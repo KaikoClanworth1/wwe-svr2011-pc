@@ -1,10 +1,11 @@
 # Makes the release zip: the launcher and the game program, with no game data.
-#   .\package.ps1 -Version 0.1.0      -> port\out\SvR2011-PC-v<version>.zip
+#   .\package.ps1 [-Version 0.2.0]    -> port\out\SvR2011-PC-v<version>.zip (default: port\VERSION)
 # Build first (build.ps1). The player installs the game data from their own
 # disc image with the launcher's Install tab, which copies these files beside it.
-param([Parameter(Mandatory)][string]$Version, [string]$Build = "")
+param([string]$Version = "", [string]$Build = "")
 $ErrorActionPreference = "Stop"
 $port  = Split-Path $PSScriptRoot -Parent
+if (-not $Version) { $Version = (Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) "VERSION") -TotalCount 1).Trim() }
 $build = if ($Build) { $Build } else { Join-Path $port "out\build\SourceRelease" }
 $name  = "SvR2011-PC-v$Version"
 $stage = Join-Path $port "out\package\$name"
@@ -20,6 +21,16 @@ foreach ($f in $files) {
 }
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
+# The native renderer's shaders (converted from the game's by
+# tools/convert_shaders.py; without them it draws nothing).
+$shaders = Join-Path $port "runs\shaders_native\dxil"
+if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
+    New-Item -ItemType Directory -Force (Join-Path $stage "native_shaders") | Out-Null
+    Get-ChildItem $shaders -File | Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
+        Copy-Item -Destination (Join-Path $stage "native_shaders")
+} else {
+    Write-Warning "no native shaders in $shaders (tools\convert_shaders.py) - this package uses the emulated renderer"
+}
 
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip

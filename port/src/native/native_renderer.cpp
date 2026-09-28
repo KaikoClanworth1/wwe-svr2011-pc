@@ -858,6 +858,18 @@ bool Initialize() {
   textures::Initialize(g_memory, 3, kSrvHeapSize - 3, 1, kSamplerHeapSize - 1);
   g_r = r;
   REXLOG_INFO("native renderer: D3D12 ready; shaders from {}", ShaderDirectory().string());
+  // Without its converted shaders (native_shaders\ beside the exe, installed
+  // by the launcher) nothing could be drawn: a black screen. Let the emulated
+  // renderer draw instead.
+  {
+    std::error_code ec;
+    if (!std::filesystem::exists(ShaderDirectory() / "present.vs.dxil", ec)) {
+      REXLOG_ERROR("native renderer: its shaders are missing ({} has no present.vs.dxil) - reinstall "
+                   "with the launcher to get the native_shaders folder",
+                   ShaderDirectory().string());
+      Fail();
+    }
+  }
   return true;
 }
 

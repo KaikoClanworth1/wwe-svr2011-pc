@@ -45,6 +45,11 @@
 #include <wchar.h>
 
 #include "movie_maker.h"
+#include "updater.h"
+
+#ifndef PORT_VERSION
+#define PORT_VERSION L"0.0.0"   /* set from port/VERSION by CMake */
+#endif
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
@@ -89,6 +94,8 @@ enum {
     ID_MV_VIDEO, ID_MV_VIDEO_BROWSE, ID_MV_BOTTOM, ID_MV_BOTTOM_BROWSE, ID_MV_BOTTOM_NONE, ID_MV_FIT, ID_MV_FILL,
     ID_MV_STRETCH, ID_MV_LENGTH, ID_MV_NAME, ID_MV_VIEW, ID_MV_LIST, ID_MV_DELETE, ID_MV_OPEN, ID_MV_PREVIEW,
     ID_MV_CREATE, ID_MV_STOP, ID_MV_PROGRESS, ID_MV_STATUS,
+    /* updates (Play tab) */
+    ID_UP_STATUS, ID_UP_BUTTON, ID_UP_AUTO, ID_UP_PROGRESS,
 };
 
 #define WM_APP_PROGRESS (WM_APP + 1)     /* wParam permille, lParam heap WCHAR* or 0 */
@@ -97,6 +104,9 @@ enum {
 #define WM_APP_DLC      (WM_APP + 4)     /* wParam 1 finished / 0 progress, lParam heap WCHAR* */
 #define WM_APP_MOVIE    (WM_APP + 5)     /* wParam percent */
 #define WM_APP_MOVIE_DONE (WM_APP + 6)   /* wParam 1 ok / 0 failed */
+#define WM_APP_UPD_CHECKED (WM_APP + 7)  /* wParam 1 ok, lParam heap error text */
+#define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
+#define WM_APP_UPD_DONE (WM_APP + 9)     /* wParam 1 ok, lParam heap error text */
 
 static HINSTANCE s_inst;
 static HWND      s_wnd, s_tab;
@@ -629,6 +639,27 @@ static int copy_out(Disc *d, DiscFile *df, const WCHAR *target, uint8_t *buf, Pr
 }
 
 /* The port's own files, from the launcher's folder to the install. */
+/* Copies the files of <launcher folder>\<name> into <target>\<name>. */
+static void copy_folder_files(const WCHAR *name, const WCHAR *target)
+{
+    WCHAR sdir[MAX_PATH], ddir[MAX_PATH], pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    if (!join(sdir, s_launcher_dir, name) || !dir_exists(sdir) || !join(ddir, target, name) || !join(pat, sdir, L"*"))
+        return;
+    CreateDirectoryW(ddir, NULL);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        if (join(src, sdir, fd.cFileName) && join(dst, ddir, fd.cFileName))
+            CopyFileW(src, dst, FALSE);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
 static void copy_program(const WCHAR *target)
 {
     WCHAR src[MAX_PATH], dst[MAX_PATH], pat[MAX_PATH];
@@ -659,6 +690,8 @@ static void copy_program(const WCHAR *target)
     exe_name = exe_name ? exe_name + 1 : s_launcher_exe;
     if (join(dst, target, exe_name))
         CopyFileW(s_launcher_exe, dst, FALSE);
+    /* The native renderer's shaders: without them it draws a black screen. */
+    copy_folder_files(L"native_shaders", target);
 }
 
 static int cmp_sector(const void *a, const void *b)
@@ -1252,6 +1285,7 @@ static void update_free_space(void)
 static void saves_refresh(void);
 static void pt_refresh(void);
 static void mv_refresh(void);
+static volatile LONG s_up_busy;
 
 static void show_tab(int t)
 {
@@ -1269,6 +1303,8 @@ static void show_tab(int t)
         pt_refresh();
     if (t == TAB_MOVIES)
         mv_refresh();
+    if (t == TAB_PLAY && !s_up_busy)
+        ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
     /* The page area in full: hidden controls (group boxes, the save list,
        the logo grid) otherwise leave their pixels behind. */
@@ -1279,6 +1315,7 @@ static void saves_setup(HWND list);
 static void saves_refresh(void);
 static HWND pt_setup_grid(void);
 static void mv_setup(void);
+static void up_setup(void);
 
 #define X0 28
 static void build_ui(void)
@@ -1311,8 +1348,7 @@ static void build_ui(void)
     add(TAB_PLAY, L"Static", L"Display, resolution, controller and audio options are on the Settings tab; they "
                              L"apply the next time the game starts.",
         SS_LEFT, X0, 356, 560, 40, 0);
-    swprintf_s(v, 64, L"Launcher version %s", LAUNCHER_VERSION);
-    add(TAB_PLAY, L"Static", v, SS_LEFT, X0, 440, 300, 20, ID_VERSION);
+    up_setup();
 
     /* Settings */
     add(TAB_SETTINGS, L"Button", L"Display", BS_GROUPBOX, X0, 50, 560, 188, 0);
@@ -3435,6 +3471,247 @@ static void mv_setup(void)
     }
 }
 
+/* ── updates (updater.c): check GitHub, download, copy the new files in ── */
+
+static UpdateInfo s_up;
+static volatile LONG s_up_cancel;
+static int s_up_available, s_up_auto_run;
+
+static void up_status(const WCHAR *fmt, ...)
+{
+    WCHAR buf[600];
+    va_list ap;
+    va_start(ap, fmt);
+    vswprintf_s(buf, 600, fmt, ap);
+    va_end(ap);
+    set_text(ID_UP_STATUS, buf);
+}
+
+static DWORD WINAPI up_check_thread(LPVOID arg)
+{
+    WCHAR err[512] = L"";
+    UpdateInfo info;
+    int ok = update_check(&info, err, 512);
+    (void)arg;
+    if (ok) s_up = info;
+    PostMessageW(s_wnd, WM_APP_UPD_CHECKED, (WPARAM)ok, ok ? 0 : (LPARAM)wdup(err));
+    return 0;
+}
+
+static void up_check(int automatic)
+{
+    if (InterlockedCompareExchange(&s_up_busy, 1, 0))
+        return;
+    s_up_auto_run = automatic;
+    up_status(L"Checking for updates\x2026");
+    EnableWindow(ctl(ID_UP_BUTTON), FALSE);
+    CloseHandle(CreateThread(NULL, 0, up_check_thread, NULL, 0, NULL));
+}
+
+/* Copies the top-level files of `from` (and its native_shaders folder) into
+ * `to`, keeping the player's settings. The running launcher is renamed out of
+ * the way first (Windows lets a running exe be renamed, not overwritten). */
+static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t errn)
+{
+    static const WCHAR *keep[] = { L"launcher.ini", GAME_TOML };
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH], old[MAX_PATH + 8], sub[MAX_PATH], subdst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    size_t i;
+    int ok = 1;
+    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        int skip = 0;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        for (i = 0; i < sizeof keep / sizeof *keep; i++)
+            if (!_wcsicmp(fd.cFileName, keep[i]))
+                skip = 1;
+        if (skip || !join(src, from, fd.cFileName) || !join(dst, to, fd.cFileName))
+            continue;
+        if (!_wcsicmp(dst, s_launcher_exe)) {
+            swprintf_s(old, MAX_PATH + 8, L"%s.old", dst);
+            DeleteFileW(old);
+            MoveFileExW(dst, old, MOVEFILE_REPLACE_EXISTING);
+        }
+        if (!CopyFileW(src, dst, FALSE)) {
+            swprintf_s(err, errn, L"Could not replace %s (error %lu). Is the game or another launcher running?",
+                       dst, GetLastError());
+            ok = 0;
+        }
+    } while (ok && FindNextFileW(h, &fd));
+    FindClose(h);
+    if (ok && join(sub, from, L"native_shaders") && dir_exists(sub) && join(subdst, to, L"native_shaders")) {
+        CreateDirectoryW(subdst, NULL);
+        if (join(pat, sub, L"*") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && join(src, sub, fd.cFileName)
+                        && join(dst, subdst, fd.cFileName))
+                    CopyFileW(src, dst, FALSE);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    return ok;
+}
+
+/* Downloads s_up's zip and copies its files over the install. */
+static int up_install(WCHAR *err, size_t errn)
+{
+    WCHAR tmp[MAX_PATH], work[MAX_PATH], zip[MAX_PATH], files[MAX_PATH], probe[MAX_PATH];
+    WCHAR name[80];
+    int ok = 0;
+    GetTempPathW(MAX_PATH, tmp);
+    if (!join(work, tmp, L"svr2011-update"))
+        goto done;
+    remove_tree(work);
+    CreateDirectoryW(work, NULL);
+    swprintf_s(name, 80, L"SvR2011-PC-v%s.zip", s_up.version);
+    if (!join(zip, work, name) || !join(files, work, L"files"))
+        goto done;
+    CreateDirectoryW(files, NULL);
+    if (!update_download(s_up.url, zip, s_wnd, WM_APP_UPD_PROGRESS, &s_up_cancel, err, errn))
+        goto done;
+    PostMessageW(s_wnd, WM_APP_UPD_PROGRESS, 100, 1);
+    if (!unpack(zip, files)) {
+        swprintf_s(err, errn, L"Could not unpack the update.");
+        goto done;
+    }
+    if (!join(probe, files, GAME_EXE) || !file_exists(probe)) {
+        swprintf_s(err, errn, L"The update has no %s; nothing was changed.", GAME_EXE);
+        goto done;
+    }
+    if (any_game_running()) {
+        swprintf_s(err, errn, L"The game is running. Close it, then update again.");
+        goto done;
+    }
+    /* The game folder, and the launcher's own folder if it is another one. */
+    ok = 1;
+    if (s_game_dir[0] && dir_exists(s_game_dir) && has_program(s_game_dir))
+        ok = up_copy_into(files, s_game_dir, err, errn);
+    if (ok && !same_dir(s_game_dir, s_launcher_dir))
+        ok = up_copy_into(files, s_launcher_dir, err, errn);
+done:
+    remove_tree(work);
+    return ok;
+}
+
+static DWORD WINAPI up_apply_thread(LPVOID arg)
+{
+    WCHAR err[600] = L"";
+    int ok = up_install(err, 600);
+    (void)arg;
+    PostMessageW(s_wnd, WM_APP_UPD_DONE, (WPARAM)ok, ok ? 0 : (LPARAM)wdup(err[0] ? err : L"The update failed."));
+    return 0;
+}
+
+static void up_apply(void)
+{
+    WCHAR q[400];
+    if (!s_up_available || s_up_busy || s_busy)
+        return;
+    if (any_game_running()) {
+        up_status(L"Close the game first, then update.");
+        return;
+    }
+    swprintf_s(q, 400, L"Update the PC port to version %s?\n\nThe launcher downloads it (%.0f MB), replaces the "
+                       L"program files and restarts. Your saves, settings, music and movies are kept.",
+               s_up.version, s_up.size / 1048576.0);
+    if (MessageBoxW(s_wnd, q, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+    InterlockedExchange(&s_up_busy, 1);
+    InterlockedExchange(&s_up_cancel, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), FALSE);
+    EnableWindow(ctl(ID_PLAY), FALSE);
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_SHOW);
+    SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, 0, 0);
+    up_status(L"Downloading version %s\x2026", s_up.version);
+    CloseHandle(CreateThread(NULL, 0, up_apply_thread, NULL, 0, NULL));
+}
+
+static void up_checked(int ok, WCHAR *err)
+{
+    InterlockedExchange(&s_up_busy, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), TRUE);
+    s_up_available = ok && version_newer(s_up.version, PORT_VERSION);
+    if (!ok) {
+        up_status(L"%s", err ? err : L"Could not check for updates.");
+    } else if (s_up_available) {
+        WCHAR b[64];
+        up_status(L"Version %s is available%s.", s_up.version, s_up.prerelease ? L" (preview)" : L"");
+        swprintf_s(b, 64, L"Update to %s", s_up.version);
+        set_text(ID_UP_BUTTON, b);
+        if (s_up_auto_run)
+            up_apply();
+    } else {
+        up_status(L"You have the newest version.");
+    }
+    free(err);
+}
+
+static void up_done(int ok, WCHAR *err)
+{
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
+    InterlockedExchange(&s_up_busy, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), TRUE);
+    refresh_play();
+    if (!ok) {
+        up_status(L"%s", err ? err : L"The update failed.");
+        free(err);
+        return;
+    }
+    {
+        STARTUPINFOW si;
+        PROCESS_INFORMATION pi;
+        WCHAR cmd[MAX_PATH + 32];
+        MessageBoxW(s_wnd, L"The PC port is updated. The launcher restarts now.", WINDOW_TITLE,
+                    MB_OK | MB_ICONINFORMATION);
+        ZeroMemory(&si, sizeof si);
+        si.cb = sizeof si;
+        swprintf_s(cmd, MAX_PATH + 32, L"\"%s\" --updated", s_launcher_exe);
+        if (CreateProcessW(s_launcher_exe, cmd, NULL, NULL, FALSE, 0, NULL, s_launcher_dir, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        save_launcher_ini();
+        DestroyWindow(s_wnd);
+    }
+}
+
+/* WM_COMMAND for the update controls; 1 if handled. */
+static int up_command(int id, int code)
+{
+    (void)code;
+    if (id == ID_UP_BUTTON) {
+        if (s_up_available) up_apply();
+        else up_check(0);
+        return 1;
+    }
+    if (id == ID_UP_AUTO) {
+        WritePrivateProfileStringW(L"Launcher", L"CheckUpdates",
+            IsDlgButtonChecked(s_wnd, ID_UP_AUTO) == BST_CHECKED ? L"1" : L"0", s_launcher_ini);
+        return 1;
+    }
+    return 0;
+}
+
+static void up_setup(void)
+{
+    WCHAR v[64];
+    swprintf_s(v, 64, L"Version %s", PORT_VERSION);
+    add(TAB_PLAY, L"Button", L"Updates", BS_GROUPBOX, X0, 410, 560, 110, 0);
+    add(TAB_PLAY, L"Static", v, SS_LEFT, X0 + 14, 434, 150, 20, ID_VERSION);
+    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 14, 456, 380, 36, ID_UP_STATUS);
+    add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 430, 146, 28, ID_UP_BUTTON);
+    add(TAB_PLAY, L"Button", L"Check when the launcher starts", BS_AUTOCHECKBOX | WS_TABSTOP,
+        X0 + 14, 490, 300, 22, ID_UP_AUTO);
+    add(TAB_PLAY, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 330, 494, 216, 14, ID_UP_PROGRESS);
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
+    CheckDlgButton(s_wnd, ID_UP_AUTO,
+                   GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
+}
+
 static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     switch (m) {
@@ -3445,7 +3722,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         break;
     }
     case WM_COMMAND:
-        if (mv_command(LOWORD(wp), HIWORD(wp)))
+        if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_PLAY:
@@ -3558,6 +3835,16 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             free((void *)lp);
         }
         break;
+    case WM_APP_UPD_CHECKED:
+        up_checked((int)wp, (WCHAR *)lp);
+        return 0;
+    case WM_APP_UPD_PROGRESS:
+        SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, wp, 0);
+        if (lp) up_status(L"Installing version %s\x2026", s_up.version);
+        return 0;
+    case WM_APP_UPD_DONE:
+        up_done((int)wp, (WCHAR *)lp);
+        return 0;
     case WM_APP_MOVIE:
         SendMessageW(ctl(ID_MV_PROGRESS), PBM_SETPOS, wp, 0);
         return 0;
@@ -3755,11 +4042,36 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         *slash = 0;
     join(s_launcher_ini, s_launcher_dir, L"launcher.ini");
     load_launcher_ini();
+    {   /* the launcher an update replaced */
+        WCHAR old[MAX_PATH + 8];
+        int k;
+        swprintf_s(old, MAX_PATH + 8, L"%s.old", s_launcher_exe);
+        for (k = 0; k < 20 && file_exists(old) && !DeleteFileW(old); k++)
+            Sleep(250);
+    }
 
     /* --install <image> <folder>: install without a window (tests). */
     if (argv && argc >= 5 && (!wcscmp(argv[1], L"--paint-export") || !wcscmp(argv[1], L"--paint-import"))) {
         console_setup();
         return pt_console(argv[1][8] == L'i', argv[2], _wtoi(argv[3]), argv[4]);
+    }
+    /* --update [<game folder>] [--from <version>]: check GitHub and install the
+       newest release without a window (--from pretends to be that version). */
+    if (argv && argc >= 2 && !wcscmp(argv[1], L"--update")) {
+        WCHAR err[600] = L"";
+        const WCHAR *from = PORT_VERSION;
+        int i;
+        console_setup();
+        for (i = 2; i < argc; i++) {
+            if (!wcscmp(argv[i], L"--from") && i + 1 < argc) from = argv[++i];
+            else wcscpy_s(s_game_dir, MAX_PATH, argv[i]);
+        }
+        if (!update_check(&s_up, err, 600)) { wprintf(L"check failed: %s\n", err); return 1; }
+        wprintf(L"newest release %s (%s), this is %s\n", s_up.version, s_up.url, from);
+        if (!version_newer(s_up.version, from)) { wprintf(L"up to date\n"); return 0; }
+        if (!up_install(err, 600)) { wprintf(L"update failed: %s\n", err); return 1; }
+        wprintf(L"updated %s to %s\n", s_game_dir, s_up.version);
+        return 0;
     }
     /* --movie-make <video> <bottom or -> <fit 0-2> <seconds> <out.bik> (tests) */
     if (argv && argc >= 7 && !wcscmp(argv[1], L"--movie-make")) {
@@ -3850,6 +4162,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
     ShowWindow(s_wnd, show);
     UpdateWindow(s_wnd);
+    if (!capture_file && GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini))
+        up_check(1);
     if (capture_file) {
         MSG pm;
         int k;

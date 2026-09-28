@@ -9,7 +9,7 @@ This is a native Windows port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 2
 It also adds:
 
 - **Sharp resolutions**: 720p (the console's), 900p, 1080p, 1440p and 4K, with anti-aliasing, VSync and a steady 60 fps.
-- **A launcher** that installs the game from your disc image, sets it up, and manages saves, DLC, logos and movies.
+- **A launcher** that installs the game from your disc image, keeps it up to date, and manages settings, saves, DLC, logos and movies.
 - **Your own entrance music**: *Create An Entrance → Music → USER PLAYLIST* plays songs from a folder on your PC, as the Xbox 360 did from its hard drive.
 - **Your own entrance movies**: turn any video into a titantron movie in the launcher and pick it in *Create An Entrance*.
 - **Up to 10 HD logos** on a created superstar, instead of the game's limit of 2.
@@ -49,6 +49,7 @@ It also adds:
 - [What you need](#what-you-need)
 - [Install and play](#install-and-play)
 - [Controls](#controls)
+- [Updates](#updates)
 - [Settings](#settings)
 - [Features](#features)
   - [Entrance music from your PC](#entrance-music-from-your-pc)
@@ -108,7 +109,11 @@ flowchart LR
     F[svr2011.toml] -->|Launcher: Settings| D
 ```
 
-**Updating to a new release:** unzip it, open its launcher, and click **Install** again into the same folder. Files already there are skipped, and your saves, settings, music and movies are kept.
+### Updates
+
+From version 0.2.0 the launcher **updates itself**. When it starts, it checks this repository's releases. If there's a newer one, it asks, downloads it, replaces the program files and restarts. Your saves, settings, music and movies are kept. The **Updates** box on the **Play** tab shows your version, has a **Check for updates** button, and can turn the check at start off.
+
+**Coming from v0.1.0:** that version has no updater. Download v0.2.0 once, unzip it, open its launcher, and click **Install** into your game folder. Files already there are skipped.
 
 ---
 
@@ -290,9 +295,10 @@ The recompiled game code is **generated on your machine from your own disc**. It
    ```bash
    powershell -ExecutionPolicy Bypass -File port/build.ps1
    ```
-9. **Make a release zip**, with no game data in it, then install it with its launcher as in [Install and play](#install-and-play):
+9. Optionally, the **native renderer's shaders**: they're converted from the game's own shaders as it creates them (a capture build, then `port/tools/convert_shaders.py`; see `port/docs/native_renderer_phase2.md`). Without them the game uses the emulated renderer.
+10. **Make a release zip**, with no game data in it, then install it with its launcher as in [Install and play](#install-and-play):
    ```bash
-   powershell -ExecutionPolicy Bypass -File port/tools/package.ps1 -Version 0.1.0
+   powershell -ExecutionPolicy Bypass -File port/tools/package.ps1
    ```
 
 **Repository layout:**
@@ -311,6 +317,7 @@ The recompiled game code is **generated on your machine from your own disc**. It
 
 - **The install fails.** Check that the image is a full disc image of the **Xbox 360** version, and that the target drive has enough free space (the Install tab shows it).
 - **The game closed unexpectedly.** A crash report is saved in `UserData\crashes\` in the game folder. Please include it when you report a problem.
+- **Black screen with sound (v0.1.0).** v0.1.0's zip was missing the native renderer's shaders. Update to v0.2.0 or later. The game now also falls back to the **Emulated** renderer if the `native_shaders` folder is missing.
 - **Something is drawn wrong.** In the launcher's **Settings**, set **Renderer** to **Emulated** and see if it looks right there. Either way, please report it with a screenshot.
 - **My entrance song or movie is gone.** The entrance remembers it by name. Check that the folder in `Music\`, or the movie in `Custom Movies\`, still has the same name.
 - **A superstar's logos 3 and up are blank.** Their images are in `Saves\.logos`. Restore it from a backup, or copy it along with the superstar's save.

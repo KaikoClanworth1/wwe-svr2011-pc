@@ -63,6 +63,12 @@ ENTRANCE MUSIC (your own songs)
   work. The game remembers the name, so don't rename a folder that an
   entrance uses. Launcher: Settings > Open Music folder.
 
+UPDATES (launcher, Play tab)
+  The launcher checks GitHub for a newer release when it starts (untick
+  "Check when the launcher starts" to stop that) and asks before updating.
+  An update replaces only the program files; saves, settings, music and
+  movies are kept. "Check for updates" checks by hand.
+
 CONTROLS
   Xbox controller - same layout as on the Xbox 360.
 
@@ -74,6 +80,8 @@ IN-GAME OVERLAYS
 FILES
   svr2011.exe        the game
   *.dll              runtime (ReXGlue) and GPU plugin (rexgpu-xenos.dll)
+  native_shaders\    the native renderer's shaders (without them the game
+                     uses the emulated renderer)
   svr2011.toml       settings
   Saves\             your saves (see SAVES)
   Music\             songs for entrances (see ENTRANCE MUSIC)

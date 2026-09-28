@@ -6,7 +6,7 @@
 #   .\session.ps1 status | stop
 # Input goes through the scripted controller (src/script_input.h).
 param([Parameter(Position = 0)][string]$Action, [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest,
-      [string]$Name = "session", [string]$Exe = "svr2011.exe", [string]$LogLevel = "info")
+      [string]$Name = "session", [string]$Exe = "svr2011.exe", [string]$LogLevel = "info", [string]$GameDir = "")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -26,7 +26,7 @@ public static class SW {
 $Rest = @($Rest | Where-Object { $_ })
 
 $port  = Split-Path $PSScriptRoot -Parent
-$game  = Join-Path (Split-Path $port -Parent) "Game Files"
+$game  = if ($GameDir) { $GameDir } else { Join-Path (Split-Path $port -Parent) "Game Files" }
 $runs  = Join-Path $port "runs"; New-Item -ItemType Directory -Force $runs | Out-Null
 $state = Join-Path $runs "session.json"
 $input = Join-Path $runs "input.txt"
@@ -48,7 +48,8 @@ switch ($Action) {
         $env:SVR2011_INPUT_FILE = $input
         $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
         $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"   # native renderer window, off-screen too
-        $env:SVR2011_NATIVE_SHADERS = Join-Path $runs "shaders_native\dxil"  # dev: converted shaders
+        # dev: converted shaders (not for -GameDir: test the install as players get it)
+        if (-not $GameDir) { $env:SVR2011_NATIVE_SHADERS = Join-Path $runs "shaders_native\dxil" } else { Remove-Item Env:SVR2011_NATIVE_SHADERS -ErrorAction SilentlyContinue }
         $a = @("--log_file=`"$log`"", "--log_level=$LogLevel", "--audio_mute=true", "--fullscreen=false") + $Rest
         Use-TestSaves
         $p = Start-Process (Join-Path $game $Exe) -WorkingDirectory $game -ArgumentList $a -PassThru -WindowStyle Minimized

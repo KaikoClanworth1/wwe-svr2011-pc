@@ -37,6 +37,13 @@ foreach ($dll in @(Get-ChildItem $build -File -Filter "rex*.dll")) {
 $files = @(Get-ChildItem $build -File | Where-Object { $_.Extension -in ".exe", ".dll" })
 foreach ($f in $files) { Copy-Item $f.FullName $game -Force }
 Copy-Item (Join-Path $root "dist\Read Me.txt") $game -Force -ErrorAction SilentlyContinue
+# The native renderer's shaders, as in the release zip.
+$shaders = Join-Path $root "runs\shaders_native\dxil"
+if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
+    New-Item -ItemType Directory -Force (Join-Path $game "native_shaders") | Out-Null
+    Get-ChildItem $shaders -File | Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
+        Copy-Item -Destination (Join-Path $game "native_shaders") -Force
+}
 
 "Deployed to $game :"
 $files | ForEach-Object { "  $($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB" }

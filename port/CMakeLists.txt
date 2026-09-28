@@ -91,11 +91,16 @@ endif()
 
 # -- Launcher -----------------------------------------------------------------
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/movie_maker.c launcher/launcher.rc)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/movie_maker.c launcher/updater.c launcher/launcher.rc)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
     target_link_options(svr2011_launcher PRIVATE -Wl,/ENTRY:wWinMainCRTStartup)
     target_link_libraries(svr2011_launcher PRIVATE
-        comctl32 comdlg32 shell32 ole32 uxtheme windowscodecs mfplat mfreadwrite mfuuid propsys)
+        comctl32 comdlg32 shell32 ole32 uxtheme windowscodecs mfplat mfreadwrite mfuuid propsys winhttp)
+    # The release version (VERSION; package.ps1 names the zip after it and the
+    # launcher's updater compares it with the newest GitHub release).
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SVR2011_VERSION LIMIT_COUNT 1)
+    target_compile_definitions(svr2011_launcher PRIVATE "PORT_VERSION=L\"${SVR2011_VERSION}\"")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 endif()
