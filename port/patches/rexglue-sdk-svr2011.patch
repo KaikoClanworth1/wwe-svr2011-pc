@@ -1,0 +1,1942 @@
+diff --git a/include/rex/external_frame.h b/include/rex/external_frame.h
+new file mode 100644
+index 0000000..a74ec89
+--- /dev/null
++++ b/include/rex/external_frame.h
+@@ -0,0 +1,41 @@
++/**
++ * @file        rex/external_frame.h
++ * @brief       [svr2011] Frames from an app-side renderer, shown instead of
++ *              the emulated GPU's.
++ *
++ * An app that renders the guest's frames itself (on the same D3D12 device)
++ * registers a provider; at each guest swap the D3D12 backend asks it for the
++ * finished frame and shows that (through its usual gamma / scaling / overlay
++ * path) instead of the guest front buffer. With host drawing disabled the
++ * emulated GPU still runs the guest's command stream (fences, interrupts,
++ * memory exports) but skips its own draws and resolves.
++ */
++
++#pragma once
++
++#include <cstdint>
++#include <functional>
++
++namespace rex::external_frame {
++
++struct Frame {
++  void* resource = nullptr;   // ID3D12Resource*, RGBA8, in a shader-readable state
++  uint32_t srv_format = 0;    // DXGI_FORMAT for the view
++  uint32_t component_mapping = 0;  // D3D12 Shader4ComponentMapping
++  uint32_t width = 0, height = 0;
++  void* fence = nullptr;      // ID3D12Fence*: the frame is ready once it reaches
++  uint64_t fence_value = 0;   // fence_value (waited for on the GPU)
++};
++
++using Provider = std::function<bool(Frame& frame)>;
++
++// Registers the provider (null to remove). Any thread.
++void SetProvider(Provider provider);
++// The latest frame, or false if there is no provider / no frame yet.
++bool GetFrame(Frame& frame);
++
++// While true, the emulated GPU skips drawing (see above).
++void SetHostDrawingDisabled(bool disabled);
++bool HostDrawingDisabled();
++
++}  // namespace rex::external_frame
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 1cb3faa..89e69b7 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -10,7 +10,9 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <functional>
+ #include <memory>
++#include <mutex>
+ #include <vector>
+ 
+ #include <rex/input/device_assignment.h>
+@@ -47,6 +49,15 @@ class InputSystem : public system::IInputSystem {
+   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
+   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+ 
++  /// [svr2011] While `hold` returns true the guest sees its pads connected but
++  /// idle (no buttons, centred sticks, no keystrokes) - for a host menu that
++  /// takes the controller. The real state the guest would have seen is kept
++  /// and returned by HeldState.
++  void SetGuestInputHold(std::function<bool()> hold);
++  /// [svr2011] The last real state polled for `user_index` while held
++  /// (false if none yet).
++  bool HeldState(uint32_t user_index, X_INPUT_STATE* out_state);
++
+  private:
+   /// Re-enumerates every driver and notifies the assignment when the set
+   /// changed.
+@@ -65,6 +76,11 @@ class InputSystem : public system::IInputSystem {
+   // does not renumber pad two.
+   std::vector<DeviceInfo> devices_;
+   std::vector<InputDriver*> device_owners_;
++
++  std::function<bool()> guest_input_hold_;  // [svr2011]
++  std::mutex held_mutex_;
++  X_INPUT_STATE held_state_[4] = {};
++  bool held_valid_[4] = {};
+ };
+ 
+ /// Create a default InputSystem with SDL + NOP drivers.
+diff --git a/include/rex/kernel/xam/apps/xmp_app.h b/include/rex/kernel/xam/apps/xmp_app.h
+index d939d62..4173cf6 100644
+--- a/include/rex/kernel/xam/apps/xmp_app.h
++++ b/include/rex/kernel/xam/apps/xmp_app.h
+@@ -19,6 +19,10 @@
+ #include <rex/system/xam/app_manager.h>
+ #include <rex/thread/mutex.h>
+ 
++#include <functional>
++#include <string>
++#include <vector>
++
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+@@ -89,12 +93,32 @@ class XmpApp : public system::xam::App {
+   X_HRESULT DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                                 uint32_t buffer_length) override;
+ 
++  // [svr2011] The user's music library, which the console kept on its hard
++  // drive: the host lists its playlists (by name) and plays them. Titles
++  // enumerate the playlists (XamCreateEnumeratorHandle with this app's
++  // messages 0x70026/0x70027, items kUserPlaylistSize bytes, the name at
++  // kUserPlaylistNameOffset) and play one with message 0x7003B; XMPStop,
++  // XMPPause and XMPContinue then control it.
++  struct HostMusic {
++    std::function<std::vector<std::u16string>()> list_playlists;
++    std::function<bool(const std::u16string& name)> play;  // loops until stopped
++    std::function<void()> stop, pause, resume;
++    std::function<void(float volume)> set_volume;  // 0..1 (XMPSetVolume)
++  };
++  static void SetHostMusic(HostMusic music);
++  static constexpr uint32_t kUserPlaylistSize = 820;
++  static constexpr uint32_t kUserPlaylistNameOffset = 572;
++  static constexpr uint32_t kUserPlaylistEnumerateMessage = 0x00070026;
++  // Writes the user playlists as enumeration items (kUserPlaylistSize each).
++  static std::vector<std::vector<uint8_t>> UserPlaylistItems();
++
+  private:
+   static const uint32_t kMsgStateChanged = 0x0A000001;
+   static const uint32_t kMsgPlaybackBehaviorChanged = 0x0A000002;
+   static const uint32_t kMsgPlaybackControllerChanged = 0x0A000003;
+ 
+   void OnStateChanged();
++  void SetUserPlaylistPlaying(bool playing);
+ 
+   State state_;
+   PlaybackClient playback_client_;
+@@ -109,6 +133,9 @@ class XmpApp : public system::xam::App {
+   std::unordered_map<uint32_t, Playlist*> playlists_;
+   uint32_t next_playlist_handle_;
+   uint32_t next_song_handle_;
++
++  bool user_playlist_playing_ = false;
++  std::u16string user_song_name_;
+ };
+ 
+ }  // namespace apps
+diff --git a/include/rex/system/util/string_utils.h b/include/rex/system/util/string_utils.h
+index e2b0470..06d6fea 100644
+--- a/include/rex/system/util/string_utils.h
++++ b/include/rex/system/util/string_utils.h
+@@ -33,9 +33,43 @@ inline std::string_view TranslateAnsiString(const memory::Memory* memory,
+                           ansi_string->length);
+ }
+ 
++// [svr2011] Guest strings are 8-bit ANSI; the runtime's string code expects
++// UTF-8 and throws on anything else. Valid UTF-8 (all ASCII included) is kept;
++// otherwise each byte is taken as Latin-1 (e.g. a content root "p0ú0",
++// 4D5307E6-style) so the same guest bytes always give the same host string.
++inline std::string AnsiToUtf8(std::string_view s) {
++  size_t i = 0;
++  bool valid = true;
++  while (i < s.size() && valid) {
++    const uint8_t c = uint8_t(s[i]);
++    size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
++    if (!n || i + n > s.size()) {
++      valid = false;
++      break;
++    }
++    for (size_t k = 1; k < n; ++k) {
++      if ((uint8_t(s[i + k]) >> 6) != 0x2) valid = false;
++    }
++    i += n;
++  }
++  if (valid) return std::string(s);
++  std::string out;
++  out.reserve(s.size() * 2);
++  for (char ch : s) {
++    const uint8_t c = uint8_t(ch);
++    if (c < 0x80) {
++      out += ch;
++    } else {
++      out += char(0xC0 | (c >> 6));
++      out += char(0x80 | (c & 0x3F));
++    }
++  }
++  return out;
++}
++
+ inline std::string TranslateAnsiPath(const memory::Memory* memory,
+                                      const X_ANSI_STRING* ansi_string) {
+-  return rex::string::trim_string(std::string(TranslateAnsiString(memory, ansi_string)));
++  return rex::string::trim_string(AnsiToUtf8(TranslateAnsiString(memory, ansi_string)));
+ }
+ 
+ inline std::string_view TranslateAnsiStringAddress(const memory::Memory* memory,
+diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
+index 949d185..cacde6d 100644
+--- a/include/rex/system/xam/content_manager.h
++++ b/include/rex/system/xam/content_manager.h
+@@ -11,10 +11,13 @@
+ 
+ #pragma once
+ 
++#include <filesystem>
++#include <functional>
+ #include <memory>
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
++#include <rex/filesystem.h>
+ #include <rex/math.h>
+ #include <rex/memory.h>
+ #include <rex/string/key.h>
+@@ -130,7 +133,12 @@ class ContentPackage {
+ 
+   uint32_t GetPackageLicense() const { return license_; }
+ 
++  // [svr2011] Run after the package is unmounted (flat saves: see
++  // ContentManager::SetFlatSavesRoot).
++  void set_on_close(std::function<void()> on_close) { on_close_ = std::move(on_close); }
++
+  private:
++  std::function<void()> on_close_;
+   KernelState* kernel_state_;
+   std::string root_name_;
+   std::string device_path_;
+@@ -182,7 +190,33 @@ class ContentManager {
+   // and writes a .header file for XAM enumeration.
+   X_RESULT InstallContent(const std::filesystem::path& package_path);
+ 
++  // [svr2011] Saved games as plain files: each package is one file,
++  // <root>/<file name> (the package's single file), instead of a folder
++  // holding it. While the game has one open it is mounted from
++  // <root>/.mount/<file name>/, where that file is a hard link to the save
++  // (so writes go straight to it); on close anything the game replaced is
++  // moved back. Headers live in <root>/.info. A package with more than one
++  // file stays a folder, <root>/<file name>/. Also finishes the moves of a
++  // session that ended without closing its packages.
++  void SetFlatSavesRoot(const std::filesystem::path& root);
++  const std::filesystem::path& flat_saves_root() const { return flat_root_; }
++
+  private:
++  bool IsFlat(XContentType type) const {
++    return !flat_root_.empty() && type == XContentType::kSavedGame;
++  }
++  std::filesystem::path FlatPath(const std::string& name) const { return flat_root_ / rex::to_path(name); }
++  std::filesystem::path FlatMountPath(const std::string& name) const {
++    return flat_root_ / ".mount" / rex::to_path(name);
++  }
++  std::filesystem::path FlatInfoPath(const std::string& name, const char* ext) const {
++    return flat_root_ / ".info" / rex::to_path(name + ext);
++  }
++  void PrepareFlatMount(const std::string& name);
++  void CommitFlatMount(const std::string& name);
++  void DeleteFlat(const std::string& name);
++  std::filesystem::path flat_root_;
++
+   std::filesystem::path ResolvePackageRoot(uint64_t xuid, XContentType content_type,
+                                            uint32_t title_id = -1);
+   std::filesystem::path ResolvePackagePath(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
+diff --git a/include/rex/system/xobject.h b/include/rex/system/xobject.h
+index 0a43f07..86971ce 100644
+--- a/include/rex/system/xobject.h
++++ b/include/rex/system/xobject.h
+@@ -15,6 +15,7 @@
+ #include <concepts>
+ #include <cstddef>
+ #include <string>
++#include <unordered_map>
+ #include <vector>
+ 
+ #include <fmt/format.h>
+@@ -197,6 +198,10 @@ class XObject {
+                                uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
+                                uint64_t* opt_timeout);
+ 
++  // [svr2011] The object whose guest struct CreateNative allocated at
++  // guest_ptr (enumerators and others without a dispatch header), or null.
++  static object_ref<XObject> GetCreatedNativeObject(uint32_t guest_ptr);
++
+   static object_ref<XObject> GetNativeObject(KernelState* kernel_state, void* native_ptr,
+                                              int32_t as_type = -1);
+   template <typename T>
+@@ -213,6 +218,7 @@ class XObject {
+ 
+   // Creates the kernel object for guest code to use. Typically not needed.
+   uint8_t* CreateNative(uint32_t size);
++  static std::unordered_map<uint32_t, XObject*>& CreatedNativeObjects();
+   void SetNativePointer(uint32_t native_ptr, bool uninitialized = false);
+ 
+   template <typename T>
+diff --git a/include/rex/timeline.h b/include/rex/timeline.h
+new file mode 100644
+index 0000000..c1f04e6
+--- /dev/null
++++ b/include/rex/timeline.h
+@@ -0,0 +1,46 @@
++/**
++ * @file        rex/timeline.h
++ * @brief       [svr2011] Microsecond event timeline for latency analysis.
++ *
++ * With --timeline_file=<path>, events from every thread (guest waits and
++ * signals, GPU fence waits, interrupts, command submission, presents) are
++ * recorded into a preallocated buffer for --timeline_seconds after
++ * --timeline_delay seconds, then written as CSV:
++ *   time_us,host_tid,event,a,b
++ * Recording costs one atomic increment per event; with no file set it is a
++ * single branch.
++ */
++
++#pragma once
++
++#include <cstdint>
++
++namespace rex::timeline {
++
++enum Event : uint16_t {
++  kWaitBegin = 1,    // a = object (guest ptr or handle), b = kind
++  kWaitEnd,          // a = object, b = result
++  kSignal,           // a = object, b = kind
++  kDelayBegin,       // a = interval (100 ns units, low 32 bits)
++  kDelayEnd,
++  kGpuWaitBegin,     // a = polled address/register, b = reference
++  kGpuWaitEnd,       // a = polled address/register, b = polls
++  kInterruptBegin,   // a = source, b = cpu
++  kInterruptEnd,
++  kPresent,          // a = frame
++  kVdSwap,
++  kWritePointer,     // a = new ring buffer write pointer
++  kVblank,
++  kUser = 100,       // app-defined
++};
++
++bool Enabled();
++void Record(uint16_t event, uint32_t a = 0, uint32_t b = 0);
++
++}  // namespace rex::timeline
++
++#define REX_TIMELINE(ev, ...)                                   \
++  do {                                                          \
++    if (::rex::timeline::Enabled())                             \
++      ::rex::timeline::Record(::rex::timeline::ev, ##__VA_ARGS__); \
++  } while (0)
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 1ddafd0..48fd5ee 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -18,6 +18,8 @@ add_library(rexcore OBJECT
+     ring_buffer.cpp
+     string_buffer.cpp
+     threading.cpp
++    timeline.cpp
++    external_frame.cpp
+     timer_queue.cpp
+     utf8.cpp
+     vec128.cpp
+diff --git a/src/core/external_frame.cpp b/src/core/external_frame.cpp
+new file mode 100644
+index 0000000..a1b242b
+--- /dev/null
++++ b/src/core/external_frame.cpp
+@@ -0,0 +1,30 @@
++// [svr2011] See rex/external_frame.h.
++
++#include <rex/external_frame.h>
++
++#include <atomic>
++#include <mutex>
++
++namespace rex::external_frame {
++
++namespace {
++std::mutex g_mutex;
++Provider g_provider;
++std::atomic<bool> g_host_drawing_disabled{false};
++}  // namespace
++
++void SetProvider(Provider provider) {
++  std::lock_guard lock(g_mutex);
++  g_provider = std::move(provider);
++}
++
++bool GetFrame(Frame& frame) {
++  std::lock_guard lock(g_mutex);
++  return g_provider && g_provider(frame);
++}
++
++void SetHostDrawingDisabled(bool disabled) { g_host_drawing_disabled = disabled; }
++
++bool HostDrawingDisabled() { return g_host_drawing_disabled.load(std::memory_order_relaxed); }
++
++}  // namespace rex::external_frame
+diff --git a/src/core/timeline.cpp b/src/core/timeline.cpp
+new file mode 100644
+index 0000000..cee5140
+--- /dev/null
++++ b/src/core/timeline.cpp
+@@ -0,0 +1,132 @@
++/**
++ * @file        core/timeline.cpp
++ * @brief       [svr2011] Microsecond event timeline (see rex/timeline.h).
++ */
++
++#include <rex/timeline.h>
++
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <thread>
++
++#include <rex/cvar.h>
++#include <rex/logging.h>
++
++#if defined(_WIN32)
++#include <windows.h>
++#endif
++
++REXCVAR_DEFINE_STRING(timeline_file, "", "Debug",
++                      "Record an event timeline (waits, signals, GPU fences) to this CSV file")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++REXCVAR_DEFINE_INT32(timeline_delay, 60, "Debug", "Seconds after startup before recording")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++REXCVAR_DEFINE_INT32(timeline_seconds, 3, "Debug", "Seconds to record")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
++namespace rex::timeline {
++
++namespace {
++
++struct Entry {
++  uint64_t ticks;
++  uint32_t tid;
++  uint16_t event;
++  uint32_t a, b;
++};
++
++constexpr size_t kCapacity = 4 * 1024 * 1024;
++
++std::atomic<int> g_state{0};  // 0 = not started, 1 = armed, 2 = recording, 3 = done
++std::atomic<size_t> g_next{0};
++std::unique_ptr<Entry[]> g_entries;
++uint64_t g_start = 0, g_freq = 1;
++
++uint64_t Now() {
++#if defined(_WIN32)
++  LARGE_INTEGER t;
++  QueryPerformanceCounter(&t);
++  return static_cast<uint64_t>(t.QuadPart);
++#else
++  return static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
++#endif
++}
++
++uint32_t ThreadId() {
++#if defined(_WIN32)
++  return GetCurrentThreadId();
++#else
++  return static_cast<uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
++#endif
++}
++
++void Arm() {
++  static std::once_flag once;
++  std::call_once(once, [] {
++    std::string path = REXCVAR_GET(timeline_file);
++    if (path.empty()) {
++      g_state = 3;
++      return;
++    }
++#if defined(_WIN32)
++    LARGE_INTEGER f;
++    QueryPerformanceFrequency(&f);
++    g_freq = static_cast<uint64_t>(f.QuadPart);
++#else
++    g_freq = 1000000000ull;
++#endif
++    g_entries = std::make_unique<Entry[]>(kCapacity);
++    g_state = 1;
++    const int delay = REXCVAR_GET(timeline_delay);
++    const int seconds = REXCVAR_GET(timeline_seconds);
++    std::thread([path, delay, seconds] {
++      std::this_thread::sleep_for(std::chrono::seconds(delay));
++      g_start = Now();
++      g_state = 2;
++      REXLOG_INFO("timeline: recording {} s", seconds);
++      std::this_thread::sleep_for(std::chrono::seconds(seconds));
++      g_state = 3;
++      std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let writers finish
++      const size_t n = std::min(g_next.load(), kCapacity);
++      if (FILE* f = std::fopen(path.c_str(), "w")) {
++        std::fputs("time_us,tid,event,a,b\n", f);
++        for (size_t i = 0; i < n; ++i) {
++          const Entry& e = g_entries[i];
++          std::fprintf(f, "%.1f,%u,%u,0x%08X,0x%08X\n",
++                       (e.ticks - g_start) * 1e6 / static_cast<double>(g_freq), e.tid, e.event,
++                       e.a, e.b);
++        }
++        std::fclose(f);
++      }
++      REXLOG_INFO("timeline: wrote {} events to {}", n, path);
++    }).detach();
++  });
++}
++
++}  // namespace
++
++bool Enabled() {
++  const int s = g_state.load(std::memory_order_relaxed);
++  if (s == 0) {
++    Arm();
++    return false;
++  }
++  return s == 2;
++}
++
++void Record(uint16_t event, uint32_t a, uint32_t b) {
++  if (g_state.load(std::memory_order_relaxed) != 2) {
++    return;
++  }
++  const size_t i = g_next.fetch_add(1, std::memory_order_relaxed);
++  if (i >= kCapacity) {
++    return;
++  }
++  g_entries[i] = Entry{Now(), ThreadId(), event, a, b};
++}
++
++}  // namespace rex::timeline
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..5aedf98 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -34,9 +34,14 @@
+ #include <rex/stream.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/user_module.h>
++#include <rex/timeline.h>
+ 
+ REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
+ 
++// [svr2011] Diagnostics for command-processor stalls on PM4 WAIT_REG_MEM.
++REXCVAR_DEFINE_BOOL(gpu_log_waits, false, "GPU",
++                    "Log WAIT_REG_MEM statistics (count, time, polled address) every 5 s");
++
+ REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
+                     "Refresh page-valid state from GPU-written memory at frame end. "
+                     "Disable for minor CPU overhead reduction, but may break memory coherency.")
+@@ -328,6 +333,7 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
+ }
+ 
+ void CommandProcessor::UpdateWritePointer(uint32_t value) {
++  REX_TIMELINE(kWritePointer, value);
+   write_ptr_index_ = value;
+   write_ptr_index_event_->Set();
+ }
+@@ -989,8 +995,15 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+ 
+   bool is_memory = (wait_info & 0x10) != 0;
+ 
++  // [svr2011] wait statistics (gpu_log_waits)
++  const bool log_waits = REXCVAR_GET(gpu_log_waits);
++  const uint64_t wait_start = log_waits ? rex::chrono::Clock::QueryHostTickCount() : 0;
++  uint32_t polls = 0;
++  const bool trace = rex::timeline::Enabled();
++
+   bool matched = false;
+   do {
++    ++polls;
+     uint32_t value = 0;
+     if (is_memory) {
+       value =
+@@ -1030,6 +1043,7 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+         break;
+     }
+     if (!matched) {
++      if (trace && polls == 1) rex::timeline::Record(rex::timeline::kGpuWaitBegin, poll_reg_addr, ref);
+       // Wait.
+       if (wait >= 0x100) {
+         PrepareForWait();
+@@ -1051,6 +1065,40 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+       }
+     }
+   } while (!matched);
++  if (trace && polls > 1) rex::timeline::Record(rex::timeline::kGpuWaitEnd, poll_reg_addr, polls);
++
++  if (log_waits) {
++    struct WaitStats {
++      uint64_t window_start = 0, blocked_ticks = 0;
++      uint32_t waits = 0, blocked = 0, max_polls = 0;
++      uint32_t last_addr = 0, last_ref = 0, last_info = 0, last_wait = 0;
++    };
++    static WaitStats st;
++    const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
++    const uint64_t freq = rex::chrono::Clock::QueryHostTickFrequency();
++    if (!st.window_start) st.window_start = now;
++    ++st.waits;
++    if (polls > 1) {
++      ++st.blocked;
++      st.blocked_ticks += now - wait_start;
++      st.max_polls = std::max(st.max_polls, polls);
++      st.last_addr = poll_reg_addr;
++      st.last_ref = ref;
++      st.last_info = wait_info;
++      st.last_wait = wait;
++    }
++    if (now - st.window_start >= freq * 5) {
++      REXGPU_INFO(
++          "WAIT_REG_MEM: {} waits, {} blocked, {:.1f} ms blocked total ({:.2f} ms/s), max polls {}; "
++          "last blocked: {} 0x{:08X} ref 0x{:X} info 0x{:X} wait 0x{:X}",
++          st.waits, st.blocked, st.blocked_ticks * 1000.0 / freq,
++          st.blocked_ticks * 1000.0 / freq / 5.0, st.max_polls,
++          (st.last_info & 0x10) ? "mem" : "reg", st.last_addr, st.last_ref, st.last_info,
++          st.last_wait);
++      st = WaitStats{};
++      st.window_start = now;
++    }
++  }
+ 
+   return true;
+ }
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..f9e0b92 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -10,6 +10,9 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
++
++#include <rex/external_frame.h>
+ #include <cstdarg>
+ #include <cstring>
+ #include <sstream>
+@@ -945,6 +948,7 @@ bool D3D12CommandProcessor::SetupContext() {
+   constant_buffer_pool_ = std::make_unique<ui::d3d12::D3D12UploadBufferPool>(
+       provider, std::max(ui::d3d12::D3D12UploadBufferPool::kDefaultPageSize,
+                          sizeof(float) * 4 * D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT));
++  REXLOG_INFO("[svr2011] upload pool {} = constants", static_cast<const void*>(constant_buffer_pool_.get()));
+   if (bindless_resources_used_) {
+     D3D12_DESCRIPTOR_HEAP_DESC view_bindless_heap_desc;
+     view_bindless_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+@@ -1916,9 +1920,34 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   D3D12_SHADER_RESOURCE_VIEW_DESC swap_texture_srv_desc;
+   xenos::TextureFormat frontbuffer_format;
+   uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
+-  ID3D12Resource* swap_texture_resource =
+-      texture_cache_->RequestSwapTexture(swap_texture_srv_desc, frontbuffer_format,
+-                                         &frontbuffer_width_unscaled, &frontbuffer_height_unscaled);
++  ID3D12Resource* swap_texture_resource = nullptr;
++  // [svr2011] A frame from the app's own renderer (rex/external_frame.h), on
++  // the same device: waited for on the GPU, then shown like the front buffer.
++  rex::external_frame::Frame external_frame;
++  if (rex::external_frame::GetFrame(external_frame) && external_frame.resource) {
++    swap_texture_resource = static_cast<ID3D12Resource*>(external_frame.resource);
++    swap_texture_srv_desc = {};
++    swap_texture_srv_desc.Format = DXGI_FORMAT(external_frame.srv_format);
++    swap_texture_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++    swap_texture_srv_desc.Shader4ComponentMapping = external_frame.component_mapping;
++    swap_texture_srv_desc.Texture2D.MipLevels = 1;
++    frontbuffer_format = xenos::TextureFormat::k_8_8_8_8;
++    frontbuffer_width_unscaled = external_frame.width;
++    frontbuffer_height_unscaled = external_frame.height;
++    frontbuffer_width = external_frame.width;
++    frontbuffer_height = external_frame.height;
++    if (external_frame.fence) {
++      GetD3D12Provider().GetDirectQueue()->Wait(static_cast<ID3D12Fence*>(external_frame.fence),
++                                                external_frame.fence_value);
++    }
++    // Kept alive until this submission is done with it.
++    swap_texture_resource->AddRef();
++    resources_for_deletion_.emplace_back(submission_current_, swap_texture_resource);
++  } else {
++    swap_texture_resource = texture_cache_->RequestSwapTexture(
++        swap_texture_srv_desc, frontbuffer_format, &frontbuffer_width_unscaled,
++        &frontbuffer_height_unscaled);
++  }
+   if (!swap_texture_resource) {
+     // Dump texture fetch constant 0 for debugging
+     const auto& regs = *register_file_;
+@@ -2326,6 +2355,11 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   }
+   bool memexport_used_pixel = pixel_shader && (pixel_shader->memexport_eM_written() != 0);
+   bool memexport_used = memexport_used_vertex || memexport_used_pixel;
++  // [svr2011] The app's renderer draws the frames (rex/external_frame.h):
++  // only draws writing guest memory still run here.
++  if (!memexport_used && rex::external_frame::HostDrawingDisabled()) {
++    return true;
++  }
+ 
+   if (!BeginSubmission(true)) {
+     return false;
+@@ -2730,6 +2764,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   return true;
+ }
+ 
++static bool LogReadbackBuffer(ID3D12Resource* buffer);  // [svr2011]
++
+ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
+   if (!total_size || memexport_ranges_.empty()) {
+     return true;
+@@ -2797,7 +2833,8 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+     ID3D12Resource* buffer = nullptr;
+     if (FAILED(device->CreateCommittedResource(
+             &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
+-            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer)))) {
++            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer))) ||
++        !LogReadbackBuffer(buffer)) {
+       return false;
+     }
+ 
+@@ -2874,6 +2911,9 @@ bool D3D12CommandProcessor::IssueCopy() {
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
++  if (rex::external_frame::HostDrawingDisabled()) {
++    return true;  // [svr2011] nothing drawn here to resolve (see IssueDraw)
++  }
+   if (!BeginSubmission(true)) {
+     return false;
+   }
+@@ -2917,7 +2957,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+     ID3D12Resource* buffer = nullptr;
+     if (FAILED(device->CreateCommittedResource(
+             &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
+-            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer)))) {
++            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer))) ||
++        !LogReadbackBuffer(buffer)) {
+       REXGPU_ERROR("Failed to create a {} MB readback buffer", size >> 20);
+       return true;
+     }
+@@ -2926,7 +2967,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+         rb.buffers[write_index]->Unmap(0, nullptr);
+         rb.mapped_data[write_index] = nullptr;
+       }
+-      rb.buffers[write_index]->Release();
++      // [svr2011] A submission still in flight may copy into it.
++      resources_for_deletion_.emplace_back(submission_current_, rb.buffers[write_index]);
+     }
+     rb.buffers[write_index] = buffer;
+     rb.sizes[write_index] = size;
+@@ -3068,6 +3110,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+     deferred_command_list_.D3DCopyBufferRegion(rb.buffers[write_index], 0, shared_memory_buffer,
+                                                written_address, written_length);
+   }
++  rb.submission_written[write_index] = submission_current_;  // [svr2011] see eviction
+ 
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
+   bool use_delayed_sync =
+@@ -3229,11 +3272,13 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
+           *node->pLastBreadcrumbValue == 0) {
+         continue;
+       }
+-      REXGPU_ERROR("DRED breadcrumb: completed {} of {} ops", *node->pLastBreadcrumbValue,
+-                   node->BreadcrumbCount);
++      REXGPU_ERROR("DRED breadcrumb: completed {} of {} ops (list '{}', queue '{}')",
++                   *node->pLastBreadcrumbValue, node->BreadcrumbCount,
++                   node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "?",
++                   node->pCommandQueueDebugNameA ? node->pCommandQueueDebugNameA : "?");
+       uint32_t last = std::min(*node->pLastBreadcrumbValue, node->BreadcrumbCount);
+-      uint32_t start = last > 3 ? last - 3 : 0;
+-      uint32_t end = std::min(last + 1, node->BreadcrumbCount);
++      uint32_t start = last > 8 ? last - 8 : 0;
++      uint32_t end = std::min(last + 8, node->BreadcrumbCount);
+       for (uint32_t i = start; i < end; i++) {
+         REXGPU_ERROR("  [{}] op type {}{}", i, static_cast<int>(node->pCommandHistory[i]),
+                      i == last ? " <-- FAULT" : "");
+@@ -4743,6 +4788,16 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+   return true;
+ }
+ 
++// [svr2011] Logs readback buffer addresses (to match GPU page faults).
++static bool LogReadbackBuffer(ID3D12Resource* buffer) {
++  static std::atomic<uint32_t> logged{0};
++  if (buffer && logged++ < 512) {
++    REXGPU_INFO("[svr2011] readback buffer GPU VA {:016X} size {:X}",
++                buffer->GetGPUVirtualAddress(), buffer->GetDesc().Width);
++  }
++  return true;
++}
++
+ void D3D12CommandProcessor::EvictOldReadbackBuffers(
+     std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map) {
+   if (buffer_map.empty()) {
+@@ -4755,6 +4810,14 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
+     ReadbackBuffer& readback = it->second;
+     bool evict =
+         buffer_map.size() > kMaxReadbackBuffers || readback.last_used_frame < eviction_frame_floor;
++    // [svr2011] Never release a buffer a submission still in flight copies
++    // into (a GPU page fault / TDR otherwise - memexport ranges of varying
++    // sizes fill the map quickly and evict buffers used moments ago).
++    for (uint32_t i = 0; i < 2 && evict; ++i) {
++      if (readback.buffers[i] && readback.submission_written[i] > submission_completed_) {
++        evict = false;
++      }
++    }
+     if (!evict) {
+       ++it;
+       continue;
+@@ -4764,7 +4827,8 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
+         if (readback.mapped_data[i]) {
+           readback.buffers[i]->Unmap(0, nullptr);
+         }
+-        readback.buffers[i]->Release();
++        // [svr2011] Released once the current submission completes.
++        resources_for_deletion_.emplace_back(submission_current_, readback.buffers[i]);
+       }
+       readback.buffers[i] = nullptr;
+       readback.mapped_data[i] = nullptr;
+@@ -4789,7 +4853,8 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
+     ID3D12Resource* buffer;
+     if (FAILED(device->CreateCommittedResource(
+             &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
+-            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer)))) {
++            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer))) ||
++        !LogReadbackBuffer(buffer)) {
+       REXGPU_ERROR("Failed to create a {} MB readback buffer", size >> 20);
+       return nullptr;
+     }
+diff --git a/src/graphics/d3d12/primitive_processor.cpp b/src/graphics/d3d12/primitive_processor.cpp
+index 500924e..eac3d0c 100644
+--- a/src/graphics/d3d12/primitive_processor.cpp
++++ b/src/graphics/d3d12/primitive_processor.cpp
+@@ -37,6 +37,7 @@ bool D3D12PrimitiveProcessor::Initialize() {
+       command_processor_.GetD3D12Provider(),
+       std::max(size_t(kMinRequiredConvertedIndexBufferSize),
+                ui::GraphicsUploadBufferPool::kDefaultPageSize));
++  REXLOG_INFO("[svr2011] upload pool {} = converted indices", static_cast<const void*>(frame_index_buffer_pool_.get()));
+   return true;
+ }
+ 
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index dd321a5..1c433af 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -575,6 +575,7 @@ bool D3D12RenderTargetCache::Initialize() {
+         provider, std::max(ui::d3d12::D3D12UploadBufferPool::kDefaultPageSize,
+                            sizeof(float) * 2 * 6 * Transfer::kMaxCutoutBorderRectangles *
+                                xenos::kEdramTileCount));
++  REXLOG_INFO("[svr2011] upload pool {} = rt transfer vertices", static_cast<const void*>(transfer_vertex_buffer_pool_.get()));
+ 
+     // Transfer root signatures.
+     D3D12_DESCRIPTOR_RANGE transfer_root_color_srv_range;
+diff --git a/src/graphics/d3d12/shared_memory.cpp b/src/graphics/d3d12/shared_memory.cpp
+index a5c97a0..77b865e 100644
+--- a/src/graphics/d3d12/shared_memory.cpp
++++ b/src/graphics/d3d12/shared_memory.cpp
+@@ -79,6 +79,8 @@ bool D3D12SharedMemory::Initialize() {
+     }
+   }
+   buffer_gpu_address_ = buffer_->GetGPUVirtualAddress();
++  REXGPU_INFO("[svr2011] shared memory buffer GPU VA {:016X}-{:016X}", buffer_gpu_address_,
++              buffer_gpu_address_ + kBufferSize);
+   buffer_uav_writes_commit_needed_ = false;
+ 
+   D3D12_DESCRIPTOR_HEAP_DESC buffer_descriptor_heap_desc;
+@@ -137,6 +139,7 @@ bool D3D12SharedMemory::Initialize() {
+   upload_buffer_pool_ = std::make_unique<ui::d3d12::D3D12UploadBufferPool>(
+       provider, rex::align(ui::d3d12::D3D12UploadBufferPool::kDefaultPageSize,
+                            size_t(1) << page_size_log2()));
++  REXLOG_INFO("[svr2011] upload pool {} = shared memory uploads", static_cast<const void*>(upload_buffer_pool_.get()));
+ 
+   return true;
+ }
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..4be98de 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -9,7 +9,10 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <chrono>
++#include <thread>
+ #include <rex/graphics/graphics_system.h>
++#include <rex/timeline.h>
+ 
+ #include <algorithm>
+ #include <cctype>
+@@ -217,6 +220,12 @@ void GraphicsSystem::OnHostGpuLossFromAnyThread([[maybe_unused]] bool is_respons
+   if (host_gpu_loss_reported_.test_and_set(std::memory_order_relaxed)) {
+     return;
+   }
++  // [svr2011] Let the GPU thread log the device removal diagnostics (DRED
++  // page fault address, breadcrumbs) first - the UI thread usually sees the
++  // loss first, and FatalError ends the process.
++  REXLOG_ERROR("Graphics device lost - waiting for diagnostics");
++  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
++  rex::FlushLogging();
+   rex::FatalError("Graphics device lost (probably due to an internal error)");
+ }
+ 
+@@ -312,8 +321,10 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
+   //          interrupt_callback_, source, cpu);
+ 
+   uint64_t args[] = {source, interrupt_callback_data_};
++  REX_TIMELINE(kInterruptBegin, source, cpu);
+   function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_, args,
+                                          rex::countof(args));
++  REX_TIMELINE(kInterruptEnd, source, cpu);
+ }
+ 
+ void GraphicsSystem::MarkVblank() {
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..739e392 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -245,12 +245,32 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+   if (!any) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+   }
++  if (guest_input_hold_ && guest_input_hold_()) {  // [svr2011] a host menu has the pad
++    if (user_index < 4) {
++      std::lock_guard lock(held_mutex_);
++      held_state_[user_index] = merged;
++      held_valid_[user_index] = true;
++    }
++    merged.gamepad = {};
++  }
+   if (out_state) {
+     *out_state = merged;
+   }
+   return X_ERROR_SUCCESS;
+ }
+ 
++void InputSystem::SetGuestInputHold(std::function<bool()> hold) {
++  guest_input_hold_ = std::move(hold);
++}
++
++bool InputSystem::HeldState(uint32_t user_index, X_INPUT_STATE* out_state) {
++  if (user_index >= 4) return false;
++  std::lock_guard lock(held_mutex_);
++  if (!held_valid_[user_index]) return false;
++  *out_state = held_state_[user_index];
++  return true;
++}
++
+ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
+   SCOPE_profile_cpu_f("hid");
+   if (!assignment_) {
+@@ -310,6 +330,9 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
+       continue;
+     }
+     X_RESULT result = driver->GetDeviceKeystroke(id, flags, out_keystroke);
++    if (result == X_ERROR_SUCCESS && guest_input_hold_ && guest_input_hold_()) {
++      return X_ERROR_EMPTY;  // [svr2011] a host menu has the pad: dropped
++    }
+     if (result == X_ERROR_SUCCESS) {
+       out_keystroke->user_index = static_cast<uint8_t>(user_index);
+       return result;
+diff --git a/src/kernel/xam/apps/xmp_app.cpp b/src/kernel/xam/apps/xmp_app.cpp
+index a5e9088..a399c35 100644
+--- a/src/kernel/xam/apps/xmp_app.cpp
++++ b/src/kernel/xam/apps/xmp_app.cpp
+@@ -14,6 +14,21 @@
+ #include <rex/system/xthread.h>
+ #include <rex/thread.h>
+ 
++#include <rex/cvar.h>
++#include <rex/string/utf8.h>
++
++#include <cstring>
++#include <mutex>
++
++
++// [svr2011] The delays below are workarounds for titles that poll XMP from a
++// busy thread (A-Train). Titles that poll it once or twice a frame from their
++// simulation thread (WWE SmackDown vs. Raw 2011) lose 10-20 ms a frame to
++// them, so they can be switched off.
++REXCVAR_DEFINE_BOOL(xmp_throttle, true, "Kernel",
++                    "Sleep in XMPGetStatus/XMPGetPlaybackController when called off the main "
++                    "thread (workaround for titles that poll XMP in a tight loop)");
++
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+@@ -22,6 +37,40 @@ using namespace rex::system::xam;
+ namespace apps {
+ using namespace rex::system;
+ 
++namespace {
++XmpApp::HostMusic g_host_music;
++std::mutex g_host_music_mutex;
++
++XmpApp::HostMusic HostMusicCopy() {
++  std::lock_guard lock(g_host_music_mutex);
++  return g_host_music;
++}
++}  // namespace
++
++void XmpApp::SetHostMusic(HostMusic music) {
++  std::lock_guard lock(g_host_music_mutex);
++  g_host_music = std::move(music);
++}
++
++std::vector<std::vector<uint8_t>> XmpApp::UserPlaylistItems() {
++  std::vector<std::vector<uint8_t>> items;
++  const HostMusic music = HostMusicCopy();
++  if (!music.list_playlists) return items;
++  uint32_t id = 1;
++  for (const std::u16string& name : music.list_playlists()) {
++    std::vector<uint8_t> item(kUserPlaylistSize, 0);
++    memory::store_and_swap<uint32_t>(item.data(), id++);
++    const size_t max_chars = (kUserPlaylistSize - kUserPlaylistNameOffset) / 2 - 1;
++    const std::u16string n = name.substr(0, max_chars);
++    for (size_t i = 0; i < n.size(); ++i) {
++      memory::store_and_swap<uint16_t>(item.data() + kUserPlaylistNameOffset + i * 2,
++                                       uint16_t(n[i]));
++    }
++    items.push_back(std::move(item));
++  }
++  return items;
++}
++
+ XmpApp::XmpApp(KernelState* kernel_state)
+     : App(kernel_state, 0xFA),
+       state_(State::kIdle),
+@@ -36,7 +85,7 @@ XmpApp::XmpApp(KernelState* kernel_state)
+       next_song_handle_(1) {}
+ 
+ X_HRESULT XmpApp::XMPGetStatus(uint32_t state_ptr) {
+-  if (!XThread::GetCurrentThread()->main_thread()) {
++  if (REXCVAR_GET(xmp_throttle) && !XThread::GetCurrentThread()->main_thread()) {
+     // Some stupid games will hammer this on a thread - induce a delay
+     // here to keep from starving real threads.
+     rex::thread::Sleep(std::chrono::milliseconds(1));
+@@ -146,6 +195,9 @@ X_HRESULT XmpApp::XMPPlayTitlePlaylist(uint32_t playlist_handle, uint32_t song_h
+ 
+ X_HRESULT XmpApp::XMPContinue() {
+   REXKRNL_DEBUG("XMPContinue()");
++  if (user_playlist_playing_ && state_ == State::kPaused) {
++    if (const HostMusic music = HostMusicCopy(); music.resume) music.resume();
++  }
+   if (state_ == State::kPaused) {
+     state_ = State::kPlaying;
+   }
+@@ -156,6 +208,10 @@ X_HRESULT XmpApp::XMPContinue() {
+ X_HRESULT XmpApp::XMPStop(uint32_t unk) {
+   assert_zero(unk);
+   REXKRNL_DEBUG("XMPStop({:08X})", unk);
++  if (user_playlist_playing_) {
++    if (const HostMusic music = HostMusicCopy(); music.stop) music.stop();
++    SetUserPlaylistPlaying(false);
++  }
+   active_playlist_ = nullptr;  // ?
+   active_song_index_ = 0;
+   state_ = State::kIdle;
+@@ -165,6 +221,9 @@ X_HRESULT XmpApp::XMPStop(uint32_t unk) {
+ 
+ X_HRESULT XmpApp::XMPPause() {
+   REXKRNL_DEBUG("XMPPause()");
++  if (user_playlist_playing_ && state_ == State::kPlaying) {
++    if (const HostMusic music = HostMusicCopy(); music.pause) music.pause();
++  }
+   if (state_ == State::kPlaying) {
+     state_ = State::kPaused;
+   }
+@@ -198,6 +257,18 @@ X_HRESULT XmpApp::XMPPrevious() {
+   return X_E_SUCCESS;
+ }
+ 
++// [svr2011] Playing a user playlist hands playback to the system and stopping
++// hands it back, each announced with XN_XMP_PLAYBACKCONTROLLERCHANGED: the
++// title mutes its audio while the system plays and waits for that
++// notification to unmute (SvR 2011 stayed silent after a USER PLAYLIST song).
++void XmpApp::SetUserPlaylistPlaying(bool playing) {
++  if (user_playlist_playing_ == playing) return;
++  user_playlist_playing_ = playing;
++  // The parameter is 1 when the title has playback again (SvR 2011's audio
++  // library unmutes on 1 and mutes its music voice on 0).
++  kernel_state_->BroadcastNotification(kMsgPlaybackControllerChanged, playing ? 0 : 1);
++}
++
+ void XmpApp::OnStateChanged() {
+   kernel_state_->BroadcastNotification(kMsgStateChanged, static_cast<uint32_t>(state_));
+ }
+@@ -298,6 +369,9 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       assert_true(args->xmp_client == 0x00000002);
+       REXKRNL_DEBUG("XMPSetVolume({:g})", float(args->value));
+       volume_ = args->value;
++      if (const HostMusic music = HostMusicCopy(); music.set_volume) {
++        music.set_volume(volume_);
++      }
+       return X_E_SUCCESS;
+     }
+     case 0x0007000D: {
+@@ -343,8 +417,16 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       auto info = memory_->TranslateVirtual(args->info_ptr);
+       assert_true(args->xmp_client == 0x00000002);
+       assert_zero(args->unk_ptr);
+-      REXKRNL_ERROR("XMPGetInfo?({:08X}, {:08X})", uint32_t(args->unk_ptr),
++      REXKRNL_DEBUG("XMPGetInfo?({:08X}, {:08X})", uint32_t(args->unk_ptr),
+                     uint32_t(args->info_ptr));
++      if (user_playlist_playing_) {
++        // [svr2011] The user playlist's song: named after the playlist.
++        std::memset(info, 0, 4 + 572 + 212);
++        memory::store_and_swap<uint32_t>(info + 0, 1);
++        memory::store_and_swap<std::u16string>(info + 4 + 572 + 0, user_song_name_.substr(0, 19));
++        memory::store_and_swap<uint32_t>(info + 4 + 572 + 208, 1);  // mp3
++        return X_E_SUCCESS;
++      }
+       if (!active_playlist_) {
+         return X_E_FAIL;
+       }
+@@ -405,10 +487,13 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       assert_true(args->xmp_client == 0x00000002);
+       REXKRNL_DEBUG("XMPGetPlaybackController({:08X}, {:08X}, {:08X})", uint32_t(args->xmp_client),
+                     uint32_t(args->controller_ptr), uint32_t(args->locked_ptr));
+-      memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->controller_ptr), 0);
++      // [svr2011] The system (the music player) has playback while it plays a
++      // user playlist, as on the console (see SetUserPlaylistPlaying).
++      memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->controller_ptr),
++                                       user_playlist_playing_ ? 1 : 0);
+       memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->locked_ptr), 0);
+ 
+-      if (!XThread::GetCurrentThread()->main_thread()) {
++      if (REXCVAR_GET(xmp_throttle) && !XThread::GetCurrentThread()->main_thread()) {
+         // Atrain spawns a thread 82437FD0 to call this in a tight loop forever.
+         rex::thread::Sleep(std::chrono::milliseconds(10));
+       }
+@@ -460,6 +545,36 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                                        4 + uint32_t(args->song_count) * 128);
+       return X_E_SUCCESS;
+     }
++    case 0x0007003B: {
++      // [svr2011] XMPPlayUserPlaylist: the client, then a playlist item as
++      // enumerated (UserPlaylistItems).
++      if (buffer_length && buffer_length < 4 + kUserPlaylistSize) {
++        return X_E_INVALIDARG;
++      }
++      std::u16string name;
++      for (uint32_t i = 0; i < (kUserPlaylistSize - kUserPlaylistNameOffset) / 2; ++i) {
++        const char16_t c = char16_t(
++            memory::load_and_swap<uint16_t>(buffer + 4 + kUserPlaylistNameOffset + i * 2));
++        if (!c) break;
++        name.push_back(c);
++      }
++      const HostMusic music = HostMusicCopy();
++      if (!music.play || !music.play(name)) {
++        REXKRNL_WARN("XMPPlayUserPlaylist: no playlist '{}'", rex::string::to_utf8(name));
++        return X_E_NOTFOUND;
++      }
++      REXKRNL_INFO("XMPPlayUserPlaylist('{}')", rex::string::to_utf8(name));
++      SetUserPlaylistPlaying(true);
++      user_song_name_ = name;
++      active_playlist_ = nullptr;
++      state_ = State::kPlaying;
++      OnStateChanged();
++      return X_E_SUCCESS;
++    }
++    case 0x00070025:
++      // [svr2011] Starts a user playlist enumeration the title created with
++      // XamCreateEnumeratorHandle (xam_enum.cpp fills it).
++      return X_E_SUCCESS;
+     case 0x0007003D: {
+       // XMPCaptureOutput - not sure how this works :/
+       REXKRNL_DEBUG("XMPCaptureOutput(...)");
+diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
+index 1fb1e16..9e4f762 100644
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+  ******************************************************************************
+@@ -17,6 +17,7 @@
+ #include <rex/types.h>
+ #include <rex/string.h>
+ #include <rex/system/kernel_state.h>
++#include <rex/system/util/string_utils.h>
+ #include <rex/system/xam/content_device.h>
+ #include <rex/system/xenumerator.h>
+ #include <rex/system/xtypes.h>
+@@ -141,7 +142,9 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+     *disposition_ptr = 0;
+   }
+ 
+-  auto run = [content_manager, xuid, root_name = root_name.value(), flags, content_data,
++  // [svr2011] ANSI root names (this game uses "p0ú0") as UTF-8, as paths are.
++  auto run = [content_manager, xuid, root_name = util::AnsiToUtf8(root_name.value()), flags,
++              content_data,
+               disposition_ptr,
+               license_mask_ptr](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+     X_RESULT result = X_ERROR_INVALID_PARAMETER;
+@@ -280,7 +283,8 @@ u32 XamContentFlush_entry(mapped_string root_name, mapped_void overlapped_ptr) {
+ 
+ u32 XamContentClose_entry(mapped_string root_name, mapped_void overlapped_ptr) {
+   // Closes a previously opened root from XamContentCreate*.
+-  auto result = REX_KERNEL_STATE()->content_manager()->CloseContent(root_name.value());
++  auto result =
++      REX_KERNEL_STATE()->content_manager()->CloseContent(util::AnsiToUtf8(root_name.value()));
+ 
+   if (overlapped_ptr) {
+     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped_ptr.guest_address(), result);
+diff --git a/src/kernel/xam/xam_enum.cpp b/src/kernel/xam/xam_enum.cpp
+index 9dcab94..a46497a 100644
+--- a/src/kernel/xam/xam_enum.cpp
++++ b/src/kernel/xam/xam_enum.cpp
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+  ******************************************************************************
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <rex/kernel/xam/module.h>
++#include <rex/kernel/xam/apps/xmp_app.h>
+ #include <rex/kernel/xam/private.h>
+ #include <rex/logging.h>
+ #include <rex/hook.h>
+@@ -25,6 +26,9 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <algorithm>
++#include <cstring>
++
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+@@ -83,9 +87,30 @@ u32 XamEnumerate_entry(u32 handle, u32 flags, mapped_void buffer, u32 buffer_len
+   return result;
+ }
+ 
+-u32 XamCreateEnumeratorHandle_entry(u32 unk1, u32 unk2, u32 unk3, u32 unk4, u32 unk5, u32 unk6,
+-                                    u32 unk7, u32 unk8) {
+-  return X_ERROR_INVALID_PARAMETER;
++u32 XamCreateEnumeratorHandle_entry(u32 user_index, u32 app_id, u32 open_message,
++                                    u32 close_message, u32 extra_size, u32 item_count, u32 flags,
++                                    mapped_u32 out_handle) {
++  // [svr2011] The music player's user playlists (xmp_app.h); nothing else yet.
++  using rex::kernel::xam::apps::XmpApp;
++  if (app_id != 0xFA || open_message != XmpApp::kUserPlaylistEnumerateMessage || !out_handle) {
++    REXKRNL_WARN("XamCreateEnumeratorHandle: app {:X} message {:08X} not supported", uint32_t(app_id),
++                 uint32_t(open_message));
++    return X_ERROR_INVALID_PARAMETER;
++  }
++  auto e = make_object<XStaticUntypedEnumerator>(REX_KERNEL_STATE(), std::max<uint32_t>(item_count, 1),
++                                                 XmpApp::kUserPlaylistSize);
++  void* extra = nullptr;
++  const auto result =
++      e->Initialize(user_index, app_id, open_message, close_message, flags, extra_size, &extra);
++  if (XFAILED(result)) {
++    return X_ERROR_FUNCTION_FAILED;
++  }
++  for (const auto& item : XmpApp::UserPlaylistItems()) {
++    std::memcpy(e->AppendItem(), item.data(), item.size());
++  }
++  REXKRNL_INFO("XamCreateEnumeratorHandle: {} user playlist(s)", e->item_count());
++  *out_handle = e->handle();
++  return X_ERROR_SUCCESS;
+ }
+ 
+ u32 XamGetPrivateEnumStructureFromHandle_entry(u32 handle, mapped_u32 out_object_ptr) {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_ob.cpp b/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
+index 5709e6d..911b33d 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
+@@ -161,6 +161,12 @@ u32 ObDereferenceObject_entry(u32 native_ptr) {
+     return 0;
+   }
+ 
++  // [svr2011] Structs made by CreateNative first (they may lack a dispatch
++  // header - see XObject::GetCreatedNativeObject).
++  if (auto created = XObject::GetCreatedNativeObject(native_ptr)) {
++    created->ReleaseHandle();
++    return 0;
++  }
+   auto object = XObject::GetNativeObject<XObject>(
+       REX_KERNEL_STATE(), REX_KERNEL_MEMORY()->TranslateVirtual(native_ptr));
+   if (object) {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index 57fd161..012b7e5 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -19,6 +19,7 @@
+ #include <vector>
+ 
+ #include <rex/chrono/clock.h>
++#include <rex/timeline.h>
+ #include <rex/dbg.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/kernel/xboxkrnl/threading.h>
+@@ -380,7 +381,9 @@ u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, mapped_u64 i
+     thread->DeliverAPCs();
+   }
+ 
++  REX_TIMELINE(kDelayBegin, static_cast<uint32_t>(static_cast<uint64_t>(*interval_ptr)));
+   X_STATUS result = thread->Delay(processor_mode, alertable, *interval_ptr);
++  REX_TIMELINE(kDelayEnd);
+ 
+   if (alertable && result == X_STATUS_USER_APC) {
+     thread->DeliverAPCs();
+@@ -473,6 +476,7 @@ uint32_t xeKeSetEvent(X_KEVENT* event_ptr, uint32_t increment, uint32_t wait) {
+ }
+ 
+ u32 KeSetEvent_entry(ppc_ptr_t<X_KEVENT> event_ptr, u32 increment, u32 wait) {
++  REX_TIMELINE(kSignal, event_ptr.guest_address(), 1);
+   return xeKeSetEvent(event_ptr, increment, wait);
+ }
+ 
+@@ -544,6 +548,7 @@ uint32_t xeNtSetEvent(uint32_t handle, rex::be<uint32_t>* previous_state_ptr) {
+ }
+ 
+ u32 NtSetEvent_entry(u32 handle, mapped_u32 previous_state_ptr) {
++  REX_TIMELINE(kSignal, handle, 2);
+   return xeNtSetEvent(handle, previous_state_ptr);
+ }
+ 
+@@ -613,6 +618,7 @@ uint32_t xeKeReleaseSemaphore(X_KSEMAPHORE* semaphore_ptr, uint32_t increment, u
+ 
+ u32 KeReleaseSemaphore_entry(ppc_ptr_t<X_KSEMAPHORE> semaphore_ptr, u32 increment, u32 adjustment,
+                              u32 wait) {
++  REX_TIMELINE(kSignal, semaphore_ptr.guest_address(), 3);
+   return xeKeReleaseSemaphore(semaphore_ptr, increment, adjustment, wait);
+ }
+ 
+@@ -655,6 +661,7 @@ u32 NtCreateSemaphore_entry(mapped_u32 handle_ptr, mapped_void obj_attributes_pt
+ }
+ 
+ u32 NtReleaseSemaphore_entry(u32 sem_handle, u32 release_count, mapped_u32 previous_count_ptr) {
++  REX_TIMELINE(kSignal, sem_handle, 4);
+   X_STATUS result = X_STATUS_SUCCESS;
+   int32_t previous_count = 0;
+ 
+@@ -844,8 +851,10 @@ u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 pro
+   // object_ptr.guest_address(), (uint32_t)wait_reason,
+   //(uint32_t)processor_mode, (uint32_t)alertable,
+   // timeout_ptr ? (int64_t)timeout : -1);
++  REX_TIMELINE(kWaitBegin, object_ptr.guest_address(), 1);
+   auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
+                                         timeout_ptr ? &timeout : nullptr);
++  REX_TIMELINE(kWaitEnd, object_ptr.guest_address(), result);
+   // REXKRNL_IMPORT_RESULT("KeWaitForSingleObject", "{:#x}", result);
+   return result;
+ }
+@@ -857,7 +866,9 @@ u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertabl
+   auto object = REX_KERNEL_OBJECTS()->LookupObject<XObject>(object_handle);
+   if (object) {
+     uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
++    REX_TIMELINE(kWaitBegin, object_handle, 2);
+     result = object->Wait(3, wait_mode, alertable, timeout_ptr ? &timeout : nullptr);
++    REX_TIMELINE(kWaitEnd, object_handle, result);
+     if (alertable && result == X_STATUS_USER_APC) {
+       XThread::GetCurrentThread()->DeliverAPCs();
+     }
+@@ -885,9 +896,11 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
+   }
+ 
+   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
++  REX_TIMELINE(kWaitBegin, objects_ptr[0], 3);
+   X_STATUS result = XObject::WaitMultiple(
+       uint32_t(objects.size()), reinterpret_cast<XObject**>(objects.data()), wait_type, wait_reason,
+       processor_mode, alertable, timeout_ptr ? &timeout : nullptr);
++  REX_TIMELINE(kWaitEnd, objects_ptr[0], result);
+   if (alertable && result == X_STATUS_USER_APC) {
+     XThread::GetCurrentThread()->DeliverAPCs();
+   }
+@@ -909,8 +922,10 @@ uint32_t xeNtWaitForMultipleObjectsEx(uint32_t count, rex::be<uint32_t>* handles
+     objects.push_back(std::move(object));
+   }
+ 
++  REX_TIMELINE(kWaitBegin, handles[0], 4);
+   auto result = XObject::WaitMultiple(count, reinterpret_cast<XObject**>(objects.data()), wait_type,
+                                       6, wait_mode, alertable, timeout_ptr);
++  REX_TIMELINE(kWaitEnd, handles[0], result);
+   if (alertable && result == X_STATUS_USER_APC) {
+     XThread::GetCurrentThread()->DeliverAPCs();
+   }
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index 1254710..4c50b3a 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -17,6 +17,7 @@
+ #include <string>
+ 
+ #include <rex/cvar.h>
++#include <rex/timeline.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/register_file.h>
+ #include <rex/graphics/video_mode_util.h>
+@@ -445,6 +446,7 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
+                   mapped_u32 frontbuffer_ptr,  // ptr to frontbuffer address
+                   mapped_u32 texture_format_ptr, mapped_u32 color_space_ptr, mapped_u32 width,
+                   mapped_u32 height) {
++  REX_TIMELINE(kVdSwap);
+   // All of these parameters are REQUIRED.
+   assert(buffer_ptr);
+   assert(fetch_ptr);
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index bd6c797..7206896 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -16,9 +16,17 @@
+ 
+ #include <fmt/format.h>
+ 
++#if defined(_WIN32)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
++#include <rex/logging.h>
+ #include <rex/string.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/content_device.h>
+@@ -57,6 +65,9 @@ ContentPackage::~ContentPackage() {
+   auto fs = kernel_state_->file_system();
+   fs->UnregisterSymbolicLink(root_name_ + ":");
+   fs->UnregisterDevice(device_path_);
++  if (on_close_) {
++    on_close_();
++  }
+ }
+ 
+ void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_path) {
+@@ -108,6 +119,13 @@ std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
+     used_xuid = 0;
+   }
+ 
++  // [svr2011] Flat saves: the package's folder is its mount folder unless the
++  // save is kept as a folder.
++  if (IsFlat(data.content_type)) {
++    auto flat = FlatPath(data.file_name());
++    return std::filesystem::is_directory(flat) ? flat : FlatMountPath(data.file_name());
++  }
++
+   // Content path:
+   // content_root/xuid/title_id/content_type/data_file_name/
+   auto package_root = ResolvePackageRoot(used_xuid, data.content_type, data.title_id);
+@@ -125,6 +143,10 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string
+     xuid = 0;
+   }
+ 
++  if (IsFlat(content_type)) {
++    return FlatInfoPath(std::string(file_name), ".header");
++  }
++
+   auto xuid_str = fmt::format("{:016X}", xuid);
+   auto title_id_str = fmt::format("{:08X}", title_id);
+   auto content_type_str = fmt::format("{:08X}", uint32_t(content_type));
+@@ -147,10 +169,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+ 
+   // Search path:
+   // content_root/xuid/title_id/type_name/*
+-  auto package_root = ResolvePackageRoot(xuid, content_type, title_id);
++  const bool flat = IsFlat(content_type);
++  auto package_root = flat ? flat_root_ : ResolvePackageRoot(xuid, content_type, title_id);
+   auto file_infos = rex::filesystem::ListFiles(package_root);
+   for (const auto& file_info : file_infos) {
+-    if (file_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
++    if (flat) {
++      // [svr2011] Flat saves: files (and folders), not the hidden ones.
++      if (rex::path_to_utf8(file_info.name).starts_with(".")) {
++        continue;
++      }
++    } else if (file_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
+       // Directories only.
+       continue;
+     }
+@@ -175,15 +203,27 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+ 
+ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+     const std::string_view root_name, uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
++  const bool flat =
++      IsFlat(data.content_type) && !std::filesystem::is_directory(FlatPath(data.file_name()));
++  if (flat) {
++    PrepareFlatMount(data.file_name());
++  }
+   auto package_path = ResolvePackagePath(xuid, data);
+   if (!std::filesystem::exists(package_path)) {
+     return nullptr;
+   }
+   auto package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path);
++  if (flat) {
++    package->set_on_close([this, name = data.file_name()] { CommitFlatMount(name); });
++  }
+   return package;
+ }
+ 
+ bool ContentManager::ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
++  if (IsFlat(data.content_type)) {
++    return std::filesystem::exists(FlatPath(data.file_name())) ||
++           std::filesystem::exists(FlatMountPath(data.file_name()));
++  }
+   auto path = ResolvePackagePath(xuid, data);
+   return std::filesystem::exists(path);
+ }
+@@ -264,15 +304,19 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+     }
+   }
+ 
+-  auto package_path = ResolvePackagePath(xuid, data);
+-  if (std::filesystem::exists(package_path)) {
++  if (ContentExists(xuid, data)) {
+     return X_ERROR_ALREADY_EXISTS;
+   }
+-  if (!std::filesystem::create_directories(package_path)) {
+-    return X_ERROR_ACCESS_DENIED;
++  if (!IsFlat(data.content_type)) {  // [svr2011] flat saves: ResolvePackage makes the folder
++    auto package_path = ResolvePackagePath(xuid, data);
++    if (!std::filesystem::create_directories(package_path)) {
++      return X_ERROR_ACCESS_DENIED;
++    }
+   }
+   auto package = ResolvePackage(root_name, xuid, data);
+-  assert_not_null(package);
++  if (!package) {
++    return X_ERROR_ACCESS_DENIED;
++  }
+ 
+   {
+     auto global_lock = global_critical_region_.Acquire();
+@@ -294,12 +338,13 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
+     }
+   }
+ 
+-  auto package_path = ResolvePackagePath(xuid, data);
+-  if (!std::filesystem::exists(package_path)) {
++  if (!ContentExists(xuid, data)) {  // [svr2011] flat saves: no folder until mounted
+     return X_ERROR_FILE_NOT_FOUND;
+   }
+   auto package = ResolvePackage(root_name, xuid, data);
+-  assert_not_null(package);
++  if (!package) {
++    return X_ERROR_FILE_NOT_FOUND;
++  }
+   package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
+       data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
+   content_license = package->GetPackageLicense();
+@@ -333,7 +378,8 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+                                              std::vector<uint8_t>* buffer) {
+   auto global_lock = global_critical_region_.Acquire();
+   auto package_path = ResolvePackagePath(xuid, data);
+-  auto thumb_path = package_path / kThumbnailFileName;
++  auto thumb_path = IsFlat(data.content_type) ? FlatInfoPath(data.file_name(), ".png")
++                                              : package_path / kThumbnailFileName;
+   if (std::filesystem::exists(thumb_path)) {
+     auto file = rex::filesystem::OpenFile(thumb_path, "rb");
+     fseek(file, 0, SEEK_END);
+@@ -352,9 +398,14 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+                                              std::vector<uint8_t> buffer) {
+   auto global_lock = global_critical_region_.Acquire();
+   auto package_path = ResolvePackagePath(xuid, data);
++  if (IsFlat(data.content_type)) {
++    // [svr2011] Not inside the package: it would make it a multi-file one.
++    package_path = flat_root_ / ".info";
++  }
+   std::filesystem::create_directories(package_path);
+   if (std::filesystem::exists(package_path)) {
+-    auto thumb_path = package_path / kThumbnailFileName;
++    auto thumb_path = IsFlat(data.content_type) ? FlatInfoPath(data.file_name(), ".png")
++                                                : package_path / kThumbnailFileName;
+     auto file = rex::filesystem::OpenFile(thumb_path, "wb");
+     fwrite(buffer.data(), 1, buffer.size(), file);
+     fclose(file);
+@@ -372,6 +423,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+     return X_ERROR_ACCESS_DENIED;
+   }
+ 
++  if (IsFlat(data.content_type)) {
++    if (!ContentExists(xuid, data)) {
++      return X_ERROR_FILE_NOT_FOUND;
++    }
++    DeleteFlat(data.file_name());
++    return X_ERROR_SUCCESS;
++  }
++
+   auto package_path = ResolvePackagePath(xuid, data);
+   std::error_code ec;
+   auto dir_removed = std::filesystem::remove_all(package_path, ec);
+@@ -419,6 +478,13 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+   delete package;
+ 
+   // Delete phase: remove package directory and .header file
++  if (IsFlat(data.content_type)) {
++    if (!ContentExists(xuid, data)) {
++      return X_ERROR_FILE_NOT_FOUND;
++    }
++    DeleteFlat(data.file_name());
++    return X_ERROR_SUCCESS;
++  }
+   auto package_path = ResolvePackagePath(xuid, data);
+ 
+   uint64_t used_xuid = (data.xuid != uint64_t(-1) && data.xuid != 0) ? uint64_t(data.xuid) : xuid;
+@@ -518,6 +584,150 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
+   }
+ }
+ 
++
++// [svr2011] Flat saves (see SetFlatSavesRoot in the header).
++namespace {
++constexpr const char* kFlatDefaultInner = "SaveData.Dat";
++
++void HideFolder(const std::filesystem::path& p) {
++#if defined(_WIN32)
++  DWORD attr = GetFileAttributesW(p.c_str());
++  if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_HIDDEN)) {
++    SetFileAttributesW(p.c_str(), attr | FILE_ATTRIBUTE_HIDDEN);
++  }
++#else
++  (void)p;
++#endif
++}
++
++std::string ReadSmallText(const std::filesystem::path& p) {
++  std::string text;
++  if (!std::filesystem::exists(p)) {
++    return text;
++  }
++  if (FILE* f = rex::filesystem::OpenFile(p, "rb")) {
++    char buf[256];
++    size_t n = fread(buf, 1, sizeof(buf), f);
++    fclose(f);
++    text.assign(buf, n);
++    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) {
++      text.pop_back();
++    }
++  }
++  return text;
++}
++}  // namespace
++
++void ContentManager::SetFlatSavesRoot(const std::filesystem::path& root) {
++  flat_root_ = root;
++  if (root.empty()) {
++    return;
++  }
++  std::error_code ec;
++  std::filesystem::create_directories(root / ".info", ec);
++  std::filesystem::create_directories(root / ".mount", ec);
++  HideFolder(root / ".info");
++  HideFolder(root / ".mount");
++  // A session that ended with packages open: finish them.
++  std::vector<std::string> left;
++  for (const auto& entry : std::filesystem::directory_iterator(root / ".mount", ec)) {
++    if (entry.is_directory()) {
++      left.push_back(rex::path_to_utf8(entry.path().filename()));
++    }
++  }
++  for (const auto& name : left) {
++    CommitFlatMount(name);
++  }
++}
++
++void ContentManager::PrepareFlatMount(const std::string& name) {
++  const auto mount = FlatMountPath(name);
++  const auto file = FlatPath(name);
++  std::error_code ec;
++  if (std::filesystem::exists(mount)) {
++    CommitFlatMount(name);  // left over: finish it first
++  }
++  std::filesystem::create_directories(mount, ec);
++  if (!std::filesystem::is_regular_file(file)) {
++    return;
++  }
++  std::string inner = ReadSmallText(FlatInfoPath(name, ".file"));
++  if (inner.empty()) {
++    inner = kFlatDefaultInner;
++  }
++  const auto link = mount / rex::to_path(inner);
++  std::filesystem::create_hard_link(file, link, ec);
++  if (ec) {
++    // No hard links on this drive: work on a copy, moved back on close.
++    std::filesystem::copy_file(file, link, std::filesystem::copy_options::overwrite_existing, ec);
++  }
++}
++
++void ContentManager::CommitFlatMount(const std::string& name) {
++  const auto mount = FlatMountPath(name);
++  const auto file = FlatPath(name);
++  std::error_code ec;
++  if (!std::filesystem::is_directory(mount)) {
++    return;
++  }
++  std::vector<std::filesystem::path> files;
++  bool has_dirs = false;
++  for (const auto& entry : std::filesystem::directory_iterator(mount, ec)) {
++    if (entry.is_directory()) {
++      has_dirs = true;
++    } else {
++      files.push_back(entry.path());
++    }
++  }
++  if (files.size() == 1 && !has_dirs) {
++    const auto inner = files[0];
++    if (!(std::filesystem::exists(file) && std::filesystem::equivalent(inner, file, ec))) {
++      // A new file (or a copy): it becomes the save.
++      std::filesystem::rename(inner, file, ec);
++      if (ec) {
++        std::filesystem::copy_file(inner, file, std::filesystem::copy_options::overwrite_existing,
++                                   ec);
++        if (ec) {
++          REXSYS_WARN("Flat saves: could not store {} ({})", name, ec.message());
++          return;  // kept for the next start
++        }
++      }
++    }
++    const auto inner_name = rex::path_to_utf8(inner.filename());
++    const auto sidecar = FlatInfoPath(name, ".file");
++    if (inner_name == kFlatDefaultInner) {
++      std::filesystem::remove(sidecar, ec);
++    } else if (FILE* f = rex::filesystem::OpenFile(sidecar, "wb")) {
++      fwrite(inner_name.data(), 1, inner_name.size(), f);
++      fclose(f);
++    }
++    std::filesystem::remove_all(mount, ec);
++    return;
++  }
++  if (files.empty() && !has_dirs) {
++    // Nothing in it: the save is gone (or was never written).
++    std::filesystem::remove_all(mount, ec);
++    return;
++  }
++  // More than one file: kept as a folder.
++  if (std::filesystem::is_regular_file(file)) {
++    std::filesystem::remove(file, ec);  // its data is linked in the mount folder
++  }
++  std::filesystem::rename(mount, file, ec);
++  if (ec) {
++    REXSYS_WARN("Flat saves: could not store {} as a folder ({})", name, ec.message());
++  }
++}
++
++void ContentManager::DeleteFlat(const std::string& name) {
++  std::error_code ec;
++  std::filesystem::remove_all(FlatMountPath(name), ec);
++  std::filesystem::remove_all(FlatPath(name), ec);
++  std::filesystem::remove(FlatInfoPath(name, ".header"), ec);
++  std::filesystem::remove(FlatInfoPath(name, ".file"), ec);
++  std::filesystem::remove(FlatInfoPath(name, ".png"), ec);
++}
++
+ static X_RESULT ExtractEntry(rex::filesystem::Entry* entry,
+                              const std::filesystem::path& base_path) {
+   auto dest_path = base_path / rex::to_path(rex::string::utf8_fix_path_separators(entry->path()));
+diff --git a/src/system/xnotifylistener.cpp b/src/system/xnotifylistener.cpp
+index eae1014..57df7ef 100644
+--- a/src/system/xnotifylistener.cpp
++++ b/src/system/xnotifylistener.cpp
+@@ -76,11 +76,28 @@ bool XNotifyListener::DequeueNotification(XNotificationID id, uint32_t* out_data
+     dequeued = true;
+     *out_data = it->second;
+     notifications_.erase(it);
+-    if (!notifications_.size()) {
+-      wait_handle_->Reset();
+-    }
+     break;
+   }
++  // [svr2011] A title that only ever asks for one id leaves the others queued;
++  // keeping the handle signaled for them makes a wait on it return at once
++  // forever. SvR 2011's Wwise audio thread waits on {listener, render events}
++  // and only takes XN_XMP_PLAYBACKCONTROLLERCHANGED, so a queued
++  // XN_XMP_STATECHANGED starved its rendering (all game audio went silent after
++  // a USER PLAYLIST song). Signal only while a notification of this id is left.
++  bool more = false;
++  for (auto& n : notifications_) {
++    if (n.first == id) {
++      more = true;
++      break;
++    }
++  }
++  if (!more) {
++    wait_handle_->Reset();
++  }
++  // Nothing takes the other ids from this listener: don't let them pile up.
++  while (notifications_.size() > 64) {
++    notifications_.erase(notifications_.begin());
++  }
+   return dequeued;
+ }
+ 
+diff --git a/src/system/xobject.cpp b/src/system/xobject.cpp
+index d358f39..0a637bd 100644
+--- a/src/system/xobject.cpp
++++ b/src/system/xobject.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <unordered_map>
+ #include <vector>
+ 
+ #include <rex/chrono/clock.h>
+@@ -53,6 +54,10 @@ XObject::~XObject() {
+   // assert_zero(pointer_ref_count_);
+ 
+   if (allocated_guest_object_) {
++    {
++      auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++      CreatedNativeObjects().erase(guest_object_ptr_);
++    }
+     uint32_t ptr = guest_object_ptr_ - sizeof(X_OBJECT_HEADER);
+     auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(ptr);
+ 
+@@ -333,6 +338,7 @@ uint8_t* XObject::CreateNative(uint32_t size) {
+   allocated_guest_object_ = true;
+   memory()->Zero(mem, total_size);
+   SetNativePointer(mem + sizeof(X_OBJECT_HEADER), true);
++  CreatedNativeObjects()[mem + sizeof(X_OBJECT_HEADER)] = this;
+ 
+   auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(mem);
+ 
+@@ -367,6 +373,27 @@ void XObject::SetNativePointer(uint32_t native_ptr, bool uninitialized) {
+   guest_object_ptr_ = native_ptr;
+ }
+ 
++// [svr2011] Guest structs made by CreateNative, by address: not all of them
++// start with a dispatch header (an enumerator starts with X_KENUMERATOR), so
++// GetNativeObject can't find them from the struct - it took an enumerator for
++// an event, made a stray XEvent on its memory and never released the
++// enumerator; once the heap reused that memory, the stray event answered for
++// the new struct there (SvR 2011 lost all its audio after previewing a USER
++// PLAYLIST song, whose lookup does XamGetPrivateEnumStructureFromHandle +
++// ObDereferenceObject).
++std::unordered_map<uint32_t, XObject*>& XObject::CreatedNativeObjects() {
++  static std::unordered_map<uint32_t, XObject*> objects;
++  return objects;
++}
++
++object_ref<XObject> XObject::GetCreatedNativeObject(uint32_t guest_ptr) {
++  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++  auto& objects = CreatedNativeObjects();
++  auto it = objects.find(guest_ptr);
++  if (it == objects.end()) return nullptr;
++  return retain_object(it->second);
++}
++
+ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state, void* native_ptr,
+                                              int32_t as_type) {
+   assert_not_null(native_ptr);
+@@ -394,9 +421,19 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state, void* na
+     uint32_t handle = header->wait_list_blink;
+     auto object = kernel_state->object_table()->LookupObject<XObject>(handle);
+ 
+-    // TODO(benvanik): assert nothing has been changed in the struct.
+-    return object;
+-  } else {
++    // [svr2011] A stale stash: the struct (often on the guest stack) outlived
++    // its object and the handle now belongs to something else, or to nothing.
++    // Callers cast the result to the type they expect (XEvent::Set on a
++    // non-event crashed at boot), so make a new object instead.
++    const Type expected = (as_type == 0 || as_type == 1) ? Type::Event
++                          : as_type == 2                 ? Type::Mutant
++                          : as_type == 5                 ? Type::Semaphore
++                                                         : Type::Undefined;
++    if (object && (expected == Type::Undefined || object->type() == expected)) {
++      return object;
++    }
++  }
++  {
+     // First use, create new.
+     // https://www.nirsoft.net/kernel_struct/vista/KOBJECTS.html
+     XObject* object = nullptr;
+diff --git a/src/ui/d3d12/d3d12_provider.cpp b/src/ui/d3d12/d3d12_provider.cpp
+index bf8252b..df605ad 100644
+--- a/src/ui/d3d12/d3d12_provider.cpp
++++ b/src/ui/d3d12/d3d12_provider.cpp
+@@ -22,6 +22,9 @@
+ 
+ REXCVAR_DEFINE_BOOL(d3d12_debug, false, "UI/D3D12", "Enable Direct3D 12 and DXGI debug layer")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++REXCVAR_DEFINE_BOOL(d3d12_dred, false, "UI/D3D12",
++                    "Enable DRED (breadcrumbs, page faults) without the debug layer, to diagnose GPU hangs")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ 
+ REXCVAR_DEFINE_BOOL(d3d12_break_on_error, false, "UI/D3D12",
+                     "Break on Direct3D 12 validation errors");
+@@ -228,18 +231,17 @@ bool D3D12Provider::Initialize() {
+       debug = false;
+     }
+ 
+-    // Enable DRED (Device Removed Extended Data) for diagnosing GPU crashes.
+-    {
+-      Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred_settings;
+-      if (SUCCEEDED(pfn_d3d12_get_debug_interface_(IID_PPV_ARGS(&dred_settings)))) {
+-        dred_settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+-        dred_settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+-        REXLOG_INFO("DRED (Device Removed Extended Data) enabled");
+-      } else {
+-        REXLOG_WARN(
+-            "Failed to enable DRED - device removal diagnostics will be "
+-            "limited");
+-      }
++  }
++  // Enable DRED (Device Removed Extended Data) for diagnosing GPU crashes
++  // (with the debug layer, or alone with d3d12_dred).
++  if (debug || REXCVAR_GET(d3d12_dred)) {
++    Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred_settings;
++    if (SUCCEEDED(pfn_d3d12_get_debug_interface_(IID_PPV_ARGS(&dred_settings)))) {
++      dred_settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
++      dred_settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
++      REXLOG_INFO("DRED (Device Removed Extended Data) enabled");
++    } else {
++      REXLOG_WARN("Failed to enable DRED - device removal diagnostics will be limited");
+     }
+   }
+   // Create the DXGI factory.
+diff --git a/src/ui/d3d12/d3d12_upload_buffer_pool.cpp b/src/ui/d3d12/d3d12_upload_buffer_pool.cpp
+index ade5dd2..9151f01 100644
+--- a/src/ui/d3d12/d3d12_upload_buffer_pool.cpp
++++ b/src/ui/d3d12/d3d12_upload_buffer_pool.cpp
+@@ -72,7 +72,13 @@ uint8_t* D3D12UploadBufferPool::RequestPartial(uint64_t submission_index, size_t
+ 
+ GraphicsUploadBufferPool::Page* D3D12UploadBufferPool::CreatePageImplementation() {
+   D3D12_RESOURCE_DESC buffer_desc;
+-  util::FillBufferResourceDesc(buffer_desc, page_size_, D3D12_RESOURCE_FLAG_NONE);
++  // [svr2011] A 64 KB tail past the page: constant buffers bound as root
++  // descriptors have no bounds checking, and shaders indexing constants
++  // (relative addressing) can read past the uploaded ones - off the end of the
++  // newest page a GPU page fault (device removed). 64 KB is the most a
++  // constant buffer view covers.
++  util::FillBufferResourceDesc(buffer_desc, page_size_ + D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16,
++                               D3D12_RESOURCE_FLAG_NONE);
+   Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+   if (FAILED(provider_.GetDevice()->CreateCommittedResource(
+           &util::kHeapPropertiesUpload, provider_.GetHeapFlagCreateNotZeroed(), &buffer_desc,
+@@ -80,6 +86,12 @@ GraphicsUploadBufferPool::Page* D3D12UploadBufferPool::CreatePageImplementation(
+     REXLOG_ERROR("Failed to create a D3D upload buffer with {} bytes", page_size_);
+     return nullptr;
+   }
++  {  // [svr2011] addresses, to match GPU page faults
++    static uint32_t logged = 0;
++    if (logged++ < 256)
++      REXLOG_INFO("[svr2011] upload pool {} page GPU VA {:016X} size {:X}",
++                  static_cast<const void*>(this), buffer->GetGPUVirtualAddress(), page_size_);
++  }
+   D3D12_RANGE read_range;
+   read_range.Begin = 0;
+   read_range.End = 0;

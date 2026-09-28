@@ -1,0 +1,342 @@
+<p align="center">
+  <img src="docs/images/banner.svg" alt="SmackDown vs. Raw 2011: PC port" width="100%">
+</p>
+
+# WWE SmackDown vs. Raw 2011 — PC Port
+
+This is a native Windows port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 2011*. It isn't an emulator. The game's code is statically recompiled to C++ with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and built into an ordinary Windows program. It runs on the SDK's Xenia-derived runtime, draws with Direct3D 12, plays sound through XAudio2 and reads controllers through XInput.
+
+It also adds:
+
+- **Sharp resolutions**: 720p (the console's), 900p, 1080p, 1440p and 4K, with anti-aliasing, VSync and a steady 60 fps.
+- **A launcher** that installs the game from your disc image, sets it up, and manages saves, DLC, logos and movies.
+- **Your own entrance music**: *Create An Entrance → Music → USER PLAYLIST* plays songs from a folder on your PC, as the Xbox 360 did from its hard drive.
+- **Your own entrance movies**: turn any video into a titantron movie in the launcher and pick it in *Create An Entrance*.
+- **Up to 10 HD logos** on a created superstar, instead of the game's limit of 2.
+- **Paint Tool import and export**: put any image into the game's Paint Tool, or save its logos as PNGs.
+- **Saves as plain files** that you can back up, copy and share.
+
+> [!IMPORTANT]
+> **This repository has no game in it.** It holds no disc image, XEX, game data, movies, music or recompiled game code. You need your **own copy of the Xbox 360 game**. Make a disc image of it (`.iso`), then point the launcher at that image.
+
+> [!NOTE]
+> **This port was made with [Claude Code](https://claude.com/claude-code)**, Anthropic's AI coding assistant. Claude Code wrote most of the port's code, tools and docs, working with the project's human author, who directed, tested and played it. See [Contributors](#contributors).
+
+---
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/title.jpg" alt="Title screen"><br><sub><b>Title screen</b></sub></td>
+    <td width="50%"><img src="docs/screenshots/main-menu.jpg" alt="Main menu"><br><sub><b>Main menu</b>, with the port's <b>EXIT</b> entry</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/custom-movie-entrance.jpg" alt="An entrance with a custom movie"><br><sub><b>Your own entrance movie</b> on the big screen</sub></td>
+    <td><img src="docs/screenshots/caw-logos-match.jpg" alt="Created superstar with extra logos in a match"><br><sub><b>A created superstar</b> wearing four HD logos, in a match</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/user-playlist.jpg" alt="USER PLAYLIST"><br><sub><b>USER PLAYLIST</b>: songs from your Music folder</sub></td>
+    <td><img src="docs/screenshots/graphics-page.jpg" alt="Graphics options in game"><br><sub><b>Graphics options</b> in <i>My WWE → Options</i></sub></td>
+  </tr>
+</table>
+
+---
+
+## Contents
+
+- [Screenshots](#screenshots)
+- [What you need](#what-you-need)
+- [Install and play](#install-and-play)
+- [Controls](#controls)
+- [Settings](#settings)
+- [Features](#features)
+  - [Entrance music from your PC](#entrance-music-from-your-pc)
+  - [Custom entrance movies](#custom-entrance-movies)
+  - [Up to 10 HD logos per superstar](#up-to-10-hd-logos-per-superstar)
+  - [Paint Tool import and export](#paint-tool-import-and-export)
+  - [Saves](#saves)
+  - [DLC](#dlc)
+- [Building from source](#building-from-source)
+- [Troubleshooting](#troubleshooting)
+- [Contributors](#contributors)
+- [Legal and credits](#legal-and-credits)
+
+---
+
+## What you need
+
+| | |
+|---|---|
+| 💿 **The game** | A disc image of your own *WWE SmackDown vs. Raw 2011* **Xbox 360** disc, as an `.iso`. The PS3, Wii, PS2 and PSP versions won't work. |
+| 🖥️ **PC** | Windows 10 or 11 (64-bit). A graphics card with Direct3D 12. A CPU from about 2009 or later (SSE4.2). |
+| 💾 **Disk space** | About 6 GB: 5.3 GB for the game, plus room for saves and caches. |
+| 🎮 **Controller** | An Xbox controller (Xbox 360, Xbox One or Series). Other gamepads work through SDL. |
+
+---
+
+## Install and play
+
+<p align="center">
+  <img src="docs/images/install-flow.svg" alt="Disc image, then Launcher Install, then Settings, then Play" width="100%">
+</p>
+
+1. **Download** the latest zip from [**Releases**](https://github.com/KaikoClanworth1/wwe-svr2011-pc/releases/latest) and unzip it anywhere. It holds the launcher and the game program, with no game data.
+2. **Make a disc image** of your Xbox 360 game disc, as an `.iso`.
+3. **Open `SvR2011 Launcher.exe`** and go to the **Install** tab:
+   1. Under **Your disc image**, choose your `.iso`.
+   2. Under **Install to**, choose an empty folder.
+   3. Click **Install**. The launcher only reads the image and never changes it. It copies the game out (about 5.3 GB) and puts the PC program beside it. If you stop it, click **Install** again later and it carries on where it left off.
+4. **Settings tab**: pick windowed or fullscreen, the resolution, VSync and so on.
+5. **Play tab**: press **Play**.
+
+Your saves go to `Saves\` inside the game folder.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/launcher-install.png" alt="Launcher Install tab"><br><sub><b>Install</b>: choose your disc image and a folder</sub></td>
+    <td width="50%"><img src="docs/screenshots/launcher-play.png" alt="Launcher Play tab"><br><sub><b>Play</b></sub></td>
+  </tr>
+</table>
+
+```mermaid
+flowchart LR
+    A[Your Xbox 360 disc] -->|you rip it| B[game.iso]
+    B -->|Launcher: Install| C[Game folder]
+    C --> D[svr2011.exe]
+    E[Music and Custom Movies] -->|your entrances| D
+    F[svr2011.toml] -->|Launcher: Settings| D
+```
+
+**Updating to a new release:** unzip it, open its launcher, and click **Install** again into the same folder. Files already there are skipped, and your saves, settings, music and movies are kept.
+
+---
+
+## Controls
+
+Play with an Xbox controller. The layout is exactly as on the Xbox 360.
+
+**While playing:**
+
+| Key | What it does |
+|---|---|
+| `F2` | Shows or hides the FPS counter. |
+| `F3` | Performance overlay. |
+| `F4` | The runtime's settings overlay. |
+| `` ` `` | Console and log. |
+
+The game's main menu has an **EXIT** entry at the bottom.
+
+---
+
+## Settings
+
+You can change these in the launcher's **Settings** tab. **Resolution**, **Display mode**, **Anti-aliasing**, **VSync**, **FPS counter** and **Renderer** are also in the game itself, under **My WWE → Options → Graphics**. Everything is saved in `svr2011.toml` beside the exe.
+
+| Setting | What it does |
+|---|---|
+| **Windowed / Fullscreen** | Fullscreen is borderless. |
+| **Resolution** | 1280×720 is the console's own output and the default. 1600×900, 1920×1080, 2560×1440 and 3840×2160 render the game at a higher internal resolution. |
+| **VSync** | Waits for the monitor's refresh, so the picture doesn't tear. On by default. |
+| **Anti-aliasing** | Renders at twice the resolution and averages it down, for smoother edges. It costs GPU time. |
+| **Renderer** | **Native** (recommended) draws the game's Direct3D calls directly. **Emulated** emulates the Xbox 360's graphics chip, as Xenia does. Try it if something looks wrong, and please report it. |
+| **Show FPS** | The frame-rate counter at the top of the window (`F2` in game). |
+| **Controller API** | **XInput** for Xbox controllers, or **SDL** for other gamepads. |
+| **Audio output** | **XAudio2** (recommended; 5.1 on surround setups, stereo otherwise) or **SDL**. **Mute** silences the game. |
+
+<p align="center"><img src="docs/screenshots/launcher-settings.png" alt="Launcher Settings tab" width="60%"></p>
+
+---
+
+## Features
+
+<p align="center">
+  <img src="docs/images/entrance-media.svg" alt="Your music and your videos, used in Create An Entrance" width="100%">
+</p>
+
+### Entrance music from your PC
+
+On the Xbox 360, *Create An Entrance → Finalize → Music → **USER PLAYLIST*** played songs from the console's hard drive. On PC, it plays them from the **`Music`** folder in the game folder. The launcher's **Settings → Open Music folder** button opens it.
+
+```
+Music\
+  My Theme\
+    song.mp3        listed as MY THEME
+  The Champ\
+    entrance.m4a    listed as THE CHAMP
+  Walkout.mp3       a song put straight in Music is listed by its file name
+```
+
+- Give each song **its own folder**. The folder's name is what the game lists.
+- `.mp3`, `.wma`, `.m4a`, `.aac`, `.wav` and `.flac` all work.
+- The entrance remembers the song by name, so **don't rename a folder that an entrance uses**.
+- The song plays in the entrance and in the preview (**X**). The game's own music lowers while it plays, as on the console.
+
+<p align="center"><img src="docs/screenshots/user-playlist.jpg" alt="USER PLAYLIST in Create An Entrance" width="70%"></p>
+
+### Custom entrance movies
+
+The launcher's **Movies** tab turns any video Windows can play (`.mp4`, `.mov`, `.wmv`, …) into an entrance movie for the arena's big screen.
+
+<p align="center"><img src="docs/screenshots/launcher-movies.png" alt="Launcher Movies tab" width="60%"></p>
+
+1. Under **Video**, choose your video. A frame from it shows in the preview.
+2. Under **Bottom strip**, choose a picture or a video for the stage and ramp screens, or click **None (black)**.
+3. Choose how the video fits the screen: **Whole picture** (black bars if needed), **Fill** (cuts off the edges) or **Stretch**.
+4. Pick a **Length**, give the movie a **Name**, and click **Make movie**. A 30-second movie takes a few seconds to make.
+5. In the game: *Create An Entrance → Finalize → **Movie***. Your movies are listed right after **NONE**, by name.
+
+The movies are saved in the **`Custom Movies`** folder in the game folder, in the same format and layout as the game's own titantron movies. Don't rename a movie that an entrance uses (`Custom Movies\ids.txt` remembers which number each one has).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/user-movies-list.jpg" alt="Movie list with your movies"><br><sub>Your movies in the <b>Movie</b> list, after <b>NONE</b></sub></td>
+    <td width="50%"><img src="docs/screenshots/custom-movie-entrance.jpg" alt="Custom movie in an entrance"><br><sub>…and on the big screen during the entrance</sub></td>
+  </tr>
+</table>
+
+### Up to 10 HD logos per superstar
+
+The game lets a created superstar wear only **2** different High Resolution (256×256) Paint Tool logos. The port raises that to **10**, so you can put a different logo on the head, chest, back, arms, legs and clothing.
+
+- Logos 1 and 2 are stored in the superstar's save as usual. Logos 3 to 10 are kept in the hidden **`Saves\.logos`** folder, and the launcher's backups include it.
+- If you copy or share a superstar's save file by hand, **copy `Saves\.logos` with it**, or logos 3 and up will be blank.
+- The game's other rules stay: Low Resolution (128×128) logos stay at 10, and the two sizes can't be mixed on one superstar.
+- **Tip:** a superstar's **Entrance Attire** and **Cinematic Attire** are separate outfits. If you don't edit them, entrances and cutscenes use the game's default gear. To see the full costume in the entrance, build it in *Other → Edit Entrance Attire* too.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/caw-logos-editor.jpg" alt="Created superstar with four HD logos"><br><sub><b>Create A Superstar</b>: four different HD logos</sub></td>
+    <td width="50%"><img src="docs/screenshots/caw-logos-match.jpg" alt="The same superstar in a match"><br><sub>The same superstar in a match</sub></td>
+  </tr>
+</table>
+
+### Paint Tool import and export
+
+The launcher's **Paint Tool** tab shows the game's 20 Paint Tool logos.
+
+- **Import image…** puts any picture into a logo. It's fitted into 256×256 and keeps its transparency. The game then shows and edits it like any logo.
+- **Export PNG…** and **Export all…** save logos as PNGs.
+- **Delete logo** empties a slot.
+
+The Paint Tool save is created the first time you open *Create A Superstar → Paint Tool* in the game.
+
+<p align="center"><img src="docs/screenshots/launcher-paint.png" alt="Launcher Paint Tool tab" width="60%"></p>
+
+### Saves
+
+Every save is **one plain file** in the `Saves\` folder. Close the game before you copy them.
+
+| File | What it holds |
+|---|---|
+| `SaveData.dat` | The main save: settings, unlocks and progress. It ties the others together, so keep them with it. |
+| `00CreateSuperStar.cas`, `01…` | Created superstars. |
+| `00PaintTool.pt` | Paint Tool logos. |
+| `00RecordingDat.rec` | Replays. |
+| `00SceneDat.scn` | Highlight reels. |
+
+The launcher's **Saves** tab lists them. You can **Back up all** (to `SaveBackups\`), **Restore backup**, **Export** or **Import** single saves, **Delete** (to the Recycle Bin) and open the folder. Restoring or importing backs up your current saves first.
+
+<p align="center"><img src="docs/screenshots/launcher-saves.png" alt="Launcher Saves tab" width="60%"></p>
+
+### DLC
+
+Downloadable content from the Xbox 360 (superstars, moves, arenas) works. In the launcher's **DLC** tab, choose the folder with your DLC packages, as downloaded on the console. `.zip`, `.rar` and `.7z` archives of them work too. Click **Install DLC**. The packages are copied into the game's `DLC\` folder and unpacked the next time the game starts. Title updates aren't needed and are skipped.
+
+<p align="center"><img src="docs/screenshots/launcher-dlc.png" alt="Launcher DLC tab" width="60%"></p>
+
+---
+
+## Building from source
+
+The recompiled game code is **generated on your machine from your own disc**. It isn't stored here.
+
+**You need:**
+
+- **Windows 10 or 11**, 64-bit.
+- **LLVM** (`clang`, `clang++` and `llvm-rc`) in `C:\Program Files\LLVM\bin`.
+- **CMake 3.25** or newer, and **Ninja**.
+- **Git** and **Python 3** with Pillow: run `pip install pillow`.
+- **PowerShell**.
+
+**Steps** (run them from the repository root):
+
+1. Get the **ReXGlue SDK** source into `recomp\rexglue-sdk`, at the commit this port was built against (its v0.10.0 release commit):
+   ```bash
+   git clone https://github.com/rexglue/rexglue-sdk recomp/rexglue-sdk
+   ```
+   ```bash
+   git -C recomp/rexglue-sdk checkout c94f5ebdcb3c9d1a460ca48e04f9758448f8d518
+   ```
+   ```bash
+   git -C recomp/rexglue-sdk submodule update --init --recursive
+   ```
+2. Apply this port's runtime fixes to the SDK:
+   ```bash
+   git -C recomp/rexglue-sdk apply ../../port/patches/rexglue-sdk-svr2011.patch
+   ```
+3. Get the **ReXGlue codegen tool**: download `rexglue-sdk-0.10.0-win-amd64.zip` from the [ReXGlue releases](https://github.com/rexglue/rexglue-sdk/releases/tag/v0.10.0) and unzip it into `recomp\sdk\win-amd64`.
+4. Put **`ninja.exe`** in `recomp\bin`, or anywhere on your `PATH`.
+5. Copy **`default.xex`** from your disc (or from an install made by the launcher) into `port\assets\`.
+6. Optionally, make the **program icon** from your game files:
+   ```bash
+   python port/tools/make_icon.py "path/to/your/game folder"
+   ```
+7. **Generate** the C++ code from your `default.xex` (about a minute):
+   ```bash
+   cd port && ../recomp/sdk/win-amd64/bin/rexglue.exe codegen svr2011_manifest.toml
+   ```
+8. **Build** (the first build takes a while):
+   ```bash
+   powershell -ExecutionPolicy Bypass -File port/build.ps1
+   ```
+9. **Make a release zip**, with no game data in it, then install it with its launcher as in [Install and play](#install-and-play):
+   ```bash
+   powershell -ExecutionPolicy Bypass -File port/tools/package.ps1 -Version 0.1.0
+   ```
+
+**Repository layout:**
+
+| Path | What's there |
+|---|---|
+| `port/src/` | The PC side: the app, audio, input, saves, DLC, menus, the graphics page, entrance music and movies, the extra logos, crash reports and the native renderer. |
+| `port/launcher/` | The Win32 launcher (Play, Settings, Install, DLC, Saves, Paint Tool and Movies tabs), including the Bink movie encoder. |
+| `port/patches/` | Fixes to the ReXGlue SDK's runtime that this game needs. |
+| `port/tools/` | Build, packaging and analysis scripts, and the background test harness. |
+| `port/svr2011_manifest.toml`, `port/svr2011_config.toml` | The codegen project and its per-game settings. |
+
+---
+
+## Troubleshooting
+
+- **The install fails.** Check that the image is a full disc image of the **Xbox 360** version, and that the target drive has enough free space (the Install tab shows it).
+- **The game closed unexpectedly.** A crash report is saved in `UserData\crashes\` in the game folder. Please include it when you report a problem.
+- **Something is drawn wrong.** In the launcher's **Settings**, set **Renderer** to **Emulated** and see if it looks right there. Either way, please report it with a screenshot.
+- **My entrance song or movie is gone.** The entrance remembers it by name. Check that the folder in `Music\`, or the movie in `Custom Movies\`, still has the same name.
+- **A superstar's logos 3 and up are blank.** Their images are in `Saves\.logos`. Restore it from a backup, or copy it along with the superstar's save.
+- **The costume is missing in the entrance.** Edit the superstar's **Entrance Attire** (see the tip under [HD logos](#up-to-10-hd-logos-per-superstar)).
+- **Online modes** aren't available in this port.
+
+---
+
+## Contributors
+
+| | Who | What |
+|---|---|---|
+| 🧑‍💻 | [**KaikoClanworth1**](https://github.com/KaikoClanworth1) | Project lead: direction, design, testing and playing. |
+| 🤖 | [**Claude Code**](https://claude.com/claude-code) (Anthropic) | AI coding assistant: wrote most of the port. That includes the recompilation setup and runtime fixes, the native renderer, audio, saves, DLC, the launcher, entrance music and movies (with its own Bink encoder), the extra logos, the tools and this README. |
+| 🛠️ | [**ReXGlue**](https://github.com/rexglue/rexglue-sdk) | The static recompiler and runtime this port is built on. |
+| 🛠️ | [**Xenia**](https://github.com/xenia-project/xenia) | The Xbox 360 emulator whose code the ReXGlue runtime is derived from. |
+
+> **AI disclosure:** this port was developed with Claude Code. Its commits carry a `Co-Authored-By: Claude` line. Every change was run and tested on the project lead's own PC.
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+---
+
+## Legal and credits
+
+- This is an unofficial fan project. It isn't affiliated with or endorsed by WWE, THQ, Yuke's or Microsoft. *WWE SmackDown vs. Raw 2011* and all related names belong to their respective owners.
+- **No game material is included**: no disc image, XEX, data, audio, video or recompiled game code. You must own the game and supply your own disc image. The screenshots in `docs/screenshots/` were taken of the port running. They're used only to show the port, and they belong to the game's owners.
+- **Recompiler and runtime**: the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), which is derived from [Xenia](https://github.com/xenia-project/xenia). See their licenses.
+- **Movie format**: the launcher writes Bink 1 video. The format was learned from [FFmpeg](https://ffmpeg.org/)'s open-source Bink decoder; no RAD Game Tools software is used or included.

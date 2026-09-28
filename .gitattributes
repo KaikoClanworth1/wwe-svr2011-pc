@@ -1,0 +1,6 @@
+* text=auto
+*.ps1 text eol=crlf
+*.rc text eol=crlf
+*.png binary
+*.jpg binary
+*.patch -text
