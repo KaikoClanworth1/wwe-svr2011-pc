@@ -1,8 +1,9 @@
 # Creates a superstar from a template and saves it, in a scratch copy of the
 # saves (SVR2011_USER_DATA), then lists the save packages. Muted, in the
 # background; never touches the player's saves.
-#   caw_save_test.ps1 -Name <run> -Seed <folder with the profile dir> [-NoUtilityDrive]
-param([Parameter(Mandatory)] [string]$Name, [Parameter(Mandatory)] [string]$Seed, [switch]$NoUtilityDrive)
+#   caw_save_test.ps1 -Name <run> -Seed <folder with the profile dir> [-NoUtilityDrive] [-Renderer main|off]
+param([Parameter(Mandatory)] [string]$Name, [Parameter(Mandatory)] [string]$Seed, [switch]$NoUtilityDrive,
+      [string]$Renderer = "main")
 
 $ErrorActionPreference = "Stop"
 $port = Split-Path $PSScriptRoot -Parent
@@ -17,7 +18,7 @@ if (Test-Path $dlc) { cmd /c mklink /J "$ud\0000000000000000" "$dlc" | Out-Null 
 
 $env:SVR2011_USER_DATA = $ud
 if ($NoUtilityDrive) { $env:SVR2011_NO_UTILITY_DRIVE = "1" }
-& $s start -Name $Name --native_renderer=main | Out-Null
+& $s start -Name $Name "--native_renderer=$Renderer" | Out-Null
 Remove-Item Env:SVR2011_USER_DATA, Env:SVR2011_NO_UTILITY_DRIVE -ErrorAction SilentlyContinue
 
 function Press($b, $wait) { & $s input "press $b 200" | Out-Null; Start-Sleep -Milliseconds ([int]($wait * 1000)) }
