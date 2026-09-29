@@ -165,6 +165,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int resolution_ = 2;
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
   bool native_at_start_ = false;
+  bool vulkan_ = false;  // the game runs on Vulkan (gpu_backend; set in the launcher)
   uint16_t prev_buttons_ = 0;
   bool wait_release_ = false;
   Clock::time_point repeat_at_{};
@@ -180,6 +181,7 @@ void GraphicsPage::Load() {
   }
   msaa_ = rex::cvar::Query<bool>("native_2x_msaa");
   native_at_start_ = native::CanSwitch();
+  vulkan_ = rex::cvar::Query<std::string>("gpu_backend") == "vulkan";
   native_ = native_at_start_ ? native::NativeActive()
                              : rex::cvar::Query<std::string>("native_renderer") != "off";
   fps_ = FpsCounterVisible();
@@ -357,7 +359,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       msaa_ ? "ON" : "OFF",
       vsync_ ? "ON" : "OFF",
       fps_ ? "ON" : "OFF",
-      native_ ? "NATIVE" : "EMULATED",
+      native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED",
   };
   static const char* kLabels[kRows] = {"RESOLUTION", "DISPLAY MODE", "ANTI-ALIASING",
                                        "VSYNC",      "FPS COUNTER",  "RENDERER"};
@@ -402,6 +404,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   // Description of the selected setting, as the game's panels have.
   {
     std::string help = kHelp[row_];
+    if (row_ == kRenderer && vulkan_)
+      help = "EXPERIMENTAL: the native renderer on Vulkan (the launcher's Renderer list).";
     if (row_ == kRenderer && restart_renderer) help = "Takes effect the next time the game starts.";
     const float hs = 18 * s;
     const ImVec2 sz = TextSize(g_menu_font, hs, help.c_str());

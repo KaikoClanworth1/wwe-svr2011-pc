@@ -168,7 +168,7 @@ You can change these in the launcher's **Settings** tab. **Resolution**, **Displ
 | **Resolution** | 1280×720 is the console's own output and the default. 1600×900, 1920×1080, 2560×1440 and 3840×2160 render the game at a higher internal resolution. |
 | **VSync** | Waits for the monitor's refresh, so the picture doesn't tear. On by default. |
 | **Anti-aliasing** | Renders at twice the resolution and averages it down, for smoother edges. It costs GPU time. |
-| **Renderer** | **Native** (recommended) draws the game's Direct3D calls directly. **Emulated** emulates the Xbox 360's graphics chip, as Xenia does. Try it if something looks wrong, and please report it. |
+| **Renderer** | **Native** (recommended) draws the game's Direct3D calls directly. **Emulated** emulates the Xbox 360's graphics chip, as Xenia does. Try it if something looks wrong, and please report it. **Native Vulkan (EXPERIMENTAL)** is the native renderer on Vulkan instead of Direct3D 12 (the groundwork for Linux and Android); it needs a Vulkan 1.2 GPU and falls back to emulated drawing if it can't start. |
 | **Show FPS** | The frame-rate counter at the top of the window (`F2` in game). |
 | **Controller API** | **XInput** for Xbox controllers, or **SDL** for other gamepads. |
 | **Audio output** | **XAudio2** (recommended; 5.1 on surround setups, stereo otherwise) or **SDL**. **Mute** silences the game. |
