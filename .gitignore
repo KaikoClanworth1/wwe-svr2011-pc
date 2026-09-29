@@ -16,6 +16,7 @@
 /port/out/
 /port/runs/
 /port/*.txt
+!/port/VERSION.txt
 !/port/CMakeLists.txt
 /port/tools/__pycache__/
 *.xex
@@ -26,6 +27,8 @@
 *.exe
 *.dll
 *.pdb
+*.keystore
+*.apk
 *.ico
 *.log
 __pycache__/

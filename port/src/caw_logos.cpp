@@ -24,7 +24,9 @@
 #include <mutex>
 #include <string>
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -204,9 +206,11 @@ void InstallCawLogos(rex::memory::Memory* memory, const std::filesystem::path& s
   std::error_code ec;
   std::filesystem::create_directories(g_store, ec);
   // Not hidden: copy tools skip hidden folders, and logos 3-10 live here.
+#if defined(_WIN32)
   const DWORD attr = GetFileAttributesW(g_store.c_str());
   if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_HIDDEN))
     SetFileAttributesW(g_store.c_str(), attr & ~DWORD(FILE_ATTRIBUTE_HIDDEN));
+#endif
   REXLOG_INFO("caw logos: up to {} High Resolution logos per Created Superstar (store {})", kMaxHigh,
               g_store.string());
 }

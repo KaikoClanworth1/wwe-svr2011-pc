@@ -17,7 +17,9 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #include <imgui.h>
 
@@ -105,6 +107,7 @@ void SaveSetting(const std::string& key, const std::string& value) {
   if (ec) REXLOG_WARN("GRAPHICS: could not save {}: {}", g_config_path.string(), ec.message());
 }
 
+#if defined(_WIN32)
 // The game's top-level window (this process's, titled like the game).
 HWND GameWindow() {
   struct Find {
@@ -147,6 +150,10 @@ void ResizeWindow(int w, int h) {
     SetWindowPos(hwnd, nullptr, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
   });
 }
+#else
+// (Android: the window is the screen.)
+void ResizeWindow(int, int) {}
+#endif
 
 class GraphicsPage final : public rex::ui::ImGuiDialog {
  public:

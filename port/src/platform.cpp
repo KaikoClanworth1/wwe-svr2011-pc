@@ -4,7 +4,14 @@
 
 #include <cstdlib>
 
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <sys/utsname.h>
+#endif
+#if defined(__ANDROID__)
+#include <android/api-level.h>
+#endif
 
 namespace svr2011 {
 
@@ -21,13 +28,19 @@ std::string Env(const char* name) {
   return result;
 }
 
+#if defined(_WIN32)
 HMODULE Ntdll() { return GetModuleHandleW(L"ntdll.dll"); }
+#endif
 
 }  // namespace
 
 bool IsWine() {
+#if defined(_WIN32)
   static const bool wine = Ntdll() && GetProcAddress(Ntdll(), "wine_get_version");
   return wine;
+#else
+  return false;
+#endif
 }
 
 bool IsSteamDeck() {
@@ -37,6 +50,14 @@ bool IsSteamDeck() {
 
 std::string PlatformDescription() {
   std::string s;
+#if !defined(_WIN32)
+  // Android / Linux: the OS name, kernel release and (Android) API level.
+  utsname u = {};
+  s = uname(&u) == 0 ? std::string(u.sysname) + " " + u.release : "POSIX";
+#if defined(__ANDROID__)
+  s = "Android API " + std::to_string(android_get_device_api_level()) + " (" + s + ")";
+#endif
+#else
   if (IsWine()) {
     using WineVersion = const char*(__cdecl*)();
     using HostVersion = void(__cdecl*)(const char** sysname, const char** release);
@@ -61,6 +82,7 @@ std::string PlatformDescription() {
       s = "Windows";
     }
   }
+#endif
   if (IsSteamDeck()) s += " (Steam Deck)";
   return s;
 }

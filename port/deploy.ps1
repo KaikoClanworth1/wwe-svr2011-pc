@@ -48,6 +48,12 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
         Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
         Copy-Item -Destination (Join-Path $game "native_shaders") -Force
 }
+# The Android app, for the launcher's Create APK Package (tools/build_apk.py).
+$apk = Join-Path $root "out\android\SvR2011.apk"
+if (Test-Path $apk) {
+    New-Item -ItemType Directory -Force (Join-Path $game "Android") | Out-Null
+    Copy-Item $apk (Join-Path $game "Android") -Force
+}
 
 "Deployed to $game :"
 $files | ForEach-Object { "  $($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB" }

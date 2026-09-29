@@ -28,8 +28,13 @@
 
 #include <fmt/format.h>
 
-#include <windows.h>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <tmmintrin.h>
+#else
+// (ARM: the SSSE3 shuffle through SIMDe, as the recompiled code does)
+#define SIMDE_ENABLE_NATIVE_ALIASES
+#include <simde/x86/ssse3.h>
+#endif
 
 #include <plume_render_interface.h>
 

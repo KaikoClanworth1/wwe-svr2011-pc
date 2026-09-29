@@ -17,18 +17,15 @@ include(generated/rexglue.cmake)
 set(SVR2011_SOURCES
     src/main.cpp
     src/svr2011_app.cpp
-    src/xaudio2_audio.cpp
     src/script_input.cpp
     src/keyboard_typing.cpp
     src/platform.cpp
     src/frame_stats.cpp
-    src/crash_report.cpp
     src/fps_overlay.cpp
     src/graphics_page.cpp
     src/menu_hooks.cpp
     src/saves.cpp
     src/dlc.cpp
-    src/music.cpp
     src/caw_logos.cpp
     src/user_movies.cpp
     src/game_files.cpp
@@ -44,7 +41,6 @@ else()
     # overlap the census hooks, so it is left out of census builds.
     list(APPEND SVR2011_SOURCES
         src/native/gpu.cpp
-        src/native/backend_d3d12.cpp
         src/native/backend_vulkan.cpp
         src/native/native_renderer.cpp
         src/native/native_hooks.cpp
@@ -64,13 +60,32 @@ if(NOT SVR2011_D3D_TRACE)
     add_subdirectory(${PLUME_DIR} plume EXCLUDE_FROM_ALL)
 endif()
 
+# Windows only: XAudio2 audio, crash reports, PC music (XAudio2 + Media
+# Foundation), the D3D12 renderer backend. Elsewhere posix_stubs.cpp.
+if(WIN32)
+    list(APPEND SVR2011_SOURCES src/xaudio2_audio.cpp src/crash_report.cpp src/music.cpp)
+    if(NOT SVR2011_D3D_TRACE)
+        list(APPEND SVR2011_SOURCES src/native/backend_d3d12.cpp)
+    endif()
+else()
+    list(APPEND SVR2011_SOURCES src/posix_stubs.cpp)
+endif()
+
 if(WIN32)
     add_executable(svr2011 WIN32 ${SVR2011_SOURCES} src/svr2011.rc)
+elseif(ANDROID)
+    # Android: libmain.so, which SDL's Java activity loads and starts (SDL_main).
+    add_library(svr2011 SHARED ${SVR2011_SOURCES})
+    set_target_properties(svr2011 PROPERTIES OUTPUT_NAME main)
 else()
     add_executable(svr2011 ${SVR2011_SOURCES})
 endif()
 
 rexglue_setup_target(svr2011 GPU_PLUGINS xenos)
+if(NOT WIN32)
+    # MSVC CRT functions the port uses (_dupenv_s ...).
+    target_compile_options(svr2011 PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/src/compat.h)
+endif()
 if(SVR2011_D3D_TRACE)
     target_compile_definitions(svr2011 PRIVATE SVR2011_D3D_TRACE=1)
 else()
@@ -106,16 +121,16 @@ endif()
 
 # -- Launcher -----------------------------------------------------------------
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/movie_maker.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/launcher.rc)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/movie_maker.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/launcher.rc)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
     target_link_options(svr2011_launcher PRIVATE -Wl,/ENTRY:wWinMainCRTStartup)
     target_link_libraries(svr2011_launcher PRIVATE
         comctl32 comdlg32 shell32 ole32 uxtheme windowscodecs mfplat mfreadwrite mfuuid propsys winhttp)
-    # The release version (VERSION; package.ps1 names the zip after it and the
+    # The release version (VERSION.txt; package.ps1 names the zip after it and the
     # launcher's updater compares it with the newest GitHub release).
-    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SVR2011_VERSION LIMIT_COUNT 1)
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_VERSION LIMIT_COUNT 1)
     target_compile_definitions(svr2011_launcher PRIVATE "PORT_VERSION=L\"${SVR2011_VERSION}\"")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt")
 endif()

@@ -5,7 +5,7 @@
 param([string]$Version = "", [string]$Build = "")
 $ErrorActionPreference = "Stop"
 $port  = Split-Path $PSScriptRoot -Parent
-if (-not $Version) { $Version = (Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) "VERSION") -TotalCount 1).Trim() }
+if (-not $Version) { $Version = (Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) "VERSION.txt") -TotalCount 1).Trim() }
 $build = if ($Build) { $Build } else { Join-Path $port "out\build\SourceRelease" }
 $name  = "SvR2011-PC-v$Version"
 $stage = Join-Path $port "out\package\$name"
@@ -34,6 +34,14 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
         Copy-Item -Destination (Join-Path $stage "native_shaders")
 } else {
     Write-Warning "no native shaders in $shaders (tools\convert_shaders.py) - this package uses the emulated renderer"
+}
+# The Android app, for the launcher's Create APK Package (tools/build_apk.py).
+$apk = Join-Path $port "out\android\SvR2011.apk"
+if (Test-Path $apk) {
+    New-Item -ItemType Directory -Force (Join-Path $stage "Android") | Out-Null
+    Copy-Item $apk (Join-Path $stage "Android")
+} else {
+    Write-Warning "no $apk (tools\build_apk.py) - this package has no Android app"
 }
 
 Remove-Item $zip -ErrorAction SilentlyContinue

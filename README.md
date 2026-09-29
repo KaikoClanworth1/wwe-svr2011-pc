@@ -341,12 +341,19 @@ The recompiled game code is **generated on your machine from your own disc**. It
    powershell -ExecutionPolicy Bypass -File port/tools/package.ps1
    ```
 
+**Android (work in progress, not yet tested on a phone):** the same code cross-compiled for arm64 with the Android NDK, drawn with the Vulkan renderer. You need JDK 17 and the Android SDK command-line tools with `ndk;30.0.16248370`, `build-tools;36.1.0` and `platforms;android-36`. Set `JAVA_HOME` and `ANDROID_HOME` if they're not in `D:\Android`. Gradle isn't needed. Build the SDK for Windows first (step 8, which makes the `rexglue.exe` code generator), then run:
+```bash
+python port/tools/build_apk.py
+```
+This makes `port/out/android/SvR2011.apk`, which holds no game data. The package script ships it beside the launcher as `Android\SvR2011.apk`. The launcher's **Install → Create APK Package** puts it next to a zip of the installed game. On first start, the app installs that zip into the phone's `games` folder.
+
 **Repository layout:**
 
 | Path | What's there |
 |---|---|
 | `port/src/` | The PC side: the app, audio, input, saves, DLC, menus, the graphics page, entrance music and movies, the extra logos, crash reports and the native renderer. |
-| `port/launcher/` | The Win32 launcher (Play, Settings, Install, DLC, Saves, Paint Tool and Movies tabs), including the Bink movie encoder. |
+| `port/launcher/` | The Win32 launcher (Play, Settings, Install, DLC, Saves, Paint Tool and Movies tabs), including the Bink movie encoder and the Android packager. |
+| `port/android/` | The Android app's manifest, icons and Java activities (the game runs in SDL's activity). |
 | `port/patches/` | Fixes to the ReXGlue SDK's runtime that this game needs. |
 | `port/tools/` | Build, packaging and analysis scripts, and the background test harness. |
 | `port/svr2011_manifest.toml`, `port/svr2011_config.toml` | The codegen project and its per-game settings. |

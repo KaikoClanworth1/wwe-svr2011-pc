@@ -8,9 +8,11 @@
 #include <fstream>
 #include <string>
 
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <timeapi.h>
+#endif
 
 #include <imgui.h>
 
@@ -39,7 +41,9 @@
 #include "keyboard_typing.h"
 #include "platform.h"
 #include "script_input.h"
+#if defined(_WIN32)
 #include "xaudio2_audio.h"
+#endif
 
 REXCVAR_DEFINE_STRING(audio_backend, "xaudio2", "Audio",
                       "Audio output: xaudio2 (default) or sdl")
@@ -85,7 +89,9 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
   // 15.6 ms default tick, and the runtime sleeps while the emulated GPU waits
   // on the game's fences (and for the game's own Sleep calls) - that alone
   // held the training ring to ~39 fps.
+#if defined(_WIN32)
   timeBeginPeriod(1);
+#endif
 
   // The game asks the music player (XMP) for its playback controller twice a
   // frame from its simulation thread; the runtime's anti-spin delay for that
@@ -118,6 +124,12 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
   g_config_path = paths.config_path;
   if (!std::filesystem::exists(paths.config_path)) {
     std::string config = kDefaultConfig;
+#if defined(__ANDROID__)
+    // The phone: Vulkan, SDL controllers, the whole screen.
+    config.replace(config.find("input_backend = \"xinput\""), 24, "input_backend = \"sdl\"");
+    config += "gpu_backend = \"vulkan\"\n";
+    config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
+#endif
     if (svr2011::IsSteamDeck()) {  // its screen is the window
       config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
     }
@@ -136,15 +148,20 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
     };
   }
 
+#if !defined(_WIN32)
+  return;  // SDL audio (the SDK default): XAudio2 is Windows only
+#endif
   if (REXCVAR_GET(audio_backend) == "sdl") {
     return;  // the SDK default
   }
   // XAudio2, falling back to SDL if it cannot start (no audio device, ...).
   config.audio_factory = [](rex::runtime::FunctionDispatcher* dispatcher)
       -> std::unique_ptr<rex::system::IAudioSystem> {
+#if defined(_WIN32)
     if (svr2011::XAudio2AudioSystem::IsAvailable()) {
       return svr2011::XAudio2AudioSystem::Create(dispatcher);
     }
+#endif
     REXLOG_WARN("XAudio2 unavailable, using SDL audio");
     return rex::audio::sdl::SDLAudioSystem::Create(dispatcher);
   };

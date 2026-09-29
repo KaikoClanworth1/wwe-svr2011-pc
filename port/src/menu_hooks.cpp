@@ -9,8 +9,10 @@
 
 #include "menu_hooks.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <dbghelp.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -160,6 +162,11 @@ REX_HOOK_RAW(sub_826E1AE8) {
 }
 
 // ---------------------------------------------------------------------------
+#if !defined(_WIN32)
+namespace {
+void ArmWatch(uint8_t*) {}  // (the watch below is Windows only)
+}  // namespace
+#else
 // Debug: SVR2011_WATCH_ADDR=<guest hex address> logs the host stack of every
 // write to that guest word (armed once the game has set its frame rate; the
 // page is write-protected, other writes to it are single-stepped through).
@@ -259,3 +266,4 @@ void ArmWatch(uint8_t* base) {
       nullptr, 0, nullptr);
 }
 }  // namespace
+#endif  // _WIN32

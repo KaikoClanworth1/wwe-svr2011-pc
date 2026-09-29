@@ -8,6 +8,10 @@
 
 namespace svr2011::native::backend {
 
+#if !defined(_WIN32)
+std::unique_ptr<Backend> CreateD3D12Backend() { return nullptr; }  // (Windows only)
+#endif
+
 namespace {
 std::unique_ptr<Backend> g_backend;
 }  // namespace
