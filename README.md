@@ -16,6 +16,7 @@ It also adds:
 - **Paint Tool import and export**: put any image into the game's Paint Tool, or save its logos as PNGs.
 - **Type on your PC keyboard** wherever the game shows its on-screen keyboard: superstar names, Story Designer text and more.
 - **Saves as plain files** that you can back up, copy and share.
+- **An experimental Vulkan renderer**: the native renderer on Vulkan as well as Direct3D 12 (Settings → Renderer → *Native Vulkan (EXPERIMENTAL)*), the groundwork for Linux and Android.
 
 > [!IMPORTANT]
 > **This repository has no game in it.** It holds no disc image, XEX, game data, movies, music or recompiled game code. You need your **own copy of the Xbox 360 game**. Make a disc image of it (`.iso`), then point the launcher at that image.
@@ -385,4 +386,5 @@ See [CONTRIBUTORS.md](CONTRIBUTORS.md).
 - This is an unofficial fan project. It isn't affiliated with or endorsed by WWE, THQ, Yuke's or Microsoft. *WWE SmackDown vs. Raw 2011* and all related names belong to their respective owners.
 - **No game material is included**: no disc image, XEX, data, audio, video or recompiled game code. You must own the game and supply your own disc image. The screenshots in `docs/screenshots/` were taken of the port running. They're used only to show the port, and they belong to the game's owners.
 - **Recompiler and runtime**: the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), which is derived from [Xenia](https://github.com/xenia-project/xenia). See their licenses.
+- **Graphics layer**: the native renderer draws through [plume](https://github.com/renderbag/plume) (MIT license), with this port's additions in `port/patches/plume-svr2011.patch`. Its shaders are converted with [XenosRecomp](https://github.com/hedge-dev/XenosRecomp).
 - **Movie format**: the launcher writes Bink 1 video. The format was learned from [FFmpeg](https://ffmpeg.org/)'s open-source Bink decoder, and the launcher's Bink reader (`port/launcher/bink_decode.c`, `bink_tables.h`) is ported from it, under FFmpeg's license, the LGPL 2.1 or later. No RAD Game Tools software is used or included.
