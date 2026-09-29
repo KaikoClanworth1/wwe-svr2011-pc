@@ -260,3 +260,39 @@ REX_HOOK_RAW(sub_828B52D8) {
   const std::string path = file.empty() ? "GAME:\\movies\\titantron\\999.bik" : "umovie:\\" + file;
   if (path.size() < 250) std::memcpy(base + ctx.r3.u32, path.c_str(), path.size() + 1);
 }
+
+// The layout of entrance movie `id`: sub_828B5250(id) reads a byte table of
+// the game's movies (ids 0-999); the arena shows the movie's top on the big
+// screen and its bottom strip on the stage when it is 1 (sub_8275FD20), else
+// the whole frame on the big screen and the arena's own movie below. User
+// movies aren't in the table (0): they get the superstar movies' layout.
+REX_EXTERN(__imp__sub_828B5250);
+REX_HOOK_RAW(sub_828B5250) {
+  const int id = ctx.r3.s32;
+  __imp__sub_828B5250(ctx, base);
+  static bool logged = false;
+  if (!logged && g_memory) {  // (once: the values the game's movies have)
+    logged = true;
+    std::map<uint32_t, int> counts;
+    const uint32_t table = Rd32(base, 0x82EDE960);
+    if (table) {
+      for (int i = 0; i < 1000; ++i) counts[base[table + i]]++;
+      std::string s;
+      for (const auto& [v, n] : counts) s += fmt::format(" {}x{}", v, n);
+      REXLOG_INFO("user movies: movie layout table values:{} (id {} -> {})", s, id, ctx.r3.u32);
+    }
+  }
+  if (id >= kFirstId && id <= kLastId) ctx.r3.u64 = 1;
+  // Tests: SVR2011_TEST_LAYOUT=<value> for every movie.
+  static const int test_layout = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    int r = -1;
+    if (_dupenv_s(&v, &n, "SVR2011_TEST_LAYOUT") == 0 && v) {
+      r = std::atoi(v);
+      free(v);
+    }
+    return r;
+  }();
+  if (test_layout >= 0) ctx.r3.u64 = uint32_t(test_layout);
+}

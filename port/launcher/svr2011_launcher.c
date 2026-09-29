@@ -1325,8 +1325,18 @@ static void show_tab(int t)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
     /* The page area in full: hidden controls (group boxes, the save list,
-       the logo grid) otherwise leave their pixels behind. */
-    RedrawWindow(s_wnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+       the logo grid) otherwise leave their pixels behind. Without clipping
+       the children: a group box doesn't paint its inside, and with
+       WS_CLIPCHILDREN the background under it was never erased either - the
+       last tab's controls stayed there (e.g. the Movies tab's inside the
+       Play tab's "Game folder" and "Updates" boxes). */
+    {
+        const LONG_PTR style = GetWindowLongPtrW(s_wnd, GWL_STYLE);
+        SetWindowLongPtrW(s_wnd, GWL_STYLE, style & ~(LONG_PTR)WS_CLIPCHILDREN);
+        RedrawWindow(s_wnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ERASENOW);
+        SetWindowLongPtrW(s_wnd, GWL_STYLE, style);
+        RedrawWindow(s_wnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
 }
 
 static void saves_setup(HWND list);
