@@ -3,8 +3,9 @@
 // The renderer draws through plume (github.com/renderbag/plume), a thin layer
 // over Direct3D 12 and Vulkan. What plume doesn't cover - which GPU to use,
 // handing finished frames to the emulator's presentation, GPU fault reports -
-// is here, one implementation per backend (backend_d3d12.cpp; Vulkan for
-// Android / Linux later).
+// is here, one implementation per API (backend_d3d12.cpp, backend_vulkan.cpp).
+// The renderer draws on the emulator's own device with the emulator's API:
+// its presentation shows the frames, which only works on the same device.
 
 #pragma once
 
@@ -20,9 +21,35 @@ struct Frame;
 
 namespace svr2011::native::backend {
 
-// The graphics API and the name of the GPU to draw on (the emulator's: its
-// presentation shows these frames, which only works on the same device).
+enum class Api { kNone, kD3D12, kVulkan };
+
+class Backend {
+ public:
+  virtual ~Backend() = default;
+  virtual Api api() const = 0;
+  virtual std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name) = 0;
+  virtual plume::RenderShaderFormat ShaderFormat() const = 0;
+  virtual const char* ShaderExtension() const = 0;
+  virtual void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
+                            uint32_t height, plume::RenderCommandFence* fence) = 0;
+  virtual bool GetFrame(rex::external_frame::Frame& frame) = 0;
+  virtual void ClearFrame() = 0;
+  virtual bool DeviceLost(plume::RenderDevice* device) = 0;
+  virtual void ReportDeviceLost(plume::RenderDevice* device) = 0;
+  virtual void ReleaseFence(plume::RenderCommandFence* fence) = 0;
+  virtual void DrainDebugMessages(plume::RenderDevice* device) = 0;
+  virtual void LogBuffer(plume::RenderBuffer* buffer, uint64_t size) = 0;
+  virtual bool PipelineCreated(plume::RenderPipeline* pipeline) = 0;
+  virtual void StallQueue(plume::RenderCommandQueue* queue) = 0;
+};
+
+std::unique_ptr<Backend> CreateD3D12Backend();   // null where D3D12 isn't built
+std::unique_ptr<Backend> CreateVulkanBackend();
+
+// Picks the emulator's API (Vulkan when it runs on Vulkan, else D3D12) and
+// creates the interface and the name of the GPU to draw on.
 std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name);
+Api ActiveApi();
 
 // The converted shaders this backend loads: "<hash>.<vs|ps><variant><extension>".
 plume::RenderShaderFormat ShaderFormat();
@@ -30,9 +57,10 @@ const char* ShaderExtension();
 
 // Main mode: `image` (shader-readable, RGBA8) is this frame, finished when
 // `fence` - just signaled by the frame's submission - is. The emulator's
-// presentation shows it (rex/external_frame.h) until the next one.
-void PublishFrame(plume::RenderTexture* image, uint32_t width, uint32_t height,
-                  plume::RenderCommandFence* fence);
+// presentation shows it (rex/external_frame.h) until the next one; the
+// backend keeps the image alive while the emulator may still read it.
+void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
+                  uint32_t height, plume::RenderCommandFence* fence);
 bool GetFrame(rex::external_frame::Frame& frame);
 void ClearFrame();
 

@@ -6,12 +6,20 @@
 // make fine detail shimmer.
 Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
 SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
+#include "own_constants.hlsli"
+#ifdef __spirv__
+#define g_Texture OWN_CONSTANT(uint, 0)
+#define g_Sampler OWN_CONSTANT(uint, 4)
+#define g_UvScale OWN_CONSTANT(float2, 8)
+#define g_OutputSize OWN_CONSTANT(float2, 16)
+#else
 cbuffer PresentConstants : register(b3, space4) {
   uint g_Texture;  // SRV heap index
   uint g_Sampler;  // sampler heap index
   float2 g_UvScale;  // part of the texture shown (front buffer larger than the window)
   float2 g_OutputSize;  // the frame image's size, pixels
 };
+#endif
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0 {
   Texture2D<float4> tex = g_Texture2DDescriptorHeap[g_Texture];

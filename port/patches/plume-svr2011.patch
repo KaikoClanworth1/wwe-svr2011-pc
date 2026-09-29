@@ -241,7 +241,7 @@ index 2281168..e20c227 100644
          bool depthWriteEnabled = false;
          bool stencilEnabled = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 4a2a489..b5601d4 100644
+index 4a2a489..e303069 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -167,6 +167,16 @@ namespace plume {
@@ -261,7 +261,30 @@ index 4a2a489..b5601d4 100644
          case RenderFormat::R32_FLOAT:
              return VK_FORMAT_R32_SFLOAT;
          case RenderFormat::R32_UINT:
-@@ -1617,6 +1627,14 @@ namespace plume {
+@@ -997,6 +1007,22 @@ namespace plume {
+             imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+         }
+ 
++        // [svr2011] typeless (as on D3D12): views in other formats of the family (sRGB).
++        switch (desc.format) {
++        case RenderFormat::R32G32B32A32_TYPELESS: case RenderFormat::R32G32B32_TYPELESS:
++        case RenderFormat::R16G16B16A16_TYPELESS: case RenderFormat::R32G32_TYPELESS:
++        case RenderFormat::R8G8B8A8_TYPELESS: case RenderFormat::R16G16_TYPELESS:
++        case RenderFormat::R32_TYPELESS: case RenderFormat::R10G10B10A2_TYPELESS:
++        case RenderFormat::R8G8_TYPELESS: case RenderFormat::R16_TYPELESS: case RenderFormat::R8_TYPELESS:
++        case RenderFormat::BC1_TYPELESS: case RenderFormat::BC2_TYPELESS: case RenderFormat::BC3_TYPELESS:
++        case RenderFormat::BC4_TYPELESS: case RenderFormat::BC5_TYPELESS: case RenderFormat::BC6H_TYPELESS:
++        case RenderFormat::BC7_TYPELESS:
++            imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
++            break;
++        default:
++            break;
++        }
++
+         imageFormat = imageInfo.format;
+         fillSubresourceRange();
+ 
+@@ -1617,6 +1643,14 @@ namespace plume {
              dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
          }
  
@@ -276,7 +299,7 @@ index 4a2a489..b5601d4 100644
          VkPipelineDynamicStateCreateInfo dynamicState = {};
          dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
          dynamicState.pDynamicStates = dynamicStates.data();
-@@ -3112,6 +3130,14 @@ namespace plume {
+@@ -3112,6 +3146,14 @@ namespace plume {
          vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
      }
  
@@ -291,7 +314,7 @@ index 4a2a489..b5601d4 100644
      static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
          rectVector.clear();
  
-@@ -3644,6 +3670,19 @@ namespace plume {
+@@ -3644,6 +3686,19 @@ namespace plume {
          vkResetFences(device->vk, 1, &interfaceFence->vk);
      }
  
@@ -311,8 +334,190 @@ index 4a2a489..b5601d4 100644
      // VulkanPool
  
      VulkanPool::VulkanPool(VulkanDevice *device, const RenderPoolDesc &desc) {
+@@ -3718,7 +3773,8 @@ namespace plume {
+         }
+ 
+         if (queues[queueIndex].mutex == nullptr) {
+-            queues[queueIndex].mutex = std::make_unique<std::mutex>();
++            queues[queueIndex].ownedMutex = std::make_unique<std::recursive_mutex>();
++            queues[queueIndex].mutex = queues[queueIndex].ownedMutex.get();
+         }
+ 
+         virtualQueue->queue = &queues[queueIndex];
+@@ -4156,6 +4212,110 @@ namespace plume {
+         }
+     }
+ 
++    // [svr2011] Adopts another renderer's device (see VulkanExistingDevice).
++    VulkanDevice::VulkanDevice(VulkanInterface *renderInterface, const VulkanExistingDevice &existing) {
++        this->renderInterface = renderInterface;
++        physicalDevice = existing.physicalDevice;
++        vk = existing.device;
++        ownsDevice = false;
++
++        vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
++        description.name = physicalDeviceProperties.deviceName;
++        description.type = toDeviceType(physicalDeviceProperties.deviceType);
++        description.driverVersion = physicalDeviceProperties.driverVersion;
++        description.vendor = RenderDeviceVendor(physicalDeviceProperties.vendorID);
++
++        // Every command list type goes to the owner's queue.
++        uint32_t queueFamilyCount = 0;
++        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
++        queueFamilies.resize(std::max(queueFamilyCount, existing.queueFamilyIndex + 1));
++        for (uint32_t &index : queueFamilyIndices) {
++            index = existing.queueFamilyIndex;
++        }
++        VulkanQueueFamily &family = queueFamilies[existing.queueFamilyIndex];
++        family.queues.resize(1);
++        family.queues[0].vk = existing.queue;
++        family.queues[0].mutex = existing.queueMutex;
++
++        VmaVulkanFunctions vmaFunctions = {};
++        vmaFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
++        vmaFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
++        vmaFunctions.vkAllocateMemory = vkAllocateMemory;
++        vmaFunctions.vkBindBufferMemory = vkBindBufferMemory;
++        vmaFunctions.vkBindImageMemory = vkBindImageMemory;
++        vmaFunctions.vkCreateBuffer = vkCreateBuffer;
++        vmaFunctions.vkCreateImage = vkCreateImage;
++        vmaFunctions.vkDestroyBuffer = vkDestroyBuffer;
++        vmaFunctions.vkDestroyImage = vkDestroyImage;
++        vmaFunctions.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
++        vmaFunctions.vkFreeMemory = vkFreeMemory;
++        vmaFunctions.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
++        vmaFunctions.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements;
++        vmaFunctions.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
++        vmaFunctions.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
++        vmaFunctions.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges;
++        vmaFunctions.vkMapMemory = vkMapMemory;
++        vmaFunctions.vkUnmapMemory = vkUnmapMemory;
++        vmaFunctions.vkCmdCopyBuffer = vkCmdCopyBuffer;
++
++        VmaAllocatorCreateInfo allocatorInfo = {};
++        allocatorInfo.flags |= existing.bufferDeviceAddress ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0;
++        allocatorInfo.physicalDevice = physicalDevice;
++        allocatorInfo.device = vk;
++        allocatorInfo.pVulkanFunctions = &vmaFunctions;
++        allocatorInfo.instance = renderInterface->instance;
++        allocatorInfo.vulkanApiVersion = renderInterface->appInfo.apiVersion;
++        VkResult res = vmaCreateAllocator(&allocatorInfo, &allocator);
++        if (res != VK_SUCCESS) {
++            fprintf(stderr, "vmaCreateAllocator failed with error code 0x%X.\n", res);
++            vk = VK_NULL_HANDLE;
++            return;
++        }
++
++        VkDeviceSize memoryHeapSize = 0;
++        const VkPhysicalDeviceMemoryProperties *memoryProps = nullptr;
++        vmaGetMemoryProperties(allocator, &memoryProps);
++        constexpr VkMemoryPropertyFlags uploadHeapPropertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++        bool hasHostVisibleDeviceLocalMemory = false;
++        for (uint32_t i = 0; i < memoryProps->memoryTypeCount; i++) {
++            if ((memoryProps->memoryTypes[i].propertyFlags & uploadHeapPropertyFlags) == uploadHeapPropertyFlags) {
++                hasHostVisibleDeviceLocalMemory = true;
++            }
++        }
++        for (uint32_t i = 0; i < memoryProps->memoryHeapCount; i++) {
++            if (memoryProps->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
++                memoryHeapSize = std::max(memoryProps->memoryHeaps[i].size, memoryHeapSize);
++            }
++        }
++        description.dedicatedVideoMemory = memoryHeapSize;
++
++        capabilities.geometryShader = existing.geometryShader;
++        capabilities.raytracing = false;
++        capabilities.raytracingStateUpdate = false;
++        capabilities.sampleLocations = false;
++        capabilities.resolveRegion = true;
++        capabilities.resolveModes = false;
++        capabilities.descriptorIndexing = existing.descriptorIndexing;
++        capabilities.scalarBlockLayout = existing.scalarBlockLayout;
++        capabilities.bufferDeviceAddress = existing.bufferDeviceAddress;
++        capabilities.samplerMirrorClampToEdge = existing.samplerMirrorClampToEdge;
++        capabilities.presentWait = false;
++        capabilities.displayTiming = false;
++        capabilities.maxTextureSize = physicalDeviceProperties.limits.maxImageDimension2D;
++        capabilities.preferHDR = memoryHeapSize > (512 * 1024 * 1024);
++        capabilities.dynamicDepthBias = true;
++        capabilities.queryPools = true;
++        capabilities.uma = (description.type == RenderDeviceType::INTEGRATED) && hasHostVisibleDeviceLocalMemory;
++        capabilities.gpuUploadHeap = capabilities.uma;
++        capabilities.triangleFan = true;
++
++        loadStoreOpNoneSupported = false;
++        nullDescriptorSupported = existing.nullDescriptor;
++        if (!nullDescriptorSupported) {
++            nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
++        }
++    }
++
+     VulkanDevice::~VulkanDevice() {
+         release();
+     }
+@@ -4438,7 +4598,9 @@ namespace plume {
+         }
+ 
+         if (vk != VK_NULL_HANDLE) {
+-            vkDestroyDevice(vk, nullptr);
++            if (ownsDevice) {  // [svr2011]
++                vkDestroyDevice(vk, nullptr);
++            }
+             vk = VK_NULL_HANDLE;
+         }
+     }
+@@ -4602,13 +4764,38 @@ namespace plume {
+         }
+     }
+ 
++    // [svr2011] Adopts another renderer's instance (see VulkanExistingDevice).
++    VulkanInterface::VulkanInterface(const VulkanExistingDevice &existing) {
++        VkResult res = volkInitialize();
++        if (res != VK_SUCCESS) {
++            fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
++            return;
++        }
++
++        this->existing = std::make_unique<VulkanExistingDevice>(existing);
++        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
++        appInfo.apiVersion = existing.apiVersion;
++        instance = existing.instance;
++        volkLoadInstance(instance);
++        capabilities.shaderFormat = RenderShaderFormat::SPIRV;
++
++        VkPhysicalDeviceProperties deviceProperties;
++        vkGetPhysicalDeviceProperties(existing.physicalDevice, &deviceProperties);
++        deviceNames.emplace_back(deviceProperties.deviceName);
++    }
++
+     VulkanInterface::~VulkanInterface() {
+-        if (instance != nullptr) {
++        if (instance != nullptr && existing == nullptr) {
+             vkDestroyInstance(instance, nullptr);
+         }
+     }
+ 
+     std::unique_ptr<RenderDevice> VulkanInterface::createDevice(const std::string &preferredDeviceName) {
++        if (existing != nullptr) {  // [svr2011]
++            std::unique_ptr<VulkanDevice> adoptedDevice = std::make_unique<VulkanDevice>(this, *existing);
++            return adoptedDevice->isValid() ? std::move(adoptedDevice) : nullptr;
++        }
++
+         std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
+         return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
+     }
+@@ -4638,4 +4825,9 @@ namespace plume {
+         return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
+     }
+ #endif
++
++    std::unique_ptr<RenderInterface> CreateVulkanInterface(const VulkanExistingDevice &existing) {  // [svr2011]
++        std::unique_ptr<VulkanInterface> createdInterface = std::make_unique<VulkanInterface>(existing);
++        return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
++    }
+ };
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index a0cf5cc..358ce69 100644
+index a0cf5cc..315b66c 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -329,6 +329,8 @@ namespace plume {
@@ -332,3 +537,68 @@ index a0cf5cc..358ce69 100644
      };
  
      struct VulkanPool : RenderPool {
+@@ -391,7 +394,9 @@ namespace plume {
+     
+     struct VulkanQueue {
+         VkQueue vk;
+-        std::unique_ptr<std::mutex> mutex;
++        // [svr2011] recursive and possibly borrowed: an adopted device's queue is locked by its owner too.
++        std::unique_ptr<std::recursive_mutex> ownedMutex;
++        std::recursive_mutex *mutex = nullptr;
+         std::unordered_set<const VulkanCommandQueue *> virtualQueues;
+     };
+ 
+@@ -417,8 +422,10 @@ namespace plume {
+         std::unique_ptr<RenderBuffer> nullBuffer;
+         bool loadStoreOpNoneSupported = false;
+         bool nullDescriptorSupported = false;
++        bool ownsDevice = true;  // [svr2011] false: adopted (VulkanExistingDevice)
+ 
+         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
++        VulkanDevice(VulkanInterface *renderInterface, const struct VulkanExistingDevice &existing);  // [svr2011]
+         ~VulkanDevice() override;
+         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
+         std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
+@@ -448,11 +455,34 @@ namespace plume {
+         bool endCapture() override;
+     };
+ 
++    // [svr2011] A Vulkan instance and device created by someone else (an emulator
++    // presenting plume's images): plume draws on them without owning them, so
++    // images and queue work are shared directly. The owner must have enabled
++    // the features flagged here, and locks queueMutex around its own submissions.
++    struct VulkanExistingDevice {
++        VkInstance instance = VK_NULL_HANDLE;
++        uint32_t apiVersion = VK_API_VERSION_1_2;
++        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
++        VkDevice device = VK_NULL_HANDLE;
++        uint32_t queueFamilyIndex = 0;  // graphics, compute and transfer
++        VkQueue queue = VK_NULL_HANDLE;
++        std::recursive_mutex *queueMutex = nullptr;
++        bool descriptorIndexing = false;  // runtime arrays, partially bound, variable count, update after bind
++        bool scalarBlockLayout = false;
++        bool bufferDeviceAddress = false;
++        bool nullDescriptor = false;
++        bool samplerMirrorClampToEdge = false;
++        bool geometryShader = false;
++    };
++
+     struct VulkanInterface : RenderInterface {
+         VkInstance instance = VK_NULL_HANDLE;
+         VkApplicationInfo appInfo = {};
+         RenderInterfaceCapabilities capabilities;
+         std::vector<std::string> deviceNames;
++        std::unique_ptr<VulkanExistingDevice> existing;  // [svr2011] adopted instance and device
++
++        VulkanInterface(const VulkanExistingDevice &existing);  // [svr2011]
+ 
+ #   if PLUME_SDL_VULKAN_ENABLED
+         VulkanInterface(RenderWindow sdlWindow);
+@@ -466,4 +496,7 @@ namespace plume {
+         const std::vector<std::string> &getDeviceNames() const override;
+         bool isValid() const;
+     };
++
++    // [svr2011]
++    std::unique_ptr<RenderInterface> CreateVulkanInterface(const VulkanExistingDevice &existing);
+ };

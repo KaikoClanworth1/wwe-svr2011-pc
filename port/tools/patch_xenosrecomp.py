@@ -293,6 +293,30 @@ COMMON += [
 ]
 
 
+# The SPIR-V path (Vulkan): the same variants as DXIL (-DSVR_SPEC_CONSTANTS),
+# and pixel shaders' own booleans at shared constants + 540 (c33.w).
+COMMON += [
+    (r"""[[vk::constant_id(0)]] const uint g_SpecConstants = 0;
+
+#define g_SpecConstants() g_SpecConstants""",
+     r"""// [svr2011] variants are compiled with -DSVR_SPEC_CONSTANTS=<mask> (as for DXIL)
+#ifdef SVR_SPEC_CONSTANTS
+#define g_SpecConstants() (SVR_SPEC_CONSTANTS)
+#else
+[[vk::constant_id(0)]] const uint g_SpecConstants = 0;
+#define g_SpecConstants() g_SpecConstants
+#endif"""),
+    (r"""#define g_NdcScale                 vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 532)""",
+     r"""#define g_NdcScale                 vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 532)
+#define g_PsBooleans               vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 540)"""),
+]
+
+RECOMPILER += [
+    (r"""        out += "#ifndef __spirv__\n#define g_Booleans g_PsBooleans\n#endif\n\n";""",
+     r"""        out += "#undef g_Booleans\n#define g_Booleans g_PsBooleans\n\n";"""),
+]
+
+
 CO_ISSUE_MARKER = "// [svr2011] co-issue: scalar op first"
 
 

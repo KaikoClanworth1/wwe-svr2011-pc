@@ -43,6 +43,10 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
     New-Item -ItemType Directory -Force (Join-Path $game "native_shaders") | Out-Null
     Get-ChildItem $shaders -File | Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
         Copy-Item -Destination (Join-Path $game "native_shaders") -Force
+    # (and the Vulkan backend's SPIR-V beside them)
+    Get-ChildItem (Join-Path (Split-Path $shaders -Parent) "spirv") -Filter "*.spv" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
+        Copy-Item -Destination (Join-Path $game "native_shaders") -Force
 }
 
 "Deployed to $game :"

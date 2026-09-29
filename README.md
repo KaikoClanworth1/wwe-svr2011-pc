@@ -332,7 +332,7 @@ The recompiled game code is **generated on your machine from your own disc**. It
    ```bash
    powershell -ExecutionPolicy Bypass -File port/build.ps1
    ```
-9. Optionally, the **native renderer's shaders**: they're converted from the game's own shaders as it creates them (a capture build, then `port/tools/convert_shaders.py`; see `port/docs/native_renderer_phase2.md`). Without them the game uses the emulated renderer.
+9. Optionally, the **native renderer's shaders**: they're converted from the game's own shaders as it creates them (a capture build, then `port/tools/convert_shaders.py`, which makes DXIL for Direct3D 12 and SPIR-V for Vulkan; see `port/docs/native_renderer_phase2.md`). Without them the game uses the emulated renderer.
 10. **Make a release zip**, with no game data in it, then install it with its launcher as in [Install and play](#install-and-play):
    ```bash
    powershell -ExecutionPolicy Bypass -File port/tools/package.ps1

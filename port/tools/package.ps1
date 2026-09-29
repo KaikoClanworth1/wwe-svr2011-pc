@@ -28,6 +28,10 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
     New-Item -ItemType Directory -Force (Join-Path $stage "native_shaders") | Out-Null
     Get-ChildItem $shaders -File | Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
         Copy-Item -Destination (Join-Path $stage "native_shaders")
+    # (and the Vulkan backend's SPIR-V beside them)
+    Get-ChildItem (Join-Path (Split-Path $shaders -Parent) "spirv") -Filter "*.spv" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
+        Copy-Item -Destination (Join-Path $stage "native_shaders")
 } else {
     Write-Warning "no native shaders in $shaders (tools\convert_shaders.py) - this package uses the emulated renderer"
 }

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <sstream>
 #include <fstream>
 #include <functional>
 #include <mutex>
@@ -162,6 +163,7 @@ struct ShaderInput {
   std::string semantic;
   uint32_t index;
   bool is_uint;
+  int location;  // Vulkan input location (-1: in declaration order)
 };
 
 struct Shader {
@@ -197,6 +199,18 @@ std::vector<uint8_t> ReadFile(const std::filesystem::path& path) {
   return std::vector<uint8_t>(std::istreambuf_iterator<char>(f), {});
 }
 
+// A converted shader: "<name><backend extension>". Installed, the DXIL and
+// SPIR-V files share native_shaders\; in the converter's output (a dev
+// SVR2011_NATIVE_SHADERS pointing at .../dxil) SPIR-V is in ../spirv.
+std::filesystem::path ShaderFile(const std::string& name) {
+  static const std::filesystem::path dir = ShaderDirectory();
+  const std::string file = name + backend::ShaderExtension();
+  std::error_code ec;
+  if (!std::filesystem::exists(dir / file, ec) && dir.filename() == "dxil")
+    return dir.parent_path() / "spirv" / file;
+  return dir / file;
+}
+
 void LoadShader(Shader& s) {
   if (s.loaded) return;
   s.loaded = true;
@@ -205,14 +219,18 @@ void LoadShader(Shader& s) {
   std::snprintf(name, sizeof(name), "%016llX.%s", static_cast<unsigned long long>(s.hash),
                 s.pixel ? "ps" : "vs");
   const std::string ext = backend::ShaderExtension();
-  s.code[0] = ReadFile(dir / (std::string(name) + ext));
-  s.code[s.pixel ? 2 : 1] = ReadFile(dir / (std::string(name) + (s.pixel ? ".s2" : ".s1") + ext));
+  s.code[0] = ReadFile(ShaderFile(name));
+  s.code[s.pixel ? 2 : 1] = ReadFile(ShaderFile(std::string(name) + (s.pixel ? ".s2" : ".s1")));
   if (!s.pixel) {
+    // SEMANTIC INDEX TYPE [LOCATION]
     std::ifstream in(dir / (std::string(name) + ".inputs"));
-    ShaderInput i;
-    std::string type;
-    while (in >> i.semantic >> i.index >> type) {
+    std::string line, type;
+    while (std::getline(in, line)) {
+      std::istringstream fields(line);
+      ShaderInput i;
+      if (!(fields >> i.semantic >> i.index >> type)) continue;
       i.is_uint = type == "uint4";
+      if (!(fields >> i.location)) i.location = -1;
       s.inputs.push_back(i);
     }
   }
@@ -515,20 +533,32 @@ plume::RenderDescriptorSetDesc g_table_descs[4];
 
 bool CreatePipelineLayout(Renderer* r) {
   for (int i = 0; i < 4; ++i) {
+    // (the count: Vulkan's upper bound for the table; D3D12 ignores it)
     g_table_ranges[i] = plume::RenderDescriptorRange(
-        i == 3 ? plume::RenderDescriptorRangeType::SAMPLER : plume::RenderDescriptorRangeType::TEXTURE, 0, 1);
+        i == 3 ? plume::RenderDescriptorRangeType::SAMPLER : plume::RenderDescriptorRangeType::TEXTURE, 0,
+        i == 3 ? kSamplerHeapSize : kSrvHeapSize);
     g_table_descs[i] = plume::RenderDescriptorSetDesc(&g_table_ranges[i], 1, true,
                                                       i == 3 ? kSamplerHeapSize : kSrvHeapSize);
   }
-  // b0/b1/b2 space4: vertex, pixel, shared constants; b3: debug / present constants.
+  // The constants: vertex, pixel, shared, the renderer's own (debug / present).
+  // D3D12: root CBVs b0-b3 space4. Vulkan: their buffer addresses in the
+  // push constants (shader_common.h, shaders/own_constants.hlsli).
   plume::RenderRootDescriptorDesc roots[4];
   for (uint32_t i = 0; i < 4; ++i)
     roots[i] = plume::RenderRootDescriptorDesc(i, 4, plume::RenderRootDescriptorType::CONSTANT_BUFFER);
+  const plume::RenderPushConstantRange push(0, 0, 0, 4 * sizeof(uint64_t),
+                                            plume::RenderShaderStageFlag::VERTEX |
+                                                plume::RenderShaderStageFlag::PIXEL);
   plume::RenderPipelineLayoutDesc desc;
   desc.descriptorSetDescs = g_table_descs;
   desc.descriptorSetDescsCount = 4;
-  desc.rootDescriptorDescs = roots;
-  desc.rootDescriptorDescsCount = 4;
+  if (backend::ActiveApi() == backend::Api::kVulkan) {
+    desc.pushConstantRanges = &push;
+    desc.pushConstantRangesCount = 1;
+  } else {
+    desc.rootDescriptorDescs = roots;
+    desc.rootDescriptorDescsCount = 4;
+  }
   desc.allowInputLayout = true;
   r->layout = r->device->createPipelineLayout(desc);
   if (!r->layout) {
@@ -588,7 +618,6 @@ bool Initialize() {
       free(v);
     }
   }
-  if (g_debug_solid) g_debug_ps = ReadFile(ShaderDirectory() / (std::string("debug_solid.ps") + backend::ShaderExtension()));
   std::string device_name;
   r->api = backend::CreateInterface(&device_name);
   if (!r->api) {
@@ -601,6 +630,7 @@ bool Initialize() {
     return false;
   }
   REXLOG_INFO("native renderer: GPU {}", r->device->getDescription().name);
+  if (g_debug_solid) g_debug_ps = ReadFile(ShaderFile("debug_solid.ps"));
   r->queue = r->device->createCommandQueue(plume::RenderCommandListType::DIRECT);
   for (uint32_t i = 0; i < kFrames; ++i) {
     r->lists[i] = r->queue->createCommandList();
@@ -644,7 +674,7 @@ bool Initialize() {
   // renderer draw instead.
   {
     std::error_code ec;
-    if (!std::filesystem::exists(ShaderDirectory() / (std::string("present.vs") + backend::ShaderExtension()), ec)) {
+    if (!std::filesystem::exists(ShaderFile("present.vs"), ec)) {
       REXLOG_ERROR("native renderer: its shaders are missing ({} has no present.vs{}) - reinstall "
                    "with the launcher to get the native_shaders folder",
                    ShaderDirectory().string(), backend::ShaderExtension());
@@ -1297,7 +1327,7 @@ const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, S
     char* e = nullptr;
     size_t n = 0;
     if (_dupenv_s(&e, &n, "SVR2011_NATIVE_DEBUG_PS") == 0 && e) {
-      o.first = ReadFile(ShaderDirectory() / (std::string(e) + ".ps" + backend::ShaderExtension()));
+      o.first = ReadFile(ShaderFile(std::string(e) + ".ps"));
       free(e);
     }
     if (_dupenv_s(&e, &n, "SVR2011_NATIVE_DEBUG_PS_FOR") == 0 && e) {
@@ -1555,6 +1585,21 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
   return gpu;
 }
 
+// Binds the draw's constants (vertex, pixel, shared, own; null: none) - root
+// CBVs on D3D12, their buffer addresses in the push constants on Vulkan. The
+// pipeline layout must be set.
+void BindConstants(Renderer* r, const RenderBufferReference constants[4]) {
+  if (backend::ActiveApi() == backend::Api::kVulkan) {
+    uint64_t addresses[4];
+    for (int i = 0; i < 4; ++i)
+      addresses[i] = constants[i].ref ? constants[i].ref->getDeviceAddress() + constants[i].offset : 0;
+    r->list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+    return;
+  }
+  for (uint32_t i = 0; i < 4; ++i)
+    if (constants[i].ref) r->list->setGraphicsRootDescriptor(constants[i], i);
+}
+
 // At every draw (drawn or not): constants set through the mirror have reached
 // the GPU; blocks loaded from memory for this draw take precedence.
 // The XDK also writes constants into the mirror inline (no hookable call),
@@ -1612,7 +1657,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     plume::RenderInputElement e;
     e.semanticName = in.semantic.c_str();
     e.semanticIndex = in.index;
-    e.location = uint32_t(layout.size());
+    e.location = in.location >= 0 ? uint32_t(in.location) : uint32_t(layout.size());
     const Element* found = nullptr;
     for (const Element& el : decl) {
       if (el.usage < std::size(kUsageNames) && in.semantic == kUsageNames[el.usage] &&
@@ -1645,11 +1690,15 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     layout_hash = layout_hash * 31 + uint32_t(e.format) * 7 + e.slotIndex * 131 +
                   e.alignedByteOffset * 17 + e.semanticIndex;
   }
-  // The vertex buffer slots (0-15; strides as set now).
+  // The vertex buffer slots (0-15; strides as set now). Vulkan pipelines
+  // have the strides of the slots they use built in.
   plume::RenderInputSlot slots[16];
   for (uint32_t i = 0; i < 16; ++i) {
     const uint32_t stride = up && i == 0 ? up->stride : i < 15 && !up ? g_streams[i].stride : 0;
     slots[i] = plume::RenderInputSlot(i, stride);
+  }
+  if (backend::ActiveApi() == backend::Api::kVulkan) {
+    for (const auto& e : layout) layout_hash = layout_hash * 31 + slots[e.slotIndex].stride * 977;
   }
 
   // Alpha test: RB_COLORCONTROL bit 3 with a "greater" function (the only
@@ -1881,18 +1930,19 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     list->setGraphicsDescriptorSet(r->sampler_set.get(), 3);
     ls.bound = true;
   }
-  list->setGraphicsRootDescriptor(GpuConstants(r, 0, kVertexConstantsBytes), 0);
-  list->setGraphicsRootDescriptor(GpuConstants(r, 256, kPixelConstantsBytes), 1);
-  list->setGraphicsRootDescriptor(SharedConstants(r, alpha_test, vs, ps, ndc), 2);
   {
+    RenderBufferReference constants[4] = {GpuConstants(r, 0, kVertexConstantsBytes),
+                                           GpuConstants(r, 256, kPixelConstantsBytes),
+                                           SharedConstants(r, alpha_test, vs, ps, ndc), {}};
     auto [cpu, gpu] = Allocate(r, 256);
     if (cpu) {
       const uint32_t n = r->frame_stats.drawn * 2654435761u;
       const float c[4] = {0.25f + ((n >> 8) & 0xFF) / 340.0f, 0.25f + ((n >> 16) & 0xFF) / 340.0f,
                           0.25f + ((n >> 24) & 0xFF) / 340.0f, 1.0f};
       std::memcpy(cpu, c, sizeof(c));
-      list->setGraphicsRootDescriptor(gpu, 3);
+      constants[3] = gpu;
     }
+    BindConstants(r, constants);
   }
   if (ls.pso != pso) {
     list->setPipeline(pso);
@@ -1996,9 +2046,8 @@ const plume::RenderPipeline* PresentPipeline(Renderer* r) {
   static bool tried = false;
   if (tried) return pso.get();
   tried = true;
-  const std::string ext = backend::ShaderExtension();
-  const std::vector<uint8_t> vs_code = ReadFile(ShaderDirectory() / ("present.vs" + ext));
-  const std::vector<uint8_t> ps_code = ReadFile(ShaderDirectory() / ("present.ps" + ext));
+  const std::vector<uint8_t> vs_code = ReadFile(ShaderFile("present.vs"));
+  const std::vector<uint8_t> ps_code = ReadFile(ShaderFile("present.ps"));
   if (vs_code.empty() || ps_code.empty()) {
     REXLOG_WARN("native renderer: present shaders missing");
     return nullptr;
@@ -2055,7 +2104,8 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   list->setGraphicsPipelineLayout(r->layout.get());
   list->setGraphicsDescriptorSet(r->texture_sets[0].get(), 0);
   list->setGraphicsDescriptorSet(r->sampler_set.get(), 3);
-  list->setGraphicsRootDescriptor(gpu, 3);
+  const RenderBufferReference constants[4] = {{}, {}, {}, gpu};
+  BindConstants(r, constants);
   list->setPipeline(pso);
   list->setViewports(plume::RenderViewport(0, 0, out_size[0], out_size[1], 0, 1));
   list->setScissors(plume::RenderRect(0, 0, int32_t(out_size[0]), int32_t(out_size[1])));
@@ -2156,7 +2206,7 @@ void OnPresent(uint32_t front_buffer) {
     return;
   }
   // This frame, for the emulator's next swap (rex/external_frame.h).
-  backend::PublishFrame(back, g_out_w, g_out_h, r->fences[r->back_index].get());
+  backend::PublishFrame(r->outputs[r->output_index], g_out_w, g_out_h, r->fences[r->back_index].get());
   r->frame_open = false;
   ++r->frames;
   // Debug: SVR2011_NATIVE_DUMP_TRIGGER=<file>: when the file appears, the next
@@ -2320,7 +2370,8 @@ void OnResolve(const PPCContext& ctx) {
     dst = {};
     plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
         dst_w * g_scale, dst_h * g_scale, 1, family,
-        plume::RenderTextureFlag::NONE);
+        depth && backend::ActiveApi() == backend::Api::kVulkan ? plume::RenderTextureFlag::DEPTH_TARGET
+                                                                : plume::RenderTextureFlag::NONE);
     d.committed = true;
     dst.resource = r->device->createTexture(d);
     if (!dst.resource) {

@@ -14,7 +14,8 @@ $root = $PSScriptRoot
 $env:PATH = "C:\Program Files\LLVM\bin;$(Join-Path $root '..\recomp\bin');$env:PATH"
 if (-not $Prebuilt) {
     $build   = Join-Path $root ("out\build\Source$Config" + $(if ($Trace) { "Trace" } else { "" }))
-    $sdkArgs = @("-DREXSDK_DIR=" + (Resolve-Path (Join-Path $root "..\recomp\rexglue-sdk")))
+    # (with the SDK's Vulkan backend too: --gpu_backend=vulkan, the native renderer's Vulkan path)
+    $sdkArgs = @("-DREXSDK_DIR=" + (Resolve-Path (Join-Path $root "..\recomp\rexglue-sdk")), "-DREXGLUE_USE_VULKAN=ON")
     if ($Trace) { $sdkArgs += "-DSVR2011_D3D_TRACE=ON" }
 } else {
     $build   = Join-Path $root "out\build\$Config"

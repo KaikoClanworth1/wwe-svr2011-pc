@@ -23,6 +23,8 @@ std::unique_ptr<RenderInterface> CreateD3D12Interface();  // (plume_d3d12.cpp; n
 
 namespace svr2011::native::backend {
 
+namespace d3d12 {
+
 namespace {
 
 using Microsoft::WRL::ComPtr;
@@ -93,9 +95,10 @@ std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name
 plume::RenderShaderFormat ShaderFormat() { return plume::RenderShaderFormat::DXIL; }
 const char* ShaderExtension() { return ".dxil"; }
 
-void PublishFrame(plume::RenderTexture* image, uint32_t width, uint32_t height,
-                  plume::RenderCommandFence* fence) {
-  auto* texture = static_cast<plume::D3D12Texture*>(image);
+void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
+                  uint32_t height, plume::RenderCommandFence* fence) {
+  // (the emulator AddRefs the resource while it uses it)
+  auto* texture = static_cast<plume::D3D12Texture*>(image.get());
   auto* f = static_cast<plume::D3D12CommandFence*>(fence);
   std::lock_guard lock(g_frame_mutex);
   g_frame = texture->d3d;
@@ -215,5 +218,42 @@ void StallQueue(plume::RenderCommandQueue* queue) {
   if (!never) Native(q->device)->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&never));
   if (never) q->d3d->Wait(never.Get(), 1);
 }
+
+}  // namespace d3d12
+
+namespace {
+
+class D3D12Backend final : public Backend {
+ public:
+  Api api() const override { return Api::kD3D12; }
+  std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name) override {
+    return d3d12::CreateInterface(device_name);
+  }
+  plume::RenderShaderFormat ShaderFormat() const override { return d3d12::ShaderFormat(); }
+  const char* ShaderExtension() const override { return d3d12::ShaderExtension(); }
+  void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
+                    uint32_t height, plume::RenderCommandFence* fence) override {
+    d3d12::PublishFrame(image, width, height, fence);
+  }
+  bool GetFrame(rex::external_frame::Frame& frame) override { return d3d12::GetFrame(frame); }
+  void ClearFrame() override { d3d12::ClearFrame(); }
+  bool DeviceLost(plume::RenderDevice* device) override { return d3d12::DeviceLost(device); }
+  void ReportDeviceLost(plume::RenderDevice* device) override { d3d12::ReportDeviceLost(device); }
+  void ReleaseFence(plume::RenderCommandFence* fence) override { d3d12::ReleaseFence(fence); }
+  void DrainDebugMessages(plume::RenderDevice* device) override {
+    d3d12::DrainDebugMessages(device);
+  }
+  void LogBuffer(plume::RenderBuffer* buffer, uint64_t size) override {
+    d3d12::LogBuffer(buffer, size);
+  }
+  bool PipelineCreated(plume::RenderPipeline* pipeline) override {
+    return d3d12::PipelineCreated(pipeline);
+  }
+  void StallQueue(plume::RenderCommandQueue* queue) override { d3d12::StallQueue(queue); }
+};
+
+}  // namespace
+
+std::unique_ptr<Backend> CreateD3D12Backend() { return std::make_unique<D3D12Backend>(); }
 
 }  // namespace svr2011::native::backend

@@ -1,4 +1,4 @@
-"""Convert captured shader containers to HLSL (XenosRecomp) and DXIL (DXC).
+"""Convert captured shader containers to HLSL (XenosRecomp), DXIL and SPIR-V (DXC).
 
     python convert_shaders.py [xsc_dir] [out_dir]
 
@@ -8,9 +8,12 @@ computes it when the game creates the shader):
   dxil/<hash>.<vs|ps>.dxil        specialization constants = 0
   dxil/<hash>.vs.s1.dxil          packed 11:11:10 normals (if the shader has them)
   dxil/<hash>.ps.s2.dxil          alpha test (if the shader has it)
-  dxil/<hash>.vs.inputs           the vertex shader's inputs: SEMANTIC INDEX TYPE
+  dxil/<hash>.vs.inputs           the vertex shader's inputs: SEMANTIC INDEX TYPE LOCATION
+                                  (LOCATION: the Vulkan input location, -1 if unassigned)
   dxil/<hash>.<vs|ps>.textures    the texture fetch slots it samples: SLOT DIMENSION
                                   (0 2D, 1 3D, 2 cube)
+spirv/ has the same files with .spv (Vulkan: -fvk-invert-y for vertex shaders,
+constants through buffer addresses in the push constants; see shader_common.h).
 The specialization constants are baked in with -DSVR_SPEC_CONSTANTS (see the
 XenosRecomp patch), so the renderer never links shaders at runtime.
 Writes out_dir/report.txt with every failure and its first error.
@@ -27,7 +30,7 @@ XR = os.path.join(ROOT, "recomp", "XenosRecomp", "build", "XenosRecomp", "XenosR
 HEADER = os.path.join(ROOT, "recomp", "XenosRecomp", "XenosRecomp", "shader_common.h")
 DXC = os.path.join(ROOT, "recomp", "XenosRecomp", "thirdparty", "dxc-bin", "bin", "x64", "dxc.exe")
 
-INPUT_RE = re.compile(r"in (float4|uint4) i\w+ : ([A-Z]+)(\d+)")
+INPUT_RE = re.compile(r"(?:\[\[vk::location\((\d+)\)\]\] )?in (float4|uint4) i\w+ : ([A-Z]+)(\d+)")
 TEXTURE_DEFINE_RE = re.compile(r"#define (\w+)_Texture(2D|3D|Cube)DescriptorIndex g_ResourceIndex\(\d+, (\d+)\)")
 TEXTURE_USE_RE = re.compile(r"(\w+)_Texture(2D|3D|Cube)DescriptorIndex")
 DIMENSIONS = {"2D": 0, "3D": 1, "Cube": 2}
@@ -36,6 +39,18 @@ DIMENSIONS = {"2D": 0, "3D": 1, "Cube": 2}
 def compile_dxil(hlsl, dxil, stage, mask):
     r = subprocess.run([DXC, "-nologo", "-HV", "2021", "-T", f"{stage}_6_0", "-E", "main",
                         f"-DSVR_SPEC_CONSTANTS={mask}", "-Fo", dxil, hlsl],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        return next((l for l in (r.stderr + r.stdout).splitlines() if "error" in l),
+                    r.stderr[:300]).strip()
+    return None
+
+
+def compile_spirv(hlsl, spv, stage, mask):
+    flags = ["-fvk-invert-y"] if stage == "vs" else ["-fvk-use-dx-position-w"]
+    r = subprocess.run([DXC, "-nologo", "-HV", "2021", "-T", f"{stage}_6_0", "-E", "main", "-spirv",
+                        "-fvk-use-dx-layout", "-fspv-target-env=vulkan1.2", *flags,
+                        f"-DSVR_SPEC_CONSTANTS={mask}", "-Fo", spv, hlsl],
                        capture_output=True, text=True, timeout=120)
     if r.returncode:
         return next((l for l in (r.stderr + r.stdout).splitlines() if "error" in l),
@@ -62,24 +77,28 @@ def convert(xsc, out):
         err = compile_dxil(hlsl, os.path.join(out, "dxil", f"{name}{suffix}.dxil"), stage, mask)
         if err:
             return name, f"dxil s{mask}", err
+        err = compile_spirv(hlsl, os.path.join(out, "spirv", f"{name}{suffix}.spv"), stage, mask)
+        if err:
+            return name, f"spirv s{mask}", err
     slots = {(name, dim): int(slot) for name, dim, slot in TEXTURE_DEFINE_RE.findall(src)}
     used = sorted({(slots[(name, dim)], DIMENSIONS[dim]) for name, dim in TEXTURE_USE_RE.findall(body)
                    if (name, dim) in slots})
-    with open(os.path.join(out, "dxil", name + ".textures"), "w") as f:
-        for slot, dim in used:
-            f.write(f"{slot} {dim}\n")
-    if stage == "vs":
-        header = body[:body.find("{")]
-        with open(os.path.join(out, "dxil", name + ".inputs"), "w") as f:
-            for typ, semantic, index in INPUT_RE.findall(header):
-                f.write(f"{semantic} {index} {typ}\n")
+    for d in ("dxil", "spirv"):
+        with open(os.path.join(out, d, name + ".textures"), "w") as f:
+            for slot, dim in used:
+                f.write(f"{slot} {dim}\n")
+        if stage == "vs":
+            header = body[:body.find("{")]
+            with open(os.path.join(out, d, name + ".inputs"), "w") as f:
+                for location, typ, semantic, index in INPUT_RE.findall(header):
+                    f.write(f"{semantic} {index} {typ} {location or -1}\n")
     return name, None, ""
 
 
 def main():
     xsc_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "port", "runs", "d3dtrace", "xsc")
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "port", "runs", "shaders_native")
-    for d in ("hlsl", "dxil"):
+    for d in ("hlsl", "dxil", "spirv"):
         os.makedirs(os.path.join(out, d), exist_ok=True)
     files = sorted(glob.glob(os.path.join(xsc_dir, "*.xsc")))
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -91,15 +110,19 @@ def main():
         err = compile_dxil(hlsl, os.path.join(out, "dxil", name + ".dxil"), name.split(".")[-1], 0)
         if err:
             results.append((name, "own", err))
+        # (the debug shaders but debug_solid are D3D12 only)
+        err = compile_spirv(hlsl, os.path.join(out, "spirv", name + ".spv"), name.split(".")[-1], 0)
+        if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
+            results.append((name, "own spirv", err))
     failed = [r for r in results if r[1]]
     with open(os.path.join(out, "report.txt"), "w") as rep:
-        rep.write(f"{len(files)} shaders, {len(files) - len(failed)} converted to DXIL\n")
+        rep.write(f"{len(files)} shaders, {len(files) - len(failed)} converted to DXIL and SPIR-V\n")
         for name, stage, err in failed:
             rep.write(f"{name}: {stage}: {err}\n")
     vs = sum(1 for f in files if f.endswith(".vs.xsc"))
     variants = len(glob.glob(os.path.join(out, "dxil", "*.s?.dxil")))
     print(f"{len(files)} shaders ({vs} vertex, {len(files) - vs} pixel): "
-          f"{len(files) - len(failed)} compiled to DXIL (+{variants} specialized variants), "
+          f"{len(files) - len(failed)} compiled to DXIL and SPIR-V (+{variants} specialized variants), "
           f"{len(failed)} failed -> {out}")
 
 

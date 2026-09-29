@@ -43,7 +43,9 @@ else()
     # Native renderer (native_renderer=main), drawing through plume. Its hooks
     # overlap the census hooks, so it is left out of census builds.
     list(APPEND SVR2011_SOURCES
+        src/native/gpu.cpp
         src/native/backend_d3d12.cpp
+        src/native/backend_vulkan.cpp
         src/native/native_renderer.cpp
         src/native/native_hooks.cpp
         src/native/textures.cpp)

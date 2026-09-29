@@ -1,16 +1,16 @@
 diff --git a/include/rex/external_frame.h b/include/rex/external_frame.h
 new file mode 100644
-index 0000000..de10d52
+index 0000000..79a47b6
 --- /dev/null
 +++ b/include/rex/external_frame.h
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,75 @@
 +/**
 + * @file        rex/external_frame.h
 + * @brief       [svr2011] Frames from an app-side renderer, shown instead of
 + *              the emulated GPU's.
 + *
-+ * An app that renders the guest's frames itself (on the same D3D12 device)
-+ * registers a provider; at each guest swap the D3D12 backend asks it for the
++ * An app that renders the guest's frames itself (on the same D3D12 or Vulkan
++ * device) registers a provider; at each guest swap the backend asks it for the
 + * finished frame and shows that (through its usual gamma / scaling / overlay
 + * path) instead of the guest front buffer. With host drawing disabled the
 + * emulated GPU still runs the guest's command stream (fences, interrupts,
@@ -21,16 +21,42 @@ index 0000000..de10d52
 +
 +#include <cstdint>
 +#include <functional>
++#include <mutex>
 +
 +namespace rex::external_frame {
 +
 +struct Frame {
++  // D3D12
 +  void* resource = nullptr;   // ID3D12Resource*, RGBA8, in a shader-readable state
 +  uint32_t srv_format = 0;    // DXGI_FORMAT for the view
 +  uint32_t component_mapping = 0;  // D3D12 Shader4ComponentMapping
 +  uint32_t width = 0, height = 0;
 +  void* fence = nullptr;      // ID3D12Fence*: the frame is ready once it reaches
 +  uint64_t fence_value = 0;   // fence_value (waited for on the GPU)
++  // Vulkan: an RGBA8 image in SHADER_READ_ONLY_OPTIMAL, drawn by work
++  // submitted earlier on the same queue (so no semaphore).
++  uint64_t vk_image = 0;       // VkImage
++  uint64_t vk_image_view = 0;  // VkImageView (2D, identity swizzle)
++};
++
++// The emulator's Vulkan device (set by the Vulkan backend), for an app
++// renderer to draw on: the handles are the Vulkan types; the renderer
++// submits to `queue` holding `queue_mutex` (the backend does the same).
++struct VulkanDevice {
++  void* instance = nullptr;          // VkInstance
++  uint32_t api_version = 0;
++  void* physical_device = nullptr;   // VkPhysicalDevice
++  void* device = nullptr;            // VkDevice
++  uint32_t queue_family = 0;         // graphics + compute
++  void* queue = nullptr;             // VkQueue
++  std::recursive_mutex* queue_mutex = nullptr;
++  // Enabled on the device:
++  bool app_renderer_features = false;  // descriptor indexing (update after bind), buffer
++                                       // device address, shaderInt64
++  bool scalar_block_layout = false;
++  bool null_descriptor = false;
++  bool sampler_mirror_clamp_to_edge = false;
++  bool geometry_shader = false;
 +};
 +
 +using Provider = std::function<bool(Frame& frame)>;
@@ -44,6 +70,9 @@ index 0000000..de10d52
 +// must use the same GPU for its frames to be shown. Null before that.
 +void SetDevice(void* d3d12_device);
 +void* Device();
++// Vulkan: the same, or null.
++void SetVulkanDevice(const VulkanDevice* device);
++const VulkanDevice* GetVulkanDevice();
 +
 +// While true, the emulated GPU skips drawing (see above).
 +void SetHostDrawingDisabled(bool disabled);
@@ -347,6 +376,21 @@ index 0000000..c1f04e6
 +    if (::rex::timeline::Enabled())                             \
 +      ::rex::timeline::Record(::rex::timeline::ev, ##__VA_ARGS__); \
 +  } while (0)
+diff --git a/include/rex/ui/vulkan/device.h b/include/rex/ui/vulkan/device.h
+index 947817f..a1cc533 100644
+--- a/include/rex/ui/vulkan/device.h
++++ b/include/rex/ui/vulkan/device.h
+@@ -168,6 +168,10 @@ class VulkanDevice {
+     // VK_EXT_robustness2
+ 
+     bool nullDescriptor = false;
++
++    // [svr2011] What an app renderer drawing on this device needs (rex/external_frame.h):
++    // descriptor indexing with update after bind, buffer device address, shaderInt64.
++    bool appRendererFeatures = false;
+   };
+ 
+   // Properties of the core API and enabled extensions, and enabled features.
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
 index 1ddafd0..48fd5ee 100644
 --- a/src/core/CMakeLists.txt
@@ -362,10 +406,10 @@ index 1ddafd0..48fd5ee 100644
      vec128.cpp
 diff --git a/src/core/external_frame.cpp b/src/core/external_frame.cpp
 new file mode 100644
-index 0000000..36304bc
+index 0000000..3fe124a
 --- /dev/null
 +++ b/src/core/external_frame.cpp
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,44 @@
 +// [svr2011] See rex/external_frame.h.
 +
 +#include <rex/external_frame.h>
@@ -380,7 +424,16 @@ index 0000000..36304bc
 +Provider g_provider;
 +std::atomic<bool> g_host_drawing_disabled{false};
 +std::atomic<void*> g_device{nullptr};
++VulkanDevice g_vulkan_device;
++std::atomic<bool> g_vulkan_device_set{false};
 +}  // namespace
++
++void SetVulkanDevice(const VulkanDevice* device) {
++  if (device) g_vulkan_device = *device;
++  g_vulkan_device_set = device != nullptr;
++}
++
++const VulkanDevice* GetVulkanDevice() { return g_vulkan_device_set ? &g_vulkan_device : nullptr; }
 +
 +void SetDevice(void* d3d12_device) { g_device = d3d12_device; }
 +
@@ -914,6 +967,75 @@ index 8f2fcb0..4be98de 100644
  }
  
  void GraphicsSystem::MarkVblank() {
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..b0520b7 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -25,6 +25,7 @@
+ #include <glslang/Public/ShaderLang.h>
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
++#include <rex/external_frame.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+@@ -2312,9 +2313,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+   uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
+   xenos::TextureFormat frontbuffer_format;
+   bool swap_source_needs_rb_swap = false;
+-  VkImageView swap_texture_view = texture_cache_->RequestSwapTexture(
+-      frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_format,
+-      &frontbuffer_width_unscaled, &frontbuffer_height_unscaled, &swap_source_needs_rb_swap);
++  VkImageView swap_texture_view = VK_NULL_HANDLE;
++  // [svr2011] A frame from the app's own renderer (rex/external_frame.h), drawn
++  // on this device by work submitted earlier on the same queue: shown like the
++  // front buffer, after a barrier making its writes visible.
++  rex::external_frame::Frame external_frame;
++  if (rex::external_frame::GetFrame(external_frame) && external_frame.vk_image_view) {
++    swap_texture_view = VkImageView(external_frame.vk_image_view);
++    frontbuffer_format = xenos::TextureFormat::k_8_8_8_8;
++    frontbuffer_width_scaled = frontbuffer_width_unscaled = external_frame.width;
++    frontbuffer_height_scaled = frontbuffer_height_unscaled = external_frame.height;
++    frontbuffer_width = external_frame.width;
++    frontbuffer_height = external_frame.height;
++    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++    PushImageMemoryBarrier(
++        VkImage(external_frame.vk_image), range,
++        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
++        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
++        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
++        VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
++        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++  } else {
++    swap_texture_view = texture_cache_->RequestSwapTexture(
++        frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_format,
++        &frontbuffer_width_unscaled, &frontbuffer_height_unscaled, &swap_source_needs_rb_swap);
++  }
+   if (swap_texture_view == VK_NULL_HANDLE) {
+     REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
+     return;
+@@ -3695,6 +3718,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+   VulkanShader::VulkanTranslation* vertex_shader_translation;
+   VulkanShader::VulkanTranslation* pixel_shader_translation;
+   bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
++  // [svr2011] The app's renderer draws the frames (rex/external_frame.h):
++  // only draws writing guest memory still run here.
++  if (!memexport_writes_possible && rex::external_frame::HostDrawingDisabled()) {
++    return true;
++  }
+ 
+   // Two iterations because a submission (even the current one - in which case
+   // it needs to be ended, and a new one must be started) may need to be awaited
+@@ -4385,6 +4413,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
++  if (rex::external_frame::HostDrawingDisabled()) {
++    return true;  // [svr2011] nothing drawn here to resolve (see IssueDraw)
++  }
+ 
+   if (!BeginSubmission(true)) {
+     return false;
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
 index 813bb1c..739e392 100644
 --- a/src/input/input_system.cpp
@@ -2012,3 +2134,99 @@ index ade5dd2..9151f01 100644
    D3D12_RANGE read_range;
    read_range.Begin = 0;
    read_range.End = 0;
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index b94fe9e..d30b98c 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -46,6 +46,11 @@
+ #include <filesystem>
+ #include <string_view>
+ 
++// [svr2011] which of the plugin's backends to use
++REXCVAR_DEFINE_STRING(gpu_backend, "any", "GPU",
++                      "GPU plugin backend: any (the first compiled in: D3D12 on Windows), d3d12, vulkan")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
+ REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
+                       "GPU emulation plugin to load at startup (e.g. 'xenos'); empty disables "
+                       "GPU emulation")
+@@ -314,7 +319,7 @@ bool ReXApp::SetupPresentation() {
+   OnPreSetup(config_);
+ 
+   if (!config_.graphics && !config_.gpu_plugin.empty()) {
+-    config_.graphics = rex::system::LoadGpuPlugin(config_.gpu_plugin);
++    config_.graphics = rex::system::LoadGpuPlugin(config_.gpu_plugin, REXCVAR_GET(gpu_backend));
+     if (!config_.graphics) {
+       // Fatal by design: no silent headless fallback.
+       auto msg =
+diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
+index 8197bb4..3375ab2 100644
+--- a/src/ui/vulkan/vulkan_device.cpp
++++ b/src/ui/vulkan/vulkan_device.cpp
+@@ -650,6 +650,26 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+       XE_UI_VULKAN_FEATURE_2(features_1_2, samplerMirrorClampToEdge);
+       XE_UI_VULKAN_FEATURE_2(features_1_2, uniformBufferStandardLayout);
+       XE_UI_VULKAN_FEATURE_2(features_1_2, scalarBlockLayout);
++      // [svr2011] for an app renderer on this device (rex/external_frame.h)
++      const VkPhysicalDeviceVulkan12Features& s = features_1_2.supported;
++      VkPhysicalDeviceVulkan12Features& e = features_1_2.enabled;
++      const bool app_renderer = s.descriptorIndexing && s.runtimeDescriptorArray &&
++                                s.descriptorBindingPartiallyBound &&
++                                s.descriptorBindingVariableDescriptorCount &&
++                                s.descriptorBindingSampledImageUpdateAfterBind &&
++                                s.bufferDeviceAddress && supported_features.shaderInt64;
++      if (app_renderer) {
++        e.descriptorIndexing = VK_TRUE;
++        e.runtimeDescriptorArray = VK_TRUE;
++        e.descriptorBindingPartiallyBound = VK_TRUE;
++        e.descriptorBindingVariableDescriptorCount = VK_TRUE;
++        e.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
++        e.shaderSampledImageArrayNonUniformIndexing = s.shaderSampledImageArrayNonUniformIndexing;
++        e.bufferDeviceAddress = VK_TRUE;
++        enabled_features.shaderInt64 = VK_TRUE;
++      }
++      device->properties_.appRendererFeatures = app_renderer;
++      REXLOG_INFO("* app renderer features: {}", app_renderer);
+     }
+   } else {
+     if (ext_1_2_KHR_sampler_mirror_clamp_to_edge) {
+diff --git a/src/ui/vulkan/vulkan_provider.cpp b/src/ui/vulkan/vulkan_provider.cpp
+index 9eeb902..0782d77 100644
+--- a/src/ui/vulkan/vulkan_provider.cpp
++++ b/src/ui/vulkan/vulkan_provider.cpp
+@@ -13,6 +13,7 @@
+ #include <vector>
+ 
+ #include <rex/cvar.h>
++#include <rex/external_frame.h>
+ #include <rex/logging.h>
+ #include <rex/ui/vulkan/immediate_drawer.h>
+ #include <rex/ui/vulkan/presenter.h>
+@@ -146,6 +147,27 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
+     }
+   }
+ 
++  // [svr2011] app renderers draw on this device (rex/external_frame.h)
++  if (with_gpu_emulation) {
++    const VulkanDevice& d = *provider->vulkan_device_;
++    const uint32_t family = d.queue_family_graphics_compute();
++    VulkanDevice::Queue& queue = *d.queue_families()[family].queues[0];
++    rex::external_frame::VulkanDevice info;
++    info.instance = provider->vulkan_instance_->instance();
++    info.api_version = d.properties().apiVersion;
++    info.physical_device = d.physical_device();
++    info.device = d.device();
++    info.queue_family = family;
++    info.queue = queue.queue;
++    info.queue_mutex = &queue.mutex;
++    info.app_renderer_features = d.properties().appRendererFeatures;
++    info.scalar_block_layout = d.properties().scalarBlockLayout;
++    info.null_descriptor = d.properties().nullDescriptor;
++    info.sampler_mirror_clamp_to_edge = d.properties().samplerMirrorClampToEdge;
++    info.geometry_shader = d.properties().geometryShader;
++    rex::external_frame::SetVulkanDevice(&info);
++  }
++
+   if (with_presentation) {
+     provider->ui_samplers_ = UISamplers::Create(provider->vulkan_device_.get());
+     if (!provider->ui_samplers_) {
