@@ -53,6 +53,7 @@ It also adds:
 - [Controls](#controls)
 - [Updates](#updates)
 - [Steam Deck and Linux (Proton)](#steam-deck-and-linux-proton)
+- [Android (experimental)](#android-experimental)
 - [Settings](#settings)
 - [Features](#features)
   - [Entrance music from your PC](#entrance-music-from-your-pc)
@@ -139,6 +140,21 @@ The port is a Windows program. On a Steam Deck or a Linux PC it runs through **P
 - **Something draws wrong:** in the launcher's **Settings**, set **Renderer** to **Emulated** and compare.
 - **Updates:** launchers before v0.2.3 can't unpack updates under Proton (they used Windows' `tar.exe`, which Proton lacks) and stop with "Could not unpack the update". Update once by hand: download the latest zip, unzip it over your launcher's folder (or unzip it anywhere, run its launcher and click **Install** into your game folder). From v0.2.3 on, updates work under Proton too.
 - **DLC:** under Proton the launcher can unpack `.zip` DLC archives but not `.rar` or `.7z`. Unpack those first, or add the unpacked folder.
+
+### Android (experimental)
+
+The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, such as a recent Snapdragon. On a Galaxy Z Fold 7 it holds 60 fps. You need about 7 GB free on the phone and a controller. First install the game on your PC as above. Then use the launcher's **Android** tab:
+
+- **Option 1: install over USB (recommended).**
+  1. On the phone, open **Settings → About phone** (on Samsung, also **→ Software information**) and tap **Build number** 7 times, until it says developer mode is on.
+  2. Open **Settings → Developer options** and turn on **USB debugging**.
+  3. Connect the phone with a USB data cable and unlock it. When it asks *Allow USB debugging?*, tick *Always allow from this computer* and tap **Allow**.
+  4. Click **Install to phone**. The first time, the launcher downloads adb, Google's Android tool (about 7 MB).
+
+  The game goes into the phone's `games/WWE SmackDown vs. Raw 2011` folder and starts. Run it again after a launcher update: it copies only what changed and keeps the phone's saves.
+- **Option 2: a package to copy yourself.** **Create APK Package** makes a folder with `SvR2011.apk`, `SvR2011-Game.zip` and instructions. Copy both files to the phone's **Download** folder and open the APK to install it. On first start the app installs the game from the zip; you can delete the zip afterwards.
+
+On the phone, the game renders at the Xbox 360's 720p. **MY WWE → Options → Graphics → Resolution** raises it, and anti-aliasing can be turned on there.
 
 ---
 
