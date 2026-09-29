@@ -30,6 +30,10 @@
         android:isGame="true"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
 
+        <!-- SDL reads SDL_ENV.* into its environment: landscape only (its window is
+             resizable, which otherwise lets it turn to portrait). -->
+        <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />
+
         <!-- First run: storage access, then the game package into the games folder. -->
         <activity
             android:name=".InstallActivity"
