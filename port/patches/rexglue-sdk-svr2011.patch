@@ -1405,7 +1405,7 @@ index 1254710..4c50b3a 100644
    assert(buffer_ptr);
    assert(fetch_ptr);
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
-index bd6c797..7206896 100644
+index bd6c797..d142a15 100644
 --- a/src/system/xam/content_manager.cpp
 +++ b/src/system/xam/content_manager.cpp
 @@ -16,9 +16,17 @@
@@ -1605,7 +1605,7 @@ index bd6c797..7206896 100644
    auto package_path = ResolvePackagePath(xuid, data);
  
    uint64_t used_xuid = (data.xuid != uint64_t(-1) && data.xuid != 0) ? uint64_t(data.xuid) : xuid;
-@@ -518,6 +584,150 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
+@@ -518,6 +584,163 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
    }
  }
  
@@ -1619,6 +1619,19 @@ index bd6c797..7206896 100644
 +  DWORD attr = GetFileAttributesW(p.c_str());
 +  if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_HIDDEN)) {
 +    SetFileAttributesW(p.c_str(), attr | FILE_ATTRIBUTE_HIDDEN);
++  }
++#else
++  (void)p;
++#endif
++}
++
++// [svr2011] .info must travel with the saves: copy tools (Winpinator, ...)
++// skip hidden folders, and without the headers the game rejects the saves.
++void ShowFolder(const std::filesystem::path& p) {
++#if defined(_WIN32)
++  DWORD attr = GetFileAttributesW(p.c_str());
++  if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_HIDDEN)) {
++    SetFileAttributesW(p.c_str(), attr & ~DWORD(FILE_ATTRIBUTE_HIDDEN));
 +  }
 +#else
 +  (void)p;
@@ -1651,7 +1664,7 @@ index bd6c797..7206896 100644
 +  std::error_code ec;
 +  std::filesystem::create_directories(root / ".info", ec);
 +  std::filesystem::create_directories(root / ".mount", ec);
-+  HideFolder(root / ".info");
++  ShowFolder(root / ".info");
 +  HideFolder(root / ".mount");
 +  // A session that ended with packages open: finish them.
 +  std::vector<std::string> left;

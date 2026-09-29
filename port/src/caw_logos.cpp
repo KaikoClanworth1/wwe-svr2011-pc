@@ -203,7 +203,10 @@ void InstallCawLogos(rex::memory::Memory* memory, const std::filesystem::path& s
   if (g_blank) std::memset(memory->TranslateVirtual<uint8_t*>(g_blank), 0, kPaletteSize + kPixelSize);
   std::error_code ec;
   std::filesystem::create_directories(g_store, ec);
-  SetFileAttributesW(g_store.c_str(), FILE_ATTRIBUTE_HIDDEN);
+  // Not hidden: copy tools skip hidden folders, and logos 3-10 live here.
+  const DWORD attr = GetFileAttributesW(g_store.c_str());
+  if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_HIDDEN))
+    SetFileAttributesW(g_store.c_str(), attr & ~DWORD(FILE_ATTRIBUTE_HIDDEN));
   REXLOG_INFO("caw logos: up to {} High Resolution logos per Created Superstar (store {})", kMaxHigh,
               g_store.string());
 }

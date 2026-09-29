@@ -1856,7 +1856,6 @@ static void saves_migrate(void)
         if (f2 == INVALID_HANDLE_VALUE)
             continue;
         mkdirs(info);
-        SetFileAttributesW(info, FILE_ATTRIBUTE_HIDDEN);
         do {
             if ((fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd2.cFileName[0] != L'.'
                     && join(pkg, pkgs, fd2.cFileName))
