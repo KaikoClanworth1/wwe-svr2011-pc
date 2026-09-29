@@ -304,6 +304,19 @@ The recompiled game code is **generated on your machine from your own disc**. It
    ```bash
    git -C recomp/rexglue-sdk apply ../../port/patches/rexglue-sdk-svr2011.patch
    ```
+   And get **plume** (the graphics layer the native renderer draws through) into `recomp\plume`, with this port's additions:
+   ```bash
+   git clone --recursive https://github.com/renderbag/plume.git recomp/plume
+   ```
+   ```bash
+   git -C recomp/plume checkout d72379344dacd3dbf9f810f92ddc87e6de1845b1
+   ```
+   ```bash
+   git -C recomp/plume submodule update --init --recursive
+   ```
+   ```bash
+   git -C recomp/plume apply ../../port/patches/plume-svr2011.patch
+   ```
 3. Get the **ReXGlue codegen tool**: download `rexglue-sdk-0.10.0-win-amd64.zip` from the [ReXGlue releases](https://github.com/rexglue/rexglue-sdk/releases/tag/v0.10.0) and unzip it into `recomp\sdk\win-amd64`.
 4. Put **`ninja.exe`** in `recomp\bin`, or anywhere on your `PATH`.
 5. Copy **`default.xex`** from your disc (or from an install made by the launcher) into `port\assets\`.

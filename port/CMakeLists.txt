@@ -40,9 +40,10 @@ option(SVR2011_D3D_TRACE "Build the D3D library call census" OFF)
 if(SVR2011_D3D_TRACE)
     list(APPEND SVR2011_SOURCES src/d3d_trace.cpp src/d3d_trace_hooks.cpp)
 else()
-    # Native D3D12 renderer (prototype, native_renderer=shadow). Its hooks
+    # Native renderer (native_renderer=main), drawing through plume. Its hooks
     # overlap the census hooks, so it is left out of census builds.
     list(APPEND SVR2011_SOURCES
+        src/native/backend_d3d12.cpp
         src/native/native_renderer.cpp
         src/native/native_hooks.cpp
         src/native/textures.cpp)
@@ -51,6 +52,14 @@ else()
     list(APPEND SVR2011_SOURCES
         ${REXSDK_DIR}/src/graphics/pipeline/texture/util.cpp
         ${REXSDK_DIR}/src/graphics/pipeline/texture/info_formats.cpp)
+endif()
+
+# plume (github.com/renderbag/plume, MIT): the native renderer's graphics
+# layer - Direct3D 12 now, Vulkan for Android / Linux. Pinned at d723793 with
+# port/patches/plume-svr2011.patch applied.
+set(PLUME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../recomp/plume" CACHE PATH "plume source tree")
+if(NOT SVR2011_D3D_TRACE)
+    add_subdirectory(${PLUME_DIR} plume EXCLUDE_FROM_ALL)
 endif()
 
 if(WIN32)
@@ -62,6 +71,8 @@ endif()
 rexglue_setup_target(svr2011 GPU_PLUGINS xenos)
 if(SVR2011_D3D_TRACE)
     target_compile_definitions(svr2011 PRIVATE SVR2011_D3D_TRACE=1)
+else()
+    target_link_libraries(svr2011 PRIVATE plume)
 endif()
 if(REXSDK_DIR AND TARGET imgui)
     # SDK source tree: ImGui (built into the runtime) is not on the public

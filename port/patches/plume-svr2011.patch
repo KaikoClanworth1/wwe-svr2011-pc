@@ -1,0 +1,334 @@
+diff --git a/plume_d3d12.cpp b/plume_d3d12.cpp
+index 5e842c5..06131e5 100644
+--- a/plume_d3d12.cpp
++++ b/plume_d3d12.cpp
+@@ -45,7 +45,7 @@ extern "C" {
+ 
+ namespace plume {
+     static const uint32_t ShaderDescriptorHeapSize = 65536;
+-    static const uint32_t SamplerDescriptorHeapSize = 1024;
++    static const uint32_t SamplerDescriptorHeapSize = 2048;  // [svr2011] (the D3D12 maximum)
+     static const uint32_t TargetDescriptorHeapSize = 16384;
+ 
+     // Common functions.
+@@ -144,6 +144,18 @@ namespace plume {
+             // In order to be able to create both depth-stencil and shader resource views,
+             // we must use R32G8X24_TYPELESS as the base type and specialize later.
+             return DXGI_FORMAT_R32G8X24_TYPELESS;
++        // [svr2011]
++        case RenderFormat::R8G8B8A8_UNORM_SRGB:
++            return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
++        case RenderFormat::R10G10B10A2_TYPELESS:
++            return DXGI_FORMAT_R10G10B10A2_TYPELESS;
++        case RenderFormat::R10G10B10A2_UNORM:
++            return DXGI_FORMAT_R10G10B10A2_UNORM;
++        case RenderFormat::R10G10B10A2_UINT:
++            return DXGI_FORMAT_R10G10B10A2_UINT;
++        case RenderFormat::D24_UNORM_S8_UINT:
++            // As D32_FLOAT_S8_UINT: typeless, specialized into depth-stencil and shader resource views.
++            return DXGI_FORMAT_R24G8_TYPELESS;
+         case RenderFormat::R32_FLOAT:
+             return DXGI_FORMAT_R32_FLOAT;
+         case RenderFormat::R32_UINT:
+@@ -243,6 +255,9 @@ namespace plume {
+             // Specialize into depth view of depth-stencil texture.
+             return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+         }
++        if (dxgiFormat == DXGI_FORMAT_R24G8_TYPELESS) {  // [svr2011]
++            return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
++        }
+         return dxgiFormat;
+     }
+ 
+@@ -252,6 +267,9 @@ namespace plume {
+             // Specialize into full depth-stencil view.
+             return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+         }
++        if (dxgiFormat == DXGI_FORMAT_R24G8_TYPELESS) {  // [svr2011]
++            return DXGI_FORMAT_D24_UNORM_S8_UINT;
++        }
+         return dxgiFormat;
+     }
+ 
+@@ -2247,6 +2265,14 @@ namespace plume {
+ #   endif
+     }
+ 
++    void D3D12CommandList::setStencilReference(uint32_t stencilReference) {  // [svr2011]
++        dynamicStencilRef = stencilReference;  // applied at the next draw (checkStencilRef)
++    }
++
++    void D3D12CommandList::setBlendFactor(const float blendFactor[4]) {  // [svr2011]
++        d3d->OMSetBlendFactor(blendFactor);
++    }
++
+     void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
+         assert(targetFramebuffer != nullptr);
+         assert(attachmentIndex < targetFramebuffer->colorTargets.size());
+@@ -2464,9 +2490,10 @@ namespace plume {
+         assert(activeGraphicsPipeline->type == D3D12Pipeline::Type::Graphics);
+ 
+         const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(activeGraphicsPipeline);
+-        if (activeStencilRef != graphicsPipeline->stencilRef) {
+-            d3d->OMSetStencilRef(graphicsPipeline->stencilRef);
+-            activeStencilRef = graphicsPipeline->stencilRef;
++        const uint32_t stencilRef = graphicsPipeline->dynamicStencilRef ? dynamicStencilRef : graphicsPipeline->stencilRef;
++        if (activeStencilRef != stencilRef) {
++            d3d->OMSetStencilRef(stencilRef);
++            activeStencilRef = stencilRef;
+         }
+     }
+     
+@@ -2717,6 +2744,13 @@ namespace plume {
+         WaitForSingleObjectEx(interfaceFence->fenceEvent, INFINITE, FALSE);
+     }
+ 
++    bool D3D12CommandQueue::waitForCommandFenceTimeout(RenderCommandFence *fence, uint32_t timeoutMs) {  // [svr2011]
++        assert(fence != nullptr);
++
++        D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
++        return WaitForSingleObjectEx(interfaceFence->fenceEvent, timeoutMs, FALSE) == WAIT_OBJECT_0;
++    }
++
+     // D3D12Buffer
+ 
+     D3D12Buffer::D3D12Buffer(D3D12Device *device, D3D12Pool *pool, const RenderBufferDesc &desc) {
+@@ -2872,7 +2906,8 @@ namespace plume {
+ 
+         D3D12_CLEAR_VALUE optimizedClearValue;
+         if (desc.optimizedClearValue != nullptr) {
+-            optimizedClearValue.Format = toDXGI(desc.optimizedClearValue->format);
++            // [svr2011] a depth target's clear value is in its depth-stencil view format (not the typeless resource's)
++            optimizedClearValue.Format = (desc.flags & RenderTextureFlag::DEPTH_TARGET) ? toDXGIDepthStencilView(desc.optimizedClearValue->format) : toDXGI(desc.optimizedClearValue->format);
+             memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
+         }
+ 
+@@ -3078,6 +3113,8 @@ namespace plume {
+         assert(desc.pipelineLayout != nullptr);
+ 
+         topology = toD3D12(desc.primitiveTopology);
++        stencilRef = desc.stencilReference;                     // [svr2011] (was never set)
++        dynamicStencilRef = desc.dynamicStencilReferenceEnabled;  // [svr2011]
+ 
+         const D3D12PipelineLayout *pipelineLayout = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
+         const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);
+diff --git a/plume_d3d12.h b/plume_d3d12.h
+index 4827452..4b309e1 100644
+--- a/plume_d3d12.h
++++ b/plume_d3d12.h
+@@ -183,6 +183,7 @@ namespace plume {
+         bool descriptorHeapsSet = false;
+         D3D12_PRIMITIVE_TOPOLOGY activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+         uint32_t activeStencilRef = 0;
++        uint32_t dynamicStencilRef = 0;  // [svr2011]
+         bool activeSamplePositions = false;
+ 
+         D3D12CommandList(D3D12CommandQueue *queue);
+@@ -211,6 +212,8 @@ namespace plume {
+         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
++        void setStencilReference(uint32_t stencilReference) override;
++        void setBlendFactor(const float blendFactor[4]) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
+@@ -266,6 +269,7 @@ namespace plume {
+         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
+         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
+         void waitForCommandFence(RenderCommandFence *fence) override;
++        bool waitForCommandFenceTimeout(RenderCommandFence *fence, uint32_t timeoutMs) override;
+     };
+ 
+     struct D3D12Buffer : RenderBuffer {
+@@ -397,6 +401,7 @@ namespace plume {
+         std::vector<RenderInputSlot> inputSlots;
+         D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+         uint32_t stencilRef = 0;
++        bool dynamicStencilRef = false;  // [svr2011]
+ 
+         D3D12GraphicsPipeline(D3D12Device *device, const RenderGraphicsPipelineDesc &desc);
+         ~D3D12GraphicsPipeline() override;
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index 2048557..d88b9b2 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -137,6 +137,9 @@ namespace plume {
+         virtual void setScissors(const RenderRect *scissorRects, uint32_t count) = 0;
+         virtual void setFramebuffer(const RenderFramebuffer *framebuffer) = 0;
+         virtual void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) = 0;
++        // [svr2011] For pipelines created with dynamicStencilReferenceEnabled / dynamicBlendFactorEnabled.
++        virtual void setStencilReference(uint32_t stencilReference) = 0;
++        virtual void setBlendFactor(const float blendFactor[4]) = 0;
+         virtual void clearColor(uint32_t attachmentIndex = 0, RenderColor colorValue = RenderColor(), const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void clearDepthStencil(bool clearDepth = true, bool clearStencil = true, float depthValue = 1.0f, uint32_t stencilValue = 0, const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) = 0;
+@@ -203,6 +206,8 @@ namespace plume {
+         virtual std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) = 0;
+         virtual void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores = nullptr, uint32_t waitSemaphoreCount = 0, RenderCommandSemaphore **signalSemaphores = nullptr, uint32_t signalSemaphoreCount = 0, RenderCommandFence *signalFence = nullptr) = 0;
+         virtual void waitForCommandFence(RenderCommandFence *fence) = 0;
++        // [svr2011] False if the fence isn't signaled within timeoutMs (it can be waited for again).
++        virtual bool waitForCommandFenceTimeout(RenderCommandFence *fence, uint32_t timeoutMs) = 0;
+ 
+         // Concrete implementation shortcuts.
+         inline void executeCommandLists(const RenderCommandList *commandList, RenderCommandFence *signalFence = nullptr) {
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 2281168..e20c227 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -160,6 +160,12 @@ namespace plume {
+         BC7_TYPELESS,
+         BC7_UNORM,
+         BC7_UNORM_SRGB,
++        // [svr2011]
++        R8G8B8A8_UNORM_SRGB,
++        R10G10B10A2_TYPELESS,
++        R10G10B10A2_UNORM,
++        R10G10B10A2_UINT,
++        D24_UNORM_S8_UINT,
+         MAX
+     };
+ 
+@@ -551,6 +557,11 @@ namespace plume {
+         case RenderFormat::R32_FLOAT:
+         case RenderFormat::R32_UINT:
+         case RenderFormat::R32_SINT:
++        case RenderFormat::R8G8B8A8_UNORM_SRGB:
++        case RenderFormat::R10G10B10A2_TYPELESS:
++        case RenderFormat::R10G10B10A2_UNORM:
++        case RenderFormat::R10G10B10A2_UINT:
++        case RenderFormat::D24_UNORM_S8_UINT:
+             return 4;
+         case RenderFormat::R8G8_TYPELESS:
+         case RenderFormat::R8G8_UNORM:
+@@ -652,6 +663,11 @@ namespace plume {
+         case RenderFormat::R8_UINT:
+         case RenderFormat::R8_SNORM:
+         case RenderFormat::R8_SINT:
++        case RenderFormat::R8G8B8A8_UNORM_SRGB:
++        case RenderFormat::R10G10B10A2_TYPELESS:
++        case RenderFormat::R10G10B10A2_UNORM:
++        case RenderFormat::R10G10B10A2_UINT:
++        case RenderFormat::D24_UNORM_S8_UINT:
+             return 1;
+         case RenderFormat::BC1_TYPELESS:
+         case RenderFormat::BC1_UNORM:
+@@ -686,6 +702,7 @@ namespace plume {
+         case RenderFormat::D16_UNORM:
+         case RenderFormat::D32_FLOAT:
+         case RenderFormat::D32_FLOAT_S8_UINT:
++        case RenderFormat::D24_UNORM_S8_UINT:
+             return true;
+         default:
+             return false;
+@@ -693,7 +710,7 @@ namespace plume {
+     }
+ 
+     constexpr bool RenderFormatIsStencil(RenderFormat format) {
+-        return format == RenderFormat::D32_FLOAT_S8_UINT;
++        return format == RenderFormat::D32_FLOAT_S8_UINT || format == RenderFormat::D24_UNORM_S8_UINT;
+     }
+ 
+     constexpr RenderTextureViewDimension RenderTextureDimensionToView(const RenderTextureDimension dimension) {
+@@ -1280,6 +1297,9 @@ namespace plume {
+         float depthBiasClamp = 0.0f;
+         float slopeScaledDepthBias = 0.0f;
+         bool dynamicDepthBiasEnabled = false;
++        // [svr2011] set with RenderCommandList::setStencilReference / setBlendFactor
++        bool dynamicStencilReferenceEnabled = false;
++        bool dynamicBlendFactorEnabled = false;
+         bool depthEnabled = false;
+         bool depthWriteEnabled = false;
+         bool stencilEnabled = false;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 4a2a489..b5601d4 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -167,6 +167,16 @@ namespace plume {
+             return VK_FORMAT_D32_SFLOAT;
+         case RenderFormat::D32_FLOAT_S8_UINT:
+             return VK_FORMAT_D32_SFLOAT_S8_UINT;
++        // [svr2011]
++        case RenderFormat::R8G8B8A8_UNORM_SRGB:
++            return VK_FORMAT_R8G8B8A8_SRGB;
++        case RenderFormat::R10G10B10A2_TYPELESS:
++        case RenderFormat::R10G10B10A2_UNORM:
++            return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
++        case RenderFormat::R10G10B10A2_UINT:
++            return VK_FORMAT_A2B10G10R10_UINT_PACK32;
++        case RenderFormat::D24_UNORM_S8_UINT:
++            return VK_FORMAT_D24_UNORM_S8_UINT;
+         case RenderFormat::R32_FLOAT:
+             return VK_FORMAT_R32_SFLOAT;
+         case RenderFormat::R32_UINT:
+@@ -1617,6 +1627,14 @@ namespace plume {
+             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+         }
+ 
++        if (desc.dynamicStencilReferenceEnabled) {  // [svr2011]
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
++        }
++
++        if (desc.dynamicBlendFactorEnabled) {  // [svr2011]
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
++        }
++
+         VkPipelineDynamicStateCreateInfo dynamicState = {};
+         dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+         dynamicState.pDynamicStates = dynamicStates.data();
+@@ -3112,6 +3130,14 @@ namespace plume {
+         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
+     }
+ 
++    void VulkanCommandList::setStencilReference(uint32_t stencilReference) {  // [svr2011]
++        vkCmdSetStencilReference(vk, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReference);
++    }
++
++    void VulkanCommandList::setBlendFactor(const float blendFactor[4]) {  // [svr2011]
++        vkCmdSetBlendConstants(vk, blendFactor);
++    }
++
+     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
+         rectVector.clear();
+ 
+@@ -3644,6 +3670,19 @@ namespace plume {
+         vkResetFences(device->vk, 1, &interfaceFence->vk);
+     }
+ 
++    bool VulkanCommandQueue::waitForCommandFenceTimeout(RenderCommandFence *fence, uint32_t timeoutMs) {  // [svr2011]
++        assert(fence != nullptr);
++
++        VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
++        VkResult res = vkWaitForFences(device->vk, 1, &interfaceFence->vk, VK_TRUE, uint64_t(timeoutMs) * 1000000ull);
++        if (res != VK_SUCCESS) {
++            return false;
++        }
++
++        vkResetFences(device->vk, 1, &interfaceFence->vk);
++        return true;
++    }
++
+     // VulkanPool
+ 
+     VulkanPool::VulkanPool(VulkanDevice *device, const RenderPoolDesc &desc) {
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index a0cf5cc..358ce69 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -329,6 +329,8 @@ namespace plume {
+         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
++        void setStencilReference(uint32_t stencilReference) override;
++        void setBlendFactor(const float blendFactor[4]) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
+@@ -377,6 +379,7 @@ namespace plume {
+         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
+         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
+         void waitForCommandFence(RenderCommandFence *fence) override;
++        bool waitForCommandFenceTimeout(RenderCommandFence *fence, uint32_t timeoutMs) override;
+     };
+ 
+     struct VulkanPool : RenderPool {

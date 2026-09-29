@@ -2,8 +2,8 @@
 //
 // Guest textures are described by Xenos texture fetch constants (the device
 // register mirror, 6 dwords per slot). Each distinct texture is uploaded once
-// into a D3D12 resource: the guest data is detiled, endian-swapped and, for
-// the few formats D3D12 lacks, converted on the CPU; the layout of the mips
+// into a GPU texture: the guest data is detiled, endian-swapped and, for the
+// few formats the host lacks, converted on the CPU; the layout of the mips
 // and the packed mip tail comes from the SDK's Xenia texture utilities, so it
 // matches the emulated renderer. Textures are re-checked against guest memory
 // every so often (streamed textures reuse memory).
@@ -12,9 +12,9 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 
-#include <d3d12.h>
-#include <wrl/client.h>
+#include <plume_render_interface.h>
 
 namespace rex::memory {
 class Memory;
@@ -23,50 +23,60 @@ class Memory;
 namespace svr2011::native::textures {
 
 struct Context {
-  ID3D12Device* device = nullptr;
-  ID3D12GraphicsCommandList* list = nullptr;
-  ID3D12DescriptorHeap* srv_heap = nullptr;
-  ID3D12DescriptorHeap* sampler_heap = nullptr;
+  plume::RenderDevice* device = nullptr;
+  plume::RenderCommandList* list = nullptr;
+  // The shaders' texture tables: 2D, 3D and cube textures (register spaces
+  // 0-2), and samplers (space 3). A texture's index is the same in each.
+  plume::RenderDescriptorSet* texture_sets[3] = {};
+  plume::RenderDescriptorSet* sampler_set = nullptr;
   uint64_t frame = 0;
-  // Keeps a resource alive until the GPU has finished the current frame.
-  std::function<void(Microsoft::WRL::ComPtr<ID3D12Resource>)> retire;
+  // Keeps an object alive until the GPU has finished the current frame.
+  std::function<void(std::shared_ptr<void>)> retire;
   // Space in the frame's upload ring (cpu pointer, the ring buffer, offset in
   // it), or {nullptr, nullptr, 0} when it's full.
   struct UploadSpace {
     uint8_t* cpu;
-    ID3D12Resource* buffer;
+    plume::RenderBuffer* buffer;
     uint64_t offset;
   };
   std::function<UploadSpace(uint64_t size, uint64_t align)> allocate;
 };
 
-// Descriptors [srv_first, srv_first + srv_count) of the SRV heap and
-// [sampler_first, sampler_first + sampler_count) of the sampler heap are the
+// Descriptors [srv_first, srv_first + srv_count) of the texture tables and
+// [sampler_first, sampler_first + sampler_count) of the sampler table are the
 // texture cache's.
 void Initialize(rex::memory::Memory* memory, uint32_t srv_first, uint32_t srv_count,
                 uint32_t sampler_first, uint32_t sampler_count);
 
-// SRV heap index of the texture a fetch constant (6 host-order dwords)
+// Texture table index of the texture a fetch constant (6 host-order dwords)
 // describes, viewed as `dimension` (0 2D, 1 3D, 2 cube, as the shader samples
 // it), uploading it if needed; UINT32_MAX when it can't be provided (the
 // caller binds a placeholder).
 uint32_t Texture(const Context& ctx, const uint32_t fetch[6], uint32_t dimension);
 
-// Sampler heap index for the fetch constant's filtering and addressing.
+// Sampler table index for the fetch constant's filtering and addressing.
 uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]);
 
+// Drops every render target copy (the renderer rebuilt its targets).
+void ForgetResolved();
+
 // A resolve wrote the guest texture at `base_address` (physical): the image
-// is in `resource` (a copy of the render target, owned by the renderer), not
-// in guest memory, so fetches of that address sample the resource.
+// is in `texture` (a copy of the render target, owned by the renderer), not
+// in guest memory, so fetches of that address sample the texture.
 // `format` / `gamma_format` are the view formats (the latter for fetches that
 // ask for gamma), `components` the channels the format has; `swap_rb`: the
 // resolve stored red and blue swapped (RB_COPY_DEST_INFO copy_dest_swap),
 // which the fetch swizzle of such textures undoes.
-// Drops every render target copy (the renderer rebuilt its targets).
-void ForgetResolved();
+void RegisterResolved(uint32_t base_address, plume::RenderTexture* texture, plume::RenderFormat format,
+                      plume::RenderFormat gamma_format, uint32_t components, bool swap_rb);
+// The renderer is about to free `texture` (a resolve copy it replaced): its
+// views go with it (after the frame, through ctx.retire).
+void ReleaseResolved(const Context& ctx, plume::RenderTexture* texture);
 
-void RegisterResolved(uint32_t base_address, ID3D12Resource* resource, DXGI_FORMAT format,
-                      DXGI_FORMAT gamma_format, uint32_t components, bool swap_rb);
+// The component mapping for a Xenos fetch swizzle (0-3 xyzw, 4 zero, 5 one);
+// components the format lacks repeat its last one (as Xenia does).
+plume::RenderComponentMapping ComponentMapping(uint32_t swizzle, uint32_t components,
+                                               bool swap_rb = false);
 
 struct Stats {
   uint32_t textures = 0;     // resident

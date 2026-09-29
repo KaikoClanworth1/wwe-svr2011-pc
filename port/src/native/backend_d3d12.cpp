@@ -1,0 +1,219 @@
+// WWE SmackDown vs. Raw 2011 - the native renderer's Direct3D 12 backend (gpu.h).
+
+#include "native/gpu.h"
+
+#include <algorithm>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include <windows.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl/client.h>
+
+#include <plume_d3d12.h>
+
+namespace plume {
+std::unique_ptr<RenderInterface> CreateD3D12Interface();  // (plume_d3d12.cpp; no header declares it)
+}
+
+#include <rex/external_frame.h>
+#include <rex/logging.h>
+
+namespace svr2011::native::backend {
+
+namespace {
+
+using Microsoft::WRL::ComPtr;
+
+// The frame handed to the emulator's presentation (it holds references, so a
+// frame image replaced by a window resize stays valid until the next one).
+std::mutex g_frame_mutex;
+ComPtr<ID3D12Resource> g_frame;
+ComPtr<ID3D12Fence> g_frame_fence;
+uint64_t g_frame_fence_value = 0;
+uint32_t g_frame_w = 0, g_frame_h = 0;
+
+// Every buffer created (GPU VA, size), live or since freed: the fault report
+// names the ones near the faulting address.
+struct BufferLogEntry {
+  D3D12_GPU_VIRTUAL_ADDRESS va;
+  uint64_t size;
+};
+std::mutex g_buffer_log_mutex;
+std::vector<BufferLogEntry> g_buffer_log;
+
+ID3D12Device* Native(plume::RenderDevice* device) {
+  return device ? static_cast<plume::D3D12Device*>(device)->d3d : nullptr;
+}
+
+bool EnvFlag(const char* name) {
+  char* v = nullptr;
+  size_t n = 0;
+  bool on = false;
+  if (_dupenv_s(&v, &n, name) == 0 && v) {
+    on = v[0] == '1';
+    free(v);
+  }
+  return on;
+}
+
+}  // namespace
+
+std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name) {
+  device_name->clear();
+  // Device Removed Extended Data: if the GPU faults, the log names the
+  // allocation (ReportDeviceLost). Set before the device exists.
+  {
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred)))) {
+      dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    }
+  }
+  if (auto* emulator = static_cast<ID3D12Device*>(rex::external_frame::Device())) {
+    ComPtr<IDXGIFactory6> factory;
+    ComPtr<IDXGIAdapter1> adapter;
+    if (SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))) &&
+        SUCCEEDED(factory->EnumAdapterByLuid(emulator->GetAdapterLuid(), IID_PPV_ARGS(&adapter)))) {
+      DXGI_ADAPTER_DESC1 desc = {};
+      adapter->GetDesc1(&desc);
+      // plume names adapters by their description, in UTF-8.
+      const int n = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
+      if (n > 1) {
+        device_name->resize(size_t(n - 1));
+        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, device_name->data(), n, nullptr, nullptr);
+      }
+    }
+  }
+  return plume::CreateD3D12Interface();
+}
+
+plume::RenderShaderFormat ShaderFormat() { return plume::RenderShaderFormat::DXIL; }
+const char* ShaderExtension() { return ".dxil"; }
+
+void PublishFrame(plume::RenderTexture* image, uint32_t width, uint32_t height,
+                  plume::RenderCommandFence* fence) {
+  auto* texture = static_cast<plume::D3D12Texture*>(image);
+  auto* f = static_cast<plume::D3D12CommandFence*>(fence);
+  std::lock_guard lock(g_frame_mutex);
+  g_frame = texture->d3d;
+  g_frame_w = width;
+  g_frame_h = height;
+  g_frame_fence = f->d3d;
+  g_frame_fence_value = f->fenceValue - 1;  // (plume counts on past the value it just signaled)
+}
+
+bool GetFrame(rex::external_frame::Frame& frame) {
+  std::lock_guard lock(g_frame_mutex);
+  if (!g_frame) return false;
+  frame.resource = g_frame.Get();
+  frame.srv_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  frame.component_mapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  frame.width = g_frame_w;
+  frame.height = g_frame_h;
+  frame.fence = g_frame_fence.Get();
+  frame.fence_value = g_frame_fence_value;
+  return true;
+}
+
+void ClearFrame() {
+  std::lock_guard lock(g_frame_mutex);
+  g_frame.Reset();
+  g_frame_fence.Reset();
+}
+
+bool DeviceLost(plume::RenderDevice* device) {
+  ID3D12Device* d = Native(device);
+  return d && d->GetDeviceRemovedReason() != S_OK;
+}
+
+void ReportDeviceLost(plume::RenderDevice* device) {
+  ID3D12Device* d = Native(device);
+  if (!d) return;
+  const HRESULT reason = d->GetDeviceRemovedReason();
+  REXLOG_ERROR("native renderer: GPU device removed, reason {:08X} - native renderer disabled",
+               uint32_t(reason));
+  ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+  if (FAILED(d->QueryInterface(IID_PPV_ARGS(&dred)))) return;
+  D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT crumbs = {};
+  if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&crumbs))) {
+    for (auto* n = crumbs.pHeadAutoBreadcrumbNode; n; n = n->pNext) {
+      const uint32_t done = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+      if (done >= n->BreadcrumbCount) continue;  // finished list
+      REXLOG_ERROR("native renderer: list '{}' stopped after {} of {} ops",
+                   n->pCommandListDebugNameA ? n->pCommandListDebugNameA : "?", done,
+                   n->BreadcrumbCount);
+      for (uint32_t i = done > 6 ? done - 6 : 0; i < std::min(done + 3, n->BreadcrumbCount); ++i)
+        REXLOG_ERROR("native renderer:   [{}] op {}{}", i, int(n->pCommandHistory[i]),
+                     i == done ? "  <- faulting" : "");
+    }
+  }
+  D3D12_DRED_PAGE_FAULT_OUTPUT fault = {};
+  if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&fault))) {
+    REXLOG_ERROR("native renderer: page fault at GPU VA {:016X}", fault.PageFaultVA);
+    {
+      std::lock_guard lock(g_buffer_log_mutex);
+      uint32_t shown = 0;
+      for (const BufferLogEntry& b : g_buffer_log) {
+        if (fault.PageFaultVA + (64ull << 20) >= b.va && fault.PageFaultVA < b.va + b.size + (64ull << 20) &&
+            shown++ < 16)
+          REXLOG_ERROR("native renderer:   {} native buffer {:016X} size {:X}",
+                       fault.PageFaultVA >= b.va && fault.PageFaultVA < b.va + b.size ? "IN" : "near",
+                       b.va, b.size);
+      }
+      REXLOG_ERROR("native renderer:   ({} native buffers created)", g_buffer_log.size());
+    }
+    for (auto* n = fault.pHeadExistingAllocationNode; n; n = n->pNext)
+      REXLOG_ERROR("native renderer:   existing allocation '{}' type {}",
+                   n->ObjectNameA ? n->ObjectNameA : "?", int(n->AllocationType));
+    for (auto* n = fault.pHeadRecentFreedAllocationNode; n; n = n->pNext)
+      REXLOG_ERROR("native renderer:   recently freed allocation '{}' type {}",
+                   n->ObjectNameA ? n->ObjectNameA : "?", int(n->AllocationType));
+  }
+}
+
+void ReleaseFence(plume::RenderCommandFence* fence) {
+  if (auto* f = static_cast<plume::D3D12CommandFence*>(fence); f && f->d3d) f->d3d->Signal(UINT64_MAX);
+}
+
+void DrainDebugMessages(plume::RenderDevice* device) {
+  static const bool on = EnvFlag("SVR2011_NATIVE_D3D_DEBUG");
+  if (!on) return;
+  ID3D12Device* d = Native(device);
+  ComPtr<ID3D12InfoQueue> q;
+  if (!d || FAILED(d->QueryInterface(IID_PPV_ARGS(&q)))) return;
+  static uint32_t logged = 0;
+  const UINT64 n = q->GetNumStoredMessages();
+  for (UINT64 i = 0; i < n && logged < 200; ++i) {
+    SIZE_T len = 0;
+    q->GetMessage(i, nullptr, &len);
+    std::vector<uint8_t> buf(len);
+    auto* m = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+    if (SUCCEEDED(q->GetMessage(i, m, &len)) && m->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
+      REXLOG_WARN("native renderer: D3D12: {}", m->pDescription);
+      ++logged;
+    }
+  }
+  q->ClearStoredMessages();
+}
+
+void LogBuffer(plume::RenderBuffer* buffer, uint64_t size) {
+  if (!buffer) return;
+  std::lock_guard lock(g_buffer_log_mutex);
+  if (g_buffer_log.size() < 65536) g_buffer_log.push_back({buffer->getDeviceAddress(), size});
+}
+
+bool PipelineCreated(plume::RenderPipeline* pipeline) {
+  return pipeline && static_cast<plume::D3D12GraphicsPipeline*>(pipeline)->d3d != nullptr;
+}
+
+void StallQueue(plume::RenderCommandQueue* queue) {
+  static ComPtr<ID3D12Fence> never;
+  auto* q = static_cast<plume::D3D12CommandQueue*>(queue);
+  if (!never) Native(q->device)->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&never));
+  if (never) q->d3d->Wait(never.Get(), 1);
+}
+
+}  // namespace svr2011::native::backend

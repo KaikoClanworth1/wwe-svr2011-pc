@@ -19,13 +19,12 @@
 #include <fmt/format.h>
 #include <rex/system/xmemory.h>
 
-using Microsoft::WRL::ComPtr;
-
 namespace svr2011::native::textures {
 
 namespace {
 
 namespace xenos = rex::graphics::xenos;
+using plume::RenderFormat;
 namespace texture_util = rex::graphics::texture_util;
 using rex::graphics::FormatInfo;
 using TF = xenos::TextureFormat;
@@ -54,8 +53,8 @@ enum class Convert : uint8_t {
 };
 
 struct HostFormat {
-  DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-  DXGI_FORMAT gamma = DXGI_FORMAT_UNKNOWN;  // format for gamma (sign 3) textures
+  RenderFormat format = RenderFormat::UNKNOWN;
+  RenderFormat gamma = RenderFormat::UNKNOWN;  // format for gamma (sign 3) textures
   Convert convert = Convert::kNone;
   uint32_t components = 4;  // host channels: missing ones replicate the last
   bool block_compressed = false;
@@ -66,62 +65,62 @@ HostFormat GetHostFormat(TF f) {
     case TF::k_8:
     case TF::k_8_A:
     case TF::k_8_B:
-      return {DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 1};
+      return {RenderFormat::R8_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 1};
     case TF::k_8_8:
-      return {DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 2};
+      return {RenderFormat::R8G8_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 2};
     case TF::k_8_8_8_8:
     case TF::k_8_8_8_8_A:
     case TF::k_8_8_8_8_AS_16_16_16_16:
-      return {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, Convert::kCopy, 4};
+      return {RenderFormat::R8G8B8A8_UNORM, RenderFormat::R8G8B8A8_UNORM_SRGB, Convert::kCopy, 4};
     case TF::k_2_10_10_10:
     case TF::k_2_10_10_10_AS_16_16_16_16:
-      return {DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 4};
+      return {RenderFormat::R10G10B10A2_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 4};
     case TF::k_5_6_5:
-      return {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, Convert::k565, 4};
+      return {RenderFormat::R8G8B8A8_UNORM, RenderFormat::R8G8B8A8_UNORM_SRGB, Convert::k565, 4};
     case TF::k_6_5_5:
-      return {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, Convert::k655, 4};
+      return {RenderFormat::R8G8B8A8_UNORM, RenderFormat::R8G8B8A8_UNORM_SRGB, Convert::k655, 4};
     case TF::k_1_5_5_5:
-      return {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, Convert::k1555, 4};
+      return {RenderFormat::R8G8B8A8_UNORM, RenderFormat::R8G8B8A8_UNORM_SRGB, Convert::k1555, 4};
     case TF::k_4_4_4_4:
-      return {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, Convert::k4444, 4};
+      return {RenderFormat::R8G8B8A8_UNORM, RenderFormat::R8G8B8A8_UNORM_SRGB, Convert::k4444, 4};
     case TF::k_DXT1:
     case TF::k_DXT1_AS_16_16_16_16:
-      return {DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB, Convert::kCopy, 4, true};
+      return {RenderFormat::BC1_UNORM, RenderFormat::BC1_UNORM_SRGB, Convert::kCopy, 4, true};
     case TF::k_DXT2_3:
     case TF::k_DXT2_3_AS_16_16_16_16:
-      return {DXGI_FORMAT_BC2_UNORM, DXGI_FORMAT_BC2_UNORM_SRGB, Convert::kCopy, 4, true};
+      return {RenderFormat::BC2_UNORM, RenderFormat::BC2_UNORM_SRGB, Convert::kCopy, 4, true};
     case TF::k_DXT4_5:
     case TF::k_DXT4_5_AS_16_16_16_16:
-      return {DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC3_UNORM_SRGB, Convert::kCopy, 4, true};
+      return {RenderFormat::BC3_UNORM, RenderFormat::BC3_UNORM_SRGB, Convert::kCopy, 4, true};
     case TF::k_DXN:
-      return {DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 2, true};
+      return {RenderFormat::BC5_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 2, true};
     case TF::k_DXT5A:
-      return {DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 1, true};
+      return {RenderFormat::BC4_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 1, true};
     case TF::k_DXT3A:
-      return {DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kDXT3A, 1};
+      return {RenderFormat::R8_UNORM, RenderFormat::UNKNOWN, Convert::kDXT3A, 1};
     case TF::k_CTX1:
-      return {DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCTX1, 2};
+      return {RenderFormat::R8G8_UNORM, RenderFormat::UNKNOWN, Convert::kCTX1, 2};
     case TF::k_16:
-      return {DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 1};
+      return {RenderFormat::R16_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 1};
     case TF::k_16_16:
-      return {DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 2};
+      return {RenderFormat::R16G16_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 2};
     case TF::k_16_16_16_16:
-      return {DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 4};
+      return {RenderFormat::R16G16B16A16_UNORM, RenderFormat::UNKNOWN, Convert::kCopy, 4};
     case TF::k_16_EXPAND:
     case TF::k_16_FLOAT:
-      return {DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 1};
+      return {RenderFormat::R16_FLOAT, RenderFormat::UNKNOWN, Convert::kCopy, 1};
     case TF::k_16_16_EXPAND:
     case TF::k_16_16_FLOAT:
-      return {DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 2};
+      return {RenderFormat::R16G16_FLOAT, RenderFormat::UNKNOWN, Convert::kCopy, 2};
     case TF::k_16_16_16_16_EXPAND:
     case TF::k_16_16_16_16_FLOAT:
-      return {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 4};
+      return {RenderFormat::R16G16B16A16_FLOAT, RenderFormat::UNKNOWN, Convert::kCopy, 4};
     case TF::k_32_FLOAT:
-      return {DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 1};
+      return {RenderFormat::R32_FLOAT, RenderFormat::UNKNOWN, Convert::kCopy, 1};
     case TF::k_32_32_FLOAT:
-      return {DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 2};
+      return {RenderFormat::R32G32_FLOAT, RenderFormat::UNKNOWN, Convert::kCopy, 2};
     case TF::k_32_32_32_32_FLOAT:
-      return {DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_UNKNOWN, Convert::kCopy, 4};
+      return {RenderFormat::R32G32B32A32_FLOAT, RenderFormat::UNKNOWN, Convert::kCopy, 4};
     default:
       return {};
   }
@@ -137,7 +136,8 @@ uint32_t Log2(uint32_t v) {
 // state
 
 struct Entry {
-  ComPtr<ID3D12Resource> resource;
+  std::shared_ptr<plume::RenderTexture> resource;
+  std::shared_ptr<plume::RenderTextureView> view;
   uint32_t srv = UINT32_MAX;
   bool failed = false;
   bool dynamic = false;  // its guest data has changed after upload
@@ -152,18 +152,27 @@ const uint8_t* g_physical = nullptr;
 uint32_t g_srv_next = 0, g_srv_end = 0;
 uint32_t g_sampler_next = 0, g_sampler_end = 0;
 std::unordered_map<uint64_t, Entry> g_textures;   // key hash -> texture
-std::unordered_map<uint64_t, uint32_t> g_samplers;  // key -> heap index
+struct SamplerEntry {
+  uint32_t index;
+  std::unique_ptr<plume::RenderSampler> sampler;
+};
+std::unordered_map<uint64_t, SamplerEntry> g_samplers;  // key -> table index
 // Resolve destinations (base page -> the renderer's copy of the target).
 struct Resolved {
-  ID3D12Resource* resource = nullptr;
-  DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN, gamma_format = DXGI_FORMAT_UNKNOWN;
+  plume::RenderTexture* resource = nullptr;
+  RenderFormat format = RenderFormat::UNKNOWN, gamma_format = RenderFormat::UNKNOWN;
   uint32_t components = 4;
   bool swap_rb = false;
   uint32_t generation = 0;  // changes with the resource (views are per generation)
 };
 std::unordered_map<uint32_t, Resolved> g_resolved;
 uint32_t g_resolved_generation = 0;
-std::unordered_map<uint64_t, uint32_t> g_resolved_views;  // (resource, swizzle, gamma) -> SRV
+struct ResolvedViewEntry {
+  uint32_t index;
+  plume::RenderTexture* texture;
+  std::shared_ptr<plume::RenderTextureView> view;
+};
+std::unordered_map<uint64_t, ResolvedViewEntry> g_resolved_views;  // (generation, swizzle, gamma) ->
 Stats g_stats;
 
 uint64_t GuestHash(const Entry& e) {
@@ -335,45 +344,44 @@ void DumpLevel0(TF format, uint32_t width, uint32_t height, const uint8_t* data,
   std::fclose(f);
 }
 
-// D3D12 view mapping for a Xenos fetch swizzle (both encode 0-3 xyzw, 4 zero,
-// 5 one); components the format lacks repeat its last one (as Xenia does).
-uint32_t ComponentMapping(uint32_t swizzle, uint32_t components, bool swap_rb = false) {
-  uint32_t mapping = D3D12_SHADER_COMPONENT_MAPPING_ALWAYS_SET_BIT_AVOIDING_ZEROMEM_MISTAKES;
-  for (uint32_t i = 0; i < 4; ++i) {
-    uint32_t c = (swizzle >> (3 * i)) & 7;
-    if (swap_rb && (c == 0 || c == 2)) c ^= 2;
-    if (c <= 3) c = std::min(c, components - 1);
-    else if (c > 5) c = 4;
-    static const bool alpha1 = std::getenv("SVR2011_NATIVE_ALPHA1") != nullptr;  // debug
-    if (alpha1 && i == 3) c = 5;
-    mapping |= c << (3 * i);
+plume::RenderSwizzle Swizzle(uint32_t c) {
+  switch (c) {
+    case 0: return plume::RenderSwizzle::R;
+    case 1: return plume::RenderSwizzle::G;
+    case 2: return plume::RenderSwizzle::B;
+    case 3: return plume::RenderSwizzle::A;
+    case 5: return plume::RenderSwizzle::ONE;
+    default: return plume::RenderSwizzle::ZERO;
   }
-  return mapping;
 }
 
 uint32_t ResolvedView(const Context& ctx, const Resolved& res,
                       const xenos::xe_gpu_texture_fetch_t& fetch) {
   const bool gamma = fetch.sign_x == xenos::TextureSign::kGamma &&
-                     res.gamma_format != DXGI_FORMAT_UNKNOWN;
+                     res.gamma_format != RenderFormat::UNKNOWN;
   const uint64_t key = uint64_t(res.generation) | (uint64_t(fetch.swizzle) << 32) |
                        (uint64_t(gamma) << 44) | (uint64_t(res.swap_rb) << 45) |
                        (uint64_t(res.format) << 46);
   auto it = g_resolved_views.find(key);
-  if (it != g_resolved_views.end()) return it->second;
+  if (it != g_resolved_views.end()) return it->second.index;
   if (g_srv_next >= g_srv_end) return UINT32_MAX;
   const uint32_t srv = g_srv_next++;
-  D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-  sd.Format = gamma ? res.gamma_format : res.format;
-  sd.Shader4ComponentMapping = ComponentMapping(fetch.swizzle, res.components, res.swap_rb);
-  sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-  sd.Texture2D.MipLevels = 1;
-  D3D12_CPU_DESCRIPTOR_HANDLE h = ctx.srv_heap->GetCPUDescriptorHandleForHeapStart();
-  h.ptr += size_t(srv) *
-           ctx.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  ctx.device->CreateShaderResourceView(res.resource, &sd, h);
-  g_resolved_views.emplace(key, srv);
+  plume::RenderTextureViewDesc vd = plume::RenderTextureViewDesc::Texture2D(gamma ? res.gamma_format : res.format);
+  vd.mipLevels = 1;
+  vd.componentMapping = ComponentMapping(fetch.swizzle, res.components, res.swap_rb);
+  std::shared_ptr<plume::RenderTextureView> view = res.resource->createTextureView(vd);
+  ctx.texture_sets[0]->setTexture(srv, res.resource, plume::RenderTextureLayout::SHADER_READ, view.get());
+  g_resolved_views.emplace(key, ResolvedViewEntry{srv, res.resource, std::move(view)});
   return srv;
 }
+
+// One subresource's place in the staging buffer (rows 256-byte aligned,
+// subresources 512-byte aligned: valid copy sources for D3D12 and Vulkan).
+struct Footprint {
+  uint64_t offset;
+  uint32_t width, height, depth;  // in texels (block-aligned for BC formats)
+  uint32_t row_pitch, rows;       // bytes per row of blocks, rows of blocks
+};
 
 // Creates the resource and SRV for a texture and records its upload.
 bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t dimension,
@@ -420,81 +428,65 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   const uint32_t host_height = host.block_compressed ? (height + 3) & ~3u : height;
 
   const bool gamma = fetch.sign_x == xenos::TextureSign::kGamma;
-  const DXGI_FORMAT resource_format =
-      gamma && host.gamma != DXGI_FORMAT_UNKNOWN ? host.gamma : host.format;
+  const RenderFormat resource_format =
+      gamma && host.gamma != RenderFormat::UNKNOWN ? host.gamma : host.format;
 
-  D3D12_RESOURCE_DESC desc = {};
-  desc.Dimension = is_3d ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  desc.Width = host_width;
-  desc.Height = host_height;
-  desc.DepthOrArraySize = uint16_t(is_3d ? depth : array_size);
-  desc.MipLevels = uint16_t(levels);
-  desc.Format = resource_format;
-  desc.SampleDesc.Count = 1;
-  desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-  D3D12_HEAP_PROPERTIES hp = {};
-  hp.Type = D3D12_HEAP_TYPE_DEFAULT;
-  // A re-upload (guest data changed) reuses the resource and its view: the
+  // A re-upload (guest data changed) reuses the texture and its view: the
   // entry's key fixes the layout, and frames still in flight keep a valid
   // descriptor (queue order serializes the copy after their reads).
-  ComPtr<ID3D12Resource> resource = e.resource;
-  const bool reuse = resource != nullptr;
-  if (reuse) {
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = resource.Get();
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore =
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    ctx.list->ResourceBarrier(1, &b);
-  } else if (FAILED(ctx.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
-                                                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                        IID_PPV_ARGS(&resource)))) {
-    return false;
-  }
-
+  const bool reuse = e.resource != nullptr;
+  std::shared_ptr<plume::RenderTexture> resource = e.resource;
   if (!reuse) {
-    const std::string n = fmt::format("texture {:08X} {}x{}x{} fmt {}", base_page << 12, width,
-                                      height, is_3d ? depth : array_size, uint32_t(format));
-    resource->SetName(std::wstring(n.begin(), n.end()).c_str());
+    plume::RenderTextureDesc desc =
+        is_3d ? plume::RenderTextureDesc::Texture3D(host_width, host_height, depth, levels, resource_format)
+              : plume::RenderTextureDesc::Texture(plume::RenderTextureDimension::TEXTURE_2D, host_width,
+                                                  host_height, 1, levels, array_size, resource_format,
+                                                  is_cube ? plume::RenderTextureFlag::CUBE
+                                                          : plume::RenderTextureFlag::NONE);
+    resource = ctx.device->createTexture(desc);
+    if (!resource) return false;
+    resource->setName(fmt::format("texture {:08X} {}x{}x{} fmt {}", base_page << 12, width, height,
+                                  is_3d ? depth : array_size, uint32_t(format)));
   }
+  ctx.list->barriers(plume::RenderBarrierStage::COPY,
+                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::COPY_DEST));
+
   const uint32_t subresources = levels * array_size;
-  std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(subresources);
-  std::vector<UINT> rows(subresources);
-  std::vector<UINT64> row_bytes(subresources);
-  UINT64 total = 0;
-  ctx.device->GetCopyableFootprints(&desc, 0, subresources, 0, footprints.data(), rows.data(),
-                                    row_bytes.data(), &total);
+  const uint32_t host_bw = plume::RenderFormatBlockWidth(resource_format);
+  const uint32_t host_bpb = plume::RenderFormatSize(resource_format);
+  std::vector<Footprint> footprints(subresources);
+  uint64_t total = 0;
+  for (uint32_t slice = 0; slice < array_size; ++slice) {
+    for (uint32_t level = 0; level < levels; ++level) {
+      Footprint& fp = footprints[level + slice * levels];
+      const uint32_t w = std::max(host_width >> level, 1u), h = std::max(host_height >> level, 1u);
+      fp.width = (w + host_bw - 1) / host_bw * host_bw;
+      fp.height = (h + host_bw - 1) / host_bw * host_bw;
+      fp.depth = std::max(depth >> level, 1u);
+      fp.row_pitch = ((fp.width / host_bw) * host_bpb + 255) & ~255u;
+      fp.rows = fp.height / host_bw;
+      fp.offset = (total + 511) & ~511ull;
+      total = fp.offset + uint64_t(fp.row_pitch) * fp.rows * fp.depth;
+    }
+  }
   // Staging: the frame's upload ring (textures that change every frame -
   // videos - would otherwise create and free a buffer per frame), or a buffer
   // of its own when the ring has no room.
-  ComPtr<ID3D12Resource> staging;
-  ID3D12Resource* staging_buffer = nullptr;
+  std::shared_ptr<plume::RenderBuffer> staging;
+  plume::RenderBuffer* staging_buffer = nullptr;
   uint64_t staging_offset = 0;
   uint8_t* mapped = nullptr;
   if (ctx.allocate) {
-    const Context::UploadSpace space =
-        ctx.allocate(total, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+    const Context::UploadSpace space = ctx.allocate(total, 512);
     mapped = space.cpu;
     staging_buffer = space.buffer;
     staging_offset = space.offset;
   }
   if (!mapped) {
-    D3D12_RESOURCE_DESC bd = {};
-    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bd.Width = total;
-    bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
-    bd.SampleDesc.Count = 1;
-    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
-    if (FAILED(ctx.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
-                                                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                                   IID_PPV_ARGS(&staging)))) {
-      return false;
-    }
-    staging->Map(0, nullptr, reinterpret_cast<void**>(&mapped));
-    staging_buffer = staging.Get();
+    staging = ctx.device->createBuffer(plume::RenderBufferDesc::UploadBuffer(total));
+    if (!staging) return false;
+    mapped = static_cast<uint8_t*>(staging->map());
+    staging_buffer = staging.get();
   }
   std::memset(mapped, 0, size_t(total));
 
@@ -521,10 +513,10 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
 
     for (uint32_t slice = 0; slice < array_size; ++slice) {
       const uint32_t sub = level + slice * levels;
-      const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& fp = footprints[sub];
+      const Footprint& fp = footprints[sub];
       const uint32_t slice_address = level_address + slice * gl.array_slice_stride_bytes;
       for (uint32_t z = 0; z < ld; ++z) {
-        uint8_t* dst = mapped + fp.Offset + size_t(z) * rows[sub] * fp.Footprint.RowPitch;
+        uint8_t* dst = mapped + fp.offset + size_t(z) * fp.rows * fp.row_pitch;
         if (!fetch.tiled && host.convert == Convert::kCopy) {
           // Linear and copied as is: whole rows (videos update such
           // textures every frame; per block, 8-bit ones cost a call a texel).
@@ -535,7 +527,7 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
             const int64_t offset = (int64_t(z + oz) * gl.z_slice_stride_block_rows + by + oy) *
                                        gl.row_pitch_bytes + int64_t(ox) * bpb;
             ReadGuestRun(row.data(), uint32_t(slice_address + offset), row_bytes_n, mask);
-            std::memcpy(dst + size_t(by) * fp.Footprint.RowPitch, row.data(), row_bytes_n);
+            std::memcpy(dst + size_t(by) * fp.row_pitch, row.data(), row_bytes_n);
           }
           continue;
         }
@@ -554,8 +546,7 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
                        int64_t(gx) * bpb;
             }
             ReadGuest(block, uint32_t(slice_address + offset), bpb, mask);
-            StoreBlock(host.convert, block, bpb, dst, fp.Footprint.RowPitch, fp.Footprint.Width,
-                       fp.Footprint.Height, bx, by);
+            StoreBlock(host.convert, block, bpb, dst, fp.row_pitch, lw, lh, bx, by);
           }
         }
       }
@@ -564,31 +555,22 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   g_stats.convert_ms +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - convert_t0).count();
   for (uint32_t level = 0; level < levels; ++level) {
-    DumpLevel0(format, footprints[level].Footprint.Width, footprints[level].Footprint.Height,
-               mapped + footprints[level].Offset, footprints[level].Footprint.RowPitch,
-               rows[level], size_t(row_bytes[level]));
+    DumpLevel0(format, footprints[level].width, footprints[level].height, mapped + footprints[level].offset,
+               footprints[level].row_pitch, footprints[level].rows,
+               size_t(footprints[level].width / host_bw) * host_bpb);
   }
-  if (staging) staging->Unmap(0, nullptr);
+  if (staging) staging->unmap();
 
   for (uint32_t sub = 0; sub < subresources; ++sub) {
-    D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
-    src.pResource = staging_buffer;
-    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    src.PlacedFootprint = footprints[sub];
-    src.PlacedFootprint.Offset += staging_offset;
-    dst.pResource = resource.Get();
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = sub;
-    ctx.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    const Footprint& fp = footprints[sub];
+    const auto src = plume::RenderTextureCopyLocation::PlacedFootprint(
+        staging_buffer, resource_format, fp.width, fp.height, fp.depth, fp.row_pitch / host_bpb * host_bw,
+        staging_offset + fp.offset);
+    const auto dst = plume::RenderTextureCopyLocation::Subresource(resource.get(), sub % levels, sub / levels);
+    ctx.list->copyTextureRegion(dst, src);
   }
-  D3D12_RESOURCE_BARRIER b = {};
-  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  b.Transition.pResource = resource.Get();
-  b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-  b.Transition.StateAfter =
-      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-  ctx.list->ResourceBarrier(1, &b);
+  ctx.list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::SHADER_READ));
   if (staging) ctx.retire(staging);
 
   // The view, with the fetch constant's swizzle (Xenos and D3D12 encode
@@ -607,24 +589,16 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
     }
     e.srv = g_srv_next++;
   }
-  const uint32_t mapping = ComponentMapping(fetch.swizzle, host.components);
-  D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-  sd.Format = resource_format;
-  sd.Shader4ComponentMapping = mapping;
-  if (is_3d) {
-    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-    sd.Texture3D.MipLevels = levels;
-  } else if (is_cube) {
-    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-    sd.TextureCube.MipLevels = levels;
-  } else {
-    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    sd.Texture2D.MipLevels = levels;
-  }
-  D3D12_CPU_DESCRIPTOR_HANDLE h = ctx.srv_heap->GetCPUDescriptorHandleForHeapStart();
-  h.ptr += size_t(e.srv) *
-           ctx.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  ctx.device->CreateShaderResourceView(resource.Get(), &sd, h);
+  plume::RenderTextureViewDesc vd;
+  vd.format = resource_format;
+  vd.dimension = is_3d ? plume::RenderTextureViewDimension::TEXTURE_3D
+                 : is_cube ? plume::RenderTextureViewDimension::TEXTURE_CUBE
+                           : plume::RenderTextureViewDimension::TEXTURE_2D;
+  vd.mipLevels = levels;
+  vd.componentMapping = ComponentMapping(fetch.swizzle, host.components);
+  e.view = resource->createTextureView(vd);
+  ctx.texture_sets[dimension]->setTexture(e.srv, resource.get(), plume::RenderTextureLayout::SHADER_READ,
+                                          e.view.get());
 
   e.resource = resource;
   e.base_address = base_page << 12;
@@ -731,59 +705,91 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
                        (uint64_t((fetch[4] >> 2) & 0xFF) << 20) |
                        (uint64_t((fetch[4] >> 12) & 0x3FF) << 28) | (uint64_t(fetch[5] & 3) << 38);
   auto it = g_samplers.find(key);
-  if (it != g_samplers.end()) return it->second;
+  if (it != g_samplers.end()) return it->second.index;
   if (g_sampler_next >= g_sampler_end) return 0;  // the default linear-wrap sampler
 
-  static const D3D12_TEXTURE_ADDRESS_MODE kAddress[8] = {
-      D3D12_TEXTURE_ADDRESS_MODE_WRAP,        D3D12_TEXTURE_ADDRESS_MODE_MIRROR,
-      D3D12_TEXTURE_ADDRESS_MODE_CLAMP,       D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE,
-      D3D12_TEXTURE_ADDRESS_MODE_CLAMP,       D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE,
-      D3D12_TEXTURE_ADDRESS_MODE_BORDER,      D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE};
+  using plume::RenderTextureAddressMode;
+  static const RenderTextureAddressMode kAddress[8] = {
+      RenderTextureAddressMode::WRAP,   RenderTextureAddressMode::MIRROR,
+      RenderTextureAddressMode::CLAMP,  RenderTextureAddressMode::MIRROR_ONCE,
+      RenderTextureAddressMode::CLAMP,  RenderTextureAddressMode::MIRROR_ONCE,
+      RenderTextureAddressMode::BORDER, RenderTextureAddressMode::MIRROR_ONCE};
   const uint32_t mag = (fetch[3] >> 19) & 3, min = (fetch[3] >> 21) & 3, mip = (fetch[3] >> 23) & 3;
   const uint32_t aniso = (fetch[3] >> 25) & 7;
-  auto linear = [](uint32_t f) { return f != 0 ? 1u : 0u; };  // point / linear (+ fetch-const)
-  D3D12_SAMPLER_DESC sd = {};
+  auto filter = [](uint32_t f) {  // point / linear (+ fetch-const)
+    return f != 0 ? plume::RenderFilter::LINEAR : plume::RenderFilter::NEAREST;
+  };
+  plume::RenderSamplerDesc sd;
   if (aniso >= 2 && aniso <= 5) {
-    sd.Filter = D3D12_FILTER_ANISOTROPIC;
-    sd.MaxAnisotropy = 1u << (aniso - 1);
+    sd.minFilter = sd.magFilter = plume::RenderFilter::LINEAR;
+    sd.mipmapMode = plume::RenderMipmapMode::LINEAR;
+    sd.anisotropyEnabled = true;
+    sd.maxAnisotropy = 1u << (aniso - 1);
   } else {
-    sd.Filter = D3D12_ENCODE_BASIC_FILTER(linear(min), linear(mag), mip == 1 || mip == 3 ? 1 : 0,
-                                          D3D12_FILTER_REDUCTION_TYPE_STANDARD);
-    sd.MaxAnisotropy = 1;
+    sd.minFilter = filter(min);
+    sd.magFilter = filter(mag);
+    sd.mipmapMode = mip == 1 || mip == 3 ? plume::RenderMipmapMode::LINEAR : plume::RenderMipmapMode::NEAREST;
+    sd.anisotropyEnabled = false;
+    sd.maxAnisotropy = 1;
   }
-  sd.AddressU = kAddress[(fetch[0] >> 10) & 7];
-  sd.AddressV = kAddress[(fetch[0] >> 13) & 7];
-  sd.AddressW = kAddress[(fetch[0] >> 16) & 7];
+  sd.addressU = kAddress[(fetch[0] >> 10) & 7];
+  sd.addressV = kAddress[(fetch[0] >> 13) & 7];
+  sd.addressW = kAddress[(fetch[0] >> 16) & 7];
   const int32_t bias = int32_t((fetch[4] >> 12) & 0x3FF) << 22 >> 22;
-  sd.MipLODBias = std::clamp(bias / 32.0f, -16.0f, 15.99f);
-  sd.MinLOD = float((fetch[4] >> 2) & 15);
-  sd.MaxLOD = mip == 2 ? sd.MinLOD : float((fetch[4] >> 6) & 15);
+  sd.mipLODBias = std::clamp(bias / 32.0f, -16.0f, 15.99f);
+  sd.minLOD = float((fetch[4] >> 2) & 15);
+  sd.maxLOD = mip == 2 ? sd.minLOD : float((fetch[4] >> 6) & 15);
   static const bool lod0 = std::getenv("SVR2011_NATIVE_LOD0") != nullptr;  // debug
-  if (lod0) sd.MinLOD = sd.MaxLOD = 0.0f;
-  sd.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-  if ((fetch[5] & 3) == 1) {
-    sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 1.0f;
-  } else if ((fetch[5] & 3) != 0) {
-    sd.BorderColor[3] = 1.0f;
-  }
+  if (lod0) sd.minLOD = sd.maxLOD = 0.0f;
+  sd.comparisonEnabled = false;
+  sd.borderColor = (fetch[5] & 3) == 0   ? plume::RenderBorderColor::TRANSPARENT_BLACK
+                   : (fetch[5] & 3) == 1 ? plume::RenderBorderColor::OPAQUE_WHITE
+                                         : plume::RenderBorderColor::OPAQUE_BLACK;
+  std::unique_ptr<plume::RenderSampler> sampler = ctx.device->createSampler(sd);
+  if (!sampler) return 0;
   const uint32_t index = g_sampler_next++;
-  D3D12_CPU_DESCRIPTOR_HANDLE h = ctx.sampler_heap->GetCPUDescriptorHandleForHeapStart();
-  h.ptr += size_t(index) * ctx.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-  ctx.device->CreateSampler(&sd, h);
-  g_samplers.emplace(key, index);
+  ctx.sampler_set->setSampler(index, sampler.get());
+  g_samplers.emplace(key, SamplerEntry{index, std::move(sampler)});
   return index;
 }
 
 void ForgetResolved() { g_resolved.clear(); }
 
-void RegisterResolved(uint32_t base_address, ID3D12Resource* resource, DXGI_FORMAT format,
-                      DXGI_FORMAT gamma_format, uint32_t components, bool swap_rb) {
+void RegisterResolved(uint32_t base_address, plume::RenderTexture* resource, RenderFormat format,
+                      RenderFormat gamma_format, uint32_t components, bool swap_rb) {
   Resolved& r = g_resolved[base_address >> 12];
   if (r.resource == resource && r.format == format && r.swap_rb == swap_rb) return;
   // Views are per resource generation (and format/swap, in their key), so a
   // target alternating formats reuses its views.
   const uint32_t generation = r.resource == resource ? r.generation : ++g_resolved_generation;
   r = {resource, format, gamma_format, components, swap_rb, generation};
+}
+
+void ReleaseResolved(const Context& ctx, plume::RenderTexture* texture) {
+  for (auto it = g_resolved_views.begin(); it != g_resolved_views.end();) {
+    if (it->second.texture == texture) {
+      ctx.retire(std::move(it->second.view));
+      it = g_resolved_views.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = g_resolved.begin(); it != g_resolved.end();)
+    it = it->second.resource == texture ? g_resolved.erase(it) : std::next(it);
+}
+
+plume::RenderComponentMapping ComponentMapping(uint32_t swizzle, uint32_t components, bool swap_rb) {
+  plume::RenderSwizzle out[4];
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint32_t c = (swizzle >> (3 * i)) & 7;
+    if (swap_rb && (c == 0 || c == 2)) c ^= 2;
+    if (c <= 3) c = std::min(c, components - 1);
+    else if (c > 5) c = 4;
+    static const bool alpha1 = std::getenv("SVR2011_NATIVE_ALPHA1") != nullptr;  // debug
+    if (alpha1 && i == 3) c = 5;
+    out[i] = Swizzle(c);
+  }
+  return plume::RenderComponentMapping(out[0], out[1], out[2], out[3]);
 }
 
 Stats TakePerf() {
