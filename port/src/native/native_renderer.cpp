@@ -919,6 +919,27 @@ void ReportDeviceRemoved(Renderer* r, HRESULT hr) {
   Fail();
 }
 
+// Waits (CPU) until the renderer's fence reaches `value`. A GPU that stops
+// answering must not hang the game: under Proton (vkd3d-proton) a stuck GPU
+// job can leave the fence short for good, where Windows would remove the
+// device. After kGpuTimeout the native renderer gives up - the emulated
+// renderer takes over, and the fence is set from the CPU so the emulator's
+// queue, which waits on it for the frame, runs on.
+constexpr DWORD kGpuTimeoutMs = 3000;
+bool WaitForFence(Renderer* r, uint64_t value, const char* what) {
+  if (r->fence->GetCompletedValue() >= value) return true;
+  r->fence->SetEventOnCompletion(value, r->fence_event);
+  if (WaitForSingleObject(r->fence_event, kGpuTimeoutMs) == WAIT_OBJECT_0) return true;
+  if (r->fence->GetCompletedValue() >= value) return true;
+  const HRESULT reason = r->device->GetDeviceRemovedReason();
+  REXLOG_ERROR("native renderer: GPU did not finish ({}) in {} ms - fence at {} of {}, device {:08X}",
+               what, kGpuTimeoutMs, r->fence->GetCompletedValue(), value, uint32_t(reason));
+  if (reason != S_OK) ReportDeviceRemoved(r, reason);
+  Fail();
+  r->fence->Signal(UINT64_MAX);  // releases the emulator's wait for the frame
+  return false;
+}
+
 Renderer* Get() {
   std::call_once(g_init_once, [] {
     if (!Initialize()) Fail();
@@ -1007,10 +1028,7 @@ void ApplyOutputSettings(Renderer* r) {
 
   // Idle: nothing in flight may still use what is replaced.
   r->queue->Signal(r->fence.Get(), ++r->fence_value);
-  if (r->fence->GetCompletedValue() < r->fence_value) {
-    r->fence->SetEventOnCompletion(r->fence_value, r->fence_event);
-    WaitForSingleObject(r->fence_event, INFINITE);
-  }
+  if (!WaitForFence(r, r->fence_value, "output change")) return;
   for (uint64_t& f : r->frame_fence) f = 0;
   r->garbage.clear();
   if (scale != g_scale) {
@@ -1034,16 +1052,17 @@ void ApplyOutputSettings(Renderer* r) {
               aa ? " (anti-aliasing)" : "");
 }
 
-void BeginFrame(Renderer* r) {
-  if (r->frame_open) return;
+// False: the GPU stopped answering and the native renderer gave up.
+bool BeginFrame(Renderer* r) {
+  if (r->frame_open) return true;
   if (g_main) ApplyOutputSettings(r);
+  if (g_failed) return false;
   r->back_index = g_main ? uint32_t(r->frames % kFrames) : r->swapchain->GetCurrentBackBufferIndex();
   r->output_index = uint32_t(r->frames % kOutputs);
   r->frame_begin = std::chrono::steady_clock::now();
   if (r->fence->GetCompletedValue() < r->frame_fence[r->back_index]) {
     ScopeTimer wait(r->perf_wait_ms);
-    r->fence->SetEventOnCompletion(r->frame_fence[r->back_index], r->fence_event);
-    WaitForSingleObject(r->fence_event, INFINITE);
+    if (!WaitForFence(r, r->frame_fence[r->back_index], "previous frame")) return false;
   }
   while (!r->garbage.empty() && r->garbage.front().first <= r->fence->GetCompletedValue()) {
     r->garbage.pop_front();
@@ -1057,6 +1076,7 @@ void BeginFrame(Renderer* r) {
   r->frame_stats = {};
   r->texture_context = TextureContext(r);
   g_resolved_this_frame = false;
+  return true;
 }
 
 int BlankedSlot(Renderer* r);
@@ -2363,7 +2383,7 @@ void OnPresent(uint32_t front_buffer) {
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();
   if (!r) return;
-  BeginFrame(r);
+  if (!BeginFrame(r)) return;
   auto* list = r->list.Get();
   ID3D12Resource* back = BackBuffer(r);
   const bool shown = PresentFrontBuffer(r, front_buffer);
@@ -2437,6 +2457,24 @@ void OnPresent(uint32_t front_buffer) {
       return;
     }
   }
+  // Debug: SVR2011_NATIVE_TEST_STALL=<frame> stalls the GPU queue for good at
+  // that frame (as a stuck GPU job would), to test WaitForFence's way out.
+  static const uint64_t stall_frame = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    uint64_t f = ~0ull;
+    if (_dupenv_s(&v, &n, "SVR2011_NATIVE_TEST_STALL") == 0 && v) {
+      f = std::strtoull(v, nullptr, 10);
+      free(v);
+    }
+    return f;
+  }();
+  if (r->frames == stall_frame) {
+    static ComPtr<ID3D12Fence> never;
+    r->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&never));
+    r->queue->Wait(never.Get(), 1);
+    REXLOG_WARN("native renderer: test stall at frame {}", r->frames);
+  }
   r->frame_fence[r->back_index] = ++r->fence_value;
   r->queue->Signal(r->fence.Get(), r->fence_value);
   if (g_main) {
@@ -2488,7 +2526,7 @@ void OnDrawIndexed(const PPCContext& ctx) {
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();
   if (!r) return;
-  BeginFrame(r);
+  if (!BeginFrame(r)) return;
   Draw(r, ctx.r4.u32, static_cast<int32_t>(ctx.r5.u32), ctx.r6.u32, ctx.r7.u32, true);
 }
 
@@ -2521,7 +2559,7 @@ void OnEndVertices() {
                 BeFloat(c + 8), BeFloat(c + 12), g_gpu_constants[1][0], g_gpu_constants[1][1],
                 g_gpu_constants[1][2], g_gpu_constants[1][3]);
   }
-  BeginFrame(r);
+  if (!BeginFrame(r)) return;
   Draw(r, up.primitive, 0, 0, up.count, false, &up);
 }
 
@@ -2533,7 +2571,7 @@ void OnClear(const PPCContext& ctx) {
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();
   if (!r) return;
-  BeginFrame(r);
+  if (!BeginFrame(r)) return;
   if (g_stop_at_resolve && g_resolved_this_frame) return;
   const Targets t = CurrentTargets(r);
   if (!BindTargets(r, t)) return;
@@ -2565,7 +2603,7 @@ void OnResolve(const PPCContext& ctx) {
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();
   if (!r || !ctx.r8.u32) return;
-  BeginFrame(r);
+  if (!BeginFrame(r)) return;
   const Targets t = CurrentTargets(r);
   const bool depth = (ctx.r4.u32 & 7) == 4;
   if (t.color && t.color == r->main_target && !depth) {
