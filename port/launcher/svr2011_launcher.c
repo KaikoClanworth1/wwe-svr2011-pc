@@ -3445,10 +3445,12 @@ static void mv_setup(void)
     add(TAB_MOVIES, L"Button", L"Browse\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 344, 129, 102, 26, ID_MV_BOTTOM_BROWSE);
     add(TAB_MOVIES, L"Button", L"None (black)", BS_PUSHBUTTON | WS_TABSTOP, X0 + 454, 129, 106, 26, ID_MV_BOTTOM_NONE);
     add(TAB_MOVIES, L"Static", L"Big screen", SS_LEFT, X0, 168, 100, 20, 0);
-    h = add(TAB_MOVIES, L"Button", L"Whole picture", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, X0 + 110, 164, 140, 24, ID_MV_FIT);
+    /* Fill by default: the video covers the whole big screen (black bars in
+       the video itself are cut off first - movie_maker.c content_find). */
+    h = add(TAB_MOVIES, L"Button", L"Fill the screen", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, X0 + 110, 164, 140, 24, ID_MV_FILL);
     SendMessageW(h, BM_SETCHECK, BST_CHECKED, 0);
-    add(TAB_MOVIES, L"Button", L"Fill (cut edges)", BS_AUTORADIOBUTTON, X0 + 256, 164, 150, 24, ID_MV_FILL);
-    add(TAB_MOVIES, L"Button", L"Stretch", BS_AUTORADIOBUTTON, X0 + 412, 164, 100, 24, ID_MV_STRETCH);
+    add(TAB_MOVIES, L"Button", L"Whole picture (bars)", BS_AUTORADIOBUTTON, X0 + 256, 164, 160, 24, ID_MV_FIT);
+    add(TAB_MOVIES, L"Button", L"Stretch", BS_AUTORADIOBUTTON, X0 + 422, 164, 100, 24, ID_MV_STRETCH);
     add(TAB_MOVIES, L"Static", L"Length", SS_LEFT, X0, 202, 100, 20, 0);
     h = add(TAB_MOVIES, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP, X0 + 110, 198, 190, 200, ID_MV_LENGTH);
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Whole video (up to 3 min)");

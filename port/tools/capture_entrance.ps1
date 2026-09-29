@@ -3,11 +3,11 @@
 # Randy Orton -> Play, then a screenshot every 2 s to runs\<Name>NN.png, a
 # contact sheet runs\<Name>_sheet.png, and the log's frame rates over the
 # entrances.
-#   .\capture_entrance.ps1 [-Name ent] [-Shots 45] [-Extra --unlock_30fps=false]
-param([string]$Name = "ent", [int]$Shots = 45, [string[]]$Extra = @(), [double]$Interval = 2)
+#   .\capture_entrance.ps1 [-Name ent] [-Shots 45] [-Extra --unlock_30fps=false] [-GameDir <install>]
+param([string]$Name = "ent", [int]$Shots = 45, [string[]]$Extra = @(), [double]$Interval = 2, [string]$GameDir = "")
 $s = Join-Path $PSScriptRoot "session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
-& $s start -Name $Name @Extra | Out-Null
+if ($GameDir) { & $s start -Name $Name -GameDir $GameDir @Extra | Out-Null } else { & $s start -Name $Name @Extra | Out-Null }
 function Step([string[]]$keys, [int]$sec) { & $s input @keys | Out-Null; Start-Sleep $sec }
 Start-Sleep 50                          # boot (longer with DLC installed)
 Step @("press START 200") 40            # title -> practice arena

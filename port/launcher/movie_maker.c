@@ -193,6 +193,7 @@ typedef struct {
     int have_next, eof;
     LONGLONG next_ts;
     IMFSample *next;
+    int cx, cy, cw, ch;        /* the picture without black borders (content_find) */
 } Pic;
 
 static int is_image(const WCHAR *path)
@@ -307,11 +308,15 @@ static void pic_close(Pic *p)
     memset(p, 0, sizeof *p);
 }
 
+static void content_find(Pic *p);
+
 static int pic_open(Pic *p, const WCHAR *path, WCHAR *err, size_t errn)
 {
     memset(p, 0, sizeof *p);
     if (!path || !path[0]) return 1;            /* black */
-    return is_image(path) ? image_open(p, path, err, errn) : video_open(p, path, err, errn);
+    if (!(is_image(path) ? image_open(p, path, err, errn) : video_open(p, path, err, errn))) return 0;
+    content_find(p);
+    return 1;
 }
 
 static void sample_copy(Pic *p, IMFSample *s)
@@ -373,6 +378,76 @@ static void pic_seek(Pic *p, LONGLONG t, int loop)
     }
 }
 
+/* Grows box (x0, y0, x1, y1) to the parts of the current picture that are
+ * not black: rows and columns where enough pixels are brighter than dark
+ * grey (so noise or a small logo in a black bar doesn't count). */
+static void content_add(const Pic *p, int *x0, int *y0, int *x1, int *y1)
+{
+    int x, y, n;
+    const int step = 2;
+    for (y = 0; y < p->h; y += step) {
+        for (x = 0, n = 0; x < p->w; x += step) {
+            const uint8_t *s = p->bgra + ((size_t)y * p->w + x) * 4;
+            if (s[0] + s[1] + s[2] > 3 * 32) n++;
+        }
+        if (n * step * 50 > p->w) { if (y < *y0) *y0 = y; if (y + step > *y1) *y1 = y + step; }
+    }
+    for (x = 0; x < p->w; x += step) {
+        for (y = 0, n = 0; y < p->h; y += step) {
+            const uint8_t *s = p->bgra + ((size_t)y * p->w + x) * 4;
+            if (s[0] + s[1] + s[2] > 3 * 32) n++;
+        }
+        if (n * step * 50 > p->h) { if (x < *x0) *x0 = x; if (x + step > *x1) *x1 = x + step; }
+    }
+}
+
+/* Black borders that are part of the picture (letterboxed or pillarboxed
+ * videos): found on frames across the whole video, then cut off - so
+ * "Fill" fills the screen with the picture, not with its black bars. */
+static void content_find(Pic *p)
+{
+    int x0 = p->w, y0 = p->h, x1 = 0, y1 = 0, k;
+    p->cx = 0; p->cy = 0; p->cw = p->w; p->ch = p->h;
+    if (p->kind == 1) {
+        content_add(p, &x0, &y0, &x1, &y1);
+    } else if (p->kind == 2 && p->duration > 0) {
+        for (k = 1; k <= 8; k++) {
+            PROPVARIANT pv;
+            DWORD idx, flags = 0;
+            LONGLONG ts = 0;
+            IMFSample *s = NULL;
+            PropVariantInit(&pv);
+            pv.vt = VT_I8;
+            pv.hVal.QuadPart = p->duration * k / 10;
+            if (FAILED(IMFSourceReader_SetCurrentPosition(p->rd, &GUID_NULL, &pv))) break;
+            if (FAILED(IMFSourceReader_ReadSample(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &idx, &flags, &ts, &s))
+                    || !s) { if (s) IMFSample_Release(s); continue; }
+            sample_copy(p, s);
+            IMFSample_Release(s);
+            content_add(p, &x0, &y0, &x1, &y1);
+        }
+        {   /* back to the start */
+            PROPVARIANT pv;
+            PropVariantInit(&pv);
+            pv.vt = VT_I8;
+            pv.hVal.QuadPart = 0;
+            IMFSourceReader_SetCurrentPosition(p->rd, &GUID_NULL, &pv);
+            memset(p->bgra, 0, (size_t)p->w * p->h * 4);
+        }
+    } else {
+        return;
+    }
+    if (x1 > p->w) x1 = p->w;
+    if (y1 > p->h) y1 = p->h;
+    /* Only clear borders: 1.5% or more of a side, and a real picture left. */
+    if (x1 - x0 < p->w / 4 || y1 - y0 < p->h / 4) return;
+    if (x0 * 1000 < p->w * 15) x0 = 0;
+    if ((p->w - x1) * 1000 < p->w * 15) x1 = p->w;
+    if (y0 * 1000 < p->h * 15) y0 = 0;
+    if ((p->h - y1) * 1000 < p->h * 15) y1 = p->h;
+    p->cx = x0; p->cy = y0; p->cw = x1 - x0; p->ch = y1 - y0;
+}
+
 /* Box-filtered copy of source rectangle (sx, sy, sw, sh) of `p` into
  * destination rectangle (dx, dy, dw, dh) of a BGRA picture `dst` (dst_w wide). */
 static void pic_draw(const Pic *p, double sx, double sy, double sw, double sh,
@@ -413,11 +488,11 @@ static void draw_top(const Pic *p, int fit, uint8_t *frame)
     double aspect, sx = 0, sy = 0, sw, sh;
     int dx = 0, dy = 0, dw = MOVIE_W, dh = TOP_H;
     if (!p->bgra) return;
-    sw = p->w; sh = p->h;
-    aspect = p->w * p->par / p->h;
+    sx = p->cx; sy = p->cy; sw = p->cw; sh = p->ch;
+    aspect = sw * p->par / sh;
     if (fit == MOVIE_FILL) {
-        if (aspect > screen) { sw = p->h * screen / p->par; sx = (p->w - sw) / 2; }
-        else                 { sh = p->w * p->par / screen; sy = (p->h - sh) / 2; }
+        if (aspect > screen) { sw = sh * screen / p->par; sx = p->cx + (p->cw - sw) / 2; }
+        else                 { sh = sw * p->par / screen; sy = p->cy + (p->ch - sh) / 2; }
     } else if (fit == MOVIE_FIT) {
         if (aspect > screen) { dh = (int)(TOP_H * screen / aspect + 0.5); dy = (TOP_H - dh) / 2; }
         else                 { dw = (int)(MOVIE_W * aspect / screen + 0.5); dx = (MOVIE_W - dw) / 2; }
@@ -431,10 +506,10 @@ static void draw_bottom(const Pic *p, uint8_t *frame)
     const double strip = (double)MOVIE_W / BOT_H;
     double aspect, sx = 0, sy = 0, sw, sh;
     if (!p->bgra) return;
-    sw = p->w; sh = p->h;
-    aspect = p->w * p->par / p->h;
-    if (aspect > strip) { sw = p->h * strip / p->par; sx = (p->w - sw) / 2; }
-    else                { sh = p->w * p->par / strip; sy = (p->h - sh) / 2; }
+    sx = p->cx; sy = p->cy; sw = p->cw; sh = p->ch;
+    aspect = sw * p->par / sh;
+    if (aspect > strip) { sw = sh * strip / p->par; sx = p->cx + (p->cw - sw) / 2; }
+    else                { sh = sw * p->par / strip; sy = p->cy + (p->ch - sh) / 2; }
     pic_draw(p, sx, sy, sw, sh, frame, MOVIE_W, 0, TOP_H, MOVIE_W, BOT_H);
 }
 

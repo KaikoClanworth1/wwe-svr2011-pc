@@ -48,9 +48,11 @@ ENTRANCE MOVIES (launcher, Movies tab)
   Make an entrance movie from any video Windows can play (.mp4, .mov,
   .wmv, ...). The video goes on the arena's big screen; pick a picture or
   video for the strip below it (the stage and ramp screens), or leave it
-  black. Whole picture / Fill / Stretch choose how the video fits the
-  screen. Movies are saved in the Custom Movies folder and listed in
-  CREATE AN ENTRANCE > FINALIZE > MOVIE right after NONE, by their name.
+  black. "Fill the screen" (the default) makes the video cover the whole
+  big screen; black bars already in the video are cut off. Movies are saved
+  in the Custom Movies folder. In the game: CREATE AN ENTRANCE > FINALIZE >
+  MOVIE > USER MOVIES lists them by name (X previews, A picks), like
+  MUSIC > USER PLAYLIST; saved highlight reels are listed there too.
   Don't rename a movie an entrance uses (Custom Movies\ids.txt remembers
   which number each one has).
 

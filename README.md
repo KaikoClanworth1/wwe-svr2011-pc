@@ -211,15 +211,15 @@ The launcher's **Movies** tab turns any video Windows can play (`.mp4`, `.mov`, 
 
 1. Under **Video**, choose your video. A frame from it shows in the preview.
 2. Under **Bottom strip**, choose a picture or a video for the stage and ramp screens, or click **None (black)**.
-3. Choose how the video fits the screen: **Whole picture** (black bars if needed), **Fill** (cuts off the edges) or **Stretch**.
+3. Choose how the video fits the big screen: **Fill the screen** (the default: the video covers the whole screen, cutting off a little at the edges if its shape differs), **Whole picture** (black bars if needed) or **Stretch**. Black bars that are already in the video (letterboxed or 4:3 videos) are found and cut off first.
 4. Pick a **Length**, give the movie a **Name**, and click **Make movie**. A 30-second movie takes a few seconds to make.
-5. In the game: *Create An Entrance → Finalize → **Movie***. Your movies are listed right after **NONE**, by name.
+5. In the game: *Create An Entrance → Finalize → **Movie** → **USER MOVIES***, like *Music → USER PLAYLIST*. It lists your movies by name (and any saved highlight reels after them). **X** previews one, **A** picks it.
 
 The movies are saved in the **`Custom Movies`** folder in the game folder, in the same format and layout as the game's own titantron movies. Don't rename a movie that an entrance uses (`Custom Movies\ids.txt` remembers which number each one has).
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/user-movies-list.jpg" alt="Movie list with your movies"><br><sub>Your movies in the <b>Movie</b> list, after <b>NONE</b></sub></td>
+    <td width="50%"><img src="docs/screenshots/user-movies-list.jpg" alt="USER MOVIES list"><br><sub><b>Movie → USER MOVIES</b> lists your movies</sub></td>
     <td width="50%"><img src="docs/screenshots/custom-movie-entrance.jpg" alt="Custom movie in an entrance"><br><sub>…and on the big screen during the entrance</sub></td>
   </tr>
 </table>

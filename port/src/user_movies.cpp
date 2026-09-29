@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -31,6 +32,7 @@ namespace {
 
 constexpr int kFirstId = 700, kLastId = 899;
 constexpr int kNoneId = 999;
+constexpr uint32_t kSubListRow = 254;  // the movie list row that opens the sub-list
 constexpr uint32_t kMovieCategory = 0;
 constexpr uint32_t kListItemSize = 24;  // {value, flags, unlock, text[12]}
 
@@ -46,6 +48,10 @@ uint32_t Rd32(uint8_t* base, uint32_t a) {
   return __builtin_bswap32(v);
 }
 int16_t Rd16(uint8_t* base, uint32_t a) { return int16_t(base[a] << 8 | base[a + 1]); }
+void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
+  v = __builtin_bswap32(v);
+  std::memcpy(base + a, &v, 4);
+}
 
 bool Ascii(const std::wstring& s) {
   return std::all_of(s.begin(), s.end(), [](wchar_t c) { return c >= 32 && c < 127; });
@@ -101,18 +107,22 @@ void Refresh() {
   g_ids = std::move(ids);
 }
 
-// The menu label of a movie (its file name without .bik, upper case) as a
-// guest string that lives for the whole run (menu rows keep the pointer).
-uint32_t Label(const std::string& file) {
-  std::string label = std::filesystem::path(file).stem().string();
-  std::transform(label.begin(), label.end(), label.begin(), ::toupper);
-  if (label.size() > 40) label.resize(40);
+// A guest string that lives for the whole run (menu rows keep the pointer).
+uint32_t Text(const std::string& label) {
   if (auto it = g_labels.find(label); it != g_labels.end()) return it->second;
   const uint32_t s = g_memory->SystemHeapAlloc(uint32_t(label.size() + 1));
   if (!s) return 0;
   std::memcpy(g_memory->TranslateVirtual<char*>(s), label.c_str(), label.size() + 1);
   g_labels[label] = s;
   return s;
+}
+
+// The menu label of a movie: its file name without .bik, upper case.
+uint32_t Label(const std::string& file) {
+  std::string label = std::filesystem::path(file).stem().string();
+  std::transform(label.begin(), label.end(), label.begin(), ::toupper);
+  if (label.size() > 40) label.resize(40);
+  return Text(label);
 }
 
 }  // namespace
@@ -131,8 +141,16 @@ void InstallUserMovies(rex::memory::Memory* memory, const std::filesystem::path&
 
 }  // namespace svr2011
 
-// Menu rows from a list table: sub_8287DFD0(list, r4, table, category, base).
-// After the game's MOVIE rows, the user movies go in after NONE.
+// CREATE AN ENTRANCE -> FINALIZE -> MOVIE. Its first row (value 254,
+// HIGHLIGHT REEL) opens a sub-list: the list right after the movie list,
+// which sub_8287CFB0 fills with the 20 highlight reel slots; picking one
+// keeps 254 in the movie list and the pick in the sub-list (like MUSIC ->
+// USER PLAYLIST). That row becomes USER MOVIES and its sub-list holds the
+// user movies, then the saved highlight reels. The entrance then plays the
+// picked id (sub_828B52D8 below).
+
+// The movie list (sub_8287DFD0(list, r4, table, category, base)): the 254
+// row is named USER MOVIES.
 REX_EXTERN(__imp__sub_8287DFD0);
 REX_HOOK_RAW(sub_8287DFD0) {
   const uint32_t list = ctx.r3.u32, table = ctx.r5.u32, category = ctx.r6.u32;
@@ -143,6 +161,26 @@ REX_HOOK_RAW(sub_8287DFD0) {
   }
   __imp__sub_8287DFD0(ctx, base);
   if (!movies) return;
+  const uint32_t count = Rd32(base, list), rows_at = Rd32(base, list + 8);
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t row = rows_at + i * kListItemSize;
+    if (Rd32(base, row) != kSubListRow) continue;
+    std::lock_guard lock(g_mutex);
+    if (const uint32_t s = Text("USER MOVIES")) Wr32(base, row + 12, s);  // {value, flags, unlock, text}
+    break;
+  }
+}
+
+// The sub-list: sub_8287CFB0(reels, list) adds the highlight reel slots
+// (1000 + i, empty ones disabled) and returns how many reels are saved (the
+// 254 row is disabled without any). Here: the user movies first, then the
+// saved reels (empty slots dropped); the count includes the movies.
+REX_EXTERN(__imp__sub_8287CFB0);
+REX_HOOK_RAW(sub_8287CFB0) {
+  const uint32_t list = ctx.r4.u32;
+  __imp__sub_8287CFB0(ctx, base);
+  if (!g_memory) return;
+  const uint32_t reels = ctx.r3.u32;
   std::vector<std::pair<int, uint32_t>> rows;
   {
     std::lock_guard lock(g_mutex);
@@ -151,7 +189,6 @@ REX_HOOK_RAW(sub_8287DFD0) {
       if (const uint32_t s = Label(file)) rows.emplace_back(id, s);
     }
   }
-  if (rows.empty()) return;
   const auto saved = ctx;
   for (const auto& [id, label] : rows) {  // sub_828829D8(list, value, text, 0, 0, unlock)
     ctx.r3.u64 = list;
@@ -163,21 +200,19 @@ REX_HOOK_RAW(sub_8287DFD0) {
     sub_828829D8(ctx, base);
   }
   ctx = saved;
-  // Move them up after the NONE row: the list is {count, capacity, rows}.
+  // {count, capacity, rows}: [movies][saved reels].
   const uint32_t count = Rd32(base, list), rows_at = Rd32(base, list + 8);
-  size_t n = rows.size(), none = 0;
-  for (uint32_t i = 0; i < count; ++i) {
-    if (Rd32(base, rows_at + i * kListItemSize) == uint32_t(kNoneId)) {
-      none = i;
-      break;
-    }
+  const size_t n = std::min<size_t>(rows.size(), count);
+  std::vector<uint8_t> out;
+  const uint8_t* all = base + rows_at;
+  out.insert(out.end(), all + (count - n) * kListItemSize, all + count * kListItemSize);
+  for (uint32_t i = 0; i < count - n; ++i) {
+    const uint8_t* row = all + i * kListItemSize;
+    if (Rd32(base, rows_at + i * kListItemSize + 4) == 0) out.insert(out.end(), row, row + kListItemSize);
   }
-  if (count < n || none + 1 >= count - n) return;
-  uint8_t* first = base + rows_at + (none + 1) * kListItemSize;
-  uint8_t* added = base + rows_at + (count - n) * kListItemSize;
-  std::vector<uint8_t> tmp(added, added + n * kListItemSize);
-  std::memmove(first + n * kListItemSize, first, added - first);
-  std::memcpy(first, tmp.data(), tmp.size());
+  std::memcpy(base + rows_at, out.data(), out.size());
+  Wr32(base, list, uint32_t(out.size() / kListItemSize));
+  ctx.r3.u64 = reels + uint32_t(n);
 }
 
 // The path of entrance movie `id`: sub_828B52D8(id) -> (r3) the path.
@@ -185,6 +220,23 @@ REX_EXTERN(__imp__sub_828B52D8);
 REX_HOOK_RAW(sub_828B52D8) {
   const int id = ctx.r3.s32;
   __imp__sub_828B52D8(ctx, base);
+  // Tests: SVR2011_TEST_MOVIE=<file in the movies folder> plays it for every
+  // entrance (e.g. a test pattern, to see what the titantron shows).
+  static const std::string test_movie = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    std::string s;
+    if (_dupenv_s(&v, &n, "SVR2011_TEST_MOVIE") == 0 && v) {
+      s = v;
+      free(v);
+    }
+    return s;
+  }();
+  if (!test_movie.empty() && g_memory) {
+    const std::string path = "umovie:\\" + test_movie;
+    std::memcpy(base + ctx.r3.u32, path.c_str(), path.size() + 1);
+    return;
+  }
   if (id < kFirstId || id > kLastId || !g_memory) return;
   std::string file;
   {
