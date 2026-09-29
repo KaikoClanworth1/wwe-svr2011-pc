@@ -121,7 +121,7 @@ index 1c74034..dbd3594 100644
      else
      {
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index 698a418..9f0c444 100644
+index 698a418..41e6c60 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -115,7 +115,14 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -596,7 +596,36 @@ index 698a418..9f0c444 100644
  
      out += "void main(\n";
  
-@@ -1630,7 +1660,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1566,11 +1596,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     }
+     else
+     {
++        // SVR2011: no switch - each block runs when pc <= its index (a jump
++        // sets pc and continues). Switch cases that fall through, inside the
++        // loop, broke Vulkan drivers (RADV on the Steam Deck, via
++        // vkd3d-proton) compiling these shaders.
+         out += "\n\tuint pc = 0;\n";
+-        out += "\twhile (true)\n";
++        out += "\t[loop] while (true)\n";
+         out += "\t{\n";
+-        out += "\t\tswitch (pc)\n";
+-        out += "\t\t{\n";
+     }
+ 
+     controlFlowCode = code;
+@@ -1589,7 +1621,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             if (!simpleControlFlow)
+             {
+                 indentation = 3;
+-                println("\t\tcase {}:", pc);
++                if (pc != 0)
++                    out += "\t\t}\n";
++                println("\t\tif (pc <= {})", pc);
++                out += "\t\t{\n";
+             }
+             else
+             {
+@@ -1630,7 +1665,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                  address = cfInstr.condExec.address;
                  count = cfInstr.condExec.count;
                  sequence = cfInstr.condExec.sequence;
@@ -619,7 +648,7 @@ index 698a418..9f0c444 100644
                  break;
  
              case ControlFlowOpcode::CondExecPred:
-@@ -1639,6 +1683,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1639,6 +1688,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                  count = cfInstr.condExecPred.count;
                  sequence = cfInstr.condExecPred.sequence;
                  shouldReturn = (cfInstr.opcode == ControlFlowOpcode::CondExecPredEnd);
@@ -636,7 +665,7 @@ index 698a418..9f0c444 100644
                  break;
  
              case ControlFlowOpcode::LoopStart:
-@@ -1698,7 +1752,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1698,7 +1757,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                          if (findResult != boolConstants.end())
                              println("if ((g_Booleans & {}) {}= 0)", findResult->second, cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
                          else
@@ -645,7 +674,7 @@ index 698a418..9f0c444 100644
                      }
  
                      if (simpleControlFlow)
-@@ -1792,6 +1846,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1792,6 +1851,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                  instructionCode += 3;
              }
  
@@ -660,7 +689,7 @@ index 698a418..9f0c444 100644
              if (shouldReturn)
              {
                  if (isPixelShader)
-@@ -1832,7 +1894,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1832,7 +1899,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                      if (!hasMtxProjection)
                  #endif
                      {
@@ -669,7 +698,15 @@ index 698a418..9f0c444 100644
                      }
                  }
  
-@@ -1881,7 +1943,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1870,7 +1937,6 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+     if (!simpleControlFlow)
+     {
+-        out += "\t\t\tbreak;\n";
+         out += "\t\t}\n";
+         out += "\t\tbreak;\n";
+         out += "\t}\n";
+@@ -1881,7 +1947,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
          out += "\t}\n";
  
      if (!isPixelShader && hasMtxProjection)
