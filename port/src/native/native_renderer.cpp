@@ -45,7 +45,8 @@
 #include "native/guest_d3d.h"
 #include "native/textures.h"
 
-REXCVAR_DEFINE_STRING(native_renderer, "off", "GPU",
+// Default "main" (as the launcher): settings files without the key use it.
+REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
                       "Native D3D12 renderer: off, main (draws the game in the main window; the "
                       "emulated renderer only runs the GPU command stream, and takes over if the "
                       "native one fails), shadow (second window beside the emulated renderer, "

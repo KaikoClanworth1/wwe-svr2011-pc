@@ -72,7 +72,7 @@ It also adds:
 | | |
 |---|---|
 | 💿 **The game** | A disc image of your own *WWE SmackDown vs. Raw 2011* **Xbox 360** disc, as an `.iso`. The PS3, Wii, PS2 and PSP versions won't work. |
-| 🖥️ **PC** | Windows 10 or 11 (64-bit). A graphics card with Direct3D 12. A CPU from about 2009 or later (SSE4.2). A **Steam Deck** or Linux PC with Proton should also work: see [Steam Deck and Linux](#steam-deck-and-linux-proton) (experimental). |
+| 🖥️ **PC** | Windows 10 or 11 (64-bit). A graphics card with Direct3D 12. A CPU from about 2009 or later (SSE4.2). It also runs on a **Steam Deck** (55–60 fps) and Linux PCs through Proton: see [Steam Deck and Linux](#steam-deck-and-linux-proton). |
 | 💾 **Disk space** | About 6 GB: 5.3 GB for the game, plus room for saves and caches. |
 | 🎮 **Controller** | An Xbox controller (Xbox 360, Xbox One or Series). Other gamepads work through SDL. |
 
@@ -119,7 +119,7 @@ From version 0.2.0 the launcher **updates itself**. When it starts, it checks th
 
 ### Steam Deck and Linux (Proton)
 
-> **Experimental.** The port is a Windows program. On a Steam Deck or a Linux PC it runs through **Proton**, Steam's compatibility layer, and hasn't been fully tested there yet. Please [report](https://github.com/KaikoClanworth1/wwe-svr2011-pc/issues) how it goes, with the newest file from the game folder's `logs` folder.
+The port is a Windows program. On a Steam Deck or a Linux PC it runs through **Proton**, Steam's compatibility layer, with the native renderer at **55–60 fps on a Steam Deck**. Linux PCs other than the Deck haven't been tested yet. If something goes wrong, please [report](https://github.com/KaikoClanworth1/wwe-svr2011-pc/issues) it with the newest file from the game folder's `logs` folder.
 
 **Set up (Desktop Mode):**
 
@@ -342,6 +342,8 @@ The recompiled game code is **generated on your machine from your own disc**. It
 - **The install fails.** Check that the image is a full disc image of the **Xbox 360** version, and that the target drive has enough free space (the Install tab shows it).
 - **The game closed unexpectedly.** A crash report is saved in `UserData\crashes\` in the game folder. Please include it when you report a problem.
 - **Black screen with sound (v0.1.0).** v0.1.0's zip was missing the native renderer's shaders. Update to v0.2.0 or later. The game now also falls back to the **Emulated** renderer if the `native_shaders` folder is missing.
+- **"The Created Superstar save data is either damaged or missing" after copying saves.** Choose **NO**, then update to v0.2.1 or later: it rebuilds the save headers that some copy tools leave out (the `Saves\.info` folder), and copies the whole `Saves` folder from then on.
+- **Very low frame rate or no picture on a laptop.** Laptops with two GPUs could run the game on the built-in one. v0.2.1 picks the fast GPU. With older versions, set `svr2011.exe` to **High performance** in Windows Settings → System → Display → Graphics.
 - **Something is drawn wrong.** In the launcher's **Settings**, set **Renderer** to **Emulated** and see if it looks right there. Either way, please report it with a screenshot.
 - **My entrance song or movie is gone.** The entrance remembers it by name. Check that the folder in `Music\`, or the movie in `Custom Movies\`, still has the same name.
 - **A superstar's logos 3 and up are blank.** Their images are in `Saves\.logos`. Restore it from a backup, or copy it along with the superstar's save.

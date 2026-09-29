@@ -6,7 +6,9 @@
 // The game state at each draw is read from the D3D device's register mirror
 // (guest_d3d.h).
 //
-// native_renderer = off     (default) not used
+// native_renderer = main    (default) draws the game; the emulated renderer
+//                           is the backup
+//                 = off     not used (the emulated renderer draws)
 //                 = shadow  runs beside the emulated renderer, drawing into a
 //                           second window "SvR 2011 - native renderer" so the
 //                           two can be compared
