@@ -49,6 +49,12 @@ constexpr Resolution kResolutions[] = {
     {2560, 1440, "2560 X 1440"}, {3840, 2160, "3840 X 2160"},
 };
 constexpr int kNumResolutions = int(std::size(kResolutions));
+#if defined(__ANDROID__)
+// The phone: the window is the screen; the row picks the render scale
+// (native_max_scale) instead.
+constexpr const char* kScales[] = {"720P", "1440P", "2160P", "2880P"};
+constexpr int kNumScales = int(std::size(kScales));
+#endif
 
 enum Row { kResolution, kDisplay, kAntiAliasing, kVsync, kFpsCounter, kRenderer, kRows };
 
@@ -170,6 +176,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
 
   int row_ = 0;
   int resolution_ = 2;
+  int scale_ = 0;  // (Android: native_max_scale - 1)
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
   bool native_at_start_ = false;
   // Native on Vulkan (gpu_backend = vulkan) chosen / running: the API is picked
@@ -189,6 +196,7 @@ void GraphicsPage::Load() {
     if (kResolutions[i].w == w && kResolutions[i].h == h) resolution_ = i;
   }
   msaa_ = rex::cvar::Query<bool>("native_2x_msaa");
+  scale_ = std::clamp(rex::cvar::Query<int32_t>("native_max_scale"), 1, 4) - 1;
   native_at_start_ = native::CanSwitch();
   vulkan_at_start_ = rex::cvar::Query<std::string>("gpu_backend") == "vulkan";
   vulkan_ = vulkan_at_start_;
@@ -202,6 +210,12 @@ void GraphicsPage::Load() {
 void GraphicsPage::Change(int row, int dir) {
   switch (row) {
     case kResolution: {
+#if defined(__ANDROID__)
+      scale_ = (scale_ + dir + kNumScales) % kNumScales;
+      rex::cvar::SetFlagByName("native_max_scale", std::to_string(scale_ + 1));
+      SaveSetting("native_max_scale", std::to_string(scale_ + 1));
+      break;
+#endif
       resolution_ = (resolution_ + dir + kNumResolutions) % kNumResolutions;
       const Resolution& r = kResolutions[resolution_];
       ResizeWindow(r.w, r.h);
@@ -370,7 +384,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   // Rows.
   const bool restart_renderer = (!native_at_start_ && native_) || vulkan_ != vulkan_at_start_;
   const char* values[kRows] = {
+#if defined(__ANDROID__)
+      kScales[scale_],
+#else
       fullscreen_ ? "FULL SCREEN" : kResolutions[resolution_].label,
+#endif
       fullscreen_ ? "FULL SCREEN" : "WINDOWED",
       msaa_ ? "ON" : "OFF",
       vsync_ ? "ON" : "OFF",
@@ -380,7 +398,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   static const char* kLabels[kRows] = {"RESOLUTION", "DISPLAY MODE", "ANTI-ALIASING",
                                        "VSYNC",      "FPS COUNTER",  "RENDERER"};
   static const char* kHelp[kRows] = {
+#if defined(__ANDROID__)
+      "Rendering resolution. Higher is sharper but slower (720P: as on the Xbox 360).",
+#else
       "The window's size. The game renders at the scale that fills it.",
+#endif
       "Play in a window or full screen (Alt+Enter also switches).",
       "Renders at twice the resolution and averages it down: smooth edges.",
       "Waits for the monitor's refresh: no tearing.",

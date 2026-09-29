@@ -19,6 +19,7 @@
  *                        --paint-export <file.pt> <slot> <out.png>  /  --paint-import <file.pt> <slot> <image>
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
+ *                        --adb-install <game folder>   (Install to phone over USB, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -74,7 +75,7 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_COUNT };
 
 enum {
     ID_TAB = 100,
@@ -85,7 +86,9 @@ enum {
     ID_SETTINGS_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
-    ID_PROGRESS, ID_INSTALL_STATUS, ID_APK_CREATE, ID_APK_PROGRESS, ID_APK_STATUS,
+    ID_PROGRESS, ID_INSTALL_STATUS,
+    /* android */
+    ID_ADB_INSTALL, ID_ANDROID_CANCEL, ID_APK_CREATE, ID_APK_PROGRESS, ID_APK_STATUS,
     /* dlc */
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
@@ -132,7 +135,7 @@ static uint64_t  s_image_bytes;           /* game bytes on the chosen image, 0 =
 
 /* Every control, with its layout in 96-DPI units, so a DPI change can re-lay it. */
 typedef struct { HWND h; int x, y, w, hh, big; } Placed;
-static Placed s_placed[128];
+static Placed s_placed[192];
 static int    s_nplaced;
 
 static const struct { int w, h, scale; const WCHAR *label; } k_res[] = {
@@ -1259,7 +1262,7 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
     SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
     if (tab >= 0 && s_nctl[tab] < 32)
         s_ctl[tab][s_nctl[tab]++] = c;
-    if (s_nplaced < 128) {
+    if (s_nplaced < (int)(sizeof s_placed / sizeof s_placed[0])) {
         Placed *pl = &s_placed[s_nplaced++];
         pl->h = c; pl->x = x; pl->y = y; pl->w = w; pl->hh = h; pl->big = 0;
     }
@@ -1357,7 +1360,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android" };
 
     /* Just the strip of tabs; the pages below are plain window. */
     s_tab = add(-1, WC_TABCONTROLW, L"", WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER, 12, 10, 596, 28, ID_TAB);
@@ -1446,16 +1449,38 @@ static void build_ui(void)
     SendMessageW(ctl(ID_PROGRESS), PBM_SETRANGE32, 0, 1000);
     add(TAB_INSTALL, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 318, 560, 76, ID_INSTALL_STATUS);
     add(TAB_INSTALL, L"Static", L"Files already installed with the right size are skipped, so a stopped "
-                                L"installation continues where it left off.", SS_LEFT, X0, 400, 560, 36, 0);
-    add(TAB_INSTALL, L"Button", L"Android phone (experimental)", BS_GROUPBOX, X0, 444, 560, 150, 0);
-    add(TAB_INSTALL, L"Static", L"Makes the Android app and a zip of the installed game to copy to a phone; the "
-                                L"app installs the game into the phone's games folder on its first start.",
-        SS_LEFT, X0 + 16, 466, 528, 36, 0);
-    add(TAB_INSTALL, L"Button", L"Create APK Package\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 506, 170, 30,
+                                L"installation continues where it left off.", SS_LEFT, X0, 410, 560, 36, 0);
+
+    /* Android */
+    add(TAB_ANDROID, L"Static", L"Play on an Android phone or tablet (experimental): 64-bit ARM with Vulkan, such as a "
+                                L"recent Snapdragon. It needs about 7 GB free and a controller.",
+        SS_LEFT, X0, 50, 560, 36, 0);
+    add(TAB_ANDROID, L"Button", L"Option 1: install over USB (recommended)", BS_GROUPBOX, X0, 92, 560, 250, 0);
+    add(TAB_ANDROID, L"Static",
+        L"1.  On the phone, open Settings \x2192 About phone (Samsung: \x2192 Software information) and tap "
+        L"Build number 7 times, until it says developer mode is on.\n"
+        L"2.  Settings \x2192 Developer options: turn on USB debugging.\n"
+        L"3.  Connect the phone to this PC with a USB data cable and unlock it. When it asks \u201cAllow USB "
+        L"debugging?\u201d, tick Always allow from this computer and tap Allow.\n"
+        L"4.  Click Install to phone. The first time, the launcher downloads Google's adb tool (about 7 MB).",
+        SS_LEFT | SS_NOPREFIX, X0 + 16, 114, 528, 150, 0);
+    add(TAB_ANDROID, L"Button", L"Install to phone", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 16, 268, 160, 34,
+        ID_ADB_INSTALL);
+    add(TAB_ANDROID, L"Button", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, X0 + 186, 268, 100, 34,
+        ID_ANDROID_CANCEL);
+    add(TAB_ANDROID, L"Static", L"It copies the app and the game to the phone's games folder (next time only what "
+                                L"changed; the phone's own saves are kept) and starts it.",
+        SS_LEFT, X0 + 16, 306, 528, 32, 0);
+    add(TAB_ANDROID, L"Button", L"Option 2: a package to copy yourself", BS_GROUPBOX, X0, 350, 560, 104, 0);
+    add(TAB_ANDROID, L"Static", L"A folder with the app (SvR2011.apk), the game (SvR2011-Game.zip) and instructions. "
+                                L"Copy both files to the phone's Download folder and install the app: it installs "
+                                L"the game on its first start.",
+        SS_LEFT, X0 + 16, 372, 528, 48, 0);
+    add(TAB_ANDROID, L"Button", L"Create APK Package\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 416, 170, 30,
         ID_APK_CREATE);
-    add(TAB_INSTALL, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 196, 511, 348, 20, ID_APK_PROGRESS);
+    add(TAB_ANDROID, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0, 468, 560, 20, ID_APK_PROGRESS);
     SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETRANGE32, 0, 1000);
-    add(TAB_INSTALL, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0 + 16, 544, 528, 40, ID_APK_STATUS);
+    add(TAB_ANDROID, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 496, 560, 56, ID_APK_STATUS);
 
     /* DLC */
     add(TAB_DLC, L"Static", L"Downloadable content (DLC) and title updates as downloaded on the Xbox 360: "
@@ -3125,12 +3150,13 @@ done:
 
 static void set_busy(int busy)
 {
-    int ids[] = { ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_INSTALL, ID_GAMEDIR_CHANGE, ID_APK_CREATE };
+    int ids[] = { ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_INSTALL, ID_GAMEDIR_CHANGE, ID_APK_CREATE, ID_ADB_INSTALL };
     int i;
     s_busy = busy;
     for (i = 0; i < (int)(sizeof ids / sizeof ids[0]); i++)
         EnableWindow(ctl(ids[i]), !busy);
     EnableWindow(ctl(ID_CANCEL), busy);
+    EnableWindow(ctl(ID_ANDROID_CANCEL), busy);
     if (busy)
         EnableWindow(ctl(ID_PLAY), FALSE);
     else
@@ -3171,23 +3197,51 @@ static void start_install(void)
     }
 }
 
-/* ── Android package (apk_package.h) ─────────────────────────────────── */
+/* ── Android tab (apk_package.h) ──────────────────────────────────────── */
 
-static WCHAR s_apk_src[MAX_PATH], s_apk_out[MAX_PATH];
+static WCHAR s_apk_src[MAX_PATH], s_apk_out[MAX_PATH], s_adb[MAX_PATH];
+static int s_android_job;  /* 0 package, 1 install to phone */
 
 static void apk_progress(int permille, const WCHAR *msg)
 {
     PostMessageW(s_wnd, WM_APP_APK, (WPARAM)permille, msg ? (LPARAM)wdup(msg) : 0);
 }
 
-static void apk_console_progress(int permille, const WCHAR *msg)   /* (--apk-package) */
+static void apk_console_progress(int permille, const WCHAR *msg)   /* (--apk-package, --adb-install) */
 {
     static int last = -100;
-    (void)msg;
+    if (msg && s_console) {
+        con_print(msg);
+        con_print(L"\n");
+    }
     if (permille >= last + 100) {
         last = permille - permille % 100;
         wprintf(L"%d%%\n", permille / 10);
     }
+}
+
+/* adb.exe, or Google's platform tools downloaded beside the launcher. */
+static int adb_get(apk_progress_fn progress, WCHAR *err, int errn)
+{
+    WCHAR tmp[MAX_PATH], dir[MAX_PATH];
+    if (adb_find(s_launcher_dir, s_adb, MAX_PATH))
+        return 1;
+    progress(0, L"Downloading Google's Android platform tools (adb)\x2026");
+    GetTempPathW(MAX_PATH, dir);
+    swprintf_s(tmp, MAX_PATH, L"%ssvr2011-platform-tools.zip", dir);
+    if (!update_download(ADB_TOOLS_URL, tmp, NULL, 0, &s_cancel, err, (size_t)errn))
+        return 0;
+    if (!unzip_file(tmp, s_launcher_dir)) {
+        DeleteFileW(tmp);
+        swprintf_s(err, errn, L"Could not unpack the platform tools into %s.", s_launcher_dir);
+        return 0;
+    }
+    DeleteFileW(tmp);
+    if (!adb_find(s_launcher_dir, s_adb, MAX_PATH)) {
+        swprintf_s(err, errn, L"The platform tools download has no adb.exe.");
+        return 0;
+    }
+    return 1;
 }
 
 static DWORD WINAPI apk_thread(LPVOID unused)
@@ -3196,28 +3250,36 @@ static DWORD WINAPI apk_thread(LPVOID unused)
     int ok;
     (void)unused;
     err[0] = 0;
-    ok = apk_package(s_game_dir, s_apk_src, s_apk_out, &s_cancel, apk_progress, err, 600);
-    PostMessageW(s_wnd, WM_APP_APK, ok ? APK_OK : APK_FAILED, ok ? 0 : (LPARAM)wdup(err));
+    if (s_android_job == 1)
+        ok = adb_get(apk_progress, err, 600) &&
+             adb_install(s_adb, s_game_dir, s_apk_src, &s_cancel, apk_progress, err, 600);
+    else
+        ok = apk_package(s_game_dir, s_apk_src, s_apk_out, &s_cancel, apk_progress, err, 600);
+    PostMessageW(s_wnd, WM_APP_APK, ok ? APK_OK : APK_FAILED, (LPARAM)wdup(err));
     return 0;
 }
 
-static void start_apk(void)
+/* The installed game and the release's APK, or a message. */
+static int android_ready(void)
 {
-    WCHAR xex[MAX_PATH], dir[MAX_PATH];
+    WCHAR xex[MAX_PATH];
     if (s_busy)
-        return;
-    swprintf_s(xex, MAX_PATH, L"%s\default.xex", s_game_dir);
+        return 0;
+    swprintf_s(xex, MAX_PATH, L"%s\\default.xex", s_game_dir);
     if (!s_game_dir[0] || !file_exists(xex)) {
-        set_text(ID_APK_STATUS, L"Install the game first (above): the package is made from the installed game.");
-        return;
+        set_text(ID_APK_STATUS, L"Install the game on this PC first (Install tab): the phone gets a copy of it.");
+        return 0;
     }
     if (!apk_find(s_game_dir, s_launcher_dir, s_apk_src, MAX_PATH)) {
         set_text(ID_APK_STATUS, L"This release has no Android app (Android\\SvR2011.apk beside the launcher).");
-        return;
+        return 0;
     }
-    if (!pick_folder(L"Choose where to put the Android package (about the size of the game)", dir))
-        return;
-    swprintf_s(s_apk_out, MAX_PATH, L"%s\\SvR2011 Android", dir);
+    return 1;
+}
+
+static void start_android(int job)
+{
+    s_android_job = job;
     s_cancel = 0;
     set_busy(1);
     SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETPOS, 0, 0);
@@ -3227,8 +3289,34 @@ static void start_apk(void)
     s_worker = CreateThread(NULL, 0, apk_thread, NULL, 0, NULL);
     if (!s_worker) {
         set_busy(0);
-        set_text(ID_APK_STATUS, L"The packaging could not be started.");
+        set_text(ID_APK_STATUS, L"It could not be started.");
     }
+}
+
+static void start_apk(void)
+{
+    WCHAR dir[MAX_PATH];
+    if (!android_ready())
+        return;
+    if (!pick_folder(L"Choose where to put the Android package (about the size of the game)", dir))
+        return;
+    swprintf_s(s_apk_out, MAX_PATH, L"%s\\SvR2011 Android", dir);
+    start_android(0);
+}
+
+static void start_adb(void)
+{
+    if (!android_ready())
+        return;
+    if (!adb_find(s_launcher_dir, s_adb, MAX_PATH) &&
+        MessageBoxW(s_wnd,
+                    L"Installing over USB uses adb, Google's Android platform tool (about 7 MB), which this "
+                    L"PC doesn't have yet.\n\nDownload it from Google now? It is put in the launcher's "
+                    L"platform-tools folder. By downloading it you agree to the Android SDK terms:\n"
+                    L"https://developer.android.com/studio/terms",
+                    WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+    start_android(1);
 }
 
 static void apk_message(WPARAM wp, WCHAR *msg)
@@ -3237,13 +3325,20 @@ static void apk_message(WPARAM wp, WCHAR *msg)
     if (wp == APK_OK) {
         set_busy(0);
         SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETPOS, 1000, 0);
-        swprintf_s(t, 800, L"Done: %s. Copy its files to the phone (see \"Install on Android.txt\").", s_apk_out);
-        set_text(ID_APK_STATUS, t);
-        ShellExecuteW(s_wnd, L"open", s_apk_out, NULL, NULL, SW_SHOWNORMAL);
+        if (s_android_job == 1) {
+            set_text(ID_APK_STATUS, msg && !wcscmp(msg, L"updated")
+                ? L"Done: the game on the phone is up to date, and SvR 2011 is starting there."
+                : L"Done: SvR 2011 is installed on the phone and starting there. You can unplug it.");
+        } else {
+            swprintf_s(t, 800, L"Done: %s. Copy its files to the phone (see \"Install on Android.txt\").", s_apk_out);
+            set_text(ID_APK_STATUS, t);
+            ShellExecuteW(s_wnd, L"open", s_apk_out, NULL, NULL, SW_SHOWNORMAL);
+        }
     } else if (wp == APK_FAILED) {
         set_busy(0);
         SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETPOS, 0, 0);
-        swprintf_s(t, 800, L"The package was not made. %s", msg ? msg : L"");
+        swprintf_s(t, 800, L"%s %s", s_android_job == 1 ? L"Not installed." : L"The package was not made.",
+                   msg ? msg : L"");
         set_text(ID_APK_STATUS, t);
     } else {
         SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETPOS, wp, 0);
@@ -4116,6 +4211,15 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_APK_CREATE:
             start_apk();
             break;
+        case ID_ADB_INSTALL:
+            start_adb();
+            break;
+        case ID_ANDROID_CANCEL:
+            if (s_busy) {
+                InterlockedExchange(&s_cancel, 1);
+                set_text(ID_APK_STATUS, L"Cancelling\x2026");
+            }
+            break;
         case ID_DLC_BROWSE: {
             WCHAR p[MAX_PATH];
             if (pick_folder(L"Choose the folder with the DLC", p))
@@ -4415,6 +4519,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         dlc_thread(NULL);
         return s_dlc.failed ? 1 : 0;
     }
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--adb-install")) {   /* <game folder> */
+        WCHAR err[600] = L"";
+        int ok;
+        s_console = 1;
+        console_setup();
+        wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
+        if (!apk_find(s_game_dir, s_launcher_dir, s_apk_src, MAX_PATH)) {
+            wprintf(L"failed: no Android\\SvR2011.apk\n");
+            return 1;
+        }
+        ok = adb_get(apk_console_progress, err, 600) &&
+             adb_install(s_adb, s_game_dir, s_apk_src, &s_cancel, apk_console_progress, err, 600);
+        wprintf(ok ? L"ok: %s\n" : L"failed: %s\n", err);
+        return ok ? 0 : 1;
+    }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--apk-package")) {   /* <game folder> <out folder> */
         WCHAR err[600] = L"";
         int ok;
@@ -4442,7 +4561,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return ok ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"install", L"dlc", L"saves", L"paint", L"movies" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"install", L"dlc", L"saves", L"paint", L"movies", L"android" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */

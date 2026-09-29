@@ -52,6 +52,10 @@
 #include "native/textures.h"
 
 // Default "main" (as the launcher): settings files without the key use it.
+REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
+                     "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
+                     "The scale follows the window; phones start at 1.");
+
 REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
                       "Native renderer: off, main (draws the game in the main window; the "
                       "emulated renderer only runs the GPU command stream, and takes over if the "
@@ -783,15 +787,18 @@ void ApplyOutputSettings(Renderer* r) {
   out_w = std::max(out_w & ~1u, 64u);
   out_h = std::max(out_h & ~1u, 36u);
   static bool aa = rex::cvar::Query<bool>("native_2x_msaa");
+  static int32_t max_scale = REXCVAR_GET(native_max_scale);
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
     aa = rex::cvar::Query<bool>("native_2x_msaa");
+    max_scale = REXCVAR_GET(native_max_scale);
     aa_checked = r->frames;
   }
   // Enough guest pixels for every output pixel - for two per axis with
   // anti-aliasing (2x2 supersampling at 1080p: 3x).
   const uint32_t need = out_h * (aa ? 2 : 1);
-  const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, 4);
+  const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
+  const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   if (scale == g_scale && out_w == g_out_w && out_h == g_out_h) return;
 
   // Idle: nothing in flight may still use what is replaced.

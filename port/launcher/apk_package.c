@@ -1,4 +1,5 @@
-/* WWE SmackDown vs. Raw 2011 launcher - "Create APK Package" (apk_package.h).
+/* WWE SmackDown vs. Raw 2011 launcher - the Android app: "Create APK Package"
+   and "Install to phone" over USB (apk_package.h).
 
    The game zip is stored (not compressed: the disc files are compressed
    already) and always Zip64, since the game is over 4 GB. Each file is
@@ -8,9 +9,11 @@
 
 #include "apk_package.h"
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 
 #define APK_NAME     L"SvR2011.apk"
@@ -33,6 +36,7 @@ typedef struct {
     volatile LONG  *cancel;
     apk_progress_fn progress;
     int             last;
+    int             update;      /* (USB install over an installed game: the phone's own state stays) */
 } Pack;
 
 static uint32_t s_crc_table[256];
@@ -56,14 +60,16 @@ static uint32_t crc_update(uint32_t crc, const uint8_t *p, size_t n)
 }
 
 /* Left out of the package: the Windows programs and the PC's own state. */
-static int skipped(const WCHAR *rel, int dir)
+static int skipped(const Pack *p, const WCHAR *rel, int dir)
 {
-    static const WCHAR *dirs[] = { L"logs", L"SaveBackups", L"Android", L"$SystemUpdate",
+    static const WCHAR *dirs[] = { L"logs", L"SaveBackups", L"Android", L"platform-tools", L"$SystemUpdate",
                                    L"UserData/cache", L"UserData/crashes" };
     static const WCHAR *files[] = { L"launcher.ini", L"svr2011.toml" };
     const WCHAR *ext = wcsrchr(rel, L'.');
     int i;
     if (dir) {
+        if (p->update && (!_wcsicmp(rel, L"Saves") || !_wcsicmp(rel, L"UserData")))
+            return 1;
         for (i = 0; i < (int)(sizeof dirs / sizeof dirs[0]); i++)
             if (!_wcsicmp(rel, dirs[i]))
                 return 1;
@@ -120,11 +126,11 @@ static int walk(Pack *p, const WCHAR *rel)
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
             continue;
         swprintf_s(child, MAX_PATH, rel[0] ? L"%s/%s" : L"%s%s", rel, fd.cFileName);
-        if (skipped(child, dir))
+        if (skipped(p, child, dir))
             continue;
         if (dir) {
             swprintf_s(full, MAX_PATH, L"%s\\%s", p->root, child);
-            if (!_wcsicmp(full, p->out_dir))  /* (packaging into the game folder) */
+            if (p->out_dir && !_wcsicmp(full, p->out_dir))  /* (packaging into the game folder) */
                 continue;
             if (!add(p, child, 0, &fd.ftLastWriteTime, 1) || !walk(p, child)) {
                 FindClose(h);
@@ -413,5 +419,373 @@ done:
     }
     if (!ok)
         DeleteFileW(part);
+    return ok;
+}
+
+/* ── Install to phone (USB debugging, Google's adb) ─────────────────────── */
+
+#define ADB_PACKAGE  L"io.github.kaikoclanworth1.svr2011"
+#define ADB_REMOTE   L"/storage/emulated/0/games/WWE SmackDown vs. Raw 2011"
+#define ADB_CMD      32767
+#define ADB_OUT      16384
+
+int adb_find(const WCHAR *launcher_dir, WCHAR *out, int outn)
+{
+    WCHAR local[MAX_PATH];
+    DWORD n;
+    swprintf_s(out, outn, L"%s\\platform-tools\\adb.exe", launcher_dir);
+    if (GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES)
+        return 1;
+    if (SearchPathW(NULL, L"adb.exe", NULL, (DWORD)outn, out, NULL))
+        return 1;
+    n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (n && n < MAX_PATH) {
+        swprintf_s(out, outn, L"%s\\Android\\Sdk\\platform-tools\\adb.exe", local);
+        if (GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES)
+            return 1;
+    }
+    out[0] = 0;
+    return 0;
+}
+
+/* Runs a command line without a window; its output (stdout and stderr) in
+   out. The exit code, or -1 if it could not start / was cancelled. */
+static int run(WCHAR *cmd, char *out, int outn, volatile LONG *cancel)
+{
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    HANDLE rd, wr;
+    DWORD code = (DWORD)-1, got;
+    int n = 0;
+    out[0] = 0;
+    if (!CreatePipe(&rd, &wr, &sa, 0))
+        return -1;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        CloseHandle(rd);
+        CloseHandle(wr);
+        return -1;
+    }
+    CloseHandle(wr);
+    for (;;) {
+        char buf[4096];
+        if (cancel && *cancel) {
+            TerminateProcess(pi.hProcess, 1);
+            break;
+        }
+        if (!ReadFile(rd, buf, sizeof buf, &got, NULL) || !got)
+            break;
+        if (n + (int)got >= outn) {  /* keep the end (errors come last) */
+            int keep = outn / 2;
+            if (n > keep) {
+                memmove(out, out + n - keep, keep);
+                n = keep;
+            }
+            if (n + (int)got >= outn)
+                got = (DWORD)(outn - 1 - n);
+        }
+        memcpy(out + n, buf, got);
+        n += got;
+        out[n] = 0;
+    }
+    CloseHandle(rd);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return (cancel && *cancel) ? -1 : (int)code;
+}
+
+/* The last non-empty line of adb's output, for error messages. */
+static void last_line(const char *out, WCHAR *line, int n)
+{
+    const char *end = out + strlen(out), *start;
+    while (end > out && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '))
+        end--;
+    start = end;
+    while (start > out && start[-1] != '\n')
+        start--;
+    {
+        char tmp[512];
+        int len = (int)(end - start) < 511 ? (int)(end - start) : 511;
+        memcpy(tmp, start, len);
+        tmp[len] = 0;
+        if (!MultiByteToWideChar(CP_UTF8, 0, tmp, -1, line, n))
+            line[0] = 0;
+    }
+}
+
+/* 'text' for the phone's shell. */
+static void shell_quote(const WCHAR *s, WCHAR *out, int n)
+{
+    int k = 0;
+    out[k++] = L'\'';
+    for (; *s && k < n - 6; s++) {
+        if (*s == L'\'') {
+            out[k++] = L'\''; out[k++] = L'\\'; out[k++] = L'\''; out[k++] = L'\'';
+        } else {
+            out[k++] = *s;
+        }
+    }
+    out[k++] = L'\'';
+    out[k] = 0;
+}
+
+typedef struct {
+    const WCHAR    *adb;
+    WCHAR           serial[128];
+    WCHAR          *cmd;
+    char           *out;
+    volatile LONG  *cancel;
+} Adb;
+
+/* adb -s <serial> <args>: the exit code (output in a->out). */
+static int adb_run(Adb *a, const WCHAR *fmt, ...)
+{
+    int k;
+    va_list ap;
+    k = swprintf_s(a->cmd, ADB_CMD, L"\"%s\" -s %s ", a->adb, a->serial);
+    va_start(ap, fmt);
+    vswprintf_s(a->cmd + k, ADB_CMD - k, fmt, ap);
+    va_end(ap);
+    return run(a->cmd, a->out, ADB_OUT, a->cancel);
+}
+
+/* The one phone ready for USB debugging. */
+static int adb_device(Adb *a, WCHAR *err, int errn)
+{
+    char *line;
+    int unauthorized = 0, found = 0;
+    swprintf_s(a->cmd, ADB_CMD, L"\"%s\" devices", a->adb);
+    if (run(a->cmd, a->out, ADB_OUT, a->cancel) != 0) {
+        swprintf_s(err, errn, L"adb did not start (%s).", a->adb);
+        return 0;
+    }
+    for (line = strtok(a->out, "\r\n"); line; line = strtok(NULL, "\r\n")) {
+        char *tab = strchr(line, '\t');
+        if (!tab)
+            continue;
+        *tab = 0;
+        if (!strcmp(tab + 1, "device") && !found) {
+            MultiByteToWideChar(CP_UTF8, 0, line, -1, a->serial, 128);
+            found = 1;
+        } else if (!strcmp(tab + 1, "unauthorized")) {
+            unauthorized = 1;
+        }
+    }
+    if (found)
+        return 1;
+    swprintf_s(err, errn, unauthorized
+        ? L"The phone hasn't allowed this PC yet: unlock it, tap Allow on the \"Allow USB debugging?\" message, then try again."
+        : L"No phone found. Turn on USB debugging (steps above), connect the phone with a USB data cable and unlock it.");
+    return 0;
+}
+
+/* mkdir -p for every folder of the listing (a few per command). */
+static int make_folders(Adb *a, const Pack *p, WCHAR *err, int errn)
+{
+    WCHAR *list = (WCHAR *)malloc(ADB_CMD * sizeof(WCHAR)), path[MAX_PATH + 64], q[MAX_PATH * 2], line[512];
+    int i, k = 0, ok = 1;
+    if (!list) {
+        swprintf_s(err, errn, L"Out of memory.");
+        return 0;
+    }
+    k = swprintf_s(list, ADB_CMD, L"'%s'", ADB_REMOTE);
+    for (i = 0; i <= p->n && ok; i++) {
+        int last = i == p->n;
+        if (!last) {
+            if (!p->e[i].dir)
+                continue;
+            swprintf_s(path, MAX_PATH + 64, ADB_REMOTE L"/%s", p->e[i].name);
+            shell_quote(path, q, MAX_PATH * 2);
+        }
+        if (last || k + (int)wcslen(q) + 2 >= 8000) {
+            if (adb_run(a, L"shell mkdir -p %s", list) != 0) {
+                last_line(a->out, line, 512);
+                swprintf_s(err, errn, *a->cancel ? L"Cancelled." : L"Could not make the game folder on the phone: %s",
+                           line);
+                ok = 0;
+            }
+            k = 0;
+            list[0] = 0;
+        }
+        if (!last)
+            k += swprintf_s(list + k, ADB_CMD - k, L" %s", q);
+    }
+    free(list);
+    return ok;
+}
+
+/* Files pushed together: one folder's, at most 48 or 256 MB at a time. */
+typedef struct {
+    Adb      *a;
+    Pack     *p;
+    WCHAR    *files, folder[MAX_PATH];
+    int       k, count;
+    uint64_t  bytes;
+} Batch;
+
+static int batch_push(Batch *b, WCHAR *err, int errn)
+{
+    WCHAR msg[MAX_PATH + 32], line[512];
+    const WCHAR *sep = b->folder[0] ? L"/" : L"";
+    if (!b->count)
+        return 1;
+    swprintf_s(msg, MAX_PATH + 32, L"Copying %s%s\x2026", b->folder[0] ? b->folder : L"the game folder", sep);
+    b->p->progress(b->p->total ? (int)(b->p->done * 1000 / b->p->total) : 0, msg);
+    if (adb_run(b->a, L"push --sync%s \"" ADB_REMOTE L"/%s%s\"", b->files, b->folder, sep) != 0) {
+        last_line(b->a->out, line, 512);
+        swprintf_s(err, errn, *b->a->cancel ? L"Cancelled." : L"Copying to the phone failed: %s", line);
+        return 0;
+    }
+    b->p->done += b->bytes;
+    b->k = b->count = 0;
+    b->bytes = 0;
+    b->files[0] = 0;
+    return 1;
+}
+
+static int batch_add(Batch *b, const Entry *e, const WCHAR *game_dir, WCHAR *err, int errn)
+{
+    WCHAR folder[MAX_PATH], full[MAX_PATH], *c;
+    const WCHAR *slash = wcsrchr(e->name, L'/');
+    wcsncpy_s(folder, MAX_PATH, e->name, slash ? (size_t)(slash - e->name) : 0);
+    if (b->count && (wcscmp(folder, b->folder) || b->count >= 48 || b->bytes >= (256ull << 20) ||
+                     b->k + MAX_PATH * 2 > ADB_CMD - 1024) &&
+        !batch_push(b, err, errn))
+        return 0;
+    if (!b->count)
+        wcscpy_s(b->folder, MAX_PATH, folder);
+    swprintf_s(full, MAX_PATH, L"%s\\%s", game_dir, e->name);
+    for (c = full; *c; c++)
+        if (*c == L'/')
+            *c = L'\\';
+    b->k += swprintf_s(b->files + b->k, ADB_CMD - b->k, L" \"%s\"", full);
+    b->count++;
+    b->bytes += e->size;
+    return 1;
+}
+
+int adb_install(const WCHAR *adb, const WCHAR *game_dir, const WCHAR *apk,
+                volatile LONG *cancel, apk_progress_fn progress_fn, WCHAR *err, int errn)
+{
+    Adb a;
+    Pack p;
+    WCHAR line[512];
+    int i, ok = 0, has_game;
+    Entry *xex = NULL;
+
+    memset(&a, 0, sizeof a);
+    memset(&p, 0, sizeof p);
+    a.adb = adb;
+    a.cancel = cancel;
+    a.cmd = (WCHAR *)malloc(ADB_CMD * sizeof(WCHAR));
+    a.out = (char *)malloc(ADB_OUT);
+    if (!a.cmd || !a.out) {
+        swprintf_s(err, errn, L"Out of memory.");
+        goto done;
+    }
+
+    progress_fn(0, L"Looking for the phone\x2026");
+    if (!adb_device(&a, err, errn))
+        goto done;
+
+    /* The app (over an older one: its data stays). */
+    progress_fn(0, L"Installing the app on the phone\x2026");
+    adb_run(&a, L"shell am force-stop " ADB_PACKAGE);
+    if (adb_run(&a, L"install -r \"%s\"", apk) != 0 || !strstr(a.out, "Success")) {
+        last_line(a.out, line, 512);
+        if (strstr(a.out, "UPDATE_INCOMPATIBLE"))
+            swprintf_s(err, errn, L"The phone has SvR 2011 from a different build. Uninstall it on the phone "
+                                  L"(the game folder and saves stay) and try again.");
+        else if (*cancel)
+            swprintf_s(err, errn, L"Cancelled.");
+        else
+            swprintf_s(err, errn, L"The app did not install: %s", line);
+        goto done;
+    }
+    /* All-files access (the game folder is in shared storage), so the app
+       doesn't have to ask. */
+    adb_run(&a, L"shell appops set " ADB_PACKAGE L" MANAGE_EXTERNAL_STORAGE allow");
+
+    /* A phone with the game already: only the game files (its saves,
+       created content and settings stay). */
+    has_game = adb_run(&a, L"shell ls '" ADB_REMOTE L"/default.xex'") == 0;
+    p.root = game_dir;
+    p.update = has_game;
+    p.cancel = cancel;
+    p.progress = progress_fn;
+    p.last = -1;
+    progress_fn(0, L"Listing the game files\x2026");
+    if (!walk(&p, L"")) {
+        swprintf_s(err, errn, L"Out of memory listing the game files.");
+        goto done;
+    }
+    for (i = 0; i < p.n; i++)
+        if (!_wcsicmp(p.e[i].name, L"default.xex"))
+            xex = &p.e[i];
+    if (!xex) {
+        swprintf_s(err, errn, L"%s has no default.xex: install the game first.", game_dir);
+        goto done;
+    }
+    if (!has_game && adb_run(&a, L"shell df -k /storage/emulated/0") == 0) {
+        /* Filesystem 1K-blocks Used Available Use% Mounted on */
+        char *l2 = strchr(a.out, '\n');
+        unsigned long long blocks, used, avail;
+        if (l2 && sscanf_s(l2 + 1, "%*s %llu %llu %llu", &blocks, &used, &avail) == 3 &&
+            avail * 1024 < p.total + (256ull << 20)) {
+            swprintf_s(err, errn, L"The phone has %.1f GB free; the game needs %.1f GB.",
+                       avail / 1048576.0, p.total / 1073741824.0);
+            goto done;
+        }
+    }
+
+    /* Folders (empty ones too), then the files in batches per folder, only
+       those that differ (--sync), default.xex last: the app treats the game
+       as installed once it's there. */
+    if (!make_folders(&a, &p, err, errn))
+        goto done;
+    {
+        Batch b;
+        memset(&b, 0, sizeof b);
+        b.a = &a;
+        b.p = &p;
+        b.files = (WCHAR *)malloc(ADB_CMD * sizeof(WCHAR));
+        if (!b.files) {
+            swprintf_s(err, errn, L"Out of memory.");
+            goto done;
+        }
+        b.files[0] = 0;
+        for (i = 0; i < p.n; i++) {
+            if (p.e[i].dir || &p.e[i] == xex)
+                continue;
+            if (!batch_add(&b, &p.e[i], game_dir, err, errn)) {
+                free(b.files);
+                goto done;
+            }
+        }
+        if (!batch_push(&b, err, errn) || !batch_add(&b, xex, game_dir, err, errn) ||
+            !batch_push(&b, err, errn)) {
+            free(b.files);
+            goto done;
+        }
+        free(b.files);
+    }
+
+    progress_fn(1000, L"Starting SvR 2011 on the phone\x2026");
+    adb_run(&a, L"shell am start -n " ADB_PACKAGE L"/.InstallActivity");
+    swprintf_s(err, errn, has_game ? L"updated" : L"installed");
+    ok = 1;
+done:
+    free(p.e);
+    free(a.cmd);
+    free(a.out);
     return ok;
 }

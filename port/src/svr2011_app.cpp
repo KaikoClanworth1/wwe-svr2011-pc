@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 #if defined(_WIN32)
@@ -122,12 +123,28 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     paths.config_path = config;
   }
   g_config_path = paths.config_path;
+#if defined(__ANDROID__)
+  // The phone's render cost: the Xbox 360's 720p without supersampling
+  // (at the screen's 1080p it rendered 3x, 30-45 fps); the GRAPHICS page
+  // raises it. Added to settings files from before.
+  if (std::filesystem::exists(paths.config_path)) {
+    std::ifstream in(paths.config_path);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::ofstream out(paths.config_path, std::ios::app);
+    if (!text.empty() && text.back() != '\n') out << '\n';
+    if (text.find("native_max_scale") == std::string::npos) out << "native_max_scale = 1\n";
+    if (text.find("native_2x_msaa") == std::string::npos) out << "native_2x_msaa = false\n";
+  }
+#endif
   if (!std::filesystem::exists(paths.config_path)) {
     std::string config = kDefaultConfig;
 #if defined(__ANDROID__)
     // The phone: Vulkan, SDL controllers, the whole screen.
     config.replace(config.find("input_backend = \"xinput\""), 24, "input_backend = \"sdl\"");
     config += "gpu_backend = \"vulkan\"\n";
+    config += "native_max_scale = 1\n";
+    config += "native_2x_msaa = false\n";
     config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
 #endif
     if (svr2011::IsSteamDeck()) {  // its screen is the window
