@@ -51,6 +51,7 @@ It also adds:
 - [Install and play](#install-and-play)
 - [Controls](#controls)
 - [Updates](#updates)
+- [Steam Deck and Linux (Proton)](#steam-deck-and-linux-proton)
 - [Settings](#settings)
 - [Features](#features)
   - [Entrance music from your PC](#entrance-music-from-your-pc)
@@ -71,7 +72,7 @@ It also adds:
 | | |
 |---|---|
 | 💿 **The game** | A disc image of your own *WWE SmackDown vs. Raw 2011* **Xbox 360** disc, as an `.iso`. The PS3, Wii, PS2 and PSP versions won't work. |
-| 🖥️ **PC** | Windows 10 or 11 (64-bit). A graphics card with Direct3D 12. A CPU from about 2009 or later (SSE4.2). |
+| 🖥️ **PC** | Windows 10 or 11 (64-bit). A graphics card with Direct3D 12. A CPU from about 2009 or later (SSE4.2). A **Steam Deck** or Linux PC with Proton should also work: see [Steam Deck and Linux](#steam-deck-and-linux-proton) (experimental). |
 | 💾 **Disk space** | About 6 GB: 5.3 GB for the game, plus room for saves and caches. |
 | 🎮 **Controller** | An Xbox controller (Xbox 360, Xbox One or Series). Other gamepads work through SDL. |
 
@@ -115,6 +116,26 @@ flowchart LR
 From version 0.2.0 the launcher **updates itself**. When it starts, it checks this repository's releases. If there's a newer one, it asks, downloads it, replaces the program files and restarts. Your saves, settings, music and movies are kept. The **Updates** box on the **Play** tab shows your version, has a **Check for updates** button, and can turn the check at start off.
 
 **Coming from v0.1.0:** that version has no updater. Download v0.2.0 once, unzip it, open its launcher, and click **Install** into your game folder. Files already there are skipped.
+
+### Steam Deck and Linux (Proton)
+
+> **Experimental.** The port is a Windows program. On a Steam Deck or a Linux PC it runs through **Proton**, Steam's compatibility layer, and hasn't been fully tested there yet. Please [report](https://github.com/KaikoClanworth1/wwe-svr2011-pc/issues) how it goes, with the newest file from the game folder's `logs` folder.
+
+**Set up (Desktop Mode):**
+
+1. Download the latest zip from [Releases](https://github.com/KaikoClanworth1/wwe-svr2011-pc/releases/latest) and unzip it, for example into `~/Games/SvR2011-PC`. Copy your `.iso` onto the Deck or its SD card.
+2. In Steam: **Games → Add a Non-Steam Game to My Library → Browse**. Set the file type to **All Files** and choose `SvR2011 Launcher.exe`.
+3. In that entry's **Properties → Compatibility**, tick **Force the use of a specific Steam Play compatibility tool** and pick **Proton Experimental** (or the newest Proton).
+4. Start it from Steam and use the **Install** tab as on Windows. In the file dialogs your Linux files are on drive **Z:**, for example `Z:\home\deck\Games`.
+
+**Play in Game Mode:** add the game folder's `svr2011.exe` as another non-Steam game and force Proton on it the same way. It starts straight into the game with the Deck's controls, and is fullscreen by default on a Deck. You can also keep using the launcher entry and press **Play** (use the trackpad or touchscreen).
+
+**Tips:**
+
+- **Typing names:** press **Steam + X** for the Deck's keyboard. It types into the game's on-screen keyboard.
+- **Entrance music:** MP3 is the safest format under Proton.
+- **Custom movies:** the launcher's movie maker may not read every video format under Proton. If a video won't convert, convert it on a Windows PC, or try an H.264 `.mp4`.
+- **Something draws wrong:** in the launcher's **Settings**, set **Renderer** to **Emulated** and compare.
 
 ---
 

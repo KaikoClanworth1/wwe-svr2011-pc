@@ -934,6 +934,13 @@ static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_a
     CheckDlgButton(s_wnd, ID_SHOWFPS, fps ? BST_CHECKED : BST_UNCHECKED);
 }
 
+/* A Steam Deck (Steam sets SteamDeck=1 for what it starts there). */
+static int on_steam_deck(void)
+{
+    WCHAR v[8];
+    return GetEnvironmentVariableW(L"SteamDeck", v, 8) == 1 && v[0] == L'1';
+}
+
 static void settings_load(void)
 {
     WCHAR p[MAX_PATH];
@@ -963,6 +970,8 @@ static void settings_load(void)
             else if (!strcmp(key, "window_height")) h = atoi(val);
         }
         lines_free(&l);
+    } else if (on_steam_deck()) {
+        fullscreen = 1;  /* no settings yet: the Deck's screen is the window */
     }
     for (i = 0; i < N_RES; i++)
         if (k_res[i].w == w && k_res[i].h == h)

@@ -69,6 +69,14 @@ UPDATES (launcher, Play tab)
   An update replaces only the program files; saves, settings, music and
   movies are kept. "Check for updates" checks by hand.
 
+STEAM DECK / LINUX (experimental)
+  Runs through Proton. In Desktop Mode, add "SvR2011 Launcher.exe" to Steam
+  (Add a Non-Steam Game), then Properties > Compatibility > force Proton
+  Experimental, and install as on Windows (your Linux files are on drive Z:).
+  For Game Mode, add the game folder's svr2011.exe the same way; it is
+  fullscreen by default on a Deck. Steam + X opens the keyboard for names.
+  Please report problems with the newest file from the logs folder.
+
 CONTROLS
   Xbox controller - same layout as on the Xbox 360.
   Typing: while the game's on-screen keyboard is open (superstar names,

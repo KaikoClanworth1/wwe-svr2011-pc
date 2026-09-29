@@ -37,6 +37,7 @@
 #include "native/native_renderer.h"
 #include "frame_stats.h"
 #include "keyboard_typing.h"
+#include "platform.h"
 #include "script_input.h"
 #include "xaudio2_audio.h"
 
@@ -52,6 +53,7 @@ namespace {
 constexpr char kDefaultConfig[] =
     "# WWE SmackDown vs. Raw 2011 - settings (the launcher rewrites this file)\n"
     "gpu_plugin = \"xenos\"\n"
+    "native_renderer = \"main\"\n"  // as the launcher's defaults (Emulated: "off")
     "input_backend = \"xinput\"\n"
     "resolution = \"720p\"\n"
     "resolution_scale = 1\n"
@@ -111,7 +113,11 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 
   g_config_path = paths.config_path;
   if (!std::filesystem::exists(paths.config_path)) {
-    std::ofstream(paths.config_path) << kDefaultConfig;
+    std::string config = kDefaultConfig;
+    if (svr2011::IsSteamDeck()) {  // its screen is the window
+      config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
+    }
+    std::ofstream(paths.config_path) << config;
   }
 }
 
@@ -233,6 +239,8 @@ void Svr2011App::OnPostLoadXexImage() {
       REXLOG_WARN("could not mount the Custom Movies folder {}", movies.string());
     }
   }
+
+  REXLOG_INFO("platform: {}", svr2011::PlatformDescription());
 
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
