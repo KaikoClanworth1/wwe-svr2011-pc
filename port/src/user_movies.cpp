@@ -162,6 +162,20 @@ REX_HOOK_RAW(sub_8287DFD0) {
   __imp__sub_8287DFD0(ctx, base);
   if (!movies) return;
   const uint32_t count = Rd32(base, list), rows_at = Rd32(base, list + 8);
+  // Tools: SVR2011_DUMP_MOVIE_NAMES=<file> writes "<id><TAB><name>" for the
+  // game's movies (the launcher's list of superstars' movies).
+  char* dump = nullptr;
+  size_t dump_len = 0;
+  if (_dupenv_s(&dump, &dump_len, "SVR2011_DUMP_MOVIE_NAMES") == 0 && dump) {
+    if (FILE* f = std::fopen(dump, "w")) {
+      for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t row = rows_at + i * kListItemSize, s = Rd32(base, row + 12);
+        if (s) std::fprintf(f, "%d\t%s\n", int(Rd32(base, row)), reinterpret_cast<const char*>(base + s));
+      }
+      std::fclose(f);
+    }
+    free(dump);
+  }
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t row = rows_at + i * kListItemSize;
     if (Rd32(base, row) != kSubListRow) continue;

@@ -209,8 +209,8 @@ The launcher's **Movies** tab turns any video Windows can play (`.mp4`, `.mov`, 
 
 <p align="center"><img src="docs/screenshots/launcher-movies.png" alt="Launcher Movies tab" width="60%"></p>
 
-1. Under **Video**, choose your video. A frame from it shows in the preview.
-2. Under **Bottom strip**, choose a picture or a video for the stage and ramp screens, or click **None (black)**.
+1. Under **Video**, choose your video. A frame from it shows in the preview. You can also choose a movie you made before (a `.bik` in `Custom Movies`) to make it again, for example with **Fill the screen**.
+2. Under **Bottom strip**, choose what the stage and ramp screens show: a picture or a video (**Browse…**), **Superstar…** to reuse a superstar's animated strip from the game's own movie (DLC superstars included), or **None (black)**.
 3. Choose how the video fits the big screen: **Fill the screen** (the default: the video covers the whole screen, cutting off a little at the edges if its shape differs), **Whole picture** (black bars if needed) or **Stretch**. Black bars that are already in the video (letterboxed or 4:3 videos) are found and cut off first.
 4. Pick a **Length**, give the movie a **Name**, and click **Make movie**. A 30-second movie takes a few seconds to make.
 5. In the game: *Create An Entrance → Finalize → **Movie** → **USER MOVIES***, like *Music → USER PLAYLIST*. It lists your movies by name (and any saved highlight reels after them). **X** previews one, **A** picks it.
@@ -372,4 +372,4 @@ See [CONTRIBUTORS.md](CONTRIBUTORS.md).
 - This is an unofficial fan project. It isn't affiliated with or endorsed by WWE, THQ, Yuke's or Microsoft. *WWE SmackDown vs. Raw 2011* and all related names belong to their respective owners.
 - **No game material is included**: no disc image, XEX, data, audio, video or recompiled game code. You must own the game and supply your own disc image. The screenshots in `docs/screenshots/` were taken of the port running. They're used only to show the port, and they belong to the game's owners.
 - **Recompiler and runtime**: the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), which is derived from [Xenia](https://github.com/xenia-project/xenia). See their licenses.
-- **Movie format**: the launcher writes Bink 1 video. The format was learned from [FFmpeg](https://ffmpeg.org/)'s open-source Bink decoder; no RAD Game Tools software is used or included.
+- **Movie format**: the launcher writes Bink 1 video. The format was learned from [FFmpeg](https://ffmpeg.org/)'s open-source Bink decoder, and the launcher's Bink reader (`port/launcher/bink_decode.c`, `bink_tables.h`) is ported from it, under FFmpeg's license, the LGPL 2.1 or later. No RAD Game Tools software is used or included.

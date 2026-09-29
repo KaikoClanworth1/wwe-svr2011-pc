@@ -47,8 +47,10 @@ PAINT TOOL (launcher, Paint Tool tab)
 ENTRANCE MOVIES (launcher, Movies tab)
   Make an entrance movie from any video Windows can play (.mp4, .mov,
   .wmv, ...). The video goes on the arena's big screen; pick a picture or
-  video for the strip below it (the stage and ramp screens), or leave it
-  black. "Fill the screen" (the default) makes the video cover the whole
+  video for the strip below it (the stage and ramp screens), reuse a
+  superstar's strip from the game's own movie (Superstar...), or leave it
+  black. A movie made before (.bik) can be chosen as the video to make it
+  again. "Fill the screen" (the default) makes the video cover the whole
   big screen; black bars already in the video are cut off. Movies are saved
   in the Custom Movies folder. In the game: CREATE AN ENTRANCE > FINALIZE >
   MOVIE > USER MOVIES lists them by name (X previews, A picks), like

@@ -24,6 +24,7 @@
 #include <string.h>
 #include <wchar.h>
 
+#include "bink_decode.h"
 #include "movie_maker.h"
 
 #define FPS 30
@@ -181,7 +182,7 @@ static int encode_plane(Bits *b, const uint8_t *cur, uint8_t *ref, int w, int h,
 /* ── pictures ── */
 
 typedef struct {
-    int kind;                  /* 0 black, 1 image, 2 video */
+    int kind;                  /* 0 black, 1 image, 2 video, 3 Bink movie (a part of it) */
     int w, h;                  /* picture size */
     double par;                /* pixel aspect ratio */
     uint8_t *bgra;             /* current picture */
@@ -194,7 +195,13 @@ typedef struct {
     LONGLONG next_ts;
     IMFSample *next;
     int cx, cy, cw, ch;        /* the picture without black borders (content_find) */
+    BinkReader *bink;          /* kind 3: the movie, */
+    int by;                    /* and the first row of the part used */
+    uint8_t *bink_frame;       /* its whole decoded frame */
 } Pic;
+
+/* Which part of the entrance movie a picture is for. */
+enum { PART_TOP = 0, PART_BOTTOM = 1 };
 
 static int is_image(const WCHAR *path)
 {
@@ -300,22 +307,72 @@ done:
     return ok;
 }
 
+static int is_bink(const WCHAR *path)
+{
+    const WCHAR *dot = wcsrchr(path, L'.');
+    return dot && !_wcsicmp(dot, L".bik");
+}
+
+/* A Bink movie laid out like the game's titantron movies: as the big screen,
+ * its top 320 x 220 (a 16:9 picture); as the strip, its bottom 320 x 100 -
+ * a superstar's movie, or one made before. */
+static int bink_pic_open(Pic *p, const WCHAR *path, int part, WCHAR *err, size_t errn)
+{
+    int bw, bh;
+    p->bink = bink_open(path, err, errn);
+    if (!p->bink) return 0;
+    bw = bink_width(p->bink);
+    bh = bink_height(p->bink);
+    p->bink_frame = (uint8_t *)malloc((size_t)bw * bh * 4);
+    p->w = bw;
+    p->h = bh;
+    p->par = 1.0;
+    p->by = 0;
+    if (bw == MOVIE_W && bh == MOVIE_H) {
+        p->by = part == PART_BOTTOM ? TOP_H : 0;
+        p->h = part == PART_BOTTOM ? BOT_H : TOP_H;
+        if (part == PART_TOP) p->par = (16.0 / 9.0) * TOP_H / MOVIE_W;
+    }
+    p->bgra = (uint8_t *)calloc((size_t)p->w * p->h, 4);
+    if (!p->bink_frame || !p->bgra) { swprintf_s(err, errn, L"Out of memory."); return 0; }
+    p->duration = bink_frame_time(p->bink) * bink_frames(p->bink);
+    p->kind = 3;
+    return 1;
+}
+
+/* Decodes the Bink movie's next frame into the picture. */
+static int bink_pic_next(Pic *p)
+{
+    if (!bink_next(p->bink)) return 0;
+    bink_bgra(p->bink, p->bink_frame);
+    memcpy(p->bgra, p->bink_frame + (size_t)p->by * p->w * 4, (size_t)p->w * p->h * 4);
+    return 1;
+}
+
 static void pic_close(Pic *p)
 {
     if (p->next) IMFSample_Release(p->next);
     if (p->rd) IMFSourceReader_Release(p->rd);
+    if (p->bink) bink_close(p->bink);
+    free(p->bink_frame);
     free(p->bgra);
     memset(p, 0, sizeof *p);
 }
 
 static void content_find(Pic *p);
+static int bink_pic_next(Pic *p);
 
-static int pic_open(Pic *p, const WCHAR *path, WCHAR *err, size_t errn)
+static int pic_open(Pic *p, const WCHAR *path, int part, WCHAR *err, size_t errn)
 {
+    int ok;
     memset(p, 0, sizeof *p);
     if (!path || !path[0]) return 1;            /* black */
-    if (!(is_image(path) ? image_open(p, path, err, errn) : video_open(p, path, err, errn))) return 0;
-    content_find(p);
+    ok = is_bink(path) ? bink_pic_open(p, path, part, err, errn)
+       : is_image(path) ? image_open(p, path, err, errn) : video_open(p, path, err, errn);
+    if (!ok) { pic_close(p); return 0; }
+    /* A superstar's strip is used as it is; anything else loses its black bars. */
+    if (p->kind == 3 && part == PART_BOTTOM) { p->cx = 0; p->cy = 0; p->cw = p->w; p->ch = p->h; }
+    else content_find(p);
     return 1;
 }
 
@@ -344,6 +401,17 @@ static void sample_copy(Pic *p, IMFSample *s)
  * last frame, or starts again if `loop`. */
 static void pic_seek(Pic *p, LONGLONG t, int loop)
 {
+    if (p->kind == 3) {
+        const LONGLONG ft = bink_frame_time(p->bink);
+        const int n = bink_frames(p->bink);
+        LONGLONG want = ft > 0 ? t / ft : 0;     /* the frame to show */
+        if (loop) want %= n;
+        else if (want >= n) want = n - 1;
+        if (want < bink_position(p->bink) - 1) bink_rewind(p->bink);
+        while (bink_position(p->bink) <= want)
+            if (!bink_pic_next(p)) break;
+        return;
+    }
     if (p->kind != 2) return;
     for (;;) {
         if (!p->have_next && !p->eof) {
@@ -378,13 +446,14 @@ static void pic_seek(Pic *p, LONGLONG t, int loop)
     }
 }
 
-/* Grows box (x0, y0, x1, y1) to the parts of the current picture that are
- * not black: rows and columns where enough pixels are brighter than dark
- * grey (so noise or a small logo in a black bar doesn't count). */
-static void content_add(const Pic *p, int *x0, int *y0, int *x1, int *y1)
+/* The parts of the current picture that are not black: rows and columns
+ * where enough pixels are brighter than dark grey (so noise or a small logo
+ * in a black bar doesn't count). 0 if the picture is all dark. */
+static int content_box(const Pic *p, int *x0, int *y0, int *x1, int *y1)
 {
     int x, y, n;
     const int step = 2;
+    *x0 = p->w; *y0 = p->h; *x1 = 0; *y1 = 0;
     for (y = 0; y < p->h; y += step) {
         for (x = 0, n = 0; x < p->w; x += step) {
             const uint8_t *s = p->bgra + ((size_t)y * p->w + x) * 4;
@@ -399,32 +468,53 @@ static void content_add(const Pic *p, int *x0, int *y0, int *x1, int *y1)
         }
         if (n * step * 50 > p->h) { if (x < *x0) *x0 = x; if (x + step > *x1) *x1 = x + step; }
     }
+    return *x1 > *x0 && *y1 > *y0;
 }
 
+static int cmp_int(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+
 /* Black borders that are part of the picture (letterboxed or pillarboxed
- * videos): found on frames across the whole video, then cut off - so
- * "Fill" fills the screen with the picture, not with its black bars. */
+ * videos): measured on frames across the video - a quartile of each side,
+ * so a flash or a title card now and then doesn't hide them - and cut off,
+ * so "Fill" fills the screen with the picture, not with its bars. */
+#define CF_SAMPLES 24
 static void content_find(Pic *p)
 {
-    int x0 = p->w, y0 = p->h, x1 = 0, y1 = 0, k;
+    int bx0[CF_SAMPLES], by0[CF_SAMPLES], bx1[CF_SAMPLES], by1[CF_SAMPLES], n = 0, k;
+    int x0, y0, x1, y1;
     p->cx = 0; p->cy = 0; p->cw = p->w; p->ch = p->h;
     if (p->kind == 1) {
-        content_add(p, &x0, &y0, &x1, &y1);
+        if (content_box(p, &bx0[0], &by0[0], &bx1[0], &by1[0])) n = 1;
     } else if (p->kind == 2 && p->duration > 0) {
-        for (k = 1; k <= 8; k++) {
+        for (k = 1; k <= CF_SAMPLES; k++) {
             PROPVARIANT pv;
-            DWORD idx, flags = 0;
-            LONGLONG ts = 0;
+            const LONGLONG want = p->duration * k / (CF_SAMPLES + 2);
             IMFSample *s = NULL;
+            int reads;
             PropVariantInit(&pv);
             pv.vt = VT_I8;
-            pv.hVal.QuadPart = p->duration * k / 10;
+            pv.hVal.QuadPart = want;
             if (FAILED(IMFSourceReader_SetCurrentPosition(p->rd, &GUID_NULL, &pv))) break;
-            if (FAILED(IMFSourceReader_ReadSample(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &idx, &flags, &ts, &s))
-                    || !s) { if (s) IMFSample_Release(s); continue; }
+            /* A seek lands on the key frame before `want` - often a scene cut
+               or a flash: decode on to the frame at `want`. */
+            for (reads = 0; reads < 600; reads++) {
+                DWORD idx, flags = 0;
+                LONGLONG ts = 0;
+                IMFSample *next = NULL;
+                if (FAILED(IMFSourceReader_ReadSample(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &idx, &flags,
+                                                      &ts, &next)) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+                    if (next) IMFSample_Release(next);
+                    break;
+                }
+                if (!next) continue;
+                if (s) IMFSample_Release(s);
+                s = next;
+                if (ts >= want) break;
+            }
+            if (!s) continue;
             sample_copy(p, s);
             IMFSample_Release(s);
-            content_add(p, &x0, &y0, &x1, &y1);
+            if (content_box(p, &bx0[n], &by0[n], &bx1[n], &by1[n])) n++;
         }
         {   /* back to the start */
             PROPVARIANT pv;
@@ -434,9 +524,25 @@ static void content_find(Pic *p)
             IMFSourceReader_SetCurrentPosition(p->rd, &GUID_NULL, &pv);
             memset(p->bgra, 0, (size_t)p->w * p->h * 4);
         }
-    } else {
-        return;
+    } else if (p->kind == 3) {
+        /* Bink decodes frame after frame: samples from its first 20 s. */
+        const int frames = bink_frames(p->bink) < 600 ? bink_frames(p->bink) : 600;
+        const int every = frames / CF_SAMPLES > 0 ? frames / CF_SAMPLES : 1;
+        for (k = 0; k < frames && n < CF_SAMPLES; k++) {
+            if (!bink_pic_next(p)) break;
+            if (k % every == every / 2 && content_box(p, &bx0[n], &by0[n], &bx1[n], &by1[n])) n++;
+        }
+        bink_rewind(p->bink);
+        memset(p->bgra, 0, (size_t)p->w * p->h * 4);
     }
+    if (!n) return;
+    qsort(bx0, (size_t)n, sizeof(int), cmp_int);
+    qsort(by0, (size_t)n, sizeof(int), cmp_int);
+    qsort(bx1, (size_t)n, sizeof(int), cmp_int);
+    qsort(by1, (size_t)n, sizeof(int), cmp_int);
+    /* The picture's edges are where most frames reach: the quartile on the
+       wide side (dark scenes reach less far; a flash, the whole frame). */
+    x0 = bx0[n / 4]; y0 = by0[n / 4]; x1 = bx1[n - 1 - n / 4]; y1 = by1[n - 1 - n / 4];
     if (x1 > p->w) x1 = p->w;
     if (y1 > p->h) y1 = p->h;
     /* Only clear borders: 1.5% or more of a side, and a real picture left. */
@@ -447,6 +553,7 @@ static void content_find(Pic *p)
     if ((p->h - y1) * 1000 < p->h * 15) y1 = p->h;
     p->cx = x0; p->cy = y0; p->cw = x1 - x0; p->ch = y1 - y0;
 }
+
 
 /* Box-filtered copy of source rectangle (sx, sy, sw, sh) of `p` into
  * destination rectangle (dx, dy, dw, dh) of a BGRA picture `dst` (dst_w wide). */
@@ -563,8 +670,8 @@ int movie_preview(const WCHAR *video, const WCHAR *bottom, int fit, double secon
     Pic top, bot;
     int ok;
     mf_start();
-    if (!pic_open(&top, video, err, errn)) return 0;
-    if (!pic_open(&bot, bottom, err, errn)) { pic_close(&top); return 0; }
+    if (!pic_open(&top, video, PART_TOP, err, errn)) return 0;
+    if (!pic_open(&bot, bottom, PART_BOTTOM, err, errn)) { pic_close(&top); return 0; }
     compose(&top, &bot, fit, (LONGLONG)(seconds * 1e7), bgra);
     ok = 1;
     pic_close(&top);
@@ -585,10 +692,10 @@ int movie_make(MovieJob *job)
     memset(&b, 0, sizeof b);
     job->err[0] = 0;
     mf_start();
-    if (!pic_open(&top, job->video, job->err, sizeof job->err / sizeof *job->err)) return 0;
+    if (!pic_open(&top, job->video, PART_TOP, job->err, sizeof job->err / sizeof *job->err)) return 0;
     if (top.kind == 0) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Choose the video."); return 0; }
-    if (!pic_open(&bot, job->bottom, job->err, sizeof job->err / sizeof *job->err)) { pic_close(&top); return 0; }
-    length = top.kind == 2 && top.duration > 0 ? top.duration : 10 * 10000000LL;
+    if (!pic_open(&bot, job->bottom, PART_BOTTOM, job->err, sizeof job->err / sizeof *job->err)) { pic_close(&top); return 0; }
+    length = (top.kind == 2 || top.kind == 3) && top.duration > 0 ? top.duration : 10 * 10000000LL;
     if (job->max_seconds > 0 && length > (LONGLONG)job->max_seconds * 10000000LL)
         length = (LONGLONG)job->max_seconds * 10000000LL;
     n = (int)((length * FPS + 9999999) / 10000000);
@@ -638,6 +745,8 @@ int movie_make(MovieJob *job)
         fwrite(offs, 4, (size_t)n + 1, f);
     }
     fclose(f); f = NULL;
+    pic_close(&top);   /* the video may be the movie being replaced (made again) */
+    pic_close(&bot);
     if (!MoveFileExW(tmp, job->out, MOVEFILE_REPLACE_EXISTING)) {
         wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not save the movie file (is the game using it?).");
         goto done;

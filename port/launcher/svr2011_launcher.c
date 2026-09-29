@@ -91,7 +91,7 @@ enum {
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     /* movies */
-    ID_MV_VIDEO, ID_MV_VIDEO_BROWSE, ID_MV_BOTTOM, ID_MV_BOTTOM_BROWSE, ID_MV_BOTTOM_NONE, ID_MV_FIT, ID_MV_FILL,
+    ID_MV_VIDEO, ID_MV_VIDEO_BROWSE, ID_MV_BOTTOM, ID_MV_BOTTOM_BROWSE, ID_MV_BOTTOM_NONE, ID_MV_BOTTOM_STAR, ID_MV_FIT, ID_MV_FILL,
     ID_MV_STRETCH, ID_MV_LENGTH, ID_MV_NAME, ID_MV_VIEW, ID_MV_LIST, ID_MV_DELETE, ID_MV_OPEN, ID_MV_PREVIEW,
     ID_MV_CREATE, ID_MV_STOP, ID_MV_PROGRESS, ID_MV_STATUS,
     /* updates (Play tab) */
@@ -3207,7 +3207,7 @@ static int mv_pick(WCHAR *out, int bottom)
     PWSTR p = NULL;
     int ok = 0;
     static const COMDLG_FILTERSPEC video[] = {
-        { L"Videos and pictures", L"*.mp4;*.m4v;*.mov;*.wmv;*.avi;*.mkv;*.webm;*.mpg;*.mpeg;*.ts;*.png;*.jpg;*.jpeg;*.bmp;*.gif" },
+        { L"Videos and pictures", L"*.mp4;*.m4v;*.mov;*.wmv;*.avi;*.mkv;*.webm;*.mpg;*.mpeg;*.ts;*.bik;*.png;*.jpg;*.jpeg;*.bmp;*.gif" },
         { L"All files", L"*.*" } };
     if (FAILED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void **)&d)))
         return 0;
@@ -3223,6 +3223,172 @@ static int mv_pick(WCHAR *out, int bottom)
     }
     d->lpVtbl->Release(d);
     return ok;
+}
+
+/* The game's titantron movies (movies\titantron\<id>.bik) and whose they
+ * are, as CREATE AN ENTRANCE lists them; the DLC superstars' movies are in
+ * the installed DLC. Their bottom strips can be reused (Superstar...). */
+static const struct { int id; const WCHAR *name; } k_star_movies[] = {
+    { 297, L"ALICIA FOX" },
+    { 160, L"BATISTA" },
+    { 224, L"BETH PHOENIX" },
+    { 125, L"BIG SHOW" },
+    { 294, L"BRIE BELLA" },
+    { 137, L"CHAVO GUERRERO" },
+    { 104, L"CHRIS JERICHO" },
+    { 276, L"CHRISTIAN" },
+    { 902, L"CHRISTIAN OLD" },
+    { 131, L"CM PUNK" },
+    { 205, L"CODY RHODES" },
+    { 424, L"CRYME TYME" },
+    { 281, L"DAVID HART SMITH" },
+    { 407, L"D-GENERATION X" },
+    { 275, L"DOLPH ZIGGLER" },
+    { 278, L"DREW McINTYRE" },
+    { 110, L"EDGE" },
+    { 423, L"EDGE & CHRISTIAN" },
+    { 901, L"EDGE OLD" },
+    { 265, L"EVAN BOURNE" },
+    { 292, L"EVE" },
+    { 268, L"EZEKIEL JACKSON" },
+    { 158, L"FINLAY" },
+    { 293, L"GAIL KIM" },
+    { 277, L"GOLDUST" },
+    { 401, L"THE HART DYNASTY" },
+    { 267, L"JACK SWAGGER" },
+    { 132, L"JAKE ROBERTS" },
+    { 122, L"JIMMY SNUKA" },
+    { 139, L"JOHN CENA" },
+    { 175, L"JOHN MORRISON" },
+    { 165, L"JTG" },
+    { 107, L"KANE" },
+    { 903, L"MASKED KANE" },
+    { 164, L"KELLY KELLY" },
+    { 176, L"KOFI KINGSTON" },
+    { 321, L"LUKE GALLOWS" },
+    { 179, L"MARK HENRY" },
+    { 291, L"MARYSE" },
+    { 112, L"MATT HARDY" },
+    { 174, L"MELINA" },
+    { 182, L"MICHELLE McCOOL" },
+    { 143, L"MICKIE JAMES" },
+    { 263, L"MIKE KNOX" },
+    { 218, L"THE MIZ" },
+    { 115, L"MR. McMAHON" },
+    { 135, L"MVP" },
+    { 295, L"NIKKI BELLA" },
+    { 271, L"PRIMO" },
+    { 161, L"RANDY ORTON" },
+    { 123, L"REY MYSTERIO" },
+    { 305, L"RICKY STEAMBOAT" },
+    { 306, L"ROB VAN DAM" },
+    { 100, L"THE ROCK" },
+    { 272, L"R-TRUTH" },
+    { 201, L"SANTINO MARELLA" },
+    { 178, L"SHAD GASPARD" },
+    { 145, L"SHAWN MICHAELS" },
+    { 279, L"SHEAMUS" },
+    { 208, L"SHELTON BENJAMIN" },
+    { 422, L"SHOWMIZ" },
+    { 101, L"STONE COLD" },
+    { 131, L"THE STRAIGHT EDGE SOCIETY" },
+    { 261, L"TED DIBIASE" },
+    { 169, L"TERRY FUNK" },
+    { 186, L"THEODORE LONG" },
+    { 102, L"TRIPLE H" },
+    { 103, L"UNDERTAKER" },
+    { 284, L"VANCE ARCHER" },
+    { 262, L"VLADIMIR KOZLOV" },
+    { 117, L"WILLIAM REGAL" },
+    { 283, L"YOSHI TATSU" },
+    { 219, L"ZACK RYDER" },
+    { 50, L"CHRIS MASTERS" },
+    { 51, L"LEX LUGER" },
+    { 52, L"BRITISH BULLDOG" },
+    { 53, L"JUSTIN GABRIEL" },
+    { 54, L"DAVID OTUNGA" },
+    { 55, L"WADE BARRETT" },
+    { 56, L"LAYLA" },
+    { 255, L"WWE LOGO" },
+    { 256, L"LEGENDS LOGO" }
+};
+
+/* The movie of k_star_movies[i]: in the game folder or in the installed DLC. */
+static int mv_star_path(int i, WCHAR *out)
+{
+    WCHAR file[32], p[MAX_PATH], pat[MAX_PATH], dlc[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int found = 0;
+    swprintf_s(file, 32, L"%03d.bik", k_star_movies[i].id);
+    swprintf_s(p, MAX_PATH, L"%s\\movies\\titantron\\%s", s_game_dir, file);
+    if (file_exists(p)) { wcscpy_s(out, MAX_PATH, p); return 1; }
+    swprintf_s(dlc, MAX_PATH, L"%s\\UserData\\0000000000000000\\5451085D\\00000002", s_game_dir);
+    swprintf_s(pat, MAX_PATH, L"%s\\*", dlc);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+        swprintf_s(p, MAX_PATH, L"%s\\%s\\movies\\titantron\\%s", dlc, fd.cFileName, file);
+        if (file_exists(p)) { wcscpy_s(out, MAX_PATH, p); found = 1; }
+    } while (!found && FindNextFileW(h, &fd));
+    FindClose(h);
+    return found;
+}
+
+static void mv_preview(void);
+
+/* A superstar's strip picked with Superstar...: the box shows its name. */
+static WCHAR s_mv_star_label[96], s_mv_star_path[MAX_PATH];
+
+/* The bottom strip's file: what the box says, or the superstar's movie. */
+static void mv_bottom_path(WCHAR *out)
+{
+    GetWindowTextW(ctl(ID_MV_BOTTOM), out, MAX_PATH);
+    if (s_mv_star_label[0] && !wcscmp(out, s_mv_star_label)) wcscpy_s(out, MAX_PATH, s_mv_star_path);
+}
+
+/* Uses k_star_movies[i]'s bottom strip. */
+static void mv_star_pick(int i)
+{
+    WCHAR p[MAX_PATH];
+    int found = 0, k;
+    if (!mv_star_path(i, s_mv_star_path)) return;
+    for (k = 0; k < (int)(sizeof k_star_movies / sizeof *k_star_movies); k++) found += mv_star_path(k, p);
+    swprintf_s(s_mv_star_label, 96, L"%s (superstar's strip)", k_star_movies[i].name);
+    set_text(ID_MV_BOTTOM, s_mv_star_label);
+    mv_preview();
+    if (s_mv_preview)   /* (else the preview's error stays) */
+        mv_status(L"Bottom strip: %s's, from the game's movie (%d superstar movies found). It loops if your video "
+                  L"is longer.", k_star_movies[i].name, found);
+}
+
+/* Superstar...: a menu of the superstars whose movies are installed; the
+ * pick's bottom strip becomes this movie's strip. */
+static void mv_star_menu(void)
+{
+    enum { FIRST = 1, PER_COLUMN = 24 };
+    HMENU m = CreatePopupMenu();
+    RECT rc;
+    WCHAR p[MAX_PATH];
+    int i, n = 0, cmd;
+    if (!m) return;
+    for (i = 0; i < (int)(sizeof k_star_movies / sizeof *k_star_movies); i++) {
+        if (!mv_star_path(i, p)) continue;
+        AppendMenuW(m, MF_STRING | (n && n % PER_COLUMN == 0 ? MF_MENUBARBREAK : 0), (UINT_PTR)(FIRST + i),
+                    k_star_movies[i].name);
+        n++;
+    }
+    if (!n) {
+        DestroyMenu(m);
+        mv_status(L"No superstar movies found - install the game on the Install tab first.");
+        return;
+    }
+    GetWindowRect(ctl(ID_MV_BOTTOM_STAR), &rc);
+    cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, rc.left, rc.bottom, 0,
+                              s_wnd, NULL);
+    DestroyMenu(m);
+    if (cmd >= FIRST) mv_star_pick(cmd - FIRST);
 }
 
 /* The movie's name as the game will list it: letters, digits, spaces, - and _. */
@@ -3249,7 +3415,7 @@ static void mv_preview(void)
     WCHAR video[MAX_PATH], bottom[MAX_PATH], err[512];
     HCURSOR old;
     GetWindowTextW(ctl(ID_MV_VIDEO), video, MAX_PATH);
-    GetWindowTextW(ctl(ID_MV_BOTTOM), bottom, MAX_PATH);
+    mv_bottom_path(bottom);
     if (!video[0]) { mv_status(L"Choose a video first."); return; }
     if (!s_mv_preview) s_mv_preview = (uint8_t *)malloc(MOVIE_W * MOVIE_H * 4);
     if (!s_mv_preview) return;
@@ -3295,7 +3461,7 @@ static void mv_create(void)
             return;
     }
     wcscpy_s(s_mv_job.video, MAX_PATH, video);
-    GetWindowTextW(ctl(ID_MV_BOTTOM), s_mv_job.bottom, MAX_PATH);
+    mv_bottom_path(s_mv_job.bottom);
     s_mv_job.fit = mv_fit();
     len = (int)SendMessageW(ctl(ID_MV_LENGTH), CB_GETCURSEL, 0, 0);
     s_mv_job.max_seconds = len >= 0 && len < 4 ? s_mv_lengths[len] : 180;
@@ -3369,6 +3535,9 @@ static int mv_command(int id, int code)
     case ID_MV_BOTTOM_BROWSE:
         if (mv_pick(f, 1)) { set_text(ID_MV_BOTTOM, f); mv_preview(); }
         return 1;
+    case ID_MV_BOTTOM_STAR:
+        mv_star_menu();
+        return 1;
     case ID_MV_BOTTOM_NONE:
         set_text(ID_MV_BOTTOM, L"");
         if (s_mv_preview) mv_preview();
@@ -3434,16 +3603,17 @@ static void mv_setup(void)
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.lpszClassName = L"SvR2011MoviePreview";
     RegisterClassW(&wc);
-    add(TAB_MOVIES, L"Static", L"Entrance movies of your own, listed after NONE in CREATE AN ENTRANCE \x2192 FINALIZE "
-                               L"\x2192 MOVIE. The video plays on the big screen, the strip on the stage and ramp.",
+    add(TAB_MOVIES, L"Static", L"Entrance movies of your own, in CREATE AN ENTRANCE \x2192 FINALIZE \x2192 MOVIE "
+                               L"\x2192 USER MOVIES. The video plays on the big screen, the strip on the stage and ramp.",
         SS_LEFT, X0, 50, 560, 40, 0);
     add(TAB_MOVIES, L"Static", L"Video", SS_LEFT, X0, 100, 100, 20, 0);
     add(TAB_MOVIES, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 110, 96, 336, 24, ID_MV_VIDEO);
     add(TAB_MOVIES, L"Button", L"Browse\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 454, 95, 106, 26, ID_MV_VIDEO_BROWSE);
     add(TAB_MOVIES, L"Static", L"Bottom strip", SS_LEFT, X0, 134, 100, 20, 0);
-    add(TAB_MOVIES, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 110, 130, 226, 24, ID_MV_BOTTOM);
-    add(TAB_MOVIES, L"Button", L"Browse\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 344, 129, 102, 26, ID_MV_BOTTOM_BROWSE);
-    add(TAB_MOVIES, L"Button", L"None (black)", BS_PUSHBUTTON | WS_TABSTOP, X0 + 454, 129, 106, 26, ID_MV_BOTTOM_NONE);
+    add(TAB_MOVIES, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 110, 130, 146, 24, ID_MV_BOTTOM);
+    add(TAB_MOVIES, L"Button", L"Browse\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 262, 129, 92, 26, ID_MV_BOTTOM_BROWSE);
+    add(TAB_MOVIES, L"Button", L"Superstar\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 360, 129, 100, 26, ID_MV_BOTTOM_STAR);
+    add(TAB_MOVIES, L"Button", L"None (black)", BS_PUSHBUTTON | WS_TABSTOP, X0 + 466, 129, 94, 26, ID_MV_BOTTOM_NONE);
     add(TAB_MOVIES, L"Static", L"Big screen", SS_LEFT, X0, 168, 100, 20, 0);
     /* Fill by default: the video covers the whole big screen (black bars in
        the video itself are cut off first - movie_maker.c content_find). */
@@ -3477,6 +3647,11 @@ static void mv_setup(void)
             set_text(ID_MV_VIDEO, v);
             if (GetEnvironmentVariableW(L"SVR2011_MOVIE_BOTTOM", v, MAX_PATH)) set_text(ID_MV_BOTTOM, v);
             mv_preview();
+            if (GetEnvironmentVariableW(L"SVR2011_MOVIE_STAR", v, MAX_PATH)) {   /* as picked with Superstar... */
+                int i;
+                for (i = 0; i < (int)(sizeof k_star_movies / sizeof *k_star_movies); i++)
+                    if (!_wcsicmp(k_star_movies[i].name, v)) mv_star_pick(i);
+            }
         }
     }
 }
