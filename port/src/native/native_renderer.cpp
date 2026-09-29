@@ -1708,6 +1708,13 @@ ID3D12PipelineState* Pipeline(Renderer* r, Shader* vs, int vs_variant, Shader* p
   d.RTVFormats[0] = rt_format;
   d.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
   d.SampleDesc.Count = 1;
+  // Logged before it is built: a GPU driver that crashes compiling it (seen
+  // under Proton) leaves this as the log's last pipeline.
+  REXLOG_INFO("native renderer: pipeline {} vs {:016X}.{} ps {:016X}.{} rt {} blend {:08X}{} mask {:X} "
+              "depth {:08X} cull {} bias {}/{} topology {}",
+              r->pipelines.size(), key.vs, key.vs_variant, key.ps, key.ps_variant, int(rt_format),
+              key.blend, bt.BlendEnable ? " on" : "", key.colour_mask, key.depth, key.cull,
+              key.bias_offset, key.bias_scale, int(topology));
   ComPtr<ID3D12PipelineState> pso;
   if (FAILED(r->device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) {
     REXLOG_WARN("native renderer: pipeline creation failed (vs {:016X} ps {:016X})", key.vs,

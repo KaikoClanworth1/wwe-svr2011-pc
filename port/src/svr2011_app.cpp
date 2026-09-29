@@ -176,6 +176,14 @@ void Svr2011App::OnPostLoadXexImage() {
     REXLOG_WARN("could not enable gpu_allow_invalid_fetch_constants");
   }
 #ifndef SVR2011_D3D_TRACE  // the census build has no native renderer
+  // Proton (Steam Deck): its GPU driver crashes the game compiling the native
+  // renderer's skinned vertex shaders (the flow-control loop XenosRecomp
+  // writes), so the emulated renderer draws there for now.
+  // SVR2011_NATIVE_ON_WINE=1 keeps the native one (for testing).
+  if (svr2011::IsWine() && Env("SVR2011_NATIVE_ON_WINE") != "1") {
+    rex::cvar::SetFlagByName("native_renderer", "off");
+    REXLOG_INFO("native renderer: off under Wine/Proton for now (the emulated renderer draws)");
+  }
   svr2011::native::Attach(runtime()->memory());
   if (rex::ui::Window* w = window()) {
     svr2011::native::SetWindowSizeSource([w] {
