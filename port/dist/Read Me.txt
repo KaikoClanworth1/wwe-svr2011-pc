@@ -71,6 +71,9 @@ UPDATES (launcher, Play tab)
 
 CONTROLS
   Xbox controller - same layout as on the Xbox 360.
+  Typing: while the game's on-screen keyboard is open (superstar names,
+  Story Designer, ...) you can also type on the PC keyboard. Backspace
+  deletes, Left/Right move the cursor, Enter confirms, Esc cancels.
 
 IN-GAME OVERLAYS
   F2  FPS counter (on by default; top of the window)

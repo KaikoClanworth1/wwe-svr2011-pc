@@ -9,6 +9,8 @@
 
 #include <rex/logging.h>
 
+#include "keyboard_typing.h"
+
 namespace svr2011 {
 
 namespace {
@@ -99,6 +101,28 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
   } else if (verb == "wait") {
     in >> step.ms;
     queue_.push_back(step);
+  } else if (verb == "type") {
+    std::getline(in >> std::ws, step.text);
+    step.ms = 100;
+    queue_.push_back(step);
+  } else if (verb == "key") {
+    static const struct {
+      const char* name;
+      uint16_t vk;
+    } kKeys[] = {{"BACK", 0x08}, {"ENTER", 0x0D}, {"ESC", 0x1B}, {"LEFT", 0x25},
+                 {"UP", 0x26},   {"RIGHT", 0x27}, {"DOWN", 0x28}};
+    std::string name;
+    in >> name;
+    std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+    for (const auto& k : kKeys) {
+      if (name == k.name) step.key = k.vk;
+    }
+    if (!step.key) {
+      REXLOG_WARN("script input: unknown key '{}'", line);
+      return;
+    }
+    step.ms = 100;
+    queue_.push_back(step);
   } else {
     REXLOG_WARN("script input: unknown command '{}'", line);
     return;
@@ -153,6 +177,8 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
       current_ = queue_.front();
       queue_.pop_front();
       step_end_ = now + std::chrono::milliseconds(current_.ms);
+      if (!current_.text.empty()) TypeText(current_.text);
+      if (current_.key) TypeKey(current_.key);
     } else {
       current_ = Step{};
     }

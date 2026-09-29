@@ -9,6 +9,8 @@
 //   stick <L|R> <x> <y> <ms>    hold a stick at x,y (-32768..32767)
 //   trigger <L|R> <0-255> <ms>  hold a trigger
 //   wait <ms>                   idle
+//   type <text>                 type on the PC keyboard (keyboard_typing.h)
+//   key <BACK|ENTER|ESC|LEFT|RIGHT|UP|DOWN>   press a PC keyboard key
 //
 // <buttons> is one or more of A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT
 // joined with '+'. Lines starting with '#' are ignored.
@@ -50,6 +52,8 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     uint8_t left_trigger = 0, right_trigger = 0;
     int16_t lx = 0, ly = 0, rx = 0, ry = 0;
     int ms = 0;
+    std::string text;  // typed when the step starts
+    uint16_t key = 0;  // PC keyboard key pressed when the step starts
   };
 
   void PollFile();

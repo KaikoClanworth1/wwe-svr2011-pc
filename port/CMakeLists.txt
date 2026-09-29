@@ -19,6 +19,7 @@ set(SVR2011_SOURCES
     src/svr2011_app.cpp
     src/xaudio2_audio.cpp
     src/script_input.cpp
+    src/keyboard_typing.cpp
     src/frame_stats.cpp
     src/crash_report.cpp
     src/fps_overlay.cpp

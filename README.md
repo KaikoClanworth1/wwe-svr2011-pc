@@ -14,6 +14,7 @@ It also adds:
 - **Your own entrance movies**: turn any video into a titantron movie in the launcher and pick it in *Create An Entrance*.
 - **Up to 10 HD logos** on a created superstar, instead of the game's limit of 2.
 - **Paint Tool import and export**: put any image into the game's Paint Tool, or save its logos as PNGs.
+- **Type on your PC keyboard** wherever the game shows its on-screen keyboard: superstar names, Story Designer text and more.
 - **Saves as plain files** that you can back up, copy and share.
 
 > [!IMPORTANT]
@@ -129,6 +130,8 @@ Play with an Xbox controller. The layout is exactly as on the Xbox 360.
 | `F3` | Performance overlay. |
 | `F4` | The runtime's settings overlay. |
 | `` ` `` | Console and log. |
+
+**Typing:** whenever the game's on-screen keyboard is open (superstar names, Story Designer, and so on), you can type on your PC keyboard as well as use the controller. `Backspace` deletes, `←` `→` move the cursor, `Enter` confirms and `Esc` cancels.
 
 The game's main menu has an **EXIT** entry at the bottom.
 

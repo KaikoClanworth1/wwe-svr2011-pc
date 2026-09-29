@@ -36,6 +36,7 @@
 #include "user_movies.h"
 #include "native/native_renderer.h"
 #include "frame_stats.h"
+#include "keyboard_typing.h"
 #include "script_input.h"
 #include "xaudio2_audio.h"
 
@@ -236,6 +237,8 @@ void Svr2011App::OnPostLoadXexImage() {
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
+  // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
+  svr2011::InstallKeyboardTyping(window());
   if (imgui_drawer()) {
     svr2011::InstallGraphicsPage(
         imgui_drawer(), window(),
