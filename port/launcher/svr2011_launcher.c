@@ -45,6 +45,7 @@
 #include <wchar.h>
 
 #include "movie_maker.h"
+#include "unzip.h"
 #include "updater.h"
 
 #ifndef PORT_VERSION
@@ -1570,13 +1571,20 @@ static int is_archive(const WCHAR *name)
     return ext && (!_wcsicmp(ext, L".zip") || !_wcsicmp(ext, L".rar") || !_wcsicmp(ext, L".7z"));
 }
 
-/* Unpacks an archive with Windows' tar (bsdtar reads zip, rar and 7z). */
+/* Unpacks an archive: a zip itself (unzip.c: Wine / Proton has no tar.exe),
+ * anything else - or a zip it can't read - with Windows' tar (bsdtar reads
+ * zip, rar and 7z). */
 static int unpack(const WCHAR *archive, const WCHAR *to)
 {
     WCHAR cmd[MAX_PATH * 3], sys[MAX_PATH];
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     DWORD code = 1;
+    const WCHAR *ext = wcsrchr(archive, L'.');
+    if (ext && !_wcsicmp(ext, L".zip") && unzip_file(archive, to))
+        return 1;
+    if (GetEnvironmentVariableW(L"SVR2011_NO_TAR", sys, MAX_PATH))
+        return 0;  /* (tests: as on Wine) */
     GetSystemDirectoryW(sys, MAX_PATH);
     swprintf_s(cmd, MAX_PATH * 3, L"\"%s\\tar.exe\" -xf \"%s\" -C \"%s\"", sys, archive, to);
     ZeroMemory(&si, sizeof si);
@@ -1617,10 +1625,17 @@ static void dlc_file(const WCHAR *path, const WCHAR *file_name)
         if (!join(tmp, base, sub) || !mkdirs(tmp))
             return;
         dlc_post(0, L"Unpacking %s\x2026", file_name);
-        if (unpack(path, tmp))
+        if (unpack(path, tmp)) {
             dlc_scan(tmp, 0);
-        else
+        } else {
+            WCHAR sys[MAX_PATH], tar[MAX_PATH];
             s_dlc.failed++;
+            /* Wine / Proton: no tar.exe for rar and 7z (zips unpack without it). */
+            GetSystemDirectoryW(sys, MAX_PATH);
+            if (join(tar, sys, L"tar.exe") && !file_exists(tar))
+                dlc_post(0, L"%s: rar and 7z archives can't be unpacked here (no tar.exe, as under "
+                            L"Linux / Proton). Unpack it yourself, or use a .zip.", file_name);
+        }
         remove_tree(tmp);
         return;
     }

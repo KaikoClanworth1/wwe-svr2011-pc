@@ -111,6 +111,10 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
   paths.cache_root = exe_dir / "UserData" / "cache";
   svr2011::InstallCrashReporter(exe_dir / "UserData" / "crashes");
 
+  // Tests: SVR2011_CONFIG=<file> keeps settings changes away from the player's.
+  if (std::string config = Env("SVR2011_CONFIG"); !config.empty()) {
+    paths.config_path = config;
+  }
   g_config_path = paths.config_path;
   if (!std::filesystem::exists(paths.config_path)) {
     std::string config = kDefaultConfig;

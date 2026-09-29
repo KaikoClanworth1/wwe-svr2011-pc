@@ -165,7 +165,9 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int resolution_ = 2;
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
   bool native_at_start_ = false;
-  bool vulkan_ = false;  // the game runs on Vulkan (gpu_backend; set in the launcher)
+  // Native on Vulkan (gpu_backend = vulkan) chosen / running: the API is picked
+  // when the game starts, so a change takes effect at the next start.
+  bool vulkan_ = false, vulkan_at_start_ = false;
   uint16_t prev_buttons_ = 0;
   bool wait_release_ = false;
   Clock::time_point repeat_at_{};
@@ -181,7 +183,8 @@ void GraphicsPage::Load() {
   }
   msaa_ = rex::cvar::Query<bool>("native_2x_msaa");
   native_at_start_ = native::CanSwitch();
-  vulkan_ = rex::cvar::Query<std::string>("gpu_backend") == "vulkan";
+  vulkan_at_start_ = rex::cvar::Query<std::string>("gpu_backend") == "vulkan";
+  vulkan_ = vulkan_at_start_;
   native_ = native_at_start_ ? native::NativeActive()
                              : rex::cvar::Query<std::string>("native_renderer") != "off";
   fps_ = FpsCounterVisible();
@@ -225,11 +228,17 @@ void GraphicsPage::Change(int row, int dir) {
       }
       SaveSetting("fullscreen", fullscreen_ ? "true" : "false");
       break;
-    case kRenderer:
-      native_ = !native_;
+    case kRenderer: {
+      // NATIVE, EMULATED, NATIVE VULKAN (EXPERIMENTAL) - the launcher's list.
+      int choice = !native_ ? 1 : vulkan_ ? 2 : 0;
+      choice = (choice + dir + 3) % 3;
+      native_ = choice != 1;
+      vulkan_ = choice == 2;
       if (native_at_start_) native::SetNativeActive(native_);
       SaveSetting("native_renderer", native_ ? "\"main\"" : "\"off\"");
+      SaveSetting("gpu_backend", vulkan_ ? "\"vulkan\"" : "\"any\"");
       break;
+    }
     default:
       break;
   }
@@ -352,7 +361,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   }
 
   // Rows.
-  const bool restart_renderer = !native_at_start_ && native_;
+  const bool restart_renderer = (!native_at_start_ && native_) || vulkan_ != vulkan_at_start_;
   const char* values[kRows] = {
       fullscreen_ ? "FULL SCREEN" : kResolutions[resolution_].label,
       fullscreen_ ? "FULL SCREEN" : "WINDOWED",
@@ -404,9 +413,10 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   // Description of the selected setting, as the game's panels have.
   {
     std::string help = kHelp[row_];
-    if (row_ == kRenderer && vulkan_)
-      help = "EXPERIMENTAL: the native renderer on Vulkan (the launcher's Renderer list).";
-    if (row_ == kRenderer && restart_renderer) help = "Takes effect the next time the game starts.";
+    if (row_ == kRenderer && native_ && vulkan_) help = "EXPERIMENTAL: the native renderer on Vulkan.";
+    if (row_ == kRenderer && restart_renderer)
+      help = native_ && vulkan_ ? "EXPERIMENTAL - takes effect the next time the game starts."
+                                : "Takes effect the next time the game starts.";
     const float hs = 18 * s;
     const ImVec2 sz = TextSize(g_menu_font, hs, help.c_str());
     Text(dl, g_menu_font, hs, ImVec2(P(639, 0).x - sz.x * 0.5f, P(0, 508).y - sz.y * 0.5f),

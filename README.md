@@ -137,6 +137,8 @@ The port is a Windows program. On a Steam Deck or a Linux PC it runs through **P
 - **Entrance music:** MP3 is the safest format under Proton.
 - **Custom movies:** the launcher's movie maker may not read every video format under Proton. If a video won't convert, convert it on a Windows PC, or try an H.264 `.mp4`.
 - **Something draws wrong:** in the launcher's **Settings**, set **Renderer** to **Emulated** and compare.
+- **Updates:** launchers before v0.2.3 can't unpack updates under Proton (they used Windows' `tar.exe`, which Proton lacks) and stop with "Could not unpack the update". Update once by hand: download the latest zip, unzip it over your launcher's folder (or unzip it anywhere, run its launcher and click **Install** into your game folder). From v0.2.3 on, updates work under Proton too.
+- **DLC:** under Proton the launcher can unpack `.zip` DLC archives but not `.rar` or `.7z`. Unpack those first, or add the unpacked folder.
 
 ---
 
