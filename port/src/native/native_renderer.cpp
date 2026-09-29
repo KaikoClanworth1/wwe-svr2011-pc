@@ -742,9 +742,22 @@ bool Initialize() {
   // The layer itself must come from --d3d12_debug=true: enabling it once the
   // emulator's device exists removes that device.
   if (!Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&r->factory)), "CreateDXGIFactory2")) return false;
+  // The emulator's GPU: its presentation shows these frames, which only
+  // works on the same device (a laptop has two GPUs to pick from).
   ComPtr<IDXGIAdapter1> adapter;
-  r->factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                         IID_PPV_ARGS(&adapter));
+  if (auto* emulator = static_cast<ID3D12Device*>(rex::external_frame::Device())) {
+    r->factory->EnumAdapterByLuid(emulator->GetAdapterLuid(), IID_PPV_ARGS(&adapter));
+  }
+  if (!adapter) {
+    r->factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                           IID_PPV_ARGS(&adapter));
+  }
+  if (adapter) {
+    DXGI_ADAPTER_DESC1 desc = {};
+    adapter->GetDesc1(&desc);
+    const std::wstring name = desc.Description;
+    REXLOG_INFO("native renderer: GPU {}", std::string(name.begin(), name.end()));
+  }
   // Device Removed Extended Data: if the GPU faults, the log names the
   // allocation (see ReportDeviceRemoved).
   {
