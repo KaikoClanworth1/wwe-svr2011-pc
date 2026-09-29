@@ -1360,7 +1360,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install" };
 
     /* Just the strip of tabs; the pages below are plain window. */
     s_tab = add(-1, WC_TABCONTROLW, L"", WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER, 12, 10, 596, 28, ID_TAB);
@@ -1455,7 +1455,7 @@ static void build_ui(void)
     add(TAB_ANDROID, L"Static", L"Play on an Android phone or tablet (experimental): 64-bit ARM with Vulkan, such as a "
                                 L"recent Snapdragon. It needs about 7 GB free and a controller.",
         SS_LEFT, X0, 50, 560, 36, 0);
-    add(TAB_ANDROID, L"Button", L"Option 1: install over USB (recommended)", BS_GROUPBOX, X0, 92, 560, 250, 0);
+    add(TAB_ANDROID, L"Button", L"Option 1: install over USB (recommended)", BS_GROUPBOX, X0, 92, 560, 214, 0);
     add(TAB_ANDROID, L"Static",
         L"1.  On the phone, open Settings \x2192 About phone (Samsung: \x2192 Software information) and tap "
         L"Build number 7 times, until it says developer mode is on.\n"
@@ -1463,24 +1463,24 @@ static void build_ui(void)
         L"3.  Connect the phone to this PC with a USB data cable and unlock it. When it asks \u201cAllow USB "
         L"debugging?\u201d, tick Always allow from this computer and tap Allow.\n"
         L"4.  Click Install to phone. The first time, the launcher downloads Google's adb tool (about 7 MB).",
-        SS_LEFT | SS_NOPREFIX, X0 + 16, 114, 528, 150, 0);
-    add(TAB_ANDROID, L"Button", L"Install to phone", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 16, 268, 160, 34,
+        SS_LEFT | SS_NOPREFIX, X0 + 16, 114, 528, 112, 0);
+    add(TAB_ANDROID, L"Button", L"Install to phone", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 16, 232, 160, 34,
         ID_ADB_INSTALL);
-    add(TAB_ANDROID, L"Button", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, X0 + 186, 268, 100, 34,
+    add(TAB_ANDROID, L"Button", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, X0 + 186, 232, 100, 34,
         ID_ANDROID_CANCEL);
     add(TAB_ANDROID, L"Static", L"It copies the app and the game to the phone's games folder (next time only what "
                                 L"changed; the phone's own saves are kept) and starts it.",
-        SS_LEFT, X0 + 16, 306, 528, 32, 0);
-    add(TAB_ANDROID, L"Button", L"Option 2: a package to copy yourself", BS_GROUPBOX, X0, 350, 560, 104, 0);
+        SS_LEFT, X0 + 16, 270, 528, 32, 0);
+    add(TAB_ANDROID, L"Button", L"Option 2: a package to copy yourself", BS_GROUPBOX, X0, 316, 560, 104, 0);
     add(TAB_ANDROID, L"Static", L"A folder with the app (SvR2011.apk), the game (SvR2011-Game.zip) and instructions. "
                                 L"Copy both files to the phone's Download folder and install the app: it installs "
                                 L"the game on its first start.",
-        SS_LEFT, X0 + 16, 372, 528, 48, 0);
-    add(TAB_ANDROID, L"Button", L"Create APK Package\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 416, 170, 30,
+        SS_LEFT, X0 + 16, 338, 528, 40, 0);
+    add(TAB_ANDROID, L"Button", L"Create APK Package\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 380, 170, 30,
         ID_APK_CREATE);
-    add(TAB_ANDROID, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0, 468, 560, 20, ID_APK_PROGRESS);
+    add(TAB_ANDROID, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0, 434, 560, 20, ID_APK_PROGRESS);
     SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETRANGE32, 0, 1000);
-    add(TAB_ANDROID, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 496, 560, 56, ID_APK_STATUS);
+    add(TAB_ANDROID, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 462, 560, 56, ID_APK_STATUS);
 
     /* DLC */
     add(TAB_DLC, L"Static", L"Downloadable content (DLC) and title updates as downloaded on the Xbox 360: "

@@ -143,7 +143,7 @@ The port is a Windows program. On a Steam Deck or a Linux PC it runs through **P
 
 ### Android (experimental)
 
-The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, such as a recent Snapdragon. On a Galaxy Z Fold 7 it holds 60 fps. You need about 7 GB free on the phone and a controller. First install the game on your PC as above. Then use the launcher's **Android** tab:
+The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, such as a recent Snapdragon. On a Galaxy Z Fold 7 it holds 60 fps. You need about 7 GB free on the phone and a controller. First install the game on your PC as above. Then use the launcher's **Android Install** tab:
 
 - **Option 1: install over USB (recommended).**
   1. On the phone, open **Settings → About phone** (on Samsung, also **→ Software information**) and tap **Build number** 7 times, until it says developer mode is on.
