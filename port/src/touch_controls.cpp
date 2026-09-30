@@ -537,6 +537,12 @@ void EditorMove(uint32_t pointer, float x, float y) {
 
 bool Down(uint32_t pointer, float x, float y) {
   g_last_touch = Clock::now();
+  static int logged = 0;
+  if (logged < 6) {
+    ++logged;
+    REXLOG_INFO("touch controls: down at {:.0f},{:.0f} (overlay {:.0f}x{:.0f}) -> control {}", x, y, g_w, g_h,
+                Visible() && !g_editor && !g_help ? Find(x, y) : -2);
+  }
   if (g_editor) {
     EditorDown(pointer, x, y);
     return true;
@@ -623,17 +629,26 @@ bool Up(uint32_t pointer) {
 
 constexpr uint32_t kMousePointer = 0xFFFFFFF0u;
 
+// Window events are in physical pixels; the overlay (ImGui) works in its
+// display units - fewer on high-density screens (a phone: 2.6 pixels each).
+ImVec2 ToOverlay(float x, float y) {
+  if (!g_window || g_w <= 0 || g_h <= 0) return ImVec2(x, y);
+  const float pw = float(g_window->GetActualPhysicalWidth()), ph = float(g_window->GetActualPhysicalHeight());
+  return ImVec2(pw > 0 ? x * g_w / pw : x, ph > 0 ? y * g_h / ph : y);
+}
+
 class TouchListener final : public rex::ui::WindowInputListener {
  public:
   void OnTouchEvent(rex::ui::TouchEvent& e) override {
     using A = rex::ui::TouchEvent::Action;
     bool handled = false;
+    const ImVec2 p = ToOverlay(e.x(), e.y());
     switch (e.action()) {
       case A::kDown:
-        handled = Down(e.pointer_id(), e.x(), e.y());
+        handled = Down(e.pointer_id(), p.x, p.y);
         break;
       case A::kMove:
-        handled = Move(e.pointer_id(), e.x(), e.y());
+        handled = Move(e.pointer_id(), p.x, p.y);
         break;
       case A::kUp:
       case A::kCancel:
@@ -645,11 +660,12 @@ class TouchListener final : public rex::ui::WindowInputListener {
   // The mouse as one finger (touch-screen PCs report touches as touches; this
   // is for trying the layout with a mouse).
   void OnMouseDown(rex::ui::MouseEvent& e) override {
-    if (e.button() == rex::ui::MouseEvent::Button::kLeft && Down(kMousePointer, float(e.x()), float(e.y())))
-      e.set_handled(true);
+    const ImVec2 p = ToOverlay(float(e.x()), float(e.y()));
+    if (e.button() == rex::ui::MouseEvent::Button::kLeft && Down(kMousePointer, p.x, p.y)) e.set_handled(true);
   }
   void OnMouseMove(rex::ui::MouseEvent& e) override {
-    if (Move(kMousePointer, float(e.x()), float(e.y()))) e.set_handled(true);
+    const ImVec2 p = ToOverlay(float(e.x()), float(e.y()));
+    if (Move(kMousePointer, p.x, p.y)) e.set_handled(true);
   }
   void OnMouseUp(rex::ui::MouseEvent& e) override {
     if (e.button() == rex::ui::MouseEvent::Button::kLeft && Up(kMousePointer)) e.set_handled(true);

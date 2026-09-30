@@ -526,17 +526,33 @@ index 947817f..a1cc533 100644
  
    // Properties of the core API and enabled extensions, and enabled features.
 diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
-index 71e7473..6ac73a3 100644
+index 71e7473..7ecc1f0 100644
 --- a/include/rex/ui/window_sdl.h
 +++ b/include/rex/ui/window_sdl.h
-@@ -40,6 +40,7 @@ class WindowSDL final : public Window {
+@@ -40,6 +40,14 @@ class WindowSDL final : public Window {
    void HandleKeyEvent(SDL_Event& event);
    void HandleTextInputEvent(SDL_Event& event);
    void HandleMouseEvent(SDL_Event& event);
 +  void HandleTouchEvent(SDL_Event& event);  // [svr2011]
++  // [svr2011] Android: the app went to the background (its ANativeWindow is
++  // destroyed) or came back (a new one, possibly a little later). The
++  // presenter follows: detached in the background, reattached to the
++  // current native window once there is one (SyncAndroidSurface, checked at
++  // every event).
++  void SetAndroidBackground(bool background);
++  void SyncAndroidSurface();
    void HandleDropEvent(SDL_Event& event);
    void HandlePaintEvent();
  
+@@ -81,6 +89,8 @@ class WindowSDL final : public Window {
+ 
+   SDL_Window* sdl_window_ = nullptr;
+   SDL_WindowID sdl_window_id_ = 0;
++  void* android_window_ = nullptr;  // [svr2011] the native window the surface was made from
++  bool android_background_ = false;
+   std::atomic<bool> paint_pending_{false};
+   // Auto-hide cursor bookkeeping (CursorVisibility::kAutoHidden).
+   SDL_TimerID cursor_hide_timer_ = 0;
 diff --git a/include/rex/ui/windowed_app.h b/include/rex/ui/windowed_app.h
 index 50638d6..40a65bb 100644
 --- a/include/rex/ui/windowed_app.h
@@ -3005,7 +3021,7 @@ index 9eeb902..0782d77 100644
      provider->ui_samplers_ = UISamplers::Create(provider->vulkan_device_.get());
      if (!provider->ui_samplers_) {
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 2251429..b1d10d5 100644
+index 2251429..158bef2 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
 @@ -35,6 +35,8 @@
@@ -3017,7 +3033,7 @@ index 2251429..b1d10d5 100644
  #else
  #include <X11/Xlib-xcb.h>
  #include <rex/ui/surface_gnulinux.h>
-@@ -398,6 +400,16 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+@@ -398,6 +400,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
        SDL_Metal_DestroyView(metal_view);
      }
    }
@@ -3028,13 +3044,14 @@ index 2251429..b1d10d5 100644
 +    auto* window = static_cast<ANativeWindow*>(
 +        SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
 +    if (window) {
++      android_window_ = window;
 +      return std::make_unique<AndroidNativeWindowSurface>(window);
 +    }
 +  }
  #else
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
    if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
-@@ -549,6 +561,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
+@@ -549,6 +562,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
  }
  
  void WindowSDL::HandleMouseEvent(SDL_Event& event) {
@@ -3049,10 +3066,39 @@ index 2251429..b1d10d5 100644
    // SDL3 reports float window coordinates; listeners expect physical pixels.
    float density = GetPixelDensity();
    WindowDestructionReceiver destruction_receiver(this);
-@@ -588,4 +608,30 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
+@@ -588,4 +609,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
    }
  }
  
++// [svr2011] Android surface lifecycle (see window_sdl.h).
++void WindowSDL::SetAndroidBackground(bool background) {
++#if REX_PLATFORM_ANDROID
++  android_background_ = background;
++  if (background && HasSurface()) {
++    REXLOG_INFO("[svr2011] background: presenter detached from the surface");
++    OnSurfaceChanged(false);
++    android_window_ = nullptr;
++  }
++  SyncAndroidSurface();
++#else
++  (void)background;
++#endif
++}
++
++void WindowSDL::SyncAndroidSurface() {
++#if REX_PLATFORM_ANDROID
++  if (android_background_ || !sdl_window_) return;
++  void* current = SDL_GetPointerProperty(SDL_GetWindowProperties(sdl_window_),
++                                         SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr);
++  if (current == android_window_ && (HasSurface() || !current)) return;
++  REXLOG_INFO("[svr2011] native window {} -> {}: {} the surface", android_window_, current,
++              current ? "recreating" : "dropping");
++  OnSurfaceChanged(current != nullptr);
++  if (!current) android_window_ = nullptr;
++  if (HasSurface()) RequestPaint();
++#endif
++}
++
 +// [svr2011] A finger (SDL: normalized 0..1 window coordinates) as a touch
 +// event in physical pixels, like the mouse events.
 +void WindowSDL::HandleTouchEvent(SDL_Event& event) {
@@ -3081,10 +3127,39 @@ index 2251429..b1d10d5 100644
 +
  }  // namespace rex::ui
 diff --git a/src/ui/windowed_app_context_sdl.cpp b/src/ui/windowed_app_context_sdl.cpp
-index dc0b4c2..d23aed9 100644
+index dc0b4c2..85004d0 100644
 --- a/src/ui/windowed_app_context_sdl.cpp
 +++ b/src/ui/windowed_app_context_sdl.cpp
-@@ -169,6 +169,18 @@ void SDLWindowedAppContext::ProcessEvent(SDL_Event& event) {
+@@ -97,6 +97,28 @@ int SDLWindowedAppContext::RunMainMessageLoop() {
+ }
+ 
+ void SDLWindowedAppContext::ProcessEvent(SDL_Event& event) {
++#if REX_PLATFORM_ANDROID
++  // [svr2011] the drawing surface after a return from the background
++  for (auto& [id, w] : windows_) w->SyncAndroidSurface();
++  if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
++    const bool background = event.type == SDL_EVENT_WILL_ENTER_BACKGROUND;
++    for (auto& [id, w] : windows_) w->SetAndroidBackground(background);
++    if (!background) {
++      // The new native window can come a little after: check again a few
++      // times (a wakeup event runs the check above).
++      static uint32_t type = 0;
++      type = wakeup_event_type_;
++      for (int k = 1; k <= 10; ++k) {
++        SDL_AddTimer(Uint32(150 * k), [](void*, SDL_TimerID, Uint32) -> Uint32 {
++          SDL_Event e{};
++          e.type = type;
++          SDL_PushEvent(&e);
++          return 0;
++        }, nullptr);
++      }
++    }
++  }
++#endif
+   if (event.type == wakeup_event_type_) {
+     ExecutePendingFunctionsFromUIThread();
+     return;
+@@ -169,6 +191,27 @@ void SDLWindowedAppContext::ProcessEvent(SDL_Event& event) {
        }
        break;
      }
@@ -3095,7 +3170,16 @@ index dc0b4c2..d23aed9 100644
 +    case SDL_EVENT_FINGER_UP:
 +    case SDL_EVENT_FINGER_MOTION:
 +    case SDL_EVENT_FINGER_CANCELED: {
-+      if (WindowSDL* window = GetWindow(event.tfinger.windowID)) {
++      // (Android may leave windowID 0 on finger events: the app's only window)
++      WindowSDL* window = GetWindow(event.tfinger.windowID);
++      if (!window && !windows_.empty()) window = windows_.begin()->second;
++      static int logged = 0;
++      if (logged < 6) {
++        ++logged;
++        REXLOG_INFO("[svr2011] finger event {:X} window {} ({}) at {:.3f},{:.3f}", uint32_t(event.type),
++                    uint32_t(event.tfinger.windowID), window ? "found" : "none", event.tfinger.x, event.tfinger.y);
++      }
++      if (window) {
 +        window->HandleTouchEvent(event);
 +      }
 +      break;
