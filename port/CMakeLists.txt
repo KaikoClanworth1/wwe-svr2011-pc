@@ -80,6 +80,11 @@ elseif(ANDROID)
     # Android: libmain.so, which SDL's Java activity loads and starts (SDL_main).
     add_library(svr2011 SHARED ${SVR2011_SOURCES})
     set_target_properties(svr2011 PROPERTIES OUTPUT_NAME main)
+    # Calls between the library's own functions (the recompiled game calls
+    # its functions millions of times a second) bound directly, not through
+    # the PLT (~3% of a phone's render thread in heavy entrances).
+    target_compile_options(svr2011 PRIVATE -fno-semantic-interposition)
+    target_link_options(svr2011 PRIVATE -Wl,-Bsymbolic-functions)
 else()
     add_executable(svr2011 ${SVR2011_SOURCES})
 endif()
