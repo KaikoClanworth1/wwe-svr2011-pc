@@ -59,6 +59,11 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]);
 
 // Drops every render target copy (the renderer rebuilt its targets).
 void ForgetResolved();
+// Drops the render target copy at one address: its image is in guest memory
+// now (a resolve written back), so textures there come from memory again -
+// the game may put something else there later (after Superstar Threads,
+// Tyson Kidd's roster picture sat where its bake had been).
+void ForgetResolved(uint32_t base_address);
 
 // A resolve wrote the guest texture at `base_address` (physical): the image
 // is in `texture` (a copy of the render target, owned by the renderer), not

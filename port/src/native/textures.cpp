@@ -176,6 +176,18 @@ std::unordered_map<uint64_t, ResolvedViewEntry> g_resolved_views;  // (generatio
 Stats g_stats;
 const bool g_no_cache = std::getenv("SVR2011_NATIVE_NOCACHE") != nullptr;  // (debug)
 
+bool IsBlockCompressed(uint32_t format) {
+  switch (format) {
+    case 18: case 19: case 20:  // k_DXT1, k_DXT2_3, k_DXT4_5
+    case 49:                    // k_DXN
+    case 51: case 52: case 53:  // k_DXT*_AS_16_16_16_16
+    case 58: case 59: case 60: case 61:  // k_DXT3A, k_DXT5A, k_CTX1, k_DXT3A_AS_1_1_1_1
+      return true;
+    default:
+      return false;
+  }
+}
+
 uint64_t GuestHash(const Entry& e) {
   const auto t0 = std::chrono::steady_clock::now();
   struct Done {
@@ -649,6 +661,11 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
     ++g_stats.unsupported;
     return UINT32_MAX;
   }
+  // A block-compressed texture where a render target was copied: the game
+  // reused that memory (the GPU can't resolve to DXT), so the copy is stale -
+  // after Superstar Threads, Tyson Kidd's roster picture showed its editor
+  // preview (a white square).
+  if (IsBlockCompressed(uint32_t(fetch.format))) g_resolved.erase(fetch.base_address);
   if (auto it = g_resolved.find(fetch.base_address); it != g_resolved.end()) {
     // A render target copy: sampled from the renderer's resource.
     if (dimension != 0) {
@@ -759,6 +776,8 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
 }
 
 void ForgetResolved() { g_resolved.clear(); }
+
+void ForgetResolved(uint32_t base_address) { g_resolved.erase(base_address >> 12); }
 
 void RegisterResolved(uint32_t base_address, plume::RenderTexture* resource, RenderFormat format,
                       RenderFormat gamma_format, uint32_t components, bool swap_rb) {

@@ -2363,10 +2363,11 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
         const uint8_t* fc = Device() + guest::RegisterOffset(0x4800) + slot * 24;
         const uint32_t base = Be32(fc + 4) & 0xFFFFF000u;
         auto it = r->resolved.find(base);
-        char one[48];
+        char one[64];
         if (it != r->resolved.end()) {
-          std::snprintf(one, sizeof(one), " %s%u:R%ux%u", sh == vs ? "v" : "p", slot, it->second.width,
-                        it->second.height);
+          std::snprintf(one, sizeof(one), " %s%u:R%ux%u@%X/f%u/%ux%u", sh == vs ? "v" : "p", slot,
+                        it->second.width, it->second.height, base, Be32(fc + 4) & 0x3F,
+                        (Be32(fc + 8) & 0x1FFF) + 1, ((Be32(fc + 8) >> 13) & 0x1FFF) + 1);
         } else {
           std::snprintf(one, sizeof(one), " %s%u:t", sh == vs ? "v" : "p", slot);
         }
@@ -3024,25 +3025,25 @@ bool FlushFrameAndWait(Renderer* r) {
 // to guest memory at once: the frame so far runs, the image is read back and
 // written at the guest's size, tiled and byte-swapped as the destination
 // texture says (32-bit colour, k_8_8_8_8 only).
-void WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, const uint32_t fetch[6],
+bool WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, const uint32_t fetch[6],
                       bool swap_rb) {
-  if (dst.format != RenderFormat::R8G8B8A8_TYPELESS || (fetch[1] & 0x3F) != 6) return;
+  if (dst.format != RenderFormat::R8G8B8A8_TYPELESS || (fetch[1] & 0x3F) != 6) return false;
   const uint32_t guest_w = dst.width, guest_h = dst.height;
   const uint32_t host_w = dst.host_w ? dst.host_w : guest_w * dst.scale;
   const uint32_t host_h = dst.host_h ? dst.host_h : guest_h * dst.scale;
   const uint32_t row_texels = (host_w + 63) & ~63u;  // (256-byte rows)
   std::shared_ptr<plume::RenderBuffer> buffer =
       r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(row_texels) * host_h * 4));
-  if (!buffer) return;
+  if (!buffer) return false;
   auto& layout = const_cast<ResolvedTexture&>(dst).layout;
   Transition(r, dst.resource.get(), layout, RenderTextureLayout::COPY_SOURCE);
   r->list->copyTextureRegion(plume::RenderTextureCopyLocation::PlacedFootprint(
                                  buffer.get(), RenderFormat::R8G8B8A8_UNORM, host_w, host_h, 1, row_texels),
                              plume::RenderTextureCopyLocation::Subresource(dst.resource.get()));
   Transition(r, dst.resource.get(), layout, RenderTextureLayout::SHADER_READ);
-  if (!FlushFrameAndWait(r)) return;
+  if (!FlushFrameAndWait(r)) return false;
   const auto* src = static_cast<const uint8_t*>(buffer->map());
-  if (!src) return;
+  if (!src) return false;
   const bool tiled = fetch[0] >> 31;
   const uint32_t pitch = std::max(((fetch[0] >> 22) & 0x1FFu) * 32, guest_w);
   const uint32_t endian = (fetch[1] >> 6) & 3;
@@ -3075,6 +3076,7 @@ void WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, co
   if (logged++ < 32) {
     REXLOG_INFO("native renderer: resolve {:08X} ({}x{}) written back to guest memory", base, guest_w, guest_h);
   }
+  return true;
 }
 
 // D3DDevice_Resolve(device, flags, ..., destination texture in r8): flags 0-3
@@ -3203,7 +3205,9 @@ void OnResolve(const PPCContext& ctx) {
       dst.last_frame = r->frames;
     }
     const bool recurring = dst.streak >= 30 || t.color == r->main_target;
-    if (write_back && !recurring) WriteBackResolve(r, base, dst, fetch, swap_rb);
+    if (write_back && !recurring && WriteBackResolve(r, base, dst, fetch, swap_rb)) {
+      textures::ForgetResolved(base);  // (sampled from memory from now on)
+    }
   }
   ++r->frame_stats.resolves;
 }
