@@ -29,6 +29,7 @@
 #include "generated/default/svr2011_init.h"
 #include "achievements_page.h"
 #include "graphics_page.h"
+#include "discord_presence.h"
 #include "touch_controls.h"
 #include "native/native_renderer.h"
 
@@ -160,6 +161,7 @@ REX_HOOK_RAW(sub_82447210) {
     REXLOG_INFO("[svr2011] menu select: group {:X} row {}", group, cursor);
     svr2011::TouchGameInMatch(false);  // (the touch controller's MENU layout)
     svr2011::native::SetMatchScene(false);  // (wide screens: menus at 16:9)
+    svr2011::SetDiscordScene(svr2011::DiscordScene::kMenus);
     if (group == kOptionsGroup && cursor == kGraphicsRow) {
       svr2011::OpenGraphicsPage();
       return;
@@ -202,8 +204,17 @@ REX_EXTERN(__imp__sub_826E1C88);
 REX_HOOK_RAW(sub_826E1C88) {
   svr2011::TouchGameInMatch(true);  // entrances: a match (the touch controller's MATCH layout)
   svr2011::native::SetMatchScene(true);  // (wide screens: full width)
+  svr2011::SetDiscordScene(svr2011::DiscordScene::kEntrances);
   if (REXCVAR_GET(unlock_30fps)) return;
   __imp__sub_826E1C88(ctx, base);
+}
+
+// The entrances' end: sub_826E1D28 restores the frame rate - the match starts.
+REX_EXTERN(__imp__sub_826E1D28);
+REX_HOOK_RAW(sub_826E1D28) {
+  REXLOG_INFO("[svr2011] entrances over");
+  svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
+  __imp__sub_826E1D28(ctx, base);
 }
 
 REX_EXTERN(__imp__sub_826E1AE8);

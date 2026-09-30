@@ -44,6 +44,7 @@
 #include "platform.h"
 #include "script_input.h"
 #include "touch_controls.h"
+#include "discord_presence.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -313,6 +314,9 @@ void Svr2011App::OnPostLoadXexImage() {
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);
     // The on-screen controller (touch_controls.h).
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
+  }
+  {
+    svr2011::StartDiscordPresence();  // (discord_presence.h)
   }
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
