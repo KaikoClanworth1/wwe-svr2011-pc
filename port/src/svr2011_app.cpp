@@ -43,6 +43,7 @@
 #include "keyboard_typing.h"
 #include "platform.h"
 #include "script_input.h"
+#include "touch_controls.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -161,7 +162,16 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
     config.input_factory = [file](bool) -> std::unique_ptr<rex::system::IInputSystem> {
       auto input = std::make_unique<rex::input::InputSystem>(nullptr);
       input->AddDriver(std::make_unique<svr2011::ScriptInputDriver>(file));
+      input->AddDriver(svr2011::CreateTouchDriver());  // (tests tap it: "touch")
       input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
+      return input;
+    };
+  } else {
+    // The SDK's controllers plus the on-screen touch controller
+    // (touch_controls.h), merged into player 1's.
+    config.input_factory = [](bool tool) -> std::unique_ptr<rex::system::IInputSystem> {
+      auto input = rex::input::CreateDefaultInputSystem(tool);
+      if (!tool) input->AddDriver(svr2011::CreateTouchDriver());
       return input;
     };
   }
@@ -202,6 +212,12 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   ImFont* title =
       std::filesystem::exists(kBoldItalic) ? atlas->AddFontFromFileTTF(kBoldItalic, 40.0f) : nullptr;
   svr2011::SetGraphicsPageFonts(menu, title ? title : menu);
+  // The touch controller's labels: the menu font, or the phone's own.
+  ImFont* touch = menu;
+  for (const char* f : {"/system/fonts/Roboto-Bold.ttf", "/system/fonts/Roboto-Regular.ttf"}) {
+    if (!touch && std::filesystem::exists(f)) touch = atlas->AddFontFromFileTTF(f, 48.0f);
+  }
+  svr2011::SetTouchControlsFont(touch);
   svr2011::SetAchievementsPageFonts(menu, title ? title : menu);
 }
 
@@ -295,6 +311,8 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallGraphicsPage(
         imgui_drawer(), window(),
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);
+    // The on-screen controller (touch_controls.h).
+    svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
   }
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,

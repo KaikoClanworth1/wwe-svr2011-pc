@@ -525,6 +525,18 @@ index 947817f..a1cc533 100644
    };
  
    // Properties of the core API and enabled extensions, and enabled features.
+diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
+index 71e7473..6ac73a3 100644
+--- a/include/rex/ui/window_sdl.h
++++ b/include/rex/ui/window_sdl.h
+@@ -40,6 +40,7 @@ class WindowSDL final : public Window {
+   void HandleKeyEvent(SDL_Event& event);
+   void HandleTextInputEvent(SDL_Event& event);
+   void HandleMouseEvent(SDL_Event& event);
++  void HandleTouchEvent(SDL_Event& event);  // [svr2011]
+   void HandleDropEvent(SDL_Event& event);
+   void HandlePaintEvent();
+ 
 diff --git a/include/rex/ui/windowed_app.h b/include/rex/ui/windowed_app.h
 index 50638d6..40a65bb 100644
 --- a/include/rex/ui/windowed_app.h
@@ -2870,7 +2882,7 @@ index 9eeb902..0782d77 100644
      provider->ui_samplers_ = UISamplers::Create(provider->vulkan_device_.get());
      if (!provider->ui_samplers_) {
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 2251429..647fd2c 100644
+index 2251429..b1d10d5 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
 @@ -35,6 +35,8 @@
@@ -2899,6 +2911,75 @@ index 2251429..647fd2c 100644
  #else
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
    if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
+@@ -549,6 +561,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
+ }
+ 
+ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
++  // [svr2011] Mouse events SDL makes from touches: the fingers themselves
++  // arrive as touch events (HandleTouchEvent; ImGui maps one to its mouse).
++  if ((event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which == SDL_TOUCH_MOUSEID) ||
++      ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
++       event.button.which == SDL_TOUCH_MOUSEID) ||
++      (event.type == SDL_EVENT_MOUSE_WHEEL && event.wheel.which == SDL_TOUCH_MOUSEID)) {
++    return;
++  }
+   // SDL3 reports float window coordinates; listeners expect physical pixels.
+   float density = GetPixelDensity();
+   WindowDestructionReceiver destruction_receiver(this);
+@@ -588,4 +608,30 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
+   }
+ }
+ 
++// [svr2011] A finger (SDL: normalized 0..1 window coordinates) as a touch
++// event in physical pixels, like the mouse events.
++void WindowSDL::HandleTouchEvent(SDL_Event& event) {
++  int w = 0, h = 0;
++  SDL_GetWindowSizeInPixels(sdl_window_, &w, &h);
++  TouchEvent::Action action;
++  switch (event.type) {
++    case SDL_EVENT_FINGER_DOWN:
++      action = TouchEvent::Action::kDown;
++      break;
++    case SDL_EVENT_FINGER_UP:
++      action = TouchEvent::Action::kUp;
++      break;
++    case SDL_EVENT_FINGER_CANCELED:
++      action = TouchEvent::Action::kCancel;
++      break;
++    default:
++      action = TouchEvent::Action::kMove;
++      break;
++  }
++  WindowDestructionReceiver destruction_receiver(this);
++  TouchEvent e(this, uint32_t(event.tfinger.fingerID), action, event.tfinger.x * float(w),
++               event.tfinger.y * float(h));
++  OnTouchEvent(e, destruction_receiver);
++}
++
+ }  // namespace rex::ui
+diff --git a/src/ui/windowed_app_context_sdl.cpp b/src/ui/windowed_app_context_sdl.cpp
+index dc0b4c2..d23aed9 100644
+--- a/src/ui/windowed_app_context_sdl.cpp
++++ b/src/ui/windowed_app_context_sdl.cpp
+@@ -169,6 +169,18 @@ void SDLWindowedAppContext::ProcessEvent(SDL_Event& event) {
+       }
+       break;
+     }
++    // [svr2011] Touch screens: each finger as a touch pointer (listeners
++    // such as the port's on-screen controller need every finger; the
++    // single-finger mouse emulation is ignored in HandleMouseEvent).
++    case SDL_EVENT_FINGER_DOWN:
++    case SDL_EVENT_FINGER_UP:
++    case SDL_EVENT_FINGER_MOTION:
++    case SDL_EVENT_FINGER_CANCELED: {
++      if (WindowSDL* window = GetWindow(event.tfinger.windowID)) {
++        window->HandleTouchEvent(event);
++      }
++      break;
++    }
+     case SDL_EVENT_DROP_FILE: {
+       if (WindowSDL* window = GetWindow(event.drop.windowID)) {
+         window->HandleDropEvent(event);
 diff --git a/src/ui/windowed_app_main_sdl.cpp b/src/ui/windowed_app_main_sdl.cpp
 index 77bb1dc..acc33de 100644
 --- a/src/ui/windowed_app_main_sdl.cpp

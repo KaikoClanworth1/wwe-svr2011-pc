@@ -33,6 +33,7 @@
 #include "achievements_page.h"
 #include "fps_overlay.h"
 #include "native/native_renderer.h"
+#include "touch_controls.h"
 
 namespace svr2011 {
 
@@ -63,15 +64,16 @@ constexpr int kNumScales = int(std::size(kScales));
 enum Row {
   kResolution, kDisplay, kVsync, kFpsCounter, kRenderer,         // DISPLAY
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
+  kTouch,                                                        // DISPLAY (last)
 };
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
-const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer},
+const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps}};
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer},
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps}};
 #endif
 
@@ -195,6 +197,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int row_ = 0;  // (in the tab)
   int resolution_ = 2;
   int scale_ = 0;  // (kScales)
+  bool touch_ = false;  // the on-screen controller
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
   bool effects_ = true, fps60_ = true;
   bool native_at_start_ = false;
@@ -230,6 +233,7 @@ void GraphicsPage::Load() {
   native_ = native_at_start_ ? native::NativeActive()
                              : rex::cvar::Query<std::string>("native_renderer") != "off";
   fps_ = FpsCounterVisible();
+  touch_ = rex::cvar::Query<bool>("touch_controls");
   vsync_ = rex::cvar::Query<bool>("vsync");
   fullscreen_ = g_window ? g_window->IsFullscreen() : false;
 }
@@ -265,6 +269,11 @@ void GraphicsPage::Change(int row, int dir) {
       msaa_ = !msaa_;
       rex::cvar::SetFlagByName("native_2x_msaa", msaa_ ? "true" : "false");
       SaveSetting("native_2x_msaa", msaa_ ? "true" : "false");
+      break;
+    case kTouch:
+      touch_ = !touch_;
+      rex::cvar::SetFlagByName("touch_controls", touch_ ? "true" : "false");
+      SaveSetting("touch_controls", touch_ ? "true" : "false");
       break;
     case kFpsCounter:
       fps_ = !fps_;
@@ -449,6 +458,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kDisplay: return fullscreen_ ? "FULL SCREEN" : "WINDOWED";
       case kVsync: return vsync_ ? "ON" : "OFF";
       case kFpsCounter: return fps_ ? "ON" : "OFF";
+      case kTouch: return touch_ ? "ON" : "OFF";
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
       case kRenderScale: return kScales[scale_].label;
       case kAntiAliasing: return msaa_ ? "ON" : "OFF";
@@ -463,6 +473,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kDisplay: return "DISPLAY MODE";
       case kVsync: return "VSYNC";
       case kFpsCounter: return "FPS COUNTER";
+      case kTouch: return "TOUCH CONTROLS";
       case kRenderer: return "RENDERER";
       case kRenderScale: return "RENDER RESOLUTION";
       case kAntiAliasing: return "ANTI-ALIASING";
@@ -477,6 +488,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kDisplay: return "Play in a window or full screen (Alt+Enter also switches).";
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
+      case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kRenderer: return "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.";
       case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
       case kAntiAliasing: return "Renders at twice the resolution and averages it down: smooth edges, slower.";
@@ -547,7 +559,10 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   if (input) {
     // (one hold for the port's pages: this one and ACHIEVEMENTS)
     input->SetGuestInputHold(
-        [] { return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput(); });
+        [] {
+          return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() ||
+                 TouchControlsHoldInput();
+        });
   }
 }
 

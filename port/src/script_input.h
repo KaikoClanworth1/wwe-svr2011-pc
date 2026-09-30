@@ -11,6 +11,9 @@
 //   wait <ms>                   idle
 //   type <text>                 type on the PC keyboard (keyboard_typing.h)
 //   key <BACK|ENTER|ESC|LEFT|RIGHT|UP|DOWN>   press a PC keyboard key
+//   touch <x> <y> <ms>          a finger on the on-screen controller at x, y
+//                               (fractions of the window) for ms
+//   drag <x0> <y0> <x1> <y1> <ms>   a finger down at x0, y0, moved to x1, y1
 //
 // <buttons> is one or more of A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT
 // joined with '+'. Lines starting with '#' are ignored.
@@ -54,6 +57,8 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     int ms = 0;
     std::string text;  // typed when the step starts
     uint16_t key = 0;  // PC keyboard key pressed when the step starts
+    bool touch = false;  // a finger (touch_controls.h) from x0, y0 to x1, y1
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   };
 
   void PollFile();

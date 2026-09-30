@@ -10,6 +10,7 @@
 #include <rex/logging.h>
 
 #include "keyboard_typing.h"
+#include "touch_controls.h"
 
 namespace svr2011 {
 
@@ -105,6 +106,15 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     std::getline(in >> std::ws, step.text);
     step.ms = 100;
     queue_.push_back(step);
+  } else if (verb == "touch" || verb == "drag") {
+    step.touch = true;
+    in >> step.x0 >> step.y0;
+    step.x1 = step.x0, step.y1 = step.y0;
+    if (verb == "drag") in >> step.x1 >> step.y1;
+    step.ms = 150;
+    in >> step.ms;
+    queue_.push_back(step);
+    queue_.push_back(Step{.ms = 120});  // (lifted, then a pause)
   } else if (verb == "key") {
     static const struct {
       const char* name;
@@ -172,6 +182,8 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
   PollFile();
   const auto now = Clock::now();
   if (!running_ || now >= step_end_) {
+    constexpr uint32_t kFinger = 7;
+    if (running_ && current_.touch) TouchInject(kFinger, 2, current_.x1, current_.y1);
     running_ = !queue_.empty();
     if (running_) {
       current_ = queue_.front();
@@ -179,6 +191,12 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
       step_end_ = now + std::chrono::milliseconds(current_.ms);
       if (!current_.text.empty()) TypeText(current_.text);
       if (current_.key) TypeKey(current_.key);
+      if (current_.touch) {
+        TouchInject(kFinger, 0, current_.x0, current_.y0);
+        if (current_.x1 != current_.x0 || current_.y1 != current_.y0) {
+          TouchInject(kFinger, 1, current_.x1, current_.y1);
+        }
+      }
     } else {
       current_ = Step{};
     }

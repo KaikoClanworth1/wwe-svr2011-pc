@@ -29,6 +29,7 @@
 #include "generated/default/svr2011_init.h"
 #include "achievements_page.h"
 #include "graphics_page.h"
+#include "touch_controls.h"
 
 namespace {
 
@@ -130,6 +131,7 @@ REX_HOOK_RAW(sub_82447210) {
     const uint8_t* menu = base + ctx.r3.u32;
     const uint32_t group = Be32(menu + kMenuGroup), cursor = Be32(menu + kMenuCursor);
     REXLOG_INFO("[svr2011] menu select: group {:X} row {}", group, cursor);
+    svr2011::TouchGameInMatch(false);  // (the touch controller's MENU layout)
     if (group == kOptionsGroup && cursor == kGraphicsRow) {
       svr2011::OpenGraphicsPage();
       return;
@@ -170,6 +172,7 @@ void ArmWatch(uint8_t* base);
 // the matching constants; sub_826E1D28 restores it). Skipped with the setting.
 REX_EXTERN(__imp__sub_826E1C88);
 REX_HOOK_RAW(sub_826E1C88) {
+  svr2011::TouchGameInMatch(true);  // entrances: a match (the touch controller's MATCH layout)
   if (REXCVAR_GET(unlock_30fps)) return;
   __imp__sub_826E1C88(ctx, base);
 }
