@@ -805,10 +805,46 @@ index b52bf39..7b89c86 100644
  #include <rex/string.h>
  
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
-index 9ac8d15..c0966e8 100644
+index 9ac8d15..a12d6ce 100644
 --- a/src/core/threading_posix.cpp
 +++ b/src/core/threading_posix.cpp
-@@ -270,7 +270,7 @@ static sem_t* RexCreateAnonymousSemaphore() {
+@@ -267,10 +267,43 @@ static sem_t* RexCreateAnonymousSemaphore() {
+ }
+ #endif  // __APPLE__
+ 
++// [svr2011] WaitMultiple used to poll its handles (try-lock them all, check,
++// yield or sleep 1 ms, repeat): two threads waiting on the same objects kept
++// each other's try-locks failing and both spun a core (on a phone the audio
++// worker and the game's audio thread took ~1.8 cores). Now every signal of
++// any condition bumps a generation counter, and a multi-wait sleeps until it
++// changes (or its timeout; a 50 ms tick guards against a missed signal).
++namespace multi_wait {
++inline std::mutex& Mutex() {
++  static std::mutex m;
++  return m;
++}
++inline std::condition_variable& Cond() {
++  static std::condition_variable c;
++  return c;
++}
++inline std::atomic<uint64_t>& Generation() {
++  static std::atomic<uint64_t> g{0};
++  return g;
++}
++inline std::atomic<int>& Waiters() {
++  static std::atomic<int> w{0};
++  return w;
++}
++// After a condition's state changed (under its own mutex or not).
++inline void Notify() {
++  Generation().fetch_add(1, std::memory_order_seq_cst);
++  if (Waiters().load(std::memory_order_seq_cst) > 0) {
++    std::lock_guard<std::mutex> lock(Mutex());
++    Cond().notify_all();
++  }
++}
++}  // namespace multi_wait
++
  class PosixConditionBase {
   public:
    PosixConditionBase() {
@@ -817,7 +853,7 @@ index 9ac8d15..c0966e8 100644
      // Use robust mutexes so waits can recover if owner thread terminates.
      pthread_mutexattr_t attr;
      if (pthread_mutexattr_init(&attr) == 0) {
-@@ -290,7 +290,7 @@ class PosixConditionBase {
+@@ -290,7 +323,7 @@ class PosixConditionBase {
    WaitResult Wait(std::chrono::milliseconds timeout) {
      bool executed;
      auto predicate = [this] { return this->signaled(); };
@@ -826,8 +862,21 @@ index 9ac8d15..c0966e8 100644
      auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
      int lock_result = pthread_mutex_lock(native_mutex);
      if (lock_result == EOWNERDEAD) {
-@@ -344,7 +344,7 @@ class PosixConditionBase {
-       locks.reserve(handles.size());
+@@ -335,16 +368,17 @@ class PosixConditionBase {
+                         ? std::chrono::steady_clock::time_point::max()
+                         : start_time + timeout;
+ 
++    std::vector<std::unique_lock<std::mutex>> locks;
++    locks.reserve(handles.size());
+     while (true) {
+       size_t first_signaled = std::numeric_limits<size_t>::max();
+       bool condition_met = false;
+       bool all_locked = true;
+-
+-      std::vector<std::unique_lock<std::mutex>> locks;
+-      locks.reserve(handles.size());
++      // (read before checking: a signal after this makes the wait below return)
++      const uint64_t seen = multi_wait::Generation().load(std::memory_order_seq_cst);
  
        for (size_t i = 0; i < handles.size(); ++i) {
 -#if REX_PLATFORM_LINUX
@@ -835,6 +884,87 @@ index 9ac8d15..c0966e8 100644
          auto native_mutex = static_cast<pthread_mutex_t*>(handles[i]->mutex_.native_handle());
          int result = pthread_mutex_trylock(native_mutex);
          if (result == 0 || result == EOWNERDEAD) {
+@@ -411,13 +445,18 @@ class PosixConditionBase {
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
+ 
+-      if (timeout == std::chrono::milliseconds::max()) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+-      } else {
+-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
+-        std::this_thread::sleep_for(sleep_time);
++      // [svr2011] Sleep until any condition is signaled (see multi_wait).
++      const auto wake = end_time - now > std::chrono::milliseconds(50)
++                            ? now + std::chrono::milliseconds(50)
++                            : end_time;
++      multi_wait::Waiters().fetch_add(1, std::memory_order_seq_cst);
++      {
++        std::unique_lock<std::mutex> wait_lock(multi_wait::Mutex());
++        multi_wait::Cond().wait_until(wait_lock, wake, [seen] {
++          return multi_wait::Generation().load(std::memory_order_seq_cst) != seen;
++        });
+       }
++      multi_wait::Waiters().fetch_sub(1, std::memory_order_seq_cst);
+     }
+   }
+ 
+@@ -450,6 +489,7 @@ class PosixCondition<Event> : public PosixConditionBase {
+     auto lock = std::unique_lock<std::mutex>(mutex_);
+     signal_ = true;
+     cond_.notify_all();
++    multi_wait::Notify();
+     return true;
+   }
+ 
+@@ -487,6 +527,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
+     }
+     count_ += release_count;
+     cond_.notify_all();
++    multi_wait::Notify();
+     return true;
+   }
+ 
+@@ -495,6 +536,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
+   inline void post_execution() override {
+     count_--;
+     cond_.notify_all();
++    multi_wait::Notify();
+   }
+   uint32_t count_;
+   const uint32_t maximum_count_;
+@@ -519,6 +561,7 @@ class PosixCondition<Mutant> : public PosixConditionBase {
+       // Free to be acquired by another thread
+       if (count_ == 0) {
+         cond_.notify_all();
++        multi_wait::Notify();
+       }
+       return true;
+     }
+@@ -551,6 +594,7 @@ class PosixCondition<Timer> : public PosixConditionBase {
+     std::lock_guard<std::mutex> lock(mutex_);
+     signal_ = true;
+     cond_.notify_all();
++    multi_wait::Notify();
+     return true;
+   }
+ 
+@@ -979,6 +1023,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       exit_code_ = exit_code;
+       signaled_ = true;
+       cond_.notify_all();
++      multi_wait::Notify();
+     }
+     if (is_current_thread) {
+       pthread_exit(reinterpret_cast<void*>(exit_code));
+@@ -1449,6 +1494,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+     thread->handle_.exit_code_ = 0;
+     thread->handle_.signaled_ = true;
+     thread->handle_.cond_.notify_all();
++    multi_wait::Notify();
+   }
+ 
+   current_thread_ = nullptr;
 diff --git a/src/core/timeline.cpp b/src/core/timeline.cpp
 new file mode 100644
 index 0000000..cee5140

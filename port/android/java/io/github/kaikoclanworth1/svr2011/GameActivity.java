@@ -18,10 +18,28 @@ public class GameActivity extends SDLActivity {
         // SDLActivity loads the libraries and starts the game's main.
         try {
             Os.setenv("REX_APP_FOLDER", InstallActivity.gameFolder().getAbsolutePath(), true);
+            // Automated tests over USB debugging (tools/phone_session.ps1):
+            // am start ... --es SVR2011_INPUT_FILE <file> --es SVR2011_USER_DATA <folder>
+            // become the environment the game reads, as on the PC.
+            Bundle extras = getIntent().getExtras();
+            if (extras != null) {
+                for (String key : extras.keySet()) {
+                    Object value = extras.get(key);
+                    if (key.startsWith("SVR2011_") && value != null) Os.setenv(key, value.toString(), true);
+                }
+            }
         } catch (ErrnoException e) {
             Log.e("SvR2011", "setenv failed", e);
         }
         super.onCreate(savedInstanceState);
+    }
+
+    // Settings on the command line (tests: --es args "--audio_mute=true ...").
+    @Override
+    protected String[] getArguments() {
+        Bundle extras = getIntent().getExtras();
+        String args = extras != null ? extras.getString("args") : null;
+        return args == null || args.trim().isEmpty() ? new String[0] : args.trim().split("\\s+");
     }
 
     @Override

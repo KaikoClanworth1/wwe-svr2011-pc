@@ -1,25 +1,18 @@
 # CPU per thread of the game on the connected phone (USB debugging), from
-# Android's top over -Seconds: which threads (XMA decoder, GPU commands, the
-# game's) cost what there. Starts the game if it isn't running; leave it on
-# the title screen or in a match (the attract demo has music, crowd and
-# commentary).
-#   phone_threads.ps1 [-Seconds 10] [-Top 20]
-param([int]$Seconds = 10, [int]$Top = 20)
-$adb = Join-Path $env:ANDROID_HOME "platform-tools\adb.exe"
-if (-not $env:ANDROID_HOME -or -not (Test-Path $adb)) { $adb = "D:\Android\sdk\platform-tools\adb.exe" }
+# Android's top over -Seconds: which threads (audio, GPU commands, the game's)
+# cost what there. Leave the game on the title screen or in a match.
+#   phone_threads.ps1 [-Seconds 10] [-Top 16]
+param([int]$Seconds = 10, [int]$Top = 16)
+$adb = "D:\Android\sdk\platform-tools\adb.exe"
+if ($env:ANDROID_HOME -and (Test-Path (Join-Path $env:ANDROID_HOME "platform-tools\adb.exe"))) {
+    $adb = Join-Path $env:ANDROID_HOME "platform-tools\adb.exe"
+}
 $pkg = "io.github.kaikoclanworth1.svr2011"
 if (-not ((& $adb devices) -match "`tdevice")) { "no phone connected (USB debugging)"; return }
-$gamePid = (& $adb shell pidof $pkg).Trim()
-if (-not $gamePid) {
-    & $adb shell am start -n "$pkg/.InstallActivity" | Out-Null
-    "started the game - run again once it's on the title screen or in a match"
-    return
-}
-# Two samples: the second is the CPU use over -Seconds.
-$out = & $adb shell top -H -b -d $Seconds -n 2 -p $gamePid -o TID,%CPU,CPU,TIME+,THREAD
-$blocks = ($out -join "`n") -split "(?m)^Tasks:"
-$last = ($blocks[-1] -split "`n") | Where-Object { $_ -match '^\s*\d+\s' }
-"CPU per thread over ${Seconds}s (100 = one core; CPU = the core it last ran on):"
-"  TID   %CPU CORE  TIME+     THREAD"
-$last | Sort-Object { [double](($_ -split '\s+', 0, 'RegexMatch' | Where-Object { $_ })[1]) } -Descending |
-    Select-Object -First $Top
+$gamePid = (& $adb shell pidof $pkg)
+if (-not $gamePid) { "the game isn't running (tools\phone_session.ps1 start)"; return }
+# Two samples: the second is the CPU use over -Seconds (sorted by %CPU;
+# 100 = one core; thread names are cut to 15 characters).
+$out = & $adb shell top -H -b -d $Seconds -n 2 -m $Top -p $gamePid.Trim()
+$start = ($out | Select-String -Pattern "^Threads:" | Select-Object -Last 1).LineNumber
+$out[($start - 1)..($out.Count - 1)] | Where-Object { $_ -notmatch "Mem:|Swap:" }

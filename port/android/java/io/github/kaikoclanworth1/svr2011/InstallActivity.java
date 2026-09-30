@@ -107,7 +107,9 @@ public class InstallActivity extends Activity {
             return;
         }
         if (installed()) {
-            startActivity(new Intent(this, GameActivity.class));
+            Intent game = new Intent(this, GameActivity.class);
+            if (getIntent().getExtras() != null) game.putExtras(getIntent().getExtras());  // (tests: GameActivity)
+            startActivity(game);
             finish();
             return;
         }
