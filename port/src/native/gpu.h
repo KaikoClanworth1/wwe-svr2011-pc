@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -41,6 +42,9 @@ class Backend {
   virtual void LogBuffer(plume::RenderBuffer* buffer, uint64_t size) = 0;
   virtual bool PipelineCreated(plume::RenderPipeline* pipeline) = 0;
   virtual void StallQueue(plume::RenderCommandQueue* queue) = 0;
+  // A pipeline cache kept on disk (Vulkan; D3D12 drivers keep their own).
+  virtual void LoadPipelineCache(plume::RenderDevice*, const std::filesystem::path&) {}
+  virtual void SavePipelineCache(plume::RenderDevice*, const std::filesystem::path&) {}
 };
 
 std::unique_ptr<Backend> CreateD3D12Backend();   // null where D3D12 isn't built
@@ -77,6 +81,11 @@ void DrainDebugMessages(plume::RenderDevice* device);
 void LogBuffer(plume::RenderBuffer* buffer, uint64_t size);
 // Whether the driver built the pipeline (plume returns one either way).
 bool PipelineCreated(plume::RenderPipeline* pipeline);
+// The pipeline cache file (Vulkan): read before the first pipeline, written
+// when new pipelines were built. Compiled pipelines then load from it the
+// next time instead of being compiled again (phones' drivers keep none).
+void LoadPipelineCache(plume::RenderDevice* device, const std::filesystem::path& file);
+void SavePipelineCache(plume::RenderDevice* device, const std::filesystem::path& file);
 // Debug: makes `queue` wait for good before its next work (a stuck GPU job).
 void StallQueue(plume::RenderCommandQueue* queue);
 

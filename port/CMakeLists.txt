@@ -25,6 +25,7 @@ set(SVR2011_SOURCES
     src/achievements_page.cpp
     src/graphics_page.cpp
     src/menu_hooks.cpp
+    src/perf_hooks.cpp
     src/saves.cpp
     src/dlc.cpp
     src/caw_logos.cpp

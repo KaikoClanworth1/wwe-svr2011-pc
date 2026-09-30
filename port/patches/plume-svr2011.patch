@@ -241,7 +241,7 @@ index 2281168..e20c227 100644
          bool depthWriteEnabled = false;
          bool stencilEnabled = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 4a2a489..e303069 100644
+index 4a2a489..b3553b5 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -167,6 +167,16 @@ namespace plume {
@@ -284,6 +284,15 @@ index 4a2a489..e303069 100644
          imageFormat = imageInfo.format;
          fillSubresourceRange();
  
+@@ -1390,7 +1416,7 @@ namespace plume {
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.stage = stageInfo;
+ 
+-        VkResult res = vkCreateComputePipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateComputePipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);  // [svr2011] cache
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
+             return;
 @@ -1617,6 +1643,14 @@ namespace plume {
              dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
          }
@@ -299,6 +308,15 @@ index 4a2a489..e303069 100644
          VkPipelineDynamicStateCreateInfo dynamicState = {};
          dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
          dynamicState.pDynamicStates = dynamicStates.data();
+@@ -1649,7 +1683,7 @@ namespace plume {
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.renderPass = renderPass;
+ 
+-        VkResult res = vkCreateGraphicsPipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);  // [svr2011] cache
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
+             return;
 @@ -3112,6 +3146,14 @@ namespace plume {
          vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
      }
@@ -455,7 +473,51 @@ index 4a2a489..e303069 100644
      VulkanDevice::~VulkanDevice() {
          release();
      }
-@@ -4438,7 +4598,9 @@ namespace plume {
+@@ -4429,16 +4589,53 @@ namespace plume {
+         }
+     }
+ 
++    // [svr2011]
++    bool VulkanDevice::setPipelineCacheData(const void *data, size_t size) {
++        if (vk == VK_NULL_HANDLE) return false;
++        VkPipelineCacheCreateInfo info = {};
++        info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
++        info.initialDataSize = data ? size : 0;
++        info.pInitialData = data;
++        VkPipelineCache cache = VK_NULL_HANDLE;
++        if (vkCreatePipelineCache(vk, &info, nullptr, &cache) != VK_SUCCESS) {
++            info.initialDataSize = 0;  // (data the driver rejects: start empty)
++            info.pInitialData = nullptr;
++            if (vkCreatePipelineCache(vk, &info, nullptr, &cache) != VK_SUCCESS) return false;
++        }
++        if (pipelineCache != VK_NULL_HANDLE) vkDestroyPipelineCache(vk, pipelineCache, nullptr);
++        pipelineCache = cache;
++        return true;
++    }
++
++    std::vector<uint8_t> VulkanDevice::getPipelineCacheData() const {
++        std::vector<uint8_t> data;
++        size_t size = 0;
++        if (pipelineCache == VK_NULL_HANDLE || vkGetPipelineCacheData(vk, pipelineCache, &size, nullptr) != VK_SUCCESS) {
++            return data;
++        }
++        data.resize(size);
++        if (vkGetPipelineCacheData(vk, pipelineCache, &size, data.data()) != VK_SUCCESS) data.clear();
++        else data.resize(size);
++        return data;
++    }
++
+     void VulkanDevice::release() {
+         nullBuffer = nullptr; // force destruction before destroying allocator
+ 
++        if (pipelineCache != VK_NULL_HANDLE && vk != VK_NULL_HANDLE) {  // [svr2011]
++            vkDestroyPipelineCache(vk, pipelineCache, nullptr);
++            pipelineCache = VK_NULL_HANDLE;
++        }
++
+         if (allocator != VK_NULL_HANDLE) {
+             vmaDestroyAllocator(allocator);
+             allocator = VK_NULL_HANDLE;
          }
  
          if (vk != VK_NULL_HANDLE) {
@@ -466,7 +528,7 @@ index 4a2a489..e303069 100644
              vk = VK_NULL_HANDLE;
          }
      }
-@@ -4602,13 +4764,38 @@ namespace plume {
+@@ -4602,13 +4799,38 @@ namespace plume {
          }
      }
  
@@ -506,7 +568,7 @@ index 4a2a489..e303069 100644
          std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
          return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
      }
-@@ -4638,4 +4825,9 @@ namespace plume {
+@@ -4638,4 +4860,9 @@ namespace plume {
          return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
      }
  #endif
@@ -517,7 +579,7 @@ index 4a2a489..e303069 100644
 +    }
  };
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index a0cf5cc..315b66c 100644
+index a0cf5cc..a34c7ef 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -329,6 +329,8 @@ namespace plume {
@@ -548,18 +610,24 @@ index a0cf5cc..315b66c 100644
          std::unordered_set<const VulkanCommandQueue *> virtualQueues;
      };
  
-@@ -417,8 +422,10 @@ namespace plume {
+@@ -417,8 +422,16 @@ namespace plume {
          std::unique_ptr<RenderBuffer> nullBuffer;
          bool loadStoreOpNoneSupported = false;
          bool nullDescriptorSupported = false;
 +        bool ownsDevice = true;  // [svr2011] false: adopted (VulkanExistingDevice)
++        VkPipelineCache pipelineCache = VK_NULL_HANDLE;  // [svr2011] for every pipeline (setPipelineCacheData)
++
++        // [svr2011] The pipeline cache's contents: replaced with saved data (a
++        // driver ignores data from another driver or GPU) / read to save them.
++        bool setPipelineCacheData(const void *data, size_t size);
++        std::vector<uint8_t> getPipelineCacheData() const;
  
          VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
 +        VulkanDevice(VulkanInterface *renderInterface, const struct VulkanExistingDevice &existing);  // [svr2011]
          ~VulkanDevice() override;
          std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
          std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
-@@ -448,11 +455,34 @@ namespace plume {
+@@ -448,11 +461,34 @@ namespace plume {
          bool endCapture() override;
      };
  
@@ -594,7 +662,7 @@ index a0cf5cc..315b66c 100644
  
  #   if PLUME_SDL_VULKAN_ENABLED
          VulkanInterface(RenderWindow sdlWindow);
-@@ -466,4 +496,7 @@ namespace plume {
+@@ -466,4 +502,7 @@ namespace plume {
          const std::vector<std::string> &getDeviceNames() const override;
          bool isValid() const;
      };

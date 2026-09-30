@@ -9,8 +9,11 @@
 #include "native/gpu.h"
 
 #include <deque>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include <plume_vulkan.h>
 
@@ -56,6 +59,37 @@ class VulkanBackend final : public Backend {
   }
 
   plume::RenderShaderFormat ShaderFormat() const override { return plume::RenderShaderFormat::SPIRV; }
+
+  void LoadPipelineCache(plume::RenderDevice* device, const std::filesystem::path& file) override {
+    std::vector<uint8_t> data;
+    if (std::ifstream in{file, std::ios::binary}) {
+      data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    auto* vk = static_cast<plume::VulkanDevice*>(device);
+    saved_size_ = data.size();
+    if (vk->setPipelineCacheData(data.empty() ? nullptr : data.data(), data.size())) {
+      REXLOG_INFO("native renderer: pipeline cache {} ({} KB)", data.empty() ? "new" : "loaded",
+                  data.size() / 1024);
+    }
+  }
+
+  void SavePipelineCache(plume::RenderDevice* device, const std::filesystem::path& file) override {
+    const std::vector<uint8_t> data = static_cast<plume::VulkanDevice*>(device)->getPipelineCacheData();
+    if (data.empty() || data.size() == saved_size_) return;  // (only cache hits: nothing new)
+    std::error_code ec;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    const std::filesystem::path tmp = file.string() + ".tmp";
+    {
+      std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+      if (!out) return;
+    }
+    std::filesystem::rename(tmp, file, ec);
+    if (!ec) {
+      saved_size_ = data.size();
+      REXLOG_INFO("native renderer: pipeline cache saved ({} KB)", data.size() / 1024);
+    }
+  }
   const char* ShaderExtension() const override { return ".spv"; }
 
   void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
@@ -113,6 +147,7 @@ class VulkanBackend final : public Backend {
   }
 
  private:
+  size_t saved_size_ = 0;  // (the pipeline cache file's)
   static constexpr uint64_t kHoldFrames = 16;
   struct Held {
     std::shared_ptr<plume::RenderTexture> texture;

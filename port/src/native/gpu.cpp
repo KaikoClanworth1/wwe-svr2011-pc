@@ -55,6 +55,12 @@ void LogBuffer(plume::RenderBuffer* buffer, uint64_t size) {
 bool PipelineCreated(plume::RenderPipeline* pipeline) {
   return g_backend && g_backend->PipelineCreated(pipeline);
 }
+void LoadPipelineCache(plume::RenderDevice* device, const std::filesystem::path& file) {
+  if (g_backend) g_backend->LoadPipelineCache(device, file);
+}
+void SavePipelineCache(plume::RenderDevice* device, const std::filesystem::path& file) {
+  if (g_backend) g_backend->SavePipelineCache(device, file);
+}
 void StallQueue(plume::RenderCommandQueue* queue) {
   if (g_backend) g_backend->StallQueue(queue);
 }

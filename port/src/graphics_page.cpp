@@ -50,14 +50,30 @@ constexpr Resolution kResolutions[] = {
     {2560, 1440, "2560 X 1440"}, {3840, 2160, "3840 X 2160"},
 };
 constexpr int kNumResolutions = int(std::size(kResolutions));
-#if defined(__ANDROID__)
-// The phone: the window is the screen; the row picks the render scale
-// (native_max_scale) instead.
-constexpr const char* kScales[] = {"720P", "1440P", "2160P", "2880P"};
+// QUALITY -> RENDER RESOLUTION: native_max_scale (AUTO: follow the window,
+// up to 4x; the phone's screen is the window).
+struct Scale {
+  int value;
+  const char* label;
+};
+constexpr Scale kScales[] = {{4, "AUTO"}, {1, "720P (XBOX 360)"}, {2, "1440P"}, {3, "2160P"}};
 constexpr int kNumScales = int(std::size(kScales));
-#endif
 
-enum Row { kResolution, kDisplay, kAntiAliasing, kVsync, kFpsCounter, kRenderer, kRows };
+// The rows, on two tabs (LB / RB).
+enum Row {
+  kResolution, kDisplay, kVsync, kFpsCounter, kRenderer,         // DISPLAY
+  kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
+};
+enum Tab { kDisplayTab, kQualityTab, kTabs };
+const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
+#if defined(__ANDROID__)
+// (the phone: the window is the screen - no window size or mode)
+const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer},
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps}};
+#else
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer},
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps}};
+#endif
 
 std::filesystem::path g_config_path;
 rex::ui::Window* g_window = nullptr;
@@ -175,10 +191,12 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   void Hide();  // (not ImGuiDialog::Close, which deletes the page)
   uint16_t PadButtons();
 
-  int row_ = 0;
+  int tab_ = kDisplayTab;
+  int row_ = 0;  // (in the tab)
   int resolution_ = 2;
-  int scale_ = 0;  // (Android: native_max_scale - 1)
+  int scale_ = 0;  // (kScales)
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
+  bool effects_ = true, fps60_ = true;
   bool native_at_start_ = false;
   // Native on Vulkan (gpu_backend = vulkan) chosen / running: the API is picked
   // when the game starts, so a change takes effect at the next start.
@@ -197,7 +215,15 @@ void GraphicsPage::Load() {
     if (kResolutions[i].w == w && kResolutions[i].h == h) resolution_ = i;
   }
   msaa_ = rex::cvar::Query<bool>("native_2x_msaa");
-  scale_ = std::clamp(rex::cvar::Query<int32_t>("native_max_scale"), 1, 4) - 1;
+  {
+    const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
+    scale_ = 0;
+    for (int i = 0; i < kNumScales; ++i) {
+      if (kScales[i].value == v) scale_ = i;
+    }
+  }
+  effects_ = rex::cvar::Query<bool>("native_scale_effects");
+  fps60_ = rex::cvar::Query<bool>("unlock_30fps");
   native_at_start_ = native::CanSwitch();
   vulkan_at_start_ = rex::cvar::Query<std::string>("gpu_backend") == "vulkan";
   vulkan_ = vulkan_at_start_;
@@ -210,13 +236,22 @@ void GraphicsPage::Load() {
 
 void GraphicsPage::Change(int row, int dir) {
   switch (row) {
-    case kResolution: {
-#if defined(__ANDROID__)
+    case kRenderScale:
       scale_ = (scale_ + dir + kNumScales) % kNumScales;
-      rex::cvar::SetFlagByName("native_max_scale", std::to_string(scale_ + 1));
-      SaveSetting("native_max_scale", std::to_string(scale_ + 1));
+      rex::cvar::SetFlagByName("native_max_scale", std::to_string(kScales[scale_].value));
+      SaveSetting("native_max_scale", std::to_string(kScales[scale_].value));
       break;
-#endif
+    case kEffects:
+      effects_ = !effects_;
+      rex::cvar::SetFlagByName("native_scale_effects", effects_ ? "true" : "false");
+      SaveSetting("native_scale_effects", effects_ ? "true" : "false");
+      break;
+    case kCutsceneFps:
+      fps60_ = !fps60_;
+      rex::cvar::SetFlagByName("unlock_30fps", fps60_ ? "true" : "false");
+      SaveSetting("unlock_30fps", fps60_ ? "true" : "false");
+      break;
+    case kResolution: {
       resolution_ = (resolution_ + dir + kNumResolutions) % kNumResolutions;
       const Resolution& r = kResolutions[resolution_];
       ResizeWindow(r.w, r.h);
@@ -297,6 +332,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   using namespace rex::input;
   if (g_open_requested.exchange(false)) {
     Load();
+    tab_ = kDisplayTab;
     row_ = 0;
     // The A that opened the page is still down: wait for everything to be
     // released, judged only on pad states the game polled after opening.
@@ -342,8 +378,15 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
     back = true;
   }
-  if (move) row_ = (row_ + move + kRows) % kRows;
-  if (dir) Change(row_, dir);
+  if ((pressed & (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER)) ||
+      ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
+    tab_ = (tab_ + 1) % kTabs;
+    row_ = 0;
+  }
+  const std::vector<Row>& rows = kTabRows[tab_];
+  const int n = int(rows.size());
+  if (move) row_ = (row_ + move + n) % n;
+  if (dir) Change(rows[row_], dir);
 
   // Layout in the game's 1280 x 720 frame (letterboxed into the window), over
   // the OPTIONS panel: the panel 144..1134 x 78..542, its header 78..112.
@@ -376,44 +419,78 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     const ImVec2 sz = TextSize(g_title_font, ts, title);
     Text(dl, g_title_font, ts, ImVec2(P(462, 0).x - sz.x * 0.5f, P(0, 101).y - sz.y * 0.5f),
          IM_COL32(255, 255, 255, 255), title);
-    const float ps = 22 * s;
-    const ImVec2 psz = TextSize(g_menu_font, ps, "GRAPHICS");
-    Text(dl, g_menu_font, ps, ImVec2(P(718, 0).x, P(0, 101).y - psz.y * 0.5f),
-         IM_COL32(255, 255, 255, 255), "GRAPHICS");
+    // GRAPHICS: its tabs (LB / RB), the chosen one white on red.
+    const float ps = 20 * s;
+    float x = P(712, 0).x;
+    const float cy = P(0, 101).y;
+    for (int i = 0; i < kTabs; ++i) {
+      const ImVec2 z = TextSize(g_menu_font, ps, kTabNames[i]);
+      const ImVec2 a(x - 10 * s, cy - 13 * s), b(x + z.x + 10 * s, cy + 13 * s);
+      if (i == tab_) {
+        dl->AddRectFilled(a, b, IM_COL32(150, 18, 20, 255), 3 * s);
+        dl->AddRect(a, b, IM_COL32(230, 60, 60, 255), 3 * s, 0, 1.2f * s);
+      }
+      Text(dl, g_menu_font, ps, ImVec2(x, cy - z.y * 0.5f),
+           i == tab_ ? IM_COL32(255, 255, 255, 255) : IM_COL32(150, 150, 158, 255), kTabNames[i]);
+      x += z.x + 30 * s;
+    }
+    const float hs = 15 * s;
+    const char* hint = "LB / RB";
+    const ImVec2 hz = TextSize(g_menu_font, hs, hint);
+    Text(dl, g_menu_font, hs, ImVec2(P(1112, 0).x - hz.x, cy - hz.y * 0.5f), IM_COL32(150, 150, 158, 255),
+         hint);
   }
 
   // Rows.
   const bool restart_renderer = (!native_at_start_ && native_) || vulkan_ != vulkan_at_start_;
-  const char* values[kRows] = {
-#if defined(__ANDROID__)
-      kScales[scale_],
-#else
-      fullscreen_ ? "FULL SCREEN" : kResolutions[resolution_].label,
-#endif
-      fullscreen_ ? "FULL SCREEN" : "WINDOWED",
-      msaa_ ? "ON" : "OFF",
-      vsync_ ? "ON" : "OFF",
-      fps_ ? "ON" : "OFF",
-      native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED",
+  auto value = [&](Row id) -> const char* {
+    switch (id) {
+      case kResolution: return fullscreen_ ? "FULL SCREEN" : kResolutions[resolution_].label;
+      case kDisplay: return fullscreen_ ? "FULL SCREEN" : "WINDOWED";
+      case kVsync: return vsync_ ? "ON" : "OFF";
+      case kFpsCounter: return fps_ ? "ON" : "OFF";
+      case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
+      case kRenderScale: return kScales[scale_].label;
+      case kAntiAliasing: return msaa_ ? "ON" : "OFF";
+      case kEffects: return effects_ ? "HIGH" : "NORMAL";
+      case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
+    }
+    return "";
   };
-  static const char* kLabels[kRows] = {"RESOLUTION", "DISPLAY MODE", "ANTI-ALIASING",
-                                       "VSYNC",      "FPS COUNTER",  "RENDERER"};
-  static const char* kHelp[kRows] = {
-#if defined(__ANDROID__)
-      "Rendering resolution. Higher is sharper but slower (720P: as on the Xbox 360).",
-#else
-      "The window's size. The game renders at the scale that fills it.",
-#endif
-      "Play in a window or full screen (Alt+Enter also switches).",
-      "Renders at twice the resolution and averages it down: smooth edges.",
-      "Waits for the monitor's refresh: no tearing.",
-      "Shows the frame rate at the top of the screen (F2).",
-      "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.",
+  auto label = [](Row id) -> const char* {
+    switch (id) {
+      case kResolution: return "RESOLUTION";
+      case kDisplay: return "DISPLAY MODE";
+      case kVsync: return "VSYNC";
+      case kFpsCounter: return "FPS COUNTER";
+      case kRenderer: return "RENDERER";
+      case kRenderScale: return "RENDER RESOLUTION";
+      case kAntiAliasing: return "ANTI-ALIASING";
+      case kEffects: return "SHADOWS & EFFECTS";
+      case kCutsceneFps: return "ENTRANCE FRAME RATE";
+    }
+    return "";
   };
+  auto help_for = [](Row id) -> const char* {
+    switch (id) {
+      case kResolution: return "The window's size. The game renders at the scale that fills it.";
+      case kDisplay: return "Play in a window or full screen (Alt+Enter also switches).";
+      case kVsync: return "Waits for the monitor's refresh: no tearing.";
+      case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
+      case kRenderer: return "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.";
+      case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
+      case kAntiAliasing: return "Renders at twice the resolution and averages it down: smooth edges, slower.";
+      case kEffects: return "HIGH: shadows, reflections and glow at the render resolution. NORMAL: faster.";
+      case kCutsceneFps: return "Entrances and cutscenes at 60 fps, or 30 as on the Xbox 360 (half the work).";
+    }
+    return "";
+  };
+  row_ = std::clamp(row_, 0, n - 1);
   const float row_h = 34, gap = 13;
-  const float top = 310 - (float(kRows) * (row_h + gap) - gap) * 0.5f;
+  const float top = 310 - (float(n) * (row_h + gap) - gap) * 0.5f;
   const float fs = 22 * s;
-  for (int i = 0; i < kRows; ++i) {
+  for (int i = 0; i < n; ++i) {
+    const Row id = rows[i];
     const float y = top + i * (row_h + gap);
     const bool sel = i == row_;
     const ImVec2 a = P(166, y), b = P(1112, y + row_h);
@@ -425,15 +502,16 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       dl->AddRectFilled(a, b, IM_COL32(34, 34, 40, 235), 3 * s);
     }
     const float ty = P(0, y + row_h * 0.5f).y - TextSize(g_menu_font, fs, "A").y * 0.5f;
-    Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), kLabels[i]);
-    const ImVec2 vs = TextSize(g_menu_font, fs, values[i]);
+    Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), label(id));
+    const char* v = value(id);
+    const ImVec2 vs = TextSize(g_menu_font, fs, v);
     const float vx = P(930, 0).x - vs.x * 0.5f;
-    const ImU32 vc = (i == kRenderer && restart_renderer) ? IM_COL32(255, 200, 60, 255)
-                                                           : IM_COL32(255, 255, 255, 255);
-    Text(dl, g_menu_font, fs, ImVec2(vx, ty), vc, values[i]);
+    const ImU32 vc = (id == kRenderer && restart_renderer) ? IM_COL32(255, 200, 60, 255)
+                                                            : IM_COL32(255, 255, 255, 255);
+    Text(dl, g_menu_font, fs, ImVec2(vx, ty), vc, v);
     if (sel) {
       const float cy = P(0, y + row_h * 0.5f).y, h = 8 * s;
-      const float lx = P(800, 0).x, rx = P(1060, 0).x;
+      const float lx = P(780, 0).x, rx = P(1080, 0).x;
       dl->AddTriangleFilled(ImVec2(lx - h, cy), ImVec2(lx + h * 0.6f, cy - h),
                             ImVec2(lx + h * 0.6f, cy + h), IM_COL32(255, 255, 255, 255));
       dl->AddTriangleFilled(ImVec2(rx + h, cy), ImVec2(rx - h * 0.6f, cy - h),
@@ -442,9 +520,10 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   }
   // Description of the selected setting, as the game's panels have.
   {
-    std::string help = kHelp[row_];
-    if (row_ == kRenderer && native_ && vulkan_) help = "EXPERIMENTAL: the native renderer on Vulkan.";
-    if (row_ == kRenderer && restart_renderer)
+    const Row id = rows[row_];
+    std::string help = help_for(id);
+    if (id == kRenderer && native_ && vulkan_) help = "EXPERIMENTAL: the native renderer on Vulkan.";
+    if (id == kRenderer && restart_renderer)
       help = native_ && vulkan_ ? "EXPERIMENTAL - takes effect the next time the game starts."
                                 : "Takes effect the next time the game starts.";
     const float hs = 18 * s;

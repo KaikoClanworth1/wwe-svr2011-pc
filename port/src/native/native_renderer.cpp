@@ -52,6 +52,15 @@
 #include "native/textures.h"
 
 // Default "main" (as the launcher): settings files without the key use it.
+#if defined(__ANDROID__)
+constexpr bool kScaleEffectsDefault = false;  // (phones: shadows and effects at the console's size)
+#else
+constexpr bool kScaleEffectsDefault = true;
+#endif
+REXCVAR_DEFINE_BOOL(native_scale_effects, kScaleEffectsDefault, "GPU",
+                    "Native renderer: render shadows, reflections and glow at the render scale too "
+                    "(false: at the Xbox 360's size, faster on weak GPUs)");
+
 REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
                      "The scale follows the window; phones start at 1.");
@@ -311,6 +320,7 @@ struct ColorTarget {
   RenderFormat view_format = RenderFormat::UNKNOWN, view_gamma_format = RenderFormat::UNKNOWN;
   uint32_t components = 4;
   uint32_t width = 0, height = 0;
+  uint32_t scale = 1;  // its host pixels per guest pixel (TargetScale)
   uint64_t used_frame = 0;
 };
 
@@ -318,6 +328,7 @@ struct DepthTarget {
   std::shared_ptr<plume::RenderTexture> resource;
   RenderTextureLayout layout = RenderTextureLayout::UNKNOWN;
   uint32_t width = 0, height = 0;
+  uint32_t scale = 1;
 };
 
 // The copy a resolve made of a target (what the game samples as a texture).
@@ -326,6 +337,7 @@ struct ResolvedTexture {
   RenderTextureLayout layout = RenderTextureLayout::UNKNOWN;
   RenderFormat format = RenderFormat::UNKNOWN;
   uint32_t width = 0, height = 0;
+  uint32_t scale = 1;  // (the resolved target's)
 };
 
 // A DrawVerticesUP waiting for its vertices (the game writes them into the
@@ -436,10 +448,20 @@ std::recursive_mutex g_mutex;
 // native_renderer=main: frames go to the main window through the emulator's
 // presentation (rex/external_frame.h) instead of this renderer's own window.
 bool g_main = false;
-// Main mode: every target, resolve copy and frame image has g_scale x g_scale
+// Main mode: every target (see TargetScale), resolve copy and frame image has g_scale x g_scale
 // times the guest's pixels (the emulator's resolution_scale setting); sizes the
 // game sees and computes with stay the guest's.
 uint32_t g_scale = 1;
+// native_scale_effects off: only the main scene's targets (and their resolves
+// and the frame images) are scaled; the effect buffers (the 1120 x 1120 shadow
+// map, reflections, glow and blur chains) keep the guest's size.
+bool g_scale_effects = true;
+
+// Host pixels per guest pixel for a target of this guest size.
+uint32_t TargetScale(uint32_t width, uint32_t height) {
+  if (g_scale_effects) return g_scale;
+  return width >= 1152 && height >= 640 ? g_scale : 1;  // (the scene: 1280 x 720)
+}
 // Main mode: the frame images' size - the window's 16:9 area, so the
 // emulator's presentation shows them 1:1 (Present averages the scaled image
 // down to it). Both follow the window and the anti-aliasing setting live
@@ -477,6 +499,22 @@ bool g_resolved_this_frame = false;
 // depth test, no culling (checks geometry independently of pixel shading).
 bool g_debug_solid = false;
 bool g_no_depth = false;  // SVR2011_NATIVE_NO_DEPTH=1
+double g_pipeline_ms = 0;  // pipeline builds since the last perf line
+// Pipelines built since the pipeline cache was saved, and when the last was.
+bool g_pipeline_cache_dirty = false;
+std::chrono::steady_clock::time_point g_last_pipeline_build;
+
+// The pipeline cache (gpu.h: Vulkan): the user data's cache folder.
+std::filesystem::path PipelineCacheFile() {
+  std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "UserData";
+  char* v = nullptr;
+  size_t n = 0;
+  if (_dupenv_s(&v, &n, "SVR2011_USER_DATA") == 0 && v) {  // (tests)
+    if (*v) dir = v;
+    free(v);
+  }
+  return dir / "cache" / "native_vulkan_pipelines.bin";
+}
 bool g_no_blend = false;  // SVR2011_NATIVE_NO_BLEND=1
 // SVR2011_NATIVE_DUMP_FRAME=<frame>: describe the first 40 draws of that
 // native frame in native_draws.txt (next to the log).
@@ -639,6 +677,7 @@ bool Initialize() {
     return false;
   }
   REXLOG_INFO("native renderer: GPU {}", r->device->getDescription().name);
+  backend::LoadPipelineCache(r->device.get(), PipelineCacheFile());
   if (g_debug_solid) g_debug_ps = ReadFile(ShaderFile("debug_solid.ps"));
   r->queue = r->device->createCommandQueue(plume::RenderCommandListType::DIRECT);
   for (uint32_t i = 0; i < kFrames; ++i) {
@@ -788,10 +827,12 @@ void ApplyOutputSettings(Renderer* r) {
   out_h = std::max(out_h & ~1u, 36u);
   static bool aa = rex::cvar::Query<bool>("native_2x_msaa");
   static int32_t max_scale = REXCVAR_GET(native_max_scale);
+  static bool effects = REXCVAR_GET(native_scale_effects);
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
     aa = rex::cvar::Query<bool>("native_2x_msaa");
     max_scale = REXCVAR_GET(native_max_scale);
+    effects = REXCVAR_GET(native_scale_effects);
     aa_checked = r->frames;
   }
   // Enough guest pixels for every output pixel - for two per axis with
@@ -799,12 +840,12 @@ void ApplyOutputSettings(Renderer* r) {
   const uint32_t need = out_h * (aa ? 2 : 1);
   const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
   const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
-  if (scale == g_scale && out_w == g_out_w && out_h == g_out_h) return;
+  if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h) return;
 
   // Idle: nothing in flight may still use what is replaced.
   if (!WaitIdle(r, "output change")) return;
   r->garbage.clear();
-  if (scale != g_scale) {
+  if (scale != g_scale || effects != g_scale_effects) {
     textures::ForgetResolved();
     r->color_targets.clear();
     r->depth_targets.clear();
@@ -812,6 +853,7 @@ void ApplyOutputSettings(Renderer* r) {
     r->main_target = nullptr;
     r->present_source = 0;
     g_scale = scale;
+    g_scale_effects = effects;
   }
   if (out_w != g_out_w || out_h != g_out_h) {
     g_out_w = out_w;
@@ -819,8 +861,8 @@ void ApplyOutputSettings(Renderer* r) {
     CreateOutputs(r);
   }
   r->list_state = {};
-  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}", g_out_w, g_out_h, g_scale,
-              aa ? " (anti-aliasing)" : "");
+  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}", g_out_w, g_out_h, g_scale,
+              aa ? " (anti-aliasing)" : "", g_scale_effects ? "" : ", effects unscaled");
 }
 
 // False: the GPU stopped answering and the native renderer gave up.
@@ -875,13 +917,19 @@ void UpdateTitle(Renderer* r) {
   if (psecs >= 5.0 && r->perf_frames) {
     const double f = r->perf_frames;
     REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, "
-                "span {:.2f} ms, draws {:.0f} (drawn {:.0f})",
+                "span {:.2f} ms, draws {:.0f} (drawn {:.0f}), pipeline builds {:.0f} ms",
                 f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_span_ms / f,
-                r->perf_draws / f, r->perf_drawn / f);
+                r->perf_draws / f, r->perf_drawn / f, g_pipeline_ms);
+    g_pipeline_ms = 0;
     r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = 0;
     r->perf_draws = r->perf_drawn = 0;
     r->perf_frames = 0;
     r->perf_start = now;
+    // New pipelines, none for a few seconds (a scene loaded): keep them.
+    if (g_pipeline_cache_dirty && now - g_last_pipeline_build > std::chrono::seconds(3)) {
+      g_pipeline_cache_dirty = false;
+      backend::SavePipelineCache(r->device.get(), PipelineCacheFile());
+    }
   }
   r->stat_start = now;
   r->stat_frames = 0;
@@ -956,8 +1004,9 @@ ColorTarget* GetColorTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   if (auto it = r->color_targets.find(key); it != r->color_targets.end()) return &it->second;
   if (r->color_targets.size() >= kMaxColorTargets) return nullptr;
   const TargetFormat f = ColorFormat(format);
+  const uint32_t scale = TargetScale(pitch, height);
   plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-      pitch * g_scale, height * g_scale, 1, f.resource, plume::RenderTextureFlag::RENDER_TARGET);
+      pitch * scale, height * scale, 1, f.resource, plume::RenderTextureFlag::RENDER_TARGET);
   d.committed = true;
   const plume::RenderClearValue cv = plume::RenderClearValue::Color(plume::RenderColor(0, 0, 0, 0), f.rtv);
   d.optimizedClearValue = &cv;
@@ -976,6 +1025,7 @@ ColorTarget* GetColorTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   t.components = f.components;
   t.width = pitch;
   t.height = height;
+  t.scale = scale;
   t.rtv = t.resource->createTextureView(plume::RenderTextureViewDesc::Texture2D(f.rtv));
   REXLOG_INFO("native renderer: render target {}x{} format {} at EDRAM tile {}", pitch, height,
               format, base);
@@ -987,8 +1037,9 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   if (auto it = r->depth_targets.find(key); it != r->depth_targets.end()) return &it->second;
   if (r->depth_targets.size() >= kMaxDepthTargets) return nullptr;
   // D24S8, copyable to a sampled depth texture (typeless underneath).
+  const uint32_t scale = TargetScale(pitch, height);
   plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-      pitch * g_scale, height * g_scale, 1, RenderFormat::D24_UNORM_S8_UINT,
+      pitch * scale, height * scale, 1, RenderFormat::D24_UNORM_S8_UINT,
       plume::RenderTextureFlag::DEPTH_TARGET);
   d.committed = true;
   const plume::RenderClearValue cv =
@@ -1004,6 +1055,7 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   t.resource->setName(fmt::format("depth target {}x{} tile {}", pitch, height, base));
   t.width = pitch;
   t.height = height;
+  t.scale = scale;
   return &t;
 }
 
@@ -1438,8 +1490,17 @@ const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, S
               key.blend, bt.blendEnabled ? " on" : "", key.colour_mask, key.depth, key.cull,
               key.bias_offset, key.bias_scale, int(topology));
   std::unique_ptr<plume::RenderPipeline> pso;
+  const auto build_start = std::chrono::steady_clock::now();
   if (d.vertexShader && (d.pixelShader || !ps)) pso = r->device->createGraphicsPipeline(d);
   if (pso && !backend::PipelineCreated(pso.get())) pso.reset();
+  {
+    const double ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - build_start).count();
+    g_pipeline_ms += ms;
+    g_pipeline_cache_dirty = true;
+    g_last_pipeline_build = std::chrono::steady_clock::now();
+    if (ms >= 20.0) REXLOG_INFO("native renderer: pipeline {} took {:.0f} ms", r->pipelines.size(), ms);
+  }
   if (!pso) {
     REXLOG_WARN("native renderer: pipeline creation failed (vs {:016X} ps {:016X})", key.vs,
                 key.ps);
@@ -1839,20 +1900,21 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   }
   vp.minDepth = std::clamp(vp.minDepth, 0.0f, 1.0f);
   vp.maxDepth = std::clamp(vp.maxDepth, 0.0f, 1.0f);
-  // (ndc above is in guest pixels; the target has g_scale times as many.)
-  vp.x *= g_scale;
-  vp.y *= g_scale;
-  vp.width *= g_scale;
-  vp.height *= g_scale;
+  // (ndc above is in guest pixels; the target has `ts` times as many.)
+  const uint32_t ts = targets.color ? targets.color->scale : targets.depth ? targets.depth->scale : g_scale;
+  vp.x *= ts;
+  vp.y *= ts;
+  vp.width *= ts;
+  vp.height *= ts;
   // Window scissor: D3D keeps it in the mirrored 0x2000 group (0x2011 top-left,
   // 0x2012 bottom-right; x in bits 0-14, y in bits 16-30), already clamped to
   // the scissor rect when the game enables one (device +0x2F00).
   const uint32_t sc_tl = Reg(PA_SC_WINDOW_SCISSOR_TL), sc_br = Reg(PA_SC_WINDOW_SCISSOR_BR);
   const plume::RenderRect scissor(
-      int32_t(std::min<uint32_t>(sc_tl & 0x7FFF, targets.color->width) * g_scale),
-      int32_t(std::min<uint32_t>((sc_tl >> 16) & 0x7FFF, targets.color->height) * g_scale),
-      int32_t(std::min<uint32_t>(sc_br & 0x7FFF, targets.color->width) * g_scale),
-      int32_t(std::min<uint32_t>((sc_br >> 16) & 0x7FFF, targets.color->height) * g_scale));
+      int32_t(std::min<uint32_t>(sc_tl & 0x7FFF, targets.color->width) * ts),
+      int32_t(std::min<uint32_t>((sc_tl >> 16) & 0x7FFF, targets.color->height) * ts),
+      int32_t(std::min<uint32_t>(sc_br & 0x7FFF, targets.color->width) * ts),
+      int32_t(std::min<uint32_t>((sc_br >> 16) & 0x7FFF, targets.color->height) * ts));
 
   if (r->frames == g_dump_frame && r->frame_stats.drawn >= g_dump_first &&
       r->frame_stats.drawn < g_dump_first + g_dump_count) {
@@ -2345,7 +2407,7 @@ void OnResolve(const PPCContext& ctx) {
   plume::RenderTexture* src = nullptr;
   RenderTextureLayout* src_layout = nullptr;
   RenderFormat family = RenderFormat::UNKNOWN;
-  uint32_t src_w = 0, src_h = 0;
+  uint32_t src_w = 0, src_h = 0, scale = g_scale;
   if (depth) {
     if (!t.depth) return;
     src = t.depth->resource.get();
@@ -2353,6 +2415,7 @@ void OnResolve(const PPCContext& ctx) {
     family = RenderFormat::D24_UNORM_S8_UINT;
     src_w = t.depth->width;
     src_h = t.depth->height;
+    scale = t.depth->scale;
   } else {
     if (!t.color) return;
     src = t.color->resource.get();
@@ -2360,6 +2423,7 @@ void OnResolve(const PPCContext& ctx) {
     family = t.color->resource_format;
     src_w = t.color->width;
     src_h = t.color->height;
+    scale = t.color->scale;
   }
   {
     static std::unordered_map<uint64_t, bool> logged;
@@ -2374,14 +2438,15 @@ void OnResolve(const PPCContext& ctx) {
   const uint32_t dst_w = depth ? src_w : std::min(width, src_w);
   const uint32_t dst_h = depth ? src_h : std::min(height, src_h);
   ResolvedTexture& dst = r->resolved[base];
-  if (!dst.resource || dst.width != dst_w || dst.height != dst_h || dst.format != family) {
+  if (!dst.resource || dst.width != dst_w || dst.height != dst_h || dst.format != family ||
+      dst.scale != scale) {
     if (dst.resource) {
       textures::ReleaseResolved(r->texture_context, dst.resource.get());
       Retire(r, std::move(dst.resource));
     }
     dst = {};
     plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-        dst_w * g_scale, dst_h * g_scale, 1, family,
+        dst_w * scale, dst_h * scale, 1, family,
         depth && backend::ActiveApi() == backend::Api::kVulkan ? plume::RenderTextureFlag::DEPTH_TARGET
                                                                 : plume::RenderTextureFlag::NONE);
     d.committed = true;
@@ -2395,6 +2460,7 @@ void OnResolve(const PPCContext& ctx) {
     dst.width = dst_w;
     dst.height = dst_h;
     dst.format = family;
+    dst.scale = scale;
   }
   auto* list = r->list;
   const RenderTextureLayout src_before = *src_layout;
@@ -2403,7 +2469,7 @@ void OnResolve(const PPCContext& ctx) {
   if (depth) {
     list->copyTexture(dst.resource.get(), src);
   } else {
-    const plume::RenderBox box(0, 0, int32_t(dst_w * g_scale), int32_t(dst_h * g_scale));
+    const plume::RenderBox box(0, 0, int32_t(dst_w * scale), int32_t(dst_h * scale));
     list->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(dst.resource.get()),
                             plume::RenderTextureCopyLocation::Subresource(src), 0, 0, 0, &box);
   }

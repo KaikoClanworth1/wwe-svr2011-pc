@@ -154,7 +154,7 @@ The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, s
   The game goes into the phone's `games/WWE SmackDown vs. Raw 2011` folder and starts. Run it again after a launcher update: it copies only what changed and keeps the phone's saves.
 - **Option 2: a package to copy yourself.** **Create APK Package** makes a folder with `SvR2011.apk`, `SvR2011-Game.zip` and instructions. Copy both files to the phone's **Download** folder and open the APK to install it. On first start the app installs the game from the zip; you can delete the zip afterwards.
 
-On the phone, the game renders at the Xbox 360's 720p. **MY WWE → Options → Graphics → Resolution** raises it, and anti-aliasing can be turned on there.
+On the phone, the game renders at the Xbox 360's 720p with shadows and effects at their original size. **MY WWE → Options → Graphics → Quality** raises them, and anti-aliasing can be turned on there.
 
 ---
 
@@ -180,6 +180,15 @@ The game's main menu has an **EXIT** entry at the bottom.
 ## Settings
 
 You can change these in the launcher's **Settings** tab. **Resolution**, **Display mode**, **Anti-aliasing**, **VSync**, **FPS counter** and **Renderer** are also in the game itself, under **My WWE → Options → Graphics**. Everything is saved in `svr2011.toml` beside the exe.
+
+The in-game **Graphics** page has two tabs (**LB / RB**). **Display** holds the settings above. **Quality** trades looks for speed; its changes apply at once:
+
+| Quality setting | What it does |
+|---|---|
+| **Render resolution** | The most the game renders at. **Auto** (default) fills your screen. **720p (Xbox 360)**, **1440p** and **2160p** cap it; lower is faster on weaker GPUs. |
+| **Anti-aliasing** | As in the launcher. |
+| **Shadows & effects** | **High**: shadows, reflections and glow at the render resolution. **Normal**: at the Xbox 360's size, much less GPU work at high resolutions. |
+| **Entrance frame rate** | **60 fps** (default), or **30 fps** as on the Xbox 360: entrances and cutscenes then need half the work. |
 
 | Setting | What it does |
 |---|---|
@@ -389,6 +398,7 @@ This makes `port/out/android/SvR2011.apk`, which holds no game data. The package
 - **Black screen with sound (v0.1.0).** v0.1.0's zip was missing the native renderer's shaders. Update to v0.2.0 or later. The game now also falls back to the **Emulated** renderer if the `native_shaders` folder is missing.
 - **"The Created Superstar save data is either damaged or missing" after copying saves.** Choose **NO**, then update to v0.2.1 or later: it rebuilds the save headers that some copy tools leave out (the `Saves\.info` folder), and copies the whole `Saves` folder from then on.
 - **Very low frame rate or no picture on a laptop.** Laptops with two GPUs could run the game on the built-in one. v0.2.1 picks the fast GPU. With older versions, set `svr2011.exe` to **High performance** in Windows Settings → System → Display → Graphics.
+- **Entrances or matches run slow on a weaker PC.** In **My WWE → Options → Graphics → Quality**, set **Shadows & effects** to **Normal**, lower **Render resolution** (720p is the console's), turn off **Anti-aliasing**, and if entrances still stutter, set **Entrance frame rate** to **30 fps**. On Vulkan and on phones, the first time a scene is shown can hitch while its shaders are prepared; they're kept in `UserData\cache\` for the next time.
 - **Something is drawn wrong.** In the launcher's **Settings**, set **Renderer** to **Emulated** and see if it looks right there. Either way, please report it with a screenshot.
 - **My entrance song or movie is gone.** The entrance remembers it by name. Check that the folder in `Music\`, or the movie in `Custom Movies\`, still has the same name.
 - **A superstar's logos 3 and up are blank.** Their images are in `Saves\.logos`. Restore it from a backup, or copy it along with the superstar's save.
