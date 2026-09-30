@@ -611,6 +611,12 @@ bool EnvFlag(const char* name) {
   return on;
 }
 
+// Debug: SVR2011_NATIVE_NOCACHE=1 - buffers and textures re-checked at every use.
+bool NoCache() {
+  static const bool on = EnvFlag("SVR2011_NATIVE_NOCACHE");
+  return on;
+}
+
 // Debug aids (environment): SVR2011_NATIVE_STOP_AT_RESOLVE=1 draws
 // only up to the first Resolve of each frame (shows the scene before
 // post-processing).
@@ -662,7 +668,7 @@ FILE* g_dump = nullptr;
 // Debug: SVR2011_DRAWLOG=<file>: when <file>.go appears, one line per draw of
 // the next frame goes to <file> (screen-space or not, depth, textures, the
 // positions' extent) - for telling the HUD from the scene.
-uint64_t g_drawlog_frame = ~0ull;
+uint64_t g_drawlog_frame = ~0ull, g_drawlog_end = 0;  // (SVR2011_DRAWLOG_FRAMES: frames logged)
 FILE* g_drawlog = nullptr;
 std::vector<uint8_t> g_debug_ps;
 
@@ -1477,7 +1483,7 @@ RenderBufferReference IndexBuffer(Renderer* r, uint32_t address, uint32_t size) 
   constexpr uint32_t kRingAfterChanges = 3;
   CachedBuffer& c = r->index_buffers[(uint64_t(address) << 32) | size];
   if (c.dynamic || size < 2) return {};
-  if (c.resource && r->frames - c.checked_frame < 4) return c.resource->at(0);
+  if (c.resource && r->frames - c.checked_frame < 4 && !NoCache()) return c.resource->at(0);
   const uint8_t* src = ObjectData(address);
   const uint64_t hash = XXH3_64bits(src, size);
   g_hash_vb_static += size;
@@ -1572,7 +1578,7 @@ RenderBufferReference VertexBuffer(Renderer* r, uint32_t object, uint32_t stream
   }
   // A static buffer is re-checked every 4th frame (buffers the game rewrites
   // turn dynamic after a few changes, then are checked at every use).
-  if (c.resource && r->frames - c.checked_frame < 4) return c.resource->at(0);
+  if (c.resource && r->frames - c.checked_frame < 4 && !NoCache()) return c.resource->at(0);
   const uint64_t hash = XXH3_64bits(src, size);
   g_hash_vb_static += size;
   c.checked_frame = r->frames;
@@ -2297,7 +2303,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
       int32_t(std::lround(float(std::min<uint32_t>(sc_br & 0x7FFF, targets.color->width)) * sx + pad)),
       int32_t(std::min<uint32_t>((sc_br >> 16) & 0x7FFF, targets.color->height) * ts));
 
-  if (r->frames == g_drawlog_frame && g_drawlog) {
+  if (r->frames >= g_drawlog_frame && r->frames < g_drawlog_end && g_drawlog) {
     char tex[256] = "";
     for (const Shader* sh : {vs, ps}) {
       for (const auto& [slot, dimension] : sh->textures) {
@@ -2353,8 +2359,8 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
                     comps > 2 ? mn[2] : 0.0f, comps > 2 ? mx[2] : 0.0f);
       break;
     }
-    std::fprintf(g_drawlog, "%4u tgt %ux%u vte %02X z %u blend %08X prim %u n %u%s vs %08X ps %08X vp %.0f,%.0f %.0fx%.0f |%s | pos %s\n",
-                 r->frame_stats.drawn, targets.color->width, targets.color->height, Reg(PA_CL_VTE_CNTL) & 0x3F,
+    std::fprintf(g_drawlog, "f%llu %4u tgt %ux%u vte %02X z %u blend %08X prim %u n %u%s vs %08X ps %08X vp %.0f,%.0f %.0fx%.0f |%s | pos %s\n",
+                 (unsigned long long)r->frames, r->frame_stats.drawn, targets.color->width, targets.color->height, Reg(PA_CL_VTE_CNTL) & 0x3F,
                  (Reg(RB_DEPTHCONTROL) >> 1) & 1, Reg(RB_BLENDCONTROL0), primitive, count, up ? " UP" : "",
                  uint32_t(vs->hash), uint32_t(ps->hash), vp.x, vp.y, vp.width, vp.height, tex, pos);
   }
@@ -2430,10 +2436,15 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     }
     // The constants the draw uses (GPU constant file): vertex gc0-gc255,
     // pixel pc0-pc255.
-    for (uint32_t k = 0; k < 512; ++k)
-      std::fprintf(f, "  %s%u = %g %g %g %g\n", k < 256 ? "gc" : "pc", k & 255,
-                   g_gpu_constants[k][0], g_gpu_constants[k][1], g_gpu_constants[k][2],
-                   g_gpu_constants[k][3]);
+    // (as GpuConstants uploads them: the device mirror, loaded constants over it)
+    for (uint32_t k = 0; k < 512; ++k) {
+      float v[4];
+      const uint8_t* m = Device() + 0x780 + 16 * k;
+      for (int c = 0; c < 4; ++c) v[c] = BeFloat(m + 4 * c);
+      for (uint32_t i = 0; i < g_loaded_draw_count; ++i)
+        if (g_loaded_draw[i] == k) std::memcpy(v, g_gpu_constants[k], 16);
+      std::fprintf(f, "  %s%u = %g %g %g %g\n", k < 256 ? "gc" : "pc", k & 255, v[0], v[1], v[2], v[3]);
+    }
     std::fflush(f);
   }
 
@@ -2547,6 +2558,29 @@ void SetWindowSizeSource(std::function<std::pair<uint32_t, uint32_t>()> source) 
 
 void Attach(rex::memory::Memory* memory) {
   g_memory = memory;
+  // Debug: SVR2011_HASH_MEM=<hex physical>:<hex size>[,...] - the regions'
+  // hashes every 2 s in the log (in either renderer mode).
+  if (const char* spec = std::getenv("SVR2011_HASH_MEM")) {
+    std::vector<std::pair<uint32_t, uint32_t>> regions;
+    for (const char* s = spec; *s;) {
+      char* e = nullptr;
+      const uint32_t a = uint32_t(std::strtoul(s, &e, 16));
+      if (!e || *e != ':') break;
+      const uint32_t n = uint32_t(std::strtoul(e + 1, &e, 16));
+      regions.emplace_back(a, n);
+      s = *e == ',' ? e + 1 : e;
+    }
+    std::thread([memory, regions] {
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::string line;
+        for (const auto& [a, n] : regions) {
+          line += fmt::format(" {:08X}={:016X}", a, XXH3_64bits(memory->TranslatePhysical(a), n));
+        }
+        REXLOG_INFO("[svr2011] memory hashes:{}", line);
+      }
+    }).detach();
+  }
   g_virtual_base = memory->virtual_membase();
   for (uint32_t i = 0; i < 4096; ++i) {
     const auto* heap = memory->LookupHeap(i << 20);
@@ -2777,7 +2811,7 @@ void OnPresent(uint32_t front_buffer) {
       }
       return s;
     }();
-    if (g_drawlog && r->frames > g_drawlog_frame) {
+    if (g_drawlog && r->frames >= g_drawlog_end) {
       std::fclose(g_drawlog);
       g_drawlog = nullptr;
     }
@@ -2786,6 +2820,17 @@ void OnPresent(uint32_t front_buffer) {
       std::filesystem::remove(drawlog + ".go", ec);
       g_drawlog = std::fopen(drawlog.c_str(), "w");
       g_drawlog_frame = r->frames;
+      static const int frames = [] {
+        char* e = nullptr;
+        size_t n = 0;
+        int f = 1;
+        if (_dupenv_s(&e, &n, "SVR2011_DRAWLOG_FRAMES") == 0 && e) {
+          f = std::max(1, std::atoi(e));
+          free(e);
+        }
+        return f;
+      }();
+      g_drawlog_end = r->frames + frames;
     }
   }
   // Debug: SVR2011_NATIVE_DUMP_TRIGGER=<file>: when the file appears, the next
@@ -2934,7 +2979,8 @@ void OnResolve(const PPCContext& ctx) {
   }
   {
     static std::unordered_map<uint64_t, bool> logged;
-    if (logged.size() < 256 &&
+    static const bool log_all = EnvFlag("SVR2011_LOG_RESOLVES");  // (debug: every resolve)
+    if (log_all || logged.size() < 256 &&
         logged.emplace((uint64_t(base) << 20) ^ (uint64_t(width) << 8) ^ height ^ (uint64_t(family) << 50), true).second) {
       REXLOG_INFO("native renderer: resolve flags {} -> texture {:08X} base {:08X} {}x{} fetch {:08X} {:08X} {:08X} from {}x{} format {}",
                   ctx.r4.u32, ctx.r8.u32, base, width, height, fetch[0], fetch[1], fetch[2], src_w,

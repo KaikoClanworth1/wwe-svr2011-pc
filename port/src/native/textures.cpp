@@ -174,6 +174,7 @@ struct ResolvedViewEntry {
 };
 std::unordered_map<uint64_t, ResolvedViewEntry> g_resolved_views;  // (generation, swizzle, gamma) ->
 Stats g_stats;
+const bool g_no_cache = std::getenv("SVR2011_NATIVE_NOCACHE") != nullptr;  // (debug)
 
 uint64_t GuestHash(const Entry& e) {
   const auto t0 = std::chrono::steady_clock::now();
@@ -679,12 +680,16 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
       ++g_stats.unsupported;
       return UINT32_MAX;
     }
-  } else if (ctx.frame >= e.checked_frame +
+  } else if (g_no_cache || ctx.frame >= e.checked_frame +
                               (e.dynamic ? 1
                                : ctx.frame < e.created_frame + kNewFrames ? kNewRecheckFrames
                                                                           : kRecheckFrames)) {
     e.checked_frame = ctx.frame;
     if (GuestHash(e) != e.hash) {
+      static const bool log_changes = std::getenv("SVR2011_LOG_TEXTURE_CHANGES") != nullptr;  // (debug)
+      if (log_changes) {
+        REXLOG_INFO("native renderer: texture {:08X} changed (frame {})", e.base_address, ctx.frame);
+      }
       if (!e.dynamic) {
         static uint32_t logged = 0;
         if (logged++ < 40) {

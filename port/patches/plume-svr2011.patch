@@ -1,5 +1,5 @@
 diff --git a/plume_d3d12.cpp b/plume_d3d12.cpp
-index 5e842c5..06131e5 100644
+index 5e842c5..345c2a0 100644
 --- a/plume_d3d12.cpp
 +++ b/plume_d3d12.cpp
 @@ -45,7 +45,7 @@ extern "C" {
@@ -65,7 +65,20 @@ index 5e842c5..06131e5 100644
      void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
          assert(targetFramebuffer != nullptr);
          assert(attachmentIndex < targetFramebuffer->colorTargets.size());
-@@ -2464,9 +2490,10 @@ namespace plume {
+@@ -2312,9 +2338,10 @@ namespace plume {
+ 
+         const D3D12_TEXTURE_COPY_LOCATION copyDstLocation = toD3D12(dstLocation);
+         const D3D12_TEXTURE_COPY_LOCATION copySrcLocation = toD3D12(srcLocation);
+-        setSamplePositions(dstLocation.texture);
++        // [svr2011] (a buffer destination - a readback - has no texture)
++        if (dstLocation.texture != nullptr) setSamplePositions(dstLocation.texture);
+         d3d->CopyTextureRegion(&copyDstLocation, dstX, dstY, dstZ, &copySrcLocation, (srcBox != nullptr) ? &copyBox : nullptr);
+-        resetSamplePositions();
++        if (dstLocation.texture != nullptr) resetSamplePositions();
+     }
+ 
+     void D3D12CommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {
+@@ -2464,9 +2491,10 @@ namespace plume {
          assert(activeGraphicsPipeline->type == D3D12Pipeline::Type::Graphics);
  
          const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(activeGraphicsPipeline);
@@ -79,7 +92,7 @@ index 5e842c5..06131e5 100644
          }
      }
      
-@@ -2717,6 +2744,13 @@ namespace plume {
+@@ -2717,6 +2745,13 @@ namespace plume {
          WaitForSingleObjectEx(interfaceFence->fenceEvent, INFINITE, FALSE);
      }
  
@@ -93,7 +106,7 @@ index 5e842c5..06131e5 100644
      // D3D12Buffer
  
      D3D12Buffer::D3D12Buffer(D3D12Device *device, D3D12Pool *pool, const RenderBufferDesc &desc) {
-@@ -2872,7 +2906,8 @@ namespace plume {
+@@ -2872,7 +2907,8 @@ namespace plume {
  
          D3D12_CLEAR_VALUE optimizedClearValue;
          if (desc.optimizedClearValue != nullptr) {
@@ -103,7 +116,7 @@ index 5e842c5..06131e5 100644
              memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
          }
  
-@@ -3078,6 +3113,8 @@ namespace plume {
+@@ -3078,6 +3114,8 @@ namespace plume {
          assert(desc.pipelineLayout != nullptr);
  
          topology = toD3D12(desc.primitiveTopology);
@@ -241,7 +254,7 @@ index 2281168..e20c227 100644
          bool depthWriteEnabled = false;
          bool stencilEnabled = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 4a2a489..af18c53 100644
+index 4a2a489..6b28e93 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -167,6 +167,16 @@ namespace plume {
@@ -349,7 +362,36 @@ index 4a2a489..af18c53 100644
      static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
          rectVector.clear();
  
-@@ -3644,6 +3690,19 @@ namespace plume {
+@@ -3229,6 +3275,28 @@ namespace plume {
+             imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
+             vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+         }
++        else if ((dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) && (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
++            // [svr2011] Image to buffer (a readback).
++            assert(srcTexture != nullptr);
++            assert(dstBuffer != nullptr);
++
++            const uint32_t blockWidth = RenderFormatBlockWidth(srcTexture->desc.format);
++            VkBufferImageCopy imageCopy = {};
++            imageCopy.bufferOffset = dstLocation.placedFootprint.offset;
++            imageCopy.bufferRowLength = ((dstLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.bufferImageHeight = ((dstLocation.placedFootprint.height + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.imageSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
++            imageCopy.imageSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
++            imageCopy.imageSubresource.layerCount = 1;
++            imageCopy.imageSubresource.mipLevel = srcLocation.subresource.mipLevel;
++            imageCopy.imageOffset.x = srcBox != nullptr ? srcBox->left : 0;
++            imageCopy.imageOffset.y = srcBox != nullptr ? srcBox->top : 0;
++            imageCopy.imageOffset.z = srcBox != nullptr ? srcBox->front : 0;
++            imageCopy.imageExtent.width = dstLocation.placedFootprint.width;
++            imageCopy.imageExtent.height = dstLocation.placedFootprint.height;
++            imageCopy.imageExtent.depth = dstLocation.placedFootprint.depth;
++            vkCmdCopyImageToBuffer(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstBuffer->vk, 1, &imageCopy);
++        }
+         else {
+             VkImageCopy imageCopy = {};
+             imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+@@ -3644,6 +3712,19 @@ namespace plume {
          vkResetFences(device->vk, 1, &interfaceFence->vk);
      }
  
@@ -369,7 +411,7 @@ index 4a2a489..af18c53 100644
      // VulkanPool
  
      VulkanPool::VulkanPool(VulkanDevice *device, const RenderPoolDesc &desc) {
-@@ -3718,7 +3777,8 @@ namespace plume {
+@@ -3718,7 +3799,8 @@ namespace plume {
          }
  
          if (queues[queueIndex].mutex == nullptr) {
@@ -379,7 +421,7 @@ index 4a2a489..af18c53 100644
          }
  
          virtualQueue->queue = &queues[queueIndex];
-@@ -4156,6 +4216,110 @@ namespace plume {
+@@ -4156,6 +4238,110 @@ namespace plume {
          }
      }
  
@@ -490,7 +532,7 @@ index 4a2a489..af18c53 100644
      VulkanDevice::~VulkanDevice() {
          release();
      }
-@@ -4429,16 +4593,53 @@ namespace plume {
+@@ -4429,16 +4615,53 @@ namespace plume {
          }
      }
  
@@ -545,7 +587,7 @@ index 4a2a489..af18c53 100644
              vk = VK_NULL_HANDLE;
          }
      }
-@@ -4602,13 +4803,38 @@ namespace plume {
+@@ -4602,13 +4825,38 @@ namespace plume {
          }
      }
  
@@ -585,7 +627,7 @@ index 4a2a489..af18c53 100644
          std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
          return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
      }
-@@ -4638,4 +4864,9 @@ namespace plume {
+@@ -4638,4 +4886,9 @@ namespace plume {
          return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
      }
  #endif

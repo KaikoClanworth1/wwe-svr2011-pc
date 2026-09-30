@@ -5,7 +5,10 @@
 // renderer. Present is hooked in frame_stats.cpp. Not built into the D3D
 // census build (SVR2011_D3D_TRACE), which hooks every D3D function itself.
 
+#include <cstdlib>
+
 #include <rex/hook.h>
+#include <rex/logging.h>
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
@@ -68,6 +71,14 @@ REX_HOOK_RAW(sub_8291F168) {
 // D3DDevice_Resolve(device, flags, ..., destination texture in r8)
 REX_EXTERN(__imp__sub_82918A88);
 REX_HOOK_RAW(sub_82918A88) {
+  // Debug: SVR2011_LOG_RESOLVE_CALLS=1 - every call, in either renderer mode.
+  static const bool log_calls = std::getenv("SVR2011_LOG_RESOLVE_CALLS") != nullptr;
+  if (log_calls && ctx.r8.u32) {
+    const uint8_t* obj = base + ctx.r8.u32;
+    auto be32 = [](const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; };
+    REXLOG_INFO("[svr2011] resolve call: flags {:X} texture {:08X} fetch {:08X} {:08X} {:08X}", ctx.r4.u32,
+                ctx.r8.u32, be32(obj + 0x1C), be32(obj + 0x20), be32(obj + 0x24));
+  }
   if (nr::Enabled()) {
     const PPCContext args = ctx;
     __imp__sub_82918A88(ctx, base);
