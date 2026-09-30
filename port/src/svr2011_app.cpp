@@ -4,6 +4,7 @@
 
 #include "svr2011_app.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -55,6 +56,28 @@ REXCVAR_DEFINE_STRING(audio_backend, "xaudio2", "Audio",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
+
+// The utility drive's folder. HostPathDevice always reports 64 MB free, and
+// at startup the game turns off match highlights (the MATCH HIGHLIGHTS
+// button after a match, greyed) unless cache: has room for its 150 MB
+// replay file (Spectacular.rps). This reports the host disk's free space,
+// up to 1 GB.
+class UtilityDriveDevice : public rex::filesystem::HostPathDevice {
+ public:
+  UtilityDriveDevice(const std::filesystem::path& dir)
+      : HostPathDevice("\\UTILITY", dir, false) {
+    std::error_code ec;
+    const auto space = std::filesystem::space(dir, ec);
+    const uint64_t free = ec ? kCap : std::min<uint64_t>(space.available, kCap);
+    units_ = uint32_t(free / bytes_per_sector());
+  }
+  uint32_t total_allocation_units() const override { return uint32_t(kCap / bytes_per_sector()); }
+  uint32_t available_allocation_units() const override { return units_; }
+
+ private:
+  static constexpr uint64_t kCap = 1ull << 30;
+  uint32_t units_ = 0;
+};
 
 // Written when svr2011.toml is missing: the settings a fresh install starts
 // with. The launcher's Settings tab rewrites this file.
@@ -251,7 +274,7 @@ void Svr2011App::OnPostLoadXexImage() {
     const std::filesystem::path dir = g_user_data / "UtilityDrive";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\UTILITY", dir, false);
+    auto device = std::make_unique<UtilityDriveDevice>(dir);
     auto* fs = runtime()->file_system();
     if (device->Initialize() && fs->RegisterDevice(std::move(device))) {
       fs->RegisterSymbolicLink("cache:", "\\UTILITY");

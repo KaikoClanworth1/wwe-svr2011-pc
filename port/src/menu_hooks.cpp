@@ -125,8 +125,8 @@ REX_HOOK_RAW(sub_82153EF8) {
     ctx.r3.u64 = g_ach_text;
     return;
   }
-  // Debug: SVR2011_DUMP_STRINGS=<file> writes the menu label strings (ids
-  // 0xA000-0xA5FF) once the tables are loaded (first lookup of PLAY).
+  // Debug: SVR2011_DUMP_STRINGS=<file> writes all the loaded strings (ids
+  // 0-0xFFFF) once the menu tables are loaded (first lookup of PLAY).
   static bool dumped = false;
   if (!dumped && ctx.r4.u32 == 0xA029) {
     dumped = true;
@@ -135,7 +135,7 @@ REX_HOOK_RAW(sub_82153EF8) {
     if (_dupenv_s(&path, &n, "SVR2011_DUMP_STRINGS") == 0 && path) {
       if (FILE* f = std::fopen(path, "wb")) {
         const auto saved = ctx;
-        for (uint32_t id = 0xA000; id < 0xA600; ++id) {
+        for (uint32_t id = 0; id < 0x10000; ++id) {
           ctx.r3.u64 = saved.r3.u64;
           ctx.r4.u64 = id;
           __imp__sub_82153EF8(ctx, base);
@@ -147,6 +147,28 @@ REX_HOOK_RAW(sub_82153EF8) {
       }
       free(path);
     }
+  }
+  // Debug: SVR2011_LOG_STRINGS=<text> - lookups returning a string with that
+  // text, with the caller (to find the code behind a label).
+  static const std::string log_text = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    std::string s;
+    if (_dupenv_s(&v, &n, "SVR2011_LOG_STRINGS") == 0 && v) {
+      s = v;
+      free(v);
+    }
+    return s;
+  }();
+  if (!log_text.empty()) {
+    const uint32_t manager = ctx.r3.u32, id = ctx.r4.u32, caller = uint32_t(ctx.lr);
+    __imp__sub_82153EF8(ctx, base);
+    if (ctx.r3.u32) {
+      const char* s = reinterpret_cast<const char*>(base + ctx.r3.u32);
+      if (std::strstr(s, log_text.c_str()))
+        REXLOG_INFO("[svr2011] string {:04X} (manager {:08X}, caller {:08X}): {:.80}", id, manager, caller, s);
+    }
+    return;
   }
   __imp__sub_82153EF8(ctx, base);
 }
