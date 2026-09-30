@@ -293,6 +293,12 @@ Downloadable content from the Xbox 360 (superstars, moves, arenas) works. In the
 
 <p align="center"><img src="docs/screenshots/launcher-dlc.png" alt="Launcher DLC tab" width="60%"></p>
 
+### Achievements
+
+The game's 39 achievements (1,000 gamerscore) unlock as they did on the Xbox 360, with a pop-up when you earn one. **MY WWE → ACHIEVEMENTS** lists them all. You can see which you've unlocked and when, your gamerscore, and how to earn each one. Use the D-pad to choose, **LB** / **RB** to page, **Y** to show all, unlocked or locked, and **B** to go back. Three need Xbox LIVE (two Royal Rumble online matches and uploading to Community Creations), so they can't be earned in the port. Unlocks are kept in the game folder's `UserData\achievements\`.
+
+<p align="center"><img src="docs/screenshots/achievements.jpg" alt="MY WWE → ACHIEVEMENTS" width="80%"></p>
+
 ---
 
 ## Building from source

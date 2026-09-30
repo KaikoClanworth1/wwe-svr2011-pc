@@ -3,13 +3,15 @@
 // extra tools. The same changes as tools/patch_strings.py and
 // tools/patch_menu.py (keep them in sync):
 //   pac/string.pac     console wording -> PC wording (dlc.cpp's table)
-//   pac/menu/menu.pac  GRAPHICS in MY WWE -> OPTIONS, EXIT in the main menu
-//                      (the port supplies their labels, menu_hooks.cpp)
+//   pac/menu/menu.pac  GRAPHICS in MY WWE -> OPTIONS, ACHIEVEMENTS in MY WWE,
+//                      EXIT in the main menu (the port supplies their labels,
+//                      menu_hooks.cpp)
 #include "game_files.h"
 
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 #include <rex/logging.h>
@@ -45,24 +47,35 @@ bool DropSkipped(std::vector<uint8_t>& d, uint32_t label, uint32_t group) {
   return false;
 }
 
-bool AddEntry(std::vector<uint8_t>& d, uint32_t after_label, uint32_t group, uint32_t new_label) {
+// The record with this label in this group (0: none).
+size_t Find(const std::vector<uint8_t>& d, uint32_t label, uint32_t group) {
   const uint32_t total = Be32(d, kMflo + 4);
-  size_t anchor = 0;
   for (uint32_t i = 0; i < total; ++i) {
     const size_t o = kFirst + i * kRec;
-    if (Be32(d, o) == after_label && Be32(d, o + 0x18) == group) {
-      anchor = o;
-      break;
-    }
+    if (Be32(d, o) == label && Be32(d, o + 0x18) == group) return o;
   }
+  return 0;
+}
+
+constexpr uint32_t kNoText = 0x05F5E0FF;
+
+// A new last entry of `group` after `after_label`: a copy of `template_label`
+// (0: of that entry) with the label and description ids.
+bool AddEntry(std::vector<uint8_t>& d, uint32_t after_label, uint32_t group, uint32_t new_label,
+              uint32_t template_label = 0, uint32_t description = kNoText) {
+  const uint32_t total = Be32(d, kMflo + 4);
+  const size_t anchor = Find(d, after_label, group);
   if (!anchor || !(Be32(d, anchor + 0x3C) & 2)) return false;
+  const size_t source = template_label ? Find(d, template_label, group) : anchor;
+  if (!source) return false;
   const size_t end = kFirst + total * kRec;
   if (end + kRec > kMflo + kMfloSlot) return false;
   uint8_t rec[kRec];
-  std::memcpy(rec, &d[anchor], kRec);
+  std::memcpy(rec, &d[source], kRec);
   SetBe32(rec + 0x00, new_label);
-  SetBe32(rec + 0x04, 0x05F5E0FF);  // no description text
-  SetBe32(rec + 0x40, 0);           // no "NEW" badge
+  SetBe32(rec + 0x04, description);
+  SetBe32(rec + 0x3C, Be32(d, source + 0x3C) | 2);  // the group's last
+  SetBe32(rec + 0x40, 0);                           // no "NEW" badge
   SetBe32(&d[anchor + 0x3C], Be32(d, anchor + 0x3C) & ~2u);
   const size_t at = anchor + kRec;
   std::memmove(&d[at + kRec], &d[at], end - at);
@@ -80,11 +93,23 @@ void PatchMenu(const std::filesystem::path& file) {
     d.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
   if (d.size() < kMflo + kMfloSlot) return;
-  if (Be32(d, kMflo + 4) != 0xE4 || Be32(d, kMflo + 8) != 0xDC) return;  // patched already (or not the disc's)
-  // Room for the two records: the main menu's hidden second ONLINE record
-  // (never shown) goes; the table can't move (see tools/patch_menu.py).
-  if (!DropSkipped(d, 0xA02E, 0x01) || !AddEntry(d, 0xA050, 0x11, 0xAFC0) ||  // GRAPHICS after CHEAT CODES
-      !AddEntry(d, 0xA04B, 0x01, 0xAFC1)) {                                     // EXIT after SHOP
+  // The table's header (records, shown records): the disc's, after the first
+  // patch (GRAPHICS, EXIT: v0.1-v0.3) and after this one (+ ACHIEVEMENTS).
+  auto state = [&] { return std::pair(Be32(d, kMflo + 4), Be32(d, kMflo + 8)); };
+  using State = std::pair<uint32_t, uint32_t>;
+  if (state() == State(0xE5, 0xDF) && Find(d, 0xAFC2, 0x05)) return;  // patched already
+  // Room for the records: hidden ones (never shown) go, the main menu's second
+  // ONLINE and a NEW SUPERSTAR copy; the table can't move (tools/patch_menu.py).
+  if (state() == State(0xE4, 0xDC)) {
+    if (!DropSkipped(d, 0xA02E, 0x01) || !AddEntry(d, 0xA050, 0x11, 0xAFC0) ||  // GRAPHICS after CHEAT CODES
+        !AddEntry(d, 0xA04B, 0x01, 0xAFC1)) {                                     // EXIT after SHOP
+      REXLOG_WARN("{}: unexpected menu table; not patched", file.string());
+      return;
+    }
+  }
+  if (state() != State(0xE5, 0xDE) || !Find(d, 0xAFC0, 0x11) ||
+      !DropSkipped(d, 0xA47E, 0x0E) ||
+      !AddEntry(d, 0xA030, 0x05, 0xAFC2, 0xA0BD, 0xAFC3)) {  // ACHIEVEMENTS after OPTIONS
     REXLOG_WARN("{}: unexpected menu table; not patched", file.string());
     return;
   }
@@ -96,7 +121,7 @@ void PatchMenu(const std::filesystem::path& file) {
   }
   std::error_code ec;
   std::filesystem::rename(tmp, file, ec);
-  if (!ec) REXLOG_INFO("{}: added GRAPHICS (MY WWE -> OPTIONS) and EXIT (main menu)", file.string());
+  if (!ec) REXLOG_INFO("{}: added GRAPHICS, ACHIEVEMENTS and EXIT", file.string());
 }
 
 }  // namespace

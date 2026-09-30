@@ -1,11 +1,12 @@
-// WWE SmackDown vs. Raw 2011 - the GRAPHICS entry in MY WWE -> OPTIONS.
+// WWE SmackDown vs. Raw 2011 - the port's menu entries: GRAPHICS in MY WWE ->
+// OPTIONS, ACHIEVEMENTS in MY WWE and EXIT in the main menu.
 //
-// tools/patch_menu.py adds the entry to the menu table (menu.pac MFLO/0000):
-// a copy of CHEAT CODES with the label string id kGraphicsLabelId. Here:
-//  - the string lookup returns "GRAPHICS" for that id (the game's string
-//    tables have no such string),
-//  - choosing the entry opens the port's GRAPHICS page instead of the game's
-//    screen (graphics_page.h).
+// tools/patch_menu.py (and game_files.cpp) add the entries to the menu table
+// (menu.pac MFLO/0000) with their own label string ids. Here:
+//  - the string lookup returns their labels (the game's string tables have no
+//    such strings),
+//  - choosing an entry opens the port's page instead of the game's screen
+//    (graphics_page.h, achievements_page.h) or closes the game.
 
 #include "menu_hooks.h"
 
@@ -26,13 +27,18 @@
 #include <rex/system/xmemory.h>
 
 #include "generated/default/svr2011_init.h"
+#include "achievements_page.h"
 #include "graphics_page.h"
 
 namespace {
 
 constexpr uint32_t kGraphicsLabelId = 0xAFC0;  // keep in sync with tools/patch_menu.py
 constexpr uint32_t kExitLabelId = 0xAFC1;
+constexpr uint32_t kAchievementsLabelId = 0xAFC2;
+constexpr uint32_t kAchievementsTextId = 0xAFC3;  // its description line
 constexpr uint32_t kMainMenuGroup = 0x01;
+constexpr uint32_t kMyWweGroup = 0x05;
+constexpr uint32_t kAchievementsRow = 4;       // MY WWE: after OPTIONS
 constexpr uint32_t kOptionsGroup = 0x11;       // MY WWE -> OPTIONS
 constexpr uint32_t kGraphicsRow = 5;           // its 6th entry
 constexpr uint32_t kExitRow = 7;               // main menu: after SHOP (row 6)
@@ -42,6 +48,8 @@ constexpr uint32_t kMenuCursor = 360;  // cursor row within the group
 
 uint32_t g_label = 0;       // guest address of "GRAPHICS"
 uint32_t g_exit_label = 0;  // and of "EXIT"
+uint32_t g_ach_label = 0;   // "ACHIEVEMENTS" and its description
+uint32_t g_ach_text = 0;
 
 uint32_t Be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
@@ -52,7 +60,8 @@ uint32_t Be32(const uint8_t* p) {
 namespace svr2011 {
 
 void InstallMenuHooks(rex::memory::Memory* memory) {
-  g_label = memory->SystemHeapAlloc(32);
+  constexpr char kAchText[] = "View your achievements: what you've unlocked and how to earn the rest.";
+  g_label = memory->SystemHeapAlloc(32 + 16 + sizeof(kAchText));
   if (!g_label) {
     REXLOG_WARN("menu: no guest memory for the GRAPHICS label");
     return;
@@ -60,6 +69,10 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   std::memcpy(memory->TranslateVirtual<char*>(g_label), "GRAPHICS", 9);
   g_exit_label = g_label + 12;
   std::memcpy(memory->TranslateVirtual<char*>(g_exit_label), "EXIT", 5);
+  g_ach_label = g_label + 20;
+  std::memcpy(memory->TranslateVirtual<char*>(g_ach_label), "ACHIEVEMENTS", 13);
+  g_ach_text = g_label + 48;
+  std::memcpy(memory->TranslateVirtual<char*>(g_ach_text), kAchText, sizeof(kAchText));
 }
 
 }  // namespace svr2011
@@ -73,6 +86,14 @@ REX_HOOK_RAW(sub_82153EF8) {
   }
   if (g_exit_label && ctx.r4.u32 == kExitLabelId) {
     ctx.r3.u64 = g_exit_label;
+    return;
+  }
+  if (g_ach_label && ctx.r4.u32 == kAchievementsLabelId) {
+    ctx.r3.u64 = g_ach_label;
+    return;
+  }
+  if (g_ach_text && ctx.r4.u32 == kAchievementsTextId) {
+    ctx.r3.u64 = g_ach_text;
     return;
   }
   // Debug: SVR2011_DUMP_STRINGS=<file> writes the menu label strings (ids
@@ -111,6 +132,10 @@ REX_HOOK_RAW(sub_82447210) {
     REXLOG_INFO("[svr2011] menu select: group {:X} row {}", group, cursor);
     if (group == kOptionsGroup && cursor == kGraphicsRow) {
       svr2011::OpenGraphicsPage();
+      return;
+    }
+    if (group == kMyWweGroup && cursor == kAchievementsRow) {
+      svr2011::OpenAchievementsPage();
       return;
     }
     if (group == kMainMenuGroup && cursor == kExitRow) {

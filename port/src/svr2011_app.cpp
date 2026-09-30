@@ -27,6 +27,7 @@
 #include <rex/input/device_assignment.h>
 #include <rex/input/input_system.h>
 
+#include "achievements_page.h"
 #include "caw_logos.h"
 #include "crash_report.h"
 #include "dlc.h"
@@ -201,6 +202,7 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   ImFont* title =
       std::filesystem::exists(kBoldItalic) ? atlas->AddFontFromFileTTF(kBoldItalic, 40.0f) : nullptr;
   svr2011::SetGraphicsPageFonts(menu, title ? title : menu);
+  svr2011::SetAchievementsPageFonts(menu, title ? title : menu);
 }
 
 void Svr2011App::OnPostLoadXexImage() {
@@ -286,6 +288,10 @@ void Svr2011App::OnPostLoadXexImage() {
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
   if (imgui_drawer()) {
+    // MY WWE -> ACHIEVEMENTS (achievements_page.h).
+    svr2011::InstallAchievementsPage(
+        imgui_drawer(), immediate_drawer(), runtime(),
+        static_cast<rex::input::InputSystem*>(runtime()->input_system()));
     svr2011::InstallGraphicsPage(
         imgui_drawer(), window(),
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);

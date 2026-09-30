@@ -30,6 +30,7 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
+#include "achievements_page.h"
 #include "fps_overlay.h"
 #include "native/native_renderer.h"
 
@@ -465,7 +466,9 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   g_config_path = config_path;
   new GraphicsPage(drawer);  // lives for the whole run
   if (input) {
-    input->SetGuestInputHold([] { return g_open.load() || g_wait_release.load(); });
+    // (one hold for the port's pages: this one and ACHIEVEMENTS)
+    input->SetGuestInputHold(
+        [] { return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput(); });
   }
 }
 

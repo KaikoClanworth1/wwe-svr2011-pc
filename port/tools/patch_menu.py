@@ -1,5 +1,5 @@
-"""Adds menu entries (pac/menu/menu.pac): GRAPHICS to MY WWE -> OPTIONS and
-EXIT to the main menu.
+"""Adds menu entries (pac/menu/menu.pac): GRAPHICS to MY WWE -> OPTIONS,
+ACHIEVEMENTS to MY WWE and EXIT to the main menu.
 
 The main menus are a table of 0x74-byte records in menu.pac entry MFLO/0000
 (big-endian; parsed by sub_82BAA6E8):
@@ -11,7 +11,10 @@ OPTIONS (node 0x1C) is group 0x11: MATCH CREATOR, GAMEPLAY OPTIONS, SAVE DATA
 MANAGER, CREDITS, CHEAT CODES. GRAPHICS is inserted after CHEAT CODES as a copy
 of it (screen 0x524, so without the port's hooks it would open Cheat Codes)
 with its own label id; the port supplies the label and opens its own page
-(src/menu_hooks.cpp).
+(src/menu_hooks.cpp). MY WWE (node 0x07) is group 0x05: SUPERSTAR MANAGEMENT,
+TEAM MANAGEMENT, PRACTICE ARENA, OPTIONS; ACHIEVEMENTS goes after OPTIONS as a
+copy of TEAM MANAGEMENT (a screen entry: OPTIONS is a submenu, whose node the
+copy would duplicate).
 
 Reads the original from "Extract GameFiles" and writes "Game Files" (idempotent):
     python patch_menu.py [<disc dir> <game dir>]
@@ -30,37 +33,51 @@ MFLO = 0x25F000          # MFLO/0000 in menu.pac
 MFLO_SLOT = 0x6800       # its directory slot
 REC = 0x74
 FIRST = MFLO + 0x28
-# Entries added: (after the entry with this label, in this group) -> new label.
-# The new record is a copy of that entry, which becomes not-last-of-group.
-# Label ids are unused string ids; keep in sync with src/menu_hooks.cpp.
+# Entries added: (after the entry with this label, in this group) -> new label,
+# a copy of the template entry (0: of that entry), with this description id
+# (NO_TEXT: none). The anchor becomes not-last-of-group.
+# Label ids are unused string ids; keep in sync with src/menu_hooks.cpp and
+# src/game_files.cpp.
+NO_TEXT = 0x05F5E0FF
 ADDITIONS = [
     # MY WWE -> OPTIONS: GRAPHICS after CHEAT CODES (a copy: screen 0x524).
-    (0xA050, 0x11, 0xAFC0),
+    (0xA050, 0x11, 0xAFC0, 0, NO_TEXT),
     # Main menu: EXIT after SHOP.
-    (0xA04B, 0x01, 0xAFC1),
+    (0xA04B, 0x01, 0xAFC1, 0, NO_TEXT),
+    # MY WWE: ACHIEVEMENTS after OPTIONS (a copy of TEAM MANAGEMENT).
+    (0xA030, 0x05, 0xAFC2, 0xA0BD, 0xAFC3),
 ]
+# Hidden records (never shown) dropped to make room: the table's slot can't grow.
+DROPPED = [(0xA02E, 0x01), (0xA47E, 0x0E)]
 
 
 def u32(d, o):
     return struct.unpack_from(">I", d, o)[0]
 
 
-def add_entry(data, after_label, group, new_label):
-    total = u32(data, MFLO + 4)
-    anchor = None
-    for i in range(total):
+def find(data, label, group):
+    for i in range(u32(data, MFLO + 4)):
         o = FIRST + i * REC
-        if u32(data, o) == after_label and u32(data, o + 0x18) == group:
-            anchor = o
-            break
+        if u32(data, o) == label and u32(data, o + 0x18) == group:
+            return o
+    return None
+
+
+def add_entry(data, after_label, group, new_label, template, description):
+    total = u32(data, MFLO + 4)
+    anchor = find(data, after_label, group)
     if anchor is None or not (u32(data, anchor + 0x3C) & 2):
         raise SystemExit(f"{FILE}: entry {after_label:#x} in group {group:#x} not found / not last")
+    source = find(data, template, group) if template else anchor
+    if source is None:
+        raise SystemExit(f"{FILE}: template {template:#x} in group {group:#x} not found")
     end = FIRST + total * REC
     if end + REC > MFLO + MFLO_SLOT:
         raise SystemExit(f"{FILE}: no room in MFLO/0000")
-    new = bytearray(data[anchor:anchor + REC])
+    new = bytearray(data[source:source + REC])
     struct.pack_into(">I", new, 0x00, new_label)
-    struct.pack_into(">I", new, 0x04, 0x05F5E0FF)            # no description text
+    struct.pack_into(">I", new, 0x04, description)
+    struct.pack_into(">I", new, 0x3C, u32(new, 0x3C) | 2)    # the group's last
     struct.pack_into(">I", new, 0x40, 0)                     # no "NEW" badge
     struct.pack_into(">I", data, anchor + 0x3C, u32(data, anchor + 0x3C) & ~2)  # not last
     at = anchor + REC
@@ -96,19 +113,21 @@ def main() -> int:
         return 1
     # The table's slot has room for one more record. The game finds it by
     # its original place (moving it and its directory entry doesn't work), so
-    # drop the main menu's hidden second ONLINE record (never shown) instead.
-    drop_skipped(data, 0xA02E, 0x01)
+    # hidden records (never shown) go instead: the main menu's second ONLINE
+    # and a NEW SUPERSTAR copy in CREATE.
+    for label, group in DROPPED:
+        drop_skipped(data, label, group)
     if 0x28 + u32(data, MFLO + 4) * REC + len(ADDITIONS) * REC > MFLO_SLOT:
         raise SystemExit(f"{FILE}: no room in MFLO/0000")
-    for after_label, group, new_label in ADDITIONS:
-        add_entry(data, after_label, group, new_label)
+    for addition in ADDITIONS:
+        add_entry(data, *addition)
     if os.path.exists(dst) and open(dst, "rb").read() == data:
         print(f"{FILE}: already patched")
         return 0
     tmp = dst + ".tmp"
     open(tmp, "wb").write(data)
     os.replace(tmp, dst)
-    print(f"{FILE}: added GRAPHICS (MY WWE -> OPTIONS) and EXIT (main menu)")
+    print(f"{FILE}: added GRAPHICS (MY WWE -> OPTIONS), ACHIEVEMENTS (MY WWE) and EXIT (main menu)")
     return 0
 
 
