@@ -48,6 +48,11 @@ std::string RendererLabel();
 // window, matches fill it (native_widescreen), menus stay 16:9.
 void SetMatchScene(bool in_match);
 
+// Screens narrower than 16:9 (matches): the factor the camera's tan(vertical
+// field of view / 2) is scaled by (1: unchanged) - native_hooks.cpp applies
+// it in the projection setup (sub_825818B8).
+float CameraFovScale();
+
 // The main window's client size in pixels (main mode: the frames follow it).
 void SetWindowSizeSource(std::function<std::pair<uint32_t, uint32_t>()> source);
 

@@ -150,6 +150,10 @@ rex::ui::Window* g_window = nullptr;
 std::filesystem::path g_file;
 ImFont* g_font = nullptr;
 float g_w = 0, g_h = 0;  // the window, at the last draw
+// The controls' unit: the height of the window's 16:9 area (the window
+// height on wide screens; less on near-square ones such as a foldable's
+// inner screen, where the height would make them huge).
+float g_u = 0;
 Clock::time_point g_last_touch{};
 
 std::atomic<bool> g_editor{false};
@@ -315,11 +319,11 @@ void Load() {
 // ---------------------------------------------------------------------------
 // geometry
 
-ImVec2 Centre(const Control& c) { return ImVec2(c.anchor * g_w + c.dx * g_h, c.y * g_h); }
+ImVec2 Centre(const Control& c) { return ImVec2(c.anchor * g_w + c.dx * g_u, c.y * g_h); }
 
 // Half extents (a pill is wider than tall).
 ImVec2 Half(const Control& c) {
-  const float r = c.size * g_h * 0.5f;
+  const float r = c.size * g_u * 0.5f;
   return c.wide ? ImVec2(r * 1.7f, r * 0.8f) : ImVec2(r, r);
 }
 
@@ -396,7 +400,7 @@ void SetMode(int mode) {
 // Where a finger on a control points it (sticks, D-pad).
 void Aim(Control& c, float x, float y) {
   const ImVec2 p = Centre(c);
-  const float r = c.size * g_h * 0.5f * (c.kind == Kind::kStick ? 0.75f : 1.0f);
+  const float r = c.size * g_u * 0.5f * (c.kind == Kind::kStick ? 0.75f : 1.0f);
   float dx = (x - p.x) / r, dy = (y - p.y) / r;
   const float len = std::sqrt(dx * dx + dy * dy);
   if (len > 1) dx /= len, dy /= len;
@@ -524,7 +528,7 @@ void EditorMove(uint32_t pointer, float x, float y) {
   const float cx = std::clamp(x - g_drag_ox, 0.0f, g_w), cy = std::clamp(y - g_drag_oy, 0.0f, g_h);
   // Anchored to the side it is on (so it stays there on other screens).
   c.anchor = cx < g_w / 3 ? 0.0f : cx > g_w * 2 / 3 ? 1.0f : 0.5f;
-  c.dx = (cx - c.anchor * g_w) / g_h;
+  c.dx = (cx - c.anchor * g_w) / g_u;
   c.y = cy / g_h;
 }
 
@@ -681,10 +685,10 @@ void FaceColour(uint32_t action, float* r, float* g, float* b) {
 
 void DrawControl(ImDrawList* dl, const Control& c, float alpha, bool selected) {
   const ImVec2 p = Centre(c), h = Half(c);
-  const float r = c.size * g_h * 0.5f;
+  const float r = c.size * g_u * 0.5f;
   const ImU32 fill = Colour(0.05f, 0.05f, 0.07f, (c.pressed ? 0.75f : 0.40f) * alpha);
   const ImU32 line = Colour(1, 1, 1, (c.pressed ? 0.95f : 0.55f) * alpha);
-  const float thick = std::max(2.0f, g_h * 0.004f);
+  const float thick = std::max(2.0f, g_u * 0.004f);
   switch (c.kind) {
     case Kind::kStick: {
       dl->AddCircleFilled(p, r, fill, 48);
@@ -859,6 +863,7 @@ class TouchOverlay final : public rex::ui::ImGuiDialog {
     g_w = io.DisplaySize.x;
     g_h = io.DisplaySize.y;
     if (g_h <= 0) return;
+    g_u = std::min(g_h, g_w * 9.0f / 16.0f);
     if (g_editor) {
       DrawEditor(ImGui::GetForegroundDrawList());
       return;

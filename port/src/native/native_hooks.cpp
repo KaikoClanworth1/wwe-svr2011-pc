@@ -5,7 +5,9 @@
 // renderer. Present is hooked in frame_stats.cpp. Not built into the D3D
 // census build (SVR2011_D3D_TRACE), which hooks every D3D function itself.
 
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -137,4 +139,34 @@ REX_EXTERN(__imp__sub_82925D78);
 REX_HOOK_RAW(sub_82925D78) {
   if (nr::Enabled()) nr::OnLoadShaderConstants(ctx.r4.u32, ctx.r5.u32);
   __imp__sub_82925D78(ctx, base);
+}
+
+// The camera's projection and culling setup (camera in r3; its vertical
+// field of view, radians, at +104; the width from the 16:9 aspect constant,
+// native_renderer.cpp). On a screen narrower than 16:9 the view is widened
+// vertically for the call - the same width as on 16:9, more above and below.
+REX_EXTERN(__imp__sub_825818B8);
+REX_HOOK_RAW(sub_825818B8) {
+  const float k = nr::CameraFovScale();
+  if (k <= 1.0f || !ctx.r3.u32) {
+    __imp__sub_825818B8(ctx, base);
+    return;
+  }
+  uint8_t* p = base + ctx.r3.u32 + 104;
+  const uint32_t saved = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+  float fov;
+  std::memcpy(&fov, &saved, 4);
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("[svr2011] camera field of view {} widened by tan x{:.3f}", fov, k);
+  }
+  if (fov > 0.01f && fov < 3.1f) {
+    const float wider = 2.0f * std::atan(std::tan(fov * 0.5f) * k);
+    uint32_t bits;
+    std::memcpy(&bits, &wider, 4);
+    p[0] = uint8_t(bits >> 24), p[1] = uint8_t(bits >> 16), p[2] = uint8_t(bits >> 8), p[3] = uint8_t(bits);
+  }
+  __imp__sub_825818B8(ctx, base);
+  p[0] = uint8_t(saved >> 24), p[1] = uint8_t(saved >> 16), p[2] = uint8_t(saved >> 8), p[3] = uint8_t(saved);
 }

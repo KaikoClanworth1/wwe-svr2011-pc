@@ -400,6 +400,7 @@ struct ColorTarget {
   uint32_t width = 0, height = 0;
   uint32_t scale = 1;  // its host pixels per guest pixel (TargetScale)
   uint32_t host_w = 0;  // its host width (wider than width * scale on wide screens: HostWidth)
+  uint32_t host_h = 0;  // and height (taller on screens narrower than 16:9: HostHeight)
   uint64_t used_frame = 0;
 };
 
@@ -408,13 +409,13 @@ struct DepthTarget {
   RenderTextureLayout layout = RenderTextureLayout::UNKNOWN;
   uint32_t width = 0, height = 0;
   uint32_t scale = 1;
-  uint32_t host_w = 0;
+  uint32_t host_w = 0, host_h = 0;
 };
 
 // The copy a resolve made of a target (what the game samples as a texture).
 struct ResolvedTexture {
   std::shared_ptr<plume::RenderTexture> resource;
-  uint32_t host_w = 0;  // (wider than width * scale when copied from a wide target)
+  uint32_t host_w = 0, host_h = 0;  // (larger than the guest size * scale when copied from a wide / tall target)
   RenderTextureLayout layout = RenderTextureLayout::UNKNOWN;
   RenderFormat format = RenderFormat::UNKNOWN;
   uint32_t width = 0, height = 0;
@@ -559,6 +560,12 @@ uint32_t TargetScale(uint32_t width, uint32_t height) {
 // get g_wide times the width. Screen-space passes follow on their own; the
 // 2D HUD's sprites are drawn into the 16:9 middle (Draw). Menus stay 16:9.
 float g_wide = 1.0f;
+// Screens narrower than 16:9 (a foldable's inner screen, 16:10): the same
+// the other way - g_tall times the height, the camera shows more above and
+// below (its vertical field of view widened: CameraFovScale), the HUD in
+// the vertical middle.
+float g_tall = 1.0f;
+std::atomic<float> g_fov_scale{1.0f};
 std::atomic<bool> g_match_scene{false};
 // The last frame drew nothing in 3D (a pause menu, a loading or transition
 // screen): 2D art filling the screen - all of it goes in the 16:9 middle,
@@ -573,6 +580,13 @@ uint32_t HostWidth(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t w = width * scale;
   if (g_wide <= 1.0f || width < 1152 || height < 640) return w;
   return (uint32_t(std::lround(float(w) * g_wide)) + 1) & ~1u;
+}
+
+// The host height of a target of this guest size.
+uint32_t HostHeight(uint32_t width, uint32_t height, uint32_t scale) {
+  const uint32_t h = height * scale;
+  if (g_tall <= 1.0f || width < 1152 || height < 640) return h;
+  return (uint32_t(std::lround(float(h) * g_tall)) + 1) & ~1u;
 }
 
 void SetCameraAspect(float aspect) {
@@ -977,12 +991,16 @@ void ApplyOutputSettings(Renderer* r) {
   static bool widescreen = REXCVAR_GET(native_widescreen);
   // A match on a window wider than 16:9: as wide as the window.
   float wide = 1.0f;
+  float tall = 1.0f;
   if (widescreen && g_match_scene.load() && uint64_t(win_w) * 9 > uint64_t(win_h) * 16 + 16) {
     wide = std::min(float(win_w) / float(win_h) / kAspect16x9, kMaxWide);
+  } else if (widescreen && g_match_scene.load() && uint64_t(win_w) * 9 + 16 < uint64_t(win_h) * 16) {
+    tall = std::min(float(win_h) / float(win_w) * kAspect16x9, kMaxWide);  // (up to 8:9)
   }
   uint32_t out_w = win_w, out_h = win_w * 9 / 16;
   if (out_h > win_h) out_h = win_h, out_w = win_h * 16 / 9;
   if (wide > 1.0f) out_h = win_h, out_w = std::min(win_w, uint32_t(std::lround(win_h * kAspect16x9 * wide)));
+  if (tall > 1.0f) out_w = win_w, out_h = std::min(win_h, uint32_t(std::lround(win_w / kAspect16x9 * tall)));
   out_w = std::max(out_w & ~1u, 64u);
   out_h = std::max(out_h & ~1u, 36u);
   static bool aa = rex::cvar::Query<bool>("native_2x_msaa");
@@ -1001,7 +1019,7 @@ void ApplyOutputSettings(Renderer* r) {
   const uint32_t need = out_h * (aa ? 2 : 1);
   const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
   const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
-  const bool wide_changed = std::fabs(wide - g_wide) > 0.002f;
+  const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
       !wide_changed) {
     return;
@@ -1020,7 +1038,9 @@ void ApplyOutputSettings(Renderer* r) {
     g_scale = scale;
     g_scale_effects = effects;
     g_wide = wide;
-    SetCameraAspect(kAspect16x9 * wide);
+    g_tall = tall;
+    SetCameraAspect(kAspect16x9 * wide / tall);
+    g_fov_scale = tall;
   }
   if (out_w != g_out_w || out_h != g_out_h) {
     g_out_w = out_w;
@@ -1030,8 +1050,9 @@ void ApplyOutputSettings(Renderer* r) {
   r->list_state = {};
   REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}", g_out_w, g_out_h, g_scale,
               aa ? " (anti-aliasing)" : "", g_scale_effects ? "" : ", effects unscaled",
-              g_wide > 1.0f ? fmt::format(", wide {:.3f} (aspect {:.3f})", g_wide, kAspect16x9 * g_wide)
-                            : std::string());
+              g_wide > 1.0f   ? fmt::format(", wide {:.3f} (aspect {:.3f})", g_wide, kAspect16x9 * g_wide)
+              : g_tall > 1.0f ? fmt::format(", tall {:.3f} (aspect {:.3f})", g_tall, kAspect16x9 / g_tall)
+                              : std::string());
 }
 
 // False: the GPU stopped answering and the native renderer gave up.
@@ -1203,9 +1224,9 @@ ColorTarget* GetColorTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   if (r->color_targets.size() >= kMaxColorTargets) return nullptr;
   const TargetFormat f = ColorFormat(format);
   const uint32_t scale = TargetScale(pitch, height);
-  const uint32_t host_w = HostWidth(pitch, height, scale);
+  const uint32_t host_w = HostWidth(pitch, height, scale), host_h = HostHeight(pitch, height, scale);
   plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-      host_w, height * scale, 1, f.resource, plume::RenderTextureFlag::RENDER_TARGET);
+      host_w, host_h, 1, f.resource, plume::RenderTextureFlag::RENDER_TARGET);
   d.committed = true;
   const plume::RenderClearValue cv = plume::RenderClearValue::Color(plume::RenderColor(0, 0, 0, 0), f.rtv);
   d.optimizedClearValue = &cv;
@@ -1226,6 +1247,7 @@ ColorTarget* GetColorTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   t.height = height;
   t.scale = scale;
   t.host_w = host_w;
+  t.host_h = host_h;
   t.rtv = t.resource->createTextureView(plume::RenderTextureViewDesc::Texture2D(f.rtv));
   REXLOG_INFO("native renderer: render target {}x{} format {} at EDRAM tile {}", pitch, height,
               format, base);
@@ -1238,9 +1260,9 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   if (r->depth_targets.size() >= kMaxDepthTargets) return nullptr;
   // D24S8, copyable to a sampled depth texture (typeless underneath).
   const uint32_t scale = TargetScale(pitch, height);
-  const uint32_t host_w = HostWidth(pitch, height, scale);
+  const uint32_t host_w = HostWidth(pitch, height, scale), host_h = HostHeight(pitch, height, scale);
   plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-      host_w, height * scale, 1, RenderFormat::D24_UNORM_S8_UINT,
+      host_w, host_h, 1, RenderFormat::D24_UNORM_S8_UINT,
       plume::RenderTextureFlag::DEPTH_TARGET);
   d.committed = true;
   const plume::RenderClearValue cv =
@@ -1258,6 +1280,7 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   t.height = height;
   t.scale = scale;
   t.host_w = host_w;
+  t.host_h = host_h;
   return &t;
 }
 
@@ -2052,28 +2075,50 @@ const InputLayout& GetInputLayout(const Shader* vs) {
   return il;
 }
 
-// The extent (x, y) of a DrawPrimitiveUP's positions (float positions only;
-// its first 64 vertices).
-bool UpExtent(const std::vector<Element>& decl, const PendingUP& up, float mn[2], float mx[2]) {
+// Whether a draw's positions are flat 2D in the target's pixels (a HUD
+// sprite: x, y within the target, one depth in 0..1), from its first 64
+// vertices (float positions only; a DrawPrimitiveUP's or its vertex
+// buffer's). `full`: they cover the whole target (a fade).
+bool FlatPixels(const std::vector<Element>& decl, const PendingUP* up, bool indexed, uint32_t start,
+                uint32_t count, int32_t base_vertex, float tw, float th, bool* full) {
   for (const Element& el : decl) {
-    if (el.usage != 0 || el.index != 0 || el.stream != 0) continue;
+    if (el.usage != 0 || el.index != 0) continue;
     const RenderFormat f = VertexFormat(el.type, false);
-    if (f != RenderFormat::R32G32_FLOAT && f != RenderFormat::R32G32B32_FLOAT &&
-        f != RenderFormat::R32G32B32A32_FLOAT) {
-      return false;
+    const int comps = f == RenderFormat::R32G32_FLOAT ? 2 : f == RenderFormat::R32G32B32_FLOAT ? 3
+                      : f == RenderFormat::R32G32B32A32_FLOAT ? 4 : 0;
+    if (!comps) return false;
+    const uint8_t* data = nullptr;
+    uint32_t stride = 0;
+    if (up) {
+      if (el.stream != 0) return false;
+      data = ObjectData(up->data), stride = up->stride;
+    } else {
+      if (el.stream >= 15 || !g_streams[el.stream].buffer) return false;
+      const Stream& st = g_streams[el.stream];
+      data = ObjectData(Be32(Virtual(st.buffer) + 0x18) & ~3u) + st.offset, stride = st.stride;
     }
-    if (!up.stride || !up.count) return false;
-    const uint8_t* data = ObjectData(up.data);
-    mn[0] = mn[1] = 1e30f;
-    mx[0] = mx[1] = -1e30f;
-    for (uint32_t k = 0; k < std::min<uint32_t>(up.count, 64); ++k) {
-      const uint8_t* q = data + k * up.stride + el.offset;
-      for (int c = 0; c < 2; ++c) {
-        const float v = BeFloat(q + 4 * c);
-        mn[c] = std::min(mn[c], v), mx[c] = std::max(mx[c], v);
+    if (!data || !stride || !count) return false;
+    const uint8_t* ib = nullptr;
+    if (indexed && !up) {
+      const uint32_t ibo = Be32(Device() + guest::kDeviceIndexBuffer);
+      if (!ibo) return false;
+      ib = ObjectData(Be32(Virtual(ibo) + 0x18)) + start * 2;
+    }
+    float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f};
+    for (uint32_t k = 0; k < std::min<uint32_t>(count, 64); ++k) {
+      const int64_t v = ib ? int64_t(Be16(ib + 2 * k)) + base_vertex : int64_t(up ? k : start + k);
+      if (v < 0) return false;
+      const uint8_t* q = data + v * stride + el.offset;
+      for (int c = 0; c < std::min(comps, 3); ++c) {
+        const float x = BeFloat(q + 4 * c);
+        mn[c] = std::min(mn[c], x), mx[c] = std::max(mx[c], x);
       }
     }
-    return true;
+    const bool flat = comps == 2 || (mn[2] == mx[2] && mn[2] >= 0.0f && mn[2] <= 1.0f);
+    const bool pixels = mn[0] >= -2 && mn[1] >= -2 && mx[0] <= tw + 2 && mx[1] <= th + 2 &&
+                        (mx[0] - mn[0] > 2 || mx[1] - mn[1] > 2);
+    *full = mn[0] <= 1 && mn[1] <= 1 && mx[0] >= tw - 1 && mx[1] >= th - 1;
+    return flat && pixels;
   }
   return false;
 }
@@ -2270,38 +2315,37 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   // `tsx` across on a wide screen.)
   const uint32_t ts = targets.color ? targets.color->scale : targets.depth ? targets.depth->scale : g_scale;
   const float tsx = targets.color && targets.color->host_w ? float(targets.color->host_w) / tw : float(ts);
+  const float tsy = targets.color && targets.color->host_h ? float(targets.color->host_h) / th : float(ts);
+  const bool reshaped = tsx > float(ts) * 1.001f || tsy > float(ts) * 1.001f;  // (wide or tall)
   // Wide screen: the HUD's 2D sprites (vertices in the game's 1280 x 720
   // pixels, drawn without depth) go in the 16:9 middle, unstretched; a sprite
   // covering the whole screen (a fade) and everything else fill the width.
   bool middle = false;
   const bool depth_test = (Reg(RB_DEPTHCONTROL) >> 1) & 1;
-  if (tsx > float(ts) * 1.001f && depth_test) ++r->frame_stats.wide_3d;
-  if (tsx > float(ts) * 1.001f && g_frame_2d) {
+  if (reshaped && depth_test) ++r->frame_stats.wide_3d;
+  if (reshaped && g_frame_2d) {
     middle = (vte & 1) != 0;  // (screen-space passes keep the target's width)
-  } else if (tsx > float(ts) * 1.001f && up && (vte & 1) && !depth_test) {
-    float mn[2], mx[2];
-    if (UpExtent(decl, *up, mn, mx)) {
-      const bool pixels = mn[0] >= -2 && mn[1] >= -2 && mx[0] <= tw + 2 && mx[1] <= th + 2 &&
-                          (mx[0] > 2 || mx[1] > 2);
-      const bool full = mn[0] <= 1 && mn[1] <= 1 && mx[0] >= tw - 1 && mx[1] >= th - 1;
-      middle = pixels && !full;
-    }
+  } else if (reshaped && (vte & 1) && !depth_test) {
+    bool full = false;
+    middle = FlatPixels(decl, up, indexed, start, count, base_vertex, tw, th, &full) && !full;
   }
   const float pad = middle ? (float(targets.color->host_w) - tw * float(ts)) * 0.5f : 0.0f;
+  const float pad_y = middle && targets.color->host_h ? (float(targets.color->host_h) - th * float(ts)) * 0.5f : 0.0f;
   const float sx = middle ? float(ts) : tsx;
+  const float sy = middle ? float(ts) : tsy;
   vp.x = vp.x * sx + pad;
-  vp.y *= ts;
+  vp.y = vp.y * sy + pad_y;
   vp.width *= sx;
-  vp.height *= ts;
+  vp.height *= sy;
   // Window scissor: D3D keeps it in the mirrored 0x2000 group (0x2011 top-left,
   // 0x2012 bottom-right; x in bits 0-14, y in bits 16-30), already clamped to
   // the scissor rect when the game enables one (device +0x2F00).
   const uint32_t sc_tl = Reg(PA_SC_WINDOW_SCISSOR_TL), sc_br = Reg(PA_SC_WINDOW_SCISSOR_BR);
   const plume::RenderRect scissor(
       int32_t(std::lround(float(std::min<uint32_t>(sc_tl & 0x7FFF, targets.color->width)) * sx + pad)),
-      int32_t(std::min<uint32_t>((sc_tl >> 16) & 0x7FFF, targets.color->height) * ts),
+      int32_t(std::lround(float(std::min<uint32_t>((sc_tl >> 16) & 0x7FFF, targets.color->height)) * sy + pad_y)),
       int32_t(std::lround(float(std::min<uint32_t>(sc_br & 0x7FFF, targets.color->width)) * sx + pad)),
-      int32_t(std::min<uint32_t>((sc_br >> 16) & 0x7FFF, targets.color->height) * ts));
+      int32_t(std::lround(float(std::min<uint32_t>((sc_br >> 16) & 0x7FFF, targets.color->height)) * sy + pad_y)));
 
   if (r->frames >= g_drawlog_frame && r->frames < g_drawlog_end && g_drawlog) {
     char tex[256] = "";
@@ -2552,6 +2596,8 @@ bool NativeActive() { return g_main && !g_failed && !g_suspended; }
 
 void SetMatchScene(bool in_match) { g_match_scene = in_match; }
 
+float CameraFovScale() { return g_fov_scale.load(std::memory_order_relaxed); }
+
 void SetWindowSizeSource(std::function<std::pair<uint32_t, uint32_t>()> source) {
   g_window_size = std::move(source);
 }
@@ -2689,6 +2735,11 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
     list->clearColor(0, plume::RenderColor(0, 0, 0, 1));
     const int32_t mid = int32_t(std::lround(out_size[1] * kAspect16x9)), x0 = (int32_t(out_size[0]) - mid) / 2;
     list->setScissors(plume::RenderRect(x0, 0, x0 + mid, int32_t(out_size[1])));
+  } else if (g_frame_2d && g_tall > 1.0f) {
+    // On a tall one: its 16:9 middle, black above and below.
+    list->clearColor(0, plume::RenderColor(0, 0, 0, 1));
+    const int32_t mid = int32_t(std::lround(out_size[0] / kAspect16x9)), y0 = (int32_t(out_size[1]) - mid) / 2;
+    list->setScissors(plume::RenderRect(0, y0, int32_t(out_size[0]), y0 + mid));
   } else {
     list->setScissors(plume::RenderRect(0, 0, int32_t(out_size[0]), int32_t(out_size[1])));
   }
@@ -2709,7 +2760,7 @@ void OnPresent(uint32_t front_buffer) {
   const bool shown = PresentFrontBuffer(r, front_buffer);
   plume::RenderTexture* src = nullptr;
   RenderTextureLayout* src_layout = nullptr;
-  uint32_t w = 0, h = 0, src_host_w = 0;
+  uint32_t w = 0, h = 0, src_host_w = 0, src_host_h = 0;
   RenderFormat src_format = RenderFormat::UNKNOWN;
   // SVR2011_NATIVE_PRESENT=<hex physical address>: show that resolve instead.
   static const uint32_t forced = [] {
@@ -2732,6 +2783,7 @@ void OnPresent(uint32_t front_buffer) {
       w = it->second.width;
       h = it->second.height;
       src_host_w = it->second.host_w;
+      src_host_h = it->second.host_h;
       src_format = it->second.format;
     }
   }
@@ -2741,6 +2793,7 @@ void OnPresent(uint32_t front_buffer) {
     w = r->main_target->width;
     h = r->main_target->height;
     src_host_w = r->main_target->host_w;
+    src_host_h = r->main_target->host_h;
     src_format = r->main_target->resource_format;
   }
   // The frame image is RGBA8: copy only what is in the same format family.
@@ -2756,7 +2809,7 @@ void OnPresent(uint32_t front_buffer) {
     Transition(r, src, *src_layout, RenderTextureLayout::COPY_SOURCE);
     // (a fallback: unscaled, cut to the frame image)
     const plume::RenderBox box(0, 0, int32_t(std::min(src_host_w ? src_host_w : std::min(w, kWidth) * g_scale, g_out_w)),
-                               int32_t(std::min(std::min(h, kHeight) * g_scale, g_out_h)));
+                               int32_t(std::min(src_host_h ? src_host_h : std::min(h, kHeight) * g_scale, g_out_h)));
     list->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(back),
                             plume::RenderTextureCopyLocation::Subresource(src), 0, 0, 0, &box);
     if (before != RenderTextureLayout::UNKNOWN) Transition(r, src, *src_layout, before);
@@ -2799,7 +2852,7 @@ void OnPresent(uint32_t front_buffer) {
   backend::PublishFrame(r->outputs[r->output_index], g_out_w, g_out_h, r->fences[r->back_index].get());
   r->frame_open = false;
   ++r->frames;
-  g_frame_2d = g_wide > 1.0f && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
+  g_frame_2d = (g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
   {
     static const std::string drawlog = [] {
       char* e = nullptr;
@@ -2957,7 +3010,7 @@ void OnResolve(const PPCContext& ctx) {
   plume::RenderTexture* src = nullptr;
   RenderTextureLayout* src_layout = nullptr;
   RenderFormat family = RenderFormat::UNKNOWN;
-  uint32_t src_w = 0, src_h = 0, scale = g_scale, src_host_w = 0;
+  uint32_t src_w = 0, src_h = 0, scale = g_scale, src_host_w = 0, src_host_h = 0;
   if (depth) {
     if (!t.depth) return;
     src = t.depth->resource.get();
@@ -2967,6 +3020,7 @@ void OnResolve(const PPCContext& ctx) {
     src_h = t.depth->height;
     scale = t.depth->scale;
     src_host_w = t.depth->host_w;
+    src_host_h = t.depth->host_h;
   } else {
     if (!t.color) return;
     src = t.color->resource.get();
@@ -2976,6 +3030,7 @@ void OnResolve(const PPCContext& ctx) {
     src_h = t.color->height;
     scale = t.color->scale;
     src_host_w = t.color->host_w;
+    src_host_h = t.color->host_h;
   }
   {
     static std::unordered_map<uint64_t, bool> logged;
@@ -2993,16 +3048,18 @@ void OnResolve(const PPCContext& ctx) {
   // (the host width: the target's share of it)
   const uint32_t dst_host_w =
       depth || dst_w == src_w ? src_host_w : std::max(1u, uint32_t(uint64_t(src_host_w) * dst_w / src_w));
+  const uint32_t dst_host_h =
+      depth || dst_h == src_h ? src_host_h : std::max(1u, uint32_t(uint64_t(src_host_h) * dst_h / src_h));
   ResolvedTexture& dst = r->resolved[base];
   if (!dst.resource || dst.width != dst_w || dst.height != dst_h || dst.format != family ||
-      dst.scale != scale || dst.host_w != dst_host_w) {
+      dst.scale != scale || dst.host_w != dst_host_w || dst.host_h != dst_host_h) {
     if (dst.resource) {
       textures::ReleaseResolved(r->texture_context, dst.resource.get());
       Retire(r, std::move(dst.resource));
     }
     dst = {};
     plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-        dst_host_w, dst_h * scale, 1, family,
+        dst_host_w, dst_host_h, 1, family,
         depth && backend::ActiveApi() == backend::Api::kVulkan ? plume::RenderTextureFlag::DEPTH_TARGET
                                                                 : plume::RenderTextureFlag::NONE);
     d.committed = true;
@@ -3018,6 +3075,7 @@ void OnResolve(const PPCContext& ctx) {
     dst.format = family;
     dst.scale = scale;
     dst.host_w = dst_host_w;
+    dst.host_h = dst_host_h;
   }
   auto* list = r->list;
   const RenderTextureLayout src_before = *src_layout;
@@ -3026,7 +3084,7 @@ void OnResolve(const PPCContext& ctx) {
   if (depth) {
     list->copyTexture(dst.resource.get(), src);
   } else {
-    const plume::RenderBox box(0, 0, int32_t(dst_host_w), int32_t(dst_h * scale));
+    const plume::RenderBox box(0, 0, int32_t(dst_host_w), int32_t(dst_host_h));
     list->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(dst.resource.get()),
                             plume::RenderTextureCopyLocation::Subresource(src), 0, 0, 0, &box);
   }
