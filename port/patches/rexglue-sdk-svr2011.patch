@@ -1956,7 +1956,7 @@ index a5e9088..a399c35 100644
        // XMPCaptureOutput - not sure how this works :/
        REXKRNL_DEBUG("XMPCaptureOutput(...)");
 diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
-index 1fb1e16..9e4f762 100644
+index 1fb1e16..a1b8346 100644
 --- a/src/kernel/xam/xam_content.cpp
 +++ b/src/kernel/xam/xam_content.cpp
 @@ -1,4 +1,4 @@
@@ -1973,7 +1973,15 @@ index 1fb1e16..9e4f762 100644
  #include <rex/system/xam/content_device.h>
  #include <rex/system/xenumerator.h>
  #include <rex/system/xtypes.h>
-@@ -141,7 +142,9 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+@@ -34,6 +35,7 @@ u32 XamContentGetLicenseMask_entry(mapped_u32 mask_ptr, mapped_void overlapped_p
+   // seems to vary from game to game, but most appear to use bit 0 to indicate
+   // if the game is purchased or not.
+   *mask_ptr = REXCVAR_GET(license_mask);
++  REXLOG_INFO("[svr2011] XamContentGetLicenseMask -> {:08X}", REXCVAR_GET(license_mask));
+ 
+   if (overlapped_ptr) {
+     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped_ptr.guest_address(),
+@@ -141,7 +143,9 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
      *disposition_ptr = 0;
    }
  
@@ -1984,7 +1992,7 @@ index 1fb1e16..9e4f762 100644
                disposition_ptr,
                license_mask_ptr](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
      X_RESULT result = X_ERROR_INVALID_PARAMETER;
-@@ -280,7 +283,8 @@ u32 XamContentFlush_entry(mapped_string root_name, mapped_void overlapped_ptr) {
+@@ -280,7 +284,8 @@ u32 XamContentFlush_entry(mapped_string root_name, mapped_void overlapped_ptr) {
  
  u32 XamContentClose_entry(mapped_string root_name, mapped_void overlapped_ptr) {
    // Closes a previously opened root from XamContentCreate*.
@@ -2247,10 +2255,10 @@ index 754fa13..1e20c8c 100644
          "GPU plugin '{}' not found at {}. Stage it next to the executable "
          "(GPU_PLUGINS {} in rexglue_configure_target).",
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
-index bd6c797..d142a15 100644
+index bd6c797..db0a694 100644
 --- a/src/system/xam/content_manager.cpp
 +++ b/src/system/xam/content_manager.cpp
-@@ -16,9 +16,17 @@
+@@ -16,9 +16,18 @@
  
  #include <fmt/format.h>
  
@@ -2265,10 +2273,21 @@ index bd6c797..d142a15 100644
  #include <rex/filesystem/devices/host_path_device.h>
  #include <rex/filesystem/devices/stfs_container_device.h>
 +#include <rex/logging.h>
++#include <rex/cvar.h>
  #include <rex/string.h>
  #include <rex/system/kernel_state.h>
  #include <rex/system/xam/content_device.h>
-@@ -57,6 +65,9 @@ ContentPackage::~ContentPackage() {
+@@ -26,6 +35,9 @@
+ #include <rex/system/xfile.h>
+ #include <rex/system/xobject.h>
+ 
++REXCVAR_DEFINE_BOOL(dlc_full_license, true, "Kernel",
++                    "Treat installed downloadable content as fully licensed (every item it lists)");
++
+ namespace rex {
+ namespace system {
+ namespace xam {
+@@ -57,6 +69,9 @@ ContentPackage::~ContentPackage() {
    auto fs = kernel_state_->file_system();
    fs->UnregisterSymbolicLink(root_name_ + ":");
    fs->UnregisterDevice(device_path_);
@@ -2278,7 +2297,7 @@ index bd6c797..d142a15 100644
  }
  
  void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_path) {
-@@ -108,6 +119,13 @@ std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
+@@ -108,6 +123,13 @@ std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
      used_xuid = 0;
    }
  
@@ -2292,7 +2311,7 @@ index bd6c797..d142a15 100644
    // Content path:
    // content_root/xuid/title_id/content_type/data_file_name/
    auto package_root = ResolvePackageRoot(used_xuid, data.content_type, data.title_id);
-@@ -125,6 +143,10 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string
+@@ -125,6 +147,10 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string
      xuid = 0;
    }
  
@@ -2303,7 +2322,7 @@ index bd6c797..d142a15 100644
    auto xuid_str = fmt::format("{:016X}", xuid);
    auto title_id_str = fmt::format("{:08X}", title_id);
    auto content_type_str = fmt::format("{:08X}", uint32_t(content_type));
-@@ -147,10 +169,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+@@ -147,10 +173,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
  
    // Search path:
    // content_root/xuid/title_id/type_name/*
@@ -2322,7 +2341,7 @@ index bd6c797..d142a15 100644
        // Directories only.
        continue;
      }
-@@ -175,15 +203,27 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+@@ -175,15 +207,27 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
  
  std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
      const std::string_view root_name, uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
@@ -2350,7 +2369,7 @@ index bd6c797..d142a15 100644
    auto path = ResolvePackagePath(xuid, data);
    return std::filesystem::exists(path);
  }
-@@ -264,15 +304,19 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+@@ -264,15 +308,19 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
      }
    }
  
@@ -2375,7 +2394,7 @@ index bd6c797..d142a15 100644
  
    {
      auto global_lock = global_critical_region_.Acquire();
-@@ -294,12 +338,13 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
+@@ -294,15 +342,25 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
      }
    }
  
@@ -2392,7 +2411,19 @@ index bd6c797..d142a15 100644
    package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
        data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
    content_license = package->GetPackageLicense();
-@@ -333,7 +378,8 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
++  // [svr2011] Downloadable content counts as fully licensed: every item a
++  // pack lists unlocks (packages copied from a console carry that account's
++  // offers - e.g. SvR 2011's Fan Axxess key without its pre-order Bret Hart
++  // bit - and the Xbox 360 store is closed).
++  if (REXCVAR_GET(dlc_full_license) && data.content_type == XContentType::kMarketplaceContent) {
++    content_license = 0xFFFFFFFFu;
++  }
++  REXLOG_INFO("[svr2011] content {} ({}) opened as {}: license {:08X}", data.file_name(),
++              static_cast<uint32_t>(XContentType(data.content_type)), root_name, content_license);
+ 
+   {
+     auto global_lock = global_critical_region_.Acquire();
+@@ -333,7 +391,8 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
                                               std::vector<uint8_t>* buffer) {
    auto global_lock = global_critical_region_.Acquire();
    auto package_path = ResolvePackagePath(xuid, data);
@@ -2402,7 +2433,7 @@ index bd6c797..d142a15 100644
    if (std::filesystem::exists(thumb_path)) {
      auto file = rex::filesystem::OpenFile(thumb_path, "rb");
      fseek(file, 0, SEEK_END);
-@@ -352,9 +398,14 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+@@ -352,9 +411,14 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
                                               std::vector<uint8_t> buffer) {
    auto global_lock = global_critical_region_.Acquire();
    auto package_path = ResolvePackagePath(xuid, data);
@@ -2418,7 +2449,7 @@ index bd6c797..d142a15 100644
      auto file = rex::filesystem::OpenFile(thumb_path, "wb");
      fwrite(buffer.data(), 1, buffer.size(), file);
      fclose(file);
-@@ -372,6 +423,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+@@ -372,6 +436,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
      return X_ERROR_ACCESS_DENIED;
    }
  
@@ -2433,7 +2464,7 @@ index bd6c797..d142a15 100644
    auto package_path = ResolvePackagePath(xuid, data);
    std::error_code ec;
    auto dir_removed = std::filesystem::remove_all(package_path, ec);
-@@ -419,6 +478,13 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+@@ -419,6 +491,13 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
    delete package;
  
    // Delete phase: remove package directory and .header file
@@ -2447,7 +2478,7 @@ index bd6c797..d142a15 100644
    auto package_path = ResolvePackagePath(xuid, data);
  
    uint64_t used_xuid = (data.xuid != uint64_t(-1) && data.xuid != 0) ? uint64_t(data.xuid) : xuid;
-@@ -518,6 +584,163 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
+@@ -518,6 +597,163 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
    }
  }
  
