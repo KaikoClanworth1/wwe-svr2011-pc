@@ -18,7 +18,7 @@
 #include <rex/logging.h>
 
 REXCVAR_DEFINE_BOOL(discord_presence, true, "UI", "Show what you're playing in Discord (Rich Presence)");
-REXCVAR_DEFINE_STRING(discord_app_id, "", "UI",
+REXCVAR_DEFINE_STRING(discord_app_id, "1554845537088577716", "UI",
                       "The Discord application (its name and icon) Rich Presence shows");
 
 namespace svr2011 {
