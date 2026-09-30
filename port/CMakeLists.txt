@@ -84,6 +84,15 @@ else()
 endif()
 
 rexglue_setup_target(svr2011 GPU_PLUGINS xenos)
+# The SDK stages the GPU plugin (loaded at run time, never linked) only when
+# the exe relinks: a change to the plugin alone would leave a stale copy
+# beside the exe (and in Game Files / the release). Stage it on every build.
+if(TARGET rexgpu-xenos AND NOT ANDROID)
+    add_custom_target(svr2011_stage_gpu_plugin ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:rexgpu-xenos> $<TARGET_FILE_DIR:svr2011>
+        DEPENDS rexgpu-xenos svr2011
+        VERBATIM)
+endif()
 if(NOT WIN32)
     # MSVC CRT functions the port uses (_dupenv_s ...).
     target_compile_options(svr2011 PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/src/compat.h)
