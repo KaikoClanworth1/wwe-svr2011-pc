@@ -3,18 +3,18 @@
 # with at least -MinDraws draws, then measures each thread's CPU time over
 # -Seconds and samples stacks (runs\<Name>_prof.txt).
 #   perf_entrance.ps1 [-Name pent] [-Seconds 10] [-Extra --gpu_backend=d3d12]
-param([string]$Name = "pent", [int]$Seconds = 10, [int]$MinDraws = 1500, [string[]]$Extra = @(), [string]$Config = "test_config.toml", [string]$Focus = "")
+param([string]$Name = "pent", [int]$Seconds = 10, [int]$MinDraws = 1500, [string[]]$Extra = @(), [string]$Config = "test_config.toml", [string]$Focus = "", [string]$P1 = "", [string]$P2 = "")
 $ErrorActionPreference = "Continue"
 $port = Split-Path $PSScriptRoot -Parent
 $runs = Join-Path $port "runs"
 $env:SVR2011_CONFIG = Join-Path $runs $Config
 $log = Join-Path $runs "$Name.log"
 Remove-Item $log -ErrorAction SilentlyContinue
-$job = Start-Job -ArgumentList $PSScriptRoot, $Name, $Extra, $env:SVR2011_CONFIG {
-    param($dir, $name, $extra, $cfg)
+$job = Start-Job -ArgumentList $PSScriptRoot, $Name, $Extra, $env:SVR2011_CONFIG, $P1, $P2 {
+    param($dir, $name, $extra, $cfg, $p1, $p2)
     $env:SVR2011_CONFIG = $cfg
     Set-Location $dir
-    & .\capture_entrance.ps1 -Name $name -Shots 30 -Extra $extra
+    & .\capture_entrance.ps1 -Name $name -Shots 30 -Extra $extra -P1 $p1 -P2 $p2
 }
 $pid_ = $null
 for ($t = 0; $t -lt 400; $t++) {

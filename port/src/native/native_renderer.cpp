@@ -9,6 +9,9 @@
 #include "native/native_renderer.h"
 
 #include <algorithm>
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 #include <cmath>
 #include <atomic>
 #include <chrono>
@@ -48,6 +51,7 @@
 
 #include "crash_report.h"
 #include "native/gpu.h"
+#include "native/recording_list.h"
 #include "native/guest_d3d.h"
 #include "native/textures.h"
 
@@ -60,6 +64,22 @@ constexpr bool kScaleEffectsDefault = true;
 REXCVAR_DEFINE_BOOL(native_scale_effects, kScaleEffectsDefault, "GPU",
                     "Native renderer: render shadows, reflections and glow at the render scale too "
                     "(false: at the Xbox 360's size, faster on weak GPUs)");
+
+// On by default only on phones, where the driver's command recording is a
+// large part of the render thread; on a PC (D3D12, Batista's entrance at
+// 5,400 draws) handing the commands over cost more than recording them.
+#if defined(__ANDROID__)
+constexpr bool kRecordThreadDefault = true;
+#else
+constexpr bool kRecordThreadDefault = false;
+#endif
+REXCVAR_DEFINE_BOOL(native_record_thread, kRecordThreadDefault, "GPU",
+                    "Native renderer: record the GPU commands on a second thread (recording_list.h), "
+                    "off the game's render thread");
+
+REXCVAR_DEFINE_BOOL(native_constant_check, false, "GPU",
+                    "Debug: also hash the shader constants and log when a reused upload was "
+                    "stale (checks the D3D dirty tracking the native renderer relies on)");
 
 REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
@@ -116,11 +136,44 @@ inline float BeFloat(const uint8_t* p) {
   return f;
 }
 
+// Byte-swapped copies of 32-bit / 16-bit words, 16 bytes at a time (NEON's
+// vrev on ARM - SIMDe's emulated SSSE3 shuffle cost ~3% of the phone's render
+// thread - and SSSE3 on x86). Whole 16-byte stores also suit the upload
+// ring, which on phones is uncached memory.
 void Swap32(uint8_t* dst, const uint8_t* src, size_t bytes) {
-  const size_t n = bytes / 4;
-  auto* d = reinterpret_cast<uint32_t*>(dst);
-  auto* s = reinterpret_cast<const uint32_t*>(src);
-  for (size_t i = 0; i < n; ++i) d[i] = _byteswap_ulong(s[i]);
+  size_t i = 0;
+#if defined(__aarch64__)
+  for (; i + 16 <= bytes; i += 16) vst1q_u8(dst + i, vrev32q_u8(vld1q_u8(src + i)));
+#else
+  const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
+  for (; i + 16 <= bytes; i += 16) {
+    const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), _mm_shuffle_epi8(v, swap));
+  }
+#endif
+  for (; i + 4 <= bytes; i += 4) {
+    uint32_t w;
+    std::memcpy(&w, src + i, 4);
+    w = _byteswap_ulong(w);
+    std::memcpy(dst + i, &w, 4);
+  }
+}
+
+void Swap16(uint8_t* dst, const uint8_t* src, size_t bytes) {
+  size_t i = 0;
+#if defined(__aarch64__)
+  for (; i + 16 <= bytes; i += 16) vst1q_u8(dst + i, vrev16q_u8(vld1q_u8(src + i)));
+#else
+  const __m128i swap = _mm_setr_epi8(1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14);
+  for (; i + 16 <= bytes; i += 16) {
+    const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), _mm_shuffle_epi8(v, swap));
+  }
+#endif
+  for (; i + 2 <= bytes; i += 2) {
+    dst[i] = src[i + 1];
+    dst[i + 1] = src[i];
+  }
 }
 
 uint64_t Fnv1a(const uint8_t* p, size_t n) {
@@ -133,15 +186,22 @@ uint64_t Fnv1a(const uint8_t* p, size_t n) {
 // guest memory
 
 rex::memory::Memory* g_memory = nullptr;
+// TranslateVirtual without its out-of-line heap lookup (~3% of a phone's
+// render thread in heavy entrances): the host offset of each 1 MB of the
+// guest address space (the heaps' bounds are 1 MB multiples), set at Attach.
+uint8_t* g_virtual_base = nullptr;
+uint32_t g_virtual_offset[4096];
 
-const uint8_t* Virtual(uint32_t address) { return g_memory->TranslateVirtual(address); }
+inline const uint8_t* Virtual(uint32_t address) {
+  return g_virtual_base + address + g_virtual_offset[address >> 20];
+}
 const uint8_t* Physical(uint32_t address) { return g_memory->TranslatePhysical(address); }
 // Addresses stored in the game's D3D objects (vertex/index buffers, textures)
 // are guest *virtual* (0xA0000000+ / 0xE0000000+ physical-memory views); the
 // 0xE... view is offset by a page on the host, so they must be translated as
 // virtual. The fetch constants in the device's register mirror hold true
 // physical addresses instead (Physical()).
-const uint8_t* ObjectData(uint32_t address) { return g_memory->TranslateVirtual(address); }
+const uint8_t* ObjectData(uint32_t address) { return Virtual(address); }
 const uint8_t* Device() { return Virtual(guest::kDeviceAddress); }
 uint32_t Reg(uint32_t reg) { return Be32(Device() + guest::RegisterOffset(reg)); }
 float RegFloat(uint32_t reg) { return BeFloat(Device() + guest::RegisterOffset(reg)); }
@@ -291,7 +351,20 @@ struct CachedBuffer {
   bool dynamic = false;  // changes often: converted into the ring when changed
   // The dynamic buffer's latest conversion in this frame's ring.
   uint64_t ring_frame = ~0ull, ring_hash = 0;
+  bool ring_hashed = false;  // (ring_hash known: only when used again, below)
   RenderBufferReference ring_ref;
+  // Its uses in this frame and the last: a buffer drawn once a frame is just
+  // converted (hashing it to spot a repeat would be wasted).
+  uint64_t use_frame = ~0ull;
+  uint32_t uses = 0, last_uses = 0;
+  // Buffers drawn many times a frame (Batista's pyro: dozens of 3 KB
+  // particle buffers, ~90 draws each) that the game only rewrites between
+  // frames are checked once a frame - and at every use every 8th frame; a
+  // change seen within a frame puts them back to checks at every use.
+  bool changed_in_frame = false;
+  bool per_frame = false;
+  uint16_t stable_frames = 0;  // frames in a row without a change within them
+  uint8_t demotions = 0;       // (twice: always checked at every use)
 };
 
 struct Stream {
@@ -375,6 +448,7 @@ struct Renderer {
 
   std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> pipelines;
   std::unordered_map<uint64_t, CachedBuffer> vertex_buffers;  // (address << 32 | size)
+  std::unordered_map<uint64_t, CachedBuffer> index_buffers;   // (address << 32 | size)
   std::deque<std::pair<uint64_t, std::shared_ptr<void>>> garbage;  // (frame, object)
 
   bool frame_open = false;
@@ -402,7 +476,14 @@ struct Renderer {
     plume::RenderViewport viewport = {-1, -1, -1, -1, -1, -1};
     plume::RenderRect scissor = {-1, -1, -1, -1};
     plume::RenderIndexBufferView ibv = {};
+    // The vertex buffers bound (consecutive draws of a mesh share them).
+    plume::RenderVertexBufferView views[16] = {};
+    plume::RenderInputSlot slots[16] = {};
+    uint32_t view_count = 0;
   } list_state;
+  // native_record_thread: stands in for the frame's list (r->list), replaying
+  // onto it on its own thread.
+  std::unique_ptr<RecordingList> recorder;
   textures::Context texture_context;  // this frame's (BeginFrame)
   // The last upload of each constant range (vertex, pixel): reused while the
   // mirror's range is unchanged (consecutive draws of a model share them).
@@ -500,6 +581,23 @@ bool g_resolved_this_frame = false;
 bool g_debug_solid = false;
 bool g_no_depth = false;  // SVR2011_NATIVE_NO_DEPTH=1
 double g_pipeline_ms = 0;  // pipeline builds since the last perf line
+// Bytes hashed since the last perf line: static / dynamic vertex buffers, constants.
+uint64_t g_hash_vb_static = 0, g_hash_vb_dynamic = 0, g_hash_const = 0;
+uint32_t g_vb_demotions = 0;
+uint64_t g_repeat_same = 0, g_repeat_changed = 0;  // (total) dynamic buffers seen changing within a frame after trusting them
+// Debug (SVR2011_NATIVE_VB_STATS=1): hashed uses per dynamic buffer (address << 32 | size).
+std::unordered_map<uint64_t, uint32_t> g_vb_stats;
+// Vertex / pixel constant blocks written since their last upload: D3D's
+// constant flush (sub_829251D8) reports which 4-constant blocks it sends at
+// each draw (bit 63 - n = block n, its order). A draw compares only those
+// blocks with the last upload's copy (g_const_shadow, as in the mirror) and
+// reuses the upload when they're unchanged - instead of hashing both 4 KB
+// constant files every draw (~17-26 MB a frame in entrances: the render
+// thread's largest cost on phones).
+uint64_t g_const_dirty[2] = {~0ull, ~0ull};
+bool g_const_force[2] = {true, true};  // (the last upload had loaded constants)
+alignas(16) uint8_t g_const_shadow[2][256 * 16];
+uint32_t g_const_stale = 0;  // (native_constant_check: reuses found stale)
 // Pipelines built since the pipeline cache was saved, and when the last was.
 bool g_pipeline_cache_dirty = false;
 std::chrono::steady_clock::time_point g_last_pipeline_build;
@@ -716,6 +814,10 @@ bool Initialize() {
 
   textures::Initialize(g_memory, 3, kSrvHeapSize - 3, 1, kSamplerHeapSize - 1);
   g_r = r;
+  if (REXCVAR_GET(native_record_thread)) {
+    r->recorder = std::make_unique<RecordingList>();
+    REXLOG_INFO("native renderer: GPU commands recorded on a second thread");
+  }
   REXLOG_INFO("native renderer: ready; shaders from {}", ShaderDirectory().string());
   // Without its converted shaders (native_shaders\ beside the exe, installed
   // by the launcher) nothing could be drawn: a black screen. Let the emulated
@@ -883,6 +985,10 @@ bool BeginFrame(Renderer* r) {
     r->garbage.pop_front();
   }
   r->list = r->lists[r->back_index].get();
+  if (r->recorder) {
+    r->recorder->SetTarget(r->list);
+    r->list = r->recorder.get();
+  }
   r->list->begin();
   r->list_state = {};
   r->constant_uploads[0] = r->constant_uploads[1] = {};
@@ -920,6 +1026,31 @@ void UpdateTitle(Renderer* r) {
                 "span {:.2f} ms, draws {:.0f} (drawn {:.0f}), pipeline builds {:.0f} ms",
                 f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_span_ms / f,
                 r->perf_draws / f, r->perf_drawn / f, g_pipeline_ms);
+    {
+      const textures::Stats ts = textures::TakePerf();
+      REXLOG_INFO("native perf: hashed per frame: vertex buffers {:.0f} KB static + {:.0f} KB dynamic, "
+                  "constants compared {:.0f} KB ({:.0f}% reused), textures {:.0f} KB; "
+                  "buffers back to checks at every use {}; repeat checks {:.0f} unchanged / {:.0f} changed",
+                  g_hash_vb_static / f / 1024, g_hash_vb_dynamic / f / 1024, g_hash_const / f / 1024,
+                  r->perf_const_uploads + r->perf_const_reused
+                      ? 100.0 * r->perf_const_reused / double(r->perf_const_uploads + r->perf_const_reused)
+                      : 0.0,
+                  ts.hash_bytes / f / 1024, g_vb_demotions, g_repeat_same / f, g_repeat_changed / f);
+      g_repeat_same = g_repeat_changed = 0;
+      g_hash_vb_static = g_hash_vb_dynamic = g_hash_const = 0;
+      if (!g_vb_stats.empty()) {
+        std::vector<std::pair<uint64_t, uint32_t>> top(g_vb_stats.begin(), g_vb_stats.end());
+        std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) {
+          return uint64_t(a.second) * uint32_t(a.first) > uint64_t(b.second) * uint32_t(b.first);
+        });
+        for (size_t i = 0; i < top.size() && i < 6; ++i) {
+          REXLOG_INFO("native perf: dynamic buffer {:08X} {} KB: {:.1f} hashed uses a frame",
+                      uint32_t(top[i].first >> 32), uint32_t(top[i].first) / 1024, top[i].second / f);
+        }
+        g_vb_stats.clear();
+      }
+      r->perf_const_uploads = r->perf_const_reused = 0;
+    }
     g_pipeline_ms = 0;
     r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = 0;
     r->perf_draws = r->perf_drawn = 0;
@@ -1273,6 +1404,38 @@ void ConvertVertices(uint8_t* dst, const uint8_t* src, uint64_t size, uint32_t s
   std::memcpy(dst, scratch.data(), size);
 }
 
+// A guest index buffer (16-bit big-endian), converted whole and cached like a
+// static vertex buffer (re-checked every 4th frame) - rather than converting
+// each draw's indices into the ring (~4% of a phone's render thread in
+// heavy entrances). One the game keeps rewriting is left to the ring (null).
+RenderBufferReference IndexBuffer(Renderer* r, uint32_t address, uint32_t size) {
+  constexpr uint32_t kRingAfterChanges = 3;
+  CachedBuffer& c = r->index_buffers[(uint64_t(address) << 32) | size];
+  if (c.dynamic || size < 2) return {};
+  if (c.resource && r->frames - c.checked_frame < 4) return c.resource->at(0);
+  const uint8_t* src = ObjectData(address);
+  const uint64_t hash = XXH3_64bits(src, size);
+  g_hash_vb_static += size;
+  c.checked_frame = r->frames;
+  if (c.resource && c.hash == hash) return c.resource->at(0);
+  if (c.resource) {
+    Retire(r, std::move(c.resource));
+    c.resource.reset();
+    if (++c.changes >= kRingAfterChanges) {
+      c.dynamic = true;
+      return {};
+    }
+  }
+  c.resource = CreateBuffer(r, size);
+  if (!c.resource) return {};
+  c.resource->setName(fmt::format("index buffer {:08X} size {}", address, size));
+  c.hash = hash;
+  c.size = size;
+  Swap16(static_cast<uint8_t*>(c.resource->map()), src, size & ~1u);
+  c.resource->unmap();
+  return c.resource->at(0);
+}
+
 // Vertex buffer object -> converted (little-endian) GPU buffer, cached per
 // guest buffer (and layout) and re-converted when its contents change. A
 // buffer that keeps changing is converted into the frame's upload ring at
@@ -1295,21 +1458,58 @@ RenderBufferReference VertexBuffer(Renderer* r, uint32_t object, uint32_t stream
   const uint8_t* src = ObjectData(address);
   if (c.dynamic) {
     // Re-converted only when the contents changed since this frame's last
-    // conversion (a hash is far cheaper than the conversion).
-    const uint64_t hash = XXH3_64bits(src, size);
-    if (c.ring_frame == r->frames && c.ring_hash == hash && c.ring_ref.ref) return c.ring_ref;
+    // conversion (a hash is far cheaper than the conversion) - for buffers
+    // drawn more than once a frame; the others are just converted.
+    if (c.use_frame != r->frames) {
+      c.last_uses = c.use_frame + 1 == r->frames ? c.uses : 0;
+      // (Its last frame of use need not be the previous frame.)
+      if (c.uses > 1 && !c.changed_in_frame && c.demotions < 2) {
+        if (++c.stable_frames >= 30) c.per_frame = true;
+      } else if (c.changed_in_frame) {
+        c.stable_frames = 0;
+      }
+      c.changed_in_frame = false;
+      c.uses = 0;
+      c.use_frame = r->frames;
+    }
+    ++c.uses;
+    const bool repeat = c.ring_frame == r->frames && c.ring_ref.ref;
+    if (repeat && c.per_frame && (r->frames & 7)) return c.ring_ref;
+    const bool hashing = repeat || c.last_uses > 1;
+    const uint64_t hash = hashing ? XXH3_64bits(src, size) : 0;
+    if (hashing) g_hash_vb_dynamic += size;
+    static const bool vb_stats = EnvFlag("SVR2011_NATIVE_VB_STATS");
+    if (vb_stats && hashing) g_vb_stats[(uint64_t(address) << 32) | size] += 1;
+    if (repeat && c.ring_hashed) {
+      if (c.ring_hash == hash) {
+        ++g_repeat_same;
+        return c.ring_ref;
+      }
+      ++g_repeat_changed;
+      c.changed_in_frame = true;
+      if (c.per_frame) {
+        c.per_frame = false;
+        c.stable_frames = 0;
+        ++c.demotions;
+        ++g_vb_demotions;
+      }
+    }
     auto [cpu, ref] = Allocate(r, size, 256);
     if (cpu) {
       ConvertVertices(cpu, src, size, s.stride, s.offset, decl, stream);
       c.ring_frame = r->frames;
       c.ring_hash = hash;
+      c.ring_hashed = hashing;
       c.ring_ref = ref;
       return ref;
     }
     // Ring full: fall back to the cached buffer (re-checked below).
   }
-  if (c.checked_frame == r->frames && c.resource) return c.resource->at(0);
+  // A static buffer is re-checked every 4th frame (buffers the game rewrites
+  // turn dynamic after a few changes, then are checked at every use).
+  if (c.resource && r->frames - c.checked_frame < 4) return c.resource->at(0);
   const uint64_t hash = XXH3_64bits(src, size);
+  g_hash_vb_static += size;
   c.checked_frame = r->frames;
   if (c.resource && c.hash == hash) return c.resource->at(0);
   if (c.resource) {
@@ -1527,21 +1727,50 @@ RenderBufferReference GpuConstants(Renderer* r, uint32_t first, uint32_t bytes) 
   bool loaded_here = false;
   for (uint32_t k = 0; k < g_loaded_draw_count; ++k)
     if (g_loaded_draw[k] >= first && g_loaded_draw[k] < first + count) loaded_here = true;
-  Renderer::ConstantUpload& last = r->constant_uploads[first ? 1 : 0];
-  const uint64_t hash = loaded_here ? 0 : XXH3_64bits(mirror, bytes);
-  if (hash && last.ref.ref && last.hash == hash) {
-    ++r->perf_const_reused;
-    return last.ref;
+  const int stage = first ? 1 : 0;
+  Renderer::ConstantUpload& last = r->constant_uploads[stage];
+  uint8_t* shadow = g_const_shadow[stage];
+  static const bool check = REXCVAR_GET(native_constant_check);
+  uint64_t& dirty = g_const_dirty[stage];
+  if (!loaded_here && !g_const_force[stage] && last.ref.ref && bytes == sizeof(g_const_shadow[0])) {
+    bool changed = false;
+    for (uint64_t m = dirty; m && !changed;) {
+      const uint32_t block = uint32_t(__builtin_clzll(m));  // (bit 63 = block 0)
+      m &= ~(1ull << (63 - block));
+      changed = std::memcmp(mirror + 64 * block, shadow + 64 * block, 64) != 0;
+      g_hash_const += 64;
+    }
+    if (!changed) {
+      dirty = 0;
+      if (check && std::memcmp(mirror, shadow, bytes) != 0 && g_const_stale++ < 16) {
+        REXLOG_WARN("native renderer: {} constants changed without a flush (upload was stale)",
+                    stage ? "pixel" : "vertex");
+      } else {
+        ++r->perf_const_reused;
+        return last.ref;
+      }
+    }
   }
+  // The copy for later comparisons: the written blocks (all when unknown).
+  if (bytes == sizeof(g_const_shadow[0])) {
+    if (g_const_force[stage] || dirty == ~0ull || check) {
+      std::memcpy(shadow, mirror, bytes);
+    } else {
+      for (uint64_t m = dirty; m;) {
+        const uint32_t block = uint32_t(__builtin_clzll(m));
+        m &= ~(1ull << (63 - block));
+        std::memcpy(shadow + 64 * block, mirror + 64 * block, 64);
+      }
+    }
+  }
+  dirty = 0;
+  // (loaded constants overlay this draw's upload only: the next one re-uploads)
+  g_const_force[stage] = loaded_here;
   auto [cpu, gpu] = Allocate(r, bytes);
   if (!cpu) return {};
   ++r->perf_const_uploads;
-  last = {hash, gpu};
-  const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
-  for (uint32_t i = 0; i < count; ++i) {
-    const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(mirror + 16 * i));
-    _mm_storeu_si128(reinterpret_cast<__m128i*>(cpu + 16 * i), _mm_shuffle_epi8(v, swap));
-  }
+  last = {0, gpu};
+  Swap32(cpu, mirror, bytes);
   for (uint32_t k = 0; k < g_loaded_draw_count; ++k) {
     const uint32_t index = g_loaded_draw[k];
     if (index >= first && index < first + count)
@@ -1685,6 +1914,73 @@ void ApplyPendingConstants() {
   g_loaded_pending_count = 0;
 }
 
+// A vertex shader's input layout for the current vertex declaration.
+struct InputLayout {
+  std::vector<Element> decl;
+  std::vector<plume::RenderInputElement> layout;
+  std::vector<std::string> names;  // (the layout's semantic names point here)
+  bool packed_normals = false, uses_zero_stream = false;
+  uint32_t hash = 0;  // (of the layout; strides are added per draw)
+};
+std::unordered_map<uint64_t, InputLayout> g_input_layouts;
+
+const InputLayout& GetInputLayout(const Shader* vs) {
+  // Keyed by the shader's contents and the declaration's elements (a
+  // declaration object's address may be reused for another).
+  uint64_t key = vs->hash * 0x9E3779B97F4A7C15ull;
+  if (const uint32_t d = Be32(Device() + guest::kDeviceVertexDeclaration)) {
+    const uint8_t* p = Virtual(d);
+    const uint32_t n = std::min<uint32_t>(Be32(p + 0x18), 16);
+    key ^= XXH3_64bits(p + 0x34, 12 * n) + n;
+  }
+  auto [it, inserted] = g_input_layouts.try_emplace(key);
+  InputLayout& il = it->second;
+  if (!inserted) return il;
+  il.decl = Declaration();
+  const std::vector<Element>& decl = il.decl;
+  il.names.reserve(vs->inputs.size());
+  for (const ShaderInput& in : vs->inputs) il.names.push_back(in.semantic);
+  std::vector<plume::RenderInputElement>& layout = il.layout;
+  for (size_t k = 0; k < vs->inputs.size(); ++k) {
+    const ShaderInput& in = vs->inputs[k];
+    plume::RenderInputElement e;
+    e.semanticName = il.names[k].c_str();
+    e.semanticIndex = in.index;
+    e.location = in.location >= 0 ? uint32_t(in.location) : uint32_t(layout.size());
+    const Element* found = nullptr;
+    for (const Element& el : decl) {
+      if (el.usage < std::size(kUsageNames) && in.semantic == kUsageNames[el.usage] &&
+          el.index == in.index) {
+        found = &el;
+        break;
+      }
+    }
+    RenderFormat fmt = found ? VertexFormat(found->type, in.is_uint) : RenderFormat::UNKNOWN;
+    if (found && !SwizzleSupported(found->type)) {
+      static std::unordered_map<uint32_t, bool> logged;
+      if (logged.emplace(found->type, true).second)
+        REXLOG_WARN("native renderer: vertex type {:08X} has an unsupported swizzle", found->type);
+    }
+    if (found && fmt != RenderFormat::UNKNOWN && found->stream < 15) {
+      e.format = fmt;
+      e.slotIndex = found->stream;
+      e.alignedByteOffset = found->offset;
+      if (in.semantic == "NORMAL" && (found->type & 0x3F) == 17) il.packed_normals = true;
+    } else {
+      e.format = in.is_uint ? RenderFormat::R32G32B32A32_UINT : RenderFormat::R32G32B32A32_FLOAT;
+      e.slotIndex = 15;  // zero stream
+      e.alignedByteOffset = 0;
+      il.uses_zero_stream = true;
+    }
+    layout.push_back(e);
+  }
+  for (const auto& e : layout) {
+    il.hash = il.hash * 31 + uint32_t(e.format) * 7 + e.slotIndex * 131 + e.alignedByteOffset * 17 +
+              e.semanticIndex;
+  }
+  return il;
+}
+
 // `up`: a DrawVerticesUP (stream 0 is the game's vertex data, not a buffer).
 void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, uint32_t count,
           bool indexed, const PendingUP* up = nullptr) {
@@ -1722,47 +2018,13 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 
   // Input layout: every input the vertex shader declares, from the game's
   // vertex declaration (or a zero stream when the declaration lacks it).
-  const std::vector<Element> decl = Declaration();
-  std::vector<plume::RenderInputElement> layout;
-  bool packed_normals = false;
-  bool uses_zero_stream = false;
-  for (const ShaderInput& in : vs->inputs) {
-    plume::RenderInputElement e;
-    e.semanticName = in.semantic.c_str();
-    e.semanticIndex = in.index;
-    e.location = in.location >= 0 ? uint32_t(in.location) : uint32_t(layout.size());
-    const Element* found = nullptr;
-    for (const Element& el : decl) {
-      if (el.usage < std::size(kUsageNames) && in.semantic == kUsageNames[el.usage] &&
-          el.index == in.index) {
-        found = &el;
-        break;
-      }
-    }
-    RenderFormat fmt = found ? VertexFormat(found->type, in.is_uint) : RenderFormat::UNKNOWN;
-    if (found && !SwizzleSupported(found->type)) {
-      static std::unordered_map<uint32_t, bool> logged;
-      if (logged.emplace(found->type, true).second)
-        REXLOG_WARN("native renderer: vertex type {:08X} has an unsupported swizzle", found->type);
-    }
-    if (found && fmt != RenderFormat::UNKNOWN && found->stream < 15) {
-      e.format = fmt;
-      e.slotIndex = found->stream;
-      e.alignedByteOffset = found->offset;
-      if (in.semantic == "NORMAL" && (found->type & 0x3F) == 17) packed_normals = true;
-    } else {
-      e.format = in.is_uint ? RenderFormat::R32G32B32A32_UINT : RenderFormat::R32G32B32A32_FLOAT;
-      e.slotIndex = 15;  // zero stream
-      e.alignedByteOffset = 0;
-      uses_zero_stream = true;
-    }
-    layout.push_back(e);
-  }
-  uint32_t layout_hash = 0;
-  for (const auto& e : layout) {
-    layout_hash = layout_hash * 31 + uint32_t(e.format) * 7 + e.slotIndex * 131 +
-                  e.alignedByteOffset * 17 + e.semanticIndex;
-  }
+  // Built once per (shader, declaration contents) - not per draw.
+  const InputLayout& il = GetInputLayout(vs);
+  const std::vector<Element>& decl = il.decl;
+  const std::vector<plume::RenderInputElement>& layout = il.layout;
+  const bool packed_normals = il.packed_normals;
+  const bool uses_zero_stream = il.uses_zero_stream;
+  uint32_t layout_hash = il.hash;
   // The vertex buffer slots (0-15; strides as set now). Vulkan pipelines
   // have the strides of the slots they use built in.
   plume::RenderInputSlot slots[16];
@@ -1832,21 +2094,28 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     }
     const uint8_t* src = ObjectData(address) + start * 2;
     const uint32_t out_count = quads ? count / 4 * 6 : count;
-    auto [cpu, gpu] = Allocate(r, out_count * 2ull, 4);
-    if (!cpu) return;
-    auto* dst = reinterpret_cast<uint16_t*>(cpu);
-    if (quads) {
-      for (uint32_t q = 0; q + 3 < count; q += 4) {
-        const uint16_t a = Be16(src + 2 * q), b = Be16(src + 2 * q + 2),
-                       c = Be16(src + 2 * q + 4), d = Be16(src + 2 * q + 6);
-        *dst++ = a; *dst++ = b; *dst++ = c;
-        *dst++ = a; *dst++ = c; *dst++ = d;
-      }
+    const RenderBufferReference cached = quads ? RenderBufferReference{} : IndexBuffer(r, address, size);
+    if (cached.ref) {
+      ibv = plume::RenderIndexBufferView(RenderBufferReference(cached.ref, cached.offset + start * 2ull),
+                                         count * 2, RenderFormat::R16_UINT);
+      draw_count = count;
     } else {
-      for (uint32_t i = 0; i < count; ++i) dst[i] = Be16(src + 2 * i);
+      auto [cpu, gpu] = Allocate(r, out_count * 2ull, 4);
+      if (!cpu) return;
+      auto* dst = reinterpret_cast<uint16_t*>(cpu);
+      if (quads) {
+        for (uint32_t q = 0; q + 3 < count; q += 4) {
+          const uint16_t a = Be16(src + 2 * q), b = Be16(src + 2 * q + 2),
+                         c = Be16(src + 2 * q + 4), d = Be16(src + 2 * q + 6);
+          *dst++ = a; *dst++ = b; *dst++ = c;
+          *dst++ = a; *dst++ = c; *dst++ = d;
+        }
+      } else {
+        Swap16(cpu, src, count * 2ull);
+      }
+      ibv = plume::RenderIndexBufferView(gpu, out_count * 2, RenderFormat::R16_UINT);
+      draw_count = out_count;
     }
-    ibv = plume::RenderIndexBufferView(gpu, out_count * 2, RenderFormat::R16_UINT);
-    draw_count = out_count;
   } else if (quads) {
     // Non-indexed quad list: two triangles per quad, from vertex `start`.
     const uint32_t out_count = count / 4 * 6;
@@ -2022,7 +2291,21 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     list->setPipeline(pso);
     ls.pso = pso;
   }
-  list->setVertexBuffers(0, views, max_slot + 1, slots);
+  {
+    const uint32_t n = max_slot + 1;
+    bool same = ls.view_count == n;
+    for (uint32_t i = 0; same && i < n; ++i) {
+      same = ls.views[i].buffer.ref == views[i].buffer.ref && ls.views[i].buffer.offset == views[i].buffer.offset &&
+             ls.views[i].size == views[i].size && ls.slots[i].index == slots[i].index &&
+             ls.slots[i].stride == slots[i].stride;
+    }
+    if (!same) {
+      list->setVertexBuffers(0, views, n, slots);
+      std::copy(views, views + n, ls.views);
+      std::copy(slots, slots + n, ls.slots);
+      ls.view_count = n;
+    }
+  }
   const uint32_t stencil_ref = Reg(RB_STENCILREFMASK) & 0xFF;
   if (ls.stencil_ref != stencil_ref) {
     list->setStencilReference(stencil_ref);
@@ -2089,6 +2372,11 @@ void SetWindowSizeSource(std::function<std::pair<uint32_t, uint32_t>()> source) 
 
 void Attach(rex::memory::Memory* memory) {
   g_memory = memory;
+  g_virtual_base = memory->virtual_membase();
+  for (uint32_t i = 0; i < 4096; ++i) {
+    const auto* heap = memory->LookupHeap(i << 20);
+    g_virtual_offset[i] = heap ? heap->host_address_offset() : 0;
+  }
   // On a crash (usually the emulator aborting on a lost GPU device - the
   // same device as this renderer's), log the device's fault details.
   svr2011::SetCrashHook([] {
@@ -2273,7 +2561,12 @@ void OnPresent(uint32_t front_buffer) {
     backend::StallQueue(r->queue.get());
     REXLOG_WARN("native renderer: test stall at frame {}", r->frames);
   }
-  r->queue->executeCommandLists(r->list, r->fences[r->back_index].get());
+  plume::RenderCommandList* submit = r->list;
+  if (r->recorder) {
+    r->recorder->Finish();  // (the worker has recorded the whole frame)
+    submit = r->recorder->target();
+  }
+  r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
   r->submitted[r->back_index] = true;
   if (backend::DeviceLost(r->device.get())) {
     ReportDeviceRemoved(r);
@@ -2517,14 +2810,24 @@ void OnSetStreamSource(uint32_t stream, uint32_t buffer, uint32_t offset, uint32
   g_streams[stream] = {buffer, offset, stride};
 }
 
-void OnSetShaderConstants(bool, uint32_t, uint32_t) {
-  // Nothing to track: each draw takes all constants from the mirror.
+void OnSetShaderConstants(bool pixel, uint32_t start, uint32_t count) {
+  // (each draw takes all constants from the mirror; this marks the blocks)
+  if (!count) return;
+  const uint32_t a = std::min(start, 255u) / 4, b = std::min(start + count - 1, 255u) / 4;
+  for (uint32_t block = a; block <= b; ++block) g_const_dirty[pixel ? 1 : 0] |= 1ull << (63 - block);
 }
 
 // D3D writes the dirty mirror ranges to the GPU: take them from the mirror.
-void OnFlushShaderConstants() {
-  // Nothing to do: each draw takes the constants from the mirror
-  // (GpuConstants), which D3D has just updated.
+void OnFlushShaderConstants(uint64_t mask, uint32_t reg) {
+  // Each draw takes the constants from the mirror (GpuConstants), which D3D
+  // has just updated; this tells it which stage changed.
+  if (!mask) return;
+  g_const_dirty[reg >= 0x4400 ? 1 : 0] |= mask;
+  static int logged = 0;
+  if (logged < 4 && reg != 0x4000 && reg != 0x4400) {
+    ++logged;
+    REXLOG_WARN("native renderer: constant flush at register {:04X} (mask {:016X})", reg, mask);
+  }
 }
 
 // 82925D78(device, shader, base): the shader object's table (offset at +20)

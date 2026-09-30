@@ -28,6 +28,10 @@ function Q([string]$path) { "'" + $path + "'" }
 switch ($Action) {
     "start" {
         if (-not ((& $adb devices) -match "`tdevice")) { "no phone connected (USB debugging)"; return }
+        # A locked or sleeping phone gives the game no surface: it waits on a black screen.
+        if (((Sh "dumpsys power | grep mWakefulness=") -join " ") -notmatch "Awake" -or (Sh "dumpsys window | grep isKeyguardShowing=true")) {
+            "the phone is locked or asleep - unlock it (screen on) and run again"; return
+        }
         & $adb shell am force-stop $pkg | Out-Null
         Sh "mkdir -p $(Q "$run/userdata")" | Out-Null
         # Test saves, once (the PC tests' saves and achievements).
@@ -39,7 +43,7 @@ switch ($Action) {
         & $adb shell am start -n "$pkg/.InstallActivity" `
             --es SVR2011_INPUT_FILE "'$run/input.txt'" `
             --es SVR2011_USER_DATA "'$run/userdata'" `
-            --es args "--audio_mute=true" | Out-Null
+            --es args "'--audio_mute=true $env:SVR2011_PHONE_ARGS'" | Out-Null  # (+ extra settings for a test)
         "started"
     }
     { $_ -in "input", "key" } {
@@ -75,6 +79,10 @@ switch ($Action) {
         Sh "tail -n $n $(Q "$game/logs/$log")"
     }
     "stop" {
+        # A locked or sleeping phone gives the game no surface: it waits on a black screen.
+        if (((Sh "dumpsys power | grep mWakefulness=") -join " ") -notmatch "Awake" -or (Sh "dumpsys window | grep isKeyguardShowing=true")) {
+            "the phone is locked or asleep - unlock it (screen on) and run again"; return
+        }
         & $adb shell am force-stop $pkg | Out-Null
         "stopped"
     }

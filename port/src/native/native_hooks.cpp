@@ -117,7 +117,7 @@ REX_HOOK_RAW(sub_82920800) {
 // D3D internal: write dirty shader constants from the device mirror to the GPU.
 REX_EXTERN(__imp__sub_829251D8);
 REX_HOOK_RAW(sub_829251D8) {
-  if (nr::Enabled()) nr::OnFlushShaderConstants();
+  if (nr::Enabled()) nr::OnFlushShaderConstants(ctx.r4.u64, ctx.r5.u32);
   __imp__sub_829251D8(ctx, base);
 }
 

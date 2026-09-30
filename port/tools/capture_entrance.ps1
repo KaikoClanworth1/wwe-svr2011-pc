@@ -4,7 +4,13 @@
 # contact sheet runs\<Name>_sheet.png, and the log's frame rates over the
 # entrances.
 #   .\capture_entrance.ps1 [-Name ent] [-Shots 45] [-Extra --unlock_30fps=false] [-GameDir <install>]
-param([string]$Name = "ent", [int]$Shots = 45, [string[]]$Extra = @(), [double]$Interval = 2, [string]$GameDir = "")
+#                          [-P1 "RIGHT RIGHT"] [-P2 "LEFT"]
+# -P1 / -P2: cursor moves on character select before each pick (player 1's
+# cursor starts on John Cena, top row second from the right, and wraps;
+# the computer's on Randy Orton): -P1 "RIGHT RIGHT" Batista,
+# "RIGHT RIGHT DOWN RIGHT" Kane; "none": no moves.
+param([string]$Name = "ent", [int]$Shots = 45, [string[]]$Extra = @(), [double]$Interval = 2, [string]$GameDir = "",
+      [string]$P1 = "", [string]$P2 = "")
 $s = Join-Path $PSScriptRoot "session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
 if ($GameDir) { & $s start -Name $Name -GameDir $GameDir @Extra | Out-Null } else { & $s start -Name $Name @Extra | Out-Null }
@@ -16,9 +22,13 @@ Step @("press START 200") 6             # main menu
 Step @("press A 200") 4                 # Play
 Step @("press A 200") 6                 # One on One
 Step @("press A 200") 10                # Normal Match -> character select
+Step @("press A 200") 3                 # player 1 joins (the cursor appears on John Cena)
+foreach ($k in ($P1 -split "\s+" | Where-Object { $_ -and $_ -ne "none" })) { Step @("press $k 200") 2 }
+& $s shot "${Name}_p1" | Out-Null       # (player 1's pick)
 Step @("press A 200") 4                 # superstar 1
-Step @("press A 200") 4                 # ready
-Step @("press RIGHT 150") 2
+Step @("press A 200") 4                 # ready (the computer's cursor appears on Randy Orton)
+foreach ($k in ($P2 -split "\s+" | Where-Object { $_ -and $_ -ne "none" })) { Step @("press $k 200") 2 }
+& $s shot "${Name}_p2" | Out-Null       # (player 2's pick)
 Step @("press A 200") 4                 # superstar 2
 Step @("press A 200") 16                # ready -> versus screen
 # A press can be lost in a transition: confirm again until the versus

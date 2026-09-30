@@ -44,6 +44,7 @@ else()
     list(APPEND SVR2011_SOURCES
         src/native/gpu.cpp
         src/native/backend_vulkan.cpp
+        src/native/recording_list.cpp
         src/native/native_renderer.cpp
         src/native/native_hooks.cpp
         src/native/textures.cpp)

@@ -67,7 +67,9 @@ void OnShaderCreated(uint32_t container, uint32_t object, bool pixel);
 //   the D3D flush copies dirty mirror ranges to the GPU,
 //   and per-draw blocks are loaded straight from memory (LOAD_ALU_CONSTANT).
 void OnSetShaderConstants(bool pixel, uint32_t start, uint32_t count);
-void OnFlushShaderConstants();
+// The D3D constant flush: `mask` has a bit per 4 dirty constants of the stage
+// whose GPU registers start at `reg` (0x4000 vertex, 0x4400 pixel).
+void OnFlushShaderConstants(uint64_t mask, uint32_t reg);
 void OnLoadShaderConstants(uint32_t shader_object, uint32_t base);
 
 }  // namespace svr2011::native
