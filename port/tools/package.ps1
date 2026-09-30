@@ -45,6 +45,18 @@ if (Test-Path $apk) {
 }
 
 Remove-Item $zip -ErrorAction SilentlyContinue
-Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip
+# Entry names with "/": Compress-Archive in Windows PowerShell writes "\",
+# which Linux extractors such as the Steam Deck's Ark turn into files named
+# "native_shaders\x" instead of folders (no shaders: no native renderer).
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$archive = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    $root = (Resolve-Path $stage).Path.TrimEnd('\') + '\'
+    foreach ($f in Get-ChildItem $stage -Recurse -File) {
+        $entry = $f.FullName.Substring($root.Length).Replace('\', '/')
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, $entry,
+            [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+} finally { $archive.Dispose() }
 "Packaged $zip"
 Get-ChildItem $stage | ForEach-Object { "  $($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB" }
