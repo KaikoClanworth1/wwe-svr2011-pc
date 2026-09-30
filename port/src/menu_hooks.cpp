@@ -62,19 +62,45 @@ uint32_t Be32(const uint8_t* p) {
 namespace svr2011 {
 
 void InstallMenuHooks(rex::memory::Memory* memory) {
-  constexpr char kAchText[] = "View your achievements: what you've unlocked and how to earn the rest.";
-  g_label = memory->SystemHeapAlloc(32 + 16 + sizeof(kAchText));
+  // The labels in the game's language (user_language: the Xbox 360 language
+  // ids; the game's own text follows it).
+  struct Labels {
+    uint32_t language;
+    const char* graphics;
+    const char* exit;
+    const char* achievements;
+    const char* achievements_text;
+  };
+  static const Labels kLabels[] = {
+      {1, "GRAPHICS", "EXIT", "ACHIEVEMENTS",
+       "View your achievements: what you've unlocked and how to earn the rest."},
+      {4, "GRAPHISMES", "QUITTER", "SUCC\xC3\x88S",
+       "Consultez vos succ\xC3\xA8s : ceux d\xC3\xA9" "bloqu\xC3\xA9s et comment obtenir les autres."},
+      {3, "GRAFIK", "BEENDEN", "ERFOLGE",
+       "Deine Erfolge: was du freigeschaltet hast und wie du den Rest bekommst."},
+      {5, "GR\xC3\x81" "FICOS", "SALIR", "LOGROS",
+       "Mira tus logros: los que has desbloqueado y c\xC3\xB3mo conseguir el resto."},
+      {6, "GRAFICA", "ESCI", "OBIETTIVI",
+       "I tuoi obiettivi: quelli sbloccati e come ottenere gli altri."},
+  };
+  const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
+  const Labels* l = &kLabels[0];
+  for (const Labels& k : kLabels)
+    if (k.language == language) l = &k;
+  const size_t n_graphics = std::strlen(l->graphics) + 1, n_exit = std::strlen(l->exit) + 1,
+               n_ach = std::strlen(l->achievements) + 1, n_text = std::strlen(l->achievements_text) + 1;
+  g_label = memory->SystemHeapAlloc(uint32_t(n_graphics + n_exit + n_ach + n_text + 16));
   if (!g_label) {
     REXLOG_WARN("menu: no guest memory for the GRAPHICS label");
     return;
   }
-  std::memcpy(memory->TranslateVirtual<char*>(g_label), "GRAPHICS", 9);
-  g_exit_label = g_label + 12;
-  std::memcpy(memory->TranslateVirtual<char*>(g_exit_label), "EXIT", 5);
-  g_ach_label = g_label + 20;
-  std::memcpy(memory->TranslateVirtual<char*>(g_ach_label), "ACHIEVEMENTS", 13);
-  g_ach_text = g_label + 48;
-  std::memcpy(memory->TranslateVirtual<char*>(g_ach_text), kAchText, sizeof(kAchText));
+  std::memcpy(memory->TranslateVirtual<char*>(g_label), l->graphics, n_graphics);
+  g_exit_label = g_label + uint32_t(n_graphics);
+  std::memcpy(memory->TranslateVirtual<char*>(g_exit_label), l->exit, n_exit);
+  g_ach_label = g_exit_label + uint32_t(n_exit);
+  std::memcpy(memory->TranslateVirtual<char*>(g_ach_label), l->achievements, n_ach);
+  g_ach_text = g_ach_label + uint32_t(n_ach);
+  std::memcpy(memory->TranslateVirtual<char*>(g_ach_text), l->achievements_text, n_text);
 }
 
 }  // namespace svr2011

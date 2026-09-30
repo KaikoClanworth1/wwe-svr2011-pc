@@ -82,7 +82,7 @@ enum {
     /* play */
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION,
     /* settings */
-    ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
+    ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
@@ -932,9 +932,27 @@ static void settings_path(WCHAR *out)
 /* The Renderer list: native (D3D12), emulated, native on Vulkan. */
 enum { RENDERER_NATIVE, RENDERER_EMULATED, RENDERER_VULKAN };
 
-static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_audio, int mute, int fps, int msaa,
-                          int renderer)
+/* The game's languages (its text; the voices are English) and their Xbox 360
+ * language ids (user_language). */
+static const struct { const WCHAR *label; int id; } k_languages[] = {
+    { L"English", 1 }, { L"Fran\x00E7" L"ais (French)", 4 }, { L"Deutsch (German)", 3 },
+    { L"Espa\x00F1" L"ol (Spanish)", 5 }, { L"Italiano (Italian)", 6 },
+};
+#define N_LANGUAGES ((int)(sizeof k_languages / sizeof k_languages[0]))
+
+static int language_index(int id)
 {
+    int i;
+    for (i = 0; i < N_LANGUAGES; i++)
+        if (k_languages[i].id == id)
+            return i;
+    return 0;
+}
+
+static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_audio, int mute, int fps, int msaa,
+                          int renderer, int language)
+{
+    SendMessageW(ctl(ID_LANGUAGE), CB_SETCURSEL, (WPARAM)language_index(language), 0);
     CheckDlgButton(s_wnd, ID_MSAA, msaa ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_RENDERER), CB_SETCURSEL, (WPARAM)renderer, 0);
     CheckRadioButton(s_wnd, ID_WINDOWED, ID_FULLSCREEN, fullscreen ? ID_FULLSCREEN : ID_WINDOWED);
@@ -958,7 +976,7 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, emulated = 0, vulkan = 0;
+    int msaa = 0, emulated = 0, vulkan = 0, language = 1;
     settings_path(p);
     if (toml_read(p, &l)) {
         for (i = 0; i < l.n; i++) {
@@ -981,6 +999,7 @@ static void settings_load(void)
             else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
             else if (!strcmp(key, "window_width")) w = atoi(val);
             else if (!strcmp(key, "window_height")) h = atoi(val);
+            else if (!strcmp(key, "user_language")) language = atoi(val);
         }
         lines_free(&l);
     } else if (on_steam_deck()) {
@@ -990,17 +1009,17 @@ static void settings_load(void)
         if (k_res[i].w == w && k_res[i].h == h)
             res = i;
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
-                  emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE);
+                  emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
 }
 
 static int settings_save(void)
 {
-    enum { NK = 14 };
+    enum { NK = 15 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
-                                    "native_2x_msaa", "native_renderer", "gpu_backend" };
+                                    "native_2x_msaa", "native_renderer", "gpu_backend", "user_language" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][64];
     int done[NK] = { 0 };
@@ -1031,6 +1050,10 @@ static int settings_save(void)
     strcpy_s(vals[12], 64, renderer == RENDERER_EMULATED ? "\"off\"" : "\"main\"");
     /* Vulkan: the emulator runs on Vulkan and the native renderer with it. */
     strcpy_s(vals[13], 64, renderer == RENDERER_VULKAN ? "\"vulkan\"" : "\"any\"");
+    {
+        int li = (int)SendMessageW(ctl(ID_LANGUAGE), CB_GETCURSEL, 0, 0);
+        sprintf_s(vals[14], 64, "%d", k_languages[li >= 0 && li < N_LANGUAGES ? li : 0].id);
+    }
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -1100,7 +1123,7 @@ static int settings_save(void)
 
 static void settings_defaults(void)
 {
-    settings_show(0, 0, 1, 0, 0, 0, 1, 0, 0);
+    settings_show(0, 0, 1, 0, 0, 0, 1, 0, 0, 1);
     s_settings_dirty = 1;
     set_text(ID_SETTINGS_STATUS, L"Defaults restored. Press Save or Play to keep them.");
 }
@@ -1425,10 +1448,15 @@ static void build_ui(void)
         SS_LEFT, X0 + 16, 368, 370, 52, 0);
     add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 374, 146, 28,
         ID_MUSIC_OPEN);
-    add(TAB_SETTINGS, L"Button", L"Controls", BS_GROUPBOX, X0, 436, 560, 72, 0);
-    add(TAB_SETTINGS, L"Static", L"An Xbox 360 controller is supported through XInput and works as on the console: "
-                                 L"Start = Start, Back = Back, A/B/X/Y, bumpers, triggers and sticks unchanged. "
-                                 L"Connect it before starting the game.", SS_LEFT, X0 + 16, 458, 530, 44, 0);
+    add(TAB_SETTINGS, L"Button", L"Language", BS_GROUPBOX, X0, 436, 560, 72, 0);
+    add(TAB_SETTINGS, L"Static", L"Game text", SS_LEFT, X0 + 16, 462, 130, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 458, 200, 200,
+            ID_LANGUAGE);
+    for (i = 0; i < N_LANGUAGES; i++)
+        SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_languages[i].label);
+    add(TAB_SETTINGS, L"Static", L"Menus and on-screen text; commentary stays English. "
+                                 L"Also in game: MY WWE !92 OPTIONS !92 GRAPHICS.",
+        SS_LEFT, X0 + 362, 452, 186, 50, 0);
     add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 518, 140, 30, ID_DEFAULTS);
     add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 518, 108, 30, ID_SAVE);
     add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 556, 560, 36, ID_SETTINGS_STATUS);
@@ -4165,7 +4193,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(s_wnd, L"open", m, NULL, NULL, SW_SHOWNORMAL);
             break;
         }
-        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER:
+        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");

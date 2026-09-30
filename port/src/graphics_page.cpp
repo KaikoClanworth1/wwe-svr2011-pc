@@ -60,21 +60,31 @@ struct Scale {
 constexpr Scale kScales[] = {{4, "AUTO"}, {1, "720P (XBOX 360)"}, {2, "1440P"}, {3, "2160P"}};
 constexpr int kNumScales = int(std::size(kScales));
 
+// The game's languages (its text; the voices are English): Xbox 360 language
+// ids (user_language, read when the game starts).
+struct Language {
+  uint32_t id;
+  const char* label;
+};
+constexpr Language kLanguages[] = {
+    {1, "ENGLISH"}, {4, "FRAN\xC3\x87" "AIS"}, {3, "DEUTSCH"}, {5, "ESPA\xC3\x91OL"}, {6, "ITALIANO"}};
+constexpr int kNumLanguages = int(std::size(kLanguages));
+
 // The rows, on two tabs (LB / RB).
 enum Row {
   kResolution, kDisplay, kVsync, kFpsCounter, kRenderer,         // DISPLAY
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
-  kTouch,                                                        // DISPLAY (last)
+  kTouch, kLanguage,                                             // DISPLAY (last)
   kWide,                                                         // QUALITY (last)
 };
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
-const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch},
+const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch, kLanguage},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide}};
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch},
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch, kLanguage},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide}};
 #endif
 
@@ -200,6 +210,8 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int scale_ = 0;  // (kScales)
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
+  int language_ = 0;    // kLanguages index (saved; applies at the next start)
+  int language_at_start_ = 0;
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
   bool effects_ = true, fps60_ = true;
   bool native_at_start_ = false;
@@ -237,6 +249,14 @@ void GraphicsPage::Load() {
   fps_ = FpsCounterVisible();
   touch_ = rex::cvar::Query<bool>("touch_controls");
   wide_ = rex::cvar::Query<bool>("native_widescreen");
+  {
+    const uint32_t id = rex::cvar::Query<uint32_t>("user_language");
+    language_ = 0;
+    for (int i = 0; i < kNumLanguages; ++i)
+      if (kLanguages[i].id == id) language_ = i;
+    static const int at_start = language_;
+    language_at_start_ = at_start;
+  }
   vsync_ = rex::cvar::Query<bool>("vsync");
   fullscreen_ = g_window ? g_window->IsFullscreen() : false;
 }
@@ -272,6 +292,10 @@ void GraphicsPage::Change(int row, int dir) {
       msaa_ = !msaa_;
       rex::cvar::SetFlagByName("native_2x_msaa", msaa_ ? "true" : "false");
       SaveSetting("native_2x_msaa", msaa_ ? "true" : "false");
+      break;
+    case kLanguage:
+      language_ = (language_ + dir + kNumLanguages) % kNumLanguages;
+      SaveSetting("user_language", std::to_string(kLanguages[language_].id));
       break;
     case kWide:
       wide_ = !wide_;
@@ -468,6 +492,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return fps_ ? "ON" : "OFF";
       case kTouch: return touch_ ? "ON" : "OFF";
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
+      case kLanguage: return kLanguages[language_].label;
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
       case kRenderScale: return kScales[scale_].label;
       case kAntiAliasing: return msaa_ ? "ON" : "OFF";
@@ -484,6 +509,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return "FPS COUNTER";
       case kTouch: return "TOUCH CONTROLS";
       case kWide: return "WIDE SCREENS";
+      case kLanguage: return "LANGUAGE";
       case kRenderer: return "RENDERER";
       case kRenderScale: return "RENDER RESOLUTION";
       case kAntiAliasing: return "ANTI-ALIASING";
@@ -492,7 +518,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     }
     return "";
   };
-  auto help_for = [](Row id) -> const char* {
+  auto help_for = [this](Row id) -> const char* {
     switch (id) {
       case kResolution: return "The window's size. The game renders at the scale that fills it.";
       case kDisplay: return "Play in a window or full screen (Alt+Enter also switches).";
@@ -500,6 +526,10 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";
+      case kLanguage:
+        return language_ == language_at_start_
+                   ? "The game's text (the commentary stays English)."
+                   : "The game's text: changes the next time the game starts.";
       case kRenderer: return "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.";
       case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
       case kAntiAliasing: return "Renders at twice the resolution and averages it down: smooth edges, slower.";
