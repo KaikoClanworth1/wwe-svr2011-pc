@@ -46,6 +46,7 @@
 #include <rex/filesystem.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
+#include <rex/graphics/pipeline/texture/util.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
 
@@ -81,6 +82,10 @@ REXCVAR_DEFINE_BOOL(native_widescreen, true, "GPU",
                     "Native renderer: matches as wide as a wider-than-16:9 window (the HUD and "
                     "menus stay 16:9)");
 
+REXCVAR_DEFINE_BOOL(native_resolve_write_back, true, "GPU",
+                    "Native renderer: copy one-off render-to-texture results back to the game's memory "
+                    "(Superstar Threads attire baking reads them)");
+
 REXCVAR_DEFINE_BOOL(native_constant_check, false, "GPU",
                     "Debug: also hash the shader constants and log when a reused upload was "
                     "stale (checks the D3D dirty tracking the native renderer relies on)");
@@ -95,6 +100,8 @@ REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
                       "native one fails). (shadow, the old side-by-side window, now means main.)")
     .allowed({"off", "main", "shadow"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+namespace texture_util = rex::graphics::texture_util;
 
 namespace svr2011::native {
 
@@ -415,6 +422,8 @@ struct DepthTarget {
 // The copy a resolve made of a target (what the game samples as a texture).
 struct ResolvedTexture {
   std::shared_ptr<plume::RenderTexture> resource;
+  uint64_t last_frame = ~0ull;  // the frame it was last resolved in (WriteBackResolve)
+  uint32_t streak = 0;          // consecutive frames it was resolved in
   uint32_t host_w = 0, host_h = 0;  // (larger than the guest size * scale when copied from a wide / tall target)
   RenderTextureLayout layout = RenderTextureLayout::UNKNOWN;
   RenderFormat format = RenderFormat::UNKNOWN;
@@ -2985,6 +2994,89 @@ void OnClear(const PPCContext& ctx) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// resolve write-back
+
+// Ends the frame's command list, runs it and waits for the GPU, then opens a
+// new list for the rest of the frame (for reading GPU results on the CPU).
+bool FlushFrameAndWait(Renderer* r) {
+  if (!r->frame_open) return true;
+  r->list->end();
+  plume::RenderCommandList* submit = r->list;
+  if (r->recorder) {
+    r->recorder->Finish();
+    submit = r->recorder->target();
+  }
+  r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
+  r->submitted[r->back_index] = true;
+  if (!WaitForFrame(r, r->back_index, "resolve write-back")) return false;
+  r->frame_open = false;
+  return BeginFrame(r);
+}
+
+// Some resolves are read by the game's own code, not only sampled: Superstar
+// Threads bakes an attire's textures on the GPU (2048x1024 and its mips)
+// and then builds the attire texture from them on the CPU. The native
+// renderer's resolves live only on the host GPU, so the game read whatever
+// was in guest memory. A resolve that isn't one of the recurring per-frame
+// ones (its destination not resolved in the last 30 frames) is copied back
+// to guest memory at once: the frame so far runs, the image is read back and
+// written at the guest's size, tiled and byte-swapped as the destination
+// texture says (32-bit colour, k_8_8_8_8 only).
+void WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, const uint32_t fetch[6],
+                      bool swap_rb) {
+  if (dst.format != RenderFormat::R8G8B8A8_TYPELESS || (fetch[1] & 0x3F) != 6) return;
+  const uint32_t guest_w = dst.width, guest_h = dst.height;
+  const uint32_t host_w = dst.host_w ? dst.host_w : guest_w * dst.scale;
+  const uint32_t host_h = dst.host_h ? dst.host_h : guest_h * dst.scale;
+  const uint32_t row_texels = (host_w + 63) & ~63u;  // (256-byte rows)
+  std::shared_ptr<plume::RenderBuffer> buffer =
+      r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(row_texels) * host_h * 4));
+  if (!buffer) return;
+  auto& layout = const_cast<ResolvedTexture&>(dst).layout;
+  Transition(r, dst.resource.get(), layout, RenderTextureLayout::COPY_SOURCE);
+  r->list->copyTextureRegion(plume::RenderTextureCopyLocation::PlacedFootprint(
+                                 buffer.get(), RenderFormat::R8G8B8A8_UNORM, host_w, host_h, 1, row_texels),
+                             plume::RenderTextureCopyLocation::Subresource(dst.resource.get()));
+  Transition(r, dst.resource.get(), layout, RenderTextureLayout::SHADER_READ);
+  if (!FlushFrameAndWait(r)) return;
+  const auto* src = static_cast<const uint8_t*>(buffer->map());
+  if (!src) return;
+  const bool tiled = fetch[0] >> 31;
+  const uint32_t pitch = std::max(((fetch[0] >> 22) & 0x1FFu) * 32, guest_w);
+  const uint32_t endian = (fetch[1] >> 6) & 3;
+  const uint32_t mask = endian == 1 ? 1 : endian == 2 ? 3 : endian == 3 ? 2 : 0;
+  auto* guest = const_cast<uint8_t*>(Physical(base));
+  const uint64_t limit = 0x20000000ull - base;
+  const uint32_t sx = std::max(1u, host_w / guest_w), sy = std::max(1u, host_h / guest_h);
+  for (uint32_t y = 0; y < guest_h; ++y) {
+    for (uint32_t x = 0; x < guest_w; ++x) {
+      uint32_t sum[4] = {};  // (the host pixels of this guest pixel, averaged)
+      for (uint32_t j = 0; j < sy; ++j) {
+        const uint8_t* row = src + (size_t(std::min(y * sy + j, host_h - 1)) * row_texels) * 4;
+        for (uint32_t i = 0; i < sx; ++i) {
+          const uint8_t* q = row + size_t(std::min(x * sx + i, host_w - 1)) * 4;
+          for (int c = 0; c < 4; ++c) sum[c] += q[c];
+        }
+      }
+      const uint32_t n = sx * sy;
+      uint8_t px[4];
+      for (int c = 0; c < 4; ++c) px[c] = uint8_t((sum[c] + n / 2) / n);
+      if (swap_rb) std::swap(px[0], px[2]);
+      const int64_t off = tiled ? texture_util::GetTiledOffset2D(int32_t(x), int32_t(y), pitch, 2)
+                                : (int64_t(y) * pitch + x) * 4;
+      if (off < 0 || uint64_t(off) + 4 > limit) continue;
+      for (uint32_t c = 0; c < 4; ++c) guest[off + (c ^ mask)] = px[c];
+    }
+  }
+  buffer->unmap();
+  static uint32_t logged = 0;
+  if (logged++ < 32) {
+    REXLOG_INFO("native renderer: resolve {:08X} ({}x{}) written back to guest memory", base, guest_w, guest_h);
+  }
+}
+
 // D3DDevice_Resolve(device, flags, ..., destination texture in r8): flags 0-3
 // colour target n, 4 depth. Copies the current target into the texture the
 // game will sample (always the whole surface from (0, 0) in this game).
@@ -3102,6 +3194,16 @@ void OnResolve(const PPCContext& ctx) {
     textures::RegisterResolved(base, dst.resource.get(), t.color->view_format,
                                t.color->view_gamma_format, t.color->components, swap_rb);
     if (dst_w >= kWidth && dst_h >= kHeight) r->present_source = base;
+    static const bool write_back = REXCVAR_GET(native_resolve_write_back);
+    // Per-frame resolves (the scene, post-processing chains: resolved in
+    // every frame) are left alone; bursts such as the attire bake - several
+    // resolves into the same texture, one per attire part - are all copied.
+    if (dst.last_frame != r->frames) {
+      dst.streak = dst.last_frame != ~0ull && dst.last_frame + 1 == r->frames ? dst.streak + 1 : 0;
+      dst.last_frame = r->frames;
+    }
+    const bool recurring = dst.streak >= 30 || t.color == r->main_target;
+    if (write_back && !recurring) WriteBackResolve(r, base, dst, fetch, swap_rb);
   }
   ++r->frame_stats.resolves;
 }
