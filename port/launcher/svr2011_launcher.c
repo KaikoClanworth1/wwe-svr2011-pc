@@ -1454,8 +1454,8 @@ static void build_ui(void)
             ID_LANGUAGE);
     for (i = 0; i < N_LANGUAGES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_languages[i].label);
-    add(TAB_SETTINGS, L"Static", L"Menus and on-screen text; commentary stays English. "
-                                 L"Also in game: MY WWE !92 OPTIONS !92 GRAPHICS.",
+    add(TAB_SETTINGS, L"Static", L"Menus and on-screen text (commentary stays "
+                                 L"English). Also in game: GRAPHICS page.",
         SS_LEFT, X0 + 362, 452, 186, 50, 0);
     add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 518, 140, 30, ID_DEFAULTS);
     add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 518, 108, 30, ID_SAVE);

@@ -8,7 +8,8 @@ This is a native Windows port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 2
 
 It also adds:
 
-- **Sharp resolutions**: 720p (the console's), 900p, 1080p, 1440p and 4K, with anti-aliasing, VSync and a steady 60 fps.
+- **Sharp resolutions**: 720p (the console's), 900p, 1080p, 1440p and 4K, with anti-aliasing, VSync and a steady 60 fps, even in the heaviest entrances.
+- **Any screen shape**: on ultrawide monitors, the Steam Deck and foldable phones, matches and entrances fill the whole screen, with more of the arena in view and nothing stretched. Menus keep the original 16:9 picture.
 - **A launcher** that installs the game from your disc image, keeps it up to date, and manages settings, saves, DLC, logos and movies.
 - **Your own entrance music**: *Create An Entrance → Music → USER PLAYLIST* plays songs from a folder on your PC, as the Xbox 360 did from its hard drive.
 - **Your own entrance movies**: turn any video into a titantron movie in the launcher and pick it in *Create An Entrance*.
@@ -16,6 +17,9 @@ It also adds:
 - **Paint Tool import and export**: put any image into the game's Paint Tool, or save its logos as PNGs.
 - **Type on your PC keyboard** wherever the game shows its on-screen keyboard: superstar names, Story Designer text and more.
 - **Saves as plain files** that you can back up, copy and share.
+- **Five languages**: English, French, German, Spanish and Italian (the game's own text), chosen in the launcher or in game.
+- **Android**: the full game on phones and tablets, with on-screen touch controls you can rearrange, or a controller.
+- **Discord**: shows what you're playing (menus, entrances, a match) on your Discord profile.
 - **An experimental Vulkan renderer**: the native renderer on Vulkan as well as Direct3D 12 (Settings → Renderer → *Native Vulkan (EXPERIMENTAL)*), the groundwork for Linux and Android.
 
 > [!IMPORTANT]
@@ -41,6 +45,14 @@ It also adds:
     <td><img src="docs/screenshots/user-playlist.jpg" alt="USER PLAYLIST"><br><sub><b>USER PLAYLIST</b>: songs from your Music folder</sub></td>
     <td><img src="docs/screenshots/graphics-page.jpg" alt="Graphics options in game"><br><sub><b>Graphics options</b> in <i>My WWE → Options</i></sub></td>
   </tr>
+  <tr>
+    <td><img src="docs/screenshots/ultrawide-entrance.jpg" alt="An entrance on a 21:9 screen"><br><sub><b>Ultrawide</b>: an entrance filling a 21:9 screen</sub></td>
+    <td><img src="docs/screenshots/phone-cover-match.jpg" alt="A match on a phone with touch controls"><br><sub><b>Android</b>: a match on a phone, with the on-screen controls</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/phone-unfolded-entrance.jpg" alt="An entrance on a foldable's inner screen"><br><sub><b>Foldables</b>: the near-square inner screen, filled</sub></td>
+    <td><img src="docs/screenshots/language-french.jpg" alt="The game in French"><br><sub><b>Languages</b>: the game in French</sub></td>
+  </tr>
 </table>
 
 ---
@@ -53,7 +65,7 @@ It also adds:
 - [Controls](#controls)
 - [Updates](#updates)
 - [Steam Deck and Linux (Proton)](#steam-deck-and-linux-proton)
-- [Android (experimental)](#android-experimental)
+- [Android](#android)
 - [Settings](#settings)
 - [Features](#features)
   - [Entrance music from your PC](#entrance-music-from-your-pc)
@@ -141,9 +153,9 @@ The port is a Windows program. On a Steam Deck or a Linux PC it runs through **P
 - **Updates:** launchers before v0.3.0 can't unpack updates under Proton (they used Windows' `tar.exe`, which Proton lacks) and stop with "Could not unpack the update". Update once by hand: download the latest zip, unzip it over your launcher's folder (or unzip it anywhere, run its launcher and click **Install** into your game folder). From v0.3.0 on, updates work under Proton too.
 - **DLC:** under Proton the launcher can unpack `.zip` DLC archives but not `.rar` or `.7z`. Unpack those first, or add the unpacked folder.
 
-### Android (experimental)
+### Android
 
-The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, such as a recent Snapdragon. On a Galaxy Z Fold 7 it holds 60 fps. You need about 7 GB free on the phone and a controller. First install the game on your PC as above. Then use the launcher's **Android Install** tab:
+The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, such as a recent Snapdragon. On a Galaxy Z Fold 7 it holds 60 fps, on both its screens. You need about 7 GB free on the phone. Play with a controller or the on-screen touch controls. First install the game on your PC as above. Then use the launcher's **Android Install** tab:
 
 - **Option 1: install over USB (recommended).**
   1. On the phone, open **Settings → About phone** (on Samsung, also **→ Software information**) and tap **Build number** 7 times, until it says developer mode is on.
@@ -153,6 +165,8 @@ The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, s
 
   The game goes into the phone's `games/WWE SmackDown vs. Raw 2011` folder and starts. Run it again after a launcher update: it copies only what changed and keeps the phone's saves.
 - **Option 2: a package to copy yourself.** **Create APK Package** makes a folder with `SvR2011.apk`, `SvR2011-Game.zip` and instructions. Copy both files to the phone's **Download** folder and open the APK to install it. On first start the app installs the game from the zip; you can delete the zip afterwards.
+
+**Touch controls:** the menus get a simple pad (D-pad, A/B/X/Y, bumpers, triggers, Start/Back). Matches get a move stick, a grapple stick, the face buttons labelled with what they do (strike, action, whip/pin, finisher), reversal, run, drag, submission and taunts, plus a **?** button with the full match controls. They switch by themselves when a match starts, or with the button at the top left. **EDIT** (top right) lets you drag, resize, hide or remap any control and set their opacity. The controls hide when a controller is connected and come back when you touch the screen. **MY WWE → Options → Graphics → Touch controls** turns them off.
 
 On the phone, the game renders at the Xbox 360's 720p with shadows and effects at their original size. **MY WWE → Options → Graphics → Quality** raises them, and anti-aliasing can be turned on there.
 
@@ -189,6 +203,7 @@ The in-game **Graphics** page has two tabs (**LB / RB**). **Display** holds the 
 | **Anti-aliasing** | As in the launcher. |
 | **Shadows & effects** | **High**: shadows, reflections and glow at the render resolution. **Normal**: at the Xbox 360's size, much less GPU work at high resolutions. |
 | **Entrance frame rate** | **60 fps** (default), or **30 fps** as on the Xbox 360: entrances and cutscenes then need half the work. |
+| **Wide screens** | **Full width** (default): on screens wider or narrower than 16:9, matches and entrances fill the screen with a wider (or taller) view; the HUD and menus stay 16:9. **16:9** keeps the original picture with bars. |
 
 | Setting | What it does |
 |---|---|
@@ -198,6 +213,7 @@ The in-game **Graphics** page has two tabs (**LB / RB**). **Display** holds the 
 | **Anti-aliasing** | Renders at twice the resolution and averages it down, for smoother edges. It costs GPU time. |
 | **Renderer** | **Native** (recommended) draws the game's Direct3D calls directly. **Emulated** emulates the Xbox 360's graphics chip, as Xenia does. Try it if something looks wrong, and please report it. **Native Vulkan (EXPERIMENTAL)** is the native renderer on Vulkan instead of Direct3D 12 (the groundwork for Linux and Android); it needs a Vulkan 1.2 GPU and falls back to emulated drawing if it can't start. |
 | **Show FPS** | The frame-rate counter at the top of the window (`F2` in game). |
+| **Language** | The game's text: English, French, German, Spanish or Italian. It applies the next time the game starts; the commentary is always English. Also in game (**Display** tab). |
 | **Controller API** | **XInput** for Xbox controllers, or **SDL** for other gamepads. |
 | **Audio output** | **XAudio2** (recommended; 5.1 on surround setups, stereo otherwise) or **SDL**. **Mute** silences the game. |
 
@@ -424,6 +440,7 @@ See [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ## Legal and credits
 
+- [Privacy policy](docs/PRIVACY.md) · [Terms](docs/TERMS.md)
 - This is an unofficial fan project. It isn't affiliated with or endorsed by WWE, THQ, Yuke's or Microsoft. *WWE SmackDown vs. Raw 2011* and all related names belong to their respective owners.
 - **No game material is included**: no disc image, XEX, data, audio, video or recompiled game code. You must own the game and supply your own disc image. The screenshots in `docs/screenshots/` were taken of the port running. They're used only to show the port, and they belong to the game's owners.
 - **Recompiler and runtime**: the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), which is derived from [Xenia](https://github.com/xenia-project/xenia). See their licenses.
