@@ -65,16 +65,17 @@ enum Row {
   kResolution, kDisplay, kVsync, kFpsCounter, kRenderer,         // DISPLAY
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
   kTouch,                                                        // DISPLAY (last)
+  kWide,                                                         // QUALITY (last)
 };
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide}};
 #else
 const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide}};
 #endif
 
 std::filesystem::path g_config_path;
@@ -198,6 +199,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int resolution_ = 2;
   int scale_ = 0;  // (kScales)
   bool touch_ = false;  // the on-screen controller
+  bool wide_ = true;    // matches as wide as the screen
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
   bool effects_ = true, fps60_ = true;
   bool native_at_start_ = false;
@@ -234,6 +236,7 @@ void GraphicsPage::Load() {
                              : rex::cvar::Query<std::string>("native_renderer") != "off";
   fps_ = FpsCounterVisible();
   touch_ = rex::cvar::Query<bool>("touch_controls");
+  wide_ = rex::cvar::Query<bool>("native_widescreen");
   vsync_ = rex::cvar::Query<bool>("vsync");
   fullscreen_ = g_window ? g_window->IsFullscreen() : false;
 }
@@ -269,6 +272,11 @@ void GraphicsPage::Change(int row, int dir) {
       msaa_ = !msaa_;
       rex::cvar::SetFlagByName("native_2x_msaa", msaa_ ? "true" : "false");
       SaveSetting("native_2x_msaa", msaa_ ? "true" : "false");
+      break;
+    case kWide:
+      wide_ = !wide_;
+      rex::cvar::SetFlagByName("native_widescreen", wide_ ? "true" : "false");
+      SaveSetting("native_widescreen", wide_ ? "true" : "false");
       break;
     case kTouch:
       touch_ = !touch_;
@@ -459,6 +467,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kVsync: return vsync_ ? "ON" : "OFF";
       case kFpsCounter: return fps_ ? "ON" : "OFF";
       case kTouch: return touch_ ? "ON" : "OFF";
+      case kWide: return wide_ ? "FULL WIDTH" : "16:9";
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
       case kRenderScale: return kScales[scale_].label;
       case kAntiAliasing: return msaa_ ? "ON" : "OFF";
@@ -474,6 +483,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kVsync: return "VSYNC";
       case kFpsCounter: return "FPS COUNTER";
       case kTouch: return "TOUCH CONTROLS";
+      case kWide: return "WIDE SCREENS";
       case kRenderer: return "RENDERER";
       case kRenderScale: return "RENDER RESOLUTION";
       case kAntiAliasing: return "ANTI-ALIASING";
@@ -489,6 +499,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
+      case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";
       case kRenderer: return "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.";
       case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
       case kAntiAliasing: return "Renders at twice the resolution and averages it down: smooth edges, slower.";

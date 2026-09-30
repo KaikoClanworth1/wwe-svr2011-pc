@@ -44,6 +44,10 @@ bool NativeActive();
 // "Emulated", or "Emulated (native failed)".
 std::string RendererLabel();
 
+// Game state (any thread): a match (entrances on) or the menus - on a wide
+// window, matches fill it (native_widescreen), menus stay 16:9.
+void SetMatchScene(bool in_match);
+
 // The main window's client size in pixels (main mode: the frames follow it).
 void SetWindowSizeSource(std::function<std::pair<uint32_t, uint32_t>()> source);
 

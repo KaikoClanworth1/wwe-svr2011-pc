@@ -1233,7 +1233,7 @@ index a744375..97be235 100644
    return true;
  }
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..f35aa76 100644
+index 19874a5..46f8ef2 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -10,6 +10,9 @@
@@ -1292,7 +1292,20 @@ index 19874a5..f35aa76 100644
    if (!swap_texture_resource) {
      // Dump texture fetch constant 0 for debugging
      const auto& regs = *register_file_;
-@@ -2326,6 +2355,18 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -1984,6 +2013,12 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // [svr2011] The app's own frames have the shape to show (16:9, or as wide
++  // as the window in the port's wide-screen matches): letterboxed to it.
++  if (external_frame.resource && external_frame.width && external_frame.height) {
++    display_width = external_frame.width;
++    display_height = external_frame.height;
++  }
+ 
+   presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+@@ -2326,6 +2361,18 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    bool memexport_used_pixel = pixel_shader && (pixel_shader->memexport_eM_written() != 0);
    bool memexport_used = memexport_used_vertex || memexport_used_pixel;
@@ -1311,7 +1324,7 @@ index 19874a5..f35aa76 100644
  
    if (!BeginSubmission(true)) {
      return false;
-@@ -2730,6 +2771,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2730,6 +2777,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    return true;
  }
  
@@ -1320,7 +1333,7 @@ index 19874a5..f35aa76 100644
  bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
    if (!total_size || memexport_ranges_.empty()) {
      return true;
-@@ -2797,7 +2840,8 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+@@ -2797,7 +2846,8 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
      ID3D12Resource* buffer = nullptr;
      if (FAILED(device->CreateCommittedResource(
              &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
@@ -1330,7 +1343,7 @@ index 19874a5..f35aa76 100644
        return false;
      }
  
-@@ -2874,6 +2918,9 @@ bool D3D12CommandProcessor::IssueCopy() {
+@@ -2874,6 +2924,9 @@ bool D3D12CommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -1340,7 +1353,7 @@ index 19874a5..f35aa76 100644
    if (!BeginSubmission(true)) {
      return false;
    }
-@@ -2917,7 +2964,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -2917,7 +2970,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
      ID3D12Resource* buffer = nullptr;
      if (FAILED(device->CreateCommittedResource(
              &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
@@ -1350,7 +1363,7 @@ index 19874a5..f35aa76 100644
        REXGPU_ERROR("Failed to create a {} MB readback buffer", size >> 20);
        return true;
      }
-@@ -2926,7 +2974,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -2926,7 +2980,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
          rb.buffers[write_index]->Unmap(0, nullptr);
          rb.mapped_data[write_index] = nullptr;
        }
@@ -1360,7 +1373,7 @@ index 19874a5..f35aa76 100644
      }
      rb.buffers[write_index] = buffer;
      rb.sizes[write_index] = size;
-@@ -3068,6 +3117,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -3068,6 +3123,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
      deferred_command_list_.D3DCopyBufferRegion(rb.buffers[write_index], 0, shared_memory_buffer,
                                                 written_address, written_length);
    }
@@ -1368,7 +1381,7 @@ index 19874a5..f35aa76 100644
  
    ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
    bool use_delayed_sync =
-@@ -3229,11 +3279,13 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
+@@ -3229,11 +3285,13 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
            *node->pLastBreadcrumbValue == 0) {
          continue;
        }
@@ -1386,7 +1399,7 @@ index 19874a5..f35aa76 100644
        for (uint32_t i = start; i < end; i++) {
          REXGPU_ERROR("  [{}] op type {}{}", i, static_cast<int>(node->pCommandHistory[i]),
                       i == last ? " <-- FAULT" : "");
-@@ -4743,6 +4795,16 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4743,6 +4801,16 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
    return true;
  }
  
@@ -1403,7 +1416,7 @@ index 19874a5..f35aa76 100644
  void D3D12CommandProcessor::EvictOldReadbackBuffers(
      std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map) {
    if (buffer_map.empty()) {
-@@ -4755,6 +4817,14 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
+@@ -4755,6 +4823,14 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
      ReadbackBuffer& readback = it->second;
      bool evict =
          buffer_map.size() > kMaxReadbackBuffers || readback.last_used_frame < eviction_frame_floor;
@@ -1418,7 +1431,7 @@ index 19874a5..f35aa76 100644
      if (!evict) {
        ++it;
        continue;
-@@ -4764,7 +4834,8 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
+@@ -4764,7 +4840,8 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
          if (readback.mapped_data[i]) {
            readback.buffers[i]->Unmap(0, nullptr);
          }
@@ -1428,7 +1441,7 @@ index 19874a5..f35aa76 100644
        }
        readback.buffers[i] = nullptr;
        readback.mapped_data[i] = nullptr;
-@@ -4789,7 +4860,8 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
+@@ -4789,7 +4866,8 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
      ID3D12Resource* buffer;
      if (FAILED(device->CreateCommittedResource(
              &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
@@ -1523,7 +1536,7 @@ index 8f2fcb0..4be98de 100644
  
  void GraphicsSystem::MarkVblank() {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..f12e3e0 100644
+index 001f36b..b268920 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -25,6 +25,7 @@
@@ -1569,7 +1582,20 @@ index 001f36b..f12e3e0 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
-@@ -3695,6 +3718,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -2407,6 +2430,12 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // [svr2011] The app's own frames have the shape to show (16:9, or as wide
++  // as the window in the port's wide-screen matches): letterboxed to it.
++  if (external_frame.vk_image_view && external_frame.width && external_frame.height) {
++    display_width = external_frame.width;
++    display_height = external_frame.height;
++  }
+ 
+   presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+@@ -3695,6 +3724,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
    VulkanShader::VulkanTranslation* vertex_shader_translation;
    VulkanShader::VulkanTranslation* pixel_shader_translation;
    bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
@@ -1588,7 +1614,7 @@ index 001f36b..f12e3e0 100644
  
    // Two iterations because a submission (even the current one - in which case
    // it needs to be ended, and a new one must be started) may need to be awaited
-@@ -4385,6 +4420,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4385,6 +4426,9 @@ bool VulkanCommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
