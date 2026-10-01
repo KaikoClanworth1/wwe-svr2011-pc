@@ -4,7 +4,7 @@
 // installed game. This activity gets all-files access (the game folder is
 // in shared storage, so the files stay reachable from a PC over USB), finds
 // that zip in the games or Download folder and extracts it into
-// games/<kFolderName>, then starts the game.
+// games/<kFolderName>, then opens the launcher (LauncherActivity).
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -107,9 +107,15 @@ public class InstallActivity extends Activity {
             return;
         }
         if (installed()) {
-            Intent game = new Intent(this, GameActivity.class);
-            if (getIntent().getExtras() != null) game.putExtras(getIntent().getExtras());  // (tests: GameActivity)
-            startActivity(game);
+            // The launcher; automated tests (extras for the game) go straight to the game.
+            Intent next;
+            if (getIntent().getExtras() != null) {
+                next = new Intent(this, GameActivity.class);
+                next.putExtras(getIntent().getExtras());
+            } else {
+                next = new Intent(this, LauncherActivity.class);
+            }
+            startActivity(next);
             finish();
             return;
         }

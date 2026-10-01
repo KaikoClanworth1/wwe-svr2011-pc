@@ -50,6 +50,13 @@
             </intent-filter>
         </activity>
 
+        <!-- The launcher: Play, Settings, Online (the PC launcher's tabs for a touch screen). -->
+        <activity
+            android:name=".LauncherActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
+
         <activity
             android:name=".GameActivity"
             android:exported="false"
