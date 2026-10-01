@@ -3409,12 +3409,14 @@ bool FlushFrameAndWait(Renderer* r) {
 bool WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, const uint32_t fetch[6],
                       bool swap_rb) {
   if (dst.format != RenderFormat::R8G8B8A8_TYPELESS || (fetch[1] & 0x3F) != 6) return false;
-  // Only power-of-two textures (Threads' 2048x1024 and its mips): the
-  // screen-shaped ones (1280x720, a glow chain's 320x180, 160x90...) are
+  // Only power-of-two textures (Threads' 2048x1024 and its mips) and
+  // portrait-shaped ones (a Created Superstar's portrait: 736x1280, which
+  // the game compresses into the save and its Community Creations preview):
+  // the screen-shaped ones (1280x720, a glow chain's 320x180, 160x90...) are
   // never read by the CPU, and each write-back waits for the GPU - on phones
   // a scene's first frames hitched for up to 600 ms.
   auto pow2 = [](uint32_t v) { return v && !(v & (v - 1)); };
-  if (!pow2(dst.width) || !pow2(dst.height)) return false;
+  if (!(pow2(dst.width) && pow2(dst.height)) && dst.height <= dst.width) return false;
   const uint32_t guest_w = dst.width, guest_h = dst.height;
   const uint32_t host_w = dst.host_w ? dst.host_w : guest_w * dst.scale;
   const uint32_t host_h = dst.host_h ? dst.host_h : guest_h * dst.scale;
