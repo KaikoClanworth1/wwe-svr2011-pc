@@ -1184,6 +1184,9 @@ bool BeginFrame(Renderer* r) {
   return true;
 }
 
+uint32_t g_write_backs = 0, g_write_back_w = 0, g_write_back_h = 0;  // (native perf line)
+double g_write_back_ms = 0;
+
 int BlankedSlot(Renderer* r);
 
 void UpdateTitle(Renderer* r) {
@@ -1210,6 +1213,12 @@ void UpdateTitle(Renderer* r) {
                 "span {:.2f} ms, draws {:.0f} (drawn {:.0f}), pipeline builds {:.0f} ms",
                 f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_span_ms / f,
                 r->perf_draws / f, r->perf_drawn / f, g_pipeline_ms);
+    if (g_write_backs) {
+      REXLOG_INFO("native perf: {} resolves written back to guest memory ({:.0f} ms waiting; last {}x{})",
+                  g_write_backs, g_write_back_ms, g_write_back_w, g_write_back_h);
+      g_write_backs = 0;
+      g_write_back_ms = 0;
+    }
     {
       const textures::Stats ts = textures::TakePerf();
       REXLOG_INFO("native perf: hashed per frame: vertex buffers {:.0f} KB static + {:.0f} KB dynamic, "
@@ -3406,17 +3415,25 @@ bool FlushFrameAndWait(Renderer* r) {
 // to guest memory at once: the frame so far runs, the image is read back and
 // written at the guest's size, tiled and byte-swapped as the destination
 // texture says (32-bit colour, k_8_8_8_8 only).
+// The resolves the game's own code reads (the rest are only sampled, and each
+// write-back waits for the GPU): Superstar Threads' attire bake (2048x1024
+// and its mips, from a 2080-wide target), a Created Superstar's portrait
+// (736x1280, compressed into the save and its Community Creations preview)
+// and a highlight reel's cover (128x128 from a 160x128 target). A wider rule
+// (any power-of-two resolve not repeated every frame) also took entrances'
+// 512x512 and 64x64 effect targets, resolved every other frame: hundreds of
+// GPU waits a second, the frame rate in single digits as entrances started.
+bool CpuReadsResolve(uint32_t dst_w, uint32_t dst_h, uint32_t src_w, uint32_t src_h) {
+  if (src_w == 2080 && src_h == 1024) return true;                    // Threads bake
+  if (dst_h > dst_w && src_h == 1280) return true;                    // portrait
+  if (dst_w == 128 && dst_h == 128 && src_w == 160 && src_h == 128) return true;  // reel cover
+  return false;
+}
+
 bool WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, const uint32_t fetch[6],
-                      bool swap_rb) {
+                      bool swap_rb, uint32_t src_w, uint32_t src_h) {
   if (dst.format != RenderFormat::R8G8B8A8_TYPELESS || (fetch[1] & 0x3F) != 6) return false;
-  // Only power-of-two textures (Threads' 2048x1024 and its mips) and
-  // portrait-shaped ones (a Created Superstar's portrait: 736x1280, which
-  // the game compresses into the save and its Community Creations preview):
-  // the screen-shaped ones (1280x720, a glow chain's 320x180, 160x90...) are
-  // never read by the CPU, and each write-back waits for the GPU - on phones
-  // a scene's first frames hitched for up to 600 ms.
-  auto pow2 = [](uint32_t v) { return v && !(v & (v - 1)); };
-  if (!(pow2(dst.width) && pow2(dst.height)) && dst.height <= dst.width) return false;
+  if (!CpuReadsResolve(dst.width, dst.height, src_w, src_h)) return false;
   const uint32_t guest_w = dst.width, guest_h = dst.height;
   const uint32_t host_w = dst.host_w ? dst.host_w : guest_w * dst.scale;
   const uint32_t host_h = dst.host_h ? dst.host_h : guest_h * dst.scale;
@@ -3430,7 +3447,12 @@ bool WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, co
                                  buffer.get(), RenderFormat::R8G8B8A8_UNORM, host_w, host_h, 1, row_texels),
                              plume::RenderTextureCopyLocation::Subresource(dst.resource.get()));
   Transition(r, dst.resource.get(), layout, RenderTextureLayout::SHADER_READ);
+  const auto wait_start = std::chrono::steady_clock::now();
   if (!FlushFrameAndWait(r)) return false;
+  g_write_back_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_start).count();
+  ++g_write_backs;
+  g_write_back_w = guest_w;
+  g_write_back_h = guest_h;
   const auto* src = static_cast<const uint8_t*>(buffer->map());
   if (!src) return false;
   const bool tiled = fetch[0] >> 31;
@@ -3594,7 +3616,7 @@ void OnResolve(const PPCContext& ctx) {
       dst.last_frame = r->frames;
     }
     const bool recurring = dst.streak >= 30 || t.color == r->main_target;
-    if (write_back && !recurring && WriteBackResolve(r, base, dst, fetch, swap_rb)) {
+    if (write_back && !recurring && WriteBackResolve(r, base, dst, fetch, swap_rb, src_w, src_h)) {
       textures::ForgetResolved(base);  // (sampled from memory from now on)
     }
   }

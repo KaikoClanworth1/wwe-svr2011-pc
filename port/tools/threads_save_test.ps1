@@ -1,13 +1,13 @@
-# Superstar Threads: Batista -> Attires -> slot 1 -> Edit -> Trunks -> white -> Continue -> Save "TEST THREAD";
+﻿# Superstar Threads: Batista -> Attires -> slot 1 -> Edit -> Trunks -> white -> Continue -> Save "TEST THREAD";
 # then a One on One with Batista in that attire (screenshot <Name>_attire.png).
-#   threads_save_test.ps1 -Name x -Config test_config.toml -UserData <folder copy of test saves>
-param([string]$Name = "thrs", [string]$Config = "test_config.toml", [string]$UserData)
+#   threads_save_test.ps1 -Name x -Config test_config.toml -UserData <folder copy of test saves> [-GameDir <install>]
+param([string]$Name = "thrs", [string]$Config = "test_config.toml", [string]$UserData, [string]$GameDir = "")
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs $Config
 if ($UserData) { $env:SVR2011_USER_DATA = $UserData }
 $s = Join-Path $PSScriptRoot "session.ps1"
 function K($k, $w = 3) { & $s input "press $k 200" | Out-Null; Start-Sleep $w }
-& $s start -Name $Name | Out-Null
+& $s start -Name $Name -GameDir $GameDir | Out-Null
 Start-Sleep 50; K START 40; K A 5                        # title -> training ring
 K START 6; K DOWN; K DOWN; K DOWN; K A 4                # CREATE MODES
 K DOWN; K A 5; K DOWN; K DOWN; K A 8                     # CREATE A SUPERSTAR -> SUPERSTAR THREADS
