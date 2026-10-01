@@ -129,7 +129,39 @@ final class Drivers {
         return r;
     }
 
+    // The game stopped (a native crash: a driver that loses the GPU ends there)
+    // since a custom driver was chosen: offer the phone's own driver back.
+    void checkCrash() {
+        String current = settings_.getString(kKey, "");
+        if (current.isEmpty() || GameActivity.running) return;
+        android.content.SharedPreferences prefs = a_.getPreferences(android.content.Context.MODE_PRIVATE);
+        long since = prefs.getLong("driver_chosen_at", 0);
+        android.app.ActivityManager am = a_.getSystemService(android.app.ActivityManager.class);
+        // (newest first; later exits - an update, the app closed - don't hide the crash)
+        android.app.ApplicationExitInfo crash = null;
+        for (android.app.ApplicationExitInfo e : am.getHistoricalProcessExitReasons(null, 0, 16)) {
+            if (e.getTimestamp() <= since) break;
+            if (e.getReason() == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                crash = e;
+                break;
+            }
+        }
+        if (crash == null) return;
+        prefs.edit().putLong("driver_chosen_at", crash.getTimestamp()).apply();  // (asked once per crash)
+        String name = new File(current).getParentFile().getName();
+        for (Driver d : installed())
+            if (d.library.getPath().equals(current)) name = d.name;
+        new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            .setMessage("The game stopped while using the graphics driver " + name
+                + ". Go back to the phone's own driver?")
+            .setPositiveButton("Use the phone's driver", (dlg, w) -> choose(null))
+            .setNegativeButton("Keep " + name, null)
+            .show();
+    }
+
     void choose(Driver d) {
+        a_.getPreferences(android.content.Context.MODE_PRIVATE).edit()
+            .putLong("driver_chosen_at", System.currentTimeMillis()).apply();
         settings_.setString(kKey, d == null ? "" : d.library.getPath());
         a_.status(settings_.save() ? (d == null ? "The phone's own driver." : d.name + " chosen.")
                                          + " It applies the next time the game starts."

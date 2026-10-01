@@ -43,6 +43,7 @@ public class LauncherActivity extends Activity {
         kDim = 0xFF9A9AA4, kLine = 0xFF2C2C34;
 
     private GameSettings settings_;
+    private Drivers drivers_;
     private final List<Button> tabs_ = new ArrayList<>();
     private final List<View> pages_ = new ArrayList<>();
     private final List<Runnable> onShow_ = new ArrayList<>();
@@ -134,6 +135,7 @@ public class LauncherActivity extends Activity {
         // (the game's GRAPHICS page may have changed settings meanwhile)
         settings_.load();
         refresh();
+        if (drivers_ != null) drivers_.checkCrash();
     }
 
     String versionName() {
@@ -316,6 +318,10 @@ public class LauncherActivity extends Activity {
             tabs_.get(i).setBackground(on ? underline() : null);
             pages_.get(i).setVisibility(on ? View.VISIBLE : View.GONE);
         }
+        // The chosen tab centred in the tab bar (its neighbours show there are more).
+        Button tab = tabs_.get(index);
+        HorizontalScrollView bar = (HorizontalScrollView) tab.getParent().getParent();
+        bar.post(() -> bar.smoothScrollTo(tab.getLeft() + tab.getWidth() / 2 - bar.getWidth() / 2, 0));
         if (onShow_.get(index) != null) onShow_.get(index).run();
     }
 
@@ -522,11 +528,17 @@ public class LauncherActivity extends Activity {
         };
         a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         sp.setAdapter(a);
+        // (a spinner also reports layouts - its first, the launcher coming back in another
+        // orientation: only the player's own choice is saved)
+        final boolean[] touched = {false};
+        sp.setOnTouchListener((v, e) -> {
+            touched[0] = true;
+            return false;
+        });
         sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                // (a spinner also reports its first layout: only a real change is saved)
-                if (loading_ || values[position].equals(settings_.getString(key, fallback))) return;
+                if (loading_ || !touched[0] || values[position].equals(settings_.getString(key, fallback))) return;
                 if (quoted) settings_.setString(key, values[position]);
                 else settings_.setInt(key, Integer.parseInt(values[position]));
                 saved(label);
@@ -570,7 +582,8 @@ public class LauncherActivity extends Activity {
         LinearLayout audio = card(c, "Audio");
         toggle(audio, "Mute", null, "audio_mute", false);
 
-        new Drivers(this, settings_).build(c);
+        drivers_ = new Drivers(this, settings_);
+        drivers_.build(c);
 
         Button defaults = button("Restore defaults", kCard);
         defaults.setOnClickListener(v -> {

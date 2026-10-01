@@ -40,6 +40,7 @@ final class InstallPage {
     private TextView state_;
     private volatile boolean cancel_;
     private boolean busy_;
+    private Button cancelButton_;
 
     InstallPage(LauncherActivity a) { a_ = a; }
 
@@ -65,9 +66,10 @@ final class InstallPage {
         progress_.setVisibility(View.GONE);
         progress_.setProgressTintList(android.content.res.ColorStateList.valueOf(LauncherActivity.kRed));
         c.addView(progress_, a_.fullWidth(16));
-        Button cancel = a_.button("Cancel", LauncherActivity.kCard);
-        cancel.setOnClickListener(v -> cancel_ = true);
-        c.addView(cancel, a_.fullWidth(10));
+        cancelButton_ = a_.button("Cancel", LauncherActivity.kCard);
+        cancelButton_.setOnClickListener(v -> cancel_ = true);
+        cancelButton_.setVisibility(View.GONE);
+        c.addView(cancelButton_, a_.fullWidth(10));
         refresh();
         return c;
     }
@@ -211,11 +213,13 @@ final class InstallPage {
         cancel_ = false;
         progress_.setProgress(0);
         progress_.setVisibility(View.VISIBLE);
+            cancelButton_.setVisibility(View.VISIBLE);
         a_.status("Reading the disc image…");
         final String[] result = new String[1];
         a_.background(() -> result[0] = copyImage(uri), () -> {
             busy_ = false;
             progress_.setVisibility(View.GONE);
+                cancelButton_.setVisibility(View.GONE);
             a_.status(result[0]);
             refresh();
         });
@@ -319,10 +323,12 @@ final class InstallPage {
             busy_ = true;
             cancel_ = false;
             progress_.setVisibility(View.VISIBLE);
+            cancelButton_.setVisibility(View.VISIBLE);
             final String[] result = new String[1];
             a_.background(() -> result[0] = copyPackage(uri), () -> {
                 busy_ = false;
                 progress_.setVisibility(View.GONE);
+                cancelButton_.setVisibility(View.GONE);
                 a_.status(result[0]);
                 refresh();
             });

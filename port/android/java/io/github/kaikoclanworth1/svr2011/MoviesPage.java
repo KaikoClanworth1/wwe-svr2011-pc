@@ -112,6 +112,7 @@ final class MoviesPage {
         {"256", "LEGENDS LOGO"}
     };
 
+    private Button stop_;
     private final LauncherActivity a_;
     private String video_, strip_;
     private TextView videoLabel_, stripLabel_;
@@ -148,11 +149,11 @@ final class MoviesPage {
 
         LinearLayout strip = a_.card(c, "Strip below (stage and ramp screens)");
         stripLabel_ = a_.text("Black", 14, LauncherActivity.kDim);
-        Button star = a_.button("Superstar…", LauncherActivity.kCard);
+        Button star = a_.button("Superstar…", LauncherActivity.kLine);
         star.setOnClickListener(v -> pickStar());
-        Button other = a_.button("Picture / video…", LauncherActivity.kCard);
+        Button other = a_.button("Picture / video…", LauncherActivity.kLine);
         other.setOnClickListener(v -> pick(false));
-        Button none = a_.button("None (black)", LauncherActivity.kCard);
+        Button none = a_.button("None (black)", LauncherActivity.kLine);
         none.setOnClickListener(v -> {
             strip_ = null;
             stripLabel_.setText("Black");
@@ -190,9 +191,10 @@ final class MoviesPage {
         progress_.setVisibility(View.GONE);
         progress_.setProgressTintList(android.content.res.ColorStateList.valueOf(LauncherActivity.kRed));
         c.addView(progress_, a_.fullWidth(10));
-        Button stop = a_.button("Stop", LauncherActivity.kCard);
-        stop.setOnClickListener(v -> cancel_.set(true));
-        c.addView(stop, a_.fullWidth(8));
+        stop_ = a_.button("Stop", LauncherActivity.kCard);
+        stop_.setOnClickListener(v -> cancel_.set(true));
+        stop_.setVisibility(View.GONE);
+        c.addView(stop_, a_.fullWidth(8));
 
         list_ = a_.card(c, "Your movies");
         refresh();
@@ -343,6 +345,7 @@ final class MoviesPage {
         cancel_.set(false);
         progress_.setProgress(0);
         progress_.setVisibility(View.VISIBLE);
+        stop_.setVisibility(View.VISIBLE);
         String v = video_, s = strip_;
         int fit = fit(), max = maxSeconds();
         final String[] result = new String[1];
@@ -359,6 +362,7 @@ final class MoviesPage {
         }, () -> {
             busy_ = false;
             progress_.setVisibility(View.GONE);
+            stop_.setVisibility(View.GONE);
             a_.status(result[0]);
             refresh();
         });
