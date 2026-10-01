@@ -78,7 +78,7 @@ switch ($Action) {
         $bmp = New-Object System.Drawing.Bitmap $w, $hh
         $g = [System.Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc()
         [void][SW]::PrintWindow($h, $dc, 2); $g.ReleaseHdc($dc)
-        $scale = [math]::Min(1.0, 1280.0 / $w)
+        $scale = if ($env:SVR2011_SHOT_FULL) { 1.0 } else { [math]::Min(1.0, 1280.0 / $w) }  # (SVR2011_SHOT_FULL=1: full size)
         $small = New-Object System.Drawing.Bitmap $bmp, ([int]($w * $scale)), ([int]($hh * $scale))
         $file = Join-Path $runs (($Rest | Select-Object -First 1) + ".png")
         $small.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)

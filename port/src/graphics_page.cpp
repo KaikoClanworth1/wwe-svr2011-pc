@@ -76,17 +76,17 @@ enum Row {
   kResolution, kDisplay, kVsync, kFpsCounter, kRenderer,         // DISPLAY
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
   kTouch, kLanguage,                                             // DISPLAY (last)
-  kWide, kPrepare,                                               // QUALITY (last)
+  kWide, kPrepare, kDof, kMotionBlur, kSoft,                      // QUALITY (last)
 };
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kPrepare}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
 #else
 const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kPrepare}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
 #endif
 // MY WWE -> OPTIONS -> LANGUAGE: the same page with only this row.
 const std::vector<Row> kLanguageRows = {kLanguage};
@@ -240,6 +240,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int scale_ = 0;  // (kScales)
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
+  bool dof_ = true, blur_ = true, soft_ = false;  // depth of field, motion blur (post_effects.cpp)
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
@@ -281,6 +282,9 @@ void GraphicsPage::Load() {
   fps_ = FpsCounterVisible();
   touch_ = rex::cvar::Query<bool>("touch_controls");
   wide_ = rex::cvar::Query<bool>("native_widescreen");
+  dof_ = rex::cvar::Query<bool>("depth_of_field");
+  blur_ = rex::cvar::Query<bool>("motion_blur");
+  soft_ = rex::cvar::Query<bool>("soft_filter");
   prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
     const uint32_t id = rex::cvar::Query<uint32_t>("user_language");
@@ -329,6 +333,21 @@ void GraphicsPage::Change(int row, int dir) {
     case kLanguage:
       language_ = (language_ + dir + kNumLanguages) % kNumLanguages;
       SaveSetting("user_language", std::to_string(kLanguages[language_].id));
+      break;
+    case kDof:
+      dof_ = !dof_;
+      rex::cvar::SetFlagByName("depth_of_field", dof_ ? "true" : "false");
+      SaveSetting("depth_of_field", dof_ ? "true" : "false");
+      break;
+    case kSoft:
+      soft_ = !soft_;
+      rex::cvar::SetFlagByName("soft_filter", soft_ ? "true" : "false");
+      SaveSetting("soft_filter", soft_ ? "true" : "false");
+      break;
+    case kMotionBlur:
+      blur_ = !blur_;
+      rex::cvar::SetFlagByName("motion_blur", blur_ ? "true" : "false");
+      SaveSetting("motion_blur", blur_ ? "true" : "false");
       break;
     case kWide:
       wide_ = !wide_;
@@ -534,6 +553,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return fps_ ? "ON" : "OFF";
       case kTouch: return touch_ ? "ON" : "OFF";
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
+      case kDof: return dof_ ? "ON" : "OFF";
+      case kMotionBlur: return blur_ ? "ON" : "OFF";
+      case kSoft: return soft_ ? "ON (XBOX 360)" : "OFF";
       case kPrepare: return prepare_ ? "ON" : "OFF";
       case kLanguage: return kLanguages[language_].label;
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
@@ -552,6 +574,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return "FPS COUNTER";
       case kTouch: return "TOUCH CONTROLS";
       case kWide: return "WIDE SCREENS";
+      case kDof: return "DEPTH OF FIELD";
+      case kMotionBlur: return "MOTION BLUR";
+      case kSoft: return "SOFT FILTER";
       case kPrepare: return "PREPARE GRAPHICS";
       case kLanguage: return "LANGUAGE";
       case kRenderer: return "RENDERER";
@@ -573,6 +598,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";
+      case kDof: return "Wide shots blur what is out of focus. OFF: the whole ring stays sharp.";
+      case kMotionBlur: return "Blur and trails on fast moves and replays.";
+      case kSoft: return "The game's 720p smoothing filter: blurs wide shots at higher resolutions.";
       case kPrepare: return "Builds the graphics ahead in the menus, so matches don't stutter (native).";
       case kLanguage:
         return language_ == language_at_start_
@@ -587,7 +615,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     return "";
   };
   row_ = std::clamp(row_, 0, n - 1);
-  const float row_h = 34, gap = 13;
+  // (9 rows on QUALITY: a little tighter, so the help line below stays clear)
+  const float row_h = n > 7 ? 30.0f : 34.0f, gap = n > 7 ? 8.0f : 13.0f;
   const float top = 310 - (float(n) * (row_h + gap) - gap) * 0.5f;
   const float fs = 22 * s;
   for (int i = 0; i < n; ++i) {
