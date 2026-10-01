@@ -35,6 +35,12 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
 } else {
     Write-Warning "no native shaders in $shaders (tools\convert_shaders.py) - this package uses the emulated renderer"
 }
+# The known pipelines, built ahead in the menus (tools/merge_pipelines.py).
+$plist = Join-Path $port "dist\pipelines.list"
+if (Test-Path $plist) {
+    New-Item -ItemType Directory -Force (Join-Path $stage "native_shaders") | Out-Null
+    Copy-Item $plist (Join-Path $stage "native_shaders") -Force
+}
 # The Android app, for the launcher's Create APK Package (tools/build_apk.py).
 $apk = Join-Path $port "out\android\SvR2011.apk"
 if (Test-Path $apk) {

@@ -1,4 +1,15 @@
-# Shader precompiling (plan, draft)
+# Shader precompiling
+
+**Status:** steps 1, 3 and 4 are done:
+- **D3D12 pipeline library:** b42cf33.
+- **List, background builder and progress bar:** a236628 and the commit after it.
+- **Shipped list:** `port/dist/pipelines.list`, 298 pipelines from a 25-leaf menu crawl. Merge more with
+  `tools/merge_pipelines.py runs\crawl` (or any user data's `cache
+ative_pipelines.list`).
+
+Still to do: the shader pack (step 2) and the settings rows (step 5; the cvar
+`native_prepare_pipelines` exists).
+
 
 Goal: no hitches the first time a scene, camera cut or finisher appears. The native renderer builds
 its GPU pipelines in the background while the player is in the menus, and a small progress bar shows

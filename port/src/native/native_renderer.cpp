@@ -2086,7 +2086,9 @@ void StartPrebuildingPipelines(Renderer* r) {
   if (!REXCVAR_GET(native_prepare_pipelines) || g_debug_solid || g_no_depth || g_no_blend) return;
   std::vector<PipelineRecord> records;
   std::unordered_set<uint64_t> seen;
-  for (const std::filesystem::path& file : {ShaderDirectory() / "pipelines.list", PlayerPipelineList()}) {
+  // (the shipped list beside the exe even when the shaders come from elsewhere: dev runs)
+  const std::filesystem::path shipped = rex::filesystem::GetExecutableFolder() / "native_shaders" / "pipelines.list";
+  for (const std::filesystem::path& file : {shipped, PlayerPipelineList()}) {
     std::ifstream in(file);
     std::string line;
     uint32_t count = 0;

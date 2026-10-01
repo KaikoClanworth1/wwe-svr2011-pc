@@ -48,6 +48,12 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
         Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
         Copy-Item -Destination (Join-Path $game "native_shaders") -Force
 }
+# The known pipelines, built ahead in the menus (tools/merge_pipelines.py).
+$plist = Join-Path $root "dist\pipelines.list"
+if (Test-Path $plist) {
+    New-Item -ItemType Directory -Force (Join-Path $game "native_shaders") | Out-Null
+    Copy-Item $plist (Join-Path $game "native_shaders") -Force
+}
 # The Android app, for the launcher's Create APK Package (tools/build_apk.py).
 $apk = Join-Path $root "out\android\SvR2011.apk"
 if (Test-Path $apk) {
