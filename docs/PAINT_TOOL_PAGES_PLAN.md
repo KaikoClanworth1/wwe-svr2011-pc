@@ -189,19 +189,21 @@ Both risks are cleared. They were checked on the clean v1.0.3 build in a separat
   - captures of pages 1-3;
   - a launcher-imported page-3 logo shown in the game's grid.
 
-## Community Creations paging (done)
+## Community Creations: one list of 200 (done)
 
-- **Hook on 8250FFC0** (the slot list's update while it has the controller; data-select screen, vtable 0x82027C20, modes 0 upload and 1 download target). On LB/RB it changes the page, writes that page into screen+272, then runs the game's own refreshes:
+At first this used LB/RB, then (user's idea) the game's own list paging was extended instead: the slot list's "1/2" (D-pad LEFT/RIGHT, 10 rows each) now reads **"1/20"**, so slots 1-200 are listed directly. Slot n is on Paint Tool page n / 20.
+
+- **The list keeps its slot number** (screen+0x8344, 0-199). The file it read (+272) holds the page of the slot under the cursor; 8250FFC0 loads it as the cursor moves.
+- **Count:** 82517B40 sets 200 (the game: 20).
+- **Flags and labels for all 200:**
   - 82517B58: used flags;
-  - 82517B90: downloaded flags;
-  - 82518668: labels;
-  - 82517D78: the upload preview, mode 0 only (downloads preview the download);
-  - 82510518: redraw.
-- **The label** sits left of the list's own "◀ 1/2 ▶" row.
-- **Hook on 82518268** (writes the download into its slot) loads the current page into screen+272 first, because the game freed and reallocated that buffer since the slot was picked. Then it calls the Online session's `SetPaintDownloadCheck` callback (backup and validation; returning false skips the write), and then the game's write. The write is then stored by the page storage hooks.
-- **Verified** against the local server (`tools/paint_pages_cc.ps1`; config `runs/test_config_lim_online.toml` with its own online_xuid; saves `runs/test_userdata_lim_online`):
-  - downloaded a logo into page 2 slot 4: `p02_s04.bin`, used and downloaded flags set, `00PaintTool.pt` untouched;
-  - the upload list on page 2 greys out the downloaded logo;
-  - uploaded page 2 slot 1 (server record 6);
-  - paging 1 -> 2 -> 3 -> 2 with the preview following.
-
+  - 82517B90: downloaded flags (the game's version would walk past the file);
+  - 82518668: labels. The port builds a 200-label table in guest memory ("PAINT TOOL LOGO SLOT 01-200"), served by 82517F40.
+- **The number becomes n % 20** in every function that turns it into a place in the file, while it runs: 825180F0 (upload copy; the upload's label is then set to the slot's own number), 825181C0, 82511C18, and 82518268 (the download write, which first loads the slot's page).
+  - 82517D78 (preview) gets its list page/row adjusted the same way.
+  - 824C5768 and 824C5BA0 get manager+16 adjusted (Paint Tool type 4 only).
+  - 82510D70 (the A-press check against downloaded flags) keeps the full number, which is why the number is not rewritten for good.
+- **Verified** (`tools/paint_pages_cc.ps1`):
+  - the list pages 1/20 -> 6/20 show page 1, page 2 (slots 21-24, 24 DOWNLOADED) and page 3 (slot 45) correctly, with previews;
+  - downloaded into slot 47: `p03_s07.bin` written, `00PaintTool.pt` untouched;
+  - uploaded slot 21 ("PAINT TOOL LOGO SLOT 21", page 2 slot 1): server record 9.

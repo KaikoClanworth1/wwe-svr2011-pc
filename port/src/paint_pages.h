@@ -6,8 +6,9 @@
 // live in Saves\.paint\pNN_sMM.bin, one file per used slot (the raw 0x604CC-
 // byte slot). On pages 2-10 the Paint Tool storage jobs (open / read / write /
 // close) are done here instead of on the file, and reported to the game as
-// done. LB / RB in the Paint Tool grid switch pages. Created Superstars keep
-// their own copy of each logo, so logos on any page stay on them.
+// done. LB / RB switch pages in the Paint Tool grid and the Created Superstar
+// logo picker; Community Creations lists all 200 slots. Created Superstars
+// keep their own copy of each logo, so logos on any page stay on them.
 // Plan and findings: docs/PAINT_TOOL_PAGES_PLAN.md.
 #pragma once
 
@@ -41,10 +42,10 @@ int PaintPage();
 // written into its slot (sub_82518268, the only hook on it), after the chosen
 // page was loaded into the screen's file buffer. `screen` is the slot list
 // (vtable 0x82027C20): +268 the downloaded 0x604CC-byte slot, +272 the file
-// buffer, +0x8344 the slot (0-19) on `page` (0-based; 0 = 00PaintTool.pt,
-// else Saves\.paint\pNN_sMM.bin). Returning false skips the game's write -
-// the callback then has to leave the screen in a state the game can go on
-// from. Set from the game's thread before Community Creations runs (online.h).
+// buffer (holding `page`), +0x8344 the slot number 0-199 - slot % 20 on
+// `page` (0-based; 0 = 00PaintTool.pt, else Saves\.paint\pNN_sMM.bin).
+// Returning false skips the game's write - the callback then has to leave
+// the screen in a state the game can go on from. Set from the game's thread before Community Creations runs (online.h).
 using PaintDownloadCheck = bool (*)(uint8_t* base, uint32_t screen, int page);
 void SetPaintDownloadCheck(PaintDownloadCheck check);
 

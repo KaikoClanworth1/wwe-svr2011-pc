@@ -80,8 +80,6 @@ std::atomic<int64_t> g_picker_seen{0};  // ms; the picker's last input (label)
 uint32_t g_picker = 0, g_picker_vtable = 0;  // the open Superstar logo picker
 uint32_t g_picker_list = 0;                  // its list while it reloads
 uint16_t g_picker_prev_buttons = 0;
-std::atomic<int64_t> g_slots_seen{0};   // ms; the CC slot list's last update (label)
-uint16_t g_slots_prev_buttons = 0;
 constexpr uint32_t kSlotScreenVtable = 0x82027C20, kSlotScreenMode = 260, kSlotScreenFile = 272;
 std::atomic<svr2011::PaintDownloadCheck> g_download_check{nullptr};
 
@@ -527,6 +525,22 @@ REX_HOOK_RAW(sub_823D4FC0) {
 }
 
 // -- Community Creations: the Paint Tool slot list -------------------------
+//
+// The list shows all 200 slots: its own pages ("1/20", D-pad LEFT / RIGHT)
+// with 10 rows each, so slot n is on Paint Tool page n / 20. The list keeps
+// the slot number (0-199) in screen+0x8344; the Paint Tool file it reads
+// (+272) holds the page of the slot under the cursor (loaded here as the
+// cursor moves), and every function that turns the number into a place in
+// that file sees n % 20 while it runs.
+
+namespace {
+
+constexpr uint32_t kListSlots = svr2011::kPaintPages * kSlots;  // 200
+constexpr uint32_t kSlotIndex = 0x8344, kSlotCount = 0x8340;
+constexpr uint32_t kUsedFlags = 0x873C, kDownloadedFlags = 0x8AD4, kLabels = 0x9010, kLabelSize = 70;
+constexpr uint32_t kListWidget = 28, kWidgetRow = 56, kWidgetPage = 72;
+constexpr uint32_t kCcManager = 0x82E3DD9C;  // -> +12 content type (4 Paint Tool), +16 slot
+uint32_t g_labels = 0;                       // guest: 200 labels, kLabelSize each
 
 // Page `page` into the file image at `f` (page 1 from the file).
 bool LoadPage(int page, uint8_t* f) {
@@ -539,65 +553,245 @@ bool IsSlotScreen(uint8_t* base, uint32_t screen) {
   return screen > 0x10000 && Rd32(base + screen) == kSlotScreenVtable;
 }
 
-// The list's update while it has the controller: sub_8250FFC0(screen). LB /
-// RB show the previous / next page (an upload can come from, and a download
-// go to, any page).
+// Used / downloaded flags of the 20 slots of `page`; the page the screen
+// holds comes from its file, the others from their stores.
+void PageFlags(uint8_t* base, uint32_t file, int page, uint32_t used[kSlots], uint32_t downloaded[kSlots]) {
+  for (uint32_t k = 0; k < kSlots; ++k) used[k] = downloaded[k] = 0;
+  auto header = [&](uint32_t k, const uint8_t* h) {
+    used[k] = Rd32(h + kUsed);
+    downloaded[k] = uint32_t(int32_t(int8_t(h[13])));
+  };
+  if (page == g_page.load() && file && Rd32(base + file) == kMagic) {
+    for (uint32_t k = 0; k < kSlots; ++k) header(k, base + file + 8 + k * kSlot);
+    return;
+  }
+  if (page == 0 && g_page1_valid && g_page1.size() == kFile) {
+    for (uint32_t k = 0; k < kSlots; ++k) header(k, g_page1.data() + 8 + k * kSlot);
+    return;
+  }
+  for (uint32_t k = 0; k < kSlots; ++k) {
+    uint8_t h[32] = {};
+    std::ifstream in(page == 0 ? g_pt : SlotFile(page, k), std::ios::binary);
+    if (page == 0) in.seekg(8 + k * kSlot);
+    if (in.read(reinterpret_cast<char*>(h), sizeof(h))) header(k, h);
+  }
+}
+
+// Shows the page of slot `n` in the screen's file (if it does not already).
+void ShowPageOf(uint8_t* base, uint32_t screen, uint32_t n) {
+  const uint32_t file = Rd32(base + screen + kSlotScreenFile);
+  const int page = int(n / kSlots);
+  if (!file || Rd32(base + file) != kMagic || page == g_page.load()) return;
+  std::lock_guard lock(g_mutex);
+  if (LoadPage(page, base + file)) g_page = page;
+}
+
+// Runs fn(screen) with the slot number as the game's 0-19 on the page the
+// file holds.
+void WithPageSlot(PPCContext& ctx, uint8_t* base, uint32_t screen, void (*fn)(PPCContext&, uint8_t*)) {
+  const uint32_t n = Rd32(base + screen + kSlotIndex);
+  if (n < kSlots || n >= kListSlots) {
+    fn(ctx, base);
+    return;
+  }
+  ShowPageOf(base, screen, n);
+  Wr32(base + screen + kSlotIndex, n % kSlots);
+  fn(ctx, base);
+  Wr32(base + screen + kSlotIndex, n);
+}
+
+}  // namespace
+
+// The number of slots: 200 (the game: 20).
+REX_EXTERN(__imp__sub_82517B40);
+REX_HOOK_RAW(sub_82517B40) {
+  const uint32_t screen = ctx.r3.u32;
+  __imp__sub_82517B40(ctx, base);
+  if (IsSlotScreen(base, screen)) Wr32(base + screen + kSlotCount, kListSlots);
+}
+
+// The used flags of all 200 slots (the game: of the 20 in its file).
+REX_EXTERN(__imp__sub_82517B58);
+REX_HOOK_RAW(sub_82517B58) {
+  const uint32_t screen = ctx.r3.u32;
+  if (!IsSlotScreen(base, screen)) {
+    __imp__sub_82517B58(ctx, base);
+    return;
+  }
+  const uint32_t file = Rd32(base + screen + kSlotScreenFile);
+  for (int page = 0; page < svr2011::kPaintPages; ++page) {
+    uint32_t used[kSlots], downloaded[kSlots];
+    PageFlags(base, file, page, used, downloaded);
+    for (uint32_t k = 0; k < kSlots; ++k) Wr32(base + screen + kUsedFlags + (page * kSlots + k) * 4, used[k]);
+  }
+}
+
+// The downloaded flags of all 200 slots.
+REX_EXTERN(__imp__sub_82517B90);
+REX_HOOK_RAW(sub_82517B90) {
+  const uint32_t screen = ctx.r3.u32;
+  if (!IsSlotScreen(base, screen)) {
+    __imp__sub_82517B90(ctx, base);
+    return;
+  }
+  const uint32_t file = Rd32(base + screen + kSlotScreenFile);
+  for (int page = 0; page < svr2011::kPaintPages; ++page) {
+    uint32_t used[kSlots], downloaded[kSlots];
+    PageFlags(base, file, page, used, downloaded);
+    for (uint32_t k = 0; k < kSlots; ++k)
+      Wr32(base + screen + kDownloadedFlags + (page * kSlots + k) * 4, downloaded[k]);
+  }
+}
+
+// The labels ("PAINT TOOL LOGO SLOT 01"): the game makes the first 20; the
+// port's table numbers all 200 the same way.
+REX_EXTERN(__imp__sub_82518668);
+REX_HOOK_RAW(sub_82518668) {
+  const uint32_t screen = ctx.r3.u32;
+  __imp__sub_82518668(ctx, base);
+  if (!IsSlotScreen(base, screen)) return;
+  if (!g_labels) g_labels = g_memory->SystemHeapAlloc(kListSlots * kLabelSize);
+  if (!g_labels) return;
+  // The game's text without its number (single-byte text, as it writes it).
+  const char* first = reinterpret_cast<const char*>(base + screen + kLabels);
+  std::string prefix(first, strnlen(first, kLabelSize));
+  if (const auto space = prefix.find_last_of(' '); space != std::string::npos) prefix.resize(space);
+  for (uint32_t n = 0; n < kListSlots; ++n) {
+    char text[kLabelSize];
+    std::snprintf(text, sizeof(text), "%s %02u", prefix.c_str(), n + 1);
+    std::memcpy(base + g_labels + n * kLabelSize, text, kLabelSize);
+  }
+}
+
+// A slot's label: sub_82517F40(screen, n) - "EMPTY" for an empty slot.
+REX_EXTERN(__imp__sub_82517F40);
+REX_HOOK_RAW(sub_82517F40) {
+  const uint32_t screen = ctx.r3.u32, n = ctx.r4.u32;
+  if (IsSlotScreen(base, screen) && g_labels && n < kListSlots && Rd32(base + screen + kUsedFlags + n * 4)) {
+    ctx.r3.u64 = g_labels + n * kLabelSize;
+    return;
+  }
+  __imp__sub_82517F40(ctx, base);
+}
+
+// The list's update while it has the controller (sets the slot number from
+// the cursor): the file follows the page of the slot under the cursor.
 REX_EXTERN(__imp__sub_8250FFC0);
 REX_HOOK_RAW(sub_8250FFC0) {
   const uint32_t screen = ctx.r3.u32;
-  if (IsSlotScreen(base, screen) && Rd32(base + screen + kSlotScreenMode) <= 1) {
-    g_slots_seen = NowMs();
-    const uint16_t buttons = PadButtons();
-    const uint16_t pressed = uint16_t(buttons & ~g_slots_prev_buttons);
-    g_slots_prev_buttons = buttons;
-    using namespace rex::input;
-    const int delta = (pressed & X_INPUT_GAMEPAD_LEFT_SHOULDER)    ? -1
-                      : (pressed & X_INPUT_GAMEPAD_RIGHT_SHOULDER) ? +1
-                                                                   : 0;
-    const uint32_t file = Rd32(base + screen + kSlotScreenFile);
-    if (delta && file && Rd32(base + file) == kMagic) {
-      const int to = (g_page.load() + delta + svr2011::kPaintPages) % svr2011::kPaintPages;
-      bool loaded;
-      {
-        std::lock_guard lock(g_mutex);
-        loaded = LoadPage(to, base + file);
-      }
-      if (loaded) {
-        g_page = to;
-        CallR3(ctx, base, sub_82517B58, screen);
-        CallR3(ctx, base, sub_82517B90, screen);
-        CallR3(ctx, base, sub_82518668, screen);
-        // Uploads preview the logo under the cursor (sub_82517D78); downloads
-        // preview the download.
-        if (Rd32(base + screen + kSlotScreenMode) == 0) CallR3(ctx, base, sub_82517D78, screen);
-        CallR3(ctx, base, sub_82510518, screen);
-        REXLOG_INFO("paint pages: Community Creations slot list shows page {}", to + 1);
-      }
-    }
-  }
   __imp__sub_8250FFC0(ctx, base);
+  if (IsSlotScreen(base, screen) && Rd32(base + screen + kSlotScreenMode) <= 1) {
+    const uint32_t n = Rd32(base + screen + kSlotIndex);
+    if (n < kListSlots) ShowPageOf(base, screen, n);
+  }
 }
 
-// A download is written into its slot: sub_82518268(screen). The game copies
-// it into the file it read before (the buffer is freed and allocated again in
-// between), so the chosen page is loaded into it first.
+// The slot preview of an upload: sub_82517D78(screen) reads the cursor (list
+// page * 10 + row) as the place in the file.
+REX_EXTERN(__imp__sub_82517D78);
+REX_HOOK_RAW(sub_82517D78) {
+  const uint32_t screen = ctx.r3.u32;
+  if (!IsSlotScreen(base, screen)) {
+    __imp__sub_82517D78(ctx, base);
+    return;
+  }
+  const uint32_t page = Rd32(base + screen + kWidgetPage), row = Rd32(base + screen + kWidgetRow);
+  const uint32_t n = page * 10 + row;
+  if (n < kSlots || n >= kListSlots) {
+    __imp__sub_82517D78(ctx, base);
+    return;
+  }
+  ShowPageOf(base, screen, n);
+  Wr32(base + screen + kWidgetPage, (n % kSlots) / 10);
+  Wr32(base + screen + kWidgetRow, n % 10);
+  __imp__sub_82517D78(ctx, base);
+  Wr32(base + screen + kWidgetPage, page);
+  Wr32(base + screen + kWidgetRow, row);
+}
+
+// Uploads: the slot is copied out with its label (sub_825180F0), and
+// stamped and saved (sub_825181C0); and the upload's checks (sub_82511C18).
+REX_EXTERN(__imp__sub_825180F0);
+REX_HOOK_RAW(sub_825180F0) {
+  const uint32_t screen = ctx.r3.u32;
+  if (!IsSlotScreen(base, screen)) {
+    __imp__sub_825180F0(ctx, base);
+    return;
+  }
+  const uint32_t n = Rd32(base + screen + kSlotIndex);
+  WithPageSlot(ctx, base, screen, __imp__sub_825180F0);
+  // The label that goes with it: the slot's own number.
+  const uint32_t record = Rd32(base + screen + 268);
+  if (record && g_labels && n < kListSlots)
+    std::memcpy(base + record + kSlot, base + g_labels + n * kLabelSize, kLabelSize);
+}
+
+REX_EXTERN(__imp__sub_825181C0);
+REX_HOOK_RAW(sub_825181C0) {
+  const uint32_t screen = ctx.r3.u32;
+  if (!IsSlotScreen(base, screen)) {
+    __imp__sub_825181C0(ctx, base);
+    return;
+  }
+  WithPageSlot(ctx, base, screen, __imp__sub_825181C0);
+}
+
+REX_EXTERN(__imp__sub_82511C18);
+REX_HOOK_RAW(sub_82511C18) {
+  const uint32_t screen = ctx.r3.u32;
+  if (!IsSlotScreen(base, screen)) {
+    __imp__sub_82511C18(ctx, base);
+    return;
+  }
+  WithPageSlot(ctx, base, screen, __imp__sub_82511C18);
+}
+
+// The upload's data and thumbnail: sub_824C5768(manager, which) and
+// sub_824C5BA0(manager, ...) take the slot from manager+16.
+template <void (*Fn)(PPCContext&, uint8_t*)>
+void WithManagerSlot(PPCContext& ctx, uint8_t* base) {
+  const uint32_t manager = ctx.r3.u32;
+  const uint32_t slot = manager ? Rd32(base + manager + 16) : 0;
+  if (!manager || Rd32(base + manager + 12) != 4 || slot < kSlots || slot >= kListSlots) {
+    Fn(ctx, base);
+    return;
+  }
+  Wr32(base + manager + 16, slot % kSlots);
+  Fn(ctx, base);
+  Wr32(base + manager + 16, slot);
+}
+
+REX_EXTERN(__imp__sub_824C5768);
+REX_HOOK_RAW(sub_824C5768) { WithManagerSlot<__imp__sub_824C5768>(ctx, base); }
+
+REX_EXTERN(__imp__sub_824C5BA0);
+REX_HOOK_RAW(sub_824C5BA0) { WithManagerSlot<__imp__sub_824C5BA0>(ctx, base); }
+
+// A download is written into its slot: sub_82518268(screen). The page of
+// the chosen slot is loaded into the file first (the game freed and
+// allocated that buffer again since the slot was chosen), then the online
+// code's check runs, then the game's write (stored by the page jobs above).
 REX_EXTERN(__imp__sub_82518268);
 REX_HOOK_RAW(sub_82518268) {
   const uint32_t screen = ctx.r3.u32;
-  if (IsSlotScreen(base, screen)) {
-    const uint32_t file = Rd32(base + screen + kSlotScreenFile);
-    if (file) {
-      std::lock_guard lock(g_mutex);
-      if (!LoadPage(g_page.load(), base + file))
-        REXLOG_WARN("paint pages: could not load page {} for the download", g_page.load() + 1);
-      REXLOG_INFO("paint pages: download goes to page {}", g_page.load() + 1);
-    }
-    if (auto check = g_download_check.load(); check && !check(base, screen, g_page.load())) {
-      REXLOG_INFO("paint pages: the download was not written (Community Creations check)");
-      return;
-    }
+  if (!IsSlotScreen(base, screen)) {
+    __imp__sub_82518268(ctx, base);
+    return;
   }
-  __imp__sub_82518268(ctx, base);
+  const uint32_t n = Rd32(base + screen + kSlotIndex);
+  const uint32_t file = Rd32(base + screen + kSlotScreenFile);
+  if (n < kListSlots && file) {
+    std::lock_guard lock(g_mutex);
+    const int page = int(n / kSlots);
+    if (LoadPage(page, base + file)) g_page = page;
+    else REXLOG_WARN("paint pages: could not load page {} for the download", page + 1);
+  }
+  REXLOG_INFO("paint pages: download goes to page {} slot {}", g_page.load() + 1, n % kSlots + 1);
+  if (auto check = g_download_check.load(); check && !check(base, screen, g_page.load())) {
+    REXLOG_INFO("paint pages: the download was not written (Community Creations check)");
+    return;
+  }
+  WithPageSlot(ctx, base, screen, __imp__sub_82518268);
 }
 
 // -- The page label ---------------------------------------------------------
@@ -612,11 +806,9 @@ class PageLabel final : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override {
     const int64_t now = NowMs();
     const bool grid = now - g_grid_seen.load() < 250, picker = now - g_picker_seen.load() < 250;
-    const bool slots = now - g_slots_seen.load() < 250;
-    if (!grid && !picker && !slots) return;
+    if (!grid && !picker) return;
     // The game's 16:9 picture, centred in the window; the label sits on the
-    // top edge of the grid, centred, left of the slot list's own page row, or
-    // right of the picker's title.
+    // top edge of the grid, centred, or right of the picker's title.
     const float w = io.DisplaySize.x, h = io.DisplaySize.y;
     const float gw = std::min(w, h * 16.0f / 9.0f), gh = gw * 9.0f / 16.0f;
     const float x0 = (w - gw) * 0.5f, y0 = (h - gh) * 0.5f;
@@ -625,11 +817,10 @@ class PageLabel final : public rex::ui::ImGuiDialog {
     std::snprintf(text, sizeof(text), "LB   PAGE %d / %d   RB", g_page.load() + 1, svr2011::kPaintPages);
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
-    const float size = (slots && !grid ? 24.0f : 28.0f) * scale;
+    const float size = 28.0f * scale;
     const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    const ImVec2 c = grid    ? ImVec2(x0 + gw * 0.5f, y0 + gh * 0.088f)
-                     : slots ? ImVec2(x0 + gw * 0.29f, y0 + gh * 0.275f)
-                             : ImVec2(x0 + gw * 0.375f + ts.x * 0.5f, y0 + gh * 0.151f);
+    const ImVec2 c = grid ? ImVec2(x0 + gw * 0.5f, y0 + gh * 0.088f)
+                          : ImVec2(x0 + gw * 0.375f + ts.x * 0.5f, y0 + gh * 0.151f);
     const ImVec2 pad(14.0f * scale, 6.0f * scale);
     const ImVec2 a(c.x - ts.x * 0.5f - pad.x, c.y - ts.y * 0.5f - pad.y);
     const ImVec2 b(c.x + ts.x * 0.5f + pad.x, c.y + ts.y * 0.5f + pad.y);
