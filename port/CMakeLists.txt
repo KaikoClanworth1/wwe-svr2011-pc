@@ -37,6 +37,7 @@ set(SVR2011_SOURCES
     src/entrance_media.cpp
     src/movie_transcode.cpp
     src/paint_pages.cpp
+    src/roster.cpp
     src/game_files.cpp
 )
 
