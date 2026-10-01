@@ -14,9 +14,11 @@ function Test-IsTestGame($proc) {
 
 function Stop-TestGames {
     foreach ($p in Get-SvrGames) {
-        # (not the online tests' games: online_session.ps1 runs them beside others)
+        # (not the online tests' games: online_session.ps1 runs them beside others;
+        # nor the Limit Breaking and Optimizing sessions' games: lim_game, opt_*)
         if ((Test-IsTestGame $p) -and ([string]$p.CommandLine -notmatch [regex]::Escape("\runs\online_game\")) -and
-            ([string]$p.CommandLine -notmatch [regex]::Escape("\runs\lim_game\"))) {
+            ([string]$p.CommandLine -notmatch [regex]::Escape("\runs\lim_game\")) -and
+            ([string]$p.CommandLine -notmatch [regex]::Escape("\runs\opt_"))) {
             Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
             Wait-Process -Id $p.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
         }

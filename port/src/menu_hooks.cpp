@@ -41,6 +41,11 @@ constexpr uint32_t kExitLabelId = 0xAFC1;
 constexpr uint32_t kAchievementsLabelId = 0xAFC2;
 constexpr uint32_t kAchievementsTextId = 0xAFC3;  // its description line
 constexpr uint32_t kLanguageLabelId = 0xAFC4;
+// Character select: the name beside the "?" tile ("Random", looked up by the
+// panel code in sub_82465728 for tile kind 4) - that tile opens the managers
+// (src/managers.cpp), so it reads "Extra" there.
+constexpr uint32_t kRandomTileId = 0x0116;
+constexpr uint32_t kRandomTileCaller = 0x82465970;
 constexpr uint32_t kMainMenuGroup = 0x01;
 constexpr uint32_t kMyWweGroup = 0x05;
 constexpr uint32_t kAchievementsRow = 4;       // MY WWE: after OPTIONS
@@ -57,6 +62,7 @@ uint32_t g_exit_label = 0;  // and of "EXIT"
 uint32_t g_ach_label = 0;   // "ACHIEVEMENTS" and its description
 uint32_t g_ach_text = 0;
 uint32_t g_language_label = 0;  // "LANGUAGE"
+uint32_t g_extra_label = 0;     // "Extra" (the "?" tile opens the managers: src/managers.cpp)
 
 uint32_t Be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
@@ -96,7 +102,7 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   const size_t n_graphics = std::strlen(l->graphics) + 1, n_exit = std::strlen(l->exit) + 1,
                n_ach = std::strlen(l->achievements) + 1, n_text = std::strlen(l->achievements_text) + 1,
                n_language = std::strlen(l->language_label) + 1;
-  g_label = memory->SystemHeapAlloc(uint32_t(n_graphics + n_exit + n_ach + n_text + n_language + 16));
+  g_label = memory->SystemHeapAlloc(uint32_t(n_graphics + n_exit + n_ach + n_text + n_language + 6 + 16));
   if (!g_label) {
     REXLOG_WARN("menu: no guest memory for the GRAPHICS label");
     return;
@@ -110,6 +116,8 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   std::memcpy(memory->TranslateVirtual<char*>(g_ach_text), l->achievements_text, n_text);
   g_language_label = g_ach_text + uint32_t(n_text);
   std::memcpy(memory->TranslateVirtual<char*>(g_language_label), l->language_label, n_language);
+  g_extra_label = g_language_label + uint32_t(n_language);
+  std::memcpy(memory->TranslateVirtual<char*>(g_extra_label), "Extra", 6);  // (the same in all five; shown in capitals)
 }
 
 }  // namespace svr2011
@@ -139,6 +147,11 @@ REX_HOOK_RAW(sub_82153EF8) {
   }
   if (g_language_label && ctx.r4.u32 == kLanguageLabelId) {
     ctx.r3.u64 = g_language_label;
+    return;
+  }
+  if (g_extra_label && ctx.r4.u32 == kRandomTileId && uint32_t(ctx.lr) == kRandomTileCaller &&
+      rex::cvar::Query<bool>("managers_tile")) {
+    ctx.r3.u64 = g_extra_label;
     return;
   }
   // Debug: SVR2011_DUMP_STRINGS=<file> writes all the loaded strings (ids

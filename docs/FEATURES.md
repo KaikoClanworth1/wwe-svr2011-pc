@@ -36,7 +36,7 @@ release yet.
 - **10 HD logos** per Created Superstar instead of 2 (`Saves\.logos`).
 - **Paint Tool: 10 pages of 20 logos** (200 instead of 20); grid edges change pages, the Superstar logo picker scrolls all pages. *(Unreleased.)*
 - **Divas against male superstars**: pick a diva, switch back to WWE SUPERSTARS and pick a man; the match plays normally. *(Unreleased.)*
-- **Managers playable**: the "?" tile on character select opens a list of Stephanie McMahon, Theodore Long, Hornswoggle, Paul Bearer and Tiffany (instead of the random pick); they wrestle full matches. *(Unreleased.)*
+- **Managers playable**: the "?" tile on character select is now an **M** tile named EXTRA; it opens a list of Stephanie McMahon, Theodore Long, Hornswoggle, Paul Bearer and Tiffany (instead of the random pick), and they wrestle full matches. *(Unreleased.)*
 - **More match types** in the PLAY menus: Falls Count Anywhere (1v1, tornado tag, triple threat, fatal 4-way), 15- and 25-man Royal Rumble, 6-man Lumberjack, Backstage brawls for triple threat, fatal 4-way and 6-man (7 areas). *(Unreleased.)*
 - **Replays can be switched off**: REPLAYS (DISPLAY tab) skips the instant replays after finishers and the highlights at the end of a match. *(Unreleased.)*
 - **Five languages**: English, French, German, Spanish, Italian, in the launcher and in game; **LANGUAGE** has its own entry in *My WWE → Options*. *(Own entry: unreleased.)*
@@ -103,7 +103,7 @@ Requested later on 1 October 2026:
 - [x] Entrances dropping to single-digit fps since the update. *(2188b98)*
 - [ ] Textures turn black at the start of a match with entrances off: not reproduced in three tests; waiting for the reporter's log, version and screenshot.
 - [x] Replays can be switched off completely. *(63d9358)*
-- [ ] Managers: the "?" tile should show an "M" (its picture is in the menu artwork; needs an art edit).
+- [x] Managers: the "?" tile shows an "M" (tile and banner, from the user's art) and reads EXTRA instead of RANDOM.
 - [ ] Match types: 50-man Royal Rumble - the engine holds 30 people in a match (not done).
 - [x] Match types: Lumberjack, Falls Count Anywhere, Backstage for triple threat / fatal 4-way / 6-man, 15- and 25-man Rumble. *(7b7e952)*
 - [ ] Road to WrestleMania's whole backstage as a fighting area: the corridor loads, the other rooms render black (follow-up).

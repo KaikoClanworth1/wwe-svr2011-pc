@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
@@ -363,6 +364,37 @@ void DumpLevel0(TF format, uint32_t width, uint32_t height, const uint8_t* data,
   std::fclose(f);
 }
 
+// Character select: the "?" tile opens the managers (src/managers.cpp), so its
+// pictures (DXT5 textures packed in the menu files: the 64 x 64 grid tile and
+// the 128 x 64 banner beside the name) become an "M" (art/managers_*.png,
+// tools/make_managers_icon.py). Recognized by their data (FNV-1a of the
+// converted base level).
+#include "native/managers_icon.inc"
+
+struct TileSwap {
+  uint32_t width;
+  uint64_t hash;
+  const uint8_t* data;
+};
+const TileSwap kTileSwaps[] = {
+    {64, 0xE4E1A919C5A0D7F9ull, kManagersTile},
+    {128, 0x823D7E7ED0BC1410ull, kManagersBanner},
+};
+static_assert(sizeof(kManagersTile) == 64 * 64 && sizeof(kManagersBanner) == 128 * 64);
+
+void ReplaceRandomTile(uint32_t width, uint8_t* data, uint32_t row_pitch) {
+  const uint32_t row_bytes = width * 4, rows = 16;  // (4 x 4 blocks, 16 bytes each; 64 high)
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (uint32_t y = 0; y < rows; ++y)
+    for (uint32_t x = 0; x < row_bytes; ++x) h = (h ^ data[size_t(y) * row_pitch + x]) * 0x100000001B3ull;
+  for (const TileSwap& t : kTileSwaps) {
+    if (t.width != width || t.hash != h) continue;
+    if (!rex::cvar::Query<bool>("managers_tile")) return;
+    for (uint32_t y = 0; y < rows; ++y) std::memcpy(data + size_t(y) * row_pitch, t.data + y * row_bytes, row_bytes);
+    return;
+  }
+}
+
 plume::RenderSwizzle Swizzle(uint32_t c) {
   switch (c) {
     case 0: return plume::RenderSwizzle::R;
@@ -573,6 +605,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   }
   g_stats.convert_ms +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - convert_t0).count();
+  if (format == TF::k_DXT4_5 && (width == 64 || width == 128) && height == 64 && array_size == 1)
+    ReplaceRandomTile(width, mapped + footprints[0].offset, footprints[0].row_pitch);
   for (uint32_t level = 0; level < levels; ++level) {
     DumpLevel0(format, footprints[level].width, footprints[level].height, mapped + footprints[level].offset,
                footprints[level].row_pitch, footprints[level].rows,
