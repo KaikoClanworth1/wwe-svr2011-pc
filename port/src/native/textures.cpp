@@ -35,7 +35,12 @@ constexpr uint64_t kRecheckFrames = 120;  // re-hash guest data this often
 // with its first frame and must be seen changing right away (with 120 its
 // start stayed frozen for up to 2 s).
 constexpr uint64_t kNewFrames = 240, kNewRecheckFrames = 4;
-// (textures seen changing are "dynamic": re-hashed at every frame they're used)
+// Textures seen changing are "dynamic": re-hashed at every frame they're
+// used, and each check that finds no change doubles the wait before the next
+// (up to kRecheckFrames). Video frames keep being checked at every frame; a
+// texture the game rewrote once (streamed into memory it had used for
+// another) settles back - before, it stayed checked at every frame for good,
+// and over a long session (Universe) that grew to 8-13 MB hashed per frame.
 
 // ---------------------------------------------------------------------------
 // formats
@@ -141,6 +146,7 @@ struct Entry {
   uint32_t srv = UINT32_MAX;
   bool failed = false;
   bool dynamic = false;  // its guest data has changed after upload
+  uint32_t interval = 1;  // (dynamic) frames until its next check
   uint64_t created_frame = 0;
   uint64_t hash = 0;
   uint64_t checked_frame = 0;
@@ -698,7 +704,7 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
       return UINT32_MAX;
     }
   } else if (g_no_cache || ctx.frame >= e.checked_frame +
-                              (e.dynamic ? 1
+                              (e.dynamic ? e.interval
                                : ctx.frame < e.created_frame + kNewFrames ? kNewRecheckFrames
                                                                           : kRecheckFrames)) {
     e.checked_frame = ctx.frame;
@@ -716,7 +722,10 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
         }
       }
       e.dynamic = true;
+      e.interval = 1;
       Upload(ctx, fetch, dimension, e);
+    } else if (e.dynamic) {
+      e.interval = uint32_t(std::min<uint64_t>(uint64_t(e.interval) * 2, kRecheckFrames));
     }
   }
   return e.srv;
