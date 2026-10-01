@@ -133,6 +133,17 @@ class TypingListener final : public rex::ui::WindowInputListener {
 
 namespace svr2011 {
 
+bool GameKeyboardOpen() { return KeyboardOpen(); }
+
+void ToggleSystemKeyboard() {
+  if (!g_window) return;
+  g_window->app_context().CallInUIThread([] { SetTextInput(!g_text_input); });
+}
+
+void UpdateSystemKeyboard() {
+  if (g_text_input && !KeyboardOpen()) SetTextInput(false);
+}
+
 void InstallKeyboardTyping(rex::ui::Window* window) {
   if (!window) return;
   g_window = window;

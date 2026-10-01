@@ -28,4 +28,13 @@ void InstallKeyboardTyping(rex::ui::Window* window);
 void TypeText(const std::string& utf8);
 void TypeKey(uint16_t vk);
 
+// The game's on-screen keyboard is up (it reads the keyboard).
+bool GameKeyboardOpen();
+
+// The system's keyboard (a phone's): shown / hidden for typing into the
+// game's keyboard (the touch controller's KEYBOARD button). Closed again
+// with the game's keyboard (UpdateSystemKeyboard, every frame).
+void ToggleSystemKeyboard();
+void UpdateSystemKeyboard();
+
 }  // namespace svr2011

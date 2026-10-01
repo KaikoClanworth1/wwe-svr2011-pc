@@ -45,6 +45,59 @@ public class GameActivity extends SDLActivity {
             Log.e("SvR2011", "setenv failed", e);
         }
         super.onCreate(savedInstanceState);
+        PreferSixtyHz();
+    }
+
+    // The game runs at 60 fps; on a 120 Hz screen its frames land on 2 or 3
+    // of the screen's refreshes in turn (8 / 25 ms: a steady judder). Asks for
+    // the screen's 60 Hz mode (same size) while the game is in front.
+    private void PreferSixtyHz() {
+        try {
+            android.view.Display display = getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode current = display.getMode();
+            android.view.Display.Mode best = null;
+            for (android.view.Display.Mode m : display.getSupportedModes()) {
+                if (m.getPhysicalWidth() != current.getPhysicalWidth() ||
+                    m.getPhysicalHeight() != current.getPhysicalHeight()) continue;
+                if (Math.abs(m.getRefreshRate() - 60f) < 1f) best = m;
+            }
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            if (best != null) lp.preferredDisplayModeId = best.getModeId();
+            lp.preferredRefreshRate = 60f;
+            getWindow().setAttributes(lp);
+            Log.i("SvR2011", "display: asked for 60 Hz (mode " + (best != null ? best.getModeId() : -1) + ")");
+        } catch (Exception e) {
+            Log.w("SvR2011", "display: 60 Hz request failed", e);
+        }
+    }
+
+    // The game's surface votes for 60 fps itself (a fixed-rate source): the
+    // compositor then runs the screen at 60 Hz (the window's preference
+    // alone left the Fold's cover screen at 120 Hz).
+    @Override
+    protected org.libsdl.app.SDLSurface createSDLSurface(android.content.Context context) {
+        org.libsdl.app.SDLSurface surface = super.createSDLSurface(context);
+        surface.getHolder().addCallback(new android.view.SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(android.view.SurfaceHolder holder) { Sixty(holder); }
+            @Override public void surfaceChanged(android.view.SurfaceHolder holder, int f, int w, int h) { Sixty(holder); }
+            @Override public void surfaceDestroyed(android.view.SurfaceHolder holder) {}
+        });
+        return surface;
+    }
+
+    private static void Sixty(android.view.SurfaceHolder holder) {
+        try {
+            holder.getSurface().setFrameRate(60f, android.view.Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                                             android.view.Surface.CHANGE_FRAME_RATE_ALWAYS);
+        } catch (Exception e) {
+            Log.w("SvR2011", "display: surface frame rate failed", e);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) PreferSixtyHz();  // (the Fold: the other screen has its own modes)
     }
 
     // Settings on the command line (tests: --es args "--audio_mute=true ...").

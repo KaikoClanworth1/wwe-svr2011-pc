@@ -7,6 +7,15 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <vector>
+
+#if defined(__ANDROID__)
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+#include <android/thermal.h>
+#endif
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -38,6 +47,29 @@ uint64_t g_window_frames = 0;
 double g_window_worst_ms = 0;
 // Frame times this window, by vblank count at 60 Hz: <=1, 2, 3, more.
 uint32_t g_window_hist[4] = {};
+std::vector<float> g_window_times;  // this window's frame times (ms), for percentiles
+
+#if defined(__ANDROID__)
+// Phones (stutter reports): the thermal state and each core's clock, with
+// the frame-time line - throttling shows as a falling clock / rising status.
+std::string PhoneState() {
+  static AThermalManager* thermal = AThermal_acquireManager();
+  std::string s = "thermal ";
+  s += thermal ? std::to_string(int(AThermal_getCurrentThermalStatus(thermal))) : "?";
+  s += ", cpu MHz";
+  for (int cpu = 0; cpu < 12; ++cpu) {
+    char path[96];
+    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
+    FILE* f = std::fopen(path, "r");
+    if (!f) break;
+    long khz = 0;
+    if (std::fscanf(f, "%ld", &khz) == 1) s += (cpu ? "/" : " ") + std::to_string(khz / 1000);
+    std::fclose(f);
+  }
+  return s;
+}
+
+#endif
 double g_frame_ms = 0;    // smoothed
 double g_fps = 0;         // over the last log window
 // Recent frame times (ms) for the on-screen counter.
@@ -56,6 +88,7 @@ void OnFramePresented() {
     g_window_worst_ms = std::max(g_window_worst_ms, ms);
     g_recent[g_recent_next++ % kRecent] = ms;
     ++g_window_hist[ms < 18.0 ? 0 : ms < 35.0 ? 1 : ms < 51.0 ? 2 : 3];
+    g_window_times.push_back(float(ms));
   }
   g_last_frame = now;
   ++g_frames;
@@ -70,6 +103,20 @@ void OnFramePresented() {
         "<18ms {} / <35ms {} / <51ms {} / longer {})",
         g_fps, g_window_worst_ms, g_window_frames, secs, g_window_hist[0], g_window_hist[1],
         g_window_hist[2], g_window_hist[3]);
+    if (!g_window_times.empty()) {
+      // Finer: the median and the slow tail (a steady 60 is 16.7 / 16.7 / 16.7).
+      std::vector<float>& v = g_window_times;
+      std::sort(v.begin(), v.end());
+      auto pct = [&](double p) { return v[std::min(v.size() - 1, size_t(p * double(v.size())))]; };
+      size_t over20 = 0;
+      for (float x : v) over20 += x > 20.0f;
+      REXLOG_INFO("frame times: median {:.1f} ms, p90 {:.1f}, p99 {:.1f}, fastest {:.1f}; over 20 ms {}",
+                  pct(0.5), pct(0.9), pct(0.99), v.front(), over20);
+#if defined(__ANDROID__)
+      REXLOG_INFO("phone: {}", PhoneState());
+#endif
+      v.clear();
+    }
     g_window_start = now;
     g_window_frames = 0;
     g_window_worst_ms = 0;

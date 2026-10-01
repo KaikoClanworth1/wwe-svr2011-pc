@@ -1,6 +1,7 @@
 // WWE SmackDown vs. Raw 2011 - on-screen touch controller (see touch_controls.h).
 
 #include "touch_controls.h"
+#include "keyboard_typing.h"
 
 #include <algorithm>
 #include <atomic>
@@ -109,6 +110,7 @@ enum class Kind : uint8_t {
   kLayout,  // switches MENU / MATCH
   kEdit,    // opens the editor
   kHelp,    // the controls sheet
+  kKeyboard,  // the phone's keyboard, for typing into the game's (shown only then)
 };
 
 struct Control {
@@ -211,6 +213,8 @@ std::vector<Control> DefaultLayout(int layout) {
     v.push_back(Button("rt", kRT, R, -0.18f, 0.17f, 0.10f, true));
     v[5].caption = "SELECT";  // (A)
     v[6].caption = "BACK";    // (B)
+    v.push_back(Special("keyboard", Kind::kKeyboard, 0, L, 0.30f, 0.06f, 0.09f));  // (beside MENU)
+    v.back().wide = true;
     return v;
   }
   v.push_back(Special("help", Kind::kHelp, 0, L, 0.22f, 0.06f, 0.09f));
@@ -408,13 +412,18 @@ void Aim(Control& c, float x, float y) {
 }
 
 // The control under a finger (the nearest one it touches).
+// The KEYBOARD button only while the game's keyboard is up (and in the editor).
+bool Shown(const Control& c) {
+  return c.kind != Kind::kKeyboard || g_editor || svr2011::GameKeyboardOpen();
+}
+
 int Find(float x, float y) {
   auto& layout = Current();
   int best = -1;
   float best_d = 1e30f;
   for (int i = 0; i < int(layout.size()); ++i) {
     const Control& c = layout[i];
-    if (!c.visible || !Hit(c, x, y)) continue;
+    if (!c.visible || !Shown(c) || !Hit(c, x, y)) continue;
     const ImVec2 p = Centre(c);
     const float d = (x - p.x) * (x - p.x) + (y - p.y) * (y - p.y);
     if (d < best_d) best_d = d, best = i;
@@ -565,6 +574,9 @@ bool Down(uint32_t pointer, float x, float y) {
     case Kind::kHelp:
       ReleaseAll();
       g_help = true;
+      return true;
+    case Kind::kKeyboard:
+      svr2011::ToggleSystemKeyboard();
       return true;
     case Kind::kStick:
     case Kind::kDpad:
@@ -747,6 +759,7 @@ void DrawControl(ImDrawList* dl, const Control& c, float alpha, bool selected) {
       const char* label = c.kind == Kind::kLayout ? kLayoutNames[g_mode.load()]
                           : c.kind == Kind::kEdit ? "EDIT"
                           : c.kind == Kind::kHelp ? "?"
+                          : c.kind == Kind::kKeyboard ? "KEYBOARD"
                                                   : ActionLabel(c.action);
       if (c.wide) {
         dl->AddRectFilled(ImVec2(p.x - h.x, p.y - h.y), ImVec2(p.x + h.x, p.y + h.y), fill, h.y);
@@ -892,9 +905,10 @@ class TouchOverlay final : public rex::ui::ImGuiDialog {
       if (!g_pointers.empty()) ReleaseAll();
       return;
     }
+    svr2011::UpdateSystemKeyboard();
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     for (const Control& c : Current()) {
-      if (c.visible) DrawControl(dl, c, g_opacity, false);
+      if (c.visible && Shown(c)) DrawControl(dl, c, g_opacity, false);
     }
   }
 };
