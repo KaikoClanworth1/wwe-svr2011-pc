@@ -40,6 +40,8 @@ set(SVR2011_SOURCES
     src/match_types.cpp
     src/roster.cpp
     src/post_effects.cpp
+    src/replays.cpp
+    src/managers.cpp
     src/game_files.cpp
 )
 

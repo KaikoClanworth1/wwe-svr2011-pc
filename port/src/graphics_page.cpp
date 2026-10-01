@@ -76,16 +76,16 @@ enum Row {
   kResolution, kDisplay, kVsync, kFpsCounter, kRenderer,         // DISPLAY
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
   kTouch, kLanguage,                                             // DISPLAY (last)
-  kWide, kPrepare, kDof, kMotionBlur, kSoft,                      // QUALITY (last)
+  kWide, kPrepare, kDof, kMotionBlur, kSoft, kReplays,                      // QUALITY (last)
 };
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
-const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch},
+const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch},
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
 #endif
 // MY WWE -> OPTIONS -> LANGUAGE: the same page with only this row.
@@ -240,7 +240,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int scale_ = 0;  // (kScales)
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
-  bool dof_ = true, blur_ = true, soft_ = false;  // depth of field, motion blur (post_effects.cpp)
+  bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
@@ -285,6 +285,7 @@ void GraphicsPage::Load() {
   dof_ = rex::cvar::Query<bool>("depth_of_field");
   blur_ = rex::cvar::Query<bool>("motion_blur");
   soft_ = rex::cvar::Query<bool>("soft_filter");
+  replays_ = rex::cvar::Query<bool>("replays");
   prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
     const uint32_t id = rex::cvar::Query<uint32_t>("user_language");
@@ -338,6 +339,11 @@ void GraphicsPage::Change(int row, int dir) {
       dof_ = !dof_;
       rex::cvar::SetFlagByName("depth_of_field", dof_ ? "true" : "false");
       SaveSetting("depth_of_field", dof_ ? "true" : "false");
+      break;
+    case kReplays:
+      replays_ = !replays_;
+      rex::cvar::SetFlagByName("replays", replays_ ? "true" : "false");
+      SaveSetting("replays", replays_ ? "true" : "false");
       break;
     case kSoft:
       soft_ = !soft_;
@@ -556,6 +562,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kDof: return dof_ ? "ON" : "OFF";
       case kMotionBlur: return blur_ ? "ON" : "OFF";
       case kSoft: return soft_ ? "ON (XBOX 360)" : "OFF";
+      case kReplays: return replays_ ? "ON" : "OFF";
       case kPrepare: return prepare_ ? "ON" : "OFF";
       case kLanguage: return kLanguages[language_].label;
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
@@ -577,6 +584,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kDof: return "DEPTH OF FIELD";
       case kMotionBlur: return "MOTION BLUR";
       case kSoft: return "SOFT FILTER";
+      case kReplays: return "REPLAYS";
       case kPrepare: return "PREPARE GRAPHICS";
       case kLanguage: return "LANGUAGE";
       case kRenderer: return "RENDERER";
@@ -601,6 +609,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kDof: return "Wide shots blur what is out of focus. OFF: the whole ring stays sharp.";
       case kMotionBlur: return "Blur and trails on fast moves and replays.";
       case kSoft: return "The game's 720p smoothing filter: blurs wide shots at higher resolutions.";
+      case kReplays: return "Instant replays after finishers and the highlights at the end of a match.";
       case kPrepare: return "Builds the graphics ahead in the menus, so matches don't stutter (native).";
       case kLanguage:
         return language_ == language_at_start_
