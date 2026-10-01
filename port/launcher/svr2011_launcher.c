@@ -84,7 +84,7 @@ enum {
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
-    ID_SETTINGS_STATUS,
+    ID_SETTINGS_STATUS, ID_PREPARE,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_DEFAULT, ID_ON_SAVE, ID_ON_STATUS,
     /* install */
@@ -1013,7 +1013,7 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0;
+    int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1;
     char online_name[64] = "", online_server[128] = "";
     settings_path(p);
     if (toml_read(p, &l)) {
@@ -1033,6 +1033,7 @@ static void settings_load(void)
             else if (!strcmp(key, "audio_backend")) sdl_audio = !_stricmp(val, "sdl");
             else if (!strcmp(key, "show_fps")) fps = !strcmp(val, "true");
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
+            else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
             else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
             else if (!strcmp(key, "window_width")) w = atoi(val);
@@ -1052,6 +1053,7 @@ static void settings_load(void)
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
     online_show(online, online_name, online_server);
+    CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
     set_text(ID_ON_STATUS, L"");
@@ -1059,11 +1061,11 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 18 };
+    enum { NK = 19 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
-                                    "online_enabled", "online_name", "online_server" };
+                                    "online_enabled", "online_name", "online_server", "native_prepare_pipelines" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1102,6 +1104,7 @@ static int settings_save(void)
     strcpy_s(vals[15], 64, IsDlgButtonChecked(s_wnd, ID_ON_ENABLE) == BST_CHECKED ? "true" : "false");
     toml_quote_ctl(ID_ON_NAME, 15, vals[16], sizeof vals[16]);
     toml_quote_ctl(ID_ON_SERVER, 120, vals[17], sizeof vals[17]);
+    strcpy_s(vals[18], 64, IsDlgButtonChecked(s_wnd, ID_PREPARE) == BST_CHECKED ? "true" : "false");
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -1173,6 +1176,7 @@ static int settings_save(void)
 static void settings_defaults(void)
 {
     settings_show(0, 0, 1, 0, 0, 0, 1, 0, 0, 1);
+    CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     s_settings_dirty = 1;
     set_text(ID_SETTINGS_STATUS, L"Defaults restored. Press Save or Play to keep them.");
 }
@@ -1468,15 +1472,17 @@ static void build_ui(void)
             X0 + 150, 104, 300, 200, ID_RESOLUTION);
     for (i = 0; i < N_RES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_res[i].label);
-    add(TAB_SETTINGS, L"Static", L"The window's size; the picture is rendered to fit it. In game, MY WWE \x2192 "
-                                 L"OPTIONS \x2192 GRAPHICS changes these at once.", SS_LEFT, X0 + 150, 134, 396, 32, 0);
+    add(TAB_SETTINGS, L"Static", L"The picture is rendered to fit the window. Also in game: GRAPHICS page.",
+        SS_LEFT, X0 + 150, 132, 396, 18, 0);
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
-        X0 + 16, 172, 360, 24, ID_VSYNC);
-    add(TAB_SETTINGS, L"Button", L"Show FPS (F2)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 400, 172, 150, 24, ID_SHOWFPS);
-    add(TAB_SETTINGS, L"Button", L"Anti-aliasing (smoother edges)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 206, 220, 24,
+        X0 + 16, 154, 360, 24, ID_VSYNC);
+    add(TAB_SETTINGS, L"Button", L"Show FPS (F2)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 400, 154, 150, 24, ID_SHOWFPS);
+    add(TAB_SETTINGS, L"Button", L"Anti-aliasing (smoother edges)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 182, 220, 24,
         ID_MSAA);
-    add(TAB_SETTINGS, L"Static", L"Renderer", SS_LEFT, X0 + 270, 210, 80, 20, 0);
-    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 350, 206, 196, 200,
+    add(TAB_SETTINGS, L"Static", L"Renderer", SS_LEFT, X0 + 270, 186, 80, 20, 0);
+    add(TAB_SETTINGS, L"Button", L"Prepare graphics in the menus (no stutter the first time a scene shows; native)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 210, 530, 24, ID_PREPARE);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 350, 182, 196, 200,
             ID_RENDERER);
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Native (recommended)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Emulated");
@@ -4387,7 +4393,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_SETTINGS_STATUS, L"");
             }
             break;
-        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_MSAA:
+        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_MSAA: case ID_PREPARE:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");

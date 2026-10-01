@@ -312,19 +312,91 @@ std::filesystem::path ShaderFile(const std::string& name) {
   return dir / file;
 }
 
+// The shaders' folder packed in one file (tools/pack_shaders.py):
+// native_shaders\shaders<extension>.pak - read once at start instead of a
+// thousand small files (on a hard disk each one is a seek: a new scene's
+// shaders froze it for hundreds of ms). "SVRPAK1\0", u32 count, then per
+// file u16 name length, name, u32 offset, u32 size; then the files.
+// Without one (a dev shader folder), the loose files.
+struct ShaderPack {
+  std::vector<uint8_t> data;
+  std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> files;  // name -> offset, size
+};
+
+const ShaderPack& Pack() {
+  static const ShaderPack pack = [] {
+    ShaderPack p;
+    const std::filesystem::path path =
+        ShaderDirectory() / (std::string("shaders") + backend::ShaderExtension() + ".pak");
+    p.data = ReadFile(path);
+    if (p.data.empty()) return p;
+    auto u16 = [&](size_t at) { return uint32_t(p.data[at]) | uint32_t(p.data[at + 1]) << 8; };
+    auto u32 = [&](size_t at) { return u16(at) | u16(at + 2) << 16; };
+    bool ok = p.data.size() >= 12 && std::memcmp(p.data.data(), "SVRPAK1", 8) == 0;
+    size_t at = 12;
+    for (uint32_t i = 0, n = ok ? u32(8) : 0; ok && i < n; ++i) {
+      if (at + 2 > p.data.size()) { ok = false; break; }
+      const uint32_t len = u16(at);
+      if (at + 2 + len + 8 > p.data.size()) { ok = false; break; }
+      std::string name(reinterpret_cast<const char*>(&p.data[at + 2]), len);
+      const uint32_t offset = u32(at + 2 + len), size = u32(at + 6 + len);
+      if (uint64_t(offset) + size > p.data.size()) { ok = false; break; }
+      p.files.emplace(std::move(name), std::make_pair(offset, size));
+      at += 2 + len + 8;
+    }
+    if (!ok) {
+      REXLOG_WARN("native renderer: {} is damaged - using the loose shader files", path.string());
+      p.files.clear();
+      p.data.clear();
+    } else {
+      REXLOG_INFO("native renderer: shader pack {} ({} files, {} KB)", path.filename().string(), p.files.size(),
+                  p.data.size() / 1024);
+    }
+    return p;
+  }();
+  return pack;
+}
+
+// A file of the shaders' folder by name ("<hash>.vs.inputs").
+std::vector<uint8_t> ShaderFolderFile(const std::string& file) {
+  const ShaderPack& pack = Pack();
+  if (auto it = pack.files.find(file); it != pack.files.end()) {
+    const uint8_t* b = pack.data.data() + it->second.first;
+    return std::vector<uint8_t>(b, b + it->second.second);
+  }
+  static const std::filesystem::path dir = ShaderDirectory();
+  return ReadFile(dir / file);
+}
+
+// A converted shader ("<name>" + the backend's extension).
+std::vector<uint8_t> ReadShader(const std::string& name) {
+  const ShaderPack& pack = Pack();
+  if (auto it = pack.files.find(name + backend::ShaderExtension()); it != pack.files.end()) {
+    const uint8_t* b = pack.data.data() + it->second.first;
+    return std::vector<uint8_t>(b, b + it->second.second);
+  }
+  return ReadFile(ShaderFile(name));
+}
+
+bool ShaderExists(const std::string& name) {
+  if (Pack().files.count(name + backend::ShaderExtension())) return true;
+  std::error_code ec;
+  return std::filesystem::exists(ShaderFile(name), ec);
+}
+
 void LoadShader(Shader& s) {
   if (s.loaded) return;
   s.loaded = true;
-  static const std::filesystem::path dir = ShaderDirectory();
   char name[64];
   std::snprintf(name, sizeof(name), "%016llX.%s", static_cast<unsigned long long>(s.hash),
                 s.pixel ? "ps" : "vs");
   const std::string ext = backend::ShaderExtension();
-  s.code[0] = ReadFile(ShaderFile(name));
-  s.code[s.pixel ? 2 : 1] = ReadFile(ShaderFile(std::string(name) + (s.pixel ? ".s2" : ".s1")));
+  s.code[0] = ReadShader(name);
+  s.code[s.pixel ? 2 : 1] = ReadShader(std::string(name) + (s.pixel ? ".s2" : ".s1"));
+  auto text = [](const std::vector<uint8_t>& b) { return std::string(b.begin(), b.end()); };
   if (!s.pixel) {
     // SEMANTIC INDEX TYPE [LOCATION]
-    std::ifstream in(dir / (std::string(name) + ".inputs"));
+    std::istringstream in(text(ShaderFolderFile(std::string(name) + ".inputs")));
     std::string line, type;
     while (std::getline(in, line)) {
       std::istringstream fields(line);
@@ -336,7 +408,7 @@ void LoadShader(Shader& s) {
     }
   }
   {
-    std::ifstream in(dir / (std::string(name) + ".textures"));
+    std::istringstream in(text(ShaderFolderFile(std::string(name) + ".textures")));
     uint32_t slot, dimension;
     while (in >> slot >> dimension) {
       if (slot < 32 && dimension < 3) s.textures.emplace_back(slot, dimension);
@@ -864,7 +936,7 @@ bool Initialize() {
   }
   REXLOG_INFO("native renderer: GPU {}", r->device->getDescription().name);
   backend::LoadPipelineCache(r->device.get(), PipelineCacheFile());
-  if (g_debug_solid) g_debug_ps = ReadFile(ShaderFile("debug_solid.ps"));
+  if (g_debug_solid) g_debug_ps = ReadShader("debug_solid.ps");
   r->queue = r->device->createCommandQueue(plume::RenderCommandListType::DIRECT);
   for (uint32_t i = 0; i < kFrames; ++i) {
     r->lists[i] = r->queue->createCommandList();
@@ -913,7 +985,7 @@ bool Initialize() {
   // renderer draw instead.
   {
     std::error_code ec;
-    if (!std::filesystem::exists(ShaderFile("present.vs"), ec)) {
+    if (!ShaderExists("present.vs")) {
       REXLOG_ERROR("native renderer: its shaders are missing ({} has no present.vs{}) - reinstall "
                    "with the launcher to get the native_shaders folder",
                    ShaderDirectory().string(), backend::ShaderExtension());
@@ -1725,7 +1797,7 @@ const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, S
     char* e = nullptr;
     size_t n = 0;
     if (_dupenv_s(&e, &n, "SVR2011_NATIVE_DEBUG_PS") == 0 && e) {
-      o.first = ReadFile(ShaderFile(std::string(e) + ".ps"));
+      o.first = ReadShader(std::string(e) + ".ps");
       free(e);
     }
     if (_dupenv_s(&e, &n, "SVR2011_NATIVE_DEBUG_PS_FOR") == 0 && e) {
@@ -2019,8 +2091,7 @@ void PrebuildPipelines(Renderer* r, std::vector<PipelineRecord> records) {
       s->pixel = pixel;
       char name[64];
       std::snprintf(name, sizeof(name), "%016llX.%s", static_cast<unsigned long long>(hash), pixel ? "ps" : "vs");
-      std::error_code ec;
-      if (std::filesystem::exists(ShaderFile(name), ec)) {
+      if (ShaderExists(name)) {
         LoadShader(*s);
       } else {
         s->loaded = s->missing = true;  // (a list from an older version)
@@ -2047,7 +2118,7 @@ void PrebuildPipelines(Renderer* r, std::vector<PipelineRecord> records) {
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
       waited_ms += 250;
     }
-    if (g_failed) break;
+    if (g_failed || !REXCVAR_GET(native_prepare_pipelines)) break;  // (turned off in game)
     const uint64_t h = RecordHash(rec);
     {
       std::lock_guard lock(g_prebuilt.mutex);
@@ -2988,8 +3059,8 @@ const plume::RenderPipeline* PresentPipeline(Renderer* r) {
   static bool tried = false;
   if (tried) return pso.get();
   tried = true;
-  const std::vector<uint8_t> vs_code = ReadFile(ShaderFile("present.vs"));
-  const std::vector<uint8_t> ps_code = ReadFile(ShaderFile("present.ps"));
+  const std::vector<uint8_t> vs_code = ReadShader("present.vs");
+  const std::vector<uint8_t> ps_code = ReadShader("present.ps");
   if (vs_code.empty() || ps_code.empty()) {
     REXLOG_WARN("native renderer: present shaders missing");
     return nullptr;

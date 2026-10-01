@@ -2760,6 +2760,22 @@ index d358f39..0a637bd 100644
      // First use, create new.
      // https://www.nirsoft.net/kernel_struct/vista/KOBJECTS.html
      XObject* object = nullptr;
+diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
+index 77bce25..1d426c7 100644
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -899,7 +899,10 @@ void XThread::SetActiveCpu(uint8_t cpu_index) {
+       thread_->set_affinity_mask(uint64_t(1) << cpu_index);
+     }
+   } else {
+-    REXSYS_WARN("Too few processor cores - scheduling will be wonky");
++    // [svr2011] once: the game sets a thread's CPU about twice a frame, and
++    // logging it each time filled low-end players' logs (98% of the lines).
++    static std::atomic<bool> warned{false};
++    if (!warned.exchange(true)) REXSYS_WARN("Too few processor cores - scheduling will be wonky");
+   }
+ }
+ 
 diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
 index 5bd3dc5..ee3b2fb 100644
 --- a/src/ui/CMakeLists.txt

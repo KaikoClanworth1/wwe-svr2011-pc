@@ -1,19 +1,14 @@
 # Shader precompiling
 
-**Status:** steps 1, 3 and 4 are done:
+**Status:** all steps are done:
 - **D3D12 pipeline library:** b42cf33.
-- **List, background builder and progress bar:** a236628 and the commit after it.
-- **Shipped list:** `port/dist/pipelines.list`, 298 pipelines from a 25-leaf menu crawl. Merge more with
-  `tools/merge_pipelines.py runs\crawl` (or any user data's `cache
-ative_pipelines.list`).
-
-Still to do: the shader pack (step 2) and the settings rows (step 5; the cvar
-`native_prepare_pipelines` exists).
-
-
-Goal: no hitches the first time a scene, camera cut or finisher appears. The native renderer builds
-its GPU pipelines in the background while the player is in the menus, and a small progress bar shows
-it at the bottom right.
+- **List, background builder and progress bar:** a236628.
+- **Shipped list:** `port/dist/pipelines.list`, 298 from a 25-leaf crawl. Grow it with
+  `tools/merge_pipelines.py runs\crawl`.
+- **Shader packs:** `tools/pack_shaders.py`, built by deploy.ps1 / package.ps1. The release ships the packs
+  only.
+- **Settings:** the GRAPHICS page's PREPARE GRAPHICS row and the launcher's "Prepare graphics in the menus"
+  checkbox (`native_prepare_pipelines`).
 
 ## Why (from a low-end laptop's logs: i5 4th gen 2C/4T, HDD, Radeon R5 M430)
 

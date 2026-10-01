@@ -75,17 +75,17 @@ enum Row {
   kResolution, kDisplay, kVsync, kFpsCounter, kRenderer,         // DISPLAY
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
   kTouch, kLanguage,                                             // DISPLAY (last)
-  kWide,                                                         // QUALITY (last)
+  kWide, kPrepare,                                               // QUALITY (last)
 };
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch, kLanguage},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kPrepare}};
 #else
 const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch, kLanguage},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kPrepare}};
 #endif
 
 std::filesystem::path g_config_path;
@@ -210,6 +210,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int scale_ = 0;  // (kScales)
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
+  bool prepare_ = true;  // the known pipelines built ahead in the menus
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
@@ -249,6 +250,7 @@ void GraphicsPage::Load() {
   fps_ = FpsCounterVisible();
   touch_ = rex::cvar::Query<bool>("touch_controls");
   wide_ = rex::cvar::Query<bool>("native_widescreen");
+  prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
     const uint32_t id = rex::cvar::Query<uint32_t>("user_language");
     language_ = 0;
@@ -301,6 +303,11 @@ void GraphicsPage::Change(int row, int dir) {
       wide_ = !wide_;
       rex::cvar::SetFlagByName("native_widescreen", wide_ ? "true" : "false");
       SaveSetting("native_widescreen", wide_ ? "true" : "false");
+      break;
+    case kPrepare:
+      prepare_ = !prepare_;
+      rex::cvar::SetFlagByName("native_prepare_pipelines", prepare_ ? "true" : "false");
+      SaveSetting("native_prepare_pipelines", prepare_ ? "true" : "false");
       break;
     case kTouch:
       touch_ = !touch_;
@@ -492,6 +499,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return fps_ ? "ON" : "OFF";
       case kTouch: return touch_ ? "ON" : "OFF";
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
+      case kPrepare: return prepare_ ? "ON" : "OFF";
       case kLanguage: return kLanguages[language_].label;
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
       case kRenderScale: return kScales[scale_].label;
@@ -509,6 +517,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return "FPS COUNTER";
       case kTouch: return "TOUCH CONTROLS";
       case kWide: return "WIDE SCREENS";
+      case kPrepare: return "PREPARE GRAPHICS";
       case kLanguage: return "LANGUAGE";
       case kRenderer: return "RENDERER";
       case kRenderScale: return "RENDER RESOLUTION";
@@ -526,6 +535,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";
+      case kPrepare: return "Builds the graphics ahead in the menus, so matches don't stutter (native).";
       case kLanguage:
         return language_ == language_at_start_
                    ? "The game's text (the commentary stays English)."

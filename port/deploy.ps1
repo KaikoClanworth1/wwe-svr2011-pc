@@ -54,6 +54,10 @@ if (Test-Path $plist) {
     New-Item -ItemType Directory -Force (Join-Path $game "native_shaders") | Out-Null
     Copy-Item $plist (Join-Path $game "native_shaders") -Force
 }
+# The shaders in one file per API (one read instead of a thousand: tools/pack_shaders.py).
+if (Test-Path (Join-Path $game "native_shaders")) {
+    python (Join-Path $root "tools\pack_shaders.py") (Join-Path $game "native_shaders") | Out-Host
+}
 # The Android app, for the launcher's Create APK Package (tools/build_apk.py).
 $apk = Join-Path $root "out\android\SvR2011.apk"
 if (Test-Path $apk) {
