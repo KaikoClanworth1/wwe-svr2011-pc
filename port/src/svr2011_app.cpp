@@ -31,6 +31,7 @@
 #include "achievements_page.h"
 #include "caw_logos.h"
 #include "paint_pages.h"
+#include "match_types.h"
 #include "crash_report.h"
 #include "dlc.h"
 #include "fps_overlay.h"
@@ -350,6 +351,8 @@ void Svr2011App::OnPostLoadXexImage() {
   // 10 pages of Paint Tool logos (paint_pages.h).
   svr2011::InstallPaintPages(runtime()->memory(),
                              static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_saves);
+  // More exhibition match types (match_types.h).
+  svr2011::InstallMatchTypes(runtime()->memory());
   if (imgui_drawer()) {
     // MY WWE -> ACHIEVEMENTS (achievements_page.h).
     svr2011::InstallAchievementsPage(

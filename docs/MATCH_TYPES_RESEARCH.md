@@ -1,6 +1,6 @@
 # Unused match types - research
 
-Status (2026-10-01): research only; nothing is enabled. Sources: the original game data (`Extract GameFiles`), the string table dump (`port/runs/strings_all.txt`), and the recompiled game code.
+Status (2026-10-01): research done; several match types are now in the menus (see Implemented). Sources: the original game data (`Extract GameFiles`), the string table dump (`port/runs/strings_all.txt`), and the recompiled game code.
 
 ## Summary
 
@@ -171,3 +171,57 @@ The arenas are `pac/bg/bgNN.pac`; arena number N is string 0x9C42 + N.
 - Whether Universe or Story Designer can already pick the FCA / cage pin & give-up ids: script natives `sub_82BB2D80` / `sub_82BB2E08` read family lists that include FCA 0x2B, 0x2E, 0x2F, 0x30.
 - The in-ring brawl ids 0x63-0x68: who uses them.
 - Whether the Druid arena works as an exhibition arena.
+
+## Implemented (`port/src/match_types.cpp`)
+
+**Menu rows are added at runtime**, not in menu.pac:
+- `sub_82BAA6E8(menus, table, size)` parses MFLO/0000. Its caller frees the table afterwards.
+- It reads only header +4 (total) and +8 (shown), copies every shown record into 76-byte entries, and builds its group index from the table. All of that is sized dynamically.
+- The hook hands it a copy with rows inserted after their anchors and both counts raised. No file-size limit applies, and patch_menu.py's hidden-record trick isn't needed for these rows.
+- A submenu finds its rows by (depth, parent node, +0x38). New groups and nodes get ids above the existing ones, and their rows go at the end of the table.
+
+**Rows added** (all tested in game with test saves):
+
+| Menu | Row | Rule | Notes |
+|---|---|---|---|
+| ONE ON ONE | FALLS COUNT ANYWHERE | 0x2B | the cut row's own label A054 |
+| TWO ON TWO | FALLS COUNT ANYWHERE TORNADO TAG | 0x2E | label A062 |
+| TRIPLE THREAT | FALLS COUNT ANYWHERE | 0x2F | label A06B |
+| FATAL-4-WAY | FALLS COUNT ANYWHERE | 0x30 | label A073; played (4 picks, match card, match) |
+| ROYAL RUMBLE | 15-MAN, 25-MAN | 0x15, 0x17 | labels 5313/5314; the select screen opens (play-through not tested) |
+| 6-MAN | LUMBERJACK | 0x55 | see below |
+| TRIPLE THREAT / FATAL-4-WAY / 6-MAN | BACKSTAGE > the 7 areas | 0x70-0x76, reshaped | see below |
+
+**Backstage with 3, 4 or 6 people.** The area comes from the rule id; 0x70-0x76 are the 2v2 areas.
+- `sub_8243FCC8(?, group, row)` returns 2000 + rule. The hook notes when the row is in one of the new submenus' groups.
+- `sub_827374A0(match, rule)` sets the match up (it runs as the row is picked, before character select). There the rule's record is reshaped like normal triple threat (0x0D), fatal-4-way (0x0E) or 6-man battle royal (0x23). The fields copied:
+  - of the 100-byte record: +0..+27 (people, start places and teams, +20, +24), **+44, +52 and +64**, which choose the select screen;
+  - **+35 of the 64-byte option record**, the people count. (The earlier note said +43; the file shows +35.)
+- Setting up any other match restores the record.
+- Played: a triple threat in the GM office and a 6-man match in the GM office.
+
+**Lumberjack (0x55).**
+- Its record keeps its 6 people: 3 fighters (teams 0, 1, 2) and 3 lumberjacks (team 3).
+- Its select fields (+24, +36, +44, +52, +64) come from 0x23, giving the 6-person select screen. Without this, select shows 2 slots and crashes on the second pick.
+- The story script (`sub_822C3D08` -> `sub_822BB158`, story mode only) marks lumberjacks for the AI (character +2572 -> +168 = 1). The port does the same from `sub_82225D68` (the per-character competitor check, which runs in every match).
+- Played: the lumberjacks stay outside the ring while the others fight.
+
+**Test aid.** `SVR2011_TEST_RULE=<hex>` plays that rule from ONE ON ONE -> NORMAL.
+
+## 50-man Royal Rumble: not done
+
+The rumble size comes from `sub_828B4AC8`, a hard-coded table (0x14 -> 10, 0x15 -> 15, 0x16 -> 20, 0x17 -> 25, 0x18 -> 30, 0x56 -> 15), not from the record. 30 is built into the engine:
+- the entrant list u32[30] (match object +13544);
+- **30 in-match character objects** of 2116 bytes each (match state +424..+63904), with about 40 accessors;
+- rumble tables of 30 entries;
+- a 32-bit entrant mask in `sub_82735A90`;
+- live settings u32[30].
+
+A 50-man rumble would need "slot recycling": reload an eliminated entrant's character slot with entrant 31 onwards, and track numbers and eliminations on the port side. That is a large, risky change (high effort). The 15- and 25-man sizes were added instead.
+
+## Whole backstage (free roam): feasibility
+
+- **Rule 0x19** (the cut generic BACKSTAGE, 1v1, arena 78) loads the free-roam area 78FR. Played with `SVR2011_TEST_RULE=19`, the fight starts in the corridor and the wrestlers can walk around.
+- Further along, large parts render black. Story mode loads the room dressing (`sub_822B9690` -> `/STG/T%1X78`, `/GMGB/T%1X78`) and exhibition doesn't.
+- A selectable "whole backstage" arena needs those rooms loaded outside story mode. That is a medium-size research task; not built.
+
