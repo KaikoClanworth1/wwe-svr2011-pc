@@ -219,9 +219,37 @@ The rumble size comes from `sub_828B4AC8`, a hard-coded table (0x14 -> 10, 0x15 
 
 A 50-man rumble would need "slot recycling": reload an eliminated entrant's character slot with entrant 31 onwards, and track numbers and eliminations on the port side. That is a large, risky change (high effort). The 15- and 25-man sizes were added instead.
 
-## Whole backstage (free roam): feasibility
+## Whole backstage as an arena (done)
 
-- **Rule 0x19** (the cut generic BACKSTAGE, 1v1, arena 78) loads the free-roam area 78FR. Played with `SVR2011_TEST_RULE=19`, the fight starts in the corridor and the wrestlers can walk around.
-- Further along, large parts render black. Story mode loads the room dressing (`sub_822B9690` -> `/STG/T%1X78`, `/GMGB/T%1X78`) and exhibition doesn't.
-- A selectable "whole backstage" arena needs those rooms loaded outside story mode. That is a medium-size research task; not built.
+**Menu.** FREE-ROAMING BACKSTAGE (label 0x9C90) is the last row of every BACKSTAGE list:
+- 1v1: rule 0x19;
+- 2v2: rule 0x1A;
+- triple threat / fatal-4-way / 6-man: rule 0x1A, reshaped for 3, 4 or 6 people.
 
+**Rooms.** bg78 loads every room. The 'CFRS' task (`sub_825310B8`, every frame) hides all but the corridor, the interview set and the one room at the camera position, which shows black through doorways.
+- The hook shows rooms 0, 2-9 after the update (`sub_8252FFF0(task, room, 1)`) for rules 0x19/0x1A outside story mode.
+- It keeps the objects the game always hides hidden (`sub_8252FF40`).
+
+**"Is backstage".** `sub_821852E0` deliberately says no for 0x19, so the match got the ring camera and the AI stood still. The hook returns yes for 0x19/0x1A outside story mode. That gives:
+- the backstage camera (`sub_82313D98` makes it);
+- a working AI;
+- the fight box.
+
+**Fight box.** A backstage match keeps its fighters in a box set up by `sub_8224EF28(box)` per area: centre +32/+36/+40, half sizes +64..+76, also copied to 0x82D9E9D4..E0 for the clamp `sub_821E5408` and the AI.
+- The whole backstage has no area there, so the box stayed a point. Fighters were pinned at the origin, and grapple pairs shot out of the level.
+- The hook gives it a box around all of the backstage: centre (-10, 0, -40), half sizes 520/510/525/515. The backstage's own wall mesh (bg78 HMD 0x3E4, the whole outline) then keeps everyone in, as in story mode.
+
+**Rule records.** Rules 0x19/0x1A get the parking lot's records (0x1B / 0x70) apart from their names. That was tried for the AI and kept; the "is backstage" hook was what fixed it.
+
+**Camera.**
+- **Distance:** the backstage camera's distance (`sub_822F26B8`: camera+932 = radius x 3.7) is x 2.4/3.7 in arena 78, so closer.
+- **Framing** (`sub_82227690`, a sphere around all competitors): with more than 2 people, it becomes the average position of the fighters within 220 of the player (the first competitor), with radius at most 90. The camera stays on the player's fight; a fight elsewhere is left out.
+
+**Tested:**
+- 1v1: the CPU fights.
+- 6-man: everyone stays inside; the camera stays close on the player's fight.
+
+**Known:**
+- Wall collision is skipped during grapples in every area (`sub_821E5910`), so a grapple at a wall could still push a pair through it. Not seen in testing.
+- The camera doesn't avoid walls, so a wall can come between it and the fighters.
+- Some areas behind the fighters render dark or black. These look like unlit room shells seen from outside.

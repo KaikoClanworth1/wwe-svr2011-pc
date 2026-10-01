@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -65,7 +66,13 @@ const Row kRows[] = {
     {0xA08C, 0x0C, 0x5313, kNoText, 0x15},  // ROYAL RUMBLE: 15-MAN after 10-MAN
     {0xA08D, 0x0C, 0x5314, kNoText, 0x17},  // 25-MAN after 20-MAN
     {0xA07F, 0x0A, 0x0052, kNoText, 0x55},  // 6-MAN: LUMBERJACK after ARMAGEDDON
+    // BACKSTAGE (1 on 1, 2 on 2): FREE-ROAMING BACKSTAGE after PARKING LOT -
+    // the whole backstage (rules without a named area, see below).
+    {0xA0DD, 0x12, 0x9C90, kNoText, 0x19},
+    {0xA0DD, 0x14, 0x9C90, kNoText, 0x1A},
 };
+constexpr uint32_t kFreeRoamLabel = 0x9C90;
+constexpr uint32_t kWholeBackstage = 0x19, kWholeBackstage2 = 0x1A;  // 1 on 1, 2 on 2
 
 // BACKSTAGE submenus (like ONE ON ONE's and TWO ON TWO's) for TRIPLE THREAT,
 // FATAL-4-WAY and 6-MAN: the 7 areas of TWO ON TWO -> BACKSTAGE (menu group
@@ -142,16 +149,24 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       ++added;
       // Its areas: a new group under that node.
       b.menu_group = group;
-      for (uint32_t k = 0; k < areas.size(); ++k) {
-        std::vector<uint8_t> leaf(areas[k], areas[k] + kRec);
+      for (uint32_t k = 0; k <= areas.size(); ++k) {
+        // The 7 areas, then FREE-ROAMING BACKSTAGE (the group's last).
+        const bool free_roam = k == areas.size();
+        std::vector<uint8_t> leaf(areas[free_roam ? k - 1 : k], areas[free_roam ? k - 1 : k] + kRec);
         Wr32(leaf.data() + 0x18, group);
         Wr32(leaf.data() + 0x1C, node + 1 + k);
         Wr32(leaf.data() + 0x38, node);
         Wr32(leaf.data() + 0x40, 0);
+        const uint32_t flags = Rd32(leaf.data() + 0x3C);
+        Wr32(leaf.data() + 0x3C, free_roam ? flags | 2u : flags & ~2u);
+        if (free_roam) {
+          Wr32(leaf.data() + 0x00, kFreeRoamLabel);
+          Wr32(leaf.data() + 0x5C, kWholeBackstage2);
+        }
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
-      node += 8;
+      node += 9;
       ++group;
     }
   }
@@ -193,7 +208,7 @@ bool g_pending_select_only = false;
 struct Saved {
   uint32_t rule = 0;
   uint8_t rec[kRuleSize];
-  uint8_t people;
+  uint8_t rec2[kRule2Size];
 };
 Saved g_saved;  // the record reshaped now (rule 0: none)
 
@@ -201,9 +216,32 @@ void RestoreRule(uint8_t* base) {
   if (!g_saved.rule) return;
   if (const uint32_t rules = Rd32(base + kRules)) {
     std::memcpy(base + rules + g_saved.rule * kRuleSize, g_saved.rec, kRuleSize);
-    base[rules + kRule2 + g_saved.rule * kRule2Size + kRule2People] = g_saved.people;
+    std::memcpy(base + rules + kRule2 + g_saved.rule * kRule2Size, g_saved.rec2, kRule2Size);
   }
   g_saved.rule = 0;
+}
+
+// The whole backstage (rules 0x19 1 on 1, 0x1A 2 on 2: no named area) is a
+// story mode rule: its record leaves the CPU standing still. For an
+// exhibition match it gets the records of the parking lot (0x1B, 0x70) but
+// for its names (the area still comes from the rule id).
+constexpr uint32_t kStoryContext = 0x82E3C1F4;
+void WholeBackstageRules(uint8_t* base, uint32_t rule) {
+  const uint32_t rules = Rd32(base + kRules);
+  if (!rules) return;
+  const uint32_t like = rule == kWholeBackstage ? 0x1B : 0x70;
+  uint8_t* rec = base + rules + rule * kRuleSize;
+  uint8_t* rec2 = base + rules + kRule2 + rule * kRule2Size;
+  const uint8_t* from = base + rules + like * kRuleSize;
+  const uint8_t* from2 = base + rules + kRule2 + like * kRule2Size;
+  g_saved.rule = rule;
+  std::memcpy(g_saved.rec, rec, kRuleSize);
+  std::memcpy(g_saved.rec2, rec2, kRule2Size);
+  // All of it but its names (+48, +56, +60) and its id (option record +0).
+  std::memcpy(rec, from, kRuleSize);
+  for (uint32_t at : {48u, 56u, 60u}) std::memcpy(rec + at, g_saved.rec + at, 4);
+  std::memcpy(rec2 + 1, from2 + 1, kRule2Size - 1);
+  REXLOG_INFO("match types: whole backstage rule {:02X} set up like {:02X}", rule, like);
 }
 
 void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
@@ -212,9 +250,11 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
   uint8_t* rec = base + rules + rule * kRuleSize;
   const uint8_t* from = base + rules + like * kRuleSize;
   uint8_t* rec2 = base + rules + kRule2 + rule * kRule2Size;
-  g_saved.rule = rule;
-  std::memcpy(g_saved.rec, rec, kRuleSize);
-  g_saved.people = rec2[kRule2People];
+  if (g_saved.rule != rule) {  // (the whole backstage's are already saved)
+    g_saved.rule = rule;
+    std::memcpy(g_saved.rec, rec, kRuleSize);
+    std::memcpy(g_saved.rec2, rec2, kRule2Size);
+  }
   if (select_only) {
     for (const Span& span : kSelect) std::memcpy(rec + span.at, from + span.at, span.size);
   } else {
@@ -296,7 +336,10 @@ REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
   const uint32_t rule = ctx.r4.u32;
   RestoreRule(base);
-  if (g_pending_like && rule >= g_pending_rule_lo && rule <= g_pending_rule_hi)
+  if ((rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext))
+    WholeBackstageRules(base, rule);
+  if (g_pending_like && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
+                         (!g_pending_select_only && rule == kWholeBackstage2)))
     ShapeRule(base, rule, g_pending_like, g_pending_select_only);
   __imp__sub_827374A0(ctx, base);
 }
@@ -336,4 +379,175 @@ REX_EXTERN(__imp__sub_82225D68);
 REX_HOOK_RAW(sub_82225D68) {
   MarkLumberjacks(ctx, base);
   __imp__sub_82225D68(ctx, base);
+}
+
+// -- The whole backstage ---------------------------------------------------
+//
+// The free-roam backstage stage (arena 78) has every room loaded; a task
+// ('CFRS', sub_825310B8 every frame) hides them all but the corridor, the
+// interview set and the one room at a position - the walking player's in
+// Road to WrestleMania, the match camera's otherwise - so a fight elsewhere
+// looks into black rooms. For a match in no named area (rule 0x19 / 0x1A:
+// the whole backstage), every room is shown after the update:
+// sub_8252FFF0(task, room 0-9, show), less the objects the game always hides.
+REX_EXTERN(__imp__sub_825310B8);
+REX_HOOK_RAW(sub_825310B8) {
+  const uint32_t task = ctx.r3.u32 - 32;
+  __imp__sub_825310B8(ctx, base);
+  constexpr uint32_t kLive = 0x82E3DE00, kStory = 0x82E3C1F4;
+  const uint8_t rule = base[kLive];
+  if (Rd32(base + kLive + 64) != 78 || (rule != 0x19 && rule != 0x1A) || Rd32(base + kStory)) return;
+  const auto saved = ctx;
+  for (uint32_t room : {0u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u}) {
+    ctx.r3.u64 = task;
+    ctx.r4.u64 = room;
+    ctx.r5.u64 = 1;
+    sub_8252FFF0(ctx, base);
+  }
+  // The objects the update always hides stay hidden: sub_8252FF40(lo, hi, 0).
+  for (uint32_t id : {6u, 25u, 43u, 72u, 85u, 172u, 184u, 197u, 198u}) {
+    ctx.r3.u64 = id;
+    ctx.r4.u64 = id;
+    ctx.r5.u64 = 0;
+    sub_8252FF40(ctx, base);
+  }
+  ctx = saved;
+}
+
+// -- The backstage camera --------------------------------------------------
+//
+// In-match cameras are made by sub_82313D98: the backstage camera (follows
+// the fighters, turns with them) when sub_821852E0() says the match is
+// backstage, the ring camera otherwise. sub_821852E0 leaves out the whole
+// backstage (rule 0x19), which then gets the ring camera: far, high and
+// fixed - it looks down onto the room boxes. While the cameras are made, the
+// whole backstage counts as backstage.
+namespace {
+
+constexpr uint32_t kLiveSettings = 0x82E3DE00;
+bool g_making_cameras = false;
+
+bool WholeBackstage(uint8_t* base) {
+  const uint8_t rule = base[kLiveSettings];
+  return Rd32(base + kLiveSettings + 64) == 78 && (rule == 0x19 || rule == 0x1A);
+}
+
+float RdF(const uint8_t* p) {
+  const uint32_t v = Rd32(p);
+  float f;
+  std::memcpy(&f, &v, 4);
+  return f;
+}
+void WrF(uint8_t* p, float f) {
+  uint32_t v;
+  std::memcpy(&v, &f, 4);
+  Wr32(p, v);
+}
+
+}  // namespace
+
+REX_EXTERN(__imp__sub_82313D98);
+REX_HOOK_RAW(sub_82313D98) {
+  g_making_cameras = true;
+  __imp__sub_82313D98(ctx, base);
+  g_making_cameras = false;
+}
+
+REX_EXTERN(__imp__sub_821852E0);
+REX_HOOK_RAW(sub_821852E0) {
+  if (WholeBackstage(base) && !Rd32(base + 0x82E3C1F4)) {
+    ctx.r3.u64 = 1;
+    return;
+  }
+  __imp__sub_821852E0(ctx, base);
+}
+
+// The backstage camera's distance: sub_822F26B8(camera) sets camera+932 =
+// the framed radius x 3.7. Closer in the backstage: x 2.4.
+REX_EXTERN(__imp__sub_822F26B8);
+REX_HOOK_RAW(sub_822F26B8) {
+  const uint32_t camera = ctx.r3.u32;
+  __imp__sub_822F26B8(ctx, base);
+  if (Rd32(base + kLiveSettings + 64) != 78) return;
+  constexpr float kCloser = 2.4f / 3.7f;
+  WrF(base + camera + 932, RdF(base + camera + 932) * kCloser);
+}
+
+// What the match camera frames: sub_82227690(camera) -> a sphere (centre
+// +16/+20/+24, radius +32) around every competitor. Backstage with more than
+// two people, it is centred on their average position instead (radius: the
+// farthest of them from it).
+REX_EXTERN(__imp__sub_82227690);
+REX_HOOK_RAW(sub_82227690) {
+  __imp__sub_82227690(ctx, base);
+  const uint32_t sphere = ctx.r3.u32;
+  if (!sphere || Rd32(base + kLiveSettings + 64) != 78) return;
+  constexpr uint32_t kChars = 0x82E3CC50;
+  float xs[9], zs[9];
+  int n = 0;
+  const auto saved = ctx;
+  for (uint32_t i = 0; i < 9; ++i) {
+    const uint32_t ch = Rd32(base + kChars + i * 4);
+    if (!ch) continue;
+    ctx.r3.u64 = ch;
+    sub_82225D68(ctx, base);
+    const bool competitor = ctx.r3.u32 != 0;
+    const uint32_t pos = Rd32(base + ch + 304);
+    if (!competitor || !pos) continue;
+    xs[n] = RdF(base + pos);
+    zs[n] = RdF(base + pos + 8);
+    ++n;
+  }
+  ctx = saved;
+  ctx.r3.u64 = sphere;
+  if (n <= 2) return;
+  // Around the fighters near the player (1P: the first competitor): their
+  // average; anyone farther away (another fight elsewhere) is left out, so
+  // the camera stays close to the player's fight.
+  const float px = xs[0], pz = zs[0];
+  constexpr float kNear = 220.0f, kMaxRadius = 90.0f;
+  float mx = 0, mz = 0;
+  int kept = 0;
+  for (int i = 0; i < n; ++i) {
+    if (std::hypot(xs[i] - px, zs[i] - pz) > kNear) continue;
+    mx += xs[i];
+    mz += zs[i];
+    ++kept;
+  }
+  mx /= float(kept);
+  mz /= float(kept);
+  float r = 0;
+  for (int i = 0; i < n; ++i)
+    if (std::hypot(xs[i] - px, zs[i] - pz) <= kNear) r = std::max(r, std::hypot(xs[i] - mx, zs[i] - mz));
+  r = std::min(r + 12.0f, kMaxRadius);
+  WrF(base + sphere + 16, mx);
+  WrF(base + sphere + 24, mz);
+  WrF(base + sphere + 32, r);
+}
+
+// -- The whole backstage's fight box --------------------------------------
+//
+// A backstage match (sub_821852E0() true) keeps its fighters in a box set up
+// by sub_8224EF28(box) for its area: centre box+32/+36/+40, half sizes +64
+// inner x, +68 inner z, +72 outer x, +76 outer z (also copied to
+// 0x82D9E9D4..E0, which the per-body clamp sub_821E5408 and the AI read).
+// The whole backstage has no area there - the box would stay a point - so it
+// gets a box around all of it: the walls of the whole backstage (bg78 wall
+// mesh 0, x -530..510, z -550..470) keep the fighters in, as in story mode.
+REX_EXTERN(__imp__sub_8224EF28);
+REX_HOOK_RAW(sub_8224EF28) {
+  const uint32_t box = ctx.r3.u32;
+  __imp__sub_8224EF28(ctx, base);
+  if (!box || !WholeBackstage(base) || Rd32(base + 0x82E3C1F4)) return;
+  WrF(base + box + 32, -10.0f);
+  WrF(base + box + 36, 0.0f);
+  WrF(base + box + 40, -40.0f);
+  WrF(base + box + 44, 1.0f);
+  constexpr float kHalf[4] = {520.0f, 510.0f, 525.0f, 515.0f};
+  constexpr uint32_t kGlobals = 0x82D9E9D4;
+  for (uint32_t i = 0; i < 4; ++i) {
+    WrF(base + box + 64 + i * 4, kHalf[i]);
+    WrF(base + kGlobals + i * 4, kHalf[i]);
+  }
+  REXLOG_INFO("match types: the whole backstage's fight box covers all of it");
 }
