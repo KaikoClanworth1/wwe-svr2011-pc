@@ -32,6 +32,7 @@ set(SVR2011_SOURCES
     src/dlc.cpp
     src/caw_logos.cpp
     src/user_movies.cpp
+    src/paint_pages.cpp
     src/game_files.cpp
 )
 

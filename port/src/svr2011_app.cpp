@@ -30,6 +30,7 @@
 
 #include "achievements_page.h"
 #include "caw_logos.h"
+#include "paint_pages.h"
 #include "crash_report.h"
 #include "dlc.h"
 #include "fps_overlay.h"
@@ -327,6 +328,9 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
+  // 10 pages of Paint Tool logos (paint_pages.h).
+  svr2011::InstallPaintPages(runtime()->memory(),
+                             static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_saves);
   if (imgui_drawer()) {
     // MY WWE -> ACHIEVEMENTS (achievements_page.h).
     svr2011::InstallAchievementsPage(
@@ -337,6 +341,7 @@ void Svr2011App::OnPostLoadXexImage() {
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);
     // The on-screen controller (touch_controls.h).
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
+    svr2011::InstallPaintPagesOverlay(imgui_drawer());
   }
   {
     svr2011::StartDiscordPresence();  // (discord_presence.h)
