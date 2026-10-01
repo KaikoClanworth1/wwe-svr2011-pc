@@ -6,9 +6,11 @@
 // live in Saves\.paint\pNN_sMM.bin, one file per used slot (the raw 0x604CC-
 // byte slot). On pages 2-10 the Paint Tool storage jobs (open / read / write /
 // close) are done here instead of on the file, and reported to the game as
-// done. LB / RB switch pages in the Paint Tool grid and the Created Superstar
-// logo picker; Community Creations lists all 200 slots. Created Superstars
-// keep their own copy of each logo, so logos on any page stay on them.
+// done. In the Paint Tool grid, moving off its right / left edge shows the
+// next / previous page; the Created Superstar logo picker scrolls through the
+// logos of all pages, and Community Creations lists all 200 slots. Created
+// Superstars keep their own copy of each logo, so logos on any page stay on
+// them.
 // Plan and findings: docs/PAINT_TOOL_PAGES_PLAN.md.
 #pragma once
 
@@ -32,7 +34,7 @@ constexpr int kPaintPages = 10;
 void InstallPaintPages(rex::memory::Memory* memory, rex::input::InputSystem* input,
                        const std::filesystem::path& saves);
 
-// The page label over the Paint Tool grid ("LB PAGE 3 / 10 RB").
+// The page label over the Paint Tool grid ("< 3 / 10 >").
 void InstallPaintPagesOverlay(rex::ui::ImGuiDrawer* drawer);
 
 // The page the game sees, 0-based.

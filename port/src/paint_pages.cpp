@@ -17,10 +17,9 @@
 //   thumbnails, then redraws the cells), +56 row, +72 column.
 //   Created Superstar logo list (sub_828D1BF8()): loaded by sub_828DC1A8(list,
 //   42) and the steps of sub_828DBD90(list) (+16 step, 7 = done; it reads the
-//   whole file through the jobs above), +28 logo count. Its picker (HEAD /
-//   BODY -> TATTOOS -> PAINT TOOL DATA) takes the list's logos when it opens
-//   (sub_827E7100(picker)); the picker's cursor widget is picker+28, whose
-//   input sub_823D4FC0 runs while the picker has the controller.
+//   whole file through the jobs above), +28 logo count; its logos are read
+//   through accessors (sub_828DB918 ... sub_828DBA28). Its picker (HEAD /
+//   BODY -> TATTOOS -> PAINT TOOL DATA) scrolls through them.
 //   Community Creations Paint Tool slot list (data-select screen, vtable
 //   0x82027C20): +260 mode (0 pick a logo to upload, 1 pick where a download
 //   goes, 2 write the download), +272 the Paint Tool file it read; while the
@@ -74,12 +73,7 @@ std::mutex g_mutex;
 std::set<uint32_t> g_faked;          // storage objects with a job done here
 std::vector<uint8_t> g_page1;        // page 1 as it was when the grid left it
 bool g_page1_valid = false;
-uint16_t g_prev_buttons = 0;
-std::atomic<int64_t> g_grid_seen{0};    // ms; the grid's last update (label)
-std::atomic<int64_t> g_picker_seen{0};  // ms; the picker's last input (label)
-uint32_t g_picker = 0, g_picker_vtable = 0;  // the open Superstar logo picker
-uint32_t g_picker_list = 0;                  // its list while it reloads
-uint16_t g_picker_prev_buttons = 0;
+std::atomic<int64_t> g_grid_seen{0};  // ms; the grid's last update (label)
 constexpr uint32_t kSlotScreenVtable = 0x82027C20, kSlotScreenMode = 260, kSlotScreenFile = 272;
 std::atomic<svr2011::PaintDownloadCheck> g_download_check{nullptr};
 
@@ -234,16 +228,6 @@ bool AnyDirty(PPCContext& ctx, uint8_t* base, uint32_t file) {
   return dirty;
 }
 
-// The buttons held on any controller (the game reads them the same way).
-uint16_t PadButtons() {
-  uint16_t buttons = 0;
-  for (uint32_t user = 0; g_input && user < 4; ++user) {
-    rex::input::X_INPUT_STATE s = {};
-    if (g_input->GetState(user, &s) == 0) buttons |= s.gamepad.buttons;
-  }
-  return buttons;
-}
-
 // Saves the page the grid shows now (copies and deletes in the grid are only
 // saved when the player leaves the Paint Tool): the game's checksums
 // (sub_827B35C8), then the page's store - page 1 is the game's own file,
@@ -286,7 +270,7 @@ bool SaveNow(PPCContext& ctx, uint8_t* base, uint32_t file) {
   return true;
 }
 
-// LB / RB in the idle grid: shows the previous / next page.
+// Shows the previous / next page in the idle grid.
 void SwitchPage(PPCContext& ctx, uint8_t* base, uint32_t menu, int delta) {
   const uint32_t ptm = Ptm(ctx, base);
   const uint32_t state = ptm ? Rd32(base + ptm + kPtmState) : 0xFFFFFFFF;
@@ -324,39 +308,6 @@ void SwitchPage(PPCContext& ctx, uint8_t* base, uint32_t menu, int delta) {
 }
 
 bool OurJob(PPCContext& ctx) { return g_page.load() != 0 && ctx.r4.u32 == 1; }
-
-// Whether page `page` has any logo (without loading it).
-bool PageHasLogos(int page) {
-  std::error_code ec;
-  if (page != 0) {
-    for (uint32_t k = 0; k < kSlots; ++k)
-      if (std::filesystem::exists(SlotFile(page, k), ec)) return true;
-    return false;
-  }
-  if (g_page1_valid && g_page1.size() == kFile) {
-    for (uint32_t k = 0; k < kSlots; ++k)
-      if (Rd32(g_page1.data() + 8 + k * kSlot + kUsed)) return true;
-    return false;
-  }
-  std::ifstream in(g_pt, std::ios::binary);
-  for (uint32_t k = 0; in && k < kSlots; ++k) {
-    uint8_t used[4] = {};
-    in.seekg(8 + k * kSlot + kUsed);
-    if (in.read(reinterpret_cast<char*>(used), 4) && Rd32(used)) return true;
-  }
-  return false;
-}
-
-uint32_t CallR3(PPCContext& ctx, uint8_t* base, void (*fn)(PPCContext&, uint8_t*), uint32_t r3,
-                uint32_t r4 = 0) {
-  const auto saved = ctx;
-  ctx.r3.u64 = r3;
-  ctx.r4.u64 = r4;
-  fn(ctx, base);
-  const uint32_t result = ctx.r3.u32;
-  ctx = saved;
-  return result;
-}
 
 }  // namespace
 
@@ -449,79 +400,197 @@ REX_HOOK_RAW(sub_824AE790) {
 
 // -- The grid ---------------------------------------------------------------
 
-// Grid menu update: sub_827B4600(menu).
+namespace {
+
+constexpr uint32_t kMenuRow = 56, kMenuColumn = 72, kColumns = 5;
+int g_last_row = -1, g_last_column = -1;  // the idle grid's cursor last frame
+
+}  // namespace
+
+// Grid menu update: sub_827B4600(menu). Pages work like the game's own list
+// pages: moving off the right edge of the grid (which wraps to the left
+// column) shows the next page, off the left edge the previous one.
 REX_EXTERN(__imp__sub_827B4600);
 REX_HOOK_RAW(sub_827B4600) {
   const uint32_t menu = ctx.r3.u32;
-  const uint16_t buttons = PadButtons();
-  const uint16_t pressed = uint16_t(buttons & ~g_prev_buttons);
-  g_prev_buttons = buttons;
-  if (Rd32(base + menu + kMenuState) == 0) {
-    g_grid_seen = NowMs();
-    using namespace rex::input;
-    if (pressed & X_INPUT_GAMEPAD_LEFT_SHOULDER) SwitchPage(ctx, base, menu, -1);
-    else if (pressed & X_INPUT_GAMEPAD_RIGHT_SHOULDER) SwitchPage(ctx, base, menu, +1);
-  }
   __imp__sub_827B4600(ctx, base);
+  if (Rd32(base + menu + kMenuState) != 0) {
+    g_last_row = g_last_column = -1;
+    return;
+  }
+  g_grid_seen = NowMs();
+  const int row = int(Rd32(base + menu + kMenuRow)), column = int(Rd32(base + menu + kMenuColumn));
+  if (row == g_last_row && g_last_column == int(kColumns - 1) && column == 0)
+    SwitchPage(ctx, base, menu, +1);
+  else if (row == g_last_row && g_last_column == 0 && column == int(kColumns - 1))
+    SwitchPage(ctx, base, menu, -1);
+  g_last_row = row;
+  g_last_column = column;
 }
 
 // -- The Created Superstar logo picker --------------------------------------
+//
+// The picker (HEAD / BODY -> TATTOOS -> PAINT TOOL DATA) scrolls through the
+// logo list, which the game sizes for 20 logos. Here the list holds the used
+// logos of all 10 pages: its count is their number, what the game asks of a
+// logo by number (type, id, slot, header) comes from an index of all pages,
+// and the 20 places for pictures (texture + 8-bit copy) are a window: logo n
+// is loaded into place n % 20 when the game asks for its picture.
 
-// The picker opens (and takes the list's logos): sub_827E7100(picker).
-REX_EXTERN(__imp__sub_827E7100);
-REX_HOOK_RAW(sub_827E7100) {
-  g_picker = ctx.r3.u32;
-  g_picker_vtable = Rd32(base + g_picker);
-  __imp__sub_827E7100(ctx, base);
+namespace {
+
+constexpr uint32_t kListState = 16, kListCount = 28, kListTypes = 32;
+constexpr uint32_t kListTextures256 = 112, kListTextures128 = 192, kListPictures = 272;
+constexpr uint32_t kPictureSize = 0x10414, kTga = 0x4002C, kHeaderSize = 28;
+
+struct Logo {
+  int page;
+  uint32_t slot;
+  uint32_t type;  // 1 = 256x256, 2 = 128x128 (the list's own values)
+  uint32_t id;
+  uint8_t header[kHeaderSize];
+};
+std::vector<Logo> g_logos;        // the used logos of all pages, in page order
+uint32_t g_list = 0;              // the list g_logos was made for
+uint32_t g_headers = 0;           // guest: the headers of g_logos
+int g_window[kSlots];             // the logo in each picture place (-1 none)
+
+// The first `n` bytes of page `page`'s slot `k`.
+bool ReadSlot(int page, uint32_t k, uint8_t* out, size_t n, size_t offset = 0) {
+  if (page == 0 && g_page1_valid && g_page1.size() == kFile) {
+    std::memcpy(out, g_page1.data() + 8 + k * kSlot + offset, n);
+    return true;
+  }
+  std::ifstream in(page == 0 ? g_pt : SlotFile(page, k), std::ios::binary);
+  in.seekg(std::streamoff((page == 0 ? 8 + k * kSlot : 0) + offset));
+  return bool(in.read(reinterpret_cast<char*>(out), std::streamsize(n)));
 }
 
-// The picker's cursor input: LB / RB load the previous / next page that has
-// logos into the list (the game's own loader), then the picker opens again.
-REX_EXTERN(__imp__sub_823D4FC0);
-REX_HOOK_RAW(sub_823D4FC0) {
-  const uint32_t widget = ctx.r3.u32;
-  const uint32_t picker = widget - 28;
-  if (!g_picker || picker != g_picker || Rd32(base + picker) != g_picker_vtable) {
-    __imp__sub_823D4FC0(ctx, base);
-    return;
-  }
-  g_picker_seen = NowMs();
-  if (g_picker_list) {
-    // Reloading: run the loader's steps until it is done, then reopen.
-    CallR3(ctx, base, sub_828DBD90, g_picker_list);
-    if (Rd32(base + g_picker_list + 16) == 7) {
-      REXLOG_INFO("paint pages: Superstar logo list holds page {} ({} logos)", g_page.load() + 1,
-                  Rd32(base + g_picker_list + 28));
-      g_picker_list = 0;
-      CallR3(ctx, base, sub_827E7100, picker);
-    }
-    return;  // no cursor moves meanwhile
-  }
-  const uint16_t buttons = PadButtons();
-  const uint16_t pressed = uint16_t(buttons & ~g_picker_prev_buttons);
-  g_picker_prev_buttons = buttons;
-  using namespace rex::input;
-  const int delta = (pressed & X_INPUT_GAMEPAD_LEFT_SHOULDER)    ? -1
-                    : (pressed & X_INPUT_GAMEPAD_RIGHT_SHOULDER) ? +1
-                                                                 : 0;
-  if (delta) {
-    const uint32_t list = CallR3(ctx, base, sub_828D1BF8, 0);
-    if (list && Rd32(base + list + 16) == 7) {
-      int to = g_page.load();
-      for (int i = 0; i < svr2011::kPaintPages; ++i) {
-        to = (to + delta + svr2011::kPaintPages) % svr2011::kPaintPages;
-        if (to == g_page.load() || PageHasLogos(to)) break;
-      }
-      if (to != g_page.load()) {
-        g_page = to;
-        CallR3(ctx, base, sub_828DC1A8, list, 42);
-        g_picker_list = list;
-        REXLOG_INFO("paint pages: Superstar logo picker loads page {}", to + 1);
-        return;
-      }
+// The list has finished loading: index every page's logos.
+void IndexLogos(uint8_t* base, uint32_t list) {
+  std::lock_guard lock(g_mutex);
+  g_logos.clear();
+  for (int page = 0; page < svr2011::kPaintPages; ++page) {
+    for (uint32_t k = 0; k < kSlots; ++k) {
+      uint8_t head[48] = {};
+      if (!ReadSlot(page, k, head, sizeof(head)) || !Rd32(head + kUsed)) continue;
+      Logo logo{page, k, Rd32(head + 36) == 128 ? 2u : 1u, 0, {}};
+      std::memcpy(logo.header, head, kHeaderSize);
+      uint8_t id[4] = {};
+      ReadSlot(page, k, id, 4, kSum);
+      logo.id = Rd32(id);
+      g_logos.push_back(logo);
     }
   }
-  __imp__sub_823D4FC0(ctx, base);
+  if (!g_headers) g_headers = g_memory->SystemHeapAlloc(svr2011::kPaintPages * kSlots * kHeaderSize);
+  for (size_t i = 0; g_headers && i < g_logos.size(); ++i)
+    std::memcpy(base + g_headers + i * kHeaderSize, g_logos[i].header, kHeaderSize);
+  for (int& w : g_window) w = -1;
+  g_list = list;
+  Wr32(base + list + kListCount, uint32_t(g_logos.size()));
+  REXLOG_INFO("paint pages: Superstar logo list holds {} logos of all pages", g_logos.size());
+}
+
+bool Indexed(uint8_t* base, uint32_t list, uint32_t n) {
+  return list && list == g_list && Rd32(base + list + kListState) == 7 && n < g_logos.size();
+}
+
+// Logo n's picture into its place (n % 20): the 8-bit copy, then the texture
+// made from it (as the list's own loader does).
+void ShowLogo(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t n) {
+  const uint32_t place = n % kSlots;
+  if (g_window[place] == int(n)) return;
+  const Logo& logo = g_logos[n];
+  const uint32_t picture = list + kListPictures + place * kPictureSize;
+  {
+    std::lock_guard lock(g_mutex);
+    if (!ReadSlot(logo.page, logo.slot, base + picture, kPictureSize, kTga)) return;
+  }
+  Wr32(base + list + kListTypes + place * 4, logo.type);
+  const uint32_t texture =
+      Rd32(base + list + (logo.type == 2 ? kListTextures128 : kListTextures256) + place * 4);
+  if (texture) {
+    const auto saved = ctx;
+    ctx.r3.u64 = texture;
+    ctx.r4.u64 = picture + 20;          // palette (after the 20-byte TGA header)
+    ctx.r5.u64 = picture + 20 + 1024;   // indices
+    sub_828D1080(ctx, base);
+    ctx = saved;
+  }
+  g_window[place] = int(n);
+}
+
+}  // namespace
+
+// A step of the list's loader: sub_828DBD90(list). When it is done, the list
+// is made to hold all pages.
+REX_EXTERN(__imp__sub_828DBD90);
+REX_HOOK_RAW(sub_828DBD90) {
+  const uint32_t list = ctx.r3.u32;
+  const uint32_t before = Rd32(base + list + kListState);
+  __imp__sub_828DBD90(ctx, base);
+  if (before != 7 && Rd32(base + list + kListState) == 7) {
+    IndexLogos(base, list);
+    // The picker shows the first logos and (wrapping) the last ones when it
+    // opens: their pictures now, not when first drawn.
+    const uint32_t n = uint32_t(g_logos.size());
+    for (uint32_t i : {n - 1, n - 2, 0u, 1u, 2u})
+      if (i < n && g_window[i % kSlots] < 0) ShowLogo(ctx, base, list, i);
+  }
+}
+
+// The accessors of logo n: type sub_828DB918(list, n), id sub_828DB9F8,
+// slot sub_828DBA10, header sub_828DBA28; texture sub_828DB928(list, n) and
+// sub_828DB970(out, list, n), 8-bit copy sub_828DB9E0(list, n).
+REX_EXTERN(__imp__sub_828DB918);
+REX_HOOK_RAW(sub_828DB918) {
+  if (!Indexed(base, ctx.r3.u32, ctx.r4.u32)) return __imp__sub_828DB918(ctx, base);
+  ctx.r3.u64 = g_logos[ctx.r4.u32].type;
+}
+
+REX_EXTERN(__imp__sub_828DB9F8);
+REX_HOOK_RAW(sub_828DB9F8) {
+  if (!Indexed(base, ctx.r3.u32, ctx.r4.u32)) return __imp__sub_828DB9F8(ctx, base);
+  ctx.r3.u64 = g_logos[ctx.r4.u32].id;
+}
+
+REX_EXTERN(__imp__sub_828DBA10);
+REX_HOOK_RAW(sub_828DBA10) {
+  if (!Indexed(base, ctx.r3.u32, ctx.r4.u32)) return __imp__sub_828DBA10(ctx, base);
+  ctx.r3.u64 = g_logos[ctx.r4.u32].slot;
+}
+
+REX_EXTERN(__imp__sub_828DBA28);
+REX_HOOK_RAW(sub_828DBA28) {
+  if (!g_headers || !Indexed(base, ctx.r3.u32, ctx.r4.u32)) return __imp__sub_828DBA28(ctx, base);
+  ctx.r3.u64 = g_headers + ctx.r4.u32 * kHeaderSize;
+}
+
+REX_EXTERN(__imp__sub_828DB928);
+REX_HOOK_RAW(sub_828DB928) {
+  const uint32_t list = ctx.r3.u32, n = ctx.r4.u32;
+  if (!Indexed(base, list, n)) return __imp__sub_828DB928(ctx, base);
+  ShowLogo(ctx, base, list, n);
+  ctx.r4.u64 = n % kSlots;
+  __imp__sub_828DB928(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_828DB970);
+REX_HOOK_RAW(sub_828DB970) {
+  const uint32_t list = ctx.r4.u32, n = ctx.r5.u32;
+  if (!Indexed(base, list, n)) return __imp__sub_828DB970(ctx, base);
+  ShowLogo(ctx, base, list, n);
+  ctx.r5.u64 = n % kSlots;
+  __imp__sub_828DB970(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_828DB9E0);
+REX_HOOK_RAW(sub_828DB9E0) {
+  const uint32_t list = ctx.r3.u32, n = ctx.r4.u32;
+  if (!Indexed(base, list, n)) return __imp__sub_828DB9E0(ctx, base);
+  ShowLogo(ctx, base, list, n);
+  ctx.r4.u64 = n % kSlots;
+  __imp__sub_828DB9E0(ctx, base);
 }
 
 // -- Community Creations: the Paint Tool slot list -------------------------
@@ -798,35 +867,39 @@ REX_HOOK_RAW(sub_82518268) {
 
 namespace {
 
+// "<  3 / 10  >" over the grid, like the game's own list pages.
 class PageLabel final : public rex::ui::ImGuiDialog {
  public:
   explicit PageLabel(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    const int64_t now = NowMs();
-    const bool grid = now - g_grid_seen.load() < 250, picker = now - g_picker_seen.load() < 250;
-    if (!grid && !picker) return;
+    if (NowMs() - g_grid_seen.load() > 250) return;
     // The game's 16:9 picture, centred in the window; the label sits on the
-    // top edge of the grid, centred, or right of the picker's title.
+    // top edge of the grid, centred.
     const float w = io.DisplaySize.x, h = io.DisplaySize.y;
     const float gw = std::min(w, h * 16.0f / 9.0f), gh = gw * 9.0f / 16.0f;
     const float x0 = (w - gw) * 0.5f, y0 = (h - gh) * 0.5f;
     const float scale = gh / 720.0f;
-    char text[48];
-    std::snprintf(text, sizeof(text), "LB   PAGE %d / %d   RB", g_page.load() + 1, svr2011::kPaintPages);
+    char text[16];
+    std::snprintf(text, sizeof(text), "%d / %d", g_page.load() + 1, svr2011::kPaintPages);
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
     const float size = 28.0f * scale;
     const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    const ImVec2 c = grid ? ImVec2(x0 + gw * 0.5f, y0 + gh * 0.088f)
-                          : ImVec2(x0 + gw * 0.375f + ts.x * 0.5f, y0 + gh * 0.151f);
-    const ImVec2 pad(14.0f * scale, 6.0f * scale);
-    const ImVec2 a(c.x - ts.x * 0.5f - pad.x, c.y - ts.y * 0.5f - pad.y);
-    const ImVec2 b(c.x + ts.x * 0.5f + pad.x, c.y + ts.y * 0.5f + pad.y);
+    const ImVec2 c(x0 + gw * 0.5f, y0 + gh * 0.088f);
+    const float arrow = 11.0f * scale, gap = 26.0f * scale;
+    const float half = ts.x * 0.5f + gap + arrow;
+    const ImVec2 pad(16.0f * scale, 6.0f * scale);
+    const ImVec2 a(c.x - half - pad.x, c.y - ts.y * 0.5f - pad.y);
+    const ImVec2 b(c.x + half + pad.x, c.y + ts.y * 0.5f + pad.y);
+    const ImU32 white = IM_COL32(255, 255, 255, 255);
     dl->AddRectFilled(a, b, IM_COL32(10, 12, 18, 210), 6.0f * scale);
     dl->AddRect(a, b, IM_COL32(220, 220, 225, 255), 6.0f * scale, 0, 2.0f * scale);
-    dl->AddText(font, size, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(255, 255, 255, 255), text);
+    dl->AddText(font, size, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), white, text);
+    const float lx = c.x - half, rx = c.x + half;  // the arrows' outer points
+    dl->AddTriangleFilled(ImVec2(lx, c.y), ImVec2(lx + arrow, c.y - arrow), ImVec2(lx + arrow, c.y + arrow), white);
+    dl->AddTriangleFilled(ImVec2(rx, c.y), ImVec2(rx - arrow, c.y + arrow), ImVec2(rx - arrow, c.y - arrow), white);
   }
 };
 

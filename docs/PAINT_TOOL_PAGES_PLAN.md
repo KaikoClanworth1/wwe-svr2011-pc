@@ -207,3 +207,21 @@ At first this used LB/RB, then (user's idea) the game's own list paging was exte
   - the list pages 1/20 -> 6/20 show page 1, page 2 (slots 21-24, 24 DOWNLOADED) and page 3 (slot 45) correctly, with previews;
   - downloaded into slot 47: `p03_s07.bin` written, `00PaintTool.pt` untouched;
   - uploaded slot 21 ("PAINT TOOL LOGO SLOT 21", page 2 slot 1): server record 9.
+
+## No LB/RB: the game's own ways of paging (done)
+
+At the user's request, every screen now pages the way the game already does. LB/RB are not used anywhere.
+
+- **Paint Tool grid.** The grid wraps its cursor (5 columns). Moving off the right edge (column 4 to 0 on the same row, seen in the 827B4600 hook) shows the next page; off the left edge (0 to 4), the previous one. The cursor ends on the near column of the new page.
+  - The label is "◀ 3 / 10 ▶", like the list pages in Community Creations.
+- **Superstar logo picker.** It scrolls through the used logos of all 10 pages ("1/57").
+  - The list (828DBD90 done, state 7) gets an index of every page's used logos, and its count is set to their number.
+  - The accessors serve type, id, slot and header (a guest table of headers) from that index.
+  - The picture accessors (828DB928, 828DB970, 828DB9E0) use the list's 20 picture places as a window: logo n goes into place n % 20 when first asked for. Its 8-bit copy is read from the page store, and the texture is refilled with 828D1080(texture, palette, indices), as the loader does.
+  - The first and last logos are loaded when the list finishes, so the picker shows them when it opens.
+- **Verified:**
+  - grid paging across the right and left edges;
+  - picker 1/11 over pages 1-3, wrapping both ways;
+  - a page-3 logo applied to a Superstar;
+  - a Superstar with logos loads in the editor with the accessors hooked.
+

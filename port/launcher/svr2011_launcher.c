@@ -1619,7 +1619,8 @@ static void build_ui(void)
 
     /* Paint Tool */
     add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
-                              L"LB / RB change pages there). Export one as a PNG, or import any image into a logo; "
+                              L"move past the grid's edge to change pages there). Export one as a PNG, or import any "
+                              L"image into a logo; "
                               L"it is fitted into 256 \x00D7 256.",
         SS_LEFT, X0, 50, 560, 32, 0);
     pt_setup_grid();
