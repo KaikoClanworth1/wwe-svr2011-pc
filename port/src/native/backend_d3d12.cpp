@@ -3,6 +3,8 @@
 #include "native/gpu.h"
 
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -250,6 +252,47 @@ class D3D12Backend final : public Backend {
     return d3d12::PipelineCreated(pipeline);
   }
   void StallQueue(plume::RenderCommandQueue* queue) override { d3d12::StallQueue(queue); }
+
+  // The compiled pipelines (an ID3D12PipelineLibrary): without it every
+  // pipeline was compiled again at each start - hitches at each new scene on
+  // slow CPUs/drivers.
+  void LoadPipelineCache(plume::RenderDevice* device, const std::filesystem::path& file) override {
+    std::vector<uint8_t> data;
+    if (std::ifstream in{file, std::ios::binary}) {
+      data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    auto* d3d = static_cast<plume::D3D12Device*>(device);
+    const bool loaded = d3d->setPipelineCacheData(data.empty() ? nullptr : data.data(), data.size());
+    saved_stores_ = 0;
+    REXLOG_INFO("native renderer: pipeline library {} ({} KB)",
+                loaded ? "loaded" : data.empty() ? "new" : "new (the saved one is from another driver)",
+                loaded ? data.size() / 1024 : 0);
+  }
+
+  void SavePipelineCache(plume::RenderDevice* device, const std::filesystem::path& file) override {
+    auto* d3d = static_cast<plume::D3D12Device*>(device);
+    if (d3d->pipelineLibraryStores == saved_stores_) return;  // (nothing new)
+    const uint32_t stores = d3d->pipelineLibraryStores;
+    const std::vector<uint8_t> data = d3d->getPipelineCacheData();
+    if (data.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    const std::filesystem::path tmp = file.string() + ".tmp";
+    {
+      std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+      if (!out) return;
+    }
+    std::filesystem::rename(tmp, file, ec);
+    if (!ec) {
+      saved_stores_ = stores;
+      REXLOG_INFO("native renderer: pipeline library saved ({} KB; {} loaded, {} compiled this run)",
+                  data.size() / 1024, d3d->pipelineLibraryLoads, stores);
+    }
+  }
+
+ private:
+  uint32_t saved_stores_ = 0;
 };
 
 }  // namespace

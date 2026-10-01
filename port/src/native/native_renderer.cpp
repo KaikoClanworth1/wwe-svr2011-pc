@@ -671,7 +671,7 @@ uint32_t g_const_stale = 0;  // (native_constant_check: reuses found stale)
 bool g_pipeline_cache_dirty = false;
 std::chrono::steady_clock::time_point g_last_pipeline_build;
 
-// The pipeline cache (gpu.h: Vulkan): the user data's cache folder.
+// The pipeline cache (gpu.h): the user data's cache folder, one per API.
 std::filesystem::path PipelineCacheFile() {
   std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "UserData";
   char* v = nullptr;
@@ -680,7 +680,8 @@ std::filesystem::path PipelineCacheFile() {
     if (*v) dir = v;
     free(v);
   }
-  return dir / "cache" / "native_vulkan_pipelines.bin";
+  return dir / "cache" /
+         (backend::ActiveApi() == backend::Api::kVulkan ? "native_vulkan_pipelines.bin" : "native_d3d12_pipelines.bin");
 }
 bool g_no_blend = false;  // SVR2011_NATIVE_NO_BLEND=1
 // SVR2011_NATIVE_DUMP_FRAME=<frame>: describe the first 40 draws of that

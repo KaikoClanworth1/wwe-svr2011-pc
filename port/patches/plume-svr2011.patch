@@ -1,8 +1,8 @@
 diff --git a/plume_d3d12.cpp b/plume_d3d12.cpp
-index 5e842c5..345c2a0 100644
+index 5e842c5..d06f901 100644
 --- a/plume_d3d12.cpp
 +++ b/plume_d3d12.cpp
-@@ -45,7 +45,7 @@ extern "C" {
+@@ -45,9 +45,23 @@ extern "C" {
  
  namespace plume {
      static const uint32_t ShaderDescriptorHeapSize = 65536;
@@ -10,8 +10,24 @@ index 5e842c5..345c2a0 100644
 +    static const uint32_t SamplerDescriptorHeapSize = 2048;  // [svr2011] (the D3D12 maximum)
      static const uint32_t TargetDescriptorHeapSize = 16384;
  
++    // [svr2011] FNV-1a over bytes, continuing from hash (pipeline library names).
++    static uint64_t HashBytes(const void *data, size_t size, uint64_t hash) {
++        if (hash == 0) {
++            hash = 14695981039346656037ull;
++        }
++
++        const uint8_t *bytes = (const uint8_t *)(data);
++        for (size_t i = 0; (bytes != nullptr) && (i < size); i++) {
++            hash = (hash ^ bytes[i]) * 1099511628211ull;
++        }
++
++        return hash;
++    }
++
      // Common functions.
-@@ -144,6 +144,18 @@ namespace plume {
+ 
+     static std::wstring Utf8ToUtf16(const std::string_view& value) {
+@@ -144,6 +158,18 @@ namespace plume {
              // In order to be able to create both depth-stencil and shader resource views,
              // we must use R32G8X24_TYPELESS as the base type and specialize later.
              return DXGI_FORMAT_R32G8X24_TYPELESS;
@@ -30,7 +46,7 @@ index 5e842c5..345c2a0 100644
          case RenderFormat::R32_FLOAT:
              return DXGI_FORMAT_R32_FLOAT;
          case RenderFormat::R32_UINT:
-@@ -243,6 +255,9 @@ namespace plume {
+@@ -243,6 +269,9 @@ namespace plume {
              // Specialize into depth view of depth-stencil texture.
              return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
          }
@@ -40,7 +56,7 @@ index 5e842c5..345c2a0 100644
          return dxgiFormat;
      }
  
-@@ -252,6 +267,9 @@ namespace plume {
+@@ -252,6 +281,9 @@ namespace plume {
              // Specialize into full depth-stencil view.
              return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
          }
@@ -50,7 +66,7 @@ index 5e842c5..345c2a0 100644
          return dxgiFormat;
      }
  
-@@ -2247,6 +2265,14 @@ namespace plume {
+@@ -2247,6 +2279,14 @@ namespace plume {
  #   endif
      }
  
@@ -65,7 +81,7 @@ index 5e842c5..345c2a0 100644
      void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
          assert(targetFramebuffer != nullptr);
          assert(attachmentIndex < targetFramebuffer->colorTargets.size());
-@@ -2312,9 +2338,10 @@ namespace plume {
+@@ -2312,9 +2352,10 @@ namespace plume {
  
          const D3D12_TEXTURE_COPY_LOCATION copyDstLocation = toD3D12(dstLocation);
          const D3D12_TEXTURE_COPY_LOCATION copySrcLocation = toD3D12(srcLocation);
@@ -78,7 +94,7 @@ index 5e842c5..345c2a0 100644
      }
  
      void D3D12CommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {
-@@ -2464,9 +2491,10 @@ namespace plume {
+@@ -2464,9 +2505,10 @@ namespace plume {
          assert(activeGraphicsPipeline->type == D3D12Pipeline::Type::Graphics);
  
          const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(activeGraphicsPipeline);
@@ -92,7 +108,7 @@ index 5e842c5..345c2a0 100644
          }
      }
      
-@@ -2717,6 +2745,13 @@ namespace plume {
+@@ -2717,6 +2759,13 @@ namespace plume {
          WaitForSingleObjectEx(interfaceFence->fenceEvent, INFINITE, FALSE);
      }
  
@@ -106,7 +122,7 @@ index 5e842c5..345c2a0 100644
      // D3D12Buffer
  
      D3D12Buffer::D3D12Buffer(D3D12Device *device, D3D12Pool *pool, const RenderBufferDesc &desc) {
-@@ -2872,7 +2907,8 @@ namespace plume {
+@@ -2872,7 +2921,8 @@ namespace plume {
  
          D3D12_CLEAR_VALUE optimizedClearValue;
          if (desc.optimizedClearValue != nullptr) {
@@ -116,7 +132,7 @@ index 5e842c5..345c2a0 100644
              memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
          }
  
-@@ -3078,6 +3114,8 @@ namespace plume {
+@@ -3078,6 +3128,8 @@ namespace plume {
          assert(desc.pipelineLayout != nullptr);
  
          topology = toD3D12(desc.primitiveTopology);
@@ -125,8 +141,118 @@ index 5e842c5..345c2a0 100644
  
          const D3D12PipelineLayout *pipelineLayout = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
          const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);
+@@ -3199,7 +3251,39 @@ namespace plume {
+ 
+         psoDesc.InputLayout = { inputElements.data(), UINT(inputElements.size()) };
+ 
++        // [svr2011] From the pipeline library when it has this one (named by a
++        // hash of everything the description holds), else compiled and stored.
++        wchar_t libraryName[24] = {};
++        if (device->pipelineLibrary != nullptr) {
++            D3D12_GRAPHICS_PIPELINE_STATE_DESC plain = psoDesc;
++            plain.pRootSignature = nullptr;
++            plain.VS.pShaderBytecode = plain.GS.pShaderBytecode = plain.PS.pShaderBytecode = nullptr;
++            plain.InputLayout.pInputElementDescs = nullptr;
++            uint64_t hash = HashBytes(&plain, sizeof(plain), pipelineLayout->rootSignatureHash);
++            for (const D3D12_SHADER_BYTECODE &code : { psoDesc.VS, psoDesc.GS, psoDesc.PS }) {
++                hash = HashBytes(code.pShaderBytecode, code.BytecodeLength, hash);
++            }
++            for (D3D12_INPUT_ELEMENT_DESC element : inputElements) {
++                hash = HashBytes(element.SemanticName, strlen(element.SemanticName), hash);
++                element.SemanticName = nullptr;
++                hash = HashBytes(&element, sizeof(element), hash);
++            }
++            swprintf(libraryName, 24, L"%016llX", (unsigned long long)hash);
++            std::lock_guard<std::mutex> lock(device->pipelineLibraryMutex);
++            if (SUCCEEDED(device->pipelineLibrary->LoadGraphicsPipeline(libraryName, &psoDesc, IID_PPV_ARGS(&d3d)))) {
++                device->pipelineLibraryLoads++;
++                return;
++            }
++        }
++
+         device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
++
++        if ((device->pipelineLibrary != nullptr) && (d3d != nullptr)) {
++            std::lock_guard<std::mutex> lock(device->pipelineLibraryMutex);
++            if (SUCCEEDED(device->pipelineLibrary->StorePipeline(libraryName, d3d))) {
++                device->pipelineLibraryStores++;
++            }
++        }
+     }
+ 
+     D3D12GraphicsPipeline::~D3D12GraphicsPipeline() {
+@@ -3625,6 +3709,7 @@ namespace plume {
+             return;
+         }
+ 
++        rootSignatureHash = HashBytes(signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), 0);  // [svr2011]
+         res = device->d3d->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
+         if (FAILED(res)) {
+             fprintf(stderr, "CreateRootSignature failed with error code 0x%lX.\n", res);
+@@ -3886,6 +3971,11 @@ namespace plume {
+     }
+ 
+     D3D12Device::~D3D12Device() {
++        if (pipelineLibrary != nullptr) {  // [svr2011]
++            pipelineLibrary->Release();
++            pipelineLibrary = nullptr;
++        }
++
+         viewHeapAllocator.reset();
+         samplerHeapAllocator.reset();
+         rtDummyGlobalPipelineLayout.reset();
+@@ -3893,6 +3983,49 @@ namespace plume {
+         release();
+     }
+ 
++    // [svr2011] (see pipelineLibrary in plume_d3d12.h)
++    bool D3D12Device::setPipelineCacheData(const void *data, size_t size) {
++        std::lock_guard<std::mutex> lock(pipelineLibraryMutex);
++        if (pipelineLibrary != nullptr) {
++            pipelineLibrary->Release();
++            pipelineLibrary = nullptr;
++        }
++
++        ID3D12Device1 *device1 = nullptr;
++        if (FAILED(d3d->QueryInterface(IID_PPV_ARGS(&device1)))) {
++            return false;
++        }
++
++        bool loaded = false;
++        if ((data != nullptr) && (size > 0)) {
++            pipelineLibraryData.assign((const uint8_t *)(data), (const uint8_t *)(data) + size);
++            loaded = SUCCEEDED(device1->CreatePipelineLibrary(pipelineLibraryData.data(), pipelineLibraryData.size(), IID_PPV_ARGS(&pipelineLibrary)));
++        }
++
++        if (!loaded) {
++            // Missing, damaged or made by another driver / GPU: start an empty one.
++            pipelineLibraryData.clear();
++            pipelineLibrary = nullptr;
++            device1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipelineLibrary));
++        }
++
++        device1->Release();
++        return loaded;
++    }
++
++    std::vector<uint8_t> D3D12Device::getPipelineCacheData() {
++        std::lock_guard<std::mutex> lock(pipelineLibraryMutex);
++        std::vector<uint8_t> data;
++        if (pipelineLibrary != nullptr) {
++            data.resize(pipelineLibrary->GetSerializedSize());
++            if (data.empty() || FAILED(pipelineLibrary->Serialize(data.data(), data.size()))) {
++                data.clear();
++            }
++        }
++
++        return data;
++    }
++
+     std::unique_ptr<RenderDescriptorSet> D3D12Device::createDescriptorSet(const RenderDescriptorSetDesc &desc) {
+         return std::make_unique<D3D12DescriptorSet>(this, desc);
+     }
 diff --git a/plume_d3d12.h b/plume_d3d12.h
-index 4827452..4b309e1 100644
+index 4827452..9678886 100644
 --- a/plume_d3d12.h
 +++ b/plume_d3d12.h
 @@ -183,6 +183,7 @@ namespace plume {
@@ -162,6 +288,32 @@ index 4827452..4b309e1 100644
  
          D3D12GraphicsPipeline(D3D12Device *device, const RenderGraphicsPipelineDesc &desc);
          ~D3D12GraphicsPipeline() override;
+@@ -419,6 +424,7 @@ namespace plume {
+ 
+     struct D3D12PipelineLayout : RenderPipelineLayout {
+         ID3D12RootSignature *rootSignature = nullptr;
++        uint64_t rootSignatureHash = 0;  // [svr2011] of the serialized root signature (pipeline library names)
+         D3D12Device *device = nullptr;
+         std::vector<RenderPushConstantRange> pushConstantRanges;
+         std::vector<uint32_t> setViewRootIndices;
+@@ -448,6 +454,17 @@ namespace plume {
+         RenderDeviceDescription description;
+         uint64_t timestampFrequency = 1;
+         bool gpuUploadHeapFallback = false;
++        // [svr2011] Compiled pipelines kept between runs (ID3D12PipelineLibrary):
++        // setPipelineCacheData loads a serialized library (or starts an empty
++        // one when it's missing or from another driver), pipelines are looked
++        // up / stored in it by a hash of their description, and
++        // getPipelineCacheData serializes it for the next run.
++        ID3D12PipelineLibrary *pipelineLibrary = nullptr;
++        std::vector<uint8_t> pipelineLibraryData;  // (the library reads from it while it lives)
++        std::mutex pipelineLibraryMutex;
++        uint32_t pipelineLibraryLoads = 0, pipelineLibraryStores = 0;
++        bool setPipelineCacheData(const void *data, size_t size);
++        std::vector<uint8_t> getPipelineCacheData();
+ 
+         D3D12Device(D3D12Interface *renderInterface, const std::string &preferredDeviceName);
+         ~D3D12Device() override;
 diff --git a/plume_render_interface.h b/plume_render_interface.h
 index 2048557..d88b9b2 100644
 --- a/plume_render_interface.h

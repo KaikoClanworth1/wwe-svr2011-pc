@@ -42,7 +42,8 @@ class Backend {
   virtual void LogBuffer(plume::RenderBuffer* buffer, uint64_t size) = 0;
   virtual bool PipelineCreated(plume::RenderPipeline* pipeline) = 0;
   virtual void StallQueue(plume::RenderCommandQueue* queue) = 0;
-  // A pipeline cache kept on disk (Vulkan; D3D12 drivers keep their own).
+  // A pipeline cache kept on disk (Vulkan: a VkPipelineCache; D3D12: a
+  // pipeline library).
   virtual void LoadPipelineCache(plume::RenderDevice*, const std::filesystem::path&) {}
   virtual void SavePipelineCache(plume::RenderDevice*, const std::filesystem::path&) {}
 };
@@ -81,7 +82,7 @@ void DrainDebugMessages(plume::RenderDevice* device);
 void LogBuffer(plume::RenderBuffer* buffer, uint64_t size);
 // Whether the driver built the pipeline (plume returns one either way).
 bool PipelineCreated(plume::RenderPipeline* pipeline);
-// The pipeline cache file (Vulkan): read before the first pipeline, written
+// The pipeline cache file (per API): read before the first pipeline, written
 // when new pipelines were built. Compiled pipelines then load from it the
 // next time instead of being compiled again (phones' drivers keep none).
 void LoadPipelineCache(plume::RenderDevice* device, const std::filesystem::path& file);
