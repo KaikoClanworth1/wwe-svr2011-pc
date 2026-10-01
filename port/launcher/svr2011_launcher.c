@@ -76,7 +76,7 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_COUNT };
 
 enum {
     ID_TAB = 100,
@@ -85,6 +85,8 @@ enum {
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS,
+    /* online */
+    ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_DEFAULT, ID_ON_SAVE, ID_ON_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS,
@@ -951,6 +953,39 @@ static int language_index(int id)
     return 0;
 }
 
+/* An edit control's text as a TOML string (UTF-8, at most max characters;
+ * without " and \, which toml_kv doesn't read back). */
+static void toml_quote_ctl(int id, int max, char *out, size_t n)
+{
+    WCHAR w[160];
+    char u[480];
+    size_t k = 0;
+    const char *s;
+    GetWindowTextW(ctl(id), w, 160);
+    if ((int)wcslen(w) > max)
+        w[max] = 0;
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, u, sizeof u, NULL, NULL);
+    out[k++] = '"';
+    for (s = u; *s && k + 3 < n; s++) {
+        if ((unsigned char)*s >= 0x20 && *s != '"' && *s != '\\')
+            out[k++] = *s;
+    }
+    out[k++] = '"';
+    out[k] = 0;
+}
+
+#define ONLINE_DEFAULT_SERVER L"127.0.0.1:8411"
+
+static void online_show(int enabled, const char *name, const char *server)
+{
+    WCHAR w[160];
+    CheckDlgButton(s_wnd, ID_ON_ENABLE, enabled ? BST_CHECKED : BST_UNCHECKED);
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 160);
+    set_text(ID_ON_NAME, w);
+    MultiByteToWideChar(CP_UTF8, 0, server, -1, w, 160);
+    set_text(ID_ON_SERVER, w[0] ? w : ONLINE_DEFAULT_SERVER);
+}
+
 static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_audio, int mute, int fps, int msaa,
                           int renderer, int language)
 {
@@ -978,7 +1013,8 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, emulated = 0, vulkan = 0, language = 1;
+    int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0;
+    char online_name[64] = "", online_server[128] = "";
     settings_path(p);
     if (toml_read(p, &l)) {
         for (i = 0; i < l.n; i++) {
@@ -1002,6 +1038,9 @@ static void settings_load(void)
             else if (!strcmp(key, "window_width")) w = atoi(val);
             else if (!strcmp(key, "window_height")) h = atoi(val);
             else if (!strcmp(key, "user_language")) language = atoi(val);
+            else if (!strcmp(key, "online_enabled")) online = !strcmp(val, "true");
+            else if (!strcmp(key, "online_name")) strcpy_s(online_name, sizeof online_name, val);
+            else if (!strcmp(key, "online_server")) strcpy_s(online_server, sizeof online_server, val);
         }
         lines_free(&l);
     } else if (on_steam_deck()) {
@@ -1012,18 +1051,21 @@ static void settings_load(void)
             res = i;
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
+    online_show(online, online_name, online_server);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
+    set_text(ID_ON_STATUS, L"");
 }
 
 static int settings_save(void)
 {
-    enum { NK = 15 };
+    enum { NK = 18 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
-                                    "native_2x_msaa", "native_renderer", "gpu_backend", "user_language" };
+                                    "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
+                                    "online_enabled", "online_name", "online_server" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
-    char vals[NK][64];
+    char vals[NK][160];
     int done[NK] = { 0 };
     WCHAR p[MAX_PATH], tmp[MAX_PATH];
     Lines l;
@@ -1033,6 +1075,7 @@ static int settings_save(void)
 
     if (!s_game_dir[0] || !dir_exists(s_game_dir)) {
         set_text(ID_SETTINGS_STATUS, L"The game folder does not exist; choose it on the Play tab first.");
+        set_text(ID_ON_STATUS, L"The game folder does not exist; choose it on the Play tab first.");
         return 0;
     }
     if (sel < 0 || sel >= N_RES)
@@ -1056,6 +1099,9 @@ static int settings_save(void)
         int li = (int)SendMessageW(ctl(ID_LANGUAGE), CB_GETCURSEL, 0, 0);
         sprintf_s(vals[14], 64, "%d", k_languages[li >= 0 && li < N_LANGUAGES ? li : 0].id);
     }
+    strcpy_s(vals[15], 64, IsDlgButtonChecked(s_wnd, ID_ON_ENABLE) == BST_CHECKED ? "true" : "false");
+    toml_quote_ctl(ID_ON_NAME, 15, vals[16], sizeof vals[16]);
+    toml_quote_ctl(ID_ON_SERVER, 120, vals[17], sizeof vals[17]);
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -1064,7 +1110,7 @@ static int settings_save(void)
      * the rest is kept. Missing keys go before the first [section]. */
     insert_at = -1;
     for (i = 0; i < l.n; i++) {
-        char key[64], val[256], line[128];
+        char key[64], val[256], line[256];
         const char *s = l.v[i];
         while (*s == ' ' || *s == '\t')
             s++;
@@ -1082,7 +1128,7 @@ static int settings_save(void)
         free(l.v[i]);
         l.v[i] = NULL;
         if (!done[k]) {
-            sprintf_s(line, 128, "%s = %s", keys[k], vals[k]);
+            sprintf_s(line, 256, "%s = %s", keys[k], vals[k]);
             l.v[i] = _strdup(line);
             done[k] = 1;
         }
@@ -1092,10 +1138,10 @@ static int settings_save(void)
     while (insert_at > 0 && (!l.v[insert_at - 1] || !l.v[insert_at - 1][0]))
         insert_at--;                                 /* before the blank lines */
     for (k = 0; k < NK; k++) {
-        char line[128];
+        char line[256];
         if (done[k])
             continue;
-        sprintf_s(line, 128, "%s = %s", keys[k], vals[k]);
+        sprintf_s(line, 256, "%s = %s", keys[k], vals[k]);
         lines_insert(&l, insert_at++, line);
     }
     if (in_section && insert_at < l.n && l.v[insert_at] && l.v[insert_at][0])
@@ -1120,6 +1166,7 @@ static int settings_save(void)
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, game_running() ? L"Settings saved. They apply the next time the game starts."
                                                 : L"Settings saved to " GAME_TOML L".");
+    set_text(ID_ON_STATUS, game_running() ? L"Saved. It applies the next time the game starts." : L"Saved.");
     return 1;
 }
 
@@ -1385,7 +1432,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install" };
 
     /* Just the strip of tabs; the pages below are plain window. */
     s_tab = add(-1, WC_TABCONTROLW, L"", WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER, 12, 10, 596, 28, ID_TAB);
@@ -1462,6 +1509,29 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 518, 140, 30, ID_DEFAULTS);
     add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 518, 108, 30, ID_SAVE);
     add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 556, 560, 36, ID_SETTINGS_STATUS);
+
+    /* Online */
+    add(TAB_ONLINE, L"Static", L"Community Creations: share Created Superstars, Paint Tool logos, highlight reels "
+                               L"and more with other players, through a Community Creations server (the original "
+                               L"servers closed in 2014). Online matches are not available yet.",
+        SS_LEFT, X0, 56, 560, 52, 0);
+    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 116, 400, 24, ID_ON_ENABLE);
+    add(TAB_ONLINE, L"Button", L"Your profile", BS_GROUPBOX, X0, 150, 560, 96, 0);
+    add(TAB_ONLINE, L"Static", L"Online name", SS_LEFT, X0 + 16, 178, 130, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 174, 220, 24, ID_ON_NAME);
+    SendMessageW(h, EM_LIMITTEXT, 15, 0);
+    SendMessageW(h, EM_SETCUEBANNER, TRUE, (LPARAM)L"User");
+    add(TAB_ONLINE, L"Static", L"Up to 15 characters. The game shows it on your profile and uploads.",
+        SS_LEFT, X0 + 150, 204, 396, 36, 0);
+    add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 256, 560, 110, 0);
+    add(TAB_ONLINE, L"Static", L"Address", SS_LEFT, X0 + 16, 284, 130, 20, 0);
+    add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 280, 290, 24, ID_ON_SERVER);
+    add(TAB_ONLINE, L"Button", L"Default", BS_PUSHBUTTON | WS_TABSTOP, X0 + 450, 279, 96, 26, ID_ON_SERVER_DEFAULT);
+    add(TAB_ONLINE, L"Static", L"host:port of the Community Creations server. The default, " ONLINE_DEFAULT_SERVER
+                               L", is a server running on this PC (server\\gamespy_server.py in the source).",
+        SS_LEFT, X0 + 150, 310, 396, 52, 0);
+    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 380, 108, 30, ID_ON_SAVE);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 386, 440, 36, ID_ON_STATUS);
 
     /* Install */
     add(TAB_INSTALL, L"Static", L"1.  Your " GAME_TITLE L" disc image (Xbox 360 ISO or XISO)",
@@ -4326,6 +4396,24 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_DEFAULTS:
             settings_defaults();
             break;
+        case ID_ON_ENABLE:
+            if (HIWORD(wp) == BN_CLICKED) {
+                s_settings_dirty = 1;
+                set_text(ID_ON_STATUS, L"");
+            }
+            break;
+        case ID_ON_NAME: case ID_ON_SERVER:
+            if (HIWORD(wp) == EN_CHANGE) {
+                s_settings_dirty = 1;
+                set_text(ID_ON_STATUS, L"");
+            }
+            break;
+        case ID_ON_SERVER_DEFAULT:
+            set_text(ID_ON_SERVER, ONLINE_DEFAULT_SERVER);
+            break;
+        case ID_ON_SAVE:
+            settings_save();
+            break;
         case ID_SAVE:
             settings_save();
             break;
@@ -4709,7 +4797,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return ok ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"install", L"dlc", L"saves", L"paint", L"movies", L"android" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
