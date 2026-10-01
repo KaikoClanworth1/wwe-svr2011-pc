@@ -52,6 +52,8 @@
 #include "unzip.h"
 #include "updater.h"
 
+#include <winhttp.h>
+
 #ifndef PORT_VERSION
 #define PORT_VERSION L"0.0.0"   /* set from port/VERSION by CMake */
 #endif
@@ -86,7 +88,8 @@ enum {
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE,
     /* online */
-    ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_DEFAULT, ID_ON_SAVE, ID_ON_STATUS,
+    ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
+    ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS,
@@ -974,7 +977,57 @@ static void toml_quote_ctl(int id, int max, char *out, size_t n)
     out[k] = 0;
 }
 
-#define ONLINE_DEFAULT_SERVER L"127.0.0.1:8411"
+#define ONLINE_DEFAULT_SERVER L"https://sho-ti.me/svr"
+#define ONLINE_CUSTOM_SERVER  L"127.0.0.1:8411"
+
+/* The Community Creations account: its session token and XUID (the server
+ * hands them out at sign in; the game reads them from svr2011.toml). */
+static char s_online_token[128], s_online_xuid[32];
+static int s_tab_visible_online;  /* (the Online tab is showing) */
+
+static void online_account_show(void)
+{
+    WCHAR name[64], text[160];
+    int signed_in = s_online_token[0] != 0;
+    GetWindowTextW(ctl(ID_ON_NAME), name, 64);
+    if (signed_in)
+        swprintf_s(text, 160, L"Signed in as %s.", name);
+    else
+        wcscpy_s(text, 160, L"Not signed in. Sign in, or create an account with the name you want.");
+    set_text(ID_ON_ACCOUNT, text);
+    EnableWindow(ctl(ID_ON_NAME), !signed_in);
+    EnableWindow(ctl(ID_ON_PASSWORD), !signed_in);
+    /* (an account is its server's: sign out to change the server) */
+    EnableWindow(ctl(ID_ON_SERVER_KIND), !signed_in);
+    EnableWindow(ctl(ID_ON_SERVER), !signed_in);
+    ShowWindow(ctl(ID_ON_SIGNIN), s_tab_visible_online && !signed_in ? SW_SHOW : SW_HIDE);
+    ShowWindow(ctl(ID_ON_REGISTER), s_tab_visible_online && !signed_in ? SW_SHOW : SW_HIDE);
+    ShowWindow(ctl(ID_ON_SIGNOUT), s_tab_visible_online && signed_in ? SW_SHOW : SW_HIDE);
+}
+
+/* The server: Default (ONLINE_DEFAULT_SERVER, its address not shown) or
+   Custom (the address box, e.g. a server on this PC). */
+static int online_custom_server(void)
+{
+    return SendMessageW(ctl(ID_ON_SERVER_KIND), CB_GETCURSEL, 0, 0) == 1;
+}
+
+static void online_server_text(WCHAR *out, int n)
+{
+    out[0] = 0;
+    if (online_custom_server())
+        GetWindowTextW(ctl(ID_ON_SERVER), out, n);
+    if (!out[0])
+        wcscpy_s(out, n, online_custom_server() ? ONLINE_CUSTOM_SERVER : ONLINE_DEFAULT_SERVER);
+}
+
+static void online_server_show(void)
+{
+    const int custom = online_custom_server();
+    ShowWindow(ctl(ID_ON_SERVER), s_tab_visible_online && custom ? SW_SHOW : SW_HIDE);
+    set_text(ID_ON_SERVER_LABEL, custom ? L"Your own server's address (one on this PC: " ONLINE_CUSTOM_SERVER L")."
+                                        : L"The port's Community Creations server.");
+}
 
 static void online_show(int enabled, const char *name, const char *server)
 {
@@ -983,7 +1036,173 @@ static void online_show(int enabled, const char *name, const char *server)
     MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 160);
     set_text(ID_ON_NAME, w);
     MultiByteToWideChar(CP_UTF8, 0, server, -1, w, 160);
-    set_text(ID_ON_SERVER, w[0] ? w : ONLINE_DEFAULT_SERVER);
+    {
+        const int custom = w[0] && wcscmp(w, ONLINE_DEFAULT_SERVER) != 0;
+        SendMessageW(ctl(ID_ON_SERVER_KIND), CB_SETCURSEL, custom ? 1 : 0, 0);
+        set_text(ID_ON_SERVER, custom ? w : ONLINE_CUSTOM_SERVER);
+    }
+    online_server_show();
+    online_account_show();
+}
+
+/* A JSON string value's start ("key": "...") in text, or NULL. */
+static const char *json_find(const char *text, const char *key)
+{
+    char k[64];
+    const char *p;
+    sprintf_s(k, sizeof k, "\"%s\"", key);
+    p = strstr(text, k);
+    if (!p)
+        return NULL;
+    p += strlen(k);
+    while (*p == ' ' || *p == ':')
+        p++;
+    return p;
+}
+
+static void json_copy(const char *text, const char *key, char *out, size_t n)
+{
+    const char *p = json_find(text, key);
+    size_t k = 0;
+    out[0] = 0;
+    if (!p || *p != '"')
+        return;
+    for (p++; *p && *p != '"' && k + 1 < n; p++)
+        out[k++] = *p;
+    out[k] = 0;
+}
+
+/* POSTs a JSON body to <server><path>; the answer's body (UTF-8) in out.
+ * Returns the HTTP status, 0 if the server didn't answer. */
+static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
+{
+    WCHAR server[200], url[260], host[200], upath[400], headers[256];
+    URL_COMPONENTS uc;
+    HINTERNET session = NULL, connect = NULL, request = NULL;
+    DWORD status = 0, size = sizeof status, got = 0;
+    size_t total = 0;
+    out[0] = 0;
+    online_server_text(server, 200);
+    while (wcslen(server) && server[wcslen(server) - 1] == L'/')
+        server[wcslen(server) - 1] = 0;
+    if (!wcsstr(server, L"://")) {
+        WCHAR tmp[200];
+        swprintf_s(tmp, 200, L"http://%s", server);
+        wcscpy_s(server, 200, tmp);
+    }
+    swprintf_s(url, 260, L"%s%S", server, path);
+    memset(&uc, 0, sizeof uc);
+    uc.dwStructSize = sizeof uc;
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = 200;
+    uc.lpszUrlPath = upath;
+    uc.dwUrlPathLength = 400;
+    if (!WinHttpCrackUrl(url, 0, 0, &uc))
+        return 0;
+    session = WinHttpOpen(L"SvR2011 Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                          WINHTTP_NO_PROXY_BYPASS, 0);
+    if (session) {
+        WinHttpSetTimeouts(session, 8000, 8000, 15000, 15000);
+        connect = WinHttpConnect(session, host, uc.nPort, 0);
+    }
+    if (connect)
+        request = WinHttpOpenRequest(connect, L"POST", upath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                     uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
+    if (request) {
+        if (token && token[0])
+            swprintf_s(headers, 256, L"Content-Type: application/json\r\nAuthorization: Bearer %S\r\n", token);
+        else
+            wcscpy_s(headers, 256, L"Content-Type: application/json\r\n");
+        if (WinHttpSendRequest(request, headers, (DWORD)-1L, (void *)body, (DWORD)strlen(body), (DWORD)strlen(body), 0)
+                && WinHttpReceiveResponse(request, NULL)) {
+            WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
+            while (total + 1 < outn && WinHttpReadData(request, out + total, (DWORD)(outn - 1 - total), &got) && got)
+                total += got;
+            out[total] = 0;
+        }
+    }
+    if (request) WinHttpCloseHandle(request);
+    if (connect) WinHttpCloseHandle(connect);
+    if (session) WinHttpCloseHandle(session);
+    return (int)status;
+}
+
+/* Text as a JSON string (UTF-8, quotes and backslashes escaped). */
+static void json_quote(const WCHAR *w, char *out, size_t n)
+{
+    char u[512];
+    const char *s;
+    size_t k = 0;
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, u, sizeof u, NULL, NULL);
+    out[k++] = '"';
+    for (s = u; *s && k + 4 < n; s++) {
+        if (*s == '"' || *s == '\\')
+            out[k++] = '\\';
+        if ((unsigned char)*s >= 0x20)
+            out[k++] = *s;
+    }
+    out[k++] = '"';
+    out[k] = 0;
+}
+
+static int settings_save(void);
+
+/* Sign in (register: create the account first) with the name and password typed. */
+static void online_sign_in(int register_account)
+{
+    WCHAR name[64], password[128], msg[300];
+    char qname[160], qpass[300], body[512], answer[2048], error[256], token[128], xuid[32], account[64];
+    HCURSOR old;
+    int status;
+    GetWindowTextW(ctl(ID_ON_NAME), name, 64);
+    GetWindowTextW(ctl(ID_ON_PASSWORD), password, 128);
+    if (!name[0] || !password[0]) {
+        set_text(ID_ON_ACCOUNT, L"Type your account's name and password.");
+        return;
+    }
+    json_quote(name, qname, sizeof qname);
+    json_quote(password, qpass, sizeof qpass);
+    sprintf_s(body, sizeof body, "{\"name\": %s, \"password\": %s}", qname, qpass);
+    set_text(ID_ON_ACCOUNT, register_account ? L"Creating the account\x2026" : L"Signing in\x2026");
+    old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    status = online_post(register_account ? "/api/register" : "/api/login", body, NULL, answer, sizeof answer);
+    SetCursor(old);
+    SecureZeroMemory(qpass, sizeof qpass);
+    SecureZeroMemory(body, sizeof body);
+    json_copy(answer, "token", token, sizeof token);
+    if (status != 200 || !token[0]) {
+        json_copy(answer, "error", error, sizeof error);
+        if (!status)
+            swprintf_s(msg, 300, L"The server didn't answer. Check the address below and your connection.");
+        else if (error[0])
+            swprintf_s(msg, 300, L"%S", error);
+        else
+            swprintf_s(msg, 300, L"The server refused (HTTP %d). Is the address right?", status);
+        set_text(ID_ON_ACCOUNT, msg);
+        return;
+    }
+    json_copy(answer, "xuid", xuid, sizeof xuid);
+    json_copy(answer, "name", account, sizeof account);
+    strcpy_s(s_online_token, sizeof s_online_token, token);
+    strcpy_s(s_online_xuid, sizeof s_online_xuid, xuid);
+    MultiByteToWideChar(CP_UTF8, 0, account, -1, name, 64);
+    set_text(ID_ON_NAME, name);
+    set_text(ID_ON_PASSWORD, L"");
+    CheckDlgButton(s_wnd, ID_ON_ENABLE, BST_CHECKED);
+    online_account_show();
+    settings_save();
+}
+
+static void online_sign_out(void)
+{
+    char answer[256];
+    if (s_online_token[0])
+        online_post("/api/logout", "{}", s_online_token, answer, sizeof answer);
+    s_online_token[0] = 0;
+    s_online_xuid[0] = 0;
+    online_account_show();
+    settings_save();
 }
 
 static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_audio, int mute, int fps, int msaa,
@@ -1015,6 +1234,7 @@ static void settings_load(void)
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1;
     char online_name[64] = "", online_server[128] = "";
+    s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
     if (toml_read(p, &l)) {
         for (i = 0; i < l.n; i++) {
@@ -1042,6 +1262,8 @@ static void settings_load(void)
             else if (!strcmp(key, "online_enabled")) online = !strcmp(val, "true");
             else if (!strcmp(key, "online_name")) strcpy_s(online_name, sizeof online_name, val);
             else if (!strcmp(key, "online_server")) strcpy_s(online_server, sizeof online_server, val);
+            else if (!strcmp(key, "online_token")) strcpy_s(s_online_token, sizeof s_online_token, val);
+            else if (!strcmp(key, "online_xuid")) strcpy_s(s_online_xuid, sizeof s_online_xuid, val);
         }
         lines_free(&l);
     } else if (on_steam_deck()) {
@@ -1061,11 +1283,12 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 19 };
+    enum { NK = 21 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
-                                    "online_enabled", "online_name", "online_server", "native_prepare_pipelines" };
+                                    "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
+                                    "online_token", "online_xuid" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1103,8 +1326,16 @@ static int settings_save(void)
     }
     strcpy_s(vals[15], 64, IsDlgButtonChecked(s_wnd, ID_ON_ENABLE) == BST_CHECKED ? "true" : "false");
     toml_quote_ctl(ID_ON_NAME, 15, vals[16], sizeof vals[16]);
-    toml_quote_ctl(ID_ON_SERVER, 120, vals[17], sizeof vals[17]);
+    {
+        WCHAR server[160];
+        char u[400];
+        online_server_text(server, 160);
+        WideCharToMultiByte(CP_UTF8, 0, server, -1, u, sizeof u, NULL, NULL);
+        sprintf_s(vals[17], sizeof vals[17], "\"%.150s\"", u);
+    }
     strcpy_s(vals[18], 64, IsDlgButtonChecked(s_wnd, ID_PREPARE) == BST_CHECKED ? "true" : "false");
+    sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
+    sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -1395,6 +1626,11 @@ static void show_tab(int t)
     for (k = 0; k < TAB_COUNT; k++)
         for (i = 0; i < s_nctl[k]; i++)
             ShowWindow(s_ctl[k][i], k == t ? SW_SHOW : SW_HIDE);
+    s_tab_visible_online = t == TAB_ONLINE;
+    if (t == TAB_ONLINE) {  /* (the controls the account/server state hides) */
+        online_account_show();
+        online_server_show();
+    }
     if (t == TAB_PLAY)
         refresh_play();
     if (t == TAB_INSTALL)
@@ -1522,22 +1758,32 @@ static void build_ui(void)
                                L"servers closed in 2014). Online matches are not available yet.",
         SS_LEFT, X0, 56, 560, 52, 0);
     add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 116, 400, 24, ID_ON_ENABLE);
-    add(TAB_ONLINE, L"Button", L"Your profile", BS_GROUPBOX, X0, 150, 560, 96, 0);
-    add(TAB_ONLINE, L"Static", L"Online name", SS_LEFT, X0 + 16, 178, 130, 20, 0);
+    add(TAB_ONLINE, L"Button", L"Your account", BS_GROUPBOX, X0, 150, 560, 156, 0);
+    add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 178, 130, 20, 0);
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 174, 220, 24, ID_ON_NAME);
     SendMessageW(h, EM_LIMITTEXT, 15, 0);
-    SendMessageW(h, EM_SETCUEBANNER, TRUE, (LPARAM)L"User");
-    add(TAB_ONLINE, L"Static", L"Up to 15 characters. The game shows it on your profile and uploads.",
-        SS_LEFT, X0 + 150, 204, 396, 36, 0);
-    add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 256, 560, 110, 0);
-    add(TAB_ONLINE, L"Static", L"Address", SS_LEFT, X0 + 16, 284, 130, 20, 0);
-    add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 280, 290, 24, ID_ON_SERVER);
-    add(TAB_ONLINE, L"Button", L"Default", BS_PUSHBUTTON | WS_TABSTOP, X0 + 450, 279, 96, 26, ID_ON_SERVER_DEFAULT);
-    add(TAB_ONLINE, L"Static", L"host:port of the Community Creations server. The default, " ONLINE_DEFAULT_SERVER
-                               L", is a server running on this PC (server\\gamespy_server.py in the source).",
-        SS_LEFT, X0 + 150, 310, 396, 52, 0);
-    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 380, 108, 30, ID_ON_SAVE);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 386, 440, 36, ID_ON_STATUS);
+    add(TAB_ONLINE, L"Static", L"Password", SS_LEFT, X0 + 16, 210, 130, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_BORDER | WS_TABSTOP, X0 + 150, 206, 220, 24,
+            ID_ON_PASSWORD);
+    SendMessageW(h, EM_LIMITTEXT, 100, 0);
+    add(TAB_ONLINE, L"Button", L"Sign in", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 173, 162, 26, ID_ON_SIGNIN);
+    add(TAB_ONLINE, L"Button", L"Create account", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 205, 162, 26,
+        ID_ON_REGISTER);
+    add(TAB_ONLINE, L"Button", L"Sign out", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 173, 162, 26, ID_ON_SIGNOUT);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 240, 530, 22, ID_ON_ACCOUNT);
+    add(TAB_ONLINE, L"Static", L"The name (3-15 characters) is what other players see on your uploads. Only you "
+                               L"can change or delete them. The same account works on any PC or phone.",
+        SS_LEFT, X0 + 16, 264, 530, 36, 0);
+    add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 316, 560, 96, 0);
+    h = add(TAB_ONLINE, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 16, 340, 120, 200,
+            ID_ON_SERVER_KIND);
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Default");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Custom");
+    SendMessageW(h, CB_SETCURSEL, 0, 0);
+    add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 340, 396, 24, ID_ON_SERVER);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 372, 396, 32, ID_ON_SERVER_LABEL);
+    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 424, 108, 30, ID_ON_SAVE);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 430, 440, 36, ID_ON_STATUS);
 
     /* Install */
     add(TAB_INSTALL, L"Static", L"1.  Your " GAME_TITLE L" disc image (Xbox 360 ISO or XISO)",
@@ -4415,8 +4661,21 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_ON_STATUS, L"");
             }
             break;
-        case ID_ON_SERVER_DEFAULT:
-            set_text(ID_ON_SERVER, ONLINE_DEFAULT_SERVER);
+        case ID_ON_SERVER_KIND:
+            if (HIWORD(wp) == CBN_SELCHANGE) {
+                online_server_show();
+                s_settings_dirty = 1;
+                set_text(ID_ON_STATUS, L"");
+            }
+            break;
+        case ID_ON_SIGNIN:
+            online_sign_in(0);
+            break;
+        case ID_ON_REGISTER:
+            online_sign_in(1);
+            break;
+        case ID_ON_SIGNOUT:
+            online_sign_out();
             break;
         case ID_ON_SAVE:
             settings_save();
@@ -4697,7 +4956,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     MSG msg;
     RECT r;
     int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0;
-    WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL;
+    WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
 
     s_inst = inst;
@@ -4823,6 +5082,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* ... --paint-page <1-10>: the Paint Tool tab shows that page. */
         if (argc >= 6 && !wcscmp(argv[4], L"--paint-page"))
             s_pt_page = (_wtoi(argv[5]) - 1 + PT_PAGES) % PT_PAGES;
+        /* ... --sign-in|--register <name> <password>: the Online tab's account
+           buttons, against the configured server. */
+        if (argc >= 7 && (!wcscmp(argv[4], L"--sign-in") || !wcscmp(argv[4], L"--register")))
+            capture_account = argv + 4;
     }
 
     icc.dwSize = sizeof icc;
@@ -4863,6 +5126,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     UpdateWindow(s_wnd);
     if (!capture_file && GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini))
         up_check(1);
+    if (capture_account) {
+        set_text(ID_ON_NAME, capture_account[1]);
+        set_text(ID_ON_PASSWORD, capture_account[2]);
+        online_sign_in(capture_account[0][2] == L'r');
+    }
     if (capture_file) {
         MSG pm;
         int k;
