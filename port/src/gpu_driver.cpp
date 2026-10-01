@@ -14,7 +14,6 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
-#include <rex/ui/vulkan/instance.h>
 
 #if SVR2011_ADRENOTOOLS
 #include <dlfcn.h>
@@ -25,6 +24,12 @@
 
 REXCVAR_DEFINE_STRING(gpu_driver, "", "GPU",
                       "Android: a custom Vulkan driver's .so (the launcher's Settings set it); empty: the phone's own");
+
+// (rex/ui/vulkan/instance.h, declared here: that header needs RenderDoc's)
+namespace rex::ui::vulkan {
+using LoaderOpener = void* (*)();
+void SetLoaderOpener(LoaderOpener opener);
+}  // namespace rex::ui::vulkan
 
 namespace svr2011 {
 namespace {
