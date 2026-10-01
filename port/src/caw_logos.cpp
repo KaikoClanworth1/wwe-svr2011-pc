@@ -65,6 +65,7 @@ std::filesystem::path g_store;       // Saves\.logos
 std::mutex g_mutex;
 std::map<uint64_t, uint32_t> g_logos;  // hash -> guest palette + pixels
 uint32_t g_blank = 0;                  // shown for a logo whose file is missing
+svr2011::MissingLogoHandler g_missing = nullptr;  // (online.cpp: fetches it)
 std::map<uint32_t, std::array<uint64_t, kMaxHigh>> g_built;  // render object -> hashes
 thread_local int t_preview_index = -1;
 
@@ -131,6 +132,11 @@ uint32_t LogoData(uint8_t* base, uint64_t hash) {
   if (!in.read(reinterpret_cast<char*>(Ptr(base, data)), kPaletteSize + kPixelSize)) {
     REXLOG_WARN("caw logos: {:016X} is missing from {}", hash, g_store.string());
     g_memory->SystemHeapFree(data);
+    static std::map<uint64_t, bool> asked;
+    if (g_missing && !asked[hash]) {
+      asked[hash] = true;
+      g_missing(hash, LogoFile(hash));
+    }
     return g_blank;
   }
   g_logos[hash] = data;
@@ -197,6 +203,8 @@ uint32_t EditorCache(PPCContext& ctx, uint8_t* base) {
 }  // namespace
 
 namespace svr2011 {
+
+void SetMissingLogoHandler(MissingLogoHandler handler) { g_missing = handler; }
 
 void InstallCawLogos(rex::memory::Memory* memory, const std::filesystem::path& saves) {
   g_memory = memory;

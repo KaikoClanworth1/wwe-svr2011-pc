@@ -52,9 +52,40 @@ const std::pair<std::string_view, std::string_view> kStringPatches[] = {
      "Put .mp3 files in the game's Music folder to use your own music as background music."},
     {"create a Playlist containing\nonly that song through the Xbox Dashboard.",
      "put only that song in its own\nfolder in the game's Music folder."},
+    // Online Axxess: none needed on the PC (all content is licensed)
+    {" This item is free with redemption of the single-use Online Axxess code found on the back of your game manual. If the code has already been redeemed by a previous owner, then you can purchase an Online Axxess code in the store.",
+     ""},
+    {"Check out the store to redeem your\nONLINE Axxess code, and purchase\ndownloadable content",
+     "Check out the store for\ndownloadable content"},
+    {"From now on everything besides\nONLINE AXXESS downloadable content is free!",
+     "From now on all downloadable\ncontent is free!"},
+    {" Please note: This purchase does not include Online Axxess or WWE Legend Bret Hart.",
+     " Please note: This purchase does not include WWE Legend Bret Hart."},
+    // (the same in the other languages)
+    {"usa la Xbox Dashboard per creare una playlist contenente solo la canzone desiderata.",
+     "mettila da sola in una cartella dentro la cartella Music del gioco."},
+    {"erstelle \xC3\xBC""ber die Xbox Steuerung eine Wiedergabeliste, die nur diesen Song enth\xC3\xA4lt.",
+     "lege nur diesen Song in einen eigenen Ordner im Music-Ordner des Spiels."},
+    {"crea una lista de reproducci\xC3\xB3n que solo contenga esa canci\xC3\xB3n con el Interfaz Xbox.",
+     "pon solo esa canci\xC3\xB3n en su propia carpeta dentro de la carpeta Music del juego."},
+    {"cr\xC3\xA9""ez une s\xC3\xA9lection ne contenant que cette musique\nvia l'Interface Xbox.",
+     "mettez-la seule dans un dossier\ndu dossier Music du jeu."},
+    {"Xbox \xE3\x83\x80\xE3\x83\x83\xE3\x82\xB7\xE3\x83\xA5\xE3\x83\x9C\xE3\x83\xBC\xE3\x83\x89\xE3\x81\x8B\xE3\x82\x89\xE3\x80\x81\n\xE3\x81\x9D\xE3\x81\xAE\xE6\x9B\xB2\xE3\x81\xA0\xE3\x81\x91\xE3\x81\x8C\xE5\x85\xA5\xE3\x81\xA3\xE3\x81\x9FPlaylist\xE3\x82\x92\xE4\xBD\x9C\xE6\x88\x90\xE3\x81\x97\xE3\x81\xA6\xE3\x81\x8F\xE3\x81\xA0\xE3\x81\x95\xE3\x81\x84\xE3\x80\x82",
+     "\xE3\x82\xB2\xE3\x83\xBC\xE3\x83\xA0\xE3\x81\xAEMusic\xE3\x83\x95\xE3\x82\xA9\xE3\x83\xAB\xE3\x83\x80\xE3\x81\xAB\xE3\x80\x81\n\xE3\x81\x9D\xE3\x81\xAE\xE6\x9B\xB2\xE3\x81\xA0\xE3\x81\x91\xE3\x81\xAE\xE3\x83\x95\xE3\x82\xA9\xE3\x83\xAB\xE3\x83\x80\xE3\x82\x92\xE4\xBD\x9C\xE3\x81\xA3\xE3\x81\xA6\xE3\x81\x8F\xE3\x81\xA0\xE3\x81\x95\xE3\x81\x84\xE3\x80\x82"},
     {"storage device", "save folder"},
     {"A maximum of 2 different High Resolution logos can be",
      "Up to 10 different High Resolution logos can be"},
+    // Xbox LIVE features the PC doesn't have (English text; the button help
+    // for gamer cards and parties goes by string id, online.cpp)
+    {"\xEE\x80\x95VIEW GAMER CARD   ", ""},
+    {"the Xbox LIVE Marketplace", "the SHOP"},
+    {"the Online Marketplace", "the SHOP"},
+    {"Xbox LIVEmenu", "Online menu"},
+    {"Onlinemenu", "Online menu"},  // (patched before as one word)
+    {"gamer profile", "profile"},
+    {"Accessing Gamertag...", "Accessing name..."},
+    {"customize your Gamertag display", "customize your name display"},
+    {"CUSTOM SEARCH FROM GAMERTAG", "CUSTOM SEARCH FROM NAME"},
     {"play on Xbox LIVE", "play online"},
     {"on Xbox LIVE", "online"},
     {"Xbox LIVE", "Online"},
@@ -73,7 +104,10 @@ const std::pair<std::string_view, std::string_view> kStringPatches[] = {
 };
 constexpr std::string_view kStringTriggers[] = {"Xbox LIVE", "Xbox 360", "storage device",
                                                 "music CD", "Xbox Dashboard",
-                                                "A maximum of 2 different High Resolution"};
+                                                "A maximum of 2 different High Resolution",
+                                                "VIEW GAMER CARD   ", "Marketplace", "Onlinemenu",
+                                                "gamer profile", "Gamertag", "GAMERTAG", "Xbox",
+                                                "Online Axxess", "ONLINE Axxess", "ONLINE AXXESS"};
 
 }  // namespace
 
@@ -97,15 +131,20 @@ void PatchOnlineStrings(const std::filesystem::path& file) {
         std::string now = old;
         if (now == "Xbox LIVE") {
           now = "ONLINE";  // a menu label (upper case)
+        } else if (now == "GAMERTAG") {
+          now = "NAME";
         } else {
           for (const auto& [from, to] : kStringPatches) {
             for (size_t p = now.find(from); p != std::string::npos; p = now.find(from, p + to.size()))
               now.replace(p, from.size(), to);
           }
         }
-        if (now != old && now.size() <= old.size()) {
+        // (a string may grow into the nulls a shorter patch left after it)
+        size_t room = end;
+        while (room + 1 < all.size() && all[room + 1] == '\0') ++room;
+        if (now != old && start + now.size() <= room) {
           std::copy(now.begin(), now.end(), data.begin() + start);
-          std::fill(data.begin() + start + now.size(), data.begin() + end, '\0');
+          std::fill(data.begin() + start + now.size(), data.begin() + std::max(end, start + now.size() + 1), '\0');
           ++count;
         }
       }

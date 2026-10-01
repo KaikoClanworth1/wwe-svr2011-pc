@@ -47,6 +47,7 @@
 #include "script_input.h"
 #include "touch_controls.h"
 #include "discord_presence.h"
+#include "online.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -179,6 +180,7 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     }
     std::ofstream(paths.config_path) << config;
   }
+  svr2011::PrepareOnlineSettings(paths.config_path, exe_dir);  // (online.h)
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
@@ -293,7 +295,8 @@ void Svr2011App::OnPostLoadXexImage() {
   // DLC packages the launcher put in "DLC" (dlc.h).
   {
     const std::filesystem::path exe_dir = rex::filesystem::GetExecutableFolder();
-    svr2011::InstallDlc(runtime()->kernel_state(), exe_dir / "DLC", exe_dir / "UserData");
+    // (the user data the content goes to: <game>\UserData, or a test's)
+    svr2011::InstallDlc(runtime()->kernel_state(), exe_dir / "DLC", g_user_data);
   }
 
   // USER PLAYLIST entrance music from the Music folder (music.h); tests:
@@ -346,6 +349,7 @@ void Svr2011App::OnPostLoadXexImage() {
   {
     svr2011::StartDiscordPresence();  // (discord_presence.h)
   }
+  svr2011::InstallOnline(runtime()->memory(), g_saves);  // Community Creations (online.h)
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).

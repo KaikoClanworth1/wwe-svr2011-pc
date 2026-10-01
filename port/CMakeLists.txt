@@ -26,6 +26,8 @@ set(SVR2011_SOURCES
     src/graphics_page.cpp
     src/touch_controls.cpp
     src/discord_presence.cpp
+    src/online.cpp
+    src/online_net.cpp
     src/menu_hooks.cpp
     src/perf_hooks.cpp
     src/saves.cpp
@@ -130,7 +132,7 @@ if(REXSDK_DIR AND TARGET imgui)
         ${REXSDK_DIR}/thirdparty/xxHash)
 endif()
 if(WIN32)
-    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 dxgi dxguid dbghelp
+    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 dxgi dxguid dbghelp ws2_32 winhttp
         mfplat mfreadwrite mfuuid)
     # A PDB (function names + line tables) for crash reports and profiling.
     target_compile_options(svr2011 PRIVATE -gline-tables-only)

@@ -26,6 +26,7 @@ typedef struct {
     uint32_t crc;
     uint16_t time, date;
     int      dir;
+    WCHAR    src[MAX_PATH];      /* the file's path when not root\name (online.toml) */
 } Entry;
 
 typedef struct {
@@ -218,6 +219,8 @@ static int write_entry(Pack *p, HANDLE out, Entry *e, uint8_t *buf, WCHAR *err, 
         WCHAR full[MAX_PATH], *c;
         HANDLE in;
         swprintf_s(full, MAX_PATH, L"%s\\%s", p->root, e->name);
+        if (e->src[0])
+            wcscpy_s(full, MAX_PATH, e->src);
         for (c = full; *c; c++)
             if (*c == L'/')
                 *c = L'\\';
@@ -322,6 +325,44 @@ int apk_find(const WCHAR *game_dir, const WCHAR *launcher_dir, WCHAR *out, int o
     return 0;
 }
 
+/* The PC's online settings and account (online_enabled, online_name, online_server,
+ * online_token, online_xuid from
+ * svr2011.toml - the rest of that file is the PC's) as online.toml, which
+ * the game on the phone merges into its own settings (src/online.cpp). */
+static void add_online_settings(Pack *p)
+{
+    WCHAR toml[MAX_PATH], tmp[MAX_PATH];
+    FILE *in, *out;
+    char line[512];
+    int n = 0;
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    swprintf_s(toml, MAX_PATH, L"%s\\svr2011.toml", p->root);
+    if (_wfopen_s(&in, toml, L"rb") || !in)
+        return;
+    GetTempPathW(MAX_PATH, tmp);
+    wcscat_s(tmp, MAX_PATH, L"svr2011_online.toml");
+    if (_wfopen_s(&out, tmp, L"wb") || !out) {
+        fclose(in);
+        return;
+    }
+    while (fgets(line, sizeof line, in)) {
+        if (line[0] == '[')
+            break;
+        if (!strncmp(line, "online_enabled", 14) || !strncmp(line, "online_name", 11) ||
+            !strncmp(line, "online_server", 13) || !strncmp(line, "online_token", 12) ||
+            !strncmp(line, "online_xuid", 11)) {
+            fputs(line, out);
+            n++;
+        }
+    }
+    fclose(in);
+    fclose(out);
+    if (!n || !GetFileAttributesExW(tmp, GetFileExInfoStandard, &fa))
+        return;
+    if (add(p, L"online.toml", fa.nFileSizeLow, &fa.ftLastWriteTime, 0))
+        wcscpy_s(p->e[p->n - 1].src, MAX_PATH, tmp);
+}
+
 static const char kHowTo[] =
     "WWE SmackDown vs. Raw 2011 on Android\r\n"
     "=====================================\r\n"
@@ -377,6 +418,7 @@ int apk_package(const WCHAR *game_dir, const WCHAR *apk, const WCHAR *out_dir,
         free(p.e);
         return 0;
     }
+    add_online_settings(&p);
     {
         int has_xex = 0;
         for (i = 0; i < p.n; i++)
@@ -664,6 +706,8 @@ static int batch_add(Batch *b, const Entry *e, const WCHAR *game_dir, WCHAR *err
     if (!b->count)
         wcscpy_s(b->folder, MAX_PATH, folder);
     swprintf_s(full, MAX_PATH, L"%s\\%s", game_dir, e->name);
+    if (e->src[0])
+        wcscpy_s(full, MAX_PATH, e->src);
     for (c = full; *c; c++)
         if (*c == L'/')
             *c = L'\\';
@@ -728,6 +772,7 @@ int adb_install(const WCHAR *adb, const WCHAR *game_dir, const WCHAR *apk,
         swprintf_s(err, errn, L"Out of memory listing the game files.");
         goto done;
     }
+    add_online_settings(&p);
     for (i = 0; i < p.n; i++)
         if (!_wcsicmp(p.e[i].name, L"default.xex"))
             xex = &p.e[i];

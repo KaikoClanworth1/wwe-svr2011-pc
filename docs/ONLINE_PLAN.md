@@ -2,6 +2,20 @@
 
 Goal: the ONLINE menu works without "Online Axxess": P2P Player Matches (LAN and internet) and Community Creations against a self-hosted server.
 
+## Status (1 October 2026): Community Creations works
+- **Server:** `port/server/server.py` (aiohttp; GameSpy Sake/Auth in `gamespy.py`).
+  - Player accounts with open registration: PBKDF2 passwords and session tokens. Each account's XUID is 0x0009000100000000 + its id.
+  - Uploads are compressed and de-duplicated (lzma, sha256). Limits: 100 requests at once, 8 MB per file, 256 MB per player.
+  - An admin dashboard shows connections, bandwidth, storage, players, uploads and accounts.
+  - Run on its own, it serves 127.0.0.1:8411 (`tools/online_server.ps1`, `server/test_server.py`).
+  - The public one is https://sho-ti.me/svr: a Project Index app running it on port 8101 with base `/svr`.
+- **Game (`src/online.cpp`, `src/online_net.cpp`):** the SDK sends the title server THQSVR11_GSGW's connections to a relay on this PC.
+  - The relay answers GameSpy's presence login itself, from the account's session.
+  - It forwards the game's HTTP to `<online_server>/game/...` with the player's `online_token`: WinHTTP on Windows, `NetBridge.java` on Android.
+  - Downloads are validated, and the save they replace is backed up first. Superstars' extra Paint Tool logos travel with them.
+- **Launchers:** the Online tab (PC and Android) signs in or creates an account, and picks the Default or a Custom server.
+- **Menus:** the gamer card, party, Xbox LIVE and Online Axxess texts and prompts are gone.
+
 ## Key finding
 Xenia Canary's netplay fork (AdrianCassar/xenia-canary, BSD 3-Clause, the same code family as our SDK) lists **SvR 2011 (5451085D) as "Working Public"** for player matches, with no game patches. Its server, **Xenia-WebServices** (NestJS + MongoDB, MIT, Docker), is the session directory. So Player Matches are a port of known-working code, not new reverse engineering. Neither implements GameSpy, so Community Creations are new work.
 

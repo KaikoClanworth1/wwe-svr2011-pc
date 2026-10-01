@@ -8,6 +8,7 @@
 // layout leaves unused (so it travels with every copy and save of the CAW).
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 
 namespace rex::memory {
@@ -17,5 +18,11 @@ class Memory;
 namespace svr2011 {
 
 void InstallCawLogos(rex::memory::Memory* memory, const std::filesystem::path& saves);
+
+// Called (once per logo) when a CAW shows a logo whose file isn't in the
+// store - e.g. a Superstar downloaded from Community Creations: online.cpp
+// fetches it; the CAW shows it from its next load.
+using MissingLogoHandler = void (*)(uint64_t hash, const std::filesystem::path& file);
+void SetMissingLogoHandler(MissingLogoHandler handler);
 
 }  // namespace svr2011
