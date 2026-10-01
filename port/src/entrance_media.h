@@ -20,8 +20,8 @@ class Memory;
 
 namespace svr2011 {
 
-// music: the folder USER PLAYLIST songs come from.
-void InstallEntranceMedia(rex::memory::Memory* memory, const std::filesystem::path& music);
+// (after InstallUserMusic and InstallUserMovies: their folders)
+void InstallEntranceMedia(rex::memory::Memory* memory);
 
 // A downloaded Superstar (its .cas at guest address `cas`) is about to be
 // saved: its entrance gets this PC's song and movie.

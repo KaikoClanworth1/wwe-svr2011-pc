@@ -52,6 +52,7 @@
 #include <rex/system/xmemory.h>
 
 #include "movie_transcode.h"
+#include "music.h"
 #include "online_net.h"
 #include "user_movies.h"
 
@@ -70,7 +71,6 @@ constexpr int kFirstUserMovie = 700, kLastUserMovie = 899;
 constexpr uint64_t kMaxSong = 16ull << 20, kMaxMovie = 40ull << 20;
 
 rex::memory::Memory* g_memory = nullptr;
-std::filesystem::path g_music;
 
 // -- small helpers ------------------------------------------------------------------
 
@@ -216,38 +216,8 @@ std::string JsonGet(const std::string& json, const std::string& object, const st
   return q == std::string::npos || q > to ? std::string() : JsonString(json, q);
 }
 
-// -- the songs (music.cpp's playlists: a folder and its first song, or a song) ----
-
-bool IsSong(const std::filesystem::path& path) {
-#if defined(_WIN32)
-  static constexpr const char* kExtensions[] = {".mp3", ".wma", ".m4a", ".aac", ".wav", ".flac"};
-#else
-  static constexpr const char* kExtensions[] = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg"};
-#endif
-  std::string ext = path.extension().string();
-  std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-  return std::find_if(std::begin(kExtensions), std::end(kExtensions), [&](const char* e) { return ext == e; }) !=
-         std::end(kExtensions);
-}
-
-// The song playlist `name` plays, empty if there is none.
-std::filesystem::path PlaylistSong(const std::u16string& name) {
-  std::error_code ec;
-  const auto folder = g_music / std::filesystem::path(name);
-  if (std::filesystem::is_directory(folder, ec)) {
-    std::vector<std::filesystem::path> songs;
-    for (auto s = std::filesystem::recursive_directory_iterator(
-             folder, std::filesystem::directory_options::skip_permission_denied, ec);
-         !ec && s != std::filesystem::recursive_directory_iterator(); s.increment(ec)) {
-      if (s->is_regular_file(ec) && IsSong(s->path())) songs.push_back(s->path());
-    }
-    if (!songs.empty()) return *std::min_element(songs.begin(), songs.end());
-  }
-  for (const auto& e : std::filesystem::directory_iterator(g_music, ec)) {
-    if (e.is_regular_file(ec) && IsSong(e.path()) && e.path().stem().u16string() == name) return e.path();
-  }
-  return {};
-}
+// The song playlist `name` plays (music.h), empty if there is none.
+std::filesystem::path PlaylistSong(const std::u16string& name) { return UserMusicSong(Utf8(name)); }
 
 // "<name> (n)" within the entrance's 39 characters.
 std::u16string Numbered(const std::u16string& name, int n, size_t max_chars) {
@@ -314,7 +284,7 @@ void SendEntrance(int fileid, int slot, std::u16string song_name, std::filesyste
     const auto song = PlaylistSong(song_name);
     if (song.empty()) {
       REXLOG_WARN("online: Superstar {}'s entrance song \"{}\" isn't in {}", slot + 1, Utf8(song_name),
-                  g_music.string());
+                  U8(UserMusicFolder()));
     } else if (auto data = ReadFile(song, kMaxSong)) {
       if (const std::string sha = SendMedia("music", *data); !sha.empty()) {
         music_json = fmt::format("{{\"playlist\": {}, \"file\": {}, \"sha\": \"{}\"}}", JsonQuote(Utf8(song_name)),
@@ -441,7 +411,7 @@ void SettleDownload(int fileid) {
         const std::u16string name = Numbered(playlist, n, kSongChars - 1);
         const auto song = PlaylistSong(name);
         if (song.empty()) {
-          fetches.emplace_back(FetchSong, g_music / std::filesystem::path(name) / FromU8(file), sha);
+          fetches.emplace_back(FetchSong, UserMusicFolder() / std::filesystem::path(name) / FromU8(file), sha);
           in.song = name;
           break;
         }
@@ -503,9 +473,8 @@ void OnTransfer(bool upload, int fileid, const std::string& content_type, const 
 
 }  // namespace
 
-void InstallEntranceMedia(rex::memory::Memory* memory, const std::filesystem::path& music) {
+void InstallEntranceMedia(rex::memory::Memory* memory) {
   g_memory = memory;
-  g_music = music;
   net::SetTransferListener(OnTransfer);
 }
 

@@ -366,12 +366,8 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::StartDiscordPresence();  // (discord_presence.h)
   }
   svr2011::InstallOnline(runtime()->memory(), g_saves);  // Community Creations (online.h)
-  {
-    // ... its Superstars' entrance songs and movies (entrance_media.h)
-    std::filesystem::path music = rex::filesystem::GetExecutableFolder() / "Music";
-    if (std::string dir = Env("SVR2011_MUSIC"); !dir.empty()) music = dir;
-    svr2011::InstallEntranceMedia(runtime()->memory(), music);
-  }
+  // ... its Superstars' entrance songs and movies (entrance_media.h)
+  svr2011::InstallEntranceMedia(runtime()->memory());
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).
