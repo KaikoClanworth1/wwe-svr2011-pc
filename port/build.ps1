@@ -5,18 +5,22 @@
 #   .\build.ps1 -Prebuilt  build against the unpatched prebuilt SDK (reference only)
 #   .\build.ps1 -Trace     developer build with the D3D call census
 #                          (out\build\SourceReleaseTrace; see src\d3d_trace.h)
+#   .\build.ps1 -Sessions  experimental session directory integration only
+#                          (out\build\SourceReleaseSessions; no match transport)
 #   .\build.ps1 -Deploy    ... then copy the program files into ..\Game Files
-param([switch]$Deploy, [switch]$Prebuilt, [switch]$Trace, [string]$Config = "Release")
+param([switch]$Deploy, [switch]$Prebuilt, [switch]$Trace, [string]$Config = "Release", [switch]$Sessions)
 # Native tools write progress to stderr, so failures are judged by exit code.
 $ErrorActionPreference = "Continue"
+if ($Sessions -and $Prebuilt) { throw "Sessions require the source SDK with this repository's runtime patch applied." }
 
 $root = $PSScriptRoot
 $env:PATH = "C:\Program Files\LLVM\bin;$(Join-Path $root '..\recomp\bin');$env:PATH"
 if (-not $Prebuilt) {
-    $build   = Join-Path $root ("out\build\Source$Config" + $(if ($Trace) { "Trace" } else { "" }))
+    $build   = Join-Path $root ("out\build\Source$Config" + $(if ($Trace) { "Trace" } else { "" }) + $(if ($Sessions) { "Sessions" } else { "" }))
     # (with the SDK's Vulkan backend too: --gpu_backend=vulkan, the native renderer's Vulkan path)
     $sdkArgs = @(("-DREXSDK_DIR=" + (Resolve-Path (Join-Path $root "..\recomp\rexglue-sdk"))), "-DREXGLUE_USE_VULKAN=ON")
     if ($Trace) { $sdkArgs += "-DSVR2011_D3D_TRACE=ON" }
+    if ($Sessions) { $sdkArgs += "-DSVR2011_P2P_SESSIONS=ON" }
 } else {
     $build   = Join-Path $root "out\build\$Config"
     $sdkArgs = @("-DCMAKE_PREFIX_PATH=" + (Resolve-Path (Join-Path $root "..\recomp\sdk\win-amd64")))

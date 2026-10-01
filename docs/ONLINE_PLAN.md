@@ -2,6 +2,76 @@
 
 Goal: the ONLINE menu works without "Online Axxess": P2P Player Matches (LAN and internet) and Community Creations against a self-hosted server.
 
+## Session groundwork in this repository
+
+The experimental session provider is part of the existing `port` project:
+`online_sessions` handles the lifecycle and guest XGI buffers,
+`online_directory` implements the Xenia-WebServices contract, `online_http`
+supplies WinHTTP, and `online_runtime` binds real SDK session objects. The
+existing SDK patch adds optional session delegation; no separate SDK project,
+launcher, new UI, gameplay hooks or Community Creations changes are required.
+
+Create (B0010), search/SearchEx (B0016/B001C), join (B0012), leave (B0013),
+and delete (B0011) are implemented for unranked peer sessions and local user
+zero. Creation contexts/properties are bounded, search results use caller-owned
+guest memory, and failures preserve local state. Host deletion verifies that
+the backend actually removed the record. Guest deletion leaves its own members.
+Start/end, details, modify, arbitration, migration and search-by-ID remain
+unsupported. Active host metadata updates also remain unsupported.
+Offline/stat-only session creation and state calls retain existing SDK behavior;
+unsupported match operations are rejected for this provider's peer sessions.
+
+Build with `port/build.ps1 -Sessions` after applying the updated repository SDK
+patch to the clean pinned SDK described in README. This uses a separate build
+configuration inside the existing project; ordinary builds remain unchanged.
+JSON is resolved locally or fetched from the pinned nlohmann-json v3.11.3 commit.
+The runtime remains OFF until these development keys are set in `svr2011.toml`:
+
+```toml
+p2p_sessions = true
+p2p_api = "http://127.0.0.1:36000" # actual existing session backend URL
+p2p_xuid = "0000000000000001"      # unique per client; not guest profile/save XUID
+p2p_name = "Player One"
+p2p_host_address = "127.0.0.1"     # reachable IPv4; loopback only for one machine
+p2p_mac = "020000000001"           # unique per client
+p2p_port = 36001                   # advertised peer port, not backend HTTP port
+```
+
+All session settings require restart. A second client needs its own identity,
+MAC/address/port. No public-IP discovery, NAT traversal or peer packets exist
+yet. Exchange-key/online-security bytes are zero and media/version fields use
+development placeholders; cross-version/Xenia match compatibility is not claimed.
+Search query properties are fetched in backend return order; result contexts
+and compressed title XLAST publication still need integration. Membership
+idempotence is per local handle; atomic admission, cross-client idempotence,
+correct private-slot departures and stale-session expiry require backend work.
+The current HTTP path is synchronous with timeouts/size bounds: true overlapped
+completion, cancellation and reconciliation after lost responses are needed
+before enabling it for a release.
+
+The existing project can build just its portable tests without game assets:
+
+```sh
+cmake -S port -B port/out/session-tests -DSVR2011_BUILD_GAME=OFF -DSVR2011_SESSION_TESTS=ON
+cmake --build port/out/session-tests
+ctest --test-dir port/out/session-tests --output-on-failure
+```
+
+Portable core/guest ABI/REST contract tests passed with GCC C++23, warnings as
+errors and address/undefined sanitizers (leak checks unavailable in this host).
+The updated SDK patch applies to the pinned clean SDK. Full Windows game/SDK
+compilation, WinHTTP live requests and the retail menu sequence still need
+verification: the development host has no Windows toolchain or generated game
+code. Contract tests use a test directory/HTTP transport, not a running server.
+
+This does not unlock the Online menu: local sign-in, denied privileges,
+Online Axxess, fixed guest profile identity and unhandled XLiveBase messages
+remain unchanged. Next checkpoint: a Windows build and original Player Match
+menu trace, then coherent identity/access replies, session details/metadata and
+lobby member events so two instances can join and leave the retail lobby.
+Only after that should XNet/QoS, peer transport and match synchronization follow.
+The phase plan below is historical research, not additional scope for this change.
+
 ## Key finding
 Xenia Canary's netplay fork (AdrianCassar/xenia-canary, BSD 3-Clause, the same code family as our SDK) lists **SvR 2011 (5451085D) as "Working Public"** for player matches, with no game patches. Its server, **Xenia-WebServices** (NestJS + MongoDB, MIT, Docker), is the session directory. So Player Matches are a port of known-working code, not new reverse engineering. Neither implements GameSpy, so Community Creations are new work.
 
