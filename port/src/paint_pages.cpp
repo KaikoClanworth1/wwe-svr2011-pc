@@ -21,6 +21,13 @@
 //   BODY -> TATTOOS -> PAINT TOOL DATA) takes the list's logos when it opens
 //   (sub_827E7100(picker)); the picker's cursor widget is picker+28, whose
 //   input sub_823D4FC0 runs while the picker has the controller.
+//   Community Creations Paint Tool slot list (data-select screen, vtable
+//   0x82027C20): +260 mode (0 pick a logo to upload, 1 pick where a download
+//   goes, 2 write the download), +272 the Paint Tool file it read; while the
+//   list has the controller sub_8250FFC0(screen) runs every frame. Its fills:
+//   sub_82517B58 used flags, sub_82517B90 downloaded flags, sub_82518668
+//   labels; sub_82510518 draws the list. Mode 2 copies the download into slot
+//   +0x8344 of +272 and saves the whole file (sub_82518268).
 #include "paint_pages.h"
 
 #include <algorithm>
@@ -73,6 +80,10 @@ std::atomic<int64_t> g_picker_seen{0};  // ms; the picker's last input (label)
 uint32_t g_picker = 0, g_picker_vtable = 0;  // the open Superstar logo picker
 uint32_t g_picker_list = 0;                  // its list while it reloads
 uint16_t g_picker_prev_buttons = 0;
+std::atomic<int64_t> g_slots_seen{0};   // ms; the CC slot list's last update (label)
+uint16_t g_slots_prev_buttons = 0;
+constexpr uint32_t kSlotScreenVtable = 0x82027C20, kSlotScreenMode = 260, kSlotScreenFile = 272;
+std::atomic<svr2011::PaintDownloadCheck> g_download_check{nullptr};
 
 uint32_t Rd32(const uint8_t* p) {
   uint32_t v;
@@ -355,6 +366,8 @@ namespace svr2011 {
 
 int PaintPage() { return g_page.load(); }
 
+void SetPaintDownloadCheck(PaintDownloadCheck check) { g_download_check = check; }
+
 void InstallPaintPages(rex::memory::Memory* memory, rex::input::InputSystem* input,
                        const std::filesystem::path& saves) {
   g_memory = memory;
@@ -513,6 +526,80 @@ REX_HOOK_RAW(sub_823D4FC0) {
   __imp__sub_823D4FC0(ctx, base);
 }
 
+// -- Community Creations: the Paint Tool slot list -------------------------
+
+// Page `page` into the file image at `f` (page 1 from the file).
+bool LoadPage(int page, uint8_t* f) {
+  if (page == 0) return LoadPage1(f);
+  BuildPage(page, f);
+  return true;
+}
+
+bool IsSlotScreen(uint8_t* base, uint32_t screen) {
+  return screen > 0x10000 && Rd32(base + screen) == kSlotScreenVtable;
+}
+
+// The list's update while it has the controller: sub_8250FFC0(screen). LB /
+// RB show the previous / next page (an upload can come from, and a download
+// go to, any page).
+REX_EXTERN(__imp__sub_8250FFC0);
+REX_HOOK_RAW(sub_8250FFC0) {
+  const uint32_t screen = ctx.r3.u32;
+  if (IsSlotScreen(base, screen) && Rd32(base + screen + kSlotScreenMode) <= 1) {
+    g_slots_seen = NowMs();
+    const uint16_t buttons = PadButtons();
+    const uint16_t pressed = uint16_t(buttons & ~g_slots_prev_buttons);
+    g_slots_prev_buttons = buttons;
+    using namespace rex::input;
+    const int delta = (pressed & X_INPUT_GAMEPAD_LEFT_SHOULDER)    ? -1
+                      : (pressed & X_INPUT_GAMEPAD_RIGHT_SHOULDER) ? +1
+                                                                   : 0;
+    const uint32_t file = Rd32(base + screen + kSlotScreenFile);
+    if (delta && file && Rd32(base + file) == kMagic) {
+      const int to = (g_page.load() + delta + svr2011::kPaintPages) % svr2011::kPaintPages;
+      bool loaded;
+      {
+        std::lock_guard lock(g_mutex);
+        loaded = LoadPage(to, base + file);
+      }
+      if (loaded) {
+        g_page = to;
+        CallR3(ctx, base, sub_82517B58, screen);
+        CallR3(ctx, base, sub_82517B90, screen);
+        CallR3(ctx, base, sub_82518668, screen);
+        // Uploads preview the logo under the cursor (sub_82517D78); downloads
+        // preview the download.
+        if (Rd32(base + screen + kSlotScreenMode) == 0) CallR3(ctx, base, sub_82517D78, screen);
+        CallR3(ctx, base, sub_82510518, screen);
+        REXLOG_INFO("paint pages: Community Creations slot list shows page {}", to + 1);
+      }
+    }
+  }
+  __imp__sub_8250FFC0(ctx, base);
+}
+
+// A download is written into its slot: sub_82518268(screen). The game copies
+// it into the file it read before (the buffer is freed and allocated again in
+// between), so the chosen page is loaded into it first.
+REX_EXTERN(__imp__sub_82518268);
+REX_HOOK_RAW(sub_82518268) {
+  const uint32_t screen = ctx.r3.u32;
+  if (IsSlotScreen(base, screen)) {
+    const uint32_t file = Rd32(base + screen + kSlotScreenFile);
+    if (file) {
+      std::lock_guard lock(g_mutex);
+      if (!LoadPage(g_page.load(), base + file))
+        REXLOG_WARN("paint pages: could not load page {} for the download", g_page.load() + 1);
+      REXLOG_INFO("paint pages: download goes to page {}", g_page.load() + 1);
+    }
+    if (auto check = g_download_check.load(); check && !check(base, screen, g_page.load())) {
+      REXLOG_INFO("paint pages: the download was not written (Community Creations check)");
+      return;
+    }
+  }
+  __imp__sub_82518268(ctx, base);
+}
+
 // -- The page label ---------------------------------------------------------
 
 namespace {
@@ -525,9 +612,11 @@ class PageLabel final : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override {
     const int64_t now = NowMs();
     const bool grid = now - g_grid_seen.load() < 250, picker = now - g_picker_seen.load() < 250;
-    if (!grid && !picker) return;
+    const bool slots = now - g_slots_seen.load() < 250;
+    if (!grid && !picker && !slots) return;
     // The game's 16:9 picture, centred in the window; the label sits on the
-    // top edge of the grid, centred, or right of the picker's title.
+    // top edge of the grid, centred, left of the slot list's own page row, or
+    // right of the picker's title.
     const float w = io.DisplaySize.x, h = io.DisplaySize.y;
     const float gw = std::min(w, h * 16.0f / 9.0f), gh = gw * 9.0f / 16.0f;
     const float x0 = (w - gw) * 0.5f, y0 = (h - gh) * 0.5f;
@@ -536,10 +625,11 @@ class PageLabel final : public rex::ui::ImGuiDialog {
     std::snprintf(text, sizeof(text), "LB   PAGE %d / %d   RB", g_page.load() + 1, svr2011::kPaintPages);
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
-    const float size = 28.0f * scale;
+    const float size = (slots && !grid ? 24.0f : 28.0f) * scale;
     const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    const ImVec2 c = grid ? ImVec2(x0 + gw * 0.5f, y0 + gh * 0.088f)
-                          : ImVec2(x0 + gw * 0.375f + ts.x * 0.5f, y0 + gh * 0.151f);
+    const ImVec2 c = grid    ? ImVec2(x0 + gw * 0.5f, y0 + gh * 0.088f)
+                     : slots ? ImVec2(x0 + gw * 0.29f, y0 + gh * 0.275f)
+                             : ImVec2(x0 + gw * 0.375f + ts.x * 0.5f, y0 + gh * 0.151f);
     const ImVec2 pad(14.0f * scale, 6.0f * scale);
     const ImVec2 a(c.x - ts.x * 0.5f - pad.x, c.y - ts.y * 0.5f - pad.y);
     const ImVec2 b(c.x + ts.x * 0.5f + pad.x, c.y + ts.y * 0.5f + pad.y);

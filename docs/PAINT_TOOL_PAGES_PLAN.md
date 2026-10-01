@@ -1,6 +1,6 @@
 # Paint Tool: more than 20 logos (pages) - research and plan
 
-Status (2026-10-01): phase 1 is implemented in `port/src/paint_pages.{h,cpp}` and tested in game (see Implemented). The launcher's Paint Tool tab has pages too. Next: Community Creations paging.
+Status (2026-10-01): phase 1 is implemented in `port/src/paint_pages.{h,cpp}` and tested in game (see Implemented). The launcher's Paint Tool tab and the Community Creations slot list have pages too.
 
 **Decided (user, 2026-10-01):** 10 pages = 200 logos, a fixed limit (not a setting). LB/RB switch pages in every paged menu.
 
@@ -188,4 +188,20 @@ Both risks are cleared. They were checked on the clean v1.0.3 build in a separat
   - command-line export/import on pages 1, 2 and 3;
   - captures of pages 1-3;
   - a launcher-imported page-3 logo shown in the game's grid.
+
+## Community Creations paging (done)
+
+- **Hook on 8250FFC0** (the slot list's update while it has the controller; data-select screen, vtable 0x82027C20, modes 0 upload and 1 download target). On LB/RB it changes the page, writes that page into screen+272, then runs the game's own refreshes:
+  - 82517B58: used flags;
+  - 82517B90: downloaded flags;
+  - 82518668: labels;
+  - 82517D78: the upload preview, mode 0 only (downloads preview the download);
+  - 82510518: redraw.
+- **The label** sits left of the list's own "◀ 1/2 ▶" row.
+- **Hook on 82518268** (writes the download into its slot) loads the current page into screen+272 first, because the game freed and reallocated that buffer since the slot was picked. Then it calls the Online session's `SetPaintDownloadCheck` callback (backup and validation; returning false skips the write), and then the game's write. The write is then stored by the page storage hooks.
+- **Verified** against the local server (`tools/paint_pages_cc.ps1`; config `runs/test_config_lim_online.toml` with its own online_xuid; saves `runs/test_userdata_lim_online`):
+  - downloaded a logo into page 2 slot 4: `p02_s04.bin`, used and downloaded flags set, `00PaintTool.pt` untouched;
+  - the upload list on page 2 greys out the downloaded logo;
+  - uploaded page 2 slot 1 (server record 6);
+  - paging 1 -> 2 -> 3 -> 2 with the preview following.
 

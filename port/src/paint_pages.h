@@ -11,6 +11,7 @@
 // Plan and findings: docs/PAINT_TOOL_PAGES_PLAN.md.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 
 namespace rex::input {
@@ -35,5 +36,16 @@ void InstallPaintPagesOverlay(rex::ui::ImGuiDrawer* drawer);
 
 // The page the game sees, 0-based.
 int PaintPage();
+
+// Community Creations: called when a downloaded Paint Tool logo is about to be
+// written into its slot (sub_82518268, the only hook on it), after the chosen
+// page was loaded into the screen's file buffer. `screen` is the slot list
+// (vtable 0x82027C20): +268 the downloaded 0x604CC-byte slot, +272 the file
+// buffer, +0x8344 the slot (0-19) on `page` (0-based; 0 = 00PaintTool.pt,
+// else Saves\.paint\pNN_sMM.bin). Returning false skips the game's write -
+// the callback then has to leave the screen in a state the game can go on
+// from. Set from the game's thread before Community Creations runs (online.h).
+using PaintDownloadCheck = bool (*)(uint8_t* base, uint32_t screen, int page);
+void SetPaintDownloadCheck(PaintDownloadCheck check);
 
 }  // namespace svr2011
