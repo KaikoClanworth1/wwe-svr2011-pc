@@ -611,36 +611,14 @@ public class LauncherActivity extends Activity {
 
     // ── Online ───────────────────────────────────────────────────────────
 
-    static final String kDefaultServer = "127.0.0.1:8411";
+    View onlinePage() { return new OnlinePage(this).build(); }
 
-    View onlinePage() {
-        LinearLayout c = column();
-        TextView about = text("Community Creations: share Created Superstars, Paint Tool logos, highlight reels and "
-            + "more with other players, through a Community Creations server (the original servers closed in "
-            + "2014). Online matches are not available yet.", 14, kDim);
-        about.setPadding(dp(4), dp(6), dp(4), dp(4));
-        c.addView(about);
+    // (for the pages in their own classes)
+    GameSettings settings() { return settings_; }
 
-        LinearLayout play = card(c, "Online");
-        toggle(play, "Play online", null, "online_enabled", false);
+    boolean loading() { return loading_; }
 
-        LinearLayout profile = card(c, "Your profile");
-        EditText name = field("User", 15, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        textSetting(name, "online_name", "Online name", "");
-        row(profile, "Online name", "Up to 15 characters, shown on your profile and uploads", name);
-
-        LinearLayout server = card(c, "Server");
-        EditText address = field(kDefaultServer, 120, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        textSetting(address, "online_server", "Server", kDefaultServer);
-        row(server, "Address", "host:port of the Community Creations server", address);
-        Button reset = button("Default server", kCard);
-        reset.setOnClickListener(v -> address.setText(kDefaultServer));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(14);
-        c.addView(reset, lp);
-        return c;
-    }
+    void onRefresh(Refresh r) { refreshers_.add(r); }
 
     EditText field(String hint, int max, int type) {
         EditText e = new EditText(this);

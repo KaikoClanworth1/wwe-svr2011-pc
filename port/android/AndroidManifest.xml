@@ -30,6 +30,7 @@
         android:hardwareAccelerated="true"
         android:requestLegacyExternalStorage="true"
         android:appCategory="game"
+        android:usesCleartextTraffic="true"
         android:isGame="true"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
 
