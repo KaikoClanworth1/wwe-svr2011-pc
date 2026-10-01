@@ -13,6 +13,12 @@ Goal: the ONLINE menu works without "Online Axxess": P2P Player Matches (LAN and
   - The relay answers GameSpy's presence login itself, from the account's session.
   - It forwards the game's HTTP to `<online_server>/game/...` with the player's `online_token`: WinHTTP on Windows, `NetBridge.java` on Android.
   - Downloads are validated, and the save they replace is backed up first. Superstars' extra Paint Tool logos travel with them.
+- **Entrances:** a Superstar's .cas carries its whole profile record (0x6BC bytes at 0x1483C4), entrance included, so the game uploads the entrance itself.
+  - The song travels by name.
+  - The game resets a user movie (row 254, ids 700-899) to none on upload.
+  - `src/entrance_media.cpp` sends the USER PLAYLIST song and the USER MOVIE (shrunk to H.264 MP4, `movie_transcode.cpp`) to `/api/media` and ties them to the Superstar with `PUT /api/entrance/<file>`.
+  - On download it installs them (`Music\<name>\`, `Custom Movies\<name>.bik`, "<name> (2)" if the name plays something else). When the save job starts (sub_824DCA98) it points the downloaded entrance at them.
+  - Android sends and installs songs; movies are Windows-only for now (Media Foundation).
 - **Launchers:** the Online tab (PC and Android) signs in or creates an account, and picks the Default or a Custom server.
 - **Menus:** the gamer card, party, Xbox LIVE and Online Axxess texts and prompts are gone.
 

@@ -48,6 +48,7 @@
 #include "touch_controls.h"
 #include "discord_presence.h"
 #include "online.h"
+#include "entrance_media.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -365,6 +366,12 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::StartDiscordPresence();  // (discord_presence.h)
   }
   svr2011::InstallOnline(runtime()->memory(), g_saves);  // Community Creations (online.h)
+  {
+    // ... its Superstars' entrance songs and movies (entrance_media.h)
+    std::filesystem::path music = rex::filesystem::GetExecutableFolder() / "Music";
+    if (std::string dir = Env("SVR2011_MUSIC"); !dir.empty()) music = dir;
+    svr2011::InstallEntranceMedia(runtime()->memory(), music);
+  }
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).

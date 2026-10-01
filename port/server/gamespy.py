@@ -181,6 +181,10 @@ class Store:
                     tableid TEXT, name TEXT, type TEXT, PRIMARY KEY (tableid, name));
                 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT);
                 CREATE TABLE IF NOT EXISTS tickets (ticket TEXT PRIMARY KEY, profileid INTEGER, created REAL);
+                CREATE TABLE IF NOT EXISTS media (
+                    sha TEXT PRIMARY KEY, kind TEXT, size INTEGER, ownerid INTEGER, created REAL);
+                CREATE TABLE IF NOT EXISTS entrances (fileid INTEGER PRIMARY KEY, ownerid INTEGER, info TEXT,
+                    created REAL);
                 CREATE INDEX IF NOT EXISTS records_table ON records (tableid);
                 CREATE INDEX IF NOT EXISTS files_owner ON files (ownerid);
             """)
@@ -339,18 +343,19 @@ class Store:
 
     # -- files: content-addressed, compressed --------------------------------
 
-    def _blob_path(self, sha):
-        return os.path.join(self.blob_dir, sha[:2], sha + ".xz")
+    def _blob_path(self, sha, packed=True):
+        return os.path.join(self.blob_dir, sha[:2], sha + (".xz" if packed else ".bin"))
 
-    def _put_blob(self, data):
-        """Stores data (once per content); returns its sha. Caller holds the lock."""
+    def _put_blob(self, data, compress=True):
+        """Stores data (once per content); returns its sha. Caller holds the lock.
+        compress=False for what is compressed already (songs, movies)."""
         sha = hashlib.sha256(data).hexdigest()
         row = self.db.execute("SELECT refs FROM blobs WHERE sha = ?", (sha,)).fetchone()
-        if row and os.path.exists(self._blob_path(sha)):
+        if row and (os.path.exists(self._blob_path(sha)) or os.path.exists(self._blob_path(sha, False))):
             self.db.execute("UPDATE blobs SET refs = refs + 1 WHERE sha = ?", (sha,))
             return sha
-        packed = lzma.compress(data, preset=6)
-        path = self._blob_path(sha)
+        packed = lzma.compress(data, preset=6) if compress else data
+        path = self._blob_path(sha, compress)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "wb") as f:
@@ -368,10 +373,11 @@ class Store:
         row = self.db.execute("SELECT refs FROM blobs WHERE sha = ?", (sha,)).fetchone()
         if row and row[0] <= 0:
             self.db.execute("DELETE FROM blobs WHERE sha = ?", (sha,))
-            try:
-                os.remove(self._blob_path(sha))
-            except OSError:
-                pass
+            for packed in (True, False):
+                try:
+                    os.remove(self._blob_path(sha, packed))
+                except OSError:
+                    pass
             if sha in self.cache:
                 self.cache_bytes -= len(self.cache.pop(sha))
 
@@ -382,8 +388,12 @@ class Store:
                 self.cache.move_to_end(sha)
                 return data
         try:
-            with open(self._blob_path(sha), "rb") as f:
-                data = lzma.decompress(f.read())
+            if os.path.exists(self._blob_path(sha, False)):
+                with open(self._blob_path(sha, False), "rb") as f:
+                    data = f.read()
+            else:
+                with open(self._blob_path(sha), "rb") as f:
+                    data = lzma.decompress(f.read())
         except (OSError, lzma.LZMAError):
             return None
         with self.lock:
@@ -441,6 +451,7 @@ class Store:
                 return
             self.db.execute("DELETE FROM files WHERE fileid = ?", (fileid,))
             self.db.execute("DELETE FROM file_logos WHERE fileid = ?", (fileid,))
+            self.db.execute("DELETE FROM entrances WHERE fileid = ?", (fileid,))
             self._drop_blob(f[2])
             self.db.commit()
 
@@ -466,12 +477,66 @@ class Store:
             self.release_file(fid)
         if old:
             log("storage: %d unused file(s) removed" % len(old))
+        # entrance songs and movies no Superstar uses any more
+        with self.lock:
+            used = set()
+            for (info,) in self.db.execute("SELECT info FROM entrances"):
+                used |= {m["sha"] for m in json.loads(info).values() if isinstance(m, dict) and m.get("sha")}
+            stale = [sha for sha, created in self.db.execute("SELECT sha, created FROM media")
+                     if sha not in used and time.time() - created > min_age]
+            for sha in stale:
+                self.db.execute("DELETE FROM media WHERE sha = ?", (sha,))
+                self._drop_blob(sha)
+            self.db.commit()
+        if stale:
+            log("storage: %d unused entrance song(s)/movie(s) removed" % len(stale))
 
     def stats(self):
         with self.lock:
             n, raw, stored = self.db.execute("SELECT COUNT(*), COALESCE(SUM(size), 0), COALESCE(SUM(stored), 0) "
                                              "FROM blobs").fetchone()
         return n, raw, stored
+
+    # -- Created Superstars' entrance songs and movies ---------------------------
+    #
+    # The game carries a Superstar's entrance in its .cas (the song by name, the
+    # movie by number); the port sends the song and the movie themselves here,
+    # keyed by the Superstar's file: entrances[fileid] = {"music": {"playlist",
+    # "file", "sha", "size"}, "movie": {"name", "sha", "size"}} (either may be
+    # missing), the files in media (stored as they are: compressed already).
+
+    def media_bytes(self, ownerid):
+        with self.lock:
+            return self.db.execute("SELECT COALESCE(SUM(size), 0) FROM media WHERE ownerid = ?",
+                                   (ownerid,)).fetchone()[0]
+
+    def has_media(self, sha):
+        with self.lock:
+            return self.db.execute("SELECT 1 FROM media WHERE sha = ?", (sha,)).fetchone() is not None
+
+    def put_media(self, ownerid, kind, data):
+        sha = hashlib.sha256(data).hexdigest()
+        with self.lock:
+            if self.has_media(sha):
+                return sha
+            self._put_blob(data, compress=False)
+            self.db.execute("INSERT INTO media VALUES (?, ?, ?, ?, ?)", (sha, kind, len(data), ownerid, time.time()))
+            self.db.commit()
+        return sha
+
+    def get_media(self, sha):
+        return self._get_blob(sha) if self.has_media(sha) else None
+
+    def set_entrance(self, fileid, ownerid, info):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO entrances VALUES (?, ?, ?, ?)",
+                            (fileid, ownerid, json.dumps(info), time.time()))
+            self.db.commit()
+
+    def get_entrance(self, fileid):
+        with self.lock:
+            row = self.db.execute("SELECT info FROM entrances WHERE fileid = ?", (fileid,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     # -- the port's extra Superstar logos (Saves\.logos) ----------------------
 

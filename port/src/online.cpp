@@ -28,6 +28,7 @@
 #include <rex/system/xmemory.h>
 
 #include "caw_logos.h"
+#include "entrance_media.h"
 #include "online_net.h"
 #include "paint_pages.h"
 
@@ -455,7 +456,12 @@ REX_HOOK_RAW(sub_824D8F58) {
 // list), sub_824DCCE8 ends it.
 REX_EXTERN(__imp__sub_824DCA98);
 REX_HOOK_RAW(sub_824DCA98) {
-  svr2011::g_importing = ctx.r4.u32 == 1;
+  using namespace svr2011;
+  g_importing = ctx.r4.u32 == 1;
+  if (g_importing && Rd32(base, ctx.r3.u32 + 1172) == 0) {  // a Superstar: its entrance's song and movie
+    const uint32_t holder = Rd32(base, kDownloadBuffer);
+    PrepareDownloadedEntrance(base, holder ? Rd32(base, holder) : 0);
+  }
   __imp__sub_824DCA98(ctx, base);
 }
 

@@ -16,6 +16,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,7 @@ rex::memory::Memory* g_memory = nullptr;
 std::filesystem::path g_folder;
 std::mutex g_mutex;
 std::map<int, std::string> g_ids;             // id -> file name (ASCII)
+std::set<std::string> g_pending;              // files being written (ReserveUserMovie)
 std::map<std::string, uint32_t> g_labels;     // label -> guest string
 
 uint32_t Rd32(uint8_t* base, uint32_t a) {
@@ -85,7 +87,10 @@ void Refresh() {
     files.push_back(p.filename().string());
   }
   for (auto it = ids.begin(); it != ids.end();) {
-    it = std::find(files.begin(), files.end(), it->second) == files.end() ? ids.erase(it) : std::next(it);
+    const bool there = std::find(files.begin(), files.end(), it->second) != files.end() ||
+                       g_pending.count(it->second) ||
+                       std::filesystem::exists(g_folder / (it->second + ".part"), ec);  // (being written)
+    it = there ? std::next(it) : ids.erase(it);
   }
   std::sort(files.begin(), files.end());
   bool changed = false;
@@ -128,6 +133,39 @@ uint32_t Label(const std::string& file) {
 }  // namespace
 
 namespace svr2011 {
+
+std::filesystem::path UserMoviesFolder() { return g_folder; }
+
+std::filesystem::path UserMovieFile(int id) {
+  std::lock_guard lock(g_mutex);
+  auto it = g_ids.find(id);
+  return it == g_ids.end() ? std::filesystem::path() : g_folder / it->second;
+}
+
+int ReserveUserMovie(const std::string& file) {
+  std::lock_guard lock(g_mutex);
+  if (g_folder.empty()) return 0;
+  g_pending.insert(file);
+  Refresh();
+  for (const auto& [id, f] : g_ids) {
+    if (f == file) return id;
+  }
+  for (int id = kFirstId; id <= kLastId; ++id) {
+    if (!g_ids.count(id)) {
+      g_ids[id] = file;
+      std::ofstream out(g_folder / "ids.txt", std::ios::trunc);
+      for (const auto& [i, f] : g_ids) out << i << '\t' << f << '\n';
+      return id;
+    }
+  }
+  return 0;
+}
+
+void FinishUserMovie(const std::string& file) {
+  std::lock_guard lock(g_mutex);
+  g_pending.erase(file);
+  Refresh();
+}
 
 void InstallUserMovies(rex::memory::Memory* memory, const std::filesystem::path& folder) {
   g_memory = memory;

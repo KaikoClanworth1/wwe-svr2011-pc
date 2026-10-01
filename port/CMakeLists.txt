@@ -34,6 +34,8 @@ set(SVR2011_SOURCES
     src/dlc.cpp
     src/caw_logos.cpp
     src/user_movies.cpp
+    src/entrance_media.cpp
+    src/movie_transcode.cpp
     src/paint_pages.cpp
     src/game_files.cpp
 )
@@ -134,6 +136,10 @@ endif()
 if(WIN32)
     target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 dxgi dxguid dbghelp ws2_32 winhttp
         mfplat mfreadwrite mfuuid)
+    # Community Creations entrance movies to and from MP4 (movie_transcode.cpp):
+    # the launcher's Bink reader and writer.
+    target_sources(svr2011 PRIVATE launcher/bink_decode.c launcher/bink_encode.c)
+    target_include_directories(svr2011 PRIVATE launcher)
     # A PDB (function names + line tables) for crash reports and profiling.
     target_compile_options(svr2011 PRIVATE -gline-tables-only)
     target_link_options(svr2011 PRIVATE -Wl,/DEBUG)

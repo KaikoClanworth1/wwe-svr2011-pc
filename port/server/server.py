@@ -326,6 +326,8 @@ class Service:
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
         self.data_dir = Path(args.data)
         self.dashboard_html = (HERE / "dashboard.html").read_text(encoding="utf-8")
+        self.max_media = {"music": args.max_music_mb << 20, "movie": args.max_movie_mb << 20}
+        self.media_quota = args.media_quota_mb << 20
 
     # who is asking
 
@@ -456,6 +458,86 @@ class Service:
         data = await loop.run_in_executor(None, self.store.get_logo, hash16)
         return web.Response(body=data or b"", content_type="application/octet-stream",
                             headers={"Svr2011-Result": "0" if data else "4"})
+
+    # Created Superstars' entrance songs and movies (gamespy.Store.set_entrance)
+
+    async def api_media_post(self, request):
+        account = self.account(request)
+        if not account:
+            return web.Response(status=401)
+        kind = request.query.get("kind", "")
+        if kind not in self.max_media:
+            return web.json_response({"ok": False, "error": "kind is music or movie"}, status=400)
+        if (request.content_length or 0) > self.max_media[kind]:
+            return web.json_response({"ok": False, "error": "too large"}, status=413)
+        data = await request.read()
+        if not data or len(data) > self.max_media[kind]:
+            return web.json_response({"ok": False, "error": "too large"}, status=413)
+        pid = account["profileid"]
+        loop = asyncio.get_running_loop()
+        sha = hashlib.sha256(data).hexdigest()
+        if not self.store.has_media(sha) and self.store.media_bytes(pid) + len(data) > self.media_quota:
+            gs.log("media: %s from %s refused: over the quota" % (kind, account["name"]))
+            return web.json_response({"ok": False, "error": "over the quota"}, status=507)
+        sha = await loop.run_in_executor(None, self.store.put_media, pid, kind, data)
+        gs.log("media: %s %d bytes from %s -> %s" % (kind, len(data), account["name"], sha[:12]))
+        return web.json_response({"ok": True, "sha": sha})
+
+    async def api_media_get(self, request):
+        if not self.account(request):
+            return web.Response(status=401)
+        sha = request.match_info["sha"].lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return web.Response(status=400)
+        if request.method == "HEAD":
+            return web.Response(status=200 if self.store.has_media(sha) else 404)
+        data = await asyncio.get_running_loop().run_in_executor(None, self.store.get_media, sha)
+        if data is None:
+            return web.Response(status=404)
+        self.stats.count("downloads")
+        return web.Response(body=data, content_type="application/octet-stream")
+
+    async def api_entrance(self, request):
+        account = self.account(request)
+        if not account:
+            return web.Response(status=401)
+        try:
+            fileid = int(request.match_info["fileid"])
+        except ValueError:
+            return web.Response(status=400)
+        if request.method == "GET":
+            info = self.store.get_entrance(fileid)
+            return web.json_response(info) if info is not None else web.Response(status=404)
+        # PUT: the Superstar's owner says which song and movie its entrance uses
+        if self.store.file_owner(fileid) != account["profileid"]:
+            return web.json_response({"ok": False, "error": "not your upload"}, status=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False, "error": "not JSON"}, status=400)
+        info = {}
+        for kind, names in (("music", ("playlist", "file")), ("movie", ("name",))):
+            m = body.get(kind)
+            if not isinstance(m, dict):
+                continue
+            sha = str(m.get("sha", "")).lower()
+            if not self.store.has_media(sha):
+                return web.json_response({"ok": False, "error": "%s not uploaded" % kind}, status=400)
+            entry = {"sha": sha}
+            for n in names:
+                v = str(m.get(n, ""))
+                # (a file name on the downloader's PC: no folders, nothing odd)
+                if not v or len(v) > 80 or re.search(r'[\\/:*?"<>|\x00-\x1f]', v) or v.strip(". ") != v:
+                    return web.json_response({"ok": False, "error": "bad %s %s" % (kind, n)}, status=400)
+                entry[n] = v
+            for n in ("frames",):
+                if isinstance(m.get(n), int):
+                    entry[n] = m[n]
+            info[kind] = entry
+        self.store.set_entrance(fileid, account["profileid"], info)
+        gs.log("entrance: file %d by %s: %s" % (fileid, account["name"], ", ".join(
+            "%s %s" % (k, v.get("playlist") or v.get("name")) for k, v in info.items()) or "nothing"))
+        return web.json_response({"ok": True})
 
     async def api_logos_wanted(self, request):
         if not self.account(request):
@@ -666,7 +748,8 @@ class Service:
             t.cancel()
 
     def build(self):
-        app = web.Application(middlewares=[self.meter], client_max_size=self.store.max_file + (1 << 20))
+        app = web.Application(middlewares=[self.meter],
+                              client_max_size=max([self.store.max_file] + list(self.max_media.values())) + (1 << 20))
         b = self.base
         app.router.add_post(b + "/api/register", self.api_register)
         app.router.add_post(b + "/api/login", self.api_login)
@@ -675,6 +758,9 @@ class Service:
         app.router.add_get(b + "/api/status", self.api_status)
         app.router.add_route("*", b + "/api/logo/{hash}", self.api_logo)
         app.router.add_get(b + "/api/logos/wanted", self.api_logos_wanted)
+        app.router.add_post(b + "/api/media", self.api_media_post)
+        app.router.add_get(b + "/api/media/{sha}", self.api_media_get)  # (and HEAD)
+        app.router.add_route("*", b + "/api/entrance/{fileid}", self.api_entrance)
         app.router.add_route("*", b + "/game/{tail:.*}", self.game)
         app.router.add_get("/__health", self.health)
         app.router.add_get("/", self.dashboard)
@@ -699,6 +785,9 @@ def main():
     ap.add_argument("--max-connections", type=int, default=100, help="game requests at once")
     ap.add_argument("--max-file-mb", type=int, default=8, help="the largest upload")
     ap.add_argument("--quota-mb", type=int, default=256, help="what one player may store (uncompressed)")
+    ap.add_argument("--max-music-mb", type=int, default=16, help="the largest entrance song")
+    ap.add_argument("--max-movie-mb", type=int, default=48, help="the largest entrance movie (sent shrunk, MP4)")
+    ap.add_argument("--media-quota-mb", type=int, default=1024, help="entrance songs and movies one player may store")
     args = ap.parse_args()
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")

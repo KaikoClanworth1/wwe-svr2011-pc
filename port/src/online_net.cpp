@@ -41,6 +41,8 @@ namespace svr2011::net {
 
 namespace {
 
+TransferListener g_transfer = nullptr;  // (SetTransferListener)
+
 // -- sockets ----------------------------------------------------------------------
 
 #if defined(_WIN32)
@@ -199,7 +201,8 @@ std::optional<Response> RequestImpl(const std::string& method, const Url& url, c
   static HINTERNET session = [] {
     HINTERNET s = WinHttpOpen(L"SvR2011-PC/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                               WINHTTP_NO_PROXY_BYPASS, 0);
-    if (s) WinHttpSetTimeouts(s, 10000, 10000, 30000, 60000);
+    // (sending: a whole body at once - an entrance movie is up to 40 MB)
+    if (s) WinHttpSetTimeouts(s, 10000, 10000, 300000, 120000);
     return s;
   }();
   if (!session) return std::nullopt;
@@ -453,6 +456,18 @@ void HandleHttp(Socket s) {
   }
   SendAll(s, reply);
   CloseSocket(s);
+  if (r && r->status == 200 && g_transfer) {
+    const std::string path = Lower(target);
+    if (path.find("/sakefileserver/upload.aspx") != std::string::npos && r->headers["sake-file-result"] == "0") {
+      const int fileid = std::atoi(r->headers["sake-file-id"].c_str());
+      if (fileid > 0) g_transfer(true, fileid, request_headers.headers["content-type"], body);
+    } else if (path.find("/sakefileserver/download.aspx") != std::string::npos &&
+               r->headers["sake-file-result"] == "0") {
+      const size_t at = path.find("fileid=");
+      const int fileid = at == std::string::npos ? 0 : std::atoi(path.c_str() + at + 7);
+      if (fileid > 0) g_transfer(false, fileid, {}, r->body);
+    }
+  }
 }
 
 // -- the relay: the presence login -------------------------------------------------
@@ -569,6 +584,8 @@ std::optional<Response> ServerRequest(const std::string& method, const std::stri
   if (!token.empty()) headers.emplace_back("Authorization", "Bearer " + token);
   return Request(method, ServerBase() + path, headers, body);
 }
+
+void SetTransferListener(TransferListener listener) { g_transfer = listener; }
 
 bool StartRelay() {
   static std::once_flag once;

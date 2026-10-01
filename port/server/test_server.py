@@ -102,6 +102,31 @@ def main():
                            {"Content-Type": ctype}, a_token)
     check(h.get("Sake-File-Result") == "5" or status == 413, "an upload over the size limit refused (%d)" % status)
 
+    # an entrance's song and movie, kept with the Superstar's file
+    song = os.urandom(200000)
+    status, _, body = request(server, "POST", "/api/media?kind=music", song, token=a_token)
+    song_sha = json.loads(body or b"{}").get("sha")
+    check(status == 200 and song_sha, "entrance song stored")
+    status, _, _ = request(server, "POST", "/api/media?kind=movie", os.urandom(49 << 20), token=a_token)
+    check(status == 413, "an entrance movie over the size limit refused (%d)" % status)
+    entrance = {"music": {"playlist": "Glass Shatters", "file": "Glass Shatters.mp3", "sha": song_sha}}
+    status, _ = post_json(server, "/api/entrance/%s" % fileid, entrance, b_token)
+    check(status == 403, "another player can't set the entrance")
+    status, _, _ = request(server, "PUT", "/api/entrance/%s" % fileid, json.dumps(entrance).encode(),
+                           {"Content-Type": "application/json"}, a_token)
+    check(status == 200, "the owner sets the entrance")
+    bad = {"music": {"playlist": "..\\Saves", "file": "x.mp3", "sha": song_sha}}
+    status, _, _ = request(server, "PUT", "/api/entrance/%s" % fileid, json.dumps(bad).encode(),
+                           {"Content-Type": "application/json"}, a_token)
+    check(status == 400, "a song name with a folder in it refused")
+    status, _, body = request(server, "GET", "/api/entrance/%s" % fileid, token=b_token)
+    got = json.loads(body or b"{}")
+    check(status == 200 and got.get("music", {}).get("playlist") == "Glass Shatters", "the other player reads it")
+    status, _, back = request(server, "GET", "/api/media/%s" % song_sha, token=b_token)
+    check(back == song, "the song read back")
+    status, _, _ = request(server, "HEAD", "/api/media/%s" % ("0" * 64), token=b_token)
+    check(status == 404, "an unknown song: 404")
+
     # logos: a wrong hash is refused, a right one stored and returned
     logo = os.urandom(gs.LOGO_SIZE)
     good = "%016X" % gs.fnv64(logo)

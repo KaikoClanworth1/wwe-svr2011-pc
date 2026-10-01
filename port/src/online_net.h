@@ -40,4 +40,10 @@ std::optional<Response> ServerRequest(const std::string& method, const std::stri
 // Starts the relay (once) and tells the runtime its ports.
 bool StartRelay();
 
+// Community Creations files the relay passed on (entrance_media.cpp): an
+// upload the server took as `fileid` (body: the game's multipart form), or
+// a download of `fileid` (body: the file). Called on the relay's thread.
+using TransferListener = void (*)(bool upload, int fileid, const std::string& content_type, const std::string& body);
+void SetTransferListener(TransferListener listener);
+
 }  // namespace svr2011::net
