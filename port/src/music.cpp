@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <objbase.h>
 #include <mfapi.h>
@@ -23,6 +24,15 @@
 #include <mmreg.h>
 #include <wrl/client.h>
 #include <xaudio2.h>
+#elif defined(__ANDROID__)
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <SDL3/SDL.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -37,13 +47,18 @@ namespace svr2011 {
 
 namespace {
 
-using Microsoft::WRL::ComPtr;
 using rex::kernel::xam::apps::XmpApp;
 
+#if defined(_WIN32)
+using Microsoft::WRL::ComPtr;
 constexpr const wchar_t* kExtensions[] = {L".mp3", L".wma", L".m4a", L".aac", L".wav", L".flac"};
 constexpr uint32_t kSlots = 6;   // buffers owned by the player
 constexpr uint32_t kQueued = 4;  // at most this many queued on the voice
 constexpr double kBufferSeconds = 0.1;
+#else
+// (Android's decoders: no WMA)
+constexpr const wchar_t* kExtensions[] = {L".mp3", L".m4a", L".aac", L".wav", L".flac", L".ogg"};
+#endif
 
 std::filesystem::path g_folder;
 
@@ -81,6 +96,7 @@ std::vector<std::pair<std::u16string, std::filesystem::path>> Playlists() {
   return lists;
 }
 
+#if defined(_WIN32)
 // Plays one song on a loop on its own XAudio2 voice, on a thread of its own.
 class Player {
  public:
@@ -288,9 +304,229 @@ class Player {
   uint32_t next_slot_ = 0;
 };
 
+#elif defined(__ANDROID__)
+
+// Android: the phone's own decoders (NDK AMediaExtractor + AMediaCodec: mp3,
+// m4a / aac, flac, wav...) into an SDL audio stream, on a thread of its own.
+class Player {
+ public:
+  void Play(std::filesystem::path path) {
+    std::lock_guard lock(mutex_);
+    request_ = std::move(path);
+    has_request_ = true;
+    paused_ = false;
+    wake_.notify_one();
+  }
+  void Stop() {
+    std::lock_guard lock(mutex_);
+    request_.clear();
+    has_request_ = true;
+    wake_.notify_one();
+  }
+  void Pause(bool paused) {
+    std::lock_guard lock(mutex_);
+    paused_ = paused;
+    wake_.notify_one();
+  }
+  void SetVolume(float volume) {
+    std::lock_guard lock(mutex_);
+    game_volume_ = std::clamp(volume, 0.0f, 1.0f);
+  }
+
+  void Run() {
+    for (;;) {
+      std::filesystem::path request;
+      bool has_request, paused;
+      {
+        std::unique_lock lock(mutex_);
+        wake_.wait_for(lock, codec_ ? std::chrono::milliseconds(20) : std::chrono::hours(1),
+                       [&] { return has_request_ || (codec_ && paused_ != stream_paused_); });
+        has_request = std::exchange(has_request_, false);
+        request = request_;
+        paused = paused_;
+      }
+      if (has_request) {
+        Close();
+        song_ = request;
+        if (!song_.empty() && !Open(song_)) song_.clear();
+      }
+      if (!codec_) continue;
+      if (paused != stream_paused_) {
+        paused ? SDL_PauseAudioStreamDevice(stream_) : SDL_ResumeAudioStreamDevice(stream_);
+        stream_paused_ = paused;
+      }
+      UpdateVolume();
+      if (stream_paused_) continue;
+      Feed();
+      if (ended_ && SDL_GetAudioStreamQueued(stream_) == 0) {  // from the top again, until stopped
+        Close();
+        if (!Open(song_)) song_.clear();
+      }
+    }
+  }
+
+ private:
+  bool Open(const std::filesystem::path& path) {
+    fd_ = open(path.c_str(), O_RDONLY);
+    if (fd_ < 0) {
+      REXLOG_WARN("user music: cannot open {}", path.string());
+      return false;
+    }
+    const off64_t size = lseek64(fd_, 0, SEEK_END);
+    extractor_ = AMediaExtractor_new();
+    if (AMediaExtractor_setDataSourceFd(extractor_, fd_, 0, size) != AMEDIA_OK) {
+      REXLOG_WARN("user music: cannot read {}", path.string());
+      Close();
+      return false;
+    }
+    for (size_t i = 0; i < AMediaExtractor_getTrackCount(extractor_) && !codec_; ++i) {
+      AMediaFormat* format = AMediaExtractor_getTrackFormat(extractor_, i);
+      const char* mime = nullptr;
+      if (AMediaFormat_getString(format, AMEDIAFORMAT_KEY_MIME, &mime) && mime &&
+          std::strncmp(mime, "audio/", 6) == 0) {
+        AMediaExtractor_selectTrack(extractor_, i);
+        codec_ = AMediaCodec_createDecoderByType(mime);
+        if (codec_ && (AMediaCodec_configure(codec_, format, nullptr, nullptr, 0) != AMEDIA_OK ||
+                       AMediaCodec_start(codec_) != AMEDIA_OK)) {
+          AMediaCodec_delete(codec_);
+          codec_ = nullptr;
+        }
+        int32_t rate = 0, channels = 0;
+        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_SAMPLE_RATE, &rate);
+        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &channels);
+        SetFormat(rate, channels);
+      }
+      AMediaFormat_delete(format);
+    }
+    if (!codec_ || !stream_) {
+      REXLOG_WARN("user music: cannot decode {}", path.string());
+      Close();
+      return false;
+    }
+    ended_ = input_done_ = false;
+    stream_paused_ = true;  // started by the loop (unless paused)
+    volume_ = -1.0f;
+    return true;
+  }
+
+  // The decoder's output (16-bit PCM): the stream's input format.
+  void SetFormat(int32_t rate, int32_t channels) {
+    if (rate <= 0 || channels <= 0) return;
+    SDL_AudioSpec spec = {SDL_AUDIO_S16, channels, rate};
+    if (!stream_) {
+      stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+      if (!stream_) REXLOG_WARN("user music: no audio output ({})", SDL_GetError());
+    } else {
+      SDL_SetAudioStreamFormat(stream_, &spec, nullptr);
+    }
+    bytes_per_second_ = rate * channels * 2;
+  }
+
+  void Close() {
+    if (codec_) {
+      AMediaCodec_stop(codec_);
+      AMediaCodec_delete(codec_);
+      codec_ = nullptr;
+    }
+    if (extractor_) {
+      AMediaExtractor_delete(extractor_);
+      extractor_ = nullptr;
+    }
+    if (fd_ >= 0) {
+      close(fd_);
+      fd_ = -1;
+    }
+    if (stream_) SDL_ClearAudioStream(stream_);
+  }
+
+  void UpdateVolume() {
+    float v;
+    {
+      std::lock_guard lock(mutex_);
+      v = game_volume_;
+    }
+    if (rex::cvar::GetFlagByName("audio_mute") == "true") v = 0.0f;
+    if (v != volume_) {
+      volume_ = v;
+      SDL_SetAudioStreamGain(stream_, v);
+    }
+  }
+
+  // Keeps ~0.3 s decoded audio queued on the stream.
+  void Feed() {
+    while (!ended_ && SDL_GetAudioStreamQueued(stream_) < int(bytes_per_second_ * 0.3)) {
+      if (!input_done_) {
+        const ssize_t in = AMediaCodec_dequeueInputBuffer(codec_, 2000);
+        if (in >= 0) {
+          size_t capacity = 0;
+          uint8_t* buffer = AMediaCodec_getInputBuffer(codec_, size_t(in), &capacity);
+          const ssize_t n = AMediaExtractor_readSampleData(extractor_, buffer, capacity);
+          if (n < 0) {
+            AMediaCodec_queueInputBuffer(codec_, size_t(in), 0, 0, 0,
+                                         AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+            input_done_ = true;
+          } else {
+            AMediaCodec_queueInputBuffer(codec_, size_t(in), 0, size_t(n),
+                                         uint64_t(AMediaExtractor_getSampleTime(extractor_)), 0);
+            AMediaExtractor_advance(extractor_);
+          }
+        }
+      }
+      AMediaCodecBufferInfo info = {};
+      const ssize_t out = AMediaCodec_dequeueOutputBuffer(codec_, &info, 2000);
+      if (out >= 0) {
+        size_t capacity = 0;
+        const uint8_t* data = AMediaCodec_getOutputBuffer(codec_, size_t(out), &capacity);
+        if (data && info.size > 0) SDL_PutAudioStreamData(stream_, data + info.offset, info.size);
+        AMediaCodec_releaseOutputBuffer(codec_, size_t(out), false);
+        if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) ended_ = true;
+      } else if (out == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+        AMediaFormat* format = AMediaCodec_getOutputFormat(codec_);
+        int32_t rate = 0, channels = 0;
+        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_SAMPLE_RATE, &rate);
+        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &channels);
+        AMediaFormat_delete(format);
+        SetFormat(rate, channels);
+      } else if (out == AMEDIACODEC_INFO_TRY_AGAIN_LATER && input_done_) {
+        break;  // (draining: wait for the next round)
+      }
+    }
+  }
+
+  // Requests (any thread).
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  std::filesystem::path request_;
+  bool has_request_ = false;
+  bool paused_ = false;
+  float game_volume_ = 1.0f;
+
+  // The player thread's own.
+  std::filesystem::path song_;
+  int fd_ = -1;
+  AMediaExtractor* extractor_ = nullptr;
+  AMediaCodec* codec_ = nullptr;
+  SDL_AudioStream* stream_ = nullptr;
+  int bytes_per_second_ = 1;
+  bool ended_ = false, input_done_ = false;
+  bool stream_paused_ = true;
+  float volume_ = -1.0f;
+};
+
+#endif
+
 Player* g_player = nullptr;  // lives for the whole run
 
 }  // namespace
+
+std::filesystem::path UserMusicFolder() { return g_folder; }
+
+std::filesystem::path UserMusicSong(const std::string& name) {
+  const std::u16string wanted = std::filesystem::path(std::u8string(name.begin(), name.end())).u16string();
+  for (auto& [list, song] : Playlists())
+    if (list == wanted) return song;
+  return {};
+}
 
 void InstallUserMusic(const std::filesystem::path& folder) {
   g_folder = folder;
@@ -298,7 +534,9 @@ void InstallUserMusic(const std::filesystem::path& folder) {
   std::filesystem::create_directories(folder, ec);  // so players can find it
   g_player = new Player();
   std::thread([] {
+#if defined(_WIN32)
     SetThreadDescription(GetCurrentThread(), L"User music");
+#endif
     g_player->Run();
   }).detach();
 

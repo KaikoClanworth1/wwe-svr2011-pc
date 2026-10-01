@@ -40,7 +40,9 @@ switch ($Action) {
             foreach ($d in "Saves", "achievements") { & $adb push (Join-Path $src $d) "$run/userdata/" | Out-Null }
         }
         Sh "rm -f $(Q "$run/input.txt"); touch $(Q "$run/input.txt")" | Out-Null
-        & $adb shell am start -n "$pkg/.InstallActivity" `
+        # (SVR2011_PHONE_MUSIC=<folder in test_run>: the test's Music folder)
+        $music = if ($env:SVR2011_PHONE_MUSIC) { @("--es", "SVR2011_MUSIC", "'$run/$env:SVR2011_PHONE_MUSIC'") } else { @() }
+        & $adb shell am start -n "$pkg/.InstallActivity" @music `
             --es SVR2011_INPUT_FILE "'$run/input.txt'" `
             --es SVR2011_USER_DATA "'$run/userdata'" `
             --es args "'--audio_mute=true $env:SVR2011_PHONE_ARGS'" | Out-Null  # (+ extra settings for a test)

@@ -14,10 +14,18 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace svr2011 {
 
 // Serves `folder` to the game's music player (xmp_app.h, HostMusic). Call once.
 void InstallUserMusic(const std::filesystem::path& folder);
+
+// The Music folder the playlists come from (SVR2011_MUSIC or <game>/Music).
+std::filesystem::path UserMusicFolder();
+
+// The song a playlist plays: the first song of folder <name>, or the loose
+// file whose stem is <name> (as USER PLAYLIST lists them); empty if none.
+std::filesystem::path UserMusicSong(const std::string& name);
 
 }  // namespace svr2011
