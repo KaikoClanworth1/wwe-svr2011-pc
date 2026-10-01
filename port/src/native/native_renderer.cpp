@@ -22,12 +22,19 @@
 #include <filesystem>
 #include <sstream>
 #include <fstream>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/resource.h>
+#endif
 
 #include <fmt/format.h>
 
@@ -49,6 +56,7 @@
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "crash_report.h"
 #include "native/gpu.h"
@@ -81,6 +89,10 @@ REXCVAR_DEFINE_BOOL(native_record_thread, kRecordThreadDefault, "GPU",
 REXCVAR_DEFINE_BOOL(native_widescreen, true, "GPU",
                     "Native renderer: matches as wide as a wider-than-16:9 window (the HUD and "
                     "menus stay 16:9)");
+
+REXCVAR_DEFINE_BOOL(native_prepare_pipelines, true, "GPU",
+                    "Native renderer: build the known pipelines in the background while in the menus, "
+                    "so scenes don't stutter compiling them");
 
 REXCVAR_DEFINE_BOOL(native_resolve_write_back, true, "GPU",
                     "Native renderer: copy one-off render-to-texture results back to the game's memory "
@@ -668,8 +680,8 @@ bool g_const_force[2] = {true, true};  // (the last upload had loaded constants)
 alignas(16) uint8_t g_const_shadow[2][256 * 16];
 uint32_t g_const_stale = 0;  // (native_constant_check: reuses found stale)
 // Pipelines built since the pipeline cache was saved, and when the last was.
-bool g_pipeline_cache_dirty = false;
-std::chrono::steady_clock::time_point g_last_pipeline_build;
+std::atomic<bool> g_pipeline_cache_dirty{false};
+std::atomic<int64_t> g_last_pipeline_build{0};  // (steady_clock ticks)
 
 // The pipeline cache (gpu.h): the user data's cache folder, one per API.
 std::filesystem::path PipelineCacheFile() {
@@ -811,6 +823,7 @@ bool CreateOutputs(Renderer* r) {
 }
 
 void ReportDeviceRemoved(Renderer* r);
+void StartPrebuildingPipelines(Renderer* r);
 
 bool Initialize() {
   if (!g_memory) {
@@ -894,6 +907,7 @@ bool Initialize() {
     REXLOG_INFO("native renderer: GPU commands recorded on a second thread");
   }
   REXLOG_INFO("native renderer: ready; shaders from {}", ShaderDirectory().string());
+  StartPrebuildingPipelines(r);
   // Without its converted shaders (native_shaders\ beside the exe, installed
   // by the launcher) nothing could be drawn: a black screen. Let the emulated
   // renderer draw instead.
@@ -1155,7 +1169,9 @@ void UpdateTitle(Renderer* r) {
     r->perf_frames = 0;
     r->perf_start = now;
     // New pipelines, none for a few seconds (a scene loaded): keep them.
-    if (g_pipeline_cache_dirty && now - g_last_pipeline_build > std::chrono::seconds(3)) {
+    if (g_pipeline_cache_dirty &&
+        now - std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(g_last_pipeline_build.load())) >
+            std::chrono::seconds(3)) {
       g_pipeline_cache_dirty = false;
       backend::SavePipelineCache(r->device.get(), PipelineCacheFile());
     }
@@ -1657,11 +1673,21 @@ plume::RenderShader* Compiled(Renderer* r, Shader* s, int variant) {
   return Compiled(r, s->code[variant], s->compiled[variant]);
 }
 
+void NotePipeline(const PipelineKey& key, uint64_t h, uint32_t layout_base_hash,
+                  const std::vector<plume::RenderInputElement>& layout, const plume::RenderInputSlot* slots,
+                  uint32_t slot_count);
+std::unique_ptr<plume::RenderPipeline> TakePrebuilt(uint64_t h);
+std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const PipelineKey& key, plume::RenderShader* vs,
+                                                      plume::RenderShader* ps, bool has_ps,
+                                                      const plume::RenderInputElement* layout,
+                                                      uint32_t layout_count, const plume::RenderInputSlot* slots,
+                                                      uint32_t slot_count, bool render_thread);
+
 const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, Shader* ps,
                                       int ps_variant, const std::vector<plume::RenderInputElement>& layout,
                                       const plume::RenderInputSlot* slots, uint32_t slot_count,
-                                      uint32_t layout_hash, plume::RenderPrimitiveTopology topology,
-                                      RenderFormat rt_format) {
+                                      uint32_t layout_hash, uint32_t layout_base_hash,
+                                      plume::RenderPrimitiveTopology topology, RenderFormat rt_format) {
   PipelineKey key = {};
   key.rt_format = uint8_t(rt_format);
   key.vs = vs->hash;
@@ -1684,10 +1710,14 @@ const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, S
   const uint64_t h = XXH3_64bits(&key, sizeof(key));
   auto it = r->pipelines.find(h);
   if (it != r->pipelines.end()) return it->second.get();
+  // Built ahead (the known pipelines, in the menus)?
+  if (std::unique_ptr<plume::RenderPipeline> built = TakePrebuilt(h)) {
+    return (r->pipelines[h] = std::move(built)).get();
+  }
+  NotePipeline(key, h, layout_base_hash, layout, slots, slot_count);
 
-  plume::RenderGraphicsPipelineDesc d;
-  d.pipelineLayout = r->layout.get();
-  d.vertexShader = Compiled(r, vs, vs_variant);
+  plume::RenderShader* vs_compiled = Compiled(r, vs, vs_variant);
+  plume::RenderShader* ps_compiled = nullptr;
   // SVR2011_NATIVE_DEBUG_PS=<name> + SVR2011_NATIVE_DEBUG_PS_FOR=<hash>,...:
   // those pixel shaders are replaced by <shader dir>/<name>.ps<extension>.
   static const std::pair<std::vector<uint8_t>, std::string> debug_override = [] {
@@ -1708,13 +1738,32 @@ const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, S
   char ps_name[20];
   std::snprintf(ps_name, sizeof(ps_name), "%016llX", static_cast<unsigned long long>(key.ps));
   if (g_debug_solid && !g_debug_ps.empty()) {
-    d.pixelShader = Compiled(r, g_debug_ps, debug_solid_shader);
+    ps_compiled = Compiled(r, g_debug_ps, debug_solid_shader);
   } else if (ps && !debug_override.first.empty() &&
              debug_override.second.find(ps_name) != std::string::npos) {
-    d.pixelShader = Compiled(r, debug_override.first, debug_override_shader);
+    ps_compiled = Compiled(r, debug_override.first, debug_override_shader);
   } else if (ps) {
-    d.pixelShader = Compiled(r, ps, ps_variant);
+    ps_compiled = Compiled(r, ps, ps_variant);
   }
+  std::unique_ptr<plume::RenderPipeline> pso =
+      CreatePipeline(r, key, vs_compiled, ps_compiled, ps != nullptr, layout.data(), uint32_t(layout.size()),
+                     slots, slot_count, true);
+  return (r->pipelines[h] = std::move(pso)).get();
+}
+
+// A pipeline from its key (no draw state is read: the background builder
+// makes the known ones with it too). `render_thread`: logged, timed.
+std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const PipelineKey& key, plume::RenderShader* vs,
+                                                      plume::RenderShader* ps, bool has_ps,
+                                                      const plume::RenderInputElement* layout,
+                                                      uint32_t layout_count, const plume::RenderInputSlot* slots,
+                                                      uint32_t slot_count, bool render_thread) {
+  const auto topology = plume::RenderPrimitiveTopology(key.topology);
+  const auto rt_format = RenderFormat(key.rt_format);
+  plume::RenderGraphicsPipelineDesc d;
+  d.pipelineLayout = r->layout.get();
+  d.vertexShader = vs;
+  d.pixelShader = ps;
   // Blend (render target 0).
   const uint32_t bc = key.blend;
   plume::RenderBlendDesc& bt = d.renderTargetBlend[0];
@@ -1778,8 +1827,8 @@ const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, S
     d.depthEnabled = false;
     d.stencilEnabled = false;
   }
-  d.inputElements = layout.data();
-  d.inputElementsCount = uint32_t(layout.size());
+  d.inputElements = layout;
+  d.inputElementsCount = layout_count;
   d.inputSlots = slots;
   d.inputSlotsCount = slot_count;
   d.primitiveTopology = topology;
@@ -1788,29 +1837,287 @@ const plume::RenderPipeline* Pipeline(Renderer* r, Shader* vs, int vs_variant, S
   d.depthTargetFormat = RenderFormat::D24_UNORM_S8_UINT;
   // Logged before it is built: a GPU driver that crashes compiling it (seen
   // under Proton) leaves this as the log's last pipeline.
-  REXLOG_INFO("native renderer: pipeline {} vs {:016X}.{} ps {:016X}.{} rt {} blend {:08X}{} mask {:X} "
+  if (render_thread) REXLOG_INFO("native renderer: pipeline {} vs {:016X}.{} ps {:016X}.{} rt {} blend {:08X}{} mask {:X} "
               "depth {:08X} cull {} bias {}/{} topology {}",
               r->pipelines.size(), key.vs, key.vs_variant, key.ps, key.ps_variant, int(rt_format),
               key.blend, bt.blendEnabled ? " on" : "", key.colour_mask, key.depth, key.cull,
               key.bias_offset, key.bias_scale, int(topology));
   std::unique_ptr<plume::RenderPipeline> pso;
   const auto build_start = std::chrono::steady_clock::now();
-  if (d.vertexShader && (d.pixelShader || !ps)) pso = r->device->createGraphicsPipeline(d);
+  if (d.vertexShader && (d.pixelShader || !has_ps)) pso = r->device->createGraphicsPipeline(d);
   if (pso && !backend::PipelineCreated(pso.get())) pso.reset();
-  {
+  g_pipeline_cache_dirty = true;
+  g_last_pipeline_build = std::chrono::steady_clock::now().time_since_epoch().count();
+  if (render_thread) {
     const double ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - build_start).count();
     g_pipeline_ms += ms;
-    g_pipeline_cache_dirty = true;
-    g_last_pipeline_build = std::chrono::steady_clock::now();
     if (ms >= 20.0) REXLOG_INFO("native renderer: pipeline {} took {:.0f} ms", r->pipelines.size(), ms);
   }
-  if (!pso) {
+  if (!pso && render_thread) {
     REXLOG_WARN("native renderer: pipeline creation failed (vs {:016X} ps {:016X})", key.vs,
                 key.ps);
   }
-  return (r->pipelines[h] = std::move(pso)).get();
+  return pso;
 }
+
+// ---------------------------------------------------------------------------
+// known pipelines: built ahead, in the menus
+//
+// A pipeline is compiled the first time the game draws with its state - in
+// the middle of a scene, a hitch on slow CPUs and drivers. So every pipeline
+// the renderer builds is noted (its key, vertex layout and slot strides:
+// what it takes to build it again without the game's draw state) in
+// UserData\cache\native_pipelines.list, beside the shipped list
+// (native_shaders\pipelines.list). At start a background thread builds all
+// the known ones at low priority while no match, entrance or cutscene is on
+// (it waits in them); the render thread takes them from it instead of
+// compiling them. They go into the pipeline cache too (D3D12 library, Vulkan
+// cache), so on later starts they only load.
+
+struct PipelineRecord {
+  PipelineKey key;  // (layout_hash: the layout's own; Vulkan adds the strides)
+  std::vector<std::string> names;
+  std::vector<plume::RenderInputElement> layout;  // (semantic names point into names)
+  uint32_t strides[16] = {};
+};
+
+struct PrebuiltPipelines {
+  std::mutex mutex;
+  std::condition_variable changed;
+  std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> ready;  // built, not taken yet
+  std::unordered_set<uint64_t> claimed;  // the render thread builds these itself
+  uint64_t busy = 0;                     // the one being built now
+  std::unordered_set<uint64_t> known;    // listed (render thread)
+  std::ofstream list;                    // the player's list, appended to (render thread)
+  std::atomic<uint32_t> total{0}, done{0};
+  std::atomic<bool> running{false};
+} g_prebuilt;
+
+// The key's hash (the pipelines' map key) for this API: Vulkan pipelines
+// have the strides of the slots they use built in.
+uint64_t RecordHash(PipelineRecord& rec) {
+  PipelineKey key = rec.key;
+  if (backend::ActiveApi() == backend::Api::kVulkan) {
+    for (const auto& e : rec.layout) key.layout_hash = key.layout_hash * 31 + rec.strides[e.slotIndex & 15] * 977;
+  }
+  return XXH3_64bits(&key, sizeof(key));
+}
+
+uint32_t FloatBits(float f) {
+  uint32_t u;
+  std::memcpy(&u, &f, 4);
+  return u;
+}
+
+float BitsFloat(uint32_t u) {
+  float f;
+  std::memcpy(&f, &u, 4);
+  return f;
+}
+
+// One line: the key, the 16 strides, then the elements
+// (name index location format slot offset).
+std::string FormatRecord(const PipelineKey& k, uint32_t layout_base_hash,
+                         const std::vector<plume::RenderInputElement>& layout, const plume::RenderInputSlot* slots,
+                         uint32_t slot_count) {
+  std::string s = fmt::format("{:016X} {} {:016X} {} {} {} {:08X} {:08X} {:X} {:X} {:X} {:08X} {:08X} {:08X} |", k.vs,
+                              k.vs_variant, k.ps, k.ps_variant, k.topology, k.rt_format, k.depth, k.blend,
+                              k.colour_mask, k.cull, k.stencil_ref_mask, layout_base_hash, FloatBits(k.bias_scale),
+                              FloatBits(k.bias_offset));
+  for (uint32_t i = 0; i < 16; ++i) s += fmt::format(" {}", i < slot_count ? slots[i].stride : 0);
+  s += " |";
+  for (const auto& e : layout) {
+    s += fmt::format(" {} {} {} {} {} {}", e.semanticName, e.semanticIndex, e.location, int(e.format), e.slotIndex,
+                     e.alignedByteOffset);
+  }
+  return s;
+}
+
+bool ParseRecord(const std::string& line, PipelineRecord& rec) {
+  const size_t bar1 = line.find('|'), bar2 = bar1 == std::string::npos ? bar1 : line.find('|', bar1 + 1);
+  if (bar2 == std::string::npos) return false;
+  std::istringstream head(line.substr(0, bar1)), strides(line.substr(bar1 + 1, bar2 - bar1 - 1)),
+      elements(line.substr(bar2 + 1));
+  PipelineKey& k = rec.key;
+  k = {};
+  uint32_t vsv, psv, topology, rt, scale, offset;
+  if (!(head >> std::hex >> k.vs >> std::dec >> vsv >> std::hex >> k.ps >> std::dec >> psv >> topology >> rt >>
+        std::hex >> k.depth >> k.blend >> k.colour_mask >> k.cull >> k.stencil_ref_mask >> k.layout_hash >> scale >>
+        offset)) {
+    return false;
+  }
+  k.vs_variant = uint8_t(vsv), k.ps_variant = uint8_t(psv), k.topology = uint8_t(topology), k.rt_format = uint8_t(rt);
+  k.bias_scale = BitsFloat(scale), k.bias_offset = BitsFloat(offset);
+  for (uint32_t i = 0; i < 16; ++i) {
+    if (!(strides >> rec.strides[i])) return false;
+  }
+  std::string name;
+  uint32_t index, location, format, slot, element_offset;
+  while (elements >> name >> index >> location >> format >> slot >> element_offset) {
+    rec.names.push_back(name);
+    plume::RenderInputElement e;
+    e.semanticIndex = index;
+    e.location = location;
+    e.format = RenderFormat(format);
+    e.slotIndex = slot;
+    e.alignedByteOffset = element_offset;
+    rec.layout.push_back(e);
+  }
+  for (size_t i = 0; i < rec.layout.size(); ++i) rec.layout[i].semanticName = rec.names[i].c_str();
+  return true;
+}
+
+std::filesystem::path PlayerPipelineList() { return PipelineCacheFile().parent_path() / "native_pipelines.list"; }
+
+// The render thread is about to build a pipeline itself: claimed (the
+// builder skips it), and listed for next time if it's new.
+void NotePipeline(const PipelineKey& key, uint64_t h, uint32_t layout_base_hash,
+                  const std::vector<plume::RenderInputElement>& layout, const plume::RenderInputSlot* slots,
+                  uint32_t slot_count) {
+  {
+    std::lock_guard lock(g_prebuilt.mutex);
+    g_prebuilt.claimed.insert(h);
+  }
+  if (!g_prebuilt.known.insert(h).second) return;
+  if (!g_prebuilt.list.is_open()) {
+    std::error_code ec;
+    std::filesystem::create_directories(PlayerPipelineList().parent_path(), ec);
+    g_prebuilt.list.open(PlayerPipelineList(), std::ios::app);
+  }
+  g_prebuilt.list << FormatRecord(key, layout_base_hash, layout, slots, slot_count) << '\n';
+  g_prebuilt.list.flush();
+}
+
+// A pipeline the builder made (waiting if it's building this one now).
+std::unique_ptr<plume::RenderPipeline> TakePrebuilt(uint64_t h) {
+  std::unique_lock lock(g_prebuilt.mutex);
+  g_prebuilt.changed.wait(lock, [h] { return g_prebuilt.busy != h; });
+  auto it = g_prebuilt.ready.find(h);
+  if (it == g_prebuilt.ready.end()) return nullptr;
+  std::unique_ptr<plume::RenderPipeline> p = std::move(it->second);
+  g_prebuilt.ready.erase(it);
+  return p;
+}
+
+void PrebuildPipelines(Renderer* r, std::vector<PipelineRecord> records) {
+#if defined(_WIN32)
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+#else
+  setpriority(PRIO_PROCESS, 0, 10);
+#endif
+  rex::thread::set_current_thread_name("native pipelines");
+  const auto start = std::chrono::steady_clock::now();
+  // The builder's own copies of the shaders (files read and compiled here,
+  // not on the render thread).
+  std::unordered_map<uint64_t, std::unique_ptr<Shader>> shaders;
+  auto shader = [&](uint64_t hash, bool pixel) -> Shader* {
+    std::unique_ptr<Shader>& s = shaders[hash * 2 + (pixel ? 1 : 0)];
+    if (!s) {
+      s = std::make_unique<Shader>();
+      s->hash = hash;
+      s->pixel = pixel;
+      char name[64];
+      std::snprintf(name, sizeof(name), "%016llX.%s", static_cast<unsigned long long>(hash), pixel ? "ps" : "vs");
+      std::error_code ec;
+      if (std::filesystem::exists(ShaderFile(name), ec)) {
+        LoadShader(*s);
+      } else {
+        s->loaded = s->missing = true;  // (a list from an older version)
+      }
+    }
+    return s->missing ? nullptr : s.get();
+  };
+  uint32_t built = 0, waited_ms = 0;
+  // Debug: SVR2011_PREBUILD_DELAY_MS=<ms> - a pause before each (a slow PC).
+  const uint32_t delay_ms = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    uint32_t ms = 0;
+    if (_dupenv_s(&v, &n, "SVR2011_PREBUILD_DELAY_MS") == 0 && v) {
+      ms = uint32_t(std::strtoul(v, nullptr, 10));
+      free(v);
+    }
+    return ms;
+  }();
+  for (PipelineRecord& rec : records) {
+    if (delay_ms) std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    // Not while a match, entrance or cutscene is on: the game needs the CPU.
+    while (g_match_scene.load() && !g_failed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      waited_ms += 250;
+    }
+    if (g_failed) break;
+    const uint64_t h = RecordHash(rec);
+    {
+      std::lock_guard lock(g_prebuilt.mutex);
+      if (g_prebuilt.claimed.count(h) || g_prebuilt.ready.count(h)) {
+        ++g_prebuilt.done;
+        continue;
+      }
+      g_prebuilt.busy = h;
+    }
+    std::unique_ptr<plume::RenderPipeline> pso;
+    Shader* vs = shader(rec.key.vs, false);
+    Shader* ps = rec.key.ps ? shader(rec.key.ps, true) : nullptr;
+    if (vs && (ps || !rec.key.ps)) {
+      plume::RenderInputSlot slots[16];
+      for (uint32_t i = 0; i < 16; ++i) slots[i] = plume::RenderInputSlot(i, rec.strides[i]);
+      pso = CreatePipeline(r, rec.key, Compiled(r, vs, rec.key.vs_variant),
+                           ps ? Compiled(r, ps, rec.key.ps_variant) : nullptr, ps != nullptr, rec.layout.data(),
+                           uint32_t(rec.layout.size()), slots, 16, false);
+    }
+    {
+      std::lock_guard lock(g_prebuilt.mutex);
+      g_prebuilt.busy = 0;
+      if (pso) g_prebuilt.ready[h] = std::move(pso), ++built;
+    }
+    g_prebuilt.changed.notify_all();
+    ++g_prebuilt.done;
+  }
+  g_prebuilt.running = false;
+  const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  REXLOG_INFO("native renderer: {} of {} known pipelines built ahead in {:.1f} s ({:.1f} s of it waiting for a "
+              "scene to end)",
+              built, records.size(), secs, waited_ms / 1000.0);
+}
+
+void StartPrebuildingPipelines(Renderer* r) {
+  if (!REXCVAR_GET(native_prepare_pipelines) || g_debug_solid || g_no_depth || g_no_blend) return;
+  std::vector<PipelineRecord> records;
+  std::unordered_set<uint64_t> seen;
+  for (const std::filesystem::path& file : {ShaderDirectory() / "pipelines.list", PlayerPipelineList()}) {
+    std::ifstream in(file);
+    std::string line;
+    uint32_t count = 0;
+    while (std::getline(in, line)) {
+      PipelineRecord rec;
+      if (!ParseRecord(line, rec)) continue;
+      const uint64_t h = RecordHash(rec);
+      if (!seen.insert(h).second) continue;
+      g_prebuilt.known.insert(h);
+      records.push_back(std::move(rec));
+      ++count;
+    }
+    if (count) REXLOG_INFO("native renderer: {} known pipelines in {}", count, file.string());
+  }
+  if (records.empty()) return;
+  g_prebuilt.total = uint32_t(records.size());
+  g_prebuilt.running = true;
+  std::thread(PrebuildPipelines, r, std::move(records)).detach();
+}
+
+}  // namespace
+
+bool PreparingPipelines(uint32_t* done, uint32_t* total, bool* paused) {
+  if (!g_prebuilt.running.load()) return false;
+  *done = g_prebuilt.done.load();
+  *total = g_prebuilt.total.load();
+  *paused = g_match_scene.load();
+  return true;
+}
+
+namespace {
 
 // Copies the shader constants from the device mirror, little-endian.
 RenderBufferReference Constants(Renderer* r, uint32_t device_offset, uint32_t bytes) {
@@ -2195,7 +2502,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 
   const plume::RenderPipeline* pso =
       Pipeline(r, vs, packed_normals ? 1 : 0, ps, alpha_test ? 2 : 0, layout, slots, 16,
-               layout_hash, topology, targets.color->format);
+               layout_hash, il.hash, topology, targets.color->format);
   if (!pso) {
     ++r->frame_stats.skipped_shader;
     return;

@@ -3,6 +3,7 @@
 #include "fps_overlay.h"
 
 #include <atomic>
+#include <cstdio>
 
 #include <imgui.h>
 
@@ -21,7 +22,36 @@ FpsOverlay* g_overlay = nullptr;     // lives for the whole run
 std::atomic<bool> g_visible{false};
 }
 
+// "Preparing graphics": the native renderer building the known pipelines
+// ahead, at the bottom right while in the menus (hidden in matches, where it
+// waits).
+static void DrawPipelineProgress(ImGuiIO& io) {
+#ifndef SVR2011_D3D_TRACE
+  uint32_t done = 0, total = 0;
+  bool paused = false;
+  if (!native::PreparingPipelines(&done, &total, &paused) || paused || !total) return;
+  const float pad = 16.0f;
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - pad, io.DisplaySize.y - pad), ImGuiCond_Always,
+                          ImVec2(1.0f, 1.0f));
+  ImGui::SetNextWindowBgAlpha(0.55f);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+  if (ImGui::Begin("##svr2011_pipelines", nullptr, flags)) {
+    ImGui::SetWindowFontScale(1.2f);
+    ImGui::TextUnformatted("Preparing graphics");
+    char label[32];
+    std::snprintf(label, sizeof(label), "%u / %u", done, total);
+    ImGui::ProgressBar(float(done) / float(total), ImVec2(240.0f, 0.0f), label);
+  }
+  ImGui::End();
+#else
+  (void)io;
+#endif
+}
+
 void FpsOverlay::OnDraw(ImGuiIO& io) {
+  DrawPipelineProgress(io);
   if (!g_visible.load(std::memory_order_relaxed)) return;
   const FrameTiming t = GetFrameTiming();
   // Top centre of the window.

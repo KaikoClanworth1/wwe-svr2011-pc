@@ -48,6 +48,11 @@ std::string RendererLabel();
 // window, matches fill it (native_widescreen), menus stay 16:9.
 void SetMatchScene(bool in_match);
 
+// The known pipelines being built ahead in the background (any thread):
+// false when it isn't running; `paused` while a match, entrance or cutscene
+// is on (it waits for the menus).
+bool PreparingPipelines(uint32_t* done, uint32_t* total, bool* paused);
+
 // Screens narrower than 16:9 (matches): the factor the camera's tan(vertical
 // field of view / 2) is scaled by (1: unchanged) - native_hooks.cpp applies
 // it in the projection setup (sub_825818B8).
