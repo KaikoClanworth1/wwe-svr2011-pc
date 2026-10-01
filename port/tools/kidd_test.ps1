@@ -3,8 +3,8 @@
 # Attires -> slot 1 -> Edit -> back out to the main menu, then the One on One
 # roster (runs\<Name>_roster.png). -NoThreads goes straight to the roster.
 # -DrawLog writes the roster frame's draws to runs\<Name>_draws.txt (native renderer).
-#   kidd_test.ps1 [-Name kidd] [-Config test_config.toml] [-UserData <test saves>] [-NoThreads] [-DrawLog]
-param([string]$Name = "kidd", [string]$Config = "test_config.toml", [string]$UserData, [switch]$NoThreads, [switch]$DrawLog)
+#   kidd_test.ps1 [-Name kidd] [-Config test_config.toml] [-UserData <test saves>] [-NoThreads] [-DrawLog] [-GameDir <install>]
+param([string]$Name = "kidd", [string]$Config = "test_config.toml", [string]$UserData, [switch]$NoThreads, [switch]$DrawLog, [string]$GameDir = "")
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs $Config
 if ($UserData) { $env:SVR2011_USER_DATA = $UserData }
@@ -12,7 +12,7 @@ $draws = Join-Path $runs "${Name}_draws.txt"
 if ($DrawLog) { $env:SVR2011_DRAWLOG = $draws; Remove-Item "$draws.go" -ErrorAction SilentlyContinue }
 $s = Join-Path $PSScriptRoot "session.ps1"
 function K($k, $w = 3) { & $s input "press $k 200" | Out-Null; Start-Sleep $w }
-& $s start -Name $Name | Out-Null
+& $s start -Name $Name -GameDir $GameDir | Out-Null
 Start-Sleep 50; K START 40; K A 5                        # title -> training ring
 if (-not $NoThreads) {
     K START 6; K DOWN; K DOWN; K DOWN; K A 4            # CREATE MODES
