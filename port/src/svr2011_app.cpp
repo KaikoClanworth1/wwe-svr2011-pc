@@ -164,6 +164,19 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     if (text.find("native_max_scale") == std::string::npos) out << "native_max_scale = 1\n";
     if (text.find("native_2x_msaa") == std::string::npos) out << "native_2x_msaa = false\n";
   }
+#else
+  // The PC keyboard plays as player 1's controller too (the SDK's keyboard
+  // driver: keybind_* in the settings). Added to settings files from before.
+  if (std::filesystem::exists(paths.config_path)) {
+    std::ifstream in(paths.config_path);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    if (text.find("mnk_mode") == std::string::npos) {
+      std::ofstream out(paths.config_path, std::ios::app);
+      if (!text.empty() && text.back() != '\n') out << '\n';
+      out << "mnk_mode = true\n";
+    }
+  }
 #endif
   if (!std::filesystem::exists(paths.config_path)) {
     std::string config = kDefaultConfig;
@@ -174,6 +187,8 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     config += "native_max_scale = 1\n";
     config += "native_2x_msaa = false\n";
     config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
+#else
+    config += "mnk_mode = true\n";
 #endif
     if (svr2011::IsSteamDeck()) {  // its screen is the window
       config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");

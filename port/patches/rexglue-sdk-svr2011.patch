@@ -561,7 +561,7 @@ index 4edde2b..429b4c9 100644
   public:
    static std::unique_ptr<VulkanInstance> Create(bool with_surface, bool try_enable_validation);
 diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
-index 71e7473..7ecc1f0 100644
+index 71e7473..6e7d82a 100644
 --- a/include/rex/ui/window_sdl.h
 +++ b/include/rex/ui/window_sdl.h
 @@ -40,6 +40,14 @@ class WindowSDL final : public Window {
@@ -579,7 +579,15 @@ index 71e7473..7ecc1f0 100644
    void HandleDropEvent(SDL_Event& event);
    void HandlePaintEvent();
  
-@@ -81,6 +89,8 @@ class WindowSDL final : public Window {
+@@ -50,6 +58,7 @@ class WindowSDL final : public Window {
+   void RequestCloseImpl() override;
+ 
+   void ApplyNewFullscreen() override;
++  void ApplyFullscreenMode();  // [svr2011]
+   void ApplyNewTitle() override;
+   void ApplyNewMouseCapture() override;
+   void ApplyNewMouseRelease() override;
+@@ -81,6 +90,8 @@ class WindowSDL final : public Window {
  
    SDL_Window* sdl_window_ = nullptr;
    SDL_WindowID sdl_window_id_ = 0;
@@ -4389,10 +4397,22 @@ index 9eeb902..1352d33 100644
      provider->ui_samplers_ = UISamplers::Create(provider->vulkan_device_.get());
      if (!provider->ui_samplers_) {
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 2251429..158bef2 100644
+index 2251429..4c80caa 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
-@@ -35,6 +35,8 @@
+@@ -28,6 +28,11 @@
+ #include <rex/ui/flags.h>
+ #include <rex/ui/sdl_virtual_key.h>
+ 
++// [svr2011] Fullscreen: false - borderless (a window covering the display),
++// true - exclusive (the display's own mode, at the desktop's resolution).
++REXCVAR_DEFINE_BOOL(fullscreen_exclusive, false, "UI/Window",
++                    "Fullscreen takes the display (exclusive) instead of a borderless window");
++
+ #if REX_PLATFORM_WIN32
+ #include <rex/ui/surface_win.h>
+ #elif REX_PLATFORM_MAC
+@@ -35,6 +40,8 @@
  #include <SDL3/SDL_metal.h>
  
  #include <rex/ui/surface_mac.h>
@@ -4401,7 +4421,46 @@ index 2251429..158bef2 100644
  #else
  #include <X11/Xlib-xcb.h>
  #include <rex/ui/surface_gnulinux.h>
-@@ -398,6 +400,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+@@ -171,7 +178,9 @@ bool WindowSDL::OpenImpl() {
+   }
+ 
+   if (IsFullscreen()) {
+-    // Borderless desktop fullscreen (a NULL display mode is SDL3's default).
++    // Borderless desktop fullscreen (a NULL display mode is SDL3's default),
++    // or exclusive ([svr2011] fullscreen_exclusive).
++    ApplyFullscreenMode();
+     SDL_SetWindowFullscreen(sdl_window_, true);
+   }
+ #if REX_PLATFORM_MAC
+@@ -291,10 +300,27 @@ uint32_t WindowSDL::GetLatestDpiImpl() const {
+   return uint32_t(scale * float(GetMediumDpi()) + 0.5f);
+ }
+ 
++// [svr2011] Exclusive fullscreen: the display's desktop mode as the window's
++// fullscreen mode; borderless: none (SDL3's desktop fullscreen).
++void WindowSDL::ApplyFullscreenMode() {
++  const SDL_DisplayMode* mode = nullptr;
++  if (REXCVAR_GET(fullscreen_exclusive)) {
++    SDL_DisplayID display = SDL_GetDisplayForWindow(sdl_window_);
++    if (!display) display = SDL_GetPrimaryDisplay();
++    mode = SDL_GetDesktopDisplayMode(display);
++  }
++  if (!SDL_SetWindowFullscreenMode(sdl_window_, mode)) {
++    REXLOG_WARN("SDL_SetWindowFullscreenMode failed: {}", SDL_GetError());
++  }
++}
++
+ void WindowSDL::ApplyNewFullscreen() {
+   if (!sdl_window_) {
+     return;
+   }
++  if (IsFullscreen()) {
++    ApplyFullscreenMode();
++  }
+   SDL_SetWindowFullscreen(sdl_window_, IsFullscreen());
+ }
+ 
+@@ -398,6 +424,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
        SDL_Metal_DestroyView(metal_view);
      }
    }
@@ -4419,7 +4478,7 @@ index 2251429..158bef2 100644
  #else
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
    if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
-@@ -549,6 +562,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
+@@ -549,6 +586,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
  }
  
  void WindowSDL::HandleMouseEvent(SDL_Event& event) {
@@ -4434,7 +4493,7 @@ index 2251429..158bef2 100644
    // SDL3 reports float window coordinates; listeners expect physical pixels.
    float density = GetPixelDensity();
    WindowDestructionReceiver destruction_receiver(this);
-@@ -588,4 +609,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
+@@ -588,4 +633,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
    }
  }
  

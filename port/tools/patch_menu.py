@@ -46,9 +46,11 @@ ADDITIONS = [
     (0xA04B, 0x01, 0xAFC1, 0, NO_TEXT),
     # MY WWE: ACHIEVEMENTS after OPTIONS (a copy of TEAM MANAGEMENT).
     (0xA030, 0x05, 0xAFC2, 0xA0BD, 0xAFC3),
+    # MY WWE -> OPTIONS: LANGUAGE after GRAPHICS (a copy of it).
+    (0xAFC0, 0x11, 0xAFC4, 0, NO_TEXT),
 ]
 # Hidden records (never shown) dropped to make room: the table's slot can't grow.
-DROPPED = [(0xA02E, 0x01), (0xA47E, 0x0E)]
+DROPPED = [(0xA02E, 0x01), (0xA47E, 0x0E), (0xA47F, 0x0E)]
 
 
 def u32(d, o):
@@ -127,7 +129,7 @@ def main() -> int:
     tmp = dst + ".tmp"
     open(tmp, "wb").write(data)
     os.replace(tmp, dst)
-    print(f"{FILE}: added GRAPHICS (MY WWE -> OPTIONS), ACHIEVEMENTS (MY WWE) and EXIT (main menu)")
+    print(f"{FILE}: added GRAPHICS and LANGUAGE (MY WWE -> OPTIONS), ACHIEVEMENTS (MY WWE) and EXIT (main menu)")
     return 0
 
 

@@ -40,11 +40,13 @@ constexpr uint32_t kGraphicsLabelId = 0xAFC0;  // keep in sync with tools/patch_
 constexpr uint32_t kExitLabelId = 0xAFC1;
 constexpr uint32_t kAchievementsLabelId = 0xAFC2;
 constexpr uint32_t kAchievementsTextId = 0xAFC3;  // its description line
+constexpr uint32_t kLanguageLabelId = 0xAFC4;
 constexpr uint32_t kMainMenuGroup = 0x01;
 constexpr uint32_t kMyWweGroup = 0x05;
 constexpr uint32_t kAchievementsRow = 4;       // MY WWE: after OPTIONS
 constexpr uint32_t kOptionsGroup = 0x11;       // MY WWE -> OPTIONS
 constexpr uint32_t kGraphicsRow = 5;           // its 6th entry
+constexpr uint32_t kLanguageRow = 6;           // after GRAPHICS
 constexpr uint32_t kExitRow = 7;               // main menu: after SHOP (row 6)
 // Main-menu object fields (sub_82447210 and friends).
 constexpr uint32_t kMenuGroup = 380;   // current group (< 1000) or screen id
@@ -54,6 +56,7 @@ uint32_t g_label = 0;       // guest address of "GRAPHICS"
 uint32_t g_exit_label = 0;  // and of "EXIT"
 uint32_t g_ach_label = 0;   // "ACHIEVEMENTS" and its description
 uint32_t g_ach_text = 0;
+uint32_t g_language_label = 0;  // "LANGUAGE"
 
 uint32_t Be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
@@ -72,26 +75,28 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
     const char* exit;
     const char* achievements;
     const char* achievements_text;
+    const char* language_label;
   };
   static const Labels kLabels[] = {
       {1, "GRAPHICS", "EXIT", "ACHIEVEMENTS",
-       "View your achievements: what you've unlocked and how to earn the rest."},
+       "View your achievements: what you've unlocked and how to earn the rest.", "LANGUAGE"},
       {4, "GRAPHISMES", "QUITTER", "SUCC\xC3\x88S",
-       "Consultez vos succ\xC3\xA8s : ceux d\xC3\xA9" "bloqu\xC3\xA9s et comment obtenir les autres."},
+       "Consultez vos succ\xC3\xA8s : ceux d\xC3\xA9" "bloqu\xC3\xA9s et comment obtenir les autres.", "LANGUE"},
       {3, "GRAFIK", "BEENDEN", "ERFOLGE",
-       "Deine Erfolge: was du freigeschaltet hast und wie du den Rest bekommst."},
+       "Deine Erfolge: was du freigeschaltet hast und wie du den Rest bekommst.", "SPRACHE"},
       {5, "GR\xC3\x81" "FICOS", "SALIR", "LOGROS",
-       "Mira tus logros: los que has desbloqueado y c\xC3\xB3mo conseguir el resto."},
+       "Mira tus logros: los que has desbloqueado y c\xC3\xB3mo conseguir el resto.", "IDIOMA"},
       {6, "GRAFICA", "ESCI", "OBIETTIVI",
-       "I tuoi obiettivi: quelli sbloccati e come ottenere gli altri."},
+       "I tuoi obiettivi: quelli sbloccati e come ottenere gli altri.", "LINGUA"},
   };
   const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
   const Labels* l = &kLabels[0];
   for (const Labels& k : kLabels)
     if (k.language == language) l = &k;
   const size_t n_graphics = std::strlen(l->graphics) + 1, n_exit = std::strlen(l->exit) + 1,
-               n_ach = std::strlen(l->achievements) + 1, n_text = std::strlen(l->achievements_text) + 1;
-  g_label = memory->SystemHeapAlloc(uint32_t(n_graphics + n_exit + n_ach + n_text + 16));
+               n_ach = std::strlen(l->achievements) + 1, n_text = std::strlen(l->achievements_text) + 1,
+               n_language = std::strlen(l->language_label) + 1;
+  g_label = memory->SystemHeapAlloc(uint32_t(n_graphics + n_exit + n_ach + n_text + n_language + 16));
   if (!g_label) {
     REXLOG_WARN("menu: no guest memory for the GRAPHICS label");
     return;
@@ -103,6 +108,8 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   std::memcpy(memory->TranslateVirtual<char*>(g_ach_label), l->achievements, n_ach);
   g_ach_text = g_ach_label + uint32_t(n_ach);
   std::memcpy(memory->TranslateVirtual<char*>(g_ach_text), l->achievements_text, n_text);
+  g_language_label = g_ach_text + uint32_t(n_text);
+  std::memcpy(memory->TranslateVirtual<char*>(g_language_label), l->language_label, n_language);
 }
 
 }  // namespace svr2011
@@ -128,6 +135,10 @@ REX_HOOK_RAW(sub_82153EF8) {
   }
   if (g_ach_text && ctx.r4.u32 == kAchievementsTextId) {
     ctx.r3.u64 = g_ach_text;
+    return;
+  }
+  if (g_language_label && ctx.r4.u32 == kLanguageLabelId) {
+    ctx.r3.u64 = g_language_label;
     return;
   }
   // Debug: SVR2011_DUMP_STRINGS=<file> writes all the loaded strings (ids
@@ -191,6 +202,10 @@ REX_HOOK_RAW(sub_82447210) {
     svr2011::SetDiscordScene(svr2011::DiscordScene::kMenus);
     if (group == kOptionsGroup && cursor == kGraphicsRow) {
       svr2011::OpenGraphicsPage();
+      return;
+    }
+    if (group == kOptionsGroup && cursor == kLanguageRow) {
+      svr2011::OpenLanguagePage();
       return;
     }
     if (group == kMyWweGroup && cursor == kAchievementsRow) {

@@ -27,6 +27,7 @@
 #include <rex/input/input_system.h>
 #include <rex/logging.h>
 #include <rex/ui/imgui_dialog.h>
+#include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
@@ -81,12 +82,19 @@ enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
-const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch, kLanguage},
+const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kPrepare}};
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch, kLanguage},
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kPrepare}};
 #endif
+// MY WWE -> OPTIONS -> LANGUAGE: the same page with only this row.
+const std::vector<Row> kLanguageRows = {kLanguage};
+
+// DISPLAY MODE: a window, a borderless window covering the screen, or the
+// screen itself (exclusive fullscreen: fullscreen_exclusive in the SDK).
+enum DisplayMode { kWindowed, kBorderless, kExclusive, kDisplayModes };
+const char* kDisplayModeNames[kDisplayModes] = {"WINDOWED", "BORDERLESS", "FULL SCREEN"};
 
 std::filesystem::path g_config_path;
 rex::ui::Window* g_window = nullptr;
@@ -94,6 +102,7 @@ rex::input::InputSystem* g_input = nullptr;
 ImFont* g_menu_font = nullptr;
 ImFont* g_title_font = nullptr;
 std::atomic<bool> g_open_requested{false};
+std::atomic<bool> g_language_requested{false};  // (opened as the LANGUAGE page)
 std::atomic<bool> g_open{false};
 // After closing, the game keeps seeing an idle pad until every button is
 // released, so the button that closed the page does not reach the menu.
@@ -141,6 +150,26 @@ void SaveSetting(const std::string& key, const std::string& value) {
   std::error_code ec;
   std::filesystem::rename(tmp, g_config_path, ec);
   if (ec) REXLOG_WARN("GRAPHICS: could not save {}: {}", g_config_path.string(), ec.message());
+}
+
+// The window's display mode now (fullscreen_exclusive: the SDK's window).
+int CurrentDisplayMode() {
+  if (!g_window || !g_window->IsFullscreen()) return kWindowed;
+  return rex::cvar::Query<bool>("fullscreen_exclusive") ? kExclusive : kBorderless;
+}
+
+// Switches the window to `mode` and saves it (fullscreen, fullscreen_exclusive).
+void SetDisplayMode(int mode) {
+  const bool exclusive = mode == kExclusive;
+  const bool changed_kind = exclusive != rex::cvar::Query<bool>("fullscreen_exclusive");
+  rex::cvar::SetFlagByName("fullscreen_exclusive", exclusive ? "true" : "false");
+  if (g_window) {
+    // (borderless <-> exclusive: leave and re-enter full screen in the new kind)
+    if (changed_kind && g_window->IsFullscreen() && mode != kWindowed) g_window->SetFullscreen(false);
+    g_window->SetFullscreen(mode != kWindowed);
+  }
+  SaveSetting("fullscreen", mode != kWindowed ? "true" : "false");
+  SaveSetting("fullscreen_exclusive", exclusive ? "true" : "false");
 }
 
 #if defined(_WIN32)
@@ -205,6 +234,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   uint16_t PadButtons();
 
   int tab_ = kDisplayTab;
+  bool language_only_ = false;  // the LANGUAGE page
   int row_ = 0;  // (in the tab)
   int resolution_ = 2;
   int scale_ = 0;  // (kScales)
@@ -213,7 +243,8 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
-  bool msaa_ = false, fps_ = true, vsync_ = true, fullscreen_ = false, native_ = true;
+  bool msaa_ = false, fps_ = true, vsync_ = true, native_ = true;
+  int display_ = kWindowed;  // (DisplayMode)
   bool effects_ = true, fps60_ = true;
   bool native_at_start_ = false;
   // Native on Vulkan (gpu_backend = vulkan) chosen / running: the API is picked
@@ -260,7 +291,7 @@ void GraphicsPage::Load() {
     language_at_start_ = at_start;
   }
   vsync_ = rex::cvar::Query<bool>("vsync");
-  fullscreen_ = g_window ? g_window->IsFullscreen() : false;
+  display_ = CurrentDisplayMode();
 }
 
 void GraphicsPage::Change(int row, int dir) {
@@ -325,13 +356,12 @@ void GraphicsPage::Change(int row, int dir) {
       SaveSetting("vsync", vsync_ ? "true" : "false");
       break;
     case kDisplay:
-      fullscreen_ = !fullscreen_;
-      if (g_window) g_window->SetFullscreen(fullscreen_);
-      if (!fullscreen_) {
+      display_ = (display_ + dir + kDisplayModes) % kDisplayModes;
+      SetDisplayMode(display_);
+      if (display_ == kWindowed) {
         const Resolution& r = kResolutions[resolution_];
         ResizeWindow(r.w, r.h);
       }
-      SaveSetting("fullscreen", fullscreen_ ? "true" : "false");
       break;
     case kRenderer: {
       // NATIVE, EMULATED, NATIVE VULKAN (EXPERIMENTAL) - the launcher's list.
@@ -382,6 +412,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     Load();
     tab_ = kDisplayTab;
     row_ = 0;
+    language_only_ = g_language_requested.exchange(false);
     // The A that opened the page is still down: wait for everything to be
     // released, judged only on pad states the game polled after opening.
     wait_release_ = true;
@@ -392,7 +423,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     if (g_wait_release && (!g_input || PadButtons() == 0)) g_wait_release = false;
     return;
   }
-  if (g_window) fullscreen_ = g_window->IsFullscreen();  // (Alt+Enter)
+  display_ = CurrentDisplayMode();  // (F11)
 
   // Input: controller (edges, with auto-repeat for held directions) and keys.
   const uint16_t buttons = PadButtons();
@@ -426,12 +457,13 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
     back = true;
   }
-  if ((pressed & (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER)) ||
-      ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
+  if (!language_only_ &&
+      ((pressed & (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER)) ||
+       ImGui::IsKeyPressed(ImGuiKey_Tab, false))) {
     tab_ = (tab_ + 1) % kTabs;
     row_ = 0;
   }
-  const std::vector<Row>& rows = kTabRows[tab_];
+  const std::vector<Row>& rows = language_only_ ? kLanguageRows : kTabRows[tab_];
   const int n = int(rows.size());
   if (move) row_ = (row_ + move + n) % n;
   if (dir) Change(rows[row_], dir);
@@ -467,23 +499,26 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     const ImVec2 sz = TextSize(g_title_font, ts, title);
     Text(dl, g_title_font, ts, ImVec2(P(462, 0).x - sz.x * 0.5f, P(0, 101).y - sz.y * 0.5f),
          IM_COL32(255, 255, 255, 255), title);
-    // GRAPHICS: its tabs (LB / RB), the chosen one white on red.
+    // GRAPHICS: its tabs (LB / RB), the chosen one white on red; LANGUAGE:
+    // its name alone.
     const float ps = 20 * s;
     float x = P(712, 0).x;
     const float cy = P(0, 101).y;
-    for (int i = 0; i < kTabs; ++i) {
-      const ImVec2 z = TextSize(g_menu_font, ps, kTabNames[i]);
+    for (int i = 0; i < (language_only_ ? 1 : int(kTabs)); ++i) {
+      const char* name = language_only_ ? "LANGUAGE" : kTabNames[i];
+      const bool chosen = language_only_ || i == tab_;
+      const ImVec2 z = TextSize(g_menu_font, ps, name);
       const ImVec2 a(x - 10 * s, cy - 13 * s), b(x + z.x + 10 * s, cy + 13 * s);
-      if (i == tab_) {
+      if (chosen) {
         dl->AddRectFilled(a, b, IM_COL32(150, 18, 20, 255), 3 * s);
         dl->AddRect(a, b, IM_COL32(230, 60, 60, 255), 3 * s, 0, 1.2f * s);
       }
       Text(dl, g_menu_font, ps, ImVec2(x, cy - z.y * 0.5f),
-           i == tab_ ? IM_COL32(255, 255, 255, 255) : IM_COL32(150, 150, 158, 255), kTabNames[i]);
+           chosen ? IM_COL32(255, 255, 255, 255) : IM_COL32(150, 150, 158, 255), name);
       x += z.x + 30 * s;
     }
     const float hs = 15 * s;
-    const char* hint = "LB / RB";
+    const char* hint = language_only_ ? "" : "LB / RB";
     const ImVec2 hz = TextSize(g_menu_font, hs, hint);
     Text(dl, g_menu_font, hs, ImVec2(P(1112, 0).x - hz.x, cy - hz.y * 0.5f), IM_COL32(150, 150, 158, 255),
          hint);
@@ -493,8 +528,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   const bool restart_renderer = (!native_at_start_ && native_) || vulkan_ != vulkan_at_start_;
   auto value = [&](Row id) -> const char* {
     switch (id) {
-      case kResolution: return fullscreen_ ? "FULL SCREEN" : kResolutions[resolution_].label;
-      case kDisplay: return fullscreen_ ? "FULL SCREEN" : "WINDOWED";
+      case kResolution: return display_ != kWindowed ? "FULL SCREEN" : kResolutions[resolution_].label;
+      case kDisplay: return kDisplayModeNames[display_];
       case kVsync: return vsync_ ? "ON" : "OFF";
       case kFpsCounter: return fps_ ? "ON" : "OFF";
       case kTouch: return touch_ ? "ON" : "OFF";
@@ -530,7 +565,10 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   auto help_for = [this](Row id) -> const char* {
     switch (id) {
       case kResolution: return "The window's size. The game renders at the scale that fills it.";
-      case kDisplay: return "Play in a window or full screen (Alt+Enter also switches).";
+      case kDisplay:
+        return display_ == kExclusive ? "Full screen: the game takes the display (F11 switches to a window)."
+               : display_ == kBorderless ? "Borderless: a window covering the screen (F11 switches)."
+                                         : "Play in a window (F11 switches to full screen).";
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
@@ -607,6 +645,12 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   g_input = input;
   g_config_path = config_path;
   new GraphicsPage(drawer);  // lives for the whole run
+  // F11: full screen (the kind chosen on the page) <-> window.
+  rex::ui::RegisterBind("bind_fullscreen", "F11", "Toggle full screen", [] {
+    if (!g_window) return;
+    SetDisplayMode(g_window->IsFullscreen() ? kWindowed
+                   : rex::cvar::Query<bool>("fullscreen_exclusive") ? kExclusive : kBorderless);
+  });
   if (input) {
     // (one hold for the port's pages: this one and ACHIEVEMENTS)
     input->SetGuestInputHold(
@@ -623,6 +667,11 @@ void SetGraphicsPageFonts(ImFont* menu, ImFont* title) {
 }
 
 void OpenGraphicsPage() { g_open_requested = true; }
+
+void OpenLanguagePage() {
+  g_language_requested = true;
+  g_open_requested = true;
+}
 
 void RequestExit() {
   rex::ui::Window* w = g_window;

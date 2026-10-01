@@ -37,6 +37,9 @@ void SetGraphicsPageFonts(ImFont* menu, ImFont* title);
 // Opens the page (any thread; the guest's menu hook).
 void OpenGraphicsPage();
 
+// MY WWE -> OPTIONS -> LANGUAGE: the page with only the language row.
+void OpenLanguagePage();
+
 // Closes the game as the window's close button does (any thread).
 void RequestExit();
 
