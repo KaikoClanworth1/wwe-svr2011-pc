@@ -12,6 +12,38 @@ project(svr2011 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(SVR2011_P2P_SESSIONS "Build experimental directory-backed sessions (no gameplay networking)" OFF)
+option(SVR2011_SESSION_TESTS "Build session lifecycle/guest ABI tests" OFF)
+option(SVR2011_BUILD_GAME "Build the game (disable for asset-free developer tests)" ON)
+
+if(SVR2011_P2P_SESSIONS OR SVR2011_SESSION_TESTS)
+    # Use an installed JSON dependency where available; otherwise fetch a
+    # pinned upstream commit. Ordinary builds incur no new download/dependency.
+    find_package(nlohmann_json 3.11.3 CONFIG QUIET)
+    if(NOT TARGET nlohmann_json::nlohmann_json)
+        include(FetchContent)
+        FetchContent_Declare(svr2011_json
+            GIT_REPOSITORY https://github.com/nlohmann/json.git
+            GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03) # v3.11.3
+        FetchContent_MakeAvailable(svr2011_json)
+    endif()
+    add_library(svr2011_sessions STATIC src/online_sessions.cpp src/online_directory.cpp)
+    target_include_directories(svr2011_sessions PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(svr2011_sessions PRIVATE nlohmann_json::nlohmann_json)
+    if(SVR2011_SESSION_TESTS)
+        enable_testing()
+        add_executable(svr2011_session_tests tests/online_sessions_test.cpp)
+        target_link_libraries(svr2011_session_tests PRIVATE svr2011_sessions nlohmann_json::nlohmann_json)
+        add_test(NAME online_session_groundwork COMMAND svr2011_session_tests)
+    endif()
+endif()
+if(NOT SVR2011_BUILD_GAME)
+    if(NOT SVR2011_SESSION_TESTS)
+        message(FATAL_ERROR "Enable SVR2011_SESSION_TESTS when disabling the game build")
+    endif()
+    return()
+endif()
+
 include(generated/rexglue.cmake)
 
 set(SVR2011_SOURCES
@@ -92,6 +124,21 @@ else()
 endif()
 
 rexglue_setup_target(svr2011 GPU_PLUGINS xenos)
+if(SVR2011_P2P_SESSIONS)
+    if(NOT WIN32)
+        message(FATAL_ERROR "Enabled game sessions currently require the Windows HTTP transport")
+    endif()
+    if(NOT REXSDK_DIR OR NOT EXISTS "${REXSDK_DIR}/include/rex/system/xam/app_manager.h")
+        message(FATAL_ERROR "Sessions require the source SDK with the repository's runtime patch applied")
+    endif()
+    file(READ "${REXSDK_DIR}/include/rex/system/xam/app_manager.h" session_sdk_header)
+    if(NOT session_sdk_header MATCHES "SetSessionProvider")
+        message(FATAL_ERROR "Reapply the updated port/patches/rexglue-sdk-svr2011.patch to a clean pinned SDK")
+    endif()
+    target_sources(svr2011 PRIVATE src/online_runtime.cpp src/online_http.cpp)
+    target_compile_definitions(svr2011 PRIVATE SVR2011_P2P_SESSIONS=1)
+    target_link_libraries(svr2011 PRIVATE svr2011_sessions winhttp)
+endif()
 # The SDK stages the GPU plugin (loaded at run time, never linked) only when
 # the exe relinks: a change to the plugin alone would leave a stale copy
 # beside the exe (and in Game Files / the release). Stage it on every build.

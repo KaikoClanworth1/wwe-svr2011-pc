@@ -302,6 +302,48 @@ index e2b0470..06d6fea 100644
  }
  
  inline std::string_view TranslateAnsiStringAddress(const memory::Memory* memory,
+diff --git a/include/rex/system/xam/app_manager.h b/include/rex/system/xam/app_manager.h
+index 84be3e4..04cdd19 100644
+--- a/include/rex/system/xam/app_manager.h
++++ b/include/rex/system/xam/app_manager.h
+@@ -13,6 +13,7 @@
+ 
+ #include <cstddef>
+ #include <memory>
++#include <optional>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -49,6 +50,21 @@ class App {
+ 
+ class AppManager {
+  public:
++  // [svr2011] Optional title-owned session implementation. Keeping this seam
++  // in XAM avoids replacing game functions or unrelated online services.
++  class SessionProvider {
++   public:
++    virtual ~SessionProvider() = default;
++    virtual uint32_t CreateHandle(uint32_t* handle) = 0;
++    virtual uint32_t ReferenceObject(uint32_t handle, uint32_t* object) = 0;
++    virtual std::optional<uint32_t> Dispatch(uint32_t message, uint32_t buffer,
++                                           uint32_t length) = 0;
++  };
++  // Install during startup, before guest threads. No hot replacement.
++  void SetSessionProvider(std::shared_ptr<SessionProvider> provider) {
++    session_provider_ = std::move(provider);
++  }
++  SessionProvider* session_provider() const { return session_provider_.get(); }
+   void RegisterApp(std::unique_ptr<App> app);
+ 
+   X_HRESULT DispatchMessageSync(uint32_t app_id, uint32_t message, uint32_t buffer_ptr,
+@@ -57,6 +73,7 @@ class AppManager {
+                                  uint32_t buffer_length);
+ 
+  private:
++  std::shared_ptr<SessionProvider> session_provider_;
+   std::vector<std::unique_ptr<App>> apps_;
+   std::unordered_map<uint32_t, App*> app_lookup_;
+ };
 diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
 index 949d185..cacde6d 100644
 --- a/include/rex/system/xam/content_manager.h
@@ -2100,6 +2142,36 @@ index 1fda053..55b41ff 100644
    auto desired_language = XLanguage::kEnglish;
  
    // Switch the language based on game region.
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+index 8778066..12d9285 100644
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -713,11 +713,25 @@ u32 XamWriteGamerTile_entry(u32 arg1, u32 arg2, u32 arg3, u32 arg4, u32 arg5, u3
+ }
+ 
+ u32 XamSessionCreateHandle_entry(mapped_u32 handle_ptr) {
++  if (auto* provider = REX_KERNEL_STATE()->app_manager()->session_provider()) {
++    if (!handle_ptr) return X_ERROR_INVALID_PARAMETER;
++    uint32_t handle = 0;
++    auto result = provider->CreateHandle(&handle);
++    if (!result) *handle_ptr = handle;
++    return result;
++  }
+   *handle_ptr = 0xCAFEDEAD;
+   return X_ERROR_SUCCESS;
+ }
+ 
+ u32 XamSessionRefObjByHandle_entry(u32 handle, mapped_u32 obj_ptr) {
++  if (auto* provider = REX_KERNEL_STATE()->app_manager()->session_provider()) {
++    if (!obj_ptr) return X_ERROR_INVALID_PARAMETER;
++    uint32_t object = 0;
++    auto result = provider->ReferenceObject(handle, &object);
++    if (!result) *obj_ptr = object;
++    return result;
++  }
+   assert_true(handle == 0xCAFEDEAD);
+   // TODO(PermaNull): Implement this properly,
+   // For the time being returning 0xDEADF00D will prevent crashing.
 diff --git a/src/kernel/xboxkrnl/xboxkrnl_ob.cpp b/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
 index 5709e6d..911b33d 100644
 --- a/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
@@ -2254,6 +2326,35 @@ index 754fa13..1e20c8c 100644
      REXSYS_ERROR(
          "GPU plugin '{}' not found at {}. Stage it next to the executable "
          "(GPU_PLUGINS {} in rexglue_configure_target).",
+diff --git a/src/system/xam/app_manager.cpp b/src/system/xam/app_manager.cpp
+index 9b882af..66f87e1 100644
+--- a/src/system/xam/app_manager.cpp
++++ b/src/system/xam/app_manager.cpp
+@@ -27,6 +27,11 @@ void AppManager::RegisterApp(std::unique_ptr<App> app) {
+ 
+ X_HRESULT AppManager::DispatchMessageSync(uint32_t app_id, uint32_t message, uint32_t buffer_ptr,
+                                           uint32_t buffer_length) {
++  if (app_id == 0xFB && session_provider_) {
++    if (auto result = session_provider_->Dispatch(message, buffer_ptr, buffer_length)) {
++      return *result;
++    }
++  }
+   App* app;
+   {
+     auto it = app_lookup_.find(app_id);
+@@ -40,6 +45,12 @@ X_HRESULT AppManager::DispatchMessageSync(uint32_t app_id, uint32_t message, uin
+ 
+ X_HRESULT AppManager::DispatchMessageAsync(uint32_t app_id, uint32_t message, uint32_t buffer_ptr,
+                                            uint32_t buffer_length) {
++  // Existing XMsg completion remains responsible for the overlapped result.
++  if (app_id == 0xFB && session_provider_) {
++    if (auto result = session_provider_->Dispatch(message, buffer_ptr, buffer_length)) {
++      return *result;
++    }
++  }
+   App* app;
+   {
+     auto it = app_lookup_.find(app_id);
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
 index bd6c797..db0a694 100644
 --- a/src/system/xam/content_manager.cpp

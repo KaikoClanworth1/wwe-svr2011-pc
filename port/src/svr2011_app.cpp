@@ -46,6 +46,9 @@
 #include "script_input.h"
 #include "touch_controls.h"
 #include "discord_presence.h"
+#if defined(SVR2011_P2P_SESSIONS)
+#include "online_sessions.h"
+#endif
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -288,6 +291,9 @@ void Svr2011App::OnPostLoadXexImage() {
 
   // Saves as plain files in the Saves folder (saves.h).
   svr2011::UseFlatSaves(runtime()->kernel_state(), g_user_data, g_saves);
+#if defined(SVR2011_P2P_SESSIONS)
+  svr2011::online::InstallSessions(runtime()->kernel_state());
+#endif
 
   // DLC packages the launcher put in "DLC" (dlc.h).
   {
