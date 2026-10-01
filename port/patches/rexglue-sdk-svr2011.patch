@@ -1613,7 +1613,7 @@ index 8f2fcb0..4be98de 100644
  
  void GraphicsSystem::MarkVblank() {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..b268920 100644
+index 001f36b..64869c7 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -25,6 +25,7 @@
@@ -1659,20 +1659,43 @@ index 001f36b..b268920 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
-@@ -2407,6 +2430,12 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2407,8 +2430,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
+-
+-  presenter->RefreshGuestOutput(
 +  // [svr2011] The app's own frames have the shape to show (16:9, or as wide
 +  // as the window in the port's wide-screen matches): letterboxed to it.
 +  if (external_frame.vk_image_view && external_frame.width && external_frame.height) {
 +    display_width = external_frame.width;
 +    display_height = external_frame.height;
 +  }
- 
-   presenter->RefreshGuestOutput(
++
++  // [svr2011] Where the shown frames came from, now and then (a phone showed
++  // only black while the native renderer drew: this tells which side stops).
++  static uint64_t swaps = 0, swaps_external = 0, swaps_failed = 0;
++  const bool external_swap = swap_texture_view == VkImageView(external_frame.vk_image_view) &&
++                             external_frame.vk_image_view;
++  const bool refreshed = presenter->RefreshGuestOutput(
        guest_output_width, guest_output_height, display_width, display_height,
-@@ -3695,6 +3724,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+       [this, guest_output_width, guest_output_height, frontbuffer_format, swap_texture_view,
+        swap_post_effect,
+@@ -2923,6 +2957,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+         EndSubmission(true);
+         return true;
+       });
++  ++swaps;
++  if (external_swap) ++swaps_external;
++  if (!refreshed) ++swaps_failed;
++  if (swaps == 1 || swaps % 1800 == 0) {
++    REXLOG_INFO("[svr2011] swaps: {} ({} from the native renderer, {} not refreshed); output {}x{}", swaps,
++                swaps_external, swaps_failed, guest_output_width, guest_output_height);
++  }
+ 
+   // End the frame even if did not present for any reason (the image refresher
+   // was not called), to prevent leaking per-frame resources.
+@@ -3695,6 +3736,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
    VulkanShader::VulkanTranslation* vertex_shader_translation;
    VulkanShader::VulkanTranslation* pixel_shader_translation;
    bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
@@ -1691,7 +1714,7 @@ index 001f36b..b268920 100644
  
    // Two iterations because a submission (even the current one - in which case
    // it needs to be ended, and a new one must be started) may need to be awaited
-@@ -4385,6 +4426,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4385,6 +4438,9 @@ bool VulkanCommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -3012,10 +3035,30 @@ index 8197bb4..3375ab2 100644
    } else {
      if (ext_1_2_KHR_sampler_mirror_clamp_to_edge) {
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..60be0c2 100644
+index 23645ef..f55ca9d 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
-@@ -1840,6 +1840,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1645,6 +1645,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+     // multiple threads can't paint the main target at the same time).
+   }
+ 
++  // [svr2011] How many paints had a game picture (none: the window shows only
++  // the clear colour and the UI), now and then.
++  {
++    static uint64_t paints = 0, paints_with_output = 0;
++    ++paints;
++    if (guest_output_image) ++paints_with_output;
++    if (paints == 1 || paints % 1800 == 0) {
++      REXLOG_INFO("[svr2011] presenter: {} paints, {} with the game's picture; swapchain {}x{}", paints,
++                  paints_with_output, paint_context_.swapchain_extent.width,
++                  paint_context_.swapchain_extent.height);
++    }
++  }
++
+   if (guest_output_image) {
+     VkExtent2D max_framebuffer_extent =
+         util::GetMax2DFramebufferExtent(vulkan_device_->properties());
+@@ -1840,6 +1853,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                  swapchain_effect, paint_context_.swapchain_render_pass);
              if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
                guest_output_flow.effect_count = 0;

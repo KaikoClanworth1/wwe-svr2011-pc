@@ -112,6 +112,10 @@ class VulkanBackend final : public Backend {
     frame_view_ = uint64_t(static_cast<plume::VulkanTextureView*>(held.view.get())->vk);
     frame_w_ = width;
     frame_h_ = height;
+    // (now and then: the frames handed to the emulator's presentation)
+    if (serial_ == 1 || serial_ % 1800 == 0) {
+      REXLOG_INFO("native renderer: {} frames published ({}x{}, image {:X})", serial_, width, height, frame_image_);
+    }
   }
 
   bool GetFrame(rex::external_frame::Frame& frame) override {
