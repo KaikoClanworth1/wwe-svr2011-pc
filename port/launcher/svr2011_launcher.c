@@ -13,10 +13,11 @@
  *
  *   DLC       copies DLC packages into the game folder (unpacked at startup).
  *   Saves     the save files (<game>\Saves): back up, restore, export, import, delete.
- *   Paint Tool the Paint Tool's logos: see them, export as PNG, import images.
+ *   Paint Tool the Paint Tool's logos (10 pages of 20): see them, export as PNG, import images.
  *
- * Command line (tests):  --capture <play|settings|install|dlc|saves|paint> <file.bmp>
+ * Command line (tests):  --capture <play|settings|install|dlc|saves|paint> <file.bmp> [--paint-page <1-10>]
  *                        --paint-export <file.pt> <slot> <out.png>  /  --paint-import <file.pt> <slot> <image>
+ *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
@@ -96,6 +97,7 @@ enum {
     ID_SV_STATUS,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
+    ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
     /* movies */
     ID_MV_VIDEO, ID_MV_VIDEO_BROWSE, ID_MV_BOTTOM, ID_MV_BOTTOM_BROWSE, ID_MV_BOTTOM_NONE, ID_MV_BOTTOM_STAR, ID_MV_FIT, ID_MV_FILL,
     ID_MV_STRETCH, ID_MV_LENGTH, ID_MV_NAME, ID_MV_VIEW, ID_MV_LIST, ID_MV_DELETE, ID_MV_OPEN, ID_MV_PREVIEW,
@@ -1540,8 +1542,9 @@ static void build_ui(void)
     add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 388, 560, 40, ID_SV_STATUS);
 
     /* Paint Tool */
-    add(TAB_PAINT, L"Static", L"The Paint Tool's 20 logos (CREATE A SUPERSTAR > PAINT TOOL in the game). Export one "
-                              L"as a PNG, or import any image into a logo; it is fitted into 256 \x00D7 256.",
+    add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
+                              L"LB / RB change pages there). Export one as a PNG, or import any image into a logo; "
+                              L"it is fitted into 256 \x00D7 256.",
         SS_LEFT, X0, 50, 560, 32, 0);
     pt_setup_grid();
     add(TAB_PAINT, L"Button", L"Export PNG\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 86, 130, 30, ID_PT_EXPORT);
@@ -1549,6 +1552,9 @@ static void build_ui(void)
     add(TAB_PAINT, L"Button", L"Delete logo", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 162, 130, 30, ID_PT_DELETE);
     add(TAB_PAINT, L"Button", L"Export all\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 220, 130, 30, ID_PT_EXPORTALL);
     add(TAB_PAINT, L"Button", L"Refresh", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 258, 130, 30, ID_PT_REFRESH);
+    add(TAB_PAINT, L"Button", L"\x25C0 Page", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 316, 64, 30, ID_PT_PREV);
+    add(TAB_PAINT, L"Button", L"Page \x25B6", BS_PUSHBUTTON | WS_TABSTOP, X0 + 496, 316, 64, 30, ID_PT_NEXT);
+    add(TAB_PAINT, L"Static", L"Page 1 of 10", SS_CENTER | SS_NOPREFIX, X0 + 430, 352, 130, 22, ID_PT_PAGE);
     add(TAB_PAINT, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 424, 560, 48, ID_PT_STATUS);
 
     /* Movies */
@@ -2445,8 +2451,14 @@ static const uint8_t k_pt_dds_header[128] = {
     0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, [76] = 0x20, [80] = 0x04, [84] = 0x44, 0x58, 0x54, 0x35,
     [108] = 0x02, 0x10 };
 
-static uint8_t *s_pt;                     /* the loaded file, PT_BYTES */
+/* The port has 10 pages of 20 logos (src/paint_pages.h): page 1 is
+ * 00PaintTool.pt, pages 2-10 are Saves\.paint\pNN_sMM.bin, one file per
+ * used slot (the raw PT_SLOT bytes of that slot, as at 8 + k * PT_SLOT). */
+#define PT_PAGES   10
+
+static uint8_t *s_pt;                     /* the shown page as a whole file, PT_BYTES */
 static int      s_pt_sel = -1;
+static int      s_pt_page;                /* 0-based */
 static HWND     s_pt_grid;
 
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
@@ -2563,6 +2575,95 @@ static int pt_write(const WCHAR *path, uint8_t *f)
         return 0;
     }
     return 1;
+}
+
+static void pt_clear(uint8_t *f, int k);
+
+/* Page `page`'s (1-9, 0-based) slot k file, beside the Paint Tool file `pt`. */
+static int pt_page_file(const WCHAR *pt, int page, int k, WCHAR *out)
+{
+    const WCHAR *a = wcsrchr(pt, L'\\'), *b = wcsrchr(pt, L'/');
+    size_t n;
+    if (b > a) a = b;
+    if (!a) return 0;
+    n = (size_t)(a - pt) + 1;
+    if (n + 24 >= MAX_PATH) return 0;
+    wmemcpy(out, pt, n);
+    swprintf_s(out + n, MAX_PATH - n, L".paint\\p%02d_s%02d.bin", page + 1, k + 1);
+    return 1;
+}
+
+/* Reads page `page` (0-based) as a whole Paint Tool file. Pages 2-10 need
+ * page 1's file too (the game makes it before the Paint Tool can be used). */
+static uint8_t *pt_read_page(const WCHAR *pt, int page, WCHAR *err, size_t errn)
+{
+    WCHAR file[MAX_PATH];
+    uint8_t *buf;
+    int k;
+    if (page == 0 || !file_exists(pt))
+        return pt_read(pt, err, errn);
+    buf = (uint8_t *)calloc(1, PT_BYTES);
+    if (!buf) {
+        swprintf_s(err, errn, L"Out of memory.");
+        return NULL;
+    }
+    wr32(buf, PT_MAGIC);
+    wr32(buf + 4, 3);
+    for (k = 0; k < PT_SLOTS; k++) {
+        FILE *f;
+        uint8_t *slot = pt_slot(buf, k) + 8;
+        size_t got = 0;
+        if (pt_page_file(pt, page, k, file) && !_wfopen_s(&f, file, L"rb") && f) {
+            got = fread(slot, 1, PT_SLOT, f);
+            fclose(f);
+        }
+        if (got != PT_SLOT || !pt_used(buf, k))
+            pt_clear(buf, k);
+    }
+    pt_fix_sums(buf);
+    return buf;
+}
+
+/* Writes page `page` (0-based): page 1 as pt_write, pages 2-10 one file per
+ * used slot (empty slots' files removed). */
+static int pt_write_page(const WCHAR *pt, int page, uint8_t *f)
+{
+    WCHAR file[MAX_PATH], tmp[MAX_PATH + 8], dir[MAX_PATH];
+    int k, ok = 1;
+    if (page == 0)
+        return pt_write(pt, f);
+    pt_fix_sums(f);
+    if (!pt_page_file(pt, page, 0, dir))
+        return 0;
+    *wcsrchr(dir, L'\\') = 0;
+    if (!mkdirs(dir))
+        return 0;
+    for (k = 0; k < PT_SLOTS; k++) {
+        FILE *o;
+        if (!pt_page_file(pt, page, k, file)) return 0;
+        if (!pt_used(f, k)) {
+            DeleteFileW(file);
+            continue;
+        }
+        swprintf_s(tmp, MAX_PATH + 8, L"%s.new", file);
+        if (_wfopen_s(&o, tmp, L"wb") || !o) { ok = 0; continue; }
+        if (fwrite(pt_slot(f, k) + 8, 1, PT_SLOT, o) != PT_SLOT) ok = 0;
+        if (fclose(o) != 0) ok = 0;
+        if (!ok || !MoveFileExW(tmp, file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileW(tmp);
+            ok = 0;
+        }
+    }
+    return ok;
+}
+
+/* A logo's PNG name: "Logo 3.png" on page 1, "Page 2 logo 3.png" after. */
+static void pt_png_name(int page, int k, WCHAR *out, size_t n)
+{
+    if (page == 0)
+        swprintf_s(out, n, L"Logo %d.png", k + 1);
+    else
+        swprintf_s(out, n, L"Page %d logo %d.png", page + 1, k + 1);
 }
 
 /* ── images (WIC) ── */
@@ -2895,12 +2996,18 @@ static void pt_refresh(void)
     } else {
         if (!any_game_running())
             saves_migrate();
-        if (pt_path(path) && (s_pt = pt_read(path, err, 512)) != NULL) {
+        if (pt_path(path) && (s_pt = pt_read_page(path, s_pt_page, err, 512)) != NULL) {
             for (k = 0; k < PT_SLOTS; k++)
                 n += pt_used(s_pt, k);
-            pt_status(L"%d of %d logos used. Choose a logo, then Export as PNG or Import an image into it.", n, PT_SLOTS);
+            pt_status(L"Page %d: %d of %d logos used. Choose a logo, then Export as PNG or Import an image into it.",
+                      s_pt_page + 1, n, PT_SLOTS);
         } else
             pt_status(L"%s", err);
+    }
+    {
+        WCHAR t[32];
+        swprintf_s(t, 32, L"Page %d of %d", s_pt_page + 1, PT_PAGES);
+        set_text(ID_PT_PAGE, t);
     }
     if (s_pt_sel >= PT_SLOTS) s_pt_sel = -1;
     InvalidateRect(s_pt_grid, NULL, TRUE);
@@ -3055,7 +3162,7 @@ static void pt_export(void)
     uint8_t *px;
     if (!pt_need_slot(1))
         return;
-    swprintf_s(name, 64, L"Logo %d.png", s_pt_sel + 1);
+    pt_png_name(s_pt_page, s_pt_sel, name, 64);
     if (!pick_image_file(out, 1, name))
         return;
     px = (uint8_t *)malloc(PT_W * PT_W * 4);
@@ -3063,34 +3170,40 @@ static void pt_export(void)
         return;
     pt_get(s_pt, s_pt_sel, px);
     if (png_write(out, px))
-        pt_status(L"Logo %d exported to %s.", s_pt_sel + 1, out);
+        pt_status(L"Page %d logo %d exported to %s.", s_pt_page + 1, s_pt_sel + 1, out);
     else
         pt_status(L"Could not write %s.", out);
     free(px);
 }
 
+/* Exports every logo of every page. */
 static void pt_export_all(void)
 {
-    WCHAR dir[MAX_PATH], out[MAX_PATH], name[64];
+    WCHAR dir[MAX_PATH], out[MAX_PATH], name[64], path[MAX_PATH], err[512];
     uint8_t *px;
-    int k, n = 0;
+    int k, page, n = 0;
     if (!s_pt) {
         pt_refresh();
         if (!s_pt)
             return;
     }
-    if (!pick_folder(L"Choose where to export the logos to", dir))
+    if (!pt_path(path) || !pick_folder(L"Choose where to export the logos to", dir))
         return;
     px = (uint8_t *)malloc(PT_W * PT_W * 4);
     if (!px)
         return;
-    for (k = 0; k < PT_SLOTS; k++) {
-        if (!pt_used(s_pt, k))
-            continue;
-        swprintf_s(name, 64, L"Logo %d.png", k + 1);
-        pt_get(s_pt, k, px);
-        if (join(out, dir, name) && png_write(out, px))
-            n++;
+    for (page = 0; page < PT_PAGES; page++) {
+        uint8_t *f = page == s_pt_page ? s_pt : pt_read_page(path, page, err, 512);
+        for (k = 0; f && k < PT_SLOTS; k++) {
+            if (!pt_used(f, k))
+                continue;
+            pt_png_name(page, k, name, 64);
+            pt_get(f, k, px);
+            if (join(out, dir, name) && png_write(out, px))
+                n++;
+        }
+        if (f != s_pt)
+            free(f);
     }
     free(px);
     pt_status(L"Exported %d logo%s to %s.", n, n == 1 ? L"" : L"s", dir);
@@ -3113,14 +3226,14 @@ static void pt_change(int import)
             return;
         }
         if (pt_used(s_pt, s_pt_sel)) {
-            swprintf_s(t, 512, L"Replace logo %d with %s?", s_pt_sel + 1, img);
+            swprintf_s(t, 512, L"Replace logo %d of page %d with %s?", s_pt_sel + 1, s_pt_page + 1, img);
             if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES) {
                 free(px);
                 return;
             }
         }
     } else {
-        swprintf_s(t, 512, L"Delete logo %d?", s_pt_sel + 1);
+        swprintf_s(t, 512, L"Delete logo %d of page %d?", s_pt_sel + 1, s_pt_page + 1);
         if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
             return;
     }
@@ -3134,8 +3247,8 @@ static void pt_change(int import)
     else
         pt_clear(s_pt, s_pt_sel);
     free(px);
-    if (!pt_write(path, s_pt)) {
-        pt_status(L"Could not write %s; nothing was changed.", path);
+    if (!pt_write_page(path, s_pt_page, s_pt)) {
+        pt_status(L"Could not write page %d; nothing was changed.", s_pt_page + 1);
         pt_refresh();
         return;
     }
@@ -3146,28 +3259,33 @@ static void pt_change(int import)
     }
     InvalidateRect(s_pt_grid, NULL, FALSE);
     if (import)
-        pt_status(L"Logo %d is now %s. (Your saves were backed up to %s.)", s_pt_sel + 1, img, before);
+        pt_status(L"Page %d logo %d is now %s. (Your saves were backed up to %s.)", s_pt_page + 1, s_pt_sel + 1,
+                  img, before);
     else
-        pt_status(L"Logo %d deleted. (Your saves were backed up to %s.)", s_pt_sel + 1, before);
+        pt_status(L"Page %d logo %d deleted. (Your saves were backed up to %s.)", s_pt_page + 1, s_pt_sel + 1,
+                  before);
 }
 
-/* --paint-export <file.pt> <slot 1-20> <out.png> / --paint-import <file.pt> <slot> <image> (tests). */
+/* --paint-export <file.pt> <slot 1-200> <out.png> / --paint-import <file.pt> <slot> <image> (tests):
+ * slots 21-40 are page 2's, and so on. */
 static int pt_console(int import, const WCHAR *file, int slot, const WCHAR *img)
 {
     WCHAR err[512];
-    uint8_t *f = pt_read(file, err, 512), *px = (uint8_t *)malloc(PT_W * PT_W * 4);
+    const int page = (slot - 1) / PT_SLOTS, k = (slot - 1) % PT_SLOTS;
+    uint8_t *f = slot >= 1 && page < PT_PAGES ? pt_read_page(file, page, err, 512) : NULL;
+    uint8_t *px = (uint8_t *)malloc(PT_W * PT_W * 4);
     int ok = 0;
-    if (!f || !px || slot < 1 || slot > PT_SLOTS) {
-        con_print(f ? L"bad slot\n" : err);
+    if (!f || !px) {
+        con_print(slot < 1 || page >= PT_PAGES ? L"bad slot\n" : err);
         goto done;
     }
     if (import) {
         if (!image_read(img, px, err, 512)) { con_print(err); goto done; }
-        pt_put(f, slot - 1, px);
-        ok = pt_write(file, f);
+        pt_put(f, k, px);
+        ok = pt_write_page(file, page, f);
     } else {
-        pt_get(f, slot - 1, px);
-        ok = pt_used(f, slot - 1) && png_write(img, px);
+        pt_get(f, k, px);
+        ok = pt_used(f, k) && png_write(img, px);
     }
     con_print(ok ? L"ok\n" : L"failed\n");
 done:
@@ -4269,6 +4387,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_PT_DELETE:    pt_change(0);        break;
         case ID_PT_EXPORTALL: pt_export_all();     break;
         case ID_PT_REFRESH:   pt_refresh();        break;
+        case ID_PT_PREV:      s_pt_page = (s_pt_page + PT_PAGES - 1) % PT_PAGES; pt_refresh(); break;
+        case ID_PT_NEXT:      s_pt_page = (s_pt_page + 1) % PT_PAGES; pt_refresh(); break;
         case ID_CANCEL:
             if (s_busy) {
                 InterlockedExchange(&s_cancel, 1);
@@ -4605,6 +4725,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (capture_seq_n)
             capture_tab = capture_seq[0];
         capture_file = argv[3];
+        /* ... --paint-page <1-10>: the Paint Tool tab shows that page. */
+        if (argc >= 6 && !wcscmp(argv[4], L"--paint-page"))
+            s_pt_page = (_wtoi(argv[5]) - 1 + PT_PAGES) % PT_PAGES;
     }
 
     icc.dwSize = sizeof icc;

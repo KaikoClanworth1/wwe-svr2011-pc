@@ -1,6 +1,6 @@
 # Paint Tool: more than 20 logos (pages) - research and plan
 
-Status (2026-10-01): phase 1 is implemented in `port/src/paint_pages.{h,cpp}` and tested in game (see Implemented). Next: Community Creations paging, then the launcher's page selector.
+Status (2026-10-01): phase 1 is implemented in `port/src/paint_pages.{h,cpp}` and tested in game (see Implemented). The launcher's Paint Tool tab has pages too. Next: Community Creations paging.
 
 **Decided (user, 2026-10-01):** 10 pages = 200 logos, a fixed limit (not a setting). LB/RB switch pages in every paged menu.
 
@@ -175,4 +175,17 @@ Both risks are cleared. They were checked on the clean v1.0.3 build in a separat
   3. Number the labels page*20 + i + 1.
   4. Keep the page fixed from the mode-1 pick to the mode-2 write. The game frees and reallocates the .pt buffer between them (824C5428), so reload the page at 82518248/82518268 before the copy.
   - The page label goes beside the list.
+
+## Launcher (done)
+
+- The Paint Tool tab works on one page at a time. "◀ Page / Page ▶" buttons sit under Refresh, with a "Page n of 10" label.
+- Page 1 reads and writes `00PaintTool.pt` as before. Pages 2-10 are built from, and written to, `Saves\.paint\pNN_sMM.bin`, the same format as the game side; empty slots' files are removed.
+- **Export all** exports every page: "Logo 3.png" on page 1, "Page 2 logo 3.png" on the others. The usual saves backup also copies `.paint`.
+- **Command line:**
+  - `--paint-export/--paint-import <file.pt> <slot 1-200>`: slots 21-40 are page 2, and so on.
+  - `--capture paint <bmp> --paint-page N`: captures that page.
+- **Verified:**
+  - command-line export/import on pages 1, 2 and 3;
+  - captures of pages 1-3;
+  - a launcher-imported page-3 logo shown in the game's grid.
 
