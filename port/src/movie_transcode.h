@@ -3,7 +3,7 @@
 // Superstar's entrance movie goes to the server as a small MP4 and becomes a
 // .bik again on the PC that downloads it. The launcher's Bink writer stores
 // pictures nearly raw (hundreds of MB for an entrance); the MP4 is a few
-// dozen. Windows (Media Foundation) only for now.
+// dozen. Windows (Media Foundation) and Android (NDK MediaCodec).
 #pragma once
 
 #include <cstdint>

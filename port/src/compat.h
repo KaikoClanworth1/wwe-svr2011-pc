@@ -2,7 +2,7 @@
 // without them (Android, Linux). Force-included there (CMakeLists.txt).
 #pragma once
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && defined(__cplusplus)  // (C files: the launcher's Bink code has its own)
 
 #include <cerrno>
 #include <cstdio>
@@ -29,4 +29,4 @@ inline unsigned long long _byteswap_uint64(unsigned long long v) { return __buil
 
 inline int localtime_s(struct tm* out, const time_t* t) { return localtime_r(t, out) ? 0 : errno; }
 
-#endif  // !_WIN32
+#endif  // !_WIN32 && __cplusplus

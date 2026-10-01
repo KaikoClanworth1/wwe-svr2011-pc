@@ -141,13 +141,15 @@ if(REXSDK_DIR AND TARGET imgui)
         $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>
         ${REXSDK_DIR}/thirdparty/xxHash)
 endif()
-if(WIN32)
-    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 dxgi dxguid dbghelp ws2_32 winhttp
-        mfplat mfreadwrite mfuuid)
+if(WIN32 OR ANDROID)
     # Community Creations entrance movies to and from MP4 (movie_transcode.cpp):
     # the launcher's Bink reader and writer.
     target_sources(svr2011 PRIVATE launcher/bink_decode.c launcher/bink_encode.c)
     target_include_directories(svr2011 PRIVATE launcher)
+endif()
+if(WIN32)
+    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 dxgi dxguid dbghelp ws2_32 winhttp
+        mfplat mfreadwrite mfuuid)
     # A PDB (function names + line tables) for crash reports and profiling.
     target_compile_options(svr2011 PRIVATE -gline-tables-only)
     target_link_options(svr2011 PRIVATE -Wl,/DEBUG)
