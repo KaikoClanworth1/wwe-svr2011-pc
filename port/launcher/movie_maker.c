@@ -25,159 +25,12 @@
 #include <wchar.h>
 
 #include "bink_decode.h"
+#include "bink_encode.h"
 #include "movie_maker.h"
 
 #define FPS 30
 #define TOP_H 220
 #define BOT_H (MOVIE_H - TOP_H)
-
-/* ── bits (least significant first, as Bink reads them) ── */
-
-typedef struct { uint8_t *p; size_t n, cap; uint64_t acc; int bits; } Bits;
-
-static int bits_put(Bits *b, uint32_t v, int n)
-{
-    b->acc |= (uint64_t)(v & ((1u << n) - 1)) << b->bits;
-    b->bits += n;
-    while (b->bits >= 8) {
-        if (b->n == b->cap) {
-            size_t cap = b->cap ? b->cap * 2 : 65536;
-            uint8_t *p = (uint8_t *)realloc(b->p, cap);
-            if (!p) return 0;
-            b->p = p; b->cap = cap;
-        }
-        b->p[b->n++] = (uint8_t)b->acc;
-        b->acc >>= 8;
-        b->bits -= 8;
-    }
-    return 1;
-}
-
-static void bits_align32(Bits *b)
-{
-    int pad = (int)((32 - ((b->n * 8 + b->bits) & 31)) & 31);
-    while (pad > 0) { int k = pad > 16 ? 16 : pad; bits_put(b, 0, k); pad -= k; }
-}
-
-static int ilog2(unsigned v) { int r = -1; while (v) { v >>= 1; r++; } return r; }
-
-/* ── one plane of a Bink frame ── */
-
-enum { BLK_SKIP = 0, BLK_FILL = 6, BLK_RAW = 9 };
-
-/* Encodes plane `cur` (w x h, w and h multiples of 8) against `ref` (the
- * picture the decoder has; updated to what it will have after this frame). */
-static int encode_plane(Bits *b, const uint8_t *cur, uint8_t *ref, int w, int h, int key, int skip_thr, int fill_thr)
-{
-    const int bw = w >> 3, bh = h >> 3;
-    const int width = w < 8 ? 8 : w;
-    const int len_types = ilog2((unsigned)(width >> 3) + 511) + 1;
-    const int len_sub = ilog2((unsigned)(width >> 4) + 511) + 1;
-    const int len_colors = ilog2((unsigned)bw * 64 + 511) + 1;
-    const int len_pattern = ilog2(((unsigned)bw << 3) + 511) + 1;
-    const int len_small = ilog2((unsigned)(width >> 3) + 511) + 1;   /* x, y, intra dc, inter dc */
-    const int len_run = ilog2((unsigned)bw * 48 + 511) + 1;
-    uint8_t *types = (uint8_t *)malloc((size_t)bw * bh);
-    uint8_t *vals = (uint8_t *)malloc((size_t)w * h);           /* colour values, block order */
-    size_t *row_start = (size_t *)malloc(sizeof(size_t) * ((size_t)bh + 1));
-    size_t nv = 0, supplied = 0, consumed = 0;
-    int by, bx, x, y, i, next_row = 0, colors_null = 0, first = 1;
-    if (!types || !vals || !row_start) { free(types); free(vals); free(row_start); return 0; }
-
-    for (by = 0; by < bh; by++) {
-        row_start[by] = nv;
-        for (bx = 0; bx < bw; bx++) {
-            int mn = 255, mx = 0, diff = 0, sum = 0, t;
-            for (y = 0; y < 8; y++) {
-                const uint8_t *c = cur + (size_t)(by * 8 + y) * w + bx * 8;
-                const uint8_t *r = ref + (size_t)(by * 8 + y) * w + bx * 8;
-                for (x = 0; x < 8; x++) {
-                    int d = c[x] - r[x];
-                    if (d < 0) d = -d;
-                    if (d > diff) diff = d;
-                    if (c[x] < mn) mn = c[x];
-                    if (c[x] > mx) mx = c[x];
-                    sum += c[x];
-                }
-            }
-            if (!key && diff <= skip_thr) {
-                t = BLK_SKIP;
-            } else if (mx - mn <= fill_thr) {
-                uint8_t v = (uint8_t)((sum + 32) >> 6);
-                t = BLK_FILL;
-                vals[nv++] = v;
-                for (y = 0; y < 8; y++) memset(ref + (size_t)(by * 8 + y) * w + bx * 8, v, 8);
-            } else {
-                t = BLK_RAW;
-                for (y = 0; y < 8; y++) {
-                    const uint8_t *c = cur + (size_t)(by * 8 + y) * w + bx * 8;
-                    memcpy(vals + nv, c, 8);
-                    memcpy(ref + (size_t)(by * 8 + y) * w + bx * 8, c, 8);
-                    nv += 8;
-                }
-            }
-            types[by * bw + bx] = (uint8_t)t;
-        }
-    }
-    row_start[bh] = nv;
-
-    /* bundle trees: all "tree 0" (4-bit codes); colours have 16 more */
-    bits_put(b, 0, 4);                                  /* block types */
-    bits_put(b, 0, 4);                                  /* sub-block types */
-    for (i = 0; i < 16; i++) bits_put(b, 0, 4);         /* colour high nibbles */
-    bits_put(b, 0, 4);                                  /* colours */
-    bits_put(b, 0, 4);                                  /* pattern */
-    bits_put(b, 0, 4);                                  /* x offsets */
-    bits_put(b, 0, 4);                                  /* y offsets */
-    bits_put(b, 0, 4);                                  /* runs (the dc bundles have none) */
-
-    for (by = 0; by < bh; by++) {
-        const uint8_t *t = types + by * bw;
-        int same = 1;
-        for (bx = 1; bx < bw; bx++) same &= t[bx] == t[0];
-        bits_put(b, (uint32_t)bw, len_types);
-        if (same) {
-            bits_put(b, 1, 1);
-            bits_put(b, t[0], 4);
-        } else {
-            bits_put(b, 0, 1);
-            for (bx = 0; bx < bw; bx++) bits_put(b, t[bx], 4);
-        }
-        if (first) bits_put(b, 0, len_sub);
-        /* colours: the decoder reads a batch only once it has used the last */
-        if (!colors_null && supplied == consumed) {
-            int r = next_row > by ? next_row : by;
-            while (r < bh && row_start[r + 1] == row_start[r]) r++;
-            if (r == bh) {
-                bits_put(b, 0, len_colors);
-                colors_null = 1;
-            } else {
-                size_t k, n = row_start[r + 1] - row_start[r];
-                bits_put(b, (uint32_t)n, len_colors);
-                bits_put(b, 0, 1);
-                for (k = row_start[r]; k < row_start[r + 1]; k++) {
-                    bits_put(b, vals[k] >> 4, 4);
-                    bits_put(b, vals[k] & 15, 4);
-                }
-                supplied += n;
-                next_row = r + 1;
-            }
-        }
-        if (first) {
-            bits_put(b, 0, len_pattern);
-            bits_put(b, 0, len_small);   /* x */
-            bits_put(b, 0, len_small);   /* y */
-            bits_put(b, 0, len_small);   /* intra dc */
-            bits_put(b, 0, len_small);   /* inter dc */
-            bits_put(b, 0, len_run);
-            first = 0;
-        }
-        consumed += row_start[by + 1] - row_start[by];
-    }
-    bits_align32(b);
-    free(types); free(vals); free(row_start);
-    return 1;
-}
 
 /* ── pictures ── */
 
@@ -633,29 +486,6 @@ static void compose(Pic *top, Pic *bottom, int fit, LONGLONG t, uint8_t *frame)
     draw_bottom(bottom, frame);
 }
 
-/* BGRA -> Y, U, V (4:2:0, BT.601 studio range as Bink's decoder expects). */
-static void to_yuv(const uint8_t *bgra, uint8_t *Y, uint8_t *U, uint8_t *V)
-{
-    int x, y;
-    for (y = 0; y < MOVIE_H; y++)
-        for (x = 0; x < MOVIE_W; x++) {
-            const uint8_t *s = bgra + ((size_t)y * MOVIE_W + x) * 4;
-            Y[y * MOVIE_W + x] = (uint8_t)((66 * s[2] + 129 * s[1] + 25 * s[0] + 128) / 256 + 16);
-        }
-    for (y = 0; y < MOVIE_H / 2; y++)
-        for (x = 0; x < MOVIE_W / 2; x++) {
-            int r = 0, g = 0, b = 0, i, j;
-            for (j = 0; j < 2; j++)
-                for (i = 0; i < 2; i++) {
-                    const uint8_t *s = bgra + ((size_t)(y * 2 + j) * MOVIE_W + x * 2 + i) * 4;
-                    b += s[0]; g += s[1]; r += s[2];
-                }
-            r /= 4; g /= 4; b /= 4;
-            U[y * (MOVIE_W / 2) + x] = (uint8_t)((-38 * r - 74 * g + 112 * b + 128) / 256 + 128);
-            V[y * (MOVIE_W / 2) + x] = (uint8_t)((112 * r - 94 * g - 18 * b + 128) / 256 + 128);
-        }
-}
-
 static int mf_start(void)
 {
     static LONG started;
@@ -683,13 +513,11 @@ int movie_make(MovieJob *job)
 {
     Pic top, bot;
     FILE *f = NULL;
-    uint8_t *frame = NULL, *Y = NULL, *U = NULL, *V = NULL, *rY = NULL, *rU = NULL, *rV = NULL;
-    uint32_t *offs = NULL, largest = 0;
+    BinkWriter *w = NULL;
+    uint8_t *frame = NULL;
     LONGLONG length;
     int n, i, ok = 0;
     WCHAR tmp[MAX_PATH + 8];
-    Bits b;
-    memset(&b, 0, sizeof b);
     job->err[0] = 0;
     mf_start();
     if (!pic_open(&top, job->video, PART_TOP, job->err, sizeof job->err / sizeof *job->err)) return 0;
@@ -701,49 +529,21 @@ int movie_make(MovieJob *job)
     n = (int)((length * FPS + 9999999) / 10000000);
     if (n < 1) n = 1;
     frame = (uint8_t *)malloc((size_t)MOVIE_W * MOVIE_H * 4);
-    Y = (uint8_t *)malloc(MOVIE_W * MOVIE_H); rY = (uint8_t *)calloc(MOVIE_W * MOVIE_H, 1);
-    U = (uint8_t *)malloc(MOVIE_W * MOVIE_H / 4); rU = (uint8_t *)calloc(MOVIE_W * MOVIE_H / 4, 1);
-    V = (uint8_t *)malloc(MOVIE_W * MOVIE_H / 4); rV = (uint8_t *)calloc(MOVIE_W * MOVIE_H / 4, 1);
-    offs = (uint32_t *)malloc(sizeof(uint32_t) * ((size_t)n + 1));
     swprintf_s(tmp, sizeof tmp / sizeof *tmp, L"%s.part", job->out);
-    if (!frame || !Y || !U || !V || !rY || !rU || !rV || !offs || _wfopen_s(&f, tmp, L"wb") || !f) {
+    if (!frame || _wfopen_s(&f, tmp, L"wb") || !f || !(w = bink_writer_open(f, n))) {
         wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not create the movie file.");
         goto done;
     }
-    {   /* header and frame index, filled in at the end */
-        uint8_t zero[64] = { 0 };
-        size_t k, head = 44 + 4 * ((size_t)n + 1);
-        for (k = 0; k < head; k += sizeof zero) fwrite(zero, 1, head - k < sizeof zero ? head - k : sizeof zero, f);
-    }
     for (i = 0; i < n; i++) {
-        size_t pos, ysize;
-        int key = i == 0;
+        int r;
         if (job->cancel) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Stopped."); goto done; }
         compose(&top, &bot, job->fit, (LONGLONG)i * 10000000LL / FPS, frame);
-        to_yuv(frame, Y, U, V);
-        b.n = 0; b.bits = 0; b.acc = 0;
-        bits_put(&b, 0, 32);                                          /* size of the Y plane, below */
-        if (!encode_plane(&b, Y, rY, MOVIE_W, MOVIE_H, key, 2, 2)) goto nomem;
-        ysize = b.n;
-        if (!encode_plane(&b, V, rV, MOVIE_W / 2, MOVIE_H / 2, key, 2, 2)) goto nomem;   /* Bink 'i': V before U */
-        if (!encode_plane(&b, U, rU, MOVIE_W / 2, MOVIE_H / 2, key, 2, 2)) goto nomem;
-        b.p[0] = (uint8_t)ysize; b.p[1] = (uint8_t)(ysize >> 8); b.p[2] = (uint8_t)(ysize >> 16); b.p[3] = (uint8_t)(ysize >> 24);
-        pos = (size_t)_ftelli64(f);
-        offs[i] = (uint32_t)pos | (key ? 1u : 0u);
-        if (fwrite(b.p, 1, b.n, f) != b.n) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not write the movie (disk full?)."); goto done; }
-        if (b.n > largest) largest = (uint32_t)b.n;
+        r = bink_writer_frame(w, frame);
+        if (r == 0) goto nomem;
+        if (r < 0) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not write the movie (disk full?)."); goto done; }
         if (job->notify) PostMessageW(job->notify, job->msg, (WPARAM)((i + 1) * 100 / n), 0);
     }
-    offs[n] = (uint32_t)_ftelli64(f);
-    {
-        uint32_t hdr[11];
-        memcpy(hdr, "BIKi", 4);
-        hdr[1] = offs[n] - 8; hdr[2] = (uint32_t)n; hdr[3] = largest; hdr[4] = (uint32_t)n;
-        hdr[5] = MOVIE_W; hdr[6] = MOVIE_H; hdr[7] = FPS; hdr[8] = 1; hdr[9] = 0; hdr[10] = 0;
-        _fseeki64(f, 0, SEEK_SET);
-        fwrite(hdr, 4, 11, f);
-        fwrite(offs, 4, (size_t)n + 1, f);
-    }
+    bink_writer_close(w); w = NULL;
     fclose(f); f = NULL;
     pic_close(&top);   /* the video may be the movie being replaced (made again) */
     pic_close(&bot);
@@ -757,8 +557,9 @@ int movie_make(MovieJob *job)
 nomem:
     wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Out of memory.");
 done:
+    bink_writer_free(w);
     if (f) { fclose(f); DeleteFileW(tmp); }
-    free(b.p); free(frame); free(Y); free(U); free(V); free(rY); free(rU); free(rV); free(offs);
+    free(frame);
     pic_close(&top);
     pic_close(&bot);
     return ok;

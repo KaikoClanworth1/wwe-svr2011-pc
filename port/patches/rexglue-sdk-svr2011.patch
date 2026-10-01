@@ -37,10 +37,10 @@ index d876846..b73d7af 100644
  struct clock_time_conversion {};
 diff --git a/include/rex/external_frame.h b/include/rex/external_frame.h
 new file mode 100644
-index 0000000..79a47b6
+index 0000000..16aa25f
 --- /dev/null
 +++ b/include/rex/external_frame.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,77 @@
 +/**
 + * @file        rex/external_frame.h
 + * @brief       [svr2011] Frames from an app-side renderer, shown instead of
@@ -81,6 +81,8 @@ index 0000000..79a47b6
 +// submits to `queue` holding `queue_mutex` (the backend does the same).
 +struct VulkanDevice {
 +  void* instance = nullptr;          // VkInstance
++  void* get_instance_proc_addr = nullptr;  // PFN_vkGetInstanceProcAddr of the loader it came from
++                                           // (a custom driver's: not the system's libvulkan)
 +  uint32_t api_version = 0;
 +  void* physical_device = nullptr;   // VkPhysicalDevice
 +  void* device = nullptr;            // VkDevice
@@ -240,6 +242,22 @@ index 0000000..3df454a
 +void ShutdownAndroid();
 +
 +}  // namespace rex
+diff --git a/include/rex/platform/dynlib.h b/include/rex/platform/dynlib.h
+index e3fc40d..026e7ed 100644
+--- a/include/rex/platform/dynlib.h
++++ b/include/rex/platform/dynlib.h
+@@ -35,6 +35,11 @@ class DynamicLibrary {
+   explicit operator bool() const { return handle_ != nullptr; }
+ 
+   void* GetRawSymbol(const char* name) const;
++  // [svr2011] Takes a library opened elsewhere (dlopen / LoadLibrary handle).
++  void Adopt(void* handle) {
++    Close();
++    handle_ = handle;
++  }
+ 
+   template <typename T>
+   T GetSymbol(const char* name) const {
 diff --git a/include/rex/platform/fpscr.h b/include/rex/platform/fpscr.h
 index c2c4fd4..ae8dcff 100644
 --- a/include/rex/platform/fpscr.h
@@ -525,6 +543,23 @@ index 947817f..a1cc533 100644
    };
  
    // Properties of the core API and enabled extensions, and enabled features.
+diff --git a/include/rex/ui/vulkan/instance.h b/include/rex/ui/vulkan/instance.h
+index 4edde2b..429b4c9 100644
+--- a/include/rex/ui/vulkan/instance.h
++++ b/include/rex/ui/vulkan/instance.h
+@@ -22,6 +22,12 @@ namespace rex {
+ namespace ui {
+ namespace vulkan {
+ 
++// [svr2011] The app opens the Vulkan loader itself (Android: a custom GPU
++// driver through libadrenotools): returns the library handle, or null to use
++// the system's. Set before the instance is created.
++using LoaderOpener = void* (*)();
++void SetLoaderOpener(LoaderOpener opener);
++
+ class VulkanInstance {
+  public:
+   static std::unique_ptr<VulkanInstance> Create(bool with_surface, bool try_enable_validation);
 diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
 index 71e7473..7ecc1f0 100644
 --- a/include/rex/ui/window_sdl.h
@@ -3034,6 +3069,37 @@ index 8197bb4..3375ab2 100644
      }
    } else {
      if (ext_1_2_KHR_sampler_mirror_clamp_to_edge) {
+diff --git a/src/ui/vulkan/vulkan_instance.cpp b/src/ui/vulkan/vulkan_instance.cpp
+index 914b311..9b56124 100644
+--- a/src/ui/vulkan/vulkan_instance.cpp
++++ b/src/ui/vulkan/vulkan_instance.cpp
+@@ -31,6 +31,10 @@ namespace rex {
+ namespace ui {
+ namespace vulkan {
+ 
++static LoaderOpener g_loader_opener = nullptr;  // [svr2011]
++
++void SetLoaderOpener(LoaderOpener opener) { g_loader_opener = opener; }
++
+ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+                                                        const bool try_enable_validation) {
+   std::unique_ptr<VulkanInstance> vulkan_instance(new VulkanInstance());
+@@ -75,7 +79,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+     return nullptr;
+   }
+ #else
+-  loader_loaded = vulkan_instance->loader_.Load(platform::lib_names::kVulkanLoader);
++  if (g_loader_opener) {
++    if (void* handle = g_loader_opener()) {
++      vulkan_instance->loader_.Adopt(handle);
++      loader_loaded = true;
++      REXLOG_INFO("Vulkan loader opened by the app (custom GPU driver)");
++    }
++  }
++  if (!loader_loaded) loader_loaded = vulkan_instance->loader_.Load(platform::lib_names::kVulkanLoader);
+   if (!loader_loaded) {
+     REXLOG_ERROR("Failed to load {}", platform::lib_names::kVulkanLoader);
+     return nullptr;
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
 index 23645ef..f55ca9d 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
@@ -3071,7 +3137,7 @@ index 23645ef..f55ca9d 100644
            }
          }
 diff --git a/src/ui/vulkan/vulkan_provider.cpp b/src/ui/vulkan/vulkan_provider.cpp
-index 9eeb902..0782d77 100644
+index 9eeb902..1352d33 100644
 --- a/src/ui/vulkan/vulkan_provider.cpp
 +++ b/src/ui/vulkan/vulkan_provider.cpp
 @@ -13,6 +13,7 @@
@@ -3082,7 +3148,7 @@ index 9eeb902..0782d77 100644
  #include <rex/logging.h>
  #include <rex/ui/vulkan/immediate_drawer.h>
  #include <rex/ui/vulkan/presenter.h>
-@@ -146,6 +147,27 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
+@@ -146,6 +147,29 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
      }
    }
  
@@ -3093,6 +3159,8 @@ index 9eeb902..0782d77 100644
 +    VulkanDevice::Queue& queue = *d.queue_families()[family].queues[0];
 +    rex::external_frame::VulkanDevice info;
 +    info.instance = provider->vulkan_instance_->instance();
++    info.get_instance_proc_addr =
++        reinterpret_cast<void*>(provider->vulkan_instance_->functions().vkGetInstanceProcAddr);
 +    info.api_version = d.properties().apiVersion;
 +    info.physical_device = d.physical_device();
 +    info.device = d.device();

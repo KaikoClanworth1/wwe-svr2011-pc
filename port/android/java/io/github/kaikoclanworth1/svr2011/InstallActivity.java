@@ -121,10 +121,11 @@ public class InstallActivity extends Activity {
         }
         File zip = findPackage();
         if (zip == null) {
-            show("The game isn't installed yet.\n\n"
-                + "On your PC, open the SvR 2011 launcher and use \"Create APK Package\".\n"
-                + "Copy " + kPackageName + " to this phone's games or Download folder, then tap Check again.",
-                "Check again", this::next);
+            // The launcher's Install tab: from the disc image, or a package elsewhere.
+            Intent launcher = new Intent(this, LauncherActivity.class);
+            launcher.putExtra("tab", "Install");
+            startActivity(launcher);
+            finish();
             return;
         }
         install(zip);
@@ -153,6 +154,7 @@ public class InstallActivity extends Activity {
                 if (error != null) {
                     show("Installing failed:\n" + error, "Try again", this::next);
                 } else {
+                    Shaders.install(this);
                     show("Installed to games/" + kFolderName + ".\n\n"
                         + "You can delete " + zip.getName() + " now to free up space.",
                         "Play", this::next);

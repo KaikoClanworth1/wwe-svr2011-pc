@@ -88,6 +88,17 @@ elseif(ANDROID)
     # the PLT (~3% of a phone's render thread in heavy entrances).
     target_compile_options(svr2011 PRIVATE -fno-semantic-interposition)
     target_link_options(svr2011 PRIVATE -Wl,-Bsymbolic-functions)
+    # Custom GPU drivers (Mesa Turnip, ...): libadrenotools (BSD-2-Clause,
+    # recomp/libadrenotools) opens libvulkan with the chosen driver; its hook
+    # libraries go beside libmain.so in the APK (tools/build_apk.py).
+    set(ADRENOTOOLS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../recomp/libadrenotools)
+    if(EXISTS ${ADRENOTOOLS_DIR}/CMakeLists.txt)
+        add_subdirectory(${ADRENOTOOLS_DIR} adrenotools EXCLUDE_FROM_ALL)
+        target_sources(svr2011 PRIVATE src/gpu_driver.cpp)
+        target_link_libraries(svr2011 PRIVATE adrenotools)
+        target_compile_definitions(svr2011 PRIVATE SVR2011_ADRENOTOOLS=1)
+        add_dependencies(svr2011 main_hook file_redirect_hook gsl_alloc_hook hook_impl)
+    endif()
 else()
     add_executable(svr2011 ${SVR2011_SOURCES})
 endif()
@@ -141,7 +152,7 @@ endif()
 
 # -- Launcher -----------------------------------------------------------------
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/movie_maker.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/launcher.rc)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/launcher.rc)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)

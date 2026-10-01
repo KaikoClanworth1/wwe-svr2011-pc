@@ -406,7 +406,7 @@ index 2281168..e20c227 100644
          bool depthWriteEnabled = false;
          bool stencilEnabled = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 4a2a489..6b28e93 100644
+index 4a2a489..bb88468 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -167,6 +167,16 @@ namespace plume {
@@ -739,13 +739,18 @@ index 4a2a489..6b28e93 100644
              vk = VK_NULL_HANDLE;
          }
      }
-@@ -4602,13 +4825,38 @@ namespace plume {
+@@ -4602,13 +4825,43 @@ namespace plume {
          }
      }
  
 +    // [svr2011] Adopts another renderer's instance (see VulkanExistingDevice).
 +    VulkanInterface::VulkanInterface(const VulkanExistingDevice &existing) {
-+        VkResult res = volkInitialize();
++        VkResult res = VK_SUCCESS;
++        if (existing.getInstanceProcAddr != nullptr) {
++            volkInitializeCustom(existing.getInstanceProcAddr);
++        } else {
++            res = volkInitialize();
++        }
 +        if (res != VK_SUCCESS) {
 +            fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
 +            return;
@@ -779,7 +784,7 @@ index 4a2a489..6b28e93 100644
          std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
          return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
      }
-@@ -4638,4 +4886,9 @@ namespace plume {
+@@ -4638,4 +4891,9 @@ namespace plume {
          return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
      }
  #endif
@@ -790,7 +795,7 @@ index 4a2a489..6b28e93 100644
 +    }
  };
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index a0cf5cc..28e849f 100644
+index a0cf5cc..9bbd8a2 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -56,6 +56,7 @@ namespace plume {
@@ -846,7 +851,7 @@ index a0cf5cc..28e849f 100644
          ~VulkanDevice() override;
          std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
          std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
-@@ -448,11 +462,34 @@ namespace plume {
+@@ -448,11 +462,38 @@ namespace plume {
          bool endCapture() override;
      };
  
@@ -868,6 +873,10 @@ index a0cf5cc..28e849f 100644
 +        bool nullDescriptor = false;
 +        bool samplerMirrorClampToEdge = false;
 +        bool geometryShader = false;
++        // The loader the instance came from (null: the system's libvulkan). A
++        // custom GPU driver's loader (Android: libadrenotools) differs from
++        // the system's, whose functions can't be used on its objects.
++        PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
 +    };
 +
      struct VulkanInterface : RenderInterface {
@@ -881,7 +890,7 @@ index a0cf5cc..28e849f 100644
  
  #   if PLUME_SDL_VULKAN_ENABLED
          VulkanInterface(RenderWindow sdlWindow);
-@@ -466,4 +503,7 @@ namespace plume {
+@@ -466,4 +507,7 @@ namespace plume {
          const std::vector<std::string> &getDeviceNames() const override;
          bool isValid() const;
      };

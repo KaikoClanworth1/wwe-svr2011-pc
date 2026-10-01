@@ -1,7 +1,13 @@
 /* Bink 1 video reader (bink_decode.c): the game's titantron movies and the
  * ones movie_maker.c writes. LGPL 2.1+ (ported from FFmpeg). */
 #pragma once
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <wchar.h>
+typedef wchar_t WCHAR;
+typedef long long LONGLONG;
+#endif
 #include <stdint.h>
 
 typedef struct BinkReader BinkReader;

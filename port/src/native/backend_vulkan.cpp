@@ -43,6 +43,7 @@ class VulkanBackend final : public Backend {
     }
     plume::VulkanExistingDevice existing;
     existing.instance = static_cast<VkInstance>(d->instance);
+    existing.getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(d->get_instance_proc_addr);
     existing.apiVersion = d->api_version;
     existing.physicalDevice = static_cast<VkPhysicalDevice>(d->physical_device);
     existing.device = static_cast<VkDevice>(d->device);

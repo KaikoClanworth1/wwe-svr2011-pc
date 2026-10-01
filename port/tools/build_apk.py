@@ -92,12 +92,27 @@ def main():
         f"@{OUT / 'sources.txt'}")
     classes = [str(p) for p in (OUT / "classes").rglob("*.class")]
     env = dict(os.environ, JAVA_HOME=str(JAVA))
+    # (the classes in one jar: listed one by one they made the command line too long)
+    with zipfile.ZipFile(OUT / "classes.jar", "w") as jar:
+        for c in classes:
+            jar.write(c, Path(c).relative_to(OUT / "classes").as_posix())
     run(BUILD_TOOLS / "d8.bat", "--release", "--min-api", "31", "--lib", PLATFORM_JAR,
-        "--output", OUT, *classes, env=env)
+        "--output", OUT, OUT / "classes.jar", env=env)
 
     # Native libraries, without their debug info (the unstripped ones stay in
     # the build folders for crash symbols).
+    # The launcher's native helpers (Movies: the PC launcher's Bink reader and writer).
+    tools = OUT / "libsvrtools-full.so"
+    run(LLVM / "bin" / "clang.exe", "--target=aarch64-linux-android31", "-shared", "-fPIC", "-O2",
+        "-I", PORT / "launcher", PORT / "android" / "jni" / "svrtools_jni.c",
+        PORT / "launcher" / "bink_decode.c", PORT / "launcher" / "bink_encode.c", "-o", tools)
     libs = {
+        "libsvrtools.so": tools,
+        # libadrenotools' hooks (custom GPU drivers; src/gpu_driver.cpp)
+        "libhook_impl.so": NATIVE / "adrenotools" / "src" / "hook" / "libhook_impl.so",
+        "libmain_hook.so": NATIVE / "adrenotools" / "src" / "hook" / "libmain_hook.so",
+        "libfile_redirect_hook.so": NATIVE / "adrenotools" / "src" / "hook" / "libfile_redirect_hook.so",
+        "libgsl_alloc_hook.so": NATIVE / "adrenotools" / "src" / "hook" / "libgsl_alloc_hook.so",
         "libmain.so": NATIVE / "libmain.so",
         "librexruntime.so": SDK_DIR / "out" / "linux-arm64" / "librexruntime.so",
         "librexgpu-xenos.so": SDK_DIR / "out" / "linux-arm64" / "librexgpu-xenos.so",
@@ -107,10 +122,34 @@ def main():
     for name, src in libs.items():
         run(LLVM / "bin" / "llvm-strip.exe", "--strip-debug", "-o", OUT / "lib" / name, src)
 
+    # The Vulkan shaders (one pack, tools/pack_shaders.py) and the known
+    # pipelines: the launcher puts them in the game folder's native_shaders, so
+    # an install from the disc image on the phone has them, and an APK update
+    # brings new ones.
+    assets = []
+    shaders = PORT / "runs" / "shaders_native"
+    stage = OUT / "shaderpack"
+    stage.mkdir()
+    for f in (shaders / "spirv").glob("*.spv"):
+        if not f.name.startswith(("dbg_", "debug_")):
+            shutil.copy2(f, stage / f.name)
+    for pattern in ("*.inputs", "*.textures"):
+        for f in (shaders / "dxil").glob(pattern):
+            shutil.copy2(f, stage / f.name)
+    if any(stage.glob("*.spv")):
+        run(sys.executable, PORT / "tools" / "pack_shaders.py", stage)
+        assets.append((stage / "shaders.spv.pak", "assets/native_shaders/shaders.spv.pak"))
+    else:
+        print("warning: no SPIR-V shaders in", shaders / "spirv", "- the APK carries no shaders")
+    if (PORT / "dist" / "pipelines.list").exists():
+        assets.append((PORT / "dist" / "pipelines.list", "assets/native_shaders/pipelines.list"))
+
     with zipfile.ZipFile(OUT / "base.apk", "a", zipfile.ZIP_DEFLATED) as apk:
         apk.write(OUT / "classes.dex", "classes.dex")
         for name in libs:
             apk.write(OUT / "lib" / name, f"lib/arm64-v8a/{name}")
+        for src, name in assets:
+            apk.write(src, name, compress_type=zipfile.ZIP_STORED)
 
     run(BUILD_TOOLS / "zipalign.exe", "-f", "-P", "16", "4", OUT / "base.apk", OUT / "aligned.apk")
 
@@ -122,8 +161,9 @@ def main():
     apk = OUT / "SvR2011.apk"
     run(BUILD_TOOLS / "apksigner.bat", "sign", "--ks", KEYSTORE, "--ks-pass", f"pass:{KEY_PASS}",
         "--out", apk, OUT / "aligned.apk", env=env)
-    for tmp in ("base.apk", "aligned.apk", "res.zip", "sources.txt", "classes.dex"):
+    for tmp in ("base.apk", "aligned.apk", "res.zip", "sources.txt", "classes.jar", "classes.dex"):
         (OUT / tmp).unlink()
+    shutil.rmtree(stage, ignore_errors=True)
     print(f"{apk} ({apk.stat().st_size / 1e6:.1f} MB, version {version_name} / {version_code})")
 
 

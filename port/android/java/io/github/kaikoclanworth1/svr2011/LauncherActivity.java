@@ -7,6 +7,7 @@
 package io.github.kaikoclanworth1.svr2011;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.graphics.Color;
@@ -44,7 +45,9 @@ public class LauncherActivity extends Activity {
     private GameSettings settings_;
     private final List<Button> tabs_ = new ArrayList<>();
     private final List<View> pages_ = new ArrayList<>();
-    private TextView status_;
+    private final List<Runnable> onShow_ = new ArrayList<>();
+    private final List<String> names_ = new ArrayList<>();
+    TextView status_;
     private boolean loading_;  // (filling the controls: no saves)
 
     int dp(float v) {
@@ -99,7 +102,21 @@ public class LauncherActivity extends Activity {
         addPage(tabRow, content, "Play", playPage());
         addPage(tabRow, content, "Settings", settingsPage());
         addPage(tabRow, content, "Online", onlinePage());
-        select(0);
+        SavesPage saves = new SavesPage(this);
+        addPage(tabRow, content, "Saves", saves.view(), saves::refresh);
+        PaintPage paint = new PaintPage(this);
+        addPage(tabRow, content, "Paint Tool", paint.view(), paint::load);
+        DlcPage dlc = new DlcPage(this);
+        addPage(tabRow, content, "DLC", dlc.view(), dlc::refresh);
+        MoviesPage movies = new MoviesPage(this);
+        addPage(tabRow, content, "Movies", movies.view(), movies::refresh);
+        InstallPage install = new InstallPage(this);
+        addPage(tabRow, content, "Install", install.view(), install::refresh);
+        String tab = getIntent().getStringExtra("tab");
+        select(Math.max(0, tab == null ? 0 : names_.indexOf(tab)));
+        // The shaders from this APK into the game folder (when it's newer).
+        if (InstallActivity.installed()) background(() -> Shaders.install(this), null);
+        if (getPreferences(MODE_PRIVATE).getBoolean("check_updates", true)) checkUpdates(false);
         // Edge to edge (Android 15+): keep clear of the status and navigation bars
         // and the camera cut-out.
         root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -126,6 +143,75 @@ public class LauncherActivity extends Activity {
         } catch (Exception e) {
             return "?";
         }
+    }
+
+    // ── shared by the pages ──────────────────────────────────────────────
+
+    void status(String s) { status_.setText(s); }
+
+    // Something that changes the saves: not while the game has them open.
+    boolean gameClosed() {
+        if (!GameActivity.running) return true;
+        status("Close the game first: it keeps its save files open while it runs.");
+        return false;
+    }
+
+    void confirm(String message, String action, Runnable onYes) {
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            .setMessage(message)
+            .setPositiveButton(action, (d, w) -> onYes.run())
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    // The system file picker and other activities' results, by request code.
+    interface Result { void run(int resultCode, Intent data); }
+    private final java.util.Map<Integer, Result> results_ = new java.util.HashMap<>();
+    private int nextRequest_ = 1000;
+
+    void startForResult(Intent intent, Result onResult) {
+        int code = nextRequest_++;
+        results_.put(code, onResult);
+        try {
+            startActivityForResult(intent, code);
+        } catch (Exception e) {
+            results_.remove(code);
+            status("Could not open the file picker: " + e.getMessage());
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        Result r = results_.remove(requestCode);
+        if (r != null) r.run(resultCode, data);
+        else super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    // Work off the UI thread, then `done` on it.
+    void background(Runnable work, Runnable done) {
+        new Thread(() -> {
+            work.run();
+            if (done != null) runOnUiThread(done);
+        }, "launcher").start();
+    }
+
+    LinearLayout.LayoutParams fullWidth(int topMargin) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(topMargin);
+        return lp;
+    }
+
+    // Two buttons side by side.
+    LinearLayout pair(Button a, Button b) {
+        LinearLayout r = new LinearLayout(this);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        lp.rightMargin = dp(6);
+        r.addView(a, lp);
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        lp2.leftMargin = dp(6);
+        r.addView(b, lp2);
+        return r;
     }
 
     // ── building blocks ──────────────────────────────────────────────────
@@ -199,6 +285,12 @@ public class LauncherActivity extends Activity {
     }
 
     void addPage(LinearLayout tabRow, FrameLayout content, String name, View page) {
+        addPage(tabRow, content, name, page, null);
+    }
+
+    void addPage(LinearLayout tabRow, FrameLayout content, String name, View page, Runnable onShow) {
+        names_.add(name);
+        onShow_.add(onShow);
         final int index = tabs_.size();
         Button tab = new Button(this);
         tab.setText(name);
@@ -224,6 +316,7 @@ public class LauncherActivity extends Activity {
             tabs_.get(i).setBackground(on ? underline() : null);
             pages_.get(i).setVisibility(on ? View.VISIBLE : View.GONE);
         }
+        if (onShow_.get(index) != null) onShow_.get(index).run();
     }
 
     android.graphics.drawable.Drawable underline() {
@@ -267,7 +360,114 @@ public class LauncherActivity extends Activity {
             + "controls). Display options are also in game: MY WWE → Options → Graphics.", 13, kDim);
         tips.setPadding(dp(4), dp(14), dp(4), 0);
         c.addView(tips);
+
+        // Updates (as the PC launcher's Play tab).
+        LinearLayout up = card(c, "Updates");
+        updateText_ = text("Version " + versionName() + ".", 15, kText);
+        updateText_.setPadding(0, dp(12), 0, dp(6));
+        up.addView(updateText_);
+        updateProgress_ = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        updateProgress_.setMax(1000);
+        updateProgress_.setVisibility(View.GONE);
+        updateProgress_.setProgressTintList(android.content.res.ColorStateList.valueOf(kRed));
+        up.addView(updateProgress_);
+        Button check = button("Check for updates", kBackground);
+        check.setOnClickListener(v -> checkUpdates(true));
+        updateButton_ = button("Download and install", kRed);
+        updateButton_.setVisibility(View.GONE);
+        updateButton_.setOnClickListener(v -> applyUpdate());
+        up.addView(check, fullWidth(6));
+        up.addView(updateButton_, fullWidth(8));
+        Switch auto = new Switch(this);
+        auto.setChecked(getPreferences(MODE_PRIVATE).getBoolean("check_updates", true));
+        auto.setOnCheckedChangeListener((b, on) -> getPreferences(MODE_PRIVATE).edit().putBoolean("check_updates", on).apply());
+        int[][] states = {{android.R.attr.state_checked}, {}};
+        auto.setThumbTintList(new android.content.res.ColorStateList(states, new int[] {kRed, 0xFFB0B0B8}));
+        auto.setTrackTintList(new android.content.res.ColorStateList(states, new int[] {0x88C8102E, 0xFF4A4A54}));
+        row(up, "Check when the launcher opens", null, auto);
         return c;
+    }
+
+    // ── updates ──
+
+    private TextView updateText_;
+    private Button updateButton_;
+    private android.widget.ProgressBar updateProgress_;
+    private Updater.Release release_;
+    private final java.util.concurrent.atomic.AtomicBoolean updateCancel_ = new java.util.concurrent.atomic.AtomicBoolean();
+    private boolean updating_;
+
+    void checkUpdates(boolean asked) {
+        updateText_.setText("Checking for updates\u2026");
+        final Updater.Release[] rel = new Updater.Release[1];
+        final String[] err = new String[1];
+        background(() -> {
+            try {
+                rel[0] = Updater.latest();
+            } catch (Exception e) {
+                err[0] = e.getMessage();
+            }
+        }, () -> {
+            String mine = versionName();
+            if (err[0] != null) {
+                updateText_.setText("Version " + mine + ". Couldn't check for updates: " + err[0] + ".");
+            } else if (rel[0] == null || !Updater.newer(rel[0].version, mine) || rel[0].assetUrl == null) {
+                updateText_.setText("Version " + mine + " \u2014 the newest.");
+                updateButton_.setVisibility(View.GONE);
+            } else {
+                release_ = rel[0];
+                updateText_.setText("Version " + rel[0].version + " is out (you have " + mine + ")"
+                    + (rel[0].prerelease ? ", a pre-release" : "") + ".");
+                updateButton_.setVisibility(View.VISIBLE);
+                if (!asked) status("An update is out: Play tab \u2192 Download and install.");
+            }
+        });
+    }
+
+    void applyUpdate() {
+        if (release_ == null || updating_) return;
+        Updater.Release rel = release_;
+        String size = rel.assetSize > 0 ? " (" + FileOps.human(rel.assetSize) + ")" : "";
+        confirm("Download version " + rel.version + size + " and install it? Android asks you to confirm; your "
+            + "saves and settings stay.", "Download", () -> {
+            updating_ = true;
+            updateCancel_.set(false);
+            updateProgress_.setProgress(0);
+            updateProgress_.setVisibility(View.VISIBLE);
+            final String[] err = new String[1];
+            background(() -> {
+                try {
+                    java.io.File apk = Updater.download(this, rel, (done, total) -> runOnUiThread(() -> {
+                        if (total > 0) updateProgress_.setProgress((int) (done * 1000 / total));
+                        updateText_.setText("Downloading\u2026 " + FileOps.human(done)
+                            + (total > 0 ? " of " + FileOps.human(total) : ""));
+                    }), updateCancel_);
+                    Updater.install(this, apk);
+                } catch (Exception e) {
+                    err[0] = e.getMessage();
+                }
+            }, () -> {
+                updating_ = false;
+                updateProgress_.setVisibility(View.GONE);
+                updateText_.setText(err[0] != null ? "The update failed: " + err[0] + "." : "Installing version "
+                    + rel.version + "\u2026");
+            });
+        });
+    }
+
+    // The package installer's answers (Updater.install).
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (!Updater.kInstallAction.equals(intent.getAction())) return;
+        int st = intent.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, -999);
+        if (st == android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+            if (confirm != null) startActivity(confirm);
+        } else if (st != android.content.pm.PackageInstaller.STATUS_SUCCESS) {
+            String msg = intent.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE);
+            updateText_.setText("The update wasn't installed" + (msg != null ? ": " + msg : "") + ".");
+        }
     }
 
     void play() {
@@ -369,6 +569,8 @@ public class LauncherActivity extends Activity {
 
         LinearLayout audio = card(c, "Audio");
         toggle(audio, "Mute", null, "audio_mute", false);
+
+        new Drivers(this, settings_).build(c);
 
         Button defaults = button("Restore defaults", kCard);
         defaults.setOnClickListener(v -> {

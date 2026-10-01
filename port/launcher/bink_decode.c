@@ -13,7 +13,25 @@
  * your option) any later version. It is distributed WITHOUT ANY WARRANTY;
  * see the GNU Lesser General Public License for more details. */
 #define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32
 #include <windows.h>
+#else
+/* (the Android launcher: plain C library calls for the Windows ones) */
+#include <stdlib.h>
+#include <wchar.h>
+#include <stdio.h>
+#define swprintf_s swprintf
+#define _fseeki64 fseeko
+#include <malloc.h>
+#define _msize malloc_usable_size
+static int _wfopen_s(FILE **f, const wchar_t *path, const wchar_t *mode)
+{
+    char p[4096], m[8];
+    if (wcstombs(p, path, sizeof p) == (size_t)-1 || wcstombs(m, mode, sizeof m) == (size_t)-1) return 1;
+    *f = fopen(p, m);
+    return *f == NULL;
+}
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

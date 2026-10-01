@@ -11,13 +11,26 @@ import android.util.Log;
 import org.libsdl.app.SDLActivity;
 
 public class GameActivity extends SDLActivity {
+    // While the game runs (the launcher's Saves / Paint Tool tabs wait: it keeps its saves open).
+    static volatile boolean running;
+
+    @Override
+    protected void onDestroy() {
+        running = false;
+        super.onDestroy();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        running = true;
         // The native side's "program folder" (settings, saves, logs, disc
         // files): rex::filesystem::GetExecutableFolder() reads it. Set before
         // SDLActivity loads the libraries and starts the game's main.
         try {
             Os.setenv("REX_APP_FOLDER", InstallActivity.gameFolder().getAbsolutePath(), true);
+            // Custom GPU drivers (src/gpu_driver.cpp): libadrenotools' hooks are with the app's libraries.
+            Os.setenv("SVR2011_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
+            Os.setenv("SVR2011_CACHE_DIR", getCacheDir().getAbsolutePath(), true);
             // Automated tests over USB debugging (tools/phone_session.ps1):
             // am start ... --es SVR2011_INPUT_FILE <file> --es SVR2011_USER_DATA <folder>
             // become the environment the game reads, as on the PC.
