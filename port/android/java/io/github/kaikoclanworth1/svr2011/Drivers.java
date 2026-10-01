@@ -134,6 +134,23 @@ final class Drivers {
     void checkCrash() {
         String current = settings_.getString(kKey, "");
         if (current.isEmpty() || GameActivity.running) return;
+        String name = new File(current).getParentFile().getName();
+        for (Driver d : installed())
+            if (d.library.getPath().equals(current)) name = d.name;
+        // The game's note (src/gpu_driver.cpp): the driver didn't start, it used the phone's.
+        File failed = new File(a_.getCacheDir(), "gpu_driver_failed.txt");
+        if (failed.isFile()) {
+            String why = "";
+            try {
+                String[] lines = new String(Files.readAllBytes(failed.toPath()), StandardCharsets.UTF_8).split("\n");
+                if (lines.length > 1) why = " (" + lines[1].trim() + ")";
+            } catch (IOException e) {
+            }
+            failed.delete();
+            ask(name + " didn't work on this phone" + why + ": the game used the phone's own driver. Go back to "
+                + "the phone's own driver?", name);
+            return;
+        }
         android.content.SharedPreferences prefs = a_.getPreferences(android.content.Context.MODE_PRIVATE);
         long since = prefs.getLong("driver_chosen_at", 0);
         android.app.ActivityManager am = a_.getSystemService(android.app.ActivityManager.class);
@@ -148,12 +165,13 @@ final class Drivers {
         }
         if (crash == null) return;
         prefs.edit().putLong("driver_chosen_at", crash.getTimestamp()).apply();  // (asked once per crash)
-        String name = new File(current).getParentFile().getName();
-        for (Driver d : installed())
-            if (d.library.getPath().equals(current)) name = d.name;
+        ask("The game stopped while using the graphics driver " + name + ". Go back to the phone's own driver?",
+            name);
+    }
+
+    void ask(String message, String name) {
         new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
-            .setMessage("The game stopped while using the graphics driver " + name
-                + ". Go back to the phone's own driver?")
+            .setMessage(message)
             .setPositiveButton("Use the phone's driver", (dlg, w) -> choose(null))
             .setNegativeButton("Keep " + name, null)
             .show();
@@ -202,6 +220,18 @@ final class Drivers {
         });
     }
 
+    String zipName(Uri uri) {
+        try (android.database.Cursor c = a_.getContentResolver().query(uri,
+                 new String[] {android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String n = c.getString(0);
+                if (n != null) return n.toLowerCase().endsWith(".zip") ? n.substring(0, n.length() - 4) : n;
+            }
+        } catch (Exception e) {
+        }
+        return "driver";
+    }
+
     Driver unpack(Uri uri) throws IOException {
         File tmp = new File(a_.getCacheDir(), "driver.zip");
         FileOps.copyIn(a_.getContentResolver(), uri, tmp);
@@ -209,7 +239,10 @@ final class Drivers {
             ZipEntry metaEntry = null;
             for (Enumeration<? extends ZipEntry> e = zip.entries(); e.hasMoreElements();) {
                 ZipEntry z = e.nextElement();
-                if (z.getName().endsWith("meta.json")) metaEntry = z;
+                // (not a Mac's resource-fork copy, __MACOSX/._meta.json; the shallowest one)
+                String n = z.getName();
+                if (n.startsWith("__MACOSX/") || !(n.equals("meta.json") || n.endsWith("/meta.json"))) continue;
+                if (metaEntry == null || n.length() < metaEntry.getName().length()) metaEntry = z;
             }
             if (metaEntry == null) throw new IOException("it has no meta.json (not a driver package)");
             String prefix = metaEntry.getName().substring(0, metaEntry.getName().length() - "meta.json".length());
@@ -222,7 +255,8 @@ final class Drivers {
             String name, library;
             try {
                 JSONObject m = new JSONObject(metaText);
-                name = m.optString("name", "driver");
+                name = m.optString("name", "");
+                if (name.isEmpty()) name = zipName(uri);  // (some packages carry only libraryName)
                 library = m.getString("libraryName");
             } catch (org.json.JSONException e) {
                 throw new IOException("its meta.json can't be read");
@@ -236,12 +270,25 @@ final class Drivers {
             String destPath = dir.getCanonicalPath() + File.separator;
             for (Enumeration<? extends ZipEntry> e = zip.entries(); e.hasMoreElements();) {
                 ZipEntry z = e.nextElement();
-                if (z.isDirectory() || !z.getName().startsWith(prefix)) continue;
+                if (z.isDirectory() || !z.getName().startsWith(prefix) || z.getName().contains("__MACOSX/")) continue;
                 File out = new File(dir, z.getName().substring(prefix.length()));
                 if (!out.getCanonicalPath().startsWith(destPath)) throw new IOException("bad path in the package");
                 out.getParentFile().mkdirs();
                 try (InputStream in = zip.getInputStream(z); OutputStream os = new FileOutputStream(out)) {
                     FileOps.copy(in, os);
+                }
+            }
+            if (library.equals("vulkan.adreno.so")) {
+                // Qualcomm's own drivers keep the phone driver's file name: the app's UI has
+                // that one loaded already, and loading it again just gives the phone's back.
+                File renamed = new File(dir, "vulkan.custom.so");
+                if (!new File(dir, library).renameTo(renamed)) throw new IOException("can't set the driver up");
+                try {
+                    JSONObject m = new JSONObject(metaText);
+                    m.put("libraryName", renamed.getName());
+                    Files.write(new File(dir, "meta.json").toPath(), m.toString(2).getBytes(StandardCharsets.UTF_8));
+                } catch (org.json.JSONException e) {
+                    throw new IOException("its meta.json can't be read");
                 }
             }
             Driver d = read(dir);
