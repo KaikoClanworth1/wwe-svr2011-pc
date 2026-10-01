@@ -73,14 +73,14 @@ release yet.
 
 ## Next (requested 1 October 2026)
 
-- [ ] Keyboard controls (play with the PC keyboard).
-- [ ] Android: a button that opens the phone's keyboard for typing.
-- [ ] F11 toggles fullscreen.
-- [ ] Language selector as its own button under *Options*.
-- [ ] Windowed, borderless and fullscreen choices in *Options*.
-- [ ] Android stuttering: investigate on the user's phone, log everything.
-- [ ] Android: custom songs from the `Music` folder, as on Windows.
-- [ ] Divas against male superstars: remove the restriction, matches play normally.
+- [x] Keyboard controls (play with the PC keyboard). *(6f64494)*
+- [x] Android: a KEYBOARD button that opens the phone's keyboard for typing. *(c366c12)*
+- [x] F11 toggles fullscreen. *(6f64494)*
+- [x] Language selector as its own button under *Options*. *(6f64494)*
+- [x] Windowed, borderless and fullscreen choices in *Options*. *(6f64494)*
+- [ ] Android stuttering: investigated, 60 Hz screen and frame-time / thermal / clock logs added (c366c12); the remaining uneven frames come from the game's own frame pacing on the phone - still open.
+- [x] Android: custom songs from the `Music` folder, as on Windows. *(8d0de6b)*
+- [x] Divas against male superstars: remove the restriction, matches play normally. *(7903c71)*
 - [ ] Managers playable and selectable in the modes.
-- [ ] Limit Breaking session: research unused match types in the game files.
-- [ ] Online session: uploaded superstars carry their custom movies and music (into `Custom Movies` / `Music` on download).
+- [x] Limit Breaking session: research unused match types in the game files (docs/MATCH_TYPES_RESEARCH.md, 247a26e).
+- [x] Online session: uploaded superstars carry their custom movies and music (into `Custom Movies` / `Music` on download). *(44c6b30; movies Windows only)*
