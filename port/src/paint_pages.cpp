@@ -68,7 +68,9 @@ rex::input::InputSystem* g_input = nullptr;
 std::filesystem::path g_dir;  // Saves\.paint
 std::filesystem::path g_pt;   // Saves\00PaintTool.pt
 
-std::atomic<int> g_page{0};
+std::atomic<int> g_page{0};            // the Paint Tool grid's page
+std::atomic<int> g_slot_page{0};       // the page in the Community Creations slot list
+std::atomic<uint32_t> g_slot_screen{0};  // that list (its storage is +284)
 std::mutex g_mutex;
 std::set<uint32_t> g_faked;          // storage objects with a job done here
 std::vector<uint8_t> g_page1;        // page 1 as it was when the grid left it
@@ -307,7 +309,17 @@ void SwitchPage(PPCContext& ctx, uint8_t* base, uint32_t menu, int delta) {
   REXLOG_INFO("paint pages: page {} of {}", to + 1, svr2011::kPaintPages);
 }
 
-bool OurJob(PPCContext& ctx) { return g_page.load() != 0 && ctx.r4.u32 == 1; }
+// The page a Paint Tool storage job is for: the Paint Tool's own (manager
+// +40) the grid's page, the Community Creations slot list's the page its file
+// holds; everyone else (the Superstar logo list, Community Creations' own
+// checks, ...) reads and writes page 1, the game's file.
+int JobPage(PPCContext& ctx, uint8_t* base) {
+  if (ctx.r4.u32 != 1) return 0;
+  const uint32_t st = ctx.r3.u32;
+  if (const uint32_t screen = g_slot_screen.load(); screen && st == screen + 284) return g_slot_page.load();
+  if (const uint32_t ptm = Ptm(ctx, base); ptm && st == Rd32(base + ptm + 40)) return g_page.load();
+  return 0;
+}
 
 }  // namespace
 
@@ -336,7 +348,7 @@ void InstallPaintPages(rex::memory::Memory* memory, rex::input::InputSystem* inp
 // Open: sub_824AE6E8(st, 1, ...).
 REX_EXTERN(__imp__sub_824AE6E8);
 REX_HOOK_RAW(sub_824AE6E8) {
-  if (!OurJob(ctx)) {
+  if (JobPage(ctx, base) == 0) {
     {
       std::lock_guard lock(g_mutex);
       if (ctx.r4.u32 == 1) g_page1_valid = false;  // page 1 may change
@@ -356,13 +368,14 @@ REX_HOOK_RAW(sub_824AE6E8) {
 REX_EXTERN(__imp__sub_824AE830);
 REX_HOOK_RAW(sub_824AE830) {
   const uint32_t st = ctx.r3.u32, buf = ctx.r5.u32, size = ctx.r6.u32;
-  if (!OurJob(ctx) || size != kFile) {
+  const int page = JobPage(ctx, base);
+  if (page == 0 || size != kFile) {
     __imp__sub_824AE830(ctx, base);
     return;
   }
   {
     std::lock_guard lock(g_mutex);
-    BuildPage(g_page.load(), base + buf);
+    BuildPage(page, base + buf);
   }
   Complete(base, st);
 }
@@ -371,13 +384,14 @@ REX_HOOK_RAW(sub_824AE830) {
 REX_EXTERN(__imp__sub_82517CF8);
 REX_HOOK_RAW(sub_82517CF8) {
   const uint32_t st = ctx.r3.u32, buf = ctx.r5.u32, size = ctx.r6.u32;
-  if (!OurJob(ctx) || size != kFile) {
+  const int page = JobPage(ctx, base);
+  if (page == 0 || size != kFile) {
     __imp__sub_82517CF8(ctx, base);
     return;
   }
   {
     std::lock_guard lock(g_mutex);
-    SavePage(g_page.load(), base + buf);
+    SavePage(page, base + buf);
   }
   Complete(base, st);
 }
@@ -630,7 +644,7 @@ void PageFlags(uint8_t* base, uint32_t file, int page, uint32_t used[kSlots], ui
     used[k] = Rd32(h + kUsed);
     downloaded[k] = uint32_t(int32_t(int8_t(h[13])));
   };
-  if (page == g_page.load() && file && Rd32(base + file) == kMagic) {
+  if (page == g_slot_page.load() && file && Rd32(base + file) == kMagic) {
     for (uint32_t k = 0; k < kSlots; ++k) header(k, base + file + 8 + k * kSlot);
     return;
   }
@@ -650,9 +664,13 @@ void PageFlags(uint8_t* base, uint32_t file, int page, uint32_t used[kSlots], ui
 void ShowPageOf(uint8_t* base, uint32_t screen, uint32_t n) {
   const uint32_t file = Rd32(base + screen + kSlotScreenFile);
   const int page = int(n / kSlots);
-  if (!file || Rd32(base + file) != kMagic || page == g_page.load()) return;
+  if (!file || Rd32(base + file) != kMagic) return;
+  if (g_slot_screen.load() == screen && page == g_slot_page.load()) return;
   std::lock_guard lock(g_mutex);
-  if (LoadPage(page, base + file)) g_page = page;
+  if (LoadPage(page, base + file)) {
+    g_slot_screen = screen;
+    g_slot_page = page;
+  }
 }
 
 // Runs fn(screen) with the slot number as the game's 0-19 on the page the
@@ -836,6 +854,49 @@ REX_HOOK_RAW(sub_824C5768) { WithManagerSlot<__imp__sub_824C5768>(ctx, base); }
 REX_EXTERN(__imp__sub_824C5BA0);
 REX_HOOK_RAW(sub_824C5BA0) { WithManagerSlot<__imp__sub_824C5BA0>(ctx, base); }
 
+// The list's storage jobs (screen+284) open: sub_825180B0(screen) before the
+// list reads the file - page 1 first (the cursor starts on slot 1) - and
+// sub_82518248(screen) before a download is written: the chosen slot's page.
+REX_EXTERN(__imp__sub_825180B0);
+REX_HOOK_RAW(sub_825180B0) {
+  const uint32_t screen = ctx.r3.u32;
+  if (IsSlotScreen(base, screen)) {
+    g_slot_screen = screen;
+    g_slot_page = 0;
+  }
+  __imp__sub_825180B0(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82518248);
+REX_HOOK_RAW(sub_82518248) {
+  const uint32_t screen = ctx.r3.u32;
+  if (IsSlotScreen(base, screen)) {
+    const uint32_t n = Rd32(base + screen + kSlotIndex);
+    g_slot_screen = screen;
+    g_slot_page = n < kListSlots ? int(n / kSlots) : 0;
+  }
+  __imp__sub_82518248(ctx, base);
+}
+
+// Whether there is a Paint Tool logo to upload (made here, not downloaded):
+// sub_824E1FD0() looks at page 1 (the file Community Creations read); the
+// other pages count too.
+REX_EXTERN(__imp__sub_824E1FD0);
+REX_HOOK_RAW(sub_824E1FD0) {
+  __imp__sub_824E1FD0(ctx, base);
+  if (ctx.r3.u32) return;
+  for (int page = 1; page < svr2011::kPaintPages; ++page) {
+    for (uint32_t k = 0; k < kSlots; ++k) {
+      uint8_t h[32] = {};
+      std::ifstream in(SlotFile(page, k), std::ios::binary);
+      if (in.read(reinterpret_cast<char*>(h), sizeof(h)) && Rd32(h + kUsed) && h[13] == 0) {
+        ctx.r3.u64 = 1;
+        return;
+      }
+    }
+  }
+}
+
 // A download is written into its slot: sub_82518268(screen). The page of
 // the chosen slot is loaded into the file first (the game freed and
 // allocated that buffer again since the slot was chosen), then the online
@@ -852,11 +913,12 @@ REX_HOOK_RAW(sub_82518268) {
   if (n < kListSlots && file) {
     std::lock_guard lock(g_mutex);
     const int page = int(n / kSlots);
-    if (LoadPage(page, base + file)) g_page = page;
-    else REXLOG_WARN("paint pages: could not load page {} for the download", page + 1);
+    g_slot_screen = screen;
+    g_slot_page = page;
+    if (!LoadPage(page, base + file)) REXLOG_WARN("paint pages: could not load page {} for the download", page + 1);
   }
-  REXLOG_INFO("paint pages: download goes to page {} slot {}", g_page.load() + 1, n % kSlots + 1);
-  if (auto check = g_download_check.load(); check && !check(base, screen, g_page.load())) {
+  REXLOG_INFO("paint pages: download goes to page {} slot {}", g_slot_page.load() + 1, n % kSlots + 1);
+  if (auto check = g_download_check.load(); check && !check(base, screen, g_slot_page.load())) {
     REXLOG_INFO("paint pages: the download was not written (Community Creations check)");
     return;
   }
