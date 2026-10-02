@@ -155,9 +155,13 @@ The port is a Windows program. On a Steam Deck or a Linux PC it runs through **P
 
 ### Android
 
-The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, such as a recent Snapdragon. On a Galaxy Z Fold 7 it holds 60 fps, on both its screens. You need about 7 GB free on the phone. Play with a controller or the on-screen touch controls. First install the game on your PC as above. Then use the launcher's **Android Install** tab:
+The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, such as a recent Snapdragon. On a Galaxy Z Fold 7 it holds 60 fps, on both its screens. You need about 7 GB free on the phone. Play with a controller or the on-screen touch controls.
 
-- **Option 1: install over USB (recommended).**
+**All you need is the APK.** Download `SvR2011-Android-v<version>.apk` from the [latest release](https://github.com/KaikoClanworth1/wwe-svr2011-pc/releases/latest), open it on the phone to install it (allow installs from your browser or file manager if asked), and start it. Its **Install** tab installs the game from your own Xbox 360 disc image (ISO) on the phone. The app updates itself from new releases.
+
+If the game is already installed on your PC, the launcher's **Android Install** tab can put it on the phone instead:
+
+- **Option 1: install over USB.**
   1. On the phone, open **Settings → About phone** (on Samsung, also **→ Software information**) and tap **Build number** 7 times, until it says developer mode is on.
   2. Open **Settings → Developer options** and turn on **USB debugging**.
   3. Connect the phone with a USB data cable and unlock it. When it asks *Allow USB debugging?*, tick *Always allow from this computer* and tap **Allow**.
@@ -166,7 +170,7 @@ The game runs on Android phones and tablets with a 64-bit ARM chip and Vulkan, s
   The game goes into the phone's `games/WWE SmackDown vs. Raw 2011` folder and starts. Run it again after a launcher update: it copies only what changed and keeps the phone's saves.
 - **Option 2: a package to copy yourself.** **Create APK Package** makes a folder with `SvR2011.apk`, `SvR2011-Game.zip` and instructions. Copy both files to the phone's **Download** folder and open the APK to install it. On first start the app installs the game from the zip; you can delete the zip afterwards.
 
-**Touch controls:** the menus get a simple pad (D-pad, A/B/X/Y, bumpers, triggers, Start/Back). Matches get a move stick, a grapple stick, the face buttons labelled with what they do (strike, action, whip/pin, finisher), reversal, run, drag, submission and taunts, plus a **?** button with the full match controls. They switch by themselves when a match starts, or with the button at the top left. **EDIT** (top right) lets you drag, resize, hide or remap any control and set their opacity. The controls hide when a controller is connected and come back when you touch the screen. **MY WWE → Options → Graphics → Touch controls** turns them off.
+**Touch controls:** the menus get a simple pad (D-pad, A/B/X/Y, bumpers, triggers, Start/Back). Matches get a move stick, a grapple stick, the face buttons labelled with what they do (strike, action, whip/pin, finisher), reversal, run, drag, submission and taunts, plus a **?** button with the full match controls. They switch by themselves when a match starts, or with the button at the top left. **EDIT** (top right) lets you drag, resize, hide or remap any control and set their opacity. The controls hide as soon as a controller is connected and come back for a while when you touch the screen. **MY WWE → Options → Graphics → Touch controls** turns them off.
 
 On the phone, the game renders at the Xbox 360's 720p with shadows and effects at their original size. **MY WWE → Options → Graphics → Quality** raises them, and anti-aliasing can be turned on there.
 
@@ -392,7 +396,7 @@ The recompiled game code is **generated on your machine from your own disc**. It
 ```bash
 python port/tools/build_apk.py
 ```
-This makes `port/out/android/SvR2011.apk`, which holds no game data. The package script ships it beside the launcher as `Android\SvR2011.apk`. The launcher's **Install → Create APK Package** puts it next to a zip of the installed game. On first start, the app installs that zip into the phone's `games` folder.
+This makes `port/out/android/SvR2011.apk`, which holds no game data. The package script ships it beside the launcher as `Android\SvR2011.apk`, and on its own as `SvR2011-Android-v<version>.apk` for the release. The launcher's **Install → Create APK Package** puts it next to a zip of the installed game. On first start, the app installs that zip into the phone's `games` folder.
 
 **Repository layout:**
 

@@ -8,7 +8,7 @@ release yet.
 
 - **Windows** PC: the recompiled game, Direct3D 12 or Vulkan.
 - **Steam Deck / Linux** through Proton: Deck defaults, updates without `tar.exe`.
-- **Android** phones and tablets (arm64, Vulkan): installs from the player's own game package, landscape only, 720p default render scale on phones. Runs the screen at 60 Hz on 120 Hz phones. *(60 Hz: unreleased.)*
+- **Android** phones and tablets (arm64, Vulkan): the APK is released beside the PC game and is all a player needs (it installs the game from their own disc image on the phone), landscape only, 720p default render scale on phones. Runs the screen at 60 Hz on 120 Hz phones. *(60 Hz: unreleased.)*
 - **Laptops with two GPUs** use the fast GPU, and one GPU for both renderers.
 
 ## Graphics and performance
@@ -58,7 +58,7 @@ release yet.
 
 - **Keyboard controls**: the PC keyboard plays as player 1 (alongside a controller). *(Unreleased.)*
 - **Type on the PC keyboard** wherever the game shows its on-screen keyboard.
-- **On-screen touch controller** (Android default, any touch screen): MENU and MATCH layouts that switch automatically, an editor to rearrange it, and a **KEYBOARD** button that opens the phone's keyboard while the game's keyboard is up. *(KEYBOARD: unreleased.)*
+- **On-screen touch controller** (Android default, any touch screen): MENU and MATCH layouts that switch automatically, an editor to rearrange it, and a **KEYBOARD** button that opens the phone's keyboard while the game's keyboard is up. Hidden as soon as a real controller is connected, with any controller backend; a touch shows it again for 15 s. *(KEYBOARD, controller hiding on every backend: unreleased.)*
 - Controllers through SDL.
 
 ## Saves
@@ -117,3 +117,7 @@ Requested 2 October 2026:
 - [x] Frame rate choices (Limit Breaking: 30 / 60 / 120 / 144 / 240, 1d0fa31; SDK side f3c397d).
 - [x] Test 30 fps fully: menus, entrances (same length as at 60), matches, pause, walking speed equal to 60 fps (Direct3D 12 and Vulkan), VSync off, switching live in GRAPHICS. Not yet: a match to its finish (replays, results), a timed match's clock, a phone.
 - [x] B did nothing in *My WWE → Options* (out of order menu records since ACHIEVEMENTS).
+- [x] The APK released beside the PC game, all an Android player needs: `package.ps1` also writes `SvR2011-Android-v<version>.apk` (the name the app's updater looks for); README updated.
+- [x] A connected controller hides the on-screen controller (it only worked when SDL saw the pad, never with the XInput backend). *(b249724)*
+- [ ] Online: peer-to-peer matches, leaderboards on the VPS, P2P working even with the VPS down. Pull request #3 reviewed by the Online session: matchmaking plumbing only, needs a central server; parts reusable. Not started.
+- [ ] Steam Deck: a match that's won never ends (player's log `svr2011_020 2.log`) - with the Limit Breaking session.

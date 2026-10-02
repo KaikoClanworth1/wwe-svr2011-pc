@@ -1,5 +1,8 @@
-# Makes the release zip: the launcher and the game program, with no game data.
-#   .\package.ps1 [-Version 0.2.0]    -> port\out\SvR2011-PC-v<version>.zip (default: port\VERSION)
+# Makes the release files, with no game data: the PC zip (the launcher and the
+# game program) and the Android app on its own (released beside it: all an
+# Android player needs - it installs the game from their disc image).
+#   .\package.ps1 [-Version 0.2.0]    -> port\out\SvR2011-PC-v<version>.zip and
+#                                       port\out\SvR2011-Android-v<version>.apk (default: port\VERSION)
 # Build first (build.ps1). The player installs the game data from their own
 # disc image with the launcher's Install tab, which copies these files beside it.
 param([string]$Version = "", [string]$Build = "")
@@ -50,6 +53,8 @@ $apk = Join-Path $port "out\android\SvR2011.apk"
 if (Test-Path $apk) {
     New-Item -ItemType Directory -Force (Join-Path $stage "Android") | Out-Null
     Copy-Item $apk (Join-Path $stage "Android")
+    # (the release's own Android download; the app's updater looks for this name)
+    Copy-Item $apk (Join-Path $port "out\SvR2011-Android-v$Version.apk") -Force
 } else {
     Write-Warning "no $apk (tools\build_apk.py) - this package has no Android app"
 }
@@ -69,4 +74,5 @@ try {
     }
 } finally { $archive.Dispose() }
 "Packaged $zip"
+if (Test-Path $apk) { "Packaged " + (Join-Path $port "out\SvR2011-Android-v$Version.apk") + " (upload it to the release too)" }
 Get-ChildItem $stage | ForEach-Object { "  $($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB" }
