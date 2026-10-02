@@ -15,7 +15,7 @@ release yet.
 
 - **Native renderer**: the game's Direct3D calls drawn on plume (Direct3D 12 or Vulkan) instead of the emulated Xenos GPU. Falls back to the emulated renderer when stuck or when its shaders are missing.
 - **Resolutions** from 720p (the console's) to 4K, anti-aliasing, VSync, steady 60 fps.
-- **FRAME RATE**: 30, 60, 120, 144 or 240 fps (DISPLAY tab and the launcher's Settings), a cap with the game at its normal speed at any rate; 30 is the console's own 30 fps mode. VSync off no longer makes the game run too fast. *(Unreleased.)*
+- **FRAME RATE**: 30, 60, 120, 144 or 240 fps (DISPLAY tab and the launcher's Settings). The game always runs its own 60 Hz timing (its update steps once per 60 Hz tick, drawing once a frame), so speed and physics are right at 30 fps and on a slow PC; 120 / 144 / 240 show 60 until frame generation is added. VSync off no longer makes the game run too fast. *(Unreleased; redone in 9e529d3.)*
 - **60 fps entrances and cutscenes** (the game's 30 fps scenes run its own 60 fps mode), optional.
 - **Any screen shape**: matches and entrances fill ultrawide, 16:10, Steam Deck and foldable screens. Menus stay 16:9.
 - **GRAPHICS page** in game: *My WWE → Options → Graphics*, DISPLAY and QUALITY tabs.
@@ -114,8 +114,8 @@ Requested later on 1 October 2026:
 
 Requested 2 October 2026:
 
-- [x] Frame rate choices (Limit Breaking: 30 / 60 / 120 / 144 / 240, 1d0fa31; SDK side f3c397d).
-- [x] Test 30 fps fully: menus, entrances (same length as at 60), matches, pause, walking speed equal to 60 fps (Direct3D 12 and Vulkan), VSync off, switching live in GRAPHICS. Not yet: a match to its finish (replays, results), a timed match's clock, a phone.
+- [x] Frame rate choices (Limit Breaking: 30 / 60 / 120 / 144 / 240, 1d0fa31; SDK side f3c397d). The user's play test found 30 fps broke physics and 120+ ran too fast; redone with the game's own 60 Hz timing (9e529d3). Next: frame generation for 120+.
+- [ ] Test 30 fps fully. The first version (1d0fa31) passed the automated checks (menus, entrances, matches, pause, walking speed, Vulkan, VSync off, live switch) but the user's play test found broken physics; the redone version (9e529d3) needs the tests again, plus a play test.
 - [x] B did nothing in *My WWE → Options* (out of order menu records since ACHIEVEMENTS).
 - [x] The APK released beside the PC game, all an Android player needs: `package.ps1` also writes `SvR2011-Android-v<version>.apk` (the name the app's updater looks for); README updated.
 - [x] A connected controller hides the on-screen controller (it only worked when SDL saw the pad, never with the XInput backend). *(b249724)*
