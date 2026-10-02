@@ -6,8 +6,11 @@
 #   .\online_session.ps1 input "press START" "wait 2000" "press A"
 #   .\online_session.ps1 shot <file-stem>      (native renderer window: shotnative)
 #   .\online_session.ps1 status | stop
+# -Slot 2 (3, 4): a second game at the same time (its own session and input
+# files; give it its own -UserData and a -Config with p2p_port = 36100).
 param([Parameter(Position = 0)][string]$Action, [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest,
-      [string]$Name = "online", [string]$Config = "test_config_online.toml", [string]$UserData = "", [string]$LogLevel = "info")
+      [string]$Name = "online", [string]$Config = "test_config_online.toml", [string]$UserData = "", [string]$LogLevel = "info",
+      [string]$Slot = "")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -30,8 +33,8 @@ $port  = Split-Path $PSScriptRoot -Parent
 $runs  = Join-Path $port "runs"
 $game  = Join-Path $runs "online_game"
 $build = Join-Path $port "out\build\SourceOnline"
-$state = Join-Path $runs "online_session.json"
-$input = Join-Path $runs "online_input.txt"
+$state = Join-Path $runs "online_session$Slot.json"
+$input = Join-Path $runs "online_input$Slot.txt"
 
 function Get-OnlineSession {
     if (-not (Test-Path $state)) { throw "no session - run: online_session.ps1 start" }
@@ -70,9 +73,12 @@ switch ($Action) {
             throw "could not copy $src (in use)"
         }
         $sdkNames = "rexruntime.dll", "rexgpu-xenos.dll"
-        Get-ChildItem $build -Filter "*.dll" | Where-Object { $sdkNames -notcontains $_.Name } | ForEach-Object { Copy-Changed $_.FullName }
-        Copy-Changed (Join-Path $build "svr2011.exe")
-        foreach ($f in $sdkNames) { Copy-Changed (Join-Path $sdkOut $f) }
+        # (a second game at the same time runs the first one's files)
+        if (-not $Slot) {
+            Get-ChildItem $build -Filter "*.dll" | Where-Object { $sdkNames -notcontains $_.Name } | ForEach-Object { Copy-Changed $_.FullName }
+            Copy-Changed (Join-Path $build "svr2011.exe")
+            foreach ($f in $sdkNames) { Copy-Changed (Join-Path $sdkOut $f) }
+        }
         Set-Content $input "" -NoNewline
         $log = Join-Path $runs "$Name.log"; Remove-Item $log -ErrorAction SilentlyContinue
         $env:SVR2011_INPUT_FILE = $input

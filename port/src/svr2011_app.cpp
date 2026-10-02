@@ -51,6 +51,7 @@
 #include "discord_presence.h"
 #include "online.h"
 #include "entrance_media.h"
+#include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -377,6 +378,8 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallOnline(runtime()->memory(), g_saves);  // Community Creations (online.h)
   // ... its Superstars' entrance songs and movies (entrance_media.h)
   svr2011::InstallEntranceMedia(runtime()->memory());
+  // Online matches, peer to peer (p2p.h)
+  svr2011::InstallP2P(runtime()->memory());
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).

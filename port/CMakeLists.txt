@@ -36,6 +36,7 @@ set(SVR2011_SOURCES
     src/user_movies.cpp
     src/entrance_media.cpp
     src/movie_transcode.cpp
+    src/p2p.cpp
     src/paint_pages.cpp
     src/match_types.cpp
     src/frame_rate.cpp

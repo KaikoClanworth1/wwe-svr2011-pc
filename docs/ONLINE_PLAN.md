@@ -20,6 +20,19 @@ Goal: the ONLINE menu works without "Online Axxess": P2P Player Matches (LAN and
   - On download it installs them (`Music\<name>\`, `Custom Movies\<name>.bik`, "<name> (2)" if the name plays something else). When the save job starts (sub_824DCA98) it points the downloaded entrance at them.
   - Android sends and installs songs; movies are Windows-only for now (Media Foundation).
 - **Launchers:** the Online tab (PC and Android) signs in or creates an account, and picks the Default or a Custom server.
+
+## Status (2 October 2026): peer-to-peer Player Matches on a network
+- **No server needed to play** (the online server only keeps leaderboards, later). `port/src/p2p.cpp`, through the SDK's `online_hooks.h`.
+  - Each game has an XNADDR: its LAN IP, its port base (`p2p_port`, UDP, default 36000) and an ID from its online XUID.
+  - Peers are 10.64.x.y to the game, mapped to their real address and ports (port + the peer's base − 36000: two games on one PC are two peers).
+  - A host advertises its sessions on its port base. A search asks the LAN (broadcast), this PC and the addresses in `p2p_peers`. QoS probes ask the host (its XNetQosListen data).
+  - The session messages (XSessionCreate / Search / Join / Leave / Start / End / Modify) are answered here. This follows PR #3 by gitSothib for the buffer layouts and per-session objects.
+- **SDK bugs it needed fixed:**
+  - socket numbers must be positive as signed (the game tests socket() > 0);
+  - sendto/recvfrom byte order;
+  - XNetInAddrToString must give the real address (the game turns it back with inet_addr).
+- **Tested** with two games on one PC (`tools/p2p_test.ps1 -Play`): Custom Match finds the host, both join the lobby, pick Superstars (the slots have a cursor: RIGHT for 2P) and play a synced match.
+- **Next:** over the internet (invite codes / addresses, UPnP), then leaderboards on the server.
 - **Menus:** the gamer card, party, Xbox LIVE and Online Axxess texts and prompts are gone.
 
 ## Key finding
