@@ -199,6 +199,7 @@ double g_frame_s = 0;      // smoothed frame time (the 60 cap's own-block test)
 double g_last_dt = 1.0 / 60;
 double g_match_time = 0;   // the match's real time, s
 uint32_t g_written = 0;    // the match frame count as last written
+bool g_test_jumped = false;
 
 void WriteFrameTime(uint8_t* base, double dt) {
   uint8_t* t = base + kTiming;
@@ -233,6 +234,7 @@ void CountFrame(uint8_t* base) {
   const int old_fps = g_rate.load();
   if (count < g_written) {
     g_match_time = count / double(old_fps);  // (a new match)
+    g_test_jumped = false;
   } else {
     g_match_time += (count - g_written) * (g_own ? 1.0 / 60 : g_last_dt);
   }
@@ -243,6 +245,17 @@ void CountFrame(uint8_t* base) {
   } else {
     g_own = false;
     WriteFrameTime(base, dt);
+  }
+  // Test aid: SVR2011_TEST_MATCH_TIME=<s> - 20 s into a match its time jumps
+  // to <s> (a timed match then ends on its own).
+  static const double test_time = [] {
+    const char* v = std::getenv("SVR2011_TEST_MATCH_TIME");
+    return v ? std::atof(v) : 0.0;
+  }();
+  if (test_time > 0 && !g_test_jumped && g_match_time > 20 && g_match_time < test_time) {
+    g_test_jumped = true;
+    g_match_time = test_time;
+    REXLOG_INFO("frame rate: test - match time set to {} s", test_time);
   }
   g_last_dt = dt;
   g_written = uint32_t(g_match_time * g_rate.load() + 0.5);
