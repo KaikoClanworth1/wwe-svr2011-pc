@@ -15,3 +15,6 @@ void mods_show(const WCHAR *game_dir);
 /* WM_COMMAND / WM_NOTIFY: 1 when handled. */
 int mods_command(int id, int code);
 int mods_notify(const NMHDR *nm);
+/* Installs a .svrmod into <game_dir>/Mods (the + button without its dialog;
+   tests: --mods-add <file>). 1 on success; the tab's status says why not. */
+int mods_install(const WCHAR *game_dir, const WCHAR *zip);

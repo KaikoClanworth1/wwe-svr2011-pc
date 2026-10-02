@@ -503,7 +503,7 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
 namespace {
 
 // "<  2 / 3  >" above the arena grid (as the Paint Tool's), and on custom
-// pages the name of the arena under the cursor.
+// pages the name of the arena under the cursor beside it.
 class ArenaPageLabel final : public rex::ui::ImGuiDialog {
  public:
   explicit ArenaPageLabel(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
@@ -540,7 +540,8 @@ class ArenaPageLabel final : public rex::ui::ImGuiDialog {
     const std::string& name = g_customs[ci].name;
     const float ns = 22.0f * scale;
     const ImVec2 nt = font->CalcTextSizeA(ns, FLT_MAX, 0.0f, name.c_str());
-    const ImVec2 nc(x0 + gw * 0.5f, y0 + gh * 0.742f);
+    // beside the page label (below the grid is the DOWNLOADED ARENAS bar)
+    const ImVec2 nc(b.x + 14.0f * scale + pad.x + nt.x * 0.5f, c.y);
     const ImVec2 na(nc.x - nt.x * 0.5f - pad.x, nc.y - nt.y * 0.5f - pad.y);
     const ImVec2 nb(nc.x + nt.x * 0.5f + pad.x, nc.y + nt.y * 0.5f + pad.y);
     dl->AddRectFilled(na, nb, IM_COL32(10, 12, 18, 220), 6.0f * scale);

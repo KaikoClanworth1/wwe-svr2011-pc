@@ -174,6 +174,24 @@ endif()
 
 # -- Launcher -----------------------------------------------------------------
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
+    # The Mod Maker (arenas branch, modmaker/): Dear ImGui (the SDK's copy) on
+    # Direct3D 11, the svrfmt format library and ufbx (FBX import).
+    set(IMGUI_SRC ${REXSDK_DIR}/thirdparty/imgui)
+    add_executable(svr2011_modmaker WIN32
+        modmaker/mod_maker.cpp
+        modmaker/svrfmt/pac.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp
+        modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp
+        modmaker/svrfmt/arena_import.cpp modmaker/svrfmt/zip_write.cpp
+        modmaker/third_party/ufbx/ufbx.c
+        ${IMGUI_SRC}/imgui.cpp ${IMGUI_SRC}/imgui_draw.cpp ${IMGUI_SRC}/imgui_tables.cpp
+        ${IMGUI_SRC}/imgui_widgets.cpp ${IMGUI_SRC}/backends/imgui_impl_win32.cpp
+        ${IMGUI_SRC}/backends/imgui_impl_dx11.cpp
+        launcher/launcher.rc)
+    target_include_directories(svr2011_modmaker PRIVATE modmaker modmaker/third_party/ufbx
+        ${IMGUI_SRC} ${IMGUI_SRC}/backends ${REXSDK_DIR}/thirdparty/stb)
+    target_compile_definitions(svr2011_modmaker PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+    target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32)
+    set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
     add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/launcher.rc)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE

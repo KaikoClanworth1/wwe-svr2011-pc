@@ -1,6 +1,7 @@
 // svrmod: command-line front end of the Mod Maker's format library.
 //   svrmod roundtrip <file.pac>...       EPAC/PACH/BPE/textures/JBOY self-test
 //   svrmod export <bgNN.pac> <out dir>   arena -> arena.fbx + textures/*.png
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -11,6 +12,7 @@
 #include "svrfmt/png.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
+#include "svrfmt/zip_write.h"
 
 using namespace svrfmt;
 
@@ -156,7 +158,40 @@ int Import(const char* pac, const char* fbx, const char* out) {
   return 0;
 }
 
+// The Mod Maker's "Save as mod" without its window (tests):
+// makemod <bgNN.pac> <edited.fbx | -> <banner picture> <name> <out.svrmod>
+int MakeMod(const char* pac, const char* fbx, const char* banner, const char* name, const char* out) {
+  Arena a;
+  std::string err;
+  if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
+  if (std::strcmp(fbx, "-")) {
+    ImportOptions opt;
+    ImportReport rep;
+    if (!ImportFbx(a, fbx, opt, rep)) {
+      for (const auto& e : rep.errors) std::printf("error: %s\n", e.c_str());
+      return 1;
+    }
+  }
+  const Bytes data = a.Save(&err);
+  if (!err.empty()) { std::printf("error: %s\n", err.c_str()); return 1; }
+  Image img;
+  if (!LoadImageFile(banner, img)) { std::printf("%s: cannot read\n", banner); return 1; }
+  std::string id;
+  for (const char* c = name; *c; ++c)
+    if (std::isalnum(static_cast<unsigned char>(*c))) id.push_back(char(std::tolower(static_cast<unsigned char>(*c))));
+    else if (!id.empty() && id.back() != '_') id.push_back('_');
+  const std::string manifest =
+      std::string("type=arena\nid=") + id + "\nname=" + name + "\nauthor=test\nversion=1.0\n";
+  std::vector<ZipEntry> files = {{"manifest.txt", Bytes(manifest.begin(), manifest.end())},
+                                 {"arena.pac", data},
+                                 {"banner.dds", DdsEncode(Resize(img, 256, 128), DxtFormat::kDxt5, false)}};
+  if (!WriteFile(out, ZipWrite(files))) return 1;
+  std::printf("wrote %s (id %s)\n", out, id.c_str());
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc == 7 && !std::strcmp(argv[1], "makemod")) return MakeMod(argv[2], argv[3], argv[4], argv[5], argv[6]);
   if (argc == 5 && !std::strcmp(argv[1], "import")) return Import(argv[2], argv[3], argv[4]);
   if (argc == 4 && !std::strcmp(argv[1], "bpe")) return Bpe(argv[2], argv[3]);
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);

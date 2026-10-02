@@ -5100,6 +5100,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         post_progress(0, L"%s: %s", ok ? L"installed" : L"failed", s_install_msg);
         return ok ? 0 : 1;
     }
+    /* Tests: --mods-add <game folder> <file.svrmod> installs a mod as the Mods
+       tab's + does (exit code 0 when installed). */
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--mods-add")) {
+        const int ok = mods_install(argv[2], argv[3]);
+        LocalFree(argv);
+        return ok ? 0 : 1;
+    }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
         static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods" };
         int i;

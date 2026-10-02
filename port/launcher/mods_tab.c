@@ -207,32 +207,45 @@ static void safe_id(WCHAR *id)
         if (!(iswalnum(*id) || *id == L'_' || *id == L'-' || *id == L'.')) *id = L'_';
 }
 
+static int install_file(const WCHAR *zip);
+
 static void add_mod(void)
 {
-    WCHAR zip[MAX_PATH], tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512];
-    Mod m;
+    WCHAR zip[MAX_PATH];
     if (!s_game[0]) { status(L"Install the game first (Install tab)."); return; }
-    if (!pick_file(zip)) return;
+    if (pick_file(zip)) install_file(zip);
+}
+
+int mods_install(const WCHAR *game_dir, const WCHAR *zip)
+{
+    wcsncpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"", _TRUNCATE);
+    return s_game[0] && install_file(zip);
+}
+
+static int install_file(const WCHAR *zip)
+{
+    WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512];
+    Mod m;
     swprintf_s(tmp, MAX_PATH, L"%s\\Mods\\.incoming", s_game);
     remove_tree(tmp, 0);
     SHCreateDirectoryExW(NULL, tmp, NULL);
     if (!unzip_file(zip, tmp)) {
         status(L"That file is not a mod (it could not be unpacked).");
         remove_tree(tmp, 0);
-        return;
+        return 0;
     }
     ZeroMemory(&m, sizeof m);
     swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", tmp);
     if (!read_manifest(man, &m)) {
         status(L"That file has no manifest.txt (type and id): it is not an SvR2011 mod.");
         remove_tree(tmp, 0);
-        return;
+        return 0;
     }
     if (_wcsicmp(m.type, L"arena")) {
         swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena mods only.", m.name, m.type);
         status(t);
         remove_tree(tmp, 0);
-        return;
+        return 0;
     }
     {
         WCHAR pac[MAX_PATH], ban[MAX_PATH];
@@ -241,7 +254,7 @@ static void add_mod(void)
         if (!exists(pac) || !exists(ban)) {
             status(L"That arena mod is incomplete (it needs arena.pac and banner.dds).");
             remove_tree(tmp, 0);
-            return;
+            return 0;
         }
     }
     safe_id(m.id);
@@ -252,13 +265,14 @@ static void add_mod(void)
     if (!MoveFileW(tmp, dst)) {
         status(L"The mod could not be installed (is the game running?).");
         remove_tree(tmp, 0);
-        return;
+        return 0;
     }
     scan();
     fill();
     swprintf_s(t, 512, L"Installed \"%s\". It is on the arena select pages after the game's own arenas.",
                m.name[0] ? m.name : m.id);
     status(t);
+    return 1;
 }
 
 static int selected(void) { return ListView_GetNextItem(s_list, -1, LVNI_SELECTED); }
