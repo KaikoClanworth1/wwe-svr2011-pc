@@ -494,6 +494,22 @@ index 0000000..c1f04e6
 +    if (::rex::timeline::Enabled())                             \
 +      ::rex::timeline::Record(::rex::timeline::ev, ##__VA_ARGS__); \
 +  } while (0)
+diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
+index afb4a30..7d91a9e 100644
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -53,6 +53,11 @@ namespace ui {
+ class Presenter;
+ class Window;
+ 
++// [svr2011] Presents to the screen so far, and those that showed a new guest
++// frame (the frames the player actually sees).
++uint64_t HostPresentCount();
++uint64_t HostNewGuestFramePresentCount();
++
+ class UIDrawContext {
+  public:
+   UIDrawContext(const UIDrawContext& context) = delete;
 diff --git a/include/rex/ui/surface_android.h b/include/rex/ui/surface_android.h
 new file mode 100644
 index 0000000..a75fb1f
@@ -1617,7 +1633,7 @@ index a5c97a0..77b865e 100644
    return true;
  }
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 8f2fcb0..4be98de 100644
+index 8f2fcb0..e5b7dad 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
 @@ -9,7 +9,10 @@
@@ -1631,7 +1647,47 @@ index 8f2fcb0..4be98de 100644
  
  #include <algorithm>
  #include <cctype>
-@@ -217,6 +220,12 @@ void GraphicsSystem::OnHostGpuLossFromAnyThread([[maybe_unused]] bool is_respons
+@@ -35,6 +38,9 @@ REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none,
+     .allowed({"none", "fxaa", "fxaa_extreme"})
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++// [svr2011] The guest's vblank rate (its frame clock), Hz; 0 = the video
++// mode's (vsync off: 1 kHz).
++REXCVAR_DEFINE_DOUBLE(guest_vblank_hz, 0.0, "GPU", "Guest vblank rate in Hz (0: the video mode's)");
+ REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
+                     "Store shaders persistently and load them when loading games to avoid "
+                     "runtime spikes and freezes when playing the game not for the first time.");
+@@ -160,6 +166,29 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+         uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
+         while (vsync_worker_running_) {
+           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
++          // [svr2011] guest_vblank_hz > 0: vblanks at that rate (read every
++          // tick, so it can change), whatever vsync says, timed precisely:
++          // 1 ms sleeps until just before the vblank, then short yields.
++          const double vblank_hz = REXCVAR_GET(guest_vblank_hz);
++          if (vblank_hz > 0) {
++            const uint64_t interval =
++                std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / vblank_hz));
++            if (current_time - last_frame_time > interval * 4) {
++              last_frame_time = current_time - interval;  // (fell far behind: no burst)
++            }
++            if (current_time - last_frame_time >= interval) {
++              MarkVblank();
++              last_frame_time += interval;
++              continue;
++            }
++            const uint64_t left = last_frame_time + interval - current_time;
++            if (left > guest_tick_frequency / 500) {  // > 2 ms
++              rex::thread::Sleep(std::chrono::milliseconds(1));
++            } else {
++              rex::thread::MaybeYield();
++            }
++            continue;
++          }
+           uint64_t interval_ticks =
+               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+           while (current_time - last_frame_time >= interval_ticks) {
+@@ -217,6 +246,12 @@ void GraphicsSystem::OnHostGpuLossFromAnyThread([[maybe_unused]] bool is_respons
    if (host_gpu_loss_reported_.test_and_set(std::memory_order_relaxed)) {
      return;
    }
@@ -1644,7 +1700,7 @@ index 8f2fcb0..4be98de 100644
    rex::FatalError("Graphics device lost (probably due to an internal error)");
  }
  
-@@ -312,8 +321,10 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
+@@ -312,8 +347,10 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
    //          interrupt_callback_, source, cpu);
  
    uint64_t args[] = {source, interrupt_callback_data_};
@@ -4204,6 +4260,52 @@ index ade5dd2..9151f01 100644
    D3D12_RANGE read_range;
    read_range.Begin = 0;
    read_range.End = 0;
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 7360ed9..03aa79d 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -277,6 +277,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
+ namespace rex {
+ namespace ui {
+ 
++// [svr2011] Frames presented to the screen (all presenters), and how many of
++// them showed a guest frame not shown before (g_guest_frames: guest frames
++// published to the mailbox).
++std::atomic<uint64_t> g_host_presents{0}, g_host_new_guest_presents{0}, g_guest_frames{0};
++uint64_t g_last_presented_guest_frame = 0;
++uint64_t HostPresentCount() { return g_host_presents.load(std::memory_order_relaxed); }
++uint64_t HostNewGuestFramePresentCount() {
++  return g_host_new_guest_presents.load(std::memory_order_relaxed);
++}
++
++
+ void Presenter::FatalErrorHostGpuLossCallback([[maybe_unused]] bool is_responsible,
+                                               [[maybe_unused]] bool statically_from_ui_thread) {
+   rex::FatalError("Graphics device lost (probably due to an internal error)");
+@@ -592,6 +603,7 @@ bool Presenter::RefreshGuestOutput(
+       last_acquired_and_ready,
+       (last_acquired_and_ready & 3) | (guest_output_mailbox_writable_ << 2),
+       std::memory_order_acq_rel, std::memory_order_relaxed)) {}
++  g_guest_frames.fetch_add(1, std::memory_order_release);  // [svr2011]
+   // Now, it's known that `ready == writable` on the host presentation side.
+   // Take the next `writable` with this assumption about its current value in
+   // mind.
+@@ -1497,7 +1509,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
+ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
+   assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
+   assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
++  const uint64_t guest_frame = g_guest_frames.load(std::memory_order_acquire);
+   PaintResult result = PaintAndPresentImpl(execute_ui_drawers);
++  if (result == PaintResult::kPresented || result == PaintResult::kPresentedSuboptimal) {
++    g_host_presents.fetch_add(1, std::memory_order_relaxed);
++    if (guest_frame != g_last_presented_guest_frame) {
++      g_last_presented_guest_frame = guest_frame;
++      g_host_new_guest_presents.fetch_add(1, std::memory_order_relaxed);
++    }
++  }
+   switch (result) {
+     case PaintResult::kPresented:
+       surface_paint_connection_was_optimal_at_successful_paint_ = true;
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
 index b94fe9e..d30b98c 100644
 --- a/src/ui/rex_app.cpp
