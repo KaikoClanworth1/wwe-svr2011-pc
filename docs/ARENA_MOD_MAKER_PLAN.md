@@ -110,13 +110,43 @@ diagrams, is in the plan artifact (https://claude.ai/artifact/YWqYNczKJju4Qo56tV
   - Changed entries use the C++ compressor (`svrmod bpe`; ours is about 6% larger than Yuke's).
   - BPE blocks must unpack to at most 4000 bytes.
 - [x] When arena files are opened: at arena load, not held (see above).
-- [ ] Redirect test: BG17's entry pointed at `GAME:\Mods\...` loads the mod file.
+- [x] Redirect: a VFS symlink sends `PAC\BG` to `Mods\ArenaOverlay`, a folder of hard links to the originals (copy fallback). The chosen tile's entry is swapped for the mod's `arena.pac` just before the load (`src/arena_mods.cpp`).
 - [x] **Blender round trip in game.**
   - Steps: `svrmod export` bg17, then `tools/blender_edit_test.py` (headless Blender: a new 2 m cube with a new texture, ropes repainted red/black, exported with Blender's own FBX exporter), then `svrmod import`. The match plays with the new cube, its texture and the red ropes.
   - Import keeps untouched models byte for byte. They are matched by svr_id; a model is "the same" when its triangles match to 0.05 units and its UVs to 1/512.
 - **Memory budget.** Each arena must stay within its shipped size. A file 6 KB larger crashed (guest write at 0x70960000); 94 KB larger with a new texture hung at NOW LOADING; the same size or smaller loads.
   - `Arena::FitBudget` halves the largest textures the modder didn't supply until every texture set is back within its shipped size.
   - Raising the budget is a later limit-lifting job. The decoder is `sub_826AEF10(src, dst)`, called through `sub_826A1318`; the test aid `SVR2011_TEST_BPE_LOG=1` logs every decode.
-- [ ] Runtime: arena id in match settings, arena select tiles and cursor.
+- [x] Runtime: arena select pages (as the Paint Tool's).
+  - The grid widget (vtable 0x8201D200; update `sub_823D4FC0`) moving past its left or right edge turns the page.
+  - Page 1 is the 20 shipped arenas. Each later page holds up to 20 custom arenas, each drawn on its host tile.
+  - The banners (DXT5 256x128, untiled with a 16-bit swap) are found in 4K-view physical memory by content when the screen opens, then overwritten per page.
+  - An ImGui label shows "< n / N >" and the name of the custom arena under the cursor.
 - [ ] Ring code: rope instances and heights, rope rebound and break, corners and sides (the six-sides report).
 - [ ] HMD decoded enough to rebuild barrier and floor collision.
+
+## Milestone A: a custom arena in game
+
+- **Mods tab** (launcher, `launcher/mods_tab.c`): the list, + (install a `.svrmod`), - (remove), on/off, and Open Mod Maker. `--mods-add <game> <file>` does the + for tests.
+- **Mod layout**:
+  - `Mods/Arenas/<id>/` holds `manifest.txt` (type, id, name, author, version), `arena.pac` and `banner.dds`.
+  - A `disabled` file turns the mod off.
+  - A `.svrmod` is a store-method zip of these files.
+- **SvR2011 Mod Maker.exe** (`modmaker/mod_maker.cpp`, Dear ImGui on D3D11):
+  - an arena grid with the real banners;
+  - Export to Blender and Import from Blender;
+  - name, author, version and banner picture;
+  - Save as mod and Install into game.
+  - `svrmod makemod` does the same steps without the window.
+- **End-to-end test** (`tools/arena_page_test.ps1`):
+  1. bg17 is edited in Blender.
+  2. `svrmod makemod` builds the mod.
+  3. The launcher's `--mods-add` installs it.
+  4. Arena select page 2 shows the mod's banner and name.
+  5. The match plays the mod: a new cube, its texture, and red ropes.
+- **Open:**
+  - the VS screen still shows the host arena's logo;
+  - ring R2-R4 (rope count, no ropes, size);
+  - the 3D Arena Editor (Phase 5);
+  - six sides (Phase 6);
+  - the Android Mods page.
