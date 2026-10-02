@@ -3,7 +3,10 @@ ACHIEVEMENTS to MY WWE and EXIT to the main menu.
 
 The main menus are a table of 0x74-byte records in menu.pac entry MFLO/0000
 (big-endian; parsed by sub_82BAA6E8):
-  +0x00 label string id   +0x18 group   +0x1C node id (ascending)
+  +0x00 label string id   +0x18 group   +0x1C node id (ascending: the game
+  finds a node by binary search, so an added record takes the id of the one
+  before it - with TEAM MANAGEMENT's id after OPTIONS, B did nothing in
+  MY WWE -> OPTIONS)
   +0x38 parent node       +0x3C flags (1 submenu, 2 last of group, 4 screen)
   +0x54 screen id
 A group's records are consecutive, in display order; the "last" flag ends it.
@@ -79,6 +82,7 @@ def add_entry(data, after_label, group, new_label, template, description):
     new = bytearray(data[source:source + REC])
     struct.pack_into(">I", new, 0x00, new_label)
     struct.pack_into(">I", new, 0x04, description)
+    struct.pack_into(">I", new, 0x1C, u32(data, anchor + 0x1C))  # (keeps the ids in order)
     struct.pack_into(">I", new, 0x3C, u32(new, 0x3C) | 2)    # the group's last
     struct.pack_into(">I", new, 0x40, 0)                     # no "NEW" badge
     struct.pack_into(">I", data, anchor + 0x3C, u32(data, anchor + 0x3C) & ~2)  # not last

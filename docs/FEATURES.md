@@ -1,6 +1,6 @@
 # WWE SmackDown vs. Raw 2011 PC Port: features
 
-Everything the port adds to the game, as of 1 October 2026 (v1.0.3 plus
+Everything the port adds to the game, as of 2 October 2026 (v1.0.3 plus
 unreleased work on `main`). "Unreleased" marks what isn't in a published
 release yet.
 
@@ -15,6 +15,7 @@ release yet.
 
 - **Native renderer**: the game's Direct3D calls drawn on plume (Direct3D 12 or Vulkan) instead of the emulated Xenos GPU. Falls back to the emulated renderer when stuck or when its shaders are missing.
 - **Resolutions** from 720p (the console's) to 4K, anti-aliasing, VSync, steady 60 fps.
+- **FRAME RATE**: 30, 60, 120, 144 or 240 fps (DISPLAY tab and the launcher's Settings), a cap with the game at its normal speed at any rate; 30 is the console's own 30 fps mode. VSync off no longer makes the game run too fast. *(Unreleased.)*
 - **60 fps entrances and cutscenes** (the game's 30 fps scenes run its own 60 fps mode), optional.
 - **Any screen shape**: matches and entrances fill ultrawide, 16:10, Steam Deck and foldable screens. Menus stay 16:9.
 - **GRAPHICS page** in game: *My WWE → Options → Graphics*, DISPLAY and QUALITY tabs.
@@ -37,10 +38,10 @@ release yet.
 - **Paint Tool: 10 pages of 20 logos** (200 instead of 20); grid edges change pages, the Superstar logo picker scrolls all pages. *(Unreleased.)*
 - **Divas against male superstars**: pick a diva, switch back to WWE SUPERSTARS and pick a man; the match plays normally. *(Unreleased.)*
 - **Managers playable**: the "?" tile on character select is now an **M** tile named EXTRA; it opens a list of Stephanie McMahon, Theodore Long, Hornswoggle, Paul Bearer and Tiffany (instead of the random pick), and they wrestle full matches. *(Unreleased.)*
-- **More match types** in the PLAY menus: Falls Count Anywhere (1v1, tornado tag, triple threat, fatal 4-way), 15- and 25-man Royal Rumble, 6-man Lumberjack, Backstage brawls for triple threat, fatal 4-way and 6-man (7 areas). *(Unreleased.)*
+- **More match types** in the PLAY menus: Falls Count Anywhere (1v1, tornado tag, triple threat, fatal 4-way), 15- and 25-man Royal Rumble, 6-man Lumberjack, Backstage brawls for triple threat, fatal 4-way and 6-man (7 areas), and **FREE-ROAMING BACKSTAGE** (Road to WrestleMania's whole backstage, all rooms, with a closer backstage camera) in every BACKSTAGE list. *(Unreleased.)*
 - **Replays can be switched off**: REPLAYS (DISPLAY tab) skips the instant replays after finishers and the highlights at the end of a match. *(Unreleased.)*
 - **Five languages**: English, French, German, Spanish, Italian, in the launcher and in game; **LANGUAGE** has its own entry in *My WWE → Options*. *(Own entry: unreleased.)*
-- **Achievements page**: *My WWE → Achievements*, console-style, tracked by the port.
+- **Achievements page**: *My WWE → Achievements*, console-style, tracked by the port. Since it was added, B did nothing in *My WWE → Options*; fixed, existing installs are repaired at start-up. *(Fix: unreleased.)*
 - **DLC** counts as fully licensed (Bret Hart and the rest).
 - **Discord Rich Presence**: menus, entrances, matches.
 
@@ -106,7 +107,13 @@ Requested later on 1 October 2026:
 - [x] Managers: the "?" tile shows an "M" (tile and banner, from the user's art) and reads EXTRA instead of RANDOM.
 - [ ] Match types: 50-man Royal Rumble - the engine holds 30 people in a match (not done).
 - [x] Match types: Lumberjack, Falls Count Anywhere, Backstage for triple threat / fatal 4-way / 6-man, 15- and 25-man Rumble. *(7b7e952)*
-- [ ] Road to WrestleMania's whole backstage as a fighting area: the corridor loads, the other rooms render black (follow-up).
+- [x] Road to WrestleMania's whole backstage as a fighting area: FREE-ROAMING BACKSTAGE, all rooms, backstage camera, working AI. *(Limit Breaking, d773d35)*
 - [x] Graphics options: depth of field, motion blur. *(c76de77)*
 - [x] Blurry image in wide shots above 720p: the game's soft filter, now off by default. *(c76de77)*
 - [ ] Test the Android entrance movies (Community Creations) on a phone.
+
+Requested 2 October 2026:
+
+- [x] Frame rate choices (Limit Breaking: 30 / 60 / 120 / 144 / 240, 1d0fa31; SDK side f3c397d).
+- [x] Test 30 fps fully: menus, entrances (same length as at 60), matches, pause, walking speed equal to 60 fps (Direct3D 12 and Vulkan), VSync off, switching live in GRAPHICS. Not yet: a match to its finish (replays, results), a timed match's clock, a phone.
+- [x] B did nothing in *My WWE → Options* (out of order menu records since ACHIEVEMENTS).
