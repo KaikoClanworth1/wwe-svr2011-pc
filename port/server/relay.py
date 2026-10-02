@@ -134,9 +134,8 @@ class Relay:
             return web.Response(status=401)
         if not gid:
             return web.Response(status=400)
-        # (the answer starts now: proxies on the way see a live request, not one waiting for its end)
-        resp = web.StreamResponse(headers={"Content-Type": "application/octet-stream", "X-Accel-Buffering": "no"})
-        await resp.prepare(request)
+        # (the answer comes when the upload ends: an answer started while the body
+        # still streams made the Project Index portal end the request with a 502)
         content = request.content
         try:
             while True:
@@ -160,11 +159,7 @@ class Relay:
                         self.relayed += 1
         except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.CancelledError):
             pass
-        try:
-            await resp.write_eof()
-        except (ConnectionResetError, RuntimeError):
-            pass
-        return resp
+        return web.Response(status=200)
 
     def routes(self, app, base):
         app.router.add_get(base + "/api/relay/{id}", self.download)

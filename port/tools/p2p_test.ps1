@@ -31,10 +31,20 @@ function Shot([string]$slot, [string]$stem) {
     if ($slot) { & $s shot -Slot $slot $stem | Out-Null } else { & $s shot $stem | Out-Null }
 }
 # title -> main menu -> ONLINE -> (paint data prompt: NO) -> MATCH -> PLAYER MATCH
-function ToPlayerMatch([string]$slot) {
-    # (one START: the title takes it from ~60 s on, and the saves load; a second
-    # one would leave the "Load Successful" box for the attract demo)
-    P $slot START 50; P $slot A 8; P $slot START 15
+function ToPlayerMatch([string]$slot, [string]$log) {
+    # START at the title loads the saves ("rows added to the match menus" in the
+    # log: the loading ring, its exhibition loading behind); one START at the
+    # wrong moment goes back to the title, so START until the saves load. The
+    # ring then waits for START for the main menu (not A: that starts its
+    # exhibition match) once the exhibition has loaded.
+    $f = Join-Path $runs "$log.log"
+    $before = @(Select-String -Path $f -Pattern "rows added to the match menus" -ErrorAction SilentlyContinue).Count
+    foreach ($try in 1..10) {
+        P $slot START 12
+        if (@(Select-String -Path $f -Pattern "rows added to the match menus" -ErrorAction SilentlyContinue).Count -gt $before) { break }
+    }
+    [Threading.Thread]::Sleep(25000)
+    P $slot START 15
     P $slot DOWN 1.5; P $slot DOWN 1.5; P $slot DOWN 1.5; P $slot DOWN 1.5; P $slot A 25
     P $slot A 25
     P $slot A 10; P $slot DOWN 1.5; P $slot A 10
@@ -42,7 +52,7 @@ function ToPlayerMatch([string]$slot) {
 if (-not $JoinOnly) {
     & $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config $(if ($HostConfig) { $HostConfig } else { "test_config_ent_down$suffix.toml" }) -LogLevel $LogLevel | Out-Null
     [Threading.Thread]::Sleep(75000)
-    ToPlayerMatch ""
+    ToPlayerMatch "" "$Name`_host"
     P "" DOWN 1.2; P "" DOWN 1.2; P "" A 10            # CREATE SESSION
     1..5 | ForEach-Object { P "" DOWN 0.8 }
     P "" A 15                                          # CONTINUE
@@ -51,7 +61,7 @@ if (-not $JoinOnly) {
 if (-not $HostOnly) {
     & $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config $(if ($JoinConfig) { $JoinConfig } else { "test_config_ent_up_p2$suffix.toml" }) -LogLevel $LogLevel | Out-Null
     [Threading.Thread]::Sleep(75000)
-    ToPlayerMatch "2"
+    ToPlayerMatch "2" "$Name`_join"
     P "2" DOWN 1.5; P "2" A 15                         # CUSTOM MATCH
     P "2" DOWN 1; P "2" DOWN 1; P "2" A 15             # SEARCH FOR A MATCH
     Shot "2" "$Name`_join_list"

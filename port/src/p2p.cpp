@@ -221,6 +221,11 @@ XnAddr MyXnAddr() {
 std::mutex g_pipe_mutex;
 std::shared_ptr<net::Pipe> g_pipe;
 std::atomic<bool> g_relay_up{false};  // (it answered)
+std::atomic<int64_t> g_online_at{0};  // last session activity (steady clock, ms): the relay is wanted
+
+int64_t NowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
 bool ForceRelay() { return REXCVAR_GET(p2p_force_relay); }
 
 struct Peer {
@@ -703,26 +708,48 @@ void OnPipeData(const uint8_t* data, size_t size) {
   buf.erase(buf.begin(), buf.begin() + ptrdiff_t(at));
 }
 
-// Opens the relay's pipe (signed in) and STUN, then keeps this game
-// registered (and its NAT's mapping open).
+// STUN now and then; the relay's pipe (signed in) while the player plays
+// online - a session open, or session activity in the last 5 minutes (the
+// ONLINE menu's presence session comes and goes) - registered every 15 s
+// (which also keeps its NAT's mapping open). Each pipe is two of the server's
+// connections: games outside online play don't hold any.
 void Keepalive() {
+  using namespace std::chrono_literals;
   const bool relay = REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty();
   const std::string stun = REXCVAR_GET(p2p_stun);
   char id[13];
   std::snprintf(id, sizeof(id), "%02x%02x%02x%02x%02x%02x", g_me.mac[0], g_me.mac[1], g_me.mac[2], g_me.mac[3],
                 g_me.mac[4], g_me.mac[5]);
-  for (int round = 0;; ++round) {
-    bool open;
+  Clock::time_point tried{}, registered{}, stunned{};
+  for (;;) {
+    const auto now = Clock::now();
+    {
+      std::lock_guard lock(g_mutex);
+      if (!g_sessions.empty()) g_online_at = NowMs();
+    }
+    const int64_t at = g_online_at;
+    const bool wanted = relay && at && NowMs() - at < 300000;
+    std::shared_ptr<net::Pipe> pipe;
     {
       std::lock_guard lock(g_pipe_mutex);
-      open = g_pipe && g_pipe->Open();
+      pipe = g_pipe;
     }
-    if (relay && !open && round % 2 == 0) {  // (and again every 30 s while it's down)
-      auto pipe = net::OpenPipe(std::string("/api/relay/") + id, OnPipeData);
+    const bool open = pipe && pipe->Open();
+    if (wanted && !open && (tried == Clock::time_point{} || now - tried >= 30s)) {  // (again every 30 s while down)
+      tried = now;
+      auto opened = net::OpenPipe(std::string("/api/relay/") + id, OnPipeData);
       std::lock_guard lock(g_pipe_mutex);
-      g_pipe = std::move(pipe);
+      g_pipe = std::move(opened);
+      registered = {};
+    } else if (!wanted && pipe) {
+      pipe->Close();
+      std::lock_guard lock(g_pipe_mutex);
+      g_pipe.reset();
+      tried = {};
+      REXLOG_INFO("p2p: relay closed (not online)");
     }
-    if (!stun.empty() && stun != "off" && round % 20 == 0) {  // (every 5 minutes: a NAT may move it)
+    if (!stun.empty() && stun != "off" && (stunned == Clock::time_point{} || now - stunned >= 300s)) {
+      stunned = now;  // (every 5 minutes: a NAT may move it)
       const auto [ip, port] = Resolve(stun, 3478);
       if (ip) {
         uint8_t req[20] = {0, 1, 0, 0};
@@ -731,8 +758,11 @@ void Keepalive() {
         SendOn(g_socket, ip, port, req, sizeof(req));
       }
     }
-    ToPipe(kRegister, g_me.mac.data(), nullptr, 0);
-    std::this_thread::sleep_for(std::chrono::seconds(round < 2 ? 2 : 15));
+    if (wanted && (registered == Clock::time_point{} || now - registered >= 15s)) {
+      registered = now;
+      ToPipe(kRegister, g_me.mac.data(), nullptr, 0);
+    }
+    std::this_thread::sleep_for(1s);
   }
 }
 
@@ -769,6 +799,10 @@ std::vector<std::pair<uint32_t, uint16_t>> SearchTargets() {
 }
 
 std::vector<Session> Search() {
+  g_online_at = NowMs();
+  if (REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty()) {
+    for (int i = 0; i < 30 && !g_relay_up; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
   const uint32_t nonce = NewNonce();
   const auto request = Header(kSearch, nonce);
   const auto targets = SearchTargets();
@@ -1018,6 +1052,7 @@ uint64_t NewSessionId() {
 
 std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) {
   if (!buffer) return std::nullopt;
+  if (message >= 0xB0010 && message <= 0xB001C) g_online_at = NowMs();  // (session messages: playing online)
   const uint8_t* b = Guest(buffer);
   auto u32 = [&](size_t at) { return Be32(b + at); };
   if (message != 0xB0006 && message != 0xB0007) {
@@ -1177,7 +1212,6 @@ void InstallP2P(rex::memory::Memory* memory) {
   }
   std::thread(Receive).detach();
   std::thread(Keepalive).detach();
-
   rex::kernel::xam::OnlineHooks hooks;
   hooks.title_xnaddr = TitleXnAddr;
   hooks.xnaddr_to_inaddr = XnAddrToInAddr;
@@ -1195,4 +1229,3 @@ void InstallP2P(rex::memory::Memory* memory) {
 }
 
 }  // namespace svr2011
-
