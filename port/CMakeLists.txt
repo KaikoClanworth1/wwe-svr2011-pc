@@ -39,6 +39,8 @@ set(SVR2011_SOURCES
     src/paint_pages.cpp
     src/match_types.cpp
     src/arena_mods.cpp
+    modmaker/svrfmt/pac.cpp
+    modmaker/svrfmt/texture.cpp
     src/frame_rate.cpp
     src/roster.cpp
     src/post_effects.cpp

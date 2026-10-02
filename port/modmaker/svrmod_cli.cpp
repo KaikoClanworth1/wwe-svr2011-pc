@@ -8,6 +8,7 @@
 #include "svrfmt/arena.h"
 #include "svrfmt/arena_import.h"
 #include "svrfmt/jboy.h"
+#include "svrfmt/png.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
 
@@ -161,6 +162,13 @@ int main(int argc, char** argv) {
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "roundtrip")) return Roundtrip(argc - 2, argv + 2);
   if (argc == 4 && !std::strcmp(argv[1], "export")) return Export(argv[2], argv[3]);
-  std::printf("usage: svrmod roundtrip <file.pac>... | export <bgNN.pac> <out dir>\n");
+  if (argc == 4 && !std::strcmp(argv[1], "banner")) {
+    // any picture -> the arena select banner: 256 x 128 DXT5, one level
+    Image img;
+    if (!LoadImageFile(argv[2], img)) { std::printf("%s: cannot read\n", argv[2]); return 1; }
+    return WriteFile(argv[3], DdsEncode(Resize(img, 256, 128), DxtFormat::kDxt5, false)) ? 0 : 1;
+  }
+  std::printf("usage: svrmod roundtrip <file.pac>... | export <bgNN.pac> <out dir> | import <bgNN.pac> <fbx> <out.pac>\n"
+              "       | banner <picture> <out.dds> | bpe <raw> <out> | bpetest <file.pac> [out.pac]\n");
   return 2;
 }
