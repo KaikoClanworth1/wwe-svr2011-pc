@@ -63,4 +63,15 @@ bool StartRelay();
 using TransferListener = void (*)(bool upload, int fileid, const std::string& content_type, const std::string& body);
 void SetTransferListener(TransferListener listener);
 
+// Requests the relay answers itself instead of the server (online_cas.cpp):
+// the whole HTTP reply, or nullopt to pass the request on. (headers: lower-
+// case names.) Called on the relay's thread.
+using LocalAnswer = std::optional<std::string> (*)(const std::string& method, const std::string& target,
+                                                   const std::map<std::string, std::string>& headers,
+                                                   const std::string& body);
+void SetLocalAnswer(LocalAnswer answer);
+
+// The signed-in player's GameSpy profile id (0 before the game's login).
+int SignedInProfile();
+
 }  // namespace svr2011::net

@@ -28,6 +28,7 @@ set(SVR2011_SOURCES
     src/discord_presence.cpp
     src/online.cpp
     src/online_net.cpp
+    src/online_cas.cpp
     src/menu_hooks.cpp
     src/perf_hooks.cpp
     src/saves.cpp

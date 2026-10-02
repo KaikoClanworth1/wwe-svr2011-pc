@@ -18,6 +18,11 @@
 // the leaderboards.
 #pragma once
 
+#include <chrono>
+#include <cstdint>
+#include <optional>
+#include <string>
+
 namespace rex::memory {
 class Memory;
 }
@@ -25,5 +30,13 @@ class Memory;
 namespace svr2011 {
 
 void InstallP2P(rex::memory::Memory* memory);
+
+// Files games fetch from each other (online_cas.cpp: the Created Superstars'
+// Paint Tool data and extra logos): a file is a kind and a key. The source
+// gives this game's copy (nullopt: it hasn't); P2PFetch asks the peers (the
+// games this one knows) and returns the first that has it, whole.
+using P2PFileSource = std::optional<std::string> (*)(uint8_t kind, const std::string& key);
+void SetP2PFileSource(P2PFileSource source);
+std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::chrono::milliseconds timeout);
 
 }  // namespace svr2011

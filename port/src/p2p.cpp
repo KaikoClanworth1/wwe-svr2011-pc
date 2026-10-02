@@ -71,7 +71,10 @@ constexpr int kInstances = 4;                    // (searched on the LAN and thi
 constexpr uint32_t kFakeNet = 0x0A400000;        // 10.64.0.0/16: peers as the game sees them
 constexpr uint32_t kMagic = 0x53565250;          // "SVRP"
 constexpr uint8_t kVersion = 1;
-enum : uint8_t { kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6 };
+enum : uint8_t {
+  kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
+  kFileRequest = 7, kFilePart = 8  // (files peers fetch from each other: P2PFetch)
+};
 
 rex::memory::Memory* g_memory = nullptr;
 
@@ -570,6 +573,108 @@ void OnData(const uint8_t* data, size_t size, Via via) {
   if (via.relayed) Punch(mac);
 }
 
+// -- files peers fetch from each other (P2PFetch: online_cas.cpp) -------------------
+//
+// A request names a file (kind + key) and a byte range; the peers that have it
+// answer with parts of up to kChunk bytes (total 0xFFFFFFFF: "I haven't"). The
+// asker re-requests what didn't arrive from the peer that answered.
+
+constexpr uint32_t kChunk = 1024, kNone = 0xFFFFFFFF;
+P2PFileSource g_file_source = nullptr;
+
+struct FileFetch {
+  uint8_t kind = 0;
+  std::string key;
+  std::string data;
+  std::vector<bool> have;
+  uint32_t total = 0, got = 0;
+  int refusals = 0;
+  bool known = false;
+  Path source;
+};
+std::map<uint32_t, FileFetch*> g_fetches;  // by request nonce (under g_wait_mutex)
+
+std::vector<uint8_t> FileRequest(uint32_t nonce, uint8_t kind, const std::string& key, uint32_t offset,
+                                 uint32_t length) {
+  Writer w;
+  w.b = Header(kFileRequest, nonce);
+  w.u8(kind), w.u8(uint8_t(key.size()));
+  w.bytes(reinterpret_cast<const uint8_t*>(key.data()), key.size());
+  w.u32(offset), w.u32(length);
+  return w.b;
+}
+
+// A peer asks for a file this game has: the parts of the range (or "I haven't").
+void ServeFile(Reader& r, uint32_t nonce, const Path& back) {
+  const uint8_t kind = r.u8(), len = r.u8();
+  if (!r.need(len)) return;
+  const std::string key(reinterpret_cast<const char*>(r.p + r.at), len);
+  r.at += len;
+  const uint32_t offset = r.u32(), length = r.u32();
+  if (!r.ok || !g_file_source) return;
+  // (the last few files asked for, so a transfer reads each once)
+  static std::mutex cache_mutex;
+  static std::vector<std::pair<std::string, std::shared_ptr<std::optional<std::string>>>> cache;
+  std::shared_ptr<std::optional<std::string>> file;
+  {
+    std::lock_guard lock(cache_mutex);
+    const std::string id = std::to_string(kind) + ":" + key;
+    for (auto& [k, v] : cache) {
+      if (k == id) file = v;
+    }
+    if (!file) {
+      file = std::make_shared<std::optional<std::string>>(g_file_source(kind, key));
+      cache.emplace_back(id, file);
+      if (cache.size() > 8) cache.erase(cache.begin());
+    }
+  }
+  auto part = [&](uint32_t total, uint32_t at, const char* bytes, uint16_t n) {
+    Writer w;
+    w.b = Header(kFilePart, nonce);
+    w.u8(kind), w.u8(uint8_t(key.size()));
+    w.bytes(reinterpret_cast<const uint8_t*>(key.data()), key.size());
+    w.u32(total), w.u32(at), w.u16(n);
+    w.bytes(reinterpret_cast<const uint8_t*>(bytes), n);
+    Send(back, w.b);
+  };
+  if (!*file) return part(kNone, 0, nullptr, 0);
+  const std::string& bytes = **file;
+  const uint32_t total = uint32_t(bytes.size());
+  const uint32_t end = uint32_t(std::min<uint64_t>(total, uint64_t(offset) + std::min<uint32_t>(length, 1u << 20)));
+  if (total == 0) return part(0, 0, nullptr, 0);
+  for (uint32_t at = offset; at < end; at += kChunk) {
+    part(total, at, bytes.data() + at, uint16_t(std::min<uint32_t>(kChunk, end - at)));
+  }
+}
+
+void OnFilePart(Reader& r, uint32_t nonce, const Path& back) {
+  r.u8();
+  const uint8_t len = r.u8();
+  if (!r.need(len)) return;
+  r.at += len;
+  const uint32_t total = r.u32(), at = r.u32();
+  const uint16_t n = r.u16();
+  if (!r.ok || !r.need(n)) return;
+  std::lock_guard lock(g_wait_mutex);
+  auto it = g_fetches.find(nonce);
+  if (it == g_fetches.end()) return;
+  FileFetch& f = *it->second;
+  if (total == kNone) {
+    ++f.refusals;
+  } else if (!f.known) {
+    if (total > (64u << 20)) return;
+    f.known = true, f.total = total, f.source = back;
+    f.data.assign(total, '\0');
+    f.have.assign((total + kChunk - 1) / kChunk, false);
+  }
+  if (total != kNone && f.known && total == f.total && at < total && at % kChunk == 0 && !f.have[at / kChunk]) {
+    std::memcpy(f.data.data() + at, r.p + r.at, std::min<uint32_t>(n, total - at));
+    f.have[at / kChunk] = true;
+    ++f.got;
+  }
+  g_wait.notify_all();
+}
+
 void OnPacket(const uint8_t* data, size_t size, Via via) {
   Reader r{data, size};
   if (r.u32() != kMagic || r.u8() != kVersion) return;
@@ -623,6 +728,12 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
     }
     case kHello:
       if (nonce & 1) Send(back, Header(kHello, nonce + 1));  // (the first of a pair: answered)
+      break;
+    case kFileRequest:
+      ServeFile(r, nonce, back);
+      break;
+    case kFilePart:
+      OnFilePart(r, nonce, back);
       break;
     case kSessions:
     case kQosReply: {
@@ -1179,6 +1290,72 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
 
 }  // namespace
 
+void SetP2PFileSource(P2PFileSource source) { g_file_source = source; }
+
+std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::chrono::milliseconds timeout) {
+  if (g_socket == kBadSocket || key.size() > 200) return std::nullopt;
+  FileFetch fetch;
+  fetch.kind = kind, fetch.key = key;
+  const uint32_t nonce = NewNonce();
+  std::vector<Path> peers;
+  {
+    std::lock_guard lock(g_mutex);
+    for (const auto& [mac, p] : g_peers) peers.push_back(PathOf(mac, p));
+  }
+  if (peers.empty()) return std::nullopt;
+  {
+    std::lock_guard lock(g_wait_mutex);
+    g_fetches[nonce] = &fetch;
+  }
+  const auto ask_all = FileRequest(nonce, kind, key, 0, kNone);
+  for (const auto& p : peers) Send(p, ask_all);
+  const auto deadline = Clock::now() + timeout;
+  auto last = Clock::now();
+  uint32_t last_got = 0;
+  std::optional<std::string> result;
+  std::unique_lock lock(g_wait_mutex);
+  while (Clock::now() < deadline) {
+    g_wait.wait_for(lock, std::chrono::milliseconds(200));
+    if (fetch.known && fetch.got == fetch.have.size()) {
+      result = std::move(fetch.data);
+      break;
+    }
+    if (!fetch.known && fetch.refusals >= int(peers.size())) break;  // (nobody has it)
+    if (fetch.got != last_got) last = Clock::now(), last_got = fetch.got;
+    if (Clock::now() - last < std::chrono::milliseconds(800)) continue;
+    last = Clock::now();
+    // (what didn't come: asked again, a range at a time)
+    std::vector<std::vector<uint8_t>> asks;
+    if (!fetch.known) {
+      asks.push_back(ask_all);
+    } else {
+      for (size_t i = 0; i < fetch.have.size() && asks.size() < 32;) {
+        if (fetch.have[i]) { ++i; continue; }
+        size_t j = i;
+        while (j < fetch.have.size() && !fetch.have[j] && j - i < 64) ++j;
+        asks.push_back(FileRequest(nonce, kind, key, uint32_t(i * kChunk), uint32_t((j - i) * kChunk)));
+        i = j;
+      }
+    }
+    const Path source = fetch.source;
+    const bool known = fetch.known;
+    lock.unlock();
+    for (const auto& a : asks) {
+      if (known) {
+        Send(source, a);
+      } else {
+        for (const auto& p : peers) Send(p, a);
+      }
+    }
+    lock.lock();
+  }
+  g_fetches.erase(nonce);
+  lock.unlock();
+  REXLOG_INFO("p2p: file {}:{} {}", kind, key,
+              result ? fmt::format("fetched ({} bytes)", result->size()) : std::string("not fetched"));
+  return result;
+}
+
 void InstallP2P(rex::memory::Memory* memory) {
   if (!rex::cvar::Query<bool>("online_enabled") || !REXCVAR_GET(p2p_enabled)) return;
   g_memory = memory;
@@ -1229,3 +1406,4 @@ void InstallP2P(rex::memory::Memory* memory) {
 }
 
 }  // namespace svr2011
+

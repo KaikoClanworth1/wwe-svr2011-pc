@@ -12,10 +12,12 @@
 # in the test server at 127.0.0.1:8421) instead of directly: the *_relay.toml
 # configs (p2p_force_relay), as two players who can't reach each other would play.
 param([string]$Name = "p2", [switch]$HostOnly, [switch]$JoinOnly, [switch]$Play, [switch]$Relay, [switch]$Fight,
-      [string]$LogLevel = "info", [string]$HostConfig = "", [string]$JoinConfig = "")
+      [string]$LogLevel = "info", [string]$HostConfig = "", [string]$JoinConfig = "",
+      [string]$HostUserData = "")
 # -HostConfig: the host's settings instead (e.g. a test account on the public
 # server, with -HostOnly, for a phone to join: tools/phone_session.ps1).
-# -JoinConfig: the joiner's (e.g. another frame rate: sync tests).
+# -JoinConfig: the joiner's (e.g. another frame rate: sync tests). -HostUserData: the
+# host's saves folder in runs (e.g. a copy with Created Superstars).
 # -Fight: in the match both players move and strike for a while, then both
 # games are screenshot at the same moment (runs\<Name>_*_sync*.png: the
 # referee and both Superstars should stand in the same places).
@@ -50,7 +52,7 @@ function ToPlayerMatch([string]$slot, [string]$log) {
     P $slot A 10; P $slot DOWN 1.5; P $slot A 10
 }
 if (-not $JoinOnly) {
-    & $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config $(if ($HostConfig) { $HostConfig } else { "test_config_ent_down$suffix.toml" }) -LogLevel $LogLevel | Out-Null
+    & $s start -Name "$Name`_host" -UserData $(if ($HostUserData) { Join-Path $runs $HostUserData } else { Join-Path $runs "test_userdata_ent_down" }) -Config $(if ($HostConfig) { $HostConfig } else { "test_config_ent_down$suffix.toml" }) -LogLevel $LogLevel | Out-Null
     [Threading.Thread]::Sleep(75000)
     ToPlayerMatch "" "$Name`_host"
     P "" DOWN 1.2; P "" DOWN 1.2; P "" A 10            # CREATE SESSION

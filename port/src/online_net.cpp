@@ -45,6 +45,8 @@ namespace svr2011::net {
 namespace {
 
 TransferListener g_transfer = nullptr;  // (SetTransferListener)
+LocalAnswer g_local = nullptr;          // (SetLocalAnswer)
+std::atomic<int> g_profile{0};          // (SignedInProfile)
 
 // -- sockets ----------------------------------------------------------------------
 
@@ -434,6 +436,14 @@ void HandleHttp(Socket s) {
     if (n <= 0) break;
     body.append(buf, size_t(n));
   }
+  if (g_local) {
+    if (auto local = g_local(method, target, request_headers.headers, body)) {
+      REXLOG_INFO("online: {} {} -> answered here ({} bytes)", method, target, local->size());
+      SendAll(s, *local);
+      CloseSocket(s);
+      return;
+    }
+  }
   Headers forward;
   for (const char* name : {"content-type", "soapaction"}) {
     auto it = request_headers.headers.find(name);
@@ -535,6 +545,7 @@ void HandleGp(Socket s) {
                        "\\userid\\" + pid + "\\profileid\\" + pid + "\\uniquenick\\\\lt\\" +
                        JsonField(session->body, "ticket") + "\\id\\" + id + "\\final\\");
         REXLOG_INFO("online: signed in as {} (profile {})", JsonField(session->body, "name"), pid);
+        g_profile = std::atoi(pid.c_str());
       } else if (msg.rfind("\\getprofile\\", 0) == 0) {
         const std::string pid = GpValue(msg, "profileid");
         std::string sig;
@@ -886,6 +897,10 @@ std::optional<Response> ServerRequest(const std::string& method, const std::stri
 }
 
 void SetTransferListener(TransferListener listener) { g_transfer = listener; }
+
+void SetLocalAnswer(LocalAnswer answer) { g_local = answer; }
+
+int SignedInProfile() { return g_profile; }
 
 bool StartRelay() {
   static std::once_flag once;
