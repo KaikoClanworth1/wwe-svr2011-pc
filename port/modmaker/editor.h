@@ -9,6 +9,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "svrfmt/arena.h"
 #include "svrfmt/ring_kit.h"
@@ -19,12 +21,15 @@ struct Lighting {
   int preset = 0;                 // index in Presets() (0 = the arena as made)
   float color[3] = {1, 1, 1};     // multiplied into every material colour
   float strength = 1.0f;
+  bool crowd = true;              // the people in the seats
   bool Default() const;
 };
 
 struct Hooks {
   std::function<void(const std::string&)> log;
   std::function<void()> test_in_game;  // install the mod and start the game
+  // the prop library: arenas to take models from (name, pac path)
+  std::vector<std::pair<std::string, std::string>> library;
 };
 
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Hooks& hooks);
@@ -39,6 +44,8 @@ void Shutdown();
 void TestStart(int view, const std::string& select);
 // test aid: moves the selection 2 m, adds a 2 m box at ringside, red top rope, warmer light
 void TestEdit();
+// test aid: every entrance-zone model of library arena `lib` added in its place
+void TestLibrary(int lib);
 
 svrfmt::RingSpec& Ring();
 Lighting& Light();

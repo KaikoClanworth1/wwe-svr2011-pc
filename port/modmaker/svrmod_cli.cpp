@@ -255,6 +255,31 @@ int main(int argc, char** argv) {
     if (!LoadImageFile(argv[2], img)) { std::printf("%s: cannot read\n", argv[2]); return 1; }
     return WriteFile(argv[3], DdsEncode(Resize(img, 256, 128), DxtFormat::kDxt5, false)) ? 0 : 1;
   }
+  if (argc == 5 && !std::strcmp(argv[1], "grow")) {
+    // test: grow <bgNN.pac> <out.pac> <KB>: an unused texture of about that
+    // many KB unpacked (a soft pattern, so it packs well) in the first set
+    Arena a;
+    std::string err;
+    if (!a.Load(argv[2], &err) || a.bundles.empty()) { std::printf("%s: %s\n", argv[2], err.c_str()); return 1; }
+    const int kb = std::atoi(argv[4]);
+    int side = 64;
+    while (side * side * 4 / 3 < kb * 1024 && side < 4096) side *= 2;  // DXT5: 1 byte per pixel (+ mips)
+    Image img;
+    img.w = img.h = side;
+    img.rgba.resize(size_t(side) * side * 4);
+    for (int y = 0; y < side; ++y)
+      for (int x = 0; x < side; ++x) {
+        uint8_t* p = &img.rgba[(size_t(y) * side + x) * 4];
+        p[0] = uint8_t(x * 255 / side), p[1] = uint8_t(y * 255 / side), p[2] = uint8_t((x ^ y) & 0x40), p[3] = 255;
+      }
+    a.bundles[0].textures.push_back({"zz_grow", "dds", DdsEncode(img, DxtFormat::kDxt5, true)});
+    a.bundles[0].changed = true;
+    const Bytes data = a.Save(&err);
+    if (!err.empty()) { std::printf("error: %s\n", err.c_str()); return 1; }
+    WriteFile(argv[3], data);
+    std::printf("wrote %s: %zu bytes (shipped %zu), texture %dx%d\n", argv[3], data.size(), a.original_file, side, side);
+    return 0;
+  }
   std::printf("usage: svrmod roundtrip <file.pac>... | export <bgNN.pac> <out dir> | import <bgNN.pac> <fbx> <out.pac>\n"
               "       | banner <picture> <out.dds> | bpe <raw> <out> | bpetest <file.pac> [out.pac]\n");
   return 2;

@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "svrfmt/arena_build.h"
 #include "svrfmt/arena_import.h"
 #include "svrfmt/png.h"
 
@@ -1184,6 +1185,7 @@ void LightingPanel() {
   if (ImGui::ColorEdit3("Colour", g_light.color)) p = int(std::size(kPresets)) - 1, Edited();
   if (ImGui::SliderFloat("Strength", &g_light.strength, 0.3f, 1.6f, "%.2f")) p = int(std::size(kPresets)) - 1, Edited();
   ImGui::TextDisabled("Every arena material's colour (not the crowd).");
+  if (ImGui::Checkbox("Crowd in the seats", &g_light.crowd)) Edited();
 }
 
 void Inspector() {
@@ -1269,6 +1271,106 @@ void Inspector() {
     ImGui::SameLine();
     ImGui::TextDisabled("(this object only)");
   }
+}
+
+// -- The prop library: models from any of the game's arenas ------------------
+
+struct Library {
+  int arena = -1;                  // index in g_hooks.library (loaded)
+  std::unique_ptr<Arena> src;
+  std::vector<int> models;         // LibraryModels(src)
+  std::thread loader;
+  std::atomic<bool> loading{false};
+  std::unique_ptr<Arena> pending;  // (from the loader)
+  int pending_arena = -1;
+  std::mutex mutex;
+  int pick = -1;
+  char filter[64] = "";
+};
+Library g_lib;
+
+void LibraryLoad(int i) {
+  if (g_lib.loading || i < 0 || i >= int(g_hooks.library.size())) return;
+  if (g_lib.loader.joinable()) g_lib.loader.join();
+  g_lib.loading = true;
+  const std::string path = g_hooks.library[i].second;
+  g_lib.loader = std::thread([i, path] {
+    auto a = std::make_unique<Arena>();
+    std::string err;
+    const bool ok = a->Load(path, &err);
+    std::lock_guard lock(g_lib.mutex);
+    if (ok) g_lib.pending = std::move(a), g_lib.pending_arena = i;
+    g_lib.loading = false;
+  });
+}
+
+void AddFromLibrary(int src_model, bool at_view) {
+  const int host = HostModel();
+  if (host < 0) { Log("This arena has no floor model to add objects to."); return; }
+  std::string err;
+  const int first = CopyModelInto(*g_arena, host, *g_lib.src, src_model, &err);
+  if (first < 0) { Log("Could not add it: " + err); return; }
+  const std::string label = g_lib.src->models[src_model].model.name + " (" + g_hooks.library[g_lib.arena].first + ")";
+  const int i = AdoptNewMeshes(host, size_t(first), label);
+  if (i < 0) return;
+  Obj& o = g_objs[i];
+  if (at_view) {
+    o.pos = {g_target.x - o.pivot.x, 0, g_target.z - o.pivot.z};
+    ApplyObj(o);
+  }
+  g_sel = i;
+  Log("Added " + label + (at_view ? " at the view centre." : " in its place."));
+}
+
+void LibraryPanel() {
+  {
+    std::lock_guard lock(g_lib.mutex);
+    if (g_lib.pending) {
+      g_lib.src = std::move(g_lib.pending);
+      g_lib.arena = g_lib.pending_arena;
+      g_lib.models = LibraryModels(*g_lib.src);
+      g_lib.pick = -1;
+    }
+  }
+  if (g_hooks.library.empty()) {
+    ImGui::TextDisabled("No game folder.");
+    return;
+  }
+  ImGui::SetNextItemWidth(-1);
+  const char* cur = g_lib.arena >= 0 ? g_hooks.library[g_lib.arena].first.c_str() : "Take models from...";
+  if (ImGui::BeginCombo("##libarena", cur)) {
+    for (int i = 0; i < int(g_hooks.library.size()); ++i)
+      if (ImGui::Selectable(g_hooks.library[i].first.c_str(), i == g_lib.arena)) LibraryLoad(i);
+    ImGui::EndCombo();
+  }
+  if (g_lib.loading) {
+    ImGui::TextDisabled("Loading...");
+    return;
+  }
+  if (!g_lib.src) {
+    ImGui::TextWrapped("Any object of any arena: stages, titantrons, trusses, lights, signs, barriers.");
+    return;
+  }
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##libfilter", "Find", g_lib.filter, sizeof g_lib.filter);
+  const float scale = ImGui::GetFontSize() / 17.0f;
+  ImGui::BeginChild("liblist", ImVec2(0, 180 * scale), true);
+  for (int k : g_lib.models) {
+    const auto& am = g_lib.src->models[k];
+    if (g_lib.filter[0] && am.model.name.find(g_lib.filter) == std::string::npos) continue;
+    size_t tris = 0;
+    for (const auto& sm : am.model.meshes)
+      for (const auto& st : sm.strips) tris += st.indices.size();
+    char b[96];
+    std::snprintf(b, sizeof b, "%s  (%s, %zuk)##%d", am.model.name.c_str(), ZoneName(am.zone), (tris + 999) / 1000, k);
+    if (ImGui::Selectable(b, g_lib.pick == k)) g_lib.pick = k;
+  }
+  ImGui::EndChild();
+  ImGui::BeginDisabled(g_lib.pick < 0);
+  if (ImGui::Button("Add in its place")) AddFromLibrary(g_lib.pick, false);
+  ImGui::SameLine();
+  if (ImGui::Button("Add at the view centre")) AddFromLibrary(g_lib.pick, true);
+  ImGui::EndDisabled();
 }
 
 void AddPanel() {
@@ -1459,7 +1561,7 @@ void ViewPreset(int which) {
 }  // namespace
 
 bool Lighting::Default() const {
-  return color[0] == 1 && color[1] == 1 && color[2] == 1 && strength == 1;
+  return color[0] == 1 && color[1] == 1 && color[2] == 1 && strength == 1 && crowd;
 }
 
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Hooks& hooks) {
@@ -1506,6 +1608,18 @@ void TestEdit() {
   Log("test edit: box added, top rope red, light warmer");
 }
 
+void TestLibrary(int lib) {
+  if (!g_arena || lib < 0 || lib >= int(g_hooks.library.size())) return;
+  g_lib.src = std::make_unique<Arena>();
+  if (!g_lib.src->Load(g_hooks.library[lib].second)) return;
+  g_lib.arena = lib;
+  g_lib.models = LibraryModels(*g_lib.src);
+  int n = 0;
+  for (int k : g_lib.models)
+    if (g_lib.src->models[k].zone == Zone::kEntrance) AddFromLibrary(k, false), ++n;
+  Log("test library: " + std::to_string(n) + " entrance models from " + g_hooks.library[lib].first);
+}
+
 void TestStart(int view, const std::string& select) {
   g_test_view = view;
   g_test_select = select;
@@ -1513,12 +1627,13 @@ void TestStart(int view, const std::string& select) {
 
 void Shutdown() {
   if (g_budget_thread.joinable()) g_budget_thread.join();
+  if (g_lib.loader.joinable()) g_lib.loader.join();
 }
 RingSpec& Ring() { return g_ring; }
 Lighting& Light() { return g_light; }
 
 void ApplyBuild(Arena& a) {
-  if (!g_light.Default()) {
+  if (g_light.color[0] != 1 || g_light.color[1] != 1 || g_light.color[2] != 1 || g_light.strength != 1) {
     const float c[3] = {g_light.color[0] * g_light.strength, g_light.color[1] * g_light.strength,
                         g_light.color[2] * g_light.strength};
     for (auto& am : a.models) {
@@ -1528,6 +1643,10 @@ void ApplyBuild(Arena& a) {
             for (int k = 0; k < 3; ++k) PutBeF(&p.value[4 * k], BeF(&p.value[4 * k]) * c[k]);
       am.changed = true;
     }
+  }
+  if (!g_light.crowd) {
+    const int n = HideCrowd(a);
+    Log("  crowd left out (" + std::to_string(n) + " crowd models)");
   }
   RingReport rep;
   ApplyRing(a, g_ring, rep);
@@ -1541,6 +1660,7 @@ std::string ManifestLines() {
     std::snprintf(b, sizeof b, "light.color=%.3f %.3f %.3f\nlight.strength=%.3f\n", g_light.color[0], g_light.color[1],
                   g_light.color[2], g_light.strength);
     s += b;
+    if (!g_light.crowd) s += "crowd=0\n";
   }
   return s;
 }
@@ -1557,6 +1677,8 @@ void FromManifest(const std::string& text) {
       std::istringstream v(line.substr(12));
       v >> g_light.color[0] >> g_light.color[1] >> g_light.color[2];
       g_light.preset = int(std::size(kPresets)) - 1;
+    } else if (line == "crowd=0") {
+      g_light.crowd = false;
     } else if (line.rfind("light.strength=", 0) == 0) {
       g_light.strength = std::strtof(line.c_str() + 15, nullptr);
       g_light.preset = int(std::size(kPresets)) - 1;
@@ -1630,6 +1752,7 @@ void Draw() {
   ImGui::BeginChild("inspector", ImVec2(0, 0), true);
   if (ImGui::CollapsingHeader("Object", ImGuiTreeNodeFlags_DefaultOpen)) Inspector();
   if (ImGui::CollapsingHeader("Add", ImGuiTreeNodeFlags_DefaultOpen)) AddPanel();
+  if (ImGui::CollapsingHeader("Library (other arenas)")) LibraryPanel();
   if (ImGui::CollapsingHeader("Ring Kit", ImGuiTreeNodeFlags_DefaultOpen)) RingKitPanel();
   if (ImGui::CollapsingHeader("Lighting")) LightingPanel();
   if (ImGui::CollapsingHeader("Size budget", ImGuiTreeNodeFlags_DefaultOpen)) BudgetPanel();

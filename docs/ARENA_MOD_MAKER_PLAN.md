@@ -262,3 +262,23 @@ diagrams, is in the plan artifact (https://claude.ai/artifact/YWqYNczKJju4Qo56tV
 - **Android:** LauncherActivity.java (Mods tab), ModsPage.java.
 - **New hooks:** sub_8219A508, sub_822EE2E0, sub_823091A0, sub_82309398, sub_823054F0, sub_821BD388, sub_823D4FC0, sub_826AEF10.
 - **Test game:** runs/opt_arena_game. The `opt_` prefix keeps the main checkout's Stop-TestGames from closing it.
+
+## New arenas and custom VS screens
+
+- **Start an empty arena** (Mod Maker, Arenas page): the selected arena's file with everything but the ring, the floor and the ringside parts emptied. Unused textures shrink to 4 x 4 (`svrfmt/arena_build` MakeEmpty), which frees about 2 MB on Superstars. The crowd is off by default (`crowd=0`, HideCrowd empties the people in nested pack 0x4E20).
+- **Library** (Arena Editor): any model from any of the 20 arenas, in its place or at the view centre. It is copied as static meshes on the floor model, with its textures; a texture is renamed (`lbNNN_`) when a different one already uses the name. Tested: an empty Superstars with WrestleMania's ramp, played in game with no crowd.
+- **Slots:** each custom arena sits on the tile of the arena it was made from (`base=`), on pages 2, 3 and so on, so it always loads in that arena's place, with its memory room and VS theme. Arenas without a base fill the free tiles.
+- **Custom VS screen** (Mod Maker, VS screen page):
+  - The VS theme is menu/MatchHD.pac group M<nn>I: DXT5 textures, untiled in memory with 16-bit words swapped.
+  - A mod can replace any of them (`vs/<name>.dds`, same size). While that arena is chosen, a background thread in arena_mods.cpp (VsLoop) finds the theme textures by content and writes the pictures over them; the originals go back when another arena is chosen.
+  - Tested: Superstars' mh_super (the background) replaced in game. plate_ss holds the name plate.
+- **Arena memory:** the game's 54 heaps come from a (heap, KB) table at 0x82DAC2F8.
+  - Heap 16 (20 MB) holds the arena file, beside menu and stage data.
+  - A file bigger than shipped fails to allocate there, and the load retries forever.
+  - Growing heap 16 by taking room from heap 53 (`SVR2011_ARENA_HEAP_EXTRA_MB`, off by default) still failed loads, so custom arenas keep their slot's size. An empty arena frees that room for new content.
+- **Test aids:**
+  - `--new-arena <tile>`, `--test-lib <tile>`, `--page <n>`;
+  - `SVR2011_TEST_HEAP_LOG`;
+  - `svrmod grow`;
+  - `arena_page_test.ps1 -Right <n>`;
+  - `arena_find_probe.ps1 -NoSelect`.

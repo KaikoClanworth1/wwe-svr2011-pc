@@ -25,6 +25,7 @@
 #include "ring_rules.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -249,6 +250,8 @@ struct CustomArena {
   std::string manifest;        // its text (ring.* keys: ring_rules.h)
   std::string base;            // the arena it was made from (manifest base=arena_SS)
   svrfmt::Bytes banner;        // DXT5 blocks, 16-bit swapped (empty = none)
+  // its VS screen pictures (vs/<name>.dds): name -> DXT5 blocks, swapped
+  std::vector<std::pair<std::string, svrfmt::Bytes>> vs;
 };
 std::vector<CustomArena> g_customs;
 
@@ -312,6 +315,39 @@ void LoadBanners() {
     }
 }
 
+// Custom arenas on the pages: each on the tile of the arena it was made
+// from (manifest base=), so it plays in that arena's place - the file the
+// game loads for that tile, with the memory room and VS screen style it was
+// made for. More than one on the same arena: pages 3, 4... Arenas without a
+// base fill the free tiles.
+std::vector<std::array<int, 20>> g_layout;  // pages 2.. : tile -> index in g_customs (-1)
+
+int TileOf(const std::string& banner) {
+  for (int k = 0; k < 20; ++k)
+    if (banner == kTiles[k].banner) return k;
+  return -1;
+}
+
+void LayOutPages() {
+  g_layout.clear();
+  auto place = [](size_t i, int tile) {
+    for (auto& page : g_layout)
+      if (tile >= 0 ? page[tile] < 0 : true) {
+        if (tile >= 0) { page[tile] = int(i); return; }
+        for (int& t : page)
+          if (t < 0) { t = int(i); return; }
+      }
+    std::array<int, 20> page;
+    page.fill(-1);
+    page[tile >= 0 ? tile : 0] = int(i);
+    g_layout.push_back(page);
+  };
+  for (size_t i = 0; i < g_customs.size(); ++i)
+    if (TileOf(g_customs[i].base) >= 0) place(i, TileOf(g_customs[i].base));
+  for (size_t i = 0; i < g_customs.size(); ++i)
+    if (TileOf(g_customs[i].base) < 0) place(i, -1);
+}
+
 void LoadCustomArenas() {
   std::error_code ec;
   const fs::path dir = g_game / "Mods" / "Arenas";
@@ -342,12 +378,23 @@ void LoadCustomArenas() {
     svrfmt::Bytes dds;
     if (svrfmt::ReadFile((f / "banner.dds").string(), dds)) c.banner = BannerBlocks(dds);
     if (c.banner.empty()) REXLOG_WARN("[svr2011] arena mods: {} has no 256 x 128 DXT5 banner.dds", c.id);
+    if (fs::is_directory(f / "vs", ec))
+      for (const auto& v : fs::directory_iterator(f / "vs", ec)) {
+        svrfmt::Bytes vdds;
+        svrfmt::DdsInfo info;
+        if (v.path().extension() != ".dds" || !svrfmt::ReadFile(v.path().string(), vdds) ||
+            !svrfmt::DdsInfoOf(vdds, info) || info.format != svrfmt::DxtFormat::kDxt5)
+          continue;
+        const size_t n = size_t((info.w + 3) / 4) * ((info.h + 3) / 4) * 16;
+        if (vdds.size() >= 128 + n) c.vs.push_back({v.path().stem().string(), Swap16(vdds.data() + 128, n)});
+      }
     g_customs.push_back(std::move(c));
   }
   REXLOG_INFO("[svr2011] arena mods: {} custom arenas", g_customs.size());
+  LayOutPages();
 }
 
-int Pages() { return 1 + int((g_customs.size() + 19) / 20); }
+int Pages() { return 1 + int(g_layout.size()); }
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -382,9 +429,9 @@ Banner* BannerOf(const char* name) {
 
 // The custom arena on tile k of the current page (nullptr: none).
 const CustomArena* CustomAt(int k) {
-  if (g_page == 0) return nullptr;
-  const size_t i = size_t(g_page - 1) * 20 + size_t(k);
-  return i < g_customs.size() ? &g_customs[i] : nullptr;
+  if (g_page == 0 || g_page - 1 >= int(g_layout.size())) return nullptr;
+  const int i = g_layout[g_page - 1][k];
+  return i >= 0 ? &g_customs[i] : nullptr;
 }
 
 // Draws the current page into the 20 banner textures.
@@ -408,17 +455,135 @@ void ShowPage(uint8_t* base) {
   REXLOG_INFO("[svr2011] arena select: page {} / {}", g_page + 1, Pages());
 }
 
+// -- The VS screen ------------------------------------------------------------
+//
+// Each arena has a VS screen theme (menu/MatchHD.pac group M<nn>I, DXT5
+// textures, untiled in guest physical memory with 16-bit words swapped, as
+// the banners). While a custom arena with vs/<name>.dds pictures is chosen,
+// a background check finds its slot's theme textures in memory (by content,
+// when the theme loads) and writes the pictures over them; the originals go
+// back when another arena is chosen.
+struct VsSwap {
+  std::string name;
+  svrfmt::Bytes original, mine;  // swapped blocks, same size
+  size_t sig = 0;                // offset of 64 distinctive bytes
+  uint32_t guest = 0;            // where it is (0: not found)
+};
+std::mutex g_vs_mutex;
+std::vector<VsSwap> g_vs_swaps;
+const void* g_redirected_custom = nullptr;
+
+// The theme textures of arena `number`: name -> swapped DXT5 blocks.
+std::vector<std::pair<std::string, svrfmt::Bytes>> VsTheme(int number) {
+  std::vector<std::pair<std::string, svrfmt::Bytes>> out;
+  svrfmt::Bytes d;
+  svrfmt::Epac e;
+  if (!svrfmt::ReadFile((g_game / "pac" / "menu" / "MatchHD.pac").string(), d) || !svrfmt::EpacRead(d, e)) return out;
+  char group[8];
+  std::snprintf(group, sizeof group, "M%02dI", number);
+  for (const auto& g : e.groups)
+    for (const auto& en : g.entries) {
+      if (en.name != group) continue;
+      std::vector<svrfmt::PachEntry> ents;
+      if (!svrfmt::PachRead(en.data, ents)) continue;
+      for (const auto& pe : ents) {
+        std::vector<svrfmt::BundleTexture> texs;
+        if (!svrfmt::BundleRead(svrfmt::Unpack(pe.data), texs)) continue;
+        for (const auto& t : texs) {
+          svrfmt::DdsInfo info;
+          if (!svrfmt::DdsInfoOf(t.data, info) || info.format != svrfmt::DxtFormat::kDxt5) continue;
+          const size_t n = size_t((info.w + 3) / 4) * ((info.h + 3) / 4) * 16;
+          if (t.data.size() >= 128 + n) out.push_back({t.name, Swap16(t.data.data() + 128, n)});
+        }
+      }
+    }
+  return out;
+}
+
+void RestoreVs(uint8_t* b) {
+  for (auto& s : g_vs_swaps)
+    if (s.guest && !std::memcmp(b + s.guest + s.sig, s.mine.data() + s.sig, 64))
+      std::memcpy(b + s.guest, s.original.data(), s.original.size());
+}
+
+void SetVsSwaps(const CustomArena* c, int host) {
+  std::lock_guard lock(g_vs_mutex);
+  RestoreVs(g_memory->virtual_membase());
+  g_vs_swaps.clear();
+  if (!c || c->vs.empty()) return;
+  const auto theme = VsTheme(host);
+  for (const auto& [name, mine] : c->vs)
+    for (const auto& [tname, orig] : theme) {
+      if (tname != name || orig.size() != mine.size()) continue;
+      VsSwap s{name, orig, mine, 0, 0};
+      // 64 bytes (4 blocks) that are not one block repeated, from the middle out
+      bool found = false;
+      for (size_t at = (orig.size() / 2) & ~size_t(15); at + 64 <= orig.size() && !found; at += 16)
+        if (std::memcmp(orig.data() + at, orig.data() + at + 16, 16) || std::memcmp(orig.data() + at + 16, orig.data() + at + 32, 16))
+          s.sig = at, found = true;
+      if (found) g_vs_swaps.push_back(std::move(s));
+    }
+  REXLOG_INFO("[svr2011] arena select: VS screen, {} of {} pictures for the {:02} theme", g_vs_swaps.size(),
+              c->vs.size(), host);
+}
+
+// Every 300 ms: keep the pictures written; look again for any not found
+// (the theme loads when the VS screen opens).
+void VsLoop() {
+  int64_t last_scan = 0;
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::lock_guard lock(g_vs_mutex);
+    if (g_vs_swaps.empty()) continue;
+    uint8_t* b = g_memory->virtual_membase();
+    bool lost = false;
+    for (auto& s : g_vs_swaps) {
+      if (s.guest && !std::memcmp(b + s.guest + s.sig, s.mine.data() + s.sig, 64)) continue;
+      if (s.guest && !std::memcmp(b + s.guest + s.sig, s.original.data() + s.sig, 64)) {
+        std::memcpy(b + s.guest, s.mine.data(), s.mine.size());  // (loaded again)
+        continue;
+      }
+      s.guest = 0;
+      lost = true;
+    }
+    if (!lost || NowMs() - last_scan < 1000) continue;
+    last_scan = NowMs();
+    int regions = 0;
+    ForEachRegion(0xE0000000, 0xFFFF0000, [&](uint64_t at, uint64_t end) {
+      ++regions;
+      for (auto& s : g_vs_swaps) {
+        if (s.guest) continue;
+        const uint8_t* sig = s.original.data() + s.sig;
+        // (a texture spans several regions: the signature in this one, then
+        // its first and last pages committed)
+        rex::memory::HeapAllocationInfo info;
+        for (uint64_t a = at; a + 64 <= end; a += 16)
+          if (!std::memcmp(b + a, sig, 64) && a >= 0xE0000000 + s.sig &&
+              Committed(uint32_t(a - s.sig), info) && Committed(uint32_t(a - s.sig + s.original.size() - 1), info) &&
+              !std::memcmp(b + a - s.sig, s.original.data(), 64)) {
+            s.guest = uint32_t(a - s.sig);
+            std::memcpy(b + s.guest, s.mine.data(), s.mine.size());
+            REXLOG_INFO("[svr2011] arena select: VS screen {} at {:08X}", s.name, s.guest);
+            break;
+          }
+      }
+    });
+    static int scans = 0;
+    if (++scans % 10 == 1)
+      REXLOG_INFO("[svr2011] arena select: VS screen scan {} ({} regions, {} ms)", scans, regions, NowMs() - last_scan);
+  }
+}
+
 // The host arena of the tile under the cursor plays the custom arena there.
 void FollowCursor(int row, int col) {
   const CustomArena* c = row < 4 ? CustomAt(row * 5 + col) : nullptr;
   g_cursor_custom = c ? int(c - g_customs.data()) : -1;
-  // the host: the arena it was made from (its file has that arena's
-  // layout and memory budget), else the tile's
-  int host = c ? kTiles[row * 5 + col].arena : -1;
-  if (c)
-    for (const auto& t : kTiles)
-      if (c->base == t.banner) host = t.arena;
-  if (host == g_redirected_host) return;
+  // the tile's arena: the one the game loads (LayOutPages puts each custom
+  // arena on the tile of the arena it was made from)
+  const int host = c ? kTiles[row * 5 + col].arena : -1;
+  if (c == g_redirected_custom && host == g_redirected_host) return;
+  g_redirected_custom = c;
+  SetVsSwaps(c, host);
   if (g_redirected_host >= 0) svr2011::RedirectArena(g_redirected_host, "");
   g_redirected_host = -1;
   svr2011::SetRingRules(c ? c->manifest : std::string());
@@ -492,13 +657,44 @@ void RedirectArena(int arena, const std::string& relative_file) {
   REXLOG_INFO("[svr2011] arena mods: BG{:02} -> {}", arena, relative_file.empty() ? "original" : relative_file);
 }
 
+// Arena memory: the game splits one block (physical 0x03A00000-0x0F000000)
+// into 54 heaps from a table of (heap, KB) pairs at 0x82DAC2F8, read once at
+// start-up by sub_8258ED50 -> sub_8269AD08. Heap 16 (20 MB, its size at
+// 0x82DAC37C) holds the loaded arena file beside other stage data: an arena
+// file much bigger than shipped doesn't fit (the load retries forever). Heap
+// 53 is the rest of the block (25 MB). Experiment (SVR2011_ARENA_HEAP_EXTRA_MB):
+// moving room from 53 to 16 did not let a bigger arena load - heap 16 is
+// shared with menus and other stage data, which then failed instead - so
+// the default is off and custom arenas keep their slot's size.
+constexpr uint32_t kHeapTable = 0x82DAC2F8, kHeap16Size = 0x82DAC37C;
+uint32_t g_arena_heap_extra_kb = 0;
+
+void GrowArenaHeap(rex::memory::Memory* memory) {
+  if (const char* v = std::getenv("SVR2011_ARENA_HEAP_EXTRA_MB")) g_arena_heap_extra_kb = uint32_t(std::atoi(v)) * 1024;
+  uint8_t* b = memory->virtual_membase();
+  auto rd = [&](uint32_t a) { return uint32_t(b[a]) << 24 | b[a + 1] << 16 | b[a + 2] << 8 | b[a + 3]; };
+  if (rd(kHeap16Size - 4) != 16 || rd(kHeap16Size) != 20480) {
+    REXLOG_WARN("[svr2011] arena mods: heap table not as expected, arena heap left as is");
+    return;
+  }
+  if (!g_arena_heap_extra_kb) return;
+  if (auto* heap = memory->LookupHeap(kHeapTable))
+    heap->Protect(kHeapTable & ~0xFFFu, 0x2000, rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+  const uint32_t kb = 20480 + g_arena_heap_extra_kb;
+  b[kHeap16Size] = uint8_t(kb >> 24), b[kHeap16Size + 1] = uint8_t(kb >> 16), b[kHeap16Size + 2] = uint8_t(kb >> 8),
+  b[kHeap16Size + 3] = uint8_t(kb);
+  REXLOG_INFO("[svr2011] arena mods: arena heap {} MB (+{} MB)", kb / 1024, g_arena_heap_extra_kb / 1024);
+}
+
 void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileSystem* fs) {
   g_memory = memory;
+  GrowArenaHeap(memory);
   g_fs = fs;
   g_game = rex::filesystem::GetExecutableFolder();
   g_overlay = g_game / "Mods" / "ArenaOverlay";
   g_bpe_log = std::getenv("SVR2011_TEST_BPE_LOG") != nullptr;
   LoadCustomArenas();
+  std::thread(VsLoop).detach();
   if (std::getenv("SVR2011_TEST_SCAN")) StartScan();
   // Test aid: SVR2011_TEST_ARENA_REDIRECT=<nn>=<file relative to the game folder>
   if (const char* v = std::getenv("SVR2011_TEST_ARENA_REDIRECT"); v && *v) {

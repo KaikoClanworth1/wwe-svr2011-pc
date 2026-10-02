@@ -142,6 +142,55 @@ void LogFighter(uint8_t* base, uint32_t f) {
 }  // namespace
 
 // The rope draw (once a frame in a match).
+// Test aid (SVR2011_TEST_HEAP_LOG=1): the game's heaps (table at
+// *0x82EC5F48, 36 bytes each: start, end) once, and every failed allocation
+// (sub_8269A8D8(size, align) for the thread's heap, sub_8269A478).
+bool g_heap_log = false;
+
+REX_EXTERN(__imp__sub_8269A8D8);
+REX_HOOK_RAW(sub_8269A8D8) {
+  const uint32_t size = ctx.r3.u32;
+  __imp__sub_8269A8D8(ctx, base);
+  if (!g_heap_log) return;
+  static bool listed = false;
+  const uint32_t table = Rd32(base + 0x82EC5F48);
+  if (!listed && table) {
+    listed = true;
+    for (int i = 0; i < 54; ++i) {
+      const uint32_t a = Rd32(base + table + i * 36), b = Rd32(base + table + i * 36 + 4);
+      if (a || b) REXLOG_INFO("[svr2011] heap {}: {:08X}-{:08X} ({:.1f} MB)", i, a, b, (b - a) / 1048576.0);
+    }
+  }
+  if (ctx.r3.u32 == 0 && size) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, uint32_t(ctx.lr));
+  }
+}
+
+REX_EXTERN(__imp__sub_8269BA30);
+REX_HOOK_RAW(sub_8269BA30) {
+  const uint32_t units = ctx.r3.u32;  // 16-byte units
+  __imp__sub_8269BA30(ctx, base);
+  if (g_heap_log && ctx.r3.u32 && units * 16 >= 256 * 1024) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, uint32_t(ctx.lr));
+  }
+  if (g_heap_log && ctx.r3.u32 == 0 && units) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (16-byte units, lr {:08X})", heap, units * 16,
+                uint32_t(ctx.lr));
+  }
+}
+
 REX_EXTERN(__imp__sub_8219A508);
 REX_HOOK_RAW(sub_8219A508) {
   Apply(g_rules);  // (start-up code sets the rope height after install)
@@ -253,6 +302,7 @@ namespace svr2011 {
 void InstallRingRules(rex::memory::Memory* memory) {
   g_memory = memory;
   g_test_run = std::getenv("SVR2011_TEST_RUN") != nullptr;
+  g_heap_log = std::getenv("SVR2011_TEST_HEAP_LOG") != nullptr;
   if (const char* v = std::getenv("SVR2011_TEST_STATE_LOG"); v && *v) {
     g_log_scan = std::string(v) == "scan";
     if (g_log_scan) g_log_fields.push_back(0);
