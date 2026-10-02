@@ -8,9 +8,15 @@
 # Test saves and settings only: runs\test_userdata_ent_down + test_config_ent_down.toml
 # (host, port base 36000), runs\test_userdata_ent_up + test_config_ent_up_p2.toml
 # (joiner, port base 36100).
-param([string]$Name = "p2", [switch]$HostOnly, [switch]$JoinOnly, [switch]$Play, [string]$LogLevel = "info")
+# -Relay: both through the online server's match relay (port\server\relay.py,
+# in the test server at 127.0.0.1:8421) instead of directly: the *_relay.toml
+# configs (p2p_force_relay), as two players who can't reach each other would play.
+param([string]$Name = "p2", [switch]$HostOnly, [switch]$JoinOnly, [switch]$Play, [switch]$Relay,
+      [string]$LogLevel = "info")
 $s = Join-Path $PSScriptRoot "online_session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
+$suffix = ""
+if ($Relay) { $suffix = "_relay" }
 function P([string]$slot, [string]$b, [double]$w) {
     if ($slot) { & $s input -Slot $slot "press $b 200" | Out-Null } else { & $s input "press $b 200" | Out-Null }
     [Threading.Thread]::Sleep([int]($w * 1000))
@@ -26,7 +32,7 @@ function ToPlayerMatch([string]$slot) {
     P $slot A 10; P $slot DOWN 1.5; P $slot A 10
 }
 if (-not $JoinOnly) {
-    & $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config test_config_ent_down.toml -LogLevel $LogLevel | Out-Null
+    & $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config "test_config_ent_down$suffix.toml" -LogLevel $LogLevel | Out-Null
     [Threading.Thread]::Sleep(75000)
     ToPlayerMatch ""
     P "" DOWN 1.2; P "" DOWN 1.2; P "" A 10            # CREATE SESSION
@@ -35,7 +41,7 @@ if (-not $JoinOnly) {
     Shot "" "$Name`_host_lobby"
 }
 if (-not $HostOnly) {
-    & $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config test_config_ent_up_p2.toml -LogLevel $LogLevel | Out-Null
+    & $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config "test_config_ent_up_p2$suffix.toml" -LogLevel $LogLevel | Out-Null
     [Threading.Thread]::Sleep(75000)
     ToPlayerMatch "2"
     P "2" DOWN 1.5; P "2" A 15                         # CUSTOM MATCH
@@ -56,7 +62,7 @@ foreach ($log in "$Name`_host", "$Name`_join") {
     $f = Join-Path $runs "$log.log"
     if (Test-Path $f) {
         "--- $log"
-        Get-Content $f | Select-String -CaseSensitive -Pattern "p2p:|net: bind|\) failed:|access violation" |
-            Select-Object -Last 25 | ForEach-Object { $_.Line.Substring([math]::Min(45, $_.Line.Length)) }
+        Get-Content $f | Select-String -CaseSensitive -Pattern "p2p:|relay:|net: bind|\) failed:|access violation" |
+            Select-Object -Last 25 | ForEach-Object { if ($_.Line.StartsWith("[")) { $_.Line.Substring([math]::Min(45, $_.Line.Length)) } else { $_.Line } }
     }
 }

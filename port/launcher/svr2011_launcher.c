@@ -89,7 +89,7 @@ enum {
     ID_SETTINGS_STATUS, ID_PREPARE,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
-    ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL,
+    ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS,
@@ -1247,7 +1247,7 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
-    char online_name[64] = "", online_server[128] = "";
+    char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
     if (toml_read(p, &l)) {
@@ -1279,6 +1279,7 @@ static void settings_load(void)
             else if (!strcmp(key, "online_server")) strcpy_s(online_server, sizeof online_server, val);
             else if (!strcmp(key, "online_token")) strcpy_s(s_online_token, sizeof s_online_token, val);
             else if (!strcmp(key, "online_xuid")) strcpy_s(s_online_xuid, sizeof s_online_xuid, val);
+            else if (!strcmp(key, "p2p_peers")) strcpy_s(online_peers, sizeof online_peers, val);
         }
         lines_free(&l);
     } else if (on_steam_deck()) {
@@ -1290,6 +1291,11 @@ static void settings_load(void)
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
     online_show(online, online_name, online_server);
+    {
+        WCHAR w[256];
+        MultiByteToWideChar(CP_UTF8, 0, online_peers, -1, w, 256);
+        set_text(ID_ON_PEERS, w);
+    }
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
@@ -1299,12 +1305,12 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 22 };
+    enum { NK = 23 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
-                                    "online_token", "online_xuid", "frame_rate" };
+                                    "online_token", "online_xuid", "frame_rate", "p2p_peers" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1356,6 +1362,7 @@ static int settings_save(void)
         const int fi = (int)SendMessageW(ctl(ID_FRAMERATE), CB_GETCURSEL, 0, 0);
         sprintf_s(vals[21], 64, "%d", k_frame_rates[fi >= 0 && fi < N_FRAME_RATES ? fi : 1]);
     }
+    toml_quote_ctl(ID_ON_PEERS, 140, vals[22], sizeof vals[22]);
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -1810,8 +1817,16 @@ static void build_ui(void)
     SendMessageW(h, CB_SETCURSEL, 0, 0);
     add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 340, 396, 24, ID_ON_SERVER);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 372, 396, 32, ID_ON_SERVER_LABEL);
-    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 424, 108, 30, ID_ON_SAVE);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 430, 440, 36, ID_ON_STATUS);
+    add(TAB_ONLINE, L"Button", L"Matches over the internet", BS_GROUPBOX, X0, 420, 560, 104, 0);
+    add(TAB_ONLINE, L"Static", L"Friends", SS_LEFT, X0 + 16, 448, 130, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 444, 396, 24, ID_ON_PEERS);
+    SendMessageW(h, EM_LIMITTEXT, 140, 0);
+    add(TAB_ONLINE, L"Static", L"Their addresses (IP or name, comma-separated), searched besides your network. Players "
+                               L"anywhere who can't connect directly play through the server's relay; with UDP port "
+                               L"36000 forwarded to this PC, others reach you directly.",
+        SS_LEFT | SS_NOPREFIX, X0 + 16, 474, 530, 46, 0);
+    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 534, 108, 30, ID_ON_SAVE);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 538, 440, 36, ID_ON_STATUS);
 
     /* Install */
     add(TAB_INSTALL, L"Static", L"1.  Your " GAME_TITLE L" disc image (Xbox 360 ISO or XISO)",
@@ -4683,7 +4698,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_ON_STATUS, L"");
             }
             break;
-        case ID_ON_NAME: case ID_ON_SERVER:
+        case ID_ON_NAME: case ID_ON_SERVER: case ID_ON_PEERS:
             if (HIWORD(wp) == EN_CHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_ON_STATUS, L"");

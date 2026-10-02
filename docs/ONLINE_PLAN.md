@@ -35,6 +35,25 @@ Goal: the ONLINE menu works without "Online Axxess": P2P Player Matches (LAN and
 - **Next:** over the internet (invite codes / addresses, UPnP), then leaderboards on the server.
 - **Menus:** the gamer card, party, Xbox LIVE and Online Axxess texts and prompts are gone.
 
+## Status (2 October 2026): matches over the internet (direct, else a relay)
+- **One port per game.** A peer outside this network (heard from an address that isn't its own, or through the relay) is *tunnelled*:
+  - its game ports become proxy sockets on 127.0.0.1;
+  - the game's packets travel in `kData` messages on the P2P socket (UDP 36000), the one port a NAT, a port forward or the relay knows.
+  - LAN and same-PC peers keep the direct path.
+- **Direct first.** STUN (`p2p_stun`, Google's by default) gives the public address and port, which go into the XNADDR (inaOnline, and abOnline after the xuid). Peers are learned from the address they were *heard from*, so NATs' port changes are followed. `p2p_peers` (the launcher's Online tab, "Friends") adds addresses to search.
+- **Relay otherwise: the Community Creations server.** `port/server/relay.py` is part of `server.py`, so there is nothing else to install:
+  - A signed-in game keeps two long requests open on the server's own https: `GET <server>/api/relay/<id>` brings its packets, and `POST` (one chunked body) takes the game's. This works wherever the server does; sho-ti.me's nginx and the Project Index portal both stream.
+  - Frames are a 16-bit length plus an "SVRR" packet. A packet "to" a game ID goes to that game; a search goes to every game on the relay (only hosts answer).
+  - The server checks the account token (a game ID belongs to one account), limits each game to 400 packets/s, and sends a keepalive every 5 s. The relay streams don't count against the request slots. The dashboard's stats show `relay_games` and `relayed_packets`.
+  - On the game's side, `net::OpenPipe` in `online_net.cpp` uses WinHTTP (Windows), `NetBridge.pipe*` (Android) or plain sockets (http only, other platforms). Set `p2p_relay = false` to turn it off.
+  - While relayed, each side keeps trying the other's STUN address (hole punching, every 2 s). If a direct packet arrives, the pair goes direct; after 10 s with nothing direct, it falls back to the relay.
+  - Relayed packets go over TCP, so they can be a little slower than direct ones. Even so, it beats not playing.
+- **The user's network** (the test case): full-tunnel VPN, symmetric NAT (two STUN servers saw different ports), no NAT-PMP, and the router's UPnP is useless behind the VPN. So it plays through the relay; UPnP is not done.
+- **Tests:**
+  - `port/server/test_relay.py --server <a test server>`: three games, by id, search, a 200-packet burst in order, refusals.
+  - `tools/p2p_test.ps1 -Relay -Play`: both games use `p2p_force_relay` (the `*_relay.toml` configs) through the test server's relay.
+  - Still to do: PC ↔ phone over their VPNs through sho-ti.me.
+
 ## Key finding
 Xenia Canary's netplay fork (AdrianCassar/xenia-canary, BSD 3-Clause, the same code family as our SDK) lists **SvR 2011 (5451085D) as "Working Public"** for player matches, with no game patches. Its server, **Xenia-WebServices** (NestJS + MongoDB, MIT, Docker), is the session directory. So Player Matches are a port of known-working code, not new reverse engineering. Neither implements GameSpy, so Community Creations are new work.
 

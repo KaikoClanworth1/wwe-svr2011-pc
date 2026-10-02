@@ -11,7 +11,11 @@
 //     from <online_server>/api/session.
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -36,6 +40,19 @@ std::optional<Response> Request(const std::string& method, const std::string& ur
 // with the account's token.
 std::optional<Response> ServerRequest(const std::string& method, const std::string& path,
                                       const std::string& body = {}, Headers headers = {});
+
+// A two-way stream with the server, with the account's token: GET <path>
+// brings the server's bytes as they arrive (on_data, on a thread of its
+// own), POST <path> (one chunked request) takes Send()'s. on_data(nullptr,
+// 0) once when it's over (either way); then Send() fails.
+class Pipe {
+ public:
+  virtual ~Pipe() = default;
+  virtual bool Send(const uint8_t* data, size_t size) = 0;
+  virtual bool Open() const = 0;
+  virtual void Close() = 0;
+};
+std::shared_ptr<Pipe> OpenPipe(const std::string& path, std::function<void(const uint8_t*, size_t)> on_data);
 
 // Starts the relay (once) and tells the runtime its ports.
 bool StartRelay();

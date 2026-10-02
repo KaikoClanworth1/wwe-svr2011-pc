@@ -12,6 +12,7 @@ One aiohttp service with two halves:
       api/logo/<hash>, api/logos/wanted       the port's extra Superstar logos
       api/status                              is the server up
       game/<GameSpy path>                     the game's own requests (gamespy.py)
+      api/relay/<id>                          the online match relay (relay.py)
   /                 the admin dashboard: connections, bandwidth, storage,
                     players, uploads and accounts (Project Index admins, or
                     anyone on this PC when run on its own)
@@ -46,6 +47,7 @@ os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
 from aiohttp import web
 
 import gamespy as gs
+import relay
 
 HERE = Path(__file__).resolve().parent
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
@@ -322,6 +324,7 @@ class Service:
         self.accounts = Accounts(self.store)
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
+        self.relay = relay.Relay(self, gs.log)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
         self.data_dir = Path(args.data)
@@ -371,8 +374,8 @@ class Service:
 
     @web.middleware
     async def meter(self, request, handler):
-        if not request.path.startswith(self.base + "/"):
-            return await handler(request)
+        if not request.path.startswith(self.base + "/") or request.path.startswith(self.base + "/api/relay/"):
+            return await handler(request)  # (the relay's streams stay open all session: not requests' slots)
         try:
             await asyncio.wait_for(self.slots.acquire(), 10)
         except asyncio.TimeoutError:
@@ -634,6 +637,7 @@ class Service:
                 "players_online": self.stats.players_online(),
                 "bytes_in": self.stats.total_in, "bytes_out": self.stats.total_out,
                 "since": self.stats.started,
+                "relay_games": len(self.relay.games), "relayed_packets": self.relay.relayed,
             },
             "players": {
                 "accounts": len(accounts),
@@ -762,6 +766,7 @@ class Service:
         app.router.add_get(b + "/api/media/{sha}", self.api_media_get)  # (and HEAD)
         app.router.add_route("*", b + "/api/entrance/{fileid}", self.api_entrance)
         app.router.add_route("*", b + "/game/{tail:.*}", self.game)
+        self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
         app.router.add_get("/", self.dashboard)
         app.router.add_get("/api/admin/stats", self.admin_stats)

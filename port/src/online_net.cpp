@@ -3,12 +3,14 @@
 
 #include "online_net.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -22,6 +24,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -568,6 +571,303 @@ uint16_t Listen(void (*handler)(Socket)) {
   }).detach();
   return ntohs(addr.sin_port);
 }
+
+// -- pipes: two long requests (the match relay) ----------------------------------------
+//
+// A half reads (the GET's body as it arrives) or writes (the POST's chunked
+// body); Close() only asks: each half stops on its own thread.
+
+struct Half {
+  virtual ~Half() = default;
+  virtual int Read(uint8_t* /*buf*/, size_t /*size*/) { return -1; }  // bytes, 0: nothing yet, -1: over
+  virtual bool Write(const uint8_t* /*data*/, size_t /*size*/) { return false; }
+  virtual void Finish() {}  // (the upload: its last chunk)
+};
+
+#if defined(_WIN32)
+
+HINTERNET PipeSession() {
+  static HINTERNET session = [] {
+    HINTERNET s = WinHttpOpen(L"SvR2011-PC/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                              WINHTTP_NO_PROXY_BYPASS, 0);
+    // (the server sends a keepalive every 5 s: 30 s of nothing is a dead stream)
+    if (s) WinHttpSetTimeouts(s, 10000, 10000, 30000, 30000);
+    return s;
+  }();
+  return session;
+}
+
+struct WinHalf : Half {
+  HINTERNET connect = nullptr, req = nullptr;
+  bool upload = false;
+  ~WinHalf() override {
+    if (req) WinHttpCloseHandle(req);
+    if (connect) WinHttpCloseHandle(connect);
+  }
+  // Starts the request: the GET up to its answer's headers (its status), the POST up to its body.
+  int Start(const Url& url, bool post, const Headers& headers) {
+    upload = post;
+    if (!PipeSession()) return 0;
+    connect = WinHttpConnect(PipeSession(), Wide(url.host).c_str(), INTERNET_PORT(url.port), 0);
+    if (!connect) return 0;
+    req = WinHttpOpenRequest(connect, post ? L"POST" : L"GET", Wide(url.path).c_str(), nullptr, WINHTTP_NO_REFERER,
+                             WINHTTP_DEFAULT_ACCEPT_TYPES, url.https ? WINHTTP_FLAG_SECURE : 0);
+    if (!req) return 0;
+    std::string lines;
+    for (const auto& [k, v] : headers) lines += k + ": " + v + "\r\n";
+    if (post) lines += "Transfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n";
+    const std::wstring wlines = Wide(lines);
+    if (!WinHttpSendRequest(req, wlines.c_str(), DWORD(-1L), WINHTTP_NO_REQUEST_DATA, 0,
+                            post ? WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH : 0, 0)) {
+      return 0;
+    }
+    if (post) return 200;
+    if (!WinHttpReceiveResponse(req, nullptr)) return 0;
+    DWORD status = 0, size = sizeof(status);
+    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                        &status, &size, WINHTTP_NO_HEADER_INDEX);
+    return int(status);
+  }
+  int Read(uint8_t* buf, size_t size) override {
+    DWORD avail = 0, got = 0;
+    if (!WinHttpQueryDataAvailable(req, &avail) || !avail) return -1;  // (blocks until some comes)
+    if (!WinHttpReadData(req, buf, std::min<DWORD>(avail, DWORD(size)), &got) || !got) return -1;
+    return int(got);
+  }
+  bool Write(const uint8_t* data, size_t size) override {
+    char head[16];
+    std::snprintf(head, sizeof(head), "%zx\r\n", size);
+    std::string chunk = head;
+    chunk.append(reinterpret_cast<const char*>(data), size);
+    chunk += "\r\n";
+    DWORD wrote = 0;
+    return WinHttpWriteData(req, chunk.data(), DWORD(chunk.size()), &wrote) && wrote == chunk.size();
+  }
+  void Finish() override {
+    DWORD wrote = 0;
+    if (upload && WinHttpWriteData(req, "0\r\n\r\n", 5, &wrote)) WinHttpReceiveResponse(req, nullptr);
+  }
+};
+
+std::unique_ptr<Half> StartHalf(const Url& url, const std::string& /*full_url*/, bool post, const Headers& headers,
+                                int* status) {
+  auto half = std::make_unique<WinHalf>();
+  *status = half->Start(url, post, headers);
+  return half;
+}
+
+#elif defined(__ANDROID__)
+
+// NetBridge.pipe* (android/java/.../NetBridge.java): Android's own http(s).
+struct BridgeHalf : Half {
+  jobject pipe = nullptr;  // (a global reference)
+  static JNIEnv* Env() { return static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv()); }
+  static jmethodID Method(JNIEnv* env, const char* name, const char* sig) {
+    jclass cls = NetBridgeClass(env);
+    jmethodID m = cls ? env->GetStaticMethodID(cls, name, sig) : nullptr;
+    if (!m) env->ExceptionClear();
+    return m;
+  }
+  ~BridgeHalf() override {
+    JNIEnv* env = Env();
+    if (!env || !pipe) return;
+    if (jmethodID close = Method(env, "pipeClose", "(Ljava/lang/Object;)V")) {
+      env->CallStaticVoidMethod(NetBridgeClass(env), close, pipe);
+      env->ExceptionClear();
+    }
+    env->DeleteGlobalRef(pipe);
+  }
+  int Start(const std::string& url, bool post, const Headers& headers) {
+    JNIEnv* env = Env();
+    if (!env) return 0;
+    jmethodID open = Method(env, "pipeOpen", "(Ljava/lang/String;Z[Ljava/lang/String;)Ljava/lang/Object;");
+    jmethodID status = Method(env, "pipeStatus", "(Ljava/lang/Object;)I");
+    if (!open || !status || env->PushLocalFrame(16 + jint(headers.size()) * 2) != 0) return 0;
+    jobjectArray jheaders =
+        env->NewObjectArray(jsize(headers.size() * 2), env->FindClass("java/lang/String"), nullptr);
+    for (size_t i = 0; i < headers.size(); ++i) {
+      env->SetObjectArrayElement(jheaders, jsize(i * 2), env->NewStringUTF(headers[i].first.c_str()));
+      env->SetObjectArrayElement(jheaders, jsize(i * 2 + 1), env->NewStringUTF(headers[i].second.c_str()));
+    }
+    jobject p = env->CallStaticObjectMethod(NetBridgeClass(env), open, env->NewStringUTF(url.c_str()),
+                                            jboolean(post), jheaders);
+    int code = 0;
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+    } else if (p) {
+      pipe = env->NewGlobalRef(p);
+      code = env->CallStaticIntMethod(NetBridgeClass(env), status, pipe);
+      env->ExceptionClear();
+    }
+    env->PopLocalFrame(nullptr);
+    return code;
+  }
+  int Read(uint8_t* buf, size_t size) override {
+    JNIEnv* env = Env();
+    jmethodID read = env ? Method(env, "pipeRead", "(Ljava/lang/Object;[B)I") : nullptr;
+    if (!read || !pipe) return -1;
+    jbyteArray jbuf = env->NewByteArray(jsize(size));
+    const int n = env->CallStaticIntMethod(NetBridgeClass(env), read, pipe, jbuf);
+    const bool failed = env->ExceptionCheck();
+    env->ExceptionClear();
+    if (!failed && n > 0) env->GetByteArrayRegion(jbuf, 0, n, reinterpret_cast<jbyte*>(buf));
+    env->DeleteLocalRef(jbuf);
+    return failed ? -1 : n;
+  }
+  bool Write(const uint8_t* data, size_t size) override {
+    JNIEnv* env = Env();
+    jmethodID write = env ? Method(env, "pipeWrite", "(Ljava/lang/Object;[B)Z") : nullptr;
+    if (!write || !pipe) return false;
+    jbyteArray jdata = env->NewByteArray(jsize(size));
+    env->SetByteArrayRegion(jdata, 0, jsize(size), reinterpret_cast<const jbyte*>(data));
+    const bool ok = env->CallStaticBooleanMethod(NetBridgeClass(env), write, pipe, jdata);
+    const bool failed = env->ExceptionCheck();
+    env->ExceptionClear();
+    env->DeleteLocalRef(jdata);
+    return ok && !failed;
+  }
+};
+
+std::unique_ptr<Half> StartHalf(const Url& /*url*/, const std::string& full_url, bool post, const Headers& headers,
+                                int* status) {
+  auto half = std::make_unique<BridgeHalf>();
+  *status = half->Start(full_url, post, headers);
+  return half;
+}
+
+#else
+
+// Plain http over a socket (no TLS here: https servers need Windows or Android).
+struct SocketHalf : Half {
+  Socket s = kBadSocket;
+  std::string early;  // (body bytes read with the headers)
+  ~SocketHalf() override {
+    if (s != kBadSocket) CloseSocket(s);
+  }
+  int Start(const Url& url, bool post, const Headers& headers) {
+    if (url.https) return 0;
+    addrinfo hints = {}, *found = nullptr;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(url.host.c_str(), std::to_string(url.port).c_str(), &hints, &found) != 0 || !found) return 0;
+    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    const bool connected = s != kBadSocket && connect(s, found->ai_addr, int(found->ai_addrlen)) == 0;
+    freeaddrinfo(found);
+    if (!connected) return 0;
+    int one = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
+    SetTimeout(s, 30);
+    // (the download: HTTP/1.0, so its body comes plain until the server closes it)
+    std::string request = (post ? "POST " : "GET ") + url.path + (post ? " HTTP/1.1" : " HTTP/1.0") +
+                          "\r\nHost: " + url.host + ":" + std::to_string(url.port) + "\r\n";
+    if (post) request += "Transfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n";
+    for (const auto& [k, v] : headers) request += k + ": " + v + "\r\n";
+    if (!SendAll(s, request + "\r\n")) return 0;
+    if (post) return 200;
+    std::string head;
+    char buf[4096];
+    while (head.find("\r\n\r\n") == std::string::npos && head.size() < 65536) {
+      const int n = int(recv(s, buf, sizeof(buf), 0));
+      if (n <= 0) return 0;
+      head.append(buf, size_t(n));
+    }
+    const size_t end = head.find("\r\n\r\n");
+    early = head.substr(end + 4);
+    return head.compare(0, 5, "HTTP/") == 0 ? std::atoi(head.c_str() + head.find(' ') + 1) : 0;
+  }
+  int Read(uint8_t* buf, size_t size) override {
+    if (!early.empty()) {
+      const size_t n = std::min(size, early.size());
+      std::memcpy(buf, early.data(), n);
+      early.erase(0, n);
+      return int(n);
+    }
+    const int n = int(recv(s, reinterpret_cast<char*>(buf), int(size), 0));
+    return n > 0 ? n : -1;
+  }
+  bool Write(const uint8_t* data, size_t size) override {
+    char head[16];
+    std::snprintf(head, sizeof(head), "%zx\r\n", size);
+    return SendAll(s, head + std::string(reinterpret_cast<const char*>(data), size) + "\r\n");
+  }
+  void Finish() override { SendAll(s, "0\r\n\r\n"); }
+};
+
+std::unique_ptr<Half> StartHalf(const Url& url, const std::string& /*full_url*/, bool post, const Headers& headers,
+                                int* status) {
+  auto half = std::make_unique<SocketHalf>();
+  *status = half->Start(url, post, headers);
+  return half;
+}
+
+#endif
+
+class PipeImpl : public Pipe {
+ public:
+  bool Send(const uint8_t* data, size_t size) override {
+    std::lock_guard lock(mutex_);
+    if (!open_ || !up_) return false;
+    if (!up_->Write(data, size)) {
+      REXLOG_WARN("online: the stream to the server broke");
+      Over();
+      return false;
+    }
+    return true;
+  }
+  bool Open() const override { return open_; }
+  void Close() override {
+    std::lock_guard lock(mutex_);
+    Over();
+  }
+
+  std::function<void(const uint8_t*, size_t)> on_data_;
+  std::unique_ptr<Half> down_, up_;
+  std::atomic<bool> open_{true};
+  std::mutex mutex_;
+
+  void Over() {  // (under mutex_)
+    if (!open_.exchange(false)) return;
+    if (up_) up_->Finish();
+  }
+  void ReadLoop() {
+    std::vector<uint8_t> buf(16384);
+    for (;;) {
+      const int n = down_->Read(buf.data(), buf.size());
+      if (n < 0 || !open_) break;
+      if (n > 0) on_data_(buf.data(), size_t(n));
+    }
+    {
+      std::lock_guard lock(mutex_);
+      Over();
+    }
+    on_data_(nullptr, 0);
+  }
+};
+
+}  // namespace
+
+std::shared_ptr<Pipe> OpenPipe(const std::string& path, std::function<void(const uint8_t*, size_t)> on_data) {
+  const std::string url = ServerBase() + path;
+  Url u;
+  if (!ParseUrl(url, &u)) return nullptr;
+  Headers headers;
+  const std::string token = rex::cvar::Query<std::string>("online_token");
+  if (!token.empty()) headers.emplace_back("Authorization", "Bearer " + token);
+  auto pipe = std::make_shared<PipeImpl>();
+  pipe->on_data_ = std::move(on_data);
+  int status = 0;
+  pipe->down_ = StartHalf(u, url, false, headers, &status);  // (first: the server takes uploads for open downloads)
+  if (status != 200) {
+    REXLOG_WARN("online: {} {}", path, status ? "refused (" + std::to_string(status) + ")" : "didn't answer");
+    return nullptr;
+  }
+  pipe->up_ = StartHalf(u, url, true, headers, &status);
+  if (status != 200) return nullptr;
+  std::thread([pipe] { pipe->ReadLoop(); }).detach();
+  return pipe;
+}
+
+namespace {
 
 }  // namespace
 
