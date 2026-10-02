@@ -16,7 +16,7 @@ online fixes are on the way.
 
 - **Native renderer**: the game's Direct3D calls drawn on plume (Direct3D 12 or Vulkan) instead of the emulated Xenos GPU. Falls back to the emulated renderer when stuck or when its shaders are missing.
 - **Resolutions** from 720p (the console's) to 4K, anti-aliasing, VSync, steady 60 fps.
-- **FRAME RATE**: 30 or 60 fps (DISPLAY tab and the launcher's Settings). The game always runs its own 60 Hz timing (its world steps once per 60 Hz tick, drawing once a frame), so speed and physics stay right at 30 fps and on a slow PC. VSync off no longer makes the game run too fast. *(Unreleased; 9e529d3, 224faa9.)*
+- **FRAME RATE**: 30 or 60 fps (DISPLAY tab and the launcher's Settings). The game always runs its own 60 Hz timing (its world steps once per 60 Hz tick, drawing once a frame), so speed and physics stay right at 30 fps and on a slow PC. 30 applies in matches; menus always run at 60. VSync off no longer makes the game run too fast. *(Unreleased; 9e529d3, 224faa9, 0b15618.)*
 - **60 fps entrances and cutscenes** (the game's 30 fps scenes run its own 60 fps mode), optional.
 - **Any screen shape**: matches and entrances fill ultrawide, 16:10, Steam Deck and foldable screens. Menus stay 16:9.
 - **GRAPHICS page** in game: *My WWE → Options → Graphics*, DISPLAY and QUALITY tabs.
@@ -117,7 +117,7 @@ Requested later on 1 October 2026:
 Requested 2 October 2026:
 
 - [x] Frame rate choices (Limit Breaking, 1d0fa31; SDK side f3c397d). The user's play test found 30 fps broke physics and 120+ ran too fast; redone with the game's own 60 Hz timing (9e529d3), now 30 or 60 only (224faa9).
-- [ ] Test 30 fps fully. The first version (1d0fa31) passed the automated checks but the user's play test found broken physics. The redone version is in Game Files (224faa9): in the practice ring it shows 30 fps with the game stepping 60 times a second and walking at the same speed as at 60. Waiting on the user's play test (physics).
+- [ ] Test 30 fps fully. The first version (1d0fa31) passed the automated checks but the user's play test found broken physics. The redone version is in Game Files (224faa9): in the practice ring it shows 30 fps with the game stepping 60 times a second and walking at the same speed as at 60. The user's play test then found an odd running animation and laggy menus at 30: fixed in 0b15618 (characters' animation stepped per tick; menus at 60, 30 only in matches) - not in Game Files yet.
 - [x] B did nothing in *My WWE → Options* (out of order menu records since ACHIEVEMENTS).
 - [x] The APK released beside the PC game, all an Android player needs: `package.ps1` also writes `SvR2011-Android-v<version>.apk` (the name the app's updater looks for); README updated.
 - [x] A connected controller hides the on-screen controller (it only worked when SDL saw the pad, never with the XInput backend). *(b249724)*
