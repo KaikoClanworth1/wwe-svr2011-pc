@@ -85,7 +85,7 @@ enum {
     /* play */
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION,
     /* settings */
-    ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
+    ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
@@ -1205,6 +1205,20 @@ static void online_sign_out(void)
     settings_save();
 }
 
+/* Frame rate choices (the game's frame_rate setting: frames a second at most;
+ * the game runs at its normal speed at any of them). */
+static const int k_frame_rates[] = { 30, 60, 120, 144, 240 };
+#define N_FRAME_RATES 5
+
+static int frame_rate_index(int fps)
+{
+    int i;
+    for (i = 0; i < N_FRAME_RATES; i++)
+        if (k_frame_rates[i] == fps)
+            return i;
+    return 1;
+}
+
 static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_audio, int mute, int fps, int msaa,
                           int renderer, int language)
 {
@@ -1232,7 +1246,7 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1;
+    int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     char online_name[64] = "", online_server[128] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1259,6 +1273,7 @@ static void settings_load(void)
             else if (!strcmp(key, "window_width")) w = atoi(val);
             else if (!strcmp(key, "window_height")) h = atoi(val);
             else if (!strcmp(key, "user_language")) language = atoi(val);
+            else if (!strcmp(key, "frame_rate")) frame_rate = atoi(val);
             else if (!strcmp(key, "online_enabled")) online = !strcmp(val, "true");
             else if (!strcmp(key, "online_name")) strcpy_s(online_name, sizeof online_name, val);
             else if (!strcmp(key, "online_server")) strcpy_s(online_server, sizeof online_server, val);
@@ -1276,6 +1291,7 @@ static void settings_load(void)
                   emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
     online_show(online, online_name, online_server);
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
+    SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
     set_text(ID_ON_STATUS, L"");
@@ -1283,12 +1299,12 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 21 };
+    enum { NK = 22 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
-                                    "online_token", "online_xuid" };
+                                    "online_token", "online_xuid", "frame_rate" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1336,6 +1352,10 @@ static int settings_save(void)
     strcpy_s(vals[18], 64, IsDlgButtonChecked(s_wnd, ID_PREPARE) == BST_CHECKED ? "true" : "false");
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
+    {
+        const int fi = (int)SendMessageW(ctl(ID_FRAMERATE), CB_GETCURSEL, 0, 0);
+        sprintf_s(vals[21], 64, "%d", k_frame_rates[fi >= 0 && fi < N_FRAME_RATES ? fi : 1]);
+    }
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -1408,6 +1428,7 @@ static void settings_defaults(void)
 {
     settings_show(0, 0, 1, 0, 0, 0, 1, 0, 0, 1);
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
+    SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
     set_text(ID_SETTINGS_STATUS, L"Defaults restored. Press Save or Play to keep them.");
 }
@@ -1705,10 +1726,17 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Button", L"Fullscreen", BS_AUTORADIOBUTTON, X0 + 270, 72, 110, 24, ID_FULLSCREEN);
     add(TAB_SETTINGS, L"Static", L"Resolution", SS_LEFT, X0 + 16, 108, 120, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
-            X0 + 150, 104, 300, 200, ID_RESOLUTION);
+            X0 + 150, 104, 240, 200, ID_RESOLUTION);
     for (i = 0; i < N_RES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_res[i].label);
-    add(TAB_SETTINGS, L"Static", L"The picture is rendered to fit the window. Also in game: GRAPHICS page.",
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 104, 146, 200,
+            ID_FRAMERATE);
+    for (i = 0; i < N_FRAME_RATES; i++) {
+        WCHAR t[32];
+        swprintf_s(t, 32, L"%d FPS", k_frame_rates[i]);
+        SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
+    }
+    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; full speed at any.",
         SS_LEFT, X0 + 150, 132, 396, 18, 0);
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 154, 360, 24, ID_VSYNC);
@@ -4634,7 +4662,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(s_wnd, L"open", m, NULL, NULL, SW_SHOWNORMAL);
             break;
         }
-        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE:
+        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");

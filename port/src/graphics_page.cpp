@@ -4,6 +4,7 @@
 // header, one bar per setting, the selected one red with < > around the
 // value), and every setting applies at once.
 
+#include "frame_rate.h"
 #include "graphics_page.h"
 
 #include <algorithm>
@@ -77,15 +78,19 @@ enum Row {
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
   kTouch, kLanguage,                                             // DISPLAY (last)
   kWide, kPrepare, kDof, kMotionBlur, kSoft, kReplays,                      // QUALITY (last)
+  kFrameRate,                                                    // DISPLAY
 };
+// FRAME RATE (frame_rate.h): the choices.
+constexpr int kFrameRates[] = {30, 60, 120, 144, 240};
+constexpr int kNumFrameRates = 5;
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
-const std::vector<Row> kTabRows[kTabs] = {{kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
+const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
 #endif
 // MY WWE -> OPTIONS -> LANGUAGE: the same page with only this row.
@@ -247,6 +252,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool msaa_ = false, fps_ = true, vsync_ = true, native_ = true;
   int display_ = kWindowed;  // (DisplayMode)
   bool effects_ = true, fps60_ = true;
+  int frame_rate_ = 1;  // (kFrameRates)
   bool native_at_start_ = false;
   // Native on Vulkan (gpu_backend = vulkan) chosen / running: the API is picked
   // when the game starts, so a change takes effect at the next start.
@@ -297,6 +303,9 @@ void GraphicsPage::Load() {
   }
   vsync_ = rex::cvar::Query<bool>("vsync");
   display_ = CurrentDisplayMode();
+  frame_rate_ = 1;
+  for (int i = 0; i < kNumFrameRates; ++i)
+    if (kFrameRates[i] == TargetFrameRate()) frame_rate_ = i;
 }
 
 void GraphicsPage::Change(int row, int dir) {
@@ -374,6 +383,11 @@ void GraphicsPage::Change(int row, int dir) {
       fps_ = !fps_;
       SetFpsCounterVisible(fps_);
       SaveSetting("show_fps", fps_ ? "true" : "false");
+      break;
+    case kFrameRate:
+      frame_rate_ = (frame_rate_ + dir + kNumFrameRates) % kNumFrameRates;
+      SetTargetFrameRate(kFrameRates[frame_rate_]);
+      SaveSetting("frame_rate", std::to_string(kFrameRates[frame_rate_]));
       break;
     case kVsync:
       vsync_ = !vsync_;
@@ -556,6 +570,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kResolution: return display_ != kWindowed ? "FULL SCREEN" : kResolutions[resolution_].label;
       case kDisplay: return kDisplayModeNames[display_];
       case kVsync: return vsync_ ? "ON" : "OFF";
+      case kFrameRate: {
+        static char fps[16];
+        std::snprintf(fps, sizeof(fps), "%d FPS", kFrameRates[frame_rate_]);
+        return fps;
+      }
       case kFpsCounter: return fps_ ? "ON" : "OFF";
       case kTouch: return touch_ ? "ON" : "OFF";
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
@@ -578,6 +597,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kResolution: return "RESOLUTION";
       case kDisplay: return "DISPLAY MODE";
       case kVsync: return "VSYNC";
+      case kFrameRate: return "FRAME RATE";
       case kFpsCounter: return "FPS COUNTER";
       case kTouch: return "TOUCH CONTROLS";
       case kWide: return "WIDE SCREENS";
@@ -603,6 +623,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                : display_ == kBorderless ? "Borderless: a window covering the screen (F11 switches)."
                                          : "Play in a window (F11 switches to full screen).";
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
+      case kFrameRate: return "Frames a second, at most. The game runs at its normal speed at any frame rate.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";

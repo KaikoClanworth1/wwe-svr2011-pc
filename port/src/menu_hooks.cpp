@@ -8,6 +8,7 @@
 //  - choosing an entry opens the port's page instead of the game's screen
 //    (graphics_page.h, achievements_page.h) or closes the game.
 
+#include "frame_rate.h"
 #include "menu_hooks.h"
 
 #if defined(_WIN32)
@@ -270,6 +271,7 @@ REX_HOOK_RAW(sub_826E1D28) {
   REXLOG_INFO("[svr2011] entrances over");
   svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
   __imp__sub_826E1D28(ctx, base);
+  svr2011::ApplyFrameRate(base);  // (frame_rate.h)
 }
 
 REX_EXTERN(__imp__sub_826E1AE8);
@@ -281,6 +283,7 @@ REX_HOOK_RAW(sub_826E1AE8) {
     if (ctx.r3.u32 == 25) ctx.r3.u64 = 50;
   }
   __imp__sub_826E1AE8(ctx, base);
+  svr2011::ApplyFrameRate(base);  // the chosen frame rate's timing (frame_rate.h)
   ArmWatch(base);  // debug (SVR2011_WATCH_ADDR)
 }
 

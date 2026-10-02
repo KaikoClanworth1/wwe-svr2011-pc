@@ -10,6 +10,7 @@
 #include <rex/cvar.h>
 #include <rex/ui/keybinds.h>
 
+#include "frame_rate.h"
 #include "frame_stats.h"
 #include "native/native_renderer.h"
 
@@ -64,9 +65,11 @@ void FpsOverlay::OnDraw(ImGuiIO& io) {
                                  ImGuiWindowFlags_NoNav;
   if (ImGui::Begin("##svr2011_fps", nullptr, flags)) {
     ImGui::SetWindowFontScale(1.5f);
-    const ImVec4 colour = t.fps >= 59.0   ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f)
-                          : t.fps >= 45.0 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f)
-                                          : ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
+    // Green at the chosen frame rate (frame_rate.h), yellow from 3/4 of it.
+    const double cap = TargetFrameRate();
+    const ImVec4 colour = t.fps >= cap * 0.97   ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f)
+                          : t.fps >= cap * 0.75 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f)
+                                                : ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
     ImGui::TextColored(colour, "%.0f FPS", t.fps);
     ImGui::SameLine();
     ImGui::TextDisabled("%.1f ms  1%% low %.0f", t.frame_ms, t.low_1pct_fps);

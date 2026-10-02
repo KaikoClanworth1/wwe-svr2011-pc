@@ -32,6 +32,7 @@
 #include "caw_logos.h"
 #include "paint_pages.h"
 #include "match_types.h"
+#include "frame_rate.h"
 #include "crash_report.h"
 #include "dlc.h"
 #include "fps_overlay.h"
@@ -353,6 +354,8 @@ void Svr2011App::OnPostLoadXexImage() {
                              static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_saves);
   // More exhibition match types (match_types.h).
   svr2011::InstallMatchTypes(runtime()->memory());
+  // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
+  svr2011::InstallFrameRate(runtime()->memory());
   if (imgui_drawer()) {
     // MY WWE -> ACHIEVEMENTS (achievements_page.h).
     svr2011::InstallAchievementsPage(
