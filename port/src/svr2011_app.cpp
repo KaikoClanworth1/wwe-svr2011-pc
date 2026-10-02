@@ -34,6 +34,7 @@
 #include "match_types.h"
 #include "arena_mods.h"
 #include "ring_rules.h"
+#include "superstar_mods.h"
 #include "frame_rate.h"
 #include "crash_report.h"
 #include "dlc.h"
@@ -363,6 +364,8 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
+  // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
+  svr2011::InstallSuperstarMods(runtime()->memory());
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
   svr2011::InstallFrameRate(runtime()->memory());
   if (imgui_drawer()) {

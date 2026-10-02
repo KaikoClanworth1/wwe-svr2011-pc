@@ -40,6 +40,7 @@ set(SVR2011_SOURCES
     src/match_types.cpp
     src/arena_mods.cpp
     src/ring_rules.cpp
+    src/superstar_mods.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp
     src/frame_rate.cpp

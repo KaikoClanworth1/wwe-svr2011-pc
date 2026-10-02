@@ -28,6 +28,7 @@
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
+#include "superstar_mods.h"
 
 REXCVAR_DEFINE_BOOL(managers_tile, true, "Gameplay",
                     "Character select: the \"?\" tile opens the managers (Paul Bearer, Hornswoggle, ...) "
@@ -57,6 +58,11 @@ void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
 void FillManagers(uint8_t* base, uint32_t list) {
   uint32_t n = 0;
   for (uint32_t id : kManagers) {
+    Wr32(base, list + 4 + n * 4, id);
+    Wr32(base, list + 4 + 1288 + n * 4, 1);
+    ++n;
+  }
+  for (uint32_t id : svr2011::SuperstarModIds()) {  // (arenas branch: superstar mods, superstar_mods.cpp)
     Wr32(base, list + 4 + n * 4, id);
     Wr32(base, list + 4 + 1288 + n * 4, 1);
     ++n;
@@ -97,14 +103,15 @@ REX_HOOK_RAW(sub_824621F8) {
   const uint32_t screen = Rd32(base, cursor + kScreen);
   ctx.r3.u64 = screen;
   sub_82449A58(ctx, base);
-  bool ours = ctx.r3.u32 == 1;
-  if (ours) {
-    ctx.r3.u64 = screen;
-    ctx.r4.u64 = Rd32(base, cursor + kCol);
-    ctx.r5.u64 = Rd32(base, cursor + kRow);
-    sub_8244C710(ctx, base);
-    ours = ctx.r3.u32 == kTileKindRandom;
-  }
+  const bool grid = ctx.r3.u32 == 1;
+  ctx.r3.u64 = screen;
+  ctx.r4.u64 = Rd32(base, cursor + kCol);
+  ctx.r5.u64 = Rd32(base, cursor + kRow);
+  sub_8244C710(ctx, base);
+  const bool ours = grid && ctx.r3.u32 == kTileKindRandom;
+  if (!grid && ctx.r3.u32 == kTileKindRandom)
+    REXLOG_INFO("[svr2011] managers: \"?\" tile left to the game (screen {:08X} +42240 = {})", screen,
+                Rd32(base, screen + 42240));
   if (!ours) {
     ctx = saved;
     __imp__sub_824621F8(ctx, base);
@@ -131,7 +138,7 @@ REX_HOOK_RAW(sub_824621F8) {
   ctx.r3.u64 = cursor;
   ctx.r4.u64 = 0;
   sub_82462118(ctx, base);  // (the panel shows the first manager)
-  REXLOG_INFO("[svr2011] managers list opened (player {})", Rd32(base, cursor + kPlayer));
+  REXLOG_INFO("[svr2011] managers list opened (player {}, cursor {:08X})", Rd32(base, cursor + kPlayer), cursor);
   ctx = saved;
   ctx.r3.u64 = 0;
 }
