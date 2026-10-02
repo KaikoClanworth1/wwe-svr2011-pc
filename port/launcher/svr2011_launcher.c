@@ -1743,7 +1743,7 @@ static void build_ui(void)
         swprintf_s(t, 32, L"%d FPS", k_frame_rates[i]);
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
     }
-    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; full speed at any.",
+    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; normal speed at any (above 60: 60 for now).",
         SS_LEFT, X0 + 150, 132, 396, 18, 0);
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 154, 360, 24, ID_VSYNC);

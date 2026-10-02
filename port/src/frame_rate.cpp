@@ -1,29 +1,46 @@
 // The game's frame rate - see frame_rate.h.
 //
-// The timing block at 0x82EDDBE8 (written by sub_826E1AE8):
+// The timing block at 0x82EDDBE8 (written by sub_826E1AE8 SetFrameRate):
 //   +8  int   fps                  +28 float 1/fps (Havok's step)
 //   +32 float fps                  +36 float 1000/fps     +40 int 1000/fps
 //   +60 float 60/fps (the step in 60 Hz frames, what most code scales by)
 //   +64 float fps/60
-// At 30 fps the game also presents every 2nd vblank (sub_826D8A90), so the
-// frame clock stays at 60 Hz there.
+// It only knows 25 / 30 / 50 / 60, and much of the game steps by whole
+// frames or tells 30 from 60 only - so it stays at the game's own 60 here,
+// and the frame rate is made by how often the world update runs.
+//
+// The game's loop (logic thread, sub_821595D8): wait for the render thread,
+// then the world update sub_8269D768 - task list upkeep (sub_8269D3F0) and
+// the task manager sub_8269C728(manager):
+//   update pass: the systems' slot 1 (input among them), then group by group
+//     (the scheduler +68's slot 4 allows the group) every live task's slot 1;
+//   draw pass:   the systems' slot 2, the render kick (sub_826A6018 /
+//     sub_826A6080), list upkeep, the systems' slot 3.
+// Here the update pass runs once per 60 Hz tick of real time, the draw pass
+// once a frame. A frame always gets at least one update (the menus are drawn
+// in it), so the game draws at most 60 frames a second; the frame clock (the
+// guest vblank, guest_vblank_hz) runs at the chosen rate up to 60. At 30 fps,
+// or when the PC can't make 60, a frame runs two (up to four) updates; the
+// extra ones repeat the controller reading and leave the characters' job to
+// the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <thread>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
-#include <rex/ui/presenter.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/presenter.h>
 
 #include "generated/default/svr2011_init.h"
 
@@ -31,13 +48,15 @@ REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30, 60, 120, 144 o
 
 namespace {
 
-constexpr uint32_t kTiming = 0x82EDDBE8;
+using Clock = std::chrono::steady_clock;
 
-// The rate the game runs at now: the chosen one, or (when the PC can't keep
-// up with it - the game would run slower than real time) a lower one.
-std::atomic<int> g_rate{60};
-uint8_t* g_base = nullptr;  // the guest's memory
-bool g_own = true;          // the game's own timing block (60, or 30)
+constexpr uint32_t kTiming = 0x82EDDBE8;
+constexpr uint32_t kMatchFrames = 0x82E3CD0C;  // the match's frame count (its clock: / fps)
+constexpr uint32_t kChars = 0x82E3CC50;        // the wrestlers
+
+uint8_t* g_base = nullptr;            // the guest's memory
+std::atomic<bool> g_scene_thirty{false};  // an entrance at the original's 30 fps
+std::atomic<bool> g_lockstep{false};      // online: one world update per frame at 60
 
 void Wr32(uint8_t* p, uint32_t v) {
   v = __builtin_bswap32(v);
@@ -60,6 +79,14 @@ void WrF(uint8_t* p, float f) {
   Wr32(p, v);
 }
 
+// The frame clock: the frames the game draws a second.
+void SetFrameClock() {
+  const int fps = g_lockstep ? 60 : g_scene_thirty ? 30 : svr2011::FrameRateNow();
+  rex::cvar::SetFlagByName("guest_vblank_hz", std::to_string(fps));
+}
+
+void StartDeveloperAids(uint8_t* base);
+
 }  // namespace
 
 namespace svr2011 {
@@ -78,43 +105,14 @@ int TargetFrameRate() {
   }
 }
 
-int FrameRateNow() { return g_rate.load(); }
-
-void SetFrameClock(int fps) {
-  // 30 fps is the game's own: every 2nd vblank of 60.
-  rex::cvar::SetFlagByName("guest_vblank_hz", std::to_string(fps == 30 ? 60 : fps));
-}
+int FrameRateNow() { return std::min(TargetFrameRate(), 60); }
 
 void InstallFrameRate(rex::memory::Memory* memory) {
-  if (memory) g_base = memory->virtual_membase();
-  const int fps = TargetFrameRate();
-  g_rate = fps;
-  SetFrameClock(fps);
-  REXLOG_INFO("frame rate: {} fps", fps);
-  // Developer aid: SVR2011_FPS_PROBE=1 logs, every second, the game frames
-  // (the match frame counter) and wrestler 1's position - the game's speed.
-  if (const char* v = std::getenv("SVR2011_FPS_PROBE"); v && *v == '1' && memory) {
-    uint8_t* base = memory->virtual_membase();
-    std::thread([base] {
-      constexpr uint32_t kFrames = 0x82E3CD0C, kChars = 0x82E3CC50;
-      uint32_t last = Rd32(base + kFrames);
-      uint64_t last_presents = rex::ui::HostPresentCount(), last_new = rex::ui::HostNewGuestFramePresentCount();
-      for (;;) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        const uint32_t frames = Rd32(base + kFrames);
-        const uint32_t ch = Rd32(base + kChars);
-        const float x = ch ? RdF(base + ch + 288) : 0, z = ch ? RdF(base + ch + 296) : 0;
-        const uint64_t presents = rex::ui::HostPresentCount(), shown = rex::ui::HostNewGuestFramePresentCount();
-        REXLOG_INFO("fps probe: {} game frames/s, {} shown ({} presents), fps {} step {:.3f}, wrestler 1 at "
-                    "({:.1f}, {:.1f})",
-                    frames - last, shown - last_new, presents - last_presents, Rd32(base + kTiming + 8),
-                    RdF(base + kTiming + 60), x, z);
-        last = frames;
-        last_presents = presents;
-        last_new = shown;
-      }
-    }).detach();
-  }
+  if (!memory) return;
+  g_base = memory->virtual_membase();
+  SetFrameClock();
+  REXLOG_INFO("frame rate: {} fps (the game draws {})", TargetFrameRate(), FrameRateNow());
+  StartDeveloperAids(g_base);
 }
 
 // The timing block for `fps` frames a second.
@@ -127,181 +125,355 @@ void WriteTiming(uint8_t* base, int fps) {
   Wr32(t + 40, uint32_t(1000 / fps));
   WrF(t + 60, 60.0f / float(fps));
   WrF(t + 64, float(fps) / 60.0f);
-  g_rate = fps;
 }
 
-void ApplyFrameRate(uint8_t* base) {
-  // 30: its timing; 60: the game's own (until the PC can't keep up); others:
-  // the next frame writes its time.
-  if (TargetFrameRate() == 30) WriteTiming(base, 30);
-  else if (TargetFrameRate() > 60) WriteTiming(base, TargetFrameRate());
-  else g_rate = 60;
+void ApplyFrameRate(uint8_t* base) { WriteTiming(base, 60); }
+
+void SetLockstep(bool on) {
+  if (g_lockstep.exchange(on) == on) return;
+  SetFrameClock();
+  REXLOG_INFO("frame rate: online lockstep {}", on ? "on (one world update a frame, 60 Hz)" : "off");
 }
 
-}  // namespace svr2011
-
-// -- Whole-frame steps -------------------------------------------------------
-//
-// A few places step by whole frames of 60 Hz: (int)(60/fps) per frame (the
-// block's +60, or 60 / +8). At other rates that is wrong (0 above 60 fps -
-// fades and light ramps would stand still). They run on 60 Hz ticks instead:
-// each frame they see the 60 fps block if a 60 Hz tick has passed (twice
-// that if two have), a block of no time otherwise.
-namespace {
-
-int g_ticks = 1;       // 60 Hz ticks in this frame
-double g_tick_acc = 0;
-int g_depth = 0;       // nesting of the functions below
-uint8_t g_saved[68];
-
-// The game's own timing (60, or its 30 fps mode): no change needed.
-bool OwnRate() { return g_own || svr2011::TargetFrameRate() == 30; }
-
-void Enter(uint8_t* base) {
-  if (g_depth++ || OwnRate()) return;
-  uint8_t* t = base + kTiming;
-  std::memcpy(g_saved, t, sizeof(g_saved));
-  const int ticks = g_ticks;
-  const float step = float(ticks);
-  const int fps = ticks ? 60 : std::max(61, g_rate.load());
-  Wr32(t + 8, uint32_t(fps));
-  WrF(t + 28, step / 60.0f);
-  WrF(t + 32, float(fps));
-  WrF(t + 36, step * 1000.0f / 60.0f);
-  Wr32(t + 40, uint32_t(ticks * 1000 / 60));
-  WrF(t + 60, step);
-  WrF(t + 64, ticks ? 1.0f / step : float(fps) / 60.0f);
+void SetSceneThirtyFps(bool on) {
+  if (g_scene_thirty.exchange(on) != on) SetFrameClock();
 }
-
-void Leave(uint8_t* base) {
-  if (--g_depth || OwnRate()) return;
-  std::memcpy(base + kTiming, g_saved, sizeof(g_saved));
-}
-
-}  // namespace
-
-// -- Full speed at any frame rate ------------------------------------------
-//
-// The chosen rate is a cap (the frame clock runs at it). The game steps the
-// time in its timing block once a frame, so like a PC game each frame gets
-// the time the last one really took: fewer frames when the PC can't make
-// more, the game at its normal speed. (At a 60 cap the game's own 60 fps
-// block stays while the PC keeps up. Whole fps of 30, 25 and 50 are left out:
-// the game treats them as its half-rate and PAL modes.) The match's time -
-// its frame count / fps, the clock of timed matches - is kept to the real
-// time it has run.
-namespace {
-
-using Clock = std::chrono::steady_clock;
-constexpr uint32_t kMatchFrames = 0x82E3CD0C;
-Clock::time_point g_last;
-double g_frame_s = 0;      // smoothed frame time (the 60 cap's own-block test)
-double g_last_dt = 1.0 / 60;
-double g_match_time = 0;   // the match's real time, s
-uint32_t g_written = 0;    // the match frame count as last written
-bool g_test_jumped = false;
-
-void WriteFrameTime(uint8_t* base, double dt) {
-  uint8_t* t = base + kTiming;
-  int fps = int(1.0 / dt + 0.5);
-  if (fps == 30 || fps == 25 || fps == 50) ++fps;
-  Wr32(t + 8, uint32_t(fps));
-  WrF(t + 28, float(dt));
-  WrF(t + 32, float(1.0 / dt));
-  WrF(t + 36, float(dt * 1000.0));
-  Wr32(t + 40, uint32_t(dt * 1000.0));
-  WrF(t + 60, float(dt * 60.0));
-  WrF(t + 64, float(1.0 / (dt * 60.0)));
-  g_rate = fps;
-}
-
-void CountFrame(uint8_t* base) {
-  const auto now = Clock::now();
-  double dt = g_last == Clock::time_point{} ? 0 : std::chrono::duration<double>(now - g_last).count();
-  g_last = now;
-  const int target = svr2011::TargetFrameRate();
-  if (target == 30) return;  // the game's own 30 fps mode
-  if (dt <= 0 || dt > 0.25) dt = 1.0 / target;  // (the first frame, or a load)
-  dt = std::clamp(dt, 0.9 / target, 1.0 / 20);
-  // 60 Hz ticks (the whole-frame steps), by real time.
-  g_tick_acc += dt * 60.0;
-  g_ticks = int(g_tick_acc);
-  g_tick_acc -= g_ticks;
-  g_frame_s = g_frame_s == 0 ? dt : g_frame_s + (dt - g_frame_s) * std::min(1.0, dt / 0.25);
-  // The match's time: what the game counted since the last frame, at that
-  // frame's step.
-  const uint32_t count = Rd32(base + kMatchFrames);
-  const int old_fps = g_rate.load();
-  if (count < g_written) {
-    g_match_time = count / double(old_fps);  // (a new match)
-    g_test_jumped = false;
-  } else {
-    g_match_time += (count - g_written) * (g_own ? 1.0 / 60 : g_last_dt);
-  }
-  const bool own = target == 60 && g_frame_s <= 1.0 / 57;
-  if (own) {
-    if (!g_own) svr2011::WriteTiming(base, 60);
-    g_own = true;
-  } else {
-    g_own = false;
-    WriteFrameTime(base, dt);
-  }
-  // Test aid: SVR2011_TEST_MATCH_TIME=<s> - 20 s into a match its time jumps
-  // to <s> (a timed match then ends on its own).
-  static const double test_time = [] {
-    const char* v = std::getenv("SVR2011_TEST_MATCH_TIME");
-    return v ? std::atof(v) : 0.0;
-  }();
-  if (test_time > 0 && !g_test_jumped && g_match_time > 20 && g_match_time < test_time) {
-    g_test_jumped = true;
-    g_match_time = test_time;
-    REXLOG_INFO("frame rate: test - match time set to {} s", test_time);
-  }
-  g_last_dt = dt;
-  g_written = uint32_t(g_match_time * g_rate.load() + 0.5);
-  Wr32(base + kMatchFrames, g_written);
-}
-
-}  // namespace
-
-REX_EXTERN(__imp__sub_826E0B38);
-REX_HOOK_RAW(sub_826E0B38) {
-  CountFrame(base);
-  __imp__sub_826E0B38(ctx, base);
-}
-
-#define SVR2011_SIXTY_HZ(addr)          \
-  REX_EXTERN(__imp__sub_##addr);        \
-  REX_HOOK_RAW(sub_##addr) {            \
-    Enter(base);                        \
-    __imp__sub_##addr(ctx, base);       \
-    Leave(base);                        \
-  }
-
-SVR2011_SIXTY_HZ(82300410)
-SVR2011_SIXTY_HZ(825A7278)
-SVR2011_SIXTY_HZ(8276B988)
-SVR2011_SIXTY_HZ(8276B250)
-SVR2011_SIXTY_HZ(8277D730)
-SVR2011_SIXTY_HZ(8277E3D8)
-SVR2011_SIXTY_HZ(82872F80)
-SVR2011_SIXTY_HZ(82885AC0)
-SVR2011_SIXTY_HZ(82885BB0)
-SVR2011_SIXTY_HZ(823AB6C8)
-SVR2011_SIXTY_HZ(823C7B40)
-SVR2011_SIXTY_HZ(8223D7E8)
-SVR2011_SIXTY_HZ(825FD418)
-
-namespace svr2011 {
 
 // GRAPHICS -> FRAME RATE: the chosen rate, now.
 void SetTargetFrameRate(int fps) {
   rex::cvar::SetFlagByName("frame_rate", std::to_string(fps));
-  fps = TargetFrameRate();
-  SetFrameClock(fps);
-  if (!g_base) return;
-  WriteTiming(g_base, fps);
-  REXLOG_INFO("frame rate: {} fps (GRAPHICS)", fps);
+  SetFrameClock();
+  REXLOG_INFO("frame rate: {} fps (GRAPHICS; the game draws {})", TargetFrameRate(), FrameRateNow());
 }
 
 }  // namespace svr2011
+
+// -- The world at 60 Hz ------------------------------------------------------
+
+namespace {
+
+Clock::time_point g_world_last;
+double g_world_acc = 0;  // 60 Hz ticks of real time not yet run
+int g_world_ticks = 1;   // update passes this frame
+
+constexpr int kMaxTicks = 4;  // (below 15 fps the game slows down rather than racing)
+
+uint32_t G32(uint8_t* base, uint32_t a) { return Rd32(base + a); }
+void P32(uint8_t* base, uint32_t a, uint32_t v) { Wr32(base + a, v); }
+
+// What the world update is running: a watchdog logs it when the update is
+// stuck (a wait that a frame with two updates would never see end).
+std::atomic<uint32_t> g_dbg_obj{0}, g_dbg_fn{0}, g_dbg_pass{0};
+std::atomic<int64_t> g_dbg_since{0};
+
+// obj->vtable[slot](obj, r4, r5)
+void Virt(PPCContext& ctx, uint8_t* base, uint32_t obj, int slot, uint32_t r4 = 0, uint32_t r5 = 0) {
+  g_dbg_obj = obj;
+  g_dbg_fn = G32(base, G32(base, obj) + slot * 4);
+  g_dbg_since = Clock::now().time_since_epoch().count();
+  ctx.r3.u64 = obj;
+  ctx.r4.u64 = r4;
+  ctx.r5.u64 = r5;
+  ctx.ctr.u64 = G32(base, G32(base, obj) + slot * 4);
+  REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+}
+
+// The manager's systems (list +0..+8, then +68): their slot `slot`.
+void Systems(PPCContext& ctx, uint8_t* base, uint32_t m, int slot, bool scheduler_first) {
+  // (as the original: list ends read once before each loop, +68 read when used)
+  if (scheduler_first)
+    if (const uint32_t o = G32(base, m + 68)) Virt(ctx, base, o, slot);
+  for (uint32_t p = G32(base, m + 0), end = G32(base, m + 8); p != end; p += 4) {
+    const uint32_t o = G32(base, p);
+    if (o != 0xFFFFFFFF) Virt(ctx, base, o, slot);
+  }
+  if (!scheduler_first)
+    if (const uint32_t o = G32(base, m + 68)) Virt(ctx, base, o, slot);
+}
+
+// Drops the removed (-1) entries of the list at `l` (begin +0, end +8, dirty +12).
+void Compact(uint8_t* base, uint32_t l) {
+  if (G32(base, l + 12) == 0) return;
+  uint32_t out = G32(base, l);
+  for (uint32_t p = G32(base, l); p != G32(base, l + 8); p += 4)
+    if (const uint32_t v = G32(base, p); v != 0xFFFFFFFF) P32(base, out, v), out += 4;
+  P32(base, l + 8, out);
+  P32(base, l + 12, 0);
+}
+
+void UpdatePass(PPCContext& ctx, uint8_t* base, uint32_t m) {
+  Systems(ctx, base, m, 1, false);
+  P32(base, m + 96, 1);
+  const uint32_t groups = (G32(base, m + 40) - G32(base, m + 32)) >> 4;
+  for (uint32_t g = 0; g < groups; ++g) {
+    if (const uint32_t scheduler = G32(base, m + 68)) {
+      Virt(ctx, base, scheduler, 4, g, G32(base, m + 80));
+      if (ctx.r3.u32 == 0) continue;
+    }
+    const uint32_t list = G32(base, m + 32) + g * 16;
+    for (uint32_t p = G32(base, list), end = G32(base, list + 8); p != end; p += 4) {
+      const uint32_t t = G32(base, p);
+      if (t != 0xFFFFFFFF && G32(base, t + 8) != 0) Virt(ctx, base, t, 1);
+    }
+  }
+  ctx.r3.u64 = m;
+  sub_8269C648(ctx, base);  // (the groups' lists)
+  P32(base, m + 96, 0);
+}
+
+void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
+  Systems(ctx, base, m, 2, false);
+  P32(base, m + 100, 1);
+  constexpr uint32_t kRenderQueue = 0x82ED6030;
+  ctx.r3.u64 = G32(base, kRenderQueue);
+  sub_826A6018(ctx, base);
+  ctx.r3.u64 = G32(base, kRenderQueue);
+  sub_826A6080(ctx, base);
+  P32(base, m + 100, 0);
+  ctx.r3.u64 = m;
+  sub_8269C6B8(ctx, base);
+  Compact(base, m + 16);
+  Systems(ctx, base, m, 3, true);
+}
+
+// The controllers are read in the update pass (a system's slot 1 ->
+// sub_826CA070 -> XamInputGetState through sub_82905058), and some menus look
+// at the presses after the update. With two updates in a frame a press would
+// be new in the first and held in the second - lost to those menus - so all
+// but the last update of a frame (an extra update) see the previous reading
+// again (no change): a press arrives in the frame's last update.
+bool g_extra_update = false;
+struct InputReading {
+  bool valid = false;
+  uint32_t result = 0;
+  uint8_t state[16] = {};  // XINPUT_STATE
+};
+InputReading g_input[4];
+
+// Test aid: SVR2011_TEST_MATCH_TIME=<s> - 20 s into a match its time jumps to
+// <s> (a timed match then ends on its own).
+void TestMatchTime(uint8_t* base) {
+  static const double test_time = [] {
+    const char* v = std::getenv("SVR2011_TEST_MATCH_TIME");
+    return v ? std::atof(v) : 0.0;
+  }();
+  if (test_time <= 0) return;
+  static uint32_t last = 0;
+  static bool jumped = false;
+  const uint32_t frames = G32(base, kMatchFrames);
+  if (frames < last) jumped = false;  // (a new match)
+  last = frames;
+  if (!jumped && frames > 20 * 60 && frames < test_time * 60) {
+    jumped = true;
+    P32(base, kMatchFrames, uint32_t(test_time * 60));
+    REXLOG_INFO("frame rate: test - match time set to {} s", test_time);
+  }
+}
+
+}  // namespace
+
+// The world update, once a frame of the game's loop: how many 60 Hz ticks
+// this frame runs (at least one).
+REX_EXTERN(__imp__sub_8269D768);
+REX_HOOK_RAW(sub_8269D768) {
+  // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
+  static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
+  if (slow_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+  const auto now = Clock::now();
+  if (g_world_last == Clock::time_point{}) g_world_last = now - std::chrono::microseconds(16667);
+  g_world_acc += std::chrono::duration<double>(now - g_world_last).count() * 60.0;
+  g_world_last = now;
+  g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
+  g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
+  if (g_lockstep) g_world_ticks = 1, g_world_acc = 0;
+  __imp__sub_8269D768(ctx, base);
+  TestMatchTime(base);
+}
+
+// The task manager: the update pass per tick, the draw pass once (see top).
+REX_EXTERN(__imp__sub_8269C728);
+REX_HOOK_RAW(sub_8269C728) {
+  const auto saved = ctx;
+  const uint32_t m = ctx.r3.u32;
+  constexpr uint32_t kOwner = 0x82EC5F94;
+  const uint32_t owner = G32(base, kOwner);
+  ctx.r3.u64 = owner + 108;
+  REX_CALL_INDIRECT_FUNC(0x82D4753Cu);  // (RtlEnterCriticalSection)
+  P32(base, owner + 136, 1);
+  for (int i = 0; i < g_world_ticks; ++i) {
+    g_dbg_pass = 10 + i;
+    g_extra_update = i + 1 < g_world_ticks;
+    UpdatePass(ctx, base, m);
+  }
+  g_extra_update = false;
+  g_dbg_pass = 20;
+  DrawPass(ctx, base, m);
+  g_dbg_pass = 0;
+  g_dbg_since = Clock::now().time_since_epoch().count();
+  static std::once_flag watchdog;
+  std::call_once(watchdog, [] {
+    std::thread([] {
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        const auto since = Clock::time_point(Clock::duration(g_dbg_since.load()));
+        if (g_dbg_pass != 0 && Clock::now() - since > std::chrono::seconds(3)) {
+          std::string jobs;
+          if (uint8_t* b = g_base) {
+            const uint32_t q = Rd32(b + 0x82ED6030);
+            const uint32_t n = q ? Rd32(b + q + 8) : 0;
+            for (uint32_t i = 0; i < n && i < 16; ++i) {
+              const uint32_t w = Rd32(b + Rd32(b + q + 4) + i * 4);
+              if (w)
+                jobs += fmt::format(" [{}: {:08X} sync {} fn {:08X} n {} +24 {:08X} +28 {:08X} +32 {:08X} +44 {:08X} +48 {:08X}]",
+                                    i, w, Rd32(b + w + 20), Rd32(b + w + 52), Rd32(b + w + 16), Rd32(b + w + 24),
+                                    Rd32(b + w + 28), Rd32(b + w + 32), Rd32(b + w + 44), Rd32(b + w + 48));
+            }
+          }
+          REXLOG_WARN("frame rate: world update stuck {} s in pass {} (1x: update x+1, 20: draw) - object {:08X} "
+                      "function {:08X}; jobs{}",
+                      std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - since).count(),
+                      g_dbg_pass.load(), g_dbg_obj.load(), g_dbg_fn.load(), jobs);
+        }
+      }
+    }).detach();
+  });
+  const uint32_t owner_now = G32(base, kOwner);
+  ctx.r3.u64 = owner_now + 108;
+  REX_CALL_INDIRECT_FUNC(0x82D4754Cu);  // (RtlLeaveCriticalSection)
+  P32(base, owner_now + 136, 0);
+  ctx.r1 = saved.r1;
+  ctx.lr = saved.lr;
+}
+
+// The characters' job ('CHPH': the physics world and the wrestlers' poses,
+// on its own thread). sub_8216F4C8, from the update's group gate, waits for
+// the job the last update started, takes its results and starts the next
+// one - but the job thread only finishes once its frame's draw has run, so
+// an extra update would wait forever. Only a frame's last update runs it; an
+// extra one takes just the wrestlers' share (CharactersStep), and the job
+// steps the physics world (sub_8238AF28(world, 1/60), only called there)
+// once per 60 Hz tick of its frame.
+namespace {
+
+std::atomic<int> g_job_ticks{1};
+
+// What sub_8216F4C8 does between waiting for the job and starting the next:
+// sub_8216F378 (each wrestler's step from the job's results) and, outside
+// some game states, sub_8216EAB8 / sub_821C1A98.
+void CharactersStep(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kJob = 0x82DE9C88, kSlot = 0x82DE9C90;
+  sub_8216E750(ctx, base);
+  if (ctx.r3.u32 != 0) return;
+  const uint32_t job = G32(base, kJob);
+  if (!job || G32(base, job + 104) != 0 || G32(base, job + 92) == 0) return;
+  // The job's results: the job started by the last frame (its draw has run,
+  // so it finishes) - waited for as sub_8216F4C8 does, but the event is left
+  // set for the frame's last update.
+  ctx.r3.u64 = G32(base, job + 276);
+  ctx.r4.u64 = uint64_t(-1);
+  sub_8215A8C0(ctx, base);
+  const uint32_t idx = G32(base, kSlot) == 0 ? 1 : 0;
+  if (G32(base, job + (idx + 27) * 4) || G32(base, job + (idx + 12) * 4) || G32(base, job + (idx + 14) * 4)) return;
+  sub_8216F378(ctx, base);
+  sub_825740C8(ctx, base);
+  const int32_t state = int32_t(G32(base, ctx.r3.u32 + 10412));
+  if (state == 4 || (state > 6 && state <= 9)) return;
+  sub_8216EAB8(ctx, base);
+  sub_821C1A98(ctx, base);
+}
+
+}  // namespace
+
+REX_EXTERN(__imp__sub_8216F4C8);
+REX_HOOK_RAW(sub_8216F4C8) {
+  if (g_extra_update) {  // (an extra update of this frame)
+    const auto saved = ctx;
+    CharactersStep(ctx, base);
+    ctx = saved;
+    return;
+  }
+  g_job_ticks = g_world_ticks;  // (the job it starts runs for this frame)
+  __imp__sub_8216F4C8(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_8238AF28);
+REX_HOOK_RAW(sub_8238AF28) {
+  const auto saved = ctx;
+  const int ticks = std::max(1, g_job_ticks.load());
+  for (int i = 0; i < ticks; ++i) {
+    ctx = saved;
+    __imp__sub_8238AF28(ctx, base);
+  }
+}
+
+// XamInputGetState(user, state) for the game: sub_82905058.
+REX_EXTERN(__imp__sub_82905058);
+REX_HOOK_RAW(sub_82905058) {
+  const uint32_t user = ctx.r3.u32, out = ctx.r4.u32;
+  InputReading* r = user < 4 ? &g_input[user] : nullptr;
+  if (g_extra_update && r && r->valid && out) {
+    std::memcpy(base + out, r->state, sizeof(r->state));
+    ctx.r3.u64 = r->result;
+    return;
+  }
+  __imp__sub_82905058(ctx, base);
+  if (r && out) {
+    r->valid = true;
+    r->result = ctx.r3.u32;
+    std::memcpy(r->state, base + out, sizeof(r->state));
+  }
+}
+
+// -- Developer aids ----------------------------------------------------------
+
+namespace {
+
+void StartDeveloperAids(uint8_t* base) {
+  // SVR2011_FPS_PROBE=1 logs, every second, the match frames (60 a second at
+  // the game's speed), the frames shown and wrestler 1's position.
+  if (const char* v = std::getenv("SVR2011_FPS_PROBE"); v && *v == '1') {
+    std::thread([base] {
+      uint32_t last = Rd32(base + kMatchFrames);
+      uint64_t last_presents = rex::ui::HostPresentCount(), last_new = rex::ui::HostNewGuestFramePresentCount();
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        const uint32_t frames = Rd32(base + kMatchFrames);
+        const uint32_t ch = Rd32(base + kChars);
+        const float x = ch ? RdF(base + ch + 288) : 0, z = ch ? RdF(base + ch + 296) : 0;
+        const uint64_t presents = rex::ui::HostPresentCount(), shown = rex::ui::HostNewGuestFramePresentCount();
+        REXLOG_INFO("fps probe: {} game frames/s, {} shown ({} presents), wrestler 1 at ({:.1f}, {:.1f})",
+                    frames - last, shown - last_new, presents - last_presents, x, z);
+        last = frames;
+        last_presents = presents;
+        last_new = shown;
+      }
+    }).detach();
+  }
+  // SVR2011_FPS_DUMP=<file> appends, every 100 ms, the real time, the match
+  // frames and the first 64 KB of wrestlers 1 and 2 (tools/rate_diff.py
+  // compares two runs).
+  if (const char* path = std::getenv("SVR2011_FPS_DUMP"); path && *path) {
+    std::thread([base, file = std::string(path)] {
+      constexpr uint32_t kSize = 0x10000;
+      const auto t0 = Clock::now();
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const uint32_t a = Rd32(base + kChars), b = Rd32(base + kChars + 4);
+        if (!a || !b) continue;
+        if (FILE* f = std::fopen(file.c_str(), "ab")) {
+          const double t = std::chrono::duration<double>(Clock::now() - t0).count();
+          const uint32_t frames = Rd32(base + kMatchFrames);
+          std::fwrite(&t, 8, 1, f);
+          std::fwrite(&frames, 4, 1, f);
+          std::fwrite(&a, 4, 1, f);
+          std::fwrite(&b, 4, 1, f);
+          std::fwrite(base + a, 1, kSize, f);
+          std::fwrite(base + b, 1, kSize, f);
+          std::fclose(f);
+        }
+      }
+    }).detach();
+  }
+}
+
+}  // namespace

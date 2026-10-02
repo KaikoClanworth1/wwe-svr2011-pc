@@ -3,7 +3,7 @@
 # -Walk seconds) while SVR2011_FPS_PROBE logs game frames/s and his position
 # every second (runs\<Name>.log, "fps probe"); screenshots runs\<Name>_*.png.
 #   fps_test.ps1 [-Fps 120] [-Name fps120] [-Walk 3]
-param([int]$Fps = 120, [string]$Name = "", [int]$Walk = 3)
+param([int]$Fps = 120, [string]$Name = "", [int]$Walk = 3, [int]$Settle = 0)
 if (-not $Name) { $Name = "fps$Fps" }
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
@@ -18,6 +18,7 @@ $env:SVR2011_FPS_PROBE = $null
 $nav = Join-Path $tools "lim_nav.ps1"
 $s = Join-Path $tools "lim_session.ps1"
 & $nav -Keys "BACK@45,START@40,A@12" | Out-Null              # title -> the training ring
+Start-Sleep $Settle
 & $s shot "${Name}_ring" | Out-Null
 & $s input "stick L 32000 0 $($Walk * 1000)" | Out-Null; Start-Sleep ($Walk + 3)
 & $s shot "${Name}_walk" | Out-Null

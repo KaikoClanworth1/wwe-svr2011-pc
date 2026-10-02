@@ -24,7 +24,7 @@ $s = Join-Path $tools "lim_session.ps1"
 & $nav -Keys "A@3,A@4" | Out-Null
 & $nav -Keys "A@4" | Out-Null
 & $nav -Keys "A@5" | Out-Null
-& $nav -Keys "A@6" | Out-Null
+& $nav -Keys "A@14" | Out-Null                                # (longer: loading at 30 fps)
 & $nav -Keys "A@1" | Out-Null                                 # PLAY (entrances on)
 foreach ($t in 10, 20, 30) { Start-Sleep 10; & $s shot "${Name}_e$t" | Out-Null }
 & $s input "press START 200" | Out-Null; Start-Sleep 4

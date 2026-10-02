@@ -243,10 +243,10 @@ REX_HOOK_RAW(sub_82447210) {
 // stores it (a global at 0x82EDDBF0: 60, or 30 / 25 in entrances) with the
 // timing constants that go with it, and ~100 places read it (a frame step of
 // 2 at 30 fps, the D3D present interval through sub_826D8A90 ->
-// SetPresentInterval sub_8291D1D0, ...). Asking for 30 (25 on PAL) is turned
-// into 60 (50), so those scenes run the game's own 60 fps mode - at the right
-// speed. (Only forcing the present interval to 1 made entrances play ~1.7x
-// too fast.)
+// SetPresentInterval sub_8291D1D0, ...). It always stays at the game's own
+// 60 (frame_rate.h: the world runs in 60 Hz steps); these scenes are drawn at
+// 30 frames a second only with the setting off. (Only forcing the present
+// interval to 1 made entrances play ~1.7x too fast.)
 REXCVAR_DEFINE_BOOL(unlock_30fps, true, "GPU",
                     "Run the game's 30 fps scenes (entrances, cutscenes) at 60 fps");
 
@@ -255,14 +255,15 @@ void ArmWatch(uint8_t* base);
 }
 
 // Entrances halve the rate instead: sub_826E1C88 (60 -> 30, 50 -> 25, with
-// the matching constants; sub_826E1D28 restores it). Skipped with the setting.
+// the matching constants; sub_826E1D28 restores it). Never done: the game's
+// world stays at its 60 Hz steps (frame_rate.h); with the setting off the
+// entrance is drawn at 30 frames a second instead, as the original.
 REX_EXTERN(__imp__sub_826E1C88);
 REX_HOOK_RAW(sub_826E1C88) {
   svr2011::TouchGameInMatch(true);  // entrances: a match (the touch controller's MATCH layout)
   svr2011::native::SetMatchScene(true);  // (wide screens: full width)
   svr2011::SetDiscordScene(svr2011::DiscordScene::kEntrances);
-  if (REXCVAR_GET(unlock_30fps)) return;
-  __imp__sub_826E1C88(ctx, base);
+  if (!REXCVAR_GET(unlock_30fps)) svr2011::SetSceneThirtyFps(true);
 }
 
 // The entrances' end: sub_826E1D28 restores the frame rate - the match starts.
@@ -271,19 +272,15 @@ REX_HOOK_RAW(sub_826E1D28) {
   REXLOG_INFO("[svr2011] entrances over");
   svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
   __imp__sub_826E1D28(ctx, base);
+  svr2011::SetSceneThirtyFps(false);
   svr2011::ApplyFrameRate(base);  // (frame_rate.h)
 }
 
 REX_EXTERN(__imp__sub_826E1AE8);
 REX_HOOK_RAW(sub_826E1AE8) {
-  REXLOG_INFO("[svr2011] SetFrameRate({}){}", ctx.r3.u32,
-              REXCVAR_GET(unlock_30fps) && (ctx.r3.u32 == 30 || ctx.r3.u32 == 25) ? " - raised" : "");
-  if (REXCVAR_GET(unlock_30fps)) {
-    if (ctx.r3.u32 == 30) ctx.r3.u64 = 60;
-    if (ctx.r3.u32 == 25) ctx.r3.u64 = 50;
-  }
+  REXLOG_INFO("[svr2011] SetFrameRate({}){}", ctx.r3.u32, ctx.r3.u32 != 60 ? " - kept at 60" : "");
   __imp__sub_826E1AE8(ctx, base);
-  svr2011::ApplyFrameRate(base);  // the chosen frame rate's timing (frame_rate.h)
+  svr2011::ApplyFrameRate(base);  // the game's 60 again (frame_rate.h)
   ArmWatch(base);  // debug (SVR2011_WATCH_ADDR)
 }
 
