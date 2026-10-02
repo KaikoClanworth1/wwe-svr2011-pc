@@ -229,10 +229,10 @@ void StartScan() {
 // ---- arena select pages
 //
 // Page 1 is the game's own 20 arenas. Pages 2+ show the installed custom
-// arenas (Mods/Arenas/<id>/: arena.pac, banner.dds = DXT5 256 x 128,
-// info.txt name=...) in the same tiles: moving past the right edge goes to
-// the next page, past the left edge to the previous one (as the Paint Tool
-// grid). A custom arena borrows its tile's arena as host: while its tile is
+// arenas in the same tiles (Mods/Arenas/<id>/: arena.pac, banner.dds = DXT5
+// 256 x 128, manifest.txt name=...; a "disabled" file turns one off).
+// Moving past the right edge goes to the next page, past the left edge to
+// the previous one (as the Paint Tool grid). A custom arena borrows its tile's arena as host: while its tile is
 // the one under the cursor, the host's file is the custom arena's
 // (RedirectArena), so the match that follows loads it.
 
@@ -315,14 +315,16 @@ void LoadCustomArenas() {
   if (!fs::is_directory(dir, ec)) return;
   std::vector<fs::path> folders;
   for (const auto& e : fs::directory_iterator(dir, ec))
-    if (e.is_directory() && fs::exists(e.path() / "arena.pac", ec)) folders.push_back(e.path());
+    if (e.is_directory() && fs::exists(e.path() / "arena.pac", ec) && !fs::exists(e.path() / "disabled", ec))
+      folders.push_back(e.path());  // ("disabled": turned off in the launcher's Mods tab)
   std::sort(folders.begin(), folders.end());
   for (const auto& f : folders) {
     CustomArena c;
     c.id = f.filename().string();
     c.name = c.id;
     c.file = "Mods/Arenas/" + c.id + "/arena.pac";
-    if (FILE* t = std::fopen((f / "info.txt").string().c_str(), "rb")) {
+    const fs::path manifest = fs::exists(f / "manifest.txt", ec) ? f / "manifest.txt" : f / "info.txt";
+    if (FILE* t = std::fopen(manifest.string().c_str(), "rb")) {
       char line[512];
       while (std::fgets(line, sizeof line, t)) {
         std::string l = line;

@@ -15,7 +15,7 @@
  *   Saves     the save files (<game>\Saves): back up, restore, export, import, delete.
  *   Paint Tool the Paint Tool's logos (10 pages of 20): see them, export as PNG, import images.
  *
- * Command line (tests):  --capture <play|settings|install|dlc|saves|paint> <file.bmp> [--paint-page <1-10>]
+ * Command line (tests):  --capture <play|settings|install|dlc|saves|paint|mods> <file.bmp> [--paint-page <1-10>]
  *                        --paint-export <file.pt> <slot> <out.png>  /  --paint-import <file.pt> <slot> <image>
  *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
@@ -48,6 +48,7 @@
 #include <wchar.h>
 
 #include "apk_package.h"
+#include "mods_tab.h"
 #include "movie_maker.h"
 #include "unzip.h"
 #include "updater.h"
@@ -78,7 +79,8 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_COUNT };
+#define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -1662,6 +1664,8 @@ static void show_tab(int t)
         pt_refresh();
     if (t == TAB_MOVIES)
         mv_refresh();
+    if (t == TAB_MODS)
+        mods_show(s_game_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
@@ -1693,7 +1697,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods" };
 
     /* Just the strip of tabs; the pages below are plain window. */
     s_tab = add(-1, WC_TABCONTROLW, L"", WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER, 12, 10, 596, 28, ID_TAB);
@@ -1910,6 +1914,9 @@ static void build_ui(void)
 
     /* Movies */
     mv_setup();
+
+    /* Mods (mods_tab.c) */
+    mods_build(s_wnd, add, TAB_MODS, ID_MODS_BASE, s_title);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -4626,10 +4633,13 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         NMHDR *n = (NMHDR *)lp;
         if (n->idFrom == ID_TAB && n->code == TCN_SELCHANGE)
             show_tab(TabCtrl_GetCurSel(s_tab));
+        else
+            mods_notify(n);
         break;
     }
     case WM_COMMAND:
-        if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)))
+        if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
+            mods_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_PLAY:
@@ -5091,7 +5101,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return ok ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
