@@ -22,6 +22,7 @@
 // menu/MatchHD.pac (MENU/MASI), kept in guest physical memory (4 KB view)
 // untiled, with 16-bit words byte-swapped.
 #include "arena_mods.h"
+#include "ring_rules.h"
 
 #include <algorithm>
 #include <cctype>
@@ -245,6 +246,7 @@ std::vector<Banner> g_banners;  // the 20 originals
 
 struct CustomArena {
   std::string id, name, file;  // file: relative to the game folder
+  std::string manifest;        // its text (ring.* keys: ring_rules.h)
   svrfmt::Bytes banner;        // DXT5 blocks, 16-bit swapped (empty = none)
 };
 std::vector<CustomArena> g_customs;
@@ -330,6 +332,8 @@ void LoadCustomArenas() {
         std::string l = line;
         while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
         if (l.rfind("name=", 0) == 0) c.name = l.substr(5);
+        c.manifest += l;
+        c.manifest += '\n';
       }
       std::fclose(t);
     }
@@ -410,6 +414,7 @@ void FollowCursor(int row, int col) {
   if (host == g_redirected_host) return;
   if (g_redirected_host >= 0) svr2011::RedirectArena(g_redirected_host, "");
   g_redirected_host = -1;
+  svr2011::SetRingRules(c ? c->manifest : std::string());
   if (c) {
     svr2011::RedirectArena(host, c->file);
     g_redirected_host = host;

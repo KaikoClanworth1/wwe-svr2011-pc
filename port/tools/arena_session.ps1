@@ -1,4 +1,4 @@
-﻿# arena_session.ps1 for the arenas branch: its own game folder (runs\arena_game), state
+# arena_session.ps1 for the arenas branch: its own game folder (runs\opt_arena_game), state
 # and input files, and it stops only its own game, so it runs beside other
 # sessions' tests. Needs SVR2011_USER_DATA (its own test saves).
 # Drive a background game session (muted, never focused, window off-screen).
@@ -29,7 +29,7 @@ public static class SW {
 $Rest = @($Rest | Where-Object { $_ })
 
 $port  = Split-Path $PSScriptRoot -Parent
-$game  = if ($GameDir) { $GameDir } else { Join-Path $port "runs\arena_game" }
+$game  = if ($GameDir) { $GameDir } else { Join-Path $port "runs\opt_arena_game" }
 $runs  = Join-Path $port "runs"; New-Item -ItemType Directory -Force $runs | Out-Null
 $state = Join-Path $runs "arena_session.json"
 $input = Join-Path $runs "arena_input.txt"
@@ -38,7 +38,7 @@ function Stop-Own {
     if (-not (Test-Path $state)) { return }
     $id = (Get-Content $state | ConvertFrom-Json).pid
     $p = Get-CimInstance Win32_Process -Filter "ProcessId = $id" -ErrorAction SilentlyContinue
-    if ($p -and [string]$p.CommandLine -match [regex]::Escape("\runs\arena_game\")) {
+    if ($p -and [string]$p.CommandLine -match [regex]::Escape("\runs\opt_arena_game\")) {
         Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $id -Timeout 15 -ErrorAction SilentlyContinue
     }

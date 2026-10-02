@@ -1,4 +1,6 @@
-# Builds the arenas branch's own test game folder: port\runs\arena_game.
+# Builds the arenas branch's own test game folder: port\runs\opt_arena_game
+# (the opt_ prefix: the main checkout's test_guard.ps1 Stop-TestGames leaves
+# runs\opt_* games running, so other sessions' tests don't close this one).
 # Game data is linked read-only from the main install (Game Files), except
 # pac\bg, pac\menu and the top-level pac files, which are copies so arena
 # tests can replace them. Game Files itself is never written.
@@ -7,7 +9,7 @@ param([string]$Exe = "")
 $ErrorActionPreference = "Stop"
 $port = Split-Path $PSScriptRoot -Parent
 $main = "D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Game Files"
-$game = Join-Path $port "runs\arena_game"
+$game = Join-Path $port "runs\opt_arena_game"
 if (-not (Test-Path $main)) { throw "main install not found: $main" }
 New-Item -ItemType Directory -Force $game | Out-Null
 

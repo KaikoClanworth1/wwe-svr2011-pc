@@ -1,5 +1,5 @@
 # Arena select pages test (arenas test game): a custom arena installed in
-# runs\arena_game\Mods\Arenas\<id>\ shows on page 2; picking it plays it.
+# runs\opt_arena_game\Mods\Arenas\<id>\ shows on page 2; picking it plays it.
 # Opens SELECT ARENA (cursor on the show's arena, top right), RIGHT -> page 2
 # (cursor on its first tile), screenshot, A to choose, PLAY, match shots.
 #   arena_page_test.ps1 [-Name pg1] [-Shots 12]

@@ -5,7 +5,7 @@
 param([string]$Name = "sc1")
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
-$game = Join-Path $runs "arena_game"
+$game = Join-Path $runs "opt_arena_game"
 $scan = Join-Path $game "scan.txt"
 if (Test-Path $scan) { [IO.File]::Delete($scan) }
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"

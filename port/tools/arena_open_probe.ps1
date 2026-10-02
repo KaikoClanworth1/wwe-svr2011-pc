@@ -1,11 +1,11 @@
 # Is an arena file held open by the arena test game? Tries an exclusive open
-# of runs\arena_game\pac\bg\<File> at points in the ONE ON ONE flow:
+# of runs\opt_arena_game\pac\bg\<File> at points in the ONE ON ONE flow:
 # title screen, main menu, match settings, match loaded.
 #   arena_open_probe.ps1 [-File bg17.pac]
 param([string]$File = "bg17.pac")
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
-$path = Join-Path $runs "arena_game\pac\bg\$File"
+$path = Join-Path $runs "opt_arena_game\pac\bg\$File"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
 $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_arena"
 $s = Join-Path $tools "arena_session.ps1"

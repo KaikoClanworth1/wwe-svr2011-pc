@@ -4,7 +4,7 @@
 param([string]$Exe = "", [string]$Game = "", [string]$Out = "", [int]$Wait = 6)
 $port = Split-Path $PSScriptRoot -Parent
 if (-not $Exe) { $Exe = Join-Path $port "out\build\SourceArenas\SvR2011 Mod Maker.exe" }
-if (-not $Game) { $Game = Join-Path $port "runs\arena_game" }
+if (-not $Game) { $Game = Join-Path $port "runs\opt_arena_game" }
 if (-not $Out) { $Out = Join-Path $port "runs\modmaker.png" }
 Add-Type -AssemblyName System.Drawing
 Add-Type @"

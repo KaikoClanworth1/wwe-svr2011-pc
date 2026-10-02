@@ -55,8 +55,10 @@ bool Arena::Load(const std::string& path, std::string* error) {
   original_file = d.size();
   models.clear();
   bundles.clear();
+  original_unpacked = 0;
   for (const auto& e : entries) {
     const Bytes raw = Unpack(e.data);
+    original_unpacked += raw.size();
     if (IsJboy(raw)) {
       ArenaModel am;
       am.id = e.id;
@@ -82,7 +84,19 @@ Bytes Arena::Save(std::string* error) const {
     return p;
   };
   std::vector<PachEntry> out = entries;
+  for (const auto& m : models)
+    if (m.added) {
+      // the game finds entries by binary search: keep ids in order
+      auto at = std::find_if(out.begin(), out.end(), [&](const PachEntry& e) { return e.id > m.id; });
+      PachEntry pe;
+      pe.id = m.id;
+      pe.data = pack(JboyWrite(m.model), "model " + m.model.name);
+      out.insert(at, std::move(pe));
+    }
   for (auto& e : out) {
+    bool added = false;
+    for (const auto& m : models) added |= m.added && m.id == e.id;
+    if (added) continue;
     for (const auto& m : models)
       if (m.id == e.id && m.changed) e.data = pack(JboyWrite(m.model), "model " + m.model.name);
     for (const auto& b : bundles)
@@ -116,6 +130,42 @@ std::vector<std::string> Arena::FitBudget(const std::vector<std::string>& keep) 
       b.changed = true;
       reduced.push_back(big->name);
     }
+  }
+  return reduced;
+}
+
+std::vector<std::string> Arena::FitFile(const std::vector<std::string>& keep) {
+  std::vector<std::string> reduced = FitBudget(keep);
+  for (int guard = 0; guard < 64; ++guard) {
+    size_t unpacked = 0;
+    for (const auto& e : entries) {
+      bool done = false;
+      for (const auto& m : models)
+        if (m.id == e.id && m.changed) { unpacked += JboyWrite(m.model).size(); done = true; }
+      for (const auto& b : bundles)
+        if (b.id == e.id && b.changed) { unpacked += BundleWrite(b.textures).size(); done = true; }
+      if (!done) unpacked += Unpack(e.data).size();
+    }
+    for (const auto& m : models)
+      if (m.added) unpacked += JboyWrite(m.model).size();
+    const size_t file = Save().size();
+    if (file <= original_file && unpacked <= original_unpacked) break;
+    BundleTexture* big = nullptr;
+    ArenaTextureSet* set = nullptr;
+    for (auto& b : bundles)
+      for (auto& t : b.textures) {
+        if (std::find(keep.begin(), keep.end(), t.name) != keep.end()) continue;
+        DdsInfo info;
+        if (!DdsInfoOf(t.data, info) || info.w <= 32 || info.h <= 32) continue;
+        if (!big || t.data.size() > big->data.size()) { big = &t; set = &b; }
+      }
+    if (!big) break;
+    Image img;
+    DdsInfo info;
+    if (!DdsInfoOf(big->data, info) || !DdsDecode(big->data, img)) break;
+    big->data = DdsEncode(Resize(img, info.w / 2, info.h / 2), info.format, info.mips > 1);
+    set->changed = true;
+    reduced.push_back(big->name);
   }
   return reduced;
 }

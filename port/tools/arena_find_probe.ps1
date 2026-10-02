@@ -4,7 +4,7 @@
 param([string[]]$Patterns, [string]$Name = "fp1")
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
-$scan = Join-Path $runs "arena_game\scan.txt"
+$scan = Join-Path $runs "opt_arena_game\scan.txt"
 if (Test-Path $scan) { [IO.File]::Delete($scan) }
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
 $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_arena"

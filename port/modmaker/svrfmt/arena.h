@@ -22,6 +22,7 @@ struct ArenaModel {
   Model model;
   Zone zone = Zone::kFree;
   bool changed = false;
+  bool added = false;  // not in the shipped file: Save inserts it (ids sorted)
 };
 
 struct ArenaTextureSet {
@@ -46,6 +47,10 @@ struct Arena {
   // largest textures not in `keep` until every texture set is back within
   // its shipped size. Returns the textures that were reduced.
   std::vector<std::string> FitBudget(const std::vector<std::string>& keep);
+  // Added models need room too: halves textures (not in `keep`) until the
+  // whole file and its unpacked total are no bigger than shipped.
+  std::vector<std::string> FitFile(const std::vector<std::string>& keep);
+  size_t original_unpacked = 0;  // all entries, unpacked, as shipped
   // Rebuild the .pac: changed models/bundles re-compressed, the rest as read.
   // *error is set if a changed entry would not load (packed >= unpacked).
   Bytes Save(std::string* error = nullptr) const;

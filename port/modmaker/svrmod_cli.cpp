@@ -10,6 +10,7 @@
 #include "svrfmt/arena_import.h"
 #include "svrfmt/jboy.h"
 #include "svrfmt/png.h"
+#include "svrfmt/ring_kit.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
 #include "svrfmt/zip_write.h"
@@ -158,9 +159,52 @@ int Import(const char* pac, const char* fbx, const char* out) {
   return 0;
 }
 
+// Ring Kit on its own: ring <bgNN.pac> <ring spec file> <out.pac>
+// The spec file holds manifest lines (ring.ropes=1 0 1, ring.tints=..., ring.rope<N>_texture=<picture>).
+bool LoadRingSpec(const char* path, RingSpec& spec) {
+  Bytes b;
+  if (!ReadFile(path, b)) { std::printf("%s: cannot read\n", path); return false; }
+  const std::string text(b.begin(), b.end());
+  spec.FromManifest(text);
+  for (int r = 0; r < 3; ++r) {
+    const std::string key = "ring.rope" + std::to_string(r) + "_texture=";
+    const size_t at = text.find(key);
+    if (at == std::string::npos) continue;
+    size_t end = text.find_first_of("\r\n", at);
+    spec.ropes[r].texture = text.substr(at + key.size(), end == std::string::npos ? end : end - at - key.size());
+  }
+  return true;
+}
+
+bool ApplyRingFile(Arena& a, const char* spec_path) {
+  RingSpec spec;
+  if (!LoadRingSpec(spec_path, spec)) return false;
+  RingReport rep;
+  const bool ok = ApplyRing(a, spec, rep);
+  std::printf("ring: %d models added, %d changed, %d textures added\n", rep.models_added, rep.models_changed,
+              rep.textures_added);
+  for (const auto& w : rep.warnings) std::printf("  warning: %s\n", w.c_str());
+  const auto reduced = a.FitFile({});
+  if (!reduced.empty()) std::printf("  %zu textures halved to fit\n", reduced.size());
+  return ok;
+}
+
+int Ring(const char* pac, const char* spec_path, const char* out) {
+  Arena a;
+  std::string err;
+  if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
+  if (!ApplyRingFile(a, spec_path)) return 1;
+  const Bytes data = a.Save(&err);
+  if (!err.empty()) { std::printf("error: %s\n", err.c_str()); return 1; }
+  if (!WriteFile(out, data)) return 1;
+  std::printf("wrote %s (%zu bytes, shipped %zu)\n", out, data.size(), a.original_file);
+  return 0;
+}
+
 // The Mod Maker's "Save as mod" without its window (tests):
-// makemod <bgNN.pac> <edited.fbx | -> <banner picture> <name> <out.svrmod>
-int MakeMod(const char* pac, const char* fbx, const char* banner, const char* name, const char* out) {
+// makemod <bgNN.pac> <edited.fbx | -> <banner picture> <name> <out.svrmod> [ring spec file]
+int MakeMod(const char* pac, const char* fbx, const char* banner, const char* name, const char* out,
+            const char* ring = nullptr) {
   Arena a;
   std::string err;
   if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
@@ -172,6 +216,11 @@ int MakeMod(const char* pac, const char* fbx, const char* banner, const char* na
       return 1;
     }
   }
+  RingSpec spec;
+  if (ring) {
+    if (!ApplyRingFile(a, ring)) return 1;
+    LoadRingSpec(ring, spec);
+  }
   const Bytes data = a.Save(&err);
   if (!err.empty()) { std::printf("error: %s\n", err.c_str()); return 1; }
   Image img;
@@ -181,7 +230,8 @@ int MakeMod(const char* pac, const char* fbx, const char* banner, const char* na
     if (std::isalnum(static_cast<unsigned char>(*c))) id.push_back(char(std::tolower(static_cast<unsigned char>(*c))));
     else if (!id.empty() && id.back() != '_') id.push_back('_');
   const std::string manifest =
-      std::string("type=arena\nid=") + id + "\nname=" + name + "\nauthor=test\nversion=1.0\n";
+      std::string("type=arena\nid=") + id + "\nname=" + name + "\nauthor=test\nversion=1.0\n" +
+      (ring ? spec.ManifestLines() : std::string());
   std::vector<ZipEntry> files = {{"manifest.txt", Bytes(manifest.begin(), manifest.end())},
                                  {"arena.pac", data},
                                  {"banner.dds", DdsEncode(Resize(img, 256, 128), DxtFormat::kDxt5, false)}};
@@ -191,7 +241,9 @@ int MakeMod(const char* pac, const char* fbx, const char* banner, const char* na
 }
 
 int main(int argc, char** argv) {
-  if (argc == 7 && !std::strcmp(argv[1], "makemod")) return MakeMod(argv[2], argv[3], argv[4], argv[5], argv[6]);
+  if ((argc == 7 || argc == 8) && !std::strcmp(argv[1], "makemod"))
+    return MakeMod(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : nullptr);
+  if (argc == 5 && !std::strcmp(argv[1], "ring")) return Ring(argv[2], argv[3], argv[4]);
   if (argc == 5 && !std::strcmp(argv[1], "import")) return Import(argv[2], argv[3], argv[4]);
   if (argc == 4 && !std::strcmp(argv[1], "bpe")) return Bpe(argv[2], argv[3]);
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
