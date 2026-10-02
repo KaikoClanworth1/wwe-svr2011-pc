@@ -64,7 +64,8 @@ static uint32_t crc_update(uint32_t crc, const uint8_t *p, size_t n)
 static int skipped(const Pack *p, const WCHAR *rel, int dir)
 {
     static const WCHAR *dirs[] = { L"logs", L"SaveBackups", L"Android", L"platform-tools", L"$SystemUpdate",
-                                   L"UserData/cache", L"UserData/crashes" };
+                                   L"UserData/cache", L"UserData/crashes",
+                                   L"Mods/ArenaOverlay" /* (the game makes it: links to pac/bg) */ };
     static const WCHAR *files[] = { L"launcher.ini", L"svr2011.toml" };
     const WCHAR *ext = wcsrchr(rel, L'.');
     int i;

@@ -18,6 +18,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstring>
@@ -372,6 +373,19 @@ void OpenModFile(const std::wstring& f) {
   if (shipped.Load(ArenaPath(host))) {
     a->original_file = shipped.original_file;
     a->original_unpacked = shipped.original_unpacked;
+    // The Ring Kit's output (per-rope models 900-911, tinted / hidden ring
+    // parts) back to the shipped ring: the kit applies again from the
+    // manifest's ring.* when the mod is saved.
+    auto ring_part = [](uint32_t id) { return id == 952 || (id >= 956 && id <= 967); };
+    for (auto& m : a->models)
+      if (ring_part(m.id))
+        for (const auto& s : shipped.models)
+          if (s.id == m.id) m.model = s.model, m.changed = true;
+    auto per_rope = [](uint32_t id) { return id >= 900 && id <= 911; };
+    a->models.erase(std::remove_if(a->models.begin(), a->models.end(), [&](const ArenaModel& m) { return per_rope(m.id); }),
+                    a->models.end());
+    a->entries.erase(std::remove_if(a->entries.begin(), a->entries.end(), [&](const PachEntry& e) { return per_rope(e.id); }),
+                     a->entries.end());
   }
   g_proj.arena = host;
   g_sel = host;
@@ -387,6 +401,21 @@ void OpenModFile(const std::wstring& f) {
     }
   }
   editor::FromManifest(text);
+  {  // the lighting is in the material colours: out again (it applies at save)
+    const editor::Lighting& l = editor::Light();
+    if (!l.Default()) {
+      float inv[3];
+      for (int k = 0; k < 3; ++k) inv[k] = l.color[k] * l.strength > 1e-4f ? 1.0f / (l.color[k] * l.strength) : 1.0f;
+      for (auto& am : a->models) {
+        if (am.id == 952 || (am.id >= 956 && am.id <= 967)) continue;  // (shipped ring parts, put back above)
+        for (auto& s : am.model.meshes)
+          for (auto& p : s.params)
+            if (p.type == 0x0d && p.value.size() >= 16 && (p.name == "g_f4MatAmbCol" || p.name == "g_f4MatDifCol"))
+              for (int k = 0; k < 3; ++k) PutBeF(&p.value[4 * k], BeF(&p.value[4 * k]) * inv[k]);
+        am.changed = true;
+      }
+    }
+  }
   g_proj.edited = std::move(a);
   g_proj.fbx.clear();
   editor::SetArena(g_proj.edited.get(), g_proj.name);
@@ -770,7 +799,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_sel = start_editor;
     OpenEditor(start_editor);
   }
-  if (!start_mod.empty()) OpenModFile(start_mod);
+  if (!start_mod.empty()) {
+    OpenModFile(start_mod);
+    // test aid: --open <mod> --test-edit-save <file> saves it again unchanged and quits
+    BuildJob job;
+    if (!g_test_save.empty() && g_proj.edited && PrepareBuild(job)) {
+      g_test_state = 1;
+      const std::string out = Utf8(g_test_save);
+      RunInBackground([job, out]() mutable {
+        std::vector<ZipEntry> files;
+        if (FinishBuild(job, files) && WriteFile(out, ZipWrite(files))) Log("test: saved " + out);
+        g_test_state = 2;
+      });
+    }
+  }
   editor::TestStart(start_view, Utf8(start_select));
 
   bool done = false;

@@ -109,6 +109,8 @@ public class LauncherActivity extends Activity {
         addPage(tabRow, content, "Paint Tool", paint.view(), paint::load);
         DlcPage dlc = new DlcPage(this);
         addPage(tabRow, content, "DLC", dlc.view(), dlc::refresh);
+        ModsPage mods = new ModsPage(this);
+        addPage(tabRow, content, "Mods", mods.view(), mods::refresh);
         MoviesPage movies = new MoviesPage(this);
         addPage(tabRow, content, "Movies", movies.view(), movies::refresh);
         InstallPage install = new InstallPage(this);

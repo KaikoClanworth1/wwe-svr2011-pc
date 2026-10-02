@@ -1154,9 +1154,15 @@ void RingKitPanel() {
   if (RopeBase() + 2 * RopeGap() > 12.5f)
     ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1), "The top rope would be above the posts.");
   if (ImGui::Button("Reset ring")) g_ring = RingSpec(), changed = true;
-  if (g_ring.VisibleRopes() < 3)
-    ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1),
-                       "Left-out ropes are not drawn, but wrestlers still\nbounce off and use them (rope gameplay\nwithout ropes is not done yet).");
+  if (g_ring.VisibleRopes() == 0)
+    ImGui::TextWrapped("No ropes: runners and whipped wrestlers stop at the edge instead of rebounding, and there "
+                       "are no rope breaks.");
+  else if (g_ring.VisibleRopes() < 3) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.7f, 0.2f, 1));
+    ImGui::TextWrapped("Ropes left out are not drawn, but wrestlers still use all three rope heights (rebounds, "
+                       "rope moves). Leave out all three for a ring without rope gameplay.");
+    ImGui::PopStyleColor();
+  }
   if (changed) Edited();
 }
 
