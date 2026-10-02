@@ -2,7 +2,8 @@
 
 Everything the port adds to the game, as of 2 October 2026 (v1.0.3 plus
 unreleased work on `main`). "Unreleased" marks what isn't in a published
-release yet.
+release yet. The master Game Files folder has everything up to 224faa9; more
+online fixes are on the way.
 
 ## Platforms
 
@@ -15,7 +16,7 @@ release yet.
 
 - **Native renderer**: the game's Direct3D calls drawn on plume (Direct3D 12 or Vulkan) instead of the emulated Xenos GPU. Falls back to the emulated renderer when stuck or when its shaders are missing.
 - **Resolutions** from 720p (the console's) to 4K, anti-aliasing, VSync, steady 60 fps.
-- **FRAME RATE**: 30, 60, 120, 144 or 240 fps (DISPLAY tab and the launcher's Settings). The game always runs its own 60 Hz timing (its update steps once per 60 Hz tick, drawing once a frame), so speed and physics are right at 30 fps and on a slow PC; 120 / 144 / 240 show 60 until frame generation is added. VSync off no longer makes the game run too fast. *(Unreleased; redone in 9e529d3.)*
+- **FRAME RATE**: 30 or 60 fps (DISPLAY tab and the launcher's Settings). The game always runs its own 60 Hz timing (its world steps once per 60 Hz tick, drawing once a frame), so speed and physics stay right at 30 fps and on a slow PC. VSync off no longer makes the game run too fast. *(Unreleased; 9e529d3, 224faa9.)*
 - **60 fps entrances and cutscenes** (the game's 30 fps scenes run its own 60 fps mode), optional.
 - **Any screen shape**: matches and entrances fill ultrawide, 16:10, Steam Deck and foldable screens. Menus stay 16:9.
 - **GRAPHICS page** in game: *My WWE → Options → Graphics*, DISPLAY and QUALITY tabs.
@@ -47,12 +48,13 @@ release yet.
 
 ## Online *(unreleased)*
 
+- **Online matches, peer to peer**: Player Matches between games with no server needed on a LAN; over the internet a direct connection first (each game's public address; a **Friends** list of addresses in the launcher's Online tab), else through the server's relay, going direct as soon as it can. Both games step the match together (lockstep). Tested: two PCs' worth of games on one PC, and PC <-> phone through sho-ti.me. *(Work in progress: more online fixes coming; leaderboards on the server to come.)*
 - **Community Creations** works again on the port's own server (https://sho-ti.me/svr), with player accounts (name and password).
 - Upload and download Created Superstars (with their extra logos), Paint Tool logos (all 200 slots), highlight reels and more.
 - **Superstars bring their entrance**: an uploaded Superstar carries its custom song and entrance movie (shrunk for upload); downloads put them in `Music` and `Custom Movies`. Movies on Android: not yet tested on a phone.
 - The game's GameSpy traffic goes through a relay in the port; Android uses its own https bridge.
 - Xbox LIVE texts and prompts removed from the menus.
-- Server: `port/server/server.py`, with an admin dashboard (the live server needs a restart for the entrance transfer).
+- Server: `port/server/server.py`, with an admin dashboard and the match relay (`relay.py`).
 
 ## Input
 
@@ -71,7 +73,7 @@ release yet.
 - **Install** from the Xbox 360 disc image (ISO / XISO) or a game package.
 - **Updates itself** from GitHub releases.
 - **Settings**: renderer, resolution, VSync, input, audio, FPS counter, language, "Prepare graphics in the menus".
-- **Online tab**: sign in, create an account, sign out; Server: Default or Custom. *(Unreleased.)*
+- **Online tab**: sign in, create an account, sign out; Server: Default or Custom; **Friends** (addresses to find for online matches). *(Unreleased.)*
 - **Saves**: backups, export, import, delete.
 - **DLC**: add packages or folders, checked before install.
 - **Paint Tool**: the 10 pages of logos, import any image, export PNGs.
@@ -114,10 +116,10 @@ Requested later on 1 October 2026:
 
 Requested 2 October 2026:
 
-- [x] Frame rate choices (Limit Breaking: 30 / 60 / 120 / 144 / 240, 1d0fa31; SDK side f3c397d). The user's play test found 30 fps broke physics and 120+ ran too fast; redone with the game's own 60 Hz timing (9e529d3). Next: frame generation for 120+.
-- [ ] Test 30 fps fully. The first version (1d0fa31) passed the automated checks (menus, entrances, matches, pause, walking speed, Vulkan, VSync off, live switch) but the user's play test found broken physics; the redone version (9e529d3) needs the tests again, plus a play test.
+- [x] Frame rate choices (Limit Breaking, 1d0fa31; SDK side f3c397d). The user's play test found 30 fps broke physics and 120+ ran too fast; redone with the game's own 60 Hz timing (9e529d3), now 30 or 60 only (224faa9).
+- [ ] Test 30 fps fully. The first version (1d0fa31) passed the automated checks but the user's play test found broken physics. The redone version is in Game Files (224faa9): in the practice ring it shows 30 fps with the game stepping 60 times a second and walking at the same speed as at 60. Waiting on the user's play test (physics).
 - [x] B did nothing in *My WWE → Options* (out of order menu records since ACHIEVEMENTS).
 - [x] The APK released beside the PC game, all an Android player needs: `package.ps1` also writes `SvR2011-Android-v<version>.apk` (the name the app's updater looks for); README updated.
 - [x] A connected controller hides the on-screen controller (it only worked when SDL saw the pad, never with the XInput backend). *(b249724)*
-- [ ] Online: peer-to-peer matches, leaderboards on the VPS, P2P working even with the VPS down. LAN play works: two games find each other, share a Player Match lobby and play a synced One on One, no server needed *(Online, b93b434; from PR #3's reusable parts)*. Internet matches (61c6f10): direct first (STUN public address, and a **Friends** list of addresses in the launcher's Online tab), else through the server's relay; while relayed the games keep trying to go direct. Tested PC <-> phone through sho-ti.me (a synced match). Game ports moved +20000 for Android (e56a8e7). Still to do: leaderboards on the server; checking internet play with the server down (direct + Friends only).
+- [ ] Online: peer-to-peer matches, leaderboards on the VPS, P2P working even with the VPS down. Lockstep (0a0c585); more fixes in progress (Online session). LAN play works: two games find each other, share a Player Match lobby and play a synced One on One, no server needed *(Online, b93b434; from PR #3's reusable parts)*. Internet matches (61c6f10): direct first (STUN public address, and a **Friends** list of addresses in the launcher's Online tab), else through the server's relay; while relayed the games keep trying to go direct. Tested PC <-> phone through sho-ti.me (a synced match). Game ports moved +20000 for Android (e56a8e7). Still to do: leaderboards on the server; checking internet play with the server down (direct + Friends only).
 - [x] Steam Deck: a won match never ended (player's log, v1.0.x). The match-end highlights waited forever for the replay recorder; now they're skipped after 8 s and the match goes on to the celebration and results, with the recorder's state logged. Waiting for a log from the player on the next build to find why the Deck's recorder stalls. *(Limit Breaking, c43d482)*
