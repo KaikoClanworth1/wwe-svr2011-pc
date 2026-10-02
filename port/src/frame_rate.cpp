@@ -288,6 +288,7 @@ REX_HOOK_RAW(sub_8269D768) {
   if (g_lockstep) g_world_ticks = 1, g_world_acc = 0;
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
+
 }
 
 // The task manager: the update pass per tick, the draw pass once (see top).
@@ -460,3 +461,4 @@ void StartDeveloperAids(uint8_t* base) {
 }
 
 }  // namespace
+

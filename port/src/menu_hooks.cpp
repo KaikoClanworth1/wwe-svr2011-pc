@@ -268,6 +268,19 @@ REX_HOOK_RAW(sub_826E1C88) {
   if (!REXCVAR_GET(unlock_30fps)) svr2011::SetSceneThirtyFps(true);
 }
 
+// A match starts: sub_823EEB98(match flow) - once per match, as it loads,
+// with or without entrances (not for the training ring). The match states
+// switch here too (entrances may be off; sub_826E1C88 then never runs).
+REX_EXTERN(__imp__sub_823EEB98);
+REX_HOOK_RAW(sub_823EEB98) {
+  REXLOG_INFO("[svr2011] match starts");
+  svr2011::TouchGameInMatch(true);  // (the touch controller's MATCH layout)
+  svr2011::native::SetMatchScene(true);  // (wide screens: full width)
+  svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
+  svr2011::SetFrameRateInMatch(true);  // (the chosen frame rate)
+  __imp__sub_823EEB98(ctx, base);
+}
+
 // The entrances' end: sub_826E1D28 restores the frame rate - the match starts.
 REX_EXTERN(__imp__sub_826E1D28);
 REX_HOOK_RAW(sub_826E1D28) {
