@@ -39,7 +39,7 @@ release yet.
 - **Divas against male superstars**: pick a diva, switch back to WWE SUPERSTARS and pick a man; the match plays normally. *(Unreleased.)*
 - **Managers playable**: the "?" tile on character select is now an **M** tile named EXTRA; it opens a list of Stephanie McMahon, Theodore Long, Hornswoggle, Paul Bearer and Tiffany (instead of the random pick), and they wrestle full matches. *(Unreleased.)*
 - **More match types** in the PLAY menus: Falls Count Anywhere (1v1, tornado tag, triple threat, fatal 4-way), 15- and 25-man Royal Rumble, 6-man Lumberjack, Backstage brawls for triple threat, fatal 4-way and 6-man (7 areas), and **FREE-ROAMING BACKSTAGE** (Road to WrestleMania's whole backstage, all rooms, with a closer backstage camera) in every BACKSTAGE list. *(Unreleased.)*
-- **Replays can be switched off**: REPLAYS (DISPLAY tab) skips the instant replays after finishers and the highlights at the end of a match. *(Unreleased.)*
+- **Replays can be switched off**: REPLAYS (DISPLAY tab) skips the instant replays after finishers and the highlights at the end of a match. Highlights that stall (seen on a Steam Deck: a won match never ended) are skipped after 8 s. *(Unreleased.)*
 - **Five languages**: English, French, German, Spanish, Italian, in the launcher and in game; **LANGUAGE** has its own entry in *My WWE → Options*. *(Own entry: unreleased.)*
 - **Achievements page**: *My WWE → Achievements*, console-style, tracked by the port. Since it was added, B did nothing in *My WWE → Options*; fixed, existing installs are repaired at start-up. *(Fix: unreleased.)*
 - **DLC** counts as fully licensed (Bret Hart and the rest).
@@ -120,4 +120,4 @@ Requested 2 October 2026:
 - [x] The APK released beside the PC game, all an Android player needs: `package.ps1` also writes `SvR2011-Android-v<version>.apk` (the name the app's updater looks for); README updated.
 - [x] A connected controller hides the on-screen controller (it only worked when SDL saw the pad, never with the XInput backend). *(b249724)*
 - [ ] Online: peer-to-peer matches, leaderboards on the VPS, P2P working even with the VPS down. Pull request #3 reviewed by the Online session: matchmaking plumbing only, needs a central server; parts reusable. Not started.
-- [ ] Steam Deck: a match that's won never ends (player's log `svr2011_020 2.log`) - with the Limit Breaking session.
+- [x] Steam Deck: a won match never ended (player's log, v1.0.x). The match-end highlights waited forever for the replay recorder; now they're skipped after 8 s and the match goes on to the celebration and results, with the recorder's state logged. Waiting for a log from the player on the next build to find why the Deck's recorder stalls. *(Limit Breaking, c43d482)*
