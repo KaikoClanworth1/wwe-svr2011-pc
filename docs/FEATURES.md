@@ -2,8 +2,8 @@
 
 Everything the port adds to the game, as of 2 October 2026 (v1.0.3 plus
 unreleased work on `main`). "Unreleased" marks what isn't in a published
-release yet. The master Game Files folder has everything up to ed8bb9b (Online's
-Created Superstars online work is still in progress and not in it).
+release yet. The master Game Files folder has everything up to ed8bb9b; Created
+Superstars in online matches (63aabc9) comes with the next combine.
 
 ## Platforms
 
@@ -48,7 +48,7 @@ Created Superstars online work is still in progress and not in it).
 
 ## Online *(unreleased)*
 
-- **Online matches, peer to peer**: Player Matches between games with no server needed on a LAN; over the internet a direct connection first (each game's public address; a **Friends** list of addresses in the launcher's Online tab), else through the server's relay, going direct as soon as it can. Both games step the match together (lockstep). Tested: two PCs' worth of games on one PC, and PC <-> phone through sho-ti.me. *(Work in progress: more online fixes coming; leaderboards on the server to come.)*
+- **Online matches, peer to peer**: Player Matches between games with no server needed on a LAN; over the internet a direct connection first (each game's public address; a **Friends** list of addresses in the launcher's Online tab), else through the server's relay, going direct as soon as it can. Both games step the match together (lockstep). Created Superstars, with their Paint Tool logos, can be used in online matches (63aabc9). Tested: two games on one PC, and PC <-> phone through sho-ti.me. *(Work in progress: leaderboards on the server to come.)*
 - **Community Creations** works again on the port's own server (https://sho-ti.me/svr), with player accounts (name and password).
 - Upload and download Created Superstars (with their extra logos), Paint Tool logos (all 200 slots), highlight reels and more.
 - **Superstars bring their entrance**: an uploaded Superstar carries its custom song and entrance movie (shrunk for upload); downloads put them in `Music` and `Custom Movies`. Movies on Android: not yet tested on a phone.
