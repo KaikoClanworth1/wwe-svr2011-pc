@@ -38,11 +38,30 @@ def tex_bundle(raw):
     return out
 
 
+def tex_bundle_write(texs, end_pad=True):
+    """[(name.ext, dds bytes)] -> bundle (header u32 count, 0x100, 0, 0x10;
+    each texture on a 16-byte boundary)."""
+    n = len(texs)
+    out = bytearray(struct.pack('<4I', n, 0x100, 0, 0x10))
+    out += bytes(32 * n)
+    for i, (fn, dds) in enumerate(texs):
+        out += bytes(-len(out) % 16)
+        name, _, ext = fn.rpartition('.')
+        r = 16 + 32 * i
+        out[r:r + 16] = name.encode('latin-1').ljust(16, b'\0')[:16]
+        out[r + 16:r + 20] = ext.encode('latin-1').ljust(4, b'\0')[:4]
+        struct.pack_into('<II', out, r + 20, len(dds), len(out))
+        out += dds
+    if end_pad:
+        out += bytes(-len(out) % 16)
+    return bytes(out)
+
+
 def is_tex_bundle(raw):
     if len(raw) < 48:
         return False
     n = struct.unpack_from('<I', raw, 0)[0]
-    return 0 < n < 4096 and raw[16 + 16:16 + 20] == b'dds\0'
+    return 0 < n < 4096 and raw[16 + 16:16 + 20].lower() == b'dds\0'
 
 
 def cmd_roundtrip(root):

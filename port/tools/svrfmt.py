@@ -14,6 +14,7 @@ BPE
     "BPE ", u32 0x100, u32 packed size, u32 unpacked size, then Philip Gage
     byte-pair blocks (pair table, u16 LE length, data).
 """
+import os
 import struct
 
 # ---------------------------------------------------------------- BPE
@@ -64,6 +65,24 @@ def bpe_decode(data):
     return bytes(out)
 
 
+_CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'out', 'modmaker', 'svrmod.exe')
+
+
+def bpe_pack(raw):
+    """Real compression through the C++ encoder (svrmod.exe bpe). The game
+    loads an entry in place: packed data must be smaller than unpacked."""
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        a, b = os.path.join(d, 'raw'), os.path.join(d, 'bpe')
+        open(a, 'wb').write(raw)
+        subprocess.run([_CLI, 'bpe', a, b], check=True, capture_output=True)
+        out = open(b, 'rb').read()
+    if len(out) >= len(raw):
+        raise ValueError(f'entry does not compress ({len(out)} >= {len(raw)}): the game would overflow')
+    return out
+
+
 def bpe_encode(raw, compress=False):
     """Pack bytes as a "BPE " entry.
 
@@ -72,7 +91,7 @@ def bpe_encode(raw, compress=False):
     expands as-is.
     compress=True runs Gage's pair replacement (slow, pure Python)."""
     out = bytearray()
-    step = 0x2000 if compress else 0xFFFF
+    step = 4000   # Yuke's blocks unpack to at most 4000 bytes (the game's buffer)
     for start in range(0, len(raw), step):
         chunk = raw[start:start + step]
         if compress:
