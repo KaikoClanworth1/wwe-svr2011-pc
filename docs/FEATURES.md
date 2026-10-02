@@ -1,53 +1,53 @@
 # WWE SmackDown vs. Raw 2011 PC Port: features
 
-Everything the port adds to the game, as of 2 October 2026 (v1.0.3 plus
-unreleased work on `main`). "Unreleased" marks what isn't in a published
-release yet. The master Game Files folder has everything up to 1ba1c7b.
+Everything the port adds to the game, as of v2.0.0 (2 October 2026).
+"New in 2.0" marks what this release adds; "Experimental" marks what is
+still being tested.
 
 ## Platforms
 
-- **Windows** PC: the recompiled game, Direct3D 12 or Vulkan.
+- **Windows** PC: the recompiled game, Direct3D 12 (or Vulkan: *Experimental*).
 - **Steam Deck / Linux** through Proton: Deck defaults, updates without `tar.exe`.
-- **Android** phones and tablets (arm64, Vulkan): the APK is released beside the PC game and is all a player needs (it installs the game from their own disc image on the phone), landscape only, 720p default render scale on phones. Runs the screen at 60 Hz on 120 Hz phones. *(60 Hz: unreleased.)*
+- **Android** phones and tablets (arm64, Vulkan): the APK is released beside the PC game and is all a player needs (it installs the game from their own disc image on the phone), landscape only, 720p default render scale on phones. Runs the screen at 60 Hz on 120 Hz phones. *(60 Hz: new in 2.0.)*
 - **Laptops with two GPUs** use the fast GPU, and one GPU for both renderers.
 
 ## Graphics and performance
 
 - **Native renderer**: the game's Direct3D calls drawn on plume (Direct3D 12 or Vulkan) instead of the emulated Xenos GPU. Falls back to the emulated renderer when stuck or when its shaders are missing.
 - **Resolutions** from 720p (the console's) to 4K, anti-aliasing, VSync, steady 60 fps.
-- **FRAME RATE**: 30 or 60 fps (DISPLAY tab and the launcher's Settings). The game always runs its own 60 Hz timing (its world steps once per 60 Hz tick, drawing once a frame), so speed and physics stay right at 30 fps and on a slow PC. 30 applies in matches; menus always run at 60. VSync off no longer makes the game run too fast. *(Unreleased; 9e529d3, 224faa9, 0b15618.)*
+- **FRAME RATE** (*30 fps: Experimental*): 30 or 60 fps (DISPLAY tab and the launcher's Settings). The game always runs its own 60 Hz timing (its world steps once per 60 Hz tick, drawing once a frame), so speed and physics stay right at 30 fps and on a slow PC. 30 applies in matches; menus always run at 60. VSync off no longer makes the game run too fast. *(New in 2.0; 9e529d3, 224faa9, 0b15618.)*
 - **60 fps entrances and cutscenes** (the game's 30 fps scenes run its own 60 fps mode), optional.
 - **Any screen shape**: matches and entrances fill ultrawide, 16:10, Steam Deck and foldable screens. Menus stay 16:9.
 - **GRAPHICS page** in game: *My WWE → Options → Graphics*, DISPLAY and QUALITY tabs.
-- **Display modes**: WINDOWED, BORDERLESS and FULL SCREEN (exclusive); **F11** switches window / full screen. *(Unreleased.)*
-- **Sharp wide shots**: the game's own soft filter (made for 720p) blurred wrestlers in wide shots at higher resolutions; off by default, with a SOFT FILTER option to bring it back. *(Unreleased.)*
-- **DEPTH OF FIELD** and **MOTION BLUR** options (QUALITY tab). *(Unreleased.)*
-- **Shader work done ahead**: compiled pipelines saved between runs (D3D12 pipeline library, Vulkan pipeline cache), the 298 known pipelines built in the menus with a progress bar ("Prepare graphics"), and shaders shipped as one pack file per API. *(Unreleased.)*
+- **Display modes**: WINDOWED, BORDERLESS and FULL SCREEN (exclusive); **F11** switches window / full screen. *(New in 2.0.)*
+- **Sharp wide shots**: the game's own soft filter (made for 720p) blurred wrestlers in wide shots at higher resolutions; off by default, with a SOFT FILTER option to bring it back. *(New in 2.0.)*
+- **DEPTH OF FIELD** and **MOTION BLUR** options (QUALITY tab). *(New in 2.0.)*
+- **Shader work done ahead**: compiled pipelines saved between runs (D3D12 pipeline library, Vulkan pipeline cache), the 298 known pipelines built in the menus with a progress bar ("Prepare graphics"), and shaders shipped as one pack file per API. *(New in 2.0.)*
 - **Performance work**: XMP 10 ms throttle removed (39 to 60 fps), GPU waits yield the CPU, cheaper register writes, threaded command recording on phones, cheaper per-draw work in heavy entrances, texture checks back off.
-- **Entrance frame drops fixed**: since v1.0.3, entrances could fall to single digits as they started (graphics copied back to the game's memory that it never reads); now only the images the game reads are copied. *(Unreleased.)*
+- **Entrance frame drops fixed**: since v1.0.3, entrances could fall to single digits as they started (graphics copied back to the game's memory that it never reads); now only the images the game reads are copied. *(New in 2.0.)*
 - **Rendering fixes**: Superstar Threads attire colours, saved outfits, Tyson Kidd's portrait, MATCH HIGHLIGHTS free space.
-- **Created Superstar portraits**: FINALIZE now stores a real portrait (they were black or garbled), so menus and Community Creations previews show the superstar. *(Unreleased.)*
-- **Custom GPU drivers on Android** (Mesa Turnip and Qualcomm packages through libadrenotools), with crash and start-up checks that fall back to the phone's driver. *(Unreleased.)*
-- **Frame-time logs**: median / slow-frame figures every 5 s, and on phones the thermal state and CPU clocks (for stutter reports). *(Unreleased.)*
+- **Created Superstar portraits**: FINALIZE now stores a real portrait (they were black or garbled), so menus and Community Creations previews show the superstar. *(New in 2.0.)*
+- **Custom GPU drivers on Android** (*Experimental*; Mesa Turnip and Qualcomm packages through libadrenotools), with crash and start-up checks that fall back to the phone's driver. *(New in 2.0.)*
+- **Frame-time logs**: median / slow-frame figures every 5 s, and on phones the thermal state and CPU clocks (for stutter reports). *(New in 2.0.)*
 
 ## Game additions
 
-- **User entrance music**: *Create An Entrance → Music → USER PLAYLIST* plays songs from the `Music` folder, on Windows and Android. *(Android: unreleased.)*
+- **User entrance music**: *Create An Entrance → Music → USER PLAYLIST* plays songs from the `Music` folder, on Windows and Android. *(Android: new in 2.0.)*
 - **User entrance movies**: *Create An Entrance → Movie → USER MOVIES*, any video turned into a Bink titantron movie by the launcher's movie maker; movies fill the big screen, with the superstar's bottom strip.
 - **10 HD logos** per Created Superstar instead of 2 (`Saves\.logos`).
-- **Paint Tool: 10 pages of 20 logos** (200 instead of 20); grid edges change pages, the Superstar logo picker scrolls all pages. *(Unreleased.)*
-- **Divas against male superstars**: pick a diva, switch back to WWE SUPERSTARS and pick a man; the match plays normally. *(Unreleased.)*
-- **Managers playable**: the "?" tile on character select is now an **M** tile named EXTRA; it opens a list of Stephanie McMahon, Theodore Long, Hornswoggle, Paul Bearer and Tiffany (instead of the random pick), and they wrestle full matches. *(Unreleased.)*
-- **More match types** in the PLAY menus: Falls Count Anywhere (1v1, tornado tag, triple threat, fatal 4-way), 15- and 25-man Royal Rumble, 6-man Lumberjack, Backstage brawls for triple threat, fatal 4-way and 6-man (7 areas), and **FREE-ROAMING BACKSTAGE** (Road to WrestleMania's whole backstage, all rooms, with a closer backstage camera) in every BACKSTAGE list. *(Unreleased.)*
-- **Replays can be switched off**: REPLAYS (DISPLAY tab) skips the instant replays after finishers and the highlights at the end of a match. Highlights that stall (seen on a Steam Deck: a won match never ended) are skipped after 8 s. *(Unreleased.)*
-- **Five languages**: English, French, German, Spanish, Italian, in the launcher and in game; **LANGUAGE** has its own entry in *My WWE → Options*. *(Own entry: unreleased.)*
-- **Achievements page**: *My WWE → Achievements*, console-style, tracked by the port. Since it was added, B did nothing in *My WWE → Options*; fixed, existing installs are repaired at start-up. *(Fix: unreleased.)*
+- **Paint Tool: 10 pages of 20 logos** (200 instead of 20); grid edges change pages, the Superstar logo picker scrolls all pages. *(New in 2.0.)*
+- **Divas against male superstars**: pick a diva, switch back to WWE SUPERSTARS and pick a man; the match plays normally. *(New in 2.0.)*
+- **Managers playable**: the "?" tile on character select is now an **M** tile named EXTRA; it opens a list of Stephanie McMahon, Theodore Long, Hornswoggle, Paul Bearer and Tiffany (instead of the random pick), and they wrestle full matches. *(New in 2.0.)*
+- **More match types** in the PLAY menus: Falls Count Anywhere (1v1, tornado tag, triple threat, fatal 4-way), 15- and 25-man Royal Rumble, 6-man Lumberjack, Backstage brawls for triple threat, fatal 4-way and 6-man (7 areas), and **FREE-ROAMING BACKSTAGE** (Road to WrestleMania's whole backstage, all rooms, with a closer backstage camera; *Experimental*) in every BACKSTAGE list. *(New in 2.0.)*
+- **Replays can be switched off**: REPLAYS (DISPLAY tab) skips the instant replays after finishers and the highlights at the end of a match. Highlights that stall (seen on a Steam Deck: a won match never ended) are skipped after 8 s. *(New in 2.0.)*
+- **Five languages**: English, French, German, Spanish, Italian, in the launcher and in game; **LANGUAGE** has its own entry in *My WWE → Options*. *(Own entry: new in 2.0.)*
+- **Achievements page**: *My WWE → Achievements*, console-style, tracked by the port. Since it was added, B did nothing in *My WWE → Options*; fixed, existing installs are repaired at start-up. *(Fix: new in 2.0.)*
 - **DLC** counts as fully licensed (Bret Hart and the rest).
 - **Discord Rich Presence**: menus, entrances, matches.
 
-## Online *(unreleased)*
+## Online *(new in 2.0)*
 
-- **Online matches, peer to peer**: Player Matches between games with no server needed on a LAN; over the internet a direct connection first (each game's public address; a **Friends** list of addresses in the launcher's Online tab), else through the server's relay, going direct as soon as it can. Both games step the match together (lockstep). Created Superstars, with their Paint Tool logos, can be used in online matches (63aabc9). Tested: two games on one PC, and PC <-> phone through sho-ti.me. *(Work in progress: leaderboards on the server to come.)*
+- **Online matches, peer to peer**: Player Matches between games with no server needed on a LAN; over the internet a direct connection first (each game's public address; a **Friends** list of addresses in the launcher's Online tab), else through the server's relay, going direct as soon as it can. Both games step the match together (lockstep). Created Superstars, with their Paint Tool logos, can be used in online matches (63aabc9). Tested: two games on one PC, and PC <-> phone through sho-ti.me. ***Experimental*** *(leaderboards on the server to come).*
 - **Community Creations** works again on the port's own server (https://sho-ti.me/svr), with player accounts (name and password).
 - Upload and download Created Superstars (with their extra logos), Paint Tool logos (all 200 slots), highlight reels and more.
 - **Superstars bring their entrance**: an uploaded Superstar carries its custom song and entrance movie (shrunk for upload); downloads put them in `Music` and `Custom Movies`. Movies on Android: not yet tested on a phone.
@@ -57,9 +57,9 @@ release yet. The master Game Files folder has everything up to 1ba1c7b.
 
 ## Input
 
-- **Keyboard controls**: the PC keyboard plays as player 1 (alongside a controller). *(Unreleased.)*
+- **Keyboard controls**: the PC keyboard plays as player 1 (alongside a controller). *(New in 2.0.)*
 - **Type on the PC keyboard** wherever the game shows its on-screen keyboard.
-- **On-screen touch controller** (Android default, any touch screen): MENU and MATCH layouts that switch automatically, an editor to rearrange it, and a **KEYBOARD** button that opens the phone's keyboard while the game's keyboard is up. Hidden as soon as a real controller is connected, with any controller backend; a touch shows it again for 15 s. *(KEYBOARD, controller hiding on every backend: unreleased.)*
+- **On-screen touch controller** (Android default, any touch screen): MENU and MATCH layouts that switch automatically, an editor to rearrange it, and a **KEYBOARD** button that opens the phone's keyboard while the game's keyboard is up. Hidden as soon as a real controller is connected, with any controller backend; a touch shows it again for 15 s. *(KEYBOARD, controller hiding on every backend: new in 2.0.)*
 - Controllers through SDL.
 
 ## Saves
@@ -72,14 +72,14 @@ release yet. The master Game Files folder has everything up to 1ba1c7b.
 - **Install** from the Xbox 360 disc image (ISO / XISO) or a game package.
 - **Updates itself** from GitHub releases.
 - **Settings**: renderer, resolution, VSync, input, audio, FPS counter, language, "Prepare graphics in the menus".
-- **Online tab**: sign in, create an account, sign out; Server: Default or Custom; **Friends** (addresses to find for online matches). *(Unreleased.)*
+- **Online tab**: sign in, create an account, sign out; Server: Default or Custom; **Friends** (addresses to find for online matches). *(New in 2.0.)*
 - **Saves**: backups, export, import, delete.
 - **DLC**: add packages or folders, checked before install.
 - **Paint Tool**: the 10 pages of logos, import any image, export PNGs.
 - **Movies**: the movie maker for custom entrance movies.
 - **Android**: install over USB, or **Create APK Package** (the game and the app in one folder).
 
-## Android app *(unreleased)*
+## Android app *(new in 2.0)*
 
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
