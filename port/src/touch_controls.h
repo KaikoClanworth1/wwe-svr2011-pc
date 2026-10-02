@@ -14,6 +14,7 @@
 // opacity - saved in UserData/touch_layout.txt.
 //
 // Settings: touch_controls (on by default on Android), touch_auto_layout.
+// A real controller connected hides it (CreateControllerWatch).
 
 #pragma once
 
@@ -28,6 +29,7 @@ class Window;
 }  // namespace rex::ui
 
 namespace rex::input {
+class DeviceAssignment;
 class InputDriver;
 class InputSystem;
 }  // namespace rex::input
@@ -36,6 +38,12 @@ namespace svr2011 {
 
 // The virtual pad, for the input system (made in the input factory).
 std::unique_ptr<rex::input::InputDriver> CreateTouchDriver();
+
+// The input system's device assignment (the SDK's SlotAssignment) that also
+// counts the real controllers: with one connected the on-screen controller
+// hides (a touch shows it again for 15 s). SVR2011_SCRIPT_IS_PAD=1: the
+// tests' scripted controller counts as one.
+std::unique_ptr<rex::input::DeviceAssignment> CreateControllerWatch();
 
 // Once, when the dialogs are created: the overlay, the editor and the
 // window's touches. `user_data`: where touch_layout.txt lives.

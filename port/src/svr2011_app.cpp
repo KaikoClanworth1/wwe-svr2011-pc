@@ -208,7 +208,7 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
       auto input = std::make_unique<rex::input::InputSystem>(nullptr);
       input->AddDriver(std::make_unique<svr2011::ScriptInputDriver>(file));
       input->AddDriver(svr2011::CreateTouchDriver());  // (tests tap it: "touch")
-      input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
+      input->SetDeviceAssignment(svr2011::CreateControllerWatch());
       return input;
     };
   } else {
@@ -216,7 +216,10 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
     // (touch_controls.h), merged into player 1's.
     config.input_factory = [](bool tool) -> std::unique_ptr<rex::system::IInputSystem> {
       auto input = rex::input::CreateDefaultInputSystem(tool);
-      if (!tool) input->AddDriver(svr2011::CreateTouchDriver());
+      if (!tool) {
+        input->AddDriver(svr2011::CreateTouchDriver());
+        input->SetDeviceAssignment(svr2011::CreateControllerWatch());  // (hides it with a controller)
+      }
       return input;
     };
   }

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -20,6 +21,7 @@
 #include <imgui.h>
 
 #include <rex/cvar.h>
+#include <rex/input/device_assignment.h>
 #include <rex/input/input.h>
 #include <rex/input/input_driver.h>
 #include <rex/logging.h>
@@ -157,6 +159,10 @@ float g_w = 0, g_h = 0;  // the window, at the last draw
 // inner screen, where the height would make them huge).
 float g_u = 0;
 Clock::time_point g_last_touch{};
+// Real controllers connected (ControllerWatch), and when one last connected
+// (steady-clock ticks): a controller hides the on-screen one at once.
+std::atomic<int> g_controllers{0};
+std::atomic<int64_t> g_controller_since{0};
 
 std::atomic<bool> g_editor{false};
 std::atomic<bool> g_help{false};
@@ -433,8 +439,12 @@ int Find(float x, float y) {
 
 bool Visible() {
   if (!REXCVAR_GET(touch_controls)) return false;
-  // With a controller connected, only after a touch (for 15 s).
-  if (SDL_HasGamepad()) return Clock::now() - g_last_touch < std::chrono::seconds(15);
+  // With a controller connected (any backend: XInput, SDL), hidden - only a
+  // touch after it connected brings it back, for 15 s.
+  if (g_controllers.load() > 0 || SDL_HasGamepad()) {
+    const Clock::time_point since{Clock::duration(g_controller_since.load())};
+    return g_last_touch > since && Clock::now() - g_last_touch < std::chrono::seconds(15);
+  }
   return true;
 }
 
@@ -965,9 +975,42 @@ class TouchDriver final : public InputDriver {
   static constexpr auto kDevice = static_cast<DeviceId>(0x54554348);  // 'TUCH'
 };
 
+// The SDK's device assignment (SlotAssignment), counting the real controllers
+// (not the keyboard, the touch pad or the stand-in: those are synthetic).
+class ControllerWatch final : public DeviceAssignment {
+ public:
+  void OnDevicesChanged(const std::vector<DeviceInfo>& devices) override {
+    static const bool script_is_pad = [] {  // (tests: the scripted controller counts)
+      const char* v = std::getenv("SVR2011_SCRIPT_IS_PAD");
+      return v && *v == '1';
+    }();
+    int n = 0;
+    std::string names;
+    for (const DeviceInfo& d : devices) {
+      if (d.synthetic || (d.name == "Script" && !script_is_pad)) continue;
+      ++n;
+      names += (names.empty() ? "" : ", ") + d.name;
+    }
+    const int before = g_controllers.exchange(n);
+    if (n > before) g_controller_since = Clock::now().time_since_epoch().count();
+    if (n != before) {
+      REXLOG_INFO("touch controls: {} controller(s){}{}", n, n ? ": " : "", names);
+    }
+    slots_.OnDevicesChanged(devices);
+  }
+  void DevicesForUser(uint32_t user_index, std::vector<DeviceId>& out) const override {
+    slots_.DevicesForUser(user_index, out);
+  }
+
+ private:
+  SlotAssignment slots_;
+};
+
 }  // namespace
 
 std::unique_ptr<InputDriver> CreateTouchDriver() { return std::make_unique<TouchDriver>(); }
+
+std::unique_ptr<DeviceAssignment> CreateControllerWatch() { return std::make_unique<ControllerWatch>(); }
 
 void InstallTouchControls(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
                           const std::filesystem::path& user_data) {
