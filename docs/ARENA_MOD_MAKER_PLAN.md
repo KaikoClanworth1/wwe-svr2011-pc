@@ -15,8 +15,11 @@ diagrams, is in the plan artifact (https://claude.ai/artifact/YWqYNczKJju4Qo56tV
 
 - **Source:** branch `arenas` only; nothing goes to `main`, nothing is pushed.
 - **Build:** `port/out/build/arena_build_low.cmd` builds `port/out/build/SourceArenas` (below-normal priority).
-  - The SDK source and recompiler tools are read from the main checkout.
-  - `port/generated` is a copy, not a link.
+  - **Own SDK copy** in `sdk/rexglue-sdk` (git-ignored).
+    - The SDK always writes its libraries, DLLs and `rexglue.exe` into `<sdk>/out/win-amd64`, whatever the build folder.
+    - The first two arenas builds used the main SDK and so wrote there; those files were built from the same SDK source.
+  - `recomp/` is a junction to the main checkout (plume, libadrenotools, tools: read only).
+  - `port/generated` and `port/assets` are copies.
 - **Test game:** `port/runs/arena_game`, made by `tools/arena_game_setup.ps1`.
   - Read-only junctions into the main install.
   - Real copies of `pac/bg`, `pac/menu` and the top-level `pac/*.pac`, so tests can change them.
@@ -25,7 +28,8 @@ diagrams, is in the plan artifact (https://claude.ai/artifact/YWqYNczKJju4Qo56tV
 
 ### Shared files touched (for the combine)
 
-None yet.
+- `port/CMakeLists.txt`: adds `src/arena_mods.cpp`.
+- `port/src/svr2011_app.cpp`: includes `arena_mods.h` and calls `InstallArenaMods` after `InstallMatchTypes`.
 
 ## Phase 0 findings
 
@@ -62,7 +66,9 @@ None yet.
 - **Group (32 bytes).** Name, (1, 0), (mesh count, 0).
 - **Coverage.** All 8633 JBOY models in the 35 arena files parse with every byte accounted for (except padding).
   - The writer reproduces 6610 byte-identically; the other 2023 differ only in junk padding, and their content is identical.
-- **Units.** 1 unit = 10 cm (the ring mat is +/-31.9). Y is up.
+- **Units.** 1 unit = 10 cm (the ring mat is +/-31.9).
+- **Axes.** Game **Y points down**: the floor is y~0, the mat y -10..-12, the posts reach -25. The export turns the scene 180 degrees about X (no mirroring); import turns it back.
+- **Half arenas.** Arenas are only modelled on the side the hard camera faces. The stands, roof and trusses exist for x <= 0 only. The visibility tree (entry 0xC364, a 3ds Max node list with bounds) confirms there is no mirroring.
 - **Crowd people** (nested PACH 0x4E20, e.g. `800_body`) are skinned to 17 bones and have 2 weight blocks.
 
 ### The ring (bg00 ids 0x3B7-0x3CE)
@@ -99,9 +105,18 @@ None yet.
 - [x] EPAC/PACH/BPE read and write; byte-identical repack.
 - [x] Texture bundle read and write; DDS untiled.
 - [x] JBOY read, validate and write on all arena models.
-- [~] In-game load of a hand-edited arena.
-  - `tools/arena_lab_mod.py` writes it: checker apron, barriers +15 units.
-  - Test: `tools/arena_load_test.ps1`. Waiting until no player game is running.
-- [ ] Runtime: when arena files are opened (debug log), arena id in match settings, arena select tiles and cursor.
+- [x] In-game load of a hand-edited arena: bg17 (WWE Superstars) with a checker apron and 11 rewritten barrier models plays a match (`tools/arena_lab_mod.py`, `tools/arena_load_test.ps1`).
+  - **Rule: a re-packed entry must stay smaller than unpacked.** Entries are loaded in place. A stored-BPE entry 36 bytes larger than unpacked crashed the load with a guest write fault at a page boundary.
+  - Changed entries use the C++ compressor (`svrmod bpe`; ours is about 6% larger than Yuke's).
+  - BPE blocks must unpack to at most 4000 bytes.
+- [x] When arena files are opened: at arena load, not held (see above).
+- [ ] Redirect test: BG17's entry pointed at `GAME:\Mods\...` loads the mod file.
+- [x] **Blender round trip in game.**
+  - Steps: `svrmod export` bg17, then `tools/blender_edit_test.py` (headless Blender: a new 2 m cube with a new texture, ropes repainted red/black, exported with Blender's own FBX exporter), then `svrmod import`. The match plays with the new cube, its texture and the red ropes.
+  - Import keeps untouched models byte for byte. They are matched by svr_id; a model is "the same" when its triangles match to 0.05 units and its UVs to 1/512.
+- **Memory budget.** Each arena must stay within its shipped size. A file 6 KB larger crashed (guest write at 0x70960000); 94 KB larger with a new texture hung at NOW LOADING; the same size or smaller loads.
+  - `Arena::FitBudget` halves the largest textures the modder didn't supply until every texture set is back within its shipped size.
+  - Raising the budget is a later limit-lifting job. The decoder is `sub_826AEF10(src, dst)`, called through `sub_826A1318`; the test aid `SVR2011_TEST_BPE_LOG=1` logs every decode.
+- [ ] Runtime: arena id in match settings, arena select tiles and cursor.
 - [ ] Ring code: rope instances and heights, rope rebound and break, corners and sides (the six-sides report).
 - [ ] HMD decoded enough to rebuild barrier and floor collision.

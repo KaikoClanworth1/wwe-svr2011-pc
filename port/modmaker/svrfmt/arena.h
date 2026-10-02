@@ -28,6 +28,7 @@ struct ArenaTextureSet {
   uint32_t id = 0;  // PACH id of the bundle
   std::vector<BundleTexture> textures;
   bool changed = false;
+  size_t original_raw = 0;  // unpacked size as shipped (the game's budget)
 };
 
 struct Arena {
@@ -37,9 +38,17 @@ struct Arena {
   std::vector<ArenaModel> models;       // top-level JBOY entries
   std::vector<ArenaTextureSet> bundles; // top-level texture bundles
 
+  size_t original_file = 0;  // .pac size as shipped
+
   bool Load(const std::string& path, std::string* error = nullptr);
-  // Rebuild the .pac: changed models/bundles re-packed (stored BPE), the rest as read.
-  Bytes Save() const;
+  // The game keeps each arena in fixed memory: an arena that outgrows its
+  // shipped size fails to load (crash or endless NOW LOADING). Halves the
+  // largest textures not in `keep` until every texture set is back within
+  // its shipped size. Returns the textures that were reduced.
+  std::vector<std::string> FitBudget(const std::vector<std::string>& keep);
+  // Rebuild the .pac: changed models/bundles re-compressed, the rest as read.
+  // *error is set if a changed entry would not load (packed >= unpacked).
+  Bytes Save(std::string* error = nullptr) const;
   // Texture by name across bundles (nullptr if none).
   BundleTexture* FindTexture(const std::string& name);
 };

@@ -6,6 +6,7 @@
 #include <string>
 
 #include "svrfmt/arena.h"
+#include "svrfmt/arena_import.h"
 #include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
@@ -133,7 +134,29 @@ int Bpe(const char* in, const char* out) {
   return WriteFile(out, enc) ? 0 : 1;
 }
 
+int Import(const char* pac, const char* fbx, const char* out) {
+  Arena a;
+  std::string err;
+  if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
+  ImportOptions opt;
+  ImportReport rep;
+  const bool ok = ImportFbx(a, fbx, opt, rep);
+  std::printf("%s: %d models changed, %d objects added (%d meshes), %d hidden, textures %d replaced %d added\n",
+              ok ? "imported" : "FAILED", rep.models_changed, rep.objects_added, rep.meshes_added, rep.models_hidden,
+              rep.textures_replaced, rep.textures_added);
+  for (const auto& w : rep.warnings) std::printf("  warning: %s\n", w.c_str());
+  for (const auto& e : rep.errors) std::printf("  error: %s\n", e.c_str());
+  if (!ok) return 1;
+  std::string serr;
+  const Bytes data = a.Save(&serr);
+  if (!serr.empty()) { std::printf("  error: %s\n", serr.c_str()); return 1; }
+  if (!WriteFile(out, data)) return 1;
+  std::printf("wrote %s (%zu bytes)\n", out, data.size());
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc == 5 && !std::strcmp(argv[1], "import")) return Import(argv[2], argv[3], argv[4]);
   if (argc == 4 && !std::strcmp(argv[1], "bpe")) return Bpe(argv[2], argv[3]);
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "roundtrip")) return Roundtrip(argc - 2, argv + 2);

@@ -38,6 +38,7 @@ set(SVR2011_SOURCES
     src/movie_transcode.cpp
     src/paint_pages.cpp
     src/match_types.cpp
+    src/arena_mods.cpp
     src/frame_rate.cpp
     src/roster.cpp
     src/post_effects.cpp

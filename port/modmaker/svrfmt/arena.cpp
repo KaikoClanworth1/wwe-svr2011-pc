@@ -52,6 +52,7 @@ bool Arena::Load(const std::string& path, std::string* error) {
     for (size_t e = 0; e < epac.groups[g].entries.size() && !found; ++e)
       if (IsPach(epac.groups[g].entries[e].data)) { group = g; entry = e; found = true; }
   if (!found || !PachRead(epac.groups[group].entries[entry].data, entries)) return fail("no stage index (PACH)");
+  original_file = d.size();
   models.clear();
   bundles.clear();
   for (const auto& e : entries) {
@@ -66,23 +67,57 @@ bool Arena::Load(const std::string& path, std::string* error) {
     } else if (IsTextureBundle(raw)) {
       ArenaTextureSet ts;
       ts.id = e.id;
+      ts.original_raw = raw.size();
       if (BundleRead(raw, ts.textures)) bundles.push_back(std::move(ts));
     }
   }
   return true;
 }
 
-Bytes Arena::Save() const {
+Bytes Arena::Save(std::string* error) const {
+  // Entries load in place: packed data must stay smaller than unpacked.
+  auto pack = [&](const Bytes& raw, const std::string& what) {
+    Bytes p = BpeEncode(raw);
+    if (p.size() + 64 > raw.size() && error) *error = what + " does not compress enough to load";
+    return p;
+  };
   std::vector<PachEntry> out = entries;
   for (auto& e : out) {
     for (const auto& m : models)
-      if (m.id == e.id && m.changed) e.data = BpeEncodeStored(JboyWrite(m.model));
+      if (m.id == e.id && m.changed) e.data = pack(JboyWrite(m.model), "model " + m.model.name);
     for (const auto& b : bundles)
-      if (b.id == e.id && b.changed) e.data = BpeEncodeStored(BundleWrite(b.textures));
+      if (b.id == e.id && b.changed) e.data = pack(BundleWrite(b.textures), "texture set");
   }
   Epac e = epac;
   e.groups[group].entries[entry].data = PachWrite(out);
   return EpacWrite(e);
+}
+
+std::vector<std::string> Arena::FitBudget(const std::vector<std::string>& keep) {
+  std::vector<std::string> reduced;
+  for (auto& b : bundles) {
+    for (int guard = 0; guard < 64; ++guard) {
+      size_t total = 16 + 32 * b.textures.size();
+      for (const auto& t : b.textures) total += (t.data.size() + 15) & ~size_t(15);
+      if (total <= b.original_raw) break;
+      // the largest texture that may be reduced
+      BundleTexture* big = nullptr;
+      for (auto& t : b.textures) {
+        if (std::find(keep.begin(), keep.end(), t.name) != keep.end()) continue;
+        DdsInfo info;
+        if (!DdsInfoOf(t.data, info) || info.w <= 32 || info.h <= 32) continue;
+        if (!big || t.data.size() > big->data.size()) big = &t;
+      }
+      if (!big) break;
+      Image img;
+      DdsInfo info;
+      if (!DdsInfoOf(big->data, info) || !DdsDecode(big->data, img)) break;
+      big->data = DdsEncode(Resize(img, info.w / 2, info.h / 2), info.format, info.mips > 1);
+      b.changed = true;
+      reduced.push_back(big->name);
+    }
+  }
+  return reduced;
 }
 
 BundleTexture* Arena::FindTexture(const std::string& name) {
