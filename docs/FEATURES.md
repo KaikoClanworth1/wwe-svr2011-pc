@@ -2,8 +2,8 @@
 
 Everything the port adds to the game, as of 2 October 2026 (v1.0.3 plus
 unreleased work on `main`). "Unreleased" marks what isn't in a published
-release yet. The master Game Files folder has everything up to ff79af7; more
-online fixes are on the way.
+release yet. The master Game Files folder has everything up to ed8bb9b (Online's
+Created Superstars online work is still in progress and not in it).
 
 ## Platforms
 
@@ -117,7 +117,7 @@ Requested later on 1 October 2026:
 Requested 2 October 2026:
 
 - [x] Frame rate choices (Limit Breaking, 1d0fa31; SDK side f3c397d). The user's play test found 30 fps broke physics and 120+ ran too fast; redone with the game's own 60 Hz timing (9e529d3), now 30 or 60 only (224faa9).
-- [ ] Test 30 fps fully. The first version (1d0fa31) passed the automated checks but the user's play test found broken physics. The redone version is in Game Files (224faa9): in the practice ring it shows 30 fps with the game stepping 60 times a second and walking at the same speed as at 60. The user's play test then found an odd running animation and laggy menus at 30: fixed in 0b15618 (characters' animation stepped per tick; menus at 60, 30 only in matches), in Game Files (ff79af7). Found in the check: with entrances off a match stayed at 60 (the "in a match" switch only happened when entrances start); fixed in 322e5fb (a match-load hook switches frame rate, touch layout, wide screen and Discord together, with or without entrances) - not in Game Files yet.
+- [ ] Test 30 fps fully. The first version (1d0fa31) passed the automated checks but the user's play test found broken physics. The redone version is in Game Files (224faa9): in the practice ring it shows 30 fps with the game stepping 60 times a second and walking at the same speed as at 60. The user's play test then found an odd running animation and laggy menus at 30: fixed in 0b15618 (characters' animation stepped per tick; menus at 60, 30 only in matches), in Game Files (ff79af7). Found in the check: with entrances off a match stayed at 60 (the "in a match" switch only happened when entrances start); fixed in 322e5fb (a match-load hook switches frame rate, touch layout, wide screen and Discord together, with or without entrances); in Game Files, checked: an entrances-off match draws 30 frames a second while the game steps 60 times. Waiting on the user's play test.
 - [x] B did nothing in *My WWE → Options* (out of order menu records since ACHIEVEMENTS).
 - [x] The APK released beside the PC game, all an Android player needs: `package.ps1` also writes `SvR2011-Android-v<version>.apk` (the name the app's updater looks for); README updated.
 - [x] A connected controller hides the on-screen controller (it only worked when SDL saw the pad, never with the XInput backend). *(b249724)*
