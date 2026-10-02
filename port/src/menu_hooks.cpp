@@ -212,6 +212,7 @@ REX_HOOK_RAW(sub_82447210) {
     const uint32_t group = Be32(menu + kMenuGroup), cursor = Be32(menu + kMenuCursor);
     REXLOG_INFO("[svr2011] menu select: group {:X} row {}", group, cursor);
     svr2011::TouchGameInMatch(false);  // (the touch controller's MENU layout)
+    svr2011::SetFrameRateInMatch(false);  // (menus at 60 fps)
     svr2011::native::SetMatchScene(false);  // (wide screens: menus at 16:9)
     svr2011::SetDiscordScene(svr2011::DiscordScene::kMenus);
     if (group == kOptionsGroup && cursor == kGraphicsRow) {
@@ -261,6 +262,7 @@ void ArmWatch(uint8_t* base);
 REX_EXTERN(__imp__sub_826E1C88);
 REX_HOOK_RAW(sub_826E1C88) {
   svr2011::TouchGameInMatch(true);  // entrances: a match (the touch controller's MATCH layout)
+  svr2011::SetFrameRateInMatch(true);  // (the chosen frame rate)
   svr2011::native::SetMatchScene(true);  // (wide screens: full width)
   svr2011::SetDiscordScene(svr2011::DiscordScene::kEntrances);
   if (!REXCVAR_GET(unlock_30fps)) svr2011::SetSceneThirtyFps(true);

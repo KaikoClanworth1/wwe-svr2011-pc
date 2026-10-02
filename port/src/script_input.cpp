@@ -91,6 +91,11 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     auto clamp = [](int v) { return static_cast<int16_t>(std::clamp(v, -32768, 32767)); };
     (side == "R" || side == "r" ? step.rx : step.lx) = clamp(x);
     (side == "R" || side == "r" ? step.ry : step.ly) = clamp(y);
+    // Optional: buttons held meanwhile, and the right trigger ("stick L 0 32000 2000 LB 255").
+    std::string buttons;
+    if (in >> buttons && buttons != "-") step.buttons = ParseButtons(buttons);
+    int rt = 0;
+    if (in >> rt) step.right_trigger = static_cast<uint8_t>(std::clamp(rt, 0, 255));
     queue_.push_back(step);
   } else if (verb == "trigger") {
     std::string side;

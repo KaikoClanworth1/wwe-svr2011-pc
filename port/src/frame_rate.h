@@ -23,9 +23,13 @@ void InstallFrameRate(rex::memory::Memory* memory);
 // again (menu_hooks.cpp).
 void ApplyFrameRate(uint8_t* base);
 
-// The chosen frame rate (30 or 60), and the frames the game draws for it.
+// The chosen frame rate (30 or 60), and the frames the game draws now: 30
+// only in a match (menus at 60).
 int TargetFrameRate();
 int FrameRateNow();
+
+// A match on (from its entrances) or off (a main menu choice): menu_hooks.cpp.
+void SetFrameRateInMatch(bool on);
 
 // Entrances and cutscenes at 30 frames a second (the original's; setting
 // unlock_30fps off): on while one plays (menu_hooks.cpp).

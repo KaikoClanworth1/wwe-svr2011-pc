@@ -34,6 +34,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -57,6 +58,7 @@ constexpr uint32_t kChars = 0x82E3CC50;        // the wrestlers
 uint8_t* g_base = nullptr;            // the guest's memory
 std::atomic<bool> g_scene_thirty{false};  // an entrance at the original's 30 fps
 std::atomic<bool> g_lockstep{false};      // online: one world update per frame at 60
+std::atomic<bool> g_in_match{false};      // 30 fps applies in matches only
 
 void Wr32(uint8_t* p, uint32_t v) {
   v = __builtin_bswap32(v);
@@ -95,7 +97,15 @@ int TargetFrameRate() {
   return REXCVAR_GET(frame_rate) == 30 ? 30 : 60;  // (older settings' 120 / 144 / 240: 60)
 }
 
-int FrameRateNow() { return TargetFrameRate(); }
+int FrameRateNow() {
+  // (test aid: SVR2011_TEST_IN_MATCH=1 - the chosen rate everywhere, e.g. the training ring)
+  static const bool always = std::getenv("SVR2011_TEST_IN_MATCH") != nullptr;
+  return g_in_match || always ? TargetFrameRate() : 60;
+}
+
+void SetFrameRateInMatch(bool on) {
+  if (g_in_match.exchange(on) != on) SetFrameClock();
+}
 
 void InstallFrameRate(rex::memory::Memory* memory) {
   if (!memory) return;
@@ -335,64 +345,47 @@ REX_HOOK_RAW(sub_8269C728) {
   ctx.lr = saved.lr;
 }
 
-// The characters' job ('CHPH': the physics world and the wrestlers' poses,
-// on its own thread). sub_8216F4C8, from the update's group gate, waits for
-// the job the last update started, takes its results and starts the next
-// one - but the job thread only finishes once its frame's draw has run, so
-// an extra update would wait forever. Only a frame's last update runs it; an
-// extra one takes just the wrestlers' share (CharactersStep), and the job
-// steps the physics world (sub_8238AF28(world, 1/60), only called there)
-// once per 60 Hz tick of its frame.
+// The characters' job ('CHPH': the wrestlers' poses and the physics world, on
+// its own thread). sub_8216F4C8, from the update's group gate, waits for the
+// job the last update started, takes its results and starts the next one;
+// the job (sub_82171940 a run) steps by the timing block's 1/60. The job and
+// the frame's draw depend on each other (double-buffered poses), so it runs
+// once a frame, as the game expects: extra updates leave it, and the job does
+// the work of every tick since it was last started (sub_82171940 that many
+// times on the job thread).
 namespace {
-
-std::atomic<int> g_job_ticks{1};
-
-// What sub_8216F4C8 does between waiting for the job and starting the next:
-// sub_8216F378 (each wrestler's step from the job's results) and, outside
-// some game states, sub_8216EAB8 / sub_821C1A98.
-void CharactersStep(PPCContext& ctx, uint8_t* base) {
-  constexpr uint32_t kJob = 0x82DE9C88, kSlot = 0x82DE9C90;
-  sub_8216E750(ctx, base);
-  if (ctx.r3.u32 != 0) return;
-  const uint32_t job = G32(base, kJob);
-  if (!job || G32(base, job + 104) != 0 || G32(base, job + 92) == 0) return;
-  // The job's results: the job started by the last frame (its draw has run,
-  // so it finishes) - waited for as sub_8216F4C8 does, but the event is left
-  // set for the frame's last update.
-  ctx.r3.u64 = G32(base, job + 276);
-  ctx.r4.u64 = uint64_t(-1);
-  sub_8215A8C0(ctx, base);
-  const uint32_t idx = G32(base, kSlot) == 0 ? 1 : 0;
-  if (G32(base, job + (idx + 27) * 4) || G32(base, job + (idx + 12) * 4) || G32(base, job + (idx + 14) * 4)) return;
-  sub_8216F378(ctx, base);
-  sub_825740C8(ctx, base);
-  const int32_t state = int32_t(G32(base, ctx.r3.u32 + 10412));
-  if (state == 4 || (state > 6 && state <= 9)) return;
-  sub_8216EAB8(ctx, base);
-  sub_821C1A98(ctx, base);
-}
-
+std::atomic<int> g_job_ticks{1};  // ticks the next / running job stands for
+int g_job_pending = 0;            // ticks since the job was last started
 }  // namespace
 
 REX_EXTERN(__imp__sub_8216F4C8);
 REX_HOOK_RAW(sub_8216F4C8) {
-  if (g_extra_update) {  // (an extra update of this frame)
-    const auto saved = ctx;
-    CharactersStep(ctx, base);
-    ctx = saved;
-    return;
+  ++g_job_pending;
+  if (g_extra_update) return;  // (an extra update of this frame)
+  // (the running job must be done before its tick count changes: waited for
+  // as the game does just after - the event stays set for it)
+  constexpr uint32_t kJob = 0x82DE9C88;
+  const auto saved = ctx;
+  sub_8216E750(ctx, base);
+  const uint32_t job = G32(base, kJob);
+  if (ctx.r3.u32 == 0 && job && G32(base, job + 104) == 0 && G32(base, job + 92) != 0) {
+    ctx.r3.u64 = G32(base, job + 276);
+    ctx.r4.u64 = uint64_t(-1);
+    sub_8215A8C0(ctx, base);
   }
-  g_job_ticks = g_world_ticks;  // (the job it starts runs for this frame)
+  ctx = saved;
+  g_job_ticks = std::clamp(g_job_pending, 1, kMaxTicks);
+  g_job_pending = 0;
   __imp__sub_8216F4C8(ctx, base);
 }
 
-REX_EXTERN(__imp__sub_8238AF28);
-REX_HOOK_RAW(sub_8238AF28) {
+REX_EXTERN(__imp__sub_82171940);
+REX_HOOK_RAW(sub_82171940) {
   const auto saved = ctx;
-  const int ticks = std::max(1, g_job_ticks.load());
+  const int ticks = g_job_ticks.load();
   for (int i = 0; i < ticks; ++i) {
     ctx = saved;
-    __imp__sub_8238AF28(ctx, base);
+    __imp__sub_82171940(ctx, base);
   }
 }
 
