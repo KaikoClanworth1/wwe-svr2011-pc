@@ -194,7 +194,11 @@ struct Me {
   uint64_t xuid = 0;
 } g_me;
 
-uint16_t Offset(uint16_t base) { return uint16_t(base - kBasePort); }
+// A game port's real port: + 20000 (the game's own, UDP 1001, is below 1024,
+// which Android and Linux don't let apps bind) + the port base's offset (two
+// games on one PC differ).
+constexpr uint16_t kPortShift = 20000;
+uint16_t Offset(uint16_t base) { return uint16_t(base - kBasePort + kPortShift); }
 
 // abOnline: the player's xuid, then the P2P socket's public port.
 XnAddr MyXnAddr() {

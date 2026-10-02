@@ -12,7 +12,9 @@
 # in the test server at 127.0.0.1:8421) instead of directly: the *_relay.toml
 # configs (p2p_force_relay), as two players who can't reach each other would play.
 param([string]$Name = "p2", [switch]$HostOnly, [switch]$JoinOnly, [switch]$Play, [switch]$Relay,
-      [string]$LogLevel = "info")
+      [string]$LogLevel = "info", [string]$HostConfig = "")
+# -HostConfig: the host's settings instead (e.g. a test account on the public
+# server, with -HostOnly, for a phone to join: tools/phone_session.ps1).
 $s = Join-Path $PSScriptRoot "online_session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
 $suffix = ""
@@ -32,7 +34,7 @@ function ToPlayerMatch([string]$slot) {
     P $slot A 10; P $slot DOWN 1.5; P $slot A 10
 }
 if (-not $JoinOnly) {
-    & $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config "test_config_ent_down$suffix.toml" -LogLevel $LogLevel | Out-Null
+    & $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config $(if ($HostConfig) { $HostConfig } else { "test_config_ent_down$suffix.toml" }) -LogLevel $LogLevel | Out-Null
     [Threading.Thread]::Sleep(75000)
     ToPlayerMatch ""
     P "" DOWN 1.2; P "" DOWN 1.2; P "" A 10            # CREATE SESSION
