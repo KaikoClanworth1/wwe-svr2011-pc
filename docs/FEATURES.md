@@ -2,8 +2,7 @@
 
 Everything the port adds to the game, as of 2 October 2026 (v1.0.3 plus
 unreleased work on `main`). "Unreleased" marks what isn't in a published
-release yet. The master Game Files folder has everything up to ed8bb9b; Created
-Superstars in online matches (63aabc9) comes with the next combine.
+release yet. The master Game Files folder has everything up to 1ba1c7b.
 
 ## Platforms
 
