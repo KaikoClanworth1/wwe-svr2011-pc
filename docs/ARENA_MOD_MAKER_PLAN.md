@@ -122,7 +122,7 @@ diagrams, is in the plan artifact (https://claude.ai/artifact/YWqYNczKJju4Qo56tV
   - Page 1 is the 20 shipped arenas. Each later page holds up to 20 custom arenas, each drawn on its host tile.
   - The banners (DXT5 256x128, untiled with a 16-bit swap) are found in 4K-view physical memory by content when the screen opens, then overwritten per page.
   - An ImGui label shows "< n / N >" and the name of the custom arena under the cursor.
-- [ ] Ring code: rope instances and heights, rope rebound and break, corners and sides (the six-sides report).
+- [x] Ring code: rope instances and heights, rope rebound and break, corners and sides (see "Phases 4-6" below).
 - [ ] HMD decoded enough to rebuild barrier and floor collision.
 
 ## Milestone A: a custom arena in game
@@ -144,9 +144,121 @@ diagrams, is in the plan artifact (https://claude.ai/artifact/YWqYNczKJju4Qo56tV
   3. The launcher's `--mods-add` installs it.
   4. Arena select page 2 shows the mod's banner and name.
   5. The match plays the mod: a new cube, its texture, and red ropes.
-- **Open:**
-  - the VS screen still shows the host arena's logo;
-  - ring R2-R4 (rope count, no ropes, size);
-  - the 3D Arena Editor (Phase 5);
-  - six sides (Phase 6);
-  - the Android Mods page.
+- Later work: see "Phases 4-6" below.
+
+## Phases 4-6
+
+### Ring code
+
+- **The ring constants** are in one block at 0x82D9D700:
+  - +0x04 = 64;
+  - +0x08 = 31.3 (edge);
+  - +0x0C = -12 (mat);
+  - +0x1C = 4.2 (rope gap);
+  - +0x80 = the four corner posts (±31.7).
+
+  Start-up code (0x82D35DD0-0x82D36100) derives globals from it:
+  - 0x82E354E0 = 28.8, the inside-the-ring line;
+  - 0x82E354E4 = bottom rope height (-12 - 3.4).
+- **Ring object** at 0x82E354CC (built by sub_82187A78):
+  - +8..+20: rope models;
+  - +184: rope model count;
+  - +104..+116: corner pads;
+  - +120: turnbuckle.
+
+  When the arena file has entries 900-911, the game loads **one model per rope** (900 + side + 4 × rope). No shipped arena uses this mode.
+- **Draws:**
+  - sub_8219A508: ropes;
+  - sub_82199550: turnbuckles and pads, three per corner at the rope heights.
+- **Rope physics object** at 0x82E354C8 (sub_82198C58): four sides × 24 nodes per rope.
+- **Fighters:**
+  - the list is at 0x82E3CC50;
+  - +212 = motion;
+  - +288 = position.
+
+  sub_822EE2E0(control) runs the 116 control handlers at 0x82008790 until one takes the frame. The run handler (entry 7) means a hook on a later handler misses running fighters.
+
+### Ring Kit
+
+`modmaker/svrfmt/ring_kit`, game side in `src/ring_rules.cpp`.
+
+- **R1, looks:**
+  - rope colour per rope (material colours);
+  - a picture per rope;
+  - turnbuckles and corner pads on or off.
+
+  Uses the 12-model mode. Tested in game.
+- **Rope height and gap:** the manifest's `ring.rope_base` / `ring.rope_gap` set 0x82E354E4 and 0x82D9D71C while the arena is picked. Every rope user follows (draws, physics, moves). Tested at 2.0 / 5.0.
+- **R2, no ropes.** With all three left out:
+  - runners and whipped wrestlers brake (motion 53) instead of rebounding: hooks sub_823091A0, sub_82309398, sub_823054F0;
+  - there are no rope breaks: hook sub_821BD388.
+
+  Tested: no rebound, five brakes, the wrestlers stand back up. Details in `docs/ARENA_ROPE_GAMEPLAY.md`.
+- **R2, one or two ropes:** those ropes are not drawn, but gameplay still uses all three heights (the Mod Maker says so).
+- **More ropes (4): not done.** The rope physics, draw loops and moves are built for three.
+- **R3, ring size: no-go.**
+  - The central block scales, but the ring / apron / floor tests (sub_8218EB88 and the zone tests) also use literal 30, 32 and 55.3.
+  - Those values come from constant pools that hundreds of functions share.
+  - A bigger ring would sink wrestlers through the mat at its edge.
+- **R4, six sides: no-go** for real gameplay. About 400 functions assume a square: 177 use the fighter's side byte +440 as 0..3, there are about 76 inline square tests, and the rope physics is built for four sides. See `docs/ARENA_SIX_SIDES_REPORT.md`.
+
+### Arena Editor (Phase 5)
+
+`modmaker/editor.cpp`, "Open in Arena Editor".
+
+- **3D view:** the arena's DXT textures; glows drawn additive.
+- **Object list** grouped by zone. Pick an object in the view.
+- **Editing:**
+  - move along an axis or on the floor, turn, scale (snap, undo);
+  - duplicate, hide, delete added objects;
+  - change the texture, or use a new picture.
+- **Add:**
+  - a box;
+  - OBJ / FBX objects (added to the floor model).
+- **Ring Kit panel**, previewed where the game draws the parts.
+- **Lighting presets** (material colours).
+- **Size budget** (file and memory against the shipped arena).
+- **Test in game.**
+- **Limits:**
+  - Ringside and entrance parts move at most 50 cm.
+  - Rigged parts can't move.
+  - Objects added in an earlier session become part of the floor model when the mod is reopened.
+- **Open a mod:**
+  - the shipped ring parts are put back, and the per-rope models removed;
+  - the lighting is divided out of the materials.
+
+  Saving then applies the kit and lighting once. Tested: open + save gives the same models and colours.
+- **Test aids:**
+  - `--editor <tile>`, `--editor-view`, `--select`, `--open`;
+  - `--test-edit-save <file>` (with `--editor`: move, add a box, red top rope, warmer light; with `--open`: save again);
+  - `tools/modmaker_shot.ps1 -Extra`.
+
+### Also done
+
+- A custom arena plays in place of the arena it was made from (manifest `base=`).
+- **Android launcher Mods tab** (`ModsPage.java`): list, on/off, Remove, Add a `.svrmod`. Compiled, not yet run on a phone.
+- The APK package and Install to phone leave out `Mods/ArenaOverlay`.
+- **Tools:**
+  - `tools/ppc_xref.py`: cross-references in the generated code;
+  - `tools/ring_rope_test.ps1`: exhibition rope test; `-AutoRun` uses `SVR2011_TEST_RUN`;
+  - `SVR2011_TEST_STATE_LOG`, `SVR2011_TEST_RING`.
+
+### Not done
+
+- **VS screen:** each arena has its own VS-screen set (menu/MatchHD.pac M00I..M66I). A custom arena shows its base arena's.
+- **Crowd:** not editable (nested PACH 0x4E20).
+- **Collision (HMD):** not rebuilt, so moved ringside parts keep their old collision. That is the reason for the 50 cm limit.
+
+### Shared files touched on this branch (for the combine)
+
+- `CMakeLists.txt`:
+  - arena_mods.cpp, ring_rules.cpp, svrfmt pac/texture in the port;
+  - mods_tab.c in the launcher;
+  - the modmaker target (mod_maker, editor, svrfmt, ufbx).
+- `src/svr2011_app.cpp`: InstallArenaMods, InstallArenaModsOverlay, InstallRingRules.
+- `src/script_input.cpp`: the stick command can hold buttons and both triggers.
+- `launcher/svr2011_launcher.c`: Mods tab, `--mods-add`.
+- `launcher/apk_package.c`: skips Mods/ArenaOverlay.
+- **Android:** LauncherActivity.java (Mods tab), ModsPage.java.
+- **New hooks:** sub_8219A508, sub_822EE2E0, sub_823091A0, sub_82309398, sub_823054F0, sub_821BD388, sub_823D4FC0, sub_826AEF10.
+- **Test game:** runs/opt_arena_game. The `opt_` prefix keeps the main checkout's Stop-TestGames from closing it.
