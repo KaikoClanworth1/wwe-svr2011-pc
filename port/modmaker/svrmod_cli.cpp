@@ -255,6 +255,66 @@ int main(int argc, char** argv) {
     if (!LoadImageFile(argv[2], img)) { std::printf("%s: cannot read\n", argv[2]); return 1; }
     return WriteFile(argv[3], DdsEncode(Resize(img, 256, 128), DxtFormat::kDxt5, false)) ? 0 : 1;
   }
+  if (argc == 6 && !std::strcmp(argv[1], "dds")) {
+    // dds <picture> <w> <h> <out.dds>: DXT5, one level (VS screen pictures)
+    Image img;
+    if (!LoadImageFile(argv[2], img)) { std::printf("%s: cannot read\n", argv[2]); return 1; }
+    return WriteFile(argv[5], DdsEncode(Resize(img, std::atoi(argv[3]), std::atoi(argv[4])), DxtFormat::kDxt5, false))
+               ? 0 : 1;
+  }
+  if (argc == 5 && !std::strcmp(argv[1], "retexture")) {
+    // retexture <bgNN.pac> <map.txt> <out.pac>: lines "<arena texture>=<picture>"
+    // (a picture at its own size, power of two, in the texture's format and
+    // mip layout); then FitFile and a size report
+    Arena a;
+    std::string err;
+    if (!a.Load(argv[2], &err)) { std::printf("%s: %s\n", argv[2], err.c_str()); return 1; }
+    Bytes mapb;
+    if (!ReadFile(argv[3], mapb)) { std::printf("%s: cannot read\n", argv[3]); return 1; }
+    std::string map(mapb.begin(), mapb.end()), line;
+    size_t pos = 0, done = 0, missing = 0, before = 0, after = 0;
+    std::vector<std::string> keep;
+    while (pos < map.size()) {
+      size_t nl = map.find('\n', pos);
+      line = map.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+      pos = nl == std::string::npos ? map.size() : nl + 1;
+      while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+      const size_t eq = line.find('=');
+      if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+      const std::string name = line.substr(0, eq), pic = line.substr(eq + 1);
+      bool found = false;
+      for (auto& b : a.bundles)
+        for (auto& t : b.textures) {
+          if (t.name != name) continue;
+          found = true;
+          DdsInfo info;
+          Image img;
+          if (!DdsInfoOf(t.data, info) || !LoadImageFile(pic, img)) { std::printf("  %s: cannot use %s\n", name.c_str(), pic.c_str()); continue; }
+          auto p2 = [](int v) { int p = 4; while (p < v && p < 2048) p *= 2; return p; };
+          img = Resize(img, p2(img.w), p2(img.h));
+          const DxtFormat f = info.format == DxtFormat::kArgb ? DxtFormat::kDxt5 : info.format;
+          before += t.data.size();
+          t.data = DdsEncode(img, f, info.mips > 1);
+          after += t.data.size();
+          b.changed = true;
+          keep.push_back(name);
+          ++done;
+        }
+      if (!found) { std::printf("  no texture %s in the arena\n", name.c_str()); ++missing; }
+    }
+    std::printf("retextured %zu (%zu not found): %.2f MB -> %.2f MB\n", done, missing, before / 1048576.0, after / 1048576.0);
+    const auto halved = a.FitFile(keep);  // (the arena's own textures give way first)
+    if (!halved.empty()) {
+      std::printf("  over the room: %zu textures halved to fit:", halved.size());
+      for (const auto& h : halved) std::printf(" %s", h.c_str());
+      std::printf("\n");
+    }
+    const Bytes data = a.Save(&err);
+    if (!err.empty()) { std::printf("error: %s\n", err.c_str()); return 1; }
+    WriteFile(argv[4], data);
+    std::printf("wrote %s: %.2f MB (shipped %.2f MB)\n", argv[4], data.size() / 1048576.0, a.original_file / 1048576.0);
+    return 0;
+  }
   if (argc == 5 && !std::strcmp(argv[1], "grow")) {
     // test: grow <bgNN.pac> <out.pac> <KB>: an unused texture of about that
     // many KB unpacked (a soft pattern, so it packs well) in the first set

@@ -468,10 +468,12 @@ struct VsSwap {
   svrfmt::Bytes original, mine;  // swapped blocks, same size
   size_t sig = 0;                // offset of 64 distinctive bytes
   uint32_t guest = 0;            // where it is (0: not found)
+  uint32_t last = 0;             // where it was last time (themes often load there again)
 };
 std::mutex g_vs_mutex;
 std::vector<VsSwap> g_vs_swaps;
 const void* g_redirected_custom = nullptr;
+int64_t g_vs_since = 0;  // when the swaps were set
 
 // The theme textures of arena `number`: name -> swapped DXT5 blocks.
 std::vector<std::pair<std::string, svrfmt::Bytes>> VsTheme(int number) {
@@ -502,7 +504,9 @@ std::vector<std::pair<std::string, svrfmt::Bytes>> VsTheme(int number) {
 
 void RestoreVs(uint8_t* b) {
   for (auto& s : g_vs_swaps)
-    if (s.guest && !std::memcmp(b + s.guest + s.sig, s.mine.data() + s.sig, 64))
+    if (rex::memory::HeapAllocationInfo info; s.guest && Committed(s.guest, info) &&
+        Committed(uint32_t(s.guest + s.mine.size() - 1), info) &&
+        !std::memcmp(b + s.guest + s.sig, s.mine.data() + s.sig, 64))
       std::memcpy(b + s.guest, s.original.data(), s.original.size());
 }
 
@@ -510,6 +514,7 @@ void SetVsSwaps(const CustomArena* c, int host) {
   std::lock_guard lock(g_vs_mutex);
   RestoreVs(g_memory->virtual_membase());
   g_vs_swaps.clear();
+  g_vs_since = NowMs();
   if (!c || c->vs.empty()) return;
   const auto theme = VsTheme(host);
   for (const auto& [name, mine] : c->vs)
@@ -537,16 +542,32 @@ void VsLoop() {
     if (g_vs_swaps.empty()) continue;
     uint8_t* b = g_memory->virtual_membase();
     bool lost = false;
+    // (a page the game has freed can't be read: check it is still committed)
+    auto readable = [](uint32_t a, size_t n) {
+      rex::memory::HeapAllocationInfo info;
+      return a && Committed(a, info) && Committed(uint32_t(a + n - 1), info);
+    };
     for (auto& s : g_vs_swaps) {
+      if (s.guest && !readable(s.guest, s.mine.size())) s.guest = 0;
       if (s.guest && !std::memcmp(b + s.guest + s.sig, s.mine.data() + s.sig, 64)) continue;
       if (s.guest && !std::memcmp(b + s.guest + s.sig, s.original.data() + s.sig, 64)) {
         std::memcpy(b + s.guest, s.mine.data(), s.mine.size());  // (loaded again)
         continue;
       }
+      if (s.guest) s.last = s.guest;
       s.guest = 0;
+      // back where it was?
+      if (readable(s.last, s.original.size()) && !std::memcmp(b + s.last + s.sig, s.original.data() + s.sig, 64) &&
+          !std::memcmp(b + s.last, s.original.data(), 64)) {
+        s.guest = s.last;
+        std::memcpy(b + s.guest, s.mine.data(), s.mine.size());
+        continue;
+      }
       lost = true;
     }
-    if (!lost || NowMs() - last_scan < 1000) continue;
+    // (look again each second for 20 s after the choice, then every 5 s:
+    // the theme is only in memory while the VS screen is up)
+    if (!lost || NowMs() - last_scan < (NowMs() - g_vs_since < 20000 ? 1000 : 5000)) continue;
     last_scan = NowMs();
     int regions = 0;
     ForEachRegion(0xE0000000, 0xFFFF0000, [&](uint64_t at, uint64_t end) {
