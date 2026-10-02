@@ -359,7 +359,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // More exhibition match types (match_types.h).
   svr2011::InstallMatchTypes(runtime()->memory());
   // Arena mods: custom arenas in place of a host arena (arena_mods.h).
-  svr2011::InstallArenaMods(runtime()->memory());
+  svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
   svr2011::InstallFrameRate(runtime()->memory());
   if (imgui_drawer()) {
