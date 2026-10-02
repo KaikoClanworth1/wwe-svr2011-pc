@@ -8,6 +8,8 @@
 //   Banner / name       the arena select banner (any picture -> 256 x 128 DXT5)
 //   Save as mod         a .svrmod (zip: manifest.txt, arena.pac, banner.dds)
 //   Install into game   the same folder straight into <game>/Mods/Arenas/<id>
+//   Arena Editor        the arena in 3D: objects, Ring Kit, lighting (editor.cpp)
+//   Open a mod          a saved .svrmod back into the editor
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -31,9 +33,11 @@
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "editor.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/arena_import.h"
 #include "svrfmt/png.h"
+#include "svrfmt/ring_kit.h"
 #include "svrfmt/zip_write.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -138,6 +142,16 @@ struct Project {
   char version[16] = "1.0";
 };
 Project g_proj;
+int g_page = 0;  // 0 arenas, 1 editor
+// test aid (--test-edit-save <file>): once the editor has its arena, editor::TestEdit,
+// name "Test Edit", save the mod there and quit
+std::wstring g_test_save;
+std::atomic<int> g_test_state{0};
+// an arena loaded in the background, handed to the UI thread (the editor holds g_proj.edited)
+std::mutex g_pending_mutex;
+std::unique_ptr<Arena> g_pending;
+std::string g_pending_fbx;
+bool g_pending_to_editor = false;
 
 std::mutex g_log_mutex;
 std::vector<std::string> g_log;
@@ -300,10 +314,90 @@ void ImportArena(int i) {
     std::string serr;
     a->Save(&serr);  // (checks it would load)
     if (!serr.empty()) { Log("  error: " + serr); return; }
-    g_proj.edited = std::move(a);
-    g_proj.fbx = fbx8;
-    Log("  ready: save it as a mod, or install it into the game.");
+    std::lock_guard lock(g_pending_mutex);
+    g_pending = std::move(a);
+    g_pending_fbx = fbx8;
+    Log("  ready: edit it in the Arena Editor, save it as a mod, or install it into the game.");
   });
+}
+
+// The project's arena into the editor (loaded from the game folder the first time).
+void OpenEditor(int i) {
+  if (g_proj.arena == i && g_proj.edited) {
+    g_page = 1;
+    return;
+  }
+  StartProject(i);
+  const std::string pac = ArenaPath(i);
+  RunInBackground([pac] {
+    auto a = std::make_unique<Arena>();
+    std::string err;
+    if (!a->Load(pac, &err)) { Log("  " + err); return; }
+    std::lock_guard lock(g_pending_mutex);
+    g_pending = std::move(a);
+    g_pending_fbx.clear();
+    g_pending_to_editor = true;
+  });
+}
+
+// A saved mod back into the editor: its arena, name, banner and settings.
+void OpenModFile(const std::wstring& f) {
+  Bytes zip;
+  std::vector<ZipEntry> files;
+  if (!ReadFile(Utf8(f), zip) || !ZipRead(zip, files)) { Log("That is not a mod the Mod Maker made."); return; }
+  const ZipEntry *manifest = nullptr, *pac = nullptr, *banner = nullptr;
+  for (const auto& e : files) {
+    if (e.name == "manifest.txt") manifest = &e;
+    if (e.name == "arena.pac") pac = &e;
+    if (e.name == "banner.dds") banner = &e;
+  }
+  if (!manifest || !pac) { Log("That mod has no arena in it."); return; }
+  const std::string text(manifest->data.begin(), manifest->data.end());
+  auto value = [&](const char* key) {
+    const std::string k = std::string("\n") + key + "=";
+    const std::string t = "\n" + text;
+    const size_t at = t.find(k);
+    if (at == std::string::npos) return std::string();
+    const size_t end = t.find_first_of("\r\n", at + k.size());
+    return t.substr(at + k.size(), end == std::string::npos ? std::string::npos : end - at - k.size());
+  };
+  int host = -1;
+  for (int i = 0; i < 20; ++i)
+    if (value("base") == g_arenas[i].banner) host = i;
+  if (host < 0) { Log("The mod does not say which arena it is built on (base=)."); return; }
+  auto a = std::make_unique<Arena>();
+  std::string err;
+  if (!a->LoadData(pac->data, &err)) { Log("  " + err); return; }
+  Arena shipped;  // the budget is the host arena's shipped size
+  if (shipped.Load(ArenaPath(host))) {
+    a->original_file = shipped.original_file;
+    a->original_unpacked = shipped.original_unpacked;
+  }
+  g_proj.arena = host;
+  g_sel = host;
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s", value("name").c_str());
+  std::snprintf(g_proj.author, sizeof g_proj.author, "%s", value("author").c_str());
+  std::snprintf(g_proj.version, sizeof g_proj.version, "%s", value("version").c_str());
+  if (banner) {
+    Image img;
+    if (DdsDecode(banner->data, img)) {
+      g_proj.banner = img;
+      if (g_proj.banner_tex) g_proj.banner_tex->Release();
+      g_proj.banner_tex = MakeTexture(img);
+    }
+  }
+  editor::FromManifest(text);
+  g_proj.edited = std::move(a);
+  g_proj.fbx.clear();
+  editor::SetArena(g_proj.edited.get(), g_proj.name);
+  g_page = 1;
+  Log("Opened " + Utf8(f) + " (built on " + g_arenas[host].name + ").");
+}
+
+void OpenMod() {
+  const COMDLG_FILTERSPEC spec[] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"}};
+  const std::wstring f = PickFile(false, L"Open a mod to keep working on it", spec, 1);
+  if (!f.empty()) OpenModFile(f);
 }
 
 void PickBanner() {
@@ -328,58 +422,114 @@ std::string ModId() {
   return id.empty() ? "arena" : id;
 }
 
-// manifest.txt, arena.pac, banner.dds (nullptr on error, logged)
-bool BuildMod(std::vector<ZipEntry>& files) {
-  if (g_proj.arena < 0) { Log("Pick an arena and import your FBX first."); return false; }
-  Bytes pac;
+// A mod build: copied and set up on the UI thread (the editor keeps
+// editing g_proj.edited), compressed in the background.
+struct BuildJob {
+  std::shared_ptr<Arena> arena;
+  std::string manifest, id;
+  Image banner;
+};
+
+bool PrepareBuild(BuildJob& job) {
+  if (g_proj.arena < 0) { Log("Pick an arena first (Open in Arena Editor or Import from Blender)."); return false; }
+  job.arena = std::make_shared<Arena>();
   if (g_proj.edited) {
-    std::string err;
-    pac = g_proj.edited->Save(&err);
-    if (!err.empty()) { Log("error: " + err); return false; }
-  } else if (!ReadFile(ArenaPath(g_proj.arena), pac)) {
+    *job.arena = *g_proj.edited;
+  } else if (!job.arena->Load(ArenaPath(g_proj.arena))) {
     Log("The arena file could not be read.");
     return false;
   }
-  Image banner = g_proj.banner;
-  if (banner.rgba.empty()) {  // no picture: a plain banner with the name is not possible here; use the original
+  editor::ApplyBuild(*job.arena);
+  job.banner = g_proj.banner;
+  if (job.banner.rgba.empty()) {
     Log("No banner picture set: using a dark banner (Banner picture... sets one).");
-    banner.w = 256;
-    banner.h = 128;
-    banner.rgba.assign(256 * 128 * 4, 40);
-    for (size_t i = 3; i < banner.rgba.size(); i += 4) banner.rgba[i] = 255;
+    job.banner.w = 256;
+    job.banner.h = 128;
+    job.banner.rgba.assign(256 * 128 * 4, 40);
+    for (size_t i = 3; i < job.banner.rgba.size(); i += 4) job.banner.rgba[i] = 255;
   }
-  const std::string manifest = "type=arena\nid=" + ModId() + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
-                               "\nversion=" + g_proj.version + "\nbase=" + g_arenas[g_proj.arena].banner + "\n";
-  files.push_back({"manifest.txt", Bytes(manifest.begin(), manifest.end())});
+  job.id = ModId();
+  job.manifest = "type=arena\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
+                 "\nversion=" + g_proj.version + "\nbase=" + g_arenas[g_proj.arena].banner + "\n" +
+                 editor::ManifestLines();
+  return true;
+}
+
+// manifest.txt, arena.pac, banner.dds (false on error, logged)
+bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
+  const auto halved = job.arena->FitFile({});
+  if (!halved.empty())
+    Log("  " + std::to_string(halved.size()) + " textures halved to fit the game's room for this arena.");
+  std::string err;
+  Bytes pac = job.arena->Save(&err);
+  if (!err.empty()) { Log("error: " + err); return false; }
+  files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
   files.push_back({"arena.pac", std::move(pac)});
-  files.push_back({"banner.dds", DdsEncode(banner, DxtFormat::kDxt5, false)});
+  files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
   return true;
 }
 
 void SaveMod() {
-  std::vector<ZipEntry> files;
-  if (!BuildMod(files)) return;
+  BuildJob job;
+  if (!PrepareBuild(job)) return;
   const COMDLG_FILTERSPEC spec[] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"}};
-  const std::wstring name(ModId().begin(), ModId().end());
+  const std::wstring name(job.id.begin(), job.id.end());
   const std::wstring f = PickFile(true, L"Save the mod", spec, 1, L"svrmod", (name + L".svrmod").c_str());
   if (f.empty()) return;
-  if (WriteFile(Utf8(f), ZipWrite(files))) Log("Saved " + Utf8(f) + " (add it in the launcher's Mods tab with +).");
-  else Log("The mod could not be written.");
+  const std::string out = Utf8(f);
+  RunInBackground([job, out]() mutable {
+    Log("Building the mod ...");
+    std::vector<ZipEntry> files;
+    if (!FinishBuild(job, files)) return;
+    if (WriteFile(out, ZipWrite(files))) Log("Saved " + out + " (add it in the launcher's Mods tab with +).");
+    else Log("The mod could not be written.");
+  });
 }
 
-void InstallMod() {
-  std::vector<ZipEntry> files;
-  if (!BuildMod(files)) return;
-  const fs::path dir = fs::path(g_game) / L"Mods" / L"Arenas" / fs::u8path(ModId());
+bool InstallFiles(const std::string& id, const std::vector<ZipEntry>& files) {
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Arenas" / fs::u8path(id);
   std::error_code ec;
   fs::create_directories(dir, ec);
   for (const auto& f : files)
     if (!WriteFile(Utf8((dir / fs::u8path(f.name)).wstring()), f.data)) {
       Log("Could not write into " + Utf8(dir.wstring()) + " (is the game running?)");
-      return;
+      return false;
     }
   Log("Installed into the game: arena select, page 2 onwards (" + Utf8(dir.wstring()) + ").");
+  return true;
 }
+
+void StartGame() {
+  const std::wstring exe = (fs::path(g_game) / L"svr2011.exe").wstring();
+  STARTUPINFOW si = {sizeof si};
+  PROCESS_INFORMATION pi = {};
+  std::wstring cmd = L"\"" + exe + L"\"";
+  if (CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, g_game.c_str(), &si, &pi)) {
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    Log("The game is starting: SELECT ARENA, then right past the last arena for page 2.");
+  } else {
+    Log("Could not start " + Utf8(exe) + ".");
+  }
+}
+
+// Builds and installs into <game>/Mods/Arenas/<id>; then, with `start`, starts the game.
+void InstallMod(bool start = false) {
+  if (start && FindWindowW(nullptr, L"WWE SmackDown vs. Raw 2011")) {
+    Log("The game is running: close it first (mods load when it starts).");
+    return;
+  }
+  BuildJob job;
+  if (!PrepareBuild(job)) return;
+  RunInBackground([job, start]() mutable {
+    Log("Building the mod ...");
+    std::vector<ZipEntry> files;
+    if (!FinishBuild(job, files) || !InstallFiles(job.id, files)) return;
+    if (start) StartGame();
+  });
+}
+
+void TestInGame() { InstallMod(true); }
 
 // ---------------------------------------------------------------- UI
 
@@ -408,12 +558,46 @@ void Draw() {
   ImGui::Begin("Mod Maker", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                          ImGuiWindowFlags_NoBringToFrontOnFocus);
   const float scale = ImGui::GetFontSize() / 13.0f;
-  const float rail = 170 * scale, side = 300 * scale, logh = 100 * scale;
+  const float rail = (g_page == 1 ? 110 : 170) * scale, side = 300 * scale, logh = (g_page == 1 ? 70 : 100) * scale;
   // rail
+  // an arena loaded in the background: into the project (and the editor)
+  {
+    std::lock_guard lock(g_pending_mutex);
+    if (g_pending) {
+      g_proj.edited = std::move(g_pending);
+      g_proj.fbx = g_pending_fbx;
+      editor::SetArena(g_proj.edited.get(), g_proj.name);
+      if (g_pending_to_editor) g_page = 1;
+      g_pending_to_editor = false;
+      if (!g_test_save.empty() && g_test_state == 0) {
+        g_test_state = 1;
+        editor::TestEdit();
+        std::snprintf(g_proj.name, sizeof g_proj.name, "Test Edit");
+        BuildJob job;
+        if (PrepareBuild(job)) {
+          const std::string out = Utf8(g_test_save);
+          RunInBackground([job, out]() mutable {
+            std::vector<ZipEntry> files;
+            if (FinishBuild(job, files) && WriteFile(out, ZipWrite(files))) Log("test: saved " + out);
+            else Log("test: build failed");
+            g_test_state = 2;
+          });
+        }
+      }
+    }
+  }
+  if (g_test_state == 2 && !g_busy) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
   ImGui::BeginChild("rail", ImVec2(rail, -logh), true);
-  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
-  ImGui::Button("Arenas", ImVec2(-1, 0));
-  ImGui::PopStyleColor();
+  for (int p = 0; p < 2; ++p) {
+    const char* names[] = {"Arenas", "Arena Editor"};
+    if (g_page == p) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
+    if (ImGui::Button(names[p], ImVec2(-1, 0))) {
+      if (p == 1 && !g_proj.edited) OpenEditor(g_sel);
+      else g_page = p;
+    }
+    if (g_page == p) ImGui::PopStyleColor();
+  }
+  ImGui::Separator();
   ImGui::BeginDisabled();
   for (const char* t : {"Titantron videos", "Crowd & signs", "Menus & renders", "Audio", "Wrestlers"})
     ImGui::Button(t, ImVec2(-1, 0));
@@ -421,6 +605,11 @@ void Draw() {
   ImGui::TextDisabled("later");
   ImGui::EndChild();
   ImGui::SameLine();
+  if (g_page == 1) {
+    ImGui::BeginChild("editor", ImVec2(0, -logh), false);
+    editor::Draw();
+    ImGui::EndChild();
+  } else {
   // grid
   ImGui::BeginChild("grid", ImVec2(-side, -logh), true);
   ImGui::Text("Pick an arena to start from");
@@ -466,13 +655,17 @@ void Draw() {
   if (a.tex) ImGui::Image(Tex(a.tex), ImVec2(bw * 0.6f, bw * 0.3f));
   ImGui::Separator();
   ImGui::BeginDisabled(g_busy);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
+  if (ImGui::Button("Open in Arena Editor", ImVec2(-1, 0))) OpenEditor(g_sel);
+  ImGui::PopStyleColor();
   if (ImGui::Button("Export to Blender...", ImVec2(-1, 0))) ExportArena(g_sel);
   if (ImGui::Button("Import from Blender...", ImVec2(-1, 0))) ImportArena(g_sel);
+  if (ImGui::Button("Open a mod (.svrmod)...", ImVec2(-1, 0))) OpenMod();
   ImGui::EndDisabled();
   ImGui::Separator();
   ImGui::Text("Your arena");
   if (g_proj.arena >= 0) {
-    ImGui::TextDisabled("from %s%s", g_arenas[g_proj.arena].name, g_proj.edited ? ", edited in Blender" : "");
+    ImGui::TextDisabled("from %s%s", g_arenas[g_proj.arena].name, g_proj.fbx.empty() ? "" : ", edited in Blender");
   } else {
     ImGui::TextDisabled("import an FBX to start");
   }
@@ -488,6 +681,7 @@ void Draw() {
   ImGui::EndDisabled();
   if (g_busy) ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "Working...");
   ImGui::EndChild();
+  }  // arenas page
   // log
   ImGui::BeginChild("log", ImVec2(0, 0), true);
   {
@@ -523,8 +717,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   int argc = 0;
   wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  for (int i = 1; i + 1 < argc; ++i)
+  // test aids: --editor <arena tile 0-19> opens the editor on it, --open <mod> opens a mod,
+  // --editor-view <0-2> a camera preset, --select <name> an object
+  int start_editor = -1, start_view = -1;
+  std::wstring start_mod, start_select;
+  for (int i = 1; i + 1 < argc; ++i) {
     if (!wcscmp(argv[i], L"--game")) g_game = argv[i + 1];
+    if (!wcscmp(argv[i], L"--editor")) start_editor = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--editor-view")) start_view = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--open")) start_mod = argv[i + 1];
+    if (!wcscmp(argv[i], L"--select")) start_select = argv[i + 1];
+    if (!wcscmp(argv[i], L"--test-edit-save")) g_test_save = argv[i + 1];
+  }
   WNDCLASSEXW wc = {sizeof wc, CS_CLASSDC, WndProc, 0, 0, inst, LoadIconW(inst, MAKEINTRESOURCEW(1)), nullptr,
                     nullptr, nullptr, L"SvR2011ModMaker", nullptr};
   RegisterClassExW(&wc);
@@ -551,6 +755,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   ImGui::GetStyle().ScaleAllSizes(dpi / 96.0f);
   ImGui_ImplWin32_Init(g_wnd);
   ImGui_ImplDX11_Init(g_dev, g_ctx);
+  editor::Hooks hooks;
+  hooks.log = [](const std::string& s) { Log(s); };
+  hooks.test_in_game = [] { TestInGame(); };
+  editor::Init(g_dev, g_ctx, hooks);
 
   if (g_game.empty() || !fs::exists(fs::path(g_game) / L"pac" / L"bg")) {
     Log("Choose the folder where the game is installed (it has the pac folder).");
@@ -558,6 +766,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   if (!g_game.empty() && LoadBanners()) Log("Game folder: " + Utf8(g_game));
   else Log("No game folder: the arena files can't be read. Open the Mod Maker from the launcher's Mods tab.");
+  if (start_editor >= 0 && start_editor < 20) {
+    g_sel = start_editor;
+    OpenEditor(start_editor);
+  }
+  if (!start_mod.empty()) OpenModFile(start_mod);
+  editor::TestStart(start_view, Utf8(start_select));
 
   bool done = false;
   while (!done) {
@@ -580,6 +794,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_swap->Present(1, 0);
   }
   if (g_worker.joinable()) g_worker.join();
+  editor::Shutdown();
   ImGui_ImplDX11_Shutdown();
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();

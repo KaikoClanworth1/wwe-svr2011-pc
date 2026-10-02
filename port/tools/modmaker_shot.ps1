@@ -1,7 +1,8 @@
 # Screenshot of the Mod Maker without taking focus: started minimized,
 # moved off-screen and shown without activation, captured with PrintWindow.
 #   modmaker_shot.ps1 [-Exe <Mod Maker exe>] [-Game <game folder>] [-Out runs\modmaker.png] [-Wait 6]
-param([string]$Exe = "", [string]$Game = "", [string]$Out = "", [int]$Wait = 6)
+#                     [-Extra "--editor 4 --editor-view 0"]
+param([string]$Exe = "", [string]$Game = "", [string]$Out = "", [int]$Wait = 6, [string]$Extra = "")
 $port = Split-Path $PSScriptRoot -Parent
 if (-not $Exe) { $Exe = Join-Path $port "out\build\SourceArenas\SvR2011 Mod Maker.exe" }
 if (-not $Game) { $Game = Join-Path $port "runs\opt_arena_game" }
@@ -19,7 +20,9 @@ public static class MW {
 }
 "@
 [void][MW]::SetProcessDPIAware()
-$p = Start-Process $Exe -ArgumentList @("--game", "`"$Game`"") -PassThru -WindowStyle Minimized
+$al = @("--game", "`"$Game`"")
+if ($Extra) { $al += $Extra }
+$p = Start-Process $Exe -ArgumentList $al -PassThru -WindowStyle Minimized
 for ($t = 0; $t -lt 100 -and $p.MainWindowHandle -eq 0; $t++) { Start-Sleep -Milliseconds 100; $p.Refresh() }
 $h = $p.MainWindowHandle
 [void][MW]::SetWindowPos($h, [IntPtr]::Zero, -4000, 0, 0, 0, 0x1 -bor 0x4 -bor 0x10)

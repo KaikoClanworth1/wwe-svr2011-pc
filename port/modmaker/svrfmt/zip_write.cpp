@@ -56,4 +56,33 @@ Bytes ZipWrite(const std::vector<ZipEntry>& entries) {
   return out;
 }
 
+bool ZipRead(const Bytes& zip, std::vector<ZipEntry>& out) {
+  // the central directory, from the end record
+  if (zip.size() < 22) return false;
+  size_t end = zip.size() - 22;
+  while (svrfmt::Le32(&zip[end]) != 0x06054B50) {
+    if (end == 0 || zip.size() - end > 22 + 0xFFFF) return false;
+    --end;
+  }
+  const uint16_t count = svrfmt::Le16(&zip[end + 10]);
+  size_t p = svrfmt::Le32(&zip[end + 16]);
+  for (uint16_t k = 0; k < count; ++k) {
+    if (p + 46 > zip.size() || svrfmt::Le32(&zip[p]) != 0x02014B50) return false;
+    const uint16_t method = svrfmt::Le16(&zip[p + 10]);
+    const uint32_t csize = svrfmt::Le32(&zip[p + 20]), usize = svrfmt::Le32(&zip[p + 24]);
+    const uint16_t nlen = svrfmt::Le16(&zip[p + 28]), xlen = svrfmt::Le16(&zip[p + 30]);
+    const uint16_t clen = svrfmt::Le16(&zip[p + 32]);
+    const uint32_t local = svrfmt::Le32(&zip[p + 42]);
+    if (p + 46 + nlen > zip.size() || size_t(local) + 30 > zip.size()) return false;
+    ZipEntry e;
+    e.name.assign(reinterpret_cast<const char*>(&zip[p + 46]), nlen);
+    const size_t data = size_t(local) + 30 + svrfmt::Le16(&zip[local + 26]) + svrfmt::Le16(&zip[local + 28]);
+    if (method != 0 || csize != usize || data + csize > zip.size()) return false;  // stored only
+    e.data.assign(zip.begin() + data, zip.begin() + data + csize);
+    out.push_back(std::move(e));
+    p += 46 + nlen + xlen + clen;
+  }
+  return true;
+}
+
 }  // namespace svrfmt

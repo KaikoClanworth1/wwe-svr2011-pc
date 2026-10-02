@@ -15,5 +15,7 @@ struct ZipEntry {
 };
 
 Bytes ZipWrite(const std::vector<ZipEntry>& entries);
+// Reads a zip of stored entries (what ZipWrite makes); false on anything else.
+bool ZipRead(const Bytes& zip, std::vector<ZipEntry>& out);
 
 }  // namespace svrfmt

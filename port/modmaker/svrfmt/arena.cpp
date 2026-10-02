@@ -43,9 +43,16 @@ Zone ZoneOf(const std::string& n) {
 }
 
 bool Arena::Load(const std::string& path, std::string* error) {
-  auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
   Bytes d;
-  if (!ReadFile(path, d)) return fail("cannot read " + path);
+  if (!ReadFile(path, d)) {
+    if (error) *error = "cannot read " + path;
+    return false;
+  }
+  return LoadData(d, error);
+}
+
+bool Arena::LoadData(const Bytes& d, std::string* error) {
+  auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
   if (!EpacRead(d, epac)) return fail("not an arena archive (EPAC)");
   bool found = false;
   for (size_t g = 0; g < epac.groups.size() && !found; ++g)

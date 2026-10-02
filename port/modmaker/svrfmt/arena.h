@@ -42,6 +42,9 @@ struct Arena {
   size_t original_file = 0;  // .pac size as shipped
 
   bool Load(const std::string& path, std::string* error = nullptr);
+  // From memory (a mod's arena.pac). The budget (original_*) is then the
+  // mod's; set it from the host arena's shipped file.
+  bool LoadData(const Bytes& data, std::string* error = nullptr);
   // The game keeps each arena in fixed memory: an arena that outgrows its
   // shipped size fails to load (crash or endless NOW LOADING). Halves the
   // largest textures not in `keep` until every texture set is back within

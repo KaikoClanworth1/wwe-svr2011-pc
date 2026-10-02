@@ -8,6 +8,8 @@ $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
 $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_arena"
+# the same Universe day every run (a played match moves Universe on)
+robocopy (Join-Path $runs "test_userdata_arena_snap") $env:SVR2011_USER_DATA /MIR /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
 $s = Join-Path $tools "arena_session.ps1"
 $nav = Join-Path $tools "arena_nav.ps1"
 & $s start -Name $Name -LogLevel $LogLevel @GameArgs | Out-Null

@@ -247,6 +247,7 @@ std::vector<Banner> g_banners;  // the 20 originals
 struct CustomArena {
   std::string id, name, file;  // file: relative to the game folder
   std::string manifest;        // its text (ring.* keys: ring_rules.h)
+  std::string base;            // the arena it was made from (manifest base=arena_SS)
   svrfmt::Bytes banner;        // DXT5 blocks, 16-bit swapped (empty = none)
 };
 std::vector<CustomArena> g_customs;
@@ -332,6 +333,7 @@ void LoadCustomArenas() {
         std::string l = line;
         while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
         if (l.rfind("name=", 0) == 0) c.name = l.substr(5);
+        if (l.rfind("base=", 0) == 0) c.base = l.substr(5);
         c.manifest += l;
         c.manifest += '\n';
       }
@@ -410,7 +412,12 @@ void ShowPage(uint8_t* base) {
 void FollowCursor(int row, int col) {
   const CustomArena* c = row < 4 ? CustomAt(row * 5 + col) : nullptr;
   g_cursor_custom = c ? int(c - g_customs.data()) : -1;
-  const int host = c ? kTiles[row * 5 + col].arena : -1;
+  // the host: the arena it was made from (its file has that arena's
+  // layout and memory budget), else the tile's
+  int host = c ? kTiles[row * 5 + col].arena : -1;
+  if (c)
+    for (const auto& t : kTiles)
+      if (c->base == t.banner) host = t.arena;
   if (host == g_redirected_host) return;
   if (g_redirected_host >= 0) svr2011::RedirectArena(g_redirected_host, "");
   g_redirected_host = -1;
