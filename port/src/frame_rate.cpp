@@ -44,7 +44,7 @@
 
 #include "generated/default/svr2011_init.h"
 
-REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30, 60, 120, 144 or 240");
+REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
 
 namespace {
 
@@ -92,20 +92,10 @@ void StartDeveloperAids(uint8_t* base);
 namespace svr2011 {
 
 int TargetFrameRate() {
-  const int fps = REXCVAR_GET(frame_rate);
-  switch (fps) {
-    case 30:
-    case 60:
-    case 120:
-    case 144:
-    case 240:
-      return fps;
-    default:
-      return 60;
-  }
+  return REXCVAR_GET(frame_rate) == 30 ? 30 : 60;  // (older settings' 120 / 144 / 240: 60)
 }
 
-int FrameRateNow() { return std::min(TargetFrameRate(), 60); }
+int FrameRateNow() { return TargetFrameRate(); }
 
 void InstallFrameRate(rex::memory::Memory* memory) {
   if (!memory) return;

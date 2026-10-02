@@ -81,8 +81,8 @@ enum Row {
   kFrameRate,                                                    // DISPLAY
 };
 // FRAME RATE (frame_rate.h): the choices.
-constexpr int kFrameRates[] = {30, 60, 120, 144, 240};
-constexpr int kNumFrameRates = 5;
+constexpr int kFrameRates[] = {30, 60};
+constexpr int kNumFrameRates = 2;
 enum Tab { kDisplayTab, kQualityTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
 #if defined(__ANDROID__)
@@ -623,7 +623,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                : display_ == kBorderless ? "Borderless: a window covering the screen (F11 switches)."
                                          : "Play in a window (F11 switches to full screen).";
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
-      case kFrameRate: return "Frames a second, at most. The game always runs at its normal speed. Above 60 it still draws 60 for now.";
+      case kFrameRate: return "Frames a second, at most. The game always runs at its normal speed.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";

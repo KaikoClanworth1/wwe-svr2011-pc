@@ -1,6 +1,5 @@
 // The game's frame rate: frames a second up to the chosen one (setting
-// frame_rate: 30, 60, 120, 144, 240), with the game's world always at its
-// normal speed.
+// frame_rate: 30 or 60), with the game's world always at its normal speed.
 //
 // The game's world advances in steps of 60 Hz (its timing block,
 // sub_826E1AE8 SetFrameRate, stays at the game's own 60). Each frame the
@@ -24,7 +23,7 @@ void InstallFrameRate(rex::memory::Memory* memory);
 // again (menu_hooks.cpp).
 void ApplyFrameRate(uint8_t* base);
 
-// The chosen frame rate, and the frames the game draws for it (up to 60).
+// The chosen frame rate (30 or 60), and the frames the game draws for it.
 int TargetFrameRate();
 int FrameRateNow();
 

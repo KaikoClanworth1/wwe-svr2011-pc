@@ -1206,9 +1206,9 @@ static void online_sign_out(void)
 }
 
 /* Frame rate choices (the game's frame_rate setting: frames a second at most;
- * the game runs at its normal speed at any of them). */
-static const int k_frame_rates[] = { 30, 60, 120, 144, 240 };
-#define N_FRAME_RATES 5
+ * the game runs at its normal speed at either). */
+static const int k_frame_rates[] = { 30, 60 };
+#define N_FRAME_RATES 2
 
 static int frame_rate_index(int fps)
 {
@@ -1743,7 +1743,7 @@ static void build_ui(void)
         swprintf_s(t, 32, L"%d FPS", k_frame_rates[i]);
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
     }
-    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; normal speed at any (above 60: 60 for now).",
+    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; normal speed at either.",
         SS_LEFT, X0 + 150, 132, 396, 18, 0);
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 154, 360, 24, ID_VSYNC);
