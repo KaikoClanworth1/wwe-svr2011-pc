@@ -37,7 +37,11 @@
 #include <thread>
 #include <vector>
 
+#include <atomic>
+#include <cfloat>
+
 #include <fmt/format.h>
+#include <imgui.h>
 #include <rex/filesystem.h>
 #include <rex/filesystem/entry.h>
 #include <rex/filesystem/vfs.h>
@@ -45,6 +49,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/imgui_dialog.h>
 
 #include "generated/default/svr2011_init.h"
 #include "../modmaker/svrfmt/pac.h"
@@ -245,6 +250,8 @@ struct CustomArena {
 std::vector<CustomArena> g_customs;
 
 uint32_t g_select_widget = 0;
+std::atomic<int64_t> g_select_seen{0};  // when the arena grid was last updated (ms)
+std::atomic<int> g_cursor_custom{-1};    // custom arena under the cursor (label)
 int g_page = 0;              // 0 = the game's arenas
 int g_redirected_host = -1;  // host arena currently pointed at a custom one
 
@@ -334,6 +341,11 @@ void LoadCustomArenas() {
 
 int Pages() { return 1 + int((g_customs.size() + 19) / 20); }
 
+int64_t NowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 // Finds each banner in guest physical memory (4 KB view) by a run of blocks.
 void LocateBanners() {
   uint8_t* b = g_memory->virtual_membase();
@@ -391,6 +403,7 @@ void ShowPage(uint8_t* base) {
 // The host arena of the tile under the cursor plays the custom arena there.
 void FollowCursor(int row, int col) {
   const CustomArena* c = row < 4 ? CustomAt(row * 5 + col) : nullptr;
+  g_cursor_custom = c ? int(c - g_customs.data()) : -1;
   const int host = c ? kTiles[row * 5 + col].arena : -1;
   if (host == g_redirected_host) return;
   if (g_redirected_host >= 0) svr2011::RedirectArena(g_redirected_host, "");
@@ -432,6 +445,7 @@ REX_HOOK_RAW(sub_823D4FC0) {
     LocateBanners();
     FollowCursor(4, 0);  // (nothing redirected)
   }
+  g_select_seen = NowMs();
   const uint32_t row = rd(28), col = rd(44), cols = rd(48), buttons = rd(64);
   __imp__sub_823D4FC0(ctx, base);
   const uint32_t new_col = rd(44), new_row = rd(28);
@@ -479,5 +493,63 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
     if (eq != std::string::npos) RedirectArena(std::atoi(s.substr(0, eq).c_str()), s.substr(eq + 1));
   }
 }
+
+}  // namespace svr2011
+
+// -- The page label ---------------------------------------------------------
+
+namespace {
+
+// "<  2 / 3  >" above the arena grid (as the Paint Tool's), and on custom
+// pages the name of the arena under the cursor.
+class ArenaPageLabel final : public rex::ui::ImGuiDialog {
+ public:
+  explicit ArenaPageLabel(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    if (g_customs.empty() || NowMs() - g_select_seen.load() > 250) return;
+    const float w = io.DisplaySize.x, h = io.DisplaySize.y;
+    const float gw = std::min(w, h * 16.0f / 9.0f), gh = gw * 9.0f / 16.0f;
+    const float x0 = (w - gw) * 0.5f, y0 = (h - gh) * 0.5f;
+    const float scale = gh / 720.0f;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const ImU32 white = IM_COL32(255, 255, 255, 255);
+    char text[16];
+    std::snprintf(text, sizeof(text), "%d / %d", g_page + 1, Pages());
+    const float size = 28.0f * scale;
+    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    const ImVec2 c(x0 + gw * 0.5f, y0 + gh * 0.075f);
+    const float arrow = 11.0f * scale, gap = 26.0f * scale;
+    const float half = ts.x * 0.5f + gap + arrow;
+    const ImVec2 pad(16.0f * scale, 6.0f * scale);
+    const ImVec2 a(c.x - half - pad.x, c.y - ts.y * 0.5f - pad.y);
+    const ImVec2 b(c.x + half + pad.x, c.y + ts.y * 0.5f + pad.y);
+    dl->AddRectFilled(a, b, IM_COL32(10, 12, 18, 210), 6.0f * scale);
+    dl->AddRect(a, b, IM_COL32(220, 220, 225, 255), 6.0f * scale, 0, 2.0f * scale);
+    dl->AddText(font, size, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), white, text);
+    const float lx = c.x - half, rx = c.x + half;
+    dl->AddTriangleFilled(ImVec2(lx, c.y), ImVec2(lx + arrow, c.y - arrow), ImVec2(lx + arrow, c.y + arrow), white);
+    dl->AddTriangleFilled(ImVec2(rx, c.y), ImVec2(rx - arrow, c.y + arrow), ImVec2(rx - arrow, c.y - arrow), white);
+    // the custom arena under the cursor
+    const int ci = g_cursor_custom.load();
+    if (ci < 0 || ci >= int(g_customs.size())) return;
+    const std::string& name = g_customs[ci].name;
+    const float ns = 22.0f * scale;
+    const ImVec2 nt = font->CalcTextSizeA(ns, FLT_MAX, 0.0f, name.c_str());
+    const ImVec2 nc(x0 + gw * 0.5f, y0 + gh * 0.742f);
+    const ImVec2 na(nc.x - nt.x * 0.5f - pad.x, nc.y - nt.y * 0.5f - pad.y);
+    const ImVec2 nb(nc.x + nt.x * 0.5f + pad.x, nc.y + nt.y * 0.5f + pad.y);
+    dl->AddRectFilled(na, nb, IM_COL32(10, 12, 18, 220), 6.0f * scale);
+    dl->AddText(font, ns, ImVec2(nc.x - nt.x * 0.5f, nc.y - nt.y * 0.5f), IM_COL32(255, 210, 60, 255), name.c_str());
+  }
+};
+
+}  // namespace
+
+namespace svr2011 {
+
+void InstallArenaModsOverlay(rex::ui::ImGuiDrawer* drawer) { new ArenaPageLabel(drawer); }
 
 }  // namespace svr2011

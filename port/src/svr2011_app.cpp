@@ -373,6 +373,7 @@ void Svr2011App::OnPostLoadXexImage() {
     // The on-screen controller (touch_controls.h).
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
+    svr2011::InstallArenaModsOverlay(imgui_drawer());
   }
   {
     svr2011::StartDiscordPresence();  // (discord_presence.h)
