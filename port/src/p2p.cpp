@@ -43,6 +43,7 @@
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#include "frame_rate.h"
 #include "online_net.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
@@ -57,6 +58,8 @@ REXCVAR_DEFINE_BOOL(p2p_relay, true, "Online",
 REXCVAR_DEFINE_STRING(p2p_stun, "stun.l.google.com:19302", "Online",
                       "The STUN server that tells this game its public address (off: none)");
 REXCVAR_DEFINE_BOOL(p2p_force_relay, false, "Online", "Tests: every peer through the relay, never directly");
+REXCVAR_DEFINE_BOOL(p2p_lockstep, true, "Online",
+                    "Matches step the world once a frame on both games (as on the console); off: tests only");
 
 namespace svr2011 {
 
@@ -444,6 +447,21 @@ std::map<uint32_t, Property> g_properties;    // (B0007)
 std::map<uint32_t, Local> g_sessions;         // by session object
 std::map<uint64_t, std::vector<uint8_t>> g_qos;  // QoS data by session id (XNetQosListen)
 std::map<uint64_t, Session> g_found;          // the last search's sessions
+
+// A match is on while a peer-network session is (XSESSION_CREATE_USES_PEER_NETWORK;
+// not the ONLINE menu's presence session): then the world steps exactly once a
+// frame on both peers, as on the console, or locally simulated things (the
+// referee...) drift apart (under g_mutex).
+void UpdateLockstep() {
+  static bool on = false;
+  bool match = false;
+  for (const auto& [obj, local] : g_sessions) match |= (local.session.flags & 0x20) != 0;
+  match &= REXCVAR_GET(p2p_lockstep);
+  if (match == on) return;
+  on = match;
+  svr2011::SetLockstep(on);
+  REXLOG_INFO("p2p: lockstep {}", on ? "on (a match session)" : "off");
+}
 
 void WriteSession(Writer& w, const Session& s) {
   w.u64(s.id);
@@ -1054,6 +1072,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
                   flags, s.public_slots, s.private_slots);
       std::lock_guard lock(g_mutex);
       g_sessions[object] = std::move(local);
+      UpdateLockstep();
       return kOk;
     }
     case 0xB0011: {  // XSessionDelete
@@ -1062,6 +1081,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         g_qos.erase(it->second.session.id);
         REXLOG_INFO("p2p: session {:016X} deleted", it->second.session.id);
         g_sessions.erase(it);
+        UpdateLockstep();
         return kOk;
       }
       return std::nullopt;
@@ -1101,6 +1121,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       it->second.session.flags = u32(4);
       it->second.session.public_slots = u32(8);
       it->second.session.private_slots = u32(12);
+      UpdateLockstep();
       return kOk;
     }
     case 0xB0016:    // XSessionSearch

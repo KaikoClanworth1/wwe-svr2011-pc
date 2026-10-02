@@ -11,10 +11,14 @@
 # -Relay: both through the online server's match relay (port\server\relay.py,
 # in the test server at 127.0.0.1:8421) instead of directly: the *_relay.toml
 # configs (p2p_force_relay), as two players who can't reach each other would play.
-param([string]$Name = "p2", [switch]$HostOnly, [switch]$JoinOnly, [switch]$Play, [switch]$Relay,
-      [string]$LogLevel = "info", [string]$HostConfig = "")
+param([string]$Name = "p2", [switch]$HostOnly, [switch]$JoinOnly, [switch]$Play, [switch]$Relay, [switch]$Fight,
+      [string]$LogLevel = "info", [string]$HostConfig = "", [string]$JoinConfig = "")
 # -HostConfig: the host's settings instead (e.g. a test account on the public
 # server, with -HostOnly, for a phone to join: tools/phone_session.ps1).
+# -JoinConfig: the joiner's (e.g. another frame rate: sync tests).
+# -Fight: in the match both players move and strike for a while, then both
+# games are screenshot at the same moment (runs\<Name>_*_sync*.png: the
+# referee and both Superstars should stand in the same places).
 $s = Join-Path $PSScriptRoot "online_session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
 $suffix = ""
@@ -28,7 +32,9 @@ function Shot([string]$slot, [string]$stem) {
 }
 # title -> main menu -> ONLINE -> (paint data prompt: NO) -> MATCH -> PLAYER MATCH
 function ToPlayerMatch([string]$slot) {
-    P $slot START 10; P $slot START 50; P $slot A 8; P $slot START 15
+    # (one START: the title takes it from ~60 s on, and the saves load; a second
+    # one would leave the "Load Successful" box for the attract demo)
+    P $slot START 50; P $slot A 8; P $slot START 15
     P $slot DOWN 1.5; P $slot DOWN 1.5; P $slot DOWN 1.5; P $slot DOWN 1.5; P $slot A 25
     P $slot A 25
     P $slot A 10; P $slot DOWN 1.5; P $slot A 10
@@ -43,7 +49,7 @@ if (-not $JoinOnly) {
     Shot "" "$Name`_host_lobby"
 }
 if (-not $HostOnly) {
-    & $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config "test_config_ent_up_p2$suffix.toml" -LogLevel $LogLevel | Out-Null
+    & $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config $(if ($JoinConfig) { $JoinConfig } else { "test_config_ent_up_p2$suffix.toml" }) -LogLevel $LogLevel | Out-Null
     [Threading.Thread]::Sleep(75000)
     ToPlayerMatch "2"
     P "2" DOWN 1.5; P "2" A 15                         # CUSTOM MATCH
@@ -59,6 +65,24 @@ if ($Play) {
     P "2" RIGHT 2; P "2" A 6; P "2" A 3; P "2" A 6      # joiner: 2P, a Superstar, attire
     Shot "" "$Name`_host_ready"
     foreach ($i in 1..4) { [Threading.Thread]::Sleep(25000); Shot "" "$Name`_host_match$i"; Shot "2" "$Name`_join_match$i" }
+}
+if ($Fight) {
+    # (pairs of presses, one game then the other; the referee follows them around)
+    $moves = @(@("LEFT 700", "RIGHT 500"), @("X 150", "UP 600"), @("UP 400", "X 150"), @("RIGHT 900", "LEFT 300"),
+               @("A 150", "DOWN 700"), @("DOWN 500", "A 150"))
+    foreach ($round in 1..3) {
+        foreach ($m in $moves) {
+            & $s input "press $($m[0])" | Out-Null
+            & $s input -Slot 2 "press $($m[1])" | Out-Null
+            [Threading.Thread]::Sleep(1500)
+        }
+        [Threading.Thread]::Sleep(4000)
+        # (both at once: a second apart they'd differ anyway)
+        $jobs = @(
+            Start-Job { param($s, $n) & $s shot $n } -ArgumentList $s, "$Name`_host_sync$round"
+            Start-Job { param($s, $n) & $s shot -Slot 2 $n } -ArgumentList $s, "$Name`_join_sync$round")
+        $jobs | Wait-Job | Remove-Job
+    }
 }
 foreach ($log in "$Name`_host", "$Name`_join") {
     $f = Join-Path $runs "$log.log"
