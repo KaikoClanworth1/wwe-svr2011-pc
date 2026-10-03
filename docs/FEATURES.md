@@ -86,6 +86,9 @@ still being tested.
 
 ## After 2.0.1 (next update)
 
+- **FULL SPEED** (GRAPHICS → DISPLAY; on by default, as before): off, the game makes one world update a frame like the Xbox 360, so a device that can't reach 60 slows down instead of catching up (30 FPS then plays at half speed). A workaround to try for the remaining freeze on some phones (31234c4).
+- **Freeze reports**: the thread dump a freeze writes no longer faults (it flooded 2.0.1 Android logs), so the next freeze log shows which thread holds it (57975df).
+
 - **ONLINE overlay on Android**: an ONLINE button in the touch MENU layout (beside EDIT) opens it (d592e58; not yet tried on a phone).
 
 ## New in 2.0.1
