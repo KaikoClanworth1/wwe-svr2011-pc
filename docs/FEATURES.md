@@ -1,6 +1,6 @@
 # WWE SmackDown vs. Raw 2011 PC Port: features
 
-Everything the port adds to the game, as of v2.0.0 (2 October 2026).
+Everything the port adds to the game, as of v2.0.1 (3 October 2026).
 "New in 2.0" marks what this release adds; "Experimental" marks what is
 still being tested.
 
@@ -73,7 +73,7 @@ still being tested.
 - **Updates itself** from GitHub releases.
 - **Settings**: renderer, resolution, VSync, input, audio, FPS counter, language, "Prepare graphics in the menus".
 - **Online tab**: sign in, create an account, sign out; Server: Default or Custom; **Friends** (addresses to find for online matches). *(New in 2.0.)*
-- **Saves**: backups, export, import, delete, and the **saves folder** (keep two installs' saves apart or shared; `saves_folder` in `svr2011.toml`, read by the game too). *(After 2.0.)*
+- **Saves**: backups, export, import, delete, and the **saves folder** (keep two installs' saves apart or shared; `saves_folder` in `svr2011.toml`, read by the game too). *(2.0.1.)*
 - **DLC**: add packages or folders, checked before install.
 - **Paint Tool**: the 10 pages of logos, import any image, export PNGs.
 - **Movies**: the movie maker for custom entrance movies.
@@ -84,7 +84,7 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
-## After 2.0 (next update)
+## New in 2.0.1
 
 - **Character select texture flashes fixed**: moving the cursor could show the next superstar for a moment with the last one's textures (Jimmy Snuka in John Cena's jeans).
 
