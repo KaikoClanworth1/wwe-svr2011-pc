@@ -55,6 +55,7 @@
 #include "online.h"
 #include "entrance_media.h"
 #include "online_cas.h"
+#include "online_overlay.h"
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
@@ -296,6 +297,7 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   ImFont* title =
       std::filesystem::exists(kBoldItalic) ? atlas->AddFontFromFileTTF(kBoldItalic, 40.0f) : nullptr;
   svr2011::SetGraphicsPageFonts(menu, title ? title : menu);
+  svr2011::SetOnlineOverlayFonts(menu, title ? title : menu);
   // The touch controller's labels: the menu font, or the phone's own.
   ImFont* touch = menu;
   for (const char* f : {"/system/fonts/Roboto-Bold.ttf", "/system/fonts/Roboto-Regular.ttf"}) {
@@ -473,6 +475,9 @@ void Svr2011App::OnPostLoadXexImage() {
     // The on-screen controller (touch_controls.h).
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
+    // The ONLINE overlay: friends, invites (online_overlay.h).
+    svr2011::InstallOnlineOverlay(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()),
+                                  runtime()->kernel_state(), g_user_data);
   }
   {
     svr2011::StartDiscordPresence();  // (discord_presence.h)

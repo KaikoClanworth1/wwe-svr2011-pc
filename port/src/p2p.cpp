@@ -455,6 +455,10 @@ std::map<uint32_t, Property> g_properties;    // (B0007)
 std::map<uint32_t, Local> g_sessions;         // by session object
 std::map<uint64_t, std::vector<uint8_t>> g_qos;  // QoS data by session id (XNetQosListen)
 std::map<uint64_t, Session> g_found;          // the last search's sessions
+// An invite accepted (online_overlay.cpp): its session comes first in searches,
+// its private slots open to this game (as the console's invites let in).
+uint64_t g_invited = 0;
+Clock::time_point g_invited_at{};
 
 // A match is on while a peer-network session is (XSESSION_CREATE_USES_PEER_NETWORK;
 // not the ONLINE menu's presence session): then the world steps exactly once a
@@ -1276,8 +1280,21 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       if (!results) return std::nullopt;
       const auto sessions = Search();
       std::vector<Session> open;
+      uint64_t invited = 0;
+      {
+        std::lock_guard lock(g_mutex);
+        if (g_invited && Clock::now() - g_invited_at < std::chrono::minutes(15)) invited = g_invited;
+      }
       for (const auto& s : sessions) {
-        if (s.filled_public < s.public_slots) open.push_back(s);
+        if (s.id == invited) {
+          Session mine = s;  // (its private slots are this game's to take)
+          mine.public_slots += mine.private_slots, mine.filled_public += mine.filled_private;
+          mine.private_slots = mine.filled_private = 0;
+          if (mine.filled_public < mine.public_slots) open.insert(open.begin(), mine);
+          REXLOG_INFO("p2p: search: the invited session {:016X}{}", s.id, mine.filled_public < mine.public_slots ? "" : " is full");
+        } else if (s.filled_public < s.public_slots) {
+          open.push_back(s);
+        }
       }
       if (open.size() > std::max<uint32_t>(1, u32(8))) open.resize(std::max<uint32_t>(1, u32(8)));
       REXLOG_INFO("p2p: search found {} session(s)", open.size());
@@ -1291,6 +1308,63 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
 }  // namespace
 
 void SetP2PFileSource(P2PFileSource source) { g_file_source = source; }
+
+bool P2PSessionInfo(uint8_t* out, uint32_t* slots) {
+  std::lock_guard lock(g_mutex);
+  const Local* best = nullptr;
+  for (const auto& [obj, local] : g_sessions) {
+    if (!(local.session.flags & 0x20)) continue;  // (a match's, not the ONLINE menu's presence session)
+    if (!best || (local.host && !best->host)) best = &local;
+  }
+  if (!best) return false;
+  WriteInfo(out, best->session);
+  if (slots) *slots = best->session.public_slots + best->session.private_slots;
+  return true;
+}
+
+void P2PExpectInvite(const uint8_t* info) {
+  {
+    std::lock_guard lock(g_mutex);
+    g_invited = Be64(info);
+    g_invited_at = Clock::now();
+  }
+  REXLOG_INFO("p2p: invited to session {:016X}: first in searches", Be64(info));
+}
+
+bool P2PReachHost(const uint8_t* info) {
+  const uint8_t* host = info + 8;
+  const Mac mac = MacOf(host);
+  Path path;
+  {
+    std::lock_guard lock(g_mutex);
+    path = PathOf(mac, Learn(host));
+  }
+  g_online_at = NowMs();  // (the relay is wanted now)
+  if (REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty()) {
+    for (int i = 0; i < 30 && !g_relay_up; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  const uint32_t nonce = NewNonce();
+  const auto request = Header(kSearch, nonce);
+  auto replies = Ask(nonce, [&] {
+    if (!path.relayed && !ForceRelay()) Send(path, request);
+    ToRelay(mac, request.data(), request.size());
+  }, std::chrono::milliseconds(2500), 1);
+  bool found = false;
+  const uint64_t id = Be64(info);
+  for (const auto& reply : replies) {
+    Reader r{reply.data(), reply.size()};
+    const uint16_t count = r.u16();
+    for (uint16_t i = 0; i < count && r.ok && i < 25; ++i) {
+      Session s;
+      if (!ReadSession(r, s)) break;
+      std::lock_guard lock(g_mutex);
+      found |= s.id == id;
+      g_found[s.id] = std::move(s);
+    }
+  }
+  REXLOG_INFO("p2p: invite: host {} {}", Ip(path.ip), found ? "has the session" : replies.empty() ? "didn't answer" : "no longer has the session");
+  return found;
+}
 
 std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::chrono::milliseconds timeout) {
   if (g_socket == kBadSocket || key.size() > 200) return std::nullopt;

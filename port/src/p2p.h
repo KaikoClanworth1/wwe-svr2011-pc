@@ -39,4 +39,15 @@ using P2PFileSource = std::optional<std::string> (*)(uint8_t kind, const std::st
 void SetP2PFileSource(P2PFileSource source);
 std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::chrono::milliseconds timeout);
 
+// Invites (online_overlay.h): the match session this game is in (hosts, or
+// else joined) as an XSESSION_INFO (60 bytes: id, host XNADDR, key) and its
+// slots; false when there's none.
+bool P2PSessionInfo(uint8_t* out, uint32_t* slots = nullptr);
+// An invited game, before the game joins: reaches the session's host (directly
+// or through the relay) so its packets get through; true if it still has it.
+bool P2PReachHost(const uint8_t* info);
+// An invite accepted: for 15 minutes the game's session searches list that
+// session first, with its private slots open to this game.
+void P2PExpectInvite(const uint8_t* info);
+
 }  // namespace svr2011

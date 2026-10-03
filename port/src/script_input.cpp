@@ -54,7 +54,15 @@ uint16_t ParseButtons(const std::string& spec) {
 }  // namespace
 
 ScriptInputDriver::ScriptInputDriver(std::filesystem::path command_file)
-    : InputDriver(nullptr, 0), file_(std::move(command_file)) {}
+    : InputDriver(nullptr, 0), file_(std::move(command_file)) {
+  // (a copy the game restarted itself into - online_overlay.cpp: the commands
+  // already there were the last copy's)
+  if (std::getenv("SVR2011_RELAUNCHED")) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(file_, ec);
+    if (!ec) consumed_ = size_t(size);
+  }
+}
 
 X_STATUS ScriptInputDriver::Setup() {
   REXLOG_INFO("script input: reading commands from {}", file_.string());

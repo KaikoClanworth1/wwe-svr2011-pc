@@ -96,6 +96,26 @@ def main():
     _, r = request(server, "POST", "/api/friends", {"remove": names[1]}, a)
     check([x["name"] for x in r["friends"]] == [names[2]], "removed")
     t.join(8)
+
+    # invites to a match session (a's friends now: c; b still has a)
+    import base64
+    info = base64.b64encode(bytes(range(60))).decode()
+    status, r = request(server, "POST", "/api/invite", {"to": names[1], "session": info, "kind": "ROYAL RUMBLE"}, a)
+    check(status == 403, "only friends can be invited: %s" % r.get("error"))
+    status, _ = request(server, "POST", "/api/invite", {"to": names[2], "session": "bm9wZQ==", "kind": "x"}, a)
+    check(status == 400, "not a session: refused")
+    status, _ = request(server, "POST", "/api/invite", {"to": names[2], "session": info, "kind": "ROYAL RUMBLE"}, a)
+    check(status == 200, "invited")
+    _, r = request(server, "GET", "/api/friends?here=1", token=c)
+    inv = r.get("invites", [])
+    check(len(inv) == 1 and inv[0]["from"] == names[0] and inv[0]["session"] == info and inv[0]["kind"] == "ROYAL RUMBLE",
+          "the invite reaches the friend, with its session")
+    request(server, "POST", "/api/invite", {"decline": names[0]}, c)
+    _, r = request(server, "GET", "/api/friends", token=c)
+    check(r.get("invites") == [], "declined: gone")
+    _, r = request(server, "GET", "/api/friends", token=a)
+    check(next(x for x in r["friends"] if x["name"] == names[2])["status"] == "online",
+          "a game asking (?here=1) counts as online")
     print("friends: " + ("all ok" if not failures else "%d failed" % len(failures)))
     return 1 if failures else 0
 

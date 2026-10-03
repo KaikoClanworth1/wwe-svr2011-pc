@@ -55,6 +55,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{2,14}$")  # 3-15, what the g
 XUID_BASE = 0x0009000100000000  # + account id: the player's XUID on every device
 PBKDF2_ROUNDS = 240000
 MAX_FRIENDS = 200  # (a player's list)
+INVITE_LIFE = 600  # seconds an invite to a match stays
 
 
 def now():
@@ -394,6 +395,7 @@ class Service:
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
         self.relay = relay.Relay(self, gs.log)
+        self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
         self.data_dir = Path(args.data)
@@ -525,6 +527,9 @@ class Service:
 
     def friends_json(self, account):
         mine, theirs = self.accounts.friends(account["id"])
+        waiting = self.invites.get(account["id"], {})
+        for k in [k for k, v in waiting.items() if now() - v["t"] > INVITE_LIFE]:
+            del waiting[k]
         added = {a["id"] for a in mine}
         friends = [{"name": a["name"], "status": self.presence(a["id"]), "last_seen": a["last_seen"],
                     "mutual": any(t["id"] == a["id"] for t in theirs)} for a in mine if not a["banned"]]
@@ -533,6 +538,8 @@ class Service:
             "ok": True,
             "friends": friends,
             "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
+            "invites": [{"from": v["from"], "xuid": v["xuid"], "session": v["session"], "kind": v["kind"],
+                         "age": int(now() - v["t"])} for v in sorted(waiting.values(), key=lambda v: -v["t"])],
         }
 
     def token_account(self, request):
@@ -544,6 +551,8 @@ class Service:
         account = self.token_account(request)
         if not account:
             return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        if request.query.get("here"):  # (the game asking: it's running, signed in)
+            self.stats.seen(account["id"])
         if request.method == "POST":
             try:
                 body = await request.json()
@@ -564,6 +573,44 @@ class Service:
             else:
                 self.accounts.remove_friend(account["id"], other["id"])
         return web.json_response(self.friends_json(account))
+
+    async def api_invite(self, request):
+        """An invite to the match session the player is in, for a friend's game
+        (it accepts through the game's own Xbox LIVE invite path): {"to": name,
+        "session": base64 XSESSION_INFO, "kind": text}; {"decline": name} drops
+        one received."""
+        account = self.token_account(request)
+        if not account:
+            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        if body.get("decline"):
+            other = self.accounts.by_name(str(body["decline"]))
+            if other:
+                self.invites.get(account["id"], {}).pop(other["id"], None)
+            return web.json_response({"ok": True})
+        other = self.accounts.by_name(str(body.get("to") or "").strip())
+        session = str(body.get("session") or "")
+        try:
+            info = base64.b64decode(session, validate=True)
+        except ValueError:
+            info = b""
+        if not other or other["banned"]:
+            return web.json_response({"ok": False, "error": "There's no such player."}, status=404)
+        if len(info) != 60:
+            return web.json_response({"ok": False, "error": "Not a session."}, status=400)
+        mine, _ = self.accounts.friends(account["id"])
+        if other["id"] not in {a["id"] for a in mine}:
+            return web.json_response({"ok": False, "error": "Only friends can be invited."}, status=403)
+        if self.throttled("invite:%d" % account["id"], limit=30, window=60):
+            return web.json_response({"ok": False, "error": "Too many invites - wait a little."}, status=429)
+        self.invites[other["id"]][account["id"]] = {"from": account["name"], "xuid": "%016X" % Accounts.xuid(account),
+                                                    "session": session,
+                                                    "kind": str(body.get("kind") or "")[:40], "t": now()}
+        gs.log("friends: %s invited %s" % (account["name"], other["name"]))
+        return web.json_response({"ok": True})
 
     async def api_status(self, request):
         return web.json_response({"ok": True, "server": "svr2011-community", "version": 1})
@@ -890,6 +937,7 @@ class Service:
         app.router.add_get(b + "/api/status", self.api_status)
         app.router.add_get(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/friends", self.api_friends)
+        app.router.add_post(b + "/api/invite", self.api_invite)
         app.router.add_route("*", b + "/api/logo/{hash}", self.api_logo)
         app.router.add_get(b + "/api/logos/wanted", self.api_logos_wanted)
         app.router.add_post(b + "/api/media", self.api_media_post)
