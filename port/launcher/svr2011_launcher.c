@@ -90,6 +90,7 @@ enum {
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
+    ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS,
@@ -121,6 +122,8 @@ enum {
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
 #define WM_APP_UPD_DONE (WM_APP + 9)     /* wParam 1 ok, lParam heap error text */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
+#define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
+#define FRIENDS_TIMER   0x5F01           /* the Friends list's refresh while the Online tab shows */
 #define APK_OK          1001
 #define APK_FAILED      1002
 
@@ -1072,9 +1075,10 @@ static void json_copy(const char *text, const char *key, char *out, size_t n)
     out[k] = 0;
 }
 
-/* POSTs a JSON body to <server><path>; the answer's body (UTF-8) in out.
- * Returns the HTTP status, 0 if the server didn't answer. */
-static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
+/* Sends a JSON body (POST; body NULL: a GET) to <server><path>; the
+ * answer's body (UTF-8) in out. Returns the HTTP status, 0 if the server
+ * didn't answer. */
+static int online_request(const char *path, const char *body, const char *token, char *out, size_t outn)
 {
     WCHAR server[200], url[260], host[200], upath[400], headers[256];
     URL_COMPONENTS uc;
@@ -1106,13 +1110,16 @@ static int online_post(const char *path, const char *body, const char *token, ch
         connect = WinHttpConnect(session, host, uc.nPort, 0);
     }
     if (connect)
-        request = WinHttpOpenRequest(connect, L"POST", upath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+        request = WinHttpOpenRequest(connect, body ? L"POST" : L"GET", upath, NULL, WINHTTP_NO_REFERER,
+                                     WINHTTP_DEFAULT_ACCEPT_TYPES,
                                      uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
     if (request) {
         if (token && token[0])
             swprintf_s(headers, 256, L"Content-Type: application/json\r\nAuthorization: Bearer %S\r\n", token);
         else
             wcscpy_s(headers, 256, L"Content-Type: application/json\r\n");
+        if (!body)
+            body = "";
         if (WinHttpSendRequest(request, headers, (DWORD)-1L, (void *)body, (DWORD)strlen(body), (DWORD)strlen(body), 0)
                 && WinHttpReceiveResponse(request, NULL)) {
             WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -1126,6 +1133,11 @@ static int online_post(const char *path, const char *body, const char *token, ch
     if (connect) WinHttpCloseHandle(connect);
     if (session) WinHttpCloseHandle(session);
     return (int)status;
+}
+
+static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
+{
+    return online_request(path, body ? body : "{}", token, out, outn);
 }
 
 /* Text as a JSON string (UTF-8, quotes and backslashes escaped). */
@@ -1147,6 +1159,8 @@ static void json_quote(const WCHAR *w, char *out, size_t n)
 }
 
 static int settings_save(void);
+static void friends_enable(void);
+static void friends_fetch(const char *body);
 
 /* Sign in (register: create the account first) with the name and password typed. */
 static void online_sign_in(int register_account)
@@ -1192,6 +1206,8 @@ static void online_sign_in(int register_account)
     CheckDlgButton(s_wnd, ID_ON_ENABLE, BST_CHECKED);
     online_account_show();
     settings_save();
+    friends_enable();
+    friends_fetch(NULL);
 }
 
 static void online_sign_out(void)
@@ -1203,6 +1219,180 @@ static void online_sign_out(void)
     s_online_xuid[0] = 0;
     online_account_show();
     settings_save();
+    friends_enable();
+}
+
+/* -- Friends: the account's list on the server (/api/friends), who's online
+ * (in the game's ONLINE menus) or in an online match (through the server's
+ * relay), and who added this player. Fetched in the background: on the
+ * Online tab, every 20 seconds while it shows. */
+
+static volatile LONG s_fr_busy;
+static char s_fr_job[256];  /* (the POST body; empty: a GET) */
+static char s_fr_token[128];
+
+static DWORD WINAPI friends_thread(void *arg)
+{
+    char *answer = (char *)malloc(32768);
+    int status;
+    (void)arg;
+    if (!answer) {
+        InterlockedExchange(&s_fr_busy, 0);
+        return 0;
+    }
+    status = online_request("/api/friends", s_fr_job[0] ? s_fr_job : NULL, s_fr_token, answer, 32768);
+    PostMessageW(s_wnd, WM_APP_FRIENDS, (WPARAM)status, (LPARAM)answer);
+    return 0;
+}
+
+/* body NULL: just the list; else {"add": name} / {"remove": name}. */
+static void friends_fetch(const char *body)
+{
+    if (!s_online_token[0] || InterlockedCompareExchange(&s_fr_busy, 1, 0))
+        return;
+    strcpy_s(s_fr_job, sizeof s_fr_job, body ? body : "");
+    strcpy_s(s_fr_token, sizeof s_fr_token, s_online_token);
+    CloseHandle(CreateThread(NULL, 0, friends_thread, NULL, 0, NULL));
+}
+
+static void friends_enable(void)
+{
+    int signed_in = s_online_token[0] != 0;
+    EnableWindow(ctl(ID_FR_NAME), signed_in);
+    EnableWindow(ctl(ID_FR_ADD), signed_in);
+    EnableWindow(ctl(ID_FR_REMOVE), signed_in);
+    if (!signed_in) {
+        ListView_DeleteAllItems(ctl(ID_FR_LIST));
+        set_text(ID_FR_STATUS, L"Sign in to see your friends and who's online.");
+    }
+}
+
+/* The next JSON string after `at` (UTF-8 to UTF-16), or NULL. */
+static const char *friends_string(const char *at, const char *end, WCHAR *out, int n)
+{
+    char u[128];
+    size_t k = 0;
+    const char *q = strchr(at, '"');
+    out[0] = 0;
+    if (!q || q >= end)
+        return NULL;
+    for (q++; *q && *q != '"' && q < end; q++)
+        if (k + 1 < sizeof u) u[k++] = *q;
+    u[k] = 0;
+    MultiByteToWideChar(CP_UTF8, 0, u, -1, out, n);
+    return *q == '"' ? q + 1 : NULL;
+}
+
+static void friends_add_row(HWND list, const WCHAR *name, const WCHAR *status)
+{
+    LVITEMW it;
+    ZeroMemory(&it, sizeof it);
+    it.mask = LVIF_TEXT;
+    it.iItem = ListView_GetItemCount(list);
+    it.pszText = (WCHAR *)name;
+    it.iItem = ListView_InsertItem(list, &it);
+    ListView_SetItemText(list, it.iItem, 1, (WCHAR *)status);
+}
+
+static void friends_show(int http, char *answer)
+{
+    HWND list = ctl(ID_FR_LIST);
+    WCHAR msg[200], name[64], keep[64] = L"";
+    int total = 0, online = 0, sel;
+    const char *p, *end;
+    InterlockedExchange(&s_fr_busy, 0);
+    if (!s_online_token[0]) {
+        friends_enable();
+        return;
+    }
+    if (http != 200 || !strstr(answer, "\"friends\"")) {
+        char error[160];
+        json_copy(answer, "error", error, sizeof error);
+        if (!http)
+            wcscpy_s(msg, 200, L"The server didn't answer.");
+        else if (error[0])
+            swprintf_s(msg, 200, L"%S", error);
+        else
+            swprintf_s(msg, 200, http == 404 ? L"This server has no friends list yet." : L"The server refused (HTTP %d).", http);
+        set_text(ID_FR_STATUS, msg);
+        return;
+    }
+    sel = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+    if (sel >= 0)
+        ListView_GetItemText(list, sel, 0, keep, 64);
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    p = strstr(answer, "\"friends\"");
+    end = p ? strchr(p, ']') : NULL;
+    while (p && end && (p = strchr(p, '{')) && p < end) {
+        const char *close = strchr(p, '}');
+        const char *v;
+        WCHAR status[64];
+        const WCHAR *label = L"Offline";
+        if (!close)
+            break;
+        v = strstr(p, "\"name\"");
+        if (v && v < close && friends_string(v + 6, close, name, 64)) {
+            v = strstr(p, "\"status\"");
+            status[0] = 0;
+            if (v && v < close)
+                friends_string(v + 8, close, status, 64);
+            if (!wcscmp(status, L"playing"))
+                label = L"In an online match", online++;
+            else if (!wcscmp(status, L"online"))
+                label = L"Online", online++;
+            v = strstr(p, "\"mutual\"");
+            if (v && v < close && strncmp(v + 8, ": false", 7) == 0 && wcscmp(label, L"Offline") == 0)
+                label = L"Offline (hasn't added you)";
+            friends_add_row(list, name, label);
+            total++;
+        }
+        p = close + 1;
+    }
+    p = strstr(answer, "\"added_you\"");
+    end = p ? strchr(p, ']') : NULL;
+    if (p && end) {
+        const char *q = strchr(p, '[');
+        while (q && (q = friends_string(q + 1, end, name, 64)) != NULL)
+            friends_add_row(list, name, L"Added you (Add to add them back)");
+    }
+    if (keep[0]) {  /* (the selection stays across refreshes) */
+        LVFINDINFOW f;
+        int i;
+        ZeroMemory(&f, sizeof f);
+        f.flags = LVFI_STRING;
+        f.psz = keep;
+        i = ListView_FindItem(list, -1, &f);
+        if (i >= 0)
+            ListView_SetItemState(list, i, LVIS_SELECTED, LVIS_SELECTED);
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    if (!total)
+        wcscpy_s(msg, 200, L"No friends yet: type a player's name and press Add.");
+    else
+        swprintf_s(msg, 200, L"%d of %d friend%s online.", online, total, total == 1 ? L"" : L"s");
+    set_text(ID_FR_STATUS, msg);
+}
+
+/* Add / Remove the player named in the box. */
+static void friends_change(int add)
+{
+    WCHAR name[64];
+    char q[160], body[256];
+    GetWindowTextW(ctl(ID_FR_NAME), name, 64);
+    if (!name[0]) {
+        set_text(ID_FR_STATUS, add ? L"Type the player's name to add." : L"Select a friend (or type the name) to remove.");
+        return;
+    }
+    json_quote(name, q, sizeof q);
+    sprintf_s(body, sizeof body, "{\"%s\": %s}", add ? "add" : "remove", q);
+    if (s_fr_busy) {
+        set_text(ID_FR_STATUS, L"One moment\x2026");
+        return;
+    }
+    friends_fetch(body);
+    if (add)
+        set_text(ID_FR_NAME, L"");
 }
 
 /* Frame rate choices (the game's frame_rate setting: frames a second at most;
@@ -1667,6 +1857,11 @@ static void show_tab(int t)
     if (t == TAB_ONLINE) {  /* (the controls the account/server state hides) */
         online_account_show();
         online_server_show();
+        friends_enable();
+        friends_fetch(NULL);
+        SetTimer(s_wnd, FRIENDS_TIMER, 20000, NULL);
+    } else {
+        KillTimer(s_wnd, FRIENDS_TIMER);
     }
     if (t == TAB_PLAY)
         refresh_play();
@@ -1698,6 +1893,7 @@ static void show_tab(int t)
 
 static void saves_setup(HWND list);
 static void saves_refresh(void);
+static void list_columns(HWND list, const WCHAR *const *names, const int *widths, int n);
 static HWND pt_setup_grid(void);
 static void mv_setup(void);
 static void up_setup(void);
@@ -1801,45 +1997,57 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 556, 560, 36, ID_SETTINGS_STATUS);
 
     /* Online */
-    add(TAB_ONLINE, L"Static", L"Community Creations: share Created Superstars, Paint Tool logos, highlight reels "
-                               L"and more with other players, through a Community Creations server (the original "
-                               L"servers closed in 2014). Online matches are not available yet.",
-        SS_LEFT, X0, 56, 560, 52, 0);
-    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 116, 400, 24, ID_ON_ENABLE);
-    add(TAB_ONLINE, L"Button", L"Your account", BS_GROUPBOX, X0, 150, 560, 156, 0);
-    add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 178, 130, 20, 0);
-    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 174, 220, 24, ID_ON_NAME);
+    add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
+                               L"Community Creations server - the original servers closed in 2014.",
+        SS_LEFT, X0, 54, 560, 36, 0);
+    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 92, 400, 22, ID_ON_ENABLE);
+    add(TAB_ONLINE, L"Button", L"Your account", BS_GROUPBOX, X0, 118, 560, 124, 0);
+    add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 144, 130, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 140, 220, 24, ID_ON_NAME);
     SendMessageW(h, EM_LIMITTEXT, 15, 0);
-    add(TAB_ONLINE, L"Static", L"Password", SS_LEFT, X0 + 16, 210, 130, 20, 0);
-    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_BORDER | WS_TABSTOP, X0 + 150, 206, 220, 24,
+    add(TAB_ONLINE, L"Static", L"Password", SS_LEFT, X0 + 16, 174, 130, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_BORDER | WS_TABSTOP, X0 + 150, 170, 220, 24,
             ID_ON_PASSWORD);
     SendMessageW(h, EM_LIMITTEXT, 100, 0);
-    add(TAB_ONLINE, L"Button", L"Sign in", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 173, 162, 26, ID_ON_SIGNIN);
-    add(TAB_ONLINE, L"Button", L"Create account", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 205, 162, 26,
+    add(TAB_ONLINE, L"Button", L"Sign in", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_SIGNIN);
+    add(TAB_ONLINE, L"Button", L"Create account", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 169, 162, 26,
         ID_ON_REGISTER);
-    add(TAB_ONLINE, L"Button", L"Sign out", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 173, 162, 26, ID_ON_SIGNOUT);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 240, 530, 22, ID_ON_ACCOUNT);
-    add(TAB_ONLINE, L"Static", L"The name (3-15 characters) is what other players see on your uploads. Only you "
-                               L"can change or delete them. The same account works on any PC or phone.",
-        SS_LEFT, X0 + 16, 264, 530, 36, 0);
-    add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 316, 560, 96, 0);
-    h = add(TAB_ONLINE, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 16, 340, 120, 200,
+    add(TAB_ONLINE, L"Button", L"Sign out", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_SIGNOUT);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 200, 530, 18, ID_ON_ACCOUNT);
+    add(TAB_ONLINE, L"Static", L"The name (3-15 characters) is what other players see. The same account works on any "
+                               L"PC or phone.",
+        SS_LEFT, X0 + 16, 219, 530, 18, 0);
+    add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 248, 560, 74, 0);
+    h = add(TAB_ONLINE, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 16, 270, 120, 200,
             ID_ON_SERVER_KIND);
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Default");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Custom");
     SendMessageW(h, CB_SETCURSEL, 0, 0);
-    add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 340, 396, 24, ID_ON_SERVER);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 372, 396, 32, ID_ON_SERVER_LABEL);
-    add(TAB_ONLINE, L"Button", L"Matches over the internet", BS_GROUPBOX, X0, 420, 560, 104, 0);
-    add(TAB_ONLINE, L"Static", L"Friends", SS_LEFT, X0 + 16, 448, 130, 20, 0);
-    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 444, 396, 24, ID_ON_PEERS);
+    add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 270, 396, 24, ID_ON_SERVER);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 298, 396, 20, ID_ON_SERVER_LABEL);
+    add(TAB_ONLINE, L"Button", L"Friends", BS_GROUPBOX, X0, 328, 560, 202, 0);
+    {
+        static const WCHAR *const names[] = { L"Player", L"Status" };
+        static const int widths[] = { 150, 196 };
+        list_columns(add(TAB_ONLINE, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER |
+                                                       WS_TABSTOP, X0 + 16, 350, 352, 124, ID_FR_LIST),
+                     names, widths, 2);
+    }
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 380, 350, 166, 24, ID_FR_NAME);
+    SendMessageW(h, EM_LIMITTEXT, 15, 0);
+    SendMessageW(h, EM_SETCUEBANNER, TRUE, (LPARAM)L"Player name");
+    add(TAB_ONLINE, L"Button", L"Add", BS_PUSHBUTTON | WS_TABSTOP, X0 + 380, 380, 80, 26, ID_FR_ADD);
+    add(TAB_ONLINE, L"Button", L"Remove", BS_PUSHBUTTON | WS_TABSTOP, X0 + 466, 380, 80, 26, ID_FR_REMOVE);
+    add(TAB_ONLINE, L"Static", L"Online: in the game's ONLINE menus. Friends' matches show in the game's searches.",
+        SS_LEFT | SS_NOPREFIX, X0 + 380, 414, 166, 60, 0);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 478, 530, 18, ID_FR_STATUS);
+    add(TAB_ONLINE, L"Static", L"Addresses", SS_LEFT, X0 + 16, 502, 90, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 110, 498, 436, 24, ID_ON_PEERS);
     SendMessageW(h, EM_LIMITTEXT, 140, 0);
-    add(TAB_ONLINE, L"Static", L"Their addresses (IP or name, comma-separated), searched besides your network. Players "
-                               L"anywhere who can't connect directly play through the server's relay; with UDP port "
-                               L"36000 forwarded to this PC, others reach you directly.",
-        SS_LEFT | SS_NOPREFIX, X0 + 16, 474, 530, 46, 0);
-    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 534, 108, 30, ID_ON_SAVE);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 538, 440, 36, ID_ON_STATUS);
+    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 538, 108, 30, ID_ON_SAVE);
+    add(TAB_ONLINE, L"Static", L"Addresses: other players' IPs or names (comma-separated) to search besides your "
+                               L"network. Without, players anywhere meet through the server.",
+        SS_LEFT | SS_NOPREFIX, X0, 538, 440, 30, ID_ON_STATUS);
 
     /* Install */
     add(TAB_INSTALL, L"Static", L"1.  Your " GAME_TITLE L" disc image (Xbox 360 ISO or XISO)",
@@ -4838,6 +5046,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         NMHDR *n = (NMHDR *)lp;
         if (n->idFrom == ID_TAB && n->code == TCN_SELCHANGE)
             show_tab(TabCtrl_GetCurSel(s_tab));
+        if (n->idFrom == ID_FR_LIST && n->code == LVN_ITEMCHANGED) {
+            NMLISTVIEW *v = (NMLISTVIEW *)lp;
+            if ((v->uNewState & LVIS_SELECTED) && !(v->uOldState & LVIS_SELECTED)) {
+                WCHAR name[64];
+                ListView_GetItemText(ctl(ID_FR_LIST), v->iItem, 0, name, 64);
+                set_text(ID_FR_NAME, name);
+            }
+        }
         break;
     }
     case WM_COMMAND:
@@ -4916,6 +5132,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             break;
         case ID_ON_SIGNOUT:
             online_sign_out();
+            break;
+        case ID_FR_ADD:
+            friends_change(1);
+            break;
+        case ID_FR_REMOVE:
+            friends_change(0);
             break;
         case ID_ON_SAVE:
             settings_save();
@@ -5006,6 +5228,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     case WM_APP_UPD_CHECKED:
         up_checked((int)wp, (WCHAR *)lp);
+        return 0;
+    case WM_APP_FRIENDS:
+        friends_show((int)wp, (char *)lp);
+        free((void *)lp);
+        return 0;
+    case WM_TIMER:
+        if (wp == FRIENDS_TIMER && s_tab_visible_online && IsWindowVisible(w) && !IsIconic(w))
+            friends_fetch(NULL);
         return 0;
     case WM_APP_UPD_PROGRESS:
         SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, wp, 0);
@@ -5384,7 +5614,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 TabCtrl_SetCurSel(s_tab, capture_seq[k]);
                 SendMessageW(s_wnd, WM_NOTIFY, ID_TAB, (LPARAM)&n);
             }
-            while (GetTickCount64() - t0 < 400)
+            /* (the Online tab: until the Friends list is in, 5 s at most) */
+            while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);
