@@ -77,6 +77,9 @@ struct Mod {
   uint32_t base = 0, slot = 0;
   std::string ch_guest, ssf_guest;  // the overlay files, as the game opens them
   std::vector<std::string> attire_guests;  // extra attires' pacs (manifest attire<N>=)
+  uint32_t attires = 1;                    // attires it has (its pacs' EMD models)
+  std::string attire_names[4];             // (manifest attire<N>_name=; attire 1: the game's ORIGINAL ATTIRE)
+  uint32_t attire_pairs = 0;               // guest: 4 x {u32 name string id, s32 unlock} (sub_828C4060)
   std::string song;                 // its theme: a USER PLAYLIST name ("" = the base's)
   int movie = 0;                    // its entrance movie: a user movie id (0 = the base's)
   // every theme / movie the port has set for it (<folder>/.applied): a slot
@@ -88,6 +91,8 @@ struct Mod {
   fs::path voice;  // its own recorded name for the ring announcer (manifest voice=)
 };
 std::vector<Mod> g_mods;
+constexpr uint32_t kAttireNameIds = 0xB100;                   // our string ids for attire names
+std::vector<std::pair<uint32_t, uint32_t>> g_attire_names;  // string id -> guest text
 rex::memory::Memory* g_memory = nullptr;
 fs::path g_game;
 bool g_mounted = false;
@@ -342,6 +347,29 @@ void ReadApplied(Mod& m, const fs::path& folder) {
   }
 }
 
+// Which attires (bit mask) a model pac has for character `id` (its EMD names).
+uint32_t AttireMask(const fs::path& pac, uint32_t id) {
+  uint32_t mask = 0;
+  FILE* f = std::fopen(pac.string().c_str(), "rb");
+  if (!f) return 0;
+  svrfmt::Bytes d(0x4000);
+  const bool ok = std::fread(d.data(), 1, d.size(), f) == d.size();
+  std::fclose(f);
+  if (!ok || std::memcmp(d.data(), "EPK8", 4)) return 0;
+  char want[8];
+  std::snprintf(want, sizeof want, "%06u", id);
+  for (size_t p = 0x800; p + 12 <= 0x4000;) {
+    if (!std::memcmp(&d[p], "\0\0\0\0", 4)) break;
+    const bool emd = !std::memcmp(&d[p], "EMD ", 4);
+    const uint32_t entries = (uint32_t(d[p + 4]) | uint32_t(d[p + 5]) << 8) / 4;
+    p += 12;
+    for (uint32_t k = 0; k < entries && p + 16 <= 0x4000; ++k, p += 16)
+      if (emd && !std::memcmp(&d[p], want, 6) && d[p + 6] >= '0' && d[p + 6] <= '3' && d[p + 7] == '2')
+        mask |= 1u << (d[p + 6] - '0');
+  }
+  return mask;
+}
+
 void LoadMods() {
   std::error_code ec;
   const fs::path dir = g_game / "Mods" / "Superstars";
@@ -386,6 +414,8 @@ void LoadMods() {
         if (l.rfind("voice=", 0) == 0 && l.size() > 6) m.voice = f / l.substr(6);
         if (l.rfind("attire", 0) == 0 && l.size() > 8 && l[6] >= '1' && l[6] <= '4' && l[7] == '=')
           attires[l[6] - '1'] = l.substr(8);
+        if (l.rfind("attire", 0) == 0 && l.size() > 12 && l[6] >= '1' && l[6] <= '4' && !l.compare(7, 6, "_name="))
+          m.attire_names[l[6] - '1'] = l.substr(13);
         if (l.rfind("call=", 0) == 0 && l.size() > 5 && std::isdigit(uint8_t(l[5])))
           m.call = std::clamp(std::atoi(l.c_str() + 5), 0, 83);
       }
@@ -434,6 +464,19 @@ void LoadMods() {
         MarkCurrent(overlay / an, {src, f / "manifest.txt"});
       }
       m.attire_guests.push_back(std::string("smods:\\") + an);
+    }
+    {  // the attires its models give (contiguous from 1)
+      uint32_t mask = 0;
+      std::vector<fs::path> pacs = {overlay / nm};  // (nm: chNNN.pac still)
+      for (int a = 0; a < 4; ++a)
+        if (drop >> a & 1) {
+          char an[32];
+          std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.slot, a + 1);
+          pacs.push_back(overlay / an);
+        }
+      for (const auto& pp : pacs) mask |= AttireMask(pp, m.slot);
+      m.attires = 1;
+      while (m.attires < 4 && (mask >> m.attires & 1)) ++m.attires;
     }
     std::snprintf(nm, sizeof nm, "ssf%03u.pac", m.slot);
     // (the renders depend on base=: rebuilt with the manifest)
@@ -987,6 +1030,30 @@ REX_HOOK_RAW(sub_825FDCD8) {
   __imp__sub_825FDCD8(ctx, base);
 }
 
+// ---- Attires
+// How many attires a character has, and each one's name and unlock, come from
+// misc.pac's COS table (BATS/INIT entry 5, by character id; 80 records, most
+// taken): the mods aren't in it, so the select screen offered no CHANGE
+// ATTIRE. Its lookups answer for them instead: sub_828C4140(mgr, id, mode)
+// the count, sub_828C4060(mgr, id, attire) the {name string id, unlock}
+// pair (unlock -1: always; sub_828C2240's "available" reads it).
+REX_EXTERN(__imp__sub_828C4140);
+REX_HOOK_RAW(sub_828C4140) {
+  if (const Mod* m = ModOf(ctx.r4.u32); m && m->attires > 1 && m->attire_pairs) {
+    ctx.r3.u64 = m->attires;
+    return;
+  }
+  __imp__sub_828C4140(ctx, base);
+}
+REX_EXTERN(__imp__sub_828C4060);
+REX_HOOK_RAW(sub_828C4060) {
+  if (const Mod* m = ModOf(ctx.r4.u32); m && m->attires > 1 && m->attire_pairs) {
+    ctx.r3.u64 = ctx.r5.u32 < m->attires ? m->attire_pairs + ctx.r5.u32 * 8 : 0;
+    return;
+  }
+  __imp__sub_828C4060(ctx, base);
+}
+
 // The file system's pacs registered (from the ARC / from each pac's header).
 REX_EXTERN(__imp__sub_825953B0);
 REX_HOOK_RAW(sub_825953B0) {
@@ -1080,6 +1147,26 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
   g_memory = memory;
   g_game = rex::filesystem::GetExecutableFolder();
   LoadMods();
+  // the attires' COS pairs and names (string ids kAttireNameIds + mod * 4 + attire)
+  uint8_t* b = memory->virtual_membase();
+  for (size_t i = 0; i < g_mods.size(); ++i) {
+    Mod& m = g_mods[i];
+    if (m.attires < 2) continue;
+    m.attire_pairs = memory->SystemHeapAlloc(32);
+    for (uint32_t a = 0; a < 4; ++a) {
+      uint32_t name = 9;  // ORIGINAL ATTIRE
+      if (a) {
+        const std::string text = m.attire_names[a].empty() ? "ATTIRE " + std::to_string(a + 1) : m.attire_names[a];
+        const uint32_t at = memory->SystemHeapAlloc(uint32_t(text.size() + 1));
+        std::memcpy(b + at, text.c_str(), text.size() + 1);
+        name = kAttireNameIds + uint32_t(i) * 4 + a;
+        g_attire_names.push_back({name, at});
+      }
+      Wr32(b + m.attire_pairs + a * 8, name);
+      Wr32(b + m.attire_pairs + a * 8 + 4, 0xFFFFFFFFu);
+    }
+    REXLOG_INFO("[svr2011] superstar mods: {}: {} attires", m.name, m.attires);
+  }
   // The overlay files as smods:\<file>: a device of their own, made after they
   // are written (a host device lists its folder once, so GAME: would not see
   // the files made this run).
@@ -1103,5 +1190,11 @@ std::vector<uint32_t> SuperstarModIds() {
 }
 
 bool IsSuperstarMod(uint32_t id) { return ModOf(id) != nullptr; }
+
+uint32_t SuperstarModString(uint32_t id) {
+  for (const auto& n : g_attire_names)
+    if (n.first == id) return n.second;
+  return 0;
+}
 
 }  // namespace svr2011

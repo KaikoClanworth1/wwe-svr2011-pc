@@ -23,5 +23,8 @@ void CopySuperstarMovies(const std::filesystem::path& movies);
 // The installed mods' character ids (the select screen's EXTRA list).
 std::vector<uint32_t> SuperstarModIds();
 bool IsSuperstarMod(uint32_t id);
+// The game's text for string id (menu_hooks.cpp's lookup): a mod's attire
+// names, else 0.
+uint32_t SuperstarModString(uint32_t id);
 
 }  // namespace svr2011

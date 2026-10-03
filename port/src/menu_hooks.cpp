@@ -32,6 +32,7 @@
 #include "graphics_page.h"
 #include "discord_presence.h"
 #include "online.h"
+#include "superstar_mods.h"
 #include "touch_controls.h"
 #include "native/native_renderer.h"
 
@@ -127,6 +128,10 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
 REX_EXTERN(__imp__sub_82153EF8);
 REX_HOOK_RAW(sub_82153EF8) {
   if (const uint32_t s = svr2011::OnlineString(ctx.r4.u32)) {  // (online.h)
+    ctx.r3.u64 = s;
+    return;
+  }
+  if (const uint32_t s = svr2011::SuperstarModString(ctx.r4.u32)) {  // (arenas branch: superstar_mods.h)
     ctx.r3.u64 = s;
     return;
   }

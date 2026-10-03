@@ -11,7 +11,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 50.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
@@ -137,6 +137,32 @@ The commentators keep the base's or the nickname call. Tested with
 | Modded Test (base Jericho) | `0104` | `Play_RA_TC_SSP_CHRISJERICHO_0` |
 | Mod 13 (`call=77`) | `CAS_The_Superstar_0` | `Play_RA_TC_CAS_Superstar_0` |
 
+### Attires
+
+How many attires a character has, and each one's name and unlock, comes from
+misc.pac's COS table (`BATS/INIT` entry 5, keyed by character id; scratchpad
+re_attire). The models don't decide it. The table has room for 80 records and
+the game uses about 66, and the mods aren't in it, so the select screen offered
+them no CHANGE ATTIRE.
+
+Two lookups now answer for mods:
+
+- `sub_828C4140(mgr, id, mode)` gives the count: the attires the mod's
+  model pacs hold, contiguous from attire 1.
+- `sub_828C4060(mgr, id, attire)` gives the `{name string id, unlock}` pair,
+  from a port-made table:
+  - the name of attire 1 is the game's ORIGINAL ATTIRE; the others are
+    `attireN_name=` or "ATTIRE N", served by menu_hooks' string lookup through
+    `SuperstarModString`;
+  - the unlock is -1, always available. `sub_828C2240` reads that.
+
+`attireN=<pac>` puts another model pac's first attire in as attire N. It goes
+in an overlay pac of its own, `chNNN_aN.pac`, and the main pac's attire N is put
+aside. So mods get all their base's attires, plus up to 4 in all.
+
+Tested: ADVANCED shows CHANGE ATTIRE "ATTIRE 3", and the model switches to the
+attire pac's (Orton on a Jericho mod).
+
 ### Select picture
 
 The select panel draws the mod's own model live (a Jericho model on an Orton
@@ -187,11 +213,13 @@ The art comes from `tools/make_modded_badge.py`, which writes
 
 ## Known limits
 
-- A mod has only the attires its `ch.pac` holds.
+- A mod has at most 4 attires.
 - The name call is the base's or a Created Superstar nickname: there is no way
   to record a new name.
-- Lists outside the select screen (WWE Universe, Superstar Threads) are not
-  checked. The select screen itself is: one on one, tag team (2 on 2), and the
+- Superstar Threads doesn't list mods (nor the managers). It lists the COS
+  table's characters, a table with room for only about 13 more, and saves
+  attires by its rows. Use attire pacs instead.
+- WWE Universe lists are not checked. The select screen itself is: one on one, tag team (2 on 2), and the
   COM side.
 
 ## Tests
