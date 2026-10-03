@@ -73,7 +73,7 @@ still being tested.
 - **Updates itself** from GitHub releases.
 - **Settings**: renderer, resolution, VSync, input, audio, FPS counter, language, "Prepare graphics in the menus".
 - **Online tab**: sign in, create an account, sign out; Server: Default or Custom; **Friends** (addresses to find for online matches). *(New in 2.0.)*
-- **Saves**: backups, export, import, delete.
+- **Saves**: backups, export, import, delete, and the **saves folder** (keep two installs' saves apart or shared; `saves_folder` in `svr2011.toml`, read by the game too). *(After 2.0.)*
 - **DLC**: add packages or folders, checked before install.
 - **Paint Tool**: the 10 pages of logos, import any image, export PNGs.
 - **Movies**: the movie maker for custom entrance movies.

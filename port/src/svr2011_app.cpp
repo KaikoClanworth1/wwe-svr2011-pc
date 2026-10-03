@@ -57,6 +57,10 @@
 #include "xaudio2_audio.h"
 #endif
 
+REXCVAR_DEFINE_STRING(saves_folder, "", "Storage",
+                      "Where the saves live: empty for the game folder's Saves, or a folder (absolute, or "
+                      "relative to the game folder) - e.g. to keep two installs' saves apart or shared")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_STRING(audio_backend, "xaudio2", "Audio",
                       "Audio output: xaudio2 (default) or sdl")
     .allowed({"xaudio2", "sdl"})
@@ -311,6 +315,23 @@ void Svr2011App::OnPostLoadXexImage() {
 
   // The port's text and menu changes to the installed disc files (once).
   svr2011::PatchGameFiles(rex::filesystem::GetExecutableFolder());
+
+  // The saves folder chosen in the settings (saves_folder; the launcher's
+  // Saves tab sets it). Read here: the settings are loaded after
+  // OnConfigurePaths. (It wins over the tests' default beside their user
+  // data too: their settings files are their own.)
+  if (!REXCVAR_GET(saves_folder).empty()) {
+    std::filesystem::path dir = std::filesystem::u8path(REXCVAR_GET(saves_folder));
+    if (dir.is_relative()) dir = rex::filesystem::GetExecutableFolder() / dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (std::filesystem::is_directory(dir, ec)) {
+      g_saves = dir.lexically_normal();
+    } else {
+      REXLOG_WARN("saves folder {} can't be used ({}); using {}", dir.string(), ec.message(), g_saves.string());
+    }
+  }
+  REXLOG_INFO("saves: {}", g_saves.string());
 
   // Saves as plain files in the Saves folder (saves.h).
   svr2011::UseFlatSaves(runtime()->kernel_state(), g_user_data, g_saves);

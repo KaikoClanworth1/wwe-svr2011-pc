@@ -99,7 +99,7 @@ enum {
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
     ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN,
-    ID_SV_STATUS,
+    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
@@ -1644,6 +1644,7 @@ static void update_free_space(void)
 }
 
 static void saves_refresh(void);
+static void saves_folder_show(void);
 static void pt_refresh(void);
 static void mv_refresh(void);
 static volatile LONG s_up_busy;
@@ -1892,7 +1893,7 @@ static void build_ui(void)
         SS_LEFT, X0, 396, 560, 40, 0);
 
     /* Saves */
-    add(TAB_SAVES, L"Static", L"Your saves, one file each in the game folder's Saves folder. The main save keeps "
+    add(TAB_SAVES, L"Static", L"Your saves, one file each in the saves folder (below). The main save keeps "
                               L"settings, unlocks and progress and ties the rest together.",
         SS_LEFT, X0, 50, 560, 36, 0);
     saves_setup(add(TAB_SAVES, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
@@ -1905,6 +1906,12 @@ static void build_ui(void)
     add(TAB_SAVES, L"Button", L"Import\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 140, 346, 140, 30, ID_SV_IMPORT);
     add(TAB_SAVES, L"Button", L"Delete selected", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 346, 130, 30, ID_SV_DELETE);
     add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 388, 560, 40, ID_SV_STATUS);
+    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 442, 380, 20, ID_SV_FOLDER);
+    add(TAB_SAVES, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 390, 436, 80, 30, ID_SV_CHANGE);
+    add(TAB_SAVES, L"Button", L"Default", BS_PUSHBUTTON | WS_TABSTOP, X0 + 480, 436, 80, 30, ID_SV_DEFAULT);
+    add(TAB_SAVES, L"Static", L"Keep two installs' saves apart (or share them): the game and this tab use the folder "
+                              L"set here (saved in " GAME_TOML L"). Default: the game folder's Saves.",
+        SS_LEFT, X0, 472, 560, 36, 0);
 
     /* Paint Tool */
     add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
@@ -2224,9 +2231,103 @@ static int any_game_running(void)
     return found;
 }
 
+/* The saves folder setting (svr2011.toml's saves_folder, which the game reads
+ * too): "" for the default, <game>\Saves. Kept with '/' (a TOML string takes
+ * '\' as an escape); relative paths are from the game folder. */
+static void saves_folder_setting(WCHAR *out, size_t n)
+{
+    WCHAR p[MAX_PATH];
+    Lines l;
+    int i;
+    out[0] = 0;
+    if (!s_game_dir[0])
+        return;
+    settings_path(p);
+    if (!toml_read(p, &l))
+        return;
+    for (i = 0; i < l.n; i++) {
+        char key[64], val[MAX_PATH * 3];
+        const char *t = l.v[i];
+        while (*t == ' ' || *t == '\t')
+            t++;
+        if (*t == '[')
+            break;
+        if (toml_kv(l.v[i], key, sizeof key, val, sizeof val) && !strcmp(key, "saves_folder")) {
+            WCHAR *c;
+            MultiByteToWideChar(CP_UTF8, 0, val, -1, out, (int)n);
+            for (c = out; *c; c++)
+                if (*c == L'/')
+                    *c = L'\\';
+        }
+    }
+    lines_free(&l);
+}
+
+/* Sets one top-level key of svr2011.toml (value as written, e.g. "\"x\"");
+ * the rest of the file is kept. */
+static int toml_set(const char *key, const char *value)
+{
+    WCHAR p[MAX_PATH], tmp[MAX_PATH];
+    Lines l;
+    FILE *f;
+    char line[MAX_PATH * 3 + 64];
+    int i, done = 0, insert_at = -1;
+    settings_path(p);
+    if (!toml_read(p, &l))
+        lines_insert(&l, 0, "# WWE SmackDown vs. Raw 2011 - settings (the launcher rewrites this file)");
+    sprintf_s(line, sizeof line, "%s = %s", key, value);
+    for (i = 0; i < l.n; i++) {
+        char k[64], v[MAX_PATH * 3];
+        const char *t = l.v[i];
+        while (*t == ' ' || *t == '\t')
+            t++;
+        if (*t == '[') {
+            insert_at = i;
+            break;
+        }
+        if (toml_kv(l.v[i], k, sizeof k, v, sizeof v) && !strcmp(k, key)) {
+            free(l.v[i]);
+            l.v[i] = done ? NULL : _strdup(line);
+            done = 1;
+        }
+    }
+    if (!done) {
+        if (insert_at < 0)
+            insert_at = l.n;
+        while (insert_at > 0 && (!l.v[insert_at - 1] || !l.v[insert_at - 1][0]))
+            insert_at--;
+        lines_insert(&l, insert_at, line);
+    }
+    swprintf_s(tmp, MAX_PATH, L"%s.tmp", p);
+    if (_wfopen_s(&f, tmp, L"wb") || !f) {
+        lines_free(&l);
+        return 0;
+    }
+    for (i = 0; i < l.n; i++)
+        if (l.v[i])
+            fprintf(f, "%s\n", l.v[i]);
+    fclose(f);
+    lines_free(&l);
+    if (!MoveFileExW(tmp, p, MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(tmp);
+        return 0;
+    }
+    return 1;
+}
+
 static int saves_dir(WCHAR *out)
 {
-    return s_game_dir[0] && join(out, s_game_dir, SAVES_DIR);
+    WCHAR s[MAX_PATH];
+    if (!s_game_dir[0])
+        return 0;
+    saves_folder_setting(s, MAX_PATH);
+    if (!s[0])
+        return join(out, s_game_dir, SAVES_DIR);
+    if (s[1] == L':' || (s[0] == L'\\' && s[1] == L'\\')) {  /* absolute */
+        wcscpy_s(out, MAX_PATH, s);
+        return 1;
+    }
+    return join(out, s_game_dir, s);
 }
 
 /* A shell copy / delete (whole folders), without dialogs. */
@@ -2422,6 +2523,7 @@ static void fmt_when(WCHAR *out, size_t n, FILETIME ft)
 
 static void saves_refresh(void)
 {
+    saves_folder_show();
     HWND list = ctl(ID_SV_LIST);
     WCHAR saves[MAX_PATH], pat[MAX_PATH], path[MAX_PATH], size[32], when[32];
     WIN32_FIND_DATAW fd;
@@ -2757,6 +2859,89 @@ static void saves_delete(void)
     }
     saves_refresh();
     saves_status(L"Moved %d save%s to the Recycle Bin.", done, done == 1 ? L"" : L"s");
+}
+
+/* The Saves folder row: where the saves are, and whether that's the default. */
+static void saves_folder_show(void)
+{
+    WCHAR s[MAX_PATH], d[MAX_PATH], t[MAX_PATH + 64];
+    saves_folder_setting(s, MAX_PATH);
+    if (saves_dir(d))
+        swprintf_s(t, MAX_PATH + 64, L"Saves folder: %s%s", d, s[0] ? L"" : L" (default)");
+    else
+        wcscpy_s(t, MAX_PATH + 64, L"Saves folder: (install the game first)");
+    set_text(ID_SV_FOLDER, t);
+    EnableWindow(ctl(ID_SV_DEFAULT), s[0] != 0);
+}
+
+static int folder_has_saves(const WCHAR *dir)
+{
+    WCHAR pat[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE f;
+    int has = 0;
+    if (!join(pat, dir, L"*") || (f = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do
+        has |= is_save_entry(&fd);
+    while (!has && FindNextFileW(f, &fd));
+    FindClose(f);
+    return has;
+}
+
+/* Change... / Default: the new folder for the saves (NULL: the default). If it
+ * has no saves and the current one does, offers to copy them over (the old
+ * folder is left as it is). */
+static void saves_set_folder(const WCHAR *dir)
+{
+    WCHAR old[MAX_PATH], now[MAX_PATH], pat[MAX_PATH], t[MAX_PATH * 3];
+    char u[MAX_PATH * 3], v[MAX_PATH * 3 + 4];
+    if (!s_game_dir[0] || saves_locked() || !saves_dir(old))
+        return;
+    if (dir) {
+        size_t i;
+        WideCharToMultiByte(CP_UTF8, 0, dir, -1, u, sizeof u, NULL, NULL);
+        for (i = 0; u[i]; i++)
+            if (u[i] == '\\')
+                u[i] = '/';
+        if (strchr(u, '"')) {
+            saves_status(L"That folder name can't be used.");
+            return;
+        }
+        sprintf_s(v, sizeof v, "\"%s\"", u);
+    } else {
+        strcpy_s(v, sizeof v, "\"\"");
+    }
+    if (!toml_set("saves_folder", v)) {
+        saves_status(L"The setting could not be saved (is the game folder read-only?).");
+        return;
+    }
+    if (!saves_dir(now) || !mkdirs(now)) {
+        saves_status(L"That folder could not be made.");
+        saves_folder_show();
+        return;
+    }
+    if (_wcsicmp(old, now) && folder_has_saves(old) && !folder_has_saves(now)) {
+        swprintf_s(t, MAX_PATH * 3, L"Copy your current saves to the new folder?\n\nFrom: %s\nTo: %s\n\n"
+                                    L"(The old folder is left as it is.)", old, now);
+        if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) == IDYES && join(pat, old, L"*"))
+            shell_op(FO_COPY, pat, now, 0);
+    }
+    saves_folder_show();
+    saves_refresh();
+}
+
+static void saves_change_folder(void)
+{
+    WCHAR cur[MAX_PATH], pick[MAX_PATH];
+    if (!s_game_dir[0]) {
+        saves_status(L"Install the game first (Install tab).");
+        return;
+    }
+    if (!saves_dir(cur))
+        cur[0] = 0;
+    if (pick_folder_in(L"Choose the folder for the saves", dir_exists(cur) ? cur : s_game_dir, pick))
+        saves_set_folder(pick);
 }
 
 static void saves_open(void)
@@ -4779,6 +4964,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_SV_IMPORT:   saves_import();       break;
         case ID_SV_DELETE:   saves_delete();       break;
         case ID_SV_OPEN:     saves_open();         break;
+        case ID_SV_CHANGE:   saves_change_folder(); break;
+        case ID_SV_DEFAULT:  saves_set_folder(NULL); break;
         case ID_PT_EXPORT:    pt_export();         break;
         case ID_PT_IMPORT:    pt_change(1);        break;
         case ID_PT_DELETE:    pt_change(0);        break;

@@ -312,7 +312,7 @@ Every save is **one plain file** in the `Saves\` folder. Close the game before y
 | `00RecordingDat.rec` | Replays. |
 | `00SceneDat.scn` | Highlight reels. |
 
-The launcher's **Saves** tab lists them. You can **Back up all** (to `SaveBackups\`), **Restore backup**, **Export** or **Import** single saves, **Delete** (to the Recycle Bin) and open the folder. Restoring or importing backs up your current saves first.
+The launcher's **Saves** tab lists them. You can **Back up all** (to `SaveBackups\`), **Restore backup**, **Export** or **Import** single saves, **Delete** (to the Recycle Bin) and open the folder. Restoring or importing backs up your current saves first. **Saves folder → Change…** puts the saves somewhere else (for example to keep two installs' saves apart, or to share them); it offers to copy your current saves over. **Default** goes back to the game folder's `Saves`.
 
 <p align="center"><img src="docs/screenshots/launcher-saves.png" alt="Launcher Saves tab" width="60%"></p>
 
