@@ -86,6 +86,11 @@ still being tested.
 
 ## After 2.0 (next update)
 
+- **Friends list** in the launcher's Online tab (PC and Android): add / remove friends, see who's online, in an online match or offline (195917e; server /api/friends, eb2e1e9).
+- **Online logos fixed**: a Created Superstar's extra High Resolution logos now come from its owner when the server supplies the Superstar (6178e5e).
+- **Community Creations uploads**: multi-part uploads (2 MB parts) were always refused; fixed. **Server dashboard** (/svr) shows its totals and relay metrics again (eb2e1e9; the live server needs a restart).
+- **Free-roaming backstage**: the CPU now moves and fights (played as the Parking Lot rule over the whole backstage), and the camera is pulled back (70412c3).
+
 - **Anti-aliasing levels**: OFF / 2x / 3x / 4x supersampling (4, 9 or 16 samples a pixel; GRAPHICS → QUALITY and the launcher's Settings), within the 4x render scale cap (4d363c8).
 - **Android drivers** (cb15eb3): **driver variables** (e.g. `FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1`, the fix for HyperOS 3's glitches with Turnip; a one-tap "HyperOS 3 fix" button); any driver zip (with or without `meta.json`) or a bare `.so` can be added, and zips labelled oddly by file managers show up in the picker; a `gpu_driver` set by hand to a file in Download is copied into the app's storage before loading. *Experimental (not yet tried on a phone).*
 
