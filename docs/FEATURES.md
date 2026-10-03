@@ -86,6 +86,8 @@ still being tested.
 
 ## After 2.0 (next update)
 
+- **Character select texture flashes fixed**: moving the cursor could show the next superstar for a moment with the last one's textures (Jimmy Snuka in John Cena's jeans).
+
 - **ONLINE overlay** (F1, or BACK + RB; or X INVITE FRIENDS in a lobby): friends with who's online, invites to public or private sessions, and accepting them (the session comes first in CUSTOM MATCH search) (7861d84; the live server needs a restart for invites).
 
 - **Freeze fix**: entrances and finishers could freeze for good on slower PCs and phones (a deadlock in 2.0's 60 Hz timing when a frame needed extra world updates); fixed (c181189).
