@@ -249,7 +249,8 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
-  bool msaa_ = false, fps_ = true, vsync_ = true, native_ = true;
+  int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
+  bool fps_ = true, vsync_ = true, native_ = true;
   int display_ = kWindowed;  // (DisplayMode)
   bool effects_ = true, fps60_ = true;
   int frame_rate_ = 1;  // (kFrameRates)
@@ -270,7 +271,10 @@ void GraphicsPage::Load() {
   for (int i = 0; i < kNumResolutions; ++i) {
     if (kResolutions[i].w == w && kResolutions[i].h == h) resolution_ = i;
   }
-  msaa_ = rex::cvar::Query<bool>("native_2x_msaa");
+  {
+    const int32_t level = rex::cvar::Query<int32_t>("native_aa");
+    aa_ = level > 0 ? std::clamp<int32_t>(level, 1, 4) : (rex::cvar::Query<bool>("native_2x_msaa") ? 2 : 1);
+  }
   {
     const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
     scale_ = 0;
@@ -336,9 +340,11 @@ void GraphicsPage::Change(int row, int dir) {
       break;
     }
     case kAntiAliasing:
-      msaa_ = !msaa_;
-      rex::cvar::SetFlagByName("native_2x_msaa", msaa_ ? "true" : "false");
-      SaveSetting("native_2x_msaa", msaa_ ? "true" : "false");
+      aa_ = (aa_ - 1 + dir + 4) % 4 + 1;  // OFF, 2X, 3X, 4X
+      rex::cvar::SetFlagByName("native_aa", std::to_string(aa_));
+      rex::cvar::SetFlagByName("native_2x_msaa", aa_ >= 2 ? "true" : "false");
+      SaveSetting("native_aa", std::to_string(aa_));
+      SaveSetting("native_2x_msaa", aa_ >= 2 ? "true" : "false");
       break;
     case kLanguage:
       language_ = (language_ + dir + kNumLanguages) % kNumLanguages;
@@ -586,7 +592,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kLanguage: return kLanguages[language_].label;
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
       case kRenderScale: return kScales[scale_].label;
-      case kAntiAliasing: return msaa_ ? "ON" : "OFF";
+      case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
       case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
     }
@@ -638,7 +644,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                    : "The game's text: changes the next time the game starts.";
       case kRenderer: return "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.";
       case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
-      case kAntiAliasing: return "Renders at twice the resolution and averages it down: smooth edges, slower.";
+      case kAntiAliasing:
+        return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
+               "pixel): smoother edges, slower. Limited by RENDER SCALE.";
       case kEffects: return "HIGH: shadows, reflections and glow at the render resolution. NORMAL: faster.";
       case kCutsceneFps: return "Entrances and cutscenes at 60 fps, or 30 as on the Xbox 360 (half the work).";
     }

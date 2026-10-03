@@ -1223,7 +1223,7 @@ static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_a
                           int renderer, int language)
 {
     SendMessageW(ctl(ID_LANGUAGE), CB_SETCURSEL, (WPARAM)language_index(language), 0);
-    CheckDlgButton(s_wnd, ID_MSAA, msaa ? BST_CHECKED : BST_UNCHECKED);
+    SendMessageW(ctl(ID_MSAA), CB_SETCURSEL, (WPARAM)(msaa >= 1 && msaa <= 4 ? msaa - 1 : 0), 0);
     SendMessageW(ctl(ID_RENDERER), CB_SETCURSEL, (WPARAM)renderer, 0);
     CheckRadioButton(s_wnd, ID_WINDOWED, ID_FULLSCREEN, fullscreen ? ID_FULLSCREEN : ID_WINDOWED);
     SendMessageW(ctl(ID_RESOLUTION), CB_SETCURSEL, (WPARAM)res, 0);
@@ -1246,7 +1246,7 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
+    int msaa = 0, aa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1267,6 +1267,7 @@ static void settings_load(void)
             else if (!strcmp(key, "audio_backend")) sdl_audio = !_stricmp(val, "sdl");
             else if (!strcmp(key, "show_fps")) fps = !strcmp(val, "true");
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
+            else if (!strcmp(key, "native_aa")) aa = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
             else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
@@ -1288,6 +1289,8 @@ static void settings_load(void)
     for (i = 0; i < N_RES; i++)
         if (k_res[i].w == w && k_res[i].h == h)
             res = i;
+    /* anti-aliasing: native_aa (1 off, 2-4), else the older on / off (on = 2x) */
+    msaa = aa >= 1 && aa <= 4 ? aa : msaa ? 2 : 1;
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
     online_show(online, online_name, online_server);
@@ -1305,12 +1308,12 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 23 };
+    enum { NK = 24 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
-                                    "online_token", "online_xuid", "frame_rate", "p2p_peers" };
+                                    "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1338,7 +1341,12 @@ static int settings_save(void)
     strcpy_s(vals[8], 64, IsDlgButtonChecked(s_wnd, ID_MUTE) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[10], 64, IsDlgButtonChecked(s_wnd, ID_SHOWFPS) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[9], 64, SendMessageW(ctl(ID_AUDIO), CB_GETCURSEL, 0, 0) == 1 ? "\"sdl\"" : "\"xaudio2\"");
-    strcpy_s(vals[11], 64, IsDlgButtonChecked(s_wnd, ID_MSAA) == BST_CHECKED ? "true" : "false");
+    {
+        const int ai = (int)SendMessageW(ctl(ID_MSAA), CB_GETCURSEL, 0, 0);
+        const int level = ai >= 0 && ai < 4 ? ai + 1 : 1;
+        strcpy_s(vals[11], 64, level >= 2 ? "true" : "false");
+        sprintf_s(vals[23], 64, "%d", level);
+    }
     strcpy_s(vals[12], 64, renderer == RENDERER_EMULATED ? "\"off\"" : "\"main\"");
     /* Vulkan: the emulator runs on Vulkan and the native renderer with it. */
     strcpy_s(vals[13], 64, renderer == RENDERER_VULKAN ? "\"vulkan\"" : "\"any\"");
@@ -1433,7 +1441,7 @@ static int settings_save(void)
 
 static void settings_defaults(void)
 {
-    settings_show(0, 0, 1, 0, 0, 0, 1, 0, 0, 1);
+    settings_show(0, 0, 1, 0, 0, 0, 1, 1, 0, 1);
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
@@ -1749,8 +1757,12 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 154, 360, 24, ID_VSYNC);
     add(TAB_SETTINGS, L"Button", L"Show FPS (F2)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 400, 154, 150, 24, ID_SHOWFPS);
-    add(TAB_SETTINGS, L"Button", L"Anti-aliasing (smoother edges)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 182, 220, 24,
-        ID_MSAA);
+    add(TAB_SETTINGS, L"Static", L"Anti-aliasing", SS_LEFT, X0 + 16, 186, 100, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 116, 182, 140, 200, ID_MSAA);
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Off");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"2x (4 samples)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"3x (9 samples)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"4x (16 samples)");
     add(TAB_SETTINGS, L"Static", L"Renderer", SS_LEFT, X0 + 270, 186, 80, 20, 0);
     add(TAB_SETTINGS, L"Button", L"Prepare graphics in the menus (no stutter the first time a scene shows; native)",
         BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 210, 530, 24, ID_PREPARE);
@@ -4862,13 +4874,13 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(s_wnd, L"open", m, NULL, NULL, SW_SHOWNORMAL);
             break;
         }
-        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE:
+        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }
             break;
-        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_MSAA: case ID_PREPARE:
+        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
