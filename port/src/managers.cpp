@@ -31,13 +31,14 @@
 #include "superstar_mods.h"
 
 REXCVAR_DEFINE_BOOL(managers_tile, true, "Gameplay",
-                    "Character select: the \"?\" tile opens the managers (Paul Bearer, Hornswoggle, ...) "
+                    "Character select: the \"?\" tile opens the managers (Paul Bearer, The Hurricane, ...) "
                     "instead of a random pick");
 
 namespace {
 
-// Stephanie McMahon, Theodore Long, Hornswoggle, Paul Bearer, Tiffany.
-constexpr uint32_t kManagers[] = {147, 186, 195, 251, 296};
+// Stephanie McMahon, Theodore Long, Paul Bearer, Tiffany, The Hurricane
+// (Hornswoggle, 195, is left out: his moves and animations are broken).
+constexpr uint32_t kManagers[] = {147, 186, 251, 296, 274};
 
 // Cursor (player object) fields.
 constexpr uint32_t kScreen = 272, kPlayer = 284, kCol = 88, kRow = 72;

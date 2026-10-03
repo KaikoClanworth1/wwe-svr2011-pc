@@ -338,6 +338,7 @@ void Svr2011App::OnPostLoadXexImage() {
     if (std::string dir = Env("SVR2011_MOVIES"); !dir.empty()) movies = dir;
     std::error_code ec;
     std::filesystem::create_directories(movies, ec);
+    svr2011::CopySuperstarMovies(movies);  // (arenas branch: superstar_mods.h)
     auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\USERMOVIES", movies, true);
     auto* fs = runtime()->file_system();
     if (device->Initialize() && fs->RegisterDevice(std::move(device))) {
@@ -365,7 +366,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
-  svr2011::InstallSuperstarMods(runtime()->memory());
+  svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
   svr2011::InstallFrameRate(runtime()->memory());
   if (imgui_drawer()) {

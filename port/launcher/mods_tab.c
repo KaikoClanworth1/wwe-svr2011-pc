@@ -3,8 +3,10 @@
  * Mods live in <game>/Mods/<Type>/<id>/ with a manifest.txt (key=value:
  * type, id, name, author, version). Arena mods hold arena.pac and banner.dds
  * (256 x 128 DXT5); the game lists them on the arena select pages after its
- * own arenas (src/arena_mods.cpp). A mod is turned off by a "disabled" file
- * in its folder. A .svrmod file is a zip of such a folder.
+ * own arenas (src/arena_mods.cpp). Superstar mods hold ch.pac (and maybe a
+ * theme song and an entrance movie); the game lists them under the M tile of
+ * the character select (src/superstar_mods.cpp). A mod is turned off by a
+ * "disabled" file in its folder. A .svrmod file is a zip of such a folder.
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
 #include "mods_tab.h"
@@ -88,7 +90,7 @@ static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -224,7 +226,7 @@ int mods_install(const WCHAR *game_dir, const WCHAR *zip)
 
 static int install_file(const WCHAR *zip)
 {
-    WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512];
+    WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512], kind[32];
     Mod m;
     swprintf_s(tmp, MAX_PATH, L"%s\\Mods\\.incoming", s_game);
     remove_tree(tmp, 0);
@@ -241,24 +243,27 @@ static int install_file(const WCHAR *zip)
         remove_tree(tmp, 0);
         return 0;
     }
-    if (_wcsicmp(m.type, L"arena")) {
-        swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena mods only.", m.name, m.type);
-        status(t);
-        remove_tree(tmp, 0);
-        return 0;
-    }
     {
-        WCHAR pac[MAX_PATH], ban[MAX_PATH];
-        swprintf_s(pac, MAX_PATH, L"%s\\arena.pac", tmp);
-        swprintf_s(ban, MAX_PATH, L"%s\\banner.dds", tmp);
-        if (!exists(pac) || !exists(ban)) {
-            status(L"That arena mod is incomplete (it needs arena.pac and banner.dds).");
+        const int arena = !_wcsicmp(m.type, L"arena"), star = !_wcsicmp(m.type, L"superstar");
+        WCHAR need1[MAX_PATH], need2[MAX_PATH];
+        if (!arena && !star) {
+            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena and superstar mods.", m.name, m.type);
+            status(t);
             remove_tree(tmp, 0);
             return 0;
         }
+        swprintf_s(need1, MAX_PATH, L"%s\\%s", tmp, arena ? L"arena.pac" : L"ch.pac");
+        swprintf_s(need2, MAX_PATH, L"%s\\%s", tmp, arena ? L"banner.dds" : L"manifest.txt");
+        if (!exists(need1) || !exists(need2)) {
+            status(arena ? L"That arena mod is incomplete (it needs arena.pac and banner.dds)."
+                         : L"That superstar mod is incomplete (it needs ch.pac).");
+            remove_tree(tmp, 0);
+            return 0;
+        }
+        wcsncpy_s(kind, 32, arena ? L"Arenas" : L"Superstars", _TRUNCATE);
     }
     safe_id(m.id);
-    swprintf_s(parent, MAX_PATH, L"%s\\Mods\\Arenas", s_game);
+    swprintf_s(parent, MAX_PATH, L"%s\\Mods\\%s", s_game, kind);
     SHCreateDirectoryExW(NULL, parent, NULL);
     swprintf_s(dst, MAX_PATH, L"%s\\%s", parent, m.id);
     if (exists(dst)) remove_tree(dst, 1);  /* an older version: to the Recycle Bin */
@@ -269,7 +274,10 @@ static int install_file(const WCHAR *zip)
     }
     scan();
     fill();
-    swprintf_s(t, 512, L"Installed \"%s\". It is on the arena select pages after the game's own arenas.",
+    swprintf_s(t, 512, wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
+                                                 L"select (up to 50 superstar mods)."
+                                               : L"Installed \"%s\". It is on the arena select pages after the "
+                                                 L"game's own arenas.",
                m.name[0] ? m.name : m.id);
     status(t);
     return 1;

@@ -3,14 +3,19 @@
 # the superstar mods) and picks one; COM picks; the match plays. Screenshots
 # runs\<Name>_*.png, then the log's superstar / managers lines.
 # -NoSkip: no A after PLAY (the entrances play).
+# -Walk N: only walks the EXTRA list (N downs, a screenshot each: <Name>_wNN).
 # -Com: COM's pick goes through the M tile too (the same entry).
 #   superstar_test.ps1 [-Name ss1] [-Down 5] [-Shots 10] [-Com]
-param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip)
+param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "")
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
-$env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_arena"
-robocopy (Join-Path $runs "test_userdata_arena_snap") $env:SVR2011_USER_DATA /MIR /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+# -UserData <folder under runs>: that save folder as it is (no restore)
+if ($UserData) { $env:SVR2011_USER_DATA = Join-Path $runs $UserData }
+else {
+    $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_arena"
+    robocopy (Join-Path $runs "test_userdata_arena_snap") $env:SVR2011_USER_DATA /MIR /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+}
 $s = Join-Path $tools "arena_session.ps1"
 $nav = Join-Path $tools "arena_nav.ps1"
 try {
@@ -18,6 +23,10 @@ try {
     & $nav -Keys "BACK@45,START@40,A@6,START@10" | Out-Null                 # main menu
     & $nav -Keys "A@5,A@3,A@10,A@4" | Out-Null                             # PLAY > ONE ON ONE > NORMAL, 1P side
     & $nav -Keys "DOWN@1.5,DOWN@1.5,RIGHT@1.5,RIGHT@1.5,A@4" -Shot "${Name}_list" | Out-Null   # the M tile
+    if ($Walk -gt 0) {
+        for ($i = 1; $i -le $Walk; $i++) { & $nav -Keys "DOWN@1.2" -Shot ("{0}_w{1:D2}" -f $Name, $i) | Out-Null }
+        return
+    }
     if ($Down -gt 0) { & $nav -Keys ((1..$Down | ForEach-Object { "DOWN@1.5" }) -join ",") | Out-Null }
     & $s shot "${Name}_pick" | Out-Null
     & $nav -Keys "A@4" -Shot "${Name}_picked" | Out-Null                   # pick (attire)

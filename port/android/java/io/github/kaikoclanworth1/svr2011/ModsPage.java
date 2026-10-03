@@ -1,8 +1,10 @@
 // WWE SmackDown vs. Raw 2011 - the launcher's Mods tab on the phone (as the PC
 // launcher's, arenas branch): installed mods in the game folder's
-// Mods/Arenas/<id> (manifest.txt, arena.pac, banner.dds; a "disabled" file
-// turns one off), a switch for each, Remove, and Add a .svrmod (a zip) picked
-// from the phone. Mods are made on the PC with the SvR2011 Mod Maker.
+// Mods/Arenas/<id> (manifest.txt, arena.pac, banner.dds) and Mods/Superstars/<id>
+// (manifest.txt, ch.pac, maybe a theme song and an entrance movie); a
+// "disabled" file turns one off. A switch for each, Remove, and Add a .svrmod
+// (a zip) picked from the phone. Mods are made on the PC with the SvR2011 Mod
+// Maker.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -37,12 +39,14 @@ final class ModsPage {
     ModsPage(LauncherActivity a) { a_ = a; }
 
     static File arenasFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Arenas"); }
+    static File superstarsFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Superstars"); }
 
     View view() {
         LinearLayout c = a_.column();
-        TextView about = a_.text("Custom arenas made with the SvR2011 Mod Maker on the PC. In the game they are on "
-            + "the arena select pages after the game's own arenas: move right past the last arena. Changes apply "
-            + "the next time the game starts.", 14, LauncherActivity.kDim);
+        TextView about = a_.text("Custom arenas and superstars made with the SvR2011 Mod Maker on the PC. Arenas are "
+            + "on the arena select pages after the game's own arenas (move right past the last arena); superstars are "
+            + "under the M tile of the character select (up to 50). Changes apply the next time the game starts.",
+            14, LauncherActivity.kDim);
         about.setPadding(a_.dp(4), a_.dp(6), a_.dp(4), a_.dp(4));
         c.addView(about);
         Button add = a_.button("Add a mod (.svrmod)…", LauncherActivity.kRed);
@@ -70,8 +74,13 @@ final class ModsPage {
 
     void refresh() {
         installed_.removeAllViews();
-        File[] dirs = arenasFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
-        if (dirs == null || dirs.length == 0) {
+        File[] arenas = arenasFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
+        File[] stars = superstarsFolder().listFiles(f -> f.isDirectory() && new File(f, "ch.pac").isFile());
+        File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)];
+        int k = 0;
+        if (arenas != null) for (File f : arenas) dirs[k++] = f;
+        if (stars != null) for (File f : stars) dirs[k++] = f;
+        if (dirs.length == 0) {
             TextView none = a_.text("None yet.", 15, LauncherActivity.kDim);
             none.setPadding(0, a_.dp(14), 0, a_.dp(14));
             installed_.addView(none);
@@ -81,9 +90,11 @@ final class ModsPage {
         for (File d : dirs) {
             Map<String, String> m = manifest(d);
             String name = m.containsKey("name") ? m.get("name") : d.getName();
-            String hint = "Arena" + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
+            boolean star = new File(d, "ch.pac").isFile();
+            String hint = (star ? "Superstar" : "Arena")
+                + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
-                + ", " + FileOps.human(new File(d, "arena.pac").length());
+                + ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length());
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
             on.setChecked(!new File(d, "disabled").exists());
@@ -130,7 +141,7 @@ final class ModsPage {
             a_.status("Adding the mod…");
             a_.background(() -> {
                 try {
-                    result[0] = "Installed " + install(uri) + ". It is on the arena select pages from the next game start.";
+                    result[0] = "Installed " + install(uri) + " (from the next game start).";
                 } catch (Exception e) {
                     result[0] = "That mod could not be added: " + e.getMessage();
                 }
@@ -141,7 +152,8 @@ final class ModsPage {
         });
     }
 
-    // A .svrmod: manifest.txt (type=arena, id=...), arena.pac, banner.dds.
+    // A .svrmod: manifest.txt (type=arena or superstar, id=...) and its files -
+    // arena.pac and banner.dds, or ch.pac and the song= / movie= files.
     String install(Uri uri) throws IOException {
         File tmp = new File(a_.getCacheDir(), "mod.part");
         Map<String, File> parts = new HashMap<>();
@@ -156,7 +168,7 @@ final class ModsPage {
                 if (e.isDirectory()) continue;
                 String n = e.getName();
                 n = n.substring(n.lastIndexOf('/') + 1);
-                if (!n.equals("manifest.txt") && !n.equals("info.txt") && !n.equals("arena.pac") && !n.equals("banner.dds")) continue;
+                if (n.isEmpty() || n.startsWith(".")) continue;
                 File out = new File(stage, n);
                 try (OutputStream o = new FileOutputStream(out)) {
                     FileOps.copy(zip, o);
@@ -165,16 +177,18 @@ final class ModsPage {
             }
         }
         tmp.delete();
-        if (!parts.containsKey("arena.pac")) throw new IOException("it has no arena (not a SvR2011 mod?)");
         Map<String, String> m = manifest(stage);
-        String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "arena";
-        if (id.isEmpty()) id = "arena";
-        File dest = new File(arenasFolder(), id);
+        boolean star = "superstar".equalsIgnoreCase(m.get("type"));
+        if (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))
+            throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
+        String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
+        if (id.isEmpty()) id = star ? "superstar" : "arena";
+        File dest = new File(star ? superstarsFolder() : arenasFolder(), id);
         deleteTree(dest);
         dest.getParentFile().mkdirs();
         FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)
         deleteTree(stage);
-        if (!new File(dest, "arena.pac").isFile()) throw new IOException("can't write to the game folder");
+        if (!new File(dest, star ? "ch.pac" : "arena.pac").isFile()) throw new IOException("can't write to the game folder");
         return m.containsKey("name") ? m.get("name") : id;
     }
 }

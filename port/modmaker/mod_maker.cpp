@@ -10,6 +10,9 @@
 //   Install into game   the same folder straight into <game>/Mods/Arenas/<id>
 //   Arena Editor        the arena in 3D: objects, Ring Kit, lighting (editor.cpp)
 //   Open a mod          a saved .svrmod back into the editor
+// Superstars page: a new playable character from one of the game's superstars
+//   (its model or another ch.pac, a name, a theme song and an entrance movie),
+//   saved as a .svrmod or installed into <game>/Mods/Superstars/<id>
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -147,7 +150,7 @@ struct Project {
   std::map<std::string, Image> vs;
 };
 Project g_proj;
-int g_page = 0;  // 0 arenas, 1 editor, 2 VS screen
+int g_page = 0;  // 0 arenas, 1 editor, 2 VS screen, 3 superstars
 // test aid (--test-edit-save <file>): once the editor has its arena, editor::TestEdit,
 // name "Test Edit", save the mod there and quit
 std::wstring g_test_save;
@@ -703,6 +706,265 @@ void VsPage() {
 
 // ---------------------------------------------------------------- UI
 
+// ---------------------------------------------------------------- Superstars
+
+// A superstar mod (the game: src/superstar_mods.cpp, docs/SUPERSTAR_MODS.md):
+// a new playable character under the character select's M tile, made from
+// one of the game's superstars (its stats, moves, entrance motions and select
+// render) with its own model pac, name, theme song and entrance movie.
+// The .svrmod: manifest.txt (type=superstar, id, name, short, base, author,
+// version, song=, movie=), ch.pac, theme.<ext>, movie.bik.
+struct StarBase {
+  int id = 0;
+  std::string name;
+};
+std::vector<StarBase> g_star_bases;  // the playable superstars (select renders in DLC_HD.pac)
+bool g_star_loaded = false;
+struct StarProject {
+  int base = -1;  // index in g_star_bases
+  char name[32] = "", short_name[32] = "", author[64] = "", version[16] = "1.0";
+  std::wstring model, song, movie;  // files ("" model: the base's own)
+  ID3D11ShaderResourceView* render = nullptr;
+  int render_for = -1;
+};
+StarProject g_star;
+// test aids: --star <id> picks the base, --star-song / --star-movie <file>,
+// --test-star-save <file> saves the mod there and quits
+int g_star_start = 0;
+std::wstring g_star_test_save;
+
+std::string Upper(std::string s) {
+  for (char& c : s) c = char(std::toupper(uint8_t(c)));
+  return s;
+}
+
+// Names from chEtc.pac CHAR/DAT (260-byte records after a 4-byte header, the
+// full name at +34); the playable ones are those with a render in DLC_HD.pac.
+void LoadStarBases() {
+  g_star_loaded = true;
+  Bytes d;
+  Epac e;
+  std::map<int, std::string> names;
+  if (ReadFile(Utf8((fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac").wstring()), d) && EpacRead(d, e))
+    for (const auto& g : e.groups)
+      for (const auto& en : g.entries)
+        if (g.type == "CHAR" && en.name.rfind("DAT", 0) == 0) {
+          std::vector<PachEntry> pe;
+          if (!PachRead(en.data, pe)) continue;
+          for (const auto& x : pe) {
+            const Bytes r = Unpack(x.data);
+            if (r.size() >= 4 + 66) names[int(x.id)] = std::string(reinterpret_cast<const char*>(&r[4 + 34]), 0,
+                                                                   strnlen(reinterpret_cast<const char*>(&r[4 + 34]), 32));
+          }
+        }
+  Bytes h;
+  if (!ReadFile(Utf8((fs::path(g_game) / L"pac" / L"DLC_HD.pac").wstring()), h) || !EpacRead(h, e)) return;
+  for (const auto& g : e.groups)
+    if (g.type == "SSFA")
+      for (const auto& en : g.entries) {
+        const int id = std::atoi(en.name.c_str());
+        if (id < 100 || id > 321) continue;  // (attires 1000+, DLC ids)
+        g_star_bases.push_back({id, names.count(id) ? names[id] : "Superstar " + std::to_string(id)});
+      }
+  std::sort(g_star_bases.begin(), g_star_bases.end(),
+            [](const StarBase& a, const StarBase& b) { return a.name < b.name; });
+}
+
+// The base's select render (DLC_HD.pac SSFA/<id>) as a picture.
+void LoadStarRender() {
+  if (g_star.render) g_star.render->Release(), g_star.render = nullptr;
+  g_star.render_for = g_star.base;
+  if (g_star.base < 0) return;
+  Bytes h;
+  Epac e;
+  if (!ReadFile(Utf8((fs::path(g_game) / L"pac" / L"DLC_HD.pac").wstring()), h) || !EpacRead(h, e)) return;
+  char key[8];
+  std::snprintf(key, sizeof key, "%04d", g_star_bases[g_star.base].id);
+  for (const auto& g : e.groups)
+    if (g.type == "SSFA")
+      for (const auto& en : g.entries)
+        if (en.name == key) {
+          Image img;
+          if (DdsDecode(Unpack(en.data), img)) g_star.render = MakeTexture(img);  // (BPE-packed DDS)
+        }
+}
+
+std::string StarId() {
+  std::string id;
+  for (char c : std::string(g_star.name))
+    id += std::isalnum(uint8_t(c)) ? char(std::tolower(uint8_t(c))) : '_';
+  return id.empty() ? "superstar" : id;
+}
+
+// The mod's files. Everything is read on the UI thread (small, or one model pac).
+bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
+  if (g_star.base < 0) {
+    Log("Pick the superstar to start from.");
+    return false;
+  }
+  if (!g_star.name[0]) {
+    Log("Give the superstar a name.");
+    return false;
+  }
+  const StarBase& b = g_star_bases[g_star.base];
+  id = StarId();
+  Bytes ch;
+  const std::wstring model = !g_star.model.empty()
+                                 ? g_star.model
+                                 : (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(b.id) + L".pac")).wstring();
+  if (!ReadFile(Utf8(model), ch) || ch.size() < 0x4000 || std::memcmp(ch.data(), "EPK8", 4)) {
+    Log("The model is not a character model pac (EPK8): " + Utf8(model));
+    return false;
+  }
+  std::string man = "type=superstar\nid=" + id + "\nname=" + g_star.name + "\nshort=" +
+                    (g_star.short_name[0] ? g_star.short_name : g_star.name) + "\nbase=" + std::to_string(b.id) +
+                    "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n";
+  files.push_back({"ch.pac", std::move(ch)});
+  if (!g_star.song.empty()) {
+    Bytes s;
+    const std::string ext = Utf8(fs::path(g_star.song).extension().wstring());
+    if (!ReadFile(Utf8(g_star.song), s)) {
+      Log("Could not read the theme song.");
+      return false;
+    }
+    files.push_back({"theme" + ext, std::move(s)});
+    man += "song=theme" + ext + "\n";
+  }
+  if (!g_star.movie.empty()) {
+    Bytes m;
+    if (!ReadFile(Utf8(g_star.movie), m) || m.size() < 4 || std::memcmp(m.data(), "BIK", 3)) {
+      Log("The entrance movie must be a Bink file (.bik): the launcher's Movies tab makes them.");
+      return false;
+    }
+    files.push_back({"movie.bik", std::move(m)});
+    man += "movie=movie.bik\n";
+  }
+  files.insert(files.begin(), ZipEntry{"manifest.txt", Bytes(man.begin(), man.end())});
+  return true;
+}
+
+void SaveStar() {
+  std::string id;
+  std::vector<ZipEntry> files;
+  if (!BuildStar(id, files)) return;
+  const COMDLG_FILTERSPEC spec[] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"}};
+  const std::wstring f = PickFile(true, L"Save the superstar mod", spec, 1, L"svrmod",
+                                  (std::wstring(id.begin(), id.end()) + L".svrmod").c_str());
+  if (f.empty()) return;
+  if (WriteFile(Utf8(f), ZipWrite(files))) Log("Saved " + Utf8(f) + " (add it in the launcher's Mods tab with +).");
+  else Log("The mod could not be written.");
+}
+
+void InstallStar(bool start) {
+  if (start && FindWindowW(nullptr, L"WWE SmackDown vs. Raw 2011")) {
+    Log("The game is running: close it first (mods load when it starts).");
+    return;
+  }
+  std::string id;
+  std::vector<ZipEntry> files;
+  if (!BuildStar(id, files)) return;
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(id);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  for (const auto& f : files)
+    if (!WriteFile(Utf8((dir / fs::u8path(f.name)).wstring()), f.data)) {
+      Log("Could not write into " + Utf8(dir.wstring()) + " (is the game running?)");
+      return;
+    }
+  Log("Installed into the game: character select, M tile (" + Utf8(dir.wstring()) + ").");
+  if (start) {
+    const std::wstring exe = (fs::path(g_game) / L"svr2011.exe").wstring();
+    STARTUPINFOW si = {sizeof si};
+    PROCESS_INFORMATION pi = {};
+    std::wstring cmd = L"\"" + exe + L"\"";
+    if (CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, g_game.c_str(), &si, &pi)) {
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+      Log("The game is starting: PLAY, then the M tile on the character select.");
+    }
+  }
+}
+
+void StarPage() {
+  if (!g_star_loaded) {
+    LoadStarBases();
+    for (int i = 0; i < int(g_star_bases.size()); ++i)
+      if (g_star_bases[i].id == g_star_start) {
+        g_star.base = i;
+        std::snprintf(g_star.name, sizeof g_star.name, "Test %s", g_star_bases[i].name.c_str());
+      }
+    if (!g_star_test_save.empty()) {
+      std::string id;
+      std::vector<ZipEntry> files;
+      if (BuildStar(id, files) && WriteFile(Utf8(g_star_test_save), ZipWrite(files)))
+        Log("test: saved " + Utf8(g_star_test_save));
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    }
+  }
+  if (g_star.render_for != g_star.base) LoadStarRender();
+  const float scale = ImGui::GetFontSize() / 13.0f;
+  ImGui::Text("New superstar");
+  ImGui::TextDisabled("A new playable character under the M tile of the character select (up to 50 mods).");
+  ImGui::Separator();
+  ImGui::BeginGroup();
+  ImGui::PushItemWidth(320 * scale);
+  const char* cur = g_star.base >= 0 ? g_star_bases[g_star.base].name.c_str() : "(pick one)";
+  if (ImGui::BeginCombo("Start from", cur)) {
+    for (int i = 0; i < int(g_star_bases.size()); ++i)
+      if (ImGui::Selectable((g_star_bases[i].name + "##" + std::to_string(i)).c_str(), g_star.base == i)) {
+        g_star.base = i;
+        if (!g_star.name[0]) {
+          std::snprintf(g_star.name, sizeof g_star.name, "%s", g_star_bases[i].name.c_str());
+        }
+      }
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Its stats, moves, entrance motions and select picture; its model unless you pick one.");
+  ImGui::InputText("Name", g_star.name, sizeof g_star.name);
+  ImGui::InputText("Short name", g_star.short_name, sizeof g_star.short_name);
+  ImGui::InputText("Author", g_star.author, sizeof g_star.author);
+  ImGui::InputText("Version", g_star.version, sizeof g_star.version);
+  ImGui::PopItemWidth();
+  ImGui::Separator();
+  auto file_row = [&](const char* label, std::wstring& f, const char* none, const COMDLG_FILTERSPEC* spec,
+                      UINT n) {
+    ImGui::PushID(label);
+    if (ImGui::Button(label, ImVec2(200 * scale, 0))) {
+      const std::wstring p = PickFile(false, std::wstring(label, label + std::strlen(label)).c_str(), spec, n);
+      if (!p.empty()) f = p;
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(f.empty() ? none : Utf8(fs::path(f).filename().wstring()).c_str());
+    if (!f.empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) f.clear();
+    }
+    ImGui::PopID();
+  };
+  const COMDLG_FILTERSPEC pac[] = {{L"Character model pac (*.pac)", L"*.pac"}};
+  const COMDLG_FILTERSPEC song[] = {{L"Songs", L"*.mp3;*.m4a;*.aac;*.wav;*.flac;*.wma;*.ogg"}};
+  const COMDLG_FILTERSPEC bik[] = {{L"Bink movie (*.bik)", L"*.bik"}};
+  file_row("Model (ch.pac)...", g_star.model, "the base superstar's own", pac, 1);
+  file_row("Theme song...", g_star.song, "the base superstar's", song, 1);
+  file_row("Entrance movie...", g_star.movie, "the base superstar's", bik, 1);
+  ImGui::TextDisabled("Entrance movies are .bik files: make them in the launcher's Movies tab.");
+  ImGui::Separator();
+  ImGui::BeginDisabled(g_busy);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
+  if (ImGui::Button("Save as mod (.svrmod)...", ImVec2(260 * scale, 0))) SaveStar();
+  ImGui::PopStyleColor();
+  if (ImGui::Button("Install into game", ImVec2(260 * scale, 0))) InstallStar(false);
+  if (ImGui::Button("Test in game", ImVec2(260 * scale, 0))) InstallStar(true);
+  ImGui::EndDisabled();
+  ImGui::EndGroup();
+  if (g_star.render) {
+    ImGui::SameLine();
+    ImGui::Image(Tex(g_star.render), ImVec2(256 * scale, 256 * scale));
+  }
+}
+
 void Style() {
   ImGuiStyle& s = ImGui::GetStyle();
   ImGui::StyleColorsDark();
@@ -779,8 +1041,8 @@ void Draw() {
   }
   if (g_test_state == 2 && !g_busy) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
   ImGui::BeginChild("rail", ImVec2(rail, -logh), true);
-  for (int p = 0; p < 3; ++p) {
-    const char* names[] = {"Arenas", "Arena Editor", "VS screen"};
+  for (int p = 0; p < 4; ++p) {
+    const char* names[] = {"Arenas", "Arena Editor", "VS screen", "Superstars"};
     if (g_page == p) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
     if (ImGui::Button(names[p], ImVec2(-1, 0))) {
       if (p == 1 && !g_proj.edited) OpenEditor(g_sel);
@@ -790,7 +1052,7 @@ void Draw() {
   }
   ImGui::Separator();
   ImGui::BeginDisabled();
-  for (const char* t : {"Titantron videos", "Crowd & signs", "Menus & renders", "Audio", "Wrestlers"})
+  for (const char* t : {"Titantron videos", "Crowd & signs", "Menus & renders", "Audio"})
     ImGui::Button(t, ImVec2(-1, 0));
   ImGui::EndDisabled();
   ImGui::TextDisabled("later");
@@ -803,6 +1065,10 @@ void Draw() {
   } else if (g_page == 2) {
     ImGui::BeginChild("vs", ImVec2(0, -logh), true);
     VsPage();
+    ImGui::EndChild();
+  } else if (g_page == 3) {
+    ImGui::BeginChild("stars", ImVec2(0, -logh), true);
+    StarPage();
     ImGui::EndChild();
   } else {
   // grid
@@ -930,6 +1196,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--new-arena")) start_new = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--test-lib")) g_test_lib = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--page")) start_page = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--star")) g_star_start = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--star-song")) g_star.song = argv[i + 1];
+    if (!wcscmp(argv[i], L"--star-movie")) g_star.movie = argv[i + 1];
+    if (!wcscmp(argv[i], L"--test-star-save")) g_star_test_save = argv[i + 1];
   }
   WNDCLASSEXW wc = {sizeof wc, CS_CLASSDC, WndProc, 0, 0, inst, LoadIconW(inst, MAKEINTRESOURCEW(1)), nullptr,
                     nullptr, nullptr, L"SvR2011ModMaker", nullptr};
@@ -978,6 +1248,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     OpenEditor(start_editor);
   }
   editor::TestStart(start_view, Utf8(start_select));  // (before the arena is set)
+  if (start_page >= 0 && start_mod.empty()) g_page = start_page;
   if (!start_mod.empty()) {
     OpenModFile(start_mod);
     if (start_page >= 0) g_page = start_page;
