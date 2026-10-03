@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -160,49 +161,76 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     paths.config_path = config;
   }
   g_config_path = paths.config_path;
+  // The settings a fresh install starts with, for this platform.
+  std::string config = kDefaultConfig;
 #if defined(__ANDROID__)
-  // The phone's render cost: the Xbox 360's 720p without supersampling
-  // (at the screen's 1080p it rendered 3x, 30-45 fps); the GRAPHICS page
-  // raises it. Added to settings files from before.
-  if (std::filesystem::exists(paths.config_path)) {
-    std::ifstream in(paths.config_path);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    in.close();
-    std::ofstream out(paths.config_path, std::ios::app);
-    if (!text.empty() && text.back() != '\n') out << '\n';
-    if (text.find("native_max_scale") == std::string::npos) out << "native_max_scale = 1\n";
-    if (text.find("native_2x_msaa") == std::string::npos) out << "native_2x_msaa = false\n";
-  }
+  // The phone: Vulkan, SDL controllers, the whole screen, and the Xbox 360's
+  // 720p render cost (at the screen's 1080p it rendered 3x, 30-45 fps; the
+  // GRAPHICS page raises it).
+  config.replace(config.find("input_backend = \"xinput\""), 24, "input_backend = \"sdl\"");
+  config += "gpu_backend = \"vulkan\"\n";
+  config += "native_max_scale = 1\n";
+  config += "native_2x_msaa = false\n";
+  config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
 #else
   // The PC keyboard plays as player 1's controller too (the SDK's keyboard
-  // driver: keybind_* in the settings). Added to settings files from before.
-  if (std::filesystem::exists(paths.config_path)) {
-    std::ifstream in(paths.config_path);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    in.close();
-    if (text.find("mnk_mode") == std::string::npos) {
-      std::ofstream out(paths.config_path, std::ios::app);
-      if (!text.empty() && text.back() != '\n') out << '\n';
-      out << "mnk_mode = true\n";
-    }
-  }
+  // driver: keybind_* in the settings).
+  config += "mnk_mode = true\n";
 #endif
-  if (!std::filesystem::exists(paths.config_path)) {
-    std::string config = kDefaultConfig;
-#if defined(__ANDROID__)
-    // The phone: Vulkan, SDL controllers, the whole screen.
-    config.replace(config.find("input_backend = \"xinput\""), 24, "input_backend = \"sdl\"");
-    config += "gpu_backend = \"vulkan\"\n";
-    config += "native_max_scale = 1\n";
-    config += "native_2x_msaa = false\n";
+  if (svr2011::IsSteamDeck()) {  // its screen is the window
     config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
-#else
-    config += "mnk_mode = true\n";
-#endif
-    if (svr2011::IsSteamDeck()) {  // its screen is the window
-      config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
-    }
+  }
+  if (!std::filesystem::exists(paths.config_path)) {
     std::ofstream(paths.config_path) << config;
+  } else {
+    // A settings file from before, or one written by a launcher with only
+    // the keys it changed (the Android app saves its settings on Play, before
+    // the game has ever run: no gpu_plugin, so nothing could draw - a black
+    // screen): the defaults it lacks are added (top-level keys only).
+    std::ifstream in(paths.config_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    auto key_of = [](const std::string& line) {
+      const size_t a = line.find_first_not_of(" \t");
+      const size_t eq = line.find('=');
+      if (a == std::string::npos || eq == std::string::npos || line[a] == '#' || line[a] == '[') return std::string();
+      size_t e = eq;
+      while (e > a && (line[e - 1] == ' ' || line[e - 1] == '\t')) --e;
+      return line.substr(a, e - a);
+    };
+    std::vector<std::string> have;
+    size_t section = std::string::npos;  // where the first [section] starts
+    for (size_t pos = 0; pos < text.size();) {
+      const size_t nl = text.find('\n', pos);
+      const std::string line = text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+      const size_t a = line.find_first_not_of(" \t");
+      if (a != std::string::npos && line[a] == '[') {
+        section = pos;
+        break;
+      }
+      if (std::string k = key_of(line); !k.empty()) have.push_back(k);
+      if (nl == std::string::npos) break;
+      pos = nl + 1;
+    }
+    std::string missing;
+    for (size_t pos = 0; pos < config.size();) {
+      const size_t nl = config.find('\n', pos);
+      const std::string line = config.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+      const std::string k = key_of(line);
+      if (!k.empty() && std::find(have.begin(), have.end(), k) == have.end()) missing += line + "\n";
+      if (nl == std::string::npos) break;
+      pos = nl + 1;
+    }
+    if (!missing.empty()) {
+      REXLOG_INFO("settings: added the defaults {} lacked:\n{}", paths.config_path.string(), missing);
+      if (section == std::string::npos) {
+        if (!text.empty() && text.back() != '\n') text += '\n';
+        text += missing;
+      } else {
+        text.insert(section, missing);  // (top-level keys go before the first [section])
+      }
+      std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
+    }
   }
   svr2011::PrepareOnlineSettings(paths.config_path, exe_dir);  // (online.h)
 }
