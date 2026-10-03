@@ -726,6 +726,7 @@ struct StarProject {
   std::wstring model, song, movie;  // files ("" model: the base's own)
   std::wstring voice;               // a recording of the name, for the ring announcer
   std::wstring attires[4];          // [1..3]: attires 2-4 from other model pacs (their first attire)
+  char attire_names[4][32] = {};    // [1..3]: their names on CHANGE ATTIRE ("" = ATTIRE N)
   ID3D11ShaderResourceView* render = nullptr;
   int render_for = -1;
   // its own select picture (else the base's): 512 x 512 and the 256 x 256 bust
@@ -983,6 +984,8 @@ bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
     const std::string n = "attire" + std::to_string(a + 1) + ".pac";
     files.push_back({n, std::move(pac)});
     man += "attire" + std::to_string(a + 1) + "=" + n + "\n";
+    if (g_star.attire_names[a][0])
+      man += "attire" + std::to_string(a + 1) + "_name=" + g_star.attire_names[a] + "\n";
   }
   if (!g_star.voice.empty()) {
     Bytes v;
@@ -1134,6 +1137,12 @@ void StarPage() {
   for (int a = 1; a < 4; ++a) {
     const std::string label = "Attire " + std::to_string(a + 1) + " (ch.pac)...";
     file_row(label.c_str(), g_star.attires[a], "none", pac, 1);
+    if (!g_star.attires[a].empty()) {
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(160 * scale);
+      ImGui::InputTextWithHint(("##an" + std::to_string(a)).c_str(), ("ATTIRE " + std::to_string(a + 1)).c_str(),
+                               g_star.attire_names[a], sizeof g_star.attire_names[a]);
+    }
   }
   ImGui::TextDisabled("Attire 1 is the model above; each extra attire is another pac's first attire.");
   file_row("Name recording...", g_star.voice, "none (the name call above)", song, 1);
