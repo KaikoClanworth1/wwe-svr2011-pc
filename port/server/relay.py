@@ -70,6 +70,7 @@ class Relay:
         self.service, self.log = service, log
         self.games = {}  # id -> Game (with a download open)
         self.relayed = 0
+        self.sessions = 0  # games that came on since the start
 
     @staticmethod
     def game_id(request):
@@ -103,6 +104,9 @@ class Relay:
                                            "Cache-Control": "no-store", "X-Accel-Buffering": "no"})
         await resp.prepare(request)
         self.log("relay: %s (%s) on from %s, %d game(s)" % (gid.hex(), account["name"], ip, len(self.games)))
+        if not old:
+            self.sessions += 1
+        self.service.stats.relay_games(len(self.games), came_on=not old)
         try:
             await resp.write(frame(packet(WELCOME, self.address(ip))))
             while True:
@@ -124,6 +128,7 @@ class Relay:
         finally:
             if self.games.get(gid) is game:
                 del self.games[gid]
+                self.service.stats.relay_games(len(self.games))
                 self.log("relay: %s off, %d game(s)" % (gid.hex(), len(self.games)))
         return resp
 
@@ -157,6 +162,7 @@ class Relay:
                     elif to in self.games:
                         self.games[to].put(out)
                         self.relayed += 1
+                        self.service.stats.count("relayed")
         except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.CancelledError):
             pass
         return web.Response(status=200)

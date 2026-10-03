@@ -54,6 +54,7 @@ LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{2,14}$")  # 3-15, what the game can show
 XUID_BASE = 0x0009000100000000  # + account id: the player's XUID on every device
 PBKDF2_ROUNDS = 240000
+MAX_FRIENDS = 200  # (a player's list)
 
 
 def now():
@@ -79,6 +80,9 @@ class Accounts:
                 CREATE TABLE IF NOT EXISTS sessions (
                     token TEXT PRIMARY KEY, account INTEGER, created REAL, last_used REAL, ip TEXT);
                 CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account);
+                CREATE TABLE IF NOT EXISTS friends (
+                    account INTEGER, friend INTEGER, created REAL, PRIMARY KEY (account, friend));
+                CREATE INDEX IF NOT EXISTS friends_friend ON friends (friend);
             """)
             self.db.commit()
         self.cache = {}  # token hash -> (account row, cached at)
@@ -205,10 +209,44 @@ class Accounts:
                 removed += 1
         with self.lock:
             self.db.execute("DELETE FROM sessions WHERE account = ?", (account_id,))
+            self.db.execute("DELETE FROM friends WHERE account = ? OR friend = ?", (account_id, account_id))
             self.db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
             self.db.commit()
         self.cache.clear()
         return removed
+
+    # friends: each player's own list (adding someone needs no answer from them;
+    # they see who added them, to add them back)
+
+    def by_name(self, name):
+        with self.lock:
+            return self._row(self.db.execute(
+                "SELECT id, name, profileid, created, last_seen, banned, ip FROM accounts WHERE name = ?",
+                (name,)).fetchone())
+
+    def friends(self, account_id):
+        """(the accounts this one added, the accounts that added this one)"""
+        cols = "a.id, a.name, a.profileid, a.created, a.last_seen, a.banned, a.ip"
+        with self.lock:
+            mine = self.db.execute("SELECT %s FROM friends f JOIN accounts a ON a.id = f.friend "
+                                   "WHERE f.account = ? ORDER BY a.name COLLATE NOCASE" % cols, (account_id,)).fetchall()
+            theirs = self.db.execute("SELECT %s FROM friends f JOIN accounts a ON a.id = f.account "
+                                     "WHERE f.friend = ? ORDER BY a.name COLLATE NOCASE" % cols,
+                                     (account_id,)).fetchall()
+        return [self._row(r) for r in mine], [self._row(r) for r in theirs]
+
+    def add_friend(self, account_id, friend_id):
+        with self.lock:
+            if self.db.execute("SELECT COUNT(*) FROM friends WHERE account = ?", (account_id,)).fetchone()[0] >= MAX_FRIENDS:
+                return False
+            self.db.execute("INSERT OR IGNORE INTO friends VALUES (?, ?, ?)", (account_id, friend_id, now()))
+            self.db.commit()
+        return True
+
+    def remove_friend(self, account_id, friend_id):
+        with self.lock:
+            self.db.execute("DELETE FROM friends WHERE account = ? AND friend = ?", (account_id, friend_id))
+            self.db.commit()
 
     def all(self):
         with self.lock:
@@ -223,6 +261,9 @@ class Stats:
     """Per-minute counters of the game's traffic, kept in the database (the
     dashboard's history), plus the live gauges."""
 
+    RELAY_COLUMNS = ("games", "sessions", "relayed")
+    COLUMNS = ("requests", "bytes_in", "bytes_out", "peak", "players", "uploads", "downloads") + RELAY_COLUMNS
+
     def __init__(self, store):
         self.db = store.db
         self.lock = store.lock
@@ -234,6 +275,12 @@ class Stats:
                     logins INTEGER, registrations INTEGER, refused INTEGER);
                 CREATE TABLE IF NOT EXISTS player_days (day TEXT, account INTEGER, PRIMARY KEY (day, account));
             """)
+            # (online play through the relay, added later: games open at once, games
+            # that came on, packets passed on)
+            have = {r[1] for r in self.db.execute("PRAGMA table_info(stats)")}
+            for column in self.RELAY_COLUMNS:
+                if column not in have:
+                    self.db.execute("ALTER TABLE stats ADD COLUMN %s INTEGER DEFAULT 0" % column)
             self.db.commit()
         self.active = 0
         self.peak = 0
@@ -243,6 +290,14 @@ class Stats:
         self.total_in = 0
         self.total_out = 0
         self.started = now()
+        self.games = 0        # relay games open now
+
+    def relay_games(self, n, came_on=False):
+        """The relay's games open now (and one more came on)."""
+        self.games = n
+        self.minute["games"] = max(self.minute["games"], n)
+        if came_on:
+            self.minute["sessions"] += 1
 
     @staticmethod
     def _zero():
@@ -284,28 +339,42 @@ class Stats:
         m, self.minute = self.minute, self._zero()
         t = int(now() // 60 * 60) - 60
         row = (t, m["requests"], m["bytes_in"], m["bytes_out"], self.peak, self.players_online(),
-               m["uploads"], m["downloads"], m["logins"], m["registrations"], m["refused"])
+               m["uploads"], m["downloads"], m["logins"], m["registrations"], m["refused"],
+               max(m["games"], self.games), m["sessions"], m["relayed"])
         self.peak = self.active
         with self.lock:
-            self.db.execute("INSERT OR REPLACE INTO stats VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+            self.db.execute("INSERT OR REPLACE INTO stats (t, requests, bytes_in, bytes_out, peak, players, uploads, "
+                            "downloads, logins, registrations, refused, games, sessions, relayed) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
             self.db.commit()
 
     def history(self, span, buckets):
-        """[(t, requests, bytes_in, bytes_out, peak, players, uploads, downloads)] over the last
-        `span` seconds, in `buckets` equal steps (sums; peak and players: max)."""
+        """[(t, requests, bytes_in, bytes_out, peak, players, uploads, downloads, games, sessions,
+        relayed)] over the last `span` seconds, in `buckets` equal steps (sums; peak, players and
+        games: max)."""
         start = int(now() - span)
         step = max(60, span // buckets)
         with self.lock:
             rows = self.db.execute(
-                "SELECT (t - ?) / ? AS b, MIN(t), SUM(requests), SUM(bytes_in), SUM(bytes_out), MAX(peak), "
-                "MAX(players), SUM(uploads), SUM(downloads) FROM stats WHERE t >= ? GROUP BY b ORDER BY b",
+                "SELECT (t - ?) / ? AS b, SUM(requests), SUM(bytes_in), SUM(bytes_out), MAX(peak), "
+                "MAX(players), SUM(uploads), SUM(downloads), MAX(games), SUM(sessions), SUM(relayed) "
+                "FROM stats WHERE t >= ? GROUP BY b ORDER BY b",
                 (start, step, start)).fetchall()
         got = {r[0]: r[1:] for r in rows}
+        n = len(self.COLUMNS)
         out = []
         for b in range(buckets):
             r = got.get(b)
-            out.append([start + b * step] + ([0] * 8 if r is None else [r[i] or 0 for i in range(1, 9)]))
+            out.append([start + b * step] + ([0] * n if r is None else [v or 0 for v in r]))
         return step, out
+
+    def totals(self, since=0):
+        """Sums over the history since `since` (all of it by default)."""
+        with self.lock:
+            r = self.db.execute("SELECT SUM(uploads), SUM(downloads), SUM(sessions), SUM(relayed), "
+                                "MAX(games), MAX(players) FROM stats WHERE t >= ?", (since,)).fetchone()
+        return {k: v or 0 for k, v in zip(("uploads", "downloads", "sessions", "relayed", "max_games",
+                                             "max_players"), r)}
 
     def unique_players(self, days):
         with self.lock:
@@ -441,6 +510,60 @@ class Service:
         self.stats.count("logins")
         return web.json_response({"ok": True, "name": account["name"], "profileid": account["profileid"],
                                   "ticket": ticket, "xuid": "%016X" % Accounts.xuid(account)})
+
+    # friends and who's online (the launchers' Friends list)
+
+    def presence(self, account_id):
+        """playing: in an online match or its lobby (its game has the relay open);
+        online: in the game's ONLINE menus (game requests in the last 5 minutes);
+        else offline. (The launchers' own requests don't count.)"""
+        if any(g.account["id"] == account_id for g in self.relay.games.values()):
+            return "playing"
+        if now() - self.stats.recent.get(account_id, 0) < 300:
+            return "online"
+        return "offline"
+
+    def friends_json(self, account):
+        mine, theirs = self.accounts.friends(account["id"])
+        added = {a["id"] for a in mine}
+        friends = [{"name": a["name"], "status": self.presence(a["id"]), "last_seen": a["last_seen"],
+                    "mutual": any(t["id"] == a["id"] for t in theirs)} for a in mine if not a["banned"]]
+        friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
+        return {
+            "ok": True,
+            "friends": friends,
+            "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
+        }
+
+    def token_account(self, request):
+        """The signed-in account, without counting it as playing (the launchers)."""
+        auth = request.headers.get("Authorization", "")
+        return self.accounts.from_token(auth[7:].strip()) if auth.startswith("Bearer ") else None
+
+    async def api_friends(self, request):
+        account = self.token_account(request)
+        if not account:
+            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+            name = str(body.get("add") or body.get("remove") or "").strip()
+            other = self.accounts.by_name(name) if name else None
+            if not other or other["banned"]:
+                return web.json_response({"ok": False, "error": "There's no player called %s." % name[:20]},
+                                         status=404)
+            if other["id"] == account["id"]:
+                return web.json_response({"ok": False, "error": "That's you."}, status=400)
+            if body.get("add"):
+                if not self.accounts.add_friend(account["id"], other["id"]):
+                    return web.json_response({"ok": False, "error": "Your list is full (%d)." % MAX_FRIENDS},
+                                             status=400)
+                gs.log("friends: %s added %s" % (account["name"], other["name"]))
+            else:
+                self.accounts.remove_friend(account["id"], other["id"])
+        return web.json_response(self.friends_json(account))
 
     async def api_status(self, request):
         return web.json_response({"ok": True, "server": "svr2011-community", "version": 1})
@@ -630,6 +753,9 @@ class Service:
                                           "JOIN blobs b ON b.sha = l.sha").fetchone()
         accounts = self.accounts.all()
         records = sum(len(t) for name, t in self.store.records.items() if name == "UserContent")
+        with self.store.lock:
+            downloads = sum(f[1] or 0 for f in self.store.files.values())
+        today = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
         return web.json_response({
             "now": {
                 "connections": self.stats.active, "max_connections": self.max_connections,
@@ -638,7 +764,10 @@ class Service:
                 "bytes_in": self.stats.total_in, "bytes_out": self.stats.total_out,
                 "since": self.stats.started,
                 "relay_games": len(self.relay.games), "relayed_packets": self.relay.relayed,
+                "relay_sessions": self.relay.sessions,
             },
+            "totals": {"all": self.stats.totals(), "today": self.stats.totals(today),
+                       "file_downloads": downloads},
             "players": {
                 "accounts": len(accounts),
                 "banned": sum(1 for a in accounts if a["banned"]),
@@ -651,8 +780,7 @@ class Service:
                 "free": self._free_space(),
             },
             "history": {"step": step, "rows": history,
-                        "columns": ["t", "requests", "bytes_in", "bytes_out", "peak", "players",
-                                    "uploads", "downloads"]},
+                        "columns": ["t"] + list(Stats.COLUMNS)},
         })
 
     def _free_space(self):
@@ -760,6 +888,8 @@ class Service:
         app.router.add_post(b + "/api/logout", self.api_logout)
         app.router.add_route("*", b + "/api/session", self.api_session)
         app.router.add_get(b + "/api/status", self.api_status)
+        app.router.add_get(b + "/api/friends", self.api_friends)
+        app.router.add_post(b + "/api/friends", self.api_friends)
         app.router.add_route("*", b + "/api/logo/{hash}", self.api_logo)
         app.router.add_get(b + "/api/logos/wanted", self.api_logos_wanted)
         app.router.add_post(b + "/api/media", self.api_media_post)

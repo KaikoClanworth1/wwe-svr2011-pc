@@ -81,6 +81,10 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       <div class="s" id="s-acc"></div></div>
     <div class="tile"><div class="k">Uploads</div><div class="v" id="v-up">&ndash;</div>
       <div class="s" id="s-up"></div></div>
+    <div class="tile"><div class="k">Downloads</div><div class="v" id="v-down">&ndash;</div>
+      <div class="s" id="s-down"></div></div>
+    <div class="tile"><div class="k">Online play (relay)</div><div class="v" id="v-relay">&ndash;</div>
+      <div class="s" id="s-relay"></div></div>
   </div>
 
   <h2>History <span class="spacer"></span>
@@ -99,6 +103,9 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     <div class="chart"><div class="head"><span>Uploads / downloads</span><b id="t-files"></b></div>
       <canvas id="c-files"></canvas>
       <div class="legend"><i style="background:var(--warn)"></i>uploads<i style="background:var(--accent)"></i>downloads</div></div>
+    <div class="chart"><div class="head"><span>Online games (relay)</span><b id="t-games"></b></div>
+      <canvas id="c-games"></canvas>
+      <div class="legend"><i style="background:var(--accent)"></i>games open<i style="background:var(--warn)"></i>games joined</div></div>
   </div>
 
   <h2>Uploads <span class="spacer"></span><input class="filter" id="f-up" placeholder="Filter"></h2>
@@ -188,6 +195,11 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     draw('c-files', [{data: col('uploads'), color: cs.getPropertyValue('--warn').trim()},
                      {data: col('downloads'), color: cs.getPropertyValue('--accent').trim()}], String);
     el('t-files').textContent = sum(col('uploads')) + ' up · ' + sum(col('downloads')) + ' down';
+    if (hist.columns.indexOf('games') >= 0) {
+      draw('c-games', [{data: col('games'), color: cs.getPropertyValue('--accent').trim()},
+                       {data: col('sessions'), color: cs.getPropertyValue('--warn').trim()}], String);
+      el('t-games').textContent = 'peak ' + Math.max.apply(null, col('games')) + ' · ' + sum(col('sessions')) + ' joined';
+    }
   }
 
   function stats() {
@@ -208,6 +220,12 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       el('s-acc').textContent = p.banned ? p.banned + ' banned' : 'none banned';
       el('v-up').textContent = s.uploads;
       el('s-up').textContent = s.files + ' files · ' + s.logos + ' extra logos';
+      var t = d.totals || {all: {}, today: {}};
+      el('v-down').textContent = t.file_downloads != null ? t.file_downloads : '–';
+      el('s-down').textContent = (t.today.downloads || 0) + ' today · ' + (t.today.uploads || 0) + ' uploads today';
+      el('v-relay').innerHTML = (n.relay_games || 0) + '<small> game' + (n.relay_games === 1 ? '' : 's') + ' now</small>';
+      el('s-relay').textContent = (t.today.sessions || 0) + ' joined today · ' + (t.all.sessions || 0) + ' in all · ' +
+        (t.all.relayed || 0).toLocaleString() + ' packets';
       hist = d.history; charts();
       el('err').textContent = '';
     }).catch(function (e) { el('err').textContent = 'Stats: ' + e.message; });

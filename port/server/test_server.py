@@ -97,6 +97,31 @@ def main():
                              token=b_token)
         check(h.get("Sake-File-Result") == "0" and back == data,
               "download %d by the other player: %d bytes, %.0f ms" % (n, len(back), (time.time() - t) * 1000))
+    # a big upload in 2 MB parts (a story, a highlight reel): one record for all of them
+    parts = []
+    for size in (2 << 20, 100000):
+        body, ctype = multipart(os.urandom(size))
+        _, h, _ = request(server, "POST", "/game/SakeFileServer/upload.aspx?gameid=2886&pid=1", body,
+                          {"Content-Type": ctype}, a_token)
+        parts.append((h.get("Sake-File-Id"), size))
+
+    def create(total):
+        values = "".join('<ns1:RecordField><ns1:name>F%02d</ns1:name><ns1:value><ns1:intValue><ns1:value>%s'
+                         '</ns1:value></ns1:intValue></ns1:value></ns1:RecordField>' % (k, fid)
+                         for k, (fid, _) in enumerate(parts))
+        values += ('<ns1:RecordField><ns1:name>FileSize</ns1:name><ns1:value><ns1:intValue><ns1:value>%d'
+                   '</ns1:value></ns1:intValue></ns1:value></ns1:RecordField>' % total)
+        soap = ('<?xml version="1.0" encoding="UTF-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV='
+                '"http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://gamespy.net/sake"><SOAP-ENV:Body>'
+                '<ns1:CreateRecord><ns1:gameid>2886</ns1:gameid><ns1:tableid>UserContent</ns1:tableid>'
+                '<ns1:values>%s</ns1:values></ns1:CreateRecord></SOAP-ENV:Body></SOAP-ENV:Envelope>' % values)
+        _, _, reply = request(server, "POST", "/game/SakeStorageServer/StorageServer.asmx", soap.encode(),
+                              {"Content-Type": "text/xml", "SOAPAction": '"http://gamespy.net/sake/CreateRecord"'},
+                              a_token)
+        return reply.decode(errors="replace")
+    total = sum(size for _, size in parts)
+    check("Success" in create(total), "a record for an upload in 2 parts (%d bytes)" % total)
+    check("NoPermission" in create(total + 1), "one with the wrong size refused")
     body, ctype = multipart(os.urandom(9 << 20))
     status, h, _ = request(server, "POST", "/game/SakeFileServer/upload.aspx?gameid=2886&pid=1", body,
                            {"Content-Type": ctype}, a_token)
