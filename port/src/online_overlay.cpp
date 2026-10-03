@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -35,6 +36,8 @@
 #include <rex/system/kernel_state.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/keybinds.h>
+#include <rex/ui/window.h>
+#include <rex/ui/windowed_app_context.h>
 
 #include "generated/default/svr2011_init.h"
 #include "online_net.h"
@@ -229,6 +232,41 @@ bool g_poll_now = false;
 
 std::atomic<bool> g_toggle{false}, g_open{false}, g_wait_release{false};
 std::atomic<uint16_t> g_guest_pad{0};  // (OnlineOverlayPad)
+
+// Touches while it's open (a phone): taps, as fractions of the window, for the
+// next frame; every touch is the overlay's then (not the on-screen pad's).
+rex::ui::Window* g_window = nullptr;
+std::mutex g_tap_mutex;
+std::vector<ImVec2> g_taps;
+struct TouchDown {
+  float x, y;
+};
+std::map<uint32_t, TouchDown> g_downs;
+
+class OverlayTouch final : public rex::ui::WindowInputListener {
+ public:
+  void OnTouchEvent(rex::ui::TouchEvent& e) override {
+    using A = rex::ui::TouchEvent::Action;
+    if (!g_open || !g_window) return;
+    const float w = float(g_window->GetActualPhysicalWidth()), h = float(g_window->GetActualPhysicalHeight());
+    if (w <= 0 || h <= 0) return;
+    const float x = e.x() / w, y = e.y() / h;
+    std::lock_guard lock(g_tap_mutex);
+    if (e.action() == A::kDown) {
+      g_downs[e.pointer_id()] = {x, y};
+    } else if (e.action() == A::kUp) {
+      auto it = g_downs.find(e.pointer_id());
+      // (a tap: lifted near where it went down)
+      if (it != g_downs.end() && std::abs(it->second.x - x) < 0.04f && std::abs(it->second.y - y) < 0.05f)
+        g_taps.push_back(ImVec2(x, y));
+      g_downs.erase(e.pointer_id());
+    } else if (e.action() == A::kCancel) {
+      g_downs.erase(e.pointer_id());
+    }
+    e.set_handled(true);
+  }
+};
+OverlayTouch g_touch;
 std::atomic<bool> g_from_game{false};  // opened by the game's INVITE FRIENDS (XN_SYS_UI sent)
 
 // An invite accepted: what the game's XInviteGetAcceptedInfo gets.
@@ -575,6 +613,28 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
     }
   }
 
+  // Taps (a phone): a row is chosen; outside the panel, it closes.
+  bool tapped_out = false;
+  {
+    std::vector<ImVec2> taps;
+    {
+      std::lock_guard lock(g_tap_mutex);
+      taps.swap(g_taps);
+    }
+    for (const ImVec2& t : taps) {
+      const ImVec2 at(t.x * io.DisplaySize.x, t.y * io.DisplaySize.y);
+      const ImVec2 pa = P(L, T), pb = P(R, B);
+      if (at.x < pa.x || at.x > pb.x || at.y < pa.y || at.y > pb.y) {
+        tapped_out = true;
+        continue;
+      }
+      for (int k = 0; k < visible && top_ + k < n; ++k) {
+        const ImVec2 a = P(L + 16, kListTop + k * kRowH), b = P(R - 16, kListTop + k * kRowH + kRowH - 6);
+        if (at.x >= a.x && at.x < b.x && at.y >= a.y && at.y < b.y) sel_ = top_ + k, choose = true;
+      }
+    }
+  }
+
   // Actions.
   if (n && (choose || other)) {
     const Row row = rows[sel_];
@@ -684,8 +744,9 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
       case kAddRow: help = "TYPE A NAME    ENTER ADD    ESC CLOSE"; break;
     }
   }
+  if (rex::cvar::Query<bool>("touch_controls")) help = "TAP A ROW    TAP OUTSIDE TO CLOSE";  // (a phone)
   Text(dl, g_menu_font, 18 * s, P(L + 24, B - 44), kGrey, help.c_str());
-  if (back && !(typing && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !typed_.empty())) Close();
+  if (tapped_out || (back && !(typing && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !typed_.empty()))) Close();
   else if (back) typed_.clear();
 }
 
@@ -791,8 +852,12 @@ bool StartNewCopy() {
 
 }  // namespace
 
-void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::input::InputSystem* input,
+void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window, rex::input::InputSystem* input,
                           rex::system::KernelState* kernel, const std::filesystem::path& user_data) {
+  g_window = window;
+  if (window) {  // (before the on-screen pad's listener: 900)
+    window->app_context().CallInUIThread([window] { window->AddInputListener(&g_touch, 950); });
+  }
   g_input = input;
   g_kernel = kernel;
   g_relaunch_file = user_data / "relaunch.bin";

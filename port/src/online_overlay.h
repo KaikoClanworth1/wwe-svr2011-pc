@@ -25,6 +25,7 @@ struct ImFont;
 
 namespace rex::ui {
 class ImGuiDrawer;
+class Window;
 }
 namespace rex::input {
 class InputSystem;
@@ -36,8 +37,8 @@ class KernelState;
 namespace svr2011 {
 
 // Once, when the dialogs are created. `input` may be null.
-// (`user_data`: where the relaunch file goes.)
-void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::input::InputSystem* input,
+// (`window`: its touches - a phone; `user_data`: where the relaunch file goes.)
+void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window, rex::input::InputSystem* input,
                           rex::system::KernelState* kernel, const std::filesystem::path& user_data);
 
 // Fonts (null: ImGui's default).
