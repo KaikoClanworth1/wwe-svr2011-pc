@@ -84,6 +84,12 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## After 2.0 (next update)
+
+- **Saves folder** can be chosen in the launcher's Saves tab (17c9df4).
+- **Online without Online Axxess**: players whose DLC lacks THQ's online pass got "Information related to your trial period couldn't be retrieved" on ONLINE; the port now supplies just that pass when online is on and no installed package has it (cdf6346). No paid unlocks are granted.
+- **Match-only behaviour no longer switches on in the ONLINE menu** (30 fps, touch MATCH layout, wide view, Discord): it waits until a match is running (60182bb).
+
 ## Requests
 
 Requested 1 October 2026:
