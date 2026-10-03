@@ -20,6 +20,7 @@
  *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
+ *                        --report <game folder>   (Report a problem: the zip, no window)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
@@ -48,6 +49,7 @@
 #include <wchar.h>
 
 #include "apk_package.h"
+#include "report.h"
 #include "movie_maker.h"
 #include "unzip.h"
 #include "updater.h"
@@ -83,7 +85,7 @@ enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_
 enum {
     ID_TAB = 100,
     /* play */
-    ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION,
+    ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE,
@@ -1899,6 +1901,33 @@ static void mv_setup(void);
 static void up_setup(void);
 
 #define X0 28
+/* Report a problem: a zip of the newest logs, crash reports and settings
+   (report.c), shown in Explorer, ready to send. */
+static void report_problem(void)
+{
+    WCHAR zip[MAX_PATH], msg[MAX_PATH + 512], args[MAX_PATH + 32];
+    int logs = 0, crashes = 0;
+    if (!is_game_folder(s_game_dir)) {
+        MessageBoxW(s_wnd, L"Install the game first (Install tab): a report is made from its logs.", WINDOW_TITLE,
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!report_make(s_game_dir, PORT_VERSION, zip, MAX_PATH, &logs, &crashes)) {
+        MessageBoxW(s_wnd, L"The report could not be written (is the game folder read-only?).", WINDOW_TITLE,
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    swprintf_s(msg, MAX_PATH + 512,
+               L"Made %s\n\nIt has the newest %d game log%s, %d crash report%s and your settings (your online "
+               L"account's password and token are left out). Send this file with a short description of what "
+               L"happened and what you did just before.\n\nRun the game once more and reproduce the problem first, "
+               L"if you can: the newest log is the one that counts.",
+               zip, logs, logs == 1 ? L"" : L"s", crashes, crashes == 1 ? L"" : L"s");
+    MessageBoxW(s_wnd, msg, WINDOW_TITLE, MB_OK | MB_ICONINFORMATION);
+    swprintf_s(args, MAX_PATH + 32, L"/select,\"%s\"", zip);
+    ShellExecuteW(s_wnd, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+}
+
 static void build_ui(void)
 {
     TCITEMW ti;
@@ -1924,6 +1953,7 @@ static void build_ui(void)
     add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 190, 560, 40, ID_PLAY_STATUS);
     h = add(TAB_PLAY, L"Button", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, X0, 246, 200, 52, ID_PLAY);
     set_big(h);
+    add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 380, 258, 166, 30, ID_REPORT);
     add(TAB_PLAY, L"Button", L"Close the launcher when the game starts", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0, 312, 400, 24, ID_CLOSE_ON_PLAY);
     add(TAB_PLAY, L"Static", L"Display, resolution, controller and audio options are on the Settings tab; they "
@@ -5060,6 +5090,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
+        case ID_REPORT:
+            report_problem();
+            break;
         case ID_PLAY:
             play();
             break;
@@ -5506,6 +5539,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         ok = adb_get(apk_console_progress, err, 600) &&
              adb_install(s_adb, s_game_dir, s_apk_src, &s_cancel, apk_console_progress, err, 600);
         wprintf(ok ? L"ok: %s\n" : L"failed: %s\n", err);
+        return ok ? 0 : 1;
+    }
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--report")) {   /* <game folder>: Report a problem, no window */
+        WCHAR zip[MAX_PATH];
+        int logs = 0, crashes = 0, ok;
+        console_setup();
+        ok = report_make(argv[2], PORT_VERSION, zip, MAX_PATH, &logs, &crashes);
+        if (ok) wprintf(L"ok %s (%d logs, %d crash reports)\n", zip, logs, crashes);
+        else wprintf(L"failed\n");
         return ok ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--apk-package")) {   /* <game folder> <out folder> */

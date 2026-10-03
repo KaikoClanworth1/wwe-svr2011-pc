@@ -9,6 +9,8 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -304,6 +306,56 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
 }
 
 void Svr2011App::OnPostLoadXexImage() {
+  // The log's first port lines: the build and the settings a problem report
+  // needs (SVR2011_PORT_VERSION / _BUILD_COMMIT: CMakeLists.txt).
+  {
+#ifndef SVR2011_PORT_VERSION
+#define SVR2011_PORT_VERSION "dev"
+#endif
+#ifndef SVR2011_BUILD_COMMIT
+#define SVR2011_BUILD_COMMIT "unknown"
+#endif
+    REXLOG_INFO("==== SvR 2011 PC port {} (build {}) ====", SVR2011_PORT_VERSION, SVR2011_BUILD_COMMIT);
+    REXLOG_INFO("game folder: {}", rex::filesystem::GetExecutableFolder().string());
+    static const char* const kGroups[][2] = {
+        {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
+        {"renderer", "native_renderer gpu_backend native_max_scale native_aa native_2x_msaa native_scale_effects "
+                     "native_widescreen native_prepare_pipelines frame_rate unlock_30fps"},
+        {"effects", "depth_of_field motion_blur soft_filter"},
+        {"gameplay", "replays managers_tile mixed_gender_matches user_language"},
+        {"input", "input_backend mnk_mode touch_controls touch_auto_layout"},
+        {"audio", "audio_backend audio_mute"},
+        {"online", "online_enabled online_server"},
+        {"storage", "saves_folder"},
+#if defined(__ANDROID__)
+        {"android", "gpu_driver gpu_driver_env"},
+#endif
+    };
+    for (const auto& group : kGroups) {
+      std::string line;
+      std::string names = group[1];
+      size_t pos = 0;
+      while (pos < names.size()) {
+        size_t end = names.find(' ', pos);
+        if (end == std::string::npos) end = names.size();
+        const std::string name = names.substr(pos, end - pos);
+        std::string value = rex::cvar::GetFlagByName(name);
+        if (value.empty()) value = "\"\"";
+        line += (line.empty() ? "" : ", ") + name + " " + value;
+        pos = end + 1;
+      }
+      REXLOG_INFO("settings ({}): {}", group[0], line);
+    }
+  }
+  // Test aid: SVR2011_TEST_CRASH=1 - a bad memory access 20 s after start
+  // (checks the crash report and its lines in the log).
+  if (!Env("SVR2011_TEST_CRASH").empty()) {
+    std::thread([] {
+      std::this_thread::sleep_for(std::chrono::seconds(20));
+      REXLOG_WARN("SVR2011_TEST_CRASH: crashing on purpose");
+      *static_cast<volatile int*>(nullptr) = 1;
+    }).detach();
+  }
   // Entrances, finishers and other post-processed scenes sample the frame's
   // resolved colour texture through fetch constants whose type field is 0
   // ("invalid"); the Xbox 360 samples them as textures, the emulator's default

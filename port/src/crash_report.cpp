@@ -140,6 +140,19 @@ void Report(const char* reason, EXCEPTION_POINTERS* info) {
     WriteGuestContext(f);
     std::fclose(f);
   }
+  // The same lines in the log (players send the log; the report beside it
+  // is often missed).
+  if (FILE* r = nullptr; _wfopen_s(&r, text.c_str(), L"r") == 0 && r) {
+    char line[512];
+    while (std::fgets(line, sizeof(line), r)) {
+      size_t n = std::strlen(line);
+      while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+      REXLOG_ERROR("crash: {}", line);
+    }
+    std::fclose(r);
+    REXLOG_ERROR("crash: report in {}", text.string());
+    rex::FlushLogging();
+  }
   std::fprintf(stderr, "SvR 2011 crash: %s - report in %ls\n", reason, text.c_str());
 }
 

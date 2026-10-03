@@ -362,6 +362,27 @@ public class LauncherActivity extends Activity {
         lp.topMargin = dp(18);
         c.addView(play, lp);
 
+        // Report a problem: a zip of the logs, crash reports and settings in Download.
+        Button report = button("Report a problem…", kBackground);
+        report.setOnClickListener(v -> {
+            final String[] result = new String[1];
+            background(() -> {
+                try {
+                    ProblemReport.Result r = ProblemReport.make(InstallActivity.gameFolder(), versionName());
+                    result[0] = "Saved Download/" + r.zip.getName() + " (" + r.logs + " game log"
+                        + (r.logs == 1 ? "" : "s") + ", " + r.crashes + " crash report" + (r.crashes == 1 ? "" : "s")
+                        + "; your online password and token are left out). Send it with a short description of "
+                        + "what happened.";
+                } catch (Exception e) {
+                    result[0] = "The report couldn't be made: " + e.getMessage();
+                }
+            }, () -> status(result[0]));
+        });
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT);
+        rp.topMargin = dp(10);
+        c.addView(report, rp);
+
         TextView tips = text("Play with a controller or the on-screen touch controls (Settings → Touch "
             + "controls). Display options are also in game: MY WWE → Options → Graphics.", 13, kDim);
         tips.setPadding(dp(4), dp(14), dp(4), 0);

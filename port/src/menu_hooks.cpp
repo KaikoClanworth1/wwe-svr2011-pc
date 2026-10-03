@@ -19,9 +19,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -67,6 +72,32 @@ uint32_t g_extra_label = 0;     // "Extra" (the "?" tile opens the managers: src
 
 uint32_t Be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+}
+
+// For the log: the menus' entries by (group, row) -> their label string id,
+// from the installed menu.pac's table (MFLO/0000: 0x74-byte records, a
+// group's records consecutive, hidden ones - +0x41 bit 0 - not shown), and
+// the game's string table (the first lookup's manager).
+uint32_t g_string_manager = 0;
+std::map<std::pair<uint32_t, uint32_t>, uint32_t> g_menu_labels;
+bool g_menu_labels_read = false;
+
+void ReadMenuLabels() {
+  g_menu_labels_read = true;
+  const auto file = rex::filesystem::GetExecutableFolder() / "pac" / "menu" / "menu.pac";
+  std::ifstream in(file, std::ios::binary);
+  if (!in) return;
+  std::vector<uint8_t> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  constexpr size_t kMflo = 0x25F000, kFirst = kMflo + 0x28, kRec = 0x74;
+  if (d.size() < kMflo + 0x6800) return;
+  const uint32_t total = Be32(&d[kMflo + 4]);
+  std::map<uint32_t, uint32_t> rows;  // group -> next row
+  for (uint32_t i = 0; i < total && kFirst + (i + 1) * kRec <= d.size(); ++i) {
+    const uint8_t* r = &d[kFirst + i * kRec];
+    if (r[0x41] & 1) continue;  // (hidden)
+    const uint32_t group = Be32(r + 0x18);
+    g_menu_labels[{group, rows[group]++}] = Be32(r);
+  }
 }
 
 }  // namespace
@@ -126,6 +157,7 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
 // String lookup: sub_82153EF8(manager, id) -> (r3) the string.
 REX_EXTERN(__imp__sub_82153EF8);
 REX_HOOK_RAW(sub_82153EF8) {
+  if (!g_string_manager) g_string_manager = ctx.r3.u32;  // (for the log's menu names)
   if (const uint32_t s = svr2011::OnlineString(ctx.r4.u32)) {  // (online.h)
     ctx.r3.u64 = s;
     return;
@@ -210,7 +242,25 @@ REX_HOOK_RAW(sub_82447210) {
   if (ctx.r4.u32 == 1) {
     const uint8_t* menu = base + ctx.r3.u32;
     const uint32_t group = Be32(menu + kMenuGroup), cursor = Be32(menu + kMenuCursor);
-    REXLOG_INFO("[svr2011] menu select: group {:X} row {}", group, cursor);
+    // The entry's label, for the log ("menu select: OPTIONS (group 5 row 3)").
+    std::string label;
+    if (!g_menu_labels_read) ReadMenuLabels();
+    if (auto it = g_menu_labels.find({group, cursor}); it != g_menu_labels.end() && g_string_manager) {
+      const auto saved = ctx;
+      ctx.r3.u64 = g_string_manager;
+      ctx.r4.u64 = it->second;
+      sub_82153EF8(ctx, base);
+      if (ctx.r3.u32) {
+        // (printable text only: icons such as MY WWE's logo are control codes)
+        for (const char* t = reinterpret_cast<const char*>(base + ctx.r3.u32); *t && label.size() < 60; ++t)
+          if (static_cast<unsigned char>(*t) >= 0x20) label += *t;
+        while (!label.empty() && label.back() == ' ') label.pop_back();
+        while (!label.empty() && label.front() == ' ') label.erase(0, 1);
+      }
+      ctx = saved;
+    }
+    REXLOG_INFO("[svr2011] menu select: {}{}group {:X} row {}{}", label, label.empty() ? "" : " (", group, cursor,
+                label.empty() ? "" : ")");
     svr2011::TouchGameInMatch(false);  // (the touch controller's MENU layout)
     svr2011::SetFrameRateInMatch(false);  // (menus at 60 fps)
     svr2011::native::SetMatchScene(false);  // (wide screens: menus at 16:9)

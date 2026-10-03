@@ -17,6 +17,7 @@
 /port/runs/
 /port/*.txt
 !/port/VERSION.txt
+!/port/BUILD_COMMIT.txt
 !/port/CMakeLists.txt
 /port/tools/__pycache__/
 *.xex
