@@ -41,6 +41,10 @@ void ArmMatchStart(void (*on_start)());
 // unlock_30fps off): on while one plays (menu_hooks.cpp).
 void SetSceneThirtyFps(bool on);
 
+// Setting full_speed (on): extra world updates when frames are slower than 60
+// (and at 30 fps); off: one a frame, as the console - the game slows down
+// instead (a way round any trouble with the extra updates).
+
 // Online lockstep (p2p.cpp, during a match session): exactly one world update
 // per frame at a 60 Hz frame clock, as on the console - both peers step the
 // world alike; a device that can't make 60 runs slower instead of catching up.
