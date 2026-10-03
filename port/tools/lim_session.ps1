@@ -5,6 +5,8 @@
 #   .\session.ps1 start [-Name s1]         launch; log -> runs\<Name>.log
 #   .\session.ps1 input "press START" "wait 2000" "press A"
 #   .\session.ps1 shot  <file-stem>        screenshot -> runs\<stem>.png
+#   .\session.ps1 postkey 47 [10]          a key (hex virtual-key code; optionally a held one,
+#                                          e.g. 10 Shift) posted to the game's window (no focus)
 #   .\session.ps1 fps                      last frame-rate lines from the log
 #   .\session.ps1 status | stop
 # Input goes through the scripted controller (src/script_input.h).
@@ -14,7 +16,7 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System; using System.Runtime.InteropServices;
-public static class SW {
+public static class SW3 {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint f);
@@ -22,9 +24,16 @@ public static class SW {
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
+  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKeyW(uint code, uint type);
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc f, IntPtr l);
+  public static System.Collections.Generic.List<IntPtr> Children(IntPtr parent) {
+    var list = new System.Collections.Generic.List<IntPtr>(); list.Add(parent);
+    EnumChildWindows(parent, (h, l) => { list.Add(h); return true; }, IntPtr.Zero); return list; }
 }
 "@
-[void][SW]::SetProcessDPIAware()
+[void][SW3]::SetProcessDPIAware()
 . (Join-Path $PSScriptRoot "test_guard.ps1")
 $Rest = @($Rest | Where-Object { $_ })
 
@@ -68,8 +77,8 @@ switch ($Action) {
         $p = Start-Process (Join-Path $game $Exe) -WorkingDirectory $game -ArgumentList $a -PassThru -WindowStyle Minimized
         for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
         if ($p.MainWindowHandle -ne 0) {
-            [void][SW]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -4000, 0, 0, 0, 0x1 -bor 0x4 -bor 0x10)
-            [void][SW]::ShowWindow($p.MainWindowHandle, 4)
+            [void][SW3]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -4000, 0, 0, 0, 0x1 -bor 0x4 -bor 0x10)
+            [void][SW3]::ShowWindow($p.MainWindowHandle, 4)
         }
         @{ pid = $p.Id; log = $log } | ConvertTo-Json | Set-Content $state
         "started pid $($p.Id), log $log"
@@ -79,18 +88,30 @@ switch ($Action) {
         Add-Content $input ($Rest -join "`n")
         "queued: $($Rest -join ' | ')"
     }
+    "postkey" {
+        $s = Get-Session
+        $h = $s.proc.MainWindowHandle
+        $vks = @($Rest | ForEach-Object { [Convert]::ToUInt32($_, 16) })
+        $wins = [SW3]::Children($h)  # (the window and its children: the keyboard may go to a child)
+        $msg = { param($m, $vk, $up) $scan = [SW3]::MapVirtualKeyW($vk, 0)
+                 $l = 1 -bor ($scan -shl 16); if ($up) { $l = $l -bor 0xC0000000 }
+                 foreach ($w in $wins) { [void][SW3]::PostMessageW($w, $m, [IntPtr][long]$vk, [IntPtr][long]$l) } }
+        for ($i = $vks.Count - 1; $i -ge 0; $i--) { & $msg 0x100 $vks[$i] $false; Start-Sleep -Milliseconds 30 }
+        Start-Sleep -Milliseconds 120
+        foreach ($vk in $vks) { & $msg 0x101 $vk $true; Start-Sleep -Milliseconds 30 }
+    }
     { $_ -in "shot", "shotnative" } {
         $s = Get-Session
         # By title/class: with the native renderer on, the process has two windows.
         # The test's own window (never a player's game with the same title).
         $s.proc.Refresh()
-        $h = if ($Action -eq "shotnative") { [SW]::FindWindowW("SvR2011NativeRenderer", [NullString]::Value) } else { $s.proc.MainWindowHandle }
+        $h = if ($Action -eq "shotnative") { [SW3]::FindWindowW("SvR2011NativeRenderer", [NullString]::Value) } else { $s.proc.MainWindowHandle }
         if ($h -eq [IntPtr]::Zero) { throw "window not found" }
-        $r = New-Object SW+RECT; [void][SW]::GetWindowRect($h, [ref]$r)
+        $r = New-Object SW3+RECT; [void][SW3]::GetWindowRect($h, [ref]$r)
         $w = $r.R - $r.L; $hh = $r.B - $r.T
         $bmp = New-Object System.Drawing.Bitmap $w, $hh
         $g = [System.Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc()
-        [void][SW]::PrintWindow($h, $dc, 2); $g.ReleaseHdc($dc)
+        [void][SW3]::PrintWindow($h, $dc, 2); $g.ReleaseHdc($dc)
         $scale = [math]::Min(1.0, 1280.0 / $w)
         $small = New-Object System.Drawing.Bitmap $bmp, ([int]($w * $scale)), ([int]($hh * $scale))
         $file = Join-Path $runs (($Rest | Select-Object -First 1) + ".png")
