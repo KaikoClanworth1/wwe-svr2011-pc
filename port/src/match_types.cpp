@@ -73,6 +73,8 @@ const Row kRows[] = {
 };
 constexpr uint32_t kFreeRoamLabel = 0x9C90;
 constexpr uint32_t kWholeBackstage = 0x19, kWholeBackstage2 = 0x1A;  // 1 on 1, 2 on 2
+// The match being played is a free-roaming backstage one (set at match set-up).
+bool g_free_roam = false;
 
 // BACKSTAGE submenus (like ONE ON ONE's and TWO ON TWO's) for TRIPLE THREAT,
 // FATAL-4-WAY and 6-MAN: the 7 areas of TWO ON TWO -> BACKSTAGE (menu group
@@ -222,27 +224,12 @@ void RestoreRule(uint8_t* base) {
 }
 
 // The whole backstage (rules 0x19 1 on 1, 0x1A 2 on 2: no named area) is a
-// story mode rule: its record leaves the CPU standing still. For an
-// exhibition match it gets the records of the parking lot (0x1B, 0x70) but
-// for its names (the area still comes from the rule id).
+// story mode rule: in an exhibition its CPU stands still, whatever its
+// records (its area, from the rule id, has none for the AI). So it is played
+// as the parking lot (0x1B 1 on 1, 0x70 2 on 2: the CPU fights), starting
+// there, with g_free_roam: every room shown, a fight box around the whole
+// backstage, the backstage camera.
 constexpr uint32_t kStoryContext = 0x82E3C1F4;
-void WholeBackstageRules(uint8_t* base, uint32_t rule) {
-  const uint32_t rules = Rd32(base + kRules);
-  if (!rules) return;
-  const uint32_t like = rule == kWholeBackstage ? 0x1B : 0x70;
-  uint8_t* rec = base + rules + rule * kRuleSize;
-  uint8_t* rec2 = base + rules + kRule2 + rule * kRule2Size;
-  const uint8_t* from = base + rules + like * kRuleSize;
-  const uint8_t* from2 = base + rules + kRule2 + like * kRule2Size;
-  g_saved.rule = rule;
-  std::memcpy(g_saved.rec, rec, kRuleSize);
-  std::memcpy(g_saved.rec2, rec2, kRule2Size);
-  // All of it but its names (+48, +56, +60) and its id (option record +0).
-  std::memcpy(rec, from, kRuleSize);
-  for (uint32_t at : {48u, 56u, 60u}) std::memcpy(rec + at, g_saved.rec + at, 4);
-  std::memcpy(rec2 + 1, from2 + 1, kRule2Size - 1);
-  REXLOG_INFO("match types: whole backstage rule {:02X} set up like {:02X}", rule, like);
-}
 
 void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
   const uint32_t rules = Rd32(base + kRules);
@@ -336,11 +323,13 @@ REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
   const uint32_t rule = ctx.r4.u32;
   RestoreRule(base);
-  if ((rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext))
-    WholeBackstageRules(base, rule);
+  g_free_roam = (rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext);
+  const uint32_t played = !g_free_roam ? rule : rule == kWholeBackstage ? 0x1Bu : 0x70u;
+  if (g_free_roam) REXLOG_INFO("match types: free-roaming backstage, played as rule {:02X}", played);
   if (g_pending_like && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
                          (!g_pending_select_only && rule == kWholeBackstage2)))
-    ShapeRule(base, rule, g_pending_like, g_pending_select_only);
+    ShapeRule(base, played, g_pending_like, g_pending_select_only);
+  ctx.r4.u64 = played;
   __imp__sub_827374A0(ctx, base);
 }
 
@@ -395,8 +384,7 @@ REX_HOOK_RAW(sub_825310B8) {
   const uint32_t task = ctx.r3.u32 - 32;
   __imp__sub_825310B8(ctx, base);
   constexpr uint32_t kLive = 0x82E3DE00, kStory = 0x82E3C1F4;
-  const uint8_t rule = base[kLive];
-  if (Rd32(base + kLive + 64) != 78 || (rule != 0x19 && rule != 0x1A) || Rd32(base + kStory)) return;
+  if (Rd32(base + kLive + 64) != 78 || !g_free_roam || Rd32(base + kStory)) return;
   const auto saved = ctx;
   for (uint32_t room : {0u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u}) {
     ctx.r3.u64 = task;
@@ -427,10 +415,7 @@ namespace {
 constexpr uint32_t kLiveSettings = 0x82E3DE00;
 bool g_making_cameras = false;
 
-bool WholeBackstage(uint8_t* base) {
-  const uint8_t rule = base[kLiveSettings];
-  return Rd32(base + kLiveSettings + 64) == 78 && (rule == 0x19 || rule == 0x1A);
-}
+bool WholeBackstage(uint8_t* base) { return Rd32(base + kLiveSettings + 64) == 78 && g_free_roam; }
 
 float RdF(const uint8_t* p) {
   const uint32_t v = Rd32(p);
@@ -463,13 +448,14 @@ REX_HOOK_RAW(sub_821852E0) {
 }
 
 // The backstage camera's distance: sub_822F26B8(camera) sets camera+932 =
-// the framed radius x 3.7. Closer in the backstage: x 2.4.
+// the framed radius x 3.7. A little closer in the free-roaming backstage:
+// x 3.2 (x 2.4 was "really zoomed in").
 REX_EXTERN(__imp__sub_822F26B8);
 REX_HOOK_RAW(sub_822F26B8) {
   const uint32_t camera = ctx.r3.u32;
   __imp__sub_822F26B8(ctx, base);
-  if (Rd32(base + kLiveSettings + 64) != 78) return;
-  constexpr float kCloser = 2.4f / 3.7f;
+  if (!WholeBackstage(base)) return;
+  constexpr float kCloser = 3.2f / 3.7f;
   WrF(base + camera + 932, RdF(base + camera + 932) * kCloser);
 }
 
@@ -543,7 +529,11 @@ REX_HOOK_RAW(sub_8224EF28) {
   WrF(base + box + 36, 0.0f);
   WrF(base + box + 40, -40.0f);
   WrF(base + box + 44, 1.0f);
-  constexpr float kHalf[4] = {520.0f, 510.0f, 525.0f, 515.0f};
+  float kHalf[4] = {520.0f, 510.0f, 525.0f, 515.0f};
+  if (const char* v = std::getenv("SVR2011_TEST_BOX")) {  // (test aid: half sizes)
+    const float h = float(std::atof(v));
+    for (float& f : kHalf) f = h;
+  }
   constexpr uint32_t kGlobals = 0x82D9E9D4;
   for (uint32_t i = 0; i < 4; ++i) {
     WrF(base + box + 64 + i * 4, kHalf[i]);

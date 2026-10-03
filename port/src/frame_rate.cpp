@@ -435,11 +435,13 @@ void StartDeveloperAids(uint8_t* base) {
       for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         const uint32_t frames = Rd32(base + kMatchFrames);
-        const uint32_t ch = Rd32(base + kChars);
+        const uint32_t ch = Rd32(base + kChars), ch2 = Rd32(base + kChars + 4);
         const float x = ch ? RdF(base + ch + 288) : 0, z = ch ? RdF(base + ch + 296) : 0;
+        const float x2 = ch2 ? RdF(base + ch2 + 288) : 0, z2 = ch2 ? RdF(base + ch2 + 296) : 0;
         const uint64_t presents = rex::ui::HostPresentCount(), shown = rex::ui::HostNewGuestFramePresentCount();
-        REXLOG_INFO("fps probe: {} game frames/s, {} shown ({} presents), wrestler 1 at ({:.1f}, {:.1f})",
-                    frames - last, shown - last_new, presents - last_presents, x, z);
+        REXLOG_INFO("fps probe: {} game frames/s, {} shown ({} presents), wrestler 1 at ({:.1f}, {:.1f}), 2 at "
+                    "({:.1f}, {:.1f})",
+                    frames - last, shown - last_new, presents - last_presents, x, z, x2, z2);
         last = frames;
         last_presents = presents;
         last_new = shown;
