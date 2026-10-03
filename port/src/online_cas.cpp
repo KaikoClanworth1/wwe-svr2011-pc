@@ -307,7 +307,15 @@ std::optional<std::string> Answer(const std::string& method, const std::string& 
     if (id < kLocalIds) {
       if (auto r = Forward(method, target, headers, body)) {
         auto res = r->headers.find("sake-file-result");
-        if (res != r->headers.end() && res->second == "0") return HttpFrom(*r);
+        if (res != r->headers.end() && res->second == "0") {
+          // (its extra High Resolution logos aren't on the server: from the owner)
+          if (r->body.size() == kCasDataSize) {
+            std::lock_guard lock(g_mutex);
+            WriteFile(CacheDir() / Name(id, kKindData), r->body);
+            FetchLogos(r->body);
+          }
+          return HttpFrom(*r);
+        }
       }
       if (!Stored(id, kKindData)) REXLOG_INFO("online cas: the server doesn't have file {}: its owner?", id);
     }
