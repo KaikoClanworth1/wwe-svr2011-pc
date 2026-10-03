@@ -3,7 +3,9 @@
 // On abort(), std::terminate (uncaught C++ exception) or an unhandled
 // structured exception, writes <dir>/crash_<time>.dmp (minidump) and
 // <dir>/crash_<time>.txt (reason + symbolized stack of the crashing thread),
-// then lets the process die as it would have.
+// and the same lines to the log, then lets the process die as it would have.
+// Android / Linux (crash_report_posix.cpp): fatal signals, the text report
+// and the log lines (no minidump).
 
 #pragma once
 

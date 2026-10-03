@@ -3,6 +3,9 @@
 // player types) and the account on it - sign in, create one, sign out
 // (<server>/api/login, /api/register, /api/logout; JSON). Signing in writes
 // online_token, online_xuid, online_name and online_enabled for the game.
+// Friends: the account's list on the server (/api/friends) - who's online (in
+// the game's ONLINE menus) or in an online match, and who added the player;
+// refreshed every 20 seconds while the page shows.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -16,6 +19,7 @@ import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -36,6 +40,12 @@ final class OnlinePage {
     private TextView who_, accountStatus_;
     private Button signIn_, create_, signOut_;
     private boolean busy_;
+    private LinearLayout friendsCard_, friendRows_;
+    private View friendsHeading_;
+    private EditText friendName_;
+    private TextView friendsStatus_;
+    private boolean friendsBusy_;
+    private final android.os.Handler timer_ = new android.os.Handler(android.os.Looper.getMainLooper());
 
     OnlinePage(LauncherActivity a) { a_ = a; }
 
@@ -45,7 +55,7 @@ final class OnlinePage {
         LinearLayout c = a_.column();
         TextView about = a_.text("Community Creations: share Created Superstars, Paint Tool logos, highlight reels "
             + "and more with other players, through a Community Creations server (the original servers closed in "
-            + "2014). Online matches are not available yet.", 14, LauncherActivity.kDim);
+            + "2014). Online matches too: Player Match and Royal Rumble.", 14, LauncherActivity.kDim);
         about.setPadding(a_.dp(4), a_.dp(6), a_.dp(4), a_.dp(4));
         c.addView(about);
 
@@ -133,8 +143,114 @@ final class OnlinePage {
         signOut_.setOnClickListener(v -> signOut());
         c.addView(signOut_, a_.fullWidth(10));
 
+        // Friends (signed in only).
+        friendsCard_ = a_.card(c, "Friends");
+        friendsHeading_ = c.getChildAt(c.indexOfChild(friendsCard_) - 1);
+        friendRows_ = new LinearLayout(a_);
+        friendRows_.setOrientation(LinearLayout.VERTICAL);
+        friendsCard_.addView(friendRows_);
+        friendsStatus_ = a_.text("", 13, LauncherActivity.kDim);
+        friendsStatus_.setPadding(0, a_.dp(8), 0, a_.dp(4));
+        friendsCard_.addView(friendsStatus_);
+        friendName_ = a_.field("Player name", 15, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        a_.row(friendsCard_, "Player", "Type a name, or tap a friend", friendName_);
+        Button add = a_.button("Add friend", LauncherActivity.kRed), remove = a_.button("Remove", LauncherActivity.kCard);
+        add.setOnClickListener(v -> changeFriend(true));
+        remove.setOnClickListener(v -> changeFriend(false));
+        LinearLayout friendButtons = a_.pair(add, remove);
+        friendButtons.setPadding(0, 0, 0, a_.dp(10));
+        friendsCard_.addView(friendButtons);
+        final View page = c;
+        Runnable tick = new Runnable() {
+            @Override
+            public void run() {
+                if (page.isShown()) fetchFriends(null);
+                timer_.postDelayed(this, 20000);
+            }
+        };
+        timer_.postDelayed(tick, 20000);
+
         a_.onRefresh(this::refresh);
         return c;
+    }
+
+    // body null: the list; else {"add": name} / {"remove": name}.
+    void fetchFriends(String body) {
+        final String token = settings().getString("online_token", "");
+        if (token.isEmpty() || friendsBusy_) return;
+        friendsBusy_ = true;
+        final String url = base(server()) + "/api/friends";
+        final Object[] result = new Object[1];
+        a_.background(() -> {
+            try {
+                result[0] = post(url, body, token);
+            } catch (Exception e) {
+                result[0] = e;
+            }
+        }, () -> {
+            friendsBusy_ = false;
+            showFriends(result[0]);
+        });
+    }
+
+    void showFriends(Object result) {
+        if (settings().getString("online_token", "").isEmpty()) return;
+        JSONObject r = result instanceof JSONObject ? (JSONObject) result : null;
+        JSONArray friends = r != null ? r.optJSONArray("friends") : null;
+        if (friends == null) {
+            int code = r != null ? r.optInt("_status", 0) : 0;
+            friendsStatus_.setText(code == 404 && r.optString("error", "").isEmpty()
+                ? "This server has no friends list yet." : error(result, false));
+            return;
+        }
+        friendRows_.removeAllViews();
+        int online = 0;
+        for (int i = 0; i < friends.length(); i++) {
+            JSONObject f = friends.optJSONObject(i);
+            if (f == null) continue;
+            String status = f.optString("status"), label = "Offline";
+            if (status.equals("playing")) { label = "In an online match"; online++; }
+            else if (status.equals("online")) { label = "Online"; online++; }
+            else if (!f.optBoolean("mutual")) label = "Offline (hasn't added you)";
+            friendRow(f.optString("name"), label, !status.equals("offline"));
+        }
+        JSONArray added = r.optJSONArray("added_you");
+        for (int i = 0; added != null && i < added.length(); i++)
+            friendRow(added.optString(i), "Added you - add them back", false);
+        friendsStatus_.setText(friends.length() == 0 ? "No friends yet: type a player's name and add them."
+            : online + " of " + friends.length() + " friend" + (friends.length() == 1 ? "" : "s") + " online.");
+    }
+
+    void friendRow(String name, String status, boolean on) {
+        LinearLayout row = new LinearLayout(a_);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(0, a_.dp(10), 0, a_.dp(10));
+        TextView n = a_.text(name, 16, LauncherActivity.kText);
+        row.addView(n, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        TextView st = a_.text(status, 14, on ? 0xFF4CD964 : LauncherActivity.kDim);
+        row.addView(st);
+        row.setOnClickListener(v -> friendName_.setText(name));
+        if (friendRows_.getChildCount() > 0) {
+            View sep = new View(a_);
+            sep.setBackgroundColor(LauncherActivity.kLine);
+            friendRows_.addView(sep, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1));
+        }
+        friendRows_.addView(row);
+    }
+
+    void changeFriend(boolean add) {
+        String name = friendName_.getText().toString().trim();
+        if (name.isEmpty()) {
+            friendsStatus_.setText(add ? "Type the player's name to add." : "Tap a friend (or type the name) to remove.");
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put(add ? "add" : "remove", name);
+            fetchFriends(body.toString());
+            if (add) friendName_.setText("");
+        } catch (org.json.JSONException e) {
+        }
     }
 
     String server() { return settings().getString("online_server", kDefaultServer); }
@@ -178,6 +294,10 @@ final class OnlinePage {
         signIn_.setEnabled(enabled);
         create_.setEnabled(enabled);
         signOut_.setEnabled(enabled);
+        friendsCard_.setVisibility(in ? View.VISIBLE : View.GONE);
+        friendsHeading_.setVisibility(in ? View.VISIBLE : View.GONE);
+        if (in) fetchFriends(null);
+        else friendRows_.removeAllViews();
     }
 
     static boolean validName(String n) {
@@ -273,20 +393,22 @@ final class OnlinePage {
             ? ": " + ((Exception) r).getMessage() : ".");
     }
 
-    // POSTs JSON; the answer's JSON (any status), with "_status" added.
+    // POSTs JSON (body null: a GET); the answer's JSON (any status), with "_status" added.
     static JSONObject post(String url, String body, String token) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         try {
             c.setConnectTimeout(10000);
             c.setReadTimeout(20000);
-            c.setRequestMethod("POST");
-            c.setDoOutput(true);
-            c.setRequestProperty("Content-Type", "application/json");
+            c.setRequestMethod(body != null ? "POST" : "GET");
             if (token != null) c.setRequestProperty("Authorization", "Bearer " + token);
-            byte[] out = body.getBytes(StandardCharsets.UTF_8);
-            c.setFixedLengthStreamingMode(out.length);
-            try (OutputStream os = c.getOutputStream()) {
-                os.write(out);
+            if (body != null) {
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                byte[] out = body.getBytes(StandardCharsets.UTF_8);
+                c.setFixedLengthStreamingMode(out.length);
+                try (OutputStream os = c.getOutputStream()) {
+                    os.write(out);
+                }
             }
             int code = c.getResponseCode();
             InputStream in = code < 400 ? c.getInputStream() : c.getErrorStream();

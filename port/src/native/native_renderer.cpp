@@ -102,6 +102,11 @@ REXCVAR_DEFINE_BOOL(native_constant_check, false, "GPU",
                     "Debug: also hash the shader constants and log when a reused upload was "
                     "stale (checks the D3D dirty tracking the native renderer relies on)");
 
+REXCVAR_DEFINE_INT32(native_aa, 0, "GPU",
+                     "Native renderer anti-aliasing (supersampling): 1 off, 2 / 3 / 4 = that many times the "
+                     "screen's resolution per side (4 / 9 / 16 samples a pixel, within native_max_scale); "
+                     "0: native_2x_msaa decides (on = 2)");
+
 REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
                      "The scale follows the window; phones start at 1.");
@@ -1099,20 +1104,26 @@ void ApplyOutputSettings(Renderer* r) {
   if (tall > 1.0f) out_w = win_w, out_h = std::min(win_h, uint32_t(std::lround(win_w / kAspect16x9 * tall)));
   out_w = std::max(out_w & ~1u, 64u);
   out_h = std::max(out_h & ~1u, 36u);
-  static bool aa = rex::cvar::Query<bool>("native_2x_msaa");
+  // Anti-aliasing: native_aa, else the older on / off setting (on = 2x).
+  auto aa_level = [] {
+    const int32_t level = REXCVAR_GET(native_aa);
+    return level > 0 ? uint32_t(std::clamp<int32_t>(level, 1, 4))
+                     : (rex::cvar::Query<bool>("native_2x_msaa") ? 2u : 1u);
+  };
+  static uint32_t aa = aa_level();
   static int32_t max_scale = REXCVAR_GET(native_max_scale);
   static bool effects = REXCVAR_GET(native_scale_effects);
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
-    aa = rex::cvar::Query<bool>("native_2x_msaa");
+    aa = aa_level();
     max_scale = REXCVAR_GET(native_max_scale);
     effects = REXCVAR_GET(native_scale_effects);
     widescreen = REXCVAR_GET(native_widescreen);
     aa_checked = r->frames;
   }
-  // Enough guest pixels for every output pixel - for two per axis with
-  // anti-aliasing (2x2 supersampling at 1080p: 3x).
-  const uint32_t need = out_h * (aa ? 2 : 1);
+  // Enough guest pixels for every output pixel - for `aa` per axis with
+  // anti-aliasing (2x2 supersampling at 1080p: 3x; up to native_max_scale).
+  const uint32_t need = out_h * aa;
   const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
   const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
@@ -1145,7 +1156,7 @@ void ApplyOutputSettings(Renderer* r) {
   }
   r->list_state = {};
   REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}", g_out_w, g_out_h, g_scale,
-              aa ? " (anti-aliasing)" : "", g_scale_effects ? "" : ", effects unscaled",
+              aa > 1 ? fmt::format(" (anti-aliasing {}x)", aa) : std::string(), g_scale_effects ? "" : ", effects unscaled",
               g_wide > 1.0f   ? fmt::format(", wide {:.3f} (aspect {:.3f})", g_wide, kAspect16x9 * g_wide)
               : g_tall > 1.0f ? fmt::format(", tall {:.3f} (aspect {:.3f})", g_tall, kAspect16x9 / g_tall)
                               : std::string());

@@ -1,6 +1,7 @@
 // WWE SmackDown vs. Raw 2011 - on-screen touch controller (see touch_controls.h).
 
 #include "touch_controls.h"
+#include "online_overlay.h"
 #include "keyboard_typing.h"
 
 #include <algorithm>
@@ -113,6 +114,7 @@ enum class Kind : uint8_t {
   kEdit,    // opens the editor
   kHelp,    // the controls sheet
   kKeyboard,  // the phone's keyboard, for typing into the game's (shown only then)
+  kOnline,    // the ONLINE overlay: friends, invites (online_overlay.h; online play on)
 };
 
 struct Control {
@@ -220,6 +222,8 @@ std::vector<Control> DefaultLayout(int layout) {
     v[5].caption = "SELECT";  // (A)
     v[6].caption = "BACK";    // (B)
     v.push_back(Special("keyboard", Kind::kKeyboard, 0, L, 0.30f, 0.06f, 0.09f));  // (beside MENU)
+    v.back().wide = true;
+    v.push_back(Special("online", Kind::kOnline, 0, R, -0.20f, 0.06f, 0.09f));  // (beside EDIT)
     v.back().wide = true;
     return v;
   }
@@ -419,7 +423,9 @@ void Aim(Control& c, float x, float y) {
 
 // The control under a finger (the nearest one it touches).
 // The KEYBOARD button only while the game's keyboard is up (and in the editor).
+// ONLINE only with online play on.
 bool Shown(const Control& c) {
+  if (c.kind == Kind::kOnline) return g_editor || rex::cvar::Query<bool>("online_enabled");
   return c.kind != Kind::kKeyboard || g_editor || svr2011::GameKeyboardOpen();
 }
 
@@ -587,6 +593,9 @@ bool Down(uint32_t pointer, float x, float y) {
       return true;
     case Kind::kKeyboard:
       svr2011::ToggleSystemKeyboard();
+      return true;
+    case Kind::kOnline:
+      svr2011::ToggleOnlineOverlay();
       return true;
     case Kind::kStick:
     case Kind::kDpad:
@@ -770,6 +779,7 @@ void DrawControl(ImDrawList* dl, const Control& c, float alpha, bool selected) {
                           : c.kind == Kind::kEdit ? "EDIT"
                           : c.kind == Kind::kHelp ? "?"
                           : c.kind == Kind::kKeyboard ? "KEYBOARD"
+                          : c.kind == Kind::kOnline   ? "ONLINE"
                                                   : ActionLabel(c.action);
       if (c.wide) {
         dl->AddRectFilled(ImVec2(p.x - h.x, p.y - h.y), ImVec2(p.x + h.x, p.y + h.y), fill, h.y);

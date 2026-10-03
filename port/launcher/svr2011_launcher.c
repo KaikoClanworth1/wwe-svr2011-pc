@@ -20,6 +20,7 @@
  *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
+ *                        --report <game folder>   (Report a problem: the zip, no window)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
@@ -49,6 +50,7 @@
 
 #include "apk_package.h"
 #include "mods_tab.h"
+#include "report.h"
 #include "movie_maker.h"
 #include "unzip.h"
 #include "updater.h"
@@ -85,13 +87,14 @@ enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_
 enum {
     ID_TAB = 100,
     /* play */
-    ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION,
+    ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
-    ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL,
+    ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
+    ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS,
@@ -101,7 +104,7 @@ enum {
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
     ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN,
-    ID_SV_STATUS,
+    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
@@ -123,6 +126,8 @@ enum {
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
 #define WM_APP_UPD_DONE (WM_APP + 9)     /* wParam 1 ok, lParam heap error text */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
+#define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
+#define FRIENDS_TIMER   0x5F01           /* the Friends list's refresh while the Online tab shows */
 #define APK_OK          1001
 #define APK_FAILED      1002
 
@@ -1074,9 +1079,10 @@ static void json_copy(const char *text, const char *key, char *out, size_t n)
     out[k] = 0;
 }
 
-/* POSTs a JSON body to <server><path>; the answer's body (UTF-8) in out.
- * Returns the HTTP status, 0 if the server didn't answer. */
-static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
+/* Sends a JSON body (POST; body NULL: a GET) to <server><path>; the
+ * answer's body (UTF-8) in out. Returns the HTTP status, 0 if the server
+ * didn't answer. */
+static int online_request(const char *path, const char *body, const char *token, char *out, size_t outn)
 {
     WCHAR server[200], url[260], host[200], upath[400], headers[256];
     URL_COMPONENTS uc;
@@ -1108,13 +1114,16 @@ static int online_post(const char *path, const char *body, const char *token, ch
         connect = WinHttpConnect(session, host, uc.nPort, 0);
     }
     if (connect)
-        request = WinHttpOpenRequest(connect, L"POST", upath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+        request = WinHttpOpenRequest(connect, body ? L"POST" : L"GET", upath, NULL, WINHTTP_NO_REFERER,
+                                     WINHTTP_DEFAULT_ACCEPT_TYPES,
                                      uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
     if (request) {
         if (token && token[0])
             swprintf_s(headers, 256, L"Content-Type: application/json\r\nAuthorization: Bearer %S\r\n", token);
         else
             wcscpy_s(headers, 256, L"Content-Type: application/json\r\n");
+        if (!body)
+            body = "";
         if (WinHttpSendRequest(request, headers, (DWORD)-1L, (void *)body, (DWORD)strlen(body), (DWORD)strlen(body), 0)
                 && WinHttpReceiveResponse(request, NULL)) {
             WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -1128,6 +1137,11 @@ static int online_post(const char *path, const char *body, const char *token, ch
     if (connect) WinHttpCloseHandle(connect);
     if (session) WinHttpCloseHandle(session);
     return (int)status;
+}
+
+static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
+{
+    return online_request(path, body ? body : "{}", token, out, outn);
 }
 
 /* Text as a JSON string (UTF-8, quotes and backslashes escaped). */
@@ -1149,6 +1163,8 @@ static void json_quote(const WCHAR *w, char *out, size_t n)
 }
 
 static int settings_save(void);
+static void friends_enable(void);
+static void friends_fetch(const char *body);
 
 /* Sign in (register: create the account first) with the name and password typed. */
 static void online_sign_in(int register_account)
@@ -1194,6 +1210,8 @@ static void online_sign_in(int register_account)
     CheckDlgButton(s_wnd, ID_ON_ENABLE, BST_CHECKED);
     online_account_show();
     settings_save();
+    friends_enable();
+    friends_fetch(NULL);
 }
 
 static void online_sign_out(void)
@@ -1205,12 +1223,186 @@ static void online_sign_out(void)
     s_online_xuid[0] = 0;
     online_account_show();
     settings_save();
+    friends_enable();
+}
+
+/* -- Friends: the account's list on the server (/api/friends), who's online
+ * (in the game's ONLINE menus) or in an online match (through the server's
+ * relay), and who added this player. Fetched in the background: on the
+ * Online tab, every 20 seconds while it shows. */
+
+static volatile LONG s_fr_busy;
+static char s_fr_job[256];  /* (the POST body; empty: a GET) */
+static char s_fr_token[128];
+
+static DWORD WINAPI friends_thread(void *arg)
+{
+    char *answer = (char *)malloc(32768);
+    int status;
+    (void)arg;
+    if (!answer) {
+        InterlockedExchange(&s_fr_busy, 0);
+        return 0;
+    }
+    status = online_request("/api/friends", s_fr_job[0] ? s_fr_job : NULL, s_fr_token, answer, 32768);
+    PostMessageW(s_wnd, WM_APP_FRIENDS, (WPARAM)status, (LPARAM)answer);
+    return 0;
+}
+
+/* body NULL: just the list; else {"add": name} / {"remove": name}. */
+static void friends_fetch(const char *body)
+{
+    if (!s_online_token[0] || InterlockedCompareExchange(&s_fr_busy, 1, 0))
+        return;
+    strcpy_s(s_fr_job, sizeof s_fr_job, body ? body : "");
+    strcpy_s(s_fr_token, sizeof s_fr_token, s_online_token);
+    CloseHandle(CreateThread(NULL, 0, friends_thread, NULL, 0, NULL));
+}
+
+static void friends_enable(void)
+{
+    int signed_in = s_online_token[0] != 0;
+    EnableWindow(ctl(ID_FR_NAME), signed_in);
+    EnableWindow(ctl(ID_FR_ADD), signed_in);
+    EnableWindow(ctl(ID_FR_REMOVE), signed_in);
+    if (!signed_in) {
+        ListView_DeleteAllItems(ctl(ID_FR_LIST));
+        set_text(ID_FR_STATUS, L"Sign in to see your friends and who's online.");
+    }
+}
+
+/* The next JSON string after `at` (UTF-8 to UTF-16), or NULL. */
+static const char *friends_string(const char *at, const char *end, WCHAR *out, int n)
+{
+    char u[128];
+    size_t k = 0;
+    const char *q = strchr(at, '"');
+    out[0] = 0;
+    if (!q || q >= end)
+        return NULL;
+    for (q++; *q && *q != '"' && q < end; q++)
+        if (k + 1 < sizeof u) u[k++] = *q;
+    u[k] = 0;
+    MultiByteToWideChar(CP_UTF8, 0, u, -1, out, n);
+    return *q == '"' ? q + 1 : NULL;
+}
+
+static void friends_add_row(HWND list, const WCHAR *name, const WCHAR *status)
+{
+    LVITEMW it;
+    ZeroMemory(&it, sizeof it);
+    it.mask = LVIF_TEXT;
+    it.iItem = ListView_GetItemCount(list);
+    it.pszText = (WCHAR *)name;
+    it.iItem = ListView_InsertItem(list, &it);
+    ListView_SetItemText(list, it.iItem, 1, (WCHAR *)status);
+}
+
+static void friends_show(int http, char *answer)
+{
+    HWND list = ctl(ID_FR_LIST);
+    WCHAR msg[200], name[64], keep[64] = L"";
+    int total = 0, online = 0, sel;
+    const char *p, *end;
+    InterlockedExchange(&s_fr_busy, 0);
+    if (!s_online_token[0]) {
+        friends_enable();
+        return;
+    }
+    if (http != 200 || !strstr(answer, "\"friends\"")) {
+        char error[160];
+        json_copy(answer, "error", error, sizeof error);
+        if (!http)
+            wcscpy_s(msg, 200, L"The server didn't answer.");
+        else if (error[0])
+            swprintf_s(msg, 200, L"%S", error);
+        else
+            swprintf_s(msg, 200, http == 404 ? L"This server has no friends list yet." : L"The server refused (HTTP %d).", http);
+        set_text(ID_FR_STATUS, msg);
+        return;
+    }
+    sel = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+    if (sel >= 0)
+        ListView_GetItemText(list, sel, 0, keep, 64);
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    p = strstr(answer, "\"friends\"");
+    end = p ? strchr(p, ']') : NULL;
+    while (p && end && (p = strchr(p, '{')) && p < end) {
+        const char *close = strchr(p, '}');
+        const char *v;
+        WCHAR status[64];
+        const WCHAR *label = L"Offline";
+        if (!close)
+            break;
+        v = strstr(p, "\"name\"");
+        if (v && v < close && friends_string(v + 6, close, name, 64)) {
+            v = strstr(p, "\"status\"");
+            status[0] = 0;
+            if (v && v < close)
+                friends_string(v + 8, close, status, 64);
+            if (!wcscmp(status, L"playing"))
+                label = L"In an online match", online++;
+            else if (!wcscmp(status, L"online"))
+                label = L"Online", online++;
+            v = strstr(p, "\"mutual\"");
+            if (v && v < close && strncmp(v + 8, ": false", 7) == 0 && wcscmp(label, L"Offline") == 0)
+                label = L"Offline (hasn't added you)";
+            friends_add_row(list, name, label);
+            total++;
+        }
+        p = close + 1;
+    }
+    p = strstr(answer, "\"added_you\"");
+    end = p ? strchr(p, ']') : NULL;
+    if (p && end) {
+        const char *q = strchr(p, '[');
+        while (q && (q = friends_string(q + 1, end, name, 64)) != NULL)
+            friends_add_row(list, name, L"Added you (Add to add them back)");
+    }
+    if (keep[0]) {  /* (the selection stays across refreshes) */
+        LVFINDINFOW f;
+        int i;
+        ZeroMemory(&f, sizeof f);
+        f.flags = LVFI_STRING;
+        f.psz = keep;
+        i = ListView_FindItem(list, -1, &f);
+        if (i >= 0)
+            ListView_SetItemState(list, i, LVIS_SELECTED, LVIS_SELECTED);
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    if (!total)
+        wcscpy_s(msg, 200, L"No friends yet: type a player's name and press Add.");
+    else
+        swprintf_s(msg, 200, L"%d of %d friend%s online.", online, total, total == 1 ? L"" : L"s");
+    set_text(ID_FR_STATUS, msg);
+}
+
+/* Add / Remove the player named in the box. */
+static void friends_change(int add)
+{
+    WCHAR name[64];
+    char q[160], body[256];
+    GetWindowTextW(ctl(ID_FR_NAME), name, 64);
+    if (!name[0]) {
+        set_text(ID_FR_STATUS, add ? L"Type the player's name to add." : L"Select a friend (or type the name) to remove.");
+        return;
+    }
+    json_quote(name, q, sizeof q);
+    sprintf_s(body, sizeof body, "{\"%s\": %s}", add ? "add" : "remove", q);
+    if (s_fr_busy) {
+        set_text(ID_FR_STATUS, L"One moment\x2026");
+        return;
+    }
+    friends_fetch(body);
+    if (add)
+        set_text(ID_FR_NAME, L"");
 }
 
 /* Frame rate choices (the game's frame_rate setting: frames a second at most;
- * the game runs at its normal speed at any of them). */
-static const int k_frame_rates[] = { 30, 60, 120, 144, 240 };
-#define N_FRAME_RATES 5
+ * the game runs at its normal speed at either). */
+static const int k_frame_rates[] = { 30, 60 };
+#define N_FRAME_RATES 2
 
 static int frame_rate_index(int fps)
 {
@@ -1225,7 +1417,7 @@ static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_a
                           int renderer, int language)
 {
     SendMessageW(ctl(ID_LANGUAGE), CB_SETCURSEL, (WPARAM)language_index(language), 0);
-    CheckDlgButton(s_wnd, ID_MSAA, msaa ? BST_CHECKED : BST_UNCHECKED);
+    SendMessageW(ctl(ID_MSAA), CB_SETCURSEL, (WPARAM)(msaa >= 1 && msaa <= 4 ? msaa - 1 : 0), 0);
     SendMessageW(ctl(ID_RENDERER), CB_SETCURSEL, (WPARAM)renderer, 0);
     CheckRadioButton(s_wnd, ID_WINDOWED, ID_FULLSCREEN, fullscreen ? ID_FULLSCREEN : ID_WINDOWED);
     SendMessageW(ctl(ID_RESOLUTION), CB_SETCURSEL, (WPARAM)res, 0);
@@ -1248,8 +1440,8 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
-    char online_name[64] = "", online_server[128] = "";
+    int msaa = 0, aa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
+    char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
     if (toml_read(p, &l)) {
@@ -1269,6 +1461,7 @@ static void settings_load(void)
             else if (!strcmp(key, "audio_backend")) sdl_audio = !_stricmp(val, "sdl");
             else if (!strcmp(key, "show_fps")) fps = !strcmp(val, "true");
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
+            else if (!strcmp(key, "native_aa")) aa = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
             else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
@@ -1281,6 +1474,7 @@ static void settings_load(void)
             else if (!strcmp(key, "online_server")) strcpy_s(online_server, sizeof online_server, val);
             else if (!strcmp(key, "online_token")) strcpy_s(s_online_token, sizeof s_online_token, val);
             else if (!strcmp(key, "online_xuid")) strcpy_s(s_online_xuid, sizeof s_online_xuid, val);
+            else if (!strcmp(key, "p2p_peers")) strcpy_s(online_peers, sizeof online_peers, val);
         }
         lines_free(&l);
     } else if (on_steam_deck()) {
@@ -1289,9 +1483,16 @@ static void settings_load(void)
     for (i = 0; i < N_RES; i++)
         if (k_res[i].w == w && k_res[i].h == h)
             res = i;
+    /* anti-aliasing: native_aa (1 off, 2-4), else the older on / off (on = 2x) */
+    msaa = aa >= 1 && aa <= 4 ? aa : msaa ? 2 : 1;
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
     online_show(online, online_name, online_server);
+    {
+        WCHAR w[256];
+        MultiByteToWideChar(CP_UTF8, 0, online_peers, -1, w, 256);
+        set_text(ID_ON_PEERS, w);
+    }
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
@@ -1301,12 +1502,12 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 22 };
+    enum { NK = 24 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
-                                    "online_token", "online_xuid", "frame_rate" };
+                                    "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1334,7 +1535,12 @@ static int settings_save(void)
     strcpy_s(vals[8], 64, IsDlgButtonChecked(s_wnd, ID_MUTE) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[10], 64, IsDlgButtonChecked(s_wnd, ID_SHOWFPS) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[9], 64, SendMessageW(ctl(ID_AUDIO), CB_GETCURSEL, 0, 0) == 1 ? "\"sdl\"" : "\"xaudio2\"");
-    strcpy_s(vals[11], 64, IsDlgButtonChecked(s_wnd, ID_MSAA) == BST_CHECKED ? "true" : "false");
+    {
+        const int ai = (int)SendMessageW(ctl(ID_MSAA), CB_GETCURSEL, 0, 0);
+        const int level = ai >= 0 && ai < 4 ? ai + 1 : 1;
+        strcpy_s(vals[11], 64, level >= 2 ? "true" : "false");
+        sprintf_s(vals[23], 64, "%d", level);
+    }
     strcpy_s(vals[12], 64, renderer == RENDERER_EMULATED ? "\"off\"" : "\"main\"");
     /* Vulkan: the emulator runs on Vulkan and the native renderer with it. */
     strcpy_s(vals[13], 64, renderer == RENDERER_VULKAN ? "\"vulkan\"" : "\"any\"");
@@ -1358,6 +1564,7 @@ static int settings_save(void)
         const int fi = (int)SendMessageW(ctl(ID_FRAMERATE), CB_GETCURSEL, 0, 0);
         sprintf_s(vals[21], 64, "%d", k_frame_rates[fi >= 0 && fi < N_FRAME_RATES ? fi : 1]);
     }
+    toml_quote_ctl(ID_ON_PEERS, 140, vals[22], sizeof vals[22]);
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -1428,7 +1635,7 @@ static int settings_save(void)
 
 static void settings_defaults(void)
 {
-    settings_show(0, 0, 1, 0, 0, 0, 1, 0, 0, 1);
+    settings_show(0, 0, 1, 0, 0, 0, 1, 1, 0, 1);
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
@@ -1639,6 +1846,7 @@ static void update_free_space(void)
 }
 
 static void saves_refresh(void);
+static void saves_folder_show(void);
 static void pt_refresh(void);
 static void mv_refresh(void);
 static volatile LONG s_up_busy;
@@ -1653,6 +1861,11 @@ static void show_tab(int t)
     if (t == TAB_ONLINE) {  /* (the controls the account/server state hides) */
         online_account_show();
         online_server_show();
+        friends_enable();
+        friends_fetch(NULL);
+        SetTimer(s_wnd, FRIENDS_TIMER, 20000, NULL);
+    } else {
+        KillTimer(s_wnd, FRIENDS_TIMER);
     }
     if (t == TAB_PLAY)
         refresh_play();
@@ -1686,11 +1899,39 @@ static void show_tab(int t)
 
 static void saves_setup(HWND list);
 static void saves_refresh(void);
+static void list_columns(HWND list, const WCHAR *const *names, const int *widths, int n);
 static HWND pt_setup_grid(void);
 static void mv_setup(void);
 static void up_setup(void);
 
 #define X0 28
+/* Report a problem: a zip of the newest logs, crash reports and settings
+   (report.c), shown in Explorer, ready to send. */
+static void report_problem(void)
+{
+    WCHAR zip[MAX_PATH], msg[MAX_PATH + 512], args[MAX_PATH + 32];
+    int logs = 0, crashes = 0;
+    if (!is_game_folder(s_game_dir)) {
+        MessageBoxW(s_wnd, L"Install the game first (Install tab): a report is made from its logs.", WINDOW_TITLE,
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!report_make(s_game_dir, PORT_VERSION, zip, MAX_PATH, &logs, &crashes)) {
+        MessageBoxW(s_wnd, L"The report could not be written (is the game folder read-only?).", WINDOW_TITLE,
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    swprintf_s(msg, MAX_PATH + 512,
+               L"Made %s\n\nIt has the newest %d game log%s, %d crash report%s and your settings (your online "
+               L"account's password and token are left out). Send this file with a short description of what "
+               L"happened and what you did just before.\n\nRun the game once more and reproduce the problem first, "
+               L"if you can: the newest log is the one that counts.",
+               zip, logs, logs == 1 ? L"" : L"s", crashes, crashes == 1 ? L"" : L"s");
+    MessageBoxW(s_wnd, msg, WINDOW_TITLE, MB_OK | MB_ICONINFORMATION);
+    swprintf_s(args, MAX_PATH + 32, L"/select,\"%s\"", zip);
+    ShellExecuteW(s_wnd, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+}
+
 static void build_ui(void)
 {
     TCITEMW ti;
@@ -1716,6 +1957,7 @@ static void build_ui(void)
     add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 190, 560, 40, ID_PLAY_STATUS);
     h = add(TAB_PLAY, L"Button", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, X0, 246, 200, 52, ID_PLAY);
     set_big(h);
+    add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 380, 258, 166, 30, ID_REPORT);
     add(TAB_PLAY, L"Button", L"Close the launcher when the game starts", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0, 312, 400, 24, ID_CLOSE_ON_PLAY);
     add(TAB_PLAY, L"Static", L"Display, resolution, controller and audio options are on the Settings tab; they "
@@ -1740,13 +1982,17 @@ static void build_ui(void)
         swprintf_s(t, 32, L"%d FPS", k_frame_rates[i]);
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
     }
-    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; full speed at any.",
+    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; normal speed at either.",
         SS_LEFT, X0 + 150, 132, 396, 18, 0);
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 154, 360, 24, ID_VSYNC);
     add(TAB_SETTINGS, L"Button", L"Show FPS (F2)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 400, 154, 150, 24, ID_SHOWFPS);
-    add(TAB_SETTINGS, L"Button", L"Anti-aliasing (smoother edges)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 182, 220, 24,
-        ID_MSAA);
+    add(TAB_SETTINGS, L"Static", L"Anti-aliasing", SS_LEFT, X0 + 16, 186, 100, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 116, 182, 140, 200, ID_MSAA);
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Off");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"2x (4 samples)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"3x (9 samples)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"4x (16 samples)");
     add(TAB_SETTINGS, L"Static", L"Renderer", SS_LEFT, X0 + 270, 186, 80, 20, 0);
     add(TAB_SETTINGS, L"Button", L"Prepare graphics in the menus (no stutter the first time a scene shows; native)",
         BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 210, 530, 24, ID_PREPARE);
@@ -1785,37 +2031,57 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 556, 560, 36, ID_SETTINGS_STATUS);
 
     /* Online */
-    add(TAB_ONLINE, L"Static", L"Community Creations: share Created Superstars, Paint Tool logos, highlight reels "
-                               L"and more with other players, through a Community Creations server (the original "
-                               L"servers closed in 2014). Online matches are not available yet.",
-        SS_LEFT, X0, 56, 560, 52, 0);
-    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 116, 400, 24, ID_ON_ENABLE);
-    add(TAB_ONLINE, L"Button", L"Your account", BS_GROUPBOX, X0, 150, 560, 156, 0);
-    add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 178, 130, 20, 0);
-    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 174, 220, 24, ID_ON_NAME);
+    add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
+                               L"Community Creations server - the original servers closed in 2014.",
+        SS_LEFT, X0, 54, 560, 36, 0);
+    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 92, 400, 22, ID_ON_ENABLE);
+    add(TAB_ONLINE, L"Button", L"Your account", BS_GROUPBOX, X0, 118, 560, 124, 0);
+    add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 144, 130, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 140, 220, 24, ID_ON_NAME);
     SendMessageW(h, EM_LIMITTEXT, 15, 0);
-    add(TAB_ONLINE, L"Static", L"Password", SS_LEFT, X0 + 16, 210, 130, 20, 0);
-    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_BORDER | WS_TABSTOP, X0 + 150, 206, 220, 24,
+    add(TAB_ONLINE, L"Static", L"Password", SS_LEFT, X0 + 16, 174, 130, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_BORDER | WS_TABSTOP, X0 + 150, 170, 220, 24,
             ID_ON_PASSWORD);
     SendMessageW(h, EM_LIMITTEXT, 100, 0);
-    add(TAB_ONLINE, L"Button", L"Sign in", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 173, 162, 26, ID_ON_SIGNIN);
-    add(TAB_ONLINE, L"Button", L"Create account", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 205, 162, 26,
+    add(TAB_ONLINE, L"Button", L"Sign in", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_SIGNIN);
+    add(TAB_ONLINE, L"Button", L"Create account", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 169, 162, 26,
         ID_ON_REGISTER);
-    add(TAB_ONLINE, L"Button", L"Sign out", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 173, 162, 26, ID_ON_SIGNOUT);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 240, 530, 22, ID_ON_ACCOUNT);
-    add(TAB_ONLINE, L"Static", L"The name (3-15 characters) is what other players see on your uploads. Only you "
-                               L"can change or delete them. The same account works on any PC or phone.",
-        SS_LEFT, X0 + 16, 264, 530, 36, 0);
-    add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 316, 560, 96, 0);
-    h = add(TAB_ONLINE, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 16, 340, 120, 200,
+    add(TAB_ONLINE, L"Button", L"Sign out", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_SIGNOUT);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 200, 530, 18, ID_ON_ACCOUNT);
+    add(TAB_ONLINE, L"Static", L"The name (3-15 characters) is what other players see. The same account works on any "
+                               L"PC or phone.",
+        SS_LEFT, X0 + 16, 219, 530, 18, 0);
+    add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 248, 560, 74, 0);
+    h = add(TAB_ONLINE, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 16, 270, 120, 200,
             ID_ON_SERVER_KIND);
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Default");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Custom");
     SendMessageW(h, CB_SETCURSEL, 0, 0);
-    add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 340, 396, 24, ID_ON_SERVER);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 372, 396, 32, ID_ON_SERVER_LABEL);
-    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 424, 108, 30, ID_ON_SAVE);
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 430, 440, 36, ID_ON_STATUS);
+    add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 270, 396, 24, ID_ON_SERVER);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 298, 396, 20, ID_ON_SERVER_LABEL);
+    add(TAB_ONLINE, L"Button", L"Friends", BS_GROUPBOX, X0, 328, 560, 202, 0);
+    {
+        static const WCHAR *const names[] = { L"Player", L"Status" };
+        static const int widths[] = { 150, 196 };
+        list_columns(add(TAB_ONLINE, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER |
+                                                       WS_TABSTOP, X0 + 16, 350, 352, 124, ID_FR_LIST),
+                     names, widths, 2);
+    }
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 380, 350, 166, 24, ID_FR_NAME);
+    SendMessageW(h, EM_LIMITTEXT, 15, 0);
+    SendMessageW(h, EM_SETCUEBANNER, TRUE, (LPARAM)L"Player name");
+    add(TAB_ONLINE, L"Button", L"Add", BS_PUSHBUTTON | WS_TABSTOP, X0 + 380, 380, 80, 26, ID_FR_ADD);
+    add(TAB_ONLINE, L"Button", L"Remove", BS_PUSHBUTTON | WS_TABSTOP, X0 + 466, 380, 80, 26, ID_FR_REMOVE);
+    add(TAB_ONLINE, L"Static", L"Online: in the game's ONLINE menus. Friends' matches show in the game's searches.",
+        SS_LEFT | SS_NOPREFIX, X0 + 380, 414, 166, 60, 0);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 478, 530, 18, ID_FR_STATUS);
+    add(TAB_ONLINE, L"Static", L"Addresses", SS_LEFT, X0 + 16, 502, 90, 20, 0);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 110, 498, 436, 24, ID_ON_PEERS);
+    SendMessageW(h, EM_LIMITTEXT, 140, 0);
+    add(TAB_ONLINE, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 538, 108, 30, ID_ON_SAVE);
+    add(TAB_ONLINE, L"Static", L"Addresses: other players' IPs or names (comma-separated) to search besides your "
+                               L"network. Without, players anywhere meet through the server.",
+        SS_LEFT | SS_NOPREFIX, X0, 538, 440, 30, ID_ON_STATUS);
 
     /* Install */
     add(TAB_INSTALL, L"Static", L"1.  Your " GAME_TITLE L" disc image (Xbox 360 ISO or XISO)",
@@ -1881,7 +2147,7 @@ static void build_ui(void)
         SS_LEFT, X0, 396, 560, 40, 0);
 
     /* Saves */
-    add(TAB_SAVES, L"Static", L"Your saves, one file each in the game folder's Saves folder. The main save keeps "
+    add(TAB_SAVES, L"Static", L"Your saves, one file each in the saves folder (below). The main save keeps "
                               L"settings, unlocks and progress and ties the rest together.",
         SS_LEFT, X0, 50, 560, 36, 0);
     saves_setup(add(TAB_SAVES, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
@@ -1894,6 +2160,12 @@ static void build_ui(void)
     add(TAB_SAVES, L"Button", L"Import\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 140, 346, 140, 30, ID_SV_IMPORT);
     add(TAB_SAVES, L"Button", L"Delete selected", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 346, 130, 30, ID_SV_DELETE);
     add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 388, 560, 40, ID_SV_STATUS);
+    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 442, 380, 20, ID_SV_FOLDER);
+    add(TAB_SAVES, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 390, 436, 80, 30, ID_SV_CHANGE);
+    add(TAB_SAVES, L"Button", L"Default", BS_PUSHBUTTON | WS_TABSTOP, X0 + 480, 436, 80, 30, ID_SV_DEFAULT);
+    add(TAB_SAVES, L"Static", L"Keep two installs' saves apart (or share them): the game and this tab use the folder "
+                              L"set here (saved in " GAME_TOML L"). Default: the game folder's Saves.",
+        SS_LEFT, X0, 472, 560, 36, 0);
 
     /* Paint Tool */
     add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
@@ -2216,9 +2488,103 @@ static int any_game_running(void)
     return found;
 }
 
+/* The saves folder setting (svr2011.toml's saves_folder, which the game reads
+ * too): "" for the default, <game>\Saves. Kept with '/' (a TOML string takes
+ * '\' as an escape); relative paths are from the game folder. */
+static void saves_folder_setting(WCHAR *out, size_t n)
+{
+    WCHAR p[MAX_PATH];
+    Lines l;
+    int i;
+    out[0] = 0;
+    if (!s_game_dir[0])
+        return;
+    settings_path(p);
+    if (!toml_read(p, &l))
+        return;
+    for (i = 0; i < l.n; i++) {
+        char key[64], val[MAX_PATH * 3];
+        const char *t = l.v[i];
+        while (*t == ' ' || *t == '\t')
+            t++;
+        if (*t == '[')
+            break;
+        if (toml_kv(l.v[i], key, sizeof key, val, sizeof val) && !strcmp(key, "saves_folder")) {
+            WCHAR *c;
+            MultiByteToWideChar(CP_UTF8, 0, val, -1, out, (int)n);
+            for (c = out; *c; c++)
+                if (*c == L'/')
+                    *c = L'\\';
+        }
+    }
+    lines_free(&l);
+}
+
+/* Sets one top-level key of svr2011.toml (value as written, e.g. "\"x\"");
+ * the rest of the file is kept. */
+static int toml_set(const char *key, const char *value)
+{
+    WCHAR p[MAX_PATH], tmp[MAX_PATH];
+    Lines l;
+    FILE *f;
+    char line[MAX_PATH * 3 + 64];
+    int i, done = 0, insert_at = -1;
+    settings_path(p);
+    if (!toml_read(p, &l))
+        lines_insert(&l, 0, "# WWE SmackDown vs. Raw 2011 - settings (the launcher rewrites this file)");
+    sprintf_s(line, sizeof line, "%s = %s", key, value);
+    for (i = 0; i < l.n; i++) {
+        char k[64], v[MAX_PATH * 3];
+        const char *t = l.v[i];
+        while (*t == ' ' || *t == '\t')
+            t++;
+        if (*t == '[') {
+            insert_at = i;
+            break;
+        }
+        if (toml_kv(l.v[i], k, sizeof k, v, sizeof v) && !strcmp(k, key)) {
+            free(l.v[i]);
+            l.v[i] = done ? NULL : _strdup(line);
+            done = 1;
+        }
+    }
+    if (!done) {
+        if (insert_at < 0)
+            insert_at = l.n;
+        while (insert_at > 0 && (!l.v[insert_at - 1] || !l.v[insert_at - 1][0]))
+            insert_at--;
+        lines_insert(&l, insert_at, line);
+    }
+    swprintf_s(tmp, MAX_PATH, L"%s.tmp", p);
+    if (_wfopen_s(&f, tmp, L"wb") || !f) {
+        lines_free(&l);
+        return 0;
+    }
+    for (i = 0; i < l.n; i++)
+        if (l.v[i])
+            fprintf(f, "%s\n", l.v[i]);
+    fclose(f);
+    lines_free(&l);
+    if (!MoveFileExW(tmp, p, MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(tmp);
+        return 0;
+    }
+    return 1;
+}
+
 static int saves_dir(WCHAR *out)
 {
-    return s_game_dir[0] && join(out, s_game_dir, SAVES_DIR);
+    WCHAR s[MAX_PATH];
+    if (!s_game_dir[0])
+        return 0;
+    saves_folder_setting(s, MAX_PATH);
+    if (!s[0])
+        return join(out, s_game_dir, SAVES_DIR);
+    if (s[1] == L':' || (s[0] == L'\\' && s[1] == L'\\')) {  /* absolute */
+        wcscpy_s(out, MAX_PATH, s);
+        return 1;
+    }
+    return join(out, s_game_dir, s);
 }
 
 /* A shell copy / delete (whole folders), without dialogs. */
@@ -2414,6 +2780,7 @@ static void fmt_when(WCHAR *out, size_t n, FILETIME ft)
 
 static void saves_refresh(void)
 {
+    saves_folder_show();
     HWND list = ctl(ID_SV_LIST);
     WCHAR saves[MAX_PATH], pat[MAX_PATH], path[MAX_PATH], size[32], when[32];
     WIN32_FIND_DATAW fd;
@@ -2749,6 +3116,89 @@ static void saves_delete(void)
     }
     saves_refresh();
     saves_status(L"Moved %d save%s to the Recycle Bin.", done, done == 1 ? L"" : L"s");
+}
+
+/* The Saves folder row: where the saves are, and whether that's the default. */
+static void saves_folder_show(void)
+{
+    WCHAR s[MAX_PATH], d[MAX_PATH], t[MAX_PATH + 64];
+    saves_folder_setting(s, MAX_PATH);
+    if (saves_dir(d))
+        swprintf_s(t, MAX_PATH + 64, L"Saves folder: %s%s", d, s[0] ? L"" : L" (default)");
+    else
+        wcscpy_s(t, MAX_PATH + 64, L"Saves folder: (install the game first)");
+    set_text(ID_SV_FOLDER, t);
+    EnableWindow(ctl(ID_SV_DEFAULT), s[0] != 0);
+}
+
+static int folder_has_saves(const WCHAR *dir)
+{
+    WCHAR pat[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE f;
+    int has = 0;
+    if (!join(pat, dir, L"*") || (f = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do
+        has |= is_save_entry(&fd);
+    while (!has && FindNextFileW(f, &fd));
+    FindClose(f);
+    return has;
+}
+
+/* Change... / Default: the new folder for the saves (NULL: the default). If it
+ * has no saves and the current one does, offers to copy them over (the old
+ * folder is left as it is). */
+static void saves_set_folder(const WCHAR *dir)
+{
+    WCHAR old[MAX_PATH], now[MAX_PATH], pat[MAX_PATH], t[MAX_PATH * 3];
+    char u[MAX_PATH * 3], v[MAX_PATH * 3 + 4];
+    if (!s_game_dir[0] || saves_locked() || !saves_dir(old))
+        return;
+    if (dir) {
+        size_t i;
+        WideCharToMultiByte(CP_UTF8, 0, dir, -1, u, sizeof u, NULL, NULL);
+        for (i = 0; u[i]; i++)
+            if (u[i] == '\\')
+                u[i] = '/';
+        if (strchr(u, '"')) {
+            saves_status(L"That folder name can't be used.");
+            return;
+        }
+        sprintf_s(v, sizeof v, "\"%s\"", u);
+    } else {
+        strcpy_s(v, sizeof v, "\"\"");
+    }
+    if (!toml_set("saves_folder", v)) {
+        saves_status(L"The setting could not be saved (is the game folder read-only?).");
+        return;
+    }
+    if (!saves_dir(now) || !mkdirs(now)) {
+        saves_status(L"That folder could not be made.");
+        saves_folder_show();
+        return;
+    }
+    if (_wcsicmp(old, now) && folder_has_saves(old) && !folder_has_saves(now)) {
+        swprintf_s(t, MAX_PATH * 3, L"Copy your current saves to the new folder?\n\nFrom: %s\nTo: %s\n\n"
+                                    L"(The old folder is left as it is.)", old, now);
+        if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) == IDYES && join(pat, old, L"*"))
+            shell_op(FO_COPY, pat, now, 0);
+    }
+    saves_folder_show();
+    saves_refresh();
+}
+
+static void saves_change_folder(void)
+{
+    WCHAR cur[MAX_PATH], pick[MAX_PATH];
+    if (!s_game_dir[0]) {
+        saves_status(L"Install the game first (Install tab).");
+        return;
+    }
+    if (!saves_dir(cur))
+        cur[0] = 0;
+    if (pick_folder_in(L"Choose the folder for the saves", dir_exists(cur) ? cur : s_game_dir, pick))
+        saves_set_folder(pick);
 }
 
 static void saves_open(void)
@@ -4633,7 +5083,15 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         NMHDR *n = (NMHDR *)lp;
         if (n->idFrom == ID_TAB && n->code == TCN_SELCHANGE)
             show_tab(TabCtrl_GetCurSel(s_tab));
-        else
+        if (n->idFrom == ID_FR_LIST && n->code == LVN_ITEMCHANGED) {
+            NMLISTVIEW *v = (NMLISTVIEW *)lp;
+            if ((v->uNewState & LVIS_SELECTED) && !(v->uOldState & LVIS_SELECTED)) {
+                WCHAR name[64];
+                ListView_GetItemText(ctl(ID_FR_LIST), v->iItem, 0, name, 64);
+                set_text(ID_FR_NAME, name);
+            }
+        }
+        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST)
             mods_notify(n);
         break;
     }
@@ -4642,6 +5100,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             mods_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
+        case ID_REPORT:
+            report_problem();
+            break;
         case ID_PLAY:
             play();
             break;
@@ -4672,13 +5133,13 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(s_wnd, L"open", m, NULL, NULL, SW_SHOWNORMAL);
             break;
         }
-        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE:
+        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }
             break;
-        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_MSAA: case ID_PREPARE:
+        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
@@ -4693,7 +5154,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_ON_STATUS, L"");
             }
             break;
-        case ID_ON_NAME: case ID_ON_SERVER:
+        case ID_ON_NAME: case ID_ON_SERVER: case ID_ON_PEERS:
             if (HIWORD(wp) == EN_CHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_ON_STATUS, L"");
@@ -4714,6 +5175,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             break;
         case ID_ON_SIGNOUT:
             online_sign_out();
+            break;
+        case ID_FR_ADD:
+            friends_change(1);
+            break;
+        case ID_FR_REMOVE:
+            friends_change(0);
             break;
         case ID_ON_SAVE:
             settings_save();
@@ -4774,6 +5241,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_SV_IMPORT:   saves_import();       break;
         case ID_SV_DELETE:   saves_delete();       break;
         case ID_SV_OPEN:     saves_open();         break;
+        case ID_SV_CHANGE:   saves_change_folder(); break;
+        case ID_SV_DEFAULT:  saves_set_folder(NULL); break;
         case ID_PT_EXPORT:    pt_export();         break;
         case ID_PT_IMPORT:    pt_change(1);        break;
         case ID_PT_DELETE:    pt_change(0);        break;
@@ -4802,6 +5271,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     case WM_APP_UPD_CHECKED:
         up_checked((int)wp, (WCHAR *)lp);
+        return 0;
+    case WM_APP_FRIENDS:
+        friends_show((int)wp, (char *)lp);
+        free((void *)lp);
+        return 0;
+    case WM_TIMER:
+        if (wp == FRIENDS_TIMER && s_tab_visible_online && IsWindowVisible(w) && !IsIconic(w))
+            friends_fetch(NULL);
         return 0;
     case WM_APP_UPD_PROGRESS:
         SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, wp, 0);
@@ -5074,6 +5551,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         wprintf(ok ? L"ok: %s\n" : L"failed: %s\n", err);
         return ok ? 0 : 1;
     }
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--report")) {   /* <game folder>: Report a problem, no window */
+        WCHAR zip[MAX_PATH];
+        int logs = 0, crashes = 0, ok;
+        console_setup();
+        ok = report_make(argv[2], PORT_VERSION, zip, MAX_PATH, &logs, &crashes);
+        if (ok) wprintf(L"ok %s (%d logs, %d crash reports)\n", zip, logs, crashes);
+        else wprintf(L"failed\n");
+        return ok ? 0 : 1;
+    }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--apk-package")) {   /* <game folder> <out folder> */
         WCHAR err[600] = L"";
         int ok;
@@ -5187,7 +5673,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 TabCtrl_SetCurSel(s_tab, capture_seq[k]);
                 SendMessageW(s_wnd, WM_NOTIFY, ID_TAB, (LPARAM)&n);
             }
-            while (GetTickCount64() - t0 < 400)
+            /* (the Online tab: until the Friends list is in, 5 s at most) */
+            while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);

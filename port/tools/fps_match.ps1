@@ -4,7 +4,7 @@
 # times (runs\<Name>_e*.png entrances, runs\<Name>_m<seconds>.png match), so
 # a clock on screen can be compared with real time.
 #   fps_match.ps1 [-Fps 120] [-Rule 36] [-Name fpsm120]
-param([int]$Fps = 120, [string]$Rule = "36", [string]$Name = "")
+param([int]$Fps = 120, [string]$Rule = "36", [string]$Name = "", [switch]$NoEntrance)
 if (-not $Name) { $Name = "fpsm$Fps" }
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
@@ -24,7 +24,8 @@ $s = Join-Path $tools "lim_session.ps1"
 & $nav -Keys "A@3,A@4" | Out-Null
 & $nav -Keys "A@4" | Out-Null
 & $nav -Keys "A@5" | Out-Null
-& $nav -Keys "A@6" | Out-Null
+& $nav -Keys "A@14" | Out-Null                                # (longer: loading at 30 fps)
+if ($NoEntrance) { & $nav -Keys "DOWN@1" | Out-Null }          # (D-pad down on the versus screen: entrances off)
 & $nav -Keys "A@1" | Out-Null                                 # PLAY (entrances on)
 foreach ($t in 10, 20, 30) { Start-Sleep 10; & $s shot "${Name}_e$t" | Out-Null }
 & $s input "press START 200" | Out-Null; Start-Sleep 4

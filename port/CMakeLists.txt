@@ -28,6 +28,8 @@ set(SVR2011_SOURCES
     src/discord_presence.cpp
     src/online.cpp
     src/online_net.cpp
+    src/online_cas.cpp
+    src/online_overlay.cpp
     src/menu_hooks.cpp
     src/perf_hooks.cpp
     src/saves.cpp
@@ -36,6 +38,7 @@ set(SVR2011_SOURCES
     src/user_movies.cpp
     src/entrance_media.cpp
     src/movie_transcode.cpp
+    src/p2p.cpp
     src/paint_pages.cpp
     src/match_types.cpp
     src/arena_mods.cpp
@@ -83,6 +86,28 @@ if(NOT SVR2011_D3D_TRACE)
     add_subdirectory(${PLUME_DIR} plume EXCLUDE_FROM_ALL)
 endif()
 
+# The version and commit, for the log's first lines (src/build_info.h): the
+# release version from VERSION.txt; the commit from BUILD_COMMIT.txt (git
+# archive fills it in: export-subst), else from git (a working tree).
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_PORT_VERSION LIMIT_COUNT 1)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/BUILD_COMMIT.txt" SVR2011_BUILD_COMMIT LIMIT_COUNT 1)
+if(NOT SVR2011_BUILD_COMMIT OR SVR2011_BUILD_COMMIT MATCHES "Format")
+    execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" log -1 "--format=%h %cs"
+                    OUTPUT_VARIABLE SVR2011_BUILD_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" status --porcelain --untracked-files=no
+                    OUTPUT_VARIABLE SVR2011_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(SVR2011_DIRTY)
+        string(APPEND SVR2011_BUILD_COMMIT " + local changes")
+    endif()
+endif()
+if(NOT SVR2011_BUILD_COMMIT)
+    set(SVR2011_BUILD_COMMIT "unknown")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" "${CMAKE_CURRENT_SOURCE_DIR}/BUILD_COMMIT.txt")
+set_source_files_properties(src/svr2011_app.cpp PROPERTIES COMPILE_DEFINITIONS
+    "SVR2011_PORT_VERSION=\"${SVR2011_PORT_VERSION}\";SVR2011_BUILD_COMMIT=\"${SVR2011_BUILD_COMMIT}\"")
+
 # Windows only: XAudio2 audio, crash reports, PC music (XAudio2 + Media
 # Foundation), the D3D12 renderer backend. Elsewhere posix_stubs.cpp.
 if(WIN32)
@@ -91,7 +116,7 @@ if(WIN32)
         list(APPEND SVR2011_SOURCES src/native/backend_d3d12.cpp)
     endif()
 else()
-    list(APPEND SVR2011_SOURCES src/posix_stubs.cpp)
+    list(APPEND SVR2011_SOURCES src/posix_stubs.cpp src/crash_report_posix.cpp)
 endif()
 
 if(WIN32)
@@ -196,7 +221,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     target_compile_definitions(svr2011_modmaker PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
     target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/launcher.rc)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/launcher.rc)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)

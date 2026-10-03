@@ -19,9 +19,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -68,6 +73,32 @@ uint32_t g_extra_label = 0;     // "Extra" (the "?" tile opens the managers: src
 
 uint32_t Be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+}
+
+// For the log: the menus' entries by (group, row) -> their label string id,
+// from the installed menu.pac's table (MFLO/0000: 0x74-byte records, a
+// group's records consecutive, hidden ones - +0x41 bit 0 - not shown), and
+// the game's string table (the first lookup's manager).
+uint32_t g_string_manager = 0;
+std::map<std::pair<uint32_t, uint32_t>, uint32_t> g_menu_labels;
+bool g_menu_labels_read = false;
+
+void ReadMenuLabels() {
+  g_menu_labels_read = true;
+  const auto file = rex::filesystem::GetExecutableFolder() / "pac" / "menu" / "menu.pac";
+  std::ifstream in(file, std::ios::binary);
+  if (!in) return;
+  std::vector<uint8_t> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  constexpr size_t kMflo = 0x25F000, kFirst = kMflo + 0x28, kRec = 0x74;
+  if (d.size() < kMflo + 0x6800) return;
+  const uint32_t total = Be32(&d[kMflo + 4]);
+  std::map<uint32_t, uint32_t> rows;  // group -> next row
+  for (uint32_t i = 0; i < total && kFirst + (i + 1) * kRec <= d.size(); ++i) {
+    const uint8_t* r = &d[kFirst + i * kRec];
+    if (r[0x41] & 1) continue;  // (hidden)
+    const uint32_t group = Be32(r + 0x18);
+    g_menu_labels[{group, rows[group]++}] = Be32(r);
+  }
 }
 
 }  // namespace
@@ -127,6 +158,7 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
 // String lookup: sub_82153EF8(manager, id) -> (r3) the string.
 REX_EXTERN(__imp__sub_82153EF8);
 REX_HOOK_RAW(sub_82153EF8) {
+  if (!g_string_manager) g_string_manager = ctx.r3.u32;  // (for the log's menu names)
   if (const uint32_t s = svr2011::OnlineString(ctx.r4.u32)) {  // (online.h)
     ctx.r3.u64 = s;
     return;
@@ -215,8 +247,27 @@ REX_HOOK_RAW(sub_82447210) {
   if (ctx.r4.u32 == 1) {
     const uint8_t* menu = base + ctx.r3.u32;
     const uint32_t group = Be32(menu + kMenuGroup), cursor = Be32(menu + kMenuCursor);
-    REXLOG_INFO("[svr2011] menu select: group {:X} row {}", group, cursor);
+    // The entry's label, for the log ("menu select: OPTIONS (group 5 row 3)").
+    std::string label;
+    if (!g_menu_labels_read) ReadMenuLabels();
+    if (auto it = g_menu_labels.find({group, cursor}); it != g_menu_labels.end() && g_string_manager) {
+      const auto saved = ctx;
+      ctx.r3.u64 = g_string_manager;
+      ctx.r4.u64 = it->second;
+      sub_82153EF8(ctx, base);
+      if (ctx.r3.u32) {
+        // (printable text only: icons such as MY WWE's logo are control codes)
+        for (const char* t = reinterpret_cast<const char*>(base + ctx.r3.u32); *t && label.size() < 60; ++t)
+          if (static_cast<unsigned char>(*t) >= 0x20) label += *t;
+        while (!label.empty() && label.back() == ' ') label.pop_back();
+        while (!label.empty() && label.front() == ' ') label.erase(0, 1);
+      }
+      ctx = saved;
+    }
+    REXLOG_INFO("[svr2011] menu select: {}{}group {:X} row {}{}", label, label.empty() ? "" : " (", group, cursor,
+                label.empty() ? "" : ")");
     svr2011::TouchGameInMatch(false);  // (the touch controller's MENU layout)
+    svr2011::SetFrameRateInMatch(false);  // (menus at 60 fps)
     svr2011::native::SetMatchScene(false);  // (wide screens: menus at 16:9)
     svr2011::SetDiscordScene(svr2011::DiscordScene::kMenus);
     if (group == kOptionsGroup && cursor == kGraphicsRow) {
@@ -248,10 +299,10 @@ REX_HOOK_RAW(sub_82447210) {
 // stores it (a global at 0x82EDDBF0: 60, or 30 / 25 in entrances) with the
 // timing constants that go with it, and ~100 places read it (a frame step of
 // 2 at 30 fps, the D3D present interval through sub_826D8A90 ->
-// SetPresentInterval sub_8291D1D0, ...). Asking for 30 (25 on PAL) is turned
-// into 60 (50), so those scenes run the game's own 60 fps mode - at the right
-// speed. (Only forcing the present interval to 1 made entrances play ~1.7x
-// too fast.)
+// SetPresentInterval sub_8291D1D0, ...). It always stays at the game's own
+// 60 (frame_rate.h: the world runs in 60 Hz steps); these scenes are drawn at
+// 30 frames a second only with the setting off. (Only forcing the present
+// interval to 1 made entrances play ~1.7x too fast.)
 REXCVAR_DEFINE_BOOL(unlock_30fps, true, "GPU",
                     "Run the game's 30 fps scenes (entrances, cutscenes) at 60 fps");
 
@@ -260,14 +311,34 @@ void ArmWatch(uint8_t* base);
 }
 
 // Entrances halve the rate instead: sub_826E1C88 (60 -> 30, 50 -> 25, with
-// the matching constants; sub_826E1D28 restores it). Skipped with the setting.
+// the matching constants; sub_826E1D28 restores it). Never done: the game's
+// world stays at its 60 Hz steps (frame_rate.h); with the setting off the
+// entrance is drawn at 30 frames a second instead, as the original.
 REX_EXTERN(__imp__sub_826E1C88);
 REX_HOOK_RAW(sub_826E1C88) {
   svr2011::TouchGameInMatch(true);  // entrances: a match (the touch controller's MATCH layout)
+  svr2011::SetFrameRateInMatch(true);  // (the chosen frame rate)
   svr2011::native::SetMatchScene(true);  // (wide screens: full width)
   svr2011::SetDiscordScene(svr2011::DiscordScene::kEntrances);
-  if (REXCVAR_GET(unlock_30fps)) return;
-  __imp__sub_826E1C88(ctx, base);
+  svr2011::ArmMatchStart(nullptr);  // (switched here already)
+  if (!REXCVAR_GET(unlock_30fps)) svr2011::SetSceneThirtyFps(true);
+}
+
+// A match starts: sub_823EEB98(match flow) - once per match, as it loads,
+// with or without entrances (not for the training ring). The match states
+// switch from it too (entrances may be off; sub_826E1C88 then never runs) -
+// but some menus call it as well (ONLINE), so only once the match is running
+// (frame_rate.h ArmMatchStart: its frame count counting).
+REX_EXTERN(__imp__sub_823EEB98);
+REX_HOOK_RAW(sub_823EEB98) {
+  svr2011::ArmMatchStart([] {
+    REXLOG_INFO("[svr2011] match starts");
+    svr2011::TouchGameInMatch(true);  // (the touch controller's MATCH layout)
+    svr2011::native::SetMatchScene(true);  // (wide screens: full width)
+    svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
+    svr2011::SetFrameRateInMatch(true);  // (the chosen frame rate)
+  });
+  __imp__sub_823EEB98(ctx, base);
 }
 
 // The entrances' end: sub_826E1D28 restores the frame rate - the match starts.
@@ -276,19 +347,15 @@ REX_HOOK_RAW(sub_826E1D28) {
   REXLOG_INFO("[svr2011] entrances over");
   svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
   __imp__sub_826E1D28(ctx, base);
+  svr2011::SetSceneThirtyFps(false);
   svr2011::ApplyFrameRate(base);  // (frame_rate.h)
 }
 
 REX_EXTERN(__imp__sub_826E1AE8);
 REX_HOOK_RAW(sub_826E1AE8) {
-  REXLOG_INFO("[svr2011] SetFrameRate({}){}", ctx.r3.u32,
-              REXCVAR_GET(unlock_30fps) && (ctx.r3.u32 == 30 || ctx.r3.u32 == 25) ? " - raised" : "");
-  if (REXCVAR_GET(unlock_30fps)) {
-    if (ctx.r3.u32 == 30) ctx.r3.u64 = 60;
-    if (ctx.r3.u32 == 25) ctx.r3.u64 = 50;
-  }
+  REXLOG_INFO("[svr2011] SetFrameRate({}){}", ctx.r3.u32, ctx.r3.u32 != 60 ? " - kept at 60" : "");
   __imp__sub_826E1AE8(ctx, base);
-  svr2011::ApplyFrameRate(base);  // the chosen frame rate's timing (frame_rate.h)
+  svr2011::ApplyFrameRate(base);  // the game's 60 again (frame_rate.h)
   ArmWatch(base);  // debug (SVR2011_WATCH_ADDR)
 }
 

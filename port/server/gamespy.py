@@ -914,17 +914,24 @@ class Sake:
                 values["UserID"] = ["binaryDataValue", base64.b64encode(xuid.to_bytes(8, "big")).decode()]
             if self.store.count_owned(tableid, owner) >= RECORD_LIMIT:
                 return reply("RecordLimitReached")
-            # its file: uploaded by the same player, the size the record says
+            # its files: uploaded by the same player, the size the record says (a
+            # big upload - a story, a highlight reel - comes in 2 MB parts, F00
+            # on: FileSize is all of them)
+            total = 0
             for name in FILE_FIELDS:
                 v = values.get(name)
                 fid = int(v[1] or 0) if v and v[0] == "intValue" else 0
                 if fid <= 0:
                     continue
                 size, _ = self.store.file_info(fid)
-                expected = values.get("FileSize", [None, None])[1]
-                if self.store.file_owner(fid) != owner or (name == "F00" and expected and int(expected) != size):
-                    log("sake: %s record refused: file %d is not this player's upload or not its size" % (tableid, fid))
+                total += size
+                if self.store.file_owner(fid) != owner:
+                    log("sake: %s record refused: file %d is not this player's upload" % (tableid, fid))
                     return reply("NoPermission")
+            expected = int(values.get("FileSize", [None, 0])[1] or 0)
+            if expected and total and expected != total:
+                log("sake: %s record refused: its files are %d bytes, not %d" % (tableid, total, expected))
+                return reply("NoPermission")
             recordid = self.store.create(tableid, owner, values)
             log("sake: %s record %d created by %d: %s" % (tableid, recordid, owner, short(values)))
             return reply("Success", "<recordid>%d</recordid>" % recordid)

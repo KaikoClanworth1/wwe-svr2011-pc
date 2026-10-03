@@ -2,7 +2,9 @@
 //
 // Drawn over the game's OPTIONS panel in the same style (the panel, its
 // header, one bar per setting, the selected one red with < > around the
-// value), and every setting applies at once.
+// value), and every setting applies at once. Its CONTROLS tab rebinds the
+// keyboard (the SDK's keyboard driver reads its keybind_* settings every
+// poll, so a change applies at once too).
 
 #include "frame_rate.h"
 #include "graphics_page.h"
@@ -10,7 +12,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -35,6 +39,7 @@
 #include "achievements_page.h"
 #include "fps_overlay.h"
 #include "native/native_renderer.h"
+#include "online_overlay.h"
 #include "touch_controls.h"
 
 namespace svr2011 {
@@ -81,18 +86,107 @@ enum Row {
   kFrameRate,                                                    // DISPLAY
 };
 // FRAME RATE (frame_rate.h): the choices.
-constexpr int kFrameRates[] = {30, 60, 120, 144, 240};
-constexpr int kNumFrameRates = 5;
-enum Tab { kDisplayTab, kQualityTab, kTabs };
-const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY"};
+constexpr int kFrameRates[] = {30, 60};
+constexpr int kNumFrameRates = 2;
+enum Tab { kDisplayTab, kQualityTab, kControlsTab, kTabs };
+const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY", "CONTROLS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
+                                          {}};
 #else
 const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare}};
+                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
+                                          {}};
 #endif
+
+// CONTROLS: each controller input, what it does in a match, its keyboard
+// keys (the SDK keyboard driver's setting: a comma-separated list, each key
+// with optional Shift+ / Ctrl+ / Alt+) and the driver's default.
+struct Binding {
+  const char* cvar;
+  const char* input;
+  const char* action;
+  const char* keys;  // (default)
+};
+constexpr Binding kBindings[] = {
+    {"keybind_a", "A", "ACTION", "Semicolon,Space"},
+    {"keybind_b", "B", "IRISH WHIP / PIN", "Quote,Backspace"},
+    {"keybind_x", "X", "STRIKE", "L"},
+    {"keybind_y", "Y", "FINISHER / SIGNATURE", "P"},
+    {"keybind_left_shoulder", "LB", "RUN", "1"},
+    {"keybind_right_shoulder", "RB", "TURN", "3"},
+    {"keybind_left_trigger", "LT", "DRAG", "Q,I"},
+    {"keybind_right_trigger", "RT", "REVERSE", "E,O"},
+    {"keybind_lstick_up", "LEFT STICK UP", "MOVE", "W"},
+    {"keybind_lstick_down", "LEFT STICK DOWN", "MOVE", "S"},
+    {"keybind_lstick_left", "LEFT STICK LEFT", "MOVE", "A"},
+    {"keybind_lstick_right", "LEFT STICK RIGHT", "MOVE", "D"},
+    {"keybind_lstick_press", "L3", "TARGET", "F"},
+    {"keybind_rstick_up", "RIGHT STICK UP", "GRAPPLE", "Up"},
+    {"keybind_rstick_down", "RIGHT STICK DOWN", "GRAPPLE", "Down"},
+    {"keybind_rstick_left", "RIGHT STICK LEFT", "GRAPPLE", "Left"},
+    {"keybind_rstick_right", "RIGHT STICK RIGHT", "GRAPPLE", "Right"},
+    {"keybind_rstick_press", "R3", "SUBMIT", "K"},
+    {"keybind_dpad_up", "D-PAD UP", "TAUNT", "Shift+Up"},
+    {"keybind_dpad_down", "D-PAD DOWN", "TAUNT", "Shift+Down"},
+    {"keybind_dpad_left", "D-PAD LEFT", "TAUNT", "Shift+Left"},
+    {"keybind_dpad_right", "D-PAD RIGHT", "TAUNT", "Shift+Right"},
+    {"keybind_start", "START", "PAUSE", "X,Return"},
+    {"keybind_back", "BACK", "BACK", "Z,Tab"},
+};
+constexpr int kNumBindings = int(std::size(kBindings));
+constexpr int kControlRows = kNumBindings + 1;  // (+ RESET TO DEFAULTS)
+constexpr int kControlsShown = 9;              // (rows on screen; the list scrolls)
+
+// The keys a binding can take: ImGui's key -> the driver's name for it.
+struct KeyName {
+  ImGuiKey key;
+  const char* name;
+};
+const std::vector<KeyName>& KeyNames() {
+  static const std::vector<KeyName> names = [] {
+    std::vector<KeyName> v;
+    static const char* const kLetters[26] = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+                                             "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"};
+    for (int i = 0; i < 26; ++i) v.push_back({ImGuiKey(ImGuiKey_A + i), kLetters[i]});
+    static const char* const kDigits[10] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
+    for (int i = 0; i < 10; ++i) v.push_back({ImGuiKey(ImGuiKey_0 + i), kDigits[i]});
+    static const char* const kF[12] = {"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"};
+    for (int i = 0; i < 12; ++i) v.push_back({ImGuiKey(ImGuiKey_F1 + i), kF[i]});
+    static const char* const kPad[10] = {"Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4",
+                                         "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9"};
+    for (int i = 0; i < 10; ++i) v.push_back({ImGuiKey(ImGuiKey_Keypad0 + i), kPad[i]});
+    const KeyName rest[] = {
+        {ImGuiKey_UpArrow, "Up"}, {ImGuiKey_DownArrow, "Down"}, {ImGuiKey_LeftArrow, "Left"},
+        {ImGuiKey_RightArrow, "Right"}, {ImGuiKey_Space, "Space"}, {ImGuiKey_Enter, "Return"},
+        {ImGuiKey_KeypadEnter, "Return"}, {ImGuiKey_Tab, "Tab"}, {ImGuiKey_Backspace, "Backspace"},
+        {ImGuiKey_Insert, "Insert"}, {ImGuiKey_Home, "Home"}, {ImGuiKey_End, "End"},
+        {ImGuiKey_PageUp, "PageUp"}, {ImGuiKey_PageDown, "PageDown"}, {ImGuiKey_Apostrophe, "Quote"},
+        {ImGuiKey_Semicolon, "Semicolon"}, {ImGuiKey_Comma, "Comma"}, {ImGuiKey_Period, "Period"},
+        {ImGuiKey_Slash, "Slash"}, {ImGuiKey_Backslash, "Backslash"}, {ImGuiKey_LeftBracket, "LBracket"},
+        {ImGuiKey_RightBracket, "RBracket"}, {ImGuiKey_Minus, "Minus"}, {ImGuiKey_Equal, "Plus"},
+        {ImGuiKey_GraveAccent, "Backtick"}, {ImGuiKey_KeypadAdd, "NumpadPlus"},
+        {ImGuiKey_KeypadSubtract, "NumpadMinus"}, {ImGuiKey_KeypadMultiply, "NumpadStar"},
+        {ImGuiKey_KeypadDivide, "NumpadSlash"}, {ImGuiKey_CapsLock, "CapsLock"},
+    };
+    v.insert(v.end(), std::begin(rest), std::end(rest));
+    return v;
+  }();
+  return names;
+}
+
+// "Semicolon,Space" -> "SEMICOLON, SPACE"; none -> "NONE".
+std::string ShowKeys(const std::string& keys) {
+  if (keys.empty()) return "NONE";
+  std::string out;
+  for (char c : keys) {
+    if (c == ',') out += ", ";
+    else out += char(std::toupper(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
 // MY WWE -> OPTIONS -> LANGUAGE: the same page with only this row.
 const std::vector<Row> kLanguageRows = {kLanguage};
 
@@ -237,6 +331,9 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   void Change(int row, int dir);
   void Hide();  // (not ImGuiDialog::Close, which deletes the page)
   uint16_t PadButtons();
+  // CONTROLS: navigate / rebind (true when it used the frame's input).
+  void ControlsInput(uint16_t pressed, uint16_t act, bool& back);
+  void SetBinding(int i, const std::string& keys);
 
   int tab_ = kDisplayTab;
   bool language_only_ = false;  // the LANGUAGE page
@@ -249,7 +346,8 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
-  bool msaa_ = false, fps_ = true, vsync_ = true, native_ = true;
+  int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
+  bool fps_ = true, vsync_ = true, native_ = true;
   int display_ = kWindowed;  // (DisplayMode)
   bool effects_ = true, fps60_ = true;
   int frame_rate_ = 1;  // (kFrameRates)
@@ -259,6 +357,12 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool vulkan_ = false, vulkan_at_start_ = false;
   uint16_t prev_buttons_ = 0;
   bool wait_release_ = false;
+  // CONTROLS: the row, the first row shown, and a key being waited for
+  // (capture_: the binding; capture_add_: added to its keys, else replaces).
+  int control_row_ = 0, control_top_ = 0;
+  int capture_ = -1;
+  bool capture_add_ = false;
+  Clock::time_point capture_until_{};
   Clock::time_point repeat_at_{};
   Clock::time_point opened_at_{};
 };
@@ -270,7 +374,10 @@ void GraphicsPage::Load() {
   for (int i = 0; i < kNumResolutions; ++i) {
     if (kResolutions[i].w == w && kResolutions[i].h == h) resolution_ = i;
   }
-  msaa_ = rex::cvar::Query<bool>("native_2x_msaa");
+  {
+    const int32_t level = rex::cvar::Query<int32_t>("native_aa");
+    aa_ = level > 0 ? std::clamp<int32_t>(level, 1, 4) : (rex::cvar::Query<bool>("native_2x_msaa") ? 2 : 1);
+  }
   {
     const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
     scale_ = 0;
@@ -336,9 +443,11 @@ void GraphicsPage::Change(int row, int dir) {
       break;
     }
     case kAntiAliasing:
-      msaa_ = !msaa_;
-      rex::cvar::SetFlagByName("native_2x_msaa", msaa_ ? "true" : "false");
-      SaveSetting("native_2x_msaa", msaa_ ? "true" : "false");
+      aa_ = (aa_ - 1 + dir + 4) % 4 + 1;  // OFF, 2X, 3X, 4X
+      rex::cvar::SetFlagByName("native_aa", std::to_string(aa_));
+      rex::cvar::SetFlagByName("native_2x_msaa", aa_ >= 2 ? "true" : "false");
+      SaveSetting("native_aa", std::to_string(aa_));
+      SaveSetting("native_2x_msaa", aa_ >= 2 ? "true" : "false");
       break;
     case kLanguage:
       language_ = (language_ + dir + kNumLanguages) % kNumLanguages;
@@ -418,6 +527,39 @@ void GraphicsPage::Change(int row, int dir) {
   }
 }
 
+void GraphicsPage::SetBinding(int i, const std::string& keys) {
+  rex::cvar::SetFlagByName(kBindings[i].cvar, keys);
+  SaveSetting(kBindings[i].cvar, "\"" + keys + "\"");
+  REXLOG_INFO("[svr2011] controls: {} = \"{}\"", kBindings[i].cvar, keys);
+}
+
+void GraphicsPage::ControlsInput(uint16_t pressed, uint16_t act, bool& back) {
+  using namespace rex::input;
+  auto key = [](ImGuiKey k, bool repeat) { return ImGui::IsKeyPressed(k, repeat); };
+  if ((act & X_INPUT_GAMEPAD_DPAD_UP) || key(ImGuiKey_UpArrow, true))
+    control_row_ = (control_row_ + kControlRows - 1) % kControlRows;
+  if ((act & X_INPUT_GAMEPAD_DPAD_DOWN) || key(ImGuiKey_DownArrow, true))
+    control_row_ = (control_row_ + 1) % kControlRows;
+  const bool change = (pressed & X_INPUT_GAMEPAD_A) || key(ImGuiKey_Enter, false);
+  const bool add = (pressed & X_INPUT_GAMEPAD_Y) || key(ImGuiKey_Insert, false);
+  const bool clear = (pressed & X_INPUT_GAMEPAD_X) || key(ImGuiKey_Delete, false);
+  if (control_row_ == kNumBindings) {  // RESET TO DEFAULTS
+    if (change) {
+      for (int i = 0; i < kNumBindings; ++i) SetBinding(i, kBindings[i].keys);
+    }
+    return;
+  }
+  if (change || add) {
+    // (from the next frame on: the key that started it is not the new key)
+    capture_ = control_row_;
+    capture_add_ = add && !change;
+    capture_until_ = Clock::now() + std::chrono::seconds(8);
+    back = false;
+  } else if (clear) {
+    SetBinding(control_row_, "");
+  }
+}
+
 void GraphicsPage::Hide() {
   g_wait_release = true;
   g_open = false;
@@ -445,8 +587,47 @@ ImVec2 TextSize(ImFont* font, float size, const char* text) {
   return (font ? font : ImGui::GetFont())->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
 }
 
+// Test aid: SVR2011_TEST_PAGE_KEYS=<file> - each line written there ("G",
+// "Shift+H", "Escape") is pressed on the page's keyboard (as ImGui key
+// events: the test game's window never has the keyboard's focus).
+void TestPageKeys(ImGuiIO& io) {
+  static const std::string file = [] {
+    const char* v = std::getenv("SVR2011_TEST_PAGE_KEYS");
+    return std::string(v ? v : "");
+  }();
+  if (file.empty()) return;
+  static ImGuiKey down = ImGuiKey_None;
+  static bool shift = false;
+  static Clock::time_point next{};
+  if (down != ImGuiKey_None) {  // (released the frame after)
+    io.AddKeyEvent(down, false);
+    if (shift) io.AddKeyEvent(ImGuiMod_Shift, false);
+    down = ImGuiKey_None;
+    return;
+  }
+  if (Clock::now() < next) return;
+  next = Clock::now() + std::chrono::milliseconds(200);
+  std::ifstream in(file);
+  std::string line;
+  if (!std::getline(in, line)) return;
+  std::string rest((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  std::ofstream(file, std::ios::trunc) << rest;
+  while (!line.empty() && (line.back() == 13 || line.back() == 32)) line.pop_back();
+  shift = line.rfind("Shift+", 0) == 0;
+  if (shift) line = line.substr(6);
+  ImGuiKey key = line == "Escape" ? ImGuiKey_Escape : line == "Delete" ? ImGuiKey_Delete : ImGuiKey_None;
+  for (const KeyName& k : KeyNames())
+    if (line == k.name) key = k.key;
+  if (key == ImGuiKey_None) return;
+  if (shift) io.AddKeyEvent(ImGuiMod_Shift, true);
+  io.AddKeyEvent(key, true);
+  down = key;
+}
+
 void GraphicsPage::OnDraw(ImGuiIO& io) {
   using namespace rex::input;
+  TestPageKeys(io);
   if (g_open_requested.exchange(false)) {
     Load();
     tab_ = kDisplayTab;
@@ -487,25 +668,65 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   auto key = [](ImGuiKey k) { return ImGui::IsKeyPressed(k, true); };
   int move = 0, dir = 0;
   bool back = false;
-  if ((act & X_INPUT_GAMEPAD_DPAD_UP) || key(ImGuiKey_UpArrow)) move = -1;
-  if ((act & X_INPUT_GAMEPAD_DPAD_DOWN) || key(ImGuiKey_DownArrow)) move = 1;
-  if ((act & X_INPUT_GAMEPAD_DPAD_LEFT) || key(ImGuiKey_LeftArrow)) dir = -1;
-  if ((act & X_INPUT_GAMEPAD_DPAD_RIGHT) || key(ImGuiKey_RightArrow)) dir = 1;
-  if ((pressed & X_INPUT_GAMEPAD_A) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) dir = 1;
-  if ((pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_START | X_INPUT_GAMEPAD_BACK)) ||
-      ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-    back = true;
+  {
+  const std::vector<Row>& rows = language_only_ ? kLanguageRows : kTabRows[tab_];
+  const int n = std::max(1, int(rows.size()));
+  if (capture_ >= 0) {
+    // CONTROLS, waiting for a key: the keyboard is the key's (the pad - which
+    // the keyboard drives too - is ignored until everything is released).
+    prev_buttons_ = buttons;
+    const auto cancel = [&] {
+      capture_ = -1;
+      wait_release_ = true;
+      opened_at_ = now;
+    };
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || now > capture_until_) {
+      cancel();
+    } else {
+      for (const KeyName& k : KeyNames()) {
+        if (!ImGui::IsKeyPressed(k.key, false)) continue;
+        std::string name;
+        if (io.KeyCtrl) name += "Ctrl+";
+        if (io.KeyAlt) name += "Alt+";
+        if (io.KeyShift) name += "Shift+";
+        name += k.name;
+        std::string keys = rex::cvar::Query<std::string>(kBindings[capture_].cvar);
+        if (!capture_add_ || keys.empty()) {
+          keys = name;
+        } else if (("," + keys + ",").find("," + name + ",") == std::string::npos) {
+          keys += "," + name;
+        }
+        SetBinding(capture_, keys);
+        cancel();
+        break;
+      }
+    }
+  } else {
+    if ((act & X_INPUT_GAMEPAD_DPAD_UP) || key(ImGuiKey_UpArrow)) move = -1;
+    if ((act & X_INPUT_GAMEPAD_DPAD_DOWN) || key(ImGuiKey_DownArrow)) move = 1;
+    if ((act & X_INPUT_GAMEPAD_DPAD_LEFT) || key(ImGuiKey_LeftArrow)) dir = -1;
+    if ((act & X_INPUT_GAMEPAD_DPAD_RIGHT) || key(ImGuiKey_RightArrow)) dir = 1;
+    if ((pressed & X_INPUT_GAMEPAD_A) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) dir = 1;
+    if ((pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_START | X_INPUT_GAMEPAD_BACK)) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+      back = true;
+    }
+    if (!language_only_ &&
+        ((pressed & (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER)) ||
+         ImGui::IsKeyPressed(ImGuiKey_Tab, false))) {
+      const int step = (pressed & X_INPUT_GAMEPAD_LEFT_SHOULDER) ? kTabs - 1 : 1;
+      tab_ = (tab_ + step) % kTabs;
+      row_ = 0;
+    } else if (!language_only_ && tab_ == kControlsTab) {
+      ControlsInput(pressed, act, back);
+    } else {
+      if (move) row_ = (row_ + move + n) % n;
+      if (dir) Change(rows[row_], dir);
+    }
   }
-  if (!language_only_ &&
-      ((pressed & (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER)) ||
-       ImGui::IsKeyPressed(ImGuiKey_Tab, false))) {
-    tab_ = (tab_ + 1) % kTabs;
-    row_ = 0;
   }
   const std::vector<Row>& rows = language_only_ ? kLanguageRows : kTabRows[tab_];
   const int n = int(rows.size());
-  if (move) row_ = (row_ + move + n) % n;
-  if (dir) Change(rows[row_], dir);
 
   // Layout in the game's 1280 x 720 frame (letterboxed into the window), over
   // the OPTIONS panel: the panel 144..1134 x 78..542, its header 78..112.
@@ -563,6 +784,64 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
          hint);
   }
 
+  // CONTROLS: the inputs, their keys, RESET TO DEFAULTS; a scrolling list.
+  if (!language_only_ && tab_ == kControlsTab) {
+    const float row_h = 30.0f, gap = 8.0f, top = 132.0f;
+    const float fs = 21 * s;
+    control_top_ = std::clamp(control_top_, std::max(0, control_row_ - kControlsShown + 1),
+                              std::min(control_row_, kControlRows - kControlsShown));
+    for (int k = 0; k < kControlsShown; ++k) {
+      const int i = control_top_ + k;
+      if (i >= kControlRows) break;
+      const float y = top + k * (row_h + gap);
+      const bool sel = i == control_row_;
+      const ImVec2 a = P(166, y), b = P(1112, y + row_h);
+      if (sel) {
+        dl->AddRectFilledMultiColor(a, b, IM_COL32(150, 18, 20, 255), IM_COL32(95, 8, 10, 255),
+                                    IM_COL32(95, 8, 10, 255), IM_COL32(150, 18, 20, 255));
+        dl->AddRect(a, b, IM_COL32(230, 60, 60, 255), 3 * s, 0, 1.5f * s);
+      } else {
+        dl->AddRectFilled(a, b, IM_COL32(34, 34, 40, 235), 3 * s);
+      }
+      const float ty = P(0, y + row_h * 0.5f).y - TextSize(g_menu_font, fs, "A").y * 0.5f;
+      if (i == kNumBindings) {
+        const char* reset = "RESET TO DEFAULTS";
+        const ImVec2 z = TextSize(g_menu_font, fs, reset);
+        Text(dl, g_menu_font, fs, ImVec2(P(639, 0).x - z.x * 0.5f, ty), IM_COL32(255, 255, 255, 255), reset);
+        continue;
+      }
+      const Binding& bd = kBindings[i];
+      Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), bd.input);
+      Text(dl, g_menu_font, fs * 0.85f, ImVec2(P(470, 0).x, ty + fs * 0.08f), IM_COL32(180, 180, 188, 255),
+           bd.action);
+      const bool waiting = capture_ == i;
+      const std::string v = waiting ? (capture_add_ ? "PRESS A KEY TO ADD" : "PRESS A KEY")
+                                    : ShowKeys(rex::cvar::Query<std::string>(bd.cvar));
+      const ImVec2 vs = TextSize(g_menu_font, fs, v.c_str());
+      Text(dl, g_menu_font, fs, ImVec2(P(1092, 0).x - vs.x, ty),
+           waiting ? IM_COL32(255, 200, 60, 255) : IM_COL32(255, 255, 255, 255), v.c_str());
+    }
+    // (more above / below)
+    const ImU32 arrow = IM_COL32(200, 200, 205, 255);
+    if (control_top_ > 0)
+      dl->AddTriangleFilled(P(639, 120), P(629, 128), P(649, 128), arrow);
+    if (control_top_ + kControlsShown < kControlRows) {
+      const float yb = top + kControlsShown * (row_h + gap) - gap + 4;
+      dl->AddTriangleFilled(P(639, yb + 8), P(629, yb), P(649, yb), arrow);
+    }
+    const char* help =
+        capture_ >= 0 ? "Press the key (Shift / Ctrl / Alt + a key for a combination). ESC: cancel."
+        : control_row_ == kNumBindings
+            ? "A: the default keys for every input."
+            : "A: change   Y: add a key   X: clear   (keyboard: Enter, Insert, Delete)";
+    const float hs = 18 * s;
+    const ImVec2 sz = TextSize(g_menu_font, hs, help);
+    Text(dl, g_menu_font, hs, ImVec2(P(639, 0).x - sz.x * 0.5f, P(0, 508).y - sz.y * 0.5f),
+         IM_COL32(200, 200, 205, 255), help);
+    if (back) Hide();
+    return;
+  }
+
   // Rows.
   const bool restart_renderer = (!native_at_start_ && native_) || vulkan_ != vulkan_at_start_;
   auto value = [&](Row id) -> const char* {
@@ -586,7 +865,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kLanguage: return kLanguages[language_].label;
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
       case kRenderScale: return kScales[scale_].label;
-      case kAntiAliasing: return msaa_ ? "ON" : "OFF";
+      case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
       case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
     }
@@ -623,7 +902,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                : display_ == kBorderless ? "Borderless: a window covering the screen (F11 switches)."
                                          : "Play in a window (F11 switches to full screen).";
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
-      case kFrameRate: return "Frames a second, at most. The game runs at its normal speed at any frame rate.";
+      case kFrameRate: return "Frames a second in matches, at most (menus: 60). The game always runs at its normal speed.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";
@@ -638,7 +917,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                    : "The game's text: changes the next time the game starts.";
       case kRenderer: return "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.";
       case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
-      case kAntiAliasing: return "Renders at twice the resolution and averages it down: smooth edges, slower.";
+      case kAntiAliasing:
+        return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
+               "pixel): smoother edges, slower. Limited by RENDER SCALE.";
       case kEffects: return "HIGH: shadows, reflections and glow at the render resolution. NORMAL: faster.";
       case kCutsceneFps: return "Entrances and cutscenes at 60 fps, or 30 as on the Xbox 360 (half the work).";
     }
@@ -715,7 +996,7 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
     input->SetGuestInputHold(
         [] {
           return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() ||
-                 TouchControlsHoldInput();
+                 TouchControlsHoldInput() || OnlineOverlayHoldsInput();
         });
   }
 }

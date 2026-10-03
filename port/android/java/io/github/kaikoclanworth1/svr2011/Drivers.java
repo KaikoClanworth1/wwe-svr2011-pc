@@ -4,6 +4,9 @@
 // unpacked into the app's own storage (libadrenotools can't load a driver
 // from shared storage), and the chosen one's .so written to the game's
 // gpu_driver setting (src/gpu_driver.cpp loads it; empty: the phone's own).
+// Packages without meta.json, or a bare .so, are taken too (the library is
+// found by name). Driver variables (gpu_driver_env, e.g. Turnip's
+// FD_DEV_FEATURES) are set by the game before it loads the driver.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -32,6 +35,9 @@ import java.util.zip.ZipFile;
 
 final class Drivers {
     static final String kKey = "gpu_driver";
+    static final String kEnvKey = "gpu_driver_env";
+    // HyperOS 3 (Xiaomi): graphical glitches with Turnip, fixed by this hint.
+    static final String kHyperOsFix = "FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1";
 
     static final class Driver {
         File dir, library;
@@ -81,12 +87,28 @@ final class Drivers {
     // The Settings card.
     void build(LinearLayout column) {
         card_ = a_.card(column, "Graphics driver");
-        Button add = a_.button("Add a driver (.zip)…", LauncherActivity.kCard);
+        Button add = a_.button("Add a driver (.zip or .so)…", LauncherActivity.kCard);
         add.setOnClickListener(v -> add());
         column.addView(add, a_.fullWidth(10));
-        TextView note = a_.text("For Adreno GPUs: driver packages such as Mesa Turnip (a zip with meta.json, as "
-            + "other emulators use them). A driver that doesn't work falls back to the phone's own. Applies the "
-            + "next time the game starts.", 12, LauncherActivity.kDim);
+        // Driver variables: NAME=value, several separated by ';'.
+        TextView varsLabel = a_.text("Driver variables (NAME=value; several separated by ;)", 13, LauncherActivity.kText);
+        varsLabel.setPadding(a_.dp(4), a_.dp(12), a_.dp(4), 0);
+        column.addView(varsLabel);
+        android.widget.EditText vars = a_.field(kHyperOsFix, 300, android.text.InputType.TYPE_CLASS_TEXT
+                                                    | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        vars.setGravity(android.view.Gravity.START);
+        a_.textSetting(vars, kEnvKey, "Driver variables", "");
+        column.addView(vars, a_.fullWidth(4));
+        Button hyper = a_.button("Add the HyperOS 3 fix", LauncherActivity.kCard);
+        hyper.setOnClickListener(v -> {
+            String cur = vars.getText().toString().trim();
+            if (!cur.contains("enable_tp_ubwc_flag_hint")) vars.setText(cur.isEmpty() ? kHyperOsFix : cur + ";" + kHyperOsFix);
+        });
+        column.addView(hyper, a_.fullWidth(6));
+        TextView note = a_.text("For Adreno GPUs: driver packages such as Mesa Turnip or Qualcomm drivers (the zips "
+            + "other emulators use, or the driver's .so). A driver that doesn't work falls back to the phone's own. "
+            + "Phones with HyperOS 3 that show glitches: use a Turnip driver with the HyperOS 3 fix above. Applies "
+            + "the next time the game starts.", 12, LauncherActivity.kDim);
         note.setPadding(a_.dp(4), a_.dp(8), a_.dp(4), 0);
         column.addView(note);
         refresh();
@@ -202,7 +224,8 @@ final class Drivers {
     void add() {
         Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         pick.addCategory(Intent.CATEGORY_OPENABLE);
-        pick.setType("application/zip");
+        // (any type: many file managers label downloaded zips octet-stream, and a .so has none)
+        pick.setType("*/*");
         a_.startForResult(pick, (code, data) -> {
             if (code != android.app.Activity.RESULT_OK || data == null || data.getData() == null) return;
             Uri uri = data.getData();
@@ -232,9 +255,67 @@ final class Drivers {
         return "driver";
     }
 
+    // A folder name from a driver's name.
+    static String folderName(String name) {
+        StringBuilder folder = new StringBuilder();
+        for (char c : name.toCharArray()) folder.append(Character.isLetterOrDigit(c) || c == '-' || c == '.' ? c : '_');
+        return folder.length() == 0 ? "driver" : folder.toString();
+    }
+
+    // Is it an ELF file (a bare .so)?
+    static boolean isElf(File f) {
+        byte[] head = new byte[4];
+        try (InputStream in = new java.io.FileInputStream(f)) {
+            return in.read(head) == 4 && head[0] == 0x7f && head[1] == 'E' && head[2] == 'L' && head[3] == 'F';
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    // The library in a zip without meta.json: the shallowest .so with "vulkan" in its name, else the only .so.
+    static ZipEntry findLibrary(ZipFile zip) {
+        ZipEntry best = null, only = null;
+        int count = 0;
+        for (Enumeration<? extends ZipEntry> e = zip.entries(); e.hasMoreElements();) {
+            ZipEntry z = e.nextElement();
+            String n = z.getName();
+            if (z.isDirectory() || n.contains("__MACOSX/") || !n.toLowerCase().endsWith(".so")) continue;
+            count++;
+            only = z;
+            String base = n.substring(n.lastIndexOf('/') + 1).toLowerCase();
+            if (base.contains("vulkan") && (best == null || n.length() < best.getName().length())) best = z;
+        }
+        return best != null ? best : count == 1 ? only : null;
+    }
+
     Driver unpack(Uri uri) throws IOException {
         File tmp = new File(a_.getCacheDir(), "driver.zip");
         FileOps.copyIn(a_.getContentResolver(), uri, tmp);
+        if (isElf(tmp)) {
+            // A bare driver .so: set up as a package of its own.
+            String name = zipName(uri);
+            if (name.toLowerCase().endsWith(".so")) name = name.substring(0, name.length() - 3);
+            File dir = new File(root(), folderName(name));
+            FileOps.deleteTree(dir);
+            dir.mkdirs();
+            File lib = new File(dir, "vulkan.custom.so");
+            try (InputStream in = new java.io.FileInputStream(tmp); OutputStream os = new FileOutputStream(lib)) {
+                FileOps.copy(in, os);
+            } finally {
+                tmp.delete();
+            }
+            try {
+                JSONObject m = new JSONObject();
+                m.put("name", name);
+                m.put("libraryName", lib.getName());
+                Files.write(new File(dir, "meta.json").toPath(), m.toString(2).getBytes(StandardCharsets.UTF_8));
+            } catch (org.json.JSONException e) {
+                throw new IOException("can't set the driver up");
+            }
+            Driver d = read(dir);
+            if (d == null) throw new IOException("can't set the driver up");
+            return d;
+        }
         try (ZipFile zip = new ZipFile(tmp)) {
             ZipEntry metaEntry = null;
             for (Enumeration<? extends ZipEntry> e = zip.entries(); e.hasMoreElements();) {
@@ -244,13 +325,28 @@ final class Drivers {
                 if (n.startsWith("__MACOSX/") || !(n.equals("meta.json") || n.endsWith("/meta.json"))) continue;
                 if (metaEntry == null || n.length() < metaEntry.getName().length()) metaEntry = z;
             }
-            if (metaEntry == null) throw new IOException("it has no meta.json (not a driver package)");
-            String prefix = metaEntry.getName().substring(0, metaEntry.getName().length() - "meta.json".length());
-            String metaText;
-            try (InputStream in = zip.getInputStream(metaEntry)) {
-                java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
-                FileOps.copy(in, b);
-                metaText = b.toString("UTF-8");
+            String prefix, metaText;
+            if (metaEntry == null) {
+                // No meta.json: find the driver library by its name and describe it.
+                ZipEntry lib = findLibrary(zip);
+                if (lib == null) throw new IOException("no driver library (.so) found in it");
+                String n = lib.getName();
+                prefix = n.substring(0, n.lastIndexOf('/') + 1);
+                try {
+                    JSONObject m = new JSONObject();
+                    m.put("name", zipName(uri));
+                    m.put("libraryName", n.substring(prefix.length()));
+                    metaText = m.toString(2);
+                } catch (org.json.JSONException e) {
+                    throw new IOException("can't set the driver up");
+                }
+            } else {
+                prefix = metaEntry.getName().substring(0, metaEntry.getName().length() - "meta.json".length());
+                try (InputStream in = zip.getInputStream(metaEntry)) {
+                    java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+                    FileOps.copy(in, b);
+                    metaText = b.toString("UTF-8");
+                }
             }
             String name, library;
             try {
@@ -262,9 +358,7 @@ final class Drivers {
                 throw new IOException("its meta.json can't be read");
             }
             if (zip.getEntry(prefix + library) == null) throw new IOException("it doesn't contain " + library);
-            StringBuilder folder = new StringBuilder();
-            for (char c : name.toCharArray()) folder.append(Character.isLetterOrDigit(c) || c == '-' || c == '.' ? c : '_');
-            File dir = new File(root(), folder.length() == 0 ? "driver" : folder.toString());
+            File dir = new File(root(), folderName(name));
             FileOps.deleteTree(dir);
             dir.mkdirs();
             String destPath = dir.getCanonicalPath() + File.separator;
@@ -278,6 +372,8 @@ final class Drivers {
                     FileOps.copy(in, os);
                 }
             }
+            if (metaEntry == null)
+                Files.write(new File(dir, "meta.json").toPath(), metaText.getBytes(StandardCharsets.UTF_8));
             if (library.equals("vulkan.adreno.so")) {
                 // Qualcomm's own drivers keep the phone driver's file name: the app's UI has
                 // that one loaded already, and loading it again just gives the phone's back.

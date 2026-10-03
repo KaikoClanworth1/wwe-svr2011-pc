@@ -61,4 +61,81 @@ public final class NetBridge {
             if (c != null) c.disconnect();
         }
     }
+
+    // The match relay's two long requests (online_net.cpp, OpenPipe): a GET whose
+    // body is read as it arrives, or a POST whose chunked body is written as the
+    // game goes. Each is an object the native side keeps until pipeClose.
+    static final class Pipe {
+        HttpURLConnection c;
+        InputStream in;
+        OutputStream out;
+        int status;
+    }
+
+    public static Object pipeOpen(String url, boolean post, String[] headers) {
+        Pipe p = new Pipe();
+        try {
+            p.c = (HttpURLConnection) new URL(url).openConnection();
+            p.c.setConnectTimeout(10000);
+            p.c.setReadTimeout(30000);  // (the server sends a keepalive every 5 s)
+            p.c.setUseCaches(false);
+            p.c.setInstanceFollowRedirects(false);
+            p.c.setRequestMethod(post ? "POST" : "GET");
+            for (int i = 0; i + 1 < headers.length; i += 2) p.c.setRequestProperty(headers[i], headers[i + 1]);
+            if (post) {
+                p.c.setRequestProperty("Content-Type", "application/octet-stream");
+                p.c.setDoOutput(true);
+                p.c.setChunkedStreamingMode(0);
+                p.out = p.c.getOutputStream();
+                p.status = 200;
+            } else {
+                p.status = p.c.getResponseCode();
+                if (p.status == 200) p.in = p.c.getInputStream();
+            }
+            return p;
+        } catch (Exception e) {
+            android.util.Log.w("SvR2011", "online: pipe " + url + ": " + e);
+            pipeClose(p);
+            return null;
+        }
+    }
+
+    public static int pipeStatus(Object pipe) {
+        return ((Pipe) pipe).status;
+    }
+
+    // Bytes read into buf (blocks until some come), -1: over.
+    public static int pipeRead(Object pipe, byte[] buf) {
+        Pipe p = (Pipe) pipe;
+        try {
+            return p.in == null ? -1 : p.in.read(buf);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    public static boolean pipeWrite(Object pipe, byte[] data) {
+        Pipe p = (Pipe) pipe;
+        try {
+            p.out.write(data);
+            p.out.flush();  // (a chunk now: a match's packets can't wait)
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static void pipeClose(Object pipe) {
+        Pipe p = (Pipe) pipe;
+        try {
+            if (p.out != null) {
+                p.out.close();
+                p.c.getResponseCode();  // (the request's end)
+            }
+            if (p.in != null) p.in.close();
+        } catch (Exception e) {
+            // (already gone)
+        }
+        if (p.c != null) p.c.disconnect();
+    }
 }

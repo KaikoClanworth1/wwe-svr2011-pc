@@ -9,6 +9,9 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <chrono>
+#include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -56,10 +59,17 @@
 #include "discord_presence.h"
 #include "online.h"
 #include "entrance_media.h"
+#include "online_cas.h"
+#include "online_overlay.h"
+#include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
 
+REXCVAR_DEFINE_STRING(saves_folder, "", "Storage",
+                      "Where the saves live: empty for the game folder's Saves, or a folder (absolute, or "
+                      "relative to the game folder) - e.g. to keep two installs' saves apart or shared")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_STRING(audio_backend, "xaudio2", "Audio",
                       "Audio output: xaudio2 (default) or sdl")
     .allowed({"xaudio2", "sdl"})
@@ -159,49 +169,76 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     paths.config_path = config;
   }
   g_config_path = paths.config_path;
+  // The settings a fresh install starts with, for this platform.
+  std::string config = kDefaultConfig;
 #if defined(__ANDROID__)
-  // The phone's render cost: the Xbox 360's 720p without supersampling
-  // (at the screen's 1080p it rendered 3x, 30-45 fps); the GRAPHICS page
-  // raises it. Added to settings files from before.
-  if (std::filesystem::exists(paths.config_path)) {
-    std::ifstream in(paths.config_path);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    in.close();
-    std::ofstream out(paths.config_path, std::ios::app);
-    if (!text.empty() && text.back() != '\n') out << '\n';
-    if (text.find("native_max_scale") == std::string::npos) out << "native_max_scale = 1\n";
-    if (text.find("native_2x_msaa") == std::string::npos) out << "native_2x_msaa = false\n";
-  }
+  // The phone: Vulkan, SDL controllers, the whole screen, and the Xbox 360's
+  // 720p render cost (at the screen's 1080p it rendered 3x, 30-45 fps; the
+  // GRAPHICS page raises it).
+  config.replace(config.find("input_backend = \"xinput\""), 24, "input_backend = \"sdl\"");
+  config += "gpu_backend = \"vulkan\"\n";
+  config += "native_max_scale = 1\n";
+  config += "native_2x_msaa = false\n";
+  config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
 #else
   // The PC keyboard plays as player 1's controller too (the SDK's keyboard
-  // driver: keybind_* in the settings). Added to settings files from before.
-  if (std::filesystem::exists(paths.config_path)) {
-    std::ifstream in(paths.config_path);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    in.close();
-    if (text.find("mnk_mode") == std::string::npos) {
-      std::ofstream out(paths.config_path, std::ios::app);
-      if (!text.empty() && text.back() != '\n') out << '\n';
-      out << "mnk_mode = true\n";
-    }
-  }
+  // driver: keybind_* in the settings).
+  config += "mnk_mode = true\n";
 #endif
-  if (!std::filesystem::exists(paths.config_path)) {
-    std::string config = kDefaultConfig;
-#if defined(__ANDROID__)
-    // The phone: Vulkan, SDL controllers, the whole screen.
-    config.replace(config.find("input_backend = \"xinput\""), 24, "input_backend = \"sdl\"");
-    config += "gpu_backend = \"vulkan\"\n";
-    config += "native_max_scale = 1\n";
-    config += "native_2x_msaa = false\n";
+  if (svr2011::IsSteamDeck()) {  // its screen is the window
     config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
-#else
-    config += "mnk_mode = true\n";
-#endif
-    if (svr2011::IsSteamDeck()) {  // its screen is the window
-      config.replace(config.find("fullscreen = false"), 18, "fullscreen = true");
-    }
+  }
+  if (!std::filesystem::exists(paths.config_path)) {
     std::ofstream(paths.config_path) << config;
+  } else {
+    // A settings file from before, or one written by a launcher with only
+    // the keys it changed (the Android app saves its settings on Play, before
+    // the game has ever run: no gpu_plugin, so nothing could draw - a black
+    // screen): the defaults it lacks are added (top-level keys only).
+    std::ifstream in(paths.config_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    auto key_of = [](const std::string& line) {
+      const size_t a = line.find_first_not_of(" \t");
+      const size_t eq = line.find('=');
+      if (a == std::string::npos || eq == std::string::npos || line[a] == '#' || line[a] == '[') return std::string();
+      size_t e = eq;
+      while (e > a && (line[e - 1] == ' ' || line[e - 1] == '\t')) --e;
+      return line.substr(a, e - a);
+    };
+    std::vector<std::string> have;
+    size_t section = std::string::npos;  // where the first [section] starts
+    for (size_t pos = 0; pos < text.size();) {
+      const size_t nl = text.find('\n', pos);
+      const std::string line = text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+      const size_t a = line.find_first_not_of(" \t");
+      if (a != std::string::npos && line[a] == '[') {
+        section = pos;
+        break;
+      }
+      if (std::string k = key_of(line); !k.empty()) have.push_back(k);
+      if (nl == std::string::npos) break;
+      pos = nl + 1;
+    }
+    std::string missing;
+    for (size_t pos = 0; pos < config.size();) {
+      const size_t nl = config.find('\n', pos);
+      const std::string line = config.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+      const std::string k = key_of(line);
+      if (!k.empty() && std::find(have.begin(), have.end(), k) == have.end()) missing += line + "\n";
+      if (nl == std::string::npos) break;
+      pos = nl + 1;
+    }
+    if (!missing.empty()) {
+      REXLOG_INFO("settings: added the defaults {} lacked:\n{}", paths.config_path.string(), missing);
+      if (section == std::string::npos) {
+        if (!text.empty() && text.back() != '\n') text += '\n';
+        text += missing;
+      } else {
+        text.insert(section, missing);  // (top-level keys go before the first [section])
+      }
+      std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
+    }
   }
   svr2011::PrepareOnlineSettings(paths.config_path, exe_dir);  // (online.h)
 }
@@ -265,6 +302,7 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   ImFont* title =
       std::filesystem::exists(kBoldItalic) ? atlas->AddFontFromFileTTF(kBoldItalic, 40.0f) : nullptr;
   svr2011::SetGraphicsPageFonts(menu, title ? title : menu);
+  svr2011::SetOnlineOverlayFonts(menu, title ? title : menu);
   // The touch controller's labels: the menu font, or the phone's own.
   ImFont* touch = menu;
   for (const char* f : {"/system/fonts/Roboto-Bold.ttf", "/system/fonts/Roboto-Regular.ttf"}) {
@@ -275,6 +313,56 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
 }
 
 void Svr2011App::OnPostLoadXexImage() {
+  // The log's first port lines: the build and the settings a problem report
+  // needs (SVR2011_PORT_VERSION / _BUILD_COMMIT: CMakeLists.txt).
+  {
+#ifndef SVR2011_PORT_VERSION
+#define SVR2011_PORT_VERSION "dev"
+#endif
+#ifndef SVR2011_BUILD_COMMIT
+#define SVR2011_BUILD_COMMIT "unknown"
+#endif
+    REXLOG_INFO("==== SvR 2011 PC port {} (build {}) ====", SVR2011_PORT_VERSION, SVR2011_BUILD_COMMIT);
+    REXLOG_INFO("game folder: {}", rex::filesystem::GetExecutableFolder().string());
+    static const char* const kGroups[][2] = {
+        {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
+        {"renderer", "native_renderer gpu_backend native_max_scale native_aa native_2x_msaa native_scale_effects "
+                     "native_widescreen native_prepare_pipelines frame_rate unlock_30fps"},
+        {"effects", "depth_of_field motion_blur soft_filter"},
+        {"gameplay", "replays managers_tile mixed_gender_matches user_language"},
+        {"input", "input_backend mnk_mode touch_controls touch_auto_layout"},
+        {"audio", "audio_backend audio_mute"},
+        {"online", "online_enabled online_server"},
+        {"storage", "saves_folder"},
+#if defined(__ANDROID__)
+        {"android", "gpu_driver gpu_driver_env"},
+#endif
+    };
+    for (const auto& group : kGroups) {
+      std::string line;
+      std::string names = group[1];
+      size_t pos = 0;
+      while (pos < names.size()) {
+        size_t end = names.find(' ', pos);
+        if (end == std::string::npos) end = names.size();
+        const std::string name = names.substr(pos, end - pos);
+        std::string value = rex::cvar::GetFlagByName(name);
+        if (value.empty()) value = "\"\"";
+        line += (line.empty() ? "" : ", ") + name + " " + value;
+        pos = end + 1;
+      }
+      REXLOG_INFO("settings ({}): {}", group[0], line);
+    }
+  }
+  // Test aid: SVR2011_TEST_CRASH=1 - a bad memory access 20 s after start
+  // (checks the crash report and its lines in the log).
+  if (!Env("SVR2011_TEST_CRASH").empty()) {
+    std::thread([] {
+      std::this_thread::sleep_for(std::chrono::seconds(20));
+      REXLOG_WARN("SVR2011_TEST_CRASH: crashing on purpose");
+      *static_cast<volatile int*>(nullptr) = 1;
+    }).detach();
+  }
   // Entrances, finishers and other post-processed scenes sample the frame's
   // resolved colour texture through fetch constants whose type field is 0
   // ("invalid"); the Xbox 360 samples them as textures, the emulator's default
@@ -314,6 +402,23 @@ void Svr2011App::OnPostLoadXexImage() {
 
   // The port's text and menu changes to the installed disc files (once).
   svr2011::PatchGameFiles(rex::filesystem::GetExecutableFolder());
+
+  // The saves folder chosen in the settings (saves_folder; the launcher's
+  // Saves tab sets it). Read here: the settings are loaded after
+  // OnConfigurePaths. (It wins over the tests' default beside their user
+  // data too: their settings files are their own.)
+  if (!REXCVAR_GET(saves_folder).empty()) {
+    std::filesystem::path dir = std::filesystem::u8path(REXCVAR_GET(saves_folder));
+    if (dir.is_relative()) dir = rex::filesystem::GetExecutableFolder() / dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (std::filesystem::is_directory(dir, ec)) {
+      g_saves = dir.lexically_normal();
+    } else {
+      REXLOG_WARN("saves folder {} can't be used ({}); using {}", dir.string(), ec.message(), g_saves.string());
+    }
+  }
+  REXLOG_INFO("saves: {}", g_saves.string());
 
   // Saves as plain files in the Saves folder (saves.h).
   svr2011::UseFlatSaves(runtime()->kernel_state(), g_user_data, g_saves);
@@ -385,6 +490,10 @@ void Svr2011App::OnPostLoadXexImage() {
     // The on-screen controller (touch_controls.h).
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
+    // The ONLINE overlay: friends, invites (online_overlay.h).
+    svr2011::InstallOnlineOverlay(imgui_drawer(), window(),
+                                  static_cast<rex::input::InputSystem*>(runtime()->input_system()),
+                                  runtime()->kernel_state(), g_user_data);
     svr2011::InstallArenaModsOverlay(imgui_drawer());
   }
   {
@@ -393,6 +502,10 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallOnline(runtime()->memory(), g_saves);  // Community Creations (online.h)
   // ... its Superstars' entrance songs and movies (entrance_media.h)
   svr2011::InstallEntranceMedia(runtime()->memory());
+  // Online matches, peer to peer (p2p.h)
+  svr2011::InstallP2P(runtime()->memory());
+  // ... and its Created Superstars' Paint Tool data, peer to peer (online_cas.h)
+  svr2011::InstallOnlineCas(g_saves);
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).

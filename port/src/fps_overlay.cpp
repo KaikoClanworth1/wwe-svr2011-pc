@@ -65,8 +65,8 @@ void FpsOverlay::OnDraw(ImGuiIO& io) {
                                  ImGuiWindowFlags_NoNav;
   if (ImGui::Begin("##svr2011_fps", nullptr, flags)) {
     ImGui::SetWindowFontScale(1.5f);
-    // Green at the chosen frame rate (frame_rate.h), yellow from 3/4 of it.
-    const double cap = TargetFrameRate();
+    // Green at the frame rate the game draws (frame_rate.h), yellow from 3/4 of it.
+    const double cap = FrameRateNow();
     const ImVec4 colour = t.fps >= cap * 0.97   ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f)
                           : t.fps >= cap * 0.75 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f)
                                                 : ImVec4(1.0f, 0.4f, 0.4f, 1.0f);

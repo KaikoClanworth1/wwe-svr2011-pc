@@ -1,11 +1,12 @@
-// The game's frame rate: 30, 60, 120, 144 or 240 frames a second, all at the
-// game's normal speed (setting frame_rate).
+// The game's frame rate: frames a second up to the chosen one (setting
+// frame_rate: 30 or 60), with the game's world always at its normal speed.
 //
-// The game advances one step per frame and sizes each step by its timing
-// block (sub_826E1AE8 SetFrameRate: 60 normally, 30 in entrances), which it
-// only fills for 25 / 30 / 50 / 60 fps. The port writes the block for the
-// chosen rate and runs the game's frame clock (the guest vblank,
-// guest_vblank_hz) at it.
+// The game's world advances in steps of 60 Hz (its timing block,
+// sub_826E1AE8 SetFrameRate, stays at the game's own 60). Each frame the
+// world update runs once per 60 Hz tick of real time - twice a frame at 30
+// fps, or when the PC can't make 60 - and the picture is drawn once. The game
+// draws at most 60 frames a second: its world and its menus are made in
+// those steps.
 #pragma once
 
 #include <cstdint>
@@ -18,17 +19,32 @@ namespace svr2011 {
 
 void InstallFrameRate(rex::memory::Memory* memory);
 
-// After the game sets its frame rate (sub_826E1AE8, sub_826E1D28): the
-// chosen rate's timing instead (menu_hooks.cpp).
+// After the game sets its frame rate (sub_826E1AE8, sub_826E1D28): its 60
+// again (menu_hooks.cpp).
 void ApplyFrameRate(uint8_t* base);
 
-// The chosen frame rate (a cap), and the one the game runs at now (the frames
-// the PC makes, up to the cap: the game's speed stays right).
+// The chosen frame rate (30 or 60), and the frames the game draws now: 30
+// only in a match (menus at 60).
 int TargetFrameRate();
 int FrameRateNow();
 
-// Runs the game's frame clock for that rate (guest_vblank_hz).
-void SetFrameClock(int fps);
+// A match on (from its entrances) or off (a main menu choice): menu_hooks.cpp.
+void SetFrameRateInMatch(bool on);
+
+// A match may be starting (sub_823EEB98 - which some menus call too, e.g.
+// ONLINE): `on_start` runs on the game's thread once the match's frame count
+// has been counting for half a second (a real match); a main menu choice
+// (SetFrameRateInMatch(false)) drops it.
+void ArmMatchStart(void (*on_start)());
+
+// Entrances and cutscenes at 30 frames a second (the original's; setting
+// unlock_30fps off): on while one plays (menu_hooks.cpp).
+void SetSceneThirtyFps(bool on);
+
+// Online lockstep (p2p.cpp, during a match session): exactly one world update
+// per frame at a 60 Hz frame clock, as on the console - both peers step the
+// world alike; a device that can't make 60 runs slower instead of catching up.
+void SetLockstep(bool on);
 
 // Chooses the frame rate, at once (GRAPHICS -> FRAME RATE).
 void SetTargetFrameRate(int fps);
