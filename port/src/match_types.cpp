@@ -244,6 +244,9 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
   }
   if (select_only) {
     for (const Span& span : kSelect) std::memcpy(rec + span.at, from + span.at, span.size);
+    // Lumberjack: 2 wrestlers and 4 lumberjacks (the record has 3 wrestlers,
+    // teams 0, 1, 2): the third person joins the lumberjacks (team 3).
+    if (rule == kLumberjack) rec[2 + 2 * 3 + 1] = 3;
   } else {
     for (const Span& span : kShape) std::memcpy(rec + span.at, from + span.at, span.size);
     rec2[kRule2People] = base[rules + kRule2 + like * kRule2Size + kRule2People];
@@ -356,13 +359,23 @@ void MarkLumberjacks(PPCContext& ctx, uint8_t* base) {
     const uint32_t info = ctx.r3.u32;
     if (info && base[info + 13] == 3) {
       Wr32(base + ai + 168, 1);
-      REXLOG_INFO("match types: lumberjack {} stays ringside", i);
+      REXLOG_INFO("match types: lumberjack {} stays ringside (character {:08X})", i, ch);
     }
   }
   ctx = saved;
 }
 
 }  // namespace
+
+// A per-character check (sub_825EEA80(?, character)) that, in a Lumberjack
+// match, says no for the lumberjacks - people 3 and up in the story match;
+// here from person 2 (the third person is a lumberjack too).
+REX_EXTERN(__imp__sub_825EEA80);
+REX_HOOK_RAW(sub_825EEA80) {
+  const uint32_t ch = ctx.r4.u32;
+  __imp__sub_825EEA80(ctx, base);
+  if (base[0x82E3DE00] == kLumberjack && ch && Rd32(base + ch + 1156) == 2) ctx.r3.u64 = 0;
+}
 
 REX_EXTERN(__imp__sub_82225D68);
 REX_HOOK_RAW(sub_82225D68) {
@@ -540,4 +553,29 @@ REX_HOOK_RAW(sub_8224EF28) {
     WrF(base + kGlobals + i * 4, kHalf[i]);
   }
   REXLOG_INFO("match types: the whole backstage's fight box covers all of it");
+}
+
+// -- Lumberjack start places ----------------------------------------------
+//
+// People start where sub_822AD738(placer, rule, ?) puts them: the placer's
+// table (+4) has an 88-byte entry per rule id - +0 the id, then per person
+// 12 bytes (+0 kind, 1 wrestler / 2 manager; int16 x, y, z, facing at +4..;
+// y -120 in the ring, 0 on the floor; tenths). The story Lumberjack's entry
+// (0x55) has 3 wrestlers in the ring and its lumberjacks on the floor around
+// it: (50,0,500), (-500,0,0), (0,0,-500). Here person 2 is a lumberjack too:
+// on the fourth side, (500, 0, 0), facing the ring.
+REX_EXTERN(__imp__sub_822AD738);
+REX_HOOK_RAW(sub_822AD738) {
+  const uint32_t placer = ctx.r3.u32;
+  if (ctx.r4.u32 != kLumberjack || !placer || Rd32(base + kStoryContext)) {
+    __imp__sub_822AD738(ctx, base);
+    return;
+  }
+  uint8_t* person2 = base + Rd32(base + placer + 4) + kLumberjack * 88 + 4 + 2 * 12;
+  uint8_t saved[12];
+  std::memcpy(saved, person2, 12);
+  const uint8_t ringside[12] = {0x01, 0, 0, 0, 0x01, 0xF4, 0x00, 0x00, 0x00, 0x00, 0x03, 0x84};  // 500, 0, 0, 900
+  std::memcpy(person2, ringside, 12);
+  __imp__sub_822AD738(ctx, base);
+  std::memcpy(person2, saved, 12);
 }

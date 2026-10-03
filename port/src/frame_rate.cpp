@@ -428,8 +428,8 @@ namespace {
 void StartDeveloperAids(uint8_t* base) {
   // SVR2011_FPS_PROBE=1 logs, every second, the match frames (60 a second at
   // the game's speed), the frames shown and wrestler 1's position.
-  if (const char* v = std::getenv("SVR2011_FPS_PROBE"); v && *v == '1') {
-    std::thread([base] {
+  if (const char* v = std::getenv("SVR2011_FPS_PROBE"); v && (*v == '1' || *v == '2')) {
+    std::thread([base, v] {
       uint32_t last = Rd32(base + kMatchFrames);
       uint64_t last_presents = rex::ui::HostPresentCount(), last_new = rex::ui::HostNewGuestFramePresentCount();
       for (;;) {
@@ -442,6 +442,14 @@ void StartDeveloperAids(uint8_t* base) {
         REXLOG_INFO("fps probe: {} game frames/s, {} shown ({} presents), wrestler 1 at ({:.1f}, {:.1f}), 2 at "
                     "({:.1f}, {:.1f})",
                     frames - last, shown - last_new, presents - last_presents, x, z, x2, z2);
+        if (*v == '2') {  // (SVR2011_FPS_PROBE=2: all six, x y z)
+          std::string all;
+          for (uint32_t i = 0; i < 6; ++i)
+            if (const uint32_t c = Rd32(base + kChars + i * 4))
+              all += fmt::format(" {}:({:.0f},{:.0f},{:.0f} ai {})", i, RdF(base + c + 288), RdF(base + c + 292),
+                                 RdF(base + c + 296), Rd32(base + c + 2572) ? Rd32(base + Rd32(base + c + 2572) + 168) : 99);
+          REXLOG_INFO("fps probe: all{}", all);
+        }
         last = frames;
         last_presents = presents;
         last_new = shown;

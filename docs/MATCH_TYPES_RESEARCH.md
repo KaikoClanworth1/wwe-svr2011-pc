@@ -253,3 +253,30 @@ A 50-man rumble would need "slot recycling": reload an eliminated entrant's char
 - Wall collision is skipped during grapples in every area (`sub_821E5910`), so a grapple at a wall could still push a pair through it. Not seen in testing.
 - The camera doesn't avoid walls, so a wall can come between it and the fighters.
 - Some areas behind the fighters render dark or black. These look like unlit room shells seen from outside.
+
+## Lumberjack: a custom version (research, 2026-10-03)
+
+**What a real Lumberjack match needs:** two wrestlers in the ring, only they can win. The lumberjacks stand around the ring on the floor. A wrestler who leaves the ring is attacked by them and thrown back in, and there are no count-outs.
+
+**What the game's own Lumberjack (rule 0x55, Road to WrestleMania only) is:**
+- **Record:** 6 people, teams 0, 1, 2, 3, 3, 3. That's a three-way fight with three lumberjacks on team 3. The "is a competitor" check `sub_82225D68` says no for team 3 in rule 0x55, and `sub_825EEA80` says no for people 3 and up.
+- **Start places:** the placement table (below) puts the three lumberjacks on the floor around the ring.
+- **Behaviour:** the story script `sub_822BB158` only sets one AI value on team 3 (character +2572 -> +168 = 1). It does not keep them outside. In test, all four lumberjacks walked into the ring about 3 s after the start and brawled. In the first test, with the 6-man select layout, a team that included lumberjacks won by pinfall. The engine has no lumberjack AI to switch on.
+
+**Start places (done, see match_types.cpp):** `sub_822AD738(placer, rule, ?)` places people from a table at placer+4.
+- **Entry layout:** 88 bytes per rule id. +0 is the id, then 6 people x 12 bytes: kind (1 = wrestler, 2 = manager), then int16 x, y, z and facing, in tenths. y is -120 in the ring and 0 on the floor.
+- **Last record:** kind 6, the referee.
+- **Examples:** managers (rule 02) stand at (400, 0, 110). Tag partners (03) use kind 1 with a value 0x1B62 (the apron) at (220, -120, 227).
+
+**Now:** 2 wrestlers and 4 lumberjacks (person 2 is moved to team 3 and to the floor at (500, 0, 0)), all four starting on the floor, one per side. They still walk in and fight.
+
+**Manager slots (tried):** making people 2-5 kind 2 (managers) changes the select screen to 2 picks (the match card still says LUMBER JACK MATCH). But exhibition never fills manager slots, so the match was a plain one on one. Using them would mean filling the slots ourselves: random superstars, or picks. The people list is not in the live settings at 0x82E3DE00, which only holds per-slot flags at +0xFC..+0x101.
+
+**Custom version - what is still needed:**
+1. **Behaviour (the core):** a per-frame lumberjack controller in the port. While both wrestlers are in the ring, lumberjacks stay at their posts: AI off, or a walk-to-post order. When a wrestler is on the floor, the nearest one or two get that wrestler as their only target until he is back in. To find:
+   - a per-character AI on/off switch. The whole-backstage story rule's CPU stood still, so one exists.
+   - the AI's target field (who it goes for).
+   - a "throw back into the ring" move, or rely on the AI's own Irish whip / roll-in moves.
+2. **No count-outs:** the rule record flags (+52 / +64) or the referee count code.
+3. **Lumberjacks can't pin or win:** check pins by team 3 (non-competitors). Watch for the earlier team win.
+4. **Who the lumberjacks are:** keep the 6-pick select, or 2 picks plus 4 random superstars.
