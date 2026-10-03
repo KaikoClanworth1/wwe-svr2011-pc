@@ -150,7 +150,7 @@ struct Project {
   std::map<std::string, Image> vs;
 };
 Project g_proj;
-int g_page = 0;  // 0 arenas, 1 editor, 2 VS screen, 3 superstars
+int g_page = 0;  // 0 arenas, 1 editor, 2 VS screen, 3 superstars, 4 crowd signs
 // test aid (--test-edit-save <file>): once the editor has its arena, editor::TestEdit,
 // name "Test Edit", save the mod there and quit
 std::wstring g_test_save;
@@ -706,6 +706,9 @@ void VsPage() {
 
 // ---------------------------------------------------------------- UI
 
+Image SignPicture(const Image& src);  // (crowd signs, below)
+std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec);
+
 // ---------------------------------------------------------------- Superstars
 
 // A superstar mod (the game: src/superstar_mods.cpp, docs/SUPERSTAR_MODS.md):
@@ -733,6 +736,8 @@ struct StarProject {
   Image picture, picture_small;
   ID3D11ShaderResourceView* picture_tex = nullptr;
   int call = -1;  // name call: -1 the base's, else a Created Superstar nickname
+  std::vector<Image> signs;  // its fans' signs (up to 4; 128 x 64)
+  std::vector<ID3D11ShaderResourceView*> sign_tex;
 };
 // The Created Superstar nicknames the announcer and commentary can say
 // (call=<index>; the game's CAS_* list, sub_8261EAB0's table at 0x82043F98).
@@ -1006,6 +1011,8 @@ bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
     files.push_back({"movie.bik", std::move(m)});
     man += "movie=movie.bik\n";
   }
+  for (size_t k = 0; k < g_star.signs.size() && k < 4; ++k)
+    files.push_back({"sign" + std::to_string(k + 1) + ".dds", DdsEncode(g_star.signs[k], DxtFormat::kDxt1, true)});
   if (g_star.picture.w) {
     files.push_back({"render.dds", DdsEncode(g_star.picture, DxtFormat::kDxt5, false)});
     files.push_back({"render_small.dds", DdsEncode(g_star.picture_small, DxtFormat::kDxt5, false)});
@@ -1145,6 +1152,32 @@ void StarPage() {
     }
   }
   ImGui::TextDisabled("Attire 1 is the model above; each extra attire is another pac's first attire.");
+  {  // its fans' crowd signs
+    const COMDLG_FILTERSPEC pics[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
+    ImGui::BeginDisabled(g_star.signs.size() >= 4);
+    if (ImGui::Button("Crowd signs...", ImVec2(200 * scale, 0)))
+      for (const auto& f : PickFiles(L"Signs for the superstar's fans (up to 4)", pics, 1)) {
+        Image img;
+        if (g_star.signs.size() < 4 && LoadImageFile(Utf8(f), img)) {
+          g_star.signs.push_back(SignPicture(img));
+          g_star.sign_tex.push_back(MakeTexture(g_star.signs.back()));
+        }
+      }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (g_star.signs.empty()) ImGui::TextUnformatted("the base superstar's");
+    for (size_t k = 0; k < g_star.sign_tex.size(); ++k) {
+      ImGui::SameLine();
+      ImGui::Image(Tex(g_star.sign_tex[k]), ImVec2(64 * scale, 32 * scale));
+    }
+    if (!g_star.signs.empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x##signs")) {
+        for (auto* t : g_star.sign_tex) t->Release();
+        g_star.signs.clear(), g_star.sign_tex.clear();
+      }
+    }
+  }
   file_row("Name recording...", g_star.voice, "none (the name call above)", song, 1);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("A short recording of the name, said the ring announcer's way: it plays when he\n"
@@ -1175,6 +1208,198 @@ void StarPage() {
     ImGui::SameLine();
     ImGui::Image(Tex(shown), ImVec2(256 * scale, 256 * scale));
   }
+}
+
+// ---------------------------------------------------------------- Crowd signs
+
+// Crowd signs (the game: src/crowd_signs.cpp): pictures the crowd holds up -
+// 128 x 64 DXT1 with mipmaps, as the game's own (audience.pac AUDE/BORD).
+// A sign pack (.svrmod: manifest.txt type=signs, NN_<name>.dds) installs into
+// <game>/Mods/Signs/<id>; its signs join the general signs every match draws
+// from. A superstar mod can have 4 signs of its own (sign1..4.dds) that its
+// fans hold up.
+struct Sign {
+  std::string name;
+  Image picture;  // 128 x 64
+  ID3D11ShaderResourceView* tex = nullptr;
+};
+struct SignPack {
+  char name[64] = "", author[64] = "", version[16] = "1.0";
+  std::vector<Sign> signs;
+};
+SignPack g_pack;
+std::vector<std::wstring> g_sign_files;  // test aids: --sign <picture>..., --test-sign-save <file>
+std::wstring g_sign_test_save;
+
+// Any picture -> a sign: fitted onto a white 128 x 64 board (no stretching).
+Image SignPicture(const Image& src) {
+  Image out;
+  out.w = 128, out.h = 64;
+  out.rgba.assign(size_t(128) * 64 * 4, 255);
+  const float k = std::min(128.0f / src.w, 64.0f / src.h);
+  const int w = std::max(1, int(src.w * k)), h = std::max(1, int(src.h * k));
+  const Image fit = Resize(src, w, h);
+  const int x0 = (128 - w) / 2, y0 = (64 - h) / 2;
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x) {
+      const uint8_t* q = &fit.rgba[(size_t(y) * w + x) * 4];
+      uint8_t* o = &out.rgba[(size_t(y + y0) * 128 + x + x0) * 4];
+      const int a = q[3];
+      for (int c = 0; c < 3; ++c) o[c] = uint8_t((q[c] * a + 255 * (255 - a)) / 255);  // (over white)
+      o[3] = 255;
+    }
+  return out;
+}
+
+Bytes SignDds(const Image& picture) { return DdsEncode(picture, DxtFormat::kDxt1, true); }
+
+std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec) {
+  std::vector<std::wstring> out;
+  IFileOpenDialog* dlg = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return out;
+  DWORD opts = 0;
+  dlg->GetOptions(&opts);
+  dlg->SetOptions(opts | FOS_ALLOWMULTISELECT);
+  dlg->SetTitle(title);
+  dlg->SetFileTypes(nspec, spec);
+  IShellItemArray* items = nullptr;
+  if (SUCCEEDED(dlg->Show(g_wnd)) && SUCCEEDED(dlg->GetResults(&items))) {
+    DWORD n = 0;
+    items->GetCount(&n);
+    for (DWORD i = 0; i < n; ++i) {
+      IShellItem* item = nullptr;
+      PWSTR path = nullptr;
+      if (SUCCEEDED(items->GetItemAt(i, &item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+        out.push_back(path);
+        CoTaskMemFree(path);
+      }
+      if (item) item->Release();
+    }
+    items->Release();
+  }
+  dlg->Release();
+  return out;
+}
+
+void AddSigns(const std::vector<std::wstring>& files) {
+  for (const auto& f : files) {
+    Image img;
+    if (!LoadImageFile(Utf8(f), img)) {
+      Log("Could not read " + Utf8(f));
+      continue;
+    }
+    Sign sg;
+    sg.name = Utf8(fs::path(f).stem().wstring());
+    sg.picture = SignPicture(img);
+    sg.tex = MakeTexture(sg.picture);
+    g_pack.signs.push_back(std::move(sg));
+  }
+}
+
+std::string PackId() {
+  std::string id;
+  for (char c : std::string(g_pack.name))
+    id += std::isalnum(uint8_t(c)) ? char(std::tolower(uint8_t(c))) : '_';
+  return id.empty() ? "signs" : id;
+}
+
+bool BuildPack(std::vector<ZipEntry>& files) {
+  if (g_pack.signs.empty()) {
+    Log("Add some pictures first.");
+    return false;
+  }
+  if (!g_pack.name[0]) std::snprintf(g_pack.name, sizeof g_pack.name, "My Signs");
+  const std::string man = "type=signs\nid=" + PackId() + "\nname=" + g_pack.name + "\nauthor=" + g_pack.author +
+                          "\nversion=" + g_pack.version + "\n";
+  files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
+  for (size_t i = 0; i < g_pack.signs.size(); ++i) {
+    char n[16];
+    std::snprintf(n, sizeof n, "%02zu_", i + 1);
+    std::string stem;
+    for (char c : g_pack.signs[i].name) stem += std::isalnum(uint8_t(c)) ? c : '_';
+    files.push_back({n + stem.substr(0, 40) + ".dds", SignDds(g_pack.signs[i].picture)});
+  }
+  return true;
+}
+
+void SavePack() {
+  std::vector<ZipEntry> files;
+  if (!BuildPack(files)) return;
+  const COMDLG_FILTERSPEC spec[] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"}};
+  const std::string id = PackId();
+  const std::wstring f =
+      PickFile(true, L"Save the sign pack", spec, 1, L"svrmod", (std::wstring(id.begin(), id.end()) + L".svrmod").c_str());
+  if (f.empty()) return;
+  if (WriteFile(Utf8(f), ZipWrite(files))) Log("Saved " + Utf8(f) + " (add it in the launcher's Mods tab with +).");
+  else Log("The sign pack could not be written.");
+}
+
+void InstallPack() {
+  std::vector<ZipEntry> files;
+  if (!BuildPack(files)) return;
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Signs" / fs::u8path(PackId());
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  for (const auto& f : files)
+    if (!WriteFile(Utf8((dir / fs::u8path(f.name)).wstring()), f.data)) {
+      Log("Could not write into " + Utf8(dir.wstring()) + " (is the game running?)");
+      return;
+    }
+  Log("Installed: the crowd holds these signs in every match from the next game start (" + Utf8(dir.wstring()) + ").");
+}
+
+void SignsPage() {
+  const float scale = ImGui::GetFontSize() / 13.0f;
+  if (!g_sign_files.empty()) {
+    AddSigns(g_sign_files);
+    g_sign_files.clear();
+    if (!g_sign_test_save.empty()) {
+      std::vector<ZipEntry> files;
+      if (BuildPack(files) && WriteFile(Utf8(g_sign_test_save), ZipWrite(files))) Log("test: saved " + Utf8(g_sign_test_save));
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    }
+  }
+  ImGui::Text("Crowd signs");
+  ImGui::TextDisabled("New signs for the crowd to hold up in every match (with the game's own). Any picture: it is "
+                      "fitted onto a white 128 x 64 board.");
+  ImGui::Separator();
+  ImGui::PushItemWidth(320 * scale);
+  ImGui::InputText("Pack name", g_pack.name, sizeof g_pack.name);
+  ImGui::InputText("Author", g_pack.author, sizeof g_pack.author);
+  ImGui::InputText("Version", g_pack.version, sizeof g_pack.version);
+  ImGui::PopItemWidth();
+  const COMDLG_FILTERSPEC spec[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
+  if (ImGui::Button("Add pictures...", ImVec2(200 * scale, 0))) AddSigns(PickFiles(L"Sign pictures", spec, 1));
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu sign%s", g_pack.signs.size(), g_pack.signs.size() == 1 ? "" : "s");
+  ImGui::Separator();
+  const float tw = 128 * 1.5f * scale, th = 64 * 1.5f * scale;
+  const int cols = std::max(1, int(ImGui::GetContentRegionAvail().x / (tw + 16 * scale)));
+  ImGui::BeginChild("signs", ImVec2(0, -60 * scale), false);
+  for (size_t i = 0; i < g_pack.signs.size(); ++i) {
+    if (i % cols) ImGui::SameLine();
+    ImGui::PushID(int(i));
+    ImGui::BeginGroup();
+    ImGui::Image(Tex(g_pack.signs[i].tex), ImVec2(tw, th));
+    if (ImGui::SmallButton("remove")) {
+      if (g_pack.signs[i].tex) g_pack.signs[i].tex->Release();
+      g_pack.signs.erase(g_pack.signs.begin() + long(i));
+      ImGui::EndGroup();
+      ImGui::PopID();
+      break;
+    }
+    ImGui::EndGroup();
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  ImGui::BeginDisabled(g_busy);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
+  if (ImGui::Button("Save as mod (.svrmod)...", ImVec2(260 * scale, 0))) SavePack();
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  if (ImGui::Button("Install into game", ImVec2(260 * scale, 0))) InstallPack();
+  ImGui::EndDisabled();
 }
 
 void Style() {
@@ -1253,8 +1478,8 @@ void Draw() {
   }
   if (g_test_state == 2 && !g_busy) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
   ImGui::BeginChild("rail", ImVec2(rail, -logh), true);
-  for (int p = 0; p < 4; ++p) {
-    const char* names[] = {"Arenas", "Arena Editor", "VS screen", "Superstars"};
+  for (int p = 0; p < 5; ++p) {
+    const char* names[] = {"Arenas", "Arena Editor", "VS screen", "Superstars", "Crowd signs"};
     if (g_page == p) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
     if (ImGui::Button(names[p], ImVec2(-1, 0))) {
       if (p == 1 && !g_proj.edited) OpenEditor(g_sel);
@@ -1264,7 +1489,7 @@ void Draw() {
   }
   ImGui::Separator();
   ImGui::BeginDisabled();
-  for (const char* t : {"Titantron videos", "Crowd & signs", "Menus & renders", "Audio"})
+  for (const char* t : {"Titantron videos", "Menus & renders", "Audio"})
     ImGui::Button(t, ImVec2(-1, 0));
   ImGui::EndDisabled();
   ImGui::TextDisabled("later");
@@ -1281,6 +1506,10 @@ void Draw() {
   } else if (g_page == 3) {
     ImGui::BeginChild("stars", ImVec2(0, -logh), true);
     StarPage();
+    ImGui::EndChild();
+  } else if (g_page == 4) {
+    ImGui::BeginChild("signs", ImVec2(0, -logh), true);
+    SignsPage();
     ImGui::EndChild();
   } else {
   // grid
@@ -1414,6 +1643,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--star-picture")) g_star_picture = argv[i + 1];
     if (!wcscmp(argv[i], L"--star-call")) g_star.call = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--star-voice")) g_star.voice = argv[i + 1];
+    if (!wcscmp(argv[i], L"--sign")) g_sign_files.push_back(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--test-sign-save")) g_sign_test_save = argv[i + 1];
     if (!wcscmp(argv[i], L"--test-star-save")) g_star_test_save = argv[i + 1];
   }
   WNDCLASSEXW wc = {sizeof wc, CS_CLASSDC, WndProc, 0, 0, inst, LoadIconW(inst, MAKEINTRESOURCEW(1)), nullptr,

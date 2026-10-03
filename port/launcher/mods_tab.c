@@ -5,7 +5,8 @@
  * (256 x 128 DXT5); the game lists them on the arena select pages after its
  * own arenas (src/arena_mods.cpp). Superstar mods hold ch.pac (and maybe a
  * theme song and an entrance movie); the game lists them under the M tile of
- * the character select (src/superstar_mods.cpp). A mod is turned off by a
+ * the character select (src/superstar_mods.cpp). Sign packs hold crowd signs
+ * (*.dds, 128 x 64) the crowd holds up (src/crowd_signs.cpp). A mod is turned off by a
  * "disabled" file in its folder. A .svrmod file is a zip of such a folder.
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
@@ -90,7 +91,7 @@ static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas", L"Superstars" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -245,9 +246,14 @@ static int install_file(const WCHAR *zip)
     }
     {
         const int arena = !_wcsicmp(m.type, L"arena"), star = !_wcsicmp(m.type, L"superstar");
+        const int signs = !_wcsicmp(m.type, L"signs");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
+        if (signs) {
+            wcsncpy_s(kind, 32, L"Signs", _TRUNCATE);
+            goto place;
+        }
         if (!arena && !star) {
-            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena and superstar mods.", m.name, m.type);
+            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, superstar and sign mods.", m.name, m.type);
             status(t);
             remove_tree(tmp, 0);
             return 0;
@@ -262,6 +268,7 @@ static int install_file(const WCHAR *zip)
         }
         wcsncpy_s(kind, 32, arena ? L"Arenas" : L"Superstars", _TRUNCATE);
     }
+place:
     safe_id(m.id);
     swprintf_s(parent, MAX_PATH, L"%s\\Mods\\%s", s_game, kind);
     SHCreateDirectoryExW(NULL, parent, NULL);
@@ -274,10 +281,11 @@ static int install_file(const WCHAR *zip)
     }
     scan();
     fill();
-    swprintf_s(t, 512, wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
-                                                 L"select (up to 50 superstar mods)."
-                                               : L"Installed \"%s\". It is on the arena select pages after the "
-                                                 L"game's own arenas.",
+    swprintf_s(t, 512, !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
+                       : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
+                                                   L"select (up to 50 superstar mods)."
+                                                 : L"Installed \"%s\". It is on the arena select pages after the "
+                                                   L"game's own arenas.",
                m.name[0] ? m.name : m.id);
     status(t);
     return 1;

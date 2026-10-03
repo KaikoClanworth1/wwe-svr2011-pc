@@ -35,6 +35,7 @@
 #include "arena_mods.h"
 #include "ring_rules.h"
 #include "superstar_mods.h"
+#include "crowd_signs.h"
 #include "frame_rate.h"
 #include "crash_report.h"
 #include "dlc.h"
@@ -367,6 +368,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallRingRules(runtime()->memory());
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
+  svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
   svr2011::InstallFrameRate(runtime()->memory());
   if (imgui_drawer()) {

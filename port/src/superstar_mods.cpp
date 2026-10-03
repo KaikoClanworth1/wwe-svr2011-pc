@@ -49,6 +49,7 @@
 #include "generated/default/svr2011_init.h"
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
+#include "crowd_signs.h"
 #include "music.h"
 #include "user_movies.h"
 
@@ -65,7 +66,7 @@ constexpr uint32_t kPool[] = {59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  
                               157, 162, 163, 167, 168, 172, 173, 181, 185, 189, 200, 202, 203,
                               204, 206, 207, 209, 213, 214, 220, 221, 223, 225, 227};
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
-constexpr uint32_t kAttireIds = 210;             // u16[4]: id*10 + attire + 1
+constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
@@ -78,6 +79,8 @@ struct Mod {
   std::string ch_guest, ssf_guest;  // the overlay files, as the game opens them
   std::vector<std::string> attire_guests;  // extra attires' pacs (manifest attire<N>=)
   uint32_t attires = 1;                    // attires it has (its pacs' EMD models)
+  uint32_t signs = 0;                      // its own crowd signs (sign1..4.dds; crowd_signs.h)
+  std::vector<fs::path> sign_files;
   std::string attire_names[4];             // (manifest attire<N>_name=; attire 1: the game's ORIGINAL ATTIRE)
   uint32_t attire_pairs = 0;               // guest: 4 x {u32 name string id, s32 unlock} (sub_828C4060)
   std::string song;                 // its theme: a USER PLAYLIST name ("" = the base's)
@@ -426,6 +429,15 @@ void LoadMods() {
       continue;
     }
     if (!m.voice.empty() && !fs::exists(m.voice, ec)) m.voice.clear();
+    {
+      std::vector<fs::path> signs;
+      for (int k = 1; k <= 4; ++k)
+        if (fs::exists(f / ("sign" + std::to_string(k) + ".dds"), ec))
+          signs.push_back(f / ("sign" + std::to_string(k) + ".dds"));
+      m.signs = uint32_t(signs.size());
+      // (added below, once the mod has its id)
+      m.sign_files = std::move(signs);
+    }
     InstallMedia(m, f, song, movie);
     ReadApplied(m, f);
     m.slot = slot_of(m.folder);
@@ -487,6 +499,7 @@ void LoadMods() {
     else
       REXLOG_WARN("[svr2011] superstar mods: {}: base {} has no select render (not a playable superstar)", m.folder,
                   m.base);
+    if (m.signs) svr2011::AddCharacterSigns(m.slot, m.sign_files);
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {})", m.name, m.slot, m.base);
     g_mods.push_back(std::move(m));
   }
@@ -600,6 +613,19 @@ void Remember(uint8_t* base) {
   }
 }
 
+// The record's crowd signs: the mod's own (crowd_signs.cpp adds them as
+// id*10 + 1..4, repeated to fill 4), else its base's.
+void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
+  for (uint32_t k = 0; k < 4; ++k) {
+    if (m.signs) {
+      const uint32_t v = m.slot * 10 + 1 + k % m.signs;
+      sr[kSignIds + k * 2] = uint8_t(v >> 8), sr[kSignIds + k * 2 + 1] = uint8_t(v);
+    } else {
+      sr[kSignIds + k * 2] = br[kSignIds + k * 2], sr[kSignIds + k * 2 + 1] = br[kSignIds + k * 2 + 1];
+    }
+  }
+}
+
 void ApplyRecords(uint8_t* base) {
   for (uint32_t id : kPool) {
     if (ModOf(id)) continue;
@@ -628,6 +654,7 @@ void ApplyRecords(uint8_t* base) {
       }
     }
     if (have_blank) SetEntranceMedia(sp, m, bp);
+    SetSigns(sr, br, m);
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
       sr[kSelectable] = 1, sr[kDlc] = 1;
       static std::vector<std::pair<uint32_t, uint32_t>> told;  // (slot, its ratings when last logged)
@@ -659,10 +686,8 @@ void ApplyRecords(uint8_t* base) {
     sr[kSelectable] = 1;
     sr[kDlc] = 1;
     for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) sr[off] = uint8_t(m.slot >> 8), sr[off + 1] = uint8_t(m.slot);
-    for (uint32_t a = 0; a < 4; ++a) {  // (+210: per attire, id*10 + attire + 1)
-      const uint32_t v = m.slot * 10 + a + 1;
-      sr[kAttireIds + a * 2] = uint8_t(v >> 8), sr[kAttireIds + a * 2 + 1] = uint8_t(v);
-    }
+    SetSigns(sr, br, m);
+
     // test aid: SVR2011_TEST_STAR_EDIT=<id> - that mod's ratings set to 20 (as
     // an edit made in the game would), to see them kept through a save
     if (const char* e = std::getenv("SVR2011_TEST_STAR_EDIT"); e && uint32_t(std::atoi(e)) == m.slot)

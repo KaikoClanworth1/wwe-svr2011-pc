@@ -41,6 +41,7 @@ set(SVR2011_SOURCES
     src/arena_mods.cpp
     src/ring_rules.cpp
     src/superstar_mods.cpp
+    src/crowd_signs.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp
     src/frame_rate.cpp
