@@ -83,7 +83,7 @@ enum Row {
   kRenderScale, kAntiAliasing, kEffects, kCutsceneFps,           // QUALITY
   kTouch, kLanguage,                                             // DISPLAY (last)
   kWide, kPrepare, kDof, kMotionBlur, kSoft, kReplays,                      // QUALITY (last)
-  kFrameRate,                                                    // DISPLAY
+  kFrameRate, kFullSpeed,                                        // DISPLAY
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -92,11 +92,11 @@ enum Tab { kDisplayTab, kQualityTab, kControlsTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY", "CONTROLS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
-const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
+const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
                                           {}};
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
                                           {}};
 #endif
@@ -347,7 +347,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
-  bool fps_ = true, vsync_ = true, native_ = true;
+  bool fps_ = true, vsync_ = true, native_ = true, full_speed_ = true;
   int display_ = kWindowed;  // (DisplayMode)
   bool effects_ = true, fps60_ = true;
   int frame_rate_ = 1;  // (kFrameRates)
@@ -409,6 +409,7 @@ void GraphicsPage::Load() {
     language_at_start_ = at_start;
   }
   vsync_ = rex::cvar::Query<bool>("vsync");
+  full_speed_ = rex::cvar::Query<bool>("full_speed");
   display_ = CurrentDisplayMode();
   frame_rate_ = 1;
   for (int i = 0; i < kNumFrameRates; ++i)
@@ -497,6 +498,12 @@ void GraphicsPage::Change(int row, int dir) {
       frame_rate_ = (frame_rate_ + dir + kNumFrameRates) % kNumFrameRates;
       SetTargetFrameRate(kFrameRates[frame_rate_]);
       SaveSetting("frame_rate", std::to_string(kFrameRates[frame_rate_]));
+      break;
+    case kFullSpeed:
+      full_speed_ = !full_speed_;
+      rex::cvar::SetFlagByName("full_speed", full_speed_ ? "true" : "false");
+      SaveSetting("full_speed", full_speed_ ? "true" : "false");
+      SetTargetFrameRate(TargetFrameRate());  // (the frame clock: 30 needs it on)
       break;
     case kVsync:
       vsync_ = !vsync_;
@@ -855,6 +862,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return fps;
       }
       case kFpsCounter: return fps_ ? "ON" : "OFF";
+      case kFullSpeed: return full_speed_ ? "ON" : "OFF (AS THE XBOX 360)";
       case kTouch: return touch_ ? "ON" : "OFF";
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
       case kDof: return dof_ ? "ON" : "OFF";
@@ -878,6 +886,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kVsync: return "VSYNC";
       case kFrameRate: return "FRAME RATE";
       case kFpsCounter: return "FPS COUNTER";
+      case kFullSpeed: return "FULL SPEED";
       case kTouch: return "TOUCH CONTROLS";
       case kWide: return "WIDE SCREENS";
       case kDof: return "DEPTH OF FIELD";
@@ -904,6 +913,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
       case kFrameRate: return "Frames a second in matches, at most (menus: 60). The game always runs at its normal speed.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
+      case kFullSpeed:
+        return full_speed_ ? "The game keeps its normal speed when the frame rate drops (and at 30 FPS)."
+                           : "One game step a frame, as the Xbox 360: the game slows down below 60 FPS (30 FPS off).";
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";
       case kDof: return "Wide shots blur what is out of focus. OFF: the whole ring stays sharp.";

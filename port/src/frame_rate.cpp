@@ -54,6 +54,9 @@
 #include "online_overlay.h"
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
+REXCVAR_DEFINE_BOOL(full_speed, true, "GPU",
+                    "Keep the game at full speed when frames are slower than 60 (extra world updates); off: one "
+                    "update a frame, as the console (slower when the device can't make 60)");
 
 namespace {
 
@@ -109,6 +112,7 @@ int TargetFrameRate() {
 int FrameRateNow() {
   // (test aid: SVR2011_TEST_IN_MATCH=1 - the chosen rate everywhere, e.g. the training ring)
   static const bool always = std::getenv("SVR2011_TEST_IN_MATCH") != nullptr;
+  if (!REXCVAR_GET(full_speed)) return 60;  // (30 needs two updates a frame)
   return g_in_match || always ? TargetFrameRate() : 60;
 }
 
@@ -326,7 +330,7 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_last = now;
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
-  if (g_lockstep) g_world_ticks = 1, g_world_acc = 0;
+  if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
   // An armed match start (ArmMatchStart): once the match's frame count has
