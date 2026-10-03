@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include <fstream>
 #include <iterator>
@@ -12,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xam/content_manager.h>
@@ -109,6 +111,72 @@ constexpr std::string_view kStringTriggers[] = {"Xbox LIVE", "Xbox 360", "storag
                                                 "gamer profile", "Gamertag", "GAMERTAG", "Xbox",
                                                 "Online Axxess", "ONLINE Axxess", "ONLINE AXXESS"};
 
+// -- Online Axxess ------------------------------------------------------------------
+//
+// THQ's online pass: the ONLINE_AXXESS item (type 6) of a DLC package's
+// info/catalog.dlc ("DLCC" header, 64-byte entries: u16 flags, id, type ...
+// and the name at +0x20). Without it the game asks Xbox LIVE's title storage
+// for a trial period (XStorageBuildServerPath ...) when ONLINE is chosen and
+// says "Information related to your trial period couldn't be retrieved". The
+// codes can't be redeemed any more: with online play on, a package of the
+// port's own grants it (that one item, nothing else) when no installed
+// package has it - whichever region's DLC a player has, or none.
+
+constexpr char kAxxessPackage[] = "5356523230313150434F4E4C494E45415858455353";  // (hex "SVR2011PCONLINEAXXESS")
+constexpr uint16_t kAxxessType = 6;
+
+bool HasAxxess(const std::filesystem::path& catalog) {
+  std::ifstream in(catalog, std::ios::binary);
+  std::vector<uint8_t> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (d.size() < 0x18 || std::string_view(reinterpret_cast<char*>(d.data()), 4) != "DLCC") return false;
+  const uint16_t header = uint16_t(d[6] | d[7] << 8);
+  const uint32_t count = uint32_t(d[12] | d[13] << 8 | d[14] << 16 | uint32_t(d[15]) << 24);
+  for (uint32_t i = 0; i < count && header + (i + 1) * 0x40 <= d.size(); ++i) {
+    const uint8_t* e = d.data() + header + i * 0x40;
+    if (uint16_t(e[4] | e[5] << 8) == kAxxessType) return true;
+  }
+  return false;
+}
+
+void GrantOnlineAxxess(const std::filesystem::path& title_root, uint32_t title_id) {
+  std::error_code ec;
+  const auto installed = title_root / "00000002";
+  const auto ours = installed / kAxxessPackage;
+  const auto header = title_root / "Headers" / "00000002" / (std::string(kAxxessPackage) + ".header");
+  if (!rex::cvar::Query<bool>("online_enabled")) return;
+  for (const auto& pkg : std::filesystem::directory_iterator(installed, ec)) {
+    if (pkg.path().filename() == kAxxessPackage) continue;
+    if (HasAxxess(pkg.path() / "info" / "catalog.dlc")) return;  // (the player's own)
+  }
+  if (std::filesystem::exists(ours / "info" / "catalog.dlc", ec) && std::filesystem::exists(header, ec)) return;
+
+  // info/catalog.dlc: one entry
+  std::vector<uint8_t> cat(0x18 + 0x40, 0);
+  std::memcpy(cat.data(), "DLCC", 4);
+  cat[4] = 2;     // version
+  cat[6] = 0x18;  // header size
+  cat[8] = 1;
+  cat[12] = 1;    // entries
+  uint8_t* e = cat.data() + 0x18;
+  e[0] = 0x40, e[2] = 1, e[4] = uint8_t(kAxxessType), e[6] = 1, e[16] = 5;
+  std::memcpy(e + 0x20, "ONLINE_AXXESS", 13);
+  // the content header (as the SDK keeps an installed package's): device 1,
+  // type 2, UTF-16BE display name at 8, file name at 264, title id at 320
+  std::vector<uint8_t> head(332, 0);
+  head[3] = 1, head[7] = 2;
+  const char* name = "Online Axxess (PC)";
+  for (size_t i = 0; name[i]; ++i) head[8 + 2 * i + 1] = uint8_t(name[i]);
+  std::memcpy(head.data() + 264, kAxxessPackage, sizeof(kAxxessPackage) - 1);
+  for (int i = 0; i < 4; ++i) head[320 + i] = uint8_t(title_id >> (24 - 8 * i));
+  head[324] = 0xFE, head[325] = 0x7F, head[328] = 0x3F;
+
+  std::filesystem::create_directories(ours / "info", ec);
+  std::filesystem::create_directories(header.parent_path(), ec);
+  std::ofstream(ours / "info" / "catalog.dlc", std::ios::binary).write(reinterpret_cast<char*>(cat.data()), cat.size());
+  std::ofstream(header, std::ios::binary).write(reinterpret_cast<char*>(head.data()), head.size());
+  REXLOG_INFO("DLC: Online Axxess granted (no installed package had it)");
+}
+
 }  // namespace
 
 void PatchOnlineStrings(const std::filesystem::path& file) {
@@ -184,6 +252,11 @@ void InstallDlc(rex::system::KernelState* kernel_state, const std::filesystem::p
         PatchOnlineStrings(pkg.path() / "pac" / "string.pac");
     }
   } patch_strings{installed};
+  struct Axxess {  // (whatever happens below: once the player's packages are in)
+    std::filesystem::path root;
+    uint32_t title;
+    ~Axxess() { GrantOnlineAxxess(root, title); }
+  } axxess{installed.parent_path(), game_title};
   if (!std::filesystem::is_directory(dlc_dir, ec)) return;
 
   for (const auto& e : std::filesystem::directory_iterator(dlc_dir, ec)) {
