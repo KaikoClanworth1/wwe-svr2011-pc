@@ -564,9 +564,49 @@ REX_HOOK_RAW(sub_8224EF28) {
 // (0x55) has 3 wrestlers in the ring and its lumberjacks on the floor around
 // it: (50,0,500), (-500,0,0), (0,0,-500). Here person 2 is a lumberjack too:
 // on the fourth side, (500, 0, 0), facing the ring.
+// The match in the log (once per placement - the match's start): rule, arena,
+// each person: name (from the person's roster record), person number, team.
+void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
+  constexpr uint32_t kLive = 0x82E3DE00, kChars = 0x82E3CC50, kRoster = 0x82EDEA88;
+  const auto saved = ctx;
+  std::string people;
+  for (uint32_t i = 0; i < 6; ++i) {
+    const uint32_t ch = Rd32(base + kChars + i * 4);
+    if (!ch) continue;
+    const uint32_t id = Rd32(base + ch + 1156);
+    std::string name;
+    if (const uint32_t roster = Rd32(base + kRoster)) {
+      ctx.r3.u64 = roster;
+      ctx.r4.u64 = id;
+      sub_828B5A18(ctx, base);
+      if (const uint32_t rec = ctx.r3.u32) {  // (the record's name: its longest text with a lowercase letter or space)
+        for (uint32_t at = 0; at < 0x100; ++at) {
+          std::string run;
+          while (at < 0x100 && base[rec + at] >= 0x20 && base[rec + at] < 0x7F) run += char(base[rec + at++]);
+          const bool wordy = run.find_first_of("abcdefghijklmnopqrstuvwxyz ") != std::string::npos;
+          if (wordy && run.size() > name.size()) name = run;
+        }
+      }
+    }
+    ctx.r3.u64 = id;
+    sub_8257C190(ctx, base);
+    sub_82573EC8(ctx, base);
+    const uint32_t info = ctx.r3.u32;
+    people += fmt::format("{}{} (person {}, team {})", people.empty() ? "" : ", ", name.size() >= 3 ? name : "?", id,
+                          info ? base[info + 13] : 255);
+  }
+  ctx = saved;
+  std::string line = fmt::format("rule {:02X}, arena {} - {}", rule, Rd32(base + kLive + 64), people);
+  static std::string last;  // (placed three times as a match loads: logged once)
+  if (line == last) return;
+  last = line;
+  REXLOG_INFO("[svr2011] match: {}", line);
+}
+
 REX_EXTERN(__imp__sub_822AD738);
 REX_HOOK_RAW(sub_822AD738) {
   const uint32_t placer = ctx.r3.u32;
+  LogMatch(ctx, base, ctx.r4.u32);
   if (ctx.r4.u32 != kLumberjack || !placer || Rd32(base + kStoryContext)) {
     __imp__sub_822AD738(ctx, base);
     return;

@@ -25,6 +25,10 @@
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -40,10 +44,14 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
+#include <rex/system/xthread.h>
 #include <rex/ui/presenter.h>
 
 #include "generated/default/svr2011_init.h"
+#include "online_overlay.h"
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
 
@@ -168,6 +176,38 @@ void P32(uint8_t* base, uint32_t a, uint32_t v) { Wr32(base + a, v); }
 // What the world update is running: a watchdog logs it when the update is
 // stuck (a wait that a frame with two updates would never see end).
 std::atomic<uint32_t> g_dbg_obj{0}, g_dbg_fn{0}, g_dbg_pass{0};
+std::atomic<rex::system::KernelState*> g_kernel{nullptr};
+
+// Whether guest memory at `a` can be read (the thread dump walks stacks).
+bool GuestReadable(uint8_t* base, uint32_t a) {
+#if defined(_WIN32)
+  MEMORY_BASIC_INFORMATION mi{};
+  return a && VirtualQuery(base + a, &mi, sizeof(mi)) && mi.State == MEM_COMMIT &&
+         !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+#else
+  return a >= 0x40000000 && a < 0x80000000;  // (guest stacks; no probe here)
+#endif
+}
+
+// Every guest thread: id, name, where it is (lr) and its call stack (the
+// back chain from r1: saved lr at each frame's -8) - for a stuck update.
+void DumpGuestThreads(uint8_t* base) {
+  auto* kernel = g_kernel.load();
+  if (!kernel) return;
+  for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
+    if (!t || !t->is_guest_thread() || !t->thread_state()) continue;
+    const PPCContext* c = t->thread_state()->context();
+    std::string chain = fmt::format("{:08X}", uint32_t(c->lr));
+    uint32_t sp = c->r1.u32;
+    for (int i = 0; i < 16 && GuestReadable(base, sp); ++i) {
+      const uint32_t prev = Rd32(base + sp);
+      if (!prev || prev <= sp || prev - sp > 0x10000 || !GuestReadable(base, prev - 8)) break;
+      chain += fmt::format(" {:08X}", Rd32(base + prev - 8));
+      sp = prev;
+    }
+    REXLOG_WARN("frame rate: thread {:08X} '{}' at {}", t->thread_id(), t->name(), chain);
+  }
+}
 std::atomic<int64_t> g_dbg_since{0};
 
 // obj->vtable[slot](obj, r4, r5)
@@ -247,6 +287,9 @@ void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
 // but the last update of a frame (an extra update) see the previous reading
 // again (no change): a press arrives in the frame's last update.
 bool g_extra_update = false;
+// The characters' job round (sub_8216F4C8, below) was left by an extra update
+// and not run since: it runs before the frame's draw, which waits for the job.
+bool g_job_deferred = false;
 struct InputReading {
   bool valid = false;
   uint32_t result = 0;
@@ -280,6 +323,7 @@ void TestMatchTime(uint8_t* base) {
 // this frame runs (at least one).
 REX_EXTERN(__imp__sub_8269D768);
 REX_HOOK_RAW(sub_8269D768) {
+  if (!g_kernel) g_kernel = REX_KERNEL_STATE();  // (for the stuck-update thread dump)
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
   if (slow_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
@@ -320,6 +364,26 @@ REX_HOOK_RAW(sub_8269C728) {
     UpdatePass(ctx, base, m);
   }
   g_extra_update = false;
+  static const bool no_defer = std::getenv("SVR2011_TEST_NO_DEFER") != nullptr;  // (test aid: 2.0.0's way)
+  if (g_job_deferred && !no_defer) {  // (only an extra update reached it this frame)
+    const auto before = ctx;
+    sub_8216F4C8(ctx, base);
+    ctx = before;
+    static int deferred = 0;
+    if (++deferred == 1 || deferred % 100 == 0)
+      REXLOG_INFO("frame rate: the characters' job round ran before the draw ({} times)", deferred);
+  }
+  // Test aid: SVR2011_TEST_STUCK=1 - one update 5 s long, 60 s into the run
+  // (the stuck-update log and its thread dump).
+  static const bool test_stuck = std::getenv("SVR2011_TEST_STUCK") != nullptr;
+  static const auto started = Clock::now();
+  static bool stuck_done = false;
+  if (test_stuck && !stuck_done && Clock::now() - started > std::chrono::seconds(60)) {
+    stuck_done = true;
+    g_dbg_pass = 20;
+    g_dbg_since = Clock::now().time_since_epoch().count();
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+  }
   g_dbg_pass = 20;
   DrawPass(ctx, base, m);
   g_dbg_pass = 0;
@@ -347,6 +411,11 @@ REX_HOOK_RAW(sub_8269C728) {
                       "function {:08X}; jobs{}",
                       std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - since).count(),
                       g_dbg_pass.load(), g_dbg_obj.load(), g_dbg_fn.load(), jobs);
+          static int64_t dumped_for = -1;  // (once per stuck update)
+          if (dumped_for != g_dbg_since.load() && g_base) {
+            dumped_for = g_dbg_since.load();
+            DumpGuestThreads(g_base);
+          }
         }
       }
     }).detach();
@@ -375,7 +444,11 @@ int g_job_pending = 0;            // ticks since the job was last started
 REX_EXTERN(__imp__sub_8216F4C8);
 REX_HOOK_RAW(sub_8216F4C8) {
   ++g_job_pending;
-  if (g_extra_update) return;  // (an extra update of this frame)
+  if (g_extra_update) {  // (an extra update of this frame)
+    g_job_deferred = true;
+    return;
+  }
+  g_job_deferred = false;
   // (the running job must be done before its tick count changes: waited for
   // as the game does just after - the event stays set for it)
   constexpr uint32_t kJob = 0x82DE9C88;
@@ -418,6 +491,7 @@ REX_HOOK_RAW(sub_82905058) {
     r->valid = true;
     r->result = ctx.r3.u32;
     std::memcpy(r->state, base + out, sizeof(r->state));
+    if (user == 0 && ctx.r3.u32 == 0) svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));  // (online_overlay.h)
   }
 }
 
