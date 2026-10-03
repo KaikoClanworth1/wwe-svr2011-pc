@@ -89,6 +89,7 @@ still being tested.
 - **Friends list** in the launcher's Online tab (PC and Android): add / remove friends, see who's online, in an online match or offline (195917e; server /api/friends, eb2e1e9).
 - **Online logos fixed**: a Created Superstar's extra High Resolution logos now come from its owner when the server supplies the Superstar (6178e5e).
 - **Community Creations uploads**: multi-part uploads (2 MB parts) were always refused; fixed. **Server dashboard** (/svr) shows its totals and relay metrics again (eb2e1e9; the live server needs a restart).
+- **Lumberjack (partly)**: now 2 wrestlers and 4 lumberjacks, all starting on the floor around the ring; they still walk in and brawl (the game has no lumberjack AI; a custom version is planned in docs/MATCH_TYPES_RESEARCH.md) (8a8298e).
 - **Free-roaming backstage**: the CPU now moves and fights (played as the Parking Lot rule over the whole backstage), and the camera is pulled back (70412c3).
 
 - **Anti-aliasing levels**: OFF / 2x / 3x / 4x supersampling (4, 9 or 16 samples a pixel; GRAPHICS → QUALITY and the launcher's Settings), within the 4x render scale cap (4d363c8).
