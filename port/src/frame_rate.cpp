@@ -178,30 +178,23 @@ void P32(uint8_t* base, uint32_t a, uint32_t v) { Wr32(base + a, v); }
 std::atomic<uint32_t> g_dbg_obj{0}, g_dbg_fn{0}, g_dbg_pass{0};
 std::atomic<rex::system::KernelState*> g_kernel{nullptr};
 
-// Whether guest memory at `a` can be read (the thread dump walks stacks).
-bool GuestReadable(uint8_t* base, uint32_t a) {
-#if defined(_WIN32)
-  MEMORY_BASIC_INFORMATION mi{};
-  return a && VirtualQuery(base + a, &mi, sizeof(mi)) && mi.State == MEM_COMMIT &&
-         !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
-#else
-  return a >= 0x40000000 && a < 0x80000000;  // (guest stacks; no probe here)
-#endif
-}
-
 // Every guest thread: id, name, where it is (lr) and its call stack (the
-// back chain from r1: saved lr at each frame's -8) - for a stuck update.
+// back chain from r1: saved lr at each frame's -8) - for a stuck update. Only
+// reads inside the thread's own stack (its PCR: +0x70 base, high; +0x74 end,
+// low), and stops at the first link that leaves it or doesn't go up.
 void DumpGuestThreads(uint8_t* base) {
   auto* kernel = g_kernel.load();
   if (!kernel) return;
   for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
-    if (!t || !t->is_guest_thread() || !t->thread_state()) continue;
+    if (!t || !t->is_guest_thread() || !t->thread_state() || !t->pcr_ptr()) continue;
     const PPCContext* c = t->thread_state()->context();
+    const uint32_t hi = Rd32(base + t->pcr_ptr() + 0x70), lo = Rd32(base + t->pcr_ptr() + 0x74);
+    const auto in_stack = [&](uint32_t a) { return lo < hi && a >= lo && a + 4 <= hi; };
     std::string chain = fmt::format("{:08X}", uint32_t(c->lr));
     uint32_t sp = c->r1.u32;
-    for (int i = 0; i < 16 && GuestReadable(base, sp); ++i) {
+    for (int i = 0; i < 16 && in_stack(sp); ++i) {
       const uint32_t prev = Rd32(base + sp);
-      if (!prev || prev <= sp || prev - sp > 0x10000 || !GuestReadable(base, prev - 8)) break;
+      if (prev <= sp || !in_stack(prev) || !in_stack(prev - 8)) break;
       chain += fmt::format(" {:08X}", Rd32(base + prev - 8));
       sp = prev;
     }
