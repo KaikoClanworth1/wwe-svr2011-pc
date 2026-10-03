@@ -84,6 +84,11 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## After 2.0.2 (next update)
+
+- **Mods** (ModMaker session, arenas branch merged 7dc4e74): a **Mods** tab in the launcher and the **SvR2011 Mod Maker** (with a 3D arena editor): custom **arenas** (with their own VS screen, ring and ropes), **superstar mods** (50 slots, theme and movie, shown with a MODDED badge), **crowd sign** packs and **media** packs (themes, videos). Mods live in `Mods\` (Arenas, Superstars, Signs, Media). Docs: `port/docs/ARENA_MOD_MAKER_PLAN.md`, `SUPERSTAR_MODS.md`, `CROWD_SIGNS.md`, `MEDIA_MODS.md`.
+- The M tile's EXTRA list: Stephanie McMahon, Theodore Long, Paul Bearer, Tiffany and The Hurricane (Hornswoggle removed: broken).
+
 ## New in 2.0.2
 
 - **FULL SPEED** (GRAPHICS → DISPLAY; on by default, as before): off, the game makes one world update a frame like the Xbox 360, so a device that can't reach 60 slows down instead of catching up (30 FPS then plays at half speed). A workaround to try for the remaining freeze on some phones (31234c4).
