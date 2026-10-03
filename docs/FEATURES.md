@@ -84,6 +84,10 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## After 2.0.1 (next update)
+
+- **ONLINE overlay on Android**: an ONLINE button in the touch MENU layout (beside EDIT) opens it (d592e58; not yet tried on a phone).
+
 ## New in 2.0.1
 
 - **Character select texture flashes fixed**: moving the cursor could show the next superstar for a moment with the last one's textures (Jimmy Snuka in John Cena's jeans).
