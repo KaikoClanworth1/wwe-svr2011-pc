@@ -74,7 +74,11 @@ switch ($Action) {
     }
     "input" {
         $null = Get-Session
-        Add-Content $input ($Rest -join "`n")
+        # (the game may be reading the file this moment: try again)
+        for ($try = 0; ; $try++) {
+            try { Add-Content $input ($Rest -join "`n") -ErrorAction Stop; break }
+            catch { if ($try -ge 20) { throw }; Start-Sleep -Milliseconds 50 }
+        }
         "queued: $($Rest -join ' | ')"
     }
     { $_ -in "shot", "shotnative" } {

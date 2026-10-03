@@ -163,6 +163,16 @@ aside. So mods get all their base's attires, plus up to 4 in all.
 Tested: ADVANCED shows CHANGE ATTIRE "ATTIRE 3", and the model switches to the
 attire pac's (Orton on a Jericho mod).
 
+### Select screen framing
+
+Where the panel's 3D model stands comes from a placement table keyed by
+character id (DLC_HD/SD.pac `MMDL/BIND`, "MMPS": per layout `{id, dx, dy,
+dz}`; scratchpad re_framing). Ids not in the table get no offsets, so mods
+stood too high, with the head cut off at the top.
+
+`sub_8273D1D0(mgr, slot, layout, out)` looks up the slot's id. A hook gives
+it the base's id for a mod, so the mod stands where its base does.
+
 ### Select picture
 
 The select panel draws the mod's own model live (a Jericho model on an Orton

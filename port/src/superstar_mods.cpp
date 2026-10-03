@@ -1054,6 +1054,24 @@ REX_HOOK_RAW(sub_828C4060) {
   __imp__sub_828C4060(ctx, base);
 }
 
+// ---- The select screen's model framing
+// Where the panel's 3D model stands comes from a placement table by character
+// id (DLC_HD/SD.pac MMDL/BIND "MMPS": per layout {id, dx, dy, dz}; scratchpad
+// re_framing). Ids not in it get no offsets: a mod stood too high, its head
+// cut off at the top. sub_8273D1D0(mgr, slot, layout, out) looks the slot's
+// id up (slot = mgr + slot * 116: the id at +64 when +20 == 1, else +44): for
+// a mod, its base's.
+REX_EXTERN(__imp__sub_8273D1D0);
+REX_HOOK_RAW(sub_8273D1D0) {
+  const uint32_t slot = ctx.r3.u32 + ctx.r4.u32 * 116;
+  const uint32_t field = slot + (Rd32(base + slot + 20) == 1 ? 64 : 44);
+  const uint32_t id = Rd32(base + field);
+  const Mod* m = ModOf(id);
+  if (m) Wr32(base + field, m->base);
+  __imp__sub_8273D1D0(ctx, base);
+  if (m) Wr32(base + field, id);
+}
+
 // The file system's pacs registered (from the ARC / from each pac's header).
 REX_EXTERN(__imp__sub_825953B0);
 REX_HOOK_RAW(sub_825953B0) {
