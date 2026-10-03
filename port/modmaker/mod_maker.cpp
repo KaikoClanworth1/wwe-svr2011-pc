@@ -726,12 +726,105 @@ struct StarProject {
   std::wstring model, song, movie;  // files ("" model: the base's own)
   ID3D11ShaderResourceView* render = nullptr;
   int render_for = -1;
+  // its own select picture (else the base's): 512 x 512 and the 256 x 256 bust
+  Image picture, picture_small;
+  ID3D11ShaderResourceView* picture_tex = nullptr;
+  int call = -1;  // name call: -1 the base's, else a Created Superstar nickname
+};
+// The Created Superstar nicknames the announcer and commentary can say
+// (call=<index>; the game's CAS_* list, sub_8261EAB0's table at 0x82043F98).
+const char* const kNickNames[84] = {
+    "Alpha",
+    "Andersen",
+    "Angel",
+    "Angus",
+    "Archangel",
+    "Azrael",
+    "Bison",
+    "Brittany",
+    "Chen",
+    "Dregs",
+    "Dynamite",
+    "El Jefe",
+    "Franco",
+    "Gonzalez",
+    "Griffin",
+    "Grime",
+    "Hero",
+    "Icon",
+    "Jessica",
+    "Jester",
+    "Justice",
+    "Kowalczyk",
+    "Lassiter",
+    "Lee",
+    "Lilith",
+    "Mantis",
+    "Matsuda",
+    "Matsumoto",
+    "Maverick",
+    "Mercer",
+    "Amazing",
+    "Black",
+    "Macho",
+    "Omega",
+    "Quinn",
+    "Rodriguez",
+    "Santos",
+    "Savior",
+    "Silva",
+    "Skinner",
+    "Sokolov",
+    "Sophia",
+    "Sullivan",
+    "Sunshine",
+    "The Bad Guy",
+    "The Barbarian",
+    "The Bruiser",
+    "Champ",
+    "The Cowboy",
+    "The Disaster",
+    "The Dog",
+    "The Dominator",
+    "The Future",
+    "The Gangster",
+    "The Hardcore Icon",
+    "(no commentary)",
+    "The King",
+    "The Maniac",
+    "The Masked Man",
+    "The Mastodon",
+    "The Mechanic",
+    "The Monster",
+    "The Motor",
+    "The Natural",
+    "The Nightmare",
+    "The Ninja",
+    "The Olympian",
+    "The Phenom",
+    "The Prince",
+    "The Princess",
+    "The Professor",
+    "The Rocker",
+    "The Samoan",
+    "The Samurai",
+    "The Scorpion",
+    "The Show",
+    "The Soldier",
+    "The Superstar",
+    "The Tornado",
+    "Thunder",
+    "Vega",
+    "Williams",
+    "Yosef",
+    "Youngblood"
 };
 StarProject g_star;
 // test aids: --star <id> picks the base, --star-song / --star-movie <file>,
 // --test-star-save <file> saves the mod there and quits
 int g_star_start = 0;
 std::wstring g_star_test_save;
+std::wstring g_star_picture;  // --star-picture <file>
 
 std::string Upper(std::string s) {
   for (char& c : s) c = char(std::toupper(uint8_t(c)));
@@ -789,6 +882,53 @@ void LoadStarRender() {
         }
 }
 
+// A picture -> the select screen's renders: fitted into 512 x 512 (top
+// aligned, centred), and the bust (SSFC): that at 3/4 size, its top 256 rows
+// around the figure's middle (the game's own are about that).
+void SetStarPicture(const Image& src) {
+  Image big;
+  big.w = big.h = 512;
+  big.rgba.assign(size_t(512) * 512 * 4, 0);
+  const float k = std::min(512.0f / src.w, 512.0f / src.h);
+  const int w = std::max(1, int(src.w * k)), h = std::max(1, int(src.h * k));
+  const Image fit = Resize(src, w, h);
+  const int x0 = (512 - w) / 2;
+  for (int y = 0; y < h; ++y)
+    std::memcpy(&big.rgba[(size_t(y) * 512 + x0) * 4], &fit.rgba[size_t(y) * w * 4], size_t(w) * 4);
+  const Image three = Resize(big, 384, 384);
+  double sx = 0, sa = 0;  // the figure's middle (alpha-weighted)
+  for (int y = 0; y < 256; ++y)
+    for (int x = 0; x < 384; ++x) {
+      const double a = three.rgba[(size_t(y) * 384 + x) * 4 + 3];
+      sx += a * x, sa += a;
+    }
+  const int cx = sa > 0 ? int(sx / sa) : 192;
+  const int left = std::clamp(cx - 128, 0, 384 - 256);
+  Image bust;
+  bust.w = bust.h = 256;
+  bust.rgba.resize(size_t(256) * 256 * 4);
+  for (int y = 0; y < 256; ++y)
+    std::memcpy(&bust.rgba[size_t(y) * 256 * 4], &three.rgba[(size_t(y) * 384 + left) * 4], 256 * 4);
+  g_star.picture = big;
+  g_star.picture_small = bust;
+  if (g_star.picture_tex) g_star.picture_tex->Release();
+  g_star.picture_tex = MakeTexture(big);
+}
+
+void PickStarPicture() {
+  const COMDLG_FILTERSPEC spec[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
+  const std::wstring f = PickFile(false, L"Select screen picture (a PNG with a transparent background is best)",
+                                  spec, 1);
+  if (f.empty()) return;
+  Image img;
+  if (!LoadImageFile(Utf8(f), img)) {
+    Log("That picture could not be read.");
+    return;
+  }
+  SetStarPicture(img);
+  Log("Select picture set from " + Utf8(f));
+}
+
 std::string StarId() {
   std::string id;
   for (char c : std::string(g_star.name))
@@ -819,6 +959,7 @@ bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
   std::string man = "type=superstar\nid=" + id + "\nname=" + g_star.name + "\nshort=" +
                     (g_star.short_name[0] ? g_star.short_name : g_star.name) + "\nbase=" + std::to_string(b.id) +
                     "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n";
+  if (g_star.call >= 0) man += "call=" + std::to_string(g_star.call) + "\n";
   files.push_back({"ch.pac", std::move(ch)});
   if (!g_star.song.empty()) {
     Bytes s;
@@ -838,6 +979,10 @@ bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
     }
     files.push_back({"movie.bik", std::move(m)});
     man += "movie=movie.bik\n";
+  }
+  if (g_star.picture.w) {
+    files.push_back({"render.dds", DdsEncode(g_star.picture, DxtFormat::kDxt5, false)});
+    files.push_back({"render_small.dds", DdsEncode(g_star.picture_small, DxtFormat::kDxt5, false)});
   }
   files.insert(files.begin(), ZipEntry{"manifest.txt", Bytes(man.begin(), man.end())});
   return true;
@@ -894,6 +1039,10 @@ void StarPage() {
         g_star.base = i;
         std::snprintf(g_star.name, sizeof g_star.name, "Test %s", g_star_bases[i].name.c_str());
       }
+    if (!g_star_picture.empty()) {
+      Image img;
+      if (LoadImageFile(Utf8(g_star_picture), img)) SetStarPicture(img);
+    }
     if (!g_star_test_save.empty()) {
       std::string id;
       std::vector<ZipEntry> files;
@@ -926,6 +1075,16 @@ void StarPage() {
   ImGui::InputText("Short name", g_star.short_name, sizeof g_star.short_name);
   ImGui::InputText("Author", g_star.author, sizeof g_star.author);
   ImGui::InputText("Version", g_star.version, sizeof g_star.version);
+  if (ImGui::BeginCombo("Name call", g_star.call < 0 ? "the base superstar's" : kNickNames[g_star.call])) {
+    if (ImGui::Selectable("the base superstar's", g_star.call < 0)) g_star.call = -1;
+    for (int i = 0; i < 84; ++i)
+      if (ImGui::Selectable((std::string(kNickNames[i]) + "##n" + std::to_string(i)).c_str(), g_star.call == i))
+        g_star.call = i;
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("What the ring announcer and the commentators call the superstar: the base's name,\n"
+                      "or one of the nicknames a Created Superstar can have.");
   ImGui::PopItemWidth();
   ImGui::Separator();
   auto file_row = [&](const char* label, std::wstring& f, const char* none, const COMDLG_FILTERSPEC* spec,
@@ -950,6 +1109,18 @@ void StarPage() {
   file_row("Theme song...", g_star.song, "the base superstar's", song, 1);
   file_row("Entrance movie...", g_star.movie, "the base superstar's", bik, 1);
   ImGui::TextDisabled("Entrance movies are .bik files: make them in the launcher's Movies tab.");
+  ImGui::PushID("pic");
+  if (ImGui::Button("Select picture...", ImVec2(200 * scale, 0))) PickStarPicture();
+  ImGui::SameLine();
+  ImGui::TextUnformatted(g_star.picture.w ? "your picture" : "the base superstar's");
+  if (g_star.picture.w) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x")) {
+      g_star.picture = g_star.picture_small = Image();
+      if (g_star.picture_tex) g_star.picture_tex->Release(), g_star.picture_tex = nullptr;
+    }
+  }
+  ImGui::PopID();
   ImGui::Separator();
   ImGui::BeginDisabled(g_busy);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
@@ -959,9 +1130,9 @@ void StarPage() {
   if (ImGui::Button("Test in game", ImVec2(260 * scale, 0))) InstallStar(true);
   ImGui::EndDisabled();
   ImGui::EndGroup();
-  if (g_star.render) {
+  if (ID3D11ShaderResourceView* shown = g_star.picture_tex ? g_star.picture_tex : g_star.render) {
     ImGui::SameLine();
-    ImGui::Image(Tex(g_star.render), ImVec2(256 * scale, 256 * scale));
+    ImGui::Image(Tex(shown), ImVec2(256 * scale, 256 * scale));
   }
 }
 
@@ -1199,6 +1370,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--star")) g_star_start = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--star-song")) g_star.song = argv[i + 1];
     if (!wcscmp(argv[i], L"--star-movie")) g_star.movie = argv[i + 1];
+    if (!wcscmp(argv[i], L"--star-picture")) g_star_picture = argv[i + 1];
+    if (!wcscmp(argv[i], L"--star-call")) g_star.call = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--test-star-save")) g_star_test_save = argv[i + 1];
   }
   WNDCLASSEXW wc = {sizeof wc, CS_CLASSDC, WndProc, 0, 0, inst, LoadIconW(inst, MAKEINTRESOURCEW(1)), nullptr,

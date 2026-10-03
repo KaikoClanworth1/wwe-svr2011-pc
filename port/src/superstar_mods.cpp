@@ -26,6 +26,7 @@
 #include "superstar_mods.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -76,6 +77,12 @@ struct Mod {
   std::string ch_guest, ssf_guest;  // the overlay files, as the game opens them
   std::string song;                 // its theme: a USER PLAYLIST name ("" = the base's)
   int movie = 0;                    // its entrance movie: a user movie id (0 = the base's)
+  // every theme / movie the port has set for it (<folder>/.applied): a slot
+  // still holding one of them (or the base's) follows the manifest; anything
+  // else was the player's choice in the game and stays
+  std::vector<std::string> songs_set;
+  std::vector<int> movies_set;
+  int call = -1;  // name call: -1 the base's, else a Created Superstar nickname (0-83)
 };
 std::vector<Mod> g_mods;
 rex::memory::Memory* g_memory = nullptr;
@@ -111,10 +118,23 @@ bool RenameModel(svrfmt::Bytes& d, uint32_t to) {
 
 // The base's select screen renders, renamed to the slot: an EPAC with
 // SSFA / SSFB / SSFC.
-bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot) {
+// A mod's own select picture (render.dds 512 x 512 and render_small.dds
+// 256 x 256, DXT5; the Mod Maker makes them) replaces the base's for every
+// attire: SSFA and SSFB are the 512 picture, SSFC the small one. The game's
+// entries are BPE-packed DDS; so are ours.
+svrfmt::Bytes OwnRender(const fs::path& file, int size) {
+  svrfmt::Bytes d;
+  svrfmt::DdsInfo info;
+  if (!svrfmt::ReadFile(file.string(), d) || !svrfmt::DdsInfoOf(d, info) || info.w != size || info.h != size)
+    return {};
+  return svrfmt::BpeEncode(d);  // (compressed: the render loader's buffer is sized for that)
+}
+
+bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::path& folder) {
   svrfmt::Bytes d;
   svrfmt::Epac src;
   if (!svrfmt::ReadFile((g_game / "pac" / "DLC_HD.pac").string(), d) || !svrfmt::EpacRead(d, src)) return false;
+  const svrfmt::Bytes big = OwnRender(folder / "render.dds", 512), small = OwnRender(folder / "render_small.dds", 256);
   svrfmt::Epac e;
   e.header = src.header;
   e.trailer = src.trailer;
@@ -128,7 +148,8 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot) {
       if (key % 1000 != int(base)) continue;
       char nm[8];
       std::snprintf(nm, sizeof nm, "%04d", (key / 1000) * 1000 + int(slot));
-      og.entries.push_back({nm, en.data});
+      const svrfmt::Bytes& own = g.type == "SSFC" ? small : big;
+      og.entries.push_back({nm, own.empty() ? en.data : own});
       ++n;
     }
     if (!og.entries.empty()) e.groups.push_back(std::move(og));
@@ -143,10 +164,39 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot) {
   return svrfmt::WriteFile(out.string(), o);
 }
 
-// A mod's overlay file is rebuilt only when its source is newer.
-bool Current(const fs::path& out, const fs::path& src) {
+// A mod's overlay file is rebuilt when its sources change: <out>.src holds
+// each source's name, size and time as they were built from (times alone
+// won't do: an installed mod's files carry the zip's old dates).
+std::string Stamp(const std::vector<fs::path>& srcs) {
+  std::string st;
   std::error_code ec;
-  return fs::exists(out, ec) && fs::last_write_time(out, ec) >= fs::last_write_time(src, ec);
+  for (const auto& p : srcs) {
+    if (!fs::exists(p, ec)) continue;
+    st += p.filename().string() + " " + std::to_string(fs::file_size(p, ec)) + " " +
+          std::to_string(fs::last_write_time(p, ec).time_since_epoch().count()) + "\n";
+  }
+  return st;
+}
+
+bool Current(const fs::path& out, const std::vector<fs::path>& srcs) {
+  std::error_code ec;
+  if (!fs::exists(out, ec)) return false;
+  std::string old;
+  if (FILE* t = std::fopen((out.string() + ".src").c_str(), "rb")) {
+    char buf[1024];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, t)) > 0) old.append(buf, n);
+    std::fclose(t);
+  }
+  return old == Stamp(srcs);
+}
+
+void MarkCurrent(const fs::path& out, const std::vector<fs::path>& srcs) {
+  if (FILE* t = std::fopen((out.string() + ".src").c_str(), "wb")) {
+    const std::string st = Stamp(srcs);
+    std::fwrite(st.data(), 1, st.size(), t);
+    std::fclose(t);
+  }
 }
 
 // Each mod keeps its id (Mods/Superstars/slots.txt: "<folder>\t<id>"): the
@@ -212,16 +262,73 @@ void InstallMedia(Mod& m, const fs::path& folder, const std::string& song, const
 // u16 at +0x10 (254 = USER PLAYLIST, by the name at +0xCC, UTF-16BE), movie
 // id u16 at +0x12. The base's motions and pyro stay (+0xC7 = 0: default).
 constexpr uint32_t kEntrance = 0x1C0, kMusic = 0x10, kMovie = 0x12, kSongName = 0xCC, kUserPlaylist = 254;
-void SetEntranceMedia(uint8_t* profile, const Mod& m) {
+std::string SongOf(const uint8_t* e) {  // the USER PLAYLIST name (ASCII part)
+  std::string n;
+  for (uint32_t i = 0; i < 40; ++i) {
+    const uint16_t c = uint16_t(e[kSongName + 2 * i] << 8 | e[kSongName + 2 * i + 1]);
+    if (!c) break;
+    n.push_back(c < 128 ? char(c) : '?');
+  }
+  return n;
+}
+
+// The profile's entrance music and movie follow the mod's manifest while they
+// are still what the port set before or the base's (`base_profile`): a new
+// theme or movie added to an installed mod reaches a slot a save already has.
+void SetEntranceMedia(uint8_t* profile, const Mod& m, const uint8_t* base_profile) {
   uint8_t* e = profile + kEntrance;
-  if (!m.song.empty()) {
-    e[kMusic] = 0, e[kMusic + 1] = uint8_t(kUserPlaylist);
-    for (uint32_t i = 0; i < 40; ++i) {
-      const uint16_t c = i < m.song.size() && i < 39 ? uint8_t(m.song[i]) : 0;
-      e[kSongName + 2 * i] = uint8_t(c >> 8), e[kSongName + 2 * i + 1] = uint8_t(c);
+  uint8_t before[0x100];
+  std::memcpy(before, e, sizeof before);
+  const uint8_t* b = base_profile + kEntrance;
+  const uint16_t music = uint16_t(e[kMusic] << 8 | e[kMusic + 1]);
+  const bool ours = music == kUserPlaylist &&
+                    std::find(m.songs_set.begin(), m.songs_set.end(), SongOf(e)) != m.songs_set.end();
+  const bool bases = !std::memcmp(e + kMusic, b + kMusic, 2) &&
+                     (music != kUserPlaylist || !std::memcmp(e + kSongName, b + kSongName, 80));
+  if (ours || bases) {
+    if (!m.song.empty()) {
+      e[kMusic] = 0, e[kMusic + 1] = uint8_t(kUserPlaylist);
+      for (uint32_t i = 0; i < 40; ++i) {
+        const uint16_t c = i < m.song.size() && i < 39 ? uint8_t(m.song[i]) : 0;
+        e[kSongName + 2 * i] = uint8_t(c >> 8), e[kSongName + 2 * i + 1] = uint8_t(c);
+      }
+    } else {
+      std::memcpy(e + kMusic, b + kMusic, 2);
+      std::memcpy(e + kSongName, b + kSongName, 80);
     }
   }
-  if (m.movie) e[kMovie] = uint8_t(m.movie >> 8), e[kMovie + 1] = uint8_t(m.movie);
+  const int movie = e[kMovie] << 8 | e[kMovie + 1];
+  if (std::find(m.movies_set.begin(), m.movies_set.end(), movie) != m.movies_set.end() ||
+      !std::memcmp(e + kMovie, b + kMovie, 2)) {
+    if (m.movie) e[kMovie] = uint8_t(m.movie >> 8), e[kMovie + 1] = uint8_t(m.movie);
+    else std::memcpy(e + kMovie, b + kMovie, 2);
+  }
+  if (std::memcmp(before, e, sizeof before))
+    REXLOG_INFO("[svr2011] superstar mods: id {} entrance: music {}{}, movie {}", m.slot,
+                int(e[kMusic] << 8 | e[kMusic + 1]), m.song.empty() ? "" : " (" + m.song + ")",
+                int(e[kMovie] << 8 | e[kMovie + 1]));
+}
+
+// <folder>/.applied: "song=<name>" / "movie=<id>" lines, all ever set.
+void ReadApplied(Mod& m, const fs::path& folder) {
+  if (FILE* t = std::fopen((folder / ".applied").string().c_str(), "rb")) {
+    char line[256];
+    while (std::fgets(line, sizeof line, t)) {
+      std::string l = line;
+      while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+      if (l.rfind("song=", 0) == 0) m.songs_set.push_back(l.substr(5));
+      if (l.rfind("movie=", 0) == 0) m.movies_set.push_back(std::atoi(l.c_str() + 6));
+    }
+    std::fclose(t);
+  }
+  bool add_song = !m.song.empty() && std::find(m.songs_set.begin(), m.songs_set.end(), m.song) == m.songs_set.end();
+  bool add_movie = m.movie && std::find(m.movies_set.begin(), m.movies_set.end(), m.movie) == m.movies_set.end();
+  if (!add_song && !add_movie) return;
+  if (FILE* t = std::fopen((folder / ".applied").string().c_str(), "ab")) {
+    if (add_song) std::fprintf(t, "song=%s\n", m.song.c_str()), m.songs_set.push_back(m.song);
+    if (add_movie) std::fprintf(t, "movie=%d\n", m.movie), m.movies_set.push_back(m.movie);
+    std::fclose(t);
+  }
 }
 
 void LoadMods() {
@@ -264,6 +371,8 @@ void LoadMods() {
         if (l.rfind("base=", 0) == 0) m.base = uint32_t(std::atoi(l.c_str() + 5));
         if (l.rfind("song=", 0) == 0) song = l.substr(5);
         if (l.rfind("movie=", 0) == 0) movie = l.substr(6);
+        if (l.rfind("call=", 0) == 0 && l.size() > 5 && std::isdigit(uint8_t(l[5])))
+          m.call = std::clamp(std::atoi(l.c_str() + 5), 0, 83);
       }
       std::fclose(t);
     }
@@ -272,6 +381,7 @@ void LoadMods() {
       continue;
     }
     InstallMedia(m, f, song, movie);
+    ReadApplied(m, f);
     m.slot = slot_of(m.folder);
     if (!m.slot) {
       REXLOG_WARN("[svr2011] superstar mods: only {} fit, {} left out (a line in slots.txt for a mod that is "
@@ -280,18 +390,21 @@ void LoadMods() {
     }
     char nm[32];
     std::snprintf(nm, sizeof nm, "ch%03u.pac", m.slot);
-    if (!Current(overlay / nm, f / "ch.pac")) {
+    if (!Current(overlay / nm, {f / "ch.pac"})) {
       svrfmt::Bytes ch;
       if (!svrfmt::ReadFile((f / "ch.pac").string(), ch) || !RenameModel(ch, m.slot) ||
           !svrfmt::WriteFile((overlay / nm).string(), ch)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
         continue;
       }
+      MarkCurrent(overlay / nm, {f / "ch.pac"});
     }
     m.ch_guest = std::string("smods:\\") + nm;
     std::snprintf(nm, sizeof nm, "ssf%03u.pac", m.slot);
     // (the renders depend on base=: rebuilt with the manifest)
-    if (Current(overlay / nm, f / "manifest.txt") || BuildRenders(overlay / nm, m.base, m.slot))
+    const std::vector<fs::path> render_srcs = {f / "manifest.txt", f / "render.dds", f / "render_small.dds"};
+    if (Current(overlay / nm, render_srcs) ||
+        (BuildRenders(overlay / nm, m.base, m.slot, f) && (MarkCurrent(overlay / nm, render_srcs), true)))
       m.ssf_guest = std::string("smods:\\") + nm;
     else
       REXLOG_WARN("[svr2011] superstar mods: {}: base {} has no select render (not a playable superstar)", m.folder,
@@ -430,10 +543,10 @@ void ApplyRecords(uint8_t* base) {
         std::memcpy(sp, k->profile.data(), kProfileSize);
       } else {
         std::memcpy(sp, bp, kProfileSize);
-        SetEntranceMedia(sp, m);
         REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {}", m.base, m.slot);
       }
     }
+    if (have_blank) SetEntranceMedia(sp, m, bp);
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
       sr[kSelectable] = 1, sr[kDlc] = 1;
       static std::vector<std::pair<uint32_t, uint32_t>> told;  // (slot, its ratings when last logged)
@@ -707,6 +820,72 @@ REX_HOOK_RAW(sub_826B87B0) {
   if (std::find(seen.begin(), seen.end(), name) != seen.end()) return;
   seen.push_back(name);
   REXLOG_INFO("[svr2011] vfs miss: {} (from {:08X})", name, caller);
+}
+
+// ---- The name call
+// The ring announcer and the commentary pick a Superstar's name call by its
+// character id (scratchpad re_namecall): mod ids have none (the announcer's
+// table says "dummy", the commentary banks don't exist). A mod gets its
+// base's call, or (call=) a Created Superstar nickname, as a CAW's.
+// Announcer: sub_825EA208(out, slot) fills {+0 id, +4 call index, ..., +20
+// u16 nickname (read when +0 < 50)}.
+// Test aid: SVR2011_TEST_NAMECALL=1 logs the announcer's ids, the commentary
+// banks and the audio events posted ("Play_...").
+bool NameCallLog() {
+  static const bool on = [] {
+    const char* e = std::getenv("SVR2011_TEST_NAMECALL");
+    return e && *e == '1';
+  }();
+  return on;
+}
+REX_EXTERN(__imp__sub_825EA208);
+REX_HOOK_RAW(sub_825EA208) {
+  const uint32_t out = ctx.r3.u32;
+  __imp__sub_825EA208(ctx, base);
+  if (!out) return;
+  if (NameCallLog())
+    REXLOG_INFO("[svr2011] name call: announcer id {} call {} nickname {}", Rd32(base + out), Rd32(base + out + 4),
+                Rd16(base + out + 20));
+  const Mod* m = ModOf(Rd32(base + out));
+  if (!m) return;
+  if (m->call < 0) {
+    Wr32(base + out + 4, m->base);
+  } else {
+    Wr32(base + out, 0);  // (a Created Superstar's: the nickname is used)
+    base[out + 20] = uint8_t(m->call >> 8), base[out + 21] = uint8_t(m->call);
+  }
+}
+// Commentary: the bank "Comm_<name>" for n = the id (ids 50-69: n + 9950;
+// CAWs: nickname + 1, the CAS_* names) - sub_8261EAB0(buf, n) makes the
+// name, sub_825FDCD8(n) leaves out ids without commentary (0).
+const Mod* ModOfCommentary(uint32_t n) { return ModOf(n >= 10000 && n < 10070 ? n - 9950 : n); }
+REX_EXTERN(__imp__sub_8261EAB0);
+REX_HOOK_RAW(sub_8261EAB0) {
+  const uint32_t n = ctx.r4.u32, buf = ctx.r3.u32;
+  if (const Mod* m = ModOfCommentary(ctx.r4.u32)) ctx.r4.u64 = m->call < 0 ? m->base : uint32_t(m->call + 1);
+  const uint32_t used = ctx.r4.u32;
+  __imp__sub_8261EAB0(ctx, base);
+  if (NameCallLog() && buf)
+    REXLOG_INFO("[svr2011] name call: commentary {} -> {} \"{:.40}\"", n, used, reinterpret_cast<const char*>(base + buf));
+}
+REX_EXTERN(__imp__sub_82BEC030);
+REX_HOOK_RAW(sub_82BEC030) {
+  if (NameCallLog() && ctx.r3.u32 >= 0x10000) {
+    const char* e = reinterpret_cast<const char*>(base + ctx.r3.u32);
+    if (!std::strncmp(e, "Play_", 5)) REXLOG_INFO("[svr2011] name call: event {:.60}", e);
+  }
+  __imp__sub_82BEC030(ctx, base);
+}
+REX_EXTERN(__imp__sub_825FDCD8);
+REX_HOOK_RAW(sub_825FDCD8) {
+  if (const Mod* m = ModOfCommentary(ctx.r3.u32)) {
+    if (m->call >= 0) {  // (a nickname: the CAS_* banks all have commentary)
+      ctx.r3.u64 = 1;
+      return;
+    }
+    ctx.r3.u64 = m->base;  // (as the base would be)
+  }
+  __imp__sub_825FDCD8(ctx, base);
 }
 
 // The file system's pacs registered (from the ARC / from each pac's header).

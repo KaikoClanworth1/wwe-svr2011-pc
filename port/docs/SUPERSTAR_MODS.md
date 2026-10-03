@@ -11,10 +11,11 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 50.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `author=`, `version=`, `song=<file>`, `movie=<file>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
+| `render.dds`, `render_small.dds` | (optional) its select-screen render: 512 x 512 and the 256 x 256 bust, DXT5 (the Mod Maker makes them from any picture) |
 | `disabled` | (optional) turns the mod off |
 
 `base=` is the disc superstar the mod starts from, which supplies its stats,
@@ -94,6 +95,55 @@ scratchpad re_entrance) gets:
 
 The base's motions and pyro stay, because +0xC7 stays 0, the default entrance.
 
+### Name call
+
+The ring announcer and the commentary pick the name call by character id
+(scratchpad re_namecall), so the mod ids had none:
+
+- the announcer's name table says "dummy" for them;
+- the commentary banks `Comm_<id>` don't exist.
+
+A mod gets one of two calls:
+
+- **By default, its base's.** The announcer's participant struct gets the
+  base's id as call index (`sub_825EA208`: +4). The commentary bank name is
+  built from the base's id (`sub_8261EAB0`).
+- **With `call=N`, a Created Superstar nickname** (0 Alpha ... 77 The
+  Superstar ... 83 Youngblood; the Mod Maker lists them). The announcer
+  struct gets +0 = 0 and +20 = N, as a CAW's. The commentary uses bank
+  `CAS_*` N+1.
+
+`sub_825FDCD8`, the "has commentary" filter, lets mods through. Tested with
+`SVR2011_TEST_NAMECALL=1`, which logs the calls and the posted events:
+
+| mod | commentary | announcer |
+|---|---|---|
+| Modded Test (base Jericho) | `0104` | `Play_RA_TC_SSP_CHRISJERICHO_0` |
+| Mod 13 (`call=77`) | `CAS_The_Superstar_0` | `Play_RA_TC_CAS_Superstar_0` |
+
+### Select picture
+
+The select panel draws the mod's own model live (a Jericho model on an Orton
+base shows Jericho), so a custom model shows itself. The render pack
+(`SSFA/SSFB/SSFC`) is also read by the select screen's code
+(`sub_827419F8`, called from `sub_8244A8F0`). A mod's own `render.dds` /
+`render_small.dds` replace the base's there for every attire, BPE-compressed
+like the game's. They must be compressed: stored BPE is too big for the
+loader.
+
+### Theme and movie after the slot exists
+
+`<folder>/.applied` lists every theme and movie the port has set for the mod.
+A slot whose entrance music or movie is still one of those, or the base's,
+follows the manifest; anything else was the player's choice in Create An
+Entrance and stays. So a song added to an installed mod reaches a slot a
+save already has (tested), and removing it brings back the base's.
+
+### Overlay rebuilds
+
+`<out>.src` records each source's size and time. Time alone won't do: an
+installed .svrmod's files carry the zip's old dates.
+
 ### Owned and listed
 
 DLC-flagged ids must be owned, and mods are. The DLC tile's filter
@@ -121,12 +171,12 @@ The art comes from `tools/make_modded_badge.py`, which writes
 
 ## Known limits
 
-- There is no name call: the voice cue `WrestlerVoice_%04d` is per id.
-- Only the attires the `ch.pac` holds are available. The select render is the
-  base's.
-- The theme and movie are set when the mod's profile is first set up. If one is
-  added to a mod later, set it in game (Create An Entrance) or remove the mod's
-  slots.txt line.
+- A mod has only the attires its `ch.pac` holds.
+- The name call is the base's or a Created Superstar nickname: there is no way
+  to record a new name.
+- Lists outside the select screen (WWE Universe, Superstar Threads) are not
+  checked. The select screen itself is: one on one, tag team (2 on 2), and the
+  COM side.
 
 ## Tests
 
@@ -146,9 +196,13 @@ Test aids (environment variables):
 - `SVR2011_TEST_VFS_LOG=1`: every virtual file lookup that finds nothing.
 - `SVR2011_TEST_STAR_EDIT=<id>`: that mod's ratings set to 20 when set up,
   to test that edits survive a save.
+- `SVR2011_TEST_NAMECALL=1`: the announcer and commentary name calls and
+  the posted `Play_` audio events.
+
+`superstar_test.ps1 -MatchDown N` picks another match category (1 = TAG TEAM).
 
 Mod Maker test aids: `--page 3 --star <id> [--star-song f] [--star-movie f]
-[--test-star-save out.svrmod]`.
+[--star-picture f] [--star-call N] [--test-star-save out.svrmod]`.
 
 Launcher test aid: `--mods-add <game> <file.svrmod>`.
 
