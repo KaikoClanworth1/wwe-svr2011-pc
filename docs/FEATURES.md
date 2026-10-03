@@ -86,6 +86,10 @@ still being tested.
 
 ## After 2.0 (next update)
 
+- **Freeze fix**: entrances and finishers could freeze for good on slower PCs and phones (a deadlock in 2.0's 60 Hz timing when a frame needed extra world updates); fixed (c181189).
+- **Keyboard controls page**: *GRAPHICS → CONTROLS* rebinds every input (add a key, clear, reset to defaults), saved and applied at once; works with a pad too (7feb9b8).
+- **Better logs and problem reports**: the log starts with the version, build and settings; crashes are written into the log; Android now has crash reports; menu choices are logged by name; freezes dump every game thread; each match logs its rule, arena and wrestlers; **Report a problem** (launcher Play tab and the Android app) makes one zip of the logs, crash reports and settings, without the online password (a09766e, c181189).
+
 - **Friends list** in the launcher's Online tab (PC and Android): add / remove friends, see who's online, in an online match or offline (195917e; server /api/friends, eb2e1e9).
 - **Online logos fixed**: a Created Superstar's extra High Resolution logos now come from its owner when the server supplies the Superstar (6178e5e).
 - **Community Creations uploads**: multi-part uploads (2 MB parts) were always refused; fixed. **Server dashboard** (/svr) shows its totals and relay metrics again (eb2e1e9; the live server needs a restart).
