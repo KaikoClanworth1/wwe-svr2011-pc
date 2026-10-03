@@ -50,6 +50,7 @@
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
 #include "crowd_signs.h"
+#include "media_mods.h"
 #include "music.h"
 #include "user_movies.h"
 
@@ -94,6 +95,7 @@ struct Mod {
   fs::path voice;  // its own recorded name for the ring announcer (manifest voice=)
 };
 std::vector<Mod> g_mods;
+std::vector<std::string> g_extra_mounts;  // other overlay pacs (smods:\<file>; AddOverlayMount)
 constexpr uint32_t kAttireNameIds = 0xB100;                   // our string ids for attire names
 std::vector<std::pair<uint32_t, uint32_t>> g_attire_names;  // string id -> guest text
 rex::memory::Memory* g_memory = nullptr;
@@ -541,11 +543,20 @@ void GrowDirectory(uint8_t* base) {
 }
 
 void Mount(PPCContext& ctx, uint8_t* base) {
-  if (g_mounted || g_mods.empty()) return;
+  if (g_mounted || (g_mods.empty() && g_extra_mounts.empty())) return;
   g_mounted = true;
   GrowDirectory(base);
   const auto saved = ctx;
   const uint32_t str = saved.r1.u32 - 0x300;
+  for (const auto& f : g_extra_mounts) {
+    std::memcpy(base + str, f.c_str(), f.size() + 1);
+    ctx = saved;
+    ctx.r1.u64 = saved.r1.u32 - 0x400;
+    ctx.r3.u64 = str;
+    ctx.r4.u64 = 0;
+    sub_826A1780(ctx, base);
+    REXLOG_INFO("[svr2011] superstar mods: mounted {} ({})", f, ctx.r3.u32);
+  }
   for (const auto& m : g_mods) {
     std::vector<const std::string*> files = {&m.ch_guest, &m.ssf_guest};
     for (const auto& a : m.attire_guests) files.push_back(&a);
@@ -915,6 +926,16 @@ REX_HOOK_RAW(sub_826B87B0) {
     const char* e = std::getenv("SVR2011_TEST_VFS_LOG");
     return e && *e == '1';
   }();
+  // a media mod's replacement (renders: media_mods.h) - the first match in
+  // the archive list wins, so the game's own would: asked for by another name
+  if (const uint32_t alias = svr2011::MediaAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) {
+    ctx.r4.u64 = alias;
+    if (log) {
+      __imp__sub_826B87B0(ctx, base);
+      REXLOG_INFO("[svr2011] media mods: {:.16} resolved {}", reinterpret_cast<const char*>(base + alias), ctx.r3.u32);
+      return;
+    }
+  }
   if (!log) {
     __imp__sub_826B87B0(ctx, base);
     return;
@@ -1031,6 +1052,11 @@ REX_EXTERN(__imp__sub_82BEC030);
 REX_HOOK_RAW(sub_82BEC030) {
   if (ctx.r3.u32 >= 0x10000) {
     const char* e = reinterpret_cast<const char*>(base + ctx.r3.u32);
+    uint32_t id = 0;
+    if (svr2011::MediaEvent(base, e, ctx.r4.u32, &id)) {  // (a media mod's sound instead: media_mods.h)
+      ctx.r3.u64 = id;
+      return;
+    }
     if (!std::strncmp(e, "Play_", 5)) {
       if (NameCallLog()) REXLOG_INFO("[svr2011] name call: event {:.60}", e);
       if (!std::strncmp(e, "Play_RA_", 8))
@@ -1213,7 +1239,7 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
   // The overlay files as smods:\<file>: a device of their own, made after they
   // are written (a host device lists its folder once, so GAME: would not see
   // the files made this run).
-  if (!g_mods.empty() && vfs) {
+  if ((!g_mods.empty() || !g_extra_mounts.empty()) && vfs) {
     auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\SUPERSTARMODS",
                                                                     g_game / "Mods" / "SuperstarOverlay", true);
     if (!device->Initialize() || !vfs->RegisterDevice(std::move(device)) ||
@@ -1233,6 +1259,8 @@ std::vector<uint32_t> SuperstarModIds() {
 }
 
 bool IsSuperstarMod(uint32_t id) { return ModOf(id) != nullptr; }
+
+void AddOverlayMount(const std::string& file) { g_extra_mounts.push_back("smods:\\" + file); }
 
 uint32_t SuperstarModString(uint32_t id) {
   for (const auto& n : g_attire_names)

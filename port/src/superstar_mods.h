@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace rex::memory {
@@ -26,5 +27,8 @@ bool IsSuperstarMod(uint32_t id);
 // The game's text for string id (menu_hooks.cpp's lookup): a mod's attire
 // names, else 0.
 uint32_t SuperstarModString(uint32_t id);
+// Another pac in Mods/SuperstarOverlay to mount with the mods' (media mods);
+// before InstallSuperstarMods.
+void AddOverlayMount(const std::string& file);
 
 }  // namespace svr2011

@@ -36,6 +36,7 @@
 #include "ring_rules.h"
 #include "superstar_mods.h"
 #include "crowd_signs.h"
+#include "media_mods.h"
 #include "frame_rate.h"
 #include "crash_report.h"
 #include "dlc.h"
@@ -340,6 +341,7 @@ void Svr2011App::OnPostLoadXexImage() {
     std::error_code ec;
     std::filesystem::create_directories(movies, ec);
     svr2011::CopySuperstarMovies(movies);  // (arenas branch: superstar_mods.h)
+    svr2011::CopyMediaMovies(movies);      // (arenas branch: media_mods.h)
     auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\USERMOVIES", movies, true);
     auto* fs = runtime()->file_system();
     if (device->Initialize() && fs->RegisterDevice(std::move(device))) {
@@ -367,6 +369,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
+  svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).

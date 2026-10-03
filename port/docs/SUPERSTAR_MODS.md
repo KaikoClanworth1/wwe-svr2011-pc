@@ -176,12 +176,18 @@ it the base's id for a mod, so the mod stands where its base does.
 ### Select picture
 
 The select panel draws the mod's own model live (a Jericho model on an Orton
-base shows Jericho), so a custom model shows itself. The render pack
-(`SSFA/SSFB/SSFC`) is also read by the select screen's code
-(`sub_827419F8`, called from `sub_8244A8F0`). A mod's own `render.dds` /
-`render_small.dds` replace the base's there for every attire, BPE-compressed
-like the game's. They must be compressed: stored BPE is too big for the
-loader.
+base shows Jericho), so a custom model shows itself.
+
+The renders (`SSFA/SSFB/SSFC`) are loaded by the render manager (0x82739xxx -
+0x8273Cxxx, scratchpad re_renders):
+
+- SSFB, the 512 render, is used on the select screen in some modes;
+- SSFC, the 256 bust, is used on the match-setup page, in WWE Universe, in the
+  online lobby and on others.
+
+A mod's own `render.dds` / `render_small.dds` replace the base's there for every
+attire, BPE-compressed like the game's. They must be compressed: entries are
+decoded in place, so a "stored" one is too big.
 
 ### Theme and movie after the slot exists
 

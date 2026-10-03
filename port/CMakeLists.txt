@@ -42,6 +42,7 @@ set(SVR2011_SOURCES
     src/ring_rules.cpp
     src/superstar_mods.cpp
     src/crowd_signs.cpp
+    src/media_mods.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp
     src/frame_rate.cpp
@@ -185,7 +186,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         modmaker/svrfmt/pac.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp
         modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp
         modmaker/svrfmt/arena_import.cpp modmaker/svrfmt/zip_write.cpp
-        modmaker/third_party/ufbx/ufbx.c
+        modmaker/third_party/ufbx/ufbx.c launcher/bink_decode.c
         ${IMGUI_SRC}/imgui.cpp ${IMGUI_SRC}/imgui_draw.cpp ${IMGUI_SRC}/imgui_tables.cpp
         ${IMGUI_SRC}/imgui_widgets.cpp ${IMGUI_SRC}/backends/imgui_impl_win32.cpp
         ${IMGUI_SRC}/backends/imgui_impl_dx11.cpp

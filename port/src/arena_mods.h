@@ -25,5 +25,9 @@ void InstallArenaModsOverlay(rex::ui::ImGuiDrawer* drawer);
 // (empty: back to the original). Takes effect at the next open (arenas are
 // opened when they load, not held open).
 void RedirectArena(int arena, const std::string& relative_file);
+// The file arena BGnn plays when no custom arena is on its tile (a media
+// mod's arena with its own screen pictures); RedirectArena(arena, "") goes
+// back to it.
+void SetArenaDefault(int arena, const std::string& relative_file);
 
 }  // namespace svr2011

@@ -68,6 +68,7 @@ std::mutex g_mutex;
 fs::path g_game, g_overlay;
 bool g_overlay_ready = false;
 std::string g_redirect[100];  // arena number -> relative file ("" = original)
+std::string g_default[100];   // arena number -> its file when no custom arena is on its tile (media mods: screens)
 
 std::string Upper(std::string s) {
   for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
@@ -661,8 +662,15 @@ REX_HOOK_RAW(sub_823D4FC0) {
 
 namespace svr2011 {
 
-void RedirectArena(int arena, const std::string& relative_file) {
+void SetArenaDefault(int arena, const std::string& relative_file) {
+  if (arena < 0 || arena >= 100) return;
+  g_default[arena] = relative_file;
+  RedirectArena(arena, relative_file);
+}
+
+void RedirectArena(int arena, const std::string& file) {
   if (!g_fs || arena < 0 || arena >= 100) return;
+  const std::string& relative_file = file.empty() ? g_default[arena] : file;
   std::lock_guard lock(g_mutex);
   if (!PrepareOverlay()) return;
   char name[16];

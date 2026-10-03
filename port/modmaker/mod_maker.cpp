@@ -45,6 +45,9 @@
 #include "svrfmt/png.h"
 #include "svrfmt/ring_kit.h"
 #include "svrfmt/zip_write.h"
+extern "C" {
+#include "../launcher/bink_decode.h"
+}
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -150,7 +153,7 @@ struct Project {
   std::map<std::string, Image> vs;
 };
 Project g_proj;
-int g_page = 0;  // 0 arenas, 1 editor, 2 VS screen, 3 superstars, 4 crowd signs
+int g_page = 0;  // 0 arenas, 1 editor, 2 VS screen, 3 superstars, 4 crowd signs, 5-7 media (videos, renders, audio)
 // test aid (--test-edit-save <file>): once the editor has its arena, editor::TestEdit,
 // name "Test Edit", save the mod there and quit
 std::wstring g_test_save;
@@ -1402,6 +1405,403 @@ void SignsPage() {
   ImGui::EndDisabled();
 }
 
+// ---------------------------------------------------------------- Media pack
+
+// A media pack (the game: src/media_mods.cpp, docs/MEDIA_MODS.md) replaces
+// the game's own media: superstars' entrance videos, renders and entrance
+// themes, arena screens' pictures, the menu music and any game sound. The
+// three pages (Titantron videos, Menus & renders, Audio) fill one pack.
+struct MediaStar {
+  std::wstring video, theme;   // files
+  Image render, bust, icon;    // pictures (512, 256 bust, 64 icon)
+  ID3D11ShaderResourceView* tex = nullptr;
+};
+struct MediaArena {
+  std::vector<Image> frames;  // the screens' flip-book (10 frames)
+  std::vector<ID3D11ShaderResourceView*> tex;
+};
+struct MediaPack {
+  char name[64] = "", author[64] = "", version[16] = "1.0";
+  std::map<int, MediaStar> stars;    // character id -> replacements
+  std::map<int, MediaArena> arenas;  // arena number -> screens
+  std::wstring menu_music;
+  std::vector<std::pair<std::string, std::wstring>> sounds;  // event (no "Play_") -> file
+};
+MediaPack g_media;
+int g_media_star = -1;   // index in g_star_bases
+int g_media_arena = 0;   // index in g_arenas
+char g_media_event[64] = "";
+int g_media_test_arena = -1;  // test aids: --media-arena <bg number> --media-video <bik> --test-media-save <file>
+std::wstring g_media_test_video, g_media_test_save;
+std::vector<std::wstring> g_media_test_pictures;  // --media-picture <file> (repeatable): the screens from pictures
+
+std::string MediaId() {
+  std::string id;
+  for (char c : std::string(g_media.name)) id += std::isalnum(uint8_t(c)) ? char(std::tolower(uint8_t(c))) : '_';
+  return id.empty() ? "media" : id;
+}
+
+void MediaPackHeader(float scale) {
+  ImGui::PushItemWidth(320 * scale);
+  ImGui::InputText("Pack name", g_media.name, sizeof g_media.name);
+  ImGui::InputText("Author", g_media.author, sizeof g_media.author);
+  ImGui::PopItemWidth();
+}
+
+bool StarPicker(float scale) {
+  if (!g_star_loaded) LoadStarBases();
+  ImGui::SetNextItemWidth(320 * scale);
+  const char* cur = g_media_star >= 0 ? g_star_bases[g_media_star].name.c_str() : "(pick a superstar)";
+  if (ImGui::BeginCombo("Superstar", cur)) {
+    for (int i = 0; i < int(g_star_bases.size()); ++i) {
+      const bool has = g_media.stars.count(g_star_bases[i].id) > 0;
+      if (ImGui::Selectable((g_star_bases[i].name + (has ? "  *" : "") + "##m" + std::to_string(i)).c_str(),
+                            g_media_star == i))
+        g_media_star = i;
+    }
+    ImGui::EndCombo();
+  }
+  return g_media_star >= 0;
+}
+
+// The arena's screen flip-book: its textures named <prefix>_animNN (00-09).
+std::vector<std::string> ScreenFrames(Arena& a) {
+  std::vector<std::string> names;
+  for (const auto& b : a.bundles)
+    for (const auto& t : b.textures) {
+      const size_t at = t.name.rfind("_anim");
+      if (at != std::string::npos && t.name.size() == at + 7 && std::isdigit(uint8_t(t.name[at + 5])) &&
+          std::isdigit(uint8_t(t.name[at + 6])))
+        names.push_back(t.name);
+    }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+void SetArenaFrames(int arena, std::vector<Image> frames) {
+  MediaArena& m = g_media.arenas[arena];
+  for (auto* t : m.tex) t->Release();
+  m.tex.clear();
+  m.frames = std::move(frames);
+  for (const auto& f : m.frames) m.tex.push_back(MakeTexture(f));
+}
+
+// A .bik -> 10 frames, evenly spread.
+std::vector<Image> FramesFromVideo(const std::wstring& file) {
+  std::vector<Image> out;
+  wchar_t err[256] = L"";
+  BinkReader* r = bink_open(file.c_str(), err, 256);
+  if (!r) {
+    Log("Not a Bink video (.bik): " + Utf8(file) + " - the launcher's Movies tab makes them.");
+    return out;
+  }
+  const int w = bink_width(r), h = bink_height(r), n = std::max(1, bink_frames(r));
+  std::vector<uint8_t> bgra(size_t(w) * h * 4);
+  int pos = 0;
+  for (int k = 0; k < 10; ++k) {
+    const int want = k * n / 10;
+    while (pos <= want) bink_next(r), ++pos;
+    bink_bgra(r, bgra.data());
+    Image img;
+    img.w = w, img.h = h;
+    img.rgba.resize(bgra.size());
+    for (size_t i = 0; i < bgra.size(); i += 4)
+      img.rgba[i] = bgra[i + 2], img.rgba[i + 1] = bgra[i + 1], img.rgba[i + 2] = bgra[i], img.rgba[i + 3] = 255;
+    out.push_back(std::move(img));
+  }
+  bink_close(r);
+  return out;
+}
+
+// The pack's files.
+bool BuildMedia(std::vector<ZipEntry>& files) {
+  if (!g_media.name[0]) std::snprintf(g_media.name, sizeof g_media.name, "My Media");
+  std::string man = "type=media\nid=" + MediaId() + "\nname=" + g_media.name + "\nauthor=" + g_media.author +
+                    "\nversion=" + g_media.version + "\n";
+  auto add_file = [&](const std::string& key, const std::wstring& src, const std::string& stem) -> bool {
+    Bytes d;
+    if (!ReadFile(Utf8(src), d)) {
+      Log("Could not read " + Utf8(src));
+      return false;
+    }
+    const std::string n = stem + Utf8(fs::path(src).extension().wstring());
+    files.push_back({n, std::move(d)});
+    man += key + "=" + n + "\n";
+    return true;
+  };
+  for (const auto& [id, s] : g_media.stars) {
+    const std::string i = std::to_string(id);
+    if (!s.video.empty() && !add_file("video." + i, s.video, "video_" + i)) return false;
+    if (!s.theme.empty() && !add_file("theme." + i, s.theme, "theme_" + i)) return false;
+    if (s.render.w) {
+      files.push_back({"render_" + i + ".dds", DdsEncode(s.render, DxtFormat::kDxt5, false)});
+      files.push_back({"bust_" + i + ".dds", DdsEncode(s.bust, DxtFormat::kDxt5, false)});
+      files.push_back({"icon_" + i + ".dds", DdsEncode(s.icon, DxtFormat::kDxt5, false)});
+      man += "render." + i + "=render_" + i + ".dds\nbust." + i + "=bust_" + i + ".dds\nicon." + i + "=icon_" + i +
+             ".dds\n";
+    }
+  }
+  for (const auto& [num, ma] : g_media.arenas) {
+    if (ma.frames.empty()) continue;
+    char bg[16];
+    std::snprintf(bg, sizeof bg, "bg%02d.pac", num);
+    Arena a;
+    std::string err;
+    if (!a.Load(Utf8((fs::path(g_game) / L"pac" / L"bg" / fs::u8path(bg)).wstring()), &err)) {
+      Log(std::string(bg) + ": " + err);
+      return false;
+    }
+    const auto names = ScreenFrames(a);
+    if (names.empty()) {
+      Log(std::string(bg) + " has no screen flip-book (<name>_anim00..09) to replace.");
+      continue;
+    }
+    std::vector<std::string> keep;
+    for (size_t k = 0; k < names.size(); ++k) {
+      BundleTexture* t = a.FindTexture(names[k]);
+      DdsInfo info;
+      if (!t || !DdsInfoOf(t->data, info)) continue;
+      const Image& src = ma.frames[k * ma.frames.size() / names.size()];
+      const DxtFormat f = info.format == DxtFormat::kArgb ? DxtFormat::kDxt5 : info.format;
+      t->data = DdsEncode(Resize(src, info.w, info.h), f, info.mips > 1);
+      keep.push_back(names[k]);
+      for (auto& b : a.bundles)
+        for (auto& bt : b.textures)
+          if (&bt == t) b.changed = true;
+    }
+    a.FitFile(keep);
+    const Bytes pac = a.Save(&err);
+    if (!err.empty()) {
+      Log(std::string(bg) + ": " + err);
+      return false;
+    }
+    files.push_back({bg, pac});
+    man += "arena." + std::to_string(num) + "=" + bg + "\n";
+  }
+  if (!g_media.menu_music.empty() && !add_file("menu_music", g_media.menu_music, "menu_music")) return false;
+  for (size_t k = 0; k < g_media.sounds.size(); ++k)
+    if (!add_file("sound." + g_media.sounds[k].first, g_media.sounds[k].second, "sound_" + std::to_string(k)))
+      return false;
+  files.insert(files.begin(), ZipEntry{"manifest.txt", Bytes(man.begin(), man.end())});
+  return files.size() > 1;
+}
+
+void SaveMedia() {
+  std::vector<ZipEntry> files;
+  if (!BuildMedia(files)) {
+    Log("Nothing in the pack yet.");
+    return;
+  }
+  const COMDLG_FILTERSPEC spec[] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"}};
+  const std::string id = MediaId();
+  const std::wstring f =
+      PickFile(true, L"Save the media pack", spec, 1, L"svrmod", (std::wstring(id.begin(), id.end()) + L".svrmod").c_str());
+  if (f.empty()) return;
+  if (WriteFile(Utf8(f), ZipWrite(files))) Log("Saved " + Utf8(f) + " (add it in the launcher's Mods tab with +).");
+  else Log("The media pack could not be written.");
+}
+
+void InstallMedia() {
+  std::vector<ZipEntry> files;
+  if (!BuildMedia(files)) {
+    Log("Nothing in the pack yet.");
+    return;
+  }
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Media" / fs::u8path(MediaId());
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  for (const auto& f : files)
+    if (!WriteFile(Utf8((dir / fs::u8path(f.name)).wstring()), f.data)) {
+      Log("Could not write into " + Utf8(dir.wstring()) + " (is the game running?)");
+      return;
+    }
+  Log("Installed: it takes effect the next time the game starts (" + Utf8(dir.wstring()) + ").");
+}
+
+void MediaButtons(float scale) {
+  ImGui::Separator();
+  ImGui::TextDisabled("One pack holds everything on the Titantron videos, Menus & renders and Audio pages.");
+  ImGui::BeginDisabled(g_busy);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
+  if (ImGui::Button("Save as mod (.svrmod)...", ImVec2(260 * scale, 0))) SaveMedia();
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  if (ImGui::Button("Install into game", ImVec2(260 * scale, 0))) InstallMedia();
+  ImGui::EndDisabled();
+}
+
+void FileField(const char* label, std::wstring& f, const COMDLG_FILTERSPEC* spec, float scale) {
+  ImGui::PushID(label);
+  if (ImGui::Button(label, ImVec2(220 * scale, 0))) {
+    const std::wstring p = PickFile(false, std::wstring(label, label + std::strlen(label)).c_str(), spec, 1);
+    if (!p.empty()) f = p;
+  }
+  ImGui::SameLine();
+  ImGui::TextUnformatted(f.empty() ? "the game's" : Utf8(fs::path(f).filename().wstring()).c_str());
+  if (!f.empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x")) f.clear();
+  }
+  ImGui::PopID();
+}
+
+void VideosPage() {
+  const float scale = ImGui::GetFontSize() / 13.0f;
+  if (g_media_test_arena >= 0 && (!g_media_test_video.empty() || !g_media_test_pictures.empty())) {
+    std::vector<Image> frames;
+    for (const auto& f : g_media_test_pictures) {
+      Image img;
+      if (LoadImageFile(Utf8(f), img)) frames.push_back(std::move(img));
+    }
+    SetArenaFrames(g_media_test_arena, frames.empty() ? FramesFromVideo(g_media_test_video) : std::move(frames));
+    for (int i = 0; i < 20; ++i)
+      if (g_arenas[i].number == g_media_test_arena) g_media_arena = i;
+    g_media_test_arena = -1;
+    if (!g_media_test_save.empty()) {
+      std::vector<ZipEntry> files;
+      if (BuildMedia(files) && WriteFile(Utf8(g_media_test_save), ZipWrite(files))) Log("test: saved " + Utf8(g_media_test_save));
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    }
+  }
+  ImGui::Text("Titantron videos");
+  ImGui::TextDisabled("Superstars' entrance videos (320 x 320 Bink, the launcher's Movies tab makes them) and the "
+                      "arena screens' pictures between entrances.");
+  ImGui::Separator();
+  MediaPackHeader(scale);
+  ImGui::Separator();
+  const COMDLG_FILTERSPEC bik[] = {{L"Bink movie (*.bik)", L"*.bik"}};
+  if (StarPicker(scale)) {
+    MediaStar& s = g_media.stars[g_star_bases[g_media_star].id];
+    FileField("Entrance video...", s.video, bik, scale);
+  }
+  ImGui::Separator();
+  ImGui::Text("Arena screens");
+  ImGui::SetNextItemWidth(320 * scale);
+  if (ImGui::BeginCombo("Arena", g_arenas[g_media_arena].name)) {
+    for (int i = 0; i < 20; ++i)
+      if (ImGui::Selectable(g_arenas[i].name, g_media_arena == i)) g_media_arena = i;
+    ImGui::EndCombo();
+  }
+  const int num = g_arenas[g_media_arena].number;
+  const COMDLG_FILTERSPEC pics[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
+  if (ImGui::Button("From a video (.bik)...", ImVec2(220 * scale, 0))) {
+    const std::wstring f = PickFile(false, L"Screen video", bik, 1);
+    if (!f.empty()) {
+      auto frames = FramesFromVideo(f);
+      if (!frames.empty()) SetArenaFrames(num, std::move(frames));
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("From pictures...", ImVec2(220 * scale, 0))) {
+    std::vector<Image> frames;
+    for (const auto& f : PickFiles(L"Screen pictures (played in turn)", pics, 1)) {
+      Image img;
+      if (LoadImageFile(Utf8(f), img)) frames.push_back(std::move(img));
+    }
+    if (!frames.empty()) SetArenaFrames(num, std::move(frames));
+  }
+  if (auto it = g_media.arenas.find(num); it != g_media.arenas.end() && !it->second.frames.empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##arena")) SetArenaFrames(num, {});
+    for (size_t k = 0; k < it->second.tex.size(); ++k) {
+      if (k) ImGui::SameLine();
+      ImGui::Image(Tex(it->second.tex[k]), ImVec2(96 * scale, 48 * scale));
+    }
+  } else {
+    ImGui::TextDisabled("the arena's own screens");
+  }
+  MediaButtons(scale);
+}
+
+void RendersPage() {
+  const float scale = ImGui::GetFontSize() / 13.0f;
+  ImGui::Text("Menus & renders");
+  ImGui::TextDisabled("A superstar's pictures in the menus: the render, the bust and the face icon (from one "
+                      "picture; a PNG with a transparent background is best).");
+  ImGui::Separator();
+  MediaPackHeader(scale);
+  ImGui::Separator();
+  if (StarPicker(scale)) {
+    MediaStar& s = g_media.stars[g_star_bases[g_media_star].id];
+    const COMDLG_FILTERSPEC pics[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
+    if (ImGui::Button("Picture...", ImVec2(220 * scale, 0))) {
+      const std::wstring f = PickFile(false, L"Superstar picture", pics, 1);
+      Image img;
+      if (!f.empty() && LoadImageFile(Utf8(f), img)) {
+        SetStarPicture(img);  // (the 512 render and 256 bust, as for a superstar mod)
+        s.render = g_star.picture, s.bust = g_star.picture_small;
+        g_star.picture = g_star.picture_small = Image();
+        if (g_star.picture_tex) g_star.picture_tex->Release(), g_star.picture_tex = nullptr;
+        // the face icon: the bust's top middle, 64 x 64
+        Image head;
+        head.w = head.h = 128;
+        head.rgba.resize(size_t(128) * 128 * 4);
+        for (int y = 0; y < 128; ++y)
+          std::memcpy(&head.rgba[size_t(y) * 128 * 4], &s.bust.rgba[(size_t(y) * 256 + 64) * 4], 128 * 4);
+        s.icon = Resize(head, 64, 64);
+        if (s.tex) s.tex->Release();
+        s.tex = MakeTexture(s.render);
+      }
+    }
+    if (s.render.w) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) {
+        s.render = s.bust = s.icon = Image();
+        if (s.tex) s.tex->Release(), s.tex = nullptr;
+      }
+      ImGui::Image(Tex(s.tex), ImVec2(256 * scale, 256 * scale));
+    } else {
+      ImGui::SameLine();
+      ImGui::TextDisabled("the game's");
+    }
+  }
+  MediaButtons(scale);
+}
+
+void AudioPage() {
+  const float scale = ImGui::GetFontSize() / 13.0f;
+  ImGui::Text("Audio");
+  ImGui::TextDisabled("Entrance themes, the menu music and any game sound (crowd chants, hits ...) replaced by your "
+                      "own files (.mp3 .m4a .wav .flac .wma .ogg).");
+  ImGui::Separator();
+  MediaPackHeader(scale);
+  ImGui::Separator();
+  const COMDLG_FILTERSPEC song[] = {{L"Sounds", L"*.mp3;*.m4a;*.aac;*.wav;*.flac;*.wma;*.ogg"}};
+  if (StarPicker(scale)) {
+    MediaStar& s = g_media.stars[g_star_bases[g_media_star].id];
+    FileField("Entrance theme...", s.theme, song, scale);
+  }
+  ImGui::Separator();
+  FileField("Menu music...", g_media.menu_music, song, scale);
+  ImGui::Separator();
+  ImGui::Text("Game sounds");
+  ImGui::TextDisabled("By the game's event name without \"Play_\" (e.g. SVR10_Chant_Sena_001 for the Cena chant, "
+                      "elbow_mid_0231_0_0).");
+  ImGui::SetNextItemWidth(320 * scale);
+  ImGui::InputTextWithHint("##event", "event name", g_media_event, sizeof g_media_event);
+  ImGui::SameLine();
+  if (ImGui::Button("Sound file...", ImVec2(160 * scale, 0)) && g_media_event[0]) {
+    const std::wstring f = PickFile(false, L"Sound file", song, 1);
+    std::string ev = g_media_event;
+    if (ev.rfind("Play_", 0) == 0) ev = ev.substr(5);
+    if (!f.empty()) g_media.sounds.push_back({ev, f}), g_media_event[0] = 0;
+  }
+  for (size_t k = 0; k < g_media.sounds.size(); ++k) {
+    ImGui::PushID(int(k));
+    ImGui::Text("%s  ->  %s", g_media.sounds[k].first.c_str(),
+                Utf8(fs::path(g_media.sounds[k].second).filename().wstring()).c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x")) {
+      g_media.sounds.erase(g_media.sounds.begin() + long(k));
+      ImGui::PopID();
+      break;
+    }
+    ImGui::PopID();
+  }
+  MediaButtons(scale);
+}
+
 void Style() {
   ImGuiStyle& s = ImGui::GetStyle();
   ImGui::StyleColorsDark();
@@ -1478,8 +1878,9 @@ void Draw() {
   }
   if (g_test_state == 2 && !g_busy) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
   ImGui::BeginChild("rail", ImVec2(rail, -logh), true);
-  for (int p = 0; p < 5; ++p) {
-    const char* names[] = {"Arenas", "Arena Editor", "VS screen", "Superstars", "Crowd signs"};
+  for (int p = 0; p < 8; ++p) {
+    const char* names[] = {"Arenas",      "Arena Editor",     "VS screen", "Superstars",
+                           "Crowd signs", "Titantron videos", "Menus & renders", "Audio"};
     if (g_page == p) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
     if (ImGui::Button(names[p], ImVec2(-1, 0))) {
       if (p == 1 && !g_proj.edited) OpenEditor(g_sel);
@@ -1488,11 +1889,7 @@ void Draw() {
     if (g_page == p) ImGui::PopStyleColor();
   }
   ImGui::Separator();
-  ImGui::BeginDisabled();
-  for (const char* t : {"Titantron videos", "Menus & renders", "Audio"})
-    ImGui::Button(t, ImVec2(-1, 0));
-  ImGui::EndDisabled();
-  ImGui::TextDisabled("later");
+
   ImGui::EndChild();
   ImGui::SameLine();
   if (g_page == 1) {
@@ -1510,6 +1907,12 @@ void Draw() {
   } else if (g_page == 4) {
     ImGui::BeginChild("signs", ImVec2(0, -logh), true);
     SignsPage();
+    ImGui::EndChild();
+  } else if (g_page >= 5) {
+    ImGui::BeginChild("media", ImVec2(0, -logh), true);
+    if (g_page == 5) VideosPage();
+    else if (g_page == 6) RendersPage();
+    else AudioPage();
     ImGui::EndChild();
   } else {
   // grid
@@ -1645,6 +2048,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--star-voice")) g_star.voice = argv[i + 1];
     if (!wcscmp(argv[i], L"--sign")) g_sign_files.push_back(argv[i + 1]);
     if (!wcscmp(argv[i], L"--test-sign-save")) g_sign_test_save = argv[i + 1];
+    if (!wcscmp(argv[i], L"--media-arena")) g_media_test_arena = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--media-video")) g_media_test_video = argv[i + 1];
+    if (!wcscmp(argv[i], L"--media-picture")) g_media_test_pictures.push_back(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--test-media-save")) g_media_test_save = argv[i + 1];
     if (!wcscmp(argv[i], L"--test-star-save")) g_star_test_save = argv[i + 1];
   }
   WNDCLASSEXW wc = {sizeof wc, CS_CLASSDC, WndProc, 0, 0, inst, LoadIconW(inst, MAKEINTRESOURCEW(1)), nullptr,

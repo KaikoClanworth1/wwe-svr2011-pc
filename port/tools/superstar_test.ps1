@@ -6,11 +6,12 @@
 # -Walk N: only walks the EXTRA list (N downs, a screenshot each: <Name>_wNN).
 # -Com: COM's pick goes through the M tile too (the same entry).
 #   superstar_test.ps1 [-Name ss1] [-Down 5] [-Shots 10] [-Com]
-param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0, [int]$Attire = 0)
+param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0, [int]$Attire = 0, [double]$Every = 8)
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
 # -MatchDown N: that many DOWNs in the match category list (0 ONE ON ONE, 1 TAG TEAM, ...)
+# -Every S: seconds between the match screenshots (8).
 # -Attire N: P1 takes attire N (ADVANCED, then RIGHT N-1 times) - screenshot <Name>_attire
 # -UserData <folder under runs>: that save folder as it is (no restore)
 if ($UserData) { $env:SVR2011_USER_DATA = Join-Path $runs $UserData }
@@ -51,7 +52,7 @@ try {
     # (without -Com PLAY is already pressed: these skip the entrances)
     if (-not $NoSkip) { & $nav -Keys "A@5,A@5" | Out-Null }
     elseif ($Com) { & $nav -Keys "A@5" | Out-Null }                       # PLAY
-    for ($i = 0; $i -lt $Shots; $i++) { Start-Sleep 8; & $s shot "${Name}_m$i" | Out-Null }
+    for ($i = 0; $i -lt $Shots; $i++) { Start-Sleep -Milliseconds ([int]($Every * 1000)); & $s shot "${Name}_m$i" | Out-Null }
 } finally {
     & $s stop | Out-Null
 }

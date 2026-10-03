@@ -101,7 +101,14 @@ std::vector<std::pair<std::u16string, std::filesystem::path>> Playlists() {
 class Player {
  public:
   explicit Player(bool once = false) : once_(once) {}
+  void Play(std::filesystem::path path, bool once) {
+    once_ = once;
+    Play(std::move(path));
+  }
+  // A song is playing or paused (not yet at its end, for a clip).
+  bool Active() const { return active_; }
   void Play(std::filesystem::path path) {
+    active_ = !path.empty();
     std::lock_guard lock(mutex_);
     request_ = std::move(path);
     has_request_ = true;
@@ -109,6 +116,7 @@ class Player {
     wake_.notify_one();
   }
   void Stop() {
+    active_ = false;
     std::lock_guard lock(mutex_);
     request_.clear();
     has_request_ = true;
@@ -151,6 +159,7 @@ class Player {
         StopVoice();
         song_ = request;
         if (!song_.empty() && !Open(song_)) song_.clear();
+        if (song_.empty()) active_ = false;
       }
       if (!voice_) continue;
       if (paused != voice_paused_) {
@@ -167,6 +176,7 @@ class Player {
           StopVoice();
           if (once_) {
             song_.clear();
+            active_ = false;
           } else if (Open(song_)) {
             voice_->Start();
             voice_paused_ = false;
@@ -284,7 +294,8 @@ class Player {
     }
   }
 
-  const bool once_;
+  std::atomic<bool> once_;
+  std::atomic<bool> active_{false};
   // Requests (any thread).
   std::mutex mutex_;
   std::condition_variable wake_;
@@ -315,7 +326,14 @@ class Player {
 class Player {
  public:
   explicit Player(bool once = false) : once_(once) {}
+  void Play(std::filesystem::path path, bool once) {
+    once_ = once;
+    Play(std::move(path));
+  }
+  // A song is playing or paused (not yet at its end, for a clip).
+  bool Active() const { return active_; }
   void Play(std::filesystem::path path) {
+    active_ = !path.empty();
     std::lock_guard lock(mutex_);
     request_ = std::move(path);
     has_request_ = true;
@@ -323,6 +341,7 @@ class Player {
     wake_.notify_one();
   }
   void Stop() {
+    active_ = false;
     std::lock_guard lock(mutex_);
     request_.clear();
     has_request_ = true;
@@ -354,6 +373,7 @@ class Player {
         Close();
         song_ = request;
         if (!song_.empty() && !Open(song_)) song_.clear();
+        if (song_.empty()) active_ = false;
       }
       if (!codec_) continue;
       if (paused != stream_paused_) {
@@ -365,7 +385,7 @@ class Player {
       Feed();
       if (ended_ && SDL_GetAudioStreamQueued(stream_) == 0) {  // from the top again, until stopped (a clip: once)
         Close();
-        if (once_ || !Open(song_)) song_.clear();
+        if (once_ || !Open(song_)) song_.clear(), active_ = false;
       }
     }
   }
@@ -499,7 +519,8 @@ class Player {
   }
 
   // Requests (any thread).
-  const bool once_;
+  std::atomic<bool> once_;
+  std::atomic<bool> active_{false};
   std::mutex mutex_;
   std::condition_variable wake_;
   std::filesystem::path request_;
@@ -530,6 +551,48 @@ std::filesystem::path UserMusicFolder() { return g_folder; }
 
 void PlayClip(const std::filesystem::path& file) {
   if (g_clips) g_clips->Play(file);
+}
+
+// Host sounds (media mods): a pool of players, each one sound at a time.
+namespace {
+std::mutex g_pool_mutex;
+std::vector<Player*> g_pool;
+}  // namespace
+
+int HostSoundStart(const std::filesystem::path& file, bool loop, float volume) {
+  std::lock_guard lock(g_pool_mutex);
+  size_t i = 0;
+  while (i < g_pool.size() && g_pool[i]->Active()) ++i;
+  if (i == g_pool.size()) {
+    if (g_pool.size() >= 16) return -1;  // (enough at once)
+    Player* p = new Player(true);
+    g_pool.push_back(p);
+    std::thread([p] {
+#if defined(_WIN32)
+      SetThreadDescription(GetCurrentThread(), L"Host sound");
+#endif
+      p->Run();
+    }).detach();
+  }
+  g_pool[i]->SetVolume(volume);
+  g_pool[i]->Play(file, !loop);
+  return int(i);
+}
+void HostSoundStop(int h) {
+  std::lock_guard lock(g_pool_mutex);
+  if (h >= 0 && size_t(h) < g_pool.size()) g_pool[h]->Stop();
+}
+void HostSoundPause(int h, bool paused) {
+  std::lock_guard lock(g_pool_mutex);
+  if (h >= 0 && size_t(h) < g_pool.size()) g_pool[h]->Pause(paused);
+}
+void HostSoundVolume(int h, float volume) {
+  std::lock_guard lock(g_pool_mutex);
+  if (h >= 0 && size_t(h) < g_pool.size()) g_pool[h]->SetVolume(volume);
+}
+bool HostSoundActive(int h) {
+  std::lock_guard lock(g_pool_mutex);
+  return h >= 0 && size_t(h) < g_pool.size() && g_pool[h]->Active();
 }
 
 std::filesystem::path UserMusicSong(const std::string& name) {

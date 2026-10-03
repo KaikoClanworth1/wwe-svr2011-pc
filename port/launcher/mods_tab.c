@@ -6,7 +6,8 @@
  * own arenas (src/arena_mods.cpp). Superstar mods hold ch.pac (and maybe a
  * theme song and an entrance movie); the game lists them under the M tile of
  * the character select (src/superstar_mods.cpp). Sign packs hold crowd signs
- * (*.dds, 128 x 64) the crowd holds up (src/crowd_signs.cpp). A mod is turned off by a
+ * (*.dds, 128 x 64) the crowd holds up (src/crowd_signs.cpp); media packs replace
+ * the game's videos, renders, arena screens and sounds (src/media_mods.cpp). A mod is turned off by a
  * "disabled" file in its folder. A .svrmod file is a zip of such a folder.
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
@@ -91,7 +92,7 @@ static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -246,10 +247,10 @@ static int install_file(const WCHAR *zip)
     }
     {
         const int arena = !_wcsicmp(m.type, L"arena"), star = !_wcsicmp(m.type, L"superstar");
-        const int signs = !_wcsicmp(m.type, L"signs");
+        const int signs = !_wcsicmp(m.type, L"signs"), media = !_wcsicmp(m.type, L"media");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
-        if (signs) {
-            wcsncpy_s(kind, 32, L"Signs", _TRUNCATE);
+        if (signs || media) {
+            wcsncpy_s(kind, 32, signs ? L"Signs" : L"Media", _TRUNCATE);
             goto place;
         }
         if (!arena && !star) {
@@ -281,7 +282,8 @@ place:
     }
     scan();
     fill();
-    swprintf_s(t, 512, !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
+    swprintf_s(t, 512, !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
+                       : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
                                                    L"select (up to 50 superstar mods)."
                                                  : L"Installed \"%s\". It is on the arena select pages after the "
