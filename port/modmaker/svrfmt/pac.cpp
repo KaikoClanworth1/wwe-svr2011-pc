@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "pac.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <functional>
 

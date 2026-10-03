@@ -193,8 +193,8 @@ std::string Stamp(const std::vector<fs::path>& srcs) {
   std::error_code ec;
   for (const auto& p : srcs) {
     if (!fs::exists(p, ec)) continue;
-    st += p.filename().string() + " " + std::to_string(fs::file_size(p, ec)) + " " +
-          std::to_string(fs::last_write_time(p, ec).time_since_epoch().count()) + "\n";
+    st += p.filename().string() + " " + std::to_string(static_cast<unsigned long long>(fs::file_size(p, ec))) + " " +
+          std::to_string(static_cast<long long>(fs::last_write_time(p, ec).time_since_epoch().count())) + "\n";
   }
   return st;
 }
