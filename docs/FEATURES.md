@@ -86,6 +86,9 @@ still being tested.
 
 ## After 2.0 (next update)
 
+- **Anti-aliasing levels**: OFF / 2x / 3x / 4x supersampling (4, 9 or 16 samples a pixel; GRAPHICS → QUALITY and the launcher's Settings), within the 4x render scale cap (4d363c8).
+- **Android drivers** (cb15eb3): **driver variables** (e.g. `FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1`, the fix for HyperOS 3's glitches with Turnip; a one-tap "HyperOS 3 fix" button); any driver zip (with or without `meta.json`) or a bare `.so` can be added, and zips labelled oddly by file managers show up in the picker; a `gpu_driver` set by hand to a file in Download is copied into the app's storage before loading. *Experimental (not yet tried on a phone).*
+
 - **Android black screen on APK-only installs fixed**: the app saved its settings on Play before the game had ever run, so the game's defaults (its GPU plugin among them) were never written and nothing could draw. The game now adds any default a settings file lacks, which also repairs phones that already have the broken file.
 
 - **Saves folder** can be chosen in the launcher's Saves tab (17c9df4).

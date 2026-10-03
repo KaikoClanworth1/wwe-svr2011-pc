@@ -172,6 +172,8 @@ If the game is already installed on your PC, the launcher's **Android Install** 
 
 **Touch controls:** the menus get a simple pad (D-pad, A/B/X/Y, bumpers, triggers, Start/Back). Matches get a move stick, a grapple stick, the face buttons labelled with what they do (strike, action, whip/pin, finisher), reversal, run, drag, submission and taunts, plus a **?** button with the full match controls. They switch by themselves when a match starts, or with the button at the top left. **EDIT** (top right) lets you drag, resize, hide or remap any control and set their opacity. The controls hide as soon as a controller is connected and come back for a while when you touch the screen. **MY WWE → Options → Graphics → Touch controls** turns them off.
 
+**Graphics drivers (Adreno):** the app's **Settings → Graphics driver** takes driver packages such as Mesa Turnip or Qualcomm's (the zips other emulators use, or a driver's `.so`). **Driver variables** are set before the driver loads; on HyperOS 3 phones with graphical glitches, pick a Turnip driver and tap **Add the HyperOS 3 fix** (`FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1`). A driver that doesn't start falls back to the phone's own.
+
 On the phone, the game renders at the Xbox 360's 720p with shadows and effects at their original size. **MY WWE → Options → Graphics → Quality** raises them, and anti-aliasing can be turned on there.
 
 ---
