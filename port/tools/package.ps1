@@ -22,6 +22,9 @@ foreach ($f in $files) {
     if (-not (Test-Path $src)) { throw "$f is missing from $build - build first" }
     Copy-Item $src $stage
 }
+# The Mod Maker (the launcher's Mods tab opens it), when built.
+$modmaker = Join-Path $build "SvR2011 Mod Maker.exe"
+if (Test-Path $modmaker) { Copy-Item $modmaker $stage } else { Write-Warning "no SvR2011 Mod Maker.exe in $build" }
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
 # The native renderer's shaders (converted from the game's by
