@@ -6,11 +6,12 @@
 # -Walk N: only walks the EXTRA list (N downs, a screenshot each: <Name>_wNN).
 # -Com: COM's pick goes through the M tile too (the same entry).
 #   superstar_test.ps1 [-Name ss1] [-Down 5] [-Shots 10] [-Com]
-param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0)
+param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0, [int]$Attire = 0)
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
 # -MatchDown N: that many DOWNs in the match category list (0 ONE ON ONE, 1 TAG TEAM, ...)
+# -Attire N: P1 takes attire N (ADVANCED, then RIGHT N-1 times) - screenshot <Name>_attire
 # -UserData <folder under runs>: that save folder as it is (no restore)
 if ($UserData) { $env:SVR2011_USER_DATA = Join-Path $runs $UserData }
 else {
@@ -32,6 +33,10 @@ try {
     if ($Down -gt 0) { & $nav -Keys ((1..$Down | ForEach-Object { "DOWN@1.5" }) -join ",") | Out-Null }
     & $s shot "${Name}_pick" | Out-Null
     & $nav -Keys "A@4" -Shot "${Name}_picked" | Out-Null                   # pick (attire)
+    if ($Attire -gt 1) {
+        & $nav -Keys ("X@4," + ((1..($Attire - 1) | ForEach-Object { "RIGHT@3" }) -join ",")) -Shot "${Name}_attire" | Out-Null
+        & $nav -Keys "A@4" -Shot "${Name}_attire_ok" | Out-Null
+    }
     if ($Com) {
         & $nav -Keys "A@4" -Shot "${Name}_ready" | Out-Null                # ready
         # (COM's cursor starts on Randy Orton, row 1 column 11; M is 8 tiles left of it on row 2: the SM tile is two wide)
@@ -41,7 +46,7 @@ try {
         & $nav -Keys "A@4" -Shot "${Name}_compicked" | Out-Null
         & $nav -Keys "A@5" -Shot "${Name}_vs" | Out-Null                   # COM ready
     } else {
-        & $nav -Keys "A@4,A@4,A@5,A@5" -Shot "${Name}_vs" | Out-Null      # ready, COM picks + ready
+        & $nav -Keys "A@4,A@4,A@5,A@5" -Shot "${Name}_vs" | Out-Null      # ready, COM picks + ready, PLAY
     }
     # (without -Com PLAY is already pressed: these skip the entrances)
     if (-not $NoSkip) { & $nav -Keys "A@5,A@5" | Out-Null }

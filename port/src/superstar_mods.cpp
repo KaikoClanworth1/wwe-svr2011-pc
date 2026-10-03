@@ -65,6 +65,7 @@ constexpr uint32_t kPool[] = {59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  
                               157, 162, 163, 167, 168, 172, 173, 181, 185, 189, 200, 202, 203,
                               204, 206, 207, 209, 213, 214, 220, 221, 223, 225, 227};
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
+constexpr uint32_t kAttireIds = 210;             // u16[4]: id*10 + attire + 1
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
@@ -75,6 +76,7 @@ struct Mod {
   std::string folder, name, short_name;
   uint32_t base = 0, slot = 0;
   std::string ch_guest, ssf_guest;  // the overlay files, as the game opens them
+  std::vector<std::string> attire_guests;  // extra attires' pacs (manifest attire<N>=)
   std::string song;                 // its theme: a USER PLAYLIST name ("" = the base's)
   int movie = 0;                    // its entrance movie: a user movie id (0 = the base's)
   // every theme / movie the port has set for it (<folder>/.applied): a slot
@@ -83,6 +85,7 @@ struct Mod {
   std::vector<std::string> songs_set;
   std::vector<int> movies_set;
   int call = -1;  // name call: -1 the base's, else a Created Superstar nickname (0-83)
+  fs::path voice;  // its own recorded name for the ring announcer (manifest voice=)
 };
 std::vector<Mod> g_mods;
 rex::memory::Memory* g_memory = nullptr;
@@ -99,7 +102,10 @@ void Wr32(uint8_t* p, uint32_t v) {
 // get the slot's id, whichever character the pac was made for (the base's
 // own or another one's). Same length: the directory is patched in place.
 // (An EPK8 group header's count is in dwords: 4 per 16-byte entry.)
-bool RenameModel(svrfmt::Bytes& d, uint32_t to) {
+// `only` >= 0: an extra attire's pac - its attire `only` (usually 0) becomes
+// attire `as`, the rest are put out of the way (id 999999). `drop`: attires
+// (bit mask) of the main pac other pacs replace, put out of the way too.
+bool RenameModel(svrfmt::Bytes& d, uint32_t to, int only = -1, int as = 0, uint32_t drop = 0) {
   if (d.size() < 0x4000 || std::memcmp(d.data(), "EPK8", 4)) return false;
   char b[8];
   std::snprintf(b, sizeof b, "%06u", to);
@@ -109,9 +115,14 @@ bool RenameModel(svrfmt::Bytes& d, uint32_t to) {
     const bool emd = !std::memcmp(&d[p], "EMD ", 4);
     const uint32_t entries = (uint32_t(d[p + 4]) | uint32_t(d[p + 5]) << 8) / 4;
     p += 12;
-    for (uint32_t k = 0; k < entries && p + 16 <= 0x4000; ++k, p += 16)
-      if (emd && std::all_of(&d[p], &d[p + 8], [](uint8_t c) { return c >= '0' && c <= '9'; }))
-        std::memcpy(&d[p], b, 6), ++n;
+    for (uint32_t k = 0; k < entries && p + 16 <= 0x4000; ++k, p += 16) {
+      if (!emd || !std::all_of(&d[p], &d[p + 8], [](uint8_t c) { return c >= '0' && c <= '9'; })) continue;
+      const int attire = d[p + 6] - '0';
+      const bool keep = only >= 0 ? attire == only : !(drop >> attire & 1);
+      std::memcpy(&d[p], keep ? b : "999999", 6);
+      if (keep && only >= 0) d[p + 6] = uint8_t('0' + as);
+      n += keep;
+    }
   }
   return n > 0;
 }
@@ -361,6 +372,7 @@ void LoadMods() {
     m.folder = f.filename().string();
     m.name = m.short_name = m.folder;
     std::string song, movie;
+    std::string attires[4];  // attire<N>= (1-4): another pac's first attire as attire N
     if (FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb")) {
       char line[512];
       while (std::fgets(line, sizeof line, t)) {
@@ -371,6 +383,9 @@ void LoadMods() {
         if (l.rfind("base=", 0) == 0) m.base = uint32_t(std::atoi(l.c_str() + 5));
         if (l.rfind("song=", 0) == 0) song = l.substr(5);
         if (l.rfind("movie=", 0) == 0) movie = l.substr(6);
+        if (l.rfind("voice=", 0) == 0 && l.size() > 6) m.voice = f / l.substr(6);
+        if (l.rfind("attire", 0) == 0 && l.size() > 8 && l[6] >= '1' && l[6] <= '4' && l[7] == '=')
+          attires[l[6] - '1'] = l.substr(8);
         if (l.rfind("call=", 0) == 0 && l.size() > 5 && std::isdigit(uint8_t(l[5])))
           m.call = std::clamp(std::atoi(l.c_str() + 5), 0, 83);
       }
@@ -380,6 +395,7 @@ void LoadMods() {
       REXLOG_WARN("[svr2011] superstar mods: {} has no base= character (100-321)", m.folder);
       continue;
     }
+    if (!m.voice.empty() && !fs::exists(m.voice, ec)) m.voice.clear();
     InstallMedia(m, f, song, movie);
     ReadApplied(m, f);
     m.slot = slot_of(m.folder);
@@ -389,17 +405,36 @@ void LoadMods() {
       continue;
     }
     char nm[32];
+    uint32_t drop = 0;
+    for (int a = 0; a < 4; ++a)
+      if (!attires[a].empty() && fs::exists(f / attires[a], ec)) drop |= 1u << a;
     std::snprintf(nm, sizeof nm, "ch%03u.pac", m.slot);
-    if (!Current(overlay / nm, {f / "ch.pac"})) {
+    if (!Current(overlay / nm, {f / "ch.pac", f / "manifest.txt"})) {
       svrfmt::Bytes ch;
-      if (!svrfmt::ReadFile((f / "ch.pac").string(), ch) || !RenameModel(ch, m.slot) ||
+      if (!svrfmt::ReadFile((f / "ch.pac").string(), ch) || !RenameModel(ch, m.slot, -1, 0, drop) ||
           !svrfmt::WriteFile((overlay / nm).string(), ch)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
         continue;
       }
-      MarkCurrent(overlay / nm, {f / "ch.pac"});
+      MarkCurrent(overlay / nm, {f / "ch.pac", f / "manifest.txt"});
     }
     m.ch_guest = std::string("smods:\\") + nm;
+    for (int a = 0; a < 4; ++a) {
+      if (!(drop >> a & 1)) continue;
+      char an[32];
+      std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.slot, a + 1);
+      const fs::path src = f / attires[a];
+      if (!Current(overlay / an, {src, f / "manifest.txt"})) {
+        svrfmt::Bytes d;
+        if (!svrfmt::ReadFile(src.string(), d) || !RenameModel(d, m.slot, 0, a) ||
+            !svrfmt::WriteFile((overlay / an).string(), d)) {
+          REXLOG_WARN("[svr2011] superstar mods: {}: {} is not a character model pac", m.folder, attires[a]);
+          continue;
+        }
+        MarkCurrent(overlay / an, {src, f / "manifest.txt"});
+      }
+      m.attire_guests.push_back(std::string("smods:\\") + an);
+    }
     std::snprintf(nm, sizeof nm, "ssf%03u.pac", m.slot);
     // (the renders depend on base=: rebuilt with the manifest)
     const std::vector<fs::path> render_srcs = {f / "manifest.txt", f / "render.dds", f / "render_small.dds"};
@@ -439,7 +474,7 @@ void GrowDirectory(uint8_t* base) {
   const uint32_t start = Rd32(base + vfs + kDirStart), end = Rd32(base + vfs + kDirEnd);
   if (!start || end < start || end - start > (64u << 20)) return;
   uint32_t need = 0x10000;
-  for (const auto& m : g_mods) need += 2 * 0x4000;  // (at most a directory each)
+  for (const auto& m : g_mods) need += uint32_t(2 + m.attire_guests.size()) * 0x4000;  // (a directory each, at most)
   const uint32_t at = g_memory->SystemHeapAlloc(end - start + need, 0x40);
   if (!at) return;
   std::memcpy(base + at, base + start, end - start);
@@ -455,8 +490,10 @@ void Mount(PPCContext& ctx, uint8_t* base) {
   GrowDirectory(base);
   const auto saved = ctx;
   const uint32_t str = saved.r1.u32 - 0x300;
-  for (const auto& m : g_mods)
-    for (const std::string* p : {&m.ch_guest, &m.ssf_guest}) {
+  for (const auto& m : g_mods) {
+    std::vector<const std::string*> files = {&m.ch_guest, &m.ssf_guest};
+    for (const auto& a : m.attire_guests) files.push_back(&a);
+    for (const std::string* p : files) {
       if (p->empty()) continue;
       std::memcpy(base + str, p->c_str(), p->size() + 1);
       ctx = saved;
@@ -466,6 +503,7 @@ void Mount(PPCContext& ctx, uint8_t* base) {
       sub_826A1780(ctx, base);
       REXLOG_INFO("[svr2011] superstar mods: mounted {} ({})", *p, ctx.r3.u32);
     }
+  }
   ctx = saved;
 }
 
@@ -578,6 +616,10 @@ void ApplyRecords(uint8_t* base) {
     sr[kSelectable] = 1;
     sr[kDlc] = 1;
     for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) sr[off] = uint8_t(m.slot >> 8), sr[off + 1] = uint8_t(m.slot);
+    for (uint32_t a = 0; a < 4; ++a) {  // (+210: per attire, id*10 + attire + 1)
+      const uint32_t v = m.slot * 10 + a + 1;
+      sr[kAttireIds + a * 2] = uint8_t(v >> 8), sr[kAttireIds + a * 2 + 1] = uint8_t(v);
+    }
     // test aid: SVR2011_TEST_STAR_EDIT=<id> - that mod's ratings set to 20 (as
     // an edit made in the game would), to see them kept through a save
     if (const char* e = std::getenv("SVR2011_TEST_STAR_EDIT"); e && uint32_t(std::atoi(e)) == m.slot)
@@ -838,6 +880,48 @@ bool NameCallLog() {
   }();
   return on;
 }
+// The announcer's name table (from sound.pac): 45 categories of 64-byte
+// event names ("RA_JR_SSP_<NAME>_0"); T = *(*(0x82EC4C18) + 32) + 4, count
+// of category c at T+420+c*8, its names at *(T+424+c*8). Categories 2, 4, 5,
+// 8, 40, 41, 42 are by character id ("dummy" for the mods' ids).
+constexpr uint32_t kSoundMgr = 0x82EC4C18;
+constexpr uint32_t kIdCategories[] = {2, 4, 5, 8, 40, 41, 42};
+// The table: T from sub_825FDDC0(*(sub_825E5E68() + 32), &T), as
+// sub_825EA4E8 reads it.
+uint32_t CallTable(PPCContext& ctx, uint8_t* base) {
+  const auto saved = ctx;
+  ctx.r1.u64 = saved.r1.u32 - 0x200;
+  sub_825E5E68(ctx, base);
+  uint32_t T = 0;
+  if (const uint32_t obj = ctx.r3.u32 ? Rd32(base + ctx.r3.u32 + 32) : 0) {
+    const uint32_t out = saved.r1.u32 - 0x100;
+    Wr32(base + out, 0);
+    ctx.r3.u64 = obj;
+    ctx.r4.u64 = out;
+    sub_825FDDC0(ctx, base);
+    T = Rd32(base + out);
+  }
+  ctx = saved;
+  return T;
+}
+
+void WriteCallNames(PPCContext& ctx, uint8_t* base, uint32_t id) {
+  const uint32_t T = CallTable(ctx, base);
+  if (NameCallLog()) REXLOG_INFO("[svr2011] name call: table {:08X}", T);
+  if (!T) return;
+  for (uint32_t c : kIdCategories) {
+    const uint32_t count = Rd32(base + T + 420 + c * 8), names = Rd32(base + T + 424 + c * 8);
+    if (!names || id >= count) continue;
+    char n[64];
+    std::snprintf(n, sizeof n, "RA_JR_MOD_%u_%u", id, c);
+    if (!std::strcmp(reinterpret_cast<const char*>(base + names + id * 64), n)) continue;  // (already)
+    if (NameCallLog())
+      REXLOG_INFO("[svr2011] name call: table {} [{}] was \"{:.60}\"", c, id,
+                  reinterpret_cast<const char*>(base + names + id * 64));
+    std::memset(base + names + id * 64, 0, 64);
+    std::memcpy(base + names + id * 64, n, std::strlen(n));
+  }
+}
 REX_EXTERN(__imp__sub_825EA208);
 REX_HOOK_RAW(sub_825EA208) {
   const uint32_t out = ctx.r3.u32;
@@ -848,6 +932,10 @@ REX_HOOK_RAW(sub_825EA208) {
                 Rd16(base + out + 20));
   const Mod* m = ModOf(Rd32(base + out));
   if (!m) return;
+  if (!m->voice.empty()) {  // (its own recording: the mod's own, silent, event names; PlayVoice)
+    WriteCallNames(ctx, base, m->slot);
+    return;
+  }
   if (m->call < 0) {
     Wr32(base + out + 4, m->base);
   } else {
@@ -868,11 +956,22 @@ REX_HOOK_RAW(sub_8261EAB0) {
   if (NameCallLog() && buf)
     REXLOG_INFO("[svr2011] name call: commentary {} -> {} \"{:.40}\"", n, used, reinterpret_cast<const char*>(base + buf));
 }
+// Audio events by name (sub_82BEC030(name, ...)): a mod's own announcer
+// event ("Play_RA_xx_MOD_<id>_<category>", WriteCallNames) plays its
+// recorded name instead (the game's sound engine has no such event: silent).
 REX_EXTERN(__imp__sub_82BEC030);
 REX_HOOK_RAW(sub_82BEC030) {
-  if (NameCallLog() && ctx.r3.u32 >= 0x10000) {
+  if (ctx.r3.u32 >= 0x10000) {
     const char* e = reinterpret_cast<const char*>(base + ctx.r3.u32);
-    if (!std::strncmp(e, "Play_", 5)) REXLOG_INFO("[svr2011] name call: event {:.60}", e);
+    if (!std::strncmp(e, "Play_", 5)) {
+      if (NameCallLog()) REXLOG_INFO("[svr2011] name call: event {:.60}", e);
+      if (!std::strncmp(e, "Play_RA_", 8))
+        if (const char* mod = std::strstr(e, "_MOD_"))
+          if (const Mod* m = ModOf(uint32_t(std::atoi(mod + 5))); m && !m->voice.empty()) {
+            REXLOG_INFO("[svr2011] superstar mods: {}: name call {}", m->name, m->voice.filename().string());
+            svr2011::PlayClip(m->voice);
+          }
+    }
   }
   __imp__sub_82BEC030(ctx, base);
 }

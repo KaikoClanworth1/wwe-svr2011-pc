@@ -724,6 +724,8 @@ struct StarProject {
   int base = -1;  // index in g_star_bases
   char name[32] = "", short_name[32] = "", author[64] = "", version[16] = "1.0";
   std::wstring model, song, movie;  // files ("" model: the base's own)
+  std::wstring voice;               // a recording of the name, for the ring announcer
+  std::wstring attires[4];          // [1..3]: attires 2-4 from other model pacs (their first attire)
   ID3D11ShaderResourceView* render = nullptr;
   int render_for = -1;
   // its own select picture (else the base's): 512 x 512 and the 256 x 256 bust
@@ -971,6 +973,27 @@ bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
     files.push_back({"theme" + ext, std::move(s)});
     man += "song=theme" + ext + "\n";
   }
+  for (int a = 1; a < 4; ++a) {
+    if (g_star.attires[a].empty()) continue;
+    Bytes pac;
+    if (!ReadFile(Utf8(g_star.attires[a]), pac) || pac.size() < 0x4000 || std::memcmp(pac.data(), "EPK8", 4)) {
+      Log("Attire " + std::to_string(a + 1) + " is not a character model pac (EPK8).");
+      return false;
+    }
+    const std::string n = "attire" + std::to_string(a + 1) + ".pac";
+    files.push_back({n, std::move(pac)});
+    man += "attire" + std::to_string(a + 1) + "=" + n + "\n";
+  }
+  if (!g_star.voice.empty()) {
+    Bytes v;
+    const std::string ext = Utf8(fs::path(g_star.voice).extension().wstring());
+    if (!ReadFile(Utf8(g_star.voice), v)) {
+      Log("Could not read the name recording.");
+      return false;
+    }
+    files.push_back({"voice" + ext, std::move(v)});
+    man += "voice=voice" + ext + "\n";
+  }
   if (!g_star.movie.empty()) {
     Bytes m;
     if (!ReadFile(Utf8(g_star.movie), m) || m.size() < 4 || std::memcmp(m.data(), "BIK", 3)) {
@@ -1108,6 +1131,15 @@ void StarPage() {
   file_row("Model (ch.pac)...", g_star.model, "the base superstar's own", pac, 1);
   file_row("Theme song...", g_star.song, "the base superstar's", song, 1);
   file_row("Entrance movie...", g_star.movie, "the base superstar's", bik, 1);
+  for (int a = 1; a < 4; ++a) {
+    const std::string label = "Attire " + std::to_string(a + 1) + " (ch.pac)...";
+    file_row(label.c_str(), g_star.attires[a], "none", pac, 1);
+  }
+  ImGui::TextDisabled("Attire 1 is the model above; each extra attire is another pac's first attire.");
+  file_row("Name recording...", g_star.voice, "none (the name call above)", song, 1);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("A short recording of the name, said the ring announcer's way: it plays when he\n"
+                      "announces the superstar. The commentators keep the name call above.");
   ImGui::TextDisabled("Entrance movies are .bik files: make them in the launcher's Movies tab.");
   ImGui::PushID("pic");
   if (ImGui::Button("Select picture...", ImVec2(200 * scale, 0))) PickStarPicture();
@@ -1372,6 +1404,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--star-movie")) g_star.movie = argv[i + 1];
     if (!wcscmp(argv[i], L"--star-picture")) g_star_picture = argv[i + 1];
     if (!wcscmp(argv[i], L"--star-call")) g_star.call = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--star-voice")) g_star.voice = argv[i + 1];
     if (!wcscmp(argv[i], L"--test-star-save")) g_star_test_save = argv[i + 1];
   }
   WNDCLASSEXW wc = {sizeof wc, CS_CLASSDC, WndProc, 0, 0, inst, LoadIconW(inst, MAKEINTRESOURCEW(1)), nullptr,

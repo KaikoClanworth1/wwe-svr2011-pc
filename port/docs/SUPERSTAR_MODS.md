@@ -11,11 +11,13 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 50.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
 | `render.dds`, `render_small.dds` | (optional) its select-screen render: 512 x 512 and the 256 x 256 bust, DXT5 (the Mod Maker makes them from any picture) |
+| `voice.<ext>` | (optional) a recording of the name: the ring announcer "says" it |
+| `attireN.pac` | (optional, N = 2-4) another model pac: its first attire becomes the mod's attire N |
 | `disabled` | (optional) turns the mod off |
 
 `base=` is the disc superstar the mod starts from, which supplies its stats,
@@ -113,7 +115,21 @@ A mod gets one of two calls:
   struct gets +0 = 0 and +20 = N, as a CAW's. The commentary uses bank
   `CAS_*` N+1.
 
-`sub_825FDCD8`, the "has commentary" filter, lets mods through. Tested with
+`sub_825FDCD8`, the "has commentary" filter, lets mods through.
+
+**A recorded name (`voice=`).** The game's sound engine can't take new lines,
+so the port plays the recording itself:
+
+1. The mod's own entries go into the announcer's name table (from
+   sound.pac; T from `sub_825FDDC0(*(sub_825E5E68() + 32))`). Categories 2,
+   4, 5, 8, 40, 41 and 42, at the mod's id, become `RA_JR_MOD_<id>_<c>`.
+2. The announcer posts `Play_RA_TC_MOD_<id>_8` where a superstar's name
+   goes. The sound engine has no such event, so it is silent and the
+   announcer carries on.
+3. The event hook (`sub_82BEC030`) plays the recording on its own voice
+   (music.h `PlayClip`, a once-only player beside the USER PLAYLIST one).
+
+The commentators keep the base's or the nickname call. Tested with
 `SVR2011_TEST_NAMECALL=1`, which logs the calls and the posted events:
 
 | mod | commentary | announcer |

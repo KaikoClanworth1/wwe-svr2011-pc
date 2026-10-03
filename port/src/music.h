@@ -28,4 +28,8 @@ std::filesystem::path UserMusicFolder();
 // file whose stem is <name> (as USER PLAYLIST lists them); empty if none.
 std::filesystem::path UserMusicSong(const std::string& name);
 
+// Plays a short sound file once on its own voice (any format the songs can
+// be; honours audio_mute) - a superstar mod's recorded name call.
+void PlayClip(const std::filesystem::path& file);
+
 }  // namespace svr2011

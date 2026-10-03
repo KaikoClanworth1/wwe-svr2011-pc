@@ -100,6 +100,7 @@ std::vector<std::pair<std::u16string, std::filesystem::path>> Playlists() {
 // Plays one song on a loop on its own XAudio2 voice, on a thread of its own.
 class Player {
  public:
+  explicit Player(bool once = false) : once_(once) {}
   void Play(std::filesystem::path path) {
     std::lock_guard lock(mutex_);
     request_ = std::move(path);
@@ -162,9 +163,11 @@ class Player {
       if (ended_) {
         XAUDIO2_VOICE_STATE state = {};
         voice_->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-        if (state.BuffersQueued == 0) {  // from the top again, until stopped
+        if (state.BuffersQueued == 0) {  // from the top again, until stopped (a clip: once)
           StopVoice();
-          if (Open(song_)) {
+          if (once_) {
+            song_.clear();
+          } else if (Open(song_)) {
             voice_->Start();
             voice_paused_ = false;
           } else {
@@ -281,6 +284,7 @@ class Player {
     }
   }
 
+  const bool once_;
   // Requests (any thread).
   std::mutex mutex_;
   std::condition_variable wake_;
@@ -310,6 +314,7 @@ class Player {
 // m4a / aac, flac, wav...) into an SDL audio stream, on a thread of its own.
 class Player {
  public:
+  explicit Player(bool once = false) : once_(once) {}
   void Play(std::filesystem::path path) {
     std::lock_guard lock(mutex_);
     request_ = std::move(path);
@@ -358,9 +363,9 @@ class Player {
       UpdateVolume();
       if (stream_paused_) continue;
       Feed();
-      if (ended_ && SDL_GetAudioStreamQueued(stream_) == 0) {  // from the top again, until stopped
+      if (ended_ && SDL_GetAudioStreamQueued(stream_) == 0) {  // from the top again, until stopped (a clip: once)
         Close();
-        if (!Open(song_)) song_.clear();
+        if (once_ || !Open(song_)) song_.clear();
       }
     }
   }
@@ -494,6 +499,7 @@ class Player {
   }
 
   // Requests (any thread).
+  const bool once_;
   std::mutex mutex_;
   std::condition_variable wake_;
   std::filesystem::path request_;
@@ -516,10 +522,15 @@ class Player {
 #endif
 
 Player* g_player = nullptr;  // lives for the whole run
+Player* g_clips = nullptr;   // short clips, played once (PlayClip)
 
 }  // namespace
 
 std::filesystem::path UserMusicFolder() { return g_folder; }
+
+void PlayClip(const std::filesystem::path& file) {
+  if (g_clips) g_clips->Play(file);
+}
 
 std::filesystem::path UserMusicSong(const std::string& name) {
   const std::u16string wanted = std::filesystem::path(std::u8string(name.begin(), name.end())).u16string();
@@ -538,6 +549,13 @@ void InstallUserMusic(const std::filesystem::path& folder) {
     SetThreadDescription(GetCurrentThread(), L"User music");
 #endif
     g_player->Run();
+  }).detach();
+  g_clips = new Player(true);
+  std::thread([] {
+#if defined(_WIN32)
+    SetThreadDescription(GetCurrentThread(), L"Clips");
+#endif
+    g_clips->Run();
   }).detach();
 
   XmpApp::HostMusic music;
