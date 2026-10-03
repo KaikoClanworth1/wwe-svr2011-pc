@@ -31,6 +31,12 @@ int FrameRateNow();
 // A match on (from its entrances) or off (a main menu choice): menu_hooks.cpp.
 void SetFrameRateInMatch(bool on);
 
+// A match may be starting (sub_823EEB98 - which some menus call too, e.g.
+// ONLINE): `on_start` runs on the game's thread once the match's frame count
+// has been counting for half a second (a real match); a main menu choice
+// (SetFrameRateInMatch(false)) drops it.
+void ArmMatchStart(void (*on_start)());
+
 // Entrances and cutscenes at 30 frames a second (the original's; setting
 // unlock_30fps off): on while one plays (menu_hooks.cpp).
 void SetSceneThirtyFps(bool on);

@@ -59,6 +59,7 @@ uint8_t* g_base = nullptr;            // the guest's memory
 std::atomic<bool> g_scene_thirty{false};  // an entrance at the original's 30 fps
 std::atomic<bool> g_lockstep{false};      // online: one world update per frame at 60
 std::atomic<bool> g_in_match{false};      // 30 fps applies in matches only
+std::atomic<void (*)()> g_match_start{nullptr};  // armed match start (ArmMatchStart)
 
 void Wr32(uint8_t* p, uint32_t v) {
   v = __builtin_bswap32(v);
@@ -104,8 +105,11 @@ int FrameRateNow() {
 }
 
 void SetFrameRateInMatch(bool on) {
+  if (!on) g_match_start = nullptr;
   if (g_in_match.exchange(on) != on) SetFrameClock();
 }
+
+void ArmMatchStart(void (*on_start)()) { g_match_start = on_start; }
 
 void InstallFrameRate(rex::memory::Memory* memory) {
   if (!memory) return;
@@ -288,6 +292,15 @@ REX_HOOK_RAW(sub_8269D768) {
   if (g_lockstep) g_world_ticks = 1, g_world_acc = 0;
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
+  // An armed match start (ArmMatchStart): once the match's frame count has
+  // gone up 30 updates running.
+  static uint32_t last_frames = 0;
+  static int counting = 0;
+  const uint32_t frames = G32(base, kMatchFrames);
+  counting = frames > last_frames ? counting + 1 : 0;
+  last_frames = frames;
+  if (counting >= 30)
+    if (auto start = g_match_start.exchange(nullptr)) start();
 
 }
 
