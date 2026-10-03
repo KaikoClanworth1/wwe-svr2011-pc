@@ -86,6 +86,8 @@ still being tested.
 
 ## After 2.0 (next update)
 
+- **ONLINE overlay** (F1, or BACK + RB; or X INVITE FRIENDS in a lobby): friends with who's online, invites to public or private sessions, and accepting them (the session comes first in CUSTOM MATCH search) (7861d84; the live server needs a restart for invites).
+
 - **Freeze fix**: entrances and finishers could freeze for good on slower PCs and phones (a deadlock in 2.0's 60 Hz timing when a frame needed extra world updates); fixed (c181189).
 - **Keyboard controls page**: *GRAPHICS → CONTROLS* rebinds every input (add a key, clear, reset to defaults), saved and applied at once; works with a pad too (7feb9b8).
 - **Better logs and problem reports**: the log starts with the version, build and settings; crashes are written into the log; Android now has crash reports; menu choices are logged by name; freezes dump every game thread; each match logs its rule, arena and wrestlers; **Report a problem** (launcher Play tab and the Android app) makes one zip of the logs, crash reports and settings, without the online password (a09766e, c181189).
