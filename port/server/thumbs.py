@@ -79,6 +79,14 @@ def png(rgba, w, h):
             chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
+def logo_png(file_data):
+    """A Paint Tool logo upload's own picture: the slot's 256 x 256 canvas
+    (RGBA at +52; the file is the 0x604CC-byte slot and a 72-byte tail)."""
+    if len(file_data) < 52 + 256 * 256 * 4 or file_data[:4] != b"\0\0\0\3":
+        return None
+    return png(file_data[52:52 + 256 * 256 * 4], 256, 256)
+
+
 def thumb_png(blob):
     """The upload's picture as a PNG, or None (none, or a kind not known)."""
     if blob[:4] == b"DDS " and len(blob) >= 128:

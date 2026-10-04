@@ -949,6 +949,42 @@ class Service:
         return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
     @admin_only
+    async def admin_upload_full(self, request):
+        """The largest picture there is: a Paint Tool logo's own 256 x 256
+        (from its file); others have only the game's thumbnail."""
+        rec = self.store.get("UserContent", int(request.match_info["id"]))
+        if not rec:
+            return web.Response(status=404)
+        loop = asyncio.get_running_loop()
+        data = None
+        f = rec["fields"]
+        if int((f.get("ContentType") or [None, -1])[1] or -1) == 3:
+            fid = int((f.get("F00") or [None, 0])[1] or 0)
+            file_data = await loop.run_in_executor(None, lambda: self.store.read_file(fid, count=False))
+            if file_data:
+                data = await loop.run_in_executor(None, thumbs.logo_png, file_data)
+        if not data:
+            data = await loop.run_in_executor(None, thumbs.thumb_png, self.thumb_blob(rec))
+        if not data:
+            return web.Response(status=404, text="No picture.")
+        return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+    @admin_only
+    async def admin_leaderboard(self, request):
+        lb = self.leaderboards
+        vid = int(request.query.get("view", "1") or 1)
+        count = max(1, min(500, int(request.query.get("count", "100") or 100)))
+        loop = asyncio.get_running_loop()
+        names = await loop.run_in_executor(None, self.lb_names)
+        rows = await loop.run_in_executor(None, lb.page_by_rank, vid, 1, count)
+        views = [{"id": k, "name": v["name"], "weekly": v["reset"] == "Weekly", "rows": 0}
+                 for k, v in sorted(lb.views.items())]
+        for v in views:
+            v["rows"] = await loop.run_in_executor(None, lb.total, v["id"])
+        return web.json_response({"view": vid, "total": await loop.run_in_executor(None, lb.total, vid),
+                                  "views": views, "rows": [self.lb_row(r, names) for r in rows]})
+
+    @admin_only
     async def admin_upload_action(self, request):
         rid, action = int(request.match_info["id"]), request.match_info["action"]
         if not self.store.get("UserContent", rid):
@@ -1043,6 +1079,8 @@ class Service:
         app.router.add_get("/api/admin/stats", self.admin_stats)
         app.router.add_get("/api/admin/uploads", self.admin_uploads)
         app.router.add_get("/api/admin/upload/{id}/thumb.png", self.admin_upload_thumb)
+        app.router.add_get("/api/admin/upload/{id}/full.png", self.admin_upload_full)
+        app.router.add_get("/api/admin/leaderboard", self.admin_leaderboard)
         app.router.add_post("/api/admin/upload/{id}/{action}", self.admin_upload_action)
         app.router.add_get("/api/admin/users", self.admin_users)
         app.router.add_post("/api/admin/user/{id}/{action}", self.admin_user_action)
