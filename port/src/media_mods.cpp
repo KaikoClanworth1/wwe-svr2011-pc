@@ -291,6 +291,20 @@ REX_EXTERN(__imp__sub_828B5BC0);
 REX_HOOK_RAW(sub_828B5BC0) {
   const uint32_t record = ctx.r3.u32, desc = ctx.r4.u32;
   __imp__sub_828B5BC0(ctx, base);
+  if (std::getenv("SVR2011_TEST_PRO_LOG") && record && desc) {  // (test aid: what the match copied)
+    const uint8_t* e = base + record + 260 + 0x1C0;
+    const uint32_t id = uint32_t(base[desc] << 24 | base[desc + 1] << 16 | base[desc + 2] << 8 | base[desc + 3]);
+    // (the same id's profile in the CHAR/PRO table, and the record in CHAR/DAT)
+    const uint32_t si = id < 512 ? uint32_t(base[0x82DB3610 + id * 2] << 8 | base[0x82DB3610 + id * 2 + 1]) : 999;
+    const uint8_t* tp = si < 512 ? base + 0x82E7C920 + si * 1056 : nullptr;
+    const uint8_t* tr = si < 512 ? base + 0x82E407C0 + si * 260 : nullptr;
+    REXLOG_INFO("[svr2011] match profile: id {} music {} movie {} entrance {} | table {} {} {} | copy==table {} "
+                "record==table {} | record {:08X} desc {:08X}",
+                id, uint32_t(e[0x10] << 8 | e[0x11]), uint32_t(e[0x12] << 8 | e[0x13]), uint32_t(e[0x14] << 8 | e[0x15]),
+                tp ? uint32_t(tp[0x1D0] << 8 | tp[0x1D1]) : 0, tp ? uint32_t(tp[0x1D2] << 8 | tp[0x1D3]) : 0,
+                tp ? uint32_t(tp[0x1D4] << 8 | tp[0x1D5]) : 0, tp ? !std::memcmp(tp, base + record + 260, 1056) : false,
+                tr ? !std::memcmp(tr, base + record, 260) : false, record, desc);
+  }
   if ((g_videos.empty() && g_themes.empty()) || !record || !desc) return;
   const uint32_t id = uint32_t(base[desc] << 24 | base[desc + 1] << 16 | base[desc + 2] << 8 | base[desc + 3]);
   if (id < 50 || (!g_videos.count(id) && !g_themes.count(id))) return;  // (a Created Superstar's own: his CAE)

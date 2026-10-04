@@ -63,14 +63,12 @@ namespace {
 // ("0", loaded from CHAR/DAT, not selectable) with no model, select render,
 // entrance or match data anywhere in the game's pacs, then the free DLC slots
 // (59-69; real DLC uses 51-58). Each has a record, profile and save slot.
-// A mod in a DLC slot never gets its entrance and the match doesn't start
-// (tested 59 and 60: the game takes those ids' entrances from DLC content),
-// so they come last and a mod in one moves to a free disc id (MoveOffDlc).
+// (Disc ids first: a DLC slot's placeholder profile changes with the DLC
+// mounted - IsBlank / RecordBlanks.)
 constexpr uint32_t kPool[] = {111, 114, 121, 127, 128, 129, 130, 136, 141, 148, 149, 151, 152,
                               154, 155, 157, 162, 163, 167, 168, 172, 173, 181, 185, 189, 200,
                               202, 203, 204, 206, 207, 209, 213, 214, 220, 221, 223, 225, 227,
                               59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69};
-bool IsDlcSlot(uint32_t id) { return id >= 59 && id <= 69; }
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
 constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
@@ -431,21 +429,7 @@ void LoadMods() {
   const fs::path overlay = g_game / "Mods" / "SuperstarOverlay";
   fs::create_directories(overlay, ec);
   auto slots = ReadSlots(dir / "slots.txt");
-  size_t known = slots.size();
-  // mods on a DLC slot move to a free disc id (see kPool)
-  for (auto& s : slots) {
-    if (!IsDlcSlot(s.second)) continue;
-    for (uint32_t id : kPool) {
-      if (IsDlcSlot(id)) break;
-      bool taken = false;
-      for (const auto& o : slots) taken |= o.second == id;
-      if (taken) continue;
-      REXLOG_INFO("[svr2011] superstar mods: {} moves from DLC slot {} to id {}", s.first, s.second, id);
-      s.second = id;
-      known = size_t(-1);  // (write slots.txt)
-      break;
-    }
-  }
+  const size_t known = slots.size();
   auto slot_of = [&](const std::string& folder) -> uint32_t {
     for (const auto& s : slots)
       if (s.first == folder) return s.second;
@@ -697,10 +681,18 @@ Kept& KeptFor(uint32_t slot) {
   return g_kept.back();
 }
 
+// A slot's placeholder profile can come in several versions: DLC Vol03
+// ships its own chEtc.pac whose CHAR/PRO placeholders for ids 59-69 differ
+// from the disc's, and the game reloads CHAR/PRO from it at each DLC scan.
+// Every version the loader writes into a mod's slot is kept (RecordBlanks).
 bool IsBlank(uint32_t slot, const uint8_t* profile) {
+  bool any = false;
   for (const auto& b : g_blank)
-    if (b.first == slot) return !std::memcmp(profile, b.second.data(), kProfileSize);
-  return true;  // (CHAR/PRO not loaded yet: nothing of the mod's there)
+    if (b.first == slot) {
+      any = true;
+      if (!std::memcmp(profile, b.second.data(), kProfileSize)) return true;
+    }
+  return !any;  // (CHAR/PRO not loaded yet: nothing of the mod's there)
 }
 
 // Before CHAR/DAT or CHAR/PRO (re)loads: the mods' slots as they are.
@@ -807,6 +799,25 @@ void ApplyRecords(uint8_t* base) {
 }
 
 // CHAR/PRO loaded: each slot's blank profile (before ApplyRecords).
+// After a CHAR/PRO load: what the loader wrote into a mod's slot (changed
+// from `before`) is a placeholder version of that slot - kept, unless known.
+void RecordBlanks(uint8_t* base, const std::vector<svrfmt::Bytes>& before) {
+  for (size_t i = 0; i < g_mods.size() && i < before.size(); ++i) {
+    const auto& m = g_mods[i];
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512 || before[i].empty()) continue;
+    const uint8_t* sp = base + kProfiles + si * kProfileSize;
+    if (!std::memcmp(sp, before[i].data(), kProfileSize)) continue;  // (not rewritten)
+    int n = 0;
+    bool known = false;
+    for (const auto& b : g_blank)
+      if (b.first == m.slot) ++n, known |= !std::memcmp(sp, b.second.data(), kProfileSize);
+    if (known) continue;
+    g_blank.push_back({m.slot, svrfmt::Bytes(sp, sp + kProfileSize)});
+    REXLOG_INFO("[svr2011] superstar mods: id {} placeholder profile #{} recorded", m.slot, n + 1);
+  }
+}
+
 void KeepBlankProfiles(uint8_t* base) {
   for (const auto& m : g_mods) {
     bool have = false;
@@ -1292,14 +1303,85 @@ REX_HOOK_RAW(sub_82B89E50) {
   ApplyRecords(base);
   ctx.r3.u64 = r3;
 }
+bool g_pro_load_ran = false;  // (sub_82594C78 ran inside sub_82B89DC0)
 REX_EXTERN(__imp__sub_82594C78);
 REX_HOOK_RAW(sub_82594C78) {
+  g_pro_load_ran = true;
   Remember(base);
+  std::vector<svrfmt::Bytes> before;  // (the mods' slots before the load: RecordBlanks)
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    before.push_back(si < 512 ? svrfmt::Bytes(base + kProfiles + si * kProfileSize,
+                                              base + kProfiles + (si + 1) * kProfileSize)
+                              : svrfmt::Bytes());
+  }
   __imp__sub_82594C78(ctx, base);
   const auto r3 = ctx.r3.u64;
   KeepBlankProfiles(base);
+  RecordBlanks(base, before);
+  ApplyRecords(base);
+  // test aid: SVR2011_TEST_PRO_LOG=1 - each mod slot's entrance after the load
+  // (music, movie, entrance number; a placeholder reads 255 255 4000)
+  if (std::getenv("SVR2011_TEST_PRO_LOG"))
+    for (const auto& m : g_mods) {
+      const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+      if (si >= 512) continue;
+      const uint8_t* e = base + kProfiles + si * kProfileSize + kEntrance;
+      REXLOG_INFO("[svr2011] superstar mods: CHAR/PRO loaded: id {} music {} movie {} entrance {}", m.slot,
+                  Rd16(e + kMusic), Rd16(e + kMovie), Rd16(e + 0x14));
+    }
+  ctx.r3.u64 = r3;
+}
+// The DLC manager's restore after a DLC scan (sub_8259CAA8, its backup made
+// by sub_8259C9A8): writes the DLC ids' records and profiles back - for a
+// mod on 59-69 the placeholder - after the port set them up. Same as after a
+// CHAR/PRO load: the new placeholder version is recorded, the mod's put back.
+REX_EXTERN(__imp__sub_8259CAA8);
+REX_HOOK_RAW(sub_8259CAA8) {
+  Remember(base);
+  std::vector<svrfmt::Bytes> before;
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    before.push_back(si < 512 ? svrfmt::Bytes(base + kProfiles + si * kProfileSize,
+                                              base + kProfiles + (si + 1) * kProfileSize)
+                              : svrfmt::Bytes());
+  }
+  __imp__sub_8259CAA8(ctx, base);
+  const auto r3 = ctx.r3.u64;
+  if (std::getenv("SVR2011_TEST_PRO_LOG")) REXLOG_INFO("[svr2011] superstar mods: DLC restore (sub_8259CAA8)");
+  RecordBlanks(base, before);
   ApplyRecords(base);
   ctx.r3.u64 = r3;
+}
+// The CHAR/PRO loader's callback (sub_82B89DC0). For a DLC's chEtc (DLC
+// Vol03 at each DLC scan) it writes the DLC ids' profiles - placeholders for
+// a mod on 59-69 - without reaching sub_82594C78: then, as after a CHAR/PRO
+// load, the new placeholder version is recorded and the mods put back. (When
+// sub_82594C78 ran, its hook did that.)
+REX_EXTERN(__imp__sub_82B89DC0);
+REX_HOOK_RAW(sub_82B89DC0) {
+  std::vector<svrfmt::Bytes> before;
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    before.push_back(si < 512 ? svrfmt::Bytes(base + kProfiles + si * kProfileSize,
+                                              base + kProfiles + (si + 1) * kProfileSize)
+                              : svrfmt::Bytes());
+  }
+  g_pro_load_ran = false;
+  __imp__sub_82B89DC0(ctx, base);
+  const auto r3 = ctx.r3.u64;
+  if (!g_pro_load_ran) {
+    if (std::getenv("SVR2011_TEST_PRO_LOG"))
+      REXLOG_INFO("[svr2011] superstar mods: CHAR/PRO written without a load (a DLC's chEtc)");
+    RecordBlanks(base, before);
+    ApplyRecords(base);
+  }
+  ctx.r3.u64 = r3;
+}
+REX_EXTERN(__imp__sub_8259C9A8);
+REX_HOOK_RAW(sub_8259C9A8) {
+  if (std::getenv("SVR2011_TEST_PRO_LOG")) REXLOG_INFO("[svr2011] superstar mods: DLC backup (sub_8259C9A8)");
+  __imp__sub_8259C9A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8257A218);
 REX_HOOK_RAW(sub_8257A218) {
@@ -1358,6 +1440,25 @@ void CopySuperstarMovies(const std::filesystem::path& movies) {
 
 void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileSystem* vfs) {
   g_memory = memory;
+  // test aid (SVR2011_TEST_PRO_LOG): log when a mod slot's entrance number
+  // changes in the CHAR/PRO table (who overwrites a mod's profile, and when)
+  if (std::getenv("SVR2011_TEST_PRO_LOG"))
+    std::thread([memory] {
+      std::vector<uint32_t> last(64, 0xFFFFFFFF);
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        uint8_t* base = memory->virtual_membase();
+        for (size_t i = 0; i < g_mods.size() && i < last.size(); ++i) {
+          const uint32_t si = Rd16(base + kIdToIndex + g_mods[i].slot * 2);
+          if (si >= 512) continue;
+          const uint32_t e = Rd16(base + kProfiles + si * kProfileSize + kEntrance + 0x14);
+          if (e != last[i]) {
+            REXLOG_INFO("[svr2011] superstar mods: watch: id {} entrance {} -> {}", g_mods[i].slot, last[i], e);
+            last[i] = e;
+          }
+        }
+      }
+    }).detach();
   g_game = rex::filesystem::GetExecutableFolder();
   LoadMods();
   // the attires' COS pairs and names (string ids kAttireNameIds + mod * 4 + attire)

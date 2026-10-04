@@ -7,7 +7,7 @@
 # -Com: COM's pick goes through the M tile too (the same entry, or -ComDown N:
 #   the game won't take one superstar on both sides).
 #   superstar_test.ps1 [-Name ss1] [-Down 5] [-Shots 10] [-Com]
-param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0, [int]$Attire = 0, [double]$Every = 8, [int]$ComDown = -1)
+param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0, [int]$Attire = 0, [double]$Every = 8, [int]$ComDown = -1, [int]$Boot = 0)
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
@@ -24,6 +24,7 @@ $s = Join-Path $tools "arena_session.ps1"
 $nav = Join-Path $tools "arena_nav.ps1"
 try {
     & $s start -Name $Name | Out-Null
+    if ($Boot -gt 0) { Start-Sleep -Seconds $Boot }                     # (-Boot S: more time to start - a busy machine)
     & $nav -Keys "BACK@45,START@40,A@6,START@10" | Out-Null                 # main menu
     $cat = if ($MatchDown -gt 0) { ((1..$MatchDown | ForEach-Object { "DOWN@1.5" }) -join ",") + "," } else { "" }
     & $nav -Keys ("A@5," + $cat + "A@3,A@10,A@4") -Shot "${Name}_mode" | Out-Null   # PLAY > category > first type, 1P side
