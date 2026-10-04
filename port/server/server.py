@@ -48,6 +48,7 @@ from aiohttp import web
 
 import gamespy as gs
 import relay
+import thumbs
 
 HERE = Path(__file__).resolve().parent
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
@@ -851,10 +852,32 @@ class Service:
                 "author": names.get(rec["ownerid"], "profile %d" % rec["ownerid"]),
                 "size": size, "downloads": downloads, "created": rec["created"],
                 "hidden": int((f.get("Moderated") or [None, 0])[1] or 0) != 0,
+                "picture": int((f.get("ThumbSize") or [None, 0])[1] or 0) > 16,
                 "deleted": int((f.get("Deleted") or [None, 0])[1] or 0) != 0,
             })
         out.sort(key=lambda r: -r["created"])
         return web.json_response(out)
+
+    @staticmethod
+    def thumb_blob(rec):
+        """The picture the game keeps with an upload (ThumbData0, 1 ...)."""
+        out = b""
+        for k in range(16):
+            v = rec["fields"].get("ThumbData%d" % k)
+            if not v or v[0] != "binaryDataValue":
+                break
+            out += base64.b64decode(v[1] or "")
+        return out
+
+    @admin_only
+    async def admin_upload_thumb(self, request):
+        rec = self.store.get("UserContent", int(request.match_info["id"]))
+        if not rec:
+            return web.Response(status=404)
+        data = await asyncio.get_running_loop().run_in_executor(None, thumbs.thumb_png, self.thumb_blob(rec))
+        if not data:
+            return web.Response(status=404, text="No picture.")
+        return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
     @admin_only
     async def admin_upload_action(self, request):
@@ -949,6 +972,7 @@ class Service:
         app.router.add_get("/", self.dashboard)
         app.router.add_get("/api/admin/stats", self.admin_stats)
         app.router.add_get("/api/admin/uploads", self.admin_uploads)
+        app.router.add_get("/api/admin/upload/{id}/thumb.png", self.admin_upload_thumb)
         app.router.add_post("/api/admin/upload/{id}/{action}", self.admin_upload_action)
         app.router.add_get("/api/admin/users", self.admin_users)
         app.router.add_post("/api/admin/user/{id}/{action}", self.admin_user_action)
