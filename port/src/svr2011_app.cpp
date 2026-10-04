@@ -56,6 +56,9 @@
 #include "platform.h"
 #include "script_input.h"
 #include "touch_controls.h"
+#include "pad_types.h"
+#include "pad_icons.h"
+#include <rex/input/flags.h>
 #include "discord_presence.h"
 #include "online.h"
 #include "entrance_media.h"
@@ -259,6 +262,14 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
     config.input_factory = [](bool tool) -> std::unique_ptr<rex::system::IInputSystem> {
       auto input = rex::input::CreateDefaultInputSystem(tool);
       if (!tool) {
+#if defined(_WIN32)
+        // (pad_types.h: PlayStation controllers next to the XInput ones)
+        if (REXCVAR_GET(input_backend) == "xinput") {
+          auto ps = svr2011::CreatePlayStationDriver();
+          using rex::X_STATUS;
+          if (ps->Setup() == X_STATUS_SUCCESS) input->AddDriver(std::move(ps));
+        }
+#endif
         input->AddDriver(svr2011::CreateTouchDriver());
         input->SetDeviceAssignment(svr2011::CreateControllerWatch());  // (hides it with a controller)
       }
@@ -461,6 +472,7 @@ void Svr2011App::OnPostLoadXexImage() {
 
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
+  svr2011::InstallPadIcons(runtime()->memory());  // (pad_icons.h)
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
