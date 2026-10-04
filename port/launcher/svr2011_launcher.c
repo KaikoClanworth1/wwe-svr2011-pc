@@ -719,6 +719,16 @@ static void copy_program(const WCHAR *target)
         CopyFileW(s_launcher_exe, dst, FALSE);
     /* The native renderer's shaders: without them it draws a black screen. */
     copy_folder_files(L"native_shaders", target);
+    /* The mods that come with the port (Bundled Mods\*.svrmod). */
+    copy_folder_files(L"Bundled Mods", target);
+}
+
+/* The bundled mods of <dir> (Bundled Mods\*.svrmod) installed into the game. */
+static void install_bundled(const WCHAR *game, const WCHAR *dir)
+{
+    WCHAR b[MAX_PATH];
+    if (game && game[0] && dir && dir[0] && join(b, dir, L"Bundled Mods") && dir_exists(b))
+        mods_install_bundled(game, b);
 }
 
 static int cmp_sector(const void *a, const void *b)
@@ -822,6 +832,7 @@ static int install_run(InstallJob *job)
         return 0;
     post_progress(995, L"Copying the PC port's program files...");
     copy_program(job->target);
+    install_bundled(job->target, s_launcher_dir);
     if (s_cancel) {
         wcscpy_s(s_install_msg, 1024, L"Installation cancelled.");
         return 0;
@@ -5332,6 +5343,18 @@ static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t e
         }
     } while (ok && FindNextFileW(h, &fd));
     FindClose(h);
+    /* (the mods that come with the port too: the launcher installs new ones) */
+    if (ok && join(sub, from, L"Bundled Mods") && dir_exists(sub) && join(subdst, to, L"Bundled Mods")) {
+        CreateDirectoryW(subdst, NULL);
+        if (join(pat, sub, L"*") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && join(src, sub, fd.cFileName)
+                        && join(dst, subdst, fd.cFileName))
+                    CopyFileW(src, dst, FALSE);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
     if (ok && join(sub, from, L"native_shaders") && dir_exists(sub) && join(subdst, to, L"native_shaders")) {
         CreateDirectoryW(subdst, NULL);
         if (join(pat, sub, L"*") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
@@ -6047,6 +6070,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* Tests: --bundled <game folder> installs <game>\Bundled Mods as a start does. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--bundled")) {
+        install_bundled(argv[2], argv[2]);
+        LocalFree(argv);
+        return 0;
+    }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
         static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods" };
         int i;
@@ -6100,6 +6129,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (!s_wnd)
         return 1;
     build_ui();
+    /* Mods that came with the port and aren't in the game yet (an update can bring new ones). */
+    if (is_game_folder(s_game_dir)) {
+        install_bundled(s_game_dir, s_game_dir);
+        if (!same_dir(s_game_dir, s_launcher_dir))
+            install_bundled(s_game_dir, s_launcher_dir);
+    }
     refresh_play();
     show_tab(capture_tab >= 0 ? capture_tab : (is_game_folder(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
     if (capture_file) {

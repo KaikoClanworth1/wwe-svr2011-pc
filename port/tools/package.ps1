@@ -55,6 +55,18 @@ if (Test-Path (Join-Path $icons "pad_icons.txt")) {
     Write-Warning "no pad_icons in $icons - the package has Xbox button pictures only"
 }
 
+# Mods that come with the port (the launcher installs them into the game):
+# the .svrmod files in "Bundled Mods" at the top of the project (outside git;
+# a release copy in _release\port looks two levels up).
+$bundled = Join-Path (Split-Path $port -Parent) "Bundled Mods"
+if (-not (Test-Path $bundled)) { $bundled = Join-Path (Split-Path (Split-Path $port -Parent) -Parent) "Bundled Mods" }
+if (Get-ChildItem $bundled -Filter "*.svrmod" -ErrorAction SilentlyContinue) {
+    New-Item -ItemType Directory -Force (Join-Path $stage "Bundled Mods") | Out-Null
+    Get-ChildItem $bundled -Filter "*.svrmod" | Copy-Item -Destination (Join-Path $stage "Bundled Mods")
+} else {
+    Write-Warning "no Bundled Mods\*.svrmod - the package comes with no mods"
+}
+
 # The known pipelines, built ahead in the menus (tools/merge_pipelines.py).
 $plist = Join-Path $port "dist\pipelines.list"
 if (Test-Path $plist) {

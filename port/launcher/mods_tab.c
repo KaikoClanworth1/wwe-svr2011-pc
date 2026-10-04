@@ -226,6 +226,53 @@ int mods_install(const WCHAR *game_dir, const WCHAR *zip)
     return s_game[0] && install_file(zip);
 }
 
+/* Mods shipped with the port (<bundle_dir>\*.svrmod, the release's
+ * "Bundled Mods"): each is installed into the game once, and again only when
+ * the shipped file changes - <game>\Mods\.bundled keeps "name|size|time" of
+ * those installed - so one the player removed stays removed. */
+void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
+{
+    WCHAR pat[MAX_PATH], zip[MAX_PATH], list[MAX_PATH], line[MAX_PATH + 64], mods[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    static WCHAR known[8192];
+    FILE *f;
+    int changed = 0;
+    if (!game_dir || !game_dir[0] || !bundle_dir || !bundle_dir[0])
+        return;
+    swprintf_s(pat, MAX_PATH, L"%s\\*.svrmod", bundle_dir);
+    swprintf_s(mods, MAX_PATH, L"%s\\Mods", game_dir);
+    swprintf_s(list, MAX_PATH, L"%s\\.bundled", mods);
+    known[0] = 0;
+    if (_wfopen_s(&f, list, L"r, ccs=UTF-8") == 0 && f) {
+        size_t n = fread(known, sizeof(WCHAR), sizeof known / sizeof *known - 1, f);
+        known[n] = 0;
+        fclose(f);
+    }
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        swprintf_s(line, MAX_PATH + 64, L"%s|%lu|%lu%lu\n", fd.cFileName, fd.nFileSizeLow,
+                   fd.ftLastWriteTime.dwHighDateTime, fd.ftLastWriteTime.dwLowDateTime);
+        if (wcsstr(known, line))
+            continue;
+        swprintf_s(zip, MAX_PATH, L"%s\\%s", bundle_dir, fd.cFileName);
+        SHCreateDirectoryExW(NULL, mods, NULL);
+        if (mods_install(game_dir, zip) && wcslen(known) + wcslen(line) < sizeof known / sizeof *known - 1) {
+            wcscat_s(known, sizeof known / sizeof *known, line);
+            changed = 1;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (changed && _wfopen_s(&f, list, L"w, ccs=UTF-8") == 0 && f) {
+        fputws(known, f);
+        fclose(f);
+    }
+}
+
 static int install_file(const WCHAR *zip)
 {
     WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512], kind[32];

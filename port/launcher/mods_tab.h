@@ -18,3 +18,6 @@ int mods_notify(const NMHDR *nm);
 /* Installs a .svrmod into <game_dir>/Mods (the + button without its dialog;
    tests: --mods-add <file>). 1 on success; the tab's status says why not. */
 int mods_install(const WCHAR *game_dir, const WCHAR *zip);
+/* Installs the mods shipped with the port (<bundle_dir>\*.svrmod) that the
+   game hasn't had yet, or whose shipped file changed. */
+void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir);

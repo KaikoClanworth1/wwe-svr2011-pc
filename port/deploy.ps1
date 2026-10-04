@@ -16,6 +16,14 @@ New-Item -ItemType Directory -Force $game | Out-Null
 
 # Disc files: only copies what is new or changed.
 robocopy $disc $game /E /XO /NFL /NDL /NJH /NP /R:1 /W:1 | Out-Host
+# The mods that come with the port ("Bundled Mods" at the top of the project,
+# or two levels up from a release copy): the launcher installs new ones.
+$bundled = Join-Path $top "Bundled Mods"
+if (-not (Test-Path $bundled)) { $bundled = Join-Path (Split-Path $top -Parent) "Bundled Mods" }
+if (Get-ChildItem $bundled -Filter "*.svrmod" -ErrorAction SilentlyContinue) {
+    New-Item -ItemType Directory -Force (Join-Path $game "Bundled Mods") | Out-Null
+    Get-ChildItem $bundled -Filter "*.svrmod" | Copy-Item -Destination (Join-Path $game "Bundled Mods") -Force
+}
 if ($LASTEXITCODE -ge 8) { throw "copying the disc files failed" }
 # Menu text: "Xbox LIVE" -> "Online" (rebuilt from the disc's string.pac).
 python (Join-Path $root "tools\patch_strings.py") $disc $game
