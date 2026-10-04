@@ -95,6 +95,10 @@ REX_HOOK_RAW(sub_82448A90) {
 REX_EXTERN(__imp__sub_824621F8);
 REX_HOOK_RAW(sub_824621F8) {
   const uint32_t cursor = ctx.r3.u32;
+  // (Match Creator sets the lists up without the two calls above: fill them here)
+  if (REXCVAR_GET(managers_tile) && Rd32(base, cursor + kListMode) == 0 &&
+      Rd32(base, cursor + kLists + kManagerList * kListSize) == 0)
+    FillManagers(base, cursor + kLists + kManagerList * kListSize);
   if (!REXCVAR_GET(managers_tile) || Rd32(base, cursor + kListMode) != 0 ||
       Rd32(base, cursor + kLists + kManagerList * kListSize) == 0) {
     __imp__sub_824621F8(ctx, base);
