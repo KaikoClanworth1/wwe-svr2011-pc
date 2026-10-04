@@ -203,6 +203,18 @@ constexpr Span kShape[] = {{0, 28}, {44, 4}, {52, 4}, {64, 1}};
 // - people 2-5, team 3, as manager slots (kind 2: the select screen leaves
 // them out) filled with random superstars as the match loads (below).
 constexpr uint32_t kLumberjack = 0x55, kLumberjackLike = 0x00, kSixMan = 0x0A;
+// At most 4: the people builder (sub_828BBEF0) takes exactly 6 people from
+// the match's slots (the referee is person 6, the commentators 7-8) - 6-8
+// lumberjacks would need it and every per-person table behind it redone.
+constexpr uint32_t kMaxLumberjacks = 4;
+// How many lumberjacks (test aid: SVR2011_TEST_LJ_COUNT=<n>, 1-4).
+uint32_t LumberjackCount() {
+  static const uint32_t n = [] {
+    const char* v = std::getenv("SVR2011_TEST_LJ_COUNT");
+    return v ? std::clamp<uint32_t>(uint32_t(std::atoi(v)), 1, kMaxLumberjacks) : 4u;
+  }();
+  return n;
+}
 constexpr Span kSelect[] = {{24, 4}, {36, 4}, {44, 4}, {52, 4}, {64, 1}};
 
 // The match row picked last: the rule record to reshape like which, and how
@@ -249,8 +261,9 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
     for (const Span& span : kSelect) std::memcpy(rec + span.at, from + span.at, span.size);
     // Lumberjack: 2 wrestlers and 4 lumberjacks (the record has 3 wrestlers,
     // teams 0, 1, 2, and 3 lumberjacks): people 2-5 team 3, manager slots.
-    if (rule == kLumberjack)
+    if (rule == kLumberjack) {
       for (int i = 2; i < 6; ++i) rec[2 + i * 3 + 1] = 3, rec[2 + i * 3 + 2] = 2;
+    }
   } else {
     for (const Span& span : kShape) std::memcpy(rec + span.at, from + span.at, span.size);
     rec2[kRule2People] = base[rules + kRule2 + like * kRule2Size + kRule2People];
@@ -353,7 +366,7 @@ void MarkLumberjacks(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kLive = 0x82E3DE00, kChars = 0x82E3CC50, kCharCount = 0x82E3CD0C;
   if (base[kLive] != kLumberjack || int32_t(Rd32(base + kCharCount)) <= 0) return;
   const auto saved = ctx;
-  for (uint32_t i = 0; i < 6; ++i) {
+  for (uint32_t i = 0; i < 2 + kMaxLumberjacks; ++i) {
     const uint32_t ch = Rd32(base + kChars + i * 4);
     if (!ch) continue;
     const uint32_t ai = Rd32(base + ch + 2572);
@@ -379,7 +392,7 @@ REX_EXTERN(__imp__sub_825EEA80);
 REX_HOOK_RAW(sub_825EEA80) {
   const uint32_t ch = ctx.r4.u32;
   __imp__sub_825EEA80(ctx, base);
-  if (base[0x82E3DE00] == kLumberjack && ch && Rd32(base + ch + 1156) == 2) ctx.r3.u64 = 0;
+  if (base[0x82E3DE00] == kLumberjack && ch && Rd32(base + ch + 1156) >= 2) ctx.r3.u64 = 0;
 }
 
 REX_EXTERN(__imp__sub_82225D68);
@@ -398,7 +411,7 @@ REX_HOOK_RAW(sub_82225D68) {
 namespace {
 
 constexpr uint32_t kSlots = 432, kSlotSize = 2116;
-uint32_t g_lumberjack_ids[4] = {};
+uint32_t g_lumberjack_ids[kMaxLumberjacks] = {};
 
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
 void Wr16(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
@@ -415,10 +428,11 @@ uint8_t LumberjackKind() {
 // a pick)
 void FillLumberjackSlots(uint8_t* base, uint32_t match) {
   constexpr uint32_t kIdToIndex = 0x82DB3610, kRecords = 0x82E407C0, kRecordSize = 260;
-  constexpr uint32_t kOwnId = 32, kName = 34, kGender = 208, kSelectable = 221, kDlc = 257;
-  uint8_t* slot[6];
-  for (uint32_t i = 0; i < 6; ++i) slot[i] = base + match + kSlots + i * kSlotSize;
-  const uint32_t picked[2] = {Rd16(slot[0] + 54), Rd16(slot[1] + 54)};
+  constexpr uint32_t kOwnId = 32, kName = 34, kGender = 208, kSelectable = 221, kSamePerson = 228, kDlc = 257;
+  const uint32_t count = LumberjackCount();
+  uint8_t* slot[2 + kMaxLumberjacks];
+  for (uint32_t i = 0; i < 2 + count; ++i) slot[i] = base + match + kSlots + i * kSlotSize;
+  const uint32_t picked[2] = {Rd32(slot[0] + 8) / 100, Rd32(slot[1] + 8) / 100};  // (+8: what the people are built from)
   auto record = [&](uint32_t id) -> const uint8_t* {
     if (id >= 1000) return nullptr;
     const uint32_t index = Rd16(base + kIdToIndex + id * 2);
@@ -428,30 +442,53 @@ void FillLumberjackSlots(uint8_t* base, uint32_t match) {
   };
   const uint8_t* first = record(picked[0]);
   const uint32_t gender = first ? first[kGender] : 0;
+  // (one of the picks, under another id: the same name or the same person, +228)
+  auto is_picked = [&](uint32_t id) {
+    const uint8_t* rec = record(id);
+    if (!rec) return false;
+    for (uint32_t p : picked) {
+      const uint8_t* pr = record(p);
+      if (id == p || (pr && (std::strncmp(reinterpret_cast<const char*>(rec + kName), reinterpret_cast<const char*>(pr + kName), 32) == 0 ||
+                             (Rd16(rec + kSamePerson) && Rd16(rec + kSamePerson) == Rd16(pr + kSamePerson)) ||
+                             Rd16(rec + kSamePerson) == p || Rd16(pr + kSamePerson) == id)))
+        return true;
+    }
+    return false;
+  };
   bool keep = g_lumberjacks_chosen;
-  for (uint32_t id : g_lumberjack_ids)
-    if (const uint8_t* rec = record(id); !rec || id == picked[0] || id == picked[1] || rec[kGender] != gender) keep = false;
+  for (uint32_t j = 0; j < count; ++j) {
+    const uint32_t id = g_lumberjack_ids[j];
+    const uint8_t* rec = record(id);
+    if (!rec || is_picked(id) || rec[kGender] != gender) keep = false;
+  }
   std::string names;
   if (!keep) {
     std::vector<uint32_t> pool;
     for (uint32_t id = 1; id < 1000; ++id) {
       const uint8_t* rec = record(id);
-      if (rec && rec[kSelectable] == 1 && !rec[kDlc] && rec[kGender] == gender && id != picked[0] && id != picked[1])
+      if (rec && rec[kSelectable] == 1 && !rec[kDlc] && rec[kGender] == gender && !is_picked(id))
         pool.push_back(id);
     }
-    if (pool.size() < 4) {
+    if (pool.size() < count) {
       REXLOG_WARN("match types: lumberjacks - only {} superstars to choose from", pool.size());
       return;
     }
     static std::mt19937 rng{std::random_device{}()};
     std::shuffle(pool.begin(), pool.end(), rng);
-    for (uint32_t i = 0; i < 4; ++i) {
-      g_lumberjack_ids[i] = pool[i];
-      names += fmt::format("{}{}", names.empty() ? "" : ", ", reinterpret_cast<const char*>(record(pool[i]) + kName));
+    uint32_t chosen = 0;
+    std::vector<std::string> seen;  // (distinct names: one superstar under two ids once)
+    for (uint32_t id : pool) {
+      if (chosen == count) break;
+      const std::string name(reinterpret_cast<const char*>(record(id) + kName), strnlen(reinterpret_cast<const char*>(record(id) + kName), 32));
+      if (std::find(seen.begin(), seen.end(), name) != seen.end()) continue;
+      seen.push_back(name);
+      g_lumberjack_ids[chosen++] = id;
+      names += fmt::format("{}{}", names.empty() ? "" : ", ", name);
     }
+    if (chosen < count) return;
     g_lumberjacks_chosen = true;
   }
-  for (uint32_t i = 2; i < 6; ++i) {
+  for (uint32_t i = 2; i < 2 + count; ++i) {
     const uint32_t id = g_lumberjack_ids[i - 2], now = Rd32(slot[i] + 8);
     if (now != 51200 && now != id * 100 + 2) continue;  // (not an empty slot: someone's pick)
     Wr32(slot[i] + 8, id * 100 + 2);  // (attire: the first, as the select screen gives)
@@ -672,7 +709,7 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
   constexpr uint32_t kLive = 0x82E3DE00, kChars = 0x82E3CC50, kRoster = 0x82EDEA88;
   const auto saved = ctx;
   std::string people;
-  for (uint32_t i = 0; i < 6; ++i) {
+  for (uint32_t i = 0; i < 10; ++i) {
     const uint32_t ch = Rd32(base + kChars + i * 4);
     if (!ch) continue;
     const uint32_t id = Rd32(base + ch + 1156);
@@ -734,3 +771,164 @@ REX_HOOK_RAW(sub_828B5E28) {
   __imp__sub_828B5E28(ctx, base);
 }
 
+// The per-fighter controls (sub_82216C58(control), once a frame each: +32
+// the fighter, +36 its input object), remembered per fighter for the
+// lumberjacks' controller.
+namespace {
+struct Control {
+  uint32_t fighter = 0, input = 0;
+};
+Control g_controls[8];
+// Attacks the controller asks for: a lumberjack fighter and his wrestler
+// (started from the control hook, which has a context).
+struct Attack {
+  uint32_t fighter = 0, wrestler = 0, at_frame = 0;
+};
+Attack g_attacks[6];
+uint32_t g_attack_motion = 1000;  // (test aid SVR2011_TEST_LJ_MOTION)
+}  // namespace
+
+REX_EXTERN(__imp__sub_82216C58);
+REX_HOOK_RAW(sub_82216C58) {
+  const uint32_t control = ctx.r3.u32, fighter = Rd32(base + control + 32), input = Rd32(base + control + 36);
+  for (Control& c : g_controls)
+    if (c.fighter == fighter || !c.fighter) {
+      c.fighter = fighter, c.input = input;
+      break;
+    }
+  __imp__sub_82216C58(ctx, base);
+  for (Attack& a : g_attacks)
+    if (a.fighter == fighter && a.wrestler) {
+      static const uint32_t motion = [] {
+        const char* v = std::getenv("SVR2011_TEST_LJ_MOTION");
+        return v ? uint32_t(std::atoi(v)) : 1000u;
+      }();
+      const auto saved = ctx;
+      const uint32_t before = Rd32(base + fighter + 212), wbefore = Rd32(base + a.wrestler + 212);
+      ctx.r3.u64 = fighter;
+      ctx.r4.u64 = a.wrestler;
+      ctx.r5.u64 = motion;
+      sub_82191AA8(ctx, base);
+      REXLOG_INFO("match types: lumberjack attack - motion {} (lumberjack {} -> {}, wrestler {} -> {})", motion, before,
+                  Rd32(base + fighter + 212), wbefore, Rd32(base + a.wrestler + 212));
+      ctx = saved;
+      a.wrestler = 0;
+    }
+}
+
+// -- The lumberjacks' controller ---------------------------------------------
+//
+// The lumberjacks are managers (kind 2): they keep to their posts on the
+// floor and their AI never fights (neither their role +2624 nor the AI's mark
+// +168 changes that during a match). So the port makes them act: each world
+// update, a wrestler on the floor (y about 0, outside the ring's +-30 - in
+// the ring y is -12) for half a second gets the nearest lumberjacks within
+// reach (two at most) - each grabs him once (the paired move 1000, started
+// from the fighter control hook below) - and back in the ring he is left
+// alone until his next trip out.
+namespace {
+
+constexpr float kRingHalf = 30.0f, kReach = 20.0f;
+
+struct Pos {
+  float x, y, z;
+};
+Pos PosOf(const uint8_t* base, uint32_t ch) { return {RdF(base + ch + 288), RdF(base + ch + 292), RdF(base + ch + 296)}; }
+bool InRing(const Pos& p) { return p.y < -6.0f && std::fabs(p.x) < kRingHalf && std::fabs(p.z) < kRingHalf; }
+bool OnFloor(const Pos& p) { return p.y > -6.0f && (std::fabs(p.x) > kRingHalf || std::fabs(p.z) > kRingHalf); }
+
+void LumberjackController(uint8_t* base) {
+  constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C;
+  static uint32_t last_frames = 0;
+  static int floor_time[6] = {};        // (updates a wrestler has been on the floor (+) / in the ring (-))
+  static bool attacked[6][6] = {};      // (lumberjack i has had wrestler w this trip out)
+  static uint32_t busy_until[6] = {};   // (a lumberjack's last grab: no other for 3 s)
+  const uint32_t frames = Rd32(base + kMatchFrames);
+  const bool running = frames != last_frames && frames > 60;
+  if (running && last_frames <= 60) {  // (once a match: its live rules - byte 5 the count out, 0x80 none)
+    std::string live;
+    for (uint32_t i = 0; i < 16; ++i) live += fmt::format(" {:02X}", base[0x82E3DE00 + i]);
+    REXLOG_INFO("match types: Lumberjack live rules{}", live);
+  }
+  last_frames = frames;
+  if (!running) {
+    for (int& f : floor_time) f = 0;
+    for (auto& row : attacked) for (bool& a : row) a = false;
+    for (uint32_t& b : busy_until) b = 0;
+    for (Attack& a : g_attacks) a = Attack{};
+    return;
+  }
+  uint32_t ch[6];
+  Pos pos[6];
+  for (uint32_t i = 0; i < 6; ++i) {
+    ch[i] = Rd32(base + kChars + i * 4);
+    if (ch[i]) pos[i] = PosOf(base, ch[i]);
+  }
+  // The lumberjacks: people 2-5 (+1156), whatever their character slot.
+  auto is_lumberjack = [&](uint32_t i) { return ch[i] && Rd32(base + ch[i] + 1156) >= 2; };
+  for (uint32_t w = 0; w < 6; ++w) {
+    if (!ch[w] || is_lumberjack(w)) continue;
+    if (OnFloor(pos[w])) floor_time[w] = std::max(floor_time[w], 0) + 1;
+    else if (InRing(pos[w])) floor_time[w] = std::min(floor_time[w], 0) - 1;
+    if (floor_time[w] <= -30)  // (back in the ring: a new trip out may be punished again)
+      for (uint32_t i = 0; i < 6; ++i) attacked[i][w] = false;
+    if (floor_time[w] < 30) continue;
+    int going = 0;
+    for (uint32_t i = 0; i < 6; ++i) going += attacked[i][w];
+    while (going < 2) {  // (the nearest lumberjacks within reach who haven't had him yet)
+      int best = -1;
+      float best_d = kReach;
+      for (uint32_t i = 0; i < 6; ++i)
+        if (is_lumberjack(i) && !attacked[i][w] && frames >= busy_until[i] && !InRing(pos[i])) {
+          const float d = std::hypot(pos[i].x - pos[w].x, pos[i].z - pos[w].z);
+          if (d < best_d) best = int(i), best_d = d;
+        }
+      if (best < 0) break;
+      attacked[best][w] = true;
+      busy_until[best] = frames + 180;
+      g_attacks[best] = Attack{ch[best], ch[w], frames};
+      REXLOG_INFO("match types: lumberjack {} goes for person {}", Rd32(base + ch[best] + 1156), Rd32(base + ch[w] + 1156));
+      ++going;
+    }
+  }
+}
+
+}  // namespace
+
+namespace svr2011 {
+
+void MatchTypesUpdate(uint8_t* base) {
+  constexpr uint32_t kChars = 0x82E3CC50;
+  if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext)) return;
+  LumberjackController(base);
+  static const bool probe = std::getenv("SVR2011_TEST_PEOPLE") != nullptr;
+  static uint32_t frames = 0;
+  if (probe && ++frames % 60 == 0) {
+    std::string all;
+    for (uint32_t i = 0; i < 6; ++i)
+      if (const uint32_t c = Rd32(base + kChars + i * 4)) {
+        all += fmt::format(" {}:{:08X} ({:.0f},{:.0f},{:.0f}) area {} role {} +2348 {} +464 {} +476 {:08X}", i, c,
+                           RdF(base + c + 288), RdF(base + c + 292), RdF(base + c + 296), base[c + 444],
+                           Rd32(base + c + 2624), Rd32(base + c + 2348), base[c + 464], Rd32(base + c + 476));
+      }
+    REXLOG_INFO("[svr2011] people: roles{}", all);
+    if (const uint32_t c2 = Rd32(base + kChars + 8)) {  // (character 2's position object +304 and body +112)
+      std::string f;
+      const uint32_t po = Rd32(base + c2 + 304), body = Rd32(base + c2 + 112);
+      for (uint32_t at = 0; po && at < 96; at += 4) f += fmt::format(" {:.1f}", RdF(base + po + at));
+      f += " | body";
+      for (uint32_t at = 32; body && at < 96; at += 4) f += fmt::format(" {:.1f}", RdF(base + body + at));
+      REXLOG_INFO("[svr2011] people: 2 at ({:.1f},{:.1f},{:.1f}) pos object {:08X}:{}", RdF(base + c2 + 288),
+                  RdF(base + c2 + 292), RdF(base + c2 + 296), po, f);
+    }
+    const uint32_t c0 = Rd32(base + kChars);
+    for (const Control& c : g_controls)
+      if (c.fighter == c0 && c.input) {
+        std::string hex;
+        for (uint32_t at = 0; at < 128; ++at) hex += fmt::format("{}{:02X}", at % 16 ? "" : " ", base[c.input + at]);
+        REXLOG_INFO("[svr2011] people: input of 0 at {:08X}:{}", c.input, hex);
+      }
+  }
+}
+
+}  // namespace svr2011
