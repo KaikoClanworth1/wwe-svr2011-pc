@@ -394,7 +394,7 @@ REX_HOOK_RAW(sub_82225D68) {
 // (1: CPU) - become people), slots 2-5 of a Lumberjack match (manager slots:
 // the select screen leaves them empty) get 4 random superstars - selectable,
 // not DLC, not the two picked, of the picked wrestlers' gender (a diva match
-// gets divas) - as CPU wrestlers of team 3.
+// gets divas) - as CPU managers of team 3 (ringside).
 namespace {
 
 constexpr uint32_t kSlots = 432, kSlotSize = 2116;
@@ -402,6 +402,14 @@ uint32_t g_lumberjack_ids[4] = {};
 
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
 void Wr16(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
+
+// The lumberjacks' slot kind: 2, managers - they stay at ringside (as
+// wrestlers, kind 0, they get in and brawl). (test aid:
+// SVR2011_TEST_LJ_KIND=<n>)
+uint8_t LumberjackKind() {
+  static const int kind = [] { const char* v = std::getenv("SVR2011_TEST_LJ_KIND"); return v ? std::atoi(v) : 2; }();
+  return uint8_t(kind);
+}
 
 // (each time the people are built - the choice is kept unless it clashes with
 // a pick)
@@ -449,7 +457,7 @@ void FillLumberjackSlots(uint8_t* base, uint32_t match) {
     Wr32(slot[i] + 8, id * 100 + 2);  // (attire: the first, as the select screen gives)
     Wr16(slot[i] + 54, id);
     slot[i][5] = 3;      // (team: the lumberjacks)
-    slot[i][4] = 0;      // (kind: a wrestler)
+    slot[i][4] = LumberjackKind();
     slot[i][-8] = 1;     // (controller: the CPU)
   }
   if (!names.empty()) REXLOG_INFO("match types: lumberjacks: {}", names);
