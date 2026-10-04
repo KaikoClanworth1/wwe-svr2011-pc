@@ -72,7 +72,7 @@ constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
 constexpr uint32_t kFullName = 34, kSecondName = 102, kShortName = 170, kNameLen = 32;
-constexpr uint32_t kSelectable = 221, kDlc = 257, kSamePerson = 228;
+constexpr uint32_t kSelectable = 221, kDlc = 257, kSamePerson = 228, kAbilities = 230;
 
 struct Mod {
   std::string folder, name, short_name;
@@ -98,6 +98,15 @@ struct Mod {
   bool styled = false;
   int ratings[7] = {-1, -1, -1, -1, -1, -1, -1};
   fs::path voice;  // its own recorded name for the ring announcer (manifest voice=)
+  // a superstar the game's sound banks still have (manifest announcer=<NAME>,
+  // e.g. JEFFHARDY): the ring announcer says it with the game's own
+  // RA_*_<NAME>_* clips, in the categories where the base says its own name
+  std::string announcer;
+  // its own moves over the base's (manifest moves=<file>: lines "0xOFF=id",
+  // a byte offset in the profile's move block, 0..0x1BF, and a move id)
+  std::vector<std::pair<uint16_t, uint16_t>> moves;
+  int entrance = -1;            // entrance number (manifest entrance=; profile +0x1C0 +0x14..+0x18)
+  std::vector<uint8_t> abilities;  // (manifest abilities=a,b,...; record +230.., up to 8)
 };
 std::vector<Mod> g_mods;
 std::vector<std::string> g_extra_mounts;  // other overlay pacs (smods:\<file>; AddOverlayMount)
@@ -309,6 +318,17 @@ std::string SongOf(const uint8_t* e) {  // the USER PLAYLIST name (ASCII part)
   return n;
 }
 
+// A fresh profile (the base's copied): the mod's own moves (big-endian u16
+// move ids at byte offsets in the move block, below the entrance) and its
+// entrance number (+0x14, and the alternates +0x16, +0x18).
+void SetOwnMoves(uint8_t* profile, const Mod& m) {
+  for (const auto& [off, id] : m.moves)
+    if (off + 1u < kEntrance) profile[off] = uint8_t(id >> 8), profile[off + 1] = uint8_t(id);
+  if (m.entrance >= 0)
+    for (uint32_t k : {0x14u, 0x16u, 0x18u})
+      profile[kEntrance + k] = uint8_t(m.entrance >> 8), profile[kEntrance + k + 1] = uint8_t(m.entrance);
+}
+
 // The profile's entrance music and movie follow the mod's manifest while they
 // are still what the port set before or the base's (`base_profile`): a new
 // theme or movie added to an installed mod reaches a slot a save already has.
@@ -420,7 +440,7 @@ void LoadMods() {
     Mod m;
     m.folder = f.filename().string();
     m.name = m.short_name = m.folder;
-    std::string song, movie;
+    std::string song, movie, moves;
     std::string attires[4];  // attire<N>= (1-4): another pac's first attire as attire N
     if (FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb")) {
       char line[512];
@@ -448,6 +468,19 @@ void LoadMods() {
           m.attire_names[l[6] - '1'] = l.substr(13);
         if (l.rfind("call=", 0) == 0 && l.size() > 5 && std::isdigit(uint8_t(l[5])))
           m.call = std::clamp(std::atoi(l.c_str() + 5), 0, 83);
+        if (l.rfind("announcer=", 0) == 0) {
+          for (char c : l.substr(10))
+            if (std::isalnum(uint8_t(c)) && m.announcer.size() < 24) m.announcer.push_back(char(std::toupper(uint8_t(c))));
+        }
+        if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
+        if (l.rfind("abilities=", 0) == 0) {
+          for (const char* q = l.c_str() + 10; *q && m.abilities.size() < 8;) {
+            if (const int a = std::atoi(q); a > 0 && a < 256) m.abilities.push_back(uint8_t(a));
+            while (*q && *q != ',') ++q;
+            if (*q == ',') ++q;
+          }
+        }
+        if (l.rfind("moves=", 0) == 0 && l.size() > 6) moves = l.substr(6);
       }
       std::fclose(t);
     }
@@ -456,6 +489,18 @@ void LoadMods() {
       continue;
     }
     if (!m.voice.empty() && !fs::exists(m.voice, ec)) m.voice.clear();
+    if (!moves.empty())
+      if (FILE* t = std::fopen((f / moves).string().c_str(), "rb")) {
+        char line[256];
+        while (std::fgets(line, sizeof line, t)) {
+          char* eq = std::strchr(line, '=');
+          if (line[0] == '#' || !eq) continue;
+          const long off = std::strtol(line, nullptr, 0), id = std::strtol(eq + 1, nullptr, 0);
+          if (off >= 0 && off < 0x1C0 && !(off & 1) && id > 0 && id < 65536)
+            m.moves.push_back({uint16_t(off), uint16_t(id)});
+        }
+        std::fclose(t);
+      }
     if (m.styled && m.call < 0) m.call = 77;  // (The Superstar: never the template's name)
     {
       std::vector<fs::path> signs;
@@ -687,7 +732,9 @@ void ApplyRecords(uint8_t* base) {
         std::memcpy(sp, k->profile.data(), kProfileSize);
       } else {
         std::memcpy(sp, bp, kProfileSize);
-        REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {}", m.base, m.slot);
+        SetOwnMoves(sp, m);
+        REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {}{}", m.base, m.slot,
+                    m.moves.empty() && m.entrance < 0 ? "" : " (its own moves / entrance)");
       }
     }
     if (have_blank) SetEntranceMedia(sp, m, bp);
@@ -726,6 +773,8 @@ void ApplyRecords(uint8_t* base) {
     SetSigns(sr, br, m);
     for (int k = 0; k < 7; ++k)  // (its attributes: +0..+6 and the copy at +8)
       if (m.ratings[k] > 0) sr[k] = sr[8 + k] = uint8_t(m.ratings[k]);
+    if (!m.abilities.empty())
+      for (uint32_t k = 0; k < 8; ++k) sr[kAbilities + k] = k < m.abilities.size() ? m.abilities[k] : 0;
 
     // test aid: SVR2011_TEST_STAR_EDIT=<id> - that mod's ratings set to 20 (as
     // an edit made in the game would), to see them kept through a save
@@ -1039,6 +1088,36 @@ void WriteCallNames(PPCContext& ctx, uint8_t* base, uint32_t id) {
     std::memcpy(base + names + id * 64, n, std::strlen(n));
   }
 }
+// announcer=<NAME>: every category where the base's entry says the base's own
+// name ("RA_JR_SSN_MATTHARDY_1": the name from category 8) gets the same
+// entry with NAME instead ("RA_JR_SSN_JEFFHARDY_1"), at the mod's id. The
+// game picks the RA_TC_ announcer's from the RA_JR_ name itself.
+void WriteAnnouncerNames(PPCContext& ctx, uint8_t* base, const Mod& m) {
+  const uint32_t T = CallTable(ctx, base);
+  if (!T) return;
+  auto entry = [&](uint32_t c, uint32_t id) -> char* {
+    const uint32_t count = Rd32(base + T + 420 + c * 8), names = Rd32(base + T + 424 + c * 8);
+    return names && id < count ? reinterpret_cast<char*>(base + names + id * 64) : nullptr;
+  };
+  const char* b8 = entry(8, m.base);  // "RA_JR_SSN_<BASE NAME>_<n>"
+  if (!b8 || std::strncmp(b8, "RA_JR_SSN_", 10)) return;
+  std::string token(b8 + 10, strnlen(b8 + 10, 50));
+  if (const size_t u = token.rfind('_'); u != std::string::npos) token.resize(u);
+  if (token.empty()) return;
+  for (uint32_t c = 0; c < 45; ++c) {
+    const char* b = entry(c, m.base);
+    char* d = entry(c, m.slot);
+    if (!b || !d) continue;
+    std::string n(b, strnlen(b, 63));
+    const size_t at = n.find("_" + token + "_");
+    if (at == std::string::npos) continue;
+    n.replace(at + 1, token.size(), m.announcer);
+    if (n.size() > 63 || !std::strcmp(d, n.c_str())) continue;
+    if (NameCallLog()) REXLOG_INFO("[svr2011] name call: table {} [{}] \"{:.60}\" -> {}", c, m.slot, d, n);
+    std::memset(d, 0, 64);
+    std::memcpy(d, n.data(), n.size());
+  }
+}
 REX_EXTERN(__imp__sub_825EA208);
 REX_HOOK_RAW(sub_825EA208) {
   const uint32_t out = ctx.r3.u32;
@@ -1049,6 +1128,10 @@ REX_HOOK_RAW(sub_825EA208) {
                 Rd16(base + out + 20));
   const Mod* m = ModOf(Rd32(base + out));
   if (!m) return;
+  if (!m->announcer.empty()) {  // (the game's own clips of that name)
+    WriteAnnouncerNames(ctx, base, *m);
+    return;
+  }
   if (!m->voice.empty()) {  // (its own recording: the mod's own, silent, event names; PlayVoice)
     WriteCallNames(ctx, base, m->slot);
     return;
@@ -1095,7 +1178,11 @@ REX_HOOK_RAW(sub_82BEC030) {
           }
     }
   }
+  const bool log_ra = NameCallLog() && ctx.r3.u32 >= 0x10000 &&
+                      !std::strncmp(reinterpret_cast<const char*>(base + ctx.r3.u32), "Play_RA_", 8);
+  std::string ev = log_ra ? std::string(reinterpret_cast<const char*>(base + ctx.r3.u32), 0, 60) : "";
   __imp__sub_82BEC030(ctx, base);
+  if (log_ra) REXLOG_INFO("[svr2011] name call: {} -> playing id {}", ev, ctx.r3.u32);
 }
 REX_EXTERN(__imp__sub_825FDCD8);
 REX_HOOK_RAW(sub_825FDCD8) {

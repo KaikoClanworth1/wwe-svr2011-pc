@@ -139,6 +139,8 @@ ArenaInfo g_arenas[20] = {
 };
 
 std::wstring g_game;  // the installed game folder
+std::wstring g_star_model;  // test aid: --star-model <ch.pac>
+std::string g_star_name;    // test aid: --star-name <name>
 int g_sel = 0;
 
 // The mod being made
@@ -1233,6 +1235,8 @@ void StarPage() {
           std::snprintf(g_star.name, sizeof g_star.name, "Test %s", g_star_bases[i].name.c_str());
       g_star.model = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_star_start) + L".pac")).wstring();
     }
+    if (!g_star_model.empty()) g_star.model = g_star_model;  // (after --star)
+    if (!g_star_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_star_name.c_str());
     if (!g_star_picture.empty()) {
       Image img;
       if (LoadImageFile(Utf8(g_star_picture), img)) SetStarPicture(img);
@@ -2232,6 +2236,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--star-picture")) g_star_picture = argv[i + 1];
     if (!wcscmp(argv[i], L"--star-call")) g_star.call = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--star-voice")) g_star.voice = argv[i + 1];
+    if (!wcscmp(argv[i], L"--star-model")) g_star_model = argv[i + 1];
+    if (!wcscmp(argv[i], L"--star-name")) g_star_name = Utf8(argv[i + 1]);
     if (!wcscmp(argv[i], L"--sign")) g_sign_files.push_back(argv[i + 1]);
     if (!wcscmp(argv[i], L"--test-sign-save")) g_sign_test_save = argv[i + 1];
     if (!wcscmp(argv[i], L"--media-arena")) g_media_test_arena = _wtoi(argv[i + 1]);

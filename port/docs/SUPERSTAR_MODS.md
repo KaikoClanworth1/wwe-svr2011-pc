@@ -11,13 +11,14 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 50.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
 | `render.dds`, `render_small.dds` | (optional) its select-screen render: 512 x 512 and the 256 x 256 bust, DXT5 (the Mod Maker makes them from any picture) |
 | `voice.<ext>` | (optional) a recording of the name: the ring announcer "says" it |
 | `attireN.pac` | (optional, N = 2-4) another model pac: its first attire becomes the mod's attire N |
+| `moves.txt` | (optional, `moves=`) its own moves over the base's: lines `0xOFF=<move id>`, OFF a byte offset in the profile's move block (0..0x1BF, even) |
 | `disabled` | (optional) turns the mod off |
 
 `base=` is the disc superstar the mod starts from, which supplies its stats,
@@ -227,6 +228,36 @@ language). It is layout node `cursor+312` in `sub_82466830`.
 The art comes from `tools/make_modded_badge.py`, which writes
 `src/modded_badge.inc`.
 
+## Keys for superstars the game still knows (ports from SvR 2010)
+
+These keys apply when the port first copies the base's record and profile to
+the slot. A save made with the mod keeps the player's own edits.
+
+- **`moves=<file>`:** each `0xOFF=id` line writes a big-endian u16 move id at
+  that byte of the profile (CHAR/PRO, 1056 bytes; the moves are +0x000..+0x1BF,
+  the entrance block +0x1C0). The ids must have motion in 2011's m.pac.
+- **`entrance=<number>`:** the entrance number, written at profile +0x1C0
+  +0x14, +0x16 and +0x18. Example: 535 is Jeff Hardy's, which 2011 ships in
+  `evt/Nyujyo7.pac`, along with its pyro sound bank `Pyro_Jeff_Hardy` in
+  Entrance.pck, though no profile uses it. The music and movie still follow
+  `song=` / `movie=`.
+- **`abilities=a,b,...`:** up to 8 ability ids at record +230 (0 ends the
+  list). 2011 uses 1, 7, 9, 11, 12, 14, 19, 20, 22, 23, 24.
+- **`announcer=<NAME>`:** the ring announcer's own clips of a name the sound
+  banks still have.
+  - At the mod's id in the announcer name table, every category where the
+    base's entry says the base's name ("RA_JR_SSN_MATTHARDY_1"; the name is
+    taken from category 8) gets the same entry with NAME instead.
+  - The game picks RA_TC_ from RA_JR_ itself.
+  - 2011's RA.pck has real Jeff Hardy recordings by both announcers
+    (`*_SSN_JEFFHARDY_0..2` name calls of 2-3 s, `*_SSP_JEFFHARDY_0..5,9`
+    introductions of 8-12 s), which nothing used.
+  - It takes priority over `voice=`. `call=` then only picks the commentary.
+- **SvR 2010 model:** `tools/svr10_char.py <2010 pac> <id> <2011 pac> <out>`
+  turns a 2010 chNNN.pac into one 2011 loads. It swaps in 2011's face
+  animation child (0x64) and uses the 2010 select bust as the 256x256
+  portrait (0xc8/0xc9).
+
 ## The Mod Maker: Create a new superstar
 
 The Superstars page makes a new superstar from a form; it doesn't start from
@@ -317,7 +348,8 @@ Test aids (environment variables):
 `superstar_test.ps1 -MatchDown N` picks another match category (1 = TAG TEAM).
 
 Mod Maker test aids: `--page 3 --star <id> [--star-song f] [--star-movie f]
-[--star-picture f] [--star-call N] [--star-voice f] [--test-star-save out.svrmod]`.
+[--star-picture f] [--star-call N] [--star-voice f] [--star-model ch.pac]
+[--star-name text] [--test-star-save out.svrmod]`.
 `--star <id>` loads `pac/ch/ch<id>.pac` as the model, so the 3D preview shows
 it (`tools/modmaker_shot.ps1 -Extra "--page 3 --star 104"`).
 
