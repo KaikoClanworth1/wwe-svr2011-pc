@@ -81,6 +81,8 @@ def process(kind, data):
                 return f.read(), ".mp3", "re-encoded (%s, %d kbps -> MP3 %d kbps)" % (
                     audio[0].get("codec_name"), kbps, SONG_KBPS)
         if kind == "movie":
+            if not any(st.get("codec_type") == "video" for st in streams):
+                return None, None, "not a movie"
             if seconds <= MAX_MOVIE_SECONDS + 0.5:
                 return data, None, "kept (%.0f s)" % seconds
             out = os.path.join(tmp, "out.mp4")

@@ -38,6 +38,19 @@ def post_json(server, path, value, token=None):
         return status, {}
 
 
+def make_media(args):
+    """A small media file made by ffmpeg (from its test sources)."""
+    import shutil
+    import subprocess
+    import tempfile
+    exe = shutil.which("ffmpeg") or r"C:fmpeginfmpeg.exe"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out")
+        subprocess.run([exe, "-v", "error", "-y"] + args + [out], check=True)
+        with open(out, "rb") as f:
+            return f.read()
+
+
 def multipart(data):
     b = b"svr2011test"
     return (b"--" + b + b'\r\nContent-Disposition: form-data; name="data"; filename="test.bin"\r\n'
@@ -127,13 +140,17 @@ def main():
                            {"Content-Type": ctype}, a_token)
     check(h.get("Sake-File-Result") == "5" or status == 413, "an upload over the size limit refused (%d)" % status)
 
-    # an entrance's song and movie, kept with the Superstar's file
-    song = os.urandom(200000)
+    # an entrance's song and movie, kept with the Superstar's file (the server
+    # makes songs MP3s at 128 kbps: a WAV comes back as one - media.py)
+    song = make_media(["-f", "lavfi", "-i", "sine=frequency=440:duration=5", "-ac", "2", "-f", "wav"])
     status, _, body = request(server, "POST", "/api/media?kind=music", song, token=a_token)
-    song_sha = json.loads(body or b"{}").get("sha")
-    check(status == 200 and song_sha, "entrance song stored")
-    status, _, _ = request(server, "POST", "/api/media?kind=movie", os.urandom(49 << 20), token=a_token)
-    check(status == 413, "an entrance movie over the size limit refused (%d)" % status)
+    answer = json.loads(body or b"{}")
+    song_sha = answer.get("sha")
+    check(status == 200 and song_sha, "entrance song stored: %s" % answer.get("processed"))
+    status, _, _ = request(server, "POST", "/api/media?kind=music", os.urandom(50000), token=a_token)
+    check(status == 415, "a song that isn't one refused (%d)" % status)
+    status, _, _ = request(server, "POST", "/api/media?kind=movie", os.urandom(200000), token=a_token)
+    check(status == 415, "a movie that isn't one refused (%d)" % status)
     entrance = {"music": {"playlist": "Glass Shatters", "file": "Glass Shatters.mp3", "sha": song_sha}}
     status, _ = post_json(server, "/api/entrance/%s" % fileid, entrance, b_token)
     check(status == 403, "another player can't set the entrance")
@@ -148,7 +165,7 @@ def main():
     got = json.loads(body or b"{}")
     check(status == 200 and got.get("music", {}).get("playlist") == "Glass Shatters", "the other player reads it")
     status, _, back = request(server, "GET", "/api/media/%s" % song_sha, token=b_token)
-    check(back == song, "the song read back")
+    check(back[:3] == b"ID3" or back[:1] == bytes([0xFF]), "the song read back (as an MP3)")
     status, _, _ = request(server, "HEAD", "/api/media/%s" % ("0" * 64), token=b_token)
     check(status == 404, "an unknown song: 404")
 
