@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <string>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -136,13 +137,31 @@ REX_HOOK_RAW(sub_82322DA0) {
   }
   if (told || state == 3 || Clock::now() - since < std::chrono::seconds(10)) return;  // (3: the highlights play)
   told = true;
-  uint32_t busy = 0xFFFFFFFF;
-  if (state == 0) {
+  // Step 0's object: sub_821650F8(**0x82E35468) (as the step does); its part
+  // at +156 runs a handshake with the frame's helper thread (sub_826E1868):
+  // +1504 the update's side (0/5 = done), +1508 the helper's, +1496 a buffer.
+  uint32_t obj = 0, part = 0;
+  if (const uint32_t p = Rd32(base + 0x82E35468)) {
     PPCContext c = saved;
+    c.r3.u64 = Rd32(base + p);
     sub_821650F8(c, base);
-    if (const uint32_t obj = c.r3.u32)
-      if (const uint32_t sub = Rd32(base + obj + 156)) busy = Rd32(base + sub + 1504);
+    obj = c.r3.u32;
+    if (obj) part = Rd32(base + obj + 156);
   }
-  REXLOG_WARN("[svr2011] match end: step {} waiting 10 s - +20 {}, busy object state {} (0/5 = free), fade {} (global {:08X})",
-              state, Rd32(base + task + 20), int32_t(busy), Rd32(base + task + 8), Rd32(base + 0x82DEA30C));
+  std::string queue;  // (the helper's callbacks, sub_826E0F78: both buffers)
+  if (const uint32_t q = Rd32(base + 0x82F6D96C)) {
+    queue = fmt::format(" write {} read {}:", Rd32(base + q + 40), Rd32(base + q + 44));
+    for (uint32_t i = 0; i < 64; ++i) {
+      const uint32_t e = q + 168 + i * 16;
+      if (Rd32(base + e) || Rd32(base + e + 4))
+        queue += fmt::format(" [{}.{} {:08X} {:08X} {:08X} {}]", i / 32, i % 32, Rd32(base + e), Rd32(base + e + 4),
+                             Rd32(base + e + 8), Rd32(base + e + 12));
+    }
+  }
+  REXLOG_WARN("[svr2011] match end: step {} waiting 10 s - +20 {}, object {:08X} (+56 {} +88 {} +112 {}), part {:08X} "
+              "(+1504 {} +1508 {} +1496 {}), fade {} (global {:08X}); queue{}",
+              state, Rd32(base + task + 20), obj, obj ? Rd32(base + obj + 56) : 0, obj ? Rd32(base + obj + 88) : 0,
+              obj ? Rd32(base + obj + 112) : 0, part, part ? Rd32(base + part + 1504) : 0,
+              part ? Rd32(base + part + 1508) : 0, part ? Rd32(base + part + 1496) : 0, Rd32(base + task + 8),
+              Rd32(base + 0x82DEA30C), queue);
 }
