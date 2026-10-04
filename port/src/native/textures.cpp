@@ -534,8 +534,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   const bool gamma = fetch.sign_x == xenos::TextureSign::kGamma;
   RenderFormat resource_format = gamma && host.gamma != RenderFormat::UNKNOWN ? host.gamma : host.format;
   // (an icon page with PlayStation pictures - pad_icons.h - recognized below)
-  const bool pad_candidate = format == TF::k_DXT4_5 && !is_3d && !is_cube && array_size == 1 && levels == 1 &&
-                             svr2011::PadIconsCandidate(width, height);
+  const bool pad_candidate = (format == TF::k_DXT4_5 || format == TF::k_DXT1) && !is_3d && !is_cube &&
+                             array_size == 1 && levels == 1 && svr2011::PadIconsCandidate(width, height);
 
   // A re-upload (guest data changed) reuses the texture and its view: the
   // entry's key fixes the layout, and frames still in flight keep a valid
@@ -665,13 +665,15 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   if (format == TF::k_DXT4_5 && (width == 64 || width == 128) && height == 64 && array_size == 1)
     ReplaceRandomTile(width, mapped + footprints[0].offset, footprints[0].row_pitch);
   // An icon page: the shared taller picture instead (pad_icons.h).
+  uint64_t pad_hash = 0;
   if (pad_candidate) {
     uint64_t h = 0xCBF29CE484222325ull;
-    const uint32_t row_bytes = (width / 4) * 16;
+    const uint32_t row_bytes = (width / 4) * (format == TF::k_DXT1 ? 8 : 16);
     for (uint32_t y = 0; y < footprints[0].rows; ++y) {
       const uint8_t* row = mapped + footprints[0].offset + size_t(y) * footprints[0].row_pitch;
       for (uint32_t x = 0; x < row_bytes; ++x) h = (h ^ row[x]) * 0x100000001B3ull;
     }
+    pad_hash = h;
     const svr2011::PadIconsPicture pic = svr2011::PadIconsAtlas(width, height, h);
     if (pic.rgba) {
       const RenderFormat rgba = gamma ? RenderFormat::R8G8B8A8_UNORM_SRGB : RenderFormat::R8G8B8A8_UNORM;
@@ -686,6 +688,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
       }
     }
   }
+  // (a picture with PlayStation / keyboard versions: SetTexture swaps it)
+  svr2011::PadIconsTextureUploaded(base_page << 12, width, height, pad_hash);
   if (!create_resource()) {
     if (staging) staging->unmap();
     return false;

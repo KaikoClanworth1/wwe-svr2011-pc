@@ -36,8 +36,12 @@ struct PadIconsPicture {
   const std::vector<uint8_t>* rgba = nullptr;
 };
 PadIconsPicture PadIconsAtlas(uint32_t page_width, uint32_t page_height, uint64_t hash);
-// Whether a texture of that size could be an icon page (before hashing it).
+// Whether a texture of that size could be an icon page or a picture with
+// other versions (before hashing it).
 bool PadIconsCandidate(uint32_t width, uint32_t height);
+// The renderer uploaded a texture at physical_base: its base level's FNV-1a
+// 64 (0: not hashed) - a picture with other versions, or not (any longer).
+void PadIconsTextureUploaded(uint32_t physical_base, uint32_t width, uint32_t height, uint64_t hash);
 
 // The player the prompts being drawn belong to (-1: shared by everyone).
 void SetPadIconsOwner(int user_index);
