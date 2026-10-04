@@ -179,10 +179,16 @@ final class ModsPage {
             ZipEntry e;
             while ((e = zip.getNextEntry()) != null) {
                 if (e.isDirectory()) continue;
-                String n = e.getName();
-                n = n.substring(n.lastIndexOf('/') + 1);
-                if (n.isEmpty() || n.startsWith(".")) continue;
+                // (subfolders kept - a superstar mod's moves/motions/ - but
+                // nothing outside the mod's folder)
+                String n = e.getName().replace('\\', '/');
+                String leaf = n.substring(n.lastIndexOf('/') + 1);
+                if (leaf.isEmpty() || leaf.startsWith(".") || n.startsWith("/") || n.contains(":")
+                        || ("/" + n + "/").contains("/../"))
+                    continue;
                 File out = new File(stage, n);
+                File dir = out.getParentFile();
+                if (dir != null) dir.mkdirs();
                 try (OutputStream o = new FileOutputStream(out)) {
                     FileOps.copy(zip, o);
                 }
