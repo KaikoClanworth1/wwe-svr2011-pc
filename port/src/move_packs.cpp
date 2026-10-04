@@ -542,7 +542,7 @@ std::string FileStamp(const fs::path& p) {
   std::error_code ec;
   const auto size = fs::file_size(p, ec);
   const auto time = fs::last_write_time(p, ec).time_since_epoch().count();
-  return p.filename().string() + " " + std::to_string(size) + " " + std::to_string(time) + "\n";
+  return p.filename().string() + " " + std::to_string(static_cast<unsigned long long>(size)) + " " + std::to_string(static_cast<long long>(time)) + "\n";
 }
 
 }  // namespace
