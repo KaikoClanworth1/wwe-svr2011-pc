@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -197,16 +198,18 @@ struct Span {
   uint32_t at, size;
 };
 constexpr Span kShape[] = {{0, 28}, {44, 4}, {52, 4}, {64, 1}};
-// Lumberjack (0x55, story mode only) keeps its people and teams (3 fighters,
-// 3 lumberjacks: team 3) but gets the 6-person select screen of 6-MAN BATTLE
-// ROYAL: +24 (team layout), +36, +44, +52, +64.
-constexpr uint32_t kLumberjack = 0x55, kLumberjackLike = 0x23, kSixMan = 0x0A;
+// Lumberjack (0x55, story mode only): 2 wrestlers picked (the 1 on 1 select
+// screen of rule 00: +24 team layout, +36, +44, +52, +64) and 4 lumberjacks
+// - people 2-5, team 3, as manager slots (kind 2: the select screen leaves
+// them out) filled with random superstars as the match loads (below).
+constexpr uint32_t kLumberjack = 0x55, kLumberjackLike = 0x00, kSixMan = 0x0A;
 constexpr Span kSelect[] = {{24, 4}, {36, 4}, {44, 4}, {52, 4}, {64, 1}};
 
 // The match row picked last: the rule record to reshape like which, and how
-// (pending_like 0: none).
-uint32_t g_pending_rule_lo = 0, g_pending_rule_hi = 0, g_pending_like = 0;
+// (pending_like ~0: none).
+uint32_t g_pending_rule_lo = 0, g_pending_rule_hi = 0, g_pending_like = ~0u;
 bool g_pending_select_only = false;
+bool g_lumberjacks_chosen = false;  // (people 2-5 of this Lumberjack match filled)
 struct Saved {
   uint32_t rule = 0;
   uint8_t rec[kRuleSize];
@@ -245,8 +248,9 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
   if (select_only) {
     for (const Span& span : kSelect) std::memcpy(rec + span.at, from + span.at, span.size);
     // Lumberjack: 2 wrestlers and 4 lumberjacks (the record has 3 wrestlers,
-    // teams 0, 1, 2): the third person joins the lumberjacks (team 3).
-    if (rule == kLumberjack) rec[2 + 2 * 3 + 1] = 3;
+    // teams 0, 1, 2, and 3 lumberjacks): people 2-5 team 3, manager slots.
+    if (rule == kLumberjack)
+      for (int i = 2; i < 6; ++i) rec[2 + i * 3 + 1] = 3, rec[2 + i * 3 + 2] = 2;
   } else {
     for (const Span& span : kShape) std::memcpy(rec + span.at, from + span.at, span.size);
     rec2[kRule2People] = base[rules + kRule2 + like * kRule2Size + kRule2People];
@@ -305,7 +309,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
   __imp__sub_8243FCC8(ctx, base);
   const int32_t result = ctx.r3.s32;
   if (result < 2000 || result >= 2119) return;
-  g_pending_like = 0;
+  g_pending_like = ~0u;
   for (const Backstage& b : g_backstage) {
     if (b.menu_group && group == b.menu_group) {
       g_pending_rule_lo = kBackstageFirstRule;
@@ -326,10 +330,11 @@ REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
   const uint32_t rule = ctx.r4.u32;
   RestoreRule(base);
+  g_lumberjacks_chosen = false;
   g_free_roam = (rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext);
   const uint32_t played = !g_free_roam ? rule : rule == kWholeBackstage ? 0x1Bu : 0x70u;
   if (g_free_roam) REXLOG_INFO("match types: free-roaming backstage, played as rule {:02X}", played);
-  if (g_pending_like && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
+  if (g_pending_like != ~0u && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
                          (!g_pending_select_only && rule == kWholeBackstage2)))
     ShapeRule(base, played, g_pending_like, g_pending_select_only);
   ctx.r4.u64 = played;
@@ -381,6 +386,91 @@ REX_EXTERN(__imp__sub_82225D68);
 REX_HOOK_RAW(sub_82225D68) {
   MarkLumberjacks(ctx, base);
   __imp__sub_82225D68(ctx, base);
+}
+
+// The lumberjacks: as the match's people are built (sub_828BBEF0(match):
+// its picks, 2116-byte slots at match+432 - +8 superstar id * 100 + attire
+// (51200: none), +54 the id, +5 the team, +4 the kind, -8 the controller
+// (1: CPU) - become people), slots 2-5 of a Lumberjack match (manager slots:
+// the select screen leaves them empty) get 4 random superstars - selectable,
+// not DLC, not the two picked, of the picked wrestlers' gender (a diva match
+// gets divas) - as CPU wrestlers of team 3.
+namespace {
+
+constexpr uint32_t kSlots = 432, kSlotSize = 2116;
+uint32_t g_lumberjack_ids[4] = {};
+
+uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
+void Wr16(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
+
+// (each time the people are built - the choice is kept unless it clashes with
+// a pick)
+void FillLumberjackSlots(uint8_t* base, uint32_t match) {
+  constexpr uint32_t kIdToIndex = 0x82DB3610, kRecords = 0x82E407C0, kRecordSize = 260;
+  constexpr uint32_t kOwnId = 32, kName = 34, kGender = 208, kSelectable = 221, kDlc = 257;
+  uint8_t* slot[6];
+  for (uint32_t i = 0; i < 6; ++i) slot[i] = base + match + kSlots + i * kSlotSize;
+  const uint32_t picked[2] = {Rd16(slot[0] + 54), Rd16(slot[1] + 54)};
+  auto record = [&](uint32_t id) -> const uint8_t* {
+    if (id >= 1000) return nullptr;
+    const uint32_t index = Rd16(base + kIdToIndex + id * 2);
+    if (index >= 1000) return nullptr;
+    const uint8_t* rec = base + kRecords + index * kRecordSize;
+    return Rd16(rec + kOwnId) == id ? rec : nullptr;
+  };
+  const uint8_t* first = record(picked[0]);
+  const uint32_t gender = first ? first[kGender] : 0;
+  bool keep = g_lumberjacks_chosen;
+  for (uint32_t id : g_lumberjack_ids)
+    if (const uint8_t* rec = record(id); !rec || id == picked[0] || id == picked[1] || rec[kGender] != gender) keep = false;
+  std::string names;
+  if (!keep) {
+    std::vector<uint32_t> pool;
+    for (uint32_t id = 1; id < 1000; ++id) {
+      const uint8_t* rec = record(id);
+      if (rec && rec[kSelectable] == 1 && !rec[kDlc] && rec[kGender] == gender && id != picked[0] && id != picked[1])
+        pool.push_back(id);
+    }
+    if (pool.size() < 4) {
+      REXLOG_WARN("match types: lumberjacks - only {} superstars to choose from", pool.size());
+      return;
+    }
+    static std::mt19937 rng{std::random_device{}()};
+    std::shuffle(pool.begin(), pool.end(), rng);
+    for (uint32_t i = 0; i < 4; ++i) {
+      g_lumberjack_ids[i] = pool[i];
+      names += fmt::format("{}{}", names.empty() ? "" : ", ", reinterpret_cast<const char*>(record(pool[i]) + kName));
+    }
+    g_lumberjacks_chosen = true;
+  }
+  for (uint32_t i = 2; i < 6; ++i) {
+    const uint32_t id = g_lumberjack_ids[i - 2], now = Rd32(slot[i] + 8);
+    if (now != 51200 && now != id * 100 + 2) continue;  // (not an empty slot: someone's pick)
+    Wr32(slot[i] + 8, id * 100 + 2);  // (attire: the first, as the select screen gives)
+    Wr16(slot[i] + 54, id);
+    slot[i][5] = 3;      // (team: the lumberjacks)
+    slot[i][4] = 0;      // (kind: a wrestler)
+    slot[i][-8] = 1;     // (controller: the CPU)
+  }
+  if (!names.empty()) REXLOG_INFO("match types: lumberjacks: {}", names);
+}
+
+}  // namespace
+
+REX_EXTERN(__imp__sub_828BBEF0);
+REX_HOOK_RAW(sub_828BBEF0) {
+  if (std::getenv("SVR2011_TEST_PEOPLE")) {  // (test aid: the match's slots 0-5, 64 bytes each)
+    for (uint32_t i = 0; i < 6; ++i) {
+      const uint32_t slot = ctx.r3.u32 + 432 + i * 2116;
+      std::string hex;
+      for (uint32_t at = 0; at < 64; ++at) hex += fmt::format("{}{:02X}", at % 16 ? "" : " ", base[slot - 8 + at]);
+      REXLOG_INFO("[svr2011] people: match {:08X} slot {} (from -8):{}", ctx.r3.u32, i, hex);
+    }
+  }
+  if (base[0x82E3DE00] == kLumberjack && !Rd32(base + kStoryContext) && ctx.r3.u32) {
+    FillLumberjackSlots(base, ctx.r3.u32);
+  }
+  __imp__sub_828BBEF0(ctx, base);
 }
 
 // -- The whole backstage ---------------------------------------------------
@@ -624,3 +714,15 @@ REX_HOOK_RAW(sub_822AD738) {
   __imp__sub_822AD738(ctx, base);
   std::memcpy(person2, saved, 12);
 }
+
+// Test aid: SVR2011_TEST_PEOPLE=1 - logs sub_828B5E28 (a person record
+// built: people, index, ...) with its caller, for the Lumberjack picks work.
+REX_EXTERN(__imp__sub_828B5E28);
+REX_HOOK_RAW(sub_828B5E28) {
+  static const bool on = std::getenv("SVR2011_TEST_PEOPLE") != nullptr;
+  if (on)
+    REXLOG_INFO("[svr2011] people: sub_828B5E28(r3 {:08X} r4 {} r5 {:08X} r6 {:08X}) from {:08X}", ctx.r3.u32, ctx.r4.u32,
+                ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
+  __imp__sub_828B5E28(ctx, base);
+}
+
