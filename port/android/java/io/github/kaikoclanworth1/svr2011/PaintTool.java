@@ -207,6 +207,16 @@ final class PaintTool {
         return buf;
     }
 
+    /** Renames `tmp` over `path` (replacing it, on any file system). */
+    private static boolean replace(File tmp, File path) {
+        try {
+            java.nio.file.Files.move(tmp.toPath(), path.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
     private static boolean writeFile(File path, byte[] b, int off, int n) {
         File tmp = new File(path.getPath() + ".new");
         boolean ok;
@@ -217,7 +227,7 @@ final class PaintTool {
         } catch (IOException e) {
             ok = false;
         }
-        if (!ok || !tmp.renameTo(path)) {
+        if (!ok || !replace(tmp, path)) {
             tmp.delete();
             return false;
         }
@@ -263,7 +273,7 @@ final class PaintTool {
             } catch (IOException e) {
                 ok = false;
             }
-            if (!ok || !tmp.renameTo(file)) {
+            if (!ok || !replace(tmp, file)) {
                 tmp.delete();
                 ok = false;
             }
@@ -298,6 +308,38 @@ final class PaintTool {
         f[b + STAMP + 6] = (byte) st.get(Calendar.SECOND);
         f[b + STAMP + 7] = (byte) st.get(Calendar.DAY_OF_WEEK);  // Sunday = 1, as wDayOfWeek + 1
     }
+
+    /**
+     * Puts a logo given as a palette (256 entries, A R G B bytes) and 256 x 256 8-bit pixels -
+     * as a Created Superstar keeps it - in slot k: the slot's 8-bit picture is those exact bytes
+     * (the PC launcher's pt_put_indexed).
+     */
+    static void putIndexed(byte[] f, int k, byte[] palette, byte[] pixels) {
+        final int b = slot(k);
+        int[] argb = new int[W * W];
+        System.arraycopy(USED_HEADER, 0, f, b + 8, 44);
+        for (int i = 0; i < W * W; i++) {
+            argb[i] = rd32(palette, 4 * (pixels[i] & 0xFF));
+            wr32(f, b + CANVAS + 4 * i, argb[i]);
+        }
+        System.arraycopy(TGA_HEADER, 0, f, b + TGA, 20);
+        System.arraycopy(palette, 0, f, b + TGA + 20, 1024);
+        System.arraycopy(pixels, 0, f, b + TGA + 0x414, W * W);
+        makeDds(f, b + DDS, argb);
+        Calendar st = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+        int year = st.get(Calendar.YEAR);
+        f[b + STAMP] = (byte) (year >> 8); f[b + STAMP + 1] = (byte) year;
+        f[b + STAMP + 2] = (byte) (st.get(Calendar.MONTH) + 1); f[b + STAMP + 3] = (byte) st.get(Calendar.DAY_OF_MONTH);
+        f[b + STAMP + 4] = (byte) st.get(Calendar.HOUR_OF_DAY); f[b + STAMP + 5] = (byte) st.get(Calendar.MINUTE);
+        f[b + STAMP + 6] = (byte) st.get(Calendar.SECOND);
+        f[b + STAMP + 7] = (byte) st.get(Calendar.DAY_OF_WEEK);
+    }
+
+    /** Slot k's 8-bit picture (palette at +20, pixels at +0x414 of the returned offset). */
+    static int tgaOffset(int k) { return slot(k) + TGA; }
+
+    /** Slot k's checksum as stored (the game's logo id for a Created Superstar's copy). */
+    static int storedSum(byte[] f, int k) { return rd32(f, slot(k) + SUM); }
 
     /** Empties slot k (everything from +8 up to the time stamp, then the empty header). */
     static void clear(byte[] f, int k) {

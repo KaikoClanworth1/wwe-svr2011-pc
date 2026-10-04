@@ -61,6 +61,15 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
           padding: 5px 10px; font: inherit; font-size: 13px; text-transform: none; letter-spacing: 0; }
 .err { color: #ffb4bb; }
 .scroll { max-height: 520px; overflow: auto; border-radius: 10px; }
+.viewer { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: none; align-items: center;
+          justify-content: center; z-index: 10; padding: 16px; }
+.viewer.on { display: flex; }
+.viewer .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+               max-width: 100%; text-align: center; }
+.viewer img { width: 384px; max-width: 100%; image-rendering: pixelated; border-radius: 8px;
+              background: repeating-conic-gradient(#2a2e35 0 25%, #1f2328 0 50%) 50% / 24px 24px; }
+.viewer .cap { margin-top: 10px; font-size: 14px; }
+.viewer .cap small { color: var(--dim, #8a93a0); display: block; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -121,6 +130,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   </table></div>
   <p class="err" id="err"></p>
 </div>
+<div class="viewer" id="viewer"><div class="box"><img id="v-img" alt=""><div class="cap" id="v-cap"></div></div></div>
 <script>
 (function () {
   var range = 'day', hist = null;
@@ -240,6 +250,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
         (u.hidden ? ' <span class="tag bad">hidden</span>' : '') + (u.deleted ? ' <span class="tag">deleted</span>' : '') +
         '</td><td>' + esc(TYPES[u.type] || u.type) + '</td><td>' + esc(u.author) + '</td><td class="num">' + bytes(u.size) +
         '</td><td class="num">' + u.downloads + '</td><td>' + ago(u.created) + '</td><td class="num">' +
+        (u.picture ? '<button class="btn" data-view="' + u.id + '">View</button>' : '') +
         '<button class="btn" data-up="' + u.id + '" data-a="' + (u.hidden ? 'show' : 'hide') + '">' + (u.hidden ? 'Show' : 'Hide') + '</button>' +
         '<button class="btn danger" data-up="' + u.id + '" data-a="delete">Delete</button></td></tr>';
     }).join('') : '<tr><td colspan="7" class="empty">No uploads.</td></tr>';
@@ -263,8 +274,17 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   }
 
   document.addEventListener('click', function (e) {
+    if (e.target.closest('#viewer')) { el('viewer').classList.remove('on'); return; }
     var b = e.target.closest('button');
     if (!b) return;
+    if (b.dataset.view) {
+      var u = uploads.filter(function (x) { return String(x.id) === b.dataset.view; })[0] || {};
+      el('v-img').src = 'api/admin/upload/' + b.dataset.view + '/thumb.png';
+      el('v-cap').innerHTML = esc(u.title || '(untitled)') + '<small>' + esc(TYPES[u.type] || '') + ' by ' +
+        esc(u.author || '') + ' &middot; tap to close</small>';
+      el('viewer').classList.add('on');
+      return;
+    }
     if (b.dataset.r) {
       range = b.dataset.r;
       document.querySelectorAll('#range button').forEach(function (x) { x.classList.toggle('on', x === b); });
@@ -284,6 +304,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   el('f-up').addEventListener('input', renderUploads);
   el('f-acc').addEventListener('input', renderUsers);
   window.addEventListener('resize', charts);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') el('viewer').classList.remove('on'); });
 
   stats(); lists();
   setInterval(stats, 5000);

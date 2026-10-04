@@ -272,11 +272,18 @@ A 50-man rumble would need "slot recycling": reload an eliminated entrant's char
 
 **Manager slots (tried):** making people 2-5 kind 2 (managers) changes the select screen to 2 picks (the match card still says LUMBER JACK MATCH). But exhibition never fills manager slots, so the match was a plain one on one. Using them would mean filling the slots ourselves: random superstars, or picks. The people list is not in the live settings at 0x82E3DE00, which only holds per-slot flags at +0xFC..+0x101.
 
-**Custom version - what is still needed:**
-1. **Behaviour (the core):** a per-frame lumberjack controller in the port. While both wrestlers are in the ring, lumberjacks stay at their posts: AI off, or a walk-to-post order. When a wrestler is on the floor, the nearest one or two get that wrestler as their only target until he is back in. To find:
-   - a per-character AI on/off switch. The whole-backstage story rule's CPU stood still, so one exists.
-   - the AI's target field (who it goes for).
-   - a "throw back into the ring" move, or rely on the AI's own Irish whip / roll-in moves.
-2. **No count-outs:** the rule record flags (+52 / +64) or the referee count code.
-3. **Lumberjacks can't pin or win:** check pins by team 3 (non-competitors). Watch for the earlier team win.
-4. **Who the lumberjacks are:** keep the 6-pick select, or 2 picks plus 4 random superstars.
+**Custom version - done (2026-10-04, match_types.cpp):**
+1. **Who:** you pick 2 wrestlers (the select fields of rule 0x00), and 4 random lumberjacks are chosen.
+   - They are selectable, not DLC, of the picks' gender, and not a pick under another id (same name or same person, +228).
+   - They are written into the live match's slots (*0x82EDEB48 +432 + i*2116: +8 id*100+attire, which MUST be attire 2; +54 id; +5 team 3; +4 kind 2; -8 CPU) as `sub_828BBEF0` builds the people.
+2. **At most 4:** `sub_828BBEF0` takes exactly 6 people from the slots (an unrolled check of 6 slot blocks), then the referee (person 6) and the commentators (7-8). Raising the record's people count is ignored. Raising it before the select screen crashes its set-up (`sub_827374A0` reads 6 slots). 6-8 lumberjacks would mean redoing the people builder and the per-person tables.
+3. **Staying outside:** as managers (kind 2) they keep to posts on the floor about 55 out, one per side. As wrestlers (kind 0) they start in the ring and brawl. With entrances off, wrestlers get the in-ring start places.
+   - Neither role (+2624: 0 wrestler, 2 manager), the AI mark (+168), the info kind (+12) nor the target (+2224, a character pointer) makes a manager fight during a match. The AI kind is fixed when the character is made.
+   - Moving a character by writing +288/+272 or the body does not stick.
+4. **Going for a wrestler:** a per-update controller.
+   - A wrestler is on the floor when y > -6 outside +-30 (in the ring y = -12; +444 byte: 0 ring, 1 outside).
+   - After half a second there, the nearest lumberjacks within 20 (two at most) each start the paired move 1000 with him once, via `sub_82191AA8(fighter, opponent, 1000)` from the fighter control hook `sub_82216C58`. Back in the ring, he can be punished again on his next trip out.
+   - Not done: a "throw him back in" move. The candidates checked (804/806/901) are running attacks.
+5. **No count-outs:** the rule's 64-byte record (misc.pac OPT, +8 + id*64; bit 7 = locked) has byte 5 = count out (normal 0x0A, Lumberjack/FCA/ER/cage 0x80 = locked off). In a match the live byte 5 is 0.
+6. **Can't win:** managers are not competitors (`sub_82225D68`, `sub_825EEA80` say no for team 3 / people 2+).
+7. **Referee ejection:** string.pac has the referee motions REFEREE WARNING / GET DOWN / EJECT MANAGER (0x3220, a motion name) and "MANAGER EJECTED" (0x8D2, a message). No ejection was seen in the tests.

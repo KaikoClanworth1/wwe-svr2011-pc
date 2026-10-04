@@ -47,7 +47,10 @@ os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
 from aiohttp import web
 
 import gamespy as gs
+import leaderboards
+import media
 import relay
+import thumbs
 
 HERE = Path(__file__).resolve().parent
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
@@ -395,6 +398,7 @@ class Service:
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
         self.relay = relay.Relay(self, gs.log)
+        self.leaderboards = leaderboards.Leaderboards(self.store)
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -612,6 +616,57 @@ class Service:
         gs.log("friends: %s invited %s" % (account["name"], other["name"]))
         return web.json_response({"ok": True})
 
+    # the game's leaderboards (leaderboards.py; the port's leaderboards.cpp)
+
+    def lb_row(self, r, names):
+        xuid, account, rating, cols, rank = r
+        return {"xuid": "%016X" % xuid, "rank": rank, "rating": rating, "name": names.get(account, ""),
+                "columns": json.loads(cols)}
+
+    def lb_names(self):
+        return {a["id"]: a["name"] for a in self.accounts.all()}
+
+    async def api_stats(self, request):
+        account = self.account(request)
+        if not account:
+            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False, "error": "Not JSON."}, status=400)
+        what = request.match_info["what"]
+        lb = self.leaderboards
+        loop = asyncio.get_running_loop()
+        if what == "write":
+            # (a game writes its own player's stats only)
+            xuid = Accounts.xuid(account)
+            if int(str(body.get("xuid") or "0"), 16) != xuid:
+                return web.json_response({"ok": False, "error": "Only your own stats."}, status=403)
+            done = await loop.run_in_executor(None, lb.write, xuid, account["id"], body.get("views") or [])
+            gs.log("stats: %s wrote %d view(s)" % (account["name"], done))
+            return web.json_response({"ok": True, "views": done})
+        names = await loop.run_in_executor(None, self.lb_names)
+        if what == "read":
+            xuids = [int(str(x), 16) for x in (body.get("xuids") or [])][:100]
+            out = []
+            for vid in [int(v) for v in (body.get("views") or [])][:64]:
+                rows = await loop.run_in_executor(None, lb.rows_for, vid, xuids)
+                out.append({"view": vid, "total": await loop.run_in_executor(None, lb.total, vid),
+                            "rows": [self.lb_row(r, names) for r in rows]})
+            return web.json_response({"ok": True, "views": out})
+        if what == "page":
+            vid, count = int(body.get("view") or 0), max(1, min(100, int(body.get("count") or 10)))
+            mode, pivot = body.get("mode"), body.get("pivot") or 0
+            if mode == "xuid":
+                rows = await loop.run_in_executor(None, lb.page_around, vid, int(str(pivot), 16), count)
+            elif mode == "rating":
+                rows = await loop.run_in_executor(None, lb.page_by_rating, vid, int(pivot), count)
+            else:
+                rows = await loop.run_in_executor(None, lb.page_by_rank, vid, int(pivot) or 1, count)
+            return web.json_response({"ok": True, "total": await loop.run_in_executor(None, lb.total, vid),
+                                      "rows": [self.lb_row(r, names) for r in rows]})
+        return web.json_response({"ok": False}, status=404)
+
     async def api_status(self, request):
         return web.json_response({"ok": True, "server": "svr2011-community", "version": 1})
 
@@ -648,13 +703,23 @@ class Service:
             return web.json_response({"ok": False, "error": "too large"}, status=413)
         pid = account["profileid"]
         loop = asyncio.get_running_loop()
-        sha = hashlib.sha256(data).hexdigest()
-        if not self.store.has_media(sha) and self.store.media_bytes(pid) + len(data) > self.media_quota:
+        sent = hashlib.sha256(data).hexdigest()
+        if self.store.stored_media(sent):  # (sent before: as it was stored)
+            return web.json_response({"ok": True, "sha": self.store.stored_media(sent)})
+        # (any size: songs made MP3 at the game's rate, movies cut at 4 minutes - media.py)
+        out, ext, what = await loop.run_in_executor(None, media.process, kind, data)
+        if out is None:
+            gs.log("media: %s from %s refused: %s" % (kind, account["name"], what))
+            return web.json_response({"ok": False, "error": what}, status=415)
+        if self.store.media_bytes(pid) + len(out) > self.media_quota:
             gs.log("media: %s from %s refused: over the quota" % (kind, account["name"]))
             return web.json_response({"ok": False, "error": "over the quota"}, status=507)
-        sha = await loop.run_in_executor(None, self.store.put_media, pid, kind, data)
-        gs.log("media: %s %d bytes from %s -> %s" % (kind, len(data), account["name"], sha[:12]))
-        return web.json_response({"ok": True, "sha": sha})
+        sha = await loop.run_in_executor(None, self.store.put_media, pid, kind, out)
+        if sha != sent:
+            self.store.set_media_alias(sent, sha, ext)
+        gs.log("media: %s %d bytes from %s -> %s, %d bytes: %s" % (kind, len(data), account["name"], sha[:12],
+                                                                   len(out), what))
+        return web.json_response({"ok": True, "sha": sha, "processed": what})
 
     async def api_media_get(self, request):
         if not self.account(request):
@@ -663,7 +728,8 @@ class Service:
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
             return web.Response(status=400)
         if request.method == "HEAD":
-            return web.Response(status=200 if self.store.has_media(sha) else 404)
+            return web.Response(status=200 if self.store.stored_media(sha) else 404)
+        sha = self.store.stored_media(sha) or sha
         data = await asyncio.get_running_loop().run_in_executor(None, self.store.get_media, sha)
         if data is None:
             return web.Response(status=404)
@@ -693,9 +759,11 @@ class Service:
             m = body.get(kind)
             if not isinstance(m, dict):
                 continue
-            sha = str(m.get("sha", "")).lower()
-            if not self.store.has_media(sha):
+            sent = str(m.get("sha", "")).lower()
+            sha = self.store.stored_media(sent)
+            if not sha:
                 return web.json_response({"ok": False, "error": "%s not uploaded" % kind}, status=400)
+            _, new_ext = self.store.media_alias(sent)
             entry = {"sha": sha}
             for n in names:
                 v = str(m.get(n, ""))
@@ -706,6 +774,8 @@ class Service:
             for n in ("frames",):
                 if isinstance(m.get(n), int):
                     entry[n] = m[n]
+            if kind == "music" and new_ext and "file" in entry:  # (the song became an MP3)
+                entry["file"] = os.path.splitext(entry["file"])[0] + new_ext
             info[kind] = entry
         self.store.set_entrance(fileid, account["profileid"], info)
         gs.log("entrance: file %d by %s: %s" % (fileid, account["name"], ", ".join(
@@ -851,10 +921,32 @@ class Service:
                 "author": names.get(rec["ownerid"], "profile %d" % rec["ownerid"]),
                 "size": size, "downloads": downloads, "created": rec["created"],
                 "hidden": int((f.get("Moderated") or [None, 0])[1] or 0) != 0,
+                "picture": int((f.get("ThumbSize") or [None, 0])[1] or 0) > 16,
                 "deleted": int((f.get("Deleted") or [None, 0])[1] or 0) != 0,
             })
         out.sort(key=lambda r: -r["created"])
         return web.json_response(out)
+
+    @staticmethod
+    def thumb_blob(rec):
+        """The picture the game keeps with an upload (ThumbData0, 1 ...)."""
+        out = b""
+        for k in range(16):
+            v = rec["fields"].get("ThumbData%d" % k)
+            if not v or v[0] != "binaryDataValue":
+                break
+            out += base64.b64decode(v[1] or "")
+        return out
+
+    @admin_only
+    async def admin_upload_thumb(self, request):
+        rec = self.store.get("UserContent", int(request.match_info["id"]))
+        if not rec:
+            return web.Response(status=404)
+        data = await asyncio.get_running_loop().run_in_executor(None, thumbs.thumb_png, self.thumb_blob(rec))
+        if not data:
+            return web.Response(status=404, text="No picture.")
+        return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
     @admin_only
     async def admin_upload_action(self, request):
@@ -938,6 +1030,7 @@ class Service:
         app.router.add_get(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/invite", self.api_invite)
+        app.router.add_post(b + "/api/stats/{what}", self.api_stats)
         app.router.add_route("*", b + "/api/logo/{hash}", self.api_logo)
         app.router.add_get(b + "/api/logos/wanted", self.api_logos_wanted)
         app.router.add_post(b + "/api/media", self.api_media_post)
@@ -949,6 +1042,7 @@ class Service:
         app.router.add_get("/", self.dashboard)
         app.router.add_get("/api/admin/stats", self.admin_stats)
         app.router.add_get("/api/admin/uploads", self.admin_uploads)
+        app.router.add_get("/api/admin/upload/{id}/thumb.png", self.admin_upload_thumb)
         app.router.add_post("/api/admin/upload/{id}/{action}", self.admin_upload_action)
         app.router.add_get("/api/admin/users", self.admin_users)
         app.router.add_post("/api/admin/user/{id}/{action}", self.admin_user_action)
@@ -968,9 +1062,9 @@ def main():
     ap.add_argument("--max-connections", type=int, default=100, help="game requests at once")
     ap.add_argument("--max-file-mb", type=int, default=8, help="the largest upload")
     ap.add_argument("--quota-mb", type=int, default=256, help="what one player may store (uncompressed)")
-    ap.add_argument("--max-music-mb", type=int, default=16, help="the largest entrance song")
-    ap.add_argument("--max-movie-mb", type=int, default=48, help="the largest entrance movie (sent shrunk, MP4)")
-    ap.add_argument("--media-quota-mb", type=int, default=1024, help="entrance songs and movies one player may store")
+    ap.add_argument("--max-music-mb", type=int, default=512, help="the largest entrance song sent (stored as MP3)")
+    ap.add_argument("--max-movie-mb", type=int, default=1024, help="the largest entrance movie sent (MP4; kept 4 min)")
+    ap.add_argument("--media-quota-mb", type=int, default=8192, help="entrance songs and movies one player may store")
     args = ap.parse_args()
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")

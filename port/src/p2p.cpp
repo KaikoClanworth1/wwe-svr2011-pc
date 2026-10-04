@@ -5,6 +5,7 @@
 // sessions", by gitSothib - its session directory is a protocol between the
 // games here instead of a web service.
 #include "p2p.h"
+#include "leaderboards.h"
 
 #include <algorithm>
 #include <array>
@@ -1301,7 +1302,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       return WriteResults(results, size, open);
     }
     default:
-      return std::nullopt;
+      return LeaderboardsXgi(message, buffer, length);  // (the stats: leaderboards.h)
   }
 }
 

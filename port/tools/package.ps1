@@ -41,6 +41,20 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
 } else {
     Write-Warning "no native shaders in $shaders (tools\convert_shaders.py) - this package uses the emulated renderer"
 }
+# PlayStation / keyboard button pictures (made by deploy.ps1 into the game
+# folder, tools/make_pad_icons.py).
+$icons = Join-Path (Split-Path $port -Parent) "Game Files\pad_icons"
+if (-not (Test-Path (Join-Path $icons "pad_icons.txt"))) {  # (a release copy in _release\port)
+    $icons = Join-Path (Split-Path (Split-Path $port -Parent) -Parent) "Game Files\pad_icons"
+}
+if (Test-Path (Join-Path $icons "pad_icons.txt")) {
+    New-Item -ItemType Directory -Force (Join-Path $stage "pad_icons") | Out-Null
+    Get-ChildItem $icons -File | Where-Object { $_.Extension -in ".dds", ".txt", ".bin" } |
+        Copy-Item -Destination (Join-Path $stage "pad_icons")
+} else {
+    Write-Warning "no pad_icons in $icons - the package has Xbox button pictures only"
+}
+
 # The known pipelines, built ahead in the menus (tools/merge_pipelines.py).
 $plist = Join-Path $port "dist\pipelines.list"
 if (Test-Path $plist) {

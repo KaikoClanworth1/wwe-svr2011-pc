@@ -21,6 +21,8 @@
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
  *                        --report <game folder>   (Report a problem: the zip, no window)
+ *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
+ *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
@@ -54,6 +56,8 @@
 #include "movie_maker.h"
 #include "unzip.h"
 #include "updater.h"
+#include "stfs.h"
+#include "caw_import.h"
 
 #include <winhttp.h>
 
@@ -104,7 +108,7 @@ enum {
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
     ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN,
-    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT,
+    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
@@ -1847,6 +1851,7 @@ static void update_free_space(void)
 
 static void saves_refresh(void);
 static void saves_folder_show(void);
+static void presets_fill(void);
 static void pt_refresh(void);
 static void mv_refresh(void);
 static volatile LONG s_up_busy;
@@ -2151,21 +2156,29 @@ static void build_ui(void)
                               L"settings, unlocks and progress and ties the rest together.",
         SS_LEFT, X0, 50, 560, 36, 0);
     saves_setup(add(TAB_SAVES, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
-                    X0, 92, 560, 206, ID_SV_LIST));
-    add(TAB_SAVES, L"Button", L"Back up all", BS_PUSHBUTTON | WS_TABSTOP, X0, 308, 130, 30, ID_SV_BACKUP);
-    add(TAB_SAVES, L"Button", L"Restore backup\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 140, 308, 140, 30, ID_SV_RESTORE);
-    add(TAB_SAVES, L"Button", L"Backups folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 290, 308, 130, 30, ID_SV_BACKUPS);
-    add(TAB_SAVES, L"Button", L"Open save folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 308, 130, 30, ID_SV_OPEN);
-    add(TAB_SAVES, L"Button", L"Export selected\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0, 346, 130, 30, ID_SV_EXPORT);
-    add(TAB_SAVES, L"Button", L"Import\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 140, 346, 140, 30, ID_SV_IMPORT);
-    add(TAB_SAVES, L"Button", L"Delete selected", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 346, 130, 30, ID_SV_DELETE);
-    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 388, 560, 40, ID_SV_STATUS);
+                    X0, 92, 560, 176, ID_SV_LIST));
+    add(TAB_SAVES, L"Button", L"Back up all", BS_PUSHBUTTON | WS_TABSTOP, X0, 276, 130, 30, ID_SV_BACKUP);
+    add(TAB_SAVES, L"Button", L"Restore backup\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 140, 276, 140, 30, ID_SV_RESTORE);
+    add(TAB_SAVES, L"Button", L"Backups folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 290, 276, 130, 30, ID_SV_BACKUPS);
+    add(TAB_SAVES, L"Button", L"Open save folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 276, 130, 30, ID_SV_OPEN);
+    add(TAB_SAVES, L"Button", L"Export selected\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0, 312, 130, 30, ID_SV_EXPORT);
+    add(TAB_SAVES, L"Button", L"Import\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 140, 312, 140, 30, ID_SV_IMPORT);
+    add(TAB_SAVES, L"Button", L"Import Superstar\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 290, 312, 130, 30,
+        ID_SV_IMPORTCAW);
+    add(TAB_SAVES, L"Button", L"Delete selected", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 312, 130, 30, ID_SV_DELETE);
+    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 350, 560, 36, ID_SV_STATUS);
+    add(TAB_SAVES, L"Static", L"Save preset:", SS_LEFT, X0, 400, 84, 20, 0);
+    add(TAB_SAVES, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 88, 396, 212, 240, ID_SV_PRESET);
+    add(TAB_SAVES, L"Button", L"New\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 310, 394, 110, 30, ID_SV_PRESET_NEW);
+    add(TAB_SAVES, L"Button", L"Import Xbox 360 save\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 394, 130, 30,
+        ID_SV_IMPORT360);
     add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 442, 380, 20, ID_SV_FOLDER);
     add(TAB_SAVES, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 390, 436, 80, 30, ID_SV_CHANGE);
     add(TAB_SAVES, L"Button", L"Default", BS_PUSHBUTTON | WS_TABSTOP, X0 + 480, 436, 80, 30, ID_SV_DEFAULT);
-    add(TAB_SAVES, L"Static", L"Keep two installs' saves apart (or share them): the game and this tab use the folder "
-                              L"set here (saved in " GAME_TOML L"). Default: the game folder's Saves.",
-        SS_LEFT, X0, 472, 560, 36, 0);
+    add(TAB_SAVES, L"Static", L"A save preset is a whole set of saves of its own (the game folder's Save Presets): "
+                              L"switch between them here, or bring your Xbox 360 save over into one. The game and "
+                              L"this tab use the folder set here (saved in " GAME_TOML L").",
+        SS_LEFT, X0, 472, 560, 52, 0);
 
     /* Paint Tool */
     add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
@@ -3129,6 +3142,7 @@ static void saves_folder_show(void)
         wcscpy_s(t, MAX_PATH + 64, L"Saves folder: (install the game first)");
     set_text(ID_SV_FOLDER, t);
     EnableWindow(ctl(ID_SV_DEFAULT), s[0] != 0);
+    presets_fill();
 }
 
 static int folder_has_saves(const WCHAR *dir)
@@ -3149,12 +3163,10 @@ static int folder_has_saves(const WCHAR *dir)
 /* Change... / Default: the new folder for the saves (NULL: the default). If it
  * has no saves and the current one does, offers to copy them over (the old
  * folder is left as it is). */
-static void saves_set_folder(const WCHAR *dir)
+/* Stores the saves folder setting (NULL: the default); 0 with a message if not. */
+static int saves_store_folder(const WCHAR *dir)
 {
-    WCHAR old[MAX_PATH], now[MAX_PATH], pat[MAX_PATH], t[MAX_PATH * 3];
     char u[MAX_PATH * 3], v[MAX_PATH * 3 + 4];
-    if (!s_game_dir[0] || saves_locked() || !saves_dir(old))
-        return;
     if (dir) {
         size_t i;
         WideCharToMultiByte(CP_UTF8, 0, dir, -1, u, sizeof u, NULL, NULL);
@@ -3163,7 +3175,7 @@ static void saves_set_folder(const WCHAR *dir)
                 u[i] = '/';
         if (strchr(u, '"')) {
             saves_status(L"That folder name can't be used.");
-            return;
+            return 0;
         }
         sprintf_s(v, sizeof v, "\"%s\"", u);
     } else {
@@ -3171,8 +3183,18 @@ static void saves_set_folder(const WCHAR *dir)
     }
     if (!toml_set("saves_folder", v)) {
         saves_status(L"The setting could not be saved (is the game folder read-only?).");
-        return;
+        return 0;
     }
+    return 1;
+}
+
+static void saves_set_folder(const WCHAR *dir)
+{
+    WCHAR old[MAX_PATH], now[MAX_PATH], pat[MAX_PATH], t[MAX_PATH * 3];
+    if (!s_game_dir[0] || saves_locked() || !saves_dir(old))
+        return;
+    if (!saves_store_folder(dir))
+        return;
     if (!saves_dir(now) || !mkdirs(now)) {
         saves_status(L"That folder could not be made.");
         saves_folder_show();
@@ -3213,6 +3235,271 @@ static void saves_open_backups(void)
     WCHAR b[MAX_PATH];
     if (join(b, s_game_dir, L"SaveBackups") && mkdirs(b))
         ShellExecuteW(s_wnd, L"open", b, NULL, NULL, SW_SHOWNORMAL);
+}
+
+/* ── save presets ─────────────────────────────────────────────────────── */
+/* A preset: a whole saves folder of its own, <game>\Save Presets\<name>;
+ * using one sets the saves folder setting to it ("Save Presets/<name>"). */
+#define PRESETS_DIR L"Save Presets"
+#define PRESET_OTHER L"Other folder: "
+
+/* A small modal box asking for a line of text. */
+static WCHAR *s_ask_out;
+static int s_ask_n, s_ask_done;
+
+static LRESULT CALLBACK ask_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
+{
+    if (m == WM_COMMAND && (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL)) {
+        if (LOWORD(wp) == IDOK)
+            GetDlgItemTextW(w, 100, s_ask_out, s_ask_n);
+        s_ask_done = LOWORD(wp) == IDOK ? 1 : -1;
+        DestroyWindow(w);
+        return 0;
+    }
+    if (m == WM_CLOSE) {
+        s_ask_done = -1;
+        DestroyWindow(w);
+        return 0;
+    }
+    return DefWindowProcW(w, m, wp, lp);
+}
+
+static int ask_text(const WCHAR *prompt, WCHAR *out, int n)
+{
+    static int registered;
+    WNDCLASSW wc;
+    RECT r = { 0, 0, 0, 0 }, pr;
+    HWND w, edit, c;
+    MSG msg;
+    int quit = 0;
+    if (!registered) {
+        ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = ask_proc;
+        wc.hInstance = s_inst;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"SvR2011Ask";
+        RegisterClassW(&wc);
+        registered = 1;
+    }
+    r.right = S(380);
+    r.bottom = S(144);
+    AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+    GetWindowRect(s_wnd, &pr);
+    w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"SvR2011Ask", WINDOW_TITLE, WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                        pr.left + (pr.right - pr.left - (r.right - r.left)) / 2,
+                        pr.top + (pr.bottom - pr.top - (r.bottom - r.top)) / 2, r.right - r.left, r.bottom - r.top,
+                        s_wnd, NULL, s_inst, NULL);
+    if (!w)
+        return 0;
+    c = CreateWindowExW(0, L"Static", prompt, WS_CHILD | WS_VISIBLE, S(16), S(12), S(348), S(36), w, NULL, s_inst, NULL);
+    SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", out, WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, S(16),
+                           S(52), S(348), S(26), w, (HMENU)(INT_PTR)100, s_inst, NULL);
+    SendMessageW(edit, WM_SETFONT, (WPARAM)s_font, TRUE);
+    SendMessageW(edit, EM_LIMITTEXT, (WPARAM)(n - 1), 0);
+    SendMessageW(edit, EM_SETSEL, 0, -1);
+    c = CreateWindowExW(0, L"Button", L"OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, S(184), S(98), S(86),
+                        S(30), w, (HMENU)(INT_PTR)IDOK, s_inst, NULL);
+    SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    c = CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP, S(278), S(98), S(86), S(30), w,
+                        (HMENU)(INT_PTR)IDCANCEL, s_inst, NULL);
+    SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    s_ask_out = out;
+    s_ask_n = n;
+    s_ask_done = 0;
+    EnableWindow(s_wnd, FALSE);
+    ShowWindow(w, SW_SHOW);
+    SetFocus(edit);
+    while (!s_ask_done) {
+        if (GetMessageW(&msg, NULL, 0, 0) <= 0) {
+            quit = 1;
+            break;
+        }
+        if (!IsDialogMessageW(w, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(s_wnd, TRUE);
+    SetForegroundWindow(s_wnd);
+    if (quit) {
+        if (IsWindow(w))
+            DestroyWindow(w);
+        PostQuitMessage(0);
+        return 0;
+    }
+    return s_ask_done == 1;
+}
+
+/* A preset name made safe as a folder name (0: nothing left). */
+static int preset_clean(WCHAR *name)
+{
+    WCHAR *r = name, *o = name;
+    for (; *r; r++)
+        if (*r >= 32 && !wcschr(L"\\/:*?\"<>|", *r))
+            *o++ = *r;
+    *o = 0;
+    while (o > name && (o[-1] == L' ' || o[-1] == L'.'))
+        *--o = 0;
+    for (r = name; *r == L' '; r++)
+        ;
+    if (r != name)
+        memmove(name, r, (wcslen(r) + 1) * sizeof(WCHAR));
+    return name[0] != 0;
+}
+
+static void presets_fill(void)
+{
+    HWND c = ctl(ID_SV_PRESET);
+    WCHAR s[MAX_PATH], base[MAX_PATH], pat[MAX_PATH], rel[MAX_PATH], abs_[MAX_PATH], other[MAX_PATH + 32];
+    WIN32_FIND_DATAW fd;
+    HANDLE f;
+    LRESULT sel = 0;
+    if (!c)
+        return;
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"Default (the game folder's Saves)");
+    if (!s_game_dir[0])
+        goto done;
+    saves_folder_setting(s, MAX_PATH);
+    if (join(base, s_game_dir, PRESETS_DIR) && join(pat, base, L"*")
+            && (f = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
+        do {
+            LRESULT i;
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
+                continue;
+            i = SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)fd.cFileName);
+            swprintf_s(rel, MAX_PATH, PRESETS_DIR L"\\%s", fd.cFileName);
+            if (s[0] && (!_wcsicmp(s, rel) || (join(abs_, base, fd.cFileName) && !_wcsicmp(s, abs_))))
+                sel = i;
+        } while (FindNextFileW(f, &fd));
+        FindClose(f);
+    }
+    if (s[0] && !sel) {
+        swprintf_s(other, MAX_PATH + 32, PRESET_OTHER L"%s", s);
+        sel = SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)other);
+    }
+done:
+    SendMessageW(c, CB_SETCURSEL, (WPARAM)sel, 0);
+}
+
+/* Switches the saves to `rel` (NULL: the default), without copying anything. */
+static void presets_use(const WCHAR *rel, const WCHAR *name)
+{
+    WCHAR now[MAX_PATH];
+    if (!saves_store_folder(rel)) {
+        presets_fill();
+        return;
+    }
+    if (saves_dir(now))
+        mkdirs(now);
+    saves_refresh();
+    if (name)
+        saves_status(L"Using the save preset \"%s\". The game uses it from its next start.", name);
+    else
+        saves_status(L"Using the default saves (the game folder's Saves).");
+}
+
+static void presets_pick(void)
+{
+    HWND c = ctl(ID_SV_PRESET);
+    LRESULT i = SendMessageW(c, CB_GETCURSEL, 0, 0);
+    WCHAR name[MAX_PATH + 32], rel[MAX_PATH];
+    if (i == CB_ERR)
+        return;
+    if (saves_locked()) {
+        presets_fill();
+        return;
+    }
+    if (i == 0) {
+        presets_use(NULL, NULL);
+        return;
+    }
+    if (SendMessageW(c, CB_GETLBTEXTLEN, (WPARAM)i, 0) >= MAX_PATH + 32)
+        return;
+    SendMessageW(c, CB_GETLBTEXT, (WPARAM)i, (LPARAM)name);
+    if (!wcsncmp(name, PRESET_OTHER, wcslen(PRESET_OTHER)))
+        return;  /* (already in use) */
+    swprintf_s(rel, MAX_PATH, PRESETS_DIR L"\\%s", name);
+    presets_use(rel, name);
+}
+
+/* A new preset's folder from a name asked for; 0 if cancelled or taken. */
+static int preset_make(const WCHAR *prompt, WCHAR *name, int n, WCHAR *dir, WCHAR *rel)
+{
+    WCHAR base[MAX_PATH];
+    if (!ask_text(prompt, name, n))
+        return 0;
+    if (!preset_clean(name)) {
+        saves_status(L"That name can't be used for a preset.");
+        return 0;
+    }
+    if (!join(base, s_game_dir, PRESETS_DIR) || !join(dir, base, name))
+        return 0;
+    if (dir_exists(dir) && folder_has_saves(dir)) {
+        saves_status(L"There is already a preset called \"%s\".", name);
+        return 0;
+    }
+    if (!mkdirs(dir)) {
+        saves_status(L"The preset's folder could not be made.");
+        return 0;
+    }
+    swprintf_s(rel, MAX_PATH, PRESETS_DIR L"\\%s", name);
+    return 1;
+}
+
+static void presets_new(void)
+{
+    WCHAR name[64] = L"", dir[MAX_PATH], rel[MAX_PATH], cur[MAX_PATH], pat[MAX_PATH], mnt[MAX_PATH], t[512];
+    if (!s_game_dir[0]) {
+        saves_status(L"Install the game first (Install tab).");
+        return;
+    }
+    if (saves_locked() || !preset_make(L"A name for the new save preset:", name, 64, dir, rel))
+        return;
+    if (saves_dir(cur) && folder_has_saves(cur)) {
+        swprintf_s(t, 512, L"Start \"%s\" with a copy of the saves you use now?\n\nYes: a copy (your saves now stay as "
+                           L"they are).\nNo: empty - the game starts over in it.", name);
+        if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) == IDYES && join(pat, cur, L"*")) {
+            shell_op(FO_COPY, pat, dir, 0);
+            if (join(mnt, dir, L".mount") && dir_exists(mnt))  /* (the game's scratch) */
+                shell_op(FO_DELETE, mnt, NULL, 0);
+        }
+    }
+    presets_use(rel, name);
+}
+
+static void saves_import_360(void)
+{
+    WCHAR src[MAX_PATH], name[64] = L"Xbox 360 save", dir[MAX_PATH], rel[MAX_PATH], info[MAX_PATH];
+    HCURSOR old;
+    int n, skipped = 0;
+    if (!s_game_dir[0]) {
+        saves_status(L"Install the game first (Install tab).");
+        return;
+    }
+    if (saves_locked())
+        return;
+    if (!pick_folder(L"Choose your Xbox 360 save folder (5451085D - or a USB drive or folder with it in)", src))
+        return;
+    if (!preset_make(L"A name for the save preset your Xbox 360 save goes into:", name, 64, dir, rel))
+        return;
+    old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    n = stfs_import_saves(src, dir, &skipped);
+    SetCursor(old);
+    if (!n) {
+        if (join(info, dir, L".info"))
+            RemoveDirectoryW(info);
+        RemoveDirectoryW(dir);
+        saves_refresh();
+        saves_status(L"No WWE SmackDown vs. Raw 2011 Xbox 360 saves were found in %s%s", src,
+                     skipped ? L" (some packages could not be read)." : L".");
+        return;
+    }
+    presets_use(rel, name);
+    saves_status(L"Brought %d Xbox 360 save%s over into the preset \"%s\", now in use.%s", n, n == 1 ? L"" : L"s", name,
+                 skipped ? L" Some packages could not be read." : L"");
 }
 
 /* ── Paint Tool ───────────────────────────────────────────────────────── */
@@ -4100,6 +4387,145 @@ done:
     free(f);
     free(px);
     return ok ? 0 : 1;
+}
+
+/* ── Created Superstar import ─────────────────────────────────────────── */
+
+/* Puts a logo given as palette + pixels (as a Created Superstar keeps it)
+ * in slot k - the Paint Tool's own 8-bit picture is those exact bytes. */
+static void pt_put_indexed(uint8_t *f, int k, const uint8_t *palette, const uint8_t *pixels)
+{
+    uint8_t *b = pt_slot(f, k);
+    uint32_t *argb = (uint32_t *)malloc(PT_W * PT_W * 4);
+    SYSTEMTIME st;
+    int i;
+    if (!argb)
+        return;
+    memcpy(b + 8, k_pt_used_header, 44);
+    for (i = 0; i < PT_W * PT_W; i++) {
+        argb[i] = rd32(palette + 4 * pixels[i]);
+        wr32(b + PT_CANVAS + 4 * i, argb[i]);
+    }
+    memcpy(b + PT_TGA, k_pt_tga_header, 20);
+    memcpy(b + PT_TGA + 20, palette, 1024);
+    memcpy(b + PT_TGA + 0x414, pixels, PT_W * PT_W);
+    pt_make_dds(b + PT_DDS, argb);
+    GetSystemTime(&st);
+    b[PT_STAMP] = (uint8_t)(st.wYear >> 8); b[PT_STAMP + 1] = (uint8_t)st.wYear;
+    b[PT_STAMP + 2] = (uint8_t)st.wMonth; b[PT_STAMP + 3] = (uint8_t)st.wDay;
+    b[PT_STAMP + 4] = (uint8_t)st.wHour; b[PT_STAMP + 5] = (uint8_t)st.wMinute;
+    b[PT_STAMP + 6] = (uint8_t)st.wSecond; b[PT_STAMP + 7] = (uint8_t)(st.wDayOfWeek + 1);
+    free(argb);
+}
+
+/* Logos into free Paint Tool slots (page 1 first), leaving out the ones the
+ * Paint Tool has already (a slot whose checksum is the logo's id). */
+static void caw_logos_to_paint(const WCHAR *saves, const CawLogo *logos, int n, int *added, int *had, int *no_room)
+{
+    WCHAR pt[MAX_PATH], err[512];
+    uint8_t *pages[PT_PAGES] = { 0 };
+    int dirty[PT_PAGES] = { 0 }, page, k, i, j;
+    uint32_t *ids = (uint32_t *)malloc(sizeof(uint32_t) * PT_PAGES * PT_SLOTS);
+    int n_ids = 0;
+    *added = *had = *no_room = 0;
+    if (!n || !ids || !join(pt, saves, PT_FILE) || !(pages[0] = pt_read(pt, err, 512))) {
+        *no_room = n;  /* (no Paint Tool save yet) */
+        free(ids);
+        return;
+    }
+    for (page = 1; page < PT_PAGES; page++)
+        pages[page] = pt_read_page(pt, page, err, 512);
+    for (page = 0; page < PT_PAGES; page++)
+        for (k = 0; pages[page] && k < PT_SLOTS; k++)
+            if (pt_used(pages[page], k))
+                ids[n_ids++] = rd32(pt_slot(pages[page], k) + PT_SUM);
+    for (i = 0; i < n; i++) {
+        int found = 0, placed = 0;
+        for (j = 0; j < n_ids && !found; j++)
+            found = logos[i].id && ids[j] == logos[i].id;
+        for (page = 0; page < PT_PAGES && !found; page++)  /* (or the same picture under another id) */
+            for (k = 0; pages[page] && k < PT_SLOTS && !found; k++) {
+                const uint8_t *t = pt_slot(pages[page], k) + PT_TGA;
+                found = pt_used(pages[page], k) && !memcmp(t + 20, logos[i].palette, 1024)
+                     && !memcmp(t + 0x414, logos[i].pixels, PT_W * PT_W);
+            }
+        if (found) {
+            ++*had;
+            continue;
+        }
+        for (page = 0; page < PT_PAGES && !placed; page++)
+            for (k = 0; pages[page] && k < PT_SLOTS && !placed; k++)
+                if (!pt_used(pages[page], k)) {
+                    pt_put_indexed(pages[page], k, logos[i].palette, logos[i].pixels);
+                    dirty[page] = placed = 1;
+                }
+        if (placed)
+            ++*added;
+        else
+            ++*no_room;
+    }
+    for (page = 0; page < PT_PAGES; page++) {
+        if (dirty[page])
+            pt_write_page(pt, page, pages[page]);
+        free(pages[page]);
+    }
+    free(ids);
+}
+
+/* Imports Created Superstars (files 0-separated in `files`) into the saves
+ * folder; a summary in `msg`. Returns how many went in. */
+static int caw_import_files(const WCHAR *saves, const WCHAR *files, int n, WCHAR *msg, size_t msg_n)
+{
+    const WCHAR *p;
+    WCHAR name[40], err[512], names[512] = L"", fail[600] = L"";
+    int i, done = 0, logos_added = 0, logos_had = 0, logos_lost = 0;
+    for (p = files, i = 0; i < n; i++, p += wcslen(p) + 1) {
+        CawLogo *logos = NULL;
+        int n_logos = 0, a = 0, h = 0, l = 0;
+        const int slot = caw_import(p, saves, name, 40, &logos, &n_logos, err, 512);
+        if (slot < 0) {
+            if (!fail[0])
+                wcscpy_s(fail, 600, err);
+            continue;
+        }
+        caw_logos_to_paint(saves, logos, n_logos, &a, &h, &l);
+        free(logos);
+        logos_added += a, logos_had += h, logos_lost += l;
+        if (wcslen(names) + wcslen(name) + 16 < 512)
+            swprintf_s(names + wcslen(names), 512 - wcslen(names), L"%s%s (slot %d)", done ? L", " : L"", name,
+                       slot + 1);
+        done++;
+    }
+    swprintf_s(msg, msg_n, L"Imported %d Created Superstar%s: %s. Logos: %d added to the Paint Tool%s%s.%s%s", done,
+               done == 1 ? L"" : L"s", done ? names : L"none", logos_added,
+               logos_had ? L", some you had already" : L"",
+               logos_lost ? L", some didn't fit (the Paint Tool is full, or not made yet)" : L"",
+               fail[0] ? L" " : L"", fail);
+    return done;
+}
+
+static void saves_import_caw(void)
+{
+    static WCHAR files[32768];
+    WCHAR saves[MAX_PATH], before[MAX_PATH], msg[1400];
+    int n;
+    if (!s_game_dir[0]) {
+        saves_status(L"Install the game first (Install tab).");
+        return;
+    }
+    if (saves_locked() || !saves_dir(saves))
+        return;
+    n = pick_save_files(files, 32768);
+    if (!n)
+        return;
+    if (!saves_backup_to(L" (before Superstar import)", before)) {
+        saves_status(L"Could not back up your saves first; nothing was imported.");
+        return;
+    }
+    caw_import_files(saves, files, n, msg, 1400);
+    saves_refresh();
+    pt_refresh();
+    saves_status(L"%s (Your saves were backed up first.)", msg);
 }
 
 static void set_busy(int busy)
@@ -5243,6 +5669,13 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_SV_OPEN:     saves_open();         break;
         case ID_SV_CHANGE:   saves_change_folder(); break;
         case ID_SV_DEFAULT:  saves_set_folder(NULL); break;
+        case ID_SV_PRESET_NEW: presets_new();    break;
+        case ID_SV_IMPORT360:  saves_import_360(); break;
+        case ID_SV_IMPORTCAW:  saves_import_caw(); break;
+        case ID_SV_PRESET:
+            if (HIWORD(wp) == CBN_SELCHANGE)
+                presets_pick();
+            break;
         case ID_PT_EXPORT:    pt_export();         break;
         case ID_PT_IMPORT:    pt_change(1);        break;
         case ID_PT_DELETE:    pt_change(0);        break;
@@ -5559,6 +5992,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (ok) wprintf(L"ok %s (%d logs, %d crash reports)\n", zip, logs, crashes);
         else wprintf(L"failed\n");
         return ok ? 0 : 1;
+    }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-360")) {   /* <360 save folder> <saves folder> */
+        int skipped = 0, n;
+        console_setup();
+        n = stfs_import_saves(argv[2], argv[3], &skipped);
+        wprintf(L"imported %d, unreadable %d\n", n, skipped);
+        return n ? 0 : 1;
+    }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-caw")) {   /* <saves folder> <file.cas>... */
+        static WCHAR list[32768];
+        WCHAR msg[1400];
+        size_t at = 0;
+        int i, n = 0;
+        console_setup();
+        for (i = 3; i < argc && at + wcslen(argv[i]) + 1 < 32768; i++, n++) {
+            wcscpy_s(list + at, 32768 - at, argv[i]);
+            at += wcslen(argv[i]) + 1;
+        }
+        n = caw_import_files(argv[2], list, n, msg, 1400);
+        wprintf(L"%s\n", msg);
+        return n ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--apk-package")) {   /* <game folder> <out folder> */
         WCHAR err[600] = L"";

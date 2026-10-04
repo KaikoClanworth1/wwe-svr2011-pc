@@ -550,6 +550,7 @@ void GraphicsPage::ControlsInput(uint16_t pressed, uint16_t act, bool& back) {
   const bool change = (pressed & X_INPUT_GAMEPAD_A) || key(ImGuiKey_Enter, false);
   const bool add = (pressed & X_INPUT_GAMEPAD_Y) || key(ImGuiKey_Insert, false);
   const bool clear = (pressed & X_INPUT_GAMEPAD_X) || key(ImGuiKey_Delete, false);
+  const bool reset = (pressed & X_INPUT_GAMEPAD_BACK) || key(ImGuiKey_R, false);
   if (control_row_ == kNumBindings) {  // RESET TO DEFAULTS
     if (change) {
       for (int i = 0; i < kNumBindings; ++i) SetBinding(i, kBindings[i].keys);
@@ -564,6 +565,9 @@ void GraphicsPage::ControlsInput(uint16_t pressed, uint16_t act, bool& back) {
     back = false;
   } else if (clear) {
     SetBinding(control_row_, "");
+  } else if (reset) {  // (this input's default keys; BACK doesn't close the page here)
+    SetBinding(control_row_, kBindings[control_row_].keys);
+    back = false;
   }
 }
 
@@ -840,7 +844,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         capture_ >= 0 ? "Press the key (Shift / Ctrl / Alt + a key for a combination). ESC: cancel."
         : control_row_ == kNumBindings
             ? "A: the default keys for every input."
-            : "A: change   Y: add a key   X: clear   (keyboard: Enter, Insert, Delete)";
+            : "A: change   Y: add a key   X: clear   BACK: reset   (keyboard: Enter, Insert, Delete, R)";
     const float hs = 18 * s;
     const ImVec2 sz = TextSize(g_menu_font, hs, help);
     Text(dl, g_menu_font, hs, ImVec2(P(639, 0).x - sz.x * 0.5f, P(0, 508).y - sz.y * 0.5f),

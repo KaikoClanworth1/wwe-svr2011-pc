@@ -405,6 +405,94 @@ REX_HOOK_RAW(sub_8247E330) {
   }
 }
 
+// Online Axxess (THQ's online pass): always owned - it's 2026. sub_828C19D8(id)
+// is the game's "is this unlocked" (ids 0, 1 and 5 through the DLC manager:
+// category 5 = catalog types 5 and 6); id 5 is Online Axxess, asked by every
+// gate: entering ONLINE (without it, a "trial period" from Xbox LIVE storage
+// that can't be had: "Information related to your trial period couldn't be
+// retrieved"), the ONLINE menu's greyed items, the shop.
+REX_EXTERN(__imp__sub_828C19D8);
+REX_HOOK_RAW(sub_828C19D8) {
+  if (ctx.r3.u32 == 5) {
+    ctx.r3.u64 = 1;
+    return;
+  }
+  __imp__sub_828C19D8(ctx, base);
+}
+
+// -- Community Creations limits lifted ----------------------------------------
+
+// "You are unable to upload due to this created content containing
+// downloadable content" (string 50999): the upload confirm step
+// (sub_82511C18) tests a DLC flag per kind of content first - a Created
+// Superstar's parts (sub_82579EB0: the part table's DLC byte), the +116 /
+// +120 kinds (also sub_82579EB0), +128 (sub_8257AB78: bit 0x4) and stories
+// (sub_82628FE0: the Superstars its scenes use). Each is asked only there:
+// no DLC, always - DLC content uploads like any other.
+REX_HOOK_RAW(sub_82579EB0) {
+  (void)base;
+  ctx.r3.u64 = 0;
+}
+REX_HOOK_RAW(sub_8257AB78) {
+  (void)base;
+  ctx.r3.u64 = 0;
+}
+REX_HOOK_RAW(sub_82628FE0) {
+  (void)base;
+  ctx.r3.u64 = 0;
+}
+
+// "To use a Created Superstar with Paint Tool Data in a match, you must first
+// upload the data to the server ... Do you want to upload these?" (string
+// 50940) on entering ONLINE: not asked - the answer is always YES. The online
+// manager's check (sub_824F27E8) shows it through sub_824FC010(box, 50940)
+// (its only use) and goes to state 1, whose handler (sub_824F18D0) waits for
+// the box (sub_824FC1E8) and takes its answer (sub_824FC290; 1 = YES: the
+// uploads of every attire's Paint Tool data, then "Upload complete").
+namespace {
+std::atomic<bool> g_paint_auto_yes{false};   // (the question was skipped)
+thread_local bool g_paint_answering = false;  // (inside its state-1 handler)
+}  // namespace
+
+REX_EXTERN(__imp__sub_824FC010);
+REX_HOOK_RAW(sub_824FC010) {
+  if (ctx.r4.u32 == 50940) {
+    g_paint_auto_yes = true;
+    REXLOG_INFO("online: Paint Tool data to upload - uploading it (no question)");
+    return;
+  }
+  __imp__sub_824FC010(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_824F18D0);
+REX_HOOK_RAW(sub_824F18D0) {
+  if (!g_paint_auto_yes.exchange(false)) {
+    __imp__sub_824F18D0(ctx, base);
+    return;
+  }
+  g_paint_answering = true;
+  __imp__sub_824F18D0(ctx, base);
+  g_paint_answering = false;
+}
+
+REX_EXTERN(__imp__sub_824FC1E8);
+REX_HOOK_RAW(sub_824FC1E8) {  // (the box has an answer)
+  if (g_paint_answering) {
+    ctx.r3.u64 = 1;
+    return;
+  }
+  __imp__sub_824FC1E8(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_824FC290);
+REX_HOOK_RAW(sub_824FC290) {  // (its answer: YES)
+  if (g_paint_answering) {
+    ctx.r3.u64 = 1;
+    return;
+  }
+  __imp__sub_824FC290(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_82480068);
 REX_HOOK_RAW(sub_82480068) {
   uint8_t* shop = base + ctx.r3.u32;

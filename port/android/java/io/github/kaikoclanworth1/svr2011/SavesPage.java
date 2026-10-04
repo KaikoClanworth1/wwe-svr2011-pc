@@ -50,9 +50,16 @@ final class SavesPage {
         Button imp = a_.button("Import…", LauncherActivity.kCard);
         imp.setOnClickListener(v -> importFiles());
         c.addView(a_.pair(export, imp), a_.fullWidth(10));
+        Button importCaw = a_.button("Import Superstar…", LauncherActivity.kCard);
+        importCaw.setOnClickListener(v -> importSuperstars());
         Button delete = a_.button("Delete selected", LauncherActivity.kCard);
         delete.setOnClickListener(v -> deleteSelected());
-        c.addView(delete, a_.fullWidth(10));
+        c.addView(a_.pair(importCaw, delete), a_.fullWidth(10));
+        TextView cawHelp = a_.text("Import Superstar: pick someone's Created Superstar files (.cas, from a PC or an "
+            + "Xbox 360 save) - add their SaveData.dat too to keep each Superstar's details. Each goes into a free "
+            + "slot, and its logos into free Paint Tool slots.", 12, LauncherActivity.kDim);
+        cawHelp.setPadding(a_.dp(4), a_.dp(8), a_.dp(4), 0);
+        c.addView(cawHelp);
         TextView where = a_.text("Saves: games/" + InstallActivity.kFolderName + "/Saves — backups in "
             + "SaveBackups beside it.", 12, LauncherActivity.kDim);
         where.setPadding(a_.dp(4), a_.dp(12), a_.dp(4), 0);
@@ -258,6 +265,52 @@ final class SavesPage {
         }, () -> {
             a_.status(result[0]);
             refresh();
+        });
+    }
+
+    // Someone else's Created Superstars (CawImport): the .cas files, with their main save and
+    // extra logo files if picked too.
+    void importSuperstars() {
+        if (!a_.gameClosed()) return;
+        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("*/*");
+        pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        a_.startForResult(pick, (code, data) -> {
+            if (code != android.app.Activity.RESULT_OK || data == null) return;
+            List<Uri> uris = new ArrayList<>();
+            if (data.getClipData() != null) {
+                for (int i = 0; i < data.getClipData().getItemCount(); i++) uris.add(data.getClipData().getItemAt(i).getUri());
+            } else if (data.getData() != null) {
+                uris.add(data.getData());
+            }
+            if (uris.isEmpty()) return;
+            final String[] result = new String[1];
+            a_.status("Importing…");
+            a_.background(() -> {
+                try {
+                    List<CawImport.Picked> picked = new ArrayList<>();
+                    for (Uri u : uris) {
+                        try (java.io.InputStream in = a_.getContentResolver().openInputStream(u)) {
+                            if (in == null) continue;
+                            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                            byte[] buf = new byte[1 << 16];
+                            for (int n; (n = in.read(buf)) > 0; ) {
+                                out.write(buf, 0, n);
+                                if (out.size() > 64 * 1024 * 1024) throw new IOException("a picked file is too big");
+                            }
+                            picked.add(new CawImport.Picked(FileOps.displayName(a_.getContentResolver(), u), out.toByteArray()));
+                        }
+                    }
+                    FileOps.backup(" (before Superstar import)");
+                    result[0] = CawImport.run(FileOps.saves(), picked) + " (Your saves were backed up first.)";
+                } catch (IOException | OutOfMemoryError e) {
+                    result[0] = "Importing failed: " + e.getMessage();
+                }
+            }, () -> {
+                a_.status(result[0]);
+                refresh();
+            });
         });
     }
 

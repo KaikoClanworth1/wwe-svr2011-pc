@@ -4,6 +4,8 @@
 #   phone_session.ps1 start                     (re)start the game for a test
 #   phone_session.ps1 input "press START" "wait 2000" "press A"
 #   phone_session.ps1 key <BUTTON> [-Wait 1.5] one press, then wait (menus drop fast presses)
+#   phone_session.ps1 route <name>             go there (script_input.cpp kRoutes, e.g. cage)
+#                                              and wait until the game is there
 #   phone_session.ps1 shot <stem>              screenshot -> port\runs\<stem>.png
 #   phone_session.ps1 log [lines]              the end of the game's log
 #   phone_session.ps1 stop
@@ -42,7 +44,13 @@ switch ($Action) {
         Sh "rm -f $(Q "$run/input.txt"); touch $(Q "$run/input.txt")" | Out-Null
         # (SVR2011_PHONE_MUSIC=<folder in test_run>: the test's Music folder)
         $music = if ($env:SVR2011_PHONE_MUSIC) { @("--es", "SVR2011_MUSIC", "'$run/$env:SVR2011_PHONE_MUSIC'") } else { @() }
-        & $adb shell am start -n "$pkg/.InstallActivity" @music `
+        # (test aids set on the PC go along: a route at start, the match a test asks for - src/test_match.cpp)
+        $aids = @()
+        foreach ($k in "SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE") {
+            $v = [Environment]::GetEnvironmentVariable($k)
+            if ($v) { $aids += @("--es", $k, "'$v'") }
+        }
+        & $adb shell am start -n "$pkg/.InstallActivity" @music @aids `
             --es SVR2011_INPUT_FILE "'$run/input.txt'" `
             --es SVR2011_USER_DATA "'$run/userdata'" `
             --es args "'--audio_mute=true $env:SVR2011_PHONE_ARGS'" | Out-Null  # (+ extra settings for a test)
@@ -55,6 +63,19 @@ switch ($Action) {
         & $adb push $tmp "/data/local/tmp/svr2011_input.txt" | Out-Null
         Sh "cat /data/local/tmp/svr2011_input.txt >> $(Q "$run/input.txt")" | Out-Null
         if ($Action -eq "key") { Start-Sleep -Milliseconds ([int]($Wait * 1000)) } else { "queued: $($lines -join ' | ')" }
+    }
+    "route" {
+        $logs = "$game/logs"
+        $count = { $l = (Sh "ls -t $(Q $logs) | head -1").Trim(); [int]((Sh "grep -c 'script input: all steps done' $(Q "$logs/$l")") | Select-Object -First 1) }
+        $before = & $count
+        $tmp = Join-Path $env:TEMP "svr2011_phone_input.txt"
+        [IO.File]::WriteAllText($tmp, "route $($Rest[0])`n")
+        & $adb push $tmp "/data/local/tmp/svr2011_input.txt" | Out-Null
+        Sh "cat /data/local/tmp/svr2011_input.txt >> $(Q "$run/input.txt")" | Out-Null
+        $t0 = Get-Date
+        while (((Get-Date) - $t0).TotalSeconds -lt 300 -and (& $count) -le $before) { Start-Sleep -Seconds 2 }
+        $l = (Sh "ls -t $(Q $logs) | head -1").Trim()
+        Sh "grep -E 'script input: (title:|menu .+: |until .+: |no route)' $(Q "$logs/$l") | grep -v 'menu group' | tail -8"
     }
     "shot" {
         # The Fold has two displays: keep the brighter (the one the game is on).
@@ -88,5 +109,5 @@ switch ($Action) {
         & $adb shell am force-stop $pkg | Out-Null
         "stopped"
     }
-    default { "usage: phone_session.ps1 start|input|key|shot|log|stop" }
+    default { "usage: phone_session.ps1 start|input|key|route|shot|log|stop" }
 }

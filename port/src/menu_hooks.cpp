@@ -17,10 +17,13 @@
 #endif
 
 #include <cstdio>
+#include <atomic>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -83,6 +86,14 @@ uint32_t g_string_manager = 0;
 std::map<std::pair<uint32_t, uint32_t>, uint32_t> g_menu_labels;
 bool g_menu_labels_read = false;
 
+// For scripted tests (script_input.h): the main-menu object, the entries'
+// label texts by (group, row) and a count of the entries chosen.
+uint8_t* g_menu = nullptr;
+std::mutex g_menu_mutex;
+std::map<std::pair<uint32_t, uint32_t>, std::string> g_menu_texts;
+std::atomic<uint32_t> g_menu_selects{0};
+std::atomic<uint32_t> g_menu_selected{0};  // (group << 16 | row of the last one)
+
 void ReadMenuLabels() {
   g_menu_labels_read = true;
   const auto file = rex::filesystem::GetExecutableFolder() / "pac" / "menu" / "menu.pac";
@@ -101,7 +112,86 @@ void ReadMenuLabels() {
   }
 }
 
+// A label's text (printable characters only: icons such as MY WWE's logo
+// are control codes), through the string lookup below.
+std::string LabelText(PPCContext& ctx, uint8_t* base, uint32_t id) {
+  std::string label;
+  if (!g_string_manager) return label;
+  const auto saved = ctx;
+  ctx.r3.u64 = g_string_manager;
+  ctx.r4.u64 = id;
+  sub_82153EF8(ctx, base);
+  if (ctx.r3.u32) {
+    for (const char* t = reinterpret_cast<const char*>(base + ctx.r3.u32); *t && label.size() < 60; ++t)
+      if (static_cast<unsigned char>(*t) >= 0x20) label += *t;
+    while (!label.empty() && label.back() == ' ') label.pop_back();
+    while (!label.empty() && label.front() == ' ') label.erase(0, 1);
+  }
+  ctx = saved;
+  return label;
+}
+
+// The scripts' view of the menus, once (the first time the menu is used).
+void ReadMenuTexts(PPCContext& ctx, uint8_t* base) {
+  if (!g_menu_labels_read) ReadMenuLabels();
+  std::map<std::pair<uint32_t, uint32_t>, std::string> texts;
+  for (const auto& [key, id] : g_menu_labels) texts[key] = LabelText(ctx, base, id);
+  if (std::getenv("SVR2011_INPUT_FILE")) {  // (scripted tests: the names a "menu" step can use)
+    std::map<uint32_t, std::string> groups;
+    for (const auto& [key, text] : texts) groups[key.first] += (groups[key.first].empty() ? "" : " | ") + text;
+    for (const auto& [group, list] : groups) REXLOG_INFO("script input: menu group {:X}: {}", group, list);
+  }
+  std::lock_guard lock(g_menu_mutex);
+  g_menu_texts = std::move(texts);
+}
+
 }  // namespace
+
+namespace svr2011 {
+
+bool ScriptMenuState(uint32_t* group, uint32_t* row) {
+  if (!g_menu) return false;
+  *group = Be32(g_menu + kMenuGroup);
+  *row = Be32(g_menu + kMenuCursor);
+  return true;
+}
+
+int ScriptMenuRow(uint32_t group, const std::string& label, int* rows) {
+  auto norm = [](std::string s) {
+    std::string out;
+    for (char c : s) {
+      if (static_cast<unsigned char>(c) >= 0x80) continue;  // (icons, such as MY WWE's logo)
+      if (c == ' ' && (out.empty() || out.back() == ' ')) continue;
+      out += char(std::toupper(static_cast<unsigned char>(c)));
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+  };
+  const std::string want = norm(label);
+  std::lock_guard lock(g_menu_mutex);
+  int found = -1, n = 0;
+  for (auto it = g_menu_texts.lower_bound({group, 0}); it != g_menu_texts.end() && it->first.first == group; ++it, ++n)
+    if (found < 0 && norm(it->second) == want) found = int(it->first.second);
+  if (rows) *rows = n;
+  return found;
+}
+
+std::string ScriptMenuTexts(uint32_t group) {
+  std::lock_guard lock(g_menu_mutex);
+  std::string s;
+  for (auto it = g_menu_texts.lower_bound({group, 0}); it != g_menu_texts.end() && it->first.first == group; ++it)
+    s += (s.empty() ? "" : ", ") + it->second;
+  return s;
+}
+
+uint32_t ScriptMenuSelects(uint32_t* group, uint32_t* row) {
+  const uint32_t last = g_menu_selected.load();
+  *group = last >> 16;
+  *row = last & 0xFFFF;
+  return g_menu_selects.load();
+}
+
+}  // namespace svr2011
 
 namespace svr2011 {
 
@@ -244,26 +334,18 @@ REX_HOOK_RAW(sub_82153EF8) {
 // by_player (r4) is 1 when the player pressed A.
 REX_EXTERN(__imp__sub_82447210);
 REX_HOOK_RAW(sub_82447210) {
+  if (!g_menu) ReadMenuTexts(ctx, base);
+  g_menu = base + ctx.r3.u32;
   if (ctx.r4.u32 == 1) {
     const uint8_t* menu = base + ctx.r3.u32;
     const uint32_t group = Be32(menu + kMenuGroup), cursor = Be32(menu + kMenuCursor);
+    g_menu_selected = group << 16 | (cursor & 0xFFFF);
+    ++g_menu_selects;
     // The entry's label, for the log ("menu select: OPTIONS (group 5 row 3)").
     std::string label;
     if (!g_menu_labels_read) ReadMenuLabels();
-    if (auto it = g_menu_labels.find({group, cursor}); it != g_menu_labels.end() && g_string_manager) {
-      const auto saved = ctx;
-      ctx.r3.u64 = g_string_manager;
-      ctx.r4.u64 = it->second;
-      sub_82153EF8(ctx, base);
-      if (ctx.r3.u32) {
-        // (printable text only: icons such as MY WWE's logo are control codes)
-        for (const char* t = reinterpret_cast<const char*>(base + ctx.r3.u32); *t && label.size() < 60; ++t)
-          if (static_cast<unsigned char>(*t) >= 0x20) label += *t;
-        while (!label.empty() && label.back() == ' ') label.pop_back();
-        while (!label.empty() && label.front() == ' ') label.erase(0, 1);
-      }
-      ctx = saved;
-    }
+    if (auto it = g_menu_labels.find({group, cursor}); it != g_menu_labels.end())
+      label = LabelText(ctx, base, it->second);
     REXLOG_INFO("[svr2011] menu select: {}{}group {:X} row {}{}", label, label.empty() ? "" : " (", group, cursor,
                 label.empty() ? "" : ")");
     svr2011::TouchGameInMatch(false);  // (the touch controller's MENU layout)

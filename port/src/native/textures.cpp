@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <cstring>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -19,6 +20,8 @@
 #include <rex/logging.h>
 #include <fmt/format.h>
 #include <rex/system/xmemory.h>
+
+#include "pad_icons.h"
 
 namespace svr2011::native::textures {
 
@@ -440,6 +443,50 @@ struct Footprint {
   uint32_t row_pitch, rows;       // bytes per row of blocks, rows of blocks
 };
 
+// PlayStation button pictures (pad_icons.h): the fonts' icon pages are shown
+// as a taller picture, one resource for all the copies of a page (each font
+// has its own). Recognized by the converted base level's FNV-1a 64.
+struct PadPicture {
+  std::shared_ptr<plume::RenderTexture> resource;
+};
+std::map<std::pair<const void*, bool>, PadPicture> g_pad_pictures;  // (picture, gamma)
+
+bool IsPadPicture(const std::shared_ptr<plume::RenderTexture>& r) {
+  for (const auto& [key, p] : g_pad_pictures)
+    if (p.resource == r) return true;
+  return false;
+}
+
+// The resource for a picture (created and uploaded the first time).
+std::shared_ptr<plume::RenderTexture> PadPictureResource(const Context& ctx, const svr2011::PadIconsPicture& pic,
+                                                         RenderFormat format) {
+  PadPicture& p = g_pad_pictures[{pic.rgba, format == RenderFormat::R8G8B8A8_UNORM_SRGB}];
+  if (p.resource) return p.resource;
+  std::shared_ptr<plume::RenderTexture> resource = ctx.device->createTexture(plume::RenderTextureDesc::Texture(
+      plume::RenderTextureDimension::TEXTURE_2D, pic.width, pic.height, 1, 1, 1, format, plume::RenderTextureFlag::NONE));
+  if (!resource) return nullptr;
+  resource->setName(fmt::format("pad icons {}x{}", pic.width, pic.height));
+  const uint32_t row_pitch = (pic.width * 4 + 255) & ~255u;
+  std::shared_ptr<plume::RenderBuffer> staging =
+      ctx.device->createBuffer(plume::RenderBufferDesc::UploadBuffer(uint64_t(row_pitch) * pic.height));
+  if (!staging) return nullptr;
+  auto* mapped = static_cast<uint8_t*>(staging->map());
+  for (uint32_t y = 0; y < pic.height; ++y)
+    std::memcpy(mapped + size_t(y) * row_pitch, pic.rgba->data() + size_t(y) * pic.width * 4, pic.width * 4);
+  staging->unmap();
+  ctx.list->barriers(plume::RenderBarrierStage::COPY,
+                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::COPY_DEST));
+  ctx.list->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(resource.get(), 0, 0),
+                              plume::RenderTextureCopyLocation::PlacedFootprint(staging.get(), format, pic.width,
+                                                                                pic.height, 1, row_pitch / 4, 0));
+  ctx.list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::SHADER_READ));
+  ctx.retire(staging);
+  p.resource = resource;
+  REXLOG_INFO("[svr2011] pad icons: picture {}x{} uploaded", pic.width, pic.height);
+  return p.resource;
+}
+
 // Creates the resource and SRV for a texture and records its upload.
 bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t dimension,
             Entry& e) {
@@ -485,15 +532,20 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   const uint32_t host_height = host.block_compressed ? (height + 3) & ~3u : height;
 
   const bool gamma = fetch.sign_x == xenos::TextureSign::kGamma;
-  const RenderFormat resource_format =
-      gamma && host.gamma != RenderFormat::UNKNOWN ? host.gamma : host.format;
+  RenderFormat resource_format = gamma && host.gamma != RenderFormat::UNKNOWN ? host.gamma : host.format;
+  // (an icon page with PlayStation pictures - pad_icons.h - recognized below)
+  const bool pad_candidate = (format == TF::k_DXT4_5 || format == TF::k_DXT1) && !is_3d && !is_cube &&
+                             array_size == 1 && levels == 1 && svr2011::PadIconsCandidate(width, height);
 
   // A re-upload (guest data changed) reuses the texture and its view: the
   // entry's key fixes the layout, and frames still in flight keep a valid
   // descriptor (queue order serializes the copy after their reads).
-  const bool reuse = e.resource != nullptr;
-  std::shared_ptr<plume::RenderTexture> resource = e.resource;
-  if (!reuse) {
+  // (a texture shown as a pad icons picture before - its data has changed -
+  // gets a resource of its own)
+  const bool reuse = e.resource != nullptr && !IsPadPicture(e.resource);
+  std::shared_ptr<plume::RenderTexture> resource = reuse ? e.resource : nullptr;
+  auto create_resource = [&]() -> bool {
+    if (reuse) return true;
     plume::RenderTextureDesc desc =
         is_3d ? plume::RenderTextureDesc::Texture3D(host_width, host_height, depth, levels, resource_format)
               : plume::RenderTextureDesc::Texture(plume::RenderTextureDimension::TEXTURE_2D, host_width,
@@ -504,9 +556,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
     if (!resource) return false;
     resource->setName(fmt::format("texture {:08X} {}x{}x{} fmt {}", base_page << 12, width, height,
                                   is_3d ? depth : array_size, uint32_t(format)));
-  }
-  ctx.list->barriers(plume::RenderBarrierStage::COPY,
-                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::COPY_DEST));
+    return true;
+  };
 
   const uint32_t subresources = levels * array_size;
   const uint32_t host_bw = plume::RenderFormatBlockWidth(resource_format);
@@ -613,6 +664,38 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - convert_t0).count();
   if (format == TF::k_DXT4_5 && (width == 64 || width == 128) && height == 64 && array_size == 1)
     ReplaceRandomTile(width, mapped + footprints[0].offset, footprints[0].row_pitch);
+  // An icon page: the shared taller picture instead (pad_icons.h).
+  uint64_t pad_hash = 0;
+  if (pad_candidate) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    const uint32_t row_bytes = (width / 4) * (format == TF::k_DXT1 ? 8 : 16);
+    for (uint32_t y = 0; y < footprints[0].rows; ++y) {
+      const uint8_t* row = mapped + footprints[0].offset + size_t(y) * footprints[0].row_pitch;
+      for (uint32_t x = 0; x < row_bytes; ++x) h = (h ^ row[x]) * 0x100000001B3ull;
+    }
+    pad_hash = h;
+    const svr2011::PadIconsPicture pic = svr2011::PadIconsAtlas(width, height, h);
+    if (pic.rgba) {
+      const RenderFormat rgba = gamma ? RenderFormat::R8G8B8A8_UNORM_SRGB : RenderFormat::R8G8B8A8_UNORM;
+      if (auto shared = PadPictureResource(ctx, pic, rgba)) {
+        if (staging) {
+          staging->unmap();
+          ctx.retire(staging);
+        }
+        resource = shared;
+        resource_format = rgba;
+        goto view;
+      }
+    }
+  }
+  // (a picture with PlayStation / keyboard versions: SetTexture swaps it)
+  svr2011::PadIconsTextureUploaded(base_page << 12, width, height, pad_hash);
+  if (!create_resource()) {
+    if (staging) staging->unmap();
+    return false;
+  }
+  ctx.list->barriers(plume::RenderBarrierStage::COPY,
+                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::COPY_DEST));
   for (uint32_t level = 0; level < levels; ++level) {
     DumpLevel0(format, footprints[level].width, footprints[level].height, mapped + footprints[level].offset,
                footprints[level].row_pitch, footprints[level].rows,
@@ -634,7 +717,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
 
   // The view, with the fetch constant's swizzle (Xenos and D3D12 encode
   // component selection the same way: 0-3 xyzw, 4 zero, 5 one).
-  if (reuse) {
+view:
+  if (reuse && resource == e.resource) {
     e.hash = GuestHash(e);
     e.checked_frame = ctx.frame;
     ++g_stats.uploads;

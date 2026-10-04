@@ -51,6 +51,7 @@
 #include <rex/ui/presenter.h>
 
 #include "generated/default/svr2011_init.h"
+#include "match_types.h"
 #include "online_overlay.h"
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
@@ -67,6 +68,7 @@ constexpr uint32_t kMatchFrames = 0x82E3CD0C;  // the match's frame count (its c
 constexpr uint32_t kChars = 0x82E3CC50;        // the wrestlers
 
 uint8_t* g_base = nullptr;            // the guest's memory
+rex::memory::Memory* g_memory = nullptr;  // (the thread dump: readable pages)
 std::atomic<bool> g_scene_thirty{false};  // an entrance at the original's 30 fps
 std::atomic<bool> g_lockstep{false};      // online: one world update per frame at 60
 std::atomic<bool> g_in_match{false};      // 30 fps applies in matches only
@@ -125,6 +127,7 @@ void ArmMatchStart(void (*on_start)()) { g_match_start = on_start; }
 
 void InstallFrameRate(rex::memory::Memory* memory) {
   if (!memory) return;
+  g_memory = memory;
   g_base = memory->virtual_membase();
   SetFrameClock();
   REXLOG_INFO("frame rate: {} fps (the game draws {})", TargetFrameRate(), FrameRateNow());
@@ -186,14 +189,21 @@ std::atomic<rex::system::KernelState*> g_kernel{nullptr};
 // back chain from r1: saved lr at each frame's -8) - for a stuck update. Only
 // reads inside the thread's own stack (its PCR: +0x70 base, high; +0x74 end,
 // low), and stops at the first link that leaves it or doesn't go up.
+
 void DumpGuestThreads(uint8_t* base) {
   auto* kernel = g_kernel.load();
-  if (!kernel) return;
+  if (!kernel || !g_memory) return;
+  // (a stack's range can hold pages never mapped - its untouched end: each
+  // word is read only from a readable page)
+  const auto readable = [](uint32_t a) {
+    auto* heap = g_memory->LookupHeap(a);
+    return heap && heap->QueryRangeAccess(a, a + 3) != rex::memory::PageAccess::kNoAccess;
+  };
   for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
     if (!t || !t->is_guest_thread() || !t->thread_state() || !t->pcr_ptr()) continue;
     const PPCContext* c = t->thread_state()->context();
     const uint32_t hi = Rd32(base + t->pcr_ptr() + 0x70), lo = Rd32(base + t->pcr_ptr() + 0x74);
-    const auto in_stack = [&](uint32_t a) { return lo < hi && a >= lo && a + 4 <= hi; };
+    const auto in_stack = [&](uint32_t a) { return lo < hi && a >= lo && a + 4 <= hi && readable(a); };
     std::string chain = fmt::format("{:08X}", uint32_t(c->lr));
     uint32_t sp = c->r1.u32;
     for (int i = 0; i < 16 && in_stack(sp); ++i) {
@@ -337,6 +347,7 @@ REX_HOOK_RAW(sub_8269D768) {
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
+  svr2011::MatchTypesUpdate(base);  // (match_types.h: the lumberjacks)
   // An armed match start (ArmMatchStart): once the match's frame count has
   // gone up 30 updates running.
   static uint32_t last_frames = 0;
@@ -404,8 +415,17 @@ REX_HOOK_RAW(sub_8269C728) {
   static std::once_flag watchdog;
   std::call_once(watchdog, [] {
     std::thread([] {
+      // (test aid: SVR2011_TEST_DUMP_AT=<s> - every guest thread's back chain once, <s> s after the start)
+      static const int dump_at = [] { const char* v = std::getenv("SVR2011_TEST_DUMP_AT"); return v ? std::atoi(v) : 0; }();
+      const auto started = Clock::now();
       for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
+        static bool dumped = false;
+        if (dump_at > 0 && !dumped && g_base && Clock::now() - started > std::chrono::seconds(dump_at)) {
+          dumped = true;
+          REXLOG_INFO("frame rate: test - thread dump");
+          DumpGuestThreads(g_base);
+        }
         const auto since = Clock::time_point(Clock::duration(g_dbg_since.load()));
         if (g_dbg_pass != 0 && Clock::now() - since > std::chrono::seconds(3)) {
           std::string jobs;

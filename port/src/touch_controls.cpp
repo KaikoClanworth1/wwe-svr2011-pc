@@ -1,6 +1,7 @@
 // WWE SmackDown vs. Raw 2011 - on-screen touch controller (see touch_controls.h).
 
 #include "touch_controls.h"
+#include "pad_types.h"
 #include "online_overlay.h"
 #include "keyboard_typing.h"
 
@@ -1013,7 +1014,7 @@ class ControllerWatch final : public DeviceAssignment {
   }
 
  private:
-  SlotAssignment slots_;
+  PlayerSlots slots_;  // (pad_types.h: the keyboard is a player of its own)
 };
 
 }  // namespace

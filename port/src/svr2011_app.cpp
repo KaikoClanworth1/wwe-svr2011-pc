@@ -57,11 +57,15 @@
 #include "platform.h"
 #include "script_input.h"
 #include "touch_controls.h"
+#include "pad_types.h"
+#include "pad_icons.h"
+#include <rex/input/flags.h>
 #include "discord_presence.h"
 #include "online.h"
 #include "entrance_media.h"
 #include "online_cas.h"
 #include "online_overlay.h"
+#include "leaderboards.h"
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
@@ -260,6 +264,14 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
     config.input_factory = [](bool tool) -> std::unique_ptr<rex::system::IInputSystem> {
       auto input = rex::input::CreateDefaultInputSystem(tool);
       if (!tool) {
+#if defined(_WIN32)
+        // (pad_types.h: PlayStation controllers next to the XInput ones)
+        if (REXCVAR_GET(input_backend) == "xinput") {
+          auto ps = svr2011::CreatePlayStationDriver();
+          using rex::X_STATUS;
+          if (ps->Setup() == X_STATUS_SUCCESS) input->AddDriver(std::move(ps));
+        }
+#endif
         input->AddDriver(svr2011::CreateTouchDriver());
         input->SetDeviceAssignment(svr2011::CreateControllerWatch());  // (hides it with a controller)
       }
@@ -462,6 +474,7 @@ void Svr2011App::OnPostLoadXexImage() {
 
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
+  svr2011::InstallPadIcons(runtime()->memory());  // (pad_icons.h)
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
@@ -508,6 +521,8 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallP2P(runtime()->memory());
   // ... and its Created Superstars' Paint Tool data, peer to peer (online_cas.h)
   svr2011::InstallOnlineCas(g_saves);
+  // ... and the online leaderboards (leaderboards.h)
+  svr2011::InstallLeaderboards(runtime()->memory(), runtime()->kernel_state());
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).

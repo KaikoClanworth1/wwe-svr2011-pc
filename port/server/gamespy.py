@@ -181,6 +181,7 @@ class Store:
                     tableid TEXT, name TEXT, type TEXT, PRIMARY KEY (tableid, name));
                 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT);
                 CREATE TABLE IF NOT EXISTS tickets (ticket TEXT PRIMARY KEY, profileid INTEGER, created REAL);
+                CREATE TABLE IF NOT EXISTS media_alias (sent TEXT PRIMARY KEY, sha TEXT, ext TEXT);
                 CREATE TABLE IF NOT EXISTS media (
                     sha TEXT PRIMARY KEY, kind TEXT, size INTEGER, ownerid INTEGER, created REAL);
                 CREATE TABLE IF NOT EXISTS entrances (fileid INTEGER PRIMARY KEY, ownerid INTEGER, info TEXT,
@@ -526,6 +527,24 @@ class Store:
 
     def get_media(self, sha):
         return self._get_blob(sha) if self.has_media(sha) else None
+
+    # what was sent -> the stored (processed: media.py) file, and its new extension
+    def media_alias(self, sent):
+        with self.lock:
+            row = self.db.execute("SELECT sha, ext FROM media_alias WHERE sent = ?", (sent,)).fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
+    def set_media_alias(self, sent, sha, ext):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO media_alias VALUES (?, ?, ?)", (sent, sha, ext))
+            self.db.commit()
+
+    def stored_media(self, sha):
+        """The stored file a sha names: itself, or what it became."""
+        if self.has_media(sha):
+            return sha
+        target, _ = self.media_alias(sha)
+        return target if target and self.has_media(target) else None
 
     def set_entrance(self, fileid, ownerid, info):
         with self.lock:

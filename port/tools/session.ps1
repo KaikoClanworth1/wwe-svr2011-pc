@@ -1,6 +1,12 @@
 ﻿# Drive a background game session (muted, never focused, window off-screen).
 #   .\session.ps1 start [-Name s1]         launch; log -> runs\<Name>.log
 #   .\session.ps1 input "press START" "wait 2000" "press A"
+#   .\session.ps1 route <name>             go there (src/script_input.cpp kRoutes: main,
+#                                          exhibition, normal, cage, match_creator, online, match,
+#                                          options) and wait until the game is there
+#                                          ("route match": into the match that
+#                                          SVR2011_TEST_MATCH="people=EDGE,KANE arena=1" and
+#                                          SVR2011_TEST_RULE=3C ask for - src/test_match.cpp)
 #   .\session.ps1 shot  <file-stem>        screenshot -> runs\<stem>.png
 #   .\session.ps1 fps                      last frame-rate lines from the log
 #   .\session.ps1 status | stop
@@ -66,6 +72,18 @@ switch ($Action) {
         Add-Content $input ($Rest -join "`n")
         "queued: $($Rest -join ' | ')"
     }
+    "route" {
+        # (the script waits on the game itself: "title", "menu <LABEL>"; this waits for its end)
+        $s = Get-Session
+        $before = @(Select-String -Path $s.log -Pattern "script input: all steps done" -ErrorAction SilentlyContinue).Count
+        Add-Content $input "route $($Rest[0])"
+        $t0 = Get-Date
+        while (((Get-Date) - $t0).TotalSeconds -lt 300) {
+            Start-Sleep -Milliseconds 500
+            if (@(Select-String -Path $s.log -Pattern "script input: all steps done" -ErrorAction SilentlyContinue).Count -gt $before) { break }
+        }
+        Select-String -Path $s.log -Pattern "script input: (title:|menu .+: |until .+: |no route)" | Where-Object { $_.Line -notmatch "menu group" } | Select-Object -Last 8 | ForEach-Object { $_.Line.Substring(26) }
+    }
     { $_ -in "shot", "shotnative" } {
         $s = Get-Session
         # By title/class: with the native renderer on, the process has two windows.
@@ -98,5 +116,5 @@ switch ($Action) {
         Stop-TestGames
         "stopped"
     }
-    default { "usage: session.ps1 start|input|shot|shotnative|fps|status|stop" }
+    default { "usage: session.ps1 start|input|route|shot|shotnative|fps|status|stop" }
 }
