@@ -52,6 +52,7 @@ set(SVR2011_SOURCES
     src/roster.cpp
     src/post_effects.cpp
     src/replays.cpp
+    src/replay_worker.cpp
     src/managers.cpp
     src/game_files.cpp
 )

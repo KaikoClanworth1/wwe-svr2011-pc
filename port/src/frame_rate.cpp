@@ -284,9 +284,13 @@ void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
 // but the last update of a frame (an extra update) see the previous reading
 // again (no change): a press arrives in the frame's last update.
 bool g_extra_update = false;
-// The characters' job round (sub_8216F4C8, below) was left by an extra update
-// and not run since: it runs before the frame's draw, which waits for the job.
-bool g_job_deferred = false;
+// The characters' job's round (sub_8216F4C8, below) or its paused round
+// (sub_8216ED38 + sub_8216E458) an extra update left, for the frame's last
+// update - or, when that one reached neither, for before the draw.
+enum class JobOwed { kNone, kRound, kPaused };
+JobOwed g_job_owed = JobOwed::kNone;
+uint32_t g_job_paused_obj = 0;   // (sub_8216ED38's r3)
+bool g_job_paused_e458 = false;  // (sub_8216E458 followed it)
 struct InputReading {
   bool valid = false;
   uint32_t result = 0;
@@ -355,20 +359,32 @@ REX_HOOK_RAW(sub_8269C728) {
   ctx.r3.u64 = owner + 108;
   REX_CALL_INDIRECT_FUNC(0x82D4753Cu);  // (RtlEnterCriticalSection)
   P32(base, owner + 136, 1);
+  g_job_owed = JobOwed::kNone;
   for (int i = 0; i < g_world_ticks; ++i) {
     g_dbg_pass = 10 + i;
     g_extra_update = i + 1 < g_world_ticks;
     UpdatePass(ctx, base, m);
   }
   g_extra_update = false;
-  static const bool no_defer = std::getenv("SVR2011_TEST_NO_DEFER") != nullptr;  // (test aid: 2.0.0's way)
-  if (g_job_deferred && !no_defer) {  // (only an extra update reached it this frame)
+  if (g_job_owed != JobOwed::kNone) {  // (only an extra update reached the job this frame)
     const auto before = ctx;
-    sub_8216F4C8(ctx, base);
+    const bool round = g_job_owed == JobOwed::kRound;
+    if (round) {
+      sub_8216F4C8(ctx, base);
+    } else {
+      ctx.r3.u64 = g_job_paused_obj;
+      sub_8216ED38(ctx, base);
+      if (g_job_paused_e458) {
+        ctx.r3.u64 = g_job_paused_obj;
+        sub_8216E458(ctx, base);
+      }
+    }
+    g_job_owed = JobOwed::kNone;
     ctx = before;
-    static int deferred = 0;
-    if (++deferred == 1 || deferred % 100 == 0)
-      REXLOG_INFO("frame rate: the characters' job round ran before the draw ({} times)", deferred);
+    static int late[2] = {};
+    const int n = ++late[round];
+    if (n == 1 || n % 100 == 0)
+      REXLOG_INFO("frame rate: the characters' job {} ran before the draw ({} times)", round ? "round" : "paused round", n);
   }
   // Test aid: SVR2011_TEST_STUCK=1 - one update 5 s long, 60 s into the run
   // (the stuck-update log and its thread dump).
@@ -430,9 +446,18 @@ REX_HOOK_RAW(sub_8269C728) {
 // job the last update started, takes its results and starts the next one;
 // the job (sub_82171940 a run) steps by the timing block's 1/60. The job and
 // the frame's draw depend on each other (double-buffered poses), so it runs
-// once a frame, as the game expects: extra updates leave it, and the job does
-// the work of every tick since it was last started (sub_82171940 that many
-// times on the job thread).
+// once a frame, as the game expects, in the frame's last update: extra updates
+// leave it, and the job does the work of every tick since it was last started
+// (sub_82171940 that many times on the job thread). The update's gate runs
+// either the round or, while the game's world is held (a finisher's
+// cinematic, a match's end), the paused round (sub_8216ED38, sub_8216E458) -
+// which starts the job too: both count as the frame's one start. Only when
+// the frame's last update reached neither does what an extra update left run
+// before the draw (which waits for the job). (2.0.1-2.0.2 ran a left round
+// before the draw even after the last update's paused round - two starts: a
+// draw frozen on job 826DFD40, a match end that never came. Running the round
+// in an extra update itself freezes that update - sub_8243C568 waits for the
+// draw.)
 namespace {
 std::atomic<int> g_job_ticks{1};  // ticks the next / running job stands for
 int g_job_pending = 0;            // ticks since the job was last started
@@ -442,10 +467,10 @@ REX_EXTERN(__imp__sub_8216F4C8);
 REX_HOOK_RAW(sub_8216F4C8) {
   ++g_job_pending;
   if (g_extra_update) {  // (an extra update of this frame)
-    g_job_deferred = true;
+    g_job_owed = JobOwed::kRound;
     return;
   }
-  g_job_deferred = false;
+  g_job_owed = JobOwed::kNone;
   // (the running job must be done before its tick count changes: waited for
   // as the game does just after - the event stays set for it)
   constexpr uint32_t kJob = 0x82DE9C88;
@@ -461,6 +486,29 @@ REX_HOOK_RAW(sub_8216F4C8) {
   g_job_ticks = std::clamp(g_job_pending, 1, kMaxTicks);
   g_job_pending = 0;
   __imp__sub_8216F4C8(ctx, base);
+}
+
+// The paused round (see above). Test aid SVR2011_TEST_JOB_LAST=1: 2.0.2's way
+// (paused rounds in every update; a left round still runs before the draw).
+REX_EXTERN(__imp__sub_8216ED38);
+REX_HOOK_RAW(sub_8216ED38) {
+  static const bool old_way = std::getenv("SVR2011_TEST_JOB_LAST") != nullptr;
+  if (g_extra_update && !old_way) {
+    g_job_owed = JobOwed::kPaused, g_job_paused_obj = ctx.r3.u32, g_job_paused_e458 = false;
+    return;
+  }
+  if (!old_way) g_job_owed = JobOwed::kNone;
+  __imp__sub_8216ED38(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_8216E458);
+REX_HOOK_RAW(sub_8216E458) {
+  static const bool old_way = std::getenv("SVR2011_TEST_JOB_LAST") != nullptr;
+  if (g_extra_update && !old_way) {
+    if (g_job_owed == JobOwed::kPaused) g_job_paused_e458 = true;
+    return;
+  }
+  __imp__sub_8216E458(ctx, base);
 }
 
 REX_EXTERN(__imp__sub_82171940);
@@ -556,3 +604,20 @@ void StartDeveloperAids(uint8_t* base) {
 
 }  // namespace
 
+
+// A frame's callbacks for another thread (sub_826E0F78 queues them,
+// sub_826E1260 runs them once a frame): with two updates in a frame each one
+// is queued twice, and the second update may let go of what the first one's
+// entry points at. sub_8217A718 (queued by sub_8217BC90 with the object at
+// *0x82DEA30C) takes the object's part at +156 - crashed on a PC at 30 fps
+// (2.0.2) when it was already gone: without it there is nothing to do.
+REX_EXTERN(__imp__sub_8217A718);
+REX_HOOK_RAW(sub_8217A718) {
+  if (ctx.r3.u32 == 0 || Rd32(base + ctx.r3.u32 + 156) == 0) {
+    static int skipped = 0;
+    if (++skipped == 1 || skipped % 100 == 0)
+      REXLOG_INFO("frame rate: a queued callback's object was gone - skipped ({} times)", skipped);
+    return;
+  }
+  __imp__sub_8217A718(ctx, base);
+}

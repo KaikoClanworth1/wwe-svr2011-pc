@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <string>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -111,4 +112,81 @@ REX_HOOK_RAW(sub_82413280) {
     Wr32(base + step + 788, 1);  // (done: on to the celebration and results)
   }
   __imp__sub_82413280(ctx, base);
+}
+
+// The match's end (logged, for reports of a won match that never ended):
+// sub_82322DA0, each frame, steps the end - state (+16) 0: waits while the
+// object of sub_821650F8 is busy (its +156 -> +1504 not 0 or 5); 1: the result;
+// 2: waits for a fade (sub_8217A8D8(+8)), then the highlights step
+// (sub_823EDC78 -> sub_82413698, logged above); 3-5: on to the results. Each
+// change is logged, and a state still waiting after 10 s logs what it waits on.
+REX_EXTERN(__imp__sub_82322DA0);
+REX_HOOK_RAW(sub_82322DA0) {
+  const uint32_t task = ctx.r3.u32;
+  const auto saved = ctx;
+  __imp__sub_82322DA0(ctx, base);
+  using Clock = std::chrono::steady_clock;
+  static uint32_t last_task = 0, last_state = ~0u;
+  static Clock::time_point since;
+  static bool told = false;
+  const uint32_t state = Rd32(base + task + 16);
+  if (task != last_task || state != last_state) {
+    REXLOG_INFO("[svr2011] match end: step {} (task {:08X}, +20 {})", state, task, Rd32(base + task + 20));
+    last_task = task, last_state = state, since = Clock::now(), told = false;
+    return;
+  }
+  if (told || state == 3 || Clock::now() - since < std::chrono::seconds(8)) return;  // (3: the highlights play)
+  told = true;
+  // Step 0's object: sub_821650F8(**0x82E35468) (as the step does); its part
+  // at +156 runs a handshake with the frame's helper thread (sub_826E1868):
+  // +1504 the update's side (0/5 = done), +1508 the helper's, +1496 a buffer.
+  uint32_t obj = 0, part = 0;
+  if (const uint32_t p = Rd32(base + 0x82E35468)) {
+    PPCContext c = saved;
+    c.r3.u64 = Rd32(base + p);
+    sub_821650F8(c, base);
+    obj = c.r3.u32;
+    if (obj) part = Rd32(base + obj + 156);
+  }
+  std::string queue;  // (the helper's callbacks, sub_826E0F78: both buffers)
+  if (const uint32_t q = Rd32(base + 0x82F6D96C)) {
+    queue = fmt::format(" write {} read {}:", Rd32(base + q + 40), Rd32(base + q + 44));
+    for (uint32_t i = 0; i < 64; ++i) {
+      const uint32_t e = q + 168 + i * 16;
+      if (Rd32(base + e) || Rd32(base + e + 4))
+        queue += fmt::format(" [{}.{} {:08X} {:08X} {:08X} {}]", i / 32, i % 32, Rd32(base + e), Rd32(base + e + 4),
+                             Rd32(base + e + 8), Rd32(base + e + 12));
+    }
+  }
+  // The replay worker (*0x82DE0368, interface +16 = the part's +1512): its
+  // "done" (sub_82167768) wants both results (+48, +52); +152/+160 its queue.
+  std::string worker;
+  if (const uint32_t w = part ? Rd32(base + part + 1512) : 0)
+    worker = fmt::format(", replay worker {:08X} (+32 {} +48 {:08X} +52 {:08X} +152 {} +160 {})", w, Rd32(base + w + 32),
+                         Rd32(base + w + 48), Rd32(base + w + 52), Rd32(base + w + 152), Rd32(base + w + 160));
+  REXLOG_WARN("[svr2011] match end: step {} waiting 8 s - +20 {}, object {:08X} (+56 {} +88 {} +112 {}), part {:08X} "
+              "(+1504 {} +1508 {} +1496 {}), fade {} (global {:08X}); queue{}",
+              state, Rd32(base + task + 20), obj, obj ? Rd32(base + obj + 56) : 0, obj ? Rd32(base + obj + 88) : 0,
+              obj ? Rd32(base + obj + 112) : 0, part, part ? Rd32(base + part + 1504) : 0,
+              part ? Rd32(base + part + 1508) : 0, part ? Rd32(base + part + 1496) : 0, Rd32(base + task + 8),
+              Rd32(base + 0x82DEA30C), queue + worker);
+  // Step 0 waits for the part to finish with the replay worker (+1504 4 ->
+  // 5, or 6 -> 0, once the worker's "done"); on Android (and the Steam Deck: the
+  // recorder above) the worker can stay unfinished after a win - the match
+  // never ended. On, as the game would: 5 or 0 (the end then goes on; the
+  // highlights' own fallback above covers a recorder that stays busy).
+  const uint32_t side = part ? Rd32(base + part + 1504) : 0;
+  if (state == 0 && (side == 4 || side == 6)) {  // (6: the same wait, then 0)
+    Wr32(base + part + 1504, side == 4 ? 5 : 0);
+    REXLOG_WARN("[svr2011] match end: the replay worker never finished - went on without it");
+  }
+}
+
+// Test aid: SVR2011_TEST_REPLAY_WORKER_STALL=1 - the replay worker's "done"
+// (sub_82167768) never true, as on the Fold 7 after a Steel Cage escape.
+REX_EXTERN(__imp__sub_82167768);
+REX_HOOK_RAW(sub_82167768) {
+  static const bool stall = std::getenv("SVR2011_TEST_REPLAY_WORKER_STALL") != nullptr;
+  __imp__sub_82167768(ctx, base);
+  if (stall) ctx.r3.u64 = 0;
 }
