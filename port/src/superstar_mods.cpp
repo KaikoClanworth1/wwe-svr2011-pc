@@ -1248,6 +1248,13 @@ REX_HOOK_RAW(sub_825953B0) {
 }
 REX_EXTERN(__imp__sub_82595428);
 REX_HOOK_RAW(sub_82595428) {
+  // (SVR2011_TEST_PLIST: mount the pacs by reading each one's own table -
+  // sub_825953B0, which mounts ours too - instead of the pre-built directory)
+  if (const char* v = std::getenv("SVR2011_TEST_PLIST"); v && *v) {
+    REXLOG_INFO("[svr2011] pac list: mounting from the pacs' own tables");
+    sub_825953B0(ctx, base);
+    return;
+  }
   __imp__sub_82595428(ctx, base);
   const uint64_t r3 = ctx.r3.u64;
   Mount(ctx, base);

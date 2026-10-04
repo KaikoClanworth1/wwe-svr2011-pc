@@ -751,6 +751,23 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
     const size_t eq = s.find('=');
     if (eq != std::string::npos) RedirectArena(std::atoi(s.substr(0, eq).c_str()), s.substr(eq + 1));
   }
+  // Test aid: SVR2011_TEST_FILE_LINK=<path>=<path>;... (game folder relative,
+  // e.g. PAC\M.PAC=Mods\PacOverlay\m.pac): file-level symbolic links.
+  if (const char* v = std::getenv("SVR2011_TEST_FILE_LINK"); v && *v) {
+    std::string s = v;
+    for (size_t a = 0; a < s.size();) {
+      size_t e = s.find(';', a);
+      if (e == std::string::npos) e = s.size();
+      const std::string item = s.substr(a, e - a);
+      if (const size_t eq = item.find('='); eq != std::string::npos) {
+        const std::string from = std::string(kGameDevice) + "\\" + item.substr(0, eq);
+        const std::string to = std::string(kGameDevice) + "\\" + item.substr(eq + 1);
+        fs->RegisterSymbolicLink(from, to);
+        REXLOG_INFO("[svr2011] file link: {} -> {}", from, to);
+      }
+      a = e + 1;
+    }
+  }
 }
 
 }  // namespace svr2011
@@ -813,3 +830,47 @@ namespace svr2011 {
 void InstallArenaModsOverlay(rex::ui::ImGuiDrawer* drawer) { new ArenaPageLabel(drawer); }
 
 }  // namespace svr2011
+
+// -- Test aid: the pac list and directory from another folder ----------------
+//
+// SVR2011_TEST_PLIST=<folder under the game folder>: the game reads its pac
+// list (D:\pac\plist360.h - sub_826B9280(obj, path)) and the pre-built pac
+// directory (GAME:\PLIST360.ARC - sub_826A7108(obj, path, out)) from that
+// folder instead. A list there can name other files for a pac (e.g.
+// "mods\pacoverlay\m.pac"); the directory's records are by line number.
+namespace {
+uint32_t TestPlistPath(uint32_t guest_path) {
+  static const char* folder = std::getenv("SVR2011_TEST_PLIST");
+  if (!folder || !*folder || !g_memory || !guest_path) return 0;
+  const char* p = reinterpret_cast<const char*>(g_memory->TranslateVirtual(guest_path));
+  std::string s(p, strnlen(p, 260));
+  const size_t slash = s.rfind('\\');
+  const std::string name = Upper(slash == std::string::npos ? s : s.substr(slash + 1));
+  if (name != "PLIST360.H" && name != "PLIST360_4X3.H" && name != "PLIST360.ARC" && name != "PLIST360_4X3.ARC")
+    return 0;
+  const std::string to = (s.rfind("GAME:", 0) == 0 ? std::string("GAME:\\") : std::string("D:\\")) + folder + "\\" +
+                         (slash == std::string::npos ? s : s.substr(slash + 1));
+  static std::vector<std::pair<std::string, uint32_t>> made;
+  for (const auto& m : made)
+    if (m.first == to) return m.second;
+  const uint32_t g = g_memory->SystemHeapAlloc(uint32_t(to.size() + 1));
+  if (!g) return 0;
+  std::memcpy(g_memory->TranslateVirtual(g), to.c_str(), to.size() + 1);
+  made.push_back({to, g});
+  REXLOG_INFO("[svr2011] pac list: {} -> {}", s, to);
+  return g;
+}
+}  // namespace
+REX_EXTERN(__imp__sub_826B9280);
+REX_HOOK_RAW(sub_826B9280) {
+  if (const uint32_t g = TestPlistPath(ctx.r4.u32)) ctx.r4.u64 = g;
+  __imp__sub_826B9280(ctx, base);
+}
+REX_EXTERN(__imp__sub_826A7108);
+REX_HOOK_RAW(sub_826A7108) {
+  if (std::getenv("SVR2011_TEST_PLIST") && ctx.r4.u32 >= 0x10000)
+    REXLOG_INFO("[svr2011] pac list: sub_826A7108 {:.80}",
+                reinterpret_cast<const char*>(g_memory->TranslateVirtual(ctx.r4.u32)));
+  if (const uint32_t g = TestPlistPath(ctx.r4.u32)) ctx.r4.u64 = g;
+  __imp__sub_826A7108(ctx, base);
+}
