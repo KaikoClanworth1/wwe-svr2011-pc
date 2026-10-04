@@ -3,11 +3,14 @@
 #include "script_input.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 
 #include <rex/logging.h>
+#include <spdlog/sinks/base_sink.h>
 
 #include "keyboard_typing.h"
 #include "touch_controls.h"
@@ -50,6 +53,38 @@ uint16_t ParseButtons(const std::string& spec) {
   }
   return bits;
 }
+
+// Named routes ("route <name>"): the steps to a place in the game, from the
+// start. Menu names are the English ones (the test config's language).
+struct Route {
+  const char* name;
+  const char* steps;
+};
+constexpr Route kRoutes[] = {
+    {"main", "title"},
+    {"exhibition", "route main\nmenu PLAY\nmenu ONE ON ONE"},
+    {"normal", "route exhibition\nmenu NORMAL MATCH"},
+    {"cage", "route exhibition\nmenu STEEL CAGE"},
+    {"match_creator", "route exhibition\nmenu MATCH CREATOR"},
+    {"online", "route main\nmenu ONLINE"},
+    {"options", "route main\nmenu MY\nmenu OPTIONS"},
+};
+
+// "until": the text a step waits for in the log, and whether it has come.
+std::mutex g_until_mutex;
+std::string g_until_text;
+std::atomic<bool> g_until_hit{false};
+
+class UntilSink final : public spdlog::sinks::base_sink<std::mutex> {
+ protected:
+  void sink_it_(const spdlog::details::log_msg& msg) override {
+    const std::string_view text(msg.payload.data(), msg.payload.size());
+    if (text.find("script input:") != std::string_view::npos) return;  // (not the step's own line)
+    std::lock_guard lock(g_until_mutex);
+    if (!g_until_text.empty() && text.find(g_until_text) != std::string_view::npos) g_until_hit = true;
+  }
+  void flush_() override {}
+};
 
 }  // namespace
 
@@ -131,6 +166,34 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     in >> step.ms;
     queue_.push_back(step);
     queue_.push_back(Step{.ms = 120});  // (lifted, then a pause)
+  } else if (verb == "title") {
+    step.kind = Step::kTitle;
+    queue_.push_back(step);
+  } else if (verb == "menu" || verb == "until") {
+    std::getline(in >> std::ws, step.arg);
+    if (step.arg.empty()) {
+      REXLOG_WARN("script input: '{}' needs a name", line);
+      return;
+    }
+    step.kind = verb == "menu" ? Step::kMenu : Step::kUntil;
+    queue_.push_back(step);
+  } else if (verb == "route") {
+    std::string name;
+    in >> name;
+    const Route* route = nullptr;
+    for (const Route& r : kRoutes)
+      if (name == r.name) route = &r;
+    if (!route) {
+      std::string names;
+      for (const Route& r : kRoutes) names += std::string(names.empty() ? "" : ", ") + r.name;
+      REXLOG_WARN("script input: no route '{}' (routes: {})", name, names);
+      return;
+    }
+    REXLOG_INFO("script input: {}", line);
+    std::istringstream steps(route->steps);
+    std::string sub;
+    while (std::getline(steps, sub)) ParseLine(sub);
+    return;
   } else if (verb == "key") {
     static const struct {
       const char* name;
@@ -195,29 +258,174 @@ void ScriptInputDriver::PollFile() {
 
 ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
   std::lock_guard lock(mutex_);
+  if (!started_) {  // (the first poll: the logger is up)
+    started_ = true;
+    rex::AddSink(std::make_shared<UntilSink>());
+    if (const char* route = std::getenv("SVR2011_ROUTE"); route && *route && !std::getenv("SVR2011_RELAUNCHED"))
+      ParseLine(std::string("route ") + route);
+  }
   PollFile();
   const auto now = Clock::now();
-  if (!running_ || now >= step_end_) {
+  for (;;) {
+    if (running_ && current_.kind != Step::kPlain) {
+      Step out;
+      if (RunSmart(now, out)) return out;
+      running_ = false;  // (done: the next step)
+      current_ = Step{};
+      if (queue_.empty()) REXLOG_INFO("script input: all steps done");  // (for the test tools)
+    }
+    if (running_ && now < step_end_) return current_;
     constexpr uint32_t kFinger = 7;
     if (running_ && current_.touch) TouchInject(kFinger, 2, current_.x1, current_.y1);
     running_ = !queue_.empty();
-    if (running_) {
-      current_ = queue_.front();
-      queue_.pop_front();
-      step_end_ = now + std::chrono::milliseconds(current_.ms);
-      if (!current_.text.empty()) TypeText(current_.text);
-      if (current_.key) TypeKey(current_.key);
-      if (current_.touch) {
-        TouchInject(kFinger, 0, current_.x0, current_.y0);
-        if (current_.x1 != current_.x0 || current_.y1 != current_.y0) {
-          TouchInject(kFinger, 1, current_.x1, current_.y1);
-        }
-      }
-    } else {
+    if (!running_) {
       current_ = Step{};
+      return current_;
     }
+    current_ = queue_.front();
+    queue_.pop_front();
+    step_end_ = now + std::chrono::milliseconds(current_.ms);
+    if (current_.kind != Step::kPlain) {
+      smart_ = Smart{};
+      smart_.start = smart_.changed = now;
+      if (current_.kind == Step::kUntil) {
+        std::lock_guard until(g_until_mutex);
+        g_until_text = current_.arg;
+        g_until_hit = false;
+      }
+      continue;
+    }
+    if (!current_.text.empty()) TypeText(current_.text);
+    if (current_.key) TypeKey(current_.key);
+    if (current_.touch) {
+      TouchInject(kFinger, 0, current_.x0, current_.y0);
+      if (current_.x1 != current_.x0 || current_.y1 != current_.y0) {
+        TouchInject(kFinger, 1, current_.x1, current_.y1);
+      }
+    }
+    return current_;
   }
-  return current_;
+}
+
+// A tap: held 120 ms, then 150 ms released.
+void ScriptInputDriver::Press(uint16_t buttons, Clock::time_point now) {
+  smart_.holding = buttons;
+  smart_.press_end = now + std::chrono::milliseconds(120);
+  smart_.release_end = smart_.press_end + std::chrono::milliseconds(150);
+}
+
+bool ScriptInputDriver::RunSmart(Clock::time_point now, Step& out) {
+  using std::chrono::milliseconds;
+  using std::chrono::seconds;
+  Smart& m = smart_;
+  if (now < m.press_end) {
+    out.buttons = m.holding;
+    return true;
+  }
+  if (now < m.release_end) return true;
+  const double waited = std::chrono::duration<double>(now - m.start).count();
+  uint32_t group = 0, row = 0;
+  const bool menu = ScriptMenuState(&group, &row);
+
+  if (current_.kind == Step::kUntil) {
+    const bool hit = g_until_hit;
+    if (hit || waited > 180) {
+      if (hit)
+        REXLOG_INFO("script input: until \"{}\": seen after {:.1f} s", current_.arg, waited);
+      else
+        REXLOG_WARN("script input: until \"{}\": not seen in 180 s - going on", current_.arg);
+      std::lock_guard until(g_until_mutex);
+      g_until_text.clear();
+      return false;
+    }
+    return true;
+  }
+
+  if (current_.kind == Step::kTitle) {
+    if (menu && group == 1) {
+      REXLOG_INFO("script input: title: main menu after {:.1f} s", waited);
+      return false;
+    }
+    if (waited > 240) {
+      REXLOG_WARN("script input: title: no main menu in 240 s - going on");
+      return false;
+    }
+    if (now >= m.next) {
+      Press(X_INPUT_GAMEPAD_START, now);
+      m.next = now + seconds(2);
+    }
+    return true;
+  }
+
+  // menu <LABEL>
+  if (!menu) {
+    if (waited > 90) {
+      REXLOG_WARN("script input: menu {}: no menu in 90 s - going on", current_.arg);
+      return false;
+    }
+    return true;
+  }
+  if (m.a_pressed) {
+    uint32_t chosen_group = 0, chosen_row = 0;
+    if (ScriptMenuSelects(&chosen_group, &chosen_row) != m.selects) {
+      if (chosen_group == m.group && chosen_row == m.row_at_press)
+        REXLOG_INFO("script input: menu {}: chosen (group {:X} row {}, {:.1f} s)", current_.arg, chosen_group,
+                    chosen_row, waited);
+      else
+        REXLOG_WARN("script input: menu {}: the game took group {:X} row {} instead", current_.arg, chosen_group,
+                    chosen_row);
+      return false;
+    }
+    if (now < m.a_deadline) return true;
+    if (++m.a_tries >= 3) {
+      REXLOG_WARN("script input: menu {}: A not taken - going on", current_.arg);
+      return false;
+    }
+    m.a_pressed = false;  // (again)
+  }
+  int rows = 0;
+  const int want = ScriptMenuRow(group, current_.arg, &rows);
+  if (group != m.group || row != m.row) {
+    m.group = group, m.row = row;
+    m.changed = now;
+  }
+  if (want < 0) {
+    if (waited > 90) {
+      REXLOG_WARN("script input: menu {}: not in the open menu (group {:X}: {}) - going on", current_.arg, group,
+                  ScriptMenuTexts(group));
+      return false;
+    }
+    return true;
+  }
+  if (now - m.changed < milliseconds(400) || now - m.pressed_at < milliseconds(800)) return true;  // (settling)
+  if (row == uint32_t(want)) {
+    uint32_t g = 0, r = 0;
+    m.selects = ScriptMenuSelects(&g, &r);
+    m.row_at_press = uint32_t(want);
+    m.a_pressed = true;
+    m.a_deadline = now + seconds(3);
+    m.pressed_at = now;
+    Press(X_INPUT_GAMEPAD_A, now);
+    return true;
+  }
+  if (m.presses > rows * 3 + 10) {
+    REXLOG_WARN("script input: menu {}: the cursor never got to row {} (at {}) - going on", current_.arg, want, row);
+    return false;
+  }
+  if (m.presses > 0 && row == m.row_at_press && ++m.stuck >= 2) {
+    m.horizontal = !m.horizontal;  // (a menu across the screen)
+    m.stuck = 0;
+  }
+  const int n = std::max(rows, 1);
+  const int down = ((want - int(row)) % n + n) % n;
+  const bool forward = down <= n - down;
+  Press(m.horizontal ? (forward ? X_INPUT_GAMEPAD_DPAD_RIGHT : X_INPUT_GAMEPAD_DPAD_LEFT)
+                     : (forward ? X_INPUT_GAMEPAD_DPAD_DOWN : X_INPUT_GAMEPAD_DPAD_UP),
+        now);
+  m.row_at_press = row;
+  m.pressed_at = now;
+  ++m.presses;
+  return true;
 }
 
 X_RESULT ScriptInputDriver::GetDeviceState(rex::input::DeviceId id, X_INPUT_STATE* out_state) {

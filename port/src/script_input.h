@@ -15,6 +15,19 @@
 //                               (fractions of the window) for ms
 //   drag <x0> <y0> <x1> <y1> <ms>   a finger down at x0, y0, moved to x1, y1
 //
+// Steps that wait for the game instead of a fixed time (so a slow phone and a
+// fast PC run the same script):
+//   title                       START until the main menu is up (skips the
+//                               intro movies and the title screen)
+//   menu <LABEL>                in the open menu, move to the entry named
+//                               LABEL (as the log's "menu select" lines and
+//                               "menu group" list name them) and choose it
+//   until <text>                wait for a log line containing text
+//   route <name>                a named route (kRoutes in script_input.cpp),
+//                               e.g. "route cage": the Steel Cage character
+//                               select. SVR2011_ROUTE=<name> runs one at start.
+// Each gives up after a while (a warning in the log) and the script goes on.
+//
 // <buttons> is one or more of A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT
 // joined with '+'. Lines starting with '#' are ignored.
 
@@ -29,6 +42,15 @@
 #include <rex/input/input_driver.h>
 
 namespace svr2011 {
+
+// The menus, for the steps above (menu_hooks.cpp): the main-menu object's
+// group and cursor row (false before the menu is first used); the row of the
+// entry named label in that group (-1: none) and the group's row count; the
+// group's names; how many entries have been chosen (and the last one).
+bool ScriptMenuState(uint32_t* group, uint32_t* row);
+int ScriptMenuRow(uint32_t group, const std::string& label, int* rows);
+std::string ScriptMenuTexts(uint32_t group);
+uint32_t ScriptMenuSelects(uint32_t* group, uint32_t* row);
 
 using rex::X_RESULT;
 using rex::X_STATUS;
@@ -59,11 +81,24 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     uint16_t key = 0;  // PC keyboard key pressed when the step starts
     bool touch = false;  // a finger (touch_controls.h) from x0, y0 to x1, y1
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    enum Kind : uint8_t { kPlain, kTitle, kMenu, kUntil } kind = kPlain;  // (a step that waits for the game)
+    std::string arg;  // its label / text
+  };
+
+  // A waiting step's progress.
+  struct Smart {
+    Clock::time_point start{}, next{}, press_end{}, release_end{}, changed{}, pressed_at{}, a_deadline{};
+    uint16_t holding = 0;
+    uint32_t group = ~0u, row = ~0u, row_at_press = ~0u, selects = 0;
+    int presses = 0, stuck = 0, a_tries = 0;
+    bool horizontal = false, a_pressed = false;
   };
 
   void PollFile();
   void ParseLine(const std::string& line);
   Step CurrentStep();
+  bool RunSmart(Clock::time_point now, Step& out);  // false once the step is done
+  void Press(uint16_t buttons, Clock::time_point now);
 
   std::filesystem::path file_;
   size_t consumed_ = 0;  // bytes of the file already parsed
@@ -71,7 +106,9 @@ class ScriptInputDriver final : public rex::input::InputDriver {
   std::mutex mutex_;
   std::deque<Step> queue_;
   bool running_ = false;
+  bool started_ = false;
   Step current_{};
+  Smart smart_{};
   Clock::time_point step_end_{};
   uint32_t packet_ = 0;
 };

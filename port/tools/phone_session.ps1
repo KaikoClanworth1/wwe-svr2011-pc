@@ -4,6 +4,8 @@
 #   phone_session.ps1 start                     (re)start the game for a test
 #   phone_session.ps1 input "press START" "wait 2000" "press A"
 #   phone_session.ps1 key <BUTTON> [-Wait 1.5] one press, then wait (menus drop fast presses)
+#   phone_session.ps1 route <name>             go there (script_input.cpp kRoutes, e.g. cage)
+#                                              and wait until the game is there
 #   phone_session.ps1 shot <stem>              screenshot -> port\runs\<stem>.png
 #   phone_session.ps1 log [lines]              the end of the game's log
 #   phone_session.ps1 stop
@@ -56,6 +58,19 @@ switch ($Action) {
         Sh "cat /data/local/tmp/svr2011_input.txt >> $(Q "$run/input.txt")" | Out-Null
         if ($Action -eq "key") { Start-Sleep -Milliseconds ([int]($Wait * 1000)) } else { "queued: $($lines -join ' | ')" }
     }
+    "route" {
+        $logs = "$game/logs"
+        $count = { $l = (Sh "ls -t $(Q $logs) | head -1").Trim(); [int]((Sh "grep -c 'script input: all steps done' $(Q "$logs/$l")") | Select-Object -First 1) }
+        $before = & $count
+        $tmp = Join-Path $env:TEMP "svr2011_phone_input.txt"
+        [IO.File]::WriteAllText($tmp, "route $($Rest[0])`n")
+        & $adb push $tmp "/data/local/tmp/svr2011_input.txt" | Out-Null
+        Sh "cat /data/local/tmp/svr2011_input.txt >> $(Q "$run/input.txt")" | Out-Null
+        $t0 = Get-Date
+        while (((Get-Date) - $t0).TotalSeconds -lt 300 -and (& $count) -le $before) { Start-Sleep -Seconds 2 }
+        $l = (Sh "ls -t $(Q $logs) | head -1").Trim()
+        Sh "grep -E 'script input: (title:|menu .+: |until .+: |no route)' $(Q "$logs/$l") | grep -v 'menu group' | tail -8"
+    }
     "shot" {
         # The Fold has two displays: keep the brighter (the one the game is on).
         $ids = (Sh "dumpsys SurfaceFlinger --display-id") | ForEach-Object { if ($_ -match '^Display (\d+)') { $Matches[1] } }
@@ -88,5 +103,5 @@ switch ($Action) {
         & $adb shell am force-stop $pkg | Out-Null
         "stopped"
     }
-    default { "usage: phone_session.ps1 start|input|key|shot|log|stop" }
+    default { "usage: phone_session.ps1 start|input|key|route|shot|log|stop" }
 }
