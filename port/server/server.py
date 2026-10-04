@@ -47,6 +47,7 @@ os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
 from aiohttp import web
 
 import gamespy as gs
+import leaderboards
 import relay
 import thumbs
 
@@ -396,6 +397,7 @@ class Service:
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
         self.relay = relay.Relay(self, gs.log)
+        self.leaderboards = leaderboards.Leaderboards(self.store)
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -612,6 +614,57 @@ class Service:
                                                     "kind": str(body.get("kind") or "")[:40], "t": now()}
         gs.log("friends: %s invited %s" % (account["name"], other["name"]))
         return web.json_response({"ok": True})
+
+    # the game's leaderboards (leaderboards.py; the port's leaderboards.cpp)
+
+    def lb_row(self, r, names):
+        xuid, account, rating, cols, rank = r
+        return {"xuid": "%016X" % xuid, "rank": rank, "rating": rating, "name": names.get(account, ""),
+                "columns": json.loads(cols)}
+
+    def lb_names(self):
+        return {a["id"]: a["name"] for a in self.accounts.all()}
+
+    async def api_stats(self, request):
+        account = self.account(request)
+        if not account:
+            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False, "error": "Not JSON."}, status=400)
+        what = request.match_info["what"]
+        lb = self.leaderboards
+        loop = asyncio.get_running_loop()
+        if what == "write":
+            # (a game writes its own player's stats only)
+            xuid = Accounts.xuid(account)
+            if int(str(body.get("xuid") or "0"), 16) != xuid:
+                return web.json_response({"ok": False, "error": "Only your own stats."}, status=403)
+            done = await loop.run_in_executor(None, lb.write, xuid, account["id"], body.get("views") or [])
+            gs.log("stats: %s wrote %d view(s)" % (account["name"], done))
+            return web.json_response({"ok": True, "views": done})
+        names = await loop.run_in_executor(None, self.lb_names)
+        if what == "read":
+            xuids = [int(str(x), 16) for x in (body.get("xuids") or [])][:100]
+            out = []
+            for vid in [int(v) for v in (body.get("views") or [])][:64]:
+                rows = await loop.run_in_executor(None, lb.rows_for, vid, xuids)
+                out.append({"view": vid, "total": await loop.run_in_executor(None, lb.total, vid),
+                            "rows": [self.lb_row(r, names) for r in rows]})
+            return web.json_response({"ok": True, "views": out})
+        if what == "page":
+            vid, count = int(body.get("view") or 0), max(1, min(100, int(body.get("count") or 10)))
+            mode, pivot = body.get("mode"), body.get("pivot") or 0
+            if mode == "xuid":
+                rows = await loop.run_in_executor(None, lb.page_around, vid, int(str(pivot), 16), count)
+            elif mode == "rating":
+                rows = await loop.run_in_executor(None, lb.page_by_rating, vid, int(pivot), count)
+            else:
+                rows = await loop.run_in_executor(None, lb.page_by_rank, vid, int(pivot) or 1, count)
+            return web.json_response({"ok": True, "total": await loop.run_in_executor(None, lb.total, vid),
+                                      "rows": [self.lb_row(r, names) for r in rows]})
+        return web.json_response({"ok": False}, status=404)
 
     async def api_status(self, request):
         return web.json_response({"ok": True, "server": "svr2011-community", "version": 1})
@@ -961,6 +1014,7 @@ class Service:
         app.router.add_get(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/invite", self.api_invite)
+        app.router.add_post(b + "/api/stats/{what}", self.api_stats)
         app.router.add_route("*", b + "/api/logo/{hash}", self.api_logo)
         app.router.add_get(b + "/api/logos/wanted", self.api_logos_wanted)
         app.router.add_post(b + "/api/media", self.api_media_post)
