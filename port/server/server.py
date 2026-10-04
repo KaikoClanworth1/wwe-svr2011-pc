@@ -48,6 +48,7 @@ from aiohttp import web
 
 import gamespy as gs
 import leaderboards
+import media
 import relay
 import thumbs
 
@@ -702,13 +703,23 @@ class Service:
             return web.json_response({"ok": False, "error": "too large"}, status=413)
         pid = account["profileid"]
         loop = asyncio.get_running_loop()
-        sha = hashlib.sha256(data).hexdigest()
-        if not self.store.has_media(sha) and self.store.media_bytes(pid) + len(data) > self.media_quota:
+        sent = hashlib.sha256(data).hexdigest()
+        if self.store.stored_media(sent):  # (sent before: as it was stored)
+            return web.json_response({"ok": True, "sha": self.store.stored_media(sent)})
+        # (any size: songs made MP3 at the game's rate, movies cut at 4 minutes - media.py)
+        out, ext, what = await loop.run_in_executor(None, media.process, kind, data)
+        if out is None:
+            gs.log("media: %s from %s refused: %s" % (kind, account["name"], what))
+            return web.json_response({"ok": False, "error": what}, status=415)
+        if self.store.media_bytes(pid) + len(out) > self.media_quota:
             gs.log("media: %s from %s refused: over the quota" % (kind, account["name"]))
             return web.json_response({"ok": False, "error": "over the quota"}, status=507)
-        sha = await loop.run_in_executor(None, self.store.put_media, pid, kind, data)
-        gs.log("media: %s %d bytes from %s -> %s" % (kind, len(data), account["name"], sha[:12]))
-        return web.json_response({"ok": True, "sha": sha})
+        sha = await loop.run_in_executor(None, self.store.put_media, pid, kind, out)
+        if sha != sent:
+            self.store.set_media_alias(sent, sha, ext)
+        gs.log("media: %s %d bytes from %s -> %s, %d bytes: %s" % (kind, len(data), account["name"], sha[:12],
+                                                                   len(out), what))
+        return web.json_response({"ok": True, "sha": sha, "processed": what})
 
     async def api_media_get(self, request):
         if not self.account(request):
@@ -717,7 +728,8 @@ class Service:
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
             return web.Response(status=400)
         if request.method == "HEAD":
-            return web.Response(status=200 if self.store.has_media(sha) else 404)
+            return web.Response(status=200 if self.store.stored_media(sha) else 404)
+        sha = self.store.stored_media(sha) or sha
         data = await asyncio.get_running_loop().run_in_executor(None, self.store.get_media, sha)
         if data is None:
             return web.Response(status=404)
@@ -747,9 +759,11 @@ class Service:
             m = body.get(kind)
             if not isinstance(m, dict):
                 continue
-            sha = str(m.get("sha", "")).lower()
-            if not self.store.has_media(sha):
+            sent = str(m.get("sha", "")).lower()
+            sha = self.store.stored_media(sent)
+            if not sha:
                 return web.json_response({"ok": False, "error": "%s not uploaded" % kind}, status=400)
+            _, new_ext = self.store.media_alias(sent)
             entry = {"sha": sha}
             for n in names:
                 v = str(m.get(n, ""))
@@ -760,6 +774,8 @@ class Service:
             for n in ("frames",):
                 if isinstance(m.get(n), int):
                     entry[n] = m[n]
+            if kind == "music" and new_ext and "file" in entry:  # (the song became an MP3)
+                entry["file"] = os.path.splitext(entry["file"])[0] + new_ext
             info[kind] = entry
         self.store.set_entrance(fileid, account["profileid"], info)
         gs.log("entrance: file %d by %s: %s" % (fileid, account["name"], ", ".join(
@@ -1046,9 +1062,9 @@ def main():
     ap.add_argument("--max-connections", type=int, default=100, help="game requests at once")
     ap.add_argument("--max-file-mb", type=int, default=8, help="the largest upload")
     ap.add_argument("--quota-mb", type=int, default=256, help="what one player may store (uncompressed)")
-    ap.add_argument("--max-music-mb", type=int, default=16, help="the largest entrance song")
-    ap.add_argument("--max-movie-mb", type=int, default=48, help="the largest entrance movie (sent shrunk, MP4)")
-    ap.add_argument("--media-quota-mb", type=int, default=1024, help="entrance songs and movies one player may store")
+    ap.add_argument("--max-music-mb", type=int, default=512, help="the largest entrance song sent (stored as MP3)")
+    ap.add_argument("--max-movie-mb", type=int, default=1024, help="the largest entrance movie sent (MP4; kept 4 min)")
+    ap.add_argument("--media-quota-mb", type=int, default=8192, help="entrance songs and movies one player may store")
     args = ap.parse_args()
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")

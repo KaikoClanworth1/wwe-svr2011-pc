@@ -68,7 +68,8 @@ constexpr uint32_t kEntrance = 0x2C4;
 constexpr uint32_t kMovieRow = 0x10, kMovieId = 0x12, kSongName = 0xCC, kSongChars = 40;
 constexpr uint16_t kHighlightReelRow = 254;
 constexpr int kFirstUserMovie = 700, kLastUserMovie = 899;
-constexpr uint64_t kMaxSong = 16ull << 20, kMaxMovie = 40ull << 20;
+// (the server makes songs MP3s at the game's rate and keeps 4 minutes of a movie)
+constexpr uint64_t kMaxSong = 256ull << 20, kMaxMovie = 256ull << 20;
 
 rex::memory::Memory* g_memory = nullptr;
 
