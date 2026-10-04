@@ -24,6 +24,7 @@
 //   mods are.
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "superstar_mods.h"
+#include "move_packs.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1248,9 +1249,9 @@ REX_HOOK_RAW(sub_825953B0) {
 }
 REX_EXTERN(__imp__sub_82595428);
 REX_HOOK_RAW(sub_82595428) {
-  // (SVR2011_TEST_PLIST: mount the pacs by reading each one's own table -
-  // sub_825953B0, which mounts ours too - instead of the pre-built directory)
-  if (const char* v = std::getenv("SVR2011_TEST_PLIST"); v && *v) {
+  // (a pac overlay - move packs: mount the pacs by reading each one's own
+  // table - sub_825953B0, which mounts ours too - not the pre-built directory)
+  if (!svr2011::PacListFolder().empty()) {
     REXLOG_INFO("[svr2011] pac list: mounting from the pacs' own tables");
     sub_825953B0(ctx, base);
     return;

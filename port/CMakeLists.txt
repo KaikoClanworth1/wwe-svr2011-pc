@@ -46,6 +46,7 @@ set(SVR2011_SOURCES
     src/superstar_mods.cpp
     src/crowd_signs.cpp
     src/media_mods.cpp
+    src/move_packs.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp
     src/frame_rate.cpp

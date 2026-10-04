@@ -22,6 +22,7 @@
 // menu/MatchHD.pac (MENU/MASI), kept in guest physical memory (4 KB view)
 // untiled, with 16-bit words byte-swapped.
 #include "arena_mods.h"
+#include "move_packs.h"
 #include "ring_rules.h"
 
 #include <algorithm>
@@ -831,17 +832,18 @@ void InstallArenaModsOverlay(rex::ui::ImGuiDrawer* drawer) { new ArenaPageLabel(
 
 }  // namespace svr2011
 
-// -- Test aid: the pac list and directory from another folder ----------------
+// -- The pac list from another folder (move packs) ---------------------------
 //
-// SVR2011_TEST_PLIST=<folder under the game folder>: the game reads its pac
-// list (D:\pac\plist360.h - sub_826B9280(obj, path)) and the pre-built pac
-// directory (GAME:\PLIST360.ARC - sub_826A7108(obj, path, out)) from that
-// folder instead. A list there can name other files for a pac (e.g.
-// "mods\pacoverlay\m.pac"); the directory's records are by line number.
+// With a pac overlay (move_packs.h: PacListFolder) the game reads its pac list
+// (D:\pac\plist360.h - sub_826B9280(obj, path)) from that folder instead: a
+// list there names other files for some pacs ("mods\pacoverlay\m.pac").
+// (The pre-built directory GAME:\PLIST360.ARC is not used then: the pacs are
+// mounted from their own tables, superstar_mods.cpp.)
 namespace {
 uint32_t TestPlistPath(uint32_t guest_path) {
-  static const char* folder = std::getenv("SVR2011_TEST_PLIST");
-  if (!folder || !*folder || !g_memory || !guest_path) return 0;
+  const std::string& f = svr2011::PacListFolder();
+  const char* folder = f.c_str();
+  if (f.empty() || !g_memory || !guest_path) return 0;
   const char* p = reinterpret_cast<const char*>(g_memory->TranslateVirtual(guest_path));
   std::string s(p, strnlen(p, 260));
   const size_t slash = s.rfind('\\');
@@ -868,9 +870,6 @@ REX_HOOK_RAW(sub_826B9280) {
 }
 REX_EXTERN(__imp__sub_826A7108);
 REX_HOOK_RAW(sub_826A7108) {
-  if (std::getenv("SVR2011_TEST_PLIST") && ctx.r4.u32 >= 0x10000)
-    REXLOG_INFO("[svr2011] pac list: sub_826A7108 {:.80}",
-                reinterpret_cast<const char*>(g_memory->TranslateVirtual(ctx.r4.u32)));
   if (const uint32_t g = TestPlistPath(ctx.r4.u32)) ctx.r4.u64 = g;
   __imp__sub_826A7108(ctx, base);
 }
