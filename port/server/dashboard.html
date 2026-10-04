@@ -66,7 +66,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
 .viewer.on { display: flex; }
 .viewer .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
                max-width: 100%; text-align: center; }
-.viewer img { width: 384px; max-width: 100%; image-rendering: pixelated; border-radius: 8px;
+.viewer img { width: 512px; max-width: 100%; border-radius: 8px;
               background: repeating-conic-gradient(#2a2e35 0 25%, #1f2328 0 50%) 50% / 24px 24px; }
 .viewer .cap { margin-top: 10px; font-size: 14px; }
 .viewer .cap small { color: var(--dim, #8a93a0); display: block; margin-top: 2px; }
@@ -116,6 +116,14 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       <canvas id="c-games"></canvas>
       <div class="legend"><i style="background:var(--accent)"></i>games open<i style="background:var(--warn)"></i>games joined</div></div>
   </div>
+
+  <h2>Leaderboards <span class="spacer"></span><select class="filter" id="lb-view"></select></h2>
+  <div class="scroll"><table>
+    <thead><tr><th class="num">Rank</th><th>Player</th><th class="num">Points</th><th class="num">Rating</th>
+      <th class="num">Matches</th><th class="num">Wins</th><th class="num">Losses</th><th class="num">Draws</th>
+      <th class="num">DQ</th><th class="num">Left</th></tr></thead>
+    <tbody id="lb-rows"><tr><td colspan="10" class="empty">Loading&hellip;</td></tr></tbody>
+  </table></div>
 
   <h2>Uploads <span class="spacer"></span><input class="filter" id="f-up" placeholder="Filter"></h2>
   <div class="scroll"><table>
@@ -268,7 +276,34 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
         '<button class="btn danger" data-user="' + u.id + '" data-a="delete">Delete</button></td></tr>';
     }).join('') : '<tr><td colspan="6" class="empty">No accounts.</td></tr>';
   }
+  // the game's leaderboards (ranked matches): LB_01_TOTAL_RANKING -> "Total ranking"
+  var lbView = 1;
+  function lbName(v) {
+    var n = v.name.replace(/^LB_\d+_/, '').replace(/_RANKING$/, '').replace(/_/g, ' ').toLowerCase();
+    return n.charAt(0).toUpperCase() + n.slice(1) + (v.weekly ? ' (weekly)' : '') + ' - ' + v.rows;
+  }
+  function leaderboard() {
+    api('api/admin/leaderboard?view=' + lbView + '&count=200').then(function (d) {
+      var sel = el('lb-view');
+      if (!sel.options.length || sel.options.length !== d.views.length) {
+        sel.innerHTML = d.views.map(function (v) { return '<option value="' + v.id + '">' + esc(lbName(v)) + '</option>'; }).join('');
+      } else {
+        d.views.forEach(function (v, i) { sel.options[i].textContent = lbName(v); });
+      }
+      sel.value = String(lbView);
+      var c = function (r, k) { var v = r.columns[k]; return v ? v[1] : 0; };
+      el('lb-rows').innerHTML = d.rows.length ? d.rows.map(function (r) {
+        return '<tr><td class="num">' + r.rank + '</td><td>' + esc(r.name || r.xuid) + '</td><td class="num">' + c(r, 2) +
+          '</td><td class="num">' + r.rating + '</td><td class="num">' + c(r, 3) + '</td><td class="num">' + c(r, 4) +
+          '</td><td class="num">' + c(r, 5) + '</td><td class="num">' + c(r, 6) + '</td><td class="num">' + c(r, 7) +
+          '</td><td class="num">' + c(r, 8) + '</td></tr>';
+      }).join('') : '<tr><td colspan="10" class="empty">No ranked matches on this board yet.</td></tr>';
+    }).catch(function () {});
+  }
+  el('lb-view').addEventListener('change', function () { lbView = +this.value; leaderboard(); });
+
   function lists() {
+    leaderboard();
     api('api/admin/uploads').then(function (d) { uploads = d; renderUploads(); }).catch(function () {});
     api('api/admin/users').then(function (d) { users = d; renderUsers(); }).catch(function () {});
   }
@@ -279,7 +314,9 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     if (!b) return;
     if (b.dataset.view) {
       var u = uploads.filter(function (x) { return String(x.id) === b.dataset.view; })[0] || {};
-      el('v-img').src = 'api/admin/upload/' + b.dataset.view + '/thumb.png';
+      var img = el('v-img');
+      img.onerror = function () { img.onerror = null; img.src = 'api/admin/upload/' + b.dataset.view + '/thumb.png'; };
+      img.src = 'api/admin/upload/' + b.dataset.view + '/full.png';
       el('v-cap').innerHTML = esc(u.title || '(untitled)') + '<small>' + esc(TYPES[u.type] || '') + ' by ' +
         esc(u.author || '') + ' &middot; tap to close</small>';
       el('viewer').classList.add('on');
