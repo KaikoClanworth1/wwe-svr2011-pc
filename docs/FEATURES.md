@@ -87,6 +87,7 @@ still being tested.
 ## After 2.0.2 (next update)
 
 - **Bring your Xbox 360 save over** (launcher, Saves tab: *Import Xbox 360 save...*): pick the 360 save folder (5451085D, from a USB drive or a save download) and its saves - Created Superstars, Paint Tool logos, replays, created content and the main save - go into a save preset of their own (3a55cc3).
+- **Import someone else's Created Superstar** (launcher, Saves tab: *Import Superstar...*): pick their .cas files (from a PC save or an Xbox 360 save, as they are) and each goes into a free slot; its Paint Tool logos are added to free Paint Tool slots (logos you already have are left out). Your saves are backed up first (09f38fe).
 - **Save presets** (launcher, Saves tab): whole sets of saves to switch between (a 360 save, a fresh start, ...); *New...* starts one empty or as a copy of the saves in use (3a55cc3).
 - **M tile in Match Creator** opens the managers list too (it gave a random superstar) (e5bd675).
 - **Finisher freezes and won matches with no ending fixed** (Android, slower devices; Steel Cage, Match Creator and others): on frames with two world updates the characters' job could start twice; now once a frame, as on the console. Tested at simulated phone speed (2f1233e).
