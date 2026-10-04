@@ -127,21 +127,41 @@ bool Applies() {
 
 }  // namespace
 
-// The match's arena: the match screen's choice (its object's +244, read by
-// sub_8247B6C8(screen) - sub_82773F00 copies it to the live match record's
-// +64 as the match loads), so the game sets up the test's arena itself.
-// (Putting it straight into the live record left parts of the load with the
-// arena they had read first - a freeze on a phone.)
+// The match's arena: the match screen's choice (its object, *0x82EDEB48:
+// +244, read by sub_8247B6C8(screen); sub_82773F00 copies it to the live
+// match record's +64 as the match loads). It is set as soon as the screen
+// exists - as if picked in SELECT ARENA - so everything the game works out
+// from it (a cage match's cage, ...) fits. Done from the live record's
+// getter (sub_825740C8), which runs all the time. (Putting it straight into
+// the live record left parts of the load with the arena they had read
+// first: no cage, and a freeze on a phone.)
+namespace {
+constexpr uint32_t kMatchScreen = 0x82EDEB48, kScreenArena = 244;
+
+void SetScreenArena(uint8_t* base, uint32_t screen) {
+  const int arena = Config().arena;
+  if (arena < 0 || !screen || !Applies() || Rd32(base + screen + kScreenArena) == uint32_t(arena)) return;
+  static uint32_t logged = 0;
+  if (logged++ < 2)
+    REXLOG_INFO("test match: arena {} (the match screen had {})", arena, Rd32(base + screen + kScreenArena));
+  Wr32(base + screen + kScreenArena, uint32_t(arena));
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_825740C8);
+REX_HOOK_RAW(sub_825740C8) {
+  __imp__sub_825740C8(ctx, base);
+  if (Config().arena >= 0) {
+    const uint32_t r3 = ctx.r3.u32;
+    SetScreenArena(base, Rd32(base + kMatchScreen));
+    ctx.r3.u64 = r3;
+  }
+}
+
 REX_EXTERN(__imp__sub_8247B6C8);
 REX_HOOK_RAW(sub_8247B6C8) {
-  const uint32_t screen = ctx.r3.u32;
+  SetScreenArena(base, ctx.r3.u32);
   __imp__sub_8247B6C8(ctx, base);
-  const int arena = Config().arena;
-  if (arena < 0 || !Applies() || !screen || ctx.r3.u32 == uint32_t(arena)) return;
-  static uint32_t logged = 0;
-  if (logged++ < 2) REXLOG_INFO("test match: arena {} (the match screen had {})", arena, ctx.r3.u32);
-  Wr32(base + screen + 244, uint32_t(arena));
-  ctx.r3.u64 = uint32_t(arena);
 }
 
 REX_EXTERN(__imp__sub_828BC5E8);
