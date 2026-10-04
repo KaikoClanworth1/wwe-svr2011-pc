@@ -5,6 +5,10 @@
 
 #include <string>
 
+namespace rex::filesystem {
+class VirtualFileSystem;
+}
+
 namespace svr2011 {
 
 // At start-up, before the game mounts its pacs: merges every enabled move
@@ -12,7 +16,7 @@ namespace svr2011 {
 // into copies of m.pac, misc.pac and mpsp.pac in <game>/Mods/PacOverlay
 // (rebuilt only when a pack or a game file changed), with a pac list naming
 // them there.
-void InstallMovePacks();
+void InstallMovePacks(rex::filesystem::VirtualFileSystem* fs);
 
 // The folder (under the game folder) the game reads its pac list from, or ""
 // for the game's own. With an overlay the pacs are mounted from their own

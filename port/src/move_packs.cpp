@@ -49,6 +49,8 @@
 #include <vector>
 
 #include <rex/filesystem.h>
+#include <rex/filesystem/entry.h>
+#include <rex/filesystem/vfs.h>
 #include <rex/logging.h>
 
 #include "../modmaker/svrfmt/pac.h"
@@ -538,6 +540,23 @@ bool WriteList(const fs::path& game, const fs::path& overlay, const std::string&
   return bool(o);
 }
 
+// The game folder's file device indexed the folder at start-up, before the
+// overlay was made: the game opens the pacs through directory handles, which
+// only walk that index (no lookup on the disk), so files made now would not
+// be found - an endless loading screen - or would keep a size from before.
+// Resolving each through the file system adds it to the index; update()
+// refreshes a size it already had.
+void Register(rex::filesystem::VirtualFileSystem* vfs, const fs::path& overlay) {
+  if (!vfs) return;
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(overlay, ec)) {
+    if (!e.is_regular_file()) continue;
+    const std::string path = "\\Device\\Harddisk0\\Partition1\\Mods\\PacOverlay\\" + e.path().filename().string();
+    if (auto* entry = vfs->ResolvePath(path)) entry->update();
+    else REXLOG_WARN("[svr2011] move packs: the game can't see {}", path);
+  }
+}
+
 std::string FileStamp(const fs::path& p) {
   std::error_code ec;
   const auto size = fs::file_size(p, ec);
@@ -551,7 +570,7 @@ namespace svr2011 {
 
 const std::string& PacListFolder() { return g_folder; }
 
-void InstallMovePacks() {
+void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   if (const char* v = std::getenv("SVR2011_TEST_PLIST"); v && *v) {  // (test aid: a folder made by hand)
     g_folder = v;
     return;
@@ -590,6 +609,7 @@ void InstallMovePacks() {
     bool have = was == stamp;
     for (const auto& p : pacs) have &= fs::exists(overlay / p, ec);
     if (have) {
+      Register(vfs, overlay);
       g_folder = "Mods\\PacOverlay";
       REXLOG_INFO("[svr2011] move packs: {} packs ({} items), overlay up to date", dirs.size(), packs.count);
       return;
@@ -608,6 +628,7 @@ void InstallMovePacks() {
     return;
   }
   std::ofstream(overlay / "stamp.txt", std::ios::binary) << stamp;
+  Register(vfs, overlay);
   g_folder = "Mods\\PacOverlay";
   REXLOG_INFO("[svr2011] move packs: merged");
 }

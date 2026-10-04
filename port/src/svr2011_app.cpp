@@ -484,7 +484,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // More exhibition match types (match_types.h).
   svr2011::InstallMatchTypes(runtime()->memory());
   // Arena mods: custom arenas in place of a host arena (arena_mods.h).
-  svr2011::InstallMovePacks();  // (arenas branch: before the game mounts its pacs)
+  svr2011::InstallMovePacks(runtime()->file_system());  // (arenas branch: before the game mounts its pacs)
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
