@@ -57,6 +57,22 @@ final class Shaders {
                 if (out.exists()) out.delete();
                 if (!part.renameTo(out)) return false;
             }
+            // (and the PlayStation / keyboard button pictures: assets/pad_icons ->
+            // the game folder's pad_icons, src/pad_icons.h)
+            String[] icons = c.getAssets().list("pad_icons");
+            if (icons != null && icons.length > 0) {
+                File iconDir = new File(InstallActivity.gameFolder(), "pad_icons");
+                iconDir.mkdirs();
+                for (String name : icons) {
+                    File out = new File(iconDir, name), part = new File(iconDir, name + ".part");
+                    try (InputStream in = c.getAssets().open("pad_icons/" + name);
+                         OutputStream os = new FileOutputStream(part)) {
+                        FileOps.copy(in, os);
+                    }
+                    if (out.exists()) out.delete();
+                    if (!part.renameTo(out)) return false;
+                }
+            }
             try (OutputStream os = new FileOutputStream(mark)) {
                 os.write(stamp.getBytes(StandardCharsets.UTF_8));
             }

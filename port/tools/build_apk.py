@@ -143,6 +143,20 @@ def main():
         print("warning: no SPIR-V shaders in", shaders / "spirv", "- the APK carries no shaders")
     if (PORT / "dist" / "pipelines.list").exists():
         assets.append((PORT / "dist" / "pipelines.list", "assets/native_shaders/pipelines.list"))
+    # PlayStation / keyboard button pictures (tools/make_pad_icons.py, from the
+    # user's PS3 copy): the Game Files' pad_icons (or SVR2011_PAD_ICONS).
+    icons = None
+    for d in [os.environ.get("SVR2011_PAD_ICONS", ""), PORT.parent / "Game Files" / "pad_icons",
+              PORT.parent.parent / "Game Files" / "pad_icons"]:
+        if d and (Path(d) / "pad_icons.txt").exists():
+            icons = Path(d)
+            break
+    if icons:
+        for f in sorted(icons.iterdir()):
+            if f.suffix in (".dds", ".txt", ".bin"):
+                assets.append((f, f"assets/pad_icons/{f.name}"))
+    else:
+        print("warning: no pad_icons (tools/make_pad_icons.py) - Xbox button pictures only")
 
     with zipfile.ZipFile(OUT / "base.apk", "a", zipfile.ZIP_DEFLATED) as apk:
         apk.write(OUT / "classes.dex", "classes.dex")

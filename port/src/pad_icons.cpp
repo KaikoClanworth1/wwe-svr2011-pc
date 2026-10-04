@@ -31,6 +31,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -490,35 +491,293 @@ REX_HOOK_RAW(sub_826AD450) {
   __imp__sub_826AD450(ctx, base);
 }
 
-// D3DDevice_SetTexture(device, sampler, texture object): a picture with a
-// PlayStation / keyboard version gets the copy for that version.
-REX_EXTERN(__imp__sub_82917EC8);
-REX_HOOK_RAW(sub_82917EC8) {
+namespace svr2011 {
+namespace {
+
+// Whether a guest address can be read (the game's heaps; a field that holds
+// something else is skipped, not followed).
+bool Readable(uint32_t a) { return a >= 0x40000000u && a < 0xFFFF0000u && (a & 3) == 0; }
+
+// The texture object for a picture's other version (0: none / not known).
+uint32_t VersionOf(uint32_t object, Kind kind) {
+  if (!Readable(object) || !g_seen_count.load(std::memory_order_relaxed)) return 0;
+  const uint8_t* o = g_base + object;
+  if ((Rd32(o) & 0xF) != 3) return 0;  // (D3D resource type: texture)
+  const uint32_t size = Rd32(o + 0x1C + 8);  // (fetch dword 2: width - 1, height - 1)
+  const uint32_t w = (size & 0x1FFF) + 1, h = ((size >> 13) & 0x1FFF) + 1;
+  if (!g_sprite_sizes.count({w, h})) return 0;
+  const uint32_t fetch1 = Rd32(o + 0x1C + 4);
+  const uint32_t physical = g_memory->GetPhysicalAddress(fetch1 & 0xFFFFF000u);
+  const Sprite* sp = nullptr;
+  {
+    std::lock_guard lock(g_seen_mutex);
+    if (auto it = g_seen.find(physical); it != g_seen.end()) sp = it->second;
+  }
+  if (!sp || sp->data[kind].empty()) return 0;
+  std::lock_guard lock(g_copies_mutex);
+  Copy& c = g_copies[{object, kind}];
+  if (c.object && c.fetch1 != fetch1) c = Copy{};  // (the object now holds another picture)
+  if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0};
+  return c.object;
+}
+
+// The game's 2D texture records (vtable 0x8205CF48, 0x70 bytes; +80 the D3D
+// texture object) and copies of them pointing at another version.
+struct RecordCopy {
+  uint32_t record = 0, object = 0;
+};
+std::mutex g_records_mutex;
+std::map<std::pair<uint32_t, Kind>, RecordCopy> g_records;
+thread_local uint32_t t_pair = 0;  // (a {handle, record} pair for the command)
+
+uint32_t RecordVersion(uint32_t record, Kind kind) {
+  constexpr uint32_t kTextureRecord = 0x8205CF48;  // (vtable)
+  if (!Readable(record) || Rd32(g_base + record) != kTextureRecord || Rd32(g_base + record + 52) != 0) return 0;
+  const uint32_t object = Rd32(g_base + record + 80);
+  const uint32_t version = VersionOf(object, kind);
+  if (!version) return 0;
+  std::lock_guard lock(g_records_mutex);
+  RecordCopy& c = g_records[{record, kind}];
+  if (!c.record) c.record = g_memory->SystemHeapAlloc(0x70, 32);
+  if (!c.record) return 0;
+  if (c.object != version) {
+    std::memcpy(g_base + c.record, g_base + record, 0x70);
+    Wr32(g_base + c.record + 80, version);
+    c.object = version;
+  }
+  return c.record;
+}
+
+// The player behind a character select slot: its setup record's controller
+// port (+56; -1 for COM) - mgr *0x82EDE630 + 120 + *(mgr+13520) * 1352 +
+// slot * 204.
+int SlotPort(uint32_t slot) {
+  const uint32_t mgr = Rd32(g_base + 0x82EDE630);
+  if (mgr < 0x40000000u || mgr >= 0xF0000000u || slot > 5) return -1;
+  const uint32_t mode = Rd32(g_base + mgr + 13520);
+  if (mode > 8) return -1;  // (not set up)
+  const uint32_t rec = mgr + 120 + mode * 1352 + slot * 204;
+  const int32_t port = int32_t(Rd32(g_base + rec + 56));
+  return port >= 0 && port < 4 ? port : -1;
+}
+
+// A wrestler HUD's player: its character (+80)'s controller port (+1152; 4
+// and up: the CPU).
+int HudOwner(uint32_t hud) {
+  const uint32_t ch = Readable(hud) ? Rd32(g_base + hud + 80) : 0;
+  const uint32_t port = Readable(ch) ? Rd32(g_base + ch + 1152) : ~0u;
+  return port < 4 ? int(port) : -1;
+}
+
+// 2D layouts made by a wrestler's HUD for its prompts (drawn later, by the
+// 2D layer): layout -> the HUD (its player is looked up at each draw - the
+// HUD gets its character after it makes them, and tag partners swap).
+thread_local uint32_t t_making = 0;
+thread_local uint32_t t_drawing_hud = 0;  // (debug)
+std::mutex g_layouts_mutex;
+std::unordered_map<uint32_t, uint32_t> g_layouts;
+// ... and their sprites (sub_82416618 makes one; its texture pair at +0x110 is
+// what the "set texture" command gets): sprite -> the HUD.
+std::unordered_map<uint32_t, uint32_t> g_sprites_hud;
+// The wrestler HUDs drawn lately and their players (-1: the CPU's).
+struct HudSeen {
+  int owner;
+  std::chrono::steady_clock::time_point at;
+};
+std::unordered_map<uint32_t, HudSeen> g_huds;
+
+// A HUD's player; a CPU wrestler's HUD shows its prompts (the submission
+// meter, ...) to the human against it: the match's only human, if one.
+int ResolveHud(uint32_t hud) {
+  const int owner = HudOwner(hud);
+  if (owner >= 0) return owner;
+  const auto now = std::chrono::steady_clock::now();
+  int human = -1;
+  for (const auto& [h, seen] : g_huds) {
+    if (seen.owner < 0 || now - seen.at > std::chrono::seconds(2)) continue;
+    if (human >= 0 && human != seen.owner) return -1;  // (more than one human: no one in particular)
+    human = seen.owner;
+  }
+  return human;
+}
+
+struct OwnerScope {
+  int saved;
+  explicit OwnerScope(int owner) : saved(t_owner) { t_owner = owner; }
+  ~OwnerScope() { t_owner = saved; }
+};
+
+}  // namespace
+}  // namespace svr2011
+
+// The 2D command "set texture" (render list type 24): sub_826DE6B0(cmd,
+// pair = {handle, record}, sampler) - written now, played back on the render
+// thread (SetTexture there knows nothing of whose picture it is). For a
+// player's picture the command gets a copy of the record with the version
+// for that player's controller.
+REX_EXTERN(__imp__sub_826DE6B0);
+REX_HOOK_RAW(sub_826DE6B0) {
   using namespace svr2011;
-  const uint32_t object = ctx.r5.u32;
-  if (g_enabled && object && g_seen_count.load(std::memory_order_relaxed)) {
+  // (debug: SVR2011_PAD_ICONS_LOG=1 - each record seen with an owner, once)
+  static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+  if (debug && ctx.r4.u32 && Readable(ctx.r4.u32)) {
+    static std::set<uint64_t> logged;
+    const uint32_t record = Rd32(base + ctx.r4.u32 + 4);
+    const uint32_t object = Readable(record) ? Rd32(base + record + 80) : 0;
+    if (Readable(record) && (t_owner >= 0 || VersionOf(object, kPlayStation)) && logged.insert(uint64_t(record) << 8 | uint8_t(t_owner + 1)).second &&
+        logged.size() < 2000) {
+      REXLOG_INFO("[svr2011] pad icons: record {:08X} pair {:08X} owner {} (object {:08X} size {:08X} caller {:08X}){}", record, ctx.r4.u32,
+                  t_owner, object, Readable(object) ? Rd32(base + object + 0x24) : 0, uint32_t(ctx.lr),
+                  VersionOf(object, kPlayStation) ? " - has a PlayStation version" : "");
+    }
+  }
+  // (a sprite a wrestler HUD made, drawn later by the 2D layer: its player)
+  std::optional<OwnerScope> sprite_owner;
+  if (g_enabled && t_owner < 0 && ctx.r4.u32) {
+    std::lock_guard lock(g_layouts_mutex);
+    if (auto it = g_sprites_hud.find(ctx.r4.u32 - 0x110); it != g_sprites_hud.end())
+      sprite_owner.emplace(ResolveHud(it->second));
+  }
+  if (g_enabled && t_owner >= 0 && ctx.r4.u32) {
     const Kind kind = CurrentKind(false);
     if (kind == kPlayStation || kind == kKeyboard) {
-      const uint8_t* o = base + object;
-      const uint32_t size = Rd32(o + 0x1C + 8);  // (fetch dword 2: width - 1, height - 1)
-      const uint32_t w = (size & 0x1FFF) + 1, h = ((size >> 13) & 0x1FFF) + 1;
-      if (g_sprite_sizes.count({w, h})) {
-        const uint32_t fetch1 = Rd32(o + 0x1C + 4);
-        const uint32_t physical = g_memory->GetPhysicalAddress(fetch1 & 0xFFFFF000u);
-        const Sprite* sp = nullptr;
-        {
-          std::lock_guard lock(g_seen_mutex);
-          if (auto it = g_seen.find(physical); it != g_seen.end()) sp = it->second;
-        }
-        if (sp && !sp->data[kind].empty()) {
-          std::lock_guard lock(g_copies_mutex);
-          Copy& c = g_copies[{object, kind}];
-          if (c.object && c.fetch1 != fetch1) c = Copy{};  // (the object now holds another picture)
-          if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0};
-          if (c.object) ctx.r5.u64 = c.object;
+      const uint32_t record = Readable(ctx.r4.u32) ? Rd32(base + ctx.r4.u32 + 4) : 0;
+      if (const uint32_t copy = record ? RecordVersion(record, kind) : 0) {
+        if (!t_pair) t_pair = g_memory->SystemHeapAlloc(8, 8);
+        if (t_pair) {
+          Wr32(base + t_pair, Rd32(base + ctx.r4.u32));
+          Wr32(base + t_pair + 4, copy);
+          ctx.r4.u64 = t_pair;
         }
       }
     }
+  }
+  __imp__sub_826DE6B0(ctx, base);
+}
+
+// Whose pictures are being drawn:
+// - a wrestler's HUD (pins, submissions, button prompts, finishers, ...):
+//   sub_82404F60(hud) draws, sub_824050C0(hud) updates - and makes the
+//   prompts' layouts (sub_82402818 -> the layout), drawn later through their
+//   node (+192, sub_82418B70);
+REX_EXTERN(__imp__sub_82404F60);
+REX_HOOK_RAW(sub_82404F60) {
+  using namespace svr2011;
+  int owner = -1;
+  if (g_enabled) {
+    std::lock_guard lock(g_layouts_mutex);
+    g_huds[ctx.r3.u32] = HudSeen{HudOwner(ctx.r3.u32), std::chrono::steady_clock::now()};
+    owner = ResolveHud(ctx.r3.u32);
+  }
+  OwnerScope scope(owner);
+  const uint32_t saved = t_drawing_hud;
+  t_drawing_hud = ctx.r3.u32;
+  __imp__sub_82404F60(ctx, base);
+  t_drawing_hud = saved;
+}
+
+// (the HUD made: sub_82403E48(hud, match manager + 376); updated, making
+// more on demand: sub_824050C0(hud))
+REX_EXTERN(__imp__sub_82403E48);
+REX_HOOK_RAW(sub_82403E48) {
+  using namespace svr2011;
+  const uint32_t saved = t_making;
+  t_making = g_enabled ? ctx.r3.u32 : 0;
+  __imp__sub_82403E48(ctx, base);
+  t_making = saved;
+}
+
+REX_EXTERN(__imp__sub_824050C0);
+REX_HOOK_RAW(sub_824050C0) {
+  using namespace svr2011;
+  const uint32_t saved = t_making;
+  t_making = g_enabled ? ctx.r3.u32 : 0;
+  OwnerScope scope(g_enabled ? HudOwner(ctx.r3.u32) : -1);
+  __imp__sub_824050C0(ctx, base);
+  t_making = saved;
+}
+
+REX_EXTERN(__imp__sub_82402818);
+REX_HOOK_RAW(sub_82402818) {
+  using namespace svr2011;
+  __imp__sub_82402818(ctx, base);
+  if (!g_enabled || !ctx.r3.u32) return;
+  std::lock_guard lock(g_layouts_mutex);
+  if (t_making) {
+    static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+    if (debug) REXLOG_INFO("[svr2011] pad icons: layout {:08X} made by wrestler HUD {:08X}", ctx.r3.u32, t_making);
+    g_layouts[ctx.r3.u32] = t_making;
+  } else {
+    g_layouts.erase(ctx.r3.u32);  // (a layout of no one's, perhaps where one was)
+  }
+}
+
+// (a sprite made: sub_82416618(sprite))
+REX_EXTERN(__imp__sub_82416618);
+REX_HOOK_RAW(sub_82416618) {
+  using namespace svr2011;
+  const uint32_t sprite = ctx.r3.u32;
+  __imp__sub_82416618(ctx, base);
+  if (!g_enabled) return;
+  std::lock_guard lock(g_layouts_mutex);
+  if (t_making) {
+    g_sprites_hud[sprite] = t_making;
+  } else {
+    g_sprites_hud.erase(sprite);
+  }
+}
+
+// (a layout drawn whole: sub_823D1C48(layout, node, ...))
+REX_EXTERN(__imp__sub_823D1C48);
+REX_HOOK_RAW(sub_823D1C48) {
+  using namespace svr2011;
+  int owner = t_owner;
+  if (g_enabled) {
+    std::lock_guard lock(g_layouts_mutex);
+    if (auto it = g_layouts.find(ctx.r3.u32); it != g_layouts.end()) owner = ResolveHud(it->second);
+  }
+  OwnerScope scope(owner);
+  __imp__sub_823D1C48(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82418B70);
+REX_HOOK_RAW(sub_82418B70) {
+  using namespace svr2011;
+  int owner = t_owner;
+  if (g_enabled) {
+    std::lock_guard lock(g_layouts_mutex);
+    if (auto it = g_layouts.find(ctx.r3.u32 - 192); it != g_layouts.end()) owner = ResolveHud(it->second);
+  }
+  OwnerScope scope(owner);
+  __imp__sub_82418B70(ctx, base);
+}
+
+// - a character select panel: sub_82467C18(cursor + 28), the slot at +256;
+REX_EXTERN(__imp__sub_82467C18);
+REX_HOOK_RAW(sub_82467C18) {
+  using namespace svr2011;
+  OwnerScope scope(g_enabled ? SlotPort(Rd32(base + ctx.r3.u32 + 256)) : -1);
+  __imp__sub_82467C18(ctx, base);
+}
+
+// - character select's bottom bar ("contro02_1P"): player 1's slot.
+REX_EXTERN(__imp__sub_8244D158);
+REX_HOOK_RAW(sub_8244D158) {
+  using namespace svr2011;
+  OwnerScope scope(g_enabled ? SlotPort(0) : -1);
+  __imp__sub_8244D158(ctx, base);
+}
+
+// D3DDevice_SetTexture(device, sampler, texture object), on the render
+// thread: pictures shared by everyone follow the players' controllers when
+// they all use the same kind.
+REX_EXTERN(__imp__sub_82917EC8);
+REX_HOOK_RAW(sub_82917EC8) {
+  using namespace svr2011;
+  if (g_enabled && ctx.r5.u32) {
+    const Kind kind = CurrentKind(false);
+    if (kind == kPlayStation || kind == kKeyboard)
+      if (const uint32_t version = VersionOf(ctx.r5.u32, kind)) ctx.r5.u64 = version;
   }
   __imp__sub_82917EC8(ctx, base);
 }

@@ -23,6 +23,15 @@ if ($LASTEXITCODE) { throw "patching the menu text failed" }
 # MY WWE -> OPTIONS gets a GRAPHICS entry (the port opens its own page).
 python (Join-Path $root "tools\patch_menu.py") $disc $game
 if ($LASTEXITCODE) { throw "patching the menus failed" }
+# PlayStation / keyboard button pictures, from the PS3 version's files
+# (SVR2011_PS3_GAME = its PS3_GAME\USRDIR; tools/make_pad_icons.py).
+$ps3 = $env:SVR2011_PS3_GAME
+if ($ps3 -and (Test-Path (Join-Path $ps3 "pac"))) {
+    python (Join-Path $root "tools\make_pad_icons.py") --ps3 $ps3 --xbox $disc --out $game | Out-Host
+    if ($LASTEXITCODE) { throw "making the PlayStation button pictures failed" }
+} elseif (-not (Test-Path (Join-Path $game "pad_icons\pad_icons.txt"))) {
+    Write-Warning "no PlayStation button pictures (set SVR2011_PS3_GAME to the PS3 game's USRDIR)"
+}
 $global:LASTEXITCODE = 0
 
 # Program files. The SDK's DLLs reach the build folder only when the game

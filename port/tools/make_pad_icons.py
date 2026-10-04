@@ -298,6 +298,7 @@ def main():
     ap.add_argument('--ps3', required=True, help='the PS3 game\'s USRDIR')
     ap.add_argument('--xbox', required=True, help='the extracted 360 data (with pac/)')
     ap.add_argument('--out', required=True, help='the game folder (pad_icons/ is written there)')
+    ap.add_argument('--previews', action='store_true', help='also PNG previews of the pictures')
     args = ap.parse_args()
 
     atlases = {}  # 360 fnv -> dict
@@ -379,7 +380,8 @@ def main():
             tall.paste(img, (px, h * 2 + pair_h + py))
         name = f'icons{n}_{w}x{h}.dds'
         write_dds_rgba(os.path.join(args.out, 'pad_icons', name), tall)
-        tall.save(os.path.join(args.out, 'pad_icons', name[:-4] + '.png'))
+        if args.previews:
+            tall.save(os.path.join(args.out, 'pad_icons', name[:-4] + '.png'))
         lines.append(f'atlas {hsh:016x} {w} {h} {total} {name}   # {a["source"]}')
         # (how a font's icon page is recognized: its Xbox glyphs' places)
         lines.append('xbox ' + ' '.join(f'{c:04x}:{tx[c][0]},{tx[c][1]},{tx[c][2]},{tx[c][3]}'
@@ -425,7 +427,8 @@ def main():
                 seen.add((hsh, 'kb'))
                 pic = keyboard_picture(w, h, name == 'contro03')
                 os.makedirs(os.path.join(args.out, 'pad_icons'), exist_ok=True)
-                pic.save(os.path.join(args.out, 'pad_icons', f'keyboard_{name}_{w}x{h}.png'))
+                if args.previews:
+                    pic.save(os.path.join(args.out, 'pad_icons', f'keyboard_{name}_{w}x{h}.png'))
                 dds = io.BytesIO()
                 pic.save(dds, 'DDS', pixel_format='DXT5')
                 data = dds.getvalue()[128:128 + n]
