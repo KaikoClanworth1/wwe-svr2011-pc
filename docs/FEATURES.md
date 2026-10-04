@@ -88,6 +88,8 @@ still being tested.
 
 - **Finisher freezes and won matches with no ending fixed** (Android, slower devices; Steel Cage, Match Creator and others): on frames with two world updates the characters' job could start twice; now once a frame, as on the console. Tested at simulated phone speed (2f1233e).
 - **Match-end logging**: each step of the ending is logged, and a step waiting over 10 s says what it waits on; the match line has the right names; FULL SPEED is in the settings line (2f1233e).
+- **Won matches that never ended, fixed for real** (Steel Cage escape and others, Android): the replay helper ran only one of two jobs sent before it woke, and the ending waited forever on the other; it now runs every queued job. Tested on the Fold (c3fb4da).
+- Safety net: if the ending still waits 8 s on the replay helper, it goes on without it (no highlight clips that match) (282aa39).
 - A guard for a rare crash at 30 fps on PC (untested against the crash itself) (2f1233e).
 
 - **Mods** (ModMaker session, arenas branch merged 7dc4e74): a **Mods** tab in the launcher and the **SvR2011 Mod Maker** (with a 3D arena editor): custom **arenas** (with their own VS screen, ring and ropes), **superstar mods** (50 slots, theme and movie, shown with a MODDED badge), **crowd sign** packs and **media** packs (themes, videos). Mods live in `Mods\` (Arenas, Superstars, Signs, Media). Docs: `port/docs/ARENA_MOD_MAKER_PLAN.md`, `SUPERSTAR_MODS.md`, `CROWD_SIGNS.md`, `MEDIA_MODS.md`.
