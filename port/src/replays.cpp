@@ -112,3 +112,37 @@ REX_HOOK_RAW(sub_82413280) {
   }
   __imp__sub_82413280(ctx, base);
 }
+
+// The match's end (logged, for reports of a won match that never ended):
+// sub_82322DA0, each frame, steps the end - state (+16) 0: waits while the
+// object of sub_821650F8 is busy (its +156 -> +1504 not 0 or 5); 1: the result;
+// 2: waits for a fade (sub_8217A8D8(+8)), then the highlights step
+// (sub_823EDC78 -> sub_82413698, logged above); 3-5: on to the results. Each
+// change is logged, and a state still waiting after 10 s logs what it waits on.
+REX_EXTERN(__imp__sub_82322DA0);
+REX_HOOK_RAW(sub_82322DA0) {
+  const uint32_t task = ctx.r3.u32;
+  const auto saved = ctx;
+  __imp__sub_82322DA0(ctx, base);
+  using Clock = std::chrono::steady_clock;
+  static uint32_t last_task = 0, last_state = ~0u;
+  static Clock::time_point since;
+  static bool told = false;
+  const uint32_t state = Rd32(base + task + 16);
+  if (task != last_task || state != last_state) {
+    REXLOG_INFO("[svr2011] match end: step {} (task {:08X}, +20 {})", state, task, Rd32(base + task + 20));
+    last_task = task, last_state = state, since = Clock::now(), told = false;
+    return;
+  }
+  if (told || state == 3 || Clock::now() - since < std::chrono::seconds(10)) return;  // (3: the highlights play)
+  told = true;
+  uint32_t busy = 0xFFFFFFFF;
+  if (state == 0) {
+    PPCContext c = saved;
+    sub_821650F8(c, base);
+    if (const uint32_t obj = c.r3.u32)
+      if (const uint32_t sub = Rd32(base + obj + 156)) busy = Rd32(base + sub + 1504);
+  }
+  REXLOG_WARN("[svr2011] match end: step {} waiting 10 s - +20 {}, busy object state {} (0/5 = free), fade {} (global {:08X})",
+              state, Rd32(base + task + 20), int32_t(busy), Rd32(base + task + 8), Rd32(base + 0x82DEA30C));
+}

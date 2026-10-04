@@ -579,20 +579,21 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
       ctx.r3.u64 = roster;
       ctx.r4.u64 = id;
       sub_828B5A18(ctx, base);
-      if (const uint32_t rec = ctx.r3.u32) {  // (the record's name: its longest text with a lowercase letter or space)
-        for (uint32_t at = 0; at < 0x100; ++at) {
-          std::string run;
-          while (at < 0x100 && base[rec + at] >= 0x20 && base[rec + at] < 0x7F) run += char(base[rec + at++]);
-          const bool wordy = run.find_first_of("abcdefghijklmnopqrstuvwxyz ") != std::string::npos;
-          if (wordy && run.size() > name.size()) name = run;
+      if (const uint32_t rec = ctx.r3.u32) {  // (the record's name: its text at +0x22; +0x20 is a number)
+        if (std::getenv("SVR2011_TEST_ROSTER_DUMP")) {  // (test aid: the record, 260 bytes)
+          std::string hex;
+          for (uint32_t at = 0; at < 260; ++at) hex += fmt::format("{}{:02X}", at % 16 ? "" : fmt::format(" +{:03X}:", at), base[rec + at]);
+          REXLOG_INFO("[svr2011] match: test - roster record {} at {:08X}:{}", id, rec, hex);
         }
+        for (uint32_t at = 0x22; at < 0x22 + 64 && base[rec + at] >= 0x20 && base[rec + at] < 0x7F; ++at)
+          name += char(base[rec + at]);
       }
     }
     ctx.r3.u64 = id;
     sub_8257C190(ctx, base);
     sub_82573EC8(ctx, base);
     const uint32_t info = ctx.r3.u32;
-    people += fmt::format("{}{} (person {}, team {})", people.empty() ? "" : ", ", name.size() >= 3 ? name : "?", id,
+    people += fmt::format("{}{} (person {}, team {})", people.empty() ? "" : ", ", name.empty() ? "?" : name, id,
                           info ? base[info + 13] : 255);
   }
   ctx = saved;
