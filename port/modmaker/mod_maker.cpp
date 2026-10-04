@@ -1691,8 +1691,7 @@ void InstallMedia() {
 
 void MediaButtons(float scale) {
   ImGui::Separator();
-  ImGui::TextDisabled("One pack holds everything on the Titantron videos, Menus & renders and Audio pages.
-"
+  ImGui::TextDisabled("One pack holds everything on the Titantron videos, Menus & renders and Audio pages.\n"
                       "Every item is optional: fill in only what you want to replace.");
   ImGui::BeginDisabled(g_busy);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
