@@ -22,6 +22,7 @@
 #include <shobjidl.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstring>
@@ -727,7 +728,10 @@ struct StarBase {
 std::vector<StarBase> g_star_bases;  // the playable superstars (select renders in DLC_HD.pac)
 bool g_star_loaded = false;
 struct StarProject {
-  int base = -1;  // index in g_star_bases
+  int style = 0;     // kStyles
+  int ratings[7] = {74, 74, 74, 74, 74, 74, 74};
+  bool ratings_set = false;  // (the style's, until moved)
+  int base = -1;  // index in g_star_bases (old mods: the superstar it started from)
   char name[32] = "", short_name[32] = "", author[64] = "", version[16] = "1.0";
   std::wstring model, song, movie;  // files ("" model: the base's own)
   std::wstring voice;               // a recording of the name, for the ring announcer
@@ -831,6 +835,30 @@ const char* const kNickNames[84] = {
     "Youngblood"
 };
 StarProject g_star;
+
+// Fighting styles: a new superstar's moves, entrance motions and starting
+// attributes come from one (the game needs a full move-set). Each is a
+// template from the roster underneath - the user never sees it.
+struct Style {
+  const char* name;
+  const char* about;
+  int template_id;  // a playable superstar (its move-set, entrance motions)
+  bool female;
+};
+const Style kStyles[] = {
+    {"Powerhouse", "Big, slow and strong: power slams and bear hugs.", 125, false},
+    {"Brawler", "Strikes, clotheslines and a power finisher.", 160, false},
+    {"All-rounder", "A bit of everything: the main-event style.", 139, false},
+    {"Technical", "Holds, counters and a submission finisher.", 104, false},
+    {"Submission specialist", "Wears opponents down with holds.", 267, false},
+    {"High flyer", "Fast, light, off the top rope.", 123, false},
+    {"Showman", "Flashy moves and taunts.", 218, false},
+    {"Diva: powerhouse", "A strong Diva: slams and power moves.", 224, true},
+    {"Diva: high flyer", "A quick, acrobatic Diva.", 164, true},
+    {"Diva: technical", "A Diva who wrestles holds and counters.", 143, true},
+};
+// The record's 7 attributes in its order (record +0..+6).
+const char* const kAttributes[7] = {"Grapple", "Submission", "Speed", "Strikes", "Hardcore", "Charisma", "Durability"};
 // test aids: --star <id> picks the base, --star-song / --star-movie <file>,
 // --test-star-save <file> saves the mod there and quits
 int g_star_start = 0;
@@ -940,6 +968,39 @@ void PickStarPicture() {
   Log("Select picture set from " + Utf8(f));
 }
 
+// A style's starting attributes: its template's record +0..+6 (chEtc.pac CHAR/DAT).
+int StyleRating(int id, int k) {
+  static std::map<int, std::array<int, 7>> cache;
+  if (cache.empty()) {
+    Bytes d;
+    Epac e;
+    if (ReadFile(Utf8((fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac").wstring()), d) && EpacRead(d, e))
+      for (const auto& g : e.groups)
+        for (const auto& en : g.entries)
+          if (g.type == "CHAR" && en.name.rfind("DAT", 0) == 0) {
+            std::vector<PachEntry> pe;
+            if (!PachRead(en.data, pe)) continue;
+            for (const auto& x : pe) {
+              const Bytes r = Unpack(x.data);
+              if (r.size() < 4 + 7) continue;
+              std::array<int, 7> v{};
+              for (int j = 0; j < 7; ++j) v[j] = r[4 + j];
+              cache[int(x.id)] = v;
+            }
+          }
+  }
+  const auto it = cache.find(id);
+  return it == cache.end() ? 74 : std::clamp(it->second[k], 1, 99);
+}
+
+// The right side: the superstar's picture (the 3D model preview: TODO).
+void StarPreview(float scale) {
+  ImGui::BeginGroup();
+  if (g_star.picture_tex) ImGui::Image(Tex(g_star.picture_tex), ImVec2(256 * scale, 256 * scale));
+  else ImGui::TextDisabled("Pick a model to see it here.");
+  ImGui::EndGroup();
+}
+
 std::string StarId() {
   std::string id;
   for (char c : std::string(g_star.name))
@@ -949,27 +1010,32 @@ std::string StarId() {
 
 // The mod's files. Everything is read on the UI thread (small, or one model pac).
 bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
-  if (g_star.base < 0) {
-    Log("Pick the superstar to start from.");
-    return false;
-  }
   if (!g_star.name[0]) {
     Log("Give the superstar a name.");
     return false;
   }
-  const StarBase& b = g_star_bases[g_star.base];
+  if (g_star.model.empty()) {
+    Log("Pick the superstar's model (a character model pac, ch.pac).");
+    return false;
+  }
+  const Style& st = kStyles[g_star.style];
+  StarBase b{st.template_id, st.name};
+  if (!g_star.ratings_set) {  // (the style's own, if the page never showed them)
+    for (int k = 0; k < 7; ++k) g_star.ratings[k] = StyleRating(st.template_id, k);
+    g_star.ratings_set = true;
+  }
   id = StarId();
   Bytes ch;
-  const std::wstring model = !g_star.model.empty()
-                                 ? g_star.model
-                                 : (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(b.id) + L".pac")).wstring();
+  const std::wstring model = g_star.model;
   if (!ReadFile(Utf8(model), ch) || ch.size() < 0x4000 || std::memcmp(ch.data(), "EPK8", 4)) {
     Log("The model is not a character model pac (EPK8): " + Utf8(model));
     return false;
   }
   std::string man = "type=superstar\nid=" + id + "\nname=" + g_star.name + "\nshort=" +
                     (g_star.short_name[0] ? g_star.short_name : g_star.name) + "\nbase=" + std::to_string(b.id) +
-                    "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n";
+                    "\nstyle=" + st.name + "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n";
+  man += "ratings=";
+  for (int k = 0; k < 7; ++k) man += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "\n");
   if (g_star.call >= 0) man += "call=" + std::to_string(g_star.call) + "\n";
   files.push_back({"ch.pac", std::move(ch)});
   if (!g_star.song.empty()) {
@@ -1070,11 +1136,14 @@ void InstallStar(bool start) {
 void StarPage() {
   if (!g_star_loaded) {
     LoadStarBases();
-    for (int i = 0; i < int(g_star_bases.size()); ++i)
-      if (g_star_bases[i].id == g_star_start) {
-        g_star.base = i;
-        std::snprintf(g_star.name, sizeof g_star.name, "Test %s", g_star_bases[i].name.c_str());
-      }
+    if (g_star_start) {  // (test aid: that superstar's model, the style with it as template if any)
+      for (int i = 0; i < int(std::size(kStyles)); ++i)
+        if (kStyles[i].template_id == g_star_start) g_star.style = i;
+      for (int i = 0; i < int(g_star_bases.size()); ++i)
+        if (g_star_bases[i].id == g_star_start)
+          std::snprintf(g_star.name, sizeof g_star.name, "Test %s", g_star_bases[i].name.c_str());
+      g_star.model = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_star_start) + L".pac")).wstring();
+    }
     if (!g_star_picture.empty()) {
       Image img;
       if (LoadImageFile(Utf8(g_star_picture), img)) SetStarPicture(img);
@@ -1087,40 +1156,43 @@ void StarPage() {
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
   }
-  if (g_star.render_for != g_star.base) LoadStarRender();
   const float scale = ImGui::GetFontSize() / 13.0f;
-  ImGui::Text("New superstar");
+  ImGui::Text("Create a new superstar");
   ImGui::TextDisabled("A new playable character under the M tile of the character select (up to 50 mods).");
   ImGui::Separator();
   ImGui::BeginGroup();
   ImGui::PushItemWidth(320 * scale);
-  const char* cur = g_star.base >= 0 ? g_star_bases[g_star.base].name.c_str() : "(pick one)";
-  if (ImGui::BeginCombo("Start from", cur)) {
-    for (int i = 0; i < int(g_star_bases.size()); ++i)
-      if (ImGui::Selectable((g_star_bases[i].name + "##" + std::to_string(i)).c_str(), g_star.base == i)) {
-        g_star.base = i;
-        if (!g_star.name[0]) {
-          std::snprintf(g_star.name, sizeof g_star.name, "%s", g_star_bases[i].name.c_str());
-        }
+  ImGui::InputText("Name", g_star.name, sizeof g_star.name);
+  ImGui::InputText("Short name (optional)", g_star.short_name, sizeof g_star.short_name);
+  if (ImGui::BeginCombo("Fighting style", kStyles[g_star.style].name)) {
+    for (int i = 0; i < int(std::size(kStyles)); ++i)
+      if (ImGui::Selectable(kStyles[i].name, g_star.style == i)) {
+        g_star.style = i;
+        g_star.ratings_set = false;
       }
     ImGui::EndCombo();
   }
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Its stats, moves, entrance motions and select picture; its model unless you pick one.");
-  ImGui::InputText("Name", g_star.name, sizeof g_star.name);
-  ImGui::InputText("Short name", g_star.short_name, sizeof g_star.short_name);
-  ImGui::InputText("Author", g_star.author, sizeof g_star.author);
-  ImGui::InputText("Version", g_star.version, sizeof g_star.version);
-  if (ImGui::BeginCombo("Name call", g_star.call < 0 ? "the base superstar's" : kNickNames[g_star.call])) {
-    if (ImGui::Selectable("the base superstar's", g_star.call < 0)) g_star.call = -1;
+  ImGui::TextDisabled("%s", kStyles[g_star.style].about);
+  if (!g_star.ratings_set) {  // (the style's own attributes, from its template's record)
+    if (!g_star_loaded) LoadStarBases();
+    for (int k = 0; k < 7; ++k) g_star.ratings[k] = StyleRating(kStyles[g_star.style].template_id, k);
+    g_star.ratings_set = true;
+  }
+  ImGui::Text("Attributes");
+  for (int k = 0; k < 7; ++k)
+    if (ImGui::SliderInt(kAttributes[k], &g_star.ratings[k], 1, 99)) g_star.ratings_set = true;
+  if (ImGui::BeginCombo("Name call (optional)", g_star.call < 0 ? "The Superstar" : kNickNames[g_star.call])) {
+    if (ImGui::Selectable("The Superstar##d", g_star.call < 0)) g_star.call = -1;
     for (int i = 0; i < 84; ++i)
       if (ImGui::Selectable((std::string(kNickNames[i]) + "##n" + std::to_string(i)).c_str(), g_star.call == i))
         g_star.call = i;
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("What the ring announcer and the commentators call the superstar: the base's name,\n"
-                      "or one of the nicknames a Created Superstar can have.");
+    ImGui::SetTooltip("What the ring announcer and the commentators call the superstar: one of the nicknames\n"
+                      "a Created Superstar can have (or record the name below).");
+  ImGui::InputText("Author (optional)", g_star.author, sizeof g_star.author);
+  ImGui::InputText("Version (optional)", g_star.version, sizeof g_star.version);
   ImGui::PopItemWidth();
   ImGui::Separator();
   auto file_row = [&](const char* label, std::wstring& f, const char* none, const COMDLG_FILTERSPEC* spec,
@@ -1141,11 +1213,11 @@ void StarPage() {
   const COMDLG_FILTERSPEC pac[] = {{L"Character model pac (*.pac)", L"*.pac"}};
   const COMDLG_FILTERSPEC song[] = {{L"Songs", L"*.mp3;*.m4a;*.aac;*.wav;*.flac;*.wma;*.ogg"}};
   const COMDLG_FILTERSPEC bik[] = {{L"Bink movie (*.bik)", L"*.bik"}};
-  file_row("Model (ch.pac)...", g_star.model, "the base superstar's own", pac, 1);
-  file_row("Theme song...", g_star.song, "the base superstar's", song, 1);
-  file_row("Entrance movie...", g_star.movie, "the base superstar's", bik, 1);
+  file_row("Model (ch.pac)...", g_star.model, "required: the superstar's model", pac, 1);
+  file_row("Theme song (optional)...", g_star.song, "the style's", song, 1);
+  file_row("Entrance movie (optional)...", g_star.movie, "the style's", bik, 1);
   for (int a = 1; a < 4; ++a) {
-    const std::string label = "Attire " + std::to_string(a + 1) + " (ch.pac)...";
+    const std::string label = "Attire " + std::to_string(a + 1) + " (optional)...";
     file_row(label.c_str(), g_star.attires[a], "none", pac, 1);
     if (!g_star.attires[a].empty()) {
       ImGui::SameLine();
@@ -1158,7 +1230,7 @@ void StarPage() {
   {  // its fans' crowd signs
     const COMDLG_FILTERSPEC pics[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
     ImGui::BeginDisabled(g_star.signs.size() >= 4);
-    if (ImGui::Button("Crowd signs...", ImVec2(200 * scale, 0)))
+    if (ImGui::Button("Crowd signs (optional)...", ImVec2(200 * scale, 0)))
       for (const auto& f : PickFiles(L"Signs for the superstar's fans (up to 4)", pics, 1)) {
         Image img;
         if (g_star.signs.size() < 4 && LoadImageFile(Utf8(f), img)) {
@@ -1168,7 +1240,7 @@ void StarPage() {
       }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (g_star.signs.empty()) ImGui::TextUnformatted("the base superstar's");
+    if (g_star.signs.empty()) ImGui::TextUnformatted("none");
     for (size_t k = 0; k < g_star.sign_tex.size(); ++k) {
       ImGui::SameLine();
       ImGui::Image(Tex(g_star.sign_tex[k]), ImVec2(64 * scale, 32 * scale));
@@ -1181,15 +1253,15 @@ void StarPage() {
       }
     }
   }
-  file_row("Name recording...", g_star.voice, "none (the name call above)", song, 1);
+  file_row("Name recording (optional)...", g_star.voice, "none (the name call above)", song, 1);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("A short recording of the name, said the ring announcer's way: it plays when he\n"
                       "announces the superstar. The commentators keep the name call above.");
   ImGui::TextDisabled("Entrance movies are .bik files: make them in the launcher's Movies tab.");
   ImGui::PushID("pic");
-  if (ImGui::Button("Select picture...", ImVec2(200 * scale, 0))) PickStarPicture();
+  if (ImGui::Button("Select picture (optional)...", ImVec2(200 * scale, 0))) PickStarPicture();
   ImGui::SameLine();
-  ImGui::TextUnformatted(g_star.picture.w ? "your picture" : "the base superstar's");
+  ImGui::TextUnformatted(g_star.picture.w ? "your picture" : "a silhouette");
   if (g_star.picture.w) {
     ImGui::SameLine();
     if (ImGui::SmallButton("x")) {
@@ -1207,10 +1279,8 @@ void StarPage() {
   if (ImGui::Button("Test in game", ImVec2(260 * scale, 0))) InstallStar(true);
   ImGui::EndDisabled();
   ImGui::EndGroup();
-  if (ID3D11ShaderResourceView* shown = g_star.picture_tex ? g_star.picture_tex : g_star.render) {
-    ImGui::SameLine();
-    ImGui::Image(Tex(shown), ImVec2(256 * scale, 256 * scale));
-  }
+  ImGui::SameLine();
+  StarPreview(scale);
 }
 
 // ---------------------------------------------------------------- Crowd signs
@@ -1369,8 +1439,8 @@ void SignsPage() {
   ImGui::Separator();
   ImGui::PushItemWidth(320 * scale);
   ImGui::InputText("Pack name", g_pack.name, sizeof g_pack.name);
-  ImGui::InputText("Author", g_pack.author, sizeof g_pack.author);
-  ImGui::InputText("Version", g_pack.version, sizeof g_pack.version);
+  ImGui::InputText("Author (optional)", g_pack.author, sizeof g_pack.author);
+  ImGui::InputText("Version (optional)", g_pack.version, sizeof g_pack.version);
   ImGui::PopItemWidth();
   const COMDLG_FILTERSPEC spec[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
   if (ImGui::Button("Add pictures...", ImVec2(200 * scale, 0))) AddSigns(PickFiles(L"Sign pictures", spec, 1));
@@ -1444,7 +1514,7 @@ std::string MediaId() {
 void MediaPackHeader(float scale) {
   ImGui::PushItemWidth(320 * scale);
   ImGui::InputText("Pack name", g_media.name, sizeof g_media.name);
-  ImGui::InputText("Author", g_media.author, sizeof g_media.author);
+  ImGui::InputText("Author (optional)", g_media.author, sizeof g_media.author);
   ImGui::PopItemWidth();
 }
 
@@ -1621,7 +1691,9 @@ void InstallMedia() {
 
 void MediaButtons(float scale) {
   ImGui::Separator();
-  ImGui::TextDisabled("One pack holds everything on the Titantron videos, Menus & renders and Audio pages.");
+  ImGui::TextDisabled("One pack holds everything on the Titantron videos, Menus & renders and Audio pages.
+"
+                      "Every item is optional: fill in only what you want to replace.");
   ImGui::BeginDisabled(g_busy);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
   if (ImGui::Button("Save as mod (.svrmod)...", ImVec2(260 * scale, 0))) SaveMedia();
@@ -1979,9 +2051,9 @@ void Draw() {
     ImGui::TextDisabled("import an FBX to start");
   }
   ImGui::InputText("Name", g_proj.name, sizeof g_proj.name);
-  ImGui::InputText("Author", g_proj.author, sizeof g_proj.author);
-  ImGui::InputText("Version", g_proj.version, sizeof g_proj.version);
-  if (ImGui::Button("Banner picture...", ImVec2(-1, 0))) PickBanner();
+  ImGui::InputText("Author (optional)", g_proj.author, sizeof g_proj.author);
+  ImGui::InputText("Version (optional)", g_proj.version, sizeof g_proj.version);
+  if (ImGui::Button("Banner picture (optional)...", ImVec2(-1, 0))) PickBanner();
   if (g_proj.banner_tex) ImGui::Image(Tex(g_proj.banner_tex), ImVec2(bw * 0.6f, bw * 0.3f));
   ImGui::Separator();
   ImGui::BeginDisabled(g_busy || g_proj.arena < 0);
