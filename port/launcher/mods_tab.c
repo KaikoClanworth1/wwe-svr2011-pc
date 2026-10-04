@@ -92,7 +92,7 @@ static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -246,7 +246,8 @@ static int install_file(const WCHAR *zip)
         return 0;
     }
     {
-        const int arena = !_wcsicmp(m.type, L"arena"), star = !_wcsicmp(m.type, L"superstar");
+        const int backstage = !_wcsicmp(m.type, L"backstage");
+        const int arena = !_wcsicmp(m.type, L"arena") || backstage, star = !_wcsicmp(m.type, L"superstar");
         const int signs = !_wcsicmp(m.type, L"signs"), media = !_wcsicmp(m.type, L"media");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
         if (signs || media) {
@@ -260,14 +261,14 @@ static int install_file(const WCHAR *zip)
             return 0;
         }
         swprintf_s(need1, MAX_PATH, L"%s\\%s", tmp, arena ? L"arena.pac" : L"ch.pac");
-        swprintf_s(need2, MAX_PATH, L"%s\\%s", tmp, arena ? L"banner.dds" : L"manifest.txt");
+        swprintf_s(need2, MAX_PATH, L"%s\\%s", tmp, arena && !backstage ? L"banner.dds" : L"manifest.txt");
         if (!exists(need1) || !exists(need2)) {
             status(arena ? L"That arena mod is incomplete (it needs arena.pac and banner.dds)."
                          : L"That superstar mod is incomplete (it needs ch.pac).");
             remove_tree(tmp, 0);
             return 0;
         }
-        wcsncpy_s(kind, 32, arena ? L"Arenas" : L"Superstars", _TRUNCATE);
+        wcsncpy_s(kind, 32, backstage ? L"Backstage" : arena ? L"Arenas" : L"Superstars", _TRUNCATE);
     }
 place:
     safe_id(m.id);
@@ -282,7 +283,8 @@ place:
     }
     scan();
     fill();
-    swprintf_s(t, 512, !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
+    swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
+                       : !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
                                                    L"select (up to 50 superstar mods)."

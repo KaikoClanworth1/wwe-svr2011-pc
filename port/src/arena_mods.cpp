@@ -662,6 +662,25 @@ REX_HOOK_RAW(sub_823D4FC0) {
 
 namespace svr2011 {
 
+// Backstage areas (Mods/Backstage/<id>: manifest type=backstage, area=<0-6>,
+// arena.pac = bg78 with that room rebuilt; Mod Maker): bg78 holds all seven
+// backstage brawl rooms, so the mod's file is bg78 from then on. One at a
+// time: a later one (by folder name) wins.
+void LoadBackstage() {
+  std::error_code ec;
+  std::vector<fs::path> found;
+  for (const auto& e : fs::directory_iterator(g_game / "Mods" / "Backstage", ec))
+    if (e.is_directory() && fs::exists(e.path() / "arena.pac", ec) && !fs::exists(e.path() / "disabled", ec))
+      found.push_back(e.path());
+  if (found.empty()) return;
+  std::sort(found.begin(), found.end());
+  if (found.size() > 1)
+    REXLOG_WARN("[svr2011] arena mods: {} backstage areas installed, only {} plays (one at a time)", found.size(),
+                found.back().filename().string());
+  const fs::path rel = fs::relative(found.back() / "arena.pac", g_game, ec);
+  svr2011::SetArenaDefault(78, rel.generic_string());
+}
+
 void SetArenaDefault(int arena, const std::string& relative_file) {
   if (arena < 0 || arena >= 100) return;
   g_default[arena] = relative_file;
@@ -723,6 +742,7 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
   g_overlay = g_game / "Mods" / "ArenaOverlay";
   g_bpe_log = std::getenv("SVR2011_TEST_BPE_LOG") != nullptr;
   LoadCustomArenas();
+  LoadBackstage();
   std::thread(VsLoop).detach();
   if (std::getenv("SVR2011_TEST_SCAN")) StartScan();
   // Test aid: SVR2011_TEST_ARENA_REDIRECT=<nn>=<file relative to the game folder>

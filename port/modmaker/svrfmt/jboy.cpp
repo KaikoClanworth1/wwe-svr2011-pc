@@ -61,10 +61,12 @@ bool JboyRead(const Bytes& d, Model& m, std::string* error) {
     const uint8_t* o = &d[B + nptr + kNode * i];
     Node n;
     n.name = Name16(o);
-    for (int k = 0; k < 3; ++k) { n.t[k] = BeF(o + 16 + 4 * k); n.r[k] = BeF(o + 28 + 4 * k); }
-    n.u40 = Be32(o + 40);
-    n.parent = int32_t(Be32(o + 44));
-    for (int k = 0; k < 4; ++k) { n.u48[k] = Be32(o + 48 + 4 * k); n.sphere[k] = BeF(o + 64 + 4 * k); }
+    for (int k = 0; k < 3; ++k) { n.t[k] = BeF(o + 16 + 4 * k); n.r[k] = BeF(o + 32 + 4 * k); }
+    n.pad28 = Be32(o + 28);
+    n.pad44 = Be32(o + 44);
+    n.parent = int32_t(Be32(o + 48));
+    for (int k = 0; k < 3; ++k) n.u52[k] = Be32(o + 52 + 4 * k);
+    for (int k = 0; k < 4; ++k) n.sphere[k] = BeF(o + 64 + 4 * k);
     m.nodes.push_back(n);
   }
   for (uint32_t i = 0; i < nmesh; ++i) {
@@ -95,7 +97,7 @@ bool JboyRead(const Bytes& d, Model& m, std::string* error) {
     for (uint32_t j = 0; j < nw; ++j) {
       std::vector<Weight> blk(vc);
       for (uint32_t k = 0; k < vc; ++k) {
-        const uint8_t* w = &d[B + wptr + 8 * (size_t(vc) * j + k)];
+        const uint8_t* w = &d[B + wptr + 8 * (size_t(nw) * k + j)];
         std::memcpy(blk[k].bones, w, 4);
         blk[k].weight = BeF(w + 4);
       }
@@ -159,8 +161,12 @@ Bytes JboyWrite(const Model& m) {
       AppBe32(out, v.color);
     }
     const size_t wd = out.size();
-    for (const auto& blk : s.weights)
-      for (const auto& w : blk) { App(out, w.bones, 4); AppBeF(out, w.weight); }
+    for (size_t k = 0; k < vc; ++k)
+      for (const auto& blk : s.weights) {
+        const Weight w = k < blk.size() ? blk[k] : Weight{{255, 0, 0, 0}, 0.f};
+        App(out, w.bones, 4);
+        AppBeF(out, w.weight);
+      }
     if (s.weights.empty())  // every mesh has at least one block (bone 0, 1.0)
       for (size_t k = 0; k < vc; ++k) { AppBe32(out, 0); AppBeF(out, 1.f); }
     const size_t ud = out.size();
@@ -207,10 +213,11 @@ Bytes JboyWrite(const Model& m) {
   for (const auto& n : m.nodes) {
     AppName(out, n.name);
     for (float f : n.t) AppBeF(out, f);
+    AppBe32(out, n.pad28);
     for (float f : n.r) AppBeF(out, f);
-    AppBe32(out, n.u40);
+    AppBe32(out, n.pad44);
     AppBe32(out, uint32_t(n.parent));
-    for (uint32_t u : n.u48) AppBe32(out, u);
+    for (uint32_t u : n.u52) AppBe32(out, u);
     for (float f : n.sphere) AppBeF(out, f);
   }
   const size_t tex_at = out.size();

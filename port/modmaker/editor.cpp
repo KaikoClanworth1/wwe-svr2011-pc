@@ -168,6 +168,10 @@ struct Obj {
   // drawn twice by the game: as it is and mirrored across x = 0 (flag "r";
   // half an arena's fences, stands and truss are stored once)
   bool mirrored = false;
+  // another area of a multi-area file (backstage: bg78 holds seven rooms):
+  // not shown, not listed, kept as it is
+  bool outside = false;
+  bool ceiling = false;  // a room's ceiling / lights rig (backstage): hidden in the view unless "Show ceilings"
   V3 pos;           // edit offset
   float yaw = 0;    // radians
   float scale = 1;
@@ -234,6 +238,17 @@ std::string g_test_select;
 
 // camera
 V3 g_target{0, -12, 0};
+int g_area_lo = -1;  // SetArea: >= 0 an area is shown (its model ids: g_area)
+std::vector<std::pair<int, int>> g_area;
+bool InArea(uint32_t id) {
+  for (const auto& [lo, hi] : g_area)
+    if (id >= uint32_t(lo) && id <= uint32_t(hi)) return true;
+  return false;
+}
+bool g_show_ceilings = false;
+// SetArea: a spot in the room the game's cameras see (TestEdit puts its box
+// there); half x 0: none
+float g_spot[5] = {};
 float g_yaw = 0.6f, g_pitch = 0.5f, g_dist = 180;
 bool g_mirror = false;
 bool g_show_ring = true;
@@ -670,6 +685,13 @@ void BuildObjects() {
       o.strips.push_back(am.model.meshes[k].strips);
       all_static &= IsStatic(am.model.meshes[k]);
     }
+    o.outside = g_area_lo >= 0 && !am.added && !InArea(am.id);
+    if (g_area_lo >= 0) {
+      const std::string& n = am.model.name;
+      o.ceiling = n.find("_top") != std::string::npos || n.find("_ten") != std::string::npos ||
+                  n.find("roof") != std::string::npos || n.find("_lig") != std::string::npos;
+    }
+    if (g_area_lo >= 0) o.zone = Zone::kFree, o.role = am.added ? o.role : Role::kNormal;  // (no ring here)
     o.movable = all_static && o.zone != Zone::kRing && o.role == Role::kNormal && !o.effect;
     o.glow = am.model.name.find("glow") != std::string::npos || am.model.name.find("beam") != std::string::npos ||
              am.model.name.find("_ev") != std::string::npos;
@@ -721,8 +743,13 @@ int HostModel() {
   size_t best_n = 0;
   for (size_t i = 0; i < g_arena->models.size(); ++i) {
     const auto& am = g_arena->models[i];
-    if (am.model.name.rfind("ar_ground", 0) == 0) return int(i);
-    if (am.zone != Zone::kFree || am.model.meshes.empty() || !IsStatic(am.model.meshes[0])) continue;
+    if (g_area_lo >= 0) {  // (backstage: a model of the shown room, else the game hides it)
+      if (am.added || !InArea(am.id) || am.id >= 1000) continue;  // (1000+: the room's movable objects)
+      if (am.model.name.find("floor") != std::string::npos) return int(i);
+    } else if (am.model.name.rfind("ar_ground", 0) == 0) {
+      return int(i);
+    }
+    if ((g_area_lo < 0 && am.zone != Zone::kFree) || am.model.meshes.empty() || !IsStatic(am.model.meshes[0])) continue;
     size_t n = 0;
     for (const auto& s : am.model.meshes) n += s.verts.size();
     if (n > best_n) best = int(i), best_n = n;
@@ -888,8 +915,9 @@ void AddBox(float w, float h, float d) {
       for (int k = 0; k < 3; ++k) {
         const float t = hi[k] > lo[k] ? (v.pos[k] - lo[k]) / (hi[k] - lo[k]) : 0.5f;  // 0..1
         const float c = k == 0 ? g_target.x : k == 2 ? g_target.z : 0.0f;
-        // y down: the box stands on the floor (y = 0) and rises to -h
-        v.pos[k] = k == 1 ? -(1.0f - t) * size[1] : c + (t - 0.5f) * size[k];
+        // y down: the box stands on the floor (y = 0; an area's: its lowest point) and rises to -h
+        const float floor = g_area_lo >= 0 ? g_target.y : 0.0f;
+        v.pos[k] = k == 1 ? floor - (1.0f - t) * size[1] : c + (t - 0.5f) * size[k];
       }
   ComputePivot(o);
   ApplyObj(o);
@@ -926,7 +954,7 @@ int Pick(V3 o, V3 d, float* t_out = nullptr) {
   float best_t = 1e30f;
   for (size_t i = 0; i < g_objs.size(); ++i) {
     const Obj& ob = g_objs[i];
-    if (ob.hidden || ob.effect || ob.role != Role::kNormal) continue;
+    if (ob.hidden || ob.effect || ob.outside || (ob.ceiling && !g_show_ceilings) || ob.role != Role::kNormal) continue;
     const Model& m = g_arena->models[ob.model].model;
     for (int k : ob.meshes) {
       const Mesh& s = m.meshes[k];
@@ -990,7 +1018,7 @@ void RenderScene() {
   }();
   const M4 ident;
   for (const Obj& o : g_objs) {
-    if (o.hidden || o.effect) continue;
+    if (o.hidden || o.effect || o.outside || (o.ceiling && !g_show_ceilings)) continue;
     switch (o.role) {
       case Role::kNotDrawn:
         break;
@@ -1061,7 +1089,7 @@ void RenderScene() {
   SetCb(ident, light);
   g_glow_pass = false;
   for (const Obj& o : g_objs)
-    if (o.glow && !o.hidden && !o.effect && o.role == Role::kNormal)
+    if (o.glow && !o.hidden && !o.effect && !o.outside && !(o.ceiling && !g_show_ceilings) && o.role == Role::kNormal)
       for (int k : o.meshes) DrawMesh(o.model, k);
   {  // (the mirrored copies)
     M4 mirror;
@@ -1070,7 +1098,7 @@ void RenderScene() {
     SetCb(mirror, light);
     g_glow_pass = false;
     for (const Obj& o : g_objs)
-      if (o.glow && o.mirrored && !o.hidden && !o.effect && o.role == Role::kNormal)
+      if (o.glow && o.mirrored && !o.hidden && !o.effect && !o.outside && o.role == Role::kNormal)
         for (int k : o.meshes) DrawMesh(o.model, k);
   }
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
@@ -1146,13 +1174,17 @@ const char* ZoneTitle(Zone z) {
 
 void Outliner() {
   static char filter[64] = "";
+  if (g_area_lo >= 0) ImGui::Checkbox("Show ceilings", &g_show_ceilings);
   ImGui::SetNextItemWidth(-1);
   ImGui::InputTextWithHint("##filter", "Find an object", filter, sizeof filter);
   const Zone zones[] = {Zone::kRing, Zone::kRingside, Zone::kEntrance, Zone::kFree};
   for (int pass = 0; pass < 6; ++pass) {
     const bool added_pass = pass == 4, effect_pass = pass == 5;
-    const char* title = effect_pass ? "Effects (placed by the game)" : added_pass ? "Added" : ZoneTitle(zones[pass]);
+    const char* title = effect_pass ? "Effects (placed by the game)" : added_pass ? "Added"
+                        : g_area_lo >= 0                                    ? "Area"
+                                                                            : ZoneTitle(zones[pass]);
     auto in_pass = [&](const Obj& o) {
+      if (o.outside) return false;
       return effect_pass ? o.effect : added_pass ? o.added : (!o.added && !o.effect && o.zone == zones[pass]);
     };
     int count = 0;
@@ -1631,6 +1663,8 @@ void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Hooks& hooks) {
   CreatePipeline();
 }
 
+void FocusArea();  // (below)
+
 void SetArena(Arena* arena, const std::string& title) {
   if (g_budget_thread.joinable()) g_budget_thread.join();
   g_arena = arena;
@@ -1642,6 +1676,7 @@ void SetArena(Arena* arena, const std::string& title) {
   }
   BuildObjects();
   Edited();
+  if (g_area_lo >= 0) FocusArea();
   if (g_test_view >= 0) ViewPreset(g_test_view);
   if (!g_test_select.empty())
     for (size_t i = 0; i < g_objs.size(); ++i)
@@ -1650,6 +1685,29 @@ void SetArena(Arena* arena, const std::string& title) {
         g_target = g_objs[i].pivot;
         break;
       }
+}
+
+void SetArea(const std::vector<std::pair<int, int>>& ids, const float* spot) {
+  g_area = ids;
+  g_area_lo = ids.empty() ? -1 : ids[0].first;
+  for (int k = 0; k < 5; ++k) g_spot[k] = spot ? spot[k] : 0.0f;
+  if (g_arena) BuildObjects();
+}
+
+// The camera on the shown area (its models' middle, from above at an angle).
+void FocusArea() {
+  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+  for (const Obj& o : g_objs) {
+    if (o.outside || o.effect) continue;
+    for (const auto& vs : o.base)
+      for (const auto& v : vs)
+        for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], v.pos[k]), hi[k] = std::max(hi[k], v.pos[k]);
+  }
+  if (lo[0] > hi[0]) return;
+  g_target = {(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
+  g_target.y = hi[1];  // (y down: the floor)
+  g_dist = std::clamp(std::max(hi[0] - lo[0], hi[2] - lo[2]) * 1.3f, 60.0f, 600.0f);
+  g_yaw = 0.6f, g_pitch = 1.0f;
 }
 
 bool Busy() { return g_budget_busy; }
@@ -1661,8 +1719,17 @@ void TestEdit() {
     ApplyObj(g_objs[g_sel]);
     Log("test edit: moved " + g_objs[g_sel].label + " 2 m");
   }
-  g_target = {0, 0, 45};  // ringside, in front of the hard camera
-  AddBox(20, 20, 20);
+  if (g_area_lo < 0) g_target = {0, 0, 45};  // ringside, in front of the hard camera (else: the area's middle)
+  if (g_area_lo >= 0) {
+    if (g_spot[3] > 0) g_target = {g_spot[0] + g_spot[3] * 0.5f, g_spot[1], g_spot[2]};
+    AddBox(15, 15, 15);
+    char at[96];
+    std::snprintf(at, sizeof at, "test edit: box at %.0f %.0f %.0f on %s", g_target.x, g_target.y, g_target.z,
+                  g_sel >= 0 ? g_arena->models[g_objs[g_sel].model].model.name.c_str() : "?");
+    Log(at);
+  } else {
+    AddBox(20, 20, 20);
+  }
   g_ring.ropes[2].tint = 0xFF2020;
   g_light.color[2] = 0.8f;  // a little warmer
   Log("test edit: box added, top rope red, light warmer");
@@ -1692,11 +1759,36 @@ void Shutdown() {
 RingSpec& Ring() { return g_ring; }
 Lighting& Light() { return g_light; }
 
+// A changed static model's node sphere (world space: what the game culls the
+// model by) grown to hold its meshes, added ones too.
+void GrowSpheres(Arena& a) {
+  for (auto& am : a.models) {
+    if (!am.changed && !am.added) continue;
+    if (am.model.nodes.size() != 1) continue;
+    float* ns = am.model.nodes[0].sphere;
+    for (const auto& s : am.model.meshes) {
+      if (s.verts.size() <= 1) continue;
+      const V3 c{s.sphere[0], s.sphere[1], s.sphere[2]}, n{ns[0], ns[1], ns[2]};
+      const float d = std::sqrt(Dot(c - n, c - n));
+      if (d + s.sphere[3] <= ns[3]) continue;
+      if (ns[3] <= 0 || d + ns[3] <= s.sphere[3]) {  // (none yet, or the mesh's holds it)
+        ns[0] = c.x, ns[1] = c.y, ns[2] = c.z, ns[3] = s.sphere[3];
+        continue;
+      }
+      const float r = (d + ns[3] + s.sphere[3]) / 2;
+      const V3 m = n + (c - n) * ((r - ns[3]) / std::max(d, 1e-6f));
+      ns[0] = m.x, ns[1] = m.y, ns[2] = m.z, ns[3] = r;
+    }
+  }
+}
+
 void ApplyBuild(Arena& a) {
+  GrowSpheres(a);
   if (g_light.color[0] != 1 || g_light.color[1] != 1 || g_light.color[2] != 1 || g_light.strength != 1) {
     const float c[3] = {g_light.color[0] * g_light.strength, g_light.color[1] * g_light.strength,
                         g_light.color[2] * g_light.strength};
     for (auto& am : a.models) {
+      if (g_area_lo >= 0 && !am.added && !InArea(am.id)) continue;  // (backstage: the room only)
       for (auto& s : am.model.meshes)
         for (auto& p : s.params)
           if (p.type == 0x0d && p.value.size() >= 16 && (p.name == "g_f4MatAmbCol" || p.name == "g_f4MatDifCol"))
@@ -1704,6 +1796,7 @@ void ApplyBuild(Arena& a) {
       am.changed = true;
     }
   }
+  if (g_area_lo >= 0) return;  // (backstage: no crowd, no ring)
   if (!g_light.crowd) {
     const int n = HideCrowd(a);
     Log("  crowd left out (" + std::to_string(n) + " crowd models)");
@@ -1813,7 +1906,7 @@ void Draw() {
   if (ImGui::CollapsingHeader("Object", ImGuiTreeNodeFlags_DefaultOpen)) Inspector();
   if (ImGui::CollapsingHeader("Add", ImGuiTreeNodeFlags_DefaultOpen)) AddPanel();
   if (ImGui::CollapsingHeader("Library (other arenas)")) LibraryPanel();
-  if (ImGui::CollapsingHeader("Ring Kit", ImGuiTreeNodeFlags_DefaultOpen)) RingKitPanel();
+  if (g_area_lo < 0 && ImGui::CollapsingHeader("Ring Kit", ImGuiTreeNodeFlags_DefaultOpen)) RingKitPanel();
   if (ImGui::CollapsingHeader("Lighting")) LightingPanel();
   if (ImGui::CollapsingHeader("Size budget", ImGuiTreeNodeFlags_DefaultOpen)) BudgetPanel();
   ImGui::EndChild();

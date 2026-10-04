@@ -39,6 +39,7 @@
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "char_preview.h"
 #include "editor.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/arena_build.h"
@@ -185,6 +186,27 @@ std::string Utf8(const std::wstring& w) {
   return s;
 }
 
+// Backstage brawl areas: all seven are rooms of one file, bg78.pac (models
+// by id range); a backstage brawl's match type decides the room (scratchpad
+// re_backstage). A backstage mod is bg78 with one room rebuilt: the game
+// plays it in that room's matches.
+struct Area {
+  const char* name;
+  std::vector<std::pair<int, int>> ids;  // its models' ids (1000+: its objects: cars, crates...)
+  // the game's box for the area (sub_8224EF28, logged with SVR2011_TEST_BOX_LOG):
+  // centre x y z, half x z. Not where the fighters are kept (they roam
+  // beyond it); the test edit's box goes beside its centre.
+  float spot[5];
+};
+const Area kAreas[7] = {{"Parking lot", {{0, 19}, {1040, 1069}}, {125, 0, -410, 38, 50}},
+                        {"GM's office", {{20, 39}, {1000, 1024}}, {-338, -8, 217, 30, 27}},
+                        {"Locker room A", {{40, 59}, {1090, 1109}}, {290, -8, -190, 34, 34}},
+                        {"Locker room B", {{60, 79}, {1070, 1089}}, {326, -8, 241, 34, 34}},
+                        {"Large locker room", {{80, 99}, {1025, 1039}}, {460, -8, -76, 25, 25}},
+                        {"Interview area", {{160, 179}, {140, 159}, {1110, 1139}}, {0, -8, 141, 30, 30}},
+                        {"Catering area", {{140, 159}, {1130, 1139}}, {20, -8, -190, 45, 30}}};
+int g_backstage = -1;  // the area being made (else an arena)
+
 std::string ArenaPath(int i) {
   char b[32];
   std::snprintf(b, sizeof b, "bg%02d.pac", g_arenas[i].number);
@@ -273,6 +295,11 @@ void RunInBackground(std::function<void()> fn) {
 }
 
 void StartProject(int i) {
+  if (g_backstage >= 0) {  // (leaving a backstage area)
+    g_backstage = -1;
+    editor::SetArea({});
+    g_proj.arena = -1;
+  }
   if (g_proj.arena == i) return;
   g_proj.arena = i;
   g_proj.edited.reset();
@@ -336,7 +363,35 @@ void ImportArena(int i) {
 }
 
 // The project's arena into the editor (loaded from the game folder the first time).
+void OpenBackstage(int area) {
+  if (g_backstage == area && g_proj.edited) {
+    g_page = 1;
+    return;
+  }
+  g_backstage = area;
+  g_proj.arena = -1;
+  g_proj.edited.reset();
+  g_proj.fbx.clear();
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s (custom)", kAreas[area].name);
+  editor::SetArea(kAreas[area].ids, kAreas[area].spot);
+  const std::string pac = Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac").wstring());
+  RunInBackground([pac] {
+    auto a = std::make_unique<Arena>();
+    std::string err;
+    if (!a->Load(pac, &err)) { Log("  " + err); return; }
+    std::lock_guard lock(g_pending_mutex);
+    g_pending = std::move(a);
+    g_pending_fbx.clear();
+    g_pending_to_editor = true;
+  });
+}
+
 void OpenEditor(int i) {
+  if (g_backstage >= 0) {  // (from a backstage area back to an arena)
+    g_backstage = -1;
+    editor::SetArea({});
+    g_proj.arena = -1;
+  }
   if (g_proj.arena == i && g_proj.edited) {
     g_page = 1;
     return;
@@ -503,6 +558,8 @@ std::string ModId() {
 // A mod build: copied and set up on the UI thread (the editor keeps
 // editing g_proj.edited), compressed in the background.
 struct BuildJob {
+  bool backstage = false;  // (a backstage area: no banner, no VS screen)
+  std::vector<std::string> keep;  // textures FitFile leaves as they are
   std::shared_ptr<Arena> arena;
   std::string manifest, id;
   Image banner;
@@ -510,6 +567,22 @@ struct BuildJob {
 };
 
 bool PrepareBuild(BuildJob& job) {
+  if (g_backstage >= 0) {  // a backstage area: bg78 with the room rebuilt
+    if (!g_proj.edited) { Log("Open the area in the Arena Editor first."); return false; }
+    job.arena = std::make_shared<Arena>(*g_proj.edited);
+    editor::ApplyBuild(*job.arena);
+    job.id = ModId();
+    job.backstage = true;
+    // only the room's own textures may be made smaller to fit
+    for (const auto& am : job.arena->models) {
+      bool mine = am.added;
+      for (const auto& [lo, hi] : kAreas[g_backstage].ids) mine |= am.id >= uint32_t(lo) && am.id <= uint32_t(hi);
+      if (!mine) job.keep.insert(job.keep.end(), am.model.textures.begin(), am.model.textures.end());
+    }
+    job.manifest = "type=backstage\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
+                   "\nversion=" + g_proj.version + "\narea=" + std::to_string(g_backstage) + "\n";
+    return true;
+  }
   if (g_proj.arena < 0) { Log("Pick an arena first (Open in Arena Editor or Import from Blender)."); return false; }
   job.arena = std::make_shared<Arena>();
   if (g_proj.edited) {
@@ -537,7 +610,7 @@ bool PrepareBuild(BuildJob& job) {
 
 // manifest.txt, arena.pac, banner.dds (false on error, logged)
 bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
-  const auto halved = job.arena->FitFile({});
+  const auto halved = job.arena->FitFile(job.keep);
   if (!halved.empty())
     Log("  " + std::to_string(halved.size()) + " textures halved to fit the game's room for this arena.");
   std::string err;
@@ -545,6 +618,7 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   if (!err.empty()) { Log("error: " + err); return false; }
   files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
   files.push_back({"arena.pac", std::move(pac)});
+  if (job.backstage) return true;
   files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
   for (const auto& [name, img] : job.vs)  // (same size as the original: VsPage resizes)
     files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
@@ -569,7 +643,7 @@ void SaveMod() {
 }
 
 bool InstallFiles(const std::string& id, const std::vector<ZipEntry>& files) {
-  const fs::path dir = fs::path(g_game) / L"Mods" / L"Arenas" / fs::u8path(id);
+  const fs::path dir = fs::path(g_game) / L"Mods" / (g_backstage >= 0 ? L"Backstage" : L"Arenas") / fs::u8path(id);
   std::error_code ec;
   fs::create_directories(dir, ec);
   for (const auto& f : files)
@@ -577,7 +651,11 @@ bool InstallFiles(const std::string& id, const std::vector<ZipEntry>& files) {
       Log("Could not write into " + Utf8(dir.wstring()) + " (is the game running?)");
       return false;
     }
-  Log("Installed into the game: arena select, page 2 onwards (" + Utf8(dir.wstring()) + ").");
+  if (g_backstage >= 0)
+    Log(std::string("Installed into the game: backstage brawls in the ") + kAreas[g_backstage].name + " (" +
+        Utf8(dir.wstring()) + ").");
+  else
+    Log("Installed into the game: arena select, page 2 onwards (" + Utf8(dir.wstring()) + ").");
   return true;
 }
 
@@ -994,10 +1072,21 @@ int StyleRating(int id, int k) {
 }
 
 // The right side: the superstar's picture (the 3D model preview: TODO).
+// The model in 3D playing the game's idle stance (char_preview), so a
+// modder sees it works; the select-screen picture below it.
 void StarPreview(float scale) {
+  char_preview::SetModel(g_star.model, g_game);
   ImGui::BeginGroup();
-  if (g_star.picture_tex) ImGui::Image(Tex(g_star.picture_tex), ImVec2(256 * scale, 256 * scale));
-  else ImGui::TextDisabled("Pick a model to see it here.");
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const float w = std::max(220 * scale, avail.x);
+  const float h = std::clamp(avail.y - (g_star.picture_tex ? 150 : 40) * scale, 300 * scale, w * 1.5f);
+  char_preview::Draw(w, h);
+  if (!char_preview::Status().empty()) ImGui::TextDisabled("%s", char_preview::Status().c_str());
+  if (g_star.picture_tex) {
+    ImGui::Image(Tex(g_star.picture_tex), ImVec2(110 * scale, 110 * scale));
+    ImGui::SameLine();
+    ImGui::TextDisabled("The select screen's picture.");
+  }
   ImGui::EndGroup();
 }
 
@@ -1916,7 +2005,7 @@ void Draw() {
         if (g_test_lib >= 0) editor::TestLibrary(g_test_lib);
         editor::TestEdit();
         // and the VS screen: the theme's biggest picture as a red / yellow checker
-        LoadVsTheme(g_proj.arena);
+        if (g_backstage < 0) LoadVsTheme(g_proj.arena);
         const VsTexture* big = nullptr;
         for (const auto& t : g_vs)
           if (!big || t.w * t.h > big->w * big->h) big = &t;
@@ -1947,7 +2036,15 @@ void Draw() {
       }
     }
   }
-  if (g_test_state == 2 && !g_busy) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+  if (g_test_state == 2 && !g_busy) {
+    if (FILE* f = _wfopen((g_test_save + L".log").c_str(), L"wb")) {  // (the log, for the test scripts)
+      std::lock_guard lock(g_log_mutex);
+      for (const auto& line : g_log) std::fprintf(f, "%s\n", line.c_str());
+      std::fclose(f);
+    }
+    PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    g_test_state = 3;
+  }
   ImGui::BeginChild("rail", ImVec2(rail, -logh), true);
   for (int p = 0; p < 8; ++p) {
     const char* names[] = {"Arenas",      "Arena Editor",     "VS screen", "Superstars",
@@ -2041,6 +2138,23 @@ void Draw() {
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Only the ring, the floor and the ringside parts: build the rest.\n"
                       "It plays in this arena's place (its room and VS screen style).");
+  ImGui::Separator();
+  ImGui::Text("Backstage areas");
+  ImGui::TextDisabled("Rebuild a backstage brawl room.");
+  static int area = 0;
+  ImGui::SetNextItemWidth(-1);
+  if (ImGui::BeginCombo("##area", kAreas[area].name)) {
+    for (int k = 0; k < 7; ++k)
+      if (ImGui::Selectable(kAreas[k].name, area == k)) area = k;
+    ImGui::EndCombo();
+  }
+  if (ImGui::Button("Open area in Arena Editor", ImVec2(-1, 0))) OpenBackstage(area);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("The game's backstage rooms are all in one file: the room you make is played in that\n"
+                      "room's backstage brawls. Keep its floor and walls where they are (the game's\n"
+                      "walls and cameras for the room stay). The cars, crates and other things the\n"
+                      "superstars can use are placed by the game: they are not shown here and stay.\n"
+                      "One backstage mod plays at a time.");
   ImGui::EndDisabled();
   ImGui::Separator();
   ImGui::Text("Your arena");
@@ -2099,7 +2213,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   // test aids: --editor <arena tile 0-19> opens the editor on it, --open <mod> opens a mod,
   // --editor-view <0-2> a camera preset, --select <name> an object
-  int start_editor = -1, start_view = -1, start_new = -1, start_page = -1;
+  int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1;
   std::wstring start_mod, start_select;
   for (int i = 1; i + 1 < argc; ++i) {
     if (!wcscmp(argv[i], L"--game")) g_game = argv[i + 1];
@@ -2111,6 +2225,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--new-arena")) start_new = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--test-lib")) g_test_lib = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--page")) start_page = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--backstage")) start_backstage = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--star")) g_star_start = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--star-song")) g_star.song = argv[i + 1];
     if (!wcscmp(argv[i], L"--star-movie")) g_star.movie = argv[i + 1];
@@ -2163,6 +2278,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!g_game.empty())
     for (int i = 0; i < 20; ++i) hooks.library.push_back({g_arenas[i].name, ArenaPath(i)});
   editor::Init(g_dev, g_ctx, hooks);
+  char_preview::Init(g_dev, g_ctx);
   if (start_new >= 0 && start_new < 20) {
     g_sel = start_new;
     NewArena(start_new);
@@ -2173,6 +2289,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   editor::TestStart(start_view, Utf8(start_select));  // (before the arena is set)
   if (start_page >= 0 && start_mod.empty()) g_page = start_page;
+  if (start_backstage >= 0 && start_backstage < 7) OpenBackstage(start_backstage);
   if (!start_mod.empty()) {
     OpenModFile(start_mod);
     if (start_page >= 0) g_page = start_page;
@@ -2211,6 +2328,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   if (g_worker.joinable()) g_worker.join();
   editor::Shutdown();
+  char_preview::Shutdown();
   ImGui_ImplDX11_Shutdown();
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();
