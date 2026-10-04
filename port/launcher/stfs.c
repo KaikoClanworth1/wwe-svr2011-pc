@@ -127,9 +127,10 @@ static int write_all(const WCHAR *path, const void *data, size_t n)
     return ok;
 }
 
-/* One package -> dest\name (+ .info\name.header). 1: done, 0: not one of
+/* One package -> dest\name (+ .info\name.header); with no `dest`, its save
+ * file into *mem (malloc'd, *mem_size bytes) instead. 1: done, 0: not one of
  * the game's saves, -1: unreadable. */
-static int import_one(const WCHAR *path, const WCHAR *name, const WCHAR *dest)
+static int import_one(const WCHAR *path, const WCHAR *name, const WCHAR *dest, uint8_t **mem, size_t *mem_size)
 {
     size_t size = 0, i;
     uint8_t *d = load(path, &size), *table = NULL, *data = NULL;
@@ -181,6 +182,13 @@ static int import_one(const WCHAR *path, const WCHAR *name, const WCHAR *dest)
     data = (uint8_t *)malloc((size_t)file_blocks * 0x1000);
     if (!data || !read_blocks(&k, file_start, file_blocks, in_a_row, data))
         goto done;
+    if (!dest) {
+        *mem = data;
+        *mem_size = file_size;
+        data = NULL;
+        ret = 1;
+        goto done;
+    }
     swprintf_s(out, MAX_PATH, L"%s\\%s", dest, name);
     swprintf_s(info, MAX_PATH, L"%s\\.info", dest);
     CreateDirectoryW(info, NULL);
@@ -217,7 +225,7 @@ static void scan(const WCHAR *dir, const WCHAR *dest, int depth, int *done, int 
             if (depth < 5)
                 scan(p, dest, depth + 1, done, skipped);
         } else if (fd.nFileSizeHigh == 0 && fd.nFileSizeLow >= 0x1000) {
-            int r = import_one(p, fd.cFileName, dest);
+            int r = import_one(p, fd.cFileName, dest, NULL, NULL);
             if (r > 0)
                 ++*done;
             else if (r < 0)
@@ -235,4 +243,11 @@ int stfs_import_saves(const WCHAR *src, const WCHAR *dest, int *skipped)
     if (skipped)
         *skipped = skip;
     return done;
+}
+
+int stfs_read_save(const WCHAR *path, uint8_t **data, size_t *size)
+{
+    *data = NULL;
+    *size = 0;
+    return import_one(path, NULL, NULL, data, size) == 1;
 }

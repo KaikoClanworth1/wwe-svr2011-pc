@@ -22,6 +22,7 @@
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
  *                        --report <game folder>   (Report a problem: the zip, no window)
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
+ *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
@@ -56,6 +57,7 @@
 #include "unzip.h"
 #include "updater.h"
 #include "stfs.h"
+#include "caw_import.h"
 
 #include <winhttp.h>
 
@@ -106,7 +108,7 @@ enum {
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
     ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN,
-    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360,
+    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
@@ -2161,6 +2163,8 @@ static void build_ui(void)
     add(TAB_SAVES, L"Button", L"Open save folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 276, 130, 30, ID_SV_OPEN);
     add(TAB_SAVES, L"Button", L"Export selected\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0, 312, 130, 30, ID_SV_EXPORT);
     add(TAB_SAVES, L"Button", L"Import\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 140, 312, 140, 30, ID_SV_IMPORT);
+    add(TAB_SAVES, L"Button", L"Import Superstar\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 290, 312, 130, 30,
+        ID_SV_IMPORTCAW);
     add(TAB_SAVES, L"Button", L"Delete selected", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 312, 130, 30, ID_SV_DELETE);
     add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 350, 560, 36, ID_SV_STATUS);
     add(TAB_SAVES, L"Static", L"Save preset:", SS_LEFT, X0, 400, 84, 20, 0);
@@ -4385,6 +4389,145 @@ done:
     return ok ? 0 : 1;
 }
 
+/* ── Created Superstar import ─────────────────────────────────────────── */
+
+/* Puts a logo given as palette + pixels (as a Created Superstar keeps it)
+ * in slot k - the Paint Tool's own 8-bit picture is those exact bytes. */
+static void pt_put_indexed(uint8_t *f, int k, const uint8_t *palette, const uint8_t *pixels)
+{
+    uint8_t *b = pt_slot(f, k);
+    uint32_t *argb = (uint32_t *)malloc(PT_W * PT_W * 4);
+    SYSTEMTIME st;
+    int i;
+    if (!argb)
+        return;
+    memcpy(b + 8, k_pt_used_header, 44);
+    for (i = 0; i < PT_W * PT_W; i++) {
+        argb[i] = rd32(palette + 4 * pixels[i]);
+        wr32(b + PT_CANVAS + 4 * i, argb[i]);
+    }
+    memcpy(b + PT_TGA, k_pt_tga_header, 20);
+    memcpy(b + PT_TGA + 20, palette, 1024);
+    memcpy(b + PT_TGA + 0x414, pixels, PT_W * PT_W);
+    pt_make_dds(b + PT_DDS, argb);
+    GetSystemTime(&st);
+    b[PT_STAMP] = (uint8_t)(st.wYear >> 8); b[PT_STAMP + 1] = (uint8_t)st.wYear;
+    b[PT_STAMP + 2] = (uint8_t)st.wMonth; b[PT_STAMP + 3] = (uint8_t)st.wDay;
+    b[PT_STAMP + 4] = (uint8_t)st.wHour; b[PT_STAMP + 5] = (uint8_t)st.wMinute;
+    b[PT_STAMP + 6] = (uint8_t)st.wSecond; b[PT_STAMP + 7] = (uint8_t)(st.wDayOfWeek + 1);
+    free(argb);
+}
+
+/* Logos into free Paint Tool slots (page 1 first), leaving out the ones the
+ * Paint Tool has already (a slot whose checksum is the logo's id). */
+static void caw_logos_to_paint(const WCHAR *saves, const CawLogo *logos, int n, int *added, int *had, int *no_room)
+{
+    WCHAR pt[MAX_PATH], err[512];
+    uint8_t *pages[PT_PAGES] = { 0 };
+    int dirty[PT_PAGES] = { 0 }, page, k, i, j;
+    uint32_t *ids = (uint32_t *)malloc(sizeof(uint32_t) * PT_PAGES * PT_SLOTS);
+    int n_ids = 0;
+    *added = *had = *no_room = 0;
+    if (!n || !ids || !join(pt, saves, PT_FILE) || !(pages[0] = pt_read(pt, err, 512))) {
+        *no_room = n;  /* (no Paint Tool save yet) */
+        free(ids);
+        return;
+    }
+    for (page = 1; page < PT_PAGES; page++)
+        pages[page] = pt_read_page(pt, page, err, 512);
+    for (page = 0; page < PT_PAGES; page++)
+        for (k = 0; pages[page] && k < PT_SLOTS; k++)
+            if (pt_used(pages[page], k))
+                ids[n_ids++] = rd32(pt_slot(pages[page], k) + PT_SUM);
+    for (i = 0; i < n; i++) {
+        int found = 0, placed = 0;
+        for (j = 0; j < n_ids && !found; j++)
+            found = logos[i].id && ids[j] == logos[i].id;
+        for (page = 0; page < PT_PAGES && !found; page++)  /* (or the same picture under another id) */
+            for (k = 0; pages[page] && k < PT_SLOTS && !found; k++) {
+                const uint8_t *t = pt_slot(pages[page], k) + PT_TGA;
+                found = pt_used(pages[page], k) && !memcmp(t + 20, logos[i].palette, 1024)
+                     && !memcmp(t + 0x414, logos[i].pixels, PT_W * PT_W);
+            }
+        if (found) {
+            ++*had;
+            continue;
+        }
+        for (page = 0; page < PT_PAGES && !placed; page++)
+            for (k = 0; pages[page] && k < PT_SLOTS && !placed; k++)
+                if (!pt_used(pages[page], k)) {
+                    pt_put_indexed(pages[page], k, logos[i].palette, logos[i].pixels);
+                    dirty[page] = placed = 1;
+                }
+        if (placed)
+            ++*added;
+        else
+            ++*no_room;
+    }
+    for (page = 0; page < PT_PAGES; page++) {
+        if (dirty[page])
+            pt_write_page(pt, page, pages[page]);
+        free(pages[page]);
+    }
+    free(ids);
+}
+
+/* Imports Created Superstars (files 0-separated in `files`) into the saves
+ * folder; a summary in `msg`. Returns how many went in. */
+static int caw_import_files(const WCHAR *saves, const WCHAR *files, int n, WCHAR *msg, size_t msg_n)
+{
+    const WCHAR *p;
+    WCHAR name[40], err[512], names[512] = L"", fail[600] = L"";
+    int i, done = 0, logos_added = 0, logos_had = 0, logos_lost = 0;
+    for (p = files, i = 0; i < n; i++, p += wcslen(p) + 1) {
+        CawLogo *logos = NULL;
+        int n_logos = 0, a = 0, h = 0, l = 0;
+        const int slot = caw_import(p, saves, name, 40, &logos, &n_logos, err, 512);
+        if (slot < 0) {
+            if (!fail[0])
+                wcscpy_s(fail, 600, err);
+            continue;
+        }
+        caw_logos_to_paint(saves, logos, n_logos, &a, &h, &l);
+        free(logos);
+        logos_added += a, logos_had += h, logos_lost += l;
+        if (wcslen(names) + wcslen(name) + 16 < 512)
+            swprintf_s(names + wcslen(names), 512 - wcslen(names), L"%s%s (slot %d)", done ? L", " : L"", name,
+                       slot + 1);
+        done++;
+    }
+    swprintf_s(msg, msg_n, L"Imported %d Created Superstar%s: %s. Logos: %d added to the Paint Tool%s%s.%s%s", done,
+               done == 1 ? L"" : L"s", done ? names : L"none", logos_added,
+               logos_had ? L", some you had already" : L"",
+               logos_lost ? L", some didn't fit (the Paint Tool is full, or not made yet)" : L"",
+               fail[0] ? L" " : L"", fail);
+    return done;
+}
+
+static void saves_import_caw(void)
+{
+    static WCHAR files[32768];
+    WCHAR saves[MAX_PATH], before[MAX_PATH], msg[1400];
+    int n;
+    if (!s_game_dir[0]) {
+        saves_status(L"Install the game first (Install tab).");
+        return;
+    }
+    if (saves_locked() || !saves_dir(saves))
+        return;
+    n = pick_save_files(files, 32768);
+    if (!n)
+        return;
+    if (!saves_backup_to(L" (before Superstar import)", before)) {
+        saves_status(L"Could not back up your saves first; nothing was imported.");
+        return;
+    }
+    caw_import_files(saves, files, n, msg, 1400);
+    saves_refresh();
+    pt_refresh();
+    saves_status(L"%s (Your saves were backed up first.)", msg);
+}
+
 static void set_busy(int busy)
 {
     int ids[] = { ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_INSTALL, ID_GAMEDIR_CHANGE, ID_APK_CREATE, ID_ADB_INSTALL };
@@ -5528,6 +5671,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_SV_DEFAULT:  saves_set_folder(NULL); break;
         case ID_SV_PRESET_NEW: presets_new();    break;
         case ID_SV_IMPORT360:  saves_import_360(); break;
+        case ID_SV_IMPORTCAW:  saves_import_caw(); break;
         case ID_SV_PRESET:
             if (HIWORD(wp) == CBN_SELCHANGE)
                 presets_pick();
@@ -5854,6 +5998,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         console_setup();
         n = stfs_import_saves(argv[2], argv[3], &skipped);
         wprintf(L"imported %d, unreadable %d\n", n, skipped);
+        return n ? 0 : 1;
+    }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-caw")) {   /* <saves folder> <file.cas>... */
+        static WCHAR list[32768];
+        WCHAR msg[1400];
+        size_t at = 0;
+        int i, n = 0;
+        console_setup();
+        for (i = 3; i < argc && at + wcslen(argv[i]) + 1 < 32768; i++, n++) {
+            wcscpy_s(list + at, 32768 - at, argv[i]);
+            at += wcslen(argv[i]) + 1;
+        }
+        n = caw_import_files(argv[2], list, n, msg, 1400);
+        wprintf(L"%s\n", msg);
         return n ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--apk-package")) {   /* <game folder> <out folder> */
