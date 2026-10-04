@@ -4,9 +4,10 @@
 # runs\<Name>_*.png, then the log's superstar / managers lines.
 # -NoSkip: no A after PLAY (the entrances play).
 # -Walk N: only walks the EXTRA list (N downs, a screenshot each: <Name>_wNN).
-# -Com: COM's pick goes through the M tile too (the same entry).
+# -Com: COM's pick goes through the M tile too (the same entry, or -ComDown N:
+#   the game won't take one superstar on both sides).
 #   superstar_test.ps1 [-Name ss1] [-Down 5] [-Shots 10] [-Com]
-param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0, [int]$Attire = 0, [double]$Every = 8)
+param([string]$Name = "ss1", [int]$Down = 5, [int]$Shots = 10, [switch]$Com, [switch]$NoSkip, [int]$Walk = 0, [string]$UserData = "", [int]$MatchDown = 0, [int]$Attire = 0, [double]$Every = 8, [int]$ComDown = -1)
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
@@ -43,7 +44,8 @@ try {
         # (COM's cursor starts on Randy Orton, row 1 column 11; M is 8 tiles left of it on row 2: the SM tile is two wide)
         & $nav -Keys ("DOWN@1.5," + ((1..8 | ForEach-Object { "LEFT@1" }) -join ",")) -Shot "${Name}_comtile" | Out-Null
         & $nav -Keys "A@4" -Shot "${Name}_comlist" | Out-Null
-        if ($Down -gt 0) { & $nav -Keys ((1..$Down | ForEach-Object { "DOWN@1.5" }) -join ",") -Shot "${Name}_compick" | Out-Null }
+        $cd = if ($ComDown -ge 0) { $ComDown } else { $Down }
+        if ($cd -gt 0) { & $nav -Keys ((1..$cd | ForEach-Object { "DOWN@1.5" }) -join ",") -Shot "${Name}_compick" | Out-Null }
         & $nav -Keys "A@4" -Shot "${Name}_compicked" | Out-Null
         & $nav -Keys "A@5" -Shot "${Name}_vs" | Out-Null                   # COM ready
     } else {

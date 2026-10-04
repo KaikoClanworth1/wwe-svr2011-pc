@@ -1384,3 +1384,50 @@ uint32_t SuperstarModString(uint32_t id) {
 }
 
 }  // namespace svr2011
+
+// Test aid: SVR2011_TEST_MOVE_LOG=<id>,<id>,... logs (once per key and
+// result) each motion lookup of those move ids - sub_823941F8(banks, id, x,
+// y, out index): key id<<16 | x<<8 | y, 0 when no loaded bank has it. Shows
+// whether a ported move's motions are found in a match.
+namespace {
+const std::vector<uint32_t>& MoveLogIds() {
+  static const std::vector<uint32_t> ids = [] {
+    std::vector<uint32_t> v;
+    if (const char* e = std::getenv("SVR2011_TEST_MOVE_LOG"))
+      for (const char* q = e; *q;) {
+        if (const long n = std::strtol(q, nullptr, 10); n > 0) v.push_back(uint32_t(n));
+        while (*q && *q != ',') ++q;
+        if (*q == ',') ++q;
+      }
+    return v;
+  }();
+  return ids;
+}
+}  // namespace
+REX_EXTERN(__imp__sub_823941F8);
+REX_HOOK_RAW(sub_823941F8) {
+  const auto& ids = MoveLogIds();
+  const uint32_t id = ctx.r4.u32 & 0xFFFF, x = ctx.r5.u32 & 0xFF, y = ctx.r6.u32 & 0xFF;
+  __imp__sub_823941F8(ctx, base);
+  if (ids.empty() || std::find(ids.begin(), ids.end(), id) == ids.end()) return;
+  static std::mutex mu;
+  static std::vector<uint64_t> told;
+  const uint64_t k = uint64_t(id) << 17 | x << 9 | y << 1 | (ctx.r3.u32 ? 1 : 0);
+  std::lock_guard lock(mu);
+  if (std::find(told.begin(), told.end(), k) != told.end()) return;
+  told.push_back(k);
+  REXLOG_INFO("[svr2011] move log: motion {} x {} y {} {}", id, x, y, ctx.r3.u32 ? "found" : "NOT FOUND");
+}
+// (with SVR2011_TEST_MOVE_LOG: allocations that fail, and what sub_8258EB90
+// - a data file read into memory - asked for)
+REX_EXTERN(__imp__sub_8269BBA0);
+REX_HOOK_RAW(sub_8269BBA0) {
+  const uint32_t size = ctx.r3.u32, lr = uint32_t(ctx.lr);
+  __imp__sub_8269BBA0(ctx, base);
+  if (!MoveLogIds().empty() && !ctx.r3.u32) REXLOG_WARN("[svr2011] move log: alloc {} bytes failed (lr {:08X})", size, lr);
+}
+REX_EXTERN(__imp__sub_8258EB90);
+REX_HOOK_RAW(sub_8258EB90) {
+  if (!MoveLogIds().empty()) REXLOG_INFO("[svr2011] move log: data read {:08X} size {}", ctx.r3.u32, ctx.r4.u32);
+  __imp__sub_8258EB90(ctx, base);
+}
