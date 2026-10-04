@@ -283,8 +283,11 @@ std::string FileName(std::string s) {
 }
 
 bool CopyIfChanged(const fs::path& from, const fs::path& to) {
-  std::error_code ec;
-  if (fs::exists(to, ec) && fs::file_size(to, ec) == fs::file_size(from, ec)) return true;
+  std::error_code ec, e1, e2;
+  // (same size and not older: kept - a re-encoded theme can keep its size)
+  if (fs::exists(to, ec) && fs::file_size(to, ec) == fs::file_size(from, ec) &&
+      fs::last_write_time(to, e1) >= fs::last_write_time(from, e2))
+    return true;
   fs::create_directories(to.parent_path(), ec);
   return fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
 }
