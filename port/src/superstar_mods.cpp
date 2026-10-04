@@ -59,14 +59,18 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// The ids mods take (50): the free DLC slots (59-69; real DLC uses 51-58),
-// then disc ids whose roster record is a blank placeholder ("0", loaded from
-// CHAR/DAT, not selectable) with no model, select render, entrance or match
-// data anywhere in the game's pacs. Each has a record, profile and save slot.
-constexpr uint32_t kPool[] = {59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69,  111, 114,
-                              121, 127, 128, 129, 130, 136, 141, 148, 149, 151, 152, 154, 155,
-                              157, 162, 163, 167, 168, 172, 173, 181, 185, 189, 200, 202, 203,
-                              204, 206, 207, 209, 213, 214, 220, 221, 223, 225, 227};
+// The ids mods take (50): disc ids whose roster record is a blank placeholder
+// ("0", loaded from CHAR/DAT, not selectable) with no model, select render,
+// entrance or match data anywhere in the game's pacs, then the free DLC slots
+// (59-69; real DLC uses 51-58). Each has a record, profile and save slot.
+// A mod in a DLC slot never gets its entrance and the match doesn't start
+// (tested 59 and 60: the game takes those ids' entrances from DLC content),
+// so they come last and a mod in one moves to a free disc id (MoveOffDlc).
+constexpr uint32_t kPool[] = {111, 114, 121, 127, 128, 129, 130, 136, 141, 148, 149, 151, 152,
+                              154, 155, 157, 162, 163, 167, 168, 172, 173, 181, 185, 189, 200,
+                              202, 203, 204, 206, 207, 209, 213, 214, 220, 221, 223, 225, 227,
+                              59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69};
+bool IsDlcSlot(uint32_t id) { return id >= 59 && id <= 69; }
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
 constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
@@ -424,7 +428,21 @@ void LoadMods() {
   const fs::path overlay = g_game / "Mods" / "SuperstarOverlay";
   fs::create_directories(overlay, ec);
   auto slots = ReadSlots(dir / "slots.txt");
-  const size_t known = slots.size();
+  size_t known = slots.size();
+  // mods on a DLC slot move to a free disc id (see kPool)
+  for (auto& s : slots) {
+    if (!IsDlcSlot(s.second)) continue;
+    for (uint32_t id : kPool) {
+      if (IsDlcSlot(id)) break;
+      bool taken = false;
+      for (const auto& o : slots) taken |= o.second == id;
+      if (taken) continue;
+      REXLOG_INFO("[svr2011] superstar mods: {} moves from DLC slot {} to id {}", s.first, s.second, id);
+      s.second = id;
+      known = size_t(-1);  // (write slots.txt)
+      break;
+    }
+  }
   auto slot_of = [&](const std::string& folder) -> uint32_t {
     for (const auto& s : slots)
       if (s.first == folder) return s.second;
