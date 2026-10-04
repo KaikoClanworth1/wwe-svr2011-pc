@@ -6,6 +6,10 @@
 - Designs the features: the launcher, entrance music and movies, and the extra logos.
 - Tests every build and plays it on their own PC.
 
+## gitSothib: contributor
+
+- [Pull request #3](https://github.com/KaikoClanworth1/wwe-svr2011-pc/pull/3), groundwork for peer-to-peer online sessions: the layouts of the game's Xbox LIVE session messages (XGI) and the idea of one session object per session. The port's online matches (`port/src/p2p.cpp`) are built on them.
+
 ## Claude Code (Anthropic): AI coding assistant
 
 This port was made with [Claude Code](https://claude.com/claude-code). Claude Code wrote most of this repository's code and docs, working under the project lead's direction:
