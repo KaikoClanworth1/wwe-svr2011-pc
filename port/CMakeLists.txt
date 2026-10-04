@@ -30,7 +30,6 @@ set(SVR2011_SOURCES
     src/online_net.cpp
     src/online_cas.cpp
     src/online_overlay.cpp
-    src/leaderboards.cpp
     src/menu_hooks.cpp
     src/perf_hooks.cpp
     src/saves.cpp
