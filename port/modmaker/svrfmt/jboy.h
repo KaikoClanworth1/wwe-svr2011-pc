@@ -41,19 +41,24 @@ struct Mesh {
   uint32_t vfmt = 0;
   std::array<float, 4> sphere{};
   std::vector<Vertex> verts;
-  std::vector<std::vector<Weight>> weights;  // blocks, each one per vertex
+  // influence j of vertex k is weights[j][k] (stored interleaved: vertex by
+  // vertex, all its influences); bones[0] is a palette slot, 255 = none
+  std::vector<std::vector<Weight>> weights;
   std::vector<std::array<float, 2>> uvs;
   std::vector<Param> params;
   std::vector<Strip> strips;
 };
 
+// 80 bytes: name, t at +16, a pad, r at +32 (Euler radians, R = Rz Ry Rx), a
+// pad, parent at +48 (-1: root), 3 unknown, the bounding sphere at +64. A
+// node's local matrix is T(t) R(r). Mesh palettes hold node index + 1.
 struct Node {
   std::string name;
-  float t[3], r[3];
-  uint32_t u40 = 0;
+  float t[3] = {}, r[3] = {};
+  uint32_t pad28 = 0, pad44 = 0;
   int32_t parent = -1;
-  uint32_t u48[4] = {};
-  float sphere[4];
+  uint32_t u52[3] = {};
+  float sphere[4] = {};
 };
 
 struct Model {

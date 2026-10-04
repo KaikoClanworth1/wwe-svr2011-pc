@@ -92,6 +92,11 @@ struct Mod {
   std::vector<std::string> songs_set;
   std::vector<int> movies_set;
   int call = -1;  // name call: -1 the base's, else a Created Superstar nickname (0-83)
+  // made with a fighting style (Mod Maker "Create a new superstar"): base= is
+  // only its template - its own attributes, a nickname name call (The
+  // Superstar unless call=) and the generic select render (unless its own)
+  bool styled = false;
+  int ratings[7] = {-1, -1, -1, -1, -1, -1, -1};
   fs::path voice;  // its own recorded name for the ring announcer (manifest voice=)
 };
 std::vector<Mod> g_mods;
@@ -151,7 +156,7 @@ svrfmt::Bytes OwnRender(const fs::path& file, int size) {
   return svrfmt::BpeEncode(d);  // (compressed: the render loader's buffer is sized for that)
 }
 
-bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::path& folder) {
+bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::path& folder, bool generic = false) {
   svrfmt::Bytes d;
   svrfmt::Epac src;
   if (!svrfmt::ReadFile((g_game / "pac" / "DLC_HD.pac").string(), d) || !svrfmt::EpacRead(d, src)) return false;
@@ -166,6 +171,17 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::p
     og.type = g.type;
     for (const auto& en : g.entries) {
       const int key = std::atoi(en.name.c_str());
+      if (generic) {  // (the game's silhouette, 9000, for every attire)
+        if (key != 9000) continue;
+        const svrfmt::Bytes& own = g.type == "SSFC" ? small : big;
+        for (int a = 0; a < 4; ++a) {
+          char gn[8];
+          std::snprintf(gn, sizeof gn, "%04d", a * 1000 + int(slot));
+          og.entries.push_back({gn, own.empty() ? en.data : own});
+          ++n;
+        }
+        continue;
+      }
       if (key % 1000 != int(base)) continue;
       char nm[8];
       std::snprintf(nm, sizeof nm, "%04d", (key / 1000) * 1000 + int(slot));
@@ -417,6 +433,15 @@ void LoadMods() {
         if (l.rfind("song=", 0) == 0) song = l.substr(5);
         if (l.rfind("movie=", 0) == 0) movie = l.substr(6);
         if (l.rfind("voice=", 0) == 0 && l.size() > 6) m.voice = f / l.substr(6);
+        if (l.rfind("style=", 0) == 0) m.styled = true;
+        if (l.rfind("ratings=", 0) == 0) {
+          const char* q = l.c_str() + 8;
+          for (int k = 0; k < 7 && *q; ++k) {
+            m.ratings[k] = std::clamp(std::atoi(q), 1, 99);
+            while (*q && *q != ',') ++q;
+            if (*q == ',') ++q;
+          }
+        }
         if (l.rfind("attire", 0) == 0 && l.size() > 8 && l[6] >= '1' && l[6] <= '4' && l[7] == '=')
           attires[l[6] - '1'] = l.substr(8);
         if (l.rfind("attire", 0) == 0 && l.size() > 12 && l[6] >= '1' && l[6] <= '4' && !l.compare(7, 6, "_name="))
@@ -431,6 +456,7 @@ void LoadMods() {
       continue;
     }
     if (!m.voice.empty() && !fs::exists(m.voice, ec)) m.voice.clear();
+    if (m.styled && m.call < 0) m.call = 77;  // (The Superstar: never the template's name)
     {
       std::vector<fs::path> signs;
       for (int k = 1; k <= 4; ++k)
@@ -496,7 +522,7 @@ void LoadMods() {
     // (the renders depend on base=: rebuilt with the manifest)
     const std::vector<fs::path> render_srcs = {f / "manifest.txt", f / "render.dds", f / "render_small.dds"};
     if (Current(overlay / nm, render_srcs) ||
-        (BuildRenders(overlay / nm, m.base, m.slot, f) && (MarkCurrent(overlay / nm, render_srcs), true)))
+        (BuildRenders(overlay / nm, m.base, m.slot, f, m.styled) && (MarkCurrent(overlay / nm, render_srcs), true)))
       m.ssf_guest = std::string("smods:\\") + nm;
     else
       REXLOG_WARN("[svr2011] superstar mods: {}: base {} has no select render (not a playable superstar)", m.folder,
@@ -698,6 +724,8 @@ void ApplyRecords(uint8_t* base) {
     sr[kDlc] = 1;
     for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) sr[off] = uint8_t(m.slot >> 8), sr[off + 1] = uint8_t(m.slot);
     SetSigns(sr, br, m);
+    for (int k = 0; k < 7; ++k)  // (its attributes: +0..+6 and the copy at +8)
+      if (m.ratings[k] > 0) sr[k] = sr[8 + k] = uint8_t(m.ratings[k]);
 
     // test aid: SVR2011_TEST_STAR_EDIT=<id> - that mod's ratings set to 20 (as
     // an edit made in the game would), to see them kept through a save

@@ -42,6 +42,7 @@ final class ModsPage {
     static File superstarsFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Superstars"); }
     static File signsFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Signs"); }
     static File mediaFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Media"); }
+    static File backstageFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Backstage"); }
 
     View view() {
         LinearLayout c = a_.column();
@@ -80,13 +81,15 @@ final class ModsPage {
         File[] stars = superstarsFolder().listFiles(f -> f.isDirectory() && new File(f, "ch.pac").isFile());
         File[] signs = signsFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] media = mediaFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
+        File[] back = backstageFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
         File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
-            + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length)];
+            + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)];
         int k = 0;
         if (arenas != null) for (File f : arenas) dirs[k++] = f;
         if (stars != null) for (File f : stars) dirs[k++] = f;
         if (signs != null) for (File f : signs) dirs[k++] = f;
         if (media != null) for (File f : media) dirs[k++] = f;
+        if (back != null) for (File f : back) dirs[k++] = f;
         if (dirs.length == 0) {
             TextView none = a_.text("None yet.", 15, LauncherActivity.kDim);
             none.setPadding(0, a_.dp(14), 0, a_.dp(14));
@@ -100,7 +103,8 @@ final class ModsPage {
             boolean star = new File(d, "ch.pac").isFile();
             boolean signPack = d.getParentFile().getName().equals("Signs");
             boolean mediaPack = d.getParentFile().getName().equals("Media");
-            String hint = (mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+            boolean backPack = d.getParentFile().getName().equals("Backstage");
+            String hint = (backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
                 + (signPack || mediaPack ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
@@ -190,11 +194,12 @@ final class ModsPage {
         boolean star = "superstar".equalsIgnoreCase(m.get("type"));
         boolean signPack = "signs".equalsIgnoreCase(m.get("type"));
         boolean mediaPack = "media".equalsIgnoreCase(m.get("type"));
+        boolean backPack = "backstage".equalsIgnoreCase(m.get("type"));
         if (!signPack && !mediaPack && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac")))
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
-        if (id.isEmpty()) id = mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
-        File dest = new File(mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        if (id.isEmpty()) id = backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
+        File dest = new File(backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
         deleteTree(dest);
         dest.getParentFile().mkdirs();
         FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)

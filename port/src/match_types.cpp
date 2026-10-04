@@ -537,6 +537,10 @@ REX_EXTERN(__imp__sub_8224EF28);
 REX_HOOK_RAW(sub_8224EF28) {
   const uint32_t box = ctx.r3.u32;
   __imp__sub_8224EF28(ctx, base);
+  if (box && std::getenv("SVR2011_TEST_BOX_LOG"))  // (test aid: the area's own box)
+    REXLOG_INFO("match types: area box centre {:.0f} {:.0f} {:.0f}, half {:.0f} {:.0f} / {:.0f} {:.0f}",
+                RdF(base + box + 32), RdF(base + box + 36), RdF(base + box + 40), RdF(base + box + 64),
+                RdF(base + box + 68), RdF(base + box + 72), RdF(base + box + 76));
   if (!box || !WholeBackstage(base) || Rd32(base + 0x82E3C1F4)) return;
   WrF(base + box + 32, -10.0f);
   WrF(base + box + 36, 0.0f);

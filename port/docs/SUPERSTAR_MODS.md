@@ -11,7 +11,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 50.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
@@ -227,11 +227,66 @@ language). It is layout node `cursor+312` in `sub_82466830`.
 The art comes from `tools/make_modded_badge.py`, which writes
 `src/modded_badge.inc`.
 
+## The Mod Maker: Create a new superstar
+
+The Superstars page makes a new superstar from a form; it doesn't start from
+another superstar. Fields marked (optional) can stay empty.
+
+- **Fighting style:** picks the `base=` template (its moves, entrance motions
+  and pyro) and is written as `style=`. Powerhouse 125, Brawler 160,
+  All-rounder 139, Technical 104, Submission 267, High flyer 123, Showman 218,
+  Diva power 224, Diva high flyer 164, Diva technical 143.
+- **Attributes:** 7 sliders, filled from the style's template (chEtc
+  CHAR/DAT) and written as `ratings=`. The game writes them into the record
+  (slots +0..+6) when it sets the mod up. Speed, Charisma and Durability are
+  certain; Grapple, Submission, Strikes and Hardcore are inferred from who
+  tops each slot.
+- A styled mod without `call=` is called "The Superstar" (77). Its select
+  picture is the generic silhouette (9000) until it has one.
+- **Model (required):** the ch.pac.
+
+### The 3D preview
+
+`modmaker/char_preview.cpp` shows the model at the right, skinned and playing
+the game's idle stance, so the modder sees that the model works. Drag to turn
+it.
+
+- **Model:** EPK8 group `EMD `, entry `%06d%02d` (attire*10 + kind); kind 2 is
+  the model, and the preview takes attire 1's. The entry is a PACH:
+  - Child 0 is the body JBOY, whose nodes are the whole skeleton.
+  - Hair (0x2710), eyelash (0x4e20) and attachments are further JBOYs. All
+    are in the body's model space, and their nodes map to the body's by name.
+  - The blood overlays (`blood_*`) are skipped.
+  - Texture bundles hold plain PC DDS. Meshes use their `texDiffuse` name
+    (case-insensitive), mostly `color`.
+- **JBOY nodes and weights** (corrected in `svrfmt/jboy.*`; arenas read the
+  same way):
+  - Node: r at +32, parent at +48.
+  - Local matrix: T(t)·Rz·Ry·Rx.
+  - Weights are interleaved per vertex: (vertex k, influence j) is at
+    `8*(nb*k + j)`.
+  - Palettes hold node index + 1.
+  - Vertices are in bind pose, so a vertex is skinned with
+    pose(j) * inverse(bind(j)).
+- **Idle:** `pac/m.pac` (EPAC, only its index and the one entry are read) →
+  `MVMT`/`STAT` → PACH child 3, a YMBs bank; motion id 20000, x 10, y 0, one
+  second.
+  - 21 rotation channels (root, koshi, mune, kubi, atama, then each arm's
+    sakotsu, ninoude, kote and te, then each leg's momo, sune, ashi and
+    tsumasaki) replace the node's rotation.
+  - A root move.
+  - Per limb an IK target and a pole angle. Upper and lower limb bones carry
+    no data; the preview solves them as two bones, with the knee or elbow
+    turned by the pole.
+  - Rotations are keyed 30 a second, moves twice that.
+  - Channels are Yamaha-style ADPCM. The full format: scratchpad research
+    `re_charmodel.md`, summarised in the file's header.
+- The game's own IK solver (sub_823A4DD8) wasn't decoded; the preview's IK is
+  an approximation that looks right on Jericho, The Rock and a Diva.
+
 ## Known limits
 
 - A mod has at most 4 attires.
-- The name call is the base's or a Created Superstar nickname: there is no way
-  to record a new name.
 - Superstar Threads doesn't list mods (nor the managers). It lists the COS
   table's characters, a table with room for only about 13 more, and saves
   attires by its rows. Use attire pacs instead.
@@ -262,7 +317,9 @@ Test aids (environment variables):
 `superstar_test.ps1 -MatchDown N` picks another match category (1 = TAG TEAM).
 
 Mod Maker test aids: `--page 3 --star <id> [--star-song f] [--star-movie f]
-[--star-picture f] [--star-call N] [--test-star-save out.svrmod]`.
+[--star-picture f] [--star-call N] [--star-voice f] [--test-star-save out.svrmod]`.
+`--star <id>` loads `pac/ch/ch<id>.pac` as the model, so the 3D preview shows
+it (`tools/modmaker_shot.ps1 -Extra "--page 3 --star 104"`).
 
 Launcher test aid: `--mods-add <game> <file.svrmod>`.
 

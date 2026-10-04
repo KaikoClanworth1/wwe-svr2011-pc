@@ -35,6 +35,11 @@ struct Hooks {
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Hooks& hooks);
 // The arena being edited (nullptr: none). Rebuilds the object list when it changes.
 void SetArena(svrfmt::Arena* arena, const std::string& title);
+// Only the models with ids lo..hi are shown and edited (a backstage area in
+// bg78, which holds seven); -1, -1: all. Before SetArena.
+// spot: the game's box for the area (sub_8224EF28: centre x y z, half x z);
+// the test edit's box goes beside its centre, where a match camera sees it.
+void SetArea(const std::vector<std::pair<int, int>>& ids, const float* spot = nullptr);
 // The editor's whole UI, filling the current ImGui window region.
 void Draw();
 bool Busy();

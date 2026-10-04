@@ -22,6 +22,7 @@
 #include <shobjidl.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstring>
@@ -38,6 +39,7 @@
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "char_preview.h"
 #include "editor.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/arena_build.h"
@@ -184,6 +186,27 @@ std::string Utf8(const std::wstring& w) {
   return s;
 }
 
+// Backstage brawl areas: all seven are rooms of one file, bg78.pac (models
+// by id range); a backstage brawl's match type decides the room (scratchpad
+// re_backstage). A backstage mod is bg78 with one room rebuilt: the game
+// plays it in that room's matches.
+struct Area {
+  const char* name;
+  std::vector<std::pair<int, int>> ids;  // its models' ids (1000+: its objects: cars, crates...)
+  // the game's box for the area (sub_8224EF28, logged with SVR2011_TEST_BOX_LOG):
+  // centre x y z, half x z. Not where the fighters are kept (they roam
+  // beyond it); the test edit's box goes beside its centre.
+  float spot[5];
+};
+const Area kAreas[7] = {{"Parking lot", {{0, 19}, {1040, 1069}}, {125, 0, -410, 38, 50}},
+                        {"GM's office", {{20, 39}, {1000, 1024}}, {-338, -8, 217, 30, 27}},
+                        {"Locker room A", {{40, 59}, {1090, 1109}}, {290, -8, -190, 34, 34}},
+                        {"Locker room B", {{60, 79}, {1070, 1089}}, {326, -8, 241, 34, 34}},
+                        {"Large locker room", {{80, 99}, {1025, 1039}}, {460, -8, -76, 25, 25}},
+                        {"Interview area", {{160, 179}, {140, 159}, {1110, 1139}}, {0, -8, 141, 30, 30}},
+                        {"Catering area", {{140, 159}, {1130, 1139}}, {20, -8, -190, 45, 30}}};
+int g_backstage = -1;  // the area being made (else an arena)
+
 std::string ArenaPath(int i) {
   char b[32];
   std::snprintf(b, sizeof b, "bg%02d.pac", g_arenas[i].number);
@@ -272,6 +295,11 @@ void RunInBackground(std::function<void()> fn) {
 }
 
 void StartProject(int i) {
+  if (g_backstage >= 0) {  // (leaving a backstage area)
+    g_backstage = -1;
+    editor::SetArea({});
+    g_proj.arena = -1;
+  }
   if (g_proj.arena == i) return;
   g_proj.arena = i;
   g_proj.edited.reset();
@@ -335,7 +363,35 @@ void ImportArena(int i) {
 }
 
 // The project's arena into the editor (loaded from the game folder the first time).
+void OpenBackstage(int area) {
+  if (g_backstage == area && g_proj.edited) {
+    g_page = 1;
+    return;
+  }
+  g_backstage = area;
+  g_proj.arena = -1;
+  g_proj.edited.reset();
+  g_proj.fbx.clear();
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s (custom)", kAreas[area].name);
+  editor::SetArea(kAreas[area].ids, kAreas[area].spot);
+  const std::string pac = Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac").wstring());
+  RunInBackground([pac] {
+    auto a = std::make_unique<Arena>();
+    std::string err;
+    if (!a->Load(pac, &err)) { Log("  " + err); return; }
+    std::lock_guard lock(g_pending_mutex);
+    g_pending = std::move(a);
+    g_pending_fbx.clear();
+    g_pending_to_editor = true;
+  });
+}
+
 void OpenEditor(int i) {
+  if (g_backstage >= 0) {  // (from a backstage area back to an arena)
+    g_backstage = -1;
+    editor::SetArea({});
+    g_proj.arena = -1;
+  }
   if (g_proj.arena == i && g_proj.edited) {
     g_page = 1;
     return;
@@ -502,6 +558,8 @@ std::string ModId() {
 // A mod build: copied and set up on the UI thread (the editor keeps
 // editing g_proj.edited), compressed in the background.
 struct BuildJob {
+  bool backstage = false;  // (a backstage area: no banner, no VS screen)
+  std::vector<std::string> keep;  // textures FitFile leaves as they are
   std::shared_ptr<Arena> arena;
   std::string manifest, id;
   Image banner;
@@ -509,6 +567,22 @@ struct BuildJob {
 };
 
 bool PrepareBuild(BuildJob& job) {
+  if (g_backstage >= 0) {  // a backstage area: bg78 with the room rebuilt
+    if (!g_proj.edited) { Log("Open the area in the Arena Editor first."); return false; }
+    job.arena = std::make_shared<Arena>(*g_proj.edited);
+    editor::ApplyBuild(*job.arena);
+    job.id = ModId();
+    job.backstage = true;
+    // only the room's own textures may be made smaller to fit
+    for (const auto& am : job.arena->models) {
+      bool mine = am.added;
+      for (const auto& [lo, hi] : kAreas[g_backstage].ids) mine |= am.id >= uint32_t(lo) && am.id <= uint32_t(hi);
+      if (!mine) job.keep.insert(job.keep.end(), am.model.textures.begin(), am.model.textures.end());
+    }
+    job.manifest = "type=backstage\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
+                   "\nversion=" + g_proj.version + "\narea=" + std::to_string(g_backstage) + "\n";
+    return true;
+  }
   if (g_proj.arena < 0) { Log("Pick an arena first (Open in Arena Editor or Import from Blender)."); return false; }
   job.arena = std::make_shared<Arena>();
   if (g_proj.edited) {
@@ -536,7 +610,7 @@ bool PrepareBuild(BuildJob& job) {
 
 // manifest.txt, arena.pac, banner.dds (false on error, logged)
 bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
-  const auto halved = job.arena->FitFile({});
+  const auto halved = job.arena->FitFile(job.keep);
   if (!halved.empty())
     Log("  " + std::to_string(halved.size()) + " textures halved to fit the game's room for this arena.");
   std::string err;
@@ -544,6 +618,7 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   if (!err.empty()) { Log("error: " + err); return false; }
   files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
   files.push_back({"arena.pac", std::move(pac)});
+  if (job.backstage) return true;
   files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
   for (const auto& [name, img] : job.vs)  // (same size as the original: VsPage resizes)
     files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
@@ -568,7 +643,7 @@ void SaveMod() {
 }
 
 bool InstallFiles(const std::string& id, const std::vector<ZipEntry>& files) {
-  const fs::path dir = fs::path(g_game) / L"Mods" / L"Arenas" / fs::u8path(id);
+  const fs::path dir = fs::path(g_game) / L"Mods" / (g_backstage >= 0 ? L"Backstage" : L"Arenas") / fs::u8path(id);
   std::error_code ec;
   fs::create_directories(dir, ec);
   for (const auto& f : files)
@@ -576,7 +651,11 @@ bool InstallFiles(const std::string& id, const std::vector<ZipEntry>& files) {
       Log("Could not write into " + Utf8(dir.wstring()) + " (is the game running?)");
       return false;
     }
-  Log("Installed into the game: arena select, page 2 onwards (" + Utf8(dir.wstring()) + ").");
+  if (g_backstage >= 0)
+    Log(std::string("Installed into the game: backstage brawls in the ") + kAreas[g_backstage].name + " (" +
+        Utf8(dir.wstring()) + ").");
+  else
+    Log("Installed into the game: arena select, page 2 onwards (" + Utf8(dir.wstring()) + ").");
   return true;
 }
 
@@ -727,7 +806,10 @@ struct StarBase {
 std::vector<StarBase> g_star_bases;  // the playable superstars (select renders in DLC_HD.pac)
 bool g_star_loaded = false;
 struct StarProject {
-  int base = -1;  // index in g_star_bases
+  int style = 0;     // kStyles
+  int ratings[7] = {74, 74, 74, 74, 74, 74, 74};
+  bool ratings_set = false;  // (the style's, until moved)
+  int base = -1;  // index in g_star_bases (old mods: the superstar it started from)
   char name[32] = "", short_name[32] = "", author[64] = "", version[16] = "1.0";
   std::wstring model, song, movie;  // files ("" model: the base's own)
   std::wstring voice;               // a recording of the name, for the ring announcer
@@ -831,6 +913,30 @@ const char* const kNickNames[84] = {
     "Youngblood"
 };
 StarProject g_star;
+
+// Fighting styles: a new superstar's moves, entrance motions and starting
+// attributes come from one (the game needs a full move-set). Each is a
+// template from the roster underneath - the user never sees it.
+struct Style {
+  const char* name;
+  const char* about;
+  int template_id;  // a playable superstar (its move-set, entrance motions)
+  bool female;
+};
+const Style kStyles[] = {
+    {"Powerhouse", "Big, slow and strong: power slams and bear hugs.", 125, false},
+    {"Brawler", "Strikes, clotheslines and a power finisher.", 160, false},
+    {"All-rounder", "A bit of everything: the main-event style.", 139, false},
+    {"Technical", "Holds, counters and a submission finisher.", 104, false},
+    {"Submission specialist", "Wears opponents down with holds.", 267, false},
+    {"High flyer", "Fast, light, off the top rope.", 123, false},
+    {"Showman", "Flashy moves and taunts.", 218, false},
+    {"Diva: powerhouse", "A strong Diva: slams and power moves.", 224, true},
+    {"Diva: high flyer", "A quick, acrobatic Diva.", 164, true},
+    {"Diva: technical", "A Diva who wrestles holds and counters.", 143, true},
+};
+// The record's 7 attributes in its order (record +0..+6).
+const char* const kAttributes[7] = {"Grapple", "Submission", "Speed", "Strikes", "Hardcore", "Charisma", "Durability"};
 // test aids: --star <id> picks the base, --star-song / --star-movie <file>,
 // --test-star-save <file> saves the mod there and quits
 int g_star_start = 0;
@@ -940,6 +1046,50 @@ void PickStarPicture() {
   Log("Select picture set from " + Utf8(f));
 }
 
+// A style's starting attributes: its template's record +0..+6 (chEtc.pac CHAR/DAT).
+int StyleRating(int id, int k) {
+  static std::map<int, std::array<int, 7>> cache;
+  if (cache.empty()) {
+    Bytes d;
+    Epac e;
+    if (ReadFile(Utf8((fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac").wstring()), d) && EpacRead(d, e))
+      for (const auto& g : e.groups)
+        for (const auto& en : g.entries)
+          if (g.type == "CHAR" && en.name.rfind("DAT", 0) == 0) {
+            std::vector<PachEntry> pe;
+            if (!PachRead(en.data, pe)) continue;
+            for (const auto& x : pe) {
+              const Bytes r = Unpack(x.data);
+              if (r.size() < 4 + 7) continue;
+              std::array<int, 7> v{};
+              for (int j = 0; j < 7; ++j) v[j] = r[4 + j];
+              cache[int(x.id)] = v;
+            }
+          }
+  }
+  const auto it = cache.find(id);
+  return it == cache.end() ? 74 : std::clamp(it->second[k], 1, 99);
+}
+
+// The right side: the superstar's picture (the 3D model preview: TODO).
+// The model in 3D playing the game's idle stance (char_preview), so a
+// modder sees it works; the select-screen picture below it.
+void StarPreview(float scale) {
+  char_preview::SetModel(g_star.model, g_game);
+  ImGui::BeginGroup();
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const float w = std::max(220 * scale, avail.x);
+  const float h = std::clamp(avail.y - (g_star.picture_tex ? 150 : 40) * scale, 300 * scale, w * 1.5f);
+  char_preview::Draw(w, h);
+  if (!char_preview::Status().empty()) ImGui::TextDisabled("%s", char_preview::Status().c_str());
+  if (g_star.picture_tex) {
+    ImGui::Image(Tex(g_star.picture_tex), ImVec2(110 * scale, 110 * scale));
+    ImGui::SameLine();
+    ImGui::TextDisabled("The select screen's picture.");
+  }
+  ImGui::EndGroup();
+}
+
 std::string StarId() {
   std::string id;
   for (char c : std::string(g_star.name))
@@ -949,27 +1099,32 @@ std::string StarId() {
 
 // The mod's files. Everything is read on the UI thread (small, or one model pac).
 bool BuildStar(std::string& id, std::vector<ZipEntry>& files) {
-  if (g_star.base < 0) {
-    Log("Pick the superstar to start from.");
-    return false;
-  }
   if (!g_star.name[0]) {
     Log("Give the superstar a name.");
     return false;
   }
-  const StarBase& b = g_star_bases[g_star.base];
+  if (g_star.model.empty()) {
+    Log("Pick the superstar's model (a character model pac, ch.pac).");
+    return false;
+  }
+  const Style& st = kStyles[g_star.style];
+  StarBase b{st.template_id, st.name};
+  if (!g_star.ratings_set) {  // (the style's own, if the page never showed them)
+    for (int k = 0; k < 7; ++k) g_star.ratings[k] = StyleRating(st.template_id, k);
+    g_star.ratings_set = true;
+  }
   id = StarId();
   Bytes ch;
-  const std::wstring model = !g_star.model.empty()
-                                 ? g_star.model
-                                 : (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(b.id) + L".pac")).wstring();
+  const std::wstring model = g_star.model;
   if (!ReadFile(Utf8(model), ch) || ch.size() < 0x4000 || std::memcmp(ch.data(), "EPK8", 4)) {
     Log("The model is not a character model pac (EPK8): " + Utf8(model));
     return false;
   }
   std::string man = "type=superstar\nid=" + id + "\nname=" + g_star.name + "\nshort=" +
                     (g_star.short_name[0] ? g_star.short_name : g_star.name) + "\nbase=" + std::to_string(b.id) +
-                    "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n";
+                    "\nstyle=" + st.name + "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n";
+  man += "ratings=";
+  for (int k = 0; k < 7; ++k) man += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "\n");
   if (g_star.call >= 0) man += "call=" + std::to_string(g_star.call) + "\n";
   files.push_back({"ch.pac", std::move(ch)});
   if (!g_star.song.empty()) {
@@ -1070,11 +1225,14 @@ void InstallStar(bool start) {
 void StarPage() {
   if (!g_star_loaded) {
     LoadStarBases();
-    for (int i = 0; i < int(g_star_bases.size()); ++i)
-      if (g_star_bases[i].id == g_star_start) {
-        g_star.base = i;
-        std::snprintf(g_star.name, sizeof g_star.name, "Test %s", g_star_bases[i].name.c_str());
-      }
+    if (g_star_start) {  // (test aid: that superstar's model, the style with it as template if any)
+      for (int i = 0; i < int(std::size(kStyles)); ++i)
+        if (kStyles[i].template_id == g_star_start) g_star.style = i;
+      for (int i = 0; i < int(g_star_bases.size()); ++i)
+        if (g_star_bases[i].id == g_star_start)
+          std::snprintf(g_star.name, sizeof g_star.name, "Test %s", g_star_bases[i].name.c_str());
+      g_star.model = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_star_start) + L".pac")).wstring();
+    }
     if (!g_star_picture.empty()) {
       Image img;
       if (LoadImageFile(Utf8(g_star_picture), img)) SetStarPicture(img);
@@ -1087,40 +1245,43 @@ void StarPage() {
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
   }
-  if (g_star.render_for != g_star.base) LoadStarRender();
   const float scale = ImGui::GetFontSize() / 13.0f;
-  ImGui::Text("New superstar");
+  ImGui::Text("Create a new superstar");
   ImGui::TextDisabled("A new playable character under the M tile of the character select (up to 50 mods).");
   ImGui::Separator();
   ImGui::BeginGroup();
   ImGui::PushItemWidth(320 * scale);
-  const char* cur = g_star.base >= 0 ? g_star_bases[g_star.base].name.c_str() : "(pick one)";
-  if (ImGui::BeginCombo("Start from", cur)) {
-    for (int i = 0; i < int(g_star_bases.size()); ++i)
-      if (ImGui::Selectable((g_star_bases[i].name + "##" + std::to_string(i)).c_str(), g_star.base == i)) {
-        g_star.base = i;
-        if (!g_star.name[0]) {
-          std::snprintf(g_star.name, sizeof g_star.name, "%s", g_star_bases[i].name.c_str());
-        }
+  ImGui::InputText("Name", g_star.name, sizeof g_star.name);
+  ImGui::InputText("Short name (optional)", g_star.short_name, sizeof g_star.short_name);
+  if (ImGui::BeginCombo("Fighting style", kStyles[g_star.style].name)) {
+    for (int i = 0; i < int(std::size(kStyles)); ++i)
+      if (ImGui::Selectable(kStyles[i].name, g_star.style == i)) {
+        g_star.style = i;
+        g_star.ratings_set = false;
       }
     ImGui::EndCombo();
   }
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Its stats, moves, entrance motions and select picture; its model unless you pick one.");
-  ImGui::InputText("Name", g_star.name, sizeof g_star.name);
-  ImGui::InputText("Short name", g_star.short_name, sizeof g_star.short_name);
-  ImGui::InputText("Author", g_star.author, sizeof g_star.author);
-  ImGui::InputText("Version", g_star.version, sizeof g_star.version);
-  if (ImGui::BeginCombo("Name call", g_star.call < 0 ? "the base superstar's" : kNickNames[g_star.call])) {
-    if (ImGui::Selectable("the base superstar's", g_star.call < 0)) g_star.call = -1;
+  ImGui::TextDisabled("%s", kStyles[g_star.style].about);
+  if (!g_star.ratings_set) {  // (the style's own attributes, from its template's record)
+    if (!g_star_loaded) LoadStarBases();
+    for (int k = 0; k < 7; ++k) g_star.ratings[k] = StyleRating(kStyles[g_star.style].template_id, k);
+    g_star.ratings_set = true;
+  }
+  ImGui::Text("Attributes");
+  for (int k = 0; k < 7; ++k)
+    if (ImGui::SliderInt(kAttributes[k], &g_star.ratings[k], 1, 99)) g_star.ratings_set = true;
+  if (ImGui::BeginCombo("Name call (optional)", g_star.call < 0 ? "The Superstar" : kNickNames[g_star.call])) {
+    if (ImGui::Selectable("The Superstar##d", g_star.call < 0)) g_star.call = -1;
     for (int i = 0; i < 84; ++i)
       if (ImGui::Selectable((std::string(kNickNames[i]) + "##n" + std::to_string(i)).c_str(), g_star.call == i))
         g_star.call = i;
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("What the ring announcer and the commentators call the superstar: the base's name,\n"
-                      "or one of the nicknames a Created Superstar can have.");
+    ImGui::SetTooltip("What the ring announcer and the commentators call the superstar: one of the nicknames\n"
+                      "a Created Superstar can have (or record the name below).");
+  ImGui::InputText("Author (optional)", g_star.author, sizeof g_star.author);
+  ImGui::InputText("Version (optional)", g_star.version, sizeof g_star.version);
   ImGui::PopItemWidth();
   ImGui::Separator();
   auto file_row = [&](const char* label, std::wstring& f, const char* none, const COMDLG_FILTERSPEC* spec,
@@ -1141,11 +1302,11 @@ void StarPage() {
   const COMDLG_FILTERSPEC pac[] = {{L"Character model pac (*.pac)", L"*.pac"}};
   const COMDLG_FILTERSPEC song[] = {{L"Songs", L"*.mp3;*.m4a;*.aac;*.wav;*.flac;*.wma;*.ogg"}};
   const COMDLG_FILTERSPEC bik[] = {{L"Bink movie (*.bik)", L"*.bik"}};
-  file_row("Model (ch.pac)...", g_star.model, "the base superstar's own", pac, 1);
-  file_row("Theme song...", g_star.song, "the base superstar's", song, 1);
-  file_row("Entrance movie...", g_star.movie, "the base superstar's", bik, 1);
+  file_row("Model (ch.pac)...", g_star.model, "required: the superstar's model", pac, 1);
+  file_row("Theme song (optional)...", g_star.song, "the style's", song, 1);
+  file_row("Entrance movie (optional)...", g_star.movie, "the style's", bik, 1);
   for (int a = 1; a < 4; ++a) {
-    const std::string label = "Attire " + std::to_string(a + 1) + " (ch.pac)...";
+    const std::string label = "Attire " + std::to_string(a + 1) + " (optional)...";
     file_row(label.c_str(), g_star.attires[a], "none", pac, 1);
     if (!g_star.attires[a].empty()) {
       ImGui::SameLine();
@@ -1158,7 +1319,7 @@ void StarPage() {
   {  // its fans' crowd signs
     const COMDLG_FILTERSPEC pics[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
     ImGui::BeginDisabled(g_star.signs.size() >= 4);
-    if (ImGui::Button("Crowd signs...", ImVec2(200 * scale, 0)))
+    if (ImGui::Button("Crowd signs (optional)...", ImVec2(200 * scale, 0)))
       for (const auto& f : PickFiles(L"Signs for the superstar's fans (up to 4)", pics, 1)) {
         Image img;
         if (g_star.signs.size() < 4 && LoadImageFile(Utf8(f), img)) {
@@ -1168,7 +1329,7 @@ void StarPage() {
       }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (g_star.signs.empty()) ImGui::TextUnformatted("the base superstar's");
+    if (g_star.signs.empty()) ImGui::TextUnformatted("none");
     for (size_t k = 0; k < g_star.sign_tex.size(); ++k) {
       ImGui::SameLine();
       ImGui::Image(Tex(g_star.sign_tex[k]), ImVec2(64 * scale, 32 * scale));
@@ -1181,15 +1342,15 @@ void StarPage() {
       }
     }
   }
-  file_row("Name recording...", g_star.voice, "none (the name call above)", song, 1);
+  file_row("Name recording (optional)...", g_star.voice, "none (the name call above)", song, 1);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("A short recording of the name, said the ring announcer's way: it plays when he\n"
                       "announces the superstar. The commentators keep the name call above.");
   ImGui::TextDisabled("Entrance movies are .bik files: make them in the launcher's Movies tab.");
   ImGui::PushID("pic");
-  if (ImGui::Button("Select picture...", ImVec2(200 * scale, 0))) PickStarPicture();
+  if (ImGui::Button("Select picture (optional)...", ImVec2(200 * scale, 0))) PickStarPicture();
   ImGui::SameLine();
-  ImGui::TextUnformatted(g_star.picture.w ? "your picture" : "the base superstar's");
+  ImGui::TextUnformatted(g_star.picture.w ? "your picture" : "a silhouette");
   if (g_star.picture.w) {
     ImGui::SameLine();
     if (ImGui::SmallButton("x")) {
@@ -1207,10 +1368,8 @@ void StarPage() {
   if (ImGui::Button("Test in game", ImVec2(260 * scale, 0))) InstallStar(true);
   ImGui::EndDisabled();
   ImGui::EndGroup();
-  if (ID3D11ShaderResourceView* shown = g_star.picture_tex ? g_star.picture_tex : g_star.render) {
-    ImGui::SameLine();
-    ImGui::Image(Tex(shown), ImVec2(256 * scale, 256 * scale));
-  }
+  ImGui::SameLine();
+  StarPreview(scale);
 }
 
 // ---------------------------------------------------------------- Crowd signs
@@ -1369,8 +1528,8 @@ void SignsPage() {
   ImGui::Separator();
   ImGui::PushItemWidth(320 * scale);
   ImGui::InputText("Pack name", g_pack.name, sizeof g_pack.name);
-  ImGui::InputText("Author", g_pack.author, sizeof g_pack.author);
-  ImGui::InputText("Version", g_pack.version, sizeof g_pack.version);
+  ImGui::InputText("Author (optional)", g_pack.author, sizeof g_pack.author);
+  ImGui::InputText("Version (optional)", g_pack.version, sizeof g_pack.version);
   ImGui::PopItemWidth();
   const COMDLG_FILTERSPEC spec[] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp"}};
   if (ImGui::Button("Add pictures...", ImVec2(200 * scale, 0))) AddSigns(PickFiles(L"Sign pictures", spec, 1));
@@ -1444,7 +1603,7 @@ std::string MediaId() {
 void MediaPackHeader(float scale) {
   ImGui::PushItemWidth(320 * scale);
   ImGui::InputText("Pack name", g_media.name, sizeof g_media.name);
-  ImGui::InputText("Author", g_media.author, sizeof g_media.author);
+  ImGui::InputText("Author (optional)", g_media.author, sizeof g_media.author);
   ImGui::PopItemWidth();
 }
 
@@ -1621,7 +1780,8 @@ void InstallMedia() {
 
 void MediaButtons(float scale) {
   ImGui::Separator();
-  ImGui::TextDisabled("One pack holds everything on the Titantron videos, Menus & renders and Audio pages.");
+  ImGui::TextDisabled("One pack holds everything on the Titantron videos, Menus & renders and Audio pages.\n"
+                      "Every item is optional: fill in only what you want to replace.");
   ImGui::BeginDisabled(g_busy);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.06f, 0.18f, 1));
   if (ImGui::Button("Save as mod (.svrmod)...", ImVec2(260 * scale, 0))) SaveMedia();
@@ -1845,7 +2005,7 @@ void Draw() {
         if (g_test_lib >= 0) editor::TestLibrary(g_test_lib);
         editor::TestEdit();
         // and the VS screen: the theme's biggest picture as a red / yellow checker
-        LoadVsTheme(g_proj.arena);
+        if (g_backstage < 0) LoadVsTheme(g_proj.arena);
         const VsTexture* big = nullptr;
         for (const auto& t : g_vs)
           if (!big || t.w * t.h > big->w * big->h) big = &t;
@@ -1876,7 +2036,15 @@ void Draw() {
       }
     }
   }
-  if (g_test_state == 2 && !g_busy) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+  if (g_test_state == 2 && !g_busy) {
+    if (FILE* f = _wfopen((g_test_save + L".log").c_str(), L"wb")) {  // (the log, for the test scripts)
+      std::lock_guard lock(g_log_mutex);
+      for (const auto& line : g_log) std::fprintf(f, "%s\n", line.c_str());
+      std::fclose(f);
+    }
+    PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    g_test_state = 3;
+  }
   ImGui::BeginChild("rail", ImVec2(rail, -logh), true);
   for (int p = 0; p < 8; ++p) {
     const char* names[] = {"Arenas",      "Arena Editor",     "VS screen", "Superstars",
@@ -1970,6 +2138,23 @@ void Draw() {
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Only the ring, the floor and the ringside parts: build the rest.\n"
                       "It plays in this arena's place (its room and VS screen style).");
+  ImGui::Separator();
+  ImGui::Text("Backstage areas");
+  ImGui::TextDisabled("Rebuild a backstage brawl room.");
+  static int area = 0;
+  ImGui::SetNextItemWidth(-1);
+  if (ImGui::BeginCombo("##area", kAreas[area].name)) {
+    for (int k = 0; k < 7; ++k)
+      if (ImGui::Selectable(kAreas[k].name, area == k)) area = k;
+    ImGui::EndCombo();
+  }
+  if (ImGui::Button("Open area in Arena Editor", ImVec2(-1, 0))) OpenBackstage(area);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("The game's backstage rooms are all in one file: the room you make is played in that\n"
+                      "room's backstage brawls. Keep its floor and walls where they are (the game's\n"
+                      "walls and cameras for the room stay). The cars, crates and other things the\n"
+                      "superstars can use are placed by the game: they are not shown here and stay.\n"
+                      "One backstage mod plays at a time.");
   ImGui::EndDisabled();
   ImGui::Separator();
   ImGui::Text("Your arena");
@@ -1979,9 +2164,9 @@ void Draw() {
     ImGui::TextDisabled("import an FBX to start");
   }
   ImGui::InputText("Name", g_proj.name, sizeof g_proj.name);
-  ImGui::InputText("Author", g_proj.author, sizeof g_proj.author);
-  ImGui::InputText("Version", g_proj.version, sizeof g_proj.version);
-  if (ImGui::Button("Banner picture...", ImVec2(-1, 0))) PickBanner();
+  ImGui::InputText("Author (optional)", g_proj.author, sizeof g_proj.author);
+  ImGui::InputText("Version (optional)", g_proj.version, sizeof g_proj.version);
+  if (ImGui::Button("Banner picture (optional)...", ImVec2(-1, 0))) PickBanner();
   if (g_proj.banner_tex) ImGui::Image(Tex(g_proj.banner_tex), ImVec2(bw * 0.6f, bw * 0.3f));
   ImGui::Separator();
   ImGui::BeginDisabled(g_busy || g_proj.arena < 0);
@@ -2028,7 +2213,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   // test aids: --editor <arena tile 0-19> opens the editor on it, --open <mod> opens a mod,
   // --editor-view <0-2> a camera preset, --select <name> an object
-  int start_editor = -1, start_view = -1, start_new = -1, start_page = -1;
+  int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1;
   std::wstring start_mod, start_select;
   for (int i = 1; i + 1 < argc; ++i) {
     if (!wcscmp(argv[i], L"--game")) g_game = argv[i + 1];
@@ -2040,6 +2225,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!wcscmp(argv[i], L"--new-arena")) start_new = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--test-lib")) g_test_lib = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--page")) start_page = _wtoi(argv[i + 1]);
+    if (!wcscmp(argv[i], L"--backstage")) start_backstage = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--star")) g_star_start = _wtoi(argv[i + 1]);
     if (!wcscmp(argv[i], L"--star-song")) g_star.song = argv[i + 1];
     if (!wcscmp(argv[i], L"--star-movie")) g_star.movie = argv[i + 1];
@@ -2092,6 +2278,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!g_game.empty())
     for (int i = 0; i < 20; ++i) hooks.library.push_back({g_arenas[i].name, ArenaPath(i)});
   editor::Init(g_dev, g_ctx, hooks);
+  char_preview::Init(g_dev, g_ctx);
   if (start_new >= 0 && start_new < 20) {
     g_sel = start_new;
     NewArena(start_new);
@@ -2102,6 +2289,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   editor::TestStart(start_view, Utf8(start_select));  // (before the arena is set)
   if (start_page >= 0 && start_mod.empty()) g_page = start_page;
+  if (start_backstage >= 0 && start_backstage < 7) OpenBackstage(start_backstage);
   if (!start_mod.empty()) {
     OpenModFile(start_mod);
     if (start_page >= 0) g_page = start_page;
@@ -2140,6 +2328,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   if (g_worker.joinable()) g_worker.join();
   editor::Shutdown();
+  char_preview::Shutdown();
   ImGui_ImplDX11_Shutdown();
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();
