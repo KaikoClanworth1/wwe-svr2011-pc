@@ -1,4 +1,4 @@
-// The Arena Editor (Mod Maker, arenas branch). See editor.h.
+﻿// The Arena Editor (Mod Maker, arenas branch). See editor.h.
 //
 // Game space: 1 unit = 10 cm, y points down (floor ~0, ring mat -12). The
 // view keeps game space and looks with "up" = -y. Objects are the arena's
@@ -18,6 +18,7 @@
 #include "editor.h"
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -159,6 +160,14 @@ struct Obj {
   Role role = Role::kNormal;
   bool movable = false, added = false, hidden = false;
   bool glow = false;  // light glows / beams: drawn additive
+  // moved by the arena's own animation (its flag table, entry 50001: "m(<n>)"):
+  // light rigs, beams, glows. Their meshes sit at the origin until the game
+  // animates them into place, so the view doesn't draw them (they'd pile up
+  // in the ring); they stay in the arena as they are.
+  bool effect = false;
+  // drawn twice by the game: as it is and mirrored across x = 0 (flag "r";
+  // half an arena's fences, stands and truss are stored once)
+  bool mirrored = false;
   V3 pos;           // edit offset
   float yaw = 0;    // radians
   float scale = 1;
@@ -612,6 +621,28 @@ std::string Label(const ArenaModel& am) {
   return b;
 }
 
+// The arena's per-model flag table (entry 50001, text: "<model id> <flags>"):
+// "m(<n>)" placed by animation track n, "r" also drawn mirrored (x -> -x).
+std::map<uint32_t, std::string> ModelFlags() {
+  std::map<uint32_t, std::string> flags;
+  if (!g_arena) return flags;
+  for (const auto& e : g_arena->entries) {
+    if (e.id != 50001) continue;
+    const Bytes t = Unpack(e.data);
+    std::string text(t.begin(), t.end()), line;
+    size_t pos = 0;
+    while (pos < text.size()) {
+      size_t nl = text.find('\n', pos);
+      line = text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+      pos = nl == std::string::npos ? text.size() : nl + 1;
+      if (line.empty() || !std::isdigit(uint8_t(line[0]))) continue;
+      const uint32_t id = uint32_t(std::atoi(line.c_str()));
+      flags[id] = " " + line.substr(line.find_first_not_of("0123456789")) + " ";
+    }
+  }
+  return flags;
+}
+
 void BuildObjects() {
   g_objs.clear();
   g_undo.clear();
@@ -619,9 +650,15 @@ void BuildObjects() {
   ForgetGpu();
   ForgetTextures();
   if (!g_arena) return;
+  const std::map<uint32_t, std::string> flags = ModelFlags();
   for (size_t mi = 0; mi < g_arena->models.size(); ++mi) {
     const ArenaModel& am = g_arena->models[mi];
     Obj o;
+    if (const auto f = flags.find(am.id); f != flags.end() && !am.added) {
+      o.effect = f->second.find("m(") != std::string::npos;
+      for (char sep : {' ', '\t', '\r'})  // (a standalone "r")
+        for (char sep2 : {' ', '\t', '\r'}) o.mirrored |= f->second.find(std::string(1, sep) + "r" + sep2) != std::string::npos;
+    }
     o.model = int(mi);
     o.label = Label(am);
     o.zone = am.zone;
@@ -633,7 +670,7 @@ void BuildObjects() {
       o.strips.push_back(am.model.meshes[k].strips);
       all_static &= IsStatic(am.model.meshes[k]);
     }
-    o.movable = all_static && o.zone != Zone::kRing && o.role == Role::kNormal;
+    o.movable = all_static && o.zone != Zone::kRing && o.role == Role::kNormal && !o.effect;
     o.glow = am.model.name.find("glow") != std::string::npos || am.model.name.find("beam") != std::string::npos ||
              am.model.name.find("_ev") != std::string::npos;
     ComputePivot(o);
@@ -889,7 +926,7 @@ int Pick(V3 o, V3 d, float* t_out = nullptr) {
   float best_t = 1e30f;
   for (size_t i = 0; i < g_objs.size(); ++i) {
     const Obj& ob = g_objs[i];
-    if (ob.hidden || ob.role != Role::kNormal) continue;
+    if (ob.hidden || ob.effect || ob.role != Role::kNormal) continue;
     const Model& m = g_arena->models[ob.model].model;
     for (int k : ob.meshes) {
       const Mesh& s = m.meshes[k];
@@ -953,7 +990,7 @@ void RenderScene() {
   }();
   const M4 ident;
   for (const Obj& o : g_objs) {
-    if (o.hidden) continue;
+    if (o.hidden || o.effect) continue;
     switch (o.role) {
       case Role::kNotDrawn:
         break;
@@ -961,6 +998,12 @@ void RenderScene() {
         if (o.glow) break;  // (after the solid ones)
         SetCb(ident, light);
         for (int k : o.meshes) DrawMesh(o.model, k);
+        if (o.mirrored) {  // (the game's mirrored copy)
+          M4 mirror;
+          mirror.m[0] = -1;
+          SetCb(mirror, light);
+          for (int k : o.meshes) DrawMesh(o.model, k);
+        }
         break;
       case Role::kRopeSide:
       case Role::kRopePerRope: {
@@ -1018,8 +1061,18 @@ void RenderScene() {
   SetCb(ident, light);
   g_glow_pass = false;
   for (const Obj& o : g_objs)
-    if (o.glow && !o.hidden && o.role == Role::kNormal)
+    if (o.glow && !o.hidden && !o.effect && o.role == Role::kNormal)
       for (int k : o.meshes) DrawMesh(o.model, k);
+  {  // (the mirrored copies)
+    M4 mirror;
+    mirror.m[0] = -1;
+    g_glow_pass = true;
+    SetCb(mirror, light);
+    g_glow_pass = false;
+    for (const Obj& o : g_objs)
+      if (o.glow && o.mirrored && !o.hidden && !o.effect && o.role == Role::kNormal)
+        for (int k : o.meshes) DrawMesh(o.model, k);
+  }
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
   g_ctx->OMSetDepthStencilState(g_depth, 0);
   // the selection, as a wireframe on top
@@ -1096,19 +1149,26 @@ void Outliner() {
   ImGui::SetNextItemWidth(-1);
   ImGui::InputTextWithHint("##filter", "Find an object", filter, sizeof filter);
   const Zone zones[] = {Zone::kRing, Zone::kRingside, Zone::kEntrance, Zone::kFree};
-  for (int pass = 0; pass < 5; ++pass) {
-    const bool added_pass = pass == 4;
-    const char* title = added_pass ? "Added" : ZoneTitle(zones[pass]);
+  for (int pass = 0; pass < 6; ++pass) {
+    const bool added_pass = pass == 4, effect_pass = pass == 5;
+    const char* title = effect_pass ? "Effects (placed by the game)" : added_pass ? "Added" : ZoneTitle(zones[pass]);
+    auto in_pass = [&](const Obj& o) {
+      return effect_pass ? o.effect : added_pass ? o.added : (!o.added && !o.effect && o.zone == zones[pass]);
+    };
     int count = 0;
-    for (const auto& o : g_objs) count += added_pass ? o.added : (!o.added && o.zone == zones[pass]);
+    for (const auto& o : g_objs) count += in_pass(o);
     if (!count) continue;
     char head[64];
     std::snprintf(head, sizeof head, "%s (%d)###z%d", title, count, pass);
     ImGui::SetNextItemOpen(pass == 0 || pass == 4, ImGuiCond_Once);
-    if (!ImGui::TreeNode(head)) continue;
+    const bool open = ImGui::TreeNode(head);
+    if (effect_pass && ImGui::IsItemHovered())
+      ImGui::SetTooltip("Light rigs, beams and glows the arena's own animation moves into place during the show.\n"
+                        "Not drawn here (they would all sit in the ring); untick one to remove it from the arena.");
+    if (!open) continue;
     for (size_t i = 0; i < g_objs.size(); ++i) {
       Obj& o = g_objs[i];
-      if (added_pass ? !o.added : (o.added || o.zone != zones[pass])) continue;
+      if (!in_pass(o)) continue;
       if (filter[0] && o.label.find(filter) == std::string::npos) continue;
       ImGui::PushID(int(i));
       bool vis = !o.hidden;
