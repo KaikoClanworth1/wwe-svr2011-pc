@@ -2,8 +2,11 @@
 #   .\session.ps1 start [-Name s1]         launch; log -> runs\<Name>.log
 #   .\session.ps1 input "press START" "wait 2000" "press A"
 #   .\session.ps1 route <name>             go there (src/script_input.cpp kRoutes: main,
-#                                          exhibition, normal, cage, match_creator, online,
+#                                          exhibition, normal, cage, match_creator, online, match,
 #                                          options) and wait until the game is there
+#                                          ("route match": into the match that
+#                                          SVR2011_TEST_MATCH="people=EDGE,KANE arena=1" and
+#                                          SVR2011_TEST_RULE=3C ask for - src/test_match.cpp)
 #   .\session.ps1 shot  <file-stem>        screenshot -> runs\<stem>.png
 #   .\session.ps1 fps                      last frame-rate lines from the log
 #   .\session.ps1 status | stop

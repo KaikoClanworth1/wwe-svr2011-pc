@@ -68,6 +68,9 @@ constexpr Route kRoutes[] = {
     {"match_creator", "route exhibition\nmenu MATCH CREATOR"},
     {"online", "route main\nmenu ONLINE"},
     {"options", "route main\nmenu MY\nmenu OPTIONS"},
+    // (through the select screen and the match screen to the match loading:
+    // with SVR2011_TEST_MATCH / SVR2011_TEST_RULE, the match a test asks for)
+    {"match", "route normal\npressuntil A match: rule"},
 };
 
 // "until": the text a step waits for in the log, and whether it has come.
@@ -168,6 +171,17 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     queue_.push_back(Step{.ms = 120});  // (lifted, then a pause)
   } else if (verb == "title") {
     step.kind = Step::kTitle;
+    queue_.push_back(step);
+  } else if (verb == "pressuntil") {
+    std::string buttons;
+    in >> buttons;
+    step.buttons = ParseButtons(buttons);
+    std::getline(in >> std::ws, step.arg);
+    if (!step.buttons || step.arg.empty()) {
+      REXLOG_WARN("script input: '{}' needs buttons and a text", line);
+      return;
+    }
+    step.kind = Step::kPressUntil;
     queue_.push_back(step);
   } else if (verb == "menu" || verb == "until") {
     std::getline(in >> std::ws, step.arg);
@@ -288,7 +302,7 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
     if (current_.kind != Step::kPlain) {
       smart_ = Smart{};
       smart_.start = smart_.changed = now;
-      if (current_.kind == Step::kUntil) {
+      if (current_.kind == Step::kUntil || current_.kind == Step::kPressUntil) {
         std::lock_guard until(g_until_mutex);
         g_until_text = current_.arg;
         g_until_hit = false;
@@ -327,7 +341,7 @@ bool ScriptInputDriver::RunSmart(Clock::time_point now, Step& out) {
   uint32_t group = 0, row = 0;
   const bool menu = ScriptMenuState(&group, &row);
 
-  if (current_.kind == Step::kUntil) {
+  if (current_.kind == Step::kUntil || current_.kind == Step::kPressUntil) {
     const bool hit = g_until_hit;
     if (hit || waited > 180) {
       if (hit)
@@ -337,6 +351,10 @@ bool ScriptInputDriver::RunSmart(Clock::time_point now, Step& out) {
       std::lock_guard until(g_until_mutex);
       g_until_text.clear();
       return false;
+    }
+    if (current_.kind == Step::kPressUntil && now >= m.next) {  // (a press every 1.5 s meanwhile)
+      Press(current_.buttons, now);
+      m.next = now + milliseconds(1500);
     }
     return true;
   }

@@ -44,7 +44,13 @@ switch ($Action) {
         Sh "rm -f $(Q "$run/input.txt"); touch $(Q "$run/input.txt")" | Out-Null
         # (SVR2011_PHONE_MUSIC=<folder in test_run>: the test's Music folder)
         $music = if ($env:SVR2011_PHONE_MUSIC) { @("--es", "SVR2011_MUSIC", "'$run/$env:SVR2011_PHONE_MUSIC'") } else { @() }
-        & $adb shell am start -n "$pkg/.InstallActivity" @music `
+        # (test aids set on the PC go along: a route at start, the match a test asks for - src/test_match.cpp)
+        $aids = @()
+        foreach ($k in "SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE") {
+            $v = [Environment]::GetEnvironmentVariable($k)
+            if ($v) { $aids += @("--es", $k, "'$v'") }
+        }
+        & $adb shell am start -n "$pkg/.InstallActivity" @music @aids `
             --es SVR2011_INPUT_FILE "'$run/input.txt'" `
             --es SVR2011_USER_DATA "'$run/userdata'" `
             --es args "'--audio_mute=true $env:SVR2011_PHONE_ARGS'" | Out-Null  # (+ extra settings for a test)

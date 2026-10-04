@@ -23,9 +23,14 @@
 //                               LABEL (as the log's "menu select" lines and
 //                               "menu group" list name them) and choose it
 //   until <text>                wait for a log line containing text
+//   pressuntil <buttons> <text> press the buttons every 1.5 s until a log line
+//                               contains text ("pressuntil A match: rule":
+//                               through the select screens to the match)
 //   route <name>                a named route (kRoutes in script_input.cpp),
 //                               e.g. "route cage": the Steel Cage character
-//                               select. SVR2011_ROUTE=<name> runs one at start.
+//                               select; "route match": into the match
+//                               SVR2011_TEST_MATCH asks for (test_match.cpp).
+//                               SVR2011_ROUTE=<name> runs one at start.
 // Each gives up after a while (a warning in the log) and the script goes on.
 //
 // <buttons> is one or more of A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT
@@ -81,7 +86,7 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     uint16_t key = 0;  // PC keyboard key pressed when the step starts
     bool touch = false;  // a finger (touch_controls.h) from x0, y0 to x1, y1
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-    enum Kind : uint8_t { kPlain, kTitle, kMenu, kUntil } kind = kPlain;  // (a step that waits for the game)
+    enum Kind : uint8_t { kPlain, kTitle, kMenu, kUntil, kPressUntil } kind = kPlain;  // (a step that waits for the game)
     std::string arg;  // its label / text
   };
 
