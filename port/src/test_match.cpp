@@ -12,8 +12,8 @@
 // sub_828BBEF0: 2116-byte slots at match+432, +8 superstar id * 100 + attire,
 // +54 the id, +5 the team, +4 the kind, -8 the controller - see
 // match_types.cpp), the slots get the asked-for superstars; slots beyond the
-// picks become CPU wrestlers of their own team. The arena is the live match
-// record's +64 (0x82E3DE00), set at the same time.
+// picks become CPU wrestlers of their own team. The arena: the match
+// screen's choice (below).
 
 #include <cctype>
 #include <cstdint>
@@ -127,24 +127,21 @@ bool Applies() {
 
 }  // namespace
 
-// The match's arena: the live record's +64. Many places set it (some copy
-// the whole record), but every reader gets the record from sub_825740C8()
-// first - so the test's arena is put back there, before any read. (The
-// first time the game had another one, the log says which code asked last.)
-REX_EXTERN(__imp__sub_825740C8);
-REX_HOOK_RAW(sub_825740C8) {
-  static uint32_t last_caller = 0;
-  __imp__sub_825740C8(ctx, base);
+// The match's arena: the match screen's choice (its object's +244, read by
+// sub_8247B6C8(screen) - sub_82773F00 copies it to the live match record's
+// +64 as the match loads), so the game sets up the test's arena itself.
+// (Putting it straight into the live record left parts of the load with the
+// arena they had read first - a freeze on a phone.)
+REX_EXTERN(__imp__sub_8247B6C8);
+REX_HOOK_RAW(sub_8247B6C8) {
+  const uint32_t screen = ctx.r3.u32;
+  __imp__sub_8247B6C8(ctx, base);
   const int arena = Config().arena;
-  if (arena >= 0 && Applies()) {
-    const uint32_t was = Rd32(base + kLive + kArena);
-    if (was != uint32_t(arena)) {
-      Wr32(base + kLive + kArena, uint32_t(arena));
-      static uint32_t logged = 0;
-      if (logged++ < 4) REXLOG_INFO("test match: arena {} (the game had {}; set after {:08X})", arena, was, last_caller);
-    }
-  }
-  last_caller = uint32_t(ctx.lr);
+  if (arena < 0 || !Applies() || !screen || ctx.r3.u32 == uint32_t(arena)) return;
+  static uint32_t logged = 0;
+  if (logged++ < 2) REXLOG_INFO("test match: arena {} (the match screen had {})", arena, ctx.r3.u32);
+  Wr32(base + screen + 244, uint32_t(arena));
+  ctx.r3.u64 = uint32_t(arena);
 }
 
 REX_EXTERN(__imp__sub_828BC5E8);
@@ -170,7 +167,6 @@ REX_HOOK_RAW(sub_828BC5E8) {
       }
       done += (done.empty() ? "" : ", ") + std::string(reinterpret_cast<const char*>(Record(base, id) + kName));
     }
-    if (m.arena >= 0) Wr32(base + kLive + kArena, uint32_t(m.arena));
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
                 Rd32(base + kLive + kArena));
   }
