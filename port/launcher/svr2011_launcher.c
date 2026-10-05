@@ -53,6 +53,7 @@
 #include "apk_package.h"
 #include "mods_tab.h"
 #include "music_tab.h"
+#include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
 #include "movie_maker.h"
@@ -87,9 +88,10 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
+#define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -1841,7 +1843,8 @@ static HBRUSH s_page_brush, s_card_brush;
 static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     { TAB_PLAY, 0xE768, L"Play" },          { TAB_SETTINGS, 0xE713, L"Settings" },
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_SAVES, 0xE74E, L"Saves" },
-    { TAB_MUSIC, 0xE8D6, L"Music" },        { TAB_MODS, 0xE90F, L"Mods" },
+    { TAB_ROSTER, 0xE716, L"Roster" },      { TAB_MUSIC, 0xE8D6, L"Music" },
+    { TAB_MODS, 0xE90F, L"Mods" },
     { TAB_PAINT, 0xE790, L"Paint Tool" },   { TAB_MOVIES, 0xE714, L"Movies" },
     { TAB_DLC, 0xE7B8, L"DLC" },            { TAB_INSTALL, 0xE896, L"Install" },
     { TAB_ANDROID, 0xE8EA, L"Android" },
@@ -2056,6 +2059,8 @@ static void show_tab(int t)
         mods_show(s_game_dir);
     if (t == TAB_MUSIC)
         music_show(s_game_dir);
+    if (t == TAB_ROSTER)
+        roster_show(s_game_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
@@ -2115,7 +2120,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -2388,6 +2393,8 @@ static void build_ui(void)
     }
     /* Music (music_tab.c) */
     music_build(s_wnd, add, TAB_MUSIC, ID_MUSIC_BASE);
+    /* Roster: the list menus' sort categories (roster_tab.c) */
+    roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -5803,7 +5810,7 @@ static void paint_window(HDC dc)
 {
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install the game", L"DLC",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Android", L"Mods",
-                                                    L"Music" };
+                                                    L"Music", L"Roster: sort categories" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -5899,7 +5906,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     }
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
-            mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)))
+            mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
+            roster_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_REPORT:
@@ -6295,7 +6303,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     MSG msg;
     RECT r;
     int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0;
-    const WCHAR *capture_music = NULL;
+    const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
 
@@ -6446,7 +6454,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -6472,6 +6480,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* ... --music-add <file>: the Music tab's Add songs with that file. */
         if (argc >= 6 && !wcscmp(argv[4], L"--music-add"))
             capture_music = argv[5];
+        /* ... --roster-tag <id> <SMACKDOWN|RAW|NPC|MODS|DEFAULT>: the Roster tab tags it. */
+        if (argc >= 7 && !wcscmp(argv[4], L"--roster-tag"))
+            capture_tag = argv + 5;
     }
 
     icc.dwSize = sizeof icc;
@@ -6513,6 +6524,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     refresh_play();
     if (capture_music)
         music_add_files(s_game_dir, &capture_music, 1);
+    if (capture_tag)
+        roster_tag(s_game_dir, _wtoi(capture_tag[0]), capture_tag[1]);
     show_tab(capture_tab >= 0 ? capture_tab : (is_game_folder(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
     if (capture_file) {
         /* Drawn off-screen, never activated (tests run beside the user's work). */
