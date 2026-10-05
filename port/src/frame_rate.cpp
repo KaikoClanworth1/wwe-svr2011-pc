@@ -296,6 +296,7 @@ void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
 // but the last update of a frame (an extra update) see the previous reading
 // again (no change): a press arrives in the frame's last update.
 bool g_extra_update = false;
+std::atomic<uint64_t> g_lat_drawn{0};  // (latency test aid: frames drawn)
 std::atomic<std::thread::id> g_logic_thread{};  // (the thread running the world update)
 // The characters' job's round (sub_8216F4C8, below) or its paused round
 // (sub_8216ED38 + sub_8216E458) an extra update left, for the frame's last
@@ -416,6 +417,7 @@ REX_HOOK_RAW(sub_8269C728) {
   }
   g_dbg_pass = 20;
   DrawPass(ctx, base, m);
+  ++g_lat_drawn;
   g_dbg_pass = 0;
   g_dbg_since = Clock::now().time_since_epoch().count();
   static std::once_flag watchdog;
@@ -695,3 +697,54 @@ REX_HOOK_RAW(sub_8216A450) {
   if (++count == 1 || count % 1000 == 0)
     REXLOG_INFO("frame rate: an extra update didn't wait for job {} (not done yet; {} times)", idx, count);
 }
+
+// -- Latency test aid (SVR2011_TEST_LATENCY=1) -------------------------------
+//
+// Frames drawn (the draw pass) against frames the native renderer published
+// (PublishFrame, in order: one per game swap) = frames in flight from the
+// game's draw to the renderer's hand-over; then the time from a publish to
+// the presenter's next new game frame (a 1 ms poll). Once a second.
+namespace {
+std::atomic<uint64_t> g_lat_published{0}, g_lat_swapped{0};
+std::atomic<int64_t> g_lat_publish_at{0};
+}  // namespace
+
+namespace svr2011 {
+void LatencyOnSwap() { ++g_lat_swapped; }
+void LatencyOnPublish() {
+  static const bool on = std::getenv("SVR2011_TEST_LATENCY") != nullptr;
+  if (!on) return;
+  ++g_lat_published;
+  g_lat_publish_at = Clock::now().time_since_epoch().count();
+  static std::once_flag started;
+  std::call_once(started, [] {
+    std::thread([] {
+      uint64_t seen = rex::ui::HostNewGuestFramePresentCount();
+      double sum_ms = 0, max_ms = 0;
+      int n = 0;
+      int64_t min_inflight = INT64_MAX, max_inflight = INT64_MIN;
+      auto last_log = Clock::now();
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const uint64_t shown = rex::ui::HostNewGuestFramePresentCount();
+        const int64_t inflight = int64_t(g_lat_drawn.load()) - int64_t(g_lat_published.load());
+        min_inflight = std::min(min_inflight, inflight), max_inflight = std::max(max_inflight, inflight);
+        if (shown != seen) {
+          seen = shown;
+          const auto at = Clock::time_point(Clock::duration(g_lat_publish_at.load()));
+          const double ms = std::chrono::duration<double, std::milli>(Clock::now() - at).count();
+          sum_ms += ms, max_ms = std::max(max_ms, ms), ++n;
+        }
+        if (Clock::now() - last_log >= std::chrono::seconds(1)) {
+          last_log = Clock::now();
+          REXLOG_INFO("frame rate: latency - drawn {} swapped {} published {}: drawn-published {}..{}, swapped-published "
+                      "{}; publish -> shown avg {:.1f} ms, max {:.1f} ms ({} new frames shown)",
+                      g_lat_drawn.load(), g_lat_swapped.load(), g_lat_published.load(), min_inflight, max_inflight,
+                      int64_t(g_lat_swapped.load()) - int64_t(g_lat_published.load()), n ? sum_ms / n : 0.0, max_ms, n);
+          sum_ms = max_ms = 0, n = 0, min_inflight = INT64_MAX, max_inflight = INT64_MIN;
+        }
+      }
+    }).detach();
+  });
+}
+}  // namespace svr2011

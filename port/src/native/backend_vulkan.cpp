@@ -7,6 +7,7 @@
 // synchronization the handoff needs.
 
 #include "native/gpu.h"
+#include "frame_rate.h"
 
 #include <deque>
 #include <fstream>
@@ -188,6 +189,7 @@ class VulkanBackend final : public Backend {
                     uint32_t height, plume::RenderCommandFence*) override {
     std::lock_guard lock(mutex_);
     ++serial_;
+    svr2011::LatencyOnPublish();  // (frame_rate.h: test aid)
     Held& held = held_[image.get()];
     if (!held.texture) {
       held.texture = image;

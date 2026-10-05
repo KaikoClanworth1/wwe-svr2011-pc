@@ -56,4 +56,11 @@ void SetTargetFrameRate(int fps);
 // Writes the game's timing block for `fps` frames a second.
 void WriteTiming(uint8_t* base, int fps);
 
+// Test aid SVR2011_TEST_LATENCY=1: the native renderer published a frame
+// (its backends' PublishFrame) - frames in flight and publish-to-screen
+// time are logged once a second.
+void LatencyOnPublish();
+// ... and a game swap reached the native renderer (OnPresent).
+void LatencyOnSwap();
+
 }  // namespace svr2011
