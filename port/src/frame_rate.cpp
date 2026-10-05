@@ -39,6 +39,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -297,6 +298,9 @@ void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
 // again (no change): a press arrives in the frame's last update.
 bool g_extra_update = false;
 std::atomic<uint64_t> g_lat_drawn{0};  // (latency test aid: frames drawn)
+// Render-thread commands the logic thread queued this frame (see
+// sub_8269B2D0 below).
+std::vector<uint32_t> g_frame_commands;
 std::atomic<std::thread::id> g_logic_thread{};  // (the thread running the world update)
 // The characters' job's round (sub_8216F4C8, below) or its paused round
 // (sub_8216ED38 + sub_8216E458) an extra update left, for the frame's last
@@ -378,6 +382,7 @@ REX_HOOK_RAW(sub_8269C728) {
   REX_CALL_INDIRECT_FUNC(0x82D4753Cu);  // (RtlEnterCriticalSection)
   P32(base, owner + 136, 1);
   g_job_owed = JobOwed::kNone;
+  g_frame_commands.clear();  // (last frame's ran at the barrier)
   for (int i = 0; i < g_world_ticks; ++i) {
     g_dbg_pass = 10 + i;
     g_extra_update = i + 1 < g_world_ticks;
@@ -748,3 +753,39 @@ void LatencyOnPublish() {
   });
 }
 }  // namespace svr2011
+
+// The game's render-thread commands: sub_826DFFA0(queue, ?) hands out a
+// command record (+0 type); type 24 (sub_826DE6B0, "set texture") calls its
+// object's (+20) vtable[6] on the render thread, which runs the queue at the
+// frame barrier. With two world updates in a frame the second may free that
+// object first: the render thread then calls into freed memory - a pure
+// virtual call (c36b4fd skips those) or, the memory reused, garbage (a weak
+// PC crashed so, 2ac47b9). So the logic thread's commands of the frame are
+// noted, and a free (operator delete: sub_8269B2D0(ptr, ?)) of a block
+// holding a pending type-24 command's object turns that command into type 0
+// (nothing). The free itself is made as always.
+REX_EXTERN(__imp__sub_826DFFA0);
+REX_HOOK_RAW(sub_826DFFA0) {
+  __imp__sub_826DFFA0(ctx, base);
+  if (ctx.r3.u32 && std::this_thread::get_id() == g_logic_thread.load() && g_frame_commands.size() < 100000)
+    g_frame_commands.push_back(ctx.r3.u32);
+}
+
+REX_EXTERN(__imp__sub_8269B2D0);
+REX_HOOK_RAW(sub_8269B2D0) {
+  const uint32_t ptr = ctx.r3.u32;
+  if (ptr && !g_frame_commands.empty() && std::this_thread::get_id() == g_logic_thread.load()) {
+    constexpr uint32_t kWithin = 0x4000;  // (the object: at or just after the block's start)
+    for (const uint32_t cmd : g_frame_commands) {
+      if (Rd32(base + cmd) != 24) continue;
+      const uint32_t obj = Rd32(base + cmd + 20);
+      if (obj >= ptr && obj - ptr < kWithin) {
+        Wr32(base + cmd, 0);
+        static int count = 0;
+        if (++count <= 20 || count % 1000 == 0)
+          REXLOG_INFO("frame rate: a queued render command's object was freed - command dropped ({} times)", count);
+      }
+    }
+  }
+  __imp__sub_8269B2D0(ctx, base);
+}
