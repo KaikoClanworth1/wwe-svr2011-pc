@@ -214,6 +214,7 @@ class Accounts:
         with self.lock:
             self.db.execute("DELETE FROM sessions WHERE account = ?", (account_id,))
             self.db.execute("DELETE FROM friends WHERE account = ? OR friend = ?", (account_id, account_id))
+            self.db.execute("DELETE FROM lb_rows WHERE account = ?", (account_id,))  # (its leaderboard rows)
             self.db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
             self.db.commit()
         self.cache.clear()
