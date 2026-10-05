@@ -31,4 +31,6 @@ for ($i = 0; ((Get-Date) - $start).TotalSeconds -lt $Seconds; $i++) {
 "shots in $dir"
 
 # (the test game ends with the capture)
-Get-CimInstance Win32_Process -Filter "Name='svr2011.exe'" | Where-Object { $_.CommandLine -match 'port\\runs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+# (only this test's own game - session.json's: other sessions run theirs under port\runs too)
+$own = (Get-Content (Join-Path $runs "session.json") | ConvertFrom-Json).pid
+if ($own) { Stop-Process -Id $own -Force -ErrorAction SilentlyContinue }
