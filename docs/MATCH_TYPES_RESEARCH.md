@@ -335,3 +335,30 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 
 **Arena:**
 - `sub_828B5558` with RUL +36: 0 any, 1 flagged arenas, 2 none, 3 arena 20, 4 = RUL +40.
+
+## Slobber Knocker (done, a4ae58f)
+
+**Menu:** HANDICAP -> SLOBBER KNOCKER (after GAUNTLET, group 0x0B).
+- Uses the gauntlet rule 0x52, reshaped while it is played:
+  - the 1 on 1 select screen (rule 0x00's select fields);
+  - 5 people (the count from 0x58; OPT +34);
+  - people 2-4 are waiting opponents (team 1). They are kind 2 during select so they aren't picked, and kind 3 in the match. They are random superstars of player 1's gender.
+
+**Gauntlet at run time:**
+- Characters at 0x82E3CC50:
+  - +446 state: 0 in, 1 waiting, 4 beaten;
+  - +447 lost; +448 by whom; +1800 team; +2624 role (3 waiting); +2348 walked in; +476 still present (0 once gone).
+- The judge `sub_82245618` brings in a waiting teammate (+446 0) of the loser, and ends the match when there is none.
+- The entry task `sub_82328AA0` walks in an active entrant with +476 0 and +2348 != 1 once the match time passes info +40 (s16). An entry time of 0 never walks in.
+
+**Endless:** a beaten opponent, once gone (state 4, lost 0, +476 0 for 1 s), waits again: state 1, role 3, +2348 0, entry time 1. The line goes round the 4 opponents. If a fall comes with no one waiting, a beaten one waits at once.
+
+**The count:** an ImGui overlay "SLOBBER KNOCKER  BEATEN: n" over the match. Falls are counted in the judge hook.
+
+**Not done: a new superstar each time.**
+- Unloading a beaten opponent's slot (`sub_8217CCD8`, as the Royal Rumble does) and loading a new one as the run-in task does (`sub_822F5AD8`, `sub_8217CB48`/`CB68`, `sub_8224AB90`) works most times. But the characters' job (thread 22: `sub_82252610` -> `sub_82258CC0`, a per-character component, obj+136) can still use the freed character, and crashes.
+  - Waiting for +476 0, setting state 5, and doing it inside the judge (the match's update) all still crashed sometimes.
+- The game's swap task (`sub_825BDF60` / `sub_825BDFD8`, from `sub_825A85B8`) fills empty person slots only. With a live character in the slot, the draw crashed.
+- A safe point to free a character is needed. The Royal Rumble eliminates first (`sub_8223FD78`), and its manager `sub_8224C1B8` notifies listeners before reusing a slot.
+
+**Test aids:** `SVR2011_TEST_SK_LOG=1`, `SVR2011_TEST_SK_BEAT=<s>` (the opponent loses), `SVR2011_TEST_SK_LOSE=<s>` (player 1 loses).
