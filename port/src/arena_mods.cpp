@@ -690,6 +690,7 @@ void LoadBackstage() {
         while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
         if (l.rfind("row=", 0) == 0) r.label = l.substr(4);
         if (l.rfind("area=", 0) == 0) r.area = std::atoi(l.c_str() + 5);
+        if (l.rfind("gimmick=", 0) == 0) r.gimmick = l.substr(8);
       }
       std::fclose(t);
     }
@@ -697,6 +698,18 @@ void LoadBackstage() {
       found.push_back(d);
     } else if (r.area >= 0 && r.area < 7 && g_backstage_rows.size() < 8) {
       REXLOG_INFO("[svr2011] arena mods: backstage area '{}' ({}; its own row after room {})", r.label, r.file, r.area);
+      // Its own gimmicks (cars and their hot spots): gimmick.pac, a small pac
+      // with GMGB/<gimmick> (4 chars, e.g. 78P8), mounted as one more pac
+      // (move_packs.cpp) and played in place of the room's GMGB package in its
+      // matches (sub_824B0090 below). Only the first such mod brings one.
+      static bool have_gm = false;
+      if (r.gimmick.size() == 4 && fs::exists(d / "gimmick.pac", ec) && !have_gm) {
+        have_gm = true;
+        REXLOG_INFO("[svr2011] arena mods: {} plays its gimmicks GMGB/{}", r.label, r.gimmick);
+      } else {
+        if (!r.gimmick.empty()) REXLOG_WARN("[svr2011] arena mods: {}: gimmicks ignored", r.label);
+        r.gimmick.clear();
+      }
       g_backstage_rows.push_back(std::move(r));
     }
   }
@@ -711,11 +724,12 @@ void LoadBackstage() {
 
 const std::vector<BackstageRow>& BackstageRows() { return g_backstage_rows; }
 
+int g_active_row = -1;
+
 void UseBackstageRow(int i) {
-  static int now = -1;
   if (i >= int(g_backstage_rows.size())) i = -1;
-  if (i == now) return;
-  now = i;
+  if (i == g_active_row) return;
+  g_active_row = i;
   RedirectArena(78, i < 0 ? "" : g_backstage_rows[size_t(i)].file);
 }
 
@@ -909,4 +923,50 @@ REX_EXTERN(__imp__sub_826A7108);
 REX_HOOK_RAW(sub_826A7108) {
   if (const uint32_t g = TestPlistPath(ctx.r4.u32)) ctx.r4.u64 = g;
   __imp__sub_826A7108(ctx, base);
+}
+
+// A stage's gimmick package (cars, crates and their hot spots): sub_824B0090
+// (kind, arena, out path) writes its name, "/GMGB/78PK" for the parking lot.
+// In a match of a backstage row with its own gimmicks, the room's package
+// name points at the mod's entry instead (same length; the group must stay
+// GMGB - the loader unwraps the two-part package only for that group).
+REX_EXTERN(__imp__sub_824B0090);
+REX_HOOK_RAW(sub_824B0090) {
+  const uint32_t out = ctx.r5.u32;
+  __imp__sub_824B0090(ctx, base);
+  const int k = svr2011::g_active_row;
+  const auto& rows = svr2011::BackstageRows();
+  if (k < 0 || size_t(k) >= rows.size() || rows[size_t(k)].gimmick.size() != 4 || !out) return;
+  char* path = reinterpret_cast<char*>(base + out);
+  if (std::strncmp(path, "/GMGB/78", 8) || std::strlen(path) != 10) return;
+  const std::string before(path);
+  std::memcpy(path + 6, rows[size_t(k)].gimmick.data(), 4);
+  REXLOG_INFO("[svr2011] arena mods: gimmicks {} -> {}", before, path);
+}
+
+// Gimmick element type 25 (a prop the package places; init sub_824BB4E0,
+// factory sub_824B8AB8): idx = int(param 1) - 11500 picks a prop in the
+// table at [0x82E3BEC0] + (idx + 14652) * 4, written through without a
+// check. A package from another game (SvR 2008's parking lot) can name a
+// prop 2011 doesn't have: an empty slot, a write at 0x24 - the element is
+// skipped instead.
+REX_EXTERN(__imp__sub_824BB4E0);
+REX_HOOK_RAW(sub_824BB4E0) {
+  const auto rd = [&](uint32_t a) {
+    return uint32_t(base[a]) << 24 | uint32_t(base[a + 1]) << 16 | uint32_t(base[a + 2]) << 8 | base[a + 3];
+  };
+  const uint32_t p = ctx.r3.u32 ? rd(ctx.r3.u32 + 84) : 0;
+  const uint32_t tbl = rd(0x82E3BEC0);
+  if (p && tbl) {
+    const uint32_t bits = rd(p + 4);
+    float f;
+    std::memcpy(&f, &bits, 4);
+    const int idx = int(f) - 11500;
+    if (idx < 0 || idx > 60 || !rd(tbl + uint32_t(idx + 14652) * 4)) {
+      static int warned = 0;
+      if (warned++ < 8) REXLOG_WARN("[svr2011] arena mods: gimmick prop {} not in the game - skipped", int(f));
+      return;
+    }
+  }
+  __imp__sub_824BB4E0(ctx, base);
 }

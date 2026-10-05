@@ -35,10 +35,12 @@ void SetArenaDefault(int arena, const std::string& relative_file);
 // only in matches from that row. area: the room (0 parking lot ... 6 catering).
 struct BackstageRow {
   std::string label, file;
+  std::string gimmick;  // its gm.pac group (GM..) or entry played for the room's GMGB package ("" = the room's)
   int area = -1;
 };
 const std::vector<BackstageRow>& BackstageRows();
 // The bg78 of row i for the next match (-1: the usual one).
 void UseBackstageRow(int i);
+extern int g_active_row;  // (the row in use, -1 none)
 
 }  // namespace svr2011

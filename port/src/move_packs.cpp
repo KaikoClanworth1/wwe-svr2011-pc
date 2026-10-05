@@ -525,7 +525,8 @@ std::string Lower(std::string s) {
 }
 
 // pac/plist360(_4x3).h with the merged pacs named in the overlay.
-bool WriteList(const fs::path& game, const fs::path& overlay, const std::string& name, const std::set<std::string>& pacs) {
+bool WriteList(const fs::path& game, const fs::path& overlay, const std::string& name, const std::set<std::string>& pacs,
+               const std::vector<std::string>& extra = {}) {
   std::ifstream in(game / "pac" / name, std::ios::binary);
   if (!in) return true;  // (the 4:3 list may not exist)
   std::ostringstream out;
@@ -538,6 +539,7 @@ bool WriteList(const fs::path& game, const fs::path& overlay, const std::string&
       if (l == "pac\\" + p) line = "mods\\pacoverlay\\" + p;
     out << line << (cr ? "\r\n" : "\n");
   }
+  for (const auto& e : extra) out << e << "\r\n";
   std::ofstream o(overlay / name, std::ios::binary | std::ios::trunc);
   o << out.str();
   return bool(o);
@@ -573,6 +575,36 @@ namespace svr2011 {
 
 const std::string& PacListFolder() { return g_folder; }
 
+// A backstage mod with its own row and gimmicks (Mods/Backstage/<id>:
+// manifest row= and gimmick=<entry>, gimmick.pac = a small pac holding only
+// GMGB/<entry>; arena_mods.cpp) - the first one by folder name, else empty.
+// It is mounted as one more pac: its line goes at the end of the overlay pac
+// list (pacs mount in list order and a lookup takes the first match, so the
+// game's own entries stay as they are). (File-level links aren't followed by
+// the game's opens, only folder links: a gm.pac served in place of
+// pac\gm.pac never was.)
+constexpr const char* kGimmickPac = "bsgimmick.pac";
+fs::path BackstageGimmickPac(const fs::path& game) {
+  std::error_code ec;
+  std::vector<fs::path> dirs;
+  for (const auto& e : fs::directory_iterator(game / "Mods" / "Backstage", ec))
+    if (e.is_directory() && !fs::exists(e.path() / "disabled", ec) && fs::exists(e.path() / "gimmick.pac", ec) &&
+        fs::exists(e.path() / "arena.pac", ec))
+      dirs.push_back(e.path());
+  std::sort(dirs.begin(), dirs.end());
+  for (const auto& d : dirs) {
+    std::ifstream m(d / "manifest.txt", std::ios::binary);
+    std::string line;
+    bool row = false, gimmick = false;
+    while (std::getline(m, line)) {
+      row |= line.rfind("row=", 0) == 0;
+      gimmick |= line.rfind("gimmick=", 0) == 0;
+    }
+    if (row && gimmick) return d / "gimmick.pac";
+  }
+  return {};
+}
+
 void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   if (const char* v = std::getenv("SVR2011_TEST_PLIST"); v && *v) {  // (test aid: a folder made by hand)
     g_folder = v;
@@ -590,8 +622,9 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
       if (fs::exists(d / "pack.txt", ec)) dirs.push_back(d);
     }
   std::sort(dirs.begin(), dirs.end());
-  if (dirs.empty()) {
-    for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h", "stamp.txt"})
+  const fs::path gm = BackstageGimmickPac(game);
+  if (dirs.empty() && gm.empty()) {
+    for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "gm.pac", kGimmickPac, "plist360.h", "plist360_4x3.h", "stamp.txt"})
       fs::remove(overlay / f, ec);  // (nothing to serve: free the space)
     return;
   }
@@ -603,6 +636,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   }
   for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h"})
     stamp += FileStamp(game / "pac" / f);
+  if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));
   if (!packs.waze.empty() || !packs.exh.empty() || !packs.evt.empty() || !packs.mbd.empty()) pacs.insert("misc.pac");
@@ -611,6 +645,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     std::string was((std::istreambuf_iterator<char>(old)), std::istreambuf_iterator<char>());
     bool have = was == stamp;
     for (const auto& p : pacs) have &= fs::exists(overlay / p, ec);
+    if (!gm.empty()) have &= fs::exists(overlay / kGimmickPac, ec);
     if (have) {
       Register(vfs, overlay);
       g_folder = "Mods\\PacOverlay";
@@ -625,7 +660,20 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   for (const auto& [pac, entries] : packs.motions)
     ok = ok && BuildMotionPac(game, overlay, Lower(pac), entries);
   if (ok && pacs.count("misc.pac")) ok = BuildMisc(game, overlay, packs);
-  ok = ok && WriteList(game, overlay, "plist360.h", pacs) && WriteList(game, overlay, "plist360_4x3.h", pacs);
+  fs::remove(overlay / "gm.pac", ec);  // (an older build served a whole gm.pac)
+  fs::remove(overlay / kGimmickPac, ec);
+  std::vector<std::string> extra;
+  if (ok && !gm.empty()) {  // (a hard link to the mod's file, else a copy)
+    fs::create_hard_link(gm, overlay / kGimmickPac, ec);
+    if (ec) {
+      ec.clear();
+      fs::copy_file(gm, overlay / kGimmickPac, fs::copy_options::overwrite_existing, ec);
+    }
+    ok = !ec;
+    extra.push_back(std::string("mods\\pacoverlay\\") + kGimmickPac);
+    REXLOG_INFO("[svr2011] move packs: backstage gimmicks from {}", gm.string());
+  }
+  ok = ok && WriteList(game, overlay, "plist360.h", pacs, extra) && WriteList(game, overlay, "plist360_4x3.h", pacs, extra);
   if (!ok) {
     REXLOG_WARN("[svr2011] move packs: merging failed - the game plays without them");
     return;
