@@ -99,7 +99,7 @@ enum {
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
-    ID_SETTINGS_STATUS, ID_PREPARE,
+    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
@@ -1471,6 +1471,7 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
+    int priority = 0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1493,6 +1494,7 @@ static void settings_load(void)
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
             else if (!strcmp(key, "native_aa")) aa = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
+            else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
             else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
             else if (!strcmp(key, "window_width")) w = atoi(val);
@@ -1524,6 +1526,7 @@ static void settings_load(void)
         set_text(ID_ON_PEERS, w);
     }
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_PRIORITY, priority ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
@@ -1532,12 +1535,13 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 24 };
+    enum { NK = 25 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
-                                    "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa" };
+                                    "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
+                                    "process_priority" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1588,6 +1592,7 @@ static int settings_save(void)
         sprintf_s(vals[17], sizeof vals[17], "\"%.150s\"", u);
     }
     strcpy_s(vals[18], 64, IsDlgButtonChecked(s_wnd, ID_PREPARE) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[24], 64, IsDlgButtonChecked(s_wnd, ID_PRIORITY) == BST_CHECKED ? "1" : "0");
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
     {
@@ -1667,6 +1672,7 @@ static void settings_defaults(void)
 {
     settings_show(0, 0, 1, 0, 0, 0, 1, 1, 0, 1);
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
+    CheckDlgButton(s_wnd, ID_PRIORITY, BST_UNCHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
     set_text(ID_SETTINGS_STATUS, L"Defaults restored. Press Save or Play to keep them.");
@@ -2192,7 +2198,7 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Native (recommended)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Emulated");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Native Vulkan (EXPERIMENTAL)");
-    add(TAB_SETTINGS, L"Button", L"Input and audio", BS_GROUPBOX, X0, 248, 560, 90, 0);
+    add(TAB_SETTINGS, L"Button", L"Input and audio", BS_GROUPBOX, X0, 248, 560, 118, 0);
     add(TAB_SETTINGS, L"Static", L"Controller API", SS_LEFT, X0 + 16, 276, 130, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 272, 300, 200, ID_INPUT);
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"XInput (Xbox controllers)");
@@ -2202,24 +2208,26 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"XAudio2 (recommended)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"SDL");
     add(TAB_SETTINGS, L"Button", L"Mute", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 464, 306, 84, 24, ID_MUTE);
-    add(TAB_SETTINGS, L"Button", L"Entrance music", BS_GROUPBOX, X0, 348, 560, 80, 0);
+    add(TAB_SETTINGS, L"Button", L"High CPU priority (helps on busy or weak PCs)", BS_AUTOCHECKBOX | WS_TABSTOP,
+        X0 + 16, 334, 530, 24, ID_PRIORITY);
+    add(TAB_SETTINGS, L"Button", L"Entrance music", BS_GROUPBOX, X0, 374, 560, 68, 0);
     add(TAB_SETTINGS, L"Static", L"Create An Entrance \x2192 Music \x2192 USER PLAYLIST plays your own songs: "
                                  L"add them on the Music tab.",
-        SS_LEFT, X0 + 16, 368, 370, 52, 0);
-    add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 374, 146, 28,
+        SS_LEFT, X0 + 16, 400, 370, 36, 0);
+    add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 400, 146, 28,
         ID_MUSIC_OPEN);
-    add(TAB_SETTINGS, L"Button", L"Language", BS_GROUPBOX, X0, 436, 560, 72, 0);
-    add(TAB_SETTINGS, L"Static", L"Game text", SS_LEFT, X0 + 16, 462, 130, 20, 0);
-    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 458, 200, 200,
+    add(TAB_SETTINGS, L"Button", L"Language", BS_GROUPBOX, X0, 450, 560, 68, 0);
+    add(TAB_SETTINGS, L"Static", L"Game text", SS_LEFT, X0 + 16, 480, 130, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 476, 200, 200,
             ID_LANGUAGE);
     for (i = 0; i < N_LANGUAGES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_languages[i].label);
     add(TAB_SETTINGS, L"Static", L"Menus and on-screen text (commentary stays "
                                  L"English). Also in game: GRAPHICS page.",
-        SS_LEFT, X0 + 362, 452, 186, 50, 0);
-    add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 518, 140, 30, ID_DEFAULTS);
-    add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 518, 108, 30, ID_SAVE);
-    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 556, 560, 36, ID_SETTINGS_STATUS);
+        SS_LEFT, X0 + 362, 466, 186, 48, 0);
+    add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 528, 140, 30, ID_DEFAULTS);
+    add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 528, 108, 30, ID_SAVE);
+    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 564, 560, 34, ID_SETTINGS_STATUS);
 
     /* Online */
     add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
@@ -5958,6 +5966,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
             break;
         case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
+        case ID_PRIORITY:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
