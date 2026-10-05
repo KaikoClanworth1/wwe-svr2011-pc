@@ -157,12 +157,39 @@ uint32_t GuestString(const char* text) {
 
 }  // namespace
 
+// Test aid: SVR2011_TEST_ROSTER_LIST=<file> - writes "<id> <name> <+209>
+// <selectable> <gender> <DLC>" (tab separated) for every roster id (once, as the lists are
+// first built) - for the launcher's tag editor.
+void DumpRoster(uint8_t* base) {
+  static bool done = false;
+  const char* path = std::getenv("SVR2011_TEST_ROSTER_LIST");
+  if (done || !path || !*path) return;
+  done = true;
+  constexpr uint32_t kIdToIndex = 0x82DB3610, kRecords = 0x82E407C0, kRecordSize = 260;
+  std::ofstream out(path);
+  out << "# id\tname\t+209\tselectable\tgender(1 diva)\tdlc\n";
+  int n = 0;
+  for (uint32_t id = 1; id < 1000; ++id) {
+    const uint32_t index = uint32_t(base[kIdToIndex + id * 2]) << 8 | base[kIdToIndex + id * 2 + 1];
+    if (index >= 1000) continue;
+    const uint8_t* rec = base + kRecords + index * kRecordSize;
+    if ((uint32_t(rec[32]) << 8 | rec[33]) != id) continue;
+    const std::string name(reinterpret_cast<const char*>(rec + 34), strnlen(reinterpret_cast<const char*>(rec + 34), 32));
+    if (name.empty()) continue;
+    out << id << '\t' << name << '\t' << int(rec[209]) << '\t' << int(rec[221]) << '\t' << int(rec[208]) << '\t'
+        << int(rec[257]) << '\n';
+    ++n;
+  }
+  REXLOG_INFO("[svr2011] sort: roster list ({} ids) written to {}", n, path);
+}
+
 // A list block is built: sub_82734970(?, lists).
 REX_EXTERN(__imp__sub_82734970);
 REX_HOOK_RAW(sub_82734970) {
   const uint32_t lists = ctx.r4.u32;
   __imp__sub_82734970(ctx, base);
   if (lists) Retag(base, lists);
+  DumpRoster(base);
 }
 
 // A category is shown: sub_824611B8(screen, player) - its label (the text
