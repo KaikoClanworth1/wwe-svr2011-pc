@@ -128,8 +128,21 @@ index 0000000..16aa25f
 +bool HostDrawingDisabled();
 +
 +}  // namespace rex::external_frame
+diff --git a/include/rex/input/device.h b/include/rex/input/device.h
+index 7b67ceb..dacad53 100644
+--- a/include/rex/input/device.h
++++ b/include/rex/input/device.h
+@@ -15,7 +15,7 @@
+ 
+ namespace rex::input {
+ 
+-constexpr uint32_t kMaxGuestUsers = 4;
++constexpr uint32_t kMaxGuestUsers = 8;  // [svr2011] 8 pads (the game has 8 pad objects; 6 local players)
+ 
+ /// Driver-scoped device handle. Never reused within a process run, so a handle
+ /// that outlives its device resolves to nothing rather than aliasing whichever
 diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
-index 1cb3faa..89e69b7 100644
+index 1cb3faa..7f9ef91 100644
 --- a/include/rex/input/input_system.h
 +++ b/include/rex/input/input_system.h
 @@ -10,7 +10,9 @@
@@ -165,8 +178,8 @@ index 1cb3faa..89e69b7 100644
 +
 +  std::function<bool()> guest_input_hold_;  // [svr2011]
 +  std::mutex held_mutex_;
-+  X_INPUT_STATE held_state_[4] = {};
-+  bool held_valid_[4] = {};
++  X_INPUT_STATE held_state_[kMaxGuestUsers] = {};
++  bool held_valid_[kMaxGuestUsers] = {};
  };
  
  /// Create a default InputSystem with SDL + NOP drivers.
@@ -1904,7 +1917,7 @@ index 001f36b..64869c7 100644
    if (!BeginSubmission(true)) {
      return false;
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
-index 813bb1c..739e392 100644
+index 813bb1c..e895060 100644
 --- a/src/input/input_system.cpp
 +++ b/src/input/input_system.cpp
 @@ -245,12 +245,32 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
@@ -1912,7 +1925,7 @@ index 813bb1c..739e392 100644
      return X_ERROR_DEVICE_NOT_CONNECTED;
    }
 +  if (guest_input_hold_ && guest_input_hold_()) {  // [svr2011] a host menu has the pad
-+    if (user_index < 4) {
++    if (user_index < kMaxGuestUsers) {
 +      std::lock_guard lock(held_mutex_);
 +      held_state_[user_index] = merged;
 +      held_valid_[user_index] = true;
@@ -1930,7 +1943,7 @@ index 813bb1c..739e392 100644
 +}
 +
 +bool InputSystem::HeldState(uint32_t user_index, X_INPUT_STATE* out_state) {
-+  if (user_index >= 4) return false;
++  if (user_index >= kMaxGuestUsers) return false;
 +  std::lock_guard lock(held_mutex_);
 +  if (!held_valid_[user_index]) return false;
 +  *out_state = held_state_[user_index];
