@@ -53,6 +53,7 @@
 #include "generated/default/svr2011_init.h"
 #include "match_types.h"
 #include "online_overlay.h"
+#include "players.h"
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
 REXCVAR_DEFINE_BOOL(full_speed, true, "GPU",
@@ -306,7 +307,7 @@ struct InputReading {
   uint32_t result = 0;
   uint8_t state[16] = {};  // XINPUT_STATE
 };
-InputReading g_input[4];
+InputReading g_input[8];
 
 // Test aid: SVR2011_TEST_MATCH_TIME=<s> - 20 s into a match its time jumps to
 // <s> (a timed match then ends on its own).
@@ -544,8 +545,9 @@ REX_HOOK_RAW(sub_82171940) {
 // XamInputGetState(user, state) for the game: sub_82905058.
 REX_EXTERN(__imp__sub_82905058);
 REX_HOOK_RAW(sub_82905058) {
+  ctx.r3.u64 = ctx.r3.u32 + svr2011::PadUserOffset();  // (pads 5-8: players.h)
   const uint32_t user = ctx.r3.u32, out = ctx.r4.u32;
-  InputReading* r = user < 4 ? &g_input[user] : nullptr;
+  InputReading* r = user < 8 ? &g_input[user] : nullptr;
   if (g_extra_update && r && r->valid && out) {
     std::memcpy(base + out, r->state, sizeof(r->state));
     ctx.r3.u64 = r->result;
