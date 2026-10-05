@@ -216,8 +216,10 @@ def epac_read(data):
 
 
 def epac_write(header, groups, trailer=b''):
-    """Rebuild an EPAC: keeps header bytes 0..0x800 (except the data size)
-    and lays entries out on 0x800 sectors from 0x4000, in the given order."""
+    """Rebuild an EPAC: keeps header bytes 0..0x800 (except the table and
+    data sizes) and lays entries out on 0x800 sectors from 0x4000, in the
+    given order. +4 is the table's size in bytes: the game reads only that
+    much of it, so an added entry past it is never found."""
     out = bytearray(header[:0x800])
     toc = bytearray()
     body = bytearray()
@@ -233,5 +235,6 @@ def epac_write(header, groups, trailer=b''):
     if len(toc) > 0x3800:
         raise ValueError('EPAC table too big')
     out += toc + b'\0' * (0x3800 - len(toc))
+    struct.pack_into('<I', out, 4, len(toc))
     struct.pack_into('<I', out, 8, len(body))
     return bytes(out + body) + (trailer or bytes(0x800))

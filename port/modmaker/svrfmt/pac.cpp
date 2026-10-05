@@ -265,8 +265,10 @@ Bytes EpacWrite(const Epac& e) {
     }
   }
   Pad(body, 0x800);
+  const uint32_t toc_size = uint32_t(toc.size());  // (+4: the game reads only this much of the table)
   toc.resize(0x3800, 0);
   App(out, toc);
+  PutLe32(&out[4], toc_size);
   PutLe32(&out[8], uint32_t(body.size()));
   App(out, body);
   if (!e.trailer.empty()) App(out, e.trailer);
