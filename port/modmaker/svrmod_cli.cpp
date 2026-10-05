@@ -1,6 +1,9 @@
 // svrmod: command-line front end of the Mod Maker's format library.
 //   svrmod roundtrip <file.pac>...       EPAC/PACH/BPE/textures/JBOY self-test
 //   svrmod export <bgNN.pac> <out dir>   arena -> arena.fbx + textures/*.png
+//   svrmod xdec <wwe13 file> <out>       WWE '13 0x0FF512ED file -> plain (EPK8 / EPAC ...)
+//   svrmod wwe13 <WWE13 bgNN.pac> <host SvR2011 bgNN.pac> <out.pac> [host-crowd] [prune-textures] [wwe13-ring]
+//         [host-ring-meshes] [rope-hi] [no-corners] [wwe13-aprons] [wwe13-lights] [tex=<name.dds>]... [card=<256x128 dds>]
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -13,6 +16,7 @@
 #include "svrfmt/ring_kit.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
+#include "svrfmt/wwe13.h"
 #include "svrfmt/zip_write.h"
 
 using namespace svrfmt;
@@ -240,10 +244,95 @@ int MakeMod(const char* pac, const char* fbx, const char* banner, const char* na
   return 0;
 }
 
+int Wwe13(int argc, char** argv) {
+  Bytes w, h;
+  if (!ReadFile(argv[2], w)) { std::printf("%s: cannot read\n", argv[2]); return 1; }
+  if (!ReadFile(argv[3], h)) { std::printf("%s: cannot read\n", argv[3]); return 1; }
+  Wwe13Options opt;
+  for (int i = 5; i < argc; ++i) {
+    if (!std::strcmp(argv[i], "host-crowd")) opt.host_crowd = true;
+    if (!std::strcmp(argv[i], "keep-textures")) opt.prune_textures = false;
+    if (!std::strcmp(argv[i], "prune-textures")) opt.prune_textures = true;
+    if (!std::strcmp(argv[i], "wwe13-ring")) opt.host_ring = false;
+    if (!std::strcmp(argv[i], "host-ring-meshes")) opt.ring_meshes = false;
+    if (!std::strcmp(argv[i], "rope-hi")) opt.rope_hi = true;
+    if (!std::strcmp(argv[i], "no-corners")) opt.barrier_corners = false;  // WWE '13's barrier corners left out
+    if (!std::strcmp(argv[i], "wwe13-aprons")) opt.host_aprons = false;  // WWE '13's apron meshes on SvR2011's bones
+    if (!std::strcmp(argv[i], "no-shadows")) opt.no_shadows = true;
+    if (!std::strcmp(argv[i], "no-shmap")) opt.no_shmap = true;
+    if (!std::strncmp(argv[i], "stand-light=", 12)) opt.stand_light = std::atoi(argv[i] + 12);
+    if (!std::strncmp(argv[i], "keep=", 5)) {  // keep=<id hex>:<mesh>
+      unsigned id = 0;
+      int k = 0;
+      if (std::sscanf(argv[i] + 5, "%x:%d", &id, &k) == 2) opt.keep_mesh.push_back({id, k});
+    }
+    if (!std::strncmp(argv[i], "tiny=", 5)) {
+      unsigned lo = 0, hi = 0;
+      if (std::sscanf(argv[i] + 5, "%x-%x", &lo, &hi) == 2) opt.tiny.push_back({lo, hi});
+    }
+    if (!std::strncmp(argv[i], "shift=", 6) || !std::strncmp(argv[i], "turn=", 5)) {  // shift=lo-hi:dx,dy,dz / turn=lo-hi
+      Wwe13Options::Shift sh;
+      unsigned lo = 0, hi = 0;
+      sh.turn = argv[i][0] == 't';
+      const char* p = argv[i] + (sh.turn ? 5 : 6);
+      if (std::sscanf(p, "%x-%x", &lo, &hi) == 2) {
+        sh.lo = lo, sh.hi = hi;
+        if (const char* c = std::strchr(p, ':')) std::sscanf(c + 1, "%f,%f,%f", &sh.d[0], &sh.d[1], &sh.d[2]);
+        opt.shift.push_back(sh);
+      }
+    }
+    if (!std::strncmp(argv[i], "draw-word=", 10)) opt.draw_word = std::atoi(argv[i] + 10);
+    if (!std::strcmp(argv[i], "spot-shadows")) opt.no_spot_shadows = false;
+    if (!std::strncmp(argv[i], "hide=", 5)) {  // hide=<lo hex>-<hi hex>
+      unsigned lo = 0, hi = 0;
+      if (std::sscanf(argv[i] + 5, "%x-%x", &lo, &hi) == 2) opt.hide.push_back({lo, hi});
+    }
+    if (!std::strncmp(argv[i], "mat-tone=", 9)) opt.mat_tone = float(std::atof(argv[i] + 9));
+    if (!std::strcmp(argv[i], "wwe13-lights")) opt.role_lights = false;
+    // tex=<file.dds>: an extra picture, named after the file
+    if (!std::strncmp(argv[i], "tex=", 4)) {
+      BundleTexture t;
+      std::string p = argv[i] + 4, n = p.substr(p.find_last_of("/\\") + 1);
+      t.name = n.substr(0, n.rfind('.'));
+      t.ext = "dds";
+      if (!ReadFile(p, t.data)) { std::printf("%s: cannot read\n", p.c_str()); return 1; }
+      opt.extra_textures.push_back(std::move(t));
+    }
+    if (!std::strncmp(argv[i], "card=", 5) && !ReadFile(argv[i] + 5, opt.card)) {
+      std::printf("%s: cannot read\n", argv[i] + 5);
+      return 1;
+    }
+  }
+  Wwe13Report rep;
+  Bytes out;
+  std::string err;
+  if (!BuildArenaFromWwe13(w, h, opt, out, rep, &err)) { std::printf("error: %s\n", err.c_str()); return 1; }
+  WriteFile(argv[4], out);
+  std::printf("models %d, meshes %d (uv scroll %d, light maps dropped %d), entries %d (%d from the host, %d dropped), "
+              "placeholders %d, ring parts %d\n",
+              rep.conv.models, rep.conv.meshes, rep.conv.uvscroll, rep.conv.lightmaps_dropped, rep.entries,
+              rep.from_host, rep.dropped, rep.placeholders, rep.ring_parts);
+  for (const auto& n : rep.notes) std::printf("  %s\n", n.c_str());
+  if (!rep.halved.empty()) {
+    std::printf("  %zu textures halved to fit:", rep.halved.size());
+    for (const auto& x : rep.halved) std::printf(" %s", x.c_str());
+    std::printf("\n");
+  }
+  std::printf("wrote %s: %.2f MB (host %.2f MB)\n", argv[4], out.size() / 1048576.0, h.size() / 1048576.0);
+  return 0;
+}
+
 int main(int argc, char** argv) {
   if ((argc == 7 || argc == 8) && !std::strcmp(argv[1], "makemod"))
     return MakeMod(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : nullptr);
   if (argc == 5 && !std::strcmp(argv[1], "ring")) return Ring(argv[2], argv[3], argv[4]);
+  if (argc >= 5 && !std::strcmp(argv[1], "wwe13")) return Wwe13(argc, argv);
+  if (argc == 4 && !std::strcmp(argv[1], "xdec")) {
+    Bytes in, out;
+    std::string err;
+    if (!ReadFile(argv[2], in) || !XcompressDecode(in, out, &err)) { std::printf("%s: %s\n", argv[2], err.c_str()); return 1; }
+    return WriteFile(argv[3], out) ? 0 : 1;
+  }
   if (argc == 5 && !std::strcmp(argv[1], "import")) return Import(argv[2], argv[3], argv[4]);
   if (argc == 4 && !std::strcmp(argv[1], "bpe")) return Bpe(argv[2], argv[3]);
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
