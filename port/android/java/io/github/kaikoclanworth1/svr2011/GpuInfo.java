@@ -2,7 +2,9 @@
 // driver advice and Mali alpha mode, Drivers.java): OpenGL ES's renderer
 // name ("Adreno (TM) 710", "Mali-G610"), from a throwaway 1x1 context - the
 // launcher has no Vulkan of its own. Kept per system build (a ROM update can
-// change the driver's name).
+// change the driver's name). Tests: games/WWE SmackDown vs. Raw 2011/test_run/
+// gpu_override.txt (its first line) stands in for the name - e.g. "Mali-G715"
+// to see the Mali screens on another phone.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -26,6 +28,8 @@ final class GpuInfo {
     // The GPU's name, or "" if it can't be told.
     static synchronized String renderer(Context c) {
         if (renderer_ != null) return renderer_;
+        String override = testOverride();
+        if (override != null) return renderer_ = override;
         SharedPreferences prefs = c.getSharedPreferences("gpu", Context.MODE_PRIVATE);
         if (Build.FINGERPRINT.equals(prefs.getString("fingerprint", null))) {
             renderer_ = prefs.getString("renderer", "");
@@ -48,6 +52,18 @@ final class GpuInfo {
     static boolean isMali(String renderer) {
         String r = renderer.toLowerCase(Locale.ROOT);
         return r.contains("mali") || r.contains("immortalis");
+    }
+
+    private static String testOverride() {
+        java.io.File f = new java.io.File(android.os.Environment.getExternalStorageDirectory(),
+                                          "games/WWE SmackDown vs. Raw 2011/test_run/gpu_override.txt");
+        if (!f.isFile()) return null;
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f))) {
+            String line = r.readLine();
+            return line == null || line.trim().isEmpty() ? null : line.trim();
+        } catch (java.io.IOException e) {
+            return null;
+        }
     }
 
     private static String query() {

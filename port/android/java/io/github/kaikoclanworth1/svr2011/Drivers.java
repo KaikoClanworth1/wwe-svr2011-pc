@@ -255,7 +255,7 @@ final class Drivers {
     static final String kMaliAbout = "Mali GPUs aren't supported yet: the game may show graphics problems, run "
         + "slowly or not start. Alpha mode lets it try (the emulator's geometry shaders and line drawing - which "
         + "Mali lacks - are skipped, and textures the GPU can't read are converted). If you try it, please send a "
-        + "problem report (Help) whether it works or not: it says what your GPU needs.";
+        + "problem report (Play tab, Report a problem) whether it works or not: it says what your GPU needs.";
 
     void buildMali(LinearLayout column) {
         LinearLayout card = a_.card(column, "Mali GPU (alpha)");
@@ -282,21 +282,43 @@ final class Drivers {
         settings_.setBool("vulkan_require_fill_mode_non_solid", !on);
     }
 
-    // Before the game starts: on a Mali GPU without alpha mode, ask. True: go on.
+    // Before the game starts on a Mali GPU: the warning (each time, until the
+    // player ticks "Don't warn me again"). Continuing turns alpha mode on - the
+    // game can't start on Mali without it. True: go on.
     boolean readyToPlay(Runnable play) {
-        if (!GpuInfo.isMali(gpu()) || settings_.getBool(kMaliKey, false)) return true;
+        if (!GpuInfo.isMali(gpu())) return true;
+        if (maliAccepted_) {  // (the Play this dialog's "Continue anyway" started)
+            maliAccepted_ = false;
+            return true;
+        }
+        android.content.SharedPreferences prefs = a_.getPreferences(android.content.Context.MODE_PRIVATE);
+        if (prefs.getBoolean("mali_warning_off", false) && settings_.getBool(kMaliKey, false)) return true;
+        android.widget.CheckBox quiet = new android.widget.CheckBox(a_);
+        quiet.setText("Don't warn me again");
+        quiet.setTextColor(LauncherActivity.kText);
+        quiet.setButtonTintList(android.content.res.ColorStateList.valueOf(LauncherActivity.kRed));
+        LinearLayout box = new LinearLayout(a_);
+        box.setPadding(a_.dp(20), a_.dp(4), a_.dp(20), 0);
+        box.addView(quiet);
         new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
-            .setTitle("Mali GPU (" + gpu() + ")")
-            .setMessage(kMaliAbout)
-            .setPositiveButton("Turn on alpha mode and play", (dlg, w) -> {
-                setMali(true);
+            .setTitle("Unsupported GPU: " + (gpu().isEmpty() ? "Mali" : gpu()))
+            .setMessage("This phone has a Mali GPU, which the game doesn't support for the moment. You can still "
+                + "play: it may show graphics problems, run slowly or not start.\n\nContinuing turns on Mali alpha "
+                + "mode (Settings, Mali GPU), which the game needs to start on Mali. If you try it, please send a "
+                + "problem report (Play tab, Report a problem) - it tells us what your GPU needs.")
+            .setView(box)
+            .setPositiveButton("Continue anyway", (dlg, w) -> {
+                if (quiet.isChecked()) prefs.edit().putBoolean("mali_warning_off", true).apply();
+                if (!settings_.getBool(kMaliKey, false)) setMali(true);
                 settings_.save();
+                maliAccepted_ = true;
                 play.run();
             })
             .setNegativeButton("Cancel", null)
             .show();
         return false;
     }
+    private boolean maliAccepted_;
 
     RadioButton radio(String title, String sub, boolean checked) {
         RadioButton r = new RadioButton(a_);
