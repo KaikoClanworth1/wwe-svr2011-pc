@@ -866,9 +866,15 @@ class Sake:
     def __init__(self, store):
         self.store = store
 
+    # (set by the service: the NEWS panel's first line starts with it, e.g.
+    # "12 players online now. ")
+    news_prefix = None
+
     def field(self, tableid, rec, name, viewer):
         """A record's value for a requested field: (type, value)."""
         f = rec["fields"]
+        if tableid == "Newsfeed" and name == "Text1" and self.news_prefix:
+            return "unicodeStringValue", self.news_prefix() + str((f.get("Text1") or [None, ""])[1] or "")
         if name == "recordid":
             return "intValue", rec["recordid"]
         if name == "ownerid":

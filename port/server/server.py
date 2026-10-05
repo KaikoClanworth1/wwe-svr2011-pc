@@ -333,6 +333,12 @@ class Stats:
                                 (time.strftime("%Y-%m-%d"), account_id))
                 self.db.commit()
 
+    def playing_now(self, window=150):
+        """Accounts whose game asked something lately (a running game, signed in,
+        asks /api/friends?here=1 every 20 s - the launchers don't count)."""
+        cutoff = now() - window
+        return sum(1 for t in list(self.recent.values()) if t >= cutoff)
+
     def players_online(self, window=300):
         cutoff = now() - window
         for k in [k for k, t in self.recent.items() if t < cutoff]:
@@ -400,6 +406,9 @@ class Service:
         self.slots = asyncio.Semaphore(args.max_connections)
         self.relay = relay.Relay(self, gs.log)
         self.leaderboards = leaderboards.Leaderboards(self.store)
+        # the ONLINE menu's NEWS: how many play now, first
+        self.sake.news_prefix = lambda: "%d player%s online now. " % (
+            self.stats.playing_now(), "" if self.stats.playing_now() == 1 else "s")
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -541,6 +550,7 @@ class Service:
         friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
+            "online_now": self.stats.playing_now(),
             "friends": friends,
             "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
             "invites": [{"from": v["from"], "xuid": v["xuid"], "session": v["session"], "kind": v["kind"],

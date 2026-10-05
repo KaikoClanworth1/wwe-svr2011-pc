@@ -1397,6 +1397,14 @@ static void friends_show(int http, char *answer)
         wcscpy_s(msg, 200, L"No friends yet: type a player's name and press Add.");
     else
         swprintf_s(msg, 200, L"%d of %d friend%s online.", online, total, total == 1 ? L"" : L"s");
+    {
+        const char *now = strstr(answer, "\"online_now\"");
+        if (now && (now = strchr(now, ':')) != NULL) {
+            const int n = atoi(now + 1);
+            const size_t len = wcslen(msg);
+            swprintf_s(msg + len, 200 - len, L"   %d player%s playing now.", n, n == 1 ? L"" : L"s");
+        }
+    }
     set_text(ID_FR_STATUS, msg);
 }
 

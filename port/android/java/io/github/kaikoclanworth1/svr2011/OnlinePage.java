@@ -217,8 +217,10 @@ final class OnlinePage {
         JSONArray added = r.optJSONArray("added_you");
         for (int i = 0; added != null && i < added.length(); i++)
             friendRow(added.optString(i), "Added you - add them back", false);
-        friendsStatus_.setText(friends.length() == 0 ? "No friends yet: type a player's name and add them."
-            : online + " of " + friends.length() + " friend" + (friends.length() == 1 ? "" : "s") + " online.");
+        int now = r.optInt("online_now", -1);
+        friendsStatus_.setText((friends.length() == 0 ? "No friends yet: type a player's name and add them."
+            : online + " of " + friends.length() + " friend" + (friends.length() == 1 ? "" : "s") + " online.")
+            + (now >= 0 ? "  " + now + " player" + (now == 1 ? "" : "s") + " playing now." : ""));
     }
 
     void friendRow(String name, String status, boolean on) {
