@@ -641,3 +641,18 @@ REX_HOOK_RAW(sub_8217A718) {
   }
   __imp__sub_8217A718(ctx, base);
 }
+
+// A pure virtual call (sub_828F3F38, the runtime's _purecall: error R6025,
+// the game quits): with two updates in a frame the second may destroy an
+// object the first queued for the render thread (render command 24,
+// sub_826DE6B0: obj->vtable[6] there), its vtable then the base class's - a
+// PC at 30 fps crashed so (2.0.2). The call on the destroyed object is
+// skipped instead (the caller's lr and object logged).
+REX_EXTERN(__imp__sub_828F3F38);
+REX_HOOK_RAW(sub_828F3F38) {
+  static int count = 0;
+  if (++count <= 20)
+    REXLOG_WARN("frame rate: a pure virtual call skipped (caller {:08X}, object {:08X}) - {} so far", uint32_t(ctx.lr),
+                ctx.r3.u32, count);
+  ctx.r3.u64 = 0;
+}
