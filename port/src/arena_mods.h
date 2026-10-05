@@ -35,7 +35,12 @@ void SetArenaDefault(int arena, const std::string& relative_file);
 // only in matches from that row. area: the room (0 parking lot ... 6 catering).
 struct BackstageRow {
   std::string label, file;
-  std::string gimmick;  // its gm.pac group (GM..) or entry played for the room's GMGB package ("" = the room's)
+  std::string gimmick;  // its GMGB entry (gimmick.pac) played for the room's package ("" = the room's)
+  // box=<x>,<z>,<half x>,<half z>: the fight box (where the cameras look and
+  // the fighters are kept), when the area isn't where the room's was
+  bool has_box = false;
+  float box[4] = {};
+  float camera = 0;  // camera=<units>: the match camera's farthest distance (0 = the game's)
   int area = -1;
 };
 const std::vector<BackstageRow>& BackstageRows();

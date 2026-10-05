@@ -650,11 +650,20 @@ REX_HOOK_RAW(sub_821852E0) {
 
 // The backstage camera's distance: sub_822F26B8(camera) sets camera+932 =
 // the framed radius x 3.7. A little closer in the free-roaming backstage:
-// x 3.2 (x 2.4 was "really zoomed in").
+// x 3.2 (x 2.4 was "really zoomed in"); a backstage mod's area: at most its
+// camera= distance.
 REX_EXTERN(__imp__sub_822F26B8);
 REX_HOOK_RAW(sub_822F26B8) {
   const uint32_t camera = ctx.r3.u32;
   __imp__sub_822F26B8(ctx, base);
+  // A backstage mod's own area may cap it (manifest camera=): a small area
+  // ringed by objects (the 2008 parking lot's cars) - farther out the
+  // camera would stand among them.
+  if (svr2011::g_active_row >= 0 && size_t(svr2011::g_active_row) < svr2011::BackstageRows().size() &&
+      !Rd32(base + 0x82E3C1F4)) {
+    const float cap = svr2011::BackstageRows()[size_t(svr2011::g_active_row)].camera;
+    if (cap > 0 && RdF(base + camera + 932) > cap) WrF(base + camera + 932, cap);
+  }
   if (!WholeBackstage(base)) return;
   constexpr float kCloser = 3.2f / 3.7f;
   WrF(base + camera + 932, RdF(base + camera + 932) * kCloser);
@@ -729,6 +738,24 @@ REX_HOOK_RAW(sub_8224EF28) {
     REXLOG_INFO("match types: area box centre {:.0f} {:.0f} {:.0f}, half {:.0f} {:.0f} / {:.0f} {:.0f}",
                 RdF(base + box + 32), RdF(base + box + 36), RdF(base + box + 40), RdF(base + box + 64),
                 RdF(base + box + 68), RdF(base + box + 72), RdF(base + box + 76));
+  // A backstage mod's own area with its own box (manifest box=): centred on
+  // it, the area's half sizes inside, a little more outside.
+  if (box && svr2011::g_active_row >= 0 && size_t(svr2011::g_active_row) < svr2011::BackstageRows().size() &&
+      !Rd32(base + 0x82E3C1F4)) {
+    const auto& row = svr2011::BackstageRows()[size_t(svr2011::g_active_row)];
+    if (row.has_box) {
+      WrF(base + box + 32, row.box[0]);
+      WrF(base + box + 40, row.box[1]);
+      const float half[4] = {row.box[2], row.box[3], row.box[2] + 5.0f, row.box[3] + 5.0f};
+      for (uint32_t i = 0; i < 4; ++i) {
+        WrF(base + box + 64 + i * 4, half[i]);
+        WrF(base + 0x82D9E9D4 + i * 4, half[i]);
+      }
+      REXLOG_INFO("match types: '{}' fight box centre {:.0f} {:.0f}, half {:.0f} {:.0f}", row.label, row.box[0],
+                  row.box[1], row.box[2], row.box[3]);
+      return;
+    }
+  }
   if (!box || !WholeBackstage(base) || Rd32(base + 0x82E3C1F4)) return;
   WrF(base + box + 32, -10.0f);
   WrF(base + box + 36, 0.0f);
