@@ -10,6 +10,8 @@
 // yields the core: a pause per poll, and after a short spin the thread gives
 // its time slice away, then sleeps briefly on long waits.
 
+#include "perf_hooks.h"
+
 #include <chrono>
 #include <thread>
 
@@ -29,6 +31,21 @@
 
 REXCVAR_DEFINE_BOOL(gpu_wait_yield, true, "GPU",
                     "Let the render thread's GPU waits yield the CPU core instead of spinning");
+REXCVAR_DEFINE_INT32(process_priority, 0, "GPU",
+                     "The game's CPU priority: 0 normal, 1 above normal (busy PCs: background programs at normal "
+                     "priority no longer take the game's cores)");
+
+namespace svr2011 {
+
+// The process's CPU priority (perf_hooks.h).
+void InstallPerfSettings() {
+#if defined(_WIN32)
+  if (REXCVAR_GET(process_priority) >= 1)
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+#endif
+}
+
+}  // namespace svr2011
 
 namespace {
 
