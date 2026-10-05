@@ -1,6 +1,7 @@
 // WWE SmackDown vs. Raw 2011 - the native renderer's Direct3D 12 backend (gpu.h).
 
 #include "native/gpu.h"
+#include "frame_rate.h"
 
 #include <algorithm>
 #include <fstream>
@@ -102,6 +103,7 @@ void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t w
   // (the emulator AddRefs the resource while it uses it)
   auto* texture = static_cast<plume::D3D12Texture*>(image.get());
   auto* f = static_cast<plume::D3D12CommandFence*>(fence);
+  svr2011::LatencyOnPublish();  // (frame_rate.h: test aid)
   std::lock_guard lock(g_frame_mutex);
   g_frame = texture->d3d;
   g_frame_w = width;

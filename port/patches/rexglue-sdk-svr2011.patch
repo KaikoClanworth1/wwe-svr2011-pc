@@ -128,8 +128,21 @@ index 0000000..16aa25f
 +bool HostDrawingDisabled();
 +
 +}  // namespace rex::external_frame
+diff --git a/include/rex/input/device.h b/include/rex/input/device.h
+index 7b67ceb..dacad53 100644
+--- a/include/rex/input/device.h
++++ b/include/rex/input/device.h
+@@ -15,7 +15,7 @@
+ 
+ namespace rex::input {
+ 
+-constexpr uint32_t kMaxGuestUsers = 4;
++constexpr uint32_t kMaxGuestUsers = 8;  // [svr2011] 8 pads (the game has 8 pad objects; 6 local players)
+ 
+ /// Driver-scoped device handle. Never reused within a process run, so a handle
+ /// that outlives its device resolves to nothing rather than aliasing whichever
 diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
-index 1cb3faa..89e69b7 100644
+index 1cb3faa..7f9ef91 100644
 --- a/include/rex/input/input_system.h
 +++ b/include/rex/input/input_system.h
 @@ -10,7 +10,9 @@
@@ -165,8 +178,8 @@ index 1cb3faa..89e69b7 100644
 +
 +  std::function<bool()> guest_input_hold_;  // [svr2011]
 +  std::mutex held_mutex_;
-+  X_INPUT_STATE held_state_[4] = {};
-+  bool held_valid_[4] = {};
++  X_INPUT_STATE held_state_[kMaxGuestUsers] = {};
++  bool held_valid_[kMaxGuestUsers] = {};
  };
  
  /// Create a default InputSystem with SDL + NOP drivers.
@@ -1792,7 +1805,7 @@ index 8f2fcb0..e5b7dad 100644
  
  void GraphicsSystem::MarkVblank() {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..64869c7 100644
+index 001f36b..e761dcf 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -25,6 +25,7 @@
@@ -1803,7 +1816,29 @@ index 001f36b..64869c7 100644
  #include <rex/dbg.h>
  #include <rex/logging.h>
  #include <rex/math.h>
-@@ -2312,9 +2313,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -930,10 +931,17 @@ bool VulkanCommandProcessor::SetupContext() {
+     return false;
+   }
+   if (!device_properties.vertexPipelineStoresAndAtomics) {
+-    REXGPU_ERROR(
+-        "Vulkan vertexPipelineStoresAndAtomics is required for GPU emulation and "
+-        "D3D12 parity, but unsupported by the selected device");
+-    return false;
++    // [svr2011] (Mali: memory export from vertex shaders goes through compute)
++    if (REXCVAR_GET(vulkan_require_vertex_pipeline_stores_and_atomics)) {
++      REXGPU_ERROR(
++          "Vulkan vertexPipelineStoresAndAtomics is required for GPU emulation "
++          "(vulkan_require_vertex_pipeline_stores_and_atomics=true), but unsupported by the "
++          "selected device");
++      return false;
++    }
++    REXGPU_WARN(
++        "Vulkan vertexPipelineStoresAndAtomics is not supported by the device; memory "
++        "export from vertex shaders uses compute shaders");
+   }
+   if (!device_properties.geometryShader) {
+     if (REXCVAR_GET(vulkan_require_geometry_shader)) {
+@@ -2312,9 +2320,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
    xenos::TextureFormat frontbuffer_format;
    bool swap_source_needs_rb_swap = false;
@@ -1838,7 +1873,7 @@ index 001f36b..64869c7 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
-@@ -2407,8 +2430,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2407,8 +2437,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
@@ -1860,7 +1895,7 @@ index 001f36b..64869c7 100644
        guest_output_width, guest_output_height, display_width, display_height,
        [this, guest_output_width, guest_output_height, frontbuffer_format, swap_texture_view,
         swap_post_effect,
-@@ -2923,6 +2957,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2923,6 +2964,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
          EndSubmission(true);
          return true;
        });
@@ -1874,7 +1909,7 @@ index 001f36b..64869c7 100644
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
-@@ -3695,6 +3736,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3695,6 +3743,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
    VulkanShader::VulkanTranslation* vertex_shader_translation;
    VulkanShader::VulkanTranslation* pixel_shader_translation;
    bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
@@ -1893,7 +1928,7 @@ index 001f36b..64869c7 100644
  
    // Two iterations because a submission (even the current one - in which case
    // it needs to be ended, and a new one must be started) may need to be awaited
-@@ -4385,6 +4438,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4385,6 +4445,9 @@ bool VulkanCommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -1904,7 +1939,7 @@ index 001f36b..64869c7 100644
    if (!BeginSubmission(true)) {
      return false;
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
-index 813bb1c..739e392 100644
+index 813bb1c..e895060 100644
 --- a/src/input/input_system.cpp
 +++ b/src/input/input_system.cpp
 @@ -245,12 +245,32 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
@@ -1912,7 +1947,7 @@ index 813bb1c..739e392 100644
      return X_ERROR_DEVICE_NOT_CONNECTED;
    }
 +  if (guest_input_hold_ && guest_input_hold_()) {  // [svr2011] a host menu has the pad
-+    if (user_index < 4) {
++    if (user_index < kMaxGuestUsers) {
 +      std::lock_guard lock(held_mutex_);
 +      held_state_[user_index] = merged;
 +      held_valid_[user_index] = true;
@@ -1930,7 +1965,7 @@ index 813bb1c..739e392 100644
 +}
 +
 +bool InputSystem::HeldState(uint32_t user_index, X_INPUT_STATE* out_state) {
-+  if (user_index >= 4) return false;
++  if (user_index >= kMaxGuestUsers) return false;
 +  std::lock_guard lock(held_mutex_);
 +  if (!held_valid_[user_index]) return false;
 +  *out_state = held_state_[user_index];
@@ -4791,10 +4826,79 @@ index 0000000..b1ba2a6
 +}  // namespace ui
 +}  // namespace rex
 diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
-index 8197bb4..3375ab2 100644
+index 8197bb4..ee5c534 100644
 --- a/src/ui/vulkan/vulkan_device.cpp
 +++ b/src/ui/vulkan/vulkan_device.cpp
-@@ -650,6 +650,26 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -26,9 +26,17 @@ REXCVAR_DEFINE_BOOL(vulkan_require_fragment_stores_and_atomics, true, "UI/Vulkan
+                     "Deprecated and ignored for parity; fragmentStoresAndAtomics is always "
+                     "required for Vulkan GPU emulation")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++// [svr2011] honoured again: Mali GPUs have no vertexPipelineStoresAndAtomics
++// (every driver), and memory export from vertex shaders has a compute path.
+ REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics, true, "UI/Vulkan",
+-                    "Deprecated and ignored for parity; vertexPipelineStoresAndAtomics is always "
+-                    "required for Vulkan GPU emulation")
++                    "Require vertexPipelineStoresAndAtomics for Vulkan GPU emulation (disable to "
++                    "allow the compute shader path for memory export from vertex shaders: Mali)")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++// [svr2011] Test aid: the device reports what an Arm Mali GPU's driver lacks
++// (vulkan.gpuinfo.org reports, Mali-G57 to G925), so the Mali paths run on
++// another GPU. Not the formats (BC: the app's own switch).
++REXCVAR_DEFINE_BOOL(vulkan_simulate_mali, false, "UI/Vulkan",
++                    "Test: hide the features and extensions an Arm Mali GPU lacks")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ // Apple Silicon / MoltenVK does not expose geometryShader or fillModeNonSolid;
+ // default both to false on macOS so the device can still be selected.
+@@ -91,6 +99,20 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+ 
+   VkPhysicalDeviceFeatures supported_features = {};
+   ifn.vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
++  if (REXCVAR_GET(vulkan_simulate_mali)) {
++    // (all Mali drivers: no wireframe, vertex stage stores, clip / cull
++    // distances, fp64, sparse resources or BC; G57 / G68 / G78: no multi draw indirect)
++    supported_features.fillModeNonSolid = VK_FALSE;
++    supported_features.vertexPipelineStoresAndAtomics = VK_FALSE;
++    supported_features.shaderClipDistance = VK_FALSE;
++    supported_features.shaderCullDistance = VK_FALSE;
++    supported_features.shaderFloat64 = VK_FALSE;
++    supported_features.sparseBinding = VK_FALSE;
++    supported_features.textureCompressionBC = VK_FALSE;
++    supported_features.multiDrawIndirect = VK_FALSE;
++    REXLOG_WARN("Vulkan device '{}': simulating an Arm Mali GPU (vulkan_simulate_mali)",
++                properties.deviceName);
++  }
+ 
+   if (with_gpu_emulation) {
+     if (!supported_features.independentBlend) {
+@@ -116,10 +138,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+           properties.deviceName);
+       return nullptr;
+     }
+-    if (!supported_features.vertexPipelineStoresAndAtomics) {
++    if (REXCVAR_GET(vulkan_require_vertex_pipeline_stores_and_atomics) &&
++        !supported_features.vertexPipelineStoresAndAtomics) {
+       REXLOG_WARN(
+-          "Vulkan device '{}' doesn't support vertexPipelineStoresAndAtomics, which "
+-          "is required for Vulkan GPU emulation parity",
++          "Vulkan device '{}' doesn't support vertexPipelineStoresAndAtomics, but "
++          "vulkan_require_vertex_pipeline_stores_and_atomics=true",
+           properties.deviceName);
+       return nullptr;
+     }
+@@ -273,6 +296,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+         if (requested_extension_it == requested_extensions.cend()) {
+           continue;
+         }
++        // (no Mali driver has these)
++        if (REXCVAR_GET(vulkan_simulate_mali) &&
++            (requested_extension_it->first == "VK_EXT_shader_stencil_export" ||
++             requested_extension_it->first == "VK_EXT_fragment_shader_interlock")) {
++          continue;
++        }
+         assert_not_null(requested_extension_it->second);
+         if (!*requested_extension_it->second) {
+           enabled_extensions.emplace_back(requested_extension_it->first.c_str());
+@@ -650,6 +679,26 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        XE_UI_VULKAN_FEATURE_2(features_1_2, samplerMirrorClampToEdge);
        XE_UI_VULKAN_FEATURE_2(features_1_2, uniformBufferStandardLayout);
        XE_UI_VULKAN_FEATURE_2(features_1_2, scalarBlockLayout);

@@ -174,6 +174,10 @@ If the game is already installed on your PC, the launcher's **Android Install** 
 
 **Graphics drivers (Adreno):** the app's **Settings → Graphics driver** takes driver packages such as Mesa Turnip or Qualcomm's (the zips other emulators use, or a driver's `.so`). **Driver variables** are set before the driver loads; on HyperOS 3 phones with graphical glitches, pick a Turnip driver and tap **Add the HyperOS 3 fix** (`FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1`). A driver that doesn't start falls back to the phone's own.
 
+**Adreno 710 / 720 / 722** (e.g. Snapdragon 7s Gen 2 / 7 Gen 3 phones and tablets): the app comes with two Mesa Turnip drivers that players found run the game well. The launcher offers the recommended one (v4.1) the first time, or pick it in **Settings → Graphics driver**. These GPUs' own drivers are often too old for the Native renderer.
+
+**Mali GPUs** 🧪 (alpha): not supported yet. **Settings → Mali GPU (alpha)** lets the game try. If you do, please send a problem report (**Report a problem**) whether it works or not.
+
 On the phone, the game renders at the Xbox 360's 720p with shadows and effects at their original size. **MY WWE → Options → Graphics → Quality** raises them, and anti-aliasing can be turned on there.
 
 ---

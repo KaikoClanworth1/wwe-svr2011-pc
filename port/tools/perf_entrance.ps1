@@ -52,4 +52,6 @@ $rows | Sort-Object cpu_pct -Descending | Select-Object -First 16 | Format-Table
 Select-String -Path $log -Pattern "native perf|fps: " | Select-Object -Last 4 | ForEach-Object { $_.Line -replace '^\[[^\]]+\] ', '' }
 Wait-Job $job -Timeout 200 | Out-Null
 Remove-Job $job -Force
-Get-CimInstance Win32_Process -Filter "Name='svr2011.exe'" | Where-Object { $_.CommandLine -match 'port\\runs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+# (only this test's own game - session.json's: other sessions run theirs under port\runs too)
+$own = (Get-Content (Join-Path $runs "session.json") | ConvertFrom-Json).pid
+if ($own) { Stop-Process -Id $own -Force -ErrorAction SilentlyContinue }

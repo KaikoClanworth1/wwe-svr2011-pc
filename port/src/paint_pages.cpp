@@ -34,6 +34,7 @@
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -132,7 +133,7 @@ std::filesystem::path SlotFile(int page, uint32_t k) {
 }
 
 // Builds page `page` (1..9) as a complete, valid Paint Tool file at `f`.
-void BuildPage(int page, uint8_t* f) {
+void BuildPage(int page, uint8_t* f, bool log = true) {
   std::memset(f, 0, kFile);
   Wr32(f, kMagic);
   Wr32(f + 4, kVersion);
@@ -153,7 +154,7 @@ void BuildPage(int page, uint8_t* f) {
     total += sum;
   }
   Wr32(f + kFile - 4, total);
-  REXLOG_INFO("paint pages: page {} loaded ({} logos)", page + 1, used);
+  if (log) REXLOG_INFO("paint pages: page {} loaded ({} logos)", page + 1, used);
 }
 
 // Stores page `page` (1..9) from a Paint Tool file image.
@@ -184,9 +185,110 @@ void SavePage(int page, const uint8_t* f) {
   REXLOG_INFO("paint pages: page {} saved ({} logos)", page + 1, used);
 }
 
-// Page 1 into `f`: the copy taken when the grid left it, else the file.
+// -- Changes made outside the game ------------------------------------------
+//
+// The launcher (Paint Tool tab, imports) may change the stores while the
+// game runs. The Paint Tool reads its page when it opens (manager states
+// 26-27), so a change made while it is closed shows anyway; while it is
+// open, its copy of the page (PTM +104) is what the game writes back when it
+// leaves or switches pages. So the page as read is remembered (g_loaded), and
+// - the idle grid checks the page's files once a second and takes in the
+//   slots changed outside (then rebuilds the thumbnails, as a page switch);
+// - a write of the page first takes in the slots changed outside;
+// in both, a slot the game changed since it read the page stays the game's
+// (in-game edits win; the outside change of that slot is dropped, logged).
+
+struct Loaded {
+  int page = -1;
+  std::vector<uint8_t> image;  // the page as read from its store
+  uint64_t stamp = 0;          // its files' sizes and times then
+};
+Loaded g_loaded;
+uint64_t g_page1_stamp = 0;  // page 1's files when g_page1 was taken
+
+// The sizes and write times of page `page`'s files.
+uint64_t Stamp(int page) {
+  uint64_t h = 1469598103934665603ull;
+  auto mix = [&](const std::filesystem::path& p) {
+    std::error_code ec;
+    const uint64_t size = std::filesystem::file_size(p, ec);
+    h = (h ^ (ec ? ~0ull : size)) * 1099511628211ull;
+    const auto t = std::filesystem::last_write_time(p, ec);
+    h = (h ^ (ec ? 0 : uint64_t(t.time_since_epoch().count()))) * 1099511628211ull;
+  };
+  if (page == 0) {
+    mix(g_pt);
+  } else {
+    for (uint32_t k = 0; k < kSlots; ++k) mix(SlotFile(page, k));
+  }
+  return h;
+}
+
+// Page `page` as its store holds it now.
+bool DiskImage(int page, std::vector<uint8_t>& out) {
+  out.assign(kFile, 0);
+  if (page != 0) {
+    BuildPage(page, out.data(), false);
+    return true;
+  }
+  std::ifstream in(g_pt, std::ios::binary);
+  return in.read(reinterpret_cast<char*>(out.data()), kFile) && Rd32(out.data()) == kMagic;
+}
+
+void Remember(int page, const uint8_t* image) {
+  g_loaded.page = page;
+  g_loaded.image.assign(image, image + kFile);
+  g_loaded.stamp = Stamp(page);
+}
+
+// The slots' checksums (ids) and the file's total, as the game makes them.
+void FixSums(uint8_t* f) {
+  uint32_t total = kMagic + kVersion;
+  for (uint32_t k = 0; k < kSlots; ++k) {
+    uint8_t* s = Slot(f, k);
+    const uint32_t sum = SlotSum(s - 8);
+    Wr32(s + kSum, sum);
+    total += sum;
+  }
+  Wr32(f + kFile - 4, total);
+}
+
+// Into the game's image `f` of page `page`: the slots that changed in the
+// store since the page was read (`disk` = the store now), except those the
+// game changed. Returns how many were taken.
+int TakeOutsideChanges(int page, uint8_t* f, const std::vector<uint8_t>& disk) {
+  if (g_loaded.page != page || g_loaded.image.size() != kFile || disk.size() != kFile) return 0;
+  int taken = 0;
+  for (uint32_t k = 0; k < kSlots; ++k) {
+    const uint8_t* was = g_loaded.image.data() + 8 + k * kSlot;
+    const uint8_t* now = disk.data() + 8 + k * kSlot;
+    if (std::memcmp(now, was, kSum) == 0) continue;  // (not changed outside)
+    if (std::memcmp(Slot(f, k), was, kSum) != 0) {
+      REXLOG_WARN("paint pages: page {} slot {} changed in the game and outside it - the game's kept", page + 1,
+                  k + 1);
+      continue;
+    }
+    std::memcpy(Slot(f, k), now, kSlot);
+    ++taken;
+  }
+  if (taken) FixSums(f);
+  return taken;
+}
+
+// Before the game's image `f` of page `page` is written: the outside
+// changes taken in.
+void BeforeWrite(int page, uint8_t* f) {
+  if (g_loaded.page != page || Stamp(page) == g_loaded.stamp) return;
+  std::vector<uint8_t> disk;
+  if (!DiskImage(page, disk)) return;
+  if (const int n = TakeOutsideChanges(page, f, disk))
+    REXLOG_INFO("paint pages: page {}: {} slots changed outside the game kept", page + 1, n);
+}
+
+// Page 1 into `f`: the copy taken when the grid left it (if the file has
+// not changed since), else the file.
 bool LoadPage1(uint8_t* f) {
-  if (g_page1_valid && g_page1.size() == kFile) {
+  if (g_page1_valid && g_page1.size() == kFile && Stamp(0) == g_page1_stamp) {
     std::memcpy(f, g_page1.data(), kFile);
     return true;
   }
@@ -241,7 +343,8 @@ bool SaveNow(PPCContext& ctx, uint8_t* base, uint32_t file) {
   ctx.r4.u64 = 1;
   sub_827B35C8(ctx, base);
   ctx = saved;
-  const uint8_t* f = base + file;
+  uint8_t* f = base + file;
+  BeforeWrite(g_page.load(), f);
   if (g_page.load() != 0) {
     SavePage(g_page.load(), f);
   } else {
@@ -262,6 +365,7 @@ bool SaveNow(PPCContext& ctx, uint8_t* base, uint32_t file) {
     }
     REXLOG_INFO("paint pages: page 1 saved");
   }
+  Remember(g_page.load(), f);
   for (uint32_t k = 0; k < kSlots; ++k) {
     ctx.r3.u64 = file;
     ctx.r4.u64 = k;
@@ -295,18 +399,43 @@ void SwitchPage(PPCContext& ctx, uint8_t* base, uint32_t menu, int delta) {
     if (from == 0) {
       g_page1.assign(f, f + kFile);
       g_page1_valid = true;
+      g_page1_stamp = g_loaded.page == 0 ? g_loaded.stamp : 0;  // (stale if changed outside since read)
     }
     if (to == 0) {
       if (!LoadPage1(f)) return;
     } else {
       BuildPage(to, f);
     }
+    Remember(to, f);
   }
   g_page = to;
   // The game's own refresh: rebuild the 20 thumbnails, then the cells.
   Wr32(base + ptm + kPtmState, kPtmRebuildThumbs);
   Wr32(base + menu + kMenuState, kMenuRefresh);
   REXLOG_INFO("paint pages: page {} of {}", to + 1, svr2011::kPaintPages);
+}
+
+// The idle grid: the slots of its page changed outside the game (checked
+// once a second) are taken in and the thumbnails rebuilt.
+void TakeOutsideChangesNow(PPCContext& ctx, uint8_t* base, uint32_t menu) {
+  const uint32_t ptm = Ptm(ctx, base);
+  if (!ptm || Rd32(base + ptm + kPtmState) != 0) return;
+  const uint32_t file = Rd32(base + ptm + kPtmFile);
+  if (!file || Rd32(base + file) != kMagic) return;
+  const int page = g_page.load();
+  std::lock_guard lock(g_mutex);
+  if (g_loaded.page != page) return;
+  const uint64_t stamp = Stamp(page);
+  if (stamp == g_loaded.stamp) return;
+  std::vector<uint8_t> disk;
+  if (!DiskImage(page, disk)) return;  // (tried again next time)
+  const int n = TakeOutsideChanges(page, base + file, disk);
+  g_loaded.image = std::move(disk);
+  g_loaded.stamp = stamp;
+  if (!n) return;
+  Wr32(base + ptm + kPtmState, kPtmRebuildThumbs);
+  Wr32(base + menu + kMenuState, kMenuRefresh);
+  REXLOG_INFO("paint pages: page {}: {} slots changed outside the game - shown", page + 1, n);
 }
 
 // The page a Paint Tool storage job is for: the Paint Tool's own (manager
@@ -348,6 +477,9 @@ void InstallPaintPages(rex::memory::Memory* memory, rex::input::InputSystem* inp
 // Open: sub_824AE6E8(st, 1, ...).
 REX_EXTERN(__imp__sub_824AE6E8);
 REX_HOOK_RAW(sub_824AE6E8) {
+  if (std::getenv("SVR2011_TEST_PAINT_TRACE") && ctx.r4.u32 == 1)
+    REXLOG_INFO("paint trace: open storage {:08X} (page {}) from {:08X}", ctx.r3.u32, JobPage(ctx, base) + 1,
+                uint32_t(ctx.lr));
   if (JobPage(ctx, base) == 0) {
     {
       std::lock_guard lock(g_mutex);
@@ -364,18 +496,32 @@ REX_HOOK_RAW(sub_824AE6E8) {
   Complete(base, st);
 }
 
+// The Paint Tool's own storage (manager +40).
+bool IsPaintToolStorage(PPCContext& ctx, uint8_t* base, uint32_t st) {
+  if (ctx.r4.u32 != 1) return false;
+  const uint32_t ptm = Ptm(ctx, base);
+  return ptm && st == Rd32(base + ptm + 40);
+}
+
 // Read: sub_824AE830(st, 1, buf, size).
 REX_EXTERN(__imp__sub_824AE830);
 REX_HOOK_RAW(sub_824AE830) {
   const uint32_t st = ctx.r3.u32, buf = ctx.r5.u32, size = ctx.r6.u32;
   const int page = JobPage(ctx, base);
+  const bool paint_tool = size == kFile && IsPaintToolStorage(ctx, base, st);
   if (page == 0 || size != kFile) {
+    if (paint_tool) {  // (the read is the game's own: remember the file as it is now)
+      std::lock_guard lock(g_mutex);
+      std::vector<uint8_t> disk;
+      if (DiskImage(0, disk)) Remember(0, disk.data());
+    }
     __imp__sub_824AE830(ctx, base);
     return;
   }
   {
     std::lock_guard lock(g_mutex);
     BuildPage(page, base + buf);
+    if (paint_tool) Remember(page, base + buf);
   }
   Complete(base, st);
 }
@@ -385,6 +531,12 @@ REX_EXTERN(__imp__sub_82517CF8);
 REX_HOOK_RAW(sub_82517CF8) {
   const uint32_t st = ctx.r3.u32, buf = ctx.r5.u32, size = ctx.r6.u32;
   const int page = JobPage(ctx, base);
+  const bool paint_tool = size == kFile && IsPaintToolStorage(ctx, base, st);
+  if (paint_tool) {
+    std::lock_guard lock(g_mutex);
+    BeforeWrite(page, base + buf);
+    Remember(page, base + buf);
+  }
   if (page == 0 || size != kFile) {
     __imp__sub_82517CF8(ctx, base);
     return;
@@ -392,6 +544,7 @@ REX_HOOK_RAW(sub_82517CF8) {
   {
     std::lock_guard lock(g_mutex);
     SavePage(page, base + buf);
+    if (paint_tool) g_loaded.stamp = Stamp(page);
   }
   Complete(base, st);
 }
@@ -433,6 +586,12 @@ REX_HOOK_RAW(sub_827B4600) {
     return;
   }
   g_grid_seen = NowMs();
+  static int64_t last_check = 0;
+  if (g_grid_seen.load() - last_check >= 1000) {
+    last_check = g_grid_seen.load();
+    TakeOutsideChangesNow(ctx, base, menu);
+    if (Rd32(base + menu + kMenuState) != 0) return;
+  }
   const int row = int(Rd32(base + menu + kMenuRow)), column = int(Rd32(base + menu + kMenuColumn));
   if (row == g_last_row && g_last_column == int(kColumns - 1) && column == 0)
     SwitchPage(ctx, base, menu, +1);
@@ -468,10 +627,17 @@ std::vector<Logo> g_logos;        // the used logos of all pages, in page order
 uint32_t g_list = 0;              // the list g_logos was made for
 uint32_t g_headers = 0;           // guest: the headers of g_logos
 int g_window[kSlots];             // the logo in each picture place (-1 none)
+uint64_t g_index_stamp = 0;       // all pages' files when g_logos was made
+
+uint64_t AllPagesStamp() {
+  uint64_t h = 0;
+  for (int page = 0; page < svr2011::kPaintPages; ++page) h = h * 31 + Stamp(page);
+  return h;
+}
 
 // The first `n` bytes of page `page`'s slot `k`.
 bool ReadSlot(int page, uint32_t k, uint8_t* out, size_t n, size_t offset = 0) {
-  if (page == 0 && g_page1_valid && g_page1.size() == kFile) {
+  if (page == 0 && g_page1_valid && g_page1.size() == kFile && Stamp(0) == g_page1_stamp) {
     std::memcpy(out, g_page1.data() + 8 + k * kSlot + offset, n);
     return true;
   }
@@ -484,6 +650,7 @@ bool ReadSlot(int page, uint32_t k, uint8_t* out, size_t n, size_t offset = 0) {
 void IndexLogos(uint8_t* base, uint32_t list) {
   std::lock_guard lock(g_mutex);
   g_logos.clear();
+  g_index_stamp = AllPagesStamp();
   for (int page = 0; page < svr2011::kPaintPages; ++page) {
     for (uint32_t k = 0; k < kSlots; ++k) {
       uint8_t head[48] = {};
@@ -534,6 +701,16 @@ void ShowLogo(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t n) {
   g_window[place] = int(n);
 }
 
+// The list holds all pages; the pictures the picker shows first loaded.
+void Reindex(PPCContext& ctx, uint8_t* base, uint32_t list) {
+  IndexLogos(base, list);
+  // The picker shows the first logos and (wrapping) the last ones when it
+  // opens: their pictures now, not when first drawn.
+  const uint32_t n = uint32_t(g_logos.size());
+  for (uint32_t i : {n - 1, n - 2, 0u, 1u, 2u})
+    if (i < n && g_window[i % kSlots] < 0) ShowLogo(ctx, base, list, i);
+}
+
 }  // namespace
 
 // A step of the list's loader: sub_828DBD90(list). When it is done, the list
@@ -543,14 +720,20 @@ REX_HOOK_RAW(sub_828DBD90) {
   const uint32_t list = ctx.r3.u32;
   const uint32_t before = Rd32(base + list + kListState);
   __imp__sub_828DBD90(ctx, base);
-  if (before != 7 && Rd32(base + list + kListState) == 7) {
-    IndexLogos(base, list);
-    // The picker shows the first logos and (wrapping) the last ones when it
-    // opens: their pictures now, not when first drawn.
-    const uint32_t n = uint32_t(g_logos.size());
-    for (uint32_t i : {n - 1, n - 2, 0u, 1u, 2u})
-      if (i < n && g_window[i % kSlots] < 0) ShowLogo(ctx, base, list, i);
+  if (before != 7 && Rd32(base + list + kListState) == 7) Reindex(ctx, base, list);
+}
+
+// The picker opens: sub_827E7100(picker) (it reads the list's count). The
+// list was loaded when the editor started; logos added or changed outside
+// the game since (the launcher) are indexed now.
+REX_EXTERN(__imp__sub_827E7100);
+REX_HOOK_RAW(sub_827E7100) {
+  const uint32_t list = g_list;
+  if (list && Rd32(base + list + kListState) == 7 && AllPagesStamp() != g_index_stamp) {
+    REXLOG_INFO("paint pages: Paint Tool logos changed outside the game - the Superstar logo list is made again");
+    Reindex(ctx, base, list);
   }
+  __imp__sub_827E7100(ctx, base);
 }
 
 // The accessors of logo n: type sub_828DB918(list, n), id sub_828DB9F8,
@@ -972,3 +1155,27 @@ namespace svr2011 {
 void InstallPaintPagesOverlay(rex::ui::ImGuiDrawer* drawer) { new PageLabel(drawer); }
 
 }  // namespace svr2011
+
+// Test aid: SVR2011_TEST_PAINT_TRACE=1 - the Paint Tool manager's state
+// changes (sub_82794D30(ptm) runs it) and the Paint Tool file opens.
+REX_EXTERN(__imp__sub_82794D30);
+REX_HOOK_RAW(sub_82794D30) {
+  static const bool trace = [] {
+    const char* v = std::getenv("SVR2011_TEST_PAINT_TRACE");
+    return v && *v == '1';
+  }();
+  const uint32_t ptm = ctx.r3.u32;
+  const uint32_t before = trace ? Rd32(base + ptm + kPtmState) : 0;
+  __imp__sub_82794D30(ctx, base);
+  if (trace && Rd32(base + ptm + kPtmState) != before)
+    REXLOG_INFO("paint trace: manager {:08X} state {} -> {}", ptm, before, Rd32(base + ptm + kPtmState));
+}
+
+// (SVR2011_TEST_PAINT_TRACE: the Created Superstar logo list starts loading:
+// sub_828DC1A8(list, ?).)
+REX_EXTERN(__imp__sub_828DC1A8);
+REX_HOOK_RAW(sub_828DC1A8) {
+  if (std::getenv("SVR2011_TEST_PAINT_TRACE"))
+    REXLOG_INFO("paint trace: logo list {:08X} loads ({}) from {:08X}", ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
+  __imp__sub_828DC1A8(ctx, base);
+}

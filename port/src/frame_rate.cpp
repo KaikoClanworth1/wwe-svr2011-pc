@@ -39,6 +39,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -53,6 +54,7 @@
 #include "generated/default/svr2011_init.h"
 #include "match_types.h"
 #include "online_overlay.h"
+#include "players.h"
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
 REXCVAR_DEFINE_BOOL(full_speed, true, "GPU",
@@ -175,7 +177,8 @@ Clock::time_point g_world_last;
 double g_world_acc = 0;  // 60 Hz ticks of real time not yet run
 int g_world_ticks = 1;   // update passes this frame
 
-constexpr int kMaxTicks = 4;  // (below 15 fps the game slows down rather than racing)
+constexpr int kMaxTicks = 2;  // (below 30 fps the game slows down rather than racing: 3-4 updates a frame - a
+                               // window in the background, tabbing out - crashed a worker thread, sub_8281F5F0)
 
 uint32_t G32(uint8_t* base, uint32_t a) { return Rd32(base + a); }
 void P32(uint8_t* base, uint32_t a, uint32_t v) { Wr32(base + a, v); }
@@ -294,6 +297,11 @@ void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
 // but the last update of a frame (an extra update) see the previous reading
 // again (no change): a press arrives in the frame's last update.
 bool g_extra_update = false;
+std::atomic<uint64_t> g_lat_drawn{0};  // (latency test aid: frames drawn)
+// Render-thread commands the logic thread queued this frame (see
+// sub_8269B2D0 below).
+std::vector<uint32_t> g_frame_commands;
+std::atomic<std::thread::id> g_logic_thread{};  // (the thread running the world update)
 // The characters' job's round (sub_8216F4C8, below) or its paused round
 // (sub_8216ED38 + sub_8216E458) an extra update left, for the frame's last
 // update - or, when that one reached neither, for before the draw.
@@ -306,7 +314,7 @@ struct InputReading {
   uint32_t result = 0;
   uint8_t state[16] = {};  // XINPUT_STATE
 };
-InputReading g_input[4];
+InputReading g_input[8];
 
 // Test aid: SVR2011_TEST_MATCH_TIME=<s> - 20 s into a match its time jumps to
 // <s> (a timed match then ends on its own).
@@ -337,7 +345,9 @@ REX_HOOK_RAW(sub_8269D768) {
   if (!g_kernel) g_kernel = REX_KERNEL_STATE();  // (for the stuck-update thread dump)
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
-  if (slow_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+  // (SVR2011_TEST_SLOW_IN_MATCH=1: only while a match runs - the menus at speed for the scripted route)
+  static const bool slow_in_match = std::getenv("SVR2011_TEST_SLOW_IN_MATCH") != nullptr;
+  if (slow_ms > 0 && (!slow_in_match || g_in_match)) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
   const auto now = Clock::now();
   if (g_world_last == Clock::time_point{}) g_world_last = now - std::chrono::microseconds(16667);
   g_world_acc += std::chrono::duration<double>(now - g_world_last).count() * 60.0;
@@ -363,6 +373,7 @@ REX_HOOK_RAW(sub_8269D768) {
 // The task manager: the update pass per tick, the draw pass once (see top).
 REX_EXTERN(__imp__sub_8269C728);
 REX_HOOK_RAW(sub_8269C728) {
+  g_logic_thread = std::this_thread::get_id();
   const auto saved = ctx;
   const uint32_t m = ctx.r3.u32;
   constexpr uint32_t kOwner = 0x82EC5F94;
@@ -371,6 +382,7 @@ REX_HOOK_RAW(sub_8269C728) {
   REX_CALL_INDIRECT_FUNC(0x82D4753Cu);  // (RtlEnterCriticalSection)
   P32(base, owner + 136, 1);
   g_job_owed = JobOwed::kNone;
+  g_frame_commands.clear();  // (last frame's ran at the barrier)
   for (int i = 0; i < g_world_ticks; ++i) {
     g_dbg_pass = 10 + i;
     g_extra_update = i + 1 < g_world_ticks;
@@ -410,6 +422,7 @@ REX_HOOK_RAW(sub_8269C728) {
   }
   g_dbg_pass = 20;
   DrawPass(ctx, base, m);
+  ++g_lat_drawn;
   g_dbg_pass = 0;
   g_dbg_since = Clock::now().time_since_epoch().count();
   static std::once_flag watchdog;
@@ -567,8 +580,9 @@ REX_HOOK_RAW(sub_82171940) {
 // XamInputGetState(user, state) for the game: sub_82905058.
 REX_EXTERN(__imp__sub_82905058);
 REX_HOOK_RAW(sub_82905058) {
+  ctx.r3.u64 = ctx.r3.u32 + svr2011::PadUserOffset();  // (pads 5-8: players.h)
   const uint32_t user = ctx.r3.u32, out = ctx.r4.u32;
-  InputReading* r = user < 4 ? &g_input[user] : nullptr;
+  InputReading* r = user < 8 ? &g_input[user] : nullptr;
   if (g_extra_update && r && r->valid && out) {
     std::memcpy(base + out, r->state, sizeof(r->state));
     ctx.r3.u64 = r->result;
@@ -663,4 +677,138 @@ REX_HOOK_RAW(sub_8217A718) {
     return;
   }
   __imp__sub_8217A718(ctx, base);
+}
+
+// A pure virtual call (sub_828F3F38, the runtime's _purecall: error R6025,
+// the game quits): with two updates in a frame the second may destroy an
+// object the first queued for the render thread (render command 24,
+// sub_826DE6B0: obj->vtable[6] there), its vtable then the base class's - a
+// PC at 30 fps crashed so (2.0.2). The call on the destroyed object is
+// skipped instead (the caller's lr and object logged).
+REX_EXTERN(__imp__sub_828F3F38);
+REX_HOOK_RAW(sub_828F3F38) {
+  static int count = 0;
+  if (++count <= 20)
+    REXLOG_WARN("frame rate: a pure virtual call skipped (caller {:08X}, object {:08X}) - {} so far", uint32_t(ctx.lr),
+                ctx.r3.u32, count);
+  ctx.r3.u64 = 0;
+}
+
+// The job system's "wait for job idx" (sub_8216A450(jobs, idx): if job
+// idx's pending flag (+(idx+14)*4) is set, wait on its event (+(idx+5)*4)
+// for ever, then clear the flag). In an extra update a task may wait so for
+// the characters' job, which only the frame's last update starts: a world
+// update stuck for ever (a player tabbing out of fullscreen - long frames,
+// 3-4 updates each - froze in pass 12, function 82225508, c27d191). There
+// the wait is at most 50 ms: a running job ends well within it, as before;
+// one not started, the flag stays for the frame's last update or the draw.
+REX_EXTERN(__imp__sub_8216A450);
+REX_HOOK_RAW(sub_8216A450) {
+  if (!g_extra_update || std::this_thread::get_id() != g_logic_thread.load()) {
+    __imp__sub_8216A450(ctx, base);
+    return;
+  }
+  const uint32_t jobs = ctx.r3.u32, idx = ctx.r4.u32;
+  const uint32_t flag = jobs + (idx + 14) * 4;
+  if (Rd32(base + flag) == 0) return;
+  const auto saved = ctx;
+  ctx.r3.u64 = Rd32(base + jobs + (idx + 5) * 4);
+  ctx.r4.u64 = 50;  // (ms)
+  sub_8215A8C0(ctx, base);
+  const uint32_t status = ctx.r3.u32;
+  ctx = saved;
+  if (status == 0) {  // (signalled: done)
+    base[flag] = base[flag + 1] = base[flag + 2] = base[flag + 3] = 0;
+    return;
+  }
+  static int count = 0;
+  if (++count == 1 || count % 1000 == 0)
+    REXLOG_INFO("frame rate: an extra update didn't wait for job {} (not done yet; {} times)", idx, count);
+}
+
+// -- Latency test aid (SVR2011_TEST_LATENCY=1) -------------------------------
+//
+// Frames drawn (the draw pass) against frames the native renderer published
+// (PublishFrame, in order: one per game swap) = frames in flight from the
+// game's draw to the renderer's hand-over; then the time from a publish to
+// the presenter's next new game frame (a 1 ms poll). Once a second.
+namespace {
+std::atomic<uint64_t> g_lat_published{0}, g_lat_swapped{0};
+std::atomic<int64_t> g_lat_publish_at{0};
+}  // namespace
+
+namespace svr2011 {
+void LatencyOnSwap() { ++g_lat_swapped; }
+void LatencyOnPublish() {
+  static const bool on = std::getenv("SVR2011_TEST_LATENCY") != nullptr;
+  if (!on) return;
+  ++g_lat_published;
+  g_lat_publish_at = Clock::now().time_since_epoch().count();
+  static std::once_flag started;
+  std::call_once(started, [] {
+    std::thread([] {
+      uint64_t seen = rex::ui::HostNewGuestFramePresentCount();
+      double sum_ms = 0, max_ms = 0;
+      int n = 0;
+      int64_t min_inflight = INT64_MAX, max_inflight = INT64_MIN;
+      auto last_log = Clock::now();
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const uint64_t shown = rex::ui::HostNewGuestFramePresentCount();
+        const int64_t inflight = int64_t(g_lat_drawn.load()) - int64_t(g_lat_published.load());
+        min_inflight = std::min(min_inflight, inflight), max_inflight = std::max(max_inflight, inflight);
+        if (shown != seen) {
+          seen = shown;
+          const auto at = Clock::time_point(Clock::duration(g_lat_publish_at.load()));
+          const double ms = std::chrono::duration<double, std::milli>(Clock::now() - at).count();
+          sum_ms += ms, max_ms = std::max(max_ms, ms), ++n;
+        }
+        if (Clock::now() - last_log >= std::chrono::seconds(1)) {
+          last_log = Clock::now();
+          REXLOG_INFO("frame rate: latency - drawn {} swapped {} published {}: drawn-published {}..{}, swapped-published "
+                      "{}; publish -> shown avg {:.1f} ms, max {:.1f} ms ({} new frames shown)",
+                      g_lat_drawn.load(), g_lat_swapped.load(), g_lat_published.load(), min_inflight, max_inflight,
+                      int64_t(g_lat_swapped.load()) - int64_t(g_lat_published.load()), n ? sum_ms / n : 0.0, max_ms, n);
+          sum_ms = max_ms = 0, n = 0, min_inflight = INT64_MAX, max_inflight = INT64_MIN;
+        }
+      }
+    }).detach();
+  });
+}
+}  // namespace svr2011
+
+// The game's render-thread commands: sub_826DFFA0(queue, ?) hands out a
+// command record (+0 type); type 24 (sub_826DE6B0, "set texture") calls its
+// object's (+20) vtable[6] on the render thread, which runs the queue at the
+// frame barrier. With two world updates in a frame the second may free that
+// object first: the render thread then calls into freed memory - a pure
+// virtual call (c36b4fd skips those) or, the memory reused, garbage (a weak
+// PC crashed so, 2ac47b9). So the logic thread's commands of the frame are
+// noted, and a free (operator delete: sub_8269B2D0(ptr, ?)) of a block
+// holding a pending type-24 command's object turns that command into type 0
+// (nothing). The free itself is made as always.
+REX_EXTERN(__imp__sub_826DFFA0);
+REX_HOOK_RAW(sub_826DFFA0) {
+  __imp__sub_826DFFA0(ctx, base);
+  if (ctx.r3.u32 && std::this_thread::get_id() == g_logic_thread.load() && g_frame_commands.size() < 100000)
+    g_frame_commands.push_back(ctx.r3.u32);
+}
+
+REX_EXTERN(__imp__sub_8269B2D0);
+REX_HOOK_RAW(sub_8269B2D0) {
+  const uint32_t ptr = ctx.r3.u32;
+  if (ptr && !g_frame_commands.empty() && std::this_thread::get_id() == g_logic_thread.load()) {
+    constexpr uint32_t kWithin = 0x4000;  // (the object: at or just after the block's start)
+    for (const uint32_t cmd : g_frame_commands) {
+      if (Rd32(base + cmd) != 24) continue;
+      const uint32_t obj = Rd32(base + cmd + 20);
+      if (obj >= ptr && obj - ptr < kWithin) {
+        Wr32(base + cmd, 0);
+        static int count = 0;
+        if (++count <= 20 || count % 1000 == 0)
+          REXLOG_INFO("frame rate: a queued render command's object was freed - command dropped ({} times)", count);
+      }
+    }
+  }
+  __imp__sub_8269B2D0(ctx, base);
 }

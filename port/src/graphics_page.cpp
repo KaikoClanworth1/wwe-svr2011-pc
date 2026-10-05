@@ -84,6 +84,7 @@ enum Row {
   kTouch, kLanguage,                                             // DISPLAY (last)
   kWide, kPrepare, kDof, kMotionBlur, kSoft, kReplays,                      // QUALITY (last)
   kFrameRate, kFullSpeed,                                        // DISPLAY
+  kCpuPriority,                                                  // DISPLAY (PC, last)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -96,7 +97,8 @@ const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsC
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
                                           {}};
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
+const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch, kReplays,
+                                           kCpuPriority},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
                                           {}};
 #endif
@@ -348,6 +350,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
   bool fps_ = true, vsync_ = true, native_ = true, full_speed_ = true;
+  bool high_priority_ = false;  // (process_priority 1: above normal, perf_hooks.cpp)
   int display_ = kWindowed;  // (DisplayMode)
   bool effects_ = true, fps60_ = true;
   int frame_rate_ = 1;  // (kFrameRates)
@@ -410,6 +413,7 @@ void GraphicsPage::Load() {
   }
   vsync_ = rex::cvar::Query<bool>("vsync");
   full_speed_ = rex::cvar::Query<bool>("full_speed");
+  high_priority_ = rex::cvar::Query<int32_t>("process_priority") >= 1;
   display_ = CurrentDisplayMode();
   frame_rate_ = 1;
   for (int i = 0; i < kNumFrameRates; ++i)
@@ -498,6 +502,14 @@ void GraphicsPage::Change(int row, int dir) {
       frame_rate_ = (frame_rate_ + dir + kNumFrameRates) % kNumFrameRates;
       SetTargetFrameRate(kFrameRates[frame_rate_]);
       SaveSetting("frame_rate", std::to_string(kFrameRates[frame_rate_]));
+      break;
+    case kCpuPriority:  // (applies at once; perf_hooks.cpp sets it at start)
+      high_priority_ = !high_priority_;
+      rex::cvar::SetFlagByName("process_priority", high_priority_ ? "1" : "0");
+      SaveSetting("process_priority", high_priority_ ? "1" : "0");
+#if defined(_WIN32)
+      SetPriorityClass(GetCurrentProcess(), high_priority_ ? ABOVE_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
+#endif
       break;
     case kFullSpeed:
       full_speed_ = !full_speed_;
@@ -873,6 +885,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return blur_ ? "ON" : "OFF";
       case kSoft: return soft_ ? "ON (XBOX 360)" : "OFF";
       case kReplays: return replays_ ? "ON" : "OFF";
+      case kCpuPriority: return high_priority_ ? "HIGH" : "NORMAL";
       case kPrepare: return prepare_ ? "ON" : "OFF";
       case kLanguage: return kLanguages[language_].label;
       case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
@@ -897,6 +910,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return "MOTION BLUR";
       case kSoft: return "SOFT FILTER";
       case kReplays: return "REPLAYS";
+      case kCpuPriority: return "CPU PRIORITY";
       case kPrepare: return "PREPARE GRAPHICS";
       case kLanguage: return "LANGUAGE";
       case kRenderer: return "RENDERER";
@@ -926,6 +940,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return "Blur and trails on fast moves and replays.";
       case kSoft: return "The game's 720p smoothing filter: blurs wide shots at higher resolutions.";
       case kReplays: return "Instant replays after finishers and the highlights at the end of a match.";
+      case kCpuPriority: return "Helps on busy or weak PCs: the game gets the CPU before other programs.";
       case kPrepare: return "Builds the graphics ahead in the menus, so matches don't stutter (native).";
       case kLanguage:
         return language_ == language_at_start_

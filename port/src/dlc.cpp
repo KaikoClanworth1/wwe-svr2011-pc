@@ -111,6 +111,88 @@ constexpr std::string_view kStringTriggers[] = {"Xbox LIVE", "Xbox 360", "storag
                                                 "gamer profile", "Gamertag", "GAMERTAG", "Xbox",
                                                 "Online Axxess", "ONLINE Axxess", "ONLINE AXXESS"};
 
+// -- Fan Axxess ----------------------------------------------------------------------
+//
+// The Fan Axxess bonus - every locked Superstar, arena and item unlocked, and
+// Bret Hart (CH_177, CH_50, three costumes) - is keys in a DLC package's
+// info/catalog.dlc ("DLCC" header, 64-byte entries:
+// u16 flags 0x40, u16 number, u16 type, u16 1, u16 index x2, u32 0, u32 value,
+// u32 variant, the name at +0x20); the characters and costumes themselves are
+// on the disc. Players with no such package (another region's DLC, or none)
+// never had them (a locked roster): a package of the port's own holds those
+// keys when no installed package has FAN_AXXESS (type 8).
+
+constexpr char kFanPackage[] = "53565232303131504346414E4158584553534B4559";  // (hex "SVR2011PCFANAXXESSKEY")
+
+struct CatalogItem {
+  uint16_t type;
+  uint32_t value, variant;
+  const char* name;
+};
+// (the same items as the game's own "Vol01" package: with it the whole roster
+// is unlocked - UNLOCK_EVERYTHING / UNLOCK_ATTIRBUTE, the game's spelling -
+// plus Bret Hart and his costumes; Online Axxess is owned anyway, online.cpp)
+constexpr CatalogItem kFanItems[] = {
+    {6, 5, 0, "ONLINE_AXXESS"},       {8, 0, 0, "FAN_AXXESS"},     {5, 0, 0, "UNLOCK_EVERYTHING"},
+    {5, 1, 0, "UNLOCK_ATTIRBUTE"},    {1, 177, 0, "CH_177"},       {2, 103, 1, "COSTUME_103_1"},
+    {2, 123, 3, "COSTUME_123_3"},     {1, 50, 0, "CH_50"},         {2, 164, 1, "COSTUME_164_1"},
+};
+
+bool HasItemType(const std::filesystem::path& catalog, uint16_t type) {
+  std::ifstream in(catalog, std::ios::binary);
+  std::vector<uint8_t> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (d.size() < 0x18 || std::string_view(reinterpret_cast<char*>(d.data()), 4) != "DLCC") return false;
+  const uint16_t header = uint16_t(d[6] | d[7] << 8);
+  const uint32_t count = uint32_t(d[12] | d[13] << 8 | d[14] << 16 | uint32_t(d[15]) << 24);
+  for (uint32_t i = 0; i < count && header + (i + 1) * 0x40 <= d.size(); ++i) {
+    const uint8_t* e = d.data() + header + i * 0x40;
+    if (uint16_t(e[4] | e[5] << 8) == type) return true;
+  }
+  return false;
+}
+
+void GrantFanAxxess(const std::filesystem::path& title_root, uint32_t title_id) {
+  std::error_code ec;
+  const auto installed = title_root / "00000002";
+  const auto ours = installed / kFanPackage;
+  const auto header = title_root / "Headers" / "00000002" / (std::string(kFanPackage) + ".header");
+  for (const auto& pkg : std::filesystem::directory_iterator(installed, ec)) {
+    if (pkg.path().filename() == kFanPackage) continue;
+    if (HasItemType(pkg.path() / "info" / "catalog.dlc", 8)) return;  // (the player's own)
+  }
+  if (std::filesystem::exists(ours / "info" / "catalog.dlc", ec) && std::filesystem::exists(header, ec)) return;
+
+  constexpr uint32_t n = uint32_t(std::size(kFanItems));
+  std::vector<uint8_t> cat(0x18 + 0x40 * n, 0);
+  std::memcpy(cat.data(), "DLCC", 4);
+  cat[4] = 2;     // version
+  cat[6] = 0x18;  // header size
+  cat[8] = 1;
+  cat[12] = uint8_t(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    uint8_t* e = cat.data() + 0x18 + 0x40 * i;
+    const CatalogItem& it = kFanItems[i];
+    e[0] = 0x40, e[2] = uint8_t(i + 1), e[4] = uint8_t(it.type), e[6] = 1, e[8] = uint8_t(i), e[10] = uint8_t(i);
+    for (int k = 0; k < 4; ++k) e[16 + k] = uint8_t(it.value >> (8 * k)), e[20 + k] = uint8_t(it.variant >> (8 * k));
+    std::memcpy(e + 0x20, it.name, std::strlen(it.name));
+  }
+  // the content header (as the SDK keeps an installed package's): device 1,
+  // type 2, UTF-16BE display name at 8, file name at 264, title id at 320
+  std::vector<uint8_t> head(332, 0);
+  head[3] = 1, head[7] = 2;
+  const char* title = "Fan Axxess (PC)";
+  for (size_t i = 0; title[i]; ++i) head[8 + 2 * i + 1] = uint8_t(title[i]);
+  std::memcpy(head.data() + 264, kFanPackage, sizeof(kFanPackage) - 1);
+  for (int i = 0; i < 4; ++i) head[320 + i] = uint8_t(title_id >> (24 - 8 * i));
+  head[324] = 0xFE, head[325] = 0x7F, head[328] = 0x3F;
+
+  std::filesystem::create_directories(ours / "info", ec);
+  std::filesystem::create_directories(header.parent_path(), ec);
+  std::ofstream(ours / "info" / "catalog.dlc", std::ios::binary).write(reinterpret_cast<char*>(cat.data()), cat.size());
+  std::ofstream(header, std::ios::binary).write(reinterpret_cast<char*>(head.data()), head.size());
+  REXLOG_INFO("DLC: Fan Axxess granted (everything unlocked, Bret Hart; no installed package had it)");
+}
+
 }  // namespace
 
 void PatchOnlineStrings(const std::filesystem::path& file) {
@@ -186,6 +268,11 @@ void InstallDlc(rex::system::KernelState* kernel_state, const std::filesystem::p
         PatchOnlineStrings(pkg.path() / "pac" / "string.pac");
     }
   } patch_strings{installed};
+  struct FanAxxess {  // (whatever happens below: once the player's packages are in)
+    std::filesystem::path root;
+    uint32_t title;
+    ~FanAxxess() { GrantFanAxxess(root, title); }
+  } fan_axxess{installed.parent_path(), game_title};
   if (!std::filesystem::is_directory(dlc_dir, ec)) return;
 
   for (const auto& e : std::filesystem::directory_iterator(dlc_dir, ec)) {

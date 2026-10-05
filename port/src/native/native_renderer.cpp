@@ -6,6 +6,7 @@
 // (textures.cpp loads the rest from guest memory), and the front buffer is
 // shown at Present.
 
+#include "frame_rate.h"
 #include "native/native_renderer.h"
 
 #include <algorithm>
@@ -3162,6 +3163,7 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
 }
 
 void OnPresent(uint32_t front_buffer) {
+  svr2011::LatencyOnSwap();  // (frame_rate.h: test aid)
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();
   if (!r) return;

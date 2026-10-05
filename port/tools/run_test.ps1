@@ -2,8 +2,9 @@
 # then stop it and print the log's errors/tail.
 # Runs in the background: audio muted, window never activated and parked
 # off-screen (it still renders; PrintWindow captures it there).
-#   .\run_test.ps1 [-Seconds 60] [-Shots 4] [-Name run] [-Extra "--flag=x"]
-param([int]$Seconds = 60, [int]$Shots = 4, [string]$Name = "run", [string[]]$Extra = @())
+#   .\run_test.ps1 [-Seconds 60] [-Shots 4] [-Name run] [-Extra "--flag=x"] [-Game <folder>]
+#   (-Game: another game folder - a test build next to links to the game data)
+param([int]$Seconds = 60, [int]$Shots = 4, [string]$Name = "run", [string[]]$Extra = @(), [string]$Game = "")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -21,7 +22,7 @@ public static class W {
 . (Join-Path $PSScriptRoot "test_guard.ps1")
 Assert-NoPlayerGame
 
-$game = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "Game Files"
+$game = if ($Game) { $Game } else { Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "Game Files" }
 $out  = Join-Path $PSScriptRoot "..\runs" | ForEach-Object { New-Item -ItemType Directory -Force $_ } | Select-Object -ExpandProperty FullName
 $log  = Join-Path $out "$Name.log"
 Remove-Item $log -ErrorAction SilentlyContinue

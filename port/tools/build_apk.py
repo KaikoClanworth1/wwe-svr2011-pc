@@ -143,6 +143,17 @@ def main():
         print("warning: no SPIR-V shaders in", shaders / "spirv", "- the APK carries no shaders")
     if (PORT / "dist" / "pipelines.list").exists():
         assets.append((PORT / "dist" / "pipelines.list", "assets/native_shaders/pipelines.list"))
+    # Built-in GPU drivers (android/drivers/README.md: Turnip for Adreno 7xx)
+    # and the Mesa licence notice that goes with them.
+    drivers = PORT / "android" / "drivers"
+    for f in sorted(drivers.glob("*.zip")):
+        assets.append((f, f"assets/drivers/{f.name}"))
+    if (drivers / "README.md").exists():
+        notice = OUT / "LICENSE-Mesa.txt"
+        text = (drivers / "README.md").read_text(encoding="utf-8")
+        notice.write_text(text[text.index("## Licence"):text.index("To add another")].strip() + "\n",
+                          encoding="utf-8")
+        assets.append((notice, "assets/drivers/LICENSE-Mesa.txt"))
     # PlayStation / keyboard button pictures (tools/make_pad_icons.py, from the
     # user's PS3 copy): the Game Files' pad_icons (or SVR2011_PAD_ICONS).
     icons = None

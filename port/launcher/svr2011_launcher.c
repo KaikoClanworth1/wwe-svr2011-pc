@@ -52,6 +52,9 @@
 
 #include "apk_package.h"
 #include "mods_tab.h"
+#include "music_tab.h"
+#include "roster_tab.h"
+#include "ui_theme.h"
 #include "report.h"
 #include "movie_maker.h"
 #include "unzip.h"
@@ -85,16 +88,18 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
+#define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
+#define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 
 enum {
     ID_TAB = 100,
     /* play */
-    ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT,
+    ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
-    ID_SETTINGS_STATUS, ID_PREPARE,
+    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
@@ -138,6 +143,8 @@ enum {
 static HINSTANCE s_inst;
 static HWND      s_wnd, s_tab;
 static HFONT     s_font, s_big, s_title;
+static HFONT     s_icons, s_nav, s_card, s_huge;  /* the look: sidebar icons and labels, card titles, page title */
+static int       s_cur_tab = -1, s_nav_hover = -1;
 static int       s_dpi = 96;
 static HICON     s_icon;
 static HWND      s_ctl[TAB_COUNT][32];
@@ -1390,6 +1397,14 @@ static void friends_show(int http, char *answer)
         wcscpy_s(msg, 200, L"No friends yet: type a player's name and press Add.");
     else
         swprintf_s(msg, 200, L"%d of %d friend%s online.", online, total, total == 1 ? L"" : L"s");
+    {
+        const char *now = strstr(answer, "\"online_now\"");
+        if (now && (now = strchr(now, ':')) != NULL) {
+            const int n = atoi(now + 1);
+            const size_t len = wcslen(msg);
+            swprintf_s(msg + len, 200 - len, L"   %d player%s playing now.", n, n == 1 ? L"" : L"s");
+        }
+    }
     set_text(ID_FR_STATUS, msg);
 }
 
@@ -1456,6 +1471,7 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
+    int priority = 0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1478,6 +1494,7 @@ static void settings_load(void)
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
             else if (!strcmp(key, "native_aa")) aa = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
+            else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
             else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
             else if (!strcmp(key, "window_width")) w = atoi(val);
@@ -1509,6 +1526,7 @@ static void settings_load(void)
         set_text(ID_ON_PEERS, w);
     }
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_PRIORITY, priority ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
@@ -1517,12 +1535,13 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 24 };
+    enum { NK = 25 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
-                                    "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa" };
+                                    "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
+                                    "process_priority" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1573,6 +1592,7 @@ static int settings_save(void)
         sprintf_s(vals[17], sizeof vals[17], "\"%.150s\"", u);
     }
     strcpy_s(vals[18], 64, IsDlgButtonChecked(s_wnd, ID_PREPARE) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[24], 64, IsDlgButtonChecked(s_wnd, ID_PRIORITY) == BST_CHECKED ? "1" : "0");
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
     {
@@ -1652,12 +1672,38 @@ static void settings_defaults(void)
 {
     settings_show(0, 0, 1, 0, 0, 0, 1, 1, 0, 1);
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
+    CheckDlgButton(s_wnd, ID_PRIORITY, BST_UNCHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
     set_text(ID_SETTINGS_STATUS, L"Defaults restored. Press Save or Play to keep them.");
 }
 
 /* ── play tab ──────────────────────────────────────────────────────────── */
+
+/* Time played (the game's <game>\\playtime.txt, src/playtime.cpp). */
+static void playtime_show(void)
+{
+    WCHAR p[MAX_PATH], t[128];
+    FILE *f = NULL;
+    char line[128];
+    unsigned long long sec = 0, ses = 0;
+    swprintf_s(p, MAX_PATH, L"%s\\playtime.txt", s_game_dir);
+    if (!_wfopen_s(&f, p, L"r") && f) {
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, "seconds=", 8)) sec = _strtoui64(line + 8, NULL, 10);
+            if (!strncmp(line, "sessions=", 9)) ses = _strtoui64(line + 9, NULL, 10);
+        }
+        fclose(f);
+    }
+    if (!sec)
+        wcscpy_s(t, 128, L"Time played: none yet");
+    else if (sec < 3600)
+        swprintf_s(t, 128, L"Time played: %llu min  \x00B7  %llu session%s", sec / 60, ses, ses == 1 ? L"" : L"s");
+    else
+        swprintf_s(t, 128, L"Time played: %llu h %llu min  \x00B7  %llu session%s", sec / 3600, sec / 60 % 60, ses,
+                   ses == 1 ? L"" : L"s");
+    set_text(ID_PLAYTIME, t);
+}
 
 static void refresh_play(void)
 {
@@ -1679,6 +1725,7 @@ static void refresh_play(void)
     }
     set_text(ID_PLAY_STATUS, t);
     EnableWindow(ctl(ID_PLAY), ready && !s_busy);
+    playtime_show();
 }
 
 static DWORD WINAPI game_watch(LPVOID p)
@@ -1789,6 +1836,99 @@ static int pick_image(WCHAR *out)
 #define DY       64      /* page content sits this much lower than laid out */
 #define CLIENT_W 620
 #define CLIENT_H 600     /* below the band */
+#define SB_W     196     /* the sidebar (the pages sit right of it) */
+
+/* The look: a dark sidebar (the tabs), the pages light grey with white
+   cards (the group boxes, drawn by the window), red for the main action. */
+#define C_SIDEBAR       RGB(20, 20, 24)
+#define C_SIDEBAR_HOVER RGB(36, 36, 42)
+#define C_SIDEBAR_SEL   RGB(48, 48, 56)
+#define C_ACCENT        RGB(208, 20, 44)
+#define C_ACCENT_HOT    RGB(228, 38, 60)
+#define C_ACCENT_DOWN   RGB(168, 14, 34)
+#define C_PAGE          RGB(243, 243, 246)
+#define C_CARD          RGB(255, 255, 255)
+#define C_CARD_LINE     RGB(222, 222, 228)
+#define C_TEXT          RGB(28, 28, 32)
+#define C_MUTED         RGB(112, 112, 122)
+static HBRUSH s_page_brush, s_card_brush;
+
+/* The sidebar: the tabs in this order, with their icons (Segoe icon font). */
+static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
+    { TAB_PLAY, 0xE768, L"Play" },          { TAB_SETTINGS, 0xE713, L"Settings" },
+    { TAB_ONLINE, 0xE774, L"Online" },      { TAB_SAVES, 0xE74E, L"Saves" },
+    { TAB_ROSTER, 0xE716, L"Roster" },      { TAB_MUSIC, 0xE8D6, L"Music" },
+    { TAB_MODS, 0xE90F, L"Mods" },
+    { TAB_PAINT, 0xE790, L"Paint Tool" },   { TAB_MOVIES, 0xE714, L"Movies" },
+    { TAB_DLC, 0xE7B8, L"DLC" },            { TAB_INSTALL, 0xE896, L"Install" },
+    { TAB_ANDROID, 0xE8EA, L"Android" },
+};
+#define NAV_N   ((int)(sizeof k_nav / sizeof k_nav[0]))
+#define NAV_TOP 96
+#define NAV_H   42
+
+/* A group box: a card the window draws on the page. */
+typedef struct { int tab, x, y, w, h; WCHAR title[64]; } Card;
+static Card s_cards[96];
+static int  s_ncards;
+/* Push buttons, drawn by the window (rounded; red for the main actions). */
+typedef struct { HWND h; int primary; } Btn;
+static Btn  s_btns[256];
+static int  s_nbtns;
+static HWND s_hover_btn;
+
+static int is_primary_id(int id)
+{
+    return id == ID_PLAY || id == ID_INSTALL || id == ID_SAVE || id == ID_DLC_INSTALL || id == ID_ON_SIGNIN ||
+           id == ID_MV_CREATE || id == ID_APK_CREATE || id == ID_ADB_INSTALL;
+}
+
+static LRESULT CALLBACK btn_proc(HWND h, UINT m, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id; (void)ref;
+    if (m == WM_MOUSEMOVE && s_hover_btn != h) {
+        TRACKMOUSEEVENT t = { sizeof t, TME_LEAVE, h, 0 };
+        HWND old = s_hover_btn;
+        s_hover_btn = h;
+        TrackMouseEvent(&t);
+        if (old) InvalidateRect(old, NULL, FALSE);
+        InvalidateRect(h, NULL, FALSE);
+    } else if (m == WM_MOUSELEAVE && s_hover_btn == h) {
+        s_hover_btn = NULL;
+        InvalidateRect(h, NULL, FALSE);
+    } else if (m == WM_SETCURSOR) {
+        SetCursor(LoadCursor(NULL, IDC_HAND));
+        return TRUE;
+    } else if (m == WM_LBUTTONDBLCLK) {
+        m = WM_LBUTTONDOWN;  /* (owner-drawn buttons: a quick second click is a click too) */
+    }
+    return DefSubclassProc(h, m, wp, lp);
+}
+
+/* The icon font: Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets. */
+static int CALLBACK font_found(const LOGFONTW *lf, const TEXTMETRICW *tm, DWORD type, LPARAM lp)
+{
+    (void)lf; (void)tm; (void)type;
+    *(int *)lp = 1;
+    return 0;
+}
+
+static const WCHAR *icon_face(void)
+{
+    static const WCHAR *face;
+    if (!face) {
+        LOGFONTW lf;
+        int found = 0;
+        HDC dc = GetDC(NULL);
+        ZeroMemory(&lf, sizeof lf);
+        lf.lfCharSet = DEFAULT_CHARSET;
+        wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Segoe Fluent Icons");
+        EnumFontFamiliesExW(dc, &lf, font_found, (LPARAM)&found, 0);
+        ReleaseDC(NULL, dc);
+        face = found ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
+    }
+    return face;
+}
 
 static void make_fonts(void)
 {
@@ -1805,13 +1945,48 @@ static void make_fonts(void)
     ncm.lfMessageFont.lfWeight = FW_BOLD;
     ncm.lfMessageFont.lfHeight = -MulDiv(17, s_dpi, 72);
     s_title = CreateFontIndirectW(&ncm.lfMessageFont);
+    /* (the look) */
+    if (s_icons) DeleteObject(s_icons);
+    if (s_nav) DeleteObject(s_nav);
+    if (s_card) DeleteObject(s_card);
+    if (s_huge) DeleteObject(s_huge);
+    s_icons = CreateFontW(-MulDiv(16, s_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                          CLEARTYPE_QUALITY, 0, icon_face());
+    ncm.lfMessageFont.lfWeight = FW_SEMIBOLD;
+    ncm.lfMessageFont.lfHeight = -MulDiv(10, s_dpi, 72);
+    s_nav = CreateFontIndirectW(&ncm.lfMessageFont);
+    ncm.lfMessageFont.lfHeight = -MulDiv(10, s_dpi, 72);
+    s_card = CreateFontIndirectW(&ncm.lfMessageFont);
+    ncm.lfMessageFont.lfWeight = FW_BOLD;
+    ncm.lfMessageFont.lfHeight = -MulDiv(20, s_dpi, 72);
+    s_huge = CreateFontIndirectW(&ncm.lfMessageFont);
 }
 
 static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x, int y, int w, int h, int id)
 {
-    HWND c = CreateWindowExW(0, cls, text, WS_CHILD | style, S(x), S(y + DY), S(w), S(h), s_wnd,
-                             (HMENU)(INT_PTR)id, s_inst, NULL);
+    HWND c;
+    const int button = !_wcsicmp(cls, L"Button");
+    const DWORD kind = style & BS_TYPEMASK;
+    const int push = button && (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON);
+    /* A group box becomes a card the window draws (the control is never shown). */
+    if (button && kind == BS_GROUPBOX && tab >= 0 && s_ncards < (int)(sizeof s_cards / sizeof s_cards[0])) {
+        Card *cd = &s_cards[s_ncards++];
+        cd->tab = tab; cd->x = x; cd->y = y; cd->w = w; cd->h = h;
+        wcsncpy_s(cd->title, 64, text ? text : L"", _TRUNCATE);
+        return CreateWindowExW(0, cls, text, WS_CHILD | style, S(x + SB_W), S(y + DY), S(w), S(h), s_wnd,
+                               (HMENU)(INT_PTR)id, s_inst, NULL);
+    }
+    if (push)
+        style = (style & ~(DWORD)BS_TYPEMASK) | BS_OWNERDRAW;
+    c = CreateWindowExW(0, cls, text, WS_CHILD | style, S(x + SB_W), S(y + DY), S(w), S(h), s_wnd,
+                        (HMENU)(INT_PTR)id, s_inst, NULL);
     SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    if (push && s_nbtns < (int)(sizeof s_btns / sizeof s_btns[0])) {
+        s_btns[s_nbtns].h = c;
+        s_btns[s_nbtns].primary = kind == BS_DEFPUSHBUTTON || is_primary_id(id);
+        s_nbtns++;
+        SetWindowSubclass(c, btn_proc, 1, 0);
+    }
     if (tab >= 0 && s_nctl[tab] < 32)
         s_ctl[tab][s_nctl[tab]++] = c;
     if (s_nplaced < (int)(sizeof s_placed / sizeof s_placed[0])) {
@@ -1837,7 +2012,7 @@ static void relayout(void)
     make_fonts();
     for (i = 0; i < s_nplaced; i++) {
         Placed *pl = &s_placed[i];
-        SetWindowPos(pl->h, NULL, S(pl->x), S(pl->y + DY), S(pl->w), S(pl->hh), SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(pl->h, NULL, S(pl->x + SB_W), S(pl->y + DY), S(pl->w), S(pl->hh), SWP_NOZORDER | SWP_NOACTIVATE);
         SendMessageW(pl->h, WM_SETFONT, (WPARAM)(pl->big ? s_big : s_font), TRUE);
     }
     InvalidateRect(s_wnd, NULL, TRUE);
@@ -1870,6 +2045,7 @@ static volatile LONG s_up_busy;
 static void show_tab(int t)
 {
     int i, k;
+    s_cur_tab = t;
     for (k = 0; k < TAB_COUNT; k++)
         for (i = 0; i < s_nctl[k]; i++)
             ShowWindow(s_ctl[k][i], k == t ? SW_SHOW : SW_HIDE);
@@ -1895,6 +2071,10 @@ static void show_tab(int t)
         mv_refresh();
     if (t == TAB_MODS)
         mods_show(s_game_dir);
+    if (t == TAB_MUSIC)
+        music_show(s_game_dir);
+    if (t == TAB_ROSTER)
+        roster_show(s_game_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
@@ -1954,31 +2134,32 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster" };
 
-    /* Just the strip of tabs; the pages below are plain window. */
-    s_tab = add(-1, WC_TABCONTROLW, L"", WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER, 12, 10, 596, 28, ID_TAB);
+    /* The tabs (never shown: the sidebar picks them; --capture and show_tab
+       still use its selection). */
+    s_tab = add(-1, WC_TABCONTROLW, L"", WS_CLIPSIBLINGS | TCS_FOCUSNEVER, 12, 10, 596, 28, ID_TAB);
     for (i = 0; i < TAB_COUNT; i++) {
         ti.mask = TCIF_TEXT;
         ti.pszText = (WCHAR *)names[i];
         TabCtrl_InsertItem(s_tab, i, &ti);
     }
 
-    /* Play */
-    add(TAB_PLAY, L"Static", L"The PC port of the 2010 Xbox 360 game, statically recompiled from the original game code.",
-        SS_LEFT, X0, 60, 560, 24, 0);
-    add(TAB_PLAY, L"Button", L"Game folder", BS_GROUPBOX, X0, 104, 560, 70, 0);
-    add(TAB_PLAY, L"Edit", L"", ES_READONLY | ES_AUTOHSCROLL | WS_BORDER, X0 + 14, 130, 430, 24, ID_GAMEDIR);
-    add(TAB_PLAY, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 454, 129, 92, 26, ID_GAMEDIR_CHANGE);
-    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 190, 560, 40, ID_PLAY_STATUS);
-    h = add(TAB_PLAY, L"Button", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, X0, 246, 200, 52, ID_PLAY);
+    /* Play: the game (status, time played, PLAY), its folder, help, updates. */
+    add(TAB_PLAY, L"Button", L"WWE SmackDown vs. Raw 2011", BS_GROUPBOX, X0, 4, 560, 150, 0);
+    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 38, 300, 40, ID_PLAY_STATUS);
+    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 82, 300, 22, ID_PLAYTIME);
+    h = add(TAB_PLAY, L"Button", L"PLAY", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 336, 36, 208, 64, ID_PLAY);
     set_big(h);
-    add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 380, 258, 166, 30, ID_REPORT);
     add(TAB_PLAY, L"Button", L"Close the launcher when the game starts", BS_AUTOCHECKBOX | WS_TABSTOP,
-        X0, 312, 400, 24, ID_CLOSE_ON_PLAY);
+        X0 + 16, 116, 320, 24, ID_CLOSE_ON_PLAY);
+    add(TAB_PLAY, L"Button", L"Game folder", BS_GROUPBOX, X0, 170, 560, 82, 0);
+    add(TAB_PLAY, L"Edit", L"", ES_READONLY | ES_AUTOHSCROLL | WS_BORDER, X0 + 16, 206, 410, 26, ID_GAMEDIR);
+    add(TAB_PLAY, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 436, 204, 108, 30, ID_GAMEDIR_CHANGE);
     add(TAB_PLAY, L"Static", L"Display, resolution, controller and audio options are on the Settings tab; they "
                              L"apply the next time the game starts.",
-        SS_LEFT, X0, 356, 560, 40, 0);
+        SS_LEFT, X0, 268, 380, 40, 0);
+    add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 394, 270, 166, 32, ID_REPORT);
     up_setup();
 
     /* Settings */
@@ -2017,7 +2198,7 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Native (recommended)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Emulated");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Native Vulkan (EXPERIMENTAL)");
-    add(TAB_SETTINGS, L"Button", L"Input and audio", BS_GROUPBOX, X0, 248, 560, 90, 0);
+    add(TAB_SETTINGS, L"Button", L"Input and audio", BS_GROUPBOX, X0, 248, 560, 118, 0);
     add(TAB_SETTINGS, L"Static", L"Controller API", SS_LEFT, X0 + 16, 276, 130, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 272, 300, 200, ID_INPUT);
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"XInput (Xbox controllers)");
@@ -2027,24 +2208,26 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"XAudio2 (recommended)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"SDL");
     add(TAB_SETTINGS, L"Button", L"Mute", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 464, 306, 84, 24, ID_MUTE);
-    add(TAB_SETTINGS, L"Button", L"Entrance music", BS_GROUPBOX, X0, 348, 560, 80, 0);
-    add(TAB_SETTINGS, L"Static", L"Create An Entrance \x2192 Music \x2192 USER PLAYLIST plays your own songs "
-                                 L"(.mp3): give each song its own folder in the game's Music folder.",
-        SS_LEFT, X0 + 16, 368, 370, 52, 0);
-    add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 374, 146, 28,
+    add(TAB_SETTINGS, L"Button", L"High CPU priority (helps on busy or weak PCs)", BS_AUTOCHECKBOX | WS_TABSTOP,
+        X0 + 16, 334, 530, 24, ID_PRIORITY);
+    add(TAB_SETTINGS, L"Button", L"Entrance music", BS_GROUPBOX, X0, 374, 560, 68, 0);
+    add(TAB_SETTINGS, L"Static", L"Create An Entrance \x2192 Music \x2192 USER PLAYLIST plays your own songs: "
+                                 L"add them on the Music tab.",
+        SS_LEFT, X0 + 16, 400, 370, 36, 0);
+    add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 400, 146, 28,
         ID_MUSIC_OPEN);
-    add(TAB_SETTINGS, L"Button", L"Language", BS_GROUPBOX, X0, 436, 560, 72, 0);
-    add(TAB_SETTINGS, L"Static", L"Game text", SS_LEFT, X0 + 16, 462, 130, 20, 0);
-    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 458, 200, 200,
+    add(TAB_SETTINGS, L"Button", L"Language", BS_GROUPBOX, X0, 450, 560, 68, 0);
+    add(TAB_SETTINGS, L"Static", L"Game text", SS_LEFT, X0 + 16, 480, 130, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 476, 200, 200,
             ID_LANGUAGE);
     for (i = 0; i < N_LANGUAGES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_languages[i].label);
     add(TAB_SETTINGS, L"Static", L"Menus and on-screen text (commentary stays "
                                  L"English). Also in game: GRAPHICS page.",
-        SS_LEFT, X0 + 362, 452, 186, 50, 0);
-    add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 518, 140, 30, ID_DEFAULTS);
-    add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 518, 108, 30, ID_SAVE);
-    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 556, 560, 36, ID_SETTINGS_STATUS);
+        SS_LEFT, X0 + 362, 466, 186, 48, 0);
+    add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 528, 140, 30, ID_DEFAULTS);
+    add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 528, 108, 30, ID_SAVE);
+    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 564, 560, 34, ID_SETTINGS_STATUS);
 
     /* Online */
     add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
@@ -2213,6 +2396,21 @@ static void build_ui(void)
 
     /* Mods (mods_tab.c) */
     mods_build(s_wnd, add, TAB_MODS, ID_MODS_BASE, s_title);
+    for (i = 0; i < s_nctl[TAB_MODS]; i++) {  /* (its heading: the page shows the title) */
+        WCHAR t[16], c[16];
+        GetClassNameW(s_ctl[TAB_MODS][i], c, 16);
+        GetWindowTextW(s_ctl[TAB_MODS][i], t, 16);
+        if (!_wcsicmp(c, L"Static") && !wcscmp(t, L"Mods")) {
+            DestroyWindow(s_ctl[TAB_MODS][i]);
+            memmove(&s_ctl[TAB_MODS][i], &s_ctl[TAB_MODS][i + 1], (size_t)(s_nctl[TAB_MODS] - i - 1) * sizeof(HWND));
+            s_nctl[TAB_MODS]--;
+            break;
+        }
+    }
+    /* Music (music_tab.c) */
+    music_build(s_wnd, add, TAB_MUSIC, ID_MUSIC_BASE);
+    /* Roster: the list menus' sort categories (roster_tab.c) */
+    roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -5513,16 +5711,194 @@ static void up_setup(void)
 {
     WCHAR v[64];
     swprintf_s(v, 64, L"Version %s", PORT_VERSION);
-    add(TAB_PLAY, L"Button", L"Updates", BS_GROUPBOX, X0, 410, 560, 110, 0);
-    add(TAB_PLAY, L"Static", v, SS_LEFT, X0 + 14, 434, 150, 20, ID_VERSION);
-    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 14, 456, 380, 36, ID_UP_STATUS);
-    add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 430, 146, 28, ID_UP_BUTTON);
+    add(TAB_PLAY, L"Button", L"Updates", BS_GROUPBOX, X0, 326, 560, 110, 0);
+    add(TAB_PLAY, L"Static", v, SS_LEFT, X0 + 16, 354, 150, 20, ID_VERSION);
+    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 376, 370, 36, ID_UP_STATUS);
+    add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 394, 352, 150, 30, ID_UP_BUTTON);
     add(TAB_PLAY, L"Button", L"Check when the launcher starts", BS_AUTOCHECKBOX | WS_TABSTOP,
-        X0 + 14, 490, 300, 22, ID_UP_AUTO);
-    add(TAB_PLAY, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 330, 494, 216, 14, ID_UP_PROGRESS);
+        X0 + 16, 406, 300, 22, ID_UP_AUTO);
+    add(TAB_PLAY, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 330, 410, 214, 14, ID_UP_PROGRESS);
     ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     CheckDlgButton(s_wnd, ID_UP_AUTO,
                    GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
+}
+
+/* Whether a control sits on a card of the page shown. */
+static int card_at(HWND c)
+{
+    RECT r;
+    int i;
+    GetWindowRect(c, &r);
+    MapWindowPoints(NULL, s_wnd, (POINT *)&r, 2);
+    for (i = 0; i < s_ncards; i++) {
+        const Card *cd = &s_cards[i];
+        if (cd->tab != s_cur_tab)
+            continue;
+        if (r.left >= S(cd->x + SB_W) && r.top >= S(cd->y + DY) && r.right <= S(cd->x + cd->w + SB_W) + 1 &&
+            r.bottom <= S(cd->y + cd->h + DY) + 1)
+            return 1;
+    }
+    return 0;
+}
+
+/* The sidebar item under (x, y), or -1. */
+static int nav_at(int x, int y)
+{
+    int k;
+    if (x < 0 || x >= S(SB_W))
+        return -1;
+    for (k = 0; k < NAV_N; k++)
+        if (y >= S(NAV_TOP + k * NAV_H) && y < S(NAV_TOP + k * NAV_H + NAV_H - 4))
+            return k;
+    return -1;
+}
+
+/* A push button: rounded, red for the main actions, lighter when the mouse
+   is on it, darker pressed; PLAY big with its icon. */
+static int draw_button(const DRAWITEMSTRUCT *d)
+{
+    int i, primary = -1;
+    for (i = 0; i < s_nbtns; i++)
+        if (s_btns[i].h == d->hwndItem)
+            primary = s_btns[i].primary;
+    if (primary < 0)
+        return 0;
+    {
+        const int disabled = (d->itemState & ODS_DISABLED) != 0, down = (d->itemState & ODS_SELECTED) != 0;
+        const int hot = !disabled && s_hover_btn == d->hwndItem;
+        const int play = GetDlgCtrlID(d->hwndItem) == ID_PLAY;
+        RECT r = d->rcItem;
+        WCHAR text[128];
+        COLORREF fill, line, ink;
+        HDC dc = d->hDC;
+        HFONT font;
+        HGDIOBJ old;
+        FillRect(dc, &r, card_at(d->hwndItem) ? s_card_brush : s_page_brush);  /* (behind the corners) */
+        if (primary) {
+            fill = disabled ? RGB(224, 186, 192) : down ? C_ACCENT_DOWN : hot ? C_ACCENT_HOT : C_ACCENT;
+            line = THEME_NONE;
+            ink = RGB(255, 255, 255);
+        } else {
+            fill = disabled ? RGB(246, 246, 248) : down ? RGB(226, 226, 232) : hot ? RGB(240, 240, 245) : C_CARD;
+            line = disabled ? RGB(226, 226, 232) : hot ? RGB(168, 168, 178) : RGB(198, 198, 206);
+            ink = disabled ? RGB(160, 160, 168) : C_TEXT;
+        }
+        theme_round_rect(dc, &r, S(play ? 8 : 6), fill, line, (float)S(1));
+        if ((d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT)) {
+            RECT f = r;
+            InflateRect(&f, -S(3), -S(3));
+            theme_round_rect(dc, &f, S(4), THEME_NONE, primary ? RGB(255, 214, 220) : C_ACCENT, (float)S(1));
+        }
+        GetWindowTextW(d->hwndItem, text, 128);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, ink);
+        if (down)
+            OffsetRect(&r, 0, S(1));
+        if (play) {  /* (the play icon, then PLAY) */
+            WCHAR icon[2] = { 0xE768, 0 };
+            SIZE ts, is;
+            RECT ir = r, tr = r;
+            int x0;
+            old = SelectObject(dc, s_huge);
+            GetTextExtentPoint32W(dc, text, (int)wcslen(text), &ts);
+            SelectObject(dc, s_icons);
+            GetTextExtentPoint32W(dc, icon, 1, &is);
+            x0 = (r.left + r.right - (is.cx + S(10) + ts.cx)) / 2;
+            ir.left = x0;
+            ir.right = x0 + is.cx;
+            DrawTextW(dc, icon, 1, &ir, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dc, s_huge);
+            tr.left = x0 + is.cx + S(10);
+            DrawTextW(dc, text, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dc, old);
+            return 1;
+        }
+        font = (HFONT)SendMessageW(d->hwndItem, WM_GETFONT, 0, 0);
+        old = SelectObject(dc, font ? font : s_font);
+        DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        SelectObject(dc, old);
+    }
+    return 1;
+}
+
+/* The window: the sidebar, the page's title, its cards. */
+static void paint_window(HDC dc)
+{
+    static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install the game", L"DLC",
+                                                    L"Saves", L"Paint Tool", L"Movies", L"Android", L"Mods",
+                                                    L"Music", L"Roster: sort categories" };
+    RECT cl, r;
+    HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
+    HGDIOBJ old;
+    int k, i;
+    WCHAR v[64];
+    GetClientRect(s_wnd, &cl);
+    /* Sidebar: the game's icon and name, the tabs, the version. */
+    r = cl;
+    r.right = S(SB_W);
+    FillRect(dc, &r, sb);
+    DeleteObject(sb);
+    SetBkMode(dc, TRANSPARENT);
+    if (s_icon)
+        DrawIconEx(dc, S(18), S(22), s_icon, S(40), S(40), 0, NULL, DI_NORMAL);
+    old = SelectObject(dc, s_card);
+    SetTextColor(dc, RGB(250, 250, 252));
+    r.left = S(68); r.top = S(22); r.right = S(SB_W - 8); r.bottom = S(42);
+    SelectObject(dc, s_title);
+    r.top = S(20); r.bottom = S(44);
+    DrawTextW(dc, L"SvR 2011", -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, s_card);
+    SetTextColor(dc, RGB(208, 20, 44));
+    r.top = S(44); r.bottom = S(64);
+    DrawTextW(dc, L"PC PORT", -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    for (k = 0; k < NAV_N; k++) {
+        const int sel = k_nav[k].tab == s_cur_tab, hot = k == s_nav_hover;
+        RECT it = { S(10), S(NAV_TOP + k * NAV_H), S(SB_W - 10), S(NAV_TOP + k * NAV_H + NAV_H - 4) };
+        WCHAR icon[2] = { k_nav[k].icon, 0 };
+        if (sel || hot)
+            theme_round_rect(dc, &it, S(6), sel ? C_SIDEBAR_SEL : C_SIDEBAR_HOVER, THEME_NONE, 0);
+        if (sel) {
+            RECT bar = { it.left, it.top + S(8), it.left + S(4), it.bottom - S(8) };
+            theme_round_rect(dc, &bar, S(2), C_ACCENT, THEME_NONE, 0);
+        }
+        SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(178, 178, 188));
+        SelectObject(dc, s_icons);
+        r = it;
+        r.left += S(18);
+        DrawTextW(dc, icon, 1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, s_nav);
+        r.left += S(30);
+        DrawTextW(dc, k_nav[k].name, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    SelectObject(dc, s_font);
+    SetTextColor(dc, RGB(120, 120, 132));
+    swprintf_s(v, 64, L"Version %s", PORT_VERSION);
+    r.left = S(20); r.right = S(SB_W - 10); r.top = cl.bottom - S(34); r.bottom = cl.bottom - S(12);
+    DrawTextW(dc, v, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    /* The page: its title, its cards. */
+    if (s_cur_tab >= 0 && s_cur_tab < TAB_COUNT) {
+        SelectObject(dc, s_huge);
+        SetTextColor(dc, C_TEXT);
+        r.left = S(SB_W + X0); r.right = cl.right - S(16); r.top = S(14); r.bottom = S(52);
+        DrawTextW(dc, titles[s_cur_tab], -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        for (i = 0; i < s_ncards; i++) {
+            const Card *cd = &s_cards[i];
+            RECT c;
+            if (cd->tab != s_cur_tab)
+                continue;
+            c.left = S(cd->x + SB_W); c.top = S(cd->y + DY); c.right = S(cd->x + cd->w + SB_W);
+            c.bottom = S(cd->y + cd->h + DY);
+            theme_round_rect(dc, &c, S(10), C_CARD, C_CARD_LINE, (float)S(1));
+            if (cd->title[0]) {
+                SelectObject(dc, s_card);
+                SetTextColor(dc, C_TEXT);
+                r = c;
+                r.left += S(14); r.top += S(6); r.bottom = r.top + S(20);
+                DrawTextW(dc, cd->title, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+            }
+        }
+    }
+    SelectObject(dc, old);
 }
 
 static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
@@ -5546,7 +5922,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     }
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
-            mods_command(LOWORD(wp), HIWORD(wp)))
+            mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
+            roster_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_REPORT:
@@ -5589,6 +5966,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
             break;
         case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
+        case ID_PRIORITY:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
@@ -5802,41 +6180,56 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_CTLCOLORSTATIC:
-        SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
-        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+    case WM_CTLCOLORBTN: {
+        /* (text on a card: white; on the page: its grey) */
+        const int on_card = card_at((HWND)lp);
+        SetTextColor((HDC)wp, C_TEXT);
+        SetBkColor((HDC)wp, on_card ? C_CARD : C_PAGE);
+        return (LRESULT)(on_card ? s_card_brush : s_page_brush);
+    }
+    case WM_DRAWITEM:
+        if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_BUTTON && draw_button((DRAWITEMSTRUCT *)lp))
+            return TRUE;
+        break;
+    case WM_LBUTTONDOWN: {
+        const int k = nav_at(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        if (k >= 0 && k_nav[k].tab != s_cur_tab)
+            show_tab(k_nav[k].tab);
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        const int k = nav_at(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        if (k != s_nav_hover) {
+            TRACKMOUSEEVENT t = { sizeof t, TME_LEAVE, w, 0 };
+            RECT sb = { 0, 0, S(SB_W), S(CLIENT_H + DY) };
+            s_nav_hover = k;
+            TrackMouseEvent(&t);
+            InvalidateRect(w, &sb, FALSE);
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        if (s_nav_hover >= 0) {
+            RECT sb = { 0, 0, S(SB_W), S(CLIENT_H + DY) };
+            s_nav_hover = -1;
+            InvalidateRect(w, &sb, FALSE);
+        }
+        return 0;
+    case WM_SETCURSOR:
+        if ((HWND)wp == w && LOWORD(lp) == HTCLIENT) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(w, &pt);
+            if (nav_at(pt.x, pt.y) >= 0) {
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
     case WM_PAINT: {
-        /* The title band: near-black with a red rule under it. */
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(w, &ps);
-        RECT r, tr, rule;
-        HBRUSH band = CreateSolidBrush(RGB(18, 18, 22)), red = CreateSolidBrush(RGB(200, 16, 32));
-        GetClientRect(w, &r);
-        r.bottom = S(HEADER_H);
-        FillRect(dc, &r, band);
-        rule = r;
-        rule.top = r.bottom - S(4);
-        FillRect(dc, &rule, red);
-        rule = r;
-        rule.left = S(16);
-        rule.right = S(22);
-        rule.top = S(12);
-        rule.bottom = S(50);
-        FillRect(dc, &rule, red);
-        DeleteObject(band);
-        DeleteObject(red);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(250, 250, 250));
-        SelectObject(dc, s_title);
-        tr = r;
-        tr.left = S(32);
-        tr.top = S(6);
-        tr.bottom = S(36);
-        DrawTextW(dc, L"WWE SmackDown vs. Raw 2011", -1, &tr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-        SetTextColor(dc, RGB(170, 170, 178));
-        SelectObject(dc, s_font);
-        tr.top = S(34);
-        tr.bottom = S(56);
-        DrawTextW(dc, L"PC Port Launcher", -1, &tr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        paint_window(dc);
         EndPaint(w, &ps);
         return 0;
     }
@@ -5927,6 +6320,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     MSG msg;
     RECT r;
     int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0;
+    const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
 
@@ -6077,7 +6471,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -6100,6 +6494,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
            buttons, against the configured server. */
         if (argc >= 7 && (!wcscmp(argv[4], L"--sign-in") || !wcscmp(argv[4], L"--register")))
             capture_account = argv + 4;
+        /* ... --music-add <file>: the Music tab's Add songs with that file. */
+        if (argc >= 6 && !wcscmp(argv[4], L"--music-add"))
+            capture_music = argv[5];
+        /* ... --roster-tag <id> <SMACKDOWN|RAW|NPC|MODS|DEFAULT>: the Roster tab tags it. */
+        if (argc >= 7 && !wcscmp(argv[4], L"--roster-tag"))
+            capture_tag = argv + 5;
     }
 
     icc.dwSize = sizeof icc;
@@ -6107,6 +6507,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     InitCommonControlsEx(&icc);
     s_dpi = (int)GetDpiForSystem();
     make_fonts();
+    theme_init();
+    s_page_brush = CreateSolidBrush(C_PAGE);
+    s_card_brush = CreateSolidBrush(C_CARD);
     /* The game's own icon (launcher.rc, from its Xbox 360 title image). */
     s_icon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE);
 
@@ -6115,13 +6518,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     wc.lpfnWndProc = wndproc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wc.hbrBackground = s_page_brush;
     wc.lpszClassName = L"SvR2011Launcher";
     wc.hIcon = s_icon;
     wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
                                    GetSystemMetrics(SM_CYSMICON), LR_SHARED);
     RegisterClassExW(&wc);
-    r.left = 0; r.top = 0; r.right = S(CLIENT_W); r.bottom = S(CLIENT_H + DY);
+    r.left = 0; r.top = 0; r.right = S(SB_W + CLIENT_W); r.bottom = S(CLIENT_H + DY);
     AdjustWindowRectExForDpi(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, 0, (UINT)s_dpi);
     s_wnd = CreateWindowExW(0, wc.lpszClassName, WINDOW_TITLE,
                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
@@ -6136,6 +6539,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             install_bundled(s_game_dir, s_launcher_dir);
     }
     refresh_play();
+    if (capture_music)
+        music_add_files(s_game_dir, &capture_music, 1);
+    if (capture_tag)
+        roster_tag(s_game_dir, _wtoi(capture_tag[0]), capture_tag[1]);
     show_tab(capture_tab >= 0 ? capture_tab : (is_game_folder(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
     if (capture_file) {
         /* Drawn off-screen, never activated (tests run beside the user's work). */

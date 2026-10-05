@@ -12,7 +12,7 @@ $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_lim"
 $nav = Join-Path $tools "lim_nav.ps1"
 & $nav -Keys "BACK@45,START@40,A@6,START@10" | Out-Null                    # title -> main menu
 & $nav -Keys "DOWN@1.5,DOWN@1.5,DOWN@1.5,A@3,DOWN@1.5,A@4" | Out-Null     # CREATE MODES -> CREATE A SUPERSTAR
-& $nav -Keys "DOWN@1.5,A@10,A@5,A@5" | Out-Null                           # EDIT -> Superstar 1 -> ORIGINAL
+& $nav -Keys "DOWN@1.5,A@10,A@5,A@5,A@5" | Out-Null                       # EDIT -> Superstar 1 -> EDIT -> ORIGINAL -> EDIT
 & $nav -Keys "A@45" | Out-Null                                            # EDIT (loads the editor)
 $log = Join-Path $runs "$Name.log"
 & $nav -Keys "UP@2,A@5,UP@2,A@6" -Shot "${Name}_picker" | Out-Null        # HEAD -> TATTOOS -> PAINT TOOL DATA

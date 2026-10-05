@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <vector>
@@ -77,6 +79,16 @@ constexpr size_t kRecent = 256;
 double g_recent[kRecent] = {};
 size_t g_recent_next = 0;
 
+// Test aid: SVR2011_FRAME_TIMES=<file> - every frame's time, a line each:
+// "<unix time ms> <frame ms>" (tools/opt_bench.ps1: exact percentiles).
+FILE* FrameTimesFile() {
+  static FILE* f = [] {
+    const char* path = std::getenv("SVR2011_FRAME_TIMES");
+    return path && *path ? std::fopen(path, "w") : nullptr;
+  }();
+  return f;
+}
+
 void OnFramePresented() {
   std::lock_guard lock(g_mutex);
   const auto now = Clock::now();
@@ -84,6 +96,12 @@ void OnFramePresented() {
     g_window_start = now;
   } else {
     const double ms = std::chrono::duration<double, std::milli>(now - g_last_frame).count();
+    if (FILE* f = FrameTimesFile())
+      std::fprintf(f, "%lld %.2f\n",
+                   static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              std::chrono::system_clock::now().time_since_epoch())
+                                              .count()),
+                   ms);
     g_frame_ms = g_frame_ms == 0 ? ms : g_frame_ms * 0.9 + ms * 0.1;
     g_window_worst_ms = std::max(g_window_worst_ms, ms);
     g_recent[g_recent_next++ % kRecent] = ms;
@@ -117,6 +135,7 @@ void OnFramePresented() {
 #endif
       v.clear();
     }
+    if (FILE* f = FrameTimesFile()) std::fflush(f);
     g_window_start = now;
     g_window_frames = 0;
     g_window_worst_ms = 0;

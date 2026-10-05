@@ -42,6 +42,7 @@
 #include "crowd_signs.h"
 #include "media_mods.h"
 #include "frame_rate.h"
+#include "perf_hooks.h"
 #include "crash_report.h"
 #include "dlc.h"
 #include "fps_overlay.h"
@@ -59,6 +60,7 @@
 #include "touch_controls.h"
 #include "pad_types.h"
 #include "pad_icons.h"
+#include "playtime.h"
 #include <rex/input/flags.h>
 #include "discord_presence.h"
 #include "online.h"
@@ -340,7 +342,7 @@ void Svr2011App::OnPostLoadXexImage() {
     static const char* const kGroups[][2] = {
         {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
         {"renderer", "native_renderer gpu_backend native_max_scale native_aa native_2x_msaa native_scale_effects "
-                     "native_widescreen native_prepare_pipelines frame_rate full_speed unlock_30fps"},
+                     "native_widescreen native_prepare_pipelines frame_rate full_speed unlock_30fps process_priority"},
         {"effects", "depth_of_field motion_blur soft_filter"},
         {"gameplay", "replays managers_tile mixed_gender_matches user_language"},
         {"input", "input_backend mnk_mode touch_controls touch_auto_layout"},
@@ -475,6 +477,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
   svr2011::InstallPadIcons(runtime()->memory());  // (pad_icons.h)
+  svr2011::InstallPlaytime();                     // (playtime.h)
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
@@ -494,6 +497,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
   svr2011::InstallFrameRate(runtime()->memory());
+  svr2011::InstallPerfSettings();  // (perf_hooks.h)
   if (imgui_drawer()) {
     // MY WWE -> ACHIEVEMENTS (achievements_page.h).
     svr2011::InstallAchievementsPage(

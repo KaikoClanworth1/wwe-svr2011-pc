@@ -41,6 +41,7 @@ typedef struct {
     uint8_t *bgra;             /* current picture */
     IMFSourceReader *rd;
     LONG stride;
+    int yuv;                   /* the decoder's own format when Windows can't give RGB: 0 RGB32, 1 NV12, 2 YUY2, 3 I420 */
     int fw, fh;                /* decoded frame layout */
     int ax, ay;                /* visible area offset */
     LONGLONG duration, base;   /* 100 ns; base = time offset of the current loop */
@@ -100,31 +101,63 @@ done:
     return ok;
 }
 
+/* The video's frames as RGB32 through Windows' video processor - or, where
+ * there is none (Wine / Proton on Linux and the Steam Deck: their decoders
+ * give only their own YUV formats), as NV12 / YUY2 / I420, turned into RGB
+ * here. SVR2011_MOVIE_FORCE_YUV=1 takes the second way on Windows (tests). */
+static int video_reader(Pic *p, const WCHAR *path)
+{
+    static const GUID *const yuv[] = { &MFVideoFormat_NV12, &MFVideoFormat_YUY2, &MFVideoFormat_IYUV };
+    WCHAR force[8];
+    const int rgb_first = !GetEnvironmentVariableW(L"SVR2011_MOVIE_FORCE_YUV", force, 8);
+    int pass, k;
+    for (pass = rgb_first ? 0 : 1; pass < 2; pass++) {
+        IMFAttributes *attr = NULL;
+        if (FAILED(MFCreateAttributes(&attr, 2)))
+            return 0;
+        if (pass == 0)
+            IMFAttributes_SetUINT32(attr, &MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+        if (FAILED(MFCreateSourceReaderFromURL(path, attr, &p->rd))) {
+            IMFAttributes_Release(attr);
+            p->rd = NULL;
+            continue;
+        }
+        IMFAttributes_Release(attr);
+        IMFSourceReader_SetStreamSelection(p->rd, (DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
+        IMFSourceReader_SetStreamSelection(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
+        for (k = pass == 0 ? -1 : 0; k < (pass == 0 ? 0 : 3); k++) {
+            IMFMediaType *mt = NULL;
+            HRESULT hr;
+            if (FAILED(MFCreateMediaType(&mt)))
+                break;
+            IMFMediaType_SetGUID(mt, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+            IMFMediaType_SetGUID(mt, &MF_MT_SUBTYPE, k < 0 ? &MFVideoFormat_RGB32 : yuv[k]);
+            hr = IMFSourceReader_SetCurrentMediaType(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, mt);
+            IMFMediaType_Release(mt);
+            if (SUCCEEDED(hr)) {
+                p->yuv = k + 1;
+                return 1;
+            }
+        }
+        IMFSourceReader_Release(p->rd);
+        p->rd = NULL;
+    }
+    return 0;
+}
+
 static int video_open(Pic *p, const WCHAR *path, WCHAR *err, size_t errn)
 {
-    IMFAttributes *attr = NULL;
     IMFMediaType *mt = NULL;
     PROPVARIANT pv;
     UINT32 w = 0, h = 0, pn = 1, pd = 1, stride = 0;
     UINT64 packed = 0;
     MFVideoArea area;
     int ok = 0;
-    if (FAILED(MFCreateAttributes(&attr, 2))
-            || FAILED(IMFAttributes_SetUINT32(attr, &MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE))
-            || FAILED(MFCreateSourceReaderFromURL(path, attr, &p->rd))) {
-        swprintf_s(err, errn, L"Could not open %s as a video (Windows can't play it).", path);
+    if (!video_reader(p, path)) {
+        swprintf_s(err, errn, L"Could not open %s as a video: this PC (or Wine / Proton) has no decoder for it. "
+                              L"Try an MP4 (H.264) video, or a .bik movie.", path);
         goto done;
     }
-    IMFSourceReader_SetStreamSelection(p->rd, (DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
-    IMFSourceReader_SetStreamSelection(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
-    if (FAILED(MFCreateMediaType(&mt))
-            || FAILED(IMFMediaType_SetGUID(mt, &MF_MT_MAJOR_TYPE, &MFMediaType_Video))
-            || FAILED(IMFMediaType_SetGUID(mt, &MF_MT_SUBTYPE, &MFVideoFormat_RGB32))
-            || FAILED(IMFSourceReader_SetCurrentMediaType(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, mt))) {
-        swprintf_s(err, errn, L"%s has no video Windows can decode.", path);
-        goto done;
-    }
-    IMFMediaType_Release(mt); mt = NULL;
     if (FAILED(IMFSourceReader_GetCurrentMediaType(p->rd, (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &mt))
             || FAILED(IMFMediaType_GetUINT64(mt, &MF_MT_FRAME_SIZE, &packed))
             || !(w = (UINT32)(packed >> 32)) || !(h = (UINT32)packed)) {
@@ -138,7 +171,7 @@ static int video_open(Pic *p, const WCHAR *path, WCHAR *err, size_t errn)
         p->ax = area.OffsetX.value; p->ay = area.OffsetY.value;
         p->w = area.Area.cx; p->h = area.Area.cy;
     }
-    p->stride = (LONG)w * 4;
+    p->stride = (LONG)w * (p->yuv == 0 ? 4 : p->yuv == 2 ? 2 : 1);
     if (SUCCEEDED(IMFMediaType_GetUINT32(mt, &MF_MT_DEFAULT_STRIDE, &stride))) p->stride = (LONG)stride;
     p->par = 1.0;
     if (SUCCEEDED(IMFMediaType_GetUINT64(mt, &MF_MT_PIXEL_ASPECT_RATIO, &packed))) {
@@ -156,7 +189,6 @@ static int video_open(Pic *p, const WCHAR *path, WCHAR *err, size_t errn)
     ok = 1;
 done:
     if (mt) IMFMediaType_Release(mt);
-    if (attr) IMFAttributes_Release(attr);
     return ok;
 }
 
@@ -229,15 +261,142 @@ static int pic_open(Pic *p, const WCHAR *path, int part, WCHAR *err, size_t errn
     return 1;
 }
 
+/* A decoded frame into the picture. The decoder's rows can be padded (a
+ * width that isn't a multiple of 16 / 64: 854, 1366, 1918...) - their real
+ * pitch comes from the 2D buffer; the media type's stride is only the
+ * unpadded width (copying with it shears the picture into stripes). */
+static uint8_t clamp8(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
+
+/* One YUV pixel (limited range; BT.709 for HD pictures, BT.601 below) to BGRA. */
+static void yuv_px(uint8_t *o, int y, int u, int v, int hd)
+{
+    const int c = (y - 16) * 298, d = u - 128, e = v - 128;
+    if (hd) {
+        o[2] = clamp8((c + 459 * e + 128) >> 8);
+        o[1] = clamp8((c - 55 * d - 136 * e + 128) >> 8);
+        o[0] = clamp8((c + 541 * d + 128) >> 8);
+    } else {
+        o[2] = clamp8((c + 409 * e + 128) >> 8);
+        o[1] = clamp8((c - 100 * d - 208 * e + 128) >> 8);
+        o[0] = clamp8((c + 516 * d + 128) >> 8);
+    }
+    o[3] = 255;
+}
+
+/* A YUV frame in one block (`len` bytes) into the picture. Its luma pitch
+ * and padded height: the first 16..512-pixel rounding of the width that the
+ * block fits (as for RGB below). */
+static void yuv_copy(Pic *p, const BYTE *data, DWORD len, LONG known_pitch)
+{
+    const int hd = p->fh >= 720;
+    DWORD pitch = 0, rows = 0;
+    int align, x, y;
+    if (known_pitch > 0) {
+        /* (from the 2D buffer: its luma plane is the height rounded up to 16
+           rows - 1080 -> 1088 - and the chroma follows it; `len` is a packed
+           copy's length, not this layout's) */
+        pitch = (DWORD)known_pitch;
+        rows = (DWORD)((p->fh + 15) & ~15);
+        (void)len;
+    }
+    for (align = 1; align <= 512 && !pitch; align = align == 1 ? 16 : align * 2) {
+        const DWORD w = (DWORD)((p->fw + align - 1) / align * align) * (p->yuv == 2 ? 2 : 1);
+        const DWORD per = p->yuv == 2 ? w : w * 3 / 2;   /* bytes per luma row, chroma included */
+        if (per && len % per == 0 && len / per >= (DWORD)p->fh) {
+            pitch = w;
+            rows = len / per;
+        }
+    }
+    if (!pitch) return;
+    for (y = 0; y < p->h; y++) {
+        const int sy = y + p->ay;
+        uint8_t *o = p->bgra + (size_t)y * p->w * 4;
+        for (x = 0; x < p->w; x++, o += 4) {
+            const int sx = x + p->ax;
+            int Y, U, V;
+            if (p->yuv == 2) {   /* YUY2: Y0 U Y1 V */
+                const BYTE *q = data + (size_t)sy * pitch + (size_t)(sx & ~1) * 2;
+                Y = q[(sx & 1) * 2]; U = q[1]; V = q[3];
+            } else if (p->yuv == 1) {   /* NV12: Y plane, then interleaved U V at half size */
+                const BYTE *c = data + (size_t)pitch * rows + (size_t)(sy / 2) * pitch + (size_t)(sx & ~1);
+                Y = data[(size_t)sy * pitch + sx]; U = c[0]; V = c[1];
+            } else {   /* I420: Y, then U and V planes at half size */
+                const BYTE *u = data + (size_t)pitch * rows, *v = u + (size_t)(pitch / 2) * (rows / 2);
+                Y = data[(size_t)sy * pitch + sx];
+                U = u[(size_t)(sy / 2) * (pitch / 2) + sx / 2]; V = v[(size_t)(sy / 2) * (pitch / 2) + sx / 2];
+            }
+            yuv_px(o, Y, U, V, hd);
+        }
+    }
+}
+
 static void sample_copy(Pic *p, IMFSample *s)
 {
     IMFMediaBuffer *buf = NULL;
+    IMF2DBuffer *b2 = NULL;
     BYTE *data = NULL;
     DWORD len = 0;
     int y;
+    DWORD count = 0;
+    if (p->yuv) {
+        if (SUCCEEDED(IMFSample_GetBufferCount(s, &count)) && count == 1 && SUCCEEDED(IMFSample_GetBufferByIndex(s, 0, &buf))
+                && SUCCEEDED(IMFMediaBuffer_QueryInterface(buf, &IID_IMF2DBuffer, (void **)&b2))) {
+            LONG pitch = 0;
+            DWORD clen = 0;
+            if (SUCCEEDED(IMF2DBuffer_GetContiguousLength(b2, &clen)) && SUCCEEDED(IMF2DBuffer_Lock2D(b2, &data, &pitch))) {
+                if (pitch > 0) yuv_copy(p, data, clen, pitch);
+                IMF2DBuffer_Unlock2D(b2);
+                IMF2DBuffer_Release(b2);
+                IMFMediaBuffer_Release(buf);
+                if (pitch > 0) return;
+                buf = NULL;
+            } else {
+                IMF2DBuffer_Release(b2);
+            }
+        }
+        if (buf) IMFMediaBuffer_Release(buf);
+        buf = NULL;
+        if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(s, &buf))) {
+            if (SUCCEEDED(IMFMediaBuffer_Lock(buf, &data, NULL, &len))) {
+                yuv_copy(p, data, len, 0);
+                IMFMediaBuffer_Unlock(buf);
+            }
+            IMFMediaBuffer_Release(buf);
+        }
+        return;
+    }
+    if (SUCCEEDED(IMFSample_GetBufferCount(s, &count)) && count == 1 && SUCCEEDED(IMFSample_GetBufferByIndex(s, 0, &buf))
+            && SUCCEEDED(IMFMediaBuffer_QueryInterface(buf, &IID_IMF2DBuffer, (void **)&b2))) {
+        LONG pitch = 0;
+        if (SUCCEEDED(IMF2DBuffer_Lock2D(b2, &data, &pitch))) {
+            for (y = 0; y < p->h; y++)   /* (scanline 0 is the top row, whatever the pitch's sign) */
+                memcpy(p->bgra + (size_t)y * p->w * 4, data + (LONG_PTR)pitch * (y + p->ay) + (size_t)p->ax * 4,
+                       (size_t)p->w * 4);
+            IMF2DBuffer_Unlock2D(b2);
+            IMF2DBuffer_Release(b2);
+            IMFMediaBuffer_Release(buf);
+            return;
+        }
+        IMF2DBuffer_Release(b2);
+    }
+    if (buf) IMFMediaBuffer_Release(buf);
+    buf = NULL;
     if (FAILED(IMFSample_ConvertToContiguousBuffer(s, &buf))) return;
     if (SUCCEEDED(IMFMediaBuffer_Lock(buf, &data, NULL, &len))) {
         LONG stride = p->stride;
+        /* (a padded frame in one block: decoders round the width - and the
+           height: 1918 x 1080 comes as 1920 x 1088 - up to 16, 32, ... pixels;
+           the rows are as far apart as the first such width the buffer fits) */
+        if (p->fh > 0 && len > (DWORD)(stride < 0 ? -stride : stride) * (DWORD)p->fh) {
+            int align;
+            for (align = 16; align <= 512; align *= 2) {
+                const DWORD pitch = (DWORD)((p->fw + align - 1) / align * align) * 4;
+                if (len % pitch == 0 && len / pitch >= (DWORD)p->fh) {
+                    stride = (stride < 0 ? -1 : 1) * (LONG)pitch;
+                    break;
+                }
+            }
+        }
         const BYTE *row0 = stride < 0 ? data + (size_t)(-stride) * (p->fh - 1) : data;
         if ((size_t)(stride < 0 ? -stride : stride) * p->fh <= len) {
             for (y = 0; y < p->h; y++) {
