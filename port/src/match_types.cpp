@@ -1278,3 +1278,94 @@ uint32_t MatchTypeString(uint32_t id) {
 }
 
 }  // namespace svr2011
+
+// -- Fewer locked rules ------------------------------------------------------
+//
+// Each rule's 64-byte option record (*(0x82EDE954) + 11900 + id * 64, copied
+// from misc.pac by sub_828B5078) has a byte per option; bit 7 locks it: the
+// rules screen greys the row (sub_82470BC0) and the match uses the record's
+// value, not the player's (sub_828C48E8). Unlocked here, for the matches
+// they can't break: K.O. (+2), ROPE BREAK (+3) and GIVE UP (+7) - extra ways
+// to win or a rope break, which every one on one / tag / multi-person match
+// has - and DQ (+4) where it is locked on (tag, handicap: No DQ can be
+// chosen). Left locked: Royal Rumbles (eliminations over the top only),
+// Elimination Chamber, backstage and story rules, Lumberjack (its rules are
+// the match), count-outs in matches of more than 2 (the count logic assumes
+// two), over the top rope (needs the battle royal rule swap), entrances.
+namespace {
+
+bool KeepLocked(uint32_t rule) {
+  return (rule >= 0x14 && rule <= 0x18) || rule == 0x56 ||  // Royal Rumble
+         rule == 0x27 || rule == 0x28 ||                    // Elimination Chamber
+         (rule >= 0x19 && rule <= 0x21) || (rule >= 0x61 && rule <= 0x76) ||  // backstage, in-ring brawls
+         rule == 0x54 || rule == 0x55 || rule == 0x57 || rule == 0x59 || rule == 0x5A || rule == 0x5C ||
+         rule == 0x5D;  // story rules, Lumberjack
+}
+
+}  // namespace
+
+REX_EXTERN(__imp__sub_828B5078);
+REX_HOOK_RAW(sub_828B5078) {
+  const uint32_t rules = ctx.r3.u32;
+  __imp__sub_828B5078(ctx, base);
+  constexpr uint32_t kCount = 119, kKo = 2, kRopeBreak = 3, kDq = 4, kGiveUp = 7;
+  int unlocked = 0;
+  for (uint32_t rule = 0; rule < kCount; ++rule) {
+    if (KeepLocked(rule)) continue;
+    uint8_t* opt = base + rules + kRule2 + rule * kRule2Size;
+    for (uint32_t at : {kKo, kRopeBreak, kGiveUp})
+      if (opt[at] & 0x80) opt[at] &= 0x7F, ++unlocked;
+    if (opt[kDq] == 0x80) opt[kDq] = 0x00, ++unlocked;  // (locked on: No DQ can be chosen)
+  }
+  REXLOG_INFO("match types: {} locked match rules unlocked", unlocked);
+}
+
+// -- Fewer greyed rows in MATCH CREATOR ---------------------------------------
+//
+// The MATCH CREATOR's 3 pages (ENVIRONMENT, WIN CONDITION, RULES) grey rows
+// by match family (sub_82490918(rule): 68 families, e.g. 9 = 1 on 1 steel
+// cage 0x3C/0x40, 28 = triple threat 0x0D, 36 = fatal-4-way 0x0E) from
+// misc.pac /MRME/MRPD, loaded by sub_82490558(loader, ...): per page a
+// defaults table and an "allowed" one (a byte per family and row: 0x09 free,
+// 0x00 greyed, others fixed). Their addresses: loader +52 (ENVIRONMENT, 8
+// rows: ring STANDARD / CAGE / HELL IN A CELL / CHAMBER / INFERNO, entrance,
+// replay, momentum), +68 (WIN CONDITION, 11 rows: pin and give up, 2 out of
+// 3, ironman, over the top, K.O., last man standing, finisher, first blood,
+// flaming table, climb out, escape), +84 (RULES, 6 rows: DQ, rope break,
+// ring out, elimination, falls count anywhere, time limit). Allowed here:
+// - K.O. and FINISHER MATCH wherever pin and give up is (e.g. the cages):
+//   more ways to win, judged as in any match;
+// - a TIME LIMIT wherever it's greyed (a draw at the bell), not in Royal
+//   Rumbles, the Elimination Chamber or backstage;
+// - the INFERNO ring for triple threat and fatal-4-way.
+REX_EXTERN(__imp__sub_82490558);
+REX_HOOK_RAW(sub_82490558) {
+  const uint32_t loader = ctx.r3.u32;
+  __imp__sub_82490558(ctx, base);
+  constexpr uint32_t kFamilies = 68;
+  constexpr uint32_t kFree = 0x09;
+  const uint32_t env = Rd32(base + loader + 52), win = Rd32(base + loader + 68), rules = Rd32(base + loader + 84);
+  auto backstage_rumble_chamber = [](uint32_t f) { return f == 12 || f == 26 || f == 55 || f == 60 || f == 48 || f == 49; };
+  int n = 0;
+  for (uint32_t f = 0; f < kFamilies; ++f) {
+    if (backstage_rumble_chamber(f)) continue;
+    if (win) {
+      uint8_t* w = base + win + f * 11;
+      if (w[0] != 0)
+        for (uint32_t row : {4u, 6u})
+          if (w[row] == 0) w[row] = kFree, ++n;
+    }
+    if (rules) {
+      uint8_t* r = base + rules + f * 6;
+      if (r[5] == 0) r[5] = kFree, ++n;
+    }
+  }
+  if (env)
+    for (uint32_t f : {28u, 36u})  // (triple threat, fatal-4-way: the inferno ring)
+      if (base[env + f * 8 + 4] == 0) base[env + f * 8 + 4] = kFree, ++n;
+  static bool logged = false;
+  if (!logged) {
+    REXLOG_INFO("match types: MATCH CREATOR - {} greyed rows allowed", n);
+    logged = true;
+  }
+}

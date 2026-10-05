@@ -362,3 +362,35 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 - A safe point to free a character is needed. The Royal Rumble eliminates first (`sub_8223FD78`), and its manager `sub_8224C1B8` notifies listeners before reusing a slot.
 
 **Test aids:** `SVR2011_TEST_SK_LOG=1`, `SVR2011_TEST_SK_BEAT=<s>` (the opponent loses), `SVR2011_TEST_SK_LOSE=<s>` (player 1 loses).
+
+## Match Creator unlocks (done, first set)
+
+**MATCH CREATOR pages:**
+- The `/MRME/MRPD` tables at misc.pac 0x932000 (PACH, 11 chunks, data base 0x93208C) have chunk pairs (defaults, allowed) per page:
+  - 1/2 ENVIRONMENT, 8 rows;
+  - 3/4 WIN CONDITION, 11 rows;
+  - 7/8 RULES, 6 rows;
+  - 5/6 and 9/10 are combination tables.
+- One byte per family (68 families; `sub_82490918`: table 0x8201E4F8, u32 rule ids) and row. 0x09 free, 0x00 greyed.
+- Loaded by `sub_82490558(loader)` into loader +48/+52 (env), +64/+68 (win), +72/+76, +80/+84 (rules), +88/+92.
+
+**Port (`match_types.cpp`, hook on `sub_82490558`):**
+- K.O. and FINISHER MATCH are allowed wherever pin and give up is (the cages and others).
+- A TIME LIMIT is allowed wherever it was greyed.
+- The INFERNO ring is allowed for triple threat (family 28) and fatal-4-way (family 36).
+- Royal Rumble (60), Elimination Chamber (48/49) and backstage (12/26/55) are left alone.
+- Tested:
+  - a steel cage with K.O. and Finisher Match on played to the end;
+  - a triple threat in the Inferno ring played 2 minutes.
+
+**Per-match rule locks (OPT bit 7, hook on `sub_828B5078`):**
+- K.O., ROPE BREAK and GIVE UP are unlocked, and DQ where it is locked on.
+- Not for Royal Rumble, Elimination Chamber, backstage, story rules or Lumberjack.
+- These are the rules screens that read the OPT record (`sub_82470BC0`, the online lobby `sub_824F4270`). MATCH CREATOR uses MRPD instead.
+
+**Not unlocked (likely to break):**
+- count-outs in matches of more than 2;
+- over the top rope outside battle royals;
+- structures for tag / 6-man;
+- chamber;
+- interference (forced off offline in `sub_828C48E8`).
