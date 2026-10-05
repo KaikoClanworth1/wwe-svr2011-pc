@@ -60,7 +60,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 1";
+constexpr const char* kFormat = "movepacks 2";  // (2: banks whose sentinel points past the data)
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -188,10 +188,13 @@ bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   offs.erase(std::unique(offs.begin(), offs.end()), offs.end());
   for (auto& e : ents) {
     const auto it = std::upper_bound(offs.begin(), offs.end(), uint32_t(e.off));
-    const size_t end = it == offs.end() ? raw.size() - base : *it;
-    if (base + end > raw.size() || uint32_t(e.off) > end) return false;
-    e.data = &raw[base + size_t(e.off)];
-    e.size = end - size_t(e.off);
+    // (a bank's closing sentinel, id 32767, can point past the data -
+    // MVMT/SPE2: it has none)
+    const size_t data = raw.size() - base;
+    const size_t end = std::min<size_t>(it == offs.end() ? data : *it, data);
+    const size_t off = std::min<size_t>(size_t(e.off), data);
+    e.data = raw.data() + base + off;
+    e.size = end > off ? end - off : 0;
   }
   for (uint32_t i = 0; i + 1 < n; ++i)
     if (ents[i].off > ents[i + 1].off) return false;
