@@ -59,6 +59,7 @@ set(SVR2011_SOURCES
     src/pad_icons.cpp
     src/test_match.cpp
     src/managers.cpp
+    src/small_rig.cpp
     src/game_files.cpp
 )
 
