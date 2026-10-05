@@ -111,10 +111,16 @@ uint32_t FindSuperstar(const uint8_t* base, const std::string& want) {
     const uint32_t id = uint32_t(std::atoi(want.c_str()));
     return Record(base, id) ? id : 0;
   }
+  // (a selectable record first: the disc keeps hidden ones with a superstar mod's name - KHALI, 166)
+  constexpr uint32_t kSelectable = 221;
   const std::string w = Upper(want);
+  uint32_t hidden = 0;
   for (uint32_t id = 1; id < 1000; ++id)
-    if (const uint8_t* rec = Record(base, id); rec && Upper(reinterpret_cast<const char*>(rec + kName)) == w) return id;
-  return 0;
+    if (const uint8_t* rec = Record(base, id); rec && Upper(reinterpret_cast<const char*>(rec + kName)) == w) {
+      if (rec[kSelectable] == 1) return id;
+      if (!hidden) hidden = id;
+    }
+  return hidden;
 }
 
 // Not the title screen's demo match: only a match chosen in the menus (the
