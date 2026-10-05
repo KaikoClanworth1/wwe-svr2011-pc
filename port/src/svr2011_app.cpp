@@ -59,6 +59,7 @@
 #include "touch_controls.h"
 #include "pad_types.h"
 #include "pad_icons.h"
+#include "playtime.h"
 #include <rex/input/flags.h>
 #include "discord_presence.h"
 #include "online.h"
@@ -475,6 +476,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
   svr2011::InstallPadIcons(runtime()->memory());  // (pad_icons.h)
+  svr2011::InstallPlaytime();                     // (playtime.h)
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());

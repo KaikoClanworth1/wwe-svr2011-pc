@@ -57,6 +57,7 @@ set(SVR2011_SOURCES
     src/replay_worker.cpp
     src/pad_types.cpp
     src/pad_icons.cpp
+    src/playtime.cpp
     src/test_match.cpp
     src/managers.cpp
     src/game_files.cpp
