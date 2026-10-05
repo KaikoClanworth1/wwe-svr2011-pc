@@ -23,6 +23,7 @@ set(SVR2011_SOURCES
     src/frame_stats.cpp
     src/fps_overlay.cpp
     src/achievements_page.cpp
+    src/jukebox.cpp
     src/graphics_page.cpp
     src/touch_controls.cpp
     src/discord_presence.cpp

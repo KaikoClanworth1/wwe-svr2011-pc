@@ -38,6 +38,7 @@
 
 #include "achievements_page.h"
 #include "fps_overlay.h"
+#include "jukebox.h"
 #include "native/native_renderer.h"
 #include "online_overlay.h"
 #include "touch_controls.h"
@@ -1023,10 +1024,10 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
                    : rex::cvar::Query<bool>("fullscreen_exclusive") ? kExclusive : kBorderless);
   });
   if (input) {
-    // (one hold for the port's pages: this one and ACHIEVEMENTS)
+    // (one hold for the port's pages: this one, ACHIEVEMENTS and JUKEBOX)
     input->SetGuestInputHold(
         [] {
-          return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() ||
+          return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() || JukeboxPageHoldsInput() ||
                  TouchControlsHoldInput() || OnlineOverlayHoldsInput();
         });
   }
@@ -1038,6 +1039,8 @@ void SetGraphicsPageFonts(ImFont* menu, ImFont* title) {
 }
 
 void OpenGraphicsPage() { g_open_requested = true; }
+
+void SaveConfigSetting(const std::string& key, const std::string& value) { SaveSetting(key, value); }
 
 void OpenLanguagePage() {
   g_language_requested = true;

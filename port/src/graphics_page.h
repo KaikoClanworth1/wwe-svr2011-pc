@@ -12,6 +12,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 struct ImFont;
 
@@ -36,6 +37,9 @@ void SetGraphicsPageFonts(ImFont* menu, ImFont* title);
 
 // Opens the page (any thread; the guest's menu hook).
 void OpenGraphicsPage();
+
+// Saves one setting ("key = value", value as TOML) in the config file.
+void SaveConfigSetting(const std::string& key, const std::string& value);
 
 // MY WWE -> OPTIONS -> LANGUAGE: the page with only the language row.
 void OpenLanguagePage();

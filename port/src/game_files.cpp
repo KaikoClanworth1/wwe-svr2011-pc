@@ -107,35 +107,37 @@ void PatchMenu(const std::filesystem::path& file) {
     d.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
   if (d.size() < kMflo + kMfloSlot) return;
-  // The table's header (records, shown records): the disc's, after the first
-  // patch (GRAPHICS, EXIT: v0.1-v0.3) and after this one (+ ACHIEVEMENTS).
+  // The table's header (records, shown records): the disc's, after each patch
+  // (v0.1-v0.3: GRAPHICS, EXIT; + ACHIEVEMENTS; v1.0.4: + LANGUAGE; v2.0.3:
+  // + JUKEBOX). Each step takes the table from one state to the next.
   auto state = [&] { return std::pair(Be32(d, kMflo + 4), Be32(d, kMflo + 8)); };
   using State = std::pair<uint32_t, uint32_t>;
-  const bool patched = state() == State(0xE5, 0xE0) && Find(d, 0xAFC4, 0x11);
-  if (patched && !FixNodeOrder(d)) return;  // patched already
+  const State before = state();
+  const bool node_fixed = FixNodeOrder(d);  // (v1.0.4)
+  auto fail = [&] { REXLOG_WARN("{}: unexpected menu table; not patched", file.string()); };
   // Room for the records: hidden ones (never shown) go, the main menu's second
   // ONLINE and a NEW SUPERSTAR copy; the table can't move (tools/patch_menu.py).
-  if (!patched && state() == State(0xE4, 0xDC)) {
+  if (state() == State(0xE4, 0xDC)) {
     if (!DropSkipped(d, 0xA02E, 0x01) || !AddEntry(d, 0xA050, 0x11, 0xAFC0) ||  // GRAPHICS after CHEAT CODES
-        !AddEntry(d, 0xA04B, 0x01, 0xAFC1)) {                                     // EXIT after SHOP
-      REXLOG_WARN("{}: unexpected menu table; not patched", file.string());
-      return;
-    }
+        !AddEntry(d, 0xA04B, 0x01, 0xAFC1))                                       // EXIT after SHOP
+      return fail();
   }
-  if (!patched && state() == State(0xE5, 0xDE)) {
+  if (state() == State(0xE5, 0xDE)) {
     if (!Find(d, 0xAFC0, 0x11) || !DropSkipped(d, 0xA47E, 0x0E) ||
-        !AddEntry(d, 0xA030, 0x05, 0xAFC2, 0xA0BD, 0xAFC3)) {  // ACHIEVEMENTS after OPTIONS
-      REXLOG_WARN("{}: unexpected menu table; not patched", file.string());
-      return;
-    }
+        !AddEntry(d, 0xA030, 0x05, 0xAFC2, 0xA0BD, 0xAFC3))  // ACHIEVEMENTS after OPTIONS
+      return fail();
   }
-  // (v1.0.4: + LANGUAGE)
-  if (!patched && (state() != State(0xE5, 0xDF) || !Find(d, 0xAFC2, 0x05) || !DropSkipped(d, 0xA47F, 0x0E) ||
-                   !AddEntry(d, 0xAFC0, 0x11, 0xAFC4))) {  // LANGUAGE after GRAPHICS
-    REXLOG_WARN("{}: unexpected menu table; not patched", file.string());
-    return;
+  if (state() == State(0xE5, 0xDF)) {
+    if (!Find(d, 0xAFC2, 0x05) || !DropSkipped(d, 0xA47F, 0x0E) || !AddEntry(d, 0xAFC0, 0x11, 0xAFC4))
+      return fail();  // LANGUAGE after GRAPHICS
   }
-  FixNodeOrder(d);  // (v1.0.4)
+  if (state() == State(0xE5, 0xE0)) {
+    if (!Find(d, 0xAFC4, 0x11) || !DropSkipped(d, 0xA480, 0x0E) ||
+        !AddEntry(d, 0xAFC2, 0x05, 0xAFC5, 0xA0BD, 0xAFC6))  // JUKEBOX after ACHIEVEMENTS
+      return fail();
+  }
+  if (state() != State(0xE5, 0xE1) || !Find(d, 0xAFC5, 0x05)) return fail();
+  if (state() == before && !node_fixed) return;  // patched already
   const auto tmp = file.string() + ".tmp";
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
@@ -144,8 +146,8 @@ void PatchMenu(const std::filesystem::path& file) {
   }
   std::error_code ec;
   std::filesystem::rename(tmp, file, ec);
-  if (!ec) REXLOG_INFO("{}: {}", file.string(), patched ? "MY WWE -> OPTIONS back fixed (node order)"
-                                                         : "added GRAPHICS, LANGUAGE, ACHIEVEMENTS and EXIT");
+  if (!ec) REXLOG_INFO("{}: {}", file.string(), state() == before ? "MY WWE -> OPTIONS back fixed (node order)"
+                                                                 : "added GRAPHICS, LANGUAGE, ACHIEVEMENTS, JUKEBOX and EXIT");
 }
 
 }  // namespace

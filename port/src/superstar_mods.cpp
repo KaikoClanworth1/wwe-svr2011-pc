@@ -52,6 +52,7 @@
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
 #include "crowd_signs.h"
+#include "jukebox.h"
 #include "media_mods.h"
 #include "music.h"
 #include "user_movies.h"
@@ -1198,6 +1199,10 @@ REX_HOOK_RAW(sub_82BEC030) {
   if (ctx.r3.u32 >= 0x10000) {
     const char* e = reinterpret_cast<const char*>(base + ctx.r3.u32);
     uint32_t id = 0;
+    if (svr2011::JukeboxEvent(base, e)) {  // (jukebox.h: every menu song off)
+      ctx.r3.u64 = 0x7E000001u;  // (a playing id: not 0)
+      return;
+    }
     if (svr2011::MediaEvent(base, e, ctx.r4.u32, &id)) {  // (a media mod's sound instead: media_mods.h)
       ctx.r3.u64 = id;
       return;

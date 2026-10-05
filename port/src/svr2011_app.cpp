@@ -32,6 +32,7 @@
 #include <rex/input/input_system.h>
 
 #include "achievements_page.h"
+#include "jukebox.h"
 #include "caw_logos.h"
 #include "paint_pages.h"
 #include "match_types.h"
@@ -325,6 +326,7 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   }
   svr2011::SetTouchControlsFont(touch);
   svr2011::SetAchievementsPageFonts(menu, title ? title : menu);
+  svr2011::SetJukeboxPageFonts(menu, title ? title : menu);
 }
 
 void Svr2011App::OnPostLoadXexImage() {
@@ -491,6 +493,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
+  svr2011::InstallJukebox(runtime()->memory());  // MY WWE -> JUKEBOX (jukebox.h)
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
@@ -503,12 +506,14 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallAchievementsPage(
         imgui_drawer(), immediate_drawer(), runtime(),
         static_cast<rex::input::InputSystem*>(runtime()->input_system()));
+    svr2011::InstallJukeboxPage(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()));
     svr2011::InstallGraphicsPage(
         imgui_drawer(), window(),
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);
     // The on-screen controller (touch_controls.h).
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
+    svr2011::InstallSlobberKnockerOverlay(imgui_drawer());  // (match_types.h)
     // The ONLINE overlay: friends, invites (online_overlay.h).
     svr2011::InstallOnlineOverlay(imgui_drawer(), window(),
                                   static_cast<rex::input::InputSystem*>(runtime()->input_system()),
