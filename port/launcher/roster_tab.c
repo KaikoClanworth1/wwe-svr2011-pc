@@ -22,7 +22,7 @@ enum { R_SEARCH, R_LIST, R_SMACKDOWN, R_RAW, R_NPC, R_MODS, R_DEFAULT, R_STATUS,
 enum { CAT_NONE, CAT_SMACKDOWN, CAT_RAW, CAT_NPC, CAT_MODS };
 static const WCHAR *const k_cat_names[] = { L"", L"SMACKDOWN", L"RAW", L"NPC", L"MODS" };
 
-/* The game's characters: { id, name, its own brand ("" if none) }. */
+/* The game's characters: { id, name, a note ("" if none) }. */
 static const struct { int id; const WCHAR *name; const WCHAR *brand; } k_roster[] = {
 #include "roster_names.inc"
 };
@@ -32,7 +32,7 @@ enum { CHARS_MAX = 512 };
 typedef struct {
     int id;
     WCHAR name[96];
-    WCHAR brand[24];  /* the game's own (shown when not re-tagged) */
+    WCHAR brand[48];  /* a note: DLC, Diva, Not selectable, Superstar mod */
     int mod;          /* a superstar mod */
     int tag;          /* CAT_ */
 } Char;
@@ -65,7 +65,7 @@ static Char *add_char(int id, const WCHAR *name, const WCHAR *brand, int mod)
         c->id = id;
     }
     if (name && name[0]) wcsncpy_s(c->name, 96, name, _TRUNCATE);
-    if (brand) wcsncpy_s(c->brand, 24, brand, _TRUNCATE);
+    if (brand) wcsncpy_s(c->brand, 48, brand, _TRUNCATE);
     c->mod |= mod;
     return c;
 }
@@ -138,7 +138,7 @@ static void read_mods(void)
             }
             fclose(m);
         }
-        add_char(id, name, L"MOD", 1);
+        add_char(id, name, L"Superstar mod", 1);
     }
     fclose(f);
 }
@@ -184,8 +184,9 @@ static void fill(void)
         swprintf_s(t, 48, L"%d", c->id);
         ListView_SetItemText(s_list, row, 1, t);
         if (c->tag) swprintf_s(t, 48, L"%s", k_cat_names[c->tag]);
-        else swprintf_s(t, 48, L"%s%s", c->brand[0] ? c->brand : L"\x2014", c->brand[0] ? L" (default)" : L"");
+        else swprintf_s(t, 48, L"\x2014");  /* (its own category) */
         ListView_SetItemText(s_list, row, 2, t);
+        ListView_SetItemText(s_list, row, 3, (WCHAR *)c->brand);
         row++;
     }
     SendMessageW(s_list, WM_SETREDRAW, TRUE, 0);
@@ -332,8 +333,8 @@ int roster_tag(const WCHAR *game_dir, int id, const WCHAR *category)
 
 void roster_build(HWND wnd, mods_add_fn add, int tab, int id_base)
 {
-    static const WCHAR *const names[] = { L"Character", L"ID", L"Category" };
-    static const int widths[] = { 260, 60, 150 };
+    static const WCHAR *const names[] = { L"Character", L"ID", L"Category", L"Note" };
+    static const int widths[] = { 190, 48, 100, 152 };
     HDC dc;
     int i, dpi;
     s_wnd = wnd;
@@ -351,7 +352,7 @@ void roster_build(HWND wnd, mods_add_fn add, int tab, int id_base)
     s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 44, 128, 400, 320,
                  id_base + R_LIST);
     ListView_SetExtendedListViewStyle(s_list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    for (i = 0; i < 3; i++) {
+    for (i = 0; i < 4; i++) {
         LVCOLUMNW c;
         ZeroMemory(&c, sizeof c);
         c.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
