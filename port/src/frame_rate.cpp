@@ -176,7 +176,8 @@ Clock::time_point g_world_last;
 double g_world_acc = 0;  // 60 Hz ticks of real time not yet run
 int g_world_ticks = 1;   // update passes this frame
 
-constexpr int kMaxTicks = 4;  // (below 15 fps the game slows down rather than racing)
+constexpr int kMaxTicks = 2;  // (below 30 fps the game slows down rather than racing: 3-4 updates a frame - a
+                               // window in the background, tabbing out - crashed a worker thread, sub_8281F5F0)
 
 uint32_t G32(uint8_t* base, uint32_t a) { return Rd32(base + a); }
 void P32(uint8_t* base, uint32_t a, uint32_t v) { Wr32(base + a, v); }
@@ -295,6 +296,7 @@ void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
 // but the last update of a frame (an extra update) see the previous reading
 // again (no change): a press arrives in the frame's last update.
 bool g_extra_update = false;
+std::atomic<std::thread::id> g_logic_thread{};  // (the thread running the world update)
 // The characters' job's round (sub_8216F4C8, below) or its paused round
 // (sub_8216ED38 + sub_8216E458) an extra update left, for the frame's last
 // update - or, when that one reached neither, for before the draw.
@@ -338,7 +340,9 @@ REX_HOOK_RAW(sub_8269D768) {
   if (!g_kernel) g_kernel = REX_KERNEL_STATE();  // (for the stuck-update thread dump)
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
-  if (slow_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+  // (SVR2011_TEST_SLOW_IN_MATCH=1: only while a match runs - the menus at speed for the scripted route)
+  static const bool slow_in_match = std::getenv("SVR2011_TEST_SLOW_IN_MATCH") != nullptr;
+  if (slow_ms > 0 && (!slow_in_match || g_in_match)) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
   const auto now = Clock::now();
   if (g_world_last == Clock::time_point{}) g_world_last = now - std::chrono::microseconds(16667);
   g_world_acc += std::chrono::duration<double>(now - g_world_last).count() * 60.0;
@@ -364,6 +368,7 @@ REX_HOOK_RAW(sub_8269D768) {
 // The task manager: the update pass per tick, the draw pass once (see top).
 REX_EXTERN(__imp__sub_8269C728);
 REX_HOOK_RAW(sub_8269C728) {
+  g_logic_thread = std::this_thread::get_id();
   const auto saved = ctx;
   const uint32_t m = ctx.r3.u32;
   constexpr uint32_t kOwner = 0x82EC5F94;
@@ -657,4 +662,36 @@ REX_HOOK_RAW(sub_828F3F38) {
     REXLOG_WARN("frame rate: a pure virtual call skipped (caller {:08X}, object {:08X}) - {} so far", uint32_t(ctx.lr),
                 ctx.r3.u32, count);
   ctx.r3.u64 = 0;
+}
+
+// The job system's "wait for job idx" (sub_8216A450(jobs, idx): if job
+// idx's pending flag (+(idx+14)*4) is set, wait on its event (+(idx+5)*4)
+// for ever, then clear the flag). In an extra update a task may wait so for
+// the characters' job, which only the frame's last update starts: a world
+// update stuck for ever (a player tabbing out of fullscreen - long frames,
+// 3-4 updates each - froze in pass 12, function 82225508, c27d191). There
+// the wait is at most 50 ms: a running job ends well within it, as before;
+// one not started, the flag stays for the frame's last update or the draw.
+REX_EXTERN(__imp__sub_8216A450);
+REX_HOOK_RAW(sub_8216A450) {
+  if (!g_extra_update || std::this_thread::get_id() != g_logic_thread.load()) {
+    __imp__sub_8216A450(ctx, base);
+    return;
+  }
+  const uint32_t jobs = ctx.r3.u32, idx = ctx.r4.u32;
+  const uint32_t flag = jobs + (idx + 14) * 4;
+  if (Rd32(base + flag) == 0) return;
+  const auto saved = ctx;
+  ctx.r3.u64 = Rd32(base + jobs + (idx + 5) * 4);
+  ctx.r4.u64 = 50;  // (ms)
+  sub_8215A8C0(ctx, base);
+  const uint32_t status = ctx.r3.u32;
+  ctx = saved;
+  if (status == 0) {  // (signalled: done)
+    base[flag] = base[flag + 1] = base[flag + 2] = base[flag + 3] = 0;
+    return;
+  }
+  static int count = 0;
+  if (++count == 1 || count % 1000 == 0)
+    REXLOG_INFO("frame rate: an extra update didn't wait for job {} (not done yet; {} times)", idx, count);
 }
