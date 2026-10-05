@@ -258,6 +258,18 @@ the slot. A save made with the mod keeps the player's own edits.
   animation child (0x64) and uses the 2010 select bust as the 256x256
   portrait (0xc8/0xc9).
 
+## Hornswoggle (small rig)
+Hornswoggle's model (ch195) is the only one with its own skeleton: legs 0.42x
+and arms 0.51x the standard rig's. Standard motions made him float with
+straight limbs. `src/small_rig.cpp` retargets the pose before the IK solve
+for id 195 and for any mod with `base=195`: root height scaled above the
+feet, hands and feet pulled in around shoulders and hips. Cvar
+`small_rig_retarget` (on). Grapples still use the standard contact points
+(his hands land short). The bundled `hornswoggle.svrmod` uses his 2011
+model, renders and announcer name, a small-wrestler moveset (Frog Splash as
+the Tadpole Splash, headbutts, bites, sentons, no lifts) and the General
+Entrance (522; he has no theme of his own).
+
 ## The Mod Maker: Create a new superstar
 
 The Superstars page makes a new superstar from a form; it doesn't start from

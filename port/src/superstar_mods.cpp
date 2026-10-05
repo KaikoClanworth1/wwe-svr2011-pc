@@ -35,6 +35,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1259,16 +1260,50 @@ REX_HOOK_RAW(sub_828C4060) {
 // re_framing). Ids not in it get no offsets: a mod stood too high, its head
 // cut off at the top. sub_8273D1D0(mgr, slot, layout, out) looks the slot's
 // id up (slot = mgr + slot * 116: the id at +64 when +20 == 1, else +44): for
-// a mod, its base's.
+// a mod, its base's. An id the table doesn't have (the managers - Stephanie,
+// Teddy Long, Paul Bearer, Tiffany, The Hurricane, Hornswoggle - floated in
+// the EXTRA list; a mod whose base is one of them too) takes the entry of a
+// listed character of the same gender and the nearest height (record +28).
+uint32_t FramingStandIn(uint8_t* base, uint32_t mgr, uint32_t layout, uint32_t id) {
+  const auto rec = [&](uint32_t i) -> const uint8_t* {
+    const uint32_t si = i < 512 ? Rd16(base + kIdToIndex + i * 2) : 0xFFFF;
+    return si < 512 ? base + kRecords + si * kRecordSize : nullptr;
+  };
+  const uint8_t* r = rec(id);
+  if (!r) return 0;
+  const uint32_t count = Rd32(base + mgr + 788 + 44 * layout);
+  const uint32_t entries = Rd32(base + mgr + 792 + 44 * layout);
+  if (!entries || count > 1024) return 0;
+  uint32_t best = 0, best_d = ~0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t c = Rd32(base + entries + i * 16);
+    const uint8_t* cr = c >= 100 ? rec(c) : nullptr;  // (disc superstars; 50-69 are DLC/placeholders)
+    if (!cr || cr[208] != r[208]) continue;
+    const uint32_t d = uint32_t(std::abs(int(Rd16(cr + 28)) - int(Rd16(r + 28))));
+    if (d < best_d) best = c, best_d = d;
+  }
+  return best;
+}
 REX_EXTERN(__imp__sub_8273D1D0);
 REX_HOOK_RAW(sub_8273D1D0) {
-  const uint32_t slot = ctx.r3.u32 + ctx.r4.u32 * 116;
+  const uint32_t mgr = ctx.r3.u32, slot = mgr + ctx.r4.u32 * 116, layout = ctx.r5.u32;
   const uint32_t field = slot + (Rd32(base + slot + 20) == 1 ? 64 : 44);
   const uint32_t id = Rd32(base + field);
   const Mod* m = ModOf(id);
-  if (m) Wr32(base + field, m->base);
+  const uint32_t look = m ? m->base : id;
+  const uint64_t r4 = ctx.r4.u64, r5 = ctx.r5.u64, r6 = ctx.r6.u64;
+  Wr32(base + field, look);
   __imp__sub_8273D1D0(ctx, base);
-  if (m) Wr32(base + field, id);
+  if (ctx.r3.u32 == 0 && look >= 50 && layout < 14) {
+    if (const uint32_t s = FramingStandIn(base, mgr, layout, look)) {
+      static std::set<uint32_t> told;
+      if (told.insert(look).second) REXLOG_INFO("[svr2011] select framing: id {} uses {}'s", look, s);
+      ctx.r3.u64 = mgr, ctx.r4.u64 = r4, ctx.r5.u64 = r5, ctx.r6.u64 = r6;
+      Wr32(base + field, s);
+      __imp__sub_8273D1D0(ctx, base);
+    }
+  }
+  Wr32(base + field, id);
 }
 
 // The file system's pacs registered (from the ARC / from each pac's header).
@@ -1504,6 +1539,10 @@ std::vector<uint32_t> SuperstarModIds() {
 }
 
 bool IsSuperstarMod(uint32_t id) { return ModOf(id) != nullptr; }
+uint32_t SuperstarModBase(uint32_t id) {
+  const Mod* m = ModOf(id);
+  return m ? m->base : 0;
+}
 
 void AddOverlayMount(const std::string& file) { g_extra_mounts.push_back("smods:\\" + file); }
 

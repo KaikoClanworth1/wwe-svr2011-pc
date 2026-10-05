@@ -62,6 +62,7 @@ set(SVR2011_SOURCES
     src/playtime.cpp
     src/test_match.cpp
     src/managers.cpp
+    src/small_rig.cpp
     src/game_files.cpp
 )
 
