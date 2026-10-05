@@ -229,15 +229,50 @@ static int pic_open(Pic *p, const WCHAR *path, int part, WCHAR *err, size_t errn
     return 1;
 }
 
+/* A decoded frame into the picture. The decoder's rows can be padded (a
+ * width that isn't a multiple of 16 / 64: 854, 1366, 1918...) - their real
+ * pitch comes from the 2D buffer; the media type's stride is only the
+ * unpadded width (copying with it shears the picture into stripes). */
 static void sample_copy(Pic *p, IMFSample *s)
 {
     IMFMediaBuffer *buf = NULL;
+    IMF2DBuffer *b2 = NULL;
     BYTE *data = NULL;
     DWORD len = 0;
     int y;
+    DWORD count = 0;
+    if (SUCCEEDED(IMFSample_GetBufferCount(s, &count)) && count == 1 && SUCCEEDED(IMFSample_GetBufferByIndex(s, 0, &buf))
+            && SUCCEEDED(IMFMediaBuffer_QueryInterface(buf, &IID_IMF2DBuffer, (void **)&b2))) {
+        LONG pitch = 0;
+        if (SUCCEEDED(IMF2DBuffer_Lock2D(b2, &data, &pitch))) {
+            for (y = 0; y < p->h; y++)   /* (scanline 0 is the top row, whatever the pitch's sign) */
+                memcpy(p->bgra + (size_t)y * p->w * 4, data + (LONG_PTR)pitch * (y + p->ay) + (size_t)p->ax * 4,
+                       (size_t)p->w * 4);
+            IMF2DBuffer_Unlock2D(b2);
+            IMF2DBuffer_Release(b2);
+            IMFMediaBuffer_Release(buf);
+            return;
+        }
+        IMF2DBuffer_Release(b2);
+    }
+    if (buf) IMFMediaBuffer_Release(buf);
+    buf = NULL;
     if (FAILED(IMFSample_ConvertToContiguousBuffer(s, &buf))) return;
     if (SUCCEEDED(IMFMediaBuffer_Lock(buf, &data, NULL, &len))) {
         LONG stride = p->stride;
+        /* (a padded frame in one block: decoders round the width - and the
+           height: 1918 x 1080 comes as 1920 x 1088 - up to 16, 32, ... pixels;
+           the rows are as far apart as the first such width the buffer fits) */
+        if (p->fh > 0 && len > (DWORD)(stride < 0 ? -stride : stride) * (DWORD)p->fh) {
+            int align;
+            for (align = 16; align <= 512; align *= 2) {
+                const DWORD pitch = (DWORD)((p->fw + align - 1) / align * align) * 4;
+                if (len % pitch == 0 && len / pitch >= (DWORD)p->fh) {
+                    stride = (stride < 0 ? -1 : 1) * (LONG)pitch;
+                    break;
+                }
+            }
+        }
         const BYTE *row0 = stride < 0 ? data + (size_t)(-stride) * (p->fh - 1) : data;
         if ((size_t)(stride < 0 ? -stride : stride) * p->fh <= len) {
             for (y = 0; y < p->h; y++) {
