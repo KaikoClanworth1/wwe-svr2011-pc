@@ -64,6 +64,12 @@ enum class Convert : uint8_t {
   k4444,
   kDXT3A,  // 4x4 block of 4-bit alpha -> R8
   kCTX1,   // 4x4 block, two RG8 endpoints + 2-bit indices -> RG8
+  // BC blocks decoded on the CPU (a GPU without BC sampling: Mali)
+  kBC1,  // -> RGBA8
+  kBC2,  // -> RGBA8
+  kBC3,  // -> RGBA8
+  kBC4,  // -> R8
+  kBC5,  // -> RG8
 };
 
 struct HostFormat {
@@ -165,6 +171,71 @@ struct Entry {
 
 rex::memory::Memory* g_memory = nullptr;
 const uint8_t* g_physical = nullptr;
+// (SetBlockCompressionSupported; SVR2011_NATIVE_NO_BC=1: as if not - tests the CPU decoding on a PC)
+bool g_bc_supported = std::getenv("SVR2011_NATIVE_NO_BC") == nullptr;
+
+// A BC format's CPU-decoded stand-in (the GPU can't sample BC).
+HostFormat Decompressed(const HostFormat& h) {
+  using RF = RenderFormat;
+  switch (h.format) {
+    case RF::BC1_UNORM:
+      return {RF::R8G8B8A8_UNORM, RF::R8G8B8A8_UNORM_SRGB, Convert::kBC1, 4};
+    case RF::BC2_UNORM:
+      return {RF::R8G8B8A8_UNORM, RF::R8G8B8A8_UNORM_SRGB, Convert::kBC2, 4};
+    case RF::BC3_UNORM:
+      return {RF::R8G8B8A8_UNORM, RF::R8G8B8A8_UNORM_SRGB, Convert::kBC3, 4};
+    case RF::BC4_UNORM:
+      return {RF::R8_UNORM, RF::UNKNOWN, Convert::kBC4, 1};
+    case RF::BC5_UNORM:
+      return {RF::R8G8_UNORM, RF::UNKNOWN, Convert::kBC5, 2};
+    default:
+      return h;
+  }
+}
+
+// BC1's color part (also BC2's and BC3's: four colors always there).
+void DecodeBC1Colors(const uint8_t* b, bool four_colors, uint8_t out[16][4]) {
+  const uint32_t c0 = b[0] | (b[1] << 8), c1 = b[2] | (b[3] << 8);
+  uint8_t p[4][4];
+  auto rgb565 = [](uint32_t v, uint8_t* d) {
+    d[0] = uint8_t(((v >> 11) & 31) * 255 / 31);
+    d[1] = uint8_t(((v >> 5) & 63) * 255 / 63);
+    d[2] = uint8_t((v & 31) * 255 / 31);
+    d[3] = 255;
+  };
+  rgb565(c0, p[0]);
+  rgb565(c1, p[1]);
+  if (four_colors || c0 > c1) {
+    for (int k = 0; k < 3; ++k) {
+      p[2][k] = uint8_t((2 * p[0][k] + p[1][k] + 1) / 3);
+      p[3][k] = uint8_t((p[0][k] + 2 * p[1][k] + 1) / 3);
+    }
+    p[2][3] = p[3][3] = 255;
+  } else {
+    for (int k = 0; k < 3; ++k) p[2][k] = uint8_t((p[0][k] + p[1][k]) / 2);
+    p[2][3] = 255;
+    p[3][0] = p[3][1] = p[3][2] = p[3][3] = 0;  // (transparent black)
+  }
+  const uint32_t indices = b[4] | (b[5] << 8) | (b[6] << 16) | (uint32_t(b[7]) << 24);
+  for (uint32_t i = 0; i < 16; ++i) std::memcpy(out[i], p[(indices >> (2 * i)) & 3], 4);
+}
+
+// A BC4 block (BC3's alpha, BC5's channels): 16 values.
+void DecodeBC4(const uint8_t* b, uint8_t out[16]) {
+  uint8_t v[8];
+  v[0] = b[0];
+  v[1] = b[1];
+  if (v[0] > v[1]) {
+    for (int k = 1; k < 7; ++k) v[k + 1] = uint8_t(((7 - k) * v[0] + k * v[1] + 3) / 7);
+  } else {
+    for (int k = 1; k < 5; ++k) v[k + 1] = uint8_t(((5 - k) * v[0] + k * v[1] + 2) / 5);
+    v[6] = 0;
+    v[7] = 255;
+  }
+  uint64_t bits = 0;
+  for (int k = 0; k < 6; ++k) bits |= uint64_t(b[2 + k]) << (8 * k);
+  for (uint32_t i = 0; i < 16; ++i) out[i] = v[(bits >> (3 * i)) & 7];
+}
 uint32_t g_srv_next = 0, g_srv_end = 0;
 uint32_t g_sampler_next = 0, g_sampler_end = 0;
 std::unordered_map<uint64_t, Entry> g_textures;   // key hash -> texture
@@ -338,6 +409,39 @@ void StoreBlock(Convert convert, const uint8_t* block, uint32_t bpb, uint8_t* ds
       }
       return;
     }
+    case Convert::kBC1:
+    case Convert::kBC2:
+    case Convert::kBC3: {
+      // (BC2 / BC3: the alpha block first, then the color block)
+      uint8_t texels[16][4];
+      DecodeBC1Colors(convert == Convert::kBC1 ? block : block + 8, convert != Convert::kBC1, texels);
+      if (convert == Convert::kBC2) {
+        for (uint32_t i = 0; i < 16; ++i) texels[i][3] = uint8_t(((block[i >> 1] >> ((i & 1) * 4)) & 15) * 17);
+      } else if (convert == Convert::kBC3) {
+        uint8_t alpha[16];
+        DecodeBC4(block, alpha);
+        for (uint32_t i = 0; i < 16; ++i) texels[i][3] = alpha[i];
+      }
+      for (uint32_t i = 0; i < 16; ++i) {
+        const uint32_t x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+        if (x >= host_width || y >= host_height) continue;
+        std::memcpy(dst_base + size_t(y) * row_pitch + size_t(x) * 4, texels[i], 4);
+      }
+      return;
+    }
+    case Convert::kBC4:
+    case Convert::kBC5: {
+      const uint32_t channels = convert == Convert::kBC5 ? 2 : 1;
+      uint8_t values[2][16];
+      for (uint32_t ch = 0; ch < channels; ++ch) DecodeBC4(block + 8 * ch, values[ch]);
+      for (uint32_t i = 0; i < 16; ++i) {
+        const uint32_t x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+        if (x >= host_width || y >= host_height) continue;
+        for (uint32_t ch = 0; ch < channels; ++ch)
+          dst_base[size_t(y) * row_pitch + size_t(x) * channels + ch] = values[ch][i];
+      }
+      return;
+    }
     default:
       return;
   }
@@ -498,7 +602,7 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
     }
   } timed;
   const TF format = fetch.format;
-  const HostFormat host = GetHostFormat(format);
+  const HostFormat host = g_bc_supported ? GetHostFormat(format) : Decompressed(GetHostFormat(format));
   const FormatInfo* info = FormatInfo::Get(format);
   if (host.convert == Convert::kNone || !info) return false;
 
@@ -662,7 +766,9 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   }
   g_stats.convert_ms +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - convert_t0).count();
-  if (format == TF::k_DXT4_5 && (width == 64 || width == 128) && height == 64 && array_size == 1)
+  // (the replacement pictures are DXT5 blocks: not on a GPU without BC)
+  if (format == TF::k_DXT4_5 && host.block_compressed && (width == 64 || width == 128) && height == 64 &&
+      array_size == 1)
     ReplaceRandomTile(width, mapped + footprints[0].offset, footprints[0].row_pitch);
   // An icon page: the shared taller picture instead (pad_icons.h).
   uint64_t pad_hash = 0;
@@ -780,6 +886,7 @@ void Initialize(rex::memory::Memory* memory, uint32_t srv_first, uint32_t srv_co
   g_srv_end = srv_first + srv_count;
   g_sampler_next = sampler_first;
   g_sampler_end = sampler_first + sampler_count;
+  if (!g_bc_supported) REXLOG_INFO("native renderer: BC (DXT) textures are decoded on the CPU");
 }
 
 uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t dimension) {
@@ -908,6 +1015,10 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
   ctx.sampler_set->setSampler(index, sampler.get());
   g_samplers.emplace(key, SamplerEntry{index, std::move(sampler)});
   return index;
+}
+
+void SetBlockCompressionSupported(bool supported) {
+  g_bc_supported = supported && std::getenv("SVR2011_NATIVE_NO_BC") == nullptr;
 }
 
 void ForgetResolved() { g_resolved.clear(); }

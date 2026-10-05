@@ -17,12 +17,102 @@
 
 #include <plume_vulkan.h>
 
+#include <rex/cvar.h>
 #include <rex/external_frame.h>
 #include <rex/logging.h>
+
+#include "native/textures.h"
+
+REXCVAR_DEFINE_BOOL(mali_alpha, false, "GPU",
+                    "Android: Mali GPUs (alpha) - the launcher turns it on with the emulator's geometry shader "
+                    "and line fill requirements off (Mali has neither)");
 
 namespace svr2011::native::backend {
 
 namespace {
+
+// What a player's log needs to tell why the native renderer does or doesn't
+// run on their GPU (Mali, old Adreno drivers): the device, the features it
+// asks for and the formats it uses. Sets the texture cache's BC fallback;
+// false: the device can't run it.
+bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
+  auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(d.get_instance_proc_addr);
+  auto instance = static_cast<VkInstance>(d.instance);
+  auto physical = static_cast<VkPhysicalDevice>(d.physical_device);
+  auto get_properties =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(gipa(instance, "vkGetPhysicalDeviceProperties"));
+  auto get_features =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(gipa(instance, "vkGetPhysicalDeviceFeatures"));
+  auto get_format = reinterpret_cast<PFN_vkGetPhysicalDeviceFormatProperties>(
+      gipa(instance, "vkGetPhysicalDeviceFormatProperties"));
+  if (!get_properties || !get_features || !get_format) return true;
+  VkPhysicalDeviceProperties props;
+  get_properties(physical, &props);
+  VkPhysicalDeviceFeatures features;
+  get_features(physical, &features);
+  const bool mali = props.vendorID == 0x13B5;  // ARM
+  REXLOG_INFO("GPU report: '{}', vendor 0x{:04X} device 0x{:08X}, Vulkan {}.{}.{}, driver 0x{:08X}{}",
+              props.deviceName, props.vendorID, props.deviceID, VK_API_VERSION_MAJOR(props.apiVersion),
+              VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
+              props.driverVersion,
+              mali ? (REXCVAR_GET(mali_alpha) ? " - Mali (alpha mode)" : " - Mali (alpha mode off)") : "");
+  REXLOG_INFO("GPU report: app renderer features {}, shaderInt64 {}, geometryShader {}, fillModeNonSolid {}, "
+              "textureCompressionBC {}, ETC2 {}, ASTC {}, independentBlend {}, depthClamp {}, "
+              "fragmentStoresAndAtomics {}, vertexPipelineStoresAndAtomics {}, maxImageDimension2D {}",
+              d.app_renderer_features, bool(features.shaderInt64), bool(features.geometryShader),
+              bool(features.fillModeNonSolid), bool(features.textureCompressionBC),
+              bool(features.textureCompressionETC2), bool(features.textureCompressionASTC_LDR),
+              bool(features.independentBlend), bool(features.depthClamp), bool(features.fragmentStoresAndAtomics),
+              bool(features.vertexPipelineStoresAndAtomics), props.limits.maxImageDimension2D);
+
+  // The formats the renderer creates: s = sampled, f = filtered, c = color
+  // attachment, b = blended, d = depth attachment (optimal tiling).
+  struct Format {
+    VkFormat format;
+    const char* name;
+  };
+  static const Format kFormats[] = {
+      {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, "BC1"},       {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, "BC1 sRGB"},
+      {VK_FORMAT_BC2_UNORM_BLOCK, "BC2"},            {VK_FORMAT_BC2_SRGB_BLOCK, "BC2 sRGB"},
+      {VK_FORMAT_BC3_UNORM_BLOCK, "BC3"},            {VK_FORMAT_BC3_SRGB_BLOCK, "BC3 sRGB"},
+      {VK_FORMAT_BC4_UNORM_BLOCK, "BC4"},            {VK_FORMAT_BC5_UNORM_BLOCK, "BC5"},
+      {VK_FORMAT_R8G8B8A8_UNORM, "RGBA8"},           {VK_FORMAT_R8G8B8A8_SRGB, "RGBA8 sRGB"},
+      {VK_FORMAT_A2B10G10R10_UNORM_PACK32, "RGB10A2"}, {VK_FORMAT_R16G16B16A16_SFLOAT, "RGBA16F"},
+      {VK_FORMAT_R16G16B16A16_UNORM, "RGBA16"},      {VK_FORMAT_R16G16B16A16_SNORM, "RGBA16 snorm"},
+      {VK_FORMAT_R16G16_SNORM, "RG16 snorm"},        {VK_FORMAT_R16G16_UNORM, "RG16"},
+      {VK_FORMAT_R32_SFLOAT, "R32F"},                {VK_FORMAT_R32G32B32A32_SFLOAT, "RGBA32F"},
+      {VK_FORMAT_D24_UNORM_S8_UINT, "D24S8"},        {VK_FORMAT_D32_SFLOAT_S8_UINT, "D32S8"},
+      {VK_FORMAT_D32_SFLOAT, "D32F"},
+  };
+  std::string line;
+  bool bc = true, d24s8 = false;
+  for (const Format& f : kFormats) {
+    VkFormatProperties fp;
+    get_format(physical, f.format, &fp);
+    const VkFormatFeatureFlags o = fp.optimalTilingFeatures;
+    std::string bits;
+    if (o & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) bits += 's';
+    if (o & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) bits += 'f';
+    if (o & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) bits += 'c';
+    if (o & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) bits += 'b';
+    if (o & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) bits += 'd';
+    line += fmt::format("{}{} {}", line.empty() ? "" : ", ", f.name, bits.empty() ? "-" : bits);
+    if (f.format <= VK_FORMAT_BC5_UNORM_BLOCK && f.format >= VK_FORMAT_BC1_RGBA_UNORM_BLOCK &&
+        !(o & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
+      bc = false;
+    if (f.format == VK_FORMAT_D24_UNORM_S8_UINT) d24s8 = o & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  }
+  REXLOG_INFO("GPU report: formats (s sampled, f filtered, c color target, b blended, d depth target): {}", line);
+
+  bc = bc && features.textureCompressionBC;
+  textures::SetBlockCompressionSupported(bc);
+  if (!bc) REXLOG_WARN("native renderer: no BC (DXT) textures on this GPU - they are decoded on the CPU (slower loads)");
+  if (!d24s8) {
+    REXLOG_ERROR("native renderer: the GPU has no D24S8 depth buffers - the emulated renderer takes over");
+    return false;
+  }
+  return true;
+}
 
 class VulkanBackend final : public Backend {
  public:
@@ -32,6 +122,7 @@ class VulkanBackend final : public Backend {
     device_name->clear();
     const rex::external_frame::VulkanDevice* d = rex::external_frame::GetVulkanDevice();
     if (!d) return nullptr;
+    if (!ReportDevice(*d)) return nullptr;
     if (!d->app_renderer_features) {
       REXLOG_ERROR("native renderer: the Vulkan device lacks descriptor indexing, buffer device "
                    "addresses or 64-bit shader integers");

@@ -124,6 +124,10 @@ std::string LocalCopy(const std::string& path) {
 #endif
 
 void* OpenVulkanLoader() {
+  // (before the log's settings lines: the GPU device is made first)
+  REXLOG_INFO("GPU settings: mali_alpha {}, vulkan_require_geometry_shader {}, vulkan_require_fill_mode_non_solid {}",
+              rex::cvar::GetFlagByName("mali_alpha"), rex::cvar::GetFlagByName("vulkan_require_geometry_shader"),
+              rex::cvar::GetFlagByName("vulkan_require_fill_mode_non_solid"));
 #if SVR2011_ADRENOTOOLS
   ApplyDriverEnv();
   const std::string chosen = REXCVAR_GET(gpu_driver);

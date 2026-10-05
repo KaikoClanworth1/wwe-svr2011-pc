@@ -57,6 +57,10 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch[6], uint32_t dimension
 // Sampler table index for the fetch constant's filtering and addressing.
 uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]);
 
+// false: the GPU can't sample BC (DXT) textures (Mali): they are decoded on
+// the CPU to RGBA8 / RG8 / R8 instead (before any texture is uploaded).
+void SetBlockCompressionSupported(bool supported);
+
 // Drops every render target copy (the renderer rebuilt its targets).
 void ForgetResolved();
 // Drops the render target copy at one address: its image is in guest memory
