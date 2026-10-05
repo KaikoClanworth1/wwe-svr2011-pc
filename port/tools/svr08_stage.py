@@ -2,7 +2,7 @@
 
     python tools/svr08_stage.py <2008 bg56.pac> <2011 bg78.pac> <out bg78.pac> [--report]
         [--png <file.png>] [--drop-2011-cars] [--margin <bytes>] [--footprint x0,x1,z0,z1]
-        [--keep-rooms] [--car-blocks <2008 gm.pac>]
+        [--keep-rooms] [--car-blocks <2008 gm.pac>] [--offset x,z]
 
 The variant is loaded only for matches in the parking room (rule 0x1B), so by
 default (parking-only) it also gives up what such a match never shows:
@@ -53,6 +53,11 @@ What the variant changes:
     (near clip) added like every bg78 model, and the 2008 light numbers l(..)
     dropped (bg78 has no lights 110/120).
 
+--offset x,z moves the 2008 lot by (x, 0, z) instead (svr08_gimmick.py takes
+the same option; use the same value for both). The report gives the
+clearance of every collision triangle from rule 0x1B's two start spots
+(START_SPOTS, from the game), and --png marks them.
+
 HMD format (verified: the shipped indexes are rebuilt byte for byte):
   "HMD " u32 n, then n x 96-byte triangles: float M[4][4] (world -> local,
   row vectors: local = w.R + t; M[0][3]/M[1][3] = world X range of the
@@ -85,6 +90,37 @@ RTWM_IDS = range(100, 140)               # training room + green room (Road to W
 ROOM_IDS = range(20, 100)                # GM office, locker rooms A/B/large
 ALWAYS_SHOWN = set(range(140, 200)) | {801, 803}
 SCREEN_WORDS = ('tv', 'titan', 'moni', 'screen', 'movie', 'vision')
+START_SPOTS = ((150.0, -450.0), (125.0, -450.0))   # rule 0x1B: wrestler 1, 2 (x, z)
+
+
+def offset_for(R56, offset=None):
+    """(dx, dz): the given offset, or the 2008 enclosure centre -> fight-box centre."""
+    if offset:
+        return float(offset[0]), float(offset[1])
+    P = np.array([c for r in R56 for c in tri_corners(r)])
+    cx, cz = (P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2
+    return round(BOX_CENTRE[0] - cx, 1), round(BOX_CENTRE[1] - cz, 1)
+
+
+def point_tri_dist(px, pz, corners):
+    """Top-down distance from a point to a triangle (0 inside)."""
+    pts = [(c[0], c[2]) for c in corners]
+
+    def seg(a, b):
+        ax, az = a
+        bx, bz = b
+        vx, vz = bx - ax, bz - az
+        ln = vx * vx + vz * vz
+        t = 0.0 if ln < 1e-9 else max(0.0, min(1.0, ((px - ax) * vx + (pz - az) * vz) / ln))
+        return math.hypot(ax + t * vx - px, az + t * vz - pz)
+    d = min(seg(pts[i], pts[(i + 1) % 3]) for i in range(3))
+    s = [(pts[(i + 1) % 3][0] - pts[i][0]) * (pz - pts[i][1]) - (pts[(i + 1) % 3][1] - pts[i][1]) * (px - pts[i][0])
+         for i in range(3)]
+    if all(v >= 0 for v in s) or all(v <= 0 for v in s):
+        area = abs((pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1]) - (pts[2][0] - pts[0][0]) * (pts[1][1] - pts[0][1]))
+        if area > 1e-6:
+            return 0.0
+    return d
 
 
 # ------------------------------------------------------------ containers
@@ -451,7 +487,7 @@ def car_blocks(gm08, d):
 
 
 def build(p56, p78, out_path, drop_cars=False, margin=64 * 1024, png=None, report=False,
-          footprint=FOOTPRINT, parking_only=True, gm08=None):
+          footprint=FOOTPRINT, parking_only=True, gm08=None, offset=None):
     log = []
     h78, g78, t78, (gi, ei), e78 = stage(p78)
     _, _, _, _, e56 = stage(p56)
@@ -466,9 +502,11 @@ def build(p56, p78, out_path, drop_cars=False, margin=64 * 1024, png=None, repor
     P = np.array([c for r in R56 for c in tri_corners(r)])
     cx, cz = (P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2
     Q = rot_matrix(0)
-    d = np.array([round(BOX_CENTRE[0] - cx, 1), 0.0, round(BOX_CENTRE[1] - cz, 1)])
+    dx_, dz_ = offset_for(R56, offset)
+    d = np.array([dx_, 0.0, dz_])
     log.append(f'offset: 2008 (x, z) + ({d[0]:.1f}, {d[2]:.1f}), y + 0, rotation 0 '
-               f'(enclosure centre {cx:.1f}, {cz:.1f} -> fight box {BOX_CENTRE})')
+               f'(enclosure centre {cx:.1f}, {cz:.1f} -> {cx + d[0]:.1f}, {cz + d[2]:.1f}; '
+               f'x {P[:, 0].min() + d[0]:.1f}..{P[:, 0].max() + d[0]:.1f}, z {P[:, 2].min() + d[2]:.1f}..{P[:, 2].max() + d[2]:.1f})')
 
     # which models stay as they are, which become stubs
     stubs = {i: stub_model(d78[i]) for i in RTWM_IDS if parking_only and d78.get(i, b'')[:4] == b'JBOY'}
@@ -551,6 +589,14 @@ def build(p56, p78, out_path, drop_cars=False, margin=64 * 1024, png=None, repor
     log.append(f'collision {PARK_HMD}: {len(rec)} triangles from bg56 + {len(cars)} of 2011 gimmick cars '
                f'+ {len(blocks)} of 2008 vehicle blocks ({", ".join(block_names)}) '
                f'(was {struct.unpack_from("<I", d78[PARK_HMD], 4)[0]})')
+
+    for si, (sx, sz) in enumerate(START_SPOTS):
+        near = min(((point_tri_dist(sx, sz, tri_corners(r)), name, k)
+                    for name, group in (('wall', rec), ('2011 car', cars), ('car block', blocks))
+                    for k, r in enumerate(group)), default=None)
+        if near:
+            log.append(f'start spot {si + 1} ({sx:.0f}, {sz:.0f}): nearest collision {near[0]:.1f} '
+                       f'({near[1]} triangle {near[2]})')
 
     flags = build_flags(d78[50001], d56[50001], idmap)
 
@@ -676,8 +722,12 @@ def draw_png(path, models, rec, cars, d78):
         dr.line([tp(p[0], p[2]) for p in c] + [tp(c[0][0], c[0][2])], fill=col, width=2)
     bx, bz = BOX_CENTRE
     dr.rectangle([tp(bx - 38, bz + 50), tp(bx + 38, bz - 50)], outline=(0, 160, 0))
+    for k, (sx, sz) in enumerate(START_SPOTS):
+        x, y = tp(sx, sz)
+        dr.ellipse([x - 4, y - 4, x + 4, y + 4], fill=(255, 140, 0))
+        dr.text((x + 5, y - 6), f'start {k + 1}', fill=(200, 100, 0))
     dr.text((4, 4), 'grey: 2008 models  red: 2008 walls  blue: car blocks  black: outline (pair 0)  '
-            'green: fight box  north up', fill=(0, 0, 0))
+            'green: fight box  orange: rule 1B start spots  north up', fill=(0, 0, 0))
     im.save(path)
 
 
@@ -696,10 +746,12 @@ if __name__ == '__main__':
     mv = opt('--margin')
     fv = opt('--footprint')
     cb = opt('--car-blocks')
+    ov = opt('--offset')
     if len(pos) != 3:
         print(__doc__)
         sys.exit(1)
     build(pos[0], pos[1], pos[2], drop_cars='--drop-2011-cars' in a,
           margin=int(mv) if mv else 64 * 1024, png=png, report='--report' in a,
           footprint=tuple(float(x) for x in fv.split(',')) if fv else FOOTPRINT,
-          parking_only='--keep-rooms' not in a, gm08=cb)
+          parking_only='--keep-rooms' not in a, gm08=cb,
+          offset=tuple(float(x) for x in ov.split(',')) if ov else None)
