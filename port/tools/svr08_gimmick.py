@@ -3,7 +3,7 @@ parking gimmick package (gm.pac GMGB/78PK), to go with svr08_stage.py's bg78.
 
     python tools/svr08_gimmick.py <2008 gm.pac> <2008 bg56.pac> <2011 gm.pac> <out gm.pac>
         [--report] [--budget <bytes>] [--all-motions] [--texture-halve N] [--png <file.png>]
-        [--as-new-entry <NAME>] [--keep-rotation] [--elements clean|nohot|scenery|all|t0only|t23only|onecar|2011hdr]
+        [--as-new-entry <NAME>] [--keep-rotation] [--rotate 0|180] [--spread k] [--elements clean|nohot|scenery|all|t0only|t23only|onecar|2011hdr]
         [--motions-2011 common|none] [--hotspots-2011]
         [--pac-out <file.pac> [--entry <NAME>]] [--offset x,z]
 
@@ -88,7 +88,12 @@ entry byte for byte and gains GMGB/NAME (appended to the GMGB group).
 default 78P8> (gm.pac's 0x800 header and trailer; +4 = table size), for the
 overlay pac list (the group must stay GMGB: sub_824B8398 unwraps the package
 only for that group). The <out gm.pac> argument may be '-' to skip it.
---offset x,z: the same as svr08_stage.py's (use one value for both).
+--spread k: the same as svr08_stage.py's: every locator moves with its
+nearest vehicle by (k-1)(W-c) (W the wall point nearest that vehicle's
+body, c the enclosure centre), before the turn and the offset.
+--offset x,z and --rotate 0|180: the same as svr08_stage.py's (use the same
+values for both). A half turn moves locators to (-x, -z) and adds pi to their
+y rotation.
 --png draws the cars' footprints as 2011 turns them, with the enclosure,
 and the report says how much of each car lies inside the enclosure.
 """
@@ -261,11 +266,16 @@ def normalize_objects(tab, pool):
 
 # ------------------------------------------------------------ placement check
 
-def enclosure(bg56, dx, dz):
-    """Convex hull (x, z) of bg56's collision corners, moved."""
+def enclosure(bg56, dx, dz, rotate=0, spread=1.0):
+    """Convex hull (x, z) of bg56's collision corners, spread, turned and moved."""
     _, _, _, _, e56 = st.stage(bg56)
     d56 = {i: unpack(b) for i, b in e56}
-    pts = sorted({(round(c[0] + dx, 2), round(c[2] + dz, 2)) for r in st.hmd_read(d56[996]) for c in st.tri_corners(r)})
+    sg = -1 if rotate == 180 else 1
+    C = [c for r in st.hmd_read(d56[996]) for c in st.tri_corners(r)]
+    P = np.array(C)
+    pv = ((P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2)
+    C = [st.pivot_scale(c, spread, pv) for c in C]
+    pts = sorted({(round(sg * c[0] + dx, 2), round(sg * c[2] + dz, 2)) for c in C})
 
     def cross(o, a, b):
         return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
@@ -470,7 +480,7 @@ def add_hotspots(tab, pool, loc, first_id=201):
 
 def build(gm08, bg56, gm11, out, budget=None, keep_motions=False, report=False, png=None,
           new_entry=None, flip_rotation=True, elements='clean', pac_out=None, pac_entry='78P8',
-          offset=None, motions_2011='common', hotspots_2011=False, texture_halve=1):
+          offset=None, motions_2011='common', hotspots_2011=False, texture_halve=1, rotate=0, spread=1.0):
     log = []
     _, _, g56b = find(gm08, b'GMGA', b'0056')
     stored08 = dict(f.pach_read(unpack(g56b)))
@@ -485,7 +495,10 @@ def build(gm08, bg56, gm11, out, budget=None, keep_motions=False, report=False, 
     R56 = st.hmd_read(d56[996])
     P = np.array([c for r in R56 for c in st.tri_corners(r)])
     cx, cz = (P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2
-    dx, dz = st.offset_for(R56, offset)
+    dx, dz = st.offset_for(R56, offset, rotate)
+    anchors = st.car_anchors(gm08, R56) if spread != 1.0 else None
+    if anchors:
+        log.append(f'spread x{spread} about ({cx:.1f}, {cz:.1f}): locators move with their nearest vehicle')
     log.append(f'offset (x, z) + ({dx}, {dz})')
 
     # models
@@ -512,10 +525,18 @@ def build(gm08, bg56, gm11, out, budget=None, keep_motions=False, report=False, 
     n = struct.unpack_from('<I', loc, 0)[0]
     for k in range(n):
         x, y, z = struct.unpack_from('<3f', loc, 16 + 32 * k)
+        if anchors:
+            sx, sz = st.spread_shift(x, z, spread, (cx, cz), anchors)
+            x, z = x + sx, z + sz
+        if rotate == 180:
+            x, z = -x, -z
         struct.pack_into('<3f', loc, 16 + 32 * k, x + dx, y, z + dz)
+        ry = struct.unpack_from('<f', loc, 16 + 32 * k + 20)[0]
         if flip_rotation:
-            ry = struct.unpack_from('<f', loc, 16 + 32 * k + 20)[0]
-            struct.pack_into('<f', loc, 16 + 32 * k + 20, -ry)
+            ry = -ry
+        if rotate == 180:
+            ry = (ry + 2 * np.pi) % (2 * np.pi) - np.pi      # + pi, kept in -pi..pi
+        struct.pack_into('<f', loc, 16 + 32 * k + 20, ry)
     log.append(f'locators: {n} moved' + (', y rotation negated' if flip_rotation else ''))
 
     # element table
@@ -652,7 +673,7 @@ def build(gm08, bg56, gm11, out, budget=None, keep_motions=False, report=False, 
     log.append(f'gm.pac {os.path.getsize(gm11)} -> {len(data)}')
     # placement check: as 2011 shows the cars (it turns them opposite to the
     # stored value, so the negated value shows them the 2008 way)
-    hull = enclosure(bg56, dx, dz)
+    hull = enclosure(bg56, dx, dz, rotate, spread)
     shown = footprints(p08[0], pool, loc, models, -1.0)
     for mid, name, corners in shown:
         clear = min(min(st.point_tri_dist(sx, sz, [(c[0], 0, c[1]) for c in tri])
@@ -709,6 +730,8 @@ if __name__ == '__main__':
     po = opt('--pac-out')
     pe = opt('--entry') or '78P8'
     ov = opt('--offset')
+    rv = opt('--rotate')
+    sv = opt('--spread')
     m11 = opt('--motions-2011') or 'common'
     th = opt('--texture-halve')
     if len(pos) != 4:
@@ -718,5 +741,6 @@ if __name__ == '__main__':
           texture_halve=int(th) if th else 1,
           report='--report' in a, png=png, new_entry=ne, flip_rotation='--keep-rotation' not in a,
           elements=el, pac_out=po, pac_entry=pe,
-          offset=tuple(float(x) for x in ov.split(',')) if ov else None,
+          offset=tuple(float(x) for x in ov.split(',')) if ov else None, rotate=int(rv) if rv else 0,
+          spread=float(sv) if sv else 1.0,
           motions_2011=m11, hotspots_2011='--hotspots-2011' in a)

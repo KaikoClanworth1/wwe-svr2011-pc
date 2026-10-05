@@ -51,6 +51,40 @@ Only one backstage mod plays at a time; the log warns when more are
 installed. Every backstage room and Road to WrestleMania read the mod's
 bg78, which is why the build keeps the other rooms as they are.
 
+## Areas of their own (row=)
+
+A backstage mod can be an area of its own instead of replacing a room.
+Extra manifest keys:
+
+| key | |
+|---|---|
+| `row=<label>` | a row in ONE ON ONE -> BACKSTAGE, after its room's row; its `arena.pac` plays only in matches from that row (the room's rule, e.g. 0x1B) |
+| `gimmick=<4 chars>` | `gimmick.pac`: a small pac with only GMGB/<name> (cars, props, hot spots); mounted as one more pac, played instead of the room's GMGB package in that row's matches |
+| `box=<x>,<z>,<half x>,<half z>` | the fight box (camera target, clamp, AI) |
+| `camera=<units>` | caps the match camera's distance |
+| `camera_height=<units>` | the camera's eye at least that high (looks over objects round the area) |
+
+Game side: match_types.cpp (row, box, camera hooks), arena_mods.cpp
+(LoadBackstage, UseBackstageRow, the sub_824B0090 rename, a guard on gimmick
+element type 25), move_packs.cpp (gimmick.pac in the overlay pac list).
+
+**Parking Lot (2008)** (Bundled Mods\parking_lot_2008.svrmod): SvR 2008's
+Parking Lot Brawl stage (bg56) and its vehicles (GMGA/0056), built by
+`tools/svr08_stage.py` and `tools/svr08_gimmick.py` with `--rotate 180
+--spread 2 --offset 142.1,-495.1` (gimmick: `--elements scenery
+--hotspots-2011`). Pitfalls found on the way:
+- File-level links aren't followed by the game's opens (folder links are),
+  so a pac must be served through the overlay list.
+- EPAC header +4 is the table size: the game reads only that much.
+- 2008 type-0 records with their own locators froze the wrestlers; 2011
+  packages carry common wrestler motions 12200-12231 the wrestlers' own
+  code plays (missing: a wrestler stood still).
+- 2008's own hot spots (types 20-28) aren't used; three cars get 2011's
+  front hot spot. Break parts are dropped.
+- 2008's ring is tight (140 x 112); spread x2 for a big open lot. 2011's
+  1B camera sits on +z looking -z: the lot is turned 180 so 2008's front
+  faces it.
+
 ## The Mod Maker
 
 Open area in Arena Editor loads bg78 and shows only that room

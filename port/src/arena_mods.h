@@ -41,6 +41,7 @@ struct BackstageRow {
   bool has_box = false;
   float box[4] = {};
   float camera = 0;  // camera=<units>: the match camera's farthest distance (0 = the game's)
+  float camera_height = 0;  // camera_height=<units>: the match camera at least that high (0 = the game's)
   int area = -1;
 };
 const std::vector<BackstageRow>& BackstageRows();

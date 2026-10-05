@@ -2,7 +2,8 @@
 
     python tools/svr08_stage.py <2008 bg56.pac> <2011 bg78.pac> <out bg78.pac> [--report]
         [--png <file.png>] [--drop-2011-cars] [--margin <bytes>] [--footprint x0,x1,z0,z1]
-        [--keep-rooms] [--car-blocks <2008 gm.pac>] [--offset x,z]
+        [--keep-rooms] [--car-blocks <2008 gm.pac>] [--offset x,z] [--rotate 0|180]
+        [--spread k]
 
 The variant is loaded only for matches in the parking room (rule 0x1B), so by
 default (parking-only) it also gives up what such a match never shows:
@@ -53,6 +54,21 @@ What the variant changes:
     (near clip) added like every bg78 model, and the 2008 light numbers l(..)
     dropped (bg78 has no lights 110/120).
 
+--rotate 180 turns the 2008 lot half around first (x, z -> -x, -z), so 2008's
+front (its -z side, where its floor lights 'stage front' sit and its low cars
+stand) faces 2011's backstage camera, which looks from +z toward -z. Only 0
+and 180 are offered: a half turn is the same in either rotation convention.
+--spread k (needs --car-blocks, for the vehicle positions) opens the lot up,
+in 2008 space before the turn and the offset, about the enclosure centre c:
+every vehicle moves by (k-1)(W-c), W the wall point nearest its body, so it
+keeps its size and its place against the wall; the enclosure walls scale by k
+horizontally (heights kept); the fight floor bg_floor3 and bg_ground04 scale
+by k; the car shadows, headlight pools and fog, cones, tire stacks and crates
+move vertex by vertex with their nearest vehicle (by body centre). The ground,
+lines and pylons stay. svr08_gimmick.py --spread k moves every locator with
+its nearest vehicle the same way (use the same k, offset and turn for both).
+2008's lot is tight by design (its hull, hi-res floor, headlight pools and
+light zones all ring the same 140 x 112 area), so this is a change from 2008.
 --offset x,z moves the 2008 lot by (x, 0, z) instead (svr08_gimmick.py takes
 the same option; use the same value for both). The report gives the
 clearance of every collision triangle from rule 0x1B's two start spots
@@ -93,11 +109,12 @@ SCREEN_WORDS = ('tv', 'titan', 'moni', 'screen', 'movie', 'vision')
 START_SPOTS = ((150.0, -450.0), (125.0, -450.0))   # rule 0x1B: wrestler 1, 2 (x, z)
 
 
-def offset_for(R56, offset=None):
-    """(dx, dz): the given offset, or the 2008 enclosure centre -> fight-box centre."""
+def offset_for(R56, offset=None, rotate=0):
+    """(dx, dz): the given offset, or the (turned) 2008 enclosure centre ->
+    fight-box centre."""
     if offset:
         return float(offset[0]), float(offset[1])
-    P = np.array([c for r in R56 for c in tri_corners(r)])
+    P = np.array([c for r in R56 for c in tri_corners(r)]) @ rot_matrix(rotate)
     cx, cz = (P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2
     return round(BOX_CENTRE[0] - cx, 1), round(BOX_CENTRE[1] - cz, 1)
 
@@ -456,7 +473,130 @@ def box_walls(cx, cz, hx, hz, ry, y=-45.1, hy=54.9):
     return out
 
 
-def car_blocks(gm08, d):
+WITH_CARS = (6, 7, 8, 9, 10, 11, 13, 14, 15, 18, 19)   # bg56 models that move with their nearest vehicle
+SCALE_WITH_RING = (3, 4)                               # bg_ground04, bg_floor3 (fight floor)
+
+
+def wall_point(R56, x, z):
+    """The point of the enclosure walls (top-down) nearest to (x, z)."""
+    best = None
+    for r in R56:
+        c = [(p[0], p[2]) for p in tri_corners(r)]
+        for (ax, az), (bx, bz) in ((c[0], c[1]), (c[1], c[2]), (c[2], c[0])):
+            vx, vz = bx - ax, bz - az
+            ln = vx * vx + vz * vz
+            t = 0.0 if ln < 1e-9 else max(0.0, min(1.0, ((x - ax) * vx + (z - az) * vz) / ln))
+            qx, qz = ax + t * vx, az + t * vz
+            dd = (qx - x) ** 2 + (qz - z) ** 2
+            if best is None or dd < best[0]:
+                best = (dd, qx, qz)
+    return best[1], best[2]
+
+
+def car_anchors(gm08, R56):
+    """[(wall x, z, body centre x, z, name, locator x, z)] of the 2008 vehicle
+    bodies of gm.pac GMGA/0056 (the bodies car_blocks boxes), 2008 space; wall
+    = the enclosure point nearest the body centre, which the vehicle follows
+    when the lot is spread (so it keeps its place against the wall)."""
+    h, g, t = f.epac_read(open(gm08, 'rb').read())
+    blob = [b for ty, e in g if ty == b'GMGA' for n, b in e if n == b'0056'][0]
+    p = {i: unpack(b) for i, b in f.pach_read(unpack(blob))}
+    rec = [struct.unpack_from('<4H', p[0], o) for o in range(0, len(p[0]) - 7, 8)]
+    W = struct.unpack(f'<{len(p[2]) // 4}I', p[2])
+    loc = unpack(dict(f.pach_read(p[3]))[10000])
+    models = {i: jboy.read(unpack(b)) for i, b in f.pach_read(p[4]) if unpack(b)[:4] == b'JBOY'}
+    out = []
+    for k, (rid, typ, n, off) in enumerate(rec):
+        if typ != 23:
+            continue
+        mid = int(struct.unpack('<f', struct.pack('<I', W[off]))[0])
+        m = models.get(mid)
+        if not m or mid >= 1500 or not m.name.startswith(('car_', 'n1840')):
+            continue
+        x, y, z, _, rx, ry, rz = struct.unpack_from('<3fI3f', loc, 16 + 32 * k)
+        V = np.array([v[:3] for s in m.meshes for v in s.verts])
+        x0, x1, z0, z1 = V[:, 0].min(), V[:, 0].max(), V[:, 2].min(), V[:, 2].max()
+        if (x1 - x0) * (z1 - z0) < 100:
+            continue
+        mx, mz = (x0 + x1) / 2, (z0 + z1) / 2
+        c, s = math.cos(ry), math.sin(ry)
+        bx, bz = x + mx * c + mz * s, z - mx * s + mz * c
+        wx, wz = wall_point(R56, bx, bz)
+        out.append((wx, wz, bx, bz, m.name, x, z))
+    return out
+
+
+def spread_shift(x, z, k, pivot, anchors):
+    """(dx, dz) for a point that moves with its nearest vehicle."""
+    own = [i for i in range(len(anchors)) if abs(anchors[i][5] - x) < 0.01 and abs(anchors[i][6] - z) < 0.01]
+    j = own[0] if own else min(range(len(anchors)), key=lambda i: (anchors[i][2] - x) ** 2 + (anchors[i][3] - z) ** 2)
+    return (k - 1) * (anchors[j][0] - pivot[0]), (k - 1) * (anchors[j][1] - pivot[1])
+
+
+def hmd_spread(r, k, pivot):
+    """The triangle with the world scaled by k horizontally about pivot
+    (corners moved, frame rebuilt: normal = S^-1 n, same handedness)."""
+    S = np.array([k, 1.0, k])
+    C = [pivot_scale(c, k, pivot) for c in tri_corners(r)]
+    M = r[:16].reshape(4, 4)
+    R = M[:3, :3]
+    n = R[:, 1] / S
+    n /= np.linalg.norm(n)
+    ex = C[1] - C[0]
+    ex = ex - n * np.dot(ex, n)
+    ex /= np.linalg.norm(ex)
+    ez = np.cross(ex, n)
+    R2 = np.column_stack([ex, n, ez])
+    if np.sign(np.linalg.det(R2)) != np.sign(np.linalg.det(R)):
+        R2[:, 2] = -R2[:, 2]
+    if np.dot(n, R[:, 1] / np.linalg.norm(R[:, 1])) > 1 - 1e-6:          # walls: the plane keeps its normal, keep the frame
+        R2 = R.copy()
+    t = -C[0] @ R2
+    L = np.array([c @ R2 + t for c in C])
+    t[0] -= (L[:, 0].min() + L[:, 0].max()) / 2      # origin at the middle of the corners, like the shipped data
+    t[2] -= (L[:, 2].min() + L[:, 2].max()) / 2
+    L = [c @ R2 + t for c in C]
+    if max(abs(l[1]) for l in L) > 0.05:      # kept frames of nearly-vertical walls: < 0.05 off
+        raise SystemExit('hmd_spread: corners off the plane')
+    out = r.copy()
+    M2 = M.copy()
+    M2[:3, :3] = R2
+    M2[3, :3] = t
+    out[:16] = M2.flatten()
+    out[16:22] = np.array([(l[0], l[2]) for l in L]).flatten()
+    out[22] = float(np.abs(out[16:22]).max())
+    out[3], out[7] = tri_xrange(out)
+    return out
+
+
+def pivot_scale(c, k, pivot):
+    return np.array([pivot[0] + (c[0] - pivot[0]) * k, c[1], pivot[1] + (c[2] - pivot[1]) * k])
+
+
+def spread_model(raw, k, pivot, anchors, mode):
+    """mode 'scale': vertices scaled by k horizontally about pivot; 'cars':
+    each vertex moves with its nearest vehicle."""
+    m = jboy.read(raw)
+    for s in m.meshes:
+        nv = []
+        for v in s.verts:
+            x, y, z = v[:3]
+            if mode == 'scale':
+                x, z = pivot[0] + (x - pivot[0]) * k, pivot[1] + (z - pivot[1]) * k
+            else:
+                dx, dz = spread_shift(x, z, k, pivot, anchors)
+                x, z = x + dx, z + dz
+            nv.append((float(x), float(y), float(z)) + tuple(v[3:]))
+        s.verts = nv
+        s.sphere = sphere_of([v[:3] for v in s.verts])
+        s.raw = s.raw[:0xA4] + struct.pack('>4f', *s.sphere) + s.raw[0xB4:]
+    allp = [v[:3] for s in m.meshes for v in s.verts]
+    for n in m.nodes:
+        n['sphere'] = sphere_of(allp)
+    return jboy.write(m)
+
+
+def car_blocks(gm08, d, rotate=0, spread=1.0, pivot=(0.0, 0.0), anchors=None):
     """Boxes for the 2008 vehicles of gm.pac GMGA/0056, moved by d."""
     h, g, t = f.epac_read(open(gm08, 'rb').read())
     blob = [b for ty, e in g if ty == b'GMGA' for n, b in e if n == b'0056'][0]
@@ -480,14 +620,19 @@ def car_blocks(gm08, d):
             continue
         mx, mz = (x0 + x1) / 2, (z0 + z1) / 2
         c, s = math.cos(ry), math.sin(ry)
-        cx, cz = x + mx * c + mz * s + d[0], z - mx * s + mz * c + d[2]
-        out += box_walls(cx, cz, (x1 - x0) / 2, (z1 - z0) / 2, ry)
+        cx, cz = x + mx * c + mz * s, z - mx * s + mz * c
+        if spread != 1.0:
+            sx, sz = spread_shift(x, z, spread, pivot, anchors)
+            cx, cz = cx + sx, cz + sz
+        if rotate == 180:
+            cx, cz, ry = -cx, -cz, ry + math.pi
+        out += box_walls(cx + d[0], cz + d[2], (x1 - x0) / 2, (z1 - z0) / 2, ry)
         names.append(m.name)
     return out, names
 
 
 def build(p56, p78, out_path, drop_cars=False, margin=64 * 1024, png=None, report=False,
-          footprint=FOOTPRINT, parking_only=True, gm08=None, offset=None):
+          footprint=FOOTPRINT, parking_only=True, gm08=None, offset=None, rotate=0, spread=1.0):
     log = []
     h78, g78, t78, (gi, ei), e78 = stage(p78)
     _, _, _, _, e56 = stage(p56)
@@ -501,10 +646,25 @@ def build(p56, p78, out_path, drop_cars=False, margin=64 * 1024, png=None, repor
     R56 = hmd_read(d56[996])
     P = np.array([c for r in R56 for c in tri_corners(r)])
     cx, cz = (P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2
-    Q = rot_matrix(0)
-    dx_, dz_ = offset_for(R56, offset)
+    pivot, anchors = (cx, cz), None
+    if spread != 1.0:
+        if not gm08:
+            raise SystemExit('--spread needs --car-blocks <2008 gm.pac> (the vehicle positions)')
+        anchors = car_anchors(gm08, R56)
+        R56 = [hmd_spread(r, spread, pivot) for r in R56]
+        for i in WITH_CARS + SCALE_WITH_RING:
+            if d56.get(i, b'')[:4] == b'JBOY':
+                d56[i] = spread_model(d56[i], spread, pivot, anchors, 'scale' if i in SCALE_WITH_RING else 'cars')
+        log.append(f'spread x{spread} about the enclosure centre ({cx:.1f}, {cz:.1f}), 2008 space')
+        P = np.array([c for r in R56 for c in tri_corners(r)])
+    if rotate not in (0, 180):
+        raise SystemExit('--rotate: 0 or 180')
+    Q = rot_matrix(rotate)
+    dx_, dz_ = offset_for(R56, offset, rotate)
     d = np.array([dx_, 0.0, dz_])
-    log.append(f'offset: 2008 (x, z) + ({d[0]:.1f}, {d[2]:.1f}), y + 0, rotation 0 '
+    P = P @ Q
+    cx, cz = (P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2
+    log.append(f'offset: 2008 (x, z) + ({d[0]:.1f}, {d[2]:.1f}), y + 0, rotation {rotate} '
                f'(enclosure centre {cx:.1f}, {cz:.1f} -> {cx + d[0]:.1f}, {cz + d[2]:.1f}; '
                f'x {P[:, 0].min() + d[0]:.1f}..{P[:, 0].max() + d[0]:.1f}, z {P[:, 2].min() + d[2]:.1f}..{P[:, 2].max() + d[2]:.1f})')
 
@@ -583,7 +743,7 @@ def build(p56, p78, out_path, drop_cars=False, margin=64 * 1024, png=None, repor
             c = tri_corners(r)
             if all(CAR_AREA[0] <= p[0] <= CAR_AREA[1] and CAR_AREA[2] <= p[2] <= CAR_AREA[3] for p in c):
                 cars.append(r)
-    blocks, block_names = car_blocks(gm08, d) if gm08 else ([], [])
+    blocks, block_names = car_blocks(gm08, d, rotate, spread, pivot, anchors) if gm08 else ([], [])
     hmd = hmd_write(rec + cars + blocks)
     idx = index_build(rec + cars + blocks)
     log.append(f'collision {PARK_HMD}: {len(rec)} triangles from bg56 + {len(cars)} of 2011 gimmick cars '
@@ -747,6 +907,8 @@ if __name__ == '__main__':
     fv = opt('--footprint')
     cb = opt('--car-blocks')
     ov = opt('--offset')
+    rv = opt('--rotate')
+    sv = opt('--spread')
     if len(pos) != 3:
         print(__doc__)
         sys.exit(1)
@@ -754,4 +916,5 @@ if __name__ == '__main__':
           margin=int(mv) if mv else 64 * 1024, png=png, report='--report' in a,
           footprint=tuple(float(x) for x in fv.split(',')) if fv else FOOTPRINT,
           parking_only='--keep-rooms' not in a, gm08=cb,
-          offset=tuple(float(x) for x in ov.split(',')) if ov else None)
+          offset=tuple(float(x) for x in ov.split(',')) if ov else None, rotate=int(rv) if rv else 0,
+          spread=float(sv) if sv else 1.0)
