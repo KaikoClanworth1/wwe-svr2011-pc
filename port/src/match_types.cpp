@@ -125,6 +125,17 @@ bool g_pending_weapons = false;
 bool g_weapons = false;  // the match set up is a WEAPONS EVERYWHERE one
 uint32_t g_weapons_text[2] = {};
 
+// SLOBBER KNOCKER: after HANDICAP -> GAUNTLET (group 0x0B, rule 0x52), a
+// copy: player 1 against an endless line of opponents, one at a time, until
+// pinned (see "Slobber Knocker" below).
+constexpr uint32_t kSlobberLabel = 0x0FA0B102, kSlobberText = 0x0FA0B103;
+constexpr uint32_t kGauntletRow = 0xA081, kHandicapGroup = 0x0B, kGauntlet = 0x52;
+constexpr int kSlobberPeople = 5;  // player 1, the opponent in the match, 3 waiting
+int g_slobber_row = -1;  // its place in the group
+bool g_pending_slobber = false;
+bool g_slobber = false;  // the match set up is a Slobber Knocker
+uint32_t g_slobber_text[2] = {};
+
 // Developer aid: SVR2011_TEST_RULE=<hex id> plays that rule record wherever
 // the game would play ONE ON ONE -> NORMAL (id 0), to try a rule in game.
 int g_test_rule = -1;
@@ -167,6 +178,23 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(copy.data() + 0x3C, flags);
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
+    }
+    if (Rd32(rec) == kGauntletRow && Rd32(rec + 0x18) == kHandicapGroup) {
+      std::vector<uint8_t> copy(rec, rec + kRec);
+      Wr32(copy.data() + 0x00, kSlobberLabel);
+      Wr32(copy.data() + 0x04, kSlobberText);
+      Wr32(copy.data() + 0x40, 0);
+      uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
+      const uint32_t flags = Rd32(prev + 0x3C);
+      Wr32(prev + 0x3C, flags & ~2u);
+      Wr32(copy.data() + 0x3C, (Rd32(copy.data() + 0x3C) & ~2u) | (flags & 2u));
+      int index = 0;
+      for (size_t at = kFirst; at < out.size(); at += kRec)
+        if (Rd32(out.data() + at + 0x18) == kHandicapGroup) ++index;
+      g_slobber_row = index;
+      out.insert(out.end(), copy.begin(), copy.end());
+      ++added;
+      REXLOG_INFO("match types: SLOBBER KNOCKER at group {:02X} row {}", kHandicapGroup, index);
     }
     if (const uint32_t rule = Rd32(rec + 0x5C);
         rule >= kExtremeFirst && rule <= kExtremeLast && Rd32(rec + 0x18) == kFullGroup && submenu) {
@@ -368,6 +396,18 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
     if (rule == kLumberjack) {
       for (int i = 2; i < 6; ++i) rec[2 + i * 3 + 1] = 3, rec[2 + i * 3 + 2] = 2;
     }
+    // Slobber Knocker: the 2 waiting opponents (people 2-3, kind 3) as manager
+    // slots while the select screen runs (it would have them picked); kind 3
+    // again as the people are built (sub_828BBEF0 below).
+    if (rule == kGauntlet && g_slobber) {
+      // (and a third: person 4 - the gauntlet has 4 people, the 5-person one
+      // 0x58 shows 5 work)
+      const uint8_t* five = base + rules + 0x58 * kRuleSize;  // (the 5-person gauntlet's count)
+      rec[0] = five[0], rec[1] = five[1];
+      rec2[34] = base[rules + kRule2 + 0x58 * kRule2Size + 34];
+      rec[2 + 4 * 3] = 4, rec[2 + 4 * 3 + 1] = 1;
+      for (int i = 2; i < kSlobberPeople; ++i) rec[2 + i * 3 + 2] = 2;
+    }
   } else {
     for (const Span& span : kShape) std::memcpy(rec + span.at, from + span.at, span.size);
     rec2[kRule2People] = base[rules + kRule2 + like * kRule2Size + kRule2People];
@@ -428,6 +468,12 @@ REX_HOOK_RAW(sub_8243FCC8) {
   if (result < 2000 || result >= 2119) return;
   g_pending_like = ~0u;
   g_pending_own_row = -1;
+  g_pending_slobber = group == kHandicapGroup && g_slobber_row >= 0 && ctx_row == uint32_t(g_slobber_row);
+  if (g_pending_slobber) {  // (the 1 on 1 select screen: player 1 and the first opponent)
+    g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
+    g_pending_like = kLumberjackLike;
+    g_pending_select_only = true;
+  }
   g_pending_weapons = false;
   for (const WeaponsRow& w : g_weapons_rows)
     if (group == w.group && ctx_row == w.index) g_pending_weapons = true;
@@ -468,6 +514,12 @@ REX_HOOK_RAW(sub_827374A0) {
     if (use) REXLOG_INFO("match types: backstage area '{}'", own[size_t(k)].label);
     svr2011::UseBackstageRow(use ? k : -1);
     g_pending_own_row = -1;
+  }
+  g_slobber = g_pending_slobber && rule == kGauntlet && !Rd32(base + kStoryContext);
+  g_pending_slobber = false;
+  if (g_slobber) {
+    REXLOG_INFO("match types: SLOBBER KNOCKER");
+    svr2011::SlobberKnockerStart();
   }
   g_weapons = g_pending_weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !Rd32(base + kStoryContext);
   g_pending_weapons = false;
@@ -553,10 +605,17 @@ uint8_t LumberjackKind() {
 
 // (each time the people are built - the choice is kept unless it clashes with
 // a pick)
+void FillRandomSlots(uint8_t* base, uint32_t match, uint32_t count, uint8_t team, uint8_t kind, const char* what);
+
 void FillLumberjackSlots(uint8_t* base, uint32_t match) {
+  FillRandomSlots(base, match, LumberjackCount(), 3, LumberjackKind(), "lumberjacks");
+}
+
+// People 2.. of the match's slots: `count` random superstars (not the picks,
+// their gender), CPU, on `team` with slot kind `kind`.
+void FillRandomSlots(uint8_t* base, uint32_t match, uint32_t count, uint8_t team, uint8_t kind, const char* what) {
   constexpr uint32_t kIdToIndex = 0x82DB3610, kRecords = 0x82E407C0, kRecordSize = 260;
   constexpr uint32_t kOwnId = 32, kName = 34, kGender = 208, kSelectable = 221, kSamePerson = 228, kDlc = 257;
-  const uint32_t count = LumberjackCount();
   uint8_t* slot[2 + kMaxLumberjacks];
   for (uint32_t i = 0; i < 2 + count; ++i) slot[i] = base + match + kSlots + i * kSlotSize;
   const uint32_t picked[2] = {Rd32(slot[0] + 8) / 100, Rd32(slot[1] + 8) / 100};  // (+8: what the people are built from)
@@ -597,7 +656,7 @@ void FillLumberjackSlots(uint8_t* base, uint32_t match) {
         pool.push_back(id);
     }
     if (pool.size() < count) {
-      REXLOG_WARN("match types: lumberjacks - only {} superstars to choose from", pool.size());
+      REXLOG_WARN("match types: {} - only {} superstars to choose from", what, pool.size());
       return;
     }
     static std::mt19937 rng{std::random_device{}()};
@@ -620,11 +679,11 @@ void FillLumberjackSlots(uint8_t* base, uint32_t match) {
     if (now != 51200 && now != id * 100 + 2) continue;  // (not an empty slot: someone's pick)
     Wr32(slot[i] + 8, id * 100 + 2);  // (attire: the first, as the select screen gives)
     Wr16(slot[i] + 54, id);
-    slot[i][5] = 3;      // (team: the lumberjacks)
-    slot[i][4] = LumberjackKind();
+    slot[i][5] = team;
+    slot[i][4] = kind;
     slot[i][-8] = 1;     // (controller: the CPU)
   }
-  if (!names.empty()) REXLOG_INFO("match types: lumberjacks: {}", names);
+  if (!names.empty()) REXLOG_INFO("match types: {}: {}", what, names);
 }
 
 }  // namespace
@@ -641,6 +700,12 @@ REX_HOOK_RAW(sub_828BBEF0) {
   }
   if (base[0x82E3DE00] == kLumberjack && !Rd32(base + kStoryContext) && ctx.r3.u32) {
     FillLumberjackSlots(base, ctx.r3.u32);
+  }
+  if (g_slobber && base[0x82E3DE00] == kGauntlet && ctx.r3.u32) {  // (the 2 waiting opponents)
+    if (const uint32_t rules = Rd32(base + kRules))
+      for (int i = 2; i < kSlobberPeople; ++i) base[rules + kGauntlet * kRuleSize + 2 + i * 3 + 2] = 3;
+    FillRandomSlots(base, ctx.r3.u32, kSlobberPeople - 2, 1, 3, "slobber knocker opponents");
+    for (uint32_t i = kSlobberPeople; i < 6; ++i) Wr32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8, 51200);
   }
   __imp__sub_828BBEF0(ctx, base);
 }
@@ -1024,8 +1089,11 @@ void LumberjackController(uint8_t* base) {
 
 namespace svr2011 {
 
-void MatchTypesUpdate(uint8_t* base) {
+bool SlobberKnockerMatch() { return g_slobber; }
+
+void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kChars = 0x82E3CC50;
+  if (g_slobber && base[0x82E3DE00] == kGauntlet) SlobberKnockerUpdate(ctx, base);
   if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext)) return;
   LumberjackController(base);
   static const bool probe = std::getenv("SVR2011_TEST_PEOPLE") != nullptr;
@@ -1168,6 +1236,19 @@ namespace svr2011 {
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
+  if ((id == kSlobberLabel || id == kSlobberText) && g_memory) {
+    static const char* const kText[] = {
+        "SLOBBER KNOCKER",
+        "One on one against an endless line of opponents. Beat one and the next comes in - how many can "
+        "you beat before you're pinned?"};
+    const uint32_t k = id - kSlobberLabel;
+    if (!g_slobber_text[k]) {
+      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
+      g_slobber_text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_slobber_text[k]), kText[k], n);
+    }
+    return g_slobber_text[k];
+  }
   if ((id == kWeaponsLabel || id == kWeaponsText) && g_memory) {
     static const char* const kText[] = {
         "WEAPONS EVERYWHERE",

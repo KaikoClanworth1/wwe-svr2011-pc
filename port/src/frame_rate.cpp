@@ -357,7 +357,7 @@ REX_HOOK_RAW(sub_8269D768) {
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
-  svr2011::MatchTypesUpdate(base);  // (match_types.h: the lumberjacks)
+  svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)
   // An armed match start (ArmMatchStart): once the match's frame count has
   // gone up 30 updates running.
   static uint32_t last_frames = 0;
