@@ -4267,13 +4267,24 @@ static void pt_clear(uint8_t *f, int k)
     memcpy(b + 8, k_pt_empty_header, 44);
 }
 
-/* Slot k's logo as BGRA. */
+/* Slot k's logo as BGRA: its canvas (full colour), unless the canvas isn't
+ * the picture the game shows - its 8-bit copy (TGA: palette + indices), made
+ * from the canvas when the logo is saved. A slot can hold another logo's
+ * canvas (seen on page 2: logo 1's canvas from page 1), and then that copy is
+ * drawn instead. */
 static void pt_get(const uint8_t *f, int k, uint8_t *bgra)
 {
-    const uint8_t *c = f + (size_t)k * PT_SLOT + PT_CANVAS;
-    int i;
-    for (i = 0; i < PT_W * PT_W; i++, c += 4) {
-        bgra[4 * i] = c[3]; bgra[4 * i + 1] = c[2]; bgra[4 * i + 2] = c[1]; bgra[4 * i + 3] = c[0];
+    const uint8_t *b = f + (size_t)k * PT_SLOT, *c = b + PT_CANVAS;
+    const uint8_t *pal = b + PT_TGA + 20, *idx = b + PT_TGA + 0x414;
+    int i, differ = 0;
+    for (i = 0; i < PT_W * PT_W; i++)
+        if (memcmp(c + 4 * i, pal + 4 * idx[i], 4) && ++differ > PT_W * PT_W / 16) {
+            c = NULL;
+            break;
+        }
+    for (i = 0; i < PT_W * PT_W; i++) {
+        const uint8_t *p = c ? c + 4 * i : pal + 4 * idx[i];
+        bgra[4 * i] = p[3]; bgra[4 * i + 1] = p[2]; bgra[4 * i + 2] = p[1]; bgra[4 * i + 3] = p[0];
     }
 }
 
