@@ -413,6 +413,29 @@ REX_HOOK_RAW(sub_8269C728) {
   g_dbg_pass = 0;
   g_dbg_since = Clock::now().time_since_epoch().count();
   static std::once_flag watchdog;
+  // Test aid: SVR2011_TEST_HITCH_MS=<ms> - an update or draw pass running
+  // longer than that: every guest thread's back chain (once per pass; what a
+  // stutter waits on).
+  static std::once_flag hitch;
+  std::call_once(hitch, [] {
+    const char* v = std::getenv("SVR2011_TEST_HITCH_MS");
+    const int ms = v ? std::atoi(v) : 0;
+    if (ms <= 0) return;
+    std::thread([ms] {
+      int64_t logged_for = -1;
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        const int64_t s = g_dbg_since.load();
+        const auto since = Clock::time_point(Clock::duration(s));
+        if (g_dbg_pass != 0 && s != logged_for && g_base && Clock::now() - since > std::chrono::milliseconds(ms)) {
+          logged_for = s;
+          REXLOG_WARN("frame rate: test - pass {} over {} ms - object {:08X} function {:08X}", g_dbg_pass.load(), ms,
+                      g_dbg_obj.load(), g_dbg_fn.load());
+          DumpGuestThreads(g_base);
+        }
+      }
+    }).detach();
+  });
   std::call_once(watchdog, [] {
     std::thread([] {
       // (test aid: SVR2011_TEST_DUMP_AT=<s> - every guest thread's back chain once, <s> s after the start)
