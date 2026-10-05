@@ -60,6 +60,9 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]);
 // false: the GPU can't sample BC (DXT) textures (Mali): they are decoded on
 // the CPU to RGBA8 / RG8 / R8 instead (before any texture is uploaded).
 void SetBlockCompressionSupported(bool supported);
+// false: 16-bit UNORM textures can't be linearly filtered (most Mali GPUs):
+// they are converted to 16-bit float on the CPU instead.
+void SetUnorm16Filterable(bool filterable);
 
 // Drops every render target copy (the renderer rebuilt its targets).
 void ForgetResolved();

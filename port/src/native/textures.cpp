@@ -70,6 +70,7 @@ enum class Convert : uint8_t {
   kBC3,  // -> RGBA8
   kBC4,  // -> R8
   kBC5,  // -> RG8
+  kUnorm16Half,  // 16-bit UNORM channels -> 16-bit float (a GPU that can't filter UNORM16: Mali)
 };
 
 struct HostFormat {
@@ -173,6 +174,40 @@ rex::memory::Memory* g_memory = nullptr;
 const uint8_t* g_physical = nullptr;
 // (SetBlockCompressionSupported; SVR2011_NATIVE_NO_BC=1: as if not - tests the CPU decoding on a PC)
 bool g_bc_supported = std::getenv("SVR2011_NATIVE_NO_BC") == nullptr;
+bool g_unorm16_filterable = true;  // (SetUnorm16Filterable)
+
+// A 16-bit UNORM format's float stand-in (the GPU can't filter UNORM16).
+HostFormat Unorm16AsHalf(const HostFormat& h) {
+  using RF = RenderFormat;
+  switch (h.format) {
+    case RF::R16_UNORM:
+      return {RF::R16_FLOAT, RF::UNKNOWN, Convert::kUnorm16Half, 1};
+    case RF::R16G16_UNORM:
+      return {RF::R16G16_FLOAT, RF::UNKNOWN, Convert::kUnorm16Half, 2};
+    case RF::R16G16B16A16_UNORM:
+      return {RF::R16G16B16A16_FLOAT, RF::UNKNOWN, Convert::kUnorm16Half, 4};
+    default:
+      return h;
+  }
+}
+
+// [0, 65535] -> the half float nearest v / 65535 (11 significant bits).
+uint16_t Unorm16ToHalf(uint32_t v) {
+  if (v == 0) return 0;
+  if (v == 65535) return 0x3C00;  // 1.0
+  float f = float(v) / 65535.0f;
+  uint32_t bits;
+  std::memcpy(&bits, &f, 4);
+  const int32_t exponent = int32_t((bits >> 23) & 0xFF) - 127 + 15;
+  uint32_t mantissa = bits & 0x7FFFFF;
+  if (exponent <= 0) {  // (subnormal half: below 2^-14)
+    mantissa |= 0x800000;
+    const uint32_t shift = uint32_t(14 - exponent);
+    return uint16_t((mantissa + (1u << (shift - 1))) >> shift);
+  }
+  const uint32_t rounded = (uint32_t(exponent) << 10) + ((mantissa + 0x1000) >> 13);
+  return uint16_t(rounded);  // (a carry into the exponent is still right)
+}
 
 // A BC format's CPU-decoded stand-in (the GPU can't sample BC).
 HostFormat Decompressed(const HostFormat& h) {
@@ -429,6 +464,16 @@ void StoreBlock(Convert convert, const uint8_t* block, uint32_t bpb, uint8_t* ds
       }
       return;
     }
+    case Convert::kUnorm16Half: {
+      // (one texel: bpb / 2 channels)
+      if (bx >= host_width || by >= host_height) return;
+      uint8_t* d = dst_base + size_t(by) * row_pitch + size_t(bx) * bpb;
+      for (uint32_t c = 0; c < bpb / 2; ++c) {
+        const uint16_t h = Unorm16ToHalf(uint32_t(block[2 * c]) | (uint32_t(block[2 * c + 1]) << 8));
+        std::memcpy(d + 2 * c, &h, 2);
+      }
+      return;
+    }
     case Convert::kBC4:
     case Convert::kBC5: {
       const uint32_t channels = convert == Convert::kBC5 ? 2 : 1;
@@ -602,7 +647,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
     }
   } timed;
   const TF format = fetch.format;
-  const HostFormat host = g_bc_supported ? GetHostFormat(format) : Decompressed(GetHostFormat(format));
+  HostFormat host = g_bc_supported ? GetHostFormat(format) : Decompressed(GetHostFormat(format));
+  if (!g_unorm16_filterable) host = Unorm16AsHalf(host);
   const FormatInfo* info = FormatInfo::Get(format);
   if (host.convert == Convert::kNone || !info) return false;
 
@@ -1016,6 +1062,8 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
   g_samplers.emplace(key, SamplerEntry{index, std::move(sampler)});
   return index;
 }
+
+void SetUnorm16Filterable(bool filterable) { g_unorm16_filterable = filterable; }
 
 void SetBlockCompressionSupported(bool supported) {
   g_bc_supported = supported && std::getenv("SVR2011_NATIVE_NO_BC") == nullptr;

@@ -51,7 +51,10 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
   get_properties(physical, &props);
   VkPhysicalDeviceFeatures features;
   get_features(physical, &features);
-  const bool mali = props.vendorID == 0x13B5;  // ARM
+  // (vulkan_simulate_mali: the SDK hides Mali's missing features - here the
+  // formats it can't filter or read too, so their paths run on another GPU)
+  const bool simulated = rex::cvar::GetFlagByName("vulkan_simulate_mali") == "true";
+  const bool mali = props.vendorID == 0x13B5 || simulated;  // ARM
   REXLOG_INFO("GPU report: '{}', vendor 0x{:04X} device 0x{:08X}, Vulkan {}.{}.{}, driver 0x{:08X}{}",
               props.deviceName, props.vendorID, props.deviceID, VK_API_VERSION_MAJOR(props.apiVersion),
               VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
@@ -81,12 +84,13 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
       {VK_FORMAT_A2B10G10R10_UNORM_PACK32, "RGB10A2"}, {VK_FORMAT_R16G16B16A16_SFLOAT, "RGBA16F"},
       {VK_FORMAT_R16G16B16A16_UNORM, "RGBA16"},      {VK_FORMAT_R16G16B16A16_SNORM, "RGBA16 snorm"},
       {VK_FORMAT_R16G16_SNORM, "RG16 snorm"},        {VK_FORMAT_R16G16_UNORM, "RG16"},
+      {VK_FORMAT_R16_UNORM, "R16"},
       {VK_FORMAT_R32_SFLOAT, "R32F"},                {VK_FORMAT_R32G32B32A32_SFLOAT, "RGBA32F"},
       {VK_FORMAT_D24_UNORM_S8_UINT, "D24S8"},        {VK_FORMAT_D32_SFLOAT_S8_UINT, "D32S8"},
       {VK_FORMAT_D32_SFLOAT, "D32F"},
   };
   std::string line;
-  bool bc = true, d24s8 = false;
+  bool bc = true, d24s8 = false, unorm16_filter = true;
   for (const Format& f : kFormats) {
     VkFormatProperties fp;
     get_format(physical, f.format, &fp);
@@ -102,11 +106,19 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
         !(o & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
       bc = false;
     if (f.format == VK_FORMAT_D24_UNORM_S8_UINT) d24s8 = o & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if ((f.format == VK_FORMAT_R16_UNORM || f.format == VK_FORMAT_R16G16_UNORM ||
+         f.format == VK_FORMAT_R16G16B16A16_UNORM) &&
+        !(o & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+      unorm16_filter = false;
   }
   REXLOG_INFO("GPU report: formats (s sampled, f filtered, c color target, b blended, d depth target): {}", line);
 
-  bc = bc && features.textureCompressionBC;
+  bc = bc && features.textureCompressionBC && !simulated;
   textures::SetBlockCompressionSupported(bc);
+  unorm16_filter = unorm16_filter && !simulated;  // (as Mali-G57 / G68 / G78 / G720 / G925)
+  textures::SetUnorm16Filterable(unorm16_filter);
+  if (!unorm16_filter)
+    REXLOG_WARN("native renderer: 16-bit UNORM textures can't be filtered on this GPU - converted to 16-bit float");
   if (!bc) REXLOG_WARN("native renderer: no BC (DXT) textures on this GPU - they are decoded on the CPU (slower loads)");
   if (!d24s8) {
     REXLOG_ERROR("native renderer: the GPU has no D24S8 depth buffers - the emulated renderer takes over");

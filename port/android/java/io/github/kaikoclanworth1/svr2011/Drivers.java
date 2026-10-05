@@ -258,6 +258,11 @@ final class Drivers {
         + "problem report (Play tab, Report a problem) whether it works or not: it says what your GPU needs.";
 
     void buildMali(LinearLayout column) {
+        // (alpha mode turned on by an older launcher: its settings brought up to date)
+        if (settings_.getBool(kMaliKey, false)) {
+            setMali(true);
+            settings_.save();
+        }
         LinearLayout card = a_.card(column, "Mali GPU (alpha)");
         android.widget.Switch sw = new android.widget.Switch(a_);
         sw.setText("Mali alpha mode");
@@ -276,10 +281,20 @@ final class Drivers {
         card.addView(note);
     }
 
+    // What Mali lacks (vulkan.gpuinfo.org, Mali-G57 to G925): line drawing and
+    // vertex shader stores (every driver) - the emulator's fallbacks instead;
+    // and its geometry shaders are slow, so the emulator expands points,
+    // rectangles and quads without them.
+    static final String[] kMaliOff = {"vulkan_require_geometry_shader", "vulkan_require_fill_mode_non_solid",
+                                      "vulkan_require_vertex_pipeline_stores_and_atomics"};
+    static final String[] kMaliOn = {"vulkan_force_expand_point_sprites_in_vs",
+                                     "vulkan_force_expand_rectangle_lists_in_vs",
+                                     "vulkan_force_convert_quad_lists_to_triangle_lists"};
+
     void setMali(boolean on) {
         settings_.setBool(kMaliKey, on);
-        settings_.setBool("vulkan_require_geometry_shader", !on);
-        settings_.setBool("vulkan_require_fill_mode_non_solid", !on);
+        for (String k : kMaliOff) settings_.setBool(k, !on);
+        for (String k : kMaliOn) settings_.setBool(k, on);
     }
 
     // Before the game starts on a Mali GPU: the warning (each time, until the
