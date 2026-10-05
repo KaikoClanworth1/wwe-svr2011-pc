@@ -17,4 +17,7 @@ void InstallMatchTypes(rex::memory::Memory* memory);
 // (match_types.cpp: their controller).
 void MatchTypesUpdate(uint8_t* base);
 
+// Menu text of the match rows added at run time (string id), else 0.
+uint32_t MatchTypeString(uint32_t id);
+
 }  // namespace svr2011

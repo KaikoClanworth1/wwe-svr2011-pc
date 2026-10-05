@@ -40,6 +40,7 @@
 #include "graphics_page.h"
 #include "discord_presence.h"
 #include "online.h"
+#include "match_types.h"
 #include "superstar_mods.h"
 #include "touch_controls.h"
 #include "native/native_renderer.h"
@@ -254,6 +255,10 @@ REX_HOOK_RAW(sub_82153EF8) {
     return;
   }
   if (const uint32_t s = svr2011::SuperstarModString(ctx.r4.u32)) {  // (arenas branch: superstar_mods.h)
+    ctx.r3.u64 = s;
+    return;
+  }
+  if (const uint32_t s = svr2011::MatchTypeString(ctx.r4.u32)) {  // (match_types.h: added rows)
     ctx.r3.u64 = s;
     return;
   }

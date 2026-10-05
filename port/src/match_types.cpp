@@ -15,6 +15,7 @@
 #include "match_types.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
@@ -28,6 +29,7 @@
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
 
+#include "arena_mods.h"
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -96,6 +98,17 @@ constexpr uint32_t kBackstageSubmenu = 0xA05D, kBackstageSubmenuGroup = 0x07;  /
 constexpr uint32_t kBackstageAreasGroup = 0x14;                               // its areas
 constexpr uint32_t kBackstageFirstRule = 0x70, kBackstageLastRule = 0x76;
 
+// Backstage mods with their own row (arena_mods.h BackstageRows: e.g. the SvR
+// 2008 parking lot): in BACKSTAGE (1 on 1, group 0x12), after the row of
+// their room's rule (0x1B + room), a copy labelled with the mod's row= text
+// (string ids kOwnRowLabel + i, see MatchTypeString). The row's place in its
+// group is remembered: picking it plays that room's rule with the mod's bg78.
+constexpr uint32_t kBackstage1v1Group = 0x12, kBackstage1v1FirstRule = 0x1B;
+constexpr uint32_t kOwnRowLabel = 0x0FA0B000;
+int g_own_row_index[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+int g_pending_own_row = -1;
+std::vector<uint32_t> g_own_row_text;  // guest strings
+
 // Developer aid: SVR2011_TEST_RULE=<hex id> plays that rule record wherever
 // the game would play ONE ON ONE -> NORMAL (id 0), to try a rule in game.
 int g_test_rule = -1;
@@ -137,6 +150,29 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(copy.data() + 0x3C, flags);
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
+    }
+    if (Rd32(rec + 0x18) == kBackstage1v1Group) {
+      // (after the room's row and the rows added after it)
+      const auto& own = svr2011::BackstageRows();
+      for (size_t k = 0; k < own.size() && k < 8; ++k) {
+        if (Rd32(rec + 0x5C) != kBackstage1v1FirstRule + uint32_t(own[k].area)) continue;
+        std::vector<uint8_t> copy(rec, rec + kRec);
+        Wr32(copy.data() + 0x00, kOwnRowLabel + uint32_t(k));
+        Wr32(copy.data() + 0x64, kNoText);
+        Wr32(copy.data() + 0x40, 0);
+        // (the group's last row stays last)
+        uint8_t* prev = out.data() + out.size() - kRec;
+        const uint32_t flags = Rd32(prev + 0x3C);
+        Wr32(prev + 0x3C, flags & ~2u);
+        Wr32(copy.data() + 0x3C, (Rd32(copy.data() + 0x3C) & ~2u) | (flags & 2u));
+        uint32_t index = 0;  // the row's place in its group
+        for (size_t at = kFirst; at < out.size(); at += kRec)
+          if (Rd32(out.data() + at + 0x18) == kBackstage1v1Group) ++index;
+        g_own_row_index[k] = int(index);
+        out.insert(out.end(), copy.begin(), copy.end());
+        ++added;
+        REXLOG_INFO("match types: backstage row '{}' at BACKSTAGE row {}", own[k].label, index);
+      }
     }
     for (Backstage& b : g_backstage) {
       if (!submenu || areas.size() != 7) break;
@@ -318,11 +354,18 @@ REX_HOOK_RAW(sub_824402A0) {
 // row. Remembers whether it was a row of the backstage submenus.
 REX_EXTERN(__imp__sub_8243FCC8);
 REX_HOOK_RAW(sub_8243FCC8) {
-  const uint32_t group = ctx.r4.u32;
+  const uint32_t group = ctx.r4.u32, ctx_row = ctx.r5.u32 & 0xFFFF;
   __imp__sub_8243FCC8(ctx, base);
   const int32_t result = ctx.r3.s32;
   if (result < 2000 || result >= 2119) return;
   g_pending_like = ~0u;
+  g_pending_own_row = -1;
+  for (int k = 0; k < 8; ++k)
+    if (group == kBackstage1v1Group && g_own_row_index[k] >= 0 && ctx_row == uint32_t(g_own_row_index[k]))
+      g_pending_own_row = k;
+  if (std::getenv("SVR2011_TEST_ROW_LOG"))
+    REXLOG_INFO("match types: row picked: group {:02X} row {} -> rule {:02X} (own row {})", group, ctx_row,
+                result - 2000, g_pending_own_row);
   for (const Backstage& b : g_backstage) {
     if (b.menu_group && group == b.menu_group) {
       g_pending_rule_lo = kBackstageFirstRule;
@@ -345,6 +388,16 @@ REX_HOOK_RAW(sub_827374A0) {
   RestoreRule(base);
   g_lumberjacks_chosen = false;
   g_free_roam = (rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext);
+  // A backstage mod's own row: its bg78 for this match (any other: the usual)
+  {
+    const auto& own = svr2011::BackstageRows();
+    const int k = g_pending_own_row;
+    const bool use = k >= 0 && size_t(k) < own.size() && !Rd32(base + kStoryContext) &&
+                     rule == kBackstage1v1FirstRule + uint32_t(own[size_t(k)].area);
+    if (use) REXLOG_INFO("match types: backstage area '{}'", own[size_t(k)].label);
+    svr2011::UseBackstageRow(use ? k : -1);
+    g_pending_own_row = -1;
+  }
   const uint32_t played = !g_free_roam ? rule : rule == kWholeBackstage ? 0x1Bu : 0x70u;
   if (g_free_roam) REXLOG_INFO("match types: free-roaming backstage, played as rule {:02X}", played);
   if (g_pending_like != ~0u && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
@@ -929,6 +982,27 @@ void MatchTypesUpdate(uint8_t* base) {
         REXLOG_INFO("[svr2011] people: input of 0 at {:08X}:{}", c.input, hex);
       }
   }
+}
+
+}  // namespace svr2011
+
+namespace svr2011 {
+
+// Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
+uint32_t MatchTypeString(uint32_t id) {
+  if (id < kOwnRowLabel || id >= kOwnRowLabel + 8 || !g_memory) return 0;
+  const auto& own = BackstageRows();
+  const size_t k = id - kOwnRowLabel;
+  if (k >= own.size()) return 0;
+  if (g_own_row_text.size() < own.size()) g_own_row_text.resize(own.size(), 0);
+  if (!g_own_row_text[k]) {
+    std::string t = own[k].label;
+    for (char& c : t) c = char(std::toupper(static_cast<unsigned char>(c)));
+    const uint32_t at = g_memory->SystemHeapAlloc(uint32_t(t.size() + 1));
+    std::memcpy(g_memory->TranslateVirtual<char*>(at), t.c_str(), t.size() + 1);
+    g_own_row_text[k] = at;
+  }
+  return g_own_row_text[k];
 }
 
 }  // namespace svr2011

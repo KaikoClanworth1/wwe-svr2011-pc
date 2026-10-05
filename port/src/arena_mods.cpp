@@ -667,12 +667,39 @@ namespace svr2011 {
 // arena.pac = bg78 with that room rebuilt; Mod Maker): bg78 holds all seven
 // backstage brawl rooms, so the mod's file is bg78 from then on. One at a
 // time: a later one (by folder name) wins.
+// A mod with row=<label> in its manifest is an area of its own instead: it
+// gets a menu row (BACKSTAGE, after its room's row; match_types.cpp) and its
+// bg78 plays only in matches started from that row (UseBackstageRow).
+std::vector<BackstageRow> g_backstage_rows;
+
 void LoadBackstage() {
   std::error_code ec;
   std::vector<fs::path> found;
+  std::vector<fs::path> dirs;
   for (const auto& e : fs::directory_iterator(g_game / "Mods" / "Backstage", ec))
     if (e.is_directory() && fs::exists(e.path() / "arena.pac", ec) && !fs::exists(e.path() / "disabled", ec))
-      found.push_back(e.path());
+      dirs.push_back(e.path());
+  std::sort(dirs.begin(), dirs.end());
+  for (const auto& d : dirs) {
+    BackstageRow r;
+    r.file = fs::relative(d / "arena.pac", g_game, ec).generic_string();
+    if (FILE* t = std::fopen((d / "manifest.txt").string().c_str(), "rb")) {
+      char line[512];
+      while (std::fgets(line, sizeof line, t)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (l.rfind("row=", 0) == 0) r.label = l.substr(4);
+        if (l.rfind("area=", 0) == 0) r.area = std::atoi(l.c_str() + 5);
+      }
+      std::fclose(t);
+    }
+    if (r.label.empty()) {
+      found.push_back(d);
+    } else if (r.area >= 0 && r.area < 7 && g_backstage_rows.size() < 8) {
+      REXLOG_INFO("[svr2011] arena mods: backstage area '{}' ({}; its own row after room {})", r.label, r.file, r.area);
+      g_backstage_rows.push_back(std::move(r));
+    }
+  }
   if (found.empty()) return;
   std::sort(found.begin(), found.end());
   if (found.size() > 1)
@@ -680,6 +707,16 @@ void LoadBackstage() {
                 found.back().filename().string());
   const fs::path rel = fs::relative(found.back() / "arena.pac", g_game, ec);
   svr2011::SetArenaDefault(78, rel.generic_string());
+}
+
+const std::vector<BackstageRow>& BackstageRows() { return g_backstage_rows; }
+
+void UseBackstageRow(int i) {
+  static int now = -1;
+  if (i >= int(g_backstage_rows.size())) i = -1;
+  if (i == now) return;
+  now = i;
+  RedirectArena(78, i < 0 ? "" : g_backstage_rows[size_t(i)].file);
 }
 
 void SetArenaDefault(int arena, const std::string& relative_file) {

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace rex::memory {
 class Memory;
@@ -29,5 +30,15 @@ void RedirectArena(int arena, const std::string& relative_file);
 // mod's arena with its own screen pictures); RedirectArena(arena, "") goes
 // back to it.
 void SetArenaDefault(int arena, const std::string& relative_file);
+
+// Backstage mods with an own menu row (manifest row=<label>): their bg78 plays
+// only in matches from that row. area: the room (0 parking lot ... 6 catering).
+struct BackstageRow {
+  std::string label, file;
+  int area = -1;
+};
+const std::vector<BackstageRow>& BackstageRows();
+// The bg78 of row i for the next match (-1: the usual one).
+void UseBackstageRow(int i);
 
 }  // namespace svr2011
