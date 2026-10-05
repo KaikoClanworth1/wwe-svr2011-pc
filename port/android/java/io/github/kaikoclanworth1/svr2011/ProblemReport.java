@@ -40,6 +40,7 @@ final class ProblemReport {
                 + "phone: " + Build.MANUFACTURER + " " + Build.MODEL + " (" + Build.DEVICE + ")\n"
                 + "Android: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n"
                 + "chip: " + (Build.VERSION.SDK_INT >= 31 ? Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL : "?") + "\n"
+                + "GPU: " + (GpuInfo.known().isEmpty() ? "?" : GpuInfo.known()) + "\n"
                 + "made: " + stamp + "\n"
                 + "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
                 + "(account token and password removed)\n";

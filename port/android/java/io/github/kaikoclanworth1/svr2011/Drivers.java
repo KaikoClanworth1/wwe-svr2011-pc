@@ -7,6 +7,12 @@
 // Packages without meta.json, or a bare .so, are taken too (the library is
 // found by name). Driver variables (gpu_driver_env, e.g. Turnip's
 // FD_DEV_FEATURES) are set by the game before it loads the driver.
+//
+// Built-in drivers (the APK's assets/drivers, android/drivers in the source):
+// Mesa Turnip builds players found good on Adreno 710/720/722, whose own
+// drivers are too old for the native renderer. The card offers them on those
+// GPUs (once by itself, then in the card). Mali GPUs (GpuInfo): alpha mode,
+// off until the player turns it on (the card, or when they press Play).
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -38,6 +44,32 @@ final class Drivers {
     static final String kEnvKey = "gpu_driver_env";
     // HyperOS 3 (Xiaomi): graphical glitches with Turnip, fixed by this hint.
     static final String kHyperOsFix = "FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1";
+    static final String kMaliKey = "mali_alpha";
+
+    // A driver package in the APK (assets/drivers) and the Adreno GPUs it is for.
+    static final class BuiltIn {
+        final String asset, name;
+        final int[] adreno;
+        final boolean recommended;
+
+        BuiltIn(String asset, String name, int[] adreno, boolean recommended) {
+            this.asset = asset;
+            this.name = name;
+            this.adreno = adreno;
+            this.recommended = recommended;
+        }
+
+        boolean fits(int model) {
+            for (int m : adreno)
+                if (m == model) return true;
+            return false;
+        }
+    }
+    // (Turnip by vauzi, Mesa 26.3 - Vulkan 1.4; players' reports: both run the game well)
+    static final BuiltIn[] kBuiltIn = {
+        new BuiltIn("Turnip-710-720-722-v4.1.zip", "Turnip 710/720/722 v4.1", new int[] {710, 720, 722}, true),
+        new BuiltIn("Turnip-710-720-722-v4.0.zip", "Turnip 710/720/722 v4.0", new int[] {710, 720, 722}, false),
+    };
 
     static final class Driver {
         File dir, library;
@@ -84,8 +116,20 @@ final class Drivers {
         return list;
     }
 
+    String gpu() { return GpuInfo.renderer(a_); }
+
+    // The built-in drivers for this phone's GPU (recommended first).
+    List<BuiltIn> builtInsHere() {
+        List<BuiltIn> list = new ArrayList<>();
+        int model = GpuInfo.adrenoModel(gpu());
+        for (BuiltIn b : kBuiltIn)
+            if (model != 0 && b.fits(model)) list.add(b);
+        return list;
+    }
+
     // The Settings card.
     void build(LinearLayout column) {
+        if (GpuInfo.isMali(gpu())) buildMali(column);
         card_ = a_.card(column, "Graphics driver");
         Button add = a_.button("Add a driver (.zip or .so)…", LauncherActivity.kCard);
         add.setOnClickListener(v -> add());
@@ -105,7 +149,9 @@ final class Drivers {
             if (!cur.contains("enable_tp_ubwc_flag_hint")) vars.setText(cur.isEmpty() ? kHyperOsFix : cur + ";" + kHyperOsFix);
         });
         column.addView(hyper, a_.fullWidth(6));
-        TextView note = a_.text("For Adreno GPUs: driver packages such as Mesa Turnip or Qualcomm drivers (the zips "
+        String g = gpu();
+        TextView note = a_.text((g.isEmpty() ? "" : "This phone's GPU: " + g + ".\n")
+            + "For Adreno GPUs: driver packages such as Mesa Turnip or Qualcomm drivers (the zips "
             + "other emulators use, or the driver's .so). A driver that doesn't work falls back to the phone's own. "
             + "Phones with HyperOS 3 that show glitches: use a Turnip driver with the HyperOS 3 fix above. Applies "
             + "the next time the game starts.", 12, LauncherActivity.kDim);
@@ -138,6 +184,118 @@ final class Drivers {
             hint.setPadding(0, 0, 0, a_.dp(8));
             card_.addView(hint);
         }
+        // Built-in drivers for this GPU (not added yet, or added and not chosen: a button each).
+        List<BuiltIn> here = builtInsHere();
+        if (!here.isEmpty()) {
+            TextView about = a_.text("Built in for " + gpu() + ": Mesa Turnip drivers players found to run the "
+                + "game well on Adreno 710, 720 and 722 (the phone's own driver is often too old for the Native "
+                + "renderer).", 12, LauncherActivity.kDim);
+            about.setPadding(0, a_.dp(4), 0, a_.dp(6));
+            card_.addView(about);
+        }
+        for (BuiltIn b : here) {
+            Driver installed = read(new File(root(), folderName(b.name)));
+            if (installed != null && installed.library.getPath().equals(current)) continue;
+            Button use = a_.button("Use " + b.name + (b.recommended ? " (recommended)" : ""),
+                                   b.recommended ? LauncherActivity.kRed : LauncherActivity.kCard);
+            use.setOnClickListener(v -> useBuiltIn(b));
+            card_.addView(use, a_.fullWidth(6));
+        }
+    }
+
+    // Adds a built-in driver (from the APK) and chooses it.
+    void useBuiltIn(BuiltIn b) {
+        a_.status("Adding " + b.name + "…");
+        final Driver[] added = new Driver[1];
+        final String[] error = new String[1];
+        a_.background(() -> {
+            File tmp = new File(a_.getCacheDir(), "driver.zip");
+            try (InputStream in = a_.getAssets().open("drivers/" + b.asset);
+                 OutputStream out = new FileOutputStream(tmp)) {
+                FileOps.copy(in, out);
+            } catch (IOException e) {
+                error[0] = e.getMessage();
+                return;
+            }
+            try {
+                added[0] = unpackFile(tmp, b.name);
+            } catch (IOException e) {
+                error[0] = e.getMessage();
+            }
+        }, () -> {
+            if (added[0] == null) {
+                a_.status(b.name + " can't be added: " + error[0]);
+                return;
+            }
+            choose(added[0]);
+        });
+    }
+
+    // Once, on a GPU a built-in driver is for, with the phone's own driver in use: offer it.
+    void offerBuiltIn() {
+        List<BuiltIn> here = builtInsHere();
+        if (here.isEmpty() || !settings_.getString(kKey, "").isEmpty()) return;
+        android.content.SharedPreferences prefs = a_.getPreferences(android.content.Context.MODE_PRIVATE);
+        if (prefs.getBoolean("builtin_driver_offered", false)) return;
+        prefs.edit().putBoolean("builtin_driver_offered", true).apply();
+        BuiltIn b = here.get(0);
+        new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            .setTitle("A better graphics driver for " + gpu())
+            .setMessage("On Adreno 710, 720 and 722 the phone's own driver is often too old for the Native renderer, "
+                + "so the game falls back to the slower Emulated one. Players found the built-in " + b.name
+                + " driver (Mesa Turnip) runs the game well on these GPUs.\n\nUse it? You can change it any time in "
+                + "Settings, Graphics driver - and if it doesn't work the game goes back to the phone's own.")
+            .setPositiveButton("Use " + b.name, (dlg, w) -> useBuiltIn(b))
+            .setNegativeButton("Not now", null)
+            .show();
+    }
+
+    // ── Mali (alpha) ──────────────────────────────────────────────────────
+
+    static final String kMaliAbout = "Mali GPUs aren't supported yet: the game may show graphics problems, run "
+        + "slowly or not start. Alpha mode lets it try (the emulator's geometry shaders and line drawing - which "
+        + "Mali lacks - are skipped, and textures the GPU can't read are converted). If you try it, please send a "
+        + "problem report (Help) whether it works or not: it says what your GPU needs.";
+
+    void buildMali(LinearLayout column) {
+        LinearLayout card = a_.card(column, "Mali GPU (alpha)");
+        android.widget.Switch sw = new android.widget.Switch(a_);
+        sw.setText("Mali alpha mode");
+        sw.setTextColor(LauncherActivity.kText);
+        sw.setTextSize(15);
+        sw.setChecked(settings_.getBool(kMaliKey, false));
+        sw.setOnCheckedChangeListener((v, on) -> {
+            setMali(on);
+            a_.status(settings_.save() ? "Mali alpha mode " + (on ? "on" : "off") + ". It applies the next time "
+                                             + "the game starts."
+                                       : "Could not save the settings.");
+        });
+        card.addView(sw);
+        TextView note = a_.text("This phone's GPU: " + gpu() + ". " + kMaliAbout, 12, LauncherActivity.kDim);
+        note.setPadding(0, a_.dp(6), 0, a_.dp(4));
+        card.addView(note);
+    }
+
+    void setMali(boolean on) {
+        settings_.setBool(kMaliKey, on);
+        settings_.setBool("vulkan_require_geometry_shader", !on);
+        settings_.setBool("vulkan_require_fill_mode_non_solid", !on);
+    }
+
+    // Before the game starts: on a Mali GPU without alpha mode, ask. True: go on.
+    boolean readyToPlay(Runnable play) {
+        if (!GpuInfo.isMali(gpu()) || settings_.getBool(kMaliKey, false)) return true;
+        new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            .setTitle("Mali GPU (" + gpu() + ")")
+            .setMessage(kMaliAbout)
+            .setPositiveButton("Turn on alpha mode and play", (dlg, w) -> {
+                setMali(true);
+                settings_.save();
+                play.run();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+        return false;
     }
 
     RadioButton radio(String title, String sub, boolean checked) {
@@ -291,9 +449,15 @@ final class Drivers {
     Driver unpack(Uri uri) throws IOException {
         File tmp = new File(a_.getCacheDir(), "driver.zip");
         FileOps.copyIn(a_.getContentResolver(), uri, tmp);
+        return unpackFile(tmp, zipName(uri));
+    }
+
+    // A driver package (or bare .so) copied to `tmp` (deleted after);
+    // `fallbackName` names it when it doesn't say.
+    Driver unpackFile(File tmp, String fallbackName) throws IOException {
         if (isElf(tmp)) {
             // A bare driver .so: set up as a package of its own.
-            String name = zipName(uri);
+            String name = fallbackName;
             if (name.toLowerCase().endsWith(".so")) name = name.substring(0, name.length() - 3);
             File dir = new File(root(), folderName(name));
             FileOps.deleteTree(dir);
@@ -334,7 +498,7 @@ final class Drivers {
                 prefix = n.substring(0, n.lastIndexOf('/') + 1);
                 try {
                     JSONObject m = new JSONObject();
-                    m.put("name", zipName(uri));
+                    m.put("name", fallbackName);
                     m.put("libraryName", n.substring(prefix.length()));
                     metaText = m.toString(2);
                 } catch (org.json.JSONException e) {
@@ -352,7 +516,7 @@ final class Drivers {
             try {
                 JSONObject m = new JSONObject(metaText);
                 name = m.optString("name", "");
-                if (name.isEmpty()) name = zipName(uri);  // (some packages carry only libraryName)
+                if (name.isEmpty()) name = fallbackName;  // (some packages carry only libraryName)
                 library = m.getString("libraryName");
             } catch (org.json.JSONException e) {
                 throw new IOException("its meta.json can't be read");

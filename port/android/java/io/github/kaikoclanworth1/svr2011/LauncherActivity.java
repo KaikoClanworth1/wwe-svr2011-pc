@@ -137,7 +137,10 @@ public class LauncherActivity extends Activity {
         // (the game's GRAPHICS page may have changed settings meanwhile)
         settings_.load();
         refresh();
-        if (drivers_ != null) drivers_.checkCrash();
+        if (drivers_ != null) {
+            drivers_.checkCrash();
+            drivers_.offerBuiltIn();  // (Adreno 710/720/722: once)
+        }
     }
 
     String versionName() {
@@ -505,6 +508,7 @@ public class LauncherActivity extends Activity {
             startActivity(new Intent(this, InstallActivity.class));
             return;
         }
+        if (drivers_ != null && !drivers_.readyToPlay(this::play)) return;  // (Mali: alpha mode first)
         settings_.save();
         startActivity(new Intent(this, GameActivity.class));
     }
