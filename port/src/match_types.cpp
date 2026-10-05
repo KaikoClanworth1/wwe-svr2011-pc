@@ -109,6 +109,22 @@ int g_own_row_index[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 int g_pending_own_row = -1;
 std::vector<uint32_t> g_own_row_text;  // guest strings
 
+// WEAPONS EVERYWHERE: after each EXTREME RULES row (rules 0x4D-0x50, no
+// disqualification; the Extreme Rules weapons are loaded), a copy labelled
+// kWeaponsLabel. Its match is that Extreme Rules match with weapons already
+// lying in and around the ring at the bell (see "Weapons everywhere" below).
+constexpr uint32_t kWeaponsLabel = 0x0FA0B100, kWeaponsText = 0x0FA0B101;  // (label, description)
+constexpr uint32_t kExtremeFirst = 0x4D, kExtremeLast = 0x50;
+constexpr uint32_t kFullGroup = 0x06;  // ONE ON ONE: 14 rows, the most a list shows
+struct WeaponsRow {
+  uint32_t group;
+  uint32_t index;  // its place in the group
+};
+std::vector<WeaponsRow> g_weapons_rows;
+bool g_pending_weapons = false;
+bool g_weapons = false;  // the match set up is a WEAPONS EVERYWHERE one
+uint32_t g_weapons_text[2] = {};
+
 // Developer aid: SVR2011_TEST_RULE=<hex id> plays that rule record wherever
 // the game would play ONE ON ONE -> NORMAL (id 0), to try a rule in game.
 int g_test_rule = -1;
@@ -116,6 +132,7 @@ int g_test_rule = -1;
 // The menu table with the rows added (empty if it isn't the main menus).
 std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   if (size < kFirst || Rd32(table) != 1) return {};
+  g_weapons_rows.clear();
   const uint32_t total = Rd32(table + 4), shown = Rd32(table + 8);
   if (total == 0 || total > 0x1000 || kFirst + total * kRec > size) return {};
   // The rows the BACKSTAGE submenus copy, and free node / group ids.
@@ -150,6 +167,57 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(copy.data() + 0x3C, flags);
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
+    }
+    if (const uint32_t rule = Rd32(rec + 0x5C);
+        rule >= kExtremeFirst && rule <= kExtremeLast && Rd32(rec + 0x18) == kFullGroup && submenu) {
+      // A full list (14 rows): EXTREME RULES becomes a submenu (a new node in
+      // its place) of EXTREME RULES and WEAPONS EVERYWHERE (a new group).
+      out.resize(out.size() - kRec);
+      std::vector<uint8_t> row(submenu, submenu + kRec);
+      Wr32(row.data() + 0x00, Rd32(rec + 0x00));
+      Wr32(row.data() + 0x04, Rd32(rec + 0x04));  // (description)
+      Wr32(row.data() + 0x18, kFullGroup);
+      Wr32(row.data() + 0x1C, node);
+      Wr32(row.data() + 0x38, Rd32(rec + 0x38));
+      Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
+      Wr32(row.data() + 0x40, Rd32(rec + 0x40));
+      out.insert(out.end(), row.begin(), row.end());
+      for (uint32_t k = 0; k < 2; ++k) {
+        std::vector<uint8_t> leaf(rec, rec + kRec);
+        Wr32(leaf.data() + 0x18, group);
+        Wr32(leaf.data() + 0x1C, node + 1 + k);
+        Wr32(leaf.data() + 0x38, node);
+        Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);  // (depth +0x16: one down)
+        Wr32(leaf.data() + 0x40, 0);
+        Wr32(leaf.data() + 0x3C, k ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
+        if (k) {
+          Wr32(leaf.data() + 0x00, kWeaponsLabel);
+          Wr32(leaf.data() + 0x04, kWeaponsText);
+        }
+        tail.insert(tail.end(), leaf.begin(), leaf.end());
+        ++added;
+      }
+      g_weapons_rows.push_back({group, 1});
+      REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
+      node += 3;
+      ++group;
+    } else if (const uint32_t rule = Rd32(rec + 0x5C); rule >= kExtremeFirst && rule <= kExtremeLast) {
+      const uint32_t in_group = Rd32(rec + 0x18);
+      std::vector<uint8_t> copy(rec, rec + kRec);
+      Wr32(copy.data() + 0x00, kWeaponsLabel);
+      Wr32(copy.data() + 0x04, kWeaponsText);
+      Wr32(copy.data() + 0x40, 0);
+      uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
+      const uint32_t flags = Rd32(prev + 0x3C);
+      Wr32(prev + 0x3C, flags & ~2u);
+      Wr32(copy.data() + 0x3C, (Rd32(copy.data() + 0x3C) & ~2u) | (flags & 2u));
+      uint32_t index = 0;
+      for (size_t at = kFirst; at < out.size(); at += kRec)
+        if (Rd32(out.data() + at + 0x18) == in_group) ++index;
+      g_weapons_rows.push_back({in_group, index});
+      out.insert(out.end(), copy.begin(), copy.end());
+      ++added;
+      REXLOG_INFO("match types: WEAPONS EVERYWHERE (rule {:02X}) at group {:02X} row {}", rule, in_group, index);
     }
     if (Rd32(rec + 0x18) == kBackstage1v1Group) {
       // (after the room's row and the rows added after it)
@@ -360,6 +428,9 @@ REX_HOOK_RAW(sub_8243FCC8) {
   if (result < 2000 || result >= 2119) return;
   g_pending_like = ~0u;
   g_pending_own_row = -1;
+  g_pending_weapons = false;
+  for (const WeaponsRow& w : g_weapons_rows)
+    if (group == w.group && ctx_row == w.index) g_pending_weapons = true;
   for (int k = 0; k < 8; ++k)
     if (group == kBackstage1v1Group && g_own_row_index[k] >= 0 && ctx_row == uint32_t(g_own_row_index[k]))
       g_pending_own_row = k;
@@ -398,6 +469,9 @@ REX_HOOK_RAW(sub_827374A0) {
     svr2011::UseBackstageRow(use ? k : -1);
     g_pending_own_row = -1;
   }
+  g_weapons = g_pending_weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !Rd32(base + kStoryContext);
+  g_pending_weapons = false;
+  if (g_weapons) REXLOG_INFO("match types: WEAPONS EVERYWHERE (rule {:02X})", rule);
   const uint32_t played = !g_free_roam ? rule : rule == kWholeBackstage ? 0x1Bu : 0x70u;
   if (g_free_roam) REXLOG_INFO("match types: free-roaming backstage, played as rule {:02X}", played);
   if (g_pending_like != ~0u && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
@@ -986,10 +1060,127 @@ void MatchTypesUpdate(uint8_t* base) {
 
 }  // namespace svr2011
 
+// -- Weapons everywhere ------------------------------------------------------
+//
+// The weapons lying around at the bell come from a table (bgEtc.pac
+// STG/WPON 45010, kept at *(0x82E3BE98) once loaded): per rule id a list of
+// 28-byte records (f32 position x/y/z, f32 rotation x/y/z in degrees, s16
+// motion, u8 place: 0 ring / 1 floor, u8 model), plus a shared ringside set
+// (announce tables, steps). sub_8227B938 makes the weapons as the match loads
+// and sub_8227D130 puts them in place at the start. Extreme Rules (0x4D-0x50)
+// has no records but loads the Extreme Rules weapons' models (live option
+// +56: table 5, ladder 11, trash can 63, guitar 89, crutch 60, ... and the
+// chair 4 of every match). For a WEAPONS EVERYWHERE match its list is ours
+// while those two run; any other match gets the game's back.
+namespace {
+
+constexpr uint32_t kWeaponTable = 0x82E3BE98;
+struct Placed {
+  uint8_t model, place;
+  float x, y, z, yaw;
+};
+// In the ring y = -12, on the floor 0 (a table stands at y -6.7 by the
+// apron); the ring is about +-30, the announce tables at z -76.
+constexpr Placed kPlaced[] = {
+    {4, 0, 10.f, -12.f, 12.f, 30.f},      // chairs in the ring
+    {4, 0, -12.f, -12.f, -8.f, 200.f},
+    {5, 1, 0.f, -6.7f, 54.f, 0.f},        // tables by the apron
+    {5, 1, -52.f, 0.f, 0.f, 90.f},
+    {11, 1, 52.f, 0.f, 0.f, 90.f},        // a ladder
+    {63, 1, 40.f, 0.f, 55.f, 0.f},        // trash can
+    {89, 1, -40.f, 0.f, 55.f, 30.f},      // guitar
+    {4, 1, 45.f, 0.f, -45.f, 60.f},       // a chair on the floor
+};
+uint32_t g_weapon_records = 0;  // guest: our records
+struct Swapped {
+  uint32_t entry = 0, count = 0, records = 0;  // the game's, while ours are in
+} g_swapped;
+
+// The rule's {count, records} in the table (0 if none).
+uint32_t WeaponEntry(uint8_t* base, uint32_t rule) {
+  const uint32_t table = Rd32(base + kWeaponTable);
+  if (!table) return 0;
+  const int16_t n = int16_t(uint16_t(base[table + 4] << 8 | base[table + 5]));
+  const uint32_t heads = Rd32(base + table + 8), entries = Rd32(base + table + 12);
+  for (int i = 0; i < n && heads && entries; ++i) {
+    const uint32_t h = heads + uint32_t(i) * 8;
+    if (uint32_t(base[h] << 8 | base[h + 1]) == rule) return entries + uint32_t(i) * 8;
+  }
+  return 0;
+}
+
+void RestoreWeapons(uint8_t* base) {
+  if (!g_swapped.entry) return;
+  Wr32(base + g_swapped.entry, g_swapped.count);
+  Wr32(base + g_swapped.entry + 4, g_swapped.records);
+  g_swapped = {};
+}
+
+// Our list in (a WEAPONS EVERYWHERE match), or the game's back.
+void ApplyWeapons(uint8_t* base) {
+  RestoreWeapons(base);
+  const uint32_t rule = base[0x82E3DE00];
+  if (!g_weapons || rule < kExtremeFirst || rule > kExtremeLast || !g_memory) return;
+  const uint32_t entry = WeaponEntry(base, rule);
+  if (!entry) {
+    REXLOG_WARN("match types: no weapon list for rule {:02X}", rule);
+    return;
+  }
+  constexpr uint32_t n = uint32_t(sizeof(kPlaced) / sizeof(kPlaced[0]));
+  if (!g_weapon_records) {
+    g_weapon_records = g_memory->SystemHeapAlloc(n * 28);
+    if (!g_weapon_records) return;
+    for (uint32_t i = 0; i < n; ++i) {
+      uint8_t* r = base + g_weapon_records + i * 28;
+      const Placed& w = kPlaced[i];
+      WrF(r, w.x), WrF(r + 4, w.y), WrF(r + 8, w.z);
+      WrF(r + 12, 0.f), WrF(r + 16, w.yaw), WrF(r + 20, 0.f);
+      r[24] = uint8_t(15010 >> 8), r[25] = uint8_t(15010 & 0xFF);  // (motion: lying)
+      r[26] = w.place;
+      r[27] = w.model;
+    }
+  }
+  g_swapped = {entry, Rd32(base + entry), Rd32(base + entry + 4)};
+  Wr32(base + entry, n);
+  Wr32(base + entry + 4, g_weapon_records);
+}
+
+}  // namespace
+
+// The match's weapons are made (as it loads): sub_8227B938.
+REX_EXTERN(__imp__sub_8227B938);
+REX_HOOK_RAW(sub_8227B938) {
+  ApplyWeapons(base);
+  if (g_swapped.entry) REXLOG_INFO("match types: WEAPONS EVERYWHERE - the weapons are made");
+  __imp__sub_8227B938(ctx, base);
+  RestoreWeapons(base);
+}
+
+// ... and put in place at the start: sub_8227D130(weapons).
+REX_EXTERN(__imp__sub_8227D130);
+REX_HOOK_RAW(sub_8227D130) {
+  ApplyWeapons(base);
+  __imp__sub_8227D130(ctx, base);
+  RestoreWeapons(base);
+}
+
 namespace svr2011 {
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
+  if ((id == kWeaponsLabel || id == kWeaponsText) && g_memory) {
+    static const char* const kText[] = {
+        "WEAPONS EVERYWHERE",
+        "Extreme Rules with chairs, tables, a ladder and more already waiting in and around the ring at "
+        "the bell."};
+    const uint32_t k = id - kWeaponsLabel;
+    if (!g_weapons_text[k]) {
+      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
+      g_weapons_text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_weapons_text[k]), kText[k], n);
+    }
+    return g_weapons_text[k];
+  }
   if (id < kOwnRowLabel || id >= kOwnRowLabel + 8 || !g_memory) return 0;
   const auto& own = BackstageRows();
   const size_t k = id - kOwnRowLabel;

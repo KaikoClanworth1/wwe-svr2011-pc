@@ -287,3 +287,51 @@ A 50-man rumble would need "slot recycling": reload an eliminated entrant's char
 5. **No count-outs:** the rule's 64-byte record (misc.pac OPT, +8 + id*64; bit 7 = locked) has byte 5 = count out (normal 0x0A, Lumberjack/FCA/ER/cage 0x80 = locked off). In a match the live byte 5 is 0.
 6. **Can't win:** managers are not competitors (`sub_82225D68`, `sub_825EEA80` say no for team 3 / people 2+).
 7. **Referee ejection:** string.pac has the referee motions REFEREE WARNING / GET DOWN / EJECT MANAGER (0x3220, a motion name) and "MANAGER EJECTED" (0x8D2, a message). No ejection was seen in the tests.
+
+## Weapons everywhere (done)
+
+A No DQ match with weapons already lying in and around the ring at the bell.
+
+**Where the game's placed weapons come from:**
+- The table is bgEtc.pac `STG/WPON` (`STG/WPBS` backstage) entry 45010, loaded by `sub_8227D938`. It is kept at `*(0x82E3BE98)`:
+  - +4 s16 count;
+  - +8 -> 8-byte heads {s16 key, n, link, pad};
+  - +12 -> {int count; record*} per key.
+- The key is the rule id. The link (1000-1002) is the shared ringside set: announce tables, steps, bell, belt.
+- Each record is 28 bytes: f32 position, f32 rotation (degrees), s16 motion (15010 lying, 15000 standing, 15305 stacked), u8 place (0 ring, 1 floor), u8 model.
+- Models: 4 chair, 5 table (every other one becomes 9), 11 ladder, 63 trash can, 89 guitar, 60 crutch, 90 mop, 17 tire, 112 barbell.
+- `sub_8227B938` makes the weapons as the match loads; `sub_8227D130` (from match init `sub_822ADE80`) places them at the start and stows the rest under the ring.
+- Models must be in the per-match load list `*(0x82E3C0E8)` (built by `sub_82301148`), or the weapon silently doesn't appear.
+- Extreme Rules (0x4D-0x50, live option +56) loads 87, 15, 60, 89, 11, 88, 5, 63 and 90 (plus chair 4 in every match), but has no records.
+
+**What the port does (`match_types.cpp`):**
+- A WEAPONS EVERYWHERE row follows each EXTREME RULES row.
+- ONE ON ONE's list is full: a list shows at most 14 rows, so a 15th row isn't displayed. There, EXTREME RULES becomes a submenu holding EXTREME RULES and WEAPONS EVERYWHERE.
+  - A submenu's rows need depth +0x16 = the parent's + 1.
+  - +0x04 is the description string; +0x64 is not.
+- For that match, the rule's {count, records} entry points at the port's 8 records while `sub_8227B938` and `sub_8227D130` run, and is put back afterwards:
+  - 2 chairs in the ring;
+  - 2 tables by the apron;
+  - a ladder;
+  - a trash can;
+  - a guitar;
+  - a chair on the floor.
+- Tested: 1 on 1 (0x4D) and triple threat (0x4F), with screenshots of the weapons in place.
+
+## Match Creator / option locks (research, 2026-10-05; not done yet)
+
+**OPT record (64 bytes, `*(0x82EDE954)+11900+id*64`, misc.pac OPT at 0xC8B4):**
+- Bit 7 = locked; bits 0-6 = the value (forced when locked).
+- Bytes:
+  - 1 pinfall; 2 KO; 3 rope break; 4 DQ off; 5 count-out; 6 over the top rope; 7 give up; 8 minutes; 9 cage bits; 12 iron man falls;
+  - 20 Hell in a Cell; 21 timed; 26 last man standing; 27 ring out; 32 interference (forced 0 offline); 33 outside allowed (guess);
+  - **34 people count** (+35 is a free-for-all flag); 36 tornado; 37 elimination; 38 entrance; 40 first blood; 41 chamber; 44 escape door; 56 extreme rules; 58 tag; 59 inferno.
+- The rules screen's rows come from `sub_82470BC0`: row disabled if its OPT byte has bit 7.
+- The live settings come from `sub_828C48E8`: the user's value is used only where unlocked.
+
+**Match Creator steps:**
+- misc.pac `/MRME/MRPD` (PACH at 0x932000, loader `sub_82490558`): per-family "allowed" bytes. 0x09 free, 0x00 disabled. Example: tag allows only the standard ring.
+- Families come from `sub_82490918`.
+
+**Arena:**
+- `sub_828B5558` with RUL +36: 0 any, 1 flagged arenas, 2 none, 3 arena 20, 4 = RUL +40.
