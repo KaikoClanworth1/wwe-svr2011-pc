@@ -43,6 +43,7 @@ set(SVR2011_SOURCES
     src/paint_pages.cpp
     src/match_types.cpp
     src/players.cpp
+    src/sort_filters.cpp
     src/arena_mods.cpp
     src/ring_rules.cpp
     src/superstar_mods.cpp
