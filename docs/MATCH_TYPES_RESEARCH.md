@@ -394,3 +394,24 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 - structures for tag / 6-man;
 - chamber;
 - interference (forced off offline in `sub_828C48E8`).
+
+## Elimination rows (done)
+
+**The engine already supports elimination with 3 or 4 people.** MATCH CREATOR -> RULES -> ELIMINATION (MRPD rules row 3) is offered by the game itself for triple threat and fatal-4-way: normal, falls count anywhere and extreme rules. It is not offered with a cage, cell, ladder, table, TLC or backstage.
+
+**What happens with it on:**
+- A pin or give up sets the loser to state 4: the judge `sub_82245618` eliminates instead of ending.
+- The eliminated wrestler leaves the ring (area 1), and the match goes on.
+- The last fall decides the winner (live +288 / +9968).
+- End steps and highlights run as usual.
+
+**Port (`match_types.cpp`):** an ELIMINATION row after NORMAL (and FALLS COUNT ANYWHERE) in TRIPLE THREAT (0x0D) and FATAL-4-WAY (0x0E).
+- The live rules are built by `sub_828C48E8(rule, live, saved)` from the option record and the player's MATCH CREATOR record for the rule (28 bytes, +18 = ELIMINATION).
+- For these rows the saved +18 is 1 during that call, and restored after. The player's MATCH CREATOR settings are not changed.
+- Setting only the live +37 byte was NOT enough: the first fall ended the match.
+
+**Tested:**
+- triple threat and fatal-4-way ELIMINATION rows: two eliminations, then the winner; highlights played;
+- a plain triple threat afterwards had live +37 = 0.
+
+**Test aid:** `SVR2011_TEST_FALL_LOG=1` (`slobber_knocker.cpp`) logs every character's state, lost and team, plus the 64 live option bytes, whenever a fall state changes, and the judge's decision.

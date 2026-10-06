@@ -136,6 +136,22 @@ bool g_pending_slobber = false;
 bool g_slobber = false;  // the match set up is a Slobber Knocker
 uint32_t g_slobber_text[2] = {};
 
+// ELIMINATION: after NORMAL in TRIPLE THREAT (rule 0x0D) and FATAL-4-WAY
+// (0x0E), a copy whose match has the ELIMINATION rule on (as MATCH CREATOR ->
+// RULES -> ELIMINATION: live option +37 = 1): a pin or give up eliminates
+// that wrestler - he leaves - and the match goes on until one is left. The
+// engine does it (a triple threat: one eliminated, he walked out, the match
+// went on, the last fall decided it, highlights as usual). The game itself
+// offers ELIMINATION only for these rules' normal, falls count anywhere and
+// extreme rules versions (MRPD), not with a cage, cell, ladder, table, TLC or
+// backstage - left so.
+constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
+constexpr uint32_t kTripleThreat = 0x0D, kFatal4Way = 0x0E;
+std::vector<WeaponsRow> g_elim_rows;  // (group, place in the group)
+bool g_pending_elimination = false;
+bool g_elimination = false;  // the match set up is an ELIMINATION one
+uint32_t g_elim_text[2] = {};
+
 // Developer aid: SVR2011_TEST_RULE=<hex id> plays that rule record wherever
 // the game would play ONE ON ONE -> NORMAL (id 0), to try a rule in game.
 int g_test_rule = -1;
@@ -152,6 +168,7 @@ int g_test_rule = -1;
 std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   if (size < kFirst || Rd32(table) != 1) return {};
   g_weapons_rows.clear();
+  g_elim_rows.clear();
   const uint32_t total = Rd32(table + 4), shown = Rd32(table + 8);
   if (total == 0 || total > 0x1000 || kFirst + total * kRec > size) return {};
   // The rows the BACKSTAGE submenus copy, and free node / group ids.
@@ -186,6 +203,25 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(copy.data() + 0x3C, flags);
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
+    }
+    if (const uint32_t rule = Rd32(rec + 0x5C);
+        (rule == kTripleThreat || rule == kFatal4Way) && Rd32(rec + 0x54) == kScreenMatch) {
+      const uint32_t in_group = Rd32(rec + 0x18);
+      std::vector<uint8_t> copy(rec, rec + kRec);
+      Wr32(copy.data() + 0x00, kElimLabel);
+      Wr32(copy.data() + 0x04, kElimText);
+      Wr32(copy.data() + 0x40, 0);
+      uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
+      const uint32_t flags = Rd32(prev + 0x3C);
+      Wr32(prev + 0x3C, flags & ~2u);
+      Wr32(copy.data() + 0x3C, (Rd32(copy.data() + 0x3C) & ~2u) | (flags & 2u));
+      uint32_t index = 0;
+      for (size_t at = kFirst; at < out.size(); at += kRec)
+        if (Rd32(out.data() + at + 0x18) == in_group) ++index;
+      g_elim_rows.push_back({in_group, index});
+      out.insert(out.end(), copy.begin(), copy.end());
+      ++added;
+      REXLOG_INFO("match types: ELIMINATION (rule {:02X}) at group {:02X} row {}", rule, in_group, index);
     }
     if (Rd32(rec) == kGauntletRow && Rd32(rec + 0x18) == kHandicapGroup) {
       std::vector<uint8_t> copy(rec, rec + kRec);
@@ -484,6 +520,9 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_like = kLumberjackLike;
     g_pending_select_only = true;
   }
+  g_pending_elimination = false;
+  for (const WeaponsRow& w : g_elim_rows)
+    if (group == w.group && ctx_row == w.index) g_pending_elimination = true;
   g_pending_weapons = false;
   for (const WeaponsRow& w : g_weapons_rows)
     if (group == w.group && ctx_row == w.index) g_pending_weapons = true;
@@ -532,6 +571,9 @@ REX_HOOK_RAW(sub_827374A0) {
     REXLOG_INFO("match types: SLOBBER KNOCKER");
     svr2011::SlobberKnockerStart();
   }
+  g_elimination = g_pending_elimination && (rule == kTripleThreat || rule == kFatal4Way) && !Rd32(base + kStoryContext);
+  g_pending_elimination = false;
+  if (g_elimination) REXLOG_INFO("match types: ELIMINATION (rule {:02X})", rule);
   g_weapons = g_pending_weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !Rd32(base + kStoryContext);
   g_pending_weapons = false;
   if (g_weapons) REXLOG_INFO("match types: WEAPONS EVERYWHERE (rule {:02X})", rule);
@@ -1345,6 +1387,18 @@ namespace svr2011 {
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
+  if ((id == kElimLabel || id == kElimText) && g_memory) {
+    static const char* const kText[] = {
+        "ELIMINATION",
+        "A pin or a give up eliminates that Superstar, and the match goes on until only one is left."};
+    const uint32_t k = id - kElimLabel;
+    if (!g_elim_text[k]) {
+      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
+      g_elim_text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_elim_text[k]), kText[k], n);
+    }
+    return g_elim_text[k];
+  }
   if ((id == kSlobberLabel || id == kSlobberText) && g_memory) {
     static const char* const kText[] = {
         "SLOBBER KNOCKER",
@@ -1477,4 +1531,22 @@ REX_HOOK_RAW(sub_82490558) {
     REXLOG_INFO("match types: MATCH CREATOR - {} greyed rows allowed", n);
     logged = true;
   }
+}
+
+// The live rules of a match are built: sub_828C48E8(rule, live, saved) -
+// from the rule's option record and the player's MATCH CREATOR record for
+// it (saved: 28 bytes, +18 ELIMINATION). For an ELIMINATION row the saved
+// record has ELIMINATION on while the live rules are built - the game then
+// sets up its elimination as MATCH CREATOR's own does (only the live +37 byte
+// was not enough: the first fall ended the match) - and is put back after,
+// so the player's MATCH CREATOR settings stay as they were.
+REX_EXTERN(__imp__sub_828C48E8);
+REX_HOOK_RAW(sub_828C48E8) {
+  constexpr uint32_t kSavedElimination = 18;
+  const uint32_t rule = ctx.r3.u32, saved = ctx.r5.u32;
+  const bool elim = g_elimination && (rule == kTripleThreat || rule == kFatal4Way) && saved;
+  const uint8_t was = elim ? base[saved + kSavedElimination] : 0;
+  if (elim) base[saved + kSavedElimination] = 1;
+  __imp__sub_828C48E8(ctx, base);
+  if (elim) base[saved + kSavedElimination] = was;
 }
