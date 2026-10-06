@@ -5416,7 +5416,7 @@ index 914b311..fce845f 100644
      REXGPU_ERROR("{}", msg);
    } else if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..6897d93 100644
+index 23645ef..308508c 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -10,6 +10,7 @@
@@ -5432,7 +5432,7 @@ index 23645ef..6897d93 100644
  }
  
 +// [svr2011] paint timing (phones: where the presenter's time goes)
-+static double g_svr_paint_ms[4];
++static double g_svr_paint_ms[5];
 +static uint32_t g_svr_paints;
 +
  Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
@@ -5493,10 +5493,21 @@ index 23645ef..6897d93 100644
        submit_result =
            dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence_acqusition.fence());
        if (ui_fence_acquisition.fence() != VK_NULL_HANDLE && submit_result == VK_SUCCESS) {
-@@ -2238,9 +2265,21 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2238,9 +2265,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
    present_info.pResults = nullptr;
    VkResult present_result;
    {
++    // [svr2011] Mali drivers (r20) block in vkQueuePresentKHR until the GPU
++    // has finished everything queued - holding the only queue's lock, so the
++    // game's and the renderer's submissions waited for the GPU and CPU and GPU
++    // never overlapped. Wait for this paint here instead, without the lock.
++    static const bool wait_before_present = vulkan_device_->properties().vendorID == 0x13B5;
++    if (wait_before_present) {
++      const auto svr_tw = std::chrono::steady_clock::now();
++      paint_context_.submission_tracker.AwaitSubmissionCompletion(
++          paint_context_.submission_tracker.GetCurrentSubmission() - 1);
++      g_svr_paint_ms[4] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - svr_tw).count();
++    }
 +    const auto svr_t2 = std::chrono::steady_clock::now();
      const VulkanDevice::Queue::Acquisition queue_acquisition =
          vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
@@ -5507,8 +5518,9 @@ index 23645ef..6897d93 100644
 +    g_svr_paint_ms[3] += std::chrono::duration<double, std::milli>(svr_t4 - svr_t3).count();
 +    if (++g_svr_paints == 600) {
 +      REXLOG_INFO("VulkanPresenter: per paint: acquire {:.2f} ms, queue wait {:.2f} ms (submit) + {:.2f} ms "
-+                  "(present), present {:.2f} ms",
-+                  g_svr_paint_ms[0] / 600, g_svr_paint_ms[1] / 600, g_svr_paint_ms[2] / 600, g_svr_paint_ms[3] / 600);
++                  "(present), GPU wait before present {:.2f} ms, present {:.2f} ms",
++                  g_svr_paint_ms[0] / 600, g_svr_paint_ms[1] / 600, g_svr_paint_ms[2] / 600, g_svr_paint_ms[4] / 600,
++                  g_svr_paint_ms[3] / 600);
 +      g_svr_paints = 0;
 +      for (double& v : g_svr_paint_ms) v = 0;
 +    }
