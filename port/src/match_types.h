@@ -34,4 +34,12 @@ void SlobberKnockerUpdate(PPCContext& ctx, uint8_t* base);
 // The count over a Slobber Knocker match (slobber_knocker.cpp).
 void InstallSlobberKnockerOverlay(rex::ui::ImGuiDrawer* drawer);
 
+// THREE STAGES OF HELL (three_stages.cpp): set up (on or not) with a match,
+// before each call of the falls judge, its score overlay.
+void ThreeStagesSetup(bool on);
+bool ThreeStagesMatch();
+void ThreeStagesUpdate(uint8_t* base);  // (each world update)
+void ThreeStagesBeforeJudge(uint8_t* base);
+void InstallThreeStagesOverlay(rex::ui::ImGuiDrawer* drawer);
+
 }  // namespace svr2011
