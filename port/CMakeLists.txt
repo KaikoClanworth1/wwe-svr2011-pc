@@ -58,6 +58,7 @@ set(SVR2011_SOURCES
     modmaker/svrfmt/texture.cpp
     src/frame_rate.cpp
     src/roster.cpp
+    src/story_designer.cpp
     src/post_effects.cpp
     src/replays.cpp
     src/replay_worker.cpp
