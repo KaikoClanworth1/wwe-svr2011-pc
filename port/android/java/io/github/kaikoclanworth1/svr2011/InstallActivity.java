@@ -98,7 +98,18 @@ public class InstallActivity extends Activity {
 
     // The next first-run step, or the game.
     private void next() {
-        if (!Environment.isExternalStorageManager()) {
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            // Android 10: the old storage permission covers the games folder.
+            if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                show("SvR 2011 keeps the game in the device's games folder:\n"
+                    + "games/" + kFolderName + "\n\nAllow access to files on the next screen.",
+                    "Allow access", () -> requestPermissions(new String[] {
+                        android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE }, 1));
+                return;
+            }
+        } else if (!Environment.isExternalStorageManager()) {
             show("SvR 2011 keeps the game in the phone's games folder:\n"
                 + "games/" + kFolderName + "\n\nAllow access to all files on the next screen.",
                 "Allow access", () -> startActivity(new Intent(

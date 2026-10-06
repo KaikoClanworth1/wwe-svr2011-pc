@@ -369,6 +369,7 @@ final class Drivers {
                 + "the phone's own driver?", name);
             return;
         }
+        if (android.os.Build.VERSION.SDK_INT < 30) return;  // (the exit reasons: Android 11 and later)
         android.content.SharedPreferences prefs = a_.getPreferences(android.content.Context.MODE_PRIVATE);
         long since = prefs.getLong("driver_chosen_at", 0);
         android.app.ActivityManager am = a_.getSystemService(android.app.ActivityManager.class);

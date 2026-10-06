@@ -122,7 +122,7 @@ public class LauncherActivity extends Activity {
         if (getPreferences(MODE_PRIVATE).getBoolean("check_updates", true)) checkUpdates(false);
         // Edge to edge (Android 15+): keep clear of the status and navigation bars
         // and the camera cut-out.
-        root.setOnApplyWindowInsetsListener((v, insets) -> {
+        if (android.os.Build.VERSION.SDK_INT >= 30) root.setOnApplyWindowInsetsListener((v, insets) -> {
             android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars()
                 | android.view.WindowInsets.Type.displayCutout());
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
