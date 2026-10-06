@@ -108,6 +108,11 @@ REXCVAR_DEFINE_INT32(native_aa, 0, "GPU",
                      "screen's resolution per side (4 / 9 / 16 samples a pixel, within native_max_scale); "
                      "0: native_2x_msaa decides (on = 2)");
 
+REXCVAR_DEFINE_DOUBLE(native_render_scale, 1.0, "GPU",
+                      "Native renderer: the scene's resolution below the Xbox 360's 720p for weak GPUs "
+                      "(0.5 = 640 x 360, scaled up to the screen; 0.25 - 1). The HUD and menus' 2D art "
+                      "are drawn into the same scene, so they get softer too.");
+
 REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
                      "The scale follows the window; phones start at 1.");
@@ -673,6 +678,13 @@ uint32_t g_scale = 1;
 // map, reflections, glow and blur chains) keep the guest's size.
 bool g_scale_effects = true;
 
+// native_render_scale: the main scene's targets (and their resolves and the
+// frame images) have this fraction of the scale's pixels per side - weak GPUs.
+float g_res = 1.0f;
+
+// Whether a target of this guest size is the main scene (1280 x 720).
+bool SceneTarget(uint32_t width, uint32_t height) { return width >= 1152 && height >= 640; }
+
 // Host pixels per guest pixel for a target of this guest size.
 uint32_t TargetScale(uint32_t width, uint32_t height) {
   if (g_scale_effects) return g_scale;
@@ -704,15 +716,17 @@ constexpr float kMaxWide = 2.0f;  // (32:9)
 // The host width of a target of this guest size.
 uint32_t HostWidth(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t w = width * scale;
-  if (g_wide <= 1.0f || width < 1152 || height < 640) return w;
-  return (uint32_t(std::lround(float(w) * g_wide)) + 1) & ~1u;
+  const float f = SceneTarget(width, height) ? std::max(g_wide, 1.0f) * g_res : 1.0f;
+  if (f == 1.0f) return w;
+  return (uint32_t(std::lround(float(w) * f)) + 1) & ~1u;
 }
 
 // The host height of a target of this guest size.
 uint32_t HostHeight(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t h = height * scale;
-  if (g_tall <= 1.0f || width < 1152 || height < 640) return h;
-  return (uint32_t(std::lround(float(h) * g_tall)) + 1) & ~1u;
+  const float f = SceneTarget(width, height) ? std::max(g_tall, 1.0f) * g_res : 1.0f;
+  if (f == 1.0f) return h;
+  return (uint32_t(std::lround(float(h) * f)) + 1) & ~1u;
 }
 
 void SetCameraAspect(float aspect) {
@@ -896,6 +910,11 @@ plume::RenderDescriptorSetDesc g_vk_set_descs[3];
 constexpr uint32_t kCompactPlaces[3] = {13, 1, 2}, kCompactFirst[3] = {0, 13, 14};
 constexpr uint32_t kCompactSamplers = 16;
 plume::RenderDescriptorRange g_compact_texture_ranges[3], g_compact_sampler_range;
+// Compact tables' constants (set 2): the upload ring as a storage buffer (the
+// renderer's own shaders), and the vertex, pixel and shared constants as
+// uniform buffers on it, at the draw's offsets (dynamic) - old Mali drivers
+// read uniform buffers much faster than storage buffers (shader_common.h).
+plume::RenderDescriptorRange g_compact_constant_ranges[4];
 plume::RenderDescriptorSetDesc g_compact_descs[2];
 
 // Compact tables: stands in for the big tables - remembers what each index
@@ -987,12 +1006,16 @@ bool CreateVulkanCompactLayout(Renderer* r) {
         plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::TEXTURE, i, kCompactPlaces[i]);
   g_compact_sampler_range =
       plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::SAMPLER, 0, kCompactSamplers);
-  g_vk_constant_range = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::BYTE_ADDRESS_BUFFER, 0, 1);
+  g_compact_constant_ranges[0] =
+      plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::BYTE_ADDRESS_BUFFER, 0, 1);
+  for (uint32_t i = 1; i < 4; ++i)
+    g_compact_constant_ranges[i] =
+        plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::CONSTANT_BUFFER_DYNAMIC, i, 1);
   g_compact_descs[0] = plume::RenderDescriptorSetDesc(g_compact_texture_ranges, 3);
   g_compact_descs[1] = plume::RenderDescriptorSetDesc(&g_compact_sampler_range, 1);
   g_vk_set_descs[0] = g_compact_descs[0];
   g_vk_set_descs[1] = g_compact_descs[1];
-  g_vk_set_descs[2] = plume::RenderDescriptorSetDesc(&g_vk_constant_range, 1);
+  g_vk_set_descs[2] = plume::RenderDescriptorSetDesc(g_compact_constant_ranges, 4);
   const plume::RenderPushConstantRange push(0, 0, 0, 4 * sizeof(uint32_t),
                                             plume::RenderShaderStageFlag::VERTEX |
                                                 plume::RenderShaderStageFlag::PIXEL);
@@ -1017,6 +1040,9 @@ bool CreateVulkanCompactLayout(Renderer* r) {
     r->constant_sets[i] = r->device->createDescriptorSet(g_vk_set_descs[2]);
     if (!r->constant_sets[i] || !r->rings[i].buffer) return false;
     r->constant_sets[i]->setBuffer(0, r->rings[i].buffer.get(), kRingSize + kRingSlack);
+    r->constant_sets[i]->setBuffer(1, r->rings[i].buffer.get(), kVertexConstantsBytes);
+    r->constant_sets[i]->setBuffer(2, r->rings[i].buffer.get(), kPixelConstantsBytes);
+    r->constant_sets[i]->setBuffer(3, r->rings[i].buffer.get(), kSharedConstantsBytes);
   }
   REXLOG_INFO("native renderer: compact tables ({} 2D / {} 3D / {} cube textures and {} samplers a draw)",
               kCompactPlaces[0], kCompactPlaces[1], kCompactPlaces[2], kCompactSamplers);
@@ -1072,7 +1098,8 @@ void BindTables(Renderer* r, plume::RenderCommandList* list) {
     r->list_state.compact[0] = r->list_state.compact[1] = nullptr;
     r->draw_sets[0] = r->draw_sets[1] = nullptr;
     BindCompactSets(r, list);
-    list->setGraphicsDescriptorSet(r->constant_sets[r->back_index].get(), 2);
+    const uint32_t zero[3] = {};
+    list->setGraphicsDescriptorSetDynamic(r->constant_sets[r->back_index].get(), 2, zero, 3);
     return;
   }
   if (backend::ActiveApi() == backend::Api::kVulkan) {
@@ -1368,11 +1395,13 @@ void ApplyOutputSettings(Renderer* r) {
   static uint32_t aa = aa_level();
   static int32_t max_scale = REXCVAR_GET(native_max_scale);
   static bool effects = REXCVAR_GET(native_scale_effects);
+  static float res = float(REXCVAR_GET(native_render_scale));
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
     aa = aa_level();
     max_scale = REXCVAR_GET(native_max_scale);
     effects = REXCVAR_GET(native_scale_effects);
+    res = float(REXCVAR_GET(native_render_scale));
     widescreen = REXCVAR_GET(native_widescreen);
     aa_checked = r->frames;
   }
@@ -1382,15 +1411,19 @@ void ApplyOutputSettings(Renderer* r) {
   const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
   const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
+  res = std::clamp(res, 0.25f, 1.0f);
+  if (scale > 1) res = 1.0f;  // (only below the Xbox 360's own resolution)
+  const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
-      !wide_changed) {
+      !wide_changed && !res_changed) {
     return;
   }
 
   // Idle: nothing in flight may still use what is replaced.
   if (!WaitIdle(r, "output change")) return;
   r->garbage.clear();
-  if (scale != g_scale || effects != g_scale_effects || wide_changed) {
+  if (scale != g_scale || effects != g_scale_effects || wide_changed || res_changed) {
+    g_res = res;
     textures::ForgetResolved();
     r->color_targets.clear();
     r->depth_targets.clear();
@@ -1410,7 +1443,8 @@ void ApplyOutputSettings(Renderer* r) {
     CreateOutputs(r);
   }
   r->list_state = {};
-  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}", g_out_w, g_out_h, g_scale,
+  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}{}", g_out_w, g_out_h, g_scale,
+              g_res < 1.0f ? fmt::format(" (scene at {:.0f}%)", g_res * 100) : std::string(),
               aa > 1 ? fmt::format(" (anti-aliasing {}x)", aa) : std::string(), g_scale_effects ? "" : ", effects unscaled",
               g_wide > 1.0f   ? fmt::format(", wide {:.3f} (aspect {:.3f})", g_wide, kAspect16x9 * g_wide)
               : g_tall > 1.0f ? fmt::format(", tall {:.3f} (aspect {:.3f})", g_tall, kAspect16x9 / g_tall)
@@ -2696,6 +2730,9 @@ void BindConstants(Renderer* r, const RenderBufferReference constants[4]) {
       }
     }
     r->list->setGraphicsPushConstants(0, offsets, 0, sizeof(offsets));
+    // (compact tables: the vertex, pixel and shared constants as uniform buffers)
+    if (backend::CompactTables())
+      r->list->setGraphicsDescriptorSetDynamic(r->constant_sets[r->back_index].get(), 2, offsets, 3);
     return;
   }
   for (uint32_t i = 0; i < 4; ++i)
@@ -3022,7 +3059,9 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   const uint32_t ts = targets.color ? targets.color->scale : targets.depth ? targets.depth->scale : g_scale;
   const float tsx = targets.color && targets.color->host_w ? float(targets.color->host_w) / tw : float(ts);
   const float tsy = targets.color && targets.color->host_h ? float(targets.color->host_h) / th : float(ts);
-  const bool reshaped = tsx > float(ts) * 1.001f || tsy > float(ts) * 1.001f;  // (wide or tall)
+  // (the scene at native_render_scale: fewer host pixels per guest pixel)
+  const float base = float(ts) * (targets.color && SceneTarget(tw, th) ? g_res : 1.0f);
+  const bool reshaped = tsx > base * 1.001f || tsy > base * 1.001f;  // (wide or tall)
   // Wide screen: the HUD's 2D sprites (vertices in the game's 1280 x 720
   // pixels, drawn without depth) go in the 16:9 middle, unstretched; a sprite
   // covering the whole screen (a fade) and everything else fill the width.
@@ -3035,10 +3074,10 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     bool full = false;
     middle = FlatPixels(decl, up, indexed, start, count, base_vertex, tw, th, &full) && !full;
   }
-  const float pad = middle ? (float(targets.color->host_w) - tw * float(ts)) * 0.5f : 0.0f;
-  const float pad_y = middle && targets.color->host_h ? (float(targets.color->host_h) - th * float(ts)) * 0.5f : 0.0f;
-  const float sx = middle ? float(ts) : tsx;
-  const float sy = middle ? float(ts) : tsy;
+  const float pad = middle ? (float(targets.color->host_w) - tw * base) * 0.5f : 0.0f;
+  const float pad_y = middle && targets.color->host_h ? (float(targets.color->host_h) - th * base) * 0.5f : 0.0f;
+  const float sx = middle ? base : tsx;
+  const float sy = middle ? base : tsy;
   vp.x = vp.x * sx + pad;
   vp.y = vp.y * sy + pad_y;
   vp.width *= sx;

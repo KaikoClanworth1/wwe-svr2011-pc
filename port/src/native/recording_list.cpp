@@ -37,7 +37,7 @@ enum class RecordingList::Op : uint16_t {
   kNextChunk, kBegin, kEnd, kBarriers, kDraw, kDrawIndexed, kPipeline, kGraphicsLayout, kPushConstants,
   kDescriptorSet, kRootDescriptor, kIndexBuffer, kVertexBuffers, kViewports, kScissors, kFramebuffer,
   kDepthBias, kStencilReference, kBlendFactor, kClearColor, kClearDepthStencil, kCopyTextureRegion,
-  kCopyTexture,
+  kCopyTexture, kDescriptorSetDynamic,
 };
 
 struct RecordingList::Chunk {
@@ -252,6 +252,12 @@ size_t RecordingList::Replay(const uint8_t* p) {
       t->setGraphicsDescriptorSet(set, in.get<uint32_t>());
       break;
     }
+    case Op::kDescriptorSetDynamic: {
+      auto* set = in.get<plume::RenderDescriptorSet*>();
+      const auto index = in.get<uint32_t>(), count = in.get<uint32_t>();
+      t->setGraphicsDescriptorSetDynamic(set, index, in.array<uint32_t>(count), count);
+      break;
+    }
     case Op::kRootDescriptor: {
       const auto ref = in.get<plume::RenderBufferReference>();
       t->setGraphicsRootDescriptor(ref, in.get<uint32_t>());
@@ -382,6 +388,13 @@ void RecordingList::setGraphicsPushConstants(uint32_t range, const void* data, u
 void RecordingList::setGraphicsDescriptorSet(plume::RenderDescriptorSet* set, uint32_t index) {
   Out o{Reserve(Op::kDescriptorSet, sizeof(set) + 4)};
   o.put(set), o.put(index);
+}
+
+void RecordingList::setGraphicsDescriptorSetDynamic(plume::RenderDescriptorSet* set, uint32_t index,
+                                                    const uint32_t* offsets, uint32_t count) {
+  Out o{Reserve(Op::kDescriptorSetDynamic, sizeof(set) + 8 + Align8(count * 4))};
+  o.put(set), o.put(index), o.put(count);
+  o.put_bytes(offsets, count * 4);
 }
 
 void RecordingList::setGraphicsRootDescriptor(plume::RenderBufferReference ref, uint32_t index) {
