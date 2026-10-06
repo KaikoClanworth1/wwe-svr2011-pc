@@ -61,6 +61,7 @@
 #include "updater.h"
 #include "stfs.h"
 #include "caw_import.h"
+#include "verify.h"
 
 #include <winhttp.h>
 
@@ -106,7 +107,7 @@ enum {
     ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
-    ID_PROGRESS, ID_INSTALL_STATUS,
+    ID_PROGRESS, ID_INSTALL_STATUS, ID_VERIFY, ID_VERIFY_REPAIR, ID_VERIFY_MARK, ID_VERIFY_STATUS,
     /* android */
     ID_ADB_INSTALL, ID_ANDROID_CANCEL, ID_APK_CREATE, ID_APK_PROGRESS, ID_APK_STATUS,
     /* dlc */
@@ -135,6 +136,7 @@ enum {
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
 #define WM_APP_UPD_DONE (WM_APP + 9)     /* wParam 1 ok, lParam heap error text */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
+#define WM_APP_VERIFY   (WM_APP + 12)    /* wParam permille, or 1001: done (s_verify) */
 #define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
 #define FRIENDS_TIMER   0x5F01           /* the Friends list's refresh while the Online tab shows */
 #define APK_OK          1001
@@ -143,7 +145,8 @@ enum {
 static HINSTANCE s_inst;
 static HWND      s_wnd, s_tab;
 static HFONT     s_font, s_big, s_title;
-static HFONT     s_icons, s_nav, s_card, s_huge;  /* the look: sidebar icons and labels, card titles, page title */
+static HFONT     s_icons, s_nav, s_card, s_huge;
+static HFONT     s_mark_font;                     /* Verify game files' mark (the icon font, large) */  /* the look: sidebar icons and labels, card titles, page title */
 static int       s_cur_tab = -1, s_nav_hover = -1;
 static int       s_dpi = 96;
 static HICON     s_icon;
@@ -763,6 +766,119 @@ static int free_space(const WCHAR *path, uint64_t *out)
         return 0;
     *out = fb.QuadPart;
     return 1;
+}
+
+/* ── Verify game files (verify.h) ──────────────────────────────────────── */
+
+static int any_game_running(void);
+
+static VerifyResult   s_verify;
+static volatile LONG  s_verify_cancel;
+static volatile LONG  s_verify_busy;
+static int            s_verify_state;   /* 0 not checked, 1 running, 2 OK, 3 damaged / missing, 4 can't tell */
+static WCHAR          s_verify_dir[MAX_PATH];
+
+/* The mark beside the button: a tick, a cross, a warning or a clock. */
+static void verify_mark(int state)
+{
+    static const WCHAR glyph[] = { 0, 0xE823, 0xE73E, 0xE711, 0xE7BA };
+    WCHAR t[2] = { glyph[state], 0 };
+    s_verify_state = state;
+    SendMessageW(ctl(ID_VERIFY_MARK), WM_SETFONT, (WPARAM)s_mark_font, FALSE);
+    set_text(ID_VERIFY_MARK, t);
+    InvalidateRect(ctl(ID_VERIFY_MARK), NULL, TRUE);
+}
+
+static void verify_progress(uint64_t done, uint64_t total, const WCHAR *file, void *ctx)
+{
+    static DWORD last;
+    const DWORD now = GetTickCount();
+    (void)file; (void)ctx;
+    if (now - last < 100 && done < total)
+        return;
+    last = now;
+    PostMessageW(s_wnd, WM_APP_VERIFY, total ? (WPARAM)(done * 1000 / total) : 0, 0);
+}
+
+static DWORD WINAPI verify_thread(LPVOID unused)
+{
+    (void)unused;
+    if (!verify_game_files(s_verify_dir, &s_verify_cancel, verify_progress, NULL, &s_verify))
+        s_verify.files = -1;   /* (stopped) */
+    PostMessageW(s_wnd, WM_APP_VERIFY, 1001, 0);
+    return 0;
+}
+
+static void start_verify(void)
+{
+    HANDLE t;
+    if (InterlockedCompareExchange(&s_verify_busy, 1, 0))
+        return;
+    if (!s_game_dir[0] || !is_game_folder(s_game_dir)) {
+        InterlockedExchange(&s_verify_busy, 0);
+        verify_mark(0);
+        set_text(ID_VERIFY_STATUS, L"Install the game first: there are no game files to check yet.");
+        return;
+    }
+    wcscpy_s(s_verify_dir, MAX_PATH, s_game_dir);
+    s_verify_cancel = 0;
+    verify_mark(1);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), SW_HIDE);
+    EnableWindow(ctl(ID_VERIFY), FALSE);
+    set_text(ID_VERIFY_STATUS, L"Checking the game files\x2026");
+    t = CreateThread(NULL, 0, verify_thread, NULL, 0, NULL);
+    if (t)
+        CloseHandle(t);
+    else
+        PostMessageW(s_wnd, WM_APP_VERIFY, 1001, 0);
+}
+
+static void verify_done(void)
+{
+    WCHAR t[600];
+    InterlockedExchange(&s_verify_busy, 0);
+    EnableWindow(ctl(ID_VERIFY), TRUE);
+    if (s_verify.files < 0) {
+        verify_mark(0);
+        set_text(ID_VERIFY_STATUS, L"The check was stopped.");
+        return;
+    }
+    verify_describe(&s_verify, t, 600);
+    set_text(ID_VERIFY_STATUS, t);
+    if (s_verify.other_edition || !s_verify.files)
+        verify_mark(4);
+    else if (s_verify.missing || s_verify.damaged)
+        verify_mark(3);
+    else
+        verify_mark(2);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), s_verify.damaged && !s_verify.other_edition ? SW_SHOW : SW_HIDE);
+}
+
+/* Repair: the damaged files set aside (renamed .damaged), then Install copies them again. */
+static void verify_repair(void)
+{
+    WCHAR t[600];
+    int n;
+    if (any_game_running()) {
+        set_text(ID_VERIFY_STATUS, L"Close the game first.");
+        return;
+    }
+    swprintf_s(t, 600, L"Set aside the %d damaged game file(s)? They are renamed to .damaged, and Install then "
+                       L"copies them again from your disc image.", s_verify.damaged);
+    if (MessageBoxW(s_wnd, t, L"Repair game files", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+        return;
+    n = verify_set_aside(&s_verify);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), SW_HIDE);
+    verify_mark(0);
+    swprintf_s(t, 600, L"%d file(s) set aside. Choose your disc image above and click Install to copy them "
+                       L"again, then Verify game files.", n);
+    set_text(ID_VERIFY_STATUS, t);
+    {
+        WCHAR target[MAX_PATH] = L"";
+        GetWindowTextW(ctl(ID_TARGET), target, MAX_PATH);
+        if (!target[0])
+            set_text(ID_TARGET, s_game_dir);
+    }
 }
 
 static int install_run(InstallJob *job)
@@ -1952,6 +2068,9 @@ static void make_fonts(void)
     if (s_huge) DeleteObject(s_huge);
     s_icons = CreateFontW(-MulDiv(16, s_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
                           CLEARTYPE_QUALITY, 0, icon_face());
+    if (s_mark_font) DeleteObject(s_mark_font);
+    s_mark_font = CreateFontW(-MulDiv(28, s_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                              CLEARTYPE_QUALITY, 0, icon_face());
     ncm.lfMessageFont.lfWeight = FW_SEMIBOLD;
     ncm.lfMessageFont.lfHeight = -MulDiv(10, s_dpi, 72);
     s_nav = CreateFontIndirectW(&ncm.lfMessageFont);
@@ -2299,6 +2418,13 @@ static void build_ui(void)
     add(TAB_INSTALL, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 318, 560, 76, ID_INSTALL_STATUS);
     add(TAB_INSTALL, L"Static", L"Files already installed with the right size are skipped, so a stopped "
                                 L"installation continues where it left off.", SS_LEFT, X0, 410, 560, 36, 0);
+    add(TAB_INSTALL, L"Button", L"Game files", BS_GROUPBOX, X0, 452, 560, 118, 0);
+    add(TAB_INSTALL, L"Button", L"Verify game files", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 482, 170, 32, ID_VERIFY);
+    add(TAB_INSTALL, L"Button", L"Repair", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 524, 170, 32, ID_VERIFY_REPAIR);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), SW_HIDE);
+    add(TAB_INSTALL, L"Static", L"", SS_CENTER | SS_NOPREFIX, X0 + 196, 478, 40, 40, ID_VERIFY_MARK);
+    add(TAB_INSTALL, L"Static", L"Checks every game file against the game disc: a damaged one can make the game "
+                                L"crash while it loads.", SS_LEFT | SS_NOPREFIX, X0 + 244, 476, 300, 84, ID_VERIFY_STATUS);
 
     /* Android */
     add(TAB_ANDROID, L"Static", L"Play on an Android phone or tablet (experimental): 64-bit ARM with Vulkan, such as a "
@@ -5832,6 +5958,32 @@ static int draw_button(const DRAWITEMSTRUCT *d)
     return 1;
 }
 
+/* draw_button drawn off-screen first, then copied: hovering a button no longer
+   shows its background a moment before its face (flicker). */
+static int draw_button_buffered(const DRAWITEMSTRUCT *d)
+{
+    DRAWITEMSTRUCT b = *d;
+    const int w = d->rcItem.right - d->rcItem.left, h = d->rcItem.bottom - d->rcItem.top;
+    HDC mdc = CreateCompatibleDC(d->hDC);
+    HBITMAP bmp = mdc ? CreateCompatibleBitmap(d->hDC, w, h) : NULL;
+    HGDIOBJ old;
+    int ok;
+    if (!bmp) {
+        if (mdc) DeleteDC(mdc);
+        return draw_button(d);
+    }
+    old = SelectObject(mdc, bmp);
+    b.hDC = mdc;
+    SetRect(&b.rcItem, 0, 0, w, h);
+    ok = draw_button(&b);
+    if (ok)
+        BitBlt(d->hDC, d->rcItem.left, d->rcItem.top, w, h, mdc, 0, 0, SRCCOPY);
+    SelectObject(mdc, old);
+    DeleteObject(bmp);
+    DeleteDC(mdc);
+    return ok;
+}
+
 /* The window: the sidebar, the page's title, its cards. */
 static void paint_window(HDC dc)
 {
@@ -6051,6 +6203,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_INSTALL:
             start_install();
             break;
+        case ID_VERIFY:
+            start_verify();
+            break;
+        case ID_VERIFY_REPAIR:
+            verify_repair();
+            break;
         case ID_APK_CREATE:
             start_apk();
             break;
@@ -6116,6 +6274,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     case WM_APP_UPD_CHECKED:
         up_checked((int)wp, (WCHAR *)lp);
+        return 0;
+    case WM_APP_VERIFY:
+        if (wp > 1000) {
+            SendMessageW(ctl(ID_PROGRESS), PBM_SETPOS, 0, 0);
+            verify_done();
+        } else {
+            SendMessageW(ctl(ID_PROGRESS), PBM_SETPOS, wp, 0);
+        }
         return 0;
     case WM_APP_FRIENDS:
         friends_show((int)wp, (char *)lp);
@@ -6195,11 +6361,16 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         /* (text on a card: white; on the page: its grey) */
         const int on_card = card_at((HWND)lp);
         SetTextColor((HDC)wp, C_TEXT);
+        if (GetDlgCtrlID((HWND)lp) == ID_VERIFY_MARK) {   /* (green OK, red damaged, amber can't tell) */
+            static const COLORREF c[] = { RGB(112, 112, 122), RGB(112, 112, 122), RGB(24, 150, 60),
+                                          RGB(208, 20, 44), RGB(214, 140, 0) };
+            SetTextColor((HDC)wp, c[s_verify_state]);
+        }
         SetBkColor((HDC)wp, on_card ? C_CARD : C_PAGE);
         return (LRESULT)(on_card ? s_card_brush : s_page_brush);
     }
     case WM_DRAWITEM:
-        if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_BUTTON && draw_button((DRAWITEMSTRUCT *)lp))
+        if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_BUTTON && draw_button_buffered((DRAWITEMSTRUCT *)lp))
             return TRUE;
         break;
     case WM_LBUTTONDOWN: {
@@ -6238,9 +6409,29 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_PAINT: {
+        /* (off-screen first, then copied: the sidebar's hover doesn't flicker) */
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(w, &ps);
-        paint_window(dc);
+        RECT cl;
+        HDC mdc;
+        HBITMAP bmp = NULL;
+        GetClientRect(w, &cl);
+        mdc = CreateCompatibleDC(dc);
+        if (mdc)
+            bmp = CreateCompatibleBitmap(dc, cl.right, cl.bottom);
+        if (bmp) {
+            HGDIOBJ old = SelectObject(mdc, bmp);
+            FillRect(mdc, &cl, s_page_brush);
+            paint_window(mdc);
+            BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left,
+                   ps.rcPaint.bottom - ps.rcPaint.top, mdc, ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
+            SelectObject(mdc, old);
+            DeleteObject(bmp);
+        } else {
+            paint_window(dc);
+        }
+        if (mdc)
+            DeleteDC(mdc);
         EndPaint(w, &ps);
         return 0;
     }
@@ -6330,7 +6521,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     INITCOMMONCONTROLSEX icc;
     MSG msg;
     RECT r;
-    int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0;
+    int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0, capture_verify = 0;
     const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
@@ -6475,6 +6666,23 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* --verify <game folder>: Verify game files, no window (exit 0: OK). */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--verify")) {
+        VerifyResult *r = (VerifyResult *)calloc(1, sizeof *r);
+        WCHAR msg[600];
+        int i, ok;
+        console_setup();
+        if (!r)
+            return 1;
+        ok = verify_game_files(argv[2], NULL, NULL, NULL, r);
+        verify_describe(r, msg, 600);
+        wprintf(L"%s\n", msg);
+        for (i = 0; i < r->bad_count; i++)
+            wprintf(L"  %s %s\n", r->bad_missing[i] ? L"missing" : L"damaged", r->bad[i]);
+        ok = ok && r->files > 0 && !r->missing && !r->damaged && !r->other_edition;
+        free(r);
+        return ok ? 0 : 1;
+    }
     /* Tests: --bundled <game folder> installs <game>\Bundled Mods as a start does. */
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--bundled")) {
         install_bundled(argv[2], argv[2]);
@@ -6498,6 +6706,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (capture_seq_n)
             capture_tab = capture_seq[0];
         capture_file = argv[3];
+        /* ... --verify: Verify game files first (the Install tab's mark). */
+        if (argc >= 5 && !wcscmp(argv[4], L"--verify"))
+            capture_verify = 1;
         /* ... --paint-page <1-10>: the Paint Tool tab shows that page. */
         if (argc >= 6 && !wcscmp(argv[4], L"--paint-page"))
             s_pt_page = (_wtoi(argv[5]) - 1 + PT_PAGES) % PT_PAGES;
@@ -6572,6 +6783,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (capture_file) {
         MSG pm;
         int k;
+        if (capture_verify) {
+            ULONGLONG t0 = GetTickCount64();
+            start_verify();
+            while (s_verify_busy && GetTickCount64() - t0 < 300000)
+                if (MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT) == WAIT_OBJECT_0)
+                    while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&pm);
+                        DispatchMessageW(&pm);
+                    }
+        }
         for (k = 0; k < (capture_seq_n ? capture_seq_n : 1); k++) {
             ULONGLONG t0 = GetTickCount64();
             if (k) {
