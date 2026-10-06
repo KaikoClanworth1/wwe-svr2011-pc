@@ -15,6 +15,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace svr2011 {
 
@@ -27,6 +28,10 @@ std::filesystem::path UserMusicFolder();
 // The song a playlist plays: the first song of folder <name>, or the loose
 // file whose stem is <name> (as USER PLAYLIST lists them); empty if none.
 std::filesystem::path UserMusicSong(const std::string& name);
+
+// Every song in the Music folder and its subfolders (paths relative to the
+// folder, sorted): MY WWE -> JUKEBOX -> MY MUSIC (jukebox.h).
+std::vector<std::filesystem::path> UserMusicSongs();
 
 // Plays a short sound file once on its own voice (any format the songs can
 // be; honours audio_mute) - a superstar mod's recorded name call.

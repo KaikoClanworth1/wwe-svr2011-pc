@@ -42,6 +42,7 @@
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
+#include "jukebox.h"
 
 namespace svr2011 {
 
@@ -595,6 +596,19 @@ bool HostSoundActive(int h) {
   return h >= 0 && size_t(h) < g_pool.size() && g_pool[h]->Active();
 }
 
+std::vector<std::filesystem::path> UserMusicSongs() {
+  std::vector<std::filesystem::path> songs;
+  std::error_code ec;
+  for (auto s = std::filesystem::recursive_directory_iterator(
+           g_folder, std::filesystem::directory_options::skip_permission_denied, ec);
+       !ec && s != std::filesystem::recursive_directory_iterator(); s.increment(ec)) {
+    std::error_code ec2;
+    if (s->is_regular_file(ec2) && IsSong(s->path())) songs.push_back(s->path().lexically_relative(g_folder));
+  }
+  std::sort(songs.begin(), songs.end());
+  return songs;
+}
+
 std::filesystem::path UserMusicSong(const std::string& name) {
   const std::u16string wanted = std::filesystem::path(std::u8string(name.begin(), name.end())).u16string();
   for (auto& [list, song] : Playlists())
@@ -632,6 +646,7 @@ void InstallUserMusic(const std::filesystem::path& folder) {
     for (auto& [list, song] : Playlists()) {
       if (list == name) {
         REXLOG_INFO("user music: playing {}", song.string());
+        JukeboxStopMyMusic();  // (the jukebox's MY MUSIC in the menus: jukebox.h)
         g_player->Play(song);
         return true;
       }
