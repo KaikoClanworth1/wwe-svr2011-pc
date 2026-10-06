@@ -57,6 +57,7 @@
 #include "ui_theme.h"
 #include "report.h"
 #include "movie_maker.h"
+#include "ascii_fold.h"
 #include "unzip.h"
 #include "updater.h"
 #include "stfs.h"
@@ -5366,14 +5367,15 @@ static void mv_star_menu(void)
     if (cmd >= FIRST) mv_star_pick(cmd - FIRST);
 }
 
-/* The movie's name as the game will list it: letters, digits, spaces, - and _. */
+/* The movie's name as the game will list it: letters, digits, spaces, - and _
+ * (accents taken off: the game skips names that aren't plain ASCII). */
 static int mv_name(WCHAR *name, size_t n)
 {
     WCHAR raw[64], *s;
     size_t k = 0;
     GetWindowTextW(ctl(ID_MV_NAME), raw, 64);
     for (s = raw; *s && k + 1 < n && k < 32; s++) {
-        WCHAR c = *s;
+        WCHAR c = ascii_fold_char(*s);
         if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L' ' || c == L'-' || c == L'_')
             name[k++] = c;
     }
