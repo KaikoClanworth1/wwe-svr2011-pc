@@ -74,6 +74,11 @@ void ForgetResolved();
 // the game may put something else there later (after Superstar Threads,
 // Tyson Kidd's roster picture sat where its bake had been).
 void ForgetResolved(uint32_t base_address);
+// The renderer wrote guest memory (a resolve written back): textures cached
+// from it are checked again at their next use, even in the same frame - the
+// attire bake draws each mip from the level it just wrote back, and its
+// cached copy could still be the previous bake's at that address.
+void GuestWritten(uint32_t address, uint32_t size);
 
 // A resolve wrote the guest texture at `base_address` (physical): the image
 // is in `texture` (a copy of the render target, owned by the renderer), not

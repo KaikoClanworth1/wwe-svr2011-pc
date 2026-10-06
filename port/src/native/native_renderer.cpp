@@ -3587,6 +3587,9 @@ bool WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, co
     }
   }
   buffer->unmap();
+  // (the span written: tiled textures are laid out in 32 x 32 tiles)
+  const uint64_t rows = tiled ? (uint64_t(guest_h) + 31) & ~31ull : guest_h;
+  textures::GuestWritten(base, uint32_t(std::min<uint64_t>(uint64_t(pitch) * rows * 4, limit)));
   static uint32_t logged = 0;
   if (logged++ < 32) {
     REXLOG_INFO("native renderer: resolve {:08X} ({}x{}) written back to guest memory", base, guest_w, guest_h);
