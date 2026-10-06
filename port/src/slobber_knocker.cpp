@@ -229,6 +229,7 @@ void SlobberKnockerUpdate(PPCContext& ctx, uint8_t* base) {
 REX_EXTERN(__imp__sub_82245618);
 REX_HOOK_RAW(sub_82245618) {
   svr2011::ThreeStagesBeforeJudge(base);  // (three_stages.cpp: a fall that doesn't end the match)
+  svr2011::LumberjackBeforeJudge(base);   // (match_types.cpp)
   // Test aid: SVR2011_TEST_FALL_LOG=1 - every match: the characters each time
   // one's state / lost byte changes, and the judge's result.
   static const bool fall_log = std::getenv("SVR2011_TEST_FALL_LOG") != nullptr;
