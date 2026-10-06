@@ -837,7 +837,9 @@ void KeepBlankProfiles(uint8_t* base) {
 // language). Mods are DLC-flagged, so the same badge shows; while a panel
 // hovers a mod, that texture's pixels (in guest memory, 16-bit words swapped)
 // say "MODDED" (tools/make_modded_badge.py) and go back for real DLC. Both
-// panels share the texture: a mod wins.
+// panels share the texture: while one shows a real DLC character (British
+// Bulldog...), it stays the DLC badge and a mod's panel shows no badge (a mod
+// on the other side made the DLC character "MODDED").
 const uint8_t kModdedRgba[] = {
 #include "modded_badge.inc"
 };
@@ -850,7 +852,8 @@ struct Badge {
 };
 std::vector<Badge> g_badges;  // [0]: MODDED, then the originals
 std::mutex g_badge_mutex;
-std::vector<std::pair<uint32_t, bool>> g_panel_mod;  // select screen cursor -> hovering a mod
+// select screen cursor -> what its panel shows: 0 no badge, 1 a mod, 2 real DLC
+std::vector<std::pair<uint32_t, int>> g_panel_mod;
 int64_t g_badge_seen = 0;                            // last panel update (a select screen is up)
 bool g_badge_thread = false;
 
@@ -950,7 +953,9 @@ void BadgeLoop() {
       std::lock_guard lock(g_badge_mutex);
       active = NowMs() - g_badge_seen < 5000;
       if (!active) g_panel_mod.clear(), scans = 0;
-      for (const auto& p : g_panel_mod) want |= p.second;
+      bool dlc = false;
+      for (const auto& p : g_panel_mod) want |= p.second == 1, dlc |= p.second == 2;
+      want = want && !dlc;
     }
     uint8_t* b = g_memory->virtual_membase();
     int now = BadgeAt(b, guest);
@@ -1001,21 +1006,27 @@ void BadgeLoop() {
 // the cursor).
 REX_EXTERN(__imp__sub_828B6CD0);
 REX_HOOK_RAW(sub_828B6CD0) {
-  if (uint32_t(ctx.lr) == kBadgeCaller && !g_badges.empty()) {
-    const uint32_t cursor = ctx.r31.u32;
-    const bool mod = ModOf(ctx.r3.u32) != nullptr;
-    std::lock_guard lock(g_badge_mutex);
-    g_badge_seen = NowMs();
-    bool found = false;
-    for (auto& p : g_panel_mod)
-      if (p.first == cursor) p.second = mod, found = true;
-    if (!found) g_panel_mod.push_back({cursor, mod});
-    if (!g_badge_thread) {
-      g_badge_thread = true;
-      std::thread(BadgeLoop).detach();
-    }
+  if (uint32_t(ctx.lr) != kBadgeCaller || g_badges.empty()) {
+    __imp__sub_828B6CD0(ctx, base);
+    return;
   }
+  const uint32_t cursor = ctx.r31.u32;
+  const bool mod = ModOf(ctx.r3.u32) != nullptr;
   __imp__sub_828B6CD0(ctx, base);
+  const int shows = !ctx.r3.u32 ? 0 : mod ? 1 : 2;
+  std::lock_guard lock(g_badge_mutex);
+  g_badge_seen = NowMs();
+  bool found = false, other_dlc = false;
+  for (auto& p : g_panel_mod) {
+    if (p.first == cursor) p.second = shows, found = true;
+    else other_dlc |= p.second == 2;
+  }
+  if (!found) g_panel_mod.push_back({cursor, shows});
+  if (shows == 1 && other_dlc) ctx.r3.u64 = 0;  // (the texture is the DLC badge now: none on the mod)
+  if (!g_badge_thread) {
+    g_badge_thread = true;
+    std::thread(BadgeLoop).detach();
+  }
 }
 
 // The DLC tile's list filter (sub_8244A128(screen, id): DLC-flagged,
