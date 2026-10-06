@@ -18,6 +18,10 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xam/content_manager.h>
 
+REXCVAR_DEFINE_BOOL(unlock_everything, true, "Gameplay",
+                    "Every locked superstar, arena and item unlocked from the start (Fan Axxess); "
+                    "off: unlocked by playing, the DLC stays");
+
 namespace svr2011 {
 
 namespace {
@@ -193,6 +197,67 @@ void GrantFanAxxess(const std::filesystem::path& title_root, uint32_t title_id) 
   REXLOG_INFO("DLC: Fan Axxess granted (everything unlocked, Bret Hart; no installed package had it)");
 }
 
+// -- Unlock everything (option) -----------------------------------------------------
+//
+// Off: the unlock keys (type 5, UNLOCK_EVERYTHING / UNLOCK_ATTIRBUTE) are taken
+// out of the installed catalogs - the player's own Fan Axxess package or the
+// port's - so the game unlocks things as one plays; the DLC itself (superstars,
+// arenas, costumes, Bret Hart) stays. The whole catalog is kept beside it
+// (catalog.dlc.unlocks) and put back when the option is on again.
+
+constexpr uint16_t kUnlockType = 5;
+
+void ApplyUnlockChoice(const std::filesystem::path& installed) {
+  const bool all = REXCVAR_GET(unlock_everything);
+  std::error_code ec;
+  for (const auto& pkg : std::filesystem::directory_iterator(installed, ec)) {
+    const auto cat = pkg.path() / "info" / "catalog.dlc";
+    auto full = cat;
+    full += ".unlocks";
+    if (all) {
+      if (!std::filesystem::exists(full, ec)) continue;
+      std::filesystem::remove(cat, ec);
+      std::filesystem::rename(full, cat, ec);
+      if (!ec) REXLOG_INFO("DLC {}: unlock keys back (everything unlocked)", pkg.path().filename().string());
+      continue;
+    }
+    if (std::filesystem::exists(full, ec)) continue;  // (taken out before)
+    std::ifstream in(cat, std::ios::binary);
+    std::vector<uint8_t> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    if (d.size() < 0x18 || std::string_view(reinterpret_cast<char*>(d.data()), 4) != "DLCC") continue;
+    const uint32_t header = uint32_t(d[6] | d[7] << 8);
+    const uint32_t count = uint32_t(d[12] | d[13] << 8), files = uint32_t(d[14] | d[15] << 8);
+    if (header + count * 0x40 > d.size()) continue;
+    auto type = [&](uint32_t i) { const uint8_t* e = d.data() + header + i * 0x40; return uint16_t(e[4] | e[5] << 8); };
+    uint32_t keys = 0;
+    for (uint32_t i = 0; i < count; ++i) keys += type(i) == kUnlockType;
+    if (!keys) continue;
+    if (files) {  // (only Fan Axxess has the keys, and it has no files)
+      REXLOG_WARN("DLC {}: unlock keys kept (a package with files)", pkg.path().filename().string());
+      continue;
+    }
+    // the same catalog without those entries, the rest renumbered
+    std::vector<uint8_t> out(d.begin(), d.begin() + header);
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+      if (type(i) == kUnlockType) continue;
+      const uint8_t* e = d.data() + header + i * 0x40;
+      out.insert(out.end(), e, e + 0x40);
+      uint8_t* o = out.data() + out.size() - 0x40;
+      o[2] = uint8_t(n + 1), o[3] = uint8_t((n + 1) >> 8);
+      o[8] = o[10] = uint8_t(n), o[9] = o[11] = uint8_t(n >> 8);
+      ++n;
+    }
+    out.insert(out.end(), d.begin() + header + count * 0x40, d.end());
+    out[12] = uint8_t(n), out[13] = uint8_t(n >> 8);
+    std::filesystem::copy_file(cat, full, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) continue;
+    std::ofstream(cat, std::ios::binary | std::ios::trunc).write(reinterpret_cast<char*>(out.data()), out.size());
+    REXLOG_INFO("DLC {}: {} unlock keys taken out (unlock_everything off)", pkg.path().filename().string(), keys);
+  }
+}
+
 }  // namespace
 
 void PatchOnlineStrings(const std::filesystem::path& file) {
@@ -271,7 +336,10 @@ void InstallDlc(rex::system::KernelState* kernel_state, const std::filesystem::p
   struct FanAxxess {  // (whatever happens below: once the player's packages are in)
     std::filesystem::path root;
     uint32_t title;
-    ~FanAxxess() { GrantFanAxxess(root, title); }
+    ~FanAxxess() {
+      GrantFanAxxess(root, title);
+      ApplyUnlockChoice(root / "00000002");
+    }
   } fan_axxess{installed.parent_path(), game_title};
   if (!std::filesystem::is_directory(dlc_dir, ec)) return;
 

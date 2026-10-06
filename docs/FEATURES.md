@@ -88,6 +88,8 @@ still being tested.
 
 - **Bundled mods come switched off**: a fresh install (or a bundle new to this game folder) installs them unticked on the Mods tab; tick the ones you want. An update of a bundled mod keeps its on / off.
 - **Your installed copies of the port's mods are kept up to date**: when an update brings a newer version of a bundled mod you already have (even one you installed by hand), it's installed over yours and stays on or off as you had it. A copy newer than the port's is left alone.
+- **Everything unlocked from the start - now your choice** (launcher, Settings, Game: *Everything unlocked from the start*; on by default, as before): off, the locked superstars, arenas and items unlock as you play, as on a console without the Fan Axxess bonus. All DLC stays (its superstars, arenas, costumes, Bret Hart). Works with your existing save too; turn it back on any time. `unlock_everything` in the settings file.
+- **Create A Moveset no longer crashes on SvR 2010 superstars** (Jeff Hardy and the others): their moves show in the editor's lists, and a move the editor can't find no longer crashes it.
 
 ## New in 2.0.3
 

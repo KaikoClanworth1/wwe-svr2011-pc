@@ -100,7 +100,7 @@ enum {
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
-    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY,
+    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
@@ -1589,7 +1589,7 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
-    int priority = 0;
+    int priority = 0, unlock_all = 1;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1613,6 +1613,7 @@ static void settings_load(void)
             else if (!strcmp(key, "native_aa")) aa = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
+            else if (!strcmp(key, "unlock_everything")) unlock_all = strcmp(val, "false") != 0;
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
             else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
             else if (!strcmp(key, "window_width")) w = atoi(val);
@@ -1646,6 +1647,7 @@ static void settings_load(void)
     }
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, priority ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_UNLOCK_ALL, unlock_all ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
@@ -1654,13 +1656,13 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 25 };
+    enum { NK = 26 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
                                     "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
-                                    "process_priority" };
+                                    "process_priority", "unlock_everything" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1712,6 +1714,7 @@ static int settings_save(void)
     }
     strcpy_s(vals[18], 64, IsDlgButtonChecked(s_wnd, ID_PREPARE) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[24], 64, IsDlgButtonChecked(s_wnd, ID_PRIORITY) == BST_CHECKED ? "1" : "0");
+    strcpy_s(vals[25], 64, IsDlgButtonChecked(s_wnd, ID_UNLOCK_ALL) == BST_CHECKED ? "true" : "false");
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
     {
@@ -1792,6 +1795,7 @@ static void settings_defaults(void)
     settings_show(0, 0, 1, 0, 0, 0, 1, 1, 0, 1);
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_UNLOCK_ALL, BST_CHECKED);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
     set_text(ID_SETTINGS_STATUS, L"Defaults restored. Press Save or Play to keep them.");
@@ -2337,18 +2341,20 @@ static void build_ui(void)
         SS_LEFT, X0 + 16, 400, 370, 36, 0);
     add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 400, 146, 28,
         ID_MUSIC_OPEN);
-    add(TAB_SETTINGS, L"Button", L"Language", BS_GROUPBOX, X0, 450, 560, 68, 0);
-    add(TAB_SETTINGS, L"Static", L"Game text", SS_LEFT, X0 + 16, 480, 130, 20, 0);
-    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 476, 200, 200,
+    add(TAB_SETTINGS, L"Button", L"Game", BS_GROUPBOX, X0, 450, 560, 78, 0);
+    add(TAB_SETTINGS, L"Static", L"Language", SS_LEFT, X0 + 16, 474, 130, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 470, 200, 200,
             ID_LANGUAGE);
     for (i = 0; i < N_LANGUAGES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_languages[i].label);
-    add(TAB_SETTINGS, L"Static", L"Menus and on-screen text (commentary stays "
-                                 L"English). Also in game: GRAPHICS page.",
-        SS_LEFT, X0 + 362, 466, 186, 48, 0);
-    add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 528, 140, 30, ID_DEFAULTS);
-    add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 528, 108, 30, ID_SAVE);
-    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 564, 560, 34, ID_SETTINGS_STATUS);
+    add(TAB_SETTINGS, L"Static", L"Menus and text (commentary stays English). "
+                                 L"Also in game: GRAPHICS.",
+        SS_LEFT, X0 + 362, 464, 186, 34, 0);
+    add(TAB_SETTINGS, L"Button", L"Everything unlocked from the start (off: unlock as you play; DLC stays)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 500, 530, 22, ID_UNLOCK_ALL);
+    add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 534, 140, 30, ID_DEFAULTS);
+    add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 534, 108, 30, ID_SAVE);
+    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 568, 560, 32, ID_SETTINGS_STATUS);
 
     /* Online */
     add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
@@ -6242,7 +6248,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
             break;
         case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
-        case ID_PRIORITY:
+        case ID_PRIORITY: case ID_UNLOCK_ALL:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
