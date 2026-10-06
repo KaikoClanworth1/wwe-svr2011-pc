@@ -18,6 +18,9 @@
 //
 // Steps that wait for the game instead of a fixed time (so a slow phone and a
 // fast PC run the same script):
+//   where                       logs the open menu's group and row
+//                               ("script input: where: group G row R", or
+//                               "where: no menu"): the menu explorer
 //   title                       START until the main menu is up (skips the
 //                               intro movies and the title screen)
 //   menu <LABEL>                in the open menu, move to the entry named
@@ -89,7 +92,7 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     uint16_t key = 0;  // PC keyboard key pressed when the step starts
     bool touch = false;  // a finger (touch_controls.h) from x0, y0 to x1, y1
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-    enum Kind : uint8_t { kPlain, kTitle, kMenu, kUntil, kPressUntil } kind = kPlain;  // (a step that waits for the game)
+    enum Kind : uint8_t { kPlain, kTitle, kMenu, kUntil, kPressUntil, kWhere } kind = kPlain;  // (a step that waits for the game)
     std::string arg;  // its label / text
   };
 

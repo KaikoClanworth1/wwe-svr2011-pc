@@ -188,6 +188,9 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
   } else if (verb == "title") {
     step.kind = Step::kTitle;
     queue_.push_back(step);
+  } else if (verb == "where") {  // (logs the open menu group and row: the overnight menu explorer)
+    step.kind = Step::kWhere;
+    queue_.push_back(step);
   } else if (verb == "pressuntil") {
     std::string buttons;
     in >> buttons;
@@ -374,6 +377,14 @@ bool ScriptInputDriver::RunSmart(Clock::time_point now, Step& out) {
   const double waited = std::chrono::duration<double>(now - m.start).count();
   uint32_t group = 0, row = 0;
   const bool menu = ScriptMenuState(&group, &row);
+
+  if (current_.kind == Step::kWhere) {
+    if (menu)
+      REXLOG_INFO("script input: where: group {:X} row {}", group, row);
+    else
+      REXLOG_INFO("script input: where: no menu");
+    return false;
+  }
 
   if (current_.kind == Step::kUntil || current_.kind == Step::kPressUntil) {
     const bool hit = g_until_hit;
