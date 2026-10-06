@@ -11,6 +11,13 @@
 // left stick: choose, A: on / off, X: preview, Y: all on / all off, LB / RB:
 // page, B: back) or the keyboard (arrows, Enter / Space, P, Page Up / Down,
 // Esc). While it is open the game sees an idle controller.
+//
+// MY MUSIC (LEFT / RIGHT: the page's second tab): the player's songs from the
+// Music folder (music.h) join the shuffle, each on or off (cvar
+// jukebox_my_music), with PREVIEW and ALL ON / ALL OFF too. A user song plays
+// over the game's menu music muted under it, as the console's music player
+// did, and stops when the game stops its menu music (a match, CREATE AN
+// ENTRANCE's theme...). With no user song on the jukebox works as before.
 
 #pragma once
 
@@ -38,6 +45,10 @@ void InstallJukebox(rex::memory::Memory* memory);
 // sub_82BEC030 hook), before anything else sees it. True: the event is not
 // posted (the menu music with every song off).
 bool JukeboxEvent(uint8_t* base, const char* e, uint32_t object);
+
+// Stops a MY MUSIC song playing in the menus (the game's own user-music
+// player starting: CREATE AN ENTRANCE -> USER PLAYLIST, music.cpp).
+void JukeboxStopMyMusic();
 
 // Once a frame, from the game's world update (frame_rate.cpp): what the page
 // asked for - the song stopped and another started, or a preview.
