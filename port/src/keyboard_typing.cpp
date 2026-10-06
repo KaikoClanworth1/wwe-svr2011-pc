@@ -20,6 +20,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include "generated/default/svr2011_init.h"
+#include "story_designer.h"
 
 namespace {
 
@@ -177,6 +178,12 @@ class TypingListener final : public rex::ui::WindowInputListener {
   void OnKeyDown(rex::ui::KeyEvent& e) override {
     if (!KeyboardOpen()) {
       SetTextInput(false);
+      // Ctrl+C / Ctrl+V on a Story Designer list (story_designer.h)
+      const auto vk = uint16_t(e.virtual_key());
+      if (e.is_ctrl_pressed() && !e.is_alt_pressed() && (vk == 0x43 || vk == 0x56) && svr2011::StoryListActive()) {
+        svr2011::StoryListKey(vk == 0x56);
+        e.set_handled(true);
+      }
       return;
     }
     SetTextInput(true);

@@ -84,7 +84,8 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     int16_t lx = 0, ly = 0, rx = 0, ry = 0;
     int ms = 0;
     std::string text;  // typed when the step starts
-    bool paste = false, copy = false;  // ("paste <text>" / "copy": keyboard_typing.h test aids)
+    bool paste = false, copy = false;
+    int sd = 0;  // ("sdcopy" 1 / "sdpaste" 2: story_designer.h)  // ("paste <text>" / "copy": keyboard_typing.h test aids)
     uint16_t key = 0;  // PC keyboard key pressed when the step starts
     bool touch = false;  // a finger (touch_controls.h) from x0, y0 to x1, y1
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;

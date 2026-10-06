@@ -37,6 +37,7 @@
 #include "paint_pages.h"
 #include "match_types.h"
 #include "arena_mods.h"
+#include "story_designer.h"
 #include "move_packs.h"
 #include "ring_rules.h"
 #include "superstar_mods.h"
@@ -521,6 +522,7 @@ void Svr2011App::OnPostLoadXexImage() {
                                   static_cast<rex::input::InputSystem*>(runtime()->input_system()),
                                   runtime()->kernel_state(), g_user_data);
     svr2011::InstallArenaModsOverlay(imgui_drawer());
+    svr2011::InstallStoryDesignerOverlay(imgui_drawer());
   }
   {
     svr2011::StartDiscordPresence();  // (discord_presence.h)
