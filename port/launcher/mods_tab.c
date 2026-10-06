@@ -222,6 +222,8 @@ static void add_mod(void)
     if (pick_file(zip)) install_file(zip);
 }
 
+static WCHAR s_installed[MAX_PATH];  /* the folder install_file put the last mod in */
+
 int mods_install(const WCHAR *game_dir, const WCHAR *zip)
 {
     wcsncpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"", _TRUNCATE);
@@ -231,7 +233,8 @@ int mods_install(const WCHAR *game_dir, const WCHAR *zip)
 /* Mods shipped with the port (<bundle_dir>\*.svrmod, the release's
  * "Bundled Mods"): each is installed into the game once, and again only when
  * the shipped file changes - <game>\Mods\.bundled keeps "name|size|time" of
- * those installed - so one the player removed stays removed. */
+ * those installed - so one the player removed stays removed. A bundle comes
+ * switched off the first time ("disabled" in its folder). */
 void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
 {
     WCHAR pat[MAX_PATH], zip[MAX_PATH], list[MAX_PATH], line[MAX_PATH + 64], mods[MAX_PATH];
@@ -239,7 +242,7 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
     HANDLE h;
     static WCHAR known[8192];
     FILE *f;
-    int changed = 0;
+    int changed = 0, fresh = 0;
     if (!game_dir || !game_dir[0] || !bundle_dir || !bundle_dir[0])
         return;
     swprintf_s(pat, MAX_PATH, L"%s\\*.svrmod", bundle_dir);
@@ -263,7 +266,24 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
             continue;
         swprintf_s(zip, MAX_PATH, L"%s\\%s", bundle_dir, fd.cFileName);
         SHCreateDirectoryExW(NULL, mods, NULL);
-        if (mods_install(game_dir, zip) && wcslen(known) + wcslen(line) < sizeof known / sizeof *known - 1) {
+        {
+            /* (a bundle installed for the first time comes switched off - the
+               player ticks the ones they want on the Mods tab; a new version
+               of one already installed keeps its on / off) */
+            WCHAR first[MAX_PATH + 4];
+            swprintf_s(first, MAX_PATH + 4, L"\n%s|", fd.cFileName);
+            fresh = wcsncmp(known, first + 1, wcslen(first + 1)) != 0 && !wcsstr(known, first);
+        }
+        s_installed[0] = 0;
+        if (mods_install(game_dir, zip) && fresh && s_installed[0]) {
+            WCHAR off[MAX_PATH];
+            FILE *f;
+            swprintf_s(off, MAX_PATH, L"%s\\disabled", s_installed);
+            if (_wfopen_s(&f, off, L"wb") == 0 && f) fclose(f);
+            scan();
+            fill();
+        }
+        if (s_installed[0] && wcslen(known) + wcslen(line) < sizeof known / sizeof *known - 1) {
             wcscat_s(known, sizeof known / sizeof *known, line);
             changed = 1;
         }
@@ -324,12 +344,23 @@ place:
     swprintf_s(parent, MAX_PATH, L"%s\\Mods\\%s", s_game, kind);
     SHCreateDirectoryExW(NULL, parent, NULL);
     swprintf_s(dst, MAX_PATH, L"%s\\%s", parent, m.id);
-    if (exists(dst)) remove_tree(dst, 1);  /* an older version: to the Recycle Bin */
-    if (!MoveFileW(tmp, dst)) {
-        status(L"The mod could not be installed (is the game running?).");
-        remove_tree(tmp, 0);
-        return 0;
+    {
+        WCHAR off[MAX_PATH];
+        int was_off;
+        swprintf_s(off, MAX_PATH, L"%s\\disabled", dst);
+        was_off = exists(off);  /* (a new version keeps the old one's on / off) */
+        if (exists(dst)) remove_tree(dst, 1);  /* an older version: to the Recycle Bin */
+        if (!MoveFileW(tmp, dst)) {
+            status(L"The mod could not be installed (is the game running?).");
+            remove_tree(tmp, 0);
+            return 0;
+        }
+        if (was_off) {
+            FILE *f;
+            if (_wfopen_s(&f, off, L"wb") == 0 && f) fclose(f);
+        }
     }
+    wcscpy_s(s_installed, MAX_PATH, dst);
     scan();
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."

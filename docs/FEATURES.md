@@ -84,6 +84,10 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## After 2.0.3 (next update)
+
+- **Bundled mods come switched off**: a fresh install (or a bundle new to this game folder) installs them unticked on the Mods tab; tick the ones you want. An update of a bundled mod keeps its on / off.
+
 ## New in 2.0.3
 
 - **Bring your Xbox 360 save over** (launcher, Saves tab: *Import Xbox 360 save...*): pick the 360 save folder (5451085D, from a USB drive or a save download) and its saves - Created Superstars, Paint Tool logos, replays, created content and the main save - go into a save preset of their own (3a55cc3).
