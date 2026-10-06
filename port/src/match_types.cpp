@@ -502,6 +502,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
 REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
   const uint32_t rule = ctx.r4.u32;
+  svr2011::SetMatchLoading(true);  // (arena_mods: a custom arena's loading pictures)
   RestoreRule(base);
   g_lumberjacks_chosen = false;
   g_free_roam = (rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext);
@@ -1010,6 +1011,7 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
 REX_EXTERN(__imp__sub_822AD738);
 REX_HOOK_RAW(sub_822AD738) {
   const uint32_t placer = ctx.r3.u32;
+  svr2011::SetMatchLoading(false);  // (its loading screen is up)
   LogMatch(ctx, base, ctx.r4.u32);
   if (ctx.r4.u32 != kLumberjack || !placer || Rd32(base + kStoryContext)) {
     __imp__sub_822AD738(ctx, base);

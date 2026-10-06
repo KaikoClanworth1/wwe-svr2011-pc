@@ -518,10 +518,18 @@ std::vector<std::pair<std::string, svrfmt::Bytes>> VsTheme(int number) {
 // decoder) that is one of the loading pictures or of that theme gets the
 // arena's own (load.dds, vs/<name>.dds) before the game uses it - no memory
 // scan, so it can't be late or missed.
+// The loading pictures are swapped only while a match loads (from its set-up
+// to its people being placed, match_types.cpp): other screens show the same
+// pictures - the WWE SHOP background is LoadHD's Online_tex00/01 - and got the
+// arena's loading picture after a match on it. The VS theme's pictures (only
+// on the VS screen) are swapped while the arena is chosen.
 struct DecodeSwap {
+  std::string name;        // the texture's name in its set
   svrfmt::Bytes original;  // top level blocks as in the file
   svrfmt::Bytes mine;
+  bool loading = false;    // a loading picture (only while a match loads)
 };
+std::atomic<bool> g_match_loading{false};
 struct DecodeSwaps {
   std::vector<DecodeSwap> swaps;
   std::unordered_map<uint64_t, std::vector<size_t>> keys;  // middle 32 bytes -> swaps
@@ -537,6 +545,7 @@ uint64_t Fnv(const uint8_t* p, size_t n) {
 }
 
 struct LoadPic {
+  std::string name;
   svrfmt::Bytes original;  // top level blocks as in the file
   int part = 0;            // 0 whole, 1 left half, 2 right half
 };
@@ -559,16 +568,19 @@ void LoadLoadingPictures() {
           svrfmt::DdsInfo info;
           if (!svrfmt::DdsInfoOf(t.data, info) || info.format != svrfmt::DxtFormat::kDxt5) continue;
           if (info.w == 1024 && info.h == 512 && t.data.size() >= 128 + 1024 * 512) {
-            LoadPic lp{svrfmt::Bytes(t.data.begin() + 128, t.data.begin() + 128 + 1024 * 512), 0};
-            if (!seen[Fnv(lp.original.data(), lp.original.size())]++) g_load_pics.push_back(std::move(lp));
+            LoadPic lp{t.name, svrfmt::Bytes(t.data.begin() + 128, t.data.begin() + 128 + 1024 * 512), 0};
+            if (!seen[Fnv(lp.original.data(), lp.original.size()) ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
+              g_load_pics.push_back(std::move(lp));
           } else if (info.w == 512 && info.h == 512 && t.data.size() >= 128 + 512 * 512) {
             halves.push_back(&t);
           }
         }
         std::sort(halves.begin(), halves.end(), [](auto* a, auto* b) { return a->name < b->name; });
         for (size_t k = 0; k < halves.size() && k < 2; ++k) {
-          LoadPic lp{svrfmt::Bytes(halves[k]->data.begin() + 128, halves[k]->data.begin() + 128 + 512 * 512), int(k) + 1};
-          if (!seen[Fnv(lp.original.data(), lp.original.size())]++) g_load_pics.push_back(std::move(lp));
+          LoadPic lp{halves[k]->name, svrfmt::Bytes(halves[k]->data.begin() + 128, halves[k]->data.begin() + 128 + 512 * 512),
+                     int(k) + 1};
+          if (!seen[Fnv(lp.original.data(), lp.original.size()) ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
+            g_load_pics.push_back(std::move(lp));
         }
       }
     }
@@ -592,20 +604,20 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
   auto t = std::make_shared<DecodeSwaps>();
   if (c) {
     t->theme = host;
-    auto add = [&](svrfmt::Bytes original, svrfmt::Bytes mine) {
+    auto add = [&](const std::string& name, svrfmt::Bytes original, svrfmt::Bytes mine, bool loading) {
       if (original.size() != mine.size() || original.size() < 64) return;
       t->keys[Fnv(original.data() + original.size() / 2, 32)].push_back(t->swaps.size());
-      t->swaps.push_back({std::move(original), std::move(mine)});
+      t->swaps.push_back({name, std::move(original), std::move(mine), loading});
     };
     if (!c->load.empty()) {
       const svrfmt::Bytes load = Swap16(c->load.data(), c->load.size());  // (kept swapped: back to file order)
-      for (const auto& lp : g_load_pics) add(lp.original, LoadPart(load, lp.part));
+      for (const auto& lp : g_load_pics) add(lp.name, lp.original, LoadPart(load, lp.part), true);
     }
     if (!c->vs.empty()) {
       const auto theme = VsTheme(host);
       for (const auto& [name, mine] : c->vs)
         for (const auto& [tname, orig] : theme)
-          if (tname == name) add(Swap16(orig.data(), orig.size()), Swap16(mine.data(), mine.size()));
+          if (tname == name) add(tname, Swap16(orig.data(), orig.size()), Swap16(mine.data(), mine.size()), false);
     }
   }
   REXLOG_INFO("[svr2011] arena mods: loading / VS pictures {} for {} (theme {:02})", t->swaps.size(),
@@ -617,6 +629,14 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
 std::shared_ptr<const DecodeSwaps> CurrentDecodeSwaps() {
   std::lock_guard lock(g_decode_mutex);
   return g_decode;
+}
+
+// Texture names compare without case (the set holds up to 16 characters).
+bool NameIs(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (std::tolower(uint8_t(a[i])) != std::tolower(uint8_t(b[i]))) return false;
+  return true;
 }
 
 // A texture set the game just unpacked (u32 count, 16-byte header, 32-byte
@@ -633,16 +653,19 @@ void SwapDecoded(uint8_t* d, uint32_t size) {
     const uint32_t off = r[24] | r[25] << 8 | r[26] << 16 | uint32_t(r[27]) << 24;
     if (uint64_t(off) + sz > size || sz < 128 + 64 || std::memcmp(d + off, "DDS ", 4)) continue;
     uint8_t* top = d + off + 128;
+    const std::string name(reinterpret_cast<const char*>(r), strnlen(reinterpret_cast<const char*>(r), 16));
     for (size_t level0 : {size_t(1024 * 512), size_t(512 * 512), size_t(1024 * 128), size_t(128 * 256)}) {
       if (128 + level0 > sz) continue;
       auto it = t->keys.find(Fnv(top + level0 / 2, 32));
       if (it == t->keys.end()) continue;
       for (size_t k : it->second) {
         const auto& sw = t->swaps[k];
-        if (sw.original.size() != level0 || std::memcmp(top, sw.original.data(), level0)) continue;
+        if (sw.original.size() != level0 || (sw.loading && !g_match_loading) || !NameIs(name, sw.name) ||
+            std::memcmp(top, sw.original.data(), level0))
+          continue;
         std::memcpy(top, sw.mine.data(), level0);
         static int logged = 0;
-        if (logged++ < 40) REXLOG_INFO("[svr2011] arena mods: picture {} swapped as it was unpacked", std::string(reinterpret_cast<const char*>(r), strnlen(reinterpret_cast<const char*>(r), 16)));
+        if (logged++ < 40) REXLOG_INFO("[svr2011] arena mods: picture {} swapped as it was unpacked", name);
         break;
       }
     }
@@ -814,6 +837,8 @@ void UseBackstageRow(int i) {
   g_active_row = i;
   RedirectArena(78, i < 0 ? "" : g_backstage_rows[size_t(i)].file);
 }
+
+void SetMatchLoading(bool loading) { g_match_loading = loading; }
 
 void SetArenaDefault(int arena, const std::string& relative_file) {
   if (arena < 0 || arena >= 100) return;
