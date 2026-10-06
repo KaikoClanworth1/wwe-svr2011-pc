@@ -525,6 +525,52 @@ public class LauncherActivity extends Activity {
         loading_ = false;
     }
 
+    // Texture packs (src/native/texture_packs.h): folders in the game folder's
+    // "Texture Packs" with PNG / DDS files named after the game's textures.
+    // Switched-on packs are used from the next start, in the order they were
+    // switched on (the first wins); "Dump textures" is for pack makers.
+    void texturePacks(LinearLayout column) {
+        LinearLayout card = card(column, "Texture packs");
+        File dir = new File(InstallActivity.gameFolder(), "Texture Packs");
+        String[] found = dir.list((d, name) -> new File(d, name).isDirectory() && !name.startsWith("."));
+        List<String> names = new ArrayList<>();
+        if (found != null) for (String n : found) names.add(n);
+        java.util.Collections.sort(names, String.CASE_INSENSITIVE_ORDER);
+        if (names.isEmpty()) {
+            TextView t = text("Copy pack folders into games/WWE SmackDown vs. Raw 2011/Texture Packs, then switch "
+                + "them on here. They replace the game's textures, at any resolution.", 13, kDim);
+            t.setPadding(0, dp(10), 0, dp(10));
+            card.addView(t);
+        }
+        for (String name : names) {
+            Switch s = new Switch(this);
+            int[][] states = {{android.R.attr.state_checked}, {}};
+            s.setThumbTintList(new android.content.res.ColorStateList(states, new int[] {kRed, 0xFFB0B0B8}));
+            s.setTrackTintList(new android.content.res.ColorStateList(states, new int[] {0x88C8102E, 0xFF4A4A54}));
+            s.setOnCheckedChangeListener((b, on) -> {
+                if (loading_) return;
+                List<String> list = enabledPacks();
+                list.remove(name);
+                if (on) list.add(name);
+                settings_.setString("native_texture_packs", String.join(";", list));
+                saved(name);
+            });
+            refreshers_.add(() -> s.setChecked(enabledPacks().contains(name)));
+            row(card, name, null, s);
+        }
+        toggle(card, "Dump textures", "For pack makers: the game writes the textures it shows to Texture Dumps "
+            + "(PNG, named after the game's textures)", "native_dump_textures", false);
+    }
+
+    List<String> enabledPacks() {
+        List<String> list = new ArrayList<>();
+        for (String n : settings_.getString("native_texture_packs", "").split(";")) {
+            n = n.trim();
+            if (!n.isEmpty() && !list.contains(n)) list.add(n);
+        }
+        return list;
+    }
+
     // An on/off setting.
     void toggle(LinearLayout card, String label, String hint, String key, boolean fallback) {
         Switch s = new Switch(this);
@@ -613,6 +659,8 @@ public class LauncherActivity extends Activity {
         toggle(quality, "Prepare graphics", "Builds the graphics ahead in the menus: no stutter in matches",
             "native_prepare_pipelines", true);
 
+        texturePacks(c);
+
         LinearLayout audio = card(c, "Audio");
         toggle(audio, "Mute", null, "audio_mute", false);
 
@@ -637,6 +685,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("unlock_30fps", true);
             settings_.setBool("native_widescreen", true);
             settings_.setBool("native_prepare_pipelines", true);
+            settings_.setBool("native_dump_textures", false);
             settings_.setBool("audio_mute", false);
             settings_.setBool("unlock_everything", true);
             settings_.setString("native_texture_quality", "high");

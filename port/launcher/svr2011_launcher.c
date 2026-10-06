@@ -53,6 +53,7 @@
 #include "apk_package.h"
 #include "mods_tab.h"
 #include "music_tab.h"
+#include "texpacks_tab.h"
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
@@ -90,10 +91,11 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
+#define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -1039,6 +1041,9 @@ static int toml_read(const WCHAR *path, Lines *l)
 }
 
 /* "key = value" at the top level: the key (lowercase-sensitive, as TOML) and value text. */
+static int toml_get(const char *key, char *out, size_t n);
+static int toml_set(const char *key, const char *value);
+
 static int toml_kv(const char *line, char *key, size_t kn, char *val, size_t vn)
 {
     const char *p = line, *eq, *e;
@@ -1991,7 +1996,7 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     { TAB_PLAY, 0xE768, L"Play" },          { TAB_SETTINGS, 0xE713, L"Settings" },
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_SAVES, 0xE74E, L"Saves" },
     { TAB_ROSTER, 0xE716, L"Roster" },      { TAB_MUSIC, 0xE8D6, L"Music" },
-    { TAB_MODS, 0xE90F, L"Mods" },
+    { TAB_MODS, 0xE90F, L"Mods" },          { TAB_TEXPACKS, 0xE8B9, L"Texture packs" },
     { TAB_PAINT, 0xE790, L"Paint Tool" },   { TAB_MOVIES, 0xE714, L"Movies" },
     { TAB_DLC, 0xE7B8, L"DLC" },            { TAB_INSTALL, 0xE896, L"Install" },
     { TAB_ANDROID, 0xE8EA, L"Android" },
@@ -2211,6 +2216,8 @@ static void show_tab(int t)
         music_show(s_game_dir);
     if (t == TAB_ROSTER)
         roster_show(s_game_dir);
+    if (t == TAB_TEXPACKS)
+        texpacks_show(s_game_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
@@ -2270,7 +2277,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -2562,6 +2569,8 @@ static void build_ui(void)
     music_build(s_wnd, add, TAB_MUSIC, ID_MUSIC_BASE);
     /* Roster: the list menus' sort categories (roster_tab.c) */
     roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
+    /* Texture packs (texpacks_tab.c) */
+    texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -2891,6 +2900,32 @@ static void saves_folder_setting(WCHAR *out, size_t n)
         }
     }
     lines_free(&l);
+}
+
+/* A top-level key of svr2011.toml, quotes removed (the Texture packs tab);
+ * 0 when absent. */
+static int toml_get(const char *key, char *out, size_t n)
+{
+    WCHAR p[MAX_PATH];
+    Lines l;
+    int i, found = 0;
+    settings_path(p);
+    if (!toml_read(p, &l))
+        return 0;
+    for (i = 0; i < l.n && !found; i++) {
+        char k[64], v[4096];
+        const char *t = l.v[i];
+        while (*t == ' ' || *t == '\t')
+            t++;
+        if (*t == '[')
+            break;
+        if (toml_kv(l.v[i], k, sizeof k, v, sizeof v) && !strcmp(k, key)) {
+            strcpy_s(out, n, v);
+            found = 1;
+        }
+    }
+    lines_free(&l);
+    return found;
 }
 
 /* Sets one top-level key of svr2011.toml (value as written, e.g. "\"x\"");
@@ -6217,13 +6252,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
         }
         if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST)
-            mods_notify(n);
+            if (!texpacks_notify(n))
+                mods_notify(n);
         break;
     }
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
-            roster_command(LOWORD(wp), HIWORD(wp)))
+            roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_REPORT:
