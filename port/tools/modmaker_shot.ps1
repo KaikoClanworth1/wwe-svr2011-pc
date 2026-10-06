@@ -25,7 +25,7 @@ if ($Extra) { $al += $Extra }
 $p = Start-Process $Exe -ArgumentList $al -PassThru -WindowStyle Minimized
 for ($t = 0; $t -lt 100 -and $p.MainWindowHandle -eq 0; $t++) { Start-Sleep -Milliseconds 100; $p.Refresh() }
 $h = $p.MainWindowHandle
-[void][MW]::SetWindowPos($h, [IntPtr]::Zero, -4000, 0, 0, 0, 0x1 -bor 0x4 -bor 0x10)
+[void][MW]::SetWindowPos($h, [IntPtr]1, 1920, 0, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)
 [void][MW]::ShowWindow($h, 4)   # SW_SHOWNOACTIVATE
 Start-Sleep $Wait
 $r = New-Object MW+RECT; [void][MW]::GetWindowRect($h, [ref]$r)
