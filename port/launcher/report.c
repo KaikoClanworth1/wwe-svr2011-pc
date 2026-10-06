@@ -122,6 +122,60 @@ static uint8_t *read_file(const WCHAR *path, size_t *size, size_t max)
     return buf;
 }
 
+/* Every IPv4 address (the P2P lines log the player's public one) becomes
+   x.x.x.x, in place - the text only gets shorter. Loopback stays, and so do
+   lines with "ersion" in them (driver / API versions such as 1.3.1.1). */
+static int is_digit(uint8_t c) { return c >= '0' && c <= '9'; }
+
+static void redact_ips(uint8_t *data, size_t *size)
+{
+    size_t i = 0, o = 0, n = *size, line = 0;
+    int skip_line = -1;  /* (-1: not looked at yet) */
+    while (i < n) {
+        if (skip_line < 0) {
+            size_t e = line;
+            skip_line = 0;
+            while (e < n && data[e] != '\n') {
+                if (e + 5 < n && !memcmp(data + e, "ersion", 6)) skip_line = 1;
+                e++;
+            }
+        }
+        if (!skip_line && is_digit(data[i]) && (i == 0 || (!is_digit(data[i - 1]) && data[i - 1] != '.'))) {
+            size_t p = i;
+            int part, ok = 1;
+            unsigned v[4];
+            for (part = 0; part < 4 && ok; part++) {
+                size_t s = p;
+                v[part] = 0;
+                while (p < n && is_digit(data[p]) && p - s < 3)
+                    v[part] = v[part] * 10 + (data[p++] - '0');
+                if (p == s || v[part] > 255) ok = 0;
+                else if (part < 3) {
+                    if (p < n && data[p] == '.') p++;
+                    else ok = 0;
+                }
+            }
+            if (ok && (p >= n || (!is_digit(data[p]) && !(data[p] == '.' && p + 1 < n && is_digit(data[p + 1]))))) {
+                if (v[0] != 127) {
+                    memcpy(data + o, "x.x.x.x", 7);
+                    o += 7;
+                } else {
+                    memmove(data + o, data + i, p - i);
+                    o += p - i;
+                }
+                i = p;
+                continue;
+            }
+        }
+        if (data[i] == '\n') {
+            line = i + 1;
+            skip_line = -1;
+        }
+        data[o++] = data[i++];
+    }
+    *size = o;
+}
+
 typedef struct {
     WCHAR name[MAX_PATH];
     FILETIME t;
@@ -161,6 +215,7 @@ static int add_newest(Zip *z, const WCHAR *dir, const WCHAR *pattern, int want, 
         data = read_file(path, &size, max);
         if (!data)
             continue;
+        redact_ips(data, &size);
         WideCharToMultiByte(CP_UTF8, 0, found[i].name, -1, u, sizeof u, NULL, NULL);
         sprintf_s(name, sizeof name, "%s/%s", folder, u);
         added += zip_add(z, name, data, size);
@@ -244,7 +299,7 @@ int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *desc
                   "SvR 2011 PC port problem report\r\nlauncher version: %ls\r\nWindows: %lu.%lu.%lu\r\n"
                   "made: %04d-%02d-%02d %02d:%02d:%02d\r\n"
                   "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
-                  "(account token and password removed)\r\n",
+                  "(account token and password removed); IP addresses blanked (x.x.x.x)\r\n",
                   version, os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, st.wYear, st.wMonth, st.wDay,
                   st.wHour, st.wMinute, st.wSecond);
         if (description && *description) {

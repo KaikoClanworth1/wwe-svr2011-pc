@@ -48,7 +48,7 @@ final class ProblemReport {
                 + "GPU: " + (GpuInfo.known().isEmpty() ? "?" : GpuInfo.known()) + "\n"
                 + "made: " + stamp + "\n"
                 + "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
-                + "(account token and password removed)\n";
+                + "(account token and password removed); IP addresses blanked (x.x.x.x)\n";
             // (the player's words first: what a reader looks for)
             if (description != null && !description.isEmpty()) info = description + "\n" + info;
             put(zip, "report.txt", info.getBytes(StandardCharsets.UTF_8));
@@ -99,9 +99,39 @@ final class ProblemReport {
         int added = 0;
         for (File f : files) {
             if (added >= want) break;
-            put(zip, folder + f.getName(), read(f, max));
+            put(zip, folder + f.getName(), redactIps(read(f, max)));
             added++;
         }
         return added;
+    }
+
+    private static final java.util.regex.Pattern IPV4 = java.util.regex.Pattern.compile(
+        "(?<![\\d.])(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})(?!\\d|\\.\\d)");
+
+    // Every IPv4 address (the P2P lines log the player's public one) becomes
+    // x.x.x.x, as the PC launcher's report does. Loopback stays, and so do lines
+    // with "ersion" in them (driver / API versions such as 1.3.1.1).
+    static byte[] redactIps(byte[] data) {
+        String text = new String(data, StandardCharsets.ISO_8859_1);  // (bytes kept as they are)
+        StringBuilder out = new StringBuilder(text.length());
+        boolean first = true;
+        for (String line : text.split("\n", -1)) {
+            if (!first) out.append('\n');
+            first = false;
+            if (line.contains("ersion")) {
+                out.append(line);
+                continue;
+            }
+            java.util.regex.Matcher m = IPV4.matcher(line);
+            StringBuffer sb = new StringBuffer();
+            while (m.find()) {
+                boolean ip = true;
+                for (int g = 1; g <= 4; g++) ip &= Integer.parseInt(m.group(g)) <= 255;
+                m.appendReplacement(sb, ip && !m.group(1).equals("127") ? "x.x.x.x" : m.group());
+            }
+            m.appendTail(sb);
+            out.append(sb);
+        }
+        return out.toString().getBytes(StandardCharsets.ISO_8859_1);
     }
 }
