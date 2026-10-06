@@ -58,6 +58,7 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        InstallActivity.init(this);
         getWindow().setStatusBarColor(kBackground);
         getWindow().setNavigationBarColor(kBackground);
         settings_ = new GameSettings(InstallActivity.gameFolder());

@@ -64,6 +64,8 @@ def version():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-native", action="store_true", help="package the last native build")
+    ap.add_argument("--debuggable", action="store_true",
+                    help="test builds: adb run-as can reach the app's storage (a game folder there)")
     args = ap.parse_args()
 
     if not args.skip_native:
@@ -79,7 +81,8 @@ def main():
     run(BUILD_TOOLS / "aapt2.exe", "link", "-o", OUT / "base.apk", "-I", PLATFORM_JAR,
         "--manifest", PORT / "android" / "AndroidManifest.xml",
         "--version-name", version_name, "--version-code", str(version_code),
-        "--min-sdk-version", "29", "--target-sdk-version", "36", OUT / "res.zip")
+        "--min-sdk-version", "29", "--target-sdk-version", "36",
+        *(["--debug-mode"] if args.debuggable else []), OUT / "res.zip")
 
     # Java: the app's activities and SDL's (the version SDL's native code expects).
     sources = list((PORT / "android" / "java").rglob("*.java"))

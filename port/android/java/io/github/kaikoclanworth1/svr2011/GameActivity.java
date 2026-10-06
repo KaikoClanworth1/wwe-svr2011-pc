@@ -23,6 +23,7 @@ public class GameActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         running = true;
+        InstallActivity.init(this);
         // The native side's "program folder" (settings, saves, logs, disc
         // files): rex::filesystem::GetExecutableFolder() reads it. Set before
         // SDLActivity loads the libraries and starts the game's main.

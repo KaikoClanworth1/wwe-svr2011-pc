@@ -23,6 +23,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -41,8 +42,18 @@ public class InstallActivity extends Activity {
     private Button button_;
     private Thread worker_;
 
-    // <shared storage>/games/WWE SmackDown vs. Raw 2011
+    // The app's own storage (filesDir/game), set by each activity at its start.
+    static File privateFolder_;
+
+    static void init(android.content.Context c) {
+        if (privateFolder_ == null) privateFolder_ = new File(c.getFilesDir(), "game");
+    }
+
+    // <shared storage>/games/WWE SmackDown vs. Raw 2011 - or the app's own
+    // storage when the game is there (an app moved to an SD card adopted as
+    // internal storage: the shared storage stays on the full built-in memory).
     static File gameFolder() {
+        if (privateFolder_ != null && new File(privateFolder_, "default.xex").isFile()) return privateFolder_;
         return new File(new File(Environment.getExternalStorageDirectory(), "games"), kFolderName);
     }
 
@@ -69,6 +80,7 @@ public class InstallActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        init(this);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setGravity(Gravity.CENTER);
@@ -93,7 +105,52 @@ public class InstallActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (worker_ == null && getIntent().getStringExtra("svr2011_import") != null) {
+            importFiles(new File(getIntent().getStringExtra("svr2011_import")));
+            return;
+        }
         if (worker_ == null) next();
+    }
+
+    // Test aid (adb can't reach the storage of an app on an adopted SD card):
+    // moves a shared-storage folder's files into the app's own game folder,
+    // then writes <folder>/.imported and closes.
+    private void importFiles(File from) {
+        show("Importing game files...", null, null);
+        worker_ = new Thread(() -> {
+            String result = "ok";
+            try {
+                move(from, privateFolder_);
+            } catch (IOException e) {
+                result = "failed: " + e;
+                Log.e(kTag, "import failed", e);
+            }
+            try (OutputStream o = new FileOutputStream(new File(from, ".imported"))) {
+                o.write(result.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            } catch (IOException ignored) {
+            }
+            runOnUiThread(this::finish);
+        });
+        worker_.start();
+    }
+
+    private static void move(File from, File to) throws IOException {
+        File[] list = from.listFiles();
+        if (list == null) return;
+        to.mkdirs();
+        for (File f : list) {
+            if (f.getName().equals(".imported")) continue;
+            File out = new File(to, f.getName());
+            if (f.isDirectory()) {
+                move(f, out);
+                f.delete();
+                continue;
+            }
+            try (InputStream in = new FileInputStream(f); OutputStream o = new FileOutputStream(out)) {
+                FileOps.copy(in, o);
+            }
+            f.delete();
+        }
     }
 
     // The next first-run step, or the game.
