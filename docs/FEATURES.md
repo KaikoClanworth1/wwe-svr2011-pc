@@ -133,6 +133,7 @@ still being tested.
 - **Lumberjack (partly)**: now 2 wrestlers and 4 lumberjacks, all starting on the floor around the ring; they still walk in and brawl (the game has no lumberjack AI; a custom version is planned in docs/MATCH_TYPES_RESEARCH.md) (8a8298e).
 - **Free-roaming backstage**: the CPU now moves and fights (played as the Parking Lot rule over the whole backstage), and the camera is pulled back (70412c3).
 
+- **Texture quality** (`native_texture_quality`: high / medium / low; GRAPHICS → QUALITY → TEXTURES and both launchers' Settings): medium / low start big mipmapped 2D textures (256 px or more) at the game's own half / quarter-size mipmap, so the larger levels are never converted or uploaded. Textures without mips (menus, fonts, pictures), render-target copies, cube maps and volumes stay whole; the samplers' LOD clamps shift to match. Changes apply at once (textures are uploaded again).
 - **Anti-aliasing levels**: OFF / 2x / 3x / 4x supersampling (4, 9 or 16 samples a pixel; GRAPHICS → QUALITY and the launcher's Settings), within the 4x render scale cap (4d363c8).
 - **Android drivers** (cb15eb3): **driver variables** (e.g. `FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1`, the fix for HyperOS 3's glitches with Turnip; a one-tap "HyperOS 3 fix" button); any driver zip (with or without `meta.json`) or a bare `.so` can be added, and zips labelled oddly by file managers show up in the picker; a `gpu_driver` set by hand to a file in Download is copied into the app's storage before loading. *Experimental (not yet tried on a phone).*
 

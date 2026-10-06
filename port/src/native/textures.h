@@ -67,6 +67,12 @@ void SetBlockCompressionSupported(bool supported);
 // they are converted to 16-bit float on the CPU instead.
 void SetUnorm16Filterable(bool filterable);
 
+// Texture quality (native_texture_quality): mip levels left out of big
+// mipmapped 2D textures - 0 high (none), 1 medium, 2 low; their host textures
+// start at the game's own smaller mipmap. A change drops the uploaded
+// textures (call with the GPU idle); they're uploaded again as they're used.
+void SetQuality(uint32_t skip);
+
 // Drops every render target copy (the renderer rebuilt its targets).
 void ForgetResolved();
 // Drops the render target copy at one address: its image is in guest memory
@@ -101,8 +107,10 @@ struct Stats {
   uint32_t uploads = 0;      // this frame
   uint32_t unsupported = 0;  // lookups that got the placeholder, this frame
   // Accumulated until TakePerf (performance log).
-  uint64_t hash_bytes = 0, upload_bytes = 0;
-  uint32_t hashes = 0;
+  uint64_t hash_bytes = 0, upload_bytes = 0;  // upload: host bytes copied
+  uint64_t resident_bytes = 0;  // all the textures' host bytes (TakePerf)
+  uint32_t reduced = 0;         // textures with levels left out (texture quality)
+  uint32_t hashes = 0, uploads_total = 0;
   double hash_ms = 0, upload_ms = 0, convert_ms = 0;  // convert: of upload_ms
 };
 // The accumulated performance counters (and resets them).

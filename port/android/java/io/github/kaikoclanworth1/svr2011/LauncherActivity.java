@@ -602,6 +602,9 @@ public class LauncherActivity extends Activity {
         choice(quality, "Render resolution", "The most the game renders at; lower is faster", "native_max_scale",
             new String[] {"Auto", "720p (Xbox 360)", "1440p", "2160p"}, new String[] {"4", "1", "2", "3"}, false, "4");
         toggle(quality, "Anti-aliasing", "Smoother edges, slower", "native_2x_msaa", true);
+        choice(quality, "Textures", "Lower: big textures at half / a quarter size - less memory, faster loading",
+            "native_texture_quality", new String[] {"High", "Medium", "Low"},
+            new String[] {"high", "medium", "low"}, true, "high");
         toggle(quality, "Shadows & effects: high", "At the render resolution (off: the console's, faster)",
             "native_scale_effects", false);
         toggle(quality, "Entrances at 60 fps", "Off: 30 fps as on the Xbox 360 (half the work)", "unlock_30fps", true);
@@ -635,6 +638,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("native_prepare_pipelines", true);
             settings_.setBool("audio_mute", false);
             settings_.setBool("unlock_everything", true);
+            settings_.setString("native_texture_quality", "high");
             saved("Defaults");
             refresh();
         });
