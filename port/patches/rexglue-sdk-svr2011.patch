@@ -47,10 +47,10 @@ index d876846..b73d7af 100644
  struct clock_time_conversion {};
 diff --git a/include/rex/external_frame.h b/include/rex/external_frame.h
 new file mode 100644
-index 0000000..16aa25f
+index 0000000..b3f7e65
 --- /dev/null
 +++ b/include/rex/external_frame.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,82 @@
 +/**
 + * @file        rex/external_frame.h
 + * @brief       [svr2011] Frames from an app-side renderer, shown instead of
@@ -126,6 +126,11 @@ index 0000000..16aa25f
 +// While true, the emulated GPU skips drawing (see above).
 +void SetHostDrawingDisabled(bool disabled);
 +bool HostDrawingDisabled();
++
++// Guest swaps the backend has finished (any thread): an app can tell a GPU
++// that never gets its first frame out (a driver stuck at start).
++void CountSwap();
++uint64_t SwapCount();
 +
 +}  // namespace rex::external_frame
 diff --git a/include/rex/input/device.h b/include/rex/input/device.h
@@ -754,10 +759,10 @@ index 1ddafd0..1e1b173 100644
  endif()
 diff --git a/src/core/external_frame.cpp b/src/core/external_frame.cpp
 new file mode 100644
-index 0000000..3fe124a
+index 0000000..7dd7848
 --- /dev/null
 +++ b/src/core/external_frame.cpp
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,52 @@
 +// [svr2011] See rex/external_frame.h.
 +
 +#include <rex/external_frame.h>
@@ -800,6 +805,14 @@ index 0000000..3fe124a
 +void SetHostDrawingDisabled(bool disabled) { g_host_drawing_disabled = disabled; }
 +
 +bool HostDrawingDisabled() { return g_host_drawing_disabled.load(std::memory_order_relaxed); }
++
++namespace {
++std::atomic<uint64_t> g_swaps{0};
++}  // namespace
++
++void CountSwap() { g_swaps.fetch_add(1, std::memory_order_relaxed); }
++
++uint64_t SwapCount() { return g_swaps.load(std::memory_order_relaxed); }
 +
 +}  // namespace rex::external_frame
 diff --git a/src/core/fiber_posix.cpp b/src/core/fiber_posix.cpp
@@ -985,7 +998,7 @@ index b52bf39..7b89c86 100644
  #include <rex/string.h>
  
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
-index 9ac8d15..a12d6ce 100644
+index 9ac8d15..6d9e384 100644
 --- a/src/core/threading_posix.cpp
 +++ b/src/core/threading_posix.cpp
 @@ -267,10 +267,43 @@ static sem_t* RexCreateAnonymousSemaphore() {
@@ -1129,7 +1142,44 @@ index 9ac8d15..a12d6ce 100644
      return true;
    }
  
-@@ -979,6 +1023,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -775,7 +819,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ #else
+     cpu_set_t cpu_set;
+ #if REX_PLATFORM_ANDROID
+-    if (sched_getaffinity(pthread_gettid_np(thread_), sizeof(cpu_set_t), &cpu_set) != 0) {
++    if (sched_getaffinity(SystemTid(), sizeof(cpu_set_t), &cpu_set) != 0) {
+       assert_always();
+     }
+ #else
+@@ -808,7 +852,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       }
+     }
+ #if REX_PLATFORM_ANDROID
+-    if (sched_setaffinity(pthread_gettid_np(thread_), sizeof(cpu_set_t), &cpu_set) != 0) {
++    if (sched_setaffinity(SystemTid(), sizeof(cpu_set_t), &cpu_set) != 0) {
+       assert_always();
+     }
+ #else
+@@ -876,8 +920,16 @@ class PosixCondition<Thread> : public PosixConditionBase {
+     sigval value{};
+     value.sival_ptr = this;
+ #if REX_PLATFORM_ANDROID
+-    int result = sigqueue(pthread_gettid_np(thread_),
+-                          GetSystemSignal(SignalType::kThreadUserCallback), value);
++    // [svr2011] To this thread, by the id it recorded: pthread_gettid_np aborts
++    // the app on a thread that has exited (closing a game whose threads hang),
++    // and sigqueue(tid) signals the whole process - any thread may take it. The
++    // signal is only a wakeup (the handler ignores the value): tgkill.
++    (void)value;
++    const pid_t tid = tid_.load(std::memory_order_acquire);
++    int result = tid > 0 ? int(syscall(SYS_tgkill, getpid(), tid,
++                                       GetSystemSignal(SignalType::kThreadUserCallback)))
++                         : 0;
++    if (result != 0 && errno == ESRCH) result = 0;  // (exited meanwhile: nothing to wake)
+ #else
+     int result = pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback), value);
+ #endif
+@@ -979,6 +1031,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
        exit_code_ = exit_code;
        signaled_ = true;
        cond_.notify_all();
@@ -1137,7 +1187,42 @@ index 9ac8d15..a12d6ce 100644
      }
      if (is_current_thread) {
        pthread_exit(reinterpret_cast<void*>(exit_code));
-@@ -1449,6 +1494,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+@@ -1010,6 +1063,18 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ 
+   void* native_handle() const override { return reinterpret_cast<void*>(thread_); }
+ 
++  // [svr2011] The kernel's id for the thread, recorded by the thread itself
++  // (0 before it starts and once it has finished: never a stale handle).
++  std::atomic<pid_t> tid_{0};
++  pid_t SystemTid() const {
++#if REX_PLATFORM_ANDROID
++    const pid_t tid = tid_.load(std::memory_order_acquire);
++    return tid > 0 ? tid : -1;  // (-1: the call fails with ESRCH instead of aborting)
++#else
++    return pthread_gettid_np(thread_);
++#endif
++  }
++
+  private:
+   static void* ThreadStartRoutine(void* parameter);
+   inline bool signaled() const override { return signaled_; }
+@@ -1417,6 +1482,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+ 
+   current_thread_ = thread;
+   current_thread_condition_ = &thread->handle_;
++  thread->handle_.tid_.store(pid_t(syscall(SYS_gettid)), std::memory_order_release);
+   {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
+     thread->handle_.state_ = create_suspended ? State::kSuspended : State::kRunning;
+@@ -1439,6 +1505,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+ 
+   start_routine();
+ 
++  thread->handle_.tid_.store(0, std::memory_order_release);
+   {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
+     thread->handle_.state_ = State::kFinished;
+@@ -1449,6 +1516,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
      thread->handle_.exit_code_ = 0;
      thread->handle_.signaled_ = true;
      thread->handle_.cond_.notify_all();
@@ -1805,7 +1890,7 @@ index 8f2fcb0..e5b7dad 100644
  
  void GraphicsSystem::MarkVblank() {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..e761dcf 100644
+index 001f36b..d080063 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -25,6 +25,7 @@
@@ -1838,7 +1923,16 @@ index 001f36b..e761dcf 100644
    }
    if (!device_properties.geometryShader) {
      if (REXCVAR_GET(vulkan_require_geometry_shader)) {
-@@ -2312,9 +2320,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2272,6 +2280,8 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                        uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
++  // [svr2011] (the GPU thread got this far: a frame's commands all went through)
++  rex::external_frame::CountSwap();
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
+@@ -2312,9 +2322,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
    xenos::TextureFormat frontbuffer_format;
    bool swap_source_needs_rb_swap = false;
@@ -1873,7 +1967,7 @@ index 001f36b..e761dcf 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
-@@ -2407,8 +2437,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2407,8 +2439,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
@@ -1895,7 +1989,7 @@ index 001f36b..e761dcf 100644
        guest_output_width, guest_output_height, display_width, display_height,
        [this, guest_output_width, guest_output_height, frontbuffer_format, swap_texture_view,
         swap_post_effect,
-@@ -2923,6 +2964,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2923,6 +2966,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
          EndSubmission(true);
          return true;
        });
@@ -1909,7 +2003,7 @@ index 001f36b..e761dcf 100644
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
-@@ -3695,6 +3743,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3695,6 +3745,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
    VulkanShader::VulkanTranslation* vertex_shader_translation;
    VulkanShader::VulkanTranslation* pixel_shader_translation;
    bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
@@ -1928,7 +2022,7 @@ index 001f36b..e761dcf 100644
  
    // Two iterations because a submission (even the current one - in which case
    // it needs to be ended, and a new one must be started) may need to be awaited
-@@ -4385,6 +4445,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4385,6 +4447,9 @@ bool VulkanCommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -1938,11 +2032,65 @@ index 001f36b..e761dcf 100644
  
    if (!BeginSubmission(true)) {
      return false;
+diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
+index 6788214..1b37e1c 100644
+--- a/src/graphics/vulkan/shared_memory.cpp
++++ b/src/graphics/vulkan/shared_memory.cpp
+@@ -61,7 +61,17 @@ bool VulkanSharedMemory::Initialize() {
+   buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+   buffer_create_info.queueFamilyIndexCount = 0;
+   buffer_create_info.pQueueFamilyIndices = nullptr;
+-  if (REXCVAR_GET(vulkan_sparse_shared_memory) &&
++  // [svr2011] Not with Turnip on an Adreno 6xx (chip id 0x06...): its sparse
++  // binding is new there, and an Adreno 610 stopped at the first draws with it
++  // (moto g play 2024, Mesa 26.0). One plain allocation instead, as on the
++  // phones' own Qualcomm drivers (they have no sparse binding at all).
++  const ui::vulkan::VulkanDevice::Properties& sparse_props = vulkan_device->properties();
++  const bool turnip_a6xx = sparse_props.driverID == VK_DRIVER_ID_MESA_TURNIP &&
++                           (sparse_props.deviceID >> 24) == 0x06;
++  if (turnip_a6xx && REXCVAR_GET(vulkan_sparse_shared_memory) && sparse_props.sparseResidencyBuffer) {
++    REXGPU_INFO("Shared memory: no sparse binding on Turnip with an Adreno 6xx");
++  }
++  if (REXCVAR_GET(vulkan_sparse_shared_memory) && !turnip_a6xx &&
+       vulkan_device->properties().sparseResidencyBuffer) {
+     if (dfn.vkCreateBuffer(device, &buffer_create_info, nullptr, &buffer_) == VK_SUCCESS) {
+       VkMemoryRequirements buffer_memory_requirements;
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
-index 813bb1c..e895060 100644
+index 813bb1c..2b180ee 100644
 --- a/src/input/input_system.cpp
 +++ b/src/input/input_system.cpp
-@@ -245,12 +245,32 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+@@ -10,6 +10,8 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <chrono>
+ #include <cmath>
+ 
+ #include <rex/dbg.h>
+@@ -79,6 +81,21 @@ void InputSystem::SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignme
+ }
+ 
+ void InputSystem::RefreshDevices() {
++  // [svr2011] At most every 8 ms: each GetState / GetCapabilities asks for it,
++  // and a game polling 8 users a frame enumerated every driver (XInput
++  // capability calls, SDL, keyboard) 8+ times a frame. Plugging a pad in or
++  // out still shows within a frame.
++  {
++    static std::atomic<int64_t> last_ns{0};
++    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                            std::chrono::steady_clock::now().time_since_epoch())
++                            .count();
++    const int64_t prev = last_ns.load(std::memory_order_relaxed);
++    if (prev && now - prev < 8000000 && !devices_.empty()) {
++      return;
++    }
++    last_ns.store(now, std::memory_order_relaxed);
++  }
+   std::vector<DeviceInfo> seen;
+   std::vector<InputDriver*> owners;
+   std::vector<DeviceInfo> enumerated;
+@@ -245,12 +262,32 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
    if (!any) {
      return X_ERROR_DEVICE_NOT_CONNECTED;
    }
@@ -1975,7 +2123,7 @@ index 813bb1c..e895060 100644
  X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
    SCOPE_profile_cpu_f("hid");
    if (!assignment_) {
-@@ -310,6 +330,9 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
+@@ -310,6 +347,9 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
        continue;
      }
      X_RESULT result = driver->GetDeviceKeystroke(id, flags, out_keystroke);
@@ -1985,6 +2133,121 @@ index 813bb1c..e895060 100644
      if (result == X_ERROR_SUCCESS) {
        out_keystroke->user_index = static_cast<uint8_t>(user_index);
        return result;
+diff --git a/src/input/xinput/xinput_input_driver.cpp b/src/input/xinput/xinput_input_driver.cpp
+index a6a1da9..b022494 100644
+--- a/src/input/xinput/xinput_input_driver.cpp
++++ b/src/input/xinput/xinput_input_driver.cpp
+@@ -10,7 +10,12 @@
+  */
+ 
+ #include <array>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
+ #include <filesystem>
++#include <mutex>
++#include <thread>
+ 
+ #include <rex/assert.h>
+ #include <rex/chrono/clock.h>
+@@ -44,7 +49,60 @@ bool SlotForDevice(rex::input::DeviceId id, uint32_t* out_slot) {
+ constexpr uint64_t SKIP_INVALID_CONTROLLER_TIME = 1100;
+ uint64_t last_invalid_time[kXinputSlotCount];
+ 
++// [svr2011] Which slots have a pad, probed off the game thread: an empty
++// slot's XInputGetCapabilities can block for hundreds of ms (seen as 300+ ms
++// stalls of the game thread in the pad reader), so once the probe runs, the
++// game's own calls never touch an empty slot - they read this mask. A pad
++// plugged in shows within half a second.
++std::atomic<uint32_t> g_present{0};
++std::atomic<bool> g_probing{false};
++std::mutex g_probe_mutex;
++std::condition_variable g_probe_cv;
++bool g_probe_stop = false;
++std::thread g_probe_thread;
++
++void ProbeSlots(decltype(&XInputGetCapabilities) xigc) {
++  uint32_t mask = 0;
++  for (uint32_t slot = 0; slot < kXinputSlotCount; slot++) {
++    XINPUT_CAPABILITIES caps;
++    if (xigc(slot, 0, &caps) == ERROR_SUCCESS) {
++      mask |= 1u << slot;
++    }
++  }
++  g_present.store(mask, std::memory_order_relaxed);
++}
++
++void StartProbe(decltype(&XInputGetCapabilities) xigc) {
++  ProbeSlots(xigc);  // (the first answer before the game asks)
++  g_probe_stop = false;
++  g_probe_thread = std::thread([xigc] {
++    std::unique_lock lock(g_probe_mutex);
++    while (!g_probe_cv.wait_for(lock, std::chrono::milliseconds(500), [] { return g_probe_stop; })) {
++      lock.unlock();
++      ProbeSlots(xigc);
++      lock.lock();
++    }
++  });
++  g_probing.store(true, std::memory_order_release);
++}
++
++void StopProbe() {
++  if (!g_probe_thread.joinable()) {
++    return;
++  }
++  {
++    std::lock_guard lock(g_probe_mutex);
++    g_probe_stop = true;
++  }
++  g_probe_cv.notify_all();
++  g_probe_thread.join();
++  g_probing.store(false, std::memory_order_release);
++}
++
+ DWORD should_skip(uint32_t user_index) {
++  if (g_probing.load(std::memory_order_acquire)) {
++    return (g_present.load(std::memory_order_relaxed) >> user_index) & 1 ? 0 : ERROR_DEVICE_NOT_CONNECTED;
++  }
+   uint64_t time = last_invalid_time[user_index];
+   if (time) {
+     uint64_t deltatime = rex::chrono::Clock::QueryHostUptimeMillis() - time;
+@@ -59,6 +117,7 @@ DWORD should_skip(uint32_t user_index) {
+ 
+ void set_skip(uint32_t user_index) {
+   last_invalid_time[user_index] = rex::chrono::Clock::QueryHostUptimeMillis();
++  g_present.fetch_and(~(1u << user_index), std::memory_order_relaxed);  // (until the probe sees it again)
+ }
+ 
+ }  // namespace
+@@ -76,6 +135,7 @@ XinputInputDriver::XinputInputDriver(rex::ui::Window* window, size_t window_z_or
+       XInputEnable_(nullptr) {}
+ 
+ XinputInputDriver::~XinputInputDriver() {
++  StopProbe();  // (before the module goes)
+   if (module_) {
+     FreeLibrary((HMODULE)module_);
+     module_ = nullptr;
+@@ -130,16 +190,11 @@ void XinputInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+   if (!xigc) {
+     return;
+   }
++  if (!g_probing.load(std::memory_order_acquire)) {
++    StartProbe(xigc);
++  }
+   for (uint32_t slot = 0; slot < kXinputSlotCount; slot++) {
+-    if (should_skip(slot)) {
+-      continue;
+-    }
+-    XINPUT_CAPABILITIES native_caps;
+-    DWORD result = xigc(slot, 0, &native_caps);
+-    if (result) {
+-      if (result == ERROR_DEVICE_NOT_CONNECTED) {
+-        set_skip(slot);
+-      }
++    if (should_skip(slot)) {  // (the probe's answer: no XInput call here)
+       continue;
+     }
+     DeviceInfo info;
 diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
 index 2b222da..2068b73 100644
 --- a/src/kernel/xam/apps/xgi_app.cpp

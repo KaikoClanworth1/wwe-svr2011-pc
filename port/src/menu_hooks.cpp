@@ -38,6 +38,7 @@
 #include "generated/default/svr2011_init.h"
 #include "achievements_page.h"
 #include "graphics_page.h"
+#include "jukebox.h"
 #include "discord_presence.h"
 #include "online.h"
 #include "match_types.h"
@@ -52,6 +53,8 @@ constexpr uint32_t kExitLabelId = 0xAFC1;
 constexpr uint32_t kAchievementsLabelId = 0xAFC2;
 constexpr uint32_t kAchievementsTextId = 0xAFC3;  // its description line
 constexpr uint32_t kLanguageLabelId = 0xAFC4;
+constexpr uint32_t kJukeboxLabelId = 0xAFC5;
+constexpr uint32_t kJukeboxTextId = 0xAFC6;
 // Character select: the name beside the "?" tile ("Random", looked up by the
 // panel code in sub_82465728 for tile kind 4) - that tile opens the managers
 // (src/managers.cpp), so it reads "Extra" there.
@@ -60,6 +63,7 @@ constexpr uint32_t kRandomTileCaller = 0x82465970;
 constexpr uint32_t kMainMenuGroup = 0x01;
 constexpr uint32_t kMyWweGroup = 0x05;
 constexpr uint32_t kAchievementsRow = 4;       // MY WWE: after OPTIONS
+constexpr uint32_t kJukeboxRow = 5;            // MY WWE: after ACHIEVEMENTS
 constexpr uint32_t kOptionsGroup = 0x11;       // MY WWE -> OPTIONS
 constexpr uint32_t kGraphicsRow = 5;           // its 6th entry
 constexpr uint32_t kLanguageRow = 6;           // after GRAPHICS
@@ -72,6 +76,8 @@ uint32_t g_label = 0;       // guest address of "GRAPHICS"
 uint32_t g_exit_label = 0;  // and of "EXIT"
 uint32_t g_ach_label = 0;   // "ACHIEVEMENTS" and its description
 uint32_t g_ach_text = 0;
+uint32_t g_jukebox_label = 0;  // "JUKEBOX" and its description
+uint32_t g_jukebox_text = 0;
 uint32_t g_language_label = 0;  // "LANGUAGE"
 uint32_t g_extra_label = 0;     // "Extra" (the "?" tile opens the managers: src/managers.cpp)
 
@@ -206,18 +212,25 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
     const char* achievements;
     const char* achievements_text;
     const char* language_label;
+    const char* jukebox;
+    const char* jukebox_text;
   };
   static const Labels kLabels[] = {
       {1, "GRAPHICS", "EXIT", "ACHIEVEMENTS",
-       "View your achievements: what you've unlocked and how to earn the rest.", "LANGUAGE"},
+       "View your achievements: what you've unlocked and how to earn the rest.", "LANGUAGE", "JUKEBOX",
+       "Choose which songs play in the menus."},
       {4, "GRAPHISMES", "QUITTER", "SUCC\xC3\x88S",
-       "Consultez vos succ\xC3\xA8s : ceux d\xC3\xA9" "bloqu\xC3\xA9s et comment obtenir les autres.", "LANGUE"},
+       "Consultez vos succ\xC3\xA8s : ceux d\xC3\xA9" "bloqu\xC3\xA9s et comment obtenir les autres.", "LANGUE", "JUKEBOX",
+       "Choisissez les musiques jou\xC3\xA9" "es dans les menus."},
       {3, "GRAFIK", "BEENDEN", "ERFOLGE",
-       "Deine Erfolge: was du freigeschaltet hast und wie du den Rest bekommst.", "SPRACHE"},
+       "Deine Erfolge: was du freigeschaltet hast und wie du den Rest bekommst.", "SPRACHE", "JUKEBOX",
+       "W\xC3\xA4hle, welche Songs in den Men\xC3\xBC" "s laufen."},
       {5, "GR\xC3\x81" "FICOS", "SALIR", "LOGROS",
-       "Mira tus logros: los que has desbloqueado y c\xC3\xB3mo conseguir el resto.", "IDIOMA"},
+       "Mira tus logros: los que has desbloqueado y c\xC3\xB3mo conseguir el resto.", "IDIOMA", "JUKEBOX",
+       "Elige qu\xC3\xA9 canciones suenan en los men\xC3\xBA" "s."},
       {6, "GRAFICA", "ESCI", "OBIETTIVI",
-       "I tuoi obiettivi: quelli sbloccati e come ottenere gli altri.", "LINGUA"},
+       "I tuoi obiettivi: quelli sbloccati e come ottenere gli altri.", "LINGUA", "JUKEBOX",
+       "Scegli quali brani suonano nei men\xC3\xB9."},
   };
   const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
   const Labels* l = &kLabels[0];
@@ -225,8 +238,10 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
     if (k.language == language) l = &k;
   const size_t n_graphics = std::strlen(l->graphics) + 1, n_exit = std::strlen(l->exit) + 1,
                n_ach = std::strlen(l->achievements) + 1, n_text = std::strlen(l->achievements_text) + 1,
-               n_language = std::strlen(l->language_label) + 1;
-  g_label = memory->SystemHeapAlloc(uint32_t(n_graphics + n_exit + n_ach + n_text + n_language + 6 + 16));
+               n_language = std::strlen(l->language_label) + 1, n_jukebox = std::strlen(l->jukebox) + 1,
+               n_jukebox_text = std::strlen(l->jukebox_text) + 1;
+  g_label = memory->SystemHeapAlloc(
+      uint32_t(n_graphics + n_exit + n_ach + n_text + n_language + 6 + n_jukebox + n_jukebox_text + 16));
   if (!g_label) {
     REXLOG_WARN("menu: no guest memory for the GRAPHICS label");
     return;
@@ -242,6 +257,10 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   std::memcpy(memory->TranslateVirtual<char*>(g_language_label), l->language_label, n_language);
   g_extra_label = g_language_label + uint32_t(n_language);
   std::memcpy(memory->TranslateVirtual<char*>(g_extra_label), "Extra", 6);  // (the same in all five; shown in capitals)
+  g_jukebox_label = g_extra_label + 6;
+  std::memcpy(memory->TranslateVirtual<char*>(g_jukebox_label), l->jukebox, n_jukebox);
+  g_jukebox_text = g_jukebox_label + uint32_t(n_jukebox);
+  std::memcpy(memory->TranslateVirtual<char*>(g_jukebox_text), l->jukebox_text, n_jukebox_text);
 }
 
 }  // namespace svr2011
@@ -276,6 +295,14 @@ REX_HOOK_RAW(sub_82153EF8) {
   }
   if (g_ach_text && ctx.r4.u32 == kAchievementsTextId) {
     ctx.r3.u64 = g_ach_text;
+    return;
+  }
+  if (g_jukebox_label && ctx.r4.u32 == kJukeboxLabelId) {
+    ctx.r3.u64 = g_jukebox_label;
+    return;
+  }
+  if (g_jukebox_text && ctx.r4.u32 == kJukeboxTextId) {
+    ctx.r3.u64 = g_jukebox_text;
     return;
   }
   if (g_language_label && ctx.r4.u32 == kLanguageLabelId) {
@@ -367,6 +394,10 @@ REX_HOOK_RAW(sub_82447210) {
     }
     if (group == kMyWweGroup && cursor == kAchievementsRow) {
       svr2011::OpenAchievementsPage();
+      return;
+    }
+    if (group == kMyWweGroup && cursor == kJukeboxRow) {
+      svr2011::OpenJukeboxPage();
       return;
     }
     if (group == kMainMenuGroup && cursor == kExitRow) {

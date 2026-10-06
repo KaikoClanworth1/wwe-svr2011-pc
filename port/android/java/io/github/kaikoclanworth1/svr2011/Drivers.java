@@ -349,6 +349,7 @@ final class Drivers {
     // The game stopped (a native crash: a driver that loses the GPU ends there)
     // since a custom driver was chosen: offer the phone's own driver back.
     void checkCrash() {
+        if (checkStuck()) return;
         String current = settings_.getString(kKey, "");
         if (current.isEmpty() || GameActivity.running) return;
         String name = new File(current).getParentFile().getName();
@@ -384,6 +385,39 @@ final class Drivers {
         prefs.edit().putLong("driver_chosen_at", crash.getTimestamp()).apply();  // (asked once per crash)
         ask("The game stopped while using the graphics driver " + name + ". Go back to the phone's own driver?",
             name);
+    }
+
+    // The game's note (src/gpu_driver.cpp): no frame a minute after the start -
+    // the graphics driver got stuck. Offer the phone's own driver, or (already
+    // on it) say plainly that this GPU may not work yet. True: a note was shown.
+    boolean checkStuck() {
+        File note = new File(a_.getCacheDir(), "gpu_stuck.txt");
+        if (!note.isFile() || GameActivity.running) return false;
+        String driver = "";
+        try {
+            String[] lines = new String(Files.readAllBytes(note.toPath()), StandardCharsets.UTF_8).split("\n");
+            if (lines.length > 0) driver = lines[0].trim();
+        } catch (IOException e) {
+        }
+        note.delete();
+        String g = gpu().isEmpty() ? "this phone's GPU" : gpu();
+        if (!driver.isEmpty()) {
+            String name = new File(driver).getParentFile() != null ? new File(driver).getParentFile().getName() : driver;
+            for (Driver d : installed())
+                if (d.library.getPath().equals(driver)) name = d.name;
+            ask("Last time the game got stuck starting its graphics (no picture after a minute) with the graphics "
+                + "driver " + name + " on " + g + ". Go back to the phone's own driver?", name);
+        } else {
+            new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle("The game couldn't start its graphics")
+                .setMessage("Last time the game got stuck starting its graphics (no picture after a minute) with "
+                    + "the phone's own driver on " + g + ". This GPU may not be able to run the game yet. You can "
+                    + "try a Mesa Turnip driver (Settings, Graphics driver), and please send a problem report "
+                    + "(Play tab, Report a problem) - it tells us what your phone needs.")
+                .setPositiveButton("OK", null)
+                .show();
+        }
+        return true;
     }
 
     void ask(String message, String name) {

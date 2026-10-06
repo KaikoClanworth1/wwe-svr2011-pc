@@ -68,6 +68,7 @@ constexpr Route kRoutes[] = {
     {"match_creator", "route exhibition\nmenu MATCH CREATOR"},
     {"online", "route main\nmenu ONLINE"},
     {"options", "route main\nmenu MY\nmenu OPTIONS"},
+    {"jukebox", "route main\nmenu MY\nmenu JUKEBOX"},
     // (through the select screen and the match screen to the match loading:
     // with SVR2011_TEST_MATCH / SVR2011_TEST_RULE, the match a test asks for)
     {"match", "route normal\npressuntil A match: rule"},

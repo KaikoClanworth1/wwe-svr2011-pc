@@ -61,6 +61,7 @@
 #include "updater.h"
 #include "stfs.h"
 #include "caw_import.h"
+#include "verify.h"
 
 #include <winhttp.h>
 
@@ -106,7 +107,7 @@ enum {
     ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
-    ID_PROGRESS, ID_INSTALL_STATUS,
+    ID_PROGRESS, ID_INSTALL_STATUS, ID_VERIFY, ID_VERIFY_REPAIR, ID_VERIFY_MARK, ID_VERIFY_STATUS,
     /* android */
     ID_ADB_INSTALL, ID_ANDROID_CANCEL, ID_APK_CREATE, ID_APK_PROGRESS, ID_APK_STATUS,
     /* dlc */
@@ -135,6 +136,8 @@ enum {
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
 #define WM_APP_UPD_DONE (WM_APP + 9)     /* wParam 1 ok, lParam heap error text */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
+#define WM_APP_UPD_FINISHED (WM_APP + 13) /* wParam 1 ok, lParam heap error text */
+#define WM_APP_VERIFY   (WM_APP + 12)    /* wParam permille, or 1001: done (s_verify) */
 #define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
 #define FRIENDS_TIMER   0x5F01           /* the Friends list's refresh while the Online tab shows */
 #define APK_OK          1001
@@ -143,7 +146,8 @@ enum {
 static HINSTANCE s_inst;
 static HWND      s_wnd, s_tab;
 static HFONT     s_font, s_big, s_title;
-static HFONT     s_icons, s_nav, s_card, s_huge;  /* the look: sidebar icons and labels, card titles, page title */
+static HFONT     s_icons, s_nav, s_card, s_huge;
+static HFONT     s_mark_font;                     /* Verify game files' mark (the icon font, large) */  /* the look: sidebar icons and labels, card titles, page title */
 static int       s_cur_tab = -1, s_nav_hover = -1;
 static int       s_dpi = 96;
 static HICON     s_icon;
@@ -763,6 +767,119 @@ static int free_space(const WCHAR *path, uint64_t *out)
         return 0;
     *out = fb.QuadPart;
     return 1;
+}
+
+/* ── Verify game files (verify.h) ──────────────────────────────────────── */
+
+static int any_game_running(void);
+
+static VerifyResult   s_verify;
+static volatile LONG  s_verify_cancel;
+static volatile LONG  s_verify_busy;
+static int            s_verify_state;   /* 0 not checked, 1 running, 2 OK, 3 damaged / missing, 4 can't tell */
+static WCHAR          s_verify_dir[MAX_PATH];
+
+/* The mark beside the button: a tick, a cross, a warning or a clock. */
+static void verify_mark(int state)
+{
+    static const WCHAR glyph[] = { 0, 0xE823, 0xE73E, 0xE711, 0xE7BA };
+    WCHAR t[2] = { glyph[state], 0 };
+    s_verify_state = state;
+    SendMessageW(ctl(ID_VERIFY_MARK), WM_SETFONT, (WPARAM)s_mark_font, FALSE);
+    set_text(ID_VERIFY_MARK, t);
+    InvalidateRect(ctl(ID_VERIFY_MARK), NULL, TRUE);
+}
+
+static void verify_progress(uint64_t done, uint64_t total, const WCHAR *file, void *ctx)
+{
+    static DWORD last;
+    const DWORD now = GetTickCount();
+    (void)file; (void)ctx;
+    if (now - last < 100 && done < total)
+        return;
+    last = now;
+    PostMessageW(s_wnd, WM_APP_VERIFY, total ? (WPARAM)(done * 1000 / total) : 0, 0);
+}
+
+static DWORD WINAPI verify_thread(LPVOID unused)
+{
+    (void)unused;
+    if (!verify_game_files(s_verify_dir, &s_verify_cancel, verify_progress, NULL, &s_verify))
+        s_verify.files = -1;   /* (stopped) */
+    PostMessageW(s_wnd, WM_APP_VERIFY, 1001, 0);
+    return 0;
+}
+
+static void start_verify(void)
+{
+    HANDLE t;
+    if (InterlockedCompareExchange(&s_verify_busy, 1, 0))
+        return;
+    if (!s_game_dir[0] || !is_game_folder(s_game_dir)) {
+        InterlockedExchange(&s_verify_busy, 0);
+        verify_mark(0);
+        set_text(ID_VERIFY_STATUS, L"Install the game first: there are no game files to check yet.");
+        return;
+    }
+    wcscpy_s(s_verify_dir, MAX_PATH, s_game_dir);
+    s_verify_cancel = 0;
+    verify_mark(1);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), SW_HIDE);
+    EnableWindow(ctl(ID_VERIFY), FALSE);
+    set_text(ID_VERIFY_STATUS, L"Checking the game files\x2026");
+    t = CreateThread(NULL, 0, verify_thread, NULL, 0, NULL);
+    if (t)
+        CloseHandle(t);
+    else
+        PostMessageW(s_wnd, WM_APP_VERIFY, 1001, 0);
+}
+
+static void verify_done(void)
+{
+    WCHAR t[600];
+    InterlockedExchange(&s_verify_busy, 0);
+    EnableWindow(ctl(ID_VERIFY), TRUE);
+    if (s_verify.files < 0) {
+        verify_mark(0);
+        set_text(ID_VERIFY_STATUS, L"The check was stopped.");
+        return;
+    }
+    verify_describe(&s_verify, t, 600);
+    set_text(ID_VERIFY_STATUS, t);
+    if (s_verify.other_edition || !s_verify.files)
+        verify_mark(4);
+    else if (s_verify.missing || s_verify.damaged)
+        verify_mark(3);
+    else
+        verify_mark(2);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), s_verify.damaged && !s_verify.other_edition ? SW_SHOW : SW_HIDE);
+}
+
+/* Repair: the damaged files set aside (renamed .damaged), then Install copies them again. */
+static void verify_repair(void)
+{
+    WCHAR t[600];
+    int n;
+    if (any_game_running()) {
+        set_text(ID_VERIFY_STATUS, L"Close the game first.");
+        return;
+    }
+    swprintf_s(t, 600, L"Set aside the %d damaged game file(s)? They are renamed to .damaged, and Install then "
+                       L"copies them again from your disc image.", s_verify.damaged);
+    if (MessageBoxW(s_wnd, t, L"Repair game files", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+        return;
+    n = verify_set_aside(&s_verify);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), SW_HIDE);
+    verify_mark(0);
+    swprintf_s(t, 600, L"%d file(s) set aside. Choose your disc image above and click Install to copy them "
+                       L"again, then Verify game files.", n);
+    set_text(ID_VERIFY_STATUS, t);
+    {
+        WCHAR target[MAX_PATH] = L"";
+        GetWindowTextW(ctl(ID_TARGET), target, MAX_PATH);
+        if (!target[0])
+            set_text(ID_TARGET, s_game_dir);
+    }
 }
 
 static int install_run(InstallJob *job)
@@ -1952,6 +2069,9 @@ static void make_fonts(void)
     if (s_huge) DeleteObject(s_huge);
     s_icons = CreateFontW(-MulDiv(16, s_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
                           CLEARTYPE_QUALITY, 0, icon_face());
+    if (s_mark_font) DeleteObject(s_mark_font);
+    s_mark_font = CreateFontW(-MulDiv(28, s_dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                              CLEARTYPE_QUALITY, 0, icon_face());
     ncm.lfMessageFont.lfWeight = FW_SEMIBOLD;
     ncm.lfMessageFont.lfHeight = -MulDiv(10, s_dpi, 72);
     s_nav = CreateFontIndirectW(&ncm.lfMessageFont);
@@ -2299,6 +2419,13 @@ static void build_ui(void)
     add(TAB_INSTALL, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 318, 560, 76, ID_INSTALL_STATUS);
     add(TAB_INSTALL, L"Static", L"Files already installed with the right size are skipped, so a stopped "
                                 L"installation continues where it left off.", SS_LEFT, X0, 410, 560, 36, 0);
+    add(TAB_INSTALL, L"Button", L"Game files", BS_GROUPBOX, X0, 452, 560, 118, 0);
+    add(TAB_INSTALL, L"Button", L"Verify game files", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 482, 170, 32, ID_VERIFY);
+    add(TAB_INSTALL, L"Button", L"Repair", BS_PUSHBUTTON | WS_TABSTOP, X0 + 16, 524, 170, 32, ID_VERIFY_REPAIR);
+    ShowWindow(ctl(ID_VERIFY_REPAIR), SW_HIDE);
+    add(TAB_INSTALL, L"Static", L"", SS_CENTER | SS_NOPREFIX, X0 + 196, 478, 40, 40, ID_VERIFY_MARK);
+    add(TAB_INSTALL, L"Static", L"Checks every game file against the game disc: a damaged one can make the game "
+                                L"crash while it loads.", SS_LEFT | SS_NOPREFIX, X0 + 244, 476, 300, 84, ID_VERIFY_STATUS);
 
     /* Android */
     add(TAB_ANDROID, L"Static", L"Play on an Android phone or tablet (experimental): 64-bit ARM with Vulkan, such as a "
@@ -4267,13 +4394,24 @@ static void pt_clear(uint8_t *f, int k)
     memcpy(b + 8, k_pt_empty_header, 44);
 }
 
-/* Slot k's logo as BGRA. */
+/* Slot k's logo as BGRA: its canvas (full colour), unless the canvas isn't
+ * the picture the game shows - its 8-bit copy (TGA: palette + indices), made
+ * from the canvas when the logo is saved. A slot can hold another logo's
+ * canvas (seen on page 2: logo 1's canvas from page 1), and then that copy is
+ * drawn instead. */
 static void pt_get(const uint8_t *f, int k, uint8_t *bgra)
 {
-    const uint8_t *c = f + (size_t)k * PT_SLOT + PT_CANVAS;
-    int i;
-    for (i = 0; i < PT_W * PT_W; i++, c += 4) {
-        bgra[4 * i] = c[3]; bgra[4 * i + 1] = c[2]; bgra[4 * i + 2] = c[1]; bgra[4 * i + 3] = c[0];
+    const uint8_t *b = f + (size_t)k * PT_SLOT, *c = b + PT_CANVAS;
+    const uint8_t *pal = b + PT_TGA + 20, *idx = b + PT_TGA + 0x414;
+    int i, differ = 0;
+    for (i = 0; i < PT_W * PT_W; i++)
+        if (memcmp(c + 4 * i, pal + 4 * idx[i], 4) && ++differ > PT_W * PT_W / 16) {
+            c = NULL;
+            break;
+        }
+    for (i = 0; i < PT_W * PT_W; i++) {
+        const uint8_t *p = c ? c + 4 * i : pal + 4 * idx[i];
+        bgra[4 * i] = p[3]; bgra[4 * i + 1] = p[2]; bgra[4 * i + 2] = p[1]; bgra[4 * i + 3] = p[0];
     }
 }
 
@@ -5507,9 +5645,51 @@ static void up_check(int automatic)
     CloseHandle(CreateThread(NULL, 0, up_check_thread, NULL, 0, NULL));
 }
 
-/* Copies the top-level files of `from` (and its native_shaders folder) into
- * `to`, keeping the player's settings. The running launcher is renamed out of
- * the way first (Windows lets a running exe be renamed, not overwritten). */
+/* Copies the folder `from` into `to` with everything in it (files replaced). */
+static int copy_tree(const WCHAR *from, const WCHAR *to)
+{
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int ok = 1;
+    CreateDirectoryW(to, NULL);
+    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || !join(src, from, fd.cFileName) ||
+            !join(dst, to, fd.cFileName))
+            continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            ok = copy_tree(src, dst) && ok;
+        else if (!CopyFileW(src, dst, FALSE))
+            ok = 0;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+/* Copies the folders of `from` (Bundled Mods, native_shaders, pad_icons,
+ * Android...) into `to`. */
+static int up_copy_folders(const WCHAR *from, const WCHAR *to)
+{
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int ok = 1;
+    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") &&
+            wcscmp(fd.cFileName, L"..") && join(src, from, fd.cFileName) && join(dst, to, fd.cFileName))
+            ok = copy_tree(src, dst) && ok;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+/* Copies the top-level files of `from` and its folders into `to`, keeping the
+ * player's settings. The running launcher is renamed out of the way first
+ * (Windows lets a running exe be renamed, not overwritten). */
 static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t errn)
 {
     static const WCHAR *keep[] = { L"launcher.ini", GAME_TOML };
@@ -5541,30 +5721,99 @@ static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t e
         }
     } while (ok && FindNextFileW(h, &fd));
     FindClose(h);
-    /* (the mods that come with the port too: the launcher installs new ones) */
-    if (ok && join(sub, from, L"Bundled Mods") && dir_exists(sub) && join(subdst, to, L"Bundled Mods")) {
-        CreateDirectoryW(subdst, NULL);
-        if (join(pat, sub, L"*") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && join(src, sub, fd.cFileName)
-                        && join(dst, subdst, fd.cFileName))
-                    CopyFileW(src, dst, FALSE);
-            } while (FindNextFileW(h, &fd));
-            FindClose(h);
-        }
-    }
-    if (ok && join(sub, from, L"native_shaders") && dir_exists(sub) && join(subdst, to, L"native_shaders")) {
-        CreateDirectoryW(subdst, NULL);
-        if (join(pat, sub, L"*") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && join(src, sub, fd.cFileName)
-                        && join(dst, subdst, fd.cFileName))
-                    CopyFileW(src, dst, FALSE);
-            } while (FindNextFileW(h, &fd));
-            FindClose(h);
-        }
-    }
+    /* (its folders too: the mods that come with the port - the launcher
+       installs new ones -, the shaders, the button pictures, the Android app) */
+    if (ok)
+        up_copy_folders(from, to);
+    (void)sub; (void)subdst;
     return ok;
+}
+
+/* ── finishing an update an older launcher made ───────────────────────────
+ * Launchers up to 2.0.3 copied only the release's top-level files and its
+ * native_shaders: after updating from one, the game folder lacks the
+ * release's other folders (Bundled Mods, pad_icons). Started with --updated
+ * (as the old launcher restarts the new one), the launcher fetches its own
+ * release again and copies the folders in. */
+static int up_finish_run(HWND notify, WCHAR *err, size_t errn)
+{
+    WCHAR tmp[MAX_PATH], work[MAX_PATH], zip[MAX_PATH], files[MAX_PATH];
+    UpdateInfo info;
+    int ok = 0;
+    GetTempPathW(MAX_PATH, tmp);
+    work[0] = 0;
+    if (!update_check_version(PORT_VERSION, &info, err, errn))
+        goto done;
+    if (!join(work, tmp, L"svr2011-update-finish") || !join(zip, work, L"release.zip") || !join(files, work, L"files"))
+        goto done;
+    remove_tree(work);
+    CreateDirectoryW(work, NULL);
+    CreateDirectoryW(files, NULL);
+    if (!update_download(info.url, zip, notify, WM_APP_UPD_PROGRESS, &s_up_cancel, err, errn))
+        goto done;
+    if (!unpack(zip, files)) {
+        swprintf_s(err, errn, L"Could not unpack the release.");
+        goto done;
+    }
+    ok = up_copy_folders(files, s_game_dir);
+    if (!same_dir(s_game_dir, s_launcher_dir))
+        up_copy_folders(files, s_launcher_dir);
+    if (!ok)
+        swprintf_s(err, errn, L"Some files could not be copied. Is the game running?");
+done:
+    if (work[0])
+        remove_tree(work);
+    return ok;
+}
+
+static DWORD WINAPI up_finish_thread(LPVOID arg)
+{
+    WCHAR err[600] = L"";
+    const int ok = up_finish_run(s_wnd, err, 600);
+    (void)arg;
+    PostMessageW(s_wnd, WM_APP_UPD_FINISHED, (WPARAM)ok, ok ? 0 : (LPARAM)wdup(err[0] ? err : L"failed"));
+    return 0;
+}
+
+/* Whether the game folder lacks what a release brings beside the programs. */
+static int up_unfinished(void)
+{
+    WCHAR p[MAX_PATH];
+    if (!is_game_folder(s_game_dir))
+        return 0;
+    return (join(p, s_game_dir, L"Bundled Mods") && !dir_exists(p)) ||
+           (join(p, s_game_dir, L"pad_icons") && !dir_exists(p));
+}
+
+static void up_finish(void)
+{
+    if (InterlockedCompareExchange(&s_up_busy, 1, 0))
+        return;
+    InterlockedExchange(&s_up_cancel, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), FALSE);
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_SHOW);
+    SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, 0, 0);
+    up_status(L"Finishing the update: downloading the bundled mods and button pictures\x2026");
+    CloseHandle(CreateThread(NULL, 0, up_finish_thread, NULL, 0, NULL));
+}
+
+static void up_finished(int ok, WCHAR *err)
+{
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
+    InterlockedExchange(&s_up_busy, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), TRUE);
+    if (!ok) {
+        up_status(L"The update is done, but its mods could not be fetched (%s). Updating again later adds them.",
+                  err ? err : L"");
+        free(err);
+        return;
+    }
+    install_bundled(s_game_dir, s_game_dir);
+    if (!same_dir(s_game_dir, s_launcher_dir))
+        install_bundled(s_game_dir, s_launcher_dir);
+    if (s_cur_tab == TAB_MODS)
+        mods_show(s_game_dir);
+    up_status(L"Updated to version %s, with its bundled mods.", PORT_VERSION);
 }
 
 /* Downloads s_up's zip and copies its files over the install. */
@@ -5821,6 +6070,32 @@ static int draw_button(const DRAWITEMSTRUCT *d)
     return 1;
 }
 
+/* draw_button drawn off-screen first, then copied: hovering a button no longer
+   shows its background a moment before its face (flicker). */
+static int draw_button_buffered(const DRAWITEMSTRUCT *d)
+{
+    DRAWITEMSTRUCT b = *d;
+    const int w = d->rcItem.right - d->rcItem.left, h = d->rcItem.bottom - d->rcItem.top;
+    HDC mdc = CreateCompatibleDC(d->hDC);
+    HBITMAP bmp = mdc ? CreateCompatibleBitmap(d->hDC, w, h) : NULL;
+    HGDIOBJ old;
+    int ok;
+    if (!bmp) {
+        if (mdc) DeleteDC(mdc);
+        return draw_button(d);
+    }
+    old = SelectObject(mdc, bmp);
+    b.hDC = mdc;
+    SetRect(&b.rcItem, 0, 0, w, h);
+    ok = draw_button(&b);
+    if (ok)
+        BitBlt(d->hDC, d->rcItem.left, d->rcItem.top, w, h, mdc, 0, 0, SRCCOPY);
+    SelectObject(mdc, old);
+    DeleteObject(bmp);
+    DeleteDC(mdc);
+    return ok;
+}
+
 /* The window: the sidebar, the page's title, its cards. */
 static void paint_window(HDC dc)
 {
@@ -6040,6 +6315,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_INSTALL:
             start_install();
             break;
+        case ID_VERIFY:
+            start_verify();
+            break;
+        case ID_VERIFY_REPAIR:
+            verify_repair();
+            break;
         case ID_APK_CREATE:
             start_apk();
             break;
@@ -6106,6 +6387,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_APP_UPD_CHECKED:
         up_checked((int)wp, (WCHAR *)lp);
         return 0;
+    case WM_APP_VERIFY:
+        if (wp > 1000) {
+            SendMessageW(ctl(ID_PROGRESS), PBM_SETPOS, 0, 0);
+            verify_done();
+        } else {
+            SendMessageW(ctl(ID_PROGRESS), PBM_SETPOS, wp, 0);
+        }
+        return 0;
     case WM_APP_FRIENDS:
         friends_show((int)wp, (char *)lp);
         free((void *)lp);
@@ -6120,6 +6409,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     case WM_APP_UPD_DONE:
         up_done((int)wp, (WCHAR *)lp);
+        return 0;
+    case WM_APP_UPD_FINISHED:
+        up_finished((int)wp, (WCHAR *)lp);
         return 0;
     case WM_APP_MOVIE:
         SendMessageW(ctl(ID_MV_PROGRESS), PBM_SETPOS, wp, 0);
@@ -6184,11 +6476,16 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         /* (text on a card: white; on the page: its grey) */
         const int on_card = card_at((HWND)lp);
         SetTextColor((HDC)wp, C_TEXT);
+        if (GetDlgCtrlID((HWND)lp) == ID_VERIFY_MARK) {   /* (green OK, red damaged, amber can't tell) */
+            static const COLORREF c[] = { RGB(112, 112, 122), RGB(112, 112, 122), RGB(24, 150, 60),
+                                          RGB(208, 20, 44), RGB(214, 140, 0) };
+            SetTextColor((HDC)wp, c[s_verify_state]);
+        }
         SetBkColor((HDC)wp, on_card ? C_CARD : C_PAGE);
         return (LRESULT)(on_card ? s_card_brush : s_page_brush);
     }
     case WM_DRAWITEM:
-        if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_BUTTON && draw_button((DRAWITEMSTRUCT *)lp))
+        if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_BUTTON && draw_button_buffered((DRAWITEMSTRUCT *)lp))
             return TRUE;
         break;
     case WM_LBUTTONDOWN: {
@@ -6227,9 +6524,29 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_PAINT: {
+        /* (off-screen first, then copied: the sidebar's hover doesn't flicker) */
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(w, &ps);
-        paint_window(dc);
+        RECT cl;
+        HDC mdc;
+        HBITMAP bmp = NULL;
+        GetClientRect(w, &cl);
+        mdc = CreateCompatibleDC(dc);
+        if (mdc)
+            bmp = CreateCompatibleBitmap(dc, cl.right, cl.bottom);
+        if (bmp) {
+            HGDIOBJ old = SelectObject(mdc, bmp);
+            FillRect(mdc, &cl, s_page_brush);
+            paint_window(mdc);
+            BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left,
+                   ps.rcPaint.bottom - ps.rcPaint.top, mdc, ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
+            SelectObject(mdc, old);
+            DeleteObject(bmp);
+        } else {
+            paint_window(dc);
+        }
+        if (mdc)
+            DeleteDC(mdc);
         EndPaint(w, &ps);
         return 0;
     }
@@ -6319,7 +6636,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     INITCOMMONCONTROLSEX icc;
     MSG msg;
     RECT r;
-    int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0;
+    int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0, capture_verify = 0, updated = 0;
     const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
@@ -6334,6 +6651,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         *slash = 0;
     join(s_launcher_ini, s_launcher_dir, L"launcher.ini");
     load_launcher_ini();
+    if (argv && argc >= 2 && !wcscmp(argv[1], L"--updated"))   /* (restarted by an update) */
+        updated = 1;
     {   /* the launcher an update replaced */
         WCHAR old[MAX_PATH + 8];
         int k;
@@ -6464,6 +6783,37 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* --finish-update <game folder>: what launchers up to 2.0.3 left out of an
+       update (Bundled Mods, pad_icons) fetched and installed, no window. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--finish-update")) {
+        WCHAR err[600] = L"";
+        int ok;
+        console_setup();
+        wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
+        wprintf(L"unfinished: %d\n", up_unfinished());
+        ok = up_finish_run(NULL, err, 600);
+        if (ok)
+            install_bundled(s_game_dir, s_game_dir);
+        wprintf(ok ? L"ok\n" : L"failed: %s\n", err);
+        return ok ? 0 : 1;
+    }
+    /* --verify <game folder>: Verify game files, no window (exit 0: OK). */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--verify")) {
+        VerifyResult *r = (VerifyResult *)calloc(1, sizeof *r);
+        WCHAR msg[600];
+        int i, ok;
+        console_setup();
+        if (!r)
+            return 1;
+        ok = verify_game_files(argv[2], NULL, NULL, NULL, r);
+        verify_describe(r, msg, 600);
+        wprintf(L"%s\n", msg);
+        for (i = 0; i < r->bad_count; i++)
+            wprintf(L"  %s %s\n", r->bad_missing[i] ? L"missing" : L"damaged", r->bad[i]);
+        ok = ok && r->files > 0 && !r->missing && !r->damaged && !r->other_edition;
+        free(r);
+        return ok ? 0 : 1;
+    }
     /* Tests: --bundled <game folder> installs <game>\Bundled Mods as a start does. */
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--bundled")) {
         install_bundled(argv[2], argv[2]);
@@ -6487,6 +6837,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (capture_seq_n)
             capture_tab = capture_seq[0];
         capture_file = argv[3];
+        /* ... --verify: Verify game files first (the Install tab's mark). */
+        if (argc >= 5 && !wcscmp(argv[4], L"--verify"))
+            capture_verify = 1;
         /* ... --paint-page <1-10>: the Paint Tool tab shows that page. */
         if (argc >= 6 && !wcscmp(argv[4], L"--paint-page"))
             s_pt_page = (_wtoi(argv[5]) - 1 + PT_PAGES) % PT_PAGES;
@@ -6539,6 +6892,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             install_bundled(s_game_dir, s_launcher_dir);
     }
     refresh_play();
+    /* Restarted by an update (--updated): what an older launcher left out. */
+    if (!capture_file && updated && up_unfinished())
+        up_finish();
     if (capture_music)
         music_add_files(s_game_dir, &capture_music, 1);
     if (capture_tag)
@@ -6561,6 +6917,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (capture_file) {
         MSG pm;
         int k;
+        if (capture_verify) {
+            ULONGLONG t0 = GetTickCount64();
+            start_verify();
+            while (s_verify_busy && GetTickCount64() - t0 < 300000)
+                if (MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT) == WAIT_OBJECT_0)
+                    while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&pm);
+                        DispatchMessageW(&pm);
+                    }
+        }
         for (k = 0; k < (capture_seq_n ? capture_seq_n : 1); k++) {
             ULONGLONG t0 = GetTickCount64();
             if (k) {

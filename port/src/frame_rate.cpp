@@ -52,6 +52,7 @@
 #include <rex/ui/presenter.h>
 
 #include "generated/default/svr2011_init.h"
+#include "jukebox.h"
 #include "match_types.h"
 #include "online_overlay.h"
 #include "players.h"
@@ -357,7 +358,8 @@ REX_HOOK_RAW(sub_8269D768) {
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
-  svr2011::MatchTypesUpdate(base);  // (match_types.h: the lumberjacks)
+  svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)
+  svr2011::JukeboxUpdate(ctx, base);     // (jukebox.h: a song stopped, skipped or previewed)
   // An armed match start (ArmMatchStart): once the match's frame count has
   // gone up 30 updates running.
   static uint32_t last_frames = 0;

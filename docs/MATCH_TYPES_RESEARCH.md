@@ -287,3 +287,110 @@ A 50-man rumble would need "slot recycling": reload an eliminated entrant's char
 5. **No count-outs:** the rule's 64-byte record (misc.pac OPT, +8 + id*64; bit 7 = locked) has byte 5 = count out (normal 0x0A, Lumberjack/FCA/ER/cage 0x80 = locked off). In a match the live byte 5 is 0.
 6. **Can't win:** managers are not competitors (`sub_82225D68`, `sub_825EEA80` say no for team 3 / people 2+).
 7. **Referee ejection:** string.pac has the referee motions REFEREE WARNING / GET DOWN / EJECT MANAGER (0x3220, a motion name) and "MANAGER EJECTED" (0x8D2, a message). No ejection was seen in the tests.
+
+## Weapons everywhere (done)
+
+A No DQ match with weapons already lying in and around the ring at the bell.
+
+**Where the game's placed weapons come from:**
+- The table is bgEtc.pac `STG/WPON` (`STG/WPBS` backstage) entry 45010, loaded by `sub_8227D938`. It is kept at `*(0x82E3BE98)`:
+  - +4 s16 count;
+  - +8 -> 8-byte heads {s16 key, n, link, pad};
+  - +12 -> {int count; record*} per key.
+- The key is the rule id. The link (1000-1002) is the shared ringside set: announce tables, steps, bell, belt.
+- Each record is 28 bytes: f32 position, f32 rotation (degrees), s16 motion (15010 lying, 15000 standing, 15305 stacked), u8 place (0 ring, 1 floor), u8 model.
+- Models: 4 chair, 5 table (every other one becomes 9), 11 ladder, 63 trash can, 89 guitar, 60 crutch, 90 mop, 17 tire, 112 barbell.
+- `sub_8227B938` makes the weapons as the match loads; `sub_8227D130` (from match init `sub_822ADE80`) places them at the start and stows the rest under the ring.
+- Models must be in the per-match load list `*(0x82E3C0E8)` (built by `sub_82301148`), or the weapon silently doesn't appear.
+- Extreme Rules (0x4D-0x50, live option +56) loads 87, 15, 60, 89, 11, 88, 5, 63 and 90 (plus chair 4 in every match), but has no records.
+
+**What the port does (`match_types.cpp`):**
+- A WEAPONS EVERYWHERE row follows each EXTREME RULES row.
+- ONE ON ONE's list is full: a list shows at most 14 rows, so a 15th row isn't displayed. There, EXTREME RULES becomes a submenu holding EXTREME RULES and WEAPONS EVERYWHERE.
+  - A submenu's rows need depth +0x16 = the parent's + 1.
+  - +0x04 is the description string; +0x64 is not.
+- For that match, the rule's {count, records} entry points at the port's 8 records while `sub_8227B938` and `sub_8227D130` run, and is put back afterwards:
+  - 2 chairs in the ring;
+  - 2 tables by the apron;
+  - a ladder;
+  - a trash can;
+  - a guitar;
+  - a chair on the floor.
+- Tested: 1 on 1 (0x4D) and triple threat (0x4F), with screenshots of the weapons in place.
+
+## Match Creator / option locks (research, 2026-10-05; not done yet)
+
+**OPT record (64 bytes, `*(0x82EDE954)+11900+id*64`, misc.pac OPT at 0xC8B4):**
+- Bit 7 = locked; bits 0-6 = the value (forced when locked).
+- Bytes:
+  - 1 pinfall; 2 KO; 3 rope break; 4 DQ off; 5 count-out; 6 over the top rope; 7 give up; 8 minutes; 9 cage bits; 12 iron man falls;
+  - 20 Hell in a Cell; 21 timed; 26 last man standing; 27 ring out; 32 interference (forced 0 offline); 33 outside allowed (guess);
+  - **34 people count** (+35 is a free-for-all flag); 36 tornado; 37 elimination; 38 entrance; 40 first blood; 41 chamber; 44 escape door; 56 extreme rules; 58 tag; 59 inferno.
+- The rules screen's rows come from `sub_82470BC0`: row disabled if its OPT byte has bit 7.
+- The live settings come from `sub_828C48E8`: the user's value is used only where unlocked.
+
+**Match Creator steps:**
+- misc.pac `/MRME/MRPD` (PACH at 0x932000, loader `sub_82490558`): per-family "allowed" bytes. 0x09 free, 0x00 disabled. Example: tag allows only the standard ring.
+- Families come from `sub_82490918`.
+
+**Arena:**
+- `sub_828B5558` with RUL +36: 0 any, 1 flagged arenas, 2 none, 3 arena 20, 4 = RUL +40.
+
+## Slobber Knocker (done, a4ae58f)
+
+**Menu:** HANDICAP -> SLOBBER KNOCKER (after GAUNTLET, group 0x0B).
+- Uses the gauntlet rule 0x52, reshaped while it is played:
+  - the 1 on 1 select screen (rule 0x00's select fields);
+  - 5 people (the count from 0x58; OPT +34);
+  - people 2-4 are waiting opponents (team 1). They are kind 2 during select so they aren't picked, and kind 3 in the match. They are random superstars of player 1's gender.
+
+**Gauntlet at run time:**
+- Characters at 0x82E3CC50:
+  - +446 state: 0 in, 1 waiting, 4 beaten;
+  - +447 lost; +448 by whom; +1800 team; +2624 role (3 waiting); +2348 walked in; +476 still present (0 once gone).
+- The judge `sub_82245618` brings in a waiting teammate (+446 0) of the loser, and ends the match when there is none.
+- The entry task `sub_82328AA0` walks in an active entrant with +476 0 and +2348 != 1 once the match time passes info +40 (s16). An entry time of 0 never walks in.
+
+**Endless:** a beaten opponent, once gone (state 4, lost 0, +476 0 for 1 s), waits again: state 1, role 3, +2348 0, entry time 1. The line goes round the 4 opponents. If a fall comes with no one waiting, a beaten one waits at once.
+
+**The count:** an ImGui overlay "SLOBBER KNOCKER  BEATEN: n" over the match. Falls are counted in the judge hook.
+
+**Not done: a new superstar each time.**
+- Unloading a beaten opponent's slot (`sub_8217CCD8`, as the Royal Rumble does) and loading a new one as the run-in task does (`sub_822F5AD8`, `sub_8217CB48`/`CB68`, `sub_8224AB90`) works most times. But the characters' job (thread 22: `sub_82252610` -> `sub_82258CC0`, a per-character component, obj+136) can still use the freed character, and crashes.
+  - Waiting for +476 0, setting state 5, and doing it inside the judge (the match's update) all still crashed sometimes.
+- The game's swap task (`sub_825BDF60` / `sub_825BDFD8`, from `sub_825A85B8`) fills empty person slots only. With a live character in the slot, the draw crashed.
+- A safe point to free a character is needed. The Royal Rumble eliminates first (`sub_8223FD78`), and its manager `sub_8224C1B8` notifies listeners before reusing a slot.
+
+**Test aids:** `SVR2011_TEST_SK_LOG=1`, `SVR2011_TEST_SK_BEAT=<s>` (the opponent loses), `SVR2011_TEST_SK_LOSE=<s>` (player 1 loses).
+
+## Match Creator unlocks (done, first set)
+
+**MATCH CREATOR pages:**
+- The `/MRME/MRPD` tables at misc.pac 0x932000 (PACH, 11 chunks, data base 0x93208C) have chunk pairs (defaults, allowed) per page:
+  - 1/2 ENVIRONMENT, 8 rows;
+  - 3/4 WIN CONDITION, 11 rows;
+  - 7/8 RULES, 6 rows;
+  - 5/6 and 9/10 are combination tables.
+- One byte per family (68 families; `sub_82490918`: table 0x8201E4F8, u32 rule ids) and row. 0x09 free, 0x00 greyed.
+- Loaded by `sub_82490558(loader)` into loader +48/+52 (env), +64/+68 (win), +72/+76, +80/+84 (rules), +88/+92.
+
+**Port (`match_types.cpp`, hook on `sub_82490558`):**
+- K.O. and FINISHER MATCH are allowed wherever pin and give up is (the cages and others).
+- A TIME LIMIT is allowed wherever it was greyed.
+- The INFERNO ring is allowed for triple threat (family 28) and fatal-4-way (family 36).
+- Royal Rumble (60), Elimination Chamber (48/49) and backstage (12/26/55) are left alone.
+- Tested:
+  - a steel cage with K.O. and Finisher Match on played to the end;
+  - a triple threat in the Inferno ring played 2 minutes.
+
+**Per-match rule locks (OPT bit 7, hook on `sub_828B5078`):**
+- K.O., ROPE BREAK and GIVE UP are unlocked, and DQ where it is locked on.
+- Not for Royal Rumble, Elimination Chamber, backstage, story rules or Lumberjack.
+- These are the rules screens that read the OPT record (`sub_82470BC0`, the online lobby `sub_824F4270`). MATCH CREATOR uses MRPD instead.
+
+**Not unlocked (likely to break):**
+- count-outs in matches of more than 2;
+- over the top rope outside battle royals;
+- structures for tag / 6-man;
+- chamber;
+- interference (forced off offline in `sub_828C48E8`).
