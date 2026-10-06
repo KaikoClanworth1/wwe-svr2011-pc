@@ -329,11 +329,13 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
 // the shape of a match with that many people while the match is set up and
 // played (setting up any other match puts it back): of the 100-byte record
 // +0..+27 (people, their start places / teams, select screen, team layout),
-// +44 (match family) and +52, +64 (its first rule flag); +35 of the 64-byte
-// option record (the people count).
+// +44 (match family) and +52, +64 (its first rule flag); +34 (the people
+// count) and +35 (free for all) of the 64-byte option record. (Only +35 was
+// copied before: a 6-man backstage match had 4 people - the areas' 2 on 2
+// count.)
 constexpr uint32_t kRules = 0x82EDE954;  // -> 119 x 100 bytes, then 119 x 64
 constexpr uint32_t kRuleSize = 100, kRule2 = 11900, kRule2Size = 64;
-constexpr uint32_t kRule2People = 35;
+constexpr uint32_t kRule2People = 34, kRule2FreeForAll = 35;
 struct Span {
   uint32_t at, size;
 };
@@ -418,7 +420,7 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
     }
   } else {
     for (const Span& span : kShape) std::memcpy(rec + span.at, from + span.at, span.size);
-    rec2[kRule2People] = base[rules + kRule2 + like * kRule2Size + kRule2People];
+    for (uint32_t at : {kRule2People, kRule2FreeForAll}) rec2[at] = base[rules + kRule2 + like * kRule2Size + at];
   }
   REXLOG_INFO("match types: rule {:02X} set up like rule {:02X}{}", rule, like, select_only ? " (select screen)" : "");
 }
