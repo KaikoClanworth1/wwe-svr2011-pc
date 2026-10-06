@@ -64,6 +64,10 @@ struct Wwe13Options {
   std::vector<Shift> shift;  // test: move (and turn 90 deg) model id ranges
   std::vector<std::pair<uint32_t, uint32_t>> tiny;  // test: bounding spheres shrunk
   std::vector<std::pair<uint32_t, int>> keep_mesh;  // test: only mesh k of a model drawn
+  // meshes left out (model id, mesh): a model over ~430 KB unpacked (the
+  // largest any SvR2011 arena has) crashes the arena load; RR / KOTR '98's
+  // stage props carry 11533 vertices of floor cables
+  std::vector<std::pair<uint32_t, int>> drop_mesh;
   int draw_word = -1;        // test: force mesh descriptor +0x88
   bool no_shmap = false;     // test: rename the vis tree's SHMAP_ groups
   float mat_tone = 0.75f;    // canvas ambient/diffuse scale (SvR2011's ring lights are brighter)

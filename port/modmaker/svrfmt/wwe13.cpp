@@ -1049,6 +1049,15 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
           for (size_t k = 0; k < m.meshes.size(); ++k)
             if (int(k) != km.second)
               for (auto& st : m.meshes[k].strips) st.indices.clear();
+      // meshes left out (from the last, so the others keep their numbers)
+      {
+        std::vector<int> drop;
+        for (const auto& dm : opt.drop_mesh)
+          if (e.id == dm.first && dm.second >= 0 && dm.second < int(m.meshes.size())) drop.push_back(dm.second);
+        std::sort(drop.rbegin(), drop.rend());
+        drop.erase(std::unique(drop.begin(), drop.end()), drop.end());
+        for (int k : drop) m.meshes.erase(m.meshes.begin() + k);
+      }
       // test aid: models in the hide ranges drawn with nothing
       for (const auto& r : opt.hide)
         if (e.id >= r.first && e.id <= r.second)

@@ -266,6 +266,11 @@ int Wwe13(int argc, char** argv) {
       int k = 0;
       if (std::sscanf(argv[i] + 5, "%x:%d", &id, &k) == 2) opt.keep_mesh.push_back({id, k});
     }
+    if (!std::strncmp(argv[i], "drop-mesh=", 10)) {  // drop-mesh=<id hex>:<mesh>
+      unsigned id = 0;
+      int k = 0;
+      if (std::sscanf(argv[i] + 10, "%x:%d", &id, &k) == 2) opt.drop_mesh.push_back({id, k});
+    }
     if (!std::strncmp(argv[i], "tiny=", 5)) {
       unsigned lo = 0, hi = 0;
       if (std::sscanf(argv[i] + 5, "%x-%x", &lo, &hi) == 2) opt.tiny.push_back({lo, hi});
