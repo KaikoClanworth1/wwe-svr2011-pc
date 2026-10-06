@@ -73,6 +73,7 @@ constexpr uint32_t kPool[] = {111, 114, 121, 127, 128, 129, 130, 136, 141, 148, 
                               59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69};
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
 constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
+constexpr uint32_t kSelectTile = 226;            // u16: its tile in the select grid's portrait table
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
@@ -728,6 +729,15 @@ void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
   }
 }
 
+// A mod's record never has its base's select-grid tile (+226): the grid's
+// tile -> record lookup takes the last record with the tile's number, the
+// mod's copy (DLC, in the EXTRA list instead), and the base's tile picked
+// nobody - Stone Cold, Matt Hardy, Mr. McMahon and William Regal couldn't be
+// chosen (2.0.3 / 2.0.4). 0 = no tile, as the placeholders have.
+void OwnSelectTile(uint8_t* sr, const uint8_t* br) {
+  if (Rd16(sr + kSelectTile) && Rd16(sr + kSelectTile) == Rd16(br + kSelectTile)) sr[kSelectTile] = sr[kSelectTile + 1] = 0;
+}
+
 void ApplyRecords(uint8_t* base) {
   for (uint32_t id : kPool) {
     if (ModOf(id)) continue;
@@ -761,6 +771,7 @@ void ApplyRecords(uint8_t* base) {
     SetSigns(sr, br, m);
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
       sr[kSelectable] = 1, sr[kDlc] = 1;
+      OwnSelectTile(sr, br);  // (a save from before 2.0.5 has the base's)
       static std::vector<std::pair<uint32_t, uint32_t>> told;  // (slot, its ratings when last logged)
       const uint32_t r = uint32_t(sr[0]) << 16 | sr[1] << 8 | sr[2];
       auto t = std::find_if(told.begin(), told.end(), [&](const auto& x) { return x.first == m.slot; });
@@ -780,10 +791,12 @@ void ApplyRecords(uint8_t* base) {
         if (x.slot == m.slot && !x.record.empty()) k = &x;
       if (k) {  // (as it was before the game reloaded its records)
         std::memcpy(sr, k->record.data(), kRecordSize);
+        OwnSelectTile(sr, br);
         continue;
       }
     }
     std::memcpy(sr, br, kRecordSize);
+    OwnSelectTile(sr, br);
     PutName(sr, kFullName, m.name);
     PutName(sr, kSecondName, m.name);
     PutName(sr, kShortName, m.short_name);
