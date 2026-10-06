@@ -29,6 +29,9 @@ struct Context {
   // 0-2), and samplers (space 3). A texture's index is the same in each.
   plume::RenderDescriptorSet* texture_sets[3] = {};
   plume::RenderDescriptorSet* sampler_set = nullptr;
+  // Where each table starts in its set: Vulkan has the three tables in one
+  // set (bindings 0-2, kSrvHeapSize apart), D3D12 one set each (all 0).
+  uint32_t texture_base[3] = {};
   uint64_t frame = 0;
   // Keeps an object alive until the GPU has finished the current frame.
   std::function<void(std::shared_ptr<void>)> retire;
