@@ -21,6 +21,7 @@
 #include <fmt/format.h>
 #include <rex/system/xmemory.h>
 
+#include "native/texture_packs.h"
 #include "pad_icons.h"
 
 namespace svr2011::native::textures {
@@ -170,6 +171,11 @@ struct Entry {
   uint32_t base_address = 0, base_size = 0, mip_address = 0, mip_size = 0;
   uint64_t bytes = 0;  // the host resource's (texture quality: resident bytes)
   uint32_t skip = 0;   // guest mip levels left out (texture quality)
+  // Texture packs (texture_packs.h): the content hash a pack has a file for,
+  // until it's read (`ready`) and replaces the game's texture (`replaced`).
+  uint64_t pending = 0;
+  std::shared_ptr<const texture_packs::Replacement> ready;
+  bool replaced = false;
   bool written = false;  // a resolve was written back over its data (GuestWritten): checked at its next use
 };
 
@@ -181,6 +187,7 @@ bool g_unorm16_filterable = true;  // (SetUnorm16Filterable)
 uint32_t g_quality_skip = 0;       // (SetQuality) 0 high, 1 medium, 2 low
 uint64_t g_resident_bytes = 0;     // all the textures' host bytes
 uint32_t g_reduced = 0;            // textures with levels left out
+uint32_t g_replaced = 0;           // pack textures shown (texture_packs.h)
 
 // Texture quality: the guest mip levels a texture leaves out - its host
 // texture starts at guest level `skip` (the game's own smaller mipmap). Only
@@ -621,6 +628,92 @@ uint32_t ResolvedView(const Context& ctx, const Resolved& res,
   return srv;
 }
 
+// A texture's content hash (texture dumps and packs): XXH3 of its first
+// level's blocks untiled, in order, as the GPU reads them (after the endian
+// swap) - for DXT and A8R8G8B8 the bytes of a PC DDS's top level, so the
+// game files' textures hash the same (their names: texture_names). Stable
+// across runs and versions; no padding or other guest memory in it. 2D only.
+// `data`: the blocks.
+uint64_t ContentHash(const xenos::xe_gpu_texture_fetch_t& fetch,
+                     const texture_util::TextureGuestLayout& layout, uint32_t base_page, uint32_t width,
+                     uint32_t height, uint32_t gbw, uint32_t gbh, uint32_t bpb, uint32_t mask,
+                     std::vector<uint8_t>& data) {
+  if (!base_page) return 0;
+  const uint32_t blocks_x = (width + gbw - 1) / gbw, blocks_y = (height + gbh - 1) / gbh;
+  const uint32_t row_bytes = blocks_x * bpb;
+  data.resize(size_t(row_bytes) * blocks_y);
+  const uint32_t address = base_page << 12;
+  const texture_util::TextureGuestLayout::Level& gl = layout.base;
+  if (!fetch.tiled) {
+    for (uint32_t by = 0; by < blocks_y; ++by)
+      ReadGuestRun(data.data() + size_t(by) * row_bytes, address + by * gl.row_pitch_bytes, row_bytes, mask);
+  } else {
+    const uint32_t pitch_blocks = gl.row_pitch_bytes / bpb, bpb_log2 = Log2(bpb);
+    uint8_t* out = data.data();
+    for (uint32_t by = 0; by < blocks_y; ++by) {
+      for (uint32_t bx = 0; bx < blocks_x; ++bx, out += bpb) {
+        const int64_t offset = texture_util::GetTiledOffset2D(int32_t(bx), int32_t(by), pitch_blocks, bpb_log2);
+        ReadGuest(out, uint32_t(address + offset), bpb, mask);
+      }
+    }
+  }
+  return XXH3_64bits(data.data(), data.size());
+}
+
+// Texture packs and dumps handle these formats (4 channels, as PNG / DDS
+// have them): the dump files' format tag, or null.
+const char* PackFormat(TF f) {
+  switch (f) {
+    case TF::k_DXT1:
+    case TF::k_DXT1_AS_16_16_16_16:
+      return "dxt1";
+    case TF::k_DXT2_3:
+    case TF::k_DXT2_3_AS_16_16_16_16:
+      return "dxt3";
+    case TF::k_DXT4_5:
+    case TF::k_DXT4_5_AS_16_16_16_16:
+      return "dxt5";
+    case TF::k_8_8_8_8:
+    case TF::k_8_8_8_8_A:
+    case TF::k_8_8_8_8_AS_16_16_16_16:
+      return "rgba";
+    default:
+      return nullptr;
+  }
+}
+
+void StoreBlock(Convert convert, const uint8_t* block, uint32_t bpb, uint8_t* dst_base, uint32_t row_pitch,
+                uint32_t host_width, uint32_t host_height, uint32_t bx, uint32_t by);
+
+// A dump's pixels: the top level's blocks (ContentHash) as RGBA8 rows, with
+// the fetch constant's swizzle applied - the texture as it looks.
+std::vector<uint8_t> DumpPixels(const std::vector<uint8_t>& blocks, TF format, uint32_t w, uint32_t h,
+                                uint32_t swizzle) {
+  std::vector<uint8_t> rgba(size_t(w) * h * 4);
+  const char* tag = PackFormat(format);
+  if (!std::strcmp(tag, "rgba")) {
+    std::memcpy(rgba.data(), blocks.data(), std::min(rgba.size(), blocks.size()));
+  } else {
+    const Convert c = tag[3] == '1' ? Convert::kBC1 : tag[3] == '3' ? Convert::kBC2 : Convert::kBC3;
+    const uint32_t bpb = c == Convert::kBC1 ? 8 : 16, bw = (w + 3) / 4, bh = (h + 3) / 4;
+    for (uint32_t by = 0; by < bh; ++by)
+      for (uint32_t bx = 0; bx < bw; ++bx)
+        if ((size_t(by) * bw + bx + 1) * bpb <= blocks.size())
+          StoreBlock(c, &blocks[(size_t(by) * bw + bx) * bpb], bpb, rgba.data(), w * 4, w, h, bx, by);
+  }
+  if ((swizzle & 0xFFF) != 0x688) {  // (not xyzw)
+    uint8_t px[4];
+    for (size_t i = 0; i < rgba.size(); i += 4) {
+      std::memcpy(px, &rgba[i], 4);
+      for (uint32_t k = 0; k < 4; ++k) {
+        const uint32_t sel = (swizzle >> (3 * k)) & 7;
+        rgba[i + k] = sel <= 3 ? px[sel] : sel == 5 ? 255 : 0;
+      }
+    }
+  }
+  return rgba;
+}
+
 // One subresource's place in the staging buffer (rows 256-byte aligned,
 // subresources 512-byte aligned: valid copy sources for D3D12 and Vulkan).
 struct Footprint {
@@ -796,6 +889,29 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   const uint32_t mask = kEndianMask[uint32_t(fetch.endianness) & 3];
   const uint32_t bpb_log2 = Log2(bpb);
   uint8_t block[16];
+  // Texture packs and dumps (texture_packs.h): a new 2D texture's content
+  // hash, dumped once and replaced when a pack has it (Texture() swaps it in
+  // once the file is read). (SVR2011_TEXTURE_HASH_LOG: each new texture's hash)
+  static const bool hash_log = std::getenv("SVR2011_TEXTURE_HASH_LOG") != nullptr;
+  if (!reuse && dimension == 0 && array_size == 1 && !is_3d && !is_cube && !pad_candidate && base_page &&
+      (hash_log || texture_packs::Active())) {
+    const char* tag = PackFormat(format);
+    if (tag || hash_log) {
+      thread_local std::vector<uint8_t> blocks;
+      const uint64_t h = ContentHash(fetch, layout, base_page, width, height, gbw, gbh, bpb, mask, blocks);
+      if (hash_log) {
+        REXLOG_INFO("texture hash {:016x} format {} {}x{} levels {} tiled {} endian {} base {:08X}", h,
+                    uint32_t(format), width, height, guest_levels, uint32_t(fetch.tiled),
+                    uint32_t(fetch.endianness), base_page << 12);
+      }
+      if (tag && h && texture_packs::WantDump(h))
+        texture_packs::Dump(h, width, height, DumpPixels(blocks, format, width, height, fetch.swizzle), tag);
+      if (tag && h && !e.dynamic) {
+        e.ready = nullptr;
+        e.pending = texture_packs::Find(h, &e.ready) == texture_packs::Lookup::kNone ? 0 : h;
+      }
+    }
+  }
 
   const auto convert_t0 = std::chrono::steady_clock::now();
   for (uint32_t host_level = 0; host_level < levels; ++host_level) {
@@ -976,6 +1092,133 @@ view:
   return true;
 }
 
+// A pack's texture (e.ready) in place of the game's: a new resource in a new
+// descriptor slot (the old one may still be read by frames in flight).
+bool Replace(const Context& ctx, Entry& e, const xenos::xe_gpu_texture_fetch_t& fetch) {
+  const std::shared_ptr<const texture_packs::Replacement> r = std::move(e.ready);
+  e.ready = nullptr;
+  const uint64_t hash = e.pending;
+  e.pending = 0;
+  if (!r || r->levels.empty()) return false;
+  const bool gamma = fetch.sign_x == xenos::TextureSign::kGamma;
+  RenderFormat format;
+  uint32_t block_bytes = 0;  // (0: RGBA8)
+  switch (r->format) {
+    case texture_packs::Format::kBC1:
+      format = gamma ? RenderFormat::BC1_UNORM_SRGB : RenderFormat::BC1_UNORM, block_bytes = 8;
+      break;
+    case texture_packs::Format::kBC2:
+      format = gamma ? RenderFormat::BC2_UNORM_SRGB : RenderFormat::BC2_UNORM, block_bytes = 16;
+      break;
+    case texture_packs::Format::kBC3:
+      format = gamma ? RenderFormat::BC3_UNORM_SRGB : RenderFormat::BC3_UNORM, block_bytes = 16;
+      break;
+    default:
+      format = gamma ? RenderFormat::R8G8B8A8_UNORM_SRGB : RenderFormat::R8G8B8A8_UNORM;
+      break;
+  }
+  if (block_bytes && !g_bc_supported) {
+    static bool logged = false;
+    if (!logged) REXLOG_WARN("texture packs: DXT (DDS) textures need a GPU with BC; use PNG files on this one");
+    logged = true;
+    return false;
+  }
+  if (g_srv_next >= g_srv_end) return false;
+  // Levels with their data (a DDS may stop short).
+  std::vector<Footprint> fps;
+  uint64_t total = 0;
+  for (uint32_t l = 0; l < r->levels.size(); ++l) {
+    const uint32_t w = std::max(r->width >> l, 1u), h = std::max(r->height >> l, 1u);
+    Footprint fp;
+    const uint32_t row_bytes = block_bytes ? (w + 3) / 4 * block_bytes : w * 4;
+    fp.rows = block_bytes ? (h + 3) / 4 : h;
+    if (r->levels[l].size() < size_t(row_bytes) * fp.rows) break;
+    fp.width = block_bytes ? (w + 3) & ~3u : w;
+    fp.height = block_bytes ? (h + 3) & ~3u : h;
+    fp.depth = 1;
+    fp.row_pitch = (row_bytes + 255) & ~255u;
+    fp.offset = (total + 511) & ~511ull;
+    total = fp.offset + uint64_t(fp.row_pitch) * fp.rows;
+    fps.push_back(fp);
+  }
+  if (fps.empty()) return false;
+  const uint32_t levels = uint32_t(fps.size());
+  std::shared_ptr<plume::RenderTexture> resource = ctx.device->createTexture(plume::RenderTextureDesc::Texture(
+      plume::RenderTextureDimension::TEXTURE_2D, r->width, r->height, 1, levels, 1, format,
+      plume::RenderTextureFlag::NONE));
+  if (!resource) return false;
+  resource->setName(fmt::format("pack texture {:016x}", hash));
+  std::shared_ptr<plume::RenderBuffer> staging;
+  plume::RenderBuffer* staging_buffer = nullptr;
+  uint64_t staging_offset = 0;
+  uint8_t* mapped = nullptr;
+  if (ctx.allocate) {
+    const Context::UploadSpace space = ctx.allocate(total, 512);
+    mapped = space.cpu;
+    staging_buffer = space.buffer;
+    staging_offset = space.offset;
+  }
+  if (!mapped) {
+    staging = ctx.device->createBuffer(plume::RenderBufferDesc::UploadBuffer(total));
+    if (!staging) return false;
+    mapped = static_cast<uint8_t*>(staging->map());
+    staging_buffer = staging.get();
+  }
+  for (uint32_t l = 0; l < levels; ++l) {
+    const uint32_t row_bytes = uint32_t(r->levels[l].size() / fps[l].rows);
+    for (uint32_t y = 0; y < fps[l].rows; ++y)
+      std::memcpy(mapped + fps[l].offset + size_t(y) * fps[l].row_pitch, r->levels[l].data() + size_t(y) * row_bytes,
+                  row_bytes);
+  }
+  if (staging) staging->unmap();
+  const uint32_t bw = plume::RenderFormatBlockWidth(format), bpb = plume::RenderFormatSize(format);
+  ctx.list->barriers(plume::RenderBarrierStage::COPY,
+                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::COPY_DEST));
+  for (uint32_t l = 0; l < levels; ++l) {
+    ctx.list->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(resource.get(), l, 0),
+                                plume::RenderTextureCopyLocation::PlacedFootprint(
+                                    staging_buffer, format, fps[l].width, fps[l].height, 1,
+                                    fps[l].row_pitch / bpb * bw, staging_offset + fps[l].offset));
+  }
+  ctx.list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                     plume::RenderTextureBarrier(resource.get(), plume::RenderTextureLayout::SHADER_READ));
+  if (staging) ctx.retire(staging);
+  plume::RenderTextureViewDesc vd;
+  vd.format = format;
+  vd.dimension = plume::RenderTextureViewDimension::TEXTURE_2D;
+  vd.mipLevels = levels;
+  vd.componentMapping = ComponentMapping(0x688, 4);  // (xyzw: the file is the texture as it looks)
+  std::shared_ptr<plume::RenderTextureView> view = resource->createTextureView(vd);
+  const uint32_t srv = g_srv_next++;
+  ctx.texture_sets[0]->setTexture(ctx.texture_base[0] + srv, resource.get(), plume::RenderTextureLayout::SHADER_READ,
+                                  view.get());
+  if (e.view) ctx.retire(std::move(e.view));
+  if (e.resource && !IsPadPicture(e.resource)) ctx.retire(std::move(e.resource));
+  g_resident_bytes = g_resident_bytes - std::min(g_resident_bytes, e.bytes) + total;
+  e.bytes = total;
+  e.resource = std::move(resource);
+  e.view = std::move(view);
+  e.srv = srv;
+  e.skip = 0;
+  e.replaced = true;
+  ++g_replaced;
+  static uint32_t logged = 0;
+  if (logged++ < 20) {
+    REXLOG_INFO("texture packs: {:016x} replaced ({}x{}, {} levels{})", hash, r->width, r->height, levels,
+                block_bytes ? ", DXT" : "");
+  }
+  return true;
+}
+
+// The cache's key: everything but the sampler state (clamp, filters, LOD
+// bias, border).
+uint64_t TextureKey(const uint32_t fetch_dwords[6], uint32_t dimension) {
+  const uint32_t key_dwords[7] = {fetch_dwords[0] & 0xFFC003FFu, fetch_dwords[1], fetch_dwords[2],
+                                  fetch_dwords[3] & 0x7FFFFu,     fetch_dwords[4] & 0x3FCu,
+                                  fetch_dwords[5] & 0xFFFFFE00u,  dimension};
+  return XXH3_64bits(key_dwords, sizeof(key_dwords));
+}
+
 }  // namespace
 
 void Initialize(rex::memory::Memory* memory, uint32_t srv_first, uint32_t srv_count,
@@ -987,6 +1230,7 @@ void Initialize(rex::memory::Memory* memory, uint32_t srv_first, uint32_t srv_co
   g_sampler_next = sampler_first;
   g_sampler_end = sampler_first + sampler_count;
   if (!g_bc_supported) REXLOG_INFO("native renderer: BC (DXT) textures are decoded on the CPU");
+  texture_packs::Start();
 }
 
 uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t dimension) {
@@ -1027,12 +1271,7 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
     }
     return ResolvedView(ctx, it->second, fetch);
   }
-  // Everything but the sampler state (clamp, filters, LOD bias, border).
-  const uint32_t key_dwords[7] = {fetch_dwords[0] & 0xFFC003FFu, fetch_dwords[1], fetch_dwords[2],
-                                  fetch_dwords[3] & 0x7FFFFu,     fetch_dwords[4] & 0x3FCu,
-                                  fetch_dwords[5] & 0xFFFFFE00u,  dimension};
-  const uint64_t key = XXH3_64bits(key_dwords, sizeof(key_dwords));
-  Entry& e = g_textures[key];
+  Entry& e = g_textures[TextureKey(fetch_dwords, dimension)];
   if (e.failed) {
     ++g_stats.unsupported;
     return UINT32_MAX;
@@ -1070,12 +1309,28 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
                       fetch.size_2d.height + 1, uint32_t(fetch.tiled), e.base_size >> 10);
         }
       }
+      if (e.replaced || e.pending) {  // (a pack's texture: the game's own again, now that it changes)
+        if (e.view) ctx.retire(std::move(e.view));
+        if (e.resource && !IsPadPicture(e.resource)) ctx.retire(std::move(e.resource));
+        e.resource = nullptr;
+        g_resident_bytes -= std::min(g_resident_bytes, e.bytes);
+        e.bytes = 0;
+        e.srv = UINT32_MAX;
+        e.replaced = false;
+        e.pending = 0;
+        e.ready = nullptr;
+      }
       e.dynamic = true;
       e.interval = 1;
       Upload(ctx, fetch, dimension, e);
     } else if (e.dynamic) {
       e.interval = uint32_t(std::min<uint64_t>(uint64_t(e.interval) * 2, kRecheckFrames));
     }
+  }
+  // A pack's texture, once read.
+  if (e.pending && !e.dynamic) {
+    if (!e.ready && texture_packs::Find(e.pending, &e.ready) == texture_packs::Lookup::kNone) e.pending = 0;
+    if (e.ready && !Replace(ctx, e, fetch)) e.pending = 0;
   }
   e.used_frame = ctx.frame;
   return e.srv;
@@ -1089,7 +1344,12 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
   // clamps move down as many (guest LOD 1 is host LOD 0).
   xenos::xe_gpu_texture_fetch_t tf;
   std::memcpy(&tf, fetch, sizeof(tf));
-  const uint32_t skip = SkipLevels(tf);
+  uint32_t skip = SkipLevels(tf);
+  // (a pack's texture keeps its own levels)
+  if (skip && texture_packs::Active()) {
+    auto t = g_textures.find(TextureKey(fetch, 0));
+    if (t != g_textures.end() && t->second.replaced) skip = 0;
+  }
   const uint64_t key = base_key | (uint64_t(skip) << 40);
   auto it = g_samplers.find(key);
   if (it != g_samplers.end()) return it->second.index;
@@ -1157,6 +1417,9 @@ void SetQuality(uint32_t skip) {
     e.dynamic = false;
     e.skip = 0;
     e.bytes = 0;
+    e.replaced = false;
+    e.pending = 0;
+    e.ready = nullptr;
     ++dropped;
   }
   g_resident_bytes = 0;
