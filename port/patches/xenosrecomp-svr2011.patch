@@ -1,5 +1,5 @@
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 1c74034..2bf2c77 100644
+index 1c74034..cf73cc5 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
 @@ -12,45 +12,96 @@
@@ -101,8 +101,8 @@ index 1c74034..2bf2c77 100644
 +// the samplers set 1 - with the constants (set 2) three sets, within the four
 +// every Vulkan GPU has. D3D12: four tables.
 +#ifdef __spirv__
-+[[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[SVR_TEXTURE_TABLE_SIZE];
-+[[vk::binding(1, 0)]] Texture3D<float4> g_Texture3DDescriptorHeap[SVR_TEXTURE_TABLE_SIZE];
++[[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[];
++[[vk::binding(1, 0)]] Texture3D<float4> g_Texture3DDescriptorHeap[];
 +[[vk::binding(2, 0)]] TextureCube<float4> g_TextureCubeDescriptorHeap[];
 +[[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[];
 +#else

@@ -15,7 +15,7 @@ struct PushConstants {
 #define OWN_CONSTANT16(TYPE, OFFSET) g_ConstantBuffer.Load<TYPE>(g_PushConstants.OwnConstants + (OFFSET))
 // The texture tables as the converted shaders declare them (set 0: 2D, 3D,
 // cube; set 1: samplers).
-#define OWN_TEXTURE_TABLES   [[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[16384];   [[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[];
+#define OWN_TEXTURE_TABLES   [[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[];   [[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[];
 #else
 #define OWN_TEXTURE_TABLES   Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);   SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
 #endif

@@ -69,6 +69,25 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
               bool(features.independentBlend), bool(features.depthClamp), bool(features.fragmentStoresAndAtomics),
               bool(features.vertexPipelineStoresAndAtomics), props.limits.maxImageDimension2D);
 
+  // The bindless tables' limits (update-after-bind: the texture set is written
+  // while bound).
+  if (auto get_properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+          gipa(instance, d.api_version >= VK_API_VERSION_1_1 ? "vkGetPhysicalDeviceProperties2"
+                                                             : "vkGetPhysicalDeviceProperties2KHR"))) {
+    VkPhysicalDeviceDescriptorIndexingProperties di = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &di;
+    get_properties2(physical, &p2);
+    REXLOG_INFO("GPU report: update-after-bind limits - sampled images per stage {} / per set {}, samplers per "
+                "stage {} / per set {}, resources per stage {}, descriptors in all pools {}; per stage (plain) "
+                "sampled images {}, samplers {}, storage buffers {}, sets {}",
+                di.maxPerStageDescriptorUpdateAfterBindSampledImages, di.maxDescriptorSetUpdateAfterBindSampledImages,
+                di.maxPerStageDescriptorUpdateAfterBindSamplers, di.maxDescriptorSetUpdateAfterBindSamplers,
+                di.maxPerStageUpdateAfterBindResources, di.maxUpdateAfterBindDescriptorsInAllPools,
+                props.limits.maxPerStageDescriptorSampledImages, props.limits.maxPerStageDescriptorSamplers,
+                props.limits.maxPerStageDescriptorStorageBuffers, props.limits.maxBoundDescriptorSets);
+  }
+
   // The formats the renderer creates: s = sampled, f = filtered, c = color
   // attachment, b = blended, d = depth attachment (optimal tiling).
   struct Format {
