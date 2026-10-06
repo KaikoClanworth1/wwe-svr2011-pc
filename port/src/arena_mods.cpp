@@ -22,6 +22,7 @@
 // menu/MatchHD.pac (MENU/MASI), kept in guest physical memory (4 KB view)
 // untiled, with 16-bit words byte-swapped.
 #include "arena_mods.h"
+#include "crowd_off.h"
 #include "move_packs.h"
 #include "ring_rules.h"
 
@@ -35,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -86,8 +88,16 @@ void Refresh(const std::string& name) {
   if (auto* e = g_fs->ResolvePath(path)) e->update();
 }
 
-// overlay/<name> := link to (or copy of) `source`
-bool Place(const fs::path& source, const std::string& name) {
+std::map<std::string, fs::path> g_placed;  // overlay name -> the file asked for
+
+// overlay/<name> := link to (or copy of) `source` - with the crowd off
+// (crowd_off.h) its crowd-less copy once made.
+bool Place(const fs::path& requested, const std::string& name) {
+  g_placed[name] = requested;
+  const fs::path source = svr2011::crowd::Serve(requested, g_game / "Mods" / "ArenaCrowdless", [requested, name] {
+    std::lock_guard lock(g_mutex);
+    if (g_placed[name] == requested) Place(requested, name);  // (now the copy)
+  });
   std::error_code ec;
   const fs::path dst = g_overlay / name;
   // An overlay entry may be a hard link to an original: never write through
@@ -941,6 +951,12 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
   g_game = rex::filesystem::GetExecutableFolder();
   g_overlay = g_game / "Mods" / "ArenaOverlay";
   g_bpe_log = std::getenv("SVR2011_TEST_BPE_LOG") != nullptr;
+  if (crowd::Off()) {
+    // (the arenas come through the overlay from the start: their crowd-less copies)
+    std::lock_guard lock(g_mutex);
+    PrepareOverlay();
+    REXLOG_INFO("[svr2011] crowd: off - arenas without their crowd");
+  }
   LoadCustomArenas();
   LoadBackstage();
   LoadLoadingPictures();
