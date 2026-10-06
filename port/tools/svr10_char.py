@@ -12,7 +12,8 @@ Two children differ (scratchpad research svr10/re_model.md):
 - 0xc8 / 0xc9, a portrait: 256x128 in 2010, 256x256 in 2011. The 2010 select
   bust (DLC_HD.pac SSFC/<id>, 256x256 DXT5, BPE packed) is used for both.
 
-Every other child keeps its packed bytes. The EMD entry names keep the 2010
+Every other child keeps its packed bytes, except that the texture bundles'
+AO textures get 2011's bruise convention (svr10_bruise.py). The EMD entry names keep the 2010
 id: the game renames them to the mod's slot (src/superstar_mods.cpp).
 """
 import os
@@ -95,7 +96,10 @@ def convert(pac10, cid, pac11, out):
             blob = svrfmt.pach_write(new)
         entries.append((typ, name, blob))
     open(out, 'wb').write(epk8_write(src, entries))
-    print('%s: %d entries -> %s (%d bytes)' % (os.path.basename(src), len(entries), out, os.path.getsize(out)))
+    import svr10_bruise  # (2010 AO textures: the bruise mask moves to R, as 2011's Mk)
+    bruise = svr10_bruise.fix_ch_pac(out, out)
+    print('%s: %d entries -> %s (%d bytes; %d AO textures converted)' % (os.path.basename(src), len(entries), out,
+                                                                        os.path.getsize(out), len(bruise)))
 
 
 if __name__ == '__main__':
