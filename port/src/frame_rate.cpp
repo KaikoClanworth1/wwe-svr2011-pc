@@ -685,6 +685,21 @@ REX_HOOK_RAW(sub_8217A718) {
   __imp__sub_8217A718(ctx, base);
 }
 
+// Its sibling sub_8217AB58 (the same object, +96 its state 1-5) also reads
+// +156's part (+1504, or +1496 at states 2-3) unchecked - crashed so in a
+// match at 60 fps (2.0.5 tests, guest read of 0x5E0); its other paths skip a
+// missing part, so without it there is nothing to do here either.
+REX_EXTERN(__imp__sub_8217AB58);
+REX_HOOK_RAW(sub_8217AB58) {
+  if (ctx.r3.u32 == 0 || Rd32(base + ctx.r3.u32 + 156) == 0) {
+    static int skipped = 0;
+    if (++skipped == 1 || skipped % 100 == 0)
+      REXLOG_INFO("frame rate: a queued callback's object was gone - skipped ({} times, AB58)", skipped);
+    return;
+  }
+  __imp__sub_8217AB58(ctx, base);
+}
+
 // A pure virtual call (sub_828F3F38, the runtime's _purecall: error R6025,
 // the game quits): with two updates in a frame the second may destroy an
 // object the first queued for the render thread (render command 24,

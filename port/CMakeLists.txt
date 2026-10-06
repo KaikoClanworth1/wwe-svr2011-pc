@@ -45,6 +45,7 @@ set(SVR2011_SOURCES
     src/paint_pages.cpp
     src/match_types.cpp
     src/slobber_knocker.cpp
+    src/three_stages.cpp
     src/players.cpp
     src/sort_filters.cpp
     src/arena_mods.cpp

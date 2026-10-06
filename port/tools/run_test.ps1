@@ -27,7 +27,7 @@ $out  = Join-Path $PSScriptRoot "..\runs" | ForEach-Object { New-Item -ItemType 
 $log  = Join-Path $out "$Name.log"
 Remove-Item $log -ErrorAction SilentlyContinue
 
-$args_ = @("--log_file=`"$log`"", "--log_level=debug", "--audio_mute=true", "--fullscreen=false") + $Extra
+$args_ = @("--log_file=`"$log`"", "--log_level=debug", "--audio_mute=true", "--fullscreen=false", "--monitor=2") + $Extra
 # SDL hints (read from the environment): don't take focus when the window opens.
 $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"
 $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"

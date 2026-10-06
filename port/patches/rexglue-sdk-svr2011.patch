@@ -639,7 +639,7 @@ index 0000000..c1f04e6
 +      ::rex::timeline::Record(::rex::timeline::ev, ##__VA_ARGS__); \
 +  } while (0)
 diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
-index afb4a30..7d91a9e 100644
+index afb4a30..ef6ae4d 100644
 --- a/include/rex/ui/presenter.h
 +++ b/include/rex/ui/presenter.h
 @@ -53,6 +53,11 @@ namespace ui {
@@ -654,6 +654,17 @@ index afb4a30..7d91a9e 100644
  class UIDrawContext {
   public:
    UIDrawContext(const UIDrawContext& context) = delete;
+@@ -715,6 +720,10 @@ class Presenter {
+   //
+   // Call via PaintAndPresent.
+   virtual PaintResult PaintAndPresentImpl(bool execute_ui_drawers) = 0;
++  // [svr2011] Weak GPUs / CPUs (Mali): repaints only for the UI drawers (the
++  // overlay asking for its next frame) wait for a new guest frame - at most
++  // ~100 ms - instead of painting at the display's rate.
++  virtual bool ThrottleUIOnlyPaints() const { return false; }
+ 
+   // For calling from the painting implementations if requested.
+   void ExecuteUIDrawersFromUIThread(UIDrawContext& ui_draw_context);
 diff --git a/include/rex/ui/surface_android.h b/include/rex/ui/surface_android.h
 new file mode 100644
 index 0000000..a75fb1f
@@ -720,6 +731,18 @@ index 4edde2b..429b4c9 100644
  class VulkanInstance {
   public:
    static std::unique_ptr<VulkanInstance> Create(bool with_surface, bool try_enable_validation);
+diff --git a/include/rex/ui/vulkan/presenter.h b/include/rex/ui/vulkan/presenter.h
+index 56ee43b..f3a6301 100644
+--- a/include/rex/ui/vulkan/presenter.h
++++ b/include/rex/ui/vulkan/presenter.h
+@@ -147,6 +147,7 @@ class VulkanPresenter final : public Presenter {
+                               bool& is_8bpc_out_ref) override;
+ 
+   PaintResult PaintAndPresentImpl(bool execute_ui_drawers) override;
++  bool ThrottleUIOnlyPaints() const override;
+ 
+  private:
+   // Usable for both the guest output image itself and for intermediate images.
 diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
 index 71e7473..6e7d82a 100644
 --- a/include/rex/ui/window_sdl.h
@@ -5006,10 +5029,47 @@ index 2d13ac8..f0dbbef 100644
  
    return sendto(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags,
 diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
-index 77bce25..1d426c7 100644
+index 77bce25..d33ed8c 100644
 --- a/src/system/xthread.cpp
 +++ b/src/system/xthread.cpp
-@@ -899,7 +899,10 @@ void XThread::SetActiveCpu(uint8_t cpu_index) {
+@@ -469,6 +469,36 @@ X_STATUS XThread::Create() {
+   if (thread_name_.empty()) {
+     set_name(fmt::format("XThread{:04X}", thread_->system_id()));
+   }
++  // [svr2011] Which game thread this is (profiles): its start function and a
++  // name string the game keeps in the thread's start object, if any (the
++  // game's thread names are in the image at 0x82000A00-0x82000D00).
++  {
++    std::string found;
++    auto valid = [&](uint32_t a) {
++      if (a < 0x40000000u || a >= 0xA0000000u || (a & 3)) return false;
++      // (readable: a committed page of a heap - and the whole 0x80 bytes)
++      memory::BaseHeap* heap = memory()->LookupHeap(a);
++      uint32_t protect = 0, protect_end = 0;
++      return heap && heap->QueryProtect(a, &protect) && (protect & memory::kMemoryProtectRead) &&
++             heap->QueryProtect(a + 0x7C, &protect_end) && (protect_end & memory::kMemoryProtectRead);
++    };
++    auto look = [&](uint32_t obj, auto& self, int depth) -> void {
++      if (!valid(obj) || !found.empty()) return;
++      for (uint32_t off = 0; off < 0x80 && found.empty(); off += 4) {
++        const uint32_t w = memory::load_and_swap<uint32_t>(memory()->TranslateVirtual(obj + off));
++        if (w >= 0x82000A00u && w < 0x82000D00u) {
++          const char* str = memory()->TranslateVirtual<const char*>(w);
++          found = std::string(str, strnlen(str, 32));
++        } else if (depth > 0 && valid(w) && w != obj) {
++          self(w, self, depth - 1);
++        }
++      }
++    };
++    look(creation_params_.start_context, look, 1);
++    REXSYS_INFO("thread {} (host {}): start {:08X} context {:08X}{}", thread_name_, thread_->system_id(),
++                creation_params_.start_address, creation_params_.start_context,
++                found.empty() ? std::string() : " - " + found);
++  }
+ 
+   if (creation_params_.creation_flags & 0x60) {
+     thread_->set_priority(creation_params_.creation_flags & 0x20 ? 1 : 0);
+@@ -899,7 +929,10 @@ void XThread::SetActiveCpu(uint8_t cpu_index) {
        thread_->set_affinity_mask(uint64_t(1) << cpu_index);
      }
    } else {
@@ -5174,10 +5234,19 @@ index ade5dd2..9151f01 100644
    read_range.Begin = 0;
    read_range.End = 0;
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
-index 7360ed9..03aa79d 100644
+index 7360ed9..aff93b8 100644
 --- a/src/ui/presenter.cpp
 +++ b/src/ui/presenter.cpp
-@@ -277,6 +277,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
+@@ -11,6 +11,8 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
++#include <thread>
+ #include <cctype>
+ #include <utility>
+ 
+@@ -277,6 +279,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
  namespace rex {
  namespace ui {
  
@@ -5195,7 +5264,48 @@ index 7360ed9..03aa79d 100644
  void Presenter::FatalErrorHostGpuLossCallback([[maybe_unused]] bool is_responsible,
                                                [[maybe_unused]] bool statically_from_ui_thread) {
    rex::FatalError("Graphics device lost (probably due to an internal error)");
-@@ -592,6 +603,7 @@ bool Presenter::RefreshGuestOutput(
+@@ -446,9 +459,31 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+   // Reset ui_thread_paint_requested_ unconditionally also, regardless of
+   // whether the UI needs to be drawn - the flag may be set to try reconnecting,
+   // for example.
+-  if (ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed)) {
++  const bool paint_requested = ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed);
++  if (paint_requested) {
+     do_paint = true;
+   }
++  // [svr2011] (ThrottleUIOnlyPaints) A paint with no new guest frame - only
++  // for the UI - waits for the next display tick and is skipped if no guest
++  // frame came meanwhile (at most for 100 ms), then looked at again. (Without
++  // the wait, SDL's own events spun the UI thread.)
++  bool throttled = false;
++  if (do_paint && !force_paint && ThrottleUIOnlyPaints() &&
++      surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable) {
++    static std::chrono::steady_clock::time_point last_paint;
++    if (g_guest_frames.load(std::memory_order_acquire) == g_last_presented_guest_frame) {
++      // (about a display tick - WaitForUITickFromUIThread only waits on Windows -
++      // ending as soon as a guest frame comes)
++      for (int i = 0; i < 4 && g_guest_frames.load(std::memory_order_acquire) == g_last_presented_guest_frame; ++i)
++        std::this_thread::sleep_for(std::chrono::milliseconds(4));
++      if (g_guest_frames.load(std::memory_order_acquire) == g_last_presented_guest_frame &&
++          std::chrono::steady_clock::now() - last_paint < std::chrono::milliseconds(100)) {
++        do_paint = false;
++        throttled = true;
++      }
++    }
++    if (do_paint) last_paint = std::chrono::steady_clock::now();
++  }
+   PaintResult paint_result = PaintResult::kNotPresented;
+   bool request_repaint_at_tick = false;
+   bool request_repaint_immediately = false;
+@@ -541,6 +576,7 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+       request_repaint_at_tick = true;
+     }
+   }
++  if (throttled) request_repaint_at_tick = true;  // (after a tick's wait above: no spinning)
+   if (request_repaint_at_tick || request_repaint_immediately) {
+     RequestPaintOrConnectionRecoveryViaWindow(request_repaint_immediately);
+   }
+@@ -592,6 +628,7 @@ bool Presenter::RefreshGuestOutput(
        last_acquired_and_ready,
        (last_acquired_and_ready & 3) | (guest_output_mailbox_writable_ << 2),
        std::memory_order_acq_rel, std::memory_order_relaxed)) {}
@@ -5203,7 +5313,7 @@ index 7360ed9..03aa79d 100644
    // Now, it's known that `ready == writable` on the host presentation side.
    // Take the next `writable` with this assumption about its current value in
    // mind.
-@@ -1497,7 +1509,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
+@@ -1497,7 +1534,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
  Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
    assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
    assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
@@ -5507,7 +5617,7 @@ index 914b311..fce845f 100644
      REXGPU_ERROR("{}", msg);
    } else if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..308508c 100644
+index 23645ef..65df178 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -10,6 +10,7 @@
@@ -5518,10 +5628,24 @@ index 23645ef..308508c 100644
  #include <atomic>
  #include <cstddef>
  #include <cstdint>
-@@ -1528,6 +1529,10 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+@@ -1528,6 +1529,24 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
    return true;
  }
  
++// [svr2011] Mali (vendor 0x13B5): the 4x A53 tablets - the paint at the display's
++// rate cost a fifth of a core.
++REXCVAR_DEFINE_STRING(vulkan_throttle_ui_paints, "auto", "GPU",
++                      "Paint only for new game frames, not at the display's rate for the overlay: auto (Mali "
++                      "GPUs), on, off");
++
++bool VulkanPresenter::ThrottleUIOnlyPaints() const {
++  static const int mode = [] {
++    const std::string v = REXCVAR_GET(vulkan_throttle_ui_paints);
++    return v == "on" ? 1 : v == "off" ? 0 : -1;
++  }();
++  return mode >= 0 ? mode == 1 : vulkan_device_->properties().vendorID == 0x13B5;
++}
++
 +// [svr2011] paint timing (phones: where the presenter's time goes)
 +static double g_svr_paint_ms[5];
 +static uint32_t g_svr_paints;
@@ -5529,7 +5653,7 @@ index 23645ef..308508c 100644
  Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
    // Begin the submission in place of the one not currently potentially used on
    // the GPU.
-@@ -1569,9 +1574,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1569,9 +1588,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
  
    VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
    uint32_t swapchain_image_index;
@@ -5541,7 +5665,7 @@ index 23645ef..308508c 100644
    switch (acquire_result) {
      case VK_SUCCESS:
      case VK_SUBOPTIMAL_KHR:
-@@ -1645,6 +1652,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1645,6 +1666,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      // multiple threads can't paint the main target at the same time).
    }
  
@@ -5561,7 +5685,7 @@ index 23645ef..308508c 100644
    if (guest_output_image) {
      VkExtent2D max_framebuffer_extent =
          util::GetMax2DFramebufferExtent(vulkan_device_->properties());
-@@ -1840,6 +1860,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1840,6 +1874,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                  swapchain_effect, paint_context_.swapchain_render_pass);
              if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
                guest_output_flow.effect_count = 0;
@@ -5573,7 +5697,7 @@ index 23645ef..308508c 100644
              }
            }
          }
-@@ -2196,8 +2221,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2196,8 +2235,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      }
      VkResult submit_result;
      {
@@ -5584,7 +5708,7 @@ index 23645ef..308508c 100644
        submit_result =
            dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence_acqusition.fence());
        if (ui_fence_acquisition.fence() != VK_NULL_HANDLE && submit_result == VK_SUCCESS) {
-@@ -2238,9 +2265,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2238,9 +2279,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
    present_info.pResults = nullptr;
    VkResult present_result;
    {
