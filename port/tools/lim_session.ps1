@@ -47,7 +47,7 @@ function Stop-Own {
     if (-not (Test-Path $state)) { return }
     $id = (Get-Content $state | ConvertFrom-Json).pid
     $p = Get-CimInstance Win32_Process -Filter "ProcessId = $id" -ErrorAction SilentlyContinue
-    if ($p -and [string]$p.CommandLine -match [regex]::Escape("\runs\lim_game\")) {
+    if ($p -and [string]$p.CommandLine -match [regex]::Escape("\runs\lim_")) {  # (lim_game, or a -GameDir runs\lim_*)
         Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $id -Timeout 15 -ErrorAction SilentlyContinue
     }

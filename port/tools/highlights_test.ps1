@@ -6,14 +6,14 @@
 # -Stall: the replay recorder never hands out a clip (SVR2011_TEST_HIGHLIGHT_STALL),
 # as on the Steam Deck where a won match never ended.
 #   highlights_test.ps1 [-Stall] [-Name hl]
-param([switch]$Stall, [string]$Name = "", [int]$Minutes = 12, [int]$Row = 0)
+param([switch]$Stall, [string]$Name = "", [int]$Minutes = 12, [int]$Row = 0, [string]$Config = "test_config.toml", [string]$GameDir = "")
 if (-not $Name) { $Name = if ($Stall) { "hlstall" } else { "hl" } }
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
-$env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
+$env:SVR2011_CONFIG = Join-Path $runs $Config
 $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_lim"
 if ($Stall) { $env:SVR2011_TEST_HIGHLIGHT_STALL = "1" }
-& (Join-Path $tools "lim_session.ps1") start -Name $Name | Out-Null
+& (Join-Path $tools "lim_session.ps1") start -Name $Name -GameDir $GameDir | Out-Null
 $env:SVR2011_TEST_HIGHLIGHT_STALL = $null
 $nav = Join-Path $tools "lim_nav.ps1"
 $s = Join-Path $tools "lim_session.ps1"
@@ -33,6 +33,6 @@ Start-Sleep 30
 $log = Join-Path $runs "$Name.log"
 $t0 = Get-Date
 while (((Get-Date) - $t0).TotalMinutes -lt $Minutes -and -not (Select-String -Path $log -Pattern "match-end highlights: \d+ clips" -Quiet)) { Start-Sleep 5 }
-for ($t = 0; $t -le 90; $t += 10) { & $s shot "${Name}_p$t" | Out-Null; Start-Sleep 10 }
+for ($t = 0; $t -le 90; $t += 3) { & $s shot "${Name}_p$t" | Out-Null; Start-Sleep 3 }
 Select-String -Path (Join-Path $runs "$Name.log") -Pattern "highlights|match time set|menu select|svr2011\] match" | ForEach-Object { $_.Line.Substring(26) }
 & $s stop | Out-Null
