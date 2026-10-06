@@ -74,6 +74,7 @@ It also adds:
   - [Paint Tool import and export](#paint-tool-import-and-export)
   - [Saves](#saves)
   - [DLC](#dlc)
+  - [Texture packs](#texture-packs)
 - [Building from source](#building-from-source)
 - [Troubleshooting](#troubleshooting)
 - [Contributors](#contributors)
@@ -328,6 +329,12 @@ The launcher's **Saves** tab lists them. You can **Back up all** (to `SaveBackup
 Downloadable content from the Xbox 360 (superstars, moves, arenas) works. In the launcher's **DLC** tab, choose the folder with your DLC packages, as downloaded on the console. `.zip`, `.rar` and `.7z` archives of them work too. Click **Install DLC**. The packages are copied into the game's `DLC\` folder and unpacked the next time the game starts. Title updates aren't needed and are skipped.
 
 <p align="center"><img src="docs/screenshots/launcher-dlc.png" alt="Launcher DLC tab" width="60%"></p>
+
+### Texture packs
+
+Texture packs replace the game's textures with new ones, at any resolution, as in Dolphin. In the launcher's **Texture packs** tab, add a pack (a folder or a `.zip`) and tick it. Ticked packs are used the next time the game starts, and a pack higher in the list wins over the ones below it. Packs live in the game folder's `Texture Packs\`. On Android, copy pack folders into the phone's game folder (`Texture Packs`), then switch them on in the launcher's **Settings**.
+
+**Making a pack:** tick **Dump textures** and play. The game writes every texture it shows to `Texture Dumps\`, as PNG, once each. Files are named after the game's own textures, with a code at the end, for example `menuHD_brandlogo_RAW_7239e21ccf9832e0.png` or `ch100_a0_normal_....png`. Textures the game makes while running get `tex_<size>_<format>_<code>.png`. Edit a file at any size, keep its name (the code at the end is what counts), and put it anywhere in your pack's folder. PNG and DDS (DXT1/3/5 or 32-bit, with mipmaps) both work. Packs aren't affected by **Textures** quality: a pack's texture always shows at its own size. The first dump indexes the game's files for the names (about half a minute, once).
 
 ### Achievements
 
