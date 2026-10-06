@@ -149,7 +149,8 @@ int version_newer(const WCHAR *a, const WCHAR *b)
     return 0;
 }
 
-int update_check(UpdateInfo *out, WCHAR *err, size_t errn)
+/* The first release in GitHub's answer `url` (a list, newest first, or one release). */
+static int update_read(const WCHAR *api, UpdateInfo *out, WCHAR *err, size_t errn)
 {
     Http h;
     char *json, *rel, *end, tag[64], url[1024], page[512], name[256];
@@ -158,8 +159,7 @@ int update_check(UpdateInfo *out, WCHAR *err, size_t errn)
     int ok = 0;
     char prefix[256];
     memset(out, 0, sizeof *out);
-    if (!http_get(&h, L"https://api.github.com/repos/" UPDATE_REPO L"/releases?per_page=10",
-                  L"Accept: application/vnd.github+json", err, errn))
+    if (!http_get(&h, api, L"Accept: application/vnd.github+json", err, errn))
         return 0;
     json = http_read_all(&h, 4u << 20, &n);
     http_close(&h);
@@ -195,6 +195,18 @@ bad:
 done:
     free(json);
     return ok;
+}
+
+int update_check(UpdateInfo *out, WCHAR *err, size_t errn)
+{
+    return update_read(L"https://api.github.com/repos/" UPDATE_REPO L"/releases?per_page=10", out, err, errn);
+}
+
+int update_check_version(const WCHAR *version, UpdateInfo *out, WCHAR *err, size_t errn)
+{
+    WCHAR api[256];
+    swprintf_s(api, 256, L"https://api.github.com/repos/" UPDATE_REPO L"/releases/tags/v%s", version);
+    return update_read(api, out, err, errn);
 }
 
 int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, volatile LONG *cancel,

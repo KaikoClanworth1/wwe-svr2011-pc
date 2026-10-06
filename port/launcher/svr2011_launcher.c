@@ -136,6 +136,7 @@ enum {
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
 #define WM_APP_UPD_DONE (WM_APP + 9)     /* wParam 1 ok, lParam heap error text */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
+#define WM_APP_UPD_FINISHED (WM_APP + 13) /* wParam 1 ok, lParam heap error text */
 #define WM_APP_VERIFY   (WM_APP + 12)    /* wParam permille, or 1001: done (s_verify) */
 #define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
 #define FRIENDS_TIMER   0x5F01           /* the Friends list's refresh while the Online tab shows */
@@ -5644,9 +5645,51 @@ static void up_check(int automatic)
     CloseHandle(CreateThread(NULL, 0, up_check_thread, NULL, 0, NULL));
 }
 
-/* Copies the top-level files of `from` (and its native_shaders folder) into
- * `to`, keeping the player's settings. The running launcher is renamed out of
- * the way first (Windows lets a running exe be renamed, not overwritten). */
+/* Copies the folder `from` into `to` with everything in it (files replaced). */
+static int copy_tree(const WCHAR *from, const WCHAR *to)
+{
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int ok = 1;
+    CreateDirectoryW(to, NULL);
+    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || !join(src, from, fd.cFileName) ||
+            !join(dst, to, fd.cFileName))
+            continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            ok = copy_tree(src, dst) && ok;
+        else if (!CopyFileW(src, dst, FALSE))
+            ok = 0;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+/* Copies the folders of `from` (Bundled Mods, native_shaders, pad_icons,
+ * Android...) into `to`. */
+static int up_copy_folders(const WCHAR *from, const WCHAR *to)
+{
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int ok = 1;
+    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") &&
+            wcscmp(fd.cFileName, L"..") && join(src, from, fd.cFileName) && join(dst, to, fd.cFileName))
+            ok = copy_tree(src, dst) && ok;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+/* Copies the top-level files of `from` and its folders into `to`, keeping the
+ * player's settings. The running launcher is renamed out of the way first
+ * (Windows lets a running exe be renamed, not overwritten). */
 static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t errn)
 {
     static const WCHAR *keep[] = { L"launcher.ini", GAME_TOML };
@@ -5678,30 +5721,99 @@ static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t e
         }
     } while (ok && FindNextFileW(h, &fd));
     FindClose(h);
-    /* (the mods that come with the port too: the launcher installs new ones) */
-    if (ok && join(sub, from, L"Bundled Mods") && dir_exists(sub) && join(subdst, to, L"Bundled Mods")) {
-        CreateDirectoryW(subdst, NULL);
-        if (join(pat, sub, L"*") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && join(src, sub, fd.cFileName)
-                        && join(dst, subdst, fd.cFileName))
-                    CopyFileW(src, dst, FALSE);
-            } while (FindNextFileW(h, &fd));
-            FindClose(h);
-        }
-    }
-    if (ok && join(sub, from, L"native_shaders") && dir_exists(sub) && join(subdst, to, L"native_shaders")) {
-        CreateDirectoryW(subdst, NULL);
-        if (join(pat, sub, L"*") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && join(src, sub, fd.cFileName)
-                        && join(dst, subdst, fd.cFileName))
-                    CopyFileW(src, dst, FALSE);
-            } while (FindNextFileW(h, &fd));
-            FindClose(h);
-        }
-    }
+    /* (its folders too: the mods that come with the port - the launcher
+       installs new ones -, the shaders, the button pictures, the Android app) */
+    if (ok)
+        up_copy_folders(from, to);
+    (void)sub; (void)subdst;
     return ok;
+}
+
+/* ── finishing an update an older launcher made ───────────────────────────
+ * Launchers up to 2.0.3 copied only the release's top-level files and its
+ * native_shaders: after updating from one, the game folder lacks the
+ * release's other folders (Bundled Mods, pad_icons). Started with --updated
+ * (as the old launcher restarts the new one), the launcher fetches its own
+ * release again and copies the folders in. */
+static int up_finish_run(HWND notify, WCHAR *err, size_t errn)
+{
+    WCHAR tmp[MAX_PATH], work[MAX_PATH], zip[MAX_PATH], files[MAX_PATH];
+    UpdateInfo info;
+    int ok = 0;
+    GetTempPathW(MAX_PATH, tmp);
+    work[0] = 0;
+    if (!update_check_version(PORT_VERSION, &info, err, errn))
+        goto done;
+    if (!join(work, tmp, L"svr2011-update-finish") || !join(zip, work, L"release.zip") || !join(files, work, L"files"))
+        goto done;
+    remove_tree(work);
+    CreateDirectoryW(work, NULL);
+    CreateDirectoryW(files, NULL);
+    if (!update_download(info.url, zip, notify, WM_APP_UPD_PROGRESS, &s_up_cancel, err, errn))
+        goto done;
+    if (!unpack(zip, files)) {
+        swprintf_s(err, errn, L"Could not unpack the release.");
+        goto done;
+    }
+    ok = up_copy_folders(files, s_game_dir);
+    if (!same_dir(s_game_dir, s_launcher_dir))
+        up_copy_folders(files, s_launcher_dir);
+    if (!ok)
+        swprintf_s(err, errn, L"Some files could not be copied. Is the game running?");
+done:
+    if (work[0])
+        remove_tree(work);
+    return ok;
+}
+
+static DWORD WINAPI up_finish_thread(LPVOID arg)
+{
+    WCHAR err[600] = L"";
+    const int ok = up_finish_run(s_wnd, err, 600);
+    (void)arg;
+    PostMessageW(s_wnd, WM_APP_UPD_FINISHED, (WPARAM)ok, ok ? 0 : (LPARAM)wdup(err[0] ? err : L"failed"));
+    return 0;
+}
+
+/* Whether the game folder lacks what a release brings beside the programs. */
+static int up_unfinished(void)
+{
+    WCHAR p[MAX_PATH];
+    if (!is_game_folder(s_game_dir))
+        return 0;
+    return (join(p, s_game_dir, L"Bundled Mods") && !dir_exists(p)) ||
+           (join(p, s_game_dir, L"pad_icons") && !dir_exists(p));
+}
+
+static void up_finish(void)
+{
+    if (InterlockedCompareExchange(&s_up_busy, 1, 0))
+        return;
+    InterlockedExchange(&s_up_cancel, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), FALSE);
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_SHOW);
+    SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, 0, 0);
+    up_status(L"Finishing the update: downloading the bundled mods and button pictures\x2026");
+    CloseHandle(CreateThread(NULL, 0, up_finish_thread, NULL, 0, NULL));
+}
+
+static void up_finished(int ok, WCHAR *err)
+{
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
+    InterlockedExchange(&s_up_busy, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), TRUE);
+    if (!ok) {
+        up_status(L"The update is done, but its mods could not be fetched (%s). Updating again later adds them.",
+                  err ? err : L"");
+        free(err);
+        return;
+    }
+    install_bundled(s_game_dir, s_game_dir);
+    if (!same_dir(s_game_dir, s_launcher_dir))
+        install_bundled(s_game_dir, s_launcher_dir);
+    if (s_cur_tab == TAB_MODS)
+        mods_show(s_game_dir);
+    up_status(L"Updated to version %s, with its bundled mods.", PORT_VERSION);
 }
 
 /* Downloads s_up's zip and copies its files over the install. */
@@ -6298,6 +6410,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_APP_UPD_DONE:
         up_done((int)wp, (WCHAR *)lp);
         return 0;
+    case WM_APP_UPD_FINISHED:
+        up_finished((int)wp, (WCHAR *)lp);
+        return 0;
     case WM_APP_MOVIE:
         SendMessageW(ctl(ID_MV_PROGRESS), PBM_SETPOS, wp, 0);
         return 0;
@@ -6521,7 +6636,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     INITCOMMONCONTROLSEX icc;
     MSG msg;
     RECT r;
-    int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0, capture_verify = 0;
+    int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0, capture_verify = 0, updated = 0;
     const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
@@ -6536,6 +6651,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         *slash = 0;
     join(s_launcher_ini, s_launcher_dir, L"launcher.ini");
     load_launcher_ini();
+    if (argv && argc >= 2 && !wcscmp(argv[1], L"--updated"))   /* (restarted by an update) */
+        updated = 1;
     {   /* the launcher an update replaced */
         WCHAR old[MAX_PATH + 8];
         int k;
@@ -6666,6 +6783,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* --finish-update <game folder>: what launchers up to 2.0.3 left out of an
+       update (Bundled Mods, pad_icons) fetched and installed, no window. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--finish-update")) {
+        WCHAR err[600] = L"";
+        int ok;
+        console_setup();
+        wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
+        wprintf(L"unfinished: %d\n", up_unfinished());
+        ok = up_finish_run(NULL, err, 600);
+        if (ok)
+            install_bundled(s_game_dir, s_game_dir);
+        wprintf(ok ? L"ok\n" : L"failed: %s\n", err);
+        return ok ? 0 : 1;
+    }
     /* --verify <game folder>: Verify game files, no window (exit 0: OK). */
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--verify")) {
         VerifyResult *r = (VerifyResult *)calloc(1, sizeof *r);
@@ -6761,6 +6892,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             install_bundled(s_game_dir, s_launcher_dir);
     }
     refresh_play();
+    /* Restarted by an update (--updated): what an older launcher left out. */
+    if (!capture_file && updated && up_unfinished())
+        up_finish();
     if (capture_music)
         music_add_files(s_game_dir, &capture_music, 1);
     if (capture_tag)

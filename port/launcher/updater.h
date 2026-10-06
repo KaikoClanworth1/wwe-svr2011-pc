@@ -16,6 +16,9 @@ typedef struct UpdateInfo {
 /* Asks GitHub for the newest release (pre-releases included). 1 on success. */
 int update_check(UpdateInfo *out, WCHAR *err, size_t errn);
 
+/* The release of `version` ("2.0.4": tag v2.0.4), as update_check. */
+int update_check_version(const WCHAR *version, UpdateInfo *out, WCHAR *err, size_t errn);
+
 /* a > b as dotted versions ("0.10.0" > "0.9.1"). */
 int version_newer(const WCHAR *a, const WCHAR *b);
 
