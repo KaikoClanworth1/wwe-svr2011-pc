@@ -120,6 +120,11 @@ REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
 
 namespace texture_util = rex::graphics::texture_util;
 
+namespace plume {
+extern std::atomic<uint32_t> g_svr_render_passes;  // (plume_vulkan.cpp: render passes begun)
+extern std::atomic<uint64_t> g_svr_render_pass_pixels;
+}  // namespace plume
+
 namespace svr2011::native {
 
 using plume::RenderFormat;
@@ -589,7 +594,7 @@ struct Renderer {
   Stats frame_stats, window_stats;
   // Performance log (every 5 s): time in the renderer's draw translation,
   // waiting for the GPU (frames in flight), and frame span.
-  double perf_draw_ms = 0, perf_wait_ms = 0, perf_span_ms = 0;
+  double perf_draw_ms = 0, perf_wait_ms = 0, perf_span_ms = 0, perf_submit_ms = 0;
   uint64_t perf_draws = 0, perf_drawn = 0;
   uint32_t perf_frames = 0;
   std::chrono::steady_clock::time_point perf_start = std::chrono::steady_clock::now();
@@ -774,6 +779,7 @@ bool g_resolved_this_frame = false;
 // SVR2011_NATIVE_DEBUG_SOLID=1: every draw with a flat per-draw colour, no
 // depth test, no culling (checks geometry independently of pixel shading).
 bool g_debug_solid = false;
+bool g_debug_solid_state = false;  // (=2: the shader only - depth, culling and blending as the game set them)
 bool g_no_depth = false;  // SVR2011_NATIVE_NO_DEPTH=1
 double g_pipeline_ms = 0;  // pipeline builds since the last perf line
 // Bytes hashed since the last perf line: static / dynamic vertex buffers, constants.
@@ -1153,6 +1159,7 @@ bool Initialize() {
   auto* r = new Renderer();
   g_stop_at_resolve = EnvFlag("SVR2011_NATIVE_STOP_AT_RESOLVE");
   g_debug_solid = EnvFlag("SVR2011_NATIVE_DEBUG_SOLID");
+  if (const char* v = std::getenv("SVR2011_NATIVE_DEBUG_SOLID")) g_debug_solid_state = g_debug_solid && std::strcmp(v, "2") != 0;
   g_no_depth = EnvFlag("SVR2011_NATIVE_NO_DEPTH");
   g_no_blend = EnvFlag("SVR2011_NATIVE_NO_BLEND");
   {
@@ -1468,9 +1475,15 @@ void UpdateTitle(Renderer* r) {
   const double psecs = std::chrono::duration<double>(now - r->perf_start).count();
   if (psecs >= 5.0 && r->perf_frames) {
     const double f = r->perf_frames;
-    REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, "
+    if (backend::ActiveApi() == backend::Api::kVulkan) {
+      const uint32_t passes = plume::g_svr_render_passes.exchange(0);
+      const uint64_t pixels = plume::g_svr_render_pass_pixels.exchange(0);
+      REXLOG_INFO("native perf: render passes per frame {:.1f} ({:.1f} Mpixels loaded and stored)", passes / f,
+                  pixels / f / 1e6);
+    }
+    REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, submit {:.2f} ms, "
                 "span {:.2f} ms, draws {:.0f} (drawn {:.0f}), pipeline builds {:.0f} ms",
-                f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_span_ms / f,
+                f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_submit_ms / f, r->perf_span_ms / f,
                 r->perf_draws / f, r->perf_drawn / f, g_pipeline_ms);
     if (g_write_backs) {
       REXLOG_INFO("native perf: {} resolves written back to guest memory ({:.0f} ms waiting; last {}x{})",
@@ -1504,7 +1517,7 @@ void UpdateTitle(Renderer* r) {
       r->perf_const_uploads = r->perf_const_reused = 0;
     }
     g_pipeline_ms = 0;
-    r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = 0;
+    r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = r->perf_submit_ms = 0;
     r->perf_draws = r->perf_drawn = 0;
     r->perf_frames = 0;
     r->perf_start = now;
@@ -2160,7 +2173,7 @@ std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const Pipelin
     bt.blendEnabled = false;
     bt.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
   }
-  if (g_debug_solid) {
+  if (g_debug_solid_state) {
     bt.blendEnabled = false;
     bt.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
     d.cullMode = plume::RenderCullMode::NONE;
@@ -3034,7 +3047,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   // 0x2012 bottom-right; x in bits 0-14, y in bits 16-30), already clamped to
   // the scissor rect when the game enables one (device +0x2F00).
   const uint32_t sc_tl = Reg(PA_SC_WINDOW_SCISSOR_TL), sc_br = Reg(PA_SC_WINDOW_SCISSOR_BR);
-  const plume::RenderRect scissor(
+  plume::RenderRect scissor(
       int32_t(std::lround(float(std::min<uint32_t>(sc_tl & 0x7FFF, targets.color->width)) * sx + pad)),
       int32_t(std::lround(float(std::min<uint32_t>((sc_tl >> 16) & 0x7FFF, targets.color->height)) * sy + pad_y)),
       int32_t(std::lround(float(std::min<uint32_t>(sc_br & 0x7FFF, targets.color->width)) * sx + pad)),
@@ -3104,7 +3117,11 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   }
   if (r->frames == g_dump_frame && r->frame_stats.drawn >= g_dump_first &&
       r->frame_stats.drawn < g_dump_first + g_dump_count) {
-    if (!g_dump) g_dump = std::fopen("native_draws.txt", "w");
+    if (!g_dump) {
+      // (SVR2011_NATIVE_DUMP_FILE: elsewhere - phones whose game folder adb can't read)
+      const char* file = std::getenv("SVR2011_NATIVE_DUMP_FILE");
+      g_dump = std::fopen(file ? file : "native_draws.txt", "w");
+    }
     FILE* f = g_dump;
     std::fprintf(f, "=== draw %u: prim %u base %d start %u count %u indexed %d | vs %016llX v%d ps %016llX v%d\n",
                  r->frame_stats.drawn, primitive, base_vertex, start, count, indexed,
@@ -3239,13 +3256,41 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     list->setBlendFactor(blend_factor);
     std::memcpy(ls.blend, blend_factor, sizeof(blend_factor));
   }
+  // (Debug, SVR2011_NATIVE_GPU_TEST=4: a quarter-size viewport - as many triangles, 1/16 the pixels)
+  static const bool quarter_viewport = [] {
+    const char* t = std::getenv("SVR2011_NATIVE_GPU_TEST");
+    return t && t[0] == '4';
+  }();
+  if (quarter_viewport) {
+    vp.width *= 0.25f;
+    vp.height *= 0.25f;
+  }
   if (std::memcmp(&ls.viewport, &vp, sizeof(vp))) {
     list->setViewports(vp);
     ls.viewport = vp;
   }
+  // Debug (GPU cost): SVR2011_NATIVE_GPU_TEST=1 draws into a 1x1 scissor (no
+  // rasterisation / pixel work, vertex work kept), =2 skips the draw calls.
+  static const int gpu_test = [] {
+    const char* v = std::getenv("SVR2011_NATIVE_GPU_TEST");
+    return v ? std::atoi(v) : 0;
+  }();
+  // (=3 with SVR2011_NATIVE_GPU_TEST_RANGE=<first>,<last>: those draws of each frame only)
+  static const std::pair<uint32_t, uint32_t> gpu_range = [] {
+    std::pair<uint32_t, uint32_t> v{0, ~0u};
+    if (const char* e = std::getenv("SVR2011_NATIVE_GPU_TEST_RANGE")) std::sscanf(e, "%u,%u", &v.first, &v.second);
+    return v;
+  }();
+  if (gpu_test == 1 || (gpu_test == 3 && r->frame_stats.drawn >= gpu_range.first &&
+                        r->frame_stats.drawn <= gpu_range.second))
+    scissor = plume::RenderRect(0, 0, 1, 1);
   if (std::memcmp(&ls.scissor, &scissor, sizeof(scissor))) {
     list->setScissors(scissor);
     ls.scissor = scissor;
+  }
+  if (gpu_test == 2) {
+    ++r->frame_stats.drawn;
+    return;
   }
   if (draw_indexed) {
     if (ls.ibv.buffer.ref != ibv.buffer.ref || ls.ibv.buffer.offset != ibv.buffer.offset ||
@@ -3549,7 +3594,10 @@ void OnPresent(uint32_t front_buffer) {
     r->recorder->Finish();  // (the worker has recorded the whole frame)
     submit = r->recorder->target();
   }
-  r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
+  {
+    ScopeTimer t(r->perf_submit_ms);  // (with the wait for the queue, shared with the emulator)
+    r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
+  }
   r->submitted[r->back_index] = true;
   if (backend::DeviceLost(r->device.get())) {
     ReportDeviceRemoved(r);
