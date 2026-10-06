@@ -228,6 +228,22 @@ void SlobberKnockerUpdate(PPCContext& ctx, uint8_t* base) {
 // The falls / match-end judge: sub_82245618(...) -> 1 when the match is over.
 REX_EXTERN(__imp__sub_82245618);
 REX_HOOK_RAW(sub_82245618) {
+  // Test aid: SVR2011_TEST_FALL_LOG=1 - every match: the characters each time
+  // one's state / lost byte changes, and the judge's result.
+  static const bool fall_log = std::getenv("SVR2011_TEST_FALL_LOG") != nullptr;
+  if (fall_log) {
+    static std::string last;
+    std::string now;
+    for (uint32_t i = 0; i < 6; ++i)
+      if (const uint32_t c = Rd32(base + kChars + i * 4)) now += fmt::format("{}{}", base[c + kState], base[c + kLost]);
+    if (now != last) {
+      last = now;
+      std::string opt;
+      for (uint32_t i = 0; i < 64; ++i) opt += fmt::format("{:02X}", base[kLive + i]);
+      REXLOG_INFO("falls: rule {:02X} live+288 {} live {};{}", base[kLive], Rd32(base + kLive + 288), opt,
+                  Characters(base));
+    }
+  }
   const bool running = Running(base);
   if (running) CountFalls(base);
   if (running) RecycleStep(ctx, base);
@@ -257,6 +273,13 @@ REX_HOOK_RAW(sub_82245618) {
     }
   }
   __imp__sub_82245618(ctx, base);
+  if (fall_log && ctx.r3.u32 == 1) {
+    static uint32_t ended = 0;
+    if (Rd32(base + kLive + 288) != ended)
+      REXLOG_INFO("falls: the judge ends the match (live+288 {}, winner {}, loser {})", Rd32(base + kLive + 288),
+                  base[kLive + 9968], base[kLive + 9969]);
+    ended = Rd32(base + kLive + 288);
+  }
   if (running && ctx.r3.u32 == 1)
     REXLOG_INFO("slobber knocker: the match is over - {} beaten;{}", g_beaten.load(), Characters(base));
 }
