@@ -255,6 +255,15 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
   // The native renderer's Direct3D 12 needs ID3D12Device8 (Windows 10 version
   // 2004, build 19041). On an older Windows (10 1809 / LTSC 2019 ...) it can't
   // make its device and nothing draws: "any" means Vulkan there.
+#if defined(__ANDROID__)
+  // The phone draws natively on Vulkan only: a settings file with another
+  // value ("any", seen in a player's report: "no backend for the emulator's
+  // graphics API" and nothing drew) gets Vulkan.
+  if (const std::string api = rex::cvar::Query<std::string>("gpu_backend"); api != "vulkan") {
+    rex::cvar::SetFlagByName("gpu_backend", "vulkan");
+    REXLOG_WARN("graphics: gpu_backend \"{}\" - the phone draws on Vulkan", api);
+  }
+#endif
   if (rex::cvar::Query<std::string>("gpu_backend") == "any") {
     if (const uint32_t build = svr2011::WindowsBuild(); build && build < 19041) {
       rex::cvar::SetFlagByName("gpu_backend", "vulkan");
