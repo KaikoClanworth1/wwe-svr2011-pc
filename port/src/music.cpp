@@ -430,6 +430,7 @@ class Player {
       return false;
     }
     ended_ = input_done_ = false;
+    drain_rounds_ = 0;
     stream_paused_ = true;  // started by the loop (unless paused)
     volume_ = -1.0f;
     return true;
@@ -501,6 +502,7 @@ class Player {
       AMediaCodecBufferInfo info = {};
       const ssize_t out = AMediaCodec_dequeueOutputBuffer(codec_, &info, 2000);
       if (out >= 0) {
+        drain_rounds_ = 0;
         size_t capacity = 0;
         const uint8_t* data = AMediaCodec_getOutputBuffer(codec_, size_t(out), &capacity);
         if (data && info.size > 0) SDL_PutAudioStreamData(stream_, data + info.offset, info.size);
@@ -514,7 +516,11 @@ class Player {
         AMediaFormat_delete(format);
         SetFormat(rate, channels);
       } else if (out == AMEDIACODEC_INFO_TRY_AGAIN_LATER && input_done_) {
-        break;  // (draining: wait for the next round)
+        // (draining: wait for the next round. Some decoders never hand back
+        // a buffer flagged END_OF_STREAM: nothing more for ~0.5 s after the
+        // last input is the end too - else a song played once never ends)
+        if (++drain_rounds_ > 25) ended_ = true;
+        break;
       }
     }
   }
@@ -537,6 +543,7 @@ class Player {
   SDL_AudioStream* stream_ = nullptr;
   int bytes_per_second_ = 1;
   bool ended_ = false, input_done_ = false;
+  int drain_rounds_ = 0;  // rounds without output since the last input
   bool stream_paused_ = true;
   float volume_ = -1.0f;
 };

@@ -121,6 +121,7 @@ std::atomic<bool> g_have_object{false};
 int g_stop_in = -1, g_play_in = -1, g_restore_in = -1;  // under g_mutex
 int g_preview = -1;   // the song every item plays for a preview (under g_mutex)
 int g_previewed = -1; // the song last previewed: left to play out even if off
+bool g_previewed_started = false;  // (it has started: until then the song fading out isn't judged)
 int g_quiet = 0;      // frames since the last event the jukebox posted
 std::atomic<int> g_now{-1};  // the song that started last and still plays (JukeboxUpdate)
 std::array<uint32_t, kTracks> g_last_count{};
@@ -455,6 +456,7 @@ void RequestPreview(int i) {
   std::lock_guard lock(g_mutex);
   StopUserLocked(15);  // (unmuted as the preview starts)
   g_preview = g_previewed = i;
+  g_previewed_started = false;
   g_stop_in = 0;
   g_play_in = 15;
   g_restore_in = -1;
@@ -607,9 +609,13 @@ void JukeboxUpdate(PPCContext& ctx, uint8_t* base) {
     bool off = false, idle = false;
     {
       std::lock_guard lock(g_mutex);
-      off = now >= 0 && !g_on[now] && now != g_previewed && g_preview < 0 && !g_muted;
+      // (a preview: nothing is judged until its song has started - the song
+      // it replaced may still be fading out, the one "now playing")
+      if (now >= 0 && now == g_previewed) g_previewed_started = true;
+      const bool waiting = g_previewed >= 0 && !g_previewed_started && g_quiet < 600;  // (10 s at most)
+      off = now >= 0 && !g_on[now] && now != g_previewed && g_preview < 0 && !g_muted && !waiting;
       idle = g_stop_in < 0 && g_play_in < 0 && g_restore_in < 0;
-      if (now >= 0 && now != g_previewed) g_previewed = -1;
+      if (now >= 0 && now != g_previewed && !waiting) g_previewed = -1;
     }
     if (off && idle && g_quiet > 180) RequestSkip();  // (3 s after the last one: the stopped song fades)
   }
