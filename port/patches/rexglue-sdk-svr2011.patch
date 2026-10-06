@@ -2056,10 +2056,41 @@ index 6788214..1b37e1c 100644
      if (dfn.vkCreateBuffer(device, &buffer_create_info, nullptr, &buffer_) == VK_SUCCESS) {
        VkMemoryRequirements buffer_memory_requirements;
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
-index 813bb1c..e895060 100644
+index 813bb1c..2b180ee 100644
 --- a/src/input/input_system.cpp
 +++ b/src/input/input_system.cpp
-@@ -245,12 +245,32 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+@@ -10,6 +10,8 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <chrono>
+ #include <cmath>
+ 
+ #include <rex/dbg.h>
+@@ -79,6 +81,21 @@ void InputSystem::SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignme
+ }
+ 
+ void InputSystem::RefreshDevices() {
++  // [svr2011] At most every 8 ms: each GetState / GetCapabilities asks for it,
++  // and a game polling 8 users a frame enumerated every driver (XInput
++  // capability calls, SDL, keyboard) 8+ times a frame. Plugging a pad in or
++  // out still shows within a frame.
++  {
++    static std::atomic<int64_t> last_ns{0};
++    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                            std::chrono::steady_clock::now().time_since_epoch())
++                            .count();
++    const int64_t prev = last_ns.load(std::memory_order_relaxed);
++    if (prev && now - prev < 8000000 && !devices_.empty()) {
++      return;
++    }
++    last_ns.store(now, std::memory_order_relaxed);
++  }
+   std::vector<DeviceInfo> seen;
+   std::vector<InputDriver*> owners;
+   std::vector<DeviceInfo> enumerated;
+@@ -245,12 +262,32 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
    if (!any) {
      return X_ERROR_DEVICE_NOT_CONNECTED;
    }
@@ -2092,7 +2123,7 @@ index 813bb1c..e895060 100644
  X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
    SCOPE_profile_cpu_f("hid");
    if (!assignment_) {
-@@ -310,6 +330,9 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
+@@ -310,6 +347,9 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
        continue;
      }
      X_RESULT result = driver->GetDeviceKeystroke(id, flags, out_keystroke);
