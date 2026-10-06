@@ -4,17 +4,20 @@
 // The menu music is one sound-engine event, Play_Menu_Music: a random
 // container of 19 songs (10 original entrance themes, 9 menu themes) that
 // moves on to another song when one ends. The page turns songs on and off
-// (cvar jukebox_off); the container then only plays songs that are on. With
-// every song off the menus are silent. Driven by the controller (D-pad / left
-// stick: choose, A: on / off, X: all on, Y: all off, LB / RB: page, B: back) or
-// the keyboard (arrows, Enter / Space, Page Up / Down, Esc). While it is open
-// the game sees an idle controller.
+// (cvar jukebox_off); the container then only plays songs that are on - a song
+// turned off while it plays stops, and another starts. With every song off the
+// menus are silent. PREVIEW plays the chosen song now (on or off), then the
+// menus go on with the songs that are on. Driven by the controller (D-pad /
+// left stick: choose, A: on / off, X: preview, Y: all on / all off, LB / RB:
+// page, B: back) or the keyboard (arrows, Enter / Space, P, Page Up / Down,
+// Esc). While it is open the game sees an idle controller.
 
 #pragma once
 
 #include <cstdint>
 
 struct ImFont;
+struct PPCContext;
 
 namespace rex::memory {
 class Memory;
@@ -34,7 +37,11 @@ void InstallJukebox(rex::memory::Memory* memory);
 // Every audio event the game posts by name (superstar_mods.cpp's
 // sub_82BEC030 hook), before anything else sees it. True: the event is not
 // posted (the menu music with every song off).
-bool JukeboxEvent(uint8_t* base, const char* e);
+bool JukeboxEvent(uint8_t* base, const char* e, uint32_t object);
+
+// Once a frame, from the game's world update (frame_rate.cpp): what the page
+// asked for - the song stopped and another started, or a preview.
+void JukeboxUpdate(PPCContext& ctx, uint8_t* base);
 
 // Once, when the dialogs are created. `input` may be null.
 void InstallJukeboxPage(rex::ui::ImGuiDrawer* drawer, rex::input::InputSystem* input);

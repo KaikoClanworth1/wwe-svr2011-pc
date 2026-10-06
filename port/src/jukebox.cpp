@@ -14,6 +14,13 @@
 // What plays now: each song's sound node (vtable 820B14F0, id at +0xC) has a
 // reference count at +4, one higher while it plays.
 //
+// Stopping, skipping and previewing post the game's own events from its
+// world update (JukeboxUpdate): Stop_Menu_Music, then Play_Menu_Music a
+// quarter of a second later on the game object the game last played the menu
+// music on. A preview gives every item the chosen song for that Play, then
+// the playlist is put back; a song that is off which still comes up (after a
+// preview of it, with every song off) is stopped when it starts.
+//
 // Research: scratchpad pck.py / songs.py (the banks), jukebox tests jbx1-10.
 
 #include "jukebox.h"
@@ -42,6 +49,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/ui/imgui_dialog.h>
 
+#include "generated/default/svr2011_init.h"
 #include "graphics_page.h"
 
 REXCVAR_DEFINE_STRING(jukebox_off, "", "UI",
@@ -83,6 +91,17 @@ uint32_t g_list = 0;             // the playlist's items (guest address; 0: not 
 std::array<uint32_t, kTracks> g_sound_node{};
 std::array<uint32_t, kTracks> g_sound_idle{};  // each node's count while it doesn't play
 std::atomic<bool> g_searched{false};
+
+// The events the page asks for (JukeboxUpdate posts them; frames to wait, -1: none).
+uint32_t g_event_names = 0;           // guest "Play_Menu_Music\0Stop_Menu_Music\0"
+std::atomic<uint32_t> g_music_object{0};
+std::atomic<bool> g_have_object{false};
+int g_stop_in = -1, g_play_in = -1, g_restore_in = -1;  // under g_mutex
+int g_preview = -1;   // the song every item plays for a preview (under g_mutex)
+int g_previewed = -1; // the song last previewed: left to play out even if off
+int g_quiet = 0;      // frames since the last event the jukebox posted
+std::atomic<int> g_now{-1};  // the song that started last and still plays (JukeboxUpdate)
+std::array<uint32_t, kTracks> g_last_count{};
 
 uint32_t Be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 void SetBe32(uint8_t* p, uint32_t v) {
@@ -175,8 +194,12 @@ void SaveSettings() {
 bool Apply() {
   std::lock_guard lock(g_mutex);
   std::vector<int> on;
-  for (int i = 0; i < kTracks; ++i)
-    if (g_on[i]) on.push_back(i);
+  if (g_preview >= 0) {
+    on.push_back(g_preview);
+  } else {
+    for (int i = 0; i < kTracks; ++i)
+      if (g_on[i]) on.push_back(i);
+  }
   if (!g_list) return !on.empty();
   uint8_t* p = Host(g_list);
   if (!IsPlaylist(p)) {  // (the bank was unloaded: search again at the next song)
@@ -184,23 +207,79 @@ bool Apply() {
     g_searched = false;
     return !on.empty();
   }
-  if (on.empty()) return false;
+  if (on.empty()) {  // (each item its own song: one that comes up is stopped, JukeboxUpdate)
+    for (int i = 0; i < kTracks; ++i) SetBe32(p + 8 * i, kTrack[i].child);
+    return false;
+  }
   static std::mt19937 rng{std::random_device{}()};
   std::vector<int> fill = on;
   std::shuffle(fill.begin(), fill.end(), rng);
   size_t next = 0;
   for (int i = 0; i < kTracks; ++i)
-    SetBe32(p + 8 * i, g_on[i] ? kTrack[i].child : kTrack[fill[next++ % fill.size()]].child);
+    SetBe32(p + 8 * i, g_preview < 0 && g_on[i] ? kTrack[i].child : kTrack[fill[next++ % fill.size()]].child);
   return true;
 }
 
-// The song playing now (-1: none).
-int NowPlaying() {
+bool AnyOn() {
   std::lock_guard lock(g_mutex);
-  if (!g_list) return -1;
-  for (int i = 0; i < kTracks; ++i)
-    if (g_sound_node[i] && Be32(Host(g_sound_node[i]) + 4) > g_sound_idle[i]) return i;
-  return -1;
+  return std::find(g_on.begin(), g_on.end(), true) != g_on.end();
+}
+
+// The song playing now (-1: none): the one that started last while it plays
+// (a stopped one fades out a moment longer). Once a frame (JukeboxUpdate).
+void TrackNowPlaying() {
+  std::lock_guard lock(g_mutex);
+  if (!g_list) {
+    g_now = -1;
+    return;
+  }
+  int now = g_now, any = -1;
+  for (int i = 0; i < kTracks; ++i) {
+    const uint32_t c = g_sound_node[i] ? Be32(Host(g_sound_node[i]) + 4) : 0;
+    if (c > g_sound_idle[i]) {
+      if (any < 0) any = i;
+      if (c > g_last_count[i]) now = i;  // (started)
+    }
+    g_last_count[i] = c;
+  }
+  if (now >= 0 && (!g_sound_node[now] || g_last_count[now] <= g_sound_idle[now])) now = any;  // (it ended)
+  if (now != g_now) REXLOG_INFO("[svr2011] jukebox: now playing {}", now >= 0 ? kTrack[now].name : "nothing");
+  g_now = now;
+}
+int NowPlaying() { return g_now; }
+
+// The page's requests (any thread).
+void RequestSkip() {  // (the song stopped; another starts if any is on)
+  const bool on = AnyOn();
+  std::lock_guard lock(g_mutex);
+  g_stop_in = 0;
+  g_play_in = on ? 15 : -1;
+}
+void RequestPlay() {  // (the menus were silent)
+  std::lock_guard lock(g_mutex);
+  if (g_play_in < 0) g_play_in = 0;
+}
+void RequestPreview(int i) {
+  std::lock_guard lock(g_mutex);
+  g_preview = g_previewed = i;
+  g_stop_in = 0;
+  g_play_in = 15;
+  g_restore_in = -1;
+}
+
+// Posts one of the menu music's events as the game does (sub_82BEC030(name,
+// object, flags, callback, cookie)), through the port's hook of it.
+void Post(PPCContext& ctx, uint8_t* base, bool play) {
+  if (!g_event_names || !g_have_object) return;
+  const auto saved = ctx;
+  ctx.r3.u64 = g_event_names + (play ? 0 : 16);
+  ctx.r4.u64 = g_music_object.load();
+  ctx.r5.u64 = 0;
+  ctx.r6.u64 = 0;
+  ctx.r7.u64 = 0;
+  sub_82BEC030(ctx, base);
+  ctx = saved;
+  REXLOG_INFO("[svr2011] jukebox: {}", play ? "Play_Menu_Music" : "Stop_Menu_Music");
 }
 
 }  // namespace
@@ -210,15 +289,62 @@ namespace svr2011 {
 void InstallJukebox(rex::memory::Memory* memory) {
   g_memory = memory;
   LoadSettings();
+  static const char kNames[32] = "Play_Menu_Music\0Stop_Menu_Music";
+  if ((g_event_names = memory->SystemHeapAlloc(32)) != 0)
+    std::memcpy(memory->TranslateVirtual<char*>(g_event_names), kNames, 32);
 }
 
-bool JukeboxEvent(uint8_t* /*base*/, const char* e) {
+bool JukeboxEvent(uint8_t* /*base*/, const char* e, uint32_t object) {
   if (!g_memory || std::strcmp(e, "Play_Menu_Music") != 0) return false;
+  g_music_object = object;
+  g_have_object = true;
   if (!g_searched.exchange(true)) Search();
   if (Apply()) return false;
   static int logged = 0;
   if (logged++ < 3) REXLOG_INFO("[svr2011] jukebox: every menu song is off - no menu music");
   return true;
+}
+
+void JukeboxUpdate(PPCContext& ctx, uint8_t* base) {
+  if (!g_memory) return;
+  bool stop = false, play = false, restore = false;
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_stop_in >= 0 && g_stop_in-- == 0) stop = true;
+    if (g_play_in >= 0 && g_play_in-- == 0) play = true;
+    if (g_restore_in >= 0 && g_restore_in-- == 0) restore = true;
+  }
+  TrackNowPlaying();
+  ++g_quiet;
+  if (stop || play) g_quiet = 0;
+  if (stop) Post(ctx, base, false);
+  if (play) {
+    Post(ctx, base, true);  // (the hook applies the playlist: the preview's, or the songs that are on)
+    std::lock_guard lock(g_mutex);
+    if (g_preview >= 0) g_restore_in = 60;  // (once the container has chosen)
+  }
+  if (restore) {
+    {
+      std::lock_guard lock(g_mutex);
+      g_preview = -1;
+    }
+    Apply();
+  }
+  // A song that is off coming up (the container's next one after a preview,
+  // or with every song off): stopped, another started if any is on.
+  static int check = 0;
+  if (++check >= 30) {
+    check = 0;
+    const int now = NowPlaying();
+    bool off = false, idle = false;
+    {
+      std::lock_guard lock(g_mutex);
+      off = now >= 0 && !g_on[now] && now != g_previewed && g_preview < 0;
+      idle = g_stop_in < 0 && g_play_in < 0 && g_restore_in < 0;
+      if (now >= 0 && now != g_previewed) g_previewed = -1;
+    }
+    if (off && idle && g_quiet > 180) RequestSkip();  // (3 s after the last one: the stopped song fades)
+  }
 }
 
 }  // namespace svr2011
@@ -312,15 +438,23 @@ uint16_t JukeboxPage::PadButtons() {
   return b;
 }
 
-// i < 0: every song.
+// i < 0: every song. The song playing turned off stops (another starts); a
+// song turned on while the menus were silent starts.
 void JukeboxPage::Set(int i, bool on) {
+  const int playing = NowPlaying();
+  const bool was_on = AnyOn();
   {
     std::lock_guard lock(g_mutex);
     for (int k = 0; k < kTracks; ++k)
       if (i < 0 || k == i) g_on[k] = on;
+    if (playing >= 0 && g_previewed == playing && !on && (i < 0 || i == playing)) g_previewed = -1;
   }
   Apply();
   SaveSettings();
+  if (!on && playing >= 0 && (i < 0 || i == playing))
+    RequestSkip();
+  else if (on && !was_on)
+    RequestPlay();
 }
 
 void JukeboxPage::OnDraw(ImGuiIO& io) {
@@ -373,8 +507,8 @@ void JukeboxPage::OnDraw(ImGuiIO& io) {
       ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
     Set(sel_, !on[sel_]);
   }
-  if (pressed & X_INPUT_GAMEPAD_X) Set(-1, true);
-  if (pressed & X_INPUT_GAMEPAD_Y) Set(-1, false);
+  if ((pressed & X_INPUT_GAMEPAD_X) || ImGui::IsKeyPressed(ImGuiKey_P, false)) RequestPreview(sel_);
+  if (pressed & X_INPUT_GAMEPAD_Y) Set(-1, std::find(on.begin(), on.end(), false) != on.end());  // (all on, or all off)
   {
     std::lock_guard lock(g_mutex);
     on = g_on;
@@ -519,7 +653,7 @@ void JukeboxPage::OnDraw(ImGuiIO& io) {
     }
     Equalizer(dl, P(800, 470), P(1166, 590), 24, t, playing >= 0, IM_COL32(150, 18, 20, 255),
               IM_COL32(255, 120, 60, 255));
-    centred(604, 15 * s, "A song you turn off plays to its end.", kDim);
+    centred(604, 15 * s, "X plays the chosen song now.", kDim);
   }
 
   // Footer: the buttons.
@@ -528,8 +662,9 @@ void JukeboxPage::OnDraw(ImGuiIO& io) {
     float x = P(84, 0).x;
     x = Hint(dl, x, cy, s, "B", IM_COL32(200, 40, 40, 255), "BACK");
     x = Hint(dl, x, cy, s, "A", IM_COL32(60, 160, 60, 255), on[sel_] ? "TURN OFF" : "TURN ON");
-    x = Hint(dl, x, cy, s, "X", IM_COL32(40, 100, 200, 255), "ALL ON");
-    x = Hint(dl, x, cy, s, "Y", IM_COL32(215, 170, 20, 255), "ALL OFF");
+    x = Hint(dl, x, cy, s, "X", IM_COL32(40, 100, 200, 255), "PREVIEW");
+    x = Hint(dl, x, cy, s, "Y", IM_COL32(215, 170, 20, 255),
+             std::find(on.begin(), on.end(), false) != on.end() ? "ALL ON" : "ALL OFF");
     x = Hint(dl, x, cy, s, "LB", IM_COL32(90, 90, 100, 255), "");
     Hint(dl, x - 26 * s, cy, s, "RB", IM_COL32(90, 90, 100, 255), "PAGE");
   }
