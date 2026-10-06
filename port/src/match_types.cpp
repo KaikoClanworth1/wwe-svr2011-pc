@@ -1075,10 +1075,22 @@ REX_HOOK_RAW(sub_82216C58) {
   __imp__sub_82216C58(ctx, base);
   for (Attack& a : g_attacks)
     if (a.fighter == fighter && a.wrestler) {
-      static const uint32_t motion = [] {
-        const char* v = std::getenv("SVR2011_TEST_LJ_MOTION");
-        return v ? uint32_t(std::atoi(v)) : 1000u;
+      // (test aid: SVR2011_TEST_LJ_MOTION=<id>[,<id>...] - each attack the next)
+      static const std::vector<uint32_t> motions = [] {
+        std::vector<uint32_t> m;
+        if (const char* v = std::getenv("SVR2011_TEST_LJ_MOTION"))
+          for (const char* p = v; *p;) {
+            char* end = nullptr;
+            const unsigned long id = std::strtoul(p, &end, 10);
+            if (end == p) break;
+            m.push_back(uint32_t(id));
+            for (p = end; *p == ',' || *p == ' ';) ++p;
+          }
+        if (m.empty()) m.push_back(g_attack_motion);
+        return m;
       }();
+      static size_t next = 0;
+      const uint32_t motion = motions[next++ % motions.size()];
       const auto saved = ctx;
       const uint32_t before = Rd32(base + fighter + 212), wbefore = Rd32(base + a.wrestler + 212);
       ctx.r3.u64 = fighter;
@@ -1142,6 +1154,19 @@ void LumberjackController(uint8_t* base) {
   }
   // The lumberjacks: people 2-5 (+1156), whatever their character slot.
   auto is_lumberjack = [&](uint32_t i) { return ch[i] && Rd32(base + ch[i] + 1156) >= 2; };
+  // Test aid: SVR2011_TEST_LJ_FORCE=<s> - every <s> seconds the next
+  // lumberjack attacks person 0 wherever they are (for trying attack moves).
+  static const int force = [] { const char* v = std::getenv("SVR2011_TEST_LJ_FORCE"); return v ? std::atoi(v) : 0; }();
+  if (force > 0 && frames % uint32_t(force * 60) == 0 && ch[0]) {
+    static uint32_t who = 2;
+    for (uint32_t k = 0; k < 6; ++k, who = 2 + (who - 1) % 4)
+      if (is_lumberjack(who)) {
+        g_attacks[who] = Attack{ch[who], ch[0], frames};
+        REXLOG_INFO("match types: test - lumberjack {} attacks person 0", who);
+        who = 2 + (who - 1) % 4;
+        break;
+      }
+  }
   for (uint32_t w = 0; w < 6; ++w) {
     if (!ch[w] || is_lumberjack(w)) continue;
     if (OnFloor(pos[w])) floor_time[w] = std::max(floor_time[w], 0) + 1;
