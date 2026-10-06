@@ -1615,7 +1615,8 @@ void UpdateTitle(Renderer* r) {
 // render targets
 //
 // Each EDRAM colour surface the game renders to (base tile, pitch, format,
-// height) gets a host render target, and each depth surface a D24S8 buffer;
+// height) gets a host render target, and each depth surface a D24S8 buffer
+// (D32F S8 where the GPU has no D24S8: backend::DepthFormat);
 // a Resolve copies a target into a texture the game then samples
 // (textures::RegisterResolved), and Present shows the last full-screen
 // colour resolve (the front buffer).
@@ -1711,15 +1712,16 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   const uint64_t key = uint64_t(base) | (uint64_t(pitch) << 12) | (uint64_t(height) << 32);
   if (auto it = r->depth_targets.find(key); it != r->depth_targets.end()) return &it->second;
   if (r->depth_targets.size() >= kMaxDepthTargets) return nullptr;
-  // D24S8, copyable to a sampled depth texture (typeless underneath).
+  // D24S8 (or D32F S8: backend::DepthFormat), copyable to a sampled depth
+  // texture (typeless underneath).
   const uint32_t scale = TargetScale(pitch, height);
   const uint32_t host_w = HostWidth(pitch, height, scale), host_h = HostHeight(pitch, height, scale);
   plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-      host_w, host_h, 1, RenderFormat::D24_UNORM_S8_UINT,
+      host_w, host_h, 1, backend::DepthFormat(),
       plume::RenderTextureFlag::DEPTH_TARGET);
   d.committed = true;
   const plume::RenderClearValue cv =
-      plume::RenderClearValue::Depth(plume::RenderDepth(1.0f), RenderFormat::D24_UNORM_S8_UINT);
+      plume::RenderClearValue::Depth(plume::RenderDepth(1.0f), backend::DepthFormat());
   d.optimizedClearValue = &cv;
   std::shared_ptr<plume::RenderTexture> resource = r->device->createTexture(d);
   if (!resource) {
@@ -2214,7 +2216,8 @@ std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const Pipelin
   d.frontFace = front_cw ? plume::RenderFrontFace::CLOCKWISE : plume::RenderFrontFace::COUNTER_CLOCKWISE;
   d.depthClipEnabled = true;
   // Xenos offsets are in depth units of the 24-bit buffer and slopes in 1/16
-  // (as Xenia converts them).
+  // (as Xenia converts them). (D32F's unit is 2^(exponent - 23): the same
+  // 2^-24 at depths 0.5..1, where scenes are; nearer, a smaller offset.)
   d.depthBias = int32_t(std::lround(double(key.bias_offset) * double(1 << 24)));
   d.slopeScaledDepthBias = key.bias_scale * (1.0f / 16.0f);
   // Depth / stencil.
@@ -2261,7 +2264,7 @@ std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const Pipelin
   d.primitiveTopology = topology;
   d.renderTargetCount = 1;
   d.renderTargetFormat[0] = rt_format;
-  d.depthTargetFormat = RenderFormat::D24_UNORM_S8_UINT;
+  d.depthTargetFormat = backend::DepthFormat();
   // Logged before it is built: a GPU driver that crashes compiling it (seen
   // under Proton) leaves this as the log's last pipeline.
   if (render_thread) REXLOG_INFO("native renderer: pipeline {} vs {:016X}.{} ps {:016X}.{} rt {} blend {:08X}{} mask {:X} "
@@ -3963,7 +3966,7 @@ void OnResolve(const PPCContext& ctx) {
     if (!t.depth) return;
     src = t.depth->resource.get();
     src_layout = &t.depth->layout;
-    family = RenderFormat::D24_UNORM_S8_UINT;
+    family = backend::DepthFormat();
     src_w = t.depth->width;
     src_h = t.depth->height;
     scale = t.depth->scale;
@@ -4039,7 +4042,7 @@ void OnResolve(const PPCContext& ctx) {
   Transition(r, dst.resource.get(), dst.layout, RenderTextureLayout::SHADER_READ);
   if (src_before != RenderTextureLayout::UNKNOWN) Transition(r, src, *src_layout, src_before);
   if (depth) {
-    textures::RegisterResolved(base, dst.resource.get(), RenderFormat::D24_UNORM_S8_UINT,
+    textures::RegisterResolved(base, dst.resource.get(), backend::DepthFormat(),
                                RenderFormat::UNKNOWN, 1, false, dst_w * dst_h * 4);
   } else {
     // Resolves to ARGB textures store red and blue swapped (copy_dest_swap),
