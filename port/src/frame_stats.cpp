@@ -194,9 +194,12 @@ REX_EXTERN(__imp__sub_8291AED0);
 REX_HOOK_RAW(sub_8291AED0) {
   const uint32_t front_buffer = ctx.r4.u32;
   __imp__sub_8291AED0(ctx, base);
-  svr2011::OnFramePresented();
 #ifndef SVR2011_D3D_TRACE
   if (svr2011::native::Enabled()) svr2011::native::OnPresent(front_buffer);
+  // (30 fps at 60 Hz, native::SetHalfFrames: only the frames shown count)
+  if (!svr2011::native::LastFrameHidden()) svr2011::OnFramePresented();
+#else
+  svr2011::OnFramePresented();
 #endif
   SVR_TIMELINE_PRESENT(0);
 }

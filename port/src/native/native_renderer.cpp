@@ -610,6 +610,7 @@ struct Renderer {
   std::deque<std::pair<uint64_t, std::shared_ptr<void>>> garbage;  // (frame, object)
 
   bool frame_open = false;
+  bool hidden_frame = false;  // (30 fps at 60 Hz: SetHalfFrames - this frame isn't shown, its draws are skipped)
   uint32_t back_index = 0;  // frame slot (frames % kFrames)
   uint64_t frames = 0;
 
@@ -1487,6 +1488,12 @@ void ApplyTextureQuality(Renderer* r) {
 }
 
 // False: the GPU stopped answering and the native renderer gave up.
+// 30 fps with the world at 60 Hz (frame_rate.cpp): every other frame isn't
+// shown and its draws and clears aren't made (the GPU work of the frames no
+// one sees); resolves still run (copies of what the last shown frame drew).
+std::atomic<bool> g_half_frames{false};
+std::atomic<bool> g_last_hidden{false};  // (OnPresent's frame wasn't shown)
+
 bool BeginFrame(Renderer* r) {
   if (r->frame_open) return true;
   if (g_main) ApplyTextureQuality(r);
@@ -1514,6 +1521,7 @@ bool BeginFrame(Renderer* r) {
   r->constant_uploads[0] = r->constant_uploads[1] = {};
   r->rings[r->back_index].offset = 0;
   r->frame_open = true;
+  r->hidden_frame = g_half_frames.load() && (r->frames & 1);
   r->frame_stats = {};
   r->texture_context = TextureContext(r);
   g_resolved_this_frame = false;
@@ -2915,6 +2923,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   ScopeTimer timer(r->perf_draw_ms);
   ApplyPendingConstants();
   ++r->frame_stats.draws;
+  if (r->hidden_frame) return;  // (a frame not shown: SetHalfFrames)
   if (g_stop_at_resolve && g_resolved_this_frame) return;
   const Targets targets = CurrentTargets(r);
   if (!targets.color) {
@@ -3686,7 +3695,9 @@ void OnPresent(uint32_t front_buffer) {
     return;
   }
   // This frame, for the emulator's next swap (rex/external_frame.h).
-  backend::PublishFrame(r->outputs[r->output_index], g_out_w, g_out_h, r->fences[r->back_index].get());
+  g_last_hidden = r->hidden_frame;
+  if (!r->hidden_frame)  // (a frame not shown keeps the last one on screen)
+    backend::PublishFrame(r->outputs[r->output_index], g_out_w, g_out_h, r->fences[r->back_index].get());
   r->frame_open = false;
   ++r->frames;
   g_frame_2d = (g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
@@ -3802,6 +3813,7 @@ void OnClear(const PPCContext& ctx) {
   Renderer* r = Get();
   if (!r) return;
   if (!BeginFrame(r)) return;
+  if (r->hidden_frame) return;  // (a frame not shown: SetHalfFrames)
   if (g_stop_at_resolve && g_resolved_this_frame) return;
   const Targets t = CurrentTargets(r);
   if (!BindTargets(r, t)) return;
@@ -4169,4 +4181,10 @@ void OnShaderCreated(uint32_t container, uint32_t object, bool pixel) {
   g_shaders[object] = std::move(s);
 }
 
+}  // namespace svr2011::native
+
+namespace svr2011::native {
+void SetHalfFrames(bool on) { g_half_frames = on; }
+bool HalfFrames() { return g_half_frames.load() && Enabled(); }
+bool LastFrameHidden() { return g_last_hidden.load(); }
 }  // namespace svr2011::native

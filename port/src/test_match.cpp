@@ -1,7 +1,7 @@
 // WWE SmackDown vs. Raw 2011 - test aid: a match with the wrestlers and arena
 // a test asks for, whatever was picked on the select screen.
 //
-//   SVR2011_TEST_MATCH="people=JOHN CENA,RANDY ORTON arena=11"
+//   SVR2011_TEST_MATCH="people=JOHN CENA,RANDY ORTON arena=11 cpu=all"
 //
 // people: roster names (as the log's "match:" lines print them) or ids,
 // comma-separated, in person order; arena: the arena id (the "match:" line's
@@ -47,6 +47,7 @@ struct TestMatch {
   bool set = false;
   std::vector<std::string> people;  // names or ids
   int arena = -1;
+  bool all_cpu = false;  // cpu=all: every person a CPU (the picks too)
 };
 
 const TestMatch& Config() {
@@ -82,6 +83,8 @@ const TestMatch& Config() {
         }
       } else if (key == "arena") {
         m.arena = std::atoi(value.c_str());
+      } else if (key == "cpu") {
+        m.all_cpu = value == "all";
       } else {
         REXLOG_WARN("test match: unknown setting '{}'", key);
       }
@@ -191,6 +194,7 @@ REX_HOOK_RAW(sub_828BC5E8) {
         slot[4] = 0;           // (kind: a wrestler)
         slot[-8] = 1;          // (controller: the CPU)
       }
+      if (m.all_cpu) slot[-8] = 1;  // (cpu=all: the picks too)
       done += (done.empty() ? "" : ", ") + std::string(reinterpret_cast<const char*>(Record(base, id) + kName));
     }
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
