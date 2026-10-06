@@ -40,6 +40,10 @@ void ThreeStagesSetup(bool on);
 bool ThreeStagesMatch();
 void ThreeStagesUpdate(uint8_t* base);  // (each world update)
 void ThreeStagesBeforeJudge(uint8_t* base);
+
+// Lumberjack (match_types.cpp): before each call of the falls judge - a
+// lumberjack's interference isn't a disqualification.
+void LumberjackBeforeJudge(uint8_t* base);
 void InstallThreeStagesOverlay(rex::ui::ImGuiDrawer* drawer);
 
 }  // namespace svr2011

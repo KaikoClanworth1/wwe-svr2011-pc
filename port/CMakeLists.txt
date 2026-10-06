@@ -56,8 +56,11 @@ set(SVR2011_SOURCES
     src/move_packs.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp
+    modmaker/svrfmt/jboy.cpp
+    src/crowd_off.cpp
     src/frame_rate.cpp
     src/roster.cpp
+    src/story_designer.cpp
     src/post_effects.cpp
     src/replays.cpp
     src/replay_worker.cpp
