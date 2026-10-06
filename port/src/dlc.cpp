@@ -128,6 +128,24 @@ constexpr std::string_view kStringTriggers[] = {"Xbox LIVE", "Xbox 360", "storag
 
 constexpr char kFanPackage[] = "53565232303131504346414E4158584553534B4559";  // (hex "SVR2011PCFANAXXESSKEY")
 
+// 2.0.1-2.0.2 made a package of their own with just the ONLINE_AXXESS item
+// when online was on and no installed package had it. With it installed the
+// Fan Axxess unlock keys don't apply (a locked roster even with the player's
+// own Fan Axxess package and unlock_everything on), and Fan Axxess carries
+// ONLINE_AXXESS anyway: it is removed.
+constexpr char kOldAxxessPackage[] = "5356523230313150434F4E4C494E45415858455353";  // (hex "SVR2011PCONLINEAXXESS")
+
+void RemoveOldAxxess(const std::filesystem::path& title_root) {
+  std::error_code ec;
+  const auto pkg = title_root / "00000002" / kOldAxxessPackage;
+  const auto header = title_root / "Headers" / "00000002" / (std::string(kOldAxxessPackage) + ".header");
+  const bool had = std::filesystem::exists(pkg, ec) || std::filesystem::exists(header, ec);
+  if (!had) return;
+  std::filesystem::remove_all(pkg, ec);
+  std::filesystem::remove(header, ec);
+  REXLOG_INFO("DLC: the old Online Axxess (PC) package removed (it kept the Fan Axxess unlocks from applying)");
+}
+
 struct CatalogItem {
   uint16_t type;
   uint32_t value, variant;
@@ -337,6 +355,7 @@ void InstallDlc(rex::system::KernelState* kernel_state, const std::filesystem::p
     std::filesystem::path root;
     uint32_t title;
     ~FanAxxess() {
+      RemoveOldAxxess(root);
       GrantFanAxxess(root, title);
       ApplyUnlockChoice(root / "00000002");
     }

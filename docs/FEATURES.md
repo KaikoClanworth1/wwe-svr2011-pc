@@ -99,6 +99,7 @@ still being tested.
 - **Superstars the included mods are built from are selectable again** (Stone Cold, Matt Hardy, Mr. McMahon, William Regal and the others): a mod's copy no longer takes over its base superstar's place on the select grid. Saves made by 2.0.3 / 2.0.4 are fixed as they load.
 - **Superstar Threads**: a painted attire the game builds again after a match (a Threads-edited superstar in the title demo, a Road to WrestleMania entrance) is no longer drawn with parts of the earlier build.
 - **SvR 2010 superstars under damage**: their neck, chest and shoulders no longer darken all over as they take damage (a "tank top"); all 20 bundled SvR 2010 superstars updated.
+- **Everything unlocked again for players who played 2.0.1 / 2.0.2 online**: the small Online Axxess package those versions made kept the Fan Axxess unlocks from applying (a locked roster even with *Everything unlocked from the start* on); it is removed at start.
 - **Arena select pages**: all 20 banners show at once after a page turn (some stayed blank, kept the last page's picture or showed half a banner).
 - **USER MOVIES with accents in the name** (e.g. "Peña") now show in Create An Entrance (PC launcher, Android and the game, which renames old ones to "Pena"); the titantron makers give a clear message when something fails.
 - **Arena mods**: VS-screen theme pictures of any size can be swapped.
