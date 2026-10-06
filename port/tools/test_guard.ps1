@@ -3,6 +3,11 @@
 #   Stop-TestGames       closes only test games
 #   Assert-NoPlayerGame  throws when a game not started by a test is running
 
+# Test games open behind every other window (the SDK's SVR2011_WINDOW_BEHIND,
+# before the window is ever shown) on the second screen (--monitor=2): the player
+# watching something never sees one pop up.
+$env:SVR2011_WINDOW_BEHIND = "1"
+
 function Get-SvrGames {
     @(Get-CimInstance Win32_Process -Filter "Name = 'svr2011.exe' OR Name = 'svr2011_trace.exe'" -ErrorAction SilentlyContinue)
 }

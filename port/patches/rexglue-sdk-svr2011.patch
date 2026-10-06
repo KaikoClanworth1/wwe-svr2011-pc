@@ -5785,10 +5785,18 @@ index 9eeb902..1352d33 100644
      provider->ui_samplers_ = UISamplers::Create(provider->vulkan_device_.get());
      if (!provider->ui_samplers_) {
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 2251429..4c80caa 100644
+index 2251429..277382e 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
-@@ -28,6 +28,11 @@
+@@ -15,6 +15,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdlib>
+ #include <cstring>
+ #include <filesystem>
+ 
+@@ -28,6 +29,11 @@
  #include <rex/ui/flags.h>
  #include <rex/ui/sdl_virtual_key.h>
  
@@ -5800,7 +5808,7 @@ index 2251429..4c80caa 100644
  #if REX_PLATFORM_WIN32
  #include <rex/ui/surface_win.h>
  #elif REX_PLATFORM_MAC
-@@ -35,6 +40,8 @@
+@@ -35,6 +41,8 @@
  #include <SDL3/SDL_metal.h>
  
  #include <rex/ui/surface_mac.h>
@@ -5809,7 +5817,7 @@ index 2251429..4c80caa 100644
  #else
  #include <X11/Xlib-xcb.h>
  #include <rex/ui/surface_gnulinux.h>
-@@ -171,7 +178,9 @@ bool WindowSDL::OpenImpl() {
+@@ -171,7 +179,9 @@ bool WindowSDL::OpenImpl() {
    }
  
    if (IsFullscreen()) {
@@ -5820,7 +5828,24 @@ index 2251429..4c80caa 100644
      SDL_SetWindowFullscreen(sdl_window_, true);
    }
  #if REX_PLATFORM_MAC
-@@ -291,10 +300,27 @@ uint32_t WindowSDL::GetLatestDpiImpl() const {
+@@ -183,6 +193,16 @@ bool WindowSDL::OpenImpl() {
+   // desired state so a reopened window comes back with the state it had.
+   ApplyTextInputActiveNow();
+   ApplyCursorVisibilityNow();
++#if REX_PLATFORM_WIN32
++  // [svr2011] Tests (SVR2011_WINDOW_BEHIND=1): behind every other window
++  // before it is ever shown, so a test game never covers what the player is
++  // watching, not even for a frame.
++  if (const char* behind = std::getenv("SVR2011_WINDOW_BEHIND"); behind && *behind == '1') {
++    if (HWND hwnd = static_cast<HWND>(GetNativeWindowHandle())) {
++      ::SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
++    }
++  }
++#endif
+   SDL_ShowWindow(sdl_window_);
+ 
+   // Actualize state for the common Window code. Listener dispatch is handled
+@@ -291,10 +311,27 @@ uint32_t WindowSDL::GetLatestDpiImpl() const {
    return uint32_t(scale * float(GetMediumDpi()) + 0.5f);
  }
  
@@ -5848,7 +5873,7 @@ index 2251429..4c80caa 100644
    SDL_SetWindowFullscreen(sdl_window_, IsFullscreen());
  }
  
-@@ -398,6 +424,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+@@ -398,6 +435,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
        SDL_Metal_DestroyView(metal_view);
      }
    }
@@ -5866,7 +5891,7 @@ index 2251429..4c80caa 100644
  #else
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
    if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
-@@ -549,6 +586,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
+@@ -549,6 +597,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
  }
  
  void WindowSDL::HandleMouseEvent(SDL_Event& event) {
@@ -5881,7 +5906,7 @@ index 2251429..4c80caa 100644
    // SDL3 reports float window coordinates; listeners expect physical pixels.
    float density = GetPixelDensity();
    WindowDestructionReceiver destruction_receiver(this);
-@@ -588,4 +633,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
+@@ -588,4 +644,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
    }
  }
  
