@@ -32,6 +32,23 @@ index 9b3cdf5..a932136 100644
  
  # Add tests subdirectory if tests are enabled
  if(REXGLUE_BUILD_TESTS)
+diff --git a/cmake/rexglue_helpers.cmake b/cmake/rexglue_helpers.cmake
+index 41e6dce..e1b9dbb 100644
+--- a/cmake/rexglue_helpers.cmake
++++ b/cmake/rexglue_helpers.cmake
+@@ -52,6 +52,12 @@ function(rexglue_apply_target_settings target_name)
+             target_compile_options(${target_name} PRIVATE -mcmodel=large)
+         elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+             target_compile_options(${target_name} PRIVATE -march=armv8-a)
++            # [svr2011] REXGLUE_ARM64_TUNE=<cpu>: instruction scheduling for that
++            # core (the same instructions run everywhere) - e.g. cortex-a53 for
++            # in-order little cores.
++            if(REXGLUE_ARM64_TUNE)
++                target_compile_options(${target_name} PRIVATE -mtune=${REXGLUE_ARM64_TUNE})
++            endif()
+         endif()
+     endif()
+ 
 diff --git a/include/rex/chrono/chrono.h b/include/rex/chrono/chrono.h
 index d876846..b73d7af 100644
 --- a/include/rex/chrono/chrono.h

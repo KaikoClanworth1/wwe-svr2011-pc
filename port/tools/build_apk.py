@@ -50,6 +50,7 @@ def build_native():
             f"-DCMAKE_TOOLCHAIN_FILE={(NDK / 'build/cmake/android.toolchain.cmake').as_posix()}",
             "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-29", "-DANDROID_STL=c++_shared",
             "-DCMAKE_BUILD_TYPE=Release", f"-DREXSDK_DIR={SDK_DIR.as_posix()}",
+            "-DREXGLUE_ARM64_TUNE=cortex-a53",  # (in-order little cores: Mali tablets; big cores barely mind)
             "-DREXGLUE_USE_VULKAN=ON",
             f"-DREXGLUE_HOST_TOOL={(SDK_DIR / 'out/win-amd64/rexglue.exe').as_posix()}", env=env)
     run("cmake", "--build", NATIVE, "--target", "svr2011", env=env)
