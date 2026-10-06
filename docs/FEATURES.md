@@ -97,6 +97,7 @@ still being tested.
 - **Arena select pages**: all 20 banners show at once after a page turn (some stayed blank, kept the last page's picture or showed half a banner).
 - **USER MOVIES with accents in the name** (e.g. "Peña") now show in Create An Entrance (PC launcher, Android and the game, which renames old ones to "Pena"); the titantron makers give a clear message when something fails.
 - **Arena mods**: VS-screen theme pictures of any size can be swapped.
+- **Community Creations: your own stories upload** (Story Designer stories were refused as "created by a different player"; only downloaded stories are now).
 - **Three more WWE '13 arenas bundled**: SmackDown 1999, Royal Rumble 1998 and King of the Ring 1998 (installed switched off, like the other bundled mods).
 - **Report a problem asks what happened** (launcher, Play tab): a window asks what kind of problem, how often, what happened and what you were doing just before; the report zip carries that description, and the window tells you to post it as a new thread in the Discord's **bug-svr11** forum (Open Discord, Show the file, and the description already copied to paste).
 - **Android 10 and 11** phones and tablets are supported (the app needed Android 12 before), as are tablets on older Linux kernels, and the game folder can be in the app's own storage (an SD card adopted as internal storage).
