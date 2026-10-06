@@ -66,6 +66,11 @@ const Row kRows[] = {
     {0xA061, 0x07, 0xA062, kNoText, 0x2E},  // TWO ON TWO: after MIXED TAG
     {0xA06A, 0x08, 0xA06B, kNoText, 0x2F},  // TRIPLE THREAT: after NORMAL
     {0xA072, 0x09, 0xA073, kNoText, 0x30},  // FATAL-4-WAY: after NORMAL
+    // FATAL-4-WAY: CHAMPIONSHIP SCRAMBLE (the game's own rule 0x26 and label
+    // A038, cut from PLAY - its row there only opens submenus): 5 people, 2
+    // start and one more comes in each minute; a fall makes an interim
+    // champion and the match goes on; at the bell (5:00) the last one wins.
+    {0xA072, 0x09, 0xA038, kNoText, 0x26},
     {0xA08C, 0x0C, 0x5313, kNoText, 0x15},  // ROYAL RUMBLE: 15-MAN after 10-MAN
     {0xA08D, 0x0C, 0x5314, kNoText, 0x17},  // 25-MAN after 20-MAN
     {0xA07F, 0x0A, 0x0052, kNoText, 0x55},  // 6-MAN: LUMBERJACK after ARMAGEDDON
@@ -177,6 +182,18 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   g_elim_rows.clear();
   const uint32_t total = Rd32(table + 4), shown = Rd32(table + 8);
   if (total == 0 || total > 0x1000 || kFirst + total * kRec > size) return {};
+  // Test aid: SVR2011_TEST_MENU_DUMP=<hex group> - that group's records and
+  // any record of rule 0x26 (CHAMPIONSHIP SCRAMBLE), logged as read.
+  if (const char* v = std::getenv("SVR2011_TEST_MENU_DUMP")) {
+    const uint32_t want = uint32_t(std::strtoul(v, nullptr, 16));
+    for (uint32_t i = 0; i < total; ++i) {
+      const uint8_t* rec = table + kFirst + i * kRec;
+      if (Rd32(rec + 0x18) == want || (Rd32(rec + 0x5C) == 0x26 && Rd32(rec + 0x54) == kScreenMatch))
+        REXLOG_INFO("menu dump: #{} label {:X} text {:X} group {:X} node {:X} parent {:X} +3C {:X} +40 {:X} screen {:X} rule {:X} (shown {})",
+                    i, Rd32(rec), Rd32(rec + 4), Rd32(rec + 0x18), Rd32(rec + 0x1C), Rd32(rec + 0x38), Rd32(rec + 0x3C),
+                    Rd32(rec + 0x40), Rd32(rec + 0x54), Rd32(rec + 0x5C), shown);
+    }
+  }
   // The rows the BACKSTAGE submenus copy, and free node / group ids.
   const uint8_t* submenu = nullptr;
   std::vector<const uint8_t*> areas;
