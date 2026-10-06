@@ -10,6 +10,7 @@
 #include "native/native_renderer.h"
 
 #include <algorithm>
+#include <array>
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
@@ -572,7 +573,19 @@ struct Renderer {
     std::unique_ptr<plume::RenderDescriptorSet> set;
     uint64_t used = 0;  // (frame)
   };
-  std::unordered_map<std::string, CompactSet> compact_sets[2];  // textures, samplers
+  // (keyed by the 16 places' stamps - no allocation or string hash per draw)
+  struct CompactKey {
+    std::array<uint32_t, 16> stamps;
+    bool operator==(const CompactKey& o) const { return stamps == o.stamps; }
+  };
+  struct CompactKeyHash {
+    size_t operator()(const CompactKey& k) const {
+      uint64_t h = 1469598103934665603ull;
+      for (uint32_t v : k.stamps) h = (h ^ v) * 1099511628211ull;
+      return size_t(h ^ (h >> 32));
+    }
+  };
+  std::unordered_map<CompactKey, CompactSet, CompactKeyHash> compact_sets[2];  // textures, samplers
   plume::RenderDescriptorSet* draw_sets[2] = {};
   plume::RenderDescriptorSet* default_sets[2] = {};  // (placeholders only)
   uint64_t compact_swept = 0;
@@ -961,9 +974,9 @@ class TableRecord final : public plume::RenderDescriptorSet {
 // while are dropped (well after the GPU is done with them).
 plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t indices[16]) {
   auto* table = static_cast<TableRecord*>(samplers ? r->sampler_set.get() : r->texture_sets[0].get());
-  uint32_t key[16];
+  Renderer::CompactKey key;
   for (int i = 0; i < 16; ++i)
-    key[i] = indices[i] < table->entries.size() ? table->entries[indices[i]].stamp : 0;
+    key.stamps[size_t(i)] = indices[i] < table->entries.size() ? table->entries[indices[i]].stamp : 0;
   auto& cache = r->compact_sets[samplers];
   if (r->frames - r->compact_swept > 600) {
     r->compact_swept = r->frames;
@@ -974,7 +987,7 @@ plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t
         it = keep ? std::next(it) : r->compact_sets[k].erase(it);
       }
   }
-  Renderer::CompactSet& c = cache[std::string(reinterpret_cast<const char*>(key), sizeof(key))];
+  Renderer::CompactSet& c = cache[key];
   c.used = r->frames;
   if (c.set) return c.set.get();
   c.set = r->device->createDescriptorSet(g_compact_descs[samplers]);
