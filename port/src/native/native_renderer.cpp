@@ -3917,6 +3917,12 @@ bool WriteBackResolve(Renderer* r, uint32_t base, const ResolvedTexture& dst, co
 // D3DDevice_Resolve(device, flags, ..., destination texture in r8): flags 0-3
 // colour target n, 4 depth. Copies the current target into the texture the
 // game will sample (always the whole surface from (0, 0) in this game).
+void GuestWritten(uint32_t address, uint32_t size) {
+  std::lock_guard lock(g_mutex);
+  if (!g_memory || !size) return;
+  textures::GuestWritten(g_memory->GetPhysicalAddress(address), size);
+}
+
 void OnResolve(const PPCContext& ctx) {
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();

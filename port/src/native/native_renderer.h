@@ -77,6 +77,11 @@ void OnDrawUP(const PPCContext& args, uint32_t data);  // data: the space it ret
 void OnEndVertices();
 void OnClear(const PPCContext& ctx);
 void OnResolve(const PPCContext& ctx);
+// The port rewrote guest texture data (guest virtual address, bytes; the
+// arena select pages' banners): textures cached from it are checked again at
+// their next use - the cache re-hashes a texture in constant use only every
+// 120 frames, so page 2's banners came in one by one, some half written.
+void GuestWritten(uint32_t address, uint32_t size);
 void OnSetRenderTarget(uint32_t index, uint32_t surface);
 void OnSetStreamSource(uint32_t stream, uint32_t buffer, uint32_t offset, uint32_t stride);
 void OnShaderCreated(uint32_t container, uint32_t object, bool pixel);
