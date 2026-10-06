@@ -417,16 +417,16 @@ void texpacks_build(HWND wnd, mods_add_fn add, int tab, int id_base, texpacks_ge
     add(tab, L"Button", L"Up", BS_PUSHBUTTON | WS_TABSTOP, 370, 300, 44, 34, id_base + TP_UP);
     add(tab, L"Button", L"Down", BS_PUSHBUTTON | WS_TABSTOP, 418, 300, 52, 34, id_base + TP_DOWN);
     add(tab, L"Button", L"Open folder", BS_PUSHBUTTON | WS_TABSTOP, 476, 300, 98, 34, id_base + TP_OPEN);
-    add(tab, L"Button", L"Making a pack", BS_GROUPBOX, 28, 360, 560, 92, 0);
+    add(tab, L"Button", L"Making a pack", BS_GROUPBOX, 28, 360, 560, 100, 0);
     s_dump = add(tab, L"Button",
                  L"Dump textures: the game writes every texture it shows to Texture Dumps, as PNG named after the "
                  L"game's own textures",
-                 BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP, 42, 380, 400, 40, id_base + TP_DUMP);
-    add(tab, L"Button", L"Open Texture Dumps", BS_PUSHBUTTON | WS_TABSTOP, 450, 382, 124, 34, id_base + TP_OPEN_DUMPS);
+                 BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP, 42, 388, 400, 40, id_base + TP_DUMP);
+    add(tab, L"Button", L"Open Texture Dumps", BS_PUSHBUTTON | WS_TABSTOP, 450, 390, 124, 34, id_base + TP_OPEN_DUMPS);
     add(tab, L"Static",
         L"Edit a dumped PNG, keep its name, and put it in a pack folder (subfolders are fine).",
-        SS_LEFT, 42, 424, 530, 20, 0);
-    s_status = add(tab, L"Static", L"", SS_LEFT | SS_NOPREFIX, 28, 460, 560, 40, id_base + TP_STATUS);
+        SS_LEFT, 42, 432, 530, 20, 0);
+    s_status = add(tab, L"Static", L"", SS_LEFT | SS_NOPREFIX, 28, 468, 560, 40, id_base + TP_STATUS);
 }
 
 int texpacks_command(int id, int code)
