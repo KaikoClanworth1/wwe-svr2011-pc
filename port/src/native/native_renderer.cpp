@@ -3610,7 +3610,7 @@ void OnResolve(const PPCContext& ctx) {
   if (src_before != RenderTextureLayout::UNKNOWN) Transition(r, src, *src_layout, src_before);
   if (depth) {
     textures::RegisterResolved(base, dst.resource.get(), RenderFormat::D24_UNORM_S8_UINT,
-                               RenderFormat::UNKNOWN, 1, false);
+                               RenderFormat::UNKNOWN, 1, false, dst_w * dst_h * 4);
   } else {
     // Resolves to ARGB textures store red and blue swapped (copy_dest_swap),
     // undone by those textures' ZYXW fetch swizzle; the copy here is RGBA,
@@ -3618,7 +3618,8 @@ void OnResolve(const PPCContext& ctx) {
     // RB_COPY_DEST_INFO: the destination's swizzle tells.)
     const bool swap_rb = t.color->components == 4 && ((fetch[3] >> 1) & 7) == 2;
     textures::RegisterResolved(base, dst.resource.get(), t.color->view_format,
-                               t.color->view_gamma_format, t.color->components, swap_rb);
+                               t.color->view_gamma_format, t.color->components, swap_rb,
+                               dst_w * dst_h * 4);
     if (dst_w >= kWidth && dst_h >= kHeight) r->present_source = base;
     static const bool write_back = REXCVAR_GET(native_resolve_write_back);
     // Per-frame resolves (the scene, post-processing chains: resolved in

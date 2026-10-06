@@ -78,9 +78,12 @@ void ForgetResolved(uint32_t base_address);
 // `format` / `gamma_format` are the view formats (the latter for fetches that
 // ask for gamma), `components` the channels the format has; `swap_rb`: the
 // resolve stored red and blue swapped (RB_COPY_DEST_INFO copy_dest_swap),
-// which the fetch swizzle of such textures undoes.
+// which the fetch swizzle of such textures undoes. `bytes`: the guest span the
+// resolve covers (a resolve doesn't write it, so when it changes the game put
+// something else there and the copy is forgotten).
 void RegisterResolved(uint32_t base_address, plume::RenderTexture* texture, plume::RenderFormat format,
-                      plume::RenderFormat gamma_format, uint32_t components, bool swap_rb);
+                      plume::RenderFormat gamma_format, uint32_t components, bool swap_rb,
+                      uint32_t bytes);
 // The renderer is about to free `texture` (a resolve copy it replaced): its
 // views go with it (after the frame, through ctx.retire).
 void ReleaseResolved(const Context& ctx, plume::RenderTexture* texture);

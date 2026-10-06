@@ -286,6 +286,9 @@ struct Resolved {
   uint32_t components = 4;
   bool swap_rb = false;
   uint32_t generation = 0;  // changes with the resource (views are per generation)
+  uint32_t bytes = 0;       // the guest span (fingerprinted)
+  uint64_t fingerprint = 0;
+  uint64_t checked_frame = ~0ull;
 };
 std::unordered_map<uint32_t, Resolved> g_resolved;
 uint32_t g_resolved_generation = 0;
@@ -297,6 +300,18 @@ struct ResolvedViewEntry {
 std::unordered_map<uint64_t, ResolvedViewEntry> g_resolved_views;  // (generation, swizzle, gamma) ->
 Stats g_stats;
 const bool g_no_cache = std::getenv("SVR2011_NATIVE_NOCACHE") != nullptr;  // (debug)
+
+// 16 slices of 256 bytes spread over the resolve's guest span.
+uint64_t ResolvedFingerprint(uint32_t base_address, uint32_t bytes) {
+  if (base_address >= 0x20000000u) return 0;
+  bytes = std::max<uint32_t>(std::min<uint32_t>(bytes, 0x20000000u - base_address), 256);
+  uint64_t h = 0;
+  for (uint32_t k = 0; k < 16; ++k) {
+    const uint32_t offset = std::min<uint32_t>(uint32_t(uint64_t(bytes) * k / 16), bytes - 256);
+    h = h * 31 + XXH3_64bits(g_physical + base_address + offset, 256);
+  }
+  return h;
+}
 
 bool IsBlockCompressed(uint32_t format) {
   switch (format) {
@@ -949,6 +964,22 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
   // after Superstar Threads, Tyson Kidd's roster picture showed its editor
   // preview (a white square).
   if (IsBlockCompressed(uint32_t(fetch.format))) g_resolved.erase(fetch.base_address);
+  // Any texture the game loaded where a resolve went: a resolve leaves guest
+  // memory alone, so changed memory is the game's new texture (after a match,
+  // Superstar Threads' paint layers landed on the match's resolves and a
+  // painted attire baked with pieces of those).
+  if (auto it = g_resolved.find(fetch.base_address);
+      it != g_resolved.end() && it->second.checked_frame != ctx.frame) {
+    it->second.checked_frame = ctx.frame;
+    if (ResolvedFingerprint(fetch.base_address << 12, it->second.bytes) != it->second.fingerprint) {
+      static uint32_t logged = 0;
+      if (logged++ < 16) {
+        REXLOG_INFO("native renderer: resolve {:08X} forgotten (the game wrote a texture there)",
+                    fetch.base_address << 12);
+      }
+      g_resolved.erase(it);
+    }
+  }
   if (auto it = g_resolved.find(fetch.base_address); it != g_resolved.end()) {
     // A render target copy: sampled from the renderer's resource.
     if (dimension != 0) {
@@ -1074,13 +1105,16 @@ void ForgetResolved() { g_resolved.clear(); }
 void ForgetResolved(uint32_t base_address) { g_resolved.erase(base_address >> 12); }
 
 void RegisterResolved(uint32_t base_address, plume::RenderTexture* resource, RenderFormat format,
-                      RenderFormat gamma_format, uint32_t components, bool swap_rb) {
+                      RenderFormat gamma_format, uint32_t components, bool swap_rb, uint32_t bytes) {
   Resolved& r = g_resolved[base_address >> 12];
+  r.bytes = bytes;
+  r.fingerprint = ResolvedFingerprint(base_address, bytes);
+  r.checked_frame = ~0ull;
   if (r.resource == resource && r.format == format && r.swap_rb == swap_rb) return;
   // Views are per resource generation (and format/swap, in their key), so a
   // target alternating formats reuses its views.
   const uint32_t generation = r.resource == resource ? r.generation : ++g_resolved_generation;
-  r = {resource, format, gamma_format, components, swap_rb, generation};
+  r = {resource, format, gamma_format, components, swap_rb, generation, r.bytes, r.fingerprint};
 }
 
 void ReleaseResolved(const Context& ctx, plume::RenderTexture* texture) {
