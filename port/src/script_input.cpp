@@ -8,6 +8,9 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <mutex>
+#include <vector>
+#include <thread>
 
 #include <rex/logging.h>
 #include <spdlog/sinks/base_sink.h>
@@ -234,41 +237,50 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
   REXLOG_INFO("script input: {}", line);
 }
 
+// The command file is read on a thread of its own: an open can block for
+// hundreds of ms (antivirus...), and GetState runs on the game thread - the
+// tests measured those as 370-830 ms frame stalls that players never have.
+// The reader hands over whole lines; PollFile parses them.
+namespace {
+std::mutex g_file_mutex;
+std::vector<std::string> g_file_lines;  // read, not yet parsed
+}  // namespace
+
 void ScriptInputDriver::PollFile() {
-  const auto now = Clock::now();
-  if (now - last_poll_ < kPollInterval) {
-    return;
+  static std::once_flag started;
+  std::call_once(started, [this] {
+    std::thread([file = file_, start = consumed_] {
+      size_t consumed = start;
+      for (;;) {
+        std::this_thread::sleep_for(kPollInterval);
+        std::ifstream f(file, std::ios::binary);
+        if (!f) continue;
+        f.seekg(0, std::ios::end);
+        const size_t size = static_cast<size_t>(f.tellg());
+        if (size < consumed) consumed = 0;  // file was truncated: start over
+        if (size == consumed) continue;
+        f.seekg(static_cast<std::streamoff>(consumed));
+        std::string text(size - consumed, '\0');
+        f.read(text.data(), static_cast<std::streamsize>(text.size()));
+        // Only whole lines; a partly written last line waits for the next poll.
+        const size_t end = text.rfind('\n');
+        if (end == std::string::npos) continue;
+        consumed += end + 1;
+        std::istringstream lines(text.substr(0, end));
+        std::lock_guard lock(g_file_mutex);
+        for (std::string line; std::getline(lines, line);) {
+          if (!line.empty() && line.back() == '\r') line.pop_back();
+          g_file_lines.push_back(std::move(line));
+        }
+      }
+    }).detach();
+  });
+  std::vector<std::string> lines;
+  {
+    std::lock_guard lock(g_file_mutex);
+    lines.swap(g_file_lines);
   }
-  last_poll_ = now;
-  std::ifstream f(file_, std::ios::binary);
-  if (!f) {
-    return;
-  }
-  f.seekg(0, std::ios::end);
-  const size_t size = static_cast<size_t>(f.tellg());
-  if (size < consumed_) {
-    consumed_ = 0;  // file was truncated: start over
-  }
-  if (size == consumed_) {
-    return;
-  }
-  f.seekg(static_cast<std::streamoff>(consumed_));
-  std::string text(size - consumed_, '\0');
-  f.read(text.data(), static_cast<std::streamsize>(text.size()));
-  // Only whole lines; a partly written last line waits for the next poll.
-  const size_t end = text.rfind('\n');
-  if (end == std::string::npos) {
-    return;
-  }
-  consumed_ += end + 1;
-  std::istringstream lines(text.substr(0, end));
-  std::string line;
-  while (std::getline(lines, line)) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
-    }
-    ParseLine(line);
-  }
+  for (const std::string& line : lines) ParseLine(line);
 }
 
 ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {

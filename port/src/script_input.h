@@ -105,9 +105,8 @@ class ScriptInputDriver final : public rex::input::InputDriver {
   bool RunSmart(Clock::time_point now, Step& out);  // false once the step is done
   void Press(uint16_t buttons, Clock::time_point now);
 
-  std::filesystem::path file_;
-  size_t consumed_ = 0;  // bytes of the file already parsed
-  Clock::time_point last_poll_{};
+  std::filesystem::path file_;  // (read on a thread of its own: PollFile)
+  size_t consumed_ = 0;          // where that reading starts (a relaunched copy: past the last copy's)
   std::mutex mutex_;
   std::deque<Step> queue_;
   bool running_ = false;
