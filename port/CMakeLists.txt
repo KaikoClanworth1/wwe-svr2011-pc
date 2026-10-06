@@ -84,7 +84,8 @@ else()
         src/native/recording_list.cpp
         src/native/native_renderer.cpp
         src/native/native_hooks.cpp
-        src/native/textures.cpp)
+        src/native/textures.cpp
+        src/native/texture_packs.cpp)
     # The texture layout / tiling code of the SDK's Xenos GPU plugin (not
     # exported by the plugin DLL), so native textures match the emulated ones.
     list(APPEND SVR2011_SOURCES
@@ -186,7 +187,8 @@ if(REXSDK_DIR AND TARGET imgui)
     # include path the way the installed SDK bundles it.
     target_include_directories(svr2011 PRIVATE
         $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>
-        ${REXSDK_DIR}/thirdparty/xxHash)
+        ${REXSDK_DIR}/thirdparty/xxHash
+        ${REXSDK_DIR}/thirdparty/stb)
 endif()
 if(WIN32 OR ANDROID)
     # Community Creations entrance movies to and from MP4 (movie_transcode.cpp):
