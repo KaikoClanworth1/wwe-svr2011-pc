@@ -113,9 +113,8 @@ REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "The scale follows the window; phones start at 1.");
 
 REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
-                      "Native renderer: off, main (draws the game in the main window; the "
-                      "emulated renderer only runs the GPU command stream, and takes over if the "
-                      "native one fails). (shadow, the old side-by-side window, now means main.)")
+                      "Native renderer: main - the game always draws with it (the emulator only "
+                      "runs the GPU command stream). (off and shadow are old values: they mean main.)")
     .allowed({"off", "main", "shadow"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -712,14 +711,28 @@ void SetCameraAspect(float aspect) {
 uint32_t g_out_w = kWidth, g_out_h = kHeight;
 std::function<std::pair<uint32_t, uint32_t>()> g_window_size;
 
-// The native renderer stopped working: in main mode the emulated renderer
-// draws again (it is the backup).
-void Fail() {
+// The native renderer couldn't start or stopped working. The game draws only
+// with it - no emulated fallback: the screen stays black with the reason on
+// it (FailureReason, fps_overlay.cpp), and on Android the launcher shows it
+// next time (native_failed.txt in the app's cache).
+std::mutex g_fail_mutex;
+std::string g_fail_reason;
+
+void Fail(const char* reason = "it stopped working") {
   g_failed = true;
-  if (g_main) {
-    rex::external_frame::SetHostDrawingDisabled(false);
-    REXLOG_WARN("native renderer: failed - the emulated renderer takes over");
+  {
+    std::lock_guard lock(g_fail_mutex);
+    if (g_fail_reason.empty()) g_fail_reason = reason;
   }
+  REXLOG_ERROR("native renderer: can't draw the game - {} (no emulated fallback)", reason);
+#if defined(__ANDROID__)
+  if (const char* cache = std::getenv("SVR2011_CACHE_DIR")) {
+    if (FILE* f = std::fopen((std::string(cache) + "/native_failed.txt").c_str(), "w")) {
+      std::fprintf(f, "%s\n", reason);
+      std::fclose(f);
+    }
+  }
+#endif
 }
 
 bool EnvFlag(const char* name) {
@@ -1063,7 +1076,7 @@ bool Initialize() {
       REXLOG_ERROR("native renderer: its shaders are missing ({} has no present.vs{}) - reinstall "
                    "with the launcher to get the native_shaders folder",
                    ShaderDirectory().string(), backend::ShaderExtension());
-      Fail();
+      Fail("its shaders are missing - reinstall the game");
     }
   }
   return true;
@@ -1074,7 +1087,7 @@ bool Initialize() {
 // the run.
 void ReportDeviceRemoved(Renderer* r) {
   backend::ReportDeviceLost(r->device.get());
-  Fail();
+  Fail("the GPU stopped (device lost)");
 }
 
 // Waits (CPU) for frame slot `slot`'s last submission. A GPU that stops
@@ -1093,7 +1106,7 @@ bool WaitForFrame(Renderer* r, uint32_t slot, const char* what) {
   REXLOG_ERROR("native renderer: GPU did not finish ({}) in {} ms{}", what, kGpuTimeoutMs,
                lost ? " - device lost" : "");
   if (lost) backend::ReportDeviceLost(r->device.get());
-  Fail();
+  Fail(lost ? "the GPU stopped (device lost)" : "the GPU stopped answering");
   // Releases the emulator's waits for the frames in flight (each slot's).
   for (auto& fence : r->fences) backend::ReleaseFence(fence.get());
   return false;
@@ -1108,7 +1121,8 @@ bool WaitIdle(Renderer* r, const char* what) {
 
 Renderer* Get() {
   std::call_once(g_init_once, [] {
-    if (!Initialize()) Fail();
+    if (!Initialize())
+      Fail("the GPU or its graphics driver lacks what it needs (the log's GPU report says what)");
   });
   return g_failed ? nullptr : g_r;
 }
@@ -3061,24 +3075,22 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 // entry points
 
 std::string RendererLabel() {
-  if (!g_main) return "Emulated";
-  if (g_failed) return "Emulated (native failed)";
-  if (g_suspended) return "Emulated";
+  if (g_failed) return "Native - stopped";
+  if (!g_main) return "Native - starting";
   return fmt::format("Native {}x", g_scale);
 }
 
-bool Enabled() {
-  static const bool on = REXCVAR_GET(native_renderer) != "off";
-  return on && !g_suspended.load(std::memory_order_relaxed);
-}
+// (always: the game draws only with the native renderer)
+bool Enabled() { return true; }
 
-bool CanSwitch() { return g_main && !g_failed; }
+// No switching to the emulated renderer any more.
+bool CanSwitch() { return false; }
 
-void SetNativeActive(bool active) {
-  if (!CanSwitch() || active == !g_suspended) return;
-  g_suspended = !active;
-  rex::external_frame::SetHostDrawingDisabled(active);
-  REXLOG_INFO("native renderer: {}", active ? "drawing again" : "suspended (the emulated renderer draws)");
+void SetNativeActive(bool) {}
+
+std::string FailureReason() {
+  std::lock_guard lock(g_fail_mutex);
+  return g_fail_reason;
 }
 
 bool NativeActive() { return g_main && !g_failed && !g_suspended; }
@@ -3133,17 +3145,20 @@ void Attach(rex::memory::Memory* memory) {
     if (!r || !r->device) return;
     if (backend::DeviceLost(r->device.get())) backend::ReportDeviceLost(r->device.get());
   });
-  if (REXCVAR_GET(native_renderer) != "off") {
+  if (REXCVAR_GET(native_renderer) != "main")
+    REXLOG_WARN("native renderer: native_renderer = {} is no longer used - the game always draws natively",
+                REXCVAR_GET(native_renderer));
+  {
     g_main = true;
     g_scale = 1;  // set with the frame images' size at the first frame (ApplyOutputSettings)
     // The emulated GPU keeps running the command stream but no longer draws;
-    // its presentation shows this renderer's frames. Fail() reverts both.
+    // its presentation shows this renderer's frames (only: no fallback).
     rex::external_frame::SetHostDrawingDisabled(true);
     rex::external_frame::SetProvider([](rex::external_frame::Frame& f) {
       if (g_failed || g_suspended) return false;
       return backend::GetFrame(f);
     });
-    REXLOG_INFO("native renderer: main renderer at {}x resolution (the emulated renderer is the backup)", g_scale);
+    REXLOG_INFO("native renderer: main renderer at {}x resolution (the only one: no emulated fallback)", g_scale);
   }
 }
 

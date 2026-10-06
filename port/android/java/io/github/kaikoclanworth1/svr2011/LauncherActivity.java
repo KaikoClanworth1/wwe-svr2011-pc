@@ -589,8 +589,11 @@ public class LauncherActivity extends Activity {
         toggle(display, "Touch controls", "The on-screen controller (EDIT in game rearranges it)", "touch_controls", true);
         toggle(display, "Show FPS", "The frame rate at the top of the screen", "show_fps", true);
         toggle(display, "VSync", "No tearing; waits for the screen's refresh", "vsync", true);
-        choice(display, "Renderer", "Native is the fastest", "native_renderer",
-            new String[] {"Native", "Emulated"}, new String[] {"main", "off"}, true, "main");
+        // (no Renderer choice: the game draws only natively; an old "off" becomes "main")
+        if ("off".equals(settings_.getString("native_renderer", "main"))) {
+            settings_.setString("native_renderer", "main");
+            settings_.save();
+        }
         choice(display, "Language", "The game's text (the commentary stays English); at the next start",
             "user_language", new String[] {"English", "Français", "Deutsch", "Español", "Italiano"},
             new String[] {"1", "4", "3", "5", "6"}, false, "1");

@@ -33,6 +33,11 @@ namespace svr2011::native {
 
 bool Enabled();
 
+// Why the native renderer couldn't start or stopped, or "" while it works.
+// The game draws only with it (no emulated fallback): the overlay shows this
+// over a black screen (fps_overlay.cpp).
+std::string FailureReason();
+
 // Main mode: switch between this renderer and the emulated one while the
 // game runs (the GRAPHICS page). CanSwitch: started as the main renderer
 // and still working.

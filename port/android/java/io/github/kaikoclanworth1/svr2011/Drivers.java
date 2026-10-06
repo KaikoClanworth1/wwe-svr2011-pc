@@ -391,6 +391,29 @@ final class Drivers {
     // the graphics driver got stuck. Offer the phone's own driver, or (already
     // on it) say plainly that this GPU may not work yet. True: a note was shown.
     boolean checkStuck() {
+        // The game's note (native_renderer.cpp): its graphics couldn't start or stopped -
+        // there is no other renderer to fall back on.
+        File failed = new File(a_.getCacheDir(), "native_failed.txt");
+        if (failed.isFile() && !GameActivity.running) {
+            String why = "";
+            try {
+                why = new String(Files.readAllBytes(failed.toPath()), StandardCharsets.UTF_8).trim();
+            } catch (IOException e) {
+            }
+            failed.delete();
+            String driver = settings_.getString(kKey, "");
+            String g = gpu().isEmpty() ? "this phone's GPU" : gpu();
+            new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle("The game's graphics couldn't run")
+                .setMessage("Last time the game's graphics couldn't run on " + g
+                    + (why.isEmpty() ? "" : " (" + why + ")") + ". "
+                    + (driver.isEmpty() ? "You can try a Mesa Turnip driver (Settings, Graphics driver). "
+                                        : "You can try the phone's own driver or another one (Settings, Graphics driver). ")
+                    + "Please send a problem report (Play tab, Report a problem) - it tells us what your phone needs.")
+                .setPositiveButton("OK", null)
+                .show();
+            return true;
+        }
         File note = new File(a_.getCacheDir(), "gpu_stuck.txt");
         if (!note.isFile() || GameActivity.running) return false;
         String driver = "";

@@ -112,7 +112,7 @@ class UtilityDriveDevice : public rex::filesystem::HostPathDevice {
 constexpr char kDefaultConfig[] =
     "# WWE SmackDown vs. Raw 2011 - settings (the launcher rewrites this file)\n"
     "gpu_plugin = \"xenos\"\n"
-    "native_renderer = \"main\"\n"  // as the launcher's defaults (Emulated: "off")
+    "native_renderer = \"main\"\n"  // (the only renderer: no emulated one)
     "input_backend = \"xinput\"\n"
     "resolution = \"720p\"\n"
     "resolution_scale = 1\n"
