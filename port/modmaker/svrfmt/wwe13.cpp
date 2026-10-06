@@ -918,6 +918,46 @@ int BakeBarrierCorners(std::map<uint32_t, Model>& models, Wwe13Report& rep) {
 
 }  // namespace
 
+// WWE '13 hangs a video cube over the ring (bg28: four arena_movie panels
+// 11-13 m up, raw_801 / raw_804, and four diagonal ones on the end of the
+// titantron's strip in raw_803 / raw_808). SvR2011 arenas have none, and the
+// high entrance camera shows it as a screen floating over the ramp (2.0.3
+// report). A movie model wholly over the ring goes; one whose strip ends with
+// such panels keeps the part before them. True: drop the whole model.
+bool DropHangingScreens(Model& m) {
+  static const char* kMovies[] = {"arena_movie", "titantron_movie", "header_wall_mov"};
+  bool movie = false;
+  for (const auto& t : m.textures)
+    for (const char* k : kMovies) movie |= Lower(t) == k;
+  if (!movie || m.meshes.empty()) return false;
+  auto over_ring = [](const Vertex& v) {
+    return std::fabs(v.pos[0]) <= 40.f && std::fabs(v.pos[2]) <= 40.f && v.pos[1] < -100.f;
+  };
+  bool any_left = false;
+  for (auto& mesh : m.meshes) {
+    for (auto& st : mesh.strips) {
+      size_t keep = st.indices.size();
+      for (size_t k = 0; k < st.indices.size(); ++k)
+        if (st.indices[k] < mesh.verts.size() && over_ring(mesh.verts[st.indices[k]])) { keep = k; break; }
+      if (keep == st.indices.size()) continue;
+      // the rest must be only hanging panels (or the joining repeats of the last kept index)
+      bool rest_hangs = true;
+      for (size_t k = keep; k < st.indices.size(); ++k) {
+        const uint16_t i = st.indices[k];
+        if (i < mesh.verts.size() && !over_ring(mesh.verts[i]) && !(keep && i == st.indices[keep - 1])) rest_hangs = false;
+      }
+      if (!rest_hangs) continue;
+      while (keep && keep >= 2 && st.indices[keep - 1] == st.indices[keep - 2]) --keep;  // (joining repeat)
+      st.indices.resize(keep < 3 ? 0 : keep);
+    }
+    mesh.strips.erase(std::remove_if(mesh.strips.begin(), mesh.strips.end(),
+                                     [](const Strip& st) { return st.indices.empty(); }),
+                      mesh.strips.end());
+    any_left |= !mesh.strips.empty();
+  }
+  return !any_left;
+}
+
 bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13Options& opt, Bytes& out,
                          Wwe13Report& rep, std::string* error) {
   auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
@@ -970,6 +1010,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       std::string err;
       if (!Jboy13Read(raw, m, &err)) return fail("model " + std::to_string(e.id) + ": " + err);
       ConvertModel13(m, 0.1f, rep.conv);
+      if (DropHangingScreens(m)) { ++rep.dropped; continue; }
       names[e.id] = m.name;
       // vertex format bit 0 makes a mesh cast the ring lights' shadows onto the
       // mat. WWE '13 sets it on stands, ringside chairs and the announce table,
