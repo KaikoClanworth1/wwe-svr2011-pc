@@ -10,15 +10,25 @@
 // SVR2011_NATIVE_LIB_DIR). Any failure: the phone's own driver - and a note
 // (gpu_driver_failed.txt in the app's cache) the launcher shows the player.
 //
+// A driver that loads but never gets the first frame out (Turnip on an Adreno
+// 610 stopped at the first pipelines, with nothing in the log): after 60 s
+// without a finished frame the log says so and gpu_stuck.txt (cache) tells
+// the launcher, which offers the phone's own driver or says the GPU may be
+// unsupported. A frame after all takes the note back.
+//
 // gpu_driver_env: driver variables set before the driver loads, "NAME=value"
 // separated by ';' - e.g. Turnip's FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1
 // (graphical glitches on HyperOS 3). A gpu_driver outside the app's storage
 // (a .so in Download, set by hand) is copied into the app's cache first:
 // Android only loads code from there.
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
+
+#include <rex/external_frame.h>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -123,6 +133,35 @@ std::string LocalCopy(const std::string& path) {
 }
 #endif
 
+void StartStuckWatch(const std::string& driver) {
+  static bool started = false;
+  if (started) return;
+  started = true;
+  std::thread([driver] {
+    constexpr int kSeconds = 60;
+    const auto t0 = std::chrono::steady_clock::now();
+    while (rex::external_frame::SwapCount() == 0) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      if (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(kSeconds)) continue;
+      REXLOG_ERROR("GPU: no frame {} s after the start - the graphics driver ({}) seems stuck; try another "
+                   "driver (launcher: Settings, Graphics driver)",
+                   kSeconds, driver.empty() ? "the phone's own" : driver);
+      const char* cache = std::getenv("SVR2011_CACHE_DIR");
+      const std::string note = cache ? std::string(cache) + "/gpu_stuck.txt" : std::string();
+      if (!note.empty()) {
+        if (FILE* f = std::fopen(note.c_str(), "w")) {
+          std::fprintf(f, "%s\n%d\n", driver.c_str(), kSeconds);
+          std::fclose(f);
+        }
+      }
+      while (rex::external_frame::SwapCount() == 0) std::this_thread::sleep_for(std::chrono::seconds(1));
+      REXLOG_INFO("GPU: the first frame came after all - not stuck");
+      if (!note.empty()) std::remove(note.c_str());
+      return;
+    }
+  }).detach();
+}
+
 void* OpenVulkanLoader() {
   // (before the log's settings lines: the GPU device is made first)
   REXLOG_INFO("GPU settings: mali_alpha {}, vulkan_require_geometry_shader {}, vulkan_require_fill_mode_non_solid {}",
@@ -131,6 +170,7 @@ void* OpenVulkanLoader() {
 #if SVR2011_ADRENOTOOLS
   ApplyDriverEnv();
   const std::string chosen = REXCVAR_GET(gpu_driver);
+  StartStuckWatch(chosen);
   if (chosen.empty()) return nullptr;
   const std::string path = access(chosen.c_str(), R_OK) == 0 ? LocalCopy(chosen) : chosen;
   if (path.empty()) {
