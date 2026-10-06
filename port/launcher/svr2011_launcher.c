@@ -1082,8 +1082,9 @@ static void settings_path(WCHAR *out)
     join(out, s_game_dir, GAME_TOML);
 }
 
-/* The Renderer list: native (D3D12), emulated, native on Vulkan. */
-enum { RENDERER_NATIVE, RENDERER_EMULATED, RENDERER_VULKAN };
+/* The graphics API list: the native renderer on D3D12 or on Vulkan (the game
+   always draws natively - no emulated renderer). */
+enum { RENDERER_NATIVE, RENDERER_VULKAN };
 
 /* The game's languages (its text; the voices are English) and their Xbox 360
  * language ids (user_language). */
@@ -1635,7 +1636,8 @@ static void settings_load(void)
     /* anti-aliasing: native_aa (1 off, 2-4), else the older on / off (on = 2x) */
     msaa = aa >= 1 && aa <= 4 ? aa : msaa ? 2 : 1;
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
-                  emulated ? RENDERER_EMULATED : vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
+                  vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
+    (void)emulated;  /* (an old native_renderer = "off": saved as "main" next time) */
     online_show(online, online_name, online_server);
     {
         WCHAR w[256];
@@ -1692,7 +1694,7 @@ static int settings_save(void)
         strcpy_s(vals[11], 64, level >= 2 ? "true" : "false");
         sprintf_s(vals[23], 64, "%d", level);
     }
-    strcpy_s(vals[12], 64, renderer == RENDERER_EMULATED ? "\"off\"" : "\"main\"");
+    strcpy_s(vals[12], 64, "\"main\"");
     /* Vulkan: the emulator runs on Vulkan and the native renderer with it. */
     strcpy_s(vals[13], 64, renderer == RENDERER_VULKAN ? "\"vulkan\"" : "\"any\"");
     {
@@ -2310,14 +2312,13 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"2x (4 samples)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"3x (9 samples)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"4x (16 samples)");
-    add(TAB_SETTINGS, L"Static", L"Renderer", SS_LEFT, X0 + 270, 186, 80, 20, 0);
+    add(TAB_SETTINGS, L"Static", L"Graphics API", SS_LEFT, X0 + 270, 186, 80, 20, 0);
     add(TAB_SETTINGS, L"Button", L"Prepare graphics in the menus (no stutter the first time a scene shows; native)",
         BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 210, 530, 24, ID_PREPARE);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 350, 182, 196, 200,
             ID_RENDERER);
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Native (recommended)");
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Emulated");
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Native Vulkan (EXPERIMENTAL)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Direct3D 12 (recommended)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Vulkan");
     add(TAB_SETTINGS, L"Button", L"Input and audio", BS_GROUPBOX, X0, 248, 560, 118, 0);
     add(TAB_SETTINGS, L"Static", L"Controller API", SS_LEFT, X0 + 16, 276, 130, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 272, 300, 200, ID_INPUT);

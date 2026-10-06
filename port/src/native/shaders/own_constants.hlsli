@@ -1,14 +1,21 @@
 // The renderer's own shaders: their constants (b3 space4 on D3D12). On Vulkan
-// they are read through a buffer address in the push constants, after the
-// three the converted game shaders use (shader_common.h).
+// they are read from the frame's upload buffer (set 2) at the byte offset in
+// the push constants, after the three the converted game shaders use
+// (shader_common.h) - no buffer addresses or 64-bit integers.
 #ifdef __spirv__
 struct PushConstants {
-  uint64_t VertexShaderConstants;
-  uint64_t PixelShaderConstants;
-  uint64_t SharedConstants;
-  uint64_t OwnConstants;
+  uint VertexShaderConstants;
+  uint PixelShaderConstants;
+  uint SharedConstants;
+  uint OwnConstants;
 };
 [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
-#define OWN_CONSTANT(TYPE, OFFSET) vk::RawBufferLoad<TYPE>(g_PushConstants.OwnConstants + (OFFSET))
-#define OWN_CONSTANT16(TYPE, OFFSET) vk::RawBufferLoad<TYPE>(g_PushConstants.OwnConstants + (OFFSET), 16)
+[[vk::binding(0, 2)]] ByteAddressBuffer g_ConstantBuffer;
+#define OWN_CONSTANT(TYPE, OFFSET) g_ConstantBuffer.Load<TYPE>(g_PushConstants.OwnConstants + (OFFSET))
+#define OWN_CONSTANT16(TYPE, OFFSET) g_ConstantBuffer.Load<TYPE>(g_PushConstants.OwnConstants + (OFFSET))
+// The texture tables as the converted shaders declare them (set 0: 2D, 3D,
+// cube; set 1: samplers).
+#define OWN_TEXTURE_TABLES   [[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[];   [[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[];
+#else
+#define OWN_TEXTURE_TABLES   Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);   SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
 #endif

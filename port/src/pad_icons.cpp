@@ -424,11 +424,7 @@ uint32_t MakeCopy(uint32_t object, const Sprite& sp, const std::vector<uint8_t>&
 void InstallPadIcons(rex::memory::Memory* memory) {
   g_memory = memory;
   g_base = memory->TranslateVirtual<uint8_t*>(0);
-  const std::string renderer = rex::cvar::Query<std::string>("native_renderer");
-  if (renderer == "off") {
-    REXLOG_INFO("[svr2011] pad icons: off (the emulated renderer)");
-    return;
-  }
+  // (the native renderer draws them; it is the only renderer)
   if (!Load()) {
     REXLOG_INFO("[svr2011] pad icons: no pad_icons/pad_icons.txt - Xbox icons only");
     return;

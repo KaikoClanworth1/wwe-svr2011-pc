@@ -94,7 +94,8 @@ enum Tab { kDisplayTab, kQualityTab, kControlsTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY", "CONTROLS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
-const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch, kReplays},
+// (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
+const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kTouch, kReplays},
                                           {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
                                           {}};
 #else
@@ -394,8 +395,7 @@ void GraphicsPage::Load() {
   native_at_start_ = native::CanSwitch();
   vulkan_at_start_ = rex::cvar::Query<std::string>("gpu_backend") == "vulkan";
   vulkan_ = vulkan_at_start_;
-  native_ = native_at_start_ ? native::NativeActive()
-                             : rex::cvar::Query<std::string>("native_renderer") != "off";
+  native_ = true;  // (the game draws only natively)
   fps_ = FpsCounterVisible();
   touch_ = rex::cvar::Query<bool>("touch_controls");
   wide_ = rex::cvar::Query<bool>("native_widescreen");
@@ -532,13 +532,11 @@ void GraphicsPage::Change(int row, int dir) {
       }
       break;
     case kRenderer: {
-      // NATIVE, EMULATED, NATIVE VULKAN (EXPERIMENTAL) - the launcher's list.
-      int choice = !native_ ? 1 : vulkan_ ? 2 : 0;
-      choice = (choice + dir + 3) % 3;
-      native_ = choice != 1;
-      vulkan_ = choice == 2;
-      if (native_at_start_) native::SetNativeActive(native_);
-      SaveSetting("native_renderer", native_ ? "\"main\"" : "\"off\"");
+      // The native renderer's graphics API: D3D12 or Vulkan (no emulated
+      // renderer any more).
+      (void)dir;
+      vulkan_ = !vulkan_;
+      SaveSetting("native_renderer", "\"main\"");
       SaveSetting("gpu_backend", vulkan_ ? "\"vulkan\"" : "\"any\"");
       break;
     }
@@ -867,7 +865,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   }
 
   // Rows.
-  const bool restart_renderer = (!native_at_start_ && native_) || vulkan_ != vulkan_at_start_;
+  const bool restart_renderer = vulkan_ != vulkan_at_start_;
   auto value = [&](Row id) -> const char* {
     switch (id) {
       case kResolution: return display_ != kWindowed ? "FULL SCREEN" : kResolutions[resolution_].label;
@@ -889,7 +887,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kCpuPriority: return high_priority_ ? "HIGH" : "NORMAL";
       case kPrepare: return prepare_ ? "ON" : "OFF";
       case kLanguage: return kLanguages[language_].label;
-      case kRenderer: return native_ ? (vulkan_ ? "NATIVE VULKAN" : "NATIVE") : "EMULATED";
+      case kRenderer: return vulkan_ ? "VULKAN" : "DIRECT3D 12";
       case kRenderScale: return kScales[scale_].label;
       case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
@@ -914,7 +912,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kCpuPriority: return "CPU PRIORITY";
       case kPrepare: return "PREPARE GRAPHICS";
       case kLanguage: return "LANGUAGE";
-      case kRenderer: return "RENDERER";
+      case kRenderer: return "GRAPHICS API";
       case kRenderScale: return "RENDER RESOLUTION";
       case kAntiAliasing: return "ANTI-ALIASING";
       case kEffects: return "SHADOWS & EFFECTS";
@@ -947,7 +945,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return language_ == language_at_start_
                    ? "The game's text (the commentary stays English)."
                    : "The game's text: changes the next time the game starts.";
-      case kRenderer: return "Native: the PC renderer (fastest). Emulated: the Xbox 360 GPU emulation.";
+      case kRenderer: return "The graphics API the game draws with (Direct3D 12 is the default; Vulkan for drivers that need it).";
       case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
       case kAntiAliasing:
         return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
@@ -995,10 +993,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   {
     const Row id = rows[row_];
     std::string help = help_for(id);
-    if (id == kRenderer && native_ && vulkan_) help = "EXPERIMENTAL: the native renderer on Vulkan.";
     if (id == kRenderer && restart_renderer)
-      help = native_ && vulkan_ ? "EXPERIMENTAL - takes effect the next time the game starts."
-                                : "Takes effect the next time the game starts.";
+      help = "Takes effect the next time the game starts.";
     const float hs = 18 * s;
     const ImVec2 sz = TextSize(g_menu_font, hs, help.c_str());
     Text(dl, g_menu_font, hs, ImVec2(P(639, 0).x - sz.x * 0.5f, P(0, 508).y - sz.y * 0.5f),

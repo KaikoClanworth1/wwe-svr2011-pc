@@ -4,9 +4,8 @@
 // that (resolution scale, anti-aliasing), it is averaged down over each
 // output pixel's footprint - a single bilinear tap would drop most texels and
 // make fine detail shimmer.
-Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
-SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
 #include "own_constants.hlsli"
+OWN_TEXTURE_TABLES
 #ifdef __spirv__
 #define g_Texture OWN_CONSTANT(uint, 0)
 #define g_Sampler OWN_CONSTANT(uint, 4)

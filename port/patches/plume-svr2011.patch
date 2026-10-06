@@ -406,7 +406,7 @@ index 2281168..e20c227 100644
          bool depthWriteEnabled = false;
          bool stencilEnabled = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 4a2a489..bb88468 100644
+index 4a2a489..9d34bfe 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -167,6 +167,16 @@ namespace plume {
@@ -466,7 +466,23 @@ index 4a2a489..bb88468 100644
          imageFormat = imageInfo.format;
          fillSubresourceRange();
  
-@@ -1390,7 +1420,7 @@ namespace plume {
+@@ -1198,6 +1228,15 @@ namespace plume {
+         if (descriptorSetDesc.lastRangeIsBoundless && (descriptorSetDesc.descriptorRangesCount > 0)) {
+             bindingFlags.clear();
+             bindingFlags.resize(descriptorSetDesc.descriptorRangesCount, 0);
++            // [svr2011] Every texture / sampler range of a bindless set too (a set of
++            // several tables: written while bound, not every slot used); the
++            // variable count stays the last range's.
++            for (uint32_t i = 0; i + 1 < descriptorSetDesc.descriptorRangesCount; i++) {
++                const RenderDescriptorRangeType type = descriptorSetDesc.descriptorRanges[i].type;
++                if (type == RenderDescriptorRangeType::TEXTURE || type == RenderDescriptorRangeType::SAMPLER) {
++                    bindingFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
++                }
++            }
+             bindingFlags[descriptorSetDesc.descriptorRangesCount - 1] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+ 
+             flagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+@@ -1390,7 +1429,7 @@ namespace plume {
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.stage = stageInfo;
  
@@ -475,7 +491,7 @@ index 4a2a489..bb88468 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
              return;
-@@ -1617,6 +1647,14 @@ namespace plume {
+@@ -1617,6 +1656,14 @@ namespace plume {
              dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
          }
  
@@ -490,7 +506,7 @@ index 4a2a489..bb88468 100644
          VkPipelineDynamicStateCreateInfo dynamicState = {};
          dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
          dynamicState.pDynamicStates = dynamicStates.data();
-@@ -1649,7 +1687,7 @@ namespace plume {
+@@ -1649,7 +1696,7 @@ namespace plume {
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.renderPass = renderPass;
  
@@ -499,7 +515,7 @@ index 4a2a489..bb88468 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
              return;
-@@ -3112,6 +3150,14 @@ namespace plume {
+@@ -3112,6 +3159,14 @@ namespace plume {
          vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
      }
  
@@ -514,7 +530,7 @@ index 4a2a489..bb88468 100644
      static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
          rectVector.clear();
  
-@@ -3229,6 +3275,28 @@ namespace plume {
+@@ -3229,6 +3284,28 @@ namespace plume {
              imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
              vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
          }
@@ -543,7 +559,7 @@ index 4a2a489..bb88468 100644
          else {
              VkImageCopy imageCopy = {};
              imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
-@@ -3644,6 +3712,19 @@ namespace plume {
+@@ -3644,6 +3721,19 @@ namespace plume {
          vkResetFences(device->vk, 1, &interfaceFence->vk);
      }
  
@@ -563,7 +579,7 @@ index 4a2a489..bb88468 100644
      // VulkanPool
  
      VulkanPool::VulkanPool(VulkanDevice *device, const RenderPoolDesc &desc) {
-@@ -3718,7 +3799,8 @@ namespace plume {
+@@ -3718,7 +3808,8 @@ namespace plume {
          }
  
          if (queues[queueIndex].mutex == nullptr) {
@@ -573,7 +589,7 @@ index 4a2a489..bb88468 100644
          }
  
          virtualQueue->queue = &queues[queueIndex];
-@@ -4156,6 +4238,110 @@ namespace plume {
+@@ -4156,6 +4247,110 @@ namespace plume {
          }
      }
  
@@ -684,7 +700,7 @@ index 4a2a489..bb88468 100644
      VulkanDevice::~VulkanDevice() {
          release();
      }
-@@ -4429,16 +4615,53 @@ namespace plume {
+@@ -4429,16 +4624,53 @@ namespace plume {
          }
      }
  
@@ -739,7 +755,7 @@ index 4a2a489..bb88468 100644
              vk = VK_NULL_HANDLE;
          }
      }
-@@ -4602,13 +4825,43 @@ namespace plume {
+@@ -4602,13 +4834,43 @@ namespace plume {
          }
      }
  
@@ -784,7 +800,7 @@ index 4a2a489..bb88468 100644
          std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
          return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
      }
-@@ -4638,4 +4891,9 @@ namespace plume {
+@@ -4638,4 +4900,9 @@ namespace plume {
          return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
      }
  #endif

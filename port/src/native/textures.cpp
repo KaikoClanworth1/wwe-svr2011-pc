@@ -594,7 +594,8 @@ uint32_t ResolvedView(const Context& ctx, const Resolved& res,
   vd.mipLevels = 1;
   vd.componentMapping = ComponentMapping(fetch.swizzle, res.components, res.swap_rb);
   std::shared_ptr<plume::RenderTextureView> view = res.resource->createTextureView(vd);
-  ctx.texture_sets[0]->setTexture(srv, res.resource, plume::RenderTextureLayout::SHADER_READ, view.get());
+  ctx.texture_sets[0]->setTexture(ctx.texture_base[0] + srv, res.resource, plume::RenderTextureLayout::SHADER_READ,
+                                  view.get());
   g_resolved_views.emplace(key, ResolvedViewEntry{srv, res.resource, std::move(view)});
   return srv;
 }
@@ -907,7 +908,8 @@ view:
   vd.mipLevels = levels;
   vd.componentMapping = ComponentMapping(fetch.swizzle, host.components);
   e.view = resource->createTextureView(vd);
-  ctx.texture_sets[dimension]->setTexture(e.srv, resource.get(), plume::RenderTextureLayout::SHADER_READ,
+  ctx.texture_sets[dimension]->setTexture(ctx.texture_base[dimension] + e.srv, resource.get(),
+                                          plume::RenderTextureLayout::SHADER_READ,
                                           e.view.get());
 
   e.resource = resource;

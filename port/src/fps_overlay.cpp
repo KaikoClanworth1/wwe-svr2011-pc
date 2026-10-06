@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <string>
 
 #include <imgui.h>
 
@@ -51,7 +52,42 @@ static void DrawPipelineProgress(ImGuiIO& io) {
 #endif
 }
 
+// The native renderer couldn't start or stopped: the game has no other way to
+// draw, so the reason, plainly, in the middle of the (black) screen.
+static void DrawNativeFailure(ImGuiIO& io) {
+#ifndef SVR2011_D3D_TRACE
+  const std::string reason = native::FailureReason();
+  if (reason.empty()) return;
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always,
+                          ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.7f, 0.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowBgAlpha(0.85f);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                 ImGuiWindowFlags_NoNav;
+  if (ImGui::Begin("##svr2011_native_failed", nullptr, flags)) {
+    ImGui::SetWindowFontScale(1.4f);
+    ImGui::TextWrapped("The game's graphics can't run on this device");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Spacing();
+    ImGui::TextWrapped("Reason: %s.", reason.c_str());
+    ImGui::Spacing();
+#if defined(__ANDROID__)
+    ImGui::TextWrapped("Try another graphics driver (launcher: Settings, Graphics driver), and please send a problem "
+                       "report (launcher: Play tab, Report a problem).");
+#else
+    ImGui::TextWrapped("Update your graphics driver, or try the other graphics API (MY WWE > Options > Graphics), and "
+                       "please send a problem report (the launcher's Report a problem).");
+#endif
+  }
+  ImGui::End();
+#else
+  (void)io;
+#endif
+}
+
 void FpsOverlay::OnDraw(ImGuiIO& io) {
+  DrawNativeFailure(io);
   DrawPipelineProgress(io);
   if (!g_visible.load(std::memory_order_relaxed)) return;
   const FrameTiming t = GetFrameTiming();

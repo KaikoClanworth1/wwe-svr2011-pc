@@ -12,8 +12,9 @@ computes it when the game creates the shader):
                                   (LOCATION: the Vulkan input location, -1 if unassigned)
   dxil/<hash>.<vs|ps>.textures    the texture fetch slots it samples: SLOT DIMENSION
                                   (0 2D, 1 3D, 2 cube)
-spirv/ has the same files with .spv (Vulkan: -fvk-invert-y for vertex shaders,
-constants through buffer addresses in the push constants; see shader_common.h).
+spirv/ has the same files with .spv (Vulkan 1.1 / SPIR-V 1.3: -fvk-invert-y for
+vertex shaders, constants read from the frame's upload buffer at offsets in the
+push constants - no buffer addresses or 64-bit integers; see shader_common.h).
 The specialization constants are baked in with -DSVR_SPEC_CONSTANTS (see the
 XenosRecomp patch), so the renderer never links shaders at runtime.
 Writes out_dir/report.txt with every failure and its first error.
@@ -28,6 +29,11 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 XR = os.path.join(ROOT, "recomp", "XenosRecomp", "build", "XenosRecomp", "XenosRecomp.exe")
 HEADER = os.path.join(ROOT, "recomp", "XenosRecomp", "XenosRecomp", "shader_common.h")
+# (SVR2011_XENOSRECOMP=<folder>: another XenosRecomp checkout - a branch's own)
+if os.environ.get("SVR2011_XENOSRECOMP"):
+    _xr = os.environ["SVR2011_XENOSRECOMP"]
+    XR = os.path.join(_xr, "build_native", "XenosRecomp", "XenosRecomp.exe")
+    HEADER = os.path.join(_xr, "XenosRecomp", "shader_common.h")
 DXC = os.path.join(ROOT, "recomp", "XenosRecomp", "thirdparty", "dxc-bin", "bin", "x64", "dxc.exe")
 
 INPUT_RE = re.compile(r"(?:\[\[vk::location\((\d+)\)\]\] )?in (float4|uint4) i\w+ : ([A-Z]+)(\d+)")
@@ -49,7 +55,7 @@ def compile_dxil(hlsl, dxil, stage, mask):
 def compile_spirv(hlsl, spv, stage, mask):
     flags = ["-fvk-invert-y"] if stage == "vs" else ["-fvk-use-dx-position-w"]
     r = subprocess.run([DXC, "-nologo", "-HV", "2021", "-T", f"{stage}_6_0", "-E", "main", "-spirv",
-                        "-fvk-use-dx-layout", "-fspv-target-env=vulkan1.2", *flags,
+                        "-fvk-use-dx-layout", "-fspv-target-env=vulkan1.1", *flags,
                         f"-DSVR_SPEC_CONSTANTS={mask}", "-Fo", spv, hlsl],
                        capture_output=True, text=True, timeout=120)
     if r.returncode:
@@ -101,7 +107,8 @@ def main():
     for d in ("hlsl", "dxil", "spirv"):
         os.makedirs(os.path.join(out, d), exist_ok=True)
     files = sorted(glob.glob(os.path.join(xsc_dir, "*.xsc")))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+    # (SVR2011_JOBS: how many conversions at once - 2 while the PC is in use)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=int(os.environ.get("SVR2011_JOBS", "8"))) as pool:
         results = list(pool.map(lambda f: convert(f, out), files))
     # The renderer's own shaders (src/native/shaders/<name>.<vs|ps>.hlsl).
     own = os.path.join(ROOT, "port", "src", "native", "shaders")

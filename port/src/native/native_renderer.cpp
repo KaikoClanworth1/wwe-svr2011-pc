@@ -113,9 +113,8 @@ REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "The scale follows the window; phones start at 1.");
 
 REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
-                      "Native renderer: off, main (draws the game in the main window; the "
-                      "emulated renderer only runs the GPU command stream, and takes over if the "
-                      "native one fails). (shadow, the old side-by-side window, now means main.)")
+                      "Native renderer: main - the game always draws with it (the emulator only "
+                      "runs the GPU command stream). (off and shadow are old values: they mean main.)")
     .allowed({"off", "main", "shadow"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -537,8 +536,17 @@ struct Renderer {
   bool submitted[kFrames] = {};  // the slot's fence has a submission to wait for
   plume::RenderCommandList* list = nullptr;  // this frame's
   std::unique_ptr<plume::RenderPipelineLayout> layout;
-  // The shaders' texture tables (2D, 3D, cube) and samplers.
+  // The shaders' texture tables (2D, 3D, cube) and samplers. Vulkan: the
+  // three tables are one set (texture_sets[0], bindings 0-2 - with the
+  // samplers and the constants three sets, within the four every GPU has);
+  // texture_set(i) / texture_base[i] address a table either way.
   std::unique_ptr<plume::RenderDescriptorSet> texture_sets[3], sampler_set;
+  plume::RenderDescriptorSet* texture_set[3] = {};
+  uint32_t texture_base[3] = {};
+  // Vulkan: each upload ring bound as the shaders' constant buffer (set 2):
+  // the push constants hold the offsets of the draw's constants in it - no
+  // buffer addresses or 64-bit integers in the shaders (shader_common.h).
+  std::unique_ptr<plume::RenderDescriptorSet> constant_sets[kFrames];
   std::unique_ptr<plume::RenderSampler> default_sampler;
   std::shared_ptr<plume::RenderTexture> outputs[kOutputs];
   std::unique_ptr<plume::RenderFramebuffer> output_framebuffers[kOutputs];
@@ -703,14 +711,28 @@ void SetCameraAspect(float aspect) {
 uint32_t g_out_w = kWidth, g_out_h = kHeight;
 std::function<std::pair<uint32_t, uint32_t>()> g_window_size;
 
-// The native renderer stopped working: in main mode the emulated renderer
-// draws again (it is the backup).
-void Fail() {
+// The native renderer couldn't start or stopped working. The game draws only
+// with it - no emulated fallback: the screen stays black with the reason on
+// it (FailureReason, fps_overlay.cpp), and on Android the launcher shows it
+// next time (native_failed.txt in the app's cache).
+std::mutex g_fail_mutex;
+std::string g_fail_reason;
+
+void Fail(const char* reason = "it stopped working") {
   g_failed = true;
-  if (g_main) {
-    rex::external_frame::SetHostDrawingDisabled(false);
-    REXLOG_WARN("native renderer: failed - the emulated renderer takes over");
+  {
+    std::lock_guard lock(g_fail_mutex);
+    if (g_fail_reason.empty()) g_fail_reason = reason;
   }
+  REXLOG_ERROR("native renderer: can't draw the game - {} (no emulated fallback)", reason);
+#if defined(__ANDROID__)
+  if (const char* cache = std::getenv("SVR2011_CACHE_DIR")) {
+    if (FILE* f = std::fopen((std::string(cache) + "/native_failed.txt").c_str(), "w")) {
+      std::fprintf(f, "%s\n", reason);
+      std::fclose(f);
+    }
+  }
+#endif
 }
 
 bool EnvFlag(const char* name) {
@@ -831,7 +853,8 @@ std::shared_ptr<plume::RenderTexture> CreatePlaceholder(Renderer* r, uint32_t di
                                   : plume::RenderTextureViewDimension::TEXTURE_2D;
   vd.mipLevels = 1;
   std::shared_ptr<plume::RenderTextureView> view = tex->createTextureView(vd);
-  r->texture_sets[dimension]->setTexture(dimension, tex.get(), RenderTextureLayout::SHADER_READ, view.get());
+  r->texture_set[dimension]->setTexture(r->texture_base[dimension] + dimension, tex.get(),
+                                        RenderTextureLayout::SHADER_READ, view.get());
   r->null_views.push_back(view);
   return tex;
 }
@@ -841,7 +864,61 @@ std::shared_ptr<plume::RenderTexture> CreatePlaceholder(Renderer* r, uint32_t di
 plume::RenderDescriptorRange g_table_ranges[4];
 plume::RenderDescriptorSetDesc g_table_descs[4];
 
+// Vulkan: textures (set 0: 2D, 3D, cube - bindings 0-2), samplers (set 1)
+// and this frame's upload ring as the constant buffer (set 2).
+plume::RenderDescriptorRange g_vk_texture_ranges[3], g_vk_sampler_range, g_vk_constant_range;
+plume::RenderDescriptorSetDesc g_vk_set_descs[3];
+
+bool CreateVulkanPipelineLayout(Renderer* r) {
+  for (uint32_t i = 0; i < 3; ++i)
+    g_vk_texture_ranges[i] = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::TEXTURE, i, kSrvHeapSize);
+  g_vk_sampler_range = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::SAMPLER, 0, kSamplerHeapSize);
+  g_vk_constant_range = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::BYTE_ADDRESS_BUFFER, 0, 1);
+  g_vk_set_descs[0] = plume::RenderDescriptorSetDesc(g_vk_texture_ranges, 3, true, kSrvHeapSize);
+  g_vk_set_descs[1] = plume::RenderDescriptorSetDesc(&g_vk_sampler_range, 1, true, kSamplerHeapSize);
+  g_vk_set_descs[2] = plume::RenderDescriptorSetDesc(&g_vk_constant_range, 1);
+  const plume::RenderPushConstantRange push(0, 0, 0, 4 * sizeof(uint32_t),
+                                            plume::RenderShaderStageFlag::VERTEX |
+                                                plume::RenderShaderStageFlag::PIXEL);
+  plume::RenderPipelineLayoutDesc desc;
+  desc.descriptorSetDescs = g_vk_set_descs;
+  desc.descriptorSetDescsCount = 3;
+  desc.pushConstantRanges = &push;
+  desc.pushConstantRangesCount = 1;
+  desc.allowInputLayout = true;
+  r->layout = r->device->createPipelineLayout(desc);
+  if (!r->layout) {
+    REXLOG_ERROR("native renderer: could not create the pipeline layout");
+    return false;
+  }
+  r->texture_sets[0] = r->device->createDescriptorSet(g_vk_set_descs[0]);
+  r->sampler_set = r->device->createDescriptorSet(g_vk_set_descs[1]);
+  for (uint32_t i = 0; i < 3; ++i) {
+    r->texture_set[i] = r->texture_sets[0].get();
+    r->texture_base[i] = i * kSrvHeapSize;
+  }
+  for (uint32_t i = 0; i < kFrames; ++i) {
+    r->constant_sets[i] = r->device->createDescriptorSet(g_vk_set_descs[2]);
+    if (!r->constant_sets[i] || !r->rings[i].buffer) return false;
+    r->constant_sets[i]->setBuffer(0, r->rings[i].buffer.get(), kRingSize + kRingSlack);
+  }
+  return r->texture_sets[0] && r->sampler_set;
+}
+
+// Binds the texture tables, samplers and (Vulkan) this frame's constant buffer.
+void BindTables(Renderer* r, plume::RenderCommandList* list) {
+  if (backend::ActiveApi() == backend::Api::kVulkan) {
+    list->setGraphicsDescriptorSet(r->texture_sets[0].get(), 0);
+    list->setGraphicsDescriptorSet(r->sampler_set.get(), 1);
+    list->setGraphicsDescriptorSet(r->constant_sets[r->back_index].get(), 2);
+    return;
+  }
+  for (uint32_t i = 0; i < 3; ++i) list->setGraphicsDescriptorSet(r->texture_sets[i].get(), i);
+  list->setGraphicsDescriptorSet(r->sampler_set.get(), 3);
+}
+
 bool CreatePipelineLayout(Renderer* r) {
+  if (backend::ActiveApi() == backend::Api::kVulkan) return CreateVulkanPipelineLayout(r);
   for (int i = 0; i < 4; ++i) {
     // (the count: Vulkan's upper bound for the table; D3D12 ignores it)
     g_table_ranges[i] = plume::RenderDescriptorRange(
@@ -875,7 +952,10 @@ bool CreatePipelineLayout(Renderer* r) {
     REXLOG_ERROR("native renderer: could not create the pipeline layout");
     return false;
   }
-  for (int i = 0; i < 3; ++i) r->texture_sets[i] = r->device->createDescriptorSet(g_table_descs[i]);
+  for (int i = 0; i < 3; ++i) {
+    r->texture_sets[i] = r->device->createDescriptorSet(g_table_descs[i]);
+    r->texture_set[i] = r->texture_sets[i].get();
+  }
   r->sampler_set = r->device->createDescriptorSet(g_table_descs[3]);
   return r->texture_sets[0] && r->texture_sets[1] && r->texture_sets[2] && r->sampler_set;
 }
@@ -949,7 +1029,8 @@ bool Initialize() {
     r->fences[i] = r->device->createCommandFence();
     r->rings[i].buffer = r->device->createBuffer(plume::RenderBufferDesc::UploadBuffer(
         kRingSize + kRingSlack,
-        plume::RenderBufferFlag::VERTEX | plume::RenderBufferFlag::INDEX | plume::RenderBufferFlag::CONSTANT));
+        plume::RenderBufferFlag::VERTEX | plume::RenderBufferFlag::INDEX | plume::RenderBufferFlag::CONSTANT |
+            plume::RenderBufferFlag::STORAGE));
     if (!r->lists[i] || !r->fences[i] || !r->rings[i].buffer) {
       REXLOG_ERROR("native renderer: could not create the frame resources");
       return false;
@@ -995,7 +1076,7 @@ bool Initialize() {
       REXLOG_ERROR("native renderer: its shaders are missing ({} has no present.vs{}) - reinstall "
                    "with the launcher to get the native_shaders folder",
                    ShaderDirectory().string(), backend::ShaderExtension());
-      Fail();
+      Fail("its shaders are missing - reinstall the game");
     }
   }
   return true;
@@ -1006,7 +1087,7 @@ bool Initialize() {
 // the run.
 void ReportDeviceRemoved(Renderer* r) {
   backend::ReportDeviceLost(r->device.get());
-  Fail();
+  Fail("the GPU stopped (device lost)");
 }
 
 // Waits (CPU) for frame slot `slot`'s last submission. A GPU that stops
@@ -1025,7 +1106,7 @@ bool WaitForFrame(Renderer* r, uint32_t slot, const char* what) {
   REXLOG_ERROR("native renderer: GPU did not finish ({}) in {} ms{}", what, kGpuTimeoutMs,
                lost ? " - device lost" : "");
   if (lost) backend::ReportDeviceLost(r->device.get());
-  Fail();
+  Fail(lost ? "the GPU stopped (device lost)" : "the GPU stopped answering");
   // Releases the emulator's waits for the frames in flight (each slot's).
   for (auto& fence : r->fences) backend::ReleaseFence(fence.get());
   return false;
@@ -1040,7 +1121,8 @@ bool WaitIdle(Renderer* r, const char* what) {
 
 Renderer* Get() {
   std::call_once(g_init_once, [] {
-    if (!Initialize()) Fail();
+    if (!Initialize())
+      Fail("the GPU or its graphics driver lacks what it needs (the log's GPU report says what)");
   });
   return g_failed ? nullptr : g_r;
 }
@@ -1068,7 +1150,10 @@ textures::Context TextureContext(Renderer* r) {
   textures::Context ctx;
   ctx.device = r->device.get();
   ctx.list = r->list;
-  for (int i = 0; i < 3; ++i) ctx.texture_sets[i] = r->texture_sets[i].get();
+  for (int i = 0; i < 3; ++i) {
+    ctx.texture_sets[i] = r->texture_set[i];
+    ctx.texture_base[i] = r->texture_base[i];
+  }
   ctx.sampler_set = r->sampler_set.get();
   ctx.frame = r->frames;
   ctx.retire = [r](std::shared_ptr<void> object) { Retire(r, std::move(object)); };
@@ -2393,14 +2478,21 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
 }
 
 // Binds the draw's constants (vertex, pixel, shared, own; null: none) - root
-// CBVs on D3D12, their buffer addresses in the push constants on Vulkan. The
-// pipeline layout must be set.
+// CBVs on D3D12; on Vulkan their offsets in this frame's upload ring (bound
+// as set 2) in the push constants. The pipeline layout must be set.
 void BindConstants(Renderer* r, const RenderBufferReference constants[4]) {
   if (backend::ActiveApi() == backend::Api::kVulkan) {
-    uint64_t addresses[4];
-    for (int i = 0; i < 4; ++i)
-      addresses[i] = constants[i].ref ? constants[i].ref->getDeviceAddress() + constants[i].offset : 0;
-    r->list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+    const plume::RenderBuffer* ring = r->rings[r->back_index].buffer.get();
+    uint32_t offsets[4];
+    for (int i = 0; i < 4; ++i) {
+      offsets[i] = constants[i].ref == ring ? uint32_t(constants[i].offset) : 0;
+      if (constants[i].ref && constants[i].ref != ring) {
+        static bool warned = false;
+        if (!warned) REXLOG_ERROR("native renderer: constants outside the frame's upload ring (not readable on Vulkan)");
+        warned = true;
+      }
+    }
+    r->list->setGraphicsPushConstants(0, offsets, 0, sizeof(offsets));
     return;
   }
   for (uint32_t i = 0; i < 4; ++i)
@@ -2909,8 +3001,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   BindTargets(r, targets);  // (barriers first: they end a Vulkan render pass)
   if (!ls.bound) {
     list->setGraphicsPipelineLayout(r->layout.get());
-    for (uint32_t i = 0; i < 3; ++i) list->setGraphicsDescriptorSet(r->texture_sets[i].get(), i);
-    list->setGraphicsDescriptorSet(r->sampler_set.get(), 3);
+    BindTables(r, list);
     ls.bound = true;
   }
   {
@@ -2984,24 +3075,22 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 // entry points
 
 std::string RendererLabel() {
-  if (!g_main) return "Emulated";
-  if (g_failed) return "Emulated (native failed)";
-  if (g_suspended) return "Emulated";
+  if (g_failed) return "Native - stopped";
+  if (!g_main) return "Native - starting";
   return fmt::format("Native {}x", g_scale);
 }
 
-bool Enabled() {
-  static const bool on = REXCVAR_GET(native_renderer) != "off";
-  return on && !g_suspended.load(std::memory_order_relaxed);
-}
+// (always: the game draws only with the native renderer)
+bool Enabled() { return true; }
 
-bool CanSwitch() { return g_main && !g_failed; }
+// No switching to the emulated renderer any more.
+bool CanSwitch() { return false; }
 
-void SetNativeActive(bool active) {
-  if (!CanSwitch() || active == !g_suspended) return;
-  g_suspended = !active;
-  rex::external_frame::SetHostDrawingDisabled(active);
-  REXLOG_INFO("native renderer: {}", active ? "drawing again" : "suspended (the emulated renderer draws)");
+void SetNativeActive(bool) {}
+
+std::string FailureReason() {
+  std::lock_guard lock(g_fail_mutex);
+  return g_fail_reason;
 }
 
 bool NativeActive() { return g_main && !g_failed && !g_suspended; }
@@ -3056,17 +3145,20 @@ void Attach(rex::memory::Memory* memory) {
     if (!r || !r->device) return;
     if (backend::DeviceLost(r->device.get())) backend::ReportDeviceLost(r->device.get());
   });
-  if (REXCVAR_GET(native_renderer) != "off") {
+  if (REXCVAR_GET(native_renderer) != "main")
+    REXLOG_WARN("native renderer: native_renderer = {} is no longer used - the game always draws natively",
+                REXCVAR_GET(native_renderer));
+  {
     g_main = true;
     g_scale = 1;  // set with the frame images' size at the first frame (ApplyOutputSettings)
     // The emulated GPU keeps running the command stream but no longer draws;
-    // its presentation shows this renderer's frames. Fail() reverts both.
+    // its presentation shows this renderer's frames (only: no fallback).
     rex::external_frame::SetHostDrawingDisabled(true);
     rex::external_frame::SetProvider([](rex::external_frame::Frame& f) {
       if (g_failed || g_suspended) return false;
       return backend::GetFrame(f);
     });
-    REXLOG_INFO("native renderer: main renderer at {}x resolution (the emulated renderer is the backup)", g_scale);
+    REXLOG_INFO("native renderer: main renderer at {}x resolution (the only one: no emulated fallback)", g_scale);
   }
 }
 
@@ -3136,8 +3228,7 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   Barrier(r, FrameImage(r), RenderTextureLayout::COLOR_WRITE);
   list->setFramebuffer(r->output_framebuffers[r->output_index].get());
   list->setGraphicsPipelineLayout(r->layout.get());
-  list->setGraphicsDescriptorSet(r->texture_sets[0].get(), 0);
-  list->setGraphicsDescriptorSet(r->sampler_set.get(), 3);
+  BindTables(r, list);
   const RenderBufferReference constants[4] = {{}, {}, {}, gpu};
   BindConstants(r, constants);
   list->setPipeline(pso);

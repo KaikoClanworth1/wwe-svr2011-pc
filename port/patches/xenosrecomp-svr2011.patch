@@ -1,8 +1,8 @@
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 1c74034..7438c04 100644
+index 1c74034..cf73cc5 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
-@@ -12,6 +12,13 @@
+@@ -12,45 +12,96 @@
  
  #if !defined(__cplusplus) || defined(__INTELLISENSE__)
  
@@ -13,27 +13,52 @@ index 1c74034..7438c04 100644
 +#define SVR_SAMPLE(SAMPLER, COORD) Sample(SAMPLER, COORD)
 +#endif
 +
++// [svr2011] the native renderer's texture table size (kSrvHeapSize)
++#define SVR_TEXTURE_TABLE_SIZE 16384
++
  #define FLT_MIN asfloat(0xff7fffff)
  #define FLT_MAX asfloat(0x7f7fffff)
  
-@@ -26,24 +33,44 @@ struct PushConstants
+ #ifdef __spirv__
+ 
++// [svr2011] The constants are read from the frame's upload buffer, bound as
++// a storage buffer (set 2); the push constants hold their byte offsets in it.
++// No buffer device addresses and no 64-bit integers: GPUs without them (the
++// phones' own Adreno 6xx / 7xx drivers, old Mali drivers) run these shaders too.
+ struct PushConstants
+ {
+-    uint64_t VertexShaderConstants;
+-    uint64_t PixelShaderConstants;
+-    uint64_t SharedConstants;
++    uint VertexShaderConstants;
++    uint PixelShaderConstants;
++    uint SharedConstants;
++    uint OwnConstants;
+ };
  
  [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
- 
+-
 -#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
 -#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
 -#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
 -#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
 -
++[[vk::binding(0, 2)]] ByteAddressBuffer g_ConstantBuffer;
++
++#define SVR_LOAD_UINT(OFFSET)   g_ConstantBuffer.Load(OFFSET)
++#define SVR_LOAD_FLOAT(OFFSET)  asfloat(g_ConstantBuffer.Load(OFFSET))
++#define SVR_LOAD_FLOAT2(OFFSET) asfloat(g_ConstantBuffer.Load2(OFFSET))
++#define SVR_LOAD_FLOAT4(OFFSET) asfloat(g_ConstantBuffer.Load4(OFFSET))
++
 +// [svr2011] shared constants: 4 x 32 descriptor indices (2D, 3D, cube
 +// textures, then samplers - one per fetch slot), then the values below.
-+#define g_ResourceIndex(DIM, SLOT) vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + ((DIM) * 32 + (SLOT)) * 4)
-+#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 512)
-+#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 516)
-+#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 520)
-+#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 528)
-+#define g_NdcScale                 vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 532)
-+#define g_PsBooleans               vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 540)
++#define g_ResourceIndex(DIM, SLOT) SVR_LOAD_UINT(g_PushConstants.SharedConstants + ((DIM) * 32 + (SLOT)) * 4)
++#define g_Booleans                 SVR_LOAD_UINT(g_PushConstants.SharedConstants + 512)
++#define g_SwappedTexcoords         SVR_LOAD_UINT(g_PushConstants.SharedConstants + 516)
++#define g_HalfPixelOffset          SVR_LOAD_FLOAT2(g_PushConstants.SharedConstants + 520)
++#define g_AlphaThreshold           SVR_LOAD_FLOAT(g_PushConstants.SharedConstants + 528)
++#define g_NdcScale                 SVR_LOAD_FLOAT2(g_PushConstants.SharedConstants + 532)
++#define g_PsBooleans               SVR_LOAD_UINT(g_PushConstants.SharedConstants + 540)
 +
 +// [svr2011] variants are compiled with -DSVR_SPEC_CONSTANTS=<mask> (as for DXIL)
 +#ifdef SVR_SPEC_CONSTANTS
@@ -72,7 +97,24 @@ index 1c74034..7438c04 100644
  
  #endif
  
-@@ -62,7 +89,7 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
++// [svr2011] Vulkan: the three texture tables are one descriptor set (0) and
++// the samplers set 1 - with the constants (set 2) three sets, within the four
++// every Vulkan GPU has. D3D12: four tables.
++#ifdef __spirv__
++[[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[];
++[[vk::binding(1, 0)]] Texture3D<float4> g_Texture3DDescriptorHeap[];
++[[vk::binding(2, 0)]] TextureCube<float4> g_TextureCubeDescriptorHeap[];
++[[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[];
++#else
+ Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
+ Texture3D<float4> g_Texture3DDescriptorHeap[] : register(t0, space1);
+ TextureCube<float4> g_TextureCubeDescriptorHeap[] : register(t0, space2);
+ SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
++#endif
+ 
+ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+ {
+@@ -62,7 +113,7 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
  float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
  {
      Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
@@ -81,7 +123,7 @@ index 1c74034..7438c04 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -135,17 +162,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -135,17 +186,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
      float h1y = h1(fy);
  
      float4 r =
@@ -104,7 +146,7 @@ index 1c74034..7438c04 100644
  }
  
  struct CubeMapData
-@@ -156,18 +183,16 @@ struct CubeMapData
+@@ -156,18 +207,16 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -127,8 +169,17 @@ index 1c74034..7438c04 100644
      }
      else
      {
+@@ -177,7 +226,7 @@ float4 tfetchR11G11B10(uint4 value)
+ 
+ float4 tfetchTexcoord(uint swappedTexcoords, float4 value, uint semanticIndex)
+ {
+-    return (swappedTexcoords & (1ull << semanticIndex)) != 0 ? value.yxwz : value;
++    return (swappedTexcoords & (1u << (semanticIndex & 31))) != 0 ? value.yxwz : value;  // [svr2011] (32-bit: no Int64)
+ }
+ 
+ float4 cube(float4 value, inout CubeMapData cubeMapData)
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index 698a418..796684c 100644
+index 698a418..9af311f 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -115,7 +115,14 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -491,15 +542,24 @@ index 698a418..796684c 100644
      out += include;
      out += '\n';
  
-@@ -1152,7 +1173,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1152,14 +1173,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
              if (constantInfo->registerCount > 1)
              {
 -                uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
 +                uint32_t tailCount = 256 - constantInfo->registerIndex;
  
-                 println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
+-                println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
++                println("#define {}(INDEX) select((INDEX) < {}, SVR_LOAD_FLOAT4(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16), 0.0)",
                      constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
+             }
+             else
+             {
+-                println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
++                println("#define {} SVR_LOAD_FLOAT4(g_PushConstants.{}ShaderConstants + {})",
+                     constantName, shaderName, constantInfo->registerIndex * 16);
+             }
+             
 @@ -1171,15 +1192,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
          case RegisterSet::Sampler:
