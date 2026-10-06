@@ -670,6 +670,9 @@ void PutName(uint8_t* rec, uint32_t off, const std::string& s) {
 // held just before (the save's copy, the player's edits) is kept (Remember)
 // and goes back instead of the base's.
 std::vector<std::pair<uint32_t, svrfmt::Bytes>> g_blank;  // slot -> CHAR/PRO's profile
+// (g_blank and g_kept grow in the loaders' hooks while CheckModProfiles reads
+// them on the game thread)
+std::mutex g_slots_mutex;
 struct Kept {
   uint32_t slot = 0;
   svrfmt::Bytes record, profile;
@@ -699,6 +702,7 @@ bool IsBlank(uint32_t slot, const uint8_t* profile) {
 
 // Before CHAR/DAT or CHAR/PRO (re)loads: the mods' slots as they are.
 void Remember(uint8_t* base) {
+  std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (si >= 512) continue;
@@ -804,6 +808,7 @@ void ApplyRecords(uint8_t* base) {
 // After a CHAR/PRO load: what the loader wrote into a mod's slot (changed
 // from `before`) is a placeholder version of that slot - kept, unless known.
 void RecordBlanks(uint8_t* base, const std::vector<svrfmt::Bytes>& before) {
+  std::lock_guard lock(g_slots_mutex);
   for (size_t i = 0; i < g_mods.size() && i < before.size(); ++i) {
     const auto& m = g_mods[i];
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
@@ -821,6 +826,7 @@ void RecordBlanks(uint8_t* base, const std::vector<svrfmt::Bytes>& before) {
 }
 
 void KeepBlankProfiles(uint8_t* base) {
+  std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     bool have = false;
     for (const auto& b : g_blank) have |= b.first == m.slot;
@@ -1441,6 +1447,29 @@ REX_HOOK_RAW(sub_8257A218) {
   ApplyRecords(base);
   ctx.r3.u64 = r3;
 }
+// Once a frame (the game's pad reads, frame_rate.cpp): a mod's profile that
+// is a placeholder again gets the mod's back. A save's copy of a slot can be
+// the placeholder (saved before the mod was installed): loading it put Jeff
+// Hardy's back to it after the hooks above ran, and CREATE A MOVESET - no
+// roster list (below) on the way - read the placeholder's finisher 15271, a
+// move that doesn't exist (crash, 2.0.3). A save's edited copy is no
+// placeholder and stays.
+namespace svr2011 {
+void CheckModProfiles(uint8_t* base) {
+  std::lock_guard lock(g_slots_mutex);
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512) continue;
+    bool have_blank = false;
+    for (const auto& b : g_blank) have_blank |= b.first == m.slot;
+    if (have_blank && IsBlank(m.slot, base + kProfiles + si * kProfileSize)) {
+      ApplyRecords(base);
+      return;
+    }
+  }
+}
+}  // namespace svr2011
+
 // A roster list is about to be built.
 REX_EXTERN(__imp__sub_82736C68);
 REX_HOOK_RAW(sub_82736C68) {

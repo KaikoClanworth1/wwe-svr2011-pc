@@ -590,6 +590,20 @@ def analyze(ctx, ids):
     return plan
 
 
+def waze_recount(wz):
+    """The header's 128 category counts (u16 LE at 8 + 2*cat) from the records' bits
+    (u64 LE at +0 / +8, records of 160 bytes from 272, count u32 LE at 4). The game
+    sizes its move lists by them (sub_8237BA68): stale counts overran the lists."""
+    n = struct.unpack_from('<I', wz, 4)[0]
+    cnt = [0] * 128
+    for k in range(n):
+        lo, hi = struct.unpack_from('<QQ', wz, 272 + 160 * k)
+        for c in range(128):
+            if ((lo if c < 64 else hi) >> (c % 64)) & 1:
+                cnt[c] += 1
+    struct.pack_into('<128H', wz, 8, *[min(c, 0xFFFF) for c in cnt])
+
+
 def waze_flags(ctx, plan, requested=None):
     """2011 WAZE category bits for each ported id, from donors with equal 2010 bits"""
     w10 = unpack(entry_get(ctx.mg10, b'MOVS', b'WAZE'))
@@ -719,6 +733,7 @@ def build(ctx, ids, namelist=False):
         for o in i11[mid]:
             wz[o:o + 16] = new
         pack['misc']['waze'].append(dict(id=mid, flags_before=old.hex(), flags_after=new.hex(), how=how))
+    waze_recount(wz)
     entry_set(mgroups, b'MOVS', b'WAZE', bytes(wz))
     # WAZA/DATA children 0 (EXH), 1 (events), 2 (MBD)
     sub0 = {g: (pk, u) for g, pk, u in w11[10]}

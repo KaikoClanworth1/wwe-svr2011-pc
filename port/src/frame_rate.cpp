@@ -57,6 +57,7 @@
 #include "match_types.h"
 #include "online_overlay.h"
 #include "players.h"
+#include "superstar_mods.h"
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
 REXCVAR_DEFINE_BOOL(full_speed, true, "GPU",
@@ -598,6 +599,7 @@ REX_HOOK_RAW(sub_82905058) {
     std::memcpy(r->state, base + out, sizeof(r->state));
     if (user == 0 && ctx.r3.u32 == 0) svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));  // (online_overlay.h)
     svr2011::ArenaSelectPad(user, ctx.r3.u32 == 0 ? uint16_t(base[out + 4] << 8 | base[out + 5]) : 0);  // (arena_mods.h)
+    if (user == 0) svr2011::CheckModProfiles(base);  // (superstar_mods.h)
   }
 }
 
