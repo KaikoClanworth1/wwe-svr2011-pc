@@ -33,6 +33,9 @@ void SetArenaDefault(int arena, const std::string& relative_file);
 // A match is loading (set-up to its people placed): a custom arena's loading
 // pictures are swapped only then.
 void SetMatchLoading(bool loading);
+// A player's pad buttons as the game read them (XInput bits): LB / RB turn
+// the arena select page.
+void ArenaSelectPad(uint32_t user, uint16_t buttons);
 
 // Backstage mods with an own menu row (manifest row=<label>): their bg78 plays
 // only in matches from that row. area: the room (0 parking lot ... 6 catering).

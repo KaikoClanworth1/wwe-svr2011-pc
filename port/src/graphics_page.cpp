@@ -67,6 +67,11 @@ struct Scale {
 };
 constexpr Scale kScales[] = {{4, "AUTO"}, {1, "720P (XBOX 360)"}, {2, "1440P"}, {3, "2160P"}};
 constexpr int kNumScales = int(std::size(kScales));
+// QUALITY -> TEXTURES: native_texture_quality (MEDIUM / LOW: big textures
+// from the game's own half / quarter size mipmaps - native/textures.h).
+constexpr const char* kTextureQualities[] = {"high", "medium", "low"};
+constexpr const char* kTextureQualityLabels[] = {"HIGH", "MEDIUM", "LOW"};
+constexpr int kNumTextureQualities = 3;
 
 // The game's languages (its text; the voices are English): Xbox 360 language
 // ids (user_language, read when the game starts).
@@ -86,6 +91,7 @@ enum Row {
   kWide, kPrepare, kDof, kMotionBlur, kSoft, kReplays,                      // QUALITY (last)
   kFrameRate, kFullSpeed,                                        // DISPLAY
   kCpuPriority,                                                  // DISPLAY (PC, last)
+  kTextureQuality,                                               // QUALITY
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -96,12 +102,12 @@ const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY", "CONTROLS"};
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
 const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kTouch, kReplays},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
+                                          {kRenderScale, kAntiAliasing, kTextureQuality, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
                                           {}};
 #else
 const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch, kReplays,
                                            kCpuPriority},
-                                          {kRenderScale, kAntiAliasing, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
+                                          {kRenderScale, kAntiAliasing, kTextureQuality, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
                                           {}};
 #endif
 
@@ -344,6 +350,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int row_ = 0;  // (in the tab)
   int resolution_ = 2;
   int scale_ = 0;  // (kScales)
+  int textures_ = 0;  // (kTextureQualities)
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
   bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
@@ -390,6 +397,12 @@ void GraphicsPage::Load() {
       if (kScales[i].value == v) scale_ = i;
     }
   }
+  {
+    const std::string q = rex::cvar::Query<std::string>("native_texture_quality");
+    textures_ = 0;
+    for (int i = 0; i < kNumTextureQualities; ++i)
+      if (q == kTextureQualities[i]) textures_ = i;
+  }
   effects_ = rex::cvar::Query<bool>("native_scale_effects");
   fps60_ = rex::cvar::Query<bool>("unlock_30fps");
   native_at_start_ = native::CanSwitch();
@@ -427,6 +440,11 @@ void GraphicsPage::Change(int row, int dir) {
       scale_ = (scale_ + dir + kNumScales) % kNumScales;
       rex::cvar::SetFlagByName("native_max_scale", std::to_string(kScales[scale_].value));
       SaveSetting("native_max_scale", std::to_string(kScales[scale_].value));
+      break;
+    case kTextureQuality:
+      textures_ = (textures_ + dir + kNumTextureQualities) % kNumTextureQualities;
+      rex::cvar::SetFlagByName("native_texture_quality", kTextureQualities[textures_]);
+      SaveSetting("native_texture_quality", std::string("\"") + kTextureQualities[textures_] + "\"");
       break;
     case kEffects:
       effects_ = !effects_;
@@ -889,6 +907,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kLanguage: return kLanguages[language_].label;
       case kRenderer: return vulkan_ ? "VULKAN" : "DIRECT3D 12";
       case kRenderScale: return kScales[scale_].label;
+      case kTextureQuality: return kTextureQualityLabels[textures_];
       case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
       case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
@@ -914,6 +933,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kLanguage: return "LANGUAGE";
       case kRenderer: return "GRAPHICS API";
       case kRenderScale: return "RENDER RESOLUTION";
+      case kTextureQuality: return "TEXTURES";
       case kAntiAliasing: return "ANTI-ALIASING";
       case kEffects: return "SHADOWS & EFFECTS";
       case kCutsceneFps: return "ENTRANCE FRAME RATE";
@@ -950,14 +970,17 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kAntiAliasing:
         return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
                "pixel): smoother edges, slower. Limited by RENDER SCALE.";
+      case kTextureQuality:
+        return "MEDIUM / LOW: big textures at half / a quarter of their size - less memory, faster loading. "
+               "Menus and text stay sharp.";
       case kEffects: return "HIGH: shadows, reflections and glow at the render resolution. NORMAL: faster.";
       case kCutsceneFps: return "Entrances and cutscenes at 60 fps, or 30 as on the Xbox 360 (half the work).";
     }
     return "";
   };
   row_ = std::clamp(row_, 0, n - 1);
-  // (9 rows on QUALITY: a little tighter, so the help line below stays clear)
-  const float row_h = n > 7 ? 30.0f : 34.0f, gap = n > 7 ? 8.0f : 13.0f;
+  // (9-10 rows on QUALITY: a little tighter, so the help line below stays clear)
+  const float row_h = n > 9 ? 28.0f : n > 7 ? 30.0f : 34.0f, gap = n > 9 ? 6.0f : n > 7 ? 8.0f : 13.0f;
   const float top = 310 - (float(n) * (row_h + gap) - gap) * 0.5f;
   const float fs = 22 * s;
   for (int i = 0; i < n; ++i) {

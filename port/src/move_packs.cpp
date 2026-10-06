@@ -51,7 +51,9 @@
 #include <rex/filesystem.h>
 #include <rex/filesystem/entry.h>
 #include <rex/filesystem/vfs.h>
+#include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/ppc.h>
 
 #include "../modmaker/svrfmt/pac.h"
 
@@ -60,7 +62,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 2";  // (2: banks whose sentinel points past the data)
+constexpr const char* kFormat = "movepacks 3";  // (2: banks whose sentinel points past the data; 3: WAZE category counts)
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -469,6 +471,41 @@ bool BuildMotionPac(const fs::path& game, const fs::path& overlay, const std::st
   return true;
 }
 
+// MOVS/WAZE as in the file (little-endian: u32 255, u32 record count, 128
+// u16 category counts, then 160-byte records from +272 - the first "* test
+// motion *" - each with its category bits, u64s at +0 / +8, and its move id
+// at +0x90): the packs' moves get their 16 bytes of bits, and the category
+// counts are recounted. Those counts size the game's move lists (sub_8237BA68
+// allocates by them, then writes every member): stock counts with new bits
+// overran the lists and lost the ported moves at their ends. Returns the
+// records set (-1: not that layout); *fixed: the counts changed.
+int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, int* fixed) {
+  static const char kMark[] = "* test motion *";
+  if (size < 272 + 160 || std::memcmp(w + 272 + 16, kMark, sizeof kMark - 1)) return -1;
+  const uint32_t records = Le32(w + 4);
+  if (size_t(records) * 160 + 272 > size) return -1;
+  int set = 0;
+  for (uint32_t k = 0; k < records; ++k) {
+    uint8_t* r = w + 272 + size_t(k) * 160;
+    const auto f = waze.find(Le16(r + 0x90));
+    if (f == waze.end() || std::all_of(r, r + 160, [](uint8_t b) { return b == 0; })) continue;
+    if (std::memcmp(r, f->second.data(), 16)) std::memcpy(r, f->second.data(), 16), ++set;
+  }
+  uint32_t count[128] = {};
+  for (uint32_t k = 0; k < records; ++k)
+    for (int c = 0; c < 128; ++c)
+      if (w[272 + size_t(k) * 160 + (c >> 3)] >> (c & 7) & 1) ++count[c];
+  *fixed = 0;
+  for (int c = 0; c < 128; ++c) {
+    const uint16_t n = uint16_t(std::min<uint32_t>(count[c], 0xFFFF));
+    *fixed += Le16(w + 8 + 2 * c) != n;
+    PutLe16(w + 8 + 2 * c, n);
+  }
+  return set;
+}
+
+std::map<uint16_t, Bytes> g_waze;  // the packs' moves' category bits (PatchWaze at each MOVS/WAZE load)
+
 bool BuildMisc(const fs::path& game, const fs::path& overlay, const Packs& p) {
   const fs::path src = game / "pac" / "misc.pac";
   std::map<std::string, Bytes> changed;
@@ -477,18 +514,11 @@ bool BuildMisc(const fs::path& game, const fs::path& overlay, const Packs& p) {
     if (!ReadEntry(src, "MOVS/WAZE", blob)) return false;
     const bool bpe = svrfmt::IsBpe(blob);
     Bytes w = svrfmt::Unpack(blob);
-    static const char kMark[] = "* test motion *";
-    const auto it = std::search(w.begin(), w.end(), kMark, kMark + sizeof kMark - 1);
-    if (it == w.end() || it - w.begin() < 0x10) return false;
-    size_t set = 0;
-    for (size_t o = size_t(it - w.begin()) - 0x10; o + 160 <= w.size(); o += 160) {
-      const auto f = p.waze.find(Le16(&w[o + 0x90]));
-      if (f == p.waze.end() || std::all_of(&w[o], &w[o + 160], [](uint8_t b) { return b == 0; })) continue;
-      std::memcpy(&w[o], f->second.data(), 16);
-      ++set;
-    }
+    int fixed = 0;
+    const int set = PatchWaze(w.data(), w.size(), p.waze, &fixed);
+    if (set < 0) return false;
     changed["MOVS/WAZE"] = Repack(w, bpe);
-    REXLOG_INFO("[svr2011] move packs: {} move records made selectable", set);
+    REXLOG_INFO("[svr2011] move packs: {} move records made selectable, {} category counts updated", set, fixed);
   }
   if (!p.exh.empty() || !p.evt.empty() || !p.mbd.empty()) {
     Bytes waza;
@@ -640,6 +670,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));
   if (!packs.waze.empty() || !packs.exh.empty() || !packs.evt.empty() || !packs.mbd.empty()) pacs.insert("misc.pac");
+  g_waze = packs.waze;
   {
     std::ifstream old(overlay / "stamp.txt", std::ios::binary);
     std::string was((std::istreambuf_iterator<char>(old)), std::istreambuf_iterator<char>());
@@ -685,3 +716,52 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
 }
 
 }  // namespace svr2011
+
+// MOVS/WAZE loaded (sub_8237ED68): sub_8237E708(data) swaps its header,
+// then its records are swapped and the category lists built. The game can
+// load another file's than the overlay's misc.pac (with the DLCs installed,
+// one without the packs' moves - Jeff Hardy's ported finisher wasn't in
+// CREATE A MOVESET's list): each is patched here, as the file still is.
+REX_EXTERN(__imp__sub_8237E708);
+REX_HOOK_RAW(sub_8237E708) {
+  const uint32_t data = ctx.r3.u32;
+  if (data && !g_waze.empty()) {
+    uint8_t* w = base + data;
+    const size_t size = 272 + size_t(Le32(w + 4)) * 160;
+    int fixed = 0;
+    const int set = Le32(w + 4) < 20000 ? PatchWaze(w, size, g_waze, &fixed) : -1;
+    static int logged = 0;
+    if (logged++ < 4)
+      REXLOG_INFO("[svr2011] move packs: MOVS/WAZE loaded ({} records): {} moves set, {} category counts updated",
+                  Le32(w + 4), set, fixed);
+  }
+  __imp__sub_8237E708(ctx, base);
+}
+
+// A moveset's move by slot (r3 slot, r4 moveset; sub_8237D4C8 looks it up in
+// its category's list): NULL when the move isn't in that list, and these
+// callers read the record without a check (+115 / +116: CREATE A MOVESET's
+// signature / finisher slots crashed, read of 0x74, on a mod whose profile
+// was its slot's placeholder - move 15271, which doesn't exist). They
+// get record 0 instead ("* test motion *": its bytes there are 0, as the code
+// takes for none, and it is in no category). Other callers check for NULL.
+REX_EXTERN(__imp__sub_82379158);
+REX_HOOK_RAW(sub_82379158) {
+  const uint32_t lr = uint32_t(ctx.lr), slot = ctx.r3.u32, moveset = ctx.r4.u32;
+  __imp__sub_82379158(ctx, base);
+  if (ctx.r3.u32) return;
+  switch (lr) {
+    case 0x82B9E1DC: case 0x82BA69E4: case 0x82B9C2E4: case 0x823797FC: case 0x82BA6424: break;
+    default: return;
+  }
+  auto rd = [&](uint32_t a) { const uint8_t* p = base + a; return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; };
+  const uint32_t table = rd(0x82E3C214);
+  const uint32_t first = table ? rd(table + 60) : 0;
+  if (!first) return;
+  ctx.r3.u64 = first;
+  static int logged = 0;
+  if (logged++ < 8) {
+    const uint32_t id = moveset ? (uint32_t(base[moveset + (slot + 2) * 2]) << 8 | base[moveset + (slot + 2) * 2 + 1]) : 0;
+    REXLOG_WARN("[svr2011] moveset: slot {} move {} not in its list (caller {:08X}) - none shown", slot, id, lr);
+  }
+}

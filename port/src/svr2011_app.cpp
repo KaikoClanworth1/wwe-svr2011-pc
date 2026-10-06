@@ -344,9 +344,10 @@ void Svr2011App::OnPostLoadXexImage() {
     static const char* const kGroups[][2] = {
         {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
         {"renderer", "native_renderer gpu_backend native_max_scale native_aa native_2x_msaa native_scale_effects "
-                     "native_widescreen native_prepare_pipelines frame_rate full_speed unlock_30fps process_priority"},
+                     "native_texture_quality native_widescreen native_prepare_pipelines frame_rate full_speed unlock_30fps "
+                     "process_priority"},
         {"effects", "depth_of_field motion_blur soft_filter"},
-        {"gameplay", "replays managers_tile mixed_gender_matches user_language"},
+        {"gameplay", "replays managers_tile mixed_gender_matches unlock_everything user_language"},
         {"input", "input_backend mnk_mode touch_controls touch_auto_layout"},
         {"audio", "audio_backend audio_mute"},
         {"online", "online_enabled online_server"},

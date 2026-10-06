@@ -12,6 +12,7 @@
 #include <vector>
 #include <thread>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <spdlog/sinks/base_sink.h>
 
@@ -211,6 +212,12 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     std::istringstream steps(route->steps);
     std::string sub;
     while (std::getline(steps, sub)) ParseLine(sub);
+    return;
+  } else if (verb == "set") {
+    std::string name, value;
+    in >> name >> value;
+    rex::cvar::SetFlagByName(name, value);
+    REXLOG_INFO("script input: {}", line);
     return;
   } else if (verb == "key") {
     static const struct {

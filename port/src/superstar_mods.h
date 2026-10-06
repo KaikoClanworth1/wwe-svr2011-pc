@@ -24,6 +24,9 @@ void CopySuperstarMovies(const std::filesystem::path& movies);
 // The installed mods' character ids (the select screen's EXTRA list).
 std::vector<uint32_t> SuperstarModIds();
 bool IsSuperstarMod(uint32_t id);
+// Once a frame: a mod's profile that is its slot's placeholder again (a
+// save's copy) gets the mod's back.
+void CheckModProfiles(uint8_t* base);
 // A mod's base character id (its manifest's base=), else 0.
 uint32_t SuperstarModBase(uint32_t id);
 // The game's text for string id (menu_hooks.cpp's lookup): a mod's attire

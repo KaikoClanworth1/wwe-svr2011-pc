@@ -117,6 +117,12 @@ REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
                      "The scale follows the window; phones start at 1.");
 
+REXCVAR_DEFINE_STRING(native_texture_quality, "high", "GPU",
+                      "Native renderer texture quality: high - as the game has them; medium / low - big "
+                      "mipmapped textures start at the game's own half / quarter size mipmap (a quarter / "
+                      "a sixteenth of the memory and upload); menus, fonts and pictures stay sharp")
+    .allowed({"high", "medium", "low"});
+
 REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
                       "Native renderer: main - the game always draws with it (the emulator only "
                       "runs the GPU command stream). (off and shadow are old values: they mean main.)")
@@ -1451,9 +1457,26 @@ void ApplyOutputSettings(Renderer* r) {
                               : std::string());
 }
 
+// Texture quality (native_texture_quality, twice a second): a change waits
+// for the GPU, then the textures are uploaded again as they're used.
+void ApplyTextureQuality(Renderer* r) {
+  static uint64_t checked = 0;
+  static uint32_t applied = 0;
+  if (r->frames && r->frames < checked + 30) return;
+  checked = r->frames;
+  const std::string q = REXCVAR_GET(native_texture_quality);
+  const uint32_t skip = q == "low" ? 2 : q == "medium" ? 1 : 0;
+  if (skip == applied) return;
+  if (!WaitIdle(r, "texture quality change")) return;
+  r->garbage.clear();
+  textures::SetQuality(skip);
+  applied = skip;
+}
+
 // False: the GPU stopped answering and the native renderer gave up.
 bool BeginFrame(Renderer* r) {
   if (r->frame_open) return true;
+  if (g_main) ApplyTextureQuality(r);
   if (g_main) ApplyOutputSettings(r);
   if (g_failed) return false;
   r->back_index = uint32_t(r->frames % kFrames);
@@ -1527,6 +1550,10 @@ void UpdateTitle(Renderer* r) {
     }
     {
       const textures::Stats ts = textures::TakePerf();
+      REXLOG_INFO("native perf: textures: {} uploads ({:.1f} MB, {:.1f} ms, converting {:.1f} ms) in {:.1f} s; "
+                  "{} resident ({:.1f} MB, {} with mip levels left out)",
+                  ts.uploads_total, ts.upload_bytes / 1048576.0, ts.upload_ms, ts.convert_ms, psecs,
+                  ts.textures, ts.resident_bytes / 1048576.0, ts.reduced);
       REXLOG_INFO("native perf: hashed per frame: vertex buffers {:.0f} KB static + {:.0f} KB dynamic, "
                   "constants compared {:.0f} KB ({:.0f}% reused), textures {:.0f} KB; "
                   "buffers back to checks at every use {}; repeat checks {:.0f} unchanged / {:.0f} changed",

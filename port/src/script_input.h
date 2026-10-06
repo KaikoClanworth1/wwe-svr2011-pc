@@ -11,6 +11,7 @@
 //   wait <ms>                   idle
 //   type <text>                 type on the PC keyboard (keyboard_typing.h)
 //   key <BACK|ENTER|ESC|LEFT|RIGHT|UP|DOWN>   press a PC keyboard key
+//   set <cvar> <value>          sets a setting at once (not queued; tests of live changes)
 //   touch <x> <y> <ms>          a finger on the on-screen controller at x, y
 //                               (fractions of the window) for ms
 //   drag <x0> <y0> <x1> <y1> <ms>   a finger down at x0, y0, moved to x1, y1

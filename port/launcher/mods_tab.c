@@ -223,6 +223,21 @@ static void add_mod(void)
 }
 
 static WCHAR s_installed[MAX_PATH];  /* the folder install_file put the last mod in */
+static int s_installed_existed;      /* ... and whether it was installed already */
+static int s_bundle_install;         /* (mods_install_bundled: never an older version over a newer one) */
+
+/* a > b as dotted versions ("1.10" > "1.9"). */
+static int version_newer(const WCHAR *a, const WCHAR *b)
+{
+    while (*a || *b) {
+        long x = wcstol(a, (WCHAR **)&a, 10), y = wcstol(b, (WCHAR **)&b, 10);
+        if (x != y) return x > y;
+        if (*a == L'.') a++;
+        if (*b == L'.') b++;
+        if ((*a && !iswdigit(*a)) || (*b && !iswdigit(*b))) break;
+    }
+    return 0;
+}
 
 int mods_install(const WCHAR *game_dir, const WCHAR *zip)
 {
@@ -234,7 +249,9 @@ int mods_install(const WCHAR *game_dir, const WCHAR *zip)
  * "Bundled Mods"): each is installed into the game once, and again only when
  * the shipped file changes - <game>\Mods\.bundled keeps "name|size|time" of
  * those installed - so one the player removed stays removed. A bundle comes
- * switched off the first time ("disabled" in its folder). */
+ * switched off the first time ("disabled" in its folder). One the player
+ * already has (installed by hand, or an older bundle) is updated to it and
+ * keeps its on / off - unless the player's copy is a newer version. */
 void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
 {
     WCHAR pat[MAX_PATH], zip[MAX_PATH], list[MAX_PATH], line[MAX_PATH + 64], mods[MAX_PATH];
@@ -275,7 +292,9 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
             fresh = wcsncmp(known, first + 1, wcslen(first + 1)) != 0 && !wcsstr(known, first);
         }
         s_installed[0] = 0;
-        if (mods_install(game_dir, zip) && fresh && s_installed[0]) {
+        s_installed_existed = 0;
+        s_bundle_install = 1;
+        if (mods_install(game_dir, zip) && fresh && !s_installed_existed && s_installed[0]) {
             WCHAR off[MAX_PATH];
             FILE *f;
             swprintf_s(off, MAX_PATH, L"%s\\disabled", s_installed);
@@ -283,6 +302,7 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
             scan();
             fill();
         }
+        s_bundle_install = 0;
         if (s_installed[0] && wcslen(known) + wcslen(line) < sizeof known / sizeof *known - 1) {
             wcscat_s(known, sizeof known / sizeof *known, line);
             changed = 1;
@@ -344,6 +364,19 @@ place:
     swprintf_s(parent, MAX_PATH, L"%s\\Mods\\%s", s_game, kind);
     SHCreateDirectoryExW(NULL, parent, NULL);
     swprintf_s(dst, MAX_PATH, L"%s\\%s", parent, m.id);
+    s_installed_existed = exists(dst);
+    if (s_installed_existed && s_bundle_install) {
+        /* (the player's copy is newer than the port's: kept) */
+        WCHAR old_man[MAX_PATH];
+        Mod old;
+        ZeroMemory(&old, sizeof old);
+        swprintf_s(old_man, MAX_PATH, L"%s\\manifest.txt", dst);
+        if (read_manifest(old_man, &old) && version_newer(old.version, m.version)) {
+            remove_tree(tmp, 0);
+            wcscpy_s(s_installed, MAX_PATH, dst);
+            return 1;
+        }
+    }
     {
         WCHAR off[MAX_PATH];
         int was_off;

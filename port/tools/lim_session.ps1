@@ -85,7 +85,12 @@ switch ($Action) {
     }
     "input" {
         $null = Get-Session
-        Add-Content $input ($Rest -join "`n")
+        # (the game reads the file every 100 ms on its own thread: a write can
+        # meet that read - tried again)
+        for ($try = 0; ; $try++) {
+            try { Add-Content $input ($Rest -join "`n") -ErrorAction Stop; break }
+            catch { if ($try -ge 20) { throw }; Start-Sleep -Milliseconds 50 }
+        }
         "queued: $($Rest -join ' | ')"
     }
     "postkey" {

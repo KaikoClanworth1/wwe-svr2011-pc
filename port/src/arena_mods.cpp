@@ -238,14 +238,18 @@ void StartScan() {
 // arenas in the same tiles (Mods/Arenas/<id>/: arena.pac, banner.dds = DXT5
 // 256 x 128, manifest.txt name=...; a "disabled" file turns one off).
 // Moving past the right edge goes to the next page, past the left edge to
-// the previous one (as the Paint Tool grid). A custom arena borrows its tile's arena as host: while its tile is
-// the one under the cursor, the host's file is the custom arena's
+// the previous one (as the Paint Tool grid); LB / RB change the page too.
+// A custom arena borrows its tile's arena as host: while its tile is the one
+// under the cursor, the host's file is the custom arena's
 // (RedirectArena), so the match that follows loads it.
 
 struct Banner {
   std::string name;    // "arena_SD"
   svrfmt::Bytes data;  // DXT5 blocks as the game keeps them (16-bit swapped)
-  uint32_t guest = 0;  // where the game keeps it while the screen is open
+  // where the game keeps it while the screen is open: every place holding the
+  // whole banner (a 64-byte match alone can take a wrong place - a 2.0.3
+  // player's pages showed banners on the wrong tiles, half drawn)
+  std::vector<uint32_t> guest;
 };
 std::vector<Banner> g_banners;  // the 20 originals
 
@@ -265,6 +269,7 @@ uint32_t g_select_widget = 0;
 std::atomic<int64_t> g_select_seen{0};  // when the arena grid was last updated (ms)
 std::atomic<int> g_cursor_custom{-1};    // custom arena under the cursor (label)
 int g_page = 0;              // 0 = the game's arenas
+std::atomic<uint16_t> g_shoulders[8];  // each player's LB / RB as last read (ArenaSelectPad)
 int g_redirected_host = -1;  // host arena currently pointed at a custom one
 
 constexpr size_t kBannerBlocks = 64 * 32;  // 256 x 128 DXT5, 16 bytes a block
@@ -316,7 +321,7 @@ void LoadBanners() {
         for (auto& t : texs)
           if (t.name.rfind("arena_", 0) == 0)
             if (svrfmt::Bytes blocks = BannerBlocks(t.data); !blocks.empty())
-              g_banners.push_back({t.name, std::move(blocks), 0});
+              g_banners.push_back({t.name, std::move(blocks), {}});
       }
     }
 }
@@ -418,21 +423,39 @@ int64_t NowMs() {
 // Finds each banner in guest physical memory (4 KB view) by a run of blocks.
 void LocateBanners() {
   uint8_t* b = g_memory->virtual_membase();
-  for (auto& bn : g_banners) bn.guest = 0;
-  ForEachRegion(0xE0000000, 0xFFFF0000, [&](uint64_t at, uint64_t end) {
-    for (auto& bn : g_banners) {
-      if (bn.guest) continue;
-      const uint8_t* sig = bn.data.data() + 16 * 300;
-      for (uint64_t a = at; a + 64 <= end; a += 16)
-        if (!std::memcmp(b + a, sig, 64)) {
-          bn.guest = uint32_t(a - 16 * 300);
-          break;
-        }
+  for (auto& bn : g_banners) bn.guest.clear();
+  // one pass: block 300's first 8 bytes -> the banners starting so there
+  std::unordered_map<uint64_t, std::vector<Banner*>> keys;
+  for (auto& bn : g_banners) {
+    uint64_t k;
+    std::memcpy(&k, bn.data.data() + 16 * 300, 8);
+    keys[k].push_back(&bn);
+  }
+  int partial = 0;
+  constexpr uint64_t hi = 0xFFFF0000;
+  ForEachRegion(0xE0000000, hi, [&](uint64_t at, uint64_t end) {
+    for (uint64_t a = at + 16 * 300; a + 64 <= end; a += 16) {
+      uint64_t k;
+      std::memcpy(&k, b + a, 8);
+      const auto it = keys.find(k);
+      if (it == keys.end()) continue;
+      const uint64_t start = a - 16 * 300;
+      for (Banner* bn : it->second) {
+        // (a texture can run on into the next region: the whole of it mapped)
+        rex::memory::HeapAllocationInfo info;
+        const uint64_t last = start + bn->data.size() - 1;
+        const bool mapped = last < end || (last < hi && Committed(uint32_t(last), info));
+        if (mapped && !std::memcmp(b + start, bn->data.data(), bn->data.size()))
+          bn->guest.push_back(uint32_t(start));
+        else if (!std::memcmp(b + a, bn->data.data() + 16 * 300, 64))
+          ++partial;
+      }
     }
   });
-  int found = 0;
-  for (const auto& bn : g_banners) found += bn.guest != 0;
-  REXLOG_INFO("[svr2011] arena select: {} of {} banners found", found, g_banners.size());
+  int found = 0, copies = 0;
+  for (const auto& bn : g_banners) found += !bn.guest.empty(), copies += int(bn.guest.size());
+  REXLOG_INFO("[svr2011] arena select: {} of {} banners found ({} places, {} partial matches left alone)", found,
+              g_banners.size(), copies, partial);
 }
 
 Banner* BannerOf(const char* name) {
@@ -458,13 +481,13 @@ void ShowPage(uint8_t* base) {
   }
   for (int k = 0; k < 20; ++k) {
     Banner* bn = BannerOf(kTiles[k].banner);
-    if (!bn || !bn->guest) continue;
+    if (!bn || bn->guest.empty()) continue;
     const svrfmt::Bytes* src = &bn->data;
     if (g_page > 0) {
       const CustomArena* c = CustomAt(k);
       src = c && !c->banner.empty() ? &c->banner : &empty;
     }
-    std::memcpy(base + bn->guest, src->data(), src->size());
+    for (const uint32_t at : bn->guest) std::memcpy(base + at, src->data(), src->size());
   }
   REXLOG_INFO("[svr2011] arena select: page {} / {}", g_page + 1, Pages());
 }
@@ -749,12 +772,24 @@ REX_HOOK_RAW(sub_823D4FC0) {
     FollowCursor(4, 0);  // (nothing redirected)
   }
   g_select_seen = NowMs();
-  const uint32_t row = rd(28), col = rd(44), cols = rd(48), buttons = rd(64);
+  const uint32_t row = rd(28), col = rd(44), cols = rd(48);
   __imp__sub_823D4FC0(ctx, base);
   const uint32_t new_col = rd(44), new_row = rd(28);
+  // Past an edge: the cursor jumped from the last column to the first or back
+  // in its row (the game wraps it), whatever moved it - a check of the button
+  // field's direction bits missed a 2.0.3 player's presses. Any player's
+  // LB / RB page too (not in that field: read with the game's pad reads).
+  static uint32_t held = 0;
+  uint32_t shoulders = 0;
+  for (const auto& s : g_shoulders) shoulders |= s.load();
+  const uint32_t pressed = shoulders & ~held;
+  held = shoulders;
   int page = g_page;
-  if (row < 4 && (buttons & 8) && col + 1 == cols && new_col == 0) page = (g_page + 1) % Pages();
-  if (row < 4 && (buttons & 4) && col == 0 && new_col + 1 == cols) page = (g_page + Pages() - 1) % Pages();
+  const bool wrapped = row < 4 && new_row == row && cols > 2;
+  if ((wrapped && col + 1 == cols && new_col == 0) || (pressed & 0x200))
+    page = (g_page + 1) % Pages();
+  else if ((wrapped && col == 0 && new_col + 1 == cols) || (pressed & 0x100))
+    page = (g_page + Pages() - 1) % Pages();
   if (page != g_page) {
     g_page = page;
     ShowPage(base);
@@ -839,6 +874,10 @@ void UseBackstageRow(int i) {
 }
 
 void SetMatchLoading(bool loading) { g_match_loading = loading; }
+
+void ArenaSelectPad(uint32_t user, uint16_t buttons) {
+  if (user < 8) g_shoulders[user] = buttons & 0x300;
+}
 
 void SetArenaDefault(int arena, const std::string& relative_file) {
   if (arena < 0 || arena >= 100) return;

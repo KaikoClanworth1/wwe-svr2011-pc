@@ -168,6 +168,8 @@ struct Entry {
   uint64_t checked_frame = 0;
   uint64_t used_frame = 0;  // the last frame it was drawn with
   uint32_t base_address = 0, base_size = 0, mip_address = 0, mip_size = 0;
+  uint64_t bytes = 0;  // the host resource's (texture quality: resident bytes)
+  uint32_t skip = 0;   // guest mip levels left out (texture quality)
 };
 
 rex::memory::Memory* g_memory = nullptr;
@@ -175,6 +177,24 @@ const uint8_t* g_physical = nullptr;
 // (SetBlockCompressionSupported; SVR2011_NATIVE_NO_BC=1: as if not - tests the CPU decoding on a PC)
 bool g_bc_supported = std::getenv("SVR2011_NATIVE_NO_BC") == nullptr;
 bool g_unorm16_filterable = true;  // (SetUnorm16Filterable)
+uint32_t g_quality_skip = 0;       // (SetQuality) 0 high, 1 medium, 2 low
+uint64_t g_resident_bytes = 0;     // all the textures' host bytes
+uint32_t g_reduced = 0;            // textures with levels left out
+
+// Texture quality: the guest mip levels a texture leaves out - its host
+// texture starts at guest level `skip` (the game's own smaller mipmap). Only
+// big mipmapped 2D textures: UI pictures and fonts (no mips) stay sharp; cube
+// maps, volumes and stacks stay whole. Never into the packed mip tail (levels
+// of 16 texels or less): with a 256 px side, guest level 2 is 64 px or more.
+// (Sampler shifts the fetch's LOD clamps by the same count.)
+uint32_t SkipLevels(const xenos::xe_gpu_texture_fetch_t& fetch) {
+  if (!g_quality_skip || fetch.dimension != xenos::DataDimension::k2DOrStacked) return 0;
+  uint32_t w1, h1, d1, base_page, mip_page, mip_min, mip_max;
+  texture_util::GetSubresourcesFromFetchConstant(fetch, &w1, &h1, &d1, &base_page, &mip_page, &mip_min,
+                                                 &mip_max);
+  if (d1 != 0 || !mip_page || mip_max == 0 || std::min(w1, h1) + 1 < 256) return 0;
+  return std::min(g_quality_skip, mip_max);  // (one level left at least)
+}
 
 // A 16-bit UNORM format's float stand-in (the GPU can't filter UNORM16).
 HostFormat Unorm16AsHalf(const HostFormat& h) {
@@ -686,7 +706,12 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
 
   const uint32_t array_size = is_3d ? 1 : depth_or_array;
   const uint32_t depth = is_3d ? depth_or_array : 1;
-  const uint32_t levels = mip_max + 1;
+  // A re-upload keeps the texture's layout (a quality change makes new ones).
+  uint32_t skip = e.resource ? e.skip : SkipLevels(fetch);
+  if (skip && skip >= layout.packed_level) skip = 0;  // (not into the packed tail)
+  // the guest's levels, and the host texture's: guest level `skip` up
+  const uint32_t guest_levels = mip_max + 1;
+  const uint32_t levels = guest_levels - skip;
   // Only a 2D view of the first slice is possible for stacked textures.
   if (dimension == 0 && array_size != 1) return false;
 
@@ -694,14 +719,16 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   const uint32_t bpb = info->bytes_per_block();
   if (!bpb || (bpb & (bpb - 1))) return false;
   // Block-compressed host textures need the base size in whole blocks.
-  const uint32_t host_width = host.block_compressed ? (width + 3) & ~3u : width;
-  const uint32_t host_height = host.block_compressed ? (height + 3) & ~3u : height;
+  // (with levels left out: the first host level's)
+  const uint32_t first_w = std::max(width >> skip, 1u), first_h = std::max(height >> skip, 1u);
+  const uint32_t host_width = host.block_compressed ? (first_w + 3) & ~3u : first_w;
+  const uint32_t host_height = host.block_compressed ? (first_h + 3) & ~3u : first_h;
 
   const bool gamma = fetch.sign_x == xenos::TextureSign::kGamma;
   RenderFormat resource_format = gamma && host.gamma != RenderFormat::UNKNOWN ? host.gamma : host.format;
   // (an icon page with PlayStation pictures - pad_icons.h - recognized below)
   const bool pad_candidate = (format == TF::k_DXT4_5 || format == TF::k_DXT1) && !is_3d && !is_cube &&
-                             array_size == 1 && levels == 1 && svr2011::PadIconsCandidate(width, height);
+                             array_size == 1 && guest_levels == 1 && svr2011::PadIconsCandidate(width, height);
 
   // A re-upload (guest data changed) reuses the texture and its view: the
   // entry's key fixes the layout, and frames still in flight keep a valid
@@ -770,7 +797,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   uint8_t block[16];
 
   const auto convert_t0 = std::chrono::steady_clock::now();
-  for (uint32_t level = 0; level < levels; ++level) {
+  for (uint32_t host_level = 0; host_level < levels; ++host_level) {
+    const uint32_t level = host_level + skip;  // the guest's
     const uint32_t page = level ? mip_page : base_page;
     if (!page) continue;  // level not present (left black)
     const uint32_t stored = std::min(level, layout.packed_level);
@@ -780,13 +808,13 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
     if (level >= layout.packed_level) {
       texture_util::GetPackedMipOffset(width, height, depth, format, level, ox, oy, oz);
     }
-    const uint32_t lw = std::max(host_width >> level, 1u), lh = std::max(host_height >> level, 1u);
+    const uint32_t lw = std::max(host_width >> host_level, 1u), lh = std::max(host_height >> host_level, 1u);
     const uint32_t ld = std::max(depth >> level, 1u);
     const uint32_t blocks_x = (lw + gbw - 1) / gbw, blocks_y = (lh + gbh - 1) / gbh;
     const uint32_t pitch_blocks = gl.row_pitch_bytes / bpb;
 
     for (uint32_t slice = 0; slice < array_size; ++slice) {
-      const uint32_t sub = level + slice * levels;
+      const uint32_t sub = host_level + slice * levels;
       const Footprint& fp = footprints[sub];
       const uint32_t slice_address = level_address + slice * gl.array_slice_stride_bytes;
       for (uint32_t z = 0; z < ld; ++z) {
@@ -890,7 +918,8 @@ view:
     e.hash = GuestHash(e);
     e.checked_frame = ctx.frame;
     ++g_stats.uploads;
-    g_stats.upload_bytes += uint64_t(e.base_size) + e.mip_size;
+    ++g_stats.uploads_total;
+    g_stats.upload_bytes += total;
     return true;
   }
   if (e.srv == UINT32_MAX) {
@@ -913,6 +942,12 @@ view:
                                           e.view.get());
 
   e.resource = resource;
+  e.skip = skip;
+  if (!IsPadPicture(resource)) {
+    e.bytes = total;
+    g_resident_bytes += total;
+    if (skip) ++g_reduced;
+  }
   e.base_address = base_page << 12;
   e.base_size = base_page ? std::min(layout.base.level_data_extent_bytes, kPhysicalSize - e.base_address) : 0;
   e.mip_address = mip_page << 12;
@@ -920,16 +955,17 @@ view:
   e.hash = GuestHash(e);
   e.checked_frame = ctx.frame;
   ++g_stats.uploads;
-  g_stats.upload_bytes += uint64_t(e.base_size) + e.mip_size;
+  ++g_stats.uploads_total;
+  g_stats.upload_bytes += total;
   static const bool log = std::getenv("SVR2011_NATIVE_TEXTURE_LOG") != nullptr;
   if (log) {
     static const char kSwizzle[] = "xyzw01??";
     char swizzle[5] = {};
     for (uint32_t i = 0; i < 4; ++i) swizzle[i] = kSwizzle[(fetch.swizzle >> (3 * i)) & 7];
     REXLOG_INFO(
-        "native texture {}: {} {}x{}x{} dim {} levels {} (min {}) tiled {} packed {} endian {} "
+        "native texture {}: {} {}x{}x{} dim {} levels {} (min {}, {} left out) tiled {} packed {} endian {} "
         "swizzle {} sign {}{}{}{} base {:08X} mips {:08X} pitch {} bias {} filter {}/{}/{} aniso {}",
-        e.srv, info->name, width, height, depth_or_array, uint32_t(dim), levels, mip_min,
+        e.srv, info->name, width, height, depth_or_array, uint32_t(dim), guest_levels, mip_min, skip,
         uint32_t(fetch.tiled), uint32_t(fetch.packed_mips), uint32_t(fetch.endianness), swizzle,
         uint32_t(fetch.sign_x), uint32_t(fetch.sign_y), uint32_t(fetch.sign_z),
         uint32_t(fetch.sign_w), e.base_address, e.mip_address, uint32_t(fetch.pitch),
@@ -1044,9 +1080,15 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
 }
 
 uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
-  const uint64_t key = uint64_t((fetch[0] >> 10) & 0x1FF) | (uint64_t((fetch[3] >> 19) & 0x7FF) << 9) |
+  const uint64_t base_key = uint64_t((fetch[0] >> 10) & 0x1FF) | (uint64_t((fetch[3] >> 19) & 0x7FF) << 9) |
                        (uint64_t((fetch[4] >> 2) & 0xFF) << 20) |
                        (uint64_t((fetch[4] >> 12) & 0x3FF) << 28) | (uint64_t(fetch[5] & 3) << 38);
+  // Texture quality: the texture starts at guest level `skip`, so the LOD
+  // clamps move down as many (guest LOD 1 is host LOD 0).
+  xenos::xe_gpu_texture_fetch_t tf;
+  std::memcpy(&tf, fetch, sizeof(tf));
+  const uint32_t skip = SkipLevels(tf);
+  const uint64_t key = base_key | (uint64_t(skip) << 40);
   auto it = g_samplers.find(key);
   if (it != g_samplers.end()) return it->second.index;
   if (g_sampler_next >= g_sampler_end) return 0;  // the default linear-wrap sampler
@@ -1080,8 +1122,9 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
   sd.addressW = kAddress[(fetch[0] >> 16) & 7];
   const int32_t bias = int32_t((fetch[4] >> 12) & 0x3FF) << 22 >> 22;
   sd.mipLODBias = std::clamp(bias / 32.0f, -16.0f, 15.99f);
-  sd.minLOD = float((fetch[4] >> 2) & 15);
-  sd.maxLOD = mip == 2 ? sd.minLOD : float((fetch[4] >> 6) & 15);
+  const uint32_t min_lod = (fetch[4] >> 2) & 15, max_lod = (fetch[4] >> 6) & 15;
+  sd.minLOD = float(min_lod > skip ? min_lod - skip : 0);
+  sd.maxLOD = mip == 2 ? sd.minLOD : float(max_lod > skip ? max_lod - skip : 0);
   static const bool lod0 = std::getenv("SVR2011_NATIVE_LOD0") != nullptr;  // debug
   if (lod0) sd.minLOD = sd.maxLOD = 0.0f;
   sd.comparisonEnabled = false;
@@ -1097,6 +1140,29 @@ uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]) {
 }
 
 void SetUnorm16Filterable(bool filterable) { g_unorm16_filterable = filterable; }
+
+void SetQuality(uint32_t skip) {
+  skip = std::min(skip, 2u);
+  if (skip == g_quality_skip) return;
+  g_quality_skip = skip;
+  // Uploaded again as they're used, into their own descriptor slots.
+  uint32_t dropped = 0;
+  for (auto& [key, e] : g_textures) {
+    if (!e.resource && !e.failed) continue;
+    e.resource = nullptr;
+    e.view = nullptr;
+    e.failed = false;
+    e.dynamic = false;
+    e.skip = 0;
+    e.bytes = 0;
+    ++dropped;
+  }
+  g_resident_bytes = 0;
+  g_reduced = 0;
+  REXLOG_INFO("native renderer: texture quality {} ({} mip levels left out of big textures); {} textures "
+              "to upload again",
+              skip == 0 ? "high" : skip == 1 ? "medium" : "low", skip, dropped);
+}
 
 void SetBlockCompressionSupported(bool supported) {
   g_bc_supported = supported && std::getenv("SVR2011_NATIVE_NO_BC") == nullptr;
@@ -1148,8 +1214,12 @@ plume::RenderComponentMapping ComponentMapping(uint32_t swizzle, uint32_t compon
 
 Stats TakePerf() {
   Stats s = g_stats;
+  s.textures = 0;  // (with a resource: a texture quality change drops them)
+  for (const auto& [key, e] : g_textures) s.textures += e.resource != nullptr;
+  s.resident_bytes = g_resident_bytes;
+  s.reduced = g_reduced;
   g_stats.hash_bytes = g_stats.upload_bytes = 0;
-  g_stats.hashes = 0;
+  g_stats.hashes = g_stats.uploads_total = 0;
   g_stats.hash_ms = g_stats.upload_ms = g_stats.convert_ms = 0;
   return s;
 }

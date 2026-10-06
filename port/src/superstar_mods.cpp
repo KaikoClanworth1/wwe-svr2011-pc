@@ -73,6 +73,7 @@ constexpr uint32_t kPool[] = {111, 114, 121, 127, 128, 129, 130, 136, 141, 148, 
                               59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69};
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
 constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
+constexpr uint32_t kSelectTile = 226;            // u16: its tile in the select grid's portrait table
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
@@ -670,6 +671,9 @@ void PutName(uint8_t* rec, uint32_t off, const std::string& s) {
 // held just before (the save's copy, the player's edits) is kept (Remember)
 // and goes back instead of the base's.
 std::vector<std::pair<uint32_t, svrfmt::Bytes>> g_blank;  // slot -> CHAR/PRO's profile
+// (g_blank and g_kept grow in the loaders' hooks while CheckModProfiles reads
+// them on the game thread)
+std::mutex g_slots_mutex;
 struct Kept {
   uint32_t slot = 0;
   svrfmt::Bytes record, profile;
@@ -699,6 +703,7 @@ bool IsBlank(uint32_t slot, const uint8_t* profile) {
 
 // Before CHAR/DAT or CHAR/PRO (re)loads: the mods' slots as they are.
 void Remember(uint8_t* base) {
+  std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (si >= 512) continue;
@@ -722,6 +727,15 @@ void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
       sr[kSignIds + k * 2] = br[kSignIds + k * 2], sr[kSignIds + k * 2 + 1] = br[kSignIds + k * 2 + 1];
     }
   }
+}
+
+// A mod's record never has its base's select-grid tile (+226): the grid's
+// tile -> record lookup takes the last record with the tile's number, the
+// mod's copy (DLC, in the EXTRA list instead), and the base's tile picked
+// nobody - Stone Cold, Matt Hardy, Mr. McMahon and William Regal couldn't be
+// chosen (2.0.3 / 2.0.4). 0 = no tile, as the placeholders have.
+void OwnSelectTile(uint8_t* sr, const uint8_t* br) {
+  if (Rd16(sr + kSelectTile) && Rd16(sr + kSelectTile) == Rd16(br + kSelectTile)) sr[kSelectTile] = sr[kSelectTile + 1] = 0;
 }
 
 void ApplyRecords(uint8_t* base) {
@@ -757,6 +771,7 @@ void ApplyRecords(uint8_t* base) {
     SetSigns(sr, br, m);
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
       sr[kSelectable] = 1, sr[kDlc] = 1;
+      OwnSelectTile(sr, br);  // (a save from before 2.0.5 has the base's)
       static std::vector<std::pair<uint32_t, uint32_t>> told;  // (slot, its ratings when last logged)
       const uint32_t r = uint32_t(sr[0]) << 16 | sr[1] << 8 | sr[2];
       auto t = std::find_if(told.begin(), told.end(), [&](const auto& x) { return x.first == m.slot; });
@@ -776,10 +791,12 @@ void ApplyRecords(uint8_t* base) {
         if (x.slot == m.slot && !x.record.empty()) k = &x;
       if (k) {  // (as it was before the game reloaded its records)
         std::memcpy(sr, k->record.data(), kRecordSize);
+        OwnSelectTile(sr, br);
         continue;
       }
     }
     std::memcpy(sr, br, kRecordSize);
+    OwnSelectTile(sr, br);
     PutName(sr, kFullName, m.name);
     PutName(sr, kSecondName, m.name);
     PutName(sr, kShortName, m.short_name);
@@ -804,6 +821,7 @@ void ApplyRecords(uint8_t* base) {
 // After a CHAR/PRO load: what the loader wrote into a mod's slot (changed
 // from `before`) is a placeholder version of that slot - kept, unless known.
 void RecordBlanks(uint8_t* base, const std::vector<svrfmt::Bytes>& before) {
+  std::lock_guard lock(g_slots_mutex);
   for (size_t i = 0; i < g_mods.size() && i < before.size(); ++i) {
     const auto& m = g_mods[i];
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
@@ -821,6 +839,7 @@ void RecordBlanks(uint8_t* base, const std::vector<svrfmt::Bytes>& before) {
 }
 
 void KeepBlankProfiles(uint8_t* base) {
+  std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     bool have = false;
     for (const auto& b : g_blank) have |= b.first == m.slot;
@@ -1441,6 +1460,29 @@ REX_HOOK_RAW(sub_8257A218) {
   ApplyRecords(base);
   ctx.r3.u64 = r3;
 }
+// Once a frame (the game's pad reads, frame_rate.cpp): a mod's profile that
+// is a placeholder again gets the mod's back. A save's copy of a slot can be
+// the placeholder (saved before the mod was installed): loading it put Jeff
+// Hardy's back to it after the hooks above ran, and CREATE A MOVESET - no
+// roster list (below) on the way - read the placeholder's finisher 15271, a
+// move that doesn't exist (crash, 2.0.3). A save's edited copy is no
+// placeholder and stays.
+namespace svr2011 {
+void CheckModProfiles(uint8_t* base) {
+  std::lock_guard lock(g_slots_mutex);
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512) continue;
+    bool have_blank = false;
+    for (const auto& b : g_blank) have_blank |= b.first == m.slot;
+    if (have_blank && IsBlank(m.slot, base + kProfiles + si * kProfileSize)) {
+      ApplyRecords(base);
+      return;
+    }
+  }
+}
+}  // namespace svr2011
+
 // A roster list is about to be built.
 REX_EXTERN(__imp__sub_82736C68);
 REX_HOOK_RAW(sub_82736C68) {

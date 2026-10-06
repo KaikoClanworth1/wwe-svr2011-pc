@@ -84,9 +84,12 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
-## After 2.0.3 (next update)
+## New in 2.0.4
 
 - **Bundled mods come switched off**: a fresh install (or a bundle new to this game folder) installs them unticked on the Mods tab; tick the ones you want. An update of a bundled mod keeps its on / off.
+- **Your installed copies of the port's mods are kept up to date**: when an update brings a newer version of a bundled mod you already have (even one you installed by hand), it's installed over yours and stays on or off as you had it. A copy newer than the port's is left alone.
+- **Everything unlocked from the start - now your choice** (launcher, Settings, Game: *Everything unlocked from the start*; on by default, as before): off, the locked superstars, arenas and items unlock as you play, as on a console without the Fan Axxess bonus. All DLC stays (its superstars, arenas, costumes, Bret Hart). Works with your existing save too; turn it back on any time. `unlock_everything` in the settings file.
+- **Create A Moveset no longer crashes on SvR 2010 superstars** (Jeff Hardy and the others): their moves show in the editor's lists, and a move the editor can't find no longer crashes it.
 
 ## New in 2.0.3
 
@@ -130,6 +133,7 @@ still being tested.
 - **Lumberjack (partly)**: now 2 wrestlers and 4 lumberjacks, all starting on the floor around the ring; they still walk in and brawl (the game has no lumberjack AI; a custom version is planned in docs/MATCH_TYPES_RESEARCH.md) (8a8298e).
 - **Free-roaming backstage**: the CPU now moves and fights (played as the Parking Lot rule over the whole backstage), and the camera is pulled back (70412c3).
 
+- **Texture quality** (`native_texture_quality`: high / medium / low; GRAPHICS → QUALITY → TEXTURES and both launchers' Settings): medium / low start big mipmapped 2D textures (256 px or more) at the game's own half / quarter-size mipmap, so the larger levels are never converted or uploaded. Textures without mips (menus, fonts, pictures), render-target copies, cube maps and volumes stay whole; the samplers' LOD clamps shift to match. Changes apply at once (textures are uploaded again).
 - **Anti-aliasing levels**: OFF / 2x / 3x / 4x supersampling (4, 9 or 16 samples a pixel; GRAPHICS → QUALITY and the launcher's Settings), within the 4x render scale cap (4d363c8).
 - **Android drivers** (cb15eb3): **driver variables** (e.g. `FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1`, the fix for HyperOS 3's glitches with Turnip; a one-tap "HyperOS 3 fix" button); any driver zip (with or without `meta.json`) or a bare `.so` can be added, and zips labelled oddly by file managers show up in the picker; a `gpu_driver` set by hand to a file in Download is copied into the app's storage before loading. *Experimental (not yet tried on a phone).*
 
