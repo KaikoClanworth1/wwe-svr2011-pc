@@ -556,6 +556,7 @@ std::atomic<bool> g_match_loading{false};
 struct DecodeSwaps {
   std::vector<DecodeSwap> swaps;
   std::unordered_map<uint64_t, std::vector<size_t>> keys;  // middle 32 bytes -> swaps
+  std::vector<size_t> sizes;                               // the swaps' top level sizes (distinct)
   int theme = -1;                                          // VS theme forced (-1 none)
 };
 std::mutex g_decode_mutex;
@@ -630,6 +631,7 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
     auto add = [&](const std::string& name, svrfmt::Bytes original, svrfmt::Bytes mine, bool loading) {
       if (original.size() != mine.size() || original.size() < 64) return;
       t->keys[Fnv(original.data() + original.size() / 2, 32)].push_back(t->swaps.size());
+      if (std::find(t->sizes.begin(), t->sizes.end(), original.size()) == t->sizes.end()) t->sizes.push_back(original.size());
       t->swaps.push_back({name, std::move(original), std::move(mine), loading});
     };
     if (!c->load.empty()) {
@@ -677,7 +679,7 @@ void SwapDecoded(uint8_t* d, uint32_t size) {
     if (uint64_t(off) + sz > size || sz < 128 + 64 || std::memcmp(d + off, "DDS ", 4)) continue;
     uint8_t* top = d + off + 128;
     const std::string name(reinterpret_cast<const char*>(r), strnlen(reinterpret_cast<const char*>(r), 16));
-    for (size_t level0 : {size_t(1024 * 512), size_t(512 * 512), size_t(1024 * 128), size_t(128 * 256)}) {
+    for (size_t level0 : t->sizes) {
       if (128 + level0 > sz) continue;
       auto it = t->keys.find(Fnv(top + level0 / 2, 32));
       if (it == t->keys.end()) continue;

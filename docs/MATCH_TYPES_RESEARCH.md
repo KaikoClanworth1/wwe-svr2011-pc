@@ -415,3 +415,29 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 - a plain triple threat afterwards had live +37 = 0.
 
 **Test aid:** `SVR2011_TEST_FALL_LOG=1` (`slobber_knocker.cpp`) logs every character's state, lost and team, plus the 64 live option bytes, whenever a fall state changes, and the judge's decision.
+
+## Three Stages of Hell (done)
+
+**Menu:** ONE ON ONE -> EXTREME RULES submenu, the 3rd row (after WEAPONS EVERYWHERE). The row is a normal one on one (rule `0x00`); `match_types.cpp` marks the match and `three_stages.cpp` does the rest.
+
+**How it works:** it is one match, not three, so health and damage carry over.
+- The falls judge `sub_82245618` (hooked in `slobber_knocker.cpp`) first calls `ThreeStagesBeforeJudge`.
+- A fall is a character's lost byte (+447). If the fall doesn't win the match, it is counted for the other wrestler and taken back (lost and beaten-by set to 0), and the judge goes on.
+- The live rules (`0x82E3DE00`) then switch to the next stage. The game reads them mid-match:
+  - fall 2, FALLS COUNT ANYWHERE (as rule `0x2B`): +1 = 2, +17 = 1, and no rope break, count-out or ring-out;
+  - fall 3, LAST MAN STANDING (as rule `0x3B`): +26 = 1, and no pinfall, give up, count-out or ring-out.
+- Overlay: the score and the current fall at the top of the screen. It is kept up by each world update (`ThreeStagesUpdate`), because the judge isn't called during an LMS count.
+
+**Tested:**
+- falls 1 and 2 were forced. In fall 3 the CPU played Last Man Standing on its own: the STAND UP / tap-or-hold count showed, and the match ended "RANDY ORTON WINS BY WAY OF KO" (2-1);
+- the first test forced all three falls, and the match-end steps and highlights ran.
+
+**Not seen in tests:** a pin outside the ring in fall 2 (the rules are the same bytes as rule `0x2B`).
+
+**Game behaviour:** a long match can bring a run-in. The game loads two hidden characters at match start (slots 2 and 3, role 3 "waiting", one per side), and one walked out about 2 minutes into fall 3. It appears to be the game's own feature: no port code adds those characters.
+
+**Crash found on the way:** `sub_8217AB58` is the sibling of the queued callback `sub_8217A718` that `frame_rate.cpp` already guards. It read a gone object's +156 part (guest 0x5E0) 16 s into a fall-3 test. It is now guarded the same way.
+
+**Test aids:**
+- `SVR2011_TEST_3S_FALL=<s>`: every `<s>` seconds person 1, then person 0, loses a fall (falls 1 and 2 only);
+- `SVR2011_TEST_3S_LOG=1`: the live bytes and characters, once a second.

@@ -515,6 +515,7 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
     svr2011::InstallSlobberKnockerOverlay(imgui_drawer());  // (match_types.h)
+    svr2011::InstallThreeStagesOverlay(imgui_drawer());
     // The ONLINE overlay: friends, invites (online_overlay.h).
     svr2011::InstallOnlineOverlay(imgui_drawer(), window(),
                                   static_cast<rex::input::InputSystem*>(runtime()->input_system()),

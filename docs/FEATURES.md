@@ -84,6 +84,18 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## New in 2.0.5
+
+- **Three Stages of Hell** (ONE ON ONE → EXTREME RULES): best of three falls in one match - a normal fall, then Falls Count Anywhere, then Last Man Standing - with the damage carried through and the score at the top of the screen.
+- **Elimination** in TRIPLE THREAT and FATAL-4-WAY (normal, Falls Count Anywhere, Extreme Rules): a pin or give up eliminates that wrestler, who leaves, and the match goes on until one is left. Uses the game's own elimination rule; your Match Creator settings are left alone.
+- **Texture quality** (`native_texture_quality`: high / medium / low; GRAPHICS → QUALITY → TEXTURES and both launchers' Settings): medium / low start big mipmapped 2D textures (256 px or more) at the game's own half / quarter-size mipmap, so the larger levels are never converted or uploaded. Textures without mips (menus, fonts, pictures), render-target copies, cube maps and volumes stay whole; the samplers' LOD clamps shift to match. Changes apply at once (textures are uploaded again).
+- **Superstars the included mods are built from are selectable again** (Stone Cold, Matt Hardy, Mr. McMahon, William Regal and the others): a mod's copy no longer takes over its base superstar's place on the select grid. Saves made by 2.0.3 / 2.0.4 are fixed as they load.
+- **Superstar Threads**: a painted attire the game builds again after a match (a Threads-edited superstar in the title demo, a Road to WrestleMania entrance) is no longer drawn with parts of the earlier build.
+- **SvR 2010 superstars under damage**: their neck, chest and shoulders no longer darken all over as they take damage (a "tank top"); all 20 bundled SvR 2010 superstars updated.
+- **Arena mods**: VS-screen theme pictures of any size can be swapped.
+- **Android 10 and 11** phones and tablets are supported (the app needed Android 12 before), as are tablets on older Linux kernels, and the game folder can be in the app's own storage (an SD card adopted as internal storage).
+- 🧪 **Mali GPUs** (older drivers without descriptor indexing): the Native renderer binds each draw's own textures and reads shader constants from uniform buffers there; a Mali-G52 tablet plays matches at about 16 fps (it couldn't before). Android builds are tuned for Cortex-A53 CPUs. `native_render_scale` (0.25-1) renders below the screen's resolution.
+
 ## New in 2.0.4
 
 - **Bundled mods come switched off**: a fresh install (or a bundle new to this game folder) installs them unticked on the Mods tab; tick the ones you want. An update of a bundled mod keeps its on / off.
@@ -133,7 +145,6 @@ still being tested.
 - **Lumberjack (partly)**: now 2 wrestlers and 4 lumberjacks, all starting on the floor around the ring; they still walk in and brawl (the game has no lumberjack AI; a custom version is planned in docs/MATCH_TYPES_RESEARCH.md) (8a8298e).
 - **Free-roaming backstage**: the CPU now moves and fights (played as the Parking Lot rule over the whole backstage), and the camera is pulled back (70412c3).
 
-- **Texture quality** (`native_texture_quality`: high / medium / low; GRAPHICS → QUALITY → TEXTURES and both launchers' Settings): medium / low start big mipmapped 2D textures (256 px or more) at the game's own half / quarter-size mipmap, so the larger levels are never converted or uploaded. Textures without mips (menus, fonts, pictures), render-target copies, cube maps and volumes stay whole; the samplers' LOD clamps shift to match. Changes apply at once (textures are uploaded again).
 - **Anti-aliasing levels**: OFF / 2x / 3x / 4x supersampling (4, 9 or 16 samples a pixel; GRAPHICS → QUALITY and the launcher's Settings), within the 4x render scale cap (4d363c8).
 - **Android drivers** (cb15eb3): **driver variables** (e.g. `FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1`, the fix for HyperOS 3's glitches with Turnip; a one-tap "HyperOS 3 fix" button); any driver zip (with or without `meta.json`) or a bare `.so` can be added, and zips labelled oddly by file managers show up in the picker; a `gpu_driver` set by hand to a file in Download is copied into the app's storage before loading. *Experimental (not yet tried on a phone).*
 

@@ -28,6 +28,11 @@ REXCVAR_DEFINE_BOOL(mali_alpha, false, "GPU",
                     "Android: Mali GPUs (alpha) - the launcher turns it on with the emulator's geometry shader "
                     "and line fill requirements off (Mali has neither)");
 
+REXCVAR_DEFINE_BOOL(native_compact_tables, false, "GPU",
+                    "Vulkan: compact tables (each draw binds its own textures; shader constants from uniform "
+                    "buffers) even with descriptor indexing - as GPUs without it (Mali) always do. A test "
+                    "switch for drivers that read uniform buffers faster than storage buffers (Adreno)");
+
 namespace svr2011::native::backend {
 
 namespace {
@@ -160,8 +165,10 @@ class VulkanBackend final : public Backend {
     // Without descriptor indexing (runtime arrays, partially bound / update-
     // after-bind sampled images - old Mali drivers): compact tables, a small
     // set of each draw's own textures.
-    compact_ = !d->app_renderer_features;
-    if (compact_)
+    compact_ = !d->app_renderer_features || REXCVAR_GET(native_compact_tables);
+    if (compact_ && d->app_renderer_features)
+      REXLOG_INFO("native renderer: compact tables chosen (native_compact_tables) - shaders .spvc");
+    else if (compact_)
       REXLOG_WARN("native renderer: no descriptor indexing on this GPU - each draw binds its own textures "
                   "(compact tables, shaders .spvc)");
     plume::VulkanExistingDevice existing;

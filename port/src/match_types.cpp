@@ -146,6 +146,12 @@ uint32_t g_slobber_text[2] = {};
 // extreme rules versions (MRPD), not with a cage, cell, ladder, table, TLC or
 // backstage - left so.
 constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
+// THREE STAGES OF HELL: in ONE ON ONE -> EXTREME RULES, after WEAPONS
+// EVERYWHERE (three_stages.cpp).
+constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
+WeaponsRow g_stages_row = {~0u, ~0u};
+bool g_pending_stages = false;
+uint32_t g_stages_text[2] = {};
 constexpr uint32_t kTripleThreat = 0x0D, kFatal4Way = 0x0E;
 std::vector<WeaponsRow> g_elim_rows;  // (group, place in the group)
 bool g_pending_elimination = false;
@@ -254,24 +260,29 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
       Wr32(row.data() + 0x40, Rd32(rec + 0x40));
       out.insert(out.end(), row.begin(), row.end());
-      for (uint32_t k = 0; k < 2; ++k) {
+      for (uint32_t k = 0; k < 3; ++k) {  // (EXTREME RULES, WEAPONS EVERYWHERE, THREE STAGES OF HELL)
         std::vector<uint8_t> leaf(rec, rec + kRec);
         Wr32(leaf.data() + 0x18, group);
         Wr32(leaf.data() + 0x1C, node + k);
         Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
         Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);  // (depth +0x16: one down)
         Wr32(leaf.data() + 0x40, 0);
-        Wr32(leaf.data() + 0x3C, k ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
-        if (k) {
+        Wr32(leaf.data() + 0x3C, k == 2 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
+        if (k == 1) {
           Wr32(leaf.data() + 0x00, kWeaponsLabel);
           Wr32(leaf.data() + 0x04, kWeaponsText);
+        } else if (k == 2) {
+          Wr32(leaf.data() + 0x00, kStagesLabel);
+          Wr32(leaf.data() + 0x04, kStagesText);
+          Wr32(leaf.data() + 0x5C, 0x00);  // (a normal one on one; three_stages.cpp changes its rules)
         }
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
       g_weapons_rows.push_back({group, 1});
+      g_stages_row = {group, 2};
       REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
-      node += 2;
+      node += 3;
       ++group;
     } else if (const uint32_t rule = Rd32(rec + 0x5C); rule >= kExtremeFirst && rule <= kExtremeLast) {
       const uint32_t in_group = Rd32(rec + 0x18);
@@ -520,6 +531,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_like = kLumberjackLike;
     g_pending_select_only = true;
   }
+  g_pending_stages = group == g_stages_row.group && ctx_row == g_stages_row.index;
   g_pending_elimination = false;
   for (const WeaponsRow& w : g_elim_rows)
     if (group == w.group && ctx_row == w.index) g_pending_elimination = true;
@@ -571,6 +583,8 @@ REX_HOOK_RAW(sub_827374A0) {
     REXLOG_INFO("match types: SLOBBER KNOCKER");
     svr2011::SlobberKnockerStart();
   }
+  svr2011::ThreeStagesSetup(g_pending_stages && rule == 0x00 && !Rd32(base + kStoryContext));
+  g_pending_stages = false;
   g_elimination = g_pending_elimination && (rule == kTripleThreat || rule == kFatal4Way) && !Rd32(base + kStoryContext);
   g_pending_elimination = false;
   if (g_elimination) REXLOG_INFO("match types: ELIMINATION (rule {:02X})", rule);
@@ -1245,6 +1259,7 @@ bool SlobberKnockerMatch() { return g_slobber; }
 void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kChars = 0x82E3CC50;
   if (g_slobber && base[0x82E3DE00] == kGauntlet) SlobberKnockerUpdate(ctx, base);
+  if (ThreeStagesMatch()) ThreeStagesUpdate(base);
   if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext)) return;
   LumberjackController(base);
   static const bool probe = std::getenv("SVR2011_TEST_PEOPLE") != nullptr;
@@ -1387,6 +1402,19 @@ namespace svr2011 {
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
+  if ((id == kStagesLabel || id == kStagesText) && g_memory) {
+    static const char* const kText[] = {
+        "THREE STAGES OF HELL",
+        "The first to win two falls: a normal fall, then Falls Count Anywhere, then Last Man Standing - "
+        "the damage carries over."};
+    const uint32_t k = id - kStagesLabel;
+    if (!g_stages_text[k]) {
+      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
+      g_stages_text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_stages_text[k]), kText[k], n);
+    }
+    return g_stages_text[k];
+  }
   if ((id == kElimLabel || id == kElimText) && g_memory) {
     static const char* const kText[] = {
         "ELIMINATION",
