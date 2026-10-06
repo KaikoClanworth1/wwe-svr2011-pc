@@ -32,6 +32,7 @@ class Backend {
   virtual plume::RenderShaderFormat ShaderFormat() const = 0;
   virtual const char* ShaderExtension() const = 0;
   virtual bool CompactTables() const { return false; }
+  virtual plume::RenderFormat DepthFormat() const { return plume::RenderFormat::D24_UNORM_S8_UINT; }
   virtual void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
                             uint32_t height, plume::RenderCommandFence* fence) = 0;
   virtual bool GetFrame(rex::external_frame::Frame& frame) = 0;
@@ -64,6 +65,10 @@ const char* ShaderExtension();
 // tables - each draw binds small sets of its own textures (native_renderer.cpp,
 // compact tables) and the shaders are the .spvc build (fixed-size tables).
 bool CompactTables();
+// The host depth buffers' format: D24S8, or D32F S8 where the GPU has no D24S8
+// depth target (AMD's Windows Vulkan driver). The game's depth values (0..1)
+// are the same in either.
+plume::RenderFormat DepthFormat();
 
 // Main mode: `image` (shader-readable, RGBA8) is this frame, finished when
 // `fence` - just signaled by the frame's submission - is. The emulator's
