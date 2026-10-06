@@ -51,6 +51,7 @@
 #include <rex/system/xthread.h>
 #include <rex/ui/presenter.h>
 
+#include "arena_mods.h"
 #include "generated/default/svr2011_init.h"
 #include "jukebox.h"
 #include "match_types.h"
@@ -596,6 +597,7 @@ REX_HOOK_RAW(sub_82905058) {
     r->result = ctx.r3.u32;
     std::memcpy(r->state, base + out, sizeof(r->state));
     if (user == 0 && ctx.r3.u32 == 0) svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));  // (online_overlay.h)
+    svr2011::ArenaSelectPad(user, ctx.r3.u32 == 0 ? uint16_t(base[out + 4] << 8 | base[out + 5]) : 0);  // (arena_mods.h)
   }
 }
 
