@@ -1631,12 +1631,54 @@ const std::vector<uint32_t>& MoveLogIds() {
   return ids;
 }
 }  // namespace
+// Test aid: SVR2011_TEST_MOTION_SWAP=<id>=<new id>[,...] - a lookup of a motion
+// with that id (any x, body tracks y 0/1) gets the new id's (x 0) instead: the
+// select screen's model, or a stance, plays a chosen motion (an in-game
+// motion viewer with a fixed camera).
+const std::vector<std::pair<uint32_t, uint32_t>>& MotionSwaps() {
+  static const std::vector<std::pair<uint32_t, uint32_t>> v = [] {
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    if (const char* e = std::getenv("SVR2011_TEST_MOTION_SWAP"))
+      for (const char* q = e; *q;) {
+        char* end = nullptr;
+        const unsigned long a = std::strtoul(q, &end, 10);
+        if (end == q || *end != '=') break;
+        const unsigned long b = std::strtoul(end + 1, &end, 10);
+        out.push_back({uint32_t(a), uint32_t(b)});
+        for (q = end; *q == ',' || *q == ' ';) ++q;
+      }
+    return out;
+  }();
+  return v;
+}
 REX_EXTERN(__imp__sub_823941F8);
 REX_HOOK_RAW(sub_823941F8) {
   const auto& ids = MoveLogIds();
-  const uint32_t id = ctx.r4.u32 & 0xFFFF, x = ctx.r5.u32 & 0xFF, y = ctx.r6.u32 & 0xFF;
+  uint32_t id = ctx.r4.u32 & 0xFFFF, x = ctx.r5.u32 & 0xFF;
+  const uint32_t y = ctx.r6.u32 & 0xFF;
+  for (const auto& [from, to] : MotionSwaps())
+    if (id == from && y <= 1) {
+      id = to, x = 0;
+      ctx.r4.u64 = to;
+      ctx.r5.u64 = 0;
+    }
   __imp__sub_823941F8(ctx, base);
-  if (ids.empty() || std::find(ids.begin(), ids.end(), id) == ids.end()) return;
+  static const bool all = [] { const char* e = std::getenv("SVR2011_TEST_MOVE_LOG"); return e && !std::strcmp(e, "all"); }();
+  if (all) {  // (SVR2011_TEST_MOVE_LOG=all: every lookup once, found or not)
+    static std::mutex amu;
+    static std::vector<uint32_t> atold;
+    const uint32_t k = id << 16 | x << 8 | y;
+    std::lock_guard lock(amu);
+    if (std::find(atold.begin(), atold.end(), k) == atold.end()) {
+      atold.push_back(k);
+      REXLOG_INFO("[svr2011] move log: lookup {} x {} y {} {}", id, x, y, ctx.r3.u32 ? "found" : "NOT FOUND");
+    }
+    return;
+  }
+  // (SVR2011_TEST_MOVE_LOG=missing: every body-track motion - y 0 / 1 - no
+  // loaded bank has, for any id: a move that snaps instead of playing)
+  static const bool missing = [] { const char* e = std::getenv("SVR2011_TEST_MOVE_LOG"); return e && !std::strcmp(e, "missing"); }();
+  if (missing ? (ctx.r3.u32 || y > 1) : (ids.empty() || std::find(ids.begin(), ids.end(), id) == ids.end())) return;
   static std::mutex mu;
   static std::vector<uint64_t> told;
   const uint64_t k = uint64_t(id) << 17 | x << 9 | y << 1 | (ctx.r3.u32 ? 1 : 0);
@@ -1657,4 +1699,27 @@ REX_EXTERN(__imp__sub_8258EB90);
 REX_HOOK_RAW(sub_8258EB90) {
   if (!MoveLogIds().empty()) REXLOG_INFO("[svr2011] move log: data read {:08X} size {}", ctx.r3.u32, ctx.r4.u32);
   __imp__sub_8258EB90(ctx, base);
+}
+
+// Test aid (SVR2011_TEST_MOVE_LOG set): the per-superstar match bank's move id
+// list (sub_8224D8C8(obj): u32 ids at obj+116, sorted, up to 267 read, 32767
+// closing it) - how full it is.
+REX_EXTERN(__imp__sub_8224CFD0);
+REX_HOOK_RAW(sub_8224CFD0) {
+  static const bool on = std::getenv("SVR2011_TEST_MOVE_LOG") != nullptr;
+  if (on) {
+    const uint32_t obj = ctx.r3.u32;
+    __imp__sub_8224CFD0(ctx, base);
+    uint32_t n = 0, last = 0, end = 0;
+    for (; n < 400; ++n) {
+      const uint32_t v = Rd32(base + obj + 116 + 4 * n);
+      if (v == 32767) { end = 1; break; }
+      if (v == 0xDEADBEEF) break;
+      last = v;
+    }
+    REXLOG_INFO("[svr2011] move log: match bank id list {} entries{} (last {}), read limit 267", n,
+                end ? " + 32767" : " (no 32767)", last);
+    return;
+  }
+  __imp__sub_8224CFD0(ctx, base);
 }

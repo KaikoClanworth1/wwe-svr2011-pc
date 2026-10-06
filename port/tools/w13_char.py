@@ -127,8 +127,10 @@ def name13to11(n):
              'd_kuchi_t': 'd_kuchi'}
     if n in fixed:
         return fixed[n]
-    if n.startswith('kami_'):
-        return 'kubi' if n in ('kami_b15', 'kami_b15_00') else 'mune'
+    if n.startswith('kami_b15'):  # (the tie's physics chain, neck to waist: chest, then waist)
+        return 'mune' if n in ('kami_b15', 'kami_b15_00', 'kami_b15_01', 'kami_b15_02') else 'koshi'
+    if n.startswith('kami_'):  # (hair physics chains: with the head)
+        return 'atama'
     if side:
         limb = {'Thigh': 'momo', 'Thigh_u': 'momo', 'Thigh_x': 'momo_x', 'Calf': 'sune', 'Foot': 'ashi', 'Toe0': 'tsumasaki',
                 'Clavicle': 'sakotsu', 'Chest_Dummy': 'mune_dummy', 'Clavicle_m': 'sakotsu_m', 'Shoulder_m': 'kata_m',
@@ -226,8 +228,9 @@ class Conv:
         s.shader = tmpl.shader
         s.vfmt = tmpl.vfmt
         s.palette = [nmap[p - 1] + 1 if p > 0 else p for p in s13['palette']]
-        # (WWE '13 skin keeps wrinkle / sweat weights in the vertex alpha; 2011 draws it as opacity)
-        s.verts = [(0.1 * (v[0] - origin[0]), 0.1 * (v[1] - origin[1]), 0.1 * (v[2] - origin[2]), v[3], v[4], v[5], v[6] | 0xFF000000)
+        # (WWE '13 skin keeps shader data in the vertex colour - alpha 0, RGB 0x32 on some attires;
+        # 2011 multiplies by it and draws its alpha as opacity: white, as 2011's own models)
+        s.verts = [(0.1 * (v[0] - origin[0]), 0.1 * (v[1] - origin[1]), 0.1 * (v[2] - origin[2]), v[3], v[4], v[5], 0xFFFFFFFF)
                    for v in s13['verts']]
         vc = len(s.verts)
         nw = s13['nw']
@@ -235,6 +238,9 @@ class Conv:
         s.weights = [[(tuple(w[8 * vc * j + 8 * k:8 * vc * j + 8 * k + 4]), struct.unpack_from('>f', w, 8 * vc * j + 8 * k + 4)[0])
                       for k in range(vc)] for j in range(nw)]
         s.uvs = list(s13['uvs'])
+        if getattr(self, 'push', None):  # (a cloth piece over the body: a little out along its normals)
+            d = self.push
+            s.verts = [(v[0] + d * v[3], v[1] + d * v[4], v[2] + d * v[5], v[3], v[4], v[5], v[6]) for v in s.verts]
         s.strips = [(6, idx) for idx in s13['strips']]
         # parameters: the template's, its texture slots pointed at our names
         s.params = []
@@ -263,9 +269,13 @@ class Conv:
         m.textures = textures
         m.nodes = nodes
         m.meshes = []
+        names13 = [nd['name'] for nd in m13['nodes']]
         for k, s13 in enumerate(m13['meshes']):
             tmpl, slots = kind_of(s13)
+            pal = [names13[p - 1] if 0 < p <= len(names13) else '' for p in s13['palette']]
+            self.push = 0.08 if pal and sum(n.startswith('kami_b15') for n in pal) * 2 >= len(pal) else 0
             ms = self.mesh(s13, tmpl, nmap, origin, textures, slots)
+            self.push = 0
             ms.u74 = k
             m.meshes.append(ms)
         return m
@@ -292,9 +302,23 @@ class Conv:
                 continue
             m13 = read13(kids13[src])
             sub_map = {}
+            body_names = {b['name']: j for j, b in enumerate(body13['nodes'])}
+            idx11 = {nd['name']: j for j, nd in enumerate(nodes)}
             for i, nd in enumerate(m13['nodes']):
-                k = next((j for j, b in enumerate(body13['nodes']) if b['name'] == nd['name']), None)
-                sub_map[i] = nmap[k] if k is not None else 0
+                # a body bone by name; else the 2011 node the name maps to; else
+                # the nearest ancestor that is one (hair chains hang off the head)
+                k = i
+                while k >= 0:
+                    nm = m13['nodes'][k]['name']
+                    if nm in body_names:
+                        sub_map[i] = nmap[body_names[nm]]
+                        break
+                    if name13to11(nm) in idx11:
+                        sub_map[i] = idx11[name13to11(nm)]
+                        break
+                    k = m13['nodes'][k]['parent']
+                else:
+                    sub_map[i] = idx11.get('atama', 0)
             tmpl = tm.meshes[-1]
             out[dst] = jboy.write(self.model(m13, tm, nodes, sub_map, origin, tex_body if dst == 0x2710 else ['color'],
                                              lambda s, t=tmpl, sl=slots: (t, sl)))

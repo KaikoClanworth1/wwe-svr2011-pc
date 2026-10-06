@@ -17,8 +17,15 @@
 //   hold the same three as children 10, 11 and 12.
 //
 // pack.txt (written by tools/movepack.py), one item a line:
-//   motion <m.pac|mpsp.pac> <TYPE/NAME/child/...> <id> <x> <y> <frames> <file>
+//   motion <m.pac|mpsp.pac> <TYPE/NAME/child/...> <id> <x> <y> <frames> <file> [<20 bytes hex>]
+//     (YMBs banks - the ADPCM ones: taunts, submissions, finishers - also take
+//     the motion's 20-byte header: type, segments, interval, 0, 4 floats)
 //   waze <id> <16 bytes hex>
+//   wazename <id> <name>   (the move record's name, e.g. a record 2011 keeps
+//     without a motion, given one)
+//   wazecopy <id> <from id>   (a new move on a free record: the whole record
+//     of another move - category bits, parameters - but its own id; applied
+//     before waze / wazename lines)
 //   exh <group> <36 bytes hex>
 //   evt <group> <16 bytes hex> <events hex>
 //   mbd <group> <8 bytes hex>
@@ -62,7 +69,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 3";  // (2: banks whose sentinel points past the data; 3: WAZE category counts)
+constexpr const char* kFormat = "movepacks 5";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names)
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -70,6 +77,7 @@ struct Motion {
   uint8_t x = 0, y = 0;
   uint32_t frames = 0;
   Bytes data;
+  Bytes hdr;  // (YMBs: the 20-byte motion header)
 };
 struct Record {
   uint32_t group = 0;
@@ -79,6 +87,8 @@ struct Packs {
   // pac -> "TYPE/NAME" -> child path -> motions
   std::map<std::string, std::map<std::string, std::map<std::vector<uint32_t>, std::vector<Motion>>>> motions;
   std::map<uint16_t, Bytes> waze;
+  std::map<uint16_t, std::string> names;
+  std::map<uint16_t, uint16_t> copies;  // record id -> the id its record is copied from
   std::vector<Record> exh, evt, mbd;
   size_t count = 0;
 };
@@ -116,7 +126,8 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
     if (kind == "motion") {
       std::string pac, path, file;
       uint32_t id = 0, x = 0, y = 0, frames = 0;
-      in >> pac >> path >> id >> x >> y >> frames >> file;
+      std::string hdr;
+      in >> pac >> path >> id >> x >> y >> frames >> file >> hdr;
       std::vector<std::string> parts;
       for (size_t a = 0; a <= path.size();) {
         size_t e = path.find('/', a);
@@ -129,6 +140,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
       for (size_t k = 2; k < parts.size(); ++k) kids.push_back(uint32_t(std::strtoul(parts[k].c_str(), nullptr, 16)));
       Motion m;
       m.id = uint16_t(id), m.x = uint8_t(x), m.y = uint8_t(y), m.frames = frames;
+      m.hdr = Hex(hdr);
       if (!ReadAll(dir / fs::u8path(file), m.data)) {
         REXLOG_WARN("[svr2011] move packs: {}: missing {}", dir.filename().string(), file);
         continue;
@@ -143,6 +155,17 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
       std::string hex;
       in >> id >> hex;
       if (const Bytes b = Hex(hex); b.size() == 16) p.waze[uint16_t(id)] = b;
+    } else if (kind == "wazecopy") {
+      uint32_t id = 0, from = 0;
+      in >> id >> from;
+      if (id && from && id != from) p.copies[uint16_t(id)] = uint16_t(from);
+    } else if (kind == "wazename") {
+      uint32_t id = 0;
+      std::string name;
+      in >> id;
+      std::getline(in, name);
+      name.erase(0, name.find_first_not_of(' '));
+      if (id && !name.empty()) p.names[uint16_t(id)] = name.substr(0, 63);
     } else if (kind == "exh" || kind == "evt" || kind == "mbd") {
       Record r;
       std::string rec, ev;
@@ -164,9 +187,12 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
 
 uint32_t Key(uint16_t id, uint8_t x, uint8_t y) { return uint32_t(id) << 16 | uint32_t(x) << 8 | y; }
 
+bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added);
+
 // Inserts the motions (keys the bank lacks) and lays the data out in
 // directory order. False if the bank can't take them (not YMKs, unsorted).
 bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
+  if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMBs", 4)) return YmbsInsert(raw, add, added);
   if (raw.size() < 0x114 || std::memcmp(raw.data(), "YMKs", 4)) return false;
   const uint32_t n = Le32(&raw[0x110]);
   const size_t base = 0x114 + size_t(n) * 16;
@@ -246,6 +272,95 @@ bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   Bytes out(raw.begin(), raw.begin() + 0x110);
   svrfmt::AppLe32(out, uint32_t(ents.size()));
   svrfmt::App(out, dir);
+  svrfmt::App(out, body);
+  raw = std::move(out);
+  return true;
+}
+
+// A YMBs bank (re_charmodel.md): the same directory, then a database - u32,
+// a 20-byte header per motion (same order), the data - with the directory
+// offsets counted from the database. New motions bring their header.
+bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
+  const uint32_t n = Le32(&raw[0x110]);
+  const size_t db = 0x114 + size_t(n) * 16;
+  if (n == 0 || db + 4 + 20 * size_t(n) > raw.size()) return false;
+  struct E {
+    uint8_t y, x;
+    uint16_t id;
+    int64_t off;  // (from the database; -1: new)
+    uint32_t frames, rt;
+    const uint8_t* hdr;
+    const uint8_t* data;
+    size_t size;
+  };
+  const size_t data_size = raw.size() - db;
+  std::vector<E> ents(n);
+  std::vector<uint32_t> offs;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* d = &raw[0x114 + 16 * i];
+    ents[i] = {d[0], d[1], Le16(d + 2), Le32(d + 4), Le32(d + 8), Le32(d + 12), &raw[db + 4 + 20 * i], nullptr, 0};
+    offs.push_back(uint32_t(ents[i].off));
+  }
+  std::sort(offs.begin(), offs.end());
+  offs.erase(std::unique(offs.begin(), offs.end()), offs.end());
+  for (auto& e : ents) {
+    const auto it = std::upper_bound(offs.begin(), offs.end(), uint32_t(e.off));
+    const size_t end = std::min<size_t>(it == offs.end() ? data_size : *it, data_size);
+    const size_t off = std::min<size_t>(size_t(e.off), data_size);
+    e.data = raw.data() + db + off;
+    e.size = end > off ? end - off : 0;
+  }
+  std::map<uint32_t, int> rts;
+  for (const auto& e : ents) ++rts[e.rt];
+  const uint32_t rt = std::max_element(rts.begin(), rts.end(), [](auto& a, auto& b) { return a.second < b.second; })->first;
+  std::vector<uint32_t> keys;
+  std::set<uint32_t> present;
+  for (const auto& e : ents) keys.push_back(Key(e.id, e.x, e.y)), present.insert(keys.back());
+  for (size_t i = 0; i + 1 < keys.size(); ++i)
+    if (keys[i] > keys[i + 1]) return false;
+  std::vector<const Motion*> sorted;
+  for (const auto& m : add) sorted.push_back(&m);
+  std::sort(sorted.begin(), sorted.end(), [](auto a, auto b) { return Key(a->id, a->x, a->y) < Key(b->id, b->x, b->y); });
+  added = 0;
+  for (const Motion* m : sorted) {
+    const uint32_t k = Key(m->id, m->x, m->y);
+    if (present.count(k) || m->hdr.size() != 20) continue;
+    if (m->id >= ents.back().id) return false;  // (above the bank's sentinel)
+    size_t pos = 0;
+    while (pos < keys.size() && keys[pos] <= k) ++pos;
+    keys.insert(keys.begin() + long(pos), k);
+    ents.insert(ents.begin() + long(pos), E{m->y, m->x, m->id, -1, m->frames, rt, m->hdr.data(), m->data.data(), m->data.size()});
+    present.insert(k);
+    ++added;
+  }
+  if (!added) return true;
+  const size_t start = 4 + 20 * ents.size();  // (the data's offset in the new database)
+  Bytes body, dir, hdrs;
+  int64_t last_old = -2;
+  uint32_t last_new = 0;
+  for (const auto& e : ents) {
+    uint32_t off;
+    if (e.off >= 0 && e.off == last_old) {
+      off = last_new;  // (neighbours sharing one block keep sharing it)
+    } else {
+      off = uint32_t(start + body.size());
+      body.insert(body.end(), e.data, e.data + e.size);
+    }
+    last_old = e.off, last_new = off;
+    uint8_t d[16];
+    d[0] = e.y, d[1] = e.x;
+    PutLe16(d + 2, e.id);
+    svrfmt::PutLe32(d + 4, off);
+    svrfmt::PutLe32(d + 8, e.frames);
+    svrfmt::PutLe32(d + 12, e.rt);
+    dir.insert(dir.end(), d, d + 16);
+    hdrs.insert(hdrs.end(), e.hdr, e.hdr + 20);
+  }
+  Bytes out(raw.begin(), raw.begin() + 0x110);
+  svrfmt::AppLe32(out, uint32_t(ents.size()));
+  svrfmt::App(out, dir);
+  out.insert(out.end(), raw.begin() + long(db), raw.begin() + long(db) + 4);
+  svrfmt::App(out, hdrs);
   svrfmt::App(out, body);
   raw = std::move(out);
   return true;
@@ -479,16 +594,38 @@ bool BuildMotionPac(const fs::path& game, const fs::path& overlay, const std::st
 // allocates by them, then writes every member): stock counts with new bits
 // overran the lists and lost the ported moves at their ends. Returns the
 // records set (-1: not that layout); *fixed: the counts changed.
-int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, int* fixed) {
+int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, int* fixed,
+              const std::map<uint16_t, std::string>& names = {}, const std::map<uint16_t, uint16_t>& copies = {}) {
   static const char kMark[] = "* test motion *";
   if (size < 272 + 160 || std::memcmp(w + 272 + 16, kMark, sizeof kMark - 1)) return -1;
   const uint32_t records = Le32(w + 4);
   if (size_t(records) * 160 + 272 > size) return -1;
   int set = 0;
+  if (!copies.empty()) {  // (whole records of other moves, the id kept)
+    std::map<uint16_t, uint8_t*> by_id;
+    for (uint32_t k = 0; k < records; ++k) {
+      uint8_t* r = w + 272 + size_t(k) * 160;
+      if (!std::all_of(r, r + 160, [](uint8_t b) { return b == 0; })) by_id.emplace(Le16(r + 0x90), r);
+    }
+    for (const auto& [id, from] : copies) {
+      const auto d = by_id.find(id), f = by_id.find(from);
+      if (d == by_id.end() || f == by_id.end()) continue;
+      uint8_t rec[160];
+      std::memcpy(rec, f->second, 160);
+      std::memcpy(rec + 0x90, d->second + 0x90, 2);
+      if (std::memcmp(d->second, rec, 160)) std::memcpy(d->second, rec, 160), ++set;
+    }
+  }
   for (uint32_t k = 0; k < records; ++k) {
     uint8_t* r = w + 272 + size_t(k) * 160;
+    if (std::all_of(r, r + 160, [](uint8_t b) { return b == 0; })) continue;
+    if (const auto nm = names.find(Le16(r + 0x90)); nm != names.end()) {  // (the name: 64 bytes at +0x10)
+      uint8_t buf[64] = {};
+      std::memcpy(buf, nm->second.data(), std::min<size_t>(nm->second.size(), 63));
+      if (std::memcmp(r + 0x10, buf, 64)) std::memcpy(r + 0x10, buf, 64), ++set;
+    }
     const auto f = waze.find(Le16(r + 0x90));
-    if (f == waze.end() || std::all_of(r, r + 160, [](uint8_t b) { return b == 0; })) continue;
+    if (f == waze.end()) continue;
     if (std::memcmp(r, f->second.data(), 16)) std::memcpy(r, f->second.data(), 16), ++set;
   }
   uint32_t count[128] = {};
@@ -505,17 +642,19 @@ int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, in
 }
 
 std::map<uint16_t, Bytes> g_waze;  // the packs' moves' category bits (PatchWaze at each MOVS/WAZE load)
+std::map<uint16_t, std::string> g_names;  // and their record names
+std::map<uint16_t, uint16_t> g_copies;     // and records copied from other moves
 
 bool BuildMisc(const fs::path& game, const fs::path& overlay, const Packs& p) {
   const fs::path src = game / "pac" / "misc.pac";
   std::map<std::string, Bytes> changed;
-  if (!p.waze.empty()) {
+  if (!p.waze.empty() || !p.names.empty() || !p.copies.empty()) {
     Bytes blob;
     if (!ReadEntry(src, "MOVS/WAZE", blob)) return false;
     const bool bpe = svrfmt::IsBpe(blob);
     Bytes w = svrfmt::Unpack(blob);
     int fixed = 0;
-    const int set = PatchWaze(w.data(), w.size(), p.waze, &fixed);
+    const int set = PatchWaze(w.data(), w.size(), p.waze, &fixed, p.names, p.copies);
     if (set < 0) return false;
     changed["MOVS/WAZE"] = Repack(w, bpe);
     REXLOG_INFO("[svr2011] move packs: {} move records made selectable, {} category counts updated", set, fixed);
@@ -669,8 +808,12 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));
-  if (!packs.waze.empty() || !packs.exh.empty() || !packs.evt.empty() || !packs.mbd.empty()) pacs.insert("misc.pac");
+  if (!packs.waze.empty() || !packs.names.empty() || !packs.copies.empty() || !packs.exh.empty() || !packs.evt.empty() ||
+      !packs.mbd.empty())
+    pacs.insert("misc.pac");
   g_waze = packs.waze;
+  g_names = packs.names;
+  g_copies = packs.copies;
   {
     std::ifstream old(overlay / "stamp.txt", std::ios::binary);
     std::string was((std::istreambuf_iterator<char>(old)), std::istreambuf_iterator<char>());
@@ -725,11 +868,12 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
 REX_EXTERN(__imp__sub_8237E708);
 REX_HOOK_RAW(sub_8237E708) {
   const uint32_t data = ctx.r3.u32;
-  if (data && !g_waze.empty()) {
+  static const bool off = [] { const char* v = std::getenv("SVR2011_TEST_WAZE_LOAD"); return v && *v == '0'; }();
+  if (data && (!g_waze.empty() || !g_names.empty() || !g_copies.empty()) && !off) {
     uint8_t* w = base + data;
     const size_t size = 272 + size_t(Le32(w + 4)) * 160;
     int fixed = 0;
-    const int set = Le32(w + 4) < 20000 ? PatchWaze(w, size, g_waze, &fixed) : -1;
+    const int set = Le32(w + 4) < 20000 ? PatchWaze(w, size, g_waze, &fixed, g_names, g_copies) : -1;
     static int logged = 0;
     if (logged++ < 4)
       REXLOG_INFO("[svr2011] move packs: MOVS/WAZE loaded ({} records): {} moves set, {} category counts updated",
