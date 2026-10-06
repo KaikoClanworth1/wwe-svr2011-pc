@@ -32,6 +32,23 @@ index 9b3cdf5..a932136 100644
  
  # Add tests subdirectory if tests are enabled
  if(REXGLUE_BUILD_TESTS)
+diff --git a/cmake/rexglue_helpers.cmake b/cmake/rexglue_helpers.cmake
+index 41e6dce..e1b9dbb 100644
+--- a/cmake/rexglue_helpers.cmake
++++ b/cmake/rexglue_helpers.cmake
+@@ -52,6 +52,12 @@ function(rexglue_apply_target_settings target_name)
+             target_compile_options(${target_name} PRIVATE -mcmodel=large)
+         elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+             target_compile_options(${target_name} PRIVATE -march=armv8-a)
++            # [svr2011] REXGLUE_ARM64_TUNE=<cpu>: instruction scheduling for that
++            # core (the same instructions run everywhere) - e.g. cortex-a53 for
++            # in-order little cores.
++            if(REXGLUE_ARM64_TUNE)
++                target_compile_options(${target_name} PRIVATE -mtune=${REXGLUE_ARM64_TUNE})
++            endif()
+         endif()
+     endif()
+ 
 diff --git a/include/rex/chrono/chrono.h b/include/rex/chrono/chrono.h
 index d876846..b73d7af 100644
 --- a/include/rex/chrono/chrono.h
@@ -133,6 +150,35 @@ index 0000000..b3f7e65
 +uint64_t SwapCount();
 +
 +}  // namespace rex::external_frame
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..751a686 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -143,6 +143,11 @@ class CommandProcessor {
+   virtual void ShutdownContext() = 0;
+ 
+   virtual void WriteRegister(uint32_t index, uint32_t value);
++  // [svr2011] Type-0 packets' runs of float shader constants (0x4000-0x47FF)
++  // stored in one go (true), then FloatConstantsWritten notes what
++  // WriteRegister would have for them.
++  virtual bool FastFloatConstants() const { return false; }
++  virtual void FloatConstantsWritten(uint32_t first_index, uint32_t count) {}
+   uint32_t ReadRegisterValue(uint32_t index) const;
+   virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
+   virtual void WriteRegisterRangeFromRing(memory::RingBuffer* ring, uint32_t base,
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 696ff48..ab4ced0 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -249,6 +249,8 @@ class VulkanCommandProcessor : public CommandProcessor {
+   void ShutdownContext() override;
+ 
+   void WriteRegister(uint32_t index, uint32_t value) override;
++  bool FastFloatConstants() const override { return true; }
++  void FloatConstantsWritten(uint32_t first_index, uint32_t count) override;
+   void WriteRegistersFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers) override;
+   bool ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader, uint32_t packet,
+                                           uint32_t count) override;
 diff --git a/include/rex/input/device.h b/include/rex/input/device.h
 index 7b67ceb..dacad53 100644
 --- a/include/rex/input/device.h
@@ -984,7 +1030,7 @@ index 0000000..3534ca7
 +
 +}  // namespace rex::filesystem
 diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
-index b52bf39..7b89c86 100644
+index b52bf39..72fa4e3 100644
 --- a/src/core/memory_posix.cpp
 +++ b/src/core/memory_posix.cpp
 @@ -32,6 +32,9 @@
@@ -997,6 +1043,23 @@ index b52bf39..7b89c86 100644
  #include <rex/platform.h>
  #include <rex/string.h>
  
+@@ -295,6 +298,16 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+ #endif
+ 
+   void* result = mmap(base_address, length, prot_initial, flags, -1, 0);
++#if defined(MAP_FIXED_NOREPLACE) && REX_PLATFORM_LINUX
++  // [svr2011] Kernels before 4.17 (Android 10 tablets: 4.14) don't know
++  // MAP_FIXED_NOREPLACE and take the address as a hint: over an existing
++  // reservation they map somewhere else. That is the EEXIST case.
++  if (result != MAP_FAILED && base_address && result != base_address) {
++    munmap(result, length);
++    result = MAP_FAILED;
++    errno = EEXIST;
++  }
++#endif
+   if (result != MAP_FAILED) {
+     return result;
+   }
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
 index 9ac8d15..6d9e384 100644
 --- a/src/core/threading_posix.cpp
@@ -1369,7 +1432,7 @@ index 0000000..cee5140
 +
 +}  // namespace rex::timeline
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index a744375..97be235 100644
+index a744375..a3840ce 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -9,6 +9,7 @@
@@ -1420,7 +1483,32 @@ index a744375..97be235 100644
      REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
    }
  
-@@ -989,8 +1004,15 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -702,6 +717,24 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
+ 
+   uint32_t base_index = (packet & 0x7FFF);
+   uint32_t write_one_reg = (packet >> 15) & 0x1;
++  // [svr2011] Float shader constants (thousands a frame): stored in one go,
++  // then the backend notes them once (FloatConstantsWritten) - instead of a
++  // WriteRegister call each. (Phones: the GPU thread's biggest cost.)
++  if (!write_one_reg && base_index >= 0x4000 && base_index + count <= 0x4800 && FastFloatConstants()) {
++    RegisterFile& regs = *register_file_;
++    memory::RingBuffer::ReadRange range = reader->BeginRead(size_t(count) * sizeof(uint32_t));
++    uint32_t* out = &regs.values[base_index];
++    auto copy = [&](const uint8_t* src, size_t bytes) {
++      const uint32_t n = uint32_t(bytes / sizeof(uint32_t));
++      for (uint32_t i = 0; i < n; ++i) out[i] = memory::load_and_swap<uint32_t>(src + i * 4);
++      out += n;
++    };
++    if (range.first_length) copy(range.first, range.first_length);
++    if (range.second_length) copy(range.second, range.second_length);
++    reader->EndRead(range);
++    FloatConstantsWritten(base_index, count);
++    return true;
++  }
+   for (uint32_t m = 0; m < count; m++) {
+     uint32_t reg_data = reader->ReadAndSwap<uint32_t>();
+     uint32_t target_index = write_one_reg ? base_index : base_index + m;
+@@ -989,8 +1022,15 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
  
    bool is_memory = (wait_info & 0x10) != 0;
  
@@ -1436,7 +1524,7 @@ index a744375..97be235 100644
      uint32_t value = 0;
      if (is_memory) {
        value =
-@@ -1030,6 +1052,7 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1030,6 +1070,7 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
          break;
      }
      if (!matched) {
@@ -1444,7 +1532,7 @@ index a744375..97be235 100644
        // Wait.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -1051,6 +1074,40 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1051,6 +1092,40 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
        }
      }
    } while (!matched);
@@ -1890,7 +1978,7 @@ index 8f2fcb0..e5b7dad 100644
  
  void GraphicsSystem::MarkVblank() {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..d080063 100644
+index 001f36b..9f7cd74 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -25,6 +25,7 @@
@@ -1923,7 +2011,27 @@ index 001f36b..d080063 100644
    }
    if (!device_properties.geometryShader) {
      if (REXCVAR_GET(vulkan_require_geometry_shader)) {
-@@ -2272,6 +2280,8 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+@@ -2160,6 +2168,19 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+   }
+ }
+ 
++// [svr2011] (see CommandProcessor::ExecutePacketType0) As WriteRegister does
++// for each float constant: the vertex / pixel constant buffers are out of date.
++void VulkanCommandProcessor::FloatConstantsWritten(uint32_t first_index, uint32_t count) {
++  if (frame_open_) {
++    const uint32_t first = (first_index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
++    const uint32_t last = (first_index + count - 1 - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
++    if (first < 256)
++      current_constant_buffers_up_to_date_ &= ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatVertex);
++    if (last >= 256)
++      current_constant_buffers_up_to_date_ &= ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatPixel);
++  }
++}
++
+ void VulkanCommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                                                    uint32_t num_registers) {
+   if (!num_registers) {
+@@ -2272,6 +2293,8 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
  void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                         uint32_t frontbuffer_height) {
    SCOPE_profile_cpu_f("gpu");
@@ -1932,7 +2040,7 @@ index 001f36b..d080063 100644
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
  
-@@ -2312,9 +2322,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2312,9 +2335,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
    xenos::TextureFormat frontbuffer_format;
    bool swap_source_needs_rb_swap = false;
@@ -1967,7 +2075,7 @@ index 001f36b..d080063 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
-@@ -2407,8 +2439,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2407,8 +2452,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
@@ -1989,7 +2097,7 @@ index 001f36b..d080063 100644
        guest_output_width, guest_output_height, display_width, display_height,
        [this, guest_output_width, guest_output_height, frontbuffer_format, swap_texture_view,
         swap_post_effect,
-@@ -2923,6 +2966,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2923,6 +2979,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
          EndSubmission(true);
          return true;
        });
@@ -2003,7 +2111,7 @@ index 001f36b..d080063 100644
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
-@@ -3695,6 +3745,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3695,6 +3758,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
    VulkanShader::VulkanTranslation* vertex_shader_translation;
    VulkanShader::VulkanTranslation* pixel_shader_translation;
    bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
@@ -2022,7 +2130,7 @@ index 001f36b..d080063 100644
  
    // Two iterations because a submission (even the current one - in which case
    // it needs to be ended, and a new one must be started) may need to be awaited
-@@ -4385,6 +4447,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4385,6 +4460,9 @@ bool VulkanCommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -2032,6 +2140,29 @@ index 001f36b..d080063 100644
  
    if (!BeginSubmission(true)) {
      return false;
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+index 0298f06..a3b2f12 100644
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -406,11 +406,13 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
+           "interlock path for D3D12 parity");
+       path_ = Path::kPixelShaderInterlock;
+     } else {
+-      REXGPU_ERROR(
+-          "VulkanRenderTargetCache: Bit-exact host render target ownership "
+-          "transfers require UINT transfer formats and integer sampled-image "
+-          "MSAA support, and fragment shader interlock fallback is unavailable");
+-      return false;
++      // [svr2011] (old Mali drivers: no integer MSAA sampling) The game draws
++      // with the native renderer - this cache only follows the command stream,
++      // so transfers that aren't bit-exact don't show.
++      REXGPU_WARN(
++          "VulkanRenderTargetCache: host render target ownership transfers "
++          "can't be bit-exact on this device (no UINT transfer formats / integer "
++          "sampled-image MSAA, no fragment shader interlock) - continuing");
+     }
+   }
+ 
 diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
 index 6788214..1b37e1c 100644
 --- a/src/graphics/vulkan/shared_memory.cpp
@@ -4168,6 +4299,58 @@ index 754fa13..1e20c8c 100644
      REXSYS_ERROR(
          "GPU plugin '{}' not found at {}. Stage it next to the executable "
          "(GPU_PLUGINS {} in rexglue_configure_target).",
+diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
+index 2b93005..353bff0 100644
+--- a/src/system/mmio_handler.cpp
++++ b/src/system/mmio_handler.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -21,6 +22,10 @@
+ #include <rex/system/mmio_handler.h>
+ #include <rex/types.h>
+ 
++#if !defined(_WIN32)
++#include <dlfcn.h>
++#endif
++
+ using namespace rex::arch;
+ 
+ namespace rex::runtime {
+@@ -417,8 +422,26 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
+     // The address is not found within any range, so either a write watch or an
+     // actual access violation.
+     if (access_violation_callback_) {
+-      return access_violation_callback_(std::move(lock), access_violation_callback_context_,
+-                                        fault_host_address, is_write);
++      const bool handled = access_violation_callback_(std::move(lock), access_violation_callback_context_,
++                                                      fault_host_address, is_write);
++#if REX_ARCH_ARM64 && !defined(_WIN32)
++      // [svr2011] where the guest code was (the first few unhandled faults)
++      static std::atomic<int> reported{0};
++      if (!handled && reported.fetch_add(1) < 3) {
++        auto where = [](uint64_t a) {
++          Dl_info info{};
++          if (a && dladdr(reinterpret_cast<void*>(a), &info) && info.dli_fname)
++            return fmt::format("{}+0x{:X}", std::strrchr(info.dli_fname, '/') ? std::strrchr(info.dli_fname, '/') + 1
++                                                                              : info.dli_fname,
++                               a - reinterpret_cast<uint64_t>(info.dli_fbase));
++          return fmt::format("0x{:X}", a);
++        };
++        const arch::HostThreadContext& c = *ex->thread_context();
++        REXLOG_ERROR("Unhandled guest access at host pc {} (lr {}), x0 {:X} x1 {:X} x2 {:X}", where(ex->pc()),
++                     where(c.x[30]), c.x[0], c.x[1], c.x[2]);
++      }
++#endif
++      return handled;
+     }
+     return false;
+   }
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
 index bd6c797..db0a694 100644
 --- a/src/system/xam/content_manager.cpp
@@ -5324,10 +5507,41 @@ index 914b311..fce845f 100644
      REXGPU_ERROR("{}", msg);
    } else if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..f55ca9d 100644
+index 23645ef..308508c 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
-@@ -1645,6 +1645,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+@@ -1528,6 +1529,10 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+   return true;
+ }
+ 
++// [svr2011] paint timing (phones: where the presenter's time goes)
++static double g_svr_paint_ms[5];
++static uint32_t g_svr_paints;
++
+ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
+   // Begin the submission in place of the one not currently potentially used on
+   // the GPU.
+@@ -1569,9 +1574,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+ 
+   VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
+   uint32_t swapchain_image_index;
++  const auto svr_t0 = std::chrono::steady_clock::now();  // [svr2011] paint timing
+   VkResult acquire_result =
+       dfn.vkAcquireNextImageKHR(device, paint_context_.swapchain, UINT64_MAX, acquire_semaphore,
+                                 VK_NULL_HANDLE, &swapchain_image_index);
++  g_svr_paint_ms[0] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - svr_t0).count();
+   switch (acquire_result) {
+     case VK_SUCCESS:
+     case VK_SUBOPTIMAL_KHR:
+@@ -1645,6 +1652,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      // multiple threads can't paint the main target at the same time).
    }
  
@@ -5347,7 +5561,7 @@ index 23645ef..f55ca9d 100644
    if (guest_output_image) {
      VkExtent2D max_framebuffer_extent =
          util::GetMax2DFramebufferExtent(vulkan_device_->properties());
-@@ -1840,6 +1853,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1840,6 +1860,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                  swapchain_effect, paint_context_.swapchain_render_pass);
              if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
                guest_output_flow.effect_count = 0;
@@ -5359,6 +5573,51 @@ index 23645ef..f55ca9d 100644
              }
            }
          }
+@@ -2196,8 +2221,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+     }
+     VkResult submit_result;
+     {
++      const auto svr_t1 = std::chrono::steady_clock::now();
+       const VulkanDevice::Queue::Acquisition queue_acquisition =
+           vulkan_device_->AcquireQueue(vulkan_device_->queue_family_graphics_compute(), 0);
++      g_svr_paint_ms[1] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - svr_t1).count();
+       submit_result =
+           dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence_acqusition.fence());
+       if (ui_fence_acquisition.fence() != VK_NULL_HANDLE && submit_result == VK_SUCCESS) {
+@@ -2238,9 +2265,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+   present_info.pResults = nullptr;
+   VkResult present_result;
+   {
++    // [svr2011] Mali drivers (r20) block in vkQueuePresentKHR until the GPU
++    // has finished everything queued - holding the only queue's lock, so the
++    // game's and the renderer's submissions waited for the GPU and CPU and GPU
++    // never overlapped. Wait for this paint here instead, without the lock.
++    static const bool wait_before_present = vulkan_device_->properties().vendorID == 0x13B5;
++    if (wait_before_present) {
++      const auto svr_tw = std::chrono::steady_clock::now();
++      paint_context_.submission_tracker.AwaitSubmissionCompletion(
++          paint_context_.submission_tracker.GetCurrentSubmission() - 1);
++      g_svr_paint_ms[4] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - svr_tw).count();
++    }
++    const auto svr_t2 = std::chrono::steady_clock::now();
+     const VulkanDevice::Queue::Acquisition queue_acquisition =
+         vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
++    const auto svr_t3 = std::chrono::steady_clock::now();
+     present_result = dfn.vkQueuePresentKHR(queue_acquisition.queue(), &present_info);
++    const auto svr_t4 = std::chrono::steady_clock::now();
++    g_svr_paint_ms[2] += std::chrono::duration<double, std::milli>(svr_t3 - svr_t2).count();
++    g_svr_paint_ms[3] += std::chrono::duration<double, std::milli>(svr_t4 - svr_t3).count();
++    if (++g_svr_paints == 600) {
++      REXLOG_INFO("VulkanPresenter: per paint: acquire {:.2f} ms, queue wait {:.2f} ms (submit) + {:.2f} ms "
++                  "(present), GPU wait before present {:.2f} ms, present {:.2f} ms",
++                  g_svr_paint_ms[0] / 600, g_svr_paint_ms[1] / 600, g_svr_paint_ms[2] / 600, g_svr_paint_ms[4] / 600,
++                  g_svr_paint_ms[3] / 600);
++      g_svr_paints = 0;
++      for (double& v : g_svr_paint_ms) v = 0;
++    }
+   }
+   switch (present_result) {
+     case VK_SUCCESS:
 diff --git a/src/ui/vulkan/vulkan_provider.cpp b/src/ui/vulkan/vulkan_provider.cpp
 index 9eeb902..1352d33 100644
 --- a/src/ui/vulkan/vulkan_provider.cpp

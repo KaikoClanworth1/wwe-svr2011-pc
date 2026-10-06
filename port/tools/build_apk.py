@@ -48,8 +48,9 @@ def build_native():
     if not (NATIVE / "build.ninja").exists():
         run("cmake", "-S", PORT, "-B", NATIVE, "-G", "Ninja",
             f"-DCMAKE_TOOLCHAIN_FILE={(NDK / 'build/cmake/android.toolchain.cmake').as_posix()}",
-            "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-31", "-DANDROID_STL=c++_shared",
+            "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-29", "-DANDROID_STL=c++_shared",
             "-DCMAKE_BUILD_TYPE=Release", f"-DREXSDK_DIR={SDK_DIR.as_posix()}",
+            "-DREXGLUE_ARM64_TUNE=cortex-a53",  # (in-order little cores: Mali tablets; big cores barely mind)
             "-DREXGLUE_USE_VULKAN=ON",
             f"-DREXGLUE_HOST_TOOL={(SDK_DIR / 'out/win-amd64/rexglue.exe').as_posix()}", env=env)
     run("cmake", "--build", NATIVE, "--target", "svr2011", env=env)
@@ -64,6 +65,8 @@ def version():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-native", action="store_true", help="package the last native build")
+    ap.add_argument("--debuggable", action="store_true",
+                    help="test builds: adb run-as can reach the app's storage (a game folder there)")
     args = ap.parse_args()
 
     if not args.skip_native:
@@ -79,7 +82,8 @@ def main():
     run(BUILD_TOOLS / "aapt2.exe", "link", "-o", OUT / "base.apk", "-I", PLATFORM_JAR,
         "--manifest", PORT / "android" / "AndroidManifest.xml",
         "--version-name", version_name, "--version-code", str(version_code),
-        "--min-sdk-version", "31", "--target-sdk-version", "36", OUT / "res.zip")
+        "--min-sdk-version", "29", "--target-sdk-version", "36",
+        *(["--debug-mode"] if args.debuggable else []), OUT / "res.zip")
 
     # Java: the app's activities and SDL's (the version SDL's native code expects).
     sources = list((PORT / "android" / "java").rglob("*.java"))
@@ -96,7 +100,7 @@ def main():
     with zipfile.ZipFile(OUT / "classes.jar", "w") as jar:
         for c in classes:
             jar.write(c, Path(c).relative_to(OUT / "classes").as_posix())
-    run(BUILD_TOOLS / "d8.bat", "--release", "--min-api", "31", "--lib", PLATFORM_JAR,
+    run(BUILD_TOOLS / "d8.bat", "--release", "--min-api", "29", "--lib", PLATFORM_JAR,
         "--output", OUT, OUT / "classes.jar", env=env)
 
     # Native libraries, without their debug info (the unstripped ones stay in
@@ -130,7 +134,8 @@ def main():
     shaders = PORT / "runs" / "shaders_native"
     stage = OUT / "shaderpack"
     stage.mkdir()
-    for f in (shaders / "spirv").glob("*.spv"):
+    # (.spvc: the compact-table build, for GPUs without descriptor indexing)
+    for f in [*(shaders / "spirv").glob("*.spv"), *(shaders / "spirv").glob("*.spvc")]:
         if not f.name.startswith(("dbg_", "debug_")):
             shutil.copy2(f, stage / f.name)
     for pattern in ("*.inputs", "*.textures"):
@@ -139,6 +144,8 @@ def main():
     if any(stage.glob("*.spv")):
         run(sys.executable, PORT / "tools" / "pack_shaders.py", stage)
         assets.append((stage / "shaders.spv.pak", "assets/native_shaders/shaders.spv.pak"))
+        if (stage / "shaders.spvc.pak").exists():
+            assets.append((stage / "shaders.spvc.pak", "assets/native_shaders/shaders.spvc.pak"))
     else:
         print("warning: no SPIR-V shaders in", shaders / "spirv", "- the APK carries no shaders")
     if (PORT / "dist" / "pipelines.list").exists():

@@ -17,6 +17,7 @@
 #include <string>
 
 #include <android/thermal.h>
+#include <dlfcn.h>
 #endif
 
 #include <rex/hook.h>
@@ -55,9 +56,15 @@ std::vector<float> g_window_times;  // this window's frame times (ms), for perce
 // Phones (stutter reports): the thermal state and each core's clock, with
 // the frame-time line - throttling shows as a falling clock / rising status.
 std::string PhoneState() {
-  static AThermalManager* thermal = AThermal_acquireManager();
+  // (looked up: the thermal API is Android 11+, the game runs from Android 10)
+  using Acquire = AThermalManager* (*)();
+  using Status = AThermalStatus (*)(AThermalManager*);
+  static void* android = dlopen("libandroid.so", RTLD_NOW);
+  static auto acquire = android ? reinterpret_cast<Acquire>(dlsym(android, "AThermal_acquireManager")) : nullptr;
+  static auto status = android ? reinterpret_cast<Status>(dlsym(android, "AThermal_getCurrentThermalStatus")) : nullptr;
+  static AThermalManager* thermal = acquire && status ? acquire() : nullptr;
   std::string s = "thermal ";
-  s += thermal ? std::to_string(int(AThermal_getCurrentThermalStatus(thermal))) : "?";
+  s += thermal ? std::to_string(int(status(thermal))) : "?";
   s += ", cpu MHz";
   for (int cpu = 0; cpu < 12; ++cpu) {
     char path[96];

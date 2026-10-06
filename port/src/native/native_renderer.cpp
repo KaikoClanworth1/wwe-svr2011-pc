@@ -108,6 +108,11 @@ REXCVAR_DEFINE_INT32(native_aa, 0, "GPU",
                      "screen's resolution per side (4 / 9 / 16 samples a pixel, within native_max_scale); "
                      "0: native_2x_msaa decides (on = 2)");
 
+REXCVAR_DEFINE_DOUBLE(native_render_scale, 1.0, "GPU",
+                      "Native renderer: the scene's resolution below the Xbox 360's 720p for weak GPUs "
+                      "(0.5 = 640 x 360, scaled up to the screen; 0.25 - 1). The HUD and menus' 2D art "
+                      "are drawn into the same scene, so they get softer too.");
+
 REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
                      "The scale follows the window; phones start at 1.");
@@ -125,6 +130,11 @@ REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace texture_util = rex::graphics::texture_util;
+
+namespace plume {
+extern std::atomic<uint32_t> g_svr_render_passes;  // (plume_vulkan.cpp: render passes begun)
+extern std::atomic<uint64_t> g_svr_render_pass_pixels;
+}  // namespace plume
 
 namespace svr2011::native {
 
@@ -553,6 +563,19 @@ struct Renderer {
   // the push constants hold the offsets of the draw's constants in it - no
   // buffer addresses or 64-bit integers in the shaders (shader_common.h).
   std::unique_ptr<plume::RenderDescriptorSet> constant_sets[kFrames];
+  // Compact tables (backend::CompactTables(): Vulkan GPUs without descriptor
+  // indexing): texture_sets[0] and sampler_set only record what each index
+  // holds (TableRecord), and each draw binds two small sets of its own
+  // textures and samplers (draw_sets), made once per contents and kept while
+  // used (CompactSet).
+  struct CompactSet {
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+    uint64_t used = 0;  // (frame)
+  };
+  std::unordered_map<std::string, CompactSet> compact_sets[2];  // textures, samplers
+  plume::RenderDescriptorSet* draw_sets[2] = {};
+  plume::RenderDescriptorSet* default_sets[2] = {};  // (placeholders only)
+  uint64_t compact_swept = 0;
   std::unique_ptr<plume::RenderSampler> default_sampler;
   std::shared_ptr<plume::RenderTexture> outputs[kOutputs];
   std::unique_ptr<plume::RenderFramebuffer> output_framebuffers[kOutputs];
@@ -582,7 +605,7 @@ struct Renderer {
   Stats frame_stats, window_stats;
   // Performance log (every 5 s): time in the renderer's draw translation,
   // waiting for the GPU (frames in flight), and frame span.
-  double perf_draw_ms = 0, perf_wait_ms = 0, perf_span_ms = 0;
+  double perf_draw_ms = 0, perf_wait_ms = 0, perf_span_ms = 0, perf_submit_ms = 0;
   uint64_t perf_draws = 0, perf_drawn = 0;
   uint32_t perf_frames = 0;
   std::chrono::steady_clock::time_point perf_start = std::chrono::steady_clock::now();
@@ -602,6 +625,7 @@ struct Renderer {
     plume::RenderVertexBufferView views[16] = {};
     plume::RenderInputSlot slots[16] = {};
     uint32_t view_count = 0;
+    const plume::RenderDescriptorSet* compact[2] = {};  // (compact tables: the bound sets 0, 1)
   } list_state;
   // native_record_thread: stands in for the frame's list (r->list), replaying
   // onto it on its own thread.
@@ -660,6 +684,13 @@ uint32_t g_scale = 1;
 // map, reflections, glow and blur chains) keep the guest's size.
 bool g_scale_effects = true;
 
+// native_render_scale: the main scene's targets (and their resolves and the
+// frame images) have this fraction of the scale's pixels per side - weak GPUs.
+float g_res = 1.0f;
+
+// Whether a target of this guest size is the main scene (1280 x 720).
+bool SceneTarget(uint32_t width, uint32_t height) { return width >= 1152 && height >= 640; }
+
 // Host pixels per guest pixel for a target of this guest size.
 uint32_t TargetScale(uint32_t width, uint32_t height) {
   if (g_scale_effects) return g_scale;
@@ -691,15 +722,17 @@ constexpr float kMaxWide = 2.0f;  // (32:9)
 // The host width of a target of this guest size.
 uint32_t HostWidth(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t w = width * scale;
-  if (g_wide <= 1.0f || width < 1152 || height < 640) return w;
-  return (uint32_t(std::lround(float(w) * g_wide)) + 1) & ~1u;
+  const float f = SceneTarget(width, height) ? std::max(g_wide, 1.0f) * g_res : 1.0f;
+  if (f == 1.0f) return w;
+  return (uint32_t(std::lround(float(w) * f)) + 1) & ~1u;
 }
 
 // The host height of a target of this guest size.
 uint32_t HostHeight(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t h = height * scale;
-  if (g_tall <= 1.0f || width < 1152 || height < 640) return h;
-  return (uint32_t(std::lround(float(h) * g_tall)) + 1) & ~1u;
+  const float f = SceneTarget(width, height) ? std::max(g_tall, 1.0f) * g_res : 1.0f;
+  if (f == 1.0f) return h;
+  return (uint32_t(std::lround(float(h) * f)) + 1) & ~1u;
 }
 
 void SetCameraAspect(float aspect) {
@@ -766,6 +799,7 @@ bool g_resolved_this_frame = false;
 // SVR2011_NATIVE_DEBUG_SOLID=1: every draw with a flat per-draw colour, no
 // depth test, no culling (checks geometry independently of pixel shading).
 bool g_debug_solid = false;
+bool g_debug_solid_state = false;  // (=2: the shader only - depth, culling and blending as the game set them)
 bool g_no_depth = false;  // SVR2011_NATIVE_NO_DEPTH=1
 double g_pipeline_ms = 0;  // pipeline builds since the last perf line
 // Bytes hashed since the last perf line: static / dynamic vertex buffers, constants.
@@ -875,7 +909,154 @@ plume::RenderDescriptorSetDesc g_table_descs[4];
 plume::RenderDescriptorRange g_vk_texture_ranges[3], g_vk_sampler_range, g_vk_constant_range;
 plume::RenderDescriptorSetDesc g_vk_set_descs[3];
 
+// Compact tables (backend::CompactTables()): set 0 is 13 2D textures, one 3D
+// and two cube (bindings 0-2, 16 in all - old Mali drivers allow 16 a stage),
+// set 1 16 samplers; the shaders' indices are places in them (.spvc shaders,
+// shader_common.h). The game's shaders use at most 12 textures a draw.
+constexpr uint32_t kCompactPlaces[3] = {13, 1, 2}, kCompactFirst[3] = {0, 13, 14};
+constexpr uint32_t kCompactSamplers = 16;
+plume::RenderDescriptorRange g_compact_texture_ranges[3], g_compact_sampler_range;
+// Compact tables' constants (set 2): the upload ring as a storage buffer (the
+// renderer's own shaders), and the vertex, pixel and shared constants as
+// uniform buffers on it, at the draw's offsets (dynamic) - old Mali drivers
+// read uniform buffers much faster than storage buffers (shader_common.h).
+plume::RenderDescriptorRange g_compact_constant_ranges[4];
+plume::RenderDescriptorSetDesc g_compact_descs[2];
+
+// Compact tables: stands in for the big tables - remembers what each index
+// holds (and a stamp, new at every write), for the draws' own sets.
+class TableRecord final : public plume::RenderDescriptorSet {
+ public:
+  struct Entry {
+    const plume::RenderTexture* texture = nullptr;
+    plume::RenderTextureLayout layout = plume::RenderTextureLayout::SHADER_READ;
+    const plume::RenderTextureView* view = nullptr;
+    const plume::RenderSampler* sampler = nullptr;
+    uint32_t stamp = 0;
+  };
+  explicit TableRecord(uint32_t size) : entries(size) {}
+  void setBuffer(uint32_t, const plume::RenderBuffer*, uint64_t, const plume::RenderBufferStructuredView*,
+                 const plume::RenderBufferFormattedView*) override {}
+  void setTexture(uint32_t index, const plume::RenderTexture* texture, plume::RenderTextureLayout layout,
+                  const plume::RenderTextureView* view) override {
+    if (index >= entries.size() || !texture) return;
+    Entry& e = entries[index];
+    e.texture = texture;
+    e.layout = layout;
+    e.view = view;
+    e.stamp = ++stamps;
+  }
+  void setSampler(uint32_t index, const plume::RenderSampler* sampler) override {
+    if (index >= entries.size() || !sampler) return;
+    entries[index].sampler = sampler;
+    entries[index].stamp = ++stamps;
+  }
+  void setAccelerationStructure(uint32_t, const plume::RenderAccelerationStructure*) override {}
+  std::vector<Entry> entries;
+  uint32_t stamps = 0;
+};
+
+// Compact tables: the set holding these table indices (16 places; UINT32_MAX:
+// a placeholder) - made the first time, then reused. Sets not used for a
+// while are dropped (well after the GPU is done with them).
+plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t indices[16]) {
+  auto* table = static_cast<TableRecord*>(samplers ? r->sampler_set.get() : r->texture_sets[0].get());
+  uint32_t key[16];
+  for (int i = 0; i < 16; ++i)
+    key[i] = indices[i] < table->entries.size() ? table->entries[indices[i]].stamp : 0;
+  auto& cache = r->compact_sets[samplers];
+  if (r->frames - r->compact_swept > 600) {
+    r->compact_swept = r->frames;
+    for (int k = 0; k < 2; ++k)
+      for (auto it = r->compact_sets[k].begin(); it != r->compact_sets[k].end();) {
+        const bool keep = it->second.used + 2 * kFrames + 4 >= r->frames ||
+                          it->second.set.get() == r->default_sets[0] || it->second.set.get() == r->default_sets[1];
+        it = keep ? std::next(it) : r->compact_sets[k].erase(it);
+      }
+  }
+  Renderer::CompactSet& c = cache[std::string(reinterpret_cast<const char*>(key), sizeof(key))];
+  c.used = r->frames;
+  if (c.set) return c.set.get();
+  c.set = r->device->createDescriptorSet(g_compact_descs[samplers]);
+  if (!c.set) return nullptr;
+  for (uint32_t i = 0; i < 16; ++i) {
+    if (samplers) {
+      const uint32_t index = indices[i] < table->entries.size() ? indices[i] : 0;  // (0: linear wrap)
+      c.set->setSampler(i, table->entries[index].sampler);
+      continue;
+    }
+    const uint32_t dimension = i < kCompactFirst[1] ? 0 : i < kCompactFirst[2] ? 1 : 2;
+    const uint32_t index =
+        indices[i] < table->entries.size() ? indices[i] : r->texture_base[dimension] + dimension;
+    const TableRecord::Entry& e = table->entries[index];
+    c.set->setTexture(i, e.texture, e.layout, e.view);
+  }
+  return c.set.get();
+}
+
+// Compact tables: binds the draw's sets (r->draw_sets) where they changed.
+void BindCompactSets(Renderer* r, plume::RenderCommandList* list) {
+  auto& ls = r->list_state;
+  for (uint32_t k = 0; k < 2; ++k) {
+    plume::RenderDescriptorSet* set = r->draw_sets[k] ? r->draw_sets[k] : r->default_sets[k];
+    if (set && ls.compact[k] != set) {
+      list->setGraphicsDescriptorSet(set, k);
+      ls.compact[k] = set;
+    }
+  }
+}
+
+bool CreateVulkanCompactLayout(Renderer* r) {
+  for (uint32_t i = 0; i < 3; ++i)
+    g_compact_texture_ranges[i] =
+        plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::TEXTURE, i, kCompactPlaces[i]);
+  g_compact_sampler_range =
+      plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::SAMPLER, 0, kCompactSamplers);
+  g_compact_constant_ranges[0] =
+      plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::BYTE_ADDRESS_BUFFER, 0, 1);
+  for (uint32_t i = 1; i < 4; ++i)
+    g_compact_constant_ranges[i] =
+        plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::CONSTANT_BUFFER_DYNAMIC, i, 1);
+  g_compact_descs[0] = plume::RenderDescriptorSetDesc(g_compact_texture_ranges, 3);
+  g_compact_descs[1] = plume::RenderDescriptorSetDesc(&g_compact_sampler_range, 1);
+  g_vk_set_descs[0] = g_compact_descs[0];
+  g_vk_set_descs[1] = g_compact_descs[1];
+  g_vk_set_descs[2] = plume::RenderDescriptorSetDesc(g_compact_constant_ranges, 4);
+  const plume::RenderPushConstantRange push(0, 0, 0, 4 * sizeof(uint32_t),
+                                            plume::RenderShaderStageFlag::VERTEX |
+                                                plume::RenderShaderStageFlag::PIXEL);
+  plume::RenderPipelineLayoutDesc desc;
+  desc.descriptorSetDescs = g_vk_set_descs;
+  desc.descriptorSetDescsCount = 3;
+  desc.pushConstantRanges = &push;
+  desc.pushConstantRangesCount = 1;
+  desc.allowInputLayout = true;
+  r->layout = r->device->createPipelineLayout(desc);
+  if (!r->layout) {
+    REXLOG_ERROR("native renderer: could not create the pipeline layout (compact tables)");
+    return false;
+  }
+  r->texture_sets[0] = std::make_unique<TableRecord>(3 * kSrvHeapSize);
+  r->sampler_set = std::make_unique<TableRecord>(kSamplerHeapSize);
+  for (uint32_t i = 0; i < 3; ++i) {
+    r->texture_set[i] = r->texture_sets[0].get();
+    r->texture_base[i] = i * kSrvHeapSize;
+  }
+  for (uint32_t i = 0; i < kFrames; ++i) {
+    r->constant_sets[i] = r->device->createDescriptorSet(g_vk_set_descs[2]);
+    if (!r->constant_sets[i] || !r->rings[i].buffer) return false;
+    r->constant_sets[i]->setBuffer(0, r->rings[i].buffer.get(), kRingSize + kRingSlack);
+    r->constant_sets[i]->setBuffer(1, r->rings[i].buffer.get(), kVertexConstantsBytes);
+    r->constant_sets[i]->setBuffer(2, r->rings[i].buffer.get(), kPixelConstantsBytes);
+    r->constant_sets[i]->setBuffer(3, r->rings[i].buffer.get(), kSharedConstantsBytes);
+  }
+  REXLOG_INFO("native renderer: compact tables ({} 2D / {} 3D / {} cube textures and {} samplers a draw)",
+              kCompactPlaces[0], kCompactPlaces[1], kCompactPlaces[2], kCompactSamplers);
+  return true;
+}
+
 bool CreateVulkanPipelineLayout(Renderer* r) {
+  if (backend::CompactTables()) return CreateVulkanCompactLayout(r);
   for (uint32_t i = 0; i < 3; ++i)
     g_vk_texture_ranges[i] = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::TEXTURE, i, kSrvHeapSize);
   g_vk_sampler_range = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::SAMPLER, 0, kSamplerHeapSize);
@@ -913,6 +1094,20 @@ bool CreateVulkanPipelineLayout(Renderer* r) {
 
 // Binds the texture tables, samplers and (Vulkan) this frame's constant buffer.
 void BindTables(Renderer* r, plume::RenderCommandList* list) {
+  if (backend::CompactTables()) {
+    // (the placeholders' sets until a draw binds its own)
+    if (!r->default_sets[0]) {
+      uint32_t none[16];
+      std::fill(std::begin(none), std::end(none), UINT32_MAX);
+      for (int k = 0; k < 2; ++k) r->default_sets[k] = CompactSet(r, k, none);
+    }
+    r->list_state.compact[0] = r->list_state.compact[1] = nullptr;
+    r->draw_sets[0] = r->draw_sets[1] = nullptr;
+    BindCompactSets(r, list);
+    const uint32_t zero[3] = {};
+    list->setGraphicsDescriptorSetDynamic(r->constant_sets[r->back_index].get(), 2, zero, 3);
+    return;
+  }
   if (backend::ActiveApi() == backend::Api::kVulkan) {
     list->setGraphicsDescriptorSet(r->texture_sets[0].get(), 0);
     list->setGraphicsDescriptorSet(r->sampler_set.get(), 1);
@@ -997,6 +1192,7 @@ bool Initialize() {
   auto* r = new Renderer();
   g_stop_at_resolve = EnvFlag("SVR2011_NATIVE_STOP_AT_RESOLVE");
   g_debug_solid = EnvFlag("SVR2011_NATIVE_DEBUG_SOLID");
+  if (const char* v = std::getenv("SVR2011_NATIVE_DEBUG_SOLID")) g_debug_solid_state = g_debug_solid && std::strcmp(v, "2") != 0;
   g_no_depth = EnvFlag("SVR2011_NATIVE_NO_DEPTH");
   g_no_blend = EnvFlag("SVR2011_NATIVE_NO_BLEND");
   {
@@ -1205,11 +1401,13 @@ void ApplyOutputSettings(Renderer* r) {
   static uint32_t aa = aa_level();
   static int32_t max_scale = REXCVAR_GET(native_max_scale);
   static bool effects = REXCVAR_GET(native_scale_effects);
+  static float res = float(REXCVAR_GET(native_render_scale));
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
     aa = aa_level();
     max_scale = REXCVAR_GET(native_max_scale);
     effects = REXCVAR_GET(native_scale_effects);
+    res = float(REXCVAR_GET(native_render_scale));
     widescreen = REXCVAR_GET(native_widescreen);
     aa_checked = r->frames;
   }
@@ -1219,15 +1417,19 @@ void ApplyOutputSettings(Renderer* r) {
   const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
   const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
+  res = std::clamp(res, 0.25f, 1.0f);
+  if (scale > 1) res = 1.0f;  // (only below the Xbox 360's own resolution)
+  const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
-      !wide_changed) {
+      !wide_changed && !res_changed) {
     return;
   }
 
   // Idle: nothing in flight may still use what is replaced.
   if (!WaitIdle(r, "output change")) return;
   r->garbage.clear();
-  if (scale != g_scale || effects != g_scale_effects || wide_changed) {
+  if (scale != g_scale || effects != g_scale_effects || wide_changed || res_changed) {
+    g_res = res;
     textures::ForgetResolved();
     r->color_targets.clear();
     r->depth_targets.clear();
@@ -1247,7 +1449,8 @@ void ApplyOutputSettings(Renderer* r) {
     CreateOutputs(r);
   }
   r->list_state = {};
-  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}", g_out_w, g_out_h, g_scale,
+  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}{}", g_out_w, g_out_h, g_scale,
+              g_res < 1.0f ? fmt::format(" (scene at {:.0f}%)", g_res * 100) : std::string(),
               aa > 1 ? fmt::format(" (anti-aliasing {}x)", aa) : std::string(), g_scale_effects ? "" : ", effects unscaled",
               g_wide > 1.0f   ? fmt::format(", wide {:.3f} (aspect {:.3f})", g_wide, kAspect16x9 * g_wide)
               : g_tall > 1.0f ? fmt::format(", tall {:.3f} (aspect {:.3f})", g_tall, kAspect16x9 / g_tall)
@@ -1329,9 +1532,15 @@ void UpdateTitle(Renderer* r) {
   const double psecs = std::chrono::duration<double>(now - r->perf_start).count();
   if (psecs >= 5.0 && r->perf_frames) {
     const double f = r->perf_frames;
-    REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, "
+    if (backend::ActiveApi() == backend::Api::kVulkan) {
+      const uint32_t passes = plume::g_svr_render_passes.exchange(0);
+      const uint64_t pixels = plume::g_svr_render_pass_pixels.exchange(0);
+      REXLOG_INFO("native perf: render passes per frame {:.1f} ({:.1f} Mpixels loaded and stored)", passes / f,
+                  pixels / f / 1e6);
+    }
+    REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, submit {:.2f} ms, "
                 "span {:.2f} ms, draws {:.0f} (drawn {:.0f}), pipeline builds {:.0f} ms",
-                f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_span_ms / f,
+                f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_submit_ms / f, r->perf_span_ms / f,
                 r->perf_draws / f, r->perf_drawn / f, g_pipeline_ms);
     if (g_write_backs) {
       REXLOG_INFO("native perf: {} resolves written back to guest memory ({:.0f} ms waiting; last {}x{})",
@@ -1369,7 +1578,7 @@ void UpdateTitle(Renderer* r) {
       r->perf_const_uploads = r->perf_const_reused = 0;
     }
     g_pipeline_ms = 0;
-    r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = 0;
+    r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = r->perf_submit_ms = 0;
     r->perf_draws = r->perf_drawn = 0;
     r->perf_frames = 0;
     r->perf_start = now;
@@ -2025,7 +2234,7 @@ std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const Pipelin
     bt.blendEnabled = false;
     bt.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
   }
-  if (g_debug_solid) {
+  if (g_debug_solid_state) {
     bt.blendEnabled = false;
     bt.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
     d.cullMode = plume::RenderCullMode::NONE;
@@ -2448,8 +2657,13 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
   if (!cpu) return {};
   auto* u = reinterpret_cast<uint32_t*>(cpu);
   std::memset(cpu, 0, kSharedConstantsBytes);
+  // Compact tables: the draw's textures and samplers get places in its own
+  // sets (the indices below are those places; unused slots read place 0).
+  const bool compact = backend::CompactTables();
+  uint32_t places[2][16], used[3] = {}, samplers = 0;
+  if (compact) std::fill(&places[0][0], &places[0][0] + 32, UINT32_MAX);
   // g_ResourceIndices[32] (uint4): 2D, 3D, cube, sampler blocks of 8 x uint4.
-  for (uint32_t slot = 0; slot < 32; ++slot) {
+  for (uint32_t slot = 0; slot < 32 && !compact; ++slot) {
     u[(0 * 8 + slot / 4) * 4 + slot % 4] = 0;  // placeholder 2D
     u[(1 * 8 + slot / 4) * 4 + slot % 4] = 1;  // placeholder 3D
     u[(2 * 8 + slot / 4) * 4 + slot % 4] = 2;  // placeholder cube
@@ -2485,10 +2699,33 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
         }
       }
       const uint32_t srv = textures::Texture(ctx, fetch, dimension);
+      if (compact) {
+        if (dimension > 2 || used[dimension] >= kCompactPlaces[dimension]) {
+          static bool warned = false;
+          if (!warned) REXLOG_WARN("native renderer: a draw has more textures than the compact tables hold");
+          warned = true;
+          continue;
+        }
+        const uint32_t place = used[dimension]++;
+        places[0][kCompactFirst[dimension] + place] =
+            srv == UINT32_MAX ? UINT32_MAX : r->texture_base[dimension] + srv;
+        u[(dimension * 8 + slot / 4) * 4 + slot % 4] = place;
+        if (srv == UINT32_MAX) continue;
+        const uint32_t sampler = textures::Sampler(ctx, fetch);
+        uint32_t s = 0;
+        while (s < samplers && places[1][s] != sampler) ++s;  // (shared)
+        if (s == samplers && samplers < kCompactSamplers) places[1][samplers++] = sampler;
+        u[(3 * 8 + slot / 4) * 4 + slot % 4] = s < kCompactSamplers ? s : 0;
+        continue;
+      }
       if (srv == UINT32_MAX) continue;
       u[(dimension * 8 + slot / 4) * 4 + slot % 4] = srv;
       u[(3 * 8 + slot / 4) * 4 + slot % 4] = textures::Sampler(ctx, fetch);
     }
+  }
+  if (compact) {
+    r->draw_sets[0] = CompactSet(r, 0, places[0]);
+    r->draw_sets[1] = CompactSet(r, 1, places[1]);
   }
   // c32: g_Booleans (vertex b0-b31), g_SwappedTexcoords, g_HalfPixelOffset;
   // c33: g_AlphaThreshold, g_NdcScale, g_PsBooleans (pixel b0-b31, the
@@ -2520,6 +2757,9 @@ void BindConstants(Renderer* r, const RenderBufferReference constants[4]) {
       }
     }
     r->list->setGraphicsPushConstants(0, offsets, 0, sizeof(offsets));
+    // (compact tables: the vertex, pixel and shared constants as uniform buffers)
+    if (backend::CompactTables())
+      r->list->setGraphicsDescriptorSetDynamic(r->constant_sets[r->back_index].get(), 2, offsets, 3);
     return;
   }
   for (uint32_t i = 0; i < 4; ++i)
@@ -2846,7 +3086,9 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   const uint32_t ts = targets.color ? targets.color->scale : targets.depth ? targets.depth->scale : g_scale;
   const float tsx = targets.color && targets.color->host_w ? float(targets.color->host_w) / tw : float(ts);
   const float tsy = targets.color && targets.color->host_h ? float(targets.color->host_h) / th : float(ts);
-  const bool reshaped = tsx > float(ts) * 1.001f || tsy > float(ts) * 1.001f;  // (wide or tall)
+  // (the scene at native_render_scale: fewer host pixels per guest pixel)
+  const float base = float(ts) * (targets.color && SceneTarget(tw, th) ? g_res : 1.0f);
+  const bool reshaped = tsx > base * 1.001f || tsy > base * 1.001f;  // (wide or tall)
   // Wide screen: the HUD's 2D sprites (vertices in the game's 1280 x 720
   // pixels, drawn without depth) go in the 16:9 middle, unstretched; a sprite
   // covering the whole screen (a fade) and everything else fill the width.
@@ -2859,10 +3101,10 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     bool full = false;
     middle = FlatPixels(decl, up, indexed, start, count, base_vertex, tw, th, &full) && !full;
   }
-  const float pad = middle ? (float(targets.color->host_w) - tw * float(ts)) * 0.5f : 0.0f;
-  const float pad_y = middle && targets.color->host_h ? (float(targets.color->host_h) - th * float(ts)) * 0.5f : 0.0f;
-  const float sx = middle ? float(ts) : tsx;
-  const float sy = middle ? float(ts) : tsy;
+  const float pad = middle ? (float(targets.color->host_w) - tw * base) * 0.5f : 0.0f;
+  const float pad_y = middle && targets.color->host_h ? (float(targets.color->host_h) - th * base) * 0.5f : 0.0f;
+  const float sx = middle ? base : tsx;
+  const float sy = middle ? base : tsy;
   vp.x = vp.x * sx + pad;
   vp.y = vp.y * sy + pad_y;
   vp.width *= sx;
@@ -2871,7 +3113,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   // 0x2012 bottom-right; x in bits 0-14, y in bits 16-30), already clamped to
   // the scissor rect when the game enables one (device +0x2F00).
   const uint32_t sc_tl = Reg(PA_SC_WINDOW_SCISSOR_TL), sc_br = Reg(PA_SC_WINDOW_SCISSOR_BR);
-  const plume::RenderRect scissor(
+  plume::RenderRect scissor(
       int32_t(std::lround(float(std::min<uint32_t>(sc_tl & 0x7FFF, targets.color->width)) * sx + pad)),
       int32_t(std::lround(float(std::min<uint32_t>((sc_tl >> 16) & 0x7FFF, targets.color->height)) * sy + pad_y)),
       int32_t(std::lround(float(std::min<uint32_t>(sc_br & 0x7FFF, targets.color->width)) * sx + pad)),
@@ -2941,7 +3183,11 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   }
   if (r->frames == g_dump_frame && r->frame_stats.drawn >= g_dump_first &&
       r->frame_stats.drawn < g_dump_first + g_dump_count) {
-    if (!g_dump) g_dump = std::fopen("native_draws.txt", "w");
+    if (!g_dump) {
+      // (SVR2011_NATIVE_DUMP_FILE: elsewhere - phones whose game folder adb can't read)
+      const char* file = std::getenv("SVR2011_NATIVE_DUMP_FILE");
+      g_dump = std::fopen(file ? file : "native_draws.txt", "w");
+    }
     FILE* f = g_dump;
     std::fprintf(f, "=== draw %u: prim %u base %d start %u count %u indexed %d | vs %016llX v%d ps %016llX v%d\n",
                  r->frame_stats.drawn, primitive, base_vertex, start, count, indexed,
@@ -3045,6 +3291,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     }
     BindConstants(r, constants);
   }
+  if (backend::CompactTables()) BindCompactSets(r, list);
   if (ls.pso != pso) {
     list->setPipeline(pso);
     ls.pso = pso;
@@ -3075,13 +3322,41 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     list->setBlendFactor(blend_factor);
     std::memcpy(ls.blend, blend_factor, sizeof(blend_factor));
   }
+  // (Debug, SVR2011_NATIVE_GPU_TEST=4: a quarter-size viewport - as many triangles, 1/16 the pixels)
+  static const bool quarter_viewport = [] {
+    const char* t = std::getenv("SVR2011_NATIVE_GPU_TEST");
+    return t && t[0] == '4';
+  }();
+  if (quarter_viewport) {
+    vp.width *= 0.25f;
+    vp.height *= 0.25f;
+  }
   if (std::memcmp(&ls.viewport, &vp, sizeof(vp))) {
     list->setViewports(vp);
     ls.viewport = vp;
   }
+  // Debug (GPU cost): SVR2011_NATIVE_GPU_TEST=1 draws into a 1x1 scissor (no
+  // rasterisation / pixel work, vertex work kept), =2 skips the draw calls.
+  static const int gpu_test = [] {
+    const char* v = std::getenv("SVR2011_NATIVE_GPU_TEST");
+    return v ? std::atoi(v) : 0;
+  }();
+  // (=3 with SVR2011_NATIVE_GPU_TEST_RANGE=<first>,<last>: those draws of each frame only)
+  static const std::pair<uint32_t, uint32_t> gpu_range = [] {
+    std::pair<uint32_t, uint32_t> v{0, ~0u};
+    if (const char* e = std::getenv("SVR2011_NATIVE_GPU_TEST_RANGE")) std::sscanf(e, "%u,%u", &v.first, &v.second);
+    return v;
+  }();
+  if (gpu_test == 1 || (gpu_test == 3 && r->frame_stats.drawn >= gpu_range.first &&
+                        r->frame_stats.drawn <= gpu_range.second))
+    scissor = plume::RenderRect(0, 0, 1, 1);
   if (std::memcmp(&ls.scissor, &scissor, sizeof(scissor))) {
     list->setScissors(scissor);
     ls.scissor = scissor;
+  }
+  if (gpu_test == 2) {
+    ++r->frame_stats.drawn;
+    return;
   }
   if (draw_indexed) {
     if (ls.ibv.buffer.ref != ibv.buffer.ref || ls.ibv.buffer.offset != ibv.buffer.offset ||
@@ -3256,6 +3531,18 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   list->setFramebuffer(r->output_framebuffers[r->output_index].get());
   list->setGraphicsPipelineLayout(r->layout.get());
   BindTables(r, list);
+  if (backend::CompactTables()) {
+    // (compact tables: the texture and sampler in place 0 of the draw's sets)
+    uint32_t places[2][16];
+    std::fill(&places[0][0], &places[0][0] + 32, UINT32_MAX);
+    places[0][0] = r->texture_base[0] + srv;
+    places[1][0] = sampler;
+    r->draw_sets[0] = CompactSet(r, 0, places[0]);
+    r->draw_sets[1] = CompactSet(r, 1, places[1]);
+    BindCompactSets(r, list);
+    const uint32_t zero[2] = {0, 0};
+    std::memcpy(cpu, zero, 8);
+  }
   const RenderBufferReference constants[4] = {{}, {}, {}, gpu};
   BindConstants(r, constants);
   list->setPipeline(pso);
@@ -3373,7 +3660,10 @@ void OnPresent(uint32_t front_buffer) {
     r->recorder->Finish();  // (the worker has recorded the whole frame)
     submit = r->recorder->target();
   }
-  r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
+  {
+    ScopeTimer t(r->perf_submit_ms);  // (with the wait for the queue, shared with the emulator)
+    r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
+  }
   r->submitted[r->back_index] = true;
   if (backend::DeviceLost(r->device.get())) {
     ReportDeviceRemoved(r);

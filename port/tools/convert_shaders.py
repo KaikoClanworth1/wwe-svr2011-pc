@@ -52,8 +52,10 @@ def compile_dxil(hlsl, dxil, stage, mask):
     return None
 
 
-def compile_spirv(hlsl, spv, stage, mask):
+def compile_spirv(hlsl, spv, stage, mask, compact=False):
     flags = ["-fvk-invert-y"] if stage == "vs" else ["-fvk-use-dx-position-w"]
+    if compact:
+        flags.append("-DSVR_COMPACT_TABLES")
     r = subprocess.run([DXC, "-nologo", "-HV", "2021", "-T", f"{stage}_6_0", "-E", "main", "-spirv",
                         "-fvk-use-dx-layout", "-fspv-target-env=vulkan1.1", *flags,
                         f"-DSVR_SPEC_CONSTANTS={mask}", "-Fo", spv, hlsl],
@@ -86,6 +88,10 @@ def convert(xsc, out):
         err = compile_spirv(hlsl, os.path.join(out, "spirv", f"{name}{suffix}.spv"), stage, mask)
         if err:
             return name, f"spirv s{mask}", err
+        # (.spvc: small per-draw tables, for GPUs without descriptor indexing)
+        err = compile_spirv(hlsl, os.path.join(out, "spirv", f"{name}{suffix}.spvc"), stage, mask, True)
+        if err:
+            return name, f"spirv compact s{mask}", err
     slots = {(name, dim): int(slot) for name, dim, slot in TEXTURE_DEFINE_RE.findall(src)}
     used = sorted({(slots[(name, dim)], DIMENSIONS[dim]) for name, dim in TEXTURE_USE_RE.findall(body)
                    if (name, dim) in slots})
@@ -118,9 +124,10 @@ def main():
         if err:
             results.append((name, "own", err))
         # (the debug shaders but debug_solid are D3D12 only)
-        err = compile_spirv(hlsl, os.path.join(out, "spirv", name + ".spv"), name.split(".")[-1], 0)
-        if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
-            results.append((name, "own spirv", err))
+        for ext, compact in ((".spv", False), (".spvc", True)):
+            err = compile_spirv(hlsl, os.path.join(out, "spirv", name + ext), name.split(".")[-1], 0, compact)
+            if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
+                results.append((name, "own spirv", err))
     failed = [r for r in results if r[1]]
     with open(os.path.join(out, "report.txt"), "w") as rep:
         rep.write(f"{len(files)} shaders, {len(files) - len(failed)} converted to DXIL and SPIR-V\n")

@@ -21,6 +21,7 @@ set(SVR2011_SOURCES
     src/keyboard_typing.cpp
     src/platform.cpp
     src/frame_stats.cpp
+    src/profiler.cpp
     src/fps_overlay.cpp
     src/achievements_page.cpp
     src/jukebox.cpp

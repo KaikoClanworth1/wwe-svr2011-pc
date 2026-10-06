@@ -23,6 +23,7 @@ public class GameActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         running = true;
+        InstallActivity.init(this);
         // The native side's "program folder" (settings, saves, logs, disc
         // files): rex::filesystem::GetExecutableFolder() reads it. Set before
         // SDLActivity loads the libraries and starts the game's main.
@@ -86,6 +87,7 @@ public class GameActivity extends SDLActivity {
     }
 
     private static void Sixty(android.view.SurfaceHolder holder) {
+        if (android.os.Build.VERSION.SDK_INT < 31) return;  // (Android 10 / 11: the display mode above only)
         try {
             holder.getSurface().setFrameRate(60f, android.view.Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
                                              android.view.Surface.CHANGE_FRAME_RATE_ALWAYS);

@@ -1,5 +1,5 @@
 diff --git a/plume_d3d12.cpp b/plume_d3d12.cpp
-index 5e842c5..d06f901 100644
+index 5e842c5..2648103 100644
 --- a/plume_d3d12.cpp
 +++ b/plume_d3d12.cpp
 @@ -45,9 +45,23 @@ extern "C" {
@@ -66,7 +66,15 @@ index 5e842c5..d06f901 100644
          return dxgiFormat;
      }
  
-@@ -2247,6 +2279,14 @@ namespace plume {
+@@ -456,6 +488,7 @@ namespace plume {
+         case RenderDescriptorRangeType::READ_WRITE_BYTE_ADDRESS_BUFFER:
+             return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+         case RenderDescriptorRangeType::CONSTANT_BUFFER:
++        case RenderDescriptorRangeType::CONSTANT_BUFFER_DYNAMIC:
+             return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+         case RenderDescriptorRangeType::SAMPLER:
+             return D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+@@ -2247,6 +2280,14 @@ namespace plume {
  #   endif
      }
  
@@ -81,7 +89,7 @@ index 5e842c5..d06f901 100644
      void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
          assert(targetFramebuffer != nullptr);
          assert(attachmentIndex < targetFramebuffer->colorTargets.size());
-@@ -2312,9 +2352,10 @@ namespace plume {
+@@ -2312,9 +2353,10 @@ namespace plume {
  
          const D3D12_TEXTURE_COPY_LOCATION copyDstLocation = toD3D12(dstLocation);
          const D3D12_TEXTURE_COPY_LOCATION copySrcLocation = toD3D12(srcLocation);
@@ -94,7 +102,7 @@ index 5e842c5..d06f901 100644
      }
  
      void D3D12CommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {
-@@ -2464,9 +2505,10 @@ namespace plume {
+@@ -2464,9 +2506,10 @@ namespace plume {
          assert(activeGraphicsPipeline->type == D3D12Pipeline::Type::Graphics);
  
          const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(activeGraphicsPipeline);
@@ -108,7 +116,7 @@ index 5e842c5..d06f901 100644
          }
      }
      
-@@ -2717,6 +2759,13 @@ namespace plume {
+@@ -2717,6 +2760,13 @@ namespace plume {
          WaitForSingleObjectEx(interfaceFence->fenceEvent, INFINITE, FALSE);
      }
  
@@ -122,7 +130,7 @@ index 5e842c5..d06f901 100644
      // D3D12Buffer
  
      D3D12Buffer::D3D12Buffer(D3D12Device *device, D3D12Pool *pool, const RenderBufferDesc &desc) {
-@@ -2872,7 +2921,8 @@ namespace plume {
+@@ -2872,7 +2922,8 @@ namespace plume {
  
          D3D12_CLEAR_VALUE optimizedClearValue;
          if (desc.optimizedClearValue != nullptr) {
@@ -132,7 +140,7 @@ index 5e842c5..d06f901 100644
              memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
          }
  
-@@ -3078,6 +3128,8 @@ namespace plume {
+@@ -3078,6 +3129,8 @@ namespace plume {
          assert(desc.pipelineLayout != nullptr);
  
          topology = toD3D12(desc.primitiveTopology);
@@ -141,7 +149,7 @@ index 5e842c5..d06f901 100644
  
          const D3D12PipelineLayout *pipelineLayout = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
          const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);
-@@ -3199,7 +3251,39 @@ namespace plume {
+@@ -3199,7 +3252,39 @@ namespace plume {
  
          psoDesc.InputLayout = { inputElements.data(), UINT(inputElements.size()) };
  
@@ -181,7 +189,7 @@ index 5e842c5..d06f901 100644
      }
  
      D3D12GraphicsPipeline::~D3D12GraphicsPipeline() {
-@@ -3625,6 +3709,7 @@ namespace plume {
+@@ -3625,6 +3710,7 @@ namespace plume {
              return;
          }
  
@@ -189,7 +197,7 @@ index 5e842c5..d06f901 100644
          res = device->d3d->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
          if (FAILED(res)) {
              fprintf(stderr, "CreateRootSignature failed with error code 0x%lX.\n", res);
-@@ -3886,6 +3971,11 @@ namespace plume {
+@@ -3886,6 +3972,11 @@ namespace plume {
      }
  
      D3D12Device::~D3D12Device() {
@@ -201,7 +209,7 @@ index 5e842c5..d06f901 100644
          viewHeapAllocator.reset();
          samplerHeapAllocator.reset();
          rtDummyGlobalPipelineLayout.reset();
-@@ -3893,6 +3983,49 @@ namespace plume {
+@@ -3893,6 +3984,49 @@ namespace plume {
          release();
      }
  
@@ -315,10 +323,22 @@ index 4827452..9678886 100644
          D3D12Device(D3D12Interface *renderInterface, const std::string &preferredDeviceName);
          ~D3D12Device() override;
 diff --git a/plume_render_interface.h b/plume_render_interface.h
-index 2048557..d88b9b2 100644
+index 2048557..a6811cb 100644
 --- a/plume_render_interface.h
 +++ b/plume_render_interface.h
-@@ -137,6 +137,9 @@ namespace plume {
+@@ -127,6 +127,11 @@ namespace plume {
+         virtual void setGraphicsPipelineLayout(const RenderPipelineLayout *pipelineLayout) = 0;
+         virtual void setGraphicsPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) = 0;
+         virtual void setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) = 0;
++        // [svr2011] A set with CONSTANT_BUFFER_DYNAMIC ranges, with their offsets (Vulkan).
++        virtual void setGraphicsDescriptorSetDynamic(RenderDescriptorSet *descriptorSet, uint32_t setIndex,
++                                                     const uint32_t *dynamicOffsets, uint32_t dynamicOffsetCount) {
++            setGraphicsDescriptorSet(descriptorSet, setIndex);
++        }
+         virtual void setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) = 0;
+         virtual void setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) = 0;
+         virtual void setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) = 0;
+@@ -137,6 +142,9 @@ namespace plume {
          virtual void setScissors(const RenderRect *scissorRects, uint32_t count) = 0;
          virtual void setFramebuffer(const RenderFramebuffer *framebuffer) = 0;
          virtual void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) = 0;
@@ -328,7 +348,7 @@ index 2048557..d88b9b2 100644
          virtual void clearColor(uint32_t attachmentIndex = 0, RenderColor colorValue = RenderColor(), const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
          virtual void clearDepthStencil(bool clearDepth = true, bool clearStencil = true, float depthValue = 1.0f, uint32_t stencilValue = 0, const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
          virtual void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) = 0;
-@@ -203,6 +206,8 @@ namespace plume {
+@@ -203,6 +211,8 @@ namespace plume {
          virtual std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) = 0;
          virtual void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores = nullptr, uint32_t waitSemaphoreCount = 0, RenderCommandSemaphore **signalSemaphores = nullptr, uint32_t signalSemaphoreCount = 0, RenderCommandFence *signalFence = nullptr) = 0;
          virtual void waitForCommandFence(RenderCommandFence *fence) = 0;
@@ -338,7 +358,7 @@ index 2048557..d88b9b2 100644
          // Concrete implementation shortcuts.
          inline void executeCommandLists(const RenderCommandList *commandList, RenderCommandFence *signalFence = nullptr) {
 diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
-index 2281168..e20c227 100644
+index 2281168..56b4fc7 100644
 --- a/plume_render_interface_types.h
 +++ b/plume_render_interface_types.h
 @@ -160,6 +160,12 @@ namespace plume {
@@ -354,7 +374,17 @@ index 2281168..e20c227 100644
          MAX
      };
  
-@@ -551,6 +557,11 @@ namespace plume {
+@@ -345,7 +351,8 @@ namespace plume {
+         READ_WRITE_STRUCTURED_BUFFER,
+         BYTE_ADDRESS_BUFFER,
+         READ_WRITE_BYTE_ADDRESS_BUFFER,
+-        ACCELERATION_STRUCTURE
++        ACCELERATION_STRUCTURE,
++        CONSTANT_BUFFER_DYNAMIC  // [svr2011] Vulkan: its offset given when the set is bound
+     };
+ 
+     enum class RenderRootDescriptorType {
+@@ -551,6 +558,11 @@ namespace plume {
          case RenderFormat::R32_FLOAT:
          case RenderFormat::R32_UINT:
          case RenderFormat::R32_SINT:
@@ -366,7 +396,7 @@ index 2281168..e20c227 100644
              return 4;
          case RenderFormat::R8G8_TYPELESS:
          case RenderFormat::R8G8_UNORM:
-@@ -652,6 +663,11 @@ namespace plume {
+@@ -652,6 +664,11 @@ namespace plume {
          case RenderFormat::R8_UINT:
          case RenderFormat::R8_SNORM:
          case RenderFormat::R8_SINT:
@@ -378,7 +408,7 @@ index 2281168..e20c227 100644
              return 1;
          case RenderFormat::BC1_TYPELESS:
          case RenderFormat::BC1_UNORM:
-@@ -686,6 +702,7 @@ namespace plume {
+@@ -686,6 +703,7 @@ namespace plume {
          case RenderFormat::D16_UNORM:
          case RenderFormat::D32_FLOAT:
          case RenderFormat::D32_FLOAT_S8_UINT:
@@ -386,7 +416,7 @@ index 2281168..e20c227 100644
              return true;
          default:
              return false;
-@@ -693,7 +710,7 @@ namespace plume {
+@@ -693,7 +711,7 @@ namespace plume {
      }
  
      constexpr bool RenderFormatIsStencil(RenderFormat format) {
@@ -395,7 +425,7 @@ index 2281168..e20c227 100644
      }
  
      constexpr RenderTextureViewDimension RenderTextureDimensionToView(const RenderTextureDimension dimension) {
-@@ -1280,6 +1297,9 @@ namespace plume {
+@@ -1280,6 +1298,9 @@ namespace plume {
          float depthBiasClamp = 0.0f;
          float slopeScaledDepthBias = 0.0f;
          bool dynamicDepthBiasEnabled = false;
@@ -406,10 +436,18 @@ index 2281168..e20c227 100644
          bool depthWriteEnabled = false;
          bool stencilEnabled = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 4a2a489..9d34bfe 100644
+index 4a2a489..79a2e21 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
-@@ -167,6 +167,16 @@ namespace plume {
+@@ -11,6 +11,7 @@
+ #include "plume_vulkan.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cmath>
+ #include <climits>
+ #include <unordered_map>
+@@ -167,6 +168,16 @@ namespace plume {
              return VK_FORMAT_D32_SFLOAT;
          case RenderFormat::D32_FLOAT_S8_UINT:
              return VK_FORMAT_D32_SFLOAT_S8_UINT;
@@ -426,7 +464,16 @@ index 4a2a489..9d34bfe 100644
          case RenderFormat::R32_FLOAT:
              return VK_FORMAT_R32_SFLOAT;
          case RenderFormat::R32_UINT:
-@@ -926,11 +936,15 @@ namespace plume {
+@@ -507,6 +518,8 @@ namespace plume {
+         switch (type) {
+         case RenderDescriptorRangeType::CONSTANT_BUFFER:
+             return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
++        case RenderDescriptorRangeType::CONSTANT_BUFFER_DYNAMIC:
++            return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+         case RenderDescriptorRangeType::FORMATTED_BUFFER:
+             return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+         case RenderDescriptorRangeType::READ_WRITE_FORMATTED_BUFFER:
+@@ -926,11 +939,15 @@ namespace plume {
  
      uint64_t VulkanBuffer::getDeviceAddress() const {
          assert((desc.flags & RenderBufferFlag::DEVICE_ADDRESSABLE) != 0 && "Buffer must have been created with GPU_ADDRESSABLE flag.");
@@ -443,7 +490,7 @@ index 4a2a489..9d34bfe 100644
      }
  
      // VulkanBufferFormattedView
-@@ -997,6 +1011,22 @@ namespace plume {
+@@ -997,6 +1014,22 @@ namespace plume {
              imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
          }
  
@@ -466,7 +513,7 @@ index 4a2a489..9d34bfe 100644
          imageFormat = imageInfo.format;
          fillSubresourceRange();
  
-@@ -1198,6 +1228,15 @@ namespace plume {
+@@ -1198,6 +1231,15 @@ namespace plume {
          if (descriptorSetDesc.lastRangeIsBoundless && (descriptorSetDesc.descriptorRangesCount > 0)) {
              bindingFlags.clear();
              bindingFlags.resize(descriptorSetDesc.descriptorRangesCount, 0);
@@ -482,7 +529,7 @@ index 4a2a489..9d34bfe 100644
              bindingFlags[descriptorSetDesc.descriptorRangesCount - 1] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
  
              flagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-@@ -1390,7 +1429,7 @@ namespace plume {
+@@ -1390,7 +1432,7 @@ namespace plume {
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.stage = stageInfo;
  
@@ -491,7 +538,7 @@ index 4a2a489..9d34bfe 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
              return;
-@@ -1617,6 +1656,14 @@ namespace plume {
+@@ -1617,6 +1659,14 @@ namespace plume {
              dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
          }
  
@@ -506,7 +553,7 @@ index 4a2a489..9d34bfe 100644
          VkPipelineDynamicStateCreateInfo dynamicState = {};
          dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
          dynamicState.pDynamicStates = dynamicStates.data();
-@@ -1649,7 +1696,7 @@ namespace plume {
+@@ -1649,7 +1699,7 @@ namespace plume {
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.renderPass = renderPass;
  
@@ -515,7 +562,23 @@ index 4a2a489..9d34bfe 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
              return;
-@@ -3112,6 +3159,14 @@ namespace plume {
+@@ -3001,6 +3051,15 @@ namespace plume {
+         setDescriptorSet(VK_PIPELINE_BIND_POINT_GRAPHICS, activeGraphicsPipelineLayout, descriptorSet, setIndex);
+     }
+ 
++    void VulkanCommandList::setGraphicsDescriptorSetDynamic(RenderDescriptorSet *descriptorSet, uint32_t setIndex,
++                                                            const uint32_t *dynamicOffsets, uint32_t dynamicOffsetCount) {
++        assert(activeGraphicsPipelineLayout != nullptr);
++        assert(descriptorSet != nullptr);
++        const VulkanDescriptorSet *interfaceSet = static_cast<const VulkanDescriptorSet *>(descriptorSet);
++        vkCmdBindDescriptorSets(vk, VK_PIPELINE_BIND_POINT_GRAPHICS, activeGraphicsPipelineLayout->vk, setIndex, 1,
++                                &interfaceSet->vk, dynamicOffsetCount, dynamicOffsets);
++    }
++
+     void VulkanCommandList::setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) {
+         assert(false && "Root descriptors are not supported in Vulkan.");
+     }
+@@ -3112,6 +3171,14 @@ namespace plume {
          vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
      }
  
@@ -530,7 +593,7 @@ index 4a2a489..9d34bfe 100644
      static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
          rectVector.clear();
  
-@@ -3229,6 +3284,28 @@ namespace plume {
+@@ -3229,6 +3296,28 @@ namespace plume {
              imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
              vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
          }
@@ -559,7 +622,25 @@ index 4a2a489..9d34bfe 100644
          else {
              VkImageCopy imageCopy = {};
              imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
-@@ -3644,6 +3721,19 @@ namespace plume {
+@@ -3466,10 +3555,17 @@ namespace plume {
+         vkCmdWriteTimestamp(vk, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, interfaceQueryPool->vk, queryIndex);
+     }
+ 
++    // [svr2011] render passes begun and their pixels (the native renderer's perf line)
++    std::atomic<uint32_t> g_svr_render_passes{0};
++    std::atomic<uint64_t> g_svr_render_pass_pixels{0};
++
+     void VulkanCommandList::checkActiveRenderPass() {
+         assert(targetFramebuffer != nullptr);
+         
+         if (activeRenderPass == VK_NULL_HANDLE) {
++            g_svr_render_passes.fetch_add(1, std::memory_order_relaxed);
++            g_svr_render_pass_pixels.fetch_add(uint64_t(targetFramebuffer->width) * targetFramebuffer->height,
++                                               std::memory_order_relaxed);
+             VkRenderPassBeginInfo beginInfo = {};
+             beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+             beginInfo.renderPass = targetFramebuffer->renderPass;
+@@ -3644,6 +3740,19 @@ namespace plume {
          vkResetFences(device->vk, 1, &interfaceFence->vk);
      }
  
@@ -579,7 +660,7 @@ index 4a2a489..9d34bfe 100644
      // VulkanPool
  
      VulkanPool::VulkanPool(VulkanDevice *device, const RenderPoolDesc &desc) {
-@@ -3718,7 +3808,8 @@ namespace plume {
+@@ -3718,7 +3827,8 @@ namespace plume {
          }
  
          if (queues[queueIndex].mutex == nullptr) {
@@ -589,7 +670,7 @@ index 4a2a489..9d34bfe 100644
          }
  
          virtualQueue->queue = &queues[queueIndex];
-@@ -4156,6 +4247,110 @@ namespace plume {
+@@ -4156,6 +4266,110 @@ namespace plume {
          }
      }
  
@@ -700,7 +781,7 @@ index 4a2a489..9d34bfe 100644
      VulkanDevice::~VulkanDevice() {
          release();
      }
-@@ -4429,16 +4624,53 @@ namespace plume {
+@@ -4429,16 +4643,53 @@ namespace plume {
          }
      }
  
@@ -755,7 +836,7 @@ index 4a2a489..9d34bfe 100644
              vk = VK_NULL_HANDLE;
          }
      }
-@@ -4602,13 +4834,43 @@ namespace plume {
+@@ -4602,13 +4853,43 @@ namespace plume {
          }
      }
  
@@ -800,7 +881,7 @@ index 4a2a489..9d34bfe 100644
          std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
          return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
      }
-@@ -4638,4 +4900,9 @@ namespace plume {
+@@ -4638,4 +4919,9 @@ namespace plume {
          return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
      }
  #endif
@@ -811,7 +892,7 @@ index 4a2a489..9d34bfe 100644
 +    }
  };
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index a0cf5cc..9bbd8a2 100644
+index a0cf5cc..6c1cf32 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -56,6 +56,7 @@ namespace plume {
@@ -822,7 +903,16 @@ index a0cf5cc..9bbd8a2 100644
  
          VulkanBuffer() = default;
          VulkanBuffer(VulkanDevice *device, VulkanPool *pool, const RenderBufferDesc &desc);
-@@ -329,6 +330,8 @@ namespace plume {
+@@ -319,6 +320,8 @@ namespace plume {
+         void setGraphicsPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
+         void setGraphicsPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
+         void setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
++        void setGraphicsDescriptorSetDynamic(RenderDescriptorSet *descriptorSet, uint32_t setIndex,
++                                             const uint32_t *dynamicOffsets, uint32_t dynamicOffsetCount) override;
+         void setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) override;
+         void setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
+         void setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
+@@ -329,6 +332,8 @@ namespace plume {
          void setScissors(const RenderRect *scissorRects, uint32_t count) override;
          void setFramebuffer(const RenderFramebuffer *framebuffer) override;
          void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
@@ -831,7 +921,7 @@ index a0cf5cc..9bbd8a2 100644
          void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
          void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
          void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
-@@ -377,6 +380,7 @@ namespace plume {
+@@ -377,6 +382,7 @@ namespace plume {
          std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
          void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
          void waitForCommandFence(RenderCommandFence *fence) override;
@@ -839,7 +929,7 @@ index a0cf5cc..9bbd8a2 100644
      };
  
      struct VulkanPool : RenderPool {
-@@ -391,7 +395,9 @@ namespace plume {
+@@ -391,7 +397,9 @@ namespace plume {
      
      struct VulkanQueue {
          VkQueue vk;
@@ -850,7 +940,7 @@ index a0cf5cc..9bbd8a2 100644
          std::unordered_set<const VulkanCommandQueue *> virtualQueues;
      };
  
-@@ -417,8 +423,16 @@ namespace plume {
+@@ -417,8 +425,16 @@ namespace plume {
          std::unique_ptr<RenderBuffer> nullBuffer;
          bool loadStoreOpNoneSupported = false;
          bool nullDescriptorSupported = false;
@@ -867,7 +957,7 @@ index a0cf5cc..9bbd8a2 100644
          ~VulkanDevice() override;
          std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
          std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
-@@ -448,11 +462,38 @@ namespace plume {
+@@ -448,11 +464,38 @@ namespace plume {
          bool endCapture() override;
      };
  
@@ -906,7 +996,7 @@ index a0cf5cc..9bbd8a2 100644
  
  #   if PLUME_SDL_VULKAN_ENABLED
          VulkanInterface(RenderWindow sdlWindow);
-@@ -466,4 +507,7 @@ namespace plume {
+@@ -466,4 +509,7 @@ namespace plume {
          const std::vector<std::string> &getDeviceNames() const override;
          bool isValid() const;
      };

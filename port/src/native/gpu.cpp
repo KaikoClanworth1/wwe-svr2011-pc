@@ -30,6 +30,7 @@ Api ActiveApi() { return g_backend ? g_backend->api() : Api::kNone; }
 
 plume::RenderShaderFormat ShaderFormat() { return g_backend->ShaderFormat(); }
 const char* ShaderExtension() { return g_backend ? g_backend->ShaderExtension() : ".dxil"; }
+bool CompactTables() { return g_backend && g_backend->CompactTables(); }
 
 void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
                   uint32_t height, plume::RenderCommandFence* fence) {

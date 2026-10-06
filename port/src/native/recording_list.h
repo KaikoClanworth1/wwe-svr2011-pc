@@ -59,6 +59,8 @@ class RecordingList final : public plume::RenderCommandList {
   void setGraphicsPipelineLayout(const plume::RenderPipelineLayout* pipelineLayout) override;
   void setGraphicsPushConstants(uint32_t rangeIndex, const void* data, uint32_t offset, uint32_t size) override;
   void setGraphicsDescriptorSet(plume::RenderDescriptorSet* descriptorSet, uint32_t setIndex) override;
+  void setGraphicsDescriptorSetDynamic(plume::RenderDescriptorSet* descriptorSet, uint32_t setIndex,
+                                       const uint32_t* dynamicOffsets, uint32_t dynamicOffsetCount) override;
   void setGraphicsRootDescriptor(plume::RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) override;
   void setRaytracingPipelineLayout(const plume::RenderPipelineLayout*) override { Unsupported(); }
   void setRaytracingPushConstants(uint32_t, const void*, uint32_t, uint32_t) override { Unsupported(); }
