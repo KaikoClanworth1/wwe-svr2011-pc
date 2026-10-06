@@ -31,7 +31,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     $env:SVR2011_INPUT_FILE = $inputFile
     $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
     $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
-    $a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false")
+    $a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2")
     if ($Native) { $a += "--native_renderer=shadow" }
     $a += $Extra
     Use-TestSaves
