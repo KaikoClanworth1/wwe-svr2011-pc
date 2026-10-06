@@ -904,7 +904,42 @@ void RedirectArena(int arena, const std::string& file) {
     REXLOG_WARN("[svr2011] arena mods: {} not found", source.string());
     return;
   }
-  if (!Place(source, name)) return;
+  // The file's stage entry (STG/<nnnn>, the TOC's first entry at +0x80C) is
+  // looked up by the arena's number when the pacs are mounted from their own
+  // tables (a move pack installed: move_packs.cpp): an arena made for another
+  // slot (SmackDown 1999's STG/0000 on BG01) loaded as an empty hall. Such a
+  // file is placed as a copy with the slot's name.
+  char want[5];
+  std::snprintf(want, sizeof want, "%04d", arena);
+  char head[0x810] = {};
+  bool renamed = false;
+  if (!relative_file.empty()) {
+    if (FILE* f = std::fopen(source.string().c_str(), "rb")) {
+      const size_t got = std::fread(head, 1, sizeof head, f);
+      std::fclose(f);
+      renamed = got == sizeof head && !std::memcmp(head, "EPAC", 4) && !std::memcmp(head + 0x800, "STG ", 4) &&
+                std::memcmp(head + 0x80C, want, 4) != 0;
+    }
+  }
+  if (renamed) {
+    std::error_code ec2;
+    const fs::path dst = g_overlay / name;
+    fs::remove(dst, ec2);
+    fs::copy_file(source, dst, fs::copy_options::overwrite_existing, ec2);
+    FILE* f = ec2 ? nullptr : std::fopen(dst.string().c_str(), "r+b");
+    if (!f) {
+      REXLOG_WARN("[svr2011] arena mods: cannot place {} ({})", name, ec2.message());
+      return;
+    }
+    std::fseek(f, 0x80C, SEEK_SET);
+    std::fwrite(want, 1, 4, f);
+    std::fclose(f);
+    Refresh(name);
+    REXLOG_INFO("[svr2011] arena mods: {} stage STG/{} renamed STG/{} for BG{:02}", relative_file,
+                std::string(head + 0x80C, 4), want, arena);
+  } else if (!Place(source, name)) {
+    return;
+  }
   g_redirect[arena] = relative_file;
   REXLOG_INFO("[svr2011] arena mods: BG{:02} -> {}", arena, relative_file.empty() ? "original" : relative_file);
 }
