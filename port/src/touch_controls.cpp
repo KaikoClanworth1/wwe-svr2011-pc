@@ -146,6 +146,10 @@ std::atomic<int> g_mode{kMenu};
 float g_opacity = 0.5f;
 bool g_auto = true;
 X_INPUT_GAMEPAD g_pad{};  // what the controls press now (g_mutex)
+// A button tapped and let go quicker than the game and the port's pages poll
+// still counts: each press lasts at least kMinPress (g_mutex).
+constexpr auto kMinPress = std::chrono::milliseconds(80);
+std::chrono::steady_clock::time_point g_pressed_at[16], g_hold_until[16];
 uint32_t g_packet = 0;
 
 struct Pointer {
@@ -396,6 +400,12 @@ void UpdatePad() {
   pad.thumb_rx = axis(rx);
   pad.thumb_ry = axis(ry);
   std::lock_guard lock(g_mutex);
+  const auto now = std::chrono::steady_clock::now();
+  for (int b = 0; b < 16; ++b) {
+    const bool was = uint16_t(g_pad.buttons) >> b & 1, is = uint16_t(pad.buttons) >> b & 1;
+    if (is && !was) g_pressed_at[b] = now;
+    if (was && !is) g_hold_until[b] = g_pressed_at[b] + kMinPress;
+  }
   g_pad = pad;
 }
 
@@ -910,6 +920,17 @@ class TouchOverlay final : public rex::ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
+    // On top of the port's pages (GRAPHICS, JUKEBOX, ACHIEVEMENTS...: they draw
+    // on the foreground list too, in the drawer's dialog order, and are added
+    // after this one): once a frame the overlay moves to the end of the dialog
+    // list, and the drawer's loop reaches it again last. (Taps on its buttons
+    // never reach the pages: its input listener comes first and takes them.)
+    if (const int frame = ImGui::GetFrameCount(); frame != raised_frame_) {
+      raised_frame_ = frame;
+      imgui_drawer()->RemoveDialog(this);
+      imgui_drawer()->AddDialog(this);
+      return;
+    }
     g_w = io.DisplaySize.x;
     g_h = io.DisplaySize.y;
     if (g_h <= 0) return;
@@ -927,11 +948,14 @@ class TouchOverlay final : public rex::ui::ImGuiDialog {
       return;
     }
     svr2011::UpdateSystemKeyboard();
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
     for (const Control& c : Current()) {
       if (c.visible && Shown(c)) DrawControl(dl, c, g_opacity, false);
     }
   }
+
+ private:
+  int raised_frame_ = -1;
 };
 
 TouchListener g_listener;
@@ -955,7 +979,14 @@ class TouchDriver final : public InputDriver {
       std::memset(out, 0, sizeof(*out));
       std::lock_guard lock(g_mutex);
       out->packet_number = ++g_packet;
-      if (!TouchControlsHoldInput()) out->gamepad = g_pad;
+      if (!TouchControlsHoldInput()) {
+        out->gamepad = g_pad;
+        const auto now = std::chrono::steady_clock::now();
+        uint16_t held = uint16_t(out->gamepad.buttons);
+        for (int b = 0; b < 16; ++b)
+          if (now < g_hold_until[b]) held |= uint16_t(1u << b);
+        out->gamepad.buttons = held;
+      }
     }
     return X_ERROR_SUCCESS;
   }
