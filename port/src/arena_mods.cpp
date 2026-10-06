@@ -59,6 +59,7 @@
 #include <rex/ui/imgui_dialog.h>
 
 #include "generated/default/svr2011_init.h"
+#include "native/native_renderer.h"
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
 
@@ -497,7 +498,10 @@ void ShowPage(uint8_t* base) {
       const CustomArena* c = CustomAt(k);
       src = c && !c->banner.empty() ? &c->banner : &empty;
     }
-    for (const uint32_t at : bn->guest) std::memcpy(base + at, src->data(), src->size());
+    for (const uint32_t at : bn->guest) {
+      std::memcpy(base + at, src->data(), src->size());
+      svr2011::native::GuestWritten(at, uint32_t(src->size()));  // (re-checked at once, not tile by tile)
+    }
   }
   REXLOG_INFO("[svr2011] arena select: page {} / {}", g_page + 1, Pages());
 }

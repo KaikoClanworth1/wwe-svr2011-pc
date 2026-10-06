@@ -31,7 +31,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     $env:SVR2011_INPUT_FILE = $inputFile
     $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
     $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
-    $a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false")
+    $a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2")
     if ($Native) { $a += "--native_renderer=shadow" }
     $a += $Extra
     Use-TestSaves
@@ -39,7 +39,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     $handle = $p.Handle  # keeps the exit code available
     for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
     if ($p.MainWindowHandle -ne 0) {  # off-screen, shown without activation (as session.ps1)
-        [void][SWS]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -4000, 0, 0, 0, 0x1 -bor 0x4 -bor 0x10)
+        [void][SWS]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920, 0, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)
         [void][SWS]::ShowWindow($p.MainWindowHandle, 4)
     }
     $stage = "boot"

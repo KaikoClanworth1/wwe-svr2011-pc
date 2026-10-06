@@ -1,7 +1,8 @@
 # Launch the game from "Game Files", screenshot its window every few seconds,
 # then stop it and print the log's errors/tail.
-# Runs in the background: audio muted, window never activated and parked
-# off-screen (it still renders; PrintWindow captures it there).
+# Runs in the background: audio muted, window never activated, opened on the
+# second screen (--monitor=2) behind every window there (it still renders and
+# PrintWindow captures it; parking it off-screen after --monitor=2 captured black).
 #   .\run_test.ps1 [-Seconds 60] [-Shots 4] [-Name run] [-Extra "--flag=x"] [-Game <folder>]
 #   (-Game: another game folder - a test build next to links to the game data)
 param([int]$Seconds = 60, [int]$Shots = 4, [string]$Name = "run", [string[]]$Extra = @(), [string]$Game = "")
@@ -27,7 +28,7 @@ $out  = Join-Path $PSScriptRoot "..\runs" | ForEach-Object { New-Item -ItemType 
 $log  = Join-Path $out "$Name.log"
 Remove-Item $log -ErrorAction SilentlyContinue
 
-$args_ = @("--log_file=`"$log`"", "--log_level=debug", "--audio_mute=true", "--fullscreen=false") + $Extra
+$args_ = @("--log_file=`"$log`"", "--log_level=debug", "--audio_mute=true", "--fullscreen=false", "--monitor=2") + $Extra
 # SDL hints (read from the environment): don't take focus when the window opens.
 $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"
 $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
@@ -42,7 +43,7 @@ for ($t = 0; $t -lt 100; $t++) {
     Start-Sleep -Milliseconds 100
 }
 if (-not $p.HasExited -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
-    [void][W]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -4000, 0, 0, 0, $SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE)
+    [void][W]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920, 0, 0, 0, $SWP_NOSIZE -bor $SWP_NOACTIVATE)  # (screen 2, behind every window: HWND_BOTTOM)
     Add-Type -Name U -Namespace N -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);' -ErrorAction SilentlyContinue
     [void][N.U]::ShowWindow($p.MainWindowHandle, 4)   # SW_SHOWNOACTIVATE: restore without focus
 }

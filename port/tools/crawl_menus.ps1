@@ -61,11 +61,11 @@ function Start-Game($log) {
     $env:SVR2011_USER_DATA = $ud
     $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
     $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
-    $a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--native_renderer=main")
+    $a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2", "--native_renderer=main")
     $p = Start-Process (Join-Path $game "svr2011.exe") -WorkingDirectory $game -ArgumentList $a -PassThru -WindowStyle Minimized
     for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
     if ($p.MainWindowHandle -ne 0) {
-        [void][CW]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -4000 - 1400 * $Worker, 0, 0, 0, 0x1 -bor 0x4 -bor 0x10)
+        [void][CW]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920 + 120 * $Worker, 60 * $Worker, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)
         [void][CW]::ShowWindow($p.MainWindowHandle, 4)
     }
     $script:proc = $p

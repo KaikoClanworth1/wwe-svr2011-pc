@@ -288,6 +288,39 @@ A 50-man rumble would need "slot recycling": reload an eliminated entrant's char
 6. **Can't win:** managers are not competitors (`sub_82225D68`, `sub_825EEA80` say no for team 3 / people 2+).
 7. **Referee ejection:** string.pac has the referee motions REFEREE WARNING / GET DOWN / EJECT MANAGER (0x3220, a motion name) and "MANAGER EJECTED" (0x8D2, a message). No ejection was seen in the tests.
 
+## Lumberjack attacks (2026-10-06)
+
+**Why the old tries froze:** the ids tried earlier (4999, 3500, ...) are misc.pac move-table ids, not motion ids. Motion ids are what a fighter's +212 shows: 20500 idle, 1000 lying down, 20 getting up.
+
+**Starting a motion:** `sub_82191AA8(fighter, opponent, motion)` (= `sub_8218F550(..., 0)`) sets both fighters' opponent (+96) and puts both into the same motion.
+- So only paired moves work.
+- A strike (3128-3130; the victim plays 300-307) would make the victim throw it too.
+
+**Motions seen in CPU fights** (`SVR2011_TEST_MOTION_LOG=1`):
+- 102: lock-up;
+- 120: a front grapple;
+- 8030: a throw (the victim then plays 6801 -> 50, down);
+- 10901: a throw (the victim then plays 449, down);
+- 5630: also a grapple.
+
+**What didn't work:**
+- `sub_8220AB68(fighter, motion)`: a motion request to one fighter. It needs +96 set; with it set, a manager's motion doesn't change.
+- Buttons in the input object (`sub_8221D320`; +68 pressed, +72, +76 held; X = 0x10): managers ignore them. Their AI drives +56 instead, and CPU wrestlers' AI doesn't use the input object at all.
+
+**Interference is a DQ:** a lumberjack (a manager, team 3) who hurts a wrestler gets lost byte (+447) 7, and the judge ends the match ("WINS BY WAY OF DQ"; live +288 3, the lumberjack the loser).
+- Live +4 = 1 doesn't stop it.
+- `LumberjackBeforeJudge` (called from the judge hook in `slobber_knocker.cpp`) clears that byte on lumberjacks, and the match goes on.
+
+**Now:** a wrestler on the floor for 0.5 s is grappled by the nearest lumberjacks (two at most), in turn 120, 8030, 10901 (`kAttackMotions`). He gets the lumberjacks again on each trip out.
+
+**Not done: a "throw him back in" move.** No paired motion that rolls the victim into the ring has been found yet.
+
+**Test aids:**
+- `SVR2011_TEST_LJ_FORCE=<s>`: a lumberjack attacks person 0 every `<s>` seconds;
+- `SVR2011_TEST_LJ_MOTION=<id,...>`: the attack motions;
+- `SVR2011_TEST_MOTION_LOG=1`: each fighter's motion changes;
+- `tools/lumberjack_test.ps1`: each menu step is checked in the log (`tools/lim_step.ps1`), because the title's demo match starts if a press comes too early.
+
 ## Weapons everywhere (done)
 
 A No DQ match with weapons already lying in and around the ring at the bell.

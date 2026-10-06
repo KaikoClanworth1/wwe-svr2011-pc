@@ -111,7 +111,7 @@ $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED 
 $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
 Remove-Item Env:SVR2011_NATIVE_SHADERS -ErrorAction SilentlyContinue
 foreach ($e in $Env) { $k, $v = $e -split '=', 2; Set-Item "Env:$k" $v }
-$a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false")
+$a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2")
 $p = Start-Process (Join-Path $Game "svr2011.exe") -WorkingDirectory $Game -ArgumentList $a -PassThru -WindowStyle Minimized
 $loadIds = @()
 try {
@@ -127,7 +127,7 @@ try {
     @{ pid = $p.Id; load = $loadIds } | ConvertTo-Json | Set-Content $state
     for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
     if ($p.MainWindowHandle -ne 0) {
-        [void][OB]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, -4000, 0, 0, 0, 0x1 -bor 0x4 -bor 0x10)
+        [void][OB]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920, 0, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)
         [void][OB]::ShowWindow($p.MainWindowHandle, 4)
     }
     Sample-Cpu

@@ -9,3 +9,6 @@
 /* Writes <game>\Reports\SvR2011-report-<date>.zip (its path in out).
    logs / crashes: how many were put in. Returns 1, or 0 if it couldn't be written. */
 int report_make(const WCHAR *game_dir, const WCHAR *version, WCHAR *out, int outn, int *logs, int *crashes);
+/* ... with the player's description of the problem (UTF-8, or NULL) at the top of report.txt. */
+int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *description, WCHAR *out, int outn,
+                   int *logs, int *crashes);

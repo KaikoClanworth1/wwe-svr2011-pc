@@ -27,6 +27,8 @@
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
 
+#include "ascii_fold.h"  // (launcher/)
+
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -55,6 +57,12 @@ void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
   std::memcpy(base + a, &v, 4);
 }
 
+// A path for the log (UTF-8).
+std::string Utf8(const std::filesystem::path& p) {
+  const auto u = p.u8string();
+  return std::string(u.begin(), u.end());
+}
+
 bool Ascii(const std::wstring& s) {
   return std::all_of(s.begin(), s.end(), [](wchar_t c) { return c >= 32 && c < 127; });
 }
@@ -80,11 +88,28 @@ void Refresh() {
     std::wstring ext = p.extension().wstring();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
     if (ext != L".bik") continue;
-    if (!Ascii(p.filename().wstring())) {
-      REXLOG_WARN("user movies: skipping {} (use plain letters in the name)", p.filename().string());
-      continue;
+    std::wstring name = p.filename().wstring();
+    if (!Ascii(name)) {
+      // (a name with accents - an older launcher, the phone's, or the player's
+      // own: renamed to plain letters, "Peña.bik" -> "Pena.bik"; the game's
+      // paths and menus are 8-bit)
+      std::wstring stem;
+      for (wchar_t c : p.stem().wstring()) {
+        const wchar_t f = ascii_fold_char(c);
+        if (f >= 32 && f < 127) stem += f;
+      }
+      const bool usable = stem.find_first_not_of(L" ._-") != std::wstring::npos;
+      const std::wstring plain = stem + L".bik";
+      const auto to = g_folder / plain;
+      if (!usable || std::filesystem::exists(to, ec) || (std::filesystem::rename(p, to, ec), ec)) {
+        REXLOG_WARN("user movies: skipping {} (use plain letters in the name)", Utf8(p.filename()));
+        ec.clear();
+        continue;
+      }
+      REXLOG_INFO("user movies: renamed {} to {}", Utf8(p.filename()), to.filename().string());
+      name = plain;
     }
-    files.push_back(p.filename().string());
+    files.push_back(std::filesystem::path(name).string());
   }
   for (auto it = ids.begin(); it != ids.end();) {
     const bool there = std::find(files.begin(), files.end(), it->second) != files.end() ||
@@ -174,7 +199,7 @@ void InstallUserMovies(rex::memory::Memory* memory, const std::filesystem::path&
   std::filesystem::create_directories(folder, ec);
   std::lock_guard lock(g_mutex);
   Refresh();
-  REXLOG_INFO("user movies: {} in {}", g_ids.size(), folder.string());
+  REXLOG_INFO("user movies: {} in {}", g_ids.size(), Utf8(folder));
 }
 
 }  // namespace svr2011
