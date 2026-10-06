@@ -87,6 +87,7 @@ still being tested.
 ## After 2.0.3 (next update)
 
 - **Bundled mods come switched off**: a fresh install (or a bundle new to this game folder) installs them unticked on the Mods tab; tick the ones you want. An update of a bundled mod keeps its on / off.
+- **Your installed copies of the port's mods are kept up to date**: when an update brings a newer version of a bundled mod you already have (even one you installed by hand), it's installed over yours and stays on or off as you had it. A copy newer than the port's is left alone.
 
 ## New in 2.0.3
 
