@@ -612,6 +612,11 @@ public class LauncherActivity extends Activity {
         LinearLayout audio = card(c, "Audio");
         toggle(audio, "Mute", null, "audio_mute", false);
 
+        // (src/dlc.cpp: off takes the Fan Axxess unlock keys out of the installed DLC catalogs)
+        LinearLayout game = card(c, "Game");
+        toggle(game, "Everything unlocked from the start", "Off: unlock as you play; DLC stays. At the next start",
+            "unlock_everything", true);
+
         drivers_ = new Drivers(this, settings_);
         drivers_.build(c);
 
@@ -629,6 +634,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("native_widescreen", true);
             settings_.setBool("native_prepare_pipelines", true);
             settings_.setBool("audio_mute", false);
+            settings_.setBool("unlock_everything", true);
             saved("Defaults");
             refresh();
         });
