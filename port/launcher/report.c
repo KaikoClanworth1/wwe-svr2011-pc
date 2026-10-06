@@ -213,6 +213,12 @@ static void add_settings(Zip *z, const WCHAR *game_dir)
 
 int report_make(const WCHAR *game_dir, const WCHAR *version, WCHAR *out, int outn, int *logs, int *crashes)
 {
+    return report_make_ex(game_dir, version, NULL, out, outn, logs, crashes);
+}
+
+int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *description, WCHAR *out, int outn,
+                   int *logs, int *crashes)
+{
     WCHAR dir[MAX_PATH], sub[MAX_PATH];
     SYSTEMTIME st;
     Zip z;
@@ -241,7 +247,20 @@ int report_make(const WCHAR *game_dir, const WCHAR *version, WCHAR *out, int out
                   "(account token and password removed)\r\n",
                   version, os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, st.wYear, st.wMonth, st.wDay,
                   st.wHour, st.wMinute, st.wSecond);
-        zip_add(&z, "report.txt", (const uint8_t *)info, strlen(info));
+        if (description && *description) {
+            /* (the player's words first: what a reader looks for) */
+            size_t dl = strlen(description), il = strlen(info);
+            char *all = (char *)malloc(dl + il + 64);
+            if (all) {
+                sprintf_s(all, dl + il + 64, "%s\r\n\r\n%s", description, info);
+                zip_add(&z, "report.txt", (const uint8_t *)all, strlen(all));
+                free(all);
+            } else {
+                zip_add(&z, "report.txt", (const uint8_t *)info, il);
+            }
+        } else {
+            zip_add(&z, "report.txt", (const uint8_t *)info, strlen(info));
+        }
     }
     swprintf_s(sub, MAX_PATH, L"%s\\logs", game_dir);
     *logs = add_newest(&z, sub, L"svr2011_*.log", 3, "logs", 16u << 20);

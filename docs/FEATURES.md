@@ -93,6 +93,7 @@ still being tested.
 - **Superstar Threads**: a painted attire the game builds again after a match (a Threads-edited superstar in the title demo, a Road to WrestleMania entrance) is no longer drawn with parts of the earlier build.
 - **SvR 2010 superstars under damage**: their neck, chest and shoulders no longer darken all over as they take damage (a "tank top"); all 20 bundled SvR 2010 superstars updated.
 - **Arena mods**: VS-screen theme pictures of any size can be swapped.
+- **Report a problem asks what happened** (launcher, Play tab): a window asks what kind of problem, how often, what happened and what you were doing just before; the report zip carries that description, and the window tells you to post it as a new thread in the Discord's **bug-svr11** forum (Open Discord, Show the file, and the description already copied to paste).
 - **Android 10 and 11** phones and tablets are supported (the app needed Android 12 before), as are tablets on older Linux kernels, and the game folder can be in the app's own storage (an SD card adopted as internal storage).
 - 🧪 **Mali GPUs** (older drivers without descriptor indexing): the Native renderer binds each draw's own textures and reads shader constants from uniform buffers there; a Mali-G52 tablet plays matches at about 16 fps (it couldn't before). Android builds are tuned for Cortex-A53 CPUs. `native_render_scale` (0.25-1) renders below the screen's resolution.
 
