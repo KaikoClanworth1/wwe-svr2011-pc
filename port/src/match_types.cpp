@@ -140,6 +140,14 @@ uint32_t g_slobber_text[2] = {};
 // the game would play ONE ON ONE -> NORMAL (id 0), to try a rule in game.
 int g_test_rule = -1;
 
+// Node ids (+0x1C): the game finds a node by binary search over the table
+// (sub_82BA9B48) - B goes back through the row's parent (sub_8243FC18) - so
+// they must not go down along the table. A submenu row added in the middle
+// of a group takes the node id of the record before it (or of the one it
+// replaces): the two then share it, which B doesn't mind (it wants the
+// parent's group, the same for both); its own rows, at the table's end, get
+// new ids above all others. (A new top id in the middle left B doing nothing
+// in the submenu after backing out of character select.)
 // The menu table with the rows added (empty if it isn't the main menus).
 std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   if (size < kFirst || Rd32(table) != 1) return {};
@@ -205,7 +213,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(row.data() + 0x00, Rd32(rec + 0x00));
       Wr32(row.data() + 0x04, Rd32(rec + 0x04));  // (description)
       Wr32(row.data() + 0x18, kFullGroup);
-      Wr32(row.data() + 0x1C, node);
+      Wr32(row.data() + 0x1C, Rd32(rec + 0x1C));  // (its node: EXTREME RULES' own - node ids, above)
       Wr32(row.data() + 0x38, Rd32(rec + 0x38));
       Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
       Wr32(row.data() + 0x40, Rd32(rec + 0x40));
@@ -213,8 +221,8 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       for (uint32_t k = 0; k < 2; ++k) {
         std::vector<uint8_t> leaf(rec, rec + kRec);
         Wr32(leaf.data() + 0x18, group);
-        Wr32(leaf.data() + 0x1C, node + 1 + k);
-        Wr32(leaf.data() + 0x38, node);
+        Wr32(leaf.data() + 0x1C, node + k);
+        Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
         Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);  // (depth +0x16: one down)
         Wr32(leaf.data() + 0x40, 0);
         Wr32(leaf.data() + 0x3C, k ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
@@ -227,7 +235,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       }
       g_weapons_rows.push_back({group, 1});
       REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
-      node += 3;
+      node += 2;
       ++group;
     } else if (const uint32_t rule = Rd32(rec + 0x5C); rule >= kExtremeFirst && rule <= kExtremeLast) {
       const uint32_t in_group = Rd32(rec + 0x18);
@@ -276,7 +284,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       // The submenu row: in this group, a new node.
       std::vector<uint8_t> row(submenu, submenu + kRec);
       Wr32(row.data() + 0x18, b.group);
-      Wr32(row.data() + 0x1C, node);
+      Wr32(row.data() + 0x1C, Rd32(rec + 0x1C));  // (its node: the anchor's - node ids, above)
       Wr32(row.data() + 0x38, Rd32(rec + 0x38));
       Wr32(row.data() + 0x3C, Rd32(row.data() + 0x3C) & ~2u);
       Wr32(row.data() + 0x40, 0);
@@ -289,8 +297,8 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         const bool free_roam = k == areas.size();
         std::vector<uint8_t> leaf(areas[free_roam ? k - 1 : k], areas[free_roam ? k - 1 : k] + kRec);
         Wr32(leaf.data() + 0x18, group);
-        Wr32(leaf.data() + 0x1C, node + 1 + k);
-        Wr32(leaf.data() + 0x38, node);
+        Wr32(leaf.data() + 0x1C, node + k);
+        Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
         Wr32(leaf.data() + 0x40, 0);
         const uint32_t flags = Rd32(leaf.data() + 0x3C);
         Wr32(leaf.data() + 0x3C, free_roam ? flags | 2u : flags & ~2u);
@@ -301,7 +309,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
-      node += 9;
+      node += 8;
       ++group;
     }
   }
