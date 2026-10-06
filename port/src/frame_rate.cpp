@@ -856,6 +856,40 @@ REX_HOOK_RAW(sub_826DFFA0) {
     g_frame_commands.push_back(ctx.r3.u32);
 }
 
+// And where the render thread runs them (sub_826E02A8(?, command)): a
+// type-24 command whose object is gone some way the notes above miss (a
+// player's crash during loading in 2026-10-05, then in most scripted test
+// routes: "call to invalid function at 0x542F5745" or an access violation at
+// sub_826E02A8+0x15da reading the object) is dropped there - when the
+// object's address isn't a heap's, its vtable isn't in the game's image, or its
+// vtable[6] isn't a game function. Logged; a live object is never skipped.
+namespace {
+// A guest address in the heaps or the image (where a game object can be).
+bool GuestObjectAddress(uint32_t a) {
+  return (a >= 0x40000000u && a < 0x60000000u) || (a >= 0x70000000u && a < 0x90000000u) || a >= 0xA0000000u;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_826E02A8);
+REX_HOOK_RAW(sub_826E02A8) {
+  const uint32_t cmd = ctx.r4.u32;
+  if (cmd && Rd32(base + cmd) == 24) {
+    static PPCFunc* const invalid = rex::runtime::ResolveIndirectFunction(0);
+    const uint32_t obj = Rd32(base + cmd + 20);
+    const uint32_t vt = obj && GuestObjectAddress(obj) ? Rd32(base + obj) : 0;
+    const bool image = vt >= 0x82000000u && vt < 0x83000000u;
+    const uint32_t fn = image ? Rd32(base + vt + 24) : 0;
+    if (!image || rex::runtime::ResolveIndirectFunction(fn) == invalid) {
+      static int count = 0;
+      if (++count <= 20 || count % 1000 == 0)
+        REXLOG_WARN("frame rate: a render command's object was gone (object {:08X}, vtable {:08X}) - skipped ({} times)",
+                    obj, vt, count);
+      return;
+    }
+  }
+  __imp__sub_826E02A8(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_8269B2D0);
 REX_HOOK_RAW(sub_8269B2D0) {
   const uint32_t ptr = ctx.r3.u32;
