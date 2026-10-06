@@ -100,6 +100,7 @@ still being tested.
 - **Superstar Threads**: a painted attire the game builds again after a match (a Threads-edited superstar in the title demo, a Road to WrestleMania entrance) is no longer drawn with parts of the earlier build.
 - **SvR 2010 superstars under damage**: their neck, chest and shoulders no longer darken all over as they take damage (a "tank top"); all 20 bundled SvR 2010 superstars updated.
 - **Everything unlocked again for players who played 2.0.1 / 2.0.2 online**: the small Online Axxess package those versions made kept the Fan Axxess unlocks from applying (a locked roster even with *Everything unlocked from the start* on); it is removed at start.
+- **Older Windows 10 (version 1809 / LTSC 2019, before 2004) starts on Vulkan** when the graphics API is on its default: Direct3D 12 here needs Windows 10 2004 or newer, and on those PCs the game showed "The game's graphics can't run on this device".
 - **Arena select pages**: all 20 banners show at once after a page turn (some stayed blank, kept the last page's picture or showed half a banner).
 - **USER MOVIES with accents in the name** (e.g. "Peña") now show in Create An Entrance (PC launcher, Android and the game, which renames old ones to "Pena"); the titantron makers give a clear message when something fails.
 - **Arena mods**: VS-screen theme pictures of any size can be swapped.

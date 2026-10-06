@@ -252,6 +252,16 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
+  // The native renderer's Direct3D 12 needs ID3D12Device8 (Windows 10 version
+  // 2004, build 19041). On an older Windows (10 1809 / LTSC 2019 ...) it can't
+  // make its device and nothing draws: "any" means Vulkan there.
+  if (rex::cvar::Query<std::string>("gpu_backend") == "any") {
+    if (const uint32_t build = svr2011::WindowsBuild(); build && build < 19041) {
+      rex::cvar::SetFlagByName("gpu_backend", "vulkan");
+      REXLOG_WARN("graphics: Windows build {} is older than 19041 (10 version 2004), which Direct3D 12 here needs - "
+                  "using Vulkan", build);
+    }
+  }
   // Automated tests: the only controller is one driven by a command file.
   if (std::string file = Env("SVR2011_INPUT_FILE"); !file.empty()) {
     config.input_factory = [file](bool) -> std::unique_ptr<rex::system::IInputSystem> {
