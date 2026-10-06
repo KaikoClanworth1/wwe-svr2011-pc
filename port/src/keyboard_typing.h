@@ -27,6 +27,10 @@ void InstallKeyboardTyping(rex::ui::Window* window);
 // Windows virtual key (VK_BACK, VK_RETURN, VK_ESCAPE, VK_LEFT, ...).
 void TypeText(const std::string& utf8);
 void TypeKey(uint16_t vk);
+// Test aids (script input "paste <text>" / "copy"): Ctrl+V with this text as
+// the clipboard's, and Ctrl+C (its text logged, the clipboard left alone).
+void PasteForTest(const std::string& utf8);
+void CopyForTest();
 
 // The game's on-screen keyboard is up (it reads the keyboard).
 bool GameKeyboardOpen();

@@ -161,6 +161,12 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
   } else if (verb == "wait") {
     in >> step.ms;
     queue_.push_back(step);
+  } else if (verb == "paste" || verb == "copy") {  // (keyboard_typing.h test aids)
+    if (verb == "paste") std::getline(in >> std::ws, step.text);
+    step.paste = verb == "paste";
+    step.copy = verb == "copy";
+    step.ms = 100;
+    queue_.push_back(step);
   } else if (verb == "type") {
     std::getline(in >> std::ws, step.text);
     step.ms = 100;
@@ -329,7 +335,9 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
       }
       continue;
     }
-    if (!current_.text.empty()) TypeText(current_.text);
+    if (current_.paste) PasteForTest(current_.text);
+    else if (current_.copy) CopyForTest();
+    else if (!current_.text.empty()) TypeText(current_.text);
     if (current_.key) TypeKey(current_.key);
     if (current_.touch) {
       TouchInject(kFinger, 0, current_.x0, current_.y0);

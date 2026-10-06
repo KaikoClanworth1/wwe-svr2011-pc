@@ -8,6 +8,8 @@
 #include <deque>
 #include <mutex>
 
+#include <SDL3/SDL_clipboard.h>
+#include <fmt/format.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -45,6 +47,8 @@ std::mutex g_mutex;
 std::deque<Stroke> g_strokes;
 std::atomic<int64_t> g_last_poll{0};  // Clock ticks of the game's last keyboard poll
 rex::ui::Window* g_window = nullptr;
+std::atomic<uint32_t> g_keyboard{0};  // the open keyboard object (sub_8274B0A8's r3)
+uint8_t* g_base = nullptr;
 bool g_text_input = false;  // UI thread: we turned the window's text input on
 
 int64_t Now() { return Clock::now().time_since_epoch().count(); }
@@ -100,6 +104,72 @@ bool CharacterKey(VirtualKey vk) {
          v == 0xE2;
 }
 
+// A character the game's keyboard can type (sub_8274ADC0 takes 32-125 but
+// '\'): accented Latin letters as their plain ones, line breaks and tabs as
+// spaces, anything else as '?'. 0: leave out.
+uint16_t Typeable(uint32_t cp) {
+  if (cp == 0x0D) return 0;
+  if (cp == 0x0A || cp == 0x09) return ' ';
+  if (cp == 0x5C) return '/';
+  if (cp >= 32 && cp <= 125) return uint16_t(cp);
+  if (cp >= 0xC0 && cp <= 0xFF) {
+    static const char kLatin1[] = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty";
+    return uint16_t(kLatin1[cp - 0xC0]);
+  }
+  if (cp == 0x2018 || cp == 0x2019) return '\'';
+  if (cp == 0x201C || cp == 0x201D) return '"';
+  if (cp == 0x2013 || cp == 0x2014) return '-';
+  return '?';
+}
+
+// Text typed into the field as Ctrl+V does (the game keeps it to the
+// field's length). Up to 120 characters (the keystroke queue holds 256).
+void PasteText(const char* text) {
+  int typed = 0;
+  for (size_t i = 0; text[i] && typed < 120;) {
+    const uint8_t c = uint8_t(text[i]);
+    uint32_t cp = c;
+    size_t n = 1;
+    if (c >= 0xF0) cp = c & 0x07, n = 4;
+    else if (c >= 0xE0) cp = c & 0x0F, n = 3;
+    else if (c >= 0xC0) cp = c & 0x1F, n = 2;
+    for (size_t k = 1; k < n && text[i + k]; ++k) cp = cp << 6 | (uint8_t(text[i + k]) & 0x3F);
+    i += n;
+    if (const uint16_t t = Typeable(cp)) PushChar(t), ++typed;
+  }
+  REXLOG_INFO("[svr2011] keyboard: pasted {} characters", typed);
+}
+
+// Ctrl+V: the clipboard's text.
+void Paste() {
+  char* text = SDL_GetClipboardText();
+  if (!text) return;
+  PasteText(text);
+  SDL_free(text);
+}
+
+// The open field's text: the keyboard's editor (*(*(keyboard + 268) + 16),
+// whose sub_8274ADC0 types a character) points at it from +0xB80 (UTF-8).
+std::string FieldText() {
+  const uint32_t kb = g_keyboard.load();
+  if (!kb || !g_base || !KeyboardOpen()) return {};
+  auto rd = [&](uint32_t a) { const uint8_t* p = g_base + a; return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; };
+  const uint32_t mid = rd(kb + 268);
+  const uint32_t ed = mid ? rd(mid + 16) : 0;
+  const uint32_t text = ed ? rd(ed + 0xB80) : 0;
+  // (in the keyboard's heap, as the editor is)
+  if (!text || (text & 0xFF000000u) != (ed & 0xFF000000u) || (text & 0xFFFFFFu) > 0xFFF000u) return {};
+  return std::string(reinterpret_cast<const char*>(g_base + text), strnlen(reinterpret_cast<const char*>(g_base + text), 256));
+}
+
+// Ctrl+C: the field's text to the clipboard.
+void Copy() {
+  const std::string t = FieldText();
+  if (t.empty()) return;
+  SDL_SetClipboardText(t.c_str());
+  REXLOG_INFO("[svr2011] keyboard: copied {} characters", t.size());
+}
+
 // Ahead of the controller emulation (keyboard -> pad) and the overlays: while
 // the game's keyboard is open, typing goes to it and nowhere else.
 class TypingListener final : public rex::ui::WindowInputListener {
@@ -110,6 +180,16 @@ class TypingListener final : public rex::ui::WindowInputListener {
       return;
     }
     SetTextInput(true);
+    if (e.is_ctrl_pressed() && !e.is_alt_pressed() && e.virtual_key() == VirtualKey(0x56)) {  // Ctrl+V
+      Paste();
+      e.set_handled(true);
+      return;
+    }
+    if (e.is_ctrl_pressed() && !e.is_alt_pressed() && e.virtual_key() == VirtualKey(0x43)) {  // Ctrl+C
+      Copy();
+      e.set_handled(true);
+      return;
+    }
     if (e.is_ctrl_pressed() || e.is_alt_pressed() || e.is_super_pressed()) return;
     uint16_t unicode = 0;
     if (GameKey(e.virtual_key(), &unicode)) {
@@ -165,6 +245,10 @@ void TypeText(const std::string& utf8) {
   }
 }
 
+void PasteForTest(const std::string& utf8) { PasteText(utf8.c_str()); }
+
+void CopyForTest() { REXLOG_INFO("[svr2011] keyboard: field text \"{}\" (test: clipboard left alone)", FieldText()); }
+
 void TypeKey(uint16_t vk) {
   uint16_t unicode = 0;
   GameKey(VirtualKey(vk), &unicode);
@@ -176,6 +260,16 @@ void TypeKey(uint16_t vk) {
 // The game's XInputGetKeystroke(user, flags, keystroke) wrapper. Keyboard
 // queries (only its on-screen keyboard makes them) get the window's keys.
 REX_EXTERN(__imp__sub_82905130);
+REX_EXTERN(__imp__sub_8274B0A8);
+thread_local uint32_t t_handling = 0;  // (sub_8274B0A8's object while it runs)
+REX_HOOK_RAW(sub_8274B0A8) {  // a keyboard's key handling, each frame
+  const uint32_t prev = t_handling;
+  t_handling = ctx.r3.u32;
+  g_base = base;
+  __imp__sub_8274B0A8(ctx, base);
+  t_handling = prev;
+}
+
 REX_HOOK_RAW(sub_82905130) {
   if ((ctx.r4.u32 & 0xFF) != kFlagKeyboard) {
     __imp__sub_82905130(ctx, base);
@@ -185,6 +279,7 @@ REX_HOOK_RAW(sub_82905130) {
     g_window->app_context().CallInUIThread([] { SetTextInput(true); });
   }
   g_last_poll = Now();
+  if (t_handling) g_keyboard = t_handling;  // (the open keyboard: it reads keys)
   Stroke s;
   {
     std::lock_guard lock(g_mutex);
