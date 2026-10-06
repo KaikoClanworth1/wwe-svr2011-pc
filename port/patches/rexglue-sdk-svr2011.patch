@@ -133,6 +133,35 @@ index 0000000..b3f7e65
 +uint64_t SwapCount();
 +
 +}  // namespace rex::external_frame
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..751a686 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -143,6 +143,11 @@ class CommandProcessor {
+   virtual void ShutdownContext() = 0;
+ 
+   virtual void WriteRegister(uint32_t index, uint32_t value);
++  // [svr2011] Type-0 packets' runs of float shader constants (0x4000-0x47FF)
++  // stored in one go (true), then FloatConstantsWritten notes what
++  // WriteRegister would have for them.
++  virtual bool FastFloatConstants() const { return false; }
++  virtual void FloatConstantsWritten(uint32_t first_index, uint32_t count) {}
+   uint32_t ReadRegisterValue(uint32_t index) const;
+   virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
+   virtual void WriteRegisterRangeFromRing(memory::RingBuffer* ring, uint32_t base,
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 696ff48..ab4ced0 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -249,6 +249,8 @@ class VulkanCommandProcessor : public CommandProcessor {
+   void ShutdownContext() override;
+ 
+   void WriteRegister(uint32_t index, uint32_t value) override;
++  bool FastFloatConstants() const override { return true; }
++  void FloatConstantsWritten(uint32_t first_index, uint32_t count) override;
+   void WriteRegistersFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers) override;
+   bool ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader, uint32_t packet,
+                                           uint32_t count) override;
 diff --git a/include/rex/input/device.h b/include/rex/input/device.h
 index 7b67ceb..dacad53 100644
 --- a/include/rex/input/device.h
@@ -1386,7 +1415,7 @@ index 0000000..cee5140
 +
 +}  // namespace rex::timeline
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index a744375..97be235 100644
+index a744375..a3840ce 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -9,6 +9,7 @@
@@ -1437,7 +1466,32 @@ index a744375..97be235 100644
      REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
    }
  
-@@ -989,8 +1004,15 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -702,6 +717,24 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
+ 
+   uint32_t base_index = (packet & 0x7FFF);
+   uint32_t write_one_reg = (packet >> 15) & 0x1;
++  // [svr2011] Float shader constants (thousands a frame): stored in one go,
++  // then the backend notes them once (FloatConstantsWritten) - instead of a
++  // WriteRegister call each. (Phones: the GPU thread's biggest cost.)
++  if (!write_one_reg && base_index >= 0x4000 && base_index + count <= 0x4800 && FastFloatConstants()) {
++    RegisterFile& regs = *register_file_;
++    memory::RingBuffer::ReadRange range = reader->BeginRead(size_t(count) * sizeof(uint32_t));
++    uint32_t* out = &regs.values[base_index];
++    auto copy = [&](const uint8_t* src, size_t bytes) {
++      const uint32_t n = uint32_t(bytes / sizeof(uint32_t));
++      for (uint32_t i = 0; i < n; ++i) out[i] = memory::load_and_swap<uint32_t>(src + i * 4);
++      out += n;
++    };
++    if (range.first_length) copy(range.first, range.first_length);
++    if (range.second_length) copy(range.second, range.second_length);
++    reader->EndRead(range);
++    FloatConstantsWritten(base_index, count);
++    return true;
++  }
+   for (uint32_t m = 0; m < count; m++) {
+     uint32_t reg_data = reader->ReadAndSwap<uint32_t>();
+     uint32_t target_index = write_one_reg ? base_index : base_index + m;
+@@ -989,8 +1022,15 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
  
    bool is_memory = (wait_info & 0x10) != 0;
  
@@ -1453,7 +1507,7 @@ index a744375..97be235 100644
      uint32_t value = 0;
      if (is_memory) {
        value =
-@@ -1030,6 +1052,7 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1030,6 +1070,7 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
          break;
      }
      if (!matched) {
@@ -1461,7 +1515,7 @@ index a744375..97be235 100644
        // Wait.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -1051,6 +1074,40 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1051,6 +1092,40 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
        }
      }
    } while (!matched);
@@ -1907,7 +1961,7 @@ index 8f2fcb0..e5b7dad 100644
  
  void GraphicsSystem::MarkVblank() {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..d080063 100644
+index 001f36b..9f7cd74 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -25,6 +25,7 @@
@@ -1940,7 +1994,27 @@ index 001f36b..d080063 100644
    }
    if (!device_properties.geometryShader) {
      if (REXCVAR_GET(vulkan_require_geometry_shader)) {
-@@ -2272,6 +2280,8 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+@@ -2160,6 +2168,19 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+   }
+ }
+ 
++// [svr2011] (see CommandProcessor::ExecutePacketType0) As WriteRegister does
++// for each float constant: the vertex / pixel constant buffers are out of date.
++void VulkanCommandProcessor::FloatConstantsWritten(uint32_t first_index, uint32_t count) {
++  if (frame_open_) {
++    const uint32_t first = (first_index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
++    const uint32_t last = (first_index + count - 1 - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
++    if (first < 256)
++      current_constant_buffers_up_to_date_ &= ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatVertex);
++    if (last >= 256)
++      current_constant_buffers_up_to_date_ &= ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatPixel);
++  }
++}
++
+ void VulkanCommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                                                    uint32_t num_registers) {
+   if (!num_registers) {
+@@ -2272,6 +2293,8 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
  void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                         uint32_t frontbuffer_height) {
    SCOPE_profile_cpu_f("gpu");
@@ -1949,7 +2023,7 @@ index 001f36b..d080063 100644
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
  
-@@ -2312,9 +2322,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2312,9 +2335,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
    xenos::TextureFormat frontbuffer_format;
    bool swap_source_needs_rb_swap = false;
@@ -1984,7 +2058,7 @@ index 001f36b..d080063 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
-@@ -2407,8 +2439,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2407,8 +2452,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
@@ -2006,7 +2080,7 @@ index 001f36b..d080063 100644
        guest_output_width, guest_output_height, display_width, display_height,
        [this, guest_output_width, guest_output_height, frontbuffer_format, swap_texture_view,
         swap_post_effect,
-@@ -2923,6 +2966,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2923,6 +2979,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
          EndSubmission(true);
          return true;
        });
@@ -2020,7 +2094,7 @@ index 001f36b..d080063 100644
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
-@@ -3695,6 +3745,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3695,6 +3758,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
    VulkanShader::VulkanTranslation* vertex_shader_translation;
    VulkanShader::VulkanTranslation* pixel_shader_translation;
    bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
@@ -2039,7 +2113,7 @@ index 001f36b..d080063 100644
  
    // Two iterations because a submission (even the current one - in which case
    // it needs to be ended, and a new one must be started) may need to be awaited
-@@ -4385,6 +4447,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4385,6 +4460,9 @@ bool VulkanCommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
