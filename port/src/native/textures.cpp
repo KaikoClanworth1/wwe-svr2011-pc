@@ -170,6 +170,7 @@ struct Entry {
   uint32_t base_address = 0, base_size = 0, mip_address = 0, mip_size = 0;
   uint64_t bytes = 0;  // the host resource's (texture quality: resident bytes)
   uint32_t skip = 0;   // guest mip levels left out (texture quality)
+  bool written = false;  // a resolve was written back over its data (GuestWritten): checked at its next use
 };
 
 rex::memory::Memory* g_memory = nullptr;
@@ -1049,12 +1050,13 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
       ++g_stats.unsupported;
       return UINT32_MAX;
     }
-  } else if (g_no_cache || ctx.frame > e.used_frame + kUnusedRecheckFrames ||
+  } else if (g_no_cache || e.written || ctx.frame > e.used_frame + kUnusedRecheckFrames ||
              ctx.frame >= e.checked_frame +
                               (e.dynamic ? e.interval
                                : ctx.frame < e.created_frame + kNewFrames ? kNewRecheckFrames
                                                                           : kRecheckFrames)) {
     e.checked_frame = ctx.frame;
+    e.written = false;
     if (GuestHash(e) != e.hash) {
       static const bool log_changes = std::getenv("SVR2011_LOG_TEXTURE_CHANGES") != nullptr;  // (debug)
       if (log_changes) {
@@ -1171,6 +1173,15 @@ void SetBlockCompressionSupported(bool supported) {
 void ForgetResolved() { g_resolved.clear(); }
 
 void ForgetResolved(uint32_t base_address) { g_resolved.erase(base_address >> 12); }
+
+void GuestWritten(uint32_t address, uint32_t size) {
+  const uint64_t end = uint64_t(address) + size;
+  for (auto& [key, e] : g_textures) {
+    const bool base = e.base_size && e.base_address < end && address < uint64_t(e.base_address) + e.base_size;
+    const bool mips = e.mip_size && e.mip_address < end && address < uint64_t(e.mip_address) + e.mip_size;
+    if (base || mips) e.written = true;
+  }
+}
 
 void RegisterResolved(uint32_t base_address, plume::RenderTexture* resource, RenderFormat format,
                       RenderFormat gamma_format, uint32_t components, bool swap_rb, uint32_t bytes) {
