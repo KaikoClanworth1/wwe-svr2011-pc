@@ -130,7 +130,8 @@ def main():
     shaders = PORT / "runs" / "shaders_native"
     stage = OUT / "shaderpack"
     stage.mkdir()
-    for f in (shaders / "spirv").glob("*.spv"):
+    # (.spvc: the compact-table build, for GPUs without descriptor indexing)
+    for f in [*(shaders / "spirv").glob("*.spv"), *(shaders / "spirv").glob("*.spvc")]:
         if not f.name.startswith(("dbg_", "debug_")):
             shutil.copy2(f, stage / f.name)
     for pattern in ("*.inputs", "*.textures"):
@@ -139,6 +140,8 @@ def main():
     if any(stage.glob("*.spv")):
         run(sys.executable, PORT / "tools" / "pack_shaders.py", stage)
         assets.append((stage / "shaders.spv.pak", "assets/native_shaders/shaders.spv.pak"))
+        if (stage / "shaders.spvc.pak").exists():
+            assets.append((stage / "shaders.spvc.pak", "assets/native_shaders/shaders.spvc.pak"))
     else:
         print("warning: no SPIR-V shaders in", shaders / "spirv", "- the APK carries no shaders")
     if (PORT / "dist" / "pipelines.list").exists():

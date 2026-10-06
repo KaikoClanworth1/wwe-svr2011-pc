@@ -31,6 +31,7 @@ class Backend {
   virtual std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name) = 0;
   virtual plume::RenderShaderFormat ShaderFormat() const = 0;
   virtual const char* ShaderExtension() const = 0;
+  virtual bool CompactTables() const { return false; }
   virtual void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
                             uint32_t height, plume::RenderCommandFence* fence) = 0;
   virtual bool GetFrame(rex::external_frame::Frame& frame) = 0;
@@ -59,6 +60,10 @@ Api ActiveApi();
 // The converted shaders this backend loads: "<hash>.<vs|ps><variant><extension>".
 plume::RenderShaderFormat ShaderFormat();
 const char* ShaderExtension();
+// Vulkan GPUs without descriptor indexing (old Mali drivers): no big texture
+// tables - each draw binds small sets of its own textures (native_renderer.cpp,
+// compact tables) and the shaders are the .spvc build (fixed-size tables).
+bool CompactTables();
 
 // Main mode: `image` (shader-readable, RGBA8) is this frame, finished when
 // `fence` - just signaled by the frame's submission - is. The emulator's

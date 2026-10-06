@@ -547,6 +547,19 @@ struct Renderer {
   // the push constants hold the offsets of the draw's constants in it - no
   // buffer addresses or 64-bit integers in the shaders (shader_common.h).
   std::unique_ptr<plume::RenderDescriptorSet> constant_sets[kFrames];
+  // Compact tables (backend::CompactTables(): Vulkan GPUs without descriptor
+  // indexing): texture_sets[0] and sampler_set only record what each index
+  // holds (TableRecord), and each draw binds two small sets of its own
+  // textures and samplers (draw_sets), made once per contents and kept while
+  // used (CompactSet).
+  struct CompactSet {
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+    uint64_t used = 0;  // (frame)
+  };
+  std::unordered_map<std::string, CompactSet> compact_sets[2];  // textures, samplers
+  plume::RenderDescriptorSet* draw_sets[2] = {};
+  plume::RenderDescriptorSet* default_sets[2] = {};  // (placeholders only)
+  uint64_t compact_swept = 0;
   std::unique_ptr<plume::RenderSampler> default_sampler;
   std::shared_ptr<plume::RenderTexture> outputs[kOutputs];
   std::unique_ptr<plume::RenderFramebuffer> output_framebuffers[kOutputs];
@@ -596,6 +609,7 @@ struct Renderer {
     plume::RenderVertexBufferView views[16] = {};
     plume::RenderInputSlot slots[16] = {};
     uint32_t view_count = 0;
+    const plume::RenderDescriptorSet* compact[2] = {};  // (compact tables: the bound sets 0, 1)
   } list_state;
   // native_record_thread: stands in for the frame's list (r->list), replaying
   // onto it on its own thread.
@@ -869,7 +883,142 @@ plume::RenderDescriptorSetDesc g_table_descs[4];
 plume::RenderDescriptorRange g_vk_texture_ranges[3], g_vk_sampler_range, g_vk_constant_range;
 plume::RenderDescriptorSetDesc g_vk_set_descs[3];
 
+// Compact tables (backend::CompactTables()): set 0 is 13 2D textures, one 3D
+// and two cube (bindings 0-2, 16 in all - old Mali drivers allow 16 a stage),
+// set 1 16 samplers; the shaders' indices are places in them (.spvc shaders,
+// shader_common.h). The game's shaders use at most 12 textures a draw.
+constexpr uint32_t kCompactPlaces[3] = {13, 1, 2}, kCompactFirst[3] = {0, 13, 14};
+constexpr uint32_t kCompactSamplers = 16;
+plume::RenderDescriptorRange g_compact_texture_ranges[3], g_compact_sampler_range;
+plume::RenderDescriptorSetDesc g_compact_descs[2];
+
+// Compact tables: stands in for the big tables - remembers what each index
+// holds (and a stamp, new at every write), for the draws' own sets.
+class TableRecord final : public plume::RenderDescriptorSet {
+ public:
+  struct Entry {
+    const plume::RenderTexture* texture = nullptr;
+    plume::RenderTextureLayout layout = plume::RenderTextureLayout::SHADER_READ;
+    const plume::RenderTextureView* view = nullptr;
+    const plume::RenderSampler* sampler = nullptr;
+    uint32_t stamp = 0;
+  };
+  explicit TableRecord(uint32_t size) : entries(size) {}
+  void setBuffer(uint32_t, const plume::RenderBuffer*, uint64_t, const plume::RenderBufferStructuredView*,
+                 const plume::RenderBufferFormattedView*) override {}
+  void setTexture(uint32_t index, const plume::RenderTexture* texture, plume::RenderTextureLayout layout,
+                  const plume::RenderTextureView* view) override {
+    if (index >= entries.size() || !texture) return;
+    Entry& e = entries[index];
+    e.texture = texture;
+    e.layout = layout;
+    e.view = view;
+    e.stamp = ++stamps;
+  }
+  void setSampler(uint32_t index, const plume::RenderSampler* sampler) override {
+    if (index >= entries.size() || !sampler) return;
+    entries[index].sampler = sampler;
+    entries[index].stamp = ++stamps;
+  }
+  void setAccelerationStructure(uint32_t, const plume::RenderAccelerationStructure*) override {}
+  std::vector<Entry> entries;
+  uint32_t stamps = 0;
+};
+
+// Compact tables: the set holding these table indices (16 places; UINT32_MAX:
+// a placeholder) - made the first time, then reused. Sets not used for a
+// while are dropped (well after the GPU is done with them).
+plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t indices[16]) {
+  auto* table = static_cast<TableRecord*>(samplers ? r->sampler_set.get() : r->texture_sets[0].get());
+  uint32_t key[16];
+  for (int i = 0; i < 16; ++i)
+    key[i] = indices[i] < table->entries.size() ? table->entries[indices[i]].stamp : 0;
+  auto& cache = r->compact_sets[samplers];
+  if (r->frames - r->compact_swept > 600) {
+    r->compact_swept = r->frames;
+    for (int k = 0; k < 2; ++k)
+      for (auto it = r->compact_sets[k].begin(); it != r->compact_sets[k].end();) {
+        const bool keep = it->second.used + 2 * kFrames + 4 >= r->frames ||
+                          it->second.set.get() == r->default_sets[0] || it->second.set.get() == r->default_sets[1];
+        it = keep ? std::next(it) : r->compact_sets[k].erase(it);
+      }
+  }
+  Renderer::CompactSet& c = cache[std::string(reinterpret_cast<const char*>(key), sizeof(key))];
+  c.used = r->frames;
+  if (c.set) return c.set.get();
+  c.set = r->device->createDescriptorSet(g_compact_descs[samplers]);
+  if (!c.set) return nullptr;
+  for (uint32_t i = 0; i < 16; ++i) {
+    if (samplers) {
+      const uint32_t index = indices[i] < table->entries.size() ? indices[i] : 0;  // (0: linear wrap)
+      c.set->setSampler(i, table->entries[index].sampler);
+      continue;
+    }
+    const uint32_t dimension = i < kCompactFirst[1] ? 0 : i < kCompactFirst[2] ? 1 : 2;
+    const uint32_t index =
+        indices[i] < table->entries.size() ? indices[i] : r->texture_base[dimension] + dimension;
+    const TableRecord::Entry& e = table->entries[index];
+    c.set->setTexture(i, e.texture, e.layout, e.view);
+  }
+  return c.set.get();
+}
+
+// Compact tables: binds the draw's sets (r->draw_sets) where they changed.
+void BindCompactSets(Renderer* r, plume::RenderCommandList* list) {
+  auto& ls = r->list_state;
+  for (uint32_t k = 0; k < 2; ++k) {
+    plume::RenderDescriptorSet* set = r->draw_sets[k] ? r->draw_sets[k] : r->default_sets[k];
+    if (set && ls.compact[k] != set) {
+      list->setGraphicsDescriptorSet(set, k);
+      ls.compact[k] = set;
+    }
+  }
+}
+
+bool CreateVulkanCompactLayout(Renderer* r) {
+  for (uint32_t i = 0; i < 3; ++i)
+    g_compact_texture_ranges[i] =
+        plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::TEXTURE, i, kCompactPlaces[i]);
+  g_compact_sampler_range =
+      plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::SAMPLER, 0, kCompactSamplers);
+  g_vk_constant_range = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::BYTE_ADDRESS_BUFFER, 0, 1);
+  g_compact_descs[0] = plume::RenderDescriptorSetDesc(g_compact_texture_ranges, 3);
+  g_compact_descs[1] = plume::RenderDescriptorSetDesc(&g_compact_sampler_range, 1);
+  g_vk_set_descs[0] = g_compact_descs[0];
+  g_vk_set_descs[1] = g_compact_descs[1];
+  g_vk_set_descs[2] = plume::RenderDescriptorSetDesc(&g_vk_constant_range, 1);
+  const plume::RenderPushConstantRange push(0, 0, 0, 4 * sizeof(uint32_t),
+                                            plume::RenderShaderStageFlag::VERTEX |
+                                                plume::RenderShaderStageFlag::PIXEL);
+  plume::RenderPipelineLayoutDesc desc;
+  desc.descriptorSetDescs = g_vk_set_descs;
+  desc.descriptorSetDescsCount = 3;
+  desc.pushConstantRanges = &push;
+  desc.pushConstantRangesCount = 1;
+  desc.allowInputLayout = true;
+  r->layout = r->device->createPipelineLayout(desc);
+  if (!r->layout) {
+    REXLOG_ERROR("native renderer: could not create the pipeline layout (compact tables)");
+    return false;
+  }
+  r->texture_sets[0] = std::make_unique<TableRecord>(3 * kSrvHeapSize);
+  r->sampler_set = std::make_unique<TableRecord>(kSamplerHeapSize);
+  for (uint32_t i = 0; i < 3; ++i) {
+    r->texture_set[i] = r->texture_sets[0].get();
+    r->texture_base[i] = i * kSrvHeapSize;
+  }
+  for (uint32_t i = 0; i < kFrames; ++i) {
+    r->constant_sets[i] = r->device->createDescriptorSet(g_vk_set_descs[2]);
+    if (!r->constant_sets[i] || !r->rings[i].buffer) return false;
+    r->constant_sets[i]->setBuffer(0, r->rings[i].buffer.get(), kRingSize + kRingSlack);
+  }
+  REXLOG_INFO("native renderer: compact tables ({} 2D / {} 3D / {} cube textures and {} samplers a draw)",
+              kCompactPlaces[0], kCompactPlaces[1], kCompactPlaces[2], kCompactSamplers);
+  return true;
+}
+
 bool CreateVulkanPipelineLayout(Renderer* r) {
+  if (backend::CompactTables()) return CreateVulkanCompactLayout(r);
   for (uint32_t i = 0; i < 3; ++i)
     g_vk_texture_ranges[i] = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::TEXTURE, i, kSrvHeapSize);
   g_vk_sampler_range = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::SAMPLER, 0, kSamplerHeapSize);
@@ -907,6 +1056,19 @@ bool CreateVulkanPipelineLayout(Renderer* r) {
 
 // Binds the texture tables, samplers and (Vulkan) this frame's constant buffer.
 void BindTables(Renderer* r, plume::RenderCommandList* list) {
+  if (backend::CompactTables()) {
+    // (the placeholders' sets until a draw binds its own)
+    if (!r->default_sets[0]) {
+      uint32_t none[16];
+      std::fill(std::begin(none), std::end(none), UINT32_MAX);
+      for (int k = 0; k < 2; ++k) r->default_sets[k] = CompactSet(r, k, none);
+    }
+    r->list_state.compact[0] = r->list_state.compact[1] = nullptr;
+    r->draw_sets[0] = r->draw_sets[1] = nullptr;
+    BindCompactSets(r, list);
+    list->setGraphicsDescriptorSet(r->constant_sets[r->back_index].get(), 2);
+    return;
+  }
   if (backend::ActiveApi() == backend::Api::kVulkan) {
     list->setGraphicsDescriptorSet(r->texture_sets[0].get(), 0);
     list->setGraphicsDescriptorSet(r->sampler_set.get(), 1);
@@ -2421,8 +2583,13 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
   if (!cpu) return {};
   auto* u = reinterpret_cast<uint32_t*>(cpu);
   std::memset(cpu, 0, kSharedConstantsBytes);
+  // Compact tables: the draw's textures and samplers get places in its own
+  // sets (the indices below are those places; unused slots read place 0).
+  const bool compact = backend::CompactTables();
+  uint32_t places[2][16], used[3] = {}, samplers = 0;
+  if (compact) std::fill(&places[0][0], &places[0][0] + 32, UINT32_MAX);
   // g_ResourceIndices[32] (uint4): 2D, 3D, cube, sampler blocks of 8 x uint4.
-  for (uint32_t slot = 0; slot < 32; ++slot) {
+  for (uint32_t slot = 0; slot < 32 && !compact; ++slot) {
     u[(0 * 8 + slot / 4) * 4 + slot % 4] = 0;  // placeholder 2D
     u[(1 * 8 + slot / 4) * 4 + slot % 4] = 1;  // placeholder 3D
     u[(2 * 8 + slot / 4) * 4 + slot % 4] = 2;  // placeholder cube
@@ -2458,10 +2625,33 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
         }
       }
       const uint32_t srv = textures::Texture(ctx, fetch, dimension);
+      if (compact) {
+        if (dimension > 2 || used[dimension] >= kCompactPlaces[dimension]) {
+          static bool warned = false;
+          if (!warned) REXLOG_WARN("native renderer: a draw has more textures than the compact tables hold");
+          warned = true;
+          continue;
+        }
+        const uint32_t place = used[dimension]++;
+        places[0][kCompactFirst[dimension] + place] =
+            srv == UINT32_MAX ? UINT32_MAX : r->texture_base[dimension] + srv;
+        u[(dimension * 8 + slot / 4) * 4 + slot % 4] = place;
+        if (srv == UINT32_MAX) continue;
+        const uint32_t sampler = textures::Sampler(ctx, fetch);
+        uint32_t s = 0;
+        while (s < samplers && places[1][s] != sampler) ++s;  // (shared)
+        if (s == samplers && samplers < kCompactSamplers) places[1][samplers++] = sampler;
+        u[(3 * 8 + slot / 4) * 4 + slot % 4] = s < kCompactSamplers ? s : 0;
+        continue;
+      }
       if (srv == UINT32_MAX) continue;
       u[(dimension * 8 + slot / 4) * 4 + slot % 4] = srv;
       u[(3 * 8 + slot / 4) * 4 + slot % 4] = textures::Sampler(ctx, fetch);
     }
+  }
+  if (compact) {
+    r->draw_sets[0] = CompactSet(r, 0, places[0]);
+    r->draw_sets[1] = CompactSet(r, 1, places[1]);
   }
   // c32: g_Booleans (vertex b0-b31), g_SwappedTexcoords, g_HalfPixelOffset;
   // c33: g_AlphaThreshold, g_NdcScale, g_PsBooleans (pixel b0-b31, the
@@ -3018,6 +3208,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     }
     BindConstants(r, constants);
   }
+  if (backend::CompactTables()) BindCompactSets(r, list);
   if (ls.pso != pso) {
     list->setPipeline(pso);
     ls.pso = pso;
@@ -3229,6 +3420,18 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   list->setFramebuffer(r->output_framebuffers[r->output_index].get());
   list->setGraphicsPipelineLayout(r->layout.get());
   BindTables(r, list);
+  if (backend::CompactTables()) {
+    // (compact tables: the texture and sampler in place 0 of the draw's sets)
+    uint32_t places[2][16];
+    std::fill(&places[0][0], &places[0][0] + 32, UINT32_MAX);
+    places[0][0] = r->texture_base[0] + srv;
+    places[1][0] = sampler;
+    r->draw_sets[0] = CompactSet(r, 0, places[0]);
+    r->draw_sets[1] = CompactSet(r, 1, places[1]);
+    BindCompactSets(r, list);
+    const uint32_t zero[2] = {0, 0};
+    std::memcpy(cpu, zero, 8);
+  }
   const RenderBufferReference constants[4] = {{}, {}, {}, gpu};
   BindConstants(r, constants);
   list->setPipeline(pso);

@@ -2032,6 +2032,29 @@ index 001f36b..d080063 100644
  
    if (!BeginSubmission(true)) {
      return false;
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+index 0298f06..a3b2f12 100644
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -406,11 +406,13 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
+           "interlock path for D3D12 parity");
+       path_ = Path::kPixelShaderInterlock;
+     } else {
+-      REXGPU_ERROR(
+-          "VulkanRenderTargetCache: Bit-exact host render target ownership "
+-          "transfers require UINT transfer formats and integer sampled-image "
+-          "MSAA support, and fragment shader interlock fallback is unavailable");
+-      return false;
++      // [svr2011] (old Mali drivers: no integer MSAA sampling) The game draws
++      // with the native renderer - this cache only follows the command stream,
++      // so transfers that aren't bit-exact don't show.
++      REXGPU_WARN(
++          "VulkanRenderTargetCache: host render target ownership transfers "
++          "can't be bit-exact on this device (no UINT transfer formats / integer "
++          "sampled-image MSAA, no fragment shader interlock) - continuing");
+     }
+   }
+ 
 diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
 index 6788214..1b37e1c 100644
 --- a/src/graphics/vulkan/shared_memory.cpp

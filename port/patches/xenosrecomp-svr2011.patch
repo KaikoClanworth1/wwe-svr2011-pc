@@ -1,8 +1,8 @@
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 1c74034..cf73cc5 100644
+index 1c74034..a2bdf66 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
-@@ -12,45 +12,96 @@
+@@ -12,45 +12,106 @@
  
  #if !defined(__cplusplus) || defined(__INTELLISENSE__)
  
@@ -100,7 +100,17 @@ index 1c74034..cf73cc5 100644
 +// [svr2011] Vulkan: the three texture tables are one descriptor set (0) and
 +// the samplers set 1 - with the constants (set 2) three sets, within the four
 +// every Vulkan GPU has. D3D12: four tables.
-+#ifdef __spirv__
++#if defined(__spirv__) && defined(SVR_COMPACT_TABLES)
++// [svr2011] GPUs without descriptor indexing (old Mali drivers: 16 textures a
++// stage, no runtime arrays): each draw binds small tables of only its own
++// textures, and the indices in the shared constants are places in them
++// (native_renderer.cpp, compact tables). The game's shaders use at most 12
++// textures (2D, one cube) a draw.
++[[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[13];
++[[vk::binding(1, 0)]] Texture3D<float4> g_Texture3DDescriptorHeap[1];
++[[vk::binding(2, 0)]] TextureCube<float4> g_TextureCubeDescriptorHeap[2];
++[[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[16];
++#elif defined(__spirv__)
 +[[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[];
 +[[vk::binding(1, 0)]] Texture3D<float4> g_Texture3DDescriptorHeap[];
 +[[vk::binding(2, 0)]] TextureCube<float4> g_TextureCubeDescriptorHeap[];
@@ -114,7 +124,7 @@ index 1c74034..cf73cc5 100644
  
  uint2 getTexture2DDimensions(Texture2D<float4> texture)
  {
-@@ -62,7 +113,7 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -62,7 +123,7 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
  float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
  {
      Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
@@ -123,7 +133,7 @@ index 1c74034..cf73cc5 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -135,17 +186,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -135,17 +196,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
      float h1y = h1(fy);
  
      float4 r =
@@ -146,7 +156,7 @@ index 1c74034..cf73cc5 100644
  }
  
  struct CubeMapData
-@@ -156,18 +207,16 @@ struct CubeMapData
+@@ -156,18 +217,16 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -169,7 +179,7 @@ index 1c74034..cf73cc5 100644
      }
      else
      {
-@@ -177,7 +226,7 @@ float4 tfetchR11G11B10(uint4 value)
+@@ -177,7 +236,7 @@ float4 tfetchR11G11B10(uint4 value)
  
  float4 tfetchTexcoord(uint swappedTexcoords, float4 value, uint semanticIndex)
  {

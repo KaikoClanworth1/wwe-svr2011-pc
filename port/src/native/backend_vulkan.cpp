@@ -157,11 +157,13 @@ class VulkanBackend final : public Backend {
     if (!ReportDevice(*d)) return nullptr;
     // (Vulkan 1.0 / 1.1 too: descriptor indexing through its extension; the
     // shaders need no buffer device addresses or 64-bit integers)
-    if (!d->app_renderer_features) {
-      REXLOG_ERROR("native renderer: the Vulkan device lacks descriptor indexing (runtime arrays, "
-                   "partially bound / variable count / update-after-bind sampled images)");
-      return nullptr;
-    }
+    // Without descriptor indexing (runtime arrays, partially bound / update-
+    // after-bind sampled images - old Mali drivers): compact tables, a small
+    // set of each draw's own textures.
+    compact_ = !d->app_renderer_features;
+    if (compact_)
+      REXLOG_WARN("native renderer: no descriptor indexing on this GPU - each draw binds its own textures "
+                  "(compact tables, shaders .spvc)");
     plume::VulkanExistingDevice existing;
     existing.instance = static_cast<VkInstance>(d->instance);
     existing.getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(d->get_instance_proc_addr);
@@ -171,7 +173,7 @@ class VulkanBackend final : public Backend {
     existing.queueFamilyIndex = d->queue_family;
     existing.queue = static_cast<VkQueue>(d->queue);
     existing.queueMutex = d->queue_mutex;
-    existing.descriptorIndexing = true;
+    existing.descriptorIndexing = !compact_;
     existing.bufferDeviceAddress = false;  // (constants come from a storage buffer: shader_common.h)
     existing.scalarBlockLayout = d->scalar_block_layout;
     existing.nullDescriptor = d->null_descriptor;
@@ -212,7 +214,8 @@ class VulkanBackend final : public Backend {
       REXLOG_INFO("native renderer: pipeline cache saved ({} KB)", data.size() / 1024);
     }
   }
-  const char* ShaderExtension() const override { return ".spv"; }
+  const char* ShaderExtension() const override { return compact_ ? ".spvc" : ".spv"; }
+  bool CompactTables() const override { return compact_; }
 
   void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
                     uint32_t height, plume::RenderCommandFence*) override {
@@ -275,6 +278,7 @@ class VulkanBackend final : public Backend {
 
  private:
   size_t saved_size_ = 0;  // (the pipeline cache file's)
+  bool compact_ = false;   // (no descriptor indexing: CompactTables)
   static constexpr uint64_t kHoldFrames = 16;
   struct Held {
     std::shared_ptr<plume::RenderTexture> texture;

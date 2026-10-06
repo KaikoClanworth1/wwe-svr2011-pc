@@ -20,7 +20,8 @@ import java.nio.file.Files;
 final class Shaders {
     private Shaders() {}
 
-    static final String[] kFiles = {"shaders.spv.pak", "pipelines.list"};
+    // (shaders.spvc.pak: for GPUs without descriptor indexing - old Mali drivers)
+    static final String[] kFiles = {"shaders.spv.pak", "shaders.spvc.pak", "pipelines.list"};
 
     // This APK's build: its version code and when it was installed.
     static String stamp(Context c) {
