@@ -17,6 +17,7 @@
 #include <spdlog/sinks/base_sink.h>
 
 #include "keyboard_typing.h"
+#include "story_designer.h"
 #include "touch_controls.h"
 
 namespace svr2011 {
@@ -160,6 +161,10 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     queue_.push_back(step);
   } else if (verb == "wait") {
     in >> step.ms;
+    queue_.push_back(step);
+  } else if (verb == "sdcopy" || verb == "sdpaste") {  // (story_designer.h: Ctrl+C / Ctrl+V on its lists)
+    step.sd = verb == "sdcopy" ? 1 : 2;
+    step.ms = 100;
     queue_.push_back(step);
   } else if (verb == "paste" || verb == "copy") {  // (keyboard_typing.h test aids)
     if (verb == "paste") std::getline(in >> std::ws, step.text);
@@ -335,6 +340,7 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
       }
       continue;
     }
+    if (current_.sd) StoryListKey(current_.sd == 2);
     if (current_.paste) PasteForTest(current_.text);
     else if (current_.copy) CopyForTest();
     else if (!current_.text.empty()) TypeText(current_.text);

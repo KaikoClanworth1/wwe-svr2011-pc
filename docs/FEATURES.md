@@ -59,6 +59,7 @@ still being tested.
 
 - **Keyboard controls**: the PC keyboard plays as player 1 (alongside a controller). *(New in 2.0.)*
 - **Type on the PC keyboard** wherever the game shows its on-screen keyboard.
+- **Ctrl+C / Ctrl+V in Story Designer lists**: copy the moment, show or moment group under the cursor and paste it at the cursor (a moment on ADD is added at the end), as the game's own COPY/PASTE does, with a short notice. *(New in 2.0.5.)*
 - **Ctrl+V / Ctrl+C in text fields**: paste the PC clipboard into the game's on-screen keyboard (story and superstar names...; accented letters and curly quotes typed as plain ones, kept to the field's length), or copy the field's text out. *(New in 2.0.5.)*
 - **Story Designer copy and paste** (the game's own): press A on a moment for MOMENT MANAGEMENT - COPY/PASTE, COPY/PASTE MULTIPLE (several moments into another show or path), DELETE, INSERT; shows and moment groups have a copy too. Divas and male superstars can share scenes and matches (*mixed gender*). *(Mixed gender in Story Designer: new in 2.0.5.)*
 - **On-screen touch controller** (Android default, any touch screen): MENU and MATCH layouts that switch automatically, an editor to rearrange it, and a **KEYBOARD** button that opens the phone's keyboard while the game's keyboard is up. Hidden as soon as a real controller is connected, with any controller backend; a touch shows it again for 15 s. *(KEYBOARD, controller hiding on every backend: new in 2.0.)*
