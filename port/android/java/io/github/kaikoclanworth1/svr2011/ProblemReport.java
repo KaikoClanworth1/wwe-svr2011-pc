@@ -29,6 +29,11 @@ final class ProblemReport {
 
     // Makes the zip; throws if it can't be written.
     static Result make(File gameFolder, String appVersion) throws IOException {
+        return make(gameFolder, appVersion, null);
+    }
+
+    // ... with the player's description (ReportForm) at the top of report.txt.
+    static Result make(File gameFolder, String appVersion, String description) throws IOException {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
         File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         dir.mkdirs();
@@ -44,6 +49,8 @@ final class ProblemReport {
                 + "made: " + stamp + "\n"
                 + "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
                 + "(account token and password removed)\n";
+            // (the player's words first: what a reader looks for)
+            if (description != null && !description.isEmpty()) info = description + "\n" + info;
             put(zip, "report.txt", info.getBytes(StandardCharsets.UTF_8));
             r.logs = addNewest(zip, new File(gameFolder, "logs"), "svr2011_", ".log", 3, "logs/", 16 << 20);
             r.crashes = addNewest(zip, new File(gameFolder, "UserData/crashes"), "crash_", ".txt", 3, "crashes/", 1 << 20);

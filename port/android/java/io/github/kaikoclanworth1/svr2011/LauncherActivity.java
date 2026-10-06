@@ -368,22 +368,10 @@ public class LauncherActivity extends Activity {
         lp.topMargin = dp(18);
         c.addView(play, lp);
 
-        // Report a problem: a zip of the logs, crash reports and settings in Download.
+        // Report a problem: what happened (ReportForm), then a zip of the logs,
+        // crash reports and settings in Download, posted on the Discord.
         Button report = button("Report a problem…", kBackground);
-        report.setOnClickListener(v -> {
-            final String[] result = new String[1];
-            background(() -> {
-                try {
-                    ProblemReport.Result r = ProblemReport.make(InstallActivity.gameFolder(), versionName());
-                    result[0] = "Saved Download/" + r.zip.getName() + " (" + r.logs + " game log"
-                        + (r.logs == 1 ? "" : "s") + ", " + r.crashes + " crash report" + (r.crashes == 1 ? "" : "s")
-                        + "; your online password and token are left out). Send it with a short description of "
-                        + "what happened.";
-                } catch (Exception e) {
-                    result[0] = "The report couldn't be made: " + e.getMessage();
-                }
-            }, () -> status(result[0]));
-        });
+        report.setOnClickListener(v -> ReportForm.show(this));
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT);
         rp.topMargin = dp(10);
