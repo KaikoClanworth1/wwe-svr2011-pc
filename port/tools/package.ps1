@@ -5,7 +5,8 @@
 #                                       port\out\SvR2011-Android-v<version>.apk (default: port\VERSION)
 # Build first (build.ps1). The player installs the game data from their own
 # disc image with the launcher's Install tab, which copies these files beside it.
-param([string]$Version = "", [string]$Build = "")
+# -WithModMaker: the Mod Maker too (left out while it isn't ready for players).
+param([string]$Version = "", [string]$Build = "", [switch]$WithModMaker)
 $ErrorActionPreference = "Stop"
 $port  = Split-Path $PSScriptRoot -Parent
 if (-not $Version) { $Version = (Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) "VERSION.txt") -TotalCount 1).Trim() }
@@ -22,9 +23,11 @@ foreach ($f in $files) {
     if (-not (Test-Path $src)) { throw "$f is missing from $build - build first" }
     Copy-Item $src $stage
 }
-# The Mod Maker (the launcher's Mods tab opens it), when built.
+# The Mod Maker (the launcher's Mods tab opens it), when built and asked for.
 $modmaker = Join-Path $build "SvR2011 Mod Maker.exe"
-if (Test-Path $modmaker) { Copy-Item $modmaker $stage } else { Write-Warning "no SvR2011 Mod Maker.exe in $build" }
+if ($WithModMaker) {
+    if (Test-Path $modmaker) { Copy-Item $modmaker $stage } else { Write-Warning "no SvR2011 Mod Maker.exe in $build" }
+}
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
 # The native renderer's shaders (converted from the game's by

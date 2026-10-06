@@ -1,7 +1,8 @@
 # Refresh "..\Game Files" - a complete, runnable install:
 #   the disc files (from "..\Extract GameFiles") + the port's program files.
 # User data there (svr2011.toml, UserData\, launcher.ini) is left alone.
-param([string]$Build = "")
+# -WithModMaker: the Mod Maker too (left out while it isn't ready for players).
+param([string]$Build = "", [switch]$WithModMaker)
 $ErrorActionPreference = "Stop"
 
 $root  = $PSScriptRoot
@@ -51,7 +52,8 @@ foreach ($dll in @(Get-ChildItem $build -File -Filter "rex*.dll")) {
         Copy-Item $fresh $dll.FullName -Force
     }
 }
-$files = @(Get-ChildItem $build -File | Where-Object { $_.Extension -in ".exe", ".dll" })
+$files = @(Get-ChildItem $build -File | Where-Object { $_.Extension -in ".exe", ".dll" } |
+           Where-Object { $WithModMaker -or $_.Name -ne "SvR2011 Mod Maker.exe" })
 foreach ($f in $files) { Copy-Item $f.FullName $game -Force }
 Copy-Item (Join-Path $root "dist\Read Me.txt") $game -Force -ErrorAction SilentlyContinue
 # The native renderer's shaders, as in the release zip.

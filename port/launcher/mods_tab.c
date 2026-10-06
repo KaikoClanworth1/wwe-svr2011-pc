@@ -89,6 +89,7 @@ static unsigned long long folder_bytes(const WCHAR *dir)
 }
 
 static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
+static int maker_present(void);
 
 static void scan(void)
 {
@@ -153,7 +154,8 @@ static void fill(void)
     {
         WCHAR t[160];
         if (!s_game[0]) status(L"Install the game first (Install tab).");
-        else if (!s_nmods) status(L"No mods yet. + adds a .svrmod file; Open Mod Maker makes one.");
+        else if (!s_nmods) status(maker_present() ? L"No mods yet. + adds a .svrmod file; Open Mod Maker makes one."
+                                                  : L"No mods yet. + adds a .svrmod file.");
         else {
             swprintf_s(t, 160, L"%d mod%s. They load the next time the game starts; your Game Files are never "
                                L"changed.", s_nmods, s_nmods == 1 ? L"" : L"s");
@@ -380,6 +382,18 @@ static void open_folder(void)
     ShellExecuteW(s_wnd, L"open", dir, NULL, NULL, SW_SHOWNORMAL);
 }
 
+/* The Mod Maker beside the launcher (left out of a release while it isn't
+   ready: then the tab has no Open Mod Maker button). */
+static int maker_present(void)
+{
+    WCHAR exe[MAX_PATH], *slash;
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    slash = wcsrchr(exe, L'\\');
+    if (slash) *slash = 0;
+    wcscat_s(exe, MAX_PATH, L"\\SvR2011 Mod Maker.exe");
+    return exists(exe);
+}
+
 static void open_maker(void)
 {
     WCHAR exe[MAX_PATH], dir[MAX_PATH], args[MAX_PATH + 16], *slash;
@@ -407,7 +421,7 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     s_base = id_base;
     h = add(tab, L"Static", L"Mods", SS_LEFT, 28, 54, 300, 28, 0);
     if (title_font) SendMessageW(h, WM_SETFONT, (WPARAM)title_font, TRUE);
-    add(tab, L"Static", L"Arenas and more made with the Mod Maker. + adds a .svrmod file, \x2212 removes the selected "
+    add(tab, L"Static", L"Arenas, superstars and more. + adds a .svrmod file, \x2212 removes the selected "
                         L"mod, the tick turns it on or off.", SS_LEFT, 28, 86, 560, 36, 0);
     s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
                  28, 126, 512, 250, id_base + M_LIST);
@@ -423,8 +437,12 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     }
     add(tab, L"Button", L"+", BS_PUSHBUTTON | WS_TABSTOP, 548, 126, 40, 34, id_base + M_ADD);
     add(tab, L"Button", L"\x2212", BS_PUSHBUTTON | WS_TABSTOP, 548, 166, 40, 34, id_base + M_REMOVE);
-    add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 170, 32, id_base + M_MAKER);
-    add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 206, 386, 150, 32, id_base + M_FOLDER);
+    if (maker_present()) {
+        add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 170, 32, id_base + M_MAKER);
+        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 206, 386, 150, 32, id_base + M_FOLDER);
+    } else {
+        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 150, 32, id_base + M_FOLDER);
+    }
     s_status = add(tab, L"Static", L"", SS_LEFT, 28, 428, 560, 40, id_base + M_STATUS);
 }
 
