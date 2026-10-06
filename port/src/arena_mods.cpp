@@ -769,6 +769,10 @@ void LoadBackstage() {
         if (l.rfind("row=", 0) == 0) r.label = l.substr(4);
         if (l.rfind("area=", 0) == 0) r.area = std::atoi(l.c_str() + 5);
         if (l.rfind("gimmick=", 0) == 0) r.gimmick = l.substr(8);
+        if (l.rfind("camera=", 0) == 0) r.camera = float(std::atof(l.c_str() + 7));
+        if (l.rfind("camera_height=", 0) == 0) r.camera_height = float(std::atof(l.c_str() + 14));
+        if (l.rfind("box=", 0) == 0)
+          r.has_box = std::sscanf(l.c_str() + 4, "%f,%f,%f,%f", &r.box[0], &r.box[1], &r.box[2], &r.box[3]) == 4;
       }
       std::fclose(t);
     }
