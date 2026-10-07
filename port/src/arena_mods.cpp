@@ -780,7 +780,12 @@ REX_HOOK_RAW(sub_823D4FC0) {
     __imp__sub_823D4FC0(ctx, base);
     return;
   }
-  if (w != g_select_widget) {  // the screen opened: page 1, find the banners
+  // The screen opened: page 1, find the banners. (Also when the widget is at
+  // the same address as last time - a gap in its updates: the game reopened
+  // the screen and loaded its banners anew, elsewhere; the old page and
+  // places stayed, the banners were written to stale memory - stock tiles on
+  // the wrong arenas, "2 / 2" over page 1's pictures; 2.0.4 report.)
+  if (w != g_select_widget || NowMs() - g_select_seen.load() > 300) {
     g_select_widget = w;
     g_page = 0;
     if (g_banners.empty()) LoadBanners();
