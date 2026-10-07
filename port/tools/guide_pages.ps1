@@ -18,10 +18,15 @@ Push-Location $root
 try {
     $guide = (git rev-parse "HEAD:docs/guide").Trim()
     if (-not $guide) { throw "HEAD has no docs/guide" }
-    # a tree = the guide's tree + an empty .nojekyll
-    $empty = ("" | git hash-object -w --stdin).Trim()
-    $lines = (git ls-tree $guide) + "100644 blob $empty`t.nojekyll"
-    $tree = ($lines -join "`n" | git mktree).Trim()
+    # a tree = the guide's tree + an empty .nojekyll, built in a scratch index
+    # (no text piped through PowerShell: it would add CRLF to the entry names)
+    $empty = (git hash-object -w -t blob (New-Item -ItemType File -Force (Join-Path $env:TEMP "svr2011_nojekyll"))).Trim()
+    $env:GIT_INDEX_FILE = Join-Path $env:TEMP "svr2011_gh_pages.index"
+    Remove-Item $env:GIT_INDEX_FILE -ErrorAction SilentlyContinue
+    git read-tree $guide
+    git update-index --add --cacheinfo "100644,$empty,.nojekyll"
+    $tree = (git write-tree).Trim()
+    Remove-Item Env:GIT_INDEX_FILE
     $head = (git rev-parse --short HEAD).Trim()
     $msg = "Mod Maker guide from $head"
     $parent = git rev-parse -q --verify gh-pages 2>$null
