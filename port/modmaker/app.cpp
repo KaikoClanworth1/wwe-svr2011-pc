@@ -1168,10 +1168,26 @@ void TitleBar() {
                                                   : FileName(g_project_file).c_str());
     if (!g_project_file.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Utf8(g_project_file).c_str());
   }
-  // right: the game folder
+  // right: the text size and the game folder
   const std::string game = g_game.empty() ? "No game folder" : Utf8(fs::path(g_game).filename().wstring());
   const float w = ImGui::CalcTextSize(game.c_str()).x + 40 * g_scale;
-  ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w - 8 * g_scale));
+  ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w - 60 * g_scale));
+  if (ImGui::Button("Aa")) ImGui::OpenPopup("text_size");
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Text size (applies the next time the Mod Maker starts).");
+  if (ImGui::BeginPopup("text_size")) {
+    const int sizes[] = {14, 15, 17, 19, 22, 26};
+    for (int sz : sizes) {
+      char label[32];
+      std::snprintf(label, sizeof label, "%d px%s", sz, sz == 17 ? "  (normal)" : "");
+      if (ImGui::MenuItem(label, nullptr, g_settings.font == sz)) {
+        g_settings.font = sz;
+        SaveSettings();
+        Status("Text size saved: it applies the next time the Mod Maker starts.");
+      }
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::SameLine();
   if (g_game.empty()) ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
   if (ImGui::Button(game.c_str())) PickGameFolder();
   if (g_game.empty()) ImGui::PopStyleColor();
