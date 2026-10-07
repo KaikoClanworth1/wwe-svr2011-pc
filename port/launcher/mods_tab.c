@@ -271,9 +271,42 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
         known[n] = 0;
         fclose(f);
     }
+    /* Bundles no longer shipped: the copy the launcher installed is switched
+       off once ("disabled" in its folder; the player may switch it back on)
+       and its line leaves .bundled. hurricane.svrmod (2.0.5): The Hurricane
+       is the playable manager on the M tile already - two tiles, neither with
+       an entrance video, theme or announcer clip (the game has none). */
+    {
+        static const struct { const WCHAR *file, *folder; } retired[] = {
+            {L"hurricane.svrmod", L"Superstars\\the_hurricane"},
+        };
+        int i;
+        for (i = 0; i < (int)(sizeof retired / sizeof *retired); ++i) {
+            WCHAR key[MAX_PATH], *at, *end, off[MAX_PATH];
+            FILE *g;
+            swprintf_s(key, MAX_PATH, L"%s|", retired[i].file);
+            at = wcsstr(known, key);
+            if (!at || (at != known && at[-1] != L'\n'))
+                continue;
+            swprintf_s(off, MAX_PATH, L"%s\\%s", mods, retired[i].folder);
+            if (GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES) {
+                wcscat_s(off, MAX_PATH, L"\\disabled");
+                if (_wfopen_s(&g, off, L"wb") == 0 && g) fclose(g);
+            }
+            end = wcschr(at, L'\n');
+            end = end ? end + 1 : at + wcslen(at);
+            memmove(at, end, (wcslen(end) + 1) * sizeof(WCHAR));
+            changed = 1;
+        }
+    }
     h = FindFirstFileW(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE)
+    if (h == INVALID_HANDLE_VALUE) {
+        if (changed && _wfopen_s(&f, list, L"w, ccs=UTF-8") == 0 && f) {
+            fputws(known, f);
+            fclose(f);
+        }
         return;
+    }
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             continue;
