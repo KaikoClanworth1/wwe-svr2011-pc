@@ -69,7 +69,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 5";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names)
+constexpr const char* kFormat = "movepacks 6";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order)
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -396,7 +396,13 @@ bool EditTree(Bytes& blob, const std::vector<uint32_t>& path, size_t depth, F&& 
 uint32_t RecKey(const uint8_t* r) { return uint32_t(Le16(r)) << 16 | uint32_t(r[2]) << 8 | r[3]; }
 
 // Inserts records (header of `head` bytes, `size`-byte records, count u32 at
-// +4) in key order (appended if the table isn't sorted); keys present stay.
+// +4) in move id order (after the id's own records; appended only if the
+// table isn't in id order); keys (id, x, b3) present stay. The game finds a
+// record by a binary search on the u16 id alone (sub_826A4960): its tables
+// are sorted by id, not always by the whole key (EXH group 16 has 845/0/1
+// before 845/0/0), and records appended there after the last id - ported
+// strikes - left them and every later stock id unfound: no hit reaction or
+// impact sound (2.0.4 report, the SvR2010 superstars' strikes).
 void InsertRecords(Bytes& t, size_t head, size_t size, std::vector<Bytes> add, Bytes* pool = nullptr,
                    std::vector<Bytes>* events = nullptr) {
   const uint32_t n = Le32(&t[4]);
@@ -404,7 +410,7 @@ void InsertRecords(Bytes& t, size_t head, size_t size, std::vector<Bytes> add, B
   for (uint32_t i = 0; i < n; ++i) recs.emplace_back(t.begin() + long(head + i * size), t.begin() + long(head + (i + 1) * size));
   Bytes tail(t.begin() + long(head + n * size), t.end());
   bool sorted = true;
-  for (size_t i = 0; i + 1 < recs.size(); ++i) sorted &= RecKey(recs[i].data()) <= RecKey(recs[i + 1].data());
+  for (size_t i = 0; i + 1 < recs.size(); ++i) sorted &= Le16(recs[i].data()) <= Le16(recs[i + 1].data());
   std::set<uint32_t> have;
   for (const auto& r : recs) have.insert(RecKey(r.data()));
   for (size_t a = 0; a < add.size(); ++a) {
@@ -421,7 +427,7 @@ void InsertRecords(Bytes& t, size_t head, size_t size, std::vector<Bytes> add, B
       continue;
     }
     size_t pos = 0;
-    while (pos < recs.size() && RecKey(recs[pos].data()) <= RecKey(r.data())) ++pos;
+    while (pos < recs.size() && Le16(recs[pos].data()) <= Le16(r.data())) ++pos;
     recs.insert(recs.begin() + long(pos), r);
   }
   Bytes out(t.begin(), t.begin() + long(head));
