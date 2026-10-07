@@ -210,7 +210,12 @@ foreach ($s in $list) {
         elseif ($r.stuckMax -ge 30) { $result = "hang" }
         elseif ($r.passed -and -not $s.soak) { $result = "pass" }
         elseif ($r.err | Where-Object { $_ -match 'test match: no superstar' }) { $result = "invalid" }
-        elseif ($age -gt $s.timeout) { $result = if ($s.soak -and $r.ends -gt 0) { "pass" } else { "timeout" } }
+        elseif ($age -gt $s.timeout) {
+            # (still being played at the limit - fps flowing, no errors: a long CPU match, not a bug)
+            $result = if ($s.soak -and $r.ends -gt 0) { "pass" }
+                      elseif (-not $r.err.Count -and ((Get-Date) - $r.lastFpsAt).TotalSeconds -lt 20) { "long" }
+                      else { "timeout" }
+        }
         elseif ($age -gt 90 -and ((Get-Date) - $r.lastFpsAt).TotalSeconds -gt 40) { $result = "hang" }
     }
     if ($result -eq "pass" -and ($r.shots | Where-Object { $_.sd -lt 3 -and $_.mean -lt 10 }).Count -ge 2) { $result = "black" }

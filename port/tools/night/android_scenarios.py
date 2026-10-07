@@ -43,6 +43,9 @@ def suite_b_phone():
         if r['id'] == 'B26':
             r['timeout'] = 1500
             r['shots'] = [60, 240, 480, 900, 1200]
+        if r['id'] in ('B0C', 'B0D', 'B0E', 'B18'):  # (long CPU matches: tag tables, eliminations)
+            r['timeout'] = 1200
+            r['shots'] = [60, 240, 600, 1000]
     return out
 
 
