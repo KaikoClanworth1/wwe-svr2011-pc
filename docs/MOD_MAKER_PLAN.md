@@ -1,5 +1,14 @@
 # Mod Maker 2 - plan (2026-10-07)
 
+**Status (2026-10-07, arenas up to 706c021):** phases 1, 2, 3 and 5 done;
+phase 4 partly (redo, multi-select, grid, snap step, gizmo marks, nudges,
+view pictures, rope pictures; collision rebuild and crowd editing still
+open). Also done beyond the plan: CAW pictures page (the Created Superstar
+render in the save), match moves played in the game with a dummy, the
+made_with stamp + launcher column, --behind / --shot no-window tests.
+Not yet verified in the game: CAW picture replacement (offline checks pass),
+Play in game, move packs saved from the Moves page.
+
 The Mod Maker (`port/modmaker/`) becomes a complete, friendly tool for the
 `.svrmod` format: every mod type the game loads, projects that reopen, viewers
 for the game's own assets, warnings before anything goes wrong, and a manual.
