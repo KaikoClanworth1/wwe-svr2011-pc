@@ -10,6 +10,7 @@
 #include "native/native_renderer.h"
 
 #include <algorithm>
+#include <array>
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
@@ -572,7 +573,19 @@ struct Renderer {
     std::unique_ptr<plume::RenderDescriptorSet> set;
     uint64_t used = 0;  // (frame)
   };
-  std::unordered_map<std::string, CompactSet> compact_sets[2];  // textures, samplers
+  // (keyed by the 16 places' stamps - no allocation or string hash per draw)
+  struct CompactKey {
+    std::array<uint32_t, 16> stamps;
+    bool operator==(const CompactKey& o) const { return stamps == o.stamps; }
+  };
+  struct CompactKeyHash {
+    size_t operator()(const CompactKey& k) const {
+      uint64_t h = 1469598103934665603ull;
+      for (uint32_t v : k.stamps) h = (h ^ v) * 1099511628211ull;
+      return size_t(h ^ (h >> 32));
+    }
+  };
+  std::unordered_map<CompactKey, CompactSet, CompactKeyHash> compact_sets[2];  // textures, samplers
   plume::RenderDescriptorSet* draw_sets[2] = {};
   plume::RenderDescriptorSet* default_sets[2] = {};  // (placeholders only)
   uint64_t compact_swept = 0;
@@ -597,6 +610,7 @@ struct Renderer {
   std::deque<std::pair<uint64_t, std::shared_ptr<void>>> garbage;  // (frame, object)
 
   bool frame_open = false;
+  bool hidden_frame = false;  // (30 fps at 60 Hz: SetHalfFrames - this frame isn't shown, its draws are skipped)
   uint32_t back_index = 0;  // frame slot (frames % kFrames)
   uint64_t frames = 0;
 
@@ -961,9 +975,9 @@ class TableRecord final : public plume::RenderDescriptorSet {
 // while are dropped (well after the GPU is done with them).
 plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t indices[16]) {
   auto* table = static_cast<TableRecord*>(samplers ? r->sampler_set.get() : r->texture_sets[0].get());
-  uint32_t key[16];
+  Renderer::CompactKey key;
   for (int i = 0; i < 16; ++i)
-    key[i] = indices[i] < table->entries.size() ? table->entries[indices[i]].stamp : 0;
+    key.stamps[size_t(i)] = indices[i] < table->entries.size() ? table->entries[indices[i]].stamp : 0;
   auto& cache = r->compact_sets[samplers];
   if (r->frames - r->compact_swept > 600) {
     r->compact_swept = r->frames;
@@ -974,7 +988,7 @@ plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t
         it = keep ? std::next(it) : r->compact_sets[k].erase(it);
       }
   }
-  Renderer::CompactSet& c = cache[std::string(reinterpret_cast<const char*>(key), sizeof(key))];
+  Renderer::CompactSet& c = cache[key];
   c.used = r->frames;
   if (c.set) return c.set.get();
   c.set = r->device->createDescriptorSet(g_compact_descs[samplers]);
@@ -1474,6 +1488,12 @@ void ApplyTextureQuality(Renderer* r) {
 }
 
 // False: the GPU stopped answering and the native renderer gave up.
+// 30 fps with the world at 60 Hz (frame_rate.cpp): every other frame isn't
+// shown and its draws and clears aren't made (the GPU work of the frames no
+// one sees); resolves still run (copies of what the last shown frame drew).
+std::atomic<bool> g_half_frames{false};
+std::atomic<bool> g_last_hidden{false};  // (OnPresent's frame wasn't shown)
+
 bool BeginFrame(Renderer* r) {
   if (r->frame_open) return true;
   if (g_main) ApplyTextureQuality(r);
@@ -1501,6 +1521,7 @@ bool BeginFrame(Renderer* r) {
   r->constant_uploads[0] = r->constant_uploads[1] = {};
   r->rings[r->back_index].offset = 0;
   r->frame_open = true;
+  r->hidden_frame = g_half_frames.load() && (r->frames & 1);
   r->frame_stats = {};
   r->texture_context = TextureContext(r);
   g_resolved_this_frame = false;
@@ -1602,7 +1623,8 @@ void UpdateTitle(Renderer* r) {
 // render targets
 //
 // Each EDRAM colour surface the game renders to (base tile, pitch, format,
-// height) gets a host render target, and each depth surface a D24S8 buffer;
+// height) gets a host render target, and each depth surface a D24S8 buffer
+// (D32F S8 where the GPU has no D24S8: backend::DepthFormat);
 // a Resolve copies a target into a texture the game then samples
 // (textures::RegisterResolved), and Present shows the last full-screen
 // colour resolve (the front buffer).
@@ -1698,15 +1720,16 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   const uint64_t key = uint64_t(base) | (uint64_t(pitch) << 12) | (uint64_t(height) << 32);
   if (auto it = r->depth_targets.find(key); it != r->depth_targets.end()) return &it->second;
   if (r->depth_targets.size() >= kMaxDepthTargets) return nullptr;
-  // D24S8, copyable to a sampled depth texture (typeless underneath).
+  // D24S8 (or D32F S8: backend::DepthFormat), copyable to a sampled depth
+  // texture (typeless underneath).
   const uint32_t scale = TargetScale(pitch, height);
   const uint32_t host_w = HostWidth(pitch, height, scale), host_h = HostHeight(pitch, height, scale);
   plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
-      host_w, host_h, 1, RenderFormat::D24_UNORM_S8_UINT,
+      host_w, host_h, 1, backend::DepthFormat(),
       plume::RenderTextureFlag::DEPTH_TARGET);
   d.committed = true;
   const plume::RenderClearValue cv =
-      plume::RenderClearValue::Depth(plume::RenderDepth(1.0f), RenderFormat::D24_UNORM_S8_UINT);
+      plume::RenderClearValue::Depth(plume::RenderDepth(1.0f), backend::DepthFormat());
   d.optimizedClearValue = &cv;
   std::shared_ptr<plume::RenderTexture> resource = r->device->createTexture(d);
   if (!resource) {
@@ -2201,7 +2224,8 @@ std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const Pipelin
   d.frontFace = front_cw ? plume::RenderFrontFace::CLOCKWISE : plume::RenderFrontFace::COUNTER_CLOCKWISE;
   d.depthClipEnabled = true;
   // Xenos offsets are in depth units of the 24-bit buffer and slopes in 1/16
-  // (as Xenia converts them).
+  // (as Xenia converts them). (D32F's unit is 2^(exponent - 23): the same
+  // 2^-24 at depths 0.5..1, where scenes are; nearer, a smaller offset.)
   d.depthBias = int32_t(std::lround(double(key.bias_offset) * double(1 << 24)));
   d.slopeScaledDepthBias = key.bias_scale * (1.0f / 16.0f);
   // Depth / stencil.
@@ -2248,7 +2272,7 @@ std::unique_ptr<plume::RenderPipeline> CreatePipeline(Renderer* r, const Pipelin
   d.primitiveTopology = topology;
   d.renderTargetCount = 1;
   d.renderTargetFormat[0] = rt_format;
-  d.depthTargetFormat = RenderFormat::D24_UNORM_S8_UINT;
+  d.depthTargetFormat = backend::DepthFormat();
   // Logged before it is built: a GPU driver that crashes compiling it (seen
   // under Proton) leaves this as the log's last pipeline.
   if (render_thread) REXLOG_INFO("native renderer: pipeline {} vs {:016X}.{} ps {:016X}.{} rt {} blend {:08X}{} mask {:X} "
@@ -2899,6 +2923,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   ScopeTimer timer(r->perf_draw_ms);
   ApplyPendingConstants();
   ++r->frame_stats.draws;
+  if (r->hidden_frame) return;  // (a frame not shown: SetHalfFrames)
   if (g_stop_at_resolve && g_resolved_this_frame) return;
   const Targets targets = CurrentTargets(r);
   if (!targets.color) {
@@ -3670,7 +3695,9 @@ void OnPresent(uint32_t front_buffer) {
     return;
   }
   // This frame, for the emulator's next swap (rex/external_frame.h).
-  backend::PublishFrame(r->outputs[r->output_index], g_out_w, g_out_h, r->fences[r->back_index].get());
+  g_last_hidden = r->hidden_frame;
+  if (!r->hidden_frame)  // (a frame not shown keeps the last one on screen)
+    backend::PublishFrame(r->outputs[r->output_index], g_out_w, g_out_h, r->fences[r->back_index].get());
   r->frame_open = false;
   ++r->frames;
   g_frame_2d = (g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
@@ -3786,6 +3813,7 @@ void OnClear(const PPCContext& ctx) {
   Renderer* r = Get();
   if (!r) return;
   if (!BeginFrame(r)) return;
+  if (r->hidden_frame) return;  // (a frame not shown: SetHalfFrames)
   if (g_stop_at_resolve && g_resolved_this_frame) return;
   const Targets t = CurrentTargets(r);
   if (!BindTargets(r, t)) return;
@@ -3950,7 +3978,7 @@ void OnResolve(const PPCContext& ctx) {
     if (!t.depth) return;
     src = t.depth->resource.get();
     src_layout = &t.depth->layout;
-    family = RenderFormat::D24_UNORM_S8_UINT;
+    family = backend::DepthFormat();
     src_w = t.depth->width;
     src_h = t.depth->height;
     scale = t.depth->scale;
@@ -4026,7 +4054,7 @@ void OnResolve(const PPCContext& ctx) {
   Transition(r, dst.resource.get(), dst.layout, RenderTextureLayout::SHADER_READ);
   if (src_before != RenderTextureLayout::UNKNOWN) Transition(r, src, *src_layout, src_before);
   if (depth) {
-    textures::RegisterResolved(base, dst.resource.get(), RenderFormat::D24_UNORM_S8_UINT,
+    textures::RegisterResolved(base, dst.resource.get(), backend::DepthFormat(),
                                RenderFormat::UNKNOWN, 1, false, dst_w * dst_h * 4);
   } else {
     // Resolves to ARGB textures store red and blue swapped (copy_dest_swap),
@@ -4153,4 +4181,10 @@ void OnShaderCreated(uint32_t container, uint32_t object, bool pixel) {
   g_shaders[object] = std::move(s);
 }
 
+}  // namespace svr2011::native
+
+namespace svr2011::native {
+void SetHalfFrames(bool on) { g_half_frames = on; }
+bool HalfFrames() { return g_half_frames.load() && Enabled(); }
+bool LastFrameHidden() { return g_last_hidden.load(); }
 }  // namespace svr2011::native

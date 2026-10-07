@@ -56,6 +56,8 @@ set(SVR2011_SOURCES
     src/move_packs.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp
+    modmaker/svrfmt/jboy.cpp
+    src/crowd_off.cpp
     src/frame_rate.cpp
     src/roster.cpp
     src/story_designer.cpp
@@ -85,7 +87,8 @@ else()
         src/native/recording_list.cpp
         src/native/native_renderer.cpp
         src/native/native_hooks.cpp
-        src/native/textures.cpp)
+        src/native/textures.cpp
+        src/native/texture_packs.cpp)
     # The texture layout / tiling code of the SDK's Xenos GPU plugin (not
     # exported by the plugin DLL), so native textures match the emulated ones.
     list(APPEND SVR2011_SOURCES
@@ -187,7 +190,8 @@ if(REXSDK_DIR AND TARGET imgui)
     # include path the way the installed SDK bundles it.
     target_include_directories(svr2011 PRIVATE
         $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>
-        ${REXSDK_DIR}/thirdparty/xxHash)
+        ${REXSDK_DIR}/thirdparty/xxHash
+        ${REXSDK_DIR}/thirdparty/stb)
 endif()
 if(WIN32 OR ANDROID)
     # Community Creations entrance movies to and from MP4 (movie_transcode.cpp):
@@ -236,7 +240,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     target_compile_definitions(svr2011_modmaker PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
     target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/music_tab.c launcher/roster_tab.c launcher/ui_theme.c launcher/launcher.rc)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/launcher.rc)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)

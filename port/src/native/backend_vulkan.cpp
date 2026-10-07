@@ -37,6 +37,9 @@ namespace svr2011::native::backend {
 
 namespace {
 
+// The depth buffers' format (DepthFormat): ReportDevice picks it.
+plume::RenderFormat g_depth_format = plume::RenderFormat::D24_UNORM_S8_UINT;
+
 // What a player's log needs to tell why the native renderer does or doesn't
 // run on their GPU (Mali, old Adreno drivers): the device, the features it
 // asks for and the formats it uses. Sets the texture cache's BC fallback;
@@ -114,7 +117,7 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
       {VK_FORMAT_D32_SFLOAT, "D32F"},
   };
   std::string line;
-  bool bc = true, d24s8 = false, unorm16_filter = true;
+  bool bc = true, d24s8 = false, d32s8 = false, unorm16_filter = true;
   for (const Format& f : kFormats) {
     VkFormatProperties fp;
     get_format(physical, f.format, &fp);
@@ -130,6 +133,7 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
         !(o & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
       bc = false;
     if (f.format == VK_FORMAT_D24_UNORM_S8_UINT) d24s8 = o & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (f.format == VK_FORMAT_D32_SFLOAT_S8_UINT) d32s8 = o & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
     if ((f.format == VK_FORMAT_R16_UNORM || f.format == VK_FORMAT_R16G16_UNORM ||
          f.format == VK_FORMAT_R16G16B16A16_UNORM) &&
         !(o & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
@@ -144,8 +148,18 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
   if (!unorm16_filter)
     REXLOG_WARN("native renderer: 16-bit UNORM textures can't be filtered on this GPU - converted to 16-bit float");
   if (!bc) REXLOG_WARN("native renderer: no BC (DXT) textures on this GPU - they are decoded on the CPU (slower loads)");
-  if (!d24s8) {
-    REXLOG_ERROR("native renderer: the GPU has no D24S8 depth buffers - the emulated renderer takes over");
+  // Depth buffers: D24S8, else D32F S8 (AMD's Windows Vulkan driver has no
+  // D24S8 depth target). SVR2011_NATIVE_DEPTH_D32=1: D32F S8 anyway (tests
+  // that path on a GPU with both).
+  static const bool force_d32 = std::getenv("SVR2011_NATIVE_DEPTH_D32") != nullptr;
+  if (d24s8 && !(force_d32 && d32s8)) {
+    g_depth_format = plume::RenderFormat::D24_UNORM_S8_UINT;
+    REXLOG_INFO("native renderer: depth buffers D24S8");
+  } else if (d32s8) {
+    g_depth_format = plume::RenderFormat::D32_FLOAT_S8_UINT;
+    REXLOG_INFO("native renderer: depth buffers D32F S8{}", d24s8 ? " (SVR2011_NATIVE_DEPTH_D32)" : " (no D24S8 depth target)");
+  } else {
+    REXLOG_ERROR("native renderer: the GPU has no D24S8 or D32F S8 depth buffers");
     return false;
   }
   return true;
@@ -223,6 +237,7 @@ class VulkanBackend final : public Backend {
   }
   const char* ShaderExtension() const override { return compact_ ? ".spvc" : ".spv"; }
   bool CompactTables() const override { return compact_; }
+  plume::RenderFormat DepthFormat() const override { return g_depth_format; }
 
   void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width,
                     uint32_t height, plume::RenderCommandFence*) override {

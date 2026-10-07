@@ -109,6 +109,8 @@ final class GameSettings {
 
     void setInt(String key, int value) { setRaw(key, Integer.toString(value)); }
 
+    void setDouble(String key, double value) { setRaw(key, Double.toString(value)); }
+
     void setString(String key, String value) {
         setRaw(key, "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"");
     }

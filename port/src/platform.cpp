@@ -48,6 +48,18 @@ bool IsSteamDeck() {
   return deck;
 }
 
+uint32_t WindowsBuild() {
+#if defined(_WIN32)
+  if (IsWine()) return 0;  // (Wine reports the Windows it pretends to be)
+  using RtlGetVersion = LONG(WINAPI*)(OSVERSIONINFOW*);
+  OSVERSIONINFOW v = {sizeof v};
+  const auto get = reinterpret_cast<RtlGetVersion>(GetProcAddress(Ntdll(), "RtlGetVersion"));
+  return get && get(&v) == 0 ? uint32_t(v.dwBuildNumber) : 0;
+#else
+  return 0;
+#endif
+}
+
 std::string PlatformDescription() {
   std::string s;
 #if !defined(_WIN32)

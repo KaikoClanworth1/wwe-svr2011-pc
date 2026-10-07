@@ -53,6 +53,13 @@ std::string RendererLabel();
 // window, matches fill it (native_widescreen), menus stay 16:9.
 void SetMatchScene(bool in_match);
 
+// 30 fps with the world at 60 Hz (frame_rate.cpp): every other frame is
+// drawn without its draws and clears and not shown. HalfFrames: on, with
+// this renderer drawing.
+void SetHalfFrames(bool on);
+bool HalfFrames();
+bool LastFrameHidden();  // (the frame OnPresent just ended wasn't shown)
+
 // The known pipelines being built ahead in the background (any thread):
 // false when it isn't running; `paused` while a match, entrance or cutscene
 // is on (it waits for the menus).

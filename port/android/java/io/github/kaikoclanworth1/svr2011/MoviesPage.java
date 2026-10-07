@@ -291,10 +291,25 @@ final class MoviesPage {
             .show();
     }
 
+    // Latin letters without their accents (launcher/ascii_fold.h's table): the
+    // game skips movie names that aren't plain ASCII.
+    static final String kLatin1 = "AAAAAAACEEEEIIIIDNOOOOO_OUUUUYTsaaaaaaaceeeeiiiidnooooo_ouuuuyty";
+    static final String kExtendedA = "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiJjJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoOoRrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs";
+
+    static char fold(char ch) {
+        if (ch < 0x80) return ch;
+        if (ch >= 0xC0 && ch <= 0xFF) return kLatin1.charAt(ch - 0xC0);
+        if (ch >= 0x100 && ch <= 0x17F) return kExtendedA.charAt(ch - 0x100);
+        return 0;
+    }
+
+    // The movie's name as the game will list it: plain letters, digits, spaces, - and _.
     static String cleanName(String s) {
         StringBuilder b = new StringBuilder();
-        for (char ch : s.toCharArray()) {
-            if (Character.isLetterOrDigit(ch) || ch == ' ' || ch == '-' || ch == '_') b.append(ch);
+        for (char c : s.toCharArray()) {
+            char ch = fold(c);
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == ' '
+                    || ch == '-' || ch == '_') b.append(ch);
             if (b.length() == 32) break;
         }
         return b.toString().trim();
@@ -310,8 +325,8 @@ final class MoviesPage {
         a_.background(() -> {
             try {
                 out[0] = MovieMaker.preview(v, s, fit, 2.0);
-            } catch (Exception e) {
-                err[0] = e.getMessage();
+            } catch (Throwable e) {
+                err[0] = why(e, "The preview could not be made");
             }
         }, () -> {
             if (out[0] != null) {
@@ -321,6 +336,15 @@ final class MoviesPage {
                 a_.status(err[0]);
             }
         });
+    }
+
+    // A failure as the player reads it: MovieMaker's own messages as they are,
+    // anything else (a decoder or memory problem) named, never a blank status.
+    static String why(Throwable e, String what) {
+        if (e instanceof OutOfMemoryError) return what + ": out of memory (try a shorter length).";
+        String m = e.getMessage();
+        if (e.getClass() == Exception.class && m != null && !m.isEmpty()) return m;
+        return what + " (" + e.getClass().getSimpleName() + (m != null ? ": " + m : "") + ").";
     }
 
     void make() {
@@ -356,8 +380,8 @@ final class MoviesPage {
                     p -> a_.runOnUiThread(() -> progress_.setProgress(p)), cancel_);
                 result[0] = "Made " + out.getName() + " (" + (n / MovieMaker.FPS) + " s). In the game: CREATE AN "
                     + "ENTRANCE → FINALIZE → MOVIE, after NONE.";
-            } catch (Exception e) {
-                result[0] = e.getMessage();
+            } catch (Throwable e) {
+                result[0] = why(e, "The movie could not be made");
             }
         }, () -> {
             busy_ = false;

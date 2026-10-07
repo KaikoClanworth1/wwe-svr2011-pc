@@ -364,6 +364,32 @@ REX_HOOK_RAW(sub_828D1648) {
   ctx.r3.u64 = base[data + 13] == 0 ? 1 : 0;
 }
 
+// Community Creations upload of a story: the game's check (sub_82629160,
+// asked only by the upload confirm sub_82511C18) says "This Created Content
+// was created by a different player" (string 50951) when the story's 15
+// entries at +0x2801A5 (stride 0x4E9EC) have one present but not the
+// player's own, when a scene (500 at +20112, stride 4056) has a created
+// Superstar that isn't the player's (sub_8257BAC0: downloaded, other DLC
+// parts...), or when the story itself was downloaded (+84+13). Stories made
+// on another console or under another online identity - the PC's identity
+// changes when the player signs in - were refused. Here only downloaded
+// stories are.
+REX_EXTERN(__imp__sub_82629160);
+REX_HOOK_RAW(sub_82629160) {
+  const uint32_t story = ctx.r3.u32;
+  __imp__sub_82629160(ctx, base);
+  if (ctx.r3.u32) return;
+  const bool downloaded = base[story + 84 + 13] != 0;
+  bool entries = true;
+  for (uint32_t k = 0, p = story + 0x2801A5; k < 15; ++k, p += 0x4E9EC) {
+    if (base[p - 0x4E9C7] && !base[p]) entries = false;
+  }
+  REXLOG_INFO("online: story upload: the game refused it ({}){}", downloaded ? "downloaded" :
+              entries ? "a created Superstar in its scenes" : "one of its entries",
+              downloaded ? "" : " - uploading it");
+  if (!downloaded) ctx.r3.u64 = 1;
+}
+
 // The menus' button help bar: sub_82746358(table, bar id, out) fills out with
 // three slots of two string ids (u16 at +0 and +2 of each 4 bytes: the
 // button's and the label's; 0xFFFF: none), which sub_8274A458 shows. The PC's removed

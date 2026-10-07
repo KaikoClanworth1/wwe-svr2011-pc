@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
 #include <mutex>
 #include <string>
 #include <thread>
@@ -55,6 +56,7 @@
 #include "generated/default/svr2011_init.h"
 #include "jukebox.h"
 #include "match_types.h"
+#include "native/native_renderer.h"
 #include "online_overlay.h"
 #include "players.h"
 #include "superstar_mods.h"
@@ -100,10 +102,25 @@ void WrF(uint8_t* p, float f) {
   Wr32(p, v);
 }
 
-// The frame clock: the frames the game draws a second.
+// The frame clock: the frames the game draws a second. 30 fps (in a match,
+// or an entrance at the original's 30) with the native renderer: the game
+// still runs at 60 Hz, one world update a frame, and every other frame isn't
+// shown or drawn (native::SetHalfFrames) - two updates a frame made the
+// characters' job step two frames at a time, so game checks waiting for one
+// animation frame (a pin's count, a move's hit) could miss it. In progress:
+// only with the test aid SVR2011_TEST_HALF_30=1 for now (else 30 fps as
+// before, two updates a frame).
 void SetFrameClock() {
   const int fps = g_lockstep ? 60 : g_scene_thirty ? 30 : svr2011::FrameRateNow();
-  rex::cvar::SetFlagByName("guest_vblank_hz", std::to_string(fps));
+  static const bool half_30 = std::getenv("SVR2011_TEST_HALF_30") != nullptr;
+  const bool half = fps == 30 && half_30 && svr2011::native::Enabled();
+  svr2011::native::SetHalfFrames(half);
+  rex::cvar::SetFlagByName("guest_vblank_hz", std::to_string(half ? 60 : fps));
+  static int last = -1;
+  if (int(half) * 1000 + fps != last) {
+    last = int(half) * 1000 + fps;
+    REXLOG_INFO("frame rate: the game draws {}{}", fps, half ? " (60 Hz, every other frame shown)" : "");
+  }
 }
 
 void StartDeveloperAids(uint8_t* base);
@@ -258,8 +275,26 @@ void Compact(uint8_t* base, uint32_t l) {
   P32(base, l + 12, 0);
 }
 
+// Research aid (with SVR2011_TEST_LOST_TRACE): a watched guest word (the
+// pin judge's count, set by its hook) - each task or system call that
+// changes it is logged.
+bool g_extra_update = false;  // (see below: an extra update of this frame)
+std::atomic<uint32_t> g_watch{0};
+uint32_t g_watch_last = 0;
+void WatchCheck(uint8_t* base, const char* where, uint32_t obj, uint32_t fn) {
+  const uint32_t a = g_watch.load();
+  if (!a) return;
+  const uint32_t v = Rd32(base + a);
+  if (v == g_watch_last) return;
+  REXLOG_INFO("lost trace: watch {:08X} {} -> {} in {} (object {:08X} function {:08X}), frame {}{}", a, int32_t(g_watch_last),
+              int32_t(v), where, obj, fn, Rd32(base + kMatchFrames), g_extra_update ? " (extra update)" : "");
+  g_watch_last = v;
+}
+
 void UpdatePass(PPCContext& ctx, uint8_t* base, uint32_t m) {
+  WatchCheck(base, "before the update", 0, 0);
   Systems(ctx, base, m, 1, false);
+  WatchCheck(base, "the systems' slot 1", 0, 0);
   P32(base, m + 96, 1);
   const uint32_t groups = (G32(base, m + 40) - G32(base, m + 32)) >> 4;
   for (uint32_t g = 0; g < groups; ++g) {
@@ -270,7 +305,10 @@ void UpdatePass(PPCContext& ctx, uint8_t* base, uint32_t m) {
     const uint32_t list = G32(base, m + 32) + g * 16;
     for (uint32_t p = G32(base, list), end = G32(base, list + 8); p != end; p += 4) {
       const uint32_t t = G32(base, p);
-      if (t != 0xFFFFFFFF && G32(base, t + 8) != 0) Virt(ctx, base, t, 1);
+      if (t != 0xFFFFFFFF && G32(base, t + 8) != 0) {
+        Virt(ctx, base, t, 1);
+        WatchCheck(base, "a task", t, g_dbg_fn.load());
+      }
     }
   }
   ctx.r3.u64 = m;
@@ -299,7 +337,7 @@ void DrawPass(PPCContext& ctx, uint8_t* base, uint32_t m) {
 // be new in the first and held in the second - lost to those menus - so all
 // but the last update of a frame (an extra update) see the previous reading
 // again (no change): a press arrives in the frame's last update.
-bool g_extra_update = false;
+
 std::atomic<uint64_t> g_lat_drawn{0};  // (latency test aid: frames drawn)
 // Render-thread commands the logic thread queued this frame (see
 // sub_8269B2D0 below).
@@ -526,7 +564,10 @@ int g_job_pending = 0;            // ticks since the job was last started
 REX_EXTERN(__imp__sub_8216F4C8);
 REX_HOOK_RAW(sub_8216F4C8) {
   ++g_job_pending;
-  if (g_extra_update) {  // (an extra update of this frame)
+  // Research aid: SVR2011_TEST_JOB_EVERY=1 - the round in every update (the
+  // deadlock it gives, with the stuck-update thread dump).
+  static const bool every = std::getenv("SVR2011_TEST_JOB_EVERY") != nullptr;
+  if (g_extra_update && !every) {  // (an extra update of this frame)
     g_job_owed = JobOwed::kRound;
     return;
   }
@@ -815,6 +856,40 @@ REX_HOOK_RAW(sub_826DFFA0) {
     g_frame_commands.push_back(ctx.r3.u32);
 }
 
+// And where the render thread runs them (sub_826E02A8(?, command)): a
+// type-24 command whose object is gone some way the notes above miss (a
+// player's crash during loading in 2026-10-05, then in most scripted test
+// routes: "call to invalid function at 0x542F5745" or an access violation at
+// sub_826E02A8+0x15da reading the object) is dropped there - when the
+// object's address isn't a heap's, its vtable isn't in the game's image, or its
+// vtable[6] isn't a game function. Logged; a live object is never skipped.
+namespace {
+// A guest address in the heaps or the image (where a game object can be).
+bool GuestObjectAddress(uint32_t a) {
+  return (a >= 0x40000000u && a < 0x60000000u) || (a >= 0x70000000u && a < 0x90000000u) || a >= 0xA0000000u;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_826E02A8);
+REX_HOOK_RAW(sub_826E02A8) {
+  const uint32_t cmd = ctx.r4.u32;
+  if (cmd && Rd32(base + cmd) == 24) {
+    static PPCFunc* const invalid = rex::runtime::ResolveIndirectFunction(0);
+    const uint32_t obj = Rd32(base + cmd + 20);
+    const uint32_t vt = obj && GuestObjectAddress(obj) ? Rd32(base + obj) : 0;
+    const bool image = vt >= 0x82000000u && vt < 0x83000000u;
+    const uint32_t fn = image ? Rd32(base + vt + 24) : 0;
+    if (!image || rex::runtime::ResolveIndirectFunction(fn) == invalid) {
+      static int count = 0;
+      if (++count <= 20 || count % 1000 == 0)
+        REXLOG_WARN("frame rate: a render command's object was gone (object {:08X}, vtable {:08X}) - skipped ({} times)",
+                    obj, vt, count);
+      return;
+    }
+  }
+  __imp__sub_826E02A8(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_8269B2D0);
 REX_HOOK_RAW(sub_8269B2D0) {
   const uint32_t ptr = ctx.r3.u32;
@@ -832,4 +907,127 @@ REX_HOOK_RAW(sub_8269B2D0) {
     }
   }
   __imp__sub_8269B2D0(ctx, base);
+}
+
+// -- Research aid (30 fps pins): SVR2011_TEST_LOST_TRACE=1 -------------------
+// The functions that write a character's lost byte (+447), each wrapped:
+// when one sets a character's lost byte, it is logged with its caller and
+// the match frame.
+namespace {
+bool LostTraceOn() {
+  static const bool on = std::getenv("SVR2011_TEST_LOST_TRACE") != nullptr;
+  return on;
+}
+struct LostSnap {
+  uint8_t lost[6] = {};
+};
+LostSnap SnapLost(uint8_t* base) {
+  LostSnap s;
+  for (uint32_t i = 0; i < 6; ++i)
+    if (const uint32_t c = Rd32(base + kChars + i * 4)) s.lost[i] = base[c + 447];
+  return s;
+}
+void CheckLost(uint8_t* base, const LostSnap& before, const char* fn, uint32_t lr) {
+  for (uint32_t i = 0; i < 6; ++i)
+    if (const uint32_t c = Rd32(base + kChars + i * 4))
+      if (base[c + 447] != before.lost[i])
+        REXLOG_INFO("lost trace: {} (from {:08X}) set person {} lost {} -> {} (by {}), frame {}{}", fn, lr, i,
+                    before.lost[i], base[c + 447], base[c + 448], Rd32(base + kMatchFrames),
+                    g_extra_update ? " (extra update)" : "");
+}
+}  // namespace
+
+#define SVR2011_LOST_TRACE(fn)                                \
+  REX_EXTERN(__imp__##fn);                                    \
+  REX_HOOK_RAW(fn) {                                          \
+    if (!LostTraceOn()) return __imp__##fn(ctx, base);        \
+    const LostSnap before = SnapLost(base);                   \
+    const uint32_t lr = uint32_t(ctx.lr);                     \
+    __imp__##fn(ctx, base);                                   \
+    CheckLost(base, before, #fn, lr);                         \
+  }
+SVR2011_LOST_TRACE(sub_82244E88)
+SVR2011_LOST_TRACE(sub_82245B60)
+SVR2011_LOST_TRACE(sub_822473B0)
+// The pin count (all frame rates). sub_822446E0(judge) judges a pin each
+// update (judge +112: the pinning character's index; its +516 is 2 while the
+// pin is on): at judge +100 = 3 the pin is won. +100 itself is set from the
+// referee's count motion (190) by the characters' task (sub_821965D0) - and
+// with two updates in a frame (30 fps, a slow PC or phone) after a frame of
+// one, the step that should make a count 2 made it 0 instead: the referee
+// went on counting to the end of the motion, the pin wasn't given and he
+// counted again (4 of 9 pins at 30 fps; never at 60) - and once that happens
+// the count stays 0. The referee's count is the same every time: 1, 2 and 3
+// come 78, 140 and 210 frames into his count motion. So here, once a count
+// has dropped to 0 with the referee still in the count motion and the pin
+// still on, the count follows that timing. A real kick-out ends the pin
+// (+516), changes the wrestlers' pin motions (the pinner's +212 and his
+// opponent's, +96) or the referee's: then it's left alone.
+namespace {
+struct PinGuard {
+  uint32_t judge = 0;
+  int32_t count = 0;    // (the highest count seen in this count)
+  uint32_t start = 0;   // (match frame the referee's count motion began)
+  bool broken = false;  // (the count dropped to 0: the timing rules)
+  uint32_t motions = 0; // (the pinner's and his opponent's motions at the start)
+};
+int32_t CountAt(uint32_t frames) { return frames >= 210 ? 3 : frames >= 140 ? 2 : frames >= 78 ? 1 : 0; }
+PinGuard g_pin;
+uint32_t RefereeOf(uint8_t* base) {
+  for (uint32_t i = 0; i < 9; ++i)
+    if (const uint32_t c = Rd32(base + kChars + i * 4))
+      if (Rd32(base + c + 2624) == 1) return c;
+  return 0;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_822446E0);
+REX_HOOK_RAW(sub_822446E0) {
+  const uint32_t judge = ctx.r3.u32, lr = uint32_t(ctx.lr);
+  const uint32_t pinner = Rd32(base + kChars + Rd32(base + judge + 112) * 4);
+  const uint32_t ref = RefereeOf(base);
+  const uint32_t frame = Rd32(base + kMatchFrames);
+  const bool pin_on = pinner && Rd32(base + pinner + 516) == 2;
+  const bool counting = ref && (Rd32(base + ref + 212) & 0x7FFF) == 190;
+  const int32_t count = int32_t(Rd32(base + judge + 100));
+  const uint32_t pinned = pinner ? Rd32(base + pinner + 96) : 0;
+  const uint32_t motions = pinner && pinned ? (Rd32(base + pinner + 212) << 16) ^ Rd32(base + pinned + 212) : 0;
+  if (!pin_on || !counting || g_pin.judge != judge || motions != g_pin.motions) {
+    g_pin = PinGuard{pin_on && counting ? judge : 0, pin_on && counting ? count : 0, frame, false, motions};
+  } else if (count > g_pin.count) {
+    g_pin.count = count;
+  } else if (count == 0 && g_pin.count > 0) {
+    if (!g_pin.broken) {
+      g_pin.broken = true;
+      static int fixed = 0;
+      if (++fixed <= 20 || fixed % 100 == 0)
+        REXLOG_INFO("frame rate: a pin count of {} dropped to 0 - the count goes on by its timing ({} times)",
+                    g_pin.count, fixed);
+    }
+    g_pin.count = std::max(g_pin.count, CountAt(frame - g_pin.start));
+    Wr32(base + judge + 100, uint32_t(g_pin.count));
+  }
+  if (!LostTraceOn()) return __imp__sub_822446E0(ctx, base);
+  const LostSnap before = SnapLost(base);
+  if (!g_watch.load()) g_watch = judge + 100, g_watch_last = Rd32(base + judge + 100);
+  if (pin_on)
+    REXLOG_INFO("lost trace: judge +96 {} +100 {} +104 {} +116 {} char {} motion {} ref motion {} frame {}{}",
+                int32_t(Rd32(base + judge + 96)), int32_t(Rd32(base + judge + 100)), int32_t(Rd32(base + judge + 104)),
+                Rd32(base + judge + 116), Rd32(base + judge + 112), Rd32(base + pinner + 212),
+                ref ? Rd32(base + ref + 212) : 0, frame, g_extra_update ? " (extra update)" : "");
+  __imp__sub_822446E0(ctx, base);
+  CheckLost(base, before, "sub_822446E0", lr);
+}
+SVR2011_LOST_TRACE(sub_82245DF8)
+SVR2011_LOST_TRACE(sub_82243660)
+SVR2011_LOST_TRACE(sub_822EB378)
+// The referee's pin count object (vtable 0x820057C4): slot 6, sub_82242C98,
+// adds one (+32) and at 8 tells the pin is won.
+REX_EXTERN(__imp__sub_82242C98);
+REX_HOOK_RAW(sub_82242C98) {
+  if (LostTraceOn())
+    REXLOG_INFO("lost trace: count {} -> {} (from {:08X}), frame {}{}", Rd32(base + ctx.r3.u32 + 32),
+                Rd32(base + ctx.r3.u32 + 32) + 1, uint32_t(ctx.lr), Rd32(base + kMatchFrames),
+                g_extra_update ? " (extra update)" : "");
+  __imp__sub_82242C98(ctx, base);
 }

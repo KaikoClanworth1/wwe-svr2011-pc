@@ -66,6 +66,11 @@ const Row kRows[] = {
     {0xA061, 0x07, 0xA062, kNoText, 0x2E},  // TWO ON TWO: after MIXED TAG
     {0xA06A, 0x08, 0xA06B, kNoText, 0x2F},  // TRIPLE THREAT: after NORMAL
     {0xA072, 0x09, 0xA073, kNoText, 0x30},  // FATAL-4-WAY: after NORMAL
+    // FATAL-4-WAY: CHAMPIONSHIP SCRAMBLE (the game's own rule 0x26 and label
+    // A038, cut from PLAY - its row there only opens submenus): 5 people, 2
+    // start and one more comes in each minute; a fall makes an interim
+    // champion and the match goes on; at the bell (5:00) the last one wins.
+    {0xA072, 0x09, 0xA038, kNoText, 0x26},
     {0xA08C, 0x0C, 0x5313, kNoText, 0x15},  // ROYAL RUMBLE: 15-MAN after 10-MAN
     {0xA08D, 0x0C, 0x5314, kNoText, 0x17},  // 25-MAN after 20-MAN
     {0xA07F, 0x0A, 0x0052, kNoText, 0x55},  // 6-MAN: LUMBERJACK after ARMAGEDDON
@@ -177,6 +182,18 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   g_elim_rows.clear();
   const uint32_t total = Rd32(table + 4), shown = Rd32(table + 8);
   if (total == 0 || total > 0x1000 || kFirst + total * kRec > size) return {};
+  // Test aid: SVR2011_TEST_MENU_DUMP=<hex group> - that group's records and
+  // any record of rule 0x26 (CHAMPIONSHIP SCRAMBLE), logged as read.
+  if (const char* v = std::getenv("SVR2011_TEST_MENU_DUMP")) {
+    const uint32_t want = uint32_t(std::strtoul(v, nullptr, 16));
+    for (uint32_t i = 0; i < total; ++i) {
+      const uint8_t* rec = table + kFirst + i * kRec;
+      if (Rd32(rec + 0x18) == want || (Rd32(rec + 0x5C) == 0x26 && Rd32(rec + 0x54) == kScreenMatch))
+        REXLOG_INFO("menu dump: #{} label {:X} text {:X} group {:X} node {:X} parent {:X} +3C {:X} +40 {:X} screen {:X} rule {:X} (shown {})",
+                    i, Rd32(rec), Rd32(rec + 4), Rd32(rec + 0x18), Rd32(rec + 0x1C), Rd32(rec + 0x38), Rd32(rec + 0x3C),
+                    Rd32(rec + 0x40), Rd32(rec + 0x54), Rd32(rec + 0x5C), shown);
+    }
+  }
   // The rows the BACKSTAGE submenus copy, and free node / group ids.
   const uint8_t* submenu = nullptr;
   std::vector<const uint8_t*> areas;
@@ -1117,7 +1134,12 @@ struct Attack {
   uint32_t fighter = 0, wrestler = 0, at_frame = 0;
 };
 Attack g_attacks[6];
-uint32_t g_attack_motion = 1000;  // (test aid SVR2011_TEST_LJ_MOTION)
+// Their attacks: paired grapples (sub_82191AA8(fighter, opponent, motion)
+// puts both into the same motion, so only paired ones work - a strike, e.g.
+// 3128, would make the wrestler throw it too). Motion ids, not misc.pac move
+// ids (those froze both). Seen in CPU fights: 120 a front grapple, 8030 and
+// 10901 throws that leave him down (6801 -> 50, 449). 1000 is only lying down.
+constexpr uint32_t kAttackMotions[] = {120, 8030, 10901};
 }  // namespace
 
 REX_EXTERN(__imp__sub_82216C58);
@@ -1129,6 +1151,17 @@ REX_HOOK_RAW(sub_82216C58) {
       break;
     }
   __imp__sub_82216C58(ctx, base);
+  // Test aid: SVR2011_TEST_MOTION_LOG=1 - each fighter's motion (+212) when
+  // it changes, with the person and the match frame.
+  static const bool motion_log = std::getenv("SVR2011_TEST_MOTION_LOG") != nullptr;
+  if (motion_log && fighter) {
+    static uint32_t last_motion[16] = {};
+    const uint32_t person = std::min<uint32_t>(Rd32(base + fighter + 1156), 15), m = Rd32(base + fighter + 212);
+    if (m != last_motion[person]) {
+      last_motion[person] = m;
+      REXLOG_INFO("motion: person {} -> {} (frame {}, state {})", person, m, Rd32(base + 0x82E3CD0C), base[fighter + 446]);
+    }
+  }
   for (Attack& a : g_attacks)
     if (a.fighter == fighter && a.wrestler) {
       // (test aid: SVR2011_TEST_LJ_MOTION=<id>[,<id>...] - each attack the next)
@@ -1142,7 +1175,7 @@ REX_HOOK_RAW(sub_82216C58) {
             m.push_back(uint32_t(id));
             for (p = end; *p == ',' || *p == ' ';) ++p;
           }
-        if (m.empty()) m.push_back(g_attack_motion);
+        if (m.empty()) m.assign(std::begin(kAttackMotions), std::end(kAttackMotions));
         return m;
       }();
       static size_t next = 0;
@@ -1201,9 +1234,10 @@ REX_HOOK_RAW(sub_82216C58) {
 // +168 changes that during a match). So the port makes them act: each world
 // update, a wrestler on the floor (y about 0, outside the ring's +-30 - in
 // the ring y is -12) for half a second gets the nearest lumberjacks within
-// reach (two at most) - each grabs him once (the paired move 1000, started
-// from the fighter control hook below) - and back in the ring he is left
-// alone until his next trip out.
+// reach (two at most) - each grapples him once (kAttackMotions in turn,
+// started from the fighter control hook above) - and back in the ring he is
+// left alone until his next trip out. Their hits would disqualify them (lost
+// 7, the match over): LumberjackBeforeJudge takes that back.
 namespace {
 
 constexpr float kRingHalf = 30.0f, kReach = 20.0f;
@@ -1289,6 +1323,23 @@ void LumberjackController(uint8_t* base) {
 namespace svr2011 {
 
 bool SlobberKnockerMatch() { return g_slobber; }
+
+// A lumberjack (a manager, team 3) who hits a wrestler gets the lost byte
+// (+447) 7 - disqualified for interference - and the judge then ends the
+// match ("WINS BY WAY OF DQ"). Their attacks are the point here: taken back.
+void LumberjackBeforeJudge(uint8_t* base) {
+  if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext)) return;
+  constexpr uint32_t kChars = 0x82E3CC50;
+  for (uint32_t i = 0; i < 6; ++i) {
+    const uint32_t c = Rd32(base + kChars + i * 4);
+    if (!c || Rd32(base + c + 1156) < 2 || !base[c + 447]) continue;
+    static int count = 0;
+    if (++count <= 20)
+      REXLOG_INFO("match types: lumberjack {} disqualified (lost {}) - taken back", Rd32(base + c + 1156), base[c + 447]);
+    base[c + 447] = 0;
+    base[c + 448] = 0;
+  }
+}
 
 void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kChars = 0x82E3CC50;

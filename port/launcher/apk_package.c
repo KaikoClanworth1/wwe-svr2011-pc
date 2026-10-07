@@ -66,7 +66,8 @@ static int skipped(const Pack *p, const WCHAR *rel, int dir)
     static const WCHAR *dirs[] = { L"logs", L"SaveBackups", L"Android", L"platform-tools", L"$SystemUpdate",
                                    L"UserData/cache", L"UserData/crashes",
                                    L"Mods/ArenaOverlay" /* (the game makes it: links to pac/bg) */,
-                                   L"Mods/SuperstarOverlay" /* (the game makes it from Mods/Superstars) */ };
+                                   L"Mods/SuperstarOverlay" /* (the game makes it from Mods/Superstars) */,
+                                   L"Texture Dumps" /* (for pack makers, on the PC) */ };
     static const WCHAR *files[] = { L"launcher.ini", L"svr2011.toml" };
     const WCHAR *ext = wcsrchr(rel, L'.');
     int i;

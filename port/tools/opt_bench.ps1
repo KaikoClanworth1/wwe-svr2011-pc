@@ -127,7 +127,7 @@ try {
     @{ pid = $p.Id; load = $loadIds } | ConvertTo-Json | Set-Content $state
     for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
     if ($p.MainWindowHandle -ne 0) {
-        [void][OB]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920, 0, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)
+        [void][OB]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, $SvrParkX, 0, 0, 0, $SvrParkFlags)  # (screen 2, behind every window)
         [void][OB]::ShowWindow($p.MainWindowHandle, 4)
     }
     Sample-Cpu

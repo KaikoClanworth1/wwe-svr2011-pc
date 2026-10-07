@@ -145,6 +145,10 @@ static int video_reader(Pic *p, const WCHAR *path)
     return 0;
 }
 
+static int mf_start(void);   /* (below) */
+static const WCHAR k_no_mf[] = L"Windows can't play videos here (Media Foundation didn't start). On a Windows \"N\" "
+                               L"edition, install the Media Feature Pack from Windows' Optional features, then try again.";
+
 static int video_open(Pic *p, const WCHAR *path, WCHAR *err, size_t errn)
 {
     IMFMediaType *mt = NULL;
@@ -153,6 +157,14 @@ static int video_open(Pic *p, const WCHAR *path, WCHAR *err, size_t errn)
     UINT64 packed = 0;
     MFVideoArea area;
     int ok = 0;
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+        swprintf_s(err, errn, L"Can't find %s (moved, renamed, or on a drive that isn't connected?).", path);
+        goto done;
+    }
+    if (!mf_start()) {
+        wcscpy_s(err, errn, k_no_mf);
+        goto done;
+    }
     if (!video_reader(p, path)) {
         swprintf_s(err, errn, L"Could not open %s as a video: this PC (or Wine / Proton) has no decoder for it. "
                               L"Try an MP4 (H.264) video, or a .bik movie.", path);
@@ -645,12 +657,14 @@ static void compose(Pic *top, Pic *bottom, int fit, LONGLONG t, uint8_t *frame)
     draw_bottom(bottom, frame);
 }
 
+/* Media Foundation, started once (0: it can't be - a Windows "N" edition
+ * without the Media Feature Pack). */
 static int mf_start(void)
 {
-    static LONG started;
-    if (InterlockedCompareExchange(&started, 1, 0) == 0)
-        return SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
-    return 1;
+    static volatile LONG state;   /* 0 not tried, 1 running, 2 failed */
+    if (state == 0)
+        InterlockedCompareExchange(&state, SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)) ? 1 : 2, 0);
+    return state == 1;
 }
 
 int movie_preview(const WCHAR *video, const WCHAR *bottom, int fit, double seconds, uint8_t *bgra,

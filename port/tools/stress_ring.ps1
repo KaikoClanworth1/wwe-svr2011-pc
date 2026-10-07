@@ -39,7 +39,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     $handle = $p.Handle  # keeps the exit code available
     for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
     if ($p.MainWindowHandle -ne 0) {  # off-screen, shown without activation (as session.ps1)
-        [void][SWS]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920, 0, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)
+        [void][SWS]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, $SvrParkX, 0, 0, 0, $SvrParkFlags)  # (screen 2, behind every window)
         [void][SWS]::ShowWindow($p.MainWindowHandle, 4)
     }
     $stage = "boot"

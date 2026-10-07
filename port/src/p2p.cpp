@@ -90,9 +90,14 @@ void Put64(uint8_t* p, uint64_t v) { Put32(p, uint32_t(v >> 32)), Put32(p + 4, u
 
 uint8_t* Guest(uint32_t address) { return g_memory->TranslateVirtual<uint8_t*>(address); }
 
+// An address for the log (players post their logs): the game's own peer
+// addresses (10.64.0.0/16) and this PC (127.x) in full, a LAN address as
+// its network only (192.168.x.x), an internet address not at all.
 std::string Ip(uint32_t ip) {
-  return std::to_string(ip >> 24) + "." + std::to_string((ip >> 16) & 255) + "." + std::to_string((ip >> 8) & 255) +
-         "." + std::to_string(ip & 255);
+  const auto part = [ip](int k) { return std::to_string((ip >> (24 - 8 * k)) & 255); };
+  if ((ip & 0xFFFF0000) == kFakeNet || (ip >> 24) == 127) return part(0) + "." + part(1) + "." + part(2) + "." + part(3);
+  const bool lan = (ip >> 24) == 10 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 || (ip >> 16) == 0xA9FE;
+  return lan ? part(0) + "." + part(1) + ".x.x" : "x.x.x.x";
 }
 
 // A message: appended fields, read back in order.

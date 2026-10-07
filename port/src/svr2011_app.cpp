@@ -253,6 +253,25 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
+  // The native renderer's Direct3D 12 needs ID3D12Device8 (Windows 10 version
+  // 2004, build 19041). On an older Windows (10 1809 / LTSC 2019 ...) it can't
+  // make its device and nothing draws: "any" means Vulkan there.
+#if defined(__ANDROID__)
+  // The phone draws natively on Vulkan only: a settings file with another
+  // value ("any", seen in a player's report: "no backend for the emulator's
+  // graphics API" and nothing drew) gets Vulkan.
+  if (const std::string api = rex::cvar::Query<std::string>("gpu_backend"); api != "vulkan") {
+    rex::cvar::SetFlagByName("gpu_backend", "vulkan");
+    REXLOG_WARN("graphics: gpu_backend \"{}\" - the phone draws on Vulkan", api);
+  }
+#endif
+  if (rex::cvar::Query<std::string>("gpu_backend") == "any") {
+    if (const uint32_t build = svr2011::WindowsBuild(); build && build < 19041) {
+      rex::cvar::SetFlagByName("gpu_backend", "vulkan");
+      REXLOG_WARN("graphics: Windows build {} is older than 19041 (10 version 2004), which Direct3D 12 here needs - "
+                  "using Vulkan", build);
+    }
+  }
   // Automated tests: the only controller is one driven by a command file.
   if (std::string file = Env("SVR2011_INPUT_FILE"); !file.empty()) {
     config.input_factory = [file](bool) -> std::unique_ptr<rex::system::IInputSystem> {
@@ -345,7 +364,8 @@ void Svr2011App::OnPostLoadXexImage() {
     static const char* const kGroups[][2] = {
         {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
         {"renderer", "native_renderer gpu_backend native_max_scale native_aa native_2x_msaa native_scale_effects "
-                     "native_texture_quality native_widescreen native_prepare_pipelines frame_rate full_speed unlock_30fps "
+                     "native_texture_quality native_texture_packs native_dump_textures native_widescreen native_prepare_pipelines "
+                     "frame_rate full_speed unlock_30fps "
                      "process_priority"},
         {"effects", "depth_of_field motion_blur soft_filter"},
         {"gameplay", "replays managers_tile mixed_gender_matches unlock_everything user_language"},

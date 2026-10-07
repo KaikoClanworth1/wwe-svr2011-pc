@@ -16,11 +16,12 @@
  *   Paint Tool the Paint Tool's logos (10 pages of 20): see them, export as PNG, import images.
  *
  * Command line (tests):  --capture <play|settings|install|dlc|saves|paint|mods> <file.bmp> [--paint-page <1-10>]
+ *                          [--report-window <1|2>]  (Report a problem's window instead: questions / where to post)
  *                        --paint-export <file.pt> <slot> <out.png>  /  --paint-import <file.pt> <slot> <image>
  *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
- *                        --report <game folder>   (Report a problem: the zip, no window)
+ *                        --report <game folder> [description]   (Report a problem: the zip, no window)
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
@@ -53,10 +54,12 @@
 #include "apk_package.h"
 #include "mods_tab.h"
 #include "music_tab.h"
+#include "texpacks_tab.h"
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
 #include "movie_maker.h"
+#include "ascii_fold.h"
 #include "unzip.h"
 #include "updater.h"
 #include "stfs.h"
@@ -89,10 +92,11 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
+#define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -1038,6 +1042,9 @@ static int toml_read(const WCHAR *path, Lines *l)
 }
 
 /* "key = value" at the top level: the key (lowercase-sensitive, as TOML) and value text. */
+static int toml_get(const char *key, char *out, size_t n);
+static int toml_set(const char *key, const char *value);
+
 static int toml_kv(const char *line, char *key, size_t kn, char *val, size_t vn)
 {
     const char *p = line, *eq, *e;
@@ -1990,7 +1997,7 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     { TAB_PLAY, 0xE768, L"Play" },          { TAB_SETTINGS, 0xE713, L"Settings" },
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_SAVES, 0xE74E, L"Saves" },
     { TAB_ROSTER, 0xE716, L"Roster" },      { TAB_MUSIC, 0xE8D6, L"Music" },
-    { TAB_MODS, 0xE90F, L"Mods" },
+    { TAB_MODS, 0xE90F, L"Mods" },          { TAB_TEXPACKS, 0xE8B9, L"Texture packs" },
     { TAB_PAINT, 0xE790, L"Paint Tool" },   { TAB_MOVIES, 0xE714, L"Movies" },
     { TAB_DLC, 0xE7B8, L"DLC" },            { TAB_INSTALL, 0xE896, L"Install" },
     { TAB_ANDROID, 0xE8EA, L"Android" },
@@ -2210,6 +2217,8 @@ static void show_tab(int t)
         music_show(s_game_dir);
     if (t == TAB_ROSTER)
         roster_show(s_game_dir);
+    if (t == TAB_TEXPACKS)
+        texpacks_show(s_game_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
@@ -2236,31 +2245,283 @@ static void mv_setup(void);
 static void up_setup(void);
 
 #define X0 28
-/* Report a problem: a zip of the newest logs, crash reports and settings
-   (report.c), shown in Explorer, ready to send. */
+/* Report a problem: a window asks what happened (kind, how often, what and
+   what just before), then the zip (report.c) is made with that description in
+   its report.txt, and the window says where to post it: a new thread in the
+   Discord's bug-svr11 forum (the description is copied, ready to paste). */
+#define DISCORD_INVITE L"https://discord.com/invite/QhGSuDKHwk"
+#define DISCORD_FORUM L"bug-svr11"
+enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS, REP_CREATE, REP_DISCORD, REP_SHOW, REP_COPY };
+static const WCHAR *const k_rep_kinds[] = { L"The game crashed (closed by itself)", L"The game froze or hung",
+                                            L"Graphics look wrong", L"Sound or music", L"Controller or keyboard",
+                                            L"Online", L"Mods", L"Saves or created content", L"The launcher",
+                                            L"Something else" };
+static const WCHAR *const k_rep_again[] = { L"Every time", L"Sometimes", L"It happened once" };
+static int s_rep_done;            /* 1: done, -1: closed */
+static int s_rep_page;            /* 1: the questions, 2: where to post */
+static WCHAR s_rep_zip[MAX_PATH];
+static WCHAR s_rep_text[4096];    /* the description, as copied */
+
+static HWND rep_add(HWND w, const WCHAR *cls, const WCHAR *text, DWORD style, int x, int y, int cw, int ch, int id,
+                    HFONT font)
+{
+    HWND c = CreateWindowExW(!wcscmp(cls, L"Edit") ? WS_EX_CLIENTEDGE : 0, cls, text, WS_CHILD | WS_VISIBLE | style,
+                             S(x), S(y), S(cw), S(ch), w, (HMENU)(INT_PTR)id, s_inst, NULL);
+    SendMessageW(c, WM_SETFONT, (WPARAM)(font ? font : s_font), TRUE);
+    return c;
+}
+
+static void rep_copy(HWND w)
+{
+    size_t n = (wcslen(s_rep_text) + 1) * sizeof(WCHAR);
+    HGLOBAL g;
+    if (!s_rep_text[0] || !OpenClipboard(w))
+        return;
+    EmptyClipboard();
+    g = GlobalAlloc(GMEM_MOVEABLE, n);
+    if (g) {
+        void *p = GlobalLock(g);
+        memcpy(p, s_rep_text, n);
+        GlobalUnlock(g);
+        if (!SetClipboardData(CF_UNICODETEXT, g))
+            GlobalFree(g);
+    }
+    CloseClipboard();
+}
+
+static void rep_clear(HWND w)
+{
+    HWND c;
+    while ((c = GetWindow(w, GW_CHILD)) != NULL)
+        DestroyWindow(c);
+}
+
+/* Page 1: the questions. */
+static void rep_page1(HWND w)
+{
+    HWND c;
+    int i;
+    s_rep_page = 1;
+    rep_clear(w);
+    rep_add(w, L"Static", L"Report a problem", 0, 20, 14, 480, 30, 0, s_big);
+    rep_add(w, L"Static", L"Tell us what went wrong. The report also takes your newest game logs, crash reports and "
+                          L"settings (your online password and token are left out). If you can, run the game and make "
+                          L"it happen once more first: the newest log is the one that counts.",
+            SS_NOPREFIX, 20, 48, 480, 52, 0, NULL);
+    rep_add(w, L"Static", L"What kind of problem?", 0, 20, 112, 170, 20, 0, NULL);
+    c = rep_add(w, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 196, 108, 304, 300, REP_KIND, NULL);
+    for (i = 0; i < (int)(sizeof k_rep_kinds / sizeof *k_rep_kinds); i++)
+        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)k_rep_kinds[i]);
+    SendMessageW(c, CB_SETCURSEL, 0, 0);
+    rep_add(w, L"Static", L"Does it happen again?", 0, 20, 146, 170, 20, 0, NULL);
+    c = rep_add(w, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 196, 142, 304, 200, REP_AGAIN, NULL);
+    for (i = 0; i < 3; i++)
+        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)k_rep_again[i]);
+    SendMessageW(c, CB_SETCURSEL, 0, 0);
+    rep_add(w, L"Static", L"What happened?", 0, 20, 180, 480, 20, 0, NULL);
+    c = rep_add(w, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP, 20, 200, 480,
+                86, REP_WHAT, NULL);
+    SendMessageW(c, EM_LIMITTEXT, 1500, 0);
+    rep_add(w, L"Static", L"What were you doing just before? (menu or mode, match type, superstars, mods)", SS_NOPREFIX,
+            20, 296, 480, 20, 0, NULL);
+    c = rep_add(w, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP, 20, 316, 480,
+                70, REP_BEFORE, NULL);
+    SendMessageW(c, EM_LIMITTEXT, 1500, 0);
+    rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 250, 36, REP_STATUS, NULL);
+    rep_add(w, L"Button", L"Create report", BS_DEFPUSHBUTTON | WS_TABSTOP, 280, 400, 130, 32, REP_CREATE, NULL);
+    rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 400, 80, 32, IDCANCEL, NULL);
+    SetFocus(GetDlgItem(w, REP_WHAT));
+}
+
+/* Page 2: the report is ready - where to post it. */
+static void rep_page2(HWND w)
+{
+    WCHAR t[MAX_PATH + 1024];
+    s_rep_page = 2;
+    rep_clear(w);
+    rep_add(w, L"Static", L"Your report is ready", 0, 20, 14, 480, 30, 0, s_big);
+    swprintf_s(t, MAX_PATH + 1024,
+               L"%s\n\n"
+               L"Now post it on our Discord so we can help:\n\n"
+               L"1.  Open the Discord (button below) and go to the  " DISCORD_FORUM L"  forum.\n\n"
+               L"2.  Start a NEW post (a thread of your own) with a short title, e.g. "
+               L"\"Crash when opening Create A Moveset\".\n\n"
+               L"3.  Paste your description (it is already copied) and attach the report file: "
+               L"\"Show the file\" opens its folder - drag the zip into Discord.\n\n"
+               L"One problem per thread, please, and not in the other channels: the forum is where we keep track of "
+               L"them.",
+               s_rep_zip);
+    rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
+    rep_add(w, L"Button", L"Open Discord", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_DISCORD, NULL);
+    rep_add(w, L"Button", L"Show the file", WS_TABSTOP, 148, 360, 120, 32, REP_SHOW, NULL);
+    rep_add(w, L"Button", L"Copy description", WS_TABSTOP, 276, 360, 136, 32, REP_COPY, NULL);
+    rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
+    rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
+    SetFocus(GetDlgItem(w, REP_DISCORD));
+}
+
+/* The description from page 1 (s_rep_text, and UTF-8 for report.txt); 0 if "What happened?" is empty. */
+static int rep_describe(HWND w, char *utf8, int n)
+{
+    WCHAR what[1600], before[1600];
+    int k = (int)SendDlgItemMessageW(w, REP_KIND, CB_GETCURSEL, 0, 0);
+    int a = (int)SendDlgItemMessageW(w, REP_AGAIN, CB_GETCURSEL, 0, 0);
+    const WCHAR *p;
+    GetDlgItemTextW(w, REP_WHAT, what, 1600);
+    GetDlgItemTextW(w, REP_BEFORE, before, 1600);
+    for (p = what; *p == L' ' || *p == L'\r' || *p == L'\n' || *p == L'\t'; p++)
+        ;
+    if (!*p)
+        return 0;
+    if (k < 0 || k >= (int)(sizeof k_rep_kinds / sizeof *k_rep_kinds)) k = 0;
+    if (a < 0 || a > 2) a = 0;
+    swprintf_s(s_rep_text, 4096,
+               L"SvR 2011 PC port %s\r\nProblem: %s\r\nHappens: %s\r\n\r\nWhat happened:\r\n%s\r\n\r\n"
+               L"Just before:\r\n%s\r\n",
+               PORT_VERSION, k_rep_kinds[k], k_rep_again[a], what, before[0] ? before : L"(not said)");
+    WideCharToMultiByte(CP_UTF8, 0, s_rep_text, -1, utf8, n, NULL, NULL);
+    return 1;
+}
+
+static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
+{
+    if (m == WM_COMMAND) {
+        switch (LOWORD(wp)) {
+        case REP_CREATE: {
+            static char utf8[8192];
+            int logs = 0, crashes = 0;
+            if (!rep_describe(w, utf8, sizeof utf8)) {
+                SetDlgItemTextW(w, REP_STATUS, L"Please say what happened first.");
+                SetFocus(GetDlgItem(w, REP_WHAT));
+                return 0;
+            }
+            if (!report_make_ex(s_game_dir, PORT_VERSION, utf8, s_rep_zip, MAX_PATH, &logs, &crashes)) {
+                SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
+                return 0;
+            }
+            rep_copy(w);
+            rep_page2(w);
+            return 0;
+        }
+        case REP_DISCORD:
+            ShellExecuteW(w, L"open", DISCORD_INVITE, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        case REP_SHOW: {
+            WCHAR args[MAX_PATH + 32];
+            swprintf_s(args, MAX_PATH + 32, L"/select,\"%s\"", s_rep_zip);
+            ShellExecuteW(w, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
+        case REP_COPY:
+            rep_copy(w);
+            SetDlgItemTextW(w, REP_STATUS, L"Description copied - paste it into your Discord post.");
+            return 0;
+        case IDCANCEL:
+            s_rep_done = -1;
+            DestroyWindow(w);
+            return 0;
+        }
+    }
+    if (m == WM_CTLCOLORSTATIC && GetDlgCtrlID((HWND)lp) == REP_STATUS) {
+        SetTextColor((HDC)wp, s_rep_page == 1 ? RGB(190, 30, 45) : RGB(30, 120, 60));
+        SetBkMode((HDC)wp, TRANSPARENT);
+        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    }
+    if (m == WM_CLOSE) {
+        s_rep_done = -1;
+        DestroyWindow(w);
+        return 0;
+    }
+    return DefWindowProcW(w, m, wp, lp);
+}
+
+/* The report window (page 1 or 2). capture_file: drawn off-screen and never
+   shown or activated, saved as a BMP and closed (--capture ... --report-window). */
+static void capture_wnd(HWND wnd, const WCHAR *file);
+static void report_window(int page, const WCHAR *capture_file)
+{
+    static int registered;
+    WNDCLASSW wc;
+    RECT r = { 0, 0, 0, 0 }, pr;
+    HWND w;
+    MSG msg;
+    int quit = 0;
+    if (!registered) {
+        ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = rep_proc;
+        wc.hInstance = s_inst;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hIcon = s_icon;
+        wc.lpszClassName = L"SvR2011Report";
+        RegisterClassW(&wc);
+        registered = 1;
+    }
+    r.right = S(520);
+    r.bottom = S(452);
+    AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+    GetWindowRect(s_wnd, &pr);
+    w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"SvR2011Report", L"Report a problem", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                        capture_file ? -8000 : pr.left + (pr.right - pr.left - (r.right - r.left)) / 2,
+                        capture_file ? -8000 : pr.top + (pr.bottom - pr.top - (r.bottom - r.top)) / 2,
+                        r.right - r.left, r.bottom - r.top, s_wnd, NULL, s_inst, NULL);
+    if (!w)
+        return;
+    s_rep_done = 0;
+    if (page == 2) {
+        if (!s_rep_zip[0])
+            swprintf_s(s_rep_zip, MAX_PATH, L"%s\\Reports\\SvR2011-report-20261006-120000.zip", s_game_dir);
+        rep_page2(w);
+    } else {
+        rep_page1(w);
+    }
+    if (capture_file) {
+        int k;
+        ShowWindow(w, SW_SHOWNOACTIVATE);
+        UpdateWindow(w);
+        for (k = 0; k < 20; k++) {
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(15);
+        }
+        capture_wnd(w, capture_file);
+        DestroyWindow(w);
+        return;
+    }
+    EnableWindow(s_wnd, FALSE);
+    ShowWindow(w, SW_SHOW);
+    SetFocus(GetDlgItem(w, page == 2 ? REP_DISCORD : REP_WHAT));
+    while (!s_rep_done) {
+        if (GetMessageW(&msg, NULL, 0, 0) <= 0) {
+            quit = 1;
+            break;
+        }
+        if (!IsDialogMessageW(w, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(s_wnd, TRUE);
+    SetForegroundWindow(s_wnd);
+    if (quit) {
+        if (IsWindow(w))
+            DestroyWindow(w);
+        PostQuitMessage(0);
+    }
+}
+
 static void report_problem(void)
 {
-    WCHAR zip[MAX_PATH], msg[MAX_PATH + 512], args[MAX_PATH + 32];
-    int logs = 0, crashes = 0;
     if (!is_game_folder(s_game_dir)) {
         MessageBoxW(s_wnd, L"Install the game first (Install tab): a report is made from its logs.", WINDOW_TITLE,
                     MB_OK | MB_ICONINFORMATION);
         return;
     }
-    if (!report_make(s_game_dir, PORT_VERSION, zip, MAX_PATH, &logs, &crashes)) {
-        MessageBoxW(s_wnd, L"The report could not be written (is the game folder read-only?).", WINDOW_TITLE,
-                    MB_OK | MB_ICONWARNING);
-        return;
-    }
-    swprintf_s(msg, MAX_PATH + 512,
-               L"Made %s\n\nIt has the newest %d game log%s, %d crash report%s and your settings (your online "
-               L"account's password and token are left out). Send this file with a short description of what "
-               L"happened and what you did just before.\n\nRun the game once more and reproduce the problem first, "
-               L"if you can: the newest log is the one that counts.",
-               zip, logs, logs == 1 ? L"" : L"s", crashes, crashes == 1 ? L"" : L"s");
-    MessageBoxW(s_wnd, msg, WINDOW_TITLE, MB_OK | MB_ICONINFORMATION);
-    swprintf_s(args, MAX_PATH + 32, L"/select,\"%s\"", zip);
-    ShellExecuteW(s_wnd, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+    s_rep_zip[0] = 0;
+    s_rep_text[0] = 0;
+    report_window(1, NULL);
 }
 
 static void build_ui(void)
@@ -2269,7 +2530,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -2561,6 +2822,8 @@ static void build_ui(void)
     music_build(s_wnd, add, TAB_MUSIC, ID_MUSIC_BASE);
     /* Roster: the list menus' sort categories (roster_tab.c) */
     roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
+    /* Texture packs (texpacks_tab.c) */
+    texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -2890,6 +3153,32 @@ static void saves_folder_setting(WCHAR *out, size_t n)
         }
     }
     lines_free(&l);
+}
+
+/* A top-level key of svr2011.toml, quotes removed (the Texture packs tab);
+ * 0 when absent. */
+static int toml_get(const char *key, char *out, size_t n)
+{
+    WCHAR p[MAX_PATH];
+    Lines l;
+    int i, found = 0;
+    settings_path(p);
+    if (!toml_read(p, &l))
+        return 0;
+    for (i = 0; i < l.n && !found; i++) {
+        char k[64], v[4096];
+        const char *t = l.v[i];
+        while (*t == ' ' || *t == '\t')
+            t++;
+        if (*t == '[')
+            break;
+        if (toml_kv(l.v[i], k, sizeof k, v, sizeof v) && !strcmp(k, key)) {
+            strcpy_s(out, n, v);
+            found = 1;
+        }
+    }
+    lines_free(&l);
+    return found;
 }
 
 /* Sets one top-level key of svr2011.toml (value as written, e.g. "\"x\"");
@@ -5366,14 +5655,15 @@ static void mv_star_menu(void)
     if (cmd >= FIRST) mv_star_pick(cmd - FIRST);
 }
 
-/* The movie's name as the game will list it: letters, digits, spaces, - and _. */
+/* The movie's name as the game will list it: letters, digits, spaces, - and _
+ * (accents taken off: the game skips names that aren't plain ASCII). */
 static int mv_name(WCHAR *name, size_t n)
 {
     WCHAR raw[64], *s;
     size_t k = 0;
     GetWindowTextW(ctl(ID_MV_NAME), raw, 64);
     for (s = raw; *s && k + 1 < n && k < 32; s++) {
-        WCHAR c = *s;
+        WCHAR c = ascii_fold_char(*s);
         if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L' ' || c == L'-' || c == L'_')
             name[k++] = c;
     }
@@ -6215,13 +6505,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
         }
         if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST)
-            mods_notify(n);
+            if (!texpacks_notify(n))
+                mods_notify(n);
         break;
     }
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
-            roster_command(LOWORD(wp), HIWORD(wp)))
+            roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_REPORT:
@@ -6601,6 +6892,11 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 /* --capture: the window as a 24-bit BMP (for checking the layout). */
 static void capture(const WCHAR *file)
 {
+    capture_wnd(s_wnd, file);
+}
+
+static void capture_wnd(HWND wnd, const WCHAR *file)
+{
     RECT r;
     HDC wdc, mdc;
     HBITMAP bmp;
@@ -6609,14 +6905,14 @@ static void capture(const WCHAR *file)
     uint8_t *bits;
     int w, h, stride;
     FILE *f;
-    GetWindowRect(s_wnd, &r);
+    GetWindowRect(wnd, &r);
     w = r.right - r.left;
     h = r.bottom - r.top;
-    wdc = GetDC(s_wnd);
+    wdc = GetDC(wnd);
     mdc = CreateCompatibleDC(wdc);
     bmp = CreateCompatibleBitmap(wdc, w, h);
     SelectObject(mdc, bmp);
-    PrintWindow(s_wnd, mdc, 2 /* PW_RENDERFULLCONTENT */);
+    PrintWindow(wnd, mdc, 2 /* PW_RENDERFULLCONTENT */);
     stride = (w * 3 + 3) & ~3;
     bits = (uint8_t *)malloc((size_t)stride * (size_t)h);
     if (bits) {
@@ -6637,7 +6933,7 @@ static void capture(const WCHAR *file)
     }
     DeleteObject(bmp);
     DeleteDC(mdc);
-    ReleaseDC(s_wnd, wdc);
+    ReleaseDC(wnd, wdc);
 }
 
 /* --install: print to the console the launcher was started from. */
@@ -6660,6 +6956,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     MSG msg;
     RECT r;
     int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0, capture_verify = 0, updated = 0;
+    int capture_report = 0;
     const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
@@ -6747,7 +7044,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         WCHAR zip[MAX_PATH];
         int logs = 0, crashes = 0, ok;
         console_setup();
-        ok = report_make(argv[2], PORT_VERSION, zip, MAX_PATH, &logs, &crashes);
+        if (argc >= 4) {   /* (... [description]: as the window's, at the top of report.txt) */
+            static char d[8192];
+            WideCharToMultiByte(CP_UTF8, 0, argv[3], -1, d, sizeof d, NULL, NULL);
+            ok = report_make_ex(argv[2], PORT_VERSION, d, zip, MAX_PATH, &logs, &crashes);
+        } else {
+            ok = report_make(argv[2], PORT_VERSION, zip, MAX_PATH, &logs, &crashes);
+        }
         if (ok) wprintf(L"ok %s (%d logs, %d crash reports)\n", zip, logs, crashes);
         else wprintf(L"failed\n");
         return ok ? 0 : 1;
@@ -6844,7 +7147,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -6876,6 +7179,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* ... --roster-tag <id> <SMACKDOWN|RAW|NPC|MODS|DEFAULT>: the Roster tab tags it. */
         if (argc >= 7 && !wcscmp(argv[4], L"--roster-tag"))
             capture_tag = argv + 5;
+        /* ... --report-window <1|2>: Report a problem's window (questions / where to post) is captured instead. */
+        if (argc >= 6 && !wcscmp(argv[4], L"--report-window"))
+            capture_report = _wtoi(argv[5]);
     }
 
     icc.dwSize = sizeof icc;
@@ -6965,7 +7271,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                     DispatchMessageW(&pm);
                 }
         }
-        capture(capture_file);
+        if (capture_report)
+            report_window(capture_report, capture_file);
+        else
+            capture(capture_file);
         return 0;
     }
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
