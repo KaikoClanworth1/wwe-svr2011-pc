@@ -129,6 +129,7 @@ still being tested.
 - **Touch controls** draw on top of the port's own pages (GRAPHICS, JUKEBOX, ACHIEVEMENTS...), and quick taps count.
 
 ### Fixes
+- **Several controllers: whoever presses START plays with the profile** - pressing START on a second pad or the keyboard at the title screen no longer says "You are not currently signed in with a profile"; that controller becomes player 1 (saves and achievements work) and the others stay players 2-4.
 - 🧪 **A freeze mid-match** (the match stops moving; seen most at 30 fps, on phones and in big matches such as Royal Rumbles): a timing race in the game's own per-character job system lost a request when the game ran extra updates to catch up. The lost request is now noticed and asked for again.
 - **Fatal 4-Way / Triple Threat Elimination crash**: when a wrestler was eliminated, a CPU still aiming at them could crash the match.
 - **Replays and match highlights at 30 fps** no longer freeze the picture (the wrestlers stood still while the sound went on).
