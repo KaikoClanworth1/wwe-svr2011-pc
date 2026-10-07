@@ -91,6 +91,10 @@ still being tested.
 
 - **Three Stages of Hell** (ONE ON ONE → EXTREME RULES): best of three falls in one match - a normal fall, then Falls Count Anywhere, then Last Man Standing - with the damage carried through and the score at the top of the screen.
 - **Elimination** in TRIPLE THREAT and FATAL-4-WAY (normal, Falls Count Anywhere, Extreme Rules): a pin or give up eliminates that wrestler, who leaves, and the match goes on until one is left. Uses the game's own elimination rule; your Match Creator settings are left alone.
+- **Graphics menus reorganised** (MY WWE → OPTIONS): **CONTROLS** has its own row above GRAPHICS, and the GRAPHICS page has three tabs - DISPLAY, GRAPHICS and **ADV. GRAPHICS**:
+  - **Crowd on / off** for every device (it was Mali-only): OFF plays arenas with empty seats - faster on weak PCs and phones (from the next start; the crowd-less copies are made once in the background).
+  - Effect detail, depth of field, motion blur, soft filter and prepare graphics moved there.
+  - **480p**: an 854 x 480 window, and 360P / 480P render resolutions (the scene drawn smaller and scaled up, for weak devices).
 - **Championship Scramble** (FATAL-4-WAY): the game's own cut match, restored. Pick the title, five superstars take part, a new one enters every minute, whoever scores a fall becomes the interim champion, and whoever holds the title at the 5:00 bell after the last entry wins.
 - **Mystery Opponent** (ONE ON ONE → NORMAL MATCH → MYSTERY OPPONENT): the CPU picks your opponent in secret. It shows as "?" on the select, VS and loading screens and is revealed when it comes out last in the entrances, which can't be skipped.
 - **Match Creator: everything allowed**: every greyed-out option is free in every match type, as far as the game engine can play it. Combinations that crashed or froze in a 240-match test stay locked: over the top rope in tag / 6-man, the inferno ring outside normal 1v1 / Triple Threat / Fatal 4-Way, cage / cell / inferno rings and new win conditions in ladder / TLC, the chamber ring, Royal Rumble, Elimination Chamber and backstage.
