@@ -18,6 +18,14 @@ namespace svr2011 {
 
 void InstallMatchTypes(rex::memory::Memory* memory);
 
+// Match type mods: each match type the port adds is on unless
+// <game>\Mods\MatchTypes\<id>\disabled exists (the launcher's Mods tab; read
+// once, at the first ask). Ids: falls_count_anywhere, championship_scramble,
+// royal_rumble_15_25, lumberjack, free_roaming_backstage,
+// backstage_more_people, weapons_everywhere, slobber_knocker,
+// three_stages_of_hell, elimination, mystery_opponent.
+bool MatchTypeOn(const char* id);
+
 // Each world update (frame_rate.cpp): the Lumberjack match's lumberjacks
 // (match_types.cpp: their controller).
 void MatchTypesUpdate(PPCContext& ctx, uint8_t* base);

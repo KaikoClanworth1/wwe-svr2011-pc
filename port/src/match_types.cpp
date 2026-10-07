@@ -22,10 +22,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
 
+#include <rex/filesystem.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -53,10 +56,11 @@ void Wr32(uint8_t* p, uint32_t v) {
 }
 
 // A row to add: after the row labelled `anchor` in menu group `group`, a copy
-// of it with this label, description and rule.
+// of it with this label, description and rule (its match type mod: `mod`).
 struct Row {
   uint32_t anchor, group;
   uint32_t label, description, rule;
+  const char* mod;
 };
 
 // PLAY -> ... (groups: 06 ONE ON ONE, 07 TWO ON TWO, 08 TRIPLE THREAT,
@@ -64,22 +68,22 @@ struct Row {
 // names: Falls Count Anywhere (the labels of the rows cut from the menu),
 // 15- and 25-man Royal Rumble, Lumberjack.
 const Row kRows[] = {
-    {0xA053, 0x06, 0xA054, kNoText, 0x2B},  // ONE ON ONE: after FIRST BLOOD
-    {0xA061, 0x07, 0xA062, kNoText, 0x2E},  // TWO ON TWO: after MIXED TAG
-    {0xA06A, 0x08, 0xA06B, kNoText, 0x2F},  // TRIPLE THREAT: after NORMAL
-    {0xA072, 0x09, 0xA073, kNoText, 0x30},  // FATAL-4-WAY: after NORMAL
+    {0xA053, 0x06, 0xA054, kNoText, 0x2B, "falls_count_anywhere"},  // ONE ON ONE: after FIRST BLOOD
+    {0xA061, 0x07, 0xA062, kNoText, 0x2E, "falls_count_anywhere"},  // TWO ON TWO: after MIXED TAG
+    {0xA06A, 0x08, 0xA06B, kNoText, 0x2F, "falls_count_anywhere"},  // TRIPLE THREAT: after NORMAL
+    {0xA072, 0x09, 0xA073, kNoText, 0x30, "falls_count_anywhere"},  // FATAL-4-WAY: after NORMAL
     // FATAL-4-WAY: CHAMPIONSHIP SCRAMBLE (the game's own rule 0x26 and label
     // A038, cut from PLAY - its row there only opens submenus): 5 people, 2
     // start and one more comes in each minute; a fall makes an interim
     // champion and the match goes on; at the bell (5:00) the last one wins.
-    {0xA072, 0x09, 0xA038, kNoText, 0x26},
-    {0xA08C, 0x0C, 0x5313, kNoText, 0x15},  // ROYAL RUMBLE: 15-MAN after 10-MAN
-    {0xA08D, 0x0C, 0x5314, kNoText, 0x17},  // 25-MAN after 20-MAN
-    {0xA07F, 0x0A, 0x0052, kNoText, 0x55},  // 6-MAN: LUMBERJACK after ARMAGEDDON
+    {0xA072, 0x09, 0xA038, kNoText, 0x26, "championship_scramble"},
+    {0xA08C, 0x0C, 0x5313, kNoText, 0x15, "royal_rumble_15_25"},  // ROYAL RUMBLE: 15-MAN after 10-MAN
+    {0xA08D, 0x0C, 0x5314, kNoText, 0x17, "royal_rumble_15_25"},  // 25-MAN after 20-MAN
+    {0xA07F, 0x0A, 0x0052, kNoText, 0x55, "lumberjack"},          // 6-MAN: LUMBERJACK after ARMAGEDDON
     // BACKSTAGE (1 on 1, 2 on 2): FREE-ROAMING BACKSTAGE after PARKING LOT -
     // the whole backstage (rules without a named area, see below).
-    {0xA0DD, 0x12, 0x9C90, kNoText, 0x19},
-    {0xA0DD, 0x14, 0x9C90, kNoText, 0x1A},
+    {0xA0DD, 0x12, 0x9C90, kNoText, 0x19, "free_roaming_backstage"},
+    {0xA0DD, 0x14, 0x9C90, kNoText, 0x1A, "free_roaming_backstage"},
 };
 constexpr uint32_t kFreeRoamLabel = 0x9C90;
 constexpr uint32_t kWholeBackstage = 0x19, kWholeBackstage2 = 0x1A;  // 1 on 1, 2 on 2
@@ -219,12 +223,18 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   std::vector<uint8_t> out(table, table + kFirst);
   std::vector<uint8_t> tail;  // the submenus' areas: new groups, at the end
   uint32_t added = 0;
+  // (match type mods switched off: their rows aren't added)
+  const bool elimination = svr2011::MatchTypeOn("elimination"), slobber = svr2011::MatchTypeOn("slobber_knocker");
+  const bool mystery = svr2011::MatchTypeOn("mystery_opponent"), weapons = svr2011::MatchTypeOn("weapons_everywhere");
+  const bool stages = svr2011::MatchTypeOn("three_stages_of_hell");
+  const bool more_backstage = svr2011::MatchTypeOn("backstage_more_people");
+  const bool free_roam_on = svr2011::MatchTypeOn("free_roaming_backstage");
   for (uint32_t i = 0; i < total; ++i) {
     const uint8_t* rec = table + kFirst + i * kRec;
     out.insert(out.end(), rec, rec + kRec);
     if (Rd32(rec + 0x54) != kScreenMatch) continue;
     for (const Row& row : kRows) {
-      if (Rd32(rec) != row.anchor || Rd32(rec + 0x18) != row.group) continue;
+      if (Rd32(rec) != row.anchor || Rd32(rec + 0x18) != row.group || !svr2011::MatchTypeOn(row.mod)) continue;
       uint8_t* prev = out.data() + out.size() - kRec;
       std::vector<uint8_t> copy(prev, prev + kRec);
       Wr32(copy.data() + 0x00, row.label);
@@ -239,7 +249,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       ++added;
     }
     if (const uint32_t rule = Rd32(rec + 0x5C);
-        (rule == kTripleThreat || rule == kFatal4Way) && Rd32(rec + 0x54) == kScreenMatch) {
+        elimination && (rule == kTripleThreat || rule == kFatal4Way) && Rd32(rec + 0x54) == kScreenMatch) {
       const uint32_t in_group = Rd32(rec + 0x18);
       std::vector<uint8_t> copy(rec, rec + kRec);
       Wr32(copy.data() + 0x00, kElimLabel);
@@ -257,7 +267,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       ++added;
       REXLOG_INFO("match types: ELIMINATION (rule {:02X}) at group {:02X} row {}", rule, in_group, index);
     }
-    if (Rd32(rec) == kGauntletRow && Rd32(rec + 0x18) == kHandicapGroup) {
+    if (slobber && Rd32(rec) == kGauntletRow && Rd32(rec + 0x18) == kHandicapGroup) {
       std::vector<uint8_t> copy(rec, rec + kRec);
       Wr32(copy.data() + 0x00, kSlobberLabel);
       Wr32(copy.data() + 0x04, kSlobberText);
@@ -274,7 +284,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       ++added;
       REXLOG_INFO("match types: SLOBBER KNOCKER at group {:02X} row {}", kHandicapGroup, index);
     }
-    if (Rd32(rec + 0x5C) == 0x00 && Rd32(rec + 0x18) == kFullGroup && submenu) {
+    if (mystery && Rd32(rec + 0x5C) == 0x00 && Rd32(rec + 0x18) == kFullGroup && submenu) {
       // NORMAL MATCH becomes a submenu (its own node) of NORMAL MATCH and
       // MYSTERY OPPONENT (a new group), as EXTREME RULES below.
       out.resize(out.size() - kRec);
@@ -307,8 +317,8 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       node += 2;
       ++group;
     }
-    if (const uint32_t rule = Rd32(rec + 0x5C);
-        rule >= kExtremeFirst && rule <= kExtremeLast && Rd32(rec + 0x18) == kFullGroup && submenu) {
+    if (const uint32_t rule = Rd32(rec + 0x5C); (weapons || stages) && rule >= kExtremeFirst &&
+                                                rule <= kExtremeLast && Rd32(rec + 0x18) == kFullGroup && submenu) {
       // A full list (14 rows): EXTREME RULES becomes a submenu (a new node in
       // its place) of EXTREME RULES and WEAPONS EVERYWHERE (a new group).
       out.resize(out.size() - kRec);
@@ -321,31 +331,35 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
       Wr32(row.data() + 0x40, Rd32(rec + 0x40));
       out.insert(out.end(), row.begin(), row.end());
-      for (uint32_t k = 0; k < 3; ++k) {  // (EXTREME RULES, WEAPONS EVERYWHERE, THREE STAGES OF HELL)
+      // (EXTREME RULES, then WEAPONS EVERYWHERE and THREE STAGES OF HELL - those on)
+      std::vector<uint32_t> kinds = {0};
+      if (weapons) kinds.push_back(1);
+      if (stages) kinds.push_back(2);
+      for (uint32_t k = 0; k < kinds.size(); ++k) {
         std::vector<uint8_t> leaf(rec, rec + kRec);
         Wr32(leaf.data() + 0x18, group);
         Wr32(leaf.data() + 0x1C, node + k);
         Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
         Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);  // (depth +0x16: one down)
         Wr32(leaf.data() + 0x40, 0);
-        Wr32(leaf.data() + 0x3C, k == 2 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
-        if (k == 1) {
+        Wr32(leaf.data() + 0x3C, k + 1 == kinds.size() ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
+        if (kinds[k] == 1) {
           Wr32(leaf.data() + 0x00, kWeaponsLabel);
           Wr32(leaf.data() + 0x04, kWeaponsText);
-        } else if (k == 2) {
+          g_weapons_rows.push_back({group, k});
+        } else if (kinds[k] == 2) {
           Wr32(leaf.data() + 0x00, kStagesLabel);
           Wr32(leaf.data() + 0x04, kStagesText);
           Wr32(leaf.data() + 0x5C, 0x00);  // (a normal one on one; three_stages.cpp changes its rules)
+          g_stages_row = {group, k};
         }
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
-      g_weapons_rows.push_back({group, 1});
-      g_stages_row = {group, 2};
       REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
-      node += 3;
+      node += uint32_t(kinds.size());
       ++group;
-    } else if (const uint32_t rule = Rd32(rec + 0x5C); rule >= kExtremeFirst && rule <= kExtremeLast) {
+    } else if (const uint32_t rule = Rd32(rec + 0x5C); weapons && rule >= kExtremeFirst && rule <= kExtremeLast) {
       const uint32_t in_group = Rd32(rec + 0x18);
       std::vector<uint8_t> copy(rec, rec + kRec);
       Wr32(copy.data() + 0x00, kWeaponsLabel);
@@ -387,7 +401,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       }
     }
     for (Backstage& b : g_backstage) {
-      if (!submenu || areas.size() != 7) break;
+      if (!more_backstage || !submenu || areas.size() != 7) break;
       if (Rd32(rec) != b.anchor || Rd32(rec + 0x18) != b.group) continue;
       // The submenu row: in this group, a new node.
       std::vector<uint8_t> row(submenu, submenu + kRec);
@@ -400,16 +414,18 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       ++added;
       // Its areas: a new group under that node.
       b.menu_group = group;
-      for (uint32_t k = 0; k <= areas.size(); ++k) {
+      const uint32_t count = uint32_t(areas.size()) + (free_roam_on ? 1 : 0);
+      for (uint32_t k = 0; k < count; ++k) {
         // The 7 areas, then FREE-ROAMING BACKSTAGE (the group's last).
         const bool free_roam = k == areas.size();
+        const bool last = k + 1 == count;
         std::vector<uint8_t> leaf(areas[free_roam ? k - 1 : k], areas[free_roam ? k - 1 : k] + kRec);
         Wr32(leaf.data() + 0x18, group);
         Wr32(leaf.data() + 0x1C, node + k);
         Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
         Wr32(leaf.data() + 0x40, 0);
         const uint32_t flags = Rd32(leaf.data() + 0x3C);
-        Wr32(leaf.data() + 0x3C, free_roam ? flags | 2u : flags & ~2u);
+        Wr32(leaf.data() + 0x3C, last ? flags | 2u : flags & ~2u);
         if (free_roam) {
           Wr32(leaf.data() + 0x00, kFreeRoamLabel);
           Wr32(leaf.data() + 0x5C, kWholeBackstage2);
@@ -417,7 +433,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
-      node += 8;
+      node += count;
       ++group;
     }
   }
@@ -536,6 +552,23 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
 }  // namespace
 
 namespace svr2011 {
+
+bool MatchTypeOn(const char* id) {
+  static const std::map<std::string, bool> on = [] {
+    std::map<std::string, bool> m;
+    const std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "Mods" / "MatchTypes";
+    std::error_code ec;
+    for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
+                          "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
+                          "three_stages_of_hell", "elimination", "mystery_opponent"}) {
+      m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
+      if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
+    }
+    return m;
+  }();
+  const auto it = on.find(id);
+  return it == on.end() || it->second;
+}
 
 void InstallMatchTypes(rex::memory::Memory* memory) {
   g_memory = memory;
@@ -1397,7 +1430,7 @@ bool SlobberKnockerMatch() { return g_slobber; }
 // (+447) 7 - disqualified for interference - and the judge then ends the
 // match ("WINS BY WAY OF DQ"). Their attacks are the point here: taken back.
 void LumberjackBeforeJudge(uint8_t* base) {
-  if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext)) return;
+  if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext) || !MatchTypeOn("lumberjack")) return;
   constexpr uint32_t kChars = 0x82E3CC50;
   for (uint32_t i = 0; i < 6; ++i) {
     const uint32_t c = Rd32(base + kChars + i * 4);
@@ -1471,7 +1504,7 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   }
   if (g_slobber && base[0x82E3DE00] == kGauntlet) SlobberKnockerUpdate(ctx, base);
   if (ThreeStagesMatch()) ThreeStagesUpdate(base);
-  if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext)) return;
+  if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext) || !MatchTypeOn("lumberjack")) return;
   LumberjackController(base);
   static const bool probe = std::getenv("SVR2011_TEST_PEOPLE") != nullptr;
   static uint32_t frames = 0;
