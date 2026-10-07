@@ -93,6 +93,7 @@ still being tested.
 - **Elimination** in TRIPLE THREAT and FATAL-4-WAY (normal, Falls Count Anywhere, Extreme Rules): a pin or give up eliminates that wrestler, who leaves, and the match goes on until one is left. Uses the game's own elimination rule; your Match Creator settings are left alone.
 - **Graphics menus reorganised** (MY WWE → OPTIONS): **CONTROLS** has its own row above GRAPHICS, and the GRAPHICS page has three tabs - DISPLAY, GRAPHICS and **ADV. GRAPHICS**:
   - **Crowd on / off** for every device (it was Mali-only): OFF plays arenas with empty seats - faster on weak PCs and phones (from the next start; the crowd-less copies are made once in the background).
+  - **Shadows on / off** for every device: OFF skips the real-time shadows (about 70 fewer draws a frame); Mali mode turns them off by itself.
   - Effect detail, depth of field, motion blur, soft filter and prepare graphics moved there.
   - **480p**: an 854 x 480 window, and 360P / 480P render resolutions (the scene drawn smaller and scaled up, for weak devices).
 - **Championship Scramble** (FATAL-4-WAY): the game's own cut match, restored. Pick the title, five superstars take part, a new one enters every minute, whoever scores a fall becomes the interim champion, and whoever holds the title at the 5:00 bell after the last entry wins.
