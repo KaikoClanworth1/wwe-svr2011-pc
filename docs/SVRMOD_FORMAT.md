@@ -13,6 +13,7 @@ Every mod has a `manifest.txt` of `key=value` lines (UTF-8, one per line):
 | `id=` | the folder name: letters, digits and `_` (a mod with the same id replaces the older one) |
 | `name=` | shown in the launcher and, where it matters, in the game |
 | `author=`, `version=` | shown in the launcher; a newer version replaces an installed one, an older one is kept |
+| `made_with=` | who made the file: `Mod Maker <version>` for the Mod Maker's, `Port tools (...)` for the converters'; the launcher shows it, and "non-Mod Maker" when it is missing |
 
 A file named `disabled` in the folder turns the mod off (the launcher's tick).
 

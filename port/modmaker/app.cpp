@@ -1424,7 +1424,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
   std::vector<std::wstring> run_tool_args;
-  std::wstring make_bink_in, make_bink_out;
+  std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   double shot_after = 6;
   int star_id = 0, star_call = -1;
@@ -1444,6 +1444,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--shot-after") && more) shot_after = _wtof(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
+    else if (!wcscmp(argv[i], L"--test-moves-save") && more) moves_save = argv[++i];
     else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
       std::wstring a = argv[++i];
       std::vector<std::wstring> parts;
@@ -1592,6 +1593,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (start_page >= 0 && start_page < 8) g_page = page_of[start_page];
   }
   if (!moves_pack.empty()) moves_page::TestOpen(moves_pack), g_page = PageId::kMoves;
+  if (!moves_save.empty()) {
+    moves_page::TestSave(moves_save);
+    WriteLogTo(moves_save + L".log");
+    PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+  }
   if (!make_bink_in.empty()) MakeBink(make_bink_in, make_bink_out, 0, 3, [](std::wstring out) { Status(out.empty() ? "test: bink failed" : "test: bink made"); });
   if (!run_tool_args.empty()) {
     const std::wstring script = run_tool_args[0];

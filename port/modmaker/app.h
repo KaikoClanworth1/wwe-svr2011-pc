@@ -281,7 +281,7 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
                        Image SignPicture(const Image& src); }
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
-namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); }
+namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); }

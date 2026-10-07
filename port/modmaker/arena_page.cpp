@@ -739,13 +739,21 @@ void SetArenaFromPac(const Bytes& pac, int host, const std::string& name) {
   g_proj = Project();
   editor::Ring() = RingSpec();
   editor::Light() = editor::Lighting();
+  editor::SetArena(nullptr, "");
   std::snprintf(g_proj.name, sizeof g_proj.name, "%s", name.c_str());
   g_sel = host;
-  std::string err;
-  if (!LoadEditedArena(pac, host, -1, "", &err)) { Status("The converted arena could not be loaded: " + err); return; }
   g_proj.arena = host;
-  Touch();
-  GoTo(PageId::kEditor);
+  auto a = std::make_unique<Arena>();
+  std::string err;
+  if (!a->LoadData(pac, &err)) { Status("The converted arena could not be loaded: " + err); return; }
+  Arena shipped;  // the budget is the host arena's shipped size
+  if (shipped.Load(ArenaPath(host))) a->original_file = shipped.original_file, a->original_unpacked = shipped.original_unpacked;
+  {
+    std::lock_guard lock(g_pending_mutex);
+    g_pending = std::move(a);
+    g_pending_fbx.clear();
+    g_pending_to_editor = true;
+  }
   Status("The converted arena is open in the 3D editor; the Arena page has its name, banner and the Save.");
 }
 

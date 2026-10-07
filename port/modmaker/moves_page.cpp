@@ -344,6 +344,14 @@ bool Read(const ProjectIn& in, bool mod) {
 
 void TestOpen(const std::wstring& folder) { OpenFolder(folder); }
 
+// test aid: --test-moves-save <file>: the pack as a mod, now (after --moves-pack)
+void TestSave(const std::wstring& file) {
+  const Job j = PrepareJob();
+  std::vector<ZipEntry> files;
+  if (Build(j, files) && WriteFile(Utf8(file), ZipWrite(files))) Log("test: saved " + Utf8(file));
+  else Log("test: moves build failed");
+}
+
 PageHooks hooks = {
     "moves", Draw, Problems, Reset, StateText, WriteProject,
     [](const ProjectIn& in) { return Read(in, false); },
