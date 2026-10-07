@@ -133,6 +133,7 @@ still being tested.
 ### Fixes
 - **Several controllers: whoever presses START plays with the profile** - pressing START on a second pad or the keyboard at the title screen no longer says "You are not currently signed in with a profile"; that controller becomes player 1 (saves and achievements work) and the others stay players 2-4.
 - 🧪 **A freeze mid-match** (the match stops moving; seen most at 30 fps, on phones and in big matches such as Royal Rumbles): a timing race in the game's own per-character job system lost a request when the game ran extra updates to catch up. The lost request is now noticed and asked for again.
+- **Universe with superstar mods**: Universe no longer books superstar mods (their ids ran past its 150-superstar table into the rivalries and match cards - the likely crash); mods stay playable everywhere else. Resetting Universe clears mod data an older save holds.
 - **Fatal 4-Way / Triple Threat Elimination crash**: when a wrestler was eliminated, a CPU still aiming at them could crash the match.
 - **Replays and match highlights at 30 fps** no longer freeze the picture (the wrestlers stood still while the sound went on).
 - **Pin counts at 30 fps / on slow PCs and phones**: a referee's count no longer stops partway when the game runs two updates a frame.
