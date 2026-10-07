@@ -1138,6 +1138,7 @@ uint32_t CallTable(PPCContext& ctx, uint8_t* base) {
 
 void WriteCallNames(PPCContext& ctx, uint8_t* base, uint32_t id) {
   const uint32_t T = CallTable(ctx, base);
+
   if (NameCallLog()) REXLOG_INFO("[svr2011] name call: table {:08X}", T);
   if (!T) return;
   for (uint32_t c : kIdCategories) {
@@ -1482,6 +1483,42 @@ void CheckModProfiles(uint8_t* base) {
   }
 }
 }  // namespace svr2011
+
+// The select lists' order: sub_82736E00 (the team editor's member list) and
+// sub_82734560 (exhibition's) rank each id by its record's +226 (the grid
+// tile number: rank = how many keys are smaller), and equal keys take the
+// same row. Mods have no tile (0, OwnSelectTile): all of them took one row
+// (the last mod won) and the rows they left kept id 0 - a nameless created
+// superstar ("DEFAULT"): team members couldn't be picked as the player
+// meant, exhibition showed generics (2.0.4). While those sorts run, each
+// mod's record has a key of its own after every real one (0x7000 + n).
+void ModSortKeys(uint8_t* base, bool on) {
+  uint32_t n = 0;
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512) continue;
+    uint8_t* key = base + kRecords + si * kRecordSize + kSelectTile;
+    const uint32_t mine = 0x7000 + n++;
+    if (on && !Rd16(key)) key[0] = uint8_t(mine >> 8), key[1] = uint8_t(mine);
+    else if (!on && Rd16(key) == mine) key[0] = key[1] = 0;
+  }
+}
+REX_EXTERN(__imp__sub_82736E00);
+REX_HOOK_RAW(sub_82736E00) {
+  ModSortKeys(base, true);
+  __imp__sub_82736E00(ctx, base);
+  const auto r3 = ctx.r3.u64;
+  ModSortKeys(base, false);
+  ctx.r3.u64 = r3;
+}
+REX_EXTERN(__imp__sub_82734560);
+REX_HOOK_RAW(sub_82734560) {
+  ModSortKeys(base, true);
+  __imp__sub_82734560(ctx, base);
+  const auto r3 = ctx.r3.u64;
+  ModSortKeys(base, false);
+  ctx.r3.u64 = r3;
+}
 
 // A roster list is about to be built.
 REX_EXTERN(__imp__sub_82736C68);
