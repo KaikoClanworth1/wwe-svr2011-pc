@@ -8,6 +8,8 @@
 
 #include "app.h"
 
+#include <shellapi.h>
+
 namespace mm {
 namespace help_page {
 
@@ -208,6 +210,25 @@ void Draw() {
   ImGui::SameLine();
   if (ImGui::RadioButton("The .svrmod format", g_doc == 1)) g_doc = 1;
   ImGui::SameLine(0, 30 * g_scale);
+  {  // the full guide (pictures, diagrams, tutorials): next to the exe, or docs/guide in a development build
+    static std::wstring guide;
+    static bool looked = false;
+    if (!looked) {
+      looked = true;
+      wchar_t buf[MAX_PATH * 2];
+      GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
+      const fs::path exe = fs::path(buf).parent_path();
+      std::error_code ec;
+      for (const fs::path cand : {exe / L"Mod Maker Guide" / L"index.html", exe / L".." / L".." / L".." / L".." / L"docs" / L"guide" / L"index.html"})
+        if (fs::exists(cand, ec)) { guide = fs::weakly_canonical(cand, ec).wstring(); break; }
+    }
+    if (!guide.empty()) {
+      PushAccent();
+      if (ImGui::Button("Open the full guide (pictures and tutorials)")) ShellExecuteW(nullptr, L"open", guide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      PopAccent();
+      ImGui::SameLine();
+    }
+  }
   ImGui::TextDisabled("Also as files: docs/MOD_MAKER_MANUAL.md and docs/SVRMOD_FORMAT.md.");
   ImGui::BeginChild("doc", ImVec2(0, 0), true);
   ImGui::PushTextWrapPos(0);

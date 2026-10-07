@@ -34,6 +34,9 @@ if ($WithModMaker) {
                      "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py")) {
         Copy-Item (Join-Path $PSScriptRoot $t) $mmtools
     }
+    # the guide (pictures, diagrams, tutorials): docs/guide -> "Mod Maker Guide"
+    $guide = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "docs\guide"
+    if (Test-Path $guide) { Copy-Item $guide (Join-Path $stage "Mod Maker Guide") -Recurse }
 }
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
