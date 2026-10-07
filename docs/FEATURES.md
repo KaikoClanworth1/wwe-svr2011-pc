@@ -125,7 +125,7 @@ still being tested.
 - **Everything unlocked again for players who played 2.0.1 / 2.0.2 online**: the small Online Axxess package those versions made kept the Fan Axxess unlocks from applying (a locked roster even with *Everything unlocked from the start* on); it is removed at start.
 - **AMD graphics cards on Vulkan**: AMD's Windows Vulkan driver has no 24-bit depth + stencil buffer, so the Native renderer couldn't start; it now uses 32-bit float depth + stencil where 24-bit isn't offered (D3D12 and other GPUs unchanged).
 - **Older Windows 10 (version 1809 / LTSC 2019, before 2004) starts on Vulkan** when the graphics API is on its default: Direct3D 12 here needs Windows 10 2004 or newer, and on those PCs the game showed "The game's graphics can't run on this device".
-- **Arena select pages**: all 20 banners show at once after a page turn (some stayed blank, kept the last page's picture or showed half a banner).
+- **Arena select pages**: all 20 banners show at once after a page turn (some stayed blank, kept the last page's picture or showed half a banner), and opening the arena select again after a pick starts at page 1 with the right arenas (tiles showed the wrong ones).
 - **USER MOVIES with accents in the name** (e.g. "Peña") now show in Create An Entrance (PC launcher, Android and the game, which renames old ones to "Pena"); the titantron makers give a clear message when something fails.
 - **Arena mods**: VS-screen theme pictures of any size can be swapped.
 - **Community Creations: your own stories upload** (Story Designer stories were refused as "created by a different player"; only downloaded stories are now).
