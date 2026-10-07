@@ -28,6 +28,7 @@ struct Lighting {
 struct Hooks {
   std::function<void(const std::string&)> log;
   std::function<void()> test_in_game;  // install the mod and start the game
+  std::function<std::string(const char* title)> pick_picture;  // a picture file dialog ("" = none)
   // the prop library: arenas to take models from (name, pac path)
   std::vector<std::pair<std::string, std::string>> library;
 };
@@ -43,6 +44,8 @@ void SetArea(const std::vector<std::pair<int, int>>& ids, const float* spot = nu
 // The editor's whole UI, filling the current ImGui window region.
 void Draw();
 bool Busy();
+bool HasArena();   // an arena is set
+int EditCount();   // grows with every edit (the project's dirty check)
 void Shutdown();
 // test aid: a camera preset (0 hard camera, 1 top, 2 from the stage; -1 none)
 // and an object to select (by name) once an arena is set

@@ -227,8 +227,22 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     # The Mod Maker (arenas branch, modmaker/): Dear ImGui (the SDK's copy) on
     # Direct3D 11, the svrfmt format library and ufbx (FBX import).
     set(IMGUI_SRC ${REXSDK_DIR}/thirdparty/imgui)
+    # The manual and the format reference, built into the Mod Maker (help_page.cpp).
+    foreach(doc MOD_MAKER_MANUAL:manual SVRMOD_FORMAT:format)
+        string(REPLACE ":" ";" doc_parts "${doc}")
+        list(GET doc_parts 0 doc_md)
+        list(GET doc_parts 1 doc_inc)
+        set(doc_path "${CMAKE_CURRENT_SOURCE_DIR}/../docs/${doc_md}.md")
+        file(READ "${doc_path}" doc_text)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/modmaker_inc/${doc_inc}.inc" "R\"svrdoc(${doc_text})svrdoc\"")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${doc_path}")
+    endforeach()
     add_executable(svr2011_modmaker WIN32
-        modmaker/mod_maker.cpp modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
+        modmaker/app.cpp modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/signs_page.cpp
+        modmaker/media_page.cpp modmaker/moves_page.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
+        modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
+        modmaker/tool_run.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c
+        modmaker/svrfmt/wwe13.cpp ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack/lzxd.c modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
         modmaker/svrfmt/pac.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp
         modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp
         modmaker/svrfmt/arena_import.cpp modmaker/svrfmt/zip_write.cpp
@@ -237,10 +251,14 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         ${IMGUI_SRC}/imgui_widgets.cpp ${IMGUI_SRC}/backends/imgui_impl_win32.cpp
         ${IMGUI_SRC}/backends/imgui_impl_dx11.cpp
         launcher/launcher.rc)
-    target_include_directories(svr2011_modmaker PRIVATE modmaker modmaker/third_party/ufbx
+    target_include_directories(svr2011_modmaker PRIVATE modmaker modmaker/third_party/ufbx ${CMAKE_CURRENT_BINARY_DIR}/modmaker_inc
+        ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack
         ${IMGUI_SRC} ${IMGUI_SRC}/backends ${REXSDK_DIR}/thirdparty/stb)
     target_compile_definitions(svr2011_modmaker PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
-    target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32)
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_MM_VERSION LIMIT_COUNT 1)
+    target_compile_definitions(svr2011_modmaker PRIVATE "PORT_VERSION=\"${SVR2011_MM_VERSION}\"")
+    target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32
+        mfplat mfreadwrite mfuuid propsys)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
     add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/launcher.rc)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")

@@ -91,6 +91,16 @@ diagrams, is in the plan artifact (https://claude.ai/artifact/YWqYNczKJju4Qo56tV
 - Each record is a 4x4 frame, a 2D outline and flags `ffffff00`.
 - bg00 0x3E4 holds 130 pieces.
 - Entries 0x3E3/0x3E5 (`00 00 11 00`, 2124 B) look like a u16 index table for it. Not decoded yet.
+- 2026-10-07 probe (bg17, 130 records in each of 0x3E4 / 0x3E7, identical):
+  24 floats + flags. Floats 0-2 / 4-6 / 8-10 are three unit axes, 3 / 7 / 11
+  the half sizes (0 for planes), 12-14 a position, 15 = 1, 16-22 a 2D
+  outline (x/z pairs and a last value). Boxes with identity axes sit where
+  objects are (ring steps x = -35 / 35, the stage z = -283, flags 000bxxxx /
+  0009xx); the big planes (flags 00ffffff) have rotated axes and positions
+  that are not the walls' model-space places (x = +-169, y = 252), so the
+  plane records encode differently. Rebuilding collision for moved objects
+  (apply the object's move / turn / scale to the box records inside its
+  bounds) is written down but not implemented: it needs an in-game check.
 
 ### Code
 

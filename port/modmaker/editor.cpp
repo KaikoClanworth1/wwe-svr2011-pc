@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <d3dcompiler.h>
+#include <shobjidl.h>
 
 #include "editor.h"
 
@@ -182,6 +183,7 @@ struct Obj {
 
 struct Snapshot {
   std::vector<std::array<float, 6>> xf;  // pos, yaw, scale, hidden
+  std::vector<std::string> tex;          // each object's texture (first mesh)
 };
 
 struct GpuMesh {
@@ -230,9 +232,13 @@ std::map<std::pair<int, int>, GpuMesh> g_gpu;  // (model, mesh)
 std::map<std::string, ID3D11ShaderResourceView*> g_tex;
 std::vector<bool> g_model_dirty;
 int g_sel = -1;
+std::vector<int> g_multi;  // the other selected objects (Ctrl+click), besides g_sel
 RingSpec g_ring;
 Lighting g_light;
-std::vector<Snapshot> g_undo;
+std::vector<Snapshot> g_undo, g_redo;
+bool g_grid = true;
+float g_snap_step = 5;  // units (1 = 10 cm)
+bool g_frame_all = false;
 int g_test_view = -1;  // (TestStart)
 std::string g_test_select;
 
@@ -485,6 +491,37 @@ void ForgetGpu(int model = -1) {
   }
 }
 
+int DiffuseSlot(const Mesh& s);
+std::string ObjTexture(const Obj& o) {
+  if (o.meshes.empty() || !g_arena) return "";
+  const Model& m = g_arena->models[o.model].model;
+  const int slot = DiffuseSlot(m.meshes[o.meshes[0]]);
+  return slot >= 0 && slot < int(m.textures.size()) ? m.textures[slot] : "";
+}
+void SetObjTexture(Obj& o, const std::string& name);
+bool Selected(int i) { return i == g_sel || std::find(g_multi.begin(), g_multi.end(), i) != g_multi.end(); }
+// every selected object (the primary first)
+std::vector<int> Selection() {
+  std::vector<int> v;
+  if (g_sel >= 0 && g_sel < int(g_objs.size())) v.push_back(g_sel);
+  for (int i : g_multi)
+    if (i >= 0 && i < int(g_objs.size()) && i != g_sel) v.push_back(i);
+  return v;
+}
+void SelectOne(int i) { g_sel = i, g_multi.clear(); }
+void ToggleSelect(int i) {
+  if (i < 0) return;
+  if (g_sel < 0) { g_sel = i; return; }
+  if (i == g_sel) {  // the primary goes: the next one becomes primary
+    g_sel = g_multi.empty() ? -1 : g_multi.front();
+    if (!g_multi.empty()) g_multi.erase(g_multi.begin());
+    return;
+  }
+  auto it = std::find(g_multi.begin(), g_multi.end(), i);
+  if (it == g_multi.end()) g_multi.push_back(i);
+  else g_multi.erase(it);
+}
+
 int DiffuseSlot(const Mesh& s) {
   for (const auto& p : s.params)
     if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) return int(Be32(p.value.data()));
@@ -660,8 +697,8 @@ std::map<uint32_t, std::string> ModelFlags() {
 
 void BuildObjects() {
   g_objs.clear();
-  g_undo.clear();
-  g_sel = -1;
+  g_undo.clear(), g_redo.clear();
+  g_sel = -1, g_multi.clear();
   ForgetGpu();
   ForgetTextures();
   if (!g_arena) return;
@@ -702,28 +739,46 @@ void BuildObjects() {
 
 Snapshot Snap() {
   Snapshot s;
-  for (const auto& o : g_objs) s.xf.push_back({o.pos.x, o.pos.y, o.pos.z, o.yaw, o.scale, o.hidden ? 1.f : 0.f});
+  for (const auto& o : g_objs) {
+    s.xf.push_back({o.pos.x, o.pos.y, o.pos.z, o.yaw, o.scale, o.hidden ? 1.f : 0.f});
+    s.tex.push_back(ObjTexture(o));
+  }
   return s;
 }
 
 void PushUndo() {
   g_undo.push_back(Snap());
   if (g_undo.size() > 64) g_undo.erase(g_undo.begin());
+  g_redo.clear();
 }
 
-void Undo() {
-  if (g_undo.empty()) return;
-  const Snapshot s = g_undo.back();
-  g_undo.pop_back();
+void Restore(const Snapshot& s) {
   for (size_t i = 0; i < g_objs.size() && i < s.xf.size(); ++i) {
     Obj& o = g_objs[i];
     const auto& x = s.xf[i];
+    if (i < s.tex.size() && !s.tex[i].empty() && s.tex[i] != ObjTexture(o)) SetObjTexture(o, s.tex[i]);
     if (o.pos.x == x[0] && o.pos.y == x[1] && o.pos.z == x[2] && o.yaw == x[3] && o.scale == x[4] &&
         o.hidden == (x[5] > 0.5f))
       continue;
     o.pos = {x[0], x[1], x[2]}, o.yaw = x[3], o.scale = x[4], o.hidden = x[5] > 0.5f;
     ApplyObj(o);
   }
+}
+
+void Undo() {
+  if (g_undo.empty()) return;
+  g_redo.push_back(Snap());
+  const Snapshot s = g_undo.back();
+  g_undo.pop_back();
+  Restore(s);
+}
+
+void Redo() {
+  if (g_redo.empty()) return;
+  g_undo.push_back(Snap());
+  const Snapshot s = g_redo.back();
+  g_redo.pop_back();
+  Restore(s);
 }
 
 // Ringside / entrance parts: the game's moves aim at fixed spots near them.
@@ -803,6 +858,18 @@ void Duplicate(int i) {
   Log("Duplicated " + src.label + ".");
 }
 
+void DuplicateSelection() {
+  const std::vector<int> sel = Selection();
+  if (sel.size() <= 1) { Duplicate(g_sel); return; }
+  std::vector<int> made;
+  for (int i : sel) {
+    Duplicate(i);
+    if (g_sel >= 0 && g_sel != i) made.push_back(g_sel);
+  }
+  g_sel = made.empty() ? -1 : made.front();
+  g_multi.assign(made.begin() + (made.empty() ? 0 : 1), made.end());
+}
+
 void Delete(int i) {
   if (i < 0) return;
   Obj& o = g_objs[i];
@@ -829,12 +896,32 @@ void Delete(int i) {
   ForgetGpu(o.model);
   g_objs.erase(g_objs.begin() + i);
   g_sel = -1;
-  g_undo.clear();  // (structure changed)
+  g_multi.clear();
+  g_undo.clear(), g_redo.clear();  // (structure changed)
   Edited();
 }
 
+// The selection's objects: hidden (game objects) or removed (added ones), highest index first.
+void DeleteSelection() {
+  std::vector<int> sel = Selection();
+  std::sort(sel.rbegin(), sel.rend());
+  for (int i : sel) Delete(i);
+  g_sel = -1, g_multi.clear();
+}
+
+void HideSelection(bool hide) {
+  PushUndo();
+  for (int i : Selection()) {
+    g_objs[i].hidden = hide;
+    ApplyObj(g_objs[i]);
+  }
+}
+
+void DuplicateSelection();
+
 void SetObjTexture(Obj& o, const std::string& name) {
   Model& m = g_arena->models[o.model].model;
+  if (ObjTexture(o) == name) return;
   int slot = -1;
   for (size_t i = 0; i < m.textures.size(); ++i)
     if (m.textures[i] == name) slot = int(i);
@@ -1104,13 +1191,14 @@ void RenderScene() {
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
   g_ctx->OMSetDepthStencilState(g_depth, 0);
   // the selection, as a wireframe on top
-  if (g_sel >= 0 && g_sel < int(g_objs.size()) && g_objs[g_sel].role == Role::kNormal && !g_objs[g_sel].hidden) {
-    g_ctx->RSSetState(g_wire);
-    const float orange[3] = {1.0f, 0.55f, 0.1f};
-    SetCb(ident, light, orange);
-    for (int k : g_objs[g_sel].meshes) DrawMesh(g_objs[g_sel].model, k);
-    g_ctx->RSSetState(g_solid);
+  g_ctx->RSSetState(g_wire);
+  for (int i : Selection()) {
+    if (g_objs[i].role != Role::kNormal || g_objs[i].hidden) continue;
+    const float orange[3] = {1.0f, 0.55f, 0.1f}, yellow[3] = {1.0f, 0.9f, 0.3f};
+    SetCb(ident, light, i == g_sel ? orange : yellow);
+    for (int k : g_objs[i].meshes) DrawMesh(g_objs[i].model, k);
   }
+  g_ctx->RSSetState(g_solid);
   ID3D11RenderTargetView* none = nullptr;
   g_ctx->OMSetRenderTargets(1, &none, nullptr);
 }
@@ -1211,7 +1299,10 @@ void Outliner() {
       }
       ImGui::SameLine();
       if (o.hidden) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-      if (ImGui::Selectable(o.label.c_str(), g_sel == int(i))) g_sel = int(i);
+      if (ImGui::Selectable(o.label.c_str(), Selected(int(i)))) {
+        if (ImGui::GetIO().KeyCtrl) ToggleSelect(int(i));
+        else SelectOne(int(i));
+      }
       if (o.hidden) ImGui::PopStyleColor();
       ImGui::PopID();
     }
@@ -1233,6 +1324,20 @@ void RingKitPanel() {
       g_ring.ropes[r].tint = uint32_t(col[0] * 255 + 0.5f) << 16 | uint32_t(col[1] * 255 + 0.5f) << 8 |
                              uint32_t(col[2] * 255 + 0.5f);
       changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(g_ring.ropes[r].texture.empty() ? "Picture..." : "Picture*")) {
+      if (g_hooks.pick_picture) {
+        const std::string f = g_hooks.pick_picture("A picture wrapped along the rope (a wide strip works best)");
+        if (!f.empty()) g_ring.ropes[r].texture = f, changed = true;
+      }
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", g_ring.ropes[r].texture.empty() ? "A picture of your own along this rope (tape, a logo, a pattern)."
+                                                               : g_ring.ropes[r].texture.c_str());
+    if (!g_ring.ropes[r].texture.empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) g_ring.ropes[r].texture.clear(), changed = true;
     }
     ImGui::PopID();
   }
@@ -1282,8 +1387,23 @@ void LightingPanel() {
 
 void Inspector() {
   if (g_sel < 0 || g_sel >= int(g_objs.size())) {
-    ImGui::TextDisabled("Click an object in the view or the list.");
+    ImGui::TextDisabled("Click an object in the view or the list. Ctrl+click adds to the selection.");
     return;
+  }
+  if (!g_multi.empty()) {
+    const std::vector<int> sel = Selection();
+    ImGui::Text("%zu objects selected", sel.size());
+    ImGui::TextDisabled("Move, Turn and Scale in the view act on all of them; so do these:");
+    if (ImGui::Button("Duplicate all")) DuplicateSelection();
+    ImGui::SameLine();
+    if (ImGui::Button("Hide all")) HideSelection(true);
+    ImGui::SameLine();
+    if (ImGui::Button("Show all")) HideSelection(false);
+    if (ImGui::Button("Delete all")) { DeleteSelection(); return; }
+    ImGui::SameLine();
+    if (ImGui::Button("Select one")) g_multi.clear();
+    ImGui::Separator();
+    ImGui::TextDisabled("The first one:");
   }
   Obj& o = g_objs[g_sel];
   const ArenaModel& am = g_arena->models[o.model];
@@ -1314,7 +1434,7 @@ void Inspector() {
       Constrain(o);
       ApplyObj(o);
     }
-    if (ImGui::Button("Duplicate")) Duplicate(g_sel);
+    if (ImGui::Button("Duplicate")) DuplicateSelection();
     ImGui::SameLine();
     if (ImGui::Button("Reset")) {
       PushUndo();
@@ -1343,7 +1463,7 @@ void Inspector() {
     if (ImGui::BeginCombo("Texture", cur.c_str())) {
       for (const auto& b : g_arena->bundles)
         for (const auto& t : b.textures)
-          if (ImGui::Selectable(t.name.c_str(), t.name == cur)) SetObjTexture(o, t.name);
+          if (ImGui::Selectable(t.name.c_str(), t.name == cur)) PushUndo(), SetObjTexture(o, t.name);
       ImGui::EndCombo();
     }
     if (ImGui::Button("Use a picture...")) {
@@ -1357,7 +1477,7 @@ void Inspector() {
         const std::string path = U8(fs::path(file));
         const std::string name = AddPicture(path);
         if (name.empty()) Log("That picture could not be read.");
-        else SetObjTexture(o, name), Log("New texture " + name + " on " + o.label + ".");
+        else PushUndo(), SetObjTexture(o, name), Log("New texture " + name + " on " + o.label + ".");
       }
     }
     ImGui::SameLine();
@@ -1465,11 +1585,62 @@ void LibraryPanel() {
   ImGui::EndDisabled();
 }
 
+// Pictures from a folder onto the arena's textures of the same name (<name>.png / .dds).
+void RetextureFromFolder(const std::string& folder) {
+  int done = 0;
+  std::error_code ec;
+  std::vector<std::string> keep;
+  for (auto& b : g_arena->bundles)
+    for (auto& t : b.textures) {
+      fs::path f;
+      for (const char* ext : {".png", ".dds", ".jpg", ".tga", ".bmp"})
+        if (fs::exists(fs::u8path(folder) / (t.name + ext), ec)) { f = fs::u8path(folder) / (t.name + ext); break; }
+      if (f.empty()) continue;
+      Image img;
+      DdsInfo info;
+      if (!DdsInfoOf(t.data, info)) continue;
+      if (f.extension() == ".dds") {
+        Bytes d;
+        if (!ReadFile(U8(f), d) || !DdsDecode(d, img)) continue;
+      } else if (!LoadImageFile(U8(f), img)) {
+        continue;
+      }
+      const DxtFormat fmt = info.format == DxtFormat::kArgb ? DxtFormat::kDxt5 : info.format;
+      t.data = DdsEncode(Resize(img, info.w, info.h), fmt, info.mips > 1);
+      b.changed = true;
+      keep.push_back(t.name);
+      ++done;
+    }
+  ForgetTextures();
+  Edited();
+  Log(std::to_string(done) + " textures replaced from " + folder + " (same size and format as the arena's).");
+}
+
 void AddPanel() {
   static float box[3] = {1.0f, 1.0f, 1.0f};  // metres
   ImGui::SetNextItemWidth(-90);
   ImGui::DragFloat3("Box (m)", box, 0.05f, 0.1f, 50, "%.2f");
   if (ImGui::Button("Add box at the view centre")) AddBox(box[0] * 10, box[1] * 10, box[2] * 10);
+  if (ImGui::Button("Pictures from a folder...")) {
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+      DWORD opt = 0;
+      dlg->GetOptions(&opt);
+      dlg->SetOptions(opt | FOS_PICKFOLDERS);
+      dlg->SetTitle(L"A folder of pictures named like the arena's textures");
+      IShellItem* item = nullptr;
+      PWSTR path = nullptr;
+      if (SUCCEEDED(dlg->Show(nullptr)) && SUCCEEDED(dlg->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+        RetextureFromFolder(U8(fs::path(path)));
+        CoTaskMemFree(path);
+      }
+      if (item) item->Release();
+      dlg->Release();
+    }
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Every picture in the folder whose name matches one of the arena's textures replaces it (fitted to "
+                      "the same size and format): a whole retexture at once, e.g. textures exported from another game.");
   if (ImGui::Button("Add object from a file (.obj / .fbx)...")) {
     wchar_t file[MAX_PATH] = L"";
     OPENFILENAMEW ofn = {sizeof ofn};
@@ -1529,6 +1700,19 @@ void ViewportInput(bool hovered) {
   }
   Obj* sel = g_sel >= 0 && g_sel < int(g_objs.size()) ? &g_objs[g_sel] : nullptr;
   const bool can_edit = sel && sel->movable && g_tool != Tool::kSelect;
+  // the start of every selected object (a drag moves them together)
+  static std::vector<std::pair<int, std::array<float, 5>>> drag_starts;
+  if (g_grid) {  // a 1 m grid on the floor round the view's target, 5 m lines brighter
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float y = g_area_lo >= 0 ? g_target.y : kMatY + 10.0f;  // (the arena floor is a metre under the mat)
+    const float cx = std::round(g_target.x / 50) * 50, cz = std::round(g_target.z / 50) * 50;
+    for (int k = -30; k <= 30; ++k) {
+      const ImU32 col = k % 5 ? IM_COL32(255, 255, 255, 18) : IM_COL32(255, 255, 255, 45);
+      ImVec2 a, b;
+      if (ToScreen({cx + k * 10.f, y, cz - 300}, a) && ToScreen({cx + k * 10.f, y, cz + 300}, b)) dl->AddLine(a, b, col);
+      if (ToScreen({cx - 300, y, cz + k * 10.f}, a) && ToScreen({cx + 300, y, cz + k * 10.f}, b)) dl->AddLine(a, b, col);
+    }
+  }
   // gizmo: axes from the selection's pivot (screen space), 6 m long
   ImVec2 base_s, axis_s[3];
   bool gizmo = false;
@@ -1545,6 +1729,23 @@ void ViewportInput(bool hovered) {
         dl->AddLine(base_s, axis_s[a], cols[a], 3);
         dl->AddCircleFilled(axis_s[a], 5, cols[a]);
       }
+    } else if (gizmo && g_tool == Tool::kRotate) {  // a ring round the pivot: drag left / right turns
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      ImVec2 prev;
+      bool have = false;
+      for (int k = 0; k <= 48; ++k) {
+        const float a = k * 2 * kPi / 48, r = g_dist * 0.1f;
+        ImVec2 q;
+        if (!ToScreen(at + V3{std::cos(a) * r, 0, std::sin(a) * r}, q)) { have = false; continue; }
+        if (have) dl->AddLine(prev, q, IM_COL32(70, 220, 90, 230), 2.5f);
+        prev = q, have = true;
+      }
+      dl->AddText(ImVec2(base_s.x + 8, base_s.y - 20), IM_COL32(220, 255, 220, 255), "drag left / right to turn");
+    } else if (gizmo && g_tool == Tool::kScale) {  // a box on the pivot: drag left / right scales
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      dl->AddRect(ImVec2(base_s.x - 8, base_s.y - 8), ImVec2(base_s.x + 8, base_s.y + 8), IM_COL32(255, 200, 60, 255), 2, 0, 2.5f);
+      dl->AddLine(base_s, ImVec2(base_s.x + 40, base_s.y), IM_COL32(255, 200, 60, 200), 2);
+      dl->AddText(ImVec2(base_s.x + 8, base_s.y - 20), IM_COL32(255, 240, 200, 255), "drag left / right to scale");
     }
   }
   if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -1565,12 +1766,17 @@ void ViewportInput(bool hovered) {
     if (g_drag_axis < 0) {
       float t;
       const int hit = Pick(ro, rd, &t);
-      if (hit >= 0 && hit == g_sel && can_edit && g_tool == Tool::kMove) {
+      if (hit >= 0 && Selected(hit) && can_edit && g_tool == Tool::kMove && !io.KeyCtrl) {
         g_drag_axis = 3;  // drag on the floor plane
         g_drag_hit = ro + rd * t;
+      } else if (io.KeyCtrl) {
+        ToggleSelect(hit);
+      } else if (hit >= 0 && Selected(hit) && can_edit && g_tool != Tool::kSelect) {
+        // (a selected object clicked in Turn / Scale: the drag below)
       } else {
-        g_sel = hit;
+        SelectOne(hit);
       }
+      sel = g_sel >= 0 && g_sel < int(g_objs.size()) ? &g_objs[g_sel] : nullptr;
     }
     if (g_drag_axis >= 0 && sel) {
       PushUndo();
@@ -1579,13 +1785,20 @@ void ViewportInput(bool hovered) {
       g_drag_start_scale = sel->scale;
       g_drag_mouse = m;
     }
-    if (can_edit && g_drag_axis < 0 && g_sel == int(sel - g_objs.data()) && g_tool != Tool::kMove &&
-        g_tool != Tool::kSelect) {
+    if (sel && sel->movable && g_drag_axis < 0 && Selected(int(sel - g_objs.data())) && g_tool != Tool::kMove &&
+        g_tool != Tool::kSelect && !io.KeyCtrl) {
       PushUndo();
       g_drag_axis = 4;  // rotate / scale by horizontal drag
       g_drag_start_yaw = sel->yaw;
       g_drag_start_scale = sel->scale;
       g_drag_mouse = m;
+    }
+    if (g_drag_axis >= 0) {
+      drag_starts.clear();
+      for (int i : Selection()) {
+        const Obj& o = g_objs[i];
+        if (o.movable) drag_starts.push_back({i, {o.pos.x, o.pos.y, o.pos.z, o.yaw, o.scale}});
+      }
     }
   }
   if (g_drag_axis >= 0 && sel && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -1597,7 +1810,7 @@ void ViewportInput(bool hovered) {
       if (l > 1) {
         const float px = ((m.x - g_drag_mouse.x) * vx + (m.y - g_drag_mouse.y) * vy) / l;
         float units = px / l * (g_dist * 0.12f);
-        if (g_snap) units = std::round(units);
+        if (g_snap) units = std::round(units / g_snap_step) * g_snap_step;
         V3 p = g_drag_start_pos;
         if (g_drag_axis == 0) p.x += units;
         if (g_drag_axis == 1) p.y -= units;
@@ -1612,7 +1825,7 @@ void ViewportInput(bool hovered) {
         const float t = (g_drag_hit.y - ro.y) / rd.y;
         const V3 now = ro + rd * t;
         V3 p = g_drag_start_pos + V3{now.x - g_drag_hit.x, 0, now.z - g_drag_hit.z};
-        if (g_snap) p.x = std::round(p.x), p.z = std::round(p.z);
+        if (g_snap) p.x = std::round(p.x / g_snap_step) * g_snap_step, p.z = std::round(p.z / g_snap_step) * g_snap_step;
         sel->pos = p;
       }
     } else if (g_drag_axis == 4) {
@@ -1627,19 +1840,93 @@ void ViewportInput(bool hovered) {
     }
     Constrain(*sel);
     ApplyObj(*sel);
+    // the others follow: the same move, the same turn, the same scale factor
+    const V3 dpos = sel->pos - g_drag_start_pos;
+    const float dyaw = sel->yaw - g_drag_start_yaw, fscale = g_drag_start_scale > 0 ? sel->scale / g_drag_start_scale : 1;
+    for (const auto& [i, st] : drag_starts) {
+      if (i == g_sel || i < 0 || i >= int(g_objs.size())) continue;
+      Obj& o = g_objs[i];
+      o.pos = V3{st[0], st[1], st[2]} + dpos;
+      o.yaw = st[3] + dyaw;
+      o.scale = st[4] * fscale;
+      Constrain(o);
+      ApplyObj(o);
+    }
   }
   if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_drag_axis = -1;
   // keys
   if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !io.WantTextInput) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Z) && io.KeyCtrl) Undo();
-    if (ImGui::IsKeyPressed(ImGuiKey_D) && io.KeyCtrl) Duplicate(g_sel);
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete)) Delete(g_sel);
+    if (ImGui::IsKeyPressed(ImGuiKey_Z) && io.KeyCtrl && !io.KeyShift) Undo();
+    if ((ImGui::IsKeyPressed(ImGuiKey_Y) && io.KeyCtrl) || (ImGui::IsKeyPressed(ImGuiKey_Z) && io.KeyCtrl && io.KeyShift)) Redo();
+    if (ImGui::IsKeyPressed(ImGuiKey_D) && io.KeyCtrl) DuplicateSelection();
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete)) DeleteSelection();
+    if (ImGui::IsKeyPressed(ImGuiKey_A) && io.KeyCtrl) {  // select every movable object shown
+      g_multi.clear();
+      for (size_t i = 0; i < g_objs.size(); ++i)
+        if (g_objs[i].movable && !g_objs[i].hidden && !g_objs[i].outside) (g_sel < 0 ? g_sel = int(i) : (g_multi.push_back(int(i)), 0));
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) SelectOne(-1);
+    // arrow keys nudge the selection by the snap step (Shift: x10; PageUp / PageDown: up / down)
+    {
+      V3 d;
+      const float step = g_snap_step * (io.KeyShift ? 10 : 1);
+      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) d.x -= step;
+      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) d.x += step;
+      if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) d.z -= step;
+      if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) d.z += step;
+      if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) d.y -= step;
+      if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) d.y += step;
+      if (d.x || d.y || d.z) {
+        PushUndo();
+        for (int i : Selection()) {
+          Obj& o = g_objs[i];
+          if (!o.movable) continue;
+          o.pos = o.pos + d;
+          Constrain(o);
+          ApplyObj(o);
+        }
+      }
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_W)) g_tool = Tool::kMove;
     if (ImGui::IsKeyPressed(ImGuiKey_E)) g_tool = Tool::kRotate;
     if (ImGui::IsKeyPressed(ImGuiKey_R)) g_tool = Tool::kScale;
     if (ImGui::IsKeyPressed(ImGuiKey_Q)) g_tool = Tool::kSelect;
     if (ImGui::IsKeyPressed(ImGuiKey_F) && sel) g_target = sel->pivot + sel->pos;
   }
+}
+
+// The viewport's picture into a PNG file the user picks.
+void SaveViewPicture() {
+  if (!g_rt) return;
+  wchar_t file[MAX_PATH] = L"arena.png";
+  OPENFILENAMEW ofn = {sizeof ofn};
+  ofn.lpstrFilter = L"PNG picture\0*.png\0";
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrDefExt = L"png";
+  ofn.Flags = OFN_OVERWRITEPROMPT;
+  if (!GetSaveFileNameW(&ofn)) return;
+  D3D11_TEXTURE2D_DESC td;
+  g_rt->GetDesc(&td);
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  ID3D11Texture2D* staging = nullptr;
+  if (FAILED(g_dev->CreateTexture2D(&td, nullptr, &staging))) return;
+  g_ctx->CopyResource(staging, g_rt);
+  D3D11_MAPPED_SUBRESOURCE ms;
+  if (SUCCEEDED(g_ctx->Map(staging, 0, D3D11_MAP_READ, 0, &ms))) {
+    Image img;
+    img.w = int(td.Width), img.h = int(td.Height);
+    img.rgba.resize(size_t(img.w) * img.h * 4);
+    for (int y = 0; y < img.h; ++y) {
+      std::memcpy(&img.rgba[size_t(y) * img.w * 4], static_cast<const uint8_t*>(ms.pData) + size_t(y) * ms.RowPitch, size_t(img.w) * 4);
+      for (int x = 0; x < img.w; ++x) img.rgba[(size_t(y) * img.w + x) * 4 + 3] = 255;
+    }
+    g_ctx->Unmap(staging, 0);
+    Log(SavePng(U8(fs::path(file)), img) ? "Picture saved: " + U8(fs::path(file)) : "The picture could not be written.");
+  }
+  staging->Release();
 }
 
 void ViewPreset(int which) {
@@ -1711,6 +1998,8 @@ void FocusArea() {
 }
 
 bool Busy() { return g_budget_busy; }
+bool HasArena() { return g_arena != nullptr; }
+int EditCount() { return g_edits; }
 
 void TestEdit() {
   if (!g_arena) return;
@@ -1859,7 +2148,22 @@ void Draw() {
   tool("Scale (R)", Tool::kScale);
   ImGui::Checkbox("Snap", &g_snap);
   ImGui::SameLine();
+  ImGui::SetNextItemWidth(70 * scale);
+  const char* steps[] = {"10 cm", "25 cm", "50 cm", "1 m"};
+  const float step_v[] = {1, 2.5f, 5, 10};
+  int si = 2;
+  for (int k = 0; k < 4; ++k)
+    if (std::fabs(step_v[k] - g_snap_step) < 0.01f) si = k;
+  if (ImGui::Combo("##step", &si, steps, 4)) g_snap_step = step_v[si];
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("The snap step: moves and arrow-key nudges round to it.");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(g_undo.empty());
   if (ImGui::Button("Undo")) Undo();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(g_redo.empty());
+  if (ImGui::Button("Redo")) Redo();
+  ImGui::EndDisabled();
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -1871,7 +2175,12 @@ void Draw() {
   ImGui::SameLine();
   ImGui::Checkbox("Ring", &g_show_ring);
   ImGui::SameLine();
+  ImGui::Checkbox("Grid", &g_grid);
+  ImGui::SameLine();
   ImGui::Checkbox("Mirror", &g_mirror);
+  ImGui::SameLine();
+  if (ImGui::Button("Picture...")) SaveViewPicture();
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("The view as a PNG file.");
   if (g_hooks.test_in_game) {
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - 150 * scale));
@@ -1899,7 +2208,8 @@ void Draw() {
                                        ImVec2(g_vp_min.x + w, g_vp_min.y + h));
   ViewportInput(hovered);
   ImGui::GetWindowDrawList()->AddText(ImVec2(g_vp_min.x + 8, g_vp_min.y + 6), IM_COL32(200, 200, 210, 200),
-                                      "Right drag: orbit   Middle drag: pan   Wheel: zoom   F: focus   Ctrl+Z: undo");
+                                      "Right drag: orbit   Middle drag: pan   Wheel: zoom   F: focus   Ctrl+click: add to selection   "
+                                      "Arrows: nudge   Ctrl+Z / Ctrl+Y: undo / redo");
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("inspector", ImVec2(0, 0), true);

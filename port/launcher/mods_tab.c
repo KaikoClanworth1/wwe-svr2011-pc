@@ -30,6 +30,7 @@ enum { MODS_MAX = 512 };
 typedef struct {
     WCHAR folder[MAX_PATH];  /* full path */
     WCHAR type[32], id[64], name[128], author[64], version[32];
+    WCHAR made_with[64];  /* manifest made_with= (the Mod Maker stamps its mods); "" = not made with it */
     unsigned long long bytes;
     int enabled;
 } Mod;
@@ -69,6 +70,7 @@ static int read_manifest(const WCHAR *path, Mod *m)
         else if (!wcscmp(w, L"name")) wcsncpy_s(m->name, 128, eq, _TRUNCATE);
         else if (!wcscmp(w, L"author")) wcsncpy_s(m->author, 64, eq, _TRUNCATE);
         else if (!wcscmp(w, L"version")) wcsncpy_s(m->version, 32, eq, _TRUNCATE);
+        else if (!wcscmp(w, L"made_with")) wcsncpy_s(m->made_with, 64, eq, _TRUNCATE);
     }
     fclose(f);
     return m->type[0] && m->id[0];
@@ -96,7 +98,7 @@ static int maker_present(void);
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"MatchTypes" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -151,6 +153,8 @@ static void fill(void)
         ListView_SetItemText(s_list, i, 3, s_mods[i].author);
         swprintf_s(size, 32, L"%.1f MB", s_mods[i].bytes / 1048576.0);
         ListView_SetItemText(s_list, i, 4, size);
+        /* made with the Mod Maker (its stamp), or not - a flag, not a warning */
+        ListView_SetItemText(s_list, i, 5, s_mods[i].made_with[0] ? s_mods[i].made_with : L"non-Mod Maker");
         ListView_SetCheckState(s_list, i, s_mods[i].enabled);
     }
     s_filling = 0;
@@ -376,15 +380,26 @@ static int install_file(const WCHAR *zip)
         const int backstage = !_wcsicmp(m.type, L"backstage");
         const int arena = !_wcsicmp(m.type, L"arena") || backstage, star = !_wcsicmp(m.type, L"superstar");
         const int signs = !_wcsicmp(m.type, L"signs"), media = !_wcsicmp(m.type, L"media");
+        const int moves = !_wcsicmp(m.type, L"moves");
         const int match_type = !_wcsicmp(m.type, L"matchtype");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
         if (signs || media || match_type) {
             wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
             goto place;
         }
+        if (moves) {  /* a move pack: pack.txt + motions (docs/MOVE_PACKS.md) */
+            swprintf_s(need1, MAX_PATH, L"%s\\pack.txt", tmp);
+            if (!exists(need1)) {
+                status(L"That move pack is incomplete (it needs pack.txt).");
+                remove_tree(tmp, 0);
+                return 0;
+            }
+            wcsncpy_s(kind, 32, L"Moves", _TRUNCATE);
+            goto place;
+        }
         if (!arena && !star) {
-            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, backstage, superstar, sign, media "
-                               L"and match type mods.", m.name, m.type);
+            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, backstage, superstar, sign, media, "
+                               L"move and match type mods.", m.name, m.type);
             status(t);
             remove_tree(tmp, 0);
             return 0;
@@ -438,6 +453,7 @@ place:
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
                        : !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
+                       : !wcscmp(kind, L"Moves") ? L"Installed \"%s\". The game merges its moves into its files when it next starts (a few seconds)."
                        : !wcscmp(kind, L"MatchTypes") ? L"Installed \"%s\". The match type is in the game's menus the "
                                                         L"next time the game starts."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
@@ -523,8 +539,8 @@ static void open_maker(void)
 
 void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_font)
 {
-    static const WCHAR *const names[] = { L"Name", L"Type", L"Version", L"Author", L"Size" };
-    static const int widths[] = { 196, 60, 62, 110, 62 };  /* (the list is 512 wide) */
+    static const WCHAR *const names[] = { L"Name", L"Type", L"Version", L"Author", L"Size", L"Made with" };
+    static const int widths[] = { 150, 60, 52, 84, 56, 104 };  /* (the list is 512 wide) */
     HWND h;
     HDC dc;
     int i, dpi;
@@ -540,7 +556,7 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
                  28, 126, 512, 250, id_base + M_LIST);
     ListView_SetExtendedListViewStyle(s_list, LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_DOUBLEBUFFER);
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 6; i++) {
         LVCOLUMNW c;
         ZeroMemory(&c, sizeof c);
         c.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;

@@ -1327,6 +1327,40 @@ REX_HOOK_RAW(sub_82216C58) {
       ctx = saved;
       a.wrestler = 0;
     }
+  // Test aid: SVR2011_TEST_FORCE_MOVE=<attacker person>,<target person>,<every s>,<motion>[,<motion>...]
+  // - in a match, every <s> seconds the attacker starts the next motion (a
+  // paired move, sub_82191AA8) on the target, wherever they are: for seeing
+  // ported moves without waiting for the AI to pick them.
+  static const std::vector<uint32_t> force = [] {
+    std::vector<uint32_t> v;
+    if (const char* e = std::getenv("SVR2011_TEST_FORCE_MOVE"))
+      for (const char* p = e; *p;) {
+        char* end = nullptr;
+        const unsigned long n = std::strtoul(p, &end, 10);
+        if (end == p) break;
+        v.push_back(uint32_t(n));
+        for (p = end; *p == ',' || *p == ' ';) ++p;
+      }
+    return v.size() >= 4 ? v : std::vector<uint32_t>{};
+  }();
+  if (!force.empty() && force[0] < 6 && force[1] < 6) {
+    constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C;
+    const uint32_t att = Rd32(base + kChars + force[0] * 4), tgt = Rd32(base + kChars + force[1] * 4);
+    const uint32_t frames = Rd32(base + kMatchFrames), every = std::max<uint32_t>(force[2], 1) * 60;
+    static uint32_t last = 0, next = 0;
+    if (att == fighter && tgt && frames > 300 && frames >= last + every) {
+      last = frames;
+      const uint32_t motion = force[3 + next++ % (force.size() - 3)];
+      const auto saved = ctx;
+      ctx.r3.u64 = att;
+      ctx.r4.u64 = tgt;
+      ctx.r5.u64 = motion;
+      sub_82191AA8(ctx, base);
+      REXLOG_INFO("match types: test - person {} starts motion {} on person {} ({} -> state {})", force[0], motion,
+                  force[1], frames, Rd32(base + att + 212));
+      ctx = saved;
+    }
+  }
 }
 
 // -- The lumberjacks' controller ---------------------------------------------

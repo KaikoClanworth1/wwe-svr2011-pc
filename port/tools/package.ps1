@@ -27,6 +27,13 @@ foreach ($f in $files) {
 $modmaker = Join-Path $build "SvR2011 Mod Maker.exe"
 if ($WithModMaker) {
     if (Test-Path $modmaker) { Copy-Item $modmaker $stage } else { Write-Warning "no SvR2011 Mod Maker.exe in $build" }
+    # the converters its Other games page runs (Python 3 + numpy + Pillow on the player's side)
+    $mmtools = Join-Path $stage "Mod Maker Tools"
+    New-Item -ItemType Directory -Force $mmtools | Out-Null
+    foreach ($t in @("svrfmt.py", "jboy.py", "ch_tool.py", "svr10_char.py", "svr10_bruise.py", "svr10_moves.py",
+                     "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py")) {
+        Copy-Item (Join-Path $PSScriptRoot $t) $mmtools
+    }
 }
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
