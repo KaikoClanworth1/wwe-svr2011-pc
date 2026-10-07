@@ -13,6 +13,7 @@
 // display order; flag 2 at +0x3C marks the group's last row; a submenu finds
 // its rows by their parent node, +0x38). No file size limit applies.
 #include "match_types.h"
+#include "mystery_opponent.h"
 
 #include <algorithm>
 #include <cctype>
@@ -156,6 +157,10 @@ constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
 WeaponsRow g_stages_row = {~0u, ~0u};
 bool g_pending_stages = false;
+// MYSTERY OPPONENT: ONE ON ONE -> NORMAL MATCH becomes a submenu of NORMAL
+// MATCH and MYSTERY OPPONENT (mystery_opponent.cpp: a normal one on one).
+WeaponsRow g_mystery_row = {~0u, ~0u};
+bool g_pending_mystery = false;
 uint32_t g_stages_text[2] = {};
 constexpr uint32_t kTripleThreat = 0x0D, kFatal4Way = 0x0E;
 std::vector<WeaponsRow> g_elim_rows;  // (group, place in the group)
@@ -267,6 +272,39 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
       REXLOG_INFO("match types: SLOBBER KNOCKER at group {:02X} row {}", kHandicapGroup, index);
+    }
+    if (Rd32(rec + 0x5C) == 0x00 && Rd32(rec + 0x18) == kFullGroup && submenu) {
+      // NORMAL MATCH becomes a submenu (its own node) of NORMAL MATCH and
+      // MYSTERY OPPONENT (a new group), as EXTREME RULES below.
+      out.resize(out.size() - kRec);
+      std::vector<uint8_t> row(submenu, submenu + kRec);
+      Wr32(row.data() + 0x00, Rd32(rec + 0x00));
+      Wr32(row.data() + 0x04, Rd32(rec + 0x04));
+      Wr32(row.data() + 0x18, kFullGroup);
+      Wr32(row.data() + 0x1C, Rd32(rec + 0x1C));
+      Wr32(row.data() + 0x38, Rd32(rec + 0x38));
+      Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
+      Wr32(row.data() + 0x40, Rd32(rec + 0x40));
+      out.insert(out.end(), row.begin(), row.end());
+      for (uint32_t k = 0; k < 2; ++k) {  // (NORMAL MATCH, MYSTERY OPPONENT)
+        std::vector<uint8_t> leaf(rec, rec + kRec);
+        Wr32(leaf.data() + 0x18, group);
+        Wr32(leaf.data() + 0x1C, node + k);
+        Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
+        Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);
+        Wr32(leaf.data() + 0x40, 0);
+        Wr32(leaf.data() + 0x3C, k == 1 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
+        if (k == 1) {
+          Wr32(leaf.data() + 0x00, svr2011::kMysteryLabel);
+          Wr32(leaf.data() + 0x04, svr2011::kMysteryText);
+        }
+        tail.insert(tail.end(), leaf.begin(), leaf.end());
+        ++added;
+      }
+      g_mystery_row = {group, 1};
+      REXLOG_INFO("match types: NORMAL MATCH submenu with MYSTERY OPPONENT, group {:02X}", group);
+      node += 2;
+      ++group;
     }
     if (const uint32_t rule = Rd32(rec + 0x5C);
         rule >= kExtremeFirst && rule <= kExtremeLast && Rd32(rec + 0x18) == kFullGroup && submenu) {
@@ -575,6 +613,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_select_only = true;
   }
   g_pending_stages = group == g_stages_row.group && ctx_row == g_stages_row.index;
+  g_pending_mystery = group == g_mystery_row.group && ctx_row == g_mystery_row.index;
   g_pending_elimination = false;
   for (const WeaponsRow& w : g_elim_rows)
     if (group == w.group && ctx_row == w.index) g_pending_elimination = true;
@@ -649,6 +688,8 @@ REX_HOOK_RAW(sub_827374A0) {
   }
   svr2011::ThreeStagesSetup(g_pending_stages && rule == 0x00 && !Rd32(base + kStoryContext));
   g_pending_stages = false;
+  svr2011::MysteryOpponentSetup(base, g_pending_mystery && rule == 0x00 && !Rd32(base + kStoryContext));
+  g_pending_mystery = false;
   g_elimination = g_pending_elimination && (rule == kTripleThreat || rule == kFatal4Way) && !Rd32(base + kStoryContext);
   g_pending_elimination = false;
   if (g_elimination) REXLOG_INFO("match types: ELIMINATION (rule {:02X})", rule);
@@ -838,6 +879,7 @@ REX_HOOK_RAW(sub_828BBEF0) {
     FillRandomSlots(base, ctx.r3.u32, kSlobberPeople - 2, 1, 3, "slobber knocker opponents");
     for (uint32_t i = kSlobberPeople; i < 6; ++i) Wr32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8, 51200);
   }
+  svr2011::MysteryOpponentFill(base, ctx.r3.u32);  // (mystery_opponent.h)
   __imp__sub_828BBEF0(ctx, base);
 }
 
@@ -1500,6 +1542,7 @@ namespace svr2011 {
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
+  if (const uint32_t t = MysteryOpponentString(id, g_memory)) return t;
   if ((id == kStagesLabel || id == kStagesText) && g_memory) {
     static const char* const kText[] = {
         "THREE STAGES OF HELL",
@@ -1669,10 +1712,11 @@ REX_HOOK_RAW(sub_82490558) {
 REX_EXTERN(__imp__sub_828C48E8);
 REX_HOOK_RAW(sub_828C48E8) {
   constexpr uint32_t kSavedElimination = 18;
-  const uint32_t rule = ctx.r3.u32, saved = ctx.r5.u32;
+  const uint32_t rule = ctx.r3.u32, live = ctx.r4.u32, saved = ctx.r5.u32;
   const bool elim = g_elimination && (rule == kTripleThreat || rule == kFatal4Way) && saved;
   const uint8_t was = elim ? base[saved + kSavedElimination] : 0;
   if (elim) base[saved + kSavedElimination] = 1;
   __imp__sub_828C48E8(ctx, base);
   if (elim) base[saved + kSavedElimination] = was;
+  svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)
 }
