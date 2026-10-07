@@ -584,6 +584,59 @@ bool ReadPacEntry(const fs::path& file, const char* name, Bytes& out, const char
 }
 
 namespace {
+std::map<int, std::map<int, std::string>> g_strings;  // table -> id -> text
+bool g_strings_loaded = false;
+
+// string.pac: EPAC group SDB, entry "64LL" = every table as PACH ids 0..13 (LL 00 = English;
+// IT's is misnamed, so the entry with 14 tables is taken when 6400 is missing). A table:
+// {u32 0, u32 count} then 16-byte records {str_off, str_len, id, 0} sorted by id, UTF-8 text.
+void LoadStrings() {
+  g_strings_loaded = true;
+  if (g_game.empty()) return;
+  PacIndex idx;
+  const fs::path file = fs::path(g_game) / L"pac" / L"string.pac";
+  if (!ReadPacIndex(file, idx)) return;
+  const PacEntryInfo* pick = nullptr;
+  for (const auto& e : idx.entries)
+    if (e.name == "6400") pick = &e;
+  Bytes d;
+  if (!pick || !ReadPacEntry(file, *pick, d)) return;
+  std::vector<PachEntry> tables;
+  if (!PachRead(d, tables)) return;
+  for (const auto& t : tables) {
+    const Bytes& b = t.data;  // (not BPE)
+    if (b.size() < 8) continue;
+    const uint32_t n = Le32(&b[4]);
+    auto& m = g_strings[int(t.id)];
+    for (uint32_t k = 0; k < n && 8 + 16 * size_t(k + 1) <= b.size(); ++k) {
+      const uint8_t* r = &b[8 + 16 * k];
+      const uint32_t off = Le32(r), len = Le32(r + 4), id = Le32(r + 8);
+      if (off >= b.size()) continue;
+      const char* s = reinterpret_cast<const char*>(&b[off]);
+      m[int(id)] = std::string(s, strnlen(s, std::min<size_t>(len ? len : 1, b.size() - off)));
+    }
+  }
+}
+}  // namespace
+
+const std::string& GameString(int id) {
+  static const std::string none;
+  if (!g_strings_loaded) LoadStrings();
+  std::vector<int> order;
+  if (id >= 50000) order = {1};
+  else if (id >= 45000) order = {2};
+  else if (id >= 40000) order = {0};
+  else { for (int t = 3; t <= 13; ++t) order.push_back(t); order.push_back(0); }
+  for (int t : order) {
+    const auto tb = g_strings.find(t);
+    if (tb == g_strings.end()) continue;
+    const auto it = tb->second.find(id);
+    if (it != tb->second.end()) return it->second;
+  }
+  return none;
+}
+
+namespace {
 std::map<int, std::string> g_move_names;
 bool g_move_names_loaded = false;
 }  // namespace
@@ -891,6 +944,7 @@ const PageDesc kPages[] = {
     {PageId::kMoves, "Moves", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
+    {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
     {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
@@ -1480,6 +1534,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       run_tool_args = parts;
       g_page = PageId::kOther;
     }
+    else if (!wcscmp(argv[i], L"--match-tab") && more) {  // <tab>[,<rule>]
+      int a[2] = {0, -1};
+      swscanf_s(argv[++i], L"%d,%d", &a[0], &a[1]);
+      match_page::TestTab(a[0], a[1]);
+      g_page = PageId::kMatch;
+    }
     else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
@@ -1605,7 +1665,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"other", L"caw", L"assets", L"anims", L"icons", L"help"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }

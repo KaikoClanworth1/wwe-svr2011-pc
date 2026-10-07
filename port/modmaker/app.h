@@ -168,6 +168,11 @@ bool ReadPacIndex(const fs::path& file, PacIndex& out);
 bool ReadPacEntry(const fs::path& file, const char* name, Bytes& out, const char* group = nullptr);
 bool ReadPacEntry(const fs::path& file, const PacEntryInfo& e, Bytes& out);
 
+// The game's strings (string.pac, English): id -> text ("" if none), loaded on
+// first use. The game's own router: ids >= 50000 table 1, >= 45000 table 2,
+// >= 40000 table 0, else the screen tables 3..13 then 0.
+const std::string& GameString(int id);
+
 // The game's move names (misc.pac MOVS/WAZE: 160-byte records, the name at
 // +0x10, the id at +0x90), loaded on first use; "" if unknown.
 const std::string& MoveName(int id);
@@ -204,7 +209,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kMedia, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -284,6 +289,7 @@ namespace media_page { extern PageHooks hooks; void TestStart(int arena, const s
 namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
+namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
 namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); }
 namespace icons_page { void Draw(); void TestTab(int tab); }

@@ -158,6 +158,22 @@ One pack that replaces the game's own media; every item is optional.
 - **Audio:** a superstar's entrance theme, the menu music, and any game sound
   by its event name (without `Play_`; e.g. `SVR10_Chant_Sena_001`).
 
+## Match types
+
+Match type mods (`type=matchtype`, a manifest only). Two kinds:
+
+- **Port match type (switch):** the switch for one of the match types the
+  port adds (Falls Count Anywhere, Championship Scramble, Lumberjack, ...);
+  the player turns it on or off in the launcher's Mods tab.
+- **Custom match type:** one of the game's matches as the base (picked by
+  name from the 119 rules), under a new row in a menu list (and submenu),
+  with its own people, slots (index, team, kind), arena, option rules with
+  locks, placed weapons and Match Creator rows. The game side that builds
+  these at start is being made by the Limit Breaking work; the page writes
+  the format it will read (docs/MATCH_TYPE_MODS.md) and warns until then.
+- **The game's matches:** every rule record decoded - participants, arena,
+  option rules - as reference, with "Use as the base".
+
 ## Other games
 
 Content from the other SmackDown games, converted the way the bundled mods
