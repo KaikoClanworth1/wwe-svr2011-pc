@@ -129,7 +129,6 @@ struct Project {
   int opt_val[32] = {};
   bool opt_lock[32] = {};
   int weapons = -1;      // rule id, -1 none
-  char mrpd[96] = "";
 };
 Project g_p;
 int g_view_rule = -1;
@@ -169,7 +168,6 @@ std::string Manifest() {
   for (size_t i = 0; i < std::size(kOpt); ++i)
     if (g_p.opt_set[i]) m += std::string("opt.") + kOpt[i].key + "=" + std::to_string(g_p.opt_val[i]) + (g_p.opt_lock[i] ? "!" : "") + "\n";
   if (g_p.weapons >= 0) std::snprintf(b, sizeof b, "weapons=0x%02X\n", g_p.weapons), m += b;
-  if (g_p.mrpd[0]) m += std::string("mrpd=") + g_p.mrpd + "\n";
   return m;
 }
 
@@ -183,7 +181,9 @@ void Problems(std::vector<Problem>& p) {
       for (int k = 0; k < g_p.people; ++k) ok &= g_p.slots[k][0] >= 0 && g_p.slots[k][0] < 6 && g_p.slots[k][1] >= 0 && g_p.slots[k][1] < 6 && g_p.slots[k][2] >= 0 && g_p.slots[k][2] < 4;
       if (!ok) p.push_back(Error("A slot's index / team must be 0-5 and its kind 0-3."));
     }
+    if (g_p.menu == 0 && !g_p.submenu[0]) p.push_back(Error("ONE ON ONE is full (14 rows, the most a list shows): give the row a submenu."));
     p.push_back(Warning("Custom match types need the game side that is being built: until it ships, the game ignores this mod (a switch for a port match type works today)."));
+    p.push_back(Warning("Custom match types play offline, or online only when both players have the same mod."));
   }
   if (!g_game.empty()) {
     std::error_code ec;
@@ -284,7 +284,7 @@ void CustomTab() {
   ImGui::SetNextItemWidth(220 * g_scale);
   ImGui::Combo("Menu list", &g_p.menu, kMenus, int(std::size(kMenus)));
   ImGui::SameLine();
-  TextField("Submenu (optional)", g_p.submenu, sizeof g_p.submenu, "e.g. EXTREME RULES", 220);
+  TextField(g_p.menu == 0 ? "Submenu (needed in ONE ON ONE)" : "Submenu (optional)", g_p.submenu, sizeof g_p.submenu, "e.g. EXTREME RULES", 220);
   TextField("Row text (optional)", g_p.label, sizeof g_p.label, "the name");
   ImGui::SetNextItemWidth(120 * g_scale);
   ImGui::SliderInt("People", &g_p.people, 2, 6);
@@ -351,7 +351,6 @@ void CustomTab() {
     }
     Hint("Which match's weapons lie in and around the ring at the start (Extreme Rules 4D, TLC 48 ...).");
   }
-  TextField("Match Creator rows (optional)", g_p.mrpd, sizeof g_p.mrpd, "env:ladder,table;win:ko,finisher", 420);
   if (ImGui::CollapsingHeader("manifest.txt it writes")) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.8f, 0.55f, 1));
     ImGui::TextUnformatted(Manifest().c_str());
@@ -452,7 +451,6 @@ bool Read(const ProjectIn& in, bool) {
     g_p.opt_lock[i] = v.back() == '!';
   }
   g_p.weapons = in.Get("weapons").empty() ? -1 : int(std::strtol(in.Get("weapons").c_str(), nullptr, 0));
-  std::snprintf(g_p.mrpd, sizeof g_p.mrpd, "%s", in.Get("mrpd").c_str());
   return true;
 }
 
