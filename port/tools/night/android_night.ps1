@@ -90,7 +90,7 @@ function Start-Scenario($s) {
     for ($i = 0; $i -lt 30 -and (-not $log -or $log -eq $before); $i++) { Start-Sleep -Seconds 1; $log = Newest-Log }
     return @{ s = $s; log = $log; start = Get-Date; lines = 0; tmStarted = $false; passed = $false; ends = 0
               err = @(); stuckMax = 0; fps = @(); worst = @(); slow = 0; frames = 0; shots = @(); nextShot = 0
-              lastFpsAt = Get-Date; seen = $false; build = "" }
+              lastFpsAt = Get-Date; seen = $false; build = ""; matches = 0 }
 }
 
 function Read-New($r) {
@@ -101,6 +101,10 @@ function Read-New($r) {
         $r.lines++
         if ($line -match 'test match: ') { $r.tmStarted = $true }
         if ($r.s.expect -and $line -match $r.s.expect) { $r.seen = $true }
+        # (a match's end without the ending replay - tag rules skip it, so no "step 3": its "step 0"
+        # after the test's own match, the second "match:" line - the first is the route's setup match)
+        if ($line -match '\[svr2011\] match: rule') { $r.matches++ }
+        if (-not $r.s.soak -and -not $r.s.need -and $r.matches -ge 2 -and $line -match 'match end: step 0') { $r.passed = $true; $r.ends++ }
         if ($r.s.needs -and $line -match $r.s.needs) { $r.seen = $true }
         if (-not $r.build -and $line -match 'PC port [\d.]+ \(build (\w+)') { $r.build = $Matches[1] }
         if (($r.tmStarted -or $r.s.need) -and $line -match $r.s.pass) {
