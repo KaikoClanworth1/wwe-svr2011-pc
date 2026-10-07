@@ -105,7 +105,7 @@ def main():
     for name, w, h, key in [('banner', 256, 128, 'banner'), ('RAW01', 1024, 512, 'vs_bg'), ('RAW02', 1024, 128, 'vs_plate')]:
         subprocess.run([SVRMOD, 'dds', pics[key], str(w), str(h), os.path.join(OUT, name + '.dds')], check=True)
     manifest = ('type=arena\nid=raw_is_war\nname=Raw Is War 1997\nauthor=WWE 13 textures (test)\nversion=1.0\n'
-                'base=arena_RAW\n')
+                "base=arena_RAW\nmade_with=Port tools (WWE '13)\n")
     out = os.path.join(OUT, 'raw_is_war.svrmod')
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
         z.writestr('manifest.txt', manifest)
