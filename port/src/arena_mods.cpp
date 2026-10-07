@@ -914,23 +914,51 @@ void RedirectArena(int arena, const std::string& file) {
     REXLOG_WARN("[svr2011] arena mods: {} not found", source.string());
     return;
   }
-  // The file's stage entry (STG/<nnnn>, the TOC's first entry at +0x80C) is
-  // looked up by the arena's number when the pacs are mounted from their own
-  // tables (a move pack installed: move_packs.cpp): an arena made for another
-  // slot (SmackDown 1999's STG/0000 on BG01) loaded as an empty hall. Such a
-  // file is placed as a copy with the slot's name.
+  // The file's stage entry (STG/<nnnn>) is looked up by the arena's number
+  // when the pacs are mounted from their own tables (a move pack installed:
+  // move_packs.cpp): an arena made for another slot (SmackDown 1999's
+  // STG/0000 on BG01) loaded as an empty hall. Such a file is placed as a
+  // copy with its stage entry renamed - only when no entry of the STG group
+  // has the slot's name already, and only the stage (the group's one
+  // all-digit name): bg78's group is T178 ... TD78 (texture variants) then
+  // 0078, and renaming its first entry made two STG/0078 (the match load
+  // crashed, every backstage mod).
   char want[5];
   std::snprintf(want, sizeof want, "%04d", arena);
-  char head[0x810] = {};
-  bool renamed = false;
+  char head[0x4000] = {};
+  long stage_at = -1;  // (file offset of the entry's name to rename)
   if (!relative_file.empty()) {
     if (FILE* f = std::fopen(source.string().c_str(), "rb")) {
       const size_t got = std::fread(head, 1, sizeof head, f);
       std::fclose(f);
-      renamed = got == sizeof head && !std::memcmp(head, "EPAC", 4) && !std::memcmp(head + 0x800, "STG ", 4) &&
-                std::memcmp(head + 0x80C, want, 4) != 0;
+      if (got == sizeof head && !std::memcmp(head, "EPAC", 4)) {
+        // TOC from 0x800: groups {type, u32 entries * 3, u32 0} each followed
+        // by its entries {name[4], u32 sector, u32 size}
+        size_t p = 0x800;
+        while (p + 12 <= sizeof head) {
+          uint32_t words;
+          std::memcpy(&words, head + p + 4, 4);  // (little-endian)
+          if (!head[p] && !head[p + 1] && !head[p + 2] && !head[p + 3]) break;
+          const bool stg = !std::memcmp(head + p, "STG ", 4);
+          const size_t count = words / 3;
+          p += 12;
+          bool has = false;
+          int digits_n = 0;
+          long digits_at = -1;
+          for (size_t e = 0; e < count && p + 12 <= sizeof head; ++e, p += 12) {
+            if (!stg) continue;
+            if (!std::memcmp(head + p, want, 4)) has = true;
+            if (std::isdigit(uint8_t(head[p])) && std::isdigit(uint8_t(head[p + 1])) &&
+                std::isdigit(uint8_t(head[p + 2])) && std::isdigit(uint8_t(head[p + 3])))
+              ++digits_n, digits_at = long(p);
+          }
+          if (stg && !has && digits_n == 1) stage_at = digits_at;
+          if (stg) break;
+        }
+      }
     }
   }
+  const bool renamed = stage_at >= 0;
   if (renamed) {
     std::error_code ec2;
     const fs::path dst = g_overlay / name;
@@ -941,12 +969,12 @@ void RedirectArena(int arena, const std::string& file) {
       REXLOG_WARN("[svr2011] arena mods: cannot place {} ({})", name, ec2.message());
       return;
     }
-    std::fseek(f, 0x80C, SEEK_SET);
+    std::fseek(f, stage_at, SEEK_SET);
     std::fwrite(want, 1, 4, f);
     std::fclose(f);
     Refresh(name);
     REXLOG_INFO("[svr2011] arena mods: {} stage STG/{} renamed STG/{} for BG{:02}", relative_file,
-                std::string(head + 0x80C, 4), want, arena);
+                std::string(head + stage_at, 4), want, arena);
   } else if (!Place(source, name)) {
     return;
   }
