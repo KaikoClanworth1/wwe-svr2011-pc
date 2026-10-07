@@ -104,6 +104,7 @@ still being tested.
 - **Copy and paste with the keyboard**: Ctrl+V pastes the clipboard into the game's text fields and Ctrl+C copies a field's text. In the Story Designer, Ctrl+C / Ctrl+V also copy and paste moments, shows and moment groups.
 - 🧪 **A freeze mid-match fixed** (the match stops moving; seen most on phones and in big matches such as Royal Rumbles): a timing race in the game's own per-character job system lost a request when the game ran extra updates to catch up. The lost request is now noticed and asked for again.
 - **Fatal 4-Way / Triple Threat Elimination crash fixed**: when a wrestler was eliminated, a CPU still aiming at them could crash the match.
+- **Weapons Everywhere: the CPU uses the weapons lying around** (chairs, trash cans, guitars, ladders, tables) instead of walking past them to search under the ring; it searches under the ring only when nothing is near.
 - **Pin counts at 30 fps / on slow PCs and phones**: a referee's count no longer stops partway when the game runs two updates a frame.
 - **Replays and match highlights at 30 fps**: they no longer freeze the picture (the wrestlers stood still while the sound went on).
 - **SvR 2010 superstar mods hit properly**: some strikes made no impact sound or reaction (and many stock moves above them lost their hit data); every bundled SvR 2010 superstar is fixed.
