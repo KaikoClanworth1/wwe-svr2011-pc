@@ -43,6 +43,7 @@ extern ID3D11DeviceContext* g_ctx;
 extern HWND g_wnd;
 extern std::wstring g_game;  // the installed game folder ("" = none)
 extern float g_scale;        // UI scale (1 at 96 dpi with the 17 px font)
+extern bool g_behind;        // --behind: a test run; the window is never shown, games it starts stay hidden too
 
 // An RGBA picture as a shader resource (nullptr for an empty picture).
 ID3D11ShaderResourceView* MakeTexture(const Image& img);
@@ -291,7 +292,7 @@ namespace caw_page { void Draw(); void TestStart(int index, int attire, const st
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
-namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); }
+namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }
 

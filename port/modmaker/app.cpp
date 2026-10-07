@@ -38,6 +38,7 @@ ID3D11DeviceContext* g_ctx = nullptr;
 HWND g_wnd = nullptr;
 std::wstring g_game;
 float g_scale = 1;
+bool g_behind = false;
 PageId g_page = PageId::kArena;
 std::wstring g_project_file;
 PageId g_project_page = PageId::kArena;
@@ -724,7 +725,16 @@ void StartGame(const std::wstring& extra_env) {
   STARTUPINFOW si = {sizeof si};
   PROCESS_INFORMATION pi = {};
   std::wstring cmd = L"\"" + exe + L"\"";
-  if (CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, g_game.c_str(), &si, &pi)) {
+  if (g_behind) {  // a test: the game behind everything, muted, its log where the test reads it
+    SetEnvironmentVariableW(L"SVR2011_WINDOW_BEHIND", L"1");
+    set.push_back(L"SVR2011_WINDOW_BEHIND");
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    cmd += L" --monitor=2 --audio_mute=true --fullscreen=false --log_file=\"" + std::wstring(tmp) + L"svr2011_modmaker_play.log\"";
+  }
+  if (CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, g_behind ? BELOW_NORMAL_PRIORITY_CLASS : 0, nullptr,
+                     g_game.c_str(), &si, &pi)) {
+    Log("game started: pid " + std::to_string(pi.dwProcessId));
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     Status("The game is starting.");
@@ -1493,7 +1503,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--editor-view") && more) start_view = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
-    else if (!wcscmp(argv[i], L"--behind")) behind = true;
+    else if (!wcscmp(argv[i], L"--behind")) behind = true, g_behind = true;
+    else if (!wcscmp(argv[i], L"--test-play") && more) {  // <star id>,<dummy id>,<move id>: Play in game
+      int a[3] = {0, 0, 0};
+      swscanf_s(argv[++i], L"%d,%d,%d", &a[0], &a[1], &a[2]);
+      anims_page::TestPlay(a[0], a[1], a[2]);
+      g_page = PageId::kAnims;
+    }
     else if (!wcscmp(argv[i], L"--shot") && more) shot = argv[++i];
     else if (!wcscmp(argv[i], L"--shot-after") && more) shot_after = _wtof(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];

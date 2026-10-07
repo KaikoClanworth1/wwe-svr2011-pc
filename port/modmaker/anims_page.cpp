@@ -308,6 +308,11 @@ void TestStart(int star_id, int bank, int motion, int dummy_id) {
   g_test_star = star_id, g_test_bank = bank, g_test_motion = motion, g_test_dummy = dummy_id;
 }
 
+int g_test_play_move = 0;
+void TestPlay(int star_id, int dummy_id, int move) {
+  g_test_star = star_id, g_test_dummy = dummy_id, g_test_play_move = move;
+}
+
 void Draw() {
   if (g_test_star > 0 && !g_game.empty()) {  // the test aid, once
     const auto& stars = Stars();
@@ -317,6 +322,11 @@ void Draw() {
     }
     if (g_test_bank >= 0 && g_test_bank < int(std::size(kBanks))) g_bank = g_test_bank, LoadBank(g_bank);
     g_test_star = 0;
+    if (g_test_play_move) {
+      g_move_id = g_test_play_move;
+      g_test_play_move = 0;
+      PlayInGame();
+    }
   }
   if (g_test_motion >= 0 && g_bank >= 0 && g_banks.count(g_bank) && !g_loading) {
     Pick(g_test_motion, 0);
