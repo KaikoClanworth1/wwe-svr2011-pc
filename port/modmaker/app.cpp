@@ -1312,6 +1312,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
+    else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
       int a[4] = {0, -1, -1, 0};
       swscanf_s(argv[++i], L"%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3]);

@@ -271,9 +271,9 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); }
-namespace assets_page { void Draw(); }
+namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
 namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); }
-namespace icons_page { void Draw(); }
+namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }
 
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).

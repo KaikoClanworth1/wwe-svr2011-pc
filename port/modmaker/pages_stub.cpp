@@ -13,22 +13,6 @@ void Soon(const char* title, const char* about, const char* plan) {
 }
 }  // namespace
 
-namespace assets_page {
-void Draw() {
-  Soon("Game assets", "Everything in the game's pac files, read-only.",
-       "Coming: a tree of the pac files (EPAC / EPK8, groups, entries, PACH, BPE, texture bundles) with a viewer for "
-       "each kind - textures, models in 3D, animation banks, tables - and export of any entry.");
-}
-}  // namespace assets_page
-
-namespace icons_page {
-void Draw() {
-  Soon("Icons & renders", "The game's pictures: superstar renders and face icons, arena banners, VS screens, "
-                           "loading screens, crowd signs.",
-       "Coming: browse them all, export any, and send one to the mod page that uses it.");
-}
-}  // namespace icons_page
-
 namespace help_page {
 void Draw() {
   Heading("Manual", "How the Mod Maker and the .svrmod format work.");
