@@ -273,7 +273,9 @@ bool MysteryOpponentHoldsInput() {
 
 void MysteryOpponentLive(uint8_t* base, uint32_t live) {
   if (!g_on.load() || !live) return;
-  base[live + 38] = 1;  // (entrances on: the reveal)
+  // (entrances on: the reveal. A standard-ring one on one with entrances on
+  // already has 1 here as built, so this changes nothing then)
+  base[live + 38] = 1;
 }
 
 void MysterySelectFrame(uint8_t* base) {
