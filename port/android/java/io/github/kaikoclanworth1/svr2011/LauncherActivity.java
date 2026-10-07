@@ -80,8 +80,9 @@ public class LauncherActivity extends Activity {
         TextView title = text("WWE SmackDown vs. Raw 2011", 22, kText);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         titles.addView(title);
-        titles.addView(text("Launcher — version " + versionName(), 13, kDim));
-        header.addView(titles);
+        titles.addView(credit());
+        // (the titles take the rest of the row, so the credit wraps on the cover screen)
+        header.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         root.addView(header);
 
         // Tabs (scroll sideways on a narrow screen).
@@ -144,6 +145,23 @@ public class LauncherActivity extends Activity {
             drivers_.checkCrash();
             drivers_.offerBuiltIn();  // (Adreno 710/720/722: once)
         }
+    }
+
+    static final String kSite = "github.com/KaikoClanworth1/wwe-svr2011-pc";
+
+    // Who made it and where it's free (above every tab): the link opens the
+    // GitHub page in the browser.
+    TextView credit() {
+        String s = "Launcher - Version " + versionName() + " - By KaikoClanworth - Download free at " + kSite;
+        android.text.SpannableString span = new android.text.SpannableString(s);
+        int at = s.indexOf(kSite);
+        span.setSpan(new android.text.style.URLSpan("https://" + kSite), at, at + kSite.length(),
+            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        TextView t = text("", 13, kDim);
+        t.setText(span);
+        t.setLinkTextColor(kText);
+        t.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
+        return t;
     }
 
     String versionName() {
