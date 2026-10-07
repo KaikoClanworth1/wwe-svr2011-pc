@@ -8,6 +8,7 @@
 
 #include "frame_rate.h"
 #include "graphics_page.h"
+#include "mystery_opponent.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1047,7 +1048,7 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
     input->SetGuestInputHold(
         [] {
           return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() || JukeboxPageHoldsInput() ||
-                 TouchControlsHoldInput() || OnlineOverlayHoldsInput();
+                 TouchControlsHoldInput() || OnlineOverlayHoldsInput() || MysteryOpponentHoldsInput();
         });
   }
 }

@@ -21,6 +21,7 @@
 // that version's data instead.
 
 #include "pad_icons.h"
+#include "mystery_opponent.h"
 
 #include <array>
 #include <atomic>
@@ -752,6 +753,7 @@ REX_HOOK_RAW(sub_82418B70) {
 REX_EXTERN(__imp__sub_82467C18);
 REX_HOOK_RAW(sub_82467C18) {
   using namespace svr2011;
+  MysterySelectFrame(base);  // (mystery_opponent.h)
   OwnerScope scope(g_enabled ? SlotPort(Rd32(base + ctx.r3.u32 + 256)) : -1);
   __imp__sub_82467C18(ctx, base);
 }
