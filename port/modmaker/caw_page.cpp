@@ -14,6 +14,9 @@
 
 #include "app.h"
 #include "svrfmt/png.h"
+extern "C" {
+#include "../launcher/caw_import.h"
+}
 
 namespace mm {
 namespace caw_page {
@@ -262,6 +265,27 @@ void Draw() {
   if (g_loaded_for != g_game) Scan();
   ImGui::BeginChild("list", ImVec2(260 * g_scale, 0), true);
   if (ImGui::SmallButton("Rescan")) Scan();
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Import a .cas...")) {
+    if (GameRunning()) {
+      Status("The game is running: close it first.");
+    } else {
+      const COMDLG_FILTERSPEC spec[] = {{L"Created Superstar (*.cas, Xbox 360 package)", L"*.cas;*"}};
+      const std::wstring f = PickFile(false, L"A Created Superstar save to bring into the game's saves", spec, 1);
+      if (!f.empty()) {
+        wchar_t name[40] = L"", err[512] = L"";
+        CawLogo* logos = nullptr;
+        int n_logos = 0;
+        const std::wstring saves = (fs::path(g_game) / L"Saves").wstring();
+        const int slot = caw_import(f.c_str(), saves.c_str(), name, 40, &logos, &n_logos, err, 512);
+        if (logos) free(logos);
+        if (slot < 0) Status("Not imported: " + Utf8(err));
+        else Status("Imported " + Utf8(name) + " into slot " + std::to_string(slot + 1) + (n_logos ? " (its Paint Tool logos: import it in the launcher's Saves tab to get those too)" : "") + ".");
+        Scan();
+      }
+    }
+  }
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Someone else's Created Superstar (.cas, or an Xbox 360 package) into a free slot of the game's saves.");
   if (g_caws.empty()) ImGui::TextWrapped("No Created Superstar saves in %s.", PathStr(fs::path(g_game) / L"Saves").c_str());
   for (int i = 0; i < int(g_caws.size()); ++i)
     if (ImGui::Selectable((g_caws[i].label + "##" + std::to_string(i)).c_str(), g_sel == i)) {

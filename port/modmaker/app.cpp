@@ -18,6 +18,10 @@
 
 #include "char_preview.h"
 #include "editor.h"
+#include "tool_run.h"
+extern "C" {
+#include "../launcher/movie_maker.h"
+}
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "svrfmt/pac.h"
@@ -766,6 +770,54 @@ void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {
   render = std::move(big);
 }
 
+void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done) {
+  if (Busy()) {
+    Status("Still working on the last job: wait a moment.");
+    return;
+  }
+  RunInBackground([video, out, fit, seconds, done] {
+    Progress("Making the Bink movie (" + FileName(video) + ") ...");
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    MovieJob job = {};
+    wcsncpy_s(job.video, video.c_str(), _TRUNCATE);
+    wcsncpy_s(job.out, out.c_str(), _TRUNCATE);
+    job.fit = fit;
+    job.max_seconds = seconds;
+    const bool ok = movie_make(&job) != 0;
+    CoUninitialize();
+    const std::wstring err = job.err;
+    const int frames = job.frames;
+    OnUiThread([ok, out, err, frames, done] {
+      if (ok) Status("Bink movie made: " + FileName(out) + " (" + std::to_string(frames) + " frames).");
+      else Status("The movie could not be made: " + Utf8(err));
+      if (done) done(ok ? out : L"");
+    });
+  });
+}
+
+bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem) {
+  ImGui::PushID(label);
+  bool pressed = false;
+  if (ImGui::Button(label, ImVec2(220 * g_scale, 0))) {
+    const COMDLG_FILTERSPEC spec[] = {{L"Videos and pictures", L"*.mp4;*.mov;*.m4v;*.avi;*.wmv;*.mkv;*.webm;*.png;*.jpg;*.jpeg;*.bmp"}};
+    const std::wstring f = PickFile(false, L"A video (or a picture) for the entrance movie", spec, 1);
+    if (!f.empty()) {
+      const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
+      std::error_code ec;
+      fs::create_directories(work, ec);
+      const std::wstring out = (work / (Wide(IdFrom(stem, "movie")) + L"_" + fs::path(f).stem().wstring() + L".bik")).wstring();
+      std::wstring* target = &movie;
+      MakeBink(f, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); });
+      pressed = true;
+    }
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Any video or picture -> a 320 x 320 Bink laid out like the game's titantron movies (the "
+                      "launcher's Movies tab does the same, with a preview and the bottom strip).");
+  ImGui::PopID();
+  return pressed;
+}
+
 // ---------------------------------------------------------------- settings
 
 namespace {
@@ -839,6 +891,7 @@ const PageDesc kPages[] = {
     {PageId::kMoves, "Moves", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
+    {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
     {PageId::kAnims, "Animations", "", nullptr, anims_page::Draw},
@@ -1370,6 +1423,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
   std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
+  std::vector<std::wstring> run_tool_args;
+  std::wstring make_bink_in, make_bink_out;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   double shot_after = 6;
   int star_id = 0, star_call = -1;
@@ -1401,6 +1456,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       caw_page::TestStart(_wtoi(parts[0].c_str()), parts.size() > 1 ? _wtoi(parts[1].c_str()) : 0,
                           parts.size() > 2 ? parts[2] : L"", parts.size() > 3 && parts[3] == L"save");
       g_page = PageId::kCaw;
+    }
+    else if (!wcscmp(argv[i], L"--convert-w13") && more) {  // <wwe13 pac>,<host tile>
+      const std::wstring a = argv[++i];
+      const size_t c = a.rfind(L',');
+      other_page::TestConvertW13(a.substr(0, c), c == std::wstring::npos ? 1 : _wtoi(a.c_str() + c + 1));
+    }
+    else if (!wcscmp(argv[i], L"--make-bink") && more) {  // <video or picture>,<out.bik>
+      const std::wstring a = argv[++i];
+      const size_t c = a.rfind(L',');
+      if (c != std::wstring::npos) make_bink_in = a.substr(0, c), make_bink_out = a.substr(c + 1);
+    }
+    else if (!wcscmp(argv[i], L"--run-tool") && more) {  // <script>,<arg>,<arg>...: the Python tool, output in the log
+      std::vector<std::wstring> parts;
+      const std::wstring a = argv[++i];
+      for (size_t at = 0; at <= a.size();) {
+        size_t e = a.find(L',', at);
+        if (e == std::wstring::npos) e = a.size();
+        parts.push_back(a.substr(at, e - at));
+        at = e + 1;
+      }
+      run_tool_args = parts;
+      g_page = PageId::kOther;
     }
     else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
@@ -1515,8 +1592,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (start_page >= 0 && start_page < 8) g_page = page_of[start_page];
   }
   if (!moves_pack.empty()) moves_page::TestOpen(moves_pack), g_page = PageId::kMoves;
+  if (!make_bink_in.empty()) MakeBink(make_bink_in, make_bink_out, 0, 3, [](std::wstring out) { Status(out.empty() ? "test: bink failed" : "test: bink made"); });
+  if (!run_tool_args.empty()) {
+    const std::wstring script = run_tool_args[0];
+    run_tool_args.erase(run_tool_args.begin());
+    RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
+  }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"caw", L"assets", L"anims", L"icons", L"help"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"other", L"caw", L"assets", L"anims", L"icons", L"help"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }

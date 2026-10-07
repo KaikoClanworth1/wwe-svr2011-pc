@@ -734,6 +734,41 @@ void StartBackstage(int area) {
   LoadInBackground(PathStr(fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac"), nullptr, true, false);
 }
 
+void SetArenaFromPac(const Bytes& pac, int host, const std::string& name) {
+  LeaveBackstage();
+  g_proj = Project();
+  editor::Ring() = RingSpec();
+  editor::Light() = editor::Lighting();
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s", name.c_str());
+  g_sel = host;
+  std::string err;
+  if (!LoadEditedArena(pac, host, -1, "", &err)) { Status("The converted arena could not be loaded: " + err); return; }
+  g_proj.arena = host;
+  Touch();
+  GoTo(PageId::kEditor);
+  Status("The converted arena is open in the 3D editor; the Arena page has its name, banner and the Save.");
+}
+
+void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name, const std::wstring& gimmick_pac,
+                         const std::string& gimmick) {
+  g_proj = Project();
+  editor::Ring() = RingSpec();
+  editor::Light() = editor::Lighting();
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s", name.c_str());
+  g_area = area;
+  std::string err;
+  if (!LoadEditedArena(pac, -1, area, "", &err)) { Status("The converted backstage file could not be loaded: " + err); return; }
+  if (!gimmick_pac.empty()) {
+    g_proj.own_area = true;
+    std::snprintf(g_proj.row, sizeof g_proj.row, "%s", Upper(name).substr(0, 31).c_str());
+    std::snprintf(g_proj.gimmick, sizeof g_proj.gimmick, "%s", gimmick.substr(0, 4).c_str());
+    g_proj.gimmick_pac = gimmick_pac;
+  }
+  Touch();
+  GoTo(PageId::kBackstage);
+  Status("The converted area is on the Backstage page (and in the 3D editor).");
+}
+
 void SetTestSave(const std::wstring& f, int lib) {
   g_test_save = f;
   g_test_lib = lib;

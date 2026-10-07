@@ -204,7 +204,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kMedia, kCaw, kAssets, kAnims, kIcons, kHelp, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kMedia, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -266,10 +266,16 @@ const ImVec4 kBad{1, 0.35f, 0.35f, 1};
 
 namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int tile); void OpenModFile(const std::wstring& f);
                        void TestInGame(); void SetTestSave(const std::wstring& f, int lib); void StartNew(int tile);
-                       void StartBackstage(int area); }
+                       void StartBackstage(int area);
+                       // a converted arena.pac as the arena project (host tile, name), into the 3D editor
+                       void SetArenaFromPac(const Bytes& pac, int host, const std::string& name);
+                       // a converted bg78 as a backstage project: area, name, and its own-area gimmick pac (or "")
+                       void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
+                                                const std::wstring& gimmick_pac, const std::string& gimmick); }
 namespace backstage_page { extern PageHooks hooks; }
 namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::wstring& model, const std::string& name,
                       const std::wstring& picture, const std::wstring& save);
+                      void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
@@ -277,6 +283,7 @@ namespace media_page { extern PageHooks hooks; void TestStart(int arena, const s
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
+namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
 namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
@@ -284,5 +291,12 @@ namespace help_page { void Draw(); }
 
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);
+
+// A video or picture -> a 320 x 320 Bink entrance movie (the launcher's movie
+// maker), in the background; done(out or "" on failure) on the UI thread.
+// fit: 0 whole picture with bars, 1 fill, 2 stretch; seconds: 0 = all.
+void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done);
+// A "From a video..." button that makes the Bink into <game>\Mods\.convert and sets `movie`.
+bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem);
 
 }  // namespace mm

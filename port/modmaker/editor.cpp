@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <d3dcompiler.h>
+#include <shobjidl.h>
 
 #include "editor.h"
 
@@ -1584,11 +1585,62 @@ void LibraryPanel() {
   ImGui::EndDisabled();
 }
 
+// Pictures from a folder onto the arena's textures of the same name (<name>.png / .dds).
+void RetextureFromFolder(const std::string& folder) {
+  int done = 0;
+  std::error_code ec;
+  std::vector<std::string> keep;
+  for (auto& b : g_arena->bundles)
+    for (auto& t : b.textures) {
+      fs::path f;
+      for (const char* ext : {".png", ".dds", ".jpg", ".tga", ".bmp"})
+        if (fs::exists(fs::u8path(folder) / (t.name + ext), ec)) { f = fs::u8path(folder) / (t.name + ext); break; }
+      if (f.empty()) continue;
+      Image img;
+      DdsInfo info;
+      if (!DdsInfoOf(t.data, info)) continue;
+      if (f.extension() == ".dds") {
+        Bytes d;
+        if (!ReadFile(U8(f), d) || !DdsDecode(d, img)) continue;
+      } else if (!LoadImageFile(U8(f), img)) {
+        continue;
+      }
+      const DxtFormat fmt = info.format == DxtFormat::kArgb ? DxtFormat::kDxt5 : info.format;
+      t.data = DdsEncode(Resize(img, info.w, info.h), fmt, info.mips > 1);
+      b.changed = true;
+      keep.push_back(t.name);
+      ++done;
+    }
+  ForgetTextures();
+  Edited();
+  Log(std::to_string(done) + " textures replaced from " + folder + " (same size and format as the arena's).");
+}
+
 void AddPanel() {
   static float box[3] = {1.0f, 1.0f, 1.0f};  // metres
   ImGui::SetNextItemWidth(-90);
   ImGui::DragFloat3("Box (m)", box, 0.05f, 0.1f, 50, "%.2f");
   if (ImGui::Button("Add box at the view centre")) AddBox(box[0] * 10, box[1] * 10, box[2] * 10);
+  if (ImGui::Button("Pictures from a folder...")) {
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+      DWORD opt = 0;
+      dlg->GetOptions(&opt);
+      dlg->SetOptions(opt | FOS_PICKFOLDERS);
+      dlg->SetTitle(L"A folder of pictures named like the arena's textures");
+      IShellItem* item = nullptr;
+      PWSTR path = nullptr;
+      if (SUCCEEDED(dlg->Show(nullptr)) && SUCCEEDED(dlg->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+        RetextureFromFolder(U8(fs::path(path)));
+        CoTaskMemFree(path);
+      }
+      if (item) item->Release();
+      dlg->Release();
+    }
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Every picture in the folder whose name matches one of the arena's textures replaces it (fitted to "
+                      "the same size and format): a whole retexture at once, e.g. textures exported from another game.");
   if (ImGui::Button("Add object from a file (.obj / .fbx)...")) {
     wchar_t file[MAX_PATH] = L"";
     OPENFILENAMEW ofn = {sizeof ofn};

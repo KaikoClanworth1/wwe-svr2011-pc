@@ -268,6 +268,8 @@ void VideosTab() {
   if (StarPicker()) {
     MediaStar& s = g_media.stars[Stars()[g_star].id];
     if (FileRow("Entrance video...", s.video, "the game's", kBinkFilter, 1)) Touch();
+    ImGui::SameLine();
+    BinkFromVideoButton("From a video...", s.video, Stars()[g_star].name);
   }
   ImGui::Separator();
   ImGui::TextUnformatted("Arena screens");

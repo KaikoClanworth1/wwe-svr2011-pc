@@ -15,7 +15,7 @@ laid over the game while it runs.
   mod), Save / Save as (the project), the recent list, and the game folder
   button on the right (where the arenas, superstars and pictures are read
   from - normally set by the launcher).
-- **Rail:** the pages. MAKE pages each build one kind of mod. SAVES edits your
+- **Rail:** the pages. MAKE pages each build one kind of mod (Other games converts from WWE '13, SvR 2010 and SvR 2008). SAVES edits your
   Created Superstars' pictures. LOOK pages show the game's assets, animations
   and pictures. HELP is this manual.
 - **Status line:** the last message, what a long job is doing, the problem
@@ -157,6 +157,42 @@ One pack that replaces the game's own media; every item is optional.
   picture.
 - **Audio:** a superstar's entrance theme, the menu music, and any game sound
   by its event name (without `Play_`; e.g. `SVR10_Chant_Sena_001`).
+
+## Other games
+
+Content from the other SmackDown games, converted the way the bundled mods
+were made. Each result lands on its page to finish and save.
+
+- **WWE '13 arena:** a WWE '13 `pac\bg\bgNN.pac` (compressed or not) rebuilt
+  as a 2011 arena in the place of a host arena, which gives the room, the
+  ring and the aprons. Options: the host's ring / aprons / crowd, barrier
+  corners, the full rope, pruning unused pictures, role lights and the stand
+  light group, the canvas tone, and meshes to drop (a model over about 430 KB
+  crashes the load; the report names the heavy ones). The result opens in the
+  3D editor; the Arena page then takes the banner and the name. RAW IS WAR,
+  SmackDown 1999, Royal Rumble 1998 and King of the Ring 1998 were made so.
+- **WWE '13 superstar:** a WWE '13 `chNNN.pac` as a 2011 model, with a 2011
+  model as the template (John Cena's by default) and an optional portrait.
+  The model goes on the Superstar page.
+- **SvR 2010 superstar:** a whole mod from a 2010 id - model, renders, theme
+  (through ffmpeg), titantron, ratings, abilities, the move-set with the
+  missing moves ported, entrance and announcer when 2011 has them. The 20
+  bundled 2010 superstars were made so. Survey lists the ids.
+- **SvR 2010 moves:** chosen 2010 move ids ported into a move pack, opened on
+  the Moves page.
+- **SvR 2008 backstage:** the Parking Lot stage and its cars as 2011's parking
+  room and an area of its own, with the bundled mod's settings.
+
+The WWE '13 arena conversion is built in. The others run the port's Python
+tools from the `Mod Maker Tools` folder next to the Mod Maker and need Python
+3 with numpy and Pillow (and ffmpeg for the 2010 themes); the page says what
+is missing. Only the other games' extracted files are read.
+
+Also built in: **From a video...** on the Superstar and Media pages makes a
+320 x 320 Bink entrance movie from any video or picture; the 3D editor's
+**Pictures from a folder...** replaces every arena texture that has a picture
+of the same name in the folder; the CAW pictures page's **Import a .cas...**
+brings someone else's Created Superstar into a free slot.
 
 ## CAW pictures
 

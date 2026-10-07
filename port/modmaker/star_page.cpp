@@ -499,7 +499,9 @@ void Draw() {
           "A character model pac: one of the game's (pac\\ch\\chNNN.pac) or one converted from another game.");
   FileRow("Theme song (optional)...", g_star.song, "the style's", kSoundFilter, 1);
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
-          "A 320 x 320 Bink movie: the launcher's Movies tab makes one from any video.");
+          "A 320 x 320 Bink movie: From a video... makes one here, the launcher's Movies tab too.");
+  ImGui::SameLine();
+  BinkFromVideoButton("From a video...", g_star.movie, g_star.name);
   for (int a = 1; a < 4; ++a) {
     const std::string label = "Attire " + std::to_string(a + 1) + " (optional)...";
     FileRow(label.c_str(), g_star.attires[a], "none", kPacFilter, 1, "Another model pac: its first attire becomes this attire.");
@@ -727,6 +729,11 @@ bool Read(const ProjectIn& in, bool mod) {
 void TestStart(int id, const std::wstring& model, const std::string& name, const std::wstring& picture,
                const std::wstring& save) {
   g_test_id = id, g_test_model = model, g_test_name = name, g_test_picture = picture, g_test_save = save;
+}
+
+void SetModel(const std::wstring& ch_pac) {
+  g_star.model = ch_pac;
+  Touch();
 }
 
 void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call) {
