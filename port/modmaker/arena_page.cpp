@@ -222,7 +222,7 @@ bool PrepareBuild(BuildJob& job) {
       if (!mine) job.keep.insert(job.keep.end(), am.model.textures.begin(), am.model.textures.end());
     }
     job.manifest = "type=backstage\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
-                   "\nversion=" + g_proj.version + "\narea=" + std::to_string(g_proj.backstage) + "\n";
+                   "\nversion=" + g_proj.version + "\n" + MadeWith() + "area=" + std::to_string(g_proj.backstage) + "\n";
     if (g_proj.own_area) {
       char b[160];
       job.manifest += std::string("row=") + g_proj.row + "\n";
@@ -259,7 +259,7 @@ bool PrepareBuild(BuildJob& job) {
   }
   job.id = ModId();
   job.manifest = "type=arena\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
-                 "\nversion=" + g_proj.version + "\nbase=" + g_arenas[g_proj.arena].banner + "\n" +
+                 "\nversion=" + g_proj.version + "\n" + MadeWith() + "base=" + g_arenas[g_proj.arena].banner + "\n" +
                  editor::ManifestLines();
   return true;
 }

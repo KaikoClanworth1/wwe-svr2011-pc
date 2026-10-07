@@ -78,6 +78,9 @@ std::string Upper(std::string s);
 std::string IdFrom(const std::string& name, const char* fallback);
 std::string FileName(const std::wstring& path);  // the last part, UTF-8
 std::string Human(size_t bytes);                // "1.2 MB"
+// "made_with=Mod Maker <version>\n": every manifest the Mod Maker writes carries it
+// (the launcher flags mods without it as not made here).
+std::string MadeWith();
 // key=value text (manifests, projects): the value of a key ("" if absent).
 std::string Value(const std::string& text, const char* key);
 std::vector<std::string> Values(const std::string& text, const char* key);  // every line with that key

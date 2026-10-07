@@ -1,6 +1,7 @@
 // Manual page: docs/MOD_MAKER_MANUAL.md and docs/SVRMOD_FORMAT.md, built
 // into the exe (CMake writes manual.inc from them) and drawn with a small
 // Markdown reader: headings, paragraphs, bullets, tables, code blocks.
+#include <algorithm>
 #include <cstring>
 #include <sstream>
 #include <vector>
@@ -48,22 +49,25 @@ void Inline(const std::string& text) {
   bool code = false, bold = false;
   const float wrap_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
   auto flush = [&] {
-    // word wrap the plain run
+    // word wrap the plain run; the spaces at its ends stay (they separate the runs)
+    const bool lead = !plain.empty() && plain.front() == ' ', trail = plain.size() > 1 && plain.back() == ' ';
     std::istringstream ws(plain);
     std::string word;
-    std::string line;
+    std::string line = lead ? " " : "";
+    bool any = false;
     while (ws >> word) {
-      const std::string cand = line.empty() ? word : line + " " + word;
+      const std::string cand = !any ? line + word : line + " " + word;
       const float x = first ? ImGui::GetCursorPosX() : ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-      if (!line.empty() && x + ImGui::CalcTextSize(cand.c_str()).x > wrap_x) {
+      if (any && x + ImGui::CalcTextSize(cand.c_str()).x > wrap_x) {
         run(line + " ", code, bold);
         first = true;  // (a new line)
         line = word;
       } else {
         line = cand;
       }
+      any = true;
     }
-    if (!line.empty()) run(line + (plain.size() && plain.back() == ' ' ? " " : ""), code, bold);
+    if (!line.empty()) run(line + (trail ? " " : ""), code, bold);
     plain.clear();
   };
   while (at < text.size()) {
@@ -97,7 +101,15 @@ void Table(const std::vector<std::string>& rows) {
   if (cells.empty()) return;
   const int cols = int(cells[0].size());
   if (ImGui::BeginTable("t", cols, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-    for (int c = 0; c < cols; ++c) ImGui::TableSetupColumn("", c == cols - 1 ? ImGuiTableColumnFlags_WidthStretch : ImGuiTableColumnFlags_WidthFixed);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    for (int c = 0; c < cols; ++c) {
+      float w = 0;
+      for (const auto& row : cells)
+        if (c < int(row.size())) w = std::max(w, ImGui::CalcTextSize(row[size_t(c)].c_str()).x);
+      w = std::min(w + 16 * g_scale, avail * 0.38f);
+      if (c == cols - 1) ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+      else ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, w);
+    }
     for (const auto& row : cells) {
       ImGui::TableNextRow();
       for (int c = 0; c < cols; ++c) {

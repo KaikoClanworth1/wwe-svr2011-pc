@@ -250,6 +250,8 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     target_include_directories(svr2011_modmaker PRIVATE modmaker modmaker/third_party/ufbx ${CMAKE_CURRENT_BINARY_DIR}/modmaker_inc
         ${IMGUI_SRC} ${IMGUI_SRC}/backends ${REXSDK_DIR}/thirdparty/stb)
     target_compile_definitions(svr2011_modmaker PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_MM_VERSION LIMIT_COUNT 1)
+    target_compile_definitions(svr2011_modmaker PRIVATE "PORT_VERSION=\"${SVR2011_MM_VERSION}\"")
     target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
     add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/launcher.rc)

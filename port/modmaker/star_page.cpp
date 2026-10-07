@@ -172,7 +172,7 @@ bool PrepareJob(Job& j) {
   j.id = StarId();
   j.manifest = "type=superstar\nid=" + j.id + "\nname=" + g_star.name + "\nshort=" +
                (g_star.short_name[0] ? g_star.short_name : g_star.name) + "\nbase=" + std::to_string(st.template_id) +
-               "\nstyle=" + st.name + "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n";
+               "\nstyle=" + st.name + "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n" + MadeWith();
   j.manifest += "ratings=";
   for (int k = 0; k < 7; ++k) j.manifest += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "\n");
   if (g_star.call >= 0) j.manifest += "call=" + std::to_string(g_star.call) + "\n";

@@ -1,5 +1,6 @@
-# Screenshot of the Mod Maker without taking focus: started minimized,
-# moved off-screen and shown without activation, captured with PrintWindow.
+# Screenshot of the Mod Maker without taking focus: started with --behind (a
+# no-activate tool window kept under every other window, not on the taskbar),
+# captured with PrintWindow. Never shown in front: the user may be playing.
 #   modmaker_shot.ps1 [-Exe <Mod Maker exe>] [-Game <game folder>] [-Out runs\modmaker.png] [-Wait 6]
 #                     [-Extra "--editor 4 --editor-view 0"]
 param([string]$Exe = "", [string]$Game = "", [string]$Out = "", [int]$Wait = 6, [string]$Extra = "")
@@ -20,13 +21,17 @@ public static class MW {
 }
 "@
 [void][MW]::SetProcessDPIAware()
-$al = @("--game", "`"$Game`"")
+$al = @("--game", "`"$Game`"", "--behind")
 if ($Extra) { $al += $Extra }
-$p = Start-Process $Exe -ArgumentList $al -PassThru -WindowStyle Minimized
-for ($t = 0; $t -lt 100 -and $p.MainWindowHandle -eq 0; $t++) { Start-Sleep -Milliseconds 100; $p.Refresh() }
-$h = $p.MainWindowHandle
-[void][MW]::SetWindowPos($h, [IntPtr]1, $SvrParkX, 0, 0, 0, $SvrParkFlags)  # (screen 2, behind every window)
-[void][MW]::ShowWindow($h, 4)   # SW_SHOWNOACTIVATE
+$p = Start-Process $Exe -ArgumentList $al -PassThru -WindowStyle Hidden
+# (a tool window has no MainWindowHandle: find it by class)
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class MWF { [DllImport("user32.dll")] public static extern IntPtr FindWindowW(string c, string t); }
+"@
+$h = [IntPtr]::Zero
+for ($t = 0; $t -lt 100 -and $h -eq [IntPtr]::Zero; $t++) { Start-Sleep -Milliseconds 100; $h = [MWF]::FindWindowW("SvR2011ModMaker", $null) }
+[void][MW]::SetWindowPos($h, [IntPtr]1, 0, 0, 0, 0, 0x0010 -bor 0x0002 -bor 0x0001)  # HWND_BOTTOM, NOACTIVATE | NOMOVE | NOSIZE
 Start-Sleep $Wait
 $r = New-Object MW+RECT; [void][MW]::GetWindowRect($h, [ref]$r)
 $bmp = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)

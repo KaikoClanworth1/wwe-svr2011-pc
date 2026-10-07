@@ -138,6 +138,11 @@ std::wstring Wide(const std::string& s) {
 }
 
 std::string PathStr(const fs::path& p) { return Utf8(p.wstring()); }
+
+#ifndef PORT_VERSION
+#define PORT_VERSION "dev"
+#endif
+std::string MadeWith() { return std::string("made_with=Mod Maker ") + PORT_VERSION + "\n"; }
 std::string Lower(std::string s) { for (char& c : s) c = char(std::tolower(uint8_t(c))); return s; }
 std::string Upper(std::string s) { for (char& c : s) c = char(std::toupper(uint8_t(c))); return s; }
 
@@ -1294,7 +1299,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_DESTROY: {
       WINDOWPLACEMENT pl = {sizeof pl};
-      if (GetWindowPlacement(w, &pl)) {
+      if (!(GetWindowLongW(w, GWL_EXSTYLE) & WS_EX_NOACTIVATE) && GetWindowPlacement(w, &pl)) {
         g_settings.win_x = pl.rcNormalPosition.left;
         g_settings.win_y = pl.rcNormalPosition.top;
         g_settings.win_w = pl.rcNormalPosition.right - pl.rcNormalPosition.left;
@@ -1325,6 +1330,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
   std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
+  bool behind = false;  // --behind: tests - never in front, never focused, not on the taskbar
   int star_id = 0, star_call = -1;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
@@ -1337,6 +1343,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--editor-view") && more) start_view = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
+    else if (!wcscmp(argv[i], L"--behind")) behind = true;
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
@@ -1401,14 +1408,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     const RECT r = {x, y, x + w, y + h};
     if (!MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) x = y = CW_USEDEFAULT;
   }
-  g_wnd = CreateWindowW(wc.lpszClassName, L"SvR2011 Mod Maker", WS_OVERLAPPEDWINDOW, x, y, w, h, nullptr, nullptr,
-                        inst, nullptr);
+  if (behind) x = 0, y = 0, w = MulDiv(1280, dpi, 96), h = MulDiv(800, dpi, 96);
+  g_wnd = CreateWindowExW(behind ? WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW : 0, wc.lpszClassName, L"SvR2011 Mod Maker",
+                          WS_OVERLAPPEDWINDOW, x, y, w, h, nullptr, nullptr, inst, nullptr);
   if (!CreateDevice(g_wnd)) {
-    MessageBoxW(nullptr, L"Direct3D 11 is not available.", L"SvR2011 Mod Maker", MB_ICONERROR);
+    if (!behind) MessageBoxW(nullptr, L"Direct3D 11 is not available.", L"SvR2011 Mod Maker", MB_ICONERROR);
     return 1;
   }
-  ShowWindow(g_wnd, g_settings.maximized && show == SW_SHOWNORMAL ? SW_SHOWMAXIMIZED : show);
-  UpdateWindow(g_wnd);
+  if (behind) {
+    SetWindowPos(g_wnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  } else {
+    ShowWindow(g_wnd, g_settings.maximized && show == SW_SHOWNORMAL ? SW_SHOWMAXIMIZED : show);
+    UpdateWindow(g_wnd);
+  }
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
@@ -1480,6 +1492,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     if (done) break;
     if (IsIconic(g_wnd)) Sleep(30);  // (minimized: slow down; frames still run for the test aids)
+    if (behind) SetWindowPos(g_wnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);  // (stays under)
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();

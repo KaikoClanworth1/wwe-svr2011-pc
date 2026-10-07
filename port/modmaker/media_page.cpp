@@ -142,7 +142,7 @@ bool Empty() {
 
 // The pack's files (in the background).
 bool BuildFiles(const Job& j, std::vector<ZipEntry>& files) {
-  std::string man = "type=media\nid=" + j.id + "\nname=" + j.name + "\nauthor=" + j.author + "\nversion=" + j.version + "\n";
+  std::string man = "type=media\nid=" + j.id + "\nname=" + j.name + "\nauthor=" + j.author + "\nversion=" + j.version + "\n" + MadeWith();
   auto add_file = [&](const std::string& key, const std::wstring& src, const std::string& stem) -> bool {
     Bytes d;
     if (!ReadFile(Utf8(src), d)) {

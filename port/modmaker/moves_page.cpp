@@ -136,7 +136,7 @@ bool PackFiles(std::vector<ZipEntry>& files, const std::string& prefix) {
 bool Build(std::vector<ZipEntry>& files) {
   if (!g_pack.name[0]) std::snprintf(g_pack.name, sizeof g_pack.name, "My Moves");
   const std::string man = "type=moves\nid=" + PackId() + "\nname=" + g_pack.name + "\nauthor=" + g_pack.author +
-                          "\nversion=" + g_pack.version + "\n";
+                          "\nversion=" + g_pack.version + "\n" + MadeWith();
   files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
   return PackFiles(files, "");
 }
