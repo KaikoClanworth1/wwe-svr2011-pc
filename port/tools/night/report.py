@@ -25,6 +25,13 @@ def load(name, platform):
             except ValueError:
                 continue
             r.setdefault('platform', platform)
+            # A game the random presses closed through the main menu's EXIT isn't a crash.
+            if r.get('result') == 'crash' and not r.get('errors') and r.get('log'):
+                lp = os.path.join(NIGHT, 'logs', r['log'])
+                if os.path.exists(lp):
+                    tail = open(lp, encoding='utf-8', errors='replace').read()[-4000:]
+                    if 'EXIT (group 1' in tail and 'Window closing' in tail and 'SvR 2011 crash' not in tail:
+                        r['result'] = 'exited'
             rows[(platform, r.get('id'))] = r  # (a rerun replaces the earlier result)
     return list(rows.values())
 
