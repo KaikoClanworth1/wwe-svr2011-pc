@@ -84,6 +84,12 @@
 #define LAUNCHER_VERSION  L"1.0"
 #define GAME_TITLE        L"WWE SmackDown vs. Raw 2011"
 #define WINDOW_TITLE      GAME_TITLE L" \x2014 PC Port Launcher"
+/* Who made it and where it's free - on the window and the top of every page
+   (copies of the port were re-uploaded, sending players to other channels). */
+#define REPO_URL          L"https://github.com/KaikoClanworth1/wwe-svr2011-pc"
+#define CREDIT_LINE       L"Launcher - Version " PORT_VERSION L" - By KaikoClanworth"
+#define CREDIT_LINK       L"Download free at github.com/KaikoClanworth1/wwe-svr2011-pc"
+#define MAIN_TITLE        CREDIT_LINE L" - " CREDIT_LINK
 #define GAME_EXE          L"svr2011.exe"
 #define GAME_TOML         L"svr2011.toml"
 #define TITLE_ID          0x5451085Du     /* from the disc's default.xex execution info */
@@ -153,6 +159,7 @@ static HFONT     s_font, s_big, s_title;
 static HFONT     s_icons, s_nav, s_card, s_huge;
 static HFONT     s_mark_font;                     /* Verify game files' mark (the icon font, large) */  /* the look: sidebar icons and labels, card titles, page title */
 static int       s_cur_tab = -1, s_nav_hover = -1;
+static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
 static int       s_dpi = 96;
 static HICON     s_icon;
 static HWND      s_ctl[TAB_COUNT][32];
@@ -6463,6 +6470,21 @@ static void paint_window(HDC dc)
     swprintf_s(v, 64, L"Version %s", PORT_VERSION);
     r.left = S(20); r.right = S(SB_W - 10); r.top = cl.bottom - S(34); r.bottom = cl.bottom - S(12);
     DrawTextW(dc, v, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    /* The credit, top right of every page: the link opens the release page. */
+    {
+        RECT c;
+        SIZE z;
+        SelectObject(dc, s_font);
+        c.left = S(SB_W + X0 + 200); c.right = cl.right - S(16); c.top = S(12); c.bottom = S(31);
+        SetTextColor(dc, RGB(120, 120, 132));
+        DrawTextW(dc, CREDIT_LINE, -1, &c, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+        c.top = S(31); c.bottom = S(50);
+        SetTextColor(dc, C_ACCENT);
+        DrawTextW(dc, CREDIT_LINK, -1, &c, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, CREDIT_LINK, (int)wcslen(CREDIT_LINK), &z);
+        s_credit_link.left = c.right - z.cx; s_credit_link.right = c.right;
+        s_credit_link.top = c.top; s_credit_link.bottom = c.bottom;
+    }
     /* The page: its title, its cards. */
     if (s_cur_tab >= 0 && s_cur_tab < TAB_COUNT) {
         SelectObject(dc, s_huge);
@@ -6803,7 +6825,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             return TRUE;
         break;
     case WM_LBUTTONDOWN: {
-        const int k = nav_at(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        const int k = nav_at(pt.x, pt.y);
+        if (PtInRect(&s_credit_link, pt)) {
+            ShellExecuteW(w, L"open", REPO_URL, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
         if (k >= 0 && k_nav[k].tab != s_cur_tab)
             show_tab(k_nav[k].tab);
         return 0;
@@ -6831,7 +6858,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
-            if (nav_at(pt.x, pt.y) >= 0) {
+            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt)) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
             }
@@ -7208,7 +7235,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     RegisterClassExW(&wc);
     r.left = 0; r.top = 0; r.right = S(SB_W + CLIENT_W); r.bottom = S(CLIENT_H + DY);
     AdjustWindowRectExForDpi(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, 0, (UINT)s_dpi);
-    s_wnd = CreateWindowExW(0, wc.lpszClassName, WINDOW_TITLE,
+    s_wnd = CreateWindowExW(0, wc.lpszClassName, MAIN_TITLE,
                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, inst, NULL);
     if (!s_wnd)
