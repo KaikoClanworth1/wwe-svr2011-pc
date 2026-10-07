@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <random>
 #include <string>
@@ -157,11 +158,43 @@ uint32_t g_slobber_text[2] = {};
 // extreme rules versions (MRPD), not with a cage, cell, ladder, table, TLC or
 // backstage - left so.
 constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
-// THREE STAGES OF HELL: in ONE ON ONE -> EXTREME RULES, after WEAPONS
-// EVERYWHERE (three_stages.cpp).
+// THREE STAGES OF HELL (three_stages.cpp): in each EXTREME RULES submenu
+// after WEAPONS EVERYWHERE (its match: the mode's normal one, kModes), and a
+// row in 6-MAN and HANDICAP.
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
-WeaponsRow g_stages_row = {~0u, ~0u};
+std::vector<WeaponsRow> g_stages_rows;
 bool g_pending_stages = false;
+
+// The modes with an EXTREME RULES row (group, its normal match: THREE STAGES
+// OF HELL's first fall). Their EXTREME RULES becomes a submenu of EXTREME
+// RULES, WEAPONS EVERYWHERE and THREE STAGES OF HELL (ONE ON ONE, TWO ON TWO
+// and FATAL-4-WAY are full lists: 14 rows).
+struct ExtremeMode {
+  uint32_t group, normal;
+};
+constexpr ExtremeMode kExtremeModes[] = {{0x06, 0x00}, {0x07, 0x03}, {0x08, 0x0D}, {0x09, 0x0E}};
+// 6-MAN and HANDICAP have no EXTREME RULES: WEAPONS EVERYWHERE and THREE
+// STAGES OF HELL are rows after the anchor (the last before MATCH CREATOR),
+// both on the mode's normal match - 6-MAN TAG (0x08) and ONE ON TWO TORNADO
+// (0x0F); Weapons Everywhere gets the Extreme Rules option bytes (below).
+struct PlainMode {
+  uint32_t anchor, group, normal;
+};
+constexpr PlainMode kPlainModes[] = {{0xA09C, 0x0A, 0x08}, {0xA086, 0x0B, 0x0F}};
+// A WEAPONS EVERYWHERE match's rule: Extreme Rules, or 6-MAN's / HANDICAP's normal one.
+bool WeaponsRule(uint32_t rule) {
+  if (rule >= kExtremeFirst && rule <= kExtremeLast) return true;
+  for (const PlainMode& m : kPlainModes)
+    if (rule == m.normal) return true;
+  return false;
+}
+bool StagesRule(uint32_t rule) {
+  for (const ExtremeMode& m : kExtremeModes)
+    if (rule == m.normal) return true;
+  for (const PlainMode& m : kPlainModes)
+    if (rule == m.normal) return true;
+  return false;
+}
 // MYSTERY OPPONENT: ONE ON ONE -> NORMAL MATCH becomes a submenu of NORMAL
 // MATCH and MYSTERY OPPONENT (mystery_opponent.cpp: a normal one on one).
 WeaponsRow g_mystery_row = {~0u, ~0u};
@@ -194,6 +227,7 @@ TestMode g_test_mode = TestMode::kNone;
 std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   if (size < kFirst || Rd32(table) != 1) return {};
   g_weapons_rows.clear();
+  g_stages_rows.clear();
   g_elim_rows.clear();
   const uint32_t total = Rd32(table + 4), shown = Rd32(table + 8);
   if (total == 0 || total > 0x1000 || kFirst + total * kRec > size) return {};
@@ -317,15 +351,18 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       node += 2;
       ++group;
     }
-    if (const uint32_t rule = Rd32(rec + 0x5C); (weapons || stages) && rule >= kExtremeFirst &&
-                                                rule <= kExtremeLast && Rd32(rec + 0x18) == kFullGroup && submenu) {
-      // A full list (14 rows): EXTREME RULES becomes a submenu (a new node in
-      // its place) of EXTREME RULES and WEAPONS EVERYWHERE (a new group).
+    const ExtremeMode* mode = nullptr;
+    for (const ExtremeMode& m : kExtremeModes)
+      if (Rd32(rec + 0x18) == m.group) mode = &m;
+    if (const uint32_t rule = Rd32(rec + 0x5C);
+        (weapons || stages) && rule >= kExtremeFirst && rule <= kExtremeLast && mode && submenu) {
+      // EXTREME RULES becomes a submenu (a new node in its place) of EXTREME
+      // RULES, WEAPONS EVERYWHERE and THREE STAGES OF HELL (a new group).
       out.resize(out.size() - kRec);
       std::vector<uint8_t> row(submenu, submenu + kRec);
       Wr32(row.data() + 0x00, Rd32(rec + 0x00));
       Wr32(row.data() + 0x04, Rd32(rec + 0x04));  // (description)
-      Wr32(row.data() + 0x18, kFullGroup);
+      Wr32(row.data() + 0x18, mode->group);
       Wr32(row.data() + 0x1C, Rd32(rec + 0x1C));  // (its node: EXTREME RULES' own - node ids, above)
       Wr32(row.data() + 0x38, Rd32(rec + 0x38));
       Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
@@ -350,8 +387,8 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         } else if (kinds[k] == 2) {
           Wr32(leaf.data() + 0x00, kStagesLabel);
           Wr32(leaf.data() + 0x04, kStagesText);
-          Wr32(leaf.data() + 0x5C, 0x00);  // (a normal one on one; three_stages.cpp changes its rules)
-          g_stages_row = {group, k};
+          Wr32(leaf.data() + 0x5C, mode->normal);  // (the mode's normal match; three_stages.cpp changes its rules)
+          g_stages_rows.push_back({group, k});
         }
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
@@ -359,7 +396,8 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
       node += uint32_t(kinds.size());
       ++group;
-    } else if (const uint32_t rule = Rd32(rec + 0x5C); weapons && rule >= kExtremeFirst && rule <= kExtremeLast) {
+    } else if (const uint32_t rule = Rd32(rec + 0x5C);
+               weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !mode) {
       const uint32_t in_group = Rd32(rec + 0x18);
       std::vector<uint8_t> copy(rec, rec + kRec);
       Wr32(copy.data() + 0x00, kWeaponsLabel);
@@ -376,6 +414,29 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
       REXLOG_INFO("match types: WEAPONS EVERYWHERE (rule {:02X}) at group {:02X} row {}", rule, in_group, index);
+    }
+    for (const PlainMode& m : kPlainModes) {
+      if (Rd32(rec) != m.anchor || Rd32(rec + 0x18) != m.group) continue;
+      for (int k = 0; k < 2; ++k) {  // (WEAPONS EVERYWHERE, THREE STAGES OF HELL)
+        if (!(k == 0 ? weapons : stages)) continue;
+        std::vector<uint8_t> copy(rec, rec + kRec);
+        Wr32(copy.data() + 0x00, k == 0 ? kWeaponsLabel : kStagesLabel);
+        Wr32(copy.data() + 0x04, k == 0 ? kWeaponsText : kStagesText);
+        Wr32(copy.data() + 0x5C, m.normal);
+        Wr32(copy.data() + 0x40, 0);
+        uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
+        const uint32_t flags = Rd32(prev + 0x3C);
+        Wr32(prev + 0x3C, flags & ~2u);
+        Wr32(copy.data() + 0x3C, (Rd32(copy.data() + 0x3C) & ~2u) | (flags & 2u));
+        uint32_t index = 0;
+        for (size_t at = kFirst; at < out.size(); at += kRec)
+          if (Rd32(out.data() + at + 0x18) == m.group) ++index;
+        (k == 0 ? g_weapons_rows : g_stages_rows).push_back({m.group, index});
+        out.insert(out.end(), copy.begin(), copy.end());
+        ++added;
+        REXLOG_INFO("match types: {} (rule {:02X}) at group {:02X} row {}",
+                    k == 0 ? "WEAPONS EVERYWHERE" : "THREE STAGES OF HELL", m.normal, m.group, index);
+      }
     }
     if (Rd32(rec + 0x18) == kBackstage1v1Group) {
       // (after the room's row and the rows added after it)
@@ -646,7 +707,9 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_like = kLumberjackLike;
     g_pending_select_only = true;
   }
-  g_pending_stages = group == g_stages_row.group && ctx_row == g_stages_row.index;
+  g_pending_stages = false;
+  for (const WeaponsRow& w : g_stages_rows)
+    if (group == w.group && ctx_row == w.index) g_pending_stages = true;
   g_pending_mystery = group == g_mystery_row.group && ctx_row == g_mystery_row.index;
   g_pending_elimination = false;
   for (const WeaponsRow& w : g_elim_rows)
@@ -713,6 +776,19 @@ REX_HOOK_RAW(sub_827374A0) {
     }
     REXLOG_INFO("match types: set-up of rule {:02X} (match {:08X}) from {:08X};{}", rule, ctx.r3.u32, uint32_t(ctx.lr), chain);
   }
+  // Research aid: SVR2011_TEST_RULE_DUMP=1 - once, the rule records (first 28
+  // bytes, +36..+67) and option records (64 bytes) of some rules.
+  if (static bool dumped = false; !dumped && std::getenv("SVR2011_TEST_RULE_DUMP"))
+    if (const uint32_t rules = Rd32(base + kRules)) {
+      dumped = true;
+      for (uint32_t r : {0x00u, 0x03u, 0x04u, 0x07u, 0x08u, 0x0Bu, 0x0Du, 0x0Eu, 0x0Fu, 0x10u, 0x11u, 0x12u, 0x13u,
+                         0x23u, 0x27u, 0x28u, 0x2Au, 0x35u, 0x3Bu, 0x4Cu, 0x4Du, 0x4Eu, 0x4Fu, 0x50u}) {
+        std::string rec, opt;
+        for (uint32_t k = 0; k < kRuleSize; ++k) rec += fmt::format("{:02X}", base[rules + r * kRuleSize + k]);
+        for (uint32_t k = 0; k < kRule2Size; ++k) opt += fmt::format("{:02X}", base[rules + kRule2 + r * kRule2Size + k]);
+        REXLOG_INFO("rule dump {:02X}: rec {} opt {}", r, rec, opt);
+      }
+    }
   svr2011::SetMatchLoading(true);  // (arena_mods: a custom arena's loading pictures)
   RestoreRule(base);
   g_lumberjacks_chosen = false;
@@ -733,14 +809,14 @@ REX_HOOK_RAW(sub_827374A0) {
     REXLOG_INFO("match types: SLOBBER KNOCKER");
     svr2011::SlobberKnockerStart();
   }
-  svr2011::ThreeStagesSetup(g_pending_stages && rule == 0x00 && !Rd32(base + kStoryContext));
+  svr2011::ThreeStagesSetup(g_pending_stages && StagesRule(rule) && !Rd32(base + kStoryContext));
   g_pending_stages = false;
   svr2011::MysteryOpponentSetup(base, g_pending_mystery && rule == 0x00 && !Rd32(base + kStoryContext));
   g_pending_mystery = false;
   g_elimination = g_pending_elimination && (rule == kTripleThreat || rule == kFatal4Way) && !Rd32(base + kStoryContext);
   g_pending_elimination = false;
   if (g_elimination) REXLOG_INFO("match types: ELIMINATION (rule {:02X})", rule);
-  g_weapons = g_pending_weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !Rd32(base + kStoryContext);
+  g_weapons = g_pending_weapons && WeaponsRule(rule) && !Rd32(base + kStoryContext);
   g_pending_weapons = false;
   if (g_weapons) REXLOG_INFO("match types: WEAPONS EVERYWHERE (rule {:02X})", rule);
   const uint32_t played = !g_free_roam ? rule : rule == kWholeBackstage ? 0x1Bu : 0x70u;
@@ -1603,9 +1679,27 @@ constexpr Placed kPlaced[] = {
     {89, 1, -40.f, 0.f, 55.f, 30.f},      // guitar
     {4, 1, 45.f, 0.f, -45.f, 60.f},       // a chair on the floor
 };
-uint32_t g_weapon_records = 0;  // guest: our records
+// 6-MAN: no Extreme Rules weapons - the extreme rules option (+56, which
+// loads their models) crashed every 6-man match at its start (sub_824186E8
+// with no event data; skipped, a resource read later): six people and that
+// pack don't fit (no 6-person rule of the game has it). Its weapons are the
+// models every match loads (a normal match's stock under the ring: chairs
+// 4, hand weapons 102, 72, 28; 33 / 34 are the steel steps' halves - left out).
+constexpr Placed kPlacedSix[] = {
+    {4, 0, 10.f, -12.f, 12.f, 30.f},      // chairs in the ring
+    {4, 0, -12.f, -12.f, -8.f, 200.f},
+    {102, 1, 0.f, 0.f, 54.f, 0.f},        // by the apron
+    {72, 1, -52.f, 0.f, 0.f, 90.f},
+    {28, 1, 52.f, 0.f, 0.f, 90.f},
+    {4, 1, 40.f, 0.f, 55.f, 0.f},         // chairs on the floor
+    {4, 1, -40.f, 0.f, 55.f, 30.f},
+    {4, 1, 45.f, 0.f, -45.f, 60.f},
+};
+constexpr uint32_t kSixManRule = 0x08;  // (6-MAN's WEAPONS EVERYWHERE rule)
+uint32_t g_weapon_records = 0, g_weapon_records_six = 0;  // guest: our records
 struct Swapped {
   uint32_t entry = 0, count = 0, records = 0;  // the game's, while ours are in
+  uint32_t head = 0, head_rule = 0;            // Extreme Rules' head lent to a rule without a list
 } g_swapped;
 
 // The rule's {count, records} in the table (0 if none).
@@ -1625,26 +1719,49 @@ void RestoreWeapons(uint8_t* base) {
   if (!g_swapped.entry) return;
   Wr32(base + g_swapped.entry, g_swapped.count);
   Wr32(base + g_swapped.entry + 4, g_swapped.records);
+  if (g_swapped.head) base[g_swapped.head] = uint8_t(g_swapped.head_rule >> 8), base[g_swapped.head + 1] = uint8_t(g_swapped.head_rule);
   g_swapped = {};
+}
+
+// The head (rule id, 16 bits) of the rule's list in the table (0 if none).
+uint32_t WeaponHead(uint8_t* base, uint32_t rule) {
+  const uint32_t table = Rd32(base + kWeaponTable);
+  if (!table) return 0;
+  const int16_t n = int16_t(uint16_t(base[table + 4] << 8 | base[table + 5]));
+  const uint32_t heads = Rd32(base + table + 8);
+  for (int i = 0; i < n && heads; ++i)
+    if (const uint32_t h = heads + uint32_t(i) * 8; uint32_t(base[h] << 8 | base[h + 1]) == rule) return h;
+  return 0;
 }
 
 // Our list in (a WEAPONS EVERYWHERE match), or the game's back.
 void ApplyWeapons(uint8_t* base) {
   RestoreWeapons(base);
   const uint32_t rule = base[0x82E3DE00];
-  if (!g_weapons || rule < kExtremeFirst || rule > kExtremeLast || !g_memory) return;
-  const uint32_t entry = WeaponEntry(base, rule);
+  if (!g_weapons || !WeaponsRule(rule) || !g_memory) return;
+  uint32_t entry = WeaponEntry(base, rule);
+  uint32_t lent = 0;
+  if (!entry)  // (6-MAN / HANDICAP: no list of their own - Extreme Rules' head says this rule meanwhile)
+    if ((lent = WeaponHead(base, kExtremeFirst))) {
+      base[lent] = uint8_t(rule >> 8), base[lent + 1] = uint8_t(rule);
+      entry = WeaponEntry(base, rule);
+    }
   if (!entry) {
     REXLOG_WARN("match types: no weapon list for rule {:02X}", rule);
     return;
   }
-  constexpr uint32_t n = uint32_t(sizeof(kPlaced) / sizeof(kPlaced[0]));
-  if (!g_weapon_records) {
-    g_weapon_records = g_memory->SystemHeapAlloc(n * 28);
-    if (!g_weapon_records) return;
+  const bool six = rule == kSixManRule;
+  const Placed* list = six ? kPlacedSix : kPlaced;
+  const uint32_t n = six ? uint32_t(std::size(kPlacedSix)) : uint32_t(std::size(kPlaced));
+  uint32_t& records = six ? g_weapon_records_six : g_weapon_records;
+  if (!records) {
+    records = g_memory->SystemHeapAlloc(n * 28);
+    if (!records) return;
     for (uint32_t i = 0; i < n; ++i) {
-      uint8_t* r = base + g_weapon_records + i * 28;
-      const Placed& w = kPlaced[i];
+      uint8_t* r = base + records + i * 28;
+      Placed w = list[i];
+      // (test aid: SVR2011_TEST_WE_IN_RING=1 - all of them in the ring, in a row: to see them)
+      if (std::getenv("SVR2011_TEST_WE_IN_RING")) w.place = 0, w.x = -24.f + 7.f * float(i), w.y = -12.f, w.z = 0.f;
       WrF(r, w.x), WrF(r + 4, w.y), WrF(r + 8, w.z);
       WrF(r + 12, 0.f), WrF(r + 16, w.yaw), WrF(r + 20, 0.f);
       r[24] = uint8_t(15010 >> 8), r[25] = uint8_t(15010 & 0xFF);  // (motion: lying)
@@ -1652,9 +1769,9 @@ void ApplyWeapons(uint8_t* base) {
       r[27] = w.model;
     }
   }
-  g_swapped = {entry, Rd32(base + entry), Rd32(base + entry + 4)};
+  g_swapped = {entry, Rd32(base + entry), Rd32(base + entry + 4), lent, lent ? kExtremeFirst : 0};
   Wr32(base + entry, n);
-  Wr32(base + entry + 4, g_weapon_records);
+  Wr32(base + entry + 4, records);
 }
 
 }  // namespace
@@ -1696,7 +1813,7 @@ constexpr float kNearWeapon = 90.f;  // (the ring is about +-30, the placed ones
 // The nearest usable weapon lying within kNearWeapon of the AI (its slot), or -1.
 int32_t NearWeapon(PPCContext& ctx, uint8_t* base, uint32_t ai) {
   static const bool ai_off = std::getenv("SVR2011_TEST_WE_AI_OFF") != nullptr;
-  if (!g_weapons || ai_off || !ai || base[0x82E3DE00] < kExtremeFirst || base[0x82E3DE00] > kExtremeLast) return -1;
+  if (!g_weapons || ai_off || !ai || !WeaponsRule(base[0x82E3DE00])) return -1;
   const uint32_t person = Rd32(base + ai);
   if (!person) return -1;
   PPCContext c = ctx;
@@ -1996,6 +2113,7 @@ REX_HOOK_RAW(sub_828C48E8) {
   constexpr uint32_t kSavedElimination = 18;
   const uint32_t rule = ctx.r3.u32, live = ctx.r4.u32, saved = ctx.r5.u32;
   const bool elim = g_elimination && (rule == kTripleThreat || rule == kFatal4Way) && saved;
+  const bool extreme_bytes = g_weapons && WeaponsRule(rule) && (rule < kExtremeFirst || rule > kExtremeLast);
   const uint8_t was = elim ? base[saved + kSavedElimination] : 0;
   if (elim) base[saved + kSavedElimination] = 1;
   // Test aid: SVR2011_TEST_MC="<saved byte>=<value>,..." - the MATCH CREATOR
@@ -2038,5 +2156,17 @@ REX_HOOK_RAW(sub_828C48E8) {
       if (opened[k]) opt[kMcBytes[k]] = 0x80;
   if (saved && !test_mc.empty()) std::memcpy(base + saved, mc_was, 28);
   if (elim) base[saved + kSavedElimination] = was;
+  // WEAPONS EVERYWHERE in 6-MAN / HANDICAP: the bytes Extreme Rules sets in
+  // every mode's option record (Extreme Rules 0x4D-0x50 against the normal
+  // rules): +3 rope breaks off, +10 0, +27 locked off (0x80), +56 extreme
+  // rules (its weapons' models are loaded). (Not +32 0x80 and +47 1, set only
+  // by the 2 on 2 and fatal-4-way ones: a 6-man match crashed in its match
+  // screen, sub_824186E8.)
+  if (extreme_bytes && live) {
+    uint8_t* l = base + live;
+    l[3] = 0, l[10] = 0, l[27] = 0x80;
+    if (rule != kSixManRule) l[56] = 1;  // (6-MAN: not - see kPlacedSix)
+    REXLOG_INFO("match types: WEAPONS EVERYWHERE - rule {:02X} with the Extreme Rules options", rule);
+  }
   svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)
 }

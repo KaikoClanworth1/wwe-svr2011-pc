@@ -4,7 +4,8 @@
 # Mods\MatchTypes\<id>), then a match through ONE ON ONE -> NORMAL MATCH.
 #   matchtype_mods_test.ps1 -Name mtm_on
 #   matchtype_mods_test.ps1 -Name mtm_off -Off slobber_knocker,elimination,mystery_opponent
-param([string]$Name = "mtm", [string[]]$Off = @(), [switch]$Match)
+param([string]$Name = "mtm", [string[]]$Off = @(), [switch]$Match,
+      [string[]]$Lists = @("TWO ON TWO", "TRIPLE THREAT", "FATAL-4-WAY", "6-MAN", "HANDICAP"))
 $tools = $PSScriptRoot
 $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $s = Join-Path $tools "lim_session.ps1"
@@ -36,7 +37,7 @@ try { (Get-Process -Id ((Get-Content (Join-Path $runs "lim_session.json") | Conv
 & $s input "route exhibition" | Out-Null
 WaitSteps 1; Start-Sleep 2; & $s shot "${Name}_1v1" | Out-Null
 $k = 1
-foreach ($list in "TRIPLE THREAT", "FATAL-4-WAY", "HANDICAP") {
+foreach ($list in $Lists) {
     & $s input "press B" "wait 1500" "menu $list" | Out-Null
     $k++; WaitSteps $k; Start-Sleep 2
     & $s shot ("${Name}_" + ($list -replace '[^A-Z0-9]', '')) | Out-Null
