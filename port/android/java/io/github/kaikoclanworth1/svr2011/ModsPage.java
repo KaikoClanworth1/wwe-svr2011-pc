@@ -129,6 +129,17 @@ final class ModsPage {
             });
             Button remove = a_.button("Remove", LauncherActivity.kCard);
             remove.setOnClickListener(v -> {
+                if (matchType) {
+                    // (no folder means on - a match type is switched off instead)
+                    try {
+                        new FileOutputStream(new File(d, "disabled")).close();
+                        a_.status("Match types can't be removed - " + name + " is switched off instead. (from the next game start)");
+                    } catch (IOException e) {
+                        a_.status("Could not change " + name + ": " + e.getMessage());
+                    }
+                    refresh();
+                    return;
+                }
                 deleteTree(d);
                 a_.status("Removed " + name + ".");
                 refresh();
