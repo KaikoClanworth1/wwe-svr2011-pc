@@ -4,7 +4,8 @@
 // (manifest.txt, ch.pac, maybe a theme song and an entrance movie); a
 // "disabled" file turns one off. A switch for each, Remove, and Add a .svrmod
 // (a zip) picked from the phone. Mods are made on the PC with the SvR2011 Mod
-// Maker.
+// Maker. Match types the port adds are mods too (type=matchtype, a manifest
+// only, in Mods/MatchTypes/<id>) so they can be switched off; they come on.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -43,6 +44,7 @@ final class ModsPage {
     static File signsFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Signs"); }
     static File mediaFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Media"); }
     static File backstageFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Backstage"); }
+    static File matchTypesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "MatchTypes"); }
 
     View view() {
         LinearLayout c = a_.column();
@@ -82,14 +84,17 @@ final class ModsPage {
         File[] signs = signsFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] media = mediaFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] back = backstageFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
+        File[] types = matchTypesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
-            + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)];
+            + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)
+            + (types == null ? 0 : types.length)];
         int k = 0;
         if (arenas != null) for (File f : arenas) dirs[k++] = f;
         if (stars != null) for (File f : stars) dirs[k++] = f;
         if (signs != null) for (File f : signs) dirs[k++] = f;
         if (media != null) for (File f : media) dirs[k++] = f;
         if (back != null) for (File f : back) dirs[k++] = f;
+        if (types != null) for (File f : types) dirs[k++] = f;
         if (dirs.length == 0) {
             TextView none = a_.text("None yet.", 15, LauncherActivity.kDim);
             none.setPadding(0, a_.dp(14), 0, a_.dp(14));
@@ -104,10 +109,11 @@ final class ModsPage {
             boolean signPack = d.getParentFile().getName().equals("Signs");
             boolean mediaPack = d.getParentFile().getName().equals("Media");
             boolean backPack = d.getParentFile().getName().equals("Backstage");
-            String hint = (backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+            boolean matchType = d.getParentFile().getName().equals("MatchTypes");
+            String hint = (matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
-                + (signPack || mediaPack ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
+                + (signPack || mediaPack || matchType ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
             on.setChecked(!new File(d, "disabled").exists());
@@ -123,6 +129,17 @@ final class ModsPage {
             });
             Button remove = a_.button("Remove", LauncherActivity.kCard);
             remove.setOnClickListener(v -> {
+                if (matchType) {
+                    // (no folder means on - a match type is switched off instead)
+                    try {
+                        new FileOutputStream(new File(d, "disabled")).close();
+                        a_.status("Match types can't be removed - " + name + " is switched off instead. (from the next game start)");
+                    } catch (IOException e) {
+                        a_.status("Could not change " + name + ": " + e.getMessage());
+                    }
+                    refresh();
+                    return;
+                }
                 deleteTree(d);
                 a_.status("Removed " + name + ".");
                 refresh();
@@ -166,7 +183,8 @@ final class ModsPage {
     }
 
     // A .svrmod: manifest.txt (type=arena or superstar, id=...) and its files -
-    // arena.pac and banner.dds, or ch.pac and the song= / movie= files.
+    // arena.pac and banner.dds, or ch.pac and the song= / movie= files; a
+    // match type (type=matchtype) is the manifest alone and comes switched on.
     String install(Uri uri) throws IOException {
         File tmp = new File(a_.getCacheDir(), "mod.part");
         Map<String, File> parts = new HashMap<>();
@@ -201,16 +219,17 @@ final class ModsPage {
         boolean signPack = "signs".equalsIgnoreCase(m.get("type"));
         boolean mediaPack = "media".equalsIgnoreCase(m.get("type"));
         boolean backPack = "backstage".equalsIgnoreCase(m.get("type"));
-        if (!signPack && !mediaPack && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac")))
+        boolean matchType = "matchtype".equalsIgnoreCase(m.get("type"));
+        if (!signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac")))
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
-        if (id.isEmpty()) id = backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
-        File dest = new File(backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        if (id.isEmpty()) id = matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
+        File dest = new File(matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
         deleteTree(dest);
         dest.getParentFile().mkdirs();
         FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)
         deleteTree(stage);
-        if (!new File(dest, signPack || mediaPack ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
+        if (!new File(dest, signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
             throw new IOException("can't write to the game folder");
         return m.containsKey("name") ? m.get("name") : id;
     }

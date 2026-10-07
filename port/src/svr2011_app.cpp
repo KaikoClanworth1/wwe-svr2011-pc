@@ -36,6 +36,7 @@
 #include "caw_logos.h"
 #include "paint_pages.h"
 #include "match_types.h"
+#include "mystery_opponent.h"
 #include "arena_mods.h"
 #include "story_designer.h"
 #include "move_packs.h"
@@ -537,6 +538,7 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
     svr2011::InstallSlobberKnockerOverlay(imgui_drawer());  // (match_types.h)
     svr2011::InstallThreeStagesOverlay(imgui_drawer());
+    svr2011::InstallMysteryOpponentOverlay(imgui_drawer());  // (the hidden opponent's "?")
     // The ONLINE overlay: friends, invites (online_overlay.h).
     svr2011::InstallOnlineOverlay(imgui_drawer(), window(),
                                   static_cast<rex::input::InputSystem*>(runtime()->input_system()),

@@ -9,6 +9,9 @@
 param([int]$Workers = 4, [string[]]$Only = @(), [string[]]$Ids = @(), [switch]$Redo, [switch]$Setup,
       [string]$Scenarios = "")
 $ErrorActionPreference = "Continue"
+# (powershell -File passes "a,b" as one string)
+$Only = @($Only | ForEach-Object { $_ -split "," } | Where-Object { $_ })
+$Ids = @($Ids | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System; using System.Runtime.InteropServices;
@@ -50,6 +53,8 @@ function Sync-Worker([int]$w) {
     # written at start (overlays, caches): copied
     robocopy (Join-Path $game "native_shaders") (Join-Path $d "native_shaders") /MIR /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
     robocopy (Join-Path $game "Mods") (Join-Path $d "Mods") /MIR /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
+    # every mod on in the tests (bundled ones install switched off)
+    Get-ChildItem (Join-Path $d "Mods") -Recurse -Filter "disabled" -File -ErrorAction SilentlyContinue | Remove-Item -Force
     # user data: its own; the installed DLC with its own catalogs (info\ copied, content linked)
     $ud = Join-Path $d "UserData"
     $src = Join-Path $game "UserData\0000000000000000\5451085D"
@@ -66,7 +71,7 @@ function Sync-Worker([int]$w) {
             }
         }
     }
-    $saves = Join-Path $d "Saves"
+    $saves = Join-Path $ud "Saves"   # (with SVR2011_USER_DATA the game reads <user data>\Saves)
     if (-not (Test-Path (Join-Path $saves "SaveData.dat"))) {
         New-Item -ItemType Directory -Force $saves | Out-Null
         Get-ChildItem (Join-Path $port "runs\test_userdata\Saves") -Force | Where-Object { $_.Name -ne ".online" } |
@@ -128,7 +133,7 @@ function Start-Scenario($s, [int]$w) {
     $input = Join-Path $d "input.txt"; Set-Content $input ""
     # this scenario's test aids only
     foreach ($k in @("SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_TEST_ARENA_REDIRECT",
-                     "SVR2011_NATIVE_DEPTH_D32", "SVR2011_TEST_HALF_30")) { Set-Item "env:$k" "" }
+                     "SVR2011_NATIVE_DEPTH_D32", "SVR2011_TEST_HALF_30", "SVR2011_TEST_MODE")) { Set-Item "env:$k" "" }
     foreach ($p in $s.env.PSObject.Properties) { Set-Item "env:$($p.Name)" $p.Value }
     $env:SVR2011_INPUT_FILE = $input
     $env:SVR2011_CONFIG = Join-Path $d "test_config.toml"
@@ -138,7 +143,7 @@ function Start-Scenario($s, [int]$w) {
                "--show_fps=false") + @($s.args)
     $p = Start-Process (Join-Path $d "svr2011.exe") -WorkingDirectory $d -ArgumentList $args_ -PassThru -WindowStyle Minimized
     return @{ proc = $p; s = $s; w = $w; log = $log; start = Get-Date; pos = 0; text = ""; tmStarted = $false;
-              passed = $false; err = @(); stuckMax = 0; fps = @(); worst = @(); shots = @(); parked = $false;
+              passed = $false; needsSeen = (-not $s.needs); err = @(); stuckMax = 0; fps = @(); worst = @(); shots = @(); parked = $false;
               nextShot = 0; lastFpsAt = Get-Date }
 }
 
@@ -155,7 +160,13 @@ function Read-New($r) {
     foreach ($line in ($new -split "`n")) {
         if (-not $line) { continue }
         if ($line -match 'test match: ') { $r.tmStarted = $true }
+        if ($r.s.needs -and $line -match $r.s.needs) { $r.needsSeen = $true }
         if ($r.tmStarted -and $line -match $r.s.pass) { $r.passed = $true }
+        # Tag rules skip the ending's highlights (no step 3): the test's own match
+        # reaching "match end: step 0" and then the after-match menu also counts.
+        if ($r.tmStarted -and $line -match '\[svr2011\] match: rule') { $r.inMatch = $true }
+        if ($r.inMatch -and $line -match 'match end: step 0 \(') { $r.endAt = Get-Date }
+        if ($line -match 'match end: step \d waiting') { $r.endWait = $true }
         if ($line -match $errPattern -and $r.err.Count -lt 12) { $r.err += $line.Substring(0, [Math]::Min(240, $line.Length)) }
         if ($line -match 'world update stuck (\d+) s') { $r.stuckMax = [Math]::Max($r.stuckMax, [int]$Matches[1])
             if ($r.err.Count -lt 12) { $r.err += $line.Substring(0, [Math]::Min(240, $line.Length)) } }
@@ -216,11 +227,15 @@ while ($queue.Count -or $running.Count) {
         elseif ($r.err | Where-Object { $_ -match 'device lost|DEVICE_REMOVED|can''t draw' }) { $result = "gpu" }
         elseif ($r.stuckMax -ge 30) { $result = "hang" }
         elseif ($r.passed) { Start-Sleep -Seconds 1; $result = "pass" }
+        elseif ($r.endAt -and -not $r.endWait -and ((Get-Date) - $r.endAt).TotalSeconds -gt 40 -and
+                $r.lastFpsAt -and ((Get-Date) - $r.lastFpsAt).TotalSeconds -lt 15) { $result = "pass" }
         elseif ($r.err | Where-Object { $_ -match 'test match: no superstar' }) { $result = "invalid" }
         elseif ($age -gt $r.s.timeout) { $result = "timeout" }
-        elseif ($age -gt 90 -and ((Get-Date) - $r.lastFpsAt).TotalSeconds -gt 40) { $result = "hang" }
+        elseif ($r.fps.Count -gt 0 -and ((Get-Date) - $r.lastFpsAt).TotalSeconds -gt 45) { $result = "hang" }
+        elseif ($r.fps.Count -eq 0 -and $age -gt 420) { $result = "hang" }   # (a first start merges the move packs: ~2 min)
         if ($result) {
             if ($result -eq "pass" -and ($r.shots | Where-Object { $_.sd -lt 3 -and $_.mean -lt 10 }).Count -ge 2) { $result = "black" }
+            if ($result -eq "pass" -and -not $r.needsSeen) { $result = "mode-missing" }
             Finish $r $result
             $running.Remove($w)
         }

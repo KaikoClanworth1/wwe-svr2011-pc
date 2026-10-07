@@ -2,14 +2,18 @@
 //
 // Drawn over the game's OPTIONS panel in the same style (the panel, its
 // header, one bar per setting, the selected one red with < > around the
-// value), and every setting applies at once. Its CONTROLS tab rebinds the
-// keyboard (the SDK's keyboard driver reads its keybind_* settings every
-// poll, so a change applies at once too).
+// value), and every setting applies at once (CROWD and GRAPHICS API: at the
+// next start). Three tabs: DISPLAY, GRAPHICS and ADV. GRAPHICS. The same page
+// is also MY WWE -> OPTIONS -> CONTROLS, which rebinds the keyboard (the SDK's
+// keyboard driver reads its keybind_* settings every poll, so a change applies
+// at once too), and LANGUAGE.
 
 #include "frame_rate.h"
 #include "graphics_page.h"
+#include "mystery_opponent.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -55,19 +59,23 @@ struct Resolution {
 };
 // Window sizes (the render scale follows the window: native_renderer.cpp).
 constexpr Resolution kResolutions[] = {
-    {1280, 720, "1280 X 720"},   {1600, 900, "1600 X 900"},   {1920, 1080, "1920 X 1080"},
+    {854, 480, "854 X 480"},     {1280, 720, "1280 X 720"},   {1600, 900, "1600 X 900"},   {1920, 1080, "1920 X 1080"},
     {2560, 1440, "2560 X 1440"}, {3840, 2160, "3840 X 2160"},
 };
 constexpr int kNumResolutions = int(std::size(kResolutions));
-// QUALITY -> RENDER RESOLUTION: native_max_scale (AUTO: follow the window,
-// up to 4x; the phone's screen is the window).
+constexpr int kDefaultResolution = 3;  // (1920 x 1080)
+// GRAPHICS -> RENDER RESOLUTION: native_max_scale (AUTO: follow the window,
+// up to 4x; the phone's screen is the window), and below the Xbox 360's 720p
+// native_render_scale (360P / 480P: the scene smaller, scaled up).
 struct Scale {
   int value;
+  double res;  // (native_render_scale)
   const char* label;
 };
-constexpr Scale kScales[] = {{4, "AUTO"}, {1, "720P (XBOX 360)"}, {2, "1440P"}, {3, "2160P"}};
+constexpr Scale kScales[] = {{4, 1.0, "AUTO"},  {1, 0.5, "360P"},  {1, 2.0 / 3.0, "480P"},
+                             {1, 1.0, "720P (XBOX 360)"}, {2, 1.0, "1440P"}, {3, 1.0, "2160P"}};
 constexpr int kNumScales = int(std::size(kScales));
-// QUALITY -> TEXTURES: native_texture_quality (MEDIUM / LOW: big textures
+// GRAPHICS -> TEXTURES: native_texture_quality (MEDIUM / LOW: big textures
 // from the game's own half / quarter size mipmaps - native/textures.h).
 constexpr const char* kTextureQualities[] = {"high", "medium", "low"};
 constexpr const char* kTextureQualityLabels[] = {"HIGH", "MEDIUM", "LOW"};
@@ -91,25 +99,39 @@ enum Row {
   kWide, kPrepare, kDof, kMotionBlur, kSoft, kReplays,                      // QUALITY (last)
   kFrameRate, kFullSpeed,                                        // DISPLAY
   kCpuPriority,                                                  // DISPLAY (PC, last)
-  kTextureQuality,                                               // QUALITY
+  kTextureQuality,                                               // GRAPHICS
+  kCrowd, kShadows,                                              // ADV. GRAPHICS
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
 constexpr int kNumFrameRates = 2;
-enum Tab { kDisplayTab, kQualityTab, kControlsTab, kTabs };
-const char* kTabNames[kTabs] = {"DISPLAY", "QUALITY", "CONTROLS"};
+enum Tab { kDisplayTab, kGraphicsTab, kAdvancedTab, kTabs };
+const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
-const std::vector<Row> kTabRows[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kTouch, kReplays},
-                                          {kRenderScale, kAntiAliasing, kTextureQuality, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
-                                          {}};
+const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kTouch, kReplays},
 #else
-const std::vector<Row> kTabRows[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch, kReplays,
-                                           kCpuPriority},
-                                          {kRenderScale, kAntiAliasing, kTextureQuality, kEffects, kCutsceneFps, kWide, kDof, kMotionBlur, kSoft, kPrepare},
-                                          {}};
+const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch,
+                                              kReplays, kCpuPriority},
 #endif
+                                             {kRenderScale, kAntiAliasing, kTextureQuality, kWide, kCutsceneFps},
+                                             {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
+// SHADOWS: only with the renderer's native_shadows setting.
+bool HasShadows() {
+  static const bool has = !rex::cvar::GetFlagByName("native_shadows").empty();
+  return has;
+}
+const std::vector<Row>& TabRows(int tab) {
+  static const std::array<std::vector<Row>, kTabs> rows = [] {
+    std::array<std::vector<Row>, kTabs> r;
+    for (int t = 0; t < kTabs; ++t)
+      for (Row id : kTabRowsAll[t])
+        if (id != kShadows || HasShadows()) r[t].push_back(id);
+    return r;
+  }();
+  return rows[tab];
+}
 
 // CONTROLS: each controller input, what it does in a match, its keyboard
 // keys (the SDK keyboard driver's setting: a comma-separated list, each key
@@ -199,6 +221,8 @@ std::string ShowKeys(const std::string& keys) {
 }
 // MY WWE -> OPTIONS -> LANGUAGE: the same page with only this row.
 const std::vector<Row> kLanguageRows = {kLanguage};
+// The page's three uses (MY WWE -> OPTIONS -> GRAPHICS / CONTROLS / LANGUAGE).
+enum Mode { kGraphicsMode, kControlsMode, kLanguageMode };
 
 // DISPLAY MODE: a window, a borderless window covering the screen, or the
 // screen itself (exclusive fullscreen: fullscreen_exclusive in the SDK).
@@ -211,7 +235,7 @@ rex::input::InputSystem* g_input = nullptr;
 ImFont* g_menu_font = nullptr;
 ImFont* g_title_font = nullptr;
 std::atomic<bool> g_open_requested{false};
-std::atomic<bool> g_language_requested{false};  // (opened as the LANGUAGE page)
+std::atomic<int> g_requested_mode{kGraphicsMode};  // (opened as GRAPHICS, CONTROLS or LANGUAGE)
 std::atomic<bool> g_open{false};
 // After closing, the game keeps seeing an idle pad until every button is
 // released, so the button that closed the page does not reach the menu.
@@ -346,15 +370,17 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   void SetBinding(int i, const std::string& keys);
 
   int tab_ = kDisplayTab;
-  bool language_only_ = false;  // the LANGUAGE page
+  int mode_ = kGraphicsMode;  // (Mode)
   int row_ = 0;  // (in the tab)
-  int resolution_ = 2;
+  int resolution_ = kDefaultResolution;
   int scale_ = 0;  // (kScales)
   int textures_ = 0;  // (kTextureQualities)
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
   bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
   bool prepare_ = true;  // the known pipelines built ahead in the menus
+  bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
+  bool shadows_ = true;  // native_shadows
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
@@ -382,7 +408,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
 void GraphicsPage::Load() {
   const int w = rex::cvar::Query<int32_t>("window_width");
   const int h = rex::cvar::Query<int32_t>("window_height");
-  resolution_ = 2;
+  resolution_ = kDefaultResolution;
   for (int i = 0; i < kNumResolutions; ++i) {
     if (kResolutions[i].w == w && kResolutions[i].h == h) resolution_ = i;
   }
@@ -392,9 +418,14 @@ void GraphicsPage::Load() {
   }
   {
     const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
+    const double res = rex::cvar::Query<double>("native_render_scale");
     scale_ = 0;
-    for (int i = 0; i < kNumScales; ++i) {
-      if (kScales[i].value == v) scale_ = i;
+    if (res > 0.0 && res < 0.99) {  // (below 720p: the nearer of 360P / 480P)
+      for (int i = 0; i < kNumScales; ++i)
+        if (kScales[i].res < 0.99 && std::abs(kScales[i].res - res) < std::abs(kScales[scale_].res - res)) scale_ = i;
+    } else {
+      for (int i = 0; i < kNumScales; ++i)
+        if (kScales[i].value == v && kScales[i].res >= 0.99) scale_ = i;
     }
   }
   {
@@ -418,6 +449,13 @@ void GraphicsPage::Load() {
   replays_ = rex::cvar::Query<bool>("replays");
   prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
+    const std::string c = rex::cvar::Query<std::string>("arena_crowd");
+    crowd_ = c == "on" || (c != "off" && rex::cvar::GetFlagByName("mali_alpha") != "true");
+    static const bool at_start = crowd_;
+    crowd_at_start_ = at_start;
+  }
+  shadows_ = !HasShadows() || rex::cvar::Query<bool>("native_shadows");
+  {
     const uint32_t id = rex::cvar::Query<uint32_t>("user_language");
     language_ = 0;
     for (int i = 0; i < kNumLanguages; ++i)
@@ -436,10 +474,25 @@ void GraphicsPage::Load() {
 
 void GraphicsPage::Change(int row, int dir) {
   switch (row) {
-    case kRenderScale:
+    case kRenderScale: {
       scale_ = (scale_ + dir + kNumScales) % kNumScales;
+      char res[16];
+      std::snprintf(res, sizeof(res), "%.4f", kScales[scale_].res);
       rex::cvar::SetFlagByName("native_max_scale", std::to_string(kScales[scale_].value));
+      rex::cvar::SetFlagByName("native_render_scale", res);
       SaveSetting("native_max_scale", std::to_string(kScales[scale_].value));
+      SaveSetting("native_render_scale", res);
+      break;
+    }
+    case kCrowd:  // (the arenas' crowd-less copies are chosen when the game starts: crowd_off.h)
+      crowd_ = !crowd_;
+      rex::cvar::SetFlagByName("arena_crowd", crowd_ ? "on" : "off");
+      SaveSetting("arena_crowd", crowd_ ? "\"on\"" : "\"off\"");
+      break;
+    case kShadows:
+      shadows_ = !shadows_;
+      rex::cvar::SetFlagByName("native_shadows", shadows_ ? "true" : "false");
+      SaveSetting("native_shadows", shadows_ ? "true" : "false");
       break;
     case kTextureQuality:
       textures_ = (textures_ + dir + kNumTextureQualities) % kNumTextureQualities;
@@ -672,7 +725,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     Load();
     tab_ = kDisplayTab;
     row_ = 0;
-    language_only_ = g_language_requested.exchange(false);
+    mode_ = g_requested_mode.exchange(kGraphicsMode);
+    control_row_ = control_top_ = 0;
     // The A that opened the page is still down: wait for everything to be
     // released, judged only on pad states the game polled after opening.
     wait_release_ = true;
@@ -709,7 +763,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   int move = 0, dir = 0;
   bool back = false;
   {
-  const std::vector<Row>& rows = language_only_ ? kLanguageRows : kTabRows[tab_];
+  const std::vector<Row>& rows = mode_ == kLanguageMode ? kLanguageRows : TabRows(tab_);
   const int n = std::max(1, int(rows.size()));
   if (capture_ >= 0) {
     // CONTROLS, waiting for a key: the keyboard is the key's (the pad - which
@@ -751,13 +805,13 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
       back = true;
     }
-    if (!language_only_ &&
+    if (mode_ == kGraphicsMode &&
         ((pressed & (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER)) ||
          ImGui::IsKeyPressed(ImGuiKey_Tab, false))) {
       const int step = (pressed & X_INPUT_GAMEPAD_LEFT_SHOULDER) ? kTabs - 1 : 1;
       tab_ = (tab_ + step) % kTabs;
       row_ = 0;
-    } else if (!language_only_ && tab_ == kControlsTab) {
+    } else if (mode_ == kControlsMode) {
       ControlsInput(pressed, act, back);
     } else {
       if (move) row_ = (row_ + move + n) % n;
@@ -765,7 +819,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     }
   }
   }
-  const std::vector<Row>& rows = language_only_ ? kLanguageRows : kTabRows[tab_];
+  const std::vector<Row>& rows = mode_ == kLanguageMode ? kLanguageRows : TabRows(tab_);
   const int n = int(rows.size());
 
   // Layout in the game's 1280 x 720 frame (letterboxed into the window), over
@@ -799,14 +853,15 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     const ImVec2 sz = TextSize(g_title_font, ts, title);
     Text(dl, g_title_font, ts, ImVec2(P(462, 0).x - sz.x * 0.5f, P(0, 101).y - sz.y * 0.5f),
          IM_COL32(255, 255, 255, 255), title);
-    // GRAPHICS: its tabs (LB / RB), the chosen one white on red; LANGUAGE:
-    // its name alone.
-    const float ps = 20 * s;
-    float x = P(712, 0).x;
+    // GRAPHICS: its tabs (LB / RB), the chosen one white on red; CONTROLS and
+    // LANGUAGE: their name alone.
+    const bool alone = mode_ != kGraphicsMode;
+    const float ps = 18 * s;
+    float x = P(708, 0).x;
     const float cy = P(0, 101).y;
-    for (int i = 0; i < (language_only_ ? 1 : int(kTabs)); ++i) {
-      const char* name = language_only_ ? "LANGUAGE" : kTabNames[i];
-      const bool chosen = language_only_ || i == tab_;
+    for (int i = 0; i < (alone ? 1 : int(kTabs)); ++i) {
+      const char* name = mode_ == kLanguageMode ? "LANGUAGE" : mode_ == kControlsMode ? "CONTROLS" : kTabNames[i];
+      const bool chosen = alone || i == tab_;
       const ImVec2 z = TextSize(g_menu_font, ps, name);
       const ImVec2 a(x - 10 * s, cy - 13 * s), b(x + z.x + 10 * s, cy + 13 * s);
       if (chosen) {
@@ -815,17 +870,17 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       }
       Text(dl, g_menu_font, ps, ImVec2(x, cy - z.y * 0.5f),
            chosen ? IM_COL32(255, 255, 255, 255) : IM_COL32(150, 150, 158, 255), name);
-      x += z.x + 30 * s;
+      x += z.x + 24 * s;
     }
     const float hs = 15 * s;
-    const char* hint = language_only_ ? "" : "LB / RB";
+    const char* hint = alone ? "" : "LB / RB";
     const ImVec2 hz = TextSize(g_menu_font, hs, hint);
     Text(dl, g_menu_font, hs, ImVec2(P(1112, 0).x - hz.x, cy - hz.y * 0.5f), IM_COL32(150, 150, 158, 255),
          hint);
   }
 
   // CONTROLS: the inputs, their keys, RESET TO DEFAULTS; a scrolling list.
-  if (!language_only_ && tab_ == kControlsTab) {
+  if (mode_ == kControlsMode) {
     const float row_h = 30.0f, gap = 8.0f, top = 132.0f;
     const float fs = 21 * s;
     control_top_ = std::clamp(control_top_, std::max(0, control_row_ - kControlsShown + 1),
@@ -884,6 +939,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
 
   // Rows.
   const bool restart_renderer = vulkan_ != vulkan_at_start_;
+  const bool restart_crowd = crowd_ != crowd_at_start_;
   auto value = [&](Row id) -> const char* {
     switch (id) {
       case kResolution: return display_ != kWindowed ? "FULL SCREEN" : kResolutions[resolution_].label;
@@ -909,6 +965,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderScale: return kScales[scale_].label;
       case kTextureQuality: return kTextureQualityLabels[textures_];
       case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
+      case kCrowd: return crowd_ ? "ON" : "OFF";
+      case kShadows: return shadows_ ? "ON" : "OFF";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
       case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
     }
@@ -935,7 +993,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderScale: return "RENDER RESOLUTION";
       case kTextureQuality: return "TEXTURES";
       case kAntiAliasing: return "ANTI-ALIASING";
-      case kEffects: return "SHADOWS & EFFECTS";
+      case kEffects: return "EFFECT DETAIL";
+      case kCrowd: return "CROWD";
+      case kShadows: return "SHADOWS";
       case kCutsceneFps: return "ENTRANCE FRAME RATE";
     }
     return "";
@@ -966,20 +1026,27 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                    ? "The game's text (the commentary stays English)."
                    : "The game's text: changes the next time the game starts.";
       case kRenderer: return "The graphics API the game draws with (Direct3D 12 is the default; Vulkan for drivers that need it).";
-      case kRenderScale: return "The most the game renders at. AUTO fills the screen; lower is faster.";
+      case kRenderScale:
+        return "The most the game renders at. AUTO fills the screen; lower is faster (360P / 480P: softer, for weak "
+               "devices).";
+      case kCrowd:
+        return crowd_ == crowd_at_start_ ? "The people in the seats. OFF: empty seats - faster on weak PCs and phones."
+                                         : "Takes effect the next time the game starts.";
+      case kShadows: return "The wrestlers', ring's and arena's shadows. OFF: faster.";
       case kAntiAliasing:
         return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
                "pixel): smoother edges, slower. Limited by RENDER SCALE.";
       case kTextureQuality:
         return "MEDIUM / LOW: big textures at half / a quarter of their size - less memory, faster loading. "
                "Menus and text stay sharp.";
-      case kEffects: return "HIGH: shadows, reflections and glow at the render resolution. NORMAL: faster.";
+      case kEffects:
+        return "HIGH: shadows, reflections and glow at the render resolution. NORMAL: at the Xbox 360's size, faster.";
       case kCutsceneFps: return "Entrances and cutscenes at 60 fps, or 30 as on the Xbox 360 (half the work).";
     }
     return "";
   };
   row_ = std::clamp(row_, 0, n - 1);
-  // (9-10 rows on QUALITY: a little tighter, so the help line below stays clear)
+  // (9-10 rows: a little tighter, so the help line below stays clear)
   const float row_h = n > 9 ? 28.0f : n > 7 ? 30.0f : 34.0f, gap = n > 9 ? 6.0f : n > 7 ? 8.0f : 13.0f;
   const float top = 310 - (float(n) * (row_h + gap) - gap) * 0.5f;
   const float fs = 22 * s;
@@ -1000,8 +1067,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     const char* v = value(id);
     const ImVec2 vs = TextSize(g_menu_font, fs, v);
     const float vx = P(930, 0).x - vs.x * 0.5f;
-    const ImU32 vc = (id == kRenderer && restart_renderer) ? IM_COL32(255, 200, 60, 255)
-                                                            : IM_COL32(255, 255, 255, 255);
+    const ImU32 vc = ((id == kRenderer && restart_renderer) || (id == kCrowd && restart_crowd))
+                         ? IM_COL32(255, 200, 60, 255)
+                         : IM_COL32(255, 255, 255, 255);
     Text(dl, g_menu_font, fs, ImVec2(vx, ty), vc, v);
     if (sel) {
       const float cy = P(0, y + row_h * 0.5f).y, h = 8 * s;
@@ -1047,7 +1115,7 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
     input->SetGuestInputHold(
         [] {
           return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() || JukeboxPageHoldsInput() ||
-                 TouchControlsHoldInput() || OnlineOverlayHoldsInput();
+                 TouchControlsHoldInput() || OnlineOverlayHoldsInput() || MysteryOpponentHoldsInput();
         });
   }
 }
@@ -1057,12 +1125,20 @@ void SetGraphicsPageFonts(ImFont* menu, ImFont* title) {
   g_title_font = title;
 }
 
-void OpenGraphicsPage() { g_open_requested = true; }
+void OpenGraphicsPage() {
+  g_requested_mode = kGraphicsMode;
+  g_open_requested = true;
+}
+
+void OpenControlsPage() {
+  g_requested_mode = kControlsMode;
+  g_open_requested = true;
+}
 
 void SaveConfigSetting(const std::string& key, const std::string& value) { SaveSetting(key, value); }
 
 void OpenLanguagePage() {
-  g_language_requested = true;
+  g_requested_mode = kLanguageMode;
   g_open_requested = true;
 }
 

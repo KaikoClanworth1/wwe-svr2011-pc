@@ -1,4 +1,4 @@
-"""Adds menu entries (pac/menu/menu.pac): GRAPHICS to MY WWE -> OPTIONS,
+"""Adds menu entries (pac/menu/menu.pac): CONTROLS, GRAPHICS and LANGUAGE to MY WWE -> OPTIONS,
 ACHIEVEMENTS and JUKEBOX to MY WWE and EXIT to the main menu.
 
 The main menus are a table of 0x74-byte records in menu.pac entry MFLO/0000
@@ -11,8 +11,8 @@ The main menus are a table of 0x74-byte records in menu.pac entry MFLO/0000
   +0x54 screen id
 A group's records are consecutive, in display order; the "last" flag ends it.
 OPTIONS (node 0x1C) is group 0x11: MATCH CREATOR, GAMEPLAY OPTIONS, SAVE DATA
-MANAGER, CREDITS, CHEAT CODES. GRAPHICS is inserted after CHEAT CODES as a copy
-of it (screen 0x524, so without the port's hooks it would open Cheat Codes)
+MANAGER, CREDITS, CHEAT CODES. CONTROLS, GRAPHICS and LANGUAGE follow CHEAT CODES
+as copies of it (screen 0x524, so without the port's hooks they'd open Cheat Codes)
 with its own label id; the port supplies the label and opens its own page
 (src/menu_hooks.cpp). MY WWE (node 0x07) is group 0x05: SUPERSTAR MANAGEMENT,
 TEAM MANAGEMENT, PRACTICE ARENA, OPTIONS; ACHIEVEMENTS goes after OPTIONS as a
@@ -43,8 +43,9 @@ FIRST = MFLO + 0x28
 # src/game_files.cpp.
 NO_TEXT = 0x05F5E0FF
 ADDITIONS = [
-    # MY WWE -> OPTIONS: GRAPHICS after CHEAT CODES (a copy: screen 0x524).
-    (0xA050, 0x11, 0xAFC0, 0, NO_TEXT),
+    # MY WWE -> OPTIONS: CONTROLS after CHEAT CODES, GRAPHICS after it (copies: screen 0x524).
+    (0xA050, 0x11, 0xAFC7, 0, NO_TEXT),
+    (0xAFC7, 0x11, 0xAFC0, 0, NO_TEXT),
     # Main menu: EXIT after SHOP.
     (0xA04B, 0x01, 0xAFC1, 0, NO_TEXT),
     # MY WWE: ACHIEVEMENTS after OPTIONS (a copy of TEAM MANAGEMENT).
@@ -55,7 +56,7 @@ ADDITIONS = [
     (0xAFC2, 0x05, 0xAFC5, 0xA0BD, 0xAFC6),
 ]
 # Hidden records (never shown) dropped to make room: the table's slot can't grow.
-DROPPED = [(0xA02E, 0x01), (0xA47E, 0x0E), (0xA47F, 0x0E), (0xA480, 0x0E)]
+DROPPED = [(0xA02E, 0x01), (0xA47E, 0x0E), (0xA47F, 0x0E), (0xA480, 0x0E), (0xA481, 0x0E)]
 
 
 def u32(d, o):
@@ -135,7 +136,7 @@ def main() -> int:
     tmp = dst + ".tmp"
     open(tmp, "wb").write(data)
     os.replace(tmp, dst)
-    print(f"{FILE}: added GRAPHICS and LANGUAGE (MY WWE -> OPTIONS), ACHIEVEMENTS and JUKEBOX (MY WWE) and EXIT (main menu)")
+    print(f"{FILE}: added CONTROLS, GRAPHICS and LANGUAGE (MY WWE -> OPTIONS), ACHIEVEMENTS and JUKEBOX (MY WWE) and EXIT (main menu)")
     return 0
 
 

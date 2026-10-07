@@ -23,6 +23,7 @@ import os
 import queue
 import random
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -112,6 +113,9 @@ class Game:
         if os.path.exists(self.log):
             os.remove(self.log)
         open(self.input, 'w').close()
+        # Each game starts from the test defaults: random presses change settings
+        # (a LANGUAGE pick left a worker in French, so later menus didn't match).
+        shutil.copyfile(os.path.join(PORT, 'runs', 'test_config.toml'), os.path.join(self.dir, 'test_config.toml'))
         env = dict(os.environ)
         for k in list(env):
             if k.startswith('SVR2011_TEST') or k in ('SVR2011_ROUTE',):

@@ -71,6 +71,7 @@
 #include "generated/default/svr2011_init.h"
 #include "graphics_page.h"
 #include "music.h"
+#include "mystery_opponent.h"
 
 REXCVAR_DEFINE_STRING(jukebox_off, "", "UI",
                       "MY WWE -> JUKEBOX: the menu songs that are off (their numbers 1-19, comma-separated)");
@@ -497,6 +498,7 @@ bool JukeboxEvent(uint8_t* base, const char* e, uint32_t object) {
   // Tests: SVR2011_JUKEBOX_EVENT_LOG=1 logs every sound event the game posts by name.
   static const bool log_events = std::getenv("SVR2011_JUKEBOX_EVENT_LOG") != nullptr;
   if (log_events) REXLOG_INFO("[svr2011] jukebox: event {:.60} object {:08X}", e, object);
+  svr2011::MysteryOpponentEvent(e);  // (mystery_opponent.h: the entrances start)
   const bool own = g_own_post;
   // The menus ending (the game stops its menu music, or every sound): a user
   // song stops too; the game's music is unmuted once the stopped music faded.

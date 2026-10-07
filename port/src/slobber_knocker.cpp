@@ -285,3 +285,53 @@ REX_HOOK_RAW(sub_82245618) {
   if (running && ctx.r3.u32 == 1)
     REXLOG_INFO("slobber knocker: the match is over - {} beaten;{}", g_beaten.load(), Characters(base));
 }
+
+// sub_828061E8(pair): on a worker thread, a pair of characters (+0, +20)
+// gets two values from each one's +2572 (+656, +660) - or, when the game
+// says so, both are zeroed and nothing read. In an ELIMINATION match
+// (fatal-4-way, Fold) the pair's +20 was NULL once one had been eliminated:
+// a read of guest 0xA0C over and over, then a hang. A pair missing a
+// character takes the zeroing path.
+REX_EXTERN(__imp__sub_828061E8);
+REX_HOOK_RAW(sub_828061E8) {
+  const uint32_t pair = ctx.r3.u32;
+  if (pair && (!Rd32(base + pair) || !Rd32(base + pair + 20))) {
+    Wr32(base + pair + 656, 0);
+    Wr32(base + pair + 660, 0);
+    static int count = 0;
+    if (++count <= 10 || count % 1000 == 0)
+      REXLOG_INFO("match types: a character pair missing one ({:08X} / {:08X}) - skipped ({} times)",
+                  Rd32(base + pair), Rd32(base + pair + 20), count);
+    return;
+  }
+  __imp__sub_828061E8(ctx, base);
+}
+
+// The same object's update, sub_8280CFD0(pair): +0 a character, +20 the one
+// it's set on (a CPU's opponent). With +20 NULL (an elimination left it so;
+// fatal-4-way ELIMINATION) it reads past NULL further on (guest 0x1BC, the
+// character's +444, PC repro): +20 becomes another character still in the
+// match (state 0, another team) before it runs; with none, it's skipped.
+REX_EXTERN(__imp__sub_8280CFD0);
+REX_HOOK_RAW(sub_8280CFD0) {
+  const uint32_t pair = ctx.r3.u32;
+  // (not at a match's start - there +20 is empty until the game sets it - and
+  // only for a competitor: not the referee or the commentators, teams 30+)
+  const uint32_t self = pair ? Rd32(base + pair) : 0;
+  if (self && !Rd32(base + pair + 20) && Rd32(base + self + kTeam) < 30 &&
+      int32_t(Rd32(base + 0x82E3CD0C)) > 300) {
+    uint32_t other = 0;
+    for (uint32_t i = 0; i < 6 && !other; ++i) {
+      const uint32_t c = Rd32(base + kChars + i * 4);
+      if (c && c != self && base[c + kState] == 0 && !base[c + kLost] && Rd32(base + c + kTeam) != Rd32(base + self + kTeam))
+        other = c;
+    }
+    static int count = 0;
+    if (++count <= 10 || count % 1000 == 0)
+      REXLOG_INFO("match types: a character's opponent was gone ({:08X}) - {} ({} times)", self,
+                  other ? fmt::format("now {:08X}", other) : std::string("skipped"), count);
+    if (!other) return;
+    Wr32(base + pair + 20, other);
+  }
+  __imp__sub_8280CFD0(ctx, base);
+}

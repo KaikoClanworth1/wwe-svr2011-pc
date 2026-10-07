@@ -13,6 +13,7 @@
 // display order; flag 2 at +0x3C marks the group's last row; a submenu finds
 // its rows by their parent node, +0x38). No file size limit applies.
 #include "match_types.h"
+#include "mystery_opponent.h"
 
 #include <algorithm>
 #include <cctype>
@@ -156,6 +157,10 @@ constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
 WeaponsRow g_stages_row = {~0u, ~0u};
 bool g_pending_stages = false;
+// MYSTERY OPPONENT: ONE ON ONE -> NORMAL MATCH becomes a submenu of NORMAL
+// MATCH and MYSTERY OPPONENT (mystery_opponent.cpp: a normal one on one).
+WeaponsRow g_mystery_row = {~0u, ~0u};
+bool g_pending_mystery = false;
 uint32_t g_stages_text[2] = {};
 constexpr uint32_t kTripleThreat = 0x0D, kFatal4Way = 0x0E;
 std::vector<WeaponsRow> g_elim_rows;  // (group, place in the group)
@@ -166,6 +171,11 @@ uint32_t g_elim_text[2] = {};
 // Developer aid: SVR2011_TEST_RULE=<hex id> plays that rule record wherever
 // the game would play ONE ON ONE -> NORMAL (id 0), to try a rule in game.
 int g_test_rule = -1;
+// Test aid: SVR2011_TEST_MODE=<mode> - ONE ON ONE NORMAL (route match) plays
+// a mode only a runtime row gives: three_stages, elimination_tt,
+// elimination_f4w, weapons, slobber, lumberjack (as if its row was picked).
+enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack };
+TestMode g_test_mode = TestMode::kNone;
 
 // Node ids (+0x1C): the game finds a node by binary search over the table
 // (sub_82BA9B48) - B goes back through the row's parent (sub_8243FC18) - so
@@ -262,6 +272,39 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
       REXLOG_INFO("match types: SLOBBER KNOCKER at group {:02X} row {}", kHandicapGroup, index);
+    }
+    if (Rd32(rec + 0x5C) == 0x00 && Rd32(rec + 0x18) == kFullGroup && submenu) {
+      // NORMAL MATCH becomes a submenu (its own node) of NORMAL MATCH and
+      // MYSTERY OPPONENT (a new group), as EXTREME RULES below.
+      out.resize(out.size() - kRec);
+      std::vector<uint8_t> row(submenu, submenu + kRec);
+      Wr32(row.data() + 0x00, Rd32(rec + 0x00));
+      Wr32(row.data() + 0x04, Rd32(rec + 0x04));
+      Wr32(row.data() + 0x18, kFullGroup);
+      Wr32(row.data() + 0x1C, Rd32(rec + 0x1C));
+      Wr32(row.data() + 0x38, Rd32(rec + 0x38));
+      Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
+      Wr32(row.data() + 0x40, Rd32(rec + 0x40));
+      out.insert(out.end(), row.begin(), row.end());
+      for (uint32_t k = 0; k < 2; ++k) {  // (NORMAL MATCH, MYSTERY OPPONENT)
+        std::vector<uint8_t> leaf(rec, rec + kRec);
+        Wr32(leaf.data() + 0x18, group);
+        Wr32(leaf.data() + 0x1C, node + k);
+        Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
+        Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);
+        Wr32(leaf.data() + 0x40, 0);
+        Wr32(leaf.data() + 0x3C, k == 1 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
+        if (k == 1) {
+          Wr32(leaf.data() + 0x00, svr2011::kMysteryLabel);
+          Wr32(leaf.data() + 0x04, svr2011::kMysteryText);
+        }
+        tail.insert(tail.end(), leaf.begin(), leaf.end());
+        ++added;
+      }
+      g_mystery_row = {group, 1};
+      REXLOG_INFO("match types: NORMAL MATCH submenu with MYSTERY OPPONENT, group {:02X}", group);
+      node += 2;
+      ++group;
     }
     if (const uint32_t rule = Rd32(rec + 0x5C);
         rule >= kExtremeFirst && rule <= kExtremeLast && Rd32(rec + 0x18) == kFullGroup && submenu) {
@@ -495,6 +538,27 @@ namespace svr2011 {
 
 void InstallMatchTypes(rex::memory::Memory* memory) {
   g_memory = memory;
+  if (const char* v = std::getenv("SVR2011_TEST_MODE"); v && *v) {
+    const std::string m = v;
+    struct Mode {
+      const char* name;
+      TestMode mode;
+      int rule;
+    };
+    constexpr Mode kModes[] = {{"three_stages", TestMode::kThreeStages, 0x00},
+                               {"elimination_tt", TestMode::kElimTT, int(kTripleThreat)},
+                               {"elimination_f4w", TestMode::kElimF4W, int(kFatal4Way)},
+                               {"weapons", TestMode::kWeapons, int(kExtremeFirst)},
+                               {"slobber", TestMode::kSlobber, int(kGauntlet)},
+                               {"lumberjack", TestMode::kLumberjack, int(kLumberjack)}};
+    for (const Mode& k : kModes)
+      if (m == k.name) {
+        g_test_mode = k.mode;
+        if (k.rule) g_test_rule = k.rule;
+        REXLOG_INFO("match types: ONE ON ONE NORMAL plays {} (SVR2011_TEST_MODE, rule {:02X})", k.name, k.rule);
+      }
+    if (g_test_mode == TestMode::kNone) REXLOG_WARN("match types: unknown SVR2011_TEST_MODE '{}'", m);
+  }
   if (const char* v = std::getenv("SVR2011_TEST_RULE"); v && *v) {
     g_test_rule = int(std::strtol(v, nullptr, 16));
     REXLOG_INFO("match types: ONE ON ONE NORMAL plays rule {:02X} (SVR2011_TEST_RULE)", g_test_rule);
@@ -549,6 +613,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_select_only = true;
   }
   g_pending_stages = group == g_stages_row.group && ctx_row == g_stages_row.index;
+  g_pending_mystery = group == g_mystery_row.group && ctx_row == g_mystery_row.index;
   g_pending_elimination = false;
   for (const WeaponsRow& w : g_elim_rows)
     if (group == w.group && ctx_row == w.index) g_pending_elimination = true;
@@ -574,12 +639,46 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_like = kLumberjackLike;
     g_pending_select_only = true;
   }
+  // (test aid SVR2011_TEST_MODE: ONE ON ONE NORMAL as the mode's row)
+  if (g_test_mode != TestMode::kNone && result == 2000) {
+    switch (g_test_mode) {
+      case TestMode::kThreeStages: g_pending_stages = true; break;
+      case TestMode::kElimTT:
+      case TestMode::kElimF4W: g_pending_elimination = true; break;
+      case TestMode::kWeapons: g_pending_weapons = true; break;
+      case TestMode::kSlobber:
+        g_pending_slobber = true;
+        g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
+        g_pending_like = kLumberjackLike;
+        g_pending_select_only = true;
+        break;
+      case TestMode::kLumberjack:
+        g_pending_rule_lo = g_pending_rule_hi = kLumberjack;
+        g_pending_like = kLumberjackLike;
+        g_pending_select_only = true;
+        break;
+      default: break;
+    }
+  }
 }
 
 // A match is set up: sub_827374A0(match, rule, ...).
 REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
   const uint32_t rule = ctx.r4.u32;
+  // Test aid: SVR2011_TEST_SETUP_TRACE=1 - each match set-up with its caller
+  // and the guest call stack (for REMATCH and the roaming FCA's reload).
+  if (std::getenv("SVR2011_TEST_SETUP_TRACE")) {
+    std::string chain;
+    uint32_t sp = ctx.r1.u32;
+    for (int k = 0; k < 12 && sp; ++k) {
+      const uint32_t next = Rd32(base + sp);
+      if (next <= sp || next - sp > 0x10000 || next < 0x70000000u || next >= 0x80000000u) break;  // (guest stacks)
+      chain += fmt::format(" {:08X}", Rd32(base + next - 8));
+      sp = next;
+    }
+    REXLOG_INFO("match types: set-up of rule {:02X} (match {:08X}) from {:08X};{}", rule, ctx.r3.u32, uint32_t(ctx.lr), chain);
+  }
   svr2011::SetMatchLoading(true);  // (arena_mods: a custom arena's loading pictures)
   RestoreRule(base);
   g_lumberjacks_chosen = false;
@@ -602,6 +701,8 @@ REX_HOOK_RAW(sub_827374A0) {
   }
   svr2011::ThreeStagesSetup(g_pending_stages && rule == 0x00 && !Rd32(base + kStoryContext));
   g_pending_stages = false;
+  svr2011::MysteryOpponentSetup(base, g_pending_mystery && rule == 0x00 && !Rd32(base + kStoryContext));
+  g_pending_mystery = false;
   g_elimination = g_pending_elimination && (rule == kTripleThreat || rule == kFatal4Way) && !Rd32(base + kStoryContext);
   g_pending_elimination = false;
   if (g_elimination) REXLOG_INFO("match types: ELIMINATION (rule {:02X})", rule);
@@ -791,6 +892,7 @@ REX_HOOK_RAW(sub_828BBEF0) {
     FillRandomSlots(base, ctx.r3.u32, kSlobberPeople - 2, 1, 3, "slobber knocker opponents");
     for (uint32_t i = kSlobberPeople; i < 6; ++i) Wr32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8, 51200);
   }
+  svr2011::MysteryOpponentFill(base, ctx.r3.u32);  // (mystery_opponent.h)
   __imp__sub_828BBEF0(ctx, base);
 }
 
@@ -1487,6 +1589,7 @@ namespace svr2011 {
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
+  if (const uint32_t t = MysteryOpponentString(id, g_memory)) return t;
   if ((id == kStagesLabel || id == kStagesText) && g_memory) {
     static const char* const kText[] = {
         "THREE STAGES OF HELL",
@@ -1596,52 +1699,108 @@ REX_HOOK_RAW(sub_828B5078) {
   REXLOG_INFO("match types: {} locked match rules unlocked", unlocked);
 }
 
-// -- Fewer greyed rows in MATCH CREATOR ---------------------------------------
+// -- MATCH CREATOR: everything allowed in every match ------------------------
 //
 // The MATCH CREATOR's 3 pages (ENVIRONMENT, WIN CONDITION, RULES) grey rows
-// by match family (sub_82490918(rule): 68 families, e.g. 9 = 1 on 1 steel
-// cage 0x3C/0x40, 28 = triple threat 0x0D, 36 = fatal-4-way 0x0E) from
-// misc.pac /MRME/MRPD, loaded by sub_82490558(loader, ...): per page a
-// defaults table and an "allowed" one (a byte per family and row: 0x09 free,
-// 0x00 greyed, others fixed). Their addresses: loader +52 (ENVIRONMENT, 8
-// rows: ring STANDARD / CAGE / HELL IN A CELL / CHAMBER / INFERNO, entrance,
-// replay, momentum), +68 (WIN CONDITION, 11 rows: pin and give up, 2 out of
-// 3, ironman, over the top, K.O., last man standing, finisher, first blood,
-// flaming table, climb out, escape), +84 (RULES, 6 rows: DQ, rope break,
-// ring out, elimination, falls count anywhere, time limit). Allowed here:
-// - K.O. and FINISHER MATCH wherever pin and give up is (e.g. the cages):
-//   more ways to win, judged as in any match;
-// - a TIME LIMIT wherever it's greyed (a draw at the bell), not in Royal
-//   Rumbles, the Elimination Chamber or backstage;
-// - the INFERNO ring for triple threat and fatal-4-way.
+// from misc.pac /MRME/MRPD, loaded by sub_82490558(loader): 10 tables at
+// loader +48, +52, +64, +68, +72, +76, +80, +84, +88, +92 (chunks 1-10).
+// - Per match family (sub_82490918(rule): 68 families, table 0x8201E4F8 -
+//   12 bytes each: a u32 rule list, its count) and row: the defaults (1, 3,
+//   7) and what is allowed (2 ENVIRONMENT, 8 rows: ring STANDARD / CAGE /
+//   HELL IN A CELL / CHAMBER / INFERNO, entrance, replay, momentum; 4 WIN
+//   CONDITION, 11 rows: pin and give up, 2 out of 3, ironman, over the top,
+//   K.O., last man standing, finisher, first blood, flaming table, climb out,
+//   escape; 8 RULES, 6 rows: DQ, rope break, ring out, elimination, falls
+//   count anywhere, time limit): 0x09 free, 0x00 greyed, 0x02-0x04 fixed.
+// - Combinations: 5 (ring structure x win rows), 6 (a win row's value x the
+//   others: 0x0A itself), 9 and 10 (the same for the rules).
+// Every greyed (0x00) cell is allowed here - fixed ones stay - but for the
+// families kept as they are (KeepFamily: Royal Rumble, Elimination Chamber,
+// backstage, in-ring brawls). A row freed here was an option locked off in
+// the rule's 64-byte record (bit 7, value 0): those are opened while a
+// match's live rules are built (sub_828C48E8 below), so the choice counts.
+namespace {
+
+bool KeepFamily(uint32_t f) {
+  return f == 12 || f == 26 || f == 55 || f == 60 || f == 48 || f == 49 || f == 61 || (f >= 62 && f <= 67) ||
+         f == 1;  // (1: INFERNO 1 on 1 - with LAST MAN STANDING it crashed)
+}
+
+// What stays greyed (the sweep, tools/mc_sweep.ps1 - docs/MATCH_TYPES_RESEARCH.md):
+// - ladder / TLC families in a cage, cell or inferno ring (the CPU stood idle),
+//   and their win conditions as they are (fatal-4-way ladder with LAST MAN
+//   STANDING hung in the characters' job);
+bool LadderFamily(uint32_t f) { return f == 4 || f == 5 || f == 18 || f == 19 || f == 30 || f == 31 || f == 39 || f == 40 || f == 50; }
+// - tag and team families with OVER THE TOP ROPE (crashed at the start);
+bool TeamFamily(uint32_t f) { return (f >= 14 && f <= 27) || (f >= 45 && f <= 47) || f == 52; }
+// - the INFERNO ring but where it already was and in 1 on 1 / triple threat /
+//   fatal-4-way normal (elsewhere the CPU stood idle or, in a tag match,
+//   crashed); the CHAMBER ring where it already was (not tested).
+bool KeepEnvironment(uint32_t f, uint32_t c) {
+  if (c == 3) return true;
+  if (c == 4) return !(f == 0 || f == 28 || f == 36);
+  return (c == 1 || c == 2) && LadderFamily(f);
+}
+
+// A rule's MATCH CREATOR family (sub_82490918; -1: none).
+int FamilyOf(const uint8_t* base, uint32_t rule) {
+  constexpr uint32_t kFamilyTable = 0x8201E4F8;
+  for (uint32_t f = 0; f < 68; ++f) {
+    const uint32_t list = Rd32(base + kFamilyTable + f * 12), n = Rd32(base + kFamilyTable + f * 12 + 4);
+    for (uint32_t k = 0; list && k < n && k < 16; ++k)
+      if (Rd32(base + list + k * 4) == rule) return int(f);
+  }
+  return -1;
+}
+
+// The option record bytes the MATCH CREATOR's rows set (sub_828C48E8, from
+// the saved record: +0 ring, +4 pin, +5/+6 falls / ironman, +7 over the top,
+// +8 K.O., +9 last man standing, +10 finisher, +11 first blood, +12 flaming
+// table, +13 climb out, +14 escape, +15 ring out, +16 rope break, +17 DQ /
+// count out, +18 elimination, +19 falls count anywhere, +20 time limit).
+constexpr uint8_t kMcBytes[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21, 22, 23, 25, 26,
+                                27, 28, 29, 32, 37, 38, 39, 40, 41, 44, 46, 59, 63};
+
+}  // namespace
+
 REX_EXTERN(__imp__sub_82490558);
 REX_HOOK_RAW(sub_82490558) {
   const uint32_t loader = ctx.r3.u32;
   __imp__sub_82490558(ctx, base);
   constexpr uint32_t kFamilies = 68;
-  constexpr uint32_t kFree = 0x09;
-  const uint32_t env = Rd32(base + loader + 52), win = Rd32(base + loader + 68), rules = Rd32(base + loader + 84);
-  auto backstage_rumble_chamber = [](uint32_t f) { return f == 12 || f == 26 || f == 55 || f == 60 || f == 48 || f == 49; };
+  constexpr uint8_t kFree = 0x09;
+  // (test aid: SVR2011_TEST_MC_OLD=1 - the tables as the game has them)
+  static const bool old = std::getenv("SVR2011_TEST_MC_OLD") != nullptr;
+  if (old) return;
   int n = 0;
-  for (uint32_t f = 0; f < kFamilies; ++f) {
-    if (backstage_rumble_chamber(f)) continue;
-    if (win) {
-      uint8_t* w = base + win + f * 11;
-      if (w[0] != 0)
-        for (uint32_t row : {4u, 6u})
-          if (w[row] == 0) w[row] = kFree, ++n;
+  // (keep(row, column): a cell left as it is)
+  auto free_cells = [&](uint32_t table, uint32_t width, uint32_t rows, bool families, auto keep) {
+    if (!table) return;
+    for (uint32_t row = 0; row < rows; ++row) {
+      if (families && KeepFamily(row)) continue;
+      uint8_t* cells = base + table + row * width;
+      for (uint32_t c = 0; c < width; ++c)
+        if (cells[c] == 0 && !keep(row, c)) cells[c] = kFree, ++n;
     }
-    if (rules) {
-      uint8_t* r = base + rules + f * 6;
-      if (r[5] == 0) r[5] = kFree, ++n;
-    }
-  }
-  if (env)
-    for (uint32_t f : {28u, 36u})  // (triple threat, fatal-4-way: the inferno ring)
-      if (base[env + f * 8 + 4] == 0) base[env + f * 8 + 4] = kFree, ++n;
+  };
+  auto none = [](uint32_t, uint32_t) { return false; };
+  free_cells(Rd32(base + loader + 52), 8, kFamilies, true, KeepEnvironment);  // ENVIRONMENT
+  // WIN CONDITION: FLAMING TABLE (8) stays a table match's own; OVER THE TOP
+  // (3) not in team matches.
+  free_cells(Rd32(base + loader + 68), 11, kFamilies, true,
+             [](uint32_t f, uint32_t c) { return c == 8 || (c == 3 && TeamFamily(f)) || LadderFamily(f); });
+  free_cells(Rd32(base + loader + 84), 6, kFamilies, true, none);  // RULES
+  // Ring x win: the ring decides FLAMING TABLE, CLIMB OUT and ESCAPE (8-10;
+  // the last two a cage's own) and OVER THE TOP (3: not out of a cage, cell
+  // or chamber) - left as they are.
+  free_cells(Rd32(base + loader + 72), 11, 5, false,
+             [](uint32_t ring, uint32_t c) { return c >= 8 || (c == 3 && ring >= 1 && ring <= 3); });
+  free_cells(Rd32(base + loader + 76), 11, 24, false, none);  // win x win
+  free_cells(Rd32(base + loader + 88), 6, 29, false, none);   // ... x rules
+  free_cells(Rd32(base + loader + 92), 6, 19, false, none);   // rules x rules
   static bool logged = false;
   if (!logged) {
-    REXLOG_INFO("match types: MATCH CREATOR - {} greyed rows allowed", n);
+    REXLOG_INFO("match types: MATCH CREATOR - {} greyed cells allowed (everything in every match)", n);
     logged = true;
   }
 }
@@ -1656,10 +1815,49 @@ REX_HOOK_RAW(sub_82490558) {
 REX_EXTERN(__imp__sub_828C48E8);
 REX_HOOK_RAW(sub_828C48E8) {
   constexpr uint32_t kSavedElimination = 18;
-  const uint32_t rule = ctx.r3.u32, saved = ctx.r5.u32;
+  const uint32_t rule = ctx.r3.u32, live = ctx.r4.u32, saved = ctx.r5.u32;
   const bool elim = g_elimination && (rule == kTripleThreat || rule == kFatal4Way) && saved;
   const uint8_t was = elim ? base[saved + kSavedElimination] : 0;
   if (elim) base[saved + kSavedElimination] = 1;
+  // Test aid: SVR2011_TEST_MC="<saved byte>=<value>,..." - the MATCH CREATOR
+  // record of every match set so (e.g. "9=1" last man standing, "0=1" a cage).
+  static const std::vector<std::pair<uint32_t, uint8_t>> test_mc = [] {
+    std::vector<std::pair<uint32_t, uint8_t>> v;
+    if (const char* e = std::getenv("SVR2011_TEST_MC"))
+      for (const char* p = e; *p;) {
+        char* end = nullptr;
+        const unsigned long k = std::strtoul(p, &end, 10);
+        if (end == p || *end != '=') break;
+        const unsigned long val = std::strtoul(end + 1, &end, 10);
+        v.push_back({uint32_t(k), uint8_t(val)});
+        for (p = end; *p == ',' || *p == ' ';) ++p;
+      }
+    return v;
+  }();
+  uint8_t mc_was[28] = {};
+  if (saved && !test_mc.empty()) {
+    std::memcpy(mc_was, base + saved, 28);
+    std::string set;
+    for (const auto& [k, val] : test_mc)
+      if (k < 28) base[saved + k] = val, set += fmt::format(" +{}={}", k, val);
+    REXLOG_INFO("match types: test - MATCH CREATOR record for rule {:02X}:{}", rule, set);
+  }
+  // MATCH CREATOR, everything allowed: the options this rule has locked off
+  // (bit 7, value 0) are open while its live rules are built.
+  static const bool old = std::getenv("SVR2011_TEST_MC_OLD") != nullptr;
+  const int family = old || Rd32(base + kStoryContext) ? -1 : FamilyOf(base, rule);
+  uint8_t* opt = family >= 0 && !KeepFamily(uint32_t(family)) && Rd32(base + kRules)
+                     ? base + Rd32(base + kRules) + kRule2 + rule * kRule2Size
+                     : nullptr;
+  uint8_t opened[sizeof(kMcBytes)] = {};
+  if (opt)
+    for (size_t k = 0; k < sizeof(kMcBytes); ++k)
+      if (opt[kMcBytes[k]] == 0x80) opt[kMcBytes[k]] = 0x00, opened[k] = 1;
   __imp__sub_828C48E8(ctx, base);
+  if (opt)
+    for (size_t k = 0; k < sizeof(kMcBytes); ++k)
+      if (opened[k]) opt[kMcBytes[k]] = 0x80;
+  if (saved && !test_mc.empty()) std::memcpy(base + saved, mc_was, 28);
   if (elim) base[saved + kSavedElimination] = was;
+  svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)
 }

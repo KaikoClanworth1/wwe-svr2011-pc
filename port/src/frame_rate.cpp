@@ -279,6 +279,40 @@ void Compact(uint8_t* base, uint32_t l) {
 // pin judge's count, set by its hook) - each task or system call that
 // changes it is logged.
 bool g_extra_update = false;  // (see below: an extra update of this frame)
+
+// The characters' job's hand-offs, the last 512 (all threads), dumped with a
+// stuck world update - for the "stuck in pass 20" freeze (Android, 4+ people
+// at 2 updates a frame). Kinds: F frame (a ticks), R/r round run/skipped (a
+// job +92, b +104), P/p paused round run/skipped, E/e its second half, J job
+// run (a ticks), W/w job wait in/out (a idx, b flag), O owed round before
+// the draw (a 1 round, 0 paused).
+struct JobEvent {
+  uint32_t frame;
+  char kind;
+  uint8_t pass, extra, thread;
+  uint32_t a, b;
+};
+JobEvent g_job_events[512];
+std::atomic<uint32_t> g_job_event_next{0};
+std::atomic<uint32_t> g_job_frame{0};
+std::atomic<int> g_dbg_pass_now{0};
+void JobEv(char kind, uint32_t a = 0, uint32_t b = 0, uint8_t thread = 0) {
+  const uint32_t i = g_job_event_next.fetch_add(1) % 512;
+  g_job_events[i] = {g_job_frame.load(), kind, uint8_t(g_dbg_pass_now.load()), uint8_t(g_extra_update), thread, a, b};
+}
+void DumpJobEvents() {
+  const uint32_t end = g_job_event_next.load();
+  std::string line;
+  for (uint32_t i = end > 160 ? end - 160 : 0; i < end; ++i) {
+    const JobEvent& e = g_job_events[i % 512];
+    line += fmt::format(" {}{}{}:{}/{:X}/{:X}", e.frame % 1000, e.kind, e.extra ? "x" : "", e.pass, e.a, e.b);
+    if (line.size() > 900) {
+      REXLOG_WARN("frame rate: job events{}", line);
+      line.clear();
+    }
+  }
+  if (!line.empty()) REXLOG_WARN("frame rate: job events{}", line);
+}
 std::atomic<uint32_t> g_watch{0};
 uint32_t g_watch_last = 0;
 void WatchCheck(uint8_t* base, const char* where, uint32_t obj, uint32_t fn) {
@@ -396,6 +430,23 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
+  // 30 fps at 60 Hz (SetHalfFrames): while frames take two updates (a PC that
+  // can't keep 60 Hz) every frame is shown - as 30 fps did before - and every
+  // other one again once it keeps up (a running average of the updates).
+  {
+    static double avg_ticks = 1.0;
+    static bool suspended = false;
+    avg_ticks = avg_ticks * 0.95 + g_world_ticks * 0.05;
+    const bool want = suspended ? avg_ticks > 1.1 : avg_ticks > 1.3;
+    if (want != suspended) {
+      suspended = want;
+      svr2011::native::SetHalfSuspended(want);
+      static int count = 0;
+      if (svr2011::native::HalfFrames() && (++count <= 10 || count % 100 == 0))
+        REXLOG_INFO("frame rate: 30 fps at 60 Hz - {} ({:.2f} updates a frame)",
+                    want ? "every frame shown (the world can't keep 60 Hz)" : "every other frame shown again", avg_ticks);
+    }
+  }
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
   svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)
@@ -425,7 +476,10 @@ REX_HOOK_RAW(sub_8269C728) {
   P32(base, owner + 136, 1);
   g_job_owed = JobOwed::kNone;
   g_frame_commands.clear();  // (last frame's ran at the barrier)
+  g_job_frame.fetch_add(1);
+  JobEv('F', uint32_t(g_world_ticks));
   for (int i = 0; i < g_world_ticks; ++i) {
+    g_dbg_pass_now = 10 + i;
     g_dbg_pass = 10 + i;
     g_extra_update = i + 1 < g_world_ticks;
     UpdatePass(ctx, base, m);
@@ -434,6 +488,8 @@ REX_HOOK_RAW(sub_8269C728) {
   if (g_job_owed != JobOwed::kNone) {  // (only an extra update reached the job this frame)
     const auto before = ctx;
     const bool round = g_job_owed == JobOwed::kRound;
+    g_dbg_pass_now = 19;
+    JobEv('O', round ? 1 : 0);
     if (round) {
       sub_8216F4C8(ctx, base);
     } else {
@@ -463,6 +519,7 @@ REX_HOOK_RAW(sub_8269C728) {
     std::this_thread::sleep_for(std::chrono::seconds(5));
   }
   g_dbg_pass = 20;
+  g_dbg_pass_now = 20;
   DrawPass(ctx, base, m);
   ++g_lat_drawn;
   g_dbg_pass = 0;
@@ -526,6 +583,7 @@ REX_HOOK_RAW(sub_8269C728) {
           if (dumped_for != g_dbg_since.load() && g_base) {
             dumped_for = g_dbg_since.load();
             DumpGuestThreads(g_base);
+            DumpJobEvents();
           }
         }
       }
@@ -567,6 +625,10 @@ REX_HOOK_RAW(sub_8216F4C8) {
   // Research aid: SVR2011_TEST_JOB_EVERY=1 - the round in every update (the
   // deadlock it gives, with the stuck-update thread dump).
   static const bool every = std::getenv("SVR2011_TEST_JOB_EVERY") != nullptr;
+  {
+    const uint32_t j = G32(base, 0x82DE9C88);
+    JobEv(g_extra_update && !every ? 'r' : 'R', j ? G32(base, j + 92) : 0xFFFF, j ? G32(base, j + 104) : 0xFFFF);
+  }
   if (g_extra_update && !every) {  // (an extra update of this frame)
     g_job_owed = JobOwed::kRound;
     return;
@@ -594,6 +656,7 @@ REX_HOOK_RAW(sub_8216F4C8) {
 REX_EXTERN(__imp__sub_8216ED38);
 REX_HOOK_RAW(sub_8216ED38) {
   static const bool old_way = std::getenv("SVR2011_TEST_JOB_LAST") != nullptr;
+  JobEv(g_extra_update && !old_way ? 'p' : 'P', ctx.r3.u32);
   if (g_extra_update && !old_way) {
     g_job_owed = JobOwed::kPaused, g_job_paused_obj = ctx.r3.u32, g_job_paused_e458 = false;
     return;
@@ -605,6 +668,7 @@ REX_HOOK_RAW(sub_8216ED38) {
 REX_EXTERN(__imp__sub_8216E458);
 REX_HOOK_RAW(sub_8216E458) {
   static const bool old_way = std::getenv("SVR2011_TEST_JOB_LAST") != nullptr;
+  JobEv(g_extra_update && !old_way ? 'e' : 'E', ctx.r3.u32);
   if (g_extra_update && !old_way) {
     if (g_job_owed == JobOwed::kPaused) g_job_paused_e458 = true;
     return;
@@ -616,6 +680,7 @@ REX_EXTERN(__imp__sub_82171940);
 REX_HOOK_RAW(sub_82171940) {
   const auto saved = ctx;
   const int ticks = g_job_ticks.load();
+  JobEv('J', uint32_t(ticks), 0, 1);
   for (int i = 0; i < ticks; ++i) {
     ctx = saved;
     __imp__sub_82171940(ctx, base);
@@ -726,6 +791,28 @@ REX_HOOK_RAW(sub_8217A718) {
   __imp__sub_8217A718(ctx, base);
 }
 
+// The replay recorder's callbacks: sub_8217BC90 (the replay object at
+// *0x82DEA30C, each update) queues two (sub_826E0F78(queue, fn, fn2, obj,
+// kind)): 0x8217AF30/0x8217AF38 (sub_8217AC50 records a frame or steps the
+// playback, sub_8217AB58 the playback's side) and 0x827ACA10/0x8217A718 (the
+// handshake with the update's side, sub_821DA3F0). With two updates in a
+// frame both were queued twice and run back to back - the recorder and the
+// playback lost step with the handshake: at 30 fps the replays showed the
+// match's first moments, nearly still, and the highlights had one clip (a
+// player's report, 2.0.4). Queued once a frame, in its last update, as at 60
+// (the recording then holds a frame per frame drawn, and plays back so).
+REX_EXTERN(__imp__sub_826E0F78);
+REX_HOOK_RAW(sub_826E0F78) {
+  if (g_extra_update && (ctx.r5.u32 == 0x8217AF38 || ctx.r5.u32 == 0x8217A718) &&
+      ctx.r6.u32 == Rd32(base + 0x82DEA30C) && std::this_thread::get_id() == g_logic_thread.load()) {
+    static int skipped = 0;
+    if (++skipped == 1 || skipped % 1000 == 0)
+      REXLOG_INFO("frame rate: the replay recorder's callbacks queued once a frame ({} skipped)", skipped);
+    return;
+  }
+  __imp__sub_826E0F78(ctx, base);
+}
+
 // Its sibling sub_8217AB58 (the same object, +96 its state 1-5) also reads
 // +156's part (+1504, or +1496 at states 2-3) unchecked - crashed so in a
 // match at 60 fps (2.0.5 tests, guest read of 0x5E0); its other paths skip a
@@ -765,11 +852,47 @@ REX_HOOK_RAW(sub_828F3F38) {
 // the wait is at most 50 ms: a running job ends well within it, as before;
 // one not started, the flag stays for the frame's last update or the draw.
 REX_EXTERN(__imp__sub_8216A450);
+//
+// The lost request (the "stuck in pass 20" freeze: Fold, PC rumble): a job
+// is asked for by sub_8216A3A8(jobs, character): its event (+(idx+5)*4)
+// reset, the wait flag (+(idx+14)*4) 1, the request flag (+(idx+23)*4) 0
+// and the worker's wake event (+16) set. The worker (sub_8216E098) runs each
+// slot whose request flag is 0, sets its event - then the request flag 1.
+// Between those two steps the waiter can wake, and the slot be asked for
+// again: the worker's late "1" then wipes that new request - nobody runs it
+// and the next wait is for ever (more likely with two updates a frame). So a
+// wait here is in 200 ms slices: no event yet but the request flag 1 (the
+// worker thinks it done) - it's asked for again (flag 0, wake the worker).
 REX_HOOK_RAW(sub_8216A450) {
   if (!g_extra_update || std::this_thread::get_id() != g_logic_thread.load()) {
-    __imp__sub_8216A450(ctx, base);
+    const uint32_t jobs = ctx.r3.u32, idx = ctx.r4.u32;
+    const bool logic = std::this_thread::get_id() == g_logic_thread.load();
+    const uint32_t flag = jobs + (idx + 14) * 4, request = jobs + (idx + 23) * 4;
+    JobEv('W', idx, Rd32(base + flag), logic ? 0 : 2);
+    if (Rd32(base + flag) != 0) {
+      const auto saved = ctx;
+      for (;;) {
+        ctx.r3.u64 = Rd32(base + jobs + (idx + 5) * 4);
+        ctx.r4.u64 = 200;  // (ms)
+        sub_8215A8C0(ctx, base);
+        if (ctx.r3.u32 == 0) break;  // (signalled: done)
+        if (Rd32(base + request) != 0) {  // (the worker took no request: it was lost)
+          Wr32(base + request, 0);
+          ctx.r3.u64 = Rd32(base + jobs + 16);
+          sub_8215ADE0(ctx, base);
+          static int lost = 0;
+          if (++lost <= 20 || lost % 100 == 0)
+            REXLOG_WARN("frame rate: job {} was asked for but lost - asked again ({} times)", idx, lost);
+          JobEv('L', idx, 0, logic ? 0 : 2);
+        }
+      }
+      ctx = saved;
+      Wr32(base + flag, 0);
+    }
+    JobEv('w', idx, Rd32(base + flag), logic ? 0 : 2);
     return;
   }
+  JobEv('W', ctx.r4.u32, Rd32(base + ctx.r3.u32 + (ctx.r4.u32 + 14) * 4));
   const uint32_t jobs = ctx.r3.u32, idx = ctx.r4.u32;
   const uint32_t flag = jobs + (idx + 14) * 4;
   if (Rd32(base + flag) == 0) return;

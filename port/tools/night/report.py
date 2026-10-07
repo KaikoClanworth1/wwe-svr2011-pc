@@ -25,6 +25,13 @@ def load(name, platform):
             except ValueError:
                 continue
             r.setdefault('platform', platform)
+            # A game the random presses closed through the main menu's EXIT isn't a crash.
+            if r.get('result') == 'crash' and not r.get('errors') and r.get('log'):
+                lp = os.path.join(NIGHT, 'logs', r['log'])
+                if os.path.exists(lp):
+                    tail = open(lp, encoding='utf-8', errors='replace').read()[-4000:]
+                    if 'EXIT (group 1' in tail and 'Window closing' in tail and 'SvR 2011 crash' not in tail:
+                        r['result'] = 'exited'
             rows[(platform, r.get('id'))] = r  # (a rerun replaces the earlier result)
     return list(rows.values())
 
@@ -55,7 +62,9 @@ def main():
             out.append('- stuck up to %s s' % r['stuckMax'])
         if r.get('navigation') and r['navigation'] != 'ok':
             out.append('- navigation: %s' % r['navigation'])
-        shots = [s['file'] if isinstance(s, dict) else s for s in r.get('shots', [])]
+        shots = [(s.get('file') or s.get('path') or s.get('name') or str(s)) if isinstance(s, dict) else str(s)
+                 for s in (r.get('shots') or [])]
+        shots = [os.path.basename(s) for s in shots]
         if shots:
             out.append('- shots: ' + ', '.join(shots[:4]))
         out.append('- log: %s' % r.get('log', '?'))

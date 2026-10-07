@@ -51,7 +51,10 @@ REX_HOOK_RAW(sub_8230C2D0) {
     __imp__sub_8230C248(ctx, base);
     return;
   }
+  const uint32_t task = ctx.r3.u32;
+  const uint32_t before = Rd32(base + task + 80);
   __imp__sub_8230C2D0(ctx, base);
+  if (before == 0 && Rd32(base + task + 80) != 0) REXLOG_INFO("[svr2011] finisher replay: plays");
 }
 
 REX_EXTERN(__imp__sub_82413698);
