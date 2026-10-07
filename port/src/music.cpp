@@ -380,11 +380,20 @@ class Player {
       if (paused != stream_paused_) {
         paused ? SDL_PauseAudioStreamDevice(stream_) : SDL_ResumeAudioStreamDevice(stream_);
         stream_paused_ = paused;
+        const auto now = std::chrono::steady_clock::now();
+        if (paused) paused_at_ = now;
+        else if (paused_at_ != std::chrono::steady_clock::time_point{}) started_ += now - paused_at_;  // (a pause isn't played time)
       }
       UpdateVolume();
       if (stream_paused_) continue;
       Feed();
-      if (ended_ && SDL_GetAudioStreamQueued(stream_) == 0) {  // from the top again, until stopped (a clip: once)
+      // (a sound played once is over at its length + 2 s whatever the decoder
+      // and the stream say: on some phones neither reported the end)
+      const auto played = std::chrono::steady_clock::now() - started_;
+      const bool overdue = once_ && duration_us_ > 0 &&
+                           played > std::chrono::microseconds(duration_us_) + std::chrono::seconds(2);
+      if (overdue) REXLOG_INFO("user music: {} over by its length ({} s)", song_.filename().string(), duration_us_ / 1000000);
+      if ((ended_ && SDL_GetAudioStreamQueued(stream_) == 0) || overdue) {  // from the top again, until stopped (a clip: once)
         Close();
         if (once_ || !Open(song_)) song_.clear(), active_ = false;
       }
@@ -421,6 +430,8 @@ class Player {
         AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_SAMPLE_RATE, &rate);
         AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &channels);
         SetFormat(rate, channels);
+        int64_t duration = 0;
+        duration_us_ = AMediaFormat_getInt64(format, AMEDIAFORMAT_KEY_DURATION, &duration) ? duration : 0;
       }
       AMediaFormat_delete(format);
     }
@@ -431,6 +442,8 @@ class Player {
     }
     ended_ = input_done_ = false;
     drain_rounds_ = 0;
+    started_ = std::chrono::steady_clock::now();
+    paused_at_ = {};
     stream_paused_ = true;  // started by the loop (unless paused)
     volume_ = -1.0f;
     return true;
@@ -492,6 +505,7 @@ class Player {
             AMediaCodec_queueInputBuffer(codec_, size_t(in), 0, 0, 0,
                                          AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
             input_done_ = true;
+            REXLOG_INFO("user music: {}: all read", song_.filename().string());
           } else {
             AMediaCodec_queueInputBuffer(codec_, size_t(in), 0, size_t(n),
                                          uint64_t(AMediaExtractor_getSampleTime(extractor_)), 0);
@@ -507,7 +521,10 @@ class Player {
         const uint8_t* data = AMediaCodec_getOutputBuffer(codec_, size_t(out), &capacity);
         if (data && info.size > 0) SDL_PutAudioStreamData(stream_, data + info.offset, info.size);
         AMediaCodec_releaseOutputBuffer(codec_, size_t(out), false);
-        if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) ended_ = true;
+        if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
+          ended_ = true;
+          REXLOG_INFO("user music: {}: decoded to the end", song_.filename().string());
+        }
       } else if (out == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
         AMediaFormat* format = AMediaCodec_getOutputFormat(codec_);
         int32_t rate = 0, channels = 0;
@@ -519,7 +536,10 @@ class Player {
         // (draining: wait for the next round. Some decoders never hand back
         // a buffer flagged END_OF_STREAM: nothing more for ~0.5 s after the
         // last input is the end too - else a song played once never ends)
-        if (++drain_rounds_ > 25) ended_ = true;
+        if (++drain_rounds_ > 25 && !ended_) {
+          ended_ = true;
+          REXLOG_INFO("user music: {}: decoder done (no end flag)", song_.filename().string());
+        }
         break;
       }
     }
@@ -544,6 +564,8 @@ class Player {
   int bytes_per_second_ = 1;
   bool ended_ = false, input_done_ = false;
   int drain_rounds_ = 0;  // rounds without output since the last input
+  int64_t duration_us_ = 0;  // the song's length (0: unknown)
+  std::chrono::steady_clock::time_point started_{}, paused_at_{};
   bool stream_paused_ = true;
   float volume_ = -1.0f;
 };
