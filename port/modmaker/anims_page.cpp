@@ -55,6 +55,12 @@ int g_sel_id = -1, g_sel_x = 0;
 char g_filter[64] = "";
 bool g_loading = false;
 int g_test_star = 0, g_test_bank = -1, g_test_motion = -1, g_test_dummy = 0;  // --anims <star>,<bank>,<motion>[,<dummy>]
+// the match moves (YMKs: only the game plays them): picked by name from the
+// game's move table, started in a test match by the game's own test aids
+char g_move_filter[64] = "";
+int g_move_id = 0;
+int g_every = 6;
+int g_game_dummy = -1;  // index in Stars() (-1: the Dummy above)
 
 std::wstring ChPac(int id) { return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(id) + L".pac")).wstring(); }
 
@@ -136,6 +142,72 @@ void Controls() {
   ImGui::TextDisabled("%s", p.keys ? (std::to_string(p.keys / 30.0f).substr(0, 4) + " s at 30 keys/s").c_str() : "");
 }
 
+// The game plays the move: a test match of the superstar against the dummy
+// (both computer-controlled, straight from the start), the attacker starting
+// the move on the dummy every few seconds (match_types.cpp FORCE_MOVE).
+void PlayInGame() {
+  const auto& stars = Stars();
+  if (GameRunning()) {
+    Status("The game is running: close it first.");
+    return;
+  }
+  const int dummy = g_game_dummy >= 0 ? g_game_dummy : g_dummy;
+  if (g_star < 0 && g_model.empty()) { Status("Pick who plays the move first."); return; }
+  if (dummy < 0) { Status("Pick a dummy for the move to be done to."); return; }
+  if (!g_move_id) { Status("Pick a move."); return; }
+  // people= takes roster names: a superstar's, or a mod's name (its folder's manifest)
+  std::string who;
+  if (g_star >= 0) who = stars[g_star].name;
+  else {
+    // a model file: a mod's ch.pac next to its manifest?
+    Bytes man;
+    if (ReadFile(PathStr(fs::path(g_model).parent_path() / L"manifest.txt"), man)) who = Value(std::string(man.begin(), man.end()), "name");
+    if (who.empty()) { Status("That model isn't an installed mod: install it as a superstar first, then pick it by name."); return; }
+  }
+  const std::wstring env = L"SVR2011_ROUTE=match;SVR2011_TEST_MATCH=people=" + Wide(who) + L"," + Wide(stars[dummy].name) +
+                           L" cpu=all;SVR2011_TEST_FORCE_MOVE=0,1," + std::to_wstring(std::max(2, g_every)) + L"," +
+                           std::to_wstring(g_move_id) + L";SVR2011_TEST_MOTION_LOG=1";
+  StartGame(env);
+  Status("The game starts a match: " + who + " does " + MotionLabel(g_move_id) + " to " + stars[dummy].name + " every " +
+         std::to_string(std::max(2, g_every)) + " s (both computer-controlled).");
+}
+
+void InGameSection() {
+  const auto& stars = Stars();
+  ImGui::TextDisabled("Match moves, done to a dummy in a test match.");
+  Hint("The match moves (grapples, strikes, the moves of a move pack) are in another format only the game plays. "
+       "This starts a test match - the superstar against a dummy, both computer-controlled - where the move is "
+       "done every few seconds. Close the game when done.");
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##mf", "find a move by name or number", g_move_filter, sizeof g_move_filter);
+  const std::string f = Lower(g_move_filter);
+  ImGui::BeginChild("movelist", ImVec2(0, -150 * g_scale), true);
+  int shown = 0;
+  for (const auto& [id, name] : MoveNames()) {
+    if (!f.empty() && Lower(name).find(f) == std::string::npos && std::to_string(id).find(f) == std::string::npos) continue;
+    if (++shown > 400) { ImGui::TextDisabled("... type more to narrow it down"); break; }
+    char line[128];
+    std::snprintf(line, sizeof line, "%s##g%d", name.c_str(), id);
+    if (ImGui::Selectable(line, g_move_id == id)) g_move_id = id;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("move %d", id);
+  }
+  ImGui::EndChild();
+  ImGui::SetNextItemWidth(120 * g_scale);
+  ImGui::InputInt("Move number", &g_move_id);
+  ImGui::SetNextItemWidth(120 * g_scale);
+  ImGui::SliderInt("Every (s)", &g_every, 2, 20);
+  ImGui::SetNextItemWidth(-1);
+  if (ImGui::BeginCombo("##gd", g_game_dummy >= 0 ? stars[g_game_dummy].name.c_str() : "Done to: the dummy above")) {
+    if (ImGui::Selectable("the dummy above", g_game_dummy < 0)) g_game_dummy = -1;
+    for (int i = 0; i < int(stars.size()); ++i)
+      if (ImGui::Selectable((stars[i].name + "##gd" + std::to_string(i)).c_str(), g_game_dummy == i)) g_game_dummy = i;
+    ImGui::EndCombo();
+  }
+  ImGui::PushStyleColor(ImGuiCol_Button, kGood);
+  if (ImGui::Button("Play in game", ImVec2(-1, 0))) PlayInGame();
+  ImGui::PopStyleColor();
+}
+
 void Left() {
   const auto& stars = Stars();
   ImGui::TextUnformatted("Who");
@@ -168,7 +240,16 @@ void Left() {
     ImGui::EndCombo();
   }
   ImGui::Separator();
-  ImGui::TextUnformatted("Motions");
+  if (!ImGui::BeginTabBar("anim_tabs")) return;
+  if (!ImGui::BeginTabItem("Watch here")) {
+    if (ImGui::BeginTabItem("In the game")) {
+      InGameSection();
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+    return;
+  }
+  ImGui::TextDisabled("The menu motions: stances, taunts, finisher previews.");
   ImGui::SetNextItemWidth(-1);
   if (ImGui::BeginCombo("##bank", g_bank >= 0 ? kBanks[g_bank].name : "(pick a set)")) {
     for (int i = 0; i < int(std::size(kBanks)); ++i) {
@@ -182,12 +263,12 @@ void Left() {
   ImGui::InputTextWithHint("##filter", "find by name or number", g_filter, sizeof g_filter);
   if (ImGui::SmallButton("Back to the idle")) g_sel_id = -1, char_preview::ClearMotion();
   const auto it = g_banks.find(g_bank);
-  if (it == g_banks.end()) {
-    if (g_bank >= 0) ImGui::TextDisabled("Loading ...");
-    return;
-  }
-  if (!it->second.error.empty()) {
-    ImGui::TextColored(kBad, "%s", it->second.error.c_str());
+  const float list_h = 0;
+  if (it == g_banks.end() || !it->second.error.empty()) {
+    if (it != g_banks.end()) ImGui::TextColored(kBad, "%s", it->second.error.c_str());
+    else if (g_bank >= 0) ImGui::TextDisabled("Loading ...");
+    ImGui::EndTabItem();
+    ImGui::EndTabBar();
     return;
   }
   // one row per (id, x) with a track 0; the tracks it has
@@ -201,7 +282,7 @@ void Left() {
     else r->frames = e.frames;
   }
   const std::string filter = Lower(g_filter);
-  ImGui::BeginChild("list", ImVec2(0, 0), true);
+  ImGui::BeginChild("list", ImVec2(0, list_h), true);
   for (const Row& r : rows) {
     const std::string label = MotionLabel(r.id) + (r.x ? "  v" + std::to_string(r.x) : "");
     if (!filter.empty() && Lower(label).find(filter) == std::string::npos && std::to_string(r.id).find(filter) == std::string::npos) continue;
@@ -213,6 +294,12 @@ void Left() {
       ImGui::SetTooltip("motion %d x%d, %d frames%s", r.id, r.x, r.frames, r.victim ? ", with the other person's track" : "");
   }
   ImGui::EndChild();
+  ImGui::EndTabItem();
+  if (ImGui::BeginTabItem("In the game")) {
+    InGameSection();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
 }
 
 }  // namespace

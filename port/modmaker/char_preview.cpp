@@ -928,8 +928,11 @@ void Render(int w, int h) {
     const float* lo = g_frame_lo;
     const float* hi = g_frame_hi;
     g_center = {(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
-    const float spread = std::max({hi[0] - lo[0], hi[2] - lo[2]});
-    g_height = std::max({1.0f, hi[1] - lo[1], spread * 0.8f});
+    // the whole bounding sphere in view: the camera sits at 1.85 x g_height,
+    // the view's half angle is 0.30 rad (ViewProj) - one idle character
+    // (20 tall, ~11 radius) comes out as before
+    const V3 ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    g_height = std::max(1.0f, Len(ext) * 0.5f * 1.84f);
     g_pan = {};
     g_frame = false;
   }
