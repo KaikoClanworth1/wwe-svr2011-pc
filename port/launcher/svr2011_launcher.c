@@ -108,6 +108,7 @@ enum {
     ID_TAB = 100,
     /* play */
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
+    ID_SKIP_INTROS, ID_SKIP_TRAINING,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES,
@@ -1603,7 +1604,7 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
-    int priority = 0, unlock_all = 1, textures = 0;
+    int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1628,6 +1629,8 @@ static void settings_load(void)
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
             else if (!strcmp(key, "unlock_everything")) unlock_all = strcmp(val, "false") != 0;
+            else if (!strcmp(key, "skip_intros")) skip_intros = !strcmp(val, "true");
+            else if (!strcmp(key, "skip_training")) skip_training = !strcmp(val, "true");
             else if (!strcmp(key, "native_texture_quality"))
                 textures = !_stricmp(val, "low") ? 2 : !_stricmp(val, "medium") ? 1 : 0;
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
@@ -1664,6 +1667,8 @@ static void settings_load(void)
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, priority ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, unlock_all ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_SKIP_TRAINING, skip_training ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, (WPARAM)textures, 0);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
@@ -1673,13 +1678,14 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 27 };
+    enum { NK = 29 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
                                     "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
-                                    "process_priority", "unlock_everything", "native_texture_quality" };
+                                    "process_priority", "unlock_everything", "native_texture_quality",
+                                    "skip_intros", "skip_training" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1732,6 +1738,8 @@ static int settings_save(void)
     strcpy_s(vals[18], 64, IsDlgButtonChecked(s_wnd, ID_PREPARE) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[24], 64, IsDlgButtonChecked(s_wnd, ID_PRIORITY) == BST_CHECKED ? "1" : "0");
     strcpy_s(vals[25], 64, IsDlgButtonChecked(s_wnd, ID_UNLOCK_ALL) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[27], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_INTROS) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[28], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_TRAINING) == BST_CHECKED ? "true" : "false");
     {
         static const char *k_textures[3] = { "\"high\"", "\"medium\"", "\"low\"" };
         const int ti = (int)SendMessageW(ctl(ID_TEXTURES), CB_GETCURSEL, 0, 0);
@@ -1818,6 +1826,8 @@ static void settings_defaults(void)
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, BST_CHECKED);
+    CheckDlgButton(s_wnd, ID_SKIP_INTROS, BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_SKIP_TRAINING, BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
@@ -2556,6 +2566,11 @@ static void build_ui(void)
     set_big(h);
     add(TAB_PLAY, L"Button", L"Close the launcher when the game starts", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 116, 320, 24, ID_CLOSE_ON_PLAY);
+    /* the faster start (fast_start.cpp): settings like the Settings tab's, kept by Play */
+    add(TAB_PLAY, L"Button", L"Skip the intro movies", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 336, 106, 208, 22,
+        ID_SKIP_INTROS);
+    add(TAB_PLAY, L"Button", L"Skip the practice ring", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 336, 128, 208, 22,
+        ID_SKIP_TRAINING);
     add(TAB_PLAY, L"Button", L"Game folder", BS_GROUPBOX, X0, 170, 560, 82, 0);
     add(TAB_PLAY, L"Edit", L"", ES_READONLY | ES_AUTOHSCROLL | WS_BORDER, X0 + 16, 206, 410, 26, ID_GAMEDIR);
     add(TAB_PLAY, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 436, 204, 108, 30, ID_GAMEDIR_CHANGE);
@@ -6577,7 +6592,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
             break;
         case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
-        case ID_PRIORITY: case ID_UNLOCK_ALL:
+        case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");

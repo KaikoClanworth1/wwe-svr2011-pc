@@ -676,6 +676,10 @@ public class LauncherActivity extends Activity {
         LinearLayout game = card(c, "Game");
         toggle(game, "Everything unlocked from the start", "Off: unlock as you play; DLC stays. At the next start",
             "unlock_everything", true);
+        // (src/fast_start.cpp: START pressed for the player through the logos / the practice ring)
+        toggle(game, "Skip the intro movies", "Straight to the Start Screen at launch", "skip_intros", false);
+        toggle(game, "Skip the practice ring", "Straight to the main menu after the Start Screen", "skip_training",
+            false);
 
         drivers_ = new Drivers(this, settings_);
         drivers_.build(c);
@@ -696,6 +700,8 @@ public class LauncherActivity extends Activity {
             settings_.setBool("native_dump_textures", false);
             settings_.setBool("audio_mute", false);
             settings_.setBool("unlock_everything", true);
+            settings_.setBool("skip_intros", false);
+            settings_.setBool("skip_training", false);
             settings_.setString("native_texture_quality", "high");
             saved("Defaults");
             refresh();

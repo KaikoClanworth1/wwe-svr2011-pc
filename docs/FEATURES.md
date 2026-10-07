@@ -116,6 +116,7 @@ still being tested.
   - **480p**: an 854 x 480 window, and 360P / 480P render resolutions (the scene drawn smaller and scaled up, for weak devices).
 - **Texture quality** (GRAPHICS → GRAPHICS → TEXTURES, and both launchers' Settings): MEDIUM / LOW use the game's own half / quarter-size copies of big textures - less memory and faster loading; menus and text stay sharp. Changes apply at once.
 - **BACKGROUNDS** (MY WWE → OPTIONS → BACKGROUNDS): switch each of the main menu's 12 background pictures on or off; the menu moves on to the next one that's on after every match or mode (all off: all play).
+- **Fast start**: skip the logo movies at launch (straight to the Start Screen) and / or the practice ring after it (straight to the main menu). Both off by default; on the launcher's Play tab, in the Android app's settings (Game) and in GRAPHICS → DISPLAY → FAST START.
 - **MY MUSIC** (MY WWE → JUKEBOX): the songs in your Music folder play in the menu shuffle with the game's own songs, or instead of them (switch songs on / off as usual). On PC and Android.
 - **Shift, Ctrl or Alt alone as a control** (MY WWE → OPTIONS → CONTROLS: tap it while the page waits for a key), e.g. Shift to run; holding it doesn't block the other keys.
 - **Copy and paste with the keyboard**: Ctrl+V pastes the clipboard into the game's text fields and Ctrl+C copies a field's text. In the Story Designer, Ctrl+C / Ctrl+V also copy and paste moments, shows and moment groups.

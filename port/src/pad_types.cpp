@@ -11,6 +11,7 @@
 #include <SDL3/SDL_hints.h>
 
 #include "generated/default/svr2011_init.h"
+#include "fast_start.h"
 
 #include <rex/input/sdl/sdl_input_driver.h>
 #include <rex/hook.h>
@@ -219,7 +220,11 @@ REX_HOOK_RAW(sub_8258B5F8) {
   static const bool off = std::getenv("SVR2011_TEST_NO_LEAD") != nullptr;  // (tests: the game's own choice)
   const uint32_t screen = ctx.r3.u32;
   const uint32_t pad = screen && !off ? Be32(base + screen + kScreenPad) : 0;
+  const uint32_t state_before = screen ? Be32(base + screen + 2752) : 0;
+  svr2011::FastStartScreenFrame(base, screen);
   __imp__sub_8258B5F8(ctx, base);
+  if (screen && state_before != 3 && Be32(base + screen + 2752) == 3)  // (START taken: fast_start.h)
+    svr2011::FastStartPressStart(base, screen, Be32(base + screen + kScreenPad));
   const uint32_t data = Be32(base + kGameData);
   if (!data || pad == 0 || pad >= svr2011::kMaxPlayers || Be32(base + data) != pad) return;
   svr2011::MakeLeadPlayer(pad);

@@ -24,6 +24,7 @@
 // extra ones repeat the controller reading and leave the characters' job to
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
+#include "fast_start.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -699,6 +700,7 @@ REX_HOOK_RAW(sub_82905058) {
     return;
   }
   __imp__sub_82905058(ctx, base);
+  if (user == 0 && out && ctx.r3.u32 == 0) svr2011::FastStartInput(base, out);  // (the start skips: fast_start.h)
   if (r && out) {
     r->valid = true;
     r->result = ctx.r3.u32;

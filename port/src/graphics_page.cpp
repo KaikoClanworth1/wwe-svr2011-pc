@@ -102,6 +102,7 @@ enum Row {
   kCpuPriority,                                                  // DISPLAY (PC, last)
   kTextureQuality,                                               // GRAPHICS
   kCrowd, kShadows,                                              // ADV. GRAPHICS
+  kFastStart,                                                    // DISPLAY (last)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -111,10 +112,10 @@ const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
-const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kTouch, kReplays},
+const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kTouch, kReplays, kFastStart},
 #else
 const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch,
-                                              kReplays, kCpuPriority},
+                                              kReplays, kCpuPriority, kFastStart},
 #endif
                                              {kRenderScale, kAntiAliasing, kTextureQuality, kWide, kCutsceneFps},
                                              {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
@@ -379,6 +380,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
   bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
+  int fast_start_ = 0;  // FAST START (fast_start.h): bit 0 skip_intros, bit 1 skip_training
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
   bool shadows_ = true;  // native_shadows
@@ -449,6 +451,7 @@ void GraphicsPage::Load() {
   blur_ = rex::cvar::Query<bool>("motion_blur");
   soft_ = rex::cvar::Query<bool>("soft_filter");
   replays_ = rex::cvar::Query<bool>("replays");
+  fast_start_ = (rex::cvar::Query<bool>("skip_intros") ? 1 : 0) | (rex::cvar::Query<bool>("skip_training") ? 2 : 0);
   prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
     const std::string c = rex::cvar::Query<std::string>("arena_crowd");
@@ -536,6 +539,13 @@ void GraphicsPage::Change(int row, int dir) {
       dof_ = !dof_;
       rex::cvar::SetFlagByName("depth_of_field", dof_ ? "true" : "false");
       SaveSetting("depth_of_field", dof_ ? "true" : "false");
+      break;
+    case kFastStart:  // (OFF, INTROS, PRACTICE RING, BOTH)
+      fast_start_ = (fast_start_ + dir + 4) % 4;
+      rex::cvar::SetFlagByName("skip_intros", fast_start_ & 1 ? "true" : "false");
+      rex::cvar::SetFlagByName("skip_training", fast_start_ & 2 ? "true" : "false");
+      SaveSetting("skip_intros", fast_start_ & 1 ? "true" : "false");
+      SaveSetting("skip_training", fast_start_ & 2 ? "true" : "false");
       break;
     case kReplays:
       replays_ = !replays_;
@@ -987,6 +997,10 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return blur_ ? "ON" : "OFF";
       case kSoft: return soft_ ? "ON (XBOX 360)" : "OFF";
       case kReplays: return replays_ ? "ON" : "OFF";
+      case kFastStart: {
+        static const char* const kNames[4] = {"OFF", "SKIP INTROS", "SKIP PRACTICE RING", "SKIP BOTH"};
+        return kNames[fast_start_ & 3];
+      }
       case kCpuPriority: return high_priority_ ? "HIGH" : "NORMAL";
       case kPrepare: return prepare_ ? "ON" : "OFF";
       case kLanguage: return kLanguages[language_].label;
@@ -1015,6 +1029,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return "MOTION BLUR";
       case kSoft: return "SOFT FILTER";
       case kReplays: return "REPLAYS";
+      case kFastStart: return "FAST START";
       case kCpuPriority: return "CPU PRIORITY";
       case kPrepare: return "PREPARE GRAPHICS";
       case kLanguage: return "LANGUAGE";
@@ -1048,6 +1063,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return "Blur and trails on fast moves and replays.";
       case kSoft: return "The game's 720p smoothing filter: blurs wide shots at higher resolutions.";
       case kReplays: return "Instant replays after finishers and the highlights at the end of a match.";
+      case kFastStart:
+        return "At launch: no logo movies (straight to the Start Screen) and / or no practice ring (straight to the "
+               "main menu). Next start.";
       case kCpuPriority: return "Helps on busy or weak PCs: the game gets the CPU before other programs.";
       case kPrepare: return "Builds the graphics ahead in the menus, so matches don't stutter (native).";
       case kLanguage:
