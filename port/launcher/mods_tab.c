@@ -451,12 +451,20 @@ place:
 }
 
 static int selected(void) { return ListView_GetNextItem(s_list, -1, LVNI_SELECTED); }
+static void set_enabled(int i, int on);
 
 static void remove_mod(void)
 {
     WCHAR t[512];
     int i = selected();
     if (i < 0 || i >= s_nmods) { status(L"Select a mod in the list first."); return; }
+    if (!_wcsicmp(s_mods[i].type, L"matchtype")) {
+        /* (the game has a match type on unless its folder says "disabled": removing it would turn it back on) */
+        set_enabled(i, 0);
+        fill();
+        status(L"Match types can't be removed - switched off instead (the game leaves it out of its menus).");
+        return;
+    }
     swprintf_s(t, 512, L"Remove \"%s\"? Its folder goes to the Recycle Bin.", s_mods[i].name);
     if (MessageBoxW(s_wnd, t, L"Remove mod", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return;
     if (!remove_tree(s_mods[i].folder, 1)) { status(L"It could not be removed (is the game running?)."); return; }
