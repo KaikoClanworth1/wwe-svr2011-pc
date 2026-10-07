@@ -1527,14 +1527,56 @@ REX_HOOK_RAW(sub_82736C68) {
   __imp__sub_82736C68(ctx, base);
 }
 
-// Owned (DLC-flagged ids must be): mods are.
+// Owned (DLC-flagged ids must be): mods are - but not for WWE Universe's
+// rankings (sub_825AF0F0's loop) and its owned snapshot (sub_825CA488): see
+// below.
+constexpr uint32_t kUniverseOwnedCallers[] = {0x825AF190, 0x825CA518};
 REX_EXTERN(__imp__sub_828C1288);
 REX_HOOK_RAW(sub_828C1288) {
   if (ModOf(ctx.r3.u32)) {
-    ctx.r3.u64 = 1;
+    const uint32_t lr = uint32_t(ctx.lr);
+    bool universe = false;
+    for (uint32_t c : kUniverseOwnedCallers) universe |= lr == c;
+    ctx.r3.u64 = universe ? 0 : 1;
     return;
   }
   __imp__sub_828C1288(ctx, base);
+}
+
+// ---- WWE Universe: no mods
+// Universe keeps 150 superstars (P = *(0x82E407B4) + 0x364B4: 24-byte
+// entries at P+16 - 0-49 created, 50-69 DLC, 70-149 a disc list of 80 ids at
+// 0x82DACA40 - a rivalry byte per pair at P+3616, match cards from P+14942).
+// sub_825B7660(id) gives an id's place: created and DLC ids their own number,
+// disc-list ids 70 + their index. Mods passed sub_825B75A8 (eligible: owned,
+// selectable, DLC-flagged) and took their id as place: mods 151-181 wrote
+// past the 150 entries into the rivalry table and the first match card,
+// 111-149 shared real superstars' entries ("Universe with the SvR 2010 mods
+// crashes", 2.0.4/2.0.5). Mods stay out of Universe: not eligible, no place,
+// no pair (sub_825B7B40); every caller handles "none" (-1 / 0).
+REX_EXTERN(__imp__sub_825B75A8);
+REX_HOOK_RAW(sub_825B75A8) {  // (id, need owned) -> in Universe
+  if (ModOf(ctx.r3.u32)) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_825B75A8(ctx, base);
+}
+REX_EXTERN(__imp__sub_825B7660);
+REX_HOOK_RAW(sub_825B7660) {  // (id) -> Universe place, -1: none
+  if (ModOf(ctx.r3.u32)) {
+    ctx.r3.u64 = uint64_t(int64_t(-1));
+    return;
+  }
+  __imp__sub_825B7660(ctx, base);
+}
+REX_EXTERN(__imp__sub_825B7B40);
+REX_HOOK_RAW(sub_825B7B40) {  // (id, id) -> both in Universe
+  if (ModOf(ctx.r3.u32) || ModOf(ctx.r4.u32)) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_825B7B40(ctx, base);
 }
 REX_EXTERN(__imp__sub_82589198);
 REX_HOOK_RAW(sub_82589198) {
