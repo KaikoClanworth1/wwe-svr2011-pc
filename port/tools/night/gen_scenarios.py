@@ -49,7 +49,7 @@ def match(id_, suite, name, people, rule=None, arena=None, timeout=480, args=(),
 def suite_b():
     """Every rule id, CPU vs CPU, to the finish."""
     out = []
-    long_rules = {0x14, 0x15, 0x16, 0x17, 0x52, 0x58}  # rumbles, gauntlets: longer
+    long_rules = {0x14, 0x15, 0x16, 0x17, 0x26, 0x52, 0x58}  # rumbles, Championship Scramble, gauntlets: longer
     for r in range(0x00, 0x80):
         t = 1200 if r in long_rules else 540
         out.append(match('B%02X' % r, 'B', 'rule %02X' % r, ['JOHN CENA', 'RANDY ORTON'], rule=r, timeout=t,
@@ -112,12 +112,30 @@ def suite_e():
     return out
 
 
+def suite_m():
+    """The port's row-based modes (SVR2011_TEST_MODE, match_types.cpp; needs fa35fd9 or later)."""
+    modes = [('three_stages', ['JOHN CENA', 'RANDY ORTON'], 'three stages: on', 900),
+             ('elimination_tt', ['JOHN CENA', 'RANDY ORTON', 'EDGE'], r'ELIMINATION \(rule 0D\)', 720),
+             ('elimination_f4w', ['JOHN CENA', 'RANDY ORTON', 'EDGE', 'BATISTA'], r'ELIMINATION \(rule 0E\)', 900),
+             ('weapons', ['JOHN CENA', 'RANDY ORTON'], r'WEAPONS EVERYWHERE \(rule 4D\)', 600),
+             ('slobber', ['JOHN CENA', 'RANDY ORTON'], 'SLOBBER KNOCKER', 1200),
+             ('lumberjack', ['JOHN CENA', 'RANDY ORTON'], 'lumberjacks: ', 720)]
+    out = []
+    for name, people, needs, t in modes:
+        for arena in (17, 1):
+            m = match('M_%s_%d' % (name, arena), 'M', 'mode %s, arena %d' % (name, arena), people, arena=arena,
+                      timeout=t, env={'SVR2011_TEST_MODE': name}, shots=(60, 240, 480, 900))
+            m['needs'] = needs  # the mode's own log line must show, or it didn't run
+            out.append(m)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--suites', default='B,C,D,E')
     ap.add_argument('--out', default=os.path.join(PORT, 'runs', 'night', 'scenarios.jsonl'))
     a = ap.parse_args()
-    gens = {'B': suite_b, 'C': suite_c, 'D': suite_d, 'E': suite_e}
+    gens = {'B': suite_b, 'C': suite_c, 'D': suite_d, 'E': suite_e, 'M': suite_m}
     rows = []
     for s in a.suites.split(','):
         rows += gens[s.strip()]()
