@@ -166,6 +166,11 @@ uint32_t g_elim_text[2] = {};
 // Developer aid: SVR2011_TEST_RULE=<hex id> plays that rule record wherever
 // the game would play ONE ON ONE -> NORMAL (id 0), to try a rule in game.
 int g_test_rule = -1;
+// Test aid: SVR2011_TEST_MODE=<mode> - ONE ON ONE NORMAL (route match) plays
+// a mode only a runtime row gives: three_stages, elimination_tt,
+// elimination_f4w, weapons, slobber, lumberjack (as if its row was picked).
+enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack };
+TestMode g_test_mode = TestMode::kNone;
 
 // Node ids (+0x1C): the game finds a node by binary search over the table
 // (sub_82BA9B48) - B goes back through the row's parent (sub_8243FC18) - so
@@ -495,6 +500,27 @@ namespace svr2011 {
 
 void InstallMatchTypes(rex::memory::Memory* memory) {
   g_memory = memory;
+  if (const char* v = std::getenv("SVR2011_TEST_MODE"); v && *v) {
+    const std::string m = v;
+    struct Mode {
+      const char* name;
+      TestMode mode;
+      int rule;
+    };
+    constexpr Mode kModes[] = {{"three_stages", TestMode::kThreeStages, 0x00},
+                               {"elimination_tt", TestMode::kElimTT, int(kTripleThreat)},
+                               {"elimination_f4w", TestMode::kElimF4W, int(kFatal4Way)},
+                               {"weapons", TestMode::kWeapons, int(kExtremeFirst)},
+                               {"slobber", TestMode::kSlobber, int(kGauntlet)},
+                               {"lumberjack", TestMode::kLumberjack, int(kLumberjack)}};
+    for (const Mode& k : kModes)
+      if (m == k.name) {
+        g_test_mode = k.mode;
+        if (k.rule) g_test_rule = k.rule;
+        REXLOG_INFO("match types: ONE ON ONE NORMAL plays {} (SVR2011_TEST_MODE, rule {:02X})", k.name, k.rule);
+      }
+    if (g_test_mode == TestMode::kNone) REXLOG_WARN("match types: unknown SVR2011_TEST_MODE '{}'", m);
+  }
   if (const char* v = std::getenv("SVR2011_TEST_RULE"); v && *v) {
     g_test_rule = int(std::strtol(v, nullptr, 16));
     REXLOG_INFO("match types: ONE ON ONE NORMAL plays rule {:02X} (SVR2011_TEST_RULE)", g_test_rule);
@@ -573,6 +599,27 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_rule_lo = g_pending_rule_hi = kLumberjack;
     g_pending_like = kLumberjackLike;
     g_pending_select_only = true;
+  }
+  // (test aid SVR2011_TEST_MODE: ONE ON ONE NORMAL as the mode's row)
+  if (g_test_mode != TestMode::kNone && result == 2000) {
+    switch (g_test_mode) {
+      case TestMode::kThreeStages: g_pending_stages = true; break;
+      case TestMode::kElimTT:
+      case TestMode::kElimF4W: g_pending_elimination = true; break;
+      case TestMode::kWeapons: g_pending_weapons = true; break;
+      case TestMode::kSlobber:
+        g_pending_slobber = true;
+        g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
+        g_pending_like = kLumberjackLike;
+        g_pending_select_only = true;
+        break;
+      case TestMode::kLumberjack:
+        g_pending_rule_lo = g_pending_rule_hi = kLumberjack;
+        g_pending_like = kLumberjackLike;
+        g_pending_select_only = true;
+        break;
+      default: break;
+    }
   }
 }
 
