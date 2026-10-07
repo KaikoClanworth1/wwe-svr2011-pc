@@ -43,6 +43,8 @@ void SetArea(const std::vector<std::pair<int, int>>& ids, const float* spot = nu
 // The editor's whole UI, filling the current ImGui window region.
 void Draw();
 bool Busy();
+bool HasArena();   // an arena is set
+int EditCount();   // grows with every edit (the project's dirty check)
 void Shutdown();
 // test aid: a camera preset (0 hard camera, 1 top, 2 from the stage; -1 none)
 // and an object to select (by name) once an arena is set

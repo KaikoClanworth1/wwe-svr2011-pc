@@ -1,0 +1,864 @@
+// Arena and Backstage pages: a new arena from one of the game's 20 (edited in
+// Blender or the 3D editor, or built from nothing), its banner and VS screen;
+// a backstage brawl room rebuilt (bg78). Builds the .svrmod (manifest.txt,
+// arena.pac, banner.dds, vs/*.dds) and installs it. The game: arena_mods.cpp.
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+
+#include "app.h"
+#include <shellapi.h>
+
+#include "editor.h"
+#include "svrfmt/arena.h"
+#include "svrfmt/arena_build.h"
+#include "svrfmt/arena_import.h"
+#include "svrfmt/pac.h"
+#include "svrfmt/ring_kit.h"
+
+namespace mm {
+namespace arena_page {
+
+using namespace svrfmt;
+
+namespace {
+
+// Backstage brawl areas: all seven are rooms of one file, bg78.pac (models
+// by id range); a backstage brawl's match type decides the room. A backstage
+// mod is bg78 with one room rebuilt: the game plays it in that room's matches.
+struct Area {
+  const char* name;
+  const char* about;
+  std::vector<std::pair<int, int>> ids;  // its models' ids (1000+: its objects: cars, crates...)
+  // the game's box for the area (sub_8224EF28): centre x y z, half x z
+  float spot[5];
+};
+const Area kAreas[7] = {
+    {"Parking lot", "Cars, a truck and the loading bay.", {{0, 19}, {1040, 1069}}, {125, 0, -410, 38, 50}},
+    {"GM's office", "The desk, the couch and the TV.", {{20, 39}, {1000, 1024}}, {-338, -8, 217, 30, 27}},
+    {"Locker room A", "Lockers, benches and the showers.", {{40, 59}, {1090, 1109}}, {290, -8, -190, 34, 34}},
+    {"Locker room B", "The second locker room.", {{60, 79}, {1070, 1089}}, {326, -8, 241, 34, 34}},
+    {"Large locker room", "The big room with the massage tables.", {{80, 99}, {1025, 1039}}, {460, -8, -76, 25, 25}},
+    {"Interview area", "The backdrop, the cameras and the corridor.", {{160, 179}, {140, 159}, {1110, 1139}}, {0, -8, 141, 30, 30}},
+    {"Catering area", "Tables, food and the drinks.", {{140, 159}, {1130, 1139}}, {20, -8, -190, 45, 30}},
+};
+
+// The mod being made
+struct Project {
+  int arena = -1;                 // tile in g_arenas the mod starts from (-1: none / backstage)
+  int backstage = -1;             // the area being made (else an arena)
+  std::unique_ptr<Arena> edited;  // after an import / in the editor
+  std::string fbx;                // the Blender file it came from
+  Picture banner;                 // 256 x 128
+  char name[96] = "";
+  char author[64] = "";
+  char version[16] = "1.0";
+  std::map<std::string, Image> vs;  // the VS screen: replaced textures of the slot's theme
+  // backstage extras (the game reads them: arena_mods.cpp)
+  int row = -1;                   // (unused yet)
+};
+Project g_proj;
+int g_sel = 0;    // the tile under the cursor on the Start tab
+int g_area = 0;   // the backstage area picked
+int g_tab = 0;
+
+// an arena loaded in the background, handed to the UI thread (the editor holds g_proj.edited)
+std::mutex g_pending_mutex;
+std::unique_ptr<Arena> g_pending;
+std::string g_pending_fbx;
+bool g_pending_to_editor = false;
+bool g_pending_no_crowd = false;  // (a new empty arena)
+// test aid (--test-edit-save <file>): once the editor has its arena, editor::TestEdit,
+// name "Test Edit", save the mod there and quit
+std::wstring g_test_save;
+int g_test_lib = -1;
+std::atomic<int> g_test_state{0};
+
+void LeaveBackstage() {
+  if (g_proj.backstage < 0) return;
+  g_proj.backstage = -1;
+  editor::SetArea({});
+  g_proj.arena = -1;
+}
+
+void StartProject(int i) {
+  LeaveBackstage();
+  if (g_proj.arena == i) return;
+  g_proj.arena = i;
+  g_proj.edited.reset();
+  g_proj.fbx.clear();
+  editor::SetArena(nullptr, "");
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s (custom)", g_arenas[i].name);
+  Touch();
+}
+
+void LoadInBackground(const std::string& pac, std::function<void(Arena&)> prepare, bool to_editor, bool no_crowd,
+                      const std::string& fbx = "") {
+  RunInBackground([=] {
+    Progress("Reading the arena file ...");
+    auto a = std::make_unique<Arena>();
+    std::string err;
+    if (!a->Load(pac, &err)) {
+      Status("The arena could not be read: " + err);
+      return;
+    }
+    if (prepare) prepare(*a);
+    std::lock_guard lock(g_pending_mutex);
+    g_pending = std::move(a);
+    g_pending_fbx = fbx;
+    g_pending_to_editor = to_editor;
+    g_pending_no_crowd = no_crowd;
+  });
+}
+
+void ExportArena(int i) {
+  const std::wstring dir = PickFolder(L"Export to Blender: choose a folder for the arena files");
+  if (dir.empty()) return;
+  const std::string out = PathStr(fs::path(dir) / (Wide(std::string(g_arenas[i].banner + 6)) + L" export"));
+  const std::string pac = ArenaPath(i), title = g_arenas[i].name;
+  RunInBackground([pac, out, title] {
+    Progress("Exporting " + title + " ...");
+    Arena a;
+    std::string err;
+    if (!a.Load(pac, &err)) { Status(err); return; }
+    ExportReport rep;
+    if (!svrfmt::ExportArena(a, out, title, rep)) {
+      for (const auto& w : rep.warnings) Log("  " + w);
+      Status("The export failed (see the log).");
+      return;
+    }
+    char b[256];
+    std::snprintf(b, sizeof b, "Exported %d objects and %d textures to %s", rep.models, rep.textures, out.c_str());
+    Status(b);
+    Log("  Open arena.fbx in Blender (File > Import > FBX). 1 Blender unit = 1 metre.");
+    ShellExecuteA(nullptr, "open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  });
+}
+
+void ImportArena(int i) {
+  const COMDLG_FILTERSPEC spec[] = {{L"FBX (*.fbx)", L"*.fbx"}};
+  const std::wstring fbx = PickFile(false, L"Import from Blender: the edited arena FBX", spec, 1);
+  if (fbx.empty()) return;
+  StartProject(i);
+  const std::string pac = ArenaPath(i), fbx8 = Utf8(fbx);
+  RunInBackground([pac, fbx8] {
+    Progress("Importing " + fbx8 + " ...");
+    auto a = std::make_unique<Arena>();
+    std::string err;
+    if (!a->Load(pac, &err)) { Status(err); return; }
+    ImportOptions opt;
+    ImportReport rep;
+    const bool ok = ImportFbx(*a, fbx8, opt, rep);
+    for (const auto& w : rep.warnings) Log("  " + w);
+    for (const auto& e : rep.errors) Log("  error: " + e);
+    if (!ok) { Status("The import failed (see the log)."); return; }
+    char b[256];
+    std::snprintf(b, sizeof b, "Imported: %d models changed, %d objects added, textures %d replaced %d added",
+                  rep.models_changed, rep.objects_added, rep.textures_replaced, rep.textures_added);
+    std::string serr;
+    a->Save(&serr);  // (checks it would load)
+    if (!serr.empty()) { Status("error: " + serr); return; }
+    Status(b);
+    std::lock_guard lock(g_pending_mutex);
+    g_pending = std::move(a);
+    g_pending_fbx = fbx8;
+    g_pending_to_editor = false;
+  });
+}
+
+// A new arena from nothing: the slot's file with everything but the ring,
+// the floor and the ringside parts emptied. The slot (the arena it loads in
+// place of) only decides the room it has and the VS screen style.
+void NewArena(int slot) {
+  StartProject(slot);
+  std::snprintf(g_proj.name, sizeof g_proj.name, "New Arena");
+  LoadInBackground(ArenaPath(slot), [](Arena& a) {
+    EmptyOptions opt;
+    EmptyReport rep;
+    MakeEmpty(a, opt, rep);
+    char b[200];
+    std::snprintf(b, sizeof b, "New empty arena: %d objects and %d textures cleared (%.1f MB of room). Add objects, "
+                  "props from other arenas (Library) and your own files.", rep.models_emptied, rep.textures_shrunk,
+                  rep.bytes_freed / 1048576.0);
+    Status(b);
+  }, true, true);
+}
+
+std::string ModId() { return IdFrom(g_proj.name, g_proj.backstage >= 0 ? "backstage" : "arena"); }
+
+// A mod build: copied and set up on the UI thread (the editor keeps
+// editing g_proj.edited), compressed in the background.
+struct BuildJob {
+  bool backstage = false;
+  int area = -1;
+  std::vector<std::string> keep;  // textures FitFile leaves as they are
+  std::shared_ptr<Arena> arena;
+  std::string manifest, id;
+  Image banner;
+  std::map<std::string, Image> vs;
+};
+
+bool PrepareBuild(BuildJob& job) {
+  if (g_proj.backstage >= 0) {  // a backstage area: bg78 with the room rebuilt
+    if (!g_proj.edited) { Status("Open the area in the 3D editor first."); return false; }
+    job.arena = std::make_shared<Arena>(*g_proj.edited);
+    editor::ApplyBuild(*job.arena);
+    job.id = ModId();
+    job.backstage = true;
+    job.area = g_proj.backstage;
+    // only the room's own textures may be made smaller to fit
+    for (const auto& am : job.arena->models) {
+      bool mine = am.added;
+      for (const auto& [lo, hi] : kAreas[g_proj.backstage].ids) mine |= am.id >= uint32_t(lo) && am.id <= uint32_t(hi);
+      if (!mine) job.keep.insert(job.keep.end(), am.model.textures.begin(), am.model.textures.end());
+    }
+    job.manifest = "type=backstage\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
+                   "\nversion=" + g_proj.version + "\narea=" + std::to_string(g_proj.backstage) + "\n";
+    return true;
+  }
+  if (g_proj.arena < 0) { Status("Pick an arena first."); return false; }
+  job.arena = std::make_shared<Arena>();
+  if (g_proj.edited) {
+    *job.arena = *g_proj.edited;
+  } else if (!job.arena->Load(ArenaPath(g_proj.arena))) {
+    Status("The arena file could not be read.");
+    return false;
+  }
+  editor::ApplyBuild(*job.arena);
+  job.banner = g_proj.banner.image;
+  job.vs = g_proj.vs;
+  if (job.banner.rgba.empty()) {
+    job.banner.w = 256;
+    job.banner.h = 128;
+    job.banner.rgba.assign(256 * 128 * 4, 40);
+    for (size_t i = 3; i < job.banner.rgba.size(); i += 4) job.banner.rgba[i] = 255;
+  }
+  job.id = ModId();
+  job.manifest = "type=arena\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
+                 "\nversion=" + g_proj.version + "\nbase=" + g_arenas[g_proj.arena].banner + "\n" +
+                 editor::ManifestLines();
+  return true;
+}
+
+// manifest.txt, arena.pac, banner.dds (false on error, logged)
+bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
+  Progress("Fitting the arena into the game's room ...");
+  const auto halved = job.arena->FitFile(job.keep);
+  if (!halved.empty())
+    Log("  " + std::to_string(halved.size()) + " textures halved to fit the game's room for this arena.");
+  Progress("Compressing the arena ...");
+  std::string err;
+  Bytes pac = job.arena->Save(&err);
+  if (!err.empty()) { Status("error: " + err); return false; }
+  files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
+  files.push_back({"arena.pac", std::move(pac)});
+  if (job.backstage) return true;
+  files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
+  for (const auto& [name, img] : job.vs)  // (same size as the original: the VS tab resizes)
+    files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+  return true;
+}
+
+void SaveMod() {
+  BuildJob job;
+  if (!PrepareBuild(job)) return;
+  const std::wstring f = PickFile(true, L"Save the mod", kModFilter, 1, L"svrmod", (Wide(job.id) + L".svrmod").c_str());
+  if (f.empty()) return;
+  const std::string out = Utf8(f);
+  RunInBackground([job, out]() mutable {
+    std::vector<ZipEntry> files;
+    if (!FinishBuild(job, files)) return;
+    if (WriteFile(out, ZipWrite(files))) Status("Saved " + out + " (add it in the launcher's Mods tab with +).");
+    else Status("The mod could not be written: " + out);
+  });
+}
+
+bool InstallFiles(const BuildJob& job, const std::vector<ZipEntry>& files) {
+  const fs::path dir = fs::path(g_game) / L"Mods" / (job.backstage ? L"Backstage" : L"Arenas") / fs::u8path(job.id);
+  std::error_code ec;
+  fs::remove_all(dir, ec);  // (an older install's files, e.g. VS pictures no longer replaced)
+  fs::create_directories(dir, ec);
+  for (const auto& f : files)
+    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
+      Status("Could not write into " + PathStr(dir) + " (is the game running?)");
+      return false;
+    }
+  if (job.backstage)
+    Status(std::string("Installed: backstage brawls in the ") + kAreas[job.area].name + " play it (" + PathStr(dir) + ").");
+  else
+    Status("Installed: it is on the arena select pages after the game's arenas (" + PathStr(dir) + ").");
+  return true;
+}
+
+// Builds and installs into <game>/Mods/...; then, with `start`, starts the game.
+void InstallMod(bool start) {
+  if (start && GameRunning()) {
+    Status("The game is running: close it first (mods load when it starts).");
+    return;
+  }
+  BuildJob job;
+  if (!PrepareBuild(job)) return;
+  RunInBackground([job, start]() mutable {
+    std::vector<ZipEntry> files;
+    if (!FinishBuild(job, files) || !InstallFiles(job, files)) return;
+    if (start) StartGame();
+  });
+}
+
+// A mod's / project's arena.pac back into the editor: budget from the host
+// arena's shipped file, the Ring Kit's output and the lighting undone (both
+// apply again from the manifest's ring.* / light.* when the mod is saved).
+bool LoadEditedArena(const Bytes& data, int host, int area, const std::string& manifest, std::string* err) {
+  auto a = std::make_unique<Arena>();
+  if (!a->LoadData(data, err)) return false;
+  Arena shipped;
+  const std::string host_pac = area >= 0 ? PathStr(fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac") : ArenaPath(host);
+  if (shipped.Load(host_pac)) {
+    a->original_file = shipped.original_file;
+    a->original_unpacked = shipped.original_unpacked;
+    if (area < 0) {
+      auto ring_part = [](uint32_t id) { return id == 952 || (id >= 956 && id <= 967); };
+      for (auto& m : a->models)
+        if (ring_part(m.id))
+          for (const auto& s : shipped.models)
+            if (s.id == m.id) m.model = s.model, m.changed = true;
+      for (auto& e : a->entries)  // the crowd (crowd=0 empties it at save)
+        if (e.id == 0x4E20)
+          for (const auto& se : shipped.entries)
+            if (se.id == e.id) e.data = se.data;
+      auto per_rope = [](uint32_t id) { return id >= 900 && id <= 911; };
+      a->models.erase(std::remove_if(a->models.begin(), a->models.end(), [&](const ArenaModel& m) { return per_rope(m.id); }),
+                      a->models.end());
+      a->entries.erase(std::remove_if(a->entries.begin(), a->entries.end(), [&](const PachEntry& e) { return per_rope(e.id); }),
+                       a->entries.end());
+    }
+  }
+  editor::FromManifest(manifest);
+  if (area < 0) {  // the lighting is in the material colours: out again (it applies at save)
+    const editor::Lighting& l = editor::Light();
+    if (!l.Default()) {
+      float inv[3];
+      for (int k = 0; k < 3; ++k) inv[k] = l.color[k] * l.strength > 1e-4f ? 1.0f / (l.color[k] * l.strength) : 1.0f;
+      for (auto& am : a->models) {
+        if (am.id == 952 || (am.id >= 956 && am.id <= 967)) continue;
+        for (auto& s : am.model.meshes)
+          for (auto& p : s.params)
+            if (p.type == 0x0d && p.value.size() >= 16 && (p.name == "g_f4MatAmbCol" || p.name == "g_f4MatDifCol"))
+              for (int k = 0; k < 3; ++k) PutBeF(&p.value[4 * k], BeF(&p.value[4 * k]) * inv[k]);
+        am.changed = true;
+      }
+    }
+  }
+  g_proj.arena = area >= 0 ? -1 : host;
+  g_proj.backstage = area;
+  if (area >= 0) editor::SetArea(kAreas[area].ids, kAreas[area].spot), g_area = area;
+  else editor::SetArea({}), g_sel = host;
+  g_proj.edited = std::move(a);
+  g_proj.fbx.clear();
+  editor::SetArena(g_proj.edited.get(), g_proj.name);
+  return true;
+}
+
+// ---- the mod type's name/author/version and the VS screen (shared tabs)
+
+void DetailsFields() {
+  TextField("Name", g_proj.name, sizeof g_proj.name, "the arena's name on the select page");
+  TextField("Author (optional)", g_proj.author, sizeof g_proj.author);
+  TextField("Version (optional)", g_proj.version, sizeof g_proj.version, "1.0");
+}
+
+struct VsTexture {
+  std::string name;
+  int w = 0, h = 0;
+  Picture original, mine;
+};
+int g_vs_slot = -1;
+std::vector<VsTexture> g_vs;
+
+// The VS screen (the match screen behind the two Superstars) is a theme per
+// arena: menu/MatchHD.pac group M<nn>I (nn = the arena's bg number), DXT5
+// textures. A custom arena shows its slot's theme; the mod can replace any
+// of its textures (vs/<name>.dds, same size).
+void LoadVsTheme(int slot) {
+  if (slot == g_vs_slot) return;
+  g_vs.clear();
+  g_vs_slot = slot;
+  if (slot < 0 || g_game.empty()) return;
+  Bytes d;
+  Epac e;
+  if (!ReadFile(PathStr(fs::path(g_game) / L"pac" / L"menu" / L"MatchHD.pac"), d) || !EpacRead(d, e)) return;
+  char group[8];
+  std::snprintf(group, sizeof group, "M%02dI", g_arenas[slot].number);
+  for (const auto& g : e.groups)
+    for (const auto& en : g.entries) {
+      if (en.name != group) continue;
+      std::vector<PachEntry> ents;
+      if (!PachRead(en.data, ents)) continue;
+      for (const auto& pe : ents) {
+        std::vector<BundleTexture> texs;
+        if (!BundleRead(Unpack(pe.data), texs)) continue;
+        for (const auto& t : texs) {
+          VsTexture v;
+          v.name = t.name;
+          Image img;
+          if (!DdsDecode(t.data, img) || img.w < 64 || img.h < 32) continue;  // (tiny: dots, glows)
+          v.w = img.w, v.h = img.h;
+          v.original.Set(std::move(img));
+          g_vs.push_back(std::move(v));
+        }
+      }
+    }
+}
+
+void VsTab() {
+  const int slot = g_proj.arena >= 0 ? g_proj.arena : g_sel;
+  LoadVsTheme(slot);
+  ImGui::TextWrapped("The screen behind the two Superstars before the match: the %s theme, which your arena uses "
+                     "because it plays in that arena's place. Replace any of its pictures (they are fitted to the "
+                     "same size).", g_arenas[slot].name);
+  ImGui::Spacing();
+  if (g_vs.empty()) {
+    ImGui::TextDisabled("No VS screen theme found for this arena.");
+    return;
+  }
+  const float col = 300 * g_scale;
+  const int cols = std::max(1, int(ImGui::GetContentRegionAvail().x / (col + 10 * g_scale)));
+  int i = 0;
+  for (auto& t : g_vs) {
+    if (i++ % cols) ImGui::SameLine();
+    ImGui::PushID(t.name.c_str());
+    ImGui::BeginGroup();
+    const auto mine = g_proj.vs.find(t.name);
+    if (mine != g_proj.vs.end() && t.mine.Empty()) t.mine.Set(mine->second);
+    if (mine == g_proj.vs.end() && !t.mine.Empty()) t.mine.Clear();
+    const float h = std::min(col * t.h / t.w, 200 * g_scale);
+    (t.mine.Empty() ? t.original : t.mine).Draw(col, h);
+    ImGui::Text("%s  %dx%d%s", t.name.c_str(), t.w, t.h, t.mine.Empty() ? "" : "  (yours)");
+    if (ImGui::Button("Replace...")) {
+      const std::wstring f = PickFile(false, L"A picture for this part of the VS screen", kPictureFilter, 1);
+      Image img;
+      if (!f.empty() && LoadPicture(f, img)) {
+        g_proj.vs[t.name] = Resize(img, t.w, t.h);
+        t.mine.Clear();
+        Touch();
+        Log("VS screen: " + t.name + " from " + Utf8(f));
+      }
+    }
+    if (!t.mine.Empty()) {
+      ImGui::SameLine();
+      if (ImGui::Button("Original")) g_proj.vs.erase(t.name), Touch();
+    }
+    ImGui::Dummy(ImVec2(col, 4));
+    ImGui::EndGroup();
+    ImGui::PopID();
+  }
+}
+
+// ---- the Start tab: the grid of the game's arenas
+
+void ArenaGrid() {
+  ImGui::BeginChild("grid", ImVec2(-320 * g_scale, 0), false);
+  ImGui::TextDisabled("The game's arenas, read from the game folder and never changed. Pick the one to start from.");
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const int cols = std::clamp(int(avail / (190 * g_scale)), 2, 5);
+  const ImGuiStyle& st = ImGui::GetStyle();
+  const float tw = (avail - st.ItemSpacing.x * (cols - 1)) / cols - 1;
+  const float iw = tw - st.FramePadding.x * 2, ih = iw * 0.5f;
+  for (int i = 0; i < 20; ++i) {
+    if (i % cols) ImGui::SameLine();
+    ImGui::PushID(i);
+    const bool sel = g_sel == i && g_proj.backstage < 0;
+    ImGui::BeginGroup();
+    if (!g_arenas[i].tile.Empty()) {
+      if (ImGui::ImageButton("t", g_arenas[i].tile.Id(), ImVec2(iw, ih))) g_sel = i;
+    } else if (ImGui::Button(g_arenas[i].name, ImVec2(tw, ih + st.FramePadding.y * 2))) {
+      g_sel = i;
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) OpenEditor(i);
+    {  // the name, clipped to the tile
+      const ImVec2 p = ImGui::GetCursorScreenPos();
+      ImGui::PushClipRect(p, ImVec2(p.x + tw, p.y + ImGui::GetTextLineHeight()), true);
+      ImGui::TextUnformatted(g_arenas[i].name);
+      ImGui::PopClipRect();
+    }
+    ImGui::EndGroup();
+    if (sel) {
+      const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+      ImGui::GetWindowDrawList()->AddRect(ImVec2(a.x - 2, a.y - 2), ImVec2(b.x + 2, b.y + 2), IM_COL32(230, 25, 50, 255),
+                                          4, 0, 3 * g_scale);
+    }
+    if (g_proj.arena == i) {
+      const ImVec2 a = ImGui::GetItemRectMin();
+      ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + 6, a.y + 4), IM_COL32(255, 255, 255, 255), "YOURS");
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+}
+
+void StartSide() {
+  ImGui::BeginChild("side", ImVec2(0, 0), true);
+  const ArenaInfo& a = g_arenas[g_sel];
+  ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.2f);
+  ImGui::TextUnformatted(a.name);
+  ImGui::PopFont();
+  ImGui::TextDisabled("pac/bg/bg%02d.pac", a.number);
+  const float bw = ImGui::GetContentRegionAvail().x;
+  g_arenas[g_sel].tile.Draw(bw, bw * 0.5f);
+  ImGui::Spacing();
+  ImGui::BeginDisabled(Busy());
+  PushAccent();
+  if (ImGui::Button("Open in the 3D editor", ImVec2(-1, 0))) OpenEditor(g_sel);
+  PopAccent();
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move, add and retexture objects, the Ring Kit, lighting (double-click a tile does the same).");
+  if (ImGui::Button("Start an empty arena", ImVec2(-1, 0))) NewArena(g_sel);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Only the ring, the floor and the ringside parts: build the rest.\n"
+                      "It plays in this arena's place (its room and VS screen style).");
+  ImGui::Spacing();
+  ImGui::TextDisabled("Blender");
+  if (ImGui::Button("Export to Blender...", ImVec2(-1, 0))) ExportArena(g_sel);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("arena.fbx + textures as PNG + arena.json into a folder you choose.");
+  if (ImGui::Button("Import from Blender...", ImVec2(-1, 0))) ImportArena(g_sel);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("The edited FBX back onto this arena (then edit on in 3D, or save).");
+  ImGui::EndDisabled();
+  ImGui::Separator();
+  ImGui::TextDisabled("Your arena");
+  if (g_proj.arena >= 0)
+    ImGui::TextWrapped("From %s%s%s.", g_arenas[g_proj.arena].name, g_proj.fbx.empty() ? "" : ", edited in Blender",
+                       g_proj.edited ? (g_proj.fbx.empty() ? ", open in the 3D editor" : "") : " (as the game has it)");
+  else
+    ImGui::TextWrapped("None yet: open an arena in the 3D editor, start an empty one, or import from Blender.");
+  ImGui::EndChild();
+}
+
+void DetailsTab() {
+  DetailsFields();
+  Hint("The name is what the arena select page shows under the banner. Mods are kept apart by the id made from "
+       "the name (letters and digits): two mods with the same name replace each other.");
+  ImGui::Spacing();
+  ImGui::TextDisabled("Banner (the select page's picture, 256 x 128)");
+  if (ImGui::Button("Banner picture...", ImVec2(220 * g_scale, 0))) {
+    const std::wstring f = PickFile(false, L"Banner picture (shown at 256 x 128)", kPictureFilter, 1);
+    Image img;
+    if (!f.empty() && LoadPicture(f, img)) {
+      g_proj.banner.Set(Resize(img, 256, 128));
+      Touch();
+      Log("Banner set from " + Utf8(f));
+    }
+  }
+  if (!g_proj.banner.Empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##banner")) g_proj.banner.Clear(), Touch();
+  }
+  if (g_proj.banner.Empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("none: a dark banner with the name is used");
+  } else {
+    g_proj.banner.Draw(256 * g_scale, 128 * g_scale);
+  }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------- public
+
+void Tick() {
+  std::lock_guard lock(g_pending_mutex);
+  if (!g_pending) {
+    if (g_test_state == 2 && !Busy()) {
+      WriteLogTo(g_test_save + L".log");  // (the test scripts read it)
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      g_test_state = 3;
+    }
+    return;
+  }
+  g_proj.edited = std::move(g_pending);
+  g_proj.fbx = g_pending_fbx;
+  editor::SetArena(g_proj.edited.get(), g_proj.name);
+  if (g_pending_to_editor) GoTo(PageId::kEditor);
+  g_pending_to_editor = false;
+  if (g_pending_no_crowd) editor::Light().crowd = false;
+  g_pending_no_crowd = false;
+  Touch();
+  if (!g_test_save.empty() && g_test_state == 0) {
+    g_test_state = 1;
+    if (g_test_lib >= 0) editor::TestLibrary(g_test_lib);
+    editor::TestEdit();
+    // and the VS screen: the theme's biggest picture as a red / yellow checker
+    if (g_proj.backstage < 0) LoadVsTheme(g_proj.arena);
+    const VsTexture* big = nullptr;
+    for (const auto& t : g_vs)
+      if (!big || t.w * t.h > big->w * big->h) big = &t;
+    if (big) {
+      Image img;
+      img.w = big->w, img.h = big->h;
+      img.rgba.resize(size_t(img.w) * img.h * 4);
+      for (int y = 0; y < img.h; ++y)
+        for (int x = 0; x < img.w; ++x) {
+          uint8_t* q = &img.rgba[(size_t(y) * img.w + x) * 4];
+          const bool on = ((x / 64) + (y / 64)) & 1;
+          q[0] = on ? 230 : 250, q[1] = on ? 20 : 210, q[2] = on ? 30 : 0, q[3] = 255;
+        }
+      g_proj.vs[big->name] = img;
+      Log("test: VS screen " + big->name + " replaced");
+    }
+    std::snprintf(g_proj.name, sizeof g_proj.name, "Test Edit");
+    BuildJob job;
+    if (PrepareBuild(job)) {
+      const std::string out = Utf8(g_test_save);
+      RunInBackground([job, out]() mutable {
+        std::vector<ZipEntry> files;
+        if (FinishBuild(job, files) && WriteFile(out, ZipWrite(files))) Log("test: saved " + out);
+        else Log("test: build failed");
+        g_test_state = 2;
+      });
+    }
+  }
+}
+
+void OpenEditor(int i) {
+  LeaveBackstage();
+  if (g_proj.arena == i && g_proj.edited) {
+    GoTo(PageId::kEditor);
+    return;
+  }
+  StartProject(i);
+  LoadInBackground(ArenaPath(i), nullptr, true, false);
+}
+
+void StartNew(int tile) {
+  g_sel = tile;
+  NewArena(tile);
+}
+
+void StartBackstage(int area) {
+  if (g_proj.backstage == area && g_proj.edited) {
+    GoTo(PageId::kEditor);
+    return;
+  }
+  g_area = area;
+  g_proj.backstage = area;
+  g_proj.arena = -1;
+  g_proj.edited.reset();
+  g_proj.fbx.clear();
+  editor::SetArena(nullptr, "");
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s (custom)", kAreas[area].name);
+  editor::SetArea(kAreas[area].ids, kAreas[area].spot);
+  Touch();
+  LoadInBackground(PathStr(fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac"), nullptr, true, false);
+}
+
+void SetTestSave(const std::wstring& f, int lib) {
+  g_test_save = f;
+  g_test_lib = lib;
+}
+
+void TestInGame() { InstallMod(true); }
+
+// A saved mod back into the editor (arena or backstage).
+void OpenModFile(const std::wstring& f) { ProjectOpen(f); }
+
+// ---- the project / mod hooks (arena and backstage)
+
+bool ReadModOrProject(const ProjectIn& in, bool mod) {
+  const std::string type = in.Get("type");
+  const bool backstage = type == "backstage";
+  const ZipEntry* pac = in.Find("arena.pac");
+  int host = -1, area = -1;
+  if (backstage) {
+    area = in.GetInt("area", -1);
+    if (area < 0 || area > 6) { Status("The mod does not say which backstage area it rebuilds (area=)."); return false; }
+  } else {
+    for (int i = 0; i < 20; ++i)
+      if (in.Get("base") == g_arenas[i].banner) host = i;
+    if (host < 0 && !mod) host = in.GetInt("tile", -1);
+    if (host < 0) { Status("The mod does not say which arena it is built on (base=)."); return false; }
+  }
+  std::snprintf(g_proj.name, sizeof g_proj.name, "%s", in.Get("name").c_str());
+  std::snprintf(g_proj.author, sizeof g_proj.author, "%s", in.Get("author").c_str());
+  std::snprintf(g_proj.version, sizeof g_proj.version, "%s", in.Get("version").c_str());
+  if (!g_proj.version[0]) std::snprintf(g_proj.version, sizeof g_proj.version, "1.0");
+  g_proj.vs.clear();
+  for (const auto& e : in.files)
+    if (e.name.rfind("vs/", 0) == 0 && e.name.size() > 7) {
+      Image img;
+      if (DdsDecode(e.data, img)) g_proj.vs[e.name.substr(3, e.name.size() - 7)] = img;
+    }
+  if (const ZipEntry* b = in.Find("banner.dds")) {
+    Image img;
+    if (DdsDecode(b->data, img)) g_proj.banner.Set(std::move(img));
+  }
+  g_proj.fbx = in.Get("fbx");
+  if (pac) {
+    std::string err;
+    if (!LoadEditedArena(pac->data, host, area, in.text, &err)) { Status("The arena in it could not be read: " + err); return false; }
+    GoTo(PageId::kEditor);
+  } else {  // (a project saved before any edit)
+    g_proj.arena = backstage ? -1 : host;
+    g_proj.backstage = area;
+    g_sel = host >= 0 ? host : g_sel;
+    if (area >= 0) g_area = area;
+    editor::FromManifest(in.text);
+  }
+  return true;
+}
+
+void WriteProject(ProjectOut& out) {
+  out.Key("name", g_proj.name);
+  out.Key("author", g_proj.author);
+  out.Key("version", g_proj.version);
+  if (g_proj.backstage >= 0) out.Key("area", g_proj.backstage);
+  else if (g_proj.arena >= 0) out.Key("base", g_arenas[g_proj.arena].banner), out.Key("tile", g_proj.arena);
+  out.Key("fbx", g_proj.fbx);
+  out.text += editor::ManifestLines();
+  if (!g_proj.banner.Empty()) out.files.push_back({"banner.dds", DdsEncode(g_proj.banner.image, DxtFormat::kDxt5, false)});
+  for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+  if (g_proj.edited) {
+    // the arena as edited (the kit / lighting apply at mod build, not here)
+    Progress("Saving the arena ...");
+    std::string err;
+    out.files.push_back({"arena.pac", g_proj.edited->Save(&err)});
+    if (!err.empty()) Log("project: " + err);
+  }
+}
+
+std::string StateText() {
+  std::string s = std::string("name=") + g_proj.name + "\nauthor=" + g_proj.author + "\nversion=" + g_proj.version +
+                  "\narena=" + std::to_string(g_proj.arena) + "\nbackstage=" + std::to_string(g_proj.backstage) +
+                  "\nvs=" + std::to_string(g_proj.vs.size()) + "\nbanner=" + std::to_string(g_proj.banner.image.rgba.size()) +
+                  "\n" + editor::ManifestLines();
+  return s;
+}
+
+void Reset() {
+  LeaveBackstage();
+  g_proj = Project();
+  editor::SetArena(nullptr, "");
+  editor::Ring() = RingSpec();
+  editor::Light() = editor::Lighting();
+}
+
+void ArenaProblems(std::vector<Problem>& p) {
+  if (g_proj.backstage >= 0) {  // (the Arena page while a backstage area is open)
+    p.push_back(Error("A backstage area is open, not an arena.", "Use the Backstage page, or pick an arena here."));
+    return;
+  }
+  if (g_proj.arena < 0) p.push_back(Error("No arena yet.", "Open one in the 3D editor, start an empty one or import from Blender."));
+  if (!g_proj.name[0]) p.push_back(Error("The arena has no name.", "Details tab."));
+  else if (std::strlen(g_proj.name) > 31) p.push_back(Warning("The name is long: the select page shows about 30 letters."));
+  if (g_proj.arena >= 0 && g_proj.banner.Empty()) p.push_back(Warning("No banner picture: a dark banner is used on the select page.", "Details tab."));
+  if (g_proj.arena >= 0 && !g_proj.edited && g_proj.fbx.empty())
+    p.push_back(Warning("Nothing changed yet: the mod would be a copy of the game's arena."));
+  if (editor::Ring().VisibleRopes() < 3 && editor::Ring().VisibleRopes() > 0)
+    p.push_back(Warning("Fewer than three ropes: rope moves are limited to the ropes left (the game adapts)."));
+  if (editor::Ring().VisibleRopes() == 0) p.push_back(Warning("No ropes: no rope moves, no rope breaks, a hardcore-style ring."));
+}
+
+void BackstageProblems(std::vector<Problem>& p) {
+  if (g_proj.backstage < 0) p.push_back(Error("No area open yet.", "Pick an area and open it in the 3D editor."));
+  if (!g_proj.name[0]) p.push_back(Error("The mod has no name."));
+  if (g_proj.backstage >= 0 && !g_proj.edited) p.push_back(Error("The area is still loading."));
+}
+
+void DrawArena() {
+  Heading("Arena", "A new arena on the arena select pages, made from one of the game's own: edited in 3D here or in "
+                   "Blender, or built from an empty hall.");
+  std::vector<Problem> problems;
+  ArenaProblems(problems);
+  if (ImGui::BeginTabBar("arena_tabs")) {
+    if (ImGui::BeginTabItem("Start")) {
+      ImGui::BeginChild("start", ImVec2(0, -48 * g_scale), false);
+      ArenaGrid();
+      ImGui::SameLine();
+      StartSide();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Details")) {
+      ImGui::BeginChild("details", ImVec2(0, -48 * g_scale), false);
+      DetailsTab();
+      ImGui::Spacing();
+      DrawProblems(problems);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("VS screen")) {
+      ImGui::BeginChild("vs", ImVec2(0, -48 * g_scale), false);
+      VsTab();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+  }
+  switch (ModButtons(problems, true)) {
+    case 1: SaveMod(); break;
+    case 2: InstallMod(false); break;
+    case 3: InstallMod(true); break;
+  }
+}
+
+void DrawBackstage() {
+  Heading("Backstage", "A backstage brawl room rebuilt. The game's seven rooms are in one file: the room you make is "
+                       "played in that room's backstage brawls. One backstage mod plays at a time.");
+  std::vector<Problem> problems;
+  BackstageProblems(problems);
+  ImGui::BeginChild("bs", ImVec2(0, -48 * g_scale), false);
+  ImGui::SetNextItemWidth(320 * g_scale);
+  if (ImGui::BeginCombo("Area", kAreas[g_area].name)) {
+    for (int k = 0; k < 7; ++k)
+      if (ImGui::Selectable(kAreas[k].name, g_area == k)) g_area = k;
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", kAreas[g_area].about);
+  ImGui::BeginDisabled(Busy());
+  PushAccent();
+  if (ImGui::Button("Open the area in the 3D editor", ImVec2(320 * g_scale, 0))) StartBackstage(g_area);
+  PopAccent();
+  ImGui::EndDisabled();
+  ImGui::TextWrapped("Keep its floor and walls where they are (the game's walls and cameras for the room stay). The "
+                     "cars, crates and other things the superstars can use are placed by the game: they are not shown "
+                     "here and stay.");
+  ImGui::Separator();
+  DetailsFields();
+  if (g_proj.backstage >= 0)
+    ImGui::TextWrapped("Open: %s%s.", kAreas[g_proj.backstage].name, g_proj.edited ? "" : " (loading)");
+  ImGui::Spacing();
+  DrawProblems(problems);
+  ImGui::EndChild();
+  switch (ModButtons(problems, true)) {
+    case 1: SaveMod(); break;
+    case 2: InstallMod(false); break;
+    case 3: InstallMod(true); break;
+  }
+}
+
+PageHooks hooks = {
+    "arena",
+    DrawArena,
+    ArenaProblems,
+    Reset,
+    StateText,
+    WriteProject,
+    [](const ProjectIn& in) { return ReadModOrProject(in, false); },
+    [](const ProjectIn& in) { return ReadModOrProject(in, true); },
+};
+
+}  // namespace arena_page
+
+namespace backstage_page {
+PageHooks hooks = {
+    "backstage",
+    arena_page::DrawBackstage,
+    arena_page::BackstageProblems,
+    arena_page::Reset,
+    arena_page::StateText,
+    arena_page::WriteProject,
+    [](const ProjectIn& in) { return arena_page::ReadModOrProject(in, false); },
+    [](const ProjectIn& in) { return arena_page::ReadModOrProject(in, true); },
+};
+}  // namespace backstage_page
+
+}  // namespace mm

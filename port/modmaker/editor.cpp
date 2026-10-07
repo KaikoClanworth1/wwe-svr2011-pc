@@ -1711,6 +1711,8 @@ void FocusArea() {
 }
 
 bool Busy() { return g_budget_busy; }
+bool HasArena() { return g_arena != nullptr; }
+int EditCount() { return g_edits; }
 
 void TestEdit() {
   if (!g_arena) return;
