@@ -474,3 +474,67 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 **Test aids:**
 - `SVR2011_TEST_3S_FALL=<s>`: every `<s>` seconds person 1, then person 0, loses a fall (falls 1 and 2 only);
 - `SVR2011_TEST_3S_LOG=1`: the live bytes and characters, once a second.
+
+## Championship Scramble (done, 9e347c4)
+
+**What it is:** the game's own match, cut from the menus: rule 0x26 (5 people, timed, the clock locked on), MATCH CREATOR family 61. Its row is still in the menu table (PLAY's last record, label A038 CHAMPIONSHIP SCRAMBLE, screen 0x7D0, rule 0x26) with flag 4 at +0x3C hiding it.
+- Showing the PLAY row isn't enough: rows in PLAY only open submenus, and picking it does nothing.
+- So it is a row in FATAL-4-WAY (`kRows`: after NORMAL, label A038, rule 0x26).
+
+**Everything after the row is native:**
+- the title pick ("CHAMPIONSHIP SCRAMBLE 5 MINUTE"; titles only change hands in Universe / Title Settings);
+- a 5-person select with an ENTRY ORDER option, and the vs screen "CHAMPIONSHIP SCRAMBLE";
+- in the match: 2 start and one more comes in about each minute until all 5 are in (role 3 waiting entrants);
+- a pin doesn't set anyone's lost byte: a short cut-scene celebrates the new interim champion and the fight goes on;
+- at the 5:00 bell the last one to score a fall wins, the referee raises his hand, then highlights and results.
+
+**Tested:** from the menu (title pick, 5 picks, the match running), and two full 5-minute CPU runs (`SVR2011_TEST_RULE=26`, `SVR2011_TEST_MATCH=... cpu=all`): entries, mid-match pins, the result at the bell, no crash.
+
+**Note:** FATAL-4-WAY now has 14 rows, the most a list shows.
+
+**Test aid:** `SVR2011_TEST_MENU_DUMP=<hex group>` logs a group's menu records, and any record of rule 0x26, as the table is read.
+
+## Match Creator: everything allowed (2.0.5)
+
+**Tables:** `sub_82490558(loader)` loads misc.pac `/MRME/MRPD`'s 10 tables to loader +48, +52, +64, +68, +72, +76, +80, +84, +88, +92 (chunks 1-10).
+- Per family (68; `sub_82490918`, table 0x8201E4F8): defaults 1/3/7, allowed 2 ENVIRONMENT (8 rows), 4 WIN CONDITION (11), 8 RULES (6).
+- Combinations:
+  - 5: ring structure x win;
+  - 6: a win row's value x the others (24 lines; 0x0A is the row itself);
+  - 9, 10: the same for the rules.
+- Cells: 0x09 free, 0x00 greyed, 0x02-0x04 fixed.
+
+**Now:** every 0x00 cell is 0x09, except the following, which keep the game's own cells:
+- the kept families: Royal Rumble, Elimination Chamber, backstage, in-ring brawls, and the INFERNO 1 on 1 (family 1);
+- FLAMING TABLE (only a table match's own);
+- CLIMB OUT / ESCAPE (a cage's own, via ring x win);
+- OVER THE TOP ROPE in a cage, cell or chamber ring, and in team families (14-27, 45-47, 52);
+- the CHAMBER ring;
+- the INFERNO ring outside 1 on 1 / triple threat / fatal-4-way normal;
+- ladder / TLC families: no cage/cell/inferno ring and no new win conditions.
+
+**Live rules:** the option record's locked-off bytes (0x80) that the MATCH CREATOR's rows set are opened while `sub_828C48E8` builds a match's live rules, so the saved choice counts. Bytes that are locked on keep their value.
+
+**Saved record (28 bytes) -> live bytes:**
+- +0 ring (live 9, 14, 20, 25, 38, 41, 46, 59, 63);
+- +4 pin/give up (1, 7);
+- +5 2 out of 3 (13); +6 ironman (12, 22);
+- +7 over the top (6, 4); +8 K.O. (2);
+- +9 last man standing (26); +10 finisher (23); +11 first blood (40);
+- +12 flaming table (39); +13 climb out (28, 9); +14 escape (44);
+- +15 ring out (27); +16 rope break (3); +17 DQ / count-out (4, 5);
+- +18 elimination (37, 11, 29); +19 falls count anywhere (1 = 2); +20 time limit (8, 21, 10).
+
+**Sweep** (`tools/mc_sweep.ps1`, `runs/mc_list.txt`; 23 rules x 11 options, CPU only, 40 s each; `SVR2011_TEST_MC` sets the saved record):
+- 192 OK and 10 ended normally.
+- The 29 "frozen" were mostly test artifacts: the OVER THE TOP ROPE first-time help box waits for A, and hold struggles (an RS bar) wait for player 1's pad even with `cpu=all`.
+- **Crashes:**
+  - tag (0x03, 0x09) and 6-man (0x08) with over the top rope or the inferno ring;
+  - INFERNO 1 on 1 (0x51) with last man standing.
+- **Hangs / idle CPU:**
+  - ladder/TLC families in cage/cell/inferno;
+  - fatal-4-way ladder with last man standing (the job thread busy, the draw waiting);
+  - the inferno ring in tag/ladder/ER/submission matches.
+- **Not tested:** fatal-4-way IRONMAN stuck once (already allowed by the game).
+
+**Test aids:** `SVR2011_TEST_MC="<saved byte>=<value>,..."`, `SVR2011_TEST_MC_OLD=1` (the game's own tables).
