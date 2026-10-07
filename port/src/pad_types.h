@@ -46,6 +46,14 @@ class PlayerSlots final : public rex::input::DeviceAssignment {
   std::array<std::vector<rex::input::DeviceId>, kMaxPlayers> users_;
 };
 
+// The player who pressed START at the press-START screen becomes player 1
+// (user 0, the signed-in profile: its saves and achievements). On PC whoever
+// presses START plays: their devices and player 1's swap places (the others
+// stay players 2-8). The game's choice (sub_8258B5F8) is hooked in
+// pad_types.cpp. Test aid: SVR2011_TEST_SCRIPT_PLAYER=<n> - the scripted
+// controller is player n (a second pad pressing START, without one).
+void MakeLeadPlayer(uint32_t user_index);
+
 // The PlayStation (non-XInput) controllers through SDL, next to XInput.
 std::unique_ptr<rex::input::InputDriver> CreatePlayStationDriver();
 
