@@ -400,6 +400,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   // (capture_: the binding; capture_add_: added to its keys, else replaces).
   int control_row_ = 0, control_top_ = 0;
   int capture_ = -1;
+  int capture_mod_ = -1;  // (a Shift / Ctrl / Alt held while waiting: kMods index)
   bool capture_add_ = false;
   Clock::time_point capture_until_{};
   Clock::time_point repeat_at_{};
@@ -643,6 +644,7 @@ void GraphicsPage::ControlsInput(uint16_t pressed, uint16_t act, bool& back) {
   if (change || add) {
     // (from the next frame on: the key that started it is not the new key)
     capture_ = control_row_;
+    capture_mod_ = -1;
     capture_add_ = add && !change;
     capture_until_ = Clock::now() + std::chrono::seconds(8);
     back = false;
@@ -775,7 +777,32 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       wait_release_ = true;
       opened_at_ = now;
     };
+    // Shift / Ctrl / Alt pressed and let go with no other key: that key alone
+    // (the keyboard driver takes a bare modifier name as a key of its own).
+    struct Mod {
+      ImGuiKey left, right;
+      const char* name;
+    };
+    static const Mod kMods[] = {{ImGuiKey_LeftShift, ImGuiKey_RightShift, "Shift"},
+                                {ImGuiKey_LeftCtrl, ImGuiKey_RightCtrl, "Ctrl"},
+                                {ImGuiKey_LeftAlt, ImGuiKey_RightAlt, "Alt"}};
+    for (const Mod& m : kMods)
+      if (ImGui::IsKeyPressed(m.left, false) || ImGui::IsKeyPressed(m.right, false)) capture_mod_ = &m - kMods;
+    const char* bare = nullptr;
+    if (capture_mod_ >= 0 && !ImGui::IsKeyDown(kMods[capture_mod_].left) && !ImGui::IsKeyDown(kMods[capture_mod_].right))
+      bare = kMods[capture_mod_].name;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || now > capture_until_) {
+      capture_mod_ = -1;
+      cancel();
+    } else if (bare) {
+      std::string keys = rex::cvar::Query<std::string>(kBindings[capture_].cvar);
+      if (!capture_add_ || keys.empty()) {
+        keys = bare;
+      } else if (("," + keys + ",").find(std::string(",") + bare + ",") == std::string::npos) {
+        keys += std::string(",") + bare;
+      }
+      SetBinding(capture_, keys);
+      capture_mod_ = -1;
       cancel();
     } else {
       for (const KeyName& k : KeyNames()) {
@@ -792,6 +819,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
           keys += "," + name;
         }
         SetBinding(capture_, keys);
+        capture_mod_ = -1;
         cancel();
         break;
       }
@@ -926,7 +954,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       dl->AddTriangleFilled(P(639, yb + 8), P(629, yb), P(649, yb), arrow);
     }
     const char* help =
-        capture_ >= 0 ? "Press the key (Shift / Ctrl / Alt + a key for a combination). ESC: cancel."
+        capture_ >= 0 ? "Press the key (Shift / Ctrl / Alt + a key: a combination; tapped alone: that key). ESC: cancel."
         : control_row_ == kNumBindings
             ? "A: the default keys for every input."
             : "A: change   Y: add a key   X: clear   BACK: reset   (keyboard: Enter, Insert, Delete, R)";
