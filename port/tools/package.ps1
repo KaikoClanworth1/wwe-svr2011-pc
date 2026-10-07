@@ -106,5 +106,19 @@ try {
     }
 } finally { $archive.Dispose() }
 "Packaged $zip"
+# The bundled mods on their own, for the Android app (it downloads this asset
+# and installs them as the PC launcher does - a phone has no PC zip).
+$modsZip = Join-Path $port "out\SvR2011-Mods-v$Version.zip"
+Remove-Item $modsZip -ErrorAction SilentlyContinue
+if (Test-Path (Join-Path $stage "Bundled Mods")) {
+    $archive = [IO.Compression.ZipFile]::Open($modsZip, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($f in Get-ChildItem (Join-Path $stage "Bundled Mods") -File) {
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, "Bundled Mods/" + $f.Name,
+                [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    } finally { $archive.Dispose() }
+    "Packaged $modsZip (upload it to the release too: the Android app's bundled mods)"
+}
 if (Test-Path $apk) { "Packaged " + (Join-Path $port "out\SvR2011-Android-v$Version.apk") + " (upload it to the release too)" }
 Get-ChildItem $stage | ForEach-Object { "  $($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB" }
