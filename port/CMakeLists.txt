@@ -227,7 +227,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     set(IMGUI_SRC ${REXSDK_DIR}/thirdparty/imgui)
     add_executable(svr2011_modmaker WIN32
         modmaker/app.cpp modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/signs_page.cpp
-        modmaker/media_page.cpp modmaker/pages_stub.cpp modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
+        modmaker/media_page.cpp modmaker/moves_page.cpp modmaker/pages_stub.cpp modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
         modmaker/svrfmt/pac.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp
         modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp
         modmaker/svrfmt/arena_import.cpp modmaker/svrfmt/zip_write.cpp

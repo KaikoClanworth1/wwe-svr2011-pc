@@ -93,7 +93,7 @@ static int maker_present(void);
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -371,13 +371,24 @@ static int install_file(const WCHAR *zip)
         const int backstage = !_wcsicmp(m.type, L"backstage");
         const int arena = !_wcsicmp(m.type, L"arena") || backstage, star = !_wcsicmp(m.type, L"superstar");
         const int signs = !_wcsicmp(m.type, L"signs"), media = !_wcsicmp(m.type, L"media");
+        const int moves = !_wcsicmp(m.type, L"moves");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
         if (signs || media) {
             wcsncpy_s(kind, 32, signs ? L"Signs" : L"Media", _TRUNCATE);
             goto place;
         }
+        if (moves) {  /* a move pack: pack.txt + motions (docs/MOVE_PACKS.md) */
+            swprintf_s(need1, MAX_PATH, L"%s\\pack.txt", tmp);
+            if (!exists(need1)) {
+                status(L"That move pack is incomplete (it needs pack.txt).");
+                remove_tree(tmp, 0);
+                return 0;
+            }
+            wcsncpy_s(kind, 32, L"Moves", _TRUNCATE);
+            goto place;
+        }
         if (!arena && !star) {
-            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, superstar and sign mods.", m.name, m.type);
+            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, backstage, superstar, sign, media and move mods.", m.name, m.type);
             status(t);
             remove_tree(tmp, 0);
             return 0;
@@ -431,6 +442,7 @@ place:
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
                        : !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
+                       : !wcscmp(kind, L"Moves") ? L"Installed \"%s\". The game merges its moves into its files when it next starts (a few seconds)."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
                                                    L"select (up to 50 superstar mods)."

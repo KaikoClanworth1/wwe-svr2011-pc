@@ -28,6 +28,7 @@ struct Lighting {
 struct Hooks {
   std::function<void(const std::string&)> log;
   std::function<void()> test_in_game;  // install the mod and start the game
+  std::function<std::string(const char* title)> pick_picture;  // a picture file dialog ("" = none)
   // the prop library: arenas to take models from (name, pac path)
   std::vector<std::pair<std::string, std::string>> library;
 };

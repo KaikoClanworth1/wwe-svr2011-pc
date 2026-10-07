@@ -55,8 +55,15 @@ struct Project {
   char author[64] = "";
   char version[16] = "1.0";
   std::map<std::string, Image> vs;  // the VS screen: replaced textures of the slot's theme
-  // backstage extras (the game reads them: arena_mods.cpp)
-  int row = -1;                   // (unused yet)
+  Picture load;                     // the loading screen (1024 x 512), optional
+  // backstage: an area of its own (arena_mods.cpp / match_types.cpp read these)
+  bool own_area = false;
+  char row[32] = "";                // row=<label>: its row in ONE ON ONE -> BACKSTAGE
+  char gimmick[8] = "";             // gimmick=<4 chars> with gimmick.pac
+  std::wstring gimmick_pac;
+  bool has_box = false;
+  float box[4] = {0, 0, 30, 30};    // box=x,z,half x,half z (game units, 10 cm)
+  float camera = 0, camera_height = 0;  // 0 = the game's
 };
 Project g_proj;
 int g_sel = 0;    // the tile under the cursor on the Start tab
@@ -195,8 +202,9 @@ struct BuildJob {
   std::vector<std::string> keep;  // textures FitFile leaves as they are
   std::shared_ptr<Arena> arena;
   std::string manifest, id;
-  Image banner;
+  Image banner, load;
   std::map<std::string, Image> vs;
+  std::wstring gimmick_pac;
 };
 
 bool PrepareBuild(BuildJob& job) {
@@ -215,6 +223,20 @@ bool PrepareBuild(BuildJob& job) {
     }
     job.manifest = "type=backstage\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
                    "\nversion=" + g_proj.version + "\narea=" + std::to_string(g_proj.backstage) + "\n";
+    if (g_proj.own_area) {
+      char b[160];
+      job.manifest += std::string("row=") + g_proj.row + "\n";
+      if (g_proj.gimmick[0] && !g_proj.gimmick_pac.empty()) {
+        job.manifest += std::string("gimmick=") + g_proj.gimmick + "\n";
+        job.gimmick_pac = g_proj.gimmick_pac;
+      }
+      if (g_proj.has_box) {
+        std::snprintf(b, sizeof b, "box=%.1f,%.1f,%.1f,%.1f\n", g_proj.box[0], g_proj.box[1], g_proj.box[2], g_proj.box[3]);
+        job.manifest += b;
+      }
+      if (g_proj.camera > 0) std::snprintf(b, sizeof b, "camera=%.1f\n", g_proj.camera), job.manifest += b;
+      if (g_proj.camera_height > 0) std::snprintf(b, sizeof b, "camera_height=%.1f\n", g_proj.camera_height), job.manifest += b;
+    }
     return true;
   }
   if (g_proj.arena < 0) { Status("Pick an arena first."); return false; }
@@ -227,6 +249,7 @@ bool PrepareBuild(BuildJob& job) {
   }
   editor::ApplyBuild(*job.arena);
   job.banner = g_proj.banner.image;
+  job.load = g_proj.load.image;
   job.vs = g_proj.vs;
   if (job.banner.rgba.empty()) {
     job.banner.w = 256;
@@ -253,8 +276,16 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   if (!err.empty()) { Status("error: " + err); return false; }
   files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
   files.push_back({"arena.pac", std::move(pac)});
-  if (job.backstage) return true;
+  if (job.backstage) {
+    if (!job.gimmick_pac.empty()) {
+      Bytes g;
+      if (!ReadFile(Utf8(job.gimmick_pac), g)) { Status("The gimmick pac could not be read: " + Utf8(job.gimmick_pac)); return false; }
+      files.push_back({"gimmick.pac", std::move(g)});
+    }
+    return true;
+  }
   files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
+  if (job.load.w) files.push_back({"load.dds", DdsEncode(job.load, DxtFormat::kDxt5, false)});
   for (const auto& [name, img] : job.vs)  // (same size as the original: the VS tab resizes)
     files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
   return true;
@@ -363,7 +394,7 @@ bool LoadEditedArena(const Bytes& data, int host, int area, const std::string& m
 // ---- the mod type's name/author/version and the VS screen (shared tabs)
 
 void DetailsFields() {
-  TextField("Name", g_proj.name, sizeof g_proj.name, "the arena's name on the select page");
+  TextField("Name", g_proj.name, sizeof g_proj.name, g_proj.backstage >= 0 || g_page == PageId::kBackstage ? "the mod's name" : "the arena's name on the select page");
   TextField("Author (optional)", g_proj.author, sizeof g_proj.author);
   TextField("Version (optional)", g_proj.version, sizeof g_proj.version, "1.0");
 }
@@ -558,6 +589,59 @@ void DetailsTab() {
   } else {
     g_proj.banner.Draw(256 * g_scale, 128 * g_scale);
   }
+  ImGui::Spacing();
+  ImGui::TextDisabled("Loading screen (shown while the match loads, 1024 x 512)");
+  if (ImGui::Button("Loading screen picture...", ImVec2(220 * g_scale, 0))) {
+    const std::wstring f = PickFile(false, L"Loading screen picture (shown at 1024 x 512)", kPictureFilter, 1);
+    Image img;
+    if (!f.empty() && LoadPicture(f, img)) {
+      g_proj.load.Set(Resize(img, 1024, 512));
+      Touch();
+      Log("Loading screen set from " + Utf8(f));
+    }
+  }
+  if (!g_proj.load.Empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##load")) g_proj.load.Clear(), Touch();
+  }
+  if (g_proj.load.Empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("none: the arena it plays in place of keeps its loading screen");
+  } else {
+    g_proj.load.Draw(512 * g_scale, 256 * g_scale);
+  }
+}
+
+// Backstage: the area-of-its-own settings (row=, gimmick=, box=, camera=, camera_height=).
+void OwnAreaFields() {
+  ImGui::Checkbox("An area of its own", &g_proj.own_area);
+  Hint("Instead of replacing the room, the mod gets a row of its own in ONE ON ONE -> BACKSTAGE (after the room's "
+       "row) and plays only in matches started from it. The room stays as the game has it.");
+  if (!g_proj.own_area) return;
+  ImGui::Indent();
+  TextField("Row name", g_proj.row, sizeof g_proj.row, "e.g. MY GARAGE (the menu row)");
+  ImGui::Checkbox("Fight box", &g_proj.has_box);
+  Hint("Where the fight is (the camera's target, where the wrestlers are kept, where the computer goes): centre x and "
+       "z and the half sizes, in game units (1 = 10 cm). Without one the room's box is used.");
+  if (g_proj.has_box) {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(260 * g_scale);
+    if (ImGui::InputFloat4("x, z, half x, half z", g_proj.box, "%.1f")) Touch();
+  }
+  ImGui::SetNextItemWidth(160 * g_scale);
+  if (ImGui::InputFloat("Camera distance cap (0 = the game's)", &g_proj.camera, 0, 0, "%.1f")) Touch();
+  Hint("Caps how far the match camera backs away (game units). A small area wants a cap, or the camera stands among "
+       "the objects.");
+  ImGui::SetNextItemWidth(160 * g_scale);
+  if (ImGui::InputFloat("Camera height, at least (0 = the game's)", &g_proj.camera_height, 0, 0, "%.1f")) Touch();
+  Hint("The camera's eye is kept at least this high (game units): it looks over the objects round the area.");
+  ImGui::TextDisabled("Objects (optional)");
+  TextField("Gimmick name (4 letters)", g_proj.gimmick, sizeof g_proj.gimmick, "e.g. GMGB");
+  if (FileRow("Gimmick pac...", g_proj.gimmick_pac, "none: the room's own cars, crates and weapons", kPacFilter, 1,
+              "A small pac with only GMGB/<name>: the cars, props and hot spots of the area, played instead of the "
+              "room's in that row's matches (tools/svr08_gimmick.py makes one from SvR 2008 data)."))
+    Touch();
+  ImGui::Unindent();
 }
 
 }  // namespace
@@ -690,7 +774,26 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
     Image img;
     if (DdsDecode(b->data, img)) g_proj.banner.Set(std::move(img));
   }
+  if (const ZipEntry* l = in.Find("load.dds")) {
+    Image img;
+    if (DdsDecode(l->data, img)) g_proj.load.Set(std::move(img));
+  }
   g_proj.fbx = in.Get("fbx");
+  if (backstage) {
+    std::snprintf(g_proj.row, sizeof g_proj.row, "%s", in.Get("row").c_str());
+    std::snprintf(g_proj.gimmick, sizeof g_proj.gimmick, "%s", in.Get("gimmick").substr(0, 4).c_str());
+    g_proj.own_area = g_proj.row[0] != 0;
+    g_proj.has_box = std::sscanf(in.Get("box").c_str(), "%f,%f,%f,%f", &g_proj.box[0], &g_proj.box[1], &g_proj.box[2], &g_proj.box[3]) == 4;
+    g_proj.camera = float(std::atof(in.Get("camera").c_str()));
+    g_proj.camera_height = float(std::atof(in.Get("camera_height").c_str()));
+    if (in.Find("gimmick.pac")) g_proj.gimmick_pac = in.Extract("gimmick.pac");
+    else if (!mod) {
+      const std::string from = in.Get("gimmick_pac.from");
+      if (!from.empty() && fs::exists(Wide(from))) g_proj.gimmick_pac = Wide(from);
+    }
+  }
+  if (!mod)  // rope pictures (project only: the mod has them baked in)
+    for (int k = 0; k < 3; ++k) editor::Ring().ropes[k].texture = in.Get(("ring.tex" + std::to_string(k)).c_str());
   if (pac) {
     std::string err;
     if (!LoadEditedArena(pac->data, host, area, in.text, &err)) { Status("The arena in it could not be read: " + err); return false; }
@@ -713,7 +816,21 @@ void WriteProject(ProjectOut& out) {
   else if (g_proj.arena >= 0) out.Key("base", g_arenas[g_proj.arena].banner), out.Key("tile", g_proj.arena);
   out.Key("fbx", g_proj.fbx);
   out.text += editor::ManifestLines();
+  for (int k = 0; k < 3; ++k) out.Key("ring.tex" + std::to_string(k), editor::Ring().ropes[k].texture);
+  if (g_proj.backstage >= 0 && g_proj.own_area) {
+    char b[160];
+    out.Key("row", g_proj.row);
+    out.Key("gimmick", g_proj.gimmick);
+    out.File("gimmick_pac", g_proj.gimmick_pac, "gimmick");
+    if (g_proj.has_box) {
+      std::snprintf(b, sizeof b, "%.1f,%.1f,%.1f,%.1f", g_proj.box[0], g_proj.box[1], g_proj.box[2], g_proj.box[3]);
+      out.Key("box", b);
+    }
+    if (g_proj.camera > 0) std::snprintf(b, sizeof b, "%.1f", g_proj.camera), out.Key("camera", b);
+    if (g_proj.camera_height > 0) std::snprintf(b, sizeof b, "%.1f", g_proj.camera_height), out.Key("camera_height", b);
+  }
   if (!g_proj.banner.Empty()) out.files.push_back({"banner.dds", DdsEncode(g_proj.banner.image, DxtFormat::kDxt5, false)});
+  if (!g_proj.load.Empty()) out.files.push_back({"load.dds", DdsEncode(g_proj.load.image, DxtFormat::kDxt5, false)});
   for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
   if (g_proj.edited) {
     // the arena as edited (the kit / lighting apply at mod build, not here)
@@ -728,7 +845,10 @@ std::string StateText() {
   std::string s = std::string("name=") + g_proj.name + "\nauthor=" + g_proj.author + "\nversion=" + g_proj.version +
                   "\narena=" + std::to_string(g_proj.arena) + "\nbackstage=" + std::to_string(g_proj.backstage) +
                   "\nvs=" + std::to_string(g_proj.vs.size()) + "\nbanner=" + std::to_string(g_proj.banner.image.rgba.size()) +
-                  "\n" + editor::ManifestLines();
+                  "\nload=" + std::to_string(g_proj.load.image.rgba.size()) + "\nown=" + std::to_string(g_proj.own_area) +
+                  "\nrow=" + g_proj.row + "\ngimmick=" + g_proj.gimmick + Utf8(g_proj.gimmick_pac) +
+                  "\nbox=" + std::to_string(g_proj.has_box) + "\n" + editor::ManifestLines();
+  for (int k = 0; k < 3; ++k) s += editor::Ring().ropes[k].texture + ";";
   return s;
 }
 
@@ -760,6 +880,14 @@ void BackstageProblems(std::vector<Problem>& p) {
   if (g_proj.backstage < 0) p.push_back(Error("No area open yet.", "Pick an area and open it in the 3D editor."));
   if (!g_proj.name[0]) p.push_back(Error("The mod has no name."));
   if (g_proj.backstage >= 0 && !g_proj.edited) p.push_back(Error("The area is still loading."));
+  if (g_proj.own_area) {
+    if (!g_proj.row[0]) p.push_back(Error("An area of its own needs a row name (the menu row)."));
+    if (g_proj.gimmick[0] && std::strlen(g_proj.gimmick) != 4) p.push_back(Error("The gimmick name must be 4 letters (the pac's group name)."));
+    if (g_proj.gimmick[0] && g_proj.gimmick_pac.empty()) p.push_back(Error("A gimmick name needs its gimmick pac (or clear the name)."));
+    if (!g_proj.gimmick_pac.empty() && !g_proj.gimmick[0]) p.push_back(Error("The gimmick pac needs its 4-letter name."));
+    if (!g_proj.has_box) p.push_back(Warning("No fight box: the room's is used - wrong if your area is somewhere else."));
+    if (g_proj.has_box && (g_proj.box[2] < 5 || g_proj.box[3] < 5)) p.push_back(Warning("A very small fight box (under 50 cm each way)."));
+  }
 }
 
 void DrawArena() {
@@ -825,6 +953,8 @@ void DrawBackstage() {
   DetailsFields();
   if (g_proj.backstage >= 0)
     ImGui::TextWrapped("Open: %s%s.", kAreas[g_proj.backstage].name, g_proj.edited ? "" : " (loading)");
+  ImGui::Separator();
+  OwnAreaFields();
   ImGui::Spacing();
   DrawProblems(problems);
   ImGui::EndChild();

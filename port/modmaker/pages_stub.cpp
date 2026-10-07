@@ -1,5 +1,5 @@
-// Pages still being built (plan: docs/MOD_MAKER_PLAN.md): Moves, Game
-// assets, Animations, Icons & renders and the Manual. Each says what it will
+// Pages still being built (plan: docs/MOD_MAKER_PLAN.md): Game assets,
+// Animations, Icons & renders and the Manual. Each says what it will
 // do until it does it.
 #include "app.h"
 
@@ -12,18 +12,6 @@ void Soon(const char* title, const char* about, const char* plan) {
   ImGui::TextWrapped("%s", plan);
 }
 }  // namespace
-
-namespace moves_page {
-namespace {
-void Draw() {
-  Soon("Moves", "Moves the game doesn't have, added by a move pack (Mods/Moves) or inside a superstar mod.",
-       "Coming: open a pack (pack.txt + motions), see each motion, set its category bits, save as a mod.");
-}
-void Problems(std::vector<Problem>& p) { p.push_back(Error("The Moves page isn't ready yet.")); }
-}  // namespace
-PageHooks hooks = {"moves", Draw, Problems, [] {}, [] { return std::string(); }, [](ProjectOut&) {},
-                   [](const ProjectIn&) { return false; }, [](const ProjectIn&) { return false; }};
-}  // namespace moves_page
 
 namespace assets_page {
 void Draw() {

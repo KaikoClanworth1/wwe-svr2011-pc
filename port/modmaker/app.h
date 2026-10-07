@@ -148,6 +148,10 @@ const StarInfo* StarById(int id);
 int StarRating(int id, int k);
 // The base's select render (DLC_HD SSFA), decoded on first use (cached).
 Picture* StarRender(int id);
+// The game's move names (misc.pac MOVS/WAZE: 160-byte records, the name at
+// +0x10, the id at +0x90), loaded on first use; "" if unknown.
+const std::string& MoveName(int id);
+const std::map<int, std::string>& MoveNames();
 bool GameRunning();
 void StartGame(const std::wstring& extra_env = L"");
 
@@ -249,7 +253,7 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
                        Image SignPicture(const Image& src); }
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
-namespace moves_page { extern PageHooks hooks; }
+namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); }
 namespace assets_page { void Draw(); }
 namespace anims_page { void Draw(); }
 namespace icons_page { void Draw(); }

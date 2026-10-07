@@ -56,6 +56,28 @@ const Style kStyles[] = {
 };
 const char* const kAttributes[7] = {"Grapple", "Submission", "Speed", "Strikes", "Hardcore", "Charisma", "Durability"};
 
+// Abilities (record +230..: up to 8 ids; the name's string id is 0x9EA8 + id,
+// sub_828B73D8). The eleven the 2011 roster uses; the other ids in the string
+// table are SvR 2009/2010 leftovers no record has.
+struct Ability {
+  int id;
+  const char* name;
+  const char* about;
+};
+const Ability kAbilities[] = {
+    {1, "Dirty Pin", "Pins with the feet on the ropes or a handful of tights."},
+    {7, "Move Thief", "Steals the opponent's finisher."},
+    {9, "Hammer Throw", "Irish whips with more force: the opponent hits harder."},
+    {11, "Resiliency", "Kicks out of a pin once when nearly beaten."},
+    {12, "Durability", "Takes longer to wear down."},
+    {14, "Kip-Up", "Springs back to the feet when down."},
+    {19, "Outside Dives", "Dives to the outside of the ring."},
+    {20, "Springboard Dives", "Springboard attacks off the ropes."},
+    {22, "Leverage Pin", "A quick pin from a reversal."},
+    {23, "Fired Up", "Finishers pass to a partner / a comeback when down."},
+    {24, "Ring Escape", "Rolls out of the ring to recover."},
+};
+
 struct StarProject {
   int style = 0;
   int ratings[7] = {74, 74, 74, 74, 74, 74, 74};
@@ -68,6 +90,13 @@ struct StarProject {
   Image picture_small;            // the 256 bust made with it
   int call = -1;                  // -1: "The Superstar"
   std::vector<Picture> signs;     // its fans' signs (up to 4; 128 x 64)
+  // the SvR 2010-style extras (the game: superstar_mods.cpp)
+  int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
+  char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
+  std::vector<int> abilities;     // abilities=a,b,... (empty: the style's)
+  bool own_abilities = false;
+  std::wstring moves;             // moves=moves.txt: lines 0xOFF=<move id>
+  std::wstring pack;              // a move pack folder (pack.txt + motions/) copied in as moves/
 };
 StarProject g_star;
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
@@ -131,6 +160,7 @@ struct Job {
   std::string attire_names[4];
   Image picture, picture_small;
   std::vector<Image> signs;
+  std::wstring moves, pack;
 };
 
 bool PrepareJob(Job& j) {
@@ -146,6 +176,15 @@ bool PrepareJob(Job& j) {
   j.manifest += "ratings=";
   for (int k = 0; k < 7; ++k) j.manifest += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "\n");
   if (g_star.call >= 0) j.manifest += "call=" + std::to_string(g_star.call) + "\n";
+  if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
+  if (g_star.announcer[0]) j.manifest += std::string("announcer=") + g_star.announcer + "\n";
+  if (g_star.own_abilities) {
+    j.manifest += "abilities=";
+    for (size_t k = 0; k < g_star.abilities.size(); ++k) j.manifest += (k ? "," : "") + std::to_string(g_star.abilities[k]);
+    j.manifest += "\n";
+  }
+  if (!g_star.moves.empty()) j.manifest += "moves=moves.txt\n";
+  j.moves = g_star.moves, j.pack = g_star.pack;
   j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
   j.picture = g_star.picture.image, j.picture_small = g_star.picture_small;
@@ -197,6 +236,21 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     }
     files.push_back({"movie.bik", std::move(m)});
     man += "movie=movie.bik\n";
+  }
+  if (!j.moves.empty()) {
+    Bytes t;
+    if (!ReadFile(Utf8(j.moves), t)) { Status("Could not read the moves list: " + Utf8(j.moves)); return false; }
+    files.push_back({"moves.txt", std::move(t)});
+  }
+  if (!j.pack.empty()) {  // the move pack: pack.txt and motions/* as moves/
+    Progress("Copying the move pack ...");
+    std::error_code ec;
+    for (const auto& e : fs::recursive_directory_iterator(j.pack, ec)) {
+      if (!e.is_regular_file(ec)) continue;
+      Bytes f;
+      if (!ReadFile(PathStr(e.path()), f)) { Status("Could not read " + PathStr(e.path())); return false; }
+      files.push_back({"moves/" + fs::relative(e.path(), j.pack, ec).generic_string(), std::move(f)});
+    }
   }
   Progress("Encoding the pictures ...");
   for (size_t k = 0; k < j.signs.size() && k < 4; ++k)
@@ -273,6 +327,17 @@ void Problems(std::vector<Problem>& p) {
     if (!f->empty() && !Check(*f, "any").exists) p.push_back(Error("A sound file is missing: " + FileName(*f)));
   if (!g_star.song.empty()) p.push_back(Warning("Theme songs play at full level: the game's own are about 7 dB quieter. Make yours about -24 LUFS.", ""));
   if (g_star.picture.Empty()) p.push_back(Warning("No select picture: the select screen shows a silhouette where other modes show a render."));
+  if (!g_star.moves.empty()) {
+    const FileCheck& c = Check(g_star.moves, "any");
+    if (!c.exists) p.push_back(Error("The moves list file is missing: " + FileName(g_star.moves)));
+  }
+  if (!g_star.pack.empty()) {
+    std::error_code ec;
+    if (!fs::exists(fs::path(g_star.pack) / L"pack.txt", ec)) p.push_back(Error("The move pack folder has no pack.txt: " + FileName(g_star.pack), "A pack is a folder with pack.txt and motions/ (tools/movepack.py or the Moves page make one)."));
+  }
+  for (char c : std::string(g_star.announcer))
+    if (!std::isalnum(uint8_t(c))) { p.push_back(Error("The announcer name takes letters and digits only (e.g. JEFFHARDY).")); break; }
+  if (g_star.own_abilities && g_star.abilities.empty()) p.push_back(Warning("Own abilities ticked but none chosen: the superstar gets no abilities."));
   if (std::strlen(g_star.name) > 20 && !g_star.short_name[0]) p.push_back(Warning("A long name with no short name: the short name goes on the match screens."));
   if (!g_game.empty()) {
     int mods = 0;
@@ -363,6 +428,71 @@ void Draw() {
        "can have (or record the name below).");
   TextField("Author (optional)", g_star.author, sizeof g_star.author);
   TextField("Version (optional)", g_star.version, sizeof g_star.version, "1.0");
+  if (ImGui::CollapsingHeader("More: entrance, announcer, abilities, moves")) {
+    ImGui::Indent();
+    // entrance: a superstar's (number = id) or Jeff Hardy's 2010 one the game ships unused
+    const auto& stars = Stars();
+    std::string cur = "The style's";
+    if (g_star.entrance == 535) cur = "Jeff Hardy's (SvR 2010, unused by the game)";
+    else if (g_star.entrance >= 0) {
+      const StarInfo* s = StarById(g_star.entrance);
+      cur = (s ? s->name : "Superstar " + std::to_string(g_star.entrance)) + "'s";
+    }
+    ImGui::SetNextItemWidth(320 * g_scale);
+    if (ImGui::BeginCombo("Entrance", cur.c_str())) {
+      if (ImGui::Selectable("The style's", g_star.entrance < 0)) g_star.entrance = -1;
+      if (ImGui::Selectable("Jeff Hardy's (SvR 2010, unused by the game)", g_star.entrance == 535)) g_star.entrance = 535;
+      for (const auto& s : stars)
+        if (ImGui::Selectable((s.name + "'s##e" + std::to_string(s.id)).c_str(), g_star.entrance == s.id)) g_star.entrance = s.id;
+      ImGui::EndCombo();
+    }
+    Hint("The entrance motions and pyro (the music and movie are the files below). Each of the game's superstars has "
+         "one; the game also ships Jeff Hardy's from SvR 2010 without using it.");
+    TextField("Announcer name (optional)", g_star.announcer, sizeof g_star.announcer, "e.g. JEFFHARDY");
+    Hint("A name the ring announcer's sound banks have clips of (letters and digits, as the banks spell it: "
+         "JEFFHARDY). The announcer then says it. It wins over a name recording; the name call above stays for the "
+         "commentators.");
+    if (ImGui::Checkbox("Own abilities", &g_star.own_abilities)) Touch();
+    Hint("The superstar's abilities (up to 8). Unticked: the style's.");
+    if (g_star.own_abilities) {
+      ImGui::Indent();
+      int col = 0;
+      for (const auto& a : kAbilities) {
+        bool on = std::find(g_star.abilities.begin(), g_star.abilities.end(), a.id) != g_star.abilities.end();
+        if (col++ % 3) ImGui::SameLine(0, 20 * g_scale);
+        ImGui::BeginDisabled(!on && g_star.abilities.size() >= 8);
+        if (ImGui::Checkbox(a.name, &on)) {
+          if (on) g_star.abilities.push_back(a.id);
+          else g_star.abilities.erase(std::remove(g_star.abilities.begin(), g_star.abilities.end(), a.id), g_star.abilities.end());
+          Touch();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", a.about);
+        ImGui::EndDisabled();
+      }
+      ImGui::Unindent();
+    }
+    const COMDLG_FILTERSPEC txt[] = {{L"Moves list (*.txt)", L"*.txt"}};
+    FileRow("Moves list (optional)...", g_star.moves, "the style's moves", txt, 1,
+            "moves.txt: lines 0xOFF=<move id> that change the style's move-set (OFF a byte offset in the profile's "
+            "move block, 0..0x1BF, even). docs/SUPERSTAR_MODS.md explains it.");
+    ImGui::PushID("pack");
+    if (ImGui::Button("Move pack folder (optional)...", ImVec2(220 * g_scale, 0))) {
+      const std::wstring f = PickFolder(L"The move pack folder (pack.txt + motions)");
+      if (!f.empty()) g_star.pack = f, Touch();
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Moves the game doesn't have, carried inside the mod (moves/): a folder with pack.txt and "
+                        "motions/, as the Moves page saves one.");
+    ImGui::SameLine();
+    if (g_star.pack.empty()) ImGui::TextDisabled("none");
+    else ImGui::TextUnformatted(FileName(g_star.pack).c_str());
+    if (!g_star.pack.empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) g_star.pack.clear(), Touch();
+    }
+    ImGui::PopID();
+    ImGui::Unindent();
+  }
   ImGui::Separator();
   ImGui::TextUnformatted("Files");
   FileRow("Model (ch.pac)...", g_star.model, "required: the superstar's model", kPacFilter, 1,
@@ -442,6 +572,9 @@ std::string StateText() {
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
   for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
   for (int a = 1; a < 4; ++a) s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a];
+  s += "\nentrance=" + std::to_string(g_star.entrance) + "\nannouncer=" + g_star.announcer + "\nmoves=" + Utf8(g_star.moves) +
+       "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
+  for (int a : g_star.abilities) s += "," + std::to_string(a);
   return s;
 }
 
@@ -464,6 +597,24 @@ void WriteProject(ProjectOut& out) {
   for (int a = 1; a < 4; ++a) {
     out.File("attire" + std::to_string(a + 1), g_star.attires[a], "star/attire" + std::to_string(a + 1));
     out.Key("attire" + std::to_string(a + 1) + "_name", g_star.attire_names[a]);
+  }
+  if (g_star.entrance >= 0) out.Key("entrance", g_star.entrance);
+  out.Key("announcer", g_star.announcer);
+  if (g_star.own_abilities) {
+    std::string a = "-";  // (a lone '-': own abilities, none chosen)
+    for (size_t k = 0; k < g_star.abilities.size(); ++k) a = (k ? a + "," : std::string()) + std::to_string(g_star.abilities[k]);
+    out.Key("abilities", a);
+  }
+  out.File("moves", g_star.moves, "star/moves");
+  if (!g_star.pack.empty()) {  // the pack's files, as the mod carries them
+    out.Key("pack", "moves");
+    out.Key("pack.from", Utf8(g_star.pack));
+    std::error_code ec;
+    for (const auto& e : fs::recursive_directory_iterator(g_star.pack, ec)) {
+      if (!e.is_regular_file(ec)) continue;
+      Bytes f;
+      if (ReadFile(PathStr(e.path()), f)) out.files.push_back({"moves/" + fs::relative(e.path(), g_star.pack, ec).generic_string(), std::move(f)});
+    }
   }
   out.Png("picture", g_star.picture.image, "star/picture");
   for (size_t k = 0; k < g_star.signs.size(); ++k) out.Png("sign" + std::to_string(k + 1), g_star.signs[k].image, "star/sign" + std::to_string(k + 1));
@@ -493,6 +644,16 @@ bool Read(const ProjectIn& in, bool mod) {
     g_star.ratings_set = true;
   }
   g_star.call = in.GetInt("call", -1);
+  g_star.entrance = in.GetInt("entrance", -1);
+  std::snprintf(g_star.announcer, sizeof g_star.announcer, "%s", in.Get("announcer").c_str());
+  if (const std::string a = in.Get("abilities"); !a.empty()) {
+    g_star.own_abilities = true;
+    for (size_t at = 0; at < a.size();) {
+      if (const int id = std::atoi(a.c_str() + at); id > 0 && id < 256) g_star.abilities.push_back(id);
+      const size_t c = a.find(',', at);
+      at = c == std::string::npos ? a.size() : c + 1;
+    }
+  }
   auto file = [&](const char* key, const char* mod_name) -> std::wstring {
     const std::string n = in.Get(key);
     if (mod) {  // (a mod: the manifest names the file inside)
@@ -508,6 +669,22 @@ bool Read(const ProjectIn& in, bool mod) {
   };
   g_star.model = file("model", "ch.pac");
   if (mod && g_star.model.empty() && in.Find("ch.pac")) g_star.model = in.Extract("ch.pac");
+  g_star.moves = file("moves", "moves.txt");
+  if (mod && g_star.moves.empty() && !in.Get("moves").empty() && in.Find(in.Get("moves"))) g_star.moves = in.Extract(in.Get("moves"));
+  {  // the move pack: every moves/* file out, the folder is the pack
+    bool any = false;
+    std::wstring folder;
+    for (const auto& e : in.files)
+      if (e.name.rfind("moves/", 0) == 0) {
+        const std::wstring f = in.Extract(e.name);
+        if (!any && !f.empty()) folder = fs::path(f).parent_path().wstring(), any = true;
+        if (e.name.find('/', 6) != std::string::npos && !f.empty())  // (a sub folder: the pack root is one up)
+          folder = fs::path(f).parent_path().parent_path().wstring();
+      }
+    const std::string from = in.Get("pack.from");
+    if (!mod && !from.empty() && fs::exists(fs::path(Wide(from)) / L"pack.txt")) g_star.pack = Wide(from);
+    else if (any) g_star.pack = folder;
+  }
   g_star.song = file("song", nullptr);
   g_star.movie = file("movie", nullptr);
   g_star.voice = file("voice", nullptr);

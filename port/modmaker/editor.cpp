@@ -1234,6 +1234,20 @@ void RingKitPanel() {
                              uint32_t(col[2] * 255 + 0.5f);
       changed = true;
     }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(g_ring.ropes[r].texture.empty() ? "Picture..." : "Picture*")) {
+      if (g_hooks.pick_picture) {
+        const std::string f = g_hooks.pick_picture("A picture wrapped along the rope (a wide strip works best)");
+        if (!f.empty()) g_ring.ropes[r].texture = f, changed = true;
+      }
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", g_ring.ropes[r].texture.empty() ? "A picture of your own along this rope (tape, a logo, a pattern)."
+                                                               : g_ring.ropes[r].texture.c_str());
+    if (!g_ring.ropes[r].texture.empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) g_ring.ropes[r].texture.clear(), changed = true;
+    }
     ImGui::PopID();
   }
   changed |= ImGui::Checkbox("Turnbuckles", &g_ring.turnbuckles);

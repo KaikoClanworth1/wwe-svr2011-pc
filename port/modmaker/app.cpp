@@ -527,6 +527,49 @@ Picture* StarRender(int id) {
   return &p;
 }
 
+namespace {
+std::map<int, std::string> g_move_names;
+bool g_move_names_loaded = false;
+}  // namespace
+
+const std::map<int, std::string>& MoveNames() {
+  if (g_move_names_loaded) return g_move_names;
+  g_move_names_loaded = true;
+  if (g_game.empty()) return g_move_names;
+  Bytes d;
+  Epac e;
+  if (!ReadFile(PathStr(fs::path(g_game) / L"pac" / L"misc.pac"), d) || !EpacRead(d, e)) return g_move_names;
+  for (const auto& g : e.groups) {
+    if (g.type != "MOVS") continue;
+    for (const auto& en : g.entries) {
+      if (en.name.rfind("WAZE", 0) != 0) continue;
+      const Bytes raw = Unpack(en.data);
+      // the records start 0x10 before "* test motion *" (the first record's name)
+      const char* probe = "* test motion *";
+      size_t at = std::string::npos;
+      for (size_t i = 0; i + 16 < raw.size(); ++i)
+        if (!std::memcmp(&raw[i], probe, 15)) { at = i - 0x10; break; }
+      if (at == std::string::npos || raw.size() < 8) continue;
+      const uint32_t count = Le32(&raw[4]);
+      for (uint32_t k = 0; k < count && at + 160 * (k + 1) <= raw.size(); ++k) {
+        const uint8_t* r = &raw[at + 160 * k];
+        const int id = Le16(r + 0x90);
+        const char* nm = reinterpret_cast<const char*>(r + 0x10);
+        const std::string name(nm, strnlen(nm, 64));
+        if (id && !name.empty() && !g_move_names.count(id)) g_move_names[id] = name;
+      }
+    }
+  }
+  return g_move_names;
+}
+
+const std::string& MoveName(int id) {
+  static const std::string none;
+  const auto& m = MoveNames();
+  const auto it = m.find(id);
+  return it == m.end() ? none : it->second;
+}
+
 bool GameRunning() { return FindWindowW(nullptr, L"WWE SmackDown vs. Raw 2011") != nullptr; }
 
 void StartGame(const std::wstring& extra_env) {
@@ -1208,7 +1251,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // --editor-view <0-2> a camera preset, --select <name> an object; --page <n>; the
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
-  std::wstring start_mod, start_select, test_save, project, test_project;
+  std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
   int star_id = 0, star_call = -1;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
@@ -1222,6 +1265,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
+    else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
+    else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
     else if (!wcscmp(argv[i], L"--select") && more) start_select = argv[++i];
     else if (!wcscmp(argv[i], L"--test-edit-save") && more) test_save = argv[++i];
     else if (!wcscmp(argv[i], L"--new-arena") && more) start_new = _wtoi(argv[++i]);
@@ -1297,6 +1342,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   editor::Hooks hooks;
   hooks.log = [](const std::string& s) { Log(s); };
   hooks.test_in_game = [] { arena_page::TestInGame(); };
+  hooks.pick_picture = [](const char* title) { return Utf8(PickFile(false, Wide(title).c_str(), kPictureFilter, 1)); };
   if (!g_game.empty())
     for (int i = 0; i < 20; ++i) hooks.library.push_back({g_arenas[i].name, ArenaPath(i)});
   editor::Init(g_dev, g_ctx, hooks);
@@ -1318,6 +1364,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!start_mod.empty()) {
     arena_page::OpenModFile(start_mod);
     if (start_page >= 0 && start_page < 8) g_page = page_of[start_page];
+  }
+  if (!moves_pack.empty()) moves_page::TestOpen(moves_pack), g_page = PageId::kMoves;
+  if (!page_name.empty()) {
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"assets", L"anims", L"icons", L"help"};
+    for (int k = 0; k < int(PageId::kCount); ++k)
+      if (page_name == names[k]) g_page = PageId(k);
   }
   if (!project.empty()) ProjectOpen(project);
   // test aid: --test-project <file.svrproj>: the shown page saved as a project, everything
