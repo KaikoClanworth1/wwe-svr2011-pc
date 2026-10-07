@@ -35,7 +35,9 @@ while True:
                 continue
             if first:
                 continue
-            if r.get('result') in BAD and not (r.get('result') == 'crash' and exited(r, logdir)):
+            # (a timeout with no errors and no stuck update = a long match still being played)
+            quiet_timeout = r.get('result') == 'timeout' and not r.get('errors') and not r.get('stuckMax')
+            if r.get('result') in BAD and not quiet_timeout and not (r.get('result') == 'crash' and exited(r, logdir)):
                 err = (r.get('errors') or [''])[0][-150:]
                 print('%s %s %s - %s (%s) %s' % (plat, r.get('result'), r.get('id'), r.get('name'), r.get('log'), err),
                       flush=True)
