@@ -1,9 +1,10 @@
 # Soak runs for the limits test game (lim_session.ps1): CPU-only matches
 # through the scripted route, one at a time, each until it ends, hangs
 # ("world update stuck"), crashes or -Minutes pass. One line per run.
+#   (-Priority: the game's process priority, BelowNormal by default)
 #   lim_soak.ps1 -Name b06 -Runs 4 -Match "people=A,B,C,D cpu=all arena=17" [-Rule 06] [-Mode lumberjack] [-SlowMs 14] [-Minutes 12]
 param([string]$Name = "soak", [int]$Runs = 1, [string]$Match = "", [string]$Rule = "", [string]$Mode = "",
-      [int]$SlowMs = 0, [int]$Minutes = 12, [string]$Config = "test_config.toml")
+      [int]$SlowMs = 0, [int]$Minutes = 12, [string]$Config = "test_config.toml", [string]$Priority = "BelowNormal")
 $tools = $PSScriptRoot
 $dir = Join-Path (Split-Path $tools -Parent) "runs"
 $s = Join-Path $tools "lim_session.ps1"
@@ -17,6 +18,10 @@ for ($k = 1; $k -le $Runs; $k++) {
     if ($SlowMs -gt 0) { $env:SVR2011_TEST_SLOW_MS = "$SlowMs"; $env:SVR2011_TEST_SLOW_IN_MATCH = "1" }
     $run = "${Name}_$k"
     try { & $s start -Name $run | Out-Null } catch { "blocked: $_"; break }
+    try {  # (the game below normal priority: the PC is in use)
+        $gamePid = (Get-Content (Join-Path $dir "lim_session.json") | ConvertFrom-Json).pid
+        (Get-Process -Id $gamePid).PriorityClass = $Priority
+    } catch {}
     foreach ($v in "ROUTE", "TEST_RULE", "TEST_MATCH", "TEST_MODE", "TEST_SLOW_MS", "TEST_SLOW_IN_MATCH") { [Environment]::SetEnvironmentVariable("SVR2011_$v", $null) }
     $log = Join-Path $dir "$run.log"
     $t0 = Get-Date

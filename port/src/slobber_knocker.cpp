@@ -315,8 +315,11 @@ REX_HOOK_RAW(sub_828061E8) {
 REX_EXTERN(__imp__sub_8280CFD0);
 REX_HOOK_RAW(sub_8280CFD0) {
   const uint32_t pair = ctx.r3.u32;
-  if (pair && Rd32(base + pair) && !Rd32(base + pair + 20)) {
-    const uint32_t self = Rd32(base + pair);
+  // (not at a match's start - there +20 is empty until the game sets it - and
+  // only for a competitor: not the referee or the commentators, teams 30+)
+  const uint32_t self = pair ? Rd32(base + pair) : 0;
+  if (self && !Rd32(base + pair + 20) && Rd32(base + self + kTeam) < 30 &&
+      int32_t(Rd32(base + 0x82E3CD0C)) > 300) {
     uint32_t other = 0;
     for (uint32_t i = 0; i < 6 && !other; ++i) {
       const uint32_t c = Rd32(base + kChars + i * 4);

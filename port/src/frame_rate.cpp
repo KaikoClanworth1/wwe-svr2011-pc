@@ -830,13 +830,44 @@ REX_HOOK_RAW(sub_828F3F38) {
 // the wait is at most 50 ms: a running job ends well within it, as before;
 // one not started, the flag stays for the frame's last update or the draw.
 REX_EXTERN(__imp__sub_8216A450);
+//
+// The lost request (the "stuck in pass 20" freeze: Fold, PC rumble): a job
+// is asked for by sub_8216A3A8(jobs, character): its event (+(idx+5)*4)
+// reset, the wait flag (+(idx+14)*4) 1, the request flag (+(idx+23)*4) 0
+// and the worker's wake event (+16) set. The worker (sub_8216E098) runs each
+// slot whose request flag is 0, sets its event - then the request flag 1.
+// Between those two steps the waiter can wake, and the slot be asked for
+// again: the worker's late "1" then wipes that new request - nobody runs it
+// and the next wait is for ever (more likely with two updates a frame). So a
+// wait here is in 200 ms slices: no event yet but the request flag 1 (the
+// worker thinks it done) - it's asked for again (flag 0, wake the worker).
 REX_HOOK_RAW(sub_8216A450) {
   if (!g_extra_update || std::this_thread::get_id() != g_logic_thread.load()) {
     const uint32_t jobs = ctx.r3.u32, idx = ctx.r4.u32;
     const bool logic = std::this_thread::get_id() == g_logic_thread.load();
-    JobEv('W', idx, Rd32(base + jobs + (idx + 14) * 4), logic ? 0 : 2);
-    __imp__sub_8216A450(ctx, base);
-    JobEv('w', idx, Rd32(base + jobs + (idx + 14) * 4), logic ? 0 : 2);
+    const uint32_t flag = jobs + (idx + 14) * 4, request = jobs + (idx + 23) * 4;
+    JobEv('W', idx, Rd32(base + flag), logic ? 0 : 2);
+    if (Rd32(base + flag) != 0) {
+      const auto saved = ctx;
+      for (;;) {
+        ctx.r3.u64 = Rd32(base + jobs + (idx + 5) * 4);
+        ctx.r4.u64 = 200;  // (ms)
+        sub_8215A8C0(ctx, base);
+        if (ctx.r3.u32 == 0) break;  // (signalled: done)
+        if (Rd32(base + request) != 0) {  // (the worker took no request: it was lost)
+          Wr32(base + request, 0);
+          ctx.r3.u64 = Rd32(base + jobs + 16);
+          sub_8215ADE0(ctx, base);
+          static int lost = 0;
+          if (++lost <= 20 || lost % 100 == 0)
+            REXLOG_WARN("frame rate: job {} was asked for but lost - asked again ({} times)", idx, lost);
+          JobEv('L', idx, 0, logic ? 0 : 2);
+        }
+      }
+      ctx = saved;
+      Wr32(base + flag, 0);
+    }
+    JobEv('w', idx, Rd32(base + flag), logic ? 0 : 2);
     return;
   }
   JobEv('W', ctx.r4.u32, Rd32(base + ctx.r3.u32 + (ctx.r4.u32 + 14) * 4));

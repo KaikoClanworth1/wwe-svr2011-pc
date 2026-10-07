@@ -666,6 +666,19 @@ REX_HOOK_RAW(sub_8243FCC8) {
 REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
   const uint32_t rule = ctx.r4.u32;
+  // Test aid: SVR2011_TEST_SETUP_TRACE=1 - each match set-up with its caller
+  // and the guest call stack (for REMATCH and the roaming FCA's reload).
+  if (std::getenv("SVR2011_TEST_SETUP_TRACE")) {
+    std::string chain;
+    uint32_t sp = ctx.r1.u32;
+    for (int k = 0; k < 12 && sp; ++k) {
+      const uint32_t next = Rd32(base + sp);
+      if (!next || next <= sp) break;
+      chain += fmt::format(" {:08X}", Rd32(base + next - 8));
+      sp = next;
+    }
+    REXLOG_INFO("match types: set-up of rule {:02X} (match {:08X}) from {:08X};{}", rule, ctx.r3.u32, uint32_t(ctx.lr), chain);
+  }
   svr2011::SetMatchLoading(true);  // (arena_mods: a custom arena's loading pictures)
   RestoreRule(base);
   g_lumberjacks_chosen = false;
