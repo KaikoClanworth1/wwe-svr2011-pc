@@ -3,7 +3,7 @@
 // extra tools. The same changes as tools/patch_strings.py and
 // tools/patch_menu.py (keep them in sync):
 //   pac/string.pac     console wording -> PC wording (dlc.cpp's table)
-//   pac/menu/menu.pac  GRAPHICS in MY WWE -> OPTIONS, ACHIEVEMENTS in MY WWE,
+//   pac/menu/menu.pac  CONTROLS, GRAPHICS and LANGUAGE in MY WWE -> OPTIONS, ACHIEVEMENTS in MY WWE,
 //                      EXIT in the main menu (the port supplies their labels,
 //                      menu_hooks.cpp)
 #include "game_files.h"
@@ -109,7 +109,7 @@ void PatchMenu(const std::filesystem::path& file) {
   if (d.size() < kMflo + kMfloSlot) return;
   // The table's header (records, shown records): the disc's, after each patch
   // (v0.1-v0.3: GRAPHICS, EXIT; + ACHIEVEMENTS; v1.0.4: + LANGUAGE; v2.0.3:
-  // + JUKEBOX). Each step takes the table from one state to the next.
+  // + JUKEBOX; v2.0.5: + CONTROLS). Each step takes the table from one state to the next.
   auto state = [&] { return std::pair(Be32(d, kMflo + 4), Be32(d, kMflo + 8)); };
   using State = std::pair<uint32_t, uint32_t>;
   const State before = state();
@@ -136,7 +136,20 @@ void PatchMenu(const std::filesystem::path& file) {
         !AddEntry(d, 0xAFC2, 0x05, 0xAFC5, 0xA0BD, 0xAFC6))  // JUKEBOX after ACHIEVEMENTS
       return fail();
   }
-  if (state() != State(0xE5, 0xE1) || !Find(d, 0xAFC5, 0x05)) return fail();
+  if (state() == State(0xE5, 0xE1)) {
+    // (v2.0.5) CONTROLS above GRAPHICS: one more copy after LANGUAGE (another
+    // hidden NEW SUPERSTAR copy goes), then the three port rows relabelled in
+    // order CONTROLS, GRAPHICS, LANGUAGE (all copies of CHEAT CODES - only
+    // their labels differ: the same bytes as tools/patch_menu.py makes).
+    if (!Find(d, 0xAFC5, 0x05) || !DropSkipped(d, 0xA481, 0x0E) || !AddEntry(d, 0xAFC4, 0x11, 0xAFC7))
+      return fail();
+    const size_t graphics = Find(d, 0xAFC0, 0x11), language = Find(d, 0xAFC4, 0x11), controls = Find(d, 0xAFC7, 0x11);
+    if (!graphics || !language || !controls) return fail();
+    SetBe32(&d[graphics], 0xAFC7);
+    SetBe32(&d[language], 0xAFC0);
+    SetBe32(&d[controls], 0xAFC4);
+  }
+  if (state() != State(0xE5, 0xE2) || !Find(d, 0xAFC5, 0x05) || !Find(d, 0xAFC7, 0x11)) return fail();
   if (state() == before && !node_fixed) return;  // patched already
   const auto tmp = file.string() + ".tmp";
   {
@@ -147,7 +160,7 @@ void PatchMenu(const std::filesystem::path& file) {
   std::error_code ec;
   std::filesystem::rename(tmp, file, ec);
   if (!ec) REXLOG_INFO("{}: {}", file.string(), state() == before ? "MY WWE -> OPTIONS back fixed (node order)"
-                                                                 : "added GRAPHICS, LANGUAGE, ACHIEVEMENTS, JUKEBOX and EXIT");
+                                                                 : "added CONTROLS, GRAPHICS, LANGUAGE, ACHIEVEMENTS, JUKEBOX and EXIT");
 }
 
 }  // namespace

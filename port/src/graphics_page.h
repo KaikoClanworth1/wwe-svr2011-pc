@@ -1,8 +1,10 @@
 // WWE SmackDown vs. Raw 2011 - the GRAPHICS page (MY WWE -> OPTIONS ->
 // GRAPHICS, a menu entry the port adds: tools/patch_menu.py, menu_hooks.cpp).
 //
-// An in-game page drawn over the menu: resolution, anti-aliasing, FPS counter,
-// VSync, fullscreen / windowed and the renderer. Driven by the controller
+// An in-game page drawn over the menu, on three tabs: DISPLAY (resolution,
+// window / full screen, frame rate, VSync, FPS counter, the graphics API...),
+// GRAPHICS (render resolution down to 360p, anti-aliasing, textures...) and
+// ADV. GRAPHICS (crowd, shadows, effect detail, depth of field, motion blur...). Driven by the controller
 // (D-pad / left stick: choose and change, A: change, B: back) or the keyboard
 // (arrows, Enter, Esc). While it is open the game sees an idle controller.
 // Changes are saved to the settings file (svr2011.toml, shared with the
@@ -40,6 +42,9 @@ void OpenGraphicsPage();
 
 // Saves one setting ("key = value", value as TOML) in the config file.
 void SaveConfigSetting(const std::string& key, const std::string& value);
+
+// MY WWE -> OPTIONS -> CONTROLS: the page with only the keyboard bindings.
+void OpenControlsPage();
 
 // MY WWE -> OPTIONS -> LANGUAGE: the page with only the language row.
 void OpenLanguagePage();
