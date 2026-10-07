@@ -122,6 +122,10 @@ final class ModsPage {
                 + (signPack || mediaPack || matchType ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
+            // (red when on, as the Settings switches: the default is hard to see)
+            int[][] states = {{android.R.attr.state_checked}, {}};
+            on.setThumbTintList(new android.content.res.ColorStateList(states, new int[] {LauncherActivity.kRed, 0xFFB0B0B8}));
+            on.setTrackTintList(new android.content.res.ColorStateList(states, new int[] {0x88C8102E, 0xFF4A4A54}));
             on.setChecked(!new File(d, "disabled").exists());
             on.setOnCheckedChangeListener((b, checked) -> {
                 File off = new File(d, "disabled");
