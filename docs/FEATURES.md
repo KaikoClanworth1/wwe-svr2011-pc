@@ -89,57 +89,62 @@ still being tested.
 
 ## New in 2.0.5
 
+### Matches
 - **Three Stages of Hell** (ONE ON ONE → EXTREME RULES): best of three falls in one match - a normal fall, then Falls Count Anywhere, then Last Man Standing - with the damage carried through and the score at the top of the screen.
-- **Elimination** in TRIPLE THREAT and FATAL-4-WAY (normal, Falls Count Anywhere, Extreme Rules): a pin or give up eliminates that wrestler, who leaves, and the match goes on until one is left. Uses the game's own elimination rule; your Match Creator settings are left alone.
+- **Championship Scramble** (FATAL-4-WAY): the game's own cut match, restored. Pick the title, five superstars take part, a new one enters every minute, whoever scores a fall becomes the interim champion, and whoever holds the title at the 5:00 bell after the last entry wins.
+- **Mystery Opponent** (ONE ON ONE → NORMAL MATCH → MYSTERY OPPONENT): the CPU picks your opponent in secret. It shows as "?" on the select, VS and loading screens and is revealed when it comes out last in the entrances, which can't be skipped.
+- **Elimination** in TRIPLE THREAT and FATAL-4-WAY (normal, Falls Count Anywhere, Extreme Rules): a pin or give up eliminates that wrestler, who leaves, and the match goes on until one is left.
+- **Match Creator: everything allowed**: every greyed-out option is free in every match type, as far as the game engine can play it. Combinations that crashed or froze in a 240-match test stay locked: over the top rope in tag / 6-man, the inferno ring outside normal 1v1 / Triple Threat / Fatal 4-Way, cage / cell / inferno rings and new win conditions in ladder / TLC, the chamber ring, Royal Rumble, Elimination Chamber and backstage.
+- **Lumberjacks attack**: a wrestler who lands on the floor is grabbed by the nearest lumberjacks (two at most) and slammed or thrown down; their interference no longer ends the match by DQ.
+- **Weapons Everywhere: the CPU uses the weapons lying around** (chairs, trash cans, guitars, ladders, tables) instead of walking past them to search under the ring; it searches under the ring only when nothing is near.
+- **Match types as mods**: each match type the port adds (Falls Count Anywhere, Championship Scramble, 15 / 25-man Royal Rumble, Lumberjack, Free-Roaming Backstage, Backstage for 3 / 4 / 6, Weapons Everywhere, Slobber Knocker, Three Stages of Hell, Elimination, Mystery Opponent) is a bundled mod on the Mods tab, switched on. Untick one and its rows leave the menus at the next start, with no gaps.
+
+### Arenas and mods
+- **Practice Arena**: the training ring from the start of the game, as a real arena on the DOWNLOADED ARENAS page (empty seats; installed switched off like the other bundled mods).
+- **Three more WWE '13 arenas bundled**: SmackDown 1999, Royal Rumble 1998 and King of the Ring 1998 (installed switched off).
+- **Arena mods**: VS-screen theme pictures of any size can be swapped.
+- **Texture packs and dumps** (like Dolphin's; the launcher's Texture packs tab, Android's Settings): dump the game's textures as PNGs named after the game's own texture names, and load packs of replacements (PNG or DDS, any resolution); you choose which pack wins.
+
+### Menus and graphics
 - **Graphics menus reorganised** (MY WWE → OPTIONS): **CONTROLS** has its own row above GRAPHICS, and the GRAPHICS page has three tabs - DISPLAY, GRAPHICS and **ADV. GRAPHICS**:
   - **Crowd on / off** for every device (it was Mali-only): OFF plays arenas with empty seats - faster on weak PCs and phones (from the next start; the crowd-less copies are made once in the background).
   - **Shadows on / off** for every device: OFF skips the real-time shadows (about 70 fewer draws a frame); Mali mode turns them off by itself.
   - Effect detail, depth of field, motion blur, soft filter and prepare graphics moved there.
   - **480p**: an 854 x 480 window, and 360P / 480P render resolutions (the scene drawn smaller and scaled up, for weak devices).
-- **Practice Arena bundled**: the training ring from the start of the game as a real arena on the DOWNLOADED ARENAS page (empty seats; installed switched off like the other bundled mods).
+- **Texture quality** (GRAPHICS → GRAPHICS → TEXTURES, and both launchers' Settings): MEDIUM / LOW use the game's own half / quarter-size copies of big textures - less memory and faster loading; menus and text stay sharp. Changes apply at once.
 - **BACKGROUNDS** (MY WWE → OPTIONS → BACKGROUNDS): switch each of the main menu's 12 background pictures on or off; the menu moves on to the next one that's on after every match or mode (all off: all play).
-- **Match types as mods**: each match type the port adds (Falls Count Anywhere, Championship Scramble, 15 / 25-man Rumble, Lumberjack, Free-Roaming Backstage, Backstage for 3 / 4 / 6, Weapons Everywhere, Slobber Knocker, Three Stages of Hell, Elimination, Mystery Opponent) is a bundled mod on the Mods tab, switched on; untick one and its rows leave the menus at the next start.
-- **The launcher shows who made it and where it's free** (PC and Android): "Launcher - Version … - By KaikoClanworth - Download free at github.com/KaikoClanworth1/wwe-svr2011-pc".
-- **Android installs the bundled mods itself**: after the disc install, after an update, or from the Mods tab's Get bundled mods (the release's SvR2011-Mods zip).
-- **Championship Scramble** (FATAL-4-WAY): the game's own cut match, restored. Pick the title, five superstars take part, a new one enters every minute, whoever scores a fall becomes the interim champion, and whoever holds the title at the 5:00 bell after the last entry wins.
-- **Mystery Opponent** (ONE ON ONE → NORMAL MATCH → MYSTERY OPPONENT): the CPU picks your opponent in secret. It shows as "?" on the select, VS and loading screens and is revealed when it comes out last in the entrances, which can't be skipped.
-- **Match Creator: everything allowed**: every greyed-out option is free in every match type, as far as the game engine can play it. Combinations that crashed or froze in a 240-match test stay locked: over the top rope in tag / 6-man, the inferno ring outside normal 1v1 / Triple Threat / Fatal 4-Way, cage / cell / inferno rings and new win conditions in ladder / TLC, the chamber ring, Royal Rumble, Elimination Chamber and backstage.
 - **MY MUSIC** (MY WWE → JUKEBOX): the songs in your Music folder play in the menu shuffle with the game's own songs, or instead of them (switch songs on / off as usual). On PC and Android.
 - **Copy and paste with the keyboard**: Ctrl+V pastes the clipboard into the game's text fields and Ctrl+C copies a field's text. In the Story Designer, Ctrl+C / Ctrl+V also copy and paste moments, shows and moment groups.
-- 🧪 **A freeze mid-match fixed** (the match stops moving; seen most on phones and in big matches such as Royal Rumbles): a timing race in the game's own per-character job system lost a request when the game ran extra updates to catch up. The lost request is now noticed and asked for again.
-- **Fatal 4-Way / Triple Threat Elimination crash fixed**: when a wrestler was eliminated, a CPU still aiming at them could crash the match.
-- **Weapons Everywhere: the CPU uses the weapons lying around** (chairs, trash cans, guitars, ladders, tables) instead of walking past them to search under the ring; it searches under the ring only when nothing is near.
+- **Story Designer: Divas and male superstars together** (with mixed-gender matches on, the default): mixed matches and scenes are allowed, and both are offered in the superstar lists.
+- **Community Creations: your own stories upload** (they were refused as "created by a different player"; only downloaded stories are now).
+
+### Launcher and Android
+- **The launcher shows who made it and where it's free** (PC and Android): "Launcher - Version … - By KaikoClanworth - Download free at github.com/KaikoClanworth1/wwe-svr2011-pc", with the link one click / tap away.
+- **Report a problem asks what happened** (PC and Android): what kind of problem, how often, what happened and what you were doing just before; the report carries that description and tells you to post it as a new thread in the Discord's **bug-svr11** forum.
+- **Android installs the bundled mods itself**: after the disc install, after an update, or from the Mods tab's Get bundled mods (the release's SvR2011-Mods zip); new bundles come switched off except the match types, and your choices are kept. The Mods tab's switches are red when on.
+- **Android 10 and 11** phones and tablets are supported (Android 12 was needed before), as are tablets on older Linux kernels, and the game folder can be in the app's own storage (an SD card used as internal storage).
+- 🧪 **Mali GPUs** (older drivers): the Native renderer runs there; Mali mode plays arenas without the crowd and shadows, at half resolution with low textures, so a Mali-G52 tablet plays matches at about 23 fps (it couldn't before; the first start makes the crowd-less arena copies once, about a minute). Android builds are tuned for Cortex-A53 CPUs.
+- **Touch controls** draw on top of the port's own pages (GRAPHICS, JUKEBOX, ACHIEVEMENTS...), and quick taps count.
+
+### Fixes
+- 🧪 **A freeze mid-match** (the match stops moving; seen most at 30 fps, on phones and in big matches such as Royal Rumbles): a timing race in the game's own per-character job system lost a request when the game ran extra updates to catch up. The lost request is now noticed and asked for again.
+- **Fatal 4-Way / Triple Threat Elimination crash**: when a wrestler was eliminated, a CPU still aiming at them could crash the match.
+- **Replays and match highlights at 30 fps** no longer freeze the picture (the wrestlers stood still while the sound went on).
 - **Pin counts at 30 fps / on slow PCs and phones**: a referee's count no longer stops partway when the game runs two updates a frame.
-- **Replays and match highlights at 30 fps**: they no longer freeze the picture (the wrestlers stood still while the sound went on).
+- **Arena select pages**: all 20 banners show at once after a page turn, and opening the arena select again after a pick starts at page 1 with the right arenas (tiles showed the wrong ones).
 - **SvR 2010 superstar mods hit properly**: some strikes made no impact sound or reaction (and many stock moves above them lost their hit data); every bundled SvR 2010 superstar is fixed.
+- **SvR 2010 superstars under damage**: their neck, chest and shoulders no longer darken all over as they take damage (a "tank top").
+- **Superstars the included mods are built from are selectable again** (Stone Cold, Matt Hardy, Mr. McMahon, William Regal and the others). Saves made by 2.0.3 / 2.0.4 are fixed as they load.
 - **Create a Team** lists real superstars again (mods made it show nameless "DEFAULT" generics).
 - **One Hurricane**: the bundled Hurricane mod (a second select tile without his video, intro or music) is retired, and copies installed by 2.0.4 are switched off once. The Hurricane under the M tile stays.
 - **Backstage mods** no longer crash the match load when a move pack is installed.
-- **Touch controls** draw on top of the port's own pages (GRAPHICS, JUKEBOX, ACHIEVEMENTS...), and quick taps count.
-- **Android with the graphics API set to anything but Vulkan** (e.g. "any" copied from a PC config) now starts on Vulkan instead of saying there's no backend.
+- **Superstar Threads**: a painted attire the game builds again after a match is no longer drawn with parts of the earlier build.
+- **Everything unlocked again for players who played 2.0.1 / 2.0.2 online**: a leftover Online Axxess package kept the Fan Axxess unlocks from applying; it is removed at start.
+- **AMD graphics cards on Vulkan**: the Native renderer uses 32-bit float depth where AMD's driver has no 24-bit depth + stencil buffer (it couldn't start before).
+- **Older Windows 10 (1809 / LTSC 2019)** starts on Vulkan when the graphics API is on its default (Direct3D 12 here needs Windows 10 2004 or newer).
+- **Android with the graphics API set to anything but Vulkan** (e.g. "any" copied from a PC config) now starts on Vulkan.
+- **USER MOVIES with accents in the name** (e.g. "Peña") now show in Create An Entrance; the titantron makers give a clear message when something fails.
 - **No internet addresses in logs or report zips**: IP addresses are masked in the game's logs and blanked in Report a problem zips.
-- **Texture packs and dumps** (as in Dolphin; `native_texture_packs`, `native_dump_textures`; the launchers' Texture packs tab / Settings card only):
-  - A texture is known by a content hash: XXH3 of its top level's blocks, untiled, after the endian swap. For DXT and A8R8G8B8 that equals the top level of the PC DDS in the pac files, so it's stable across runs and versions.
-  - Dumps are PNGs (own deflate writer) in `Texture Dumps\<owner>\<owner>_<name>_<hash16>.png`. Names come from an index of every pac (EPAC + the characters' EPK8, PACH nested, 0x190-style bundles and loose DDS), built on a thread (about 35 s) and cached in `UserData\cache	exture_names.txt`. Unnamed: `tex_<w>x<h>_<fmt>_<hash16>`. In a menu-to-match run, 96% of dumped textures got names.
-  - Packs (`Texture Packs\<pack>\**`, PNG or DDS DXT1/3/5 / 32-bit, matched on hash16, first enabled pack wins) are decoded on a thread. The game's texture shows until a replacement is ready, which then goes into a new descriptor slot.
-  - PNGs get a box-filtered mip chain; DDS keeps its own. Texture quality doesn't apply to replacements. Render-target copies, dynamic textures and pad pictures are left alone, and a replaced texture whose guest data changes reverts.
-- **Lumberjacks attack**: a wrestler who lands on the floor is grabbed by the nearest lumberjacks (two at most) and slammed or thrown down; their interference no longer ends the match by DQ. (They don't throw him back in yet.)
-- **Story Designer: Divas and male superstars together** (with `mixed_gender_matches`, on by default): mixed matches and scenes (attacks, cast slots) are allowed, and both are offered in the superstar lists. Diva-only and male-only match types and titles keep their rules.
-- **Texture quality** (`native_texture_quality`: high / medium / low; GRAPHICS → GRAPHICS → TEXTURES and both launchers' Settings): medium / low start big mipmapped 2D textures (256 px or more) at the game's own half / quarter-size mipmap, so the larger levels are never converted or uploaded. Textures without mips (menus, fonts, pictures), render-target copies, cube maps and volumes stay whole; the samplers' LOD clamps shift to match. Changes apply at once (textures are uploaded again).
-- **Superstars the included mods are built from are selectable again** (Stone Cold, Matt Hardy, Mr. McMahon, William Regal and the others): a mod's copy no longer takes over its base superstar's place on the select grid. Saves made by 2.0.3 / 2.0.4 are fixed as they load.
-- **Superstar Threads**: a painted attire the game builds again after a match (a Threads-edited superstar in the title demo, a Road to WrestleMania entrance) is no longer drawn with parts of the earlier build.
-- **SvR 2010 superstars under damage**: their neck, chest and shoulders no longer darken all over as they take damage (a "tank top"); all 20 bundled SvR 2010 superstars updated.
-- **Everything unlocked again for players who played 2.0.1 / 2.0.2 online**: the small Online Axxess package those versions made kept the Fan Axxess unlocks from applying (a locked roster even with *Everything unlocked from the start* on); it is removed at start.
-- **AMD graphics cards on Vulkan**: AMD's Windows Vulkan driver has no 24-bit depth + stencil buffer, so the Native renderer couldn't start; it now uses 32-bit float depth + stencil where 24-bit isn't offered (D3D12 and other GPUs unchanged).
-- **Older Windows 10 (version 1809 / LTSC 2019, before 2004) starts on Vulkan** when the graphics API is on its default: Direct3D 12 here needs Windows 10 2004 or newer, and on those PCs the game showed "The game's graphics can't run on this device".
-- **Arena select pages**: all 20 banners show at once after a page turn (some stayed blank, kept the last page's picture or showed half a banner), and opening the arena select again after a pick starts at page 1 with the right arenas (tiles showed the wrong ones).
-- **USER MOVIES with accents in the name** (e.g. "Peña") now show in Create An Entrance (PC launcher, Android and the game, which renames old ones to "Pena"); the titantron makers give a clear message when something fails.
-- **Arena mods**: VS-screen theme pictures of any size can be swapped.
-- **Community Creations: your own stories upload** (Story Designer stories were refused as "created by a different player"; only downloaded stories are now).
-- **Three more WWE '13 arenas bundled**: SmackDown 1999, Royal Rumble 1998 and King of the Ring 1998 (installed switched off, like the other bundled mods).
-- **Report a problem asks what happened** (launcher, Play tab): a window asks what kind of problem, how often, what happened and what you were doing just before; the report zip carries that description, and the window tells you to post it as a new thread in the Discord's **bug-svr11** forum (Open Discord, Show the file, and the description already copied to paste).
-- **Android 10 and 11** phones and tablets are supported (the app needed Android 12 before), as are tablets on older Linux kernels, and the game folder can be in the app's own storage (an SD card adopted as internal storage).
-- 🧪 **Mali GPUs** (older drivers without descriptor indexing): the Native renderer binds each draw's own textures and reads shader constants from uniform buffers there; the presenter only draws new game frames there, and Mali mode plays arenas without the crowd (`arena_crowd`: auto / on / off; crowd-less copies are made once in Mods/ArenaCrowdless) at half render scale with low textures by default; a Mali-G52 tablet plays matches at about 23 fps (it couldn't before). Android builds are tuned for Cortex-A53 CPUs. `native_render_scale` (0.25-1) renders below the screen's resolution.
 
 ## New in 2.0.4
 
