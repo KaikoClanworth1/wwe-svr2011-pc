@@ -1492,6 +1492,7 @@ void ApplyTextureQuality(Renderer* r) {
 // shown and its draws and clears aren't made (the GPU work of the frames no
 // one sees); resolves still run (copies of what the last shown frame drew).
 std::atomic<bool> g_half_frames{false};
+std::atomic<bool> g_half_suspended{false};  // (the PC can't keep 60 Hz: every frame shown - SetHalfSuspended)
 std::atomic<bool> g_last_hidden{false};  // (OnPresent's frame wasn't shown)
 
 bool BeginFrame(Renderer* r) {
@@ -1521,7 +1522,7 @@ bool BeginFrame(Renderer* r) {
   r->constant_uploads[0] = r->constant_uploads[1] = {};
   r->rings[r->back_index].offset = 0;
   r->frame_open = true;
-  r->hidden_frame = g_half_frames.load() && (r->frames & 1);
+  r->hidden_frame = g_half_frames.load() && !g_half_suspended.load() && (r->frames & 1);
   r->frame_stats = {};
   r->texture_context = TextureContext(r);
   g_resolved_this_frame = false;
@@ -4185,6 +4186,7 @@ void OnShaderCreated(uint32_t container, uint32_t object, bool pixel) {
 
 namespace svr2011::native {
 void SetHalfFrames(bool on) { g_half_frames = on; }
+void SetHalfSuspended(bool on) { g_half_suspended = on; }
 bool HalfFrames() { return g_half_frames.load() && Enabled(); }
 bool LastFrameHidden() { return g_last_hidden.load(); }
 }  // namespace svr2011::native

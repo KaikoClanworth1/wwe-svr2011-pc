@@ -430,6 +430,23 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
+  // 30 fps at 60 Hz (SetHalfFrames): while frames take two updates (a PC that
+  // can't keep 60 Hz) every frame is shown - as 30 fps did before - and every
+  // other one again once it keeps up (a running average of the updates).
+  {
+    static double avg_ticks = 1.0;
+    static bool suspended = false;
+    avg_ticks = avg_ticks * 0.95 + g_world_ticks * 0.05;
+    const bool want = suspended ? avg_ticks > 1.1 : avg_ticks > 1.3;
+    if (want != suspended) {
+      suspended = want;
+      svr2011::native::SetHalfSuspended(want);
+      static int count = 0;
+      if (svr2011::native::HalfFrames() && (++count <= 10 || count % 100 == 0))
+        REXLOG_INFO("frame rate: 30 fps at 60 Hz - {} ({:.2f} updates a frame)",
+                    want ? "every frame shown (the world can't keep 60 Hz)" : "every other frame shown again", avg_ticks);
+    }
+  }
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
   svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)

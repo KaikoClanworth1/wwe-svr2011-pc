@@ -59,6 +59,9 @@ void SetMatchScene(bool in_match);
 void SetHalfFrames(bool on);
 bool HalfFrames();
 bool LastFrameHidden();  // (the frame OnPresent just ended wasn't shown)
+// While the world can't keep 60 Hz (frames of two updates), every frame is
+// shown again (frame_rate.cpp).
+void SetHalfSuspended(bool on);
 
 // The known pipelines being built ahead in the background (any thread):
 // false when it isn't running; `paused` while a match, entrance or cutscene
