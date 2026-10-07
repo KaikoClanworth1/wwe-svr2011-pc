@@ -393,7 +393,16 @@ class Player {
       const bool overdue = once_ && duration_us_ > 0 &&
                            played > std::chrono::microseconds(duration_us_) + std::chrono::seconds(2);
       if (overdue) REXLOG_INFO("user music: {} over by its length ({} s)", song_.filename().string(), duration_us_ / 1000000);
-      if ((ended_ && SDL_GetAudioStreamQueued(stream_) == 0) || overdue) {  // from the top again, until stopped (a clip: once)
+      // (decoded to the end: over once the stream has at most ~20 ms left or
+      // stops draining - on some phones it never reached 0)
+      bool drained = false;
+      if (ended_) {
+        const int queued = SDL_GetAudioStreamQueued(stream_);
+        const auto now = std::chrono::steady_clock::now();
+        if (queued != last_queued_) last_queued_ = queued, queued_since_ = now;
+        drained = queued <= bytes_per_second_ / 50 || now - queued_since_ > std::chrono::milliseconds(250);
+      }
+      if (drained || overdue) {  // from the top again, until stopped (a clip: once)
         Close();
         if (once_ || !Open(song_)) song_.clear(), active_ = false;
       }
@@ -442,6 +451,7 @@ class Player {
     }
     ended_ = input_done_ = false;
     drain_rounds_ = 0;
+    last_queued_ = -1;
     started_ = std::chrono::steady_clock::now();
     paused_at_ = {};
     stream_paused_ = true;  // started by the loop (unless paused)
@@ -565,6 +575,8 @@ class Player {
   bool ended_ = false, input_done_ = false;
   int drain_rounds_ = 0;  // rounds without output since the last input
   int64_t duration_us_ = 0;  // the song's length (0: unknown)
+  int last_queued_ = -1;     // the stream's queued bytes, and since when
+  std::chrono::steady_clock::time_point queued_since_{};
   std::chrono::steady_clock::time_point started_{}, paused_at_{};
   bool stream_paused_ = true;
   float volume_ = -1.0f;
