@@ -91,6 +91,21 @@ still being tested.
 
 - **Three Stages of Hell** (ONE ON ONE → EXTREME RULES): best of three falls in one match - a normal fall, then Falls Count Anywhere, then Last Man Standing - with the damage carried through and the score at the top of the screen.
 - **Elimination** in TRIPLE THREAT and FATAL-4-WAY (normal, Falls Count Anywhere, Extreme Rules): a pin or give up eliminates that wrestler, who leaves, and the match goes on until one is left. Uses the game's own elimination rule; your Match Creator settings are left alone.
+- **Championship Scramble** (FATAL-4-WAY): the game's own cut match, restored. Pick the title, five superstars take part, a new one enters every minute, whoever scores a fall becomes the interim champion, and whoever holds the title at the 5:00 bell after the last entry wins.
+- **Mystery Opponent** (ONE ON ONE → NORMAL MATCH → MYSTERY OPPONENT): the CPU picks your opponent in secret. It shows as "?" on the select, VS and loading screens and is revealed when it comes out last in the entrances, which can't be skipped.
+- **Match Creator: everything allowed**: every greyed-out option is free in every match type, as far as the game engine can play it. Combinations that crashed or froze in a 240-match test stay locked: over the top rope in tag / 6-man, the inferno ring outside normal 1v1 / Triple Threat / Fatal 4-Way, cage / cell / inferno rings and new win conditions in ladder / TLC, the chamber ring, Royal Rumble, Elimination Chamber and backstage.
+- **MY MUSIC** (MY WWE → JUKEBOX): the songs in your Music folder play in the menu shuffle with the game's own songs, or instead of them (switch songs on / off as usual). On PC and Android.
+- **Copy and paste with the keyboard**: Ctrl+V pastes the clipboard into the game's text fields and Ctrl+C copies a field's text. In the Story Designer, Ctrl+C / Ctrl+V also copy and paste moments, shows and moment groups.
+- 🧪 **A freeze mid-match fixed** (the match stops moving; seen most on phones and in big matches such as Royal Rumbles): a timing race in the game's own per-character job system lost a request when the game ran extra updates to catch up. The lost request is now noticed and asked for again.
+- **Fatal 4-Way / Triple Threat Elimination crash fixed**: when a wrestler was eliminated, a CPU still aiming at them could crash the match.
+- **Pin counts at 30 fps / on slow PCs and phones**: a referee's count no longer stops partway when the game runs two updates a frame.
+- **SvR 2010 superstar mods hit properly**: some strikes made no impact sound or reaction (and many stock moves above them lost their hit data); every bundled SvR 2010 superstar is fixed.
+- **Create a Team** lists real superstars again (mods made it show nameless "DEFAULT" generics).
+- **One Hurricane**: the bundled Hurricane mod (a second select tile without his video, intro or music) is retired, and copies installed by 2.0.4 are switched off once. The Hurricane under the M tile stays.
+- **Backstage mods** no longer crash the match load when a move pack is installed.
+- **Touch controls** draw on top of the port's own pages (GRAPHICS, JUKEBOX, ACHIEVEMENTS...), and quick taps count.
+- **Android with the graphics API set to anything but Vulkan** (e.g. "any" copied from a PC config) now starts on Vulkan instead of saying there's no backend.
+- **No internet addresses in logs or report zips**: IP addresses are masked in the game's logs and blanked in Report a problem zips.
 - **Texture packs and dumps** (as in Dolphin; `native_texture_packs`, `native_dump_textures`; the launchers' Texture packs tab / Settings card only):
   - A texture is known by a content hash: XXH3 of its top level's blocks, untiled, after the endian swap. For DXT and A8R8G8B8 that equals the top level of the PC DDS in the pac files, so it's stable across runs and versions.
   - Dumps are PNGs (own deflate writer) in `Texture Dumps\<owner>\<owner>_<name>_<hash16>.png`. Names come from an index of every pac (EPAC + the characters' EPK8, PACH nested, 0x190-style bundles and loose DDS), built on a thread (about 35 s) and cached in `UserData\cache	exture_names.txt`. Unnamed: `tex_<w>x<h>_<fmt>_<hash16>`. In a menu-to-match run, 96% of dumped textures got names.
