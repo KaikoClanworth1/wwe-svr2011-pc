@@ -90,12 +90,13 @@ still being tested.
 ## New in 2.0.5
 
 ### Matches
-- **Three Stages of Hell** (ONE ON ONE → EXTREME RULES): best of three falls in one match - a normal fall, then Falls Count Anywhere, then Last Man Standing - with the damage carried through and the score at the top of the screen.
+- **Three Stages of Hell** in every mode (ONE ON ONE, TWO ON TWO, TRIPLE THREAT, FATAL-4-WAY → EXTREME RULES; 6-MAN and HANDICAP rows): best of three falls in one match - a normal fall, then Falls Count Anywhere, then Last Man Standing (in 6-man: No Disqualification) - with the damage carried through and every side's score at the top of the screen. In team matches a fall counts for the team that scored it.
 - **Championship Scramble** (FATAL-4-WAY): the game's own cut match, restored. Pick the title, five superstars take part, a new one enters every minute, whoever scores a fall becomes the interim champion, and whoever holds the title at the 5:00 bell after the last entry wins.
 - **Mystery Opponent** (ONE ON ONE → NORMAL MATCH → MYSTERY OPPONENT): the CPU picks your opponent in secret. It shows as "?" on the select, VS and loading screens and is revealed when it comes out last in the entrances, which can't be skipped.
 - **Elimination** in TRIPLE THREAT and FATAL-4-WAY (normal, Falls Count Anywhere, Extreme Rules): a pin or give up eliminates that wrestler, who leaves, and the match goes on until one is left.
 - **Match Creator: everything allowed**: every greyed-out option is free in every match type, as far as the game engine can play it. Combinations that crashed or froze in a 240-match test stay locked: over the top rope in tag / 6-man, the inferno ring outside normal 1v1 / Triple Threat / Fatal 4-Way, cage / cell / inferno rings and new win conditions in ladder / TLC, the chamber ring, Royal Rumble, Elimination Chamber and backstage.
 - **Lumberjacks attack**: a wrestler who lands on the floor is grabbed by the nearest lumberjacks (two at most) and slammed or thrown down; their interference no longer ends the match by DQ.
+- **Weapons Everywhere in every mode** (also TWO ON TWO, TRIPLE THREAT, FATAL-4-WAY, 6-MAN and HANDICAP): weapons lying in and around the ring at the bell, no disqualification (6-man: chairs and hand weapons only).
 - **Weapons Everywhere: the CPU uses the weapons lying around** (chairs, trash cans, guitars, ladders, tables) instead of walking past them to search under the ring; it searches under the ring only when nothing is near.
 - **Match types as mods**: each match type the port adds (Falls Count Anywhere, Championship Scramble, 15 / 25-man Royal Rumble, Lumberjack, Free-Roaming Backstage, Backstage for 3 / 4 / 6, Weapons Everywhere, Slobber Knocker, Three Stages of Hell, Elimination, Mystery Opponent) is a bundled mod on the Mods tab, switched on. Untick one and its rows leave the menus at the next start, with no gaps.
 
