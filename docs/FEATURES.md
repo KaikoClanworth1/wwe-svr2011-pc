@@ -96,6 +96,7 @@ still being tested.
   - **Shadows on / off** for every device: OFF skips the real-time shadows (about 70 fewer draws a frame); Mali mode turns them off by itself.
   - Effect detail, depth of field, motion blur, soft filter and prepare graphics moved there.
   - **480p**: an 854 x 480 window, and 360P / 480P render resolutions (the scene drawn smaller and scaled up, for weak devices).
+- **Practice Arena bundled**: the training ring from the start of the game as a real arena on the DOWNLOADED ARENAS page (empty seats; installed switched off like the other bundled mods).
 - **Championship Scramble** (FATAL-4-WAY): the game's own cut match, restored. Pick the title, five superstars take part, a new one enters every minute, whoever scores a fall becomes the interim champion, and whoever holds the title at the 5:00 bell after the last entry wins.
 - **Mystery Opponent** (ONE ON ONE → NORMAL MATCH → MYSTERY OPPONENT): the CPU picks your opponent in secret. It shows as "?" on the select, VS and loading screens and is revealed when it comes out last in the entrances, which can't be skipped.
 - **Match Creator: everything allowed**: every greyed-out option is free in every match type, as far as the game engine can play it. Combinations that crashed or froze in a 240-match test stay locked: over the top rope in tag / 6-man, the inferno ring outside normal 1v1 / Triple Threat / Fatal 4-Way, cage / cell / inferno rings and new win conditions in ladder / TLC, the chamber ring, Royal Rumble, Elimination Chamber and backstage.

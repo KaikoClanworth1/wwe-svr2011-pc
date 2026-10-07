@@ -7,8 +7,11 @@
  * theme song and an entrance movie); the game lists them under the M tile of
  * the character select (src/superstar_mods.cpp). Sign packs hold crowd signs
  * (*.dds, 128 x 64) the crowd holds up (src/crowd_signs.cpp); media packs replace
- * the game's videos, renders, arena screens and sounds (src/media_mods.cpp). A mod is turned off by a
- * "disabled" file in its folder. A .svrmod file is a zip of such a folder.
+ * the game's videos, renders, arena screens and sounds (src/media_mods.cpp). Match type mods
+ * (Mods/MatchTypes/<id>: a manifest only) switch on one of the match types the port adds -
+ * Slobber Knocker, Three Stages of Hell, Elimination... (src/match_types.cpp); they come
+ * switched on. A mod is turned off by a "disabled" file in its folder. A .svrmod file is a
+ * zip of such a folder.
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
 #include "mods_tab.h"
@@ -93,7 +96,7 @@ static int maker_present(void);
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"MatchTypes" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -249,7 +252,8 @@ int mods_install(const WCHAR *game_dir, const WCHAR *zip)
  * "Bundled Mods"): each is installed into the game once, and again only when
  * the shipped file changes - <game>\Mods\.bundled keeps "name|size|time" of
  * those installed - so one the player removed stays removed. A bundle comes
- * switched off the first time ("disabled" in its folder). One the player
+ * switched off the first time ("disabled" in its folder) - except a match
+ * type, which the game had on before it became a mod. One the player
  * already has (installed by hand, or an older bundle) is updated to it and
  * keeps its on / off - unless the player's copy is a newer version. */
 void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
@@ -327,7 +331,8 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
         s_installed[0] = 0;
         s_installed_existed = 0;
         s_bundle_install = 1;
-        if (mods_install(game_dir, zip) && fresh && !s_installed_existed && s_installed[0]) {
+        if (mods_install(game_dir, zip) && fresh && !s_installed_existed && s_installed[0] &&
+            !wcsstr(s_installed, L"\\Mods\\MatchTypes\\")) {
             WCHAR off[MAX_PATH];
             FILE *f;
             swprintf_s(off, MAX_PATH, L"%s\\disabled", s_installed);
@@ -371,13 +376,15 @@ static int install_file(const WCHAR *zip)
         const int backstage = !_wcsicmp(m.type, L"backstage");
         const int arena = !_wcsicmp(m.type, L"arena") || backstage, star = !_wcsicmp(m.type, L"superstar");
         const int signs = !_wcsicmp(m.type, L"signs"), media = !_wcsicmp(m.type, L"media");
+        const int match_type = !_wcsicmp(m.type, L"matchtype");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
-        if (signs || media) {
-            wcsncpy_s(kind, 32, signs ? L"Signs" : L"Media", _TRUNCATE);
+        if (signs || media || match_type) {
+            wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
             goto place;
         }
         if (!arena && !star) {
-            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, superstar and sign mods.", m.name, m.type);
+            swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, backstage, superstar, sign, media "
+                               L"and match type mods.", m.name, m.type);
             status(t);
             remove_tree(tmp, 0);
             return 0;
@@ -431,6 +438,8 @@ place:
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
                        : !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
+                       : !wcscmp(kind, L"MatchTypes") ? L"Installed \"%s\". The match type is in the game's menus the "
+                                                        L"next time the game starts."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
                                                    L"select (up to 50 superstar mods)."
