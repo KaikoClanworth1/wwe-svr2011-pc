@@ -66,7 +66,7 @@ std::wstring ChPac(int id) { return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" 
 
 // A bank read from m.pac in the background.
 void LoadBank(int which) {
-  if (g_banks.count(which) || g_loading) return;
+  if (g_banks.count(which) || g_loading || Busy()) return;  // (Busy: tried again next frame)
   g_loading = true;
   const BankDesc d = kBanks[which];
   RunInBackground([which, d] {

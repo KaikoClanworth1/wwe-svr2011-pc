@@ -985,19 +985,42 @@ bool ProjectSave(bool ask_name) {
     f = PickFile(true, L"Save the project", kProjectFilter, 1, L"svrproj", (Wide(stem) + L".svrproj").c_str());
     if (f.empty()) return false;
   }
+  if (Busy()) {
+    Status("Still working on the last job: save in a moment.");
+    return false;
+  }
   ProjectOut out;
   out.text = std::string("svrproj=1\ntype=") + h->type + "\n";
   h->write(out);
   out.files.insert(out.files.begin(), ZipEntry{"project.txt", Bytes(out.text.begin(), out.text.end())});
-  if (!WriteFile(Utf8(f), ZipWrite(out.files))) {
-    Status("The project could not be written: " + Utf8(f));
-    return false;
-  }
   g_project_file = f;
   g_project_files[g_project_page] = f;
   AddRecent(f);
-  MarkSaved(g_project_page);
-  Status("Project saved: " + Utf8(f));
+  const std::string path = Utf8(f);
+  if (out.deferred.empty()) {
+    if (!WriteFile(path, ZipWrite(out.files))) {
+      Status("The project could not be written: " + path);
+      return false;
+    }
+    MarkSaved(g_project_page);
+    Status("Project saved: " + path);
+    return true;
+  }
+  // the slow part in the background; the page counts as saved once the file is written
+  // (the state it holds is the one gathered now)
+  auto shared = std::make_shared<ProjectOut>(std::move(out));
+  const PageId page = g_project_page;
+  const std::string state = CurrentState(page);
+  const int touches = g_touches[page];
+  RunInBackground([shared, path, page, state, touches] {
+    Progress("Saving the project ...");
+    for (auto& fn : shared->deferred) fn(shared->files);
+    const bool ok = WriteFile(path, ZipWrite(shared->files));
+    OnUiThread([ok, page, state, touches, path] {
+      if (ok) g_saved_state[page] = state, g_saved_touches[page] = touches;
+      Status(ok ? "Project saved: " + path : "The project could not be written: " + path);
+    });
+  });
   return true;
 }
 

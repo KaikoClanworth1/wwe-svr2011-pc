@@ -120,11 +120,11 @@ void OpenFolder(const std::wstring& f) {
 std::string PackId() { return IdFrom(g_pack.name, "moves"); }
 
 // Every file of the pack folder (pack.txt, motions/*), as the mod carries them.
-bool PackFiles(std::vector<ZipEntry>& files, const std::string& prefix) {
+bool PackFiles(const std::wstring& folder, std::vector<ZipEntry>& files, const std::string& prefix) {
   std::error_code ec;
-  for (const auto& e : fs::recursive_directory_iterator(g_pack.folder, ec)) {
+  for (const auto& e : fs::recursive_directory_iterator(folder, ec)) {
     if (!e.is_regular_file(ec)) continue;
-    const std::string rel = fs::relative(e.path(), g_pack.folder, ec).generic_string();
+    const std::string rel = fs::relative(e.path(), folder, ec).generic_string();
     if (rel == "manifest.txt" || rel == "disabled") continue;
     Bytes f;
     if (!ReadFile(PathStr(e.path()), f)) { Status("Could not read " + PathStr(e.path())); return false; }
@@ -133,33 +133,47 @@ bool PackFiles(std::vector<ZipEntry>& files, const std::string& prefix) {
   return true;
 }
 
-bool Build(std::vector<ZipEntry>& files) {
+// What the build needs, copied off the UI thread.
+struct Job {
+  std::string id, manifest;
+  std::wstring folder;
+};
+Job PrepareJob() {
   if (!g_pack.name[0]) std::snprintf(g_pack.name, sizeof g_pack.name, "My Moves");
-  const std::string man = "type=moves\nid=" + PackId() + "\nname=" + g_pack.name + "\nauthor=" + g_pack.author +
-                          "\nversion=" + g_pack.version + "\n" + MadeWith();
-  files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
-  return PackFiles(files, "");
+  Job j;
+  j.id = PackId();
+  j.manifest = "type=moves\nid=" + j.id + "\nname=" + g_pack.name + "\nauthor=" + g_pack.author + "\nversion=" +
+               g_pack.version + "\n" + MadeWith();
+  j.folder = g_pack.folder;
+  return j;
+}
+
+bool Build(const Job& j, std::vector<ZipEntry>& files) {
+  files.push_back({"manifest.txt", Bytes(j.manifest.begin(), j.manifest.end())});
+  return PackFiles(j.folder, files, "");
 }
 
 void SaveMod() {
-  const std::wstring f = PickFile(true, L"Save the move pack", kModFilter, 1, L"svrmod", (Wide(PackId()) + L".svrmod").c_str());
+  const Job j = PrepareJob();
+  const std::wstring f = PickFile(true, L"Save the move pack", kModFilter, 1, L"svrmod", (Wide(j.id) + L".svrmod").c_str());
   if (f.empty()) return;
   const std::string out = Utf8(f);
-  RunInBackground([out] {
+  RunInBackground([j, out] {
     Progress("Packing the moves ...");
     std::vector<ZipEntry> files;
-    if (!Build(files)) return;
+    if (!Build(j, files)) return;
     if (WriteFile(out, ZipWrite(files))) Status("Saved " + out + " (add it in the launcher's Mods tab with +).");
     else Status("The move pack could not be written: " + out);
   });
 }
 
 void Install() {
-  RunInBackground([] {
+  const Job j = PrepareJob();
+  RunInBackground([j] {
     Progress("Installing the moves ...");
     std::vector<ZipEntry> files;
-    if (!Build(files)) return;
-    const fs::path dir = fs::path(g_game) / L"Mods" / L"Moves" / fs::u8path(PackId());
+    if (!Build(j, files)) return;
+    const fs::path dir = fs::path(g_game) / L"Mods" / L"Moves" / fs::u8path(j.id);
     std::error_code ec;
     fs::remove_all(dir, ec);
     for (const auto& f : files) {
@@ -296,7 +310,7 @@ void WriteProject(ProjectOut& out) {
   if (g_pack.folder.empty()) return;
   out.Key("pack", "pack");
   out.Key("pack.from", Utf8(g_pack.folder));
-  PackFiles(out.files, "pack/");
+  PackFiles(g_pack.folder, out.files, "pack/");
 }
 
 bool Read(const ProjectIn& in, bool mod) {

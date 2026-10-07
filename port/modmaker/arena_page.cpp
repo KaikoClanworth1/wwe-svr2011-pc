@@ -833,11 +833,15 @@ void WriteProject(ProjectOut& out) {
   if (!g_proj.load.Empty()) out.files.push_back({"load.dds", DdsEncode(g_proj.load.image, DxtFormat::kDxt5, false)});
   for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
   if (g_proj.edited) {
-    // the arena as edited (the kit / lighting apply at mod build, not here)
-    Progress("Saving the arena ...");
-    std::string err;
-    out.files.push_back({"arena.pac", g_proj.edited->Save(&err)});
-    if (!err.empty()) Log("project: " + err);
+    // the arena as edited (the kit / lighting apply at mod build, not here): a copy
+    // taken now, compressed in the background
+    auto copy = std::make_shared<Arena>(*g_proj.edited);
+    out.deferred.push_back([copy](std::vector<ZipEntry>& files) {
+      Progress("Compressing the arena ...");
+      std::string err;
+      files.push_back({"arena.pac", copy->Save(&err)});
+      if (!err.empty()) Log("project: " + err);
+    });
   }
 }
 

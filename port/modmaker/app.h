@@ -182,6 +182,8 @@ void StartGame(const std::wstring& extra_env = L"");
 struct ProjectOut {
   std::string text;                 // key=value lines
   std::vector<ZipEntry> files;
+  // slow work (an arena's compression) done in the background before the zip is written
+  std::vector<std::function<void(std::vector<ZipEntry>&)>> deferred;
   void Key(const std::string& k, const std::string& v) { if (!v.empty()) text += k + "=" + v + "\n"; }
   void Key(const std::string& k, int v) { text += k + "=" + std::to_string(v) + "\n"; }
   // Copies the file into the project (false logged); returns its name there.

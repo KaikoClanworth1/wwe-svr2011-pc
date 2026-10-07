@@ -61,12 +61,26 @@ std::map<int, std::vector<Shown>> g_star_pics;  // id -> SSFA, SSFB, SSFC, icon
 std::map<uint32_t, Bytes> g_icons;               // the face icon bank
 bool g_icons_loaded = false;
 
+// DLC_HD.pac parsed once (16 MB: the renders of every superstar).
+const Epac* DlcHd() {
+  static Epac e;
+  static std::wstring loaded_for;
+  static bool ok = false;
+  if (loaded_for != g_game) {
+    loaded_for = g_game;
+    Bytes d;
+    e = Epac();
+    ok = ReadFile(PathStr(fs::path(g_game) / L"pac" / L"DLC_HD.pac"), d) && EpacRead(d, e);
+  }
+  return ok ? &e : nullptr;
+}
+
 void LoadStarPics(int id) {
   if (g_star_pics.count(id)) return;
   auto& v = g_star_pics[id];
-  Bytes d;
-  Epac e;
-  if (!ReadFile(PathStr(fs::path(g_game) / L"pac" / L"DLC_HD.pac"), d) || !EpacRead(d, e)) return;
+  const Epac* dlc = DlcHd();
+  if (!dlc) return;
+  const Epac& e = *dlc;
   char key[8];
   std::snprintf(key, sizeof key, "%04d", id);
   const char* groups[3] = {"SSFA", "SSFB", "SSFC"};

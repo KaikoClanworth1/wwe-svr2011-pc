@@ -475,7 +475,7 @@ bool Read(const ProjectIn& in, bool mod) {
   for (size_t at = 0; at <= in.text.size(); ++at) {
     if (at < in.text.size() && in.text[at] != '\n') { line += in.text[at]; continue; }
     const size_t eq = line.find('=');
-    if (eq != std::string::npos) {
+    if (eq != std::string::npos && !line.substr(0, eq).ends_with(".from")) {  // (.from: where a file came from, not a key)
       const std::string key = line.substr(0, eq), val = line.substr(eq + 1);
       auto id_of = [&](const char* prefix) { return key.rfind(prefix, 0) == 0 ? std::atoi(key.c_str() + std::strlen(prefix)) : -1; };
       if (int id = id_of("video."); id > 0) g_media.stars[id].video = file(key);
