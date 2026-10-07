@@ -1289,7 +1289,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
       }
       return 0;
     case WM_CLOSE:
-      if (ProjectDirty() && !g_quit_asked) {
+      if (ProjectDirty() && !g_quit_asked && IsWindowVisible(w)) {
         const int r = MessageBoxW(w, L"Save the project before closing?", L"SvR2011 Mod Maker",
                                   MB_YESNOCANCEL | MB_ICONQUESTION);
         if (r == IDCANCEL) return 0;
@@ -1330,7 +1330,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
   std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
-  bool behind = false;  // --behind: tests - never in front, never focused, not on the taskbar
+  bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
+  std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
+  double shot_after = 6;
   int star_id = 0, star_call = -1;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
@@ -1344,6 +1346,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--behind")) behind = true;
+    else if (!wcscmp(argv[i], L"--shot") && more) shot = argv[++i];
+    else if (!wcscmp(argv[i], L"--shot-after") && more) shot_after = _wtof(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
@@ -1416,7 +1420,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     return 1;
   }
   if (behind) {
-    SetWindowPos(g_wnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // never shown: nothing on any screen, nothing on the taskbar (the swap chain still renders)
   } else {
     ShowWindow(g_wnd, g_settings.maximized && show == SW_SHOWNORMAL ? SW_SHOWMAXIMIZED : show);
     UpdateWindow(g_wnd);
@@ -1492,7 +1496,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     if (done) break;
     if (IsIconic(g_wnd)) Sleep(30);  // (minimized: slow down; frames still run for the test aids)
-    if (behind) SetWindowPos(g_wnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);  // (stays under)
+    if (behind && IsWindowVisible(g_wnd)) ShowWindow(g_wnd, SW_HIDE);  // (stays unseen)
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -1519,6 +1523,34 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
     g_ctx->ClearRenderTargetView(g_rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    if (!shot.empty() && ImGui::GetTime() >= shot_after && !Busy()) {  // the frame to a PNG, then quit
+      ID3D11Texture2D* back = nullptr;
+      g_swap->GetBuffer(0, IID_PPV_ARGS(&back));
+      D3D11_TEXTURE2D_DESC td;
+      back->GetDesc(&td);
+      td.Usage = D3D11_USAGE_STAGING, td.BindFlags = 0, td.CPUAccessFlags = D3D11_CPU_ACCESS_READ, td.MiscFlags = 0;
+      ID3D11Texture2D* staging = nullptr;
+      if (SUCCEEDED(g_dev->CreateTexture2D(&td, nullptr, &staging))) {
+        g_ctx->CopyResource(staging, back);
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (SUCCEEDED(g_ctx->Map(staging, 0, D3D11_MAP_READ, 0, &ms))) {
+          Image img;
+          img.w = int(td.Width), img.h = int(td.Height);
+          img.rgba.resize(size_t(img.w) * img.h * 4);
+          for (int yy = 0; yy < img.h; ++yy) {
+            std::memcpy(&img.rgba[size_t(yy) * img.w * 4], static_cast<const uint8_t*>(ms.pData) + size_t(yy) * ms.RowPitch, size_t(img.w) * 4);
+            for (int xx = 0; xx < img.w; ++xx) img.rgba[(size_t(yy) * img.w + xx) * 4 + 3] = 255;
+          }
+          g_ctx->Unmap(staging, 0);
+          SavePng(Utf8(shot), img);
+        }
+        staging->Release();
+      }
+      back->Release();
+      WriteLogTo(shot + L".log");
+      shot.clear();
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    }
     g_swap->Present(1, 0);
   }
   if (g_worker.joinable()) g_worker.join();
