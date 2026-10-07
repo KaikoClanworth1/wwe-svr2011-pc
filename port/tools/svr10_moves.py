@@ -384,6 +384,15 @@ def rkey(r):
     return (struct.unpack_from('<H', r, 0)[0], r[2], r[3])
 
 
+def idkey(r):
+    """The game finds WAZA records by a binary search on the u16 move id alone
+    (sub_826A4960); its groups are in id order, not always in rkey order (EXH
+    group 16: 845/0/1 before 845/0/0). Records go in by id (after the id's
+    own): appended ones after the last id were never found, nor every later
+    stock id (no hit reaction / impact sound on strikes)."""
+    return struct.unpack_from('<H', r, 0)[0]
+
+
 def sorted_insert(recs, new, keyf):
     import bisect
     keys = [keyf(r) for r in recs]
@@ -772,11 +781,11 @@ def build(ctx, ids, namelist=False):
             r36 = r + best[32:36]
             todo.append(r36)
             pack['misc']['exh'].append(dict(group=g, record=r36.hex(), extra_from='%d,%d,%d' % rkey(best)))
-        if not is_sorted(recs, rkey):
-            ctx.p('EXH group %d is not sorted by key; appending' % g)
+        if not is_sorted(recs, idkey):
+            ctx.p('EXH group %d is not in id order; appending' % g)
             recs += todo
         else:
-            sorted_insert(recs, todo, rkey)
+            sorted_insert(recs, todo, idkey)
         new_sub0[g] = exh_build(recs)
         ctx.p('EXH group %d: +%d records' % (g, len(todo)))
     new_sub1 = {}
@@ -798,11 +807,11 @@ def build(ctx, ids, namelist=False):
             ev += b''.join(evs)
             todo.append(bytes(nr))
             pack['misc']['events'].append(dict(group=g, record=bytes(nr).hex(), events=b''.join(evs).hex()))
-        if not is_sorted(recs, rkey):
-            ctx.p('event group %d is not sorted by key; appending' % g)
+        if not is_sorted(recs, idkey):
+            ctx.p('event group %d is not in id order; appending' % g)
             recs += todo
         else:
-            sorted_insert(recs, todo, rkey)
+            sorted_insert(recs, todo, idkey)
         new_sub1[g] = struct.pack('<II', 16, len(recs)) + b''.join(recs) + bytes(ev)
         ctx.p('event group %d: +%d records' % (g, len(todo)))
     # child 2 "MBD" (8-byte {u16 id, u8 x, u8 y, u16 value, u16 0} per key; 2010 and 2011
@@ -819,7 +828,7 @@ def build(ctx, ids, namelist=False):
         ctx.p('MBD group %d: %d records for these moves, %d already in 2011, +%d' % (
             g, sum(1 for it in plan.values() for gg, r in it['mbd'] if gg == g), sum(1 for it in plan.values() for gg, r in it['mbd'] if gg == g and rkey(r) in have), len(todo)))
         if todo:
-            sorted_insert(recs, todo, rkey)
+            sorted_insert(recs, todo, idkey)
             new_sub2[g] = b'MBD\0' + struct.pack('<I', len(recs)) + b''.join(recs)
             pack['misc']['mbd'] += [dict(group=g, record=r.hex()) for r in todo]
 
@@ -1084,8 +1093,9 @@ def verify(pac11, out):
         if u[:4] == b'EXH\0' and len(u) != 8 + 36 * len(recs):
             p('FAIL EXH group size', g)
             ok = False
-        if not is_sorted(recs, rkey):
-            p('note: EXH group %d not sorted' % g)
+        if not is_sorted(recs, idkey):
+            p('FAIL EXH group %d not in move id order (the game binary-searches the id)' % g)
+            ok = False
         for r in recs:
             exh.setdefault(rkey(r), r)
     evk = {}
