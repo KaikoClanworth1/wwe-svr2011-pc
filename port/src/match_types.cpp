@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <random>
 #include <string>
@@ -1411,6 +1412,63 @@ void LumberjackBeforeJudge(uint8_t* base) {
 
 void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kChars = 0x82E3CC50;
+  // Research aid: SVR2011_TEST_ITEM_DUMP=<file> - every 30 updates of a match,
+  // the object table (0x82DE0220, 72 slots: people and weapons) appended:
+  // u32 match frames, then per slot u32 object and its first 0xC00 bytes.
+  if (static const char* dump = std::getenv("SVR2011_TEST_ITEM_DUMP"); dump && Rd32(base + 0x82E3CD0C) > 0) {
+    static uint32_t n = 0;
+    if (++n % 30 == 0)
+      if (FILE* f = std::fopen(dump, "ab")) {
+        const uint32_t frames = Rd32(base + 0x82E3CD0C);
+        std::fwrite(&frames, 4, 1, f);
+        for (uint32_t i = 0; i < 72; ++i) {
+          const uint32_t o = Rd32(base + 0x82DE0220 + i * 4);
+          std::fwrite(&o, 4, 1, f);
+          if (o) std::fwrite(base + o, 1, 0xC00, f);
+        }
+        std::fclose(f);
+      }
+  }
+  // Test aid: SVR2011_TEST_ITEM_LOG=1 - each weapon picked up (its holder,
+  // +44, from none to a person): its slot, model, where it lay, and whether it
+  // came from under the ring (hidden at 0,-12,0 until then).
+  if (static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr; item_log) {
+    // (kind per slot: 0 unknown, 1 lying at the bell (placed), 2 hidden (under the ring), 3 out from under it)
+    static uint32_t holder[72], kind[72], last_frames = 0;
+    static float last_pos[72][3];
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    if (frames < last_frames)
+      for (uint32_t i = 0; i < 72; ++i) holder[i] = 0xFF, kind[i] = 0;
+    last_frames = frames;
+    for (uint32_t i = 0; i < 72; ++i) {
+      const uint32_t o = Rd32(base + 0x82DE0220 + i * 4);
+      if (!o) continue;
+      const uint32_t h = Rd32(base + o + 44) & 0xFF;
+      const uint32_t model = Rd32(base + o + 80);
+      if (model >= 1000) continue;  // (not a weapon)
+      const float x = RdF(base + o + 288), y = RdF(base + o + 292), z = RdF(base + o + 296);
+      const bool hidden_now = x == 0.f && z == 0.f && y < -11.f;
+      if (kind[i] == 0 && frames >= 120 && frames < 600 && h == 0xFF) kind[i] = hidden_now ? 2 : 1;
+      if (kind[i] == 2 && !hidden_now && last_pos[i][1] < -11.f && last_pos[i][0] == 0.f) {
+        std::string who;  // (out from under the ring: what the people are doing)
+        for (uint32_t c = 0; c < 6; ++c)
+          if (const uint32_t p = Rd32(base + kChars + c * 4))
+            who += fmt::format(" [{}: motion {} at ({:.0f},{:.0f})]", Rd32(base + p + 1156), Rd32(base + p + 212),
+                               RdF(base + p + 288), RdF(base + p + 296));
+        REXLOG_INFO("item: slot {} (model {}) out from under the ring at ({:.0f},{:.0f},{:.0f}), frame {};{}", i, model,
+                    x, y, z, frames, who);
+      }
+      if (h != 0xFF && holder[i] == 0xFF && kind[i] != 0) {
+        static const char* kKinds[] = {"?", "placed", "from under the ring", "again"};
+        REXLOG_INFO("item: person {} picks up slot {} (model {}) {} at ({:.0f},{:.0f},{:.0f}), frame {}", h, i, model,
+                    kKinds[kind[i]], last_pos[i][0], last_pos[i][1], last_pos[i][2], frames);
+        if (kind[i] == 2) kind[i] = 3;
+      }
+      holder[i] = h;
+      if (h == 0xFF)
+        for (int k = 0; k < 3; ++k) last_pos[i][k] = RdF(base + o + 288 + k * 4);
+    }
+  }
   if (g_slobber && base[0x82E3DE00] == kGauntlet) SlobberKnockerUpdate(ctx, base);
   if (ThreeStagesMatch()) ThreeStagesUpdate(base);
   if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext)) return;
@@ -1549,6 +1607,94 @@ REX_HOOK_RAW(sub_8227D130) {
   ApplyWeapons(base);
   __imp__sub_8227D130(ctx, base);
   RestoreWeapons(base);
+}
+
+// The CPU and the weapons lying about. Its behaviour script asks conditions
+// by id (sub_828578E8(this, id), *this the AI: +0 its person, +400 its
+// position): 157 "a usable weapon lies somewhere" (sub_8280DFB0 any) leads to
+// its "go get a weapon" actions (300 any, 301-304 / 329 a kind: sub_82837C30
+// finds the nearest), 158 "one can come from under the ring" (the stock list
+// at *0x82E3C06C not empty, fewer than 4 out) to the search under it (actions
+// 140 / 141, sub_82828490: to the apron, motions 15480 / 15481) - and it
+// mostly searched, some of it without asking 158: in WEAPONS EVERYWHERE the
+// CPU walked past the placed weapons to the apron. Now, while a usable weapon
+// lies within kNearWeapon, 158 is false and an action 140 / 141 or 260 (the
+// search itself, sub_82828968) being made (the action factories
+// sub_82812838(ai, id), sub_828136D0) is a 300 instead: the CPU goes for that
+// weapon; under the ring only when nothing usable is near.
+// (test aid: SVR2011_TEST_WE_AI_OFF=1 - as the game)
+namespace {
+constexpr float kNearWeapon = 90.f;  // (the ring is about +-30, the placed ones at most ~75 from its middle)
+
+// The nearest usable weapon lying within kNearWeapon of the AI (its slot), or -1.
+int32_t NearWeapon(PPCContext& ctx, uint8_t* base, uint32_t ai) {
+  static const bool ai_off = std::getenv("SVR2011_TEST_WE_AI_OFF") != nullptr;
+  if (!g_weapons || ai_off || !ai || base[0x82E3DE00] < kExtremeFirst || base[0x82E3DE00] > kExtremeLast) return -1;
+  const uint32_t person = Rd32(base + ai);
+  if (!person) return -1;
+  PPCContext c = ctx;
+  c.r3.u64 = ai, c.r4.u64 = uint64_t(-1), c.r5.u64 = uint64_t(-1);
+  sub_8280DFB0(c, base);
+  const int32_t slot = int32_t(c.r3.u32);
+  const uint32_t item = slot >= 0 && slot < 72 ? Rd32(base + 0x82DE0220 + uint32_t(slot) * 4) : 0;
+  if (!item) return -1;
+  const float dx = RdF(base + item + 288) - RdF(base + ai + 400), dz = RdF(base + item + 296) - RdF(base + ai + 408);
+  const float d = std::sqrt(dx * dx + dz * dz);
+  if (d >= kNearWeapon) return -1;
+  static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr;
+  static uint32_t last_logged = 0;
+  const uint32_t frames = Rd32(base + 0x82E3CD0C);
+  if (item_log && frames - last_logged > 60) {
+    last_logged = frames;
+    REXLOG_INFO("item: person {} - not under the ring: slot {} (model {}) lies {:.0f} away, frame {}",
+                Rd32(base + person + 1156), slot, Rd32(base + item + 80), d, frames);
+  }
+  return slot;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_828578E8);
+REX_HOOK_RAW(sub_828578E8) {
+  if (ctx.r4.u32 == 158 && ctx.r3.u32 && NearWeapon(ctx, base, Rd32(base + ctx.r3.u32)) >= 0) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_828578E8(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82812838);
+REX_HOOK_RAW(sub_82812838) {
+  const uint32_t id = ctx.r4.u32;
+  if ((id == 140 || id == 141 || id == 260) && NearWeapon(ctx, base, ctx.r3.u32) >= 0) ctx.r4.u64 = 300;
+  __imp__sub_82812838(ctx, base);
+}
+
+// ... and its sibling for actions 146-346: 260, the search itself (sub_82828968).
+REX_EXTERN(__imp__sub_828136D0);
+REX_HOOK_RAW(sub_828136D0) {
+  if (ctx.r4.u32 == 260 && NearWeapon(ctx, base, ctx.r3.u32) >= 0) {
+    ctx.r4.u64 = 300;
+    sub_82812838(ctx, base);  // (300: the first factory's)
+    return;
+  }
+  __imp__sub_828136D0(ctx, base);
+}
+
+// Research aid (with SVR2011_TEST_ITEM_LOG): the CPU's "go get a weapon"
+// action starts (sub_82837C30(action): +84 the kind wanted - 301 one in a
+// hand, 302 a ladder, 303 a table, 304 a chair, 329 model 1, else any; +52
+// the person; +80 the weapon found, -1 none).
+REX_EXTERN(__imp__sub_82837C30);
+REX_HOOK_RAW(sub_82837C30) {
+  const uint32_t action = ctx.r3.u32;
+  __imp__sub_82837C30(ctx, base);
+  static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr;
+  if (item_log) {
+    const uint32_t ai = Rd32(base + action + 52), person = ai ? Rd32(base + ai) : 0;  // (the AI: +0 its person)
+    REXLOG_INFO("item: person {} goes for a weapon - kind {}, found slot {}, frame {} (area {})",
+                person ? Rd32(base + person + 1156) : 99, Rd32(base + action + 84), int32_t(Rd32(base + action + 80)),
+                Rd32(base + 0x82E3CD0C), ai ? Rd32(base + ai + 208) : 99);
+  }
 }
 
 namespace svr2011 {
