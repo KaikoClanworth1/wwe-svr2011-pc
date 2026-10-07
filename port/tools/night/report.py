@@ -62,7 +62,9 @@ def main():
             out.append('- stuck up to %s s' % r['stuckMax'])
         if r.get('navigation') and r['navigation'] != 'ok':
             out.append('- navigation: %s' % r['navigation'])
-        shots = [s['file'] if isinstance(s, dict) else s for s in r.get('shots', [])]
+        shots = [(s.get('file') or s.get('path') or s.get('name') or str(s)) if isinstance(s, dict) else str(s)
+                 for s in (r.get('shots') or [])]
+        shots = [os.path.basename(s) for s in shots]
         if shots:
             out.append('- shots: ' + ', '.join(shots[:4]))
         out.append('- log: %s' % r.get('log', '?'))
