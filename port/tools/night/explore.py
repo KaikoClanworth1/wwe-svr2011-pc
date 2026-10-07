@@ -38,6 +38,11 @@ lock = threading.Lock()
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 user32.SetProcessDPIAware()
+# The second screen if there is one (x 1920 +), else stay on the only screen,
+# behind every window (the game's pages don't draw off every screen).
+TWO_SCREENS = user32.GetSystemMetrics(78) > user32.GetSystemMetrics(0)  # virtual vs primary width
+PARK_X = 1920 if TWO_SCREENS else 0
+PARK_FLAGS = 0x11 if TWO_SCREENS else 0x13
 
 
 # ---- windows ----------------------------------------------------------------
@@ -157,7 +162,7 @@ class Game:
         if not self.hwnd:
             self.hwnd = find_window(self.p.pid)
             if self.hwnd:  # screen 2, behind every window, never activated
-                user32.SetWindowPos(self.hwnd, 1, 1920 + 40 * self.worker, 40 * self.worker, 0, 0, 0x1 | 0x10)
+                user32.SetWindowPos(self.hwnd, 1, PARK_X + 40 * self.worker, 40 * self.worker, 0, 0, PARK_FLAGS)
 
     def shot(self, name):
         self.park()

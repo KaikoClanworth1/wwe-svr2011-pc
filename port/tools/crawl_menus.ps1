@@ -65,7 +65,7 @@ function Start-Game($log) {
     $p = Start-Process (Join-Path $game "svr2011.exe") -WorkingDirectory $game -ArgumentList $a -PassThru -WindowStyle Minimized
     for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
     if ($p.MainWindowHandle -ne 0) {
-        [void][CW]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920 + 120 * $Worker, 60 * $Worker, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)
+        [void][CW]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, $SvrParkX + 120 * $Worker, 60 * $Worker, 0, 0, $SvrParkFlags)  # (screen 2, behind every window)
         [void][CW]::ShowWindow($p.MainWindowHandle, 4)
     }
     $script:proc = $p

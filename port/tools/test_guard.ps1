@@ -8,6 +8,15 @@
 # watching something never sees one pop up.
 $env:SVR2011_WINDOW_BEHIND = "1"
 
+# Where a test window is parked: the second screen if there is one (x 1920 +),
+# else it stays where it opened on the only screen - behind every window
+# (HWND_BOTTOM), never activated. Off every screen, the game's own pages
+# don't draw. $SvrParkX / $SvrParkFlags: SetWindowPos(h, 1, $SvrParkX + dx, dy, 0, 0, $SvrParkFlags).
+Add-Type -AssemblyName System.Windows.Forms
+$SvrTwoScreens = @([System.Windows.Forms.Screen]::AllScreens | Where-Object { $_.Bounds.X -ge 1920 }).Count -gt 0
+$SvrParkX = if ($SvrTwoScreens) { 1920 } else { 0 }
+$SvrParkFlags = if ($SvrTwoScreens) { 0x11 } else { 0x13 }   # NOSIZE|NOACTIVATE (+ NOMOVE on one screen)
+
 function Get-SvrGames {
     @(Get-CimInstance Win32_Process -Filter "Name = 'svr2011.exe' OR Name = 'svr2011_trace.exe'" -ErrorAction SilentlyContinue)
 }

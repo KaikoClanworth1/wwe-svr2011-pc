@@ -199,7 +199,7 @@ while ($queue.Count -or $running.Count) {
             $r.proc.Refresh()
             if ($r.proc.MainWindowHandle -ne [IntPtr]::Zero) {
                 # screen 2, behind every window (HWND_BOTTOM), never activated
-                [void][NW]::SetWindowPos($r.proc.MainWindowHandle, [IntPtr]1, 1920 + 40 * $w, 40 * $w, 0, 0, 0x1 -bor 0x10)
+                [void][NW]::SetWindowPos($r.proc.MainWindowHandle, [IntPtr]1, $SvrParkX + 40 * $w, 40 * $w, 0, 0, $SvrParkFlags)
                 $r.parked = $true
             }
         }

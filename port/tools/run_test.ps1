@@ -43,7 +43,7 @@ for ($t = 0; $t -lt 100; $t++) {
     Start-Sleep -Milliseconds 100
 }
 if (-not $p.HasExited -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
-    [void][W]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920, 0, 0, 0, $SWP_NOSIZE -bor $SWP_NOACTIVATE)  # (screen 2, behind every window: HWND_BOTTOM)
+    [void][W]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, $SvrParkX, 0, 0, 0, $SvrParkFlags)  # (screen 2, behind every window: HWND_BOTTOM)
     Add-Type -Name U -Namespace N -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);' -ErrorAction SilentlyContinue
     [void][N.U]::ShowWindow($p.MainWindowHandle, 4)   # SW_SHOWNOACTIVATE: restore without focus
 }
