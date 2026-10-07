@@ -64,6 +64,36 @@ def suite_m():
     return [hand, m]
 
 
+def suite_h():
+    """The 30 fps mode that shows every other frame of the 60 Hz game (SVR2011_TEST_HALF_30, 26a75a2+):
+    a 1v1 and a 6-person (lumberjack) CPU match."""
+    env = {'SVR2011_TEST_HALF_30': '1'}
+    one = g.match('M_half30_1v1', 'H', '30 fps (every other frame), 1v1', ['JOHN CENA', 'RANDY ORTON'], arena=17,
+                  args=['--frame_rate=30'], env=env, timeout=540, shots=(60, 180, 300))
+    six = g.match('M_half30_6', 'H', '30 fps (every other frame), lumberjack (6 people)', ['JOHN CENA', 'RANDY ORTON'],
+                  arena=17, args=['--frame_rate=30'], env=dict(env, SVR2011_TEST_MODE='lumberjack'), timeout=720,
+                  shots=(60, 240, 480))
+    six['needs'] = 'lumberjacks: '
+    return [one, six]
+
+
+def suite_s():
+    """The pass-20 freeze (a lost job request in the per-character job system) forced: each match frame
+    8 ms longer (SVR2011_TEST_SLOW_MS, menus at speed) - about 40 fps on the Fold, 2 updates a frame.
+    Run on a build without the fix and on one with it (rows carry the build)."""
+    slow = {'SVR2011_TEST_SLOW_MS': '8', 'SVR2011_TEST_SLOW_IN_MATCH': '1'}
+    out = []
+    for arena in (17, 1):
+        m = g.match('S_lumberjack_%d' % arena, 'S', 'slowed: lumberjack, arena %d' % arena, ['JOHN CENA', 'RANDY ORTON'],
+                    arena=arena, timeout=900, env=dict(slow, SVR2011_TEST_MODE='lumberjack'), shots=(120, 480))
+        m['needs'] = 'lumberjacks: '
+        out.append(m)
+    b = g.match('S_B06', 'S', 'slowed: rule 06 (2 on 2)', ['JOHN CENA', 'RANDY ORTON'], rule=0x06, timeout=900,
+                env=slow, shots=(120, 480))
+    out.append(b)
+    return out
+
+
 def suite_g():
     s = g.match('G_soak', 'G', 'soak: back-to-back matches', ['JOHN CENA', 'RANDY ORTON'], arena=17,
                 timeout=7200, shots=(600, 1800, 3600, 5400))
@@ -73,10 +103,10 @@ def suite_g():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--suites', default='M,T,B,C,D,E,G')
+    ap.add_argument('--suites', default='M,T,H,S,B,C,D,E,G')
     ap.add_argument('--out', default=os.path.join(g.PORT, 'runs', 'night', 'android_scenarios.jsonl'))
     a = ap.parse_args()
-    gens = {'B': suite_b_phone, 'M': suite_m, 'T': g.suite_m, 'C': suite_c_sample, 'D': g.suite_d, 'E': suite_e_phone, 'G': suite_g}
+    gens = {'B': suite_b_phone, 'M': suite_m, 'T': g.suite_m, 'H': suite_h, 'S': suite_s, 'C': suite_c_sample, 'D': g.suite_d, 'E': suite_e_phone, 'G': suite_g}
     rows = []
     for s in a.suites.split(','):
         rows += gens[s.strip()]()
