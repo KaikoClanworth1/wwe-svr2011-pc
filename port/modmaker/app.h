@@ -148,6 +148,23 @@ const StarInfo* StarById(int id);
 int StarRating(int id, int k);
 // The base's select render (DLC_HD SSFA), decoded on first use (cached).
 Picture* StarRender(int id);
+// A pac's table without reading the whole file: EPAC (12-byte entries,
+// 4-char names) and EPK8 (16-byte entries, 8-char names).
+struct PacEntryInfo {
+  std::string group, name;
+  uint64_t offset = 0;
+  uint32_t size = 0;
+};
+struct PacIndex {
+  bool epk8 = false;
+  std::vector<PacEntryInfo> entries;
+};
+bool ReadPacIndex(const fs::path& file, PacIndex& out);
+// One entry's data (by group + name, or the first entry with that name when
+// group is nullptr); false if absent.
+bool ReadPacEntry(const fs::path& file, const char* name, Bytes& out, const char* group = nullptr);
+bool ReadPacEntry(const fs::path& file, const PacEntryInfo& e, Bytes& out);
+
 // The game's move names (misc.pac MOVS/WAZE: 160-byte records, the name at
 // +0x10, the id at +0x90), loaded on first use; "" if unknown.
 const std::string& MoveName(int id);
@@ -255,7 +272,7 @@ namespace media_page { extern PageHooks hooks; void TestStart(int arena, const s
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); }
 namespace assets_page { void Draw(); }
-namespace anims_page { void Draw(); }
+namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); }
 namespace icons_page { void Draw(); }
 namespace help_page { void Draw(); }
 

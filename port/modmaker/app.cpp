@@ -527,6 +527,52 @@ Picture* StarRender(int id) {
   return &p;
 }
 
+bool ReadPacIndex(const fs::path& file, PacIndex& out) {
+  out = PacIndex();
+  FILE* f = _wfopen(file.c_str(), L"rb");
+  if (!f) return false;
+  Bytes idx(0x4000);
+  const bool ok = std::fread(idx.data(), 1, idx.size(), f) == idx.size() &&
+                  (!std::memcmp(idx.data(), "EPAC", 4) || !std::memcmp(idx.data(), "EPK8", 4));
+  std::fclose(f);
+  if (!ok) return false;
+  out.epk8 = !std::memcmp(idx.data(), "EPK8", 4);
+  const size_t esz = out.epk8 ? 16 : 12, nlen = out.epk8 ? 8 : 4;
+  for (size_t p = 0x800; p + 12 <= 0x4000;) {
+    if (!Le32(&idx[p])) break;
+    const std::string group(reinterpret_cast<const char*>(&idx[p]), 4);
+    const uint32_t cnt = out.epk8 ? Le16(&idx[p + 4]) : Le32(&idx[p + 4]) / 3;
+    p += 12;
+    for (uint32_t i = 0; i < cnt && p + esz <= 0x4000; ++i, p += esz) {
+      PacEntryInfo e;
+      e.group = group;
+      const char* n = reinterpret_cast<const char*>(&idx[p]);
+      e.name.assign(n, strnlen(n, nlen));
+      e.offset = 0x4000 + uint64_t(Le32(&idx[p + nlen])) * 0x800;
+      e.size = Le32(&idx[p + nlen + 4]) * 0x100;
+      out.entries.push_back(std::move(e));
+    }
+  }
+  return true;
+}
+
+bool ReadPacEntry(const fs::path& file, const PacEntryInfo& e, Bytes& out) {
+  FILE* f = _wfopen(file.c_str(), L"rb");
+  if (!f) return false;
+  out.resize(e.size);
+  const bool ok = _fseeki64(f, int64_t(e.offset), SEEK_SET) == 0 && std::fread(out.data(), 1, out.size(), f) == out.size();
+  std::fclose(f);
+  return ok;
+}
+
+bool ReadPacEntry(const fs::path& file, const char* name, Bytes& out, const char* group) {
+  PacIndex idx;
+  if (!ReadPacIndex(file, idx)) return false;
+  for (const auto& e : idx.entries)
+    if (e.name == name && (!group || e.group == group)) return ReadPacEntry(file, e, out);
+  return false;
+}
+
 namespace {
 std::map<int, std::string> g_move_names;
 bool g_move_names_loaded = false;
@@ -1266,6 +1312,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
+    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
+      int a[4] = {0, -1, -1, 0};
+      swscanf_s(argv[++i], L"%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3]);
+      anims_page::TestStart(a[0], a[1], a[2], a[3]);
+      g_page = PageId::kAnims;
+    }
     else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
     else if (!wcscmp(argv[i], L"--select") && more) start_select = argv[++i];
     else if (!wcscmp(argv[i], L"--test-edit-save") && more) test_save = argv[++i];

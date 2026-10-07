@@ -21,14 +21,6 @@ void Draw() {
 }
 }  // namespace assets_page
 
-namespace anims_page {
-void Draw() {
-  Soon("Animations", "A character playing the game's motions: taunts, stances, finishers.",
-       "Coming: pick a superstar or a mod, a motion by name, play / pause / scrub; match moves through the game "
-       "with a dummy opponent.");
-}
-}  // namespace anims_page
-
 namespace icons_page {
 void Draw() {
   Soon("Icons & renders", "The game's pictures: superstar renders and face icons, arena banners, VS screens, "

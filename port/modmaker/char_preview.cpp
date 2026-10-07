@@ -1,4 +1,5 @@
-﻿// The superstar page's 3D preview (char_preview.h).
+﻿// The 3D character view (char_preview.h): the superstar page's preview and
+// the Animations page.
 //
 // Model: ch.pac is EPK8; its EMD group has one PACH per attire and kind
 // (entry "%06d%02d", attire*10 + kind, kind 2 = the model). The PACH holds
@@ -9,7 +10,9 @@
 // to the body's by name. -Y is up; the character faces -Z.
 //
 // Idle: m.pac EPAC group MVMT, entry STAT, PACH child 3 is a YMBs bank;
-// motion id 20000 x 10 y 0 is a one second loop. A motion has 21 rotation
+// motion id 20000 x 10 y 0 is a one second loop. Any YMBs motion plays the
+// same way (SetMotion); its track 1 (the victim) goes on the second
+// character. A motion has 21 rotation
 // channels (the bones in kBones, Euler z*y*x, replacing the node's own
 // rotation), a root move, and for each arm and leg an IK target and a pole
 // angle: the upper and lower limb bones carry no data and are solved here
@@ -356,13 +359,13 @@ void Ch16(Reader& r, int K, char mode, Channel& c) {
 
 bool DecodeMotion(const Bytes& b, int id, int x, int y, Motion& m, std::string& err) {
   if (b.size() < 0x114 || std::memcmp(b.data(), "YMBs", 4)) {
-    err = "the idle bank is not YMBs";
+    err = "the bank is not YMBs (match moves are YMKs, which only the game plays)";
     return false;
   }
   const uint8_t* T = &b[0x10];
   const uint32_t n = Le32(&b[0x110]);
   if (0x114 + size_t(n) * 16 + 4 + size_t(n) * 20 > b.size()) {
-    err = "the idle bank is cut short";
+    err = "the bank is cut short";
     return false;
   }
   const size_t base = 0x114 + size_t(n) * 16;
@@ -372,7 +375,7 @@ bool DecodeMotion(const Bytes& b, int id, int x, int y, Motion& m, std::string& 
     if (e[0] == y && e[1] == x && Le16(e + 2) == id) { k = int(i); break; }
   }
   if (k < 0) {
-    err = "the idle motion is not in the bank";
+    err = "that track of the motion is not in the bank";
     return false;
   }
   const uint8_t* e = &b[0x114 + 16 * size_t(k)];
@@ -380,7 +383,7 @@ bool DecodeMotion(const Bytes& b, int id, int x, int y, Motion& m, std::string& 
   const int type = h[0], nseg = h[1], interval = h[2] ? h[2] : 1;
   const uint32_t frames = Le32(e + 8);
   if (nseg || type > 1) {
-    err = "the idle motion has an unexpected layout";
+    err = "the motion's layout (segments / type) isn't understood yet";
     return false;
   }
   const int K = int((frames + uint32_t(interval) - 1) / uint32_t(interval));
@@ -429,7 +432,7 @@ bool DecodeMotion(const Bytes& b, int id, int x, int y, Motion& m, std::string& 
     }
   }
   if (!r.ok || rot != 21 || ik != 4 || pole != 4) {
-    err = "the idle motion did not decode";
+    err = "the motion did not decode";
     return false;
   }
   return true;
@@ -633,19 +636,26 @@ struct GpuMesh {
   bool cutout = false;
 };
 
-// state
+// state: slot 0 the model (track 0), slot 1 the dummy (track 1)
+struct Slot {
+  std::wstring file;
+  std::atomic<int> generation{0};
+  std::shared_ptr<Character> pending;  // loaded, not uploaded yet
+  std::shared_ptr<Character> ch;
+  std::vector<GpuMesh> gpu;
+  std::map<std::string, ID3D11ShaderResourceView*> textures;
+  std::vector<Xf> bind_inv;
+  std::shared_ptr<Motion> motion;  // its track of the chosen motion (nullptr: the idle / bind pose)
+};
 std::mutex g_mutex;
-std::wstring g_file, g_game;
-std::atomic<int> g_generation{0};
-std::shared_ptr<Character> g_pending;  // loaded, not uploaded yet
-std::shared_ptr<Character> g_char;
-std::vector<GpuMesh> g_gpu;
-std::map<std::string, ID3D11ShaderResourceView*> g_textures;
-std::shared_ptr<Motion> g_motion;
-std::string g_status;
-std::vector<Xf> g_bind_inv;
-float g_time = 0, g_yaw = 0.35f;
-V3 g_center{0, 0, 0};
+std::wstring g_game;
+Slot g_slots[2];
+std::shared_ptr<Motion> g_idle;
+std::string g_status, g_motion_status;
+Playback g_play;
+std::shared_ptr<const Bytes> g_bank;
+float g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
+V3 g_center{0, 0, 0}, g_pan{0, 0, 0};
 float g_height = 20;
 bool g_frame = false;  // (frame the camera on the next posed frame)
 
@@ -653,12 +663,12 @@ void Release(IUnknown* p) {
   if (p) p->Release();
 }
 
-void FreeCharacter() {
-  for (auto& g : g_gpu) Release(g.vb), Release(g.ib);
-  g_gpu.clear();
-  for (auto& [n, t] : g_textures) Release(t);
-  g_textures.clear();
-  g_char.reset();
+void FreeCharacter(Slot& sl) {
+  for (auto& g : sl.gpu) Release(g.vb), Release(g.ib);
+  sl.gpu.clear();
+  for (auto& [n, t] : sl.textures) Release(t);
+  sl.textures.clear();
+  sl.ch.reset();
 }
 
 ID3D11ShaderResourceView* MakeTexture(const Bytes& dds) {
@@ -702,9 +712,13 @@ ID3D11ShaderResourceView* MakeTexture(const Bytes& dds) {
   return srv;
 }
 
-void Upload(std::shared_ptr<Character> ch) {
-  FreeCharacter();
-  g_char = std::move(ch);
+void Upload(Slot& sl, std::shared_ptr<Character> ch) {
+  FreeCharacter(sl);
+  sl.ch = std::move(ch);
+  std::shared_ptr<Character>& g_char = sl.ch;
+  std::vector<GpuMesh>& g_gpu = sl.gpu;
+  std::map<std::string, ID3D11ShaderResourceView*>& g_textures = sl.textures;
+  std::vector<Xf>& g_bind_inv = sl.bind_inv;
   for (const PMesh& pm : g_char->meshes) {
     GpuMesh g;
     D3D11_BUFFER_DESC bd = {};
@@ -749,10 +763,11 @@ void Upload(std::shared_ptr<Character> ch) {
       for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], v[k]), hi[k] = std::max(hi[k], v[k]);
     }
   // (shown y up: y and z negated)
-  g_center = {(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -(lo[2] + hi[2]) / 2};
-  g_height = std::max(1.0f, hi[1] - lo[1]);
-  g_time = 0;
-  g_frame = true;
+  if (&sl == &g_slots[0]) {
+    g_center = {(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -(lo[2] + hi[2]) / 2};
+    g_height = std::max(1.0f, hi[1] - lo[1]);
+    g_frame = true;
+  }
 }
 
 bool CreatePipeline() {
@@ -834,9 +849,10 @@ void ResizeTarget(int w, int h) {
 
 // row-major, row vectors (as the editor)
 void ViewProj(float aspect, float out[16]) {
-  const float dist = g_height * 1.85f;
-  const V3 at = g_center;
-  const V3 eye = at + V3{std::sin(g_yaw) * dist, g_height * 0.08f, std::cos(g_yaw) * dist};
+  const float dist = g_height * 1.85f * g_zoom;
+  const V3 at = g_center + g_pan;
+  const float cp = std::cos(g_pitch), sp = std::sin(g_pitch);
+  const V3 eye = at + V3{std::sin(g_yaw) * dist * cp, dist * sp, std::cos(g_yaw) * dist * cp};
   const V3 z = Norm(at - eye), x = Norm(Cross(V3{0, 1, 0}, z)), y = Cross(z, x);
   const float view[16] = {x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -Dot(x, eye), -Dot(y, eye), -Dot(z, eye), 1};
   const float zn = 0.5f, zf = dist * 4, ys = 1.0f / std::tan(0.30f), xs = ys / aspect;
@@ -849,14 +865,18 @@ void ViewProj(float aspect, float out[16]) {
     }
 }
 
-void Skin(const std::vector<Xf>& pose) {
+float g_frame_lo[3], g_frame_hi[3];  // the bounds gathered over the slots skinned this frame
+
+void Skin(Slot& sl, const std::vector<Xf>& pose) {
   float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
   std::vector<Xf> skin(pose.size());
-  for (size_t i = 0; i < pose.size(); ++i) skin[i] = Mul(pose[i], g_bind_inv[i]);
-  for (size_t m = 0; m < g_gpu.size(); ++m) {
-    const PMesh& pm = g_char->meshes[m];
+  for (size_t i = 0; i < pose.size(); ++i) skin[i] = Mul(pose[i], sl.bind_inv[i]);
+  const bool frame = g_frame;
+  for (size_t m = 0; m < sl.gpu.size(); ++m) {
+    const PMesh& pm = sl.ch->meshes[m];
+    ID3D11Buffer* vb = sl.gpu[m].vb;
     D3D11_MAPPED_SUBRESOURCE ms;
-    if (!g_gpu[m].vb || FAILED(g_ctx->Map(g_gpu[m].vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
+    if (!vb || FAILED(g_ctx->Map(vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
     auto* out = static_cast<GpuVertex*>(ms.pData);
     for (size_t k = 0; k < pm.pos.size(); ++k) {
       V3 p, n;
@@ -869,16 +889,13 @@ void Skin(const std::vector<Xf>& pose) {
       }
       // y up for the view: y and z negated (a half turn about x)
       out[k] = {{p.x, -p.y, -p.z}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}};
-      if (g_frame)
+      if (frame)
         for (int c = 0; c < 3; ++c) lo[c] = std::min(lo[c], out[k].pos[c]), hi[c] = std::max(hi[c], out[k].pos[c]);
     }
-    g_ctx->Unmap(g_gpu[m].vb, 0);
+    g_ctx->Unmap(vb, 0);
   }
-  if (g_frame && lo[0] <= hi[0]) {  // (the idle stands on the floor: framed as posed)
-    g_center = {(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
-    g_height = std::max(1.0f, hi[1] - lo[1]);
-    g_frame = false;
-  }
+  if (frame && lo[0] <= hi[0])
+    for (int c = 0; c < 3; ++c) g_frame_lo[c] = std::min(g_frame_lo[c], lo[c]), g_frame_hi[c] = std::max(g_frame_hi[c], hi[c]);
 }
 
 void Render(int w, int h) {
@@ -886,15 +903,35 @@ void Render(int w, int h) {
   const float clear[4] = {0.11f, 0.12f, 0.14f, 1};
   g_ctx->ClearRenderTargetView(g_rtv, clear);
   g_ctx->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1, 0);
-  if (!g_char || !g_vs) return;
-  if (g_motion) {
-    g_time += ImGui::GetIO().DeltaTime;
-    const float key = std::fmod(g_time * 30.0f, float(std::max(1, g_motion->keys)));
-    Skin(Pose(*g_char, *g_motion, key));
-  } else {
-    std::vector<Xf> bind(g_bind_inv.size());
-    for (size_t i = 0; i < bind.size(); ++i) bind[i] = Inverse(g_bind_inv[i]);
-    Skin(bind);
+  if (!g_slots[0].ch || !g_vs) return;
+  // the clock: the chosen motion's keys (track 0's length), else the idle's
+  const Motion* clock = g_slots[0].motion ? g_slots[0].motion.get() : g_slots[1].motion ? g_slots[1].motion.get() : g_idle.get();
+  g_play.keys = clock ? clock->keys : 0;
+  if (g_play.playing && g_play.keys > 0) {
+    g_play.key += ImGui::GetIO().DeltaTime * 30.0f * g_play.speed;
+    if (g_play.key >= float(g_play.keys)) g_play.key = g_play.loop ? std::fmod(g_play.key, float(g_play.keys)) : float(g_play.keys - 1);
+  }
+  for (int c = 0; c < 3; ++c) g_frame_lo[c] = 1e30f, g_frame_hi[c] = -1e30f;
+  for (Slot& sl : g_slots) {
+    if (!sl.ch) continue;
+    const Motion* m = sl.motion ? sl.motion.get() : (&sl == &g_slots[0] || !g_bank) ? g_idle.get() : nullptr;
+    if (m) {
+      const float key = m == clock ? g_play.key : std::fmod(g_play.key, float(std::max(1, m->keys)));
+      Skin(sl, Pose(*sl.ch, *m, key));
+    } else {
+      std::vector<Xf> bind(sl.bind_inv.size());
+      for (size_t i = 0; i < bind.size(); ++i) bind[i] = Inverse(sl.bind_inv[i]);
+      Skin(sl, bind);
+    }
+  }
+  if (g_frame && g_frame_lo[0] <= g_frame_hi[0]) {  // framed as posed (the idle stands on the floor)
+    const float* lo = g_frame_lo;
+    const float* hi = g_frame_hi;
+    g_center = {(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
+    const float spread = std::max({hi[0] - lo[0], hi[2] - lo[2]});
+    g_height = std::max({1.0f, hi[1] - lo[1], spread * 0.8f});
+    g_pan = {};
+    g_frame = false;
   }
   D3D11_VIEWPORT vp = {0, 0, float(w), float(h), 0, 1};
   g_ctx->RSSetViewports(1, &vp);
@@ -911,7 +948,8 @@ void Render(int w, int h) {
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
   float viewproj[16];
   ViewProj(float(w) / float(h), viewproj);
-  for (const GpuMesh& g : g_gpu) {
+  for (const Slot& sl : g_slots)
+  for (const GpuMesh& g : sl.gpu) {
     D3D11_MAPPED_SUBRESOURCE ms;
     if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
     Cb* c = static_cast<Cb*>(ms.pData);
@@ -937,59 +975,109 @@ void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
 }
 
 void Shutdown() {
-  FreeCharacter();
+  for (Slot& sl : g_slots) FreeCharacter(sl);
   Release(g_rt_srv), Release(g_rtv), Release(g_rt), Release(g_dsv);
   Release(g_vs), Release(g_ps), Release(g_layout), Release(g_cb), Release(g_sampler), Release(g_raster);
   Release(g_depth), Release(g_white);
 }
 
-void SetModel(const std::wstring& ch_pac, const std::wstring& game) {
+void LoadSlot(int which, const std::wstring& ch_pac) {
+  Slot& sl = g_slots[which];
   {
     std::lock_guard lock(g_mutex);
-    if (ch_pac == g_file && game == g_game) return;
-    g_file = ch_pac;
-    g_game = game;
-    g_pending.reset();
-    g_status = ch_pac.empty() ? "" : "Loading the model...";
+    if (ch_pac == sl.file) return;
+    sl.file = ch_pac;
+    sl.pending.reset();
+    if (which == 0) g_status = ch_pac.empty() ? "" : "Loading the model...";
   }
-  const int gen = ++g_generation;
+  const int gen = ++sl.generation;
   if (ch_pac.empty()) return;
-  const bool need_motion = !g_motion;
-  std::thread([ch_pac, game, gen, need_motion] {
+  const bool need_idle = !g_idle;
+  const std::wstring game = g_game;
+  std::thread([which, ch_pac, game, gen, need_idle] {
     auto ch = std::make_shared<Character>();
     std::string err;
     Bytes pac;
     bool ok = ReadWide(ch_pac, pac) && LoadCharacter(pac, *ch, err);
     if (!ok && err.empty()) err = "could not read the file";
-    std::shared_ptr<Motion> motion;
-    std::string motion_err;
-    if (ok && need_motion) {
-      motion = std::make_shared<Motion>();
-      if (!LoadIdle(game, *motion, motion_err)) motion.reset();
+    std::shared_ptr<Motion> idle;
+    std::string idle_err;
+    if (ok && need_idle) {
+      idle = std::make_shared<Motion>();
+      if (!LoadIdle(game, *idle, idle_err)) idle.reset();
     }
     std::lock_guard lock(g_mutex);
-    if (gen != g_generation) return;
+    Slot& sl = g_slots[which];
+    if (gen != sl.generation) return;
     if (!ok) {
-      g_status = "The model did not load: " + err + ".";
+      if (which == 0) g_status = "The model did not load: " + err + ".";
       return;
     }
-    g_pending = ch;
-    if (motion) g_motion = motion;
-    char s[160];
-    std::snprintf(s, sizeof s, "%zu vertices, %zu bones%s", ch->verts, ch->bones.size(),
-                  g_motion ? ", playing the idle stance" : "");
-    g_status = s;
-    if (!g_motion && !motion_err.empty()) g_status += " (no idle: " + motion_err + ")";
+    sl.pending = ch;
+    if (idle) g_idle = idle;
+    if (which == 0) {
+      char s[160];
+      std::snprintf(s, sizeof s, "%zu vertices, %zu bones%s", ch->verts, ch->bones.size(),
+                    g_bank ? "" : g_idle ? ", playing the idle stance" : "");
+      g_status = s;
+      if (!g_idle && !idle_err.empty()) g_status += " (no idle: " + idle_err + ")";
+    }
   }).detach();
+}
+
+void SetModel(const std::wstring& ch_pac, const std::wstring& game) {
+  {
+    std::lock_guard lock(g_mutex);
+    g_game = game;
+  }
+  LoadSlot(0, ch_pac);
+}
+
+void SetDummy(const std::wstring& ch_pac) { LoadSlot(1, ch_pac); }
+
+bool SetMotion(std::shared_ptr<const Bytes> bank, int id, int x, std::string* err) {
+  std::lock_guard lock(g_mutex);
+  g_bank = bank;
+  g_slots[0].motion.reset();
+  g_slots[1].motion.reset();
+  g_play.key = 0;
+  g_play.id = bank ? id : -1;
+  g_play.x = x;
+  if (!bank) return true;
+  std::string e0, e1;
+  auto m0 = std::make_shared<Motion>(), m1 = std::make_shared<Motion>();
+  const bool ok0 = DecodeMotion(*bank, id, x, 0, *m0, e0), ok1 = DecodeMotion(*bank, id, x, 1, *m1, e1);
+  if (ok0) g_slots[0].motion = m0;
+  if (ok1) g_slots[1].motion = m1;
+  if (!ok0 && !ok1) {
+    if (err) *err = e0;
+    g_bank.reset();
+    g_play.id = -1;
+    return false;
+  }
+  g_frame = true;
+  return true;
+}
+
+void ClearMotion() { SetMotion(nullptr, -1, 0); }
+
+Playback& Play() { return g_play; }
+
+void ResetCamera() {
+  g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
+  g_pan = {};
+  g_frame = true;
 }
 
 void Draw(float w, float h) {
   {
     std::lock_guard lock(g_mutex);
-    if (g_pending) Upload(std::move(g_pending)), g_pending.reset();
-    if (g_file.empty() && g_char) FreeCharacter();
+    for (Slot& sl : g_slots) {
+      if (sl.pending) Upload(sl, std::move(sl.pending)), sl.pending.reset();
+      if (sl.file.empty() && sl.ch) FreeCharacter(sl);
+    }
   }
-  if (!g_char) {
+  if (!g_slots[0].ch) {
     ImGui::Dummy(ImVec2(w, h));
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     ImGui::GetWindowDrawList()->AddRectFilled(a, b, IM_COL32(28, 31, 36, 255));
@@ -1001,8 +1089,23 @@ void Draw(float w, float h) {
   }
   Render(std::max(16, int(w)), std::max(16, int(h)));
   ImGui::Image(ImTextureID(reinterpret_cast<uintptr_t>(g_rt_srv)), ImVec2(w, h));
-  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to turn the superstar.");
-  if (ImGui::IsItemHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_yaw -= ImGui::GetIO().MouseDelta.x * 0.01f;
+  if (ImGui::IsItemHovered()) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_yaw -= io.MouseDelta.x * 0.01f;
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+      g_yaw -= io.MouseDelta.x * 0.01f;
+      g_pitch = std::clamp(g_pitch + io.MouseDelta.y * 0.01f, -0.6f, 1.2f);
+    }
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+      // pan in the view plane
+      const float k = g_height * g_zoom * 0.0025f;
+      const V3 right{std::cos(g_yaw), 0, -std::sin(g_yaw)};
+      g_pan = g_pan - right * (io.MouseDelta.x * k) + V3{0, io.MouseDelta.y * k, 0};
+    }
+    if (io.MouseWheel != 0) g_zoom = std::clamp(g_zoom * (io.MouseWheel > 0 ? 0.88f : 1.14f), 0.25f, 4.0f);
+    if (!ImGui::IsAnyMouseDown() && io.MouseWheel == 0)
+      ImGui::SetTooltip("Left drag: turn   Right drag: tilt   Middle drag: pan   Wheel: zoom");
+  }
 }
 
 std::string Status() {
