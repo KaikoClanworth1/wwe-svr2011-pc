@@ -57,6 +57,12 @@ final class ModsPage {
         Button add = a_.button("Add a mod (.svrmod)…", LauncherActivity.kRed);
         add.setOnClickListener(v -> pick());
         c.addView(add, a_.fullWidth(14));
+        Button bundled = a_.button("Get bundled mods", LauncherActivity.kCard);
+        bundled.setOnClickListener(v -> {
+            if (!InstallActivity.installed()) a_.status("Install the game first.");
+            else BundledMods.offer(a_, true, this::refresh);
+        });
+        c.addView(bundled, a_.fullWidth(8));
         installed_ = a_.card(c, "Installed mods");
         refresh();
         return c;
@@ -186,51 +192,82 @@ final class ModsPage {
     // arena.pac and banner.dds, or ch.pac and the song= / movie= files; a
     // match type (type=matchtype) is the manifest alone and comes switched on.
     String install(Uri uri) throws IOException {
-        File tmp = new File(a_.getCacheDir(), "mod.part");
-        Map<String, File> parts = new HashMap<>();
-        File stage = new File(a_.getCacheDir(), "mod_stage");
-        deleteTree(stage);
-        stage.mkdirs();
         try (InputStream raw = a_.getContentResolver().openInputStream(uri)) {
             if (raw == null) throw new IOException("can't read it");
-            ZipInputStream zip = new ZipInputStream(new BufferedInputStream(raw, 1 << 16));
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (e.isDirectory()) continue;
-                // (subfolders kept - a superstar mod's moves/motions/ - but
-                // nothing outside the mod's folder)
-                String n = e.getName().replace('\\', '/');
-                String leaf = n.substring(n.lastIndexOf('/') + 1);
-                if (leaf.isEmpty() || leaf.startsWith(".") || n.startsWith("/") || n.contains(":")
-                        || ("/" + n + "/").contains("/../"))
-                    continue;
-                File out = new File(stage, n);
-                File dir = out.getParentFile();
-                if (dir != null) dir.mkdirs();
-                try (OutputStream o = new FileOutputStream(out)) {
-                    FileOps.copy(zip, o);
-                }
-                parts.put(n, out);
-            }
+            return install(a_, raw, false).name;
         }
-        tmp.delete();
+    }
+
+    // Where a mod went (Mods/<kind>/<id>), whether it was there already, and
+    // for a bundled one whether the player's newer copy was kept instead.
+    static final class Installed {
+        String name, type;
+        File dest;
+        boolean existed, kept;
+    }
+
+    // Installs the .svrmod read from `raw`. A bundled mod (BundledMods) keeps
+    // the player's on / off and never replaces a newer version of it.
+    static Installed install(android.content.Context ctx, InputStream raw, boolean bundle) throws IOException {
+        Map<String, File> parts = new HashMap<>();
+        File stage = new File(ctx.getCacheDir(), "mod_stage");
+        deleteTree(stage);
+        stage.mkdirs();
+        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(raw, 1 << 16));
+        ZipEntry e;
+        while ((e = zip.getNextEntry()) != null) {
+            if (e.isDirectory()) continue;
+            // (subfolders kept - a superstar mod's moves/motions/ - but
+            // nothing outside the mod's folder)
+            String n = e.getName().replace('\\', '/');
+            String leaf = n.substring(n.lastIndexOf('/') + 1);
+            if (leaf.isEmpty() || leaf.startsWith(".") || n.startsWith("/") || n.contains(":")
+                    || ("/" + n + "/").contains("/../"))
+                continue;
+            File out = new File(stage, n);
+            File dir = out.getParentFile();
+            if (dir != null) dir.mkdirs();
+            try (OutputStream o = new FileOutputStream(out)) {
+                FileOps.copy(zip, o);
+            }
+            parts.put(n, out);
+        }
         Map<String, String> m = manifest(stage);
-        boolean star = "superstar".equalsIgnoreCase(m.get("type"));
-        boolean signPack = "signs".equalsIgnoreCase(m.get("type"));
-        boolean mediaPack = "media".equalsIgnoreCase(m.get("type"));
-        boolean backPack = "backstage".equalsIgnoreCase(m.get("type"));
-        boolean matchType = "matchtype".equalsIgnoreCase(m.get("type"));
-        if (!signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac")))
+        String type = m.containsKey("type") ? m.get("type").toLowerCase() : "arena";
+        boolean star = type.equals("superstar");
+        boolean signPack = type.equals("signs");
+        boolean mediaPack = type.equals("media");
+        boolean backPack = type.equals("backstage");
+        boolean matchType = type.equals("matchtype");
+        if (!signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
+            deleteTree(stage);
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
+        }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
         if (id.isEmpty()) id = matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
         File dest = new File(matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        Installed r = new Installed();
+        r.name = m.containsKey("name") ? m.get("name") : id;
+        r.type = type;
+        r.dest = dest;
+        r.existed = dest.exists();
+        boolean off = false;
+        if (bundle && r.existed) {
+            String mine = manifest(dest).get("version"), theirs = m.get("version");
+            if (mine != null && theirs != null && Updater.newer(mine, theirs)) {
+                deleteTree(stage);
+                r.kept = true;
+                return r;
+            }
+            off = new File(dest, "disabled").exists();
+        }
         deleteTree(dest);
         dest.getParentFile().mkdirs();
         FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)
         deleteTree(stage);
         if (!new File(dest, signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
             throw new IOException("can't write to the game folder");
-        return m.containsKey("name") ? m.get("name") : id;
+        if (off) new FileOutputStream(new File(dest, "disabled")).close();
+        return r;
     }
 }

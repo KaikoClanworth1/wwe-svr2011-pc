@@ -121,6 +121,8 @@ public class LauncherActivity extends Activity {
         // The shaders from this APK into the game folder (when it's newer).
         if (InstallActivity.installed()) background(() -> Shaders.install(this), null);
         if (getPreferences(MODE_PRIVATE).getBoolean("check_updates", true)) checkUpdates(false);
+        // The mods that come with the port, once for each app version (BundledMods).
+        BundledMods.atStart(this);
         // Edge to edge (Android 15+): keep clear of the status and navigation bars
         // and the camera cut-out.
         if (android.os.Build.VERSION.SDK_INT >= 30) root.setOnApplyWindowInsetsListener((v, insets) -> {

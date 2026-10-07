@@ -21,6 +21,8 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Updates (the launcher downloads the new app and hands it to the package installer); online play. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- (the bundled mods download asks first on mobile data) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />

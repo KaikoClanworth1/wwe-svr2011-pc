@@ -3,7 +3,8 @@
 // APK (SvR2011-Android-v<version>.apk, or the one inside the PC zip) is
 // downloaded and handed to Android's package installer, which asks the
 // player and installs it over this app (same signing key: the saves and the
-// game folder stay).
+// game folder stay). The release's SvR2011-Mods-v<version>.zip (Bundled
+// Mods\*.svrmod) is BundledMods' download.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -35,6 +36,8 @@ final class Updater {
         String version, page, assetUrl, assetName;
         long assetSize;
         boolean prerelease, zip;  // zip: the APK is inside the PC zip
+        String modsUrl, modsName;  // the bundled mods (SvR2011-Mods-v<version>.zip), if it has them
+        long modsSize;
     }
 
     interface Progress { void at(long done, long total); }
@@ -69,7 +72,10 @@ final class Updater {
     }
 
     // The newest release (pre-releases included, as the PC launcher does).
-    static Release latest() throws IOException {
+    static Release latest() throws IOException { return release(null); }
+
+    // The release of `version` (tag v<version>) when it's among the newest, else the newest.
+    static Release release(String version) throws IOException {
         HttpURLConnection c = connect("https://api.github.com/repos/" + kRepo + "/releases?per_page=10");
         int code = c.getResponseCode();
         if (code == 403) throw new IOException("GitHub limits how often it can be asked; try again in an hour");
@@ -84,6 +90,10 @@ final class Updater {
             JSONArray list = new JSONArray(body);
             if (list.length() == 0) return null;
             JSONObject r = list.getJSONObject(0);
+            for (int i = 0; version != null && i < list.length(); i++) {
+                String t = list.getJSONObject(i).optString("tag_name");
+                if (t.equals("v" + version) || t.equals(version)) r = list.getJSONObject(i);
+            }
             Release rel = new Release();
             String tag = r.getString("tag_name");
             rel.version = tag.startsWith("v") ? tag.substring(1) : tag;
@@ -104,6 +114,15 @@ final class Updater {
                         rel.zip = pass == 1;
                         break;
                     }
+                }
+            }
+            for (int i = 0; i < assets.length(); i++) {
+                JSONObject a = assets.getJSONObject(i);
+                String name = a.getString("name"), url = a.getString("browser_download_url");
+                if (name.startsWith("SvR2011-Mods-") && name.endsWith(".zip") && url.startsWith(prefix)) {
+                    rel.modsUrl = url;
+                    rel.modsName = name;
+                    rel.modsSize = a.optLong("size", -1);
                 }
             }
             return rel;

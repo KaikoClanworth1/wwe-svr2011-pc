@@ -222,6 +222,8 @@ final class InstallPage {
                 cancelButton_.setVisibility(View.GONE);
             a_.status(result[0]);
             refresh();
+            // (the disc has the game only: the port's own mods are a download)
+            if (InstallActivity.installed() && result[0].startsWith("Installed")) BundledMods.offer(a_, false, null);
         });
     }
 
