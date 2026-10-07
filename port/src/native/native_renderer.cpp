@@ -76,6 +76,10 @@ REXCVAR_DEFINE_BOOL(native_scale_effects, kScaleEffectsDefault, "GPU",
                     "Native renderer: render shadows, reflections and glow at the render scale too "
                     "(false: at the Xbox 360's size, faster on weak GPUs)");
 
+REXCVAR_DEFINE_BOOL(native_shadows, true, "GPU",
+                    "Native renderer: the characters' and the arena's real-time shadows (false: nothing "
+                    "is drawn into the shadow map - no shadows, fewer draws). Applies at once.");
+
 // On by default only on phones, where the driver's command recording is a
 // large part of the render thread; on a PC (D3D12, Batista's entrance at
 // 5,400 draws) handing the commands over cost more than recording them.
@@ -697,6 +701,9 @@ uint32_t g_scale = 1;
 // and the frame images) are scaled; the effect buffers (the 1120 x 1120 shadow
 // map, reflections, glow and blur chains) keep the guest's size.
 bool g_scale_effects = true;
+// native_shadows off: draws into the shadow map (the 1120 x 1120 32-bit float
+// target) are skipped; its clear stays, so nothing reads as shadowed.
+bool g_shadows = true;
 
 // native_render_scale: the main scene's targets (and their resolves and the
 // frame images) have this fraction of the scale's pixels per side - weak GPUs.
@@ -1415,12 +1422,15 @@ void ApplyOutputSettings(Renderer* r) {
   static uint32_t aa = aa_level();
   static int32_t max_scale = REXCVAR_GET(native_max_scale);
   static bool effects = REXCVAR_GET(native_scale_effects);
+  static const bool shadows_once = (g_shadows = REXCVAR_GET(native_shadows));
+  (void)shadows_once;
   static float res = float(REXCVAR_GET(native_render_scale));
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
     aa = aa_level();
     max_scale = REXCVAR_GET(native_max_scale);
     effects = REXCVAR_GET(native_scale_effects);
+    g_shadows = REXCVAR_GET(native_shadows);
     res = float(REXCVAR_GET(native_render_scale));
     widescreen = REXCVAR_GET(native_widescreen);
     aa_checked = r->frames;
@@ -2929,6 +2939,11 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   const Targets targets = CurrentTargets(r);
   if (!targets.color) {
     ++r->frame_stats.skipped_target;
+    return;
+  }
+  if (!g_shadows && targets.color->width == 1120 && targets.color->height == 1120 &&
+      targets.color->format == RenderFormat::R32_FLOAT) {
+    ++r->frame_stats.skipped_target;  // (native_shadows off: the shadow map keeps its clear)
     return;
   }
   Shader* vs = FindShader(Be32(Device() + guest::kDeviceCurrentVertexShader));

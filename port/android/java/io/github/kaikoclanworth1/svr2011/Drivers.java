@@ -296,10 +296,12 @@ final class Drivers {
         for (String k : kMaliOff) settings_.setBool(k, !on);
         for (String k : kMaliOn) settings_.setBool(k, on);
         // Mali GPUs are in slow phones and tablets: the scene at half resolution
-        // and small textures (memory); the crowd is left out in Mali mode too
-        // (arena_crowd auto). Off: full resolution again.
+        // and small textures (memory), no real-time shadows; the crowd is left
+        // out in Mali mode too (arena_crowd auto). Off: full resolution and
+        // shadows again.
         settings_.setDouble("native_render_scale", on ? 0.5 : 1.0);
         if (on) settings_.setString("native_texture_quality", "low");
+        settings_.setBool("native_shadows", !on);  // (no real-time shadows: fewer draws)
     }
 
     // Before the game starts on a Mali GPU: the warning (each time, until the
