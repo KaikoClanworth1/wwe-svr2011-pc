@@ -10,6 +10,7 @@
 
 #include "frame_rate.h"
 #include "graphics_page.h"
+#include "backgrounds_page.h"
 #include "mystery_opponent.h"
 
 #include <algorithm>
@@ -1111,11 +1112,12 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
                    : rex::cvar::Query<bool>("fullscreen_exclusive") ? kExclusive : kBorderless);
   });
   if (input) {
-    // (one hold for the port's pages: this one, ACHIEVEMENTS and JUKEBOX)
+    // (one hold for the port's pages: this one, ACHIEVEMENTS, JUKEBOX and BACKGROUNDS)
     input->SetGuestInputHold(
         [] {
           return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() || JukeboxPageHoldsInput() ||
-                 TouchControlsHoldInput() || OnlineOverlayHoldsInput() || MysteryOpponentHoldsInput();
+                 BackgroundsPageHoldsInput() || TouchControlsHoldInput() || OnlineOverlayHoldsInput() ||
+                 MysteryOpponentHoldsInput();
         });
   }
 }

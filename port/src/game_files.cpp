@@ -3,7 +3,7 @@
 // extra tools. The same changes as tools/patch_strings.py and
 // tools/patch_menu.py (keep them in sync):
 //   pac/string.pac     console wording -> PC wording (dlc.cpp's table)
-//   pac/menu/menu.pac  CONTROLS, GRAPHICS and LANGUAGE in MY WWE -> OPTIONS, ACHIEVEMENTS in MY WWE,
+//   pac/menu/menu.pac  CONTROLS, GRAPHICS, LANGUAGE and BACKGROUNDS in MY WWE -> OPTIONS, ACHIEVEMENTS in MY WWE,
 //                      EXIT in the main menu (the port supplies their labels,
 //                      menu_hooks.cpp)
 #include "game_files.h"
@@ -109,8 +109,9 @@ void PatchMenu(const std::filesystem::path& file) {
   if (d.size() < kMflo + kMfloSlot) return;
   // The table's header (records, shown records): the disc's, after each patch
   // (v0.1-v0.3: GRAPHICS, EXIT; + ACHIEVEMENTS; v1.0.4: + LANGUAGE; v2.0.3:
-  // + JUKEBOX; v2.0.5: + CONTROLS). Each step takes the table from one state to the next.
+  // + JUKEBOX; v2.0.5: + CONTROLS; v2.0.6: + BACKGROUNDS). Each step takes the table from one state to the next.
   auto state = [&] { return std::pair(Be32(d, kMflo + 4), Be32(d, kMflo + 8)); };
+  constexpr uint32_t kBackgroundsLabel = 0x0FA0B200;  // (v2.0.6: BACKGROUNDS - below)
   using State = std::pair<uint32_t, uint32_t>;
   const State before = state();
   const bool node_fixed = FixNodeOrder(d);  // (v1.0.4)
@@ -149,7 +150,15 @@ void PatchMenu(const std::filesystem::path& file) {
     SetBe32(&d[language], 0xAFC0);
     SetBe32(&d[controls], 0xAFC4);
   }
-  if (state() != State(0xE5, 0xE2) || !Find(d, 0xAFC5, 0x05) || !Find(d, 0xAFC7, 0x11)) return fail();
+  if (state() == State(0xE5, 0xE2)) {
+    // (v2.0.6) BACKGROUNDS after LANGUAGE (a copy of it); one more hidden NEW
+    // SUPERSTAR copy goes. Its label id is outside the game's string ids
+    // (menu_hooks.cpp supplies the text; 0xAFC8 is the game's own: the help bar's A).
+    if (!Find(d, 0xAFC7, 0x11) || !DropSkipped(d, 0xA482, 0x0E) || !AddEntry(d, 0xAFC4, 0x11, kBackgroundsLabel))
+      return fail();
+  }
+  if (state() != State(0xE5, 0xE3) || !Find(d, 0xAFC5, 0x05) || !Find(d, 0xAFC7, 0x11) || !Find(d, kBackgroundsLabel, 0x11))
+    return fail();
   if (state() == before && !node_fixed) return;  // patched already
   const auto tmp = file.string() + ".tmp";
   {
@@ -160,7 +169,7 @@ void PatchMenu(const std::filesystem::path& file) {
   std::error_code ec;
   std::filesystem::rename(tmp, file, ec);
   if (!ec) REXLOG_INFO("{}: {}", file.string(), state() == before ? "MY WWE -> OPTIONS back fixed (node order)"
-                                                                 : "added CONTROLS, GRAPHICS, LANGUAGE, ACHIEVEMENTS, JUKEBOX and EXIT");
+                                                                 : "added CONTROLS, GRAPHICS, LANGUAGE, BACKGROUNDS, ACHIEVEMENTS, JUKEBOX and EXIT");
 }
 
 }  // namespace

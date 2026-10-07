@@ -47,6 +47,7 @@ set(SVR2011_SOURCES
     src/slobber_knocker.cpp
     src/three_stages.cpp
     src/mystery_opponent.cpp
+    src/backgrounds_page.cpp
     src/players.cpp
     src/sort_filters.cpp
     src/arena_mods.cpp
