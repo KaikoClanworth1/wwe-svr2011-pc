@@ -164,9 +164,16 @@ void PlayInGame() {
     if (ReadFile(PathStr(fs::path(g_model).parent_path() / L"manifest.txt"), man)) who = Value(std::string(man.begin(), man.end()), "name");
     if (who.empty()) { Status("That model isn't an installed mod: install it as a superstar first, then pick it by name."); return; }
   }
-  const std::wstring env = L"SVR2011_ROUTE=match;SVR2011_TEST_MATCH=people=" + Wide(who) + L"," + Wide(stars[dummy].name) +
-                           L" cpu=all;SVR2011_TEST_FORCE_MOVE=0,1," + std::to_wstring(std::max(2, g_every)) + L"," +
-                           std::to_wstring(g_move_id) + L";SVR2011_TEST_MOTION_LOG=1";
+  // the route's menu steps run through the scripted controller, which needs its input file
+  // (empty is fine); without it the game's title demo plays instead of the chosen match
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
+  std::error_code ec;
+  fs::create_directories(work, ec);
+  const fs::path input = work / L"play_input.txt";
+  if (FILE* f = _wfopen(input.c_str(), L"wb")) std::fclose(f);
+  const std::wstring env = L"SVR2011_ROUTE=match;SVR2011_INPUT_FILE=" + input.wstring() + L";SVR2011_TEST_MATCH=people=" +
+                           Wide(who) + L"," + Wide(stars[dummy].name) + L" cpu=all;SVR2011_TEST_FORCE_MOVE=0,1," +
+                           std::to_wstring(std::max(2, g_every)) + L"," + std::to_wstring(g_move_id) + L";SVR2011_TEST_MOTION_LOG=1";
   StartGame(env);
   Status("The game starts a match: " + who + " does " + MotionLabel(g_move_id) + " to " + stars[dummy].name + " every " +
          std::to_string(std::max(2, g_every)) + " s (both computer-controlled).");
