@@ -116,6 +116,7 @@ still being tested.
 - **Texture quality** (GRAPHICS → GRAPHICS → TEXTURES, and both launchers' Settings): MEDIUM / LOW use the game's own half / quarter-size copies of big textures - less memory and faster loading; menus and text stay sharp. Changes apply at once.
 - **BACKGROUNDS** (MY WWE → OPTIONS → BACKGROUNDS): switch each of the main menu's 12 background pictures on or off; the menu moves on to the next one that's on after every match or mode (all off: all play).
 - **MY MUSIC** (MY WWE → JUKEBOX): the songs in your Music folder play in the menu shuffle with the game's own songs, or instead of them (switch songs on / off as usual). On PC and Android.
+- **Shift, Ctrl or Alt alone as a control** (MY WWE → OPTIONS → CONTROLS: tap it while the page waits for a key), e.g. Shift to run; holding it doesn't block the other keys.
 - **Copy and paste with the keyboard**: Ctrl+V pastes the clipboard into the game's text fields and Ctrl+C copies a field's text. In the Story Designer, Ctrl+C / Ctrl+V also copy and paste moments, shows and moment groups.
 - **Story Designer: Divas and male superstars together** (with mixed-gender matches on, the default): mixed matches and scenes are allowed, and both are offered in the superstar lists.
 - **Community Creations: your own stories upload** (they were refused as "created by a different player"; only downloaded stories are now).
@@ -129,6 +130,7 @@ still being tested.
 - **Touch controls** draw on top of the port's own pages (GRAPHICS, JUKEBOX, ACHIEVEMENTS...), and quick taps count.
 
 ### Fixes
+- **Several controllers: whoever presses START plays with the profile** - pressing START on a second pad or the keyboard at the title screen no longer says "You are not currently signed in with a profile"; that controller becomes player 1 (saves and achievements work) and the others stay players 2-4.
 - 🧪 **A freeze mid-match** (the match stops moving; seen most at 30 fps, on phones and in big matches such as Royal Rumbles): a timing race in the game's own per-character job system lost a request when the game ran extra updates to catch up. The lost request is now noticed and asked for again.
 - **Fatal 4-Way / Triple Threat Elimination crash**: when a wrestler was eliminated, a CPU still aiming at them could crash the match.
 - **Replays and match highlights at 30 fps** no longer freeze the picture (the wrestlers stood still while the sound went on).
