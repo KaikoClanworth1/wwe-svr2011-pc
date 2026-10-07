@@ -75,6 +75,7 @@ It also adds:
   - [Saves](#saves)
   - [DLC](#dlc)
   - [Texture packs](#texture-packs)
+  - [Mods and the Mod Maker](#mods-and-the-mod-maker)
 - [Building from source](#building-from-source)
 - [Troubleshooting](#troubleshooting)
 - [Contributors](#contributors)
@@ -335,6 +336,12 @@ Downloadable content from the Xbox 360 (superstars, moves, arenas) works. In the
 Texture packs replace the game's textures with new ones, at any resolution, as in Dolphin. In the launcher's **Texture packs** tab, add a pack (a folder or a `.zip`) and tick it. Ticked packs are used the next time the game starts, and a pack higher in the list wins over the ones below it. Packs live in the game folder's `Texture Packs\`. On Android, copy pack folders into the phone's game folder (`Texture Packs`), then switch them on in the launcher's **Settings**.
 
 **Making a pack:** tick **Dump textures** and play. The game writes every texture it shows to `Texture Dumps\`, as PNG, once each. Files are named after the game's own textures, with a code at the end, for example `menuHD_brandlogo_RAW_7239e21ccf9832e0.png` or `ch100_a0_normal_....png`. Textures the game makes while running get `tex_<size>_<format>_<code>.png`. Edit a file at any size, keep its name (the code at the end is what counts), and put it anywhere in your pack's folder. PNG and DDS (DXT1/3/5 or 32-bit, with mipmaps) both work. Packs aren't affected by **Textures** quality: a pack's texture always shows at its own size. The first dump indexes the game's files for the names (about half a minute, once).
+
+### Mods and the Mod Maker
+
+Mods add things to the game without touching its files: arenas, backstage rooms, superstars, moves, crowd signs, media packs and match types, each a single `.svrmod` file. The launcher's **Mods** tab installs them (**+**), lists them with a tick to switch each on or off, and ships with the bundled ones. Mods live in the game folder's `Mods\`; the game lays them over its own files when it starts.
+
+The **Mod Maker** (Mods tab → **Open Mod Maker**) makes them: a 3D arena editor with a Blender round trip, superstar mods from any character model with their theme, entrance video, attires and pictures, move packs, crowd signs, media packs, match types, converters for WWE '13 / SvR 2010 / SvR 2008 content, your Created Superstars' pictures, and viewers for every file, animation and picture in the game. **The full guide, with pictures, diagrams and step-by-step tutorials: [kaikoclanworth1.github.io/wwe-svr2011-pc](https://kaikoclanworth1.github.io/wwe-svr2011-pc/)** (also next to the Mod Maker as *Mod Maker Guide*, and on its Manual page). The `.svrmod` format is documented in [docs/SVRMOD_FORMAT.md](docs/SVRMOD_FORMAT.md).
 
 ### Achievements
 
