@@ -199,7 +199,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kMedia, kAssets, kAnims, kIcons, kHelp, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kMedia, kCaw, kAssets, kAnims, kIcons, kHelp, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -271,6 +271,7 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); }
+namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
 namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); }
 namespace icons_page { void Draw(); void TestTab(int tab); }

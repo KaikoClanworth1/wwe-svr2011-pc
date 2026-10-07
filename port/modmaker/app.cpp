@@ -7,6 +7,7 @@
 
 #include <shellapi.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cctype>
@@ -616,7 +617,32 @@ const std::string& MoveName(int id) {
   return it == m.end() ? none : it->second;
 }
 
-bool GameRunning() { return FindWindowW(nullptr, L"WWE SmackDown vs. Raw 2011") != nullptr; }
+// A game running from this game folder (another copy's test game doesn't count).
+bool GameRunning() {
+  if (g_game.empty()) return false;
+  static std::wstring last_game;
+  static bool last_result = false;
+  static double last_time = -10;
+  const double now = ImGui::GetTime();
+  if (last_game == g_game && now - last_time < 1.0) return last_result;  // (asked every frame)
+  last_game = g_game, last_time = now;
+  last_result = false;
+  const std::wstring want = Lower(PathStr(fs::path(g_game) / L"svr2011.exe")) == "" ? L"" : (fs::path(g_game) / L"svr2011.exe").wstring();
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE) return false;
+  PROCESSENTRY32W pe = {sizeof pe};
+  for (BOOL ok = Process32FirstW(snap, &pe); ok && !last_result; ok = Process32NextW(snap, &pe)) {
+    if (_wcsicmp(pe.szExeFile, L"svr2011.exe")) continue;
+    if (HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID)) {
+      wchar_t path[MAX_PATH * 2];
+      DWORD n = DWORD(std::size(path));
+      if (QueryFullProcessImageNameW(h, 0, path, &n) && !_wcsicmp(path, want.c_str())) last_result = true;
+      CloseHandle(h);
+    }
+  }
+  CloseHandle(snap);
+  return last_result;
+}
 
 void StartGame(const std::wstring& extra_env) {
   const std::wstring exe = (fs::path(g_game) / L"svr2011.exe").wstring();
@@ -808,6 +834,7 @@ const PageDesc kPages[] = {
     {PageId::kMoves, "Moves", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
+    {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
     {PageId::kAnims, "Animations", "", nullptr, anims_page::Draw},
     {PageId::kIcons, "Icons & renders", "", nullptr, icons_page::Draw},
@@ -1312,6 +1339,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
+    else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
+      std::wstring a = argv[++i];
+      std::vector<std::wstring> parts;
+      for (size_t at = 0; at <= a.size();) {
+        size_t e = a.find(L',', at);
+        if (e == std::wstring::npos) e = a.size();
+        parts.push_back(a.substr(at, e - at));
+        at = e + 1;
+      }
+      caw_page::TestStart(_wtoi(parts[0].c_str()), parts.size() > 1 ? _wtoi(parts[1].c_str()) : 0,
+                          parts.size() > 2 ? parts[2] : L"", parts.size() > 3 && parts[3] == L"save");
+      g_page = PageId::kCaw;
+    }
     else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
@@ -1421,7 +1461,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   if (!moves_pack.empty()) moves_page::TestOpen(moves_pack), g_page = PageId::kMoves;
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"assets", L"anims", L"icons", L"help"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"caw", L"assets", L"anims", L"icons", L"help"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }
