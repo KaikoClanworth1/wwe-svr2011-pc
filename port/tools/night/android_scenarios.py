@@ -6,6 +6,7 @@ at a time). From gen_scenarios.py's suites:
   D  every arena (and the bundled custom arenas)
   E  the phone's settings: texture quality medium / low, 30 fps, touch on
   G  a soak: back-to-back matches in one run (android_night.ps1 re-routes)
+  T  the port's row-based modes (gen_scenarios' suite M: SVR2011_TEST_MODE, a 'needs' log line)
     python android_scenarios.py [--suites B,C,D,E,G]
 """
 import argparse
@@ -35,6 +36,34 @@ def suite_e_phone():
                     timeout=540, shots=(60, 240, 480)) for n, a in v]
 
 
+def suite_b_phone():
+    """gen_scenarios' B, with Championship Scramble (0x26: a 5:00 timed match + entrances) given longer."""
+    out = g.suite_b()
+    for r in out:
+        if r['id'] == 'B26':
+            r['timeout'] = 1500
+            r['shots'] = [60, 240, 480, 900, 1200]
+    return out
+
+
+def suite_m():
+    """MY MUSIC (jukebox.cpp): three 15 s test songs (runs/night/android_music, pushed to
+    test_run/night_music, SVR2011_MUSIC), the game's songs off. M_handover: the menus hand
+    over from song to song (3 starts); M_match: a match stops the song (its end, and the
+    entrance music)."""
+    off = ','.join(str(n) for n in range(1, 20))
+    songs = 'Pena_Theme.mp3|Test_A.mp3|Test_C.mp3'.replace('Pena', 'Peña')
+    args = ['--jukebox_off=' + off, '--jukebox_my_music=' + songs, '--audio_mute=false']
+    env = {'SVR2011_MUSIC': 'night_music'}
+    hand = {'id': 'M_handover', 'suite': 'M', 'name': 'MY MUSIC: songs hand over in the menus',
+            'env': dict(env, SVR2011_ROUTE='main'), 'args': args, 'timeout': 150,
+            'pass': r'now playing .* \(my music\)', 'need': 3, 'shots': [30]}
+    m = g.match('M_match', 'M', 'MY MUSIC: a match stops the song', ['JOHN CENA', 'RANDY ORTON'], arena=17,
+                args=args, env=env, timeout=540, shots=(60, 240))
+    m['expect'] = r'my music stopped|game music unmuted'
+    return [hand, m]
+
+
 def suite_g():
     s = g.match('G_soak', 'G', 'soak: back-to-back matches', ['JOHN CENA', 'RANDY ORTON'], arena=17,
                 timeout=7200, shots=(600, 1800, 3600, 5400))
@@ -44,10 +73,10 @@ def suite_g():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--suites', default='B,C,D,E,G')
+    ap.add_argument('--suites', default='M,T,B,C,D,E,G')
     ap.add_argument('--out', default=os.path.join(g.PORT, 'runs', 'night', 'android_scenarios.jsonl'))
     a = ap.parse_args()
-    gens = {'B': g.suite_b, 'C': suite_c_sample, 'D': g.suite_d, 'E': suite_e_phone, 'G': suite_g}
+    gens = {'B': suite_b_phone, 'M': suite_m, 'T': g.suite_m, 'C': suite_c_sample, 'D': g.suite_d, 'E': suite_e_phone, 'G': suite_g}
     rows = []
     for s in a.suites.split(','):
         rows += gens[s.strip()]()
