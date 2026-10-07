@@ -162,6 +162,11 @@ function Read-New($r) {
         if ($line -match 'test match: ') { $r.tmStarted = $true }
         if ($r.s.needs -and $line -match $r.s.needs) { $r.needsSeen = $true }
         if ($r.tmStarted -and $line -match $r.s.pass) { $r.passed = $true }
+        # Tag rules skip the ending's highlights (no step 3): the test's own match
+        # reaching "match end: step 0" and then the after-match menu also counts.
+        if ($r.tmStarted -and $line -match '\[svr2011\] match: rule') { $r.inMatch = $true }
+        if ($r.inMatch -and $line -match 'match end: step 0 \(') { $r.endAt = Get-Date }
+        if ($line -match 'match end: step \d waiting') { $r.endWait = $true }
         if ($line -match $errPattern -and $r.err.Count -lt 12) { $r.err += $line.Substring(0, [Math]::Min(240, $line.Length)) }
         if ($line -match 'world update stuck (\d+) s') { $r.stuckMax = [Math]::Max($r.stuckMax, [int]$Matches[1])
             if ($r.err.Count -lt 12) { $r.err += $line.Substring(0, [Math]::Min(240, $line.Length)) } }
@@ -222,6 +227,8 @@ while ($queue.Count -or $running.Count) {
         elseif ($r.err | Where-Object { $_ -match 'device lost|DEVICE_REMOVED|can''t draw' }) { $result = "gpu" }
         elseif ($r.stuckMax -ge 30) { $result = "hang" }
         elseif ($r.passed) { Start-Sleep -Seconds 1; $result = "pass" }
+        elseif ($r.endAt -and -not $r.endWait -and ((Get-Date) - $r.endAt).TotalSeconds -gt 40 -and
+                $r.lastFpsAt -and ((Get-Date) - $r.lastFpsAt).TotalSeconds -lt 15) { $result = "pass" }
         elseif ($r.err | Where-Object { $_ -match 'test match: no superstar' }) { $result = "invalid" }
         elseif ($age -gt $r.s.timeout) { $result = "timeout" }
         elseif ($r.fps.Count -gt 0 -and ((Get-Date) - $r.lastFpsAt).TotalSeconds -gt 45) { $result = "hang" }
