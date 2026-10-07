@@ -673,7 +673,7 @@ REX_HOOK_RAW(sub_827374A0) {
     uint32_t sp = ctx.r1.u32;
     for (int k = 0; k < 12 && sp; ++k) {
       const uint32_t next = Rd32(base + sp);
-      if (!next || next <= sp) break;
+      if (next <= sp || next - sp > 0x10000 || next < 0x70000000u || next >= 0x80000000u) break;  // (guest stacks)
       chain += fmt::format(" {:08X}", Rd32(base + next - 8));
       sp = next;
     }

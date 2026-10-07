@@ -791,6 +791,28 @@ REX_HOOK_RAW(sub_8217A718) {
   __imp__sub_8217A718(ctx, base);
 }
 
+// The replay recorder's callbacks: sub_8217BC90 (the replay object at
+// *0x82DEA30C, each update) queues two (sub_826E0F78(queue, fn, fn2, obj,
+// kind)): 0x8217AF30/0x8217AF38 (sub_8217AC50 records a frame or steps the
+// playback, sub_8217AB58 the playback's side) and 0x827ACA10/0x8217A718 (the
+// handshake with the update's side, sub_821DA3F0). With two updates in a
+// frame both were queued twice and run back to back - the recorder and the
+// playback lost step with the handshake: at 30 fps the replays showed the
+// match's first moments, nearly still, and the highlights had one clip (a
+// player's report, 2.0.4). Queued once a frame, in its last update, as at 60
+// (the recording then holds a frame per frame drawn, and plays back so).
+REX_EXTERN(__imp__sub_826E0F78);
+REX_HOOK_RAW(sub_826E0F78) {
+  if (g_extra_update && (ctx.r5.u32 == 0x8217AF38 || ctx.r5.u32 == 0x8217A718) &&
+      ctx.r6.u32 == Rd32(base + 0x82DEA30C) && std::this_thread::get_id() == g_logic_thread.load()) {
+    static int skipped = 0;
+    if (++skipped == 1 || skipped % 1000 == 0)
+      REXLOG_INFO("frame rate: the replay recorder's callbacks queued once a frame ({} skipped)", skipped);
+    return;
+  }
+  __imp__sub_826E0F78(ctx, base);
+}
+
 // Its sibling sub_8217AB58 (the same object, +96 its state 1-5) also reads
 // +156's part (+1504, or +1496 at states 2-3) unchecked - crashed so in a
 // match at 60 fps (2.0.5 tests, guest read of 0x5E0); its other paths skip a
