@@ -15,13 +15,16 @@
 // - entrances are on for the match (live rules +38), the opponent enters
 //   last (sub_828C3AC8's team order) and the controller is held from the
 //   first entrance to the bell (nothing skips them): the reveal is the
-//   opponent's entrance. The "?" goes when the entrances start.
+//   opponent's entrance. The "?" goes when the entrances start (at the
+//   latest: the match running, the entrances' end, the bell).
 //
 // The pick: any selectable superstar (the roster records), the installed
 // superstar mods, the managers with the M tile on; never the player's own
 // pick (by id, name or same person), the player's gender unless
 // mixed_gender_matches is on. Test aids: SVR2011_TEST_MYSTERY=<id> picks that
-// id; SVR2011_TEST_SELECT_LOG=1 logs the select cursors' A presses.
+// id; SVR2011_TEST_SELECT_LOG=1 logs the select cursors' A presses;
+// SVR2011_TEST_MYSTERY_NO_EVENT=1 ignores the entrances' sound events (the
+// reveal's fallbacks).
 
 #include "mystery_opponent.h"
 
@@ -253,17 +256,25 @@ void MysteryOpponentFill(uint8_t* base, uint32_t match) {
 
 void MysteryOpponentEvent(const char* e) {
   if (!g_on.load()) return;
-  if (g_entrances_since.load() && !std::strncmp(e, "Play_Bgn_match_bell", 19)) {
-    g_entrances_since = 0;
-    REXLOG_INFO("mystery opponent: the bell - the controller back");
+  if (!std::strncmp(e, "Play_Bgn_match_bell", 19)) {
+    MysteryOpponentReveal("the bell");
+    if (g_entrances_since.exchange(0)) REXLOG_INFO("mystery opponent: the bell - the controller back");
     return;
   }
   if (!g_loading.load() && !g_vs.load()) return;
+  static const bool no_event = std::getenv("SVR2011_TEST_MYSTERY_NO_EVENT") != nullptr;  // (tests: the fallbacks)
+  if (no_event) return;
   if (std::strncmp(e, "Play_MUS_", 9) != 0 && std::strncmp(e, "Play_Ent_", 9) != 0) return;
   g_vs = false;
   g_loading = false;
   g_entrances_since = NowMs();
   REXLOG_INFO("mystery opponent: the entrances start ({:.40}) - revealed; no skipping", e);
+}
+
+void MysteryOpponentReveal(const char* why) {
+  if (!g_on.load()) return;
+  const bool vs = g_vs.exchange(false), loading = g_loading.exchange(false);
+  if (vs || loading) REXLOG_INFO("mystery opponent: revealed ({}) - the \"?\" goes", why);
 }
 
 bool MysteryOpponentHoldsInput() {

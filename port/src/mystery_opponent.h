@@ -43,6 +43,11 @@ void MysteryOpponentEvent(const char* e);
 // entrances run (graphics_page.cpp's input hold): nothing skips the reveal.
 bool MysteryOpponentHoldsInput();
 
+// The match is running (menu_hooks.cpp: its frame count counting, the
+// entrances' end): the "?" goes if it is still up - entrances whose music
+// isn't a Play_MUS_ / Play_Ent_ event (DLC, mods), entrances skipped or off.
+void MysteryOpponentReveal(const char* why);
+
 // The "?" over the VS screen until the entrances start.
 void InstallMysteryOpponentOverlay(rex::ui::ImGuiDrawer* drawer);
 

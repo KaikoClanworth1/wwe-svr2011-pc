@@ -44,6 +44,7 @@
 #include "discord_presence.h"
 #include "online.h"
 #include "match_types.h"
+#include "mystery_opponent.h"
 #include "superstar_mods.h"
 #include "touch_controls.h"
 #include "native/native_renderer.h"
@@ -486,6 +487,7 @@ REX_HOOK_RAW(sub_823EEB98) {
     svr2011::native::SetMatchScene(true);  // (wide screens: full width)
     svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
     svr2011::SetFrameRateInMatch(true);  // (the chosen frame rate)
+    svr2011::MysteryOpponentReveal("the match runs");  // (mystery_opponent.h)
   });
   __imp__sub_823EEB98(ctx, base);
 }
@@ -494,6 +496,7 @@ REX_HOOK_RAW(sub_823EEB98) {
 REX_EXTERN(__imp__sub_826E1D28);
 REX_HOOK_RAW(sub_826E1D28) {
   REXLOG_INFO("[svr2011] entrances over");
+  svr2011::MysteryOpponentReveal("the entrances' end");  // (mystery_opponent.h)
   svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
   __imp__sub_826E1D28(ctx, base);
   svr2011::SetSceneThirtyFps(false);
