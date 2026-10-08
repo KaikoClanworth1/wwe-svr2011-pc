@@ -3,7 +3,9 @@
 #include "fps_overlay.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 #include <imgui.h>
@@ -22,6 +24,33 @@ namespace svr2011 {
 namespace {
 FpsOverlay* g_overlay = nullptr;     // lives for the whole run
 std::atomic<bool> g_visible{false};
+std::mutex g_notice_mutex;
+std::string g_notice;
+std::chrono::steady_clock::time_point g_notice_until;
+}
+
+static void DrawNotice(ImGuiIO& io) {
+  std::string text;
+  {
+    std::lock_guard lock(g_notice_mutex);
+    if (g_notice.empty()) return;
+    if (std::chrono::steady_clock::now() > g_notice_until) {
+      g_notice.clear();
+      return;
+    }
+    text = g_notice;
+  }
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.85f), ImGuiCond_Always,
+                          ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowBgAlpha(0.8f);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+  if (ImGui::Begin("##svr2011_notice", nullptr, flags)) {
+    ImGui::SetWindowFontScale(1.4f);
+    ImGui::TextUnformatted(text.c_str());
+  }
+  ImGui::End();
 }
 
 // "Preparing graphics": the native renderer building the known pipelines
@@ -90,6 +119,7 @@ static void DrawNativeFailure(ImGuiIO& io) {
 void FpsOverlay::OnDraw(ImGuiIO& io) {
   DrawNativeFailure(io);
   DrawPipelineProgress(io);
+  DrawNotice(io);
   if (!g_visible.load(std::memory_order_relaxed)) return;
   const FrameTiming t = GetFrameTiming();
   // Top centre of the window.
@@ -128,5 +158,11 @@ void InstallFpsOverlay(rex::ui::ImGuiDrawer* drawer) {
 void SetFpsCounterVisible(bool visible) { g_visible = visible; }
 
 bool FpsCounterVisible() { return g_visible; }
+
+void ShowNotice(const std::string& text, float seconds) {
+  std::lock_guard lock(g_notice_mutex);
+  g_notice = text;
+  g_notice_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(int(seconds * 1000));
+}
 
 }  // namespace svr2011

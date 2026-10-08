@@ -69,6 +69,7 @@ set(SVR2011_SOURCES
     src/title_belts.cpp
     src/post_effects.cpp
     src/replays.cpp
+    src/reel_save.cpp
     src/replay_worker.cpp
     src/pad_types.cpp
     src/pad_icons.cpp

@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <rex/ui/imgui_dialog.h>
 
 namespace svr2011 {
@@ -25,5 +27,9 @@ void InstallFpsOverlay(rex::ui::ImGuiDrawer* drawer);
 // Shows or hides the counter (any thread).
 void SetFpsCounterVisible(bool visible);
 bool FpsCounterVisible();
+
+// A short notice at the bottom centre for `seconds` (any thread), e.g. a save
+// the port had to cancel.
+void ShowNotice(const std::string& text, float seconds);
 
 }  // namespace svr2011
