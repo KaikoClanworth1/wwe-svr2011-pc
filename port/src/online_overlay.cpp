@@ -41,6 +41,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "json_lite.h"
+#include "keyboard_typing.h"
 #include "online_net.h"
 #include "p2p.h"
 
@@ -182,8 +183,6 @@ void Say(const std::string& m) {
   g_message = m;
   g_message_at = Clock::now();
 }
-
-std::string g_notice;  // (OnlineNotice: the next toast; under g_mutex)
 
 bool SignedIn() {
   return rex::cvar::Query<bool>("online_enabled") && !rex::cvar::Query<std::string>("online_token").empty();
@@ -354,6 +353,8 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
 
   int sel_ = 0, top_ = 0;
   std::string typed_;  // ADD FRIEND
+  bool grid_ = false;  // ADD FRIEND's letter grid (a controller: Y)
+  int gx_ = 0, gy_ = 0;
   uint16_t prev_buttons_ = 0;
   bool wait_release_ = false, combo_down_ = false;
   Clock::time_point opened_at_{}, repeat_at_{};
@@ -364,21 +365,17 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
 
 void OnlineOverlay::Close() {
   g_open = false;
+  grid_ = false;
+  SetOverlayTyping(false);
   g_wait_release = true;
   if (g_from_game.exchange(false) && g_kernel) g_kernel->BroadcastNotification(kSystemUi, 0);
 }
 
 void OnlineOverlay::Toast(ImGuiIO& io) {
   State s;
-  std::string notice;
   {
     std::lock_guard lock(g_mutex);
     s.invites = g_state.invites;
-    notice.swap(g_notice);
-  }
-  if (!notice.empty()) {
-    toast_ = notice;
-    toast_until_ = Clock::now() + std::chrono::seconds(10);
   }
   for (const Invite& i : s.invites) {
     if (!seen_invites_.insert(i.from + i.session).second) continue;
@@ -481,11 +478,39 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   bool choose = (pressed & X_INPUT_GAMEPAD_A) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                 ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
   bool other = (pressed & X_INPUT_GAMEPAD_X) != 0;  // (decline)
-  const bool back = (pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_START)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+  bool back = (pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_START)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+  // ADD FRIEND with a controller: Y opens a letter grid (the D-pad moves, A
+  // types, X deletes, B closes it; OK adds the friend).
+  static const char* const kGrid[4] = {"ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ0123", "456789_-. "};
+  const bool on_add = n && sel_ < n && rows[sel_].kind == kAddRow;
+  if (grid_ && on_add) {
+    const int cols = gy_ < 4 ? 10 : 2;
+    if (pressed & X_INPUT_GAMEPAD_DPAD_LEFT) gx_ = (gx_ + cols - 1) % cols;
+    if (pressed & X_INPUT_GAMEPAD_DPAD_RIGHT) gx_ = (gx_ + 1) % cols;
+    if (move) gy_ = (gy_ + move + 5) % 5, gx_ = std::min(gx_, gy_ < 4 ? 9 : 1);
+    bool ok = false;
+    if (pressed & X_INPUT_GAMEPAD_A) {
+      if (gy_ < 4) {
+        if (typed_.size() < 15) typed_ += kGrid[gy_][gx_];
+      } else if (gx_ == 0) {
+        if (!typed_.empty()) typed_.pop_back();
+      } else {
+        ok = true, grid_ = false;
+      }
+    }
+    if ((pressed & X_INPUT_GAMEPAD_X) && !typed_.empty()) typed_.pop_back();
+    if (pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_Y)) grid_ = false;
+    move = 0, other = false, back = false;
+    choose = ok;
+  } else {
+    grid_ = false;
+    if (on_add && (pressed & X_INPUT_GAMEPAD_Y)) grid_ = true, gx_ = gy_ = 0;
+  }
   if (n) sel_ = (sel_ + move + n) % n;
   sel_ = std::clamp(sel_, 0, std::max(0, n - 1));
   // ADD FRIEND: typing (the keyboard)
   const bool typing = n && rows[sel_].kind == kAddRow;
+  SetOverlayTyping(typing);  // (the window's text input; a phone's keyboard: keyboard_typing.h)
   if (typing) {
     for (ImWchar c : io.InputQueueCharacters) {
       if (typed_.size() < 15 && c < 128 && (std::isalnum(int(c)) || c == ' ' || c == '_' || c == '.' || c == '-'))
@@ -557,7 +582,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
       AddFriend(st.added_you[row.index]);
     } else if (row.kind == kAddRow && choose) {
       if (typed_.size() >= 3) AddFriend(typed_), typed_.clear();
-      else Say("TYPE THE PLAYER'S NAME (KEYBOARD), THEN ENTER");
+      else Say("TYPE THE PLAYER'S NAME (KEYBOARD, OR Y FOR LETTERS), THEN ENTER");
     }
   }
 
@@ -640,6 +665,27 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   if (top_ > 0) Text(dl, g_menu_font, 18 * s, P(R - 40, kListTop - 26), kGrey, "^");
   if (top_ + visible < n) Text(dl, g_menu_font, 18 * s, P(R - 40, B - 94), kGrey, "v");
 
+  // ADD FRIEND's letter grid (a controller), over the list's bottom
+  if (grid_) {
+    constexpr float kCell = 46, gx0 = L + 20, gy0 = B - 330;
+    dl->AddRectFilled(P(gx0 - 10, gy0 - 10), P(gx0 + 10 * kCell + 10, gy0 + 5 * kCell + 10), IM_COL32(16, 16, 22, 250), 6 * s);
+    dl->AddRect(P(gx0 - 10, gy0 - 10), P(gx0 + 10 * kCell + 10, gy0 + 5 * kCell + 10), IM_COL32(90, 90, 100, 255), 6 * s);
+    for (int r = 0; r < 5; ++r) {
+      const int cols = r < 4 ? 10 : 2;
+      for (int c = 0; c < cols; ++c) {
+        const float w = r < 4 ? kCell : kCell * 5;
+        const ImVec2 a = P(gx0 + c * w + 2, gy0 + r * kCell + 2), b = P(gx0 + (c + 1) * w - 2, gy0 + (r + 1) * kCell - 2);
+        const bool here = r == gy_ && c == gx_;
+        dl->AddRectFilled(a, b, here ? kRed : IM_COL32(34, 34, 40, 255), 4 * s);
+        char label[8] = {};
+        if (r < 4) label[0] = kGrid[r][c] == ' ' ? '_' : kGrid[r][c];
+        const char* t = r < 4 ? (kGrid[r][c] == ' ' ? "SPC" : label) : (c == 0 ? "DEL" : "OK");
+        const ImVec2 sz = TextSize(g_menu_font, 20 * s, t);
+        Text(dl, g_menu_font, 20 * s, ImVec2((a.x + b.x - sz.x) * 0.5f, (a.y + b.y - sz.y) * 0.5f), kWhite, t);
+      }
+    }
+  }
+
   // the outcome of the last action, and the buttons
   if (fresh_message) Text(dl, g_menu_font, 19 * s, P(L + 24, B - 78), kGold, message.c_str());
   std::string help = "B CLOSE";
@@ -648,7 +694,9 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
       case kInviteRow: help = "A ACCEPT    X DECLINE    B CLOSE"; break;
       case kFriendRow: help = in_session ? "A INVITE    B CLOSE" : "B CLOSE"; break;
       case kAddedRow: help = "A ADD BACK    B CLOSE"; break;
-      case kAddRow: help = "TYPE A NAME    ENTER ADD    ESC CLOSE"; break;
+      case kAddRow:
+        help = grid_ ? "D-PAD MOVE    A TYPE    X DELETE    B DONE" : "TYPE A NAME (Y: LETTERS)    ENTER ADD    ESC CLOSE";
+        break;
     }
   }
   if (rex::cvar::Query<bool>("touch_controls")) help = "TAP A ROW    TAP OUTSIDE TO CLOSE";  // (a phone)
@@ -783,12 +831,28 @@ void ToggleOnlineOverlay() { g_toggle = true; }
 
 bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load(); }
 
-void OnlineOverlayPad(uint16_t buttons) { g_guest_pad = buttons; }
-void OnlineNotice(const std::string& text) {
-  REXLOG_WARN("online: {}", text);
-  Say(text);
-  std::lock_guard lock(g_mutex);
-  g_notice = text;
+uint16_t OnlineOverlayPad(uint16_t buttons) {
+  using namespace rex::input;
+  g_guest_pad = buttons;  // (the overlay's combo check: the real buttons)
+  static const bool on = rex::cvar::Query<bool>("online_enabled");
+  if (!on) return buttons;
+  // (game thread only)
+  static bool back_held = false, chord = false;
+  static Clock::time_point back_until{};
+  const bool back = buttons & X_INPUT_GAMEPAD_BACK, rb = buttons & X_INPUT_GAMEPAD_RIGHT_SHOULDER;
+  const auto now = Clock::now();
+  if (back) {
+    if (!back_held) back_held = true, chord = false;
+    if (rb) chord = true;
+    buttons &= uint16_t(~(X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_RIGHT_SHOULDER));
+  } else if (back_held) {
+    back_held = false;
+    if (!chord) back_until = now + std::chrono::milliseconds(120);  // (a plain BACK: the game gets it now)
+  }
+  if (chord && rb) buttons &= uint16_t(~X_INPUT_GAMEPAD_RIGHT_SHOULDER);  // (until RB is let go too)
+  if (chord && !back && !rb) chord = false;
+  if (now < back_until) buttons |= X_INPUT_GAMEPAD_BACK;
+  return buttons;
 }
 
 }  // namespace svr2011
@@ -804,7 +868,6 @@ REX_HOOK_RAW(sub_82904DB0) {
   }
   ctx.r3.u64 = 0;  // ERROR_SUCCESS
 }
-
 
 // XInviteGetAcceptedInfo(user, XINVITE_INFO*) (the game's; it asks XLIVEBASE
 // 0x58023): an invite accepted on the overlay - the inviter, this player, the

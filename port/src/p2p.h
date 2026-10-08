@@ -49,5 +49,9 @@ bool P2PReachHost(const uint8_t* info);
 // An invite accepted: for 15 minutes the game's session searches list that
 // session first, with its private slots open to this game.
 void P2PExpectInvite(const uint8_t* info);
+// Why the last session search (or invite) left hosts out - another version or
+// other gameplay mods (online_files.h) - and how many sessions ("" when none,
+// or over 2 minutes ago): for the game's own "no sessions" / join messages.
+std::string P2PHiddenReason(int* sessions = nullptr);
 
 }  // namespace svr2011

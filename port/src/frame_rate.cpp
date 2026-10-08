@@ -702,12 +702,16 @@ REX_HOOK_RAW(sub_82905058) {
     return;
   }
   __imp__sub_82905058(ctx, base);
-  if (user == 0 && out && ctx.r3.u32 == 0) svr2011::FastStartInput(base, out);  // (the start skips: fast_start.h)
+  if (user == 0 && out && ctx.r3.u32 == 0) {
+    svr2011::FastStartInput(base, out);  // (the start skips: fast_start.h)
+    // (the online overlay's BACK + RB never reaches the game: online_overlay.h)
+    const uint16_t b = svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));
+    base[out + 4] = uint8_t(b >> 8), base[out + 5] = uint8_t(b);
+  }
   if (r && out) {
     r->valid = true;
     r->result = ctx.r3.u32;
     std::memcpy(r->state, base + out, sizeof(r->state));
-    if (user == 0 && ctx.r3.u32 == 0) svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));  // (online_overlay.h)
     svr2011::ArenaSelectPad(user, ctx.r3.u32 == 0 ? uint16_t(base[out + 4] << 8 | base[out + 5]) : 0);  // (arena_mods.h)
     if (user == 0) svr2011::CheckModProfiles(base);  // (superstar_mods.h)
   }

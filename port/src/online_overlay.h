@@ -20,7 +20,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <string>
 
 struct ImFont;
 
@@ -52,12 +51,10 @@ void ToggleOnlineOverlay();
 bool OnlineOverlayHoldsInput();
 
 // The game's pad 1 buttons as it reads them (frame_rate.cpp's XInputGetState
-// hook, on the game's thread): BACK + RB opens the overlay.
-void OnlineOverlayPad(uint16_t buttons);
-
-// A notice for the player (any thread): shown for 10 s at the top of the
-// screen (as an invite's), and on the overlay (e.g. a match refused because
-// the mods differ).
-void OnlineNotice(const std::string& text);
+// hook, on the game's thread): BACK + RB opens the overlay. Returns the
+// buttons the game gets: with online on, the combo never reaches it - RB is
+// kept from it while BACK is held, and BACK itself until it is let go
+// without RB (then a short BACK press).
+uint16_t OnlineOverlayPad(uint16_t buttons);
 
 }  // namespace svr2011

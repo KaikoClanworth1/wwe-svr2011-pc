@@ -47,7 +47,6 @@
 #include "frame_rate.h"
 #include "online_files.h"
 #include "online_net.h"
-#include "online_overlay.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
@@ -73,6 +72,8 @@ constexpr uint16_t kBasePort = 36000;            // (port bases are kBasePort + 
 constexpr int kInstances = 4;                    // (searched on the LAN and this PC)
 constexpr uint32_t kFakeNet = 0x0A400000;        // 10.64.0.0/16: peers as the game sees them
 constexpr uint32_t kMagic = 0x53565250;          // "SVRP"
+constexpr uint32_t kContextGameType = 0x0000800A;  // X_CONTEXT_GAME_TYPE (ranked / standard)
+constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
@@ -523,7 +524,9 @@ bool ReadSession(Reader& r, Session& s) {
 // The gameplay mods (online_files.h): a host's search reply carries its set
 // after its sessions ("MODS", the hash, the set's text; older games stop
 // reading before it). A searcher plays only with the same set: other hosts'
-// sessions are left out, and both players are told what differs.
+// sessions are left out, and the game's own message says why (the search's
+// "No game sessions were found", an invite's join failure: P2PHiddenReason,
+// online.cpp's strings). The host only logs it.
 constexpr uint32_t kModsTag = 0x4D4F4453;  // "MODS"
 constexpr size_t kModsMax = 6000;           // (the set's text, at most)
 
@@ -557,18 +560,17 @@ std::string Mismatch(Reader& r) {
 
 void TellModsRefused(const uint8_t* host_xnaddr);  // (below: tells a host its sessions were left out)
 
-// The notice for a refused match (not the same one again within 20 s).
-void ModsNotice(const std::string& text) {
-  static std::mutex m;
-  static std::string last;
-  static auto last_at = std::chrono::steady_clock::time_point{};
-  {
-    std::lock_guard lock(m);
-    const auto now = std::chrono::steady_clock::now();
-    if (text == last && now - last_at < std::chrono::seconds(20)) return;
-    last = text, last_at = now;
-  }
-  svr2011::OnlineNotice(text);
+// Why the last search / invite left a host out (P2PHiddenReason).
+std::mutex g_hidden_mutex;
+std::string g_hidden_why;
+int g_hidden_count = 0;
+std::chrono::steady_clock::time_point g_hidden_at{};
+
+void Hidden(const std::string& why, int sessions) {
+  std::lock_guard lock(g_hidden_mutex);
+  if (g_hidden_count == 0 || g_hidden_why.empty()) g_hidden_why = why;
+  g_hidden_count += sessions;
+  g_hidden_at = std::chrono::steady_clock::now();
 }
 
 // -- the discovery protocol ------------------------------------------------------------
@@ -779,7 +781,7 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
     }
     case kModsRefused: {  // a searcher left this game's sessions out: its version or mods differ
       const std::string why = Mismatch(r);
-      if (!why.empty()) ModsNotice("A player couldn't join. " + why);
+      if (!why.empty()) REXLOG_INFO("p2p: a player couldn't join - {}", why);
       break;
     }
     case kQosRequest: {
@@ -981,6 +983,10 @@ std::vector<std::pair<uint32_t, uint16_t>> SearchTargets() {
 
 std::vector<Session> Search() {
   g_online_at = NowMs();
+  {
+    std::lock_guard lock(g_hidden_mutex);  // (this search's own: P2PHiddenReason)
+    g_hidden_why.clear(), g_hidden_count = 0;
+  }
   if (REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty()) {
     for (int i = 0; i < 30 && !g_relay_up; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
@@ -1005,7 +1011,7 @@ std::vector<Session> Search() {
     // (the host's version and mods: others - its sessions left out, both told)
     if (const std::string why = Mismatch(r); !why.empty()) {
       REXLOG_INFO("p2p: {} session(s) left out - {}", got.size(), why);
-      ModsNotice(why);
+      Hidden(why, int(got.size()));
       TellModsRefused(got.front().host.data());
       continue;
     }
@@ -1307,8 +1313,10 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       }
       if (info && local.host) WriteInfo(Guest(info), s);
       if (nonce) Put64(Guest(nonce), s.nonce);
-      REXLOG_INFO("p2p: session {:016X} {} (flags {:X}, {} + {} slots)", s.id, local.host ? "hosted" : "joined",
-                  flags, s.public_slots, s.private_slots);
+      REXLOG_INFO("p2p: session {:016X} {} (flags {:X}, {} + {} slots, game type {}, mode {})", s.id,
+                  local.host ? "hosted" : "joined", flags, s.public_slots, s.private_slots,
+                  s.contexts.count(kContextGameType) ? int(s.contexts.at(kContextGameType)) : -1,
+                  s.contexts.count(kContextGameMode) ? int(s.contexts.at(kContextGameMode)) : -1);
       std::lock_guard lock(g_mutex);
       g_sessions[object] = std::move(local);
       UpdateLockstep();
@@ -1367,7 +1375,35 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
     case 0xB001C: {  // XSessionSearchEx
       const uint32_t size = u32(24), results = u32(28);
       if (!results) return std::nullopt;
-      const auto sessions = Search();
+      // The query's contexts (XUSER_CONTEXT {id, value} x n at u32(20), the
+      // count in u32(12)'s low half): a Ranked search finds only ranked
+      // sessions and a Player Match search only player ones - the session's
+      // game type / mode contexts must be the same (as LIVE's search did).
+      std::map<uint32_t, uint32_t> want;
+      {
+        const uint32_t contexts = u32(20), n = std::min<uint32_t>(u32(12) & 0xFFFF, 16);
+        for (uint32_t i = 0; contexts && i < n; ++i) {
+          const uint32_t id = Be32(Guest(contexts) + 8 * i), value = Be32(Guest(contexts) + 8 * i + 4);
+          if (id == kContextGameType || id == kContextGameMode) want[id] = value;
+        }
+        static int logged = 0;
+        if (logged++ < 10)
+          REXLOG_INFO("p2p: search (procedure {}, words {:08X} {:08X} {:08X}, {} contexts{}{})", u32(0), u32(12), u32(16),
+                      u32(20), n,
+                      want.count(kContextGameType) ? fmt::format(", game type {}", want[kContextGameType]) : "",
+                      want.count(kContextGameMode) ? fmt::format(", mode {}", want[kContextGameMode]) : "");
+      }
+      auto same_kind = [&](const Session& s) {
+        for (const auto& [id, value] : want)
+          if (auto it = s.contexts.find(id); it != s.contexts.end() && it->second != value) return false;
+        return true;
+      };
+      auto sessions = Search();
+      const size_t before = sessions.size();
+      sessions.erase(std::remove_if(sessions.begin(), sessions.end(), [&](const Session& s) { return !same_kind(s); }),
+                     sessions.end());
+      if (sessions.size() != before)
+        REXLOG_INFO("p2p: search: {} session(s) of the other kind (ranked / player) left out", before - sessions.size());
       std::vector<Session> open;
       uint64_t invited = 0;
       {
@@ -1411,6 +1447,13 @@ bool P2PSessionInfo(uint8_t* out, uint32_t* slots) {
   return true;
 }
 
+std::string P2PHiddenReason(int* sessions) {
+  std::lock_guard lock(g_hidden_mutex);
+  if (sessions) *sessions = g_hidden_count;
+  if (!g_hidden_count || std::chrono::steady_clock::now() - g_hidden_at > std::chrono::minutes(2)) return "";
+  return g_hidden_why;
+}
+
 void P2PExpectInvite(const uint8_t* info) {
   {
     std::lock_guard lock(g_mutex);
@@ -1421,6 +1464,10 @@ void P2PExpectInvite(const uint8_t* info) {
 }
 
 bool P2PReachHost(const uint8_t* info) {
+  {
+    std::lock_guard lock(g_hidden_mutex);
+    g_hidden_why.clear(), g_hidden_count = 0;
+  }
   const uint8_t* host = info + 8;
   const Mac mac = MacOf(host);
   Path path;
@@ -1452,7 +1499,7 @@ bool P2PReachHost(const uint8_t* info) {
     }
     // (an invite too: only with the same mods)
     if (const std::string why = Mismatch(r); !why.empty()) {
-      ModsNotice(why);
+      Hidden(why, 1);
       if (!got.empty()) TellModsRefused(got.front().host.data());
       refused = true;
       continue;

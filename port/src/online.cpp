@@ -31,6 +31,7 @@
 #include "entrance_media.h"
 #include "online_files.h"
 #include "online_net.h"
+#include "p2p.h"
 #include "paint_pages.h"
 
 namespace svr2011 {
@@ -151,6 +152,22 @@ uint32_t g_empty_string = 0;  // guest "" (removed labels)
 constexpr uint32_t kOffTextSize = 256;
 uint32_t g_online_off_text = 0;
 rex::memory::Memory* g_online_memory = nullptr;
+// guest: the game's "no game sessions" / join failure message with why hosts
+// were left out (p2p.h P2PHiddenReason: another version or other mods)
+uint32_t g_hidden_text = 0;
+// (string ids: from SVR2011_DUMP_STRINGS)
+constexpr uint32_t kNoSessionsId = 0xC6D4;  // "No game sessions were found. Search again?"
+constexpr uint32_t kJoinFailedId = 0xC67F;  // "Failed to find a session. Please try again." (an invite)
+
+// Text into a guest buffer (kOffTextSize).
+uint32_t GuestText(uint32_t buffer, const std::string& text) {
+  if (!buffer || !g_online_memory) return 0;
+  char* out = g_online_memory->TranslateVirtual<char*>(buffer);
+  const size_t n = std::min<size_t>(text.size(), kOffTextSize - 1);
+  std::memcpy(out, text.data(), n);
+  out[n] = 0;
+  return buffer;
+}
 
 // -- The Superstars' extra logos (Saves\.logos) and the server ----------------
 
@@ -342,16 +359,27 @@ uint32_t OnlineString(uint32_t id) {
     case 50866:
     case 50867: {
       const std::string why = GameFilesOnlineMessage();
-      if (why.empty() || !g_online_off_text || !g_online_memory) return 0;
-      char* out = g_online_memory->TranslateVirtual<char*>(g_online_off_text);
-      const size_t n = std::min<size_t>(why.size(), kOffTextSize - 1);
-      std::memcpy(out, why.data(), n);
-      out[n] = 0;
-      return g_online_off_text;
+      return why.empty() ? 0 : GuestText(g_online_off_text, why);
     }
     default:
-      return 0;
+      break;
   }
+  // The search found only hosts this game can't play (another version or
+  // other gameplay mods): the game's own message says so.
+  if (id && (id == kNoSessionsId || id == kJoinFailedId)) {
+    int sessions = 0;
+    const std::string why = P2PHiddenReason(&sessions);
+    if (why.empty()) return 0;
+    // (the game's own wording - its C67E / C67C messages - then the details)
+    const bool mods = why.rfind("Your mods", 0) == 0;
+    const std::string head = mods ? "Unable to join the session due to a difference in downloadable content."
+                                  : "Unable to join the session due to a difference in game versions.";
+    if (id == kNoSessionsId)
+      return GuestText(g_hidden_text, std::string(sessions == 1 ? "A game session was found. " : "Game sessions were found. ") +
+                                          head + "\n" + why + "\nSearch again?");
+    return GuestText(g_hidden_text, head + "\n" + why);
+  }
+  return 0;
 }
 
 void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& saves) {
@@ -359,6 +387,7 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
   if (g_empty_string) std::memset(memory->TranslateVirtual<char*>(g_empty_string), 0, 4);
   g_online_memory = memory;
   g_online_off_text = memory->SystemHeapAlloc(kOffTextSize);
+  g_hidden_text = memory->SystemHeapAlloc(kOffTextSize);
   if (!rex::cvar::Query<bool>("online_enabled")) return;
   g_saves = saves;
   svr2011::StartGameFilesCheck();  // (online_files.h: the game files and the newest version)
@@ -458,6 +487,17 @@ REX_HOOK_RAW(sub_8247E330) {
 // gate: entering ONLINE (without it, a "trial period" from Xbox LIVE storage
 // that can't be had: "Information related to your trial period couldn't be
 // retrieved"), the ONLINE menu's greyed items, the shop.
+// XShowPlayerReviewUI(user, xuid) - the lobby's PLAYER REVIEW (sub_82904D50,
+// the import's thunk): there is no Xbox review screen here. Its caller
+// (sub_823746F0) on success waits for the system UI to close - a
+// notification that never comes, so the game locked up; an error and the
+// game goes on (no screen).
+REX_HOOK_RAW(sub_82904D50) {
+  (void)base;
+  REXLOG_INFO("online: PLAYER REVIEW - no review screen on the PC");
+  ctx.r3.u64 = 0x1F;  // ERROR_GEN_FAILURE
+}
+
 REX_EXTERN(__imp__sub_828C19D8);
 // Online is off while the game files aren't clean (online_files.h: modified,
 // or still being checked at start): id 5 then answers no - entering ONLINE
