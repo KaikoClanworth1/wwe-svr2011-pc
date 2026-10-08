@@ -30,6 +30,8 @@ int FrameRateNow();
 
 // A match on (from its entrances) or off (a main menu choice): menu_hooks.cpp.
 void SetFrameRateInMatch(bool on);
+// The last of those (any thread).
+bool InMatch();
 
 // A match may be starting (sub_823EEB98 - which some menus call too, e.g.
 // ONLINE): `on_start` runs on the game's thread once the match's frame count

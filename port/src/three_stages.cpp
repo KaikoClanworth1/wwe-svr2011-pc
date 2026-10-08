@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <imgui.h>
@@ -40,6 +41,7 @@
 #include <rex/logging.h>
 #include <rex/ui/imgui_dialog.h>
 
+#include "match_hud.h"
 #include "match_types.h"
 
 namespace {
@@ -70,13 +72,27 @@ std::atomic<int> g_sides{0};               // sides in the match now (their team
 std::atomic<uint32_t> g_side_team[kMaxSides] = {};
 std::atomic<int> g_falls[kTeams] = {};     // falls won by each team
 std::atomic<int64_t> g_seen{0};            // ms: the match's last update (the score is shown)
+std::atomic<int64_t> g_stage_at{0};        // ms: the last stage change (its banner)
+// The live rules of fall 1 (saved before fall 2 changes them): a REMATCH
+// doesn't set the match up again - its fall 1 gets them back.
+uint8_t g_live0[64];
+bool g_live0_saved = false;
+
+bool g_falls_any() {
+  for (const auto& f : g_falls)
+    if (f.load()) return true;
+  return false;
+}
 
 // The sides: the people's teams now, in person order (teams are set as the
 // match starts - kept from earlier, a handicap match showed three sides).
 void FindSides(uint8_t* base, const uint32_t (&chars)[6]) {
   uint32_t teams[kMaxSides];
   int n = 0;
-  for (uint32_t c : chars) {
+  // (the match's own people - live +34 - not a Universe run-in waiting outside: a 1v1 showed three sides)
+  const uint32_t people = std::clamp<uint32_t>(base[kLive + 34], 2, 6);
+  for (uint32_t i = 0; i < people; ++i) {
+    const uint32_t c = chars[i];
     if (!c) continue;
     const uint32_t team = Rd32(base + c + kTeam);
     bool seen = team >= uint32_t(kTeams);
@@ -90,6 +106,8 @@ uint32_t TeamOf(uint8_t* base, uint32_t c) { return std::min<uint32_t>(Rd32(base
 
 void ApplyStage(uint8_t* base, int stage) {
   uint8_t* live = base + kLive;
+  if (stage == 1) std::memcpy(g_live0, live, sizeof(g_live0)), g_live0_saved = true;
+  g_stage_at = NowMs();
   if (stage == 1) {  // FALLS COUNT ANYWHERE
     live[1] = 2;
     live[17] = 1;
@@ -115,36 +133,37 @@ void ApplyStage(uint8_t* base, int stage) {
   REXLOG_INFO("three stages: fall {} - {}", stage + 1, StageName(stage));
 }
 
+// The score at the top and, at a stage change, a banner (match_hud.h: only
+// while the match runs - not in the menus, select, entrances, pauses,
+// replays or the end screens).
 class Score final : public rex::ui::ImGuiDialog {
  public:
   explicit Score(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    if (!g_on.load() || NowMs() - g_seen.load() > 500) return;
-    const float w = io.DisplaySize.x, h = io.DisplaySize.y;
-    const float gw = std::min(w, h * 16.0f / 9.0f), gh = gw * 9.0f / 16.0f;
-    const float scale = gh / 720.0f;
-    char score[48] = "0 - 0";
+    if (!g_on.load() || !svr2011::MatchHudVisible()) return;
+    std::string score = "0 - 0";
     if (const int n = g_sides.load(); n >= 2) {
-      int at = 0;
-      for (int s = 0; s < n && at < int(sizeof(score)) - 8; ++s)
-        at += std::snprintf(score + at, sizeof(score) - size_t(at), s ? " - %d" : "%d",
-                            g_falls[std::min<uint32_t>(g_side_team[s].load(), kTeams - 1)].load());
+      score.clear();
+      for (int s = 0; s < n; ++s)
+        score += (s ? " - " : "") + std::to_string(g_falls[std::min<uint32_t>(g_side_team[s].load(), kTeams - 1)].load());
     }
-    char text[128];
-    std::snprintf(text, sizeof(text), "THREE STAGES OF HELL   %s   FALL %d: %s", score, g_stage.load() + 1,
-                  StageName(g_stage.load()));
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    ImFont* font = ImGui::GetFont();
-    const float size = 22.0f * scale;
-    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    const ImVec2 at((w - ts.x) * 0.5f, (h - gh) * 0.5f + gh * 0.035f);
-    const ImVec2 pad(14.0f * scale, 6.0f * scale);
-    dl->AddRectFilled(ImVec2(at.x - pad.x, at.y - pad.y), ImVec2(at.x + ts.x + pad.x, at.y + ts.y + pad.y),
-                      IM_COL32(10, 12, 18, 200), 6.0f * scale);
-    dl->AddText(font, size, at, IM_COL32(255, 255, 255, 255), text);
+    const int stage = g_stage.load();
+    svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, "THREE STAGES OF HELL",
+                          score + "    FALL " + std::to_string(stage + 1) + ": " + StageName(stage));
+    // A stage change: its banner for 5 s from when the match is seen again
+    // (a fall stops the match's clock a while - the game's own moment).
+    const int64_t now = NowMs();
+    if (stage != banner_stage_) banner_stage_ = stage, banner_from_ = stage > 0 ? now : 0;
+    if (banner_from_ && now - banner_from_ < 5000)
+      svr2011::DrawHudBanner(io.DisplaySize.x, io.DisplaySize.y, "FALL " + std::to_string(stage + 1), StageName(stage),
+                             float(now - banner_from_) / 5000.0f);
   }
+
+ private:
+  int banner_stage_ = 0;
+  int64_t banner_from_ = 0;
 };
 
 }  // namespace
@@ -155,6 +174,8 @@ void InstallThreeStagesOverlay(rex::ui::ImGuiDrawer* drawer) { new Score(drawer)
 
 void ThreeStagesSetup(bool on) {
   g_on = on;
+  g_live0_saved = false;
+  g_stage_at = 0;
   g_stage = 0;
   g_no_dq = false;
   g_sides = 0;
@@ -167,7 +188,20 @@ bool ThreeStagesMatch() { return g_on.load(); }
 // Each world update: the score stays shown (the judge isn't asked during a
 // count). Test aid: SVR2011_TEST_3S_LOG=1 - the characters once a second.
 void ThreeStagesUpdate(uint8_t* base) {
-  if (!Rd32(base + kChars) || int32_t(Rd32(base + 0x82E3CD0C)) <= 0) return;  // (a match running)
+  // A new match (its clock starts again: a REMATCH, which doesn't set the
+  // match up again) starts at fall 1, 0 - 0, with fall 1's rules.
+  static uint32_t last_clock = 0;
+  const uint32_t clock = Rd32(base + 0x82E3CD0C);
+  if (clock < last_clock && (g_stage.load() > 0 || g_falls_any())) {
+    if (g_live0_saved && base[kLive] == g_live0[0]) std::memcpy(base + kLive, g_live0, sizeof(g_live0));
+    g_stage = 0;
+    g_no_dq = false;
+    for (auto& f : g_falls) f = 0;
+    g_stage_at = 0;
+    REXLOG_INFO("three stages: a new match (a rematch) - fall 1, 0 - 0");
+  }
+  last_clock = clock;
+  if (!Rd32(base + kChars) || int32_t(clock) <= 0) return;  // (a match running)
   g_seen = NowMs();
   static const bool log = std::getenv("SVR2011_TEST_3S_LOG") != nullptr;
   static uint32_t frames = 0;

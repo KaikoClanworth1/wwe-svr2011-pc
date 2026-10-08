@@ -36,6 +36,7 @@
 #include <rex/system/xmemory.h>
 
 #include "arena_mods.h"
+#include "match_hud.h"
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -764,18 +765,10 @@ REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
   const uint32_t rule = ctx.r4.u32;
   // Test aid: SVR2011_TEST_SETUP_TRACE=1 - each match set-up with its caller
-  // and the guest call stack (for REMATCH and the roaming FCA's reload).
-  if (std::getenv("SVR2011_TEST_SETUP_TRACE")) {
-    std::string chain;
-    uint32_t sp = ctx.r1.u32;
-    for (int k = 0; k < 12 && sp; ++k) {
-      const uint32_t next = Rd32(base + sp);
-      if (next <= sp || next - sp > 0x10000 || next < 0x70000000u || next >= 0x80000000u) break;  // (guest stacks)
-      chain += fmt::format(" {:08X}", Rd32(base + next - 8));
-      sp = next;
-    }
-    REXLOG_INFO("match types: set-up of rule {:02X} (match {:08X}) from {:08X};{}", rule, ctx.r3.u32, uint32_t(ctx.lr), chain);
-  }
+  // and the story context (a guest stack walk read unmapped pages: left out).
+  if (std::getenv("SVR2011_TEST_SETUP_TRACE"))
+    REXLOG_INFO("match types: set-up of rule {:02X} (match {:08X}) from {:08X}, story context {:08X}", rule, ctx.r3.u32,
+                uint32_t(ctx.lr), Rd32(base + kStoryContext));
   // Research aid: SVR2011_TEST_RULE_DUMP=1 - once, the rule records (first 28
   // bytes, +36..+67) and option records (64 bytes) of some rules.
   if (static bool dumped = false; !dumped && std::getenv("SVR2011_TEST_RULE_DUMP"))
@@ -1555,6 +1548,7 @@ void LumberjackBeforeJudge(uint8_t* base) {
 
 void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kChars = 0x82E3CC50;
+  MatchHudTick(base);  // (match_hud.h: the HUD shows while the match's clock runs)
   // Research aid: SVR2011_TEST_ITEM_DUMP=<file> - every 30 updates of a match,
   // the object table (0x82DE0220, 72 slots: people and weapons) appended:
   // u32 match frames, then per slot u32 object and its first 0xC00 bytes.

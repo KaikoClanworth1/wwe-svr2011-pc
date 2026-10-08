@@ -146,6 +146,8 @@ void SetFrameRateInMatch(bool on) {
   if (g_in_match.exchange(on) != on) SetFrameClock();
 }
 
+bool InMatch() { return g_in_match.load(); }
+
 void ArmMatchStart(void (*on_start)()) { g_match_start = on_start; }
 
 void InstallFrameRate(rex::memory::Memory* memory) {

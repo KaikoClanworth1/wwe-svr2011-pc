@@ -36,6 +36,7 @@
 #include <rex/ui/imgui_dialog.h>
 
 #include "generated/default/svr2011_init.h"
+#include "match_hud.h"
 #include "match_types.h"
 
 namespace {
@@ -153,28 +154,16 @@ void RecycleStep(PPCContext& ctx, uint8_t* base) {
   }
 }
 
-// The count, over the match.
+// The count, over the match (match_hud.h: only while the match runs).
 class Count final : public rex::ui::ImGuiDialog {
  public:
   explicit Count(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    if (NowMs() - g_seen.load() > 500) return;
-    const float w = io.DisplaySize.x, h = io.DisplaySize.y;
-    const float gw = std::min(w, h * 16.0f / 9.0f), gh = gw * 9.0f / 16.0f;
-    const float scale = gh / 720.0f;
-    char text[48];
-    std::snprintf(text, sizeof(text), "SLOBBER KNOCKER   BEATEN: %d", g_beaten.load());
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    ImFont* font = ImGui::GetFont();
-    const float size = 24.0f * scale;
-    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    const ImVec2 at((w - ts.x) * 0.5f, (h - gh) * 0.5f + gh * 0.035f);
-    const ImVec2 pad(14.0f * scale, 6.0f * scale);
-    dl->AddRectFilled(ImVec2(at.x - pad.x, at.y - pad.y), ImVec2(at.x + ts.x + pad.x, at.y + ts.y + pad.y),
-                      IM_COL32(10, 12, 18, 200), 6.0f * scale);
-    dl->AddText(font, size, at, IM_COL32(255, 255, 255, 255), text);
+    if (NowMs() - g_seen.load() > 500 || !svr2011::MatchHudVisible()) return;
+    svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, "SLOBBER KNOCKER",
+                          "BEATEN: " + std::to_string(g_beaten.load()));
   }
 };
 

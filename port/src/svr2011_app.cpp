@@ -70,6 +70,7 @@
 #include "online.h"
 #include "entrance_media.h"
 #include "online_cas.h"
+#include "match_hud.h"
 #include "online_overlay.h"
 #include "leaderboards.h"
 #include "p2p.h"
@@ -350,6 +351,7 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   svr2011::SetAchievementsPageFonts(menu, title ? title : menu);
   svr2011::SetJukeboxPageFonts(menu, title ? title : menu);
   svr2011::SetBackgroundsPageFonts(menu, title ? title : menu);
+  svr2011::SetMatchHudFonts(menu, title ? title : menu);
 }
 
 void Svr2011App::OnPostLoadXexImage() {
