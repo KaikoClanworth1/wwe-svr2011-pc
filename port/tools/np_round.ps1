@@ -3,7 +3,9 @@
 # play, both stopped. The test settings are set here, so both games get them.
 #   np_round.ps1 -Name np4 [-Delay "75,40,1"] [-Seconds 60]
 # -Delay: SVR2011_TEST_NET_DELAY for both games (ms[,jitter[,loss%]]); "" none.
-param([string]$Name = "np", [string]$Delay = "", [int]$Seconds = 60)
+# -V1: the old tunnel packets only (no repeats): the "before" of a comparison.
+param([string]$Name = "np", [string]$Delay = "", [int]$Seconds = 60, [switch]$V1)
+$env:SVR2011_TEST_NET_V1 = if ($V1) { "1" } else { "" }
 $s = Join-Path $PSScriptRoot "np_session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
 $env:SVR2011_NET_STATS = "2"

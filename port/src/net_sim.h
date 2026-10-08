@@ -23,6 +23,8 @@ bool NetSimActive();
 void NetSimSend(std::function<void()> send);
 // Every peer through the tunnel (SVR2011_TEST_NET_TUNNEL).
 bool NetForceTunnel();
+// Tests: the old tunnel packets only, no repeats (SVR2011_TEST_NET_V1=1): before/after.
+bool NetDataV1();
 // A game packet to / from the peer `peer` (its 10.64.x.y address), relayed or not.
 void NetPacket(bool out, uint32_t peer, size_t size, bool relayed);
 

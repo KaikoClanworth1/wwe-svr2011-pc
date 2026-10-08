@@ -179,6 +179,14 @@ std::vector<NetLink> NetLinks() {
   return links;
 }
 
+bool NetDataV1() {
+  static const bool on = [] {
+    const char* v = std::getenv("SVR2011_TEST_NET_V1");
+    return v && v[0] == '1';
+  }();
+  return on;
+}
+
 void NetPacket(bool out, uint32_t peer, size_t size, bool relayed) {
   if (!CountsOn()) return;
   if (!g_reporter.exchange(true)) std::thread(Reporter).detach();
