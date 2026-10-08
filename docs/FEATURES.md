@@ -87,6 +87,15 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## New in 2.0.6 (in progress)
+
+- **72 superstar mod slots** (was 50), using more of the game's blank superstar records.
+- **Superstar height** (`height=` in a mod, 0.80-1.25; the Mod Maker's Superstar page has a slider with a live preview) - for converted superstars that came out the wrong size.
+- **SvR 2010 superstars' corner moves**: moves on an opponent sitting in the corner (e.g. Umaga's Running Knee) no longer lift them above the turnbuckle; 17 bundled superstars updated.
+- **Three Stages of Hell after REMATCH** starts again at fall 1 (a rematch kept the last match's score and ended after one fall).
+- **Mystery Opponent**: the "?" picture can't stay on screen into the match (it waited for an entrance sound that doesn't always play).
+- **The M tile on the character select reads MODS** (was EXTRA).
+
 ## New in 2.0.5
 
 ### Matches
