@@ -27,6 +27,7 @@
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
+#include "arena_mods.h"
 #include "script_input.h"
 
 namespace {
@@ -148,7 +149,8 @@ namespace {
 constexpr uint32_t kMatchScreen = 0x82EDEB48, kScreenArena = 244;
 
 void SetScreenArena(uint8_t* base, uint32_t screen) {
-  const int arena = Config().arena;
+  // (a slot that plays as another arena - arena_mods.h ArenaNumberFor - as the match would)
+  const int arena = svr2011::ArenaNumberFor(Config().arena);
   if (arena < 0 || !screen || !Applies() || Rd32(base + screen + kScreenArena) == uint32_t(arena)) return;
   static uint32_t logged = 0;
   if (logged++ < 2)

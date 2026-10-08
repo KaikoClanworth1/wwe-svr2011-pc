@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <filesystem>
 #include <memory>
 #include <map>
@@ -75,6 +76,7 @@ std::mutex g_mutex;
 fs::path g_game, g_overlay;
 bool g_overlay_ready = false;
 std::string g_redirect[100];  // arena number -> relative file ("" = original)
+int g_number_for[100];        // arena number -> the number a match there plays as (0: its own), see RedirectArena
 std::string g_default[100];   // arena number -> its file when no custom arena is on its tile (media mods: screens)
 
 std::string Upper(std::string s) {
@@ -749,6 +751,30 @@ void FollowCursor(int row, int col) {
 
 }  // namespace
 
+// The match record takes the match screen's arena (sub_82773F00: screen
+// *0x82EDEB48 +244 via sub_8247B6C8 -> the live record +64). A slot that plays
+// as another arena (RedirectArena: the stock practice ring) gets that number
+// here, on the screen, before the copy - as if picked in SELECT ARENA. (Not on
+// the live record after it: parts of the load keep the number they read first.)
+REX_EXTERN(__imp__sub_82773F00);
+REX_HOOK_RAW(sub_82773F00) {
+  constexpr uint32_t kMatchScreen = 0x82EDEB48, kScreenArena = 244;
+  const auto rd = [&](uint32_t a) {
+    const uint8_t* q = base + a;
+    return uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
+  };
+  if (const uint32_t screen = rd(kMatchScreen)) {
+    const uint32_t arena = rd(screen + kScreenArena);
+    const int as = svr2011::ArenaNumberFor(int(arena));
+    if (as != int(arena)) {
+      uint8_t* q = base + screen + kScreenArena;
+      q[0] = uint8_t(uint32_t(as) >> 24), q[1] = uint8_t(uint32_t(as) >> 16), q[2] = uint8_t(uint32_t(as) >> 8), q[3] = uint8_t(as);
+      REXLOG_INFO("[svr2011] arena mods: the match in arena {} plays as arena {}", arena, as);
+    }
+  }
+  __imp__sub_82773F00(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_826AEF10);
 REX_HOOK_RAW(sub_826AEF10) {
   if (g_bpe_log) {
@@ -899,6 +925,8 @@ void UseBackstageRow(int i) {
 
 void SetMatchLoading(bool loading) { g_match_loading = loading; }
 
+int ArenaNumberFor(int arena) { return arena >= 0 && arena < 100 && g_number_for[arena] ? g_number_for[arena] : arena; }
+
 void ArenaSelectPad(uint32_t user, uint16_t buttons) {
   if (user < 8) g_shoulders[user] = buttons & 0x300;
 }
@@ -931,6 +959,7 @@ void RedirectArena(int arena, const std::string& file) {
   // all-digit name): bg78's group is T178 ... TD78 (texture variants) then
   // 0078, and renaming its first entry made two STG/0078 (the match load
   // crashed, every backstage mod).
+  g_number_for[arena] = 0;
   char want[5];
   std::snprintf(want, sizeof want, "%04d", arena);
   char head[0x4000] = {};
@@ -964,6 +993,35 @@ void RedirectArena(int arena, const std::string& file) {
           if (stg) break;
         }
       }
+    }
+  }
+  // The game's own practice ring as it is (the Practice Arena mod: bg29 on
+  // SummerSlam's tile): not renamed into the slot. The game draws arena 29
+  // its own way, so in another arena's slot (BG04) the match cameras showed
+  // black beyond the ring (its floor and stands culled: the per-arena
+  // visibility data and paths are chosen by the arena number). The slot keeps
+  // its own file and a match picked there plays as arena 29 (the match screen's
+  // arena, set as the match record copies it: sub_82773F00 below).
+  if (stage_at >= 0 && !std::memcmp(head + stage_at, "0029", 4)) {
+    const fs::path stock = g_game / "pac" / "bg" / "BG29.PAC";
+    std::error_code e1, e2;
+    bool same = fs::file_size(source, e1) == fs::file_size(stock, e2) && !e1 && !e2;
+    if (same) {
+      std::ifstream a(source, std::ios::binary), b(stock, std::ios::binary);
+      std::vector<char> x(1 << 20), y(1 << 20);
+      while (same && a && b) {
+        a.read(x.data(), long(x.size()));
+        b.read(y.data(), long(y.size()));
+        same = a.gcount() == b.gcount() && !std::memcmp(x.data(), y.data(), size_t(a.gcount()));
+      }
+    }
+    if (same) {
+      if (!Place(g_game / "pac" / "bg" / name, name)) return;
+      g_redirect[arena] = relative_file;
+      g_number_for[arena] = 29;
+      REXLOG_INFO("[svr2011] arena mods: BG{:02} -> {} (the stock practice ring: a match there plays as arena 29)", arena,
+                  relative_file);
+      return;
     }
   }
   const bool renamed = stage_at >= 0;
