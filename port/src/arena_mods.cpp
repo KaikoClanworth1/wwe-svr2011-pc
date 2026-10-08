@@ -21,6 +21,7 @@
 // 4 left, 8 right). The 20 banners are DXT5 256 x 128 textures from
 // menu/MatchHD.pac (MENU/MASI), kept in guest physical memory (4 KB view)
 // untiled, with 16-bit words byte-swapped.
+#include "backgrounds_page.h"
 #include "arena_mods.h"
 #include "crowd_off.h"
 #include "move_packs.h"
@@ -761,6 +762,7 @@ REX_HOOK_RAW(sub_826AEF10) {
   const uint32_t size = s[12] | s[13] << 8 | s[14] << 16 | uint32_t(s[15]) << 24;
   __imp__sub_826AEF10(ctx, base);
   if (dst && size) SwapDecoded(base + dst, size);
+  if (dst && size) svr2011::BackgroundsDecoded(base + dst, size);  // (custom menu pictures: backgrounds_page.h)
 }
 
 // Does a file exist (r3 path): a custom arena's VS theme instead of the one

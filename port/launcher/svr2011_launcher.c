@@ -7154,6 +7154,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* Tests: --bg-add <game folder> <picture> [logo] makes a main menu
+       background as the Mods tab's "Add background picture" does. */
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--bg-add")) {
+        int ok;
+        console_setup();
+        ok = mods_add_background(argv[2], argv[3], argc >= 5 && !wcscmp(argv[4], L"logo"));
+        LocalFree(argv);
+        return ok ? 0 : 1;
+    }
     /* --finish-update <game folder>: what launchers up to 2.0.3 left out of an
        update (Bundled Mods, pad_icons) fetched and installed, no window. */
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--finish-update")) {

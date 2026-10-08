@@ -10,7 +10,9 @@
  * the game's videos, renders, arena screens and sounds (src/media_mods.cpp). Match type mods
  * (Mods/MatchTypes/<id>: a manifest only) switch on one of the match types the port adds -
  * Slobber Knocker, Three Stages of Hell, Elimination... (src/match_types.cpp); they come
- * switched on. A mod is turned off by a "disabled" file in its folder. A .svrmod file is a
+ * switched on. Background mods (Mods/Backgrounds/<id>: picture.dds + manifest) are main menu
+ * pictures; "Add background picture" makes one from a PNG / JPG (backgrounds.c,
+ * src/backgrounds_page.cpp). A mod is turned off by a "disabled" file in its folder. A .svrmod file is a
  * zip of such a folder.
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
@@ -23,6 +25,7 @@
 #include <stdio.h>
 #include <wchar.h>
 
+#include "backgrounds.h"
 #include "unzip.h"
 
 enum { MODS_MAX = 512 };
@@ -42,7 +45,7 @@ static HWND s_list, s_status, s_wnd;
 static WCHAR s_game[MAX_PATH];
 static int s_filling;              /* (checkbox notifications while filling the list) */
 
-enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS };
+enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND };
 
 static void status(const WCHAR *t) { SetWindowTextW(s_status, t); }
 
@@ -98,7 +101,8 @@ static int maker_present(void);
 
 static void scan(void)
 {
-    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes" };
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes",
+                                         L"Backgrounds" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -227,6 +231,57 @@ static void add_mod(void)
     WCHAR zip[MAX_PATH];
     if (!s_game[0]) { status(L"Install the game first (Install tab)."); return; }
     if (pick_file(zip)) install_file(zip);
+}
+
+/* A picture for the main menu (backgrounds.h). */
+static int pick_image(WCHAR *out)
+{
+    IFileOpenDialog *dlg = NULL;
+    IShellItem *item = NULL;
+    PWSTR path = NULL;
+    int ok = 0;
+    COMDLG_FILTERSPEC spec[] = { { L"Pictures (*.png, *.jpg, *.jpeg, *.bmp, *.webp)", L"*.png;*.jpg;*.jpeg;*.bmp;*.webp" } };
+    if (FAILED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void **)&dlg)))
+        return 0;
+    dlg->lpVtbl->SetFileTypes(dlg, 1, spec);
+    dlg->lpVtbl->SetTitle(dlg, L"Add a main menu background picture");
+    if (SUCCEEDED(dlg->lpVtbl->Show(dlg, s_wnd)) && SUCCEEDED(dlg->lpVtbl->GetResult(dlg, &item)) &&
+        SUCCEEDED(item->lpVtbl->GetDisplayName(item, SIGDN_FILESYSPATH, &path))) {
+        wcsncpy_s(out, MAX_PATH, path, _TRUNCATE);
+        CoTaskMemFree(path);
+        ok = 1;
+    }
+    if (item) item->lpVtbl->Release(item);
+    dlg->lpVtbl->Release(dlg);
+    return ok;
+}
+
+static void add_background(void)
+{
+    WCHAR img[MAX_PATH], err[600] = L"", t[700];
+    HCURSOR old;
+    int ok;
+    if (!s_game[0]) { status(L"Install the game first (Install tab)."); return; }
+    if (!pick_image(img)) return;
+    status(L"Converting the picture\x2026");
+    old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    ok = bg_make(s_game, img, NULL, 0, NULL, err, 600);
+    SetCursor(old);
+    scan();
+    fill();
+    if (!ok) { status(err); return; }
+    swprintf_s(t, 700, L"Added. The main menu shows it after its own 12 pictures (MY WWE \x2192 OPTIONS \x2192 "
+                       L"BACKGROUNDS turns pictures on or off, X there shows the game's logo on it).");
+    status(t);
+}
+
+int mods_add_background(const WCHAR *game_dir, const WCHAR *image, int logo)
+{
+    WCHAR err[600] = L"", dir[MAX_PATH] = L"";
+    const int ok = bg_make(game_dir, image, NULL, logo, dir, err, 600);
+    if (ok) wprintf(L"added: %s\n", dir);
+    else wprintf(L"failed: %s\n", err);
+    return ok;
 }
 
 static WCHAR s_installed[MAX_PATH];  /* the folder install_file put the last mod in */
@@ -382,9 +437,20 @@ static int install_file(const WCHAR *zip)
         const int signs = !_wcsicmp(m.type, L"signs"), media = !_wcsicmp(m.type, L"media");
         const int moves = !_wcsicmp(m.type, L"moves");
         const int match_type = !_wcsicmp(m.type, L"matchtype");
+        const int background = !_wcsicmp(m.type, L"background");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
         if (signs || media || match_type) {
             wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
+            goto place;
+        }
+        if (background) {  /* a main menu picture: picture.dds (1024 x 512 DXT5) */
+            swprintf_s(need1, MAX_PATH, L"%s\\picture.dds", tmp);
+            if (!exists(need1)) {
+                status(L"That background mod is incomplete (it needs picture.dds).");
+                remove_tree(tmp, 0);
+                return 0;
+            }
+            wcsncpy_s(kind, 32, L"Backgrounds", _TRUNCATE);
             goto place;
         }
         if (moves) {  /* a move pack: pack.txt + motions (docs/MOVE_PACKS.md) */
@@ -399,7 +465,7 @@ static int install_file(const WCHAR *zip)
         }
         if (!arena && !star) {
             swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, backstage, superstar, sign, media, "
-                               L"move and match type mods.", m.name, m.type);
+                               L"move, match type and background mods.", m.name, m.type);
             status(t);
             remove_tree(tmp, 0);
             return 0;
@@ -456,6 +522,8 @@ place:
                        : !wcscmp(kind, L"Moves") ? L"Installed \"%s\". The game merges its moves into its files when it next starts (a few seconds)."
                        : !wcscmp(kind, L"MatchTypes") ? L"Installed \"%s\". The match type is in the game's menus the "
                                                         L"next time the game starts."
+                       : !wcscmp(kind, L"Backgrounds") ? L"Installed \"%s\". The main menu shows it after its own "
+                                                         L"12 pictures."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
                                                    L"select (up to 72 superstar mods)."
@@ -570,8 +638,12 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     if (maker_present()) {
         add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 170, 32, id_base + M_MAKER);
         add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 206, 386, 150, 32, id_base + M_FOLDER);
+        add(tab, L"Button", L"Add background picture\x2026", BS_PUSHBUTTON | WS_TABSTOP, 364, 386, 224, 32,
+            id_base + M_BACKGROUND);
     } else {
         add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 150, 32, id_base + M_FOLDER);
+        add(tab, L"Button", L"Add background picture\x2026", BS_PUSHBUTTON | WS_TABSTOP, 186, 386, 224, 32,
+            id_base + M_BACKGROUND);
     }
     s_status = add(tab, L"Static", L"", SS_LEFT, 28, 428, 560, 40, id_base + M_STATUS);
 }
@@ -583,6 +655,7 @@ int mods_command(int id, int code)
     if (id == s_base + M_REMOVE) { remove_mod(); return 1; }
     if (id == s_base + M_FOLDER) { open_folder(); return 1; }
     if (id == s_base + M_MAKER) { open_maker(); return 1; }
+    if (id == s_base + M_BACKGROUND) { add_background(); return 1; }
     return 0;
 }
 

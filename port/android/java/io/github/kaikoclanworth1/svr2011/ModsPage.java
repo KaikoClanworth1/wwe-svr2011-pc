@@ -6,6 +6,8 @@
 // (a zip) picked from the phone. Mods are made on the PC with the SvR2011 Mod
 // Maker. Match types the port adds are mods too (type=matchtype, a manifest
 // only, in Mods/MatchTypes/<id>) so they can be switched off; they come on.
+// Main menu backgrounds are mods too (Mods/Backgrounds/<id>: picture.dds +
+// manifest); "Add a background picture" makes one from a photo (Backgrounds.java).
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -45,6 +47,7 @@ final class ModsPage {
     static File mediaFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Media"); }
     static File backstageFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Backstage"); }
     static File matchTypesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "MatchTypes"); }
+    static File backgroundsFolder() { return Backgrounds.folder(); }
 
     View view() {
         LinearLayout c = a_.column();
@@ -57,6 +60,9 @@ final class ModsPage {
         Button add = a_.button("Add a mod (.svrmod)…", LauncherActivity.kRed);
         add.setOnClickListener(v -> pick());
         c.addView(add, a_.fullWidth(14));
+        Button picture = a_.button("Add a background picture…", LauncherActivity.kCard);
+        picture.setOnClickListener(v -> pickPicture());
+        c.addView(picture, a_.fullWidth(8));
         Button bundled = a_.button("Get bundled mods", LauncherActivity.kCard);
         bundled.setOnClickListener(v -> {
             if (!InstallActivity.installed()) a_.status("Install the game first.");
@@ -91,9 +97,10 @@ final class ModsPage {
         File[] media = mediaFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] back = backstageFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
         File[] types = matchTypesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
+        File[] pics = backgroundsFolder().listFiles(f -> f.isDirectory() && new File(f, "picture.dds").isFile());
         File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
             + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)
-            + (types == null ? 0 : types.length)];
+            + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length)];
         int k = 0;
         if (arenas != null) for (File f : arenas) dirs[k++] = f;
         if (stars != null) for (File f : stars) dirs[k++] = f;
@@ -101,6 +108,7 @@ final class ModsPage {
         if (media != null) for (File f : media) dirs[k++] = f;
         if (back != null) for (File f : back) dirs[k++] = f;
         if (types != null) for (File f : types) dirs[k++] = f;
+        if (pics != null) for (File f : pics) dirs[k++] = f;
         if (dirs.length == 0) {
             TextView none = a_.text("None yet.", 15, LauncherActivity.kDim);
             none.setPadding(0, a_.dp(14), 0, a_.dp(14));
@@ -116,10 +124,11 @@ final class ModsPage {
             boolean mediaPack = d.getParentFile().getName().equals("Media");
             boolean backPack = d.getParentFile().getName().equals("Backstage");
             boolean matchType = d.getParentFile().getName().equals("MatchTypes");
-            String hint = (matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+            boolean pic = d.getParentFile().getName().equals("Backgrounds");
+            String hint = (pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
-                + (signPack || mediaPack || matchType ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
+                + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
             // (red when on, as the Settings switches: the default is hard to see)
@@ -192,6 +201,45 @@ final class ModsPage {
         });
     }
 
+    // A picture for the main menu (Backgrounds.java), named after its file.
+    void pickPicture() {
+        if (!InstallActivity.installed()) {
+            a_.status("Install the game first.");
+            return;
+        }
+        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("image/*");
+        a_.startForResult(pick, (code, data) -> {
+            if (code != android.app.Activity.RESULT_OK || data == null || data.getData() == null) return;
+            Uri uri = data.getData();
+            String name = "Background";
+            try (android.database.Cursor q = a_.getContentResolver().query(uri,
+                    new String[] {android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                if (q != null && q.moveToFirst() && q.getString(0) != null) name = q.getString(0);
+            } catch (Exception ignored) {
+            }
+            int dot = name.lastIndexOf('.');
+            if (dot > 0) name = name.substring(0, dot);
+            final String title = name;
+            final String[] result = new String[1];
+            a_.status("Converting the picture…");
+            a_.background(() -> {
+                try (InputStream in = a_.getContentResolver().openInputStream(uri)) {
+                    if (in == null) throw new IOException("can't read it");
+                    Backgrounds.make(in, title, false);
+                    result[0] = "Added " + title + ": the main menu shows it after its own 12 pictures (MY WWE -> "
+                        + "OPTIONS -> BACKGROUNDS turns pictures on or off).";
+                } catch (Exception e) {
+                    result[0] = "That picture could not be added: " + e.getMessage();
+                }
+            }, () -> {
+                refresh();
+                a_.status(result[0]);
+            });
+        });
+    }
+
     // A .svrmod: manifest.txt (type=arena or superstar, id=...) and its files -
     // arena.pac and banner.dds, or ch.pac and the song= / movie= files; a
     // match type (type=matchtype) is the manifest alone and comes switched on.
@@ -243,13 +291,18 @@ final class ModsPage {
         boolean mediaPack = type.equals("media");
         boolean backPack = type.equals("backstage");
         boolean matchType = type.equals("matchtype");
-        if (!signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
+        boolean pic = type.equals("background");
+        if (pic && !parts.containsKey("picture.dds")) {
+            deleteTree(stage);
+            throw new IOException("it has no picture.dds");
+        }
+        if (!pic && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
             deleteTree(stage);
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
         }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
-        if (id.isEmpty()) id = matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
-        File dest = new File(matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        if (id.isEmpty()) id = pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
+        File dest = new File(pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
         Installed r = new Installed();
         r.name = m.containsKey("name") ? m.get("name") : id;
         r.type = type;
@@ -269,7 +322,7 @@ final class ModsPage {
         dest.getParentFile().mkdirs();
         FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)
         deleteTree(stage);
-        if (!new File(dest, signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
+        if (!new File(dest, pic ? "picture.dds" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
             throw new IOException("can't write to the game folder");
         if (off) new FileOutputStream(new File(dest, "disabled")).close();
         return r;

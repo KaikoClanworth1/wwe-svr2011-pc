@@ -9,6 +9,11 @@
 // blank menu). Controller (D-pad / stick: choose, A: on / off, Y: all on /
 // all off, B: back), keyboard (arrows, Enter / Space, Esc) or touch (tap a
 // row). While it is open the game sees an idle controller.
+//
+// Custom pictures (Mods/Backgrounds/<id>: picture.dds 1024 x 512 DXT5,
+// manifest.txt name= / logo=, a "disabled" file; the launcher's Backgrounds
+// list makes them) join the cycle after the 12; the page lists them too (X:
+// the game's logo shown / hidden on one).
 
 #pragma once
 
@@ -32,5 +37,9 @@ void InstallBackgroundsPage(rex::ui::ImGuiDrawer* drawer, rex::input::InputSyste
 void SetBackgroundsPageFonts(ImFont* menu, ImFont* title);
 void OpenBackgroundsPage();
 bool BackgroundsPageHoldsInput();
+
+// A set the game just unpacked (arena_mods.cpp's BPE decoder hook): while a
+// custom picture's background loads, EB00's picture (and logo) become it.
+void BackgroundsDecoded(uint8_t* data, uint32_t size);
 
 }  // namespace svr2011
