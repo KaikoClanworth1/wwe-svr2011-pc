@@ -106,6 +106,7 @@ enum Row {
   kTextureQuality,                                               // GRAPHICS
   kCrowd, kShadows,                                              // ADV. GRAPHICS
   kFastStart,                                                    // DISPLAY (last)
+  kPing,                                                         // DISPLAY
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -115,9 +116,9 @@ const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
-const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kTouch, kReplays, kFastStart},
+const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kPing, kTouch, kReplays, kFastStart},
 #else
-const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kRenderer, kTouch,
+const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kPing, kRenderer, kTouch,
                                               kReplays, kCpuPriority, kFastStart},
 #endif
                                              {kRenderScale, kAntiAliasing, kTextureQuality, kWide, kCutsceneFps},
@@ -390,6 +391,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
+  bool ping_ = true;
   bool fps_ = true, vsync_ = true, native_ = true, full_speed_ = true;
   bool high_priority_ = false;  // (process_priority 1: above normal, perf_hooks.cpp)
   int display_ = kWindowed;  // (DisplayMode)
@@ -458,6 +460,7 @@ void GraphicsPage::Load() {
   api_ = api_at_start_;
   native_ = true;  // (the game draws only natively)
   fps_ = FpsCounterVisible();
+  ping_ = rex::cvar::Query<bool>("show_ping");
   touch_ = rex::cvar::Query<bool>("touch_controls");
   wide_ = rex::cvar::Query<bool>("native_widescreen");
   dof_ = rex::cvar::Query<bool>("depth_of_field");
@@ -591,6 +594,11 @@ void GraphicsPage::Change(int row, int dir) {
       touch_ = !touch_;
       rex::cvar::SetFlagByName("touch_controls", touch_ ? "true" : "false");
       SaveSetting("touch_controls", touch_ ? "true" : "false");
+      break;
+    case kPing:
+      ping_ = !ping_;
+      rex::cvar::SetFlagByName("show_ping", ping_ ? "true" : "false");
+      SaveSetting("show_ping", ping_ ? "true" : "false");
       break;
     case kFpsCounter:
       fps_ = !fps_;
@@ -1005,6 +1013,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return fps;
       }
       case kFpsCounter: return fps_ ? "ON" : "OFF";
+      case kPing: return ping_ ? "ON" : "OFF";
       case kFullSpeed: return full_speed_ ? "ON" : "OFF (AS THE XBOX 360)";
       case kTouch: return touch_ ? "ON" : "OFF";
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
@@ -1037,6 +1046,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kVsync: return "VSYNC";
       case kFrameRate: return "FRAME RATE";
       case kFpsCounter: return "FPS COUNTER";
+      case kPing: return "ONLINE PING";
       case kFullSpeed: return "FULL SPEED";
       case kTouch: return "TOUCH CONTROLS";
       case kWide: return "WIDE SCREENS";
@@ -1069,6 +1079,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
       case kFrameRate: return "Frames a second in matches, at most (menus: 60). The game always runs at its normal speed.";
       case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
+      case kPing: return "Online matches: the delay to the other players at the top right (bars: green under 150 ms, yellow under 250, red above).";
       case kFullSpeed:
         return full_speed_ ? "The game keeps its normal speed when the frame rate drops (and at 30 FPS)."
                            : "One game step a frame, as the Xbox 360: the game slows down below 60 FPS (30 FPS off).";
