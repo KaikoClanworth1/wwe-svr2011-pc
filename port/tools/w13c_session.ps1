@@ -62,8 +62,10 @@ switch ($Action) {
         $env:SVR2011_INPUT_FILE = $input
         $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
         $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"   # native renderer window, off-screen too
+        $env:SVR2011_WINDOW_BEHIND = "1"              # (the PC port coordinator's test rule: behind every window)
         $a = @("--log_file=`"$log`"", "--log_level=$LogLevel", "--audio_mute=true", "--fullscreen=false", "--monitor=2") + $Rest
         $p = Start-Process (Join-Path $game $Exe) -WorkingDirectory $game -ArgumentList $a -PassThru -WindowStyle Minimized
+        try { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
         for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
         if ($p.MainWindowHandle -ne 0) {
             [void][SW]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, 1920, 0, 0, 0, 0x1 -bor 0x10)  # (screen 2, behind every window)

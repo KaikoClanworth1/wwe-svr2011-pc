@@ -4,13 +4,14 @@
 # sets SVR2011_TEST_FORCE_MOVE (match_types.cpp); -MoveLog ids logs motion lookups.
 #   w13c_match.ps1 -Name mk1 [-People "MANKIND,RANDY ORTON"] [-Shots 30] [-Every 2] [-Force ...] [-MoveLog ...] [-Rule 0D]
 param([string]$Name = "w13c", [string]$People = "MANKIND,RANDY ORTON", [int]$Shots = 30, [double]$Every = 2,
-      [string]$Force = "", [string]$MoveLog = "", [string]$Rule = "", [string[]]$Acts = @(), [int]$Settle = 0)
+      [string]$Force = "", [string]$MoveLog = "", [string]$Rule = "", [string[]]$Acts = @(), [int]$Settle = 0,
+      [int]$Arena = 1, [string]$Redirect = "")   # -Redirect "<slot>=<arena pac>": SVR2011_TEST_ARENA_REDIRECT
 $runs = "D:\Xbox Games Ports\SvR2011 Arenas\port\runs"
 $sess = Join-Path $PSScriptRoot "w13c_session.ps1"
 $env:SVR2011_CONFIG = Join-Path $runs "test_config.toml"
 $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_w13c"
 robocopy (Join-Path $runs "test_userdata_arena_snap") $env:SVR2011_USER_DATA /MIR /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
-$env:SVR2011_ROUTE = "match"; $env:SVR2011_TEST_MATCH = "people=$People arena=1"; $env:SVR2011_TEST_RUN = "1"
+$env:SVR2011_ROUTE = "match"; $env:SVR2011_TEST_MATCH = "people=$People arena=$Arena"; $env:SVR2011_TEST_ARENA_REDIRECT = $Redirect; $env:SVR2011_TEST_RUN = "1"
 $env:SVR2011_TEST_FORCE_MOVE = $Force; $env:SVR2011_TEST_MOVE_LOG = $MoveLog; $env:SVR2011_TEST_RULE = $Rule
 try {
     & $sess start -Name $Name | Out-Null
@@ -21,7 +22,7 @@ try {
         & $sess shot "${Name}_$i" | Out-Null
     }
 } catch { "ERR $_" } finally { & $sess stop | Out-Null }
-foreach ($v in "SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RUN", "SVR2011_TEST_FORCE_MOVE", "SVR2011_TEST_MOVE_LOG", "SVR2011_TEST_RULE") {
+foreach ($v in "SVR2011_TEST_ARENA_REDIRECT", "SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RUN", "SVR2011_TEST_FORCE_MOVE", "SVR2011_TEST_MOVE_LOG", "SVR2011_TEST_RULE") {
     [Environment]::SetEnvironmentVariable($v, $null, "Process")
 }
 $log = Join-Path $runs "$Name.log"

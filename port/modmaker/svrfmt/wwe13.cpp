@@ -856,10 +856,13 @@ int BakeBarrierCorners(std::map<uint32_t, Model>& models, Wwe13Report& rep) {
     };
     float A[2], B[2];
     centre(a->x, a->z, true, A);
+    // (B lies beyond A's end along z: SD99's side run is two panels deep, x
+    // 70-73, and its inner posts at A's own z made a 3-unit "corner" squashed
+    // to 0.18 - gaps at all four corners)
     const P* b = nullptr;
     float bd = 1e30f;
     for (const auto& p : q) {
-      if (std::fabs(p.x) > mx - 3) continue;
+      if (std::fabs(p.x) > mx - 3 || p.z * sz < A[1] * sz + 1.f) continue;
       const float d = (p.x - A[0]) * (p.x - A[0]) + (p.z - A[1]) * (p.z - A[1]);
       if (d < bd) bd = d, b = &p;
     }
