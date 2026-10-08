@@ -110,7 +110,8 @@ bool Place(const fs::path& requested, const std::string& name) {
   }
   fs::create_hard_link(source, dst, ec);
   if (ec) {
-    fs::copy_file(source, dst, fs::copy_options::overwrite_existing, ec);
+    ec.clear();
+    fs::copy_file(source, dst, fs::copy_options::none, ec);  // (never over an entry: it could be a link)
     if (ec) {
       REXLOG_WARN("[svr2011] arena mods: cannot place {} ({})", name, ec.message());
       return false;
@@ -967,8 +968,15 @@ void RedirectArena(int arena, const std::string& file) {
   if (renamed) {
     std::error_code ec2;
     const fs::path dst = g_overlay / name;
+    // The entry may be a hard link to the original (pacg): it must be gone
+    // before the copy - an overwrite or the rename below would write through
+    // it into the game's own file (BG06.PAC was changed so on 2026-10-06).
     fs::remove(dst, ec2);
-    fs::copy_file(source, dst, fs::copy_options::overwrite_existing, ec2);
+    if (fs::exists(dst, ec2)) {
+      REXLOG_WARN("[svr2011] arena mods: cannot replace {}", name);
+      return;
+    }
+    fs::copy_file(source, dst, fs::copy_options::none, ec2);
     FILE* f = ec2 ? nullptr : std::fopen(dst.string().c_str(), "r+b");
     if (!f) {
       REXLOG_WARN("[svr2011] arena mods: cannot place {} ({})", name, ec2.message());

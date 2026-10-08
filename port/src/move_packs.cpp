@@ -843,11 +843,12 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   fs::remove(overlay / "gm.pac", ec);  // (an older build served a whole gm.pac)
   fs::remove(overlay / kGimmickPac, ec);
   std::vector<std::string> extra;
-  if (ok && !gm.empty()) {  // (a hard link to the mod's file, else a copy)
+  if (ok && !gm.empty() && !fs::exists(overlay / kGimmickPac, ec)) {  // (a hard link to the mod's file, else a copy)
     fs::create_hard_link(gm, overlay / kGimmickPac, ec);
     if (ec) {
       ec.clear();
-      fs::copy_file(gm, overlay / kGimmickPac, fs::copy_options::overwrite_existing, ec);
+      // (never over an entry left in place: an old link would be written through)
+      fs::copy_file(gm, overlay / kGimmickPac, fs::copy_options::none, ec);
     }
     ok = !ec;
     extra.push_back(std::string("mods\\pacoverlay\\") + kGimmickPac);
