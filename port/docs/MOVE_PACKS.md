@@ -55,6 +55,16 @@ Extreme Neckbreaker Drop. The game's own files are never written.
   the most similar stock move (same EXH group and x, fewest differing EXH
   bytes, its victim chained to a motion), in the BM and MOTP copies.
 
+- Top-rope moves: 2011 seats the opponent on the top turnbuckle first (stock
+  23100 lifts him; its last event, op 79 y -1000, raises his base 1000 units),
+  and slots 0x140-0x146 play moves that start from that seat (WAZE +0x73 13
+  facing out, 14 facing in; 23163's victim starts at root Y -210). A 2010 one
+  (situation 10/11: Super Hurricanrana 5735, Superplex 5736, Sunset Powerbomb
+  5771) lifts him from the mat itself, so played there he went a body-height
+  above the turnbuckle (Sabu). Not converted: `svr10_superstar.py` puts only
+  situation 13/14 moves in those slots (a same-name 2011 move, else the base's).
+  Slot 0x10A (corner grapple, standing opponent) still takes situation 10.
+
 `svr10_moves.py fix <2010 pac> <2011 pac> <mod.svrmod>...` applies both to a
 built mod (version +0.1, a pack.txt line so the overlay rebuilds; a second
 run changes nothing).

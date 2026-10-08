@@ -85,6 +85,7 @@ MAP = (_rng(0x00, 0x04, 0x00) + _rng(0x06, 0x10, 0x06) + _rng(0x12, 0x18, 0x12) 
        + [(0x15c, 0x1a2), (0x15e, 0x1a4), (0x160, 0x1a6), (0x162, 0x1a8)] + _rng(0x164, 0x16a, 0x1aa) + _rng(0x16c, 0x172, 0x1b6))
 MARKERS = {10900, 1001, 1101, 1051, 1151, 10280, 10290, 1290, 1380, 1381, 1382, 1383, 1384, 1385, 800, 810, 100, 101, 102, 103,
            900, 1700, 1775, 9900, 8370, 8371, 8360, 8361, 8380, 8381, 0}
+SEATED_TOP = {13, 14}                            # move situations: opponent seated on the top turnbuckle
 SECTIONS = [(0x7a, 0xc2), (0x104, 0x158)]      # grapple and corner/top-rope sections: a move may move within them
 ABILITIES_2011 = {1, 7, 9, 11, 12, 14, 19, 20, 22, 23, 24}
 # Created Superstar nicknames for the commentary (Mod Maker list, 0..83)
@@ -186,13 +187,21 @@ class Game:
             h, g, t = svrfmt.epac_read(open(os.path.join(self.pac, 'misc.pac'), 'rb').read())
             raw = ch_tool.unpack(dict(((ty, n), b) for ty, es in g for n, b in es)[(b'MOVS', b'WAZE')])
             st = raw.index(b'* test motion *') - 0x10
-            self._waze = {}
+            self._waze, self._situation = {}, {}
             for k in range((len(raw) - st) // 160):
                 r = raw[st + 160 * k:st + 160 * (k + 1)]
                 if len(r) == 160 and r.strip(b'\0'):
                     mid = struct.unpack_from('<H', r, 0x90)[0]
                     self._waze.setdefault(mid, (r[:16], r[0x10:0x50].split(b'\0')[0].decode('utf-8', 'replace')))
+                    self._situation.setdefault(mid, r[0x73])
         return self._waze
+
+    def situation(self):
+        """{move id: the situation it starts from (WAZE +0x73)}, e.g. 10/11 at the corner (2010's
+        top-rope moves lift the opponent up themselves), 13/14 the opponent already seated on the
+        top turnbuckle facing out / in (2011)"""
+        self.waze()
+        return self._situation
 
 
 # ------------------------------------------------------------ Wwise (2011 sound/*.pck)
@@ -457,6 +466,18 @@ class Moves:
             fl = [int.from_bytes(self.w11[m][0], 'little') for m in (u16s(g11.pro[c], 224)[s // 2] for c in real) if m in self.w11]
             cnt = collections.Counter(b for x in fl for b in range(128) if x >> b & 1)
             self.need[s] = {b for b, n in cnt.items() if fl and n >= 0.9 * len(fl)} - {121, 124, 127}
+        # slots for an opponent seated on the top turnbuckle (situations 13/14, 0x140-0x146): 2011
+        # puts him there first (23100 lifts him, then raises his base by 1000 units, event op 79),
+        # so the move must start from the seat. A 2010 top-rope move (situation 10/11) lifts him
+        # itself from the mat and, played there, lifts him a body-height above the turnbuckle
+        # (Sabu's Super Hurricanrana 5735). Such a slot takes only moves of its situation.
+        self.sit11 = g11.situation()
+        self.sit_need = {}
+        for s in range(0, 0x1c0, 2):
+            ss = [self.sit11[m] for m in (u16s(g11.pro[c], 224)[s // 2] for c in real) if m in self.sit11]
+            top = collections.Counter(ss).most_common(1)
+            if top and top[0][0] in SEATED_TOP and top[0][1] >= 0.9 * len(ss):
+                self.sit_need[s] = top[0][0]
 
     def generic(self, cid):
         """the 2010 default profile shared by the non-wrestlers (announcers, Shane), or a
@@ -492,6 +513,10 @@ class Moves:
         def has(m):
             return m in self.motion11 or m in ported_flags
 
+        def fits(m, s):
+            # the slot's category bits, and its situation where it needs one
+            return self.need[s] <= fbits(m) and (s not in self.sit_need or self.sit11.get(m) == self.sit_need[s])
+
         def stem(n):
             return re.sub(r'\s*\d+$', '', n.strip()).lower()
 
@@ -499,14 +524,14 @@ class Moves:
             # a 2011 move of the same name stem ("Snap Jab 1" for "Snap Jab 2") that fits the slot
             st = stem(self.w10.get(m, (b'', ''))[1] or self.w11.get(m, (b'', ''))[1])
             c = [k for k, (f, n) in self.w11.items() if k != m and has(k) and st and stem(n) == st
-                 and self.need[s11] and self.need[s11] <= fbits(k)]
+                 and self.need[s11] and fits(k, s11)]
             return min(c, key=lambda k: abs(k - m)) if c else None
 
         def relocate(m, s11):
             for lo, hi in SECTIONS:
                 if lo <= s11 <= hi:
                     for s in range(lo, hi + 2, 2):
-                        if s not in used and self.need[s] and self.need[s] <= fbits(m) and t[s // 2] not in MARKERS:
+                        if s not in used and self.need[s] and fits(m, s) and t[s // 2] not in MARKERS:
                             return s
             return None
         for s10, s11 in MAP:
@@ -514,7 +539,8 @@ class Moves:
             nm = self.w10.get(m, (b'', ''))[1]
             if m in MARKERS:
                 continue
-            if has(m) and self.need[s11] <= fbits(m) and s11 not in used:
+            wrong_sit = s11 in self.sit_need and self.sit11.get(m) != self.sit_need[s11]
+            if has(m) and fits(m, s11) and s11 not in used:
                 out[s11 // 2] = m
                 used.add(s11)
                 v = 'ok' + (' (ported)' if m in ported_flags else '')
@@ -527,14 +553,17 @@ class Moves:
                     s11 = r
                 else:
                     sub = substitute(m, s11) if s11 not in used else None
-                    if m in ported_flags:
+                    why = ('starts at the corner (situation %s), the slot from the top turnbuckle (%d)'
+                           % (self.sit11.get(m), self.sit_need[s11]) if wrong_sit
+                           else 'category bits %s missing' % sorted(self.need[s11] - fbits(m)))
+                    if m in ported_flags and not wrong_sit:
                         extra[m] = sorted(set(extra.get(m, [])) | (self.need[s11] - fbits(m)))
-                    if sub is not None and m not in ported_flags:
+                    if sub is not None and (m not in ported_flags or wrong_sit):
                         out[s11 // 2] = sub
                         used.add(s11)
-                        v = 'category bits %s missing -> substitute %d %s' % (sorted(self.need[s11] - fbits(m)), sub, self.w11[sub][1])
+                        v = '%s -> substitute %d %s' % (why, sub, self.w11[sub][1])
                     else:
-                        v = 'category bits %s missing -> base move kept' % sorted(self.need[s11] - fbits(m))
+                        v = '%s -> base move kept' % why
             else:
                 sub = substitute(m, s11) if s11 not in used else None
                 if sub is not None:
