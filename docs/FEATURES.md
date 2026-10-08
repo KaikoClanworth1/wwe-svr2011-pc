@@ -103,6 +103,7 @@ still being tested.
 ### Arenas and mods
 - **The Mod Maker** (launcher → Mods → Open Mod Maker): make your own **arenas** (a 3D arena editor), **backstage rooms**, **superstars**, **move packs**, **crowd signs**, **media packs** and **match type** switches as `.svrmod` files, saved as projects you can reopen. It also browses the game's files (textures, models, motions, text), plays the game's animations, exports renders and icons, swaps your Created Superstars' pictures, and converts WWE '13 arenas / superstars, SvR 2010 superstars and moves and SvR 2008 backstage areas. A manual is built in.
 - **Made with** column on the Mods tab: each mod says what made it (Mod Maker, the port's tools) - or **non-Mod Maker** for mods made some other way.
+- **Bigger title belts**: championship belts are 1.2x their old size (they looked small on this game's superstars), in entrances, on the shoulder or waist and in hand; `title_belt_scale` (1.0 = the original size).
 - **Sabu bundled** (from SvR 2008): his model with two attires (including the turban), renders, theme, titantron and his SvR 2008 moves as a move pack, with 2011's own Sabu entrance; installed switched off like the other bundled superstars.
 - **Practice Arena**: the training ring from the start of the game, as a real arena on the DOWNLOADED ARENAS page (empty seats; installed switched off like the other bundled mods).
 - **Three more WWE '13 arenas bundled**: SmackDown 1999, Royal Rumble 1998 and King of the Ring 1998 (installed switched off).
@@ -125,7 +126,6 @@ still being tested.
 - **Community Creations: your own stories upload** (they were refused as "created by a different player"; only downloaded stories are now).
 
 ### Launcher and Android
-- **Fast start** (launcher Play tab, Android Settings, or GRAPHICS → DISPLAY → FAST START): skip the intro movies (the Start Screen in about half the time) and / or the practice ring after START, straight to the main menu. Off by default.
 - **The launcher shows who made it and where it's free** (PC and Android): "Launcher - Version … - By KaikoClanworth - Download free at github.com/KaikoClanworth1/wwe-svr2011-pc", with the link one click / tap away.
 - **Report a problem asks what happened** (PC and Android): what kind of problem, how often, what happened and what you were doing just before; the report carries that description and tells you to post it as a new thread in the Discord's **bug-svr11** forum.
 - **Android installs the bundled mods itself**: after the disc install, after an update, or from the Mods tab's Get bundled mods (the release's SvR2011-Mods zip); new bundles come switched off except the match types, and your choices are kept. The Mods tab's switches are red when on.
