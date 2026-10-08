@@ -73,6 +73,7 @@
 #include "online_cas.h"
 #include "match_hud.h"
 #include "online_overlay.h"
+#include "startup_pump.h"
 #include "leaderboards.h"
 #include "p2p.h"
 #if defined(_WIN32)
@@ -513,6 +514,10 @@ void Svr2011App::OnPostLoadXexImage() {
 
   REXLOG_INFO("platform: {}", svr2011::PlatformDescription());
 
+  // The mods below can take a while on a cold hard drive: the window keeps
+  // answering Windows meanwhile (startup_pump.h).
+  svr2011::StartupThread() = std::this_thread::get_id();
+
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
   svr2011::InstallPadIcons(runtime()->memory());  // (pad_icons.h)
@@ -526,15 +531,21 @@ void Svr2011App::OnPostLoadXexImage() {
   // More exhibition match types (match_types.h).
   svr2011::InstallMatchTypes(runtime()->memory());
   // Arena mods: custom arenas in place of a host arena (arena_mods.h).
+  svr2011::KeepWindowAlive();
   svr2011::InstallMovePacks(runtime()->file_system());  // (arenas branch: before the game mounts its pacs)
+  svr2011::KeepWindowAlive();
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
+  svr2011::KeepWindowAlive();
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
   svr2011::InstallJukebox(runtime()->memory());  // MY WWE -> JUKEBOX (jukebox.h)
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
+  svr2011::KeepWindowAlive();
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
+  svr2011::KeepWindowAlive();
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)
+  svr2011::KeepWindowAlive();
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
   svr2011::InstallFrameRate(runtime()->memory());
   svr2011::InstallPerfSettings();  // (perf_hooks.h)
