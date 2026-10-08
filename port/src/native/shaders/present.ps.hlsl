@@ -11,6 +11,15 @@ OWN_TEXTURE_TABLES
 #define g_Sampler OWN_CONSTANT(uint, 4)
 #define g_UvScale OWN_CONSTANT(float2, 8)
 #define g_OutputSize OWN_CONSTANT(float2, 16)
+#elif defined(SVR_D3D11)
+// (Direct3D 11: the texture and sampler are in register 0)
+cbuffer PresentConstants : register(b3) {
+  uint2 g_Unused;
+  float2 g_UvScale;
+  float2 g_OutputSize;
+};
+#define g_Texture 0
+#define g_Sampler 0
 #else
 cbuffer PresentConstants : register(b3, space4) {
   uint g_Texture;  // SRV heap index

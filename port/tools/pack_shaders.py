@@ -2,7 +2,7 @@
 
   python tools/pack_shaders.py <native_shaders folder> [--remove-loose]
 
-Writes shaders.dxil.pak (D3D12), shaders.spv.pak (Vulkan) and shaders.spvc.pak
+Writes shaders.dxil.pak (D3D12), shaders.spv.pak (Vulkan), shaders.dxbc.pak (Direct3D 11) and shaders.spvc.pak
 (Vulkan GPUs without descriptor indexing: compact tables) into the folder:
 each holds that API's shader code (*.dxil / *.spv, without debug_* / dbg_*)
 and the shared *.inputs / *.textures. The game reads the pack in one go
@@ -47,7 +47,7 @@ def main(args):
         return 1
     folder = Path(args[0])
     packed = set()
-    for ext in (".dxil", ".spv", ".spvc"):
+    for ext in (".dxil", ".spv", ".spvc", ".dxbc"):
         out, files = pack(folder, ext)
         if out:
             packed.update(files)

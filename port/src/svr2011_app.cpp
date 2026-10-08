@@ -59,6 +59,7 @@
 #include "native/native_renderer.h"
 #include "frame_stats.h"
 #include "keyboard_typing.h"
+#include "gpu_probe.h"
 #include "platform.h"
 #include "script_input.h"
 #include "touch_controls.h"
@@ -256,9 +257,6 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
-  // The native renderer's Direct3D 12 needs ID3D12Device8 (Windows 10 version
-  // 2004, build 19041). On an older Windows (10 1809 / LTSC 2019 ...) it can't
-  // make its device and nothing draws: "any" means Vulkan there.
 #if defined(__ANDROID__)
   // The phone draws natively on Vulkan only: a settings file with another
   // value ("any", seen in a player's report: "no backend for the emulator's
@@ -268,13 +266,25 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
     REXLOG_WARN("graphics: gpu_backend \"{}\" - the phone draws on Vulkan", api);
   }
 #endif
+#if defined(_WIN32)
+  // "any": Direct3D 12 when it can run the native renderer (Windows 10 2004+,
+  // binding tier 2, Shader Model 6), else Vulkan 1.1, else Direct3D 11 (older
+  // GPUs / drivers) - gpu_probe.h.
   if (rex::cvar::Query<std::string>("gpu_backend") == "any") {
-    if (const uint32_t build = svr2011::WindowsBuild(); build && build < 19041) {
-      rex::cvar::SetFlagByName("gpu_backend", "vulkan");
-      REXLOG_WARN("graphics: Windows build {} is older than 19041 (10 version 2004), which Direct3D 12 here needs - "
-                  "using Vulkan", build);
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string why;
+    bool cached = false;
+    const std::string api = svr2011::PickGraphicsApi(g_user_data / "cache" / "graphics_api.txt", &why, &cached);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (api != "d3d12") {
+      rex::cvar::SetFlagByName("gpu_backend", api);
+      REXLOG_WARN("graphics: {} - using {} ({:.0f} ms to check{})", why, api == "vulkan" ? "Vulkan" : "Direct3D 11", ms,
+                  cached ? ", known for this GPU and driver" : "");
+    } else {
+      REXLOG_INFO("graphics: Direct3D 12 ({:.0f} ms to check{})", ms, cached ? ", known for this GPU and driver" : "");
     }
   }
+#endif
   // Automated tests: the only controller is one driven by a command file.
   if (std::string file = Env("SVR2011_INPUT_FILE"); !file.empty()) {
     config.input_factory = [file](bool) -> std::unique_ptr<rex::system::IInputSystem> {

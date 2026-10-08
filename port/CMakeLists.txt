@@ -20,6 +20,7 @@ set(SVR2011_SOURCES
     src/script_input.cpp
     src/keyboard_typing.cpp
     src/platform.cpp
+    src/gpu_probe.cpp
     src/frame_stats.cpp
     src/profiler.cpp
     src/fps_overlay.cpp
@@ -136,7 +137,7 @@ set_source_files_properties(src/svr2011_app.cpp PROPERTIES COMPILE_DEFINITIONS
 if(WIN32)
     list(APPEND SVR2011_SOURCES src/xaudio2_audio.cpp src/crash_report.cpp src/music.cpp)
     if(NOT SVR2011_D3D_TRACE)
-        list(APPEND SVR2011_SOURCES src/native/backend_d3d12.cpp)
+        list(APPEND SVR2011_SOURCES src/native/backend_d3d12.cpp src/native/backend_d3d11.cpp)
     endif()
 else()
     list(APPEND SVR2011_SOURCES src/posix_stubs.cpp src/crash_report_posix.cpp)
@@ -205,8 +206,11 @@ if(WIN32 OR ANDROID)
     target_include_directories(svr2011 PRIVATE launcher)
 endif()
 if(WIN32)
-    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 dxgi dxguid dbghelp ws2_32 winhttp
-        mfplat mfreadwrite mfuuid)
+    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 d3d11 dxgi dxguid dbghelp ws2_32 winhttp
+        mfplat mfreadwrite mfuuid delayimp)
+    # d3d12.dll is loaded only when the game draws with Direct3D 12: Windows
+    # without it (or GPUs without it, on Direct3D 11) still start the game.
+    target_link_options(svr2011 PRIVATE -Wl,/DELAYLOAD:d3d12.dll)
     # A PDB (function names + line tables) for crash reports and profiling.
     target_compile_options(svr2011 PRIVATE -gline-tables-only)
     target_link_options(svr2011 PRIVATE -Wl,/DEBUG)

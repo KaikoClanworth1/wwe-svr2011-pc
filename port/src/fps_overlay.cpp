@@ -76,8 +76,9 @@ static void DrawNativeFailure(ImGuiIO& io) {
     ImGui::TextWrapped("Try another graphics driver (launcher: Settings, Graphics driver), and please send a problem "
                        "report (launcher: Play tab, Report a problem).");
 #else
-    ImGui::TextWrapped("Update your graphics driver, or try the other graphics API (MY WWE > Options > Graphics), and "
-                       "please send a problem report (the launcher's Report a problem).");
+    ImGui::TextWrapped("Update your graphics driver, or try another graphics API - DIRECT3D 11 for older GPUs (MY WWE > "
+                       "Options > Graphics, or the launcher's Settings) - and please send a problem report (the "
+                       "launcher's Report a problem).");
 #endif
   }
   ImGui::End();

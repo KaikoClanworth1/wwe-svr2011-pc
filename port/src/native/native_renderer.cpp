@@ -49,6 +49,9 @@
 #endif
 
 #include <plume_render_interface.h>
+#if defined(_WIN32)
+#include <plume_d3d11.h>  // (slot tables: a view's swizzle)
+#endif
 
 #include <rex/cvar.h>
 #include <rex/external_frame.h>
@@ -577,9 +580,10 @@ struct Renderer {
     std::unique_ptr<plume::RenderDescriptorSet> set;
     uint64_t used = 0;  // (frame)
   };
-  // (keyed by the 16 places' stamps - no allocation or string hash per draw)
+  // (keyed by the places' stamps - no allocation or string hash per draw;
+  // 16 places, or 64 with slot tables)
   struct CompactKey {
-    std::array<uint32_t, 16> stamps;
+    std::array<uint32_t, 64> stamps;
     bool operator==(const CompactKey& o) const { return stamps == o.stamps; }
   };
   struct CompactKeyHash {
@@ -590,6 +594,13 @@ struct Renderer {
     }
   };
   std::unordered_map<CompactKey, CompactSet, CompactKeyHash> compact_sets[2];  // textures, samplers
+  // The last draw's places and set (CompactSet's fast path).
+  struct LastCompact {
+    uint32_t indices[64] = {};
+    uint32_t table_stamps = 0;
+    CompactSet* entry = nullptr;
+  };
+  LastCompact last_compact[2];
   plume::RenderDescriptorSet* draw_sets[2] = {};
   plume::RenderDescriptorSet* default_sets[2] = {};  // (placeholders only)
   uint64_t compact_swept = 0;
@@ -944,6 +955,21 @@ plume::RenderDescriptorRange g_compact_texture_ranges[3], g_compact_sampler_rang
 plume::RenderDescriptorRange g_compact_constant_ranges[4];
 plume::RenderDescriptorSetDesc g_compact_descs[2];
 
+// Slot tables (Direct3D 11, SlotTables()): no descriptor tables in the
+// shaders - each fetch slot has its own register (shader_common.h, SVR_D3D11):
+// set 0 is 64 textures (2D slots 0-31, 3D 0-15, cube 0-15), set 1 16 samplers
+// (slots 0-15; the vertex shaders' 16 / 17 in 14 / 15), made per draw like
+// the compact tables'. The constants are root constant buffers b0-b3.
+constexpr uint32_t kSlotTextures = 64, kSlotSamplers = 16;
+constexpr uint32_t kSlotFirst[3] = {0, 32, 48}, kSlotCount[3] = {32, 16, 16};
+plume::RenderDescriptorRange g_slot_ranges[2];
+plume::RenderDescriptorSetDesc g_slot_descs[2];
+
+bool SlotTables() { return backend::ActiveApi() == backend::Api::kD3D11; }
+
+// The sampler register of a fetch slot (slot tables).
+uint32_t SlotSampler(uint32_t slot) { return slot >= 16 ? slot - 2 : slot; }
+
 // Compact tables: stands in for the big tables - remembers what each index
 // holds (and a stamp, new at every write), for the draws' own sets.
 class TableRecord final : public plume::RenderDescriptorSet {
@@ -977,17 +1003,28 @@ class TableRecord final : public plume::RenderDescriptorSet {
   uint32_t stamps = 0;
 };
 
-// Compact tables: the set holding these table indices (16 places; UINT32_MAX:
-// a placeholder) - made the first time, then reused. Sets not used for a
-// while are dropped (well after the GPU is done with them).
-plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t indices[16]) {
+// Compact tables: the set holding these table indices (16 places, slot
+// tables 64 textures / 16 samplers; UINT32_MAX: a placeholder) - made the
+// first time, then reused. Sets not used for a while are dropped (well after
+// the GPU is done with them).
+plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t* indices) {
   auto* table = static_cast<TableRecord*>(samplers ? r->sampler_set.get() : r->texture_sets[0].get());
-  Renderer::CompactKey key;
-  for (int i = 0; i < 16; ++i)
+  const uint32_t places = SlotTables() && !samplers ? kSlotTextures : 16;
+  // The same places as the last draw's, and the table unchanged since: its set
+  // (most draws - no key to build and look up).
+  Renderer::LastCompact& last = r->last_compact[samplers];
+  if (last.entry && last.table_stamps == table->stamps &&
+      std::memcmp(last.indices, indices, places * sizeof(uint32_t)) == 0) {
+    last.entry->used = r->frames;
+    return last.entry->set.get();
+  }
+  Renderer::CompactKey key{};
+  for (uint32_t i = 0; i < places; ++i)
     key.stamps[size_t(i)] = indices[i] < table->entries.size() ? table->entries[indices[i]].stamp : 0;
   auto& cache = r->compact_sets[samplers];
   if (r->frames - r->compact_swept > 600) {
     r->compact_swept = r->frames;
+    r->last_compact[0].entry = r->last_compact[1].entry = nullptr;
     for (int k = 0; k < 2; ++k)
       for (auto it = r->compact_sets[k].begin(); it != r->compact_sets[k].end();) {
         const bool keep = it->second.used + 2 * kFrames + 4 >= r->frames ||
@@ -997,16 +1034,22 @@ plume::RenderDescriptorSet* CompactSet(Renderer* r, int samplers, const uint32_t
   }
   Renderer::CompactSet& c = cache[key];
   c.used = r->frames;
+  last.entry = &c;  // (map elements stay put until erased)
+  last.table_stamps = table->stamps;
+  std::memcpy(last.indices, indices, places * sizeof(uint32_t));
   if (c.set) return c.set.get();
-  c.set = r->device->createDescriptorSet(g_compact_descs[samplers]);
+  c.set = r->device->createDescriptorSet(SlotTables() ? g_slot_descs[samplers] : g_compact_descs[samplers]);
   if (!c.set) return nullptr;
-  for (uint32_t i = 0; i < 16; ++i) {
+  for (uint32_t i = 0; i < places; ++i) {
     if (samplers) {
       const uint32_t index = indices[i] < table->entries.size() ? indices[i] : 0;  // (0: linear wrap)
       c.set->setSampler(i, table->entries[index].sampler);
       continue;
     }
-    const uint32_t dimension = i < kCompactFirst[1] ? 0 : i < kCompactFirst[2] ? 1 : 2;
+    const uint32_t dimension = SlotTables() ? (i < kSlotFirst[1] ? 0 : i < kSlotFirst[2] ? 1 : 2)
+                               : i < kCompactFirst[1]          ? 0
+                               : i < kCompactFirst[2]          ? 1
+                                                               : 2;
     const uint32_t index =
         indices[i] < table->entries.size() ? indices[i] : r->texture_base[dimension] + dimension;
     const TableRecord::Entry& e = table->entries[index];
@@ -1115,16 +1158,17 @@ bool CreateVulkanPipelineLayout(Renderer* r) {
 
 // Binds the texture tables, samplers and (Vulkan) this frame's constant buffer.
 void BindTables(Renderer* r, plume::RenderCommandList* list) {
-  if (backend::CompactTables()) {
+  if (backend::CompactTables() || SlotTables()) {
     // (the placeholders' sets until a draw binds its own)
     if (!r->default_sets[0]) {
-      uint32_t none[16];
+      uint32_t none[kSlotTextures];
       std::fill(std::begin(none), std::end(none), UINT32_MAX);
       for (int k = 0; k < 2; ++k) r->default_sets[k] = CompactSet(r, k, none);
     }
     r->list_state.compact[0] = r->list_state.compact[1] = nullptr;
     r->draw_sets[0] = r->draw_sets[1] = nullptr;
     BindCompactSets(r, list);
+    if (SlotTables()) return;  // (constants: root constant buffers, BindConstants)
     const uint32_t zero[3] = {};
     list->setGraphicsDescriptorSetDynamic(r->constant_sets[r->back_index].get(), 2, zero, 3);
     return;
@@ -1139,8 +1183,40 @@ void BindTables(Renderer* r, plume::RenderCommandList* list) {
   list->setGraphicsDescriptorSet(r->sampler_set.get(), 3);
 }
 
+// Slot tables (Direct3D 11): see g_slot_descs.
+bool CreateSlotPipelineLayout(Renderer* r) {
+  g_slot_ranges[0] = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::TEXTURE, 0, kSlotTextures);
+  g_slot_ranges[1] = plume::RenderDescriptorRange(plume::RenderDescriptorRangeType::SAMPLER, 0, kSlotSamplers);
+  g_slot_descs[0] = plume::RenderDescriptorSetDesc(&g_slot_ranges[0], 1);
+  g_slot_descs[1] = plume::RenderDescriptorSetDesc(&g_slot_ranges[1], 1);
+  plume::RenderRootDescriptorDesc roots[4];
+  for (uint32_t i = 0; i < 4; ++i)
+    roots[i] = plume::RenderRootDescriptorDesc(i, 0, plume::RenderRootDescriptorType::CONSTANT_BUFFER);
+  plume::RenderPipelineLayoutDesc desc;
+  desc.descriptorSetDescs = g_slot_descs;
+  desc.descriptorSetDescsCount = 2;
+  desc.rootDescriptorDescs = roots;
+  desc.rootDescriptorDescsCount = 4;
+  desc.allowInputLayout = true;
+  r->layout = r->device->createPipelineLayout(desc);
+  if (!r->layout) {
+    REXLOG_ERROR("native renderer: could not create the pipeline layout (slot tables)");
+    return false;
+  }
+  r->texture_sets[0] = std::make_unique<TableRecord>(3 * kSrvHeapSize);
+  r->sampler_set = std::make_unique<TableRecord>(kSamplerHeapSize);
+  for (uint32_t i = 0; i < 3; ++i) {
+    r->texture_set[i] = r->texture_sets[0].get();
+    r->texture_base[i] = i * kSrvHeapSize;
+  }
+  REXLOG_INFO("native renderer: slot tables ({} textures, {} samplers a draw, each fetch slot its own register)",
+              kSlotTextures, kSlotSamplers);
+  return true;
+}
+
 bool CreatePipelineLayout(Renderer* r) {
   if (backend::ActiveApi() == backend::Api::kVulkan) return CreateVulkanPipelineLayout(r);
+  if (SlotTables()) return CreateSlotPipelineLayout(r);
   for (int i = 0; i < 4; ++i) {
     // (the count: Vulkan's upper bound for the table; D3D12 ignores it)
     g_table_ranges[i] = plume::RenderDescriptorRange(
@@ -1344,8 +1420,11 @@ bool WaitIdle(Renderer* r, const char* what) {
 
 Renderer* Get() {
   std::call_once(g_init_once, [] {
-    if (!Initialize())
-      Fail("the GPU or its graphics driver lacks what it needs (the log's GPU report says what)");
+    if (!Initialize()) {
+      const std::string reason = backend::FailReason();
+      Fail(!reason.empty() ? reason.c_str()
+                           : "the GPU or its graphics driver lacks what it needs (the log's GPU report says what)");
+    }
   });
   return g_failed ? nullptr : g_r;
 }
@@ -1437,8 +1516,20 @@ void ApplyOutputSettings(Renderer* r) {
   }
   // Enough guest pixels for every output pixel - for `aa` per axis with
   // anti-aliasing (2x2 supersampling at 1080p: 3x; up to native_max_scale).
+  // Direct3D 11 (older GPUs): AUTO anti-aliasing (native_aa 0) means the
+  // Xbox 360's own 720p - supersampling would sink them. Choosing 2x-4x still
+  // raises it.
+  const bool d3d11_auto = SlotTables() && REXCVAR_GET(native_aa) == 0;
+  if (d3d11_auto) {
+    aa = 1;
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_INFO("native renderer: Direct3D 11 - render scale 1x (anti-aliasing AUTO; choose 2x-4x to raise it)");
+    }
+  }
   const uint32_t need = out_h * aa;
-  const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
+  const uint32_t limit = d3d11_auto ? 1u : uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
   const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
   res = std::clamp(res, 0.25f, 1.0f);
@@ -1570,6 +1661,16 @@ void UpdateTitle(Renderer* r) {
       REXLOG_INFO("native perf: render passes per frame {:.1f} ({:.1f} Mpixels loaded and stored)", passes / f,
                   pixels / f / 1e6);
     }
+#if defined(_WIN32)
+    if (SlotTables()) {
+      auto* d = static_cast<plume::D3D11Device*>(r->device.get());
+      REXLOG_INFO("native perf: D3D11 per frame: uploads {:.2f} ms ({:.1f} MB), replay {:.2f} ms ({:.0f} draws), "
+                  "context lock wait {:.2f} ms, flush {:.2f} ms",
+                  d->statUploadNs.exchange(0) / f / 1e6, d->statUploadBytes.exchange(0) / f / 1e6,
+                  d->statReplayNs.exchange(0) / f / 1e6, d->statDraws.exchange(0) / f,
+                  d->statLockWaitNs.exchange(0) / f / 1e6, d->statFlushNs.exchange(0) / f / 1e6);
+    }
+#endif
     REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, submit {:.2f} ms, "
                 "span {:.2f} ms, draws {:.0f} (drawn {:.0f}), pipeline builds {:.0f} ms",
                 f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_submit_ms / f, r->perf_span_ms / f,
@@ -2685,6 +2786,36 @@ int BlankedSlot(Renderer* r) {
   return cycle[(r->frames / 600) % cycle.size()];
 }
 
+// Slot tables: a texture's swizzle for the shaders (3 bits a component: 0-3
+// xyzw, 4 zero, 5 one), from its view's component mapping.
+constexpr uint32_t kIdentitySwizzle = 0x688;
+uint32_t SlotSwizzle(Renderer* r, uint32_t index) {
+#if defined(_WIN32)
+  const auto* table = static_cast<const TableRecord*>(r->texture_sets[0].get());
+  if (index >= table->entries.size() || !table->entries[index].view) return kIdentitySwizzle;
+  const plume::RenderComponentMapping& m =
+      static_cast<const plume::D3D11TextureView*>(table->entries[index].view)->desc.componentMapping;
+  const plume::RenderSwizzle c[4] = {m.r, m.g, m.b, m.a};
+  uint32_t code = 0;
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint32_t v = i;
+    switch (c[i]) {
+      case plume::RenderSwizzle::ZERO: v = 4; break;
+      case plume::RenderSwizzle::ONE: v = 5; break;
+      case plume::RenderSwizzle::R: v = 0; break;
+      case plume::RenderSwizzle::G: v = 1; break;
+      case plume::RenderSwizzle::B: v = 2; break;
+      case plume::RenderSwizzle::A: v = 3; break;
+      default: break;  // (IDENTITY)
+    }
+    code |= v << (3 * i);
+  }
+  return code;
+#else
+  return kIdentitySwizzle;
+#endif
+}
+
 // `ndc`: g_NdcScale (x, y) and g_HalfPixelOffset (the NDC offset, z, w).
 RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader* vs,
                                       const Shader* ps, const float ndc[4]) {
@@ -2695,10 +2826,14 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
   // Compact tables: the draw's textures and samplers get places in its own
   // sets (the indices below are those places; unused slots read place 0).
   const bool compact = backend::CompactTables();
-  uint32_t places[2][16], used[3] = {}, samplers = 0;
-  if (compact) std::fill(&places[0][0], &places[0][0] + 32, UINT32_MAX);
+  // Slot tables (Direct3D 11): each slot's texture and sampler at its own
+  // place, and where the indices would be, its swizzle (D3D11 views have none).
+  const bool slots = SlotTables();
+  uint32_t places[2][kSlotTextures], used[3] = {}, samplers = 0;
+  if (compact || slots) std::fill(&places[0][0], &places[0][0] + 2 * kSlotTextures, UINT32_MAX);
+  if (slots) std::fill(u, u + 24 * 4, kIdentitySwizzle);
   // g_ResourceIndices[32] (uint4): 2D, 3D, cube, sampler blocks of 8 x uint4.
-  for (uint32_t slot = 0; slot < 32 && !compact; ++slot) {
+  for (uint32_t slot = 0; slot < 32 && !compact && !slots; ++slot) {
     u[(0 * 8 + slot / 4) * 4 + slot % 4] = 0;  // placeholder 2D
     u[(1 * 8 + slot / 4) * 4 + slot % 4] = 1;  // placeholder 3D
     u[(2 * 8 + slot / 4) * 4 + slot % 4] = 2;  // placeholder cube
@@ -2734,6 +2869,14 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
         }
       }
       const uint32_t srv = textures::Texture(ctx, fetch, dimension);
+      if (slots) {
+        if (dimension > 2 || slot >= kSlotCount[dimension] || srv == UINT32_MAX) continue;
+        const uint32_t index = r->texture_base[dimension] + srv;
+        places[0][kSlotFirst[dimension] + slot] = index;
+        u[(dimension * 8 + slot / 4) * 4 + slot % 4] = SlotSwizzle(r, index);
+        places[1][SlotSampler(slot) & 15] = textures::Sampler(ctx, fetch);
+        continue;
+      }
       if (compact) {
         if (dimension > 2 || used[dimension] >= kCompactPlaces[dimension]) {
           static bool warned = false;
@@ -2758,7 +2901,7 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
       u[(3 * 8 + slot / 4) * 4 + slot % 4] = textures::Sampler(ctx, fetch);
     }
   }
-  if (compact) {
+  if (compact || slots) {
     r->draw_sets[0] = CompactSet(r, 0, places[0]);
     r->draw_sets[1] = CompactSet(r, 1, places[1]);
   }
@@ -3332,7 +3475,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     }
     BindConstants(r, constants);
   }
-  if (backend::CompactTables()) BindCompactSets(r, list);
+  if (backend::CompactTables() || SlotTables()) BindCompactSets(r, list);
   if (ls.pso != pso) {
     list->setPipeline(pso);
     ls.pso = pso;
@@ -3572,10 +3715,10 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   list->setFramebuffer(r->output_framebuffers[r->output_index].get());
   list->setGraphicsPipelineLayout(r->layout.get());
   BindTables(r, list);
-  if (backend::CompactTables()) {
-    // (compact tables: the texture and sampler in place 0 of the draw's sets)
-    uint32_t places[2][16];
-    std::fill(&places[0][0], &places[0][0] + 32, UINT32_MAX);
+  if (backend::CompactTables() || SlotTables()) {
+    // (compact / slot tables: the texture and sampler in place 0 of the draw's sets)
+    uint32_t places[2][kSlotTextures];
+    std::fill(&places[0][0], &places[0][0] + 2 * kSlotTextures, UINT32_MAX);
     places[0][0] = r->texture_base[0] + srv;
     places[1][0] = sampler;
     r->draw_sets[0] = CompactSet(r, 0, places[0]);
@@ -4039,7 +4182,7 @@ void OnResolve(const PPCContext& ctx) {
     dst = {};
     plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
         dst_host_w, dst_host_h, 1, family,
-        depth && backend::ActiveApi() == backend::Api::kVulkan ? plume::RenderTextureFlag::DEPTH_TARGET
+        depth && (backend::ActiveApi() == backend::Api::kVulkan || SlotTables()) ? plume::RenderTextureFlag::DEPTH_TARGET
                                                                 : plume::RenderTextureFlag::NONE);
     d.committed = true;
     dst.resource = r->device->createTexture(d);

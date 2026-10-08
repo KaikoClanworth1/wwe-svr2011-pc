@@ -1,8 +1,22 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 9b3cdf5..a932136 100644
+index 9b3cdf5..6975ea2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -188,7 +188,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rex_pch.cmake)
+@@ -36,9 +36,13 @@ endif()
+ # Vulkan: Cross-platform, ON by default on Linux, OFF by default on Windows.
+ if(WIN32)
+     option(REXGLUE_USE_D3D12  "Enable D3D12 graphics backend" ON)
++    # [svr2011] Direct3D 11: GPUs / drivers without D3D12 or Vulkan (the app
++    # draws its frames itself; the guest GPU runs without emulated drawing).
++    option(REXGLUE_USE_D3D11  "Enable the D3D11 graphics backend (no emulated drawing)" ON)
+     option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" OFF)
+ else()
+     set(REXGLUE_USE_D3D12 OFF)
++    set(REXGLUE_USE_D3D11 OFF)
+     option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" ON)
+ endif()
+ 
+@@ -188,7 +192,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rex_pch.cmake)
  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rex_version.cmake)
  rex_resolve_version(REXGLUE_FULL_VERSION
      FLOOR_MAJOR ${PROJECT_VERSION_MAJOR}
@@ -12,7 +26,7 @@ index 9b3cdf5..a932136 100644
  
  # Strip the -id trailer (if any) for the numeric-only version.
  string(REGEX REPLACE "-.*$" "" REXGLUE_NUMERIC_VERSION "${REXGLUE_FULL_VERSION}")
-@@ -259,8 +260,17 @@ add_subdirectory(src/audio)
+@@ -259,8 +264,17 @@ add_subdirectory(src/audio)
  add_subdirectory(src/graphics)
  add_subdirectory(src/system)
  add_subdirectory(src/kernel)
@@ -64,10 +78,10 @@ index d876846..b73d7af 100644
  struct clock_time_conversion {};
 diff --git a/include/rex/external_frame.h b/include/rex/external_frame.h
 new file mode 100644
-index 0000000..b3f7e65
+index 0000000..a1a889e
 --- /dev/null
 +++ b/include/rex/external_frame.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,103 @@
 +/**
 + * @file        rex/external_frame.h
 + * @brief       [svr2011] Frames from an app-side renderer, shown instead of
@@ -101,6 +115,24 @@ index 0000000..b3f7e65
 +  // submitted earlier on the same queue (so no semaphore).
 +  uint64_t vk_image = 0;       // VkImage
 +  uint64_t vk_image_view = 0;  // VkImageView (2D, identity swizzle)
++  // Direct3D 11: an RGBA8 ID3D11Texture2D (shader resource) on the same
++  // device, drawn by work already issued on its immediate context (so no
++  // fence: the context runs in order).
++  void* d3d11_texture = nullptr;
++};
++
++// The emulator's Direct3D 11 device (set by the D3D11 provider), for an app
++// renderer to draw on. One immediate context serves everyone: hold
++// `context_mutex` for every sequence of context calls, and set all the state
++// needed (nothing may assume another user's state).
++struct D3D11Device {
++  void* device = nullptr;           // ID3D11Device
++  void* context = nullptr;          // ID3D11DeviceContext (immediate)
++  std::recursive_mutex* context_mutex = nullptr;
++  uint32_t feature_level = 0;       // D3D_FEATURE_LEVEL
++  bool constant_buffer_offsetting = false;  // *SetConstantBuffers1 with offsets
++  bool warp = false;                // the software rasterizer
++  uint32_t vendor_id = 0;
 +};
 +
 +// The emulator's Vulkan device (set by the Vulkan backend), for an app
@@ -139,6 +171,9 @@ index 0000000..b3f7e65
 +// Vulkan: the same, or null.
 +void SetVulkanDevice(const VulkanDevice* device);
 +const VulkanDevice* GetVulkanDevice();
++// Direct3D 11: the same, or null.
++void SetD3D11Device(const D3D11Device* device);
++const D3D11Device* GetD3D11Device();
 +
 +// While true, the emulated GPU skips drawing (see above).
 +void SetHostDrawingDisabled(bool disabled);
@@ -795,7 +830,7 @@ index 50638d6..40a65bb 100644
  #define XE_UI_WINDOWED_APPS_IN_LIBRARY 1
  #endif
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index 1ddafd0..1e1b173 100644
+index 1ddafd0..01e1ac6 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
 @@ -18,6 +18,8 @@ add_library(rexcore OBJECT
@@ -826,12 +861,22 @@ index 1ddafd0..1e1b173 100644
  elseif(UNIX)
      target_link_libraries(rexcore PRIVATE pthread rt dl)
  endif()
+@@ -122,6 +129,9 @@ endif()
+ if(REXGLUE_USE_VULKAN)
+     target_compile_definitions(rexcore PUBLIC REX_HAS_VULKAN=1)
+ endif()
++if(REXGLUE_USE_D3D11)
++    target_compile_definitions(rexcore PUBLIC REX_HAS_D3D11=1)
++endif()
+ 
+ if(REXGLUE_ENABLE_TRACY)
+     target_link_libraries(rexcore PUBLIC
 diff --git a/src/core/external_frame.cpp b/src/core/external_frame.cpp
 new file mode 100644
-index 0000000..7dd7848
+index 0000000..ca71015
 --- /dev/null
 +++ b/src/core/external_frame.cpp
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,61 @@
 +// [svr2011] See rex/external_frame.h.
 +
 +#include <rex/external_frame.h>
@@ -848,7 +893,16 @@ index 0000000..7dd7848
 +std::atomic<void*> g_device{nullptr};
 +VulkanDevice g_vulkan_device;
 +std::atomic<bool> g_vulkan_device_set{false};
++D3D11Device g_d3d11_device;
++std::atomic<bool> g_d3d11_device_set{false};
 +}  // namespace
++
++void SetD3D11Device(const D3D11Device* device) {
++  if (device) g_d3d11_device = *device;
++  g_d3d11_device_set = device != nullptr;
++}
++
++const D3D11Device* GetD3D11Device() { return g_d3d11_device_set ? &g_d3d11_device : nullptr; }
 +
 +void SetVulkanDevice(const VulkanDevice* device) {
 +  if (device) g_vulkan_device = *device;
@@ -1597,7 +1651,7 @@ index a744375..a3840ce 100644
    return true;
  }
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..3ba2c7a 100644
+index 19874a5..96215fa 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -10,6 +10,9 @@
@@ -1647,15 +1701,18 @@ index 19874a5..3ba2c7a 100644
    if (bindless_resources_used_) {
      D3D12_DESCRIPTOR_HEAP_DESC view_bindless_heap_desc;
      view_bindless_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-@@ -1893,6 +1919,7 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
+@@ -1893,7 +1919,10 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
  
  void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
 +  Svr2011GpuDrawlogFrame();  // [svr2011] debug
    SCOPE_profile_cpu_f("gpu");
++  // [svr2011] (the GPU thread got this far: a frame's commands all went through)
++  rex::external_frame::CountSwap();
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
-@@ -1916,9 +1943,34 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+ 
+@@ -1916,9 +1945,34 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    D3D12_SHADER_RESOURCE_VIEW_DESC swap_texture_srv_desc;
    xenos::TextureFormat frontbuffer_format;
    uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
@@ -1693,7 +1750,7 @@ index 19874a5..3ba2c7a 100644
    if (!swap_texture_resource) {
      // Dump texture fetch constant 0 for debugging
      const auto& regs = *register_file_;
-@@ -1984,6 +2036,12 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -1984,6 +2038,12 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
@@ -1706,7 +1763,7 @@ index 19874a5..3ba2c7a 100644
  
    presenter->RefreshGuestOutput(
        guest_output_width, guest_output_height, display_width, display_height,
-@@ -2326,6 +2384,42 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2326,6 +2386,42 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    bool memexport_used_pixel = pixel_shader && (pixel_shader->memexport_eM_written() != 0);
    bool memexport_used = memexport_used_vertex || memexport_used_pixel;
@@ -1749,7 +1806,7 @@ index 19874a5..3ba2c7a 100644
  
    if (!BeginSubmission(true)) {
      return false;
-@@ -2730,6 +2824,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2730,6 +2826,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    return true;
  }
  
@@ -1758,7 +1815,7 @@ index 19874a5..3ba2c7a 100644
  bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
    if (!total_size || memexport_ranges_.empty()) {
      return true;
-@@ -2797,7 +2893,8 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+@@ -2797,7 +2895,8 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
      ID3D12Resource* buffer = nullptr;
      if (FAILED(device->CreateCommittedResource(
              &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
@@ -1768,7 +1825,7 @@ index 19874a5..3ba2c7a 100644
        return false;
      }
  
-@@ -2874,6 +2971,9 @@ bool D3D12CommandProcessor::IssueCopy() {
+@@ -2874,6 +2973,9 @@ bool D3D12CommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -1778,7 +1835,7 @@ index 19874a5..3ba2c7a 100644
    if (!BeginSubmission(true)) {
      return false;
    }
-@@ -2917,7 +3017,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -2917,7 +3019,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
      ID3D12Resource* buffer = nullptr;
      if (FAILED(device->CreateCommittedResource(
              &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
@@ -1788,7 +1845,7 @@ index 19874a5..3ba2c7a 100644
        REXGPU_ERROR("Failed to create a {} MB readback buffer", size >> 20);
        return true;
      }
-@@ -2926,7 +3027,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -2926,7 +3029,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
          rb.buffers[write_index]->Unmap(0, nullptr);
          rb.mapped_data[write_index] = nullptr;
        }
@@ -1798,7 +1855,7 @@ index 19874a5..3ba2c7a 100644
      }
      rb.buffers[write_index] = buffer;
      rb.sizes[write_index] = size;
-@@ -3068,6 +3170,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -3068,6 +3172,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
      deferred_command_list_.D3DCopyBufferRegion(rb.buffers[write_index], 0, shared_memory_buffer,
                                                 written_address, written_length);
    }
@@ -1806,7 +1863,7 @@ index 19874a5..3ba2c7a 100644
  
    ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
    bool use_delayed_sync =
-@@ -3229,11 +3332,13 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
+@@ -3229,11 +3334,13 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
            *node->pLastBreadcrumbValue == 0) {
          continue;
        }
@@ -1824,7 +1881,7 @@ index 19874a5..3ba2c7a 100644
        for (uint32_t i = start; i < end; i++) {
          REXGPU_ERROR("  [{}] op type {}{}", i, static_cast<int>(node->pCommandHistory[i]),
                       i == last ? " <-- FAULT" : "");
-@@ -4743,6 +4848,16 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4743,6 +4850,16 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
    return true;
  }
  
@@ -1841,7 +1898,7 @@ index 19874a5..3ba2c7a 100644
  void D3D12CommandProcessor::EvictOldReadbackBuffers(
      std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map) {
    if (buffer_map.empty()) {
-@@ -4755,6 +4870,14 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
+@@ -4755,6 +4872,14 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
      ReadbackBuffer& readback = it->second;
      bool evict =
          buffer_map.size() > kMaxReadbackBuffers || readback.last_used_frame < eviction_frame_floor;
@@ -1856,7 +1913,7 @@ index 19874a5..3ba2c7a 100644
      if (!evict) {
        ++it;
        continue;
-@@ -4764,7 +4887,8 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
+@@ -4764,7 +4889,8 @@ void D3D12CommandProcessor::EvictOldReadbackBuffers(
          if (readback.mapped_data[i]) {
            readback.buffers[i]->Unmap(0, nullptr);
          }
@@ -1866,7 +1923,7 @@ index 19874a5..3ba2c7a 100644
        }
        readback.buffers[i] = nullptr;
        readback.mapped_data[i] = nullptr;
-@@ -4789,7 +4913,8 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
+@@ -4789,7 +4915,8 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
      ID3D12Resource* buffer;
      if (FAILED(device->CreateCommittedResource(
              &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
@@ -5082,10 +5139,26 @@ index 77bce25..d33ed8c 100644
  }
  
 diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
-index 5bd3dc5..ee3b2fb 100644
+index 5bd3dc5..8638e12 100644
 --- a/src/ui/CMakeLists.txt
 +++ b/src/ui/CMakeLists.txt
-@@ -72,6 +72,10 @@ elseif(APPLE)
+@@ -63,6 +63,15 @@ if(REXGLUE_USE_D3D12)
+     )
+ endif()
+ 
++# [svr2011] D3D11 UI backend
++if(REXGLUE_USE_D3D11)
++    set(REXUI_D3D11_SOURCES
++        d3d11/d3d11_immediate_drawer.cpp
++        d3d11/d3d11_presenter.cpp
++        d3d11/d3d11_provider.cpp
++    )
++endif()
++
+ # Platform-specific sources (windowing itself is SDL3, platform-independent)
+ if(WIN32)
+     set(REXUI_PLATFORM_SOURCES
+@@ -72,6 +81,10 @@ elseif(APPLE)
      set(REXUI_PLATFORM_SOURCES
          surface_mac.cpp
      )
@@ -5096,7 +5169,18 @@ index 5bd3dc5..ee3b2fb 100644
  else()
      set(REXUI_PLATFORM_SOURCES
          surface_gnulinux.cpp
-@@ -146,7 +150,10 @@ if(REXGLUE_USE_VULKAN)
+@@ -93,6 +106,10 @@ if(REXGLUE_USE_D3D12)
+     list(APPEND REXUI_SOURCES ${REXUI_D3D12_SOURCES})
+ endif()
+ 
++if(REXGLUE_USE_D3D11)
++    list(APPEND REXUI_SOURCES ${REXUI_D3D11_SOURCES})
++endif()
++
+ add_library(rexui OBJECT ${REXUI_SOURCES})
+ add_library(rex::ui ALIAS rexui)
+ 
+@@ -146,7 +163,10 @@ if(REXGLUE_USE_VULKAN)
  endif()
  
  # Platform-specific dependencies
@@ -5108,8 +5192,18 @@ index 5bd3dc5..ee3b2fb 100644
      find_package(PkgConfig REQUIRED)
      pkg_check_modules(X11_XCB REQUIRED x11-xcb)
      # Required, not optional: vulkan/api.h pulls in <wayland-client.h> on every
+@@ -168,6 +188,9 @@ endif()
+ if(WIN32)
+     target_link_libraries(rexui PUBLIC dxgi dxguid)
+ endif()
++if(REXGLUE_USE_D3D11)
++    target_link_libraries(rexui PUBLIC d3d11)
++endif()
+ 
+ # D3D12 backend dependencies
+ if(REXGLUE_USE_D3D12)
 diff --git a/src/ui/d3d12/d3d12_provider.cpp b/src/ui/d3d12/d3d12_provider.cpp
-index bf8252b..814f591 100644
+index bf8252b..a6ee12b 100644
 --- a/src/ui/d3d12/d3d12_provider.cpp
 +++ b/src/ui/d3d12/d3d12_provider.cpp
 @@ -12,6 +12,7 @@
@@ -5134,6 +5228,17 @@ index bf8252b..814f591 100644
  
  REXCVAR_DEFINE_BOOL(d3d12_break_on_error, false, "UI/D3D12",
                      "Break on Direct3D 12 validation errors");
+@@ -57,8 +63,8 @@ std::unique_ptr<D3D12Provider> D3D12Provider::Create() {
+         "Ensure that you have the latest drivers for your GPU and it supports "
+         "Direct3D 12 with the feature level of at least 11_0.\n"
+         "\n"
+-        "See https://xenia.jp/faq/ for more information and a list of "
+-        "supported GPUs.");
++        "Older GPUs: choose Direct3D 11 as the graphics API (the launcher's "
++        "Settings, or gpu_backend = \"d3d11\" in svr2011.toml).");  // [svr2011]
+     return nullptr;
+   }
+   return provider;
 @@ -228,18 +234,17 @@ bool D3D12Provider::Initialize() {
        debug = false;
      }
@@ -6153,3 +6258,2383 @@ index 3f9422d..00c6368 100644
    uint16_t buttons = 0;
    if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a)))
      buttons |= X_INPUT_GAMEPAD_A;
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 0d8f8af..d90945b 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -89,6 +89,12 @@ if(REXGLUE_USE_VULKAN)
+     list(APPEND REXGPU_XENOS_SOURCES ${REXGPU_XENOS_SPIRV_SOURCES} ${REXGPU_XENOS_VULKAN_SOURCES})
+ endif()
+ 
++if(REXGLUE_USE_D3D11)  # [svr2011]
++    list(APPEND REXGPU_XENOS_SOURCES
++        d3d11/command_processor.cpp
++        d3d11/graphics_system.cpp)
++endif()
++
+ if(REXGLUE_USE_D3D12)
+     list(APPEND REXGPU_XENOS_SOURCES
+         ${REXGPU_XENOS_DXBC_THIRDPARTY_SOURCES}
+@@ -106,6 +112,7 @@ set_target_properties(rexgpu-xenos PROPERTIES
+ )
+ 
+ target_include_directories(rexgpu-xenos PRIVATE
++    ${REXGLUE_ROOT}/src  # [svr2011] ui/shaders/bytecode (D3D11 gamma pass)
+     ${REXGLUE_ROOT}/thirdparty/renderdoc
+     ${REXGLUE_ROOT}  # For thirdparty/dxbc/DXBCChecksum.h include
+ )
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index fc46d86..2531c00 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -123,3 +123,7 @@ if(REXGLUE_USE_VULKAN)
+     )
+     target_compile_definitions(rexruntime PUBLIC REX_HAS_VULKAN=1)
+ endif()
++if(REXGLUE_USE_D3D11)  # [svr2011]
++    target_link_libraries(rexruntime PUBLIC d3d11)
++    target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D11=1)
++endif()
+diff --git a/src/graphics/plugin_main.cpp b/src/graphics/plugin_main.cpp
+index ec756d3..4156be0 100644
+--- a/src/graphics/plugin_main.cpp
++++ b/src/graphics/plugin_main.cpp
+@@ -20,6 +20,9 @@
+ #if REX_HAS_VULKAN
+ #include <rex/graphics/vulkan/graphics_system.h>
+ #endif
++#if REX_HAS_D3D11
++#include <rex/graphics/d3d11/graphics_system.h>
++#endif
+ 
+ extern "C" REX_GPU_PLUGIN_EXPORT uint32_t rex_gpu_abi_version(void) {
+   return rex::system::kGpuPluginAbiVersion;
+@@ -38,6 +41,13 @@ extern "C" REX_GPU_PLUGIN_EXPORT rex::system::IGraphicsSystem* rex_gpu_create(
+   }
+ 
+   std::string_view backend = info->backend ? info->backend : "any";
++#if REX_HAS_D3D11
++  // [svr2011] Only when asked for ("any" never picks it here: the app chooses
++  // it before loading the plugin when D3D12 and Vulkan can't run).
++  if (backend == "d3d11") {
++    return new rex::graphics::d3d11::D3D11GraphicsSystem();
++  }
++#endif
+ #if REX_HAS_D3D12
+   if (backend == "any" || backend == "d3d12") {
+     return new rex::graphics::d3d12::D3D12GraphicsSystem();
+diff --git a/include/rex/ui/d3d11/d3d11_provider.h b/include/rex/ui/d3d11/d3d11_provider.h
+new file mode 100644
+index 0000000..5ae0a0b
+--- /dev/null
++++ b/include/rex/ui/d3d11/d3d11_provider.h
+@@ -0,0 +1,72 @@
++/**
++ * @file        ui/d3d11/d3d11_provider.h
++ * @brief       [svr2011] Direct3D 11 graphics provider: the device the
++ *              presenter, the ImGui drawer and an app-side renderer share.
++ *
++ * For GPUs / drivers that run neither Direct3D 12 nor Vulkan. One immediate
++ * context serves every thread: whoever uses it holds context_mutex() for the
++ * whole sequence of calls (the presenter while painting, the command
++ * processor while refreshing the guest output, an app renderer while it
++ * replays a frame), and sets all the state it needs (ClearState first) -
++ * nothing may assume state left by another user.
++ */
++
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <mutex>
++
++#include <d3d11_1.h>
++#include <dxgi1_2.h>
++#include <wrl/client.h>
++
++#include <rex/ui/graphics_provider.h>
++
++namespace rex::ui::d3d11 {
++
++class D3D11Provider : public GraphicsProvider {
++ public:
++  ~D3D11Provider() override;
++
++  static bool IsD3D11APIAvailable();
++  // Null (with the reason logged) if no device can be created.
++  static std::unique_ptr<D3D11Provider> Create();
++
++  std::unique_ptr<Presenter> CreatePresenter(
++      Presenter::HostGpuLossCallback host_gpu_loss_callback =
++          Presenter::FatalErrorHostGpuLossCallback) override;
++  std::unique_ptr<ImmediateDrawer> CreateImmediateDrawer() override;
++
++  IDXGIFactory1* GetDXGIFactory() const { return dxgi_factory_.Get(); }
++  // Null below Windows 8 / DXGI 1.2 (no flip model, no CreateSwapChainForHwnd).
++  IDXGIFactory2* GetDXGIFactory2() const { return dxgi_factory_2_.Get(); }
++  ID3D11Device* GetDevice() const { return device_.Get(); }
++  // Hold context_mutex() while using it.
++  ID3D11DeviceContext* GetContext() const { return context_.Get(); }
++  // Direct3D 11.1 context (null on Windows 7 without the platform update).
++  ID3D11DeviceContext1* GetContext1() const { return context_1_.Get(); }
++  std::recursive_mutex& context_mutex() const { return context_mutex_; }
++  D3D_FEATURE_LEVEL GetFeatureLevel() const { return feature_level_; }
++  GpuVendorID GetAdapterVendorID() const { return adapter_vendor_id_; }
++  // VS/PSSetConstantBuffers1 with offsets work (11.1 runtime + driver).
++  bool constant_buffer_offsetting() const { return constant_buffer_offsetting_; }
++  bool is_warp() const { return is_warp_; }
++
++ private:
++  D3D11Provider() = default;
++  bool Initialize();
++
++  Microsoft::WRL::ComPtr<IDXGIFactory1> dxgi_factory_;
++  Microsoft::WRL::ComPtr<IDXGIFactory2> dxgi_factory_2_;
++  Microsoft::WRL::ComPtr<ID3D11Device> device_;
++  Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
++  Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context_1_;
++  mutable std::recursive_mutex context_mutex_;
++  D3D_FEATURE_LEVEL feature_level_ = D3D_FEATURE_LEVEL_11_0;
++  GpuVendorID adapter_vendor_id_ = GpuVendorID(0);
++  bool constant_buffer_offsetting_ = false;
++  bool is_warp_ = false;
++};
++
++}  // namespace rex::ui::d3d11
+diff --git a/include/rex/ui/d3d11/d3d11_presenter.h b/include/rex/ui/d3d11/d3d11_presenter.h
+new file mode 100644
+index 0000000..c7302b0
+--- /dev/null
++++ b/include/rex/ui/d3d11/d3d11_presenter.h
+@@ -0,0 +1,115 @@
++/**
++ * @file        ui/d3d11/d3d11_presenter.h
++ * @brief       [svr2011] Direct3D 11 presenter: the guest output (bilinear,
++ *              letterboxed) and the UI drawers on a DXGI swap chain - the flip
++ *              model where DXGI has it (Windows 8+), the blt model otherwise.
++ *
++ * Everything runs on the provider's immediate context under its lock; the
++ * guest output textures are reference-counted, so no submission tracking.
++ * The FidelityFX effects of the D3D12 / Vulkan presenters aren't here: any
++ * effect chain is drawn as one bilinear pass.
++ */
++
++#pragma once
++
++#include <array>
++#include <memory>
++
++#include <rex/ui/d3d11/d3d11_provider.h>
++#include <rex/ui/presenter.h>
++#include <rex/ui/surface.h>
++
++namespace rex::ui::d3d11 {
++
++class D3D11UIDrawContext final : public UIDrawContext {
++ public:
++  D3D11UIDrawContext(Presenter& presenter, uint32_t render_target_width,
++                     uint32_t render_target_height, ID3D11DeviceContext* context)
++      : UIDrawContext(presenter, render_target_width, render_target_height), context_(context) {}
++  ID3D11DeviceContext* context() const { return context_; }
++
++ private:
++  ID3D11DeviceContext* context_;
++};
++
++class D3D11Presenter final : public Presenter {
++ public:
++  static constexpr DXGI_FORMAT kGuestOutputFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
++  static constexpr DXGI_FORMAT kSwapChainFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
++
++  class D3D11GuestOutputRefreshContext final : public GuestOutputRefreshContext {
++   public:
++    D3D11GuestOutputRefreshContext(bool& is_8bpc_out_ref, ID3D11Texture2D* texture,
++                                   ID3D11RenderTargetView* rtv)
++        : GuestOutputRefreshContext(is_8bpc_out_ref), texture_(texture), rtv_(rtv) {}
++    // kGuestOutputFormat, the guest output's size; drawn to (hold the
++    // provider's context lock).
++    ID3D11Texture2D* texture() const { return texture_; }
++    ID3D11RenderTargetView* rtv() const { return rtv_; }
++
++   private:
++    ID3D11Texture2D* texture_;
++    ID3D11RenderTargetView* rtv_;
++  };
++
++  static std::unique_ptr<D3D11Presenter> Create(HostGpuLossCallback host_gpu_loss_callback,
++                                                const D3D11Provider& provider);
++  ~D3D11Presenter();
++
++  const D3D11Provider& provider() const { return provider_; }
++
++  Surface::TypeFlags GetSupportedSurfaceTypes() const override;
++  bool CaptureGuestOutput(RawImage& image_out) override;
++
++ protected:
++  SurfacePaintConnectResult ConnectOrReconnectPaintingToSurfaceFromUIThread(
++      Surface& new_surface, uint32_t new_surface_width, uint32_t new_surface_height,
++      bool was_paintable, bool& is_vsync_implicit_out) override;
++  void DisconnectPaintingFromSurfaceFromUIThreadImpl() override;
++  bool RefreshGuestOutputImpl(uint32_t mailbox_index, uint32_t frontbuffer_width,
++                              uint32_t frontbuffer_height,
++                              std::function<bool(GuestOutputRefreshContext& context)> refresher,
++                              bool& is_8bpc_out_ref) override;
++  PaintResult PaintAndPresentImpl(bool execute_ui_drawers) override;
++
++ private:
++  struct GuestOutput {
++    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
++    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv;
++    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
++  };
++
++  explicit D3D11Presenter(HostGpuLossCallback host_gpu_loss_callback,
++                          const D3D11Provider& provider)
++      : Presenter(host_gpu_loss_callback), provider_(provider) {}
++  bool InitializeSurfaceIndependent();
++  void DestroySwapChain();
++  bool GetBackBufferRTV();
++
++  const D3D11Provider& provider_;
++  bool dxgi_supports_tearing_ = false;
++
++  Microsoft::WRL::ComPtr<ID3D11VertexShader> rect_vs_;
++  Microsoft::WRL::ComPtr<ID3D11PixelShader> bilinear_ps_;
++  Microsoft::WRL::ComPtr<ID3D11SamplerState> linear_clamp_;
++  Microsoft::WRL::ComPtr<ID3D11BlendState> blend_opaque_;
++  Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
++  Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depth_off_;
++  Microsoft::WRL::ComPtr<ID3D11Buffer> rect_constants_;
++
++  std::array<GuestOutput, kGuestOutputMailboxSize> guest_outputs_;
++
++  // Painting (UI thread).
++  Microsoft::WRL::ComPtr<IDXGISwapChain> swap_chain_;
++  Microsoft::WRL::ComPtr<ID3D11RenderTargetView> back_buffer_rtv_;
++  uint32_t swap_chain_width_ = 0;
++  uint32_t swap_chain_height_ = 0;
++  UINT swap_chain_flags_ = 0;
++  bool swap_chain_flip_ = false;
++  // Flip model on Windows 8.1+: signaled when a back buffer is free, waited
++  // for before the context lock - Present then doesn't block with the lock
++  // held (the native renderer submits on the same context).
++  HANDLE frame_latency_waitable_ = nullptr;
++};
++
++}  // namespace rex::ui::d3d11
+diff --git a/include/rex/ui/d3d11/d3d11_immediate_drawer.h b/include/rex/ui/d3d11/d3d11_immediate_drawer.h
+new file mode 100644
+index 0000000..795cf4f
+--- /dev/null
++++ b/include/rex/ui/d3d11/d3d11_immediate_drawer.h
+@@ -0,0 +1,82 @@
++/**
++ * @file        ui/d3d11/d3d11_immediate_drawer.h
++ * @brief       [svr2011] Direct3D 11 immediate drawer (ImGui and other
++ *              overlays), drawing on the provider's immediate context while
++ *              the presenter paints (the presenter holds the context lock).
++ */
++
++#pragma once
++
++#include <memory>
++
++#include <rex/ui/d3d11/d3d11_provider.h>
++#include <rex/ui/immediate_drawer.h>
++
++namespace rex::ui::d3d11 {
++
++class D3D11ImmediateDrawer final : public ImmediateDrawer {
++ public:
++  static std::unique_ptr<D3D11ImmediateDrawer> Create(const D3D11Provider& provider);
++
++  std::unique_ptr<ImmediateTexture> CreateTexture(uint32_t width, uint32_t height,
++                                                  ImmediateTextureFilter filter, bool is_repeated,
++                                                  const uint8_t* data) override;
++
++  void Begin(UIDrawContext& ui_draw_context, float coordinate_space_width,
++             float coordinate_space_height) override;
++  void BeginDrawBatch(const ImmediateDrawBatch& batch) override;
++  void Draw(const ImmediateDraw& draw) override;
++  void EndDrawBatch() override;
++  void End() override;
++
++ private:
++  enum SamplerIndex { kNearestClamp, kLinearClamp, kNearestRepeat, kLinearRepeat, kSamplerCount };
++
++  class D3D11ImmediateTexture final : public ImmediateTexture {
++   public:
++    D3D11ImmediateTexture(uint32_t width, uint32_t height,
++                          Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view,
++                          SamplerIndex sampler)
++        : ImmediateTexture(width, height), view_(std::move(view)), sampler_(sampler) {}
++    ID3D11ShaderResourceView* view() const { return view_.Get(); }
++    SamplerIndex sampler() const { return sampler_; }
++
++   private:
++    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view_;
++    SamplerIndex sampler_;
++  };
++
++  explicit D3D11ImmediateDrawer(const D3D11Provider& provider) : provider_(provider) {}
++  bool Initialize();
++  // Grows `buffer` (dynamic, `bind` flags) to at least `size` bytes.
++  bool EnsureBuffer(Microsoft::WRL::ComPtr<ID3D11Buffer>& buffer, UINT& capacity, UINT size,
++                    UINT bind);
++
++  const D3D11Provider& provider_;
++
++  Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex_shader_;
++  Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel_shader_;
++  Microsoft::WRL::ComPtr<ID3D11InputLayout> input_layout_;
++  Microsoft::WRL::ComPtr<ID3D11BlendState> blend_state_;
++  Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_state_;
++  Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depth_stencil_state_;
++  Microsoft::WRL::ComPtr<ID3D11SamplerState> samplers_[kSamplerCount];
++  Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
++  // A 1x1 white texture for draws without one (solid color).
++  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> white_view_;
++
++  Microsoft::WRL::ComPtr<ID3D11Buffer> vertex_buffer_;
++  UINT vertex_buffer_capacity_ = 0;
++  Microsoft::WRL::ComPtr<ID3D11Buffer> index_buffer_;
++  UINT index_buffer_capacity_ = 0;
++
++  ID3D11DeviceContext* context_ = nullptr;  // between Begin and End
++  bool batch_open_ = false;
++  bool batch_has_index_buffer_ = false;
++  D3D11_PRIMITIVE_TOPOLOGY current_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
++  ID3D11ShaderResourceView* current_view_ = nullptr;
++  int current_sampler_ = -1;
++  D3D11_RECT current_scissor_ = {};
++};
++
++}  // namespace rex::ui::d3d11
+diff --git a/src/ui/d3d11/d3d11_provider.cpp b/src/ui/d3d11/d3d11_provider.cpp
+new file mode 100644
+index 0000000..dcdb542
+--- /dev/null
++++ b/src/ui/d3d11/d3d11_provider.cpp
+@@ -0,0 +1,221 @@
++// [svr2011] Direct3D 11 graphics provider (rex/ui/d3d11/d3d11_provider.h).
++
++#include <rex/ui/d3d11/d3d11_provider.h>
++
++#include <iterator>
++#include <string>
++#include <vector>
++
++#include <dxgi1_6.h>
++
++#include <rex/cvar.h>
++#include <rex/external_frame.h>
++#include <rex/logging.h>
++#include <rex/ui/d3d11/d3d11_immediate_drawer.h>
++#include <rex/ui/d3d11/d3d11_presenter.h>
++
++REXCVAR_DEFINE_BOOL(d3d11_debug, false, "UI/D3D11", "Enable the Direct3D 11 debug layer")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++REXCVAR_DEFINE_INT32(d3d11_adapter, -1, "UI/D3D11",
++                     "Index of the DXGI adapter to use (-1 for the high-performance physical GPU, "
++                     "-2 for WARP, the software rasterizer)")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++REXCVAR_DEFINE_INT32(d3d11_feature_level, 0, "UI/D3D11",
++                     "Highest Direct3D feature level to use (0 for the GPU's highest; 110 for 11_0, "
++                     "101 for 10_1, 100 for 10_0 - to test what older GPUs get)")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
++namespace rex::ui::d3d11 {
++
++namespace {
++
++const char* FeatureLevelName(D3D_FEATURE_LEVEL level) {
++  switch (level) {
++    case D3D_FEATURE_LEVEL_12_1:
++      return "12_1";
++    case D3D_FEATURE_LEVEL_12_0:
++      return "12_0";
++    case D3D_FEATURE_LEVEL_11_1:
++      return "11_1";
++    case D3D_FEATURE_LEVEL_11_0:
++      return "11_0";
++    case D3D_FEATURE_LEVEL_10_1:
++      return "10_1";
++    case D3D_FEATURE_LEVEL_10_0:
++      return "10_0";
++    default:
++      return "9_x";
++  }
++}
++
++}  // namespace
++
++bool D3D11Provider::IsD3D11APIAvailable() {
++  HMODULE library = LoadLibraryW(L"d3d11.dll");
++  if (!library) {
++    return false;
++  }
++  FreeLibrary(library);
++  return true;
++}
++
++std::unique_ptr<D3D11Provider> D3D11Provider::Create() {
++  std::unique_ptr<D3D11Provider> provider(new D3D11Provider);
++  if (!provider->Initialize()) {
++    REXLOG_ERROR("D3D11Provider: no Direct3D 11 device (feature level 10_0 or newer) could be created");
++    return nullptr;
++  }
++  return provider;
++}
++
++D3D11Provider::~D3D11Provider() {
++  rex::external_frame::SetD3D11Device(nullptr);
++  if (context_) {
++    std::lock_guard lock(context_mutex_);
++    context_->ClearState();
++    context_->Flush();
++  }
++}
++
++std::unique_ptr<Presenter> D3D11Provider::CreatePresenter(
++    Presenter::HostGpuLossCallback host_gpu_loss_callback) {
++  return D3D11Presenter::Create(host_gpu_loss_callback, *this);
++}
++
++std::unique_ptr<ImmediateDrawer> D3D11Provider::CreateImmediateDrawer() {
++  return D3D11ImmediateDrawer::Create(*this);
++}
++
++bool D3D11Provider::Initialize() {
++  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&dxgi_factory_)))) {
++    REXLOG_ERROR("D3D11Provider: Failed to create a DXGI factory");
++    return false;
++  }
++  dxgi_factory_.As(&dxgi_factory_2_);
++
++  // The feature levels to try, highest first, capped by d3d11_feature_level.
++  static const D3D_FEATURE_LEVEL kLevels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
++                                              D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
++  size_t first_level = 0;
++  switch (REXCVAR_GET(d3d11_feature_level)) {
++    case 110:
++      first_level = 1;
++      break;
++    case 101:
++      first_level = 2;
++      break;
++    case 100:
++      first_level = 3;
++      break;
++    default:
++      break;
++  }
++
++  UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
++  if (REXCVAR_GET(d3d11_debug)) {
++    flags |= D3D11_CREATE_DEVICE_DEBUG;
++  }
++
++  auto create = [&](IDXGIAdapter* adapter, D3D_DRIVER_TYPE type) -> bool {
++    for (size_t first = first_level; first < std::size(kLevels); ++first) {
++      HRESULT hr = D3D11CreateDevice(adapter, type, nullptr, flags, kLevels + first,
++                                     UINT(std::size(kLevels) - first), D3D11_SDK_VERSION,
++                                     &device_, &feature_level_, &context_);
++      if (SUCCEEDED(hr)) {
++        return true;
++      }
++      if ((flags & D3D11_CREATE_DEVICE_DEBUG) && hr == DXGI_ERROR_SDK_COMPONENT_MISSING) {
++        REXLOG_WARN("D3D11Provider: the debug layer isn't installed - creating the device without it");
++        flags &= ~UINT(D3D11_CREATE_DEVICE_DEBUG);
++        --first;
++        continue;
++      }
++      // The Windows 7 runtime without the platform update rejects 11_1 in the
++      // list (E_INVALIDARG): the loop retries from the next level down.
++      if (hr != E_INVALIDARG) {
++        return false;
++      }
++    }
++    return false;
++  };
++
++  const int32_t adapter_choice = REXCVAR_GET(d3d11_adapter);
++  bool created = false;
++  if (adapter_choice == -2) {
++    created = create(nullptr, D3D_DRIVER_TYPE_WARP);
++    is_warp_ = created;
++  } else {
++    std::vector<Microsoft::WRL::ComPtr<IDXGIAdapter1>> adapters;
++    Microsoft::WRL::ComPtr<IDXGIFactory6> factory6;
++    if (adapter_choice == -1 && SUCCEEDED(dxgi_factory_.As(&factory6))) {
++      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
++      for (UINT i = 0; factory6->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
++                                                            IID_PPV_ARGS(&adapter)) == S_OK;
++           ++i) {
++        adapters.push_back(std::move(adapter));
++      }
++    } else {
++      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
++      for (UINT i = 0; dxgi_factory_->EnumAdapters1(i, &adapter) == S_OK; ++i) {
++        adapters.push_back(std::move(adapter));
++      }
++    }
++    for (size_t i = 0; i < adapters.size() && !created; ++i) {
++      DXGI_ADAPTER_DESC1 desc = {};
++      adapters[i]->GetDesc1(&desc);
++      if (adapter_choice >= 0 ? int32_t(i) != adapter_choice
++                              : (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
++        continue;
++      }
++      created = create(adapters[i].Get(), D3D_DRIVER_TYPE_UNKNOWN);
++    }
++  }
++  if (!created) {
++    return false;
++  }
++
++  context_.As(&context_1_);
++
++  // The adapter the device is on (vendor, name for the log).
++  std::string adapter_name = "?";
++  {
++    Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
++    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
++    DXGI_ADAPTER_DESC desc = {};
++    if (SUCCEEDED(device_.As(&dxgi_device)) && SUCCEEDED(dxgi_device->GetAdapter(&adapter)) &&
++        SUCCEEDED(adapter->GetDesc(&desc))) {
++      adapter_vendor_id_ = GpuVendorID(desc.VendorId);
++      const int n = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
++      if (n > 1) {
++        adapter_name.resize(size_t(n - 1));
++        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, adapter_name.data(), n, nullptr, nullptr);
++      }
++      if (desc.VendorId == 0x1414 && desc.DeviceId == 0x8C) {
++        is_warp_ = true;  // (Microsoft Basic Render Driver)
++      }
++    }
++  }
++
++  D3D11_FEATURE_DATA_D3D11_OPTIONS options = {};
++  if (SUCCEEDED(device_->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options,
++                                             sizeof(options)))) {
++    constant_buffer_offsetting_ = options.ConstantBufferOffsetting && context_1_;
++  }
++
++  REXLOG_INFO("D3D11Provider: {} (vendor {:04X}), feature level {}{}, constant buffer offsets {}",
++              adapter_name, uint32_t(adapter_vendor_id_), FeatureLevelName(feature_level_),
++              is_warp_ ? " (WARP)" : "", constant_buffer_offsetting_ ? "yes" : "no");
++
++  rex::external_frame::D3D11Device info;
++  info.device = device_.Get();
++  info.context = context_.Get();
++  info.context_mutex = &context_mutex_;
++  info.feature_level = uint32_t(feature_level_);
++  info.constant_buffer_offsetting = constant_buffer_offsetting_;
++  info.warp = is_warp_;
++  info.vendor_id = uint32_t(adapter_vendor_id_);
++  rex::external_frame::SetD3D11Device(&info);  // app renderers use this device
++  return true;
++}
++
++}  // namespace rex::ui::d3d11
+diff --git a/src/ui/d3d11/d3d11_presenter.cpp b/src/ui/d3d11/d3d11_presenter.cpp
+new file mode 100644
+index 0000000..d198c4a
+--- /dev/null
++++ b/src/ui/d3d11/d3d11_presenter.cpp
+@@ -0,0 +1,431 @@
++// [svr2011] Direct3D 11 presenter (rex/ui/d3d11/d3d11_presenter.h).
++
++#include <rex/ui/d3d11/d3d11_presenter.h>
++
++#include <algorithm>
++#include <cstring>
++
++#include <dxgi1_5.h>
++
++#include <rex/cvar.h>
++#include <rex/logging.h>
++#include <rex/ui/surface_win.h>
++
++REXCVAR_DEFINE_BOOL(d3d11_allow_tearing, true, "UI/D3D11",
++                    "Allow variable refresh rate and tearing (flip model swap chains)");
++
++namespace rex::ui::d3d11 {
++
++namespace shaders {
++#include "../shaders/bytecode/d3d11_4_0/guest_output_bilinear_ps.h"
++#include "../shaders/bytecode/d3d11_4_0/guest_output_rect_vs.h"
++}  // namespace shaders
++
++namespace {
++
++// RectConstants of guest_output_rect.vs.hlsl.
++struct RectConstants {
++  float offset[2];
++  float size[2];
++};
++
++}  // namespace
++
++std::unique_ptr<D3D11Presenter> D3D11Presenter::Create(HostGpuLossCallback host_gpu_loss_callback,
++                                                       const D3D11Provider& provider) {
++  std::unique_ptr<D3D11Presenter> presenter(new D3D11Presenter(host_gpu_loss_callback, provider));
++  if (!presenter->InitializeSurfaceIndependent()) {
++    return nullptr;
++  }
++  return presenter;
++}
++
++D3D11Presenter::~D3D11Presenter() { DestroySwapChain(); }
++
++Surface::TypeFlags D3D11Presenter::GetSupportedSurfaceTypes() const {
++  return Surface::kTypeFlag_Win32Hwnd;
++}
++
++bool D3D11Presenter::InitializeSurfaceIndependent() {
++  {
++    Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
++    BOOL tearing = FALSE;
++    dxgi_supports_tearing_ =
++        SUCCEEDED(provider_.GetDXGIFactory()->QueryInterface(IID_PPV_ARGS(&factory5))) &&
++        SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing,
++                                                sizeof(tearing))) &&
++        tearing;
++  }
++
++  ID3D11Device* device = provider_.GetDevice();
++  if (FAILED(device->CreateVertexShader(shaders::guest_output_rect_vs,
++                                        sizeof(shaders::guest_output_rect_vs), nullptr,
++                                        &rect_vs_)) ||
++      FAILED(device->CreatePixelShader(shaders::guest_output_bilinear_ps,
++                                       sizeof(shaders::guest_output_bilinear_ps), nullptr,
++                                       &bilinear_ps_))) {
++    REXLOG_ERROR("D3D11Presenter: Failed to create the guest output shaders");
++    return false;
++  }
++  D3D11_SAMPLER_DESC sampler = {};
++  sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
++  sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
++  sampler.MaxAnisotropy = 1;
++  sampler.ComparisonFunc = D3D11_COMPARISON_NEVER;
++  D3D11_BLEND_DESC blend = {};
++  blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
++  D3D11_RASTERIZER_DESC raster = {};
++  raster.FillMode = D3D11_FILL_SOLID;
++  raster.CullMode = D3D11_CULL_NONE;
++  raster.DepthClipEnable = TRUE;
++  D3D11_DEPTH_STENCIL_DESC depth = {};
++  D3D11_BUFFER_DESC constants = {};
++  constants.ByteWidth = 16;
++  constants.Usage = D3D11_USAGE_DYNAMIC;
++  constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
++  constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
++  if (FAILED(device->CreateSamplerState(&sampler, &linear_clamp_)) ||
++      FAILED(device->CreateBlendState(&blend, &blend_opaque_)) ||
++      FAILED(device->CreateRasterizerState(&raster, &rasterizer_)) ||
++      FAILED(device->CreateDepthStencilState(&depth, &depth_off_)) ||
++      FAILED(device->CreateBuffer(&constants, nullptr, &rect_constants_))) {
++    REXLOG_ERROR("D3D11Presenter: Failed to create the painting state");
++    return false;
++  }
++  return InitializeCommonSurfaceIndependent();
++}
++
++void D3D11Presenter::DestroySwapChain() {
++  if (!swap_chain_) {
++    return;
++  }
++  {
++    std::lock_guard lock(provider_.context_mutex());
++    provider_.GetContext()->ClearState();
++    back_buffer_rtv_.Reset();
++    provider_.GetContext()->Flush();
++  }
++  swap_chain_.Reset();
++  if (frame_latency_waitable_) {
++    CloseHandle(frame_latency_waitable_);
++    frame_latency_waitable_ = nullptr;
++  }
++  swap_chain_width_ = 0;
++  swap_chain_height_ = 0;
++  swap_chain_flags_ = 0;
++  swap_chain_flip_ = false;
++}
++
++bool D3D11Presenter::GetBackBufferRTV() {
++  // Buffer 0 is always the current back buffer in Direct3D 11, flip model too.
++  Microsoft::WRL::ComPtr<ID3D11Texture2D> buffer;
++  if (FAILED(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&buffer))) ||
++      FAILED(provider_.GetDevice()->CreateRenderTargetView(buffer.Get(), nullptr,
++                                                           &back_buffer_rtv_))) {
++    REXLOG_ERROR("D3D11Presenter: Failed to get the swap chain's back buffer");
++    return false;
++  }
++  return true;
++}
++
++Presenter::SurfacePaintConnectResult D3D11Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
++    Surface& new_surface, uint32_t new_surface_width, uint32_t new_surface_height,
++    bool was_paintable, bool& is_vsync_implicit_out) {
++  is_vsync_implicit_out = false;
++  const uint32_t width =
++      std::min(new_surface_width, uint32_t(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION));
++  const uint32_t height =
++      std::min(new_surface_height, uint32_t(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION));
++
++  if (swap_chain_) {
++    if (was_paintable && swap_chain_width_ == width && swap_chain_height_ == height) {
++      return SurfacePaintConnectResult::kSuccessUnchanged;
++    }
++    bool resized;
++    {
++      std::lock_guard lock(provider_.context_mutex());
++      provider_.GetContext()->ClearState();
++      back_buffer_rtv_.Reset();
++      resized = SUCCEEDED(swap_chain_->ResizeBuffers(0, UINT(width), UINT(height),
++                                                     DXGI_FORMAT_UNKNOWN, swap_chain_flags_)) &&
++                GetBackBufferRTV();
++    }
++    if (resized) {
++      swap_chain_width_ = width;
++      swap_chain_height_ = height;
++      return SurfacePaintConnectResult::kSuccess;
++    }
++    REXLOG_ERROR("D3D11Presenter: Failed to resize the swap chain - creating a new one");
++    DestroySwapChain();
++  }
++
++  if (new_surface.GetType() != Surface::kTypeIndex_Win32Hwnd) {
++    REXLOG_ERROR("D3D11Presenter: unsupported surface type");
++    return SurfacePaintConnectResult::kFailureSurfaceUnusable;
++  }
++  HWND hwnd = static_cast<const Win32HwndSurface&>(new_surface).hwnd();
++  ID3D11Device* device = provider_.GetDevice();
++
++  // The flip model (Windows 10: FLIP_DISCARD, Windows 8: FLIP_SEQUENTIAL),
++  // else the blt model (Windows 7).
++  if (IDXGIFactory2* factory2 = provider_.GetDXGIFactory2()) {
++    DXGI_SWAP_CHAIN_DESC1 desc = {};
++    desc.Width = UINT(width);
++    desc.Height = UINT(height);
++    desc.Format = kSwapChainFormat;
++    desc.SampleDesc.Count = 1;
++    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
++    desc.BufferCount = 2;
++    desc.Scaling = DXGI_SCALING_NONE;
++    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
++    for (DXGI_SWAP_EFFECT effect : {DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL}) {
++      desc.SwapEffect = effect;
++      desc.Flags = effect == DXGI_SWAP_EFFECT_FLIP_DISCARD && dxgi_supports_tearing_ &&
++                           REXCVAR_GET(d3d11_allow_tearing)
++                       ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
++                       : 0;
++      Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain_1;
++      // (Windows 8.1+: a waitable swap chain, see frame_latency_waitable_)
++      desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
++      HRESULT hr = factory2->CreateSwapChainForHwnd(device, hwnd, &desc, nullptr, nullptr,
++                                                    &swap_chain_1);
++      if (FAILED(hr)) {
++        desc.Flags &= ~UINT(DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
++        hr = factory2->CreateSwapChainForHwnd(device, hwnd, &desc, nullptr, nullptr, &swap_chain_1);
++      }
++      if (FAILED(hr) && desc.Scaling == DXGI_SCALING_NONE) {
++        desc.Scaling = DXGI_SCALING_STRETCH;  // (Windows 8 has no SCALING_NONE)
++        hr = factory2->CreateSwapChainForHwnd(device, hwnd, &desc, nullptr, nullptr, &swap_chain_1);
++      }
++      if (SUCCEEDED(hr)) {
++        swap_chain_ = swap_chain_1;
++        swap_chain_flags_ = desc.Flags;
++        swap_chain_flip_ = true;
++        Microsoft::WRL::ComPtr<IDXGISwapChain2> swap_chain_2;
++        if ((desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) &&
++            SUCCEEDED(swap_chain_.As(&swap_chain_2))) {
++          swap_chain_2->SetMaximumFrameLatency(2);
++          frame_latency_waitable_ = swap_chain_2->GetFrameLatencyWaitableObject();
++        }
++        break;
++      }
++    }
++  }
++  if (!swap_chain_) {
++    DXGI_SWAP_CHAIN_DESC desc = {};
++    desc.BufferDesc.Width = UINT(width);
++    desc.BufferDesc.Height = UINT(height);
++    desc.BufferDesc.Format = kSwapChainFormat;
++    desc.SampleDesc.Count = 1;
++    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
++    desc.BufferCount = 1;
++    desc.OutputWindow = hwnd;
++    desc.Windowed = TRUE;
++    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
++    if (FAILED(provider_.GetDXGIFactory()->CreateSwapChain(device, &desc, &swap_chain_))) {
++      REXLOG_ERROR("D3D11Presenter: Failed to create a swap chain for the window");
++      return SurfacePaintConnectResult::kFailure;
++    }
++    swap_chain_flags_ = 0;
++    swap_chain_flip_ = false;
++  }
++  // The window implementation does borderless fullscreen itself.
++  provider_.GetDXGIFactory()->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
++
++  swap_chain_width_ = width;
++  swap_chain_height_ = height;
++  bool got_rtv;
++  {
++    std::lock_guard lock(provider_.context_mutex());
++    got_rtv = GetBackBufferRTV();
++  }
++  if (!got_rtv) {
++    DestroySwapChain();
++    return SurfacePaintConnectResult::kFailure;
++  }
++  static bool logged = false;
++  if (!logged) {
++    logged = true;
++    REXLOG_INFO("D3D11Presenter: {} swap chain{}",
++                swap_chain_flip_ ? "flip model" : "blt model (no DXGI 1.2 flip model)",
++                (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? ", tearing allowed" : "");
++  }
++  return SurfacePaintConnectResult::kSuccess;
++}
++
++void D3D11Presenter::DisconnectPaintingFromSurfaceFromUIThreadImpl() { DestroySwapChain(); }
++
++bool D3D11Presenter::RefreshGuestOutputImpl(
++    uint32_t mailbox_index, uint32_t frontbuffer_width, uint32_t frontbuffer_height,
++    std::function<bool(GuestOutputRefreshContext& context)> refresher, bool& is_8bpc_out_ref) {
++  GuestOutput& output = guest_outputs_[mailbox_index];
++  if (output.texture) {
++    D3D11_TEXTURE2D_DESC desc;
++    output.texture->GetDesc(&desc);
++    if (desc.Width != frontbuffer_width || desc.Height != frontbuffer_height) {
++      // (Painting holds its own references to the one it draws.)
++      output = GuestOutput();
++    }
++  }
++  if (!output.texture) {
++    D3D11_TEXTURE2D_DESC desc = {};
++    desc.Width = frontbuffer_width;
++    desc.Height = frontbuffer_height;
++    desc.MipLevels = 1;
++    desc.ArraySize = 1;
++    desc.Format = kGuestOutputFormat;
++    desc.SampleDesc.Count = 1;
++    desc.Usage = D3D11_USAGE_DEFAULT;
++    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
++    ID3D11Device* device = provider_.GetDevice();
++    if (FAILED(device->CreateTexture2D(&desc, nullptr, &output.texture)) ||
++        FAILED(device->CreateRenderTargetView(output.texture.Get(), nullptr, &output.rtv)) ||
++        FAILED(device->CreateShaderResourceView(output.texture.Get(), nullptr, &output.srv))) {
++      REXLOG_ERROR("D3D11Presenter: Failed to create the guest output {}x{} texture",
++                   frontbuffer_width, frontbuffer_height);
++      output = GuestOutput();
++      return false;
++    }
++  }
++  D3D11GuestOutputRefreshContext context(is_8bpc_out_ref, output.texture.Get(), output.rtv.Get());
++  return refresher(context);
++}
++
++Presenter::PaintResult D3D11Presenter::PaintAndPresentImpl(bool execute_ui_drawers) {
++  if (!swap_chain_ || !back_buffer_rtv_) {
++    return PaintResult::kNotPresented;
++  }
++
++  GuestOutputProperties properties;
++  GuestOutputPaintConfig paint_config;
++  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> guest_output_srv;
++  {
++    uint32_t mailbox_index;
++    std::unique_lock<std::mutex> consumer_lock(
++        ConsumeGuestOutput(mailbox_index, &properties, &paint_config));
++    if (mailbox_index != UINT32_MAX) {
++      guest_output_srv = guest_outputs_[mailbox_index].srv;
++    }
++  }
++
++  // A free back buffer first, without the context lock.
++  if (frame_latency_waitable_) {
++    WaitForSingleObjectEx(frame_latency_waitable_, 100, TRUE);
++  }
++  std::lock_guard lock(provider_.context_mutex());
++  ID3D11DeviceContext* context = provider_.GetContext();
++  context->ClearState();
++  ID3D11RenderTargetView* rtv = back_buffer_rtv_.Get();
++  context->OMSetRenderTargets(1, &rtv, nullptr);
++  const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
++  context->ClearRenderTargetView(rtv, black);
++
++  if (guest_output_srv) {
++    GuestOutputPaintFlow flow =
++        GetGuestOutputPaintFlow(properties, swap_chain_width_, swap_chain_height_,
++                                D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION,
++                                D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION, paint_config);
++    if (flow.effect_count) {
++      // One bilinear pass to the final rectangle (any effect chain).
++      const std::pair<uint32_t, uint32_t>& size = flow.effect_output_sizes[flow.effect_count - 1];
++      D3D11_MAPPED_SUBRESOURCE mapped;
++      if (SUCCEEDED(context->Map(rect_constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
++        RectConstants rect;
++        rect.offset[0] = float(flow.output_x) * 2.0f / float(swap_chain_width_) - 1.0f;
++        rect.offset[1] = 1.0f - float(flow.output_y) * 2.0f / float(swap_chain_height_);
++        rect.size[0] = float(size.first) * 2.0f / float(swap_chain_width_);
++        rect.size[1] = -float(size.second) * 2.0f / float(swap_chain_height_);
++        std::memcpy(mapped.pData, &rect, sizeof(rect));
++        context->Unmap(rect_constants_.Get(), 0);
++      }
++      D3D11_VIEWPORT viewport = {};
++      viewport.Width = float(swap_chain_width_);
++      viewport.Height = float(swap_chain_height_);
++      viewport.MaxDepth = 1.0f;
++      context->RSSetViewports(1, &viewport);
++      context->RSSetState(rasterizer_.Get());
++      context->OMSetBlendState(blend_opaque_.Get(), nullptr, 0xFFFFFFFF);
++      context->OMSetDepthStencilState(depth_off_.Get(), 0);
++      context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
++      ID3D11Buffer* constants = rect_constants_.Get();
++      context->VSSetConstantBuffers(0, 1, &constants);
++      context->VSSetShader(rect_vs_.Get(), nullptr, 0);
++      context->PSSetShader(bilinear_ps_.Get(), nullptr, 0);
++      ID3D11ShaderResourceView* srv = guest_output_srv.Get();
++      context->PSSetShaderResources(0, 1, &srv);
++      ID3D11SamplerState* sampler = linear_clamp_.Get();
++      context->PSSetSamplers(0, 1, &sampler);
++      context->Draw(4, 0);
++      ID3D11ShaderResourceView* null_srv = nullptr;
++      context->PSSetShaderResources(0, 1, &null_srv);
++    }
++  }
++
++  if (execute_ui_drawers) {
++    D3D11UIDrawContext ui_draw_context(*this, swap_chain_width_, swap_chain_height_, context);
++    ExecuteUIDrawersFromUIThread(ui_draw_context);
++  }
++
++  // Present as soon as possible (no vsync wait: the guest's own rate decides),
++  // tearing allowed for variable refresh rate where the swap chain has it.
++  HRESULT hr = swap_chain_->Present(
++      0, (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? DXGI_PRESENT_ALLOW_TEARING : 0);
++  // (Flip model unbinds the back buffer after Present.)
++  context->ClearState();
++  switch (hr) {
++    case DXGI_ERROR_DEVICE_REMOVED:
++      return PaintResult::kGpuLostExternally;
++    case DXGI_ERROR_DEVICE_RESET:
++      return PaintResult::kGpuLostResponsible;
++    default:
++      return SUCCEEDED(hr) ? PaintResult::kPresented : PaintResult::kNotPresented;
++  }
++}
++
++bool D3D11Presenter::CaptureGuestOutput(RawImage& image_out) {
++  Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
++  {
++    uint32_t mailbox_index;
++    std::unique_lock<std::mutex> consumer_lock(ConsumeGuestOutput(mailbox_index, nullptr, nullptr));
++    if (mailbox_index != UINT32_MAX) {
++      texture = guest_outputs_[mailbox_index].texture;
++    }
++  }
++  if (!texture) {
++    return false;
++  }
++  D3D11_TEXTURE2D_DESC desc;
++  texture->GetDesc(&desc);
++  desc.Usage = D3D11_USAGE_STAGING;
++  desc.BindFlags = 0;
++  desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++  Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
++  if (FAILED(provider_.GetDevice()->CreateTexture2D(&desc, nullptr, &staging))) {
++    REXLOG_ERROR("D3D11Presenter: Failed to create the guest output capture texture");
++    return false;
++  }
++  std::lock_guard lock(provider_.context_mutex());
++  ID3D11DeviceContext* context = provider_.GetContext();
++  context->CopyResource(staging.Get(), texture.Get());
++  D3D11_MAPPED_SUBRESOURCE mapped;
++  if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
++    REXLOG_ERROR("D3D11Presenter: Failed to map the guest output capture texture");
++    return false;
++  }
++  image_out.width = desc.Width;
++  image_out.height = desc.Height;
++  image_out.stride = sizeof(uint32_t) * image_out.width;
++  image_out.data.resize(size_t(image_out.stride) * image_out.height);
++  auto* out = reinterpret_cast<uint32_t*>(image_out.data.data());
++  for (uint32_t y = 0; y < desc.Height; ++y) {
++    const auto* row = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(mapped.pData) +
++                                                        size_t(mapped.RowPitch) * y);
++    for (uint32_t x = 0; x < desc.Width; ++x) {
++      out[size_t(desc.Width) * y + x] = Packed10bpcRGBTo8bpcBytes(row[x]);
++    }
++  }
++  context->Unmap(staging.Get(), 0);
++  return true;
++}
++
++}  // namespace rex::ui::d3d11
+diff --git a/src/ui/d3d11/d3d11_immediate_drawer.cpp b/src/ui/d3d11/d3d11_immediate_drawer.cpp
+new file mode 100644
+index 0000000..563d94e
+--- /dev/null
++++ b/src/ui/d3d11/d3d11_immediate_drawer.cpp
+@@ -0,0 +1,278 @@
++// [svr2011] Direct3D 11 immediate drawer (rex/ui/d3d11/d3d11_immediate_drawer.h).
++
++#include <rex/ui/d3d11/d3d11_immediate_drawer.h>
++
++#include <algorithm>
++#include <cstddef>
++#include <cstring>
++#include <iterator>
++
++#include <rex/logging.h>
++#include <rex/ui/d3d11/d3d11_presenter.h>
++
++namespace rex::ui::d3d11 {
++
++namespace shaders {
++#include "../shaders/bytecode/d3d11_4_0/immediate_ps.h"
++#include "../shaders/bytecode/d3d11_4_0/immediate_vs.h"
++}  // namespace shaders
++
++std::unique_ptr<D3D11ImmediateDrawer> D3D11ImmediateDrawer::Create(const D3D11Provider& provider) {
++  std::unique_ptr<D3D11ImmediateDrawer> drawer(new D3D11ImmediateDrawer(provider));
++  if (!drawer->Initialize()) {
++    return nullptr;
++  }
++  return drawer;
++}
++
++bool D3D11ImmediateDrawer::Initialize() {
++  ID3D11Device* device = provider_.GetDevice();
++  if (FAILED(device->CreateVertexShader(shaders::immediate_vs, sizeof(shaders::immediate_vs),
++                                        nullptr, &vertex_shader_)) ||
++      FAILED(device->CreatePixelShader(shaders::immediate_ps, sizeof(shaders::immediate_ps), nullptr,
++                                       &pixel_shader_))) {
++    REXLOG_ERROR("D3D11ImmediateDrawer: Failed to create the shaders");
++    return false;
++  }
++  const D3D11_INPUT_ELEMENT_DESC elements[] = {
++      {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, UINT(offsetof(ImmediateVertex, x)),
++       D3D11_INPUT_PER_VERTEX_DATA, 0},
++      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, UINT(offsetof(ImmediateVertex, u)),
++       D3D11_INPUT_PER_VERTEX_DATA, 0},
++      {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, UINT(offsetof(ImmediateVertex, color)),
++       D3D11_INPUT_PER_VERTEX_DATA, 0},
++  };
++  if (FAILED(device->CreateInputLayout(elements, UINT(std::size(elements)), shaders::immediate_vs,
++                                       sizeof(shaders::immediate_vs), &input_layout_))) {
++    REXLOG_ERROR("D3D11ImmediateDrawer: Failed to create the input layout");
++    return false;
++  }
++
++  D3D11_BLEND_DESC blend = {};
++  blend.RenderTarget[0].BlendEnable = TRUE;
++  blend.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
++  blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
++  blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
++  blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
++  blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
++  blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
++  blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
++  D3D11_RASTERIZER_DESC raster = {};
++  raster.FillMode = D3D11_FILL_SOLID;
++  raster.CullMode = D3D11_CULL_NONE;
++  raster.DepthClipEnable = TRUE;
++  raster.ScissorEnable = TRUE;
++  D3D11_DEPTH_STENCIL_DESC depth = {};
++  if (FAILED(device->CreateBlendState(&blend, &blend_state_)) ||
++      FAILED(device->CreateRasterizerState(&raster, &rasterizer_state_)) ||
++      FAILED(device->CreateDepthStencilState(&depth, &depth_stencil_state_))) {
++    REXLOG_ERROR("D3D11ImmediateDrawer: Failed to create the state objects");
++    return false;
++  }
++
++  D3D11_SAMPLER_DESC sampler = {};
++  sampler.MaxAnisotropy = 1;
++  sampler.ComparisonFunc = D3D11_COMPARISON_NEVER;
++  sampler.MaxLOD = D3D11_FLOAT32_MAX;
++  for (int i = 0; i < kSamplerCount; ++i) {
++    const bool linear = i == kLinearClamp || i == kLinearRepeat;
++    const bool repeat = i == kNearestRepeat || i == kLinearRepeat;
++    sampler.Filter = linear ? D3D11_FILTER_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_POINT;
++    sampler.AddressU = sampler.AddressV = sampler.AddressW =
++        repeat ? D3D11_TEXTURE_ADDRESS_WRAP : D3D11_TEXTURE_ADDRESS_CLAMP;
++    if (FAILED(device->CreateSamplerState(&sampler, &samplers_[i]))) {
++      REXLOG_ERROR("D3D11ImmediateDrawer: Failed to create the samplers");
++      return false;
++    }
++  }
++
++  D3D11_BUFFER_DESC constants = {};
++  constants.ByteWidth = 16;
++  constants.Usage = D3D11_USAGE_DYNAMIC;
++  constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
++  constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
++  if (FAILED(device->CreateBuffer(&constants, nullptr, &constants_))) {
++    REXLOG_ERROR("D3D11ImmediateDrawer: Failed to create the constant buffer");
++    return false;
++  }
++
++  const uint32_t white = 0xFFFFFFFF;
++  auto texture = CreateTexture(1, 1, ImmediateTextureFilter::kNearest, false,
++                               reinterpret_cast<const uint8_t*>(&white));
++  if (!texture) {
++    return false;
++  }
++  white_view_ = static_cast<D3D11ImmediateTexture*>(texture.get())->view();
++  return true;
++}
++
++std::unique_ptr<ImmediateTexture> D3D11ImmediateDrawer::CreateTexture(uint32_t width,
++                                                                      uint32_t height,
++                                                                      ImmediateTextureFilter filter,
++                                                                      bool is_repeated,
++                                                                      const uint8_t* data) {
++  D3D11_TEXTURE2D_DESC desc = {};
++  desc.Width = width;
++  desc.Height = height;
++  desc.MipLevels = 1;
++  desc.ArraySize = 1;
++  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++  desc.SampleDesc.Count = 1;
++  desc.Usage = D3D11_USAGE_IMMUTABLE;
++  desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
++  D3D11_SUBRESOURCE_DATA initial = {data, UINT(sizeof(uint32_t) * width), 0};
++  Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
++  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
++  // (Device calls are free-threaded: no context lock.)
++  if (!data || FAILED(provider_.GetDevice()->CreateTexture2D(&desc, &initial, &texture)) ||
++      FAILED(provider_.GetDevice()->CreateShaderResourceView(texture.Get(), nullptr, &view))) {
++    REXLOG_ERROR("D3D11ImmediateDrawer: Failed to create a {}x{} texture", width, height);
++  }
++  SamplerIndex sampler = filter == ImmediateTextureFilter::kLinear
++                             ? (is_repeated ? kLinearRepeat : kLinearClamp)
++                             : (is_repeated ? kNearestRepeat : kNearestClamp);
++  return std::make_unique<D3D11ImmediateTexture>(width, height, std::move(view), sampler);
++}
++
++bool D3D11ImmediateDrawer::EnsureBuffer(Microsoft::WRL::ComPtr<ID3D11Buffer>& buffer,
++                                        UINT& capacity, UINT size, UINT bind) {
++  if (buffer && capacity >= size) {
++    return true;
++  }
++  UINT new_capacity = std::max(capacity ? capacity : UINT(64 * 1024), UINT(4096));
++  while (new_capacity < size) {
++    new_capacity *= 2;
++  }
++  D3D11_BUFFER_DESC desc = {};
++  desc.ByteWidth = new_capacity;
++  desc.Usage = D3D11_USAGE_DYNAMIC;
++  desc.BindFlags = bind;
++  desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
++  buffer.Reset();
++  capacity = 0;
++  if (FAILED(provider_.GetDevice()->CreateBuffer(&desc, nullptr, &buffer))) {
++    REXLOG_ERROR("D3D11ImmediateDrawer: Failed to create a {}-byte buffer", new_capacity);
++    return false;
++  }
++  capacity = new_capacity;
++  return true;
++}
++
++void D3D11ImmediateDrawer::Begin(UIDrawContext& ui_draw_context, float coordinate_space_width,
++                                 float coordinate_space_height) {
++  ImmediateDrawer::Begin(ui_draw_context, coordinate_space_width, coordinate_space_height);
++  context_ = static_cast<D3D11UIDrawContext&>(ui_draw_context).context();
++  batch_open_ = false;
++
++  // The presenter has its back buffer bound as the render target.
++  D3D11_VIEWPORT viewport = {};
++  viewport.Width = float(ui_draw_context.render_target_width());
++  viewport.Height = float(ui_draw_context.render_target_height());
++  viewport.MaxDepth = 1.0f;
++  context_->RSSetViewports(1, &viewport);
++  context_->RSSetState(rasterizer_state_.Get());
++  context_->OMSetBlendState(blend_state_.Get(), nullptr, 0xFFFFFFFF);
++  context_->OMSetDepthStencilState(depth_stencil_state_.Get(), 0);
++  context_->IASetInputLayout(input_layout_.Get());
++  context_->VSSetShader(vertex_shader_.Get(), nullptr, 0);
++  context_->PSSetShader(pixel_shader_.Get(), nullptr, 0);
++  context_->GSSetShader(nullptr, nullptr, 0);
++
++  D3D11_MAPPED_SUBRESOURCE mapped;
++  if (SUCCEEDED(context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
++    float size_inv[4] = {1.0f / coordinate_space_width, 1.0f / coordinate_space_height, 0, 0};
++    std::memcpy(mapped.pData, size_inv, sizeof(size_inv));
++    context_->Unmap(constants_.Get(), 0);
++  }
++  ID3D11Buffer* constants = constants_.Get();
++  context_->VSSetConstantBuffers(0, 1, &constants);
++
++  current_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
++  current_view_ = nullptr;
++  current_sampler_ = -1;
++  current_scissor_ = {-1, -1, -1, -1};
++}
++
++void D3D11ImmediateDrawer::BeginDrawBatch(const ImmediateDrawBatch& batch) {
++  batch_open_ = false;
++  const UINT vertex_bytes = UINT(sizeof(ImmediateVertex)) * UINT(batch.vertex_count);
++  if (!vertex_bytes ||
++      !EnsureBuffer(vertex_buffer_, vertex_buffer_capacity_, vertex_bytes,
++                    D3D11_BIND_VERTEX_BUFFER)) {
++    return;
++  }
++  D3D11_MAPPED_SUBRESOURCE mapped;
++  if (FAILED(context_->Map(vertex_buffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
++    return;
++  }
++  std::memcpy(mapped.pData, batch.vertices, vertex_bytes);
++  context_->Unmap(vertex_buffer_.Get(), 0);
++  ID3D11Buffer* vertex_buffer = vertex_buffer_.Get();
++  const UINT stride = UINT(sizeof(ImmediateVertex)), offset = 0;
++  context_->IASetVertexBuffers(0, 1, &vertex_buffer, &stride, &offset);
++
++  batch_has_index_buffer_ = batch.indices != nullptr;
++  if (batch_has_index_buffer_) {
++    const UINT index_bytes = UINT(sizeof(uint16_t)) * UINT(batch.index_count);
++    if (!EnsureBuffer(index_buffer_, index_buffer_capacity_, index_bytes,
++                      D3D11_BIND_INDEX_BUFFER) ||
++        FAILED(context_->Map(index_buffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
++      return;
++    }
++    std::memcpy(mapped.pData, batch.indices, index_bytes);
++    context_->Unmap(index_buffer_.Get(), 0);
++    context_->IASetIndexBuffer(index_buffer_.Get(), DXGI_FORMAT_R16_UINT, 0);
++  }
++  batch_open_ = true;
++}
++
++void D3D11ImmediateDrawer::Draw(const ImmediateDraw& draw) {
++  if (!batch_open_) {
++    return;
++  }
++  uint32_t left, top, width, height;
++  if (!ScissorToRenderTarget(draw, left, top, width, height)) {
++    return;
++  }
++  const D3D11_RECT scissor = {LONG(left), LONG(top), LONG(left + width), LONG(top + height)};
++  if (std::memcmp(&scissor, &current_scissor_, sizeof(scissor))) {
++    current_scissor_ = scissor;
++    context_->RSSetScissorRects(1, &scissor);
++  }
++
++  auto* texture = static_cast<D3D11ImmediateTexture*>(draw.texture);
++  ID3D11ShaderResourceView* view = texture && texture->view() ? texture->view() : white_view_.Get();
++  if (view != current_view_) {
++    current_view_ = view;
++    context_->PSSetShaderResources(0, 1, &view);
++  }
++  const int sampler = texture && texture->view() ? texture->sampler() : kNearestClamp;
++  if (sampler != current_sampler_) {
++    current_sampler_ = sampler;
++    ID3D11SamplerState* state = samplers_[sampler].Get();
++    context_->PSSetSamplers(0, 1, &state);
++  }
++
++  const D3D11_PRIMITIVE_TOPOLOGY topology = draw.primitive_type == ImmediatePrimitiveType::kLines
++                                                ? D3D11_PRIMITIVE_TOPOLOGY_LINELIST
++                                                : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
++  if (topology != current_topology_) {
++    current_topology_ = topology;
++    context_->IASetPrimitiveTopology(topology);
++  }
++
++  if (batch_has_index_buffer_) {
++    context_->DrawIndexed(UINT(draw.count), UINT(draw.index_offset), draw.base_vertex);
++  } else {
++    context_->Draw(UINT(draw.count), UINT(draw.base_vertex));
++  }
++}
++
++void D3D11ImmediateDrawer::EndDrawBatch() { batch_open_ = false; }
++
++void D3D11ImmediateDrawer::End() {
++  ImmediateDrawer::End();
++  context_ = nullptr;
++}
++
++}  // namespace rex::ui::d3d11
+diff --git a/include/rex/graphics/d3d11/command_processor.h b/include/rex/graphics/d3d11/command_processor.h
+new file mode 100644
+index 0000000..1932c2e
+--- /dev/null
++++ b/include/rex/graphics/d3d11/command_processor.h
+@@ -0,0 +1,69 @@
++/**
++ * @file        graphics/d3d11/command_processor.h
++ * @brief       [svr2011] Direct3D 11 command processor: the guest's command
++ *              stream without emulated drawing.
++ *
++ * For apps that draw the guest's frames with their own renderer
++ * (rex/external_frame.h) on GPUs without Direct3D 12 / Vulkan: the base
++ * class runs the PM4 stream on the CPU (registers, fences, interrupts, waits,
++ * swaps); draws and copies (resolves) are skipped, and memexport draws, which
++ * would need the emulated GPU, are only counted and logged. At each swap the
++ * app's frame gets the guest's gamma ramp (a pixel shader pass, as the
++ * D3D12 / Vulkan backends' compute pass does) into the presenter's guest
++ * output.
++ */
++
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <unordered_map>
++
++#include <rex/graphics/command_processor.h>
++#include <rex/string/buffer.h>
++#include <rex/ui/d3d11/d3d11_provider.h>
++
++namespace rex::graphics::d3d11 {
++
++class D3D11GraphicsSystem;
++
++class D3D11CommandProcessor final : public CommandProcessor {
++ public:
++  D3D11CommandProcessor(D3D11GraphicsSystem* graphics_system, system::KernelState* kernel_state);
++  ~D3D11CommandProcessor() override;
++
++  void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
++                 uint32_t frontbuffer_height) override;
++
++ protected:
++  bool SetupContext() override;
++  void ShutdownContext() override;
++
++  void OnGammaRamp256EntryTableValueWritten() override { gamma_ramp_up_to_date_ = false; }
++
++  Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
++                     const uint32_t* host_address, uint32_t dword_count) override;
++  bool IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
++                 IndexBufferInfo* index_buffer_info, bool major_mode_explicit) override;
++  bool IssueCopy() override;
++
++ private:
++  ui::d3d11::D3D11Provider& provider() const;
++
++  std::unordered_map<uint64_t, std::unique_ptr<Shader>> shaders_;
++  string::StringBuffer ucode_disasm_buffer_;
++  uint64_t memexport_draws_ = 0;
++
++  Microsoft::WRL::ComPtr<ID3D11VertexShader> rect_vs_;
++  Microsoft::WRL::ComPtr<ID3D11PixelShader> apply_gamma_ps_;
++  Microsoft::WRL::ComPtr<ID3D11Buffer> rect_constants_;
++  Microsoft::WRL::ComPtr<ID3D11Texture2D> gamma_ramp_;
++  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> gamma_ramp_srv_;
++  Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
++  bool gamma_ramp_up_to_date_ = false;
++  // The app frame's view (recreated when the frame's texture changes).
++  void* frame_texture_ = nullptr;
++  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frame_srv_;
++};
++
++}  // namespace rex::graphics::d3d11
+diff --git a/include/rex/graphics/d3d11/graphics_system.h b/include/rex/graphics/d3d11/graphics_system.h
+new file mode 100644
+index 0000000..59fb6f0
+--- /dev/null
++++ b/include/rex/graphics/d3d11/graphics_system.h
+@@ -0,0 +1,32 @@
++/**
++ * @file        graphics/d3d11/graphics_system.h
++ * @brief       [svr2011] Direct3D 11 graphics system: the D3D11 provider and
++ *              presenter, and a command processor without emulated drawing
++ *              (rex/graphics/d3d11/command_processor.h).
++ */
++
++#pragma once
++
++#include <memory>
++#include <string>
++
++#include <rex/graphics/command_processor.h>
++#include <rex/graphics/graphics_system.h>
++
++namespace rex::graphics::d3d11 {
++
++class D3D11GraphicsSystem : public GraphicsSystem {
++ public:
++  D3D11GraphicsSystem();
++  ~D3D11GraphicsSystem() override;
++
++  static bool IsAvailable();
++
++  std::string name() const override { return "Direct3D 11"; }
++
++ protected:
++  void CreateProvider(bool with_presentation) override;
++  std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;
++};
++
++}  // namespace rex::graphics::d3d11
+diff --git a/src/graphics/d3d11/command_processor.cpp b/src/graphics/d3d11/command_processor.cpp
+new file mode 100644
+index 0000000..35b78d6
+--- /dev/null
++++ b/src/graphics/d3d11/command_processor.cpp
+@@ -0,0 +1,225 @@
++// [svr2011] Direct3D 11 command processor (rex/graphics/d3d11/command_processor.h).
++
++#include <rex/graphics/d3d11/command_processor.h>
++
++#include <algorithm>
++#include <cstring>
++
++#include <rex/external_frame.h>
++#include <rex/graphics/d3d11/graphics_system.h>
++#include <rex/graphics/pipeline/shader/shader.h>
++#include <rex/logging.h>
++#include <rex/ui/d3d11/d3d11_presenter.h>
++
++#include <xxhash.h>
++
++namespace rex::graphics::d3d11 {
++
++namespace shaders {
++#include "ui/shaders/bytecode/d3d11_4_0/apply_gamma_table_ps.h"
++#include "ui/shaders/bytecode/d3d11_4_0/guest_output_rect_vs.h"
++}  // namespace shaders
++
++D3D11CommandProcessor::D3D11CommandProcessor(D3D11GraphicsSystem* graphics_system,
++                                             system::KernelState* kernel_state)
++    : CommandProcessor(graphics_system, kernel_state) {}
++
++D3D11CommandProcessor::~D3D11CommandProcessor() = default;
++
++ui::d3d11::D3D11Provider& D3D11CommandProcessor::provider() const {
++  return *static_cast<ui::d3d11::D3D11Provider*>(graphics_system_->provider());
++}
++
++bool D3D11CommandProcessor::SetupContext() {
++  ID3D11Device* device = provider().GetDevice();
++  if (FAILED(device->CreateVertexShader(shaders::guest_output_rect_vs,
++                                        sizeof(shaders::guest_output_rect_vs), nullptr,
++                                        &rect_vs_)) ||
++      FAILED(device->CreatePixelShader(shaders::apply_gamma_table_ps,
++                                       sizeof(shaders::apply_gamma_table_ps), nullptr,
++                                       &apply_gamma_ps_))) {
++    REXGPU_ERROR("D3D11: Failed to create the gamma ramp shaders");
++    return false;
++  }
++  // The whole target: offset (-1, 1), size (2, -2) in NDC.
++  const float rect[4] = {-1.0f, 1.0f, 2.0f, -2.0f};
++  D3D11_BUFFER_DESC constants = {};
++  constants.ByteWidth = sizeof(rect);
++  constants.Usage = D3D11_USAGE_IMMUTABLE;
++  constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
++  D3D11_SUBRESOURCE_DATA constants_data = {rect, 0, 0};
++  D3D11_TEXTURE2D_DESC ramp = {};
++  ramp.Width = 256;
++  ramp.Height = 1;
++  ramp.MipLevels = 1;
++  ramp.ArraySize = 1;
++  ramp.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
++  ramp.SampleDesc.Count = 1;
++  ramp.Usage = D3D11_USAGE_DEFAULT;
++  ramp.BindFlags = D3D11_BIND_SHADER_RESOURCE;
++  D3D11_RASTERIZER_DESC raster = {};
++  raster.FillMode = D3D11_FILL_SOLID;
++  raster.CullMode = D3D11_CULL_NONE;
++  raster.DepthClipEnable = TRUE;
++  if (FAILED(device->CreateBuffer(&constants, &constants_data, &rect_constants_)) ||
++      FAILED(device->CreateTexture2D(&ramp, nullptr, &gamma_ramp_)) ||
++      FAILED(device->CreateShaderResourceView(gamma_ramp_.Get(), nullptr, &gamma_ramp_srv_)) ||
++      FAILED(device->CreateRasterizerState(&raster, &rasterizer_))) {
++    REXGPU_ERROR("D3D11: Failed to create the gamma ramp resources");
++    return false;
++  }
++  gamma_ramp_up_to_date_ = false;
++  REXGPU_INFO("D3D11: guest GPU commands run without emulated drawing (the app draws the frames)");
++  return true;
++}
++
++void D3D11CommandProcessor::ShutdownContext() {
++  frame_srv_.Reset();
++  frame_texture_ = nullptr;
++  gamma_ramp_srv_.Reset();
++  gamma_ramp_.Reset();
++  rect_constants_.Reset();
++  apply_gamma_ps_.Reset();
++  rect_vs_.Reset();
++  rasterizer_.Reset();
++  shaders_.clear();
++}
++
++Shader* D3D11CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
++                                          const uint32_t* host_address, uint32_t dword_count) {
++  const uint64_t hash = XXH3_64bits(host_address, dword_count * sizeof(uint32_t));
++  auto it = shaders_.find(hash);
++  if (it != shaders_.end()) {
++    return it->second.get();
++  }
++  auto shader = std::make_unique<Shader>(shader_type, hash, host_address, dword_count);
++  // (Only to know which draws use memexport: those need the emulated GPU.)
++  shader->AnalyzeUcode(ucode_disasm_buffer_);
++  if (shader->memexport_eM_written()) {
++    REXGPU_WARN("D3D11: shader {:016X} at {:08X} uses memexport - its draws are not run", hash,
++                guest_address);
++  }
++  Shader* result = shader.get();
++  shaders_.emplace(hash, std::move(shader));
++  return result;
++}
++
++bool D3D11CommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
++                                      IndexBufferInfo* index_buffer_info,
++                                      bool major_mode_explicit) {
++  const Shader* vs = active_vertex_shader();
++  const Shader* ps = active_pixel_shader();
++  if ((vs && vs->memexport_eM_written()) || (ps && ps->memexport_eM_written())) {
++    if (memexport_draws_++ < 8) {
++      REXGPU_WARN("D3D11: memexport draw #{} skipped (no emulated GPU drawing)", memexport_draws_);
++    }
++  }
++  return true;
++}
++
++bool D3D11CommandProcessor::IssueCopy() { return true; }
++
++void D3D11CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
++                                      uint32_t frontbuffer_height) {
++  // (the GPU thread got this far: a frame's commands all went through)
++  rex::external_frame::CountSwap();
++  if (!graphics_system_) {
++    return;
++  }
++  ui::Presenter* presenter = graphics_system_->presenter();
++  if (!presenter) {
++    return;
++  }
++  rex::external_frame::Frame frame;
++  if (!rex::external_frame::GetFrame(frame) || !frame.d3d11_texture || !frame.width ||
++      !frame.height) {
++    // Nothing to show (yet): black, with the UI on top.
++    presenter->RefreshGuestOutput(0, 0, 1, 1, nullptr);
++    return;
++  }
++  const uint32_t width = frame.width, height = frame.height;
++  presenter->RefreshGuestOutput(
++      width, height, width, height,
++      [this, &frame, width, height](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
++        auto& d3d11_context =
++            static_cast<ui::d3d11::D3D11Presenter::D3D11GuestOutputRefreshContext&>(context);
++        context.SetIs8bpc(true);
++        ui::d3d11::D3D11Provider& d3d11 = provider();
++        std::lock_guard lock(d3d11.context_mutex());
++        ID3D11DeviceContext* ctx = d3d11.GetContext();
++        if (frame.d3d11_texture != frame_texture_ || !frame_srv_) {
++          frame_srv_.Reset();
++          frame_texture_ = frame.d3d11_texture;
++          D3D11_SHADER_RESOURCE_VIEW_DESC srv = {};
++          srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++          srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
++          srv.Texture2D.MipLevels = 1;
++          if (FAILED(d3d11.GetDevice()->CreateShaderResourceView(
++                  static_cast<ID3D11Texture2D*>(frame.d3d11_texture), &srv, &frame_srv_))) {
++            frame_texture_ = nullptr;
++            return false;
++          }
++        }
++        if (!gamma_ramp_up_to_date_) {
++          ctx->UpdateSubresource(gamma_ramp_.Get(), 0, nullptr, gamma_ramp_256_entry_table(),
++                                 256 * sizeof(uint32_t), 0);
++          gamma_ramp_up_to_date_ = true;
++        }
++        ctx->ClearState();
++        ID3D11RenderTargetView* rtv = d3d11_context.rtv();
++        ctx->OMSetRenderTargets(1, &rtv, nullptr);
++        D3D11_VIEWPORT viewport = {};
++        viewport.Width = float(width);
++        viewport.Height = float(height);
++        viewport.MaxDepth = 1.0f;
++        ctx->RSSetViewports(1, &viewport);
++        ctx->RSSetState(rasterizer_.Get());
++        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
++        ID3D11Buffer* constants = rect_constants_.Get();
++        ctx->VSSetConstantBuffers(0, 1, &constants);
++        ctx->VSSetShader(rect_vs_.Get(), nullptr, 0);
++        ctx->PSSetShader(apply_gamma_ps_.Get(), nullptr, 0);
++        ID3D11ShaderResourceView* views[2] = {frame_srv_.Get(), gamma_ramp_srv_.Get()};
++        ctx->PSSetShaderResources(0, 2, views);
++        ctx->Draw(4, 0);
++        ctx->ClearState();
++        // Debug: SVR2011_D3D11_PROBE=1 logs the average colour of the app's
++        // frame and of the guest output every 300 swaps.
++        static const bool probe = std::getenv("SVR2011_D3D11_PROBE") != nullptr;
++        static uint32_t swaps = 0;
++        if (probe && ++swaps % 300 == 1) {
++          auto average = [&](ID3D11Texture2D* texture, bool rgb10) {
++            D3D11_TEXTURE2D_DESC desc;
++            texture->GetDesc(&desc);
++            desc.Usage = D3D11_USAGE_STAGING;
++            desc.BindFlags = 0;
++            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++            desc.MiscFlags = 0;
++            desc.MipLevels = 1;
++            Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
++            double sum[3] = {};
++            if (FAILED(d3d11.GetDevice()->CreateTexture2D(&desc, nullptr, &staging))) return std::string("?");
++            ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, texture, 0, nullptr);
++            D3D11_MAPPED_SUBRESOURCE m;
++            if (FAILED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m))) return std::string("?");
++            for (uint32_t y = 0; y < desc.Height; y += 8) {
++              const auto* row = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(m.pData) + size_t(y) * m.RowPitch);
++              for (uint32_t x = 0; x < desc.Width; x += 8) {
++                const uint32_t v = row[x];
++                for (int c = 0; c < 3; ++c)
++                  sum[c] += rgb10 ? ((v >> (10 * c)) & 0x3FF) / 1023.0 : ((v >> (8 * c)) & 0xFF) / 255.0;
++              }
++            }
++            ctx->Unmap(staging.Get(), 0);
++            const double n = double((desc.Width + 7) / 8) * double((desc.Height + 7) / 8);
++            return fmt::format("{:.3f} {:.3f} {:.3f}", sum[0] / n, sum[1] / n, sum[2] / n);
++          };
++          REXGPU_INFO("D3D11 probe: swap {} frame avg {} -> guest output avg {}", swaps,
++                      average(static_cast<ID3D11Texture2D*>(frame.d3d11_texture), false),
++                      average(d3d11_context.texture(), true));
++        }
++        return true;
++      });
++}
++
++}  // namespace rex::graphics::d3d11
+diff --git a/src/graphics/d3d11/graphics_system.cpp b/src/graphics/d3d11/graphics_system.cpp
+new file mode 100644
+index 0000000..7d48c28
+--- /dev/null
++++ b/src/graphics/d3d11/graphics_system.cpp
+@@ -0,0 +1,26 @@
++// [svr2011] Direct3D 11 graphics system (rex/graphics/d3d11/graphics_system.h).
++
++#include <rex/graphics/d3d11/graphics_system.h>
++
++#include <rex/graphics/d3d11/command_processor.h>
++#include <rex/ui/d3d11/d3d11_provider.h>
++
++namespace rex::graphics::d3d11 {
++
++D3D11GraphicsSystem::D3D11GraphicsSystem() {}
++
++D3D11GraphicsSystem::~D3D11GraphicsSystem() {}
++
++bool D3D11GraphicsSystem::IsAvailable() {
++  return rex::ui::d3d11::D3D11Provider::IsD3D11APIAvailable();
++}
++
++void D3D11GraphicsSystem::CreateProvider(bool /*with_presentation*/) {
++  provider_ = rex::ui::d3d11::D3D11Provider::Create();
++}
++
++std::unique_ptr<CommandProcessor> D3D11GraphicsSystem::CreateCommandProcessor() {
++  return std::unique_ptr<CommandProcessor>(new D3D11CommandProcessor(this, kernel_state_));
++}
++
++}  // namespace rex::graphics::d3d11
+diff --git a/src/ui/shaders/d3d11/immediate.vs.hlsl b/src/ui/shaders/d3d11/immediate.vs.hlsl
+new file mode 100644
+index 0000000..03f384c
+--- /dev/null
++++ b/src/ui/shaders/d3d11/immediate.vs.hlsl
+@@ -0,0 +1,25 @@
++// [svr2011] Direct3D 11 ImGui / immediate drawer vertex shader.
++cbuffer ImmediateConstants : register(b0) {
++  float2 coordinate_space_size_inv;
++};
++
++struct VsInput {
++  float2 position : POSITION;
++  float2 texcoord : TEXCOORD;
++  float4 color : COLOR;
++};
++
++struct VsOutput {
++  float2 texcoord : TEXCOORD;
++  float4 color : COLOR;
++  float4 position : SV_Position;
++};
++
++VsOutput main(VsInput input) {
++  VsOutput output;
++  output.position = float4(
++      input.position * coordinate_space_size_inv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
++  output.texcoord = input.texcoord;
++  output.color = input.color;
++  return output;
++}
+diff --git a/src/ui/shaders/d3d11/immediate.ps.hlsl b/src/ui/shaders/d3d11/immediate.ps.hlsl
+new file mode 100644
+index 0000000..57548ed
+--- /dev/null
++++ b/src/ui/shaders/d3d11/immediate.ps.hlsl
+@@ -0,0 +1,8 @@
++// [svr2011] Direct3D 11 ImGui / immediate drawer pixel shader (a draw
++// without a texture binds a 1x1 white one).
++Texture2D<float4> immediate_texture : register(t0);
++SamplerState immediate_sampler : register(s0);
++
++float4 main(float2 texcoord : TEXCOORD, float4 color : COLOR) : SV_Target {
++  return immediate_texture.Sample(immediate_sampler, texcoord) * color;
++}
+diff --git a/src/ui/shaders/d3d11/guest_output_rect.vs.hlsl b/src/ui/shaders/d3d11/guest_output_rect.vs.hlsl
+new file mode 100644
+index 0000000..aaab66d
+--- /dev/null
++++ b/src/ui/shaders/d3d11/guest_output_rect.vs.hlsl
+@@ -0,0 +1,13 @@
++// [svr2011] Direct3D 11 presenter: a rectangle (triangle strip of 4 vertices,
++// no vertex buffer) at an offset and size in normalized device coordinates.
++cbuffer RectConstants : register(b0) {
++  float2 rect_offset;  // NDC of the top-left corner
++  float2 rect_size;    // NDC size (y negative: down)
++};
++
++void main(uint vertex_id : SV_VertexID, out float2 texcoord : TEXCOORD,
++          out float4 position : SV_Position) {
++  float2 uv = float2(float(vertex_id & 1u), float(vertex_id >> 1u));
++  texcoord = uv;
++  position = float4(rect_offset + uv * rect_size, 0.0, 1.0);
++}
+diff --git a/src/ui/shaders/d3d11/guest_output_bilinear.ps.hlsl b/src/ui/shaders/d3d11/guest_output_bilinear.ps.hlsl
+new file mode 100644
+index 0000000..5f1fd1f
+--- /dev/null
++++ b/src/ui/shaders/d3d11/guest_output_bilinear.ps.hlsl
+@@ -0,0 +1,7 @@
++// [svr2011] Direct3D 11 presenter: the guest output, bilinear-filtered.
++Texture2D<float3> guest_output : register(t0);
++SamplerState linear_clamp : register(s0);
++
++float4 main(float2 texcoord : TEXCOORD) : SV_Target {
++  return float4(guest_output.SampleLevel(linear_clamp, texcoord, 0.0), 1.0);
++}
+diff --git a/src/ui/shaders/d3d11/apply_gamma_table.ps.hlsl b/src/ui/shaders/d3d11/apply_gamma_table.ps.hlsl
+new file mode 100644
+index 0000000..8b7c90a
+--- /dev/null
++++ b/src/ui/shaders/d3d11/apply_gamma_table.ps.hlsl
+@@ -0,0 +1,14 @@
++// [svr2011] Direct3D 11 guest output refresh: the guest's 256-entry gamma
++// ramp applied to the app renderer's frame, pixel for pixel (the same as the
++// D3D12 / Vulkan backends' compute pass). The ramp is a 256x1
++// R10G10B10A2_UNORM texture of the DC_LUT_30_COLOR registers: blue in the
++// low bits (.r), red in the high (.b).
++Texture2D<float4> source : register(t0);
++Texture2D<float4> ramp : register(t1);
++
++float4 main(float2 texcoord : TEXCOORD, float4 position : SV_Position) : SV_Target {
++  float3 color = source.Load(int3(int2(position.xy), 0)).rgb;
++  uint3 index = uint3(saturate(color) * 255.0 + 0.5);
++  return float4(ramp.Load(int3(index.r, 0, 0)).b, ramp.Load(int3(index.g, 0, 0)).g,
++                ramp.Load(int3(index.b, 0, 0)).r, 1.0);
++}
+diff --git a/src/ui/shaders/bytecode/d3d11_4_0/immediate_vs.h b/src/ui/shaders/bytecode/d3d11_4_0/immediate_vs.h
+new file mode 100644
+index 0000000..27fd0c8
+--- /dev/null
++++ b/src/ui/shaders/bytecode/d3d11_4_0/immediate_vs.h
+@@ -0,0 +1,136 @@
++#if 0
++//
++// Generated by Microsoft (R) D3D Shader Disassembler
++//
++//
++// Input signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// POSITION                 0   xy          0     NONE   float   xy  
++// TEXCOORD                 0   xy          1     NONE   float   xy  
++// COLOR                    0   xyzw        2     NONE   float   xyzw
++//
++//
++// Output signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// TEXCOORD                 0   xy          0     NONE   float   xy  
++// COLOR                    0   xyzw        1     NONE   float   xyzw
++// SV_Position              0   xyzw        2      POS   float   xyzw
++//
++vs_4_0
++dcl_constantbuffer CB0[1], immediateIndexed
++dcl_input v0.xy
++dcl_input v1.xy
++dcl_input v2.xyzw
++dcl_output o0.xy
++dcl_output o1.xyzw
++dcl_output_siv o2.xyzw, position
++dcl_temps 1
++mov o0.xy, v1.xyxx
++mov o1.xyzw, v2.xyzw
++mul r0.xy, v0.xyxx, cb0[0].xyxx
++mad o2.xy, r0.xyxx, l(2.000000, -2.000000, 0.000000, 0.000000), l(-1.000000, 1.000000, 0.000000, 0.000000)
++mov o2.zw, l(0,0,0,1.000000)
++ret 
++// Approximately 0 instruction slots used
++#endif
++
++const BYTE immediate_vs[] =
++{
++     68,  88,  66,  67, 211, 137, 
++     10, 162,  12, 214, 180,  52, 
++    251, 106, 144, 205, 213,  31, 
++      4,  49,   1,   0,   0,   0, 
++     44,   2,   0,   0,   3,   0, 
++      0,   0,  44,   0,   0,   0, 
++    156,   0,   0,   0,  16,   1, 
++      0,   0,  73,  83,  71,  78, 
++    104,   0,   0,   0,   3,   0, 
++      0,   0,   8,   0,   0,   0, 
++     80,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   0,   0, 
++      0,   0,   3,   3,   0,   0, 
++     89,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   1,   0, 
++      0,   0,   3,   3,   0,   0, 
++     98,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   2,   0, 
++      0,   0,  15,  15,   0,   0, 
++     80,  79,  83,  73,  84,  73, 
++     79,  78,   0,  84,  69,  88, 
++     67,  79,  79,  82,  68,   0, 
++     67,  79,  76,  79,  82,   0, 
++     79,  83,  71,  78, 108,   0, 
++      0,   0,   3,   0,   0,   0, 
++      8,   0,   0,   0,  80,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   3,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,  12,   0,   0,  89,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   3,   0, 
++      0,   0,   1,   0,   0,   0, 
++     15,   0,   0,   0,  95,   0, 
++      0,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0,   3,   0, 
++      0,   0,   2,   0,   0,   0, 
++     15,   0,   0,   0,  84,  69, 
++     88,  67,  79,  79,  82,  68, 
++      0,  67,  79,  76,  79,  82, 
++      0,  83,  86,  95,  80, 111, 
++    115, 105, 116, 105, 111, 110, 
++      0, 171,  83,  72,  68,  82, 
++     20,   1,   0,   0,  64,   0, 
++      1,   0,  69,   0,   0,   0, 
++     89,   0,   0,   4,  70, 142, 
++     32,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0,  95,   0, 
++      0,   3,  50,  16,  16,   0, 
++      0,   0,   0,   0,  95,   0, 
++      0,   3,  50,  16,  16,   0, 
++      1,   0,   0,   0,  95,   0, 
++      0,   3, 242,  16,  16,   0, 
++      2,   0,   0,   0, 101,   0, 
++      0,   3,  50,  32,  16,   0, 
++      0,   0,   0,   0, 101,   0, 
++      0,   3, 242,  32,  16,   0, 
++      1,   0,   0,   0, 103,   0, 
++      0,   4, 242,  32,  16,   0, 
++      2,   0,   0,   0,   1,   0, 
++      0,   0, 104,   0,   0,   2, 
++      1,   0,   0,   0,  54,   0, 
++      0,   5,  50,  32,  16,   0, 
++      0,   0,   0,   0,  70,  16, 
++     16,   0,   1,   0,   0,   0, 
++     54,   0,   0,   5, 242,  32, 
++     16,   0,   1,   0,   0,   0, 
++     70,  30,  16,   0,   2,   0, 
++      0,   0,  56,   0,   0,   8, 
++     50,   0,  16,   0,   0,   0, 
++      0,   0,  70,  16,  16,   0, 
++      0,   0,   0,   0,  70, 128, 
++     32,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,  50,   0, 
++      0,  15,  50,  32,  16,   0, 
++      2,   0,   0,   0,  70,   0, 
++     16,   0,   0,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
++      0,  64,   0,   0,   0, 192, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   2,  64,   0,   0, 
++      0,   0, 128, 191,   0,   0, 
++    128,  63,   0,   0,   0,   0, 
++      0,   0,   0,   0,  54,   0, 
++      0,   8, 194,  32,  16,   0, 
++      2,   0,   0,   0,   2,  64, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0, 128,  63, 
++     62,   0,   0,   1
++};
+diff --git a/src/ui/shaders/bytecode/d3d11_4_0/immediate_ps.h b/src/ui/shaders/bytecode/d3d11_4_0/immediate_ps.h
+new file mode 100644
+index 0000000..aec3fca
+--- /dev/null
++++ b/src/ui/shaders/bytecode/d3d11_4_0/immediate_ps.h
+@@ -0,0 +1,91 @@
++#if 0
++//
++// Generated by Microsoft (R) D3D Shader Disassembler
++//
++//
++// Input signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// TEXCOORD                 0   xy          0     NONE   float   xy  
++// COLOR                    0   xyzw        1     NONE   float   xyzw
++//
++//
++// Output signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// SV_Target                0   xyzw        0   TARGET   float   xyzw
++//
++ps_4_0
++dcl_sampler s0, mode_default
++dcl_resource_texture2d (float,float,float,float) t0
++dcl_input_ps linear v0.xy
++dcl_input_ps linear v1.xyzw
++dcl_output o0.xyzw
++dcl_temps 1
++sample r0.xyzw, v0.xyxx, t0.xyzw, s0
++mul o0.xyzw, r0.xyzw, v1.xyzw
++ret 
++// Approximately 0 instruction slots used
++#endif
++
++const BYTE immediate_ps[] =
++{
++     68,  88,  66,  67, 194,  64, 
++    143, 112, 242, 188, 196,  52, 
++     71, 141, 113,  40, 115,  50, 
++     88, 166,   1,   0,   0,   0, 
++     76,   1,   0,   0,   3,   0, 
++      0,   0,  44,   0,   0,   0, 
++    124,   0,   0,   0, 176,   0, 
++      0,   0,  73,  83,  71,  78, 
++     72,   0,   0,   0,   2,   0, 
++      0,   0,   8,   0,   0,   0, 
++     56,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   0,   0, 
++      0,   0,   3,   3,   0,   0, 
++     65,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   1,   0, 
++      0,   0,  15,  15,   0,   0, 
++     84,  69,  88,  67,  79,  79, 
++     82,  68,   0,  67,  79,  76, 
++     79,  82,   0, 171,  79,  83, 
++     71,  78,  44,   0,   0,   0, 
++      1,   0,   0,   0,   8,   0, 
++      0,   0,  32,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   3,   0,   0,   0, 
++      0,   0,   0,   0,  15,   0, 
++      0,   0,  83,  86,  95,  84, 
++     97, 114, 103, 101, 116,   0, 
++    171, 171,  83,  72,  68,  82, 
++    148,   0,   0,   0,  64,   0, 
++      0,   0,  37,   0,   0,   0, 
++     90,   0,   0,   3,   0,  96, 
++     16,   0,   0,   0,   0,   0, 
++     88,  24,   0,   4,   0, 112, 
++     16,   0,   0,   0,   0,   0, 
++     85,  85,   0,   0,  98,  16, 
++      0,   3,  50,  16,  16,   0, 
++      0,   0,   0,   0,  98,  16, 
++      0,   3, 242,  16,  16,   0, 
++      1,   0,   0,   0, 101,   0, 
++      0,   3, 242,  32,  16,   0, 
++      0,   0,   0,   0, 104,   0, 
++      0,   2,   1,   0,   0,   0, 
++     69,   0,   0,   9, 242,   0, 
++     16,   0,   0,   0,   0,   0, 
++     70,  16,  16,   0,   0,   0, 
++      0,   0,  70, 126,  16,   0, 
++      0,   0,   0,   0,   0,  96, 
++     16,   0,   0,   0,   0,   0, 
++     56,   0,   0,   7, 242,  32, 
++     16,   0,   0,   0,   0,   0, 
++     70,  14,  16,   0,   0,   0, 
++      0,   0,  70,  30,  16,   0, 
++      1,   0,   0,   0,  62,   0, 
++      0,   1
++};
+diff --git a/src/ui/shaders/bytecode/d3d11_4_0/guest_output_rect_vs.h b/src/ui/shaders/bytecode/d3d11_4_0/guest_output_rect_vs.h
+new file mode 100644
+index 0000000..283bb72
+--- /dev/null
++++ b/src/ui/shaders/bytecode/d3d11_4_0/guest_output_rect_vs.h
+@@ -0,0 +1,112 @@
++#if 0
++//
++// Generated by Microsoft (R) D3D Shader Disassembler
++//
++//
++// Input signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// SV_VertexID              0   x           0   VERTID    uint   x   
++//
++//
++// Output signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// TEXCOORD                 0   xy          0     NONE   float   xy  
++// SV_Position              0   xyzw        1      POS   float   xyzw
++//
++vs_4_0
++dcl_constantbuffer CB0[1], immediateIndexed
++dcl_input_sgv v0.x, vertex_id
++dcl_output o0.xy
++dcl_output_siv o1.xyzw, position
++dcl_temps 1
++and r0.x, v0.x, l(1)
++ushr r0.z, v0.x, l(1)
++utof r0.xy, r0.xzxx
++mov o0.xy, r0.xyxx
++mad o1.xy, r0.xyxx, cb0[0].zwzz, cb0[0].xyxx
++mov o1.zw, l(0,0,0,1.000000)
++ret 
++// Approximately 0 instruction slots used
++#endif
++
++const BYTE guest_output_rect_vs[] =
++{
++     68,  88,  66,  67,  62,  25, 
++     64, 246, 237, 127,  60,  71, 
++     60, 168, 187, 166, 107, 145, 
++     24,  52,   1,   0,   0,   0, 
++    188,   1,   0,   0,   3,   0, 
++      0,   0,  44,   0,   0,   0, 
++     96,   0,   0,   0, 184,   0, 
++      0,   0,  73,  83,  71,  78, 
++     44,   0,   0,   0,   1,   0, 
++      0,   0,   8,   0,   0,   0, 
++     32,   0,   0,   0,   0,   0, 
++      0,   0,   6,   0,   0,   0, 
++      1,   0,   0,   0,   0,   0, 
++      0,   0,   1,   1,   0,   0, 
++     83,  86,  95,  86, 101, 114, 
++    116, 101, 120,  73,  68,   0, 
++     79,  83,  71,  78,  80,   0, 
++      0,   0,   2,   0,   0,   0, 
++      8,   0,   0,   0,  56,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   3,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,  12,   0,   0,  65,   0, 
++      0,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0,   3,   0, 
++      0,   0,   1,   0,   0,   0, 
++     15,   0,   0,   0,  84,  69, 
++     88,  67,  79,  79,  82,  68, 
++      0,  83,  86,  95,  80, 111, 
++    115, 105, 116, 105, 111, 110, 
++      0, 171, 171, 171,  83,  72, 
++     68,  82, 252,   0,   0,   0, 
++     64,   0,   1,   0,  63,   0, 
++      0,   0,  89,   0,   0,   4, 
++     70, 142,  32,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0, 
++     96,   0,   0,   4,  18,  16, 
++     16,   0,   0,   0,   0,   0, 
++      6,   0,   0,   0, 101,   0, 
++      0,   3,  50,  32,  16,   0, 
++      0,   0,   0,   0, 103,   0, 
++      0,   4, 242,  32,  16,   0, 
++      1,   0,   0,   0,   1,   0, 
++      0,   0, 104,   0,   0,   2, 
++      1,   0,   0,   0,   1,   0, 
++      0,   7,  18,   0,  16,   0, 
++      0,   0,   0,   0,  10,  16, 
++     16,   0,   0,   0,   0,   0, 
++      1,  64,   0,   0,   1,   0, 
++      0,   0,  85,   0,   0,   7, 
++     66,   0,  16,   0,   0,   0, 
++      0,   0,  10,  16,  16,   0, 
++      0,   0,   0,   0,   1,  64, 
++      0,   0,   1,   0,   0,   0, 
++     86,   0,   0,   5,  50,   0, 
++     16,   0,   0,   0,   0,   0, 
++    134,   0,  16,   0,   0,   0, 
++      0,   0,  54,   0,   0,   5, 
++     50,  32,  16,   0,   0,   0, 
++      0,   0,  70,   0,  16,   0, 
++      0,   0,   0,   0,  50,   0, 
++      0,  11,  50,  32,  16,   0, 
++      1,   0,   0,   0,  70,   0, 
++     16,   0,   0,   0,   0,   0, 
++    230, 138,  32,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++     70, 128,  32,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++     54,   0,   0,   8, 194,  32, 
++     16,   0,   1,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++    128,  63,  62,   0,   0,   1
++};
+diff --git a/src/ui/shaders/bytecode/d3d11_4_0/guest_output_bilinear_ps.h b/src/ui/shaders/bytecode/d3d11_4_0/guest_output_bilinear_ps.h
+new file mode 100644
+index 0000000..804883d
+--- /dev/null
++++ b/src/ui/shaders/bytecode/d3d11_4_0/guest_output_bilinear_ps.h
+@@ -0,0 +1,86 @@
++#if 0
++//
++// Generated by Microsoft (R) D3D Shader Disassembler
++//
++//
++// Input signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// TEXCOORD                 0   xy          0     NONE   float   xy  
++//
++//
++// Output signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// SV_Target                0   xyzw        0   TARGET   float   xyzw
++//
++ps_4_0
++dcl_sampler s0, mode_default
++dcl_resource_texture2d (float,float,float,float) t0
++dcl_input_ps linear v0.xy
++dcl_output o0.xyzw
++dcl_temps 1
++sample_l r0.xyzw, v0.xyxx, t0.xyzw, s0, l(0.000000)
++mov o0.xyz, r0.xyzx
++mov o0.w, l(1.000000)
++ret 
++// Approximately 0 instruction slots used
++#endif
++
++const BYTE guest_output_bilinear_ps[] =
++{
++     68,  88,  66,  67,  27, 135, 
++    158, 238,   0, 222,  43,  28, 
++      8, 100,  93,   6, 107, 149, 
++    118, 204,   1,   0,   0,   0, 
++     56,   1,   0,   0,   3,   0, 
++      0,   0,  44,   0,   0,   0, 
++     96,   0,   0,   0, 148,   0, 
++      0,   0,  73,  83,  71,  78, 
++     44,   0,   0,   0,   1,   0, 
++      0,   0,   8,   0,   0,   0, 
++     32,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   0,   0, 
++      0,   0,   3,   3,   0,   0, 
++     84,  69,  88,  67,  79,  79, 
++     82,  68,   0, 171, 171, 171, 
++     79,  83,  71,  78,  44,   0, 
++      0,   0,   1,   0,   0,   0, 
++      8,   0,   0,   0,  32,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   3,   0, 
++      0,   0,   0,   0,   0,   0, 
++     15,   0,   0,   0,  83,  86, 
++     95,  84,  97, 114, 103, 101, 
++    116,   0, 171, 171,  83,  72, 
++     68,  82, 156,   0,   0,   0, 
++     64,   0,   0,   0,  39,   0, 
++      0,   0,  90,   0,   0,   3, 
++      0,  96,  16,   0,   0,   0, 
++      0,   0,  88,  24,   0,   4, 
++      0, 112,  16,   0,   0,   0, 
++      0,   0,  85,  85,   0,   0, 
++     98,  16,   0,   3,  50,  16, 
++     16,   0,   0,   0,   0,   0, 
++    101,   0,   0,   3, 242,  32, 
++     16,   0,   0,   0,   0,   0, 
++    104,   0,   0,   2,   1,   0, 
++      0,   0,  72,   0,   0,  11, 
++    242,   0,  16,   0,   0,   0, 
++      0,   0,  70,  16,  16,   0, 
++      0,   0,   0,   0,  70, 126, 
++     16,   0,   0,   0,   0,   0, 
++      0,  96,  16,   0,   0,   0, 
++      0,   0,   1,  64,   0,   0, 
++      0,   0,   0,   0,  54,   0, 
++      0,   5, 114,  32,  16,   0, 
++      0,   0,   0,   0,  70,   2, 
++     16,   0,   0,   0,   0,   0, 
++     54,   0,   0,   5, 130,  32, 
++     16,   0,   0,   0,   0,   0, 
++      1,  64,   0,   0,   0,   0, 
++    128,  63,  62,   0,   0,   1
++};
+diff --git a/src/ui/shaders/bytecode/d3d11_4_0/apply_gamma_table_ps.h b/src/ui/shaders/bytecode/d3d11_4_0/apply_gamma_table_ps.h
+new file mode 100644
+index 0000000..3002439
+--- /dev/null
++++ b/src/ui/shaders/bytecode/d3d11_4_0/apply_gamma_table_ps.h
+@@ -0,0 +1,152 @@
++#if 0
++//
++// Generated by Microsoft (R) D3D Shader Disassembler
++//
++//
++// Input signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// TEXCOORD                 0   xy          0     NONE   float       
++// SV_Position              0   xyzw        1      POS   float   xy  
++//
++//
++// Output signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// SV_Target                0   xyzw        0   TARGET   float   xyzw
++//
++ps_4_0
++dcl_resource_texture2d (float,float,float,float) t0
++dcl_resource_texture2d (float,float,float,float) t1
++dcl_input_ps_siv linear noperspective v1.xy, position
++dcl_output o0.xyzw
++dcl_temps 2
++ftoi r0.xy, v1.xyxx
++mov r0.zw, l(0,0,0,0)
++ld r0.xyzw, r0.xyzw, t0.xyzw
++mov_sat r0.xyz, r0.xyzx
++mad r0.xyz, r0.xyzx, l(255.000000, 255.000000, 255.000000, 0.000000), l(0.500000, 0.500000, 0.500000, 0.000000)
++ftou r0.xyz, r0.xyzx
++mov r0.w, l(0)
++ld r1.xyzw, r0.xwww, t1.xyzw
++mov o0.x, r1.z
++ld r1.xyzw, r0.ywww, t1.xyzw
++ld r0.xyzw, r0.zwww, t1.xyzw
++mov o0.z, r0.x
++mov o0.y, r1.y
++mov o0.w, l(1.000000)
++ret 
++// Approximately 0 instruction slots used
++#endif
++
++const BYTE apply_gamma_table_ps[] =
++{
++     68,  88,  66,  67,  23, 235, 
++     39,   2, 111, 200, 150, 206, 
++    177,  52,  58, 234, 218, 137, 
++    232, 116,   1,   0,   0,   0, 
++    124,   2,   0,   0,   3,   0, 
++      0,   0,  44,   0,   0,   0, 
++    132,   0,   0,   0, 184,   0, 
++      0,   0,  73,  83,  71,  78, 
++     80,   0,   0,   0,   2,   0, 
++      0,   0,   8,   0,   0,   0, 
++     56,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   0,   0, 
++      0,   0,   3,   0,   0,   0, 
++     65,   0,   0,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0, 
++      3,   0,   0,   0,   1,   0, 
++      0,   0,  15,   3,   0,   0, 
++     84,  69,  88,  67,  79,  79, 
++     82,  68,   0,  83,  86,  95, 
++     80, 111, 115, 105, 116, 105, 
++    111, 110,   0, 171, 171, 171, 
++     79,  83,  71,  78,  44,   0, 
++      0,   0,   1,   0,   0,   0, 
++      8,   0,   0,   0,  32,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   3,   0, 
++      0,   0,   0,   0,   0,   0, 
++     15,   0,   0,   0,  83,  86, 
++     95,  84,  97, 114, 103, 101, 
++    116,   0, 171, 171,  83,  72, 
++     68,  82, 188,   1,   0,   0, 
++     64,   0,   0,   0, 111,   0, 
++      0,   0,  88,  24,   0,   4, 
++      0, 112,  16,   0,   0,   0, 
++      0,   0,  85,  85,   0,   0, 
++     88,  24,   0,   4,   0, 112, 
++     16,   0,   1,   0,   0,   0, 
++     85,  85,   0,   0, 100,  32, 
++      0,   4,  50,  16,  16,   0, 
++      1,   0,   0,   0,   1,   0, 
++      0,   0, 101,   0,   0,   3, 
++    242,  32,  16,   0,   0,   0, 
++      0,   0, 104,   0,   0,   2, 
++      2,   0,   0,   0,  27,   0, 
++      0,   5,  50,   0,  16,   0, 
++      0,   0,   0,   0,  70,  16, 
++     16,   0,   1,   0,   0,   0, 
++     54,   0,   0,   8, 194,   0, 
++     16,   0,   0,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,  45,   0,   0,   7, 
++    242,   0,  16,   0,   0,   0, 
++      0,   0,  70,  14,  16,   0, 
++      0,   0,   0,   0,  70, 126, 
++     16,   0,   0,   0,   0,   0, 
++     54,  32,   0,   5, 114,   0, 
++     16,   0,   0,   0,   0,   0, 
++     70,   2,  16,   0,   0,   0, 
++      0,   0,  50,   0,   0,  15, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,   2,  64, 
++      0,   0,   0,   0, 127,  67, 
++      0,   0, 127,  67,   0,   0, 
++    127,  67,   0,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
++      0,  63,   0,   0,   0,  63, 
++      0,   0,   0,  63,   0,   0, 
++      0,   0,  28,   0,   0,   5, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,  54,   0, 
++      0,   5, 130,   0,  16,   0, 
++      0,   0,   0,   0,   1,  64, 
++      0,   0,   0,   0,   0,   0, 
++     45,   0,   0,   7, 242,   0, 
++     16,   0,   1,   0,   0,   0, 
++    198,  15,  16,   0,   0,   0, 
++      0,   0,  70, 126,  16,   0, 
++      1,   0,   0,   0,  54,   0, 
++      0,   5,  18,  32,  16,   0, 
++      0,   0,   0,   0,  42,   0, 
++     16,   0,   1,   0,   0,   0, 
++     45,   0,   0,   7, 242,   0, 
++     16,   0,   1,   0,   0,   0, 
++    214,  15,  16,   0,   0,   0, 
++      0,   0,  70, 126,  16,   0, 
++      1,   0,   0,   0,  45,   0, 
++      0,   7, 242,   0,  16,   0, 
++      0,   0,   0,   0, 230,  15, 
++     16,   0,   0,   0,   0,   0, 
++     70, 126,  16,   0,   1,   0, 
++      0,   0,  54,   0,   0,   5, 
++     66,  32,  16,   0,   0,   0, 
++      0,   0,  10,   0,  16,   0, 
++      0,   0,   0,   0,  54,   0, 
++      0,   5,  34,  32,  16,   0, 
++      0,   0,   0,   0,  26,   0, 
++     16,   0,   1,   0,   0,   0, 
++     54,   0,   0,   5, 130,  32, 
++     16,   0,   0,   0,   0,   0, 
++      1,  64,   0,   0,   0,   0, 
++    128,  63,  62,   0,   0,   1
++};

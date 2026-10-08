@@ -22,7 +22,7 @@ struct Frame;
 
 namespace svr2011::native::backend {
 
-enum class Api { kNone, kD3D12, kVulkan };
+enum class Api { kNone, kD3D12, kVulkan, kD3D11 };
 
 class Backend {
  public:
@@ -52,11 +52,16 @@ class Backend {
 
 std::unique_ptr<Backend> CreateD3D12Backend();   // null where D3D12 isn't built
 std::unique_ptr<Backend> CreateVulkanBackend();
+std::unique_ptr<Backend> CreateD3D11Backend();   // null where D3D11 isn't built
 
 // Picks the emulator's API (Vulkan when it runs on Vulkan, else D3D12) and
 // creates the interface and the name of the GPU to draw on.
 std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name);
 Api ActiveApi();
+// Why the backend couldn't make its interface, for the player (empty: no
+// particular reason known).
+std::string FailReason();
+void SetFailReason(std::string reason);
 
 // The converted shaders this backend loads: "<hash>.<vs|ps><variant><extension>".
 plume::RenderShaderFormat ShaderFormat();
