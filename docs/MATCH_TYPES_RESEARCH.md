@@ -558,3 +558,15 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 - The AI has a cell-wall climbing zone (type 10, `sub_8281B040`: x 40.3-55.3).
 - A roof start needs the climb itself (both climb at the bell) or the on-roof state. Not built.
 - Test aids: `SVR2011_TEST_CELL=1` (each second: the first two people's position, +441, +444, motion, +516), `SVR2011_TEST_CELL_ROOF=<y>` (put them at that height at frame 180), `SVR2011_TEST_CELL_START=<y tenths>` (the start table).
+
+## Gauntlet Eliminator (done)
+
+**Menu:** HANDICAP -> GAUNTLET ELIMINATOR and G. ELIMINATOR: EXTREME RULES (after SLOBBER KNOCKER). Switch mod `gauntlet_eliminator`.
+
+**How (`gauntlet_eliminator.cpp`, set-up in `match_types.cpp`):** the gauntlet rule 0x52 for six (its record's people count is a big-endian u16: 0x0600 crashed the set-up), each on his own team. Player 1 and the first opponent are picked on the 1 on 1 select screen; the four entrants are random (kind 3, waiting).
+- Entries: at 1:00, 2:00, 3:00, 4:00 the next waiter's state goes 0 (as the judge brings one in) and the gauntlet's entry task walks him down; sooner when only one is left in the ring. Setting only the entry time (info +40) did nothing for waiters of other teams.
+- Eliminations: before the falls judge, a fall that doesn't decide the match puts the loser out (state 4: he leaves) and takes the fall back. The last fall is the judge's: it ends the match with the pinner as the winner.
+- The AI's opponent-pair update (`sub_8280CFD0`) read past NULL when one was alone in the ring while the next entrant walked down: its own opponent pick found nobody. In this match the update is skipped while no opponent is at ringside (|x|, |z| < 58).
+- EXTREME RULES: 6-man's weapons (chairs, hand weapons; no +56) and DQ off (live +4 1).
+- HUD: "N LEFT    NEXT ENTRANT m:ss".
+- Tested: CPU vs CPU, 330 s with a forced fall every 35 s: four eliminations, the entrants in on time, the judge ended the match (winner 5); the EXTREME RULES one 150 s. Test aids `SVR2011_TEST_MODE=gauntlet_eliminator` / `gauntlet_eliminator_er`, `SVR2011_TEST_GE_BEAT=<s>`, `SVR2011_TEST_GE_LOG=1`.

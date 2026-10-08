@@ -47,6 +47,7 @@ set(SVR2011_SOURCES
     src/match_types.cpp
     src/match_hud.cpp
     src/slobber_knocker.cpp
+    src/gauntlet_eliminator.cpp
     src/three_stages.cpp
     src/mystery_opponent.cpp
     src/backgrounds_page.cpp

@@ -148,6 +148,18 @@ int g_slobber_row = -1;  // its place in the group
 bool g_pending_slobber = false;
 bool g_slobber = false;  // the match set up is a Slobber Knocker
 uint32_t g_slobber_text[2] = {};
+// GAUNTLET ELIMINATOR (gauntlet_eliminator.cpp): HANDICAP rows after SLOBBER
+// KNOCKER - the gauntlet 0x52 for six, each on his own: player 1 and the
+// first opponent picked (the 1 on 1 select screen), four random entrants who
+// come in on a timer; a pin or submission eliminates. Its EXTREME RULES row
+// adds weapons lying about (6-MAN's set: the Extreme Rules option crashed
+// six-person matches) and no disqualifications.
+constexpr uint32_t kGeLabel = 0x0FA0B10C, kGeText = 0x0FA0B10D, kGeErLabel = 0x0FA0B10E, kGeErText = 0x0FA0B10F;
+constexpr int kGePeople = 6;
+int g_ge_row = -1, g_ge_er_row = -1;  // their places in the group
+bool g_pending_ge = false;
+bool g_ge = false;  // the match set up is a Gauntlet Eliminator
+uint32_t g_ge_text[4] = {};
 
 // ELIMINATION: after NORMAL in TRIPLE THREAT (rule 0x0D) and FATAL-4-WAY
 // (0x0E), a copy whose match has the ELIMINATION rule on (as MATCH CREATOR ->
@@ -195,6 +207,7 @@ constexpr PlainMode kPlainModes[] = {{0xA09C, 0x0A, 0x08}, {0xA086, 0x0B, 0x0F}}
 bool WeaponsRule(uint32_t rule) {
   if (rule >= kExtremeFirst && rule <= kExtremeLast) return true;
   if (rule >= kCellFirst && rule <= kCellLast) return true;
+  if (rule == 0x52) return true;  // (GAUNTLET ELIMINATOR: EXTREME RULES)
   for (const PlainMode& m : kPlainModes)
     if (rule == m.normal) return true;
   return false;
@@ -223,7 +236,7 @@ int g_test_rule = -1;
 // Test aid: SVR2011_TEST_MODE=<mode> - ONE ON ONE NORMAL (route match) plays
 // a mode only a runtime row gives: three_stages, elimination_tt,
 // elimination_f4w, weapons, slobber, lumberjack (as if its row was picked).
-enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack };
+enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack, kGauntletElim, kGauntletElimEr };
 TestMode g_test_mode = TestMode::kNone;
 
 // Node ids (+0x1C): the game finds a node by binary search over the table
@@ -273,6 +286,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   const bool mystery = svr2011::MatchTypeOn("mystery_opponent"), weapons = svr2011::MatchTypeOn("weapons_everywhere");
   const bool stages = svr2011::MatchTypeOn("three_stages_of_hell");
   const bool cell_weapons = svr2011::MatchTypeOn("hiac_tables_ladders");
+  const bool gauntlet_elim = svr2011::MatchTypeOn("gauntlet_eliminator");
   const bool more_backstage = svr2011::MatchTypeOn("backstage_more_people");
   const bool free_roam_on = svr2011::MatchTypeOn("free_roaming_backstage");
   for (uint32_t i = 0; i < total; ++i) {
@@ -329,6 +343,25 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       out.insert(out.end(), copy.begin(), copy.end());
       ++added;
       REXLOG_INFO("match types: SLOBBER KNOCKER at group {:02X} row {}", kHandicapGroup, index);
+    }
+    if (gauntlet_elim && Rd32(rec) == kGauntletRow && Rd32(rec + 0x18) == kHandicapGroup) {
+      for (int k = 0; k < 2; ++k) {  // (GAUNTLET ELIMINATOR, its EXTREME RULES one)
+        std::vector<uint8_t> copy(rec, rec + kRec);
+        Wr32(copy.data() + 0x00, k ? kGeErLabel : kGeLabel);
+        Wr32(copy.data() + 0x04, k ? kGeErText : kGeText);
+        Wr32(copy.data() + 0x40, 0);
+        uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
+        const uint32_t flags = Rd32(prev + 0x3C);
+        Wr32(prev + 0x3C, flags & ~2u);
+        Wr32(copy.data() + 0x3C, (Rd32(copy.data() + 0x3C) & ~2u) | (flags & 2u));
+        int index = 0;
+        for (size_t at = kFirst; at < out.size(); at += kRec)
+          if (Rd32(out.data() + at + 0x18) == kHandicapGroup) ++index;
+        (k ? g_ge_er_row : g_ge_row) = index;
+        out.insert(out.end(), copy.begin(), copy.end());
+        ++added;
+      }
+      REXLOG_INFO("match types: GAUNTLET ELIMINATOR at group {:02X} rows {} and {}", kHandicapGroup, g_ge_row, g_ge_er_row);
     }
     if (mystery && Rd32(rec + 0x5C) == 0x00 && Rd32(rec + 0x18) == kFullGroup && submenu) {
       // NORMAL MATCH becomes a submenu (its own node) of NORMAL MATCH and
@@ -640,6 +673,11 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
     // Slobber Knocker: the 2 waiting opponents (people 2-3, kind 3) as manager
     // slots while the select screen runs (it would have them picked); kind 3
     // again as the people are built (sub_828BBEF0 below).
+    if (rule == kGauntlet && g_ge) {  // (six: people 2-5 the entrants, each his own team)
+      rec[0] = 0, rec[1] = uint8_t(kGePeople);  // (a big-endian u16)
+      rec2[34] = uint8_t(kGePeople);
+      for (int i = 2; i < kGePeople; ++i) rec[2 + i * 3] = uint8_t(i), rec[2 + i * 3 + 1] = uint8_t(i), rec[2 + i * 3 + 2] = 2;
+    }
     if (rule == kGauntlet && g_slobber) {
       // (and a third: person 4 - the gauntlet has 4 people, the 5-person one
       // 0x58 shows 5 work)
@@ -667,7 +705,8 @@ bool MatchTypeOn(const char* id) {
     std::error_code ec;
     for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
                           "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
-                          "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders"}) {
+                          "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders",
+                          "gauntlet_eliminator"}) {
       m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
       if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
     }
@@ -692,6 +731,8 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
                                {"weapons", TestMode::kWeapons, int(kExtremeFirst)},
                                {"cell_weapons", TestMode::kWeapons, int(kCellFirst)},
                                {"slobber", TestMode::kSlobber, int(kGauntlet)},
+                               {"gauntlet_eliminator", TestMode::kGauntletElim, int(kGauntlet)},
+                               {"gauntlet_eliminator_er", TestMode::kGauntletElimEr, int(kGauntlet)},
                                {"lumberjack", TestMode::kLumberjack, int(kLumberjack)}};
     for (const Mode& k : kModes)
       if (m == k.name) {
@@ -749,7 +790,10 @@ REX_HOOK_RAW(sub_8243FCC8) {
   g_pending_like = ~0u;
   g_pending_own_row = -1;
   g_pending_slobber = group == kHandicapGroup && g_slobber_row >= 0 && ctx_row == uint32_t(g_slobber_row);
-  if (g_pending_slobber) {  // (the 1 on 1 select screen: player 1 and the first opponent)
+  g_pending_ge = group == kHandicapGroup && ((g_ge_row >= 0 && ctx_row == uint32_t(g_ge_row)) ||
+                                             (g_ge_er_row >= 0 && ctx_row == uint32_t(g_ge_er_row)));
+  const bool ge_er = g_pending_ge && g_ge_er_row >= 0 && ctx_row == uint32_t(g_ge_er_row);
+  if (g_pending_slobber || g_pending_ge) {  // (the 1 on 1 select screen: player 1 and the first opponent)
     g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
     g_pending_like = kLumberjackLike;
     g_pending_select_only = true;
@@ -761,7 +805,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
   g_pending_elimination = false;
   for (const WeaponsRow& w : g_elim_rows)
     if (group == w.group && ctx_row == w.index) g_pending_elimination = true;
-  g_pending_weapons = false;
+  g_pending_weapons = ge_er;  // (GAUNTLET ELIMINATOR: EXTREME RULES)
   for (const WeaponsRow& w : g_weapons_rows)
     if (group == w.group && ctx_row == w.index) g_pending_weapons = true;
   for (int k = 0; k < 8; ++k)
@@ -790,6 +834,14 @@ REX_HOOK_RAW(sub_8243FCC8) {
       case TestMode::kElimTT:
       case TestMode::kElimF4W: g_pending_elimination = true; break;
       case TestMode::kWeapons: g_pending_weapons = true; break;
+      case TestMode::kGauntletElim:
+      case TestMode::kGauntletElimEr:
+        g_pending_ge = true;
+        g_pending_weapons = g_test_mode == TestMode::kGauntletElimEr;
+        g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
+        g_pending_like = kLumberjackLike;
+        g_pending_select_only = true;
+        break;
       case TestMode::kSlobber:
         g_pending_slobber = true;
         g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
@@ -844,6 +896,12 @@ REX_HOOK_RAW(sub_827374A0) {
   }
   g_slobber = g_pending_slobber && rule == kGauntlet && !Rd32(base + kStoryContext);
   g_pending_slobber = false;
+  g_ge = g_pending_ge && rule == kGauntlet && !Rd32(base + kStoryContext);
+  g_pending_ge = false;
+  if (g_ge) {
+    REXLOG_INFO("match types: GAUNTLET ELIMINATOR");
+    svr2011::GauntletEliminatorStart();
+  }
   if (g_slobber) {
     REXLOG_INFO("match types: SLOBBER KNOCKER");
     svr2011::SlobberKnockerStart();
@@ -1040,6 +1098,12 @@ REX_HOOK_RAW(sub_828BBEF0) {
       for (int i = 2; i < kSlobberPeople; ++i) base[rules + kGauntlet * kRuleSize + 2 + i * 3 + 2] = 3;
     FillRandomSlots(base, ctx.r3.u32, kSlobberPeople - 2, 1, 3, "slobber knocker opponents");
     for (uint32_t i = kSlobberPeople; i < 6; ++i) Wr32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8, 51200);
+  }
+  if (g_ge && base[0x82E3DE00] == kGauntlet && ctx.r3.u32) {  // (the 4 entrants: random, each his own team)
+    if (const uint32_t rules = Rd32(base + kRules))
+      for (int i = 2; i < kGePeople; ++i) base[rules + kGauntlet * kRuleSize + 2 + i * 3 + 2] = 3;
+    FillRandomSlots(base, ctx.r3.u32, kGePeople - 2, 2, 3, "gauntlet eliminator entrants");
+    for (uint32_t i = 2; i < uint32_t(kGePeople); ++i) base[ctx.r3.u32 + kSlots + i * kSlotSize + 5] = uint8_t(i);
   }
   svr2011::MysteryOpponentFill(base, ctx.r3.u32);  // (mystery_opponent.h)
   __imp__sub_828BBEF0(ctx, base);
@@ -1590,6 +1654,7 @@ void LumberjackController(uint8_t* base) {
 namespace svr2011 {
 
 bool SlobberKnockerMatch() { return g_slobber; }
+bool GauntletEliminatorMatch() { return g_ge; }
 
 // A lumberjack (a manager, team 3) who hits a wrestler gets the lost byte
 // (+447) 7 - disqualified for interference - and the judge then ends the
@@ -1746,6 +1811,7 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
     }
   }
   if (g_slobber && base[0x82E3DE00] == kGauntlet) SlobberKnockerUpdate(ctx, base);
+  if (g_ge && base[0x82E3DE00] == kGauntlet) svr2011::GauntletEliminatorUpdate(ctx, base);
   if (ThreeStagesMatch()) ThreeStagesUpdate(base);
   if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext) || !MatchTypeOn("lumberjack")) return;
   LumberjackController(base);
@@ -1894,7 +1960,7 @@ void ApplyWeapons(uint8_t* base) {
     REXLOG_WARN("match types: no weapon list for rule {:02X}", rule);
     return;
   }
-  const bool six = rule == kSixManRule, cell = rule >= kCellFirst && rule <= kCellLast;
+  const bool six = rule == kSixManRule || rule == kGauntlet, cell = rule >= kCellFirst && rule <= kCellLast;
   const Placed* list = six ? kPlacedSix : cell ? kPlacedCell : kPlaced;
   const uint32_t n = six ? uint32_t(std::size(kPlacedSix)) : cell ? uint32_t(std::size(kPlacedCell)) : uint32_t(std::size(kPlaced));
   uint32_t& records = six ? g_weapon_records_six : cell ? g_weapon_records_cell : g_weapon_records;
@@ -2115,6 +2181,21 @@ uint32_t MatchTypeString(uint32_t id) {
       std::memcpy(g_memory->TranslateVirtual<char*>(g_elim_text[k]), kText[k], n);
     }
     return g_elim_text[k];
+  }
+  if (id >= kGeLabel && id <= kGeErText && g_memory) {
+    static const char* const kText[] = {
+        "GAUNTLET ELIMINATOR",
+        "Six superstars, each on his own: two start, the other four come in one a minute. A pin or a submission "
+        "eliminates - the last one left wins.",
+        "G. ELIMINATOR: EXTREME RULES",
+        "The Gauntlet Eliminator with weapons lying about and no disqualifications."};
+    const uint32_t k = id - kGeLabel;
+    if (!g_ge_text[k]) {
+      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
+      g_ge_text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_ge_text[k]), kText[k], n);
+    }
+    return g_ge_text[k];
   }
   if ((id == kSlobberLabel || id == kSlobberText) && g_memory) {
     static const char* const kText[] = {
@@ -2370,7 +2451,8 @@ REX_HOOK_RAW(sub_828C48E8) {
   if (extreme_bytes && live) {
     uint8_t* l = base + live;
     l[3] = 0, l[10] = 0, l[27] = 0x80;
-    if (rule != kSixManRule) l[56] = 1;  // (6-MAN: not - see kPlacedSix)
+    if (rule != kSixManRule && rule != kGauntlet) l[56] = 1;  // (6-MAN / the six-person gauntlet: not - see kPlacedSix)
+    if (rule == kGauntlet) l[4] = 1;                            // (GAUNTLET ELIMINATOR: EXTREME RULES - no DQ)
     REXLOG_INFO("match types: WEAPONS EVERYWHERE - rule {:02X} with the Extreme Rules options", rule);
   }
   svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)

@@ -31,6 +31,7 @@ MATCH_TYPES = [
     ("elimination", "Elimination", "TRIPLE THREAT and FATAL-4-WAY: a pin or give up eliminates; the last one left wins."),
     ("mystery_opponent", "Mystery Opponent", "ONE ON ONE -> NORMAL MATCH: the CPU picks your opponent in secret."),
     ("hiac_tables_ladders", "Hell in a Cell: Tables & Ladders", "HELL IN A CELL: tables, ladders and chairs lying inside the cell."),
+    ("gauntlet_eliminator", "Gauntlet Eliminator", "HANDICAP: six superstars, two start, one more each minute; a pin or submission eliminates."),
 ]
 
 

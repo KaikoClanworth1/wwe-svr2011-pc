@@ -28,7 +28,7 @@ $game = Join-Path $port "runs\lim_game"
 $runs = Join-Path $port "runs"
 
 function Shot($p, $png) {
-    $p.Refresh(); $h = $p.MainWindowHandle
+    $p.Refresh(); if ($p.HasExited) { return }; $h = $p.MainWindowHandle
     if ($h -eq [IntPtr]::Zero) { return }
     $r = New-Object WC+RECT; [void][WC]::GetWindowRect($h, [ref]$r)
     $w = $r.R - $r.L; $hh = $r.B - $r.T
