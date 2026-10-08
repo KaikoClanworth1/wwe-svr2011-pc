@@ -38,6 +38,7 @@
 #include <rex/hook.h>
 #include <rex/kernel/xam/apps/xmp_app.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 #include <fmt/format.h>
 #include <rex/ppc.h>
 
@@ -611,7 +612,7 @@ int HostSoundStart(const std::filesystem::path& file, bool loop, float volume) {
     g_pool.push_back(p);
     std::thread([p] {
 #if defined(_WIN32)
-      SetThreadDescription(GetCurrentThread(), L"Host sound");
+      rex::thread::set_current_thread_name("Host sound");
 #endif
       p->Run();
     }).detach();
@@ -664,14 +665,14 @@ void InstallUserMusic(const std::filesystem::path& folder) {
   g_player = new Player();
   std::thread([] {
 #if defined(_WIN32)
-    SetThreadDescription(GetCurrentThread(), L"User music");
+    rex::thread::set_current_thread_name("User music");
 #endif
     g_player->Run();
   }).detach();
   g_clips = new Player(true);
   std::thread([] {
 #if defined(_WIN32)
-    SetThreadDescription(GetCurrentThread(), L"Clips");
+    rex::thread::set_current_thread_name("Clips");
 #endif
     g_clips->Run();
   }).detach();

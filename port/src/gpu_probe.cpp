@@ -6,7 +6,7 @@
 // tables are 16384 descriptors; tier 1 GPUs - GeForce 400 / 500, the first
 // D3D12 Intel ones - hold 128) and Shader Model 6.0 (DXIL). On Vulkan: a 1.1
 // device (SPIR-V 1.3). Anything else draws with Direct3D 11 (feature level
-// 11_0, Shader Model 5.0).
+// 11_0: Shader Model 5.0; 10_0 / 10_1: Shader Model 4.0).
 
 #include "gpu_probe.h"
 

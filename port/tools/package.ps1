@@ -51,8 +51,8 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
     Get-ChildItem (Join-Path (Split-Path $shaders -Parent) "spirv") -Filter "*.spv" -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
         Copy-Item -Destination (Join-Path $stage "native_shaders")
-    # (and the Direct3D 11 backend's DXBC: older GPUs)
-    Get-ChildItem (Join-Path (Split-Path $shaders -Parent) "dxbc") -Filter "*.dxbc" -ErrorAction SilentlyContinue |
+    # (and the Direct3D 11 backend's DXBC: older GPUs; .dxbc4 for feature level 10_x)
+    Get-ChildItem (Join-Path (Split-Path $shaders -Parent) "dxbc") -Filter "*.dxbc*" -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
         Copy-Item -Destination (Join-Path $stage "native_shaders")
 } else {
