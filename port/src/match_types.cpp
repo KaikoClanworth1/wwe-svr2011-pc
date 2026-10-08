@@ -1612,6 +1612,40 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
         for (int k = 0; k < 3; ++k) last_pos[i][k] = RdF(base + o + 288 + k * 4);
     }
   }
+  // (with SVR2011_TEST_ITEM_LOG) the stock under the ring (*0x82E3C06C: +0
+  // count, +8 entries, -1 taken) each time it changes, and how long each
+  // search under the ring (motions 15480 / 15481) lasts.
+  if (static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr; item_log) {
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    if (const uint32_t list = Rd32(base + 0x82E3C06C); list && frames > 0) {
+      const int32_t n = int32_t(Rd32(base + list));
+      const uint32_t entries = Rd32(base + list + 8);
+      std::string s;
+      for (int32_t i = 0; i < n && i < 32 && entries; ++i) {
+        const int32_t e = int32_t(Rd32(base + entries + uint32_t(i) * 4));
+        const uint32_t o = e >= 0 && e < 72 ? Rd32(base + 0x82DE0220 + uint32_t(e) * 4) : 0;
+        s += o ? fmt::format(" {}:m{}{}", e, Rd32(base + o + 80),
+                             RdF(base + o + 288) == 0.f && RdF(base + o + 296) == 0.f ? "" : "(out)")
+               : fmt::format(" {}", e);
+      }
+      static std::string last;
+      if (s != last) {
+        last = s;
+        REXLOG_INFO("item: under the ring ({}):{} frame {}", n, s, frames);
+      }
+    }
+    static uint32_t search_from[6] = {};
+    for (uint32_t c = 0; c < 6; ++c) {
+      const uint32_t p = Rd32(base + kChars + c * 4);
+      const uint32_t m = p ? Rd32(base + p + 212) : 0;
+      const bool searching = m == 15480 || m == 15481;
+      if (searching && !search_from[c]) search_from[c] = frames ? frames : 1;
+      if (!searching && search_from[c]) {
+        REXLOG_INFO("item: person {} searched under the ring {:.1f} s", c, (frames - search_from[c]) / 60.0);
+        search_from[c] = 0;
+      }
+    }
+  }
   if (g_slobber && base[0x82E3DE00] == kGauntlet) SlobberKnockerUpdate(ctx, base);
   if (ThreeStagesMatch()) ThreeStagesUpdate(base);
   if (base[0x82E3DE00] != kLumberjack || Rd32(base + kStoryContext) || !MatchTypeOn("lumberjack")) return;
@@ -1850,12 +1884,24 @@ REX_EXTERN(__imp__sub_82812838);
 REX_HOOK_RAW(sub_82812838) {
   const uint32_t id = ctx.r4.u32;
   if ((id == 140 || id == 141 || id == 260) && NearWeapon(ctx, base, ctx.r3.u32) >= 0) ctx.r4.u64 = 300;
+  // (with SVR2011_TEST_ITEM_LOG: each weapon action made - asked id, made id)
+  static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr;
+  if (item_log && (id == 140 || id == 141 || id == 260 || (id >= 300 && id <= 304))) {
+    const uint32_t ai = ctx.r3.u32, person = ai ? Rd32(base + ai) : 0;
+    REXLOG_INFO("item: person {} action {} -> {} frame {}", person ? Rd32(base + person + 1156) : 99, id, ctx.r4.u32,
+                Rd32(base + 0x82E3CD0C));
+  }
   __imp__sub_82812838(ctx, base);
 }
 
 // ... and its sibling for actions 146-346: 260, the search itself (sub_82828968).
 REX_EXTERN(__imp__sub_828136D0);
 REX_HOOK_RAW(sub_828136D0) {
+  if (static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr; item_log && ctx.r4.u32 == 260) {
+    const uint32_t person = ctx.r3.u32 ? Rd32(base + ctx.r3.u32) : 0;
+    REXLOG_INFO("item: person {} action 260 (second factory) frame {}", person ? Rd32(base + person + 1156) : 99,
+                Rd32(base + 0x82E3CD0C));
+  }
   if (ctx.r4.u32 == 260 && NearWeapon(ctx, base, ctx.r3.u32) >= 0) {
     ctx.r4.u64 = 300;
     sub_82812838(ctx, base);  // (300: the first factory's)
