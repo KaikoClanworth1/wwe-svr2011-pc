@@ -58,7 +58,7 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `style=<text>` | the Mod Maker's style name; its presence makes the name call default to "The Superstar" |
 | `ratings=a,b,c,d,e,f,g` | grapple, submission, speed, strikes, hardcore, charisma, durability (1-99) |
 | `abilities=a,b,...` | up to 8 ability ids: 1 Dirty Pin, 7 Move Thief, 9 Hammer Throw, 11 Resiliency, 12 Durability, 14 Kip-Up, 19 Outside Dives, 20 Springboard Dives, 22 Leverage Pin, 23 Fired Up, 24 Ring Escape |
-| `height=<scale>` | optional: the size against the base superstar's, from the feet, 0.80 - 1.25 with 2 decimals (1.05 = 5% taller; missing = the base's own). The game stretches the skeleton (record +28 = the base's x scale), so grapples follow; about 0.90 - 1.15 plays best |
+| `height=<scale>` | optional: the size against the base superstar's, from the feet, 0.80 - 1.25 with 2 decimals (1.05 = 5% taller; missing = the base's own). The game stretches the skeleton (record +28, 4.12 fixed point, 4096 = 1.0: the base's x scale, kept within 3300 - 4900, so about x0.81 - x1.20 for a 4096 base; at 4139 and up the game counts the wrestler as "big"), so grapples follow; about 0.90 - 1.15 plays best |
 | `call=<0-83>` | the Created Superstar nickname the announcer and commentary use |
 | `announcer=<NAME>` | letters and digits: a name the announcer's sound banks have clips of (e.g. `JEFFHARDY`); wins over `voice=` |
 | `voice=voice.<ext>` | a recording of the name the announcer plays |
@@ -71,7 +71,7 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `moves=moves.txt` | lines `0xOFF=<move id>`: the move at byte offset OFF (0..0x1BF, even) of the profile's move block, over the base's |
 | `moves\pack.txt`, `moves\motions\*` | a move pack carried inside the mod (below) |
 
-Game: `src/superstar_mods.cpp` (50 slots: `Mods\Superstars\slots.txt` keeps
+Game: `src/superstar_mods.cpp` (72 slots: `Mods\Superstars\slots.txt` keeps
 each mod's id), `src/managers.cpp` (the M tile list).
 
 ## type=moves (`Mods\Moves\<id>`)
