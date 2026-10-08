@@ -103,6 +103,7 @@ still being tested.
 ### Arenas and mods
 - **The Mod Maker** (launcher → Mods → Open Mod Maker): make your own **arenas** (a 3D arena editor), **backstage rooms**, **superstars**, **move packs**, **crowd signs**, **media packs** and **match type** switches as `.svrmod` files, saved as projects you can reopen. It also browses the game's files (textures, models, motions, text), plays the game's animations, exports renders and icons, swaps your Created Superstars' pictures, and converts WWE '13 arenas / superstars, SvR 2010 superstars and moves and SvR 2008 backstage areas. A manual is built in.
 - **Made with** column on the Mods tab: each mod says what made it (Mod Maker, the port's tools) - or **non-Mod Maker** for mods made some other way.
+- **Sabu bundled** (from SvR 2008): his model with two attires (including the turban), renders, theme, titantron and his SvR 2008 moves as a move pack, with 2011's own Sabu entrance; installed switched off like the other bundled superstars.
 - **Practice Arena**: the training ring from the start of the game, as a real arena on the DOWNLOADED ARENAS page (empty seats; installed switched off like the other bundled mods).
 - **Three more WWE '13 arenas bundled**: SmackDown 1999, Royal Rumble 1998 and King of the Ring 1998 (installed switched off).
 - **Arena mods**: VS-screen theme pictures of any size can be swapped.
