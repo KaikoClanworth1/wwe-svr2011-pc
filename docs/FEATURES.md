@@ -87,7 +87,7 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
-## New in 2.0.6 (in progress)
+## New in 2.0.6
 
 - **Camel clutch crash fixed** (and stray "teleports"): with Sabu, the Sandman or another mod that adds submissions or taunts, any superstar's camel clutch could stretch both wrestlers into spikes and crash the game - the move-pack merge shifted the game's own submission / taunt motions out of place. New motions now go after the game's own (existing merges rebuild once).
 - **The Sandman bundled** (from SvR 2008): his model and official renders, theme, titantron, a 69-move set with his two 2008 finishers, and his **crowd entrance** - walking through the crowd with a beer can and the Singapore cane, as in SvR 2008 (mods can now add whole entrances: move-pack `pacentry` lines, built into an overlay copy; the game's files are never changed).
