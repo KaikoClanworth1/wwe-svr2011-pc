@@ -1335,10 +1335,10 @@ index 0000000..6887b83
 +};
 diff --git a/plume_d3d11.cpp b/plume_d3d11.cpp
 new file mode 100644
-index 0000000..46aadf0
+index 0000000..ae7405c
 --- /dev/null
 +++ b/plume_d3d11.cpp
-@@ -0,0 +1,1824 @@
+@@ -0,0 +1,1828 @@
 +//
 +// plume
 +//
@@ -2753,7 +2753,11 @@ index 0000000..46aadf0
 +    }
 +
 +    void D3D11CommandQueue::worker() {
-+        SetThreadDescription(GetCurrentThread(), L"plume D3D11 replay");
++        // (looked up: Windows 8.1 has no SetThreadDescription)
++        using SetThreadDescriptionFn = HRESULT(WINAPI *)(HANDLE, PCWSTR);
++        static const auto setThreadDescription = reinterpret_cast<SetThreadDescriptionFn>(
++            reinterpret_cast<void *>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription")));
++        if (setThreadDescription) setThreadDescription(GetCurrentThread(), L"plume D3D11 replay");
 +        for (;;) {
 +            Submission s;
 +            {

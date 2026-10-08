@@ -74,15 +74,16 @@ class D3D11Backend final : public Backend {
     device_name->clear();
     const rex::external_frame::D3D11Device* d = rex::external_frame::GetD3D11Device();
     if (!d) return nullptr;
-    if (d->feature_level < D3D_FEATURE_LEVEL_11_0) {
-      // (The converted shaders are Shader Model 5.0.)
-      REXLOG_ERROR("native renderer: the GPU's Direct3D feature level is {}_{} - 11_0 is needed",
+    if (d->feature_level < D3D_FEATURE_LEVEL_10_0) {
+      REXLOG_ERROR("native renderer: the GPU's Direct3D feature level is {}_{} - 10_0 is needed",
                    (d->feature_level >> 12) & 0xF, (d->feature_level >> 8) & 0xF);
-      SetFailReason(fmt::format("the GPU supports Direct3D feature level {}_{}; the game needs 11_0 (GeForce 400, "
-                                "Radeon HD 5000, Intel HD 2500 / 4000 or newer)",
+      SetFailReason(fmt::format("the GPU supports Direct3D feature level {}_{}; the game needs 10_0 (GeForce 8, "
+                                "Radeon HD 2000, Intel HD Graphics or newer)",
                                 (d->feature_level >> 12) & 0xF, (d->feature_level >> 8) & 0xF));
       return nullptr;
     }
+    // Feature level 10_x: the Shader Model 4.0 shaders (.dxbc4: 16 interpolators).
+    sm4_ = d->feature_level < D3D_FEATURE_LEVEL_11_0;
     REXLOG_INFO("native renderer: Direct3D 11, feature level {}_{}, constant buffer offsets {}{}",
                 (d->feature_level >> 12) & 0xF, (d->feature_level >> 8) & 0xF,
                 d->constant_buffer_offsetting ? "yes" : "no (constants copied per draw)",
@@ -96,7 +97,7 @@ class D3D11Backend final : public Backend {
   }
 
   plume::RenderShaderFormat ShaderFormat() const override { return plume::RenderShaderFormat::DXBC; }
-  const char* ShaderExtension() const override { return ".dxbc"; }
+  const char* ShaderExtension() const override { return sm4_ ? ".dxbc4" : ".dxbc"; }
 
   void PublishFrame(const std::shared_ptr<plume::RenderTexture>& image, uint32_t width, uint32_t height,
                     plume::RenderCommandFence* /*fence*/) override {
@@ -175,6 +176,9 @@ class D3D11Backend final : public Backend {
   }
 
   void StallQueue(plume::RenderCommandQueue*) override {}
+
+ private:
+  bool sm4_ = false;
 };
 
 }  // namespace

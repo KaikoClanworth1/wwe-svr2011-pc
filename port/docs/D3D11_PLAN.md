@@ -69,18 +69,31 @@ Choosing 2x-4x still raises it.
   geometry, depth and 2D are right. NVIDIA is correct at 2x.
   - Ruled out: the mip-0 textures, shadows, the effects scale, the replay
     thread and the write-back.
-  - The cause is not found yet; it could show on some real AMD / Intel
-    drivers. A RenderDoc capture would settle it.
+  - With `SVR2011_NATIVE_STOP_AT_RESOLVE=1` the main target is right at 2x
+    (frame average 0.26), so the black comes from post-processing.
+  - Found and fixed on the way: the backend showed a published frame only
+    once the replay thread had reached it, and each new frame replaced the
+    waiting one. With a GPU slower than the game (WARP at 2x, or replay
+    slowed on purpose) the waiting frame kept moving ahead and nothing new
+    was ever shown: a black or frozen screen. It now keeps the last 8
+    published frames and shows the newest replayed one.
+  - After that fix WARP 2x shows the demo match in screenshots, but most
+    frames are still black (probe) and some have black bands. The debug
+    layer is clean.
+  - `SVR2011_TEST_SLOW_MS` (game loop) and a slowed replay both slow the
+    game too, so the demo is never reached: no reproduction on a real GPU.
+  - It stays open: WARP-only, at 2x, which D3D11 doesn't use by default.
 
 **Merge notes.**
 - The renderer's CompactSet now reuses the last draw's set when the places
   and the table are unchanged. This also affects the Vulkan compact-tables
   (Mali) path: same output, less hashing. The Android / Mali chat should
   check it on the Mali tablet before or after the merge.
-- Phase 2: feature level 10_x (vertex shaders linked per pipeline) and
-  Windows 7 / 8.1.
+- Phase 2: feature level 10_x (a fixed interpolator layout, below) and
+  Windows 8.1. Windows 7 is out with this toolset (below).
 - The shared `runs\shaders_native` must be converted again with this header
-  for `dxbc/` (deploy and package take it from there).
+  for `dxbc/` (deploy and package take it from there). Phase 2 adds `.dxbc4`
+  files there (the same conversion run; deploy and package copy `*.dxbc*`).
 
 ## Where things stand today
 
@@ -245,9 +258,43 @@ pipelines in `pipelines.list`. That is phase 2. Phase 1 needs feature level
   load where there is no d3d12.dll. `d3d12.dll` (and `d3d11.dll`) become
   `/DELAYLOAD`.
 
-## Windows 7 / 8.1 (later, if feasible)
+## Phase 2: feature level 10_x
 
-What blocks it today:
+Shader Model 4.0 (`vs_4_0` / `ps_4_0`) has 16 interpolator registers. The
+converted shaders declare 24 (TEXCOORD0-15, COLOR0-7) and fxc refuses them.
+The game's pixel shaders read at most 10, and all of them together read only
+11: TEXCOORD0-7, COLOR0, COLOR3 and COLOR4. So `convert_shaders.py` writes a
+second DXBC set, `.dxbc4` (`shaders.dxbc4.pak`):
+- Every shader keeps those 11 in that order, so any vertex shader's outputs
+  line up with any pixel shader's inputs: no per-pipeline linking.
+- The other inputs and outputs become plain variables.
+- A pixel shader that reads a dropped one fails the conversion (`sm4: reads
+  ...` in the report); none does today.
+
+The backend loads `.dxbc4` when the device's feature level is below 11_0, and
+refuses only levels below 10_0. Textures are BC1-5 (all fine on 10_x), and the
+texture size limit (8192) comes from the device. `rcp()` (Shader Model 5 only)
+becomes `1.0 / x`.
+
+Tested (2026-10-08): all 467 shaders and the own ones compile to `.dxbc4`.
+The demo match draws correctly on the RTX 4080 forced to 10_1 (debug layer:
+only the expected combined-buffer refusal) and 10_0, both at 60 fps, and on
+WARP at 10_0 (21 fps). Feature level 11 at 2x still runs at 60 fps.
+
+## Windows 7 / 8.1
+
+**Windows 8.1:** the only Windows 10 import was `SetThreadDescription` (the
+music threads and plume's replay thread). It is now looked up at run time.
+`CopyFile2`, `CreateFile2` (Windows 8) and `CreateDXGIFactory2` (8.1) are there.
+
+**Windows 7: not feasible with this toolset.** MSVC 14.51's C++ library
+(`msvcprt.lib`, `filesystem.obj`) imports `CopyFile2` and `CreateFile2`, so
+`svr2011.exe`, `rexruntime.dll` and `rexgpu-xenos.dll` don't load on
+Windows 7. Building with an older toolset (14.29 is installed) would change
+every binary, for every player. The VC++ redistributable's own minimum
+Windows version is a second question.
+
+What blocked it before phase 2:
 - `svr2011.exe` statically imports `d3d12.dll`; the delay-load fixes this.
 - `SetThreadDescription` (Windows 10 1607) is imported statically; it would
   have to be looked up at run time.

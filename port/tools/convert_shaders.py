@@ -17,7 +17,9 @@ vertex shaders, constants read from the frame's upload buffer at offsets in the
 push constants - no buffer addresses or 64-bit integers; see shader_common.h).
 dxbc/ has them as .dxbc (Direct3D 11: Shader Model 5.0 from fxc, -DSVR_D3D11 -
 each fetch slot its own register, see shader_common.h); the HLSL fxc reads
-(older syntax) is in hlsl_d3d11/.
+(older syntax) is in hlsl_d3d11/; .dxbc4 is the same as Shader Model 4.0 for
+feature level 10_x GPUs (only the 11 interpolators the pixel shaders read:
+SM4_INTERPOLATORS).
 The specialization constants are baked in with -DSVR_SPEC_CONSTANTS (see the
 XenosRecomp patch), so the renderer never links shaders at runtime.
 Writes out_dir/report.txt with every failure and its first error.
@@ -88,13 +90,50 @@ def fxc_source(text):
     return text
 
 
-def compile_dxbc(hlsl, dxbc, stage, mask, fixed_dir):
+# Shader Model 4.0 (feature level 10_x GPUs) has 16 interpolator registers;
+# the converted shaders declare 24 (TEXCOORD0-15, COLOR0-7) of which the game's
+# pixel shaders read only these. Every shader keeps them in this order (so a
+# vertex shader's outputs line up with any pixel shader's inputs) and the rest
+# become plain variables.
+SM4_INTERPOLATORS = [f"TEXCOORD{i}" for i in range(8)] + ["COLOR0", "COLOR3", "COLOR4"]
+PARAM_RE = re.compile(r"^\s*(in|out) float4 (\w+) : ([A-Z]+\d+)$")
+
+
+def sm4_source(text):
+    start = text.find("void main(")
+    if start < 0:
+        return text, None
+    end = text.find(")", start)
+    params = text[start + len("void main("):end].split(",")
+    kept, dropped = [], []
+    for p in params:
+        m = PARAM_RE.match(p.strip("\r\n"))
+        if m and m.group(3) not in SM4_INTERPOLATORS and m.group(3).startswith(("TEXCOORD", "COLOR")):
+            dropped.append(m)
+        else:
+            kept.append(p)
+    body = text[end:]
+    for m in dropped:
+        if m.group(1) == "in" and re.search(r"\b%s\b" % m.group(2), body):
+            return text, f"sm4: reads {m.group(3)}"
+    statics = "".join(f"static float4 {m.group(2)} = 0;\n" for m in dropped)
+    # (rcp() is Shader Model 5 only)
+    return ("#define rcp(X) (1.0 / (X))\n" + text[:start] + statics + "void main(" + ",".join(kept) + body,
+            None)
+
+
+def compile_dxbc(hlsl, dxbc, stage, mask, fixed_dir, model="5_0"):
     fixed = os.path.join(fixed_dir, os.path.basename(hlsl))
     with open(hlsl, encoding="utf-8", errors="ignore") as f:
         text = fxc_source(f.read())
+    if model == "4_0":
+        fixed = fixed[:-5] + ".sm4.hlsl"
+        text, err = sm4_source(text)
+        if err:
+            return err
     with open(fixed, "w", encoding="utf-8") as f:
         f.write(text)
-    r = subprocess.run([FXC, "/nologo", "/T", f"{stage}_5_0", "/E", "main", "/O3", "/DSVR_D3D11",
+    r = subprocess.run([FXC, "/nologo", "/T", f"{stage}_{model}", "/E", "main", "/O3", "/DSVR_D3D11",
                         f"/DSVR_SPEC_CONSTANTS={mask}", "/I", os.path.dirname(os.path.abspath(hlsl)),
                         "/Fo", dxbc, fixed],
                        capture_output=True, text=True, timeout=300)
@@ -135,6 +174,11 @@ def convert(xsc, out):
                                os.path.join(out, "hlsl_d3d11"))
             if err:
                 return name, f"dxbc s{mask}", err
+            # (.dxbc4: Shader Model 4.0, for feature level 10_x GPUs)
+            err = compile_dxbc(hlsl, os.path.join(out, "dxbc", f"{name}{suffix}.dxbc4"), stage, mask,
+                               os.path.join(out, "hlsl_d3d11"), "4_0")
+            if err:
+                return name, f"dxbc4 s{mask}", err
     slots = {(name, dim): int(slot) for name, dim, slot in TEXTURE_DEFINE_RE.findall(src)}
     used = sorted({(slots[(name, dim)], DIMENSIONS[dim]) for name, dim in TEXTURE_USE_RE.findall(body)
                    if (name, dim) in slots})
@@ -172,10 +216,11 @@ def main():
             if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
                 results.append((name, "own spirv", err))
         if FXC:
-            err = compile_dxbc(hlsl, os.path.join(out, "dxbc", name + ".dxbc"), name.split(".")[-1], 0,
-                               os.path.join(out, "hlsl_d3d11"))
-            if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
-                results.append((name, "own dxbc", err))
+            for ext, model in ((".dxbc", "5_0"), (".dxbc4", "4_0")):
+                err = compile_dxbc(hlsl, os.path.join(out, "dxbc", name + ext), name.split(".")[-1], 0,
+                                   os.path.join(out, "hlsl_d3d11"), model)
+                if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
+                    results.append((name, "own " + ext[1:], err))
     failed = [r for r in results if r[1]]
     with open(os.path.join(out, "report.txt"), "w") as rep:
         rep.write(f"{len(files)} shaders, {len(files) - len(failed)} converted to DXIL, SPIR-V and DXBC\n")
