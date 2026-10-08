@@ -45,7 +45,9 @@
 #include <rex/system/xmemory.h>
 
 #include "frame_rate.h"
+#include "online_files.h"
 #include "online_net.h"
+#include "online_overlay.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
@@ -74,7 +76,8 @@ constexpr uint32_t kMagic = 0x53565250;          // "SVRP"
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
-  kFileRequest = 7, kFilePart = 8  // (files peers fetch from each other: P2PFetch)
+  kFileRequest = 7, kFilePart = 8,  // (files peers fetch from each other: P2PFetch)
+  kModsRefused = 9                  // (a searcher's mods differ: its set, for the host's notice)
 };
 
 rex::memory::Memory* g_memory = nullptr;
@@ -517,6 +520,57 @@ bool ReadSession(Reader& r, Session& s) {
   return r.ok && s.id && s.public_slots + s.private_slots <= 32;
 }
 
+// The gameplay mods (online_files.h): a host's search reply carries its set
+// after its sessions ("MODS", the hash, the set's text; older games stop
+// reading before it). A searcher plays only with the same set: other hosts'
+// sessions are left out, and both players are told what differs.
+constexpr uint32_t kModsTag = 0x4D4F4453;  // "MODS"
+constexpr size_t kModsMax = 6000;           // (the set's text, at most)
+
+void WriteMods(Writer& w) {
+  const std::string& set = svr2011::GameplayModSet();
+  const size_t n = std::min(set.size(), kModsMax);
+  w.u32(kModsTag), w.u64(svr2011::GameplayModSetHash()), w.u16(uint16_t(n));
+  w.bytes(reinterpret_cast<const uint8_t*>(set.data()), n);
+  const std::string& v = svr2011::PortVersion();  // (then the version)
+  w.u8(uint8_t(std::min<size_t>(v.size(), 32)));
+  w.bytes(reinterpret_cast<const uint8_t*>(v.data()), std::min<size_t>(v.size(), 32));
+}
+
+// Why this game can't play the other side's (its version, then its mods;
+// "" when they match). A game from before the check has neither: an older version.
+std::string Mismatch(Reader& r) {
+  if (!r.ok || r.at + 14 > r.n || Be32(r.p + r.at) != kModsTag) return svr2011::VersionDifference("");
+  r.u32(), r.u64();
+  const uint16_t n = r.u16();
+  if (!r.need(n)) return svr2011::VersionDifference("");
+  std::string set(reinterpret_cast<const char*>(r.p + r.at), n);
+  r.at += n;
+  std::string version;
+  if (r.need(1)) {
+    const uint8_t vn = r.u8();
+    if (r.need(vn)) version.assign(reinterpret_cast<const char*>(r.p + r.at), vn), r.at += vn;
+  }
+  if (std::string why = svr2011::VersionDifference(version); !why.empty()) return why;
+  return svr2011::ModSetDifference(svr2011::GameplayModSet(), set);
+}
+
+void TellModsRefused(const uint8_t* host_xnaddr);  // (below: tells a host its sessions were left out)
+
+// The notice for a refused match (not the same one again within 20 s).
+void ModsNotice(const std::string& text) {
+  static std::mutex m;
+  static std::string last;
+  static auto last_at = std::chrono::steady_clock::time_point{};
+  {
+    std::lock_guard lock(m);
+    const auto now = std::chrono::steady_clock::now();
+    if (text == last && now - last_at < std::chrono::seconds(20)) return;
+    last = text, last_at = now;
+  }
+  svr2011::OnlineNotice(text);
+}
+
 // -- the discovery protocol ------------------------------------------------------------
 
 std::mutex g_wait_mutex;
@@ -719,7 +773,13 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       if (mine.empty() && via.relayed) break;  // (a search through the relay reaches every game)
       w.u16(uint16_t(mine.size()));
       for (const auto& s : mine) WriteSession(w, s);
+      WriteMods(w);
       Send(back, w.b);
+      break;
+    }
+    case kModsRefused: {  // a searcher left this game's sessions out: its version or mods differ
+      const std::string why = Mismatch(r);
+      if (!why.empty()) ModsNotice("A player couldn't join. " + why);
       break;
     }
     case kQosRequest: {
@@ -935,11 +995,21 @@ std::vector<Session> Search() {
   for (const auto& reply : replies) {
     Reader r{reply.data(), reply.size()};
     const uint16_t count = r.u16();
+    std::vector<Session> got;
     for (uint16_t i = 0; i < count && r.ok && i < 25; ++i) {
       Session s;
       if (!ReadSession(r, s)) break;
-      found[s.id] = std::move(s);
+      got.push_back(std::move(s));
     }
+    if (got.empty()) continue;
+    // (the host's version and mods: others - its sessions left out, both told)
+    if (const std::string why = Mismatch(r); !why.empty()) {
+      REXLOG_INFO("p2p: {} session(s) left out - {}", got.size(), why);
+      ModsNotice(why);
+      TellModsRefused(got.front().host.data());
+      continue;
+    }
+    for (auto& s : got) found[s.id] = std::move(s);
   }
   std::vector<Session> sessions;
   std::lock_guard lock(g_mutex);
@@ -960,6 +1030,19 @@ void Hello(const uint8_t* host_xnaddr) {
   }
   const uint32_t nonce = NewNonce() | 1;
   for (int i = 0; i < 3; ++i) Send(path, Header(kHello, nonce));
+}
+
+// Tells a host its sessions were left out (the mods differ): this game's set.
+void TellModsRefused(const uint8_t* host_xnaddr) {
+  Path path;
+  {
+    std::lock_guard lock(g_mutex);
+    path = PathOf(MacOf(host_xnaddr), Learn(host_xnaddr));
+  }
+  Writer w;
+  w.b = Header(kModsRefused, NewNonce());
+  WriteMods(w);
+  Send(path, w.b);
 }
 
 // -- XNet ------------------------------------------------------------------------------
@@ -1357,16 +1440,32 @@ bool P2PReachHost(const uint8_t* info) {
   }, std::chrono::milliseconds(2500), 1);
   bool found = false;
   const uint64_t id = Be64(info);
+  bool refused = false;
   for (const auto& reply : replies) {
     Reader r{reply.data(), reply.size()};
     const uint16_t count = r.u16();
+    std::vector<Session> got;
     for (uint16_t i = 0; i < count && r.ok && i < 25; ++i) {
       Session s;
       if (!ReadSession(r, s)) break;
-      std::lock_guard lock(g_mutex);
+      got.push_back(std::move(s));
+    }
+    // (an invite too: only with the same mods)
+    if (const std::string why = Mismatch(r); !why.empty()) {
+      ModsNotice(why);
+      if (!got.empty()) TellModsRefused(got.front().host.data());
+      refused = true;
+      continue;
+    }
+    std::lock_guard lock(g_mutex);
+    for (auto& s : got) {
       found |= s.id == id;
       g_found[s.id] = std::move(s);
     }
+  }
+  if (refused && !found) {
+    REXLOG_INFO("p2p: invite: the host's mods differ - not joining");
+    return false;
   }
   REXLOG_INFO("p2p: invite: host {} {}", Ip(path.ip), found ? "has the session" : replies.empty() ? "didn't answer" : "no longer has the session");
   return found;

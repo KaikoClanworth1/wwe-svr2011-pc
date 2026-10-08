@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 struct ImFont;
 
@@ -53,5 +54,10 @@ bool OnlineOverlayHoldsInput();
 // The game's pad 1 buttons as it reads them (frame_rate.cpp's XInputGetState
 // hook, on the game's thread): BACK + RB opens the overlay.
 void OnlineOverlayPad(uint16_t buttons);
+
+// A notice for the player (any thread): shown for 10 s at the top of the
+// screen (as an invite's), and on the overlay (e.g. a match refused because
+// the mods differ).
+void OnlineNotice(const std::string& text);
 
 }  // namespace svr2011

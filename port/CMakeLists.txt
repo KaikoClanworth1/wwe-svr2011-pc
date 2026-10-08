@@ -31,6 +31,7 @@ set(SVR2011_SOURCES
     src/discord_presence.cpp
     src/online.cpp
     src/online_net.cpp
+    src/online_files.cpp
     src/online_cas.cpp
     src/online_overlay.cpp
     src/leaderboards.cpp

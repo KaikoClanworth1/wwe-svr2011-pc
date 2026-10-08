@@ -183,6 +183,8 @@ void Say(const std::string& m) {
   g_message_at = Clock::now();
 }
 
+std::string g_notice;  // (OnlineNotice: the next toast; under g_mutex)
+
 bool SignedIn() {
   return rex::cvar::Query<bool>("online_enabled") && !rex::cvar::Query<std::string>("online_token").empty();
 }
@@ -368,9 +370,15 @@ void OnlineOverlay::Close() {
 
 void OnlineOverlay::Toast(ImGuiIO& io) {
   State s;
+  std::string notice;
   {
     std::lock_guard lock(g_mutex);
     s.invites = g_state.invites;
+    notice.swap(g_notice);
+  }
+  if (!notice.empty()) {
+    toast_ = notice;
+    toast_until_ = Clock::now() + std::chrono::seconds(10);
   }
   for (const Invite& i : s.invites) {
     if (!seen_invites_.insert(i.from + i.session).second) continue;
@@ -776,6 +784,12 @@ void ToggleOnlineOverlay() { g_toggle = true; }
 bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load(); }
 
 void OnlineOverlayPad(uint16_t buttons) { g_guest_pad = buttons; }
+void OnlineNotice(const std::string& text) {
+  REXLOG_WARN("online: {}", text);
+  Say(text);
+  std::lock_guard lock(g_mutex);
+  g_notice = text;
+}
 
 }  // namespace svr2011
 
@@ -790,6 +804,7 @@ REX_HOOK_RAW(sub_82904DB0) {
   }
   ctx.r3.u64 = 0;  // ERROR_SUCCESS
 }
+
 
 // XInviteGetAcceptedInfo(user, XINVITE_INFO*) (the game's; it asks XLIVEBASE
 // 0x58023): an invite accepted on the overlay - the inviter, this player, the

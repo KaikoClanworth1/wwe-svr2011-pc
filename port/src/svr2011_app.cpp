@@ -72,6 +72,7 @@
 #include "entrance_media.h"
 #include "online_cas.h"
 #include "match_hud.h"
+#include "online_files.h"
 #include "online_overlay.h"
 #include "leaderboards.h"
 #include "p2p.h"
@@ -176,6 +177,8 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
   g_saves = (Env("SVR2011_USER_DATA").empty() ? exe_dir : g_user_data) / "Saves";
   paths.cache_root = exe_dir / "UserData" / "cache";
   svr2011::InstallCrashReporter(exe_dir / "UserData" / "crashes");
+  // Online: where the game files checked against the launcher's list are (online_files.h; the check starts with online).
+  svr2011::SetGameFilesPaths(paths.game_data_root, g_user_data);
 
   // Tests: SVR2011_CONFIG=<file> keeps settings changes away from the player's.
   if (std::string config = Env("SVR2011_CONFIG"); !config.empty()) {

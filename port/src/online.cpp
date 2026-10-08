@@ -29,6 +29,7 @@
 
 #include "caw_logos.h"
 #include "entrance_media.h"
+#include "online_files.h"
 #include "online_net.h"
 #include "paint_pages.h"
 
@@ -145,6 +146,11 @@ void PrepareOnlineSettings(const std::filesystem::path& config, const std::files
 
 namespace {
 uint32_t g_empty_string = 0;  // guest "" (removed labels)
+// guest: why online is off (online_files.h: modified game files, an older
+// version, still checking) - filled when the game asks for the text
+constexpr uint32_t kOffTextSize = 256;
+uint32_t g_online_off_text = 0;
+rex::memory::Memory* g_online_memory = nullptr;
 
 // -- The Superstars' extra logos (Saves\.logos) and the server ----------------
 
@@ -331,6 +337,18 @@ uint32_t OnlineString(uint32_t id) {
     case 0xB0B2:  // Invite Xbox LIVE Party
     case 0xB15D:  // Invite Xbox LIVE Party Member
       return g_empty_string;
+    // The trial period messages: what entering ONLINE shows while it is off
+    // for the game files (the Online Axxess gate below) - why, instead.
+    case 50866:
+    case 50867: {
+      const std::string why = GameFilesOnlineMessage();
+      if (why.empty() || !g_online_off_text || !g_online_memory) return 0;
+      char* out = g_online_memory->TranslateVirtual<char*>(g_online_off_text);
+      const size_t n = std::min<size_t>(why.size(), kOffTextSize - 1);
+      std::memcpy(out, why.data(), n);
+      out[n] = 0;
+      return g_online_off_text;
+    }
     default:
       return 0;
   }
@@ -339,8 +357,11 @@ uint32_t OnlineString(uint32_t id) {
 void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& saves) {
   g_empty_string = memory->SystemHeapAlloc(4);
   if (g_empty_string) std::memset(memory->TranslateVirtual<char*>(g_empty_string), 0, 4);
+  g_online_memory = memory;
+  g_online_off_text = memory->SystemHeapAlloc(kOffTextSize);
   if (!rex::cvar::Query<bool>("online_enabled")) return;
   g_saves = saves;
+  svr2011::StartGameFilesCheck();  // (online_files.h: the game files and the newest version)
   net::StartRelay();
   SetMissingLogoHandler(OnMissingLogo);
   SetPaintDownloadCheck(OnPaintDownload);
@@ -438,9 +459,18 @@ REX_HOOK_RAW(sub_8247E330) {
 // that can't be had: "Information related to your trial period couldn't be
 // retrieved"), the ONLINE menu's greyed items, the shop.
 REX_EXTERN(__imp__sub_828C19D8);
+// Online is off while the game files aren't clean (online_files.h: modified,
+// or still being checked at start): id 5 then answers no - entering ONLINE
+// shows the trial period message, whose text says why (OnlineString).
 REX_HOOK_RAW(sub_828C19D8) {
   if (ctx.r3.u32 == 5) {
-    ctx.r3.u64 = 1;
+    // (online off in the settings: as before - the files aren't checked then)
+    const std::string why =
+        rex::cvar::Query<bool>("online_enabled") ? svr2011::GameFilesOnlineMessage() : std::string();
+    ctx.r3.u64 = why.empty() ? 1 : 0;
+    static std::string told;
+    if (!why.empty() && why != told) REXLOG_WARN("online: off - {}", why);
+    told = why;
     return;
   }
   __imp__sub_828C19D8(ctx, base);
