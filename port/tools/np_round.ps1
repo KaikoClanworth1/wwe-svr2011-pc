@@ -4,7 +4,8 @@
 #   np_round.ps1 -Name np4 [-Delay "75,40,1"] [-Seconds 60]
 # -Delay: SVR2011_TEST_NET_DELAY for both games (ms[,jitter[,loss%]]); "" none.
 # -V1: the old tunnel packets only (no repeats): the "before" of a comparison.
-param([string]$Name = "np", [string]$Delay = "", [int]$Seconds = 60, [switch]$V1)
+param([string]$Name = "np", [string]$Delay = "", [int]$Seconds = 60, [switch]$V1,
+      [string]$HostConfig = "test_config_ent_down.toml", [string]$JoinConfig = "test_config_ent_up_p2.toml")
 $env:SVR2011_TEST_NET_V1 = if ($V1) { "1" } else { "" }
 $s = Join-Path $PSScriptRoot "np_session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
@@ -24,14 +25,14 @@ function Wait-Log([string]$log, [string]$pattern, [int]$after, [int]$timeout) {
 function Count([string]$log, [string]$pattern) { @(Select-String -Path (Join-Path $runs "$log.log") -Pattern $pattern -ErrorAction SilentlyContinue).Count }
 
 # host: ONLINE -> MATCH (it loads slowly) -> PLAYER MATCH -> CREATE SESSION, entrance off, CONTINUE
-& $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config "test_config_ent_down.toml" | Out-Null
+& $s start -Name "$Name`_host" -UserData (Join-Path $runs "test_userdata_ent_down") -Config $HostConfig | Out-Null
 In "" "title" "menu ONLINE" "wait 15000" "press A 200" "wait 40000" "press DOWN 200" "wait 1500" "press A 200" "wait 12000" `
      "press DOWN 200" "wait 1200" "press DOWN 200" "wait 1200" "press A 200" "wait 12000" `
      "press DOWN 200" "wait 900" "press DOWN 200" "wait 900" "press DOWN 200" "wait 900" "press RIGHT 200" "wait 1200" `
      "press DOWN 200" "wait 900" "press DOWN 200" "wait 900" "press A 200"
 if (-not (Wait-Log "$Name`_host" "session .* hosted \(flags 42F" 0 300)) { "host: no session"; & $s shot "$Name`_host_fail"; return }
 # joiner: ONLINE -> MATCH -> PLAYER MATCH -> QUICK MATCH -> YES
-& $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config "test_config_ent_up_p2.toml" | Out-Null
+& $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config $JoinConfig | Out-Null
 In "2" "title" "menu ONLINE" "wait 15000" "press A 200" "wait 40000" "press DOWN 200" "wait 1500" "press A 200" "wait 12000" `
      "press A 200" "wait 15000" "press A 200"
 if (-not (Wait-Log "$Name`_host" "join remote" 0 300)) { "joiner: didn't join"; & $s shot -Slot 2 "$Name`_join_fail"; return }
