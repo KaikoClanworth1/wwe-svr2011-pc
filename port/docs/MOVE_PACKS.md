@@ -114,6 +114,13 @@ old exported move pack hides a mod's fixed motions that way.
      name, under `PacOverlay/evt` etc.; `movepacks 8`).
    - Unchanged entries are streamed from the originals. Changed ones are
      rebuilt and compressed for real (BPE).
+   - New YMBs motions (submissions, taunts) go AFTER the bank's stock entries
+     (before its end mark), never between them (`movepacks 9`): the game keeps
+     YMBs motions by their place in the bank, so one inserted in key order
+     shifted the stock motions after it. Sabu's ported camel clutch (5962)
+     ahead of Camel Clutch 2 (21450, every superstar's) made that move read
+     another motion's data: stretched bodies, then a crash. YMKs banks are
+     looked up by key and keep the sorted insert.
    - `stamp.txt` records the packs and the game files. The merge runs again
      only when one of them changes; it takes about 3 s.
    - With no packs the overlay files are deleted.

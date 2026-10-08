@@ -73,7 +73,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 8";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines)
+constexpr const char* kFormat = "movepacks 9";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones)
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -350,8 +350,13 @@ bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
     const uint32_t k = Key(m->id, m->x, m->y);
     if (present.count(k) || m->hdr.size() != 20) continue;
     if (m->id >= ents.back().id) return false;  // (above the bank's sentinel)
-    size_t pos = 0;
-    while (pos < keys.size() && keys[pos] <= k) ++pos;
+    // Appended after the stock entries (before the end mark), never between
+    // them: the game keeps YMBs motions by their place in the bank, so one put
+    // in front shifted every stock motion after it - any superstar's Camel
+    // Clutch 2 (21450) then read another motion's data and crashed once
+    // Sabu's ported camel clutch (5962) went in ahead of it.
+    size_t pos = keys.size();
+    while (pos > 0 && ents[pos - 1].id == ents.back().id) --pos;
     keys.insert(keys.begin() + long(pos), k);
     ents.insert(ents.begin() + long(pos), E{m->y, m->x, m->id, -1, m->frames, rt, m->hdr.data(), m->data.data(), m->data.size()});
     present.insert(k);
