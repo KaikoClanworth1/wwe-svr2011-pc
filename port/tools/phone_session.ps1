@@ -46,7 +46,7 @@ switch ($Action) {
         $music = if ($env:SVR2011_PHONE_MUSIC) { @("--es", "SVR2011_MUSIC", "'$run/$env:SVR2011_PHONE_MUSIC'") } else { @() }
         # (test aids set on the PC go along: a route at start, the match a test asks for - src/test_match.cpp)
         $aids = @()
-        foreach ($k in "SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE") {
+        foreach ($k in "SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_FPS_PROBE") {
             $v = [Environment]::GetEnvironmentVariable($k)
             if ($v) { $aids += @("--es", $k, "'$v'") }
         }

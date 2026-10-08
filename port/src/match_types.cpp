@@ -163,6 +163,15 @@ constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
 // after WEAPONS EVERYWHERE (its match: the mode's normal one, kModes), and a
 // row in 6-MAN and HANDICAP.
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
+// HELL IN A CELL: TABLES & LADDERS - each HELL IN A CELL row (one on one,
+// two on two, triple threat, fatal-4-way: 0x31-0x34) becomes a submenu of
+// HELL IN A CELL and TABLES & LADDERS: the cell with tables, ladders and
+// chairs lying inside it (WEAPONS EVERYWHERE's way, kPlacedCell). Not the
+// 6-man cell (0x35): the Extreme Rules option that loads the table and ladder
+// models crashed 6-man matches.
+constexpr uint32_t kCellWeaponsLabel = 0x0FA0B10A, kCellWeaponsText = 0x0FA0B10B;  // (B108/B109: mystery_opponent.h)
+constexpr uint32_t kCellFirst = 0x31, kCellLast = 0x34;
+uint32_t g_cell_text[2] = {};
 std::vector<WeaponsRow> g_stages_rows;
 bool g_pending_stages = false;
 
@@ -185,6 +194,7 @@ constexpr PlainMode kPlainModes[] = {{0xA09C, 0x0A, 0x08}, {0xA086, 0x0B, 0x0F}}
 // A WEAPONS EVERYWHERE match's rule: Extreme Rules, or 6-MAN's / HANDICAP's normal one.
 bool WeaponsRule(uint32_t rule) {
   if (rule >= kExtremeFirst && rule <= kExtremeLast) return true;
+  if (rule >= kCellFirst && rule <= kCellLast) return true;
   for (const PlainMode& m : kPlainModes)
     if (rule == m.normal) return true;
   return false;
@@ -262,6 +272,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   const bool elimination = svr2011::MatchTypeOn("elimination"), slobber = svr2011::MatchTypeOn("slobber_knocker");
   const bool mystery = svr2011::MatchTypeOn("mystery_opponent"), weapons = svr2011::MatchTypeOn("weapons_everywhere");
   const bool stages = svr2011::MatchTypeOn("three_stages_of_hell");
+  const bool cell_weapons = svr2011::MatchTypeOn("hiac_tables_ladders");
   const bool more_backstage = svr2011::MatchTypeOn("backstage_more_people");
   const bool free_roam_on = svr2011::MatchTypeOn("free_roaming_backstage");
   for (uint32_t i = 0; i < total; ++i) {
@@ -351,6 +362,40 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       REXLOG_INFO("match types: NORMAL MATCH submenu with MYSTERY OPPONENT, group {:02X}", group);
       node += 2;
       ++group;
+    }
+    if (const uint32_t rule = Rd32(rec + 0x5C); cell_weapons && submenu && rule >= kCellFirst && rule <= kCellLast) {
+      // HELL IN A CELL becomes a submenu (a new node in its place) of HELL IN
+      // A CELL and TABLES & LADDERS (a new group).
+      out.resize(out.size() - kRec);
+      std::vector<uint8_t> row(submenu, submenu + kRec);
+      Wr32(row.data() + 0x00, Rd32(rec + 0x00));
+      Wr32(row.data() + 0x04, Rd32(rec + 0x04));  // (description)
+      Wr32(row.data() + 0x18, Rd32(rec + 0x18));
+      Wr32(row.data() + 0x1C, Rd32(rec + 0x1C));  // (its node: the cell row's own)
+      Wr32(row.data() + 0x38, Rd32(rec + 0x38));
+      Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
+      Wr32(row.data() + 0x40, Rd32(rec + 0x40));
+      out.insert(out.end(), row.begin(), row.end());
+      for (uint32_t k = 0; k < 2; ++k) {  // (HELL IN A CELL, TABLES & LADDERS)
+        std::vector<uint8_t> leaf(rec, rec + kRec);
+        Wr32(leaf.data() + 0x18, group);
+        Wr32(leaf.data() + 0x1C, node + k);
+        Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
+        Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);  // (depth +0x16: one down)
+        Wr32(leaf.data() + 0x40, 0);
+        Wr32(leaf.data() + 0x3C, k == 1 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
+        if (k == 1) {
+          Wr32(leaf.data() + 0x00, kCellWeaponsLabel);
+          Wr32(leaf.data() + 0x04, kCellWeaponsText);
+          g_weapons_rows.push_back({group, k});
+        }
+        tail.insert(tail.end(), leaf.begin(), leaf.end());
+        ++added;
+      }
+      REXLOG_INFO("match types: HELL IN A CELL (rule {:02X}) submenu with TABLES & LADDERS, group {:02X}", rule, group);
+      node += 2;
+      ++group;
+      continue;
     }
     const ExtremeMode* mode = nullptr;
     for (const ExtremeMode& m : kExtremeModes)
@@ -622,7 +667,7 @@ bool MatchTypeOn(const char* id) {
     std::error_code ec;
     for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
                           "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
-                          "three_stages_of_hell", "elimination", "mystery_opponent"}) {
+                          "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders"}) {
       m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
       if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
     }
@@ -645,6 +690,7 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
                                {"elimination_tt", TestMode::kElimTT, int(kTripleThreat)},
                                {"elimination_f4w", TestMode::kElimF4W, int(kFatal4Way)},
                                {"weapons", TestMode::kWeapons, int(kExtremeFirst)},
+                               {"cell_weapons", TestMode::kWeapons, int(kCellFirst)},
                                {"slobber", TestMode::kSlobber, int(kGauntlet)},
                                {"lumberjack", TestMode::kLumberjack, int(kLumberjack)}};
     for (const Mode& k : kModes)
@@ -1301,6 +1347,25 @@ REX_HOOK_RAW(sub_822AD738) {
   const uint32_t placer = ctx.r3.u32;
   svr2011::SetMatchLoading(false);  // (its loading screen is up)
   LogMatch(ctx, base, ctx.r4.u32);
+  // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL_START=<y tenths> -
+  // in a cell match people 0 and 1 start at that height (x -150 / +150, z 0).
+  if (static const char* cy = std::getenv("SVR2011_TEST_CELL_START");
+      cy && placer && ctx.r4.u32 >= 0x31 && ctx.r4.u32 <= 0x35) {
+    uint8_t* entry = base + Rd32(base + placer + 4) + ctx.r4.u32 * 88 + 4;
+    uint8_t saved[24];
+    std::memcpy(saved, entry, 24);
+    const int16_t y = int16_t(std::atoi(cy));
+    for (int i = 0; i < 2; ++i) {
+      uint8_t* p = entry + i * 12;
+      const int16_t v[4] = {int16_t(i ? 150 : -150), y, 0, int16_t(i ? 2700 : 900)};
+      for (int k = 0; k < 4; ++k) p[4 + k * 2] = uint8_t(uint16_t(v[k]) >> 8), p[5 + k * 2] = uint8_t(v[k]);
+    }
+    REXLOG_INFO("match types: cell test - the two start at height {} (tenths); were {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", y,
+                saved[4], saved[5], saved[6], saved[7], saved[8], saved[9], saved[10], saved[11]);
+    __imp__sub_822AD738(ctx, base);
+    std::memcpy(entry, saved, 24);
+    return;
+  }
   if (ctx.r4.u32 != kLumberjack || !placer || Rd32(base + kStoryContext)) {
     __imp__sub_822AD738(ctx, base);
     return;
@@ -1546,6 +1611,35 @@ void LumberjackBeforeJudge(uint8_t* base) {
 void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kChars = 0x82E3CC50;
   MatchHudTick(base);  // (match_hud.h: the HUD shows while the match's clock runs)
+  // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a
+  // match the first two people's position, area bytes (+441, +444) and motion;
+  // SVR2011_TEST_CELL_ROOF=<y> - at match frame 180 both are put at that
+  // height (x -15 / +15, z 0), once.
+  if (static const bool cell_log = std::getenv("SVR2011_TEST_CELL") != nullptr; cell_log) {
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    static uint32_t last = 0;
+    static bool moved = false;
+    if (frames < last) moved = false;
+    if (static const char* roof = std::getenv("SVR2011_TEST_CELL_ROOF"); roof && !moved && frames >= 180) {
+      moved = true;
+      const float y = float(std::atof(roof));
+      for (uint32_t i = 0; i < 2; ++i)
+        if (const uint32_t c = Rd32(base + kChars + i * 4)) {
+          WrF(base + c + 288, i ? 15.0f : -15.0f), WrF(base + c + 292, y), WrF(base + c + 296, 0.0f);
+          REXLOG_INFO("match types: cell test - person {} put at height {}", i, y);
+        }
+    }
+    if (frames / 60 != last / 60 || frames < last) {
+      std::string s;
+      for (uint32_t i = 0; i < 2; ++i)
+        if (const uint32_t c = Rd32(base + kChars + i * 4))
+          s += fmt::format(" {}:({:.1f},{:.1f},{:.1f}) a{} b{} m{} f{:X}", i, RdF(base + c + 288), RdF(base + c + 292),
+                           RdF(base + c + 296), base[c + 441], base[c + 444], Rd32(base + c + 212) & 0x7FFF,
+                           Rd32(base + c + 516));
+      REXLOG_INFO("match types: cell test frame {} rule {:02X}{}", frames, base[0x82E3DE00], s);
+    }
+    last = frames;
+  }
   // Research aid: SVR2011_TEST_ITEM_DUMP=<file> - every 30 updates of a match,
   // the object table (0x82DE0220, 72 slots: people and weapons) appended:
   // u32 match frames, then per slot u32 object and its first 0xC00 bytes.
@@ -1734,8 +1828,19 @@ constexpr Placed kPlacedSix[] = {
     {4, 1, -40.f, 0.f, 55.f, 30.f},
     {4, 1, 45.f, 0.f, -45.f, 60.f},
 };
+// HELL IN A CELL: inside its walls (about +-55; the ring +-30, its apron to
+// about 34): tables and ladders on the floor around the ring, chairs.
+constexpr Placed kPlacedCell[] = {
+    {4, 0, 10.f, -12.f, 12.f, 30.f},      // chairs in the ring
+    {4, 0, -12.f, -12.f, -8.f, 200.f},
+    {5, 1, 0.f, 0.f, 42.f, 0.f},          // tables
+    {5, 1, -42.f, 0.f, -12.f, 90.f},
+    {11, 1, 40.f, 0.f, 10.f, 90.f},       // ladders
+    {11, 1, -10.f, 0.f, -40.f, 0.f},
+    {4, 1, 40.f, 0.f, -38.f, 60.f},       // a chair on the floor
+};
 constexpr uint32_t kSixManRule = 0x08;  // (6-MAN's WEAPONS EVERYWHERE rule)
-uint32_t g_weapon_records = 0, g_weapon_records_six = 0;  // guest: our records
+uint32_t g_weapon_records = 0, g_weapon_records_six = 0, g_weapon_records_cell = 0;  // guest: our records
 struct Swapped {
   uint32_t entry = 0, count = 0, records = 0;  // the game's, while ours are in
   uint32_t head = 0, head_rule = 0;            // Extreme Rules' head lent to a rule without a list
@@ -1789,10 +1894,10 @@ void ApplyWeapons(uint8_t* base) {
     REXLOG_WARN("match types: no weapon list for rule {:02X}", rule);
     return;
   }
-  const bool six = rule == kSixManRule;
-  const Placed* list = six ? kPlacedSix : kPlaced;
-  const uint32_t n = six ? uint32_t(std::size(kPlacedSix)) : uint32_t(std::size(kPlaced));
-  uint32_t& records = six ? g_weapon_records_six : g_weapon_records;
+  const bool six = rule == kSixManRule, cell = rule >= kCellFirst && rule <= kCellLast;
+  const Placed* list = six ? kPlacedSix : cell ? kPlacedCell : kPlaced;
+  const uint32_t n = six ? uint32_t(std::size(kPlacedSix)) : cell ? uint32_t(std::size(kPlacedCell)) : uint32_t(std::size(kPlaced));
+  uint32_t& records = six ? g_weapon_records_six : cell ? g_weapon_records_cell : g_weapon_records;
   if (!records) {
     records = g_memory->SystemHeapAlloc(n * 28);
     if (!records) return;
@@ -1974,6 +2079,18 @@ namespace svr2011 {
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
   if (const uint32_t t = MysteryOpponentString(id, g_memory)) return t;
+  if ((id == kCellWeaponsLabel || id == kCellWeaponsText) && g_memory) {
+    static const char* const kText[] = {
+        "TABLES & LADDERS",
+        "Hell in a Cell with tables, ladders and chairs lying inside the cell - no disqualifications."};
+    const uint32_t k = id - kCellWeaponsLabel;
+    if (!g_cell_text[k]) {
+      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
+      g_cell_text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_cell_text[k]), kText[k], n);
+    }
+    return g_cell_text[k];
+  }
   if ((id == kStagesLabel || id == kStagesText) && g_memory) {
     static const char* const kText[] = {
         "THREE STAGES OF HELL",

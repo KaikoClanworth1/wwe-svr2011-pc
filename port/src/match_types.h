@@ -23,7 +23,7 @@ void InstallMatchTypes(rex::memory::Memory* memory);
 // once, at the first ask). Ids: falls_count_anywhere, championship_scramble,
 // royal_rumble_15_25, lumberjack, free_roaming_backstage,
 // backstage_more_people, weapons_everywhere, slobber_knocker,
-// three_stages_of_hell, elimination, mystery_opponent.
+// three_stages_of_hell, elimination, mystery_opponent, hiac_tables_ladders.
 bool MatchTypeOn(const char* id);
 
 // Each world update (frame_rate.cpp): the Lumberjack match's lumberjacks

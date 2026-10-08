@@ -37,6 +37,7 @@ const Builtin kBuiltins[] = {
     {"three_stages_of_hell", "Three Stages of Hell", "ONE ON ONE -> EXTREME RULES: a normal fall, then Falls Count Anywhere, then Last Man Standing."},
     {"elimination", "Elimination", "TRIPLE THREAT and FATAL-4-WAY: a pin or give up eliminates; the last one left wins."},
     {"mystery_opponent", "Mystery Opponent", "ONE ON ONE -> NORMAL MATCH: the CPU picks your opponent in secret."},
+    {"hiac_tables_ladders", "Hell in a Cell: Tables & Ladders", "HELL IN A CELL: tables, ladders and chairs lying inside the cell."},
 };
 
 // ---- the game's rule and option records

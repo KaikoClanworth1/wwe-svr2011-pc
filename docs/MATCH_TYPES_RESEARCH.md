@@ -538,3 +538,23 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 - **Not tested:** fatal-4-way IRONMAN stuck once (already allowed by the game).
 
 **Test aids:** `SVR2011_TEST_MC="<saved byte>=<value>,..."`, `SVR2011_TEST_MC_OLD=1` (the game's own tables).
+
+## Hell in a Cell: Tables & Ladders (done)
+
+**Menu:** each HELL IN A CELL row (ONE ON ONE 0x31, TWO ON TWO 0x32, TRIPLE THREAT 0x33, FATAL-4-WAY 0x34) becomes a submenu: HELL IN A CELL, then TABLES & LADDERS. Not the 6-man cell (0x35): the Extreme Rules option (+56) that loads the table and ladder models crashed 6-man matches. Switch mod `hiac_tables_ladders`.
+
+**How:** the WEAPONS EVERYWHERE machinery (`match_types.cpp`): the rule's placed-weapon list is swapped for `kPlacedCell` while the weapons are made and placed, and the live rules get the Extreme Rules bytes (+3 0, +10 0, +27 0x80, +56 1).
+- The cell's walls are at about ±55 (the AI's wall zone runs 40.3-55.3). Weapons at 44 from the middle ended up against the wall and the CPUs couldn't pick them up (8 tries, nothing in hand); at 40 they can.
+- Tested: 1-on-1 and triple threat, CPU vs CPU, 150-180 s each. The weapons are made, the CPUs go for the ladders and use them (a weapon in hand 48-60 s of a minute), no crash.
+- Test aid: `SVR2011_TEST_MODE=cell_weapons` (ONE ON ONE NORMAL plays it); with `SVR2011_TEST_RULE=33` the triple threat one.
+
+## Hell in a Cell roof (research, 2026-10-08)
+
+- The game has roof fighting: help texts CLIMB CELL WALL, STOP CLIMBING CELL, CLIMB DOWN FROM CEILING, SHOVE OPPONENT OFF CEILING, BREAK CELL CEILING (grapples on the two breakable middle sections), CELL SIGNATURE / FINISHER; commentary "THROWN FROM THE TOP OF THE CELL", "RIGHT THROUGH THE CELL".
+- The cell is live option +20 (118 functions read it through `sub_825740C8`). `sub_828B4758` (rule 0x31-0x35) has one caller.
+- The roof is a level reached through the climb, not ground at a height:
+  - a person's height (+292) written in a match is put back within a second;
+  - the start table (`sub_822AD738`, y in tenths) at -900: the game puts the person on the floor under the spot (the ring).
+- The AI has a cell-wall climbing zone (type 10, `sub_8281B040`: x 40.3-55.3).
+- A roof start needs the climb itself (both climb at the bell) or the on-roof state. Not built.
+- Test aids: `SVR2011_TEST_CELL=1` (each second: the first two people's position, +441, +444, motion, +516), `SVR2011_TEST_CELL_ROOF=<y>` (put them at that height at frame 180), `SVR2011_TEST_CELL_START=<y tenths>` (the start table).
