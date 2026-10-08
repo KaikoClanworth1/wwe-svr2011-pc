@@ -219,7 +219,7 @@
 <ol class="steps">
   <li>Press <b>Superstar</b> on the rail.</li>
   <li><b>Name</b>: type the superstar's name (up to 31 letters). A <b>short name</b> goes on the match screens if the name is long.</li>
-  <li><b>Fighting style</b>: pick one. It decides the move-set, the entrance motions and the starting attributes (from one of the game's superstars underneath). Move the attribute sliders if you like.</li>
+  <li><b>Fighting style</b>: pick one. It decides the move-set, the entrance motions and the starting attributes (from one of the game's superstars underneath). Move the attribute sliders if you like. <b>Height (scale)</b> makes the superstar taller or shorter than the base (1.05 = 5% taller; the preview shows it) - for converted models that come out the wrong size.</li>
   <li><b>Model (ch.pac)</b>: press the button and pick <code>pac\ch\ch139.pac</code> from the game folder (John Cena's model). The preview shows it standing in its idle stance - drag to turn it. A model that doesn't load shows why under the preview.</li>
   <li>Optional: <b>Theme song</b> (mp3, m4a, wav, flac, wma, ogg), <b>Entrance movie</b> (press <b>From a video...</b> next to it to make the 320 x 320 Bink from any video or picture), <b>Attires 2-4</b> (another model pac's first attire each), <b>Crowd signs</b> the fans hold, a <b>Name recording</b> for the ring announcer, and the <b>Select picture</b> (a PNG with a transparent background looks best - the render, the bust and the face icon are made from it).</li>
   <li>Optional, under <b>More</b>: the entrance (any superstar's), an announcer name the game has clips of, the abilities, a moves list and a move pack.</li>
@@ -244,7 +244,7 @@
     <rect x="520" y="20" width="440" height="210" rx="10" fill="#19422b" stroke="#2f9e5a"/>
     <text x="740" y="46" text-anchor="middle" font-weight="700" font-size="15">In the game</text>
     <g fill="#e6e6ea">
-      <text x="540" y="76">Character select → M tile → the list (up to 50 mods)</text>
+      <text x="540" y="76">Character select → M tile → the list (up to 72 mods)</text>
       <text x="540" y="98">Entrance: the style's motions and pyro, your theme and video</text>
       <text x="540" y="120">Match: the model, the style's moves (+ your moves list)</text>
       <text x="540" y="142">Select panel: the 3D model; other screens: your picture</text>
@@ -421,7 +421,7 @@
   <tr><td>Arena</td><td><code>type=arena</code>: arena.pac, banner.dds, load.dds, vs\*.dds</td><td>Mods\Arenas\&lt;id&gt;</td><td>arena select, pages after the game's</td></tr>
   <tr><td>3D editor</td><td>the arena / room being edited</td><td>-</td><td>-</td></tr>
   <tr><td>Backstage</td><td><code>type=backstage</code>: arena.pac (bg78), own-area keys, gimmick.pac</td><td>Mods\Backstage\&lt;id&gt;</td><td>that room's brawls, or its own row</td></tr>
-  <tr><td>Superstar</td><td><code>type=superstar</code>: ch.pac, theme, movie, renders, signs, attires, moves</td><td>Mods\Superstars\&lt;id&gt;</td><td>the M tile (up to 50)</td></tr>
+  <tr><td>Superstar</td><td><code>type=superstar</code>: ch.pac, theme, movie, renders, signs, attires, moves</td><td>Mods\Superstars\&lt;id&gt;</td><td>the M tile (up to 72)</td></tr>
   <tr><td>Moves</td><td><code>type=moves</code>: pack.txt + motions\</td><td>Mods\Moves\&lt;id&gt;</td><td>CREATE A MOVE-SET</td></tr>
   <tr><td>Crowd signs</td><td><code>type=signs</code>: NN_name.dds</td><td>Mods\Signs\&lt;id&gt;</td><td>the crowd, every match</td></tr>
   <tr><td>Media</td><td><code>type=media</code>: videos, themes, renders, screens, sounds</td><td>Mods\Media\&lt;id&gt;</td><td>entrances, menus, arena screens</td></tr>
@@ -470,7 +470,7 @@ made_with=Mod Maker 2.0.5
   <tr><td>"ONE ON ONE is full: give the row a submenu"</td><td>That menu list shows at most 14 rows; a custom match type there needs a submenu.</td></tr>
   <tr><td>"Needs Python 3 / numpy and Pillow / ffmpeg"</td><td>The converter tabs on Other games need them (see Setting up). Recheck after installing.</td></tr>
   <tr><td>The arena loads as an empty hall or crashes</td><td>Make sure the mod says which arena it plays in place of (base) and that no model is over the size ceiling; the Size budget panel and the conversion report show the heavy ones.</td></tr>
-  <tr><td>A superstar mod doesn't show up</td><td>50 is the limit; check the launcher's Mods tab that it is on; a mod needs <code>ch.pac</code> and a name.</td></tr>
+  <tr><td>A superstar mod doesn't show up</td><td>72 is the limit; check the launcher's Mods tab that it is on; a mod needs <code>ch.pac</code> and a name.</td></tr>
   <tr><td>Theme too loud</td><td>Make it about -24 LUFS (the game's own are about 7 dB under full level).</td></tr>
 </table>
 </section>
