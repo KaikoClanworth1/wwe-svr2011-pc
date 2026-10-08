@@ -1,5 +1,10 @@
 # Match type mods (type=matchtype) - format
 
+> **Status (2.0.5):** the switch mods (kind 1) ship and work. **Custom match
+> types (kind 2) are planned, not in 2.0.5:** the Mod Maker's Match types page
+> already writes this format, but the game doesn't read it yet, so a custom
+> match type mod installs and does nothing until a later release.
+
 A match type mod is a folder `Mods\MatchTypes\<id>\` holding a `manifest.txt`
 (and nothing else). Two kinds:
 
