@@ -89,6 +89,7 @@ still being tested.
 
 ## New in 2.0.6 (in progress)
 
+- **Direct3D 11** for PCs whose graphics card or driver can't run Direct3D 12 or Vulkan (roughly 2010-era DX11 cards and newer): the graphics API AUTO now tries Direct3D 12, then Vulkan, then Direct3D 11; or pick DIRECT3D 11 in GRAPHICS → DISPLAY → GRAPHICS API or the launcher's Settings. It renders at 1x by default there (2x-4x can still be chosen). Older DX10 cards and Windows 7 / 8.1 come later.
 - **72 superstar mod slots** (was 50), using more of the game's blank superstar records.
 - **Superstar height** (`height=` in a mod, 0.80-1.25; the Mod Maker's Superstar page has a slider with a live preview) - for converted superstars that came out the wrong size.
 - **SvR 2010 superstars' corner moves**: moves on an opponent sitting in the corner (e.g. Umaga's Running Knee) no longer lift them above the turnbuckle; 17 bundled superstars updated.
