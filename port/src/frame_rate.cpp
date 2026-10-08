@@ -665,6 +665,15 @@ REX_HOOK_RAW(sub_8216ED38) {
     return;
   }
   if (!old_way) g_job_owed = JobOwed::kNone;
+  svr2011::ThreeStagesCinematic();  // (the world held: a finisher's / signature's cinematic - match_types.h)
+  // Research aid: SVR2011_TEST_PAUSE_LOG=1 - when the world starts being
+  // held (a move's cinematic, a match's end), with the match frame.
+  if (static const bool pause_log = std::getenv("SVR2011_TEST_PAUSE_LOG") != nullptr; pause_log) {
+    static uint32_t last_frame = 0;
+    const uint32_t f = g_job_frame.load();
+    if (f > last_frame + 2) REXLOG_INFO("frame rate: test - the world is held from match frame {}", Rd32(base + kMatchFrames));
+    last_frame = f;
+  }
   __imp__sub_8216ED38(ctx, base);
 }
 

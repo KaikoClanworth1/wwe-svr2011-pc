@@ -175,6 +175,15 @@ constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
 // after WEAPONS EVERYWHERE (its match: the mode's normal one, kModes), and a
 // row in 6-MAN and HANDICAP.
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
+// Its submenu: one row per set of stages (three_stages.cpp kSets), labels
+// kStagesSetLabel + 2 * set (+1 its description). Sets 3 (TABLE / TLC /
+// LADDER) and 4 (HELL IN A CELL) only where the mode has those matches: one
+// on one, two on two, triple threat, fatal-4-way.
+constexpr uint32_t kStagesSetLabel = 0x0FA0B114;
+struct StagesRow {
+  uint32_t group, index;
+  int set;
+};
 // A structure's match with weapons inside (WEAPONS EVERYWHERE's way, its own
 // placed list): its row becomes a submenu of the match and the weapons one.
 // - HELL IN A CELL: TABLES & LADDERS (one on one, two on two, triple threat,
@@ -208,8 +217,18 @@ const StructureWeapons* StructureOf(uint32_t rule) {
     if (rule >= s.first && rule <= s.last) return &s;
   return nullptr;
 }
-std::vector<WeaponsRow> g_stages_rows;
+std::vector<StagesRow> g_stages_rows;
 bool g_pending_stages = false;
+int g_pending_set = 0;
+uint32_t g_stages_set_text[2 * svr2011::kThreeStagesSets] = {};
+// A set's match in a mode (its normal one): the TLC or cell one for sets 3, 4.
+uint32_t SetRule(uint32_t normal, int set) {
+  constexpr uint32_t kNormals[] = {0x00, 0x03, 0x0D, 0x0E}, kTlc[] = {0x48, 0x49, 0x4A, 0x4B}, kCell[] = {0x31, 0x32, 0x33, 0x34};
+  for (int i = 0; i < 4; ++i)
+    if (normal == kNormals[i]) return set == 3 ? kTlc[i] : set == 4 ? kCell[i] : normal;
+  return normal;
+}
+int SetsFor(uint32_t normal) { return SetRule(normal, 3) != normal ? svr2011::kThreeStagesSets : 3; }
 
 // The modes with an EXTREME RULES row (group, its normal match: THREE STAGES
 // OF HELL's first fall). Their EXTREME RULES becomes a submenu of EXTREME
@@ -238,7 +257,7 @@ bool WeaponsRule(uint32_t rule) {
 }
 bool StagesRule(uint32_t rule) {
   for (const ExtremeMode& m : kExtremeModes)
-    if (rule == m.normal) return true;
+    if (rule == m.normal || rule == SetRule(m.normal, 3) || rule == SetRule(m.normal, 4)) return true;
   for (const PlainMode& m : kPlainModes)
     if (rule == m.normal) return true;
   return false;
@@ -314,6 +333,46 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   const bool gauntlet_elim = svr2011::MatchTypeOn("gauntlet_eliminator");
   const bool more_backstage = svr2011::MatchTypeOn("backstage_more_people");
   const bool free_roam_on = svr2011::MatchTypeOn("free_roaming_backstage");
+  // THREE STAGES OF HELL's sets: rows of a submenu (its node `parent`, depth
+  // word +0x14 `depth`), in group `in_group`, nodes from `first_node`, each
+  // a copy of a match row of the mode (`leaf_like`: the table's first row of
+  // that rule) playing the set's match.
+  struct StageSets {
+    uint32_t parent = 0, depth = 0, normal = 0;
+  } stage_sets;
+  const auto AddStageSets = [&](const StageSets& s, uint32_t in_group, uint32_t first_node) {
+    const uint8_t* like = nullptr;
+    for (uint32_t j = 0; j < total && !like; ++j) {
+      const uint8_t* r = table + kFirst + j * kRec;
+      if (Rd32(r + 0x54) == kScreenMatch && Rd32(r + 0x5C) == s.normal) like = r;
+    }
+    if (!like) return;
+    // (set 3, TABLE / TLC / LADDER, not offered yet: the prize can't hang again
+    // for a third stage, and the TLC match has no referee for a pin stage -
+    // test aid SVR2011_TEST_3S_TLC=1 offers it)
+    static const bool tlc = std::getenv("SVR2011_TEST_3S_TLC") != nullptr;
+    std::vector<int> offered;
+    for (int k = 0; k < SetsFor(s.normal); ++k)
+      if (k != 3 || tlc) offered.push_back(k);
+    const int sets = int(offered.size());
+    for (int row = 0; row < sets; ++row) {
+      const int k = offered[size_t(row)];
+      std::vector<uint8_t> leaf(like, like + kRec);
+      Wr32(leaf.data() + 0x00, kStagesSetLabel + uint32_t(2 * k));
+      Wr32(leaf.data() + 0x04, kStagesSetLabel + uint32_t(2 * k + 1));
+      Wr32(leaf.data() + 0x14, s.depth);
+      Wr32(leaf.data() + 0x18, in_group);
+      Wr32(leaf.data() + 0x1C, first_node + uint32_t(row));
+      Wr32(leaf.data() + 0x38, s.parent);
+      Wr32(leaf.data() + 0x40, 0);
+      Wr32(leaf.data() + 0x3C, row + 1 == sets ? Rd32(like + 0x3C) | 2u : Rd32(like + 0x3C) & ~2u);
+      Wr32(leaf.data() + 0x5C, SetRule(s.normal, k));
+      g_stages_rows.push_back({in_group, uint32_t(row), k});
+      tail.insert(tail.end(), leaf.begin(), leaf.end());
+      ++added;
+    }
+    REXLOG_INFO("match types: THREE STAGES OF HELL sets (rule {:02X}): {} rows, group {:02X}", s.normal, sets, in_group);
+  };
   for (uint32_t i = 0; i < total; ++i) {
     const uint8_t* rec = table + kFirst + i * kRec;
     out.insert(out.end(), rec, rec + kRec);
@@ -489,18 +548,27 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
           Wr32(leaf.data() + 0x00, kWeaponsLabel);
           Wr32(leaf.data() + 0x04, kWeaponsText);
           g_weapons_rows.push_back({group, k});
-        } else if (kinds[k] == 2) {
-          Wr32(leaf.data() + 0x00, kStagesLabel);
-          Wr32(leaf.data() + 0x04, kStagesText);
-          Wr32(leaf.data() + 0x5C, mode->normal);  // (the mode's normal match; three_stages.cpp changes its rules)
-          g_stages_rows.push_back({group, k});
+        } else if (kinds[k] == 2) {  // (a submenu of the sets: a new node, its rows a new group)
+          std::vector<uint8_t> row(submenu, submenu + kRec);
+          Wr32(row.data() + 0x00, kStagesLabel);
+          Wr32(row.data() + 0x04, kStagesText);
+          Wr32(row.data() + 0x14, Rd32(submenu + 0x14) + 0x100);  // (one down from EXTREME RULES)
+          Wr32(row.data() + 0x18, group);
+          Wr32(row.data() + 0x1C, node + k);
+          Wr32(row.data() + 0x38, Rd32(rec + 0x1C));
+          Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(leaf.data() + 0x3C) & 2u));
+          Wr32(row.data() + 0x40, 0);
+          leaf = row;
+          stage_sets = {node + k, Rd32(rec + 0x14) + 0x200, mode->normal};
         }
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
+      if (stage_sets.parent) AddStageSets(stage_sets, group + 1, node + uint32_t(kinds.size()));
       REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
       node += uint32_t(kinds.size());
       ++group;
+      if (stage_sets.parent) node += uint32_t(SetsFor(stage_sets.normal)), ++group, stage_sets = {};
     } else if (const uint32_t rule = Rd32(rec + 0x5C);
                weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !mode) {
       const uint32_t in_group = Rd32(rec + 0x18);
@@ -529,6 +597,19 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         Wr32(copy.data() + 0x04, k == 0 ? kWeaponsText : kStagesText);
         Wr32(copy.data() + 0x5C, m.normal);
         Wr32(copy.data() + 0x40, 0);
+        if (k == 1 && submenu) {  // (THREE STAGES OF HELL: a submenu of the sets - a new node, its rows a new group)
+          std::vector<uint8_t> row(submenu, submenu + kRec);
+          Wr32(row.data() + 0x00, kStagesLabel);
+          Wr32(row.data() + 0x04, kStagesText);
+          Wr32(row.data() + 0x18, m.group);
+          Wr32(row.data() + 0x1C, node);
+          Wr32(row.data() + 0x38, Rd32(rec + 0x38));
+          Wr32(row.data() + 0x40, 0);
+          copy = row;
+          AddStageSets({node, Rd32(rec + 0x14) + 0x100, m.normal}, group, node + 1);
+          node += 1 + uint32_t(SetsFor(m.normal));
+          ++group;
+        }
         uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
         const uint32_t flags = Rd32(prev + 0x3C);
         Wr32(prev + 0x3C, flags & ~2u);
@@ -536,7 +617,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         uint32_t index = 0;
         for (size_t at = kFirst; at < out.size(); at += kRec)
           if (Rd32(out.data() + at + 0x18) == m.group) ++index;
-        (k == 0 ? g_weapons_rows : g_stages_rows).push_back({m.group, index});
+        if (k == 0) g_weapons_rows.push_back({m.group, index});
         out.insert(out.end(), copy.begin(), copy.end());
         ++added;
         REXLOG_INFO("match types: {} (rule {:02X}) at group {:02X} row {}",
@@ -827,8 +908,8 @@ REX_HOOK_RAW(sub_8243FCC8) {
     g_pending_select_only = true;
   }
   g_pending_stages = false;
-  for (const WeaponsRow& w : g_stages_rows)
-    if (group == w.group && ctx_row == w.index) g_pending_stages = true;
+  for (const StagesRow& w : g_stages_rows)
+    if (group == w.group && ctx_row == w.index) g_pending_stages = true, g_pending_set = w.set;
   g_pending_mystery = group == g_mystery_row.group && ctx_row == g_mystery_row.index;
   g_pending_elimination = false;
   for (const WeaponsRow& w : g_elim_rows)
@@ -858,7 +939,12 @@ REX_HOOK_RAW(sub_8243FCC8) {
   // (test aid SVR2011_TEST_MODE: ONE ON ONE NORMAL as the mode's row)
   if (g_test_mode != TestMode::kNone && result == 2000) {
     switch (g_test_mode) {
-      case TestMode::kThreeStages: g_pending_stages = true; break;
+      case TestMode::kThreeStages: {  // (SVR2011_TEST_3S_SET=<0-4>: the set; its match is SVR2011_TEST_RULE's)
+        g_pending_stages = true;
+        const char* s = std::getenv("SVR2011_TEST_3S_SET");
+        g_pending_set = s ? std::atoi(s) : 0;
+        break;
+      }
       case TestMode::kElimTT:
       case TestMode::kElimF4W: g_pending_elimination = true; break;
       case TestMode::kWeapons: g_pending_weapons = true; break;
@@ -934,7 +1020,7 @@ REX_HOOK_RAW(sub_827374A0) {
     REXLOG_INFO("match types: SLOBBER KNOCKER");
     svr2011::SlobberKnockerStart();
   }
-  svr2011::ThreeStagesSetup(g_pending_stages && StagesRule(rule) && !Rd32(base + kStoryContext));
+  svr2011::ThreeStagesSetup(g_pending_stages && StagesRule(rule) && !Rd32(base + kStoryContext), g_pending_set);
   g_pending_stages = false;
   svr2011::MysteryOpponentSetup(base, g_pending_mystery && rule == 0x00 && !Rd32(base + kStoryContext));
   g_pending_mystery = false;
@@ -1750,6 +1836,23 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
         std::fclose(f);
       }
   }
+  // Research aid: SVR2011_TEST_CHAR_DUMP=<file> - every 6 updates of a match,
+  // the first two people (0x82E3CC50): u32 match frames, then per person u32
+  // its address and its first 0x3000 bytes.
+  if (static const char* dump = std::getenv("SVR2011_TEST_CHAR_DUMP"); dump && Rd32(base + 0x82E3CD0C) > 0) {
+    static uint32_t n = 0;
+    if (++n % 6 == 0)
+      if (FILE* f = std::fopen(dump, "ab")) {
+        const uint32_t frames = Rd32(base + 0x82E3CD0C);
+        std::fwrite(&frames, 4, 1, f);
+        for (uint32_t i = 0; i < 2; ++i) {
+          const uint32_t c = Rd32(base + kChars + i * 4);
+          std::fwrite(&c, 4, 1, f);
+          if (c) std::fwrite(base + c, 1, 0x3000, f);
+        }
+        std::fclose(f);
+      }
+  }
   // Test aid: SVR2011_TEST_ITEM_LOG=1 - each weapon picked up (its holder,
   // +44, from none to a person): its slot, model, where it lay, and whether it
   // came from under the ring (hidden at 0,-12,0 until then).
@@ -2196,11 +2299,30 @@ uint32_t MatchTypeString(uint32_t id) {
     }
     return g_structure_text[s][k];
   }
+  if (id >= kStagesSetLabel && id < kStagesSetLabel + 2 * svr2011::kThreeStagesSets && g_memory) {
+    static const char* const kText[] = {
+        "NORMAL / FCA / LMS",
+        "A normal fall, then Falls Count Anywhere, then Last Man Standing.",
+        "NORMAL / BLOOD / FINISHER",
+        "A normal fall, then First Blood, then Finishers: a pin or submission counts only right after a finisher.",
+        "NORMAL / LMS / SUBMISSION",
+        "A normal fall, then Last Man Standing, then Submission.",
+        "TABLE / TLC / LADDER",
+        "Through a table, then a TLC fall for the prize, then a Ladder fall for it.",
+        "CELL: BLOOD / LMS / SUB",
+        "Inside Hell in a Cell: First Blood, then Last Man Standing, then Submission."};
+    const uint32_t k = id - kStagesSetLabel;
+    if (!g_stages_set_text[k]) {
+      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
+      g_stages_set_text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_stages_set_text[k]), kText[k], n);
+    }
+    return g_stages_set_text[k];
+  }
   if ((id == kStagesLabel || id == kStagesText) && g_memory) {
     static const char* const kText[] = {
         "THREE STAGES OF HELL",
-        "The first to win two falls: a normal fall, then Falls Count Anywhere, then Last Man Standing - "
-        "the damage carries over."};
+        "The first to win two falls, each under another stipulation - the damage carries over. Pick the three."};
     const uint32_t k = id - kStagesLabel;
     if (!g_stages_text[k]) {
       const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);

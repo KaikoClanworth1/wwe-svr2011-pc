@@ -577,3 +577,18 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 - Weapons in the ring (`kPlacedRing`): three chairs and the hand weapons every match loads (102, 72, 28). Not tables or ladders: with the Extreme Rules option (+56, which loads those models) the cage crashed at its start (`sub_824186E8` with no event data, as 6-man did). No DQ (live +4 1).
 - Tested: CPU vs CPU, 120 s each. Weapons placed in the ring, inside the ropes (the Inferno's fire stays outside them), no crash.
 - Test aids: `SVR2011_TEST_MODE=cage_weapons` / `inferno_weapons`.
+
+## Three Stages of Hell: sets of stages (done)
+
+**Menu:** THREE STAGES OF HELL (EXTREME RULES submenus, and 6-MAN / HANDICAP) is a submenu of sets:
+- NORMAL / FCA / LMS (as before), NORMAL / BLOOD / FINISHER, NORMAL / LMS / SUBMISSION - every mode;
+- CELL: BLOOD / LMS / SUB - one on one, two on two, triple threat, fatal-4-way, played as that mode's Hell in a Cell (0x31-0x34: the cell stands from the bell).
+- TABLE / TLC / LADDER is written (played as the mode's TLC match, 0x48-0x4B) but not offered (test aid `SVR2011_TEST_3S_TLC=1`): after a TLC stage the prize can't hang again for a third, and the TLC match has no referee for a pin stage.
+Under the `three_stages_of_hell` switch mod.
+
+**How (`three_stages.cpp` kSets / ApplyStage):** each stage starts from the match's own rules (saved at its first update) and sets only what wins a fall: +1 pinfall, +7 give up, +17 falls count anywhere, +18 table, +19 ladder, +24 TLC, +26 last man standing, +40 first blood. What loads at the bell (a cell, a cage, the prize, table / ladder models) can't change mid-match, so a set needing one is played in that rule from the start.
+- Count-outs are off in every stage: a count-out ends the match outside the falls judge (a normal fall 1 ended so).
+- Fall 1's rules are applied when the match itself starts (`InMatch`), not on the clock left over from the title's demo match.
+- FIRST BLOOD is the game's own rule (+40); with CPUs it is slow - in the game's own First Blood match (0x29) nobody bled in 4 minutes either.
+- FINISHERS (the port's): a pin or submission counts only within 10 s after a finisher or signature move's cinematic (the world held: `frame_rate.cpp`'s paused round calls `ThreeStagesCinematic`); any other fall is taken back. It does NOT check who did the move: during the cinematic both people play the same paired motion and point at each other (+96), and no attacker / defender field showed in their first 0x3000 bytes.
+- Test aids: `SVR2011_TEST_3S_SET=<0-4>` (with `SVR2011_TEST_MODE=three_stages`, and `SVR2011_TEST_RULE` the set's match), `SVR2011_TEST_3S_STAGE=<0-2>` (start at that stage), `SVR2011_TEST_PAUSE_LOG=1` (the world held), `SVR2011_TEST_CHAR_DUMP=<file>` (the first two people every 6 updates).
