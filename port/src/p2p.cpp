@@ -302,6 +302,17 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     p.fake = fake;
     g_fake[fake] = mac;
     p.route = RouteTo(xnaddr), p.route_port = p.base;
+    // A player not on this PC: its game packets go through the tunnel (this
+    // game's P2P port, the one its router lets through or the relay reaches)
+    // from the start, and through the relay until something comes directly.
+    // Players the game itself introduces (a third joining a rumble: the others
+    // only know its address from the host) were sent to its game port behind
+    // its router, and dropped, until it happened to answer: joins above two
+    // players timed out.
+    if (Be32(xnaddr) != g_me.lan) {
+      p.tunnel = true;
+      if (g_relay_up && p.route != Be32(xnaddr)) p.relayed = true;  // (another network)
+    }
   }
   const auto now = Clock::now();
   // A peer that pings (this version): its path is set by PingLoop from round
@@ -1170,7 +1181,14 @@ void Hello(const uint8_t* host_xnaddr) {
     path = PathOf(MacOf(host_xnaddr), Learn(host_xnaddr));
   }
   const uint32_t nonce = NewNonce() | 1;
-  for (int i = 0; i < 3; ++i) Send(path, Header(kHello, nonce));
+  const auto hello = Header(kHello, nonce);
+  // (both ways: directly, which may be dropped by its router, and through the
+  // relay, so it learns of this game and answers either way)
+  Path direct = path;
+  direct.relayed = false;
+  for (int i = 0; i < 3; ++i) Send(direct, hello);
+  if (g_relay_up && !ForceRelay()) ToRelay(path.mac, hello.data(), hello.size());
+  else if (path.relayed) Send(path, hello);
 }
 
 // -- XNet ------------------------------------------------------------------------------
