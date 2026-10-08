@@ -25,6 +25,7 @@
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "superstar_mods.h"
 #include "move_packs.h"
+#include "startup_pump.h"
 
 #include <algorithm>
 #include <cctype>
@@ -455,6 +456,7 @@ void LoadMods() {
     return 0;
   };
   for (const auto& f : folders) {
+    svr2011::KeepWindowAlive();  // (startup_pump.h)
     Mod m;
     m.folder = f.filename().string();
     m.name = m.short_name = m.folder;

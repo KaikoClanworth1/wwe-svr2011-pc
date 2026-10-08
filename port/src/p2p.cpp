@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -47,6 +48,7 @@
 #include "frame_rate.h"
 #include "online_files.h"
 #include "online_net.h"
+#include "net_sim.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
@@ -80,6 +82,9 @@ enum : uint8_t {
   kFileRequest = 7, kFilePart = 8,  // (files peers fetch from each other: P2PFetch)
   kModsRefused = 9                  // (a searcher's mods differ: its set, for the host's notice)
 };
+// Round trips to the peers a match exchanges game packets with (net_sim.h);
+// game packets with the last few repeated (a peer that pings takes them).
+enum : uint8_t { kPing = 11, kPong = 12, kDataV2 = 13 };
 
 rex::memory::Memory* g_memory = nullptr;
 
@@ -239,6 +244,9 @@ std::atomic<int64_t> g_online_at{0};  // last session activity (steady clock, ms
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
 }
+uint64_t NowUs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count());
+}
 bool ForceRelay() { return REXCVAR_GET(p2p_force_relay); }
 
 struct Peer {
@@ -253,6 +261,9 @@ struct Peer {
   Clock::time_point punched{};         // last direct try while relayed
   uint32_t seen_ip = 0;                // its address as the relay sees it
   uint16_t seen_port = 0;
+  bool data_v2 = false;                // it pings: it takes kDataV2
+  Clock::time_point direct_ok{};       // (v2) a direct ping last came back directly
+  std::map<std::pair<uint16_t, uint16_t>, uint32_t> delivered;  // (v2: last sequence passed on, by to / from port)
 };
 
 std::mutex g_mutex;
@@ -297,6 +308,23 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     p.route = RouteTo(xnaddr), p.route_port = p.base;
   }
   const auto now = Clock::now();
+  // A peer that pings (this version): its path is set by PingLoop from round
+  // trips that came back directly (both ways confirmed), not by which way the
+  // last packet came - a direct path working one way only had a peer send its
+  // game packets into it for 10 s and more, then flip back and forth.
+  if (p.data_v2 && !ForceRelay()) {
+    if (via.relayed) p.seen_ip = via.ip, p.seen_port = via.port;
+    if (!via.relayed && via.ip) {
+      const uint32_t from = via.ip == 0x7F000001 ? Be32(xnaddr) : via.ip;
+      p.route = from, p.route_port = via.port, p.direct = now;
+      if (from != Be32(xnaddr) && from != g_me.lan && !p.tunnel) {
+        p.tunnel = true;  // (through a NAT: its game ports are not reachable, only this one)
+        REXLOG_INFO("p2p: peer {} is outside this network ({}:{})", Ip(p.fake), Ip(from), via.port);
+      }
+    }
+    if (NetForceTunnel()) p.tunnel = true;
+    return p;
+  }
   if (via.relayed) {
     p.seen_ip = via.ip, p.seen_port = via.port;
     // (direct while that works: the relay only when nothing came directly lately)
@@ -318,6 +346,7 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     }
   }
   if (ForceRelay()) p.relayed = p.tunnel = true;
+  if (NetForceTunnel()) p.tunnel = true;  // (tests: the delay applies on this PC too)
   if (added) {
     REXLOG_INFO("p2p: peer {:02X}{:02X}{:02X}{:02X}{:02X}{:02X} at {}:{}{} is {}", mac[0], mac[1], mac[2], mac[3],
                 mac[4], mac[5], Ip(p.route), p.route_port, p.relayed ? " (relay)" : "", Ip(p.fake));
@@ -375,11 +404,26 @@ void Send(const Path& path, const std::vector<uint8_t>& data) { Send(path, data.
 // the proxy to the game's own socket - from the address the game knows the
 // peer's port as.
 
+// kDataV2 (peers that ping: this version's): each tunnel packet repeats the
+// last few small game packets of its stream (to / from port) with their
+// sequence numbers, and the far side passes each on once, in order. In
+// online matches the game's lockstep waits for every input: one lost packet
+// stood both games still for a round trip plus the game's resend (400-900 ms
+// at 300 ms with 2% loss); now the next packet, 16 ms later, brings it.
+constexpr size_t kRepeat = 3;          // earlier packets repeated in each
+constexpr size_t kRepeatMaxSize = 96;  // (only small ones: inputs, not transfers)
+
+struct DataStream {
+  uint32_t next = 1;
+  std::deque<std::pair<uint32_t, std::vector<uint8_t>>> recent;
+};
+
 struct Proxy {
   Socket s = kBadSocket;
   Mac mac{};
   uint16_t remote = 0;  // the peer's game port (as its game knows it)
   uint16_t local = 0;   // the proxy's port
+  std::map<uint16_t, DataStream> streams;  // (v2: by this game's port; the proxy's thread only)
 };
 std::map<std::pair<Mac, uint16_t>, Proxy*> g_proxies;
 std::map<uint16_t, Proxy*> g_proxy_ports;
@@ -389,6 +433,33 @@ std::vector<uint8_t> DataHeader(uint16_t to, uint16_t from) {
   w.u32(kMagic), w.u8(kVersion), w.u8(kData);
   w.bytes(g_me.mac.data(), 6);
   w.u16(to), w.u16(from);
+  return w.b;
+}
+
+// A v2 packet: the header, the newest sequence number, how many packets, then
+// each (newest first) as a 16-bit length and its bytes.
+std::vector<uint8_t> DataV2(DataStream& st, uint16_t to, uint16_t from, const uint8_t* data, size_t size) {
+  const uint32_t seq = st.next++;
+  Writer w;
+  w.u32(kMagic), w.u8(kVersion), w.u8(kDataV2);
+  w.bytes(g_me.mac.data(), 6);
+  w.u16(to), w.u16(from);
+  w.u32(seq);
+  const size_t repeat = size <= kRepeatMaxSize ? std::min(st.recent.size(), kRepeat) : 0;
+  w.u8(uint8_t(1 + repeat));
+  w.u16(uint16_t(size)), w.bytes(data, size);
+  for (size_t k = 0; k < repeat; ++k) {
+    const auto& [s, bytes] = st.recent[st.recent.size() - 1 - k];
+    if (s != seq - 1 - k) break;  // (only an unbroken run back from this one)
+    w.u16(uint16_t(bytes.size())), w.bytes(bytes.data(), bytes.size());
+  }
+  // (the count written is an upper bound; the reader stops at the end)
+  if (size <= kRepeatMaxSize) {
+    st.recent.emplace_back(seq, std::vector<uint8_t>(data, data + size));
+    while (st.recent.size() > kRepeat) st.recent.pop_front();
+  } else {
+    st.recent.clear();  // (a big one breaks the run: the next starts over)
+  }
   return w.b;
 }
 
@@ -404,16 +475,27 @@ void ProxyLoop(Proxy* proxy) {
       continue;
     }
     // (from the game's own socket: its port as the game knows it)
-    auto packet = DataHeader(proxy->remote, uint16_t(ntohs(from.sin_port) - Offset(g_me.base)));
-    packet.insert(packet.end(), buf.begin(), buf.begin() + n);
+    const uint16_t from_port = uint16_t(ntohs(from.sin_port) - Offset(g_me.base));
     Path path;
+    uint32_t fake = 0;
+    bool v2 = false;
     {
       std::lock_guard lock(g_mutex);
       auto it = g_peers.find(proxy->mac);
       if (it == g_peers.end()) continue;
       path = PathOf(proxy->mac, it->second);
+      fake = it->second.fake;
+      v2 = it->second.data_v2;
     }
-    Send(path, packet);
+    std::vector<uint8_t> packet;
+    if (v2) {
+      packet = DataV2(proxy->streams[from_port], proxy->remote, from_port, buf.data(), size_t(n));
+    } else {
+      packet = DataHeader(proxy->remote, from_port);
+      packet.insert(packet.end(), buf.begin(), buf.begin() + n);
+    }
+    NetPacket(true, fake, size_t(n), path.relayed);
+    NetSimSend([path, packet = std::move(packet)] { Send(path, packet); });  // (net_sim.h: a test's delay)
   }
 }
 
@@ -631,12 +713,109 @@ void OnData(const uint8_t* data, size_t size, Via via) {
       }
       p.direct = Clock::now();
     }
+    NetPacket(false, p.fake, size - 16, via.relayed);
     Proxy* proxy = ProxyFor(mac, from);
     if (!proxy) return;
     s = proxy->s;
   }
   SendOn(s, 0x7F000001, uint16_t(to + Offset(g_me.base)), data + 16, size - 16);
   if (via.relayed) Punch(mac);
+}
+
+// A v2 game packet (DataV2): the ones not passed on yet, oldest first.
+void OnDataV2(const uint8_t* data, size_t size, Via via) {
+  if (size < 21) return;
+  Mac mac;
+  std::memcpy(mac.data(), data + 6, 6);
+  const uint16_t to = Be16(data + 12), from = Be16(data + 14);
+  const uint32_t seq = Be32(data + 16);
+  const uint8_t count = data[20];
+  // the packets, newest first: (sequence, bytes)
+  std::vector<std::pair<uint32_t, std::pair<const uint8_t*, size_t>>> got;
+  for (size_t at = 21, k = 0; k < count && at + 2 <= size; ++k) {
+    const size_t n = Be16(data + at);
+    if (at + 2 + n > size) break;
+    got.push_back({seq - uint32_t(k), {data + at + 2, n}});
+    at += 2 + n;
+  }
+  if (got.empty()) return;
+  Socket s;
+  uint32_t fake = 0;
+  std::vector<std::pair<const uint8_t*, size_t>> deliver;
+  {
+    std::lock_guard lock(g_mutex);
+    auto it = g_peers.find(mac);
+    if (it == g_peers.end()) return;
+    Peer& p = it->second;
+    if (!via.relayed && via.ip) {
+      if (via.ip != p.route || via.port != p.route_port) {
+        const XnAddr xnaddr = p.xnaddr;
+        Learn(xnaddr.data(), via);
+      }
+      p.direct = Clock::now();
+    }
+    fake = p.fake;
+    uint32_t& last = p.delivered[{to, from}];
+    // (a peer that started over - a new match, a restarted game - begins at 1 again)
+    if (seq + 64 < last) last = 0;
+    for (auto e = got.rbegin(); e != got.rend(); ++e) {
+      if (e->first > last) deliver.push_back(e->second), last = e->first;
+    }
+    Proxy* proxy = ProxyFor(mac, from);
+    if (!proxy) return;
+    s = proxy->s;
+  }
+  for (const auto& [bytes, n] : deliver) {
+    NetPacket(false, fake, n, via.relayed);
+    SendOn(s, 0x7F000001, uint16_t(to + Offset(g_me.base)), bytes, n);
+  }
+  if (via.relayed) Punch(mac);
+}
+
+// Once a second, a ping to each peer this game exchanges game packets with (it
+// has a proxy): their round trips for the log and the ping indicator (net_sim.h).
+void PingLoop() {
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::vector<Path> to;
+    {
+      std::lock_guard lock(g_mutex);
+      std::set<Mac> gamers;
+      for (const auto& [key, proxy] : g_proxies) gamers.insert(proxy->mac);
+      const auto now = Clock::now();
+      for (const Mac& mac : gamers) {
+        auto it = g_peers.find(mac);
+        if (it == g_peers.end()) continue;
+        Peer& p = it->second;
+        Path direct = PathOf(mac, p);
+        direct.relayed = false;
+        // A pinging peer's path: direct while a direct ping came back directly in
+        // the last 3 s, else the relay (when there is one) - checked every second.
+        if (p.data_v2 && !ForceRelay()) {
+          const bool ok = now - p.direct_ok < std::chrono::seconds(3);
+          const bool relay = !ok && g_relay_up && p.tunnel;
+          if (relay != p.relayed) {
+            p.relayed = relay;
+            REXLOG_INFO("p2p: peer {} {}", Ip(p.fake), relay ? "through the relay (no direct round trip for 3 s)"
+                                                             : "direct (a direct round trip)");
+          }
+        }
+        // (pings both ways for a tunnel peer: the direct one tells whether direct works)
+        if (!ForceRelay()) to.push_back(direct);
+        if (p.tunnel && g_relay_up) {
+          Path relayed = direct;
+          relayed.relayed = true;
+          to.push_back(relayed);
+        }
+      }
+    }
+    for (const Path& path : to) {
+      Writer w;
+      w.b = Header(kPing, NewNonce());
+      w.u64(NowUs());
+      NetSimSend([path, b = std::move(w.b)] { Send(path, b); });
+    }
+  }
 }
 
 // -- files peers fetch from each other (P2PFetch: online_cas.cpp) -------------------
@@ -746,6 +925,7 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
   if (r.u32() != kMagic || r.u8() != kVersion) return;
   const uint8_t type = r.u8();
   if (type == kData) return OnData(data, size, via);
+  if (type == kDataV2) return OnDataV2(data, size, via);
   const uint32_t nonce = r.u32();
   XnAddr sender{};
   r.bytes(sender.data(), 36);
@@ -801,6 +981,37 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
     case kHello:
       if (nonce & 1) Send(back, Header(kHello, nonce + 1));  // (the first of a pair: answered)
       break;
+    case kPing: {  // -> its time back (the way game packets go, with a test's delay)
+      {
+        std::lock_guard lock(g_mutex);  // (it pings: it's this version, kDataV2 from now on)
+        if (auto it = g_peers.find(mac); it != g_peers.end() && !it->second.data_v2) {
+          it->second.data_v2 = !NetDataV1();
+          REXLOG_INFO("p2p: peer {} takes repeated game packets{}", Ip(it->second.fake),
+                      NetDataV1() ? " (off: SVR2011_TEST_NET_V1)" : "");
+        }
+      }
+      Writer w;
+      w.b = Header(kPong, nonce);
+      w.u64(r.u64());
+      if (r.ok) NetSimSend([back, b = std::move(w.b)] { Send(back, b); });
+      break;
+    }
+    case kPong: {
+      const uint64_t sent_us = r.u64();
+      if (!r.ok) break;
+      uint32_t fake = 0;
+      bool current = true;  // (the round trip of the path game packets take now)
+      {
+        std::lock_guard lock(g_mutex);
+        if (auto it = g_peers.find(mac); it != g_peers.end()) {
+          fake = it->second.fake;
+          if (!via.relayed) it->second.direct_ok = Clock::now();
+          current = via.relayed == it->second.relayed;
+        }
+      }
+      if (current) NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed);
+      break;
+    }
     case kFileRequest:
       ServeFile(r, nonce, back);
       break;
@@ -1615,6 +1826,7 @@ void InstallP2P(rex::memory::Memory* memory) {
   }
   std::thread(Receive).detach();
   std::thread(Keepalive).detach();
+  std::thread(PingLoop).detach();
   rex::kernel::xam::OnlineHooks hooks;
   hooks.title_xnaddr = TitleXnAddr;
   hooks.xnaddr_to_inaddr = XnAddrToInAddr;

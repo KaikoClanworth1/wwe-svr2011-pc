@@ -43,6 +43,7 @@
 // instead of sub_82595428). Unchanged entries are streamed from the original
 // files; changed ones are re-compressed (real BPE).
 #include "move_packs.h"
+#include "startup_pump.h"
 
 #include <algorithm>
 #include <cctype>
@@ -122,7 +123,11 @@ bool ReadAll(const fs::path& p, Bytes& out) {
 
 // ---- reading the packs
 
-void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
+// data false: the lists and the stamp only (no motion files read - enough to
+// see that the overlay is up to date: thousands of small files on a hard
+// drive with a cold cache took 35 s). A missing motion file counts in both
+// ways, so the stamps match.
+void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = true) {
   std::ifstream f(dir / "pack.txt");
   std::string line;
   size_t n = 0;
@@ -150,9 +155,13 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
       m.id = uint16_t(id), m.x = uint8_t(x), m.y = uint8_t(y), m.frames = frames;
       m.hdr = Hex(hdr);
       m.pack = (dir.filename() == "moves" ? dir.parent_path() : dir).filename().string();
-      if (!ReadAll(dir / fs::u8path(file), m.data)) {
-        REXLOG_WARN("[svr2011] move packs: {}: missing {}", dir.filename().string(), file);
-        continue;
+      if (data) {
+        svr2011::KeepWindowAlive();
+        if (!ReadAll(dir / fs::u8path(file), m.data)) {
+          REXLOG_WARN("[svr2011] move packs: {}: missing {}", dir.filename().string(), file);
+          ++n;
+          continue;
+        }
       }
       std::string key = parts[0];
       key.resize(4, ' ');
@@ -189,15 +198,17 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
       if (group.size() != 4 || name.empty() || name.size() > 8 || file.empty()) continue;
       for (auto& c : pac) c = c == '/' ? '\\' : char(std::tolower(static_cast<unsigned char>(c)));
       if (pac.find("..") != std::string::npos || pac.size() < 5 || pac.compare(pac.size() - 4, 4, ".pac")) continue;
-      Bytes data;
-      if (!ReadAll(dir / fs::u8path(file), data)) {
+      Bytes bytes;
+      std::error_code ec;
+      const uintmax_t size = data ? 0 : fs::file_size(dir / fs::u8path(file), ec);
+      if (data ? !ReadAll(dir / fs::u8path(file), bytes) : bool(ec)) {
         REXLOG_WARN("[svr2011] move packs: {}: missing {}", dir.filename().string(), file);
         continue;
       }
-      std::error_code ec;  // (the file in the stamp: a changed entry rebuilds the overlay)
-      stamp += file + " " + std::to_string(data.size()) + " " +
+      // (the file in the stamp: a changed entry rebuilds the overlay)
+      stamp += file + " " + std::to_string(data ? uintmax_t(bytes.size()) : size) + " " +
                std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
-      p.entries[pac].emplace(group + "/" + name, std::move(data));  // (the first pack's wins)
+      p.entries[pac].emplace(group + "/" + name, std::move(bytes));  // (the first pack's wins)
     } else {
       continue;
     }
@@ -985,11 +996,17 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     return;
   }
   Packs packs;
-  std::string stamp = std::string(kFormat) + "\n";
-  for (const auto& d : dirs) {
-    ReadPack(d, packs, stamp);
-    stamp += FileStamp(d / "pack.txt");
-  }
+  std::string stamp;
+  // (data false: the stamp and lists only; the motion files are read when merging)
+  auto read_packs = [&](bool data) {
+    packs = Packs{};
+    stamp = std::string(kFormat) + "\n";
+    for (const auto& d : dirs) {
+      ReadPack(d, packs, stamp, data);
+      stamp += FileStamp(d / "pack.txt");
+    }
+  };
+  read_packs(false);
   WarnOverrides(packs);
   for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h"})
     stamp += FileStamp(game / "pac" / f);
@@ -1018,14 +1035,25 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     }
   }
   REXLOG_INFO("[svr2011] move packs: merging {} packs ({} items) into {} ...", dirs.size(), packs.count, overlay.string());
+  {
+    const std::string checked = stamp;
+    read_packs(true);  // (now the motion files too)
+    if (stamp != checked) REXLOG_WARN("[svr2011] move packs: a pack changed while it was read");
+  }
   fs::create_directories(overlay, ec);
   fs::remove(overlay / "stamp.txt", ec);
   bool ok = true;
-  for (const auto& [pac, entries] : packs.motions)
+  for (const auto& [pac, entries] : packs.motions) {
+    svr2011::KeepWindowAlive();
     ok = ok && BuildMotionPac(game, overlay, Lower(pac), entries);
+  }
+  svr2011::KeepWindowAlive();
   if (ok && pacs.count("misc.pac")) ok = BuildMisc(game, overlay, packs);
   fs::remove_all(overlay / "evt", ec);  // (entry pacs: copies of the game's with the packs' entries)
-  for (const auto& [pac, entries] : packs.entries) ok = ok && BuildEntryPac(game, overlay, pac, entries);
+  for (const auto& [pac, entries] : packs.entries) {
+    svr2011::KeepWindowAlive();
+    ok = ok && BuildEntryPac(game, overlay, pac, entries);
+  }
   fs::remove(overlay / "gm.pac", ec);  // (an older build served a whole gm.pac)
   fs::remove(overlay / kGimmickPac, ec);
   std::vector<std::string> extra;

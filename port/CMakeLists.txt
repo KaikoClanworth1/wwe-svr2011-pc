@@ -45,6 +45,8 @@ set(SVR2011_SOURCES
     src/entrance_media.cpp
     src/movie_transcode.cpp
     src/p2p.cpp
+    src/net_stats.cpp
+    src/net_sim.cpp
     src/paint_pages.cpp
     src/match_types.cpp
     src/match_hud.cpp

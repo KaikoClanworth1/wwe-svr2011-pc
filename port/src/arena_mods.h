@@ -33,6 +33,10 @@ void SetArenaDefault(int arena, const std::string& relative_file);
 // A match is loading (set-up to its people placed): a custom arena's loading
 // pictures are swapped only then.
 void SetMatchLoading(bool loading);
+
+// The arena number a match in that arena plays as (RedirectArena: the stock
+// practice ring on another tile plays as 29); the arena itself otherwise.
+int ArenaNumberFor(int arena);
 // A player's pad buttons as the game read them (XInput bits): LB / RB turn
 // the arena select page.
 void ArenaSelectPad(uint32_t user, uint16_t buttons);
