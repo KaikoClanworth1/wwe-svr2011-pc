@@ -11,7 +11,10 @@
 //
 // Custom pictures (the launcher's Backgrounds list): <game>/Mods/Backgrounds/
 // <id>/picture.dds (1024 x 512 DXT5, no mips: EXHBG2's size and format) with
-// manifest.txt (name=..., logo=0|1); a "disabled" file turns one off. They
+// manifest.txt (name=..., logo=0|1); a "disabled" file turns one off. A pack
+// (the Mod Maker's Backgrounds page) is one folder with several pictures
+// (NN_<name>.dds; manifest title.<file>= / logo.<file>= for each, a
+// "<file>.off" file turns one off; "disabled" turns the whole pack off). They
 // join the cycle after the 12 (numbers 12, 13, ... in the game's data: both
 // 12-limits are the hooks below). A custom picture's background object loads
 // EB00 (+68 = 0), and as the game unpacks that set (the BPE decoder,
@@ -81,9 +84,9 @@ constexpr uint32_t kGameData = 0x82E3DDFC;  // -> +8680: the picture number
 constexpr uint32_t kPictureAt = 8680;
 constexpr uint32_t kObjectPicture = 68;  // the background object's number
 
-// A custom picture (Mods/Backgrounds/<id>).
+// A custom picture (Mods/Backgrounds/<id>/<file>).
 struct Custom {
-  std::string id, name;
+  std::string id, file, name, pack;  // pack: the pack's name (empty: a single picture)
   bool on = true, logo = false;
 };
 
@@ -122,41 +125,102 @@ std::vector<std::string> Lines(const fs::path& file) {
   return out;
 }
 
-// The custom pictures on disk (a folder with picture.dds), by folder name.
+// A folder's pictures: picture.dds (a single one) or a pack's *.dds, by name.
+std::vector<std::string> PicturesIn(const fs::path& dir) {
+  std::error_code ec;
+  if (fs::is_regular_file(dir / "picture.dds", ec)) return {"picture.dds"};
+  std::vector<std::string> out;
+  for (const auto& f : fs::directory_iterator(dir, ec)) {
+    std::string n = f.path().filename().string(), low = n;
+    for (char& c : low) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (f.is_regular_file(ec) && low.size() > 4 && low.compare(low.size() - 4, 4, ".dds") == 0) out.push_back(n);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// A pack picture's name from its file: "03_john_cena.dds" -> "JOHN CENA".
+std::string NameFromFile(std::string f) {
+  if (f.size() > 4) f.resize(f.size() - 4);
+  if (f.size() > 3 && std::isdigit(static_cast<unsigned char>(f[0])) && std::isdigit(static_cast<unsigned char>(f[1])) &&
+      f[2] == '_')
+    f = f.substr(3);
+  for (char& c : f)
+    if (c == '_') c = ' ';
+  return f;
+}
+
+// The custom pictures on disk, by folder name and file.
 void ScanCustoms() {
   std::vector<Custom> out;
   std::error_code ec;
-  for (const auto& e : fs::directory_iterator(Folder(), ec)) {
-    if (!e.is_directory(ec) || !fs::is_regular_file(e.path() / "picture.dds", ec)) continue;
-    Custom c;
-    c.id = e.path().filename().string();
-    c.name = c.id;
-    for (const auto& line : Lines(e.path() / "manifest.txt")) {
-      if (line.rfind("name=", 0) == 0 && line.size() > 5) c.name = line.substr(5);
-      if (line.rfind("logo=", 0) == 0) c.logo = line.substr(5) == "1";
+  std::vector<fs::path> dirs;
+  for (const auto& e : fs::directory_iterator(Folder(), ec))
+    if (e.is_directory(ec)) dirs.push_back(e.path());
+  std::sort(dirs.begin(), dirs.end());
+  for (const auto& dir : dirs) {
+    const auto files = PicturesIn(dir);
+    if (files.empty()) continue;
+    std::string name = dir.filename().string();
+    bool logo = false;
+    std::vector<std::string> man = Lines(dir / "manifest.txt");
+    for (const auto& line : man) {
+      if (line.rfind("name=", 0) == 0 && line.size() > 5) name = line.substr(5);
+      if (line.rfind("logo=", 0) == 0) logo = line.substr(5) == "1";
     }
-    c.name = Upper(c.name);
-    c.on = !fs::exists(e.path() / "disabled", ec);
-    out.push_back(std::move(c));
+    const bool all_off = fs::exists(dir / "disabled", ec);
+    for (const auto& f : files) {
+      Custom c;
+      c.id = dir.filename().string();
+      c.file = f;
+      c.logo = logo;
+      if (files.size() == 1 && f == "picture.dds") {
+        c.name = name;
+      } else {
+        c.pack = name;
+        c.name = NameFromFile(f);
+        for (const auto& line : man) {
+          if (line.rfind("title." + f + "=", 0) == 0) c.name = line.substr(7 + f.size());
+          if (line.rfind("logo." + f + "=", 0) == 0) c.logo = line.substr(6 + f.size()) == "1";
+        }
+      }
+      c.name = Upper(c.name);
+      c.on = !all_off && !fs::exists(dir / (f + ".off"), ec);
+      out.push_back(std::move(c));
+    }
   }
-  std::sort(out.begin(), out.end(), [](const Custom& a, const Custom& b) { return a.id < b.id; });
   std::lock_guard lock(g_mutex);
   g_customs = std::move(out);
 }
 
-// A custom picture's on / off (its "disabled" file) and logo (manifest.txt
-// logo=) to disk.
+// A custom picture's on / off and logo to disk: a single picture's
+// "disabled" file and manifest logo=; a pack picture's "<file>.off" and
+// logo.<file>= (turning one on in a pack that is off leaves the pack's
+// others off).
 void SaveCustom(const Custom& c) {
   const fs::path dir = Folder() / c.id;
   std::error_code ec;
-  if (c.on)
-    fs::remove(dir / "disabled", ec);
-  else
-    std::ofstream(dir / "disabled") << "off\n";
+  const bool pack = !c.pack.empty();
+  if (!pack) {
+    if (c.on)
+      fs::remove(dir / "disabled", ec);
+    else
+      std::ofstream(dir / "disabled") << "off\n";
+  } else if (c.on) {
+    if (fs::exists(dir / "disabled", ec)) {
+      for (const auto& f : PicturesIn(dir))
+        if (f != c.file) std::ofstream(dir / (f + ".off")) << "off\n";
+      fs::remove(dir / "disabled", ec);
+    }
+    fs::remove(dir / (c.file + ".off"), ec);
+  } else {
+    std::ofstream(dir / (c.file + ".off")) << "off\n";
+  }
+  const std::string key = pack ? "logo." + c.file + "=" : "logo=";
   std::vector<std::string> lines;
   for (const auto& line : Lines(dir / "manifest.txt"))
-    if (line.rfind("logo=", 0) != 0) lines.push_back(line);
-  lines.push_back(std::string("logo=") + (c.logo ? "1" : "0"));
+    if (line.rfind(key, 0) != 0) lines.push_back(line);
+  lines.push_back(key + (c.logo ? "1" : "0"));
   std::ofstream m(dir / "manifest.txt", std::ios::trunc);
   for (const auto& l : lines) m << l << "\n";
 }
@@ -242,7 +306,7 @@ void Activate(int i) {
       std::lock_guard lock(g_mutex);
       if (i - kCount < int(g_customs.size())) c = g_customs[i - kCount];
     }
-    std::ifstream f(Folder() / c.id / "picture.dds", std::ios::binary);
+    std::ifstream f(Folder() / c.id / c.file, std::ios::binary);
     const std::vector<uint8_t> d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     if (d.size() >= 128 + kPictureBytes && !std::memcmp(d.data(), "DDS ", 4) && Le32(&d[12]) == 512 &&
         Le32(&d[16]) == 1024 && !std::memcmp(&d[84], "DXT5", 4)) {
@@ -251,7 +315,7 @@ void Activate(int i) {
       a->logo = c.logo;
       a->name = c.name;
     } else {
-      REXLOG_WARN("[svr2011] backgrounds: {} - picture.dds is not a 1024 x 512 DXT5 DDS", c.id);
+      REXLOG_WARN("[svr2011] backgrounds: {}/{} is not a 1024 x 512 DXT5 DDS", c.id, c.file);
     }
   }
   std::lock_guard lock(g_active_mutex);
@@ -436,7 +500,8 @@ void BackgroundsPage::OnDraw(ImGuiIO& io) {
       } else if (k - kCount < int(g_customs.size())) {
         const Custom& c = g_customs[k - kCount];
         names[k] = c.name, logo[k] = c.logo;
-        whats[k] = c.logo ? "Your picture - with the game's logo" : "Your picture";
+        whats[k] = (c.pack.empty() ? std::string("Your picture") : "From " + c.pack) +
+                   (c.logo ? " - with the game's logo" : "");
       }
     }
   };

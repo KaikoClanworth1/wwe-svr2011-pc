@@ -97,7 +97,7 @@ final class ModsPage {
         File[] media = mediaFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] back = backstageFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
         File[] types = matchTypesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
-        File[] pics = backgroundsFolder().listFiles(f -> f.isDirectory() && new File(f, "picture.dds").isFile());
+        File[] pics = backgroundsFolder().listFiles(f -> f.isDirectory() && hasPicture(f));
         File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
             + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)
             + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length)];
@@ -167,6 +167,12 @@ final class ModsPage {
             controls.addView(remove);
             a_.row(installed_, name, hint, controls);
         }
+    }
+
+    // A background mod's folder has its picture(s): picture.dds or a pack's *.dds.
+    static boolean hasPicture(File dir) {
+        File[] d = dir.listFiles(f -> f.isFile() && f.getName().toLowerCase().endsWith(".dds"));
+        return d != null && d.length > 0;
     }
 
     static void deleteTree(File f) {
@@ -292,9 +298,9 @@ final class ModsPage {
         boolean backPack = type.equals("backstage");
         boolean matchType = type.equals("matchtype");
         boolean pic = type.equals("background");
-        if (pic && !parts.containsKey("picture.dds")) {
+        if (pic && !hasPicture(stage)) {  // (picture.dds, or a pack's NN_<name>.dds)
             deleteTree(stage);
-            throw new IOException("it has no picture.dds");
+            throw new IOException("it has no pictures (.dds)");
         }
         if (!pic && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
             deleteTree(stage);
@@ -322,7 +328,7 @@ final class ModsPage {
         dest.getParentFile().mkdirs();
         FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)
         deleteTree(stage);
-        if (!new File(dest, pic ? "picture.dds" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
+        if (!new File(dest, pic ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
             throw new IOException("can't write to the game folder");
         if (off) new FileOutputStream(new File(dest, "disabled")).close();
         return r;

@@ -1,21 +1,11 @@
 /* WWE SmackDown vs. Raw 2011 PC launcher - custom main menu backgrounds (see
  * backgrounds.h).
  *
- * Where the main menu puts the 1024 x 512 picture (measured with a grid
- * picture; the layout MENU/EXBL draws it in parts): in the game's 1280 x 720
- * frame a texel (tx, ty) lands at
- *   x = -59.75 + 1.8511 tx            (tx < 320: the left part, stretched)
- *   x = 532.6 + 1.1471 (tx - 320)     (the rest, squeezed)
- *   y = -42.84 + 1.3819 ty
- * so the screen shows tx 32-972, ty 31-512 (down to y 665; the menu's footer
- * is below). The game's own pictures are drawn pre-distorted for it. Here the
- * player's picture is scaled to cover that visible area (1280 x 665), centred
- * - no squashing; what falls outside is cut - and every texel takes the
- * picture's pixel at the place it lands, so it looks right on screen. Texels
- * off screen repeat the picture's edge.
+ * The picture is fitted to where the main menu puts it: bg_map.h.
  */
 #define COBJMACROS
 #include "backgrounds.h"
+#include "bg_map.h"
 
 #include <objbase.h>
 #include <shlobj.h>
@@ -25,24 +15,6 @@
 #include <string.h>
 #include <wchar.h>
 #include <wincodec.h>
-
-enum { BG_W = 1024, BG_H = 512 };
-
-/* The texel -> screen mapping above (game frame units). */
-#define BG_X0 (-59.75)
-#define BG_XS1 1.8511
-#define BG_SEAM 320
-#define BG_XS2 1.1471
-#define BG_Y0 (-42.84)
-#define BG_YS 1.3819
-#define BG_VIEW_W 1280.0
-#define BG_VIEW_H 664.7  /* (BG_Y0 + 512 BG_YS: the picture's bottom on screen) */
-
-static double screen_x(int tx)
-{
-    return tx < BG_SEAM ? BG_X0 + BG_XS1 * (tx + 0.5) : BG_X0 + BG_XS1 * BG_SEAM + BG_XS2 * (tx + 0.5 - BG_SEAM);
-}
-static double screen_y(int ty) { return BG_Y0 + BG_YS * (ty + 0.5); }
 
 static void wr32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
 
@@ -137,8 +109,7 @@ static int read_fitted(const WCHAR *path, uint8_t *out, WCHAR *err, size_t errn)
     IWICBitmapScaler *scaler = NULL;
     UINT w = 0, h = 0, sw, sh;
     uint8_t *img = NULL;
-    int ok = 0, x, y;
-    double scale;
+    int ok = 0;
     if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory,
                                 (void **)&fac))
             || FAILED(IWICImagingFactory_CreateDecoderFromFilename(fac, path, NULL, GENERIC_READ,
@@ -151,12 +122,7 @@ static int read_fitted(const WCHAR *path, uint8_t *out, WCHAR *err, size_t errn)
         swprintf_s(err, errn, L"Could not read %s as a picture (PNG, JPG, BMP or WebP).", path);
         goto done;
     }
-    /* cover the visible area: the larger of the two scales */
-    scale = BG_VIEW_W / w > BG_VIEW_H / h ? BG_VIEW_W / w : BG_VIEW_H / h;
-    sw = (UINT)(w * scale + 0.5);
-    sh = (UINT)(h * scale + 0.5);
-    if (sw < (UINT)BG_VIEW_W) sw = (UINT)BG_VIEW_W;
-    if (sh < (UINT)(BG_VIEW_H + 0.5)) sh = (UINT)(BG_VIEW_H + 0.5);
+    bg_cover_size(w, h, &sw, &sh);  /* (bg_map.h) */
     if (FAILED(IWICImagingFactory_CreateBitmapScaler(fac, &scaler))
             || FAILED(IWICBitmapScaler_Initialize(scaler, (IWICBitmapSource *)conv, sw, sh,
                                                   WICBitmapInterpolationModeHighQualityCubic))) {
@@ -168,37 +134,7 @@ static int read_fitted(const WCHAR *path, uint8_t *out, WCHAR *err, size_t errn)
         swprintf_s(err, errn, L"Could not read the pixels of %s.", path);
         goto done;
     }
-    {
-        /* the scaled picture centred on the visible area; each texel takes
-           the picture at the place it lands (bilinear) */
-        const double ox = BG_VIEW_W / 2 - sw / 2.0, oy = BG_VIEW_H / 2 - sh / 2.0;
-        for (y = 0; y < BG_H; y++) {
-            double fy = screen_y(y) - oy - 0.5;
-            int y0, y1;
-            double ay;
-            if (fy < 0) fy = 0;
-            if (fy > sh - 1) fy = sh - 1;
-            y0 = (int)fy;
-            y1 = y0 + 1 < (int)sh ? y0 + 1 : y0;
-            ay = fy - y0;
-            for (x = 0; x < BG_W; x++) {
-                double fx = screen_x(x) - ox - 0.5, ax;
-                int x0, x1, c;
-                const uint8_t *p00, *p01, *p10, *p11;
-                if (fx < 0) fx = 0;
-                if (fx > sw - 1) fx = sw - 1;
-                x0 = (int)fx;
-                x1 = x0 + 1 < (int)sw ? x0 + 1 : x0;
-                ax = fx - x0;
-                p00 = img + ((size_t)y0 * sw + x0) * 4; p01 = img + ((size_t)y0 * sw + x1) * 4;
-                p10 = img + ((size_t)y1 * sw + x0) * 4; p11 = img + ((size_t)y1 * sw + x1) * 4;
-                for (c = 0; c < 4; c++) {
-                    const double v = (p00[c] * (1 - ax) + p01[c] * ax) * (1 - ay) + (p10[c] * (1 - ax) + p11[c] * ax) * ay;
-                    out[((size_t)y * BG_W + x) * 4 + c] = (uint8_t)(v + 0.5);
-                }
-            }
-        }
-    }
+    bg_map(img, sw, sh, out);
     ok = 1;
 done:
     free(img);

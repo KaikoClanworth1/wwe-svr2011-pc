@@ -1,7 +1,7 @@
 // SvR2011 Mod Maker: the window, the shell (title bar, rail, status line,
 // log, problems), projects, settings and the game data every page shares.
 // Pages: arena_page.cpp (arenas, backstage, VS screen), star_page.cpp,
-// signs_page.cpp, media_page.cpp, moves_page.cpp, assets_page.cpp,
+// signs_page.cpp, backgrounds_page.cpp, media_page.cpp, moves_page.cpp, assets_page.cpp,
 // anims_page.cpp, icons_page.cpp, help_page.cpp; the 3D editor is editor.cpp.
 #include "app.h"
 
@@ -961,6 +961,7 @@ const PageDesc kPages[] = {
     {PageId::kStar, "Superstar", "", &star_page::hooks, nullptr},
     {PageId::kMoves, "Moves", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
+    {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
     {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
@@ -1503,7 +1504,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   float star_height = 0;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
-  std::vector<std::wstring> sign_files, media_pictures;
+  std::vector<std::wstring> sign_files, media_pictures, background_files;
+  std::wstring background_save;
   int media_arena = -1;
   for (int i = 1; i < argc; ++i) {
     const bool more = i + 1 < argc;
@@ -1591,6 +1593,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--sign") && more) sign_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-sign-save") && more) sign_save = argv[++i];
+    else if (!wcscmp(argv[i], L"--background") && more) background_files.push_back(argv[++i]);
+    else if (!wcscmp(argv[i], L"--test-background-save") && more) background_save = argv[++i];
     else if (!wcscmp(argv[i], L"--media-arena") && more) media_arena = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--media-video") && more) media_video = argv[++i];
     else if (!wcscmp(argv[i], L"--media-picture") && more) media_pictures.push_back(argv[++i]);
@@ -1668,6 +1672,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
   if (star_height > 0) star_page::TestHeight(star_height);
   signs_page::TestStart(sign_files, sign_save);
+  backgrounds_page::TestStart(background_files, background_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
   arena_page::SetTestSave(test_save, test_lib);
   if (start_new >= 0 && start_new < 20) arena_page::StartNew(start_new);
@@ -1692,7 +1697,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }

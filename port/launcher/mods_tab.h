@@ -14,7 +14,10 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
 void mods_show(const WCHAR *game_dir);
 /* WM_COMMAND / WM_NOTIFY: 1 when handled. */
 int mods_command(int id, int code);
+/* 1: handled; 2 / 3: the window answers TRUE / FALSE (renaming a background). */
 int mods_notify(const NMHDR *nm);
+/* A background's name (manifest.txt name=). 1 on success. */
+int mods_rename(const WCHAR *folder, const WCHAR *name);
 /* Installs a .svrmod into <game_dir>/Mods (the + button without its dialog;
    tests: --mods-add <file>). 1 on success; the tab's status says why not. */
 int mods_install(const WCHAR *game_dir, const WCHAR *zip);

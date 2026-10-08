@@ -11,8 +11,9 @@
  * (Mods/MatchTypes/<id>: a manifest only) switch on one of the match types the port adds -
  * Slobber Knocker, Three Stages of Hell, Elimination... (src/match_types.cpp); they come
  * switched on. Background mods (Mods/Backgrounds/<id>: picture.dds + manifest) are main menu
- * pictures; "Add background picture" makes one from a PNG / JPG (backgrounds.c,
- * src/backgrounds_page.cpp). A mod is turned off by a "disabled" file in its folder. A .svrmod file is a
+ * pictures (or a pack of them, NN_<name>.dds, from the Mod Maker); "Add background picture"
+ * makes one from a PNG / JPG (backgrounds.c, src/backgrounds_page.cpp). A background's name
+ * (what the game's BACKGROUNDS page shows) can be changed in the list (click it, or F2). A mod is turned off by a "disabled" file in its folder. A .svrmod file is a
  * zip of such a folder.
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
@@ -443,10 +444,14 @@ static int install_file(const WCHAR *zip)
             wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
             goto place;
         }
-        if (background) {  /* a main menu picture: picture.dds (1024 x 512 DXT5) */
-            swprintf_s(need1, MAX_PATH, L"%s\\picture.dds", tmp);
-            if (!exists(need1)) {
-                status(L"That background mod is incomplete (it needs picture.dds).");
+        if (background) {  /* main menu pictures: picture.dds or a pack's *.dds (1024 x 512 DXT5) */
+            WIN32_FIND_DATAW pf;
+            HANDLE ph;
+            swprintf_s(need1, MAX_PATH, L"%s\\*.dds", tmp);
+            ph = FindFirstFileW(need1, &pf);
+            if (ph != INVALID_HANDLE_VALUE) FindClose(ph);
+            if (ph == INVALID_HANDLE_VALUE) {
+                status(L"That background mod is incomplete (it has no pictures: picture.dds).");
                 remove_tree(tmp, 0);
                 return 0;
             }
@@ -621,7 +626,7 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     if (title_font) SendMessageW(h, WM_SETFONT, (WPARAM)title_font, TRUE);
     add(tab, L"Static", L"Arenas, superstars and more. + adds a .svrmod file, \x2212 removes the selected "
                         L"mod, the tick turns it on or off.", SS_LEFT, 28, 86, 560, 36, 0);
-    s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
+    s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_EDITLABELS | WS_BORDER | WS_TABSTOP,
                  28, 126, 512, 250, id_base + M_LIST);
     ListView_SetExtendedListViewStyle(s_list, LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_DOUBLEBUFFER);
     for (i = 0; i < 6; i++) {
@@ -659,9 +664,62 @@ int mods_command(int id, int code)
     return 0;
 }
 
+/* A background's new name into its manifest.txt (name=), the other lines kept. */
+int mods_rename(const WCHAR *folder, const WCHAR *name)
+{
+    WCHAR man[MAX_PATH], tmp[MAX_PATH];
+    FILE *in = NULL, *out = NULL;
+    char line[1024], u[512];
+    int done = 0;
+    if (!name[0]) return 0;
+    swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", folder);
+    swprintf_s(tmp, MAX_PATH, L"%s\\manifest.new", folder);
+    WideCharToMultiByte(CP_UTF8, 0, name, -1, u, sizeof u, NULL, NULL);
+    if (_wfopen_s(&out, tmp, L"wb") || !out) return 0;
+    if (_wfopen_s(&in, man, L"rb") == 0 && in) {
+        while (fgets(line, sizeof line, in)) {
+            if (!strncmp(line, "name=", 5)) {
+                if (!done) fprintf(out, "name=%s\n", u);
+                done = 1;
+            } else {
+                fputs(line, out);
+                if (line[0] && line[strlen(line) - 1] != '\n') fputs("\n", out);
+            }
+        }
+        fclose(in);
+    }
+    if (!done) fprintf(out, "name=%s\n", u);
+    fclose(out);
+    return MoveFileExW(tmp, man, MOVEFILE_REPLACE_EXISTING) != 0;
+}
+
 int mods_notify(const NMHDR *nm)
 {
     if (!s_list || nm->hwndFrom != s_list || s_filling) return 0;
+    /* Renaming in place (backgrounds only: the others' names come with the
+       mod). 2: the window answers TRUE, 3: FALSE (svr2011_launcher.c). */
+    if (nm->code == LVN_BEGINLABELEDITW || nm->code == LVN_ENDLABELEDITW) {
+        const NMLVDISPINFOW *d = (const NMLVDISPINFOW *)nm;
+        LVITEMW it;
+        int i;
+        ZeroMemory(&it, sizeof it);
+        it.mask = LVIF_PARAM;
+        it.iItem = d->item.iItem;
+        i = ListView_GetItem(s_list, &it) ? (int)it.lParam : -1;
+        if (i < 0 || i >= s_nmods || _wcsicmp(s_mods[i].type, L"background")) {
+            if (nm->code == LVN_BEGINLABELEDITW) status(L"Only backgrounds can be renamed here.");
+            return nm->code == LVN_BEGINLABELEDITW ? 2 : 3;  /* (cancel / keep the old name) */
+        }
+        if (nm->code == LVN_BEGINLABELEDITW) return 3;
+        if (!d->item.pszText || !d->item.pszText[0]) return 3;  /* (Esc, or an empty name) */
+        if (!mods_rename(s_mods[i].folder, d->item.pszText)) {
+            status(L"It could not be renamed (is the game running?).");
+            return 3;
+        }
+        wcsncpy_s(s_mods[i].name, 128, d->item.pszText, _TRUNCATE);
+        status(L"Renamed: the game's BACKGROUNDS page shows the new name from the next start.");
+        return 2;
+    }
     if (nm->code == LVN_ITEMCHANGED) {
         const NMLISTVIEW *lv = (const NMLISTVIEW *)nm;
         if ((lv->uChanged & LVIF_STATE) && ((lv->uNewState ^ lv->uOldState) & LVIS_STATEIMAGEMASK))

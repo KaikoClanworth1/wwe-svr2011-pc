@@ -1,7 +1,7 @@
 # SvR2011 Mod Maker - manual
 
 The Mod Maker makes mods for the WWE SmackDown vs. Raw 2011 PC port: new
-arenas, backstage rooms, superstars, move packs, crowd signs and media packs,
+arenas, backstage rooms, superstars, move packs, crowd signs, main menu backgrounds and media packs,
 all as `.svrmod` files the launcher's Mods tab installs. It also shows what is
 inside the game's files, plays the game's animations, and swaps the pictures
 of your Created Superstars.
@@ -149,6 +149,17 @@ files when it starts (a few seconds the first time). Format: docs/MOVE_PACKS.md.
 Pictures the crowd holds up in every match, with the game's own. Add any
 pictures: each is fitted onto a white 128 x 64 board. A superstar's own
 signs (held by that superstar's fans) go on the Superstar page instead.
+
+## Menu backgrounds
+
+Pictures behind the main menu, after the game's own 12 (MY WWE -> OPTIONS ->
+BACKGROUNDS turns each on or off in the game). Add any pictures: each is
+fitted to the screen without squashing (the edges that don't fit are cut),
+and the preview shows how the main menu will show it. Give each a name (the
+game's BACKGROUNDS page shows it). "Show the game's logo" puts the game's
+"SmackDown vs RAW 2011" logo over them; leave it off for fan art with its own
+logo. One picture, or a pack of many. (The launcher's Mods tab can also turn
+a single picture into a background: Add background picture.)
 
 ## Media
 

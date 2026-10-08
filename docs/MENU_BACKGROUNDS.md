@@ -63,7 +63,7 @@ The port does it without new groups (next section).
   - `picture.dds`: 1024 x 512 DXT5, one level (EXHBG2's size and format);
   - `manifest.txt`: `type=Background`, `id`, `name`, `version`, `logo=0|1`;
   - a `disabled` file turns it off (as other mods).
-- **Made by:** the PC launcher's Mods tab, **Add background picture…** (`launcher/backgrounds.c`; test flag `--bg-add <game folder> <picture> [logo]`), and the Android app's Mods page, **Add a background picture…** (`Backgrounds.java`). A `.svrmod` with `type=Background` and `picture.dds` installs as one too.
+- **Made by:** the PC launcher's Mods tab, **Add background picture…** (`launcher/backgrounds.c`; test flag `--bg-add <game folder> <picture> [logo]`), the Android app's Mods page, **Add a background picture…** (`Backgrounds.java`), and the Mod Maker's **Menu backgrounds** page (packs; test flags `--page-name backgrounds --background <picture>... --test-background-save <file>`). A `.svrmod` with `type=Background` installs on both launchers (and as a bundled mod); Create APK carries `Mods/Backgrounds`.
 - **In the cycle:** after the 12, as numbers 12, 13, ... in game data `+8680` (sorted by folder name).
   - `sub_8258A990`'s hook wraps at 12 + the custom count.
   - `sub_82458F58`'s hook reads the number from game data (the constructor's +68 copy is clamped to 0-11). For a custom picture it sets +68 = 0, so EB00 loads.
@@ -71,7 +71,9 @@ The port does it without new groups (next section).
   - `EXHBG2` gets the custom picture's blocks;
   - with `logo=0`, `EXHBG` (the logo, A8R8G8B8) is zeroed (transparent).
   - No pac change and no memory scan.
-- **The page:** the custom pictures are rows after the 12: A on / off (their `disabled` file), X shows / hides the game's logo on one (`logo=` in its manifest, from its next showing).
+- **Packs** (the Mod Maker's Menu backgrounds page): one folder with `NN_<name>.dds` pictures; `title.<file>=` names them, `logo=` is the pack's default, `logo.<file>=` one picture's. The game lists each picture; `<file>.off` turns one off, `disabled` the whole pack (the launcher's tick). Format: docs/SVRMOD_FORMAT.md.
+- **Names:** the launcher's Mods list renames a background in place (click its name or F2; test flag `--mods-rename <folder> <name>`): manifest `name=`.
+- **The page:** the custom pictures are rows after the 12: A on / off (a single picture's `disabled` file, a pack picture's `<file>.off`), X shows / hides the game's logo on one (`logo=` / `logo.<file>=`, from its next showing).
 
 ### Where the picture lands on screen
 
@@ -85,6 +87,7 @@ Measured with a grid picture (the menu's layout `EXBL` draws it in parts; the pi
 
 - So the screen shows tx 32-972 and ty 31-512, down to y 665 (the menu's footer is below).
 - The game's own pictures are drawn pre-distorted for this: re-rendering EB00 through the mapping matches a screenshot exactly.
+- The fitting is `launcher/bg_map.h`, shared by the launcher and the Mod Maker (the Android app has the same numbers).
 - The converters scale the player's picture to cover the visible 1280 x 665 area, centred (no squashing; what falls outside is cut). Each texel takes the picture's pixel where it lands (bilinear), so it looks right on screen; texels off screen repeat the edge.
 - A 16:10 wallpaper loses about 8% at the top and the bottom; a 16:9 one loses about 4% at each.
 

@@ -9,7 +9,7 @@ Every mod has a `manifest.txt` of `key=value` lines (UTF-8, one per line):
 
 | key | all types |
 |---|---|
-| `type=` | `arena`, `backstage`, `superstar`, `moves`, `signs`, `media` (the launcher routes the folder by it) |
+| `type=` | `arena`, `backstage`, `superstar`, `moves`, `signs`, `Background`, `media` (the launcher routes the folder by it) |
 | `id=` | the folder name: letters, digits and `_` (a mod with the same id replaces the older one) |
 | `name=` | shown in the launcher and, where it matters, in the game |
 | `author=`, `version=` | shown in the launcher; a newer version replaces an installed one, an older one is kept |
@@ -98,6 +98,23 @@ starts. Game: `src/move_packs.cpp`; details docs/MOVE_PACKS.md.
 Any `*.dds` in the folder: 128 x 64 DXT1 with mips, as the game's own
 (`audience.pac` AUDE/BORD). They join the general signs every match draws
 from (ids 6001+). Game: `src/crowd_signs.cpp`.
+
+## type=Background (`Mods\Backgrounds\<id>`)
+
+Main menu pictures, shown after the game's own 12 (docs/MENU_BACKGROUNDS.md).
+Each is 1024 x 512 DXT5, one level, already fitted to where the menu draws its
+picture (launcher/bg_map.h).
+
+| | |
+|---|---|
+| `picture.dds` | one picture (its name: `name=`) |
+| `NN_<name>.dds` | a pack's pictures, in order |
+| `logo=0\|1` | the game's "SmackDown vs RAW 2011" logo over them (0: hidden) |
+| `title.<file>=` | a pack picture's name in the game (default: the file's name) |
+| `logo.<file>=` | one pack picture's logo (the game writes it from its BACKGROUNDS page) |
+
+The game writes `disabled` (a single picture, or the whole pack off) and
+`<file>.off` (one pack picture off). Game: `src/backgrounds_page.cpp`.
 
 ## type=media (`Mods\Media\<id>`)
 

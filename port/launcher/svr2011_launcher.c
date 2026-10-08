@@ -6544,9 +6544,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_FR_NAME, name);
             }
         }
-        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST)
-            if (!texpacks_notify(n))
-                mods_notify(n);
+        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n)) {
+            const int r = mods_notify(n);
+            if (r == 2 || r == 3) return r == 2;  /* (renaming a background: mods_tab.c) */
+        }
         break;
     }
     case WM_COMMAND:
@@ -7160,6 +7161,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         int ok;
         console_setup();
         ok = mods_add_background(argv[2], argv[3], argc >= 5 && !wcscmp(argv[4], L"logo"));
+        LocalFree(argv);
+        return ok ? 0 : 1;
+    }
+    /* Tests: --mods-rename <mod folder> <name> renames a background as editing
+       its name in the Mods list does. */
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--mods-rename")) {
+        const int ok = mods_rename(argv[2], argv[3]);
         LocalFree(argv);
         return ok ? 0 : 1;
     }
