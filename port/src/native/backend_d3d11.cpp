@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <mutex>
 #include <vector>
 
@@ -35,15 +36,19 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-// The frame shown, and the newest one published: shown once its submission
-// has been replayed on the context (plume replays on its own thread).
+// The frame shown, and the ones published since: each is shown once its
+// submission has been replayed on the context (plume replays on its own
+// thread). The newest replayed one wins - with a slow GPU the replay is always
+// behind the newest frame, which alone would never be shown (a black screen).
 struct FrameImage {
   ComPtr<ID3D11Texture2D> texture;
   uint32_t w = 0, h = 0;
   uint64_t submission = 0;
 };
 std::mutex g_frame_mutex;
-FrameImage g_frame, g_newest;
+FrameImage g_frame;
+std::deque<FrameImage> g_published;
+constexpr size_t kMaxPublished = 8;
 plume::D3D11CommandQueue* g_queue = nullptr;
 
 ID3D11Device* Native(plume::RenderDevice* device) {
@@ -104,14 +109,16 @@ class D3D11Backend final : public Backend {
     f.submission = g_queue ? g_queue->submitted.load() : 0;
     svr2011::LatencyOnPublish();  // (frame_rate.h: test aid)
     std::lock_guard lock(g_frame_mutex);
-    g_newest = std::move(f);
+    g_published.push_back(std::move(f));
+    if (g_published.size() > kMaxPublished) g_published.pop_front();
   }
 
   bool GetFrame(rex::external_frame::Frame& frame) override {
     std::lock_guard lock(g_frame_mutex);
-    if (g_newest.texture && (!g_queue || g_queue->replayed >= g_newest.submission)) {
-      g_frame = std::move(g_newest);
-      g_newest = {};
+    const uint64_t replayed = g_queue ? g_queue->replayed.load() : ~0ull;
+    while (!g_published.empty() && g_published.front().submission <= replayed) {
+      g_frame = std::move(g_published.front());
+      g_published.pop_front();
     }
     if (!g_frame.texture) return false;
     frame.d3d11_texture = g_frame.texture.Get();
@@ -123,7 +130,7 @@ class D3D11Backend final : public Backend {
   void ClearFrame() override {
     std::lock_guard lock(g_frame_mutex);
     g_frame = {};
-    g_newest = {};
+    g_published.clear();
   }
 
   bool DeviceLost(plume::RenderDevice* device) override {
