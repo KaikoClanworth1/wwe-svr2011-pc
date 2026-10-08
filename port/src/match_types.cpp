@@ -1438,14 +1438,17 @@ REX_HOOK_RAW(sub_82216C58) {
 // floor and their AI never fights (neither their role +2624 nor the AI's mark
 // +168 changes that during a match). So the port makes them act: each world
 // update, a wrestler on the floor (y about 0, outside the ring's +-30 - in
-// the ring y is -12) for half a second gets the nearest lumberjacks within
-// reach (two at most) - each grapples him once (kAttackMotions in turn,
-// started from the fighter control hook above) - and back in the ring he is
-// left alone until his next trip out. Their hits would disqualify them (lost
-// 7, the match over): LumberjackBeforeJudge takes that back.
+// the ring y is -12) for half a second gets the nearest lumberjack within
+// reach, who grapples him (kAttackMotions in turn, started from the fighter
+// control hook above) - and again while he stays out: one attack on a
+// wrestler every kWrestlerGap, each lumberjack resting kLumberjackGap between
+// his. (Each lumberjack once per trip out, two at most, left a wrestler who
+// stayed on the floor alone after two - "they just watch".) Their hits would
+// disqualify them (lost 7, the match over): LumberjackBeforeJudge takes that back.
 namespace {
 
-constexpr float kRingHalf = 30.0f, kReach = 20.0f;
+constexpr float kRingHalf = 30.0f, kReach = 26.0f;
+constexpr uint32_t kWrestlerGap = 180, kLumberjackGap = 360;  // (updates: 3 s, 6 s)
 
 struct Pos {
   float x, y, z;
@@ -1458,8 +1461,8 @@ void LumberjackController(uint8_t* base) {
   constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C;
   static uint32_t last_frames = 0;
   static int floor_time[6] = {};        // (updates a wrestler has been on the floor (+) / in the ring (-))
-  static bool attacked[6][6] = {};      // (lumberjack i has had wrestler w this trip out)
-  static uint32_t busy_until[6] = {};   // (a lumberjack's last grab: no other for 3 s)
+  static uint32_t next_on[6] = {};      // (a wrestler: the next attack on him not before)
+  static uint32_t busy_until[6] = {};   // (a lumberjack: resting until)
   const uint32_t frames = Rd32(base + kMatchFrames);
   const bool running = frames != last_frames && frames > 60;
   if (running && last_frames <= 60) {  // (once a match: its live rules - byte 5 the count out, 0x80 none)
@@ -1470,7 +1473,7 @@ void LumberjackController(uint8_t* base) {
   last_frames = frames;
   if (!running) {
     for (int& f : floor_time) f = 0;
-    for (auto& row : attacked) for (bool& a : row) a = false;
+    for (uint32_t& n : next_on) n = 0;
     for (uint32_t& b : busy_until) b = 0;
     for (Attack& a : g_attacks) a = Attack{};
     return;
@@ -1500,26 +1503,20 @@ void LumberjackController(uint8_t* base) {
     if (!ch[w] || is_lumberjack(w)) continue;
     if (OnFloor(pos[w])) floor_time[w] = std::max(floor_time[w], 0) + 1;
     else if (InRing(pos[w])) floor_time[w] = std::min(floor_time[w], 0) - 1;
-    if (floor_time[w] <= -30)  // (back in the ring: a new trip out may be punished again)
-      for (uint32_t i = 0; i < 6; ++i) attacked[i][w] = false;
-    if (floor_time[w] < 30) continue;
-    int going = 0;
-    for (uint32_t i = 0; i < 6; ++i) going += attacked[i][w];
-    while (going < 2) {  // (the nearest lumberjacks within reach who haven't had him yet)
-      int best = -1;
-      float best_d = kReach;
-      for (uint32_t i = 0; i < 6; ++i)
-        if (is_lumberjack(i) && !attacked[i][w] && frames >= busy_until[i] && !InRing(pos[i])) {
-          const float d = std::hypot(pos[i].x - pos[w].x, pos[i].z - pos[w].z);
-          if (d < best_d) best = int(i), best_d = d;
-        }
-      if (best < 0) break;
-      attacked[best][w] = true;
-      busy_until[best] = frames + 180;
-      g_attacks[best] = Attack{ch[best], ch[w], frames};
-      REXLOG_INFO("match types: lumberjack {} goes for person {}", Rd32(base + ch[best] + 1156), Rd32(base + ch[w] + 1156));
-      ++going;
-    }
+    if (floor_time[w] < 30 || frames < next_on[w]) continue;
+    // (the nearest rested lumberjack within reach)
+    int best = -1;
+    float best_d = kReach;
+    for (uint32_t i = 0; i < 6; ++i)
+      if (is_lumberjack(i) && frames >= busy_until[i] && !InRing(pos[i])) {
+        const float d = std::hypot(pos[i].x - pos[w].x, pos[i].z - pos[w].z);
+        if (d < best_d) best = int(i), best_d = d;
+      }
+    if (best < 0) continue;
+    busy_until[best] = frames + kLumberjackGap;
+    next_on[w] = frames + kWrestlerGap;
+    g_attacks[best] = Attack{ch[best], ch[w], frames};
+    REXLOG_INFO("match types: lumberjack {} goes for person {}", Rd32(base + ch[best] + 1156), Rd32(base + ch[w] + 1156));
   }
 }
 
@@ -1626,6 +1623,20 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
       if (s != last) {
         last = s;
         REXLOG_INFO("item: under the ring ({}):{} frame {}", n, s, frames);
+      }
+    }
+    // (each minute: in how many of its seconds someone held a weapon)
+    static uint32_t held_s = 0, sampled_s = 0, last_sample = 0;
+    if (frames > 0 && frames / 60 != last_sample) {
+      last_sample = frames / 60;
+      bool held = false;
+      for (uint32_t i = 0; i < 72 && !held; ++i)
+        if (const uint32_t o = Rd32(base + 0x82DE0220 + i * 4); o && Rd32(base + o + 80) < 1000)
+          held = (Rd32(base + o + 44) & 0xFF) != 0xFF;
+      held_s += held, ++sampled_s;
+      if (sampled_s == 60) {
+        REXLOG_INFO("item: a weapon in hand {} of the last 60 s, frame {}", held_s, frames);
+        held_s = sampled_s = 0;
       }
     }
     static uint32_t search_from[6] = {};
@@ -1837,11 +1848,38 @@ REX_HOOK_RAW(sub_8227D130) {
 // (test aid: SVR2011_TEST_WE_AI_OFF=1 - as the game)
 namespace {
 constexpr float kNearWeapon = 90.f;  // (the ring is about +-30, the placed ones at most ~75 from its middle)
+// After a CPU's weapon action (one made, or redirected), its next weapon
+// choices are the game's own for a while: without that, every dropped weapon
+// had another within reach - weapon after weapon, rarely wrestling.
+constexpr uint32_t kWeaponCooldown = 25 * 60;  // (updates)
+struct WeaponTurn {
+  uint32_t ai = 0, at = 0;
+};
+WeaponTurn g_weapon_turns[8];
+bool WeaponCooling(uint8_t* base, uint32_t ai) {
+  const uint32_t frames = Rd32(base + 0x82E3CD0C);
+  for (const WeaponTurn& w : g_weapon_turns)
+    if (w.ai == ai && frames >= w.at && frames - w.at < kWeaponCooldown) return true;
+  return false;
+}
+void WeaponUsed(uint8_t* base, uint32_t ai) {
+  const uint32_t frames = Rd32(base + 0x82E3CD0C);
+  WeaponTurn* slot = nullptr;  // (this CPU's, else a free one, else the oldest)
+  for (WeaponTurn& w : g_weapon_turns)
+    if (w.ai == ai) slot = &w;
+  for (WeaponTurn& w : g_weapon_turns)
+    if (!slot && !w.ai) slot = &w;
+  for (WeaponTurn& w : g_weapon_turns)
+    if (!slot || (slot->ai != ai && slot->ai && w.at < slot->at)) slot = &w;
+  *slot = {ai, frames};
+}
 
 // The nearest usable weapon lying within kNearWeapon of the AI (its slot), or -1.
 int32_t NearWeapon(PPCContext& ctx, uint8_t* base, uint32_t ai) {
   static const bool ai_off = std::getenv("SVR2011_TEST_WE_AI_OFF") != nullptr;
   if (!g_weapons || ai_off || !ai || !WeaponsRule(base[0x82E3DE00])) return -1;
+  static const bool no_cooldown = std::getenv("SVR2011_TEST_WE_NO_COOLDOWN") != nullptr;  // (test aid: 2.0.5's way)
+  if (!no_cooldown && WeaponCooling(base, ai)) return -1;
   const uint32_t person = Rd32(base + ai);
   if (!person) return -1;
   PPCContext c = ctx;
@@ -1867,6 +1905,13 @@ int32_t NearWeapon(PPCContext& ctx, uint8_t* base, uint32_t ai) {
 
 REX_EXTERN(__imp__sub_828578E8);
 REX_HOOK_RAW(sub_828578E8) {
+  // (a CPU in its weapon cooldown: "a usable weapon lies somewhere" (157) is no - it wrestles)
+  static const bool no_cooldown = std::getenv("SVR2011_TEST_WE_NO_COOLDOWN") != nullptr;
+  if (ctx.r4.u32 == 157 && ctx.r3.u32 && g_weapons && !no_cooldown && WeaponsRule(base[0x82E3DE00]) &&
+      WeaponCooling(base, Rd32(base + ctx.r3.u32))) {
+    ctx.r3.u64 = 0;
+    return;
+  }
   if (ctx.r4.u32 == 158 && ctx.r3.u32 && NearWeapon(ctx, base, Rd32(base + ctx.r3.u32)) >= 0) {
     ctx.r3.u64 = 0;
     return;
@@ -1878,6 +1923,9 @@ REX_EXTERN(__imp__sub_82812838);
 REX_HOOK_RAW(sub_82812838) {
   const uint32_t id = ctx.r4.u32;
   if ((id == 140 || id == 141 || id == 260) && NearWeapon(ctx, base, ctx.r3.u32) >= 0) ctx.r4.u64 = 300;
+  // (a weapon action made: this CPU's cooldown starts - WEAPONS EVERYWHERE)
+  if (g_weapons && ctx.r3.u32 && (id == 140 || id == 141 || id == 260 || (id >= 300 && id <= 304)))
+    WeaponUsed(base, ctx.r3.u32);
   // (with SVR2011_TEST_ITEM_LOG: each weapon action made - asked id, made id)
   static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr;
   if (item_log && (id == 140 || id == 141 || id == 260 || (id >= 300 && id <= 304))) {
