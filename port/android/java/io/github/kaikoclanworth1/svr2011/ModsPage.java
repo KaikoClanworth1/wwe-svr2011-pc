@@ -50,7 +50,7 @@ final class ModsPage {
         LinearLayout c = a_.column();
         TextView about = a_.text("Custom arenas and superstars made with the SvR2011 Mod Maker on the PC. Arenas are "
             + "on the arena select pages after the game's own arenas (move right past the last arena); superstars are "
-            + "under the M tile of the character select (up to 50). Changes apply the next time the game starts.",
+            + "under the M tile of the character select (up to 72). Changes apply the next time the game starts.",
             14, LauncherActivity.kDim);
         about.setPadding(a_.dp(4), a_.dp(6), a_.dp(4), a_.dp(4));
         c.addView(about);

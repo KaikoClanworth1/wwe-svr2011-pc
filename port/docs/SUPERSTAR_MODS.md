@@ -1,6 +1,6 @@
 # Superstar mods (arenas branch)
 
-New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 50.
+New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 72.
 
 - **Game:** `src/superstar_mods.cpp`.
 - **Select screen EXTRA list:** `src/managers.cpp`.
@@ -11,7 +11,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 50.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
@@ -26,17 +26,22 @@ moves, entrance motions and pyro, and select render. It must be one of the 91
 playable ones, those with `SSFA` renders in `pac/DLC_HD.pac` (which includes
 The Hurricane, 274).
 
-## Ids: 50 slots
+## Ids: 72 slots
 
 The pool, in `kPool`:
 
-- the free DLC slots **59-69** (real DLC uses 51-58);
-- then 39 disc ids whose `CHAR/DAT` record is a blank placeholder: name "0",
+- 61 disc ids whose `CHAR/DAT` record is a blank placeholder: name "0",
   loaded, not selectable, with no model, render, entrance or match data in any
-  pac (111, 114, 121, ...).
+  pac (111, 114, 121, ...; the 22 from 228 on were added later, 50 -> 72);
+- then the free DLC slots **59-69** (real DLC uses 51-58).
 
-Each of these has a record, a profile and room in the save. 61 such disc ids
-exist, so the pool could grow to 72.
+Each of these has a record, a profile and room in the save.
+
+The ceiling: the game indexes 242 ids (0-321, table 0x82DB3610; 322 means
+"no character"). 65 more indexed ids are "absent" (present flag
+0x82DB3AE0 + id off): with that flag set they could hold mods too, about 137
+in all - not done, untested. Past that there is no free record, profile or
+save room without changing the game's index and the save layout.
 
 Each mod keeps its id in `Mods/Superstars/slots.txt` (`<folder>\t<id>`):
 
@@ -253,6 +258,15 @@ the slot. A save made with the mod keeps the player's own edits.
     (`*_SSN_JEFFHARDY_0..2` name calls of 2-3 s, `*_SSP_JEFFHARDY_0..5,9`
     introductions of 8-12 s), which nothing used.
   - It takes priority over `voice=`. `call=` then only picks the commentary.
+- **`height=<scale>`:** its size against the base's, 0.80-1.25 (1.05 = 5%
+  taller; missing = the base's own). Record +28 is the superstar's scale, 4.12
+  fixed point (4096 = 1.0, most are near it): the skeleton is built with its
+  bone lengths times it (sub_826E75A8), and grapples / IK follow. The port
+  writes base +28 x scale, kept within 3300-4900 (so about x0.81-x1.20 for a
+  4096 base), from the base's value each time (never compounding through a
+  save). At 4139 and up the game counts the wrestler as "big" (another
+  variant of some moves). The moves are made for about 1.0: 0.90-1.15 plays
+  best. Unlike the other keys here it is set on every load, saves included.
 - **SvR 2010 model:** `tools/svr10_char.py <2010 pac> <id> <2011 pac> <out>`
   turns a 2010 chNNN.pac into one 2011 loads. It swaps in 2011's face
   animation child (0x64) and uses the 2010 select bust as the 256x256

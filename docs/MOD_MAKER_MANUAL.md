@@ -101,7 +101,7 @@ pac (the area's own cars and props, as `tools/svr08_gimmick.py` makes).
 
 ## Superstar
 
-A new playable character under the M tile of the character select (up to 50
+A new playable character under the M tile of the character select (up to 72
 mods).
 
 - **Name** (up to 31 letters) and a short name for the match screens.

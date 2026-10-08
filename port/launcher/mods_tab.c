@@ -458,7 +458,7 @@ place:
                                                         L"next time the game starts."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
-                                                   L"select (up to 50 superstar mods)."
+                                                   L"select (up to 72 superstar mods)."
                                                  : L"Installed \"%s\". It is on the arena select pages after the "
                                                    L"game's own arenas.",
                m.name[0] ? m.name : m.id);

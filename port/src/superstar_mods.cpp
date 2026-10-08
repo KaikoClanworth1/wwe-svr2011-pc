@@ -1,4 +1,4 @@
-// Superstar mods (arenas branch): up to 50 new playable characters from
+// Superstar mods (arenas branch): up to 72 new playable characters from
 // <game>/Mods/Superstars/<id>/ (manifest.txt: name=, short=, base=<character
 // id>, song=, movie=; ch.pac: a character model pac; a "disabled" file turns
 // one off). docs/SUPERSTAR_MODS.md has the whole story.
@@ -61,15 +61,21 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// The ids mods take (50): disc ids whose roster record is a blank placeholder
+// The ids mods take (72): disc ids whose roster record is a blank placeholder
 // ("0", loaded from CHAR/DAT, not selectable) with no model, select render,
-// entrance or match data anywhere in the game's pacs, then the free DLC slots
-// (59-69; real DLC uses 51-58). Each has a record, profile and save slot.
-// (Disc ids first: a DLC slot's placeholder profile changes with the DLC
-// mounted - IsBlank / RecordBlanks.)
+// entrance or match data anywhere in the game's pacs (61 of them; the same
+// DAT / PRO entries in the disc's and the DLCs' chEtc), then the free DLC
+// slots (59-69; real DLC uses 51-58). Each has a record, profile and save
+// slot (the game indexes 242 ids, 0-321). (Disc ids first: a DLC slot's
+// placeholder profile changes with the DLC mounted - IsBlank / RecordBlanks.)
+// The 22 after 227 were added later (50 -> 72 slots); a mod keeps its id (slots.txt).
+// (65 more indexed ids are "absent" - present flag 0x82DB3AE0 + id off - and
+// could be used if that flag were set: not done.)
 constexpr uint32_t kPool[] = {111, 114, 121, 127, 128, 129, 130, 136, 141, 148, 149, 151, 152,
                               154, 155, 157, 162, 163, 167, 168, 172, 173, 181, 185, 189, 200,
                               202, 203, 204, 206, 207, 209, 213, 214, 220, 221, 223, 225, 227,
+                              228, 229, 230, 232, 233, 246, 247, 252, 258, 260, 266, 269, 270,
+                              273, 280, 285, 286, 302, 303, 304, 307, 320,
                               59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69};
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
 constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
@@ -78,6 +84,7 @@ constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
 constexpr uint32_t kFullName = 34, kSecondName = 102, kShortName = 170, kNameLen = 32;
+constexpr uint32_t kScale = 28;  // the superstar's height scale (4.12 fixed point)
 constexpr uint32_t kSelectable = 221, kDlc = 257, kSamePerson = 228, kAbilities = 230;
 
 struct Mod {
@@ -113,6 +120,8 @@ struct Mod {
   std::vector<std::pair<uint16_t, uint16_t>> moves;
   int entrance = -1;            // entrance number (manifest entrance=; profile +0x1C0 +0x14..+0x18)
   std::vector<uint8_t> abilities;  // (manifest abilities=a,b,...; record +230.., up to 8)
+  // its height: a factor of the base's (manifest height=1.05; 0 = the base's)
+  double height = 0;
 };
 std::vector<Mod> g_mods;
 std::vector<std::string> g_extra_mounts;  // other overlay pacs (smods:\<file>; AddOverlayMount)
@@ -481,6 +490,10 @@ void LoadMods() {
           for (char c : l.substr(10))
             if (std::isalnum(uint8_t(c)) && m.announcer.size() < 24) m.announcer.push_back(char(std::toupper(uint8_t(c))));
         }
+        if (l.rfind("height=", 0) == 0) {
+          const double h = std::atof(l.c_str() + 7);
+          if (h > 0) m.height = std::clamp(h, 0.80, 1.25);
+        }
         if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
         if (l.rfind("abilities=", 0) == 0) {
           for (const char* q = l.c_str() + 10; *q && m.abilities.size() < 8;) {
@@ -734,6 +747,19 @@ void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
 // mod's copy (DLC, in the EXTRA list instead), and the base's tile picked
 // nobody - Stone Cold, Matt Hardy, Mr. McMahon and William Regal couldn't be
 // chosen (2.0.3 / 2.0.4). 0 = no tile, as the placeholders have.
+// Its height (manifest height=): record +28 is the superstar's scale, 4.12
+// fixed point (4096 = 1.0) - the character's skeleton is built with its bone
+// lengths times it, and grapples / IK follow. Always from the base's value
+// (never compounding over a kept or saved record); clamped to what the
+// game's moves still fit.
+void SetHeight(uint8_t* sr, const uint8_t* br, const Mod& m) {
+  if (m.height <= 0) return;
+  const long v = std::clamp(std::lround(Rd16(br + kScale) * m.height), 3300L, 4900L);
+  if (Rd16(sr + kScale) != uint32_t(v))
+    REXLOG_INFO("[svr2011] superstar mods: id {} height x{:.2f} ({} -> {})", m.slot, m.height, Rd16(br + kScale), v);
+  sr[kScale] = uint8_t(v >> 8), sr[kScale + 1] = uint8_t(v);
+}
+
 void OwnSelectTile(uint8_t* sr, const uint8_t* br) {
   if (Rd16(sr + kSelectTile) && Rd16(sr + kSelectTile) == Rd16(br + kSelectTile)) sr[kSelectTile] = sr[kSelectTile + 1] = 0;
 }
@@ -772,6 +798,7 @@ void ApplyRecords(uint8_t* base) {
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
       sr[kSelectable] = 1, sr[kDlc] = 1;
       OwnSelectTile(sr, br);  // (a save from before 2.0.5 has the base's)
+      SetHeight(sr, br, m);
       static std::vector<std::pair<uint32_t, uint32_t>> told;  // (slot, its ratings when last logged)
       const uint32_t r = uint32_t(sr[0]) << 16 | sr[1] << 8 | sr[2];
       auto t = std::find_if(told.begin(), told.end(), [&](const auto& x) { return x.first == m.slot; });
@@ -792,6 +819,7 @@ void ApplyRecords(uint8_t* base) {
       if (k) {  // (as it was before the game reloaded its records)
         std::memcpy(sr, k->record.data(), kRecordSize);
         OwnSelectTile(sr, br);
+        SetHeight(sr, br, m);
         continue;
       }
     }
@@ -808,6 +836,7 @@ void ApplyRecords(uint8_t* base) {
       if (m.ratings[k] > 0) sr[k] = sr[8 + k] = uint8_t(m.ratings[k]);
     if (!m.abilities.empty())
       for (uint32_t k = 0; k < 8; ++k) sr[kAbilities + k] = k < m.abilities.size() ? m.abilities[k] : 0;
+    SetHeight(sr, br, m);
 
     // test aid: SVR2011_TEST_STAR_EDIT=<id> - that mod's ratings set to 20 (as
     // an edit made in the game would), to see them kept through a save

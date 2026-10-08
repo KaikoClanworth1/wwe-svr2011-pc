@@ -42,6 +42,7 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import struct
 import sys
 
@@ -234,6 +235,62 @@ def convert_motion(d, T):
                     changed += 1
                 q += ln
     return bytes(out), changed
+
+
+def root_z(d):
+    """the first root Z (pose record 0x7D: float x, y, z at +2) of a BM motion, or None"""
+    nf, recs = frames(d)
+    for f, p, sz in recs:
+        r = d[p:p + sz]
+        if r and r[0] & 0x80:
+            r = r[1 + (r[0] & 0x7f):]
+        if len(r) >= 14 and r[0] == 0x7d:
+            return struct.unpack_from('<f', r, 10)[0]
+    return None
+
+
+def shift_root_z(d, dz):
+    """every root Z of a BM motion + dz"""
+    out = bytearray(d)
+    nf, recs = frames(d)
+    for f, p, sz in recs:
+        q = p + (1 + (d[p] & 0x7f) if sz and d[p] & 0x80 else 0)
+        if p + sz - q >= 14 and d[q] == 0x7d:
+            struct.pack_into('<f', out, q + 10, struct.unpack_from('<f', d, q + 10)[0] + dz)
+    return bytes(out)
+
+
+# SvR 2011 moved the "sitting in the corner" pose 254 units (~25 cm) out of
+# the corner: its idle 152 / slump 581 end at victim root Z -586, 2010's at
+# -333, and every 2011 sitting-corner move was re-rooted to match. A 2010
+# sitting-corner move (2010 WAZE +0x73 = 12) ported as is starts both
+# wrestlers deeper in the corner than the 2011 pose: the victim's hips inside
+# the post and pads (Umaga's Running Knee 5832 lifted Sabu above the
+# turnbuckle). 2011 re-rooted its own copies by the same amount (running
+# dropkick 3422 x=20: victim -326 -> -577, attacker +251). So: victim (y 1/51)
+# root Z - 253, attacker (y 0/50) + 253, per x (a running move's x=20 keys;
+# its run-up x=0 is left alone) - when the victim starts where 2010's sitting
+# pose is (first root Z above -450; 2010 has a few moves already at 2011's).
+SIT_SITUATION, SIT_SHIFT, SIT_2010_MIN = 12, -253.0, -450.0
+
+
+def corner_shift(motions):
+    """motions: the dict(x, y, data) of one sitting-corner move (any banks) -> shifted in place; notes"""
+    notes = []
+    xs = set(m['x'] for m in motions)
+    for x in sorted(xs):
+        if x == 0 and 20 in xs:
+            continue
+        victim = next((m['data'] for m in motions if m['x'] == x and m['y'] == 1), None)
+        z0 = root_z(victim) if victim else None
+        if z0 is None or z0 < SIT_2010_MIN:
+            continue
+        d = SIT_SHIFT
+        for m in motions:
+            if m['x'] == x and m['y'] in (0, 1, 50, 51):
+                m['data'] = shift_root_z(m['data'], d if m['y'] in (1, 51) else -d)
+        notes.append('x=%d: victim root z %.0f -> %.0f (attacker %+.0f)' % (x, z0, z0 + d, -d))
+    return notes
 
 
 def bank_insert(raw, new):
@@ -694,6 +751,15 @@ def build(ctx, ids, namelist=False):
                 else:
                     conv, n = convert_motion(e['data'], raw10[0x10:0x110])   # source bank's event-size table
                 per_bank[p11].append(dict(y=k[2], x=k[1], id=k[0], frames=e['frames'], data=conv, src=p10))
+    # sitting-in-the-corner moves: re-rooted to 2011's sitting pose (corner_shift)
+    w10raw = unpack(entry_get(ctx.mg10, b'MOVS', b'WAZE'))
+    _, _, wi10 = waze_load(w10raw)
+    for mid in sorted(plan):
+        if mid not in wi10 or w10raw[wi10[mid][0] + 0x73] != SIT_SITUATION:
+            continue
+        mine = [m for p11, lst in per_bank.items() if not p11.startswith('MOTP') for m in lst if m['id'] == mid]
+        for n in corner_shift(mine):
+            ctx.p('corner %d (sitting): %s' % (mid, n))
     os.makedirs(os.path.join(out, 'banks'), exist_ok=True)
     pack = dict(format='svr2011-movepack/1', moves=sorted(plan), banks=[], misc={})
     mdir = os.path.join(out, 'movepack', 'motions')
@@ -1134,6 +1200,52 @@ def verify(pac11, out):
     return ok
 
 
+def corner_fix_svrmod(pac10, path, dry=False):
+    """An already built SvR 2010 superstar mod (.svrmod): its ported sitting-corner
+    moves re-rooted (corner_shift), version +0.1. Returns the notes (empty: nothing to do)."""
+    import zipfile
+    h, g, t = read_epac(os.path.join(pac10, 'misc.pac'))
+    w10 = unpack(entry_get(g, b'MOVS', b'WAZE'))
+    _, _, wi10 = waze_load(w10)
+    with zipfile.ZipFile(path) as z:
+        infos = z.infolist()
+        files = {i.filename: z.read(i) for i in infos}
+    motions = collections.defaultdict(list)
+    for n in files:
+        m = re.fullmatch(r'moves/motions/(\d+)_(\d+)_(\d+)\.ymk', n)   # (motp_*: packed, left as is)
+        if m:
+            motions[int(m[1])].append(dict(id=int(m[1]), x=int(m[2]), y=int(m[3]), data=files[n], name=n))
+    notes = []
+    for mid in sorted(motions):
+        if mid not in wi10 or w10[wi10[mid][0] + 0x73] != SIT_SITUATION:
+            continue
+        for n in corner_shift(motions[mid]):
+            notes.append('corner %d (sitting): %s' % (mid, n))
+        for m in motions[mid]:
+            files[m['name']] = m['data']
+    if not notes or dry:
+        return notes
+    man = files['manifest.txt'].decode('utf-8').split('\n')
+    for i, l in enumerate(man):
+        if l.startswith('version='):
+            try:
+                man[i] = 'version=%.1f' % (float(l[8:].strip()) + 0.1) + ('\r' if l.endswith('\r') else '')
+            except ValueError:
+                pass
+    files['manifest.txt'] = '\n'.join(man).encode('utf-8')
+    # (pack.txt changes too: the game rebuilds its move overlay only when a pack.txt does)
+    if 'moves/pack.txt' in files:
+        pk = files['moves/pack.txt']
+        eol = b'\r\n' if b'\r\n' in pk else b'\n'
+        files['moves/pack.txt'] = pk.rstrip(b'\r\n') + eol + b'# sitting-corner moves re-rooted (svr10_moves.py corner)' + eol
+    tmp = path + '.tmp'
+    with zipfile.ZipFile(tmp, 'w') as z:
+        for i in infos:
+            z.writestr(i, files[i.filename], compress_type=i.compress_type)
+    os.replace(tmp, path)
+    return notes
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -1154,6 +1266,12 @@ def main(argv):
         del argv[i:i + 2]
     argv = [a for a in argv if a != '--namelist']
     cmd = argv[1]
+    if cmd == 'corner':   # corner <pac10> <mod.svrmod>... [--dry]
+        for f in argv[3:]:
+            if f != '--dry':
+                for n in corner_fix_svrmod(argv[2], f, '--dry' in argv):
+                    print('%s: %s' % (os.path.basename(f), n))
+        return 0
     if cmd == 'verify':
         return 0 if verify(argv[2], out) else 2
     pac10, pac11, ids = argv[2], argv[3], parse_ids(argv[4])

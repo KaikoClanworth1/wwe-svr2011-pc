@@ -32,9 +32,22 @@ Extreme Neckbreaker Drop. The game's own files are never written.
   - Each child is a PACH of groups, sorted by (u16 id, u8, u8).
   - `BATS/INIT` and `BATH/INIT` hold the same three as children 10-12.
 
-2010 data needs one conversion: event op 87 has bit 7 set in 2010 and never
-in 2011. `svr10_moves.py` clears it. The MOTP copies are carried over
-unchanged.
+2010 data needs two conversions in `svr10_moves.py`:
+
+- Event op 87 has bit 7 set in 2010 and never in 2011: cleared.
+- Moves on an opponent sitting in the corner (2010 WAZE +0x73 = 12): 2011
+  moved its sitting-in-the-corner pose 253 units (about 25 cm) out of the
+  corner and re-rooted its own such moves (3422: victim root Z -326 -> -577).
+  A 2010 one ported as is put the victim's hips inside the post, so he
+  floated above the turnbuckle (Umaga's Running Knee 5832 on Sabu). The
+  victim's (y 1 / 51) root Z gets -253 and the attacker's (y 0 / 50) +253,
+  per x (a running move's x=20 keys; not its run-up x=0), when the victim
+  starts where 2010's pose is (first root Z above -450).
+  `svr10_moves.py corner <2010 pac> <mod.svrmod>...` does the same to a
+  built mod (version +0.1; a second run changes nothing).
+
+The MOTP copies are carried over unchanged (packed; their root isn't
+decoded).
 
 ## A pack
 
