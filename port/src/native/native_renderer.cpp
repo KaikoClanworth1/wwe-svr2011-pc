@@ -1516,8 +1516,20 @@ void ApplyOutputSettings(Renderer* r) {
   }
   // Enough guest pixels for every output pixel - for `aa` per axis with
   // anti-aliasing (2x2 supersampling at 1080p: 3x; up to native_max_scale).
+  // Direct3D 11 (older GPUs): AUTO anti-aliasing (native_aa 0) means the
+  // Xbox 360's own 720p - supersampling would sink them. Choosing 2x-4x still
+  // raises it.
+  const bool d3d11_auto = SlotTables() && REXCVAR_GET(native_aa) == 0;
+  if (d3d11_auto) {
+    aa = 1;
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_INFO("native renderer: Direct3D 11 - render scale 1x (anti-aliasing AUTO; choose 2x-4x to raise it)");
+    }
+  }
   const uint32_t need = out_h * aa;
-  const uint32_t limit = uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
+  const uint32_t limit = d3d11_auto ? 1u : uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
   const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
   res = std::clamp(res, 0.25f, 1.0f);

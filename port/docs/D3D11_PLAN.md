@@ -49,14 +49,34 @@ Steps 1-4 below are done, and step 5 is partly done.
 - A 10_1 cap shows the "needs 11_0" message.
 - D3D12 and Vulkan are unchanged on the same build.
 
+**Also tested (at the 1x default):**
+- texture dump (150 PNGs) and a texture pack (inverted menu art replaced);
+- a 2560x1080 window (21:9 match view; the title demo stays 16:9, as on
+  D3D12);
+- the Superstar Threads attire editor;
+- the 128x128 resolve written back in every match.
+
+The Mod Maker draws with its own D3D11 code, not the game renderer, so it
+wasn't tested here.
+
+**Render scale.** On Direct3D 11, AUTO anti-aliasing (`native_aa = 0`)
+means render scale 1x: GPUs that need D3D11 can't afford supersampling.
+Choosing 2x-4x still raises it.
+
 **Open.**
 - WARP (software) draws the title, the menus and, at render scale 1x, the
-  demo match correctly. At 2x (the default 2x AA) the shaded 3D scene is
-  near-black, while geometry, depth and 2D are right. NVIDIA is correct at
-  2x. The cause is not found yet; it could show on some real AMD / Intel
-  drivers.
-- Still to test: texture packs, wide screens, CAW / Threads painting
-  (write-back) and Mod Maker previews.
+  demo match correctly. At 2x the shaded 3D scene is near-black, while
+  geometry, depth and 2D are right. NVIDIA is correct at 2x.
+  - Ruled out: the mip-0 textures, shadows, the effects scale, the replay
+    thread and the write-back.
+  - The cause is not found yet; it could show on some real AMD / Intel
+    drivers. A RenderDoc capture would settle it.
+
+**Merge notes.**
+- The renderer's CompactSet now reuses the last draw's set when the places
+  and the table are unchanged. This also affects the Vulkan compact-tables
+  (Mali) path: same output, less hashing. The Android / Mali chat should
+  check it on the Mali tablet before or after the merge.
 - Phase 2: feature level 10_x (vertex shaders linked per pipeline) and
   Windows 7 / 8.1.
 - The shared `runs\shaders_native` must be converted again with this header
