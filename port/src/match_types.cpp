@@ -175,15 +175,39 @@ constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
 // after WEAPONS EVERYWHERE (its match: the mode's normal one, kModes), and a
 // row in 6-MAN and HANDICAP.
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
-// HELL IN A CELL: TABLES & LADDERS - each HELL IN A CELL row (one on one,
-// two on two, triple threat, fatal-4-way: 0x31-0x34) becomes a submenu of
-// HELL IN A CELL and TABLES & LADDERS: the cell with tables, ladders and
-// chairs lying inside it (WEAPONS EVERYWHERE's way, kPlacedCell). Not the
-// 6-man cell (0x35): the Extreme Rules option that loads the table and ladder
-// models crashed 6-man matches.
-constexpr uint32_t kCellWeaponsLabel = 0x0FA0B10A, kCellWeaponsText = 0x0FA0B10B;  // (B108/B109: mystery_opponent.h)
+// A structure's match with weapons inside (WEAPONS EVERYWHERE's way, its own
+// placed list): its row becomes a submenu of the match and the weapons one.
+// - HELL IN A CELL: TABLES & LADDERS (one on one, two on two, triple threat,
+//   fatal-4-way: 0x31-0x34) - tables, ladders and chairs inside the cell
+//   (kPlacedCell). Not the 6-man cell (0x35): the Extreme Rules option that
+//   loads the table and ladder models crashed 6-man matches.
+// - STEEL CAGE: WEAPONS INSIDE (0x3C-0x3F) and INFERNO MATCH: WEAPONS INSIDE
+//   (0x51) - in the ring (kPlacedRing): the cage stands at the ring's edge,
+//   the fire around it. The models every match loads (chairs, hand weapons):
+//   with the Extreme Rules option (+56: tables, ladders) the cage crashed at
+//   its start (sub_824186E8 with no event data, as 6-man).
 constexpr uint32_t kCellFirst = 0x31, kCellLast = 0x34;
-uint32_t g_cell_text[2] = {};
+struct StructureWeapons {
+  uint32_t first, last;
+  const char* mod;       // (its match type mod)
+  uint32_t label, text;  // (B108/B109: mystery_opponent.h)
+  const char* name;
+  const char* about;
+};
+constexpr StructureWeapons kStructures[] = {
+    {kCellFirst, kCellLast, "hiac_tables_ladders", 0x0FA0B10A, 0x0FA0B10B, "TABLES & LADDERS",
+     "Hell in a Cell with tables, ladders and chairs lying inside the cell - no disqualifications."},
+    {0x3C, 0x3F, "cage_weapons", 0x0FA0B110, 0x0FA0B111, "WEAPONS INSIDE",
+     "A Steel Cage match with chairs and other weapons lying in the ring - no disqualifications."},
+    {0x51, 0x51, "inferno_weapons", 0x0FA0B112, 0x0FA0B113, "WEAPONS INSIDE",
+     "An Inferno match with chairs and other weapons lying in the ring - no disqualifications."},
+};
+uint32_t g_structure_text[std::size(kStructures)][2] = {};
+const StructureWeapons* StructureOf(uint32_t rule) {
+  for (const StructureWeapons& s : kStructures)
+    if (rule >= s.first && rule <= s.last) return &s;
+  return nullptr;
+}
 std::vector<WeaponsRow> g_stages_rows;
 bool g_pending_stages = false;
 
@@ -206,7 +230,7 @@ constexpr PlainMode kPlainModes[] = {{0xA09C, 0x0A, 0x08}, {0xA086, 0x0B, 0x0F}}
 // A WEAPONS EVERYWHERE match's rule: Extreme Rules, or 6-MAN's / HANDICAP's normal one.
 bool WeaponsRule(uint32_t rule) {
   if (rule >= kExtremeFirst && rule <= kExtremeLast) return true;
-  if (rule >= kCellFirst && rule <= kCellLast) return true;
+  if (StructureOf(rule)) return true;
   if (rule == 0x52) return true;  // (GAUNTLET ELIMINATOR: EXTREME RULES)
   for (const PlainMode& m : kPlainModes)
     if (rule == m.normal) return true;
@@ -285,7 +309,8 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   const bool elimination = svr2011::MatchTypeOn("elimination"), slobber = svr2011::MatchTypeOn("slobber_knocker");
   const bool mystery = svr2011::MatchTypeOn("mystery_opponent"), weapons = svr2011::MatchTypeOn("weapons_everywhere");
   const bool stages = svr2011::MatchTypeOn("three_stages_of_hell");
-  const bool cell_weapons = svr2011::MatchTypeOn("hiac_tables_ladders");
+  bool structure_on[std::size(kStructures)];
+  for (size_t s = 0; s < std::size(kStructures); ++s) structure_on[s] = svr2011::MatchTypeOn(kStructures[s].mod);
   const bool gauntlet_elim = svr2011::MatchTypeOn("gauntlet_eliminator");
   const bool more_backstage = svr2011::MatchTypeOn("backstage_more_people");
   const bool free_roam_on = svr2011::MatchTypeOn("free_roaming_backstage");
@@ -396,9 +421,10 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       node += 2;
       ++group;
     }
-    if (const uint32_t rule = Rd32(rec + 0x5C); cell_weapons && submenu && rule >= kCellFirst && rule <= kCellLast) {
-      // HELL IN A CELL becomes a submenu (a new node in its place) of HELL IN
-      // A CELL and TABLES & LADDERS (a new group).
+    if (const uint32_t rule = Rd32(rec + 0x5C), st = StructureOf(rule) ? uint32_t(StructureOf(rule) - kStructures) : ~0u;
+        st != ~0u && structure_on[st] && submenu) {
+      // The row becomes a submenu (a new node in its place) of the match and
+      // its weapons one (a new group).
       out.resize(out.size() - kRec);
       std::vector<uint8_t> row(submenu, submenu + kRec);
       Wr32(row.data() + 0x00, Rd32(rec + 0x00));
@@ -409,7 +435,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
       Wr32(row.data() + 0x40, Rd32(rec + 0x40));
       out.insert(out.end(), row.begin(), row.end());
-      for (uint32_t k = 0; k < 2; ++k) {  // (HELL IN A CELL, TABLES & LADDERS)
+      for (uint32_t k = 0; k < 2; ++k) {  // (the match, the weapons one)
         std::vector<uint8_t> leaf(rec, rec + kRec);
         Wr32(leaf.data() + 0x18, group);
         Wr32(leaf.data() + 0x1C, node + k);
@@ -418,14 +444,14 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         Wr32(leaf.data() + 0x40, 0);
         Wr32(leaf.data() + 0x3C, k == 1 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
         if (k == 1) {
-          Wr32(leaf.data() + 0x00, kCellWeaponsLabel);
-          Wr32(leaf.data() + 0x04, kCellWeaponsText);
+          Wr32(leaf.data() + 0x00, kStructures[st].label);
+          Wr32(leaf.data() + 0x04, kStructures[st].text);
           g_weapons_rows.push_back({group, k});
         }
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
-      REXLOG_INFO("match types: HELL IN A CELL (rule {:02X}) submenu with TABLES & LADDERS, group {:02X}", rule, group);
+      REXLOG_INFO("match types: rule {:02X} submenu with {}, group {:02X}", rule, kStructures[st].name, group);
       node += 2;
       ++group;
       continue;
@@ -706,7 +732,7 @@ bool MatchTypeOn(const char* id) {
     for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
                           "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
                           "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders",
-                          "gauntlet_eliminator"}) {
+                          "gauntlet_eliminator", "cage_weapons", "inferno_weapons"}) {
       m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
       if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
     }
@@ -730,6 +756,8 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
                                {"elimination_f4w", TestMode::kElimF4W, int(kFatal4Way)},
                                {"weapons", TestMode::kWeapons, int(kExtremeFirst)},
                                {"cell_weapons", TestMode::kWeapons, int(kCellFirst)},
+                               {"cage_weapons", TestMode::kWeapons, 0x3C},
+                               {"inferno_weapons", TestMode::kWeapons, 0x51},
                                {"slobber", TestMode::kSlobber, int(kGauntlet)},
                                {"gauntlet_eliminator", TestMode::kGauntletElim, int(kGauntlet)},
                                {"gauntlet_eliminator_er", TestMode::kGauntletElimEr, int(kGauntlet)},
@@ -1906,7 +1934,16 @@ constexpr Placed kPlacedCell[] = {
     {4, 1, 40.f, 0.f, -38.f, 60.f},       // a chair on the floor
 };
 constexpr uint32_t kSixManRule = 0x08;  // (6-MAN's WEAPONS EVERYWHERE rule)
-uint32_t g_weapon_records = 0, g_weapon_records_six = 0, g_weapon_records_cell = 0;  // guest: our records
+// STEEL CAGE / INFERNO: in the ring (y -12, inside the ropes at about +-28).
+constexpr Placed kPlacedRing[] = {
+    {4, 0, -15.f, -12.f, 12.f, 30.f},     // chairs
+    {4, 0, 14.f, -12.f, -14.f, 200.f},
+    {4, 0, 0.f, -12.f, -19.f, 90.f},
+    {102, 0, 0.f, -12.f, 19.f, 0.f},      // hand weapons (a normal match's stock under the ring)
+    {72, 0, 17.f, -12.f, 13.f, 0.f},
+    {28, 0, -17.f, -12.f, -12.f, 30.f},
+};
+uint32_t g_weapon_records = 0, g_weapon_records_six = 0, g_weapon_records_cell = 0, g_weapon_records_ring = 0;  // guest: our records
 struct Swapped {
   uint32_t entry = 0, count = 0, records = 0;  // the game's, while ours are in
   uint32_t head = 0, head_rule = 0;            // Extreme Rules' head lent to a rule without a list
@@ -1961,9 +1998,11 @@ void ApplyWeapons(uint8_t* base) {
     return;
   }
   const bool six = rule == kSixManRule || rule == kGauntlet, cell = rule >= kCellFirst && rule <= kCellLast;
-  const Placed* list = six ? kPlacedSix : cell ? kPlacedCell : kPlaced;
-  const uint32_t n = six ? uint32_t(std::size(kPlacedSix)) : cell ? uint32_t(std::size(kPlacedCell)) : uint32_t(std::size(kPlaced));
-  uint32_t& records = six ? g_weapon_records_six : cell ? g_weapon_records_cell : g_weapon_records;
+  const bool ring = StructureOf(rule) && !cell;  // (cage, inferno)
+  const Placed* list = six ? kPlacedSix : cell ? kPlacedCell : ring ? kPlacedRing : kPlaced;
+  const uint32_t n = six ? uint32_t(std::size(kPlacedSix)) : cell ? uint32_t(std::size(kPlacedCell))
+                     : ring ? uint32_t(std::size(kPlacedRing)) : uint32_t(std::size(kPlaced));
+  uint32_t& records = six ? g_weapon_records_six : cell ? g_weapon_records_cell : ring ? g_weapon_records_ring : g_weapon_records;
   if (!records) {
     records = g_memory->SystemHeapAlloc(n * 28);
     if (!records) return;
@@ -2145,17 +2184,17 @@ namespace svr2011 {
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
   if (const uint32_t t = MysteryOpponentString(id, g_memory)) return t;
-  if ((id == kCellWeaponsLabel || id == kCellWeaponsText) && g_memory) {
-    static const char* const kText[] = {
-        "TABLES & LADDERS",
-        "Hell in a Cell with tables, ladders and chairs lying inside the cell - no disqualifications."};
-    const uint32_t k = id - kCellWeaponsLabel;
-    if (!g_cell_text[k]) {
-      const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);
-      g_cell_text[k] = g_memory->SystemHeapAlloc(n);
-      std::memcpy(g_memory->TranslateVirtual<char*>(g_cell_text[k]), kText[k], n);
+  for (size_t s = 0; s < std::size(kStructures) && g_memory; ++s) {
+    const StructureWeapons& st = kStructures[s];
+    if (id != st.label && id != st.text) continue;
+    const uint32_t k = id == st.text;
+    const char* text = k ? st.about : st.name;
+    if (!g_structure_text[s][k]) {
+      const uint32_t n = uint32_t(std::strlen(text) + 1);
+      g_structure_text[s][k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(g_structure_text[s][k]), text, n);
     }
-    return g_cell_text[k];
+    return g_structure_text[s][k];
   }
   if ((id == kStagesLabel || id == kStagesText) && g_memory) {
     static const char* const kText[] = {
@@ -2451,8 +2490,9 @@ REX_HOOK_RAW(sub_828C48E8) {
   if (extreme_bytes && live) {
     uint8_t* l = base + live;
     l[3] = 0, l[10] = 0, l[27] = 0x80;
-    if (rule != kSixManRule && rule != kGauntlet) l[56] = 1;  // (6-MAN / the six-person gauntlet: not - see kPlacedSix)
-    if (rule == kGauntlet) l[4] = 1;                            // (GAUNTLET ELIMINATOR: EXTREME RULES - no DQ)
+    const bool ring = StructureOf(rule) && (rule < kCellFirst || rule > kCellLast);  // (cage, inferno)
+    if (rule != kSixManRule && rule != kGauntlet && !ring) l[56] = 1;  // (6-MAN / the six-person gauntlet / cage / inferno: not - see kPlacedSix, kPlacedRing)
+    if (rule == kGauntlet || ring) l[4] = 1;                            // (no DQ)
     REXLOG_INFO("match types: WEAPONS EVERYWHERE - rule {:02X} with the Extreme Rules options", rule);
   }
   svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)

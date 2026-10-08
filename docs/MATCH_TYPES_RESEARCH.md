@@ -570,3 +570,10 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 - EXTREME RULES: 6-man's weapons (chairs, hand weapons; no +56) and DQ off (live +4 1).
 - HUD: "N LEFT    NEXT ENTRANT m:ss".
 - Tested: CPU vs CPU, 330 s with a forced fall every 35 s: four eliminations, the entrants in on time, the judge ended the match (winner 5); the EXTREME RULES one 150 s. Test aids `SVR2011_TEST_MODE=gauntlet_eliminator` / `gauntlet_eliminator_er`, `SVR2011_TEST_GE_BEAT=<s>`, `SVR2011_TEST_GE_LOG=1`.
+
+## Steel Cage / Inferno: Weapons Inside (done)
+
+**Menu:** each STEEL CAGE row (0x3C-0x3F) and INFERNO MATCH (0x51) becomes a submenu: the match, then WEAPONS INSIDE. Switch mods `cage_weapons`, `inferno_weapons`. Same machinery as HELL IN A CELL: TABLES & LADDERS (`kStructures` in `match_types.cpp`).
+- Weapons in the ring (`kPlacedRing`): three chairs and the hand weapons every match loads (102, 72, 28). Not tables or ladders: with the Extreme Rules option (+56, which loads those models) the cage crashed at its start (`sub_824186E8` with no event data, as 6-man did). No DQ (live +4 1).
+- Tested: CPU vs CPU, 120 s each. Weapons placed in the ring, inside the ropes (the Inferno's fire stays outside them), no crash.
+- Test aids: `SVR2011_TEST_MODE=cage_weapons` / `inferno_weapons`.

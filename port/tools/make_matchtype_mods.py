@@ -32,6 +32,8 @@ MATCH_TYPES = [
     ("mystery_opponent", "Mystery Opponent", "ONE ON ONE -> NORMAL MATCH: the CPU picks your opponent in secret."),
     ("hiac_tables_ladders", "Hell in a Cell: Tables & Ladders", "HELL IN A CELL: tables, ladders and chairs lying inside the cell."),
     ("gauntlet_eliminator", "Gauntlet Eliminator", "HANDICAP: six superstars, two start, one more each minute; a pin or submission eliminates."),
+    ("cage_weapons", "Steel Cage: Weapons Inside", "STEEL CAGE: chairs and other weapons lying in the ring."),
+    ("inferno_weapons", "Inferno: Weapons Inside", "INFERNO MATCH: chairs and other weapons lying in the ring."),
 ]
 
 
