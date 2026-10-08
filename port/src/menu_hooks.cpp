@@ -61,7 +61,7 @@ constexpr uint32_t kControlsLabelId = 0xAFC7;
 constexpr uint32_t kBackgroundsLabelId = 0x0FA0B200;  // (not 0xAFC8: the game's own, the help bar's A)
 // Character select: the name beside the "?" tile ("Random", looked up by the
 // panel code in sub_82465728 for tile kind 4) - that tile opens the managers
-// (src/managers.cpp), so it reads "Extra" there.
+// (src/managers.cpp), so it reads "Mods" there (the superstar mods are in its list).
 constexpr uint32_t kRandomTileId = 0x0116;
 constexpr uint32_t kRandomTileCaller = 0x82465970;
 constexpr uint32_t kMainMenuGroup = 0x01;
@@ -87,7 +87,7 @@ uint32_t g_jukebox_text = 0;
 uint32_t g_language_label = 0;  // "LANGUAGE"
 uint32_t g_controls_label = 0;  // "CONTROLS"
 uint32_t g_backgrounds_label = 0;  // "BACKGROUNDS"
-uint32_t g_extra_label = 0;     // "Extra" (the "?" tile opens the managers: src/managers.cpp)
+uint32_t g_extra_label = 0;     // "Mods" (the "?" tile opens the managers: src/managers.cpp)
 
 uint32_t Be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
@@ -267,7 +267,7 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   g_language_label = g_ach_text + uint32_t(n_text);
   std::memcpy(memory->TranslateVirtual<char*>(g_language_label), l->language_label, n_language);
   g_extra_label = g_language_label + uint32_t(n_language);
-  std::memcpy(memory->TranslateVirtual<char*>(g_extra_label), "Extra", 6);  // (the same in all five; shown in capitals)
+  std::memcpy(memory->TranslateVirtual<char*>(g_extra_label), "Mods", 5);  // (the same in all five; shown in capitals - the tile holds the superstar mods)
   g_jukebox_label = g_extra_label + 6;
   std::memcpy(memory->TranslateVirtual<char*>(g_jukebox_label), l->jukebox, n_jukebox);
   g_jukebox_text = g_jukebox_label + uint32_t(n_jukebox);
