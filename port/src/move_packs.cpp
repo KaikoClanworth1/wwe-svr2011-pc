@@ -29,6 +29,10 @@
 //   exh <group> <36 bytes hex>
 //   evt <group> <16 bytes hex> <events hex>
 //   mbd <group> <8 bytes hex>
+//   pacentry <pac under pac\, e.g. evt\Nyujyo5.pac> <GROUP> <name> <file>
+//     (a whole entry of an EPK8 pac, unpacked: e.g. an entrance's script and
+//     motions, EVPE/EVTE <number>; added, or replacing the game's. The pac is
+//     copied to the overlay with the entries in - never written in place)
 // Keys the game already has are left as they are.
 //
 // The merged pacs go to <game>/Mods/PacOverlay with copies of pac/plist360.h
@@ -69,7 +73,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 7";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used)
+constexpr const char* kFormat = "movepacks 8";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines)
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -91,6 +95,9 @@ struct Packs {
   std::map<uint16_t, std::string> names;
   std::map<uint16_t, uint16_t> copies;  // record id -> the id its record is copied from
   std::vector<Record> exh, evt, mbd;
+  // EPK8 pac (under pac\, lower case, e.g. "evt\nyujyo5.pac") -> "GROUP/name" -> unpacked data
+  // (pacentry lines: whole entries added to / replacing the pac's, e.g. an entrance's EVPE/EVTE)
+  std::map<std::string, std::map<std::string, Bytes>> entries;
   size_t count = 0;
 };
 
@@ -176,6 +183,21 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
       const size_t want = kind == "exh" ? 36 : kind == "evt" ? 16 : 8;
       if (r.rec.size() != want) continue;
       (kind == "exh" ? p.exh : kind == "evt" ? p.evt : p.mbd).push_back(std::move(r));
+    } else if (kind == "pacentry") {
+      std::string pac, group, name, file;
+      in >> pac >> group >> name >> file;
+      if (group.size() != 4 || name.empty() || name.size() > 8 || file.empty()) continue;
+      for (auto& c : pac) c = c == '/' ? '\\' : char(std::tolower(static_cast<unsigned char>(c)));
+      if (pac.find("..") != std::string::npos || pac.size() < 5 || pac.compare(pac.size() - 4, 4, ".pac")) continue;
+      Bytes data;
+      if (!ReadAll(dir / fs::u8path(file), data)) {
+        REXLOG_WARN("[svr2011] move packs: {}: missing {}", dir.filename().string(), file);
+        continue;
+      }
+      std::error_code ec;  // (the file in the stamp: a changed entry rebuilds the overlay)
+      stamp += file + " " + std::to_string(data.size()) + " " +
+               std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
+      p.entries[pac].emplace(group + "/" + name, std::move(data));  // (the first pack's wins)
     } else {
       continue;
     }
@@ -553,6 +575,129 @@ bool WritePac(const fs::path& src, const fs::path& dst, const std::map<std::stri
   return bool(out);
 }
 
+// ---- EPK8 (evt\Nyujyo*.pac): pacentry entries added
+// Table at 0x800-0x4000: groups {4CC, u16 count * 4, u16 1, u32 0} each followed
+// by 16-byte entries {char name[8] (space padded), u32 sector (0x800 units from
+// 0x4000), u32 size / 0x100}; header +4 = the table's size, +8 = the data's.
+// Names are numbers kept in numeric order, "65535" (an end mark) last. The
+// added entries are BPE-packed as the game's are.
+
+// A pac list name ("evt\nyujyo5.pac") as a path on this system (Android: '/').
+fs::path PacPath(std::string pac) {
+  std::replace(pac.begin(), pac.end(), '\\', '/');
+  return fs::u8path(pac);
+}
+
+uint64_t Epk8Order(const std::string& name) {
+  const std::string n = name.substr(0, name.find(' '));
+  if (n == "65535") return ~0ull;
+  return n.empty() || n.find_first_not_of("0123456789") != std::string::npos ? ~0ull - 1 : std::stoull(n);
+}
+
+bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::string& pac,
+                   const std::map<std::string, Bytes>& add) {
+  const fs::path src = game / "pac" / PacPath(pac), dst = overlay / PacPath(pac);
+  std::ifstream in(src, std::ios::binary);
+  Bytes head(0x4000);
+  if (!in || !in.read(reinterpret_cast<char*>(head.data()), 0x4000) || std::memcmp(head.data(), "EPK8", 4)) {
+    REXLOG_WARN("[svr2011] move packs: {} is not an EPK8 pac", pac);
+    return false;
+  }
+  struct E {
+    std::string name;
+    uint32_t sector = 0, size256 = 0;
+    const Bytes* data = nullptr;  // (an added entry, packed)
+  };
+  struct G {
+    std::string type;
+    Bytes extra;
+    std::vector<E> ents;
+  };
+  std::vector<G> groups;
+  for (size_t q = 0x800; q + 12 <= 0x4000 && Le32(&head[q]);) {
+    G g;
+    g.type.assign(reinterpret_cast<char*>(&head[q]), 4);
+    const uint32_t n = Le16(&head[q + 4]) / 4;
+    g.extra.assign(head.begin() + long(q + 6), head.begin() + long(q + 12));
+    q += 12;
+    for (uint32_t i = 0; i < n && q + 16 <= 0x4000; ++i, q += 16)
+      g.ents.push_back({std::string(reinterpret_cast<char*>(&head[q]), 8), Le32(&head[q + 8]), Le32(&head[q + 12])});
+    groups.push_back(std::move(g));
+  }
+  std::map<std::string, Bytes> packed;
+  for (const auto& [key, raw] : add) {
+    const std::string type = key.substr(0, 4), name = (key.substr(5) + "        ").substr(0, 8);
+    auto g = std::find_if(groups.begin(), groups.end(), [&](const G& x) { return x.type == type; });
+    if (g == groups.end()) {
+      REXLOG_WARN("[svr2011] move packs: {} has no group {}", pac, type);
+      continue;
+    }
+    const Bytes& data = packed[key] = svrfmt::BpeEncode(raw);
+    auto e = std::find_if(g->ents.begin(), g->ents.end(), [&](const E& x) { return x.name == name; });
+    if (e == g->ents.end()) g->ents.push_back({name, 0, 0, &data});
+    else e->data = &data;
+    std::stable_sort(g->ents.begin(), g->ents.end(), [](const E& a, const E& b) { return Epk8Order(a.name) < Epk8Order(b.name); });
+  }
+  in.seekg(0, std::ios::end);
+  const uint64_t src_size = uint64_t(in.tellg()), src_end = 0x4000 + uint64_t(Le32(&head[8]));
+  std::error_code ec;
+  fs::create_directories(dst.parent_path(), ec);
+  std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  out.write(reinterpret_cast<char*>(head.data()), 0x4000);  // (the table is rewritten at the end)
+  Bytes table, zeros(0x800, 0);
+  std::vector<char> buf(1 << 20);
+  uint64_t pos = 0;
+  for (const auto& g : groups) {
+    svrfmt::AppName(table, g.type, 4);
+    table.push_back(uint8_t(g.ents.size() * 4)), table.push_back(uint8_t(g.ents.size() * 4 >> 8));
+    table.insert(table.end(), g.extra.begin(), g.extra.end());
+    for (const auto& e : g.ents) {
+      if (pos % 0x800) out.write(reinterpret_cast<char*>(zeros.data()), std::streamsize(0x800 - pos % 0x800)), pos += 0x800 - pos % 0x800;
+      table.insert(table.end(), e.name.begin(), e.name.end());
+      svrfmt::AppLe32(table, uint32_t(pos / 0x800));
+      uint64_t size;
+      if (e.data) {
+        out.write(reinterpret_cast<const char*>(e.data->data()), std::streamsize(e.data->size()));
+        size = e.data->size();
+      } else {
+        size = uint64_t(e.size256) * 0x100;
+        in.seekg(std::streamoff(0x4000 + uint64_t(e.sector) * 0x800));
+        for (uint64_t left = size; left;) {
+          const size_t n = size_t(std::min<uint64_t>(left, buf.size()));
+          if (!in.read(buf.data(), std::streamsize(n))) return false;
+          out.write(buf.data(), std::streamsize(n));
+          left -= n;
+        }
+      }
+      svrfmt::AppLe32(table, uint32_t((size + 0xFF) / 0x100));
+      pos += size;
+      if (pos % 0x100) out.write(reinterpret_cast<char*>(zeros.data()), std::streamsize(0x100 - pos % 0x100)), pos += 0x100 - pos % 0x100;
+    }
+  }
+  if (table.size() > 0x3800) {
+    REXLOG_WARN("[svr2011] move packs: {}: too many entries for the table", pac);
+    return false;
+  }
+  if (pos % 0x800) out.write(reinterpret_cast<char*>(zeros.data()), std::streamsize(0x800 - pos % 0x800)), pos += 0x800 - pos % 0x800;
+  if (src_end < src_size) {  // (the packer's footer, as the original has it)
+    in.seekg(std::streamoff(src_end));
+    std::vector<char> tail(size_t(src_size - src_end));
+    if (in.read(tail.data(), std::streamsize(tail.size()))) out.write(tail.data(), std::streamsize(tail.size()));
+  } else {
+    out.write(reinterpret_cast<char*>(zeros.data()), 0x800);
+  }
+  const uint32_t table_size = uint32_t(table.size());
+  table.resize(0x3800, 0);
+  std::memcpy(&head[0x800], table.data(), 0x3800);
+  svrfmt::PutLe32(&head[4], table_size);
+  svrfmt::PutLe32(&head[8], uint32_t(pos));
+  out.seekp(0);
+  out.write(reinterpret_cast<char*>(head.data()), 0x4000);
+  REXLOG_INFO("[svr2011] move packs: {}: {} entries added or replaced", pac, add.size());
+  return bool(out);
+}
+
 bool ReadEntry(const fs::path& pac, const std::string& type_name, Bytes& out) {
   std::ifstream in(pac, std::ios::binary);
   Bytes head;
@@ -757,9 +902,11 @@ bool WriteList(const fs::path& game, const fs::path& overlay, const std::string&
 void Register(rex::filesystem::VirtualFileSystem* vfs, const fs::path& overlay) {
   if (!vfs) return;
   std::error_code ec;
-  for (const auto& e : fs::directory_iterator(overlay, ec)) {
+  for (const auto& e : fs::recursive_directory_iterator(overlay, ec)) {  // (entry pacs sit in evt\)
     if (!e.is_regular_file()) continue;
-    const std::string path = "\\Device\\Harddisk0\\Partition1\\Mods\\PacOverlay\\" + e.path().filename().string();
+    std::string rel = fs::relative(e.path(), overlay, ec).string();
+    std::replace(rel.begin(), rel.end(), '/', '\\');
+    const std::string path = "\\Device\\Harddisk0\\Partition1\\Mods\\PacOverlay\\" + rel;
     if (auto* entry = vfs->ResolvePath(path)) entry->update();
     else REXLOG_WARN("[svr2011] move packs: the game can't see {}", path);
   }
@@ -829,6 +976,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   if (dirs.empty() && gm.empty()) {
     for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "gm.pac", kGimmickPac, "plist360.h", "plist360_4x3.h", "stamp.txt"})
       fs::remove(overlay / f, ec);  // (nothing to serve: free the space)
+    fs::remove_all(overlay / "evt", ec);
     return;
   }
   Packs packs;
@@ -840,9 +988,11 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   WarnOverrides(packs);
   for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h"})
     stamp += FileStamp(game / "pac" / f);
+  for (const auto& [pac, e] : packs.entries) stamp += FileStamp(game / "pac" / PacPath(pac));
   if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));
+  for (const auto& [pac, e] : packs.entries) pacs.insert(pac);  // ("evt\nyujyo5.pac": WriteList maps pac\evt\... to it)
   if (!packs.waze.empty() || !packs.names.empty() || !packs.copies.empty() || !packs.exh.empty() || !packs.evt.empty() ||
       !packs.mbd.empty())
     pacs.insert("misc.pac");
@@ -853,7 +1003,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     std::ifstream old(overlay / "stamp.txt", std::ios::binary);
     std::string was((std::istreambuf_iterator<char>(old)), std::istreambuf_iterator<char>());
     bool have = was == stamp;
-    for (const auto& p : pacs) have &= fs::exists(overlay / p, ec);
+    for (const auto& p : pacs) have &= fs::exists(overlay / PacPath(p), ec);
     if (!gm.empty()) have &= fs::exists(overlay / kGimmickPac, ec);
     if (have) {
       Register(vfs, overlay);
@@ -869,6 +1019,8 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   for (const auto& [pac, entries] : packs.motions)
     ok = ok && BuildMotionPac(game, overlay, Lower(pac), entries);
   if (ok && pacs.count("misc.pac")) ok = BuildMisc(game, overlay, packs);
+  fs::remove_all(overlay / "evt", ec);  // (entry pacs: copies of the game's with the packs' entries)
+  for (const auto& [pac, entries] : packs.entries) ok = ok && BuildEntryPac(game, overlay, pac, entries);
   fs::remove(overlay / "gm.pac", ec);  // (an older build served a whole gm.pac)
   fs::remove(overlay / kGimmickPac, ec);
   std::vector<std::string> extra;

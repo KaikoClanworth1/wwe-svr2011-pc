@@ -71,9 +71,26 @@ waze <id> <16 bytes hex>            the move's category bits
 exh <group> <36 bytes hex>
 evt <group> <16 bytes hex> <events hex>
 mbd <group> <8 bytes hex>
+pacentry <pac under pac\> <GROUP> <name> <file>   a whole entry of an EPK8 pac
 ```
 
 The motion files go in `motions/`.
+
+`pacentry` adds (or replaces) a whole entry of an EPK8 pac, unpacked in the
+pack: e.g. a converted SvR 2008 entrance, its script and tracks
+(docs/SVR08_ENTRANCES.md):
+
+```
+pacentry evt\Nyujyo5.pac EVPE 504 entrance/504_evp.bin
+pacentry evt\Nyujyo5.pac EVTE 504 entrance/504_evt.bin
+```
+
+The pac is copied to `Mods/PacOverlay/evt/Nyujyo5.pac` with the entries in
+(numeric name order, the `65535` end mark last, BPE-packed, the packer's
+footer kept) and the overlay pac list names the copy
+(`mods\pacoverlay\evt\nyujyo5.pac`). The game's own file is never written.
+Of two packs' entries with the same group and name the first read is used.
+The entry files are in the stamp, so a changed one rebuilds the overlay.
 
 Where a pack goes:
 - in a superstar mod: `Mods/Superstars/<mod>/moves/`
@@ -93,7 +110,8 @@ old exported move pack hides a mod's fixed motions that way.
 
 1. **At start-up** (`InstallMovePacks`, before the game mounts its pacs):
    - Every enabled pack is merged into copies of `m.pac`, `misc.pac` and
-     `mpsp.pac` in `<game>/Mods/PacOverlay`.
+     `mpsp.pac` in `<game>/Mods/PacOverlay` (and of each pac `pacentry` lines
+     name, under `PacOverlay/evt` etc.; `movepacks 8`).
    - Unchanged entries are streamed from the originals. Changed ones are
      rebuilt and compressed for real (BPE).
    - `stamp.txt` records the packs and the game files. The merge runs again
