@@ -4,6 +4,8 @@
     python svr10_moves.py build   <pac10> <pac11> <ids> [--out DIR] [--namelist] [--extra-bits FILE]
                      (FILE: lines "<id> <bit>,<bit>" OR'ed into that move's 2011 WAZE category bits)
     python svr10_moves.py verify  <pac11> [--out DIR]
+    python svr10_moves.py fix     <pac10> <pac11> <mod.svrmod>... [--dry]
+                     (a built superstar mod: the corner / victim-end conversions below, version +0.1)
 
 <pac10>/<pac11> are the games' "pac" folders (read only). <ids> is a comma list
 of move ids, or @file with one id per line. Everything is written under --out
@@ -35,6 +37,9 @@ Conversions applied to 2010 data:
     2011 never does (474/474 vs 550/550; 189 identical motions differ only
     by this) -> cleared.
   * EXH record: +u32 taken from the most similar record in the 2011 group.
+  * Sitting-in-the-corner moves re-rooted to 2011's corner pose (corner_shift).
+  * Victims ending on the mat with op 49 -> 0 chained to the down motion of
+    the most similar stock move (down_end_fix; BM and MOTP copies).
   * WAZE category bits: from 2011 "donor" moves whose 2010 bits are equal.
 """
 import collections
@@ -290,6 +295,128 @@ def corner_shift(motions):
             if m['x'] == x and m['y'] in (0, 1, 50, 51):
                 m['data'] = shift_root_z(m['data'], d if m['y'] in (1, 51) else -d)
         notes.append('x=%d: victim root z %.0f -> %.0f (attacker %+.0f)' % (x, z0, z0 + d, -d))
+    return notes
+
+
+def event_blocks(d, motp=False):
+    """(start, end) of each frame's event block in a motion: BM records start with
+    0x80 | length, MOTP (packed) records with a byte below 0x40 = length - 1"""
+    nf, recs = frames(d)
+    out = []
+    for f, p, sz in recs:
+        if not sz:
+            continue
+        if not motp and d[p] & 0x80:
+            out.append((p + 1, p + 1 + (d[p] & 0x7f)))
+        elif motp and d[p] < 0x40:
+            out.append((p + 1, p + 2 + d[p]))
+    return out
+
+
+def end_chain(d, T, motp=False):
+    """the last op 49 (the motion that follows this one): (offset of its u16, target) or (None, None)"""
+    at = tgt = None
+    for q, end in event_blocks(d, motp):
+        end = min(end, len(d))
+        while q < end:
+            op = d[q]
+            ln = T[op]
+            if ln == 0 or q + ln > end:
+                break
+            if op == 49:
+                at, tgt = q + 1, struct.unpack_from('<H', d, q + 1)[0]
+            q += ln
+    return at, tgt
+
+
+def last_root_y(d):
+    nf, recs = frames(d)
+    y = None
+    for f, p, sz in recs:
+        q = p + (1 + (d[p] & 0x7f) if sz and d[p] & 0x80 else 0)
+        if p + sz - q >= 14 and d[q] == 0x7d:
+            y = struct.unpack_from('<f', d, q + 6)[0]
+    return y
+
+
+# The victim's end. A victim track (y 1) ends with op 49 naming the motion
+# that follows: 2011's victims that end on the mat name a down motion (443,
+# 446, 448, 476...: lying, selling); a 2010 one often names 0, and in 2011
+# that's straight to the get-up (Jeff's Hurricanrana 8, 7573: the opponent
+# up ~250 frames sooner than after the stock Hurricanrana 5, 7450, whose
+# victim goes to 446). So a ported victim that ends low (last root Y above
+# END_LOW_Y) with op 49 -> 0 gets the target of the most similar stock 2011
+# move: same EXH group and x, fewest differing EXH bytes, its victim chained
+# to something (StockEnds).
+END_LOW_Y = -400.0
+
+
+class StockEnds:
+    """2011: each victim track's end chain ((id, x) -> target, when not 0) and the EXH groups"""
+
+    def __init__(self, pac11, cache):
+        if os.path.exists(cache):
+            self.ends, self.exh = pickle.load(open(cache, 'rb'))
+            return
+        self.ends = {}
+        h, g, t = read_epac(os.path.join(pac11, 'm.pac'))
+        for path, raw in walk_banks(g):
+            if not path.startswith('MOT/BM') or raw[:4] != b'YMKs':
+                continue
+            T = raw[0x10:0x110]
+            for e in bank_entries(raw):
+                if e['y'] != 1 or e['x'] >= 90 or (e['id'], e['x']) in self.ends:
+                    continue
+                try:
+                    at, tgt = end_chain(e['data'], T)
+                except (ValueError, IndexError):
+                    continue
+                if tgt:
+                    self.ends[(e['id'], e['x'])] = tgt
+        h, g, t = read_epac(os.path.join(pac11, 'misc.pac'))
+        self.exh = {gid: exh_parse(u, 36) for gid, pk, u in subgroups(waza_children(g)[0])}
+        os.makedirs(os.path.dirname(cache) or '.', exist_ok=True)
+        pickle.dump((self.ends, self.exh), open(cache, 'wb'))
+
+    def donor(self, group, rec):
+        """the most similar stock record's (id, x) and its victim's end target, or None"""
+        cands = [r for r in self.exh.get(group, []) if r[2] == rec[2] and (rkey(r)[0], r[2]) in self.ends
+                 and rkey(r)[0] != rkey(rec)[0]]
+        if not cands:
+            return None
+        best = min(cands, key=lambda q: sum(a != b for a, b in zip(q[2:32], rec[2:32])))
+        k = (rkey(best)[0], best[2])
+        return k, self.ends[k]
+
+
+def down_end_fix(motions, exh, stock, T):
+    """motions: dict(id, x, y, data, motp) of one move; exh: {x: (2011 group, record)}.
+    Victim tracks ending low with op 49 -> 0 get the donor's target (in place). -> notes"""
+    notes = []
+    for x in sorted(set(m['x'] for m in motions)):
+        bm = next((m for m in motions if m['x'] == x and m['y'] == 1 and not m['motp']), None)
+        if bm is not None and x not in exh:   # (a record 2011 kept: not in the pack)
+            exh[x] = next(((g, r) for g, rs in stock.exh.items() for r in rs
+                           if rkey(r)[0] == bm['id'] and r[2] == x), None)
+        if bm is None or not exh.get(x):
+            continue
+        at, tgt = end_chain(bm['data'], T)
+        y = last_root_y(bm['data'])
+        if at is None or tgt != 0 or y is None or y <= END_LOW_Y:
+            continue
+        d = stock.donor(*exh[x])
+        if d is None:
+            continue
+        (did, dx), new = d
+        for m in motions:
+            if m['x'] != x or m['y'] not in (1, 51):
+                continue
+            at, tgt = end_chain(m['data'], T, m['motp'])
+            if at is not None and tgt == 0:
+                b = bytearray(m['data'])
+                struct.pack_into('<H', b, at, new)
+                m['data'] = bytes(b)
+        notes.append('x=%d: victim end 0 -> %d (from %d/%d; victim ends at root y %.0f)' % (x, new, did, dx, y))
     return notes
 
 
@@ -760,6 +887,19 @@ def build(ctx, ids, namelist=False):
         mine = [m for p11, lst in per_bank.items() if not p11.startswith('MOTP') for m in lst if m['id'] == mid]
         for n in corner_shift(mine):
             ctx.p('corner %d (sitting): %s' % (mid, n))
+    # victims ending on the mat: the down motion that follows (down_end_fix)
+    stock = StockEnds(ctx.pac11, os.path.join(ctx.out, 'cache', 'ends11.pkl'))
+    _, _, gm = ctx.waza10()
+    for mid in sorted(plan):
+        exh = {}
+        for g10, r in plan[mid]['exh']:
+            if gm[10].get(g10) is not None:
+                exh.setdefault(r[2], (gm[10][g10], r))
+        mine = [dict(m, motp=p11.startswith('MOTP'), _ref=m) for p11, lst in per_bank.items() for m in lst if m['id'] == mid]
+        for n in down_end_fix(mine, exh, stock, ctx.T11()):
+            ctx.p('victim end %d: %s' % (mid, n))
+        for m in mine:
+            m['_ref']['data'] = m['data']
     os.makedirs(os.path.join(out, 'banks'), exist_ok=True)
     pack = dict(format='svr2011-movepack/1', moves=sorted(plan), banks=[], misc={})
     mdir = os.path.join(out, 'movepack', 'motions')
@@ -1200,9 +1340,10 @@ def verify(pac11, out):
     return ok
 
 
-def corner_fix_svrmod(pac10, path, dry=False):
+def fix_svrmod(pac10, pac11, path, dry=False, cache=None):
     """An already built SvR 2010 superstar mod (.svrmod): its ported sitting-corner
-    moves re-rooted (corner_shift), version +0.1. Returns the notes (empty: nothing to do)."""
+    moves re-rooted (corner_shift) and victims ending on the mat chained to a
+    down motion (down_end_fix), version +0.1. Returns the notes (empty: nothing to do)."""
     import zipfile
     h, g, t = read_epac(os.path.join(pac10, 'misc.pac'))
     w10 = unpack(entry_get(g, b'MOVS', b'WAZE'))
@@ -1212,17 +1353,41 @@ def corner_fix_svrmod(pac10, path, dry=False):
         files = {i.filename: z.read(i) for i in infos}
     motions = collections.defaultdict(list)
     for n in files:
-        m = re.fullmatch(r'moves/motions/(\d+)_(\d+)_(\d+)\.ymk', n)   # (motp_*: packed, left as is)
+        m = re.fullmatch(r'moves/motions/(motp_)?(\d+)_(\d+)_(\d+)\.ymk', n)
         if m:
-            motions[int(m[1])].append(dict(id=int(m[1]), x=int(m[2]), y=int(m[3]), data=files[n], name=n))
+            motions[int(m[2])].append(dict(id=int(m[2]), x=int(m[3]), y=int(m[4]), data=files[n], name=n, motp=bool(m[1])))
     notes = []
+    kinds = []
+    # victims ending on the mat (BM and MOTP copies)
+    stock = StockEnds(pac11, cache or os.path.join(HERE, 'out', 'cache', 'ends11.pkl'))
+    h, g, t = read_epac(os.path.join(pac11, 'm.pac'))
+    T11 = tree_get(entry_get(g, *path_split('MVMT/CORN/f')[:2]), path_split('MVMT/CORN/f')[2])[0x10:0x110]
+    exh = collections.defaultdict(dict)
+    for l in files.get('moves/pack.txt', b'').decode('utf-8', 'replace').splitlines():
+        f = l.split()
+        if len(f) >= 3 and f[0] == 'exh':
+            r = bytes.fromhex(f[2])
+            exh[rkey(r)[0]].setdefault(r[2], (int(f[1]), r))
+    for mid in sorted(motions):
+        got = down_end_fix(motions[mid], exh.get(mid, {}), stock, T11)
+        for n in got:
+            notes.append('victim end %d: %s' % (mid, n))
+        if got:
+            for m in motions[mid]:
+                files[m['name']] = m['data']
+    if notes:
+        kinds.append(b'# victims ending on the mat chained to a down motion (svr10_moves.py fix)')
+    corner = len(notes)
     for mid in sorted(motions):
         if mid not in wi10 or w10[wi10[mid][0] + 0x73] != SIT_SITUATION:
             continue
-        for n in corner_shift(motions[mid]):
+        bm = [m for m in motions[mid] if not m['motp']]   # (motp_*: packed poses, not shifted)
+        for n in corner_shift(bm):
             notes.append('corner %d (sitting): %s' % (mid, n))
-        for m in motions[mid]:
+        for m in bm:
             files[m['name']] = m['data']
+    if len(notes) > corner:
+        kinds.append(b'# sitting-corner moves re-rooted (svr10_moves.py corner)')
     if not notes or dry:
         return notes
     man = files['manifest.txt'].decode('utf-8').split('\n')
@@ -1237,7 +1402,7 @@ def corner_fix_svrmod(pac10, path, dry=False):
     if 'moves/pack.txt' in files:
         pk = files['moves/pack.txt']
         eol = b'\r\n' if b'\r\n' in pk else b'\n'
-        files['moves/pack.txt'] = pk.rstrip(b'\r\n') + eol + b'# sitting-corner moves re-rooted (svr10_moves.py corner)' + eol
+        files['moves/pack.txt'] = pk.rstrip(b'\r\n') + eol + b''.join(k + eol for k in kinds if k not in pk)
     tmp = path + '.tmp'
     with zipfile.ZipFile(tmp, 'w') as z:
         for i in infos:
@@ -1266,10 +1431,10 @@ def main(argv):
         del argv[i:i + 2]
     argv = [a for a in argv if a != '--namelist']
     cmd = argv[1]
-    if cmd == 'corner':   # corner <pac10> <mod.svrmod>... [--dry]
-        for f in argv[3:]:
+    if cmd == 'fix':   # fix <pac10> <pac11> <mod.svrmod>... [--dry]
+        for f in argv[4:]:
             if f != '--dry':
-                for n in corner_fix_svrmod(argv[2], f, '--dry' in argv):
+                for n in fix_svrmod(argv[2], argv[3], f, '--dry' in argv, os.path.join(out, 'cache', 'ends11.pkl')):
                     print('%s: %s' % (os.path.basename(f), n))
         return 0
     if cmd == 'verify':

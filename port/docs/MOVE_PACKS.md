@@ -32,7 +32,7 @@ Extreme Neckbreaker Drop. The game's own files are never written.
   - Each child is a PACH of groups, sorted by (u16 id, u8, u8).
   - `BATS/INIT` and `BATH/INIT` hold the same three as children 10-12.
 
-2010 data needs two conversions in `svr10_moves.py`:
+2010 data needs these conversions in `svr10_moves.py`:
 
 - Event op 87 has bit 7 set in 2010 and never in 2011: cleared.
 - Moves on an opponent sitting in the corner (2010 WAZE +0x73 = 12): 2011
@@ -42,12 +42,24 @@ Extreme Neckbreaker Drop. The game's own files are never written.
   floated above the turnbuckle (Umaga's Running Knee 5832 on Sabu). The
   victim's (y 1 / 51) root Z gets -253 and the attacker's (y 0 / 50) +253,
   per x (a running move's x=20 keys; not its run-up x=0), when the victim
-  starts where 2010's pose is (first root Z above -450).
-  `svr10_moves.py corner <2010 pac> <mod.svrmod>...` does the same to a
-  built mod (version +0.1; a second run changes nothing).
+  starts where 2010's pose is (first root Z above -450). BM/RR copies only:
+  the packed MOTP copies' root isn't decoded (whether matches play MOTP or
+  BM for these isn't confirmed).
+- The victim's end: a victim track's (y 1) last event op 49 names the motion
+  that follows (sub_821D48D0 -> sub_82395E10); 0 names none and the game
+  goes straight to the get-up (motion 20). 2011's victims that end on the
+  mat name a down motion (443-448, 473-478: lying, selling). Several 2010
+  ones name 0 - Jeff's Hurricanrana 8 (7573): the opponent got up at once,
+  ~250 frames before the stock Hurricanrana 5 (7450 -> 446). A ported victim
+  that ends low (last root Y above -400) with op 49 -> 0 gets the target of
+  the most similar stock move (same EXH group and x, fewest differing EXH
+  bytes, its victim chained to a motion), in the BM and MOTP copies.
 
-The MOTP copies are carried over unchanged (packed; their root isn't
-decoded).
+`svr10_moves.py fix <2010 pac> <2011 pac> <mod.svrmod>...` applies both to a
+built mod (version +0.1, a pack.txt line so the overlay rebuilds; a second
+run changes nothing).
+
+The MOTP copies are otherwise carried over unchanged (packed).
 
 ## A pack
 
@@ -71,6 +83,13 @@ A `disabled` file in the mod or pack folder turns it off. Keys the game
 already has are left alone.
 
 ## How the game uses them
+
+Packs are read in path order: `Mods\Moves\<pack>`, then
+`Mods\Superstars\<mod>\moves`, A-Z. Of two packs' copies of one motion key
+the first read is used (`movepacks 7`; before, either). Copies that differ are
+logged once per pair of packs, e.g. `move packs: "Moves" and "jeff_hardy"
+carry different motions for moves 2504 3410 7573: "Moves"'s are used` - an
+old exported move pack hides a mod's fixed motions that way.
 
 1. **At start-up** (`InstallMovePacks`, before the game mounts its pacs):
    - Every enabled pack is merged into copies of `m.pac`, `misc.pac` and

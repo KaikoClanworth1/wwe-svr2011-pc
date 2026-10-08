@@ -69,7 +69,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 6";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order)
+constexpr const char* kFormat = "movepacks 7";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used)
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -78,6 +78,7 @@ struct Motion {
   uint32_t frames = 0;
   Bytes data;
   Bytes hdr;  // (YMBs: the 20-byte motion header)
+  std::string pack;  // (the pack it came from: its folder, or the superstar mod's)
 };
 struct Record {
   uint32_t group = 0;
@@ -141,6 +142,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp) {
       Motion m;
       m.id = uint16_t(id), m.x = uint8_t(x), m.y = uint8_t(y), m.frames = frames;
       m.hdr = Hex(hdr);
+      m.pack = (dir.filename() == "moves" ? dir.parent_path() : dir).filename().string();
       if (!ReadAll(dir / fs::u8path(file), m.data)) {
         REXLOG_WARN("[svr2011] move packs: {}: missing {}", dir.filename().string(), file);
         continue;
@@ -234,7 +236,7 @@ bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   for (const auto& e : ents) keys.push_back(Key(e.id, e.x, e.y)), present.insert(keys.back());
   std::vector<const Motion*> sorted;
   for (const auto& m : add) sorted.push_back(&m);
-  std::sort(sorted.begin(), sorted.end(), [](auto a, auto b) { return Key(a->id, a->x, a->y) < Key(b->id, b->x, b->y); });
+  std::stable_sort(sorted.begin(), sorted.end(), [](auto a, auto b) { return Key(a->id, a->x, a->y) < Key(b->id, b->x, b->y); });
   added = 0;
   for (const Motion* m : sorted) {
     const uint32_t k = Key(m->id, m->x, m->y);
@@ -320,7 +322,7 @@ bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
     if (keys[i] > keys[i + 1]) return false;
   std::vector<const Motion*> sorted;
   for (const auto& m : add) sorted.push_back(&m);
-  std::sort(sorted.begin(), sorted.end(), [](auto a, auto b) { return Key(a->id, a->x, a->y) < Key(b->id, b->x, b->y); });
+  std::stable_sort(sorted.begin(), sorted.end(), [](auto a, auto b) { return Key(a->id, a->x, a->y) < Key(b->id, b->x, b->y); });
   added = 0;
   for (const Motion* m : sorted) {
     const uint32_t k = Key(m->id, m->x, m->y);
@@ -563,6 +565,32 @@ bool ReadEntry(const fs::path& pac, const std::string& type_name, Bytes& out) {
       return bool(in.read(reinterpret_cast<char*>(out.data()), std::streamsize(out.size())));
     }
   return false;
+}
+
+// Two packs with the same motion key: the first read is used (packs are read
+// in path order - Mods\Moves\<pack> before Mods\Superstars\<mod>\moves, then
+// A-Z), the other is ignored. Copies that are the same (one ported move in
+// several superstar mods) are normal; different ones are logged, once per
+// pair of packs, with the move ids: an old exported move pack can hide a
+// mod's fixed motion that way.
+void WarnOverrides(const Packs& p) {
+  std::map<std::pair<std::string, std::string>, std::set<uint16_t>> diff;  // (used, ignored) -> move ids
+  for (const auto& [pac, entries] : p.motions)
+    for (const auto& [type_name, banks] : entries)
+      for (const auto& [path, motions] : banks) {
+        std::map<uint32_t, const Motion*> first;
+        for (const Motion& m : motions) {
+          const auto [it, fresh] = first.emplace(Key(m.id, m.x, m.y), &m);
+          if (!fresh && it->second->pack != m.pack && it->second->data != m.data)
+            diff[{it->second->pack, m.pack}].insert(m.id);
+        }
+      }
+  for (const auto& [packs, ids] : diff) {
+    std::string list;
+    for (uint16_t id : ids) list += (list.empty() ? "" : " ") + std::to_string(id);
+    REXLOG_WARN("[svr2011] move packs: \"{}\" and \"{}\" carry different motions for moves {}: \"{}\"'s are used",
+                packs.first, packs.second, list, packs.first);
+  }
 }
 
 // ---- building
@@ -809,6 +837,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     ReadPack(d, packs, stamp);
     stamp += FileStamp(d / "pack.txt");
   }
+  WarnOverrides(packs);
   for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h"})
     stamp += FileStamp(game / "pac" / f);
   if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
