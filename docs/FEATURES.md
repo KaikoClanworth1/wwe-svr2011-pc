@@ -147,6 +147,7 @@ still being tested.
 - **Create a Team** lists real superstars again (mods made it show nameless "DEFAULT" generics).
 - **One Hurricane**: the bundled Hurricane mod (a second select tile without his video, intro or music) is retired, and copies installed by 2.0.4 are switched off once. The Hurricane under the M tile stays.
 - **Backstage mods** no longer crash the match load when a move pack is installed.
+- **Arena mods can't damage the game's own arena files any more**: a custom arena on another arena's slot could, in rare cases, write through to that slot's original file in `pacg` (e.g. bg06.pac). If an arena looks wrong, run Verify game files in the launcher to repair it.
 - **Superstar Threads**: a painted attire the game builds again after a match is no longer drawn with parts of the earlier build.
 - **Everything unlocked again for players who played 2.0.1 / 2.0.2 online**: a leftover Online Axxess package kept the Fan Axxess unlocks from applying; it is removed at start.
 - **AMD graphics cards on Vulkan**: the Native renderer uses 32-bit float depth where AMD's driver has no 24-bit depth + stencil buffer (it couldn't start before).
