@@ -92,7 +92,8 @@ still being tested.
 - **72 superstar mod slots** (was 50), using more of the game's blank superstar records.
 - **Superstar height** (`height=` in a mod, 0.80-1.25; the Mod Maker's Superstar page has a slider with a live preview) - for converted superstars that came out the wrong size.
 - **SvR 2010 superstars' corner moves**: moves on an opponent sitting in the corner (e.g. Umaga's Running Knee) no longer lift them above the turnbuckle; 17 bundled superstars updated.
-- **Three Stages of Hell after REMATCH** starts again at fall 1 (a rematch kept the last match's score and ended after one fall).
+- **Three Stages of Hell after REMATCH** starts again at fall 1 (a rematch kept the last match's score and ended after one fall), and each new stage is announced in the middle of the screen ("FALL 2 - FALLS COUNT ANYWHERE").
+- **The port's match HUD looks like the game's own** (a slanted black panel with a white rim and a red edge, bold italic text) and only shows while the match is running - not on the select or versus screens, in entrances, replays, pauses or end screens. A Universe run-in waiting outside no longer counts as a side in the score.
 - **Mystery Opponent**: the "?" picture can't stay on screen into the match (it waited for an entrance sound that doesn't always play).
 - **The M tile on the character select reads MODS** (was EXTRA).
 
