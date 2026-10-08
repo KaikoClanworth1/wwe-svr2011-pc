@@ -356,8 +356,8 @@ void Problems(std::vector<Problem>& p) {
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Superstars", ec))
       if (e.is_directory(ec) && fs::exists(e.path() / L"manifest.txt", ec)) ++mods;
-    if (mods >= 50) p.push_back(Error("The game already has 50 superstar mods installed: that is the limit.", "Remove one in the launcher's Mods tab."));
-    else if (mods >= 45) p.push_back(Warning(std::to_string(mods) + " of 50 superstar mod slots are in use."));
+    if (mods >= 72) p.push_back(Error("The game already has 72 superstar mods installed: that is the limit.", "Remove one in the launcher's Mods tab."));
+    else if (mods >= 67) p.push_back(Warning(std::to_string(mods) + " of 72 superstar mod slots are in use."));
   }
 }
 
@@ -401,7 +401,7 @@ void Draw() {
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
   }
-  Heading("Superstar", "A new playable character under the M tile of the character select (up to 50 mods).");
+  Heading("Superstar", "A new playable character under the M tile of the character select (up to 72 mods).");
   std::vector<Problem> problems;
   Problems(problems);
   ImGui::BeginChild("form", ImVec2(-360 * g_scale, -48 * g_scale), false);
