@@ -46,6 +46,7 @@
 
 #include "frame_rate.h"
 #include "online_net.h"
+#include "net_sim.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
@@ -76,6 +77,8 @@ enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
   kFileRequest = 7, kFilePart = 8  // (files peers fetch from each other: P2PFetch)
 };
+// Round trips to the peers a match exchanges game packets with (net_sim.h).
+enum : uint8_t { kPing = 11, kPong = 12 };
 
 rex::memory::Memory* g_memory = nullptr;
 
@@ -235,6 +238,9 @@ std::atomic<int64_t> g_online_at{0};  // last session activity (steady clock, ms
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
 }
+uint64_t NowUs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count());
+}
 bool ForceRelay() { return REXCVAR_GET(p2p_force_relay); }
 
 struct Peer {
@@ -314,6 +320,7 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     }
   }
   if (ForceRelay()) p.relayed = p.tunnel = true;
+  if (NetForceTunnel()) p.tunnel = true;  // (tests: the delay applies on this PC too)
   if (added) {
     REXLOG_INFO("p2p: peer {:02X}{:02X}{:02X}{:02X}{:02X}{:02X} at {}:{}{} is {}", mac[0], mac[1], mac[2], mac[3],
                 mac[4], mac[5], Ip(p.route), p.route_port, p.relayed ? " (relay)" : "", Ip(p.fake));
@@ -403,13 +410,16 @@ void ProxyLoop(Proxy* proxy) {
     auto packet = DataHeader(proxy->remote, uint16_t(ntohs(from.sin_port) - Offset(g_me.base)));
     packet.insert(packet.end(), buf.begin(), buf.begin() + n);
     Path path;
+    uint32_t fake = 0;
     {
       std::lock_guard lock(g_mutex);
       auto it = g_peers.find(proxy->mac);
       if (it == g_peers.end()) continue;
       path = PathOf(proxy->mac, it->second);
+      fake = it->second.fake;
     }
-    Send(path, packet);
+    NetPacket(true, fake, size_t(n), path.relayed);
+    NetSimSend([path, packet = std::move(packet)] { Send(path, packet); });  // (net_sim.h: a test's delay)
   }
 }
 
@@ -575,12 +585,36 @@ void OnData(const uint8_t* data, size_t size, Via via) {
       }
       p.direct = Clock::now();
     }
+    NetPacket(false, p.fake, size - 16, via.relayed);
     Proxy* proxy = ProxyFor(mac, from);
     if (!proxy) return;
     s = proxy->s;
   }
   SendOn(s, 0x7F000001, uint16_t(to + Offset(g_me.base)), data + 16, size - 16);
   if (via.relayed) Punch(mac);
+}
+
+// Once a second, a ping to each peer this game exchanges game packets with (it
+// has a proxy): their round trips for the log and the ping indicator (net_sim.h).
+void PingLoop() {
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::vector<Path> to;
+    {
+      std::lock_guard lock(g_mutex);
+      std::set<Mac> gamers;
+      for (const auto& [key, proxy] : g_proxies) gamers.insert(proxy->mac);
+      for (const Mac& mac : gamers) {
+        if (auto it = g_peers.find(mac); it != g_peers.end()) to.push_back(PathOf(mac, it->second));
+      }
+    }
+    for (const Path& path : to) {
+      Writer w;
+      w.b = Header(kPing, NewNonce());
+      w.u64(NowUs());
+      NetSimSend([path, b = std::move(w.b)] { Send(path, b); });
+    }
+  }
 }
 
 // -- files peers fetch from each other (P2PFetch: online_cas.cpp) -------------------
@@ -739,6 +773,24 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
     case kHello:
       if (nonce & 1) Send(back, Header(kHello, nonce + 1));  // (the first of a pair: answered)
       break;
+    case kPing: {  // -> its time back (the way game packets go, with a test's delay)
+      Writer w;
+      w.b = Header(kPong, nonce);
+      w.u64(r.u64());
+      if (r.ok) NetSimSend([back, b = std::move(w.b)] { Send(back, b); });
+      break;
+    }
+    case kPong: {
+      const uint64_t sent_us = r.u64();
+      if (!r.ok) break;
+      uint32_t fake = 0;
+      {
+        std::lock_guard lock(g_mutex);
+        if (auto it = g_peers.find(mac); it != g_peers.end()) fake = it->second.fake;
+      }
+      NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed);
+      break;
+    }
     case kFileRequest:
       ServeFile(r, nonce, back);
       break;
@@ -1469,6 +1521,7 @@ void InstallP2P(rex::memory::Memory* memory) {
   }
   std::thread(Receive).detach();
   std::thread(Keepalive).detach();
+  std::thread(PingLoop).detach();
   rex::kernel::xam::OnlineHooks hooks;
   hooks.title_xnaddr = TitleXnAddr;
   hooks.xnaddr_to_inaddr = XnAddrToInAddr;
