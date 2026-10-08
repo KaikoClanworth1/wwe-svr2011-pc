@@ -96,6 +96,8 @@ still being tested.
 - **The port's match HUD looks like the game's own** (a slanted black panel with a white rim and a red edge, bold italic text) and only shows while the match is running - not on the select or versus screens, in entrances, replays, pauses or end screens. A Universe run-in waiting outside no longer counts as a side in the score.
 - **Mystery Opponent**: the "?" picture can't stay on screen into the match (it waited for an entrance sound that doesn't always play).
 - **The M tile on the character select reads MODS** (was EXTRA).
+- **Weapons Everywhere: CPUs wrestle too** - after using a weapon a CPU waits 25 s before going for another (they had kept re-arming all match).
+- **Lumberjacks keep attacking** a wrestler who stays on the floor (at most one attack every 3 s; each lumberjack rests 6 s) - they stopped after two before.
 
 ## New in 2.0.5
 
