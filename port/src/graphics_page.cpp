@@ -67,14 +67,17 @@ constexpr int kNumResolutions = int(std::size(kResolutions));
 constexpr int kDefaultResolution = 3;  // (1920 x 1080)
 // GRAPHICS -> RENDER RESOLUTION: native_max_scale (AUTO: follow the window,
 // up to 4x; the phone's screen is the window), and below the Xbox 360's 720p
-// native_render_scale (360P / 480P: the scene smaller, scaled up).
+// native_render_scale (360P / 480P: the scene smaller, scaled up); between
+// the 720p steps native_scene_height (900P / 1080P: 2x, scaled down to it).
 struct Scale {
   int value;
   double res;  // (native_render_scale)
+  int height;  // (native_scene_height; 0: off)
   const char* label;
 };
-constexpr Scale kScales[] = {{4, 1.0, "AUTO"},  {1, 0.5, "360P"},  {1, 2.0 / 3.0, "480P"},
-                             {1, 1.0, "720P (XBOX 360)"}, {2, 1.0, "1440P"}, {3, 1.0, "2160P"}};
+constexpr Scale kScales[] = {{4, 1.0, 0, "AUTO"},       {1, 0.5, 0, "360P"},     {1, 2.0 / 3.0, 0, "480P"},
+                             {1, 1.0, 0, "720P (XBOX 360)"}, {2, 1.0, 900, "900P"}, {2, 1.0, 1080, "1080P"},
+                             {2, 1.0, 0, "1440P"},       {3, 1.0, 0, "2160P"}};
 constexpr int kNumScales = int(std::size(kScales));
 // GRAPHICS -> TEXTURES: native_texture_quality (MEDIUM / LOW: big textures
 // from the game's own half / quarter size mipmaps - native/textures.h).
@@ -424,13 +427,19 @@ void GraphicsPage::Load() {
   {
     const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
     const double res = rex::cvar::Query<double>("native_render_scale");
+    const int32_t height = rex::cvar::Query<int32_t>("native_scene_height");
     scale_ = 0;
-    if (res > 0.0 && res < 0.99) {  // (below 720p: the nearer of 360P / 480P)
+    if (height > 0) {  // (the nearest of 900P / 1080P)
+      for (int i = 0; i < kNumScales; ++i)
+        if (kScales[i].height > 0 &&
+            (kScales[scale_].height == 0 || std::abs(kScales[i].height - height) < std::abs(kScales[scale_].height - height)))
+          scale_ = i;
+    } else if (res > 0.0 && res < 0.99) {  // (below 720p: the nearer of 360P / 480P)
       for (int i = 0; i < kNumScales; ++i)
         if (kScales[i].res < 0.99 && std::abs(kScales[i].res - res) < std::abs(kScales[scale_].res - res)) scale_ = i;
     } else {
       for (int i = 0; i < kNumScales; ++i)
-        if (kScales[i].value == v && kScales[i].res >= 0.99) scale_ = i;
+        if (kScales[i].value == v && kScales[i].res >= 0.99 && kScales[i].height == 0) scale_ = i;
     }
   }
   {
@@ -491,6 +500,8 @@ void GraphicsPage::Change(int row, int dir) {
       rex::cvar::SetFlagByName("native_render_scale", res);
       SaveSetting("native_max_scale", std::to_string(kScales[scale_].value));
       SaveSetting("native_render_scale", res);
+      rex::cvar::SetFlagByName("native_scene_height", std::to_string(kScales[scale_].height));
+      SaveSetting("native_scene_height", std::to_string(kScales[scale_].height));
       break;
     }
     case kCrowd:  // (the arenas' crowd-less copies are chosen when the game starts: crowd_off.h)
@@ -1079,7 +1090,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderer: return "The graphics API the game draws with. AUTO: Direct3D 12, else Vulkan, else Direct3D 11 (older GPUs).";
       case kRenderScale:
         return "The most the game renders at. AUTO fills the screen; lower is faster (360P / 480P: softer, for weak "
-               "devices).";
+               "devices; 1080P: sharp on a 1080p screen, lighter than AUTO's 1440P).";
       case kCrowd:
         return crowd_ == crowd_at_start_ ? "The people in the seats. OFF: empty seats - faster on weak PCs and phones."
                                          : "Takes effect the next time the game starts.";

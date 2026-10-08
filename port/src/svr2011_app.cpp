@@ -378,7 +378,7 @@ void Svr2011App::OnPostLoadXexImage() {
     REXLOG_INFO("game folder: {}", rex::filesystem::GetExecutableFolder().string());
     static const char* const kGroups[][2] = {
         {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
-        {"renderer", "native_renderer gpu_backend native_max_scale native_aa native_2x_msaa native_scale_effects "
+        {"renderer", "native_renderer gpu_backend native_max_scale native_render_scale native_scene_height native_aa native_2x_msaa native_scale_effects "
                      "native_texture_quality native_texture_packs native_dump_textures native_widescreen native_prepare_pipelines "
                      "frame_rate full_speed unlock_30fps "
                      "process_priority"},

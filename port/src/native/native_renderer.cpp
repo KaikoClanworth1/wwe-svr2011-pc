@@ -121,6 +121,10 @@ REXCVAR_DEFINE_DOUBLE(native_render_scale, 1.0, "GPU",
                       "(0.5 = 640 x 360, scaled up to the screen; 0.25 - 1). The HUD and menus' 2D art "
                       "are drawn into the same scene, so they get softer too.");
 
+REXCVAR_DEFINE_INT32(native_scene_height, 0, "GPU",
+                     "Native renderer: the scene's height in pixels, between the 720p steps (900 / 1080: "
+                     "2x scaled down to it). 0: native_max_scale and native_render_scale decide.");
+
 REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
                      "The scale follows the window; phones start at 1.");
@@ -1504,6 +1508,7 @@ void ApplyOutputSettings(Renderer* r) {
   static const bool shadows_once = (g_shadows = REXCVAR_GET(native_shadows));
   (void)shadows_once;
   static float res = float(REXCVAR_GET(native_render_scale));
+  static int32_t scene_height = REXCVAR_GET(native_scene_height);
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
     aa = aa_level();
@@ -1511,6 +1516,7 @@ void ApplyOutputSettings(Renderer* r) {
     effects = REXCVAR_GET(native_scale_effects);
     g_shadows = REXCVAR_GET(native_shadows);
     res = float(REXCVAR_GET(native_render_scale));
+    scene_height = REXCVAR_GET(native_scene_height);
     widescreen = REXCVAR_GET(native_widescreen);
     aa_checked = r->frames;
   }
@@ -1530,10 +1536,16 @@ void ApplyOutputSettings(Renderer* r) {
   }
   const uint32_t need = out_h * aa;
   const uint32_t limit = d3d11_auto ? 1u : uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
-  const uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
+  uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
   res = std::clamp(res, 0.25f, 1.0f);
   if (scale > 1) res = 1.0f;  // (only below the Xbox 360's own resolution)
+  // A chosen height (1080P): the 720p step above it, the scene scaled down to it.
+  if (scene_height > 0) {
+    const uint32_t h = uint32_t(std::clamp<int32_t>(scene_height, int32_t(kHeight / 4), int32_t(kHeight * 4)));
+    scale = (h + kHeight - 1) / kHeight;
+    res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
+  }
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
       !wide_changed && !res_changed) {

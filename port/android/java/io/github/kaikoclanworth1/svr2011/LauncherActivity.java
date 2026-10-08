@@ -623,6 +623,8 @@ public class LauncherActivity extends Activity {
                 if (loading_ || !touched[0] || values[position].equals(settings_.getString(key, fallback))) return;
                 if (quoted) settings_.setString(key, values[position]);
                 else settings_.setInt(key, Integer.parseInt(values[position]));
+                // (the in-game 900P / 1080P choice would win over this one: graphics_page.cpp)
+                if (key.equals("native_max_scale")) settings_.setInt("native_scene_height", 0);
                 saved(label);
             }
 
@@ -692,6 +694,7 @@ public class LauncherActivity extends Activity {
             settings_.setString("native_renderer", "main");
             settings_.setInt("user_language", 1);
             settings_.setInt("native_max_scale", 4);
+            settings_.setInt("native_scene_height", 0);
             settings_.setBool("native_2x_msaa", true);
             settings_.setBool("native_scale_effects", false);
             settings_.setBool("unlock_30fps", true);

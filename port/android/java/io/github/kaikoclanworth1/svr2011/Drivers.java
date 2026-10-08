@@ -300,6 +300,7 @@ final class Drivers {
         // out in Mali mode too (arena_crowd auto). Off: full resolution and
         // shadows again.
         settings_.setDouble("native_render_scale", on ? 0.5 : 1.0);
+        settings_.setInt("native_scene_height", 0);  // (an in-game 900P / 1080P would win over it)
         if (on) settings_.setString("native_texture_quality", "low");
         settings_.setBool("native_shadows", !on);  // (no real-time shadows: fewer draws)
     }
