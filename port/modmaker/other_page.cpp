@@ -12,6 +12,7 @@
 //                      Lot stage and its cars on the Backstage page
 // The Python tools ship in "Mod Maker Tools" next to the Mod Maker and need
 // Python 3 with numpy and Pillow (ffmpeg too for the 2010 themes).
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -209,6 +210,7 @@ void Wwe13StarTab() {
 int g_w10_id = 100;
 int g_w10_model = 0;  // 0 default, 1 from 2010, 2 from 2011
 bool g_w10_no_moves = false;
+float g_w10_height = 1.0f;  // --height (1: left out)
 char g_w10_out[260] = "";
 
 void Svr10StarTab() {
@@ -226,6 +228,10 @@ void Svr10StarTab() {
   ImGui::SetNextItemWidth(220 * g_scale);
   ImGui::Combo("Model", &g_w10_model, "the tool's choice\0from SvR 2010\0from SvR 2011\0");
   ImGui::Checkbox("Keep the base's moves (no move pack)", &g_w10_no_moves);
+  ImGui::SetNextItemWidth(220 * g_scale);
+  ImGui::SliderFloat("Height (scale)", &g_w10_height, 0.8f, 1.25f, "%.2f");
+  Hint("The mod's height=: its size against the base superstar's (1.00 leaves it out; about 0.90 - 1.15 plays "
+       "best). It can be changed on the Superstar page afterwards, where the preview shows it.");
   if (!ToolsReady(true)) return;
   if (ImGui::Button("Survey the 2010 roster (ids and names into the log)", ImVec2(320 * g_scale, 0)))
     RunTool(L"svr10_superstar.py", {L"survey", L"--pac10", g_w10_pac}, [](int) {});
@@ -238,6 +244,11 @@ void Svr10StarTab() {
       std::vector<std::wstring> args = {std::to_wstring(g_w10_id), out, L"--pac10", g_w10_pac, L"--pac11", Pac11()};
       if (g_w10_model) args.push_back(L"--model"), args.push_back(g_w10_model == 1 ? L"10" : L"11");
       if (g_w10_no_moves) args.push_back(L"--no-moves");
+      if (std::lround(g_w10_height * 100) != 100) {
+        wchar_t hb[16];
+        std::swprintf(hb, 16, L"%.2f", g_w10_height);
+        args.push_back(L"--height"), args.push_back(hb);
+      }
       RunTool(L"svr10_superstar.py", args, [out](int code) {
         if (code != 0) { Status("svr10_superstar.py failed (see the log)."); return; }
         ProjectOpen(out);

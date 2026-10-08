@@ -460,6 +460,7 @@ bool LoadBanners() {
 
 std::vector<StarInfo> g_stars;
 std::map<int, std::array<int, 7>> g_ratings;
+std::map<int, int> g_scales;  // record +28 (4096 = 1.0)
 bool g_stars_loaded = false;
 std::map<int, Picture> g_renders;
 
@@ -486,6 +487,7 @@ void LoadStars() {
             std::array<int, 7> v{};
             for (int j = 0; j < 7; ++j) v[j] = r[4 + j];
             g_ratings[int(x.id)] = v;
+            g_scales[int(x.id)] = r[4 + 28] | (r[4 + 29] << 8);
           }
         }
   Bytes h;
@@ -517,6 +519,12 @@ int StarRating(int id, int k) {
   Stars();
   const auto it = g_ratings.find(id);
   return it == g_ratings.end() ? 74 : std::clamp(it->second[k], 1, 99);
+}
+
+float StarScale(int id) {
+  Stars();
+  const auto it = g_scales.find(id);
+  return it == g_scales.end() || it->second < 2048 || it->second > 8192 ? 1.0f : float(it->second) / 4096.0f;
 }
 
 Picture* StarRender(int id) {
@@ -1492,6 +1500,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   double shot_after = 6;
   int star_id = 0, star_call = -1;
+  float star_height = 0;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures;
@@ -1576,6 +1585,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-movie") && more) star_movie = argv[++i];
     else if (!wcscmp(argv[i], L"--star-picture") && more) star_picture = argv[++i];
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-voice") && more) star_voice = argv[++i];
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
@@ -1656,6 +1666,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   star_page::TestStart(star_id, star_model, star_name, star_picture, star_save);
   if (star_call >= 0 || !star_song.empty() || !star_movie.empty() || !star_voice.empty())
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
+  if (star_height > 0) star_page::TestHeight(star_height);
   signs_page::TestStart(sign_files, sign_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
   arena_page::SetTestSave(test_save, test_lib);

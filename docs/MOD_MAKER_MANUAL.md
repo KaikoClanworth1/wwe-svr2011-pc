@@ -109,6 +109,10 @@ mods).
   starting attributes (from one of the game's superstars underneath). Move
   the attribute sliders as you like; the moves can be changed in the game's
   CREATE A MOVE-SET.
+- **Height (scale):** the superstar's size against the base's (1.00 = the
+  base's own size, left out of the mod; 1.05 = 5% taller), for converted or
+  older models that come out too tall or short. The preview shows the size the
+  game uses; about 0.90 - 1.15 plays best.
 - **Name call:** what the announcer and commentators call the superstar: one
   of the Created Superstar nicknames, or a recording of the name.
 - **More:** the entrance (any superstar's, or Jeff Hardy's SvR 2010 one the

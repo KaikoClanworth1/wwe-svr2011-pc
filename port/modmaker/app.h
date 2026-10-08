@@ -150,6 +150,9 @@ const std::vector<StarInfo>& Stars();
 const StarInfo* StarById(int id);
 // A superstar's 7 ratings (record +0..+6), 74 if unknown.
 int StarRating(int id, int k);
+// A superstar's body scale (record +28, 4.12 fixed point: the game stretches the
+// skeleton by it), 1 if unknown.
+float StarScale(int id);
 // The base's select render (DLC_HD SSFA), decoded on first use (cached).
 Picture* StarRender(int id);
 // A pac's table without reading the whole file: EPAC (12-byte entries,
@@ -282,7 +285,8 @@ namespace backstage_page { extern PageHooks hooks; }
 namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::wstring& model, const std::string& name,
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
-                      void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call); }
+                      void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
+                      void TestHeight(float scale); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,

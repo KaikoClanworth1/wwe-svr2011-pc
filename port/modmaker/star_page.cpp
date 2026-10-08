@@ -5,6 +5,7 @@
 // entrance movie, attires, select picture, crowd signs and name recording.
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -89,6 +90,7 @@ struct StarProject {
   Picture picture;                // its own select picture (512): else a silhouette
   Image picture_small;            // the 256 bust made with it
   int call = -1;                  // -1: "The Superstar"
+  float height = 1.0f;            // height=<scale> from the feet (0.80-1.25; 1: left out)
   std::vector<Picture> signs;     // its fans' signs (up to 4; 128 x 64)
   // the SvR 2010-style extras (the game: superstar_mods.cpp)
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
@@ -163,6 +165,15 @@ struct Job {
   std::wstring moves, pack;
 };
 
+// height= as written (2 decimals), "" at 1.00 (the key left out)
+std::string HeightText() {
+  const int c = int(std::lround(std::clamp(g_star.height, 0.8f, 1.25f) * 100));
+  if (c == 100) return "";
+  char b[8];
+  std::snprintf(b, sizeof b, "%d.%02d", c / 100, c % 100);
+  return b;
+}
+
 bool PrepareJob(Job& j) {
   const Style& st = kStyles[g_star.style];
   if (!g_star.ratings_set) {
@@ -176,6 +187,7 @@ bool PrepareJob(Job& j) {
   j.manifest += "ratings=";
   for (int k = 0; k < 7; ++k) j.manifest += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "\n");
   if (g_star.call >= 0) j.manifest += "call=" + std::to_string(g_star.call) + "\n";
+  if (const std::string h = HeightText(); !h.empty()) j.manifest += "height=" + h + "\n";
   if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
   if (g_star.announcer[0]) j.manifest += std::string("announcer=") + g_star.announcer + "\n";
   if (g_star.own_abilities) {
@@ -351,6 +363,7 @@ void Problems(std::vector<Problem>& p) {
 
 void Preview() {
   char_preview::SetModel(g_star.model, g_game);
+  char_preview::SetHeight(g_star.height * StarScale(kStyles[g_star.style].template_id));  // as the game: base x height=
   ImGui::BeginGroup();
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   const float w = std::max(220 * g_scale, avail.x);
@@ -415,6 +428,30 @@ void Draw() {
   for (int k = 0; k < 7; ++k) {
     ImGui::SetNextItemWidth(320 * g_scale);
     if (ImGui::SliderInt(kAttributes[k], &g_star.ratings[k], 1, 99)) g_star.ratings_set = true;
+  }
+  {  // height=: the model's size from its feet
+    ImGui::SetNextItemWidth(236 * g_scale);
+    ImGui::SliderFloat("##height", &g_star.height, 0.8f, 1.25f, "%.2f");
+    ImGui::SameLine(0, 4 * g_scale);
+    ImGui::SetNextItemWidth(80 * g_scale);
+    ImGui::InputFloat("Height (scale)", &g_star.height, 0, 0, "%.2f");
+    g_star.height = std::clamp(std::round(g_star.height * 100) / 100, 0.8f, 1.25f);
+    const float base = StarScale(kStyles[g_star.style].template_id);
+    Hint("The superstar's size against the base superstar's (the style's): 1.00 is the base's own size (the key "
+         "is left out), 1.05 is 5% taller. The game stretches the skeleton, so grapples and moves follow. For "
+         "converted or older models that come out too tall or too short. The game's moves are made for sizes "
+         "near the roster's: about 0.90 - 1.15 plays best. The preview shows the size the game will use.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%+d%%", int(std::lround((g_star.height - 1) * 100)));
+    if (const float tall = char_preview::ModelHeight(); tall > 0) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("about %d cm", int(std::lround(tall * 10 * base * g_star.height)));
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Measured on the model in its stance, at the size the game uses (the base's own size is x%.2f).", base);
+    }
+    if (g_star.height != 1.0f) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("1.00##hreset")) g_star.height = 1.0f;
+    }
   }
   ImGui::SetNextItemWidth(320 * g_scale);
   if (ImGui::BeginCombo("Name call (optional)", g_star.call < 0 ? "The Superstar" : kNickNames[g_star.call])) {
@@ -570,7 +607,7 @@ void Draw() {
 std::string StateText() {
   std::string s = std::string("name=") + g_star.name + "\nshort=" + g_star.short_name + "\nstyle=" +
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
-                  "\nversion=" + g_star.version + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) +
+                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) +
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
   for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
   for (int a = 1; a < 4; ++a) s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a];
@@ -592,6 +629,7 @@ void WriteProject(ProjectOut& out) {
   for (int k = 0; k < 7; ++k) r += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "");
   out.Key("ratings", r);
   if (g_star.call >= 0) out.Key("call", g_star.call);
+  if (const std::string h = HeightText(); !h.empty()) out.Key("height", h);
   out.File("model", g_star.model, "star/model");
   out.File("song", g_star.song, "star/theme");
   out.File("movie", g_star.movie, "star/movie");
@@ -646,6 +684,7 @@ bool Read(const ProjectIn& in, bool mod) {
     g_star.ratings_set = true;
   }
   g_star.call = in.GetInt("call", -1);
+  if (const std::string h = in.Get("height"); !h.empty()) g_star.height = std::clamp(float(std::atof(h.c_str())), 0.8f, 1.25f);
   g_star.entrance = in.GetInt("entrance", -1);
   std::snprintf(g_star.announcer, sizeof g_star.announcer, "%s", in.Get("announcer").c_str());
   if (const std::string a = in.Get("abilities"); !a.empty()) {
@@ -735,6 +774,8 @@ void SetModel(const std::wstring& ch_pac) {
   g_star.model = ch_pac;
   Touch();
 }
+
+void TestHeight(float scale) { g_star.height = std::clamp(scale, 0.8f, 1.25f); }
 
 void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call) {
   if (!song.empty()) g_star.song = song;

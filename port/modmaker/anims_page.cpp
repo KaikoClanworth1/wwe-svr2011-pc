@@ -351,6 +351,7 @@ void Draw() {
   ImGui::SameLine();
   ImGui::BeginChild("view", ImVec2(0, 0), false);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
+  char_preview::SetHeight(1.0f);  // (the Superstar page's height= is its own)
   char_preview::Draw(avail.x, std::max(100.0f, avail.y - 64 * g_scale));
   const std::string st = char_preview::Status();
   if (!st.empty()) ImGui::TextDisabled("%s", st.c_str());

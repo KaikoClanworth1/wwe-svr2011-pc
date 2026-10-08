@@ -58,6 +58,7 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `style=<text>` | the Mod Maker's style name; its presence makes the name call default to "The Superstar" |
 | `ratings=a,b,c,d,e,f,g` | grapple, submission, speed, strikes, hardcore, charisma, durability (1-99) |
 | `abilities=a,b,...` | up to 8 ability ids: 1 Dirty Pin, 7 Move Thief, 9 Hammer Throw, 11 Resiliency, 12 Durability, 14 Kip-Up, 19 Outside Dives, 20 Springboard Dives, 22 Leverage Pin, 23 Fired Up, 24 Ring Escape |
+| `height=<scale>` | optional: the size against the base superstar's, from the feet, 0.80 - 1.25 with 2 decimals (1.05 = 5% taller; missing = the base's own). The game stretches the skeleton (record +28 = the base's x scale), so grapples follow; about 0.90 - 1.15 plays best |
 | `call=<0-83>` | the Created Superstar nickname the announcer and commentary use |
 | `announcer=<NAME>` | letters and digits: a name the announcer's sound banks have clips of (e.g. `JEFFHARDY`); wins over `voice=` |
 | `voice=voice.<ext>` | a recording of the name the announcer plays |

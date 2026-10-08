@@ -866,12 +866,16 @@ void ViewProj(float aspect, float out[16]) {
 }
 
 float g_frame_lo[3], g_frame_hi[3];  // the bounds gathered over the slots skinned this frame
+float g_height_scale = 1;            // the model's (slot 0) size from its feet
+float g_feet = 0, g_feet_next = 1e30f, g_top_next = -1e30f, g_tall = 0;  // slot 0's lowest / highest y (view, unscaled)
 
 void Skin(Slot& sl, const std::vector<Xf>& pose) {
   float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
   std::vector<Xf> skin(pose.size());
   for (size_t i = 0; i < pose.size(); ++i) skin[i] = Mul(pose[i], sl.bind_inv[i]);
   const bool frame = g_frame;
+  const bool model = &sl == &g_slots[0];
+  const float s = model ? g_height_scale : 1.0f;
   for (size_t m = 0; m < sl.gpu.size(); ++m) {
     const PMesh& pm = sl.ch->meshes[m];
     ID3D11Buffer* vb = sl.gpu[m].vb;
@@ -887,8 +891,10 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
         p = p + Apply(s, pm.pos[k]) * f.w[j];
         n = n + Rotate(s, pm.nrm[k]) * f.w[j];
       }
-      // y up for the view: y and z negated (a half turn about x)
-      out[k] = {{p.x, -p.y, -p.z}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}};
+      // y up for the view: y and z negated (a half turn about x); the model
+      // scaled from its feet (last frame's lowest point)
+      if (model) g_feet_next = std::min(g_feet_next, -p.y), g_top_next = std::max(g_top_next, -p.y);
+      out[k] = {{p.x * s, g_feet + (-p.y - g_feet) * s, -p.z * s}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}};
       if (frame)
         for (int c = 0; c < 3; ++c) lo[c] = std::min(lo[c], out[k].pos[c]), hi[c] = std::max(hi[c], out[k].pos[c]);
     }
@@ -912,6 +918,7 @@ void Render(int w, int h) {
     if (g_play.key >= float(g_play.keys)) g_play.key = g_play.loop ? std::fmod(g_play.key, float(g_play.keys)) : float(g_play.keys - 1);
   }
   for (int c = 0; c < 3; ++c) g_frame_lo[c] = 1e30f, g_frame_hi[c] = -1e30f;
+  g_feet_next = 1e30f, g_top_next = -1e30f;
   for (Slot& sl : g_slots) {
     if (!sl.ch) continue;
     const Motion* m = sl.motion ? sl.motion.get() : (&sl == &g_slots[0] || !g_bank) ? g_idle.get() : nullptr;
@@ -924,6 +931,7 @@ void Render(int w, int h) {
       Skin(sl, bind);
     }
   }
+  if (g_feet_next <= g_top_next) g_feet = g_feet_next, g_tall = g_top_next - g_feet_next;
   if (g_frame && g_frame_lo[0] <= g_frame_hi[0]) {  // framed as posed (the idle stands on the floor)
     const float* lo = g_frame_lo;
     const float* hi = g_frame_hi;
@@ -1110,6 +1118,9 @@ void Draw(float w, float h) {
       ImGui::SetTooltip("Left drag: turn   Right drag: tilt   Middle drag: pan   Wheel: zoom");
   }
 }
+
+void SetHeight(float scale) { g_height_scale = std::clamp(scale, 0.5f, 2.0f); }
+float ModelHeight() { return g_slots[0].ch ? g_tall : 0.0f; }
 
 std::string Status() {
   std::lock_guard lock(g_mutex);

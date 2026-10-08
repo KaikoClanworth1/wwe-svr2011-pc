@@ -39,6 +39,11 @@ Playback& Play();
 // The preview, w x h: left drag turns, right drag tilts, wheel zooms, middle drag pans.
 void Draw(float w, float h);
 void ResetCamera();
+// The model's size from its feet (a superstar mod's height=, 0.80-1.25; 1 = as
+// made), shown live; the dummy keeps its own. ModelHeight: the model as posed
+// now, unscaled, in game units (1 = 10 cm; 0 until shown).
+void SetHeight(float scale);
+float ModelHeight();
 // "Loading...", what is shown ("11089 vertices, 102 bones, idle") or why not.
 std::string Status();
 

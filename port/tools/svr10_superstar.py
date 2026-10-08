@@ -13,6 +13,7 @@ Options:
     --entrance N    entrance number (default: the 2011 entrance whose name matches, else the base's)
     --call N        Created Superstar nickname for the commentary (default: table below)
     --no-moves      keep the base's moves (no moves.txt / move pack)
+    --height S      height=S in the manifest: the model's size from its feet, 0.80-1.25 (default: left out)
     --verify        let svr10_moves.py write the full patched pacs and verify them (slow, ~1 GB)
     --work DIR      working folder (default: <out>.work next to the output)
 
@@ -806,9 +807,14 @@ def build(cid, out, o):
         c = o.get('call') if o.get('call') is not None else CALL.get(cid, 69 if (g10.dat.get(cid) or g11.dat[cid])[208] else 77)
         man['call'] = c
         p('commentary: call=%d (nickname bank; 2011 has no Comm_%04d)' % (c, cid))
+    if o.get('height'):
+        h = round(min(1.25, max(0.80, float(o['height']))), 2)
+        if h != 1.0:
+            man['height'] = '%.2f' % h
+            p('height = %.2f' % h)
     # manifest + zip
     order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'ratings', 'abilities', 'moves', 'entrance',
-             'announcer', 'call', 'song', 'movie']
+             'announcer', 'call', 'height', 'song', 'movie']
     txt = ''.join('%s=%s\n' % (k, man[k]) for k in order if k in man)
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n').write(txt)
     tmp = out + '.%d.tmp' % os.getpid()
@@ -888,7 +894,7 @@ def main(argv):
     i = 1
     while i < len(argv):
         a = argv[i]
-        if a in ('--pac10', '--pac11', '--base', '--model', '--entrance', '--call', '--work', '--out'):
+        if a in ('--pac10', '--pac11', '--base', '--model', '--entrance', '--call', '--work', '--out', '--height'):
             o[a[2:]] = argv[i + 1]
             i += 2
             continue
