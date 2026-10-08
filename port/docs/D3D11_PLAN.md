@@ -6,6 +6,62 @@ Examples are GeForce 400-600 and Radeon HD 5000-6000 era cards, and Intel HD
 Windows 7 / 8.1 come later, if they turn out to be feasible. The work is on
 branch `d3d11`, worktree `D:\Xbox Games Ports\SvR2011 D3D11`.
 
+## Status (phase 1 built)
+
+Steps 1-4 below are done, and step 5 is partly done.
+
+**How to use it.**
+- `gpu_backend = "d3d11"` (GRAPHICS > GRAPHICS API: DIRECT3D 11, or the
+  launcher's Settings) draws the whole game on Direct3D 11.
+- `"any"` (AUTO) picks it when neither Direct3D 12 nor Vulkan can run the
+  renderer (gpu_probe.cpp). The answer is kept per GPU and driver in
+  `UserData\cache\graphics_api.txt`.
+- Shaders: `native_shaders\shaders.dxbc.pak` (tools/convert_shaders.py
+  writes `dxbc/`, tools/pack_shaders.py packs it).
+
+**Pieces.**
+- SDK `graphics/d3d11`: a command processor without emulated drawing (the
+  gamma ramp as a pixel shader pass).
+- SDK `ui/d3d11`: provider, presenter and ImGui drawer. One immediate context
+  is shared under a lock. The presenter uses a flip-model swap chain (blt on
+  Windows 7) with a frame-latency waitable object.
+- plume_d3d11: recorded command lists replayed on a thread of their own, and
+  upload rings mapped NO_OVERWRITE that append within a frame.
+- Renderer "slot tables" (SlotTables()). Slot swizzles go where the
+  descriptor indices would be in g_ResourceIndices.
+
+**Settings for A/B tests.**
+- `native_d3d11_flush_draws`: default 1000. Light submissions flush at once.
+- `native_d3d11_replay_thread`: default on.
+- `d3d11_feature_level`: 0, 110, 101 or 100, to stand in for older GPUs.
+- `d3d11_adapter = -2`: WARP, the software rasterizer.
+- `d3d11_debug`: the debug layer. With `SVR2011_NATIVE_D3D_DEBUG=1` its
+  messages are logged.
+- `SVR2011_D3D11_PROBE=1`: logs the average colour of the frame and of the
+  guest output every 300 swaps. A cheap check that frames aren't black or
+  wrong.
+
+**Tested on this PC (RTX 4080, also at feature level 11_0).**
+- Title, menus, the demo match, and a full CPU match from the entrances to
+  the highlights.
+- The debug layer reports nothing but the expected refusal of a
+  constants+vertex buffer.
+- A 10_1 cap shows the "needs 11_0" message.
+- D3D12 and Vulkan are unchanged on the same build.
+
+**Open.**
+- WARP (software) draws the title, the menus and, at render scale 1x, the
+  demo match correctly. At 2x (the default 2x AA) the shaded 3D scene is
+  near-black, while geometry, depth and 2D are right. NVIDIA is correct at
+  2x. The cause is not found yet; it could show on some real AMD / Intel
+  drivers.
+- Still to test: texture packs, wide screens, CAW / Threads painting
+  (write-back) and Mod Maker previews.
+- Phase 2: feature level 10_x (vertex shaders linked per pipeline) and
+  Windows 7 / 8.1.
+- The shared `runs\shaders_native` must be converted again with this header
+  for `dxbc/` (deploy and package take it from there).
+
 ## Where things stand today
 
 The game draws only through the native renderer (`src/native/*`), and the

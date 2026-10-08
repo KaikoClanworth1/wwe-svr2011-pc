@@ -98,3 +98,40 @@ within noise (58.0 / 56.9 on vs 57.0 / 57.5 off). Not kept.
 
 Windows only throttles a background / hidden window's process (EcoQoS, coarse
 timers): nothing for a player playing it.
+
+## Direct3D 11 (branch d3d11, 2026-10-08)
+
+The same benchmark (opt_bench, normal condition, 60 fps, 2x render scale), on
+one build, alternating APIs. The PC was 24-34% busy. Another session's test
+game was running during most runs. D3D11 frames were checked against
+screenshots and the SVR2011_D3D11_PROBE colour averages.
+
+| run | API | avg fps | p99 ms | frames >51 ms | frames >20 ms | entrances >20 ms | worst ms |
+|---|---|---|---|---|---|---|---|
+| f11_a | D3D11 | 59.7 | 18.0 | 5 | 51 | 22 | 727 (title load) |
+| f11_b | D3D11 | 59.8 | 18.0 | 3 | 64 | 43 | 230 |
+| f11_end | D3D11, to the highlights | 59.9 | 17.8 | 3 | 41 | 16 | 186 |
+| f12_a | D3D12 | 59.7 | 17.8 | 14 | 43 | 7 | 180 |
+| f12_b | D3D12 | 59.8 | 17.8 | 12 | 49 | 14 | 182 |
+
+On this PC Direct3D 11 is on a par with Direct3D 12. It has fewer long load
+hitches and a few more 20 ms frames in the heaviest entrances (Batista's pyro,
+~5,000 draws).
+
+How it got there. At the 5,000-draw peak the first build ran at 41 fps:
+
+| change | effect at the peak |
+|---|---|
+| per-draw slot sets reused when unchanged; uploads noted once per buffer | recording 7.9 -> 6.1 ms |
+| no Flush after heavy submissions (`native_d3d11_flush_draws` = 1000: only light ones) | -4 ms of driver work on the render thread; 20 ms frames 516-542 -> 251-348 (busy PC) |
+| presenter waits for its back buffer before taking the context lock | context lock wait 0 |
+| upload rings mapped NO_OVERWRITE, appending within a frame (DISCARD renamed a 64 MB buffer every submission) | the rest of the gap to D3D12 |
+| replay on a thread of its own (`native_d3d11_replay_thread`) | slightly better (20-27 vs 26-50 frames >20 ms) |
+
+Not kept: one buffer for constants and vertices. The runtime refuses
+CONSTANT combined with other bind flags (WARP and NVIDIA).
+
+A pitfall seen: the first NO_OVERWRITE build tracked "already uploaded" bytes
+once per buffer instead of once per GPU copy. The constants copy then skipped
+most bytes, and frames were black (but fast). Check screenshots and the probe,
+not only the frame times.
