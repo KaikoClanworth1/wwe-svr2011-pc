@@ -1097,9 +1097,10 @@ static void settings_path(WCHAR *out)
     join(out, s_game_dir, GAME_TOML);
 }
 
-/* The graphics API list: the native renderer on D3D12 or on Vulkan (the game
-   always draws natively - no emulated renderer). */
-enum { RENDERER_NATIVE, RENDERER_VULKAN };
+/* The graphics API list: automatic (D3D12, else Vulkan, else D3D11 - the game
+   checks at start), Vulkan or D3D11 (the game always draws natively - no
+   emulated renderer). */
+enum { RENDERER_NATIVE, RENDERER_VULKAN, RENDERER_D3D11 };
 
 /* The game's languages (its text; the voices are English) and their Xbox 360
  * language ids (user_language). */
@@ -1603,7 +1604,7 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, aa = 0, emulated = 0, vulkan = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
+    int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
@@ -1634,7 +1635,8 @@ static void settings_load(void)
             else if (!strcmp(key, "native_texture_quality"))
                 textures = !_stricmp(val, "low") ? 2 : !_stricmp(val, "medium") ? 1 : 0;
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
-            else if (!strcmp(key, "gpu_backend")) vulkan = !_stricmp(val, "vulkan");
+            else if (!strcmp(key, "gpu_backend"))
+                api = !_stricmp(val, "vulkan") ? RENDERER_VULKAN : !_stricmp(val, "d3d11") ? RENDERER_D3D11 : RENDERER_NATIVE;
             else if (!strcmp(key, "window_width")) w = atoi(val);
             else if (!strcmp(key, "window_height")) h = atoi(val);
             else if (!strcmp(key, "user_language")) language = atoi(val);
@@ -1656,7 +1658,7 @@ static void settings_load(void)
     /* anti-aliasing: native_aa (1 off, 2-4), else the older on / off (on = 2x) */
     msaa = aa >= 1 && aa <= 4 ? aa : msaa ? 2 : 1;
     settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
-                  vulkan ? RENDERER_VULKAN : RENDERER_NATIVE, language);
+                  api, language);
     (void)emulated;  /* (an old native_renderer = "off": saved as "main" next time) */
     online_show(online, online_name, online_server);
     {
@@ -1720,8 +1722,8 @@ static int settings_save(void)
         sprintf_s(vals[23], 64, "%d", level);
     }
     strcpy_s(vals[12], 64, "\"main\"");
-    /* Vulkan: the emulator runs on Vulkan and the native renderer with it. */
-    strcpy_s(vals[13], 64, renderer == RENDERER_VULKAN ? "\"vulkan\"" : "\"any\"");
+    /* Vulkan / D3D11: the emulator's presentation and the native renderer on it. */
+    strcpy_s(vals[13], 64, renderer == RENDERER_VULKAN ? "\"vulkan\"" : renderer == RENDERER_D3D11 ? "\"d3d11\"" : "\"any\"");
     {
         int li = (int)SendMessageW(ctl(ID_LANGUAGE), CB_GETCURSEL, 0, 0);
         sprintf_s(vals[14], 64, "%d", k_languages[li >= 0 && li < N_LANGUAGES ? li : 0].id);
@@ -2620,8 +2622,9 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Low (quarter size)");
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 350, 182, 196, 200,
             ID_RENDERER);
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Direct3D 12 (recommended)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Automatic (Direct3D 12 recommended)");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Vulkan");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Direct3D 11 (older GPUs)");
     add(TAB_SETTINGS, L"Button", L"Input and audio", BS_GROUPBOX, X0, 248, 560, 118, 0);
     add(TAB_SETTINGS, L"Static", L"Controller API", SS_LEFT, X0 + 16, 276, 130, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 272, 300, 200, ID_INPUT);

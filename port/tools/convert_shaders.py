@@ -15,6 +15,9 @@ computes it when the game creates the shader):
 spirv/ has the same files with .spv (Vulkan 1.1 / SPIR-V 1.3: -fvk-invert-y for
 vertex shaders, constants read from the frame's upload buffer at offsets in the
 push constants - no buffer addresses or 64-bit integers; see shader_common.h).
+dxbc/ has them as .dxbc (Direct3D 11: Shader Model 5.0 from fxc, -DSVR_D3D11 -
+each fetch slot its own register, see shader_common.h); the HLSL fxc reads
+(older syntax) is in hlsl_d3d11/.
 The specialization constants are baked in with -DSVR_SPEC_CONSTANTS (see the
 XenosRecomp patch), so the renderer never links shaders at runtime.
 Writes out_dir/report.txt with every failure and its first error.
@@ -35,6 +38,8 @@ if os.environ.get("SVR2011_XENOSRECOMP"):
     XR = os.path.join(_xr, "build_native", "XenosRecomp", "XenosRecomp.exe")
     HEADER = os.path.join(_xr, "XenosRecomp", "shader_common.h")
 DXC = os.path.join(ROOT, "recomp", "XenosRecomp", "thirdparty", "dxc-bin", "bin", "x64", "dxc.exe")
+# fxc (Direct3D 11's DXBC): the newest Windows SDK's.
+FXC = (sorted(glob.glob(r"C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64\fxc.exe")) or [""])[-1]
 
 INPUT_RE = re.compile(r"(?:\[\[vk::location\((\d+)\)\]\] )?in (float4|uint4) i\w+ : ([A-Z]+)(\d+)")
 TEXTURE_DEFINE_RE = re.compile(r"#define (\w+)_Texture(2D|3D|Cube)DescriptorIndex g_ResourceIndex\(\d+, (\d+)\)")
@@ -60,6 +65,39 @@ def compile_spirv(hlsl, spv, stage, mask, compact=False):
                         "-fvk-use-dx-layout", "-fspv-target-env=vulkan1.1", *flags,
                         f"-DSVR_SPEC_CONSTANTS={mask}", "-Fo", spv, hlsl],
                        capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        return next((l for l in (r.stderr + r.stdout).splitlines() if "error" in l),
+                    r.stderr[:300]).strip()
+    return None
+
+
+# fxc reads an older HLSL than DXC: no [[vk::...]] attributes, register
+# spaces, [shader()] attributes or empty-parameter macros, and a macro NAME(i)
+# can't share its name with the array NAME[] it reads.
+ARRAY_MACRO_RE = re.compile(r"#define (\w+)\(INDEX\)")
+
+
+def fxc_source(text):
+    text = re.sub(r"\[\[vk::[^\]]*\]\]", "", text)
+    text = text.replace(", space4)", ")")
+    text = re.sub(r'\[shader\("\w+"\)\]', "", text)
+    text = text.replace("#define DEFINE_SHARED_CONSTANTS() \\", "#define DEFINE_SHARED_CONSTANTS \\")
+    text = text.replace("DEFINE_SHARED_CONSTANTS();", "DEFINE_SHARED_CONSTANTS")
+    for name in set(ARRAY_MACRO_RE.findall(text)):
+        text = re.sub(r"\b%s\[" % re.escape(name), name + "_a[", text)
+    return text
+
+
+def compile_dxbc(hlsl, dxbc, stage, mask, fixed_dir):
+    fixed = os.path.join(fixed_dir, os.path.basename(hlsl))
+    with open(hlsl, encoding="utf-8", errors="ignore") as f:
+        text = fxc_source(f.read())
+    with open(fixed, "w", encoding="utf-8") as f:
+        f.write(text)
+    r = subprocess.run([FXC, "/nologo", "/T", f"{stage}_5_0", "/E", "main", "/O3", "/DSVR_D3D11",
+                        f"/DSVR_SPEC_CONSTANTS={mask}", "/I", os.path.dirname(os.path.abspath(hlsl)),
+                        "/Fo", dxbc, fixed],
+                       capture_output=True, text=True, timeout=300)
     if r.returncode:
         return next((l for l in (r.stderr + r.stdout).splitlines() if "error" in l),
                     r.stderr[:300]).strip()
@@ -92,10 +130,15 @@ def convert(xsc, out):
         err = compile_spirv(hlsl, os.path.join(out, "spirv", f"{name}{suffix}.spvc"), stage, mask, True)
         if err:
             return name, f"spirv compact s{mask}", err
+        if FXC:
+            err = compile_dxbc(hlsl, os.path.join(out, "dxbc", f"{name}{suffix}.dxbc"), stage, mask,
+                               os.path.join(out, "hlsl_d3d11"))
+            if err:
+                return name, f"dxbc s{mask}", err
     slots = {(name, dim): int(slot) for name, dim, slot in TEXTURE_DEFINE_RE.findall(src)}
     used = sorted({(slots[(name, dim)], DIMENSIONS[dim]) for name, dim in TEXTURE_USE_RE.findall(body)
                    if (name, dim) in slots})
-    for d in ("dxil", "spirv"):
+    for d in ("dxil", "spirv", "dxbc"):
         with open(os.path.join(out, d, name + ".textures"), "w") as f:
             for slot, dim in used:
                 f.write(f"{slot} {dim}\n")
@@ -110,7 +153,7 @@ def convert(xsc, out):
 def main():
     xsc_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "port", "runs", "d3dtrace", "xsc")
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "port", "runs", "shaders_native")
-    for d in ("hlsl", "dxil", "spirv"):
+    for d in ("hlsl", "hlsl_d3d11", "dxil", "spirv", "dxbc"):
         os.makedirs(os.path.join(out, d), exist_ok=True)
     files = sorted(glob.glob(os.path.join(xsc_dir, "*.xsc")))
     # (SVR2011_JOBS: how many conversions at once - 2 while the PC is in use)
@@ -128,9 +171,14 @@ def main():
             err = compile_spirv(hlsl, os.path.join(out, "spirv", name + ext), name.split(".")[-1], 0, compact)
             if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
                 results.append((name, "own spirv", err))
+        if FXC:
+            err = compile_dxbc(hlsl, os.path.join(out, "dxbc", name + ".dxbc"), name.split(".")[-1], 0,
+                               os.path.join(out, "hlsl_d3d11"))
+            if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
+                results.append((name, "own dxbc", err))
     failed = [r for r in results if r[1]]
     with open(os.path.join(out, "report.txt"), "w") as rep:
-        rep.write(f"{len(files)} shaders, {len(files) - len(failed)} converted to DXIL and SPIR-V\n")
+        rep.write(f"{len(files)} shaders, {len(files) - len(failed)} converted to DXIL, SPIR-V and DXBC\n")
         for name, stage, err in failed:
             rep.write(f"{name}: {stage}: {err}\n")
     vs = sum(1 for f in files if f.endswith(".vs.xsc"))

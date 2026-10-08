@@ -393,9 +393,10 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool effects_ = true, fps60_ = true;
   int frame_rate_ = 1;  // (kFrameRates)
   bool native_at_start_ = false;
-  // Native on Vulkan (gpu_backend = vulkan) chosen / running: the API is picked
-  // when the game starts, so a change takes effect at the next start.
-  bool vulkan_ = false, vulkan_at_start_ = false;
+  // The graphics API (gpu_backend): 0 any (Direct3D 12, else Vulkan, else
+  // Direct3D 11), 1 vulkan, 2 d3d11 - picked when the game starts, so a change
+  // takes effect at the next start.
+  int api_ = 0, api_at_start_ = 0;
   uint16_t prev_buttons_ = 0;
   bool wait_release_ = false;
   // CONTROLS: the row, the first row shown, and a key being waited for
@@ -441,8 +442,11 @@ void GraphicsPage::Load() {
   effects_ = rex::cvar::Query<bool>("native_scale_effects");
   fps60_ = rex::cvar::Query<bool>("unlock_30fps");
   native_at_start_ = native::CanSwitch();
-  vulkan_at_start_ = rex::cvar::Query<std::string>("gpu_backend") == "vulkan";
-  vulkan_ = vulkan_at_start_;
+  {
+    const std::string api = rex::cvar::Query<std::string>("gpu_backend");
+    api_at_start_ = api == "vulkan" ? 1 : api == "d3d11" ? 2 : 0;
+  }
+  api_ = api_at_start_;
   native_ = true;  // (the game draws only natively)
   fps_ = FpsCounterVisible();
   touch_ = rex::cvar::Query<bool>("touch_controls");
@@ -615,12 +619,12 @@ void GraphicsPage::Change(int row, int dir) {
       }
       break;
     case kRenderer: {
-      // The native renderer's graphics API: D3D12 or Vulkan (no emulated
-      // renderer any more).
-      (void)dir;
-      vulkan_ = !vulkan_;
+      // The native renderer's graphics API: auto (D3D12, else Vulkan, else
+      // D3D11), Vulkan or D3D11 (no emulated renderer any more).
+      static const char* const kApis[3] = {"\"any\"", "\"vulkan\"", "\"d3d11\""};
+      api_ = (api_ + dir + 3) % 3;
       SaveSetting("native_renderer", "\"main\"");
-      SaveSetting("gpu_backend", vulkan_ ? "\"vulkan\"" : "\"any\"");
+      SaveSetting("gpu_backend", kApis[api_]);
       break;
     }
     default:
@@ -977,7 +981,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   }
 
   // Rows.
-  const bool restart_renderer = vulkan_ != vulkan_at_start_;
+  const bool restart_renderer = api_ != api_at_start_;
   const bool restart_crowd = crowd_ != crowd_at_start_;
   auto value = [&](Row id) -> const char* {
     switch (id) {
@@ -1004,7 +1008,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kCpuPriority: return high_priority_ ? "HIGH" : "NORMAL";
       case kPrepare: return prepare_ ? "ON" : "OFF";
       case kLanguage: return kLanguages[language_].label;
-      case kRenderer: return vulkan_ ? "VULKAN" : "DIRECT3D 12";
+      case kRenderer: return api_ == 1 ? "VULKAN" : api_ == 2 ? "DIRECT3D 11" : "AUTO";
       case kRenderScale: return kScales[scale_].label;
       case kTextureQuality: return kTextureQualityLabels[textures_];
       case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
@@ -1072,7 +1076,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return language_ == language_at_start_
                    ? "The game's text (the commentary stays English)."
                    : "The game's text: changes the next time the game starts.";
-      case kRenderer: return "The graphics API the game draws with (Direct3D 12 is the default; Vulkan for drivers that need it).";
+      case kRenderer: return "The graphics API the game draws with. AUTO: Direct3D 12, else Vulkan, else Direct3D 11 (older GPUs).";
       case kRenderScale:
         return "The most the game renders at. AUTO fills the screen; lower is faster (360P / 480P: softer, for weak "
                "devices).";

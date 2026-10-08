@@ -66,6 +66,10 @@ if (Test-Path (Join-Path $shaders "present.vs.dxil")) {
     Get-ChildItem (Join-Path (Split-Path $shaders -Parent) "spirv") -Filter "*.spv" -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
         Copy-Item -Destination (Join-Path $game "native_shaders") -Force
+    # (and the Direct3D 11 backend's DXBC: older GPUs)
+    Get-ChildItem (Join-Path (Split-Path $shaders -Parent) "dxbc") -Filter "*.dxbc" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike "dbg_*" -and $_.Name -notlike "debug_*" } |
+        Copy-Item -Destination (Join-Path $game "native_shaders") -Force
 }
 # The known pipelines, built ahead in the menus (tools/merge_pipelines.py).
 $plist = Join-Path $root "dist\pipelines.list"

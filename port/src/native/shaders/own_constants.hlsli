@@ -21,6 +21,9 @@ struct PushConstants {
 #else
 #define OWN_TEXTURE_TABLES   [[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[];   [[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[];
 #endif
+#elif defined(SVR_D3D11)
+// (Direct3D 11: the draw's texture and sampler in register 0 - no tables)
+#define OWN_TEXTURE_TABLES   Texture2D<float4> g_Texture2DDescriptorHeap[1] : register(t0);   SamplerState g_SamplerDescriptorHeap[1] : register(s0);
 #else
 #define OWN_TEXTURE_TABLES   Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);   SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
 #endif

@@ -11,22 +11,35 @@ namespace svr2011::native::backend {
 #if !defined(_WIN32)
 std::unique_ptr<Backend> CreateD3D12Backend() { return nullptr; }  // (Windows only)
 #endif
+#if !defined(_WIN32)
+std::unique_ptr<Backend> CreateD3D11Backend() { return nullptr; }  // (Windows only)
+#endif
 
 namespace {
 std::unique_ptr<Backend> g_backend;
 }  // namespace
 
 std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name) {
-  g_backend = rex::external_frame::GetVulkanDevice() ? CreateVulkanBackend() : CreateD3D12Backend();
+  g_backend = rex::external_frame::GetVulkanDevice()   ? CreateVulkanBackend()
+              : rex::external_frame::GetD3D11Device() ? CreateD3D11Backend()
+                                                      : CreateD3D12Backend();
   if (!g_backend) {
     REXLOG_ERROR("native renderer: no backend for the emulator's graphics API");
     return nullptr;
   }
-  REXLOG_INFO("native renderer: {} backend", g_backend->api() == Api::kVulkan ? "Vulkan" : "D3D12");
+  REXLOG_INFO("native renderer: {} backend", g_backend->api() == Api::kVulkan  ? "Vulkan"
+                                              : g_backend->api() == Api::kD3D11 ? "D3D11"
+                                                                                : "D3D12");
   return g_backend->CreateInterface(device_name);
 }
 
 Api ActiveApi() { return g_backend ? g_backend->api() : Api::kNone; }
+
+namespace {
+std::string g_fail_reason;
+}  // namespace
+std::string FailReason() { return g_fail_reason; }
+void SetFailReason(std::string reason) { g_fail_reason = std::move(reason); }
 
 plume::RenderShaderFormat ShaderFormat() { return g_backend->ShaderFormat(); }
 const char* ShaderExtension() { return g_backend ? g_backend->ShaderExtension() : ".dxil"; }
