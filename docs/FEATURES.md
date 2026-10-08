@@ -89,6 +89,7 @@ still being tested.
 
 ## New in 2.0.6 (in progress)
 
+- **The Sandman bundled** (from SvR 2008): his model and official renders, theme, titantron, a 69-move set with his two 2008 finishers, and his **crowd entrance** - walking through the crowd with a beer can and the Singapore cane, as in SvR 2008 (mods can now add whole entrances: move-pack `pacentry` lines, built into an overlay copy; the game's files are never changed).
 - **Direct3D 11** for PCs whose graphics card or driver can't run Direct3D 12 or Vulkan (roughly 2010-era DX11 cards and newer): the graphics API AUTO now tries Direct3D 12, then Vulkan, then Direct3D 11; or pick DIRECT3D 11 in GRAPHICS → DISPLAY → GRAPHICS API or the launcher's Settings. It renders at 1x by default there (2x-4x can still be chosen). Older DX10 cards and Windows 7 / 8.1 come later.
 - **72 superstar mod slots** (was 50), using more of the game's blank superstar records.
 - **Superstar height** (`height=` in a mod, 0.80-1.25; the Mod Maker's Superstar page has a slider with a live preview) - for converted superstars that came out the wrong size.
