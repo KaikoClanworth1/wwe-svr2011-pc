@@ -39,6 +39,7 @@
 
 #include "arena_mods.h"
 #include "match_hud.h"
+#include "online_rules.h"
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -977,7 +978,16 @@ REX_HOOK_RAW(sub_8243FCC8) {
 // A match is set up: sub_827374A0(match, rule, ...).
 REX_EXTERN(__imp__sub_827374A0);
 REX_HOOK_RAW(sub_827374A0) {
-  const uint32_t rule = ctx.r4.u32;
+  uint32_t rule = ctx.r4.u32;
+  // ONLINE: the session's PORT RULES (online_rules.h) - the same modes as the
+  // offline rows, on both sides, before the match is set up.
+  if (const svr2011::OnlineRulesSetup online = svr2011::OnlineRulesFor(rule); online.on && !Rd32(base + kStoryContext)) {
+    rule = online.rule;
+    ctx.r4.u64 = rule;
+    g_pending_weapons = online.weapons;
+    g_pending_stages = online.stages;
+    g_pending_set = online.set;
+  }
   // Test aid: SVR2011_TEST_SETUP_TRACE=1 - each match set-up with its caller
   // and the story context (a guest stack walk read unmapped pages: left out).
   if (std::getenv("SVR2011_TEST_SETUP_TRACE"))
@@ -2697,41 +2707,3 @@ SVR2011_ONLINE_TRACE(sub_82470A60)
 SVR2011_ONLINE_TRACE(sub_82470AA0)
 SVR2011_ONLINE_TRACE(sub_82470AE0)
 SVR2011_ONLINE_TRACE(sub_828B4A48)
-
-// Research aid (online PORT RULES): SVR2011_TEST_CS_COUNT=1 - the CREATE
-// SESSION screen class (vtable 0x82023D50; made by sub_824EAD88, freed by
-// sub_824EBB78): its own methods' calls counted, logged every 2 s with the
-// object (which runs each frame, and which only while it's on top).
-namespace {
-std::atomic<uint32_t> g_cs_counts[9];
-const char* const kCsNames[9] = {"ctor 824EAD88", "dtor 824EBB78", "824EAB50", "824EABA0", "824EB078",
-                                 "824EBFF0",      "824EBC70",      "824EAAF8", "824EBD38"};
-void CsCount(int k, uint32_t obj) {
-  static const bool on = std::getenv("SVR2011_TEST_CS_COUNT") != nullptr;
-  if (!on) return;
-  ++g_cs_counts[k];
-  if (k < 2) REXLOG_INFO("cs count: {} object {:08X}", kCsNames[k], obj);
-  static int64_t last = 0;
-  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  if (now - last < 2000) return;
-  last = now;
-  std::string s;
-  for (int i = 2; i < 9; ++i) s += fmt::format(" {}:{}", kCsNames[i], g_cs_counts[i].exchange(0));
-  REXLOG_INFO("cs count: last 2 s{} (object {:08X})", s, obj);
-}
-}  // namespace
-#define SVR2011_CS_COUNT(fn, k)                    \
-  REX_EXTERN(__imp__##fn);                         \
-  REX_HOOK_RAW(fn) {                               \
-    CsCount(k, ctx.r3.u32);                        \
-    __imp__##fn(ctx, base);                        \
-  }
-SVR2011_CS_COUNT(sub_824EAD88, 0)
-SVR2011_CS_COUNT(sub_824EBB78, 1)
-SVR2011_CS_COUNT(sub_824EAB50, 2)
-SVR2011_CS_COUNT(sub_824EABA0, 3)
-SVR2011_CS_COUNT(sub_824EB078, 4)
-SVR2011_CS_COUNT(sub_824EBFF0, 5)
-SVR2011_CS_COUNT(sub_824EBC70, 6)
-SVR2011_CS_COUNT(sub_824EAAF8, 7)
-SVR2011_CS_COUNT(sub_824EBD38, 8)

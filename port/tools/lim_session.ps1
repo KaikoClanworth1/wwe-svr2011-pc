@@ -11,7 +11,8 @@
 #   .\session.ps1 status | stop
 # Input goes through the scripted controller (src/script_input.h).
 param([Parameter(Position = 0)][string]$Action, [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest,
-      [string]$Name = "session", [string]$Exe = "svr2011.exe", [string]$LogLevel = "info", [string]$GameDir = "")
+      [string]$Name = "session", [string]$Exe = "svr2011.exe", [string]$LogLevel = "info", [string]$GameDir = "",
+      [string]$Slot = "")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -40,8 +41,8 @@ $Rest = @($Rest | Where-Object { $_ })
 $port  = Split-Path $PSScriptRoot -Parent
 $game  = if ($GameDir) { $GameDir } else { Join-Path $port "runs\lim_game" }
 $runs  = Join-Path $port "runs"; New-Item -ItemType Directory -Force $runs | Out-Null
-$state = Join-Path $runs "lim_session.json"
-$input = Join-Path $runs "lim_input.txt"
+$state = Join-Path $runs "lim_session$Slot.json"   # (-Slot 2: a second game beside the first)
+$input = Join-Path $runs "lim_input$Slot.txt"
 
 function Stop-Own {
     if (-not (Test-Path $state)) { return }

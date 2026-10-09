@@ -35,4 +35,15 @@ void DrawHudPanel(float display_w, float display_h, const std::string& left, con
 // of its time (it slides in, holds, fades).
 void DrawHudBanner(float display_w, float display_h, const std::string& big, const std::string& sub, float t);
 
+// An option row in the game's menu style (online PORT RULES): a slanted bar
+// across the game's area at `y` (0..1 of its height), `label` (gold) on the
+// left, "<  value  >" on the right, `note` (small, white) under it and a
+// button legend under that; `highlight` draws its red edge brighter. The
+// arrows' boxes (display pixels) come back for clicks / taps.
+struct HudRowHits {
+  float left[4] = {}, right[4] = {};  // x0, y0, x1, y1
+};
+HudRowHits DrawHudRow(float display_w, float display_h, float y, const std::string& label, const std::string& value,
+                      const std::string& note, const std::string& legend);
+
 }  // namespace svr2011
