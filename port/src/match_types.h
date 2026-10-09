@@ -24,7 +24,7 @@ void InstallMatchTypes(rex::memory::Memory* memory);
 // royal_rumble_15_25, lumberjack, free_roaming_backstage,
 // backstage_more_people, weapons_everywhere, slobber_knocker,
 // three_stages_of_hell, elimination, mystery_opponent, hiac_tables_ladders,
-// gauntlet_eliminator, cage_weapons, inferno_weapons.
+// gauntlet_eliminator, cage_weapons, inferno_weapons, online_first_blood.
 bool MatchTypeOn(const char* id);
 
 // Each world update (frame_rate.cpp): the Lumberjack match's lumberjacks
@@ -54,7 +54,10 @@ void InstallGauntletEliminatorOverlay(rex::ui::ImGuiDrawer* drawer);
 
 // THREE STAGES OF HELL (three_stages.cpp): set up (on or not) with a match,
 // before each call of the falls judge, its score overlay.
-void ThreeStagesSetup(bool on);
+constexpr int kThreeStagesSets = 5;  // (its submenu's sets of stages: three_stages.cpp kSets)
+void ThreeStagesSetup(bool on, int set);
+// FINISHERS: a move cinematic (a finisher or signature: the world held) now.
+void ThreeStagesCinematic();
 bool ThreeStagesMatch();
 void ThreeStagesUpdate(uint8_t* base);  // (each world update)
 void ThreeStagesBeforeJudge(uint8_t* base);

@@ -34,6 +34,7 @@ MATCH_TYPES = [
     ("gauntlet_eliminator", "Gauntlet Eliminator", "HANDICAP: six superstars, two start, one more each minute; a pin or submission eliminates."),
     ("cage_weapons", "Steel Cage: Weapons Inside", "STEEL CAGE: chairs and other weapons lying in the ring."),
     ("inferno_weapons", "Inferno: Weapons Inside", "INFERNO MATCH: chairs and other weapons lying in the ring."),
+    ("online_first_blood", "Online First Blood", "ONLINE Player Match: FIRST BLOOD under EXTREME RULES MATCHES (one on one, 3-man)."),
 ]
 
 

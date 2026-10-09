@@ -5,6 +5,25 @@
 // triple threat 0x0D, fatal-4-way 0x0E, 6-man tag 0x08, one on two tornado
 // 0x0F.
 //
+// Its submenu has five sets of three stages (ThreeStagesSetup's set):
+//   0 NORMAL / FALLS COUNT ANYWHERE / LAST MAN STANDING (below);
+//   1 NORMAL / FIRST BLOOD / FINISHERS;
+//   2 NORMAL / LAST MAN STANDING / SUBMISSION;
+//   3 TABLE / TLC / LADDER - played as the mode's TLC match (0x48-0x4B: the
+//     prize hangs, tables and ladders are there from the bell);
+//   4 HELL IN A CELL: FIRST BLOOD / LAST MAN STANDING / SUBMISSION - played as
+//     the mode's cell match (0x31-0x34: the cell stands from the bell).
+// What loads at the bell (a cell, a cage, the prize, the table and ladder
+// models) can't change mid-match: a set needing one is played in that rule
+// from the start and only what wins a fall changes (live option bytes:
+// +1 pinfall, +7 give up, +18 table, +19 ladder, +24 TLC, +26 last man
+// standing, +40 first blood). FINISHERS is the port's: a pin or submission
+// counts only within 10 s (kFinisherWindow) after a finisher or signature -
+// the game's move cinematic, when it holds the world (frame_rate.cpp's
+// paused round: ThreeStagesCinematic); any other fall is taken back. (No
+// "finisher" byte showed in the people's records at those moments; who did
+// the move isn't checked.)
+//
 // One match, not three: the falls / match-end judge (sub_82245618, hooked in
 // slobber_knocker.cpp, which calls ThreeStagesBeforeJudge first) sees a fall
 // as a character's lost byte (+447) - in tag the legal man pinned; here a
@@ -41,6 +60,7 @@
 #include <rex/logging.h>
 #include <rex/ui/imgui_dialog.h>
 
+#include "frame_rate.h"
 #include "match_hud.h"
 #include "match_types.h"
 
@@ -58,12 +78,28 @@ int64_t NowMs() {
       .count();
 }
 
-constexpr const char* kStageName[3] = {"NORMAL", "FALLS COUNT ANYWHERE", "LAST MAN STANDING"};
-constexpr uint32_t kSixManTag = 0x08;  // (fall 3: NO DISQUALIFICATION, see above)
-std::atomic<bool> g_no_dq{false};      // this match's fall 3 is that one
+enum Kind { kNormal, kFca, kLms, kNoDq, kFirstBlood, kFinishers, kSubmission, kTable, kTlc, kLadder, kTablesLadders };
+constexpr const char* kKindName[] = {"NORMAL", "FALLS COUNT ANYWHERE", "LAST MAN STANDING", "NO DISQUALIFICATION",
+                                     "FIRST BLOOD", "FINISHERS", "SUBMISSION", "TABLE", "TLC", "LADDER",
+                                     "TABLES & LADDERS"};
+constexpr Kind kSets[svr2011::kThreeStagesSets][3] = {
+    {kNormal, kFca, kLms},
+    {kNormal, kFirstBlood, kFinishers},
+    {kNormal, kLms, kSubmission},
+    {kTable, kTlc, kLadder},
+    {kFirstBlood, kLms, kSubmission},
+};
+constexpr uint32_t kSixManTag = 0x08;  // (LAST MAN STANDING: NO DISQUALIFICATION, see above)
+constexpr int64_t kFinisherWindow = 10000;  // ms
+std::atomic<int> g_set{0};
+Kind KindOf(int stage) {
+  Kind k = kSets[std::clamp(g_set.load(), 0, svr2011::kThreeStagesSets - 1)][std::clamp(stage, 0, 2)];
+  return k;
+}
+std::atomic<bool> g_no_dq{false};      // this match's LAST MAN STANDING is that one
 const char* StageName(int stage) {
-  stage = std::clamp(stage, 0, 2);
-  return stage == 2 && g_no_dq.load() ? "NO DISQUALIFICATION" : kStageName[stage];
+  const Kind k = KindOf(stage);
+  return k == kLms && g_no_dq.load() ? "NO DISQUALIFICATION" : kKindName[k];
 }
 
 std::atomic<bool> g_on{false};
@@ -104,34 +140,69 @@ void FindSides(uint8_t* base, const uint32_t (&chars)[6]) {
 }
 uint32_t TeamOf(uint8_t* base, uint32_t c) { return std::min<uint32_t>(Rd32(base + c + kTeam), kTeams - 1); }
 
+// The live rules for a stage: from the match's own (fall 1's, saved), what
+// wins a fall set as the stage's kind.
 void ApplyStage(uint8_t* base, int stage) {
   uint8_t* live = base + kLive;
-  if (stage == 1) std::memcpy(g_live0, live, sizeof(g_live0)), g_live0_saved = true;
-  g_stage_at = NowMs();
-  if (stage == 1) {  // FALLS COUNT ANYWHERE
-    live[1] = 2;
-    live[17] = 1;
-    live[3] = 0;
-    live[5] = 0;
-    live[27] = 0;
-  } else if (stage == 2 && live[0] == kSixManTag) {  // NO DISQUALIFICATION
-    g_no_dq = true;
-    live[1] = 1;   // (pinfall in the ring)
-    live[17] = 0;
-    live[3] = 0;
-    live[10] = 0;
-    live[27] = 0x80;
-  } else if (stage == 2) {  // LAST MAN STANDING
-    live[1] = 0;
-    live[7] = 0;
-    live[17] = 0;
-    live[26] = 1;
-    live[3] = 0;
-    live[5] = 0;
-    live[27] = 0;
+  if (!g_live0_saved) std::memcpy(g_live0, live, sizeof(g_live0)), g_live0_saved = true;
+  std::memcpy(live, g_live0, sizeof(g_live0));
+  if (stage > 0) g_stage_at = NowMs();
+  // (no win condition but the stage's: pin, give up, table, ladder, TLC, last man standing, first blood)
+  const auto only = [&](int pin, int give_up) {
+    live[1] = uint8_t(pin), live[7] = uint8_t(give_up);
+    live[17] = 0, live[18] = 0, live[19] = 0, live[24] = 0, live[26] = 0, live[40] = 0;
+  };
+  // (no count-outs in any stage: a count-out ends the match outside the falls
+  // judge - a normal fall 1 ended so, the stages never seen)
+  live[5] = 0;
+  Kind kind = KindOf(stage);
+  if (kind == kLms && live[0] == kSixManTag) kind = kNoDq, g_no_dq = true;
+  switch (kind) {
+    case kNormal: break;  // (the rule's own)
+    case kFca:
+      only(2, live[7]);
+      live[17] = 1, live[3] = 0, live[5] = 0, live[27] = 0;
+      break;
+    case kLms:
+      only(0, 0);
+      live[26] = 1, live[3] = 0, live[5] = 0, live[27] = 0;
+      break;
+    case kNoDq:
+      only(1, live[7] ? live[7] : 1);  // (pinfall in the ring)
+      live[3] = 0, live[10] = 0, live[27] = 0x80;
+      break;
+    case kFirstBlood:
+      only(0, 0);
+      live[40] = 1;
+      break;
+    case kFinishers:  // (a pin or give up; the port takes back one not after a finisher)
+      only(1, 1);
+      break;
+    case kSubmission:
+      only(0, 1);
+      break;
+    case kTable:
+      only(0, 0);
+      live[18] = 1;
+      break;
+    case kTlc:
+      only(0, 0);
+      live[24] = 1;
+      break;
+    case kLadder:
+      only(0, 0);
+      live[19] = 1;
+      break;
+    case kTablesLadders:  // (pin or give up, no DQ)
+      only(1, 1);
+      live[3] = 0, live[4] = 1, live[10] = 0;
+      break;
   }
   REXLOG_INFO("three stages: fall {} - {}", stage + 1, StageName(stage));
 }
+
+// FINISHERS: the last move cinematic (ms).
+std::atomic<int64_t> g_cinematic_at{0};
 
 // The score at the top and, at a stage change, a banner (match_hud.h: only
 // while the match runs - not in the menus, select, entrances, pauses,
@@ -172,15 +243,22 @@ namespace svr2011 {
 
 void InstallThreeStagesOverlay(rex::ui::ImGuiDrawer* drawer) { new Score(drawer); }
 
-void ThreeStagesSetup(bool on) {
+void ThreeStagesSetup(bool on, int set) {
   g_on = on;
+  g_set = std::clamp(set, 0, kThreeStagesSets - 1);
+  g_cinematic_at = 0;
   g_live0_saved = false;
   g_stage_at = 0;
   g_stage = 0;
   g_no_dq = false;
   g_sides = 0;
   for (auto& f : g_falls) f = 0;
-  if (on) REXLOG_INFO("three stages: on");
+  if (on) REXLOG_INFO("three stages: on - {} / {} / {}", kKindName[kSets[g_set][0]], kKindName[kSets[g_set][1]],
+                      kKindName[kSets[g_set][2]]);
+}
+
+void ThreeStagesCinematic() {
+  if (g_on.load()) g_cinematic_at = NowMs();
 }
 
 bool ThreeStagesMatch() { return g_on.load(); }
@@ -193,7 +271,7 @@ void ThreeStagesUpdate(uint8_t* base) {
   static uint32_t last_clock = 0;
   const uint32_t clock = Rd32(base + 0x82E3CD0C);
   if (clock < last_clock && (g_stage.load() > 0 || g_falls_any())) {
-    if (g_live0_saved && base[kLive] == g_live0[0]) std::memcpy(base + kLive, g_live0, sizeof(g_live0));
+    if (g_live0_saved && base[kLive] == g_live0[0]) ApplyStage(base, 0);
     g_stage = 0;
     g_no_dq = false;
     for (auto& f : g_falls) f = 0;
@@ -201,7 +279,26 @@ void ThreeStagesUpdate(uint8_t* base) {
     REXLOG_INFO("three stages: a new match (a rematch) - fall 1, 0 - 0");
   }
   last_clock = clock;
-  if (!Rd32(base + kChars) || int32_t(clock) <= 0) return;  // (a match running)
+  // A match starts (the port's "in a match", frame_rate.h - not the menus
+  // after the title's demo match, whose clock is left over): fall 1, 0 - 0,
+  // the match's own rules saved at its first update.
+  static bool was_in = false;
+  const bool in = svr2011::InMatch();
+  if (in && !was_in) {
+    g_live0_saved = false;
+    g_stage = 0;
+    g_no_dq = false;
+    for (auto& f : g_falls) f = 0;
+    g_stage_at = 0;
+  }
+  was_in = in;
+  if (!in || !Rd32(base + kChars) || int32_t(clock) <= 0) return;  // (a match running)
+  if (!g_live0_saved) {
+    // (test aid: SVR2011_TEST_3S_STAGE=<0-2> - the match starts at that stage)
+    static const int first = [] { const char* v = std::getenv("SVR2011_TEST_3S_STAGE"); return v ? std::clamp(std::atoi(v), 0, 2) : 0; }();
+    ApplyStage(base, 0);
+    if (first > 0) g_stage = first, ApplyStage(base, first);
+  }
   g_seen = NowMs();
   static const bool log = std::getenv("SVR2011_TEST_3S_LOG") != nullptr;
   static uint32_t frames = 0;
@@ -218,7 +315,7 @@ void ThreeStagesUpdate(uint8_t* base) {
 }
 
 void ThreeStagesBeforeJudge(uint8_t* base) {
-  if (!g_on.load()) return;
+  if (!g_on.load() || !svr2011::InMatch() || !g_live0_saved) return;
   uint32_t chars[6] = {};
   int people = 0;
   for (uint32_t i = 0; i < 6; ++i)
@@ -263,6 +360,13 @@ void ThreeStagesBeforeJudge(uint8_t* base) {
       winner = int(g_side_team[0].load() == uint32_t(loser) ? g_side_team[1].load() : g_side_team[0].load());
     REXLOG_INFO("three stages: person {} (team {}) lost (code {}, by {}) - fall to team {}", Rd32(base + c + kPerson),
                 loser, base[c + kLost], by, winner);
+    // FINISHERS: not within kFinisherWindow of a finisher / signature - taken back, not counted
+    if (KindOf(g_stage.load()) == kFinishers && NowMs() - g_cinematic_at.load() > kFinisherWindow) {
+      REXLOG_INFO("three stages: no finisher before it - the fall doesn't count");
+      base[c + kLost] = 0;
+      base[c + kBeatenBy] = 0;
+      return;
+    }
     if (winner < 0 || winner >= kTeams) return;  // (unknown: the judge decides, as a normal match)
     const int won = ++g_falls[winner];
     std::string score;

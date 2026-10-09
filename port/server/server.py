@@ -404,7 +404,7 @@ class Service:
         self.accounts = Accounts(self.store)
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
-        self.relay = relay.Relay(self, gs.log)
+        self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0))
         self.leaderboards = leaderboards.Leaderboards(self.store)
         # the ONLINE menu's NEWS: how many play now, first
         self.sake.news_prefix = lambda: "%d player%s online now. " % (
@@ -1114,6 +1114,8 @@ def main():
     ap.add_argument("--max-music-mb", type=int, default=512, help="the largest entrance song sent (stored as MP3)")
     ap.add_argument("--max-movie-mb", type=int, default=1024, help="the largest entrance movie sent (MP4; kept 4 min)")
     ap.add_argument("--media-quota-mb", type=int, default=8192, help="entrance songs and movies one player may store")
+    ap.add_argument("--relay-udp-port", type=int, default=0,
+                    help="the match relay over UDP too (e.g. 36500; open it in the firewall); 0: https only")
     args = ap.parse_args()
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")

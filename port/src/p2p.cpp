@@ -307,6 +307,17 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     p.fake = fake;
     g_fake[fake] = mac;
     p.route = RouteTo(xnaddr), p.route_port = p.base;
+    // A player not on this PC: its game packets go through the tunnel (this
+    // game's P2P port, the one its router lets through or the relay reaches)
+    // from the start, and through the relay until something comes directly.
+    // Players the game itself introduces (a third joining a rumble: the others
+    // only know its address from the host) were sent to its game port behind
+    // its router, and dropped, until it happened to answer: joins above two
+    // players timed out.
+    if (Be32(xnaddr) != g_me.lan) {
+      p.tunnel = true;
+      if (g_relay_up && p.route != Be32(xnaddr)) p.relayed = true;  // (another network)
+    }
   }
   const auto now = Clock::now();
   // A peer that pings (this version): its path is set by PingLoop from round
@@ -383,7 +394,25 @@ void ToPipe(uint8_t type, const uint8_t* id, const uint8_t* data, size_t size) {
   pipe->Send(out.data(), out.size());
 }
 
+// The relay over UDP (the server's --relay-udp-port): a ticket from https,
+// registered from the P2P socket every 5 s; packets go that way while it
+// answers (welcomed in the last 15 s), else through the https pipe. Over TCP
+// one lost segment held back every later packet.
+std::atomic<uint32_t> g_udp_relay_ip{0};
+std::atomic<uint16_t> g_udp_relay_port{0};
+std::atomic<int64_t> g_udp_welcome_ms{0};
+
+bool UdpRelayUp() { return g_udp_relay_ip && NowMs() - g_udp_welcome_ms.load() < 15000; }
+
 void ToRelay(const Mac& to, const uint8_t* data, size_t size) {
+  if (UdpRelayUp()) {
+    std::vector<uint8_t> out(12 + size);
+    Put32(out.data(), kRelayMagic), out[4] = 1, out[5] = kForward;
+    std::memcpy(out.data() + 6, to.data(), 6);
+    if (size) std::memcpy(out.data() + 12, data, size);
+    SendOn(g_socket, g_udp_relay_ip, g_udp_relay_port, out.data(), out.size());
+    return;
+  }
   if (g_relay_up) ToPipe(kForward, to.data(), data, size);
 }
 
@@ -1079,6 +1108,14 @@ void Receive() {
     }
     const uint32_t ip = ntohl(from.sin_addr.s_addr);
     const uint16_t port = ntohs(from.sin_port);
+    // (the relay over UDP: its frames without the length)
+    if (n >= 6 && Be32(buf.data()) == kRelayMagic && ip == g_udp_relay_ip && port == g_udp_relay_port) {
+      if (buf[5] == kWelcome && g_udp_welcome_ms.exchange(NowMs()) == 0) {
+        REXLOG_INFO("p2p: relay over UDP up");
+      }
+      OnRelay(buf.data(), size_t(n));
+      continue;
+    }
     if (!OnStun(buf.data(), size_t(n))) {
       OnPacket(buf.data(), size_t(n), {ip, port, false});
     }
@@ -1115,7 +1152,8 @@ void Keepalive() {
   char id[13];
   std::snprintf(id, sizeof(id), "%02x%02x%02x%02x%02x%02x", g_me.mac[0], g_me.mac[1], g_me.mac[2], g_me.mac[3],
                 g_me.mac[4], g_me.mac[5]);
-  Clock::time_point tried{}, registered{}, stunned{};
+  Clock::time_point tried{}, registered{}, stunned{}, ticketed{}, udp_registered{};
+  std::vector<uint8_t> ticket;  // (the relay over UDP)
   for (;;) {
     const auto now = Clock::now();
     {
@@ -1157,6 +1195,40 @@ void Keepalive() {
       registered = now;
       ToPipe(kRegister, g_me.mac.data(), nullptr, 0);
     }
+    // The relay over UDP: a ticket (again after 30 minutes; a server without
+    // UDP answers 404: asked again in 10), then registered every 5 s.
+    if (wanted && (ticketed == Clock::time_point{} || now - ticketed >= (ticket.empty() ? 600s : 1800s))) {
+      ticketed = now;
+      ticket.clear();
+      if (auto r = net::ServerRequest("GET", std::string("/api/relay/") + id + "/udp"); r && r->status == 200) {
+        const std::string& b = r->body;
+        const size_t p = b.find("\"port\""), t = b.find("\"ticket\"");
+        if (p != std::string::npos && t != std::string::npos) {
+          const int udp_port = std::atoi(b.c_str() + b.find(':', p) + 1);
+          const size_t q = b.find('"', b.find(':', t) + 1);
+          const std::string hex = q == std::string::npos ? "" : b.substr(q + 1, 32);
+          std::string host = rex::cvar::Query<std::string>("online_server");
+          if (const size_t s = host.find("://"); s != std::string::npos) host.erase(0, s + 3);
+          host = host.substr(0, host.find('/'));
+          host = host.substr(0, host.find(':'));
+          const auto [ip, port] = Resolve(host, uint16_t(udp_port));
+          if (ip && port && hex.size() == 32) {
+            for (size_t k = 0; k < 16; ++k) ticket.push_back(uint8_t(std::stoul(hex.substr(2 * k, 2), nullptr, 16)));
+            g_udp_relay_ip = ip, g_udp_relay_port = port;
+            REXLOG_INFO("p2p: relay over UDP at port {}", port);
+          }
+        }
+      }
+    }
+    if (wanted && ticket.size() == 16 && g_udp_relay_ip && (udp_registered == Clock::time_point{} || now - udp_registered >= 5s)) {
+      udp_registered = now;
+      uint8_t reg[6 + 6 + 16];
+      Put32(reg, kRelayMagic), reg[4] = 1, reg[5] = kRegister;
+      std::memcpy(reg + 6, g_me.mac.data(), 6);
+      std::memcpy(reg + 12, ticket.data(), 16);
+      SendOn(g_socket, g_udp_relay_ip, g_udp_relay_port, reg, sizeof(reg));
+    }
+    if (!wanted && g_udp_welcome_ms) g_udp_welcome_ms = 0, ticket.clear(), ticketed = {};
     std::this_thread::sleep_for(1s);
   }
 }
@@ -1249,7 +1321,14 @@ void Hello(const uint8_t* host_xnaddr) {
     path = PathOf(MacOf(host_xnaddr), Learn(host_xnaddr));
   }
   const uint32_t nonce = NewNonce() | 1;
-  for (int i = 0; i < 3; ++i) Send(path, Header(kHello, nonce));
+  const auto hello = Header(kHello, nonce);
+  // (both ways: directly, which may be dropped by its router, and through the
+  // relay, so it learns of this game and answers either way)
+  Path direct = path;
+  direct.relayed = false;
+  for (int i = 0; i < 3; ++i) Send(direct, hello);
+  if (g_relay_up && !ForceRelay()) ToRelay(path.mac, hello.data(), hello.size());
+  else if (path.relayed) Send(path, hello);
 }
 
 // Tells a host its sessions were left out (the mods differ): this game's set.
