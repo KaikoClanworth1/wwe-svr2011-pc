@@ -51,7 +51,12 @@ void ToggleOnlineOverlay();
 bool OnlineOverlayHoldsInput();
 
 // The game's pad 1 buttons as it reads them (frame_rate.cpp's XInputGetState
-// hook, on the game's thread): BACK + RB opens the overlay.
-void OnlineOverlayPad(uint16_t buttons);
+// hook, on the game's thread): BACK + RB opens the overlay. Returns the
+// buttons the game gets: with online on, the combo never reaches it - RB is
+// kept from it while BACK is held, and BACK itself until it is let go
+// without RB (then a short BACK press).
+uint16_t OnlineOverlayPad(uint16_t buttons);
+// Pad 1's buttons as last read (XInput bits, before the combo filter).
+uint16_t OnlineRawPad();
 
 }  // namespace svr2011

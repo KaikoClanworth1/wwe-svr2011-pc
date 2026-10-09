@@ -46,6 +46,7 @@
 #include <rex/system/xmemory.h>
 
 #include "frame_rate.h"
+#include "online_files.h"
 #include "online_net.h"
 #include "net_sim.h"
 
@@ -73,10 +74,14 @@ constexpr uint16_t kBasePort = 36000;            // (port bases are kBasePort + 
 constexpr int kInstances = 4;                    // (searched on the LAN and this PC)
 constexpr uint32_t kFakeNet = 0x0A400000;        // 10.64.0.0/16: peers as the game sees them
 constexpr uint32_t kMagic = 0x53565250;          // "SVRP"
+constexpr uint32_t kContextGameType = 0x0000800A;  // X_CONTEXT_GAME_TYPE (ranked / standard)
+constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
+constexpr uint32_t kPortRules = 0x1000F001;        // the port's match rules (match_types: mode << 16 | set)
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
-  kFileRequest = 7, kFilePart = 8  // (files peers fetch from each other: P2PFetch)
+  kFileRequest = 7, kFilePart = 8,  // (files peers fetch from each other: P2PFetch)
+  kModsRefused = 9                  // (a searcher's mods differ: its set, for the host's notice)
 };
 // Round trips to the peers a match exchanges game packets with (net_sim.h);
 // game packets with the last few repeated (a peer that pings takes them).
@@ -628,6 +633,58 @@ bool ReadSession(Reader& r, Session& s) {
   return r.ok && s.id && s.public_slots + s.private_slots <= 32;
 }
 
+// The gameplay mods (online_files.h): a host's search reply carries its set
+// after its sessions ("MODS", the hash, the set's text; older games stop
+// reading before it). A searcher plays only with the same set: other hosts'
+// sessions are left out, and the game's own message says why (the search's
+// "No game sessions were found", an invite's join failure: P2PHiddenReason,
+// online.cpp's strings). The host only logs it.
+constexpr uint32_t kModsTag = 0x4D4F4453;  // "MODS"
+constexpr size_t kModsMax = 6000;           // (the set's text, at most)
+
+void WriteMods(Writer& w) {
+  const std::string& set = svr2011::GameplayModSet();
+  const size_t n = std::min(set.size(), kModsMax);
+  w.u32(kModsTag), w.u64(svr2011::GameplayModSetHash()), w.u16(uint16_t(n));
+  w.bytes(reinterpret_cast<const uint8_t*>(set.data()), n);
+  const std::string& v = svr2011::PortVersion();  // (then the version)
+  w.u8(uint8_t(std::min<size_t>(v.size(), 32)));
+  w.bytes(reinterpret_cast<const uint8_t*>(v.data()), std::min<size_t>(v.size(), 32));
+}
+
+// Why this game can't play the other side's (its version, then its mods;
+// "" when they match). A game from before the check has neither: an older version.
+std::string Mismatch(Reader& r) {
+  if (!r.ok || r.at + 14 > r.n || Be32(r.p + r.at) != kModsTag) return svr2011::VersionDifference("");
+  r.u32(), r.u64();
+  const uint16_t n = r.u16();
+  if (!r.need(n)) return svr2011::VersionDifference("");
+  std::string set(reinterpret_cast<const char*>(r.p + r.at), n);
+  r.at += n;
+  std::string version;
+  if (r.need(1)) {
+    const uint8_t vn = r.u8();
+    if (r.need(vn)) version.assign(reinterpret_cast<const char*>(r.p + r.at), vn), r.at += vn;
+  }
+  if (std::string why = svr2011::VersionDifference(version); !why.empty()) return why;
+  return svr2011::ModSetDifference(svr2011::GameplayModSet(), set);
+}
+
+void TellModsRefused(const uint8_t* host_xnaddr);  // (below: tells a host its sessions were left out)
+
+// Why the last search / invite left a host out (P2PHiddenReason).
+std::mutex g_hidden_mutex;
+std::string g_hidden_why;
+std::set<uint64_t> g_hidden_ids;  // (a host answers once per path: counted once)
+std::chrono::steady_clock::time_point g_hidden_at{};
+
+void Hidden(const std::string& why, const std::vector<uint64_t>& sessions) {
+  std::lock_guard lock(g_hidden_mutex);
+  if (g_hidden_ids.empty() || g_hidden_why.empty()) g_hidden_why = why;
+  g_hidden_ids.insert(sessions.begin(), sessions.end());
+  g_hidden_at = std::chrono::steady_clock::now();
+}
+
 // -- the discovery protocol ------------------------------------------------------------
 
 std::mutex g_wait_mutex;
@@ -928,7 +985,13 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       if (mine.empty() && via.relayed) break;  // (a search through the relay reaches every game)
       w.u16(uint16_t(mine.size()));
       for (const auto& s : mine) WriteSession(w, s);
+      WriteMods(w);
       Send(back, w.b);
+      break;
+    }
+    case kModsRefused: {  // a searcher left this game's sessions out: its version or mods differ
+      const std::string why = Mismatch(r);
+      if (!why.empty()) REXLOG_INFO("p2p: a player couldn't join - {}", why);
       break;
     }
     case kQosRequest: {
@@ -1204,6 +1267,10 @@ std::vector<std::pair<uint32_t, uint16_t>> SearchTargets() {
 
 std::vector<Session> Search() {
   g_online_at = NowMs();
+  {
+    std::lock_guard lock(g_hidden_mutex);  // (this search's own: P2PHiddenReason)
+    g_hidden_why.clear(), g_hidden_ids.clear();
+  }
   if (REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty()) {
     for (int i = 0; i < 30 && !g_relay_up; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
@@ -1218,11 +1285,23 @@ std::vector<Session> Search() {
   for (const auto& reply : replies) {
     Reader r{reply.data(), reply.size()};
     const uint16_t count = r.u16();
+    std::vector<Session> got;
     for (uint16_t i = 0; i < count && r.ok && i < 25; ++i) {
       Session s;
       if (!ReadSession(r, s)) break;
-      found[s.id] = std::move(s);
+      got.push_back(std::move(s));
     }
+    if (got.empty()) continue;
+    // (the host's version and mods: others - its sessions left out, both told)
+    if (const std::string why = Mismatch(r); !why.empty()) {
+      REXLOG_INFO("p2p: {} session(s) left out - {}", got.size(), why);
+      std::vector<uint64_t> ids;
+      for (const auto& s : got) ids.push_back(s.id);
+      Hidden(why, ids);
+      TellModsRefused(got.front().host.data());
+      continue;
+    }
+    for (auto& s : got) found[s.id] = std::move(s);
   }
   std::vector<Session> sessions;
   std::lock_guard lock(g_mutex);
@@ -1250,6 +1329,19 @@ void Hello(const uint8_t* host_xnaddr) {
   for (int i = 0; i < 3; ++i) Send(direct, hello);
   if (g_relay_up && !ForceRelay()) ToRelay(path.mac, hello.data(), hello.size());
   else if (path.relayed) Send(path, hello);
+}
+
+// Tells a host its sessions were left out (the mods differ): this game's set.
+void TellModsRefused(const uint8_t* host_xnaddr) {
+  Path path;
+  {
+    std::lock_guard lock(g_mutex);
+    path = PathOf(MacOf(host_xnaddr), Learn(host_xnaddr));
+  }
+  Writer w;
+  w.b = Header(kModsRefused, NewNonce());
+  WriteMods(w);
+  Send(path, w.b);
 }
 
 // -- XNet ------------------------------------------------------------------------------
@@ -1502,6 +1594,14 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         std::lock_guard lock(g_mutex);
         s.contexts = g_contexts;
         for (const auto& [id, p] : g_properties) s.properties.push_back(p);
+        // (Ranked: the game's own rules only)
+        if (auto t = s.contexts.find(kContextGameType); t != s.contexts.end() && t->second == 0)
+          s.properties.erase(std::remove_if(s.properties.begin(), s.properties.end(),
+                                            [](const Property& p) { return p.id == kPortRules; }),
+                             s.properties.end());
+        for (const auto& p : s.properties)
+          if (p.id == kPortRules && p.value.size() >= 4)
+            REXLOG_INFO("p2p: port rules {:08X} (host)", Be32(p.value.data()));
         // X_PROPERTY_GAMER_HOSTNAME (LIVE filled it in: the host's name, UTF-16)
         Property name{0x40008109, 4, {}};
         for (char c : rex::cvar::Query<std::string>("online_name")) name.value.push_back(0), name.value.push_back(uint8_t(c));
@@ -1509,13 +1609,22 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         s.properties.push_back(std::move(name));
       } else if (info) {  // (joining: the session the game found)
         s.id = Be64(Guest(info));
+        {
+          std::lock_guard found_lock(g_mutex);
+          if (auto f = g_found.find(s.id); f != g_found.end())
+            for (const auto& p : f->second.properties)
+              if (p.id == kPortRules && p.value.size() >= 4)
+                REXLOG_INFO("p2p: port rules {:08X} (joiner)", Be32(p.value.data()));
+        }
         std::memcpy(s.host.data(), Guest(info) + 8, 36);
         Hello(s.host.data());
       }
       if (info && local.host) WriteInfo(Guest(info), s);
       if (nonce) Put64(Guest(nonce), s.nonce);
-      REXLOG_INFO("p2p: session {:016X} {} (flags {:X}, {} + {} slots)", s.id, local.host ? "hosted" : "joined",
-                  flags, s.public_slots, s.private_slots);
+      REXLOG_INFO("p2p: session {:016X} {} (flags {:X}, {} + {} slots, game type {}, mode {})", s.id,
+                  local.host ? "hosted" : "joined", flags, s.public_slots, s.private_slots,
+                  s.contexts.count(kContextGameType) ? int(s.contexts.at(kContextGameType)) : -1,
+                  s.contexts.count(kContextGameMode) ? int(s.contexts.at(kContextGameMode)) : -1);
       std::lock_guard lock(g_mutex);
       g_sessions[object] = std::move(local);
       UpdateLockstep();
@@ -1574,7 +1683,35 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
     case 0xB001C: {  // XSessionSearchEx
       const uint32_t size = u32(24), results = u32(28);
       if (!results) return std::nullopt;
-      const auto sessions = Search();
+      // The query's contexts (XUSER_CONTEXT {id, value} x n at u32(20), the
+      // count in u32(12)'s low half): a Ranked search finds only ranked
+      // sessions and a Player Match search only player ones - the session's
+      // game type / mode contexts must be the same (as LIVE's search did).
+      std::map<uint32_t, uint32_t> want;
+      {
+        const uint32_t contexts = u32(20), n = std::min<uint32_t>(u32(12) & 0xFFFF, 16);
+        for (uint32_t i = 0; contexts && i < n; ++i) {
+          const uint32_t id = Be32(Guest(contexts) + 8 * i), value = Be32(Guest(contexts) + 8 * i + 4);
+          if (id == kContextGameType || id == kContextGameMode) want[id] = value;
+        }
+        static int logged = 0;
+        if (logged++ < 10)
+          REXLOG_INFO("p2p: search (procedure {}, words {:08X} {:08X} {:08X}, {} contexts{}{})", u32(0), u32(12), u32(16),
+                      u32(20), n,
+                      want.count(kContextGameType) ? fmt::format(", game type {}", want[kContextGameType]) : "",
+                      want.count(kContextGameMode) ? fmt::format(", mode {}", want[kContextGameMode]) : "");
+      }
+      auto same_kind = [&](const Session& s) {
+        for (const auto& [id, value] : want)
+          if (auto it = s.contexts.find(id); it != s.contexts.end() && it->second != value) return false;
+        return true;
+      };
+      auto sessions = Search();
+      const size_t before = sessions.size();
+      sessions.erase(std::remove_if(sessions.begin(), sessions.end(), [&](const Session& s) { return !same_kind(s); }),
+                     sessions.end());
+      if (sessions.size() != before)
+        REXLOG_INFO("p2p: search: {} session(s) of the other kind (ranked / player) left out", before - sessions.size());
       std::vector<Session> open;
       uint64_t invited = 0;
       {
@@ -1618,6 +1755,52 @@ bool P2PSessionInfo(uint8_t* out, uint32_t* slots) {
   return true;
 }
 
+void P2PSetHostProperty(uint32_t id, uint32_t value) {
+  Property p{id, uint8_t(id >> 28), {uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value)}};
+  std::lock_guard lock(g_mutex);
+  g_properties[id] = std::move(p);
+}
+
+std::optional<uint32_t> P2PSessionProperty(uint32_t id) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [obj, local] : g_sessions) {
+    if (!(local.session.flags & 0x20)) continue;  // (a match's, not the ONLINE menu's presence session)
+    // (a joiner's session has the host's properties from the search)
+    const auto found = g_found.find(local.session.id);
+    const auto& props = local.host || found == g_found.end() ? local.session.properties : found->second.properties;
+    for (const auto& p : props)
+      if (p.id == id && p.value.size() >= 4)
+        return uint32_t(p.value[0]) << 24 | uint32_t(p.value[1]) << 16 | uint32_t(p.value[2]) << 8 | p.value[3];
+  }
+  return std::nullopt;
+}
+
+void SetPortRules(uint32_t value) {
+  if (!value) {
+    std::lock_guard lock(g_mutex);
+    g_properties.erase(kPortRules);
+    return;
+  }
+  REXLOG_INFO("p2p: port rules {:08X} set (host)", value);
+  P2PSetHostProperty(kPortRules, value);
+}
+
+std::optional<uint32_t> PortRules() { return P2PSessionProperty(kPortRules); }
+
+std::optional<bool> P2PRanked() {
+  std::lock_guard lock(g_mutex);
+  const auto t = g_contexts.find(kContextGameType);
+  if (t == g_contexts.end()) return std::nullopt;
+  return t->second == 0;
+}
+
+std::string P2PHiddenReason(int* sessions) {
+  std::lock_guard lock(g_hidden_mutex);
+  if (sessions) *sessions = int(g_hidden_ids.size());
+  if (g_hidden_ids.empty() || std::chrono::steady_clock::now() - g_hidden_at > std::chrono::minutes(2)) return "";
+  return g_hidden_why;
+}
+
 void P2PExpectInvite(const uint8_t* info) {
   {
     std::lock_guard lock(g_mutex);
@@ -1628,6 +1811,10 @@ void P2PExpectInvite(const uint8_t* info) {
 }
 
 bool P2PReachHost(const uint8_t* info) {
+  {
+    std::lock_guard lock(g_hidden_mutex);
+    g_hidden_why.clear(), g_hidden_ids.clear();
+  }
   const uint8_t* host = info + 8;
   const Mac mac = MacOf(host);
   Path path;
@@ -1647,16 +1834,32 @@ bool P2PReachHost(const uint8_t* info) {
   }, std::chrono::milliseconds(2500), 1);
   bool found = false;
   const uint64_t id = Be64(info);
+  bool refused = false;
   for (const auto& reply : replies) {
     Reader r{reply.data(), reply.size()};
     const uint16_t count = r.u16();
+    std::vector<Session> got;
     for (uint16_t i = 0; i < count && r.ok && i < 25; ++i) {
       Session s;
       if (!ReadSession(r, s)) break;
-      std::lock_guard lock(g_mutex);
+      got.push_back(std::move(s));
+    }
+    // (an invite too: only with the same mods)
+    if (const std::string why = Mismatch(r); !why.empty()) {
+      Hidden(why, {id});
+      if (!got.empty()) TellModsRefused(got.front().host.data());
+      refused = true;
+      continue;
+    }
+    std::lock_guard lock(g_mutex);
+    for (auto& s : got) {
       found |= s.id == id;
       g_found[s.id] = std::move(s);
     }
+  }
+  if (refused && !found) {
+    REXLOG_INFO("p2p: invite: the host's mods differ - not joining");
+    return false;
   }
   REXLOG_INFO("p2p: invite: host {} {}", Ip(path.ip), found ? "has the session" : replies.empty() ? "didn't answer" : "no longer has the session");
   return found;

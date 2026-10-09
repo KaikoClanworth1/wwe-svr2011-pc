@@ -41,11 +41,15 @@
 
 #include "generated/default/svr2011_init.h"
 #include "json_lite.h"
+#include "keyboard_typing.h"
 #include "online_net.h"
+#include "graphics_page.h"
 #include "p2p.h"
 
 // The game's own Xbox LIVE invite path (it restarts itself to join): off - the
 // restarted game says "a sign-in change has occurred" (see the notes below).
+REXCVAR_DEFINE_BOOL(online_invite_popups, true, "Online",
+                    "A pop-up when a friend invites you (the online overlay's INVITE POP-UPS row)");
 REXCVAR_DEFINE_BOOL(online_invite_native, false, "Online",
                     "Invites accepted through the game's own Xbox LIVE path (restarts the game; experimental)");
 
@@ -342,7 +346,7 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  enum Kind { kInviteRow, kFriendRow, kAddedRow, kAddRow };
+  enum Kind { kInviteRow, kFriendRow, kAddedRow, kAddRow, kPopupRow };
   struct Row {
     Kind kind;
     int index;  // (in its list)
@@ -352,16 +356,21 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
 
   int sel_ = 0, top_ = 0;
   std::string typed_;  // ADD FRIEND
+  bool grid_ = false;  // ADD FRIEND's letter grid (a controller: Y)
+  int gx_ = 0, gy_ = 0;
   uint16_t prev_buttons_ = 0;
   bool wait_release_ = false, combo_down_ = false;
+  bool invite_mode_ = false;  // opened by the lobby's X INVITE FRIENDS: the friends only, mid-screen
   Clock::time_point opened_at_{}, repeat_at_{};
   std::set<std::string> seen_invites_;  // (the notice: once each)
-  std::string toast_;
+  std::string toast_, toast_line2_;
   Clock::time_point toast_until_{};
 };
 
 void OnlineOverlay::Close() {
   g_open = false;
+  grid_ = false;
+  SetOverlayTyping(false);
   g_wait_release = true;
   if (g_from_game.exchange(false) && g_kernel) g_kernel->BroadcastNotification(kSystemUi, 0);
 }
@@ -372,20 +381,28 @@ void OnlineOverlay::Toast(ImGuiIO& io) {
     std::lock_guard lock(g_mutex);
     s.invites = g_state.invites;
   }
+  // A new invite: "<NAME> INVITED YOU" and how to answer, for 10 s at the top
+  // of the screen (INVITE POP-UPS on the overlay turns it off).
+  const bool popups = rex::cvar::Query<bool>("online_invite_popups");
   for (const Invite& i : s.invites) {
-    if (!seen_invites_.insert(i.from + i.session).second) continue;
-    toast_ = Upper(i.from) + " INVITED YOU TO A " + Upper(i.kind.empty() ? "match" : i.kind) + "  -  " +
-             Upper(rex::cvar::Query<std::string>("bind_online_menu")) + " OR BACK + RB";
-    toast_until_ = Clock::now() + std::chrono::seconds(8);
+    if (!seen_invites_.insert(i.from + i.session).second || !popups) continue;
+    toast_ = Upper(i.from) + " INVITED YOU";
+    toast_line2_ = "TO A " + Upper(i.kind.empty() ? "match" : i.kind) + "  -  " +
+                   Upper(rex::cvar::Query<std::string>("bind_online_menu")) + " OR BACK + RB TO ANSWER";
+    toast_until_ = Clock::now() + std::chrono::seconds(10);
   }
   if (g_open || Clock::now() > toast_until_ || toast_.empty()) return;
-  const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f), size = 20 * sc;
+  const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f), size = 24 * sc, size2 = 18 * sc;
   ImDrawList* dl = ImGui::GetForegroundDrawList();
-  const ImVec2 sz = TextSize(g_menu_font, size, toast_.c_str());
-  const ImVec2 a(io.DisplaySize.x - sz.x - 40 * sc, 24 * sc), b(io.DisplaySize.x - 16 * sc, 24 * sc + sz.y + 18 * sc);
-  dl->AddRectFilled(a, b, IM_COL32(8, 8, 12, 235), 8 * sc);
-  dl->AddRect(a, b, IM_COL32(200, 30, 32, 255), 8 * sc, 0, 2 * sc);
-  Text(dl, g_menu_font, size, ImVec2(a.x + 12 * sc, a.y + 9 * sc), IM_COL32(255, 255, 255, 255), toast_.c_str());
+  const ImVec2 sz = TextSize(g_menu_font, size, toast_.c_str()), sz2 = TextSize(g_menu_font, size2, toast_line2_.c_str());
+  const float w = std::max(sz.x, sz2.x) + 48 * sc, h = sz.y + sz2.y + 34 * sc;
+  const ImVec2 a((io.DisplaySize.x - w) * 0.5f, 24 * sc), b(a.x + w, a.y + h);
+  dl->AddRectFilled(a, b, IM_COL32(8, 8, 12, 240), 8 * sc);
+  dl->AddRectFilled(a, ImVec2(a.x + 8 * sc, b.y), IM_COL32(200, 30, 32, 255), 8 * sc);
+  dl->AddRect(a, b, IM_COL32(235, 235, 240, 255), 8 * sc, 0, 2 * sc);
+  Text(dl, g_menu_font, size, ImVec2((a.x + b.x - sz.x) * 0.5f, a.y + 12 * sc), IM_COL32(255, 255, 255, 255), toast_.c_str());
+  Text(dl, g_menu_font, size2, ImVec2((a.x + b.x - sz2.x) * 0.5f, a.y + 18 * sc + sz.y), IM_COL32(255, 200, 60, 255),
+       toast_line2_.c_str());
 }
 
 void OnlineOverlay::OnDraw(ImGuiIO& io) {
@@ -414,6 +431,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
       Close();
     } else {
       g_open = true;
+      invite_mode_ = g_from_game.load();
       wait_release_ = true;
       opened_at_ = Clock::now();
       sel_ = top_ = 0;
@@ -442,11 +460,20 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   const bool in_session = P2PSessionInfo(info, &slots);
   const std::string session_key = in_session ? Base64(info, 8) : std::string();
 
+  // (invite mode - the lobby's X INVITE FRIENDS: the friends to invite only,
+  // the ones online first)
   std::vector<Row> rows;
-  for (int i = 0; i < int(st.invites.size()); ++i) rows.push_back({kInviteRow, i});
-  for (int i = 0; i < int(st.friends.size()); ++i) rows.push_back({kFriendRow, i});
-  for (int i = 0; i < int(st.added_you.size()); ++i) rows.push_back({kAddedRow, i});
-  if (st.signed_in) rows.push_back({kAddRow, 0});
+  if (invite_mode_) {
+    for (int pass = 0; pass < 2; ++pass)
+      for (int i = 0; i < int(st.friends.size()); ++i)
+        if ((st.friends[i].status != "offline") == (pass == 0)) rows.push_back({kFriendRow, i});
+  } else {
+    for (int i = 0; i < int(st.invites.size()); ++i) rows.push_back({kInviteRow, i});
+    for (int i = 0; i < int(st.friends.size()); ++i) rows.push_back({kFriendRow, i});
+    for (int i = 0; i < int(st.added_you.size()); ++i) rows.push_back({kAddedRow, i});
+    if (st.signed_in) rows.push_back({kAddRow, 0});
+    if (st.signed_in) rows.push_back({kPopupRow, 0});
+  }
   const int n = int(rows.size());
 
   // Input: controller (edges, repeat for held directions), keys, the mouse.
@@ -473,11 +500,39 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   bool choose = (pressed & X_INPUT_GAMEPAD_A) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                 ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
   bool other = (pressed & X_INPUT_GAMEPAD_X) != 0;  // (decline)
-  const bool back = (pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_START)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+  bool back = (pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_START)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+  // ADD FRIEND with a controller: Y opens a letter grid (the D-pad moves, A
+  // types, X deletes, B closes it; OK adds the friend).
+  static const char* const kGrid[4] = {"ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ0123", "456789_-. "};
+  const bool on_add = n && sel_ < n && rows[sel_].kind == kAddRow;
+  if (grid_ && on_add) {
+    const int cols = gy_ < 4 ? 10 : 2;
+    if (pressed & X_INPUT_GAMEPAD_DPAD_LEFT) gx_ = (gx_ + cols - 1) % cols;
+    if (pressed & X_INPUT_GAMEPAD_DPAD_RIGHT) gx_ = (gx_ + 1) % cols;
+    if (move) gy_ = (gy_ + move + 5) % 5, gx_ = std::min(gx_, gy_ < 4 ? 9 : 1);
+    bool ok = false;
+    if (pressed & X_INPUT_GAMEPAD_A) {
+      if (gy_ < 4) {
+        if (typed_.size() < 15) typed_ += kGrid[gy_][gx_];
+      } else if (gx_ == 0) {
+        if (!typed_.empty()) typed_.pop_back();
+      } else {
+        ok = true, grid_ = false;
+      }
+    }
+    if ((pressed & X_INPUT_GAMEPAD_X) && !typed_.empty()) typed_.pop_back();
+    if (pressed & (X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_Y)) grid_ = false;
+    move = 0, other = false, back = false;
+    choose = ok;
+  } else {
+    grid_ = false;
+    if (on_add && (pressed & X_INPUT_GAMEPAD_Y)) grid_ = true, gx_ = gy_ = 0;
+  }
   if (n) sel_ = (sel_ + move + n) % n;
   sel_ = std::clamp(sel_, 0, std::max(0, n - 1));
   // ADD FRIEND: typing (the keyboard)
   const bool typing = n && rows[sel_].kind == kAddRow;
+  SetOverlayTyping(typing);  // (the window's text input; a phone's keyboard: keyboard_typing.h)
   if (typing) {
     for (ImWchar c : io.InputQueueCharacters) {
       if (typed_.size() < 15 && c < 128 && (std::isalnum(int(c)) || c == ' ' || c == '_' || c == '.' || c == '-'))
@@ -495,7 +550,10 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   const ImU32 kWhite = IM_COL32(255, 255, 255, 255), kGrey = IM_COL32(170, 170, 178, 255),
               kDim = IM_COL32(120, 120, 128, 255), kGreen = IM_COL32(110, 210, 90, 255),
               kGold = IM_COL32(255, 200, 60, 255), kRed = IM_COL32(200, 30, 32, 255);
-  constexpr float L = 690, R = 1250, T = 30, B = 690, kRowH = 52, kListTop = 150;
+  // (the full overlay at the right; invite mode a smaller panel mid-screen)
+  const float L = invite_mode_ ? 330 : 690, R = invite_mode_ ? 950 : 1250, T = invite_mode_ ? 120 : 30,
+              B = invite_mode_ ? 600 : 690, kListTop = T + 120;
+  constexpr float kRowH = 52;
   const int visible = int((B - 90 - kListTop) / kRowH);
   if (sel_ < top_) top_ = sel_;
   if (sel_ >= top_ + visible) top_ = sel_ - visible + 1;
@@ -547,9 +605,14 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
       else SendInvite(f.name);
     } else if (row.kind == kAddedRow && choose) {
       AddFriend(st.added_you[row.index]);
+    } else if (row.kind == kPopupRow && choose) {
+      const bool on = !rex::cvar::Query<bool>("online_invite_popups");
+      rex::cvar::SetFlagByName("online_invite_popups", on ? "true" : "false");
+      SaveConfigSetting("online_invite_popups", on ? "true" : "false");
+      Say(on ? "INVITE POP-UPS ON" : "INVITE POP-UPS OFF (INVITES STILL SHOW HERE)");
     } else if (row.kind == kAddRow && choose) {
       if (typed_.size() >= 3) AddFriend(typed_), typed_.clear();
-      else Say("TYPE THE PLAYER'S NAME (KEYBOARD), THEN ENTER");
+      else Say("TYPE THE PLAYER'S NAME (KEYBOARD, OR Y FOR LETTERS), THEN ENTER");
     }
   }
 
@@ -562,7 +625,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   // header
   dl->AddRectFilled(P(L + 6, T + 6), P(R - 6, T + 44), IM_COL32(24, 24, 30, 255), 6 * s);
   dl->AddRectFilled(P(L + 6, T + 6), P(L + 12, T + 44), kRed);
-  Text(dl, g_title_font, 32 * s, P(L + 24, T + 8), kWhite, "ONLINE");
+  Text(dl, g_title_font, 32 * s, P(L + 24, T + 8), kWhite, invite_mode_ ? "INVITE FRIENDS" : "ONLINE");
   {
     const std::string who = st.signed_in ? Upper(rex::cvar::Query<std::string>("online_name")) : "NOT SIGNED IN";
     const ImVec2 sz = TextSize(g_menu_font, 20 * s, who.c_str());
@@ -621,16 +684,44 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
         name = "ADD FRIEND: " + Upper(typed_) + (on && (int(ImGui::GetTime() * 2) & 1) ? "_" : "");
         rc = kDim;
         break;
+      case kPopupRow: {
+        const bool pop = rex::cvar::Query<bool>("online_invite_popups");
+        name = "INVITE POP-UPS";
+        right = pop ? "ON" : "OFF", rc = pop ? kGreen : kDim;
+        break;
+      }
     }
     Text(dl, g_menu_font, 22 * s, P(L + 30, y + 11), kWhite, name.c_str());
     const ImVec2 sz = TextSize(g_menu_font, 18 * s, right.c_str());
     Text(dl, g_menu_font, 18 * s, ImVec2(P(R - 30, 0).x - sz.x, P(0, y + 14).y), rc, right.c_str());
   }
   if (st.signed_in && st.answered && st.friends.empty() && st.invites.empty() && st.added_you.empty()) {
-    Text(dl, g_menu_font, 19 * s, P(L + 24, kListTop + kRowH + 8), kDim, "NO FRIENDS YET: ADD ONE BELOW OR ON THE LAUNCHER");
+    Text(dl, g_menu_font, 19 * s, P(L + 24, kListTop + kRowH + 8), kDim,
+         invite_mode_ ? "NO FRIENDS YET: ADD THEM ON THE ONLINE MENU (BACK + RB)" : "NO FRIENDS YET: ADD ONE BELOW OR ON THE LAUNCHER");
   }
   if (top_ > 0) Text(dl, g_menu_font, 18 * s, P(R - 40, kListTop - 26), kGrey, "^");
   if (top_ + visible < n) Text(dl, g_menu_font, 18 * s, P(R - 40, B - 94), kGrey, "v");
+
+  // ADD FRIEND's letter grid (a controller), over the list's bottom
+  if (grid_) {
+    const float kCell = 46, gx0 = L + 20, gy0 = B - 330;
+    dl->AddRectFilled(P(gx0 - 10, gy0 - 10), P(gx0 + 10 * kCell + 10, gy0 + 5 * kCell + 10), IM_COL32(16, 16, 22, 250), 6 * s);
+    dl->AddRect(P(gx0 - 10, gy0 - 10), P(gx0 + 10 * kCell + 10, gy0 + 5 * kCell + 10), IM_COL32(90, 90, 100, 255), 6 * s);
+    for (int r = 0; r < 5; ++r) {
+      const int cols = r < 4 ? 10 : 2;
+      for (int c = 0; c < cols; ++c) {
+        const float w = r < 4 ? kCell : kCell * 5;
+        const ImVec2 a = P(gx0 + c * w + 2, gy0 + r * kCell + 2), b = P(gx0 + (c + 1) * w - 2, gy0 + (r + 1) * kCell - 2);
+        const bool here = r == gy_ && c == gx_;
+        dl->AddRectFilled(a, b, here ? kRed : IM_COL32(34, 34, 40, 255), 4 * s);
+        char label[8] = {};
+        if (r < 4) label[0] = kGrid[r][c] == ' ' ? '_' : kGrid[r][c];
+        const char* t = r < 4 ? (kGrid[r][c] == ' ' ? "SPC" : label) : (c == 0 ? "DEL" : "OK");
+        const ImVec2 sz = TextSize(g_menu_font, 20 * s, t);
+        Text(dl, g_menu_font, 20 * s, ImVec2((a.x + b.x - sz.x) * 0.5f, (a.y + b.y - sz.y) * 0.5f), kWhite, t);
+      }
+    }
+  }
 
   // the outcome of the last action, and the buttons
   if (fresh_message) Text(dl, g_menu_font, 19 * s, P(L + 24, B - 78), kGold, message.c_str());
@@ -640,7 +731,10 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
       case kInviteRow: help = "A ACCEPT    X DECLINE    B CLOSE"; break;
       case kFriendRow: help = in_session ? "A INVITE    B CLOSE" : "B CLOSE"; break;
       case kAddedRow: help = "A ADD BACK    B CLOSE"; break;
-      case kAddRow: help = "TYPE A NAME    ENTER ADD    ESC CLOSE"; break;
+      case kPopupRow: help = "A CHANGE    B CLOSE"; break;
+      case kAddRow:
+        help = grid_ ? "D-PAD MOVE    A TYPE    X DELETE    B DONE" : "TYPE A NAME (Y: LETTERS)    ENTER ADD    ESC CLOSE";
+        break;
     }
   }
   if (rex::cvar::Query<bool>("touch_controls")) help = "TAP A ROW    TAP OUTSIDE TO CLOSE";  // (a phone)
@@ -775,7 +869,31 @@ void ToggleOnlineOverlay() { g_toggle = true; }
 
 bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load(); }
 
-void OnlineOverlayPad(uint16_t buttons) { g_guest_pad = buttons; }
+uint16_t OnlineRawPad() { return g_guest_pad.load(); }
+
+uint16_t OnlineOverlayPad(uint16_t buttons) {
+  using namespace rex::input;
+  g_guest_pad = buttons;  // (the overlay's combo check: the real buttons)
+  static const bool on = rex::cvar::Query<bool>("online_enabled");
+  if (!on) return buttons;
+  // (game thread only)
+  static bool back_held = false, chord = false;
+  static Clock::time_point back_until{};
+  const bool back = buttons & X_INPUT_GAMEPAD_BACK, rb = buttons & X_INPUT_GAMEPAD_RIGHT_SHOULDER;
+  const auto now = Clock::now();
+  if (back) {
+    if (!back_held) back_held = true, chord = false;
+    if (rb) chord = true;
+    buttons &= uint16_t(~(X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_RIGHT_SHOULDER));
+  } else if (back_held) {
+    back_held = false;
+    if (!chord) back_until = now + std::chrono::milliseconds(120);  // (a plain BACK: the game gets it now)
+  }
+  if (chord && rb) buttons &= uint16_t(~X_INPUT_GAMEPAD_RIGHT_SHOULDER);  // (until RB is let go too)
+  if (chord && !back && !rb) chord = false;
+  if (now < back_until) buttons |= X_INPUT_GAMEPAD_BACK;
+  return buttons;
+}
 
 }  // namespace svr2011
 

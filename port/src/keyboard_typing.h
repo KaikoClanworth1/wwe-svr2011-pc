@@ -41,4 +41,9 @@ bool GameKeyboardOpen();
 void ToggleSystemKeyboard();
 void UpdateSystemKeyboard();
 
+// An overlay's text field (the online overlay's ADD FRIEND) is being typed in:
+// the window's text input is on (a phone's keyboard shows), and the keys that
+// type characters don't also act as the controller.
+void SetOverlayTyping(bool on);
+
 }  // namespace svr2011

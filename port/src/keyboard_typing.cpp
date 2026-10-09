@@ -51,6 +51,7 @@ rex::ui::Window* g_window = nullptr;
 std::atomic<uint32_t> g_keyboard{0};  // the open keyboard object (sub_8274B0A8's r3)
 uint8_t* g_base = nullptr;
 bool g_text_input = false;  // UI thread: we turned the window's text input on
+std::atomic<bool> g_overlay_text{false};  // an overlay's text field wants typing (SetOverlayTyping)
 
 int64_t Now() { return Clock::now().time_since_epoch().count(); }
 
@@ -176,6 +177,15 @@ void Copy() {
 class TypingListener final : public rex::ui::WindowInputListener {
  public:
   void OnKeyDown(rex::ui::KeyEvent& e) override {
+    if (!KeyboardOpen() && g_overlay_text) {
+      // (an overlay's field: its characters come as text; the keys that type
+      // them don't also drive the keyboard's controller emulation)
+      SetTextInput(true);
+      const auto vk = uint16_t(e.virtual_key());
+      if (!e.is_ctrl_pressed() && !e.is_alt_pressed() && CharacterKey(e.virtual_key()) && vk != 0x0D && vk != 0x1B)
+        e.set_handled(true);
+      return;
+    }
     if (!KeyboardOpen()) {
       SetTextInput(false);
       // Ctrl+C / Ctrl+V on a Story Designer list (story_designer.h)
@@ -228,7 +238,14 @@ void ToggleSystemKeyboard() {
 }
 
 void UpdateSystemKeyboard() {
-  if (g_text_input && !KeyboardOpen()) SetTextInput(false);
+  if (g_text_input && !KeyboardOpen() && !g_overlay_text) SetTextInput(false);
+}
+
+void SetOverlayTyping(bool on) {
+  if (g_overlay_text.exchange(on) == on || !g_window) return;
+  g_window->app_context().CallInUIThread([on] {
+    if (!KeyboardOpen()) SetTextInput(on);  // (a phone shows its keyboard)
+  });
 }
 
 void InstallKeyboardTyping(rex::ui::Window* window) {

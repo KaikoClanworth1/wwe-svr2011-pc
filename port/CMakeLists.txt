@@ -31,6 +31,8 @@ set(SVR2011_SOURCES
     src/discord_presence.cpp
     src/online.cpp
     src/online_net.cpp
+    src/online_files.cpp
+    src/online_cpu.cpp
     src/online_cas.cpp
     src/online_overlay.cpp
     src/leaderboards.cpp
@@ -133,7 +135,8 @@ if(NOT SVR2011_BUILD_COMMIT)
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" "${CMAKE_CURRENT_SOURCE_DIR}/BUILD_COMMIT.txt")
-set_source_files_properties(src/svr2011_app.cpp PROPERTIES COMPILE_DEFINITIONS
+# (online_files.cpp too: the online version gate compares it with the newest release)
+set_source_files_properties(src/svr2011_app.cpp src/online_files.cpp PROPERTIES COMPILE_DEFINITIONS
     "SVR2011_PORT_VERSION=\"${SVR2011_PORT_VERSION}\";SVR2011_BUILD_COMMIT=\"${SVR2011_BUILD_COMMIT}\"")
 
 # Windows only: XAudio2 audio, crash reports, PC music (XAudio2 + Media

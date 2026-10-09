@@ -29,7 +29,9 @@
 
 #include "caw_logos.h"
 #include "entrance_media.h"
+#include "online_files.h"
 #include "online_net.h"
+#include "p2p.h"
 #include "paint_pages.h"
 
 namespace svr2011 {
@@ -145,6 +147,32 @@ void PrepareOnlineSettings(const std::filesystem::path& config, const std::files
 
 namespace {
 uint32_t g_empty_string = 0;  // guest "" (removed labels)
+// guest: why online is off (online_files.h: modified game files, an older
+// version, still checking) - filled when the game asks for the text
+constexpr uint32_t kOffTextSize = 256;
+uint32_t g_online_off_text = 0;
+rex::memory::Memory* g_online_memory = nullptr;
+// guest: the game's "no game sessions" / join failure message with why hosts
+// were left out (p2p.h P2PHiddenReason: another version or other mods)
+uint32_t g_hidden_text = 0;
+// guest: the CPU slots' help bar labels (online_cpu.cpp)
+constexpr uint32_t kAddCpuId = 0xEF10, kRemoveCpuId = 0xEF11, kWaitingId = 0xEF12;  // (16-bit: the bar holds u16 ids; blank in the game's table)
+constexpr uint32_t kYIcon = 0xAFCB;  // (the game's Y glyph string)
+uint32_t g_cpu_labels[3] = {};
+uint32_t g_scratch = 0;  // (OnlineScratch)
+// (string ids: from SVR2011_DUMP_STRINGS)
+constexpr uint32_t kNoSessionsId = 0xC6D4;  // "No game sessions were found. Search again?"
+constexpr uint32_t kJoinFailedId = 0xC67F;  // "Failed to find a session. Please try again." (an invite)
+
+// Text into a guest buffer (kOffTextSize).
+uint32_t GuestText(uint32_t buffer, const std::string& text) {
+  if (!buffer || !g_online_memory) return 0;
+  char* out = g_online_memory->TranslateVirtual<char*>(buffer);
+  const size_t n = std::min<size_t>(text.size(), kOffTextSize - 1);
+  std::memcpy(out, text.data(), n);
+  out[n] = 0;
+  return buffer;
+}
 
 // -- The Superstars' extra logos (Saves\.logos) and the server ----------------
 
@@ -331,16 +359,51 @@ uint32_t OnlineString(uint32_t id) {
     case 0xB0B2:  // Invite Xbox LIVE Party
     case 0xB15D:  // Invite Xbox LIVE Party Member
       return g_empty_string;
+    // The trial period messages: what entering ONLINE shows while it is off
+    // for the game files (the Online Axxess gate below) - why, instead.
+    case 50866:
+    case 50867: {
+      const std::string why = GameFilesOnlineMessage();
+      return why.empty() ? 0 : GuestText(g_online_off_text, why);
+    }
     default:
-      return 0;
+      break;
   }
+  if (id >= kAddCpuId && id <= kWaitingId && g_cpu_labels[id - kAddCpuId]) return g_cpu_labels[id - kAddCpuId];
+  // The search found only hosts this game can't play (another version or
+  // other gameplay mods): the game's own message says so.
+  if (id && (id == kNoSessionsId || id == kJoinFailedId)) {
+    int sessions = 0;
+    const std::string why = P2PHiddenReason(&sessions);
+    if (why.empty()) return 0;
+    // (the game's own wording - its C67E / C67C messages - then the details)
+    const bool mods = why.rfind("Your mods", 0) == 0;
+    const std::string head = mods ? "Unable to join the session due to a difference in downloadable content."
+                                  : "Unable to join the session due to a difference in game versions.";
+    if (id == kNoSessionsId)
+      return GuestText(g_hidden_text, std::string(sessions == 1 ? "A game session was found. " : "Game sessions were found. ") +
+                                          head + "\n" + why + "\nSearch again?");
+    return GuestText(g_hidden_text, head + "\n" + why);
+  }
+  return 0;
 }
 
 void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& saves) {
   g_empty_string = memory->SystemHeapAlloc(4);
   if (g_empty_string) std::memset(memory->TranslateVirtual<char*>(g_empty_string), 0, 4);
+  g_online_memory = memory;
+  g_online_off_text = memory->SystemHeapAlloc(kOffTextSize);
+  g_hidden_text = memory->SystemHeapAlloc(kOffTextSize);
+  g_scratch = memory->SystemHeapAlloc(4096);
+  {
+    static const char* const kLabels[3] = {"ADD CPU", "REMOVE CPU", "WAITING FOR ONE MORE PLAYER"};
+    for (int i = 0; i < 3; ++i)
+      if ((g_cpu_labels[i] = memory->SystemHeapAlloc(32)) != 0)
+        std::strncpy(memory->TranslateVirtual<char*>(g_cpu_labels[i]), kLabels[i], 31);
+  }
   if (!rex::cvar::Query<bool>("online_enabled")) return;
   g_saves = saves;
+  svr2011::StartGameFilesCheck();  // (online_files.h: the game files and the newest version)
   net::StartRelay();
   SetMissingLogoHandler(OnMissingLogo);
   SetPaintDownloadCheck(OnPaintDownload);
@@ -411,7 +474,27 @@ REX_HOOK_RAW(sub_82746358) {
     if (kept != slot) std::memmove(slots + kept * 4, p, 4);
     ++kept;
   }
-  for (; kept < 3; ++kept) std::memset(slots + kept * 4, 0xFF, 4);
+  for (uint32_t k = kept; k < 3; ++k) std::memset(slots + k * 4, 0xFF, 4);
+  // The Player Match lobby's CPU slots (online_cpu.cpp): Y ADD CPU / REMOVE
+  // CPU for the cursor's slot, and the host alone with CPUs is told why the
+  // match doesn't start.
+  int y = 0;
+  bool waiting = false;
+  svr2011::OnlineCpuHelp(&y, &waiting);
+  auto put = [&](uint32_t icon, uint32_t label) {
+    for (uint32_t k = 0; k < kept; ++k)
+      if (((uint32_t(slots[k * 4]) << 8) | slots[k * 4 + 1]) == icon && icon != 0xFFFF) {
+        slots[k * 4 + 2] = uint8_t(label >> 8), slots[k * 4 + 3] = uint8_t(label);
+        return;
+      }
+    if (kept < 3) {
+      uint8_t* p = slots + kept * 4;
+      p[0] = uint8_t(icon >> 8), p[1] = uint8_t(icon), p[2] = uint8_t(label >> 8), p[3] = uint8_t(label);
+      ++kept;
+    }
+  };
+  if (y) put(svr2011::kYIcon, y == 1 ? svr2011::kAddCpuId : svr2011::kRemoveCpuId);
+  if (waiting) put(0xFFFF, svr2011::kWaitingId);
 }
 
 // The WWE SHOP: the PC has no marketplace and needs no Online Axxess (all
@@ -437,10 +520,30 @@ REX_HOOK_RAW(sub_8247E330) {
 // gate: entering ONLINE (without it, a "trial period" from Xbox LIVE storage
 // that can't be had: "Information related to your trial period couldn't be
 // retrieved"), the ONLINE menu's greyed items, the shop.
+// XShowPlayerReviewUI(user, xuid) - the lobby's PLAYER REVIEW (sub_82904D50,
+// the import's thunk): there is no Xbox review screen here. Its caller
+// (sub_823746F0) on success waits for the system UI to close - a
+// notification that never comes, so the game locked up; an error and the
+// game goes on (no screen).
+REX_HOOK_RAW(sub_82904D50) {
+  (void)base;
+  REXLOG_INFO("online: PLAYER REVIEW - no review screen on the PC");
+  ctx.r3.u64 = 0x1F;  // ERROR_GEN_FAILURE
+}
+
 REX_EXTERN(__imp__sub_828C19D8);
+// Online is off while the game files aren't clean (online_files.h: modified,
+// or still being checked at start): id 5 then answers no - entering ONLINE
+// shows the trial period message, whose text says why (OnlineString).
 REX_HOOK_RAW(sub_828C19D8) {
   if (ctx.r3.u32 == 5) {
-    ctx.r3.u64 = 1;
+    // (online off in the settings: as before - the files aren't checked then)
+    const std::string why =
+        rex::cvar::Query<bool>("online_enabled") ? svr2011::GameFilesOnlineMessage() : std::string();
+    ctx.r3.u64 = why.empty() ? 1 : 0;
+    static std::string told;
+    if (!why.empty() && why != told) REXLOG_WARN("online: off - {}", why);
+    told = why;
     return;
   }
   __imp__sub_828C19D8(ctx, base);
@@ -627,3 +730,7 @@ REX_HOOK_RAW(sub_82519C60) {
   if (svr2011::g_importing) svr2011::BackupSave(svr2011::g_saves / "SaveData.dat");
   __imp__sub_82519C60(ctx, base);
 }
+
+namespace svr2011 {
+uint32_t OnlineScratch() { return g_scratch; }
+}  // namespace svr2011
