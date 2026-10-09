@@ -59,6 +59,7 @@
 #include "match_types.h"
 #include "native/native_renderer.h"
 #include "online_overlay.h"
+#include "online_rules.h"
 #include "players.h"
 #include "superstar_mods.h"
 
@@ -716,6 +717,7 @@ REX_HOOK_RAW(sub_82905058) {
     // (the online overlay's BACK + RB never reaches the game: online_overlay.h)
     const uint16_t b = svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));
     base[out + 4] = uint8_t(b >> 8), base[out + 5] = uint8_t(b);
+    svr2011::OnlineRulesPad(b);  // (LB / RB: the PORT RULES row - online_rules.h)
   }
   if (r && out) {
     r->valid = true;

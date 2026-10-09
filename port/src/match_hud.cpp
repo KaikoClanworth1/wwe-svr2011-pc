@@ -114,4 +114,43 @@ void DrawHudBanner(float dw, float dh, const std::string& big, const std::string
   Text(dl, g_title, ss, ImVec2(cx - st.x * 0.5f, a.y + 14.0f * g.s + bt.y), kGold, sub, alpha);
 }
 
+HudRowHits DrawHudRow(float dw, float dh, float y, const std::string& label, const std::string& value,
+                      const std::string& note, const std::string& legend) {
+  const Area g = GameArea(dw, dh);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const float size = 22.0f * g.s, small = 17.0f * g.s, lean = 12.0f * g.s;
+  // (as wide as the game's CREATE SESSION box: x 0.16 .. 0.86 of the area)
+  const ImVec2 a(g.x + g.w * 0.16f, g.y + g.h * y), b(g.x + g.w * 0.86f, a.y + size + 14.0f * g.s);
+  Panel(dl, a, b, lean, g.s, 1.0f);
+  const float ty = a.y + 7.0f * g.s;
+  Text(dl, g_title, size, ImVec2(a.x + 26.0f * g.s, ty), kGold, label);
+  // the value between arrows, centred in the right half
+  const float vx0 = a.x + (b.x - a.x) * 0.42f, vx1 = b.x - 18.0f * g.s;
+  const ImVec2 vs = Size(g_title, size, value);
+  const float cx = (vx0 + vx1) * 0.5f;
+  Text(dl, g_title, size, ImVec2(cx - vs.x * 0.5f, ty), kWhite, value);
+  const float arrow = size * 0.42f, my = ty + size * 0.5f;
+  const auto tri = [&](float x, bool right) {
+    const ImVec2 p0(right ? x - arrow : x + arrow, my - arrow), p1(right ? x - arrow : x + arrow, my + arrow), p2(x, my);
+    dl->AddTriangleFilled(p0, p1, p2, kWhite);
+  };
+  tri(vx0, false);
+  tri(vx1, true);
+  HudRowHits hits;
+  const float pad = 10.0f * g.s;
+  hits.left[0] = vx0 - pad, hits.left[1] = a.y, hits.left[2] = vx0 + arrow + pad * 2, hits.left[3] = b.y;
+  hits.right[0] = vx1 - arrow - pad * 2, hits.right[1] = a.y, hits.right[2] = vx1 + pad, hits.right[3] = b.y;
+  float ny = b.y + 6.0f * g.s;
+  if (!note.empty()) {
+    const ImVec2 ns = Size(g_menu, small, note);
+    Text(dl, g_menu, small, ImVec2(g.x + (g.w - ns.x) * 0.5f, ny), kWhite, note);
+    ny += ns.y + 4.0f * g.s;
+  }
+  if (!legend.empty()) {
+    const ImVec2 ls = Size(g_menu, small, legend);
+    Text(dl, g_menu, small, ImVec2(g.x + (g.w - ls.x) * 0.5f, ny), kGold, legend);
+  }
+  return hits;
+}
+
 }  // namespace svr2011
