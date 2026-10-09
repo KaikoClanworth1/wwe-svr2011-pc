@@ -291,13 +291,17 @@ REX_HOOK_RAW(sub_828AC668) {
   }
 }
 
-// The host's wait for every superstar block to be acknowledged by every
-// machine (sub_828AD2F8(L): each block's mask at L+3564+k*15044 needs a bit
-// per slot): the CPU slots' bits are set.
+// "Block j done" (sub_828AD2F8(L, j): the bits of the block's mask at
+// L+3564+j*15044 - the host needs one per slot, its own and every joiner's
+// acknowledgement; a joiner exactly one, its own, set when the block
+// arrives): on the HOST the CPU slots' bits stand in for the acknowledgements
+// they never send. Not on joiners - the host sends them every block, the
+// CPUs' too (with them set, a joiner never counted exactly one: "EXCHANGING
+// SUPERSTAR INFORMATION" forever with 2 CPUs).
 REX_EXTERN(__imp__sub_828AD2F8);
 REX_HOOK_RAW(sub_828AD2F8) {
   const uint32_t L = ctx.r3.u32;
-  if (L) {
+  if (L && IsHost(ctx, base)) {
     uint32_t bits = 0;
     for (uint32_t j = 0; j < SlotCount(base, L); ++j)
       if (IsCpu(Record(base, L, j))) bits |= 1u << j;
@@ -459,8 +463,8 @@ REX_HOOK_RAW(sub_82893958) {
 
 // The lobby's help bar: the screen picks its bar id every frame (sub_824E5578,
 // then sub_824E3E60(screen, &id) adjusts it), and the bar is only rebuilt
-// when the id changes - the host's lobby keeps 1286 whatever the cursor is
-// on. So the Y label's state rides in the id's high half (1 + y + 3 *
+// when the id changes (the host's lobby has a few - 1286, and others by what
+// the cursor is on - none of them telling a CPU from a player). So the Y label's state rides in the id's high half (1 + y + 3 *
 // waiting: y 1 ADD CPU, 2 REMOVE CPU, waiting for one more player), which
 // changes the id with it; online.cpp's bar hook (sub_82746358) takes it
 // off and puts the labels in.
@@ -468,14 +472,19 @@ REX_EXTERN(__imp__sub_824E3E60);
 REX_HOOK_RAW(sub_824E3E60) {
   const uint32_t screen = ctx.r3.u32, idp = ctx.r4.u32;
   __imp__sub_824E3E60(ctx, base);
-  if (!screen || !idp || Rd32(base + idp) != 1286 || !REXCVAR_GET(online_cpu_slots)) return;
+  if (!screen || !idp || !REXCVAR_GET(online_cpu_slots)) return;
+  const uint32_t id = Rd32(base + idp);
+  if (!id || id > 0xFFFF) return;
   const uint32_t L = Lobby(base);
   if (!L) return;
   const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
   if (!((state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base))) return;
   const uint32_t y = IsCpu(Record(base, L, j)) ? 2 : Rd32(Record(base, L, j)) < 5 ? 1 : 0;
   const uint32_t waiting = Rd32(base + L + 24) < 2 && CpuCount(base, L) > 0 ? 1 : 0;
-  if (y || waiting) Wr32(base + idp, 1286 | ((1 + y + 3 * waiting) << 16));
+  static uint32_t logged = 0;
+  if (LogOn() && id != logged) REXLOG_INFO("online cpu: lobby bar {} (cursor slot {}, Y {}, waiting {})", id, j, y, waiting);
+  logged = id;
+  if (y || waiting) Wr32(base + idp, id | ((1 + y + 3 * waiting) << 16));
 }
 
 // The result screen's kinds (sub_828A7F18, at the match's end): a person who
