@@ -37,6 +37,7 @@
 #include <string>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -44,6 +45,9 @@
 #include "generated/default/svr2011_init.h"
 #include "online.h"
 #include "online_overlay.h"
+
+REXCVAR_DEFINE_BOOL(online_cpu_slots, false, "Online",
+                    "CPU players in online Player Matches: the host's Y on a vacant lobby slot (in progress)");
 
 namespace {
 
@@ -202,7 +206,7 @@ REX_HOOK_RAW(sub_824E6510) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
     {
       int y = 0;
-      const bool host = (state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base);
+      const bool host = REXCVAR_GET(online_cpu_slots) && (state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base);
       if (host) y = IsCpu(Record(base, L, j)) ? 2 : Rd32(Record(base, L, j)) < 5 ? 1 : 0;
       g_help_y = y;
       g_help_waiting = host && Rd32(base + L + 24) < 2 && CpuCount(base, L) > 0;
@@ -215,7 +219,7 @@ REX_HOOK_RAW(sub_824E6510) {
     const bool y = (svr2011::OnlineRawPad() & 0x8000) != 0;  // (XINPUT_GAMEPAD_Y)
     const bool pressed = y && !y_down;
     y_down = y;
-    if (pressed) {
+    if (pressed && REXCVAR_GET(online_cpu_slots)) {
       if (LogOn()) REXLOG_INFO("online cpu: Y (lobby state {}, cursor slot {})", state, j);
       if ((state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base)) {
         uint8_t* rec = Record(base, L, j);

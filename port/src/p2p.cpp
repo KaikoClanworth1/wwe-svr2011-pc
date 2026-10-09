@@ -1708,6 +1708,13 @@ void SetPortRules(uint32_t value) {
 
 std::optional<uint32_t> PortRules() { return P2PSessionProperty(kPortRules); }
 
+std::optional<bool> P2PRanked() {
+  std::lock_guard lock(g_mutex);
+  const auto t = g_contexts.find(kContextGameType);
+  if (t == g_contexts.end()) return std::nullopt;
+  return t->second == 0;
+}
+
 std::string P2PHiddenReason(int* sessions) {
   std::lock_guard lock(g_hidden_mutex);
   if (sessions) *sessions = int(g_hidden_ids.size());

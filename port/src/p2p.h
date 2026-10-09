@@ -66,5 +66,9 @@ std::optional<uint32_t> P2PSessionProperty(uint32_t id);
 // sessions never carry them.
 void SetPortRules(uint32_t value);
 std::optional<uint32_t> PortRules();
+// The match kind the game set for its online sessions (XUserSetContext
+// X_CONTEXT_GAME_TYPE, set as the player enters RANKED MATCH / PLAYER MATCH,
+// before CREATE SESSION): true Ranked, false Player Match; nullopt: not set yet.
+std::optional<bool> P2PRanked();
 
 }  // namespace svr2011
