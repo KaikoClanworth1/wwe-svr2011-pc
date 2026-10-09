@@ -86,7 +86,8 @@ switch ($Action) {
         $env:SVR2011_CONFIG = Join-Path $runs $Config
         $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
         $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
-        $env:SVR2011_NATIVE_SHADERS = Join-Path $runs "shaders_native\dxil"
+        # (NP_SHADERS: another shader folder - the D3D11 runs need the .dxbc ones)
+        $env:SVR2011_NATIVE_SHADERS = if ($env:NP_SHADERS) { $env:NP_SHADERS } else { Join-Path $runs "shaders_native\dxil" }
         # a copy of the test saves (never the base test saves or the player's)
         if (-not $UserData) {
             $UserData = Join-Path $runs "test_userdata_online"

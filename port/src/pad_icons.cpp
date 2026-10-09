@@ -525,7 +525,10 @@ struct RecordCopy {
 };
 std::mutex g_records_mutex;
 std::map<std::pair<uint32_t, Kind>, RecordCopy> g_records;
-thread_local uint32_t t_pair = 0;  // (a {handle, record} pair for the command)
+// The {handle, record} pairs the commands get: the command keeps the pair's
+// address and reads it at playback, so each {handle, copy} has its own (one
+// shared pair made every swapped picture in a frame the frame's last one).
+std::map<std::pair<uint32_t, uint32_t>, uint32_t> g_pairs;
 
 uint32_t RecordVersion(uint32_t record, Kind kind) {
   constexpr uint32_t kTextureRecord = 0x8205CF48;  // (vtable)
@@ -537,11 +540,10 @@ uint32_t RecordVersion(uint32_t record, Kind kind) {
   RecordCopy& c = g_records[{record, kind}];
   if (!c.record) c.record = g_memory->SystemHeapAlloc(0x70, 32);
   if (!c.record) return 0;
-  if (c.object != version) {
-    std::memcpy(g_base + c.record, g_base + record, 0x70);
-    Wr32(g_base + c.record + 80, version);
-    c.object = version;
-  }
+  // (refreshed each time: the game changes a record's region in place)
+  std::memcpy(g_base + c.record, g_base + record, 0x70);
+  Wr32(g_base + c.record + 80, version);
+  c.object = version;
   return c.record;
 }
 
@@ -640,12 +642,18 @@ REX_HOOK_RAW(sub_826DE6B0) {
     if (kind == kPlayStation || kind == kKeyboard) {
       const uint32_t record = Readable(ctx.r4.u32) ? Rd32(base + ctx.r4.u32 + 4) : 0;
       if (const uint32_t copy = record ? RecordVersion(record, kind) : 0) {
-        if (!t_pair) t_pair = g_memory->SystemHeapAlloc(8, 8);
-        if (t_pair) {
-          Wr32(base + t_pair, Rd32(base + ctx.r4.u32));
-          Wr32(base + t_pair + 4, copy);
-          ctx.r4.u64 = t_pair;
+        const uint32_t handle = Rd32(base + ctx.r4.u32);
+        uint32_t pair;
+        {
+          std::lock_guard lock(g_records_mutex);
+          uint32_t& p = g_pairs[{handle, copy}];
+          if (!p && (p = g_memory->SystemHeapAlloc(8, 8))) {
+            Wr32(base + p, handle);
+            Wr32(base + p + 4, copy);
+          }
+          pair = p;
         }
+        if (pair) ctx.r4.u64 = pair;
       }
     }
   }
