@@ -76,6 +76,7 @@ constexpr uint32_t kFakeNet = 0x0A400000;        // 10.64.0.0/16: peers as the g
 constexpr uint32_t kMagic = 0x53565250;          // "SVRP"
 constexpr uint32_t kContextGameType = 0x0000800A;  // X_CONTEXT_GAME_TYPE (ranked / standard)
 constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
+constexpr uint32_t kPortRules = 0x1000F001;        // the port's match rules (match_types: mode << 16 | set)
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
@@ -645,13 +646,13 @@ void TellModsRefused(const uint8_t* host_xnaddr);  // (below: tells a host its s
 // Why the last search / invite left a host out (P2PHiddenReason).
 std::mutex g_hidden_mutex;
 std::string g_hidden_why;
-int g_hidden_count = 0;
+std::set<uint64_t> g_hidden_ids;  // (a host answers once per path: counted once)
 std::chrono::steady_clock::time_point g_hidden_at{};
 
-void Hidden(const std::string& why, int sessions) {
+void Hidden(const std::string& why, const std::vector<uint64_t>& sessions) {
   std::lock_guard lock(g_hidden_mutex);
-  if (g_hidden_count == 0 || g_hidden_why.empty()) g_hidden_why = why;
-  g_hidden_count += sessions;
+  if (g_hidden_ids.empty() || g_hidden_why.empty()) g_hidden_why = why;
+  g_hidden_ids.insert(sessions.begin(), sessions.end());
   g_hidden_at = std::chrono::steady_clock::now();
 }
 
@@ -1196,7 +1197,7 @@ std::vector<Session> Search() {
   g_online_at = NowMs();
   {
     std::lock_guard lock(g_hidden_mutex);  // (this search's own: P2PHiddenReason)
-    g_hidden_why.clear(), g_hidden_count = 0;
+    g_hidden_why.clear(), g_hidden_ids.clear();
   }
   if (REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty()) {
     for (int i = 0; i < 30 && !g_relay_up; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1222,7 +1223,9 @@ std::vector<Session> Search() {
     // (the host's version and mods: others - its sessions left out, both told)
     if (const std::string why = Mismatch(r); !why.empty()) {
       REXLOG_INFO("p2p: {} session(s) left out - {}", got.size(), why);
-      Hidden(why, int(got.size()));
+      std::vector<uint64_t> ids;
+      for (const auto& s : got) ids.push_back(s.id);
+      Hidden(why, ids);
       TellModsRefused(got.front().host.data());
       continue;
     }
@@ -1512,6 +1515,14 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         std::lock_guard lock(g_mutex);
         s.contexts = g_contexts;
         for (const auto& [id, p] : g_properties) s.properties.push_back(p);
+        // (Ranked: the game's own rules only)
+        if (auto t = s.contexts.find(kContextGameType); t != s.contexts.end() && t->second == 0)
+          s.properties.erase(std::remove_if(s.properties.begin(), s.properties.end(),
+                                            [](const Property& p) { return p.id == kPortRules; }),
+                             s.properties.end());
+        for (const auto& p : s.properties)
+          if (p.id == kPortRules && p.value.size() >= 4)
+            REXLOG_INFO("p2p: port rules {:08X} (host)", Be32(p.value.data()));
         // X_PROPERTY_GAMER_HOSTNAME (LIVE filled it in: the host's name, UTF-16)
         Property name{0x40008109, 4, {}};
         for (char c : rex::cvar::Query<std::string>("online_name")) name.value.push_back(0), name.value.push_back(uint8_t(c));
@@ -1519,6 +1530,13 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         s.properties.push_back(std::move(name));
       } else if (info) {  // (joining: the session the game found)
         s.id = Be64(Guest(info));
+        {
+          std::lock_guard found_lock(g_mutex);
+          if (auto f = g_found.find(s.id); f != g_found.end())
+            for (const auto& p : f->second.properties)
+              if (p.id == kPortRules && p.value.size() >= 4)
+                REXLOG_INFO("p2p: port rules {:08X} (joiner)", Be32(p.value.data()));
+        }
         std::memcpy(s.host.data(), Guest(info) + 8, 36);
         Hello(s.host.data());
       }
@@ -1658,10 +1676,42 @@ bool P2PSessionInfo(uint8_t* out, uint32_t* slots) {
   return true;
 }
 
+void P2PSetHostProperty(uint32_t id, uint32_t value) {
+  Property p{id, uint8_t(id >> 28), {uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value)}};
+  std::lock_guard lock(g_mutex);
+  g_properties[id] = std::move(p);
+}
+
+std::optional<uint32_t> P2PSessionProperty(uint32_t id) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [obj, local] : g_sessions) {
+    if (!(local.session.flags & 0x20)) continue;  // (a match's, not the ONLINE menu's presence session)
+    // (a joiner's session has the host's properties from the search)
+    const auto found = g_found.find(local.session.id);
+    const auto& props = local.host || found == g_found.end() ? local.session.properties : found->second.properties;
+    for (const auto& p : props)
+      if (p.id == id && p.value.size() >= 4)
+        return uint32_t(p.value[0]) << 24 | uint32_t(p.value[1]) << 16 | uint32_t(p.value[2]) << 8 | p.value[3];
+  }
+  return std::nullopt;
+}
+
+void SetPortRules(uint32_t value) {
+  if (!value) {
+    std::lock_guard lock(g_mutex);
+    g_properties.erase(kPortRules);
+    return;
+  }
+  REXLOG_INFO("p2p: port rules {:08X} set (host)", value);
+  P2PSetHostProperty(kPortRules, value);
+}
+
+std::optional<uint32_t> PortRules() { return P2PSessionProperty(kPortRules); }
+
 std::string P2PHiddenReason(int* sessions) {
   std::lock_guard lock(g_hidden_mutex);
-  if (sessions) *sessions = g_hidden_count;
-  if (!g_hidden_count || std::chrono::steady_clock::now() - g_hidden_at > std::chrono::minutes(2)) return "";
+  if (sessions) *sessions = int(g_hidden_ids.size());
+  if (g_hidden_ids.empty() || std::chrono::steady_clock::now() - g_hidden_at > std::chrono::minutes(2)) return "";
   return g_hidden_why;
 }
 
@@ -1677,7 +1727,7 @@ void P2PExpectInvite(const uint8_t* info) {
 bool P2PReachHost(const uint8_t* info) {
   {
     std::lock_guard lock(g_hidden_mutex);
-    g_hidden_why.clear(), g_hidden_count = 0;
+    g_hidden_why.clear(), g_hidden_ids.clear();
   }
   const uint8_t* host = info + 8;
   const Mac mac = MacOf(host);
@@ -1710,7 +1760,7 @@ bool P2PReachHost(const uint8_t* info) {
     }
     // (an invite too: only with the same mods)
     if (const std::string why = Mismatch(r); !why.empty()) {
-      Hidden(why, 1);
+      Hidden(why, {id});
       if (!got.empty()) TellModsRefused(got.front().host.data());
       refused = true;
       continue;

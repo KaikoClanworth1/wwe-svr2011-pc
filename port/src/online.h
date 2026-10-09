@@ -31,4 +31,9 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
 // the PC doesn't have (gamer cards, Xbox LIVE Party).
 uint32_t OnlineString(uint32_t id);
 
+// The Player Match lobby's CPU slots (online_cpu.cpp): Y's label for the
+// cursor's slot (0 none, 1 ADD CPU, 2 REMOVE CPU) and whether the host is
+// alone with CPUs (the match needs one more player).
+void OnlineCpuHelp(int* y, bool* waiting);
+
 }  // namespace svr2011

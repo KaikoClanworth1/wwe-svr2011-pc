@@ -56,5 +56,7 @@ bool OnlineOverlayHoldsInput();
 // kept from it while BACK is held, and BACK itself until it is let go
 // without RB (then a short BACK press).
 uint16_t OnlineOverlayPad(uint16_t buttons);
+// Pad 1's buttons as last read (XInput bits, before the combo filter).
+uint16_t OnlineRawPad();
 
 }  // namespace svr2011

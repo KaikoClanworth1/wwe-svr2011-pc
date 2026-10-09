@@ -53,5 +53,18 @@ void P2PExpectInvite(const uint8_t* info);
 // other gameplay mods (online_files.h) - and how many sessions ("" when none,
 // or over 2 minutes ago): for the game's own "no sessions" / join messages.
 std::string P2PHiddenReason(int* sessions = nullptr);
+// A port session property (an int32: XUSER_PROPERTY type 1, e.g. 0x1000F001
+// the port's match mode): the host sets it before the game creates its
+// session (it goes into every session it hosts from then on, as
+// XUserSetProperty's); the match session this game hosts or joined has it
+// (nullopt: none).
+void P2PSetHostProperty(uint32_t id, uint32_t value);
+std::optional<uint32_t> P2PSessionProperty(uint32_t id);
+// The port's match rules for online Player Matches (match_types.cpp: mode
+// << 16 | set): the host sets them before CREATE SESSION (0: none); the
+// current match session's (hosted or joined) - nullopt: none. Ranked
+// sessions never carry them.
+void SetPortRules(uint32_t value);
+std::optional<uint32_t> PortRules();
 
 }  // namespace svr2011

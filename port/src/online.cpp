@@ -155,6 +155,10 @@ rex::memory::Memory* g_online_memory = nullptr;
 // guest: the game's "no game sessions" / join failure message with why hosts
 // were left out (p2p.h P2PHiddenReason: another version or other mods)
 uint32_t g_hidden_text = 0;
+// guest: the CPU slots' help bar labels (online_cpu.cpp)
+constexpr uint32_t kAddCpuId = 0xEF10, kRemoveCpuId = 0xEF11, kWaitingId = 0xEF12;  // (16-bit: the bar holds u16 ids; blank in the game's table)
+constexpr uint32_t kYIcon = 0xAFCB;  // (the game's Y glyph string)
+uint32_t g_cpu_labels[3] = {};
 // (string ids: from SVR2011_DUMP_STRINGS)
 constexpr uint32_t kNoSessionsId = 0xC6D4;  // "No game sessions were found. Search again?"
 constexpr uint32_t kJoinFailedId = 0xC67F;  // "Failed to find a session. Please try again." (an invite)
@@ -364,6 +368,7 @@ uint32_t OnlineString(uint32_t id) {
     default:
       break;
   }
+  if (id >= kAddCpuId && id <= kWaitingId && g_cpu_labels[id - kAddCpuId]) return g_cpu_labels[id - kAddCpuId];
   // The search found only hosts this game can't play (another version or
   // other gameplay mods): the game's own message says so.
   if (id && (id == kNoSessionsId || id == kJoinFailedId)) {
@@ -388,6 +393,12 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
   g_online_memory = memory;
   g_online_off_text = memory->SystemHeapAlloc(kOffTextSize);
   g_hidden_text = memory->SystemHeapAlloc(kOffTextSize);
+  {
+    static const char* const kLabels[3] = {"ADD CPU", "REMOVE CPU", "WAITING FOR ONE MORE PLAYER"};
+    for (int i = 0; i < 3; ++i)
+      if ((g_cpu_labels[i] = memory->SystemHeapAlloc(32)) != 0)
+        std::strncpy(memory->TranslateVirtual<char*>(g_cpu_labels[i]), kLabels[i], 31);
+  }
   if (!rex::cvar::Query<bool>("online_enabled")) return;
   g_saves = saves;
   svr2011::StartGameFilesCheck();  // (online_files.h: the game files and the newest version)
@@ -461,7 +472,27 @@ REX_HOOK_RAW(sub_82746358) {
     if (kept != slot) std::memmove(slots + kept * 4, p, 4);
     ++kept;
   }
-  for (; kept < 3; ++kept) std::memset(slots + kept * 4, 0xFF, 4);
+  for (uint32_t k = kept; k < 3; ++k) std::memset(slots + k * 4, 0xFF, 4);
+  // The Player Match lobby's CPU slots (online_cpu.cpp): Y ADD CPU / REMOVE
+  // CPU for the cursor's slot, and the host alone with CPUs is told why the
+  // match doesn't start.
+  int y = 0;
+  bool waiting = false;
+  svr2011::OnlineCpuHelp(&y, &waiting);
+  auto put = [&](uint32_t icon, uint32_t label) {
+    for (uint32_t k = 0; k < kept; ++k)
+      if (((uint32_t(slots[k * 4]) << 8) | slots[k * 4 + 1]) == icon && icon != 0xFFFF) {
+        slots[k * 4 + 2] = uint8_t(label >> 8), slots[k * 4 + 3] = uint8_t(label);
+        return;
+      }
+    if (kept < 3) {
+      uint8_t* p = slots + kept * 4;
+      p[0] = uint8_t(icon >> 8), p[1] = uint8_t(icon), p[2] = uint8_t(label >> 8), p[3] = uint8_t(label);
+      ++kept;
+    }
+  };
+  if (y) put(svr2011::kYIcon, y == 1 ? svr2011::kAddCpuId : svr2011::kRemoveCpuId);
+  if (waiting) put(0xFFFF, svr2011::kWaitingId);
 }
 
 // The WWE SHOP: the PC has no marketplace and needs no Online Axxess (all

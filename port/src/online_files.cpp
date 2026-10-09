@@ -373,7 +373,8 @@ std::string GameFilesOnlineMessage() {
     return "Your game files are modified - online is off.\nUse Verify game files in the launcher to repair them.";
   if (g_version.load() == Version::kOlder) {
     std::lock_guard lock(g_latest_mutex);
-    return "A newer version (" + g_latest + ") is out -\nupdate in the launcher to play online.";
+    return "Unable to play online due to a difference in game versions.\nUpdate to v" + g_latest +
+           " (the launcher's Check for updates, or GitHub) to play online.";
   }
   if (files == GameFiles::kChecking || g_version.load() == Version::kChecking)
     return "Checking your game files.\nOnline will be ready in a moment - please try again.";
@@ -390,8 +391,11 @@ const std::string& PortVersion() {
 
 std::string VersionDifference(const std::string& theirs) {
   if (theirs == PortVersion()) return "";
-  return "They're on " + (theirs.empty() ? std::string("an older version") : theirs) + ", you're on " + PortVersion() +
-         " - both players need the same version.";
+  if (!theirs.empty() && VersionNewer(theirs, PortVersion()))
+    return "They're on v" + theirs + ", you're on v" + PortVersion() + ": update to v" + theirs +
+           " (launcher or GitHub) to play them.";
+  return "They're on " + (theirs.empty() ? std::string("an older version") : "v" + theirs) + ", you're on v" +
+         PortVersion() + ": they need to update.";
 }
 
 const std::string& GameplayModSet() {
@@ -425,8 +429,9 @@ std::string ModSetDifference(const std::string& mine, const std::string& theirs)
                           : l.name + ": your files differ from theirs");
   if (parts.empty()) return "";
   std::string out = "Your mods don't match: ";
-  for (size_t i = 0; i < parts.size() && i < 4; ++i) out += (i ? "; " : "") + parts[i];
-  if (parts.size() > 4) out += "; and " + std::to_string(parts.size() - 4) + " more";
+  // (the game's message box holds about three lines: two named, then a count)
+  for (size_t i = 0; i < parts.size() && i < 2; ++i) out += (i ? "; " : "") + parts[i];
+  if (parts.size() > 2) out += "; and " + std::to_string(parts.size() - 2) + " more";
   return out + ".";
 }
 
