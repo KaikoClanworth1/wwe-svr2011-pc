@@ -157,7 +157,8 @@ rex::memory::Memory* g_online_memory = nullptr;
 uint32_t g_hidden_text = 0;
 // guest: the CPU slots' help bar labels (online_cpu.cpp)
 constexpr uint32_t kAddCpuId = 0xEF10, kRemoveCpuId = 0xEF11, kWaitingId = 0xEF12;  // (16-bit: the bar holds u16 ids; blank in the game's table)
-constexpr uint32_t kYIcon = 0xAFCB;  // (the game's Y glyph string)
+constexpr uint32_t kPlayerInfoId = 0xB0A7;  // PLAYER INFO: the lobby's own Y label - its slot's icon is Y's glyph
+constexpr uint32_t kYIconGuess = 0xAFCA;    // (before one was seen; 0xAFCB is X's)
 uint32_t g_cpu_labels[3] = {};
 uint32_t g_scratch = 0;  // (OnlineScratch)
 // (string ids: from SVR2011_DUMP_STRINGS)
@@ -496,7 +497,12 @@ REX_HOOK_RAW(sub_82746358) {
       ++kept;
     }
   };
-  if (y) put(svr2011::kYIcon, y == 1 ? svr2011::kAddCpuId : svr2011::kRemoveCpuId);
+  // (Y's glyph id: taken from the game's own Y slot - PLAYER INFO - when a bar has it)
+  static uint32_t y_icon = svr2011::kYIconGuess;
+  for (uint32_t k = 0; k < kept; ++k)
+    if (((uint32_t(slots[k * 4 + 2]) << 8) | slots[k * 4 + 3]) == svr2011::kPlayerInfoId)
+      y_icon = (uint32_t(slots[k * 4]) << 8) | slots[k * 4 + 1];
+  if (y) put(y_icon, y == 1 ? svr2011::kAddCpuId : svr2011::kRemoveCpuId);
   if (waiting) put(0xFFFF, svr2011::kWaitingId);
 }
 
