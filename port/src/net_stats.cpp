@@ -101,7 +101,9 @@ REX_HOOK_RAW(sub_82893BD0) {
     std::lock_guard lock(g_mutex);
     if (g_window_start == Clock::time_point{}) g_window_start = now;
     g_entries = std::min(Rd32(o + kCount), kMaxEntries);
-    g_local = Rd32(o + kLocal);
+    g_local = Rd32(o + kLocal);  // (this game's lobby slot: its entry is the one with that slot at +4 - they differ with CPU slots)
+    for (uint32_t k = 0; k < g_entries; ++k)
+      if (Rd32(o + k * kEntrySize + 4) == Rd32(o + kLocal)) g_local = k;
     const bool waiting = Rd32(o + kWaiting) != 0;
     ++g_window.frames;
     if (waiting) {

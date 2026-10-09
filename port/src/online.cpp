@@ -159,6 +159,7 @@ uint32_t g_hidden_text = 0;
 constexpr uint32_t kAddCpuId = 0xEF10, kRemoveCpuId = 0xEF11, kWaitingId = 0xEF12;  // (16-bit: the bar holds u16 ids; blank in the game's table)
 constexpr uint32_t kYIcon = 0xAFCB;  // (the game's Y glyph string)
 uint32_t g_cpu_labels[3] = {};
+uint32_t g_scratch = 0;  // (OnlineScratch)
 // (string ids: from SVR2011_DUMP_STRINGS)
 constexpr uint32_t kNoSessionsId = 0xC6D4;  // "No game sessions were found. Search again?"
 constexpr uint32_t kJoinFailedId = 0xC67F;  // "Failed to find a session. Please try again." (an invite)
@@ -393,6 +394,7 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
   g_online_memory = memory;
   g_online_off_text = memory->SystemHeapAlloc(kOffTextSize);
   g_hidden_text = memory->SystemHeapAlloc(kOffTextSize);
+  g_scratch = memory->SystemHeapAlloc(4096);
   {
     static const char* const kLabels[3] = {"ADD CPU", "REMOVE CPU", "WAITING FOR ONE MORE PLAYER"};
     for (int i = 0; i < 3; ++i)
@@ -728,3 +730,7 @@ REX_HOOK_RAW(sub_82519C60) {
   if (svr2011::g_importing) svr2011::BackupSave(svr2011::g_saves / "SaveData.dat");
   __imp__sub_82519C60(ctx, base);
 }
+
+namespace svr2011 {
+uint32_t OnlineScratch() { return g_scratch; }
+}  // namespace svr2011

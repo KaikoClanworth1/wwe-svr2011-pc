@@ -42,6 +42,7 @@
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
+#include "online.h"
 #include "online_overlay.h"
 
 namespace {
@@ -113,14 +114,43 @@ int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }  // a slot's record before it became a CPU (Y again: back to it)
 
-// The lobby record j changed: unpack it for the panel and send it to everyone.
-void SendRecord(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
+// The lobby record j changed: send it to everyone (and the panel into the
+// superstar block, unless the block was built and the panel made from it).
+void SendRecord(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j, bool panel_to_block = true) {
   PPCContext c = ctx;
-  c.r3.u64 = L + kSlots + j * kSlotSize + 160, c.r4.u64 = L + kBlocks + j * kBlockSize;
-  sub_828A5408(c, base);
-  c = ctx;
+  if (panel_to_block) {
+    c.r3.u64 = L + kSlots + j * kSlotSize + 160, c.r4.u64 = L + kBlocks + j * kBlockSize;
+    sub_828A5408(c, base);
+    c = ctx;
+  }
   c.r3.u64 = L, c.r4.u64 = j, c.r5.u64 = 0;
   sub_828AC700(c, base);
+}
+
+// The CPU's superstar block, built as the select screen builds a human's
+// (sub_824C4F58) from the stock superstar's data (as an offline CPU's,
+// sub_828B5BC0): online, every machine loads each person from the lobby's
+// block. Then the panel is made from it (real stats). False: no scratch memory.
+bool BuildBlock(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j, uint32_t id) {
+  const uint32_t tmp = svr2011::OnlineScratch();
+  if (!tmp) return false;
+  const uint32_t blk = L + kBlocks + j * kBlockSize, args = tmp + 1952 + 32;
+  std::memset(base + blk, 0, kBlockSize - 4);
+  PPCContext c = ctx;
+  c.r3.u64 = blk;
+  sub_824C4F08(c, base);
+  std::memset(base + tmp, 0, 1952);
+  Wr32(base + args, id), Wr32(base + args + 4, 1), Wr32(base + args + 8, 0);
+  c = ctx;
+  c.r3.u64 = tmp, c.r4.u64 = args;
+  sub_828B5BC0(c, base);
+  std::memcpy(base + blk, base + tmp, 1724);
+  std::memcpy(base + blk + 14816, base + tmp + 1728, 224);
+  c = ctx;
+  c.r3.u64 = L + kSlots + j * kSlotSize + 160, c.r4.u64 = blk;
+  sub_828A5380(c, base);
+  if (LogOn()) REXLOG_INFO("online cpu: slot {} block built: {}", j, Hex(base + blk, 64));
+  return true;
 }
 
 void MakeCpu(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
@@ -147,7 +177,8 @@ void MakeCpu(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
   std::strncpy(reinterpret_cast<char*>(rec + 174), s.name, 40);
   std::strncpy(reinterpret_cast<char*>(rec + 242), s.name, 36);
   REXLOG_INFO("online cpu: slot {} is a CPU - {} (id {})", j, s.name, s.id);
-  SendRecord(ctx, base, L, j);
+  const bool built = BuildBlock(ctx, base, L, j, s.id);
+  SendRecord(ctx, base, L, j, !built);
 }
 
 void MakeVacant(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
@@ -253,10 +284,14 @@ REX_HOOK_RAW(sub_824F6AE0) {
   if (LogOn())
     REXLOG_INFO("online cpu: match slot {} from lobby slot {}: {}", to, from, Hex(slot - 8, 72));
   if (!IsCpu(Record(base, L, from))) return;
-  // (its superstar from this game's own roster record, not the lobby's
-  // superstar block - a CPU has none: +56 = 1 means "use the copied block")
-  Wr32(slot + 56, 0);
-  REXLOG_INFO("online cpu: match slot {} is the CPU (id {}): {}", to, Rd32(Record(base, L, from) + 136), Hex(slot - 8, 72));
+  // (joiners build the CPU's block too - the same stock data from the synced
+  // id - so it doesn't hang on the host's block broadcast reaching them)
+  if (!IsHost(ctx, base)) BuildBlock(ctx, base, L, from, Rd32(Record(base, L, from) + 136));
+  // (+56 stays as the game set it, "use the copied block": the host built the
+  // CPU's block (BuildBlock) and every machine has it - a cleared +56 left
+  // sub_828B92A0 returning 0 to a caller that reads it on joiners)
+  REXLOG_INFO("online cpu: match slot {} is the CPU (id {}): {}; block {}", to, Rd32(Record(base, L, from) + 136), Hex(slot - 8, 72),
+              Hex(base + L + kBlocks + from * kBlockSize, 32));
 }
 
 // The match's people entries from the lobby (sub_824F64A8(obj): 30 entries
@@ -344,18 +379,13 @@ REX_HOOK_RAW(sub_824E5398) {
   if (!cpus) return;
   const uint32_t entries = Rd32(base + net + 2236);
   if (entries <= uint32_t(cpus)) return;
+  // (only +2236, the entry count: +2240 stays the lobby's slot count (its
+  // reader, sub_82893080, loops over lobby slots) and +2232 stays this
+  // machine's LOBBY SLOT - every reader maps it to an entry through the
+  // entries' +4 (sub_82892CF0); an entry index there made a joiner not in
+  // slot 0 take the CPU for itself and leave the match)
   Wr32(base + net + 2236, entries - cpus);
-  Wr32(base + net + 2240, entries - cpus);
-  // (+2232 - this machine - is the lobby slot, which is also the entry index
-  // when no slot is a CPU; with one, this machine's entry is the one whose
-  // lobby slot (+4) is its own)
-  const uint32_t mine = Rd32(base + net + 2232);
-  for (uint32_t i = 0; i < entries - cpus; ++i)
-    if (Rd32(base + net + i * 72 + 4) == mine) {
-      Wr32(base + net + 2232, i);
-      break;
-    }
-  REXLOG_INFO("online cpu: net table {} -> {} entries, this machine slot {} -> entry {}: {}", entries, entries - cpus, mine,
+  REXLOG_INFO("online cpu: net table {} -> {} entries, this machine slot {}: {}", entries, entries - cpus,
               Rd32(base + net + 2232), Hex(base + net, 72 * 3));
 }
 

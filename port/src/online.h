@@ -35,5 +35,8 @@ uint32_t OnlineString(uint32_t id);
 // cursor's slot (0 none, 1 ADD CPU, 2 REMOVE CPU) and whether the host is
 // alone with CPUs (the match needs one more player).
 void OnlineCpuHelp(int* y, bool* waiting);
+// Guest scratch memory for online_cpu.cpp's calls into the game (4 KB, the
+// game's thread only); 0 before InstallOnline.
+uint32_t OnlineScratch();
 
 }  // namespace svr2011
