@@ -592,3 +592,17 @@ Under the `three_stages_of_hell` switch mod.
 - FIRST BLOOD is the game's own rule (+40); with CPUs it is slow - in the game's own First Blood match (0x29) nobody bled in 4 minutes either.
 - FINISHERS (the port's): a pin or submission counts only within 10 s after a finisher or signature move's cinematic (the world held: `frame_rate.cpp`'s paused round calls `ThreeStagesCinematic`); any other fall is taken back. It does NOT check who did the move: during the cinematic both people play the same paired motion and point at each other (+96), and no attacker / defender field showed in their first 0x3000 bytes.
 - Test aids: `SVR2011_TEST_3S_SET=<0-4>` (with `SVR2011_TEST_MODE=three_stages`, and `SVR2011_TEST_RULE` the set's match), `SVR2011_TEST_3S_STAGE=<0-2>` (start at that stage), `SVR2011_TEST_PAUSE_LOG=1` (the world held), `SVR2011_TEST_CHAR_DUMP=<file>` (the first two people every 6 updates).
+
+## Online Player Match: match types (2026-10-09)
+
+**The online CREATE SESSION -> MATCH TYPE screen** (native code; its data static in the image):
+- Categories at 0x82028D10: {label 4E2C.., list, count}; each list holds online type ids (1-0x1A).
+- Online types at 0x82028A60: {id, list, count}, a list of {rule, 0, 0} (12 bytes) per people count. 1v1: type 1 NORMAL 0x00; 2 LADDER 0x48, 0x37; 3 EXTREME RULES 0x51, 0x2B, 0x36, 0x3B, 0x43, 0x44, 0x4D; 4 CAGE 0x31, 0x3C, 0x40; 5 BACKSTAGE 0x1B-0x21. 3-man ER is type 0xB (0x46, 0x2F, 0x4F).
+- Names: rule record +60 through the string lookup (`sub_82520270`).
+- Not used by it: the people lists at 0x8201C488 (`sub_82470818`) and the Match Creator families.
+- The session carries the rule (property 0x1000000C), so a joiner plays it as any rule.
+
+**FIRST BLOOD online (done):** types 3 and 0xB get 0x29 / 0x2A before EXTREME RULES MATCH (lists copied to port memory; the image's records made writable for the two words). Switch mod `online_first_blood`. Tested: listed, picked, session created, lobby "FIRST BLOOD".
+
+**The port's own types:** not as pseudo rules (no free rule ids: 0x53-0x62 are story/special, and the online flow reads the record's people/slots throughout). Design B: a game-styled PORT RULES row on CREATE SESSION (LB/RB, touch, mouse), session property 0x1000F001 = mode << 16 | set (p2p.h `SetPortRules` / `PortRules`, online-207), the same panel read-only in the lobbies; applied before setup on both sides.
+- Research aid: `SVR2011_TEST_ONLINE_TRACE=1` (family lookups, list getters, rule-record getter, with callers).

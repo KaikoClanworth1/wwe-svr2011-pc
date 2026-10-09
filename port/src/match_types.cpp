@@ -813,7 +813,7 @@ bool MatchTypeOn(const char* id) {
     for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
                           "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
                           "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders",
-                          "gauntlet_eliminator", "cage_weapons", "inferno_weapons"}) {
+                          "gauntlet_eliminator", "cage_weapons", "inferno_weapons", "online_first_blood"}) {
       m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
       if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
     }
@@ -1787,7 +1787,51 @@ void LumberjackBeforeJudge(uint8_t* base) {
   }
 }
 
+// ONLINE: FIRST BLOOD in Player Match. The online MATCH TYPE screen's
+// categories (the image's data at 0x82028A60: per online type a record {id,
+// list, count}, its list {rule, 0, 0} entries, 12 bytes) leave First Blood
+// out; the one on one EXTREME RULES type (3) and the triple threat one (0xB)
+// get it (0x29 / 0x2A, before EXTREME RULES, the last), in port memory. The
+// session carries the rule (property 0x1000000C): the joiner plays it as any.
+namespace {
+void OnlineFirstBlood(uint8_t* base) {
+  static bool done = false;
+  if (done || !g_memory || !svr2011::MatchTypeOn("online_first_blood")) return;
+  done = true;
+  struct Add {
+    uint32_t record, rule;
+  };
+  for (const Add& a : {Add{0x82028A70, 0x29}, Add{0x82028AD0, 0x2A}}) {
+    const uint32_t list = Rd32(base + a.record + 4), n = Rd32(base + a.record + 8);
+    if (!list || n == 0 || n > 16) continue;
+    bool has = false;
+    for (uint32_t i = 0; i < n; ++i) has = has || Rd32(base + list + i * 12) == a.rule;
+    if (has) continue;
+    const uint32_t copy = g_memory->SystemHeapAlloc((n + 1) * 12);
+    if (!copy) continue;
+    std::memcpy(base + copy, base + list, (n - 1) * 12);   // (all but the last: EXTREME RULES)
+    Wr32(base + copy + (n - 1) * 12, a.rule);
+    Wr32(base + copy + (n - 1) * 12 + 4, 0);
+    Wr32(base + copy + (n - 1) * 12 + 8, 0);
+    std::memcpy(base + copy + n * 12, base + list + (n - 1) * 12, 12);
+    // (the image is read-only: writable for the record's two words)
+    auto* heap = g_memory->LookupHeap(a.record);
+    uint32_t old = 0;
+    if (!heap || !heap->QueryProtect(a.record, &old) ||
+        !heap->Protect(a.record + 4, 8, rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite)) {
+      REXLOG_WARN("match types: online - the type record {:08X} can't be made writable", a.record);
+      continue;
+    }
+    Wr32(base + a.record + 4, copy);
+    Wr32(base + a.record + 8, n + 1);
+    heap->Protect(a.record + 4, 8, old);
+    REXLOG_INFO("match types: online - FIRST BLOOD (rule {:02X}) in the online type {:X}", a.rule, Rd32(base + a.record));
+  }
+}
+}  // namespace
+
 void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
+  OnlineFirstBlood(base);
   constexpr uint32_t kChars = 0x82E3CC50;
   MatchHudTick(base);  // (match_hud.h: the HUD shows while the match's clock runs)
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a
@@ -2619,3 +2663,35 @@ REX_HOOK_RAW(sub_828C48E8) {
   }
   svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)
 }
+
+// Research aid (online match types): SVR2011_TEST_ONLINE_TRACE=1 - the
+// match families (sub_82490918 rule -> family, sub_82490980 rule -> its
+// flag) and the online lists' getters (sub_82470A60 count, sub_82470AA0
+// list, sub_82470AE0 label) logged with their callers (the first 40 calls of
+// each caller).
+namespace {
+bool OnlineTrace() {
+  static const bool on = std::getenv("SVR2011_TEST_ONLINE_TRACE") != nullptr;
+  return on;
+}
+void TraceCall(const char* fn, uint32_t lr, uint32_t a, uint32_t b, uint32_t result) {
+  static std::map<std::pair<std::string, uint32_t>, int> seen;
+  if (++seen[{fn, lr}] > 40) return;
+  REXLOG_INFO("online trace: {}({:X}, {:X}) = {:X} from {:08X}", fn, a, b, result, lr);
+}
+}  // namespace
+
+#define SVR2011_ONLINE_TRACE(fn)                                              \
+  REX_EXTERN(__imp__##fn);                                                    \
+  REX_HOOK_RAW(fn) {                                                          \
+    if (!OnlineTrace()) return __imp__##fn(ctx, base);                        \
+    const uint32_t lr = uint32_t(ctx.lr), a = ctx.r3.u32, b = ctx.r4.u32;     \
+    __imp__##fn(ctx, base);                                                   \
+    TraceCall(#fn, lr, a, b, ctx.r3.u32);                                     \
+  }
+SVR2011_ONLINE_TRACE(sub_82490918)
+SVR2011_ONLINE_TRACE(sub_82490980)
+SVR2011_ONLINE_TRACE(sub_82470A60)
+SVR2011_ONLINE_TRACE(sub_82470AA0)
+SVR2011_ONLINE_TRACE(sub_82470AE0)
+SVR2011_ONLINE_TRACE(sub_828B4A48)

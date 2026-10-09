@@ -24,7 +24,7 @@ void InstallMatchTypes(rex::memory::Memory* memory);
 // royal_rumble_15_25, lumberjack, free_roaming_backstage,
 // backstage_more_people, weapons_everywhere, slobber_knocker,
 // three_stages_of_hell, elimination, mystery_opponent, hiac_tables_ladders,
-// gauntlet_eliminator, cage_weapons, inferno_weapons.
+// gauntlet_eliminator, cage_weapons, inferno_weapons, online_first_blood.
 bool MatchTypeOn(const char* id);
 
 // Each world update (frame_rate.cpp): the Lumberjack match's lumberjacks
