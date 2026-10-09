@@ -28,8 +28,6 @@
 // Test aid: SVR2011_TEST_LOBBY_LOG=1 logs the records, picks and match slots.
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -106,7 +104,7 @@ bool IsHost(PPCContext& ctx, uint8_t* base) {
   return c.r3.u32 && Rd32(base + c.r3.u32 + 20) != 0;
 }
 
-uint8_t g_vacant[6][kSlotSize];
+uint8_t g_vacant[6][kSlotSize];  // a slot's record before it became a CPU (Y again: back to it)
 
 // The host choosing a CPU's superstar with the lobby's own list (A on the CPU
 // slot): the list runs as for the host's own slot (OMSL state 5 opens it;
@@ -125,16 +123,6 @@ uint32_t Panel0(uint8_t* base) {
   const uint32_t P = Rd32(base + kPanels);
   return P ? P + Rd32(base + P + 13520) * 1352 + 120 : 0;
 }
-
-// The lobby's help bar (online.cpp's bar hook asks): Y's label for the
-// cursor's slot (0 none, 1 ADD CPU, 2 REMOVE CPU) and whether the host is
-// alone with CPUs (WAITING FOR ONE MORE PLAYER); kept fresh by the lobby's frame.
-std::atomic<int> g_help_y{0};
-std::atomic<bool> g_help_waiting{false};
-std::atomic<int64_t> g_help_at{0};
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}  // a slot's record before it became a CPU (Y again: back to it)
 
 // The lobby record j changed: send it to everyone (and the panel into the
 // superstar block, unless the block was built and the panel made from it).
@@ -225,14 +213,6 @@ REX_HOOK_RAW(sub_824E6510) {
   const uint32_t L = Lobby(base);
   if (screen && L) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
-    {
-      int y = 0;
-      const bool host = REXCVAR_GET(online_cpu_slots) && (state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base);
-      if (host) y = IsCpu(Record(base, L, j)) ? 2 : Rd32(Record(base, L, j)) < 5 ? 1 : 0;
-      g_help_y = y;
-      g_help_waiting = host && Rd32(base + L + 24) < 2 && CpuCount(base, L) > 0;
-      g_help_at = NowMs();
-    }
     static uint32_t last_state = 0xFFFFFFFF;
     if (LogOn() && state != last_state) REXLOG_INFO("online cpu: lobby state {} (cursor slot {})", state, j);
     last_state = state;
@@ -477,6 +457,55 @@ REX_HOOK_RAW(sub_82893958) {
   if (ready) ctx.r3.u64 = 1;
 }
 
+// The lobby's help bar: the screen picks its bar id every frame (sub_824E5578,
+// then sub_824E3E60(screen, &id) adjusts it), and the bar is only rebuilt
+// when the id changes - the host's lobby keeps 1286 whatever the cursor is
+// on. So the Y label's state rides in the id's high half (1 + y + 3 *
+// waiting: y 1 ADD CPU, 2 REMOVE CPU, waiting for one more player), which
+// changes the id with it; online.cpp's bar hook (sub_82746358) takes it
+// off and puts the labels in.
+REX_EXTERN(__imp__sub_824E3E60);
+REX_HOOK_RAW(sub_824E3E60) {
+  const uint32_t screen = ctx.r3.u32, idp = ctx.r4.u32;
+  __imp__sub_824E3E60(ctx, base);
+  if (!screen || !idp || Rd32(base + idp) != 1286 || !REXCVAR_GET(online_cpu_slots)) return;
+  const uint32_t L = Lobby(base);
+  if (!L) return;
+  const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
+  if (!((state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base))) return;
+  const uint32_t y = IsCpu(Record(base, L, j)) ? 2 : Rd32(Record(base, L, j)) < 5 ? 1 : 0;
+  const uint32_t waiting = Rd32(base + L + 24) < 2 && CpuCount(base, L) > 0 ? 1 : 0;
+  if (y || waiting) Wr32(base + idp, 1286 | ((1 + y + 3 * waiting) << 16));
+}
+
+// The result screen's kinds (sub_828A7F18, at the match's end): a person who
+// left (sub_828932D8(N, slot): its entry's +32) shows DISCONNECT, one with
+// entry +64 set (sub_82893460) LOSE. A CPU slot has no entry (sub_82892CF0:
+// 6), so both read sync flags instead - set on joiners: the CPU showed
+// DISCONNECT there. A CPU never left: its real result.
+bool CpuSlot(uint8_t* base, uint32_t slot) {
+  const uint32_t L = Lobby(base);
+  return L && slot < SlotCount(base, L) && IsCpu(Record(base, L, slot));
+}
+
+REX_EXTERN(__imp__sub_828932D8);
+REX_HOOK_RAW(sub_828932D8) {
+  if (CpuSlot(base, ctx.r4.u32)) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_828932D8(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82893460);
+REX_HOOK_RAW(sub_82893460) {
+  if (CpuSlot(base, ctx.r4.u32)) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_82893460(ctx, base);
+}
+
 // The host's handlers for a slot's pick (sub_828AE250(L, msg)) and its
 // superstar block (sub_828AE378(L, msg)) - msg +0 the sender's net player,
 // +8 the data: from the host itself while it chooses a CPU's superstar, they
@@ -541,13 +570,3 @@ REX_HOOK_RAW(sub_828A6078) {
   if (g_edit_msg && int(j) == g_edit) Wr32(Record(base, L, j), kCpuState);
 }
 
-namespace svr2011 {
-
-// (online.cpp's help bar hook) - fresh only while the lobby runs.
-void OnlineCpuHelp(int* y, bool* waiting) {
-  const bool fresh = NowMs() - g_help_at.load() < 500;
-  *y = fresh ? g_help_y.load() : 0;
-  *waiting = fresh && g_help_waiting.load();
-}
-
-}  // namespace svr2011

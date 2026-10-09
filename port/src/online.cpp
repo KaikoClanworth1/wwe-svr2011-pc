@@ -460,6 +460,10 @@ REX_HOOK_RAW(sub_82629160) {
 REX_EXTERN(__imp__sub_82746358);
 REX_HOOK_RAW(sub_82746358) {
   const uint32_t out = ctx.r5.u32;
+  // (the Player Match lobby's CPU slots put the Y label's state in the id's
+  // high half - online_cpu.cpp's sub_824E3E60 hook: 1 + y + 3 * waiting)
+  const uint32_t cpu = ctx.r4.u32 >> 16;
+  ctx.r4.u64 = ctx.r4.u32 & 0xFFFF;
   __imp__sub_82746358(ctx, base);
   // (the bar ends at its first empty slot: the ones after a removed one
   // move up)
@@ -478,9 +482,8 @@ REX_HOOK_RAW(sub_82746358) {
   // The Player Match lobby's CPU slots (online_cpu.cpp): Y ADD CPU / REMOVE
   // CPU for the cursor's slot, and the host alone with CPUs is told why the
   // match doesn't start.
-  int y = 0;
-  bool waiting = false;
-  svr2011::OnlineCpuHelp(&y, &waiting);
+  const int y = cpu ? int((cpu - 1) % 3) : 0;
+  const bool waiting = cpu && (cpu - 1) / 3 != 0;
   auto put = [&](uint32_t icon, uint32_t label) {
     for (uint32_t k = 0; k < kept; ++k)
       if (((uint32_t(slots[k * 4]) << 8) | slots[k * 4 + 1]) == icon && icon != 0xFFFF) {
