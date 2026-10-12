@@ -8,8 +8,8 @@ if (-not $Name) { $Name = "wk$Fps" }
 $tools = $PSScriptRoot; $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $s = Join-Path $tools "lim_session.ps1"
 $cfg = Join-Path $runs "test_config_lim_fps$Fps.toml"
-$lines = Get-Content (Join-Path $runs "test_config.toml") | Where-Object { $_ -notmatch '^(frame_rate|mnk_mode)' }
-[IO.File]::WriteAllLines($cfg, $lines + "frame_rate = $Fps" + "mnk_mode = false" + ($Extra -split ';' | Where-Object { $_ }))
+$lines = Get-Content (Join-Path $runs "test_config.toml") | Where-Object { $_ -notmatch '^(frame_rate|mnk_mode|user_language)' }
+[IO.File]::WriteAllLines($cfg, $lines + "frame_rate = $Fps" + "mnk_mode = false" + "user_language = 1" + ($Extra -split ';' | Where-Object { $_ }))
 $dump = Join-Path $runs "$Name.dump"; Remove-Item $dump -ErrorAction SilentlyContinue
 $env:SVR2011_CONFIG = $cfg; $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_lim"; $env:SVR2011_WINDOW_BEHIND = "1"
 $env:SVR2011_FPS_DUMP = $dump

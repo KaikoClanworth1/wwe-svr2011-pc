@@ -6,7 +6,9 @@
 #   .\lim_p2p.ps1 [-Name lp1] [-RbPresses 1]
 # The joiner's account (LimitTest2) is made on the test server the first time:
 # runs\test_config_lim_online2.toml. Stops both games and the server at the end.
-param([string]$Name = "lp1", [int]$RbPresses = 1)
+param([string]$Name = "lp1", [int]$RbPresses = 1, [string]$MatchKeys = "", [string]$RowKey = "RB", [int]$Shots = 3)
+# -MatchKeys: presses on CREATE SESSION before the row (comma-separated, e.g. the MATCH TYPE list:
+# "A,DOWN,DOWN,A,A" = TRIPLE THREAT > NORMAL); -RowKey RB / LB, pressed -RbPresses times.
 $port = Split-Path $PSScriptRoot -Parent; $runs = Join-Path $port "runs"
 $s = Join-Path $PSScriptRoot "lim_session.ps1"
 $py = "C:\Users\Ranger\AppData\Local\Programs\Python\Python311\python.exe"
@@ -40,7 +42,8 @@ try {
     # host: MATCH -> PLAYER MATCH -> CREATE SESSION, the PORT RULES row, CONTINUE
     In "" @("press A", "wait 2500", "press DOWN", "wait 800", "press A", "wait 2500", "press DOWN", "wait 700", "press DOWN", "wait 700", "press A", "wait 3000")
     Start-Sleep 16
-    foreach ($i in 1..$RbPresses) { In "" @("press RB", "wait 1200") }
+    if ($MatchKeys) { foreach ($k in ($MatchKeys -split ",")) { In "" @("press $k 300", "wait 2500") }; Start-Sleep 6; Shot "" "$Name`_host_type" }
+    foreach ($i in 1..$RbPresses) { In "" @("press $RowKey", "wait 1200") }
     Start-Sleep 4; Shot "" "$Name`_host_cs"
     In "" @("press DOWN", "wait 800", "press DOWN", "wait 800", "press DOWN", "wait 800", "press DOWN", "wait 800", "press DOWN", "wait 800", "press A", "wait 3000")
     Start-Sleep 16; Shot "" "$Name`_host_lobby"
@@ -53,7 +56,7 @@ try {
     # both pick (the joiner moves to 2P first); the match starts
     In "" @("press A", "wait 6000", "press A", "wait 3000", "press A", "wait 6000")
     In "2" @("press RIGHT", "wait 2000", "press A", "wait 6000", "press A", "wait 3000", "press A", "wait 6000")
-    foreach ($i in 1..3) { Start-Sleep 25; Shot "" "$Name`_host_match$i"; Shot "2" "$Name`_join_match$i" }
+    foreach ($i in 1..$Shots) { Start-Sleep 25; Shot "" "$Name`_host_match$i"; Shot "2" "$Name`_join_match$i" }
 } finally {
     & $s stop | Out-Null; & $s stop -Slot 2 | Out-Null
     Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
@@ -61,6 +64,6 @@ try {
 }
 foreach ($log in "$Name`_host", "$Name`_join") {
     "--- $log"
-    Select-String -Path (Join-Path $runs "$log.log") -Pattern "online rules|port rules|p2p: session|joined|weapons|crash|access violation" -ErrorAction SilentlyContinue |
+    Select-String -Path (Join-Path $runs "$log.log") -Pattern "online rules|port rules|online cpu|p2p: session|joined|weapons|crash|access violation|match: rule" -ErrorAction SilentlyContinue |
         Select-Object -Last 25 | ForEach-Object { $_.Line.Substring([math]::Min(48, $_.Line.Length)) }
 }
