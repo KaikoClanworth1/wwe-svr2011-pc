@@ -122,6 +122,7 @@ still being tested.
 - **Mystery Opponent**: once you pick your superstar the CPU's pick locks by itself and shows only a "?" on its panel; the opponent stays hidden on the VS screen until the entrance.
 
 ### Fixes
+- **Road to WrestleMania VS. UNDERTAKER** accepts downloaded Created Superstars (the game only allowed ones made on that profile).
 - **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start.
 - **Highlight reel clip save**: saving a video clip mid-match with a full memory pool is cancelled with a message instead of crashing.
 - **Sabu**: his top-rope corner moves no longer lift the opponent a body-height above the turnbuckle (2011's own seated moves); the SvR 2010 converter keeps corner slots for seated moves.
