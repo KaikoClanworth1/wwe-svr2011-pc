@@ -65,7 +65,12 @@ def bpe_decode(data):
     return bytes(out)
 
 
-_CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'out', 'modmaker', 'svrmod.exe')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# svrmod.exe beside this file (the player's "Mod Maker Tools" folder), else the
+# developer build (modmaker/build_cli.sh -> port/out/modmaker)
+_CLI = next((p for p in (os.path.join(_HERE, 'svrmod.exe'),
+                         os.path.join(_HERE, '..', 'out', 'modmaker', 'svrmod.exe')) if os.path.isfile(p)),
+            os.path.join(_HERE, 'svrmod.exe'))
 
 
 def bpe_pack(raw):

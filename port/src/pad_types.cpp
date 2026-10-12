@@ -127,6 +127,26 @@ uint32_t PadTypesInUse() {
 
 uint32_t PadTypesVersion() { return g_version.load(std::memory_order_relaxed); }
 
+// Android lists phone parts that report joystick / D-pad input as game
+// controllers on some phones (fingerprint readers - uinput-fpc, goodix -
+// power keys, touch panels): one of those as player 1's pad, merged
+// with the touch controls, can hold a stick or a button and the game plays
+// by itself (B18). Those are left out by name.
+static bool NotAController(const std::string& name) {
+#if defined(__ANDROID__)
+  std::string n = name;
+  for (char& c : n) c = char(std::tolower(static_cast<unsigned char>(c)));
+  static const char* kParts[] = {"uinput", "fingerprint", "fpc", "goodix", "fortsense", "silead", "egistec",
+                                 "chipone", "cdfinger", "gpio", "pwrkey", "qpnp", "sensor", "touch",
+                                 "stylus", "e-pen"};
+  for (const char* p : kParts)
+    if (n.find(p) != std::string::npos) return true;
+#else
+  (void)name;
+#endif
+  return false;
+}
+
 void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
   for (auto& u : users_) u.clear();
   std::array<PadType, kMaxPlayers> types{};
@@ -142,6 +162,14 @@ void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
     const char* v = std::getenv("SVR2011_TEST_SCRIPT_PLAYER");
     return v ? uint32_t(std::atoi(v)) : 0u;
   }();
+  // (a left-out phone part doesn't take a player's number: the controllers
+  // after it move up)
+  auto ordinal = [&devices](const DeviceInfo& d) {
+    uint32_t skipped = 0;
+    for (const DeviceInfo& o : devices)
+      if (!o.synthetic && o.ordinal < d.ordinal && NotAController(o.name)) ++skipped;
+    return d.ordinal - skipped;
+  };
   for (const DeviceInfo& d : devices) {
     if (script_player >= 1 && script_player <= kMaxPlayers && d.name == "Script") {
       users_[script_player - 1].push_back(d.id);
@@ -151,10 +179,16 @@ void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
       keyboard = &d;
     } else if (d.synthetic) {
       shared.push_back(&d);
-    } else if (d.ordinal < kMaxPlayers) {
-      users_[d.ordinal].push_back(d.id);
-      if (types[d.ordinal] == PadType::kNone) types[d.ordinal] = TypeOf(d);
-      next_free = std::max(next_free, d.ordinal + 1);
+    } else if (NotAController(d.name)) {
+      static std::string told;  // (once per name)
+      if (told.find("|" + d.name + "|") == std::string::npos) {
+        told += "|" + d.name + "|";
+        REXLOG_WARN("[svr2011] players: '{}' left out - a phone part, not a game controller", d.name);
+      }
+    } else if (const uint32_t o = ordinal(d); o < kMaxPlayers) {
+      users_[o].push_back(d.id);
+      if (types[o] == PadType::kNone) types[o] = TypeOf(d);
+      next_free = std::max(next_free, o + 1);
     }
   }
   // The keyboard: the player after the controllers (player 1 with none; the
