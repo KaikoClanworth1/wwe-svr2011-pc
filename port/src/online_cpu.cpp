@@ -216,6 +216,16 @@ REX_HOOK_RAW(sub_824E6510) {
     static uint32_t last_state = 0xFFFFFFFF;
     if (LogOn() && state != last_state) REXLOG_INFO("online cpu: lobby state {} (cursor slot {})", state, j);
     last_state = state;
+    if (LogOn()) {  // (the slot records when one changes: state, net player, superstar)
+      static std::string last;
+      std::string now = fmt::format("joined {} me {}:", Rd32(base + L + 24), Rd32(base + L + 20));
+      for (uint32_t k = 0; k < SlotCount(base, L); ++k) {
+        const uint8_t* rec = Record(base, L, k);
+        now += fmt::format(" [{} {} {:08X} {}]", k, Rd32(rec), Rd32(rec + 4), Rd32(rec + 136));
+      }
+      if (now != last) REXLOG_INFO("online cpu: slots {}", now);
+      last = now;
+    }
     static bool y_down = false;
     const bool y = (svr2011::OnlineRawPad() & 0x8000) != 0;  // (XINPUT_GAMEPAD_Y)
     const bool pressed = y && !y_down;
