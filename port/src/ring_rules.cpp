@@ -273,7 +273,7 @@ void TestRun(PPCContext& ctx, uint8_t* base, uint32_t f) {
   const auto now = std::chrono::steady_clock::now();
   if (now - last < std::chrono::seconds(6)) return;
   const uint32_t m = Rd32(base + f + 212);
-  if (m != 0 && m != 20) return;
+  if (m != 0 && m != 20 && m != 20500) return;  // (20500: standing backstage)
   last = now;
   const auto saved = ctx;
   ctx.r3.u64 = f;

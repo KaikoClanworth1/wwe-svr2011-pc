@@ -49,6 +49,23 @@ struct BackstageRow {
   float camera = 0;  // camera=<units>: the match camera's farthest distance (0 = the game's)
   float camera_height = 0;  // camera_height=<units>: the match camera at least that high (0 = the game's)
   int area = -1;
+  // start=<x>,<z>,<facing deg>[,<y>];...: where the fighters start (person 1, 2, ...), in place of the room's
+  struct Start {
+    float x, z, facing, y;
+  };
+  std::vector<Start> starts;
+  // weapons=<model>,<x>,<y>,<z>,<yaw deg>;...: the weapons lying in the area at the bell, in place of
+  // the room's (2011 weapon model numbers, world coordinates)
+  struct Weapon {
+    int model;
+    float x, y, z, yaw;
+  };
+  std::vector<Weapon> weapons;
+  std::string dir;  // the mod's folder (full path)
+  // load_weapons=<model>,...: weapon models loaded for the match besides the area's own (the
+  // game loads a hard-coded set per area; weapons= only places them) - for weapons made later
+  std::vector<int> load_weapons;
+  int hctp = 0;     // hctp=<room>: a SmackDown! Here Comes the Pain room (hctp_room.cpp: climbing etc.)
 };
 const std::vector<BackstageRow>& BackstageRows();
 // The bg78 of row i for the next match (-1: the usual one).

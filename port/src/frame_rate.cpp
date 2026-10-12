@@ -433,6 +433,7 @@ REX_HOOK_RAW(sub_8269D768) {
   __imp__sub_8269D768(ctx, base);
   TestMatchTime(base);
   svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)
+  svr2011::HctpRoomUpdate(ctx, base);    // (match_types.h: an HCTP backstage room's gimmicks)
   svr2011::JukeboxUpdate(ctx, base);     // (jukebox.h: a song stopped, skipped or previewed)
   // An armed match start (ArmMatchStart): once the match's frame count has
   // gone up 30 updates running.

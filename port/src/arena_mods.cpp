@@ -835,8 +835,9 @@ void LoadBackstage() {
   for (const auto& d : dirs) {
     BackstageRow r;
     r.file = fs::relative(d / "arena.pac", g_game, ec).generic_string();
+    r.dir = d.string();  // (full path)
     if (FILE* t = std::fopen((d / "manifest.txt").string().c_str(), "rb")) {
-      char line[512];
+      char line[4096];
       while (std::fgets(line, sizeof line, t)) {
         std::string l = line;
         while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
@@ -847,6 +848,37 @@ void LoadBackstage() {
         if (l.rfind("camera_height=", 0) == 0) r.camera_height = float(std::atof(l.c_str() + 14));
         if (l.rfind("box=", 0) == 0)
           r.has_box = std::sscanf(l.c_str() + 4, "%f,%f,%f,%f", &r.box[0], &r.box[1], &r.box[2], &r.box[3]) == 4;
+        if (l.rfind("hctp=", 0) == 0) r.hctp = std::atoi(l.c_str() + 5);
+        if (l.rfind("load_weapons=", 0) == 0) {
+          std::string v = l.substr(13);
+          for (size_t at = 0; at < v.size();) {
+            const size_t end = std::min(v.find(',', at), v.size());
+            if (const int m = std::atoi(v.substr(at, end - at).c_str()); m > 0) r.load_weapons.push_back(m);
+            at = end + 1;
+          }
+        }
+        if (l.rfind("start=", 0) == 0) {
+          size_t at = 6;
+          while (at < l.size()) {
+            const size_t end = std::min(l.find(';', at), l.size());
+            BackstageRow::Start s{};
+            if (std::sscanf(l.substr(at, end - at).c_str(), "%f,%f,%f,%f", &s.x, &s.z, &s.facing, &s.y) >= 3)
+              r.starts.push_back(s);
+            at = end + 1;
+          }
+        }
+        if (l.rfind("weapons=", 0) == 0) {
+          size_t at = 8;
+          while (at < l.size()) {
+            const size_t end = std::min(l.find(';', at), l.size());
+            BackstageRow::Weapon w{};
+            if (std::sscanf(l.substr(at, end - at).c_str(), "%d,%f,%f,%f,%f", &w.model, &w.x, &w.y, &w.z, &w.yaw) ==
+                    5 &&
+                w.model > 0 && w.model < 256)
+              r.weapons.push_back(w);
+            at = end + 1;
+          }
+        }
       }
       std::fclose(t);
     }

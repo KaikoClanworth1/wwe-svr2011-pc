@@ -1185,6 +1185,38 @@ REX_HOOK_RAW(sub_822AD738) {
   const uint32_t placer = ctx.r3.u32;
   svr2011::SetMatchLoading(false);  // (its loading screen is up)
   LogMatch(ctx, base, ctx.r4.u32);
+  // A backstage mod's own area with start=: its fighters' places (x, z,
+  // facing; tenths, y 0) for the match, the room's table back after.
+  if (placer && !Rd32(base + kStoryContext) && svr2011::g_active_row >= 0 &&
+      size_t(svr2011::g_active_row) < svr2011::BackstageRows().size()) {
+    const auto& row = svr2011::BackstageRows()[size_t(svr2011::g_active_row)];
+    const uint32_t rule = ctx.r4.u32;
+    static int checks = 0;
+    if (checks++ < 6)
+      REXLOG_INFO("match types: start places? rule {:02X} area {} starts {}", rule, row.area, row.starts.size());
+    if (!row.starts.empty() && rule == kBackstage1v1FirstRule + uint32_t(row.area)) {
+      uint8_t* people = base + Rd32(base + placer + 4) + rule * 88 + 4;
+      const size_t n = std::min<size_t>(row.starts.size(), 7);
+      uint8_t saved[7 * 12];
+      std::memcpy(saved, people, n * 12);
+      for (size_t i = 0; i < n; ++i) {
+        uint8_t* p = people + i * 12;
+        const auto put = [&](int at, float v) {
+          const int16_t t = int16_t(std::lround(v * 10.0f));
+          p[at] = uint8_t(uint16_t(t) >> 8), p[at + 1] = uint8_t(t & 0xFF);
+        };
+        put(4, row.starts[i].x), put(6, row.starts[i].y), put(8, row.starts[i].z), put(10, row.starts[i].facing);
+      }
+      static int logged = -1;
+      if (logged != svr2011::g_active_row) {
+        logged = svr2011::g_active_row;
+        REXLOG_INFO("match types: '{}' starts at ({:.0f}, {:.0f})...", row.label, row.starts[0].x, row.starts[0].z);
+      }
+      __imp__sub_822AD738(ctx, base);
+      std::memcpy(people, saved, n * 12);
+      return;
+    }
+  }
   if (ctx.r4.u32 != kLumberjack || !placer || Rd32(base + kStoryContext)) {
     __imp__sub_822AD738(ctx, base);
     return;
@@ -1491,9 +1523,44 @@ void RestoreWeapons(uint8_t* base) {
 }
 
 // Our list in (a WEAPONS EVERYWHERE match), or the game's back.
+uint32_t g_row_records = 0, g_row_records_row = ~0u, g_row_records_n = 0;  // guest: a backstage row's list
+
+// A backstage mod's own area with weapons=: its list for the area's rule.
+bool ApplyRowWeapons(uint8_t* base, uint32_t rule) {
+  if (svr2011::g_active_row < 0 || size_t(svr2011::g_active_row) >= svr2011::BackstageRows().size() || !g_memory ||
+      Rd32(base + kStoryContext))
+    return false;
+  const auto& row = svr2011::BackstageRows()[size_t(svr2011::g_active_row)];
+  if (row.weapons.empty() || rule != kBackstage1v1FirstRule + uint32_t(row.area)) return false;
+  const uint32_t entry = WeaponEntry(base, rule);
+  if (!entry) return false;
+  const uint32_t n = uint32_t(std::min<size_t>(row.weapons.size(), 32));
+  if (g_row_records_row != uint32_t(svr2011::g_active_row)) {
+    if (!g_row_records) g_row_records = g_memory->SystemHeapAlloc(32 * 28);
+    if (!g_row_records) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+      uint8_t* r = base + g_row_records + i * 28;
+      const auto& w = row.weapons[i];
+      WrF(r, w.x), WrF(r + 4, w.y), WrF(r + 8, w.z);
+      WrF(r + 12, 0.f), WrF(r + 16, w.yaw), WrF(r + 20, 0.f);
+      r[24] = uint8_t(15010 >> 8), r[25] = uint8_t(15010 & 0xFF);  // (motion: lying)
+      r[26] = 1;                                                    // (on the floor)
+      r[27] = uint8_t(w.model);
+    }
+    g_row_records_row = uint32_t(svr2011::g_active_row);
+    g_row_records_n = n;
+    REXLOG_INFO("match types: '{}' brings {} weapons", row.label, n);
+  }
+  g_swapped = {entry, Rd32(base + entry), Rd32(base + entry + 4)};
+  Wr32(base + entry, g_row_records_n);
+  Wr32(base + entry + 4, g_row_records);
+  return true;
+}
+
 void ApplyWeapons(uint8_t* base) {
   RestoreWeapons(base);
   const uint32_t rule = base[0x82E3DE00];
+  if (ApplyRowWeapons(base, rule)) return;
   if (!g_weapons || rule < kExtremeFirst || rule > kExtremeLast || !g_memory) return;
   const uint32_t entry = WeaponEntry(base, rule);
   if (!entry) {
@@ -1538,7 +1605,39 @@ REX_HOOK_RAW(sub_8227D130) {
   RestoreWeapons(base);
 }
 
+// The weapon models a match loads: sub_82301148(list) fills the wanted-model
+// list {s32 count; s32 ids[72]} with a hard-coded set per area (parking: 65,
+// 63, 17); 45010 (weapons=) only places them. A backstage mod row's weapon
+// models and load_weapons= join the list (sub_823010F0(list, id) appends, no
+// duplicates) - weapons the room makes later (sub_821D2070) need theirs loaded.
+REX_EXTERN(__imp__sub_82301148);
+REX_HOOK_RAW(sub_82301148) {
+  const uint32_t list = ctx.r3.u32;
+  __imp__sub_82301148(ctx, base);
+  const int r = svr2011::g_active_row;
+  if (!list || r < 0 || size_t(r) >= svr2011::BackstageRows().size() || Rd32(base + kStoryContext)) return;
+  const auto& row = svr2011::BackstageRows()[size_t(r)];
+  std::vector<int> models = row.load_weapons;
+  for (const auto& w : row.weapons) models.push_back(w.model);
+  if (models.empty()) return;
+  const auto saved = ctx;
+  for (int m : models) {
+    if (int32_t(Rd32(base + list)) >= 47) break;  // (48 loaded-model slots)
+    ctx.r3.u64 = list;
+    ctx.r4.u64 = uint32_t(m);
+    sub_823010F0(ctx, base);
+  }
+  ctx = saved;
+  REXLOG_INFO("match types: '{}' loads weapon models ({} wanted now)", row.label, int32_t(Rd32(base + list)));
+}
+
 namespace svr2011 {
+
+uint32_t FighterInput(uint32_t fighter) {
+  for (const Control& c : g_controls)
+    if (c.fighter == fighter) return c.input;
+  return 0;
+}
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {

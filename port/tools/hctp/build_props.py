@@ -1,0 +1,212 @@
+"""Room 30 props + climb spots + converted motions -> GMGB package (78H3) for the row mod."""
+import math
+import struct
+import sys
+
+import numpy as np
+from PIL import Image
+
+sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+import svr08_stage as s8
+import hctp_props, hctp_gimmick, hctp_fake56, hctp2jboy, yobj
+
+STAGE = r"D:\Xbox Games Ports\HCTP Extract\_unpacked\bg\stg_0030"
+BG78 = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\bg\bg78.pac"
+GM = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\gm.pac"
+BANK = 'out/mot/bank_h3.bin'
+DX, DZ = 180.0, -440.0
+CLIMB_KEYS = {0xFB: 12541, 0xFD: 12542, 0xF4: 12503, 0xDF: 12503}
+# props' rest poses (HCTP: idle acts, or the first frame of their fall / open act)
+REST = {1243: 12532, 1234: 12523, 1264: 12531, 1232: 12558, 1252: 12556, 1236: 12555, 1233: 12559}
+STILL = {1262, 1235}
+RUN_KEYS = {0xFB: 12504, 0xFD: 12544, 0xF4: 12503, 0xDF: 12503}
+
+
+def to2011(p):
+    return np.array([-p[0] + DX, p[1], -p[2] + DZ])
+
+
+def climb_spots(hmd_bytes):
+    """T22 walk-into-wall spots, one per climbable face (pairs of triangles in one plane)."""
+    n = struct.unpack_from('<I', hmd_bytes, 4)[0]
+    faces = {}
+    for k in range(n):
+        attr = struct.unpack_from('<I', hmd_bytes, 8 + 96 * k + 92)[0] & 0xFF
+        if attr not in CLIMB_KEYS:
+            continue
+        r = np.array(struct.unpack_from('<24f', hmd_bytes, 8 + 96 * k))
+        C = np.array(s8.tri_corners(r))
+        nrm = np.cross(C[1] - C[0], C[2] - C[0])
+        nrm /= np.linalg.norm(nrm)
+        key = (attr, tuple(np.round(nrm, 2)), round(float(np.dot(nrm, C[0])), 1))
+        faces.setdefault(key, []).append(C)
+    out = []
+    for (attr, nrm, _), tris in faces.items():
+        P = np.concatenate(tris)
+        c = (P.min(0) + P.max(0)) / 2
+        w = P.max(0) - P.min(0)
+        bottom = P[:, 1].max()                       # y down: the face's foot
+        pos = to2011((c[0], bottom, c[2]))
+        f = np.array([-nrm[0], -nrm[2]])            # the normal turned by the half turn: (-nx, -nz)
+        ry = math.atan2(f[0], f[1]) + math.pi     # (2011 faces the spot's ry + pi: a climb plays toward the wall)
+        ry = (ry + math.pi) % (2 * math.pi) - math.pi
+        out.append(dict(type=22, words=[0, max(9.0, float(max(w[0], w[2])) / 2 + 2), CLIMB_KEYS[attr], 0],
+                        pos=tuple(float(v) for v in pos), ry=ry, attr=attr))
+        out.append(dict(type=21, words=[0, out[-1]['words'][1], RUN_KEYS[attr], 2, 99, 0, 0, 0],
+                        pos=out[-1]['pos'], ry=ry, attr=attr))
+    return out
+
+
+_, _, _, _, e78 = s8.stage(BG78)
+tmpl = hctp2jboy.template({i: s8.unpack(b) for i, b in e78})
+plist = hctp_props.props(STAGE)
+models = {}
+import os
+os.makedirs('out/props', exist_ok=True)
+import jboy
+for pr in plist:
+    for mid in pr['models']:
+        if mid in models:
+            continue
+        M = yobj.read(open(f'{STAGE}/50101/{mid:05d}.yobj', 'rb').read())
+        # (a model that never plays a key is drawn with its nodes' own
+        # transforms: those that don't move get none - 1262 the cart body,
+        # 1235 the button panel)
+        J = hctp2jboy.convert(M, tmpl, keep_nodes=mid not in STILL)
+        path = f'out/props/{mid}.jboy'
+        open(path, 'wb').write(jboy.write(J))
+        models[mid] = (path, J.textures)
+# steam jets (HCTP particles 32 / 34: model 1237 zyouki puffs, hit volume along local +z):
+# a few zyouki quads per jet, moved along it by hctp_room while the valve has it on
+STEAM = {32: (210, 2058), 34: (215, 2068)}   # particle -> (valve, hit volume)
+PUFFS = 5
+steam_lines, puffs = [], []
+M = yobj.read(open(f'{STAGE}/50101/01237.yobj', 'rb').read())
+J = hctp2jboy.convert(M, tmpl, keep_nodes=False)
+if os.environ.get('HCTP_PUFF_TEX'):   # (debug: the puff with another texture)
+    J.textures = [os.environ['HCTP_PUFF_TEX']]
+open('out/props/1237.jboy', 'wb').write(jboy.write(J))
+models[1237] = ('out/props/1237.jboy', J.textures)
+for _, t, ppos, pry in hctp_props.placements(STAGE):
+    if t not in STEAM:
+        continue
+    valve, coll = STEAM[t]
+    R = [np.array(r) for r in s8.hmd_read(open(f'{STAGE}/50101/{coll:05d}.hmd', 'rb').read())]
+    C = np.array([c for r in R for c in s8.tri_corners(r)])
+    o = to2011(ppos)
+    d = (-math.sin(pry), -math.cos(pry))           # local +z, mirrored into 2011
+    steam_lines.append(f"steam {t} {valve} {o[0]:.2f} {o[1]:.2f} {o[2]:.2f} {d[0]:.4f} {d[1]:.4f} "
+                       f"{C[:, 2].max():.1f} {C[:, 0].max():.1f} {C[:, 1].max():.1f}")
+    for k in range(PUFFS):
+        puffs.append((t, k, o))
+tb = yobj.texbank(open(STAGE + r'\00200.bin', 'rb').read())
+tex = {}
+for mid, (path, tl) in models.items():
+    for t in tl:
+        if t not in tex:
+            tex[t] = hctp_fake56.dds(tb[t], hctp_fake56.alpha_kind(tb[t]))
+# the steam puff: 2011 props draw with an alpha cut-off, which drops all of
+# the soft zyouki smoke (alpha < 128 almost everywhere) - its alpha becomes
+# an ordered dither (a texel is solid as often as it was opaque), white-ish
+z = tb['zyouki'].astype(np.float32)
+h0, w0 = z.shape[:2]
+big = np.array(Image.fromarray(tb['zyouki'], 'RGBA').resize((w0 * 4, h0 * 4), Image.BILINEAR)).astype(np.float32)
+bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16.0
+thr = np.tile(bayer, (big.shape[0] // 4, big.shape[1] // 4))
+a = np.clip(big[..., 3] / 255.0 * 1.8, 0, 1)
+big[..., 3] = np.where(a > thr, 255, 0)
+big[..., :3] = np.clip(big[..., :3] * 0.5 + 128, 0, 255)
+tex['zyouki'] = hctp_fake56.dds(big.astype(np.uint8), 'cut')
+spec = []
+for pr in plist:
+    pos, a = hctp_props.to_2011(pr['pos'], pr['ry'], DX, DZ)
+    for mid in pr['models']:
+        spec.append(dict(model=models[mid][0], pos=pos, ry=a, note=f"{pr['id']} m{mid}", idle=REST.get(mid, 0)))
+# climb spots from the room collision with props (HCTP coordinates, original attributes)
+hmd = open(STAGE + r'\00999.hmd', 'rb').read()
+extra = hctp_props.world_collision(STAGE, plist)
+hmd = s8.hmd_write(s8.hmd_read(hmd) + extra)
+spots = climb_spots(hmd)
+for s in spots:
+    print(f"T{s['type']} attr {s['attr']:#x} key {s['words'][2]} r {s['words'][1]:.1f} at "
+          f"({s['pos'][0]:.1f}, {s['pos'][1]:.1f}, {s['pos'][2]:.1f}) ry {s['ry']:.2f}")
+bank = open(BANK, 'rb').read()
+# (the puffs first: objects past the first 20 weren't drawn)
+spec = [dict(model=models[1237][0], pos=tuple(float(v) for v in o), ry=0.0, note=f'steam {t} puff {k}')
+        for t, k, o in puffs] + spec
+hctp_gimmick.build(GM, 'mod_row/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
+                   records=spots, bank=bank)
+
+
+# ------------------------------------------------------------ hctp.txt (hctp_room.cpp's room data)
+# One line per item, space separated, 2011 world coordinates (y down), yaw in radians:
+#   prop <name> <hctp id> <kind> <attr byte> <x> <y> <z> <ry> recs=<record ids,...> tris=<HMD 1004 indices,...>
+#   weapon <hctp id> <model> <x> <y> <z>         (where a stack's weapon appears)
+#   key <key> <frames>                           (converted motions hctp_room plays)
+KIND = {89: 'stack', 51: 'throw', 47: 'wall', 46: 'roof', 37: 'switch', 39: 'valve', 44: 'shutter',
+        54: 'cart', 49: 'lamp', 36: 'crate'}
+# HCTP weapon -> 2011 (WPBS): cardboard box 56 -> 17 (78_obj_cbox), barrel 57 -> trash can 63,
+# lead pipe 148 -> kendo stick 88 (no pipe in 2011), trash can 9 -> 63
+WEAPON_2011 = {56: 17, 57: 63, 148: 88, 9: 63}
+tags = hctp_props.gobj_tags(1)
+
+
+def final_index_map(n):
+    """HMD record k -> index after stage_wrap's dummies (no index may end in 0xFF)."""
+    out, m = 0, []
+    for k in range(n):
+        while (out & 0xFF) == 0xFF:
+            out += 1
+        m.append(out)
+        out += 1
+    return m
+
+
+n0 = struct.unpack_from('<I', open(STAGE + r'\00999.hmd', 'rb').read(), 4)[0]
+lists = hctp_props.world_collision_lists(STAGE, plist)
+fmap = final_index_map(n0 + sum(len(x) for x in lists))
+lines, at, rid = [], n0, 100 + len(puffs)
+for i, pr in enumerate(plist):
+    kind = KIND.get(pr['kind'], f"k{pr['kind']}")
+    recs = list(range(rid, rid + len(pr['models'])))
+    rid += len(pr['models'])
+    tris = [fmap[k] for k in range(at, at + len(lists[i]))]
+    at += len(lists[i])
+    pos, a = hctp_props.to_2011(pr['pos'], pr['ry'], DX, DZ)
+    box = ''
+    if lists[i]:                   # the collision's 2011 footprint: x0,x1,y0,y1,z0,z1
+        P = np.array([to2011(c) for r in lists[i] for c in s8.tri_corners(np.array(r))])
+        lo, hi = P.min(0), P.max(0)
+        box = f" box={lo[0]:.1f},{hi[0]:.1f},{lo[1]:.1f},{hi[1]:.1f},{lo[2]:.1f},{hi[2]:.1f}"
+    if kind in ('switch', 'valve'):  # the press zone (CGmSwitch p0 / valve p0: an HMD shape, not solid)
+        zf = f"{STAGE}/50101/{int(tags[pr['id']][1][1]):05d}.hmd"
+        if os.path.exists(zf):
+            R = hctp_props.rot_y(pr['ry'])
+            P = np.array([to2011(c) for r in s8.hmd_read(open(zf, 'rb').read())
+                          for c in s8.tri_corners(np.array(s8.hmd_move(r, R, np.array(pr['pos']))))])
+            lo, hi = P.min(0), P.max(0)
+            box += f" zone={lo[0]:.1f},{hi[0]:.1f},{lo[1]:.1f},{hi[1]:.1f},{lo[2]:.1f},{hi[2]:.1f}"
+    lines.append(f"prop {pr['id']}_{i} {pr['id']} {kind} {0xA0 + i} {pos[0]:.2f} {pos[1]:.2f} {pos[2]:.2f} {a:.4f} "
+                 f"recs={','.join(map(str, recs))} tris={','.join(map(str, tris))}{box}")
+    t = tags[pr['id']][1]
+    if kind == 'stack':            # gmAttackObjAndWeapon: p4 (param 5) = the GmWeaponPosRot tag
+        ws = tags.get(int(t[5]))
+        if ws:
+            w = ws[1]              # [0, weapon, act, 0, 0, x, y, z, ...]; upper-level y is stored +30
+            wy = -abs(w[6])
+            p2, _ = hctp_props.to_2011((w[5], wy, w[7]), 0.0, DX, DZ)
+            lines.append(f"weapon {pr['id']} {WEAPON_2011.get(int(w[1]), 63)} {p2[0]:.2f} {p2[1]:.2f} {p2[2]:.2f}")
+    if kind == 'throw' and len(t) > 9 and t[9] > 0:   # CGmThrowObject p8 (param 9) = weapon after p10 frames
+        lines.append(f"weapon {pr['id']} {WEAPON_2011.get(int(t[9]), 88)} {pos[0]:.2f} {pos[1]:.2f} {pos[2]:.2f}")
+import svr08_gimmick as G
+T, ents, _ = G.bank_parse(bank)
+frames = {}
+for e in ents:
+    if 12500 <= e[2] < 12600:
+        frames[e[2]] = max(frames.get(e[2], 0), e[4])
+lines += steam_lines
+for k, (t, j, o) in enumerate(puffs):  # (the first records, in spec order)
+    lines.append(f"prop steam{t}_{j} {t} puff 0 {o[0]:.2f} {o[1]:.2f} {o[2]:.2f} 0 recs={100 + k} tris=")
+lines += [f"key {k} {v}" for k, v in sorted(frames.items())]
+open('mod_row/hctp.txt', 'w').write('\n'.join(lines) + '\n')
+print(f'hctp.txt: {len(lines)} lines')
