@@ -550,6 +550,53 @@ REX_HOOK_RAW(sub_82904D50) {
   ctx.r3.u64 = 0x1F;  // ERROR_GEN_FAILURE
 }
 
+// Test aid (SVR2011_TEST_IMG_LOG): a superstar picture asked for
+// (sub_8273A270(holder, desc): desc +0 the id, +4 the kind - SSFA/SSFB/SSFC -,
+// +8 the attire).
+REX_EXTERN(__imp__sub_8273A270);
+REX_HOOK_RAW(sub_8273A270) {
+  static const bool log = std::getenv("SVR2011_TEST_IMG_LOG") != nullptr;
+  if (log && ctx.r4.u32) {
+    auto rd = [base](uint32_t a) {
+      const uint8_t* p = base + a;
+      return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    };
+    REXLOG_INFO("online: superstar picture id {} kind {} attire {} (lr {:08X})", int32_t(rd(ctx.r4.u32)),
+                rd(ctx.r4.u32 + 4), int32_t(rd(ctx.r4.u32 + 8)), uint32_t(ctx.lr));
+  }
+  __imp__sub_8273A270(ctx, base);
+}
+
+// Test aid (SVR2011_TEST_IMG_LOG): a picture holder told what to show
+// (sub_8273BB60(holder, desc): desc +0 the id - a Created Superstar < 50 gets
+// a CAW picture object, others the SSFC loader -, +4, +8, +12).
+REX_EXTERN(__imp__sub_8273BB60);
+REX_HOOK_RAW(sub_8273BB60) {
+  static const bool log = std::getenv("SVR2011_TEST_IMG_LOG") != nullptr;
+  if (log && ctx.r4.u32) {
+    auto rd = [base](uint32_t a) {
+      const uint8_t* p = base + a;
+      return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    };
+    REXLOG_INFO("online: picture holder {:08X} id {} {} {} {} (lr {:08X})", ctx.r3.u32, int32_t(rd(ctx.r4.u32)),
+                int32_t(rd(ctx.r4.u32 + 4)), int32_t(rd(ctx.r4.u32 + 8)), int32_t(rd(ctx.r4.u32 + 12)),
+                uint32_t(ctx.lr));
+  }
+  __imp__sub_8273BB60(ctx, base);
+}
+
+// Test aid (SVR2011_TEST_IMG_LOG): the pictures the menus load by name
+// (sub_826A2FA8(image, "/DSC1/R123", ...), 16 characters at most).
+REX_EXTERN(__imp__sub_826A2FA8);
+REX_HOOK_RAW(sub_826A2FA8) {
+  static const bool log = std::getenv("SVR2011_TEST_IMG_LOG") != nullptr;
+  if (log && ctx.r4.u32) {
+    const char* p = reinterpret_cast<const char*>(base + ctx.r4.u32);
+    REXLOG_INFO("online: picture {:08X} <- {} (lr {:08X})", ctx.r3.u32, std::string(p, strnlen(p, 32)), uint32_t(ctx.lr));
+  }
+  __imp__sub_826A2FA8(ctx, base);
+}
+
 // A lobby chat message that arrived (sub_828A7C18(chat, msg): msg +0 the
 // sender, +8 the text, UTF-8; message kind 4096, sub_828A7E40): the line
 // "name : text" is made in a 92-byte buffer (sub_828A7B38 adds it). The

@@ -579,3 +579,48 @@ REX_HOOK_RAW(sub_828A6078) {
   if (g_edit_msg && int(j) == g_edit) Wr32(Record(base, L, j), kCpuState);
 }
 
+// The lobby's superstar pictures - each slot's card and the SUPERSTAR INFO
+// panel - are set by sub_8251DB28(item, panel): item +0 the slot (-1: the
+// panel), +8 the superstar, +12 the attire; by its kind (sub_828B78C0: 1
+// stock, 2 an added one, 3 a Created Superstar 0..49) it asks for the picture
+// (sub_8251BA48(slot + 1, {id, 2}, {attire + 10, 0}, 0): the picture holder
+// then shows it - a Created Superstar's through its own picture object, as
+// the superstar list does) - but not for a Created Superstar: its picture
+// was turned off (panel +8 -> +22724 = 0) and the card kept the vacant
+// slot's silhouette. Here this player's own Created Superstar is asked for
+// as the stock ones are. (Another player's is one of his slots, not ours:
+// left as the game has it.)
+REX_EXTERN(__imp__sub_8251DB28);
+REX_HOOK_RAW(sub_8251DB28) {
+  const uint32_t item = ctx.r3.u32, ctl = ctx.r4.u32;
+  const PPCContext saved = ctx;
+  __imp__sub_8251DB28(ctx, base);
+  if (!item || !ctl) return;
+  const int32_t slot = int32_t(Rd32(base + item));
+  const uint32_t id = Rd32(base + item + 8), attire = Rd32(base + item + 12);
+  const uint32_t L = Lobby(base);
+  if (id >= 50 || !L || slot < -1 || slot >= 6) return;
+  const uint32_t me = Rd32(base + L + 20);  // (this machine's slot)
+  bool mine = false;
+  if (slot >= 0) {
+    mine = uint32_t(slot) == me;
+  } else {  // (the panel: whoever the cursor is on - ours if only our slot has this superstar)
+    bool other = false;
+    for (uint32_t j = 0; j < SlotCount(base, L); ++j) {
+      const uint8_t* rec = Record(base, L, j);
+      if (Rd32(rec) < 5 || IsCpu(rec) || Rd32(rec + 136) != id) continue;
+      (j == me ? mine : other) = true;
+    }
+    mine = mine && !other;
+  }
+  if (LogOn()) REXLOG_INFO("online cpu: picture of slot {}: Created Superstar {}{}", slot, id, mine ? " (ours: shown)" : "");
+  if (!mine) return;
+  PPCContext c = saved;
+  c.r3.u64 = uint32_t(slot + 1);
+  c.r4.u64 = (uint64_t(id) << 32) | 2;
+  c.r5.u64 = uint64_t(attire + 10) << 32;
+  c.r6.u64 = 0;
+  sub_8251BA48(c, base);
+  if (const uint32_t panel = Rd32(base + ctl + 8)) Wr32(base + panel + 22724, 1);
+}
+
