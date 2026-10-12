@@ -45,6 +45,7 @@
 #include "online_net.h"
 #include "graphics_page.h"
 #include "p2p.h"
+#include "script_input.h"
 
 // The game's own Xbox LIVE invite path (it restarts itself to join): off - the
 // restarted game says "a sign-in change has occurred" (see the notes below).
@@ -272,17 +273,21 @@ void Decline(const std::string& from) {
   }).detach();
 }
 
+void RequestInviteWalk(bool rumble, const std::string& from);  // (below: the game walks there)
+
 void Accept(const Invite& invite) {
   const auto info = Unbase64(invite.session);
   if (info.size() != 60) return Say("THAT INVITE IS BROKEN");
   Decline(invite.from);  // (taken: off the list)
   if (!REXCVAR_GET(online_invite_native)) {
-    // (the session first in the game's search, its private slots open to this game)
+    // (the session first in the game's search, its private slots open to this
+    // game; the game is walked there - from a menu now, else once at one)
     P2PExpectInvite(info.data());
     const bool rumble = invite.kind == "Royal Rumble";
-    Say(Upper(invite.from) + "'S SESSION: ONLINE > " + (rumble ? "ROYAL RUMBLE" : "MATCH") +
-        " > PLAYER MATCH > CUSTOM MATCH > SEARCH");
+    Say("TAKING YOU TO " + Upper(invite.from) + "'S SESSION (BACK: STOP)");
+    RequestInviteWalk(rumble, invite.from);
     std::thread([info] { P2PReachHost(info.data()); }).detach();
+    g_toggle = g_open.load();  // (closed: the game takes over)
     return;
   }
   Say("JOINING " + Upper(invite.from) + "'S SESSION...");
@@ -871,11 +876,351 @@ bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load(); 
 
 uint16_t OnlineRawPad() { return g_guest_pad.load(); }
 
+// -- an accepted invite: the game walks the player into the session ----------
+//
+// Accepted anywhere, the invite's session comes first in the game's session
+// search (P2PExpectInvite); then the walk below presses the buttons - on the
+// game's pad reads (OnlineOverlayPad), never the PC's keyboard or mouse - from
+// the main menu (any of its groups: B to the top) or the online menus to
+// ONLINE > MATCH (ROYAL RUMBLE) > PLAYER MATCH > CUSTOM MATCH > SEARCH FOR A
+// MATCH, the first session (the invited one) and JOIN THIS SESSION? YES. In
+// a match, an editor or a session's lobby it waits until the player is back
+// at a menu. BACK on the pad stops it; it gives up after a while on a screen
+// it doesn't know (then the old way: the toast says where to go).
+//
+// Where the cursor is: each menu row has a description (string.pac), looked
+// up once when the cursor moves onto it - the latest of a screen's rows'
+// descriptions is the row. Where the player is: the main-menu object's group
+// (menu_hooks.cpp: < 1000 a main-menu group, else the screen opened from it -
+// 0x5EC the online menus).
+namespace {
+using namespace rex::input;
+enum Desc : uint32_t {
+  kOnMatch = 20218, kOnRumble = 20240, kOnCc = 20241, kOnInfo = 20221, kOnBoards = 20220, kOnShop = 20296,
+  kMaRanked = 20216, kMaPlayer = 20217,
+  kPmQuick = 20200, kPmCustom = 20201, kPmCreate = 20202, kPmPrivate = 20203,
+  kCmType = 20211, kCmContent = 20212, kCmSearch = 20215,
+  kNoSessions = 50900, kJoinThis = 20564,
+};
+constexpr uint32_t kWatched[] = {kOnMatch, kOnRumble, kOnCc,      kOnInfo,    kOnBoards,  kOnShop,   kMaRanked,
+                                 kMaPlayer, kPmQuick, kPmCustom,  kPmCreate,  kPmPrivate, kCmType,   kCmContent,
+                                 kCmSearch, kNoSessions, kJoinThis};
+constexpr uint32_t kOnlineRows[] = {kOnMatch, kOnRumble, kOnCc, kOnInfo, kOnBoards, kOnShop};
+constexpr uint32_t kMatchRows[] = {kMaRanked, kMaPlayer};
+constexpr uint32_t kPlayerRows[] = {kPmQuick, kPmCustom, kPmCreate, kPmPrivate};
+constexpr uint32_t kCustomRows[] = {kCmType, kCmContent, kCmSearch};
+constexpr uint32_t kOnlineScreen = 0x5EC;  // (the main-menu object's group while in the online menus)
+constexpr uint32_t kBarList = 207;         // the session list's help bar
+constexpr uint32_t kBarLobbyA = 1220, kBarLobbyB = 1223, kBarJoining = 204;
+constexpr uint32_t kBarJoinBox = 201;      // JOIN THIS SESSION? (YES / NO)
+constexpr uint32_t kBarMessage = 2;        // a message box (A SELECT)
+
+std::atomic<int64_t> g_seen[std::size(kWatched)];  // (Clock ticks of each one's last lookup)
+std::atomic<uint32_t> g_help_bar{0};
+std::atomic<int64_t> g_help_bar_at{0};
+
+int64_t Ticks() { return Clock::now().time_since_epoch().count(); }
+
+int64_t SeenAt(uint32_t id) {
+  for (size_t k = 0; k < std::size(kWatched); ++k)
+    if (kWatched[k] == id) return g_seen[k].load();
+  return 0;
+}
+
+// The row of a screen the cursor is on (0: none seen) and when it was seen.
+template <size_t N>
+uint32_t Latest(const uint32_t (&rows)[N], int64_t* at = nullptr) {
+  uint32_t best = 0;
+  int64_t t = 0;
+  for (uint32_t id : rows)
+    if (const int64_t s = SeenAt(id); s > t) t = s, best = id;
+  if (at) *at = t;
+  return best;
+}
+
+template <size_t N>
+bool Has(const uint32_t (&rows)[N], uint32_t id) {
+  return std::find(std::begin(rows), std::end(rows), id) != std::end(rows);
+}
+
+// The walk (game thread; Accept() on the overlay's asks for it).
+std::mutex g_walk_mutex;
+struct WalkRequest {
+  bool rumble = false;
+  std::string from;
+  Clock::time_point until;
+};
+std::optional<WalkRequest> g_walk_request;
+
+enum class Step { kIdle, kWait, kMainTop, kMainOnline, kOnline, kMatch, kPlayer, kCustom, kSearching, kList, kJoin, kJoining };
+struct Walk {
+  Step step = Step::kIdle;
+  bool rumble = false;
+  std::string from;
+  Clock::time_point until;          // (the invite's time)
+  Clock::time_point step_at;        // (this step's start)
+  Clock::time_point next;           // (no new press before)
+  uint16_t press = 0;
+  Clock::time_point press_end;
+  int presses = 0;                  // (in this step)
+  int searches = 0;
+  int retries = 0;
+  bool told_wait = false;
+} g_walk;
+
+const char* StepName(Step s) {
+  switch (s) {
+    case Step::kWait: return "waiting for a menu";
+    case Step::kMainTop: return "main menu";
+    case Step::kMainOnline: return "main menu: ONLINE";
+    case Step::kOnline: return "ONLINE menu";
+    case Step::kMatch: return "MATCH menu";
+    case Step::kPlayer: return "PLAYER MATCH menu";
+    case Step::kCustom: return "CUSTOM MATCH";
+    case Step::kSearching: return "searching";
+    case Step::kList: return "session list";
+    case Step::kJoin: return "JOIN THIS SESSION?";
+    case Step::kJoining: return "joining";
+    default: return "idle";
+  }
+}
+
+void Goto(Step s) {
+  g_walk.step = s;
+  g_walk.step_at = Clock::now();
+  g_walk.presses = 0;
+  REXLOG_INFO("online overlay: invite walk: {}", StepName(s));
+}
+
+void Press(uint16_t b, int gap_ms = 350) {
+  const auto now = Clock::now();
+  g_walk.press = b;
+  g_walk.press_end = now + std::chrono::milliseconds(120);
+  g_walk.next = g_walk.press_end + std::chrono::milliseconds(gap_ms);
+  ++g_walk.presses;
+}
+
+std::string WhereToGo(const Walk& w) {
+  return Upper(w.from) + "'S SESSION: ONLINE > " + (w.rumble ? "ROYAL RUMBLE" : "MATCH") +
+         " > PLAYER MATCH > CUSTOM MATCH > SEARCH";
+}
+
+void Stop(const std::string& why) {
+  REXLOG_INFO("online overlay: invite walk stopped ({})", why);
+  if (!why.empty()) Say(why);
+  g_walk = Walk{};
+}
+
+bool SeenSinceStep(uint32_t id) { return SeenAt(id) >= g_walk.step_at.time_since_epoch().count(); }
+
+// The screen chosen hasn't come up: after 5 s, back to the step that chose
+// it (its A again), at most 3 times.
+void Retry(Step back) {
+  if (Clock::now() - g_walk.step_at < std::chrono::seconds(5)) return;
+  if (++g_walk.retries > 3) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+  REXLOG_INFO("online overlay: invite walk: the next screen didn't come up - again");
+  Goto(back);
+}
+
+// Moves a screen's cursor to `want` (its rows' descriptions in `rows`), then A
+// and the next step. False while it moves.
+template <size_t N>
+void ChooseRow(const uint32_t (&rows)[N], uint32_t want, Step then) {
+  const uint32_t at = Latest(rows);
+  if (!at) return;  // (the screen hasn't shown a row yet)
+  // (a screen that has just come up ignores the pad while it slides in)
+  if (Clock::now() - g_walk.step_at < std::chrono::milliseconds(1500)) return;
+  if (at != want) {
+    if (g_walk.presses > int(N) * 2 + 2) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+    const int from = int(std::find(std::begin(rows), std::end(rows), at) - std::begin(rows));
+    const int to = int(std::find(std::begin(rows), std::end(rows), want) - std::begin(rows));
+    Press(to > from ? X_INPUT_GAMEPAD_DPAD_DOWN : X_INPUT_GAMEPAD_DPAD_UP);
+    return;
+  }
+  Press(X_INPUT_GAMEPAD_A, 600);
+  Goto(then);
+}
+
+void WalkTick() {
+  using namespace std::chrono;
+  const auto now = Clock::now();
+  if (g_walk.step == Step::kIdle) return;
+  if (now > g_walk.until) return Stop("");  // (the invite is too old)
+  if (g_walk.press) {
+    if (now < g_walk.press_end) return;
+    g_walk.press = 0;
+  }
+  if (now < g_walk.next) return;
+  uint32_t group = 0, row = 0;
+  const bool menu = ScriptMenuState(&group, &row);
+  const uint32_t bar = g_help_bar.load();
+  const bool in_lobby = group == kOnlineScreen && (bar == kBarLobbyA || bar == kBarLobbyB || bar == kBarJoining);
+  const auto in_step = now - g_walk.step_at;
+  switch (g_walk.step) {
+    case Step::kWait: {
+      // (a match, an editor, a session's lobby: until the player is at a menu)
+      const bool drivable = menu && (group < 1000 || group == kOnlineScreen) && !in_lobby;
+      if (!drivable) {
+        if (!g_walk.told_wait) {
+          Say("INVITE ACCEPTED: BACK AT A MENU, THE GAME TAKES YOU TO " + Upper(g_walk.from) + "'S SESSION");
+          g_walk.told_wait = true;
+        }
+        g_walk.next = now + milliseconds(500);
+        return;
+      }
+      if (g_walk.told_wait && in_step > seconds(1)) {  // (said "back at a menu": a moment to read it)
+        Say("TAKING YOU TO " + Upper(g_walk.from) + "'S SESSION (BACK: STOP)");
+        g_walk.next = now + seconds(2);
+        g_walk.told_wait = false;
+        return;
+      }
+      if (group < 1000) return Goto(Step::kMainTop);
+      // (in the online menus: from the screen the cursor shows)
+      int64_t t_on = 0, t_ma = 0, t_pm = 0, t_cm = 0;
+      Latest(kOnlineRows, &t_on), Latest(kMatchRows, &t_ma), Latest(kPlayerRows, &t_pm), Latest(kCustomRows, &t_cm);
+      const int64_t newest = std::max({t_on, t_ma, t_pm, t_cm});
+      if (bar == kBarList) return Goto(Step::kList);
+      if (!newest) return Goto(Step::kOnline);
+      if (newest == t_cm) return Goto(Step::kCustom);
+      if (newest == t_pm) return Goto(Step::kPlayer);
+      if (newest == t_ma) return Goto(Step::kMatch);
+      return Goto(Step::kOnline);
+    }
+    case Step::kMainTop:
+      if (!menu || group >= 1000) return Goto(Step::kWait);
+      if (group != 1) {  // (a sub-menu: back to the top)
+        if (g_walk.presses > 8) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+        return Press(X_INPUT_GAMEPAD_B, 800);
+      }
+      return Goto(Step::kMainOnline);
+    case Step::kMainOnline: {
+      if (group == kOnlineScreen) return Goto(Step::kOnline);
+      if (!menu || group != 1) {
+        if (in_step > seconds(60)) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+        return;  // (ONLINE chosen: its screen loading)
+      }
+      int rows = 0;
+      const int want = ScriptMenuRow(1, "ONLINE", &rows);
+      if (want < 0) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+      if (int(row) != want) {
+        if (g_walk.presses > rows * 2 + 2) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+        return Press(int(row) < want ? X_INPUT_GAMEPAD_DPAD_DOWN : X_INPUT_GAMEPAD_DPAD_UP);
+      }
+      if (g_walk.presses < 100) Press(X_INPUT_GAMEPAD_A, 1500), g_walk.presses = 100;  // (once)
+      return;
+    }
+    case Step::kOnline:
+      if (in_step > seconds(60)) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+      if (!SeenSinceStep(Latest(kOnlineRows)) && in_step < seconds(3)) return;  // (its rows shown)
+      return ChooseRow(kOnlineRows, g_walk.rumble ? kOnRumble : kOnMatch, Step::kMatch);
+    case Step::kMatch: {
+      // (the MATCH / ROYAL RUMBLE menu - the same two rows: once it shows them;
+      // still the ONLINE menu after a while: its A was missed, again)
+      int64_t t_ma = 0, t_on = 0;
+      Latest(kMatchRows, &t_ma), Latest(kOnlineRows, &t_on);
+      if (t_ma < t_on || !t_ma) return Retry(Step::kOnline);
+      return ChooseRow(kMatchRows, kMaPlayer, Step::kPlayer);
+    }
+    case Step::kPlayer: {
+      int64_t t_pm = 0, t_ma = 0;
+      Latest(kPlayerRows, &t_pm), Latest(kMatchRows, &t_ma);
+      if (t_pm < t_ma || !t_pm) return Retry(Step::kMatch);
+      return ChooseRow(kPlayerRows, kPmCustom, Step::kCustom);
+    }
+    case Step::kCustom: {
+      int64_t t_cm = 0, t_pm = 0;
+      Latest(kCustomRows, &t_cm), Latest(kPlayerRows, &t_pm);
+      if (t_cm < t_pm || !t_cm) return Retry(Step::kPlayer);
+      return ChooseRow(kCustomRows, kCmSearch, Step::kSearching);
+    }
+    case Step::kSearching:
+      if (bar == kBarList && g_help_bar_at.load() >= g_walk.step_at.time_since_epoch().count())
+        return Goto(Step::kList);
+      if (SeenSinceStep(kNoSessions) && bar == kBarMessage) {  // ("No game sessions were found. Search again?": YES)
+        if (++g_walk.searches > 5) return Stop(Upper(g_walk.from) + "'S SESSION WASN'T FOUND - IT MAY HAVE ENDED");
+        Press(X_INPUT_GAMEPAD_A, 800);
+        return Goto(Step::kSearching);
+      }
+      if (in_step > seconds(45)) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+      return;
+    case Step::kList:
+      if (in_step < milliseconds(800)) return;  // (the list drawn)
+      if (g_walk.presses) {
+        // ("JOIN THIS SESSION?": its own help bar - its text is looked up
+        // before, with the menus)
+        if (bar == kBarJoinBox && g_help_bar_at.load() >= g_walk.step_at.time_since_epoch().count())
+          return Goto(Step::kJoin);
+        if (in_step > seconds(15)) return Stop("COULDN'T GET THERE - " + WhereToGo(g_walk));
+        return;
+      }
+      return Press(X_INPUT_GAMEPAD_A, 1500);  // (the first session: the invited one)
+    case Step::kJoin:
+      if (in_step < milliseconds(500)) return;
+      Press(X_INPUT_GAMEPAD_A, 1500);  // (YES)
+      return Goto(Step::kJoining);
+    case Step::kJoining:
+      if (in_lobby && bar != kBarJoining) {
+        REXLOG_INFO("online overlay: invite walk: in {}'s session", g_walk.from);
+        Say("JOINED " + Upper(g_walk.from) + "'S SESSION");
+        g_walk = Walk{};
+        return;
+      }
+      if (in_step > seconds(45)) return Stop("COULDN'T JOIN " + Upper(g_walk.from) + "'S SESSION");
+      return;
+    default:
+      return;
+  }
+}
+
+// (Accept(): the walk, from the next pad read)
+void RequestInviteWalk(bool rumble, const std::string& from) {
+  std::lock_guard lock(g_walk_mutex);
+  g_walk_request = WalkRequest{rumble, from, Clock::now() + std::chrono::minutes(15)};
+}
+}  // namespace
+
+void OnlineNoteString(uint32_t id) {
+  for (size_t k = 0; k < std::size(kWatched); ++k) {
+    if (kWatched[k] != id) continue;
+    static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
+    const int64_t now = Ticks(), was = g_seen[k].exchange(now);
+    if (log && now - was > std::chrono::duration_cast<Clock::duration>(std::chrono::milliseconds(500)).count())
+      REXLOG_INFO("online overlay: string {} shown", id);
+    return;
+  }
+}
+
+void OnlineNoteHelpBar(uint32_t id) {
+  g_help_bar = id;
+  g_help_bar_at = Ticks();
+}
+
 uint16_t OnlineOverlayPad(uint16_t buttons) {
   using namespace rex::input;
   g_guest_pad = buttons;  // (the overlay's combo check: the real buttons)
   static const bool on = rex::cvar::Query<bool>("online_enabled");
   if (!on) return buttons;
+  // An accepted invite's walk: its presses instead of the pad's; BACK stops it.
+  {
+    std::optional<WalkRequest> req;
+    {
+      std::lock_guard lock(g_walk_mutex);
+      req.swap(g_walk_request);
+    }
+    if (req) {
+      g_walk = Walk{};
+      g_walk.rumble = req->rumble, g_walk.from = req->from, g_walk.until = req->until;
+      Goto(Step::kWait);
+    }
+    if (g_walk.step != Step::kIdle) {
+      if ((buttons & X_INPUT_GAMEPAD_BACK) && !OnlineOverlayHoldsInput()) {
+        Stop("STOPPED - " + WhereToGo(g_walk));
+      } else {
+        WalkTick();
+        if (g_walk.step != Step::kIdle && g_walk.step != Step::kWait) return g_walk.press;
+      }
+    }
+  }
   // (game thread only) The game gets BACK as it is - its help screens
   // (Create-a-Superstar's, the menus') are open only while BACK is held; held
   // back until release, they closed at once. Only the overlay's BACK + RB is

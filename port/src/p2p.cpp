@@ -1729,6 +1729,14 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
           open.push_back(s);
         }
       }
+      // (an invite's search lists that session alone: the game sorts its list
+      // by connection, not by this order - the first row was another session;
+      // once listed, the invite is done with and searches are as before)
+      if (invited && !open.empty() && open.front().id == invited) {
+        open.resize(1);
+        std::lock_guard lock(g_mutex);
+        g_invited = 0;
+      }
       if (open.size() > std::max<uint32_t>(1, u32(8))) open.resize(std::max<uint32_t>(1, u32(8)));
       REXLOG_INFO("p2p: search found {} session(s)", open.size());
       return WriteResults(results, size, open);

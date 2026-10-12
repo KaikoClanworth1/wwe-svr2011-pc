@@ -31,6 +31,7 @@
 #include "entrance_media.h"
 #include "online_files.h"
 #include "online_net.h"
+#include "online_overlay.h"
 #include "p2p.h"
 #include "paint_pages.h"
 
@@ -352,6 +353,7 @@ bool OnPaintDownload(uint8_t* base, uint32_t screen, int page) {
 }  // namespace
 
 uint32_t OnlineString(uint32_t id) {
+  OnlineNoteString(id);  // (online_overlay.h: where the menus' cursors are)
   switch (id) {
     case 0x5339:  // VIEW GAMER CARD (button help)
     case 0xB09B:
@@ -465,6 +467,13 @@ REX_HOOK_RAW(sub_82746358) {
   // high half - online_cpu.cpp's sub_824E3E60 hook: 1 + y + 3 * waiting)
   const uint32_t cpu = ctx.r4.u32 >> 16;
   ctx.r4.u64 = ctx.r4.u32 & 0xFFFF;
+  {
+    static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
+    static uint32_t last = 0xFFFFFFFF;
+    if (log && ctx.r4.u32 != last) REXLOG_INFO("online: help bar {} (lr {:08X})", ctx.r4.u32, uint32_t(ctx.lr));
+    last = ctx.r4.u32;
+    svr2011::OnlineNoteHelpBar(ctx.r4.u32);
+  }
   __imp__sub_82746358(ctx, base);
   // (the bar ends at its first empty slot: the ones after a removed one
   // move up)
