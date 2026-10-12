@@ -550,6 +550,51 @@ REX_HOOK_RAW(sub_82904D50) {
   ctx.r3.u64 = 0x1F;  // ERROR_GEN_FAILURE
 }
 
+// A lobby chat message that arrived (sub_828A7C18(chat, msg): msg +0 the
+// sender, +8 the text, UTF-8; message kind 4096, sub_828A7E40): the line
+// "name : text" is made in a 92-byte buffer (sub_828A7B38 adds it). The
+// lobby's chat keyboard takes 21 characters (its field: 64 bytes, 21 a
+// line, one line); a longer text - an old or changed game's - is cut to
+// that, as this game would have typed it.
+constexpr size_t kChatChars = 21;
+REX_EXTERN(__imp__sub_828A7C18);
+REX_HOOK_RAW(sub_828A7C18) {
+  static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
+  // (test aid SVR2011_TEST_CHAT_LONG: every message arrives as 150 characters)
+  static const bool test_long = std::getenv("SVR2011_TEST_CHAT_LONG") != nullptr;
+  const uint32_t msg = ctx.r4.u32;
+  if (msg && test_long && svr2011::g_scratch) {
+    const uint32_t g_scratch = svr2011::g_scratch;
+    std::string t;
+    while (t.size() < 150) t += "LONGMESSAGE-";
+    t.resize(150);
+    std::memcpy(base + g_scratch, t.c_str(), t.size() + 1);
+    uint8_t* q = base + msg + 8;
+    q[0] = uint8_t(g_scratch >> 24), q[1] = uint8_t(g_scratch >> 16), q[2] = uint8_t(g_scratch >> 8), q[3] = uint8_t(g_scratch);
+  }
+  if (msg) {
+    const uint8_t* p = base + msg + 8;
+    const uint32_t text = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    if (text) {
+      char* s = reinterpret_cast<char*>(base + text);
+      const size_t bytes = strnlen(s, 4096);
+      size_t at = 0, chars = 0;  // (whole UTF-8 characters)
+      while (at < bytes && chars < kChatChars) {
+        const uint8_t c = uint8_t(s[at]);
+        at += c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+        ++chars;
+      }
+      if (at < bytes) {
+        s[std::min(at, bytes)] = 0;
+        REXLOG_INFO("online: a chat message of {} bytes cut to {} characters", bytes, kChatChars);
+      } else if (log) {
+        REXLOG_INFO("online: chat message in: {} bytes", bytes);
+      }
+    }
+  }
+  __imp__sub_828A7C18(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_828C19D8);
 // Online is off while the game files aren't clean (online_files.h: modified,
 // or still being checked at start): id 5 then answers no - entering ONLINE
