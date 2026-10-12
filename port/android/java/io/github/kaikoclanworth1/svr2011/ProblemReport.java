@@ -52,7 +52,7 @@ final class ProblemReport {
             // (the player's words first: what a reader looks for)
             if (description != null && !description.isEmpty()) info = description + "\n" + info;
             put(zip, "report.txt", info.getBytes(StandardCharsets.UTF_8));
-            r.logs = addNewest(zip, new File(gameFolder, "logs"), "svr2011_", ".log", 3, "logs/", 16 << 20);
+            r.logs = addLogs(zip, new File(gameFolder, "logs"), 16 << 20);
             r.crashes = addNewest(zip, new File(gameFolder, "UserData/crashes"), "crash_", ".txt", 3, "crashes/", 1 << 20);
             File toml = new File(gameFolder, "svr2011.toml");
             if (toml.isFile()) {
@@ -103,6 +103,113 @@ final class ProblemReport {
             added++;
         }
         return added;
+    }
+
+    // The game's logs: svr2011_<n>.log, rotated at 5 MB into svr2011_<n>.<k>.log
+    // (the higher k, the older; up to 20). A freeze can fill several parts with
+    // the same fault line, pushing out what came before it, so the newest
+    // game's parts all go in, oldest first, with the repeated fault lines left
+    // out after the first ones - its first part (the device, the first faults'
+    // host pc) always, then the newest parts back to `budget` bytes - and the
+    // two games before it (their last part).
+    static final String kFault = "Unhandled guest access violation";
+    static final int kFaultsKept = 30;
+
+    static int addLogs(ZipOutputStream zip, File dir, int budget) throws IOException {
+        File[] files = dir.listFiles((d, n) -> n.startsWith("svr2011_") && n.endsWith(".log"));
+        if (files == null || files.length == 0) return 0;
+        java.util.Map<String, java.util.List<File>> games = new java.util.HashMap<>();
+        for (File f : files) {
+            String n = f.getName();
+            String game = n.substring(0, n.indexOf('.'));
+            games.computeIfAbsent(game, k -> new java.util.ArrayList<>()).add(f);
+        }
+        // (games newest first, by their newest file)
+        java.util.List<String> order = new java.util.ArrayList<>(games.keySet());
+        java.util.Map<String, Long> newest = new java.util.HashMap<>();
+        for (String g : order) {
+            long t = 0;
+            for (File f : games.get(g)) t = Math.max(t, f.lastModified());
+            newest.put(g, t);
+        }
+        order.sort((a, b) -> Long.compare(newest.get(b), newest.get(a)));
+        int added = 0;
+        java.util.List<File> parts = games.get(order.get(0));
+        parts.sort((a, b) -> Integer.compare(part(b), part(a)));  // (oldest first: highest k, the plain .log last)
+        // (the fault lines before each part: the game's first ones are kept)
+        int[] before = new int[parts.size()];
+        for (int i = 1; i < parts.size(); i++) before[i] = before[i - 1] + countFaults(parts.get(i - 1));
+        byte[][] kept = new byte[parts.size()][];
+        long left = budget;
+        // The first part, then the newest ones back, while they fit.
+        java.util.List<Integer> pick = new java.util.ArrayList<>();
+        pick.add(0);
+        for (int i = parts.size() - 1; i > 0; i--) pick.add(i);
+        for (int i : pick) {
+            if (left <= 0) break;
+            byte[] b = condense(read(parts.get(i), 64 << 20), new int[] {before[i]});
+            if (b.length > left) b = Arrays.copyOfRange(b, (int) (b.length - left), b.length);
+            kept[i] = b;
+            left -= b.length;
+        }
+        for (int i = 0; i < parts.size(); i++) {
+            if (kept[i] == null) continue;
+            put(zip, "logs/" + parts.get(i).getName(), redactIps(kept[i]));
+            added++;
+        }
+        // The games before (their last part: how they ended).
+        for (int g = 1; g < order.size() && g <= 2 && left > 0; g++) {
+            File last = null;
+            for (File f : games.get(order.get(g))) if (part(f) == 0) last = f;
+            if (last == null) continue;
+            byte[] b = condense(read(last, (int) Math.min(left, 4 << 20)), new int[1]);
+            put(zip, "logs/" + last.getName(), redactIps(b));
+            left -= b.length;
+            added++;
+        }
+        return added;
+    }
+
+    static int countFaults(File f) throws IOException {
+        int n = 0;
+        try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(new FileInputStream(f), StandardCharsets.ISO_8859_1), 1 << 16)) {
+            String line;
+            while ((line = r.readLine()) != null) if (line.contains(kFault)) n++;
+        }
+        return n;
+    }
+
+    // svr2011_12.3.log -> 3, svr2011_12.log -> 0.
+    static int part(File f) {
+        String[] p = f.getName().split("\\.");
+        if (p.length < 3) return 0;
+        try {
+            return Integer.parseInt(p[1]);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    // The log without the repeated fault lines after the first kFaultsKept
+    // (counted over the game's parts in `faults`), saying how many went.
+    static byte[] condense(byte[] data, int[] faults) {
+        String text = new String(data, StandardCharsets.ISO_8859_1);
+        StringBuilder out = new StringBuilder(Math.min(text.length(), 1 << 20));
+        int dropped = 0;
+        for (String line : text.split("\n", -1)) {
+            if (line.contains(kFault) && ++faults[0] > kFaultsKept) {
+                dropped++;
+                continue;
+            }
+            if (dropped > 0) {
+                out.append("(report: ").append(dropped).append(" more '").append(kFault).append("' lines left out)\n");
+                dropped = 0;
+            }
+            out.append(line).append('\n');
+        }
+        if (dropped > 0) out.append("(report: ").append(dropped).append(" more '").append(kFault).append("' lines left out)\n");
+        return out.toString().getBytes(StandardCharsets.ISO_8859_1);
     }
 
     private static final java.util.regex.Pattern IPV4 = java.util.regex.Pattern.compile(
