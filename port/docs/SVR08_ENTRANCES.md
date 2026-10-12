@@ -37,7 +37,7 @@ Type bytes:
 | `01000000 00000000` | character | a character model |
 | `00000100 00000000` | prop | an evtobj.pac id |
 | `00010000 00000000` | camera | |
-| `00000001 00000000` and `00000000 01000000` | [L] lights / effects | 0/1/2 |
+| `00000001 00000000` and `00000000 01000000` | ring rope push / turnbuckle (HCTP `CEventRopeAction`; was read as lights, see HCTP_ENTRANCES.md section 8) | rope 0/1/2 |
 | `00000000 00010000` | "global" effect object | |
 
 The global effect object's EVT tracks sit at x 10..14 (and 60..64, 63/y50+). CAE parts leave it out.
