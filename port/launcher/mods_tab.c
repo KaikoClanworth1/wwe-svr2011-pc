@@ -24,6 +24,8 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 
 #include "backgrounds.h"
@@ -194,6 +196,48 @@ static int remove_tree(const WCHAR *dir, int recycle)
     op.pFrom = from;
     op.fFlags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | (recycle ? FOF_ALLOWUNDO : 0);
     return SHFileOperationW(&op) == 0;
+}
+
+/* A removed superstar mod gives its id back: its line ("<folder>\t<id>") leaves
+   Mods\Superstars\slots.txt. (The game keeps a mod's id there so saves stay
+   with it; a line left behind held one of its 72 ids for good, and new mods
+   no longer showed once they were all taken.) The game writes the folder in
+   the ANSI code page; both that and UTF-8 match. */
+static void free_superstar_slot(const WCHAR *game, const WCHAR *folder)
+{
+    WCHAR path[MAX_PATH];
+    const WCHAR *name = wcsrchr(folder, L'\\');
+    char acp[MAX_PATH * 2], utf8[MAX_PATH * 3], line[1024];
+    char *out = NULL;
+    size_t used = 0, cap = 0;
+    int dropped = 0;
+    FILE *f = NULL;
+    name = name ? name + 1 : folder;
+    swprintf_s(path, MAX_PATH, L"%s\\Mods\\Superstars\\slots.txt", game);
+    if (_wfopen_s(&f, path, L"rb") || !f) return;
+    WideCharToMultiByte(CP_ACP, 0, name, -1, acp, sizeof acp, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, sizeof utf8, NULL, NULL);
+    while (fgets(line, sizeof line, f)) {
+        const char *tab = strchr(line, '\t');
+        size_t n = strlen(line), k = tab ? (size_t)(tab - line) : 0;
+        if (tab && ((strlen(acp) == k && !strncmp(line, acp, k)) || (strlen(utf8) == k && !strncmp(line, utf8, k)))) {
+            dropped = 1;
+            continue;
+        }
+        if (used + n + 1 > cap) {
+            char *grown = (char *)realloc(out, cap = (used + n + 1) * 2);
+            if (!grown) { free(out); fclose(f); return; }
+            out = grown;
+        }
+        memcpy(out + used, line, n);
+        used += n;
+    }
+    fclose(f);
+    if (dropped && !_wfopen_s(&f, path, L"wb") && f) {
+        if (used) fwrite(out, 1, used, f);
+        fclose(f);
+    }
+    free(out);
 }
 
 static int pick_file(WCHAR *out)
@@ -557,6 +601,7 @@ static void remove_mod(void)
     swprintf_s(t, 512, L"Remove \"%s\"? Its folder goes to the Recycle Bin.", s_mods[i].name);
     if (MessageBoxW(s_wnd, t, L"Remove mod", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return;
     if (!remove_tree(s_mods[i].folder, 1)) { status(L"It could not be removed (is the game running?)."); return; }
+    if (!_wcsicmp(s_mods[i].type, L"superstar")) free_superstar_slot(s_game, s_mods[i].folder);
     scan();
     fill();
     status(L"Removed (it is in the Recycle Bin).");
@@ -665,6 +710,16 @@ int mods_command(int id, int code)
 }
 
 /* A background's new name into its manifest.txt (name=), the other lines kept. */
+/* Tests: removes an installed mod as the list's Remove does (its folder to the
+   Recycle Bin, a superstar mod's id freed). */
+int mods_remove(const WCHAR *game, const WCHAR *folder)
+{
+    const int star = wcsstr(folder, L"\\Superstars\\") != NULL;
+    if (!remove_tree(folder, 1)) return 0;
+    if (star) free_superstar_slot(game, folder);
+    return 1;
+}
+
 int mods_rename(const WCHAR *folder, const WCHAR *name)
 {
     WCHAR man[MAX_PATH], tmp[MAX_PATH];
