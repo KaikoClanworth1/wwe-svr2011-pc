@@ -960,6 +960,25 @@ class TouchOverlay final : public rex::ui::ImGuiDialog {
 
 TouchListener g_listener;
 
+// The game going out of sight (folding the phone, home, a call, the
+// notification shade) can take a finger without its up or cancel - its
+// control would stay held and the player act on his own when the game is
+// back (B18): everything held is let go then.
+class FocusListener final : public rex::ui::WindowListener {
+ public:
+  void OnLostFocus(rex::ui::UISetupEvent&) override { LetGo("focus lost"); }
+  void OnMinimized(rex::ui::UIEvent&) override { LetGo("minimized"); }
+
+ private:
+  static void LetGo(const char* why) {
+    if (g_pointers.empty()) return;
+    REXLOG_INFO("touch controls: {} with {} finger(s) down - let go", why, g_pointers.size());
+    ReleaseAll();
+  }
+};
+
+FocusListener g_focus_listener;
+
 class TouchDriver final : public InputDriver {
  public:
   TouchDriver() : InputDriver(nullptr, 0) {}
@@ -1061,7 +1080,10 @@ void InstallTouchControls(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   Load();
   if (drawer) new TouchOverlay(drawer);  // lives for the whole run
   if (window) {
-    window->app_context().CallInUIThread([window] { window->AddInputListener(&g_listener, 900); });
+    window->app_context().CallInUIThread([window] {
+      window->AddInputListener(&g_listener, 900);
+      window->AddListener(&g_focus_listener);
+    });
   }
   REXLOG_INFO("touch controls: {} ({})", REXCVAR_GET(touch_controls) ? "on" : "off", g_file.string());
 }
