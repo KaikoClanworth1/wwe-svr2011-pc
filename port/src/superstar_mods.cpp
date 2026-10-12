@@ -1526,6 +1526,40 @@ REX_HOOK_RAW(sub_8257A218) {
   ApplyRecords(base);
   ctx.r3.u64 = r3;
 }
+
+// WWE Universe's title holders: 14 titles x 2 u16 ids (a tag title's two;
+// 0x200 none) at save + 0x7CD70 (SaveData.dat 0x7CD88, after its 0x18-byte
+// header). A mod has no place in Universe (above), so a title it holds can't
+// be booked - "gave Kenny Omega the Intercontinental title: holder blank,
+// nobody could fight for it" - yet its TITLE SETTINGS page gives it one.
+// Checked once a frame: a holder that just became a mod gets the one before
+// back; one a save already holds (none before) leaves the title vacant, as a
+// title nobody holds.
+namespace {
+void KeepModsOffTitles(uint8_t* base) {
+  constexpr uint32_t kSave = 0x82E407B4, kTitles = 0x7CD70, kSlots = 28, kNone = 0x200;
+  static uint32_t last[kSlots], last_save = 0;
+  const uint32_t save = Rd32(base + kSave);
+  if (!save || g_mods.empty()) return;
+  if (save != last_save) {
+    std::fill(std::begin(last), std::end(last), kNone);
+    last_save = save;
+  }
+  for (uint32_t i = 0; i < kSlots; ++i) {
+    uint8_t* p = base + save + kTitles + i * 2;
+    uint32_t id = Rd16(p);
+    if (const Mod* m = ModOf(id)) {
+      const uint32_t back = ModOf(last[i]) ? kNone : last[i];
+      p[0] = uint8_t(back >> 8), p[1] = uint8_t(back);
+      REXLOG_WARN("[svr2011] superstar mods: Universe title {} (holder {}) can't go to {} (id {}): {}", i / 2,
+                  i % 2 + 1, m->name, id, back == kNone ? std::string("left vacant") : "back to id " + std::to_string(back));
+      id = back;
+    }
+    last[i] = id;
+  }
+}
+}  // namespace
+
 // Once a frame (the game's pad reads, frame_rate.cpp): a mod's profile that
 // is a placeholder again gets the mod's back. A save's copy of a slot can be
 // the placeholder (saved before the mod was installed): loading it put Jeff
@@ -1535,6 +1569,7 @@ REX_HOOK_RAW(sub_8257A218) {
 // placeholder and stays.
 namespace svr2011 {
 void CheckModProfiles(uint8_t* base) {
+  KeepModsOffTitles(base);
   std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
