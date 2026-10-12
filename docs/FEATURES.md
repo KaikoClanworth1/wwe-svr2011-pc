@@ -87,6 +87,40 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## New in 2.0.7 *(in progress - not released yet)*
+
+### Matches
+- **Three Stages of Hell sets**: THREE STAGES OF HELL opens a list of sets - NORMAL / FALLS COUNT ANYWHERE / LAST MAN STANDING, NORMAL / FIRST BLOOD / FINISHERS (a fall counts only within 10 s of a finisher or signature), NORMAL / LAST MAN STANDING / SUBMISSION, and HELL IN A CELL: FIRST BLOOD / LAST MAN STANDING / SUBMISSION (1v1, 2v2, triple threat, fatal-4-way). Count-outs no longer end the whole match.
+- **Hell in a Cell: Tables & Ladders**: each cell match (1v1, 2v2, triple threat, fatal-4-way) has a version with tables, ladders and chairs inside the cell (switch mod `hiac_tables_ladders`).
+- **Steel Cage / Inferno: Weapons Inside**: chairs and hand weapons in the ring, no DQ (switch mods `cage_weapons`, `inferno_weapons`).
+- **Gauntlet Eliminator** (HANDICAP): six superstars, two start, one more each minute (sooner if only one is left), a pin or submission eliminates, the last one standing wins; plus an EXTREME RULES version with weapons and no DQ (switch mod `gauntlet_eliminator`).
+- **CPU opponents run again at 30 fps** - at 30 they could only walk (their run presses were lost between the game's two updates per frame).
+- **Practice Arena mod**: its crowd and floor show during the match (everything beyond the ring was black).
+
+### Online
+- **Smoother online matches**: each packet repeats the last game inputs, so a lost packet no longer freezes both games (300 ms + 2% loss: from up to 40% of frames waiting to 0-1%); players stay on a path that works both ways instead of flipping between direct and relay.
+- **Royal Rumble and 3+ player sessions**: players the game introduces can reach each other at once (joins above two players failed).
+- **Player and Ranked kept apart**: a Ranked search no longer lands in a Player Match, or the other way round.
+- **Latest version only**: an old version can't go online; the game's own message says to update (the launcher's Check for updates, or GitHub).
+- **Mods must match**: a session with different gameplay mods is hidden, and the game's own message names the mods that differ.
+- **FIRST BLOOD** in Player Match (one on one and 3-man EXTREME RULES MATCHES; switch mod `online_first_blood`).
+- **PORT RULES** on CREATE SESSION (Player Match): the port's own match types online - Weapons Everywhere, the Three Stages sets, Hell in a Cell Tables & Ladders, Weapons Inside - chosen with LB / RB, shown in both lobbies.
+- **Ping indicator** (GRAPHICS → DISPLAY → ONLINE PING): bars and milliseconds while online.
+- **Invites**: a pop-up when a friend invites you (with an on/off switch in the overlay), and X INVITE FRIENDS in the lobby opens an invite panel.
+- **Online overlay**: BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
+- 🧪 **UDP match relay** (server side off until enabled) and **CPU players in Player Matches** (being finished).
+
+### Menus and graphics
+- **900P and 1080P** render resolutions (GRAPHICS → RENDER RESOLUTION).
+- **Custom main-menu backgrounds**: add your own pictures on the launcher's Mods tab (or the Android Mods page); they join the game's 12, with on/off and the game logo on/off in OPTIONS → BACKGROUNDS. The Mod Maker's Menu backgrounds page makes shareable background packs.
+- **Button pictures fixed**: PlayStation / keyboard button pictures could show other pictures (the WWE Universe logo, a font sheet, the WWEHD logo).
+
+### Fixes
+- **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start.
+- **Highlight reel clip save**: saving a video clip mid-match with a full memory pool is cancelled with a message instead of crashing.
+- **Sabu**: his top-rope corner moves no longer lift the opponent a body-height above the turnbuckle (2011's own seated moves); the SvR 2010 converter keeps corner slots for seated moves.
+- **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
+
 ## New in 2.0.6
 
 - **Camel clutch crash fixed** (and stray "teleports"): with Sabu, the Sandman or another mod that adds submissions or taunts, any superstar's camel clutch could stretch both wrestlers into spikes and crash the game - the move-pack merge shifted the game's own submission / taunt motions out of place. New motions now go after the game's own (existing merges rebuild once).
