@@ -983,7 +983,9 @@ REX_HOOK_RAW(sub_827374A0) {
   uint32_t rule = ctx.r4.u32;
   // ONLINE: the session's PORT RULES (online_rules.h) - the same modes as the
   // offline rows, on both sides, before the match is set up.
-  if (const svr2011::OnlineRulesSetup online = svr2011::OnlineRulesFor(rule); online.on && !Rd32(base + kStoryContext)) {
+  const svr2011::OnlineRulesSetup online = svr2011::OnlineRulesFor(rule);
+  svr2011::MysteryOpponentOnline(online.on && online.mystery && !Rd32(base + kStoryContext));
+  if (online.on && !Rd32(base + kStoryContext)) {
     rule = online.rule;
     ctx.r4.u64 = rule;
     g_pending_weapons = online.weapons;

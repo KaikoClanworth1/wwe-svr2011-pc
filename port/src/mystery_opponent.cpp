@@ -83,7 +83,8 @@ std::atomic<bool> g_loading{false};      // the people built: the loading screen
 std::atomic<int64_t> g_vs_since{0};      // (ms) the COM panel's pick
 std::atomic<int64_t> g_entrances_since{0};  // (ms) the entrances started (0: not now) - until the bell
 std::atomic<uint32_t> g_player_id{0};    // the player's pick (the VS screen's name)
-std::atomic<bool> g_auto_done{false};      // the COM panel completed for the player (B26)
+std::atomic<bool> g_auto_done{false};
+std::atomic<bool> g_online{false};         // an online MYSTERY OPPONENT match (MysteryOpponentOnline)      // the COM panel completed for the player (B26)
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
@@ -224,6 +225,10 @@ void MysteryOpponentSetup(uint8_t* base, bool on) {
 
 bool MysteryOpponentMatch() { return g_on.load(); }
 
+void MysteryOpponentOnline(bool on) {
+  if (g_online.exchange(on) != on && on) REXLOG_INFO("mystery opponent: online - the lobby's CPU enters last");
+}
+
 void MysteryOpponentFill(uint8_t* base, uint32_t match) {
   if (!g_on.load() || !match || base[kLive] != kRule) return;
   uint8_t* me = base + match + kSlots;
@@ -347,10 +352,24 @@ REX_HOOK_RAW(sub_82463FD0) {
 // entrances.
 REX_EXTERN(__imp__sub_828C3AC8);
 REX_HOOK_RAW(sub_828C3AC8) {
-  if (g_on.load() && base[kLive] == kRule && ctx.r3.u32) {
+  // (online: the hidden one is the match's CPU - its match slot's controller,
+  // [-8], is 1; the others are the players)
+  int hidden = 1;
+  if (g_online.load())
+    if (const uint32_t match = Rd32(base + 0x82EDEB48)) {
+      hidden = -1;
+      for (int i = 0; i < 6; ++i)
+        if (base[match + kSlots + uint32_t(i) * kSlotSize - 8] == 1) hidden = i;
+    }
+  if (((g_on.load() && base[kLive] == kRule) || (g_online.load() && hidden >= 0)) && ctx.r3.u32) {
     const uint32_t order = ctx.r3.u32, people = Rd32(base + 0x82E3DDFC);
     if (people) {
-      const int8_t me = int8_t(base[people + 132 + 0 * 52 + 13]), them = int8_t(base[people + 132 + 1 * 52 + 13]);
+      // (the last-entering team: the one with the highest order - swapped with the hidden one's)
+      int last = 0;
+      for (int k = 0; k < 6; ++k)
+        if (int32_t(Rd32(base + order + uint32_t(k) * 4)) > int32_t(Rd32(base + order + uint32_t(last) * 4))) last = k;
+      const int8_t me = g_online.load() ? int8_t(last) : int8_t(base[people + 132 + 0 * 52 + 13]),
+                   them = int8_t(base[people + 132 + uint32_t(hidden) * 52 + 13]);
       if (me >= 0 && me < 6 && them >= 0 && them < 6 && me != them) {
         const int32_t a = int32_t(Rd32(base + order + me * 4)), b = int32_t(Rd32(base + order + them * 4));
         if (a >= 0 && b >= 0 && b < a) {
