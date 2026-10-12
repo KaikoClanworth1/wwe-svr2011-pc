@@ -33,10 +33,13 @@ if ($LASTEXITCODE) { throw "patching the menu text failed" }
 python (Join-Path $root "tools\patch_menu.py") $disc $game
 if ($LASTEXITCODE) { throw "patching the menus failed" }
 # PlayStation / keyboard button pictures, from the PS3 version's files
-# (SVR2011_PS3_GAME = its PS3_GAME\USRDIR; tools/make_pad_icons.py).
+# (SVR2011_PS3_GAME = its PS3_GAME\USRDIR; tools/make_pad_icons.py). The
+# keyboard's keycaps come from WWE 2K15 PC when SVR2011_K15_GAME is its folder.
 $ps3 = $env:SVR2011_PS3_GAME
 if ($ps3 -and (Test-Path (Join-Path $ps3 "pac"))) {
-    python (Join-Path $root "tools\make_pad_icons.py") --ps3 $ps3 --xbox $disc --out $game | Out-Host
+    $k15 = @()
+    if ($env:SVR2011_K15_GAME -and (Test-Path (Join-Path $env:SVR2011_K15_GAME "pac\menu"))) { $k15 = @("--k15", $env:SVR2011_K15_GAME) }
+    python (Join-Path $root "tools\make_pad_icons.py") --ps3 $ps3 --xbox $disc --out $game @k15 | Out-Host
     if ($LASTEXITCODE) { throw "making the PlayStation button pictures failed" }
 } elseif (-not (Test-Path (Join-Path $game "pad_icons\pad_icons.txt"))) {
     Write-Warning "no PlayStation button pictures (set SVR2011_PS3_GAME to the PS3 game's USRDIR)"

@@ -207,6 +207,144 @@ def keycap(name, h):
     return img
 
 
+# ---------------------------------------------------------------------------
+# Keycaps from WWE 2K15 PC (--k15 <game folder>): its menu font
+# pac/menu/Assets/font/LTAG_font.pac holds an icon page (4096 x 2048) with a
+# keycap for every key, glyph U+E200 + the DirectInput scan code. Mouse
+# buttons 2K15 doesn't have: drawn in its style.
+
+DIK = {'Escape': 0x01, **{str(i): 0x01 + i for i in range(1, 10)}, '0': 0x0B, 'Minus': 0x0C, 'Plus': 0x0D,
+       'Backspace': 0x0E, 'Tab': 0x0F, 'Q': 0x10, 'W': 0x11, 'E': 0x12, 'R': 0x13, 'T': 0x14, 'Y': 0x15,
+       'U': 0x16, 'I': 0x17, 'O': 0x18, 'P': 0x19, 'LBracket': 0x1A, 'RBracket': 0x1B, 'Return': 0x1C,
+       'Control': 0x1D, 'A': 0x1E, 'S': 0x1F, 'D': 0x20, 'F': 0x21, 'G': 0x22, 'H': 0x23, 'J': 0x24,
+       'K': 0x25, 'L': 0x26, 'Semicolon': 0x27, 'Quote': 0x28, 'Backtick': 0x29, 'Shift': 0x2A,
+       'Backslash': 0x2B, 'Z': 0x2C, 'X': 0x2D, 'C': 0x2E, 'V': 0x2F, 'B': 0x30, 'N': 0x31, 'M': 0x32,
+       'Comma': 0x33, 'Period': 0x34, 'Slash': 0x35, 'NumpadStar': 0x37, 'Alt': 0x38, 'Space': 0x39,
+       'CapsLock': 0x3A, **{f'F{i}': 0x3A + i for i in range(1, 11)}, 'NumLock': 0x45, 'ScrollLock': 0x46,
+       'Numpad7': 0x47, 'Numpad8': 0x48, 'Numpad9': 0x49, 'NumpadMinus': 0x4A, 'Numpad4': 0x4B,
+       'Numpad5': 0x4C, 'Numpad6': 0x4D, 'NumpadPlus': 0x4E, 'Numpad1': 0x4F, 'Numpad2': 0x50,
+       'Numpad3': 0x51, 'Numpad0': 0x52, 'F11': 0x57, 'F12': 0x58, 'NumpadEnter': 0x9C, 'NumpadSlash': 0xB5,
+       'PrintScreen': 0xB7, 'Pause': 0xC5, 'Home': 0xC7, 'Up': 0xC8, 'PageUp': 0xC9, 'Left': 0xCB,
+       'Right': 0xCD, 'End': 0xCF, 'Down': 0xD0, 'PageDown': 0xD1, 'Insert': 0xD2, 'Delete': 0xD3}
+
+K15 = {}  # code -> RGBA glyph (full size)
+
+
+def load_k15(game):
+    """WWE 2K15's keycap glyphs into K15 (code -> picture)."""
+    import ch_tool
+    path = os.path.join(game, 'pac', 'menu', 'Assets', 'font', 'LTAG_font.pac')
+    _, groups = ch_tool.epk8_read(open(path, 'rb').read())
+    ents = [(i, unbpe(e)) for i, e in svrfmt.pach_read(groups[0][1][0][1])]
+    # (each font: descriptor 'd\0\0\0', its pages; the keycap font's descriptor
+    # lists the U+E2xx codes, its page is the 4096 x 2048 DDS after it)
+    for k, (i, d) in enumerate(ents):
+        if d[:4] != b'd\0\0\0' or len(d) < 0x70:
+            continue
+        n = struct.unpack_from('<I', d, 0x3C)[0]
+        if n <= 0 or 0x70 + 2 * n > len(d):
+            continue
+        codes = struct.unpack_from(f'<{n}H', d, 0x70)
+        if 0xE21E not in codes:
+            continue
+        page = next((p for _, p in ents[k + 1:] if p[:4] == b'DDS ' and struct.unpack_from('<I', p, 16)[0] >= 2048),
+                    None)
+        if page is None:
+            continue
+        img = Image.open(io.BytesIO(page)).convert('RGBA')
+        off = struct.unpack_from('<I', d, 0x60)[0]
+        for j, c in enumerate(codes):
+            x, y, w, h = struct.unpack_from('<4h', d, off + 16 * j)
+            if w > 0 and h > 0:
+                K15[c] = img.crop((x, y, x + w, y + h))
+        return True
+    return False
+
+
+def k15_cap(name, h):
+    """2K15's keycap for a key, h pixels high (its own width), or None."""
+    code = DIK.get(name)
+    g = K15.get(0xE200 + code) if code is not None else None
+    if g is None:
+        return None
+    g = g.crop(g.getbbox() or (0, 0, g.width, g.height))
+    return g.resize((max(1, round(g.width * h / g.height)), h), Image.LANCZOS)
+
+
+def k15_cluster(keys, h):
+    """Four 2K15 keycaps as a cluster (up key on top, the other three below), h high."""
+    s = h // 2
+    caps = [k15_cap(k, s) for k in keys]
+    if any(c is None for c in caps):
+        return None
+    cw = max(c.width for c in caps)
+    img = Image.new('RGBA', (cw * 3, s * 2), (0, 0, 0, 0))
+    img.alpha_composite(caps[0], (cw + (cw - caps[0].width) // 2, 0))
+    for k, c in enumerate(caps[1:]):
+        img.alpha_composite(c, (k * cw + (cw - c.width) // 2, s))
+    return img
+
+
+def k15_mouse(name, h):
+    """A mouse in 2K15's keycap style (dark gloss, red rim), the button lit."""
+    s = 4  # (drawn large, scaled down)
+    W, H = int(h * 0.72) * s, h * s
+    img = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    rim, body = (150, 20, 20, 255), (34, 34, 38, 255)
+    d.rounded_rectangle([s, s, W - s, H - s], int(W * 0.48), fill=(10, 10, 10, 255))
+    d.rounded_rectangle([3 * s, 3 * s, W - 3 * s, H - 3 * s], int(W * 0.45), fill=rim)
+    d.rounded_rectangle([6 * s, 6 * s, W - 6 * s, H - 6 * s], int(W * 0.42), fill=body)
+    split = int(H * 0.42)
+    mid = W // 2
+    d.line([(6 * s, split), (W - 6 * s, split)], fill=(10, 10, 10, 255), width=2 * s)
+    d.line([(mid, 6 * s), (mid, split)], fill=(10, 10, 10, 255), width=2 * s)
+    lit = (230, 30, 30, 255)
+    if name == 'LMB':
+        d.pieslice([6 * s, 6 * s, W - 6 * s, int(H * 0.8)], 180, 270, fill=lit)
+        d.rectangle([6 * s + W // 4, int(H * 0.2), mid - s, split - s], fill=lit)
+    elif name == 'RMB':
+        d.pieslice([6 * s, 6 * s, W - 6 * s, int(H * 0.8)], 270, 360, fill=lit)
+        d.rectangle([mid + s, int(H * 0.2), W - 6 * s - W // 4, split - s], fill=lit)
+    else:  # (MMB: the wheel)
+        d.rounded_rectangle([mid - 3 * s, int(H * 0.12), mid + 3 * s, int(H * 0.34)], 3 * s, fill=lit)
+    # (gloss)
+    d.ellipse([W * 0.25, H * 0.5, W * 0.55, H * 0.85], fill=(255, 255, 255, 28))
+    return img.resize((W // s, H // s), Image.LANCZOS)
+
+
+def keycap_any(name, h):
+    """2K15's keycap when --k15 gave its pictures, the drawn one otherwise."""
+    if K15:
+        if name in ('LMB', 'RMB', 'MMB'):
+            return k15_mouse(name, h)
+        if name == 'WASD':
+            c = k15_cluster(['W', 'A', 'S', 'D'], h)
+            if c:
+                return c
+        if name == 'ARROWS':
+            c = k15_cluster(['Up', 'Left', 'Down', 'Right'], h)
+            if c:
+                return c
+        if '+' in name:
+            a, b = name.split('+')
+            ca, cb = k15_cap(a, h), k15_cap(b, h)
+            if ca and cb:
+                plus = max(8, h // 4)
+                img = Image.new('RGBA', (ca.width + plus + cb.width, h), (0, 0, 0, 0))
+                img.paste(ca, (0, 0))
+                img.paste(cb, (ca.width + plus, 0))
+                d = ImageDraw.Draw(img)
+                c, t = ca.width + plus // 2, max(2, h // 16)
+                d.rectangle([c - plus // 2 + 1, h // 2 - t, c + plus // 2 - 1, h // 2 + t], fill=(255, 255, 255, 255))
+                d.rectangle([c - t, h // 2 - plus // 2 + 1, c + t, h // 2 + plus // 2 - 1], fill=(255, 255, 255, 255))
+                return img
+        c = k15_cap(name, h)
+        if c:
+            return c
+    return keycap(name, h)
+
+
 def pack(items, width, y0=0):
     """Rows of images: [(key, x, y, img)] and the height used."""
     placed, x, y, row_h = [], 0, y0, 0
@@ -299,7 +437,10 @@ def main():
     ap.add_argument('--xbox', required=True, help='the extracted 360 data (with pac/)')
     ap.add_argument('--out', required=True, help='the game folder (pad_icons/ is written there)')
     ap.add_argument('--previews', action='store_true', help='also PNG previews of the pictures')
+    ap.add_argument('--k15', help='WWE 2K15 PC game folder: its keycap pictures for the keyboard')
     args = ap.parse_args()
+    if args.k15:
+        print('2K15 keycaps:', len(K15) if load_k15(args.k15) else 'not found')
 
     atlases = {}  # 360 fnv -> dict
     for rel in FONT_PACS:
@@ -369,7 +510,7 @@ def main():
         pair_h = (y0 + row_h + 3) & ~3
         # Section 3: the keycaps, as high as the face buttons.
         cap_h = tx[0xE009][3]
-        caps, keys_h = pack([(k, keycap(k, cap_h)) for k in KEY_NAMES + COMBOS + SPECIAL], w)
+        caps, keys_h = pack([(k, keycap_any(k, cap_h)) for k in KEY_NAMES + COMBOS + SPECIAL], w)
         total = h * 2 + pair_h + keys_h
         tall = Image.new('RGBA', (w, total), (0, 0, 0, 0))
         tall.paste(x360, (0, 0))
