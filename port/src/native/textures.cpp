@@ -45,6 +45,10 @@ constexpr uint64_t kNewFrames = 240, kNewRecheckFrames = 4;
 // character select the next superstar appeared for a moment with the last
 // one's textures - Jimmy Snuka in John Cena's jeans).
 constexpr uint64_t kUnusedRecheckFrames = 2;
+// Texture packs and dumps take a texture whose data changed up to this many
+// times (new content in reused memory - CAWs' parts on character select and
+// in matches never were in the dumps); more changes is a video or the like.
+constexpr uint32_t kPackChanges = 8;
 // Textures seen changing are "dynamic": re-hashed at every frame they're
 // used, and each check that finds no change doubles the wait before the next
 // (up to kRecheckFrames). Video frames keep being checked at every frame; a
@@ -163,6 +167,8 @@ struct Entry {
   uint32_t srv = UINT32_MAX;
   bool failed = false;
   bool dynamic = false;  // its guest data has changed after upload
+  uint32_t changes = 0;  // how often (texture packs: a texture loaded into memory another had used - a
+                         // CAW's parts, the next superstar - is still dumped and replaced; videos aren't)
   uint32_t interval = 1;  // (dynamic) frames until its next check
   uint64_t created_frame = 0;
   uint64_t hash = 0;
@@ -893,8 +899,8 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   // hash, dumped once and replaced when a pack has it (Texture() swaps it in
   // once the file is read). (SVR2011_TEXTURE_HASH_LOG: each new texture's hash)
   static const bool hash_log = std::getenv("SVR2011_TEXTURE_HASH_LOG") != nullptr;
-  if (!reuse && dimension == 0 && array_size == 1 && !is_3d && !is_cube && !pad_candidate && base_page &&
-      (hash_log || texture_packs::Active())) {
+  if ((!reuse || e.changes <= kPackChanges) && dimension == 0 && array_size == 1 && !is_3d && !is_cube &&
+      !pad_candidate && base_page && (hash_log || texture_packs::Active())) {
     const char* tag = PackFormat(format);
     if (tag || hash_log) {
       thread_local std::vector<uint8_t> blocks;
@@ -906,7 +912,7 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
       }
       if (tag && h && texture_packs::WantDump(h))
         texture_packs::Dump(h, width, height, DumpPixels(blocks, format, width, height, fetch.swizzle), tag);
-      if (tag && h && !e.dynamic) {
+      if (tag && h && e.changes <= kPackChanges) {
         e.ready = nullptr;
         e.pending = texture_packs::Find(h, &e.ready) == texture_packs::Lookup::kNone ? 0 : h;
       }
@@ -1322,13 +1328,14 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
       }
       e.dynamic = true;
       e.interval = 1;
+      ++e.changes;
       Upload(ctx, fetch, dimension, e);
     } else if (e.dynamic) {
       e.interval = uint32_t(std::min<uint64_t>(uint64_t(e.interval) * 2, kRecheckFrames));
     }
   }
   // A pack's texture, once read.
-  if (e.pending && !e.dynamic) {
+  if (e.pending && e.changes <= kPackChanges) {
     if (!e.ready && texture_packs::Find(e.pending, &e.ready) == texture_packs::Lookup::kNone) e.pending = 0;
     if (e.ready && !Replace(ctx, e, fetch)) e.pending = 0;
   }
