@@ -52,11 +52,17 @@ bool OnlineOverlayHoldsInput();
 
 // The game's pad 1 buttons as it reads them (frame_rate.cpp's XInputGetState
 // hook, on the game's thread): BACK + RB opens the overlay. Returns the
-// buttons the game gets: with online on, the combo never reaches it - RB is
-// kept from it while BACK is held, and BACK itself until it is let go
-// without RB (then a short BACK press).
+// buttons the game gets: with online on, BACK as it is, but not the BACK +
+// RB combo (from both down until both are let go); while an accepted invite
+// takes the player to the session, the walk's own presses.
 uint16_t OnlineOverlayPad(uint16_t buttons);
 // Pad 1's buttons as last read (XInput bits, before the combo filter).
 uint16_t OnlineRawPad();
+
+// What the screens show, for that walk: a string the game looked up
+// (menu_hooks.cpp's string lookup: a menu row's description says where its
+// cursor is) and the help bar it built (each screen has its own).
+void OnlineNoteString(uint32_t id);
+void OnlineNoteHelpBar(uint32_t id);
 
 }  // namespace svr2011
