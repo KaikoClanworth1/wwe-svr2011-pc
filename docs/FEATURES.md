@@ -136,6 +136,9 @@ still being tested.
 - **The mouse is only captured when the game window really has focus** (a game in the background could grab the cursor in keyboard-and-mouse mode).
 - **VSync really syncs**: with VSync on, frames no longer tear on Direct3D 12, Direct3D 11 or Vulkan (it only paced the game before); the log names the present mode.
 - **Cutscene movies keep up with their sound** on slow PCs (the video fell 4-6 s behind in Road to WrestleMania); full-speed PCs are unchanged.
+- **Sabu 1.4**: his d-pad-left taunt ("Sit Down", a move 2011 cut) no longer freezes him and the match end.
+- **Custom titantrons kept**: editing a modded superstar's entrance no longer swaps his user movie for the first one in the list.
+- **R-Truth's entrance** plays his theme (only his vocal track played).
 - **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
 
 ## New in 2.0.6
