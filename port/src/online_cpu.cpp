@@ -28,6 +28,8 @@
 // Test aid: SVR2011_TEST_LOBBY_LOG=1 logs the records, picks and match slots.
 
 #include <algorithm>
+#include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -207,8 +209,23 @@ void MakeVacant(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
 
 }  // namespace
 
+namespace {
+std::atomic<int64_t> g_lobby_seen{0};       // ms: the lobby's last frame
+std::atomic<uint32_t> g_lobby_state{0}, g_lobby_cursor{0}, g_lobby_addr{0};
+uint8_t* g_lobby_base = nullptr;
+}  // namespace
+
 namespace svr2011 {
 // (online_rules.h: the port rules' CPUs)
+bool OnlineLobbyView(uint32_t* state, uint32_t* cursor, uint8_t** base, uint32_t* lobby) {
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (now - g_lobby_seen.load() > 300) return false;
+  *state = g_lobby_state.load(), *cursor = g_lobby_cursor.load();
+  *base = g_lobby_base, *lobby = g_lobby_addr.load();
+  if (!*base || !*lobby) return false;
+  return true;
+}
 uint32_t OnlineLobby(uint8_t* base) { return Lobby(base); }
 uint32_t OnlineLobbySlots(uint8_t* base, uint32_t L) { return SlotCount(base, L); }
 const uint8_t* OnlineLobbyRecord(uint8_t* base, uint32_t L, uint32_t j) { return Record(base, L, j); }
@@ -227,6 +244,9 @@ REX_HOOK_RAW(sub_824E6510) {
   const uint32_t L = Lobby(base);
   if (screen && L) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
+    g_lobby_state = state, g_lobby_cursor = j, g_lobby_addr = L, g_lobby_base = base;  // (OnlineLobbyView: online_rules.cpp's covers)
+    g_lobby_seen = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch()).count();
     static uint32_t last_state = 0xFFFFFFFF;
     if (LogOn() && state != last_state) REXLOG_INFO("online cpu: lobby state {} (cursor slot {})", state, j);
     last_state = state;

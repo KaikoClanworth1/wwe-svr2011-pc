@@ -44,6 +44,8 @@ void OnlineRulesLobby(PPCContext& ctx, uint8_t* base, uint32_t lobby);
 uint32_t OnlineLobbySlots(uint8_t* base, uint32_t lobby);
 const uint8_t* OnlineLobbyRecord(uint8_t* base, uint32_t lobby, uint32_t j);
 bool OnlineLobbyIsCpu(uint8_t* base, uint32_t lobby, uint32_t j);
+// The Player Match lobby on screen (its last frame within 300 ms): its state, its cursor slot, the memory, the lobby.
+bool OnlineLobbyView(uint32_t* state, uint32_t* cursor, uint8_t** base, uint32_t* lobby);
 void OnlineLobbyMakeCpu(PPCContext& ctx, uint8_t* base, uint32_t lobby, uint32_t j, const char* shown);
 
 }  // namespace svr2011

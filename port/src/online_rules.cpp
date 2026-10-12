@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cfloat>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -146,8 +147,43 @@ class Overlay final : public rex::ui::ImGuiDialog {
       return;
     }
     if (!g_cs_alive.load() && !svr2011::InMatch())
-      if (const auto v = svr2011::PortRules(); v && *v)
+      if (const auto v = svr2011::PortRules(); v && *v) {
         svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, "PORT RULES", Describe(*v));
+        if (Mode(*v >> 16) == kMystery) MysteryCovers(io);
+      }
+  }
+
+  // MYSTERY OPPONENT in the lobby: the hidden CPU's slot box (its portrait and
+  // name come from its superstar) and, with the cursor on it, the SUPERSTAR
+  // INFO panel get a "?" - the 3-slot (TRIPLE THREAT) layout; not while the
+  // superstar list is open (states 5, 6).
+  void MysteryCovers(ImGuiIO& io) {
+    uint32_t state = 0, cursor = 0, lobby = 0;
+    uint8_t* base = nullptr;
+    if (!svr2011::OnlineLobbyView(&state, &cursor, &base, &lobby) || state == 5 || state == 6) return;
+    const uint32_t slots = svr2011::OnlineLobbySlots(base, lobby);
+    if (slots != 3) return;
+    int hidden = -1;
+    for (uint32_t j = 0; j < slots; ++j)
+      if (svr2011::OnlineLobbyIsCpu(base, lobby, j)) hidden = int(j);  // (in a MYSTERY OPPONENT session every CPU is hidden)
+    if (hidden < 0) return;
+    const float w = io.DisplaySize.x, h = io.DisplaySize.y;
+    const float gw = std::min(w, h * 16.0f / 9.0f), gh = gw * 9.0f / 16.0f, s = gh / 720.0f;
+    const float ox = (w - gw) * 0.5f, oy = (h - gh) * 0.5f;
+    auto P = [&](float fx, float fy) { return ImVec2(ox + fx * gw, oy + fy * gh); };
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    auto cover = [&](ImVec2 a, ImVec2 b, const char* text, float size) {
+      dl->AddRectFilled(a, b, IM_COL32(12, 12, 16, 255), 4 * s);
+      dl->AddRect(a, b, IM_COL32(235, 235, 240, 255), 4 * s, 0, 2 * s);
+      const ImVec2 z = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+      dl->AddText(font, size, ImVec2((a.x + b.x - z.x) * 0.5f, (a.y + b.y - z.y) * 0.5f), IM_COL32(255, 255, 255, 255), text);
+    };
+    // (the slot boxes: 1P top, 2P left, 3P right)
+    constexpr float kBox[3][4] = {{0.348f, 0.218f, 0.652f, 0.336f}, {0.161f, 0.383f, 0.466f, 0.501f}, {0.534f, 0.383f, 0.838f, 0.501f}};
+    const float* k = kBox[hidden];
+    cover(P(k[0], k[1]), P(k[2], k[3]), "? MYSTERY OPPONENT", 26 * s);
+    if (cursor == uint32_t(hidden)) cover(P(0.129f, 0.593f), P(0.873f, 0.843f), "?", 80 * s);
   }
 };
 
@@ -167,8 +203,9 @@ void OnlineRulesPad(uint16_t buttons) {
 
 // MYSTERY OPPONENT: the host fills the lobby's last vacant slot with a CPU
 // (online_cpu.cpp: a stock superstar nobody has, its superstar block built
-// and sent) shown as MYSTERY OPPONENT - once: a slot already holding it is
-// never rolled again, and a joiner (early or late) gets the record.
+// and sent) - once: with a CPU in the lobby nothing is rolled again, and a
+// joiner (early or late) gets the record. Every machine covers the CPU's
+// slot (MysteryCovers).
 void OnlineRulesLobby(PPCContext& ctx, uint8_t* base, uint32_t lobby) {
   const auto v = PortRules();
   if (!v || Mode(*v >> 16) != kMystery) return;
@@ -176,8 +213,9 @@ void OnlineRulesLobby(PPCContext& ctx, uint8_t* base, uint32_t lobby) {
   int vacant = -1;
   for (uint32_t j = 0; j < slots; ++j) {
     const uint8_t* rec = OnlineLobbyRecord(base, lobby, j);
-    if (OnlineLobbyIsCpu(base, lobby, j) && std::strncmp(reinterpret_cast<const char*>(rec + 174), kMysteryName, 16) == 0)
-      return;  // (there: rolled already)
+    // (a CPU there: rolled already - its record's names are the superstar's
+    // once its block is built, so any CPU counts)
+    if (OnlineLobbyIsCpu(base, lobby, j)) return;
     const uint32_t state = uint32_t(rec[0]) << 24 | uint32_t(rec[1]) << 16 | uint32_t(rec[2]) << 8 | rec[3];
     if (state < 5) vacant = int(j);
   }
