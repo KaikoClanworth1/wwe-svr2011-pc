@@ -34,6 +34,9 @@ if ($WithModMaker) {
                      "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py")) {
         Copy-Item (Join-Path $PSScriptRoot $t) $mmtools
     }
+    # (and svrmod.exe, which svrfmt.py runs to compress pac entries: modmaker/build_cli.sh)
+    $cli = Join-Path $port "out\modmaker\svrmod.exe"
+    if (Test-Path $cli) { Copy-Item $cli $mmtools } else { Write-Warning "no $cli (modmaker\build_cli.sh) - the converters can't compress" }
     # the guide (pictures, diagrams, tutorials): docs/guide -> "Mod Maker Guide"
     $guide = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "docs\guide"
     if (Test-Path $guide) { Copy-Item $guide (Join-Path $stage "Mod Maker Guide") -Recurse }
