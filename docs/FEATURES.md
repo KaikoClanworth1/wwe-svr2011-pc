@@ -119,6 +119,10 @@ still being tested.
 - **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start.
 - **Highlight reel clip save**: saving a video clip mid-match with a full memory pool is cancelled with a message instead of crashing.
 - **Sabu**: his top-rope corner moves no longer lift the opponent a body-height above the turnbuckle (2011's own seated moves); the SvR 2010 converter keeps corner slots for seated moves.
+- **Black screen at start in game folders with non-English letters** (e.g. `oyun yüklü`, Cyrillic): the settings file never loaded; the programs now use UTF-8 paths throughout (Windows 10 1903 and later).
+- **Create-a-Superstar Help** stays open while BACK is held (it closed after a second with online on).
+- **Android: the game no longer plays by itself** on phones that list fingerprint readers, power keys or touch panels as controllers; the touch controls let go when the game loses focus (folding, the notification shade, a call).
+- **Report a problem** (PC and Android) keeps the useful log parts: a freeze's repeated errors no longer push out what came before.
 - **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
 
 ## New in 2.0.6
