@@ -652,6 +652,10 @@ REX_HOOK_RAW(sub_826DE6B0) {
   // the record the game keeps, not a copy put in the command - a copy left
   // the picture with no texture of its own, drawn with the font page bound
   // before it: the "glitched" keyboard picture on character select)
+  // (per record: a copy of the record in the sprite's pair - +0x110, its own -
+  // isn't bound at playback either, the picture showed the font page again;
+  // so the COM panel, which shares player 1's bottom bar record, shows player
+  // 1's version too)
   if (g_enabled && t_owner >= 0 && ctx.r4.u32) {
     const uint32_t record = Readable(ctx.r4.u32) ? Rd32(base + ctx.r4.u32 + 4) : 0;
     if (record) SwapRecordObject(record, CurrentKind(false));
