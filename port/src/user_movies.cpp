@@ -292,6 +292,95 @@ REX_HOOK_RAW(sub_8287CFB0) {
   ctx.r3.u64 = reels + uint32_t(n);
 }
 
+// An entrance's movie -> the CREATE AN ENTRANCE menus (B16). Two loaders put
+// a stored entrance into a menu's picks: sub_8287E960(slots, e) (the full
+// editor; slots = screen+4288, e = the entrance in the profile +0x1C4 layout,
+// the movie id at e+14 = profile +0x1C0 +0x12) and sub_82875320(page) (the
+// one-page editor of an existing superstar's entrance: MOTION, CHAMPION and
+// MULTI-TITLE ENTRANCE, MOVIE, MUSIC). Both find a highlight reel
+// (1000-1019) in the sub-list by value and any other id in the movie list
+// (sub_828823E0); a user movie (700-899) isn't there, so they picked row 0
+// (USER MOVIES) and the sub-list's row 0 - the first user movie, which
+// FINALIZE / SAVE then wrote (the sub-list row's value when the movie row is
+// 254): editing an entrance with a user movie (a superstar mod's own, or one
+// the player picked) turned its movie into the first one in the list. Here:
+// USER MOVIES and the movie's own row in the sub-list (filled before the
+// lookup, by sub_8287CFB0); NONE if its file is gone. An empty sub-list (the
+// reel storage not ready: sub_8287CFB0 not called) leaves the game's picks.
+namespace {
+
+int IndexOf(uint8_t* base, uint32_t list, uint32_t value) {  // (as sub_828823E0)
+  if (!list) return -1;
+  const uint32_t n = Rd32(base, list), rows = Rd32(base, list + 8);
+  for (uint32_t i = 0; i < n && rows; ++i)
+    if (Rd32(base, rows + i * kListItemSize) == value) return int(i);
+  return -1;
+}
+
+// The rows to select for user movie `id`: {movie list row, sub-list row}, or
+// false to leave the game's picks.
+bool UserMoviePicks(uint8_t* base, uint32_t movies, uint32_t sub, int id, uint32_t* row, uint32_t* pick) {
+  const int r = IndexOf(base, movies, kSubListRow), p = IndexOf(base, sub, uint32_t(id));
+  if (r >= 0 && p >= 0) {
+    *row = uint32_t(r), *pick = uint32_t(p);
+    REXLOG_INFO("user movies: entrance movie {} -> USER MOVIES row {}", id, p);
+    return true;
+  }
+  if (!sub || Rd32(base, sub) == 0) return false;
+  const int none = IndexOf(base, movies, kNoneId);
+  if (none < 0) return false;
+  *row = uint32_t(none), *pick = 0;
+  REXLOG_INFO("user movies: entrance movie {} has no file - NONE", id);
+  return true;
+}
+
+// sub_82875320's own lookup of the movie id (its copy of the entrance is on
+// its stack): the user movie it missed, and the list it looked in.
+thread_local bool t_in_page = false;
+thread_local int t_page_movie = -1;
+
+}  // namespace
+
+REX_EXTERN(__imp__sub_8287E960);
+REX_HOOK_RAW(sub_8287E960) {
+  const uint32_t slots = ctx.r3.u32, e = ctx.r4.u32;
+  __imp__sub_8287E960(ctx, base);
+  if (!g_memory || !slots || !e) return;
+  const int id = uint16_t(Rd16(base, e + 14));
+  if (id < kFirstId || id > kLastId) return;
+  uint32_t row = 0, pick = 0;
+  if (UserMoviePicks(base, Rd32(base, slots + 500), Rd32(base, slots + 508), id, &row, &pick)) {
+    Wr32(base, slots + 496, row);  // {index, list} picks: the movie row, the sub-list row
+    Wr32(base, slots + 504, pick);
+  }
+}
+
+// sub_82875320(page): the movie list at page+2264, the sub-list at page+2292;
+// the picks at page+152 (movie row) / +156 (sub-list row), then copied with
+// the others (+136..+156 -> +160..+180, the "unchanged" baseline).
+REX_EXTERN(__imp__sub_828823E0);
+REX_HOOK_RAW(sub_828823E0) {
+  const uint32_t value = ctx.r4.u32;
+  __imp__sub_828823E0(ctx, base);
+  if (t_in_page && ctx.r3.s32 < 0 && int(value) >= kFirstId && int(value) <= kLastId) t_page_movie = int(value);
+}
+REX_EXTERN(__imp__sub_82875320);
+REX_HOOK_RAW(sub_82875320) {
+  const uint32_t page = ctx.r3.u32;
+  t_in_page = true;
+  t_page_movie = -1;
+  __imp__sub_82875320(ctx, base);
+  t_in_page = false;
+  if (!g_memory || !page || t_page_movie < 0) return;
+  uint32_t row = 0, pick = 0;
+  if (UserMoviePicks(base, page + 2264, page + 2292, t_page_movie, &row, &pick)) {
+    Wr32(base, page + 152, row);
+    Wr32(base, page + 156, pick);
+    Wr32(base, page + 176, row);
+    Wr32(base, page + 180, pick);
+  }
+}
+
 // The path of entrance movie `id`: sub_828B52D8(id) -> (r3) the path.
 REX_EXTERN(__imp__sub_828B52D8);
 REX_HOOK_RAW(sub_828B52D8) {
