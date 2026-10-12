@@ -28,6 +28,8 @@
 // Test aid: SVR2011_TEST_LOBBY_LOG=1 logs the records, picks and match slots.
 
 #include <algorithm>
+#include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -43,6 +45,7 @@
 #include "generated/default/svr2011_init.h"
 #include "online.h"
 #include "online_overlay.h"
+#include "online_rules.h"
 
 REXCVAR_DEFINE_BOOL(online_cpu_slots, true, "Online",
                     "CPU players in online Player Matches: the host's Y on a vacant lobby slot");
@@ -163,7 +166,9 @@ bool BuildBlock(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j, uint32_t
   return true;
 }
 
-void MakeCpu(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
+// (shown: the name the lobby shows instead of the superstar's - MYSTERY
+// OPPONENT, online_rules.cpp; the superstar block is the real one)
+void MakeCpu(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j, const char* shown = nullptr) {
   uint8_t* rec = Record(base, L, j);
   std::memcpy(g_vacant[j], rec, kSlotSize);
   // a superstar nobody in the lobby has
@@ -187,9 +192,9 @@ void MakeCpu(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
   Wr32(rec + 152, 0xFFFFFFFF);
   std::memset(rec + 160, 0, 120);
   rec[172] = uint8_t(s.id >> 8), rec[173] = uint8_t(s.id);
-  std::strncpy(reinterpret_cast<char*>(rec + 174), s.name, 40);
-  std::strncpy(reinterpret_cast<char*>(rec + 242), s.name, 36);
-  REXLOG_INFO("online cpu: slot {} is a CPU - {} (id {})", j, s.name, s.id);
+  std::strncpy(reinterpret_cast<char*>(rec + 174), shown ? shown : s.name, 40);
+  std::strncpy(reinterpret_cast<char*>(rec + 242), shown ? shown : s.name, 36);
+  REXLOG_INFO("online cpu: slot {} is a CPU - {} (id {}){}", j, s.name, s.id, shown ? " - shown as " + std::string(shown) : "");
   const bool built = BuildBlock(ctx, base, L, j, s.id);
   SendRecord(ctx, base, L, j, !built);
 }
@@ -204,6 +209,32 @@ void MakeVacant(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
 
 }  // namespace
 
+namespace {
+std::atomic<int64_t> g_lobby_seen{0};       // ms: the lobby's last frame
+std::atomic<uint32_t> g_lobby_state{0}, g_lobby_cursor{0}, g_lobby_addr{0};
+uint8_t* g_lobby_base = nullptr;
+}  // namespace
+
+namespace svr2011 {
+// (online_rules.h: the port rules' CPUs)
+bool OnlineLobbyView(uint32_t* state, uint32_t* cursor, uint8_t** base, uint32_t* lobby) {
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (now - g_lobby_seen.load() > 300) return false;
+  *state = g_lobby_state.load(), *cursor = g_lobby_cursor.load();
+  *base = g_lobby_base, *lobby = g_lobby_addr.load();
+  if (!*base || !*lobby) return false;
+  return true;
+}
+uint32_t OnlineLobby(uint8_t* base) { return Lobby(base); }
+uint32_t OnlineLobbySlots(uint8_t* base, uint32_t L) { return SlotCount(base, L); }
+const uint8_t* OnlineLobbyRecord(uint8_t* base, uint32_t L, uint32_t j) { return Record(base, L, j); }
+bool OnlineLobbyIsCpu(uint8_t* base, uint32_t L, uint32_t j) { return IsCpu(Record(base, L, j)); }
+void OnlineLobbyMakeCpu(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j, const char* shown) {
+  MakeCpu(ctx, base, L, j, shown);
+}
+}  // namespace svr2011
+
 // The Player Match lobby's frame (sub_824E6510(screen)). Y pressed (pad 1's
 // own buttons: the lobby's Y listener isn't called on the host) on the host
 // with the cursor on a vacant slot: a CPU there; on a CPU: vacant again.
@@ -213,6 +244,9 @@ REX_HOOK_RAW(sub_824E6510) {
   const uint32_t L = Lobby(base);
   if (screen && L) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
+    g_lobby_state = state, g_lobby_cursor = j, g_lobby_addr = L, g_lobby_base = base;  // (OnlineLobbyView: online_rules.cpp's covers)
+    g_lobby_seen = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch()).count();
     static uint32_t last_state = 0xFFFFFFFF;
     if (LogOn() && state != last_state) REXLOG_INFO("online cpu: lobby state {} (cursor slot {})", state, j);
     last_state = state;
@@ -263,6 +297,8 @@ REX_HOOK_RAW(sub_824E6510) {
         g_edit = -1;
       }
     }
+    if ((state == 11 || state == 22) && IsHost(ctx, base))
+      svr2011::OnlineRulesLobby(ctx, base, L);  // (the port rules' CPUs: online_rules.h)
     if (pressed && REXCVAR_GET(online_cpu_slots)) {
       if (LogOn()) REXLOG_INFO("online cpu: Y (lobby state {}, cursor slot {})", state, j);
       if ((state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base)) {

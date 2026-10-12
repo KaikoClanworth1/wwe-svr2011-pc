@@ -23,6 +23,9 @@ uint32_t MysteryOpponentString(uint32_t id, rex::memory::Memory* memory);  // (0
 // A match is set up (sub_827374A0, before the game's own): on for a MYSTERY
 // OPPONENT one (the 1 on 1 rule 0x00, not in a story).
 void MysteryOpponentSetup(uint8_t* base, bool on);
+// An ONLINE MYSTERY OPPONENT match (online_rules.cpp's port rules; set up
+// by match_types.cpp): the lobby's CPU is the hidden one - it enters last.
+void MysteryOpponentOnline(bool on);
 bool MysteryOpponentMatch();
 
 // The match's people are built (sub_828BBEF0, before the game's own): the
