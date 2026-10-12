@@ -340,9 +340,21 @@ std::string SongOf(const uint8_t* e) {  // the USER PLAYLIST name (ASCII part)
 // A fresh profile (the base's copied): the mod's own moves (big-endian u16
 // move ids at byte offsets in the move block, below the entrance) and its
 // entrance number (+0x14, and the alternates +0x16, +0x18).
+// A move the game has no usable record for (none, or one 2011 kept for a cut
+// move: no category, no motion) stays the base's: such ids froze or crashed
+// the game in matches and in CREATE A MOVESET (players' mods made elsewhere).
 void SetOwnMoves(uint8_t* profile, const Mod& m) {
-  for (const auto& [off, id] : m.moves)
-    if (off + 1u < kEntrance) profile[off] = uint8_t(id >> 8), profile[off + 1] = uint8_t(id);
+  std::string skipped;
+  for (const auto& [off, id] : m.moves) {
+    if (off + 1u >= kEntrance) continue;
+    if (svr2011::MoveUsable(id) == 0) {
+      skipped += fmt::format(" 0x{:03X}={}", off, id);
+      continue;
+    }
+    profile[off] = uint8_t(id >> 8), profile[off + 1] = uint8_t(id);
+  }
+  if (!skipped.empty())
+    REXLOG_WARN("[svr2011] superstar mods: {}: moves the game doesn't have, the base's kept:{}", m.folder, skipped);
   if (m.entrance >= 0)
     for (uint32_t k : {0x14u, 0x16u, 0x18u})
       profile[kEntrance + k] = uint8_t(m.entrance >> 8), profile[kEntrance + k + 1] = uint8_t(m.entrance);
@@ -442,7 +454,7 @@ void LoadMods() {
   const fs::path overlay = g_game / "Mods" / "SuperstarOverlay";
   fs::create_directories(overlay, ec);
   auto slots = ReadSlots(dir / "slots.txt");
-  const size_t known = slots.size();
+  bool slots_changed = false;
   auto slot_of = [&](const std::string& folder) -> uint32_t {
     for (const auto& s : slots)
       if (s.first == folder) return s.second;
@@ -451,7 +463,20 @@ void LoadMods() {
       for (const auto& s : slots) taken |= s.second == id;
       if (taken) continue;
       slots.push_back({folder, id});
+      slots_changed = true;
       return id;
+    }
+    // All ids taken: one held by a mod whose folder is gone (removed by hand,
+    // or by an older launcher that left its line) is given to this one. Only
+    // then - a mod moved out for a while and back keeps its id (and the edits
+    // saves hold for it) while there is room.
+    for (auto& s : slots) {
+      std::error_code e;
+      if (fs::is_directory(dir / fs::path(s.first), e)) continue;  // (folder names as written: ANSI code page)
+      REXLOG_INFO("[svr2011] superstar mods: id {} of {} (its folder is gone) goes to {}", s.second, s.first, folder);
+      s.first = folder;
+      slots_changed = true;
+      return s.second;
     }
     return 0;
   };
@@ -600,7 +625,7 @@ void LoadMods() {
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {})", m.name, m.slot, m.base);
     g_mods.push_back(std::move(m));
   }
-  if (slots.size() != known) {
+  if (slots_changed) {
     if (FILE* t = std::fopen((dir / "slots.txt").string().c_str(), "wb")) {
       for (const auto& s : slots) std::fprintf(t, "%s\t%u\n", s.first.c_str(), s.second);
       std::fclose(t);
@@ -824,6 +849,15 @@ void ApplyRecords(uint8_t* base) {
         SetHeight(sr, br, m);
         continue;
       }
+    }
+    // The slot changes hands (another mod's record there: its id given to this
+    // one, slots.txt) - its profile, the moves and entrance a save kept for
+    // the old mod, goes too: this mod's, as for a new slot.
+    if (!was.empty() && !IsBlank(m.slot, sp)) {
+      std::memcpy(sp, bp, kProfileSize);
+      SetOwnMoves(sp, m);
+      SetEntranceMedia(sp, m, bp);
+      REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (the slot held \"{}\")", m.base, m.slot, was);
     }
     std::memcpy(sr, br, kRecordSize);
     OwnSelectTile(sr, br);
@@ -1511,6 +1545,26 @@ void CheckModProfiles(uint8_t* base) {
       ApplyRecords(base);
       return;
     }
+  }
+  // Once the move records are loaded: a mod's own move the game has no usable
+  // record for (SetOwnMoves may have run before they were) goes back to the
+  // base's - only where the slot still holds the mod's id, never an edit.
+  static bool checked = false;
+  if (checked || MoveUsable(0) < 0) return;
+  checked = true;
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2), bi = Rd16(base + kIdToIndex + m.base * 2);
+    if (si >= 512 || bi >= 512) continue;
+    uint8_t* sp = base + kProfiles + si * kProfileSize;
+    const uint8_t* bp = base + kProfiles + bi * kProfileSize;
+    std::string fixed;
+    for (const auto& [off, id] : m.moves) {
+      if (off + 1u >= kEntrance || Rd16(sp + off) != id || MoveUsable(id) != 0) continue;
+      sp[off] = bp[off], sp[off + 1] = bp[off + 1];
+      fixed += fmt::format(" 0x{:03X}={}", off, id);
+    }
+    if (!fixed.empty())
+      REXLOG_WARN("[svr2011] superstar mods: {}: moves the game doesn't have, the base's put back:{}", m.folder, fixed);
   }
 }
 }  // namespace svr2011
