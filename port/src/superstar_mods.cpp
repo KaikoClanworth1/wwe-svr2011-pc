@@ -1260,6 +1260,20 @@ REX_EXTERN(__imp__sub_82BEC030);
 REX_HOOK_RAW(sub_82BEC030) {
   if (ctx.r3.u32 >= 0x10000) {
     const char* e = reinterpret_cast<const char*>(base + ctx.r3.u32);
+    // Entrance music with a live vocal: R-Truth's entrance posts
+    // "Play_MUS_0272_2_0_RTruthVO" (Music.pck: two actions - the music
+    // container also posted by "Play_MUS_0272_2_0", and a streamed vocal track,
+    // both under one actor-mixer). Here only the vocal plays: the theme is
+    // silent (B20; level 0.04 = crowd only, against 0.07 with the music).
+    // Posted without the "_<name>VO" part the theme plays: the name is cut
+    // there (in the game's own string, which it builds again for each post).
+    if (!std::strncmp(e, "Play_MUS_", 9))
+      if (const size_t n = std::strlen(e); n > 3 && !std::strcmp(e + n - 2, "VO"))
+        if (const char* cut = std::strrchr(e, '_'); cut && cut - e > 9) {
+          static int logged = 0;
+          if (logged++ < 8) REXLOG_INFO("[svr2011] entrance music: {} posted without its vocal track", e);
+          base[ctx.r3.u32 + uint32_t(cut - e)] = 0;
+        }
     uint32_t id = 0;
     if (svr2011::JukeboxEvent(base, e, ctx.r4.u32)) {  // (jukebox.h: every menu song off)
       ctx.r3.u64 = 0x7E000001u;  // (a playing id: not 0)
