@@ -6,7 +6,7 @@
 #   .\lim_p2p.ps1 [-Name lp1] [-RbPresses 1]
 # The joiner's account (LimitTest2) is made on the test server the first time:
 # runs\test_config_lim_online2.toml. Stops both games and the server at the end.
-param([string]$Name = "lp1", [int]$RbPresses = 1, [string]$MatchKeys = "", [string]$RowKey = "RB", [int]$Shots = 3, [string]$HostBase = "", [string]$TargetRule = "")
+param([string]$Name = "lp1", [int]$RbPresses = 1, [string]$MatchKeys = "", [string]$RowKey = "RB", [int]$Shots = 3, [string]$HostBase = "", [string]$TargetRule = "", [int]$ShotEvery = 25)
 # -TargetRule 0D (00 / 0D / 0E / 08): CREATE SESSION's MATCH TYPE set to that normal match, checked in the
 # log ("CREATE SESSION match is rule XX") and tried again (presses get lost under load).
 # -HostBase: a saves folder in runs copied fresh for the host each run (runs	est_userdata_lim_run): the
@@ -90,9 +90,9 @@ try {
       Shot "" "$Name`_host_round$round"; Shot "2" "$Name`_join_round$round"
       In "" @("press A 200", "wait 3000", "press A 200", "wait 6000")
       In "2" @("press A 200", "wait 6000", "press A 200", "wait 3000", "press A 200", "wait 6000")
-      Start-Sleep 30
+      foreach ($k in 1..5) { Start-Sleep 7; Shot "" "$Name`_host_r$round`_$k"; Shot "2" "$Name`_join_r$round`_$k" }  # (the VS / loading / entrances)
     }
-    foreach ($i in 1..$Shots) { Start-Sleep 25; Shot "" "$Name`_host_match$i"; Shot "2" "$Name`_join_match$i" }
+    foreach ($i in 1..$Shots) { Start-Sleep $ShotEvery; Shot "" "$Name`_host_match$i"; Shot "2" "$Name`_join_match$i" }
 } finally {
     & $s stop | Out-Null; & $s stop -Slot 2 | Out-Null
     Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
