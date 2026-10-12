@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -292,6 +293,27 @@ REX_HOOK_RAW(sub_8274B0A8) {  // a keyboard's key handling, each frame
   g_base = base;
   __imp__sub_8274B0A8(ctx, base);
   t_handling = prev;
+}
+
+// Test aid (SVR2011_TEST_LOBBY_LOG): a text field's limits as a character
+// goes in (sub_82730110(field, utf8, ...): its settings at +44 - +40 bytes,
+// +44 per line, +52 more lines allowed).
+REX_EXTERN(__imp__sub_82730110);
+REX_HOOK_RAW(sub_82730110) {
+  static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
+  static uint32_t logged = 0;
+  if (log && ctx.r3.u32 && ctx.r3.u32 != logged) {
+    logged = ctx.r3.u32;
+    auto rd = [base](uint32_t a) {
+      const uint8_t* p = base + a;
+      return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    };
+    const uint32_t cfg = rd(ctx.r3.u32 + 44);
+    if (cfg >= 0x40000000 && cfg < 0xC0000000)
+      REXLOG_INFO("[svr2011] text field {:08X}: bytes {}, per line {}, lines {}", ctx.r3.u32, rd(cfg + 40), rd(cfg + 44),
+                  rd(cfg + 52));
+  }
+  __imp__sub_82730110(ctx, base);
 }
 
 REX_HOOK_RAW(sub_82905130) {
