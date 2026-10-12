@@ -1296,19 +1296,28 @@ REX_HOOK_RAW(sub_82BEC030) {
   if (ctx.r3.u32 >= 0x10000) {
     const char* e = reinterpret_cast<const char*>(base + ctx.r3.u32);
     // Entrance music with a live vocal: R-Truth's entrance posts
-    // "Play_MUS_0272_2_0_RTruthVO" (Music.pck: two actions - the music
-    // container also posted by "Play_MUS_0272_2_0", and a streamed vocal track,
-    // both under one actor-mixer). Here only the vocal plays: the theme is
-    // silent (B20; level 0.04 = crowd only, against 0.07 with the music).
-    // Posted without the "_<name>VO" part the theme plays: the name is cut
-    // there (in the game's own string, which it builds again for each post).
-    if (!std::strncmp(e, "Play_MUS_", 9))
-      if (const size_t n = std::strlen(e); n > 3 && !std::strcmp(e + n - 2, "VO"))
-        if (const char* cut = std::strrchr(e, '_'); cut && cut - e > 9) {
-          static int logged = 0;
-          if (logged++ < 8) REXLOG_INFO("[svr2011] entrance music: {} posted without its vocal track", e);
-          base[ctx.r3.u32 + uint32_t(cut - e)] = 0;
-        }
+    // "Play_MUS_0272_2_0_RTruthVO" (Music.pck: two streamed sounds - the
+    // theme, as "Play_MUS_0272_2_0" plays it, and his vocal), then at once
+    // "Pause_start" on the same object and "Pause_Resume" a moment later. The
+    // theme's stream is still opening when the pause comes and stays paused:
+    // only the vocal played (B20; level 0.04 = crowd only, 0.07-0.08 with the
+    // theme). The pause right after such an event is not passed on (the
+    // pause/resume pair is a fraction of a second; a resume of a sound that
+    // isn't paused does nothing): theme and vocal both play.
+    static uint32_t vo_object = 0;
+    static auto vo_at = std::chrono::steady_clock::time_point{};
+    if (!std::strncmp(e, "Play_MUS_", 9)) {
+      const size_t n = std::strlen(e);
+      vo_object = n > 3 && !std::strcmp(e + n - 2, "VO") ? ctx.r4.u32 : 0;
+      vo_at = std::chrono::steady_clock::now();
+    } else if (vo_object && ctx.r4.u32 == vo_object && !std::strcmp(e, "Pause_start")) {
+      vo_object = 0;
+      if (std::chrono::steady_clock::now() - vo_at < std::chrono::milliseconds(500)) {
+        REXLOG_INFO("[svr2011] entrance music: the pause right after the music with a vocal is not passed on");
+        ctx.r3.u64 = 0x7E000002u;  // (a playing id: not 0)
+        return;
+      }
+    }
     uint32_t id = 0;
     if (svr2011::JukeboxEvent(base, e, ctx.r4.u32)) {  // (jukebox.h: every menu song off)
       ctx.r3.u64 = 0x7E000001u;  // (a playing id: not 0)
