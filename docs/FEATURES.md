@@ -124,6 +124,7 @@ still being tested.
 - **Android: the game no longer plays by itself** on phones that list fingerprint readers, power keys or touch panels as controllers; the touch controls let go when the game loses focus (folding, the notification shade, a call).
 - **Report a problem** (PC and Android) keeps the useful log parts: a freeze's repeated errors no longer push out what came before.
 - **Direct3D 11: ringside floor mat and barricade tops** no longer white (a shader limit the DX11 compiler dropped).
+- **Custom arenas on page 2 of SELECT ARENA** stay chosen (going back into the arena select reset to page 1 and the stock arena played); LT / RT turn the pages too.
 - **Universe: superstar mods can't hold a title** (a mod has no Universe place, so the title got stuck with a holder nobody could book); saves where one does get the previous holder back.
 - **Superstar mod slots**: removing a mod in the launcher / Android frees its slot; the game reuses the slots of mods whose folder is gone.
 - **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
