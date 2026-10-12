@@ -1047,6 +1047,20 @@ REX_HOOK_RAW(sub_827374A0) {
   if (g_pending_like != ~0u && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
                          (!g_pending_select_only && rule == kWholeBackstage2)))
     ShapeRule(base, played, g_pending_like, g_pending_select_only);
+  // 6-MAN WEAPONS EVERYWHERE: a tornado match - everyone legal, no tags (B11:
+  // it played as a 6-man tag). The rule record's +8 is 2 where everyone is
+  // legal (triple threat, fatal-4-way, the tornado rules 0x0F and 2 on 2
+  // Extreme Rules 0x4E), 0 in the tag rules; back after the match (RestoreRule).
+  if (g_weapons && rule == 0x08)
+    if (const uint32_t rules = Rd32(base + kRules)) {
+      if (g_saved.rule != rule) {
+        g_saved.rule = rule;
+        std::memcpy(g_saved.rec, base + rules + rule * kRuleSize, kRuleSize);
+        std::memcpy(g_saved.rec2, base + rules + kRule2 + rule * kRule2Size, kRule2Size);
+      }
+      base[rules + rule * kRuleSize + 8] = 2;
+      REXLOG_INFO("match types: WEAPONS EVERYWHERE - 6-man as a tornado match");
+    }
   ctx.r4.u64 = played;
   __imp__sub_827374A0(ctx, base);
 }
@@ -1846,6 +1860,48 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   OnlineFirstBlood(base);
   constexpr uint32_t kChars = 0x82E3CC50;
   MatchHudTick(base);  // (match_hud.h: the HUD shows while the match's clock runs)
+  // Research aid (stuck wrestlers, B11/B12): SVR2011_TEST_STUCK_CHARS=1 - each
+  // second, people 0-5 whose place and motion (+212) haven't changed for 10 s
+  // while the match clock runs are logged (once each time), with the motion.
+  if (static const bool stuck_log = std::getenv("SVR2011_TEST_STUCK_CHARS") != nullptr; stuck_log) {
+    struct Seen { uint32_t x = 0, z = 0, motion = 0, since = 0; bool told = false; };
+    static Seen seen[6];
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    static uint32_t last = 0;
+    if (frames < last) for (Seen& s : seen) s = Seen{};
+    // (SVR2011_TEST_PUT_P1=<x>,<z>[,<frame>]: at that match frame (240) person 0 is put there on the floor, once a match)
+    static bool put = false;
+    if (frames < last) put = false;
+    static const char* put_at = std::getenv("SVR2011_TEST_PUT_P1");
+    static const uint32_t put_frame = [] {
+      float x, z;
+      int f = 240;
+      if (put_at) std::sscanf(put_at, "%f,%f,%d", &x, &z, &f);
+      return uint32_t(f);
+    }();
+    if (const char* at = put_at; at && !put && frames >= put_frame)
+      if (const uint32_t c = Rd32(base + kChars)) {
+        put = true;
+        float x = 0, z = 0;
+        std::sscanf(at, "%f,%f", &x, &z);
+        WrF(base + c + 288, x), WrF(base + c + 292, 0.0f), WrF(base + c + 296, z);
+        REXLOG_INFO("match types: person 0 put at ({}, {})", x, z);
+      }
+    if (frames / 60 != last / 60)
+      for (uint32_t i = 0; i < 6; ++i) {
+        const uint32_t c = Rd32(base + kChars + i * 4);
+        if (!c) continue;
+        Seen& s = seen[i];
+        const uint32_t x = Rd32(base + c + 288), z = Rd32(base + c + 296), m = Rd32(base + c + 212);
+        if (x != s.x || z != s.z || m != s.motion) s = Seen{x, z, m, frames};
+        else if (!s.told && frames - s.since >= 600) {
+          s.told = true;
+          REXLOG_INFO("match types: person {} stuck since match frame {} at ({:.1f}, {:.1f}), motion {}", i, s.since,
+                      RdF(base + c + 288), RdF(base + c + 296), m);
+        }
+      }
+    last = frames;
+  }
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a
   // match the first two people's position, area bytes (+441, +444) and motion;
   // SVR2011_TEST_CELL_ROOF=<y> - at match frame 180 both are put at that
@@ -2054,15 +2110,18 @@ struct Placed {
   float x, y, z, yaw;
 };
 // In the ring y = -12, on the floor 0 (a table stands at y -6.7 by the
-// apron); the ring is about +-30, the announce tables at z -76.
+// apron); the ring is about +-30 (its apron to about 34), the announce
+// tables at z -76. On the camera's side (+z) the barrier is close: weapons
+// at z 54-55 lay against it, and a wrestler picking one up there froze for
+// the rest of the match (B11, a player's video) - they lie at z 45.
 constexpr Placed kPlaced[] = {
     {4, 0, 10.f, -12.f, 12.f, 30.f},      // chairs in the ring
     {4, 0, -12.f, -12.f, -8.f, 200.f},
-    {5, 1, 0.f, -6.7f, 54.f, 0.f},        // tables by the apron
+    {5, 1, 0.f, -6.7f, 45.f, 0.f},        // tables by the apron
     {5, 1, -52.f, 0.f, 0.f, 90.f},
     {11, 1, 52.f, 0.f, 0.f, 90.f},        // a ladder
-    {63, 1, 40.f, 0.f, 55.f, 0.f},        // trash can
-    {89, 1, -40.f, 0.f, 55.f, 30.f},      // guitar
+    {63, 1, 40.f, 0.f, 45.f, 0.f},        // trash can
+    {89, 1, -40.f, 0.f, 45.f, 30.f},      // guitar
     {4, 1, 45.f, 0.f, -45.f, 60.f},       // a chair on the floor
 };
 // 6-MAN: no Extreme Rules weapons - the extreme rules option (+56, which
@@ -2074,11 +2133,11 @@ constexpr Placed kPlaced[] = {
 constexpr Placed kPlacedSix[] = {
     {4, 0, 10.f, -12.f, 12.f, 30.f},      // chairs in the ring
     {4, 0, -12.f, -12.f, -8.f, 200.f},
-    {102, 1, 0.f, 0.f, 54.f, 0.f},        // by the apron
+    {102, 1, 0.f, 0.f, 45.f, 0.f},        // by the apron
     {72, 1, -52.f, 0.f, 0.f, 90.f},
     {28, 1, 52.f, 0.f, 0.f, 90.f},
-    {4, 1, 40.f, 0.f, 55.f, 0.f},         // chairs on the floor
-    {4, 1, -40.f, 0.f, 55.f, 30.f},
+    {4, 1, 40.f, 0.f, 45.f, 0.f},         // chairs on the floor
+    {4, 1, -40.f, 0.f, 45.f, 30.f},
     {4, 1, 45.f, 0.f, -45.f, 60.f},
 };
 // HELL IN A CELL: inside its walls (about +-55; the ring +-30, its apron to
@@ -2661,16 +2720,17 @@ REX_HOOK_RAW(sub_828C48E8) {
   if (elim) base[saved + kSavedElimination] = was;
   // WEAPONS EVERYWHERE in 6-MAN / HANDICAP: the bytes Extreme Rules sets in
   // every mode's option record (Extreme Rules 0x4D-0x50 against the normal
-  // rules): +3 rope breaks off, +10 0, +27 locked off (0x80), +56 extreme
+  // rules): +3 rope breaks off, +10 0, +27 DISQUALIFICATION off (the record's locked 0x80 is 0 live), +56 extreme
   // rules (its weapons' models are loaded). (Not +32 0x80 and +47 1, set only
   // by the 2 on 2 and fatal-4-way ones: a 6-man match crashed in its match
   // screen, sub_824186E8.)
   if (extreme_bytes && live) {
     uint8_t* l = base + live;
-    l[3] = 0, l[10] = 0, l[27] = 0x80;
+    l[3] = 0, l[10] = 0, l[27] = 0;  // (+27 DISQUALIFICATION: 0 off - the game has masked the lock bit 0x80 off by now)
     const bool ring = StructureOf(rule) && (rule < kCellFirst || rule > kCellLast);  // (cage, inferno)
     if (rule != kSixManRule && rule != kGauntlet && !ring) l[56] = 1;  // (6-MAN / the six-person gauntlet / cage / inferno: not - see kPlacedSix, kPlacedRing)
-    if (rule == kGauntlet || ring) l[4] = 1;                            // (no DQ)
+    if (rule == kGauntlet || ring) l[4] = 1;                            // (RING OUT: no exiting)
+    if (rule == kSixManRule) l[5] = 0;                                   // (6-MAN: no count-outs; out of the ring is fine, as in Extreme Rules)
     REXLOG_INFO("match types: WEAPONS EVERYWHERE - rule {:02X} with the Extreme Rules options", rule);
   }
   svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)
