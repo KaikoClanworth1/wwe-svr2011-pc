@@ -175,7 +175,10 @@ constexpr Binding kBindings[] = {
     {"keybind_back", "BACK", "BACK", "Z,Tab"},
 };
 constexpr int kNumBindings = int(std::size(kBindings));
-constexpr int kControlRows = kNumBindings + 1;  // (+ RESET TO DEFAULTS)
+// Rows: VIBRATION (ON / OFF, the vibration setting: pad_types.cpp), the
+// inputs (row - 1), RESET TO DEFAULTS.
+constexpr int kVibrationRow = 0, kFirstBinding = 1, kResetRow = kNumBindings + 1;
+constexpr int kControlRows = kNumBindings + 2;
 constexpr int kControlsShown = 9;              // (rows on screen; the list scrolls)
 
 // The keys a binding can take: ImGui's key -> the driver's name for it.
@@ -668,23 +671,35 @@ void GraphicsPage::ControlsInput(uint16_t pressed, uint16_t act, bool& back) {
   const bool add = (pressed & X_INPUT_GAMEPAD_Y) || key(ImGuiKey_Insert, false);
   const bool clear = (pressed & X_INPUT_GAMEPAD_X) || key(ImGuiKey_Delete, false);
   const bool reset = (pressed & X_INPUT_GAMEPAD_BACK) || key(ImGuiKey_R, false);
-  if (control_row_ == kNumBindings) {  // RESET TO DEFAULTS
+  if (control_row_ == kVibrationRow) {  // VIBRATION: A, left / right toggle it
+    const bool flip = change || (act & (X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_RIGHT)) ||
+                      key(ImGuiKey_LeftArrow, false) || key(ImGuiKey_RightArrow, false);
+    if (flip) {
+      const bool on = !rex::cvar::Query<bool>("vibration");
+      rex::cvar::SetFlagByName("vibration", on ? "true" : "false");
+      SaveSetting("vibration", on ? "true" : "false");
+      REXLOG_INFO("[svr2011] controls: vibration {}", on ? "on" : "off");
+    }
+    return;
+  }
+  if (control_row_ == kResetRow) {  // RESET TO DEFAULTS
     if (change) {
       for (int i = 0; i < kNumBindings; ++i) SetBinding(i, kBindings[i].keys);
     }
     return;
   }
+  const int binding = control_row_ - kFirstBinding;
   if (change || add) {
     // (from the next frame on: the key that started it is not the new key)
-    capture_ = control_row_;
+    capture_ = binding;
     capture_mod_ = -1;
     capture_add_ = add && !change;
     capture_until_ = Clock::now() + std::chrono::seconds(8);
     back = false;
   } else if (clear) {
-    SetBinding(control_row_, "");
+    SetBinding(binding, "");
   } else if (reset) {  // (this input's default keys; BACK doesn't close the page here)
-    SetBinding(control_row_, kBindings[control_row_].keys);
+    SetBinding(binding, kBindings[binding].keys);
     back = false;
   }
 }
@@ -961,17 +976,26 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         dl->AddRectFilled(a, b, IM_COL32(34, 34, 40, 235), 3 * s);
       }
       const float ty = P(0, y + row_h * 0.5f).y - TextSize(g_menu_font, fs, "A").y * 0.5f;
-      if (i == kNumBindings) {
+      if (i == kResetRow) {
         const char* reset = "RESET TO DEFAULTS";
         const ImVec2 z = TextSize(g_menu_font, fs, reset);
         Text(dl, g_menu_font, fs, ImVec2(P(639, 0).x - z.x * 0.5f, ty), IM_COL32(255, 255, 255, 255), reset);
         continue;
       }
-      const Binding& bd = kBindings[i];
+      if (i == kVibrationRow) {
+        Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), "VIBRATION");
+        Text(dl, g_menu_font, fs * 0.85f, ImVec2(P(470, 0).x, ty + fs * 0.08f), IM_COL32(180, 180, 188, 255),
+             "CONTROLLER RUMBLE");
+        const char* v = rex::cvar::Query<bool>("vibration") ? "ON" : "OFF";
+        const ImVec2 vs = TextSize(g_menu_font, fs, v);
+        Text(dl, g_menu_font, fs, ImVec2(P(1092, 0).x - vs.x, ty), IM_COL32(255, 255, 255, 255), v);
+        continue;
+      }
+      const Binding& bd = kBindings[i - kFirstBinding];
       Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), bd.input);
       Text(dl, g_menu_font, fs * 0.85f, ImVec2(P(470, 0).x, ty + fs * 0.08f), IM_COL32(180, 180, 188, 255),
            bd.action);
-      const bool waiting = capture_ == i;
+      const bool waiting = capture_ == i - kFirstBinding;
       const std::string v = waiting ? (capture_add_ ? "PRESS A KEY TO ADD" : "PRESS A KEY")
                                     : ShowKeys(rex::cvar::Query<std::string>(bd.cvar));
       const ImVec2 vs = TextSize(g_menu_font, fs, v.c_str());
@@ -988,8 +1012,10 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     }
     const char* help =
         capture_ >= 0 ? "Press the key (Shift / Ctrl / Alt + a key: a combination; tapped alone: that key). ESC: cancel."
-        : control_row_ == kNumBindings
+        : control_row_ == kResetRow
             ? "A: the default keys for every input."
+        : control_row_ == kVibrationRow
+            ? "A / LEFT / RIGHT: controller vibration on or off."
             : "A: change   Y: add a key   X: clear   BACK: reset   (keyboard: Enter, Insert, Delete, R)";
     const float hs = 18 * s;
     const ImVec2 sz = TextSize(g_menu_font, hs, help);

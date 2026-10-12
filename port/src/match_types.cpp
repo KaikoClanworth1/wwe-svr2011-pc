@@ -282,7 +282,7 @@ int g_test_rule = -1;
 // Test aid: SVR2011_TEST_MODE=<mode> - ONE ON ONE NORMAL (route match) plays
 // a mode only a runtime row gives: three_stages, elimination_tt,
 // elimination_f4w, weapons, slobber, lumberjack (as if its row was picked).
-enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack, kGauntletElim, kGauntletElimEr };
+enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack, kGauntletElim, kGauntletElimEr, kMystery };
 TestMode g_test_mode = TestMode::kNone;
 
 // Node ids (+0x1C): the game finds a node by binary search over the table
@@ -845,7 +845,8 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
                                {"slobber", TestMode::kSlobber, int(kGauntlet)},
                                {"gauntlet_eliminator", TestMode::kGauntletElim, int(kGauntlet)},
                                {"gauntlet_eliminator_er", TestMode::kGauntletElimEr, int(kGauntlet)},
-                               {"lumberjack", TestMode::kLumberjack, int(kLumberjack)}};
+                               {"lumberjack", TestMode::kLumberjack, int(kLumberjack)},
+                               {"mystery", TestMode::kMystery, 0}};
     for (const Mode& k : kModes)
       if (m == k.name) {
         g_test_mode = k.mode;
@@ -951,6 +952,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
       case TestMode::kElimTT:
       case TestMode::kElimF4W: g_pending_elimination = true; break;
       case TestMode::kWeapons: g_pending_weapons = true; break;
+      case TestMode::kMystery: g_pending_mystery = true; break;
       case TestMode::kGauntletElim:
       case TestMode::kGauntletElimEr:
         g_pending_ge = true;
@@ -1896,8 +1898,12 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
         if (x != s.x || z != s.z || m != s.motion) s = Seen{x, z, m, frames};
         else if (!s.told && frames - s.since >= 600) {
           s.told = true;
-          REXLOG_INFO("match types: person {} stuck since match frame {} at ({:.1f}, {:.1f}), motion {}", i, s.since,
-                      RdF(base + c + 288), RdF(base + c + 296), m);
+          const uint32_t target = svr2011::AiTargetOf(c);
+          REXLOG_INFO("match types: person {} stuck since match frame {} at ({:.1f}, {:.1f}), motion {}, state {} lost {}; "
+                      "AI target {:08X}{}", i, s.since, RdF(base + c + 288), RdF(base + c + 296), m, base[c + 446], base[c + 447],
+                      target, target ? fmt::format(" (state {} lost {} at {:.1f}, {:.1f}, motion {})", base[target + 446],
+                                                   base[target + 447], RdF(base + target + 288), RdF(base + target + 296),
+                                                   Rd32(base + target + 212)) : std::string());
         }
       }
     last = frames;

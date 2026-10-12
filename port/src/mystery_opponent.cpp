@@ -3,11 +3,12 @@
 // A normal one on one (rule 0x00). The select screen still has its two
 // panels (no match rule has a select layout of one pick), but the opponent's
 // is never really chosen:
-// - the player picks their superstar as usual; the COM panel's first A (the
-//   cursor's A handler, sub_82463FD0, state 4) is played twice at once - pick
-//   and attire - whatever the COM cursor is on;
-// - a "?" covers the COM panel (select screen) and the opponent's model, name
-//   and the ticker (VS screen, then the loading screen);
+// - the player picks their superstar as usual; then the COM panel completes
+//   by itself (B26: its cursor's A handler, sub_82463FD0 state 4, played
+//   twice at once - pick and attire - whatever the COM cursor is on; the
+//   cursor's per-frame update sub_82465038 starts it);
+// - a "?" covers the COM panel's model and name (select screen) and the
+//   opponent's model, name and the ticker (VS screen, then the loading screen);
 // - when the people are built (sub_828BBEF0) person 1's slot gets the hidden
 //   pick (CPU, team 1, the first attire);
 // - the COM cursor's own pick can land in a later slot (a third wrestler):
@@ -82,6 +83,7 @@ std::atomic<bool> g_loading{false};      // the people built: the loading screen
 std::atomic<int64_t> g_vs_since{0};      // (ms) the COM panel's pick
 std::atomic<int64_t> g_entrances_since{0};  // (ms) the entrances started (0: not now) - until the bell
 std::atomic<uint32_t> g_player_id{0};    // the player's pick (the VS screen's name)
+std::atomic<bool> g_auto_done{false};      // the COM panel completed for the player (B26)
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
@@ -168,18 +170,16 @@ class Hidden final : public rex::ui::ImGuiDialog {
       centred(qs, a, b, "?", kRed);
     };
     if (select) {
-      // The COM panel: the model, then its info plate.
+      // The COM panel (picked by itself: B26): a "?" over its model and its
+      // name - only those, in the panel's own look (no plate of ours).
       question(P(0.60f, 0.03f), P(0.86f, 0.315f));
-      const ImVec2 a = P(0.522f, 0.315f), b = P(0.852f, 0.43f);
-      dl->AddRectFilled(a, b, IM_COL32(10, 12, 18, 250), 6 * s);
-      dl->AddRect(a, b, IM_COL32(235, 235, 240, 255), 6 * s, 0, 2 * s);
-      centred(30 * s, a, ImVec2(b.x, (a.y + b.y) * 0.5f + 6 * s), "MYSTERY OPPONENT", kWhite);
-      centred(18 * s, ImVec2(a.x, (a.y + b.y) * 0.5f + 6 * s), b,
-              g_player_ready.load() ? "PRESS A TO FACE THEM" : "REVEALED AT THEIR ENTRANCE", IM_COL32(255, 200, 60, 255));
+      const ImVec2 a = P(0.522f, 0.318f), b = P(0.852f, 0.372f);
+      dl->AddRectFilled(a, b, IM_COL32(12, 12, 16, 255), 3 * s);
+      centred(32 * s, a, b, "?", kWhite);
     } else {
       // The VS screen: the opponent's model, their half of the names, the ticker.
       question(P(0.50f, 0.08f), P(0.82f, 0.515f));
-      const ImVec2 a = P(0.515f, 0.555f), b = P(0.83f, 0.64f);
+      const ImVec2 a = P(0.50f, 0.555f), b = P(0.84f, 0.70f);  // (down over the names line: "VS. <name>" showed under it)
       dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 255));
       centred(44 * s, a, b, "MYSTERY OPPONENT", kWhite);
       dl->AddRectFilled(P(0.135f, 0.79f), P(0.80f, 0.858f), IM_COL32(24, 24, 28, 255));
@@ -218,6 +218,7 @@ void MysteryOpponentSetup(uint8_t* base, bool on) {
   g_entrances_since = 0;
   g_player_ready = false;
   g_player_id = 0;
+  g_auto_done = false;
   if (on) REXLOG_INFO("mystery opponent: on");
 }
 
@@ -361,4 +362,38 @@ REX_HOOK_RAW(sub_828C3AC8) {
     }
   }
   __imp__sub_828C3AC8(ctx, base);
+}
+
+// The select cursor's per-frame update: sub_82465038(cursor) (its state at
+// +4948, its player at +284, a list or roulette open at +28916, the screen at
+// +272 - its fade at +92, 255 when the screen takes input). For a MYSTERY
+// OPPONENT match the COM panel is completed by itself once the player's own
+// pick is decided (B26: the opponent can't be chosen): its A handler is run
+// as if A was pressed (above: pick and attire at once) - whatever superstar
+// the cursor rests on, the hidden pick takes its place (sub_828BBEF0).
+// Backing out of the COM panel (the player's panel open again) arms it again.
+REX_EXTERN(__imp__sub_82465038);
+REX_HOOK_RAW(sub_82465038) {
+  const uint32_t cursor = ctx.r3.u32;
+  __imp__sub_82465038(ctx, base);
+  if (!g_on.load() || !cursor) return;
+  if (!g_player_ready.load()) {
+    g_auto_done = false;
+    return;
+  }
+  if (g_auto_done.load() || Rd32(base + cursor + 284) != 1 || Rd32(base + cursor + 4948) != kStatePick ||
+      Rd32(base + cursor + 28916) != 0)
+    return;
+  const uint32_t screen = Rd32(base + cursor + 272);
+  if (!screen) return;
+  const uint32_t fade_bits = Rd32(base + screen + 92);
+  float fade;
+  std::memcpy(&fade, &fade_bits, 4);
+  if (!(fade >= 255.0f)) return;  // (the screen not taking input yet: next frame)
+  g_auto_done = true;
+  REXLOG_INFO("mystery opponent: the COM panel completed for the player");
+  const auto saved = ctx;
+  ctx.r3.u64 = cursor + 44;
+  sub_82463FD0(ctx, base);  // (the hooked A handler: pick and attire)
+  ctx = saved;
 }

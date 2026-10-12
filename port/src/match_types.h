@@ -46,6 +46,8 @@ void InstallSlobberKnockerOverlay(rex::ui::ImGuiDrawer* drawer);
 // GAUNTLET ELIMINATOR (gauntlet_eliminator.cpp): the match set up is one
 // (match_types.cpp), a new one starts, each world update while it runs,
 // before each call of the falls judge, its panel over the match.
+// A character's AI target (its pair's +20, last update; slobber_knocker.cpp) - research aid.
+uint32_t AiTargetOf(uint32_t character);
 bool GauntletEliminatorMatch();
 void GauntletEliminatorStart();
 void GauntletEliminatorUpdate(PPCContext& ctx, uint8_t* base);

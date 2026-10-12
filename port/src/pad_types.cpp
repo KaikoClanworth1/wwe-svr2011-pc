@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <SDL3/SDL_hints.h>
@@ -14,9 +15,29 @@
 #include "fast_start.h"
 
 #include <rex/input/sdl/sdl_input_driver.h>
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+
+REXCVAR_DEFINE_BOOL(vibration, true, "Input", "Controller vibration (rumble); OPTIONS -> CONTROLS -> VIBRATION");
+
+// The game's XamInputSetState(user, vibration) wrapper: sub_82905068 (r4: the
+// two motor speeds, u16 each). With vibration off the motors get 0 - so a
+// rumble already running stops too.
+REX_EXTERN(__imp__sub_82905068);
+REX_HOOK_RAW(sub_82905068) {
+  if (!REXCVAR_GET(vibration) && ctx.r4.u32) {
+    static bool told = false;
+    if (!told && (base[ctx.r4.u32] | base[ctx.r4.u32 + 1] | base[ctx.r4.u32 + 2] | base[ctx.r4.u32 + 3]))
+    {
+      told = true;
+      REXLOG_INFO("[svr2011] controls: vibration off - the game's rumble not sent");
+    }
+    std::memset(base + ctx.r4.u32, 0, 4);
+  }
+  __imp__sub_82905068(ctx, base);
+}
 
 namespace svr2011 {
 

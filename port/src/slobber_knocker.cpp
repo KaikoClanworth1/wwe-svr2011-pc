@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <mutex>
 #include <cstring>
 #include <set>
@@ -304,6 +305,10 @@ REX_HOOK_RAW(sub_828061E8) {
 // fatal-4-way ELIMINATION) it reads past NULL further on (guest 0x1BC, the
 // character's +444, PC repro): +20 becomes another character still in the
 // match (state 0, another team) before it runs; with none, it's skipped.
+namespace {
+std::mutex g_targets_mutex;
+std::map<uint32_t, uint32_t> g_targets;  // character -> its AI pair's +20, last update
+}  // namespace
 REX_EXTERN(__imp__sub_8280CFD0);
 REX_HOOK_RAW(sub_8280CFD0) {
   const uint32_t pair = ctx.r3.u32;
@@ -364,4 +369,16 @@ REX_HOOK_RAW(sub_8280CFD0) {
     Wr32(base + pair + 20, other);
   }
   __imp__sub_8280CFD0(ctx, base);
+  if (self) {  // (research aid: the stuck-wrestler log's AI target - match_types.h AiTargetOf)
+    std::lock_guard lock(g_targets_mutex);
+    g_targets[self] = Rd32(base + pair + 20);
+  }
 }
+
+namespace svr2011 {
+uint32_t AiTargetOf(uint32_t character) {
+  std::lock_guard lock(g_targets_mutex);
+  const auto it = g_targets.find(character);
+  return it == g_targets.end() ? 0 : it->second;
+}
+}  // namespace svr2011

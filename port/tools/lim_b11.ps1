@@ -8,8 +8,8 @@ param([string]$Name = "b11a", [string]$Rule = "08", [string]$Mode = "weapons", [
 $tools = $PSScriptRoot; $runs = Join-Path (Split-Path $tools -Parent) "runs"
 $s = Join-Path $tools "lim_session.ps1"
 $cfg = Join-Path $runs "test_config_lim_fps$Fps.toml"
-$lines = Get-Content (Join-Path $runs "test_config.toml") | Where-Object { $_ -notmatch '^frame_rate' }
-[IO.File]::WriteAllLines($cfg, $lines + "frame_rate = $Fps")
+$lines = Get-Content (Join-Path $runs "test_config.toml") | Where-Object { $_ -notmatch '^(frame_rate|mnk_mode)' }
+[IO.File]::WriteAllLines($cfg, $lines + "frame_rate = $Fps" + "mnk_mode = false")
 $env:SVR2011_CONFIG = $cfg; $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_lim"; $env:SVR2011_WINDOW_BEHIND = "1"
 $env:SVR2011_TEST_RULE = $Rule; $env:SVR2011_TEST_STUCK_CHARS = "1"
 if ($Mode) { $env:SVR2011_TEST_MODE = $Mode } else { Remove-Item Env:SVR2011_TEST_MODE -ErrorAction SilentlyContinue }
