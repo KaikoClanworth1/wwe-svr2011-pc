@@ -152,7 +152,8 @@ else()
 endif()
 
 if(WIN32)
-    add_executable(svr2011 WIN32 ${SVR2011_SOURCES} src/svr2011.rc)
+    # (src/utf8.manifest: UTF-8 code page - game folders with any letters)
+    add_executable(svr2011 WIN32 ${SVR2011_SOURCES} src/svr2011.rc src/utf8.manifest)
 elseif(ANDROID)
     # Android: libmain.so, which SDL's Java activity loads and starts (SDL_main).
     add_library(svr2011 SHARED ${SVR2011_SOURCES})
@@ -265,7 +266,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         ${IMGUI_SRC}/imgui.cpp ${IMGUI_SRC}/imgui_draw.cpp ${IMGUI_SRC}/imgui_tables.cpp
         ${IMGUI_SRC}/imgui_widgets.cpp ${IMGUI_SRC}/backends/imgui_impl_win32.cpp
         ${IMGUI_SRC}/backends/imgui_impl_dx11.cpp
-        launcher/launcher.rc)
+        launcher/launcher.rc src/utf8.manifest)
     target_include_directories(svr2011_modmaker PRIVATE modmaker modmaker/third_party/ufbx ${CMAKE_CURRENT_BINARY_DIR}/modmaker_inc
         ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack
         ${IMGUI_SRC} ${IMGUI_SRC}/backends ${REXSDK_DIR}/thirdparty/stb)
@@ -275,7 +276,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32
         mfplat mfreadwrite mfuuid propsys)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/launcher.rc)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/launcher.rc src/utf8.manifest)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
