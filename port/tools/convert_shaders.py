@@ -87,7 +87,48 @@ def fxc_source(text):
     text = text.replace("DEFINE_SHARED_CONSTANTS();", "DEFINE_SHARED_CONSTANTS")
     for name in set(ARRAY_MACRO_RE.findall(text)):
         text = re.sub(r"\b%s\[" % re.escape(name), name + "_a[", text)
-    return text
+    return finite_clamps(text)
+
+
+# The converted shaders keep log2 / rcp / rsqrt results finite as the Xenos
+# does: clamp(rsqrt(x), FLT_MIN, FLT_MAX) (FLT_MIN being -FLT_MAX there). fxc
+# takes floats as finite and drops such a clamp, so rsqrt(0) stayed infinite and
+# a zero vector normalised (0 * inf) was NaN - D3D11 drew the ringside floor and
+# the barricade tops white. The clamps go through a function whose result is
+# precise (kept as written; /Gis would make every operation precise).
+FINITE_HELPER = ("float SvrFinite(float x) { precise float y = clamp(x, asfloat(0xff7fffff), asfloat(0x7f7fffff)); "
+                 "return y; }\n")
+FINITE_TAIL = ", FLT_MIN, FLT_MAX)"
+
+
+def finite_clamps(text):
+    text = finite_calls(text)
+    start = text.find("void main(")
+    if "SvrFinite(" not in text or start < 0:
+        return text
+    return text[:start] + FINITE_HELPER + text[start:]
+
+
+def finite_calls(text):
+    out, pos = [], 0
+    while True:
+        start = text.find("clamp(", pos)
+        if start < 0:
+            break
+        depth, k = 1, start + len("clamp(")
+        while k < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[k], 0)
+            k += 1
+        call = text[start:k]
+        if call.endswith(FINITE_TAIL):
+            inner = finite_calls(call[len("clamp("):-len(FINITE_TAIL)])
+            out.append(text[pos:start] + "SvrFinite(" + inner + ")")
+            pos = k
+        else:  # (another clamp: its arguments may hold some)
+            out.append(text[pos:start + len("clamp(")])
+            pos = start + len("clamp(")
+    out.append(text[pos:])
+    return "".join(out)
 
 
 # Shader Model 4.0 (feature level 10_x GPUs) has 16 interpolator registers;
