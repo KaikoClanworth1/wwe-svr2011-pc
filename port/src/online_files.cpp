@@ -15,6 +15,14 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#elif defined(__linux__) || defined(__ANDROID__)
+#include <sys/resource.h>
+#endif
+
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
@@ -353,7 +361,16 @@ void StartGameFilesCheck() {
     // (a copy with an edited file, the game still running from its own).
     fs::path root = game_root;
     if (const char* v = std::getenv("SVR2011_TEST_FILES_ROOT"); v && *v) root = v;
-    std::thread([root, user_data] { Check(root, user_data); }).detach();
+    std::thread([root, user_data] {
+      // (background priority, low disk priority too: a first check - every
+      // file hashed - mustn't compete with the game's own loading)
+#if defined(_WIN32)
+      SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+#elif defined(__linux__) || defined(__ANDROID__)
+      setpriority(PRIO_PROCESS, 0, 19);  // (this thread: Linux nice values are per thread)
+#endif
+      Check(root, user_data);
+    }).detach();
     std::thread([user_data] { CheckVersion(user_data); }).detach();
   });
 }
