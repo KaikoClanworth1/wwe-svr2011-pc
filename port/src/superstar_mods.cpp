@@ -36,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <unordered_map>
 #include <set>
 #include <string>
 #include <thread>
@@ -1850,6 +1851,63 @@ const std::vector<std::pair<uint32_t, uint32_t>>& MotionSwaps() {
   }();
   return v;
 }
+// A bank whose keys are no longer all in order: a move pack's new YMBs motions
+// go after the stock entries (move_packs.cpp: the game keeps YMBs motions by
+// their place), and the game's binary search (sub_823941F8) then missed stock
+// keys whose search path ran into that tail - with Sabu or The Sandman
+// installed, Surfboard Stretch (21201) wasn't found: ground submissions froze
+// in matches and in the Move-Set preview (camera left on the apron). A miss in
+// such a bank is looked up again: binary search over the sorted part, then the
+// tail one by one. Returns the bank's +272 (as the game's) and *index; 0 if
+// none has the key.
+namespace {
+uint8_t* GuestAt(uint8_t* base, uint32_t a) { return base + a + (a >= 0xE0000000u ? 0x1000u : 0u); }
+struct BankOrder { uint32_t count = 0, last = 0, sorted = 0; };  // sorted: entries in order from 0
+std::mutex g_order_mutex;
+std::unordered_map<uint32_t, BankOrder> g_order;  // bank -> its order (checked again when count or last key change)
+uint32_t SortedPrefix(uint8_t* base, uint32_t bank, uint32_t count) {
+  const uint8_t* e = GuestAt(base, bank + 276);
+  const uint32_t last = Rd32(e + (count - 1) * 16);
+  std::lock_guard lock(g_order_mutex);
+  BankOrder& o = g_order[bank];
+  if (o.count == count && o.last == last && o.sorted) return o.sorted;
+  uint32_t n = 1;
+  while (n < count && Rd32(e + n * 16) > Rd32(e + (n - 1) * 16)) ++n;
+  o = {count, last, n};
+  return n;
+}
+uint32_t FindInUnsortedBanks(uint8_t* base, uint32_t banks, uint32_t key, uint32_t out) {
+  constexpr uint32_t kYmks = 0x734B4D59, kYmbs = 0x73424D59;  // (as the game reads them)
+  for (uint32_t k = 0; k < 68; ++k) {
+    uint32_t b = Rd32(GuestAt(base, banks + 4 * k));
+    if (!b) continue;
+    const uint32_t magic = Rd32(GuestAt(base, b));
+    if (magic != kYmks && magic != kYmbs) b -= 16;
+    const uint32_t count = Rd32(GuestAt(base, b + 272));
+    if (!count || count > 20000) continue;
+    const uint32_t sorted = SortedPrefix(base, b, count);
+    if (sorted >= count) continue;  // (in order: the game's search was right)
+    const uint8_t* e = GuestAt(base, b + 276);
+    int lo = 0, hi = int(sorted) - 1, at = -1;
+    while (lo <= hi) {
+      const int mid = (lo + hi) / 2;
+      const uint32_t v = Rd32(e + mid * 16);
+      if (v == key) { at = mid; break; }
+      if (v < key) lo = mid + 1; else hi = mid - 1;
+    }
+    for (uint32_t i = sorted; at < 0 && i < count; ++i)
+      if (Rd32(e + i * 16) == key) at = int(i);
+    if (at < 0) continue;
+    if (out) {
+      uint8_t* q = GuestAt(base, out);
+      q[0] = uint8_t(uint32_t(at) >> 24), q[1] = uint8_t(uint32_t(at) >> 16), q[2] = uint8_t(uint32_t(at) >> 8), q[3] = uint8_t(at);
+    }
+    return b + 272;
+  }
+  return 0;
+}
+}  // namespace
+
 REX_EXTERN(__imp__sub_823941F8);
 REX_HOOK_RAW(sub_823941F8) {
   const auto& ids = MoveLogIds();
@@ -1861,7 +1919,12 @@ REX_HOOK_RAW(sub_823941F8) {
       ctx.r4.u64 = to;
       ctx.r5.u64 = 0;
     }
+  const uint32_t banks = ctx.r3.u32, out = ctx.r7.u32;
   __imp__sub_823941F8(ctx, base);
+  if (!ctx.r3.u32 && banks) {
+    static const bool off = std::getenv("SVR2011_TEST_YMBS_SEARCH_OFF") != nullptr;  // (test aid: the game's search only)
+    if (!off) ctx.r3.u64 = FindInUnsortedBanks(base, banks, id << 16 | x << 8 | y, out);
+  }
   static const bool all = [] { const char* e = std::getenv("SVR2011_TEST_MOVE_LOG"); return e && !std::strcmp(e, "all"); }();
   if (all) {  // (SVR2011_TEST_MOVE_LOG=all: every lookup once, found or not)
     static std::mutex amu;
