@@ -134,6 +134,8 @@ still being tested.
 - **Keyboard and mouse button pictures** from WWE 2K15 PC (every key, plus mouse buttons), and the keyboard / PlayStation pictures on character select drawn right.
 - **Texture packs**: textures loaded into reused memory (Created Superstars, the select screen's superstars) can now be dumped and replaced.
 - **The mouse is only captured when the game window really has focus** (a game in the background could grab the cursor in keyboard-and-mouse mode).
+- **VSync really syncs**: with VSync on, frames no longer tear on Direct3D 12, Direct3D 11 or Vulkan (it only paced the game before); the log names the present mode.
+- **Cutscene movies keep up with their sound** on slow PCs (the video fell 4-6 s behind in Road to WrestleMania); full-speed PCs are unchanged.
 - **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
 
 ## New in 2.0.6
