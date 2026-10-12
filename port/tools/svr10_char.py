@@ -78,8 +78,62 @@ def generic_face(pac11):
     raise SystemExit('no 2011 face animation (ch104)')
 
 
+# The bones props are held by (title belts in championship entrances on the
+# shoulder, the hands, the waist) and the body bones above them: every shipped
+# SvR 2010 model has the same rest rotations there, within 0.1 rad (85 checked;
+# the forearms, kote, come in two shapes and are left out). A model edited
+# elsewhere (a player's SvR 2010 Chris Benoit) can differ, and a prop then sits
+# rotated - the belt held vertical. Not changed here (the mesh is bound to
+# those bones): reported, so the model's maker can line them up.
+PROP_BONES = ['root', 'koshi', 'mune', 'onaka', 'l_sakotsu', 'r_sakotsu', 'l_ninoude', 'r_ninoude',
+              'l_te', 'r_te', 'l_kata_m', 'r_kata_m', 'l_sakotsu_m', 'r_sakotsu_m', 'kubi']
+
+
+def skeleton(blob):
+    """the largest JBOY skeleton (nodes) in an EMD blob, or None"""
+    import jboy
+    best, stack = None, [ch_tool.unpack(blob)]
+    while stack:
+        d = stack.pop()
+        if d[:4] == b'PACH':
+            stack += [ch_tool.unpack(c) for i, c in svrfmt.pach_read(d)]
+        elif d[:4] == b'JBOY':
+            try:
+                m = jboy.read(d)
+            except Exception:
+                continue
+            if len(m.nodes) > 40 and (best is None or len(m.nodes) > len(best.nodes)):
+                best = m
+    return best
+
+
+def prop_bone_check(src, reference, tol=0.2):
+    """-> [(bone, model rotation, reference rotation)] where the model's rest rotation differs"""
+    ref = {}
+    for typ, name, blob in epk8_entries(reference):
+        m = skeleton(blob) if typ == b'EMD ' else None
+        if m:
+            ref = {n['name']: n['r'] for n in m.nodes}
+            break
+    out = []
+    for typ, name, blob in epk8_entries(src):
+        m = skeleton(blob) if typ == b'EMD ' else None
+        if not m:
+            continue
+        for n in m.nodes:
+            if n['name'] in PROP_BONES and n['name'] in ref and                     any(abs(a - b) > tol for a, b in zip(n['r'], ref[n['name']])):
+                out.append((n['name'], tuple(round(x, 2) for x in n['r']), tuple(round(x, 2) for x in ref[n['name']])))
+        break
+    return out
+
+
 def convert(pac10, cid, pac11, out):
     src = os.path.join(pac10, 'ch', 'ch%d.pac' % cid)
+    reference = os.path.join(pac10, 'ch', 'ch105.pac')  # (a shipped 2010 model: the standard skeleton)
+    if os.path.exists(reference) and os.path.abspath(reference) != os.path.abspath(src):
+        for bone, r, want in prop_bone_check(src, reference):
+            print('WARNING: %s: bone %s has rest rotation %s, shipped models %s - props it holds (a title '
+                  'belt) will sit rotated in the game' % (os.path.basename(src), bone, r, want))
     face = generic_face(pac11)
     bust = dlc_render(pac10, 'SSFC', cid)
     entries = []
