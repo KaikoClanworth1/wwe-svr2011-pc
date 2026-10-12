@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <cstring>
 #include <set>
 #include <string>
@@ -335,8 +336,25 @@ REX_HOOK_RAW(sub_8280CFD0) {
       REXLOG_INFO("match types: a character with no opponent in the ring ({:08X}) - skipped ({} times)", self, alone);
     return;
   }
+  // (B13, Android: a Road to WrestleMania gauntlet froze 1-2 moves after the
+  // next entrant came in - reads of guest 0x1BC over and over, as here; the
+  // story match's clock may start again with each entrant, and the guard only
+  // ran after match frame 300. Now also a pair that had an opponent earlier
+  // in this match - the start, where the game fills +20 itself, stays as it
+  // was. SVR2011_TEST_PAIR_OLD=1 the old way.)
+  static const bool old_way = std::getenv("SVR2011_TEST_PAIR_OLD") != nullptr;
+  bool had = false;
+  {
+    static std::mutex m;
+    static std::set<uint32_t> pairs;  // (pairs that have had an opponent this match)
+    static uint32_t first = 0;        // (person 0: a new one, a new match)
+    std::lock_guard lock(m);
+    if (const uint32_t c = Rd32(base + kChars); c != first) first = c, pairs.clear();
+    if (pair && Rd32(base + pair + 20)) pairs.insert(pair);
+    had = pair && pairs.count(pair) && !old_way;
+  }
   if (self && !Rd32(base + pair + 20) && Rd32(base + self + kTeam) < 30 &&
-      int32_t(Rd32(base + 0x82E3CD0C)) > 300) {
+      (had || int32_t(Rd32(base + 0x82E3CD0C)) > 300)) {
     const uint32_t other = valid_other();
     static int count = 0;
     if (++count <= 10 || count % 1000 == 0)

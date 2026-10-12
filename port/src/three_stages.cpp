@@ -169,7 +169,7 @@ void ApplyStage(uint8_t* base, int stage) {
       break;
     case kNoDq:
       only(1, live[7] ? live[7] : 1);  // (pinfall in the ring)
-      live[3] = 0, live[10] = 0, live[27] = 0x80;
+      live[3] = 0, live[10] = 0, live[27] = 0;  // (+27 DISQUALIFICATION off: 0 - live bytes never hold the lock bit)
       break;
     case kFirstBlood:
       only(0, 0);

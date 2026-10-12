@@ -381,6 +381,18 @@ void Svr2011App::OnPostLoadXexImage() {
 #endif
     REXLOG_INFO("==== SvR 2011 PC port {} (build {}) ====", SVR2011_PORT_VERSION, SVR2011_BUILD_COMMIT);
     REXLOG_INFO("game folder: {}", rex::filesystem::GetExecutableFolder().string());
+#if defined(_WIN32)
+    // (src/utf8.manifest: Windows before 10 version 1903 ignores the UTF-8
+    // code page, and a game folder with other letters than A-Z can't be
+    // opened everywhere - unread settings, a black screen at the start)
+    if (GetACP() != CP_UTF8) {
+      const std::u16string folder = rex::filesystem::GetExecutableFolder().u16string();
+      if (std::any_of(folder.begin(), folder.end(), [](char16_t c) { return c > 0x7F; }))
+        REXLOG_WARN("game folder: its name has letters other than A-Z, which this Windows (before 10 version "
+                    "1903) can't open everywhere - if the game starts to a black screen, move it to a folder "
+                    "with a plain name (such as C:\\Games\\SvR2011)");
+    }
+#endif
     static const char* const kGroups[][2] = {
         {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
         {"renderer", "native_renderer gpu_backend native_max_scale native_render_scale native_scene_height native_aa native_2x_msaa native_scale_effects "

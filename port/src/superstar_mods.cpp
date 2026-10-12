@@ -36,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <unordered_map>
 #include <set>
 #include <string>
 #include <thread>
@@ -340,9 +341,21 @@ std::string SongOf(const uint8_t* e) {  // the USER PLAYLIST name (ASCII part)
 // A fresh profile (the base's copied): the mod's own moves (big-endian u16
 // move ids at byte offsets in the move block, below the entrance) and its
 // entrance number (+0x14, and the alternates +0x16, +0x18).
+// A move the game has no usable record for (none, or one 2011 kept for a cut
+// move: no category, no motion) stays the base's: such ids froze or crashed
+// the game in matches and in CREATE A MOVESET (players' mods made elsewhere).
 void SetOwnMoves(uint8_t* profile, const Mod& m) {
-  for (const auto& [off, id] : m.moves)
-    if (off + 1u < kEntrance) profile[off] = uint8_t(id >> 8), profile[off + 1] = uint8_t(id);
+  std::string skipped;
+  for (const auto& [off, id] : m.moves) {
+    if (off + 1u >= kEntrance) continue;
+    if (svr2011::MoveUsable(id) == 0) {
+      skipped += fmt::format(" 0x{:03X}={}", off, id);
+      continue;
+    }
+    profile[off] = uint8_t(id >> 8), profile[off + 1] = uint8_t(id);
+  }
+  if (!skipped.empty())
+    REXLOG_WARN("[svr2011] superstar mods: {}: moves the game doesn't have, the base's kept:{}", m.folder, skipped);
   if (m.entrance >= 0)
     for (uint32_t k : {0x14u, 0x16u, 0x18u})
       profile[kEntrance + k] = uint8_t(m.entrance >> 8), profile[kEntrance + k + 1] = uint8_t(m.entrance);
@@ -442,7 +455,7 @@ void LoadMods() {
   const fs::path overlay = g_game / "Mods" / "SuperstarOverlay";
   fs::create_directories(overlay, ec);
   auto slots = ReadSlots(dir / "slots.txt");
-  const size_t known = slots.size();
+  bool slots_changed = false;
   auto slot_of = [&](const std::string& folder) -> uint32_t {
     for (const auto& s : slots)
       if (s.first == folder) return s.second;
@@ -451,7 +464,20 @@ void LoadMods() {
       for (const auto& s : slots) taken |= s.second == id;
       if (taken) continue;
       slots.push_back({folder, id});
+      slots_changed = true;
       return id;
+    }
+    // All ids taken: one held by a mod whose folder is gone (removed by hand,
+    // or by an older launcher that left its line) is given to this one. Only
+    // then - a mod moved out for a while and back keeps its id (and the edits
+    // saves hold for it) while there is room.
+    for (auto& s : slots) {
+      std::error_code e;
+      if (fs::is_directory(dir / fs::path(s.first), e)) continue;  // (folder names as written: ANSI code page)
+      REXLOG_INFO("[svr2011] superstar mods: id {} of {} (its folder is gone) goes to {}", s.second, s.first, folder);
+      s.first = folder;
+      slots_changed = true;
+      return s.second;
     }
     return 0;
   };
@@ -600,7 +626,7 @@ void LoadMods() {
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {})", m.name, m.slot, m.base);
     g_mods.push_back(std::move(m));
   }
-  if (slots.size() != known) {
+  if (slots_changed) {
     if (FILE* t = std::fopen((dir / "slots.txt").string().c_str(), "wb")) {
       for (const auto& s : slots) std::fprintf(t, "%s\t%u\n", s.first.c_str(), s.second);
       std::fclose(t);
@@ -824,6 +850,15 @@ void ApplyRecords(uint8_t* base) {
         SetHeight(sr, br, m);
         continue;
       }
+    }
+    // The slot changes hands (another mod's record there: its id given to this
+    // one, slots.txt) - its profile, the moves and entrance a save kept for
+    // the old mod, goes too: this mod's, as for a new slot.
+    if (!was.empty() && !IsBlank(m.slot, sp)) {
+      std::memcpy(sp, bp, kProfileSize);
+      SetOwnMoves(sp, m);
+      SetEntranceMedia(sp, m, bp);
+      REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (the slot held \"{}\")", m.base, m.slot, was);
     }
     std::memcpy(sr, br, kRecordSize);
     OwnSelectTile(sr, br);
@@ -1492,6 +1527,40 @@ REX_HOOK_RAW(sub_8257A218) {
   ApplyRecords(base);
   ctx.r3.u64 = r3;
 }
+
+// WWE Universe's title holders: 14 titles x 2 u16 ids (a tag title's two;
+// 0x200 none) at save + 0x7CD70 (SaveData.dat 0x7CD88, after its 0x18-byte
+// header). A mod has no place in Universe (above), so a title it holds can't
+// be booked - "gave Kenny Omega the Intercontinental title: holder blank,
+// nobody could fight for it" - yet its TITLE SETTINGS page gives it one.
+// Checked once a frame: a holder that just became a mod gets the one before
+// back; one a save already holds (none before) leaves the title vacant, as a
+// title nobody holds.
+namespace {
+void KeepModsOffTitles(uint8_t* base) {
+  constexpr uint32_t kSave = 0x82E407B4, kTitles = 0x7CD70, kSlots = 28, kNone = 0x200;
+  static uint32_t last[kSlots], last_save = 0;
+  const uint32_t save = Rd32(base + kSave);
+  if (!save || g_mods.empty()) return;
+  if (save != last_save) {
+    std::fill(std::begin(last), std::end(last), kNone);
+    last_save = save;
+  }
+  for (uint32_t i = 0; i < kSlots; ++i) {
+    uint8_t* p = base + save + kTitles + i * 2;
+    uint32_t id = Rd16(p);
+    if (const Mod* m = ModOf(id)) {
+      const uint32_t back = ModOf(last[i]) ? kNone : last[i];
+      p[0] = uint8_t(back >> 8), p[1] = uint8_t(back);
+      REXLOG_WARN("[svr2011] superstar mods: Universe title {} (holder {}) can't go to {} (id {}): {}", i / 2,
+                  i % 2 + 1, m->name, id, back == kNone ? std::string("left vacant") : "back to id " + std::to_string(back));
+      id = back;
+    }
+    last[i] = id;
+  }
+}
+}  // namespace
+
 // Once a frame (the game's pad reads, frame_rate.cpp): a mod's profile that
 // is a placeholder again gets the mod's back. A save's copy of a slot can be
 // the placeholder (saved before the mod was installed): loading it put Jeff
@@ -1501,6 +1570,7 @@ REX_HOOK_RAW(sub_8257A218) {
 // placeholder and stays.
 namespace svr2011 {
 void CheckModProfiles(uint8_t* base) {
+  KeepModsOffTitles(base);
   std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
@@ -1511,6 +1581,26 @@ void CheckModProfiles(uint8_t* base) {
       ApplyRecords(base);
       return;
     }
+  }
+  // Once the move records are loaded: a mod's own move the game has no usable
+  // record for (SetOwnMoves may have run before they were) goes back to the
+  // base's - only where the slot still holds the mod's id, never an edit.
+  static bool checked = false;
+  if (checked || MoveUsable(0) < 0) return;
+  checked = true;
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2), bi = Rd16(base + kIdToIndex + m.base * 2);
+    if (si >= 512 || bi >= 512) continue;
+    uint8_t* sp = base + kProfiles + si * kProfileSize;
+    const uint8_t* bp = base + kProfiles + bi * kProfileSize;
+    std::string fixed;
+    for (const auto& [off, id] : m.moves) {
+      if (off + 1u >= kEntrance || Rd16(sp + off) != id || MoveUsable(id) != 0) continue;
+      sp[off] = bp[off], sp[off + 1] = bp[off + 1];
+      fixed += fmt::format(" 0x{:03X}={}", off, id);
+    }
+    if (!fixed.empty())
+      REXLOG_WARN("[svr2011] superstar mods: {}: moves the game doesn't have, the base's put back:{}", m.folder, fixed);
   }
 }
 }  // namespace svr2011
@@ -1761,6 +1851,63 @@ const std::vector<std::pair<uint32_t, uint32_t>>& MotionSwaps() {
   }();
   return v;
 }
+// A bank whose keys are no longer all in order: a move pack's new YMBs motions
+// go after the stock entries (move_packs.cpp: the game keeps YMBs motions by
+// their place), and the game's binary search (sub_823941F8) then missed stock
+// keys whose search path ran into that tail - with Sabu or The Sandman
+// installed, Surfboard Stretch (21201) wasn't found: ground submissions froze
+// in matches and in the Move-Set preview (camera left on the apron). A miss in
+// such a bank is looked up again: binary search over the sorted part, then the
+// tail one by one. Returns the bank's +272 (as the game's) and *index; 0 if
+// none has the key.
+namespace {
+uint8_t* GuestAt(uint8_t* base, uint32_t a) { return base + a + (a >= 0xE0000000u ? 0x1000u : 0u); }
+struct BankOrder { uint32_t count = 0, last = 0, sorted = 0; };  // sorted: entries in order from 0
+std::mutex g_order_mutex;
+std::unordered_map<uint32_t, BankOrder> g_order;  // bank -> its order (checked again when count or last key change)
+uint32_t SortedPrefix(uint8_t* base, uint32_t bank, uint32_t count) {
+  const uint8_t* e = GuestAt(base, bank + 276);
+  const uint32_t last = Rd32(e + (count - 1) * 16);
+  std::lock_guard lock(g_order_mutex);
+  BankOrder& o = g_order[bank];
+  if (o.count == count && o.last == last && o.sorted) return o.sorted;
+  uint32_t n = 1;
+  while (n < count && Rd32(e + n * 16) > Rd32(e + (n - 1) * 16)) ++n;
+  o = {count, last, n};
+  return n;
+}
+uint32_t FindInUnsortedBanks(uint8_t* base, uint32_t banks, uint32_t key, uint32_t out) {
+  constexpr uint32_t kYmks = 0x734B4D59, kYmbs = 0x73424D59;  // (as the game reads them)
+  for (uint32_t k = 0; k < 68; ++k) {
+    uint32_t b = Rd32(GuestAt(base, banks + 4 * k));
+    if (!b) continue;
+    const uint32_t magic = Rd32(GuestAt(base, b));
+    if (magic != kYmks && magic != kYmbs) b -= 16;
+    const uint32_t count = Rd32(GuestAt(base, b + 272));
+    if (!count || count > 20000) continue;
+    const uint32_t sorted = SortedPrefix(base, b, count);
+    if (sorted >= count) continue;  // (in order: the game's search was right)
+    const uint8_t* e = GuestAt(base, b + 276);
+    int lo = 0, hi = int(sorted) - 1, at = -1;
+    while (lo <= hi) {
+      const int mid = (lo + hi) / 2;
+      const uint32_t v = Rd32(e + mid * 16);
+      if (v == key) { at = mid; break; }
+      if (v < key) lo = mid + 1; else hi = mid - 1;
+    }
+    for (uint32_t i = sorted; at < 0 && i < count; ++i)
+      if (Rd32(e + i * 16) == key) at = int(i);
+    if (at < 0) continue;
+    if (out) {
+      uint8_t* q = GuestAt(base, out);
+      q[0] = uint8_t(uint32_t(at) >> 24), q[1] = uint8_t(uint32_t(at) >> 16), q[2] = uint8_t(uint32_t(at) >> 8), q[3] = uint8_t(at);
+    }
+    return b + 272;
+  }
+  return 0;
+}
+}  // namespace
+
 REX_EXTERN(__imp__sub_823941F8);
 REX_HOOK_RAW(sub_823941F8) {
   const auto& ids = MoveLogIds();
@@ -1772,7 +1919,12 @@ REX_HOOK_RAW(sub_823941F8) {
       ctx.r4.u64 = to;
       ctx.r5.u64 = 0;
     }
+  const uint32_t banks = ctx.r3.u32, out = ctx.r7.u32;
   __imp__sub_823941F8(ctx, base);
+  if (!ctx.r3.u32 && banks) {
+    static const bool off = std::getenv("SVR2011_TEST_YMBS_SEARCH_OFF") != nullptr;  // (test aid: the game's search only)
+    if (!off) ctx.r3.u64 = FindInUnsortedBanks(base, banks, id << 16 | x << 8 | y, out);
+  }
   static const bool all = [] { const char* e = std::getenv("SVR2011_TEST_MOVE_LOG"); return e && !std::strcmp(e, "all"); }();
   if (all) {  // (SVR2011_TEST_MOVE_LOG=all: every lookup once, found or not)
     static std::mutex amu;

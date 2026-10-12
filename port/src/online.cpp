@@ -157,7 +157,8 @@ rex::memory::Memory* g_online_memory = nullptr;
 uint32_t g_hidden_text = 0;
 // guest: the CPU slots' help bar labels (online_cpu.cpp)
 constexpr uint32_t kAddCpuId = 0xEF10, kRemoveCpuId = 0xEF11, kWaitingId = 0xEF12;  // (16-bit: the bar holds u16 ids; blank in the game's table)
-constexpr uint32_t kYIcon = 0xAFCB;  // (the game's Y glyph string)
+constexpr uint32_t kPlayerInfoId = 0xB0A7;  // PLAYER INFO: the lobby's own Y label - its slot's icon is Y's glyph
+constexpr uint32_t kYIconGuess = 0xAFCA;    // (before one was seen; 0xAFCB is X's)
 uint32_t g_cpu_labels[3] = {};
 uint32_t g_scratch = 0;  // (OnlineScratch)
 // (string ids: from SVR2011_DUMP_STRINGS)
@@ -460,6 +461,10 @@ REX_HOOK_RAW(sub_82629160) {
 REX_EXTERN(__imp__sub_82746358);
 REX_HOOK_RAW(sub_82746358) {
   const uint32_t out = ctx.r5.u32;
+  // (the Player Match lobby's CPU slots put the Y label's state in the id's
+  // high half - online_cpu.cpp's sub_824E3E60 hook: 1 + y + 3 * waiting)
+  const uint32_t cpu = ctx.r4.u32 >> 16;
+  ctx.r4.u64 = ctx.r4.u32 & 0xFFFF;
   __imp__sub_82746358(ctx, base);
   // (the bar ends at its first empty slot: the ones after a removed one
   // move up)
@@ -468,7 +473,8 @@ REX_HOOK_RAW(sub_82746358) {
   for (uint32_t slot = 0; slot < 3; ++slot) {
     const uint8_t* p = slots + slot * 4;
     const uint32_t icon = (uint32_t(p[0]) << 8) | p[1], label = (uint32_t(p[2]) << 8) | p[3];
-    if ((icon != 0xFFFF && svr2011::OnlineString(icon)) || (label != 0xFFFF && svr2011::OnlineString(label))) {
+    if ((icon == 0xFFFF && label == 0xFFFF) ||  // (an empty slot: room for the CPU label)
+        (icon != 0xFFFF && svr2011::OnlineString(icon)) || (label != 0xFFFF && svr2011::OnlineString(label))) {
       continue;
     }
     if (kept != slot) std::memmove(slots + kept * 4, p, 4);
@@ -478,9 +484,8 @@ REX_HOOK_RAW(sub_82746358) {
   // The Player Match lobby's CPU slots (online_cpu.cpp): Y ADD CPU / REMOVE
   // CPU for the cursor's slot, and the host alone with CPUs is told why the
   // match doesn't start.
-  int y = 0;
-  bool waiting = false;
-  svr2011::OnlineCpuHelp(&y, &waiting);
+  const int y = cpu ? int((cpu - 1) % 3) : 0;
+  const bool waiting = cpu && (cpu - 1) / 3 != 0;
   auto put = [&](uint32_t icon, uint32_t label) {
     for (uint32_t k = 0; k < kept; ++k)
       if (((uint32_t(slots[k * 4]) << 8) | slots[k * 4 + 1]) == icon && icon != 0xFFFF) {
@@ -493,8 +498,22 @@ REX_HOOK_RAW(sub_82746358) {
       ++kept;
     }
   };
-  if (y) put(svr2011::kYIcon, y == 1 ? svr2011::kAddCpuId : svr2011::kRemoveCpuId);
+  // (Y's glyph id: taken from the game's own Y slot - PLAYER INFO - when a bar has it)
+  static uint32_t y_icon = svr2011::kYIconGuess;
+  for (uint32_t k = 0; k < kept; ++k)
+    if (((uint32_t(slots[k * 4 + 2]) << 8) | slots[k * 4 + 3]) == svr2011::kPlayerInfoId)
+      y_icon = (uint32_t(slots[k * 4]) << 8) | slots[k * 4 + 1];
+  if (y) put(y_icon, y == 1 ? svr2011::kAddCpuId : svr2011::kRemoveCpuId);
   if (waiting) put(0xFFFF, svr2011::kWaitingId);
+  static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
+  if (log && cpu) {
+    static std::string last;
+    std::string now = fmt::format("id {} y {} waiting {}:", ctx.r4.u32 & 0xFFFF, y, waiting);
+    for (uint32_t k = 0; k < 3; ++k)
+      now += fmt::format(" {:02X}{:02X}/{:02X}{:02X}", slots[k * 4], slots[k * 4 + 1], slots[k * 4 + 2], slots[k * 4 + 3]);
+    if (now != last) REXLOG_INFO("online cpu: bar {}", now);
+    last = now;
+  }
 }
 
 // The WWE SHOP: the PC has no marketplace and needs no Online Axxess (all

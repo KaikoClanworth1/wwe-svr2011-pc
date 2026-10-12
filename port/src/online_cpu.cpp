@@ -28,8 +28,6 @@
 // Test aid: SVR2011_TEST_LOBBY_LOG=1 logs the records, picks and match slots.
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -46,8 +44,8 @@
 #include "online.h"
 #include "online_overlay.h"
 
-REXCVAR_DEFINE_BOOL(online_cpu_slots, false, "Online",
-                    "CPU players in online Player Matches: the host's Y on a vacant lobby slot (in progress)");
+REXCVAR_DEFINE_BOOL(online_cpu_slots, true, "Online",
+                    "CPU players in online Player Matches: the host's Y on a vacant lobby slot");
 
 namespace {
 
@@ -106,17 +104,25 @@ bool IsHost(PPCContext& ctx, uint8_t* base) {
   return c.r3.u32 && Rd32(base + c.r3.u32 + 20) != 0;
 }
 
-uint8_t g_vacant[6][kSlotSize];
+uint8_t g_vacant[6][kSlotSize];  // a slot's record before it became a CPU (Y again: back to it)
 
-// The lobby's help bar (online.cpp's bar hook asks): Y's label for the
-// cursor's slot (0 none, 1 ADD CPU, 2 REMOVE CPU) and whether the host is
-// alone with CPUs (WAITING FOR ONE MORE PLAYER); kept fresh by the lobby's frame.
-std::atomic<int> g_help_y{0};
-std::atomic<bool> g_help_waiting{false};
-std::atomic<int64_t> g_help_at{0};
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}  // a slot's record before it became a CPU (Y again: back to it)
+// The host choosing a CPU's superstar with the lobby's own list (A on the CPU
+// slot): the list runs as for the host's own slot (OMSL state 5 opens it;
+// the claim message is skipped, so the host's slot stays as it was), and its
+// two messages - the pick (sub_828AE250) and the superstar block
+// (sub_828AE378), which the host handles itself - land on the CPU slot:
+// sub_828A5F08 (the sender's slot) answers the CPU's while they run.
+int g_edit = -1;             // the CPU slot being chosen for (-1 none)
+bool g_edit_open = false;    // (the list has opened: OMSL state 6 seen)
+bool g_edit_msg = false;     // (one of the two handlers is running for it)
+uint8_t g_panel_save[204];   // the host's own panel 0 (the list writes it)
+constexpr uint32_t kSelect = 0x82E3DD98;  // -> S: +0 state (0 / 22 done), +4 result (1 back, 2 taken, 3 done, 4/5 failed)
+constexpr uint32_t kPanels = 0x82EDE630;  // -> P: panel 0 = P + u32(P+13520) * 1352 + 120 (204 bytes)
+
+uint32_t Panel0(uint8_t* base) {
+  const uint32_t P = Rd32(base + kPanels);
+  return P ? P + Rd32(base + P + 13520) * 1352 + 120 : 0;
+}
 
 // The lobby record j changed: send it to everyone (and the panel into the
 // superstar block, unless the block was built and the panel made from it).
@@ -175,7 +181,10 @@ void MakeCpu(PPCContext& ctx, uint8_t* base, uint32_t L, uint32_t j) {
   std::memset(rec + 12, 0, 16);
   std::memcpy(rec + 12, "CPU", 3);
   Wr32(rec + 136, s.id);
-  Wr32(rec + 140, 0);  // (the first attire)
+  // (the attire: +148, the alternate +152 (-1 none) - as a pick stores them;
+  // +140 is a per-superstar byte the pick also carries, left as it was)
+  Wr32(rec + 148, 0);
+  Wr32(rec + 152, 0xFFFFFFFF);
   std::memset(rec + 160, 0, 120);
   rec[172] = uint8_t(s.id >> 8), rec[173] = uint8_t(s.id);
   std::strncpy(reinterpret_cast<char*>(rec + 174), s.name, 40);
@@ -204,14 +213,6 @@ REX_HOOK_RAW(sub_824E6510) {
   const uint32_t L = Lobby(base);
   if (screen && L) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
-    {
-      int y = 0;
-      const bool host = REXCVAR_GET(online_cpu_slots) && (state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base);
-      if (host) y = IsCpu(Record(base, L, j)) ? 2 : Rd32(Record(base, L, j)) < 5 ? 1 : 0;
-      g_help_y = y;
-      g_help_waiting = host && Rd32(base + L + 24) < 2 && CpuCount(base, L) > 0;
-      g_help_at = NowMs();
-    }
     static uint32_t last_state = 0xFFFFFFFF;
     if (LogOn() && state != last_state) REXLOG_INFO("online cpu: lobby state {} (cursor slot {})", state, j);
     last_state = state;
@@ -219,6 +220,39 @@ REX_HOOK_RAW(sub_824E6510) {
     const bool y = (svr2011::OnlineRawPad() & 0x8000) != 0;  // (XINPUT_GAMEPAD_Y)
     const bool pressed = y && !y_down;
     y_down = y;
+    static bool a_down = false;
+    const bool a = (svr2011::OnlineRawPad() & 0x1000) != 0;  // (XINPUT_GAMEPAD_A)
+    const bool a_pressed = a && !a_down;
+    a_down = a;
+    if (a_pressed && g_edit < 0 && REXCVAR_GET(online_cpu_slots) && (state == 11 || state == 22) &&
+        j < SlotCount(base, L) && IsCpu(Record(base, L, j)) && IsHost(ctx, base)) {
+      if (const uint32_t panel = Panel0(base)) {
+        g_edit = int(j);
+        std::memcpy(g_panel_save, base + panel, sizeof(g_panel_save));
+        PPCContext c = ctx;
+        c.r3.u64 = screen, c.r4.u64 = 5;  // (the list opens: sub_8251BE90 is the screen's own state setter)
+        sub_8251BE90(c, base);
+        REXLOG_INFO("online cpu: the host chooses slot {}'s superstar", j);
+      }
+    }
+    if (g_edit >= 0) {
+      const uint32_t S = Rd32(base + kSelect);
+      const uint32_t done = S ? Rd32(base + S) : 1;
+      // (backing out or failing: as done - the game's own answers to those
+      // release or clear the HOST's slot)
+      if (state == 6) g_edit_open = true;
+      if (state == 6 && S && done == 22) {
+        const uint32_t result = Rd32(base + S + 4);
+        if (result == 1 || result == 4 || result == 5) Wr32(base + S + 4, 3);
+      }
+      if (g_edit_open && (state == 10 || state == 11 || state == 22)) {
+        g_edit_open = false;
+        if (const uint32_t panel = Panel0(base)) std::memcpy(base + panel, g_panel_save, sizeof(g_panel_save));
+        REXLOG_INFO("online cpu: slot {} is {} (id {})", g_edit, reinterpret_cast<const char*>(Record(base, L, g_edit) + 174),
+                    Rd32(Record(base, L, g_edit) + 136));
+        g_edit = -1;
+      }
+    }
     if (pressed && REXCVAR_GET(online_cpu_slots)) {
       if (LogOn()) REXLOG_INFO("online cpu: Y (lobby state {}, cursor slot {})", state, j);
       if ((state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base)) {
@@ -257,13 +291,17 @@ REX_HOOK_RAW(sub_828AC668) {
   }
 }
 
-// The host's wait for every superstar block to be acknowledged by every
-// machine (sub_828AD2F8(L): each block's mask at L+3564+k*15044 needs a bit
-// per slot): the CPU slots' bits are set.
+// "Block j done" (sub_828AD2F8(L, j): the bits of the block's mask at
+// L+3564+j*15044 - the host needs one per slot, its own and every joiner's
+// acknowledgement; a joiner exactly one, its own, set when the block
+// arrives): on the HOST the CPU slots' bits stand in for the acknowledgements
+// they never send. Not on joiners - the host sends them every block, the
+// CPUs' too (with them set, a joiner never counted exactly one: "EXCHANGING
+// SUPERSTAR INFORMATION" forever with 2 CPUs).
 REX_EXTERN(__imp__sub_828AD2F8);
 REX_HOOK_RAW(sub_828AD2F8) {
   const uint32_t L = ctx.r3.u32;
-  if (L) {
+  if (L && IsHost(ctx, base)) {
     uint32_t bits = 0;
     for (uint32_t j = 0; j < SlotCount(base, L); ++j)
       if (IsCpu(Record(base, L, j))) bits |= 1u << j;
@@ -290,7 +328,13 @@ REX_HOOK_RAW(sub_824F6AE0) {
   if (!IsCpu(Record(base, L, from))) return;
   // (joiners build the CPU's block too - the same stock data from the synced
   // id - so it doesn't hang on the host's block broadcast reaching them)
-  if (!IsHost(ctx, base)) BuildBlock(ctx, base, L, from, Rd32(Record(base, L, from) + 136));
+  // (only when its copy isn't that superstar's - the host's block, e.g. a
+  // superstar and attire the host chose, arrived otherwise; block +32 = id)
+  if (!IsHost(ctx, base)) {
+    const uint32_t id = Rd32(Record(base, L, from) + 136);
+    const uint8_t* blk = base + L + kBlocks + from * kBlockSize;
+    if ((uint32_t(blk[32]) << 8 | blk[33]) != id) BuildBlock(ctx, base, L, from, id);
+  }
   // (+56 stays as the game set it, "use the copied block": the host built the
   // CPU's block (BuildBlock) and every machine has it - a cleared +56 left
   // sub_828B92A0 returning 0 to a caller that reads it on joiners)
@@ -393,13 +437,145 @@ REX_HOOK_RAW(sub_824E5398) {
               Rd32(base + net + 2232), Hex(base + net, 72 * 3));
 }
 
-namespace svr2011 {
-
-// (online.cpp's help bar hook) - fresh only while the lobby runs.
-void OnlineCpuHelp(int* y, bool* waiting) {
-  const bool fresh = NowMs() - g_help_at.load() < 500;
-  *y = fresh ? g_help_y.load() : 0;
-  *waiting = fresh && g_help_waiting.load();
+// The match's cross-console sync points (sub_82894AB0(N, k) waits until
+// sub_82893958(N, k) says every entry reached point k: N + (9k+110+i)*4 set
+// for each entry i < +2236). Its "k < +2236" guard assumes no more points
+// than entries - with CPUs there are more people than entries, and the wait
+// after the entrances (a point past the humans' count) never ended: both
+// games sat on NOW LOADING. With a CPU slot: the same check for those points.
+REX_EXTERN(__imp__sub_82893958);
+REX_HOOK_RAW(sub_82893958) {
+  const uint32_t N = ctx.r3.u32, k = ctx.r4.u32;
+  __imp__sub_82893958(ctx, base);
+  const uint32_t L = Lobby(base);
+  if (ctx.r3.u32 || !N || !L || !CpuCount(base, L)) return;
+  const uint32_t entries = Rd32(base + N + 2236);
+  if (k < entries || k >= 6) return;
+  bool ready = entries > 0;
+  for (uint32_t i = 0; i < entries; ++i) ready = ready && Rd32(base + N + (9 * k + 110 + i) * 4) != 0;
+  static uint32_t logged = 0xFFFFFFFF;
+  if (k != logged || ready) {
+    REXLOG_INFO("online cpu: sync point {} ({} entries): {}", k, entries, ready ? "everyone" : "waiting");
+    logged = ready ? 0xFFFFFFFF : k;
+  }
+  if (ready) ctx.r3.u64 = 1;
 }
 
-}  // namespace svr2011
+// The lobby's help bar: the screen picks its bar id every frame (sub_824E5578,
+// then sub_824E3E60(screen, &id) adjusts it), and the bar is only rebuilt
+// when the id changes (the host's lobby has a few - 1286, and others by what
+// the cursor is on - none of them telling a CPU from a player). So the Y label's state rides in the id's high half (1 + y + 3 *
+// waiting: y 1 ADD CPU, 2 REMOVE CPU, waiting for one more player), which
+// changes the id with it; online.cpp's bar hook (sub_82746358) takes it
+// off and puts the labels in.
+REX_EXTERN(__imp__sub_824E3E60);
+REX_HOOK_RAW(sub_824E3E60) {
+  const uint32_t screen = ctx.r3.u32, idp = ctx.r4.u32;
+  __imp__sub_824E3E60(ctx, base);
+  if (!screen || !idp || !REXCVAR_GET(online_cpu_slots)) return;
+  const uint32_t id = Rd32(base + idp);
+  if (!id || id > 0xFFFF) return;
+  const uint32_t L = Lobby(base);
+  if (!L) return;
+  const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
+  if (!((state == 11 || state == 22) && j < SlotCount(base, L) && IsHost(ctx, base))) return;
+  const uint32_t y = IsCpu(Record(base, L, j)) ? 2 : Rd32(Record(base, L, j)) < 5 ? 1 : 0;
+  const uint32_t waiting = Rd32(base + L + 24) < 2 && CpuCount(base, L) > 0 ? 1 : 0;
+  static uint32_t logged = 0;
+  if (LogOn() && id != logged) REXLOG_INFO("online cpu: lobby bar {} (cursor slot {}, Y {}, waiting {})", id, j, y, waiting);
+  logged = id;
+  if (y || waiting) Wr32(base + idp, id | ((1 + y + 3 * waiting) << 16));
+}
+
+// The result screen's kinds (sub_828A7F18, at the match's end): a person who
+// left (sub_828932D8(N, slot): its entry's +32) shows DISCONNECT, one with
+// entry +64 set (sub_82893460) LOSE. A CPU slot has no entry (sub_82892CF0:
+// 6), so both read sync flags instead - set on joiners: the CPU showed
+// DISCONNECT there. A CPU never left: its real result.
+bool CpuSlot(uint8_t* base, uint32_t slot) {
+  const uint32_t L = Lobby(base);
+  return L && slot < SlotCount(base, L) && IsCpu(Record(base, L, slot));
+}
+
+REX_EXTERN(__imp__sub_828932D8);
+REX_HOOK_RAW(sub_828932D8) {
+  if (CpuSlot(base, ctx.r4.u32)) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_828932D8(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82893460);
+REX_HOOK_RAW(sub_82893460) {
+  if (CpuSlot(base, ctx.r4.u32)) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_82893460(ctx, base);
+}
+
+// The host's handlers for a slot's pick (sub_828AE250(L, msg)) and its
+// superstar block (sub_828AE378(L, msg)) - msg +0 the sender's net player,
+// +8 the data: from the host itself while it chooses a CPU's superstar, they
+// go to the CPU slot (sub_828A5F08 below), which stays a CPU (state 26: the
+// stores set 8 / 10 and the handler sends the record right after).
+bool EditMessage(uint8_t* base, uint32_t L, uint32_t msg) {
+  if (g_edit < 0 || !L || !msg) return false;
+  const uint32_t mine = Rd32(base + L + 20);  // (this machine's slot)
+  return mine < SlotCount(base, L) && Rd32(base + msg) == Rd32(Record(base, L, mine) + 4);
+}
+
+REX_EXTERN(__imp__sub_828AE250);
+REX_HOOK_RAW(sub_828AE250) {
+  const uint32_t L = ctx.r3.u32;
+  if (!EditMessage(base, L, ctx.r4.u32)) {
+    __imp__sub_828AE250(ctx, base);
+    return;
+  }
+  // (its own superstar doesn't count as taken: an attire-only change)
+  uint8_t* rec = Record(base, L, g_edit);
+  const uint32_t had = Rd32(rec + 136);
+  Wr32(rec + 136, 512);
+  g_edit_msg = true;
+  __imp__sub_828AE250(ctx, base);
+  g_edit_msg = false;
+  if (Rd32(rec + 136) == 512) Wr32(rec + 136, had);  // (refused: taken by another)
+  REXLOG_INFO("online cpu: the host's pick for slot {}: id {} (was {})", g_edit, Rd32(rec + 136), had);
+}
+
+REX_EXTERN(__imp__sub_828AE378);
+REX_HOOK_RAW(sub_828AE378) {
+  if (!EditMessage(base, ctx.r3.u32, ctx.r4.u32)) {
+    __imp__sub_828AE378(ctx, base);
+    return;
+  }
+  g_edit_msg = true;
+  __imp__sub_828AE378(ctx, base);
+  g_edit_msg = false;
+  REXLOG_INFO("online cpu: slot {}'s superstar block from the host's pick", g_edit);
+}
+
+REX_EXTERN(__imp__sub_828A5F08);
+REX_HOOK_RAW(sub_828A5F08) {
+  if (g_edit_msg && g_edit >= 0) {
+    ctx.r3.u64 = uint32_t(g_edit);
+    return;
+  }
+  __imp__sub_828A5F08(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_828A6008);
+REX_HOOK_RAW(sub_828A6008) {
+  const uint32_t L = ctx.r3.u32, j = ctx.r4.u32;
+  __imp__sub_828A6008(ctx, base);
+  if (g_edit_msg && int(j) == g_edit) Wr32(Record(base, L, j), kCpuState);
+}
+
+REX_EXTERN(__imp__sub_828A6078);
+REX_HOOK_RAW(sub_828A6078) {
+  const uint32_t L = ctx.r3.u32, j = ctx.r4.u32;
+  __imp__sub_828A6078(ctx, base);
+  if (g_edit_msg && int(j) == g_edit) Wr32(Record(base, L, j), kCpuState);
+}
+

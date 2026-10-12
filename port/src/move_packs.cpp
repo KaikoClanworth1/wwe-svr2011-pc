@@ -46,6 +46,7 @@
 #include "startup_pump.h"
 
 #include <algorithm>
+#include <mutex>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -1086,6 +1087,21 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
 // load another file's than the overlay's misc.pac (with the DLCs installed,
 // one without the packs' moves - Jeff Hardy's ported finisher wasn't in
 // CREATE A MOVESET's list): each is patched here, as the file still is.
+namespace {
+// The moves a moveset can name (MoveUsable): a record with category bits, as
+// the last MOVS/WAZE loaded (after the packs' patch).
+std::mutex g_usable_mutex;
+std::vector<bool> g_usable;  // (empty: not loaded yet)
+}  // namespace
+
+namespace svr2011 {
+int MoveUsable(uint16_t id) {
+  std::lock_guard lock(g_usable_mutex);
+  if (g_usable.empty()) return -1;
+  return g_usable[id] ? 1 : 0;
+}
+}  // namespace svr2011
+
 REX_EXTERN(__imp__sub_8237E708);
 REX_HOOK_RAW(sub_8237E708) {
   const uint32_t data = ctx.r3.u32;
@@ -1099,6 +1115,23 @@ REX_HOOK_RAW(sub_8237E708) {
     if (logged++ < 4)
       REXLOG_INFO("[svr2011] move packs: MOVS/WAZE loaded ({} records): {} moves set, {} category counts updated",
                   Le32(w + 4), set, fixed);
+  }
+  if (data && Le32(base + data + 4) < 20000 && !std::memcmp(base + data + 272 + 16, "* test motion *", 15)) {
+    // (records still as in the file: id at +0x90, bits +0..+15)
+    const uint8_t* w = base + data;
+    std::vector<bool> usable(65536, false);
+    for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
+      const uint8_t* r = w + 272 + size_t(k) * 160;
+      if (std::any_of(r, r + 16, [](uint8_t b) { return b != 0; })) usable[Le16(r + 0x90)] = true;
+    }
+    // (a move pack's own moves count whatever the records say: Sabu's Arabian
+    // Facebuster 6861 has 2011's motions and the pack's bits but no record of
+    // its own in the file - it plays)
+    for (const auto& [id, b] : g_waze) usable[id] = true;
+    for (const auto& [id, from] : g_copies) usable[id] = true;
+    for (const auto& [id, n] : g_names) usable[id] = true;
+    std::lock_guard lock(g_usable_mutex);
+    g_usable = std::move(usable);
   }
   __imp__sub_8237E708(ctx, base);
 }

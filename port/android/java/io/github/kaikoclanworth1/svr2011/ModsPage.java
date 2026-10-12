@@ -160,6 +160,7 @@ final class ModsPage {
                     return;
                 }
                 deleteTree(d);
+                freeSuperstarSlot(d);
                 a_.status("Removed " + name + ".");
                 refresh();
             });
@@ -173,6 +174,33 @@ final class ModsPage {
     static boolean hasPicture(File dir) {
         File[] d = dir.listFiles(f -> f.isFile() && f.getName().toLowerCase().endsWith(".dds"));
         return d != null && d.length > 0;
+    }
+
+    // A removed superstar mod gives its id back: its line ("<folder>\t<id>")
+    // leaves Mods/Superstars/slots.txt. (The game keeps a mod's id there so
+    // saves stay with it; a line left behind held one of its 72 ids for good,
+    // and new mods no longer showed once they were all taken.)
+    static void freeSuperstarSlot(File folder) {
+        File parent = folder.getParentFile();
+        if (parent == null || !parent.getName().equals("Superstars")) return;
+        File slots = new File(parent, "slots.txt");
+        if (!slots.isFile()) return;
+        StringBuilder keep = new StringBuilder();
+        boolean dropped = false;
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(slots), StandardCharsets.UTF_8))) {
+            for (String line; (line = r.readLine()) != null; ) {
+                int tab = line.lastIndexOf('\t');
+                if (tab >= 0 && line.substring(0, tab).equals(folder.getName())) { dropped = true; continue; }
+                keep.append(line).append('\n');
+            }
+        } catch (IOException e) {
+            return;
+        }
+        if (!dropped) return;
+        try (OutputStream o = new FileOutputStream(slots)) {
+            o.write(keep.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+        }
     }
 
     static void deleteTree(File f) {

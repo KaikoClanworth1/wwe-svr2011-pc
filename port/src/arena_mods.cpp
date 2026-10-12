@@ -253,7 +253,8 @@ void StartScan() {
 // arenas in the same tiles (Mods/Arenas/<id>/: arena.pac, banner.dds = DXT5
 // 256 x 128, manifest.txt name=...; a "disabled" file turns one off).
 // Moving past the right edge goes to the next page, past the left edge to
-// the previous one (as the Paint Tool grid); LB / RB change the page too.
+// the previous one (as the Paint Tool grid); LB / RB and LT / RT change the
+// page too (keyboard: 1 / 3 and Q / E, the controller keys' defaults).
 // A custom arena borrows its tile's arena as host: while its tile is the one
 // under the cursor, the host's file is the custom arena's
 // (RedirectArena), so the match that follows loads it.
@@ -284,7 +285,10 @@ uint32_t g_select_widget = 0;
 std::atomic<int64_t> g_select_seen{0};  // when the arena grid was last updated (ms)
 std::atomic<int> g_cursor_custom{-1};    // custom arena under the cursor (label)
 int g_page = 0;              // 0 = the game's arenas
-std::atomic<uint16_t> g_shoulders[8];  // each player's LB / RB as last read (ArenaSelectPad)
+// each player's page buttons as last read (ArenaSelectPad): LB 0x100, RB
+// 0x200, LT 0x400, RT 0x800 (the triggers pressed past a quarter); A 0x1000
+// and B 0x2000 (a pick / a cancel)
+std::atomic<uint16_t> g_shoulders[8];
 int g_redirected_host = -1;  // host arena currently pointed at a custom one
 
 constexpr size_t kBannerBlocks = 64 * 32;  // 256 x 128 DXT5, 16 bytes a block
@@ -479,6 +483,17 @@ Banner* BannerOf(const char* name) {
   return nullptr;
 }
 
+// A dark grey tile for unused places on custom pages.
+const svrfmt::Bytes& EmptyTile() {
+  static svrfmt::Bytes empty;
+  if (empty.empty()) {
+    const uint8_t blk[16] = {0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0xE7, 0x39, 0xE7, 0x39, 0, 0, 0, 0};
+    for (size_t k = 0; k < kBannerBlocks; ++k) empty.insert(empty.end(), blk, blk + 16);
+    empty = Swap16(empty.data(), empty.size());
+  }
+  return empty;
+}
+
 // The custom arena on tile k of the current page (nullptr: none).
 const CustomArena* CustomAt(int k) {
   if (g_page == 0 || g_page - 1 >= int(g_layout.size())) return nullptr;
@@ -487,21 +502,44 @@ const CustomArena* CustomAt(int k) {
 }
 
 // Draws the current page into the 20 banner textures.
-void ShowPage(uint8_t* base) {
-  static svrfmt::Bytes empty;
-  if (empty.empty()) {  // a dark grey tile for unused places on custom pages
-    const uint8_t blk[16] = {0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0xE7, 0x39, 0xE7, 0x39, 0, 0, 0, 0};
-    for (size_t k = 0; k < kBannerBlocks; ++k) empty.insert(empty.end(), blk, blk + 16);
-    empty = Swap16(empty.data(), empty.size());
+const svrfmt::Bytes& EmptyTile();
+
+// What tile k of the current page shows (nullptr: the game's own banner).
+const svrfmt::Bytes* PageBanner(int k) {
+  if (g_page == 0) return nullptr;
+  const CustomArena* c = CustomAt(k);
+  return c && !c->banner.empty() ? &c->banner : &EmptyTile();
+}
+
+// The page drawn into the banner textures is still there: the game has not
+// loaded its banners anew (it reopened the screen). Only then may a gap in
+// the grid's updates keep the page.
+bool PageStillShown(const uint8_t* base) {
+  if (g_page == 0) return false;
+  int checked = 0;
+  for (int k = 0; k < 20; ++k) {
+    const Banner* bn = BannerOf(kTiles[k].banner);
+    const svrfmt::Bytes* src = PageBanner(k);
+    if (!bn || !src || bn->guest.empty()) continue;
+    for (const uint32_t at : bn->guest)
+      if (std::memcmp(base + at, src->data(), src->size())) {
+        size_t first = 0;
+        while (first < src->size() && base[at + first] == (*src)[first]) ++first;
+        REXLOG_INFO("[svr2011] arena select: page {} tile {} not shown at {:08X} (differs from byte {} of {})",
+                    g_page + 1, k, at, first, src->size());
+        return false;
+      }
+    ++checked;
   }
+  return checked > 0;
+}
+
+void ShowPage(uint8_t* base) {
   for (int k = 0; k < 20; ++k) {
     Banner* bn = BannerOf(kTiles[k].banner);
     if (!bn || bn->guest.empty()) continue;
-    const svrfmt::Bytes* src = &bn->data;
-    if (g_page > 0) {
-      const CustomArena* c = CustomAt(k);
-      src = c && !c->banner.empty() ? &c->banner : &empty;
-    }
+    const svrfmt::Bytes* src = PageBanner(k);
+    if (!src) src = &bn->data;
     for (const uint32_t at : bn->guest) {
       std::memcpy(base + at, src->data(), src->size());
       svr2011::native::GuestWritten(at, uint32_t(src->size()));  // (re-checked at once, not tile by tile)
@@ -516,6 +554,9 @@ void ShowPage(uint8_t* base) {
 // textures); a custom arena's vs/<name>.dds replace its base arena's
 // pictures of that name (see the loading and VS screens below).
 const void* g_redirected_custom = nullptr;
+// what the last pick (A) or the screen's opening left chosen (B restores it)
+const void* g_committed_custom = nullptr;
+int g_committed_host = -1;
 
 // The theme textures of arena `number`: name -> top level blocks, swapped.
 std::vector<std::pair<std::string, svrfmt::Bytes>> VsTheme(int number) {
@@ -813,15 +854,49 @@ REX_HOOK_RAW(sub_823D4FC0) {
   // the same address as last time - a gap in its updates: the game reopened
   // the screen and loaded its banners anew, elsewhere; the old page and
   // places stayed, the banners were written to stale memory - stock tiles on
-  // the wrong arenas, "2 / 2" over page 1's pictures; 2.0.4 report.)
-  if (w != g_select_widget || NowMs() - g_select_seen.load() > 300) {
+  // the wrong arenas, "2 / 2" over page 1's pictures; 2.0.4 report.) A gap
+  // alone is not a reopen while the page drawn is still in the banners: a
+  // hitch or the pick's own pause (A on a page 2 tile) then sent the screen
+  // back to page 1 and the stock arena was played (2.0.5 player reports).
+  if (w != g_select_widget || (NowMs() - g_select_seen.load() > 300 && !PageStillShown(base))) {
+    if (w != g_select_widget || g_page > 0)
+      REXLOG_INFO("[svr2011] arena select: screen (re)opened (widget {:08X} was {:08X}, {} ms since the last update, page {})",
+                  w, g_select_widget, NowMs() - g_select_seen.load(), g_page + 1);
     g_select_widget = w;
     g_page = 0;
     if (g_banners.empty()) LoadBanners();
     LocateBanners();
-    FollowCursor(4, 0);  // (nothing redirected)
+    // A custom arena already chosen (the screen opened again from the match
+    // screen): its page again, with it still played - the game puts the
+    // cursor on its tile (its base arena's). Going back to page 1 here
+    // dropped the pick: a stock arena was played (2.0.5 player reports).
+    g_committed_custom = g_redirected_custom;
+    g_committed_host = g_redirected_host;
+    const auto* chosen = static_cast<const CustomArena*>(g_redirected_custom);
+    int page = 0;
+    if (chosen)
+      for (size_t pg = 0; pg < g_layout.size() && !page; ++pg)
+        for (int k = 0; k < 20; ++k)
+          if (g_layout[pg][k] == int(chosen - g_customs.data())) page = int(pg) + 1;
+    if (page) {
+      g_page = page;
+      ShowPage(base);
+      REXLOG_INFO("[svr2011] arena select: {} still chosen (page {})", chosen->name, page + 1);
+    } else {
+      FollowCursor(4, 0);  // (nothing redirected)
+    }
   }
   g_select_seen = NowMs();
+  // Test aid: SVR2011_TEST_SELECT_HITCH=<ms>: the grid stalls that long every
+  // 2 s (a slow PC's hitches, which sent page 2 back to page 1).
+  static const int hitch = [] { const char* v = std::getenv("SVR2011_TEST_SELECT_HITCH"); return v ? std::atoi(v) : 0; }();
+  if (hitch > 0) {
+    static int64_t last = 0;
+    if (NowMs() - last > 2000) {
+      last = NowMs();
+      std::this_thread::sleep_for(std::chrono::milliseconds(hitch));
+    }
+  }
   const uint32_t row = rd(28), col = rd(44), cols = rd(48);
   __imp__sub_823D4FC0(ctx, base);
   const uint32_t new_col = rd(44), new_row = rd(28);
@@ -836,12 +911,47 @@ REX_HOOK_RAW(sub_823D4FC0) {
   held = shoulders;
   int page = g_page;
   const bool wrapped = row < 4 && new_row == row && cols > 2;
-  if ((wrapped && col + 1 == cols && new_col == 0) || (pressed & 0x200))
-    page = (g_page + 1) % Pages();
-  else if ((wrapped && col == 0 && new_col + 1 == cols) || (pressed & 0x100))
-    page = (g_page + Pages() - 1) % Pages();
+  // a page button turns one page per press: a press within 250 ms of the last
+  // turn is the same press read again (a hitch's repeated pad reads turned
+  // page 2 straight back to page 1)
+  static int64_t last_turn = 0;
+  const bool button_ok = NowMs() - last_turn > 250;
+  const char* why = nullptr;
+  if (wrapped && col + 1 == cols && new_col == 0) why = "right edge";
+  else if (wrapped && col == 0 && new_col + 1 == cols) why = "left edge";
+  else if (button_ok && (pressed & 0xA00)) why = pressed & 0x800 ? "RT" : "RB";
+  else if (button_ok && (pressed & 0x500)) why = pressed & 0x400 ? "LT" : "LB";
+  if (why) page = (why[0] == 'r' || why[0] == 'R' ? g_page + 1 : g_page + Pages() - 1) % Pages();
+  // A picks the tile under the cursor (kept); B leaves the screen with the
+  // arena chosen before, so a custom arena chosen then is played again (the
+  // cursor moving had pointed its host back at the stock file)
+  if (pressed & 0x1000) {
+    g_committed_custom = g_redirected_custom;
+    g_committed_host = g_redirected_host;
+  } else if (pressed & 0x2000) {
+    if (g_committed_custom != g_redirected_custom || g_committed_host != g_redirected_host) {
+      if (g_redirected_host >= 0) svr2011::RedirectArena(g_redirected_host, "");
+      g_redirected_host = -1;
+      g_redirected_custom = nullptr;
+      if (const auto* c = static_cast<const CustomArena*>(g_committed_custom); c && g_committed_host >= 0) {
+        SetDecodeSwaps(c, g_committed_host);
+        svr2011::SetRingRules(c->manifest);
+        svr2011::RedirectArena(g_committed_host, c->file);
+        g_redirected_custom = c;
+        g_redirected_host = g_committed_host;
+      } else {
+        SetDecodeSwaps(nullptr, -1);
+        svr2011::SetRingRules(std::string());
+      }
+      REXLOG_INFO("[svr2011] arena select: cancelled, {} kept",
+                  g_redirected_custom ? static_cast<const CustomArena*>(g_redirected_custom)->name : std::string("the stock arena"));
+    }
+    return;  // (the screen is closing: the cursor no longer picks)
+  }
   if (page != g_page) {
+    last_turn = NowMs();
     g_page = page;
+    REXLOG_INFO("[svr2011] arena select: page turned ({})", why);
     ShowPage(base);
   }
   FollowCursor(int(new_row), int(new_col));
@@ -928,7 +1038,7 @@ void SetMatchLoading(bool loading) { g_match_loading = loading; }
 int ArenaNumberFor(int arena) { return arena >= 0 && arena < 100 && g_number_for[arena] ? g_number_for[arena] : arena; }
 
 void ArenaSelectPad(uint32_t user, uint16_t buttons) {
-  if (user < 8) g_shoulders[user] = buttons & 0x300;
+  if (user < 8) g_shoulders[user] = buttons & 0x3F00;  // (+ A 0x1000, B 0x2000: pick / cancel)
 }
 
 void SetArenaDefault(int arena, const std::string& relative_file) {

@@ -94,6 +94,7 @@ still being tested.
 - **Hell in a Cell: Tables & Ladders**: each cell match (1v1, 2v2, triple threat, fatal-4-way) has a version with tables, ladders and chairs inside the cell (switch mod `hiac_tables_ladders`).
 - **Steel Cage / Inferno: Weapons Inside**: chairs and hand weapons in the ring, no DQ (switch mods `cage_weapons`, `inferno_weapons`).
 - **Gauntlet Eliminator** (HANDICAP): six superstars, two start, one more each minute (sooner if only one is left), a pin or submission eliminates, the last one standing wins; plus an EXTREME RULES version with weapons and no DQ (switch mod `gauntlet_eliminator`).
+- **6-Man Weapons Everywhere** is every man for himself (it played as a tag match), DQ is really off (the pause menu showed "Press Start Button"), no count-outs, and the floor weapons no longer lie against the barrier.
 - **CPU opponents run again at 30 fps** - at 30 they could only walk (their run presses were lost between the game's two updates per frame).
 - **Practice Arena mod**: its crowd and floor show during the match (everything beyond the ring was black).
 
@@ -108,7 +109,8 @@ still being tested.
 - **Ping indicator** (GRAPHICS → DISPLAY → ONLINE PING): bars and milliseconds while online.
 - **Invites**: a pop-up when a friend invites you (with an on/off switch in the overlay), and X INVITE FRIENDS in the lobby opens an invite panel.
 - **Online overlay**: BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
-- 🧪 **UDP match relay** (server side off until enabled) and **CPU players in Player Matches** (being finished).
+- **CPU players in Player Matches**: the host presses Y on an empty slot (Y ADD CPU / REMOVE CPU) and picks the CPU's superstar with A; the match plays in sync on every machine (needs at least two human players).
+- 🧪 **UDP match relay** (server side off until enabled).
 
 ### Menus and graphics
 - **900P and 1080P** render resolutions (GRAPHICS → RENDER RESOLUTION).
@@ -119,6 +121,15 @@ still being tested.
 - **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start.
 - **Highlight reel clip save**: saving a video clip mid-match with a full memory pool is cancelled with a message instead of crashing.
 - **Sabu**: his top-rope corner moves no longer lift the opponent a body-height above the turnbuckle (2011's own seated moves); the SvR 2010 converter keeps corner slots for seated moves.
+- **Black screen at start in game folders with non-English letters** (e.g. `oyun yüklü`, Cyrillic): the settings file never loaded; the programs now use UTF-8 paths throughout (Windows 10 1903 and later).
+- **Create-a-Superstar Help** stays open while BACK is held (it closed after a second with online on).
+- **Android: the game no longer plays by itself** on phones that list fingerprint readers, power keys or touch panels as controllers; the touch controls let go when the game loses focus (folding, the notification shade, a call).
+- **Report a problem** (PC and Android) keeps the useful log parts: a freeze's repeated errors no longer push out what came before.
+- **Direct3D 11: ringside floor mat and barricade tops** no longer white (a shader limit the DX11 compiler dropped).
+- **Custom arenas on page 2 of SELECT ARENA** stay chosen (going back into the arena select reset to page 1 and the stock arena played); LT / RT turn the pages too.
+- **Universe: superstar mods can't hold a title** (a mod has no Universe place, so the title got stuck with a holder nobody could book); saves where one does get the previous holder back.
+- **Superstar mod slots**: removing a mod in the launcher / Android frees its slot; the game reuses the slots of mods whose folder is gone.
+- **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
 - **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
 
 ## New in 2.0.6

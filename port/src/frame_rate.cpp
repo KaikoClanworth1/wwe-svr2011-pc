@@ -723,7 +723,10 @@ REX_HOOK_RAW(sub_82905058) {
     r->valid = true;
     r->result = ctx.r3.u32;
     std::memcpy(r->state, base + out, sizeof(r->state));
-    svr2011::ArenaSelectPad(user, ctx.r3.u32 == 0 ? uint16_t(base[out + 4] << 8 | base[out + 5]) : 0);  // (arena_mods.h)
+    svr2011::ArenaSelectPad(user, ctx.r3.u32 == 0 ? uint16_t((base[out + 4] << 8 | base[out + 5]) & ~0xC00 |
+                                                             (base[out + 6] > 0x40 ? 0x400 : 0) |
+                                                             (base[out + 7] > 0x40 ? 0x800 : 0))
+                                                : 0);  // (arena_mods.h: LB/RB, LT/RT as 0x400/0x800)
     if (user == 0) svr2011::CheckModProfiles(base);  // (superstar_mods.h)
   }
 }

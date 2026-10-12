@@ -876,23 +876,16 @@ uint16_t OnlineOverlayPad(uint16_t buttons) {
   g_guest_pad = buttons;  // (the overlay's combo check: the real buttons)
   static const bool on = rex::cvar::Query<bool>("online_enabled");
   if (!on) return buttons;
-  // (game thread only)
-  static bool back_held = false, chord = false;
-  static Clock::time_point back_until{};
+  // (game thread only) The game gets BACK as it is - its help screens
+  // (Create-a-Superstar's, the menus') are open only while BACK is held; held
+  // back until release, they closed at once. Only the overlay's BACK + RB is
+  // kept from it, from the moment both are down until both are let go.
+  static bool chord = false;
   const bool back = buttons & X_INPUT_GAMEPAD_BACK, rb = buttons & X_INPUT_GAMEPAD_RIGHT_SHOULDER;
-  const auto now = Clock::now();
-  if (back) {
-    if (!back_held) back_held = true, chord = false;
-    if (rb) chord = true;
-    buttons &= uint16_t(~(X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_RIGHT_SHOULDER));
-  } else if (back_held) {
-    back_held = false;
-    if (!chord) back_until = now + std::chrono::milliseconds(120);  // (a plain BACK: the game gets it now)
-  }
-  if (chord && rb) buttons &= uint16_t(~X_INPUT_GAMEPAD_RIGHT_SHOULDER);  // (until RB is let go too)
-  if (chord && !back && !rb) chord = false;
-  if (now < back_until) buttons |= X_INPUT_GAMEPAD_BACK;
-  return buttons;
+  if (back && rb) chord = true;
+  if (!chord) return buttons;
+  if (!back && !rb) chord = false;
+  return uint16_t(buttons & ~(X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_RIGHT_SHOULDER));
 }
 
 }  // namespace svr2011

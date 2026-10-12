@@ -37,8 +37,8 @@ void SetMatchLoading(bool loading);
 // The arena number a match in that arena plays as (RedirectArena: the stock
 // practice ring on another tile plays as 29); the arena itself otherwise.
 int ArenaNumberFor(int arena);
-// A player's pad buttons as the game read them (XInput bits): LB / RB turn
-// the arena select page.
+// A player's pad buttons as the game read them (XInput bits, with LT / RT
+// pressed as 0x400 / 0x800): LB / RB and LT / RT turn the arena select page.
 void ArenaSelectPad(uint32_t user, uint16_t buttons);
 
 // Backstage mods with an own menu row (manifest row=<label>): their bg78 plays

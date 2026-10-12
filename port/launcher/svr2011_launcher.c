@@ -7164,6 +7164,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* Tests: --mods-remove <game folder> <mod folder> removes a mod as the Mods
+       list's Remove does (a superstar mod's slots.txt line goes too). */
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--mods-remove")) {
+        const int ok = mods_remove(argv[2], argv[3]);
+        LocalFree(argv);
+        return ok ? 0 : 1;
+    }
     /* Tests: --mods-rename <mod folder> <name> renames a background as editing
        its name in the Mods list does. */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--mods-rename")) {

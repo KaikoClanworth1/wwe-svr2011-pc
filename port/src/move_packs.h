@@ -3,6 +3,7 @@
 // docs/MOVE_PACKS.md.
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace rex::filesystem {
@@ -22,5 +23,11 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* fs);
 // for the game's own. With an overlay the pacs are mounted from their own
 // tables (the pre-built directory plist360.arc only knows the originals).
 const std::string& PacListFolder();
+
+// Can a moveset name this move: 1 if the game's move records (the last
+// MOVS/WAZE loaded, the packs' moves in) have it with category bits, 0 if not
+// (no record, or one 2011 kept for a cut move: no motion either), -1 before
+// the records are loaded.
+int MoveUsable(uint16_t id);
 
 }  // namespace svr2011

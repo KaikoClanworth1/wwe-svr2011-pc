@@ -611,3 +611,13 @@ Under the `three_stages_of_hell` switch mod.
 - The picked match: the screen reads its name through the rule-name helper `sub_824CCB38` (rule in r3) from 0x824EB3B8, as it is made and when the MATCH TYPE list returns. Not it: the session-info property-6 read `sub_824FDC78` (search results only), and 0x1000000C (not set before CONTINUE).
 - The MATCH TYPE list sets up matches (`sub_827374A0`) as it is browsed: the rules are applied only while no CREATE SESSION exists.
 - Tested (2026-10-09): host cycles on normal and HIAC; LAN host + joiner: the joiner gets 00010000 before joining, both set up rule 00 as 0x4D, the lobby panel on both. The match itself not watched yet.
+
+## Live rule bytes (corrected 2026-10-12, B11)
+
+The live rules are the first 64 bytes of the match struct at 0x82E3DE00 (built by `sub_828C48E8`, which masks every byte with 0x7F at its end: live bytes never hold the 0x80 lock bit).
+- **+27 DISQUALIFICATION** (0 off). The referee's DQ count (`sub_822473B0`, `sub_82246BF0`) runs only when it is non-zero. Writing the record's locked value 0x80 after the mask left DQ on, and the pause menu's MATCH RULES row showed "Press Start Button" (its ON/OFF string table indexed past its end).
+- **+4 RING OUT: no exiting** (1), **+5 count-out** (0 off, else the count). Not DQ, as older notes here said.
+- **+3 rope breaks**, +37 elimination, +1 pin / give up, +8 time limit, +2 K.O.
+- MATCH CREATOR rows (saved record): +15 DQ -> live +27, +16 rope breaks -> +3, +17 ring out / count-out -> +4/+5.
+- The rule record (100 bytes) +8: 2 where everyone is legal (triple threat, fatal-4-way, tornado 0x0F, 2 on 2 Extreme Rules 0x4E), 0 in tag rules. 6-MAN WEAPONS EVERYWHERE sets it (a tornado 6-man), restored after the match.
+- 6-MAN WEAPONS EVERYWHERE now: tornado, DQ off, count-outs off, out of the ring allowed; floor weapons on the camera side at z 45 (at z 54-55 they lay against the barrier, and a wrestler picking one up froze, B11).
