@@ -117,6 +117,10 @@ still being tested.
 - **Custom main-menu backgrounds**: add your own pictures on the launcher's Mods tab (or the Android Mods page); they join the game's 12, with on/off and the game logo on/off in OPTIONS → BACKGROUNDS. The Mod Maker's Menu backgrounds page makes shareable background packs.
 - **Button pictures fixed**: PlayStation / keyboard button pictures could show other pictures (the WWE Universe logo, a font sheet, the WWEHD logo).
 
+### Options
+- **VIBRATION ON / OFF** (OPTIONS → CONTROLS).
+- **Mystery Opponent**: once you pick your superstar the CPU's pick locks by itself and shows only a "?" on its panel; the opponent stays hidden on the VS screen until the entrance.
+
 ### Fixes
 - **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start.
 - **Highlight reel clip save**: saving a video clip mid-match with a full memory pool is cancelled with a message instead of crashing.
@@ -138,7 +142,7 @@ still being tested.
 - **Cutscene movies keep up with their sound** on slow PCs (the video fell 4-6 s behind in Road to WrestleMania); full-speed PCs are unchanged.
 - **Sabu 1.4**: his d-pad-left taunt ("Sit Down", a move 2011 cut) no longer freezes him and the match end.
 - **Custom titantrons kept**: editing a modded superstar's entrance no longer swaps his user movie for the first one in the list.
-- **R-Truth's entrance** plays his theme (only his vocal track played).
+- **R-Truth's entrance** plays his theme and his vocal (only the vocal played: a pause the game sends right after his music starts kept the theme stopped).
 - **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
 
 ## New in 2.0.6
