@@ -8,6 +8,8 @@
 
 #include <cstdint>
 
+#include <rex/ppc.h>
+
 namespace rex::ui {
 class ImGuiDrawer;
 }
@@ -27,8 +29,21 @@ struct OnlineRulesSetup {
   bool on = false;
   uint32_t rule = 0;
   bool weapons = false, stages = false;
+  bool mystery = false;  // (MYSTERY OPPONENT: the host's hidden CPU in the lobby)
   int set = 0;
 };
 OnlineRulesSetup OnlineRulesFor(uint32_t rule);
+
+// The HOST's Player Match lobby, each frame while it waits (online_cpu.cpp's
+// lobby hook): the port rules' CPU slots - MYSTERY OPPONENT's hidden one.
+// Rolled once, by the host only; the record goes to everyone (a joiner,
+// early or late, gets the same one).
+void OnlineRulesLobby(PPCContext& ctx, uint8_t* base, uint32_t lobby);
+
+// (online_cpu.cpp) the lobby's slots
+uint32_t OnlineLobbySlots(uint8_t* base, uint32_t lobby);
+const uint8_t* OnlineLobbyRecord(uint8_t* base, uint32_t lobby, uint32_t j);
+bool OnlineLobbyIsCpu(uint8_t* base, uint32_t lobby, uint32_t j);
+void OnlineLobbyMakeCpu(PPCContext& ctx, uint8_t* base, uint32_t lobby, uint32_t j, const char* shown);
 
 }  // namespace svr2011

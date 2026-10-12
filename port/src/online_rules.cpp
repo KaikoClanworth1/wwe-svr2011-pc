@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -38,7 +39,7 @@ int64_t NowMs() {
       .count();
 }
 
-enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4 };
+enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5 };
 struct Option {
   Mode mode;
   int set;
@@ -54,6 +55,9 @@ constexpr Option kStage[] = {
     {kStages, 4, "THREE STAGES: CELL BLOOD / LMS / SUB", "Inside the cell: First Blood, Last Man Standing, Submission."}};
 constexpr Option kTl{kTablesLadders, 0, "TABLES & LADDERS", "Tables, ladders and chairs lying inside the cell."};
 constexpr Option kInside{kWeaponsInside, 0, "WEAPONS INSIDE", "Chairs and other weapons lying in the ring."};
+constexpr Option kMysteryOpt{kMystery, 0, "MYSTERY OPPONENT",
+                             "A hidden CPU superstar fills the last slot - revealed at their entrance."};
+constexpr const char* kMysteryName = "MYSTERY OPPONENT";
 
 // The mode's normal matches (one on one, two on two, 3-man, 4-man) and
 // their Extreme Rules ones; 6-man tag and handicap have no Extreme Rules
@@ -66,6 +70,7 @@ std::vector<Option> OptionsFor(uint32_t rule) {
   if (normal || rule == 0x08 || rule == 0x0F) {
     o.push_back(kWe);
     for (int k = 0; k < 3; ++k) o.push_back(kStage[k]);
+    if (rule == 0x0D) o.push_back(kMysteryOpt);  // (TRIPLE THREAT: 2 players + the hidden CPU)
   } else if (rule >= 0x4D && rule <= 0x50) {
     o.push_back(kWe);
   } else if (rule >= 0x31 && rule <= 0x34) {
@@ -92,7 +97,7 @@ bool CreateSessionShown() { return NowMs() - g_cs_at.load() < 300; }
 // The picked match (CREATE SESSION's name read).
 uint32_t PickedRule() { return g_cs_rule.load(); }
 std::string Describe(uint32_t value) {
-  for (uint32_t rule : {0x00u, 0x31u, 0x3Cu})
+  for (uint32_t rule : {0x00u, 0x31u, 0x3Cu, 0x0Du})
     for (const Option& o : OptionsFor(rule))
       if (Value(o) == value) return o.name;
   return "UNKNOWN";
@@ -160,6 +165,27 @@ void OnlineRulesPad(uint16_t buttons) {
   if (pressed & 0x0200) g_step = 1;   // RB
 }
 
+// MYSTERY OPPONENT: the host fills the lobby's last vacant slot with a CPU
+// (online_cpu.cpp: a stock superstar nobody has, its superstar block built
+// and sent) shown as MYSTERY OPPONENT - once: a slot already holding it is
+// never rolled again, and a joiner (early or late) gets the record.
+void OnlineRulesLobby(PPCContext& ctx, uint8_t* base, uint32_t lobby) {
+  const auto v = PortRules();
+  if (!v || Mode(*v >> 16) != kMystery) return;
+  const uint32_t slots = OnlineLobbySlots(base, lobby);
+  int vacant = -1;
+  for (uint32_t j = 0; j < slots; ++j) {
+    const uint8_t* rec = OnlineLobbyRecord(base, lobby, j);
+    if (OnlineLobbyIsCpu(base, lobby, j) && std::strncmp(reinterpret_cast<const char*>(rec + 174), kMysteryName, 16) == 0)
+      return;  // (there: rolled already)
+    const uint32_t state = uint32_t(rec[0]) << 24 | uint32_t(rec[1]) << 16 | uint32_t(rec[2]) << 8 | rec[3];
+    if (state < 5) vacant = int(j);
+  }
+  if (vacant < 0) return;  // (every slot taken by players)
+  REXLOG_INFO("online rules: MYSTERY OPPONENT - the hidden CPU in slot {}", vacant);
+  OnlineLobbyMakeCpu(ctx, base, lobby, uint32_t(vacant), kMysteryName);
+}
+
 OnlineRulesSetup OnlineRulesFor(uint32_t rule) {
   OnlineRulesSetup s;
   // (not while CREATE SESSION is up: the MATCH TYPE list sets up matches as it's browsed)
@@ -183,6 +209,8 @@ OnlineRulesSetup OnlineRulesFor(uint32_t rule) {
       if (rule == kNormal[i]) s.rule = kExtreme[i];  // (Weapons Everywhere: the Extreme Rules match)
   } else if (mode == kStages) {
     s.stages = true;
+  } else if (mode == kMystery) {
+    s.mystery = true;  // (the lobby's CPU is the opponent: nothing to change in the rule)
   } else {
     s.weapons = true;  // (Tables & Ladders, Weapons Inside: the structure's weapons)
   }
