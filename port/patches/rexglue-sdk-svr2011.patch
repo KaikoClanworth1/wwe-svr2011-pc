@@ -688,6 +688,22 @@ index 0000000..c1f04e6
 +    if (::rex::timeline::Enabled())                             \
 +      ::rex::timeline::Record(::rex::timeline::ev, ##__VA_ARGS__); \
 +  } while (0)
+diff --git a/include/rex/ui/d3d12/d3d12_presenter.h b/include/rex/ui/d3d12/d3d12_presenter.h
+index 83d09f7..e69ebf5 100644
+--- a/include/rex/ui/d3d12/d3d12_presenter.h
++++ b/include/rex/ui/d3d12/d3d12_presenter.h
+@@ -251,6 +251,11 @@ class D3D12Presenter final : public Presenter {
+     uint32_t swap_chain_width = 0;
+     uint32_t swap_chain_height = 0;
+     bool swap_chain_allows_tearing = false;
++    // [svr2011] The vsync setting when the swap chain was made (on: no tearing,
++    // a waitable swap chain with one frame of latency - each paint waits for a
++    // free back buffer first, as the D3D11 presenter does).
++    bool vsync = false;
++    HANDLE frame_latency_waitable = nullptr;
+     Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain;
+     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kSwapChainBufferCount> swap_chain_buffers;
+   };
 diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
 index afb4a30..ef6ae4d 100644
 --- a/include/rex/ui/presenter.h
@@ -1524,7 +1540,7 @@ index 0000000..cee5140
 +
 +}  // namespace rex::timeline
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index a744375..a3840ce 100644
+index a744375..9e16801 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -9,6 +9,7 @@
@@ -1535,21 +1551,21 @@ index a744375..a3840ce 100644
  #include <algorithm>
  #include <cinttypes>
  #include <cmath>
-@@ -34,9 +35,14 @@
+@@ -34,8 +35,13 @@
  #include <rex/stream.h>
  #include <rex/system/kernel_state.h>
  #include <rex/system/user_module.h>
 +#include <rex/timeline.h>
  
- REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
- 
+-REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
++REXCVAR_DECLARE(bool, vsync);  // [svr2011] (ui/presenter.cpp: the presenters read it too)
++
 +// [svr2011] Diagnostics for command-processor stalls on PM4 WAIT_REG_MEM.
 +REXCVAR_DEFINE_BOOL(gpu_log_waits, false, "GPU",
 +                    "Log WAIT_REG_MEM statistics (count, time, polled address) every 5 s");
-+
+ 
  REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
                      "Refresh page-valid state from GPU-written memory at frame end. "
-                     "Disable for minor CPU overhead reduction, but may break memory coherency.")
 @@ -328,6 +334,7 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
  }
  
@@ -5217,6 +5233,119 @@ index 5bd3dc5..8638e12 100644
  
  # D3D12 backend dependencies
  if(REXGLUE_USE_D3D12)
+diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
+index 306118e..3ab27e7 100644
+--- a/src/ui/d3d12/d3d12_presenter.cpp
++++ b/src/ui/d3d12/d3d12_presenter.cpp
+@@ -32,6 +32,7 @@
+ 
+ REXCVAR_DEFINE_BOOL(d3d12_allow_variable_refresh_rate_and_tearing, true, "UI/D3D12",
+                     "Allow variable refresh rate and tearing");
++REXCVAR_DECLARE(bool, vsync);  // (presenter.cpp; on: no tearing)
+ 
+ namespace rex::ui::d3d12 {
+ 
+@@ -350,7 +351,7 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
+   if (paint_context_.swap_chain) {
+     if (was_paintable && paint_context_.swap_chain_width == new_swap_chain_width &&
+         paint_context_.swap_chain_height == new_swap_chain_height) {
+-      is_vsync_implicit_out = false;
++      is_vsync_implicit_out = paint_context_.vsync;  // [svr2011] (the UI thread waits, see Paint)
+       return SurfacePaintConnectResult::kSuccessUnchanged;
+     }
+     paint_context_.AwaitSwapChainUsageCompletion();
+@@ -363,7 +364,9 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
+     }
+     bool swap_chain_resized = SUCCEEDED(paint_context_.swap_chain->ResizeBuffers(
+         0, UINT(new_swap_chain_width), UINT(new_swap_chain_height), DXGI_FORMAT_UNKNOWN,
+-        paint_context_.swap_chain_allows_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0));
++        (paint_context_.swap_chain_allows_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) |
++            (paint_context_.frame_latency_waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
++                                                   : 0)));
+     if (swap_chain_resized) {
+       for (uint32_t i = 0; i < PaintContext::kSwapChainBufferCount; ++i) {
+         if (FAILED(paint_context_.swap_chain->GetBuffer(
+@@ -413,6 +416,11 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
+       // rate.
+       swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+     }
++    // [svr2011] VSync on: a waitable swap chain (see PaintContext::vsync).
++    paint_context_.vsync = REXCVAR_GET(vsync);
++    if (paint_context_.vsync) {
++      swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
++    }
+     IDXGIFactory2* dxgi_factory = provider_.GetDXGIFactory();
+     ID3D12CommandQueue* direct_queue = provider_.GetDirectQueue();
+     Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain_1;
+@@ -450,6 +458,18 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
+     paint_context_.swap_chain_height = new_swap_chain_height;
+     paint_context_.swap_chain_allows_tearing =
+         (swap_chain_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
++    if (paint_context_.vsync) {
++      paint_context_.swap_chain->SetMaximumFrameLatency(1);
++      paint_context_.frame_latency_waitable = paint_context_.swap_chain->GetFrameLatencyWaitableObject();
++    }
++    static bool logged = false;
++    if (!logged) {
++      logged = true;
++      REXLOG_INFO("D3D12Presenter: flip model swap chain{}; present: {}",
++                  paint_context_.swap_chain_allows_tearing ? ", tearing allowed" : "",
++                  paint_context_.vsync ? "vsync (newest frame at each refresh, no tearing)"
++                                       : "no vsync (tearing allowed)");
++    }
+     for (uint32_t i = 0; i < PaintContext::kSwapChainBufferCount; ++i) {
+       if (FAILED(paint_context_.swap_chain->GetBuffer(
+               i, IID_PPV_ARGS(&paint_context_.swap_chain_buffers[i])))) {
+@@ -478,7 +498,7 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
+         provider_.OffsetRTVDescriptor(rtv_heap_start, PaintContext::kRTVIndexSwapChainBuffer0 + i));
+   }
+ 
+-  is_vsync_implicit_out = false;
++  is_vsync_implicit_out = paint_context_.vsync;  // [svr2011] (the UI thread waits, see Paint)
+   return SurfacePaintConnectResult::kSuccess;
+ }
+ 
+@@ -549,12 +569,22 @@ void D3D12Presenter::PaintContext::DestroySwapChain() {
+     swap_chain_buffer_ref.Reset();
+   }
+   swap_chain.Reset();
++  if (frame_latency_waitable) {
++    CloseHandle(frame_latency_waitable);
++    frame_latency_waitable = nullptr;
++  }
+   swap_chain_allows_tearing = false;
+   swap_chain_height = 0;
+   swap_chain_width = 0;
+ }
+ 
+ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawers) {
++  // [svr2011] VSync on: a free back buffer first (one frame of latency). None
++  // within 100 ms (the compositor isn't taking frames): this paint is skipped.
++  if (paint_context_.frame_latency_waitable &&
++      WaitForSingleObjectEx(paint_context_.frame_latency_waitable, 100, TRUE) == WAIT_TIMEOUT) {
++    return PaintResult::kNotPresented;
++  }
+   // Begin the command list with the command allocator not currently potentially
+   // used on the GPU.
+   UINT64 current_paint_submission = paint_context_.paint_submission_tracker.GetCurrentSubmission();
+@@ -1155,9 +1185,15 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+   // fullscreen is ever used in, the allow tearing flag must not be passed in
+   // fullscreen, but DXGI fullscreen is largely unneeded with the flip
+   // presentation model used in Direct3D 12).
++  // [svr2011] VSync on (the vsync setting): no tearing flag - a flip model
++  // swap chain then shows the newest frame at each refresh, never torn, and
++  // Present doesn't block (sync interval 1 did, and its wait held up the guest
++  // output: frames paced 16 / 33 ms).
++  const bool vsync = paint_context_.vsync;
+   HRESULT present_result = paint_context_.swap_chain->Present(
+-      0, DXGI_PRESENT_RESTART |
+-             (paint_context_.swap_chain_allows_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0));
++      0, DXGI_PRESENT_RESTART | (!vsync && paint_context_.swap_chain_allows_tearing
++                                     ? DXGI_PRESENT_ALLOW_TEARING
++                                     : 0));
+   // Even if presentation has failed, work might have been enqueued anyway
+   // internally before the failure according to Jesse Natalie from the DirectX
+   // Discord server.
 diff --git a/src/ui/d3d12/d3d12_provider.cpp b/src/ui/d3d12/d3d12_provider.cpp
 index bf8252b..a6ee12b 100644
 --- a/src/ui/d3d12/d3d12_provider.cpp
@@ -5354,7 +5483,7 @@ index ade5dd2..9151f01 100644
    read_range.Begin = 0;
    read_range.End = 0;
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
-index 7360ed9..aff93b8 100644
+index 7360ed9..dfc6037 100644
 --- a/src/ui/presenter.cpp
 +++ b/src/ui/presenter.cpp
 @@ -11,6 +11,8 @@
@@ -5366,7 +5495,18 @@ index 7360ed9..aff93b8 100644
  #include <cctype>
  #include <utility>
  
-@@ -277,6 +279,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
+@@ -26,6 +28,10 @@
+ #include <ffx_api/ffx_upscale.h>
+ #endif
+ 
++// [svr2011] Defined here (rexruntime) rather than in the GPU plugin: the
++// presenters wait for the refresh with it on (sync interval 1 / FIFO) too.
++REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
++
+ REXCVAR_DEFINE_BOOL(host_present_from_non_ui_thread, true, "UI/Presenter",
+                     "Allow presentation from non-UI thread");
+ 
+@@ -277,6 +283,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
  namespace rex {
  namespace ui {
  
@@ -5384,7 +5524,7 @@ index 7360ed9..aff93b8 100644
  void Presenter::FatalErrorHostGpuLossCallback([[maybe_unused]] bool is_responsible,
                                                [[maybe_unused]] bool statically_from_ui_thread) {
    rex::FatalError("Graphics device lost (probably due to an internal error)");
-@@ -446,9 +459,31 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -446,9 +463,31 @@ void Presenter::PaintFromUIThread(bool force_paint) {
    // Reset ui_thread_paint_requested_ unconditionally also, regardless of
    // whether the UI needs to be drawn - the flag may be set to try reconnecting,
    // for example.
@@ -5417,7 +5557,7 @@ index 7360ed9..aff93b8 100644
    PaintResult paint_result = PaintResult::kNotPresented;
    bool request_repaint_at_tick = false;
    bool request_repaint_immediately = false;
-@@ -541,6 +576,7 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -541,6 +580,7 @@ void Presenter::PaintFromUIThread(bool force_paint) {
        request_repaint_at_tick = true;
      }
    }
@@ -5425,7 +5565,7 @@ index 7360ed9..aff93b8 100644
    if (request_repaint_at_tick || request_repaint_immediately) {
      RequestPaintOrConnectionRecoveryViaWindow(request_repaint_immediately);
    }
-@@ -592,6 +628,7 @@ bool Presenter::RefreshGuestOutput(
+@@ -592,6 +632,7 @@ bool Presenter::RefreshGuestOutput(
        last_acquired_and_ready,
        (last_acquired_and_ready & 3) | (guest_output_mailbox_writable_ << 2),
        std::memory_order_acq_rel, std::memory_order_relaxed)) {}
@@ -5433,7 +5573,7 @@ index 7360ed9..aff93b8 100644
    // Now, it's known that `ready == writable` on the host presentation side.
    // Take the next `writable` with this assumption about its current value in
    // mind.
-@@ -1497,7 +1534,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
+@@ -1497,7 +1538,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
  Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
    assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
    assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
@@ -5737,7 +5877,7 @@ index 914b311..fce845f 100644
      REXGPU_ERROR("{}", msg);
    } else if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..65df178 100644
+index 23645ef..8c8aeb3 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -10,6 +10,7 @@
@@ -5748,7 +5888,58 @@ index 23645ef..65df178 100644
  #include <atomic>
  #include <cstddef>
  #include <cstdint>
-@@ -1528,6 +1529,24 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+@@ -58,6 +59,8 @@ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_mailbox, true, "UI/Vulkan",
+ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_fifo_relaxed, true, "UI/Vulkan",
+                     "Allow FIFO relaxed present mode");
+ 
++REXCVAR_DECLARE(bool, vsync);  // (presenter.cpp; on: mailbox, else FIFO)
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+@@ -1381,7 +1384,18 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   // interfering with GPU command processing, and also to allow tearing so
+   // variable refresh rate may be used where it's available.
+   // Note: If the priorities here are changes, update the cvar descriptions.
+-  if (REXCVAR_GET(vulkan_allow_present_mode_immediate) &&
++  // [svr2011] VSync on (the vsync setting): never tearing - mailbox (the
++  // newest image at each refresh, presents don't wait) where the driver has
++  // it, else FIFO (every driver has it; each image waits for the refresh,
++  // which paced frames 16 / 33 ms where mailbox exists).
++  const bool vsync = REXCVAR_GET(vsync);
++  if (vsync) {
++    swapchain_create_info.presentMode =
++        std::find(present_modes.cbegin(), present_modes.cend(), VK_PRESENT_MODE_MAILBOX_KHR) !=
++                present_modes.cend()
++            ? VK_PRESENT_MODE_MAILBOX_KHR
++            : VK_PRESENT_MODE_FIFO_KHR;
++  } else if (REXCVAR_GET(vulkan_allow_present_mode_immediate) &&
+       std::find(present_modes.cbegin(), present_modes.cend(), VK_PRESENT_MODE_IMMEDIATE_KHR) !=
+           present_modes.cend()) {
+     // Allowing tearing to reduce latency, and possibly variable refresh rate
+@@ -1410,12 +1424,19 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+     REXLOG_ERROR("VulkanPresenter: Failed to create a swapchain");
+     return VK_NULL_HANDLE;
+   }
++  const VkPresentModeKHR mode = swapchain_create_info.presentMode;
+   REXLOG_INFO(
+       "VulkanPresenter: Created {}x{} swapchain with format {}, color space "
+-      "{}, presentation mode {}",
++      "{}, presentation mode {} ({}; vsync {})",
+       swapchain_create_info.imageExtent.width, swapchain_create_info.imageExtent.height,
+       uint32_t(swapchain_create_info.imageFormat), uint32_t(swapchain_create_info.imageColorSpace),
+-      uint32_t(swapchain_create_info.presentMode));
++      uint32_t(mode),
++      mode == VK_PRESENT_MODE_FIFO_KHR           ? "FIFO"
++      : mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "FIFO relaxed"
++      : mode == VK_PRESENT_MODE_MAILBOX_KHR      ? "mailbox"
++      : mode == VK_PRESENT_MODE_IMMEDIATE_KHR    ? "immediate"
++                                                 : "other",
++      vsync ? "on" : "off");
+ 
+   present_queue_family_out = queue_family_index_present;
+   image_format_out = swapchain_create_info.imageFormat;
+@@ -1528,6 +1549,24 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
    return true;
  }
  
@@ -5773,7 +5964,7 @@ index 23645ef..65df178 100644
  Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
    // Begin the submission in place of the one not currently potentially used on
    // the GPU.
-@@ -1569,9 +1588,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1569,9 +1608,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
  
    VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
    uint32_t swapchain_image_index;
@@ -5785,7 +5976,7 @@ index 23645ef..65df178 100644
    switch (acquire_result) {
      case VK_SUCCESS:
      case VK_SUBOPTIMAL_KHR:
-@@ -1645,6 +1666,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1645,6 +1686,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      // multiple threads can't paint the main target at the same time).
    }
  
@@ -5805,7 +5996,7 @@ index 23645ef..65df178 100644
    if (guest_output_image) {
      VkExtent2D max_framebuffer_extent =
          util::GetMax2DFramebufferExtent(vulkan_device_->properties());
-@@ -1840,6 +1874,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1840,6 +1894,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                  swapchain_effect, paint_context_.swapchain_render_pass);
              if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
                guest_output_flow.effect_count = 0;
@@ -5817,7 +6008,7 @@ index 23645ef..65df178 100644
              }
            }
          }
-@@ -2196,8 +2235,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2196,8 +2255,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      }
      VkResult submit_result;
      {
@@ -5828,7 +6019,7 @@ index 23645ef..65df178 100644
        submit_result =
            dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence_acqusition.fence());
        if (ui_fence_acquisition.fence() != VK_NULL_HANDLE && submit_result == VK_SUCCESS) {
-@@ -2238,9 +2279,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2238,9 +2299,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
    present_info.pResults = nullptr;
    VkResult present_result;
    {
@@ -6447,10 +6638,10 @@ index 0000000..5ae0a0b
 +}  // namespace rex::ui::d3d11
 diff --git a/include/rex/ui/d3d11/d3d11_presenter.h b/include/rex/ui/d3d11/d3d11_presenter.h
 new file mode 100644
-index 0000000..c7302b0
+index 0000000..0836b54
 --- /dev/null
 +++ b/include/rex/ui/d3d11/d3d11_presenter.h
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,116 @@
 +/**
 + * @file        ui/d3d11/d3d11_presenter.h
 + * @brief       [svr2011] Direct3D 11 presenter: the guest output (bilinear,
@@ -6559,6 +6750,7 @@ index 0000000..c7302b0
 +  uint32_t swap_chain_height_ = 0;
 +  UINT swap_chain_flags_ = 0;
 +  bool swap_chain_flip_ = false;
++  bool vsync_ = false;  // (the vsync setting when the surface was connected)
 +  // Flip model on Windows 8.1+: signaled when a back buffer is free, waited
 +  // for before the context lock - Present then doesn't block with the lock
 +  // held (the native renderer submits on the same context).
@@ -6883,15 +7075,16 @@ index 0000000..dcdb542
 +}  // namespace rex::ui::d3d11
 diff --git a/src/ui/d3d11/d3d11_presenter.cpp b/src/ui/d3d11/d3d11_presenter.cpp
 new file mode 100644
-index 0000000..d198c4a
+index 0000000..4c410be
 --- /dev/null
 +++ b/src/ui/d3d11/d3d11_presenter.cpp
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,459 @@
 +// [svr2011] Direct3D 11 presenter (rex/ui/d3d11/d3d11_presenter.h).
 +
 +#include <rex/ui/d3d11/d3d11_presenter.h>
 +
 +#include <algorithm>
++#include <chrono>
 +#include <cstring>
 +
 +#include <dxgi1_5.h>
@@ -6902,6 +7095,7 @@ index 0000000..d198c4a
 +
 +REXCVAR_DEFINE_BOOL(d3d11_allow_tearing, true, "UI/D3D11",
 +                    "Allow variable refresh rate and tearing (flip model swap chains)");
++REXCVAR_DECLARE(bool, vsync);  // (presenter.cpp; on: no tearing)
 +
 +namespace rex::ui::d3d11 {
 +
@@ -7020,7 +7214,10 @@ index 0000000..d198c4a
 +Presenter::SurfacePaintConnectResult D3D11Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
 +    Surface& new_surface, uint32_t new_surface_width, uint32_t new_surface_height,
 +    bool was_paintable, bool& is_vsync_implicit_out) {
-+  is_vsync_implicit_out = false;
++  // VSync on: Present waits for the refresh, so the presenter paints from the
++  // UI thread (not the guest output's). A change applies at the next connect.
++  vsync_ = REXCVAR_GET(vsync);
++  is_vsync_implicit_out = vsync_;
 +  const uint32_t width =
 +      std::min(new_surface_width, uint32_t(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION));
 +  const uint32_t height =
@@ -7135,9 +7332,10 @@ index 0000000..d198c4a
 +  static bool logged = false;
 +  if (!logged) {
 +    logged = true;
-+    REXLOG_INFO("D3D11Presenter: {} swap chain{}",
++    REXLOG_INFO("D3D11Presenter: {} swap chain{}; present: {}",
 +                swap_chain_flip_ ? "flip model" : "blt model (no DXGI 1.2 flip model)",
-+                (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? ", tearing allowed" : "");
++                (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? ", tearing allowed" : "",
++                vsync_ ? "vsync (sync interval 1)" : "no vsync (sync interval 0)");
 +  }
 +  return SurfacePaintConnectResult::kSuccess;
 +}
@@ -7197,9 +7395,18 @@ index 0000000..d198c4a
 +    }
 +  }
 +
-+  // A free back buffer first, without the context lock.
-+  if (frame_latency_waitable_) {
-+    WaitForSingleObjectEx(frame_latency_waitable_, 100, TRUE);
++  // A free back buffer first, without the context lock. None within 100 ms
++  // (the compositor isn't taking frames: an occluded / off-screen window, a
++  // busy desktop): this paint is skipped - Present with a full queue would
++  // block holding the context lock, and the guest's frames (replayed under
++  // that lock) would stand still meanwhile.
++  if (frame_latency_waitable_ &&
++      WaitForSingleObjectEx(frame_latency_waitable_, 100, TRUE) == WAIT_TIMEOUT) {
++    static uint32_t skipped = 0;
++    if (++skipped <= 3 || skipped % 600 == 0) {
++      REXLOG_WARN("D3D11Presenter: no free back buffer in 100 ms - paint skipped ({} so far)", skipped);
++    }
++    return PaintResult::kNotPresented;
 +  }
 +  std::lock_guard lock(provider_.context_mutex());
 +  ID3D11DeviceContext* context = provider_.GetContext();
@@ -7255,10 +7462,23 @@ index 0000000..d198c4a
 +    ExecuteUIDrawersFromUIThread(ui_draw_context);
 +  }
 +
-+  // Present as soon as possible (no vsync wait: the guest's own rate decides),
-+  // tearing allowed for variable refresh rate where the swap chain has it.
++  // VSync on: wait for the refresh (no tearing). Off: present as soon as
++  // possible (the guest's own rate decides), tearing allowed for variable
++  // refresh rate where the swap chain has it.
++  const bool vsync = vsync_;
++  const auto present_start = std::chrono::steady_clock::now();
 +  HRESULT hr = swap_chain_->Present(
-+      0, (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? DXGI_PRESENT_ALLOW_TEARING : 0);
++      vsync ? 1 : 0,
++      !vsync && (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? DXGI_PRESENT_ALLOW_TEARING : 0);
++  // (a slow Present holds the context lock: say so in the log)
++  const double present_ms =
++      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - present_start).count();
++  if (present_ms >= 250.0) {
++    static uint32_t slow = 0;
++    if (++slow <= 10) {
++      REXLOG_WARN("D3D11Presenter: Present took {:.0f} ms (result {:08X})", present_ms, uint32_t(hr));
++    }
++  }
 +  // (Flip model unbinds the back buffer after Present.)
 +  context->ClearState();
 +  switch (hr) {

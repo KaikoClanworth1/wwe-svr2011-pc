@@ -62,7 +62,7 @@ switch ($Action) {
         # the program files of the online build
         # (the SDK's DLLs from where it builds them: the copies beside the exe
         # are only refreshed when the exe relinks)
-        $sdkOut = $build  # (netperf: this build's own SDK DLLs)
+        $sdkOut = Join-Path $PSScriptRoot "..\..\recomp\rexglue-sdk\out\win-amd64"  # (this worktree's own SDK)
         # Only what changed; the stopped game's files can stay locked a moment.
         function Copy-Changed($src) {
             $dst = Join-Path $game (Split-Path $src -Leaf)
