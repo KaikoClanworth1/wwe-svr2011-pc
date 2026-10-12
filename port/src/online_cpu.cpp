@@ -44,8 +44,8 @@
 #include "online.h"
 #include "online_overlay.h"
 
-REXCVAR_DEFINE_BOOL(online_cpu_slots, false, "Online",
-                    "CPU players in online Player Matches: the host's Y on a vacant lobby slot (in progress)");
+REXCVAR_DEFINE_BOOL(online_cpu_slots, true, "Online",
+                    "CPU players in online Player Matches: the host's Y on a vacant lobby slot");
 
 namespace {
 

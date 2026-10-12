@@ -473,7 +473,8 @@ REX_HOOK_RAW(sub_82746358) {
   for (uint32_t slot = 0; slot < 3; ++slot) {
     const uint8_t* p = slots + slot * 4;
     const uint32_t icon = (uint32_t(p[0]) << 8) | p[1], label = (uint32_t(p[2]) << 8) | p[3];
-    if ((icon != 0xFFFF && svr2011::OnlineString(icon)) || (label != 0xFFFF && svr2011::OnlineString(label))) {
+    if ((icon == 0xFFFF && label == 0xFFFF) ||  // (an empty slot: room for the CPU label)
+        (icon != 0xFFFF && svr2011::OnlineString(icon)) || (label != 0xFFFF && svr2011::OnlineString(label))) {
       continue;
     }
     if (kept != slot) std::memmove(slots + kept * 4, p, 4);
@@ -504,6 +505,15 @@ REX_HOOK_RAW(sub_82746358) {
       y_icon = (uint32_t(slots[k * 4]) << 8) | slots[k * 4 + 1];
   if (y) put(y_icon, y == 1 ? svr2011::kAddCpuId : svr2011::kRemoveCpuId);
   if (waiting) put(0xFFFF, svr2011::kWaitingId);
+  static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
+  if (log && cpu) {
+    static std::string last;
+    std::string now = fmt::format("id {} y {} waiting {}:", ctx.r4.u32 & 0xFFFF, y, waiting);
+    for (uint32_t k = 0; k < 3; ++k)
+      now += fmt::format(" {:02X}{:02X}/{:02X}{:02X}", slots[k * 4], slots[k * 4 + 1], slots[k * 4 + 2], slots[k * 4 + 3]);
+    if (now != last) REXLOG_INFO("online cpu: bar {}", now);
+    last = now;
+  }
 }
 
 // The WWE SHOP: the PC has no marketplace and needs no Online Axxess (all
