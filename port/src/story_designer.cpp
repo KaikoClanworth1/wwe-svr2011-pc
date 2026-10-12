@@ -94,6 +94,36 @@ REX_HOOK_RAW(sub_828B6950) {
   __imp__sub_828B6950(ctx, base);
 }
 
+// Road to WrestleMania's Created Superstar story (VS. UNDERTAKER): its list
+// of Created Superstars (sub_8246ADA0: each used slot that is male and not
+// sub_828B6D40(id), "downloaded from Community Creations") leaves the
+// downloaded ones out, and with none left says "A Created Superstar is needed
+// to play this story" (string 0xC79E) - a player whose only one was
+// downloaded can't play it. While that list is built none counts as
+// downloaded.
+static thread_local bool g_rtwm_list = false;
+
+REX_EXTERN(__imp__sub_8246ADA0);
+REX_HOOK_RAW(sub_8246ADA0) {
+  g_rtwm_list = true;
+  __imp__sub_8246ADA0(ctx, base);
+  g_rtwm_list = false;
+}
+
+REX_EXTERN(__imp__sub_828B6D40);
+REX_HOOK_RAW(sub_828B6D40) {
+  const uint32_t id = ctx.r3.u32;
+  __imp__sub_828B6D40(ctx, base);
+  if (g_rtwm_list && ctx.r3.u32) {
+    static uint64_t logged = 0;
+    if (id < 64 && !(logged >> id & 1)) {
+      logged |= 1ull << id;
+      REXLOG_INFO("[svr2011] Road to WrestleMania: downloaded Created Superstar {} is in the story's list", id);
+    }
+    ctx.r3.u64 = 0;
+  }
+}
+
 REX_EXTERN(__imp__sub_828B69B0);
 REX_HOOK_RAW(sub_828B69B0) {
   if (g_gathering) {
