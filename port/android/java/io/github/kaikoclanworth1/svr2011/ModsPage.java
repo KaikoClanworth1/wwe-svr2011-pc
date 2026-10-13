@@ -47,6 +47,7 @@ final class ModsPage {
     static File mediaFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Media"); }
     static File backstageFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Backstage"); }
     static File matchTypesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "MatchTypes"); }
+    static File attiresFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Attires"); }
     static File backgroundsFolder() { return Backgrounds.folder(); }
 
     View view() {
@@ -98,9 +99,10 @@ final class ModsPage {
         File[] back = backstageFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
         File[] types = matchTypesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] pics = backgroundsFolder().listFiles(f -> f.isDirectory() && hasPicture(f));
+        File[] attires = attiresFolder().listFiles(f -> f.isDirectory() && new File(f, "attire.pac").isFile());
         File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
             + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)
-            + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length)];
+            + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length) + (attires == null ? 0 : attires.length)];
         int k = 0;
         if (arenas != null) for (File f : arenas) dirs[k++] = f;
         if (stars != null) for (File f : stars) dirs[k++] = f;
@@ -109,6 +111,7 @@ final class ModsPage {
         if (back != null) for (File f : back) dirs[k++] = f;
         if (types != null) for (File f : types) dirs[k++] = f;
         if (pics != null) for (File f : pics) dirs[k++] = f;
+        if (attires != null) for (File f : attires) dirs[k++] = f;
         if (dirs.length == 0) {
             TextView none = a_.text("None yet.", 15, LauncherActivity.kDim);
             none.setPadding(0, a_.dp(14), 0, a_.dp(14));
@@ -134,11 +137,12 @@ final class ModsPage {
             boolean backPack = d.getParentFile().getName().equals("Backstage");
             boolean matchType = d.getParentFile().getName().equals("MatchTypes");
             boolean pic = d.getParentFile().getName().equals("Backgrounds");
+            boolean attire = d.getParentFile().getName().equals("Attires");
             String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the " + superstarLimit() + " limit. " : "")
-                + (pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+                + (attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
-                + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
+                + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
             // (red when on, as the Settings switches: the default is hard to see)
@@ -152,6 +156,11 @@ final class ModsPage {
                     if (checked) off.delete();
                     else new FileOutputStream(off).close();
                     a_.status(name + (checked ? " is on." : " is off.") + " (from the next game start)");
+                    if (attire && checked) {  // (two attire mods on one attire: the newer one moves)
+                        String clash = attireGuard(null);
+                        if (!clash.isEmpty()) a_.status(clash);
+                        installed_.post(this::refresh);
+                    }
                     if (star) installed_.post(this::refresh);  // (which superstar mods fit)
                 } catch (IOException e) {
                     a_.status("Could not change " + name + ": " + e.getMessage());
@@ -338,7 +347,8 @@ final class ModsPage {
     String install(Uri uri) throws IOException {
         try (InputStream raw = a_.getContentResolver().openInputStream(uri)) {
             if (raw == null) throw new IOException("can't read it");
-            return install(a_, raw, false).name;
+            Installed r = install(a_, raw, false);
+            return r.name + (r.note.isEmpty() ? "" : ". " + r.note);
         }
     }
 
@@ -348,6 +358,7 @@ final class ModsPage {
         String name, type;
         File dest;
         boolean existed, kept;
+        String note = "";  // (an attire mod moved: what the guard said)
     }
 
     // Installs the .svrmod read from `raw`. A bundled mod (BundledMods) keeps
@@ -384,17 +395,22 @@ final class ModsPage {
         boolean backPack = type.equals("backstage");
         boolean matchType = type.equals("matchtype");
         boolean pic = type.equals("background");
+        boolean attire = type.equals("attire");
+        if (attire && !parts.containsKey("attire.pac")) {
+            deleteTree(stage);
+            throw new IOException("that attire mod has no attire.pac");
+        }
         if (pic && !hasPicture(stage)) {  // (picture.dds, or a pack's NN_<name>.dds)
             deleteTree(stage);
             throw new IOException("it has no pictures (.dds)");
         }
-        if (!pic && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
+        if (!pic && !attire && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
             deleteTree(stage);
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
         }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
-        if (id.isEmpty()) id = pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
-        File dest = new File(pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        if (id.isEmpty()) id = attire ? "attire" : pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
+        File dest = new File(attire ? attiresFolder() : pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
         Installed r = new Installed();
         r.name = m.containsKey("name") ? m.get("name") : id;
         r.type = type;
@@ -414,9 +430,163 @@ final class ModsPage {
         dest.getParentFile().mkdirs();
         FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)
         deleteTree(stage);
-        if (!new File(dest, pic ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
+        if (!new File(dest, attire ? "attire.pac" : pic ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
             throw new IOException("can't write to the game folder");
         if (off) new FileOutputStream(new File(dest, "disabled")).close();
+        if (attire) {
+            try (OutputStream o = new FileOutputStream(new File(dest, ".installed"))) {  // (the install order: the newer moves)
+                o.write(Long.toString(System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8));
+            }
+            r.note = attireGuard(dest);
+        }
         return r;
     }
+
+    // ---- Two attire mods on one attire (the PC launcher's mods_tab.c mods_attire_guard; the game's
+    // LoadAttireMods). A superstar's attire is free when their own pac (pac/ch/chNNN.pac, EMD entries
+    // "%06d%d2") doesn't have it and no switched-on attire mod asks for it. Of two switched-on mods on one
+    // attire the one installed first keeps it (`fresh`, just installed, is the newer); the other moves to the
+    // next free attire (1-4): its manifest's attire= rewritten, with a "# moved" line. With none free the
+    // player is told to switch one off (the game leaves it out). -> what it did / says ("" when nothing).
+    static final class AttireMod {
+        File dir;
+        String name;
+        int id, attire;  // attire 1-4, 0 = new
+        long born;       // install time (.installed, else the folder's time)
+        boolean fresh;
+    }
+
+    static String starName(String id) {
+        if (id != null) for (String[] s : MoviesPage.kStars) if (s[0].equals(id.trim())) return s[1];
+        return "superstar " + id;
+    }
+
+    static int ownAttires(int id) {
+        File pac = new File(new File(new File(InstallActivity.gameFolder(), "pac"), "ch"),
+            String.format(java.util.Locale.ROOT, "ch%03d.pac", id));
+        byte[] d = new byte[0x4000];
+        try (FileInputStream in = new FileInputStream(pac)) {
+            int n = 0, r;
+            while (n < d.length && (r = in.read(d, n, d.length - n)) > 0) n += r;
+            if (n < d.length) return 0;
+        } catch (IOException e) {
+            return 0;
+        }
+        if (d[0] != 'E' || d[1] != 'P' || d[2] != 'K' || d[3] != '8') return 0;
+        byte[] want = String.format(java.util.Locale.ROOT, "%06d", id).getBytes(StandardCharsets.US_ASCII);
+        int mask = 0;
+        for (int p = 0x800; p + 12 <= d.length; ) {
+            if (d[p] == 0 && d[p + 1] == 0 && d[p + 2] == 0 && d[p + 3] == 0) break;
+            boolean emd = d[p] == 'E' && d[p + 1] == 'M' && d[p + 2] == 'D' && d[p + 3] == ' ';
+            int entries = ((d[p + 4] & 0xFF) | (d[p + 5] & 0xFF) << 8) / 4;
+            p += 12;
+            for (int k = 0; k < entries && p + 16 <= d.length; k++, p += 16) {
+                boolean same = emd;
+                for (int i = 0; i < 6 && same; i++) same = d[p + i] == want[i];
+                if (same && d[p + 6] >= '0' && d[p + 6] <= '3' && d[p + 7] == '2') mask |= 1 << (d[p + 6] - '0');
+            }
+        }
+        return mask;
+    }
+
+    static boolean older(AttireMod a, AttireMod b) {
+        if (a.fresh != b.fresh) return b.fresh;
+        if (a.born != b.born) return a.born < b.born;
+        return a.dir.getName().compareTo(b.dir.getName()) < 0;
+    }
+
+    static boolean setAttire(File dir, int from, int to, String keeper) {
+        File man = new File(dir, "manifest.txt"), tmp = new File(dir, "manifest.new");
+        StringBuilder out = new StringBuilder();
+        boolean done = false;
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(man), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (!done && line.startsWith("attire=")) {
+                    out.append("attire=").append(to).append('\n').append("# moved from attire ").append(from)
+                        .append(" by the launcher (").append(keeper).append(" has attire ").append(from).append(")\n");
+                    done = true;
+                } else out.append(line).append('\n');
+            }
+        } catch (IOException e) {
+            return false;
+        }
+        if (!done) return false;
+        try (OutputStream o = new FileOutputStream(tmp)) {
+            o.write(out.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            return false;
+        }
+        return tmp.renameTo(man) || (man.delete() && tmp.renameTo(man));
+    }
+
+    static String attireGuard(File fresh) {
+        File[] dirs = attiresFolder().listFiles(f -> f.isDirectory() && !new File(f, "disabled").exists()
+            && new File(f, "manifest.txt").isFile());
+        if (dirs == null) return "";
+        java.util.List<AttireMod> mods = new java.util.ArrayList<>();
+        for (File d : dirs) {
+            Map<String, String> m = manifest(d);
+            if (!"attire".equals(m.get("type"))) continue;
+            AttireMod a = new AttireMod();
+            a.dir = d;
+            a.name = m.containsKey("name") ? m.get("name") : d.getName();
+            try {
+                a.id = Integer.parseInt(m.containsKey("superstar") ? m.get("superstar").trim() : "0");
+                String w = m.containsKey("attire") ? m.get("attire").trim() : "";
+                a.attire = w.equals("new") ? 0 : Integer.parseInt(w);
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            if (a.id < 100 || a.id > 321 || a.attire < 0 || a.attire > 4) continue;
+            a.born = d.lastModified();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(new File(d, ".installed")),
+                    StandardCharsets.UTF_8))) {
+                a.born = Long.parseLong(r.readLine().trim());
+            } catch (Exception ignored) {
+            }
+            a.fresh = fresh != null && d.getAbsolutePath().equals(fresh.getAbsolutePath());
+            mods.add(a);
+        }
+        StringBuilder said = new StringBuilder();
+        java.util.Set<Integer> stars = new java.util.TreeSet<>();
+        for (AttireMod a : mods) stars.add(a.id);
+        for (int id : stars) {
+            int used = ownAttires(id), news = 0;
+            for (AttireMod a : mods) {
+                if (a.id != id || a.attire == 0) continue;
+                boolean best = true;
+                for (AttireMod o : mods) if (o != a && o.id == id && o.attire == a.attire && older(o, a)) best = false;
+                if (best) used |= 1 << (a.attire - 1);
+            }
+            for (AttireMod a : mods) {
+                if (a.id != id) continue;
+                if (a.attire == 0) {
+                    news++;
+                    continue;
+                }
+                AttireMod keeper = null;
+                for (AttireMod o : mods)
+                    if (o != a && o.id == id && o.attire == a.attire && older(o, a) && (keeper == null || older(o, keeper))) keeper = o;
+                if (keeper == null) continue;
+                int to = 0;
+                for (int k = 0; k < 4 && to == 0; k++) if ((used >> k & 1) == 0) to = k + 1;
+                String both = "\"" + keeper.name + "\" and \"" + a.name + "\" both use " + starName("" + id) + "'s attire " + a.attire;
+                if (to != 0 && setAttire(a.dir, a.attire, to, keeper.name)) {
+                    used |= 1 << (to - 1);
+                    said.append(both).append(": \"").append(a.name).append("\" moved to attire ").append(to).append(".\n");
+                    a.attire = to;
+                } else {
+                    said.append(both).append(" and there is no free attire to move one to (4 at most): switch one off, or the game leaves \"")
+                        .append(a.name).append("\" out.\n");
+                }
+            }
+            for (int k = 0; k < 4; k++) if ((used >> k & 1) == 0 && news > 0) news--;
+            if (news > 0)
+                said.append(starName("" + id)).append(" has no free attire for ").append(news).append(" attire=new mod")
+                    .append(news == 1 ? "" : "s").append(" (4 at most): switch some off.\n");
+        }
+        return said.toString().trim();
+    }
+
 }

@@ -1923,6 +1923,11 @@ static void play(void)
     }
     if (s_settings_dirty)
         settings_save();
+    {  /* two attire mods on one attire: the newer moves to a free one (mods_tab.c) */
+        static WCHAR clash[4096];
+        if (mods_attire_guard(s_game_dir, NULL, clash, 4096))
+            MessageBoxW(s_wnd, clash, WINDOW_TITLE L" - attire mods", MB_OK | MB_ICONINFORMATION);
+    }
     join(exe, s_game_dir, GAME_EXE);
     swprintf_s(cmd, MAX_PATH + 4, L"\"%s\"", exe);
     memset(&si, 0, sizeof si);
@@ -7223,6 +7228,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--mods-superstars")) {
         console_setup();
         mods_print_superstars(argv[2]);
+        LocalFree(argv);
+        return 0;
+    }
+    /* Tests: --mods-attires <game folder> moves clashing attire mods as Play does and prints what it said. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--mods-attires")) {
+        console_setup();
+        mods_print_attires(argv[2]);
         LocalFree(argv);
         return 0;
     }

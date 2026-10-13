@@ -197,8 +197,25 @@ tab), `manifest.txt`:
 - The two lookups above answer for the superstar too: the count goes up to
   the highest attire a mod gives (4 at most), and a mod's attire gets its
   `{name, unlock -1}` pair (string ids from 0xB400); the others keep the game's.
-- 4 attires at most. Of two mods on one attire the first folder (A-Z) is used
-  and the other is logged. `new` on a superstar with 4 attires is left out.
+- 4 attires at most. Two mods on one attire (the user's rule, 13 Oct): an attire
+  is free when the superstar's own pac doesn't have it and no switched-on attire
+  mod asks for it.
+  - The launchers (PC Mods tab: `mods_attire_guard`, when an attire mod is
+    installed and when Play starts the game; Android Mods page: `attireGuard`,
+    on install, on switching one on and on Play) keep the attire for the mod
+    installed first and move the newer one to the next free attire, rewriting
+    its `attire=` (with a `# moved from attire N` line) and saying so. With none
+    free they tell the player to switch one off.
+  - The game (games started without a launcher): the attire numbers asked for
+    are given in folder order (A-Z), the first keeping its attire; then the ones
+    that lost theirs and the `new` ones take the free attires in folder order,
+    or are left out with a log line. The same every start.
+  - The Mod Maker's Attires page warns when the attire chosen is already used
+    by an installed mod.
+  - Superstar mods' `attireN=` can't clash with these: attire mods only take
+    stock superstars.
+  - Test: `"SvR2011 Launcher.exe" --mods-attires <game>` runs the launcher's
+    guard and prints what it did.
 - A `disabled` file in the folder turns it off.
 
 - Every model (a superstar mod's ch.pac and attire pacs, an attire mod's model)

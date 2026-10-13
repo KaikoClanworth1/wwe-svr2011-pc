@@ -824,7 +824,8 @@ const Mod* ModOf(uint32_t id);
 // (ch<id>_x<N>.pac), mounted with the other overlay pacs; the game finds
 // models by entry name. "new" takes the first attire the superstar's own pac
 // doesn't have. Four attires at most; of two mods on one attire the first
-// folder (A-Z) is used. The count and the {name, unlock} pair answer for it
+// folder (A-Z) keeps it and the other takes a free attire (LoadAttireMods; the
+// launchers move it for good in its manifest). The count and the {name, unlock} pair answer for it
 // (sub_828C4140 / sub_828C4060 below).
 struct AttireMod {
   std::string folder, name;
@@ -853,10 +854,19 @@ void LoadAttireMods() {
       folders.push_back(e.path());
   std::sort(folders.begin(), folders.end());
   fs::create_directories(overlay, ec);
-  for (const auto& f : folders) {
+  struct Pending {
     AttireMod a;
-    a.folder = f.filename().string();
-    std::string type, model = "attire.pac", which;
+    fs::path folder;
+    std::string model, which;
+    int asked = 0;  // attire=<1-4> it asked for (0: new)
+  };
+  std::vector<Pending> pending;
+  for (const auto& f : folders) {
+    Pending p;
+    p.folder = f;
+    p.model = "attire.pac";
+    p.a.folder = f.filename().string();
+    std::string type;
     if (FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb")) {
       char line[512];
       while (std::fgets(line, sizeof line, t)) {
@@ -866,79 +876,103 @@ void LoadAttireMods() {
         if (eq == std::string::npos || l[0] == '#') continue;
         const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
         if (k == "type") type = v;
-        else if (k == "superstar") a.id = uint32_t(std::atoi(v.c_str()));
-        else if (k == "attire") which = v;
-        else if (k == "name") a.name = v.substr(0, 31);
-        else if (k == "model") model = v;
-        else if (k == "entrance") a.entrance = std::clamp(std::atoi(v.c_str()), 0, 65535);
+        else if (k == "superstar") p.a.id = uint32_t(std::atoi(v.c_str()));
+        else if (k == "attire") p.which = v;
+        else if (k == "name") p.a.name = v.substr(0, 31);
+        else if (k == "model") p.model = v;
+        else if (k == "entrance") p.a.entrance = std::clamp(std::atoi(v.c_str()), 0, 65535);
       }
       std::fclose(t);
     }
     if (type != "attire") continue;
-    if (a.id < 100 || a.id > 321 || ModOf(a.id)) {
+    if (p.a.id < 100 || p.a.id > 321 || ModOf(p.a.id)) {
       REXLOG_WARN("[svr2011] attire mods: {}: superstar={} is not a stock superstar (a superstar mod takes attireN= in "
-                  "its own manifest)", a.folder, a.id);
+                  "its own manifest)", p.a.folder, p.a.id);
       continue;
     }
-    char stock[32];
-    std::snprintf(stock, sizeof stock, "ch%03u.pac", a.id);
-    if (!g_attire_own.count(a.id)) g_attire_own[a.id] = AttireMask(g_game / "pac" / "ch" / stock, a.id);
-    const uint32_t own = g_attire_own[a.id];
-    uint32_t taken = own;
-    for (const auto& o : g_attire_mods)
-      if (o.id == a.id) taken |= 1u << o.attire;
-    if (which == "new") {
-      a.attire = 4;
-      for (uint32_t k = 0; k < 4; ++k)
-        if (!(taken >> k & 1)) {
-          a.attire = k;
-          break;
-        }
-      if (a.attire >= 4) {
-        REXLOG_WARN("[svr2011] attire mods: {}: superstar {} has 4 attires already (attire=new needs a free one)", a.folder,
-                    a.id);
-        continue;
-      }
-    } else {
-      const int n = std::atoi(which.c_str());
-      if (n < 1 || n > 4) {
-        REXLOG_WARN("[svr2011] attire mods: {}: attire={} (1-4 or new)", a.folder, which);
-        continue;
-      }
-      a.attire = uint32_t(n - 1);
-      if (AttireModOf(a.id, a.attire)) {
-        REXLOG_WARN("[svr2011] attire mods: {}: superstar {} attire {} is taken by {} (first folder A-Z wins)", a.folder,
-                    a.id, n, AttireModOf(a.id, a.attire)->folder);
+    if (p.which != "new") {
+      p.asked = std::atoi(p.which.c_str());
+      if (p.asked < 1 || p.asked > 4) {
+        REXLOG_WARN("[svr2011] attire mods: {}: attire={} (1-4 or new)", p.a.folder, p.which);
         continue;
       }
     }
+    char stock[32];
+    std::snprintf(stock, sizeof stock, "ch%03u.pac", p.a.id);
+    if (!g_attire_own.count(p.a.id)) g_attire_own[p.a.id] = AttireMask(g_game / "pac" / "ch" / stock, p.a.id);
+    pending.push_back(std::move(p));
+  }
+  // Two mods on one attire (the launcher moves the newer one to a free attire; this is the same rule for
+  // games started without it, and it's the same every start): the attire numbers asked for are given in
+  // folder order (A-Z), the first keeping its attire; then the ones that lost theirs and the attire=new
+  // ones take the superstar's free attires - none in its own pac and no mod's - in folder order, or are
+  // left out with a log line.
+  auto place = [&](Pending& p) {
+    AttireMod& a = p.a;
+    const uint32_t own = g_attire_own[a.id];
     if (own >> a.attire & 1) {  // (replaces the game's: its model is in the pac overlay, PrepareAttirePacks)
       REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {} (replaces the game's) ({})", a.folder, a.id,
                   a.attire + 1, a.name);
       g_attire_mods.push_back(std::move(a));
-      continue;
+      return;
     }
     char an[40];
     std::snprintf(an, sizeof an, "ch%03u_x%u.pac", a.id, a.attire + 1);
-    const fs::path src = f / model;
-    if (!Current(overlay / an, {src, f / "manifest.txt"})) {
+    const fs::path src = p.folder / p.model;
+    if (!Current(overlay / an, {src, p.folder / "manifest.txt"})) {
       svrfmt::Bytes d;
       std::string notes;
       if (svrfmt::ReadFile(src.string(), d) && !FitModelBudget(d, notes)) {
         REXLOG_WARN("[svr2011] attire mods: {}: {} is over the match's 768 KB per-wrestler budget:{} - left out", a.folder,
-                    model, notes);
-        continue;
+                    p.model, notes);
+        return;
       }
       if (d.empty() || !RenameModel(d, a.id, 0, int(a.attire)) || !svrfmt::WriteFile((overlay / an).string(), d)) {
-        REXLOG_WARN("[svr2011] attire mods: {}: {} is not a character model pac (EPK8 with EMD models)", a.folder, model);
-        continue;
+        REXLOG_WARN("[svr2011] attire mods: {}: {} is not a character model pac (EPK8 with EMD models)", a.folder,
+                    p.model);
+        return;
       }
-      MarkCurrent(overlay / an, {src, f / "manifest.txt"});
+      MarkCurrent(overlay / an, {src, p.folder / "manifest.txt"});
     }
     g_extra_mounts.push_back(std::string("smods:\\") + an);
-    REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {}{} ({})", a.folder, a.id, a.attire + 1,
-                (own >> a.attire & 1) ? " (replaces the game's)" : " (new)", a.name);
+    REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {} (new) ({})", a.folder, a.id, a.attire + 1, a.name);
     g_attire_mods.push_back(std::move(a));
+  };
+  std::vector<Pending*> later;
+  for (auto& p : pending) {
+    if (!p.asked) {
+      later.push_back(&p);
+      continue;
+    }
+    p.a.attire = uint32_t(p.asked - 1);
+    if (const AttireMod* o = AttireModOf(p.a.id, p.a.attire)) {
+      REXLOG_WARN("[svr2011] attire mods: {}: superstar {} attire {} is taken by {} (first folder A-Z keeps it) - it "
+                  "takes a free attire", p.a.folder, p.a.id, p.asked, o->folder);
+      later.push_back(&p);
+      continue;
+    }
+    place(p);
+  }
+  std::sort(later.begin(), later.end(), [](const Pending* x, const Pending* y) { return x->folder < y->folder; });
+  for (Pending* p : later) {
+    uint32_t taken = g_attire_own[p->a.id];
+    for (const auto& o : g_attire_mods)
+      if (o.id == p->a.id) taken |= 1u << o.attire;
+    p->a.attire = 4;
+    for (uint32_t k = 0; k < 4; ++k)
+      if (!(taken >> k & 1)) {
+        p->a.attire = k;
+        break;
+      }
+    if (p->a.attire >= 4) {
+      REXLOG_WARN("[svr2011] attire mods: {}: superstar {} has no free attire (4 at most) - left out (switch one off)",
+                  p->a.folder, p->a.id);
+      continue;
+    }
+    if (p->asked)
+      REXLOG_WARN("[svr2011] attire mods: {}: superstar {} attire {} -> attire {} (that one was taken)", p->a.folder,
+                  p->a.id, p->asked, p->a.attire + 1);
+    place(*p);
   }
 }
 
