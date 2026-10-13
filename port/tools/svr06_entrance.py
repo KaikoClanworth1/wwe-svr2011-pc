@@ -364,7 +364,7 @@ def convert_bank(raw, kinds, entrant_on, rep, fill0=False):
             cnt['global effect (pyro) tracks dropped'] += 1
             continue
         if kind == 'char' and y != 0:
-            cnt['face / hand tracks (y1..3, 2006 ops 0x77-0x79) dropped'] += 1
+            cnt['source face / hand tracks (y1..3, 2006 ops 0x77-0x79) dropped (hands remade below)'] += 1
             continue
         if (oi, x, y) in seen:
             cnt['duplicate track keys dropped'] += 1
@@ -384,6 +384,15 @@ def convert_bank(raw, kinds, entrant_on, rep, fill0=False):
             n = seg_len.get(x) or 1
             Y.insert_motion(bank, S.ID_SHIFT, x, 0, Y.build_stream(Y.make_stream([], n)), n, S.RT_2011)
             rep['notes'].append('segment %d: the entrant has no 2006 track; a %d-frame pose-less one added' % (x // 5, n))
+    # the entrant's fingers: 2006's y2 / y3 keys are 2011's finger values (0x78 / 0x79 joint-mask groups,
+    # expanded to 2011's 5-byte sub-records: svr06_hands.py)
+    import svr06_hands
+    for x, hd in svr06_hands.hand_tracks(raw, obj=0, frames={x: seg_len[x] for x in seg_len}, fill0=fill0).items():
+        if x >= NSLOTS:
+            continue
+        for y, data in hd.items():
+            Y.insert_motion(bank, S.ID_SHIFT, x, y, data, Y.parse_stream(data).nframes(), S.RT_2011)
+            cnt['hand tracks (y2/y3, from 2006 0x78/0x79 keys)'] += 1
     for k, v in sorted(cnt.items()):
         (rep['dropped'] if 'dropped' in k else rep['notes']).append('%s: %d' % (k, v))
     used = sorted(op for op in bad if any(('op %d dropped' % op) in k for k in cnt))
@@ -447,7 +456,7 @@ def convert(src, entrance, number, name, rep, *more, game_pac=None):
         rep['notes'].append('SvR 2007 (X360) has this entrance as %d%s: entrance_port.py --game svr07 keeps its '
                             'full key set and face / hand tracks' % (s7[0], ' (same frame counts)' if s7[1] else
                                                                        ' (re-cut: other frame counts)'))
-    rep['notes'].append('not converted: pyro (2006 PS2 particles), face / hand animation, titantron, theme')
+    rep['notes'].append('not converted: pyro (2006 PS2 particles), face animation, titantron, theme')
     return S.build_evp(e11), evt
 
 

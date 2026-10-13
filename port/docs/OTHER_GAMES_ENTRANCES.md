@@ -360,6 +360,7 @@ left / 15-29 right; docs/HAND_POSES.md), the first with the event block `40 05 0
 |---|---|
 | SvR 2007-2010, LoW (and their PS2 discs) | the source's y1-y3 tracks are kept |
 | HCTP, SvR 2004, Shut Your Mouth | made from the source's hand events: op 16 `10 ss iiii` (ss 1 left / 2 right, pose ids = 2011's 0-105 / 200-305; ss 0 = face) -> `tools/hand_tracks.py` builds y2/y3 per 2011 segment from the 2011 game's pose library (m.pac MVMT/STAT/99, `--game-pac` needed), 5-frame blends. Goldberg 3047: 10 tracks from 8 events, played in game |
-| SvR 2006, WWE '12 - 2K17 | not yet (2006: own sub-track encoding; WWE: Biped finger bones to retarget) |
+| SvR 2006 | its y2/y3 keys are 2011's finger values in joint-mask groups (`0x78` right / `0x79` left `[op][count][u16 mask][s8 xyz per bit]`, plain 5-byte sub-records otherwise): `tools/svr06_hands.py` expands them losslessly (812 / 812 tracks of the 93 entrances; vs SvR 2007's re-releases ~1 step) |
+| WWE '12 - 2K17 | the Biped finger bones retargeted onto 2011's 30 finger joints: `tools/finger_retarget.py` (hand-frame chain, fixed ch246 -> ch104 hand alignment, `bind * Rz Ry Rx` as the library, solved parent first on the quantised chain); vs 2011's own 107 Kane / 101 Austin: fist / open agree 97-99% of frames, median 1 degree. Bind tables are WWE '13's (assumed for '12 / 2K14-2K17) |
 
 The Mod Maker's future entrance preview reads y2/y3 the same way (ModMakerUIRework).
