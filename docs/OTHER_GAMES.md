@@ -17,7 +17,7 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 | Game | Arena files | State | How |
 |---|---|---|---|
 | SvR 2007 (360) | | research | not extracted yet |
-| SvR 2008 (360) | `pac/bg/bgNN.pac`, EPAC | research | different layout (see below); unchanged it crashes the 2011 arena load |
+| **SvR 2008 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | texture sets moved to 2011's ids, crowd from a 2011 arena (`--pac11`) |
 | SvR 2009 (360) | | research | not extracted yet |
 | **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
 | WWE '12 (360) | | research | not extracted yet |
@@ -73,20 +73,44 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 
 ### SvR 2008
 
-- **Format:** the arena file is an EPAC with the stage group (STG/00NN), but
-  laid out differently from 2010 / 2011. It has:
-  - no main texture set 0x190;
-  - no crowd pack (0x4E20/0x4E2A);
-  - no visibility tree (0xC364), no announce table / card entries
-    (0x192 / 0xEE48) and no 0x80E8 / 0x7922.
+- **Format:** the same EPAC / JBOY models, but the arena's texture sets are
+  entries 0xC8 (main) and 0xC9 (cube maps). In 2011 those ids are models, so
+  the unchanged file crashed the arena load (`sub_826D73D0`).
+- **What 2008 has no copy of:** a crowd (0x4E20-0x4E23, 0x4E2A), announce
+  table pictures (0x192), a card (0xEE48), 0xEA6C, a visibility tree
+  (0xC364) and 0x7922 / 0x80E8.
+- **Conversion:**
+  1. 0xC8 / 0xC9 move to 0x190 / 0x191.
+  2. The crowd, 0x192, 0xEE48 and 0xEA6C come from the 2011 arena of the
+     base slot (`--pac11 <SvR 2011 game folder>`).
+  3. The biggest textures lose their top mip until the file is no bigger
+     than that 2011 arena's.
 
-  The models are the same JBOY family: `tools/svr08_stage.py` already moves
-  2008 stage models into a 2011 backstage room.
-- **Tested:** RAW 2008 (bg01) unchanged crashes the 2011 arena load (in
-  `sub_826D73D0`).
-- **Next:** where 2008 keeps an arena's textures; then a converter like
-  `wwe13.cpp`: the 2008 models and collision, with the missing entries
-  (crowd, visibility, light zones) from a 2011 host.
+  2008's own 0x7530 (another format than 2011's YMKs) is kept. With it, the
+  arena loads and plays.
+- **Tested:** RAW (bg01) plays in 2011: red ropes, 2008's white
+  turnbuckles, the 2011 crowd, 4 textures halved, no heap change.
+- **Arenas:**
+
+  | bg | Show | | bg | Show |
+  |---|---|---|---|---|
+  | 00 | SmackDown | | 10 | No Way Out |
+  | 01 | RAW | | 11 | WrestleMania 23 |
+  | 02 | ECW | | 12 | Backlash |
+  | 03 | Sunday Night Heat | | 13 | Judgment Day |
+  | 04 | SummerSlam | | 14 | Vengeance |
+  | 05 | Unforgiven | | 15 | The Great American Bash |
+  | 06 | No Mercy | | 16 | New Year's Revolution |
+  | 07 | Survivor Series | | 17 | One Night Stand |
+  | 08 | Armageddon | | 18 | December to Dismember |
+  | 09 | Royal Rumble | | 19 | Cyber Sunday |
+
+  bg20-27 are story copies, and bg56-73 are backstage areas (`tools/svr08_stage.py`).
+- **Pictures:** 2008 has no arena select banners. The banner, loading and VS
+  pictures are cut from the arena's VS theme (MatchHD `M<nn>I`).
+- **Crowd seats:** the 2011 base arena's crowd sits in that hall's seat
+  layout, so it fits 2008's stands only roughly. RAW looks right; other halls
+  are not checked yet.
 
 ### WWE '13
 
