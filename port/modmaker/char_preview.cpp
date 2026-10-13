@@ -295,7 +295,21 @@ struct Motion {
   std::array<std::array<Channel, 3>, 21> rot;  // empty: that axis is 0
   std::array<bool, 21> has{};
   bool fk = false;  // YMKs: every bone has its rotation (no IK for the limbs)
+  struct HandEvent {
+    int frame, side, id, blend;  // side 1 left, 2 right; a pose of the hand library
+  };
+  std::vector<HandEvent> hands;
 };
+
+// ---- hands: the finger poses (m.pac MVMT/STAT child 99), picked by YMKs event op 21
+struct HandPose {
+  int frames = 1;
+  std::array<std::vector<std::array<int, 4>>, 30> keys;  // per finger bone: {frame, x, y, z} (s16 angle codes)
+};
+std::map<int, HandPose> g_hand_lib;
+std::mutex g_hand_mutex;
+bool g_hand_loaded = false;
+std::atomic<bool> g_hand_ready{false};  // (the library is complete: Pose reads it)
 
 const int kStep[8] = {57, 57, 57, 57, 77, 102, 128, 153};
 
@@ -373,6 +387,7 @@ void Ch16(Reader& r, int K, char mode, Channel& c) {
 // count + 1 frames.
 bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& err) {
   if (b.size() < 0x114) return err = "not a motion bank", false;
+  m.hands.clear();
   const uint32_t n = Le32(&b[0x110]);
   const size_t base = 0x114 + 16 * size_t(n);
   if (base > b.size()) return err = "the bank's directory runs past it", false;
@@ -428,7 +443,16 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
     const uint8_t* r = d + p;
     p += sz;
     size_t q = 0;
-    if (sz && (r[0] & 0x80)) q = 1 + (r[0] & 0x7Fu);  // (events: not shown here)
+    if (sz && (r[0] & 0x80)) {  // events: the hand poses (op 21) are used, the rest not shown here
+      q = 1 + (r[0] & 0x7Fu);
+      for (size_t e = 1; e < q && e < sz;) {
+        const uint8_t op = r[e];
+        const size_t n = b[0x10 + op];  // (the bank's event-size table, head +0x10)
+        if (!n || e + n > q || e + n > sz) break;
+        if (op == 21 && n >= 6) m.hands.push_back({frame, r[e + 1], int(Le16(r + e + 2)), int(Le16(r + e + 4))});
+        e += n;
+      }
+    }
     while (q + 1 < sz) {
       const uint8_t op = r[q];
       const size_t left = sz - q;
@@ -476,7 +500,9 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
     for (const auto& a : b2) any |= !a.empty();
   if (!any) return err = "track " + std::to_string(y) + " has no body poses (a camera or a prop)", false;
   // per frame: keys between records blended in a straight line (angles the short way round)
+  auto hands = std::move(m.hands);
   m = Motion();
+  m.hands = std::move(hands);
   m.fk = true;
   m.keys = last + 1;
   for (int k = 0; k < 21; ++k)
@@ -662,6 +688,85 @@ float Key(const Channel& c, float at, bool angle, float unit) {
   return (a + (b - a) * f) * c.scale * unit;
 }
 
+bool EpacEntry(const fs::path& file, const char* group, const char* name, Bytes& out);
+
+// The hand library, once (m.pac MVMT/STAT, PACH child 99: a YMKs bank of poses by id).
+void LoadHands(const std::wstring& game) {
+  std::lock_guard lock(g_hand_mutex);
+  if (g_hand_loaded) return;
+  g_hand_loaded = true;
+  Bytes entry;
+  if (!EpacEntry(fs::path(game) / L"pac" / L"m.pac", "MVMT", "STAT", entry)) return;
+  std::vector<PachEntry> kids;
+  if (!PachRead(Unpack(entry), kids)) return;
+  Bytes bank;
+  for (const auto& k : kids)
+    if (k.id == 99) bank = Unpack(k.data);
+  if (bank.size() < 0x114 || std::memcmp(bank.data(), "YMKs", 4)) return;
+  std::map<int, HandPose> lib;  // (built here, published whole)
+  const uint32_t n = Le32(&bank[0x110]);
+  const size_t base = 0x114 + 16 * size_t(n);
+  if (base > bank.size()) return;
+  const size_t dl = bank.size() - base;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* e = &bank[0x114 + 16 * i];
+    const int id = Le16(e + 2);
+    const uint32_t off = Le32(e + 4);
+    if (id >= 1000 || off >= dl || lib.count(id)) continue;  // (hands only; 1000+ are faces)
+    size_t end = dl;
+    for (uint32_t j = 0; j < n; ++j) {
+      const uint32_t o = Le32(&bank[0x114 + 16 * j + 4]);
+      if (o > off && o < end) end = o;
+    }
+    HandPose hp;
+    hp.frames = std::max(1, int(Le32(e + 8)));
+    const uint8_t* d = &bank[base + off];
+    const size_t size = end - off;
+    int frame = 0;
+    for (size_t p = 0; p < size;) {
+      const uint8_t c = d[p];
+      if (c < 0x60) { frame += c, ++p; continue; }
+      size_t sz;
+      if (c == 0x60) {
+        if (p + 3 > size) break;
+        sz = size_t(d[p + 1]) | size_t(d[p + 2]) << 8, p += 3;
+      } else {
+        sz = c - 0x60u, ++p;
+      }
+      if (p + sz > size) break;
+      const uint8_t* r = d + p;
+      p += sz;
+      size_t q = sz && (r[0] & 0x80) ? 1 + (r[0] & 0x7Fu) : 0;
+      for (; q + 5 <= sz; q += 5) {
+        const int k = r[q];
+        if (k >= 30) break;
+        hp.keys[size_t(k)].push_back({frame, int(int8_t(r[q + 2])) * 256, int(int8_t(r[q + 3])) * 256, int(int8_t(r[q + 4])) * 256});
+      }
+      ++frame;
+    }
+    lib[id] = std::move(hp);
+  }
+  g_hand_lib = std::move(lib);
+  g_hand_ready = true;
+}
+
+// A hand pose's angles (s16 codes) for finger bone k at time t (looped for animated poses).
+std::array<float, 3> HandAngles(int id, int k, float t) {
+  const auto it = g_hand_lib.find(id);
+  if (it == g_hand_lib.end()) return {0, 0, 0};
+  const auto& ks = it->second.keys[size_t(k)];
+  if (ks.empty()) return {0, 0, 0};
+  if (it->second.frames > 1) t = std::fmod(std::max(0.0f, t), float(it->second.frames));
+  size_t j = 0;
+  while (j + 1 < ks.size() && float(ks[j + 1][0]) <= t) ++j;
+  std::array<float, 3> v = {float(ks[j][1]), float(ks[j][2]), float(ks[j][3])};
+  if (j + 1 < ks.size() && t > float(ks[j][0])) {
+    const float f = (t - float(ks[j][0])) / float(ks[j + 1][0] - ks[j][0]);
+    for (int a = 0; a < 3; ++a) v[size_t(a)] += (float(ks[j + 1][size_t(a) + 1]) - v[size_t(a)]) * f;
+  }
+  return v;
+}
+
 // World transforms of every bone for the motion at `key` (rotation keys).
 std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
   const float kAng = 6.2831853f / 65536.0f, kMove = 1e-4f;
@@ -696,6 +801,36 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
   if (root >= 0)
     local[size_t(root)].t = {Key(m.root[0], 2 * key, false, kMove), Key(m.root[1], 2 * key, false, kMove),
                              Key(m.root[2], 2 * key, false, kMove)};
+  if (g_hand_ready) {  // fingers: the hand poses the motion's events pick (else the ring idle 10 / 210)
+    for (int side = 1; side <= 2; ++side) {
+      const Motion::HandEvent* cur = nullptr;
+      const Motion::HandEvent* prev = nullptr;
+      for (const auto& e : m.hands)
+        if (e.side == side && float(e.frame) <= key) prev = cur, cur = &e;
+      const int idle = side == 1 ? 10 : 210;
+      const int cur_id = cur ? cur->id : idle, prev_id = prev ? prev->id : idle;
+      const float since = cur ? key - float(cur->frame) : key;
+      const float w = cur && cur->blend > 0 ? std::clamp(since / float(cur->blend), 0.0f, 1.0f) : 1.0f;
+      for (int k = 0; k < 15; ++k) {
+        const int bone = (side - 1) * 15 + k;
+        char name[16];
+        std::snprintf(name, sizeof name, "%c_yubi%d%d", side == 1 ? 'l' : 'r', k / 3, k % 3);
+        const int i = find(name);
+        if (i < 0) continue;
+        const auto a = HandAngles(cur_id, bone, since);
+        std::array<float, 3> v = a;
+        if (w < 1) {
+          const auto b2 = HandAngles(prev_id, bone, prev ? key - float(prev->frame) : key);
+          for (int c = 0; c < 3; ++c) v[size_t(c)] = b2[size_t(c)] + (a[size_t(c)] - b2[size_t(c)]) * w;
+        }
+        const float e[3] = {v[0] * kAng, v[1] * kAng, v[2] * kAng};
+        float rr[3][3], rest[3][3];
+        Euler(e, rr);
+        std::memcpy(rest, local[size_t(i)].r, sizeof rest);
+        MulR(rest, rr, local[size_t(i)].r);
+      }
+    }
+  }
   std::vector<Xf> w(nb);
   auto fk = [&] {
     for (size_t i = 0; i < nb; ++i) {
@@ -1240,6 +1375,7 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
     if (!ok && err.empty()) err = "could not read the file";
     std::shared_ptr<Motion> idle;
     std::string idle_err;
+    if (ok) LoadHands(game);
     if (ok && need_idle) {
       idle = std::make_shared<Motion>();
       if (!LoadIdle(game, *idle, idle_err)) idle.reset();
