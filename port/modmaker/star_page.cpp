@@ -19,6 +19,7 @@
 #include "svrfmt/char_fbx.h"
 #include "svrfmt/pac.h"
 #include "tool_run.h"
+#include "svrfmt/png.h"
 
 namespace mm {
 namespace star_page {
@@ -119,6 +120,7 @@ struct StarProject {
   // a model from an FBX (import): the file and the hand edits to its automatic bone mapping
   std::wstring fbx;
   std::map<std::string, std::string> fbx_map;  // source bone -> 2011 bone ("" = folds into its parent)
+  std::map<std::string, std::string> fbx_on, fbx_kind, fbx_pic;  // per mesh ("node / material"): "1"/"0", kind, picture file
 };
 StarProject g_star;
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
@@ -902,6 +904,7 @@ struct FbxRig {
   std::vector<std::string> auto_map;  // MapRig's
   std::vector<int> depth;
   std::string rig, error;
+  std::vector<FbxMeshInfo> meshes;
 };
 FbxRig g_fbx_rig;
 bool g_fbx_open_once = false;  // (test aid: the mapping table open)
@@ -919,6 +922,8 @@ const FbxRig& FbxSkeleton() {
   for (const auto& b : g_fbx_rig.bones) rb.push_back({b.name, b.parent});
   g_fbx_rig.auto_map = MapRig(rb);
   g_fbx_rig.rig = DetectRig(rb);
+  std::string merr;
+  FbxListMeshes(Utf8(g_star.fbx), g_fbx_rig.meshes, merr);
   for (size_t i = 0; i < g_fbx_rig.bones.size(); ++i) {
     int d = 0;
     for (int p = g_fbx_rig.bones[i].parent; p >= 0 && d < int(g_fbx_rig.bones.size()); p = g_fbx_rig.bones[size_t(p)].parent) ++d;
@@ -939,22 +944,76 @@ std::string FbxWeightsTo(const FbxRig& r, size_t i) {
   return {};
 }
 
-// fbx_map=<source>><2011>|... ("<source>>" = folds); bone names have neither '|' nor '>' in the known rigs.
-std::string FbxMapText() {
+// fbx_map=<source>><2011>|... ("<source>>" = folds); the same "key>value|..." for the per-mesh keys (bone and mesh
+// names have neither '|' nor '>' in the known rigs; a picture path's '>' can't be in a Windows path)
+std::string PairsText(const std::map<std::string, std::string>& m) {
   std::string t;
-  for (const auto& [src, dst] : g_star.fbx_map) t += (t.empty() ? "" : "|") + src + ">" + dst;
+  for (const auto& [k, v] : m) t += (t.empty() ? "" : "|") + k + ">" + v;
   return t;
 }
-void ParseFbxMap(const std::string& t) {
-  g_star.fbx_map.clear();
+void ParsePairs(const std::string& t, std::map<std::string, std::string>& m) {
+  m.clear();
   size_t a = 0;
   while (a < t.size()) {
     size_t b = t.find('|', a);
     if (b == std::string::npos) b = t.size();
     const std::string item = t.substr(a, b - a);
-    if (const size_t g = item.rfind('>'); g != std::string::npos && g > 0) g_star.fbx_map[item.substr(0, g)] = item.substr(g + 1);
+    if (const size_t g = item.find('>'); g != std::string::npos && g > 0) m[item.substr(0, g)] = item.substr(g + 1);
     a = b + 1;
   }
+}
+std::string FbxMapText() { return PairsText(g_star.fbx_map); }
+void ParseFbxMap(const std::string& t) { ParsePairs(t, g_star.fbx_map); }
+
+// The FBX -> build.json (FbxToBuildInput) -> ch.pac (tools/svr11_build.py), in <game>\Mods\.convert\<name>_fbx.
+constexpr const wchar_t* kFbxBuilder = L"svr11_build.py";
+void MakeFromFbx() {
+  const FbxRig& r = FbxSkeleton();
+  if (!r.error.empty() || r.bones.empty()) return;
+  std::vector<std::string> targets;
+  for (size_t i = 0; i < r.bones.size(); ++i) targets.push_back(FbxTarget(r, i));
+  const int tid = kStyles[g_star.style].template_id;
+  const std::wstring tpl = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(tid) + L".pac")).wstring();
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / (Wide(IdFrom(g_star.name, "superstar")) + L"_fbx");
+  FbxImportOptions opts;
+  for (const auto& [k, v] : g_star.fbx_on) opts.include[k] = v == "1";
+  opts.kind = g_star.fbx_kind, opts.picture = g_star.fbx_pic;
+  const std::string fbx = Utf8(g_star.fbx);
+  RunInBackground([fbx, targets, tpl, work, opts] {
+    Progress("Posing the FBX into the game's stance ...");
+    Bytes pac;
+    FbxImportReport rep;
+    const bool ok = ReadFile(Utf8(tpl), pac) && FbxToBuildInput(fbx, targets, pac, Utf8(tpl), PathStr(work), rep, opts);
+    for (const auto& w : rep.warnings) Log("  FBX: " + w);
+    for (const auto& w : rep.skipped) Log("  FBX: left out " + w);
+    if (!ok) {
+      Status("The FBX could not be posed: " + (rep.warnings.empty() ? std::string("is the template ") + Utf8(tpl) + " there?" : rep.warnings.front()));
+      return;
+    }
+    Log("FBX: " + std::to_string(rep.meshes) + " meshes, " + std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.textures) +
+        " pictures; scaled x" + std::to_string(rep.scale).substr(0, 5) + " to the game's legs (it was " +
+        std::to_string(int(rep.height_cm + 0.5)) + " cm tall)");
+    const double scale = rep.scale;
+    WhenIdle([work, tpl, scale] {
+      const std::wstring in = (work / L"build.json").wstring(), out = (work / L"ch.pac").wstring(), report = (work / L"report.json").wstring();
+      std::error_code ec;
+      fs::remove(out, ec);
+      const bool started = RunToolJson(kFbxBuilder, {in, out, report}, [out, scale](int code, const std::string& text) {
+        if (code != 0 || !fs::exists(out)) {
+          Status("The model could not be built from the FBX (see the log).");
+          Log("svr11_build: " + text);
+          return;
+        }
+        g_star.model = out;
+        // the game holds the hips at the fighting style's height: the model was scaled to it; height= brings it back
+        const double back = 1.0 / std::max(0.01, scale);
+        g_star.height = float(std::clamp(back, 0.8, 1.25));
+        Touch();
+        Status("Built the model from the FBX" + std::string(back < 0.8 || back > 1.25 ? " (its own size is beyond the height range: set to the nearest)" : "") + ".");
+      });
+      if (!started) Status("The model builder (" + Utf8(kFbxBuilder) + ") couldn't start: see the log.");
+    });
+  });
 }
 
 void FbxRows() {
@@ -978,7 +1037,7 @@ void FbxRows() {
   ImGui::TextDisabled("%s: %d of %d bones mapped%s, %d edited by hand", r.rig.c_str(), mapped, int(r.bones.size()),
                       missing ? (", " + std::to_string(missing) + " of the main 2011 bones missing").c_str() : "",
                       int(g_star.fbx_map.size()));
-  if (g_fbx_open_once) ImGui::SetScrollHereY(0.1f), ImGui::SetNextItemOpen(true), g_fbx_open_once = false;  // (test aid)
+
   if (ImGui::TreeNode("Bone mapping")) {
     ImGui::BeginDisabled(g_star.fbx_map.empty());
     if (ImGui::SmallButton("Back to the automatic mapping")) g_star.fbx_map.clear(), Touch();
@@ -1034,7 +1093,72 @@ void FbxRows() {
     }
     ImGui::TreePop();
   }
-  ImGui::TextDisabled("Building the model from the FBX comes next; the mapping is kept in the project.");
+  if (g_fbx_open_once) ImGui::SetScrollHereY(0.3f), ImGui::SetNextItemOpen(true), g_fbx_open_once = false;  // (test aid)
+  if (ImGui::TreeNode("Meshes")) {
+    ImGui::TextDisabled("(hidden ones - an avatar's toggled-off clothes - start off)");
+    if (ImGui::BeginTable("fbxmeshes", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+                          ImVec2(0, std::min(260.0f, 34.0f + 30.0f * float(r.meshes.size())) * g_scale))) {
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("Mesh");
+      ImGui::TableSetupColumn("Triangles", ImGuiTableColumnFlags_WidthFixed, 80 * g_scale);
+      ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed, 110 * g_scale);
+      ImGui::TableSetupColumn("Picture");
+      ImGui::TableHeadersRow();
+      static const char* kKinds[] = {"skin", "eye", "hair", "lash"};
+      for (size_t i = 0; i < r.meshes.size(); ++i) {
+        const FbxMeshInfo& m = r.meshes[i];
+        ImGui::PushID(int(i));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        const auto on_it = g_star.fbx_on.find(m.name);
+        bool on = on_it != g_star.fbx_on.end() ? on_it->second == "1" : !m.hidden;
+        if (ImGui::Checkbox(m.name.c_str(), &on)) {
+          if (on == !m.hidden) g_star.fbx_on.erase(m.name);
+          else g_star.fbx_on[m.name] = on ? "1" : "0";
+          Touch();
+        }
+        if (m.hidden && ImGui::IsItemHovered()) ImGui::SetTooltip("Hidden in the FBX.");
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", m.triangles);
+        ImGui::TableNextColumn();
+        const auto k_it = g_star.fbx_kind.find(m.name);
+        const std::string kind = k_it != g_star.fbx_kind.end() ? k_it->second : m.kind;
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##kind", kind.c_str())) {
+          for (const char* k : kKinds)
+            if (ImGui::Selectable(k, kind == k)) {
+              if (m.kind == k) g_star.fbx_kind.erase(m.name);
+              else g_star.fbx_kind[m.name] = k;
+              Touch();
+            }
+          ImGui::EndCombo();
+        }
+        ImGui::TableNextColumn();
+        const auto p_it = g_star.fbx_pic.find(m.name);
+        if (p_it != g_star.fbx_pic.end()) {
+          ImGui::TextUnformatted(FileName(Wide(p_it->second)).c_str());
+          ImGui::SameLine();
+          if (ImGui::SmallButton("x")) g_star.fbx_pic.erase(m.name), Touch();
+        } else {
+          if (!m.has_texture) ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "none"), ImGui::SameLine();
+          else ImGui::TextDisabled("its material's"), ImGui::SameLine();
+          if (ImGui::SmallButton("Pick...")) {
+            const std::wstring f = PickFile(false, L"The mesh's colour picture", kPictureFilter, 1);
+            if (!f.empty()) g_star.fbx_pic[m.name] = Utf8(f), Touch();
+          }
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+    ImGui::TreePop();
+  }
+  ImGui::BeginDisabled(Busy() || !r.error.empty());
+  if (ImGui::Button("Make the model from the FBX", ImVec2(260 * g_scale, 0))) MakeFromFbx();
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("Poses it into the game's stance with the mapping above, moves its weights to the 2011 bones, packs its\n"
+                      "pictures into one sheet and builds a ch.pac on the fighting style's superstar (the model above then uses it).");
   ImGui::Unindent();
 }
 
@@ -1563,7 +1687,8 @@ std::string StateText() {
   s += "\nentrance=" + std::to_string(g_star.entrance) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
-  s += "\nfbx=" + Utf8(g_star.fbx) + "\nfbx_map=" + FbxMapText();
+  s += "\nfbx=" + Utf8(g_star.fbx) + "\nfbx_map=" + FbxMapText() + "\nfbx_on=" + PairsText(g_star.fbx_on) + "\nfbx_kind=" +
+       PairsText(g_star.fbx_kind) + "\nfbx_pic=" + PairsText(g_star.fbx_pic);
   return s;
 }
 
@@ -1583,6 +1708,9 @@ void WriteProject(ProjectOut& out) {
   out.File("model", g_star.model, "star/model");
   out.Key("fbx", Utf8(g_star.fbx));  // (the FBX stays where it is: its textures sit beside it)
   out.Key("fbx_map", FbxMapText());
+  out.Key("fbx_on", PairsText(g_star.fbx_on));
+  out.Key("fbx_kind", PairsText(g_star.fbx_kind));
+  out.Key("fbx_pic", PairsText(g_star.fbx_pic));
   out.File("song", g_star.song, "star/theme");
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", g_star.movie, "star/movie");
@@ -1683,6 +1811,9 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.model = file("model", "ch.pac");
   g_star.fbx = Wide(in.Get("fbx"));
   ParseFbxMap(in.Get("fbx_map"));
+  ParsePairs(in.Get("fbx_on"), g_star.fbx_on);
+  ParsePairs(in.Get("fbx_kind"), g_star.fbx_kind);
+  ParsePairs(in.Get("fbx_pic"), g_star.fbx_pic);
   if (mod && g_star.model.empty() && in.Find("ch.pac")) g_star.model = in.Extract("ch.pac");
   g_star.moves = file("moves", "moves.txt");
   if (mod && g_star.moves.empty() && !in.Get("moves").empty() && in.Find(in.Get("moves"))) g_star.moves = in.Extract(in.Get("moves"));

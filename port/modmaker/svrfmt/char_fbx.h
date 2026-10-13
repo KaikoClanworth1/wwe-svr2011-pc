@@ -4,6 +4,7 @@
 // textures as PNG files beside it. Blood overlays are left out.
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -42,8 +43,22 @@ struct FbxImportReport {
   std::string aim_worst;
   std::vector<std::string> warnings, skipped, mesh_lines;
 };
+// The user's choices per mesh (by FbxMeshInfo::name): on / off (default: the visible ones), its kind ("skin", "eye",
+// "hair", "lash"; default by its name), a picture file in place of its material's.
+struct FbxImportOptions {
+  std::map<std::string, bool> include;
+  std::map<std::string, std::string> kind, picture;
+};
 bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,
-                     const std::string& template_path, const std::string& out_dir, FbxImportReport& rep);
+                     const std::string& template_path, const std::string& out_dir, FbxImportReport& rep,
+                     const FbxImportOptions& opts = {});
+// The FBX's meshes as the import sees them: one per mesh node and material ("node / material").
+struct FbxMeshInfo {
+  std::string name, kind;  // (kind: the guess)
+  int vertices = 0, triangles = 0;
+  bool hidden = false, has_texture = false;
+};
+bool FbxListMeshes(const std::string& fbx_path, std::vector<FbxMeshInfo>& out, std::string& err);
 
 // Test: the exported file read back (ufbx) against the pac - bones, bind matrices, vertices, weights; a line per check.
 std::vector<std::string> CheckCharacterFbx(const Bytes& pac, int attire, const std::string& fbx_path);

@@ -665,8 +665,61 @@ struct OutMesh {
 
 }  // namespace
 
+namespace {
+std::string GuessKind(const std::string& node_name, const std::string& mat_name) {
+  const std::string l = LowerStr(node_name + " " + mat_name);
+  return l.find("lash") != std::string::npos ? "lash"
+         : l.find("hair") != std::string::npos ? "hair"
+         : (l.find("eye") != std::string::npos && l.find("brow") == std::string::npos) ? "eye?"
+         : "skin";  // ("eye?": an eye only when it's small)
+}
+}  // namespace
+
+bool FbxListMeshes(const std::string& fbx_path, std::vector<FbxMeshInfo>& out, std::string& err) {
+  ufbx_load_opts lo = {};
+  lo.target_axes = ufbx_axes_right_handed_y_up;
+  lo.target_unit_meters = 0.1f;
+  lo.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
+  ufbx_error ue;
+  ufbx_scene* scene = ufbx_load_file(fbx_path.c_str(), &lo, &ue);
+  if (!scene) return err = "ufbx: " + std::string(ue.description.data, ue.description.length), false;
+  for (size_t ni = 0; ni < scene->nodes.count; ++ni) {
+    const ufbx_node* node = scene->nodes.data[ni];
+    const ufbx_mesh* mesh = node->mesh;
+    if (!mesh || mesh->num_faces == 0) continue;
+    const size_t parts = std::max<size_t>(1, mesh->material_parts.count);
+    for (size_t pi = 0; pi < parts; ++pi) {
+      const ufbx_mesh_part* part = mesh->material_parts.count ? &mesh->material_parts.data[pi] : nullptr;
+      if (part && part->num_triangles == 0) continue;
+      const ufbx_material* mat = part && pi < mesh->materials.count ? mesh->materials.data[pi] : nullptr;
+      FbxMeshInfo m;
+      const std::string node_name(node->name.data, node->name.length);
+      const std::string mat_name = mat ? std::string(mat->name.data, mat->name.length) : "";
+      m.name = node_name + (mat_name.empty() ? "" : " / " + mat_name);
+      m.kind = GuessKind(node_name, mat_name);
+      if (m.kind == "eye?") {
+        V3 lo3{1e30, 1e30, 1e30}, hi3{-1e30, -1e30, -1e30};
+        const M gw = FromUfbx(node->geometry_to_world);
+        for (size_t v = 0; v < mesh->vertices.count; ++v) {
+          const V3 p = Apply(gw, V3{mesh->vertices.data[v].x, mesh->vertices.data[v].y, mesh->vertices.data[v].z});
+          for (int k = 0; k < 3; ++k) lo3[k] = std::min(lo3[k], p[k]), hi3[k] = std::max(hi3[k], p[k]);
+        }
+        m.kind = Len(Sub(hi3, lo3)) < 0.8 ? "eye" : "skin";
+      }
+      m.triangles = int(part ? part->num_triangles : mesh->num_triangles);
+      m.vertices = int(part ? part->num_faces * 3 : mesh->num_vertices);  // (before sharing: an upper bound)
+      m.hidden = !node->visible;
+      m.has_texture = MaterialTexture(mat, false) != nullptr;
+      out.push_back(m);
+    }
+  }
+  ufbx_free_scene(scene);
+  return true;
+}
+
 bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,
-                     const std::string& template_path, const std::string& out_dir, FbxImportReport& rep) {
+                     const std::string& template_path, const std::string& out_dir, FbxImportReport& rep,
+                     const FbxImportOptions& opts) {
   auto fail = [&](const std::string& e) { return rep.warnings.insert(rep.warnings.begin(), e), false; };
   // the 2011 template skeleton (game axes, bind = rest)
   Character tpl;
@@ -856,10 +909,6 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     const ufbx_node* node = scene->nodes.data[ni];
     const ufbx_mesh* mesh = node->mesh;
     if (!mesh || mesh->num_faces == 0) continue;
-    if (!node->visible) {
-      rep.skipped.push_back(std::string(node->name.data, node->name.length) + " (hidden)");
-      continue;
-    }
     const ufbx_skin_deformer* sk = mesh->skin_deformers.count ? mesh->skin_deformers.data[0] : nullptr;
     // a mesh without a skin rides on its nearest bone parent (or root)
     int rigid = -1;
@@ -877,15 +926,23 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       const std::string node_name(node->name.data, node->name.length);
       const std::string mat_name = mat ? std::string(mat->name.data, mat->name.length) : "";
       om.name = node_name + (mat_name.empty() ? "" : " / " + mat_name);
-      const std::string lname = LowerStr(node_name + " " + mat_name);
-      om.kind = lname.find("lash") != std::string::npos ? "lash"
-                : lname.find("hair") != std::string::npos ? "hair"
-                : (lname.find("eye") != std::string::npos && lname.find("brow") == std::string::npos) ? "eye?"
-                : "skin";  // ("eye?": an eye only when it's small, below)
+      {
+        const auto on = opts.include.find(om.name);
+        if (on != opts.include.end() ? !on->second : !node->visible) {
+          rep.skipped.push_back(om.name + (node->visible ? "" : " (hidden)"));
+          continue;
+        }
+      }
+      om.kind = GuessKind(node_name, mat_name);
+      if (const auto k = opts.kind.find(om.name); k != opts.kind.end() && !k->second.empty()) om.kind = k->second;
       const ufbx_texture* ct = MaterialTexture(mat, false);
+      if (const auto pic = opts.picture.find(om.name); pic != opts.picture.end() && !pic->second.empty()) {
+        om.texture_key = "file|" + pic->second;
+        ct = nullptr;
+      } else
       om.texture_key = !ct ? "" : ct->filename.length ? LowerStr(std::string(ct->filename.data, ct->filename.length))
                                                     : "embedded|" + std::to_string(ct->element_id);
-      if (!om.texture_key.empty()) tex_material.emplace(om.texture_key, mat);
+      if (!om.texture_key.empty() && om.texture_key.rfind("file|", 0) != 0) tex_material.emplace(om.texture_key, mat);
       std::map<std::array<uint32_t, 6>, int> verts;  // (position index, normal and uv values) -> output vertex
       auto vertex = [&](uint32_t ix) {
         const uint32_t vi = mesh->vertex_indices.data[ix];
@@ -1004,6 +1061,12 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     int x = 0, y = 0, w = 0, h = 0;
   };
   std::map<std::string, Sheet> sheets;
+  for (const auto& m : meshes)  // (pictures picked for a mesh)
+    if (m.texture_key.rfind("file|", 0) == 0 && !sheets.count(m.texture_key)) {
+      Sheet s;
+      if (LoadImageFile(m.texture_key.substr(5), s.color)) ++rep.textures, sheets.emplace(m.texture_key, std::move(s));
+      else rep.warnings.push_back("picture not readable: " + m.texture_key.substr(5));
+    }
   for (const auto& [key, mat] : tex_material) {
     Sheet s;
     std::string where;
