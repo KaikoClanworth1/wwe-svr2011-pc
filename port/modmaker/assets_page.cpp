@@ -576,6 +576,23 @@ void Viewer() {
   if (!n->detail.empty()) info += ", " + n->detail;
   ImGui::TextDisabled("%s", info.c_str());
   if (!n->error.empty()) ImGui::TextColored(kBad, "%s", n->error.c_str());
+  if (n->kind == Kind::kFile && n->opened && n->error.empty() && !n->children.empty()) {
+    PushAccent();
+    const bool edit = ImGui::Button("Edit a copy of this pac...");
+    PopAccent();
+    ImGui::SameLine();
+    Hint("Opens a copy in the pac editor: export, replace, rename, remove or add entries (and the children of PACH "
+         "entries), then save the copy somewhere else. The original - the game's own pac folder, a disc - is never "
+         "written.");
+    if (edit) {
+      Bytes all;
+      if (n->whole) all = *n->whole;
+      else if (!ReadRange(*n, 0, FileSize(*n), all)) all.clear();
+      if (all.empty()) Status("Could not read the pac.");
+      else pac_editor::Open(std::move(all), g_source_name + ": " + Path(n), n->disc ? Wide(n->label) : n->file.wstring(),
+                            n->whole ? "unwrapped from xcompress (saved without it: SvR 2011 reads plain pacs)" : "");
+    }
+  }
   if (!n->data.empty()) {
     if (ImGui::Button("Export...")) Export(*n, false);
     if (n->kind == Kind::kTexture && !n->picture.Empty()) {
@@ -727,9 +744,9 @@ void SourceRow() {
 }
 
 void Draw() {
-  Heading("Game assets", "Everything in the game's pac files - or in your other WWE discs - read-only: expand a "
-                         "file, click an entry to see what it is - textures, models, motion banks, string tables, "
-                         "roster records - and export any of it.");
+  Heading("Game assets", "Everything in the game's pac files - or in your other WWE discs: expand a file, click an "
+                         "entry to see what it is - textures, models, motion banks, string tables, roster records - "
+                         "export any of it, or edit a copy of a pac.");
   if (g_game.empty()) {
     ImGui::TextDisabled("No game folder.");
     return;
@@ -772,7 +789,8 @@ void Draw() {
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("viewer", ImVec2(0, 0), true);
-  Viewer();
+  if (pac_editor::IsOpen()) pac_editor::Draw();
+  else Viewer();
   ImGui::EndChild();
 }
 

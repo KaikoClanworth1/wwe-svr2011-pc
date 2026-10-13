@@ -318,6 +318,13 @@ namespace caw_page { void Draw(); void TestStart(int index, int attire, const st
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
+namespace pac_editor {  // a copy of any pac, edited and saved elsewhere (Game assets)
+bool Open(svrfmt::Bytes pac, const std::string& label, const std::wstring& from, const std::string& note);
+bool IsOpen();
+void Close();
+void Draw();
+void TestEdit(const std::wstring& spec);
+}
 namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }
