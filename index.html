@@ -71,7 +71,9 @@
   <a href="#tour">The window</a>
   <a href="#concepts">Projects, mods, problems</a>
   <h2>Tutorials</h2>
+  <a href="#tut-port">Port from another game</a>
   <a href="#tut-superstar">Your first superstar</a>
+  <a href="#tut-attire">Attires</a>
   <a href="#tut-arena">Your first arena</a>
   <a href="#tut-blender">An arena in Blender</a>
   <a href="#tut-backstage">A backstage room</a>
@@ -212,6 +214,21 @@
 <p>Hover any <b>(?)</b> for a longer explanation of a field.</p>
 </section>
 
+<section id="tut-port">
+<h2>Tutorial: port from another game</h2>
+<p>Bring a superstar, an arena, moves, an entrance, an attire or a belt's look from your other WWE discs - Xbox 360 SvR 2007 to 2K17 and the PS2 games - straight from the disc images, nothing extracted.</p>
+<figure><img src="img/port.png" alt="The Port page: SvR 2009 picked, the Superstars tab listing the disc's superstars, which 2011 has, and Convert"><figcaption>SvR 2009's superstars, read off the disc: "has it" for the ones 2011 already has, "new" for the rest.</figcaption></figure>
+<ol class="steps">
+  <li><b>Port from a disc</b> on the rail. <b>1. The disc</b>: your disc images are listed by game (the Mod Maker looks in <code>D:\Roms\Xbox 360\WWE</code> and <code>D:\Roms\Playstation 2\WWE Games</code>; <b>Game assets → Disc folders...</b> adds others). An extracted folder works too.</li>
+  <li>Pick what to port: <b>Superstars</b>, <b>Moves</b>, <b>Entrances</b>, <b>Arenas</b>, <b>Attires</b>, <b>Belts</b> or <b>Weapons</b>. The line under the tabs says whether this game is ready for it ("not portable yet" means its format is still being worked out).</li>
+  <li><b>3. List what's on the disc.</b> Find one by name; tick <i>hide what 2011 already has</i> to see only what's new.</li>
+  <li>Pick it, then <b>4. Convert</b>. It takes from seconds to a couple of minutes; the status line shows how far it is.</li>
+  <li><b>5. Open it to finish</b>: a superstar opens on the Superstar page, an arena in the 3D editor, moves and entrances on the Moves page; belts and weapons install as a texture pack. What the conversion left out is listed under the button.</li>
+</ol>
+<div class="note"><b>Needs Python</b> (see <a href="#install">Setting up</a>): the converters are the port's Python tools. WWE '12 and '13 arenas convert without it (Other games page).</div>
+<div class="tip"><b>The work folder</b> (<code>Mods\.convert\port</code> in the game folder) keeps the converters' copies of the disc's files - a superstar can take close to 1 GB. Its size shows on the page with <b>Clear it</b>; above 3 GB the oldest are removed after a conversion.</div>
+</section>
+
 <section id="tut-superstar">
 <h2>Tutorial: your first superstar</h2>
 <p>A new playable character under the <b>M</b> tile of the character select, in about five minutes. You need a character model pac - for this tutorial, one of the game's own.</p>
@@ -222,11 +239,12 @@
   <li><b>Fighting style</b>: pick one. It decides the move-set, the entrance motions and the starting attributes (from one of the game's superstars underneath). Move the attribute sliders if you like. <b>Height (scale)</b> makes the superstar taller or shorter than the base (1.05 = 5% taller; the preview shows it) - for converted models that come out the wrong size.</li>
   <li><b>Model (ch.pac)</b>: press the button and pick <code>pac\ch\ch139.pac</code> from the game folder (John Cena's model). The preview shows it standing in its idle stance - drag to turn it. A model that doesn't load shows why under the preview.</li>
   <li>Optional: <b>Theme song</b> (mp3, m4a, wav, flac, wma, ogg), <b>Entrance movie</b> (press <b>From a video...</b> next to it to make the 320 x 320 Bink from any video or picture), <b>Attires 2-4</b> (another model pac's first attire each), <b>Crowd signs</b> the fans hold, a <b>Name recording</b> for the ring announcer, and the <b>Select picture</b> (a PNG with a transparent background looks best - the render, the bust and the face icon are made from it).</li>
-  <li>Optional, under <b>More</b>: the entrance (any superstar's), an announcer name the game has clips of, the abilities, a moves list and a move pack.</li>
+  <li><b>Moveset</b> (its own section): the style's moves slot by slot. Pick another for any slot by name - each slot lists the game's moves of its kind - and press <b>&gt;</b> to watch it in the preview, done to the style's superstar.</li>
+  <li>Optional, under <b>More</b>: the entrance - any installed one, by number and name, including the ones the Port page converts - an announcer name the game has clips of, the abilities and a move pack. Attires 2-4 can each have their own entrance.</li>
   <li>Check the <b>Problems</b> at the bottom: red ones must go. Then <b>Save as mod</b> (a <code>.svrmod</code> to share) or <b>Install into game</b>, or <b>Test in game</b> to install and start the game right away.</li>
   <li>In the game: character select → the <b>M</b> tile (EXTRA) → your superstar is in the list, with a MODDED badge.</li>
 </ol>
-<div class="warn"><b>Theme songs</b> play at full level while the game's own are about 7 dB quieter. Make yours about -24 LUFS or it will blast.</div>
+<div class="warn"><b>Theme songs</b> play at full level while the game's own are about 7 dB quieter. Under the theme song, <b>Theme volume</b> → <b>Measure</b> → <b>Match the game</b> sets the volume so yours sits with the game's (about -24 LUFS).</div>
 <div class="tip"><b>Save the project too</b> (<kbd>Ctrl</kbd>+<kbd>S</kbd>). A <code>.svrproj</code> holds every setting and a copy of every file you picked, so you can come back and change the mod later - even from another PC.</div>
 <figure>
 <svg viewBox="0 0 980 250" role="img" aria-label="What is inside a superstar mod and where each part shows in the game" xmlns="http://www.w3.org/2000/svg" style="color:#e6e6ea">
@@ -244,7 +262,7 @@
     <rect x="520" y="20" width="440" height="210" rx="10" fill="#19422b" stroke="#2f9e5a"/>
     <text x="740" y="46" text-anchor="middle" font-weight="700" font-size="15">In the game</text>
     <g fill="#e6e6ea">
-      <text x="540" y="76">Character select → M tile → the list (up to 72 mods)</text>
+      <text x="540" y="76">Character select → M tile → the list (up to 137 mods)</text>
       <text x="540" y="98">Entrance: the style's motions and pyro, your theme and video</text>
       <text x="540" y="120">Match: the model, the style's moves (+ your moves list)</text>
       <text x="540" y="142">Select panel: the 3D model; other screens: your picture</text>
@@ -256,6 +274,19 @@
 </svg>
 <figcaption>Only <code>manifest.txt</code> and <code>ch.pac</code> are required; everything else falls back to the style's.</figcaption>
 </figure>
+</section>
+
+<section id="tut-attire">
+<h2>Tutorial: an attire for a superstar</h2>
+<p>A new attire for one of the game's superstars (or a superstar mod), or one replacing an attire they have - its own mod, on CHANGE ATTIRE.</p>
+<figure><img src="img/attires.png" alt="The Attires page: Matt Hardy picked, attire 3 chosen, a model in the preview"><figcaption>An attire for Matt Hardy: the slots he has, the free ones, the model in the preview.</figcaption></figure>
+<ol class="steps">
+  <li><b>Attires</b> on the rail. Pick the <b>Superstar</b>. The page shows the attires their model pac has.</li>
+  <li><b>A new attire</b>, or <b>Replace</b> one (4 at most - the game's limit; slots marked <i>free?</i> are free if the game allows that superstar more).</li>
+  <li><b>Model (ch.pac)</b>: any character model pac - one of the game's, a superstar mod's, or one the Port page converted. Its first attire becomes this attire.</li>
+  <li>Give it a <b>name</b> for CHANGE ATTIRE and, if you like, its own <b>entrance</b>.</li>
+  <li><b>Save as mod</b> or <b>Install into game</b>. The superstar's pictures stay theirs: the game has no per-attire render.</li>
+</ol>
 </section>
 
 <section id="tut-arena">
@@ -378,16 +409,18 @@
 <section id="tut-other">
 <h2>Tutorial: from other games</h2>
 <figure><img src="img/other.png" alt="The Other games page: WWE '13 arena tab with the host arena choice and options"><figcaption>Five converters, each landing on its page to finish and save.</figcaption></figure>
-<h4>A WWE '13 arena (built in)</h4>
+<h4>A WWE '12 or WWE '13 arena (built in)</h4>
 <ol class="steps">
-  <li><b>Other games</b> → <b>WWE '13 arena</b>. Pick the WWE '13 <code>pac\bg\bgNN.pac</code> (compressed or not) from its extracted files.</li>
+  <li><b>Other games</b> → <b>WWE '12 / '13 arena</b>. Pick the arena's <code>pac\bg\bgNN.pac</code> (compressed or not) - or start from the Port page, which reads it off the disc.</li>
   <li>Pick the <b>host arena</b> - the 2011 arena whose room, ring and aprons it uses (RAW was used for the bundled ones). Name it.</li>
   <li><b>Options</b> if needed: host ring / aprons / crowd, barrier corners, the full rope, pruning unused pictures, role lights, the canvas tone, meshes to drop (a model over about 430 KB crashes the load; the report after a conversion names the heavy ones).</li>
   <li><b>Convert</b>. A minute later the arena opens in the 3D editor; the Arena page takes its banner and name; save.</li>
 </ol>
 <figure><img src="img/w13_converted.png" alt="A WWE '13 arena converted and open in the 3D editor"><figcaption>A WWE '13 arena after conversion, in the editor.</figcaption></figure>
 <h4>A WWE '13 superstar, an SvR 2010 superstar, SvR 2010 moves, the SvR 2008 backstage</h4>
-<p>These run the port's Python tools (see <a href="#install">Setting up</a>). Point each tab at the other game's extracted <code>pac</code> folder; the SvR 2010 superstar tab has a <b>Survey</b> that lists the ids and names. The result opens on the Superstar, Moves or Backstage page as a normal project.</p>
+<p>These run the port's Python tools (see <a href="#install">Setting up</a>). Point each tab at the other game's extracted <code>pac</code> folder; the SvR 2010 superstar tab has a <b>Survey</b> that lists the ids and names. The result opens on the Superstar, Moves or Backstage page as a normal project. The <a href="#tut-port">Port page</a> does the same from the disc images, for more games.</p>
+<h4>Bink 2 videos (WWE '13 and later)</h4>
+<p>Titantrons and movies of the later games are Bink 2. <b>Enable Bink 2 conversion</b> on the Other games page points the Mod Maker at RAD Video Tools (free from RAD Game Tools) or an ffmpeg built with a Bink 2 decoder - neither comes with the Mod Maker. Then <b>From a video...</b> takes <code>.bk2</code> files, and converted entrances bring their titantron.</p>
 </section>
 
 <section id="tut-caw">
@@ -407,9 +440,14 @@
 <h3>Game assets</h3>
 <figure><img src="img/assets.png" alt="The Game assets page: the pac tree with a motion bank selected and listed"><figcaption>A motion bank inside <code>m.pac</code>: every motion with its move name.</figcaption></figure>
 <p>Expand the folders and pac files on the left; nothing is read until you look. Each thing shows as what it is: textures (zoom, checkerboard for transparency), texture bundles (click a thumbnail), models (meshes, nodes, textures), motion banks, string tables (every text by id), roster records, text, or bytes. <b>Export</b> writes any of them out, textures as PNG too.</p>
+<p><b>Look in</b> switches from this game to any of your disc images - Xbox 360 and PS2 - or a folder, read as they are. WWE '13 and later pack most files with xcompress; they unpack as you open them.</p>
+<figure><img src="img/paced.png" alt="The pac editor: a copy of a pac with its entries, one replaced"><figcaption>Editing a copy of a pac: export, replace, rename, remove or add entries; save the copy elsewhere.</figcaption></figure>
+<p><b>Edit a copy of this pac...</b> on any pac file opens it in the pac editor: export, replace, rename, remove or add entries - and the children of the PACH entries inside them - then <b>Save the copy as...</b>. Replaced data is packed like the original. The game's own pac folder is never written; a copy saved unchanged is byte for byte the original.</p>
 <h3>Animations</h3>
 <figure><img src="img/anims_fini.png" alt="The Animations page: a finisher preview with a dummy on the victim's track"><figcaption>A finisher preview with the dummy on the victim's track.</figcaption></figure>
-<p>Pick a superstar (or any <code>ch.pac</code>), optionally a dummy, then a set: stances, taunts, the entrance's ring part, finisher previews, abilities. Play, pause, step, scrub, speed, loop. The camera turns (left drag), tilts (right drag), pans (middle drag) and zooms (wheel). The match moves - grapples, strikes, a move pack's moves - only the game plays: <b>In the game</b> picks one by name and <b>Play in game</b> starts a test match where it is done to the dummy every few seconds.</p>
+<p>Pick a superstar (or any <code>ch.pac</code>), optionally a dummy, then a set: stances, taunts, the entrance's ring part, finisher previews, abilities. Play, pause, step, scrub, speed, loop. The camera turns (left drag), tilts (right drag), pans (middle drag) and zooms (wheel).</p>
+<figure><img src="img/watch.png" alt="John Cena doing the Attitude Adjustment to The Rock in the Animations page"><figcaption>A match move watched here: the superstar does it, the dummy takes it.</figcaption></figure>
+<p><b>Match moves</b>: pick one by name - every one of the 2,800 the game ships - and <b>Watch here</b> plays it, the superstar doing it and the dummy taking it, fingers and all. <b>Play in game</b> starts a test match instead, where the move is done to the dummy every few seconds (the way to see a move pack's moves). <b>Blood</b> shows the game's blood at three levels; <b>Hit spheres</b> shows where a superstar can be hit (green) and, in the moves that switch them on, the attacking ones (red).</p>
 <h3>Icons &amp; renders</h3>
 <figure><img src="img/icons_arenas.png" alt="The Icons &amp; renders page: arena banners and a VS screen theme"><figcaption>Banners, VS screen themes and loading screens; the Superstars tab has every render and face icon, the Crowd signs tab all 437 signs.</figcaption></figure>
 </section>
@@ -421,11 +459,13 @@
   <tr><td>Arena</td><td><code>type=arena</code>: arena.pac, banner.dds, load.dds, vs\*.dds</td><td>Mods\Arenas\&lt;id&gt;</td><td>arena select, pages after the game's</td></tr>
   <tr><td>3D editor</td><td>the arena / room being edited</td><td>-</td><td>-</td></tr>
   <tr><td>Backstage</td><td><code>type=backstage</code>: arena.pac (bg78), own-area keys, gimmick.pac</td><td>Mods\Backstage\&lt;id&gt;</td><td>that room's brawls, or its own row</td></tr>
-  <tr><td>Superstar</td><td><code>type=superstar</code>: ch.pac, theme, movie, renders, signs, attires, moves</td><td>Mods\Superstars\&lt;id&gt;</td><td>the M tile (up to 72)</td></tr>
+  <tr><td>Superstar</td><td><code>type=superstar</code>: ch.pac, theme, movie, renders, signs, attires, moves</td><td>Mods\Superstars\&lt;id&gt;</td><td>the M tile (up to 137)</td></tr>
+  <tr><td>Attires</td><td><code>type=attire</code>: attire.pac</td><td>Mods\Attires\&lt;id&gt;</td><td>that superstar's CHANGE ATTIRE</td></tr>
   <tr><td>Moves</td><td><code>type=moves</code>: pack.txt + motions\</td><td>Mods\Moves\&lt;id&gt;</td><td>CREATE A MOVE-SET</td></tr>
   <tr><td>Crowd signs</td><td><code>type=signs</code>: NN_name.dds</td><td>Mods\Signs\&lt;id&gt;</td><td>the crowd, every match</td></tr>
   <tr><td>Media</td><td><code>type=media</code>: videos, themes, renders, screens, sounds</td><td>Mods\Media\&lt;id&gt;</td><td>entrances, menus, arena screens</td></tr>
   <tr><td>Match types</td><td><code>type=matchtype</code>: manifest only</td><td>Mods\MatchTypes\&lt;id&gt;</td><td>the match menus</td></tr>
+  <tr><td>Port from a disc</td><td>conversions from your other discs → the pages above</td><td>-</td><td>-</td></tr>
   <tr><td>Other games</td><td>conversions → the pages above</td><td>-</td><td>-</td></tr>
   <tr><td>CAW pictures</td><td>edits the Created Superstar saves</td><td>Saves\</td><td>the select lists</td></tr>
   <tr><td>Game assets / Animations / Icons &amp; renders</td><td>nothing: viewers and exporters</td><td>-</td><td>-</td></tr>
@@ -470,7 +510,7 @@ made_with=Mod Maker 2.0.5
   <tr><td>"ONE ON ONE is full: give the row a submenu"</td><td>That menu list shows at most 14 rows; a custom match type there needs a submenu.</td></tr>
   <tr><td>"Needs Python 3 / numpy and Pillow / ffmpeg"</td><td>The converter tabs on Other games need them (see Setting up). Recheck after installing.</td></tr>
   <tr><td>The arena loads as an empty hall or crashes</td><td>Make sure the mod says which arena it plays in place of (base) and that no model is over the size ceiling; the Size budget panel and the conversion report show the heavy ones.</td></tr>
-  <tr><td>A superstar mod doesn't show up</td><td>72 is the limit; check the launcher's Mods tab that it is on; a mod needs <code>ch.pac</code> and a name.</td></tr>
+  <tr><td>A superstar mod doesn't show up</td><td>137 is the limit; check the launcher's Mods tab that it is on; a mod needs <code>ch.pac</code> and a name.</td></tr>
   <tr><td>Theme too loud</td><td>Make it about -24 LUFS (the game's own are about 7 dB under full level).</td></tr>
 </table>
 </section>
