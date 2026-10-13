@@ -108,6 +108,7 @@ still being tested.
 - **FIRST BLOOD** in Player Match (one on one and 3-man EXTREME RULES MATCHES; switch mod `online_first_blood`).
 - **PORT RULES** on CREATE SESSION (Player Match): the port's own match types online - Weapons Everywhere, the Three Stages sets, Hell in a Cell Tables & Ladders, Weapons Inside - chosen with LB / RB, shown in both lobbies.
 - **Mystery Opponent online** (PORT RULES on a triple threat Player Match): the two players face a hidden CPU picked by the host, shown as "?" in the lobby and revealed at his entrance (he enters last).
+- **Gauntlet Eliminator online** (PORT RULES on a 6-man Player Match): the players start, and the host's random CPU entrants come in at 1, 2, 3 and 4 minutes; eliminations play the same on every machine.
 - **Ping indicator** (GRAPHICS → DISPLAY → ONLINE PING): bars and milliseconds while online.
 - **Invites**: a pop-up when a friend invites you (with an on/off switch in the overlay), and X INVITE FRIENDS in the lobby opens an invite panel. **Accepting an invite from anywhere** takes the game into the inviter's lobby by itself (during a match or an editor it waits until you're back at a menu).
 - **Online overlay**: BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
