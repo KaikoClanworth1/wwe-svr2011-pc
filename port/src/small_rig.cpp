@@ -143,9 +143,15 @@ void Retarget(uint8_t* base, uint32_t ch) {
 
 }  // namespace
 
+namespace svr2011 {
+void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass);  // (pose_dump.cpp: a test aid, off unless asked)
+}
+
+// (one hook for the IK solve: the small rig's retarget before it, the pose dump test aid after)
 REX_EXTERN(__imp__sub_823A4DD8);
 REX_HOOK_RAW(sub_823A4DD8) {
-  const uint32_t ch = ctx.r3.u32;
+  const uint32_t ch = ctx.r3.u32, pass = ctx.r4.u32;
   if (REXCVAR_GET(small_rig_retarget) && ch && IsSmall(ctx, base, ch)) Retarget(base, ch);
   __imp__sub_823A4DD8(ctx, base);
+  svr2011::PoseDump(base, ch, pass);
 }

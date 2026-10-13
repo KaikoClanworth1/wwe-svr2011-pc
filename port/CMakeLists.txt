@@ -89,6 +89,7 @@ set(SVR2011_SOURCES
     src/test_match.cpp
     src/managers.cpp
     src/small_rig.cpp
+    src/pose_dump.cpp
     src/game_files.cpp
 )
 
