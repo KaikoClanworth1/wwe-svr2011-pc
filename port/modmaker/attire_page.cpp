@@ -143,8 +143,29 @@ std::map<int, std::string> ModAttires(int star) {
   }
   return out;
 }
-// The lowest attire neither in the superstar's pac nor asked for by a mod (0: none of the 4).
+// A superstar who wears entrance gear (their pac's attire 1 has a model besides the wrestler: EMD "<id>0" + kind,
+// kind != 2 - the coats / hats / shirts of Undertaker, Punk, Cena, HBK, Morrison): any attire beyond their own
+// never finishes loading the match, so only their own can be replaced (the game and the launchers follow this too).
+bool EntranceGear(int star) {
+  static std::map<int, bool> cache;
+  if (const auto it = cache.find(star); it != cache.end()) return it->second;
+  PacIndex idx;
+  bool gear = false;
+  char id[8];
+  std::snprintf(id, sizeof id, "%06d", star);
+  if (ReadPacIndex(fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(star) + L".pac"), idx))
+    for (const auto& e : idx.entries)
+      if (e.group == "EMD " && e.name.size() == 8 && e.name.compare(0, 6, id) == 0 && e.name[6] == '0' && e.name[7] != '2') gear = true;
+  return cache[star] = gear;
+}
+std::string GearText(const std::string& star, size_t own) {
+  return star + " wears entrance gear: new attires for them don't load in the game yet - replace attire " +
+         (own > 1 ? "1-" + std::to_string(own) : std::string("1")) + " instead.";
+}
+
+// The lowest attire neither in the superstar's pac nor asked for by a mod (0: none of the 4; none for entrance gear).
 int NextFreeAttire(int star) {
+  if (EntranceGear(star)) return 0;
   const auto now = CurrentAttires(star);
   const auto mods = ModAttires(star);
   for (int a = 1; a <= 4; ++a)
@@ -181,15 +202,20 @@ void Problems(std::vector<Problem>& p) {
     const int next = NextFreeAttire(g_at.star);
     const StarInfo* who = StarById(g_at.star);
     const std::string star = who ? who->name : "superstar " + std::to_string(g_at.star);
-    if (g_at.slot && mods.count(g_at.slot)) {
+    const bool gear = EntranceGear(g_at.star);
+    const bool own_slot = g_at.slot && std::find(now.begin(), now.end(), g_at.slot) != now.end();
+    if (gear && !own_slot) {
+      p.push_back(Error(GearText(star, now.size()), "Pick Replace 1" + std::string(now.size() > 1 ? " - " + std::to_string(now.size()) : "") + "."));
+    } else if (g_at.slot && mods.count(g_at.slot)) {
       p.push_back(Warning("Attire " + std::to_string(g_at.slot) + " of " + star + " is already used by \"" + mods.at(g_at.slot) + "\" (installed). " +
                               (next ? "If you install this, the launcher moves it to attire " + std::to_string(next) + "."
-                                    : star + " has no free attire (4 at most): the launcher will ask to switch one off."),
+                                    : gear ? star + " wears entrance gear, so it can't move to another attire: switch one of the two off."
+                                           : star + " has no free attire (4 at most): the launcher will ask to switch one off."),
                           next ? "Pick attire " + std::to_string(next) + " (or A new attire) now." : "Switch one attire mod off in the launcher's Mods tab."));
     } else if (g_at.slot && std::find(now.begin(), now.end(), g_at.slot) == now.end()) {
       p.push_back(Warning("The superstar has no attire " + std::to_string(g_at.slot) + " now: this adds it as attire " + std::to_string(g_at.slot) + "."));
     }
-    if (!g_at.slot && !next && now.size() < 4)
+    if (!gear && !g_at.slot && !next && now.size() < 4)
       p.push_back(Error(star + " has no free attire (4 at most): installed attire mods use the rest.", "Replace one of the attires, or switch an attire mod off in the launcher's Mods tab."));
   }
   if (!g_at.name[0]) p.push_back(Warning("No name: CHANGE ATTIRE shows ATTIRE N."));
@@ -217,7 +243,7 @@ void Draw() {
   ImGui::SetNextItemWidth(320 * g_scale);
   if (ImGui::BeginCombo("Superstar", who ? who->name.c_str() : g_at.star >= 0 ? std::to_string(g_at.star).c_str() : "(pick one)")) {
     for (const auto& s : stars)
-      if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id)) g_at.star = s.id, g_at.slot = 0, Touch();
+      if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id)) g_at.star = s.id, g_at.slot = EntranceGear(s.id) ? 1 : 0, Touch();
     ImGui::EndCombo();
   }
   if (g_at.star >= 0) {
@@ -225,12 +251,16 @@ void Draw() {
     std::string list;
     for (int a : now) list += (list.empty() ? "" : ", ") + std::to_string(a);
     ImGui::TextDisabled("Attires in the model pac: %s (of 4; some may be locked in the game)", list.empty() ? "none found" : list.c_str());
+    const bool gear = EntranceGear(g_at.star);
+    ImGui::BeginDisabled(gear);
     if (ImGui::RadioButton("A new attire", g_at.slot == 0)) g_at.slot = 0, Touch();
+    ImGui::EndDisabled();
     const auto mods = ModAttires(g_at.star);
     for (int a = 1; a <= 4; ++a) {
       ImGui::SameLine();
       const bool exists = std::find(now.begin(), now.end(), a) != now.end();
       const bool modded = mods.count(a) > 0;
+      if (gear && !exists) continue;  // (entrance gear: their own attires only)
       if (ImGui::RadioButton(((exists ? "Replace " : "Attire ") + std::to_string(a) + (modded ? " (a mod's)" : exists ? "" : " (free?)")).c_str(), g_at.slot == a)) g_at.slot = a, Touch();
       if (ImGui::IsItemHovered()) {
         if (modded) ImGui::SetTooltip("Used by the installed attire mod \"%s\".", mods.at(a).c_str());
@@ -239,6 +269,12 @@ void Draw() {
       }
     }
     const int next = NextFreeAttire(g_at.star);
+    if (gear) {
+      const StarInfo* w = StarById(g_at.star);
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "%s", GearText(w ? w->name : std::to_string(g_at.star), now.size()).c_str());
+      ImGui::PopTextWrapPos();
+    }
     if (g_at.slot && mods.count(g_at.slot)) {
       ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "Attire %d is already used by \"%s\".", g_at.slot, mods.at(g_at.slot).c_str());
       if (next) {
@@ -247,7 +283,7 @@ void Draw() {
       }
     } else if (g_at.slot && std::find(now.begin(), now.end(), g_at.slot) != now.end()) {
       ImGui::TextDisabled("Replaces the game's attire %d.", g_at.slot);
-    } else if (!g_at.slot) {
+    } else if (!g_at.slot && !gear) {
       ImGui::TextDisabled("%s", next ? ("It becomes attire " + std::to_string(next) + " (the next free one).").c_str() : "No attire is free: replace one instead.");
     }
   }

@@ -1299,10 +1299,11 @@ void ViewFooter() {
   ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x, 70 * g_scale, 110 * g_scale));
   if (ImGui::SliderInt("##damage", &stage, 0, 2, kLevels[std::clamp(stage, 0, 2)], ImGuiSliderFlags_NoInput)) char_preview::SetBloodStage(stage);
   ImGui::EndDisabled();
-  if (const char* hint = "Drag to turn, scroll to zoom"; ImGui::GetContentRegionAvail().x > ImGui::CalcTextSize(hint).x + 60 * g_scale) {
-    ImGui::SameLine();
+  ImGui::SameLine();  // (the hint on this line when it fits what's left of it)
+  if (const char* hint = "Drag to turn, scroll to zoom"; ImGui::GetContentRegionAvail().x > ImGui::CalcTextSize(hint).x + 8 * g_scale)
     ImGui::TextDisabled("%s", hint);
-  }
+  else
+    ImGui::NewLine();
   ImGui::PopID();
 }
 
