@@ -25,7 +25,7 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | SmackDown! Shut Your Mouth (PS2) | - | 114 | - | researched: HCTP back end + a new SYDT script reader |
 | SmackDown! vs. Raw 2006 (PS2) | - | 95 | - | researched: 2008 script path little-endian, bodies as HCTP; 2/3 also in SvR 2007 |
 | WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
-| SvR 2007-2011 (PS2) | - | same as 360 | - | researched: the 360 entrances in PS2 byte order (a ~110-line front end for the 360 converters) |
+| SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
 | WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, converted offline (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
@@ -91,7 +91,11 @@ scripts are the 360 EVP in PS2 byte order (two-u16 fields, raw type bytes: a lit
 `build_evp` rebuilds the 360 bytes for 935/935), tracks are the same YMKs banks (2008 138/140 and 2009
 167/168 byte-identical; 2010/2011 character tracks are key-reduced). A ~110-line front end (container
 reader + `parse_evp_le`) lets the svr07-10 converters take a PS2 disc; 2008/2009 output then equals
-the 360-based one. Titantrons: Sofdec MPEG-1 224x192 in `MOVIE/NMV*.AFS`; themes CRI ADX; pyro sets are
+the 360-based one - done: `tools/ps2_entrance.py` (`entrance_port.pac_entries` reads DPAC / DPK8 and turns
+PS2 scripts into the 360 bytes), so games svr07-svr10 take a PS2 disc; `games` lists the PS2 serials in
+`disc_hints` (PAL discs checked; US SLUS serials not known yet). Checked: 2008 Sandman 4132 and 2009
+Kennedy 4062 byte-identical to the 360-based conversion, 2007 Andre 4109 script identical (one minor track
+differs, as on the disc), 2010 Kennedy 162 converts. Titantrons: Sofdec MPEG-1 224x192 in `MOVIE/NMV*.AFS`; themes CRI ADX; pyro sets are
 PS2 textures (not portable). The 360 discs are the better source.
 
 ## WWE 2K15 / 2K16 / 2K17 (Xbox 360)

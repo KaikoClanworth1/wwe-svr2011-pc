@@ -167,7 +167,10 @@ def pac_entries(d):
                 out[(ty, n)] = unbpe(d[o:o + sz * 0x100])
                 p += 12
         return out
-    raise ValueError('not an EPAC / EPK8 pac')
+    if d[:4] in (b'DPAC', b'DPK8'):          # (PS2 SvR 2007-2011: the 360 pacs in little-endian)
+        import ps2_entrance
+        return ps2_entrance.entries(d)
+    raise ValueError('not an EPAC / EPK8 / PS2 DPAC / DPK8 pac')
 
 
 def evp_name(evp):
@@ -263,10 +266,10 @@ def in_2011(name, game_pac):
 # ============================================================================ games
 
 GAMES = collections.OrderedDict([
-    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready')),
-    ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready')),
-    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready')),
-    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='ready')),
+    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', disc_hints=['545107E0', 'SLES_544.89'], status='ready')),
+    ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', disc_hints=['5451080B', 'SLES_548.79'], status='ready')),
+    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', disc_hints=['54510826', 'SLES_552.51'], status='ready')),
+    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', disc_hints=['54510844', 'SLES_555.45'], status='ready')),
     ('low', dict(name='WWE Legends of WrestleMania', platform='x360', disc_hint='54510838', status='ready')),
     ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='ready')),
     ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='ready')),
@@ -749,7 +752,9 @@ def opt(a, k, d=None):
 
 
 def cmd_games(a):
-    return [dict(id=k, name=v['name'], platform=v['platform'], disc_hint=v['disc_hint'], status=v['status'])
+    # (disc_hints: every disc that game id reads - the 360 title id and, for SvR 2007-2010, the PS2 serial)
+    return [dict(id=k, name=v['name'], platform=v['platform'], disc_hint=v['disc_hint'],
+                 disc_hints=v.get('disc_hints', [v['disc_hint']]), status=v['status'])
             for k, v in GAMES.items()]
 
 
