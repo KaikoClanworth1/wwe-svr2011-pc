@@ -130,6 +130,14 @@ PadType PlayerPadType(uint32_t user_index) {
   return user_index < kMaxPlayers ? g_types[Slot(user_index)].load(std::memory_order_relaxed) : PadType::kNone;
 }
 
+void SetTestPadType(uint32_t player, const std::string& type) {
+  if (player >= kMaxPlayers) return;
+  g_types[Slot(player)] = type == "ps" ? PadType::kPlayStation : type == "kb" ? PadType::kKeyboard
+                        : type == "xbox" ? PadType::kXbox : PadType::kNone;
+  ++g_version;
+  REXLOG_INFO("[svr2011] players: test - player {} is now '{}'", player + 1, type);
+}
+
 void MakeLeadPlayer(uint32_t user_index) {
   if (user_index == 0 || user_index >= kMaxPlayers) return;
   const uint8_t lead = g_order[user_index].load(), first = g_order[0].load();
