@@ -104,6 +104,7 @@ struct StarProject {
   float theme_gain = 0.0f;        // theme_gain=<dB> (-20..+6; 0: left out)
   std::vector<Picture> signs;     // its fans' signs (up to 4; 128 x 64)
   // the SvR 2010-style extras (the game: superstar_mods.cpp)
+  int pose = -1;                  // pose=<motion id>: the select / VS panel's pose (-1: the style's)
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
   char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
   char hometown_city[32] = "";    // hometown=<CITY>[,<STATE>]: the announcer's own hometown clips
@@ -119,6 +120,7 @@ StarProject g_star;
 int g_test_id = 0;
 std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
 std::string g_test_hometown;
+int g_test_pose = -1;
 std::string g_test_name;
 bool g_test_done = false;
 
@@ -308,6 +310,74 @@ bool ClipPicker(const char* label, char* buf, size_t size, const std::vector<std
     ImGui::EndCombo();
   }
   return changed;
+}
+
+// ---- the select / VS screen pose (D7): the game's superstar -> pose table (DLC_HD.pac MMDL MMMN) and the
+// generic poses it rotates through; 32592-32596 (the DLC superstars') aren't on the disc, so not offered
+const std::pair<int, int> kStarPoses[] = {{50, 32591}, {51, 32595}, {52, 32596}, {54, 32592}, {55, 32593}, {56, 32594}, {57, 32529}, {58, 32555}, {100, 32520}, {101, 32551}, {102, 32521}, {103, 32522}, {104, 32523}, {107, 32524}, {110, 32525}, {112, 32553}, {117, 32545}, {123, 32526}, {125, 32549}, {131, 32527}, {135, 32528}, {137, 32554}, {139, 32529}, {145, 32530}, {160, 32531}, {161, 32532}, {174, 32580}, {175, 32533}, {176, 32534}, {179, 32543}, {182, 32581}, {195, 32590}, {201, 32535}, {208, 32555}, {218, 32536}, {219, 32537}, {224, 32583}, {251, 32548}, {267, 32546}, {272, 32538}, {275, 32539}, {276, 32540}, {277, 32541}, {279, 32542}, {283, 32547}, {290, 32582}, {306, 32552}};
+struct PoseChoice {
+  int id;
+  std::string label;
+};
+const std::vector<PoseChoice>& Poses() {
+  static std::vector<PoseChoice> v;
+  if (!v.empty()) return v;
+  std::map<int, std::string> by;  // motion -> the superstars who use it
+  for (const auto& [star, motion] : kStarPoses) {
+    if (motion >= 32592 && motion <= 32596) continue;
+    const StarInfo* si = StarById(star);
+    std::string& l = by[motion];
+    l += (l.empty() ? "" : ", ") + (si ? si->name : "superstar " + std::to_string(star));
+  }
+  std::vector<PoseChoice> stars;
+  for (const auto& [motion, names] : by) stars.push_back({motion, names});
+  std::sort(stars.begin(), stars.end(), [](const PoseChoice& a, const PoseChoice& b) { return a.label < b.label; });
+  for (auto& c : stars) v.push_back(c);
+  for (int k = 0; k < 6; ++k) v.push_back({32500 + k, "Generic (men) " + std::to_string(k + 1)});
+  for (int k = 0; k < 6; ++k) v.push_back({32510 + k, "Generic (women) " + std::to_string(k + 1)});
+  v.push_back({32544, "Unused 1 (no superstar has it)"});
+  v.push_back({32550, "Unused 2 (no superstar has it)"});
+  return v;
+}
+std::string PoseLabel(int id) {
+  for (const auto& c : Poses())
+    if (c.id == id) return c.label;
+  return id < 0 ? "" : "pose " + std::to_string(id);
+}
+
+// pac\DLC.pac MMDL MOTN child 0: the poses' YMKs bank (loaded once)
+std::shared_ptr<const std::vector<uint8_t>> g_pose_bank;
+bool g_pose_bank_tried = false;
+void PreviewPose(int id) {
+  auto play = [id] {
+    std::string err;
+    char_preview::SetDummy(L"");
+    if (!g_pose_bank || !char_preview::SetMotion(g_pose_bank, id, 10, &err)) Log("pose: not shown: " + err), Status("That pose can't be shown: " + (g_pose_bank ? err : std::string("pac\\DLC.pac has no pose bank")) + ".");
+    else g_watching = true, Log("pose: showing " + std::to_string(id));
+  };
+  if (g_pose_bank_tried) return play();
+  g_pose_bank_tried = true;
+  const std::wstring file = (fs::path(g_game) / L"pac" / L"DLC.pac").wstring();
+  RunInBackground([file, play] {
+    Progress("Reading the select screen poses ...");
+    Bytes d;
+    Epac e;
+    std::shared_ptr<const std::vector<uint8_t>> bank;
+    if (ReadFile(Utf8(file), d) && EpacRead(d, e))
+      for (const auto& g : e.groups)
+        if (g.type == "MMDL")
+          for (const auto& en : g.entries) {
+            std::vector<PachEntry> kids;
+            if (en.name.rfind("MOTN", 0) == 0 && PachRead(Unpack(en.data), kids))
+              for (const auto& k : kids)
+                if (k.id == 0) bank = std::make_shared<const std::vector<uint8_t>>(Unpack(k.data));
+          }
+    OnUiThread([bank, play] {
+      Log("pose bank: " + (bank ? std::to_string(bank->size()) + " bytes" : std::string("not found")));
+      g_pose_bank = bank;
+      play();
+    });
+  });
 }
 
 // tools/pro_slots.json: [{"off": 122, "menu": "...", "slot": "...", "fixed": false}, ...]
@@ -609,6 +679,7 @@ bool PrepareJob(Job& j) {
     if (!g_star.attires[a].empty() && g_star.attire_entrance[a] > 0)
       j.manifest += "attire" + std::to_string(a + 1) + "_entrance=" + std::to_string(g_star.attire_entrance[a]) + "\n";
   if (g_star.announcer[0]) j.manifest += std::string("announcer=") + g_star.announcer + "\n";
+  if (g_star.pose >= 0) j.manifest += "pose=" + std::to_string(g_star.pose) + "\n";
   if (g_star.hometown_city[0])
     j.manifest += std::string("hometown=") + g_star.hometown_city + (g_star.hometown_state[0] ? std::string(",") + g_star.hometown_state : "") + "\n";
   if (g_star.own_abilities) {
@@ -850,6 +921,10 @@ void Preview() {
 }
 
 void Draw() {
+  if (g_test_pose >= 0 && g_test_done && char_preview::ModelHeight() > 0 && !Busy()) {
+    Log("test: pose " + std::to_string(g_test_pose) + " (" + PoseLabel(g_test_pose) + ")");
+    PreviewPose(g_test_pose), g_test_pose = -1;
+  }
   if (!g_test_done) {  // the test aids, once the page shows
     g_test_done = true;
     if (g_test_id) {
@@ -865,6 +940,7 @@ void Draw() {
       if (LoadPicture(g_test_picture, img)) SetPicture(img);
     }
     if (Image img; !g_test_full.empty() && LoadPicture(g_test_full, img)) g_star.picture_full = FitFigure(img, 512);
+    if (g_test_pose >= 0) g_star.pose = g_test_pose;  // (previewed once the model is in: below)
     if (const size_t c = g_test_hometown.find(','); !g_test_hometown.empty()) {
       std::snprintf(g_star.hometown_city, sizeof g_star.hometown_city, "%s", g_test_hometown.substr(0, c).c_str());
       std::snprintf(g_star.hometown_state, sizeof g_star.hometown_state, "%s", c == std::string::npos ? "" : g_test_hometown.substr(c + 1).c_str());
@@ -960,6 +1036,26 @@ void Draw() {
     Hint("The entrance motions and pyro (the music and movie are the files above): any the game has - every "
          "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
          "(the Port page makes them from other games). Attires 2-4 can have their own.");
+    {
+      ImGui::SetNextItemWidth(320 * g_scale);
+      const std::string cur = g_star.pose < 0 ? "The style's" : PoseLabel(g_star.pose);
+      if (ImGui::BeginCombo("Select screen pose", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+        if (ImGui::Selectable("The style's", g_star.pose < 0)) g_star.pose = -1, Touch();
+        for (const auto& c : Poses())
+          if (ImGui::Selectable((c.label + "##" + std::to_string(c.id)).c_str(), g_star.pose == c.id)) {
+            g_star.pose = c.id, Touch();
+            if (!g_star.model.empty()) PreviewPose(c.id);
+          }
+        ImGui::EndCombo();
+      }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(g_star.pose < 0 || g_star.model.empty() || Busy());
+      if (ImGui::SmallButton(">##pose")) PreviewPose(g_star.pose);
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Watch the pose in the preview.");
+      Hint("How the superstar stands on the character select's 3D panel (either side of VS): a superstar's own pose "
+           "(named by who has it) or one of the game's generic ones. The style's: the base superstar's.");
+    }
     const Calls& calls = AnnouncerCalls();
     if (ClipPicker("Announcer name", g_star.announcer, sizeof g_star.announcer, calls.names, "none (optional)")) Touch();
     Hint("A name the ring announcer's sound banks have clips of (as the banks spell it: JEFFHARDY) - the list is the "
@@ -1171,7 +1267,7 @@ std::string StateText() {
     s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a] + "|" +
          std::to_string(g_star.attire_entrance[a]);
   s += "\nmoveset=" + MovesetText();
-  s += "\nentrance=" + std::to_string(g_star.entrance) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
+  s += "\nentrance=" + std::to_string(g_star.entrance) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
   return s;
@@ -1202,6 +1298,7 @@ void WriteProject(ProjectOut& out) {
   }
   if (g_star.entrance >= 0) out.Key("entrance", g_star.entrance);
   out.Key("announcer", g_star.announcer);
+  if (g_star.pose >= 0) out.Key("pose", std::to_string(g_star.pose));
   if (g_star.hometown_city[0])
     out.Key("hometown", std::string(g_star.hometown_city) + (g_star.hometown_state[0] ? std::string(",") + g_star.hometown_state : ""));
   if (g_star.own_abilities) {
@@ -1254,6 +1351,10 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.call = in.GetInt("call", -1);
   if (const std::string h = in.Get("height"); !h.empty()) g_star.height = std::clamp(float(std::atof(h.c_str())), 0.8f, 1.25f);
   g_star.entrance = in.GetInt("entrance", -1);
+  g_star.pose = in.GetInt("pose", -1);
+  if (g_star.pose >= 0 && g_star.pose < 512)  // (an id below 512: that superstar's pose)
+    for (const auto& [star, motion] : kStarPoses)
+      if (star == g_star.pose) { g_star.pose = motion; break; }
   for (int a = 1; a < 4; ++a) g_star.attire_entrance[a] = in.GetInt(("attire" + std::to_string(a + 1) + "_entrance").c_str(), -1);
   std::snprintf(g_star.announcer, sizeof g_star.announcer, "%s", in.Get("announcer").c_str());
   {
@@ -1370,6 +1471,7 @@ bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::
   return ClipPicker(label, buf, size, clips, none, width);
 }
 void TestHometown(const std::string& h) { g_test_hometown = h; }
+void TestPose(int id) { g_test_pose = id; }
 void TestWatchSlot(int off) { g_watch_slot_test = off / 2, g_moveset_open_once = true, g_moveset_all = true; }
 
 void TestMoveset(const std::string& spec) {

@@ -667,8 +667,13 @@ static void compose(Pic *top, Pic *bottom, int fit, LONGLONG t, uint8_t *frame, 
 static int mf_start(void)
 {
     static volatile LONG state;   /* 0 not tried, 1 running, 2 failed */
+    /* (mfplat / mfreadwrite are delay-loaded: called without them the
+     * launcher would crash, so first see that Windows has them) */
     if (state == 0)
-        InterlockedCompareExchange(&state, SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)) ? 1 : 2, 0);
+        InterlockedCompareExchange(&state,
+            LoadLibraryExW(L"mfplat.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+            LoadLibraryExW(L"mfreadwrite.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+            SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)) ? 1 : 2, 0);
     return state == 1;
 }
 

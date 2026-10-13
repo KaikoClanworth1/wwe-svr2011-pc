@@ -53,6 +53,24 @@ if ($WithModMaker) {
     if (Test-Path $guide) { Copy-Item $guide (Join-Path $stage "Mod Maker Guide") -Recurse }
 }
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
+# The Visual C++ runtime the programs use (dynamic CRT), app-local beside them
+# (Microsoft's redistributable files, from the build machine's Visual Studio
+# Redist folder - the toolset the programs were linked with or newer): players
+# without the VC++ redistributable can start the game, nothing to install.
+$vcrt = @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_atomic_wait.dll")
+$redist = @("${env:ProgramFiles}\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio") |
+    Where-Object { Test-Path $_ } |
+    ForEach-Object { Get-ChildItem $_ -Directory -Recurse -Depth 8 -Filter "Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue } |
+    Where-Object { $_.FullName -match "\\Redist\\MSVC\\[0-9.]+\\x64\\" -and $_.FullName -notmatch "onecore|debug" } |
+    Sort-Object { [version]($_.FullName -replace '.*\\Redist\\MSVC\\([0-9.]+)\\.*', '$1') } -Descending |
+    Select-Object -First 1
+if (-not $redist) { throw "no Visual Studio Redist\MSVC\<version>\x64\Microsoft.VC14x.CRT folder - the release needs the VC++ runtime DLLs" }
+foreach ($f in $vcrt) {
+    $src = Join-Path $redist.FullName $f
+    if (-not (Test-Path $src)) { throw "$f is missing from $($redist.FullName)" }
+    Copy-Item $src $stage
+}
+Write-Host "VC++ runtime from $($redist.FullName)"
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
 # The native renderer's shaders (converted from the game's by
 # tools/convert_shaders.py; without them it draws nothing).

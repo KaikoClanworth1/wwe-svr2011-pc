@@ -227,6 +227,10 @@ if(WIN32)
     # d3d12.dll is loaded only when the game draws with Direct3D 12: Windows
     # without it (or GPUs without it, on Direct3D 11) still start the game.
     target_link_options(svr2011 PRIVATE -Wl,/DELAYLOAD:d3d12.dll)
+    # Media Foundation (user music, movie transcoding) only when used: a Windows
+    # "N" edition without the Media Feature Pack has no mfplat.dll and would not
+    # start the game at all (each use loads them with LoadLibraryExW first).
+    target_link_options(svr2011 PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     # A PDB (function names + line tables) for crash reports and profiling.
     target_compile_options(svr2011 PRIVATE -gline-tables-only)
     target_link_options(svr2011 PRIVATE -Wl,/DEBUG)
@@ -281,15 +285,20 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_MM_VERSION LIMIT_COUNT 1)
     target_compile_definitions(svr2011_modmaker PRIVATE "PORT_VERSION=\"${SVR2011_MM_VERSION}\"")
     target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32
-        mfplat mfreadwrite mfuuid propsys)
+        mfplat mfreadwrite mfuuid propsys delayimp)
+    # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
+    target_link_options(svr2011_modmaker PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/launcher.rc src/utf8.manifest)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/launcher.rc src/utf8.manifest)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
     target_link_options(svr2011_launcher PRIVATE -Wl,/ENTRY:wWinMainCRTStartup)
     target_link_libraries(svr2011_launcher PRIVATE
-        comctl32 comdlg32 shell32 ole32 uxtheme windowscodecs mfplat mfreadwrite mfuuid propsys winhttp gdiplus)
+        comctl32 comdlg32 shell32 ole32 uxtheme windowscodecs mfplat mfreadwrite mfuuid propsys winhttp gdiplus delayimp
+        bcrypt)
+    # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
+    target_link_options(svr2011_launcher PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     # The release version (VERSION.txt; package.ps1 names the zip after it and the
     # launcher's updater compares it with the newest GitHub release).
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_VERSION LIMIT_COUNT 1)

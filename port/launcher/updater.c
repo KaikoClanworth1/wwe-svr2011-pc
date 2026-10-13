@@ -65,13 +65,15 @@ static int http_get(Http *h, const WCHAR *url, const WCHAR *accept, WCHAR *err, 
             || !WinHttpReceiveResponse(h->request, NULL)
             || !WinHttpQueryHeaders(h->request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                                     WINHTTP_HEADER_NAME_BY_INDEX, &status, &len, WINHTTP_NO_HEADER_INDEX)) {
-        swprintf_s(err, errn, L"Could not reach GitHub (error %lu). Check your internet connection.", GetLastError());
+        swprintf_s(err, errn, L"Could not reach %s (error %lu). Check your internet connection.", host, GetLastError());
         http_close(h);
         return 0;
     }
     if (status != 200) {
-        swprintf_s(err, errn, status == 403 ? L"GitHub is limiting requests right now (HTTP 403); try again later."
-                                            : L"GitHub answered HTTP %lu.", status);
+        if (status == 403)
+            swprintf_s(err, errn, L"%s is limiting requests right now (HTTP 403); try again later.", host);
+        else
+            swprintf_s(err, errn, L"%s answered HTTP %lu.", host, status);
         http_close(h);
         return 0;
     }
