@@ -50,7 +50,7 @@ try {
     In "" @("route online"); In "2" @("route online")
     Start-Sleep 70
     # host: MATCH -> PLAYER MATCH -> CREATE SESSION, the PORT RULES row, CONTINUE
-    In "" @("press A", "wait 2500", "press DOWN", "wait 800", "press A", "wait 2500", "press DOWN", "wait 700", "press DOWN", "wait 700", "press A", "wait 3000")
+    In "" @("press A", "wait 4000", "press DOWN", "wait 1500", "press A", "wait 4000", "press DOWN", "wait 1500", "press DOWN", "wait 1500", "press A", "wait 4000")
     Start-Sleep 16
     if ($TargetRule) {
         $order = @{ "00" = 0; "03" = 1; "0D" = 2; "0E" = 3; "05" = 4; "08" = 5; "0A" = 5 }   # (the MATCH TYPE list's people counts: 1, 2 on 2, 3, 4, 5, 6)
@@ -62,21 +62,21 @@ try {
             if ($cur -eq $TargetRule) { break }
             $d = (($order[$TargetRule] - $order[$cur]) % 6 + 6) % 6   # (the list wraps: the shorter way round)
             if ($d -gt 3) { $d = $d - 6 }
-            $keys = @("press A 400", "wait 6000")
+            $keys = @("press A", "wait 6000")
             $k = if ($d -gt 0) { "DOWN" } else { "UP" }
-            for ($i = 0; $i -lt [math]::Abs($d); $i++) { $keys += @("press $k 400", "wait 3000") }
-            $keys += @("press A 400", "wait 4000", "press A 400", "wait 4000", "press A 400", "wait 5000")
+            for ($i = 0; $i -lt [math]::Abs($d); $i++) { $keys += @("press $k", "wait 3000") }
+            $keys += @("press A", "wait 4000", "press A", "wait 4000", "press A", "wait 5000")
             In "" $keys; Start-Sleep ([int](($keys.Count / 2) * 3) + 8)
         }
         Shot "" "$Name`_host_type"
     }
-    if ($MatchKeys) { foreach ($k in ($MatchKeys -split ",")) { In "" @("press $k 400", "wait 4000") }; Start-Sleep ([int](($MatchKeys -split ",").Count * 4.5) + 8); Shot "" "$Name`_host_type" }
+    if ($MatchKeys) { foreach ($k in ($MatchKeys -split ",")) { In "" @("press $k", "wait 4000") }; Start-Sleep ([int](($MatchKeys -split ",").Count * 4.5) + 8); Shot "" "$Name`_host_type" }
     foreach ($i in 1..$RbPresses) { In "" @("press $RowKey", "wait 1200") }
     Start-Sleep 4; Shot "" "$Name`_host_cs"
     In "" @("press DOWN", "wait 800", "press DOWN", "wait 800", "press DOWN", "wait 800", "press DOWN", "wait 800", "press DOWN", "wait 800", "press A", "wait 3000")
     Start-Sleep 4; Shot "" "$Name`_host_cont1"; Start-Sleep 6; Shot "" "$Name`_host_cont2"; Start-Sleep 6; Shot "" "$Name`_host_lobby"
     # joiner: MATCH -> PLAYER MATCH -> CUSTOM MATCH -> SEARCH -> the session -> YES
-    In "2" @("press A", "wait 2500", "press DOWN", "wait 800", "press A", "wait 2500", "press DOWN", "wait 800", "press A", "wait 3000")
+    In "2" @("press A", "wait 4000", "press DOWN", "wait 1500", "press A", "wait 4000", "press DOWN", "wait 1500", "press A", "wait 4000")
     Start-Sleep 12
     In "2" @("press DOWN", "wait 800", "press DOWN", "wait 800", "press A", "wait 3000"); Start-Sleep 14; Shot "2" "$Name`_join_list"
     In "2" @("press A", "wait 3000"); Start-Sleep 14; Shot "2" "$Name`_join_info"
