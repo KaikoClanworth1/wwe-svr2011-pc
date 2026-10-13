@@ -126,10 +126,29 @@ void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
     if (misses++ < 5) REXLOG_INFO("[svr2011] pose dump: ch {:08X} - node {:08X} +32 {:08X} isn't a CHAR", ch, n, fighter);
     return;
   }
-  const uint32_t newest = Rd32(base + ch + kNewest);
-  if (newest >= 6) return;
+  const uint32_t newest = Rd32(base + ch + kNewest), person = Rd32(base + fighter + 1156);
+  static int notes = 0;
+  if (newest >= 6) {
+    if (notes++ < 10) REXLOG_INFO("[svr2011] pose dump: person {} ch {:08X} - newest player index {} out of range", person, ch, newest);
+    return;
+  }
   const uint8_t* player = base + ch + kPlayers + kPlayerSize * newest;
-  const uint32_t motion = Rd16(player + 598) & 0x7FFF, person = Rd32(base + fighter + 1156);
+  const uint32_t motion = Rd16(player + 598) & 0x7FFF;
+  {  // (what the players hold, each time it changes - so a wrong field shows)
+    static uint32_t seen[16] = {};
+    const uint32_t key = motion << 8 | player[600];
+    if (person < 16 && seen[person] != key && notes < 200) {
+      seen[person] = key, ++notes;
+      std::string all;
+      for (uint32_t i = 0; i < 6; ++i) {
+        const uint8_t* pl = base + ch + kPlayers + kPlayerSize * i;
+        char t[64];
+        std::snprintf(t, sizeof t, " [%u: %u x%u y%u t%.1f w%.2f]", i, Rd16(pl + 598), pl[600], pl[601], RdF(pl + 584), RdF(pl + 528));
+        all += t;
+      }
+      REXLOG_INFO("[svr2011] pose dump: person {} newest {} plays {} (request {}):{}", person, newest, motion, Rd32(base + fighter + 212), all);
+    }
+  }
   static uint32_t playing[16] = {};
   const uint32_t pi = person < 16 ? person : 15;
   if (!c.motions.count(motion)) {
