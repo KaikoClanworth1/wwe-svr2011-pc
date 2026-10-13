@@ -39,7 +39,7 @@ typedef struct {
     WCHAR made_with[64];  /* manifest made_with= (the Mod Maker stamps its mods); "" = not made with it */
     unsigned long long bytes;
     int enabled;
-    int left_out;  /* a superstar mod over the game's 72 ids: not in the game (superstar_limit) */
+    int left_out;  /* a superstar mod over the game's ids (s_star_ids): not in the game (superstar_limit) */
 } Mod;
 
 static Mod s_mods[MODS_MAX];
@@ -53,12 +53,15 @@ enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND };
 
 static void status(const WCHAR *t) { SetWindowTextW(s_status, t); }
 
-/* The game has 72 ids for superstar mods (src/superstar_mods.cpp kPool), kept
+/* The game has 137 ids for superstar mods (src/superstar_mods.cpp kPool; it
+   writes the number to Mods\Superstars\limit.txt at each start), kept
    per mod folder in Mods\Superstars\slots.txt. As the game does: a mod that's
    on and holds an id keeps it; the ones without wait, in folder order, for
    the ids left (those of mods switched off or gone included). Marks the
    waiting ones that don't fit; returns how many superstar mods are on. */
-enum { SUPERSTAR_IDS = 72 };
+enum { SUPERSTAR_IDS = 137 };  /* (until the game has written limit.txt: a fresh install) */
+static int s_star_ids = SUPERSTAR_IDS;
+static WCHAR s_over_label[64];
 static int s_stars_on, s_stars_out;
 static int folder_cmp(const void *a, const void *b)
 {
@@ -75,6 +78,15 @@ static void superstar_limit(void)
     int nwait = 0;
     FILE *f = NULL;
     s_stars_on = s_stars_out = 0;
+    s_star_ids = SUPERSTAR_IDS;
+    swprintf_s(path, MAX_PATH, L"%s\\Mods\\Superstars\\limit.txt", s_game);
+    if (!_wfopen_s(&f, path, L"rb") && f) {
+        int n = 0;
+        if (fscanf_s(f, "%d", &n) == 1 && n > 0 && n < 1000) s_star_ids = n;
+        fclose(f);
+        f = NULL;
+    }
+    swprintf_s(s_over_label, 64, L"superstar - NOT IN GAME (over the %d limit)", s_star_ids);
     swprintf_s(path, MAX_PATH, L"%s\\Mods\\Superstars\\slots.txt", s_game);
     if (!_wfopen_s(&f, path, L"rb") && f) {
         while (nheld < MODS_MAX * 2 && fgets(line, sizeof line, f)) {
@@ -99,7 +111,7 @@ static void superstar_limit(void)
         else waiting[nwait++] = m;
     }
     qsort(waiting, nwait, sizeof *waiting, folder_cmp);
-    room = SUPERSTAR_IDS - holders;
+    room = s_star_ids - holders;
     for (i = 0; i < nwait; i++)
         if (i >= room) waiting[i]->left_out = 1, s_stars_out++;
 }
@@ -208,7 +220,7 @@ static void fill(void)
         it.pszText = s_mods[i].name;
         it.lParam = i;
         ListView_InsertItem(s_list, &it);
-        ListView_SetItemText(s_list, i, 1, s_mods[i].left_out ? L"superstar - NOT IN GAME (over the 72 limit)" : s_mods[i].type);
+        ListView_SetItemText(s_list, i, 1, s_mods[i].left_out ? s_over_label : s_mods[i].type);
         ListView_SetItemText(s_list, i, 2, s_mods[i].version);
         ListView_SetItemText(s_list, i, 3, s_mods[i].author);
         swprintf_s(size, 32, L"%.1f MB", s_mods[i].bytes / 1048576.0);
@@ -224,8 +236,8 @@ static void fill(void)
         else if (!s_nmods) status(maker_present() ? L"No mods yet. + adds a .svrmod file; Open Mod Maker makes one."
                                                   : L"No mods yet. + adds a .svrmod file.");
         else if (s_stars_out) {
-            swprintf_s(t, 160, L"%d of %d superstar mods fit - %d aren't in the game (72 is the limit). Switch some "
-                               L"off to choose which play.", s_stars_on - s_stars_out, s_stars_on, s_stars_out);
+            swprintf_s(t, 160, L"%d of %d superstar mods fit - %d aren't in the game (%d is the limit). Switch some "
+                               L"off to choose which play.", s_stars_on - s_stars_out, s_stars_on, s_stars_out, s_star_ids);
             status(t);
         } else {
             swprintf_s(t, 160, L"%d mod%s. They load the next time the game starts; your Game Files are never "
@@ -632,7 +644,7 @@ place:
                                                          L"12 pictures."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
-                                                   L"select (up to 72 superstar mods)."
+                                                   L"select (up to 137 superstar mods)."
                                                  : L"Installed \"%s\". It is on the arena select pages after the "
                                                    L"game's own arenas.",
                m.name[0] ? m.name : m.id);
@@ -768,7 +780,7 @@ int mods_command(int id, int code)
 
 /* A background's new name into its manifest.txt (name=), the other lines kept. */
 /* Tests: prints the superstar mods as the Mods list shows them (left out =
-   over the 72 ids), and the status line's counts. */
+   over the game's ids), and the status line's counts. */
 int mods_print_superstars(const WCHAR *game)
 {
     int i;
@@ -862,12 +874,12 @@ int mods_notify(const NMHDR *nm)
                     int k;
                     for (k = 0; k < s_nmods; k++)
                         if (!_wcsicmp(s_mods[k].type, L"superstar"))
-                            ListView_SetItemText(s_list, k, 1, s_mods[k].left_out ? L"superstar - NOT IN GAME (over the 72 limit)" : s_mods[k].type);
+                            ListView_SetItemText(s_list, k, 1, s_mods[k].left_out ? s_over_label : s_mods[k].type);
                     if (s_stars_out)
-                        swprintf_s(t, 160, L"%d of %d superstar mods fit - %d aren't in the game (72 is the limit). "
-                                           L"Switch some off to choose which play.", s_stars_on - s_stars_out, s_stars_on, s_stars_out);
+                        swprintf_s(t, 160, L"%d of %d superstar mods fit - %d aren't in the game (%d is the limit). "
+                                           L"Switch some off to choose which play.", s_stars_on - s_stars_out, s_stars_on, s_stars_out, s_star_ids);
                     else
-                        swprintf_s(t, 160, L"All %d superstar mods fit (72 is the limit). They load the next time the game starts.", s_stars_on);
+                        swprintf_s(t, 160, L"All %d superstar mods fit (%d is the limit). They load the next time the game starts.", s_stars_on, s_star_ids);
                     status(t);
                 }
             }

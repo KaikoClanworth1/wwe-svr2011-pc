@@ -7165,7 +7165,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return ok ? 0 : 1;
     }
     /* Tests: --mods-superstars <game folder> lists the superstar mods, those
-       over the 72-id limit marked, as the Mods tab does. */
+       over the game's id limit marked, as the Mods tab does. */
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--mods-superstars")) {
         console_setup();
         mods_print_superstars(argv[2]);

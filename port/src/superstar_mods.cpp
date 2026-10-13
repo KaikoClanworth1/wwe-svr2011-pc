@@ -1,4 +1,4 @@
-// Superstar mods (arenas branch): up to 72 new playable characters from
+// Superstar mods (arenas branch): up to 137 new playable characters from
 // <game>/Mods/Superstars/<id>/ (manifest.txt: name=, short=, base=<character
 // id>, song=, movie=; ch.pac: a character model pac; a "disabled" file turns
 // one off). docs/SUPERSTAR_MODS.md has the whole story.
@@ -63,7 +63,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// The ids mods take (72): disc ids whose roster record is a blank placeholder
+// The ids mods take (137): disc ids whose roster record is a blank placeholder
 // ("0", loaded from CHAR/DAT, not selectable) with no model, select render,
 // entrance or match data anywhere in the game's pacs (61 of them; the same
 // DAT / PRO entries in the disc's and the DLCs' chEtc), then the free DLC
@@ -71,14 +71,25 @@ namespace {
 // slot (the game indexes 242 ids, 0-321). (Disc ids first: a DLC slot's
 // placeholder profile changes with the DLC mounted - IsBlank / RecordBlanks.)
 // The 22 after 227 were added later (50 -> 72 slots); a mod keeps its id (slots.txt).
-// (65 more indexed ids are "absent" - present flag 0x82DB3AE0 + id off - and
-// could be used if that flag were set: not done.)
+// Then 65 ids the game indexes but keeps "absent" (present flag 0x82DB3AE0 +
+// id off, read only by sub_828B7078: the CHAR/DAT and CHAR/PRO loaders skip
+// them, the roster getters give none): the same blank "0" placeholder records
+// and profiles as the others, no model, render or titantron (108 and 109 have
+// a model pac left: not used). A mod on one is made present (the hook on
+// sub_828B7078 below); unused ones stay absent. 72 -> 137, the new ids after
+// the old so existing mods and saves keep theirs.
 constexpr uint32_t kPool[] = {111, 114, 121, 127, 128, 129, 130, 136, 141, 148, 149, 151, 152,
                               154, 155, 157, 162, 163, 167, 168, 172, 173, 181, 185, 189, 200,
                               202, 203, 204, 206, 207, 209, 213, 214, 220, 221, 223, 225, 227,
                               228, 229, 230, 232, 233, 246, 247, 252, 258, 260, 266, 269, 270,
                               273, 280, 285, 286, 302, 303, 304, 307, 320,
-                              59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69};
+                              59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69,
+                              113, 116, 119, 120, 124, 133, 134, 138, 140, 142, 144, 146, 156,
+                              159, 170, 171, 180, 183, 184, 193, 194, 196, 197, 198, 199, 210,
+                              211, 212, 215, 216, 217, 222, 226, 235, 236, 237, 238, 239, 240,
+                              241, 242, 243, 244, 245, 248, 249, 250, 253, 254, 259, 264, 298,
+                              300, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319};
+static_assert(std::size(kPool) == 137);
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
 constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
 constexpr uint32_t kSelectTile = 226;            // u16: its tile in the select grid's portrait table
@@ -447,6 +458,10 @@ void LoadMods() {
   std::error_code ec;
   const fs::path dir = g_game / "Mods" / "Superstars";
   if (!fs::is_directory(dir, ec)) return;
+  if (FILE* t = std::fopen((dir / "limit.txt").string().c_str(), "wb")) {  // (the launcher's count: Mods tab)
+    std::fprintf(t, "%u\n", unsigned(std::size(kPool)));
+    std::fclose(t);
+  }
   std::vector<fs::path> folders;
   for (const auto& e : fs::directory_iterator(dir, ec))
     if (e.is_directory() && fs::exists(e.path() / "ch.pac", ec) && !fs::exists(e.path() / "disabled", ec))
@@ -810,6 +825,20 @@ void OwnSelectTile(uint8_t* sr, const uint8_t* br) {
 }
 
 void ApplyRecords(uint8_t* base) {
+  // Test aid: SVR2011_TEST_ID_TABLE=1 - once, the ids whose present flag
+  // (0x82DB3AE0 + id, sub_828B7078) is off, with their record index and name.
+  if (static bool told = false; !told && std::getenv("SVR2011_TEST_ID_TABLE")) {
+    told = true;
+    std::string absent;
+    int n = 0;
+    for (uint32_t id = 0; id < 322; ++id) {
+      if (base[0x82DB3AE0 + id] == 1) continue;
+      const uint32_t si = Rd16(base + kIdToIndex + id * 2);
+      absent += fmt::format(" {}:{}:{}", id, si, si < 512 ? base[kRecords + si * kRecordSize + kFullName] : 0);
+      ++n;
+    }
+    REXLOG_INFO("[svr2011] superstar mods: test - {} ids absent (id:index:name byte){}", n, absent);
+  }
   for (uint32_t id : kPool) {
     if (ModOf(id)) continue;
     const uint32_t si = Rd16(base + kIdToIndex + id * 2);
@@ -1715,6 +1744,19 @@ REX_HOOK_RAW(sub_828C1288) {
 // 111-149 shared real superstars' entries ("Universe with the SvR 2010 mods
 // crashes", 2.0.4/2.0.5). Mods stay out of Universe: not eligible, no place,
 // no pair (sub_825B7B40); every caller handles "none" (-1 / 0).
+// "Is this id present" (sub_828B7078(id): the flag 0x82DB3AE0 + id, read by
+// the CHAR/DAT and CHAR/PRO loaders and the roster getters): a mod's id is,
+// so the 65 ids the game keeps absent load their placeholder record and
+// profile and show like the other mod ids when a mod takes one.
+REX_EXTERN(__imp__sub_828B7078);
+REX_HOOK_RAW(sub_828B7078) {
+  if (ctx.r3.u32 < 322 && ModOf(ctx.r3.u32)) {
+    ctx.r3.u64 = 1;
+    return;
+  }
+  __imp__sub_828B7078(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_825B75A8);
 REX_HOOK_RAW(sub_825B75A8) {  // (id, need owned) -> in Universe
   if (ModOf(ctx.r3.u32)) {

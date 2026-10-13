@@ -53,7 +53,7 @@ final class ModsPage {
         LinearLayout c = a_.column();
         TextView about = a_.text("Custom arenas and superstars made with the SvR2011 Mod Maker on the PC. Arenas are "
             + "on the arena select pages after the game's own arenas (move right past the last arena); superstars are "
-            + "under the M tile of the character select (up to 72). Changes apply the next time the game starts.",
+            + "under the M tile of the character select (up to " + superstarLimit() + "). Changes apply the next time the game starts.",
             14, LauncherActivity.kDim);
         about.setPadding(a_.dp(4), a_.dp(6), a_.dp(4), a_.dp(4));
         c.addView(about);
@@ -121,7 +121,7 @@ final class ModsPage {
             int on = 0;
             if (stars != null) for (File f : stars) if (!new File(f, "disabled").exists()) on++;
             TextView over = a_.text((on - leftOut.size()) + " of " + on + " superstar mods fit - " + leftOut.size()
-                + " aren't in the game (72 is the limit). Switch some off to choose which play.", 15, LauncherActivity.kRed);
+                + " aren't in the game (" + superstarLimit() + " is the limit). Switch some off to choose which play.", 15, LauncherActivity.kRed);
             over.setPadding(0, a_.dp(8), 0, a_.dp(8));
             installed_.addView(over);
         }
@@ -134,7 +134,7 @@ final class ModsPage {
             boolean backPack = d.getParentFile().getName().equals("Backstage");
             boolean matchType = d.getParentFile().getName().equals("MatchTypes");
             boolean pic = d.getParentFile().getName().equals("Backgrounds");
-            String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the 72 limit. " : "")
+            String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the " + superstarLimit() + " limit. " : "")
                 + (pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
@@ -152,7 +152,7 @@ final class ModsPage {
                     if (checked) off.delete();
                     else new FileOutputStream(off).close();
                     a_.status(name + (checked ? " is on." : " is off.") + " (from the next game start)");
-                    if (star) installed_.post(this::refresh);  // (which superstar mods fit: 72 ids)
+                    if (star) installed_.post(this::refresh);  // (which superstar mods fit)
                 } catch (IOException e) {
                     a_.status("Could not change " + name + ": " + e.getMessage());
                 }
@@ -214,7 +214,23 @@ final class ModsPage {
         }
     }
 
-    // The game has 72 ids for superstar mods (src/superstar_mods.cpp), kept per
+    // The game's number of superstar mod ids: it writes it to
+    // Mods/Superstars/limit.txt at each start; before the first start (a fresh
+    // install), the same number as in this build.
+    static final int SUPERSTAR_IDS = 137;
+    static int superstarLimit() {
+        File f = new File(superstarsFolder(), "limit.txt");
+        if (f.isFile()) {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
+                int n = Integer.parseInt(r.readLine().trim());
+                if (n > 0 && n < 1000) return n;
+            } catch (IOException | NumberFormatException | NullPointerException ignored) {
+            }
+        }
+        return SUPERSTAR_IDS;
+    }
+
+    // The game has its ids for superstar mods (src/superstar_mods.cpp), kept per
     // folder in Mods/Superstars/slots.txt. As the game does: a mod that's on
     // and holds an id keeps it; the others wait, in folder order, for the ids
     // left (those of mods switched off or gone included). -> the waiting ones
@@ -241,7 +257,7 @@ final class ModsPage {
             else waiting.add(f.getName());
         }
         java.util.Collections.sort(waiting);
-        for (int i = 72 - holders; i < waiting.size(); i++) if (i >= 0) out.add(waiting.get(i));
+        for (int i = superstarLimit() - holders; i < waiting.size(); i++) if (i >= 0) out.add(waiting.get(i));
         return out;
     }
 
