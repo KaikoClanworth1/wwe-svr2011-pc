@@ -34,6 +34,7 @@ set(SVR2011_SOURCES
     src/online_files.cpp
     src/online_cpu.cpp
     src/online_cas.cpp
+    src/online_mods.cpp
     src/online_overlay.cpp
     src/leaderboards.cpp
     src/menu_hooks.cpp

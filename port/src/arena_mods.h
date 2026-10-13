@@ -33,6 +33,12 @@ void SetArenaDefault(int arena, const std::string& relative_file);
 // A match is loading (set-up to its people placed): a custom arena's loading
 // pictures are swapped only then.
 void SetMatchLoading(bool loading);
+// Online (online_mods.cpp): the custom arena this game's next match plays
+// (the arena select's pick: its folder in Mods/Arenas and the tile it plays
+// on; "" when a stock arena), and another game's pick played here too (on
+// that tile; "" back to none) - false when it isn't installed here.
+std::string ArenaModInUse(int* tile);
+bool UseArenaMod(const std::string& folder, int tile);
 
 // The arena number a match in that arena plays as (RedirectArena: the stock
 // practice ring on another tile plays as 29); the arena itself otherwise.

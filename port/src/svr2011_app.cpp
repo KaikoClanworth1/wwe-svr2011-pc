@@ -78,6 +78,7 @@
 #include "online_overlay.h"
 #include "startup_pump.h"
 #include "leaderboards.h"
+#include "online_mods.h"
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
@@ -603,6 +604,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallOnlineCas(g_saves);
   // ... and the online leaderboards (leaderboards.h)
   svr2011::InstallLeaderboards(runtime()->memory(), runtime()->kernel_state());
+  svr2011::InstallOnlineMods(runtime()->memory());  // (superstar / arena mods in online lobbies)
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).

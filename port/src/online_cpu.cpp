@@ -44,6 +44,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "online.h"
+#include "online_mods.h"
 #include "online_overlay.h"
 #include "online_rules.h"
 
@@ -245,6 +246,7 @@ REX_HOOK_RAW(sub_824E6510) {
   if (screen && L) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
     g_lobby_state = state, g_lobby_cursor = j, g_lobby_addr = L, g_lobby_base = base;  // (OnlineLobbyView: online_rules.cpp's covers)
+    svr2011::OnlineModsFrame(ctx, base);
     g_lobby_seen = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now().time_since_epoch()).count();
     static uint32_t last_state = 0xFFFFFFFF;
@@ -321,6 +323,7 @@ REX_HOOK_RAW(sub_828AC668) {
   const int cpus = L && Rd32(base + L + 24) >= 2 ? CpuCount(base, L) : 0;
   if (!cpus) {
     __imp__sub_828AC668(ctx, base);
+    if (ctx.r3.u32 && !svr2011::OnlineModsMayStart(base, L)) ctx.r3.u64 = 0;  // (online_mods.h)
     return;
   }
   const uint32_t joined = Rd32(base + L + 24);
@@ -328,6 +331,7 @@ REX_HOOK_RAW(sub_828AC668) {
   const uint32_t stage = ctx.r4.u32;
   __imp__sub_828AC668(ctx, base);
   Wr32(base + L + 24, joined);
+  if (ctx.r3.u32 && !svr2011::OnlineModsMayStart(base, L)) ctx.r3.u64 = 0;  // (online_mods.h)
   if (LogOn()) {
     static uint32_t last = 99;
     if (ctx.r3.u32 != last || stage != 0) {
@@ -575,6 +579,11 @@ bool EditMessage(uint8_t* base, uint32_t L, uint32_t msg) {
 REX_EXTERN(__imp__sub_828AE250);
 REX_HOOK_RAW(sub_828AE250) {
   const uint32_t L = ctx.r3.u32;
+  // (a mod superstar: in this game's numbering, refused if someone lacks it - online_mods.h)
+  svr2011::OnlineModsPick(ctx, base, ctx.r4.u32);
+  struct Done {
+    ~Done() { svr2011::OnlineModsPickDone(); }
+  } done;
   if (!EditMessage(base, L, ctx.r4.u32)) {
     __imp__sub_828AE250(ctx, base);
     return;
@@ -592,6 +601,7 @@ REX_HOOK_RAW(sub_828AE250) {
 
 REX_EXTERN(__imp__sub_828AE378);
 REX_HOOK_RAW(sub_828AE378) {
+  svr2011::OnlineModsBlockFrom(ctx, base, ctx.r4.u32);  // (online_mods.h: the sender's numbering)
   if (!EditMessage(base, ctx.r3.u32, ctx.r4.u32)) {
     __imp__sub_828AE378(ctx, base);
     return;
@@ -621,6 +631,7 @@ REX_HOOK_RAW(sub_828A6008) {
 REX_EXTERN(__imp__sub_828A6078);
 REX_HOOK_RAW(sub_828A6078) {
   const uint32_t L = ctx.r3.u32, j = ctx.r4.u32;
+  svr2011::OnlineModsBlockStore(base, ctx.r5.u32);  // (online_mods.h: in this game's numbering)
   __imp__sub_828A6078(ctx, base);
   if (g_edit_msg && int(j) == g_edit) Wr32(Record(base, L, j), kCpuState);
 }
