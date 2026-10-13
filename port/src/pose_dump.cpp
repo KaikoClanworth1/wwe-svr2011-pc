@@ -2,11 +2,14 @@
 // Mod Maker's animation viewer to be checked against (Animations rework,
 // phase B).
 //
-// SVR2011_TEST_POSE_DUMP=<motion>[,<motion>...]: while a fighter plays one of
-// those motions (fighter +212), every IK solve (sub_823A4DD8, the hook in
-// small_rig.cpp) writes one line to SVR2011_TEST_POSE_DUMP_FILE (default
-// pose_dump.txt in the working folder):
-//   F <match frame> P <person> M <motion> S <pass> A <fighter pos +288> E <fighter Euler +272>
+// SVR2011_TEST_POSE_DUMP=<motion>[,<motion>...]: while a character plays one
+// of those motions - its newest motion player (ch+3248 + 832 * ch[3232]: id
+// +598 u16, bit 15 mirrored; fighter +212 is only a request) - every IK solve
+// (sub_823A4DD8, the hook in small_rig.cpp) writes one line to
+// SVR2011_TEST_POSE_DUMP_FILE (default pose_dump.txt in the working folder):
+//   F <match frame> P <person> M <motion> S <pass> Rq <fighter +212>
+//   Q <players sampled (weight >= 0.001), the newest first: id x y mirrored time weight ...>
+//   A <fighter pos +288> E <fighter Euler +272>
 //   R <pose root +1760+64> O <origin Euler +1760+112> <origin pos +1760+128> Y <extra yaw +1760+472>
 //   B <33 parts: the local matrix each part pointer (ch+1336+4i) holds - 3 rotation rows and the
 //      translation row, 12 floats, row-vector form; "-" for none>
@@ -24,6 +27,7 @@
 #include <string>
 #include <thread>
 
+#include <rex/logging.h>
 #include <rex/ppc.h>
 
 namespace svr2011 {
@@ -39,6 +43,9 @@ float RdF(const uint8_t* p) {
 bool Pointer(uint32_t a) { return a >= 0x40000000 && a < 0xC0000000 && !(a & 3); }
 
 constexpr uint32_t kPose = 1760, kParts = 1336, kMatchFrames = 0x82E3CD0C;
+constexpr uint32_t kPlayers = 3248, kPlayerSize = 832, kNewest = 3232;  // (motion players; the newest one's index)
+
+uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
 
 struct Config {
   bool on = false;
@@ -80,6 +87,9 @@ void Flush(bool force) {
     if (FILE* f = std::fopen(file.c_str(), "ab")) {
       std::fwrite(out.data(), 1, out.size(), f);
       std::fclose(f);
+      REXLOG_INFO("[svr2011] pose dump: {} bytes written to {}", out.size(), file);
+    } else {
+      REXLOG_INFO("[svr2011] pose dump: can't open {}", file);
     }
   }).detach();
 }
@@ -98,25 +108,89 @@ void Vec(std::string& s, const uint8_t* p, int n) {
 void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
   const Config& c = Cfg();
   if (!c.on || !Pointer(ch)) return;
+  static bool said = false;
+  if (!said) {
+    said = true;
+    REXLOG_INFO("[svr2011] pose dump: on, {} motion(s), into {}", c.motions.size(), c.file);
+  }
   // the fighter: the character node's 3rd parent (+16), its +32 (as small_rig.cpp)
   uint32_t n = ch;
   for (int i = 0; i < 3 && Pointer(n); ++i) n = Rd32(base + n + 16);
-  if (!Pointer(n)) return;
+  static int misses = 0;
+  if (!Pointer(n)) {
+    if (misses++ < 5) REXLOG_INFO("[svr2011] pose dump: ch {:08X} - no 3rd parent", ch);
+    return;
+  }
   const uint32_t fighter = Rd32(base + n + 32);
-  if (!Pointer(fighter) || std::memcmp(base + fighter + 4, "CHAR", 4)) return;
-  const uint32_t motion = Rd32(base + fighter + 212), person = Rd32(base + fighter + 1156);
+  if (!Pointer(fighter) || std::memcmp(base + fighter + 4, "CHAR", 4)) {
+    if (misses++ < 5) REXLOG_INFO("[svr2011] pose dump: ch {:08X} - node {:08X} +32 {:08X} isn't a CHAR", ch, n, fighter);
+    return;
+  }
+  uint32_t newest = Rd32(base + ch + kNewest);
+  const uint32_t person = Rd32(base + fighter + 1156);
+  static int notes = 0, range_notes = 0;
+  if (newest >= 6) {  // (-1 in matches: the sampled player with the most weight)
+    float best = 0.001f;
+    for (uint32_t i = 0; i < 6; ++i)
+      if (const float w = RdF(base + ch + kPlayers + kPlayerSize * i + 528); w >= best) best = w, newest = i;
+    if (newest >= 6) {
+      if (range_notes++ < 4) {
+        std::string raw;
+        for (uint32_t i = 0; i < 6; ++i) {
+          const uint8_t* pl = base + ch + kPlayers + kPlayerSize * i;
+          char t[48];
+          std::snprintf(t, sizeof t, " [%u: id %u w %g]", i, Rd16(pl + 598), RdF(pl + 528));
+          raw += t;
+        }
+        REXLOG_INFO("[svr2011] pose dump: person {} ch {:08X} - no player sampled (newest index {}):{}", person, ch, Rd32(base + ch + kNewest), raw);
+      }
+      return;
+    }
+  }
+  const uint8_t* player = base + ch + kPlayers + kPlayerSize * newest;
+  const uint32_t motion = Rd16(player + 598) & 0x7FFF;
+  {  // (what the players hold, each time it changes - so a wrong field shows)
+    static uint32_t seen[16] = {};
+    const uint32_t key = motion << 8 | player[600];
+    if (person < 16 && seen[person] != key && notes < 200) {
+      seen[person] = key, ++notes;
+      std::string all;
+      for (uint32_t i = 0; i < 6; ++i) {
+        const uint8_t* pl = base + ch + kPlayers + kPlayerSize * i;
+        char t[64];
+        std::snprintf(t, sizeof t, " [%u: %u x%u y%u t%.1f w%.2f]", i, Rd16(pl + 598), pl[600], pl[601], RdF(pl + 584), RdF(pl + 528));
+        all += t;
+      }
+      REXLOG_INFO("[svr2011] pose dump: person {} newest {} plays {} (request {}):{}", person, newest, motion, Rd32(base + fighter + 212), all);
+    }
+  }
   static uint32_t playing[16] = {};
   const uint32_t pi = person < 16 ? person : 15;
   if (!c.motions.count(motion)) {
-    if (playing[pi]) playing[pi] = 0, Flush(true);  // (that motion ended: written out)
+    if (playing[pi]) {
+      REXLOG_INFO("[svr2011] pose dump: person {} motion {} ended", person, playing[pi]);
+      playing[pi] = 0, Flush(true);  // (that motion ended: written out)
+    }
     return;
   }
+  if (playing[pi] != motion) REXLOG_INFO("[svr2011] pose dump: person {} motion {} (ch {:08X}, fighter {:08X})", person, motion, ch, fighter);
   playing[pi] = motion;
   const uint8_t* P = base + ch + kPose;
   std::string s;
   char b[96];
-  std::snprintf(b, sizeof b, "F %u P %u M %u S %u A", Rd32(base + kMatchFrames), person, motion, pass);
+  std::snprintf(b, sizeof b, "F %u P %u M %u S %u Rq %u Q", Rd32(base + kMatchFrames), person, motion, pass,
+                Rd32(base + fighter + 212));
   s += b;
+  for (uint32_t k = 0; k < 6; ++k) {  // the newest first, then the others still blended in
+    const uint32_t i = (newest + k) % 6;
+    const uint8_t* pl = base + ch + kPlayers + kPlayerSize * i;
+    const float w = RdF(pl + 528);
+    if (k && !(w >= 0.001f)) continue;
+    const uint16_t id = Rd16(pl + 598);
+    std::snprintf(b, sizeof b, " %u %u %u %u %.2f %.3f", id & 0x7FFF, pl[600], pl[601], id >> 15, RdF(pl + 584), w);
+    s += b;
+  }
+  s += " A";
   Vec(s, base + fighter + 288, 3);
   s += " E";
   Vec(s, base + fighter + 272, 3);
