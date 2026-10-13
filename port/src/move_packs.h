@@ -31,6 +31,20 @@ const std::string& PacListFolder();
 // the records are loaded.
 int MoveUsable(uint16_t id);
 
+// Is `id` one of the packs' own moves (a waze / wazename / wazecopy line names it)? CREATE A MOVE-SET
+// shows those as "MOD: <name>" rows at the end of its lists (cam_mod_moves.cpp).
+bool PackMove(uint16_t id);
+
+// The game move a slot of `category` (0-127) falls back to in a match when its own has no record:
+// computed at each MOVS/WAZE load (0 = none / not loaded).
+uint16_t CategoryDefaultMove(int category);
+
+// Has a match's move `id` nothing to play: a move a pack gave earlier (its id kept in
+// Mods\PacOverlay\pack_moves.txt) that no pack gives now and the stock game can't play (no stock record with
+// category bits, no stock EXH data). Stock moves are never "missing" (stock movesets name moves without
+// records, bits or EXH that play fine).
+bool MoveMissing(uint16_t id);
+
 // The entrances the move packs add (pacentry EVP? <n>, n < 10000), for CREATE AN ENTRANCE's MODS
 // rows (cae_mod_motions.cpp): label = the superstar mod's name, else the script's own name and the
 // game it was converted from; parts: bit k set when CAE part 10000 + 1000k + n is in the pack too.
