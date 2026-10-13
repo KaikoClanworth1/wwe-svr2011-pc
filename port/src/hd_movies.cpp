@@ -25,7 +25,9 @@
 // scales to the size and gives NV12) on a thread per open movie, a frame
 // ahead. Where it can't decode (no H.264: a Windows "N" edition, Proton on
 // the Steam Deck) RegisterHdMovie says no and the fallback .bik plays.
-// Android: not yet (the fallback .bik).
+// Android: the NDK's MediaExtractor + MediaCodec into an image reader (the
+// phone's own decoder), scaled to the frame size on the movie's thread; no
+// decoder for it on the phone: the fallback .bik.
 //
 // Test aid: SVR2011_TEST_HD_MOVIES=1 logs the decoders.
 
@@ -67,6 +69,14 @@ extern "C" {
 #include <initguid.h>  // (codecapi.h's GUIDs, defined here)
 #include <codecapi.h>
 using Microsoft::WRL::ComPtr;
+#elif defined(__ANDROID__)
+#include <fcntl.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#include <media/NdkImage.h>
+#include <media/NdkImageReader.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -146,6 +156,83 @@ bool WriteStub(const fs::path& out, int size, int frames) {
   if (!ok) fs::remove(part, ec);
   return ok;
 }
+
+// One open HD movie: the platform's thread (Run) decoding a frame ahead of
+// the game into a ring of three NV12 frames at w_ x h_; Write copies the one
+// due into Bink's planes.
+class DecoderBase {
+ public:
+  explicit DecoderBase(HdMovie movie) : movie_(std::move(movie)) {
+    w_ = uint32_t(movie_.size);
+    h_ = movie_.square ? w_ : w_ * 220 / 320;
+    h_ &= ~1u;
+  }
+  virtual ~DecoderBase() = default;
+
+  // Copies the frame for `seconds` (the newest at or before it; none yet:
+  // nothing) into Bink's planes: Y (pitch ypitch, the top h_ rows), cR / cB
+  // (half size). The strip below stays the stub's black.
+  void Write(double seconds, uint8_t* y, uint32_t ypitch, uint8_t* cr, uint8_t* cb, uint32_t cpitch) {
+    want_ = seconds;
+    std::lock_guard lock(mutex_);
+    const Frame* best = nullptr;
+    for (const Frame& f : frames_)
+      if (f.ready && f.time <= seconds + 0.5 / kFps && (!best || f.time > best->time)) best = &f;
+    if (!best) return;
+    for (uint32_t r = 0; r < h_; ++r) std::memcpy(y + size_t(r) * ypitch, best->nv12.data() + size_t(r) * w_, w_);
+    const uint8_t* uv = best->nv12.data() + size_t(w_) * h_;
+    for (uint32_t r = 0; r < h_ / 2; ++r) {
+      uint8_t* u = cb + size_t(r) * cpitch;
+      uint8_t* v = cr + size_t(r) * cpitch;
+      const uint8_t* s = uv + size_t(r) * w_;
+      for (uint32_t x = 0; x < w_ / 2; ++x) u[x] = s[2 * x], v[x] = s[2 * x + 1];
+    }
+  }
+
+ protected:
+  struct Frame {
+    std::vector<uint8_t> nv12;
+    double time = -1;
+    bool ready = false;
+  };
+
+  // (the subclass starts its thread when constructed and stops it in its
+  // destructor, while its own members still exist)
+  void Start() { thread_ = std::thread([this] { Run(); }); }
+  void Stop() {
+    stop_ = true;
+    if (thread_.joinable()) thread_.join();
+  }
+  virtual void Run() = 0;
+
+  // The game looped (it wants a time well before the last frame): true -
+  // the decoder starts again from the beginning.
+  bool Looped(double last) const { return last >= 0 && want_.load() + 1.0 < last; }
+  // Far enough ahead of the game (or at the end): wait.
+  bool Ahead(double last) const { return last >= 0 && last > want_.load() + 2.0 / kFps; }
+  void Clear() {
+    std::lock_guard lock(mutex_);
+    for (Frame& f : frames_) f.ready = false;
+  }
+  void Push(Frame&& f) {
+    std::lock_guard lock(mutex_);
+    // (the oldest of three goes)
+    auto oldest = std::min_element(frames_, frames_ + 3, [](const Frame& a, const Frame& b) {
+      return !a.ready ? true : !b.ready ? false : a.time < b.time;
+    });
+    *oldest = std::move(f);
+  }
+
+  HdMovie movie_;
+  uint32_t w_ = 0, h_ = 0;
+  std::atomic<bool> stop_{false};
+
+ private:
+  std::thread thread_;
+  std::atomic<double> want_{0.0};
+  std::mutex mutex_;
+  Frame frames_[3];
+};
 
 #if defined(_WIN32)
 
@@ -234,48 +321,14 @@ bool Probe(const fs::path& mp4, double* seconds, uint32_t* sw, uint32_t* sh) {
   return sample != nullptr;
 }
 
-// One open HD movie: a thread decoding a frame ahead of the game.
-class Decoder {
+// Windows: Media Foundation's source reader (GPU decode and scale where it can).
+class Decoder : public DecoderBase {
  public:
-  Decoder(HdMovie movie) : movie_(std::move(movie)) {
-    w_ = uint32_t(movie_.size);
-    h_ = movie_.square ? w_ : w_ * 220 / 320;
-    h_ &= ~1u;
-    thread_ = std::thread([this] { Run(); });
-  }
-  ~Decoder() {
-    stop_ = true;
-    if (thread_.joinable()) thread_.join();
-  }
-
-  // Copies the frame for `seconds` (the newest at or before it; none yet:
-  // nothing) into Bink's planes: Y (pitch ypitch, the top h_ rows), cR / cB
-  // (half size). The strip below stays the stub's black.
-  void Write(double seconds, uint8_t* y, uint32_t ypitch, uint8_t* cr, uint8_t* cb, uint32_t cpitch) {
-    want_ = seconds;
-    std::lock_guard lock(mutex_);
-    const Frame* best = nullptr;
-    for (const Frame& f : frames_)
-      if (f.ready && f.time <= seconds + 0.5 / kFps && (!best || f.time > best->time)) best = &f;
-    if (!best) return;
-    for (uint32_t r = 0; r < h_; ++r) std::memcpy(y + size_t(r) * ypitch, best->nv12.data() + size_t(r) * w_, w_);
-    const uint8_t* uv = best->nv12.data() + size_t(w_) * h_;
-    for (uint32_t r = 0; r < h_ / 2; ++r) {
-      uint8_t* u = cb + size_t(r) * cpitch;
-      uint8_t* v = cr + size_t(r) * cpitch;
-      const uint8_t* s = uv + size_t(r) * w_;
-      for (uint32_t x = 0; x < w_ / 2; ++x) u[x] = s[2 * x], v[x] = s[2 * x + 1];
-    }
-  }
+  explicit Decoder(HdMovie movie) : DecoderBase(std::move(movie)) { Start(); }
+  ~Decoder() override { Stop(); }
 
  private:
-  struct Frame {
-    std::vector<uint8_t> nv12;
-    double time = -1;
-    bool ready = false;
-  };
-
-  void Run() {
+  void Run() override {
     // (below the game's own threads: a frame late on the titantron is better
     // than a frame late in the match)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
@@ -310,9 +363,7 @@ class Decoder {
     double last = -1;
     bool ended = false;
     while (!stop_) {
-      // (a frame ahead of the game at most; the game looped: from the start)
-      const double want = want_.load();
-      if (last >= 0 && want + 1.0 < last) {
+      if (Looped(last)) {
         PROPVARIANT p;
         PropVariantInit(&p);
         p.vt = VT_I8;
@@ -320,10 +371,9 @@ class Decoder {
         reader->SetCurrentPosition(GUID_NULL, p);
         last = -1;
         ended = false;
-        std::lock_guard lock(mutex_);
-        for (Frame& f : frames_) f.ready = false;
+        Clear();
       }
-      if (ended || (last >= 0 && last > want + 2.0 / kFps)) {
+      if (ended || Ahead(last)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(4));
         continue;
       }
@@ -363,31 +413,202 @@ class Decoder {
       f.time = double(t) / 1e7;
       f.ready = true;
       last = f.time;
-      std::lock_guard lock(mutex_);
-      // (the oldest of three goes)
-      auto oldest = std::min_element(frames_, frames_ + 3, [](const Frame& a, const Frame& b) {
-        return !a.ready ? true : !b.ready ? false : a.time < b.time;
-      });
-      *oldest = std::move(f);
+      Push(std::move(f));
+    }
+  }
+};
+
+#elif defined(__ANDROID__)
+
+// Android: the NDK's MediaExtractor + MediaCodec into an image reader (the
+// phone's own decoder, its planes in whatever layout), scaled here to the
+// frame size.
+
+// The mp4's video track.
+struct Track {
+  int fd = -1;
+  AMediaExtractor* extractor = nullptr;
+  AMediaFormat* format = nullptr;
+  const char* mime = nullptr;
+  int32_t w = 0, h = 0;
+  int64_t duration = 0;  // (microseconds)
+  ~Track() {
+    if (format) AMediaFormat_delete(format);
+    if (extractor) AMediaExtractor_delete(extractor);
+    if (fd >= 0) close(fd);
+  }
+};
+
+bool OpenTrack(const fs::path& mp4, Track* t) {
+  t->fd = open(mp4.c_str(), O_RDONLY);
+  if (t->fd < 0) return false;
+  std::error_code ec;
+  const auto size = fs::file_size(mp4, ec);
+  t->extractor = AMediaExtractor_new();
+  if (!t->extractor || AMediaExtractor_setDataSourceFd(t->extractor, t->fd, 0, off64_t(size)) != AMEDIA_OK) return false;
+  for (size_t i = 0; i < AMediaExtractor_getTrackCount(t->extractor) && !t->format; ++i) {
+    AMediaFormat* f = AMediaExtractor_getTrackFormat(t->extractor, i);
+    const char* m = nullptr;
+    if (AMediaFormat_getString(f, AMEDIAFORMAT_KEY_MIME, &m) && m && std::strncmp(m, "video/", 6) == 0) {
+      t->format = f, t->mime = m;
+      AMediaExtractor_selectTrack(t->extractor, i);
+    } else {
+      AMediaFormat_delete(f);
+    }
+  }
+  if (!t->format) return false;
+  AMediaFormat_getInt32(t->format, AMEDIAFORMAT_KEY_WIDTH, &t->w);
+  AMediaFormat_getInt32(t->format, AMEDIAFORMAT_KEY_HEIGHT, &t->h);
+  AMediaFormat_getInt64(t->format, AMEDIAFORMAT_KEY_DURATION, &t->duration);
+  return t->w > 0 && t->h > 0;
+}
+
+// The mp4's length (s) and source size, and whether this phone has a decoder for it.
+bool Probe(const fs::path& mp4, double* seconds, uint32_t* sw, uint32_t* sh) {
+  Track t;
+  if (!OpenTrack(mp4, &t)) return false;
+  *seconds = double(t.duration) / 1e6;
+  *sw = uint32_t(t.w), *sh = uint32_t(t.h);
+  AMediaCodec* codec = AMediaCodec_createDecoderByType(t.mime);
+  if (!codec) return false;
+  AMediaCodec_delete(codec);
+  return true;
+}
+
+class Decoder : public DecoderBase {
+ public:
+  explicit Decoder(HdMovie movie) : DecoderBase(std::move(movie)) { Start(); }
+  ~Decoder() override { Stop(); }
+
+ private:
+  void Run() override {
+    setpriority(PRIO_PROCESS, 0, 10);  // (this thread: below the game's own)
+    Track t;
+    AImageReader* images = nullptr;
+    ANativeWindow* window = nullptr;
+    AMediaCodec* codec = nullptr;
+    bool ok = OpenTrack(movie_.mp4, &t) &&
+              AImageReader_new(t.w, t.h, AIMAGE_FORMAT_YUV_420_888, 4, &images) == AMEDIA_OK &&
+              AImageReader_getWindow(images, &window) == AMEDIA_OK;
+    if (ok) {
+      codec = AMediaCodec_createDecoderByType(t.mime);
+      ok = codec && AMediaCodec_configure(codec, t.format, window, nullptr, 0) == AMEDIA_OK &&
+           AMediaCodec_start(codec) == AMEDIA_OK;
+    }
+    if (!ok) {
+      REXLOG_WARN("[svr2011] hd movies: can't decode {}", movie_.mp4.string());
+    } else {
+      if (LogOn())
+        REXLOG_INFO("[svr2011] hd movies: decoding {} ({}x{}) at {}x{} (MediaCodec)", movie_.mp4.string(), t.w, t.h, w_, h_);
+      Decode(t, codec, images);
+      AMediaCodec_stop(codec);
+    }
+    if (codec) AMediaCodec_delete(codec);
+    if (images) AImageReader_delete(images);
+  }
+
+  void Decode(Track& t, AMediaCodec* codec, AImageReader* images) {
+    constexpr int64_t kWaitUs = 2000;
+    double last = -1;
+    bool input_done = false, ended = false;
+    while (!stop_) {
+      if (Looped(last)) {
+        AMediaExtractor_seekTo(t.extractor, 0, AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC);
+        AMediaCodec_flush(codec);
+        last = -1;
+        input_done = ended = false;
+        Clear();
+      }
+      if (ended || Ahead(last)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        continue;
+      }
+      if (!input_done) {
+        const ssize_t in = AMediaCodec_dequeueInputBuffer(codec, kWaitUs);
+        if (in >= 0) {
+          size_t size = 0;
+          uint8_t* data = AMediaCodec_getInputBuffer(codec, size_t(in), &size);
+          const ssize_t n = data ? AMediaExtractor_readSampleData(t.extractor, data, size) : -1;
+          if (n < 0) {
+            AMediaCodec_queueInputBuffer(codec, size_t(in), 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+            input_done = true;
+          } else {
+            AMediaCodec_queueInputBuffer(codec, size_t(in), 0, size_t(n), uint64_t(AMediaExtractor_getSampleTime(t.extractor)),
+                                         0);
+            AMediaExtractor_advance(t.extractor);
+          }
+        }
+      }
+      AMediaCodecBufferInfo info;
+      const ssize_t out = AMediaCodec_dequeueOutputBuffer(codec, &info, kWaitUs);
+      if (out < 0) continue;
+      const bool eos = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
+      const bool picture = info.size > 0;
+      AMediaCodec_releaseOutputBuffer(codec, size_t(out), picture);  // (to the image reader)
+      if (eos) ended = true;  // (the end: the last frame stays until the game loops or closes)
+      if (!picture) continue;
+      AImage* image = nullptr;
+      for (int k = 0; k < 200; ++k) {  // (the picture arrives a moment later)
+        if (AImageReader_acquireNextImage(images, &image) == AMEDIA_OK) break;
+        image = nullptr;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      if (!image) continue;
+      Frame f;
+      f.nv12.resize(size_t(w_) * h_ * 3 / 2);
+      const bool scaled = Scale(image, f.nv12.data());
+      AImage_delete(image);
+      if (!scaled) continue;
+      f.time = double(info.presentationTimeUs) / 1e6;
+      f.ready = true;
+      last = f.time;
+      Push(std::move(f));
     }
   }
 
-  HdMovie movie_;
-  uint32_t w_ = 0, h_ = 0;
-  std::thread thread_;
-  std::atomic<bool> stop_{false};
-  std::atomic<double> want_{0.0};
-  std::mutex mutex_;
-  Frame frames_[3];
+  // The decoder's picture (any 4:2:0 plane layout) to the frame's NV12 at
+  // w_ x h_ (nearest pixel - the titantron's size is near the source's).
+  bool Scale(AImage* image, uint8_t* nv12) {
+    int32_t sw = 0, sh = 0;
+    AImage_getWidth(image, &sw);
+    AImage_getHeight(image, &sh);
+    uint8_t* plane[3] = {};
+    int len[3] = {}, row[3] = {}, pixel[3] = {1, 1, 1};
+    for (int p = 0; p < 3; ++p) {
+      AImage_getPlaneData(image, p, &plane[p], &len[p]);
+      AImage_getPlaneRowStride(image, p, &row[p]);
+      AImage_getPlanePixelStride(image, p, &pixel[p]);
+    }
+    if (sw <= 0 || sh <= 0 || !plane[0] || !plane[1] || !plane[2]) return false;
+    for (uint32_t y = 0; y < h_; ++y) {
+      const uint8_t* src = plane[0] + size_t(int64_t(y) * sh / h_) * row[0];
+      uint8_t* dst = nv12 + size_t(y) * w_;
+      for (uint32_t x = 0; x < w_; ++x) dst[x] = src[size_t(int64_t(x) * sw / w_) * pixel[0]];
+    }
+    uint8_t* uv = nv12 + size_t(w_) * h_;
+    for (uint32_t y = 0; y < h_ / 2; ++y) {
+      const size_t sy = size_t(int64_t(y) * sh / h_);
+      const uint8_t* u = plane[1] + sy * row[1];
+      const uint8_t* v = plane[2] + sy * row[2];
+      uint8_t* dst = uv + size_t(y) * w_;
+      for (uint32_t x = 0; x < w_ / 2; ++x) {
+        const size_t sx = size_t(int64_t(x) * sw / w_);
+        dst[2 * x] = u[sx * pixel[1]], dst[2 * x + 1] = v[sx * pixel[2]];
+      }
+    }
+    return true;
+  }
 };
 
 #else
 
 bool Probe(const fs::path&, double*, uint32_t*, uint32_t*) { return false; }
-class Decoder {
+class Decoder : public DecoderBase {
  public:
-  explicit Decoder(HdMovie) {}
-  void Write(double, uint8_t*, uint32_t, uint8_t*, uint8_t*, uint32_t) {}
+  explicit Decoder(HdMovie movie) : DecoderBase(std::move(movie)) {}
+
+ private:
+  void Run() override {}
 };
 
 #endif
