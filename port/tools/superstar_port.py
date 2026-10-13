@@ -73,6 +73,7 @@ GAMES = [
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
     dict(id='wwe2k15', name='WWE 2K15', platform='x360', disc_hint='545408B6', status='ready'),
+    dict(id='wwe2k16', name='WWE 2K16', platform='x360', disc_hint='315A07D2', status='ready'),
 ]
 READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
 
@@ -949,6 +950,78 @@ class GameW2K15(GameW2K14):
         return self._ssf
 
 
+def epac20(raw):
+    """2K16+ model pacs: EPAC groups {4CC, u16 count field (entries * 4), u16 kind, u32 0} of 20-byte entries
+    {name[4], u32 sector, u32 size / 0x100, u32 size2 / 0x100, u32} -> [(type, [(name, data)])]"""
+    out, p = [], 0x800
+    while p < 0x4000 and raw[p:p + 4].strip(b'\0'):
+        typ, cnt = raw[p:p + 4], struct.unpack_from('<H', raw, p + 4)[0]
+        p += 12
+        ents = []
+        for _ in range(cnt // 4):
+            sec, sz = struct.unpack_from('<II', raw, p + 4)
+            ents.append((raw[p:p + 4], raw[0x4000 + sec * 0x800:0x4000 + sec * 0x800 + sz * 0x100]))
+            p += 20
+        out.append((typ, ents))
+    return out
+
+
+class GameW2K16(GameW2K15):
+    """WWE 2K16: chEtc / string.pac as 2K15 (xcompressed, 12-byte tables) but CHAR/DAT 216 B in records 0-309
+    with the superstar id u16 at +4 (ids up to 630) and 2K15's fields 4 bytes on (name string id +14, height
+    +26, weight class +30, gender +31); CHAR/PRO 1348 B, entrance block +588 = 4 x u32 (music id * 1000 +
+    variant, movie id * 100 + variant, entrance, alt). Model pacs: EPAC with 20-byte entries all named "0001"
+    (epac20), no kind in the name: an entry with 0x5208.. children is the entrance-gear model (2K14's kind 4,
+    left out), the rest are attires in file order (exact copies dropped); hair at 0x271a (w13_char takes it).
+    Renders menu/menuHD2.pac SFAG / SFCG (2K15's raw format; no full body). Sounds in lowercase pcks; their
+    Wwise banks are v113."""
+
+    year = 16
+    label = 'WWE 2K16'
+    suffix = '_2k16'
+    game_id = 'wwe2k16'
+    dat_name, dat_scale, dat_gender, dat_class, pro_entrance = 14, 26, 31, 30, 588
+    dat_size = 216
+    no_ratings = "2K16's ratings aren't mapped"
+
+    def __init__(self, src, svrmod=None):
+        GameW2K15.__init__(self, src, svrmod)
+        ids = {i: struct.unpack_from('<H', r, 4)[0] for i, r in self.raw_dat.items() if len(r) >= 6}
+        self.raw_dat = {ids[i]: r for i, r in self.raw_dat.items() if i in ids}
+        self.dat = {ids[i]: r for i, r in self.dat.items() if i in ids}
+        self.pro = {ids[i]: r for i, r in self.pro.items() if i in ids}
+
+    def theme_events(self, music, cid):
+        ev = ['Play_MUS_%04d_%02d_0_0' % (music // 1000, music % 1000)] if 1000 <= music < 1000000 else []
+        return ev + ['Play_MUS_%04d_00_0_0' % cid]
+
+    def music_pck(self):
+        return self.src.get('sound/game_sound_e_s.pck')
+
+    def stream_pck(self):
+        return self.src.get('sound/game_sound_m.pck')
+
+    def roster(self):
+        return [c for c in sorted(self.dat) if 100 <= c < 1000 and self.named(c) and self.has_chpac(c)
+                and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
+
+    def model_entries(self, raw):
+        out, seen = [], set()
+        for t, es in epac20(raw):
+            if t != b'EMD ':
+                continue
+            for n, b in es:
+                kids = dict(svrfmt.pach_read(ch_tool.unpack(b)))
+                if 0x5208 in kids or 0 not in kids:
+                    continue
+                key = ch_tool.unpack(kids[0])
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((b'%04d0402' % (len(out) + 1), b))
+        return out
+
+
 class _RawRenders(dict):
     """2K15 / 2K16 menuHD2 renders, made into DDS when read"""
 
@@ -979,8 +1052,11 @@ def model_w(g, cid, pac11, out, portrait):
     tmp = os.path.join(tempfile.gettempdir(), 'svr_w_ch%d.pac' % cid)
     left = []
     if getattr(g, 'max_attires', 0):   # (2K14: wrestler models only, the first four attires, as an EPK8)
-        ents = [(n, b) for t, es in g.MP.read_pac(raw) if t == b'EMD ' for n, b in es if n.endswith(b'2')]
-        ents.sort(key=lambda e: e[0])
+        if hasattr(g, 'model_entries'):
+            ents = g.model_entries(raw)
+        else:
+            ents = [(n, b) for t, es in g.MP.read_pac(raw) if t == b'EMD ' for n, b in es if n.endswith(b'2')]
+            ents.sort(key=lambda e: e[0])
         left = [n.decode('latin1') for n, _ in ents[g.max_attires:]]
         w13_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), [(b'EMD ', n, b) for n, b in ents[:g.max_attires]],
                             tmp)
@@ -1206,8 +1282,8 @@ def open_game(game, src, svrmod=None):
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
         return g
-    if game in ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15'):
-        g = {'wwe12': GameW, 'wwe13': GameW13, 'wwe2k14': GameW2K14, 'wwe2k15': GameW2K15}[game]
+    if game in ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16'):
+        g = {'wwe12': GameW, 'wwe13': GameW13, 'wwe2k14': GameW2K14, 'wwe2k15': GameW2K15, 'wwe2k16': GameW2K16}[game]
         g = g(src) if game == 'wwe12' else g(src, svrmod)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFA'}
         return g
@@ -1250,7 +1326,7 @@ def cmd_convert(a):
         if o.get(k) is not None:
             o[k] = int(o[k])
     fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW, 'wwe13': buildW,
-          'wwe2k14': buildW, 'wwe2k15': buildW}[a['game']]
+          'wwe2k14': buildW, 'wwe2k15': buildW, 'wwe2k16': buildW}[a['game']]
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
     progress(100, 'done')

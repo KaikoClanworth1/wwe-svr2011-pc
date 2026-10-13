@@ -310,6 +310,9 @@ class Conv:
 
     def attire(self, kids13):
         """WWE '13 EMD children -> 2011 EMD children."""
+        if 0x271a in kids13 and 0x2710 not in kids13:   # (2K16+ keep the hair at 0x271a)
+            kids13 = dict(kids13)
+            kids13[0x2710] = kids13[0x271a]
         body13 = read13(kids13[0])
         nodes, nmap, origin = self.nodes_for(body13)
         SKIN = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
