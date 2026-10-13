@@ -191,6 +191,39 @@ bool RenameModel(svrfmt::Bytes& d, uint32_t to, int only = -1, int as = 0, uint3
   return n > 0;
 }
 
+// The other kinds of model a character's pac has for its attire 1 (kind = the
+// entry name's last digit; 2 is the wrestler): the entrance gear superstars -
+// Undertaker, CM Punk, John Cena, Shawn Michaels, John Morrison - have a kind 4
+// ("%06d04": the coat / hat / shirt they come out in) -> bit mask of kinds.
+// A NEW attire for one of them (attire 3 for Cena or Undertaker, through a
+// guest pac or the pac overlay alike, with or without a kind 4 entry beside it)
+// never finished loading the match: the loading screen waits for ever. Their
+// third attires in the DLC (CM Punk's 00013122) come with the DLC's own
+// chEtc.pac - per-attire character data a mod doesn't give yet. Until then
+// they take replaced attires only (LoadAttireMods, the launchers' rule).
+uint32_t ExtraKinds(const fs::path& pac, uint32_t id) {
+  uint32_t kinds = 0;
+  FILE* f = std::fopen(pac.string().c_str(), "rb");
+  if (!f) return 0;
+  svrfmt::Bytes d(0x4000);
+  const bool ok = std::fread(d.data(), 1, d.size(), f) == d.size();
+  std::fclose(f);
+  if (!ok || std::memcmp(d.data(), "EPK8", 4)) return 0;
+  char want[8];
+  std::snprintf(want, sizeof want, "%06u", id);
+  for (size_t p = 0x800; p + 12 <= 0x4000;) {
+    if (!std::memcmp(&d[p], "\0\0\0\0", 4)) break;
+    const bool emd = !std::memcmp(&d[p], "EMD ", 4);
+    const uint32_t entries = (uint32_t(d[p + 4]) | uint32_t(d[p + 5]) << 8) / 4;
+    p += 12;
+    for (uint32_t k = 0; k < entries && p + 16 <= 0x4000; ++k, p += 16)
+      if (emd && !std::memcmp(&d[p], want, 6) && d[p + 6] == '0' && d[p + 7] >= '0' && d[p + 7] <= '9' &&
+          d[p + 7] != '2')
+        kinds |= 1u << (d[p + 7] - '0');
+  }
+  return kinds;
+}
+
 // The base's select screen renders, renamed to the slot: an EPAC with
 // SSFA / SSFB / SSFC.
 // A mod's own select picture (render.dds 512 x 512 and render_small.dds
@@ -835,6 +868,7 @@ struct AttireMod {
 std::vector<AttireMod> g_attire_mods;
 std::unordered_map<uint32_t, uint32_t> g_attire_pairs;  // id -> guest 4 x {name string id, unlock}
 std::unordered_map<uint32_t, uint32_t> g_attire_own;    // id -> attires its own pac has (bit mask)
+std::set<uint32_t> g_attire_gear;                         // ids with entrance gear models (ExtraKinds): no new attires
 constexpr uint32_t kAttireModNameIds = 0xB400;           // string ids for attire mods' names
 
 const AttireMod* AttireModOf(uint32_t id, uint32_t attire) {
@@ -899,7 +933,10 @@ void LoadAttireMods() {
     }
     char stock[32];
     std::snprintf(stock, sizeof stock, "ch%03u.pac", p.a.id);
-    if (!g_attire_own.count(p.a.id)) g_attire_own[p.a.id] = AttireMask(g_game / "pac" / "ch" / stock, p.a.id);
+    if (!g_attire_own.count(p.a.id)) {
+      g_attire_own[p.a.id] = AttireMask(g_game / "pac" / "ch" / stock, p.a.id);
+      if (ExtraKinds(g_game / "pac" / "ch" / stock, p.a.id)) g_attire_gear.insert(p.a.id);
+    }
     pending.push_back(std::move(p));
   }
   // Two mods on one attire (the launcher moves the newer one to a free attire; this is the same rule for
@@ -945,6 +982,11 @@ void LoadAttireMods() {
       continue;
     }
     p.a.attire = uint32_t(p.asked - 1);
+    if (g_attire_gear.count(p.a.id) && !(g_attire_own[p.a.id] >> p.a.attire & 1)) {
+      REXLOG_WARN("[svr2011] attire mods: {}: superstar {} wears entrance gear - a new attire {} for them doesn't load "
+                  "yet (only their own attires can be replaced) - left out", p.a.folder, p.a.id, p.asked);
+      continue;
+    }
     if (const AttireMod* o = AttireModOf(p.a.id, p.a.attire)) {
       REXLOG_WARN("[svr2011] attire mods: {}: superstar {} attire {} is taken by {} (first folder A-Z keeps it) - it "
                   "takes a free attire", p.a.folder, p.a.id, p.asked, o->folder);
@@ -955,7 +997,7 @@ void LoadAttireMods() {
   }
   std::sort(later.begin(), later.end(), [](const Pending* x, const Pending* y) { return x->folder < y->folder; });
   for (Pending* p : later) {
-    uint32_t taken = g_attire_own[p->a.id];
+    uint32_t taken = g_attire_gear.count(p->a.id) ? 0xF : g_attire_own[p->a.id];  // (gear: no new attires)
     for (const auto& o : g_attire_mods)
       if (o.id == p->a.id) taken |= 1u << o.attire;
     p->a.attire = 4;
@@ -965,8 +1007,12 @@ void LoadAttireMods() {
         break;
       }
     if (p->a.attire >= 4) {
-      REXLOG_WARN("[svr2011] attire mods: {}: superstar {} has no free attire (4 at most) - left out (switch one off)",
-                  p->a.folder, p->a.id);
+      if (g_attire_gear.count(p->a.id))
+        REXLOG_WARN("[svr2011] attire mods: {}: superstar {} wears entrance gear - new attires for them don't load yet "
+                    "- left out (switch one off)", p->a.folder, p->a.id);
+      else
+        REXLOG_WARN("[svr2011] attire mods: {}: superstar {} has no free attire (4 at most) - left out (switch one off)",
+                    p->a.folder, p->a.id);
       continue;
     }
     if (p->asked)

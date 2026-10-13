@@ -331,8 +331,10 @@ static const WCHAR *roster_name(int id, WCHAR *buf, size_t n)
     return buf;
 }
 
-/* Attires 1-4 (bits 0-3) the superstar's own pac has. */
-static unsigned own_attires(const WCHAR *game, int id)
+/* Attires 1-4 (bits 0-3) the superstar's own pac has; *gear: it also has other model kinds for attire 1 (the
+   entrance gear superstars - Undertaker, CM Punk, Cena, Shawn Michaels, Morrison: kind 4). A new attire for
+   them doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds): only their own can be replaced. */
+static unsigned own_attires(const WCHAR *game, int id, int *gear)
 {
     WCHAR path[MAX_PATH];
     unsigned char d[0x4000];
@@ -341,6 +343,7 @@ static unsigned own_attires(const WCHAR *game, int id)
     size_t p;
     FILE *f = NULL;
     swprintf_s(path, MAX_PATH, L"%s\\pac\\ch\\ch%03d.pac", game, id);
+    *gear = 0;
     if (_wfopen_s(&f, path, L"rb") || !f) return 0;
     p = fread(d, 1, sizeof d, f);
     fclose(f);
@@ -354,8 +357,10 @@ static unsigned own_attires(const WCHAR *game, int id)
         entries = (d[p + 4] | d[p + 5] << 8) / 4;
         p += 12;
         for (k = 0; k < entries && p + 16 <= sizeof d; k++, p += 16)
-            if (emd && !memcmp(d + p, want, 6) && d[p + 6] >= '0' && d[p + 6] <= '3' && d[p + 7] == '2')
-                mask |= 1u << (d[p + 6] - '0');
+            if (emd && !memcmp(d + p, want, 6) && d[p + 6] >= '0' && d[p + 6] <= '3') {
+                if (d[p + 7] == '2') mask |= 1u << (d[p + 6] - '0');
+                else if (d[p + 6] == '0' && d[p + 7] >= '0' && d[p + 7] <= '9') *gear = 1;
+            }
     }
     return mask;
 }
@@ -445,10 +450,10 @@ int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     for (i = 0; i < n; i++) {
-        unsigned used;
-        int k, news = 0;
+        unsigned used, own;
+        int k, news = 0, gear = 0;
         if (mods[i].id < 0) continue;  /* (a superstar already done) */
-        used = own_attires(game, mods[i].id);
+        own = used = own_attires(game, mods[i].id, &gear);
         /* the attires asked for, the oldest mod on each keeping it */
         for (j = 0; j < n; j++) {
             AttireMod *a = &mods[j];
@@ -458,12 +463,22 @@ int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size
                 if (k != j && mods[k].id == a->id && mods[k].attire == a->attire && attire_older(&mods[k], a)) best = 0;
             if (best) used |= 1u << (a->attire - 1);
         }
+        if (gear) used = 0xF;  /* (no new attires for them: nothing free to move to) */
         for (j = 0; j < n; j++) {
             AttireMod *a = &mods[j], *keeper = NULL;
             WCHAR who[48], t[512];
             int to = 0;
             if (a->id != mods[i].id) continue;
             if (!a->attire) { news++; continue; }
+            if (gear && !(own >> (a->attire - 1) & 1)) {  /* (a new attire for a gear superstar: left out by the game) */
+                swprintf_s(t, 512, L"\"%s\" gives %s an attire %d, but %s wears entrance gear and new attires for them "
+                                   L"don't load in the game yet: the game leaves it out (replacing attire 1-%d works).\r\n",
+                           a->name, roster_name(a->id, who, 48), a->attire, roster_name(a->id, who, 48),
+                           own & 4 ? 3 : own & 2 ? 2 : 1);
+                if (report) wcsncat_s(report, report_n, t, _TRUNCATE);
+                said++;
+                continue;
+            }
             for (k = 0; k < n; k++)
                 if (k != j && mods[k].id == a->id && mods[k].attire == a->attire && attire_older(&mods[k], a))
                     if (!keeper || attire_older(&mods[k], keeper)) keeper = &mods[k];
@@ -475,7 +490,13 @@ int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size
                 swprintf_s(t, 512, L"\"%s\" and \"%s\" both use %s's attire %d: \"%s\" moved to attire %d.\r\n",
                            keeper->name, a->name, roster_name(a->id, who, 48), a->attire, a->name, to);
                 a->attire = to;
-            } else
+            } else if (gear)
+                swprintf_s(t, 512, L"\"%s\" and \"%s\" both use %s's attire %d. %s wears entrance gear, and new attires "
+                                   L"for them don't load in the game yet, so neither can move: switch one off, or the "
+                                   L"game leaves \"%s\" out.\r\n",
+                           keeper->name, a->name, roster_name(a->id, who, 48), a->attire, roster_name(a->id, who, 48),
+                           a->name);
+            else
                 swprintf_s(t, 512, L"\"%s\" and \"%s\" both use %s's attire %d and there is no free attire to "
                                    L"move one to (4 at most): switch one off, or the game leaves \"%s\" out.\r\n",
                            keeper->name, a->name, roster_name(a->id, who, 48), a->attire, a->name);
@@ -487,8 +508,11 @@ int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size
             if (!(used >> k & 1) && news) news--;
         if (news) {
             WCHAR who[48], t[256];
-            swprintf_s(t, 256, L"%s has no free attire for %d attire=new mod%s (4 at most): switch some off.\r\n",
-                       roster_name(mods[i].id, who, 48), news, news == 1 ? L"" : L"s");
+            swprintf_s(t, 256, gear ? L"%s wears entrance gear: new attires for them don't load in the game yet, so "
+                                      L"%d attire=new mod%s stay%s out: switch %s off.\r\n"
+                                    : L"%s has no free attire for %d attire=new mod%s (4 at most): switch some off.\r\n",
+                       roster_name(mods[i].id, who, 48), news, news == 1 ? L"" : L"s", news == 1 ? L"s" : L"",
+                       news == 1 ? L"it" : L"them");
             if (report) wcsncat_s(report, report_n, t, _TRUNCATE);
             said++;
         }

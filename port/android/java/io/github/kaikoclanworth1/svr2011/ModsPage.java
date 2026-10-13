@@ -461,6 +461,11 @@ final class ModsPage {
         return "superstar " + id;
     }
 
+    // Attires 1-4 (bits 0-3) the superstar's own pac has, plus bit 8 when it has other model kinds for attire 1:
+    // the entrance gear superstars (Undertaker, CM Punk, Cena, Shawn Michaels, Morrison) - a new attire for them
+    // doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds), so only their own can be replaced.
+    static final int kGear = 0x100;
+
     static int ownAttires(int id) {
         File pac = new File(new File(new File(InstallActivity.gameFolder(), "pac"), "ch"),
             String.format(java.util.Locale.ROOT, "ch%03d.pac", id));
@@ -483,7 +488,10 @@ final class ModsPage {
             for (int k = 0; k < entries && p + 16 <= d.length; k++, p += 16) {
                 boolean same = emd;
                 for (int i = 0; i < 6 && same; i++) same = d[p + i] == want[i];
-                if (same && d[p + 6] >= '0' && d[p + 6] <= '3' && d[p + 7] == '2') mask |= 1 << (d[p + 6] - '0');
+                if (same && d[p + 6] >= '0' && d[p + 6] <= '3') {
+                    if (d[p + 7] == '2') mask |= 1 << (d[p + 6] - '0');
+                    else if (d[p + 6] == '0' && d[p + 7] >= '0' && d[p + 7] <= '9') mask |= kGear;
+                }
             }
         }
         return mask;
@@ -552,17 +560,24 @@ final class ModsPage {
         java.util.Set<Integer> stars = new java.util.TreeSet<>();
         for (AttireMod a : mods) stars.add(a.id);
         for (int id : stars) {
-            int used = ownAttires(id), news = 0;
+            int own = ownAttires(id), used = own & 0xF, news = 0;
+            boolean gear = (own & kGear) != 0;
             for (AttireMod a : mods) {
                 if (a.id != id || a.attire == 0) continue;
                 boolean best = true;
                 for (AttireMod o : mods) if (o != a && o.id == id && o.attire == a.attire && older(o, a)) best = false;
                 if (best) used |= 1 << (a.attire - 1);
             }
+            if (gear) used = 0xF;  // (no new attires for them: nothing free to move to)
             for (AttireMod a : mods) {
                 if (a.id != id) continue;
                 if (a.attire == 0) {
                     news++;
+                    continue;
+                }
+                if (gear && (own >> (a.attire - 1) & 1) == 0) {  // (a new attire for a gear superstar: left out by the game)
+                    said.append('"').append(a.name).append("\" gives ").append(starName("" + id)).append(" an attire ").append(a.attire)
+                        .append(", but they wear entrance gear and new attires for them don't load in the game yet: the game leaves it out.\n");
                     continue;
                 }
                 AttireMod keeper = null;
@@ -576,13 +591,20 @@ final class ModsPage {
                     used |= 1 << (to - 1);
                     said.append(both).append(": \"").append(a.name).append("\" moved to attire ").append(to).append(".\n");
                     a.attire = to;
+                } else if (gear) {
+                    said.append(both).append(". ").append(starName("" + id)).append(" wears entrance gear, and new attires for them don't load in")
+                        .append(" the game yet, so neither can move: switch one off, or the game leaves \"").append(a.name).append("\" out.\n");
                 } else {
                     said.append(both).append(" and there is no free attire to move one to (4 at most): switch one off, or the game leaves \"")
                         .append(a.name).append("\" out.\n");
                 }
             }
             for (int k = 0; k < 4; k++) if ((used >> k & 1) == 0 && news > 0) news--;
-            if (news > 0)
+            if (news > 0 && gear)
+                said.append(starName("" + id)).append(" wears entrance gear: new attires for them don't load in the game yet, so ")
+                    .append(news).append(" attire=new mod").append(news == 1 ? " stays" : "s stay").append(" out: switch ")
+                    .append(news == 1 ? "it" : "them").append(" off.\n");
+            else if (news > 0)
                 said.append(starName("" + id)).append(" has no free attire for ").append(news).append(" attire=new mod")
                     .append(news == 1 ? "" : "s").append(" (4 at most): switch some off.\n");
         }

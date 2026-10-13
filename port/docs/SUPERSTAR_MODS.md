@@ -214,6 +214,17 @@ tab), `manifest.txt`:
     by an installed mod.
   - Superstar mods' `attireN=` can't clash with these: attire mods only take
     stock superstars.
+- Entrance gear superstars (Undertaker 103, CM Punk 131, John Cena 139, Shawn
+  Michaels 145, John Morrison 175: their pac has a kind 4 model, `%06d04`, the
+  coat / hat / shirt they come out in) take replaced attires only. Any attire
+  past their own never finishes loading the match (tested: Cena / Undertaker
+  attire 3 through a guest pac, through the pac overlay, with a kind 4 row
+  beside it, even with no mod at all through the test aid); Jericho and Mark
+  Henry load new attires fine. Their DLC third attires (CM Punk's 00013122)
+  come with the DLC's own chEtc.pac, so per-attire character data is the lead.
+  Until that is found the game leaves a new attire for them out (log line),
+  the launchers count no free attire for them and say why, and the Mod Maker
+  shouldn't offer one.
   - Test: `"SvR2011 Launcher.exe" --mods-attires <game>` runs the launcher's
     guard and prints what it did.
 - A `disabled` file in the folder turns it off.
@@ -225,7 +236,8 @@ tab), `manifest.txt`:
   with a log line.
 
 Tested: an attire mod replacing Mark Henry's attire 1 with Sabu's model plays
-in a match. Not tested yet: `attire=new` on CHANGE ATTIRE.
+in a match; new attires (guest pacs) on Mark Henry (2) and Chris Jericho (3 and
+4, the launcher's move) play in matches (13 Oct).
 
 ### Select screen framing
 
