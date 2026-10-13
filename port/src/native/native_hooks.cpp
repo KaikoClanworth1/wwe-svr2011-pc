@@ -13,6 +13,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "../thread_cpu.h"
 #include "generated/default/svr2011_init.h"
 #include "native/native_renderer.h"
 
@@ -61,6 +62,7 @@ REX_HOOK_RAW(sub_8291E618) {
 // D3DDevice_Clear(device, flags, rects, ...)
 REX_EXTERN(__imp__sub_8291F168);
 REX_HOOK_RAW(sub_8291F168) {
+  svr2011::NoteThreadRole("render");  // (thread_cpu.h: the game's render thread)
   if (nr::Enabled()) {
     const PPCContext args = ctx;
     __imp__sub_8291F168(ctx, base);
