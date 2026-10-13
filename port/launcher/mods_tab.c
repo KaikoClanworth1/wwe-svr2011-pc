@@ -29,6 +29,7 @@
 #include <wchar.h>
 
 #include "backgrounds.h"
+#include "movie_maker.h"
 #include "unzip.h"
 
 enum { MODS_MAX = 512 };
@@ -526,6 +527,42 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
     }
 }
 
+/* A superstar / media mod's .mp4 entrance movies (movie= / video.<id>=) that
+ * have no .bik of the same name beside them get one (1024 x 1024, the movie
+ * on the big screen): the game plays the .bik where the platform can't decode
+ * the .mp4 (Proton on the Steam Deck, Windows "N" editions). The Mod Maker
+ * writes both; this covers mods made by hand. */
+static void make_movie_fallbacks(const WCHAR *dir)
+{
+    WCHAR man[MAX_PATH];
+    FILE *f;
+    char line[1024];
+    swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", dir);
+    if (_wfopen_s(&f, man, L"rb") || !f) return;
+    while (fgets(line, sizeof line, f)) {
+        char *v = strchr(line, '='), *e;
+        WCHAR file[MAX_PATH];
+        size_t n;
+        static MovieJob job;
+        if (!v || (strncmp(line, "movie=", 6) && strncmp(line, "video.", 6))) continue;
+        v++;
+        for (e = v + strlen(v); e > v && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' '); ) *--e = 0;
+        n = strlen(v);
+        if (n < 5 || _stricmp(v + n - 4, ".mp4")) continue;
+        if (!MultiByteToWideChar(CP_UTF8, 0, v, -1, file, MAX_PATH)) continue;
+        ZeroMemory(&job, sizeof job);
+        swprintf_s(job.video, MAX_PATH, L"%s\\%s", dir, file);
+        swprintf_s(job.out, MAX_PATH, L"%s\\%s", dir, file);
+        wcscpy_s(job.out + wcslen(job.out) - 4, 5, L".bik");
+        if (exists(job.out) || !exists(job.video)) continue;
+        job.fit = MOVIE_FIT;
+        job.size = 1024;
+        status(L"Making the mod's movie for PCs that can't play its MP4 (Steam Deck)...");
+        if (!movie_make(&job)) status(job.err);
+    }
+    fclose(f);
+}
+
 static int install_file(const WCHAR *zip)
 {
     WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512], kind[32];
@@ -633,6 +670,7 @@ place:
         }
     }
     wcscpy_s(s_installed, MAX_PATH, dst);
+    if (!wcscmp(kind, L"Superstars") || !wcscmp(kind, L"Media")) make_movie_fallbacks(dst);
     scan();
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
