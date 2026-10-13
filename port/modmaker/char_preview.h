@@ -21,6 +21,9 @@ void Shutdown();
 void SetModel(const std::wstring& ch_pac, const std::wstring& game);
 // The second character, for the victim's track ("" = none).
 void SetDummy(const std::wstring& ch_pac);
+// The model's attire shown (1-4: its EMD entry ......<n-1>2; one it doesn't have: the first). Reloads the model.
+void SetAttire(int attire);
+int Attire();
 // A motion from a YMBs bank: track 0 plays on the model, track 1 on the dummy.
 // An empty bank (or ClearMotion) goes back to the idle. False (with why) when
 // the motion isn't in the bank or its layout isn't understood.

@@ -386,6 +386,9 @@ struct ModelPages {
   int pages = 0;
 };
 const std::vector<ModelPages>& ModelBudget(const std::wstring& pac);  // (cached by file time / size)
+// The attires a model pac holds (its kind-2 EMD entries %06d%02d: attire*10 + 2), 1-based, in order. The game
+// uses a superstar mod's in-pac attires contiguous from 1, at most 4.
+std::vector<int> ModelAttires(const std::wstring& pac);
 // The problem line for a model over (error) or near (warning) the budget; who: "The model", "Attire 2" ...
 void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out);
 

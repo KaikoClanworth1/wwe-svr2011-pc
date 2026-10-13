@@ -353,6 +353,21 @@ void Left() {
       }
     ImGui::EndCombo();
   }
+  if (!g_model.empty()) {  // the model's attires (its EMD kind-2 entries)
+    const std::vector<int> att = ModelAttires(g_model);
+    if (att.size() > 1) {
+      ImGui::TextDisabled("Attire");
+      for (int a : att) {
+        ImGui::SameLine();
+        const bool on = a == char_preview::Attire();
+        if (on) PushAccent();
+        if (ImGui::SmallButton((std::to_string(a) + "##aa").c_str())) char_preview::SetAttire(a);
+        if (on) PopAccent();
+      }
+    } else if (char_preview::Attire() != 1) {
+      char_preview::SetAttire(1);
+    }
+  }
   if (ImGui::Button("A model file (ch.pac)...", ImVec2(-1, 0))) {
     const std::wstring f = PickFile(false, L"A character model pac", kPacFilter, 1);
     if (!f.empty()) g_star = -1, g_model = f, char_preview::SetModel(g_model, g_game);

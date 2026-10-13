@@ -676,7 +676,7 @@ bool PrepareJob(Job& j) {
   if (const std::string g = GainText(); !g.empty() && !g_star.song.empty()) j.manifest += "theme_gain=" + g + "\n";
   if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
   for (int a = 1; a < 4; ++a)
-    if (!g_star.attires[a].empty() && g_star.attire_entrance[a] > 0)
+    if (g_star.attire_entrance[a] > 0)
       j.manifest += "attire" + std::to_string(a + 1) + "_entrance=" + std::to_string(g_star.attire_entrance[a]) + "\n";
   if (g_star.announcer[0]) j.manifest += std::string("announcer=") + g_star.announcer + "\n";
   if (g_star.pose >= 0) j.manifest += "pose=" + std::to_string(g_star.pose) + "\n";
@@ -826,12 +826,20 @@ void Problems(std::vector<Problem>& p) {
     if (!c.exists) p.push_back(Error("The model file is missing: " + FileName(g_star.model)));
     else if (!c.ok) p.push_back(Error("The model is " + c.note + ": " + FileName(g_star.model)));
   }
+  const std::vector<int> own_attires = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  auto in_model_attire = [&](int n) {
+    for (int k = 1; k <= n; ++k)
+      if (std::find(own_attires.begin(), own_attires.end(), k) == own_attires.end()) return false;
+    return true;
+  };
+  if (own_attires.size() > 4)
+    p.push_back(Warning("The model pac has " + std::to_string(own_attires.size()) + " attires: the game uses the first 4."));
   for (int a = 1; a < 4; ++a) {
     if (g_star.attires[a].empty()) continue;
     const FileCheck& c = Check(g_star.attires[a], "pac");
     if (!c.exists) p.push_back(Error("Attire " + std::to_string(a + 1) + "'s file is missing: " + FileName(g_star.attires[a])));
     else if (!c.ok) p.push_back(Error("Attire " + std::to_string(a + 1) + " is " + c.note + "."));
-    if (a > 1 && g_star.attires[a - 1].empty()) p.push_back(Warning("Attire " + std::to_string(a + 1) + " is set but attire " + std::to_string(a) + " isn't: the game lists attires in order."));
+    if (a > 1 && g_star.attires[a - 1].empty() && !in_model_attire(a)) p.push_back(Warning("Attire " + std::to_string(a + 1) + " is set but attire " + std::to_string(a) + " isn't: the game lists attires in order."));
   }
   if (!g_star.movie.empty()) {
     const FileCheck& c = Check(g_star.movie, "bik");
@@ -867,7 +875,7 @@ void Problems(std::vector<Problem>& p) {
     };
     check(g_star.entrance, "The superstar");
     for (int a = 1; a < 4; ++a)
-      if (!g_star.attires[a].empty()) check(g_star.attire_entrance[a], "Attire " + std::to_string(a + 1));
+      if (!g_star.attires[a].empty() || g_star.attire_entrance[a] > 0) check(g_star.attire_entrance[a], "Attire " + std::to_string(a + 1));
   }
   for (int a = 0; a < 4; ++a) {  // the match memory (D12): every attire of the model, the first of attire pacs
     const std::wstring& f = a ? g_star.attires[a] : g_star.model;
@@ -907,8 +915,31 @@ void Problems(std::vector<Problem>& p) {
   }
 }
 
+int g_view_attire = 1;  // the attire the preview shows (1-4)
+
 void Preview() {
-  char_preview::SetModel(g_star.model, g_game);
+  // the attire shown: an attire<N> file's first attire, else the model's own attire N
+  const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  std::vector<int> have;
+  for (int a = 1; a <= 4; ++a)
+    if (a == 1 || !g_star.attires[a - 1].empty() || std::find(own.begin(), own.end(), a) != own.end()) have.push_back(a);
+  if (std::find(have.begin(), have.end(), g_view_attire) == have.end()) g_view_attire = 1;
+  const bool from_file = g_view_attire > 1 && !g_star.attires[g_view_attire - 1].empty();
+  char_preview::SetAttire(from_file ? 1 : g_view_attire);
+  char_preview::SetModel(from_file ? g_star.attires[g_view_attire - 1] : g_star.model, g_game);
+  if (have.size() > 1) {
+    ImGui::TextDisabled("Attire");
+    for (int a : have) {
+      ImGui::SameLine();
+      const bool on = a == g_view_attire;
+      if (on) PushAccent();
+      if (ImGui::SmallButton((std::to_string(a) + "##va").c_str())) g_view_attire = a;
+      if (on) PopAccent();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", a > 1 && !g_star.attires[a - 1].empty() ? ("Attire " + std::to_string(a) + ": " + FileName(g_star.attires[a - 1])).c_str()
+                                                                         : ("Attire " + std::to_string(a) + " of the model").c_str());
+    }
+  }
   char_preview::SetHeight(g_star.height * StarScale(kStyles[g_star.style].template_id));  // as the game: base x height=
   ImGui::BeginGroup();
   const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -1122,10 +1153,20 @@ void Draw() {
           "A 320 x 320 Bink movie: From a video... makes one here, the launcher's Movies tab too.");
   ImGui::SameLine();
   BinkFromVideoButton("From a video...", g_star.movie, g_star.name);
+  const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  auto in_model = [&](int n) {  // (the game counts them contiguous from 1)
+    for (int k = 1; k <= n; ++k)
+      if (std::find(own.begin(), own.end(), k) == own.end()) return false;
+    return true;
+  };
   for (int a = 1; a < 4; ++a) {
-    const std::string label = "Attire " + std::to_string(a + 1) + " (optional)...";
-    FileRow(label.c_str(), g_star.attires[a], "none", kPacFilter, 1, "Another model pac: its first attire becomes this attire.");
-    if (!g_star.attires[a].empty()) {
+    const bool inpac = in_model(a + 1);
+    const std::string label = "Attire " + std::to_string(a + 1) + (inpac ? " (the model's own)..." : " (optional)...");
+    const std::string none = inpac ? "the model's attire " + std::to_string(a + 1) : std::string("none");
+    FileRow(label.c_str(), g_star.attires[a], none.c_str(), kPacFilter, 1,
+            inpac ? "The model pac has this attire itself. A pac here replaces it: that pac's first attire."
+                  : "Another model pac: its first attire becomes this attire.");
+    if (!g_star.attires[a].empty() || inpac) {
       ImGui::SameLine();
       ImGui::SetNextItemWidth(160 * g_scale);
       ImGui::InputTextWithHint(("##an" + std::to_string(a)).c_str(), ("ATTIRE " + std::to_string(a + 1)).c_str(),
@@ -1136,7 +1177,9 @@ void Draw() {
       ImGui::PopID();
     }
   }
-  ImGui::TextDisabled("Attire 1 is the model above; each extra attire is another pac's first attire.");
+  ImGui::TextDisabled("%s", own.size() > 1 ? ("The model has " + std::to_string(std::min<size_t>(own.size(), 4)) +
+                                                " attires of its own; a pac above replaces that attire.").c_str()
+                                             : "Attire 1 is the model above; each extra attire is another pac's first attire.");
   {  // its fans' crowd signs
     ImGui::BeginDisabled(g_star.signs.size() >= 4);
     if (ImGui::Button("Crowd signs (optional)...", ImVec2(220 * g_scale, 0)))

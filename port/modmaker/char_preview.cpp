@@ -164,14 +164,17 @@ int DiffuseSlot(const Mesh& s) {
   return -1;
 }
 
-bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
+std::atomic<int> g_attire{1};  // the model's attire shown (1-4)
+
+bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire = 1) {
   if (pac.size() < 0x4000 || std::memcmp(pac.data(), "EPK8", 4)) {
     err = "not a character model pac (EPK8)";
     return false;
   }
-  // the EMD group, the attire 1 model (name "......02"), else any model
+  // the EMD group, the attire's model (name "......<attire-1>2"), else attire 1's, else any model
   Bytes emd;
-  bool attire1 = false;
+  bool attire1 = false, wanted = false;
+  const char want = char('0' + std::clamp(attire, 1, 9) - 1);
   for (size_t p = 0x800; p + 12 <= 0x4000;) {
     if (!Le32(&pac[p])) break;
     const bool is_emd = !std::memcmp(&pac[p], "EMD ", 4);
@@ -181,9 +184,10 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
       const std::string name(reinterpret_cast<const char*>(&pac[p]), 8);
       const size_t off = 0x4000 + size_t(Le32(&pac[p + 8])) * 0x800, size = size_t(Le32(&pac[p + 12])) * 0x100;
       if (!is_emd || name[0] == 0 || name[7] != '2' || off + size > pac.size()) continue;
-      if (emd.empty() || (name[6] == '0' && !attire1)) {
+      if (!wanted && (emd.empty() || name[6] == want || (name[6] == '0' && !attire1))) {
         emd.assign(pac.begin() + off, pac.begin() + off + size);
         attire1 = name[6] == '0';
+        wanted = name[6] == want;
       }
     }
   }
@@ -1540,7 +1544,7 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
     auto ch = std::make_shared<Character>();
     std::string err;
     Bytes pac;
-    bool ok = ReadWide(ch_pac, pac) && LoadCharacter(pac, *ch, err);
+    bool ok = ReadWide(ch_pac, pac) && LoadCharacter(pac, *ch, err, which == 0 ? g_attire.load() : 1);
     if (!ok && err.empty()) err = "could not read the file";
     std::shared_ptr<Motion> idle;
     std::string idle_err;
@@ -1579,6 +1583,19 @@ void SetModel(const std::wstring& ch_pac, const std::wstring& game) {
 }
 
 void SetDummy(const std::wstring& ch_pac) { LoadSlot(1, ch_pac); }
+
+void SetAttire(int attire) {
+  attire = std::clamp(attire, 1, 4);
+  if (g_attire.exchange(attire) == attire) return;
+  std::wstring file;
+  {
+    std::lock_guard lock(g_mutex);
+    file = g_slots[0].file;
+    g_slots[0].file.clear();  // (LoadSlot reloads only a new file)
+  }
+  if (!file.empty()) LoadSlot(0, file);
+}
+int Attire() { return g_attire.load(); }
 
 bool SetMotion(std::shared_ptr<const Bytes> bank, int id, int x, std::string* err) {
   std::lock_guard lock(g_mutex);
