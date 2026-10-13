@@ -87,11 +87,12 @@ def convert_evp(e10, number, stock_obj0_models=(), templates=None, log=None):
     e['objs'] = objs
     if e10['tail']:
         recs = []
-        for typ, z, v, items in e10['tail']['recs']:
+        for r in e10['tail']['recs']:
+            typ, z, v, items = r[:4]
             items = list(items)
             if typ == 1 and [k for k, _, _ in items] == [2]:
                 items += [(1, 0, 0), (1, 0, 0)]
-            recs.append((typ, z, v, items))
+            recs.append((typ, z, v, items) + tuple(r[4:]))
         e['tail'] = dict(num=number, recs=recs)
     e['game'] = '2011'
     return e

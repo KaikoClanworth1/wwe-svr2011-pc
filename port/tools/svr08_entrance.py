@@ -101,7 +101,8 @@ def parse_evp(d, game):
     assert d[:4] == b'0FOP' and d[8:10] == b'EV'
     e = dict(num=struct.unpack_from('>H', d, 0x20)[0], name=d[0x22:0x40], f10=_u32(d, 0x10),
              f18=_u32(d, 0x18), f44=_u32(d, 0x44), objs=[], tail=None, game=game)
-    n = _u32(d, 0x40)
+    n = _u32(d, 0x40) & 0xffff      # (a 30-character name without its NUL runs into the high half)
+    e['n_hi'] = _u32(d, 0x40) >> 16
     t = _u32(d, 0x48) + 8
     es = 28 if game == '2008' else 32
     for i in range(n):
@@ -126,13 +127,13 @@ def parse_evp(d, game):
             typ, z, v, m, ip = struct.unpack_from('>HHIII', d, lp + 16 * i)
             ip += 8
             items = []
-            for j in range(m):
+            for j in range(1 if typ == 9 else m):    # (type 9: one item; m is a parameter, kept)
                 kind, vp = struct.unpack_from('>II', d, ip + 8 * j)
                 vp += 8
                 k = kind >> 24
                 val = _u32(d, vp) if k == 2 else struct.unpack_from('>H', d, vp)[0]
                 items.append((k, kind & 0xffffff, val))
-            recs.append((typ, z, v, items))
+            recs.append((typ, z, v, items, m) if typ == 9 else (typ, z, v, items))
         e['tail'] = dict(num=num, recs=recs)
     return e
 
@@ -189,7 +190,7 @@ def build_evp(e, game='2011'):
                     item_ptr[(ri, j)] = val_base + len(vals)
                     vals += struct.pack('>H', val)
         for ri, r in enumerate(recs):
-            tb += struct.pack('>HHIII', r[0], r[1], r[2], len(r[3]), lists[ri] - 8)
+            tb += struct.pack('>HHIII', r[0], r[1], r[2], r[4] if len(r) > 4 else len(r[3]), lists[ri] - 8)
             ptrs.append(rec_at + 16 * ri + 12)
         for ri, r in enumerate(recs):
             for j, (k, low, val) in enumerate(r[3]):
@@ -207,7 +208,7 @@ def build_evp(e, game='2011'):
     struct.pack_into('>III', body, 0x10, e['f10'], 0x18, e['f18'])
     struct.pack_into('>H', body, 0x20, e['num'])
     body[0x22:0x40] = e['name']
-    struct.pack_into('>III', body, 0x40, n, e['f44'], 0x44)
+    struct.pack_into('>III', body, 0x40, n | e.get('n_hi', 0) << 16, e['f44'], 0x44)
     return bytes(body) + pof0_write(ptrs)
 
 
@@ -252,11 +253,12 @@ def convert_evp(e8, number, obj0_model=PREVIEW_CHAR_11, prop_map=PROP_MAP, log=N
     e['objs'] = objs
     if e8['tail']:
         recs = []
-        for typ, z, v, items in e8['tail']['recs']:
+        for r in e8['tail']['recs']:
+            typ, z, v, items = r[:4]
             items = list(items)
             if typ == 1 and [k for k, _, _ in items] == [2]:
                 items += [(1, 0, 0), (1, 0, 0)]    # 2011 music record: 2 extra u16 params (all 216 tails)
-            recs.append((typ, z, v, items))
+            recs.append((typ, z, v, items) + tuple(r[4:]))
         e['tail'] = dict(num=number, recs=recs)
     e['game'] = '2011'
     return e

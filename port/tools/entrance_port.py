@@ -4,6 +4,8 @@
   python entrance_port.py list --game <id> --src <extract folder or disc image> [--game-pac <2011 pac dir>]
   python entrance_port.py convert --game <id> --src <...> --entrance <n> --number <2011 n> --out <dir>
                                   [--name <text>] [--no-parts] [--game-pac <2011 pac dir>]
+  (wwe13 also takes --svrmod <svrmod.exe>: its pacs are xcompressed; default: next to the tools or
+   the Mod Maker; missing = exit 2)
   python entrance_port.py free-numbers [--game-pac <2011 pac dir>] [--mods <Mods dir>]
 
 Contract (shared by the Mod Maker's converters, docs/MOD_MAKER_3_PLAN.md):
@@ -19,7 +21,8 @@ Contract (shared by the Mod Maker's converters, docs/MOD_MAKER_3_PLAN.md):
   PS2 ISO 9660); paths inside it are the disc's own (e.g. pac/evt/Nyujyo0.pac, PAC/EVTENT.PAC).
 
 Games: docs/OTHER_GAMES_ENTRANCES.md (formats and what converts); per-game converters
-tools/svr08_entrance.py (SvR 2008) and tools/hctp_entrance.py (HCTP).
+tools/svr08_entrance.py (SvR 2008), tools/svr10_entrance.py (SvR 2010), tools/hctp_entrance.py (HCTP)
+and tools/wwe13_entrance.py (WWE '13).
 """
 import collections
 import io
@@ -36,6 +39,7 @@ import ymks  # noqa: E402
 import svr08_entrance as E08  # noqa: E402
 import hctp_entrance as EH  # noqa: E402
 import svr10_entrance as E10  # noqa: E402
+import wwe13_entrance as E13  # noqa: E402
 
 
 class InputError(Exception):
@@ -136,11 +140,20 @@ def pac_entries(d):
     if d[:4] == b'EPK8':
         return {k: unbpe(v) for k, v in epk8_read(d).items()}
     if d[:4] == b'EPAC':
-        h, groups, t = svrfmt.epac_read(d)
+        # (svrfmt.epac_read's layout, but the count is the u16 at +4: SvR 2007 keeps other data in
+        # the u16 at +6)
         out = collections.OrderedDict()
-        for ty, es in groups:
-            for n, b in es:
-                out[(ty.decode('latin-1'), n.decode('latin-1').strip())] = unbpe(b)
+        p = 0x800
+        while p < 0x4000 and d[p:p + 4] != bytes(4):
+            ty = d[p:p + 4].decode('latin-1')
+            cnt = struct.unpack_from('<H', d, p + 4)[0] // 3
+            p += 12
+            for _ in range(cnt):
+                n = d[p:p + 4].replace(bytes(1), b'').decode('latin-1').strip()
+                sec, sz = struct.unpack_from('<II', d, p + 4)
+                o = 0x4000 + sec * 0x800
+                out[(ty, n)] = unbpe(d[o:o + sz * 0x100])
+                p += 12
         return out
     raise ValueError('not an EPAC / EPK8 pac')
 
@@ -238,12 +251,12 @@ def in_2011(name, game_pac):
 # ============================================================================ games
 
 GAMES = collections.OrderedDict([
-    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='research')),
+    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready')),
     ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready')),
-    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='research')),
+    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready')),
     ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='ready')),
     ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='research')),
-    ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='research')),
+    ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='ready')),
     ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research')),
     ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
 ])
@@ -427,8 +440,198 @@ def svr10_convert(src, entrance, number, name, parts, rep, game_pac=None):
     return E08.build_evp(e11), t11
 
 
-LISTERS = {'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list}
-CONVERTERS = {'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert}
+# ---- WWE '13 (Xbox 360): pac/evt/Entrance00-08.pac + Entrance_dlc01.pac, xcompressed (svrmod xdec),
+#      EPK8 groups 'EVP ' / 'EVZ ' (YANM motion records), numbers 50-856; tools/wwe13_entrance.py
+
+SVRMOD = None          # --svrmod (else found next to the tools / the Mod Maker)
+_w13 = {}
+
+
+def wwe13_entrances(src):
+    key = id(src)
+    if key not in _w13:
+        try:
+            sv = E13.find_svrmod(SVRMOD)
+        except E13.ToolMissing as x:
+            raise InputError(str(x))
+        try:
+            _w13[key] = E13.read_source(src, sv)
+        except FileNotFoundError as x:
+            raise InputError(str(x))
+    return _w13[key]
+
+
+def wwe13_list(src, game_pac):
+    evp, evz = wwe13_entrances(src)
+    return E13.entry_list(evp, evz, game_pac)
+
+
+def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None):
+    evp, evz = wwe13_entrances(src)
+    if entrance not in evp or entrance not in evz:
+        raise InputError("WWE '13 has no entrance %d" % entrance)
+    if not game_pac:
+        rep['warnings'].append('2011 pac folder not found: prop tracks, the lights object and the model checks are skipped')
+    progress(15, 'converting the script and tracks')
+
+    def prog(done, total, kind):
+        progress(15 + int(40 * done / total), 'tracks %d/%d (%s)' % (done, total, kind))
+    evp11, evt11, r = E13.convert(evp[entrance], evz[entrance], number, game_pac, name, progress=prog)
+    for k in ('notes', 'warnings', 'dropped'):
+        rep[k] += r[k]
+    rep['notes'].append('not converted: pyro (prtcls.pac PCE6), titantron (Bink 2), theme, face / finger tracks')
+    return evp11, evt11
+
+
+# ---- SvR 2007 (Xbox 360): pac/evt/evt1.pac + evt2.pac (EPAC, EVP1/EVT1, EVP2/EVT2), 4000-4362
+#      (evt0 = the entrance editor and props, evt3 CAE parts, evt4-8 season / win scenes)
+# ---- SvR 2009 (Xbox 360): pac/evt/Nyujyo0-3.pac (EPAC, EVP1-4/EVT1-4), 4002-4424 (TNyujyo = tests)
+# Both use 2008's script layout (28-byte objects) and its headerless track bank.
+
+def old_entrances(src, files):
+    evp, evt = {}, {}
+    for f in src.listdir('pac/evt'):
+        if not any(re.match(rx, f, re.I) for rx in files):
+            continue
+        for (g, n), raw in pac_entries(src.read('pac/evt/' + f)).items():
+            if n.isdigit() and int(n) < 9999:
+                (evp if g.startswith('EVP') else evt if g.startswith('EVT') else {})[int(n)] = raw
+    return evp, evt
+
+
+SRC07 = (r'evt[12]\.pac$',)
+SRC09 = (r'nyujyo\d\.pac$',)
+
+
+def old_list(files):
+    def lister(src, game_pac):
+        evp, evt = old_entrances(src, files)
+        out = []
+        for n in sorted(evp):
+            if n not in evt:
+                continue
+            try:
+                e = E08.parse_evp(evp[n], '2008')
+            except Exception as x:
+                log('%d: EVP not readable (%s)' % (n, x))
+                continue
+            nm = evp_name(evp[n])
+            frames = {}
+            try:
+                for x in E08.read_evt(evt[n], '2008').entries:
+                    if x['id'] == 0 and x['y'] == 0 and x['x'] in (0, 5, 10, 15, 20):
+                        frames[x['x'] // 5] = x['frames']
+            except Exception:
+                pass
+            out.append(dict(number=n, name=nm, segments=len(frames), frames=[frames.get(k, 0) for k in range(5)],
+                            objects=len(e['objs']),
+                            props=[o['model'] for o in e['objs'] if (o['t0'], o['t1']) == E08.TYPE_PROP],
+                            has_pyro=any((o['t0'], o['t1']) == E08.TYPE_GLOBAL for o in e['objs']),
+                            has_movie=False, has_theme=False, in_2011=in_2011(nm, game_pac)))
+        return out
+    return lister
+
+
+def drop_ops(evt11, op, ys, rep, label):
+    """remove every op `op` event from the tracks whose y is in ys (2011 bank bytes in and out)"""
+    b = ymks.read_bank(evt11)
+    gone = 0
+    for e in b.entries:
+        if not e['data'] or e.get('share') or e['y'] not in ys:
+            continue
+        st = ymks.parse_stream(e['data'])
+        items, changed = [], False
+        for it in st.items:
+            if it[0] == 'rec':
+                ev, pose = ymks.split_record(it[1])
+                if ev:
+                    lst, ok = ymks.parse_events(ev, b.T)
+                    if ok and any(o == op for o, _ in lst):
+                        keep = b''.join(bb for o, bb in lst if o != op)
+                        gone += sum(1 for o, _ in lst if o == op)
+                        rec = ymks.join_record(keep, pose)
+                        items.append(('rec', rec, len(rec) > 0x9f))
+                        changed = True
+                        continue
+            items.append(it)
+        if changed:
+            e['data'] = ymks.build_stream(ymks.Stream(items))
+    for i, e in enumerate(b.entries):
+        if e.get('share') and i:
+            e['data'] = b.entries[i - 1]['data']
+    if gone:
+        rep['dropped'].append('%s: %d op-%d events removed' % (label, gone, op))
+    return ymks.write_bank(b)
+
+
+def set_name(e11, name):
+    if name:
+        nm = name.encode('latin-1', 'replace')[:29]
+        e11['name'] = nm + bytes(30 - len(nm))
+
+
+def svr07_convert(src, entrance, number, name, parts, rep):
+    evp, evt = old_entrances(src, SRC07)
+    if entrance not in evp or entrance not in evt:
+        raise InputError('SvR 2007 has no entrance %d' % entrance)
+    progress(20, 'converting the script')
+    lines = []
+    e7 = E08.parse_evp(evp[entrance], '2008')
+    for i, o in enumerate(e7['objs']):      # (Yuke's own 2007 -> 2011 pair 4252 -> 772: extras are 13902)
+        if i and (o['t0'], o['t1']) == E08.TYPE_CHAR and o['model'] != E08.GENERIC_CHAR_08:
+            lines.append('object %d: extra character model %d -> generic' % (i, o['model']))
+            o['model'] = E08.GENERIC_CHAR_08
+    e11 = E08.convert_evp(e7, number, log=lines)
+    if e11['tail'] and any(r[0] == 9 for r in e11['tail']['recs']):
+        lines.append('tail: the 2007-only type-9 record (a music cue) dropped')
+        e11['tail']['recs'] = [r for r in e11['tail']['recs'] if r[0] != 9]
+    set_name(e11, name)
+    progress(45, 'converting the tracks')
+    t11 = E08.convert_evt(evt[entrance], log=lines)
+    t11 = drop_ops(t11, 79, (1, 2, 3), rep, 'face/hand tracks (2007 loop marker)')
+    missing = [o['model'] for o in e11['objs'] if (o['t0'], o['t1']) == E08.TYPE_PROP
+               and o['model'] in (2040, 2054, 2075, 2078, 2079, 2080, 3001)]
+    if missing:
+        rep['warnings'].append('props %s are not in 2011 (they will not show)' % missing)
+    rep['notes'] += lines
+    rep['dropped'] += [l for l in lines if l.startswith('dropped')]
+    return E08.build_evp(e11), t11
+
+
+def svr09_convert(src, entrance, number, name, parts, rep, game_pac=None):
+    evp, evt = old_entrances(src, SRC09)
+    if entrance not in evp or entrance not in evt:
+        raise InputError('SvR 2009 has no entrance %d' % entrance)
+    progress(20, 'converting the script')
+    stock = stock_2011_evps(game_pac)
+    if not stock:
+        rep['warnings'].append('2011 pac folder not found: object 6 position templates and object 0 model rule skipped')
+    m0 = set()
+    for b in stock.values():
+        try:
+            m0.add(E08.parse_evp(b, '2011')['objs'][0]['model'])
+        except Exception:
+            pass
+    lines = []
+    e9 = E08.parse_evp(evp[entrance], '2008')        # (2008's object entries, 2011's model ids)
+    e11 = E10.convert_evp(e9, number, m0, E10.obj6_templates(stock), lines)
+    if e11['objs'] and e11['objs'][0]['model'] == E08.PREVIEW_CHAR_11:
+        for o in e11['objs'][1:7]:                    # (Yuke's: extras follow the preview body)
+            if (o['t0'], o['t1']) == E08.TYPE_CHAR and o['model'] == E08.GENERIC_CHAR_11:
+                o['model'] = E08.PREVIEW_CHAR_11
+    set_name(e11, name)
+    progress(45, 'converting the tracks')
+    t11 = E08.convert_evt(evt[entrance], log=lines)
+    missing = [o['model'] for o in e11['objs'] if (o['t0'], o['t1']) == E08.TYPE_PROP and o['model'] in (2116, 2152, 2262)]
+    if missing:
+        rep['warnings'].append('props %s are not in 2011 (they will not show)' % missing)
+    rep['notes'] += lines
+    rep['dropped'] += [l for l in lines if l.startswith('dropped')]
+    return E08.build_evp(e11), t11
+
+
+LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'wwe13': wwe13_list}
+CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'wwe13': wwe13_convert}
 
 
 # ============================================================================ commands
@@ -507,7 +710,10 @@ def cmd_convert(a):
         files = [(number, evp, evt)]
         if '--no-parts' not in a:
             progress(75, 'Create-An-Entrance parts')
-            files += list(E08.cae_parts(evp, evt, number))
+            try:
+                files += list(E08.cae_parts(evp, evt, number))
+            except Exception as x:   # (scripts without the usual 21 slots: tag / special entrances)
+                rep['warnings'].append('no Create-An-Entrance parts for this entrance (%s)' % x)
         progress(90, 'writing the pack')
         os.makedirs(out, exist_ok=True)
         label = '%s entrance %d as 2011 %d' % (GAMES[g]['name'], entrance, number)
@@ -531,6 +737,8 @@ def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(__doc__, file=sys.stderr)
         return 2
+    global SVRMOD
+    SVRMOD = opt(argv, '--svrmod')
     cmd = {'games': cmd_games, 'list': cmd_list, 'convert': cmd_convert, 'free-numbers': cmd_free}.get(argv[0])
     if not cmd:
         print('unknown command %r' % argv[0], file=sys.stderr)
