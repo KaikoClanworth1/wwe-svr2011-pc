@@ -46,7 +46,7 @@ bool HasBlood();  // the model has blood overlays that can be shown (their textu
 void SetBloodStage(int stage);  // 0 light, 1 medium, 2 heavy (the game's blood textures by stage)
 int BloodStage();
 // The hit volumes (port/docs/HIT_VOLUMES.md): target spheres green, attack spheres red while a motion's
-// op 40 .. 41 window has them on - drawn over the view.
+// op 87 .. 94 (strikes) or op 40 .. 41 (weapons) window has them on - drawn over the view.
 void SetHits(bool on);
 bool Hits();
 // The model's size from its feet (a superstar mod's height=, 0.80-1.25; 1 = as

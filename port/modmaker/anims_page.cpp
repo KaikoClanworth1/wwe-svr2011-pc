@@ -237,7 +237,7 @@ void Controls() {
   if (ImGui::Checkbox("Hit spheres", &hits)) char_preview::SetHits(hits);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("The game's hit volumes: green the spheres a superstar is hit on, red the attacking ones while a "
-                      "move turns them on (only weapon moves do, in the game's own data).");
+                      "move turns them on (strikes and weapon moves; a few moves switch them in code and show none here).");
   bool blood = char_preview::Blood();
   if (char_preview::HasBlood()) {
     ImGui::SameLine();

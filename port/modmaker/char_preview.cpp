@@ -452,8 +452,10 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
         const size_t n = b[0x10 + op];  // (the bank's event-size table, head +0x10)
         if (!n || e + n > q || e + n > sz) break;
         if (op == 21 && n >= 6) m.hands.push_back({frame, r[e + 1], int(Le16(r + e + 2)), int(Le16(r + e + 4))});
-        if (op == 40 && n >= 2) m.attack.push_back({frame, r[e + 1]});
-        if (op == 41) m.attack.push_back({frame, 0});
+        // attack windows (HIT_VOLUMES.md): op 87 / 94 in strikes, op 40 / 41 in weapon motions - set / clear the
+        // attack spheres' group mask; a window left open runs to the motion's end
+        if ((op == 40 || op == 87) && n >= 2) m.attack.push_back({frame, r[e + 1]});
+        if (op == 41 || op == 94) m.attack.push_back({frame, 0});
         e += n;
       }
     }
@@ -509,6 +511,11 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
   m = Motion();
   m.hands = std::move(hands);
   m.attack = std::move(attack);
+  if (!m.attack.empty()) {
+    std::string w;
+    for (const auto& [f, mask] : m.attack) w += " " + std::to_string(mask) + "@" + std::to_string(f);
+    mm::Log("motion " + std::to_string(id) + ": attack windows (mask@key)" + w);
+  }
   m.fk = true;
   m.keys = last + 1;
   for (int k = 0; k < 21; ++k)
