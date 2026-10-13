@@ -24,6 +24,7 @@
 #include <string>
 #include <thread>
 
+#include <rex/logging.h>
 #include <rex/ppc.h>
 
 namespace svr2011 {
@@ -80,6 +81,9 @@ void Flush(bool force) {
     if (FILE* f = std::fopen(file.c_str(), "ab")) {
       std::fwrite(out.data(), 1, out.size(), f);
       std::fclose(f);
+      REXLOG_INFO("[svr2011] pose dump: {} bytes written to {}", out.size(), file);
+    } else {
+      REXLOG_INFO("[svr2011] pose dump: can't open {}", file);
     }
   }).detach();
 }
@@ -98,19 +102,32 @@ void Vec(std::string& s, const uint8_t* p, int n) {
 void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
   const Config& c = Cfg();
   if (!c.on || !Pointer(ch)) return;
+  static bool said = false;
+  if (!said) said = true, REXLOG_INFO("[svr2011] pose dump: on, {} motion(s), into {}", c.motions.size(), c.file);
   // the fighter: the character node's 3rd parent (+16), its +32 (as small_rig.cpp)
   uint32_t n = ch;
   for (int i = 0; i < 3 && Pointer(n); ++i) n = Rd32(base + n + 16);
-  if (!Pointer(n)) return;
+  static int misses = 0;
+  if (!Pointer(n)) {
+    if (misses++ < 5) REXLOG_INFO("[svr2011] pose dump: ch {:08X} - no 3rd parent", ch);
+    return;
+  }
   const uint32_t fighter = Rd32(base + n + 32);
-  if (!Pointer(fighter) || std::memcmp(base + fighter + 4, "CHAR", 4)) return;
+  if (!Pointer(fighter) || std::memcmp(base + fighter + 4, "CHAR", 4)) {
+    if (misses++ < 5) REXLOG_INFO("[svr2011] pose dump: ch {:08X} - node {:08X} +32 {:08X} isn't a CHAR", ch, n, fighter);
+    return;
+  }
   const uint32_t motion = Rd32(base + fighter + 212), person = Rd32(base + fighter + 1156);
   static uint32_t playing[16] = {};
   const uint32_t pi = person < 16 ? person : 15;
   if (!c.motions.count(motion)) {
-    if (playing[pi]) playing[pi] = 0, Flush(true);  // (that motion ended: written out)
+    if (playing[pi]) {
+      REXLOG_INFO("[svr2011] pose dump: person {} motion {} ended", person, playing[pi]);
+      playing[pi] = 0, Flush(true);  // (that motion ended: written out)
+    }
     return;
   }
+  if (playing[pi] != motion) REXLOG_INFO("[svr2011] pose dump: person {} motion {} (ch {:08X}, fighter {:08X})", person, motion, ch, fighter);
   playing[pi] = motion;
   const uint8_t* P = base + ch + kPose;
   std::string s;
