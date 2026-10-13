@@ -65,7 +65,7 @@ def convert(a, game, it, slot, pac_out):
         r = subprocess.run([a.svrmod, 'wwe13', os.path.join(src, 'pac', 'bg', it['key'] + '.pac'), host, pac_out],
                            capture_output=True, text=True, creationflags=IDLE)
         text = (r.stdout + r.stderr).strip().splitlines()
-        notes = [l.strip() for l in text if l.strip().startswith(('models', 'entry', 'texture', 'ring model'))
+        notes = [l.strip() for l in text if l.strip().startswith(('models', 'entry', 'texture', 'ring model', 'light sets'))
                  or 'halved' in l or l.startswith('wrote')]
         ok = r.returncode == 0 and os.path.exists(pac_out)
         if not ok:
