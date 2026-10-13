@@ -11,7 +11,8 @@ digits (XX of model id XXYZ) read as decimal (HCTP model 0x3900 -> record 39 Joh
 number, PS2 2010 the digits + 100 (NUMBERING). (HCTP also lists the roster in MOVES.PAC group LIST entry 6:
 u16 count, 32-byte {u16 id, name[30]}.)
 Characters ps2_char finds without a name (staff, props, copies) are left out of the list.
-Not yet: themes (BGM\\*.AFS, ADX), ratings, movesets - the base's.
+Ratings / abilities: ratings_port / abilities_port (ps2_records); movesets: ps2_moves (by move name, no motions).
+Not yet: themes (BGM\\*.AFS, ADX) - the base's.
 """
 import collections
 import json
@@ -220,8 +221,10 @@ def build_ps2(cid, outdir, o, rep):
     else:
         drop('ratings: the base\'s (%s)' % rrep['note'])
     SP.abilities_step(g.game_id, g, cid, man, note)
-    # moves: not mapped yet
-    drop('moves: the base\'s (%s records not mapped yet)' % g.label)
+    # moves: the PS2 profile's moves that 2011 has (tools/ps2_moves.py; PS2 motions aren't ported)
+    import ps2_moves
+    SP.progress(55, 'moveset')
+    ps2_moves.moveset_step(g, cid, base, o, work, mod, man, rep)
     # entrance
     SP.progress(60, 'entrance')
     if o.get('entrance'):

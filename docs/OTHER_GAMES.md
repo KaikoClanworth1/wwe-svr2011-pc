@@ -247,6 +247,16 @@ numbering (14 is Comeback from '12 on: mapped to Kip-Up as a guess; 22 Possum Pi
 2K16 +60, 2K17 +64 (raw DAT). SvR 2008's fighting styles and SvR 2007's ratings give a guessed set; the report
 says which were guessed.
 
+PS2 movesets: `tools/ps2_moves.py` (ps2_port calls it; `--report <game> <iso>` lists every superstar). Move
+names: SYM `PAC/MOVES.PAC` CATE (lists of 40-byte {id, name +8}), HCTP / SvR 2004 MOVES.PAC WAZA (64-byte
+{name[32], data[32] with the id at +8}; 0x20 / 0xA0-byte header), SvR 2006 - 2009 `PAC/MISC.PAC` MOVS/WAZE
+(SvR 2007's 144-byte records), 2010 its 160-byte ones. Profiles: SYM / HCTP / SvR 2004 in the CHAR record
+(+0x08 / +0x10 / +0x30, one layout), SvR 2006 CHAR/PRO (432 B), PS2 2007-2010 CHAR/PRO = the X360 records
+(2010: its first 564 B), the X360 maps and 2011's ids. A slot's move is 2011's of the same name (or the same id
+and name), else one of the same name with another number that 2011 uses in that kind of slot ("similar"),
+else the base's - no PS2 motions are ported. Mapped slots that get a 2011 move: SYM 32 %, HCTP 37 %, SvR 2004
+45 %, 2006 45 %, PS2 2007 60 %, 2008 60 %, 2009 69 %, 2010 82 % (offline, every superstar of each disc).
+
 ### Converter plan
 
 | From | Model | Renders | Theme | Moveset | Moves |

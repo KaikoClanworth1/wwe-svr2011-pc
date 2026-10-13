@@ -51,13 +51,21 @@ def _groups(head):
     return out
 
 
-def table(src):
-    """{record number: record bytes} of the game's CHAR table (cached on src)"""
-    cached = getattr(src, '_ps2_records', None)
-    if cached is not None:
-        return cached
+# the CHAR/PRO tables (the move profiles, tools/ps2_moves.py): SvR 2006 and PS2 2007-2010, in the DAT's file
+PRO_FILE = {'ps2_svr06': 'PAC/M.PAC', 'ps2_svr07': 'PAC/MISC.PAC', 'ps2_svr08': 'PAC/MISC.PAC',
+            'ps2_svr09': 'PAC/CH/CHETC.PAC', 'ps2_svr10': 'PAC/CH/CHETC.PAC'}
+
+
+def table(src, what=None):
+    """{record number: record bytes} of the game's CHAR table (cached on src); what='PRO': the CHAR/PRO
+    table (PRO_FILE games), the same record numbers"""
+    cache = src.__dict__.setdefault('_ps2_tables', {})
+    if what in cache:
+        return cache[what]
     import svrfmt
     f, entry, _no, _nl = SPEC[src.game_id]
+    if what is not None:
+        f, entry = PRO_FILE[src.game_id], what
     d = src.g.disc
     head = d.read(f, 0, 0x4000)
     out = {}
@@ -71,7 +79,7 @@ def table(src):
             import ps2_char   # (its PS2 'PAC ' reader)
             for k, v in ps2_char.pac(bytes(d.read(f, off, size))).items():
                 out[k] = svrfmt.bpe_decode(v) if v[:4] == b'BPE ' else v
-    src._ps2_records = out
+    cache[what] = out
     return out
 
 
@@ -86,17 +94,24 @@ def record_name(game_id, rec):
     return rec[no:no + nl].split(b'\0')[0].decode('latin-1').strip()
 
 
-def record(src, cid):
-    """the superstar's record (bytes) or None: by record number (HCTP), else by name"""
+def number(src, cid):
+    """the superstar's record number or None: src.record_number (ps2_port) or HCTP's number, else by name"""
     t = table(src)
-    if src.game_id == 'ps2_hctp' and hasattr(src, 'number'):
-        r = t.get(src.number(cid))
-        if r is not None:
-            return r
+    for f in ('record_number', 'number'):
+        if hasattr(src, f) and (f == 'record_number' or src.game_id == 'ps2_hctp'):
+            n = getattr(src, f)(cid)
+            if n in t:
+                return n
     want = norm(src.name(cid) or '')
     if not want:
         return None
     for n in sorted(t):
         if norm(record_name(src.game_id, t[n])) == want:
-            return t[n]
+            return n
     return None
+
+
+def record(src, cid):
+    """the superstar's record (bytes) or None"""
+    n = number(src, cid)
+    return None if n is None else table(src)[n]
