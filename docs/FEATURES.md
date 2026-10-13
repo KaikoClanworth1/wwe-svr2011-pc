@@ -166,6 +166,7 @@ still being tested.
 - **Less CPU on high-refresh screens (Direct3D 12 / 11)**: the window is only redrawn when the game has a new frame (Vulkan already did this); before, it redrew at the monitor's rate - 144 times a second on a 144 Hz screen for 60 game frames. Measured: the UI thread 43% -> 3% of a core (D3D12), frame rate unchanged. `d3d_throttle_ui_paints = false` turns it off.
 - **VSync really syncs**: with VSync on, frames no longer tear on Direct3D 12, Direct3D 11 or Vulkan (it only paced the game before); the log names the present mode.
 - **Cutscene movies keep up with their sound** on slow PCs (the video fell 4-6 s behind in Road to WrestleMania); full-speed PCs are unchanged.
+- **Sabu 1.5 and The Sandman 1.1**: their models no longer show red specks at a distance or a stray texture on some parts (converter bugs, now fixed for all new ports too).
 - **Sabu 1.4**: his d-pad-left taunt ("Sit Down", a move 2011 cut) no longer freezes him and the match end.
 - **HD entrance movies**: a superstar or media mod's movie can be an .mp4 up to 1080p, shown on the arena screens at up to 1024x1024 (the game's largest; 320x320 before), decoded on the graphics card; the launcher makes a .bik copy for PCs that can't play .mp4 (Steam Deck, Windows N).
 - **Hometowns and name calls**: superstar mods can have a hometown the announcer says (`hometown=`); Created Superstars can use a stock superstar's name calls (`Mods\caw_announcer.txt`); theme volume per mod (`theme_gain=`).
