@@ -478,24 +478,10 @@ Bytes ConvertHmd13(const Bytes& raw, float scale) {
 }
 
 std::string ConvertFlags13(const std::string& t) {
-  // lights SvR2011 arenas use: 100-111, 120-127, 300-308, 501, 502. WWE '13
-  // defines its lights in the arena (entries 0x7532/0x7533, by light number);
-  // SvR2011 has no such entry, so 128-135 go to the light whose WWE '13
-  // definition is nearest (colours and directions)
-  static const std::map<int, int> kMap = {{128, 127}, {129, 126}, {130, 121}, {131, 126},
-                                          {132, 121}, {133, 121}, {134, 121}, {135, 124}};
+  // (the light numbers l(n) stay: the arena keeps its own light bank 0x7530,
+  // see LightBank13)
   std::string o;
   for (size_t i = 0; i < t.size();) {
-    if (t.compare(i, 2, "l(") == 0 && (i == 0 || t[i - 1] == ' ' || t[i - 1] == '\t')) {
-      const size_t e = t.find(')', i);
-      if (e != std::string::npos && e - i < 8) {
-        const int v = std::atoi(t.c_str() + i + 2);
-        auto it = kMap.find(v);
-        o += "l(" + std::to_string(it != kMap.end() ? it->second : v) + ")";
-        i = e + 1;
-        continue;
-      }
-    }
     // "p" / "pg" / "pe": the model drops a shadow. WWE '13 marks its floor
     // pieces and mats; SvR2011 projects those shadows flat onto the canvas
     // (grey slabs and dashes on the mat): left out
@@ -519,20 +505,170 @@ std::string ConvertFlags13(const std::string& t) {
   return o;
 }
 
-// Light numbers l(n) the host arena has no light for go to its nearest one of
-// the same hundred (a light the arena lacks crashes the load: SvR 2009's and
-// WWE 2K14's l(502) on a 2011 RAW host).
-std::string HostLights13(const std::string& t, const std::string& host_flags) {
+// Arena lights: entry 0x7530 is the arena's bank of light sets (YMKs, LE:
+// [16-byte header], event-size table T[256], u32 count, count x {u8 y, u8 x,
+// u16 set id, u32 offset, u32 frames, u32 rt}, key streams). A set: ground /
+// sky colour (y 0 / 1), up to 4 directional lights (y 10-13), moving crowd
+// lights (y 50-59). The model flags (0xC351 l(n)) and the light zones (0xC353)
+// pick sets by id; an id the bank lacks is index -1 in the game. WWE '12 /
+// '13 / 2K14 banks have the SvR2011 format and id plan (their y 14 track is
+// ignored), but lack sets the game looks up itself (110, 115) and some the
+// flags name (111, and RAW's 102 / 108 given by RelightByRole13).
+constexpr int kExeLights13[] = {10, 11, 12, 13, 14, 20, 30, 31, 100, 110, 115, 500};
+
+struct LightDir13 { uint8_t y, x; uint16_t id; uint32_t off, frames, rt; };
+
+bool LightBankRead13(const Bytes& b, size_t& head, std::vector<LightDir13>& dirs, size_t& data) {
+  head = (b.size() >= 4 && (!std::memcmp(b.data(), "YMKs", 4) || !std::memcmp(b.data(), "YMBs", 4))) ? 16 : 0;
+  if (b.size() < head + 0x104) return false;
+  const uint32_t n = Le32(&b[head + 0x100]);
+  data = head + 0x104 + size_t(n) * 16;
+  if (n > 100000 || data > b.size()) return false;
+  dirs.clear();
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* r = &b[head + 0x104 + 16 * i];
+    dirs.push_back({r[0], r[1], Le16(r + 2), Le32(r + 4), Le32(r + 8), Le32(r + 12)});
+  }
+  return true;
+}
+
+std::set<int> LightIds13(const Bytes& bank) {
+  size_t head, data;
+  std::vector<LightDir13> dirs;
+  std::set<int> ids;
+  if (LightBankRead13(bank, head, dirs, data))
+    for (const auto& d : dirs) ids.insert(d.id);
+  return ids;
+}
+
+// The sets in `want` the bank lacks are copied from the host's (2011 RAW's)
+// bank: directory records appended, their key streams after the data. Sets
+// neither the host has nor `want` names are dropped (unused): every set costs
+// the game ~18 KB of stage memory (two 8608-byte players and a 928-byte
+// object), and WWE 2K14's 52 crashed its arena load (in the object motion
+// loader sub_82183C10, after the light sets); with 41 or 47 it plays.
+Bytes FillLights13(const Bytes& bank, const Bytes& host, const std::set<int>& want, std::vector<int>& added,
+                   std::vector<int>& unused) {
+  size_t head, data, hh, hdata;
+  std::vector<LightDir13> dirs, hd;
+  if (!LightBankRead13(bank, head, dirs, data) || !LightBankRead13(host, hh, hd, hdata)) return bank;
+  std::set<int> host_ids;
+  for (const auto& d : hd) host_ids.insert(d.id);
+  {
+    std::vector<LightDir13> keep;
+    for (const auto& d : dirs)
+      if (host_ids.count(d.id) || want.count(d.id)) keep.push_back(d);
+      else if (unused.empty() || unused.back() != d.id) unused.push_back(d.id);
+    dirs.swap(keep);
+  }
   std::set<int> have;
-  for (size_t i = host_flags.find("l("); i != std::string::npos; i = host_flags.find("l(", i + 2))
-    have.insert(std::atoi(host_flags.c_str() + i + 2));
+  for (const auto& d : dirs) have.insert(d.id);
+  std::set<uint32_t> hoffs;
+  for (const auto& d : hd) hoffs.insert(d.off);
+  const size_t hlen = host.size() - hdata;
+  Bytes extra;
+  std::map<uint32_t, uint32_t> moved;  // host offset -> new offset (shared streams stay shared)
+  const uint32_t base = uint32_t(bank.size() - data);
+  for (int id : want) {
+    if (have.count(id)) continue;
+    bool any = false;
+    for (const auto& d : hd) {
+      if (d.id != id || d.off > hlen) continue;
+      auto mv = moved.find(d.off);
+      if (mv == moved.end()) {
+        auto nx = hoffs.upper_bound(d.off);
+        const size_t end = (nx == hoffs.end() || *nx > hlen) ? hlen : *nx;
+        mv = moved.emplace(d.off, base + uint32_t(extra.size())).first;
+        App(extra, &host[hdata + d.off], end - d.off);
+      }
+      dirs.push_back({d.y, d.x, d.id, mv->second, d.frames, d.rt});
+      any = true;
+    }
+    if (any) added.push_back(id);
+  }
+  if (added.empty() && unused.empty()) return bank;
+  Bytes out(bank.begin(), bank.begin() + head + 0x100);
+  AppLe32(out, uint32_t(dirs.size()));
+  for (const auto& d : dirs) {
+    out.push_back(d.y), out.push_back(d.x), out.push_back(uint8_t(d.id)), out.push_back(uint8_t(d.id >> 8));
+    AppLe32(out, d.off), AppLe32(out, d.frames), AppLe32(out, d.rt);
+  }
+  out.insert(out.end(), bank.begin() + data, bank.end());
+  App(out, extra);
+  return out;
+}
+
+// The l(n) / le(n) / lg(n) numbers of a flags text
+std::set<int> FlagLights13(const std::string& t) {
+  std::set<int> ids;
+  for (size_t i = t.find('('); i != std::string::npos; i = t.find('(', i + 1)) {
+    size_t s = i;
+    if (s >= 1 && (t[s - 1] == 'e' || t[s - 1] == 'g')) --s;
+    if (s >= 1 && t[s - 1] == 'l' && (s == 1 || t[s - 2] == ' ' || t[s - 2] == '\t'))
+      ids.insert(std::atoi(t.c_str() + i + 1));
+  }
+  return ids;
+}
+
+// The light sets a zones text (0xC353) names
+std::set<int> ZoneLights13(const std::string& t) {
+  std::set<int> ids;
+  size_t i = 0;
+  while (i < t.size()) {
+    size_t e = t.find('\n', i);
+    if (e == std::string::npos) e = t.size();
+    const std::string line = t.substr(i, e - i);
+    i = e + 1;
+    float v[4];
+    int l[4];
+    if (line.compare(0, 2, "//") != 0 &&
+        std::sscanf(line.c_str(), "%f %f %f %f %d %d %d %d", &v[0], &v[1], &v[2], &v[3], &l[0], &l[1], &l[2], &l[3]) == 8)
+      for (int k : l) ids.insert(k);
+  }
+  return ids;
+}
+
+// WWE '12 / '13 / 2K14 light zones (0xC353: "x0 z0 x1 z1 L0 L1 L2 ambient", the
+// entrance stage and ramp) are in cm, SvR2011's in its arena units (x 0.1)
+std::string ScaleZones13(const std::string& t, float k) {
+  std::string o;
+  size_t i = 0;
+  while (i < t.size()) {
+    size_t e = t.find('\n', i);
+    if (e == std::string::npos) e = t.size(); else ++e;
+    std::string line = t.substr(i, e - i), eol;
+    i = e;
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) eol.insert(eol.begin(), line.back()), line.pop_back();
+    float v[4];
+    int l[4];
+    const size_t c = line.find(';');
+    const std::string body = line.substr(0, c);
+    if (line.compare(0, 2, "//") != 0 &&
+        std::sscanf(body.c_str(), "%f %f %f %f %d %d %d %d", &v[0], &v[1], &v[2], &v[3], &l[0], &l[1], &l[2], &l[3]) == 8) {
+      char buf[160];
+      std::snprintf(buf, sizeof buf, "%7.1f  %7.1f   %7.1f  %7.1f    %d  %d  %d  %d", v[0] * k, v[1] * k, v[2] * k, v[3] * k,
+                    l[0], l[1], l[2], l[3]);
+      const std::string comment = c == std::string::npos ? "" : "     " + line.substr(c);
+      line = buf + comment;
+    }
+    o += line + eol;
+  }
+  return o;
+}
+
+// Light numbers l(n) the shipped bank has no set for go to its nearest one of
+// the same hundred.
+std::string BankLights13(const std::string& t, const std::set<int>& have) {
   if (have.empty()) return t;
   std::string o;
   for (size_t i = 0; i < t.size();) {
-    if (t.compare(i, 2, "l(") == 0 && (i == 0 || t[i - 1] == ' ' || t[i - 1] == '	')) {
+    size_t k = i + 1;
+    if (t[i] == 'l' && k < t.size() && (t[k] == 'e' || t[k] == 'g')) ++k;
+    if (t[i] == 'l' && k < t.size() && t[k] == '(' && (i == 0 || t[i - 1] == ' ' || t[i - 1] == '	')) {
       const size_t e = t.find(')', i);
-      if (e != std::string::npos && e - i < 8) {
-        int v = std::atoi(t.c_str() + i + 2);
+      if (e != std::string::npos && e - i < 9) {
+        const std::string word = t.substr(i, k - i);
+        int v = std::atoi(t.c_str() + k + 1);
         if (!have.count(v)) {
           int best = -1;
           for (int h : have)
@@ -542,7 +678,7 @@ std::string HostLights13(const std::string& t, const std::string& host_flags) {
               if (best < 0 || std::abs(h - v) < std::abs(best - v)) best = h;
           v = best;
         }
-        o += "l(" + std::to_string(v) + ")";
+        o += word + "(" + std::to_string(v) + ")";
         i = e + 1;
         continue;
       }
@@ -1085,8 +1221,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   if (se.empty()) return fail("WWE '13 file: no stage index (PACH)");
   Arena host;
   if (!host.LoadData(host_file, error)) return false;
-  // WWE 2K14 (its entries packed as "ZLIB"): its arena motions (0x7530 YMKs)
-  // crash SvR2011's arena load; the host's are used
+  // WWE 2K14 (its entries packed as "ZLIB")
   bool k14 = false;
   for (const auto& e : se) k14 = k14 || (e.data.size() >= 4 && !std::memcmp(e.data.data(), "ZLIB", 4));
 
@@ -1095,6 +1230,9 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   std::map<uint32_t, std::string> names;  // converted models
   std::map<uint32_t, const PachEntry*> hostm;
   for (const auto& e : host.entries) hostm[e.id] = &e;
+  Bytes bank13;  // the arena's light bank (0x7530)
+  std::string flags13;  // its converted model flags (0xC351)
+  bool has_flags13 = false;
   // the source's light maps (by name), for BakeLightMaps13
   std::map<std::string, LightMap13> lightmaps;
   {
@@ -1163,7 +1301,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       continue;
     }
     if (e.id == 0x7532 || e.id == 0x7533) { ++rep.dropped; continue; }  // (WWE '13 only)
-    if (k14 && e.id == 0x7530 && hostm.count(e.id)) { outm[e.id] = hostm[e.id]->data; ++rep.from_host; continue; }
+    if (e.id == 0x7530) { bank13 = Unpack(e.data); continue; }  // (written after the flags: LightBank13)
     // (2K14 stores a few small texts - ring zones 0xEB29 - as bare zlib streams
     // of unknown size: the host's, which match)
     if (k14 && e.data.size() > 2 && e.data[0] == 0x78 && hostm.count(e.id)) {
@@ -1256,16 +1394,42 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       std::string fl = ConvertFlags13(Text(raw));
       if (opt.role_lights) fl = RelightByRole13(fl, names, opt.stand_light);
       if (opt.no_spot_shadows) fl = NoSpotShadows13(fl, names);
-      if (hostm.count(0xC351)) fl = HostLights13(fl, Text(Unpack(hostm[0xC351]->data)));
-      outm[e.id] = Pack(FromText(fl));
+      flags13 = fl, has_flags13 = true;
+    } else if (e.id == 0xC353) {
+      outm[e.id] = Pack(FromText(ScaleZones13(Text(raw), 0.1f)));
     } else if ((e.id == 0x4E20 || e.id == 0x4E2A) && IsPach(raw)) {
       if (opt.host_crowd && hostm.count(e.id)) { outm[e.id] = hostm[e.id]->data; ++rep.from_host; continue; }
       outm[e.id] = Pack(ConvertCrowd(raw, rep));
     } else {
-      outm[e.id] = e.data;  // as stored
+      // as stored; 2K14's "ZLIB" packing repacked (the game unpacks BPE only:
+      // its object motions 0x7531 and 0x7922 left as ZLIB crashed the arena load)
+      outm[e.id] = (e.data.size() >= 4 && !std::memcmp(e.data.data(), "ZLIB", 4)) ? Pack(raw) : e.data;
     }
   }
   if (opt.barrier_corners) BakeBarrierCorners(pending, rep);
+  // LightBank13: the arena's own light sets, plus those the game looks up
+  // itself and the flags name that it lacks, from the 2011 host arena's bank
+  if (!bank13.empty()) {
+    std::set<int> want(std::begin(kExeLights13), std::end(kExeLights13));
+    if (has_flags13)
+      for (int id : FlagLights13(flags13)) want.insert(id);
+    if (outm.count(0xC353))
+      for (int id : ZoneLights13(Text(Unpack(outm[0xC353])))) want.insert(id);
+    std::vector<int> added, unused;
+    if (hostm.count(0x7530)) bank13 = FillLights13(bank13, Unpack(hostm[0x7530]->data), want, added, unused);
+    if (!added.empty()) {
+      std::string n = "light sets from the 2011 host arena:";
+      for (int id : added) n += " " + std::to_string(id);
+      rep.notes.push_back(n);
+    }
+    if (!unused.empty()) {
+      std::string n = "light sets nothing uses, left out:";
+      for (int id : unused) n += " " + std::to_string(id);
+      rep.notes.push_back(n);
+    }
+    outm[0x7530] = Pack(bank13);
+  }
+  if (has_flags13) outm[0xC351] = Pack(FromText(BankLights13(flags13, LightIds13(outm.count(0x7530) ? Unpack(outm[0x7530]) : Bytes()))));
   for (auto& [id, m] : pending) outm[id] = Pack(JboyWrite(m));
   // the host's: the ring kit, and data files WWE '13 has none of (not its
   // models; not its ad boards or titantron flip-book, placed for its own hall)
