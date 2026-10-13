@@ -13,9 +13,11 @@
 #include "app.h"
 #include "char_preview.h"
 #include <cmath>
+#include <memory>
 
 #include "star_page_internal.h"
 #include "svrfmt/png.h"
+#include "tool_run.h"
 
 namespace mm {
 namespace star_page {
@@ -288,9 +290,44 @@ void StepMusic() {
   if (!g_star.song.empty()) ImGui::TextDisabled("Tip: \"Match the game\" makes it as loud as the game's own songs.");
 }
 
+// The entrance's walk to the ring on the model: tools/entrance_ring.py turns entrance n's own track bank (its
+// pac\evt Nyujyo pac, or a mod's move pack) into a YMKs bank keyed as motion n, x = segment (4 = the ring part).
+int g_ring_shown = -1;  // the entrance the preview shows
+void WatchEntrance(int n) {
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"entrance_ring";
+  std::error_code ec;
+  fs::create_directories(work, ec);
+  const std::vector<std::wstring> args = {std::to_wstring(n), L"--game-pac", (fs::path(g_game) / L"pac").wstring(), L"--mods",
+                                          (fs::path(g_game) / L"Mods").wstring(), L"--out", work.wstring()};
+  const bool started = RunToolJson(L"entrance_ring.py", args, [n, work](int code, const std::string& text) {
+    svrfmt::Bytes b;
+    if (code != 0 || !svrfmt::ReadFile(PathStr(work / (L"entrance_" + std::to_wstring(n) + L".ymks")), b)) {
+      Status(code == 2 ? "That entrance has no walk to show." : "The entrance couldn't be read (see the log).");
+      Log("entrance_ring: " + text);
+      return;
+    }
+    auto bank = std::make_shared<const std::vector<uint8_t>>(std::move(b));
+    std::string err;
+    char_preview::SetDummy(L"");
+    if (!char_preview::SetMotion(bank, n, 4, &err)) return Status("The entrance can't be shown: " + err + ".");
+    char_preview::Play().loop = true;
+    g_ring_shown = n;
+    Status("The entrance's walk to the ring.");
+  });
+  if (!started) Status("The entrance preview needs the Mod Maker tools (Python): see the log.");
+}
+
 void StepEntrance() {
   if (EntrancePicker("Entrance", g_star.entrance, "The style's", 360)) Touch();
   if (g_star.entrance < 0) FromStyle("Entrance");
+  {
+    const int n = g_star.entrance >= 0 ? g_star.entrance : kStyles[g_star.style].template_id;  // (the style's: its superstar's)
+    ImGui::BeginDisabled(Busy());
+    if (ImGui::Button("Watch the walk to the ring", ImVec2(240 * g_scale, 0))) WatchEntrance(n);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("Your superstar does the entrance's ring part in the 3D view (the lights, pyro and video only show in the game).");
+  }
   ImGui::Spacing();
   ImGui::TextUnformatted("Big screen video (optional)");
   FileRow("Pick a video file...", g_star.movie, "the style's", kBinkFilter, 1, "A video made for the game's big screen (.bik).");
@@ -499,6 +536,8 @@ void StepFinish() {
 void TestSimpleLook(int mode) { g_look_mode = mode; }
 std::wstring g_test_capture;  // --simple-capture <png>: the 3D view taken as the select picture, saved, quit
 void TestSimpleCapture(const std::wstring& png) { g_test_capture = png; }
+int g_test_ring = -1;  // --simple-ring <entrance>: its walk to the ring in the preview (with --simple-capture: taken mid-walk)
+void TestSimpleRing(int n) { g_test_ring = n; }
 
 void SimpleDraw() {
   int& step = g_star.simple_step;
@@ -554,7 +593,10 @@ void SimpleDraw() {
   ImGui::SameLine();
 
   static int capture_frames = 0;
-  if (!g_test_capture.empty() && char_preview::ModelHeight() > 0 && ++capture_frames > 30) {
+  static bool ring_asked = false;
+  if (g_test_ring >= 0 && !ring_asked && char_preview::ModelHeight() > 0 && !Busy()) ring_asked = true, WatchEntrance(g_test_ring);
+  if (g_test_ring >= 0 && g_ring_shown >= 0 && char_preview::Play().key < 300) char_preview::Play().key = 300;  // (mid-walk)
+  if (!g_test_capture.empty() && char_preview::ModelHeight() > 0 && (g_test_ring < 0 || g_ring_shown >= 0) && ++capture_frames > 30) {
     std::vector<uint8_t> rgba;
     Image img;
     img.w = img.h = 512;
