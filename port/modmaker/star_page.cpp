@@ -959,11 +959,21 @@ void MakeFromFbx() {
       std::error_code ec;
       fs::remove(out, ec);
       const bool started = RunToolJson(kFbxBuilder, {in, out, report}, [out, scale](int code, const std::string& text) {
+        // its answer: {"ok", "error", "warnings": [...], "attires": [{"pages", "dropped": [...]}]}
+        Json j;
+        const bool parsed = ParseJson(text, j);
+        if (parsed)
+          for (const auto& w : j["warnings"].items) Log("  model: " + w.Str());
         if (code != 0 || !fs::exists(out)) {
-          Status("The model could not be built from the FBX (see the log).");
-          Log("svr11_build: " + text);
+          const std::string why = parsed ? j["error"].Str() : std::string();
+          Status("The model could not be built from the FBX" + (why.empty() ? std::string(" (see the log).") : ": " + why));
+          Log("svr11_build (" + std::to_string(code) + "): " + text);
           return;
         }
+        if (parsed)
+          for (const auto& a : j["attires"].items)
+            Log("FBX model: " + a["pages"].Str() + " of 192 memory pages" +
+                (a["dropped"].items.empty() ? std::string() : ", " + std::to_string(a["dropped"].items.size()) + " blood layers left out to fit"));
         g_star.model = out;
         // the game holds the hips at the fighting style's height: the model was scaled to it; height= brings it back
         const double back = 1.0 / std::max(0.01, scale);

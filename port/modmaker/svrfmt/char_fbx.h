@@ -38,6 +38,7 @@ bool ReadFbxSkeleton(const std::string& path, std::vector<FbxBone>& out, std::st
 // (the input of tools/svr11_build.py), color.png and normal.png.
 struct FbxImportReport {
   int meshes = 0, vertices = 0, triangles = 0, textures = 0, atlas = 0, aimed = 0, bones_used = 0;
+  int reduced_from = 0;  // the vertices before the budget's reduction (0: none needed)
   double scale = 1, height_cm = 0;  // (height: the model as it came, feet to the top)
   double aim_error_deg = 0;         // (test: the posed bones against the template's directions)
   std::string aim_worst;
@@ -48,6 +49,7 @@ struct FbxImportReport {
 struct FbxImportOptions {
   std::map<std::string, bool> include;
   std::map<std::string, std::string> kind, picture;
+  int max_vertices = 10500;  // all meshes together (the game's budget; 0 = as they are)
 };
 bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,
                      const std::string& template_path, const std::string& out_dir, FbxImportReport& rep,

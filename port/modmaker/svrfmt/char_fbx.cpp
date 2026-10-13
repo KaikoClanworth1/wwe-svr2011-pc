@@ -663,6 +663,202 @@ struct OutMesh {
   std::vector<std::array<int, 3>> tris;
 };
 
+// Fewer vertices for the game's budget (192 pages a wrestler; stock bodies ~10,000 vertices): quadric error
+// half-edge collapses - a vertex merges into a neighbour, so the kept ones keep their exact UVs, normals and
+// weights. Seam vertices (one position, several UV / normal copies) and open edges stay put; a collapse that
+// flips or squashes a triangle is refused. keep: the vertices to keep at most. Returns the new vertex count.
+struct Quadric {
+  double a[10] = {};  // the symmetric 4x4 (upper triangle)
+  void AddPlane(const V3& n, double d, double w) {
+    const double p[4] = {n[0], n[1], n[2], d};
+    int k = 0;
+    for (int i = 0; i < 4; ++i)
+      for (int j = i; j < 4; ++j) a[k++] += w * p[i] * p[j];
+  }
+  void Add(const Quadric& q) {
+    for (int k = 0; k < 10; ++k) a[k] += q.a[k];
+  }
+  double Eval(const V3& v) const {
+    const double x = v[0], y = v[1], z = v[2];
+    return a[0] * x * x + 2 * a[1] * x * y + 2 * a[2] * x * z + 2 * a[3] * x + a[4] * y * y + 2 * a[5] * y * z + 2 * a[6] * y +
+           a[7] * z * z + 2 * a[8] * z + a[9];
+  }
+};
+
+int Decimate(OutMesh& m, int keep) {
+  const int nv = int(m.pos.size());
+  if (keep >= nv || m.tris.empty()) return nv;
+  // positions welded: a seam vertex's copies (UV / normal splits) are one position
+  std::map<std::array<double, 3>, int> weld;
+  std::vector<int> pid(static_cast<size_t>(nv));
+  std::vector<std::vector<int>> members;
+  for (int i = 0; i < nv; ++i) {
+    auto [it, fresh] = weld.emplace(std::array<double, 3>{m.pos[size_t(i)][0], m.pos[size_t(i)][1], m.pos[size_t(i)][2]}, int(members.size()));
+    if (fresh) members.emplace_back();
+    pid[size_t(i)] = it->second;
+    members[size_t(it->second)].push_back(i);
+  }
+  const int np = int(members.size());
+  std::vector<std::vector<int>> vt(static_cast<size_t>(nv));  // vertex -> its triangles
+  for (int t = 0; t < int(m.tris.size()); ++t)
+    for (int c = 0; c < 3; ++c) vt[size_t(m.tris[size_t(t)][size_t(c)])].push_back(t);
+  // feature edges (positions): open (one triangle) or a seam (the two sides use different copies);
+  // a position on exactly two feature edges slides along them, on more (a corner) or one it stays
+  auto key = [](int a, int b) { return a < b ? std::make_pair(a, b) : std::make_pair(b, a); };
+  std::map<std::pair<int, int>, std::set<std::pair<int, int>>> variants;
+  std::map<std::pair<int, int>, int> uses;
+  for (const auto& t : m.tris)
+    for (int c = 0; c < 3; ++c) {
+      const int a = t[size_t(c)], b = t[size_t((c + 1) % 3)];
+      const auto k = key(pid[size_t(a)], pid[size_t(b)]);
+      ++uses[k];
+      variants[k].insert(pid[size_t(a)] < pid[size_t(b)] ? std::make_pair(a, b) : std::make_pair(b, a));
+    }
+  std::vector<std::set<int>> fadj(static_cast<size_t>(np));  // position -> its neighbours along feature edges
+  for (const auto& [k, n] : uses)
+    if (n == 1 || variants[k].size() > 1) fadj[size_t(k.first)].insert(k.second), fadj[size_t(k.second)].insert(k.first);
+  auto is_feature = [&](int a, int b) { return fadj[size_t(a)].count(b) > 0; };
+  std::vector<Quadric> q(static_cast<size_t>(np));
+  for (const auto& t : m.tris) {
+    const V3 &p0 = m.pos[size_t(t[0])], &p1 = m.pos[size_t(t[1])], &p2 = m.pos[size_t(t[2])];
+    const V3 c = Cross(Sub(p1, p0), Sub(p2, p0));
+    const double area = Len(c);
+    if (area < 1e-12) continue;
+    const V3 n = Norm(c);
+    for (int k = 0; k < 3; ++k) q[size_t(pid[size_t(t[size_t(k)])])].AddPlane(n, -Dot(n, p0), area);
+    for (int k = 0; k < 3; ++k) {  // a feature edge's own plane (through it, upright on the face): its line stays
+      const int a = t[size_t(k)], b = t[size_t((k + 1) % 3)];
+      if (!is_feature(pid[size_t(a)], pid[size_t(b)])) continue;
+      const V3 e = Sub(m.pos[size_t(b)], m.pos[size_t(a)]);
+      const V3 en = Norm(Cross(e, n));
+      const double w = Dot(e, e) * 8;
+      q[size_t(pid[size_t(a)])].AddPlane(en, -Dot(en, m.pos[size_t(a)]), w);
+      q[size_t(pid[size_t(b)])].AddPlane(en, -Dot(en, m.pos[size_t(a)]), w);
+    }
+  }
+  std::vector<bool> tri_dead(m.tris.size()), dead(static_cast<size_t>(nv)), pdead(static_cast<size_t>(np));
+  std::vector<int> stamp(static_cast<size_t>(np));
+  auto movable = [&](int pu) { return fadj[size_t(pu)].empty() || fadj[size_t(pu)].size() == 2; };
+  struct Cand {
+    double cost;
+    int pu, pv, su;
+  };
+  auto worse = [](const Cand& a, const Cand& b) { return a.cost > b.cost; };
+  std::vector<Cand> heap;
+  auto push_from = [&](int pu) {
+    if (pdead[size_t(pu)] || !movable(pu)) return;
+    std::set<int> seen;
+    for (int u : members[size_t(pu)])
+      for (int t : vt[size_t(u)]) {
+        if (tri_dead[size_t(t)]) continue;
+        for (int x : m.tris[size_t(t)]) {
+          const int pv = pid[size_t(x)];
+          if (pv == pu || !seen.insert(pv).second) continue;
+          if (!fadj[size_t(pu)].empty() && !is_feature(pu, pv)) continue;  // (a feature vertex slides along its line only)
+          Quadric s = q[size_t(pu)];
+          s.Add(q[size_t(pv)]);
+          heap.push_back({s.Eval(m.pos[size_t(x)]), pu, pv, stamp[size_t(pu)]});
+          std::push_heap(heap.begin(), heap.end(), worse);
+        }
+      }
+  };
+  for (int p = 0; p < np; ++p) push_from(p);
+  int live = nv;
+  while (live > keep && !heap.empty()) {
+    std::pop_heap(heap.begin(), heap.end(), worse);
+    const Cand c = heap.back();
+    heap.pop_back();
+    if (pdead[size_t(c.pu)] || pdead[size_t(c.pv)] || stamp[size_t(c.pu)] != c.su) continue;
+    // each copy of pu goes onto the copy of pv it shares a triangle with
+    std::vector<std::pair<int, int>> pairs;
+    bool ok = true;
+    for (int u : members[size_t(c.pu)]) {
+      int to = -1;
+      for (int t : vt[size_t(u)]) {
+        if (tri_dead[size_t(t)]) continue;
+        for (int x : m.tris[size_t(t)])
+          if (pid[size_t(x)] == c.pv) to = x;
+      }
+      if (to < 0) {
+        ok = false;
+        break;
+      }
+      pairs.push_back({u, to});
+    }
+    if (!ok || pairs.empty()) continue;
+    // no triangle may flip or turn to a sliver
+    for (const auto& [u, v] : pairs) {
+      for (int t : vt[size_t(u)]) {
+        if (tri_dead[size_t(t)]) continue;
+        auto tr = m.tris[size_t(t)];
+        if (pid[size_t(tr[0])] == c.pv || pid[size_t(tr[1])] == c.pv || pid[size_t(tr[2])] == c.pv) continue;
+        const V3 before = Cross(Sub(m.pos[size_t(tr[1])], m.pos[size_t(tr[0])]), Sub(m.pos[size_t(tr[2])], m.pos[size_t(tr[0])]));
+        for (auto& x : tr)
+          if (x == u) x = v;
+        const V3 after = Cross(Sub(m.pos[size_t(tr[1])], m.pos[size_t(tr[0])]), Sub(m.pos[size_t(tr[2])], m.pos[size_t(tr[0])]));
+        if (Len(after) < 1e-10 || Dot(Norm(before), Norm(after)) < 0.3) ok = false;
+      }
+      if (!ok) break;
+    }
+    if (!ok) continue;
+    for (const auto& [u, v] : pairs) {
+      for (int t : vt[size_t(u)]) {
+        if (tri_dead[size_t(t)]) continue;
+        auto& tr = m.tris[size_t(t)];
+        if (pid[size_t(tr[0])] == c.pv || pid[size_t(tr[1])] == c.pv || pid[size_t(tr[2])] == c.pv) {
+          tri_dead[size_t(t)] = true;
+          continue;
+        }
+        for (auto& x : tr)
+          if (x == u) x = v;
+        vt[size_t(v)].push_back(t);
+      }
+      dead[size_t(u)] = true;
+      --live;
+    }
+    // pu's feature edges are pv's now
+    for (int other : fadj[size_t(c.pu)]) {
+      fadj[size_t(other)].erase(c.pu);
+      if (other != c.pv) fadj[size_t(other)].insert(c.pv), fadj[size_t(c.pv)].insert(other);
+    }
+    fadj[size_t(c.pu)].clear();
+    fadj[size_t(c.pv)].erase(c.pu);
+    pdead[size_t(c.pu)] = true;
+    q[size_t(c.pv)].Add(q[size_t(c.pu)]);
+    // the neighbours' candidates change
+    std::set<int> around;
+    for (int v : members[size_t(c.pv)])
+      for (int t : vt[size_t(v)])
+        if (!tri_dead[size_t(t)])
+          for (int x : m.tris[size_t(t)]) around.insert(pid[size_t(x)]);
+    for (int p : around) ++stamp[size_t(p)], push_from(p);
+    if (heap.size() > size_t(nv) * 64) {
+      heap.clear();
+      for (int p = 0; p < np; ++p) push_from(p);
+    }
+  }
+  // compact: the live, used vertices
+  std::vector<bool> used(static_cast<size_t>(nv));
+  for (size_t t = 0; t < m.tris.size(); ++t)
+    if (!tri_dead[t])
+      for (int x : m.tris[t]) used[size_t(x)] = true;
+  OutMesh f;
+  f.name = m.name, f.kind = m.kind, f.texture_key = m.texture_key;
+  std::vector<int> remap(static_cast<size_t>(nv), -1);
+  for (int i = 0; i < nv; ++i)
+    if (used[size_t(i)] && !dead[size_t(i)])
+      remap[size_t(i)] = int(f.pos.size()), f.pos.push_back(m.pos[size_t(i)]), f.nrm.push_back(m.nrm[size_t(i)]),
+      f.uv.push_back(m.uv[size_t(i)]), f.w.push_back(m.w[size_t(i)]);
+  for (size_t t = 0; t < m.tris.size(); ++t) {
+    if (tri_dead[t]) continue;
+    const auto& tr = m.tris[t];
+    if (remap[size_t(tr[0])] < 0 || remap[size_t(tr[1])] < 0 || remap[size_t(tr[2])] < 0) continue;
+    f.tris.push_back({remap[size_t(tr[0])], remap[size_t(tr[1])], remap[size_t(tr[2])]});
+  }
+  m = std::move(f);
+  return int(m.pos.size());
+}
+
 }  // namespace
 
 namespace {
@@ -1053,6 +1249,27 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       for (auto& v : m.pos) v = {v[0] * scale, v[1] * scale, v[2] * scale};
   }
   rep.scale = scale;
+  // the game's budget: fewer vertices on the big meshes (eyes and lashes are left as they are)
+  {
+    int total = 0, small = 0;
+    for (const auto& m : meshes) total += int(m.pos.size()), small += (m.kind == "eye" || m.kind == "lash") ? int(m.pos.size()) : 0;
+    if (opts.max_vertices > 0 && total > opts.max_vertices) {
+      rep.reduced_from = total;
+      for (int pass = 0; pass < 3 && total > opts.max_vertices; ++pass) {
+        const int big = total - small;
+        const double ratio = std::max(0.05, double(opts.max_vertices - small) / std::max(1, big));
+        total = small;
+        for (auto& m : meshes) {
+          if (m.kind == "eye" || m.kind == "lash") continue;
+          total += Decimate(m, std::max(24, int(double(m.pos.size()) * ratio)));
+        }
+      }
+      rep.vertices = 0, rep.triangles = 0;
+      for (const auto& m : meshes) rep.vertices += int(m.pos.size()), rep.triangles += int(m.tris.size());
+      if (total > opts.max_vertices)
+        rep.warnings.push_back("still " + std::to_string(total) + " vertices after reducing (many UV seams or open edges hold them): turn off a mesh or two");
+    }
+  }
 
   // textures: every colour (and normal) map in one sheet (shelf packed, up to 2048), the UVs moved into it
   struct Sheet {
