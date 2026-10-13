@@ -407,6 +407,7 @@ def write_mod(mod, man, out_svrmod):
     order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'ratings', 'abilities', 'moves',
              'entrance', 'announcer', 'call', 'height', 'song', 'movie']
     txt = ''.join('%s=%s\n' % (k, man[k]) for k in order if k in man)
+    txt += ''.join('%s=%s\n' % (k, v) for k, v in man.items() if k not in order)   # (attire<N>_name= ...)
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n').write(txt)
     tmp = out_svrmod + '.tmp'
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
@@ -579,7 +580,67 @@ def build10(cid, outdir, o, rep):
             rep['warnings'].append(line)
         elif line.startswith(('base =', 'model:', 'renders:', 'theme:', 'titantron:', 'entrance', 'moves:', 'announcer =', 'commentary', 'ratings')):
             rep['notes'].append(line)
+    # attire names (CHANGE ATTIRE): 2010's own, for the attires its model pac gives
+    names = attire_names(src, cid)
+    if names and os.path.exists(os.path.join(mod, 'ch.pac')):
+        digits = sorted(model_attires(os.path.join(mod, 'ch.pac')))
+        man = collections.OrderedDict()
+        for line in open(os.path.join(mod, 'manifest.txt'), encoding='utf-8', errors='replace'):
+            if '=' in line:
+                k, v = line.rstrip('\r\n').split('=', 1)
+                man[k] = v
+        added = []
+        for a in digits:
+            if a >= 1 and a in names and 'attire%d_name' % (a + 1) not in man:
+                man['attire%d_name' % (a + 1)] = names[a][:31]
+                added.append('%d %s' % (a + 1, names[a]))
+        if added:
+            write_mod(mod, man, out)
+            rep['notes'].append('attire names from SvR 2010: ' + ', '.join(added))
     return out, mod
+
+
+def model_attires(pac):
+    """the attire digits of a model pac's wrestler (kind 2) entries"""
+    d = open(pac, 'rb').read()
+    _, groups = ch_tool.epk8_read(d)
+    out = set()
+    for typ, ents in groups:
+        if typ == b'EMD ':
+            for n, b in ents:
+                s = n.decode('latin1').strip('\0 ')
+                if len(s) == 8 and s[7] == '2' and s[6].isdigit():
+                    out.add(int(s[6]))
+    return out
+
+
+def attire_names(src, cid):
+    """{attire digit: name} from the game's COS table (misc.pac BATS/INIT child 5: "COS\\0", count,
+    40-byte records {u32 id, u32 attires, 4 x {u32 name string id, s32 unlock}}) and string.pac
+    entry "0000" child 3 (sdb: id -> text) - SvR 2010's layout, as 2011's"""
+    try:
+        g = svrfmt.epac_read(open(src.get('pac/misc.pac'), 'rb').read())[1]
+        init = ch_tool.unpack(dict(((ty, n), b) for ty, es in g for n, b in es)[(b'BATS', b'INIT')])
+        c5 = ch_tool.unpack(dict(svrfmt.pach_read(init))[5])
+        if c5[:4] != b'COS\0':
+            return {}
+        recs = {}
+        for k in range(struct.unpack_from('<I', c5, 4)[0]):
+            r = c5[8 + 40 * k: 8 + 40 * (k + 1)]
+            i, cnt = struct.unpack_from('<II', r, 0)
+            recs[i] = [struct.unpack_from('<I', r, 8 + 8 * a)[0] for a in range(min(cnt, 4))]
+        if cid not in recs:
+            return {}
+        g = svrfmt.epac_read(open(src.get('pac/string.pac'), 'rb').read())[1]
+        table = ch_tool.unpack(dict(((ty, n), b) for ty, es in g for n, b in es)[(b'SDB ', b'0000')])
+        sdb = ch_tool.unpack(dict(svrfmt.pach_read(table))[3])
+        text = {}
+        for k in range(struct.unpack_from('<I', sdb, 4)[0]):
+            off, ln, i, z = struct.unpack_from('<IIII', sdb, 8 + 16 * k)
+            text[i] = sdb[off:off + ln].split(b'\0')[0].decode('latin1')
+        return {a: text[nid] for a, nid in enumerate(recs[cid]) if nid in text}
+    except (KeyError, OSError, struct.error, IndexError):
+        return {}
 
 
 # --------------------------------------------------------------------------- commands
