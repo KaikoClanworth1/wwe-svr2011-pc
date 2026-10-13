@@ -87,7 +87,8 @@ enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
   kFileRequest = 7, kFilePart = 8,  // (files peers fetch from each other: P2PFetch)
   kModsRefused = 9,                 // (a searcher's mods differ: its set, for the host's notice)
-  kMods = 14                        // (a lobby's superstar mods: online_mods.cpp)
+  kMods = 14,                       // (a lobby's superstar mods: online_mods.cpp)
+  kChat = 15                        // (lobby chat, whole: online_chat.cpp)
 };
 // Round trips to the peers a match exchanges game packets with (net_sim.h);
 // game packets with the last few repeated (a peer that pings takes them).
@@ -591,6 +592,7 @@ std::map<uint64_t, Session> g_found;          // the last search's sessions
 // its private slots open to this game (as the console's invites let in).
 uint64_t g_invited = 0;
 std::atomic<P2PModHandler> g_mod_handler{nullptr};
+std::atomic<P2PChatHandler> g_chat_handler{nullptr};
 Clock::time_point g_invited_at{};
 
 // A match is on while a peer-network session is (XSESSION_CREATE_USES_PEER_NETWORK;
@@ -1084,6 +1086,11 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
     }
     case kMods: {  // (online_mods.cpp: the rest is its own)
       P2PModHandler handler = g_mod_handler.load();
+      if (handler && r.ok && r.at <= r.n) handler(r.p + r.at, r.n - r.at);
+      break;
+    }
+    case kChat: {  // (online_chat.cpp: the rest is its own)
+      P2PChatHandler handler = g_chat_handler.load();
       if (handler && r.ok && r.at <= r.n) handler(r.p + r.at, r.n - r.at);
       break;
     }
@@ -1859,6 +1866,21 @@ P2PLobby P2PMatchLobby() {
 }
 
 void SetP2PModHandler(P2PModHandler handler) { g_mod_handler = handler; }
+
+void SetP2PChatHandler(P2PChatHandler handler) { g_chat_handler = handler; }
+
+void P2PSendChat(const std::vector<uint8_t>& payload) {
+  if (g_socket == kBadSocket || payload.size() > 2000) return;
+  std::vector<Path> peers;
+  {
+    std::lock_guard lock(g_mutex);
+    for (const auto& [mac, p] : g_peers) peers.push_back(PathOf(mac, p));
+  }
+  Writer w;
+  w.b = Header(kChat, NewNonce());
+  w.bytes(payload.data(), payload.size());
+  for (const auto& p : peers) Send(p, w.b);
+}
 
 void P2PSendMods(const std::vector<uint8_t>& payload) {
   if (g_socket == kBadSocket || payload.size() > 50000) return;

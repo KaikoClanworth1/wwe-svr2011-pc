@@ -47,6 +47,7 @@
 #include "generated/default/svr2011_init.h"
 #include "online.h"
 #include "online_cas.h"
+#include "online_chat.h"
 #include "online_mods.h"
 #include "online_overlay.h"
 #include "online_rules.h"
@@ -220,6 +221,11 @@ uint8_t* g_lobby_base = nullptr;
 }  // namespace
 
 namespace svr2011 {
+bool OnlineLobbySeenWithin(int64_t ms) {
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()).count();
+  return now - g_lobby_seen.load() <= ms;
+}
 // (online_rules.h: the port rules' CPUs)
 bool OnlineLobbyView(uint32_t* state, uint32_t* cursor, uint8_t** base, uint32_t* lobby) {
   const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -254,6 +260,7 @@ REX_HOOK_RAW(sub_824E6510) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
     g_lobby_state = state, g_lobby_cursor = j, g_lobby_addr = L, g_lobby_base = base;  // (OnlineLobbyView: online_rules.cpp's covers)
     svr2011::OnlineModsFrame(ctx, base);
+    svr2011::OnlineChatFrame(ctx, base);
     PicturesFrame(ctx, base, L);
     g_lobby_seen = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now().time_since_epoch()).count();

@@ -32,6 +32,7 @@
 #include "online_files.h"
 #include "online_net.h"
 #include "online_overlay.h"
+#include "online_chat.h"
 #include "p2p.h"
 #include "paint_pages.h"
 
@@ -620,6 +621,28 @@ REX_HOOK_RAW(sub_828A7C18) {
   // (test aid SVR2011_TEST_CHAT_LONG: every message arrives as 150 characters)
   static const bool test_long = std::getenv("SVR2011_TEST_CHAT_LONG") != nullptr;
   const uint32_t msg = ctx.r4.u32;
+  // (a port game's message: its whole text comes over P2P - online_chat.h - and shows instead)
+  if (msg) {
+    PPCContext c = ctx;
+    const uint8_t* m = base + msg;
+    const uint8_t* g = base + 0x82EDE910;
+    c.r3.u64 = uint32_t(g[0]) << 24 | uint32_t(g[1]) << 16 | uint32_t(g[2]) << 8 | g[3];
+    c.r4.u64 = uint32_t(m[0]) << 24 | uint32_t(m[1]) << 16 | uint32_t(m[2]) << 8 | m[3];
+    if (c.r3.u32) {
+      sub_8288EC28(c, base);
+      // (this player's own: the whole text it sent - the field held its end)
+      if (c.r3.u64 == std::strtoull(rex::cvar::Query<std::string>("online_xuid").c_str(), nullptr, 16)) {
+        if (auto own = svr2011::OnlineChatTakeOwn()) {
+          svr2011::OnlineChatShow(rex::cvar::Query<std::string>("online_name"), *own);
+          return;
+        }
+      }
+      if (svr2011::OnlineChatFromPort(c.r3.u64)) {
+        if (log) REXLOG_INFO("online: chat message of {:016X} left out (its whole one comes)", c.r3.u64);
+        return;
+      }
+    }
+  }
   if (msg && test_long && svr2011::g_scratch) {
     const uint32_t g_scratch = svr2011::g_scratch;
     std::string t;
