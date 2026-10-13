@@ -1729,6 +1729,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       WriteFile(PathStr(report), Bytes(out.begin(), out.end()));
       return same == files ? 0 : 1;
     }
+  // --test-lufs <song>,<report.txt>: the theme volume meter on one file; no window
+  for (int i = 1; i + 1 < argc; ++i)
+    if (!wcscmp(argv[i], L"--test-lufs")) {
+      const std::wstring a = argv[i + 1];
+      const size_t comma = a.find(L',');
+      double l = 0;
+      std::string err;
+      const bool ok = MeasureLufs(a.substr(0, comma), &l, &err);
+      char b[128];
+      std::snprintf(b, sizeof b, "%s %.2f LUFS %s\n", ok ? "ok" : "failed", l, err.c_str());
+      WriteFile(Utf8(comma == std::wstring::npos ? L"lufs.txt" : a.substr(comma + 1)), Bytes(b, b + std::strlen(b)));
+      return ok ? 0 : 1;
+    }
   // test aids: --editor <arena tile 0-19> opens the editor on it, --open <mod> opens a mod,
   // --editor-view <0-2> a camera preset, --select <name> an object; --page <n>; the
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
