@@ -100,6 +100,7 @@ still being tested.
 
 ### Online
 - **Smoother online matches**: each packet repeats the last game inputs, so a lost packet no longer freezes both games (300 ms + 2% loss: from up to 40% of frames waiting to 0-1%); players stay on a path that works both ways instead of flipping between direct and relay.
+- **Less input delay online**: inputs go out every frame and the game's input delay is set from the measured ping (press to action on LAN 87 -> 37 ms; a 180 ms link 253 -> 204 ms); the lobby lists every player's ping; each player uses the faster of the direct and relay paths.
 - **Royal Rumble and 3+ player sessions**: players the game introduces can reach each other at once (joins above two players failed).
 - **Player and Ranked kept apart**: a Ranked search no longer lands in a Player Match, or the other way round.
 - **Latest version only**: an old version can't go online; the game's own message says to update (the launcher's Check for updates, or GitHub).
