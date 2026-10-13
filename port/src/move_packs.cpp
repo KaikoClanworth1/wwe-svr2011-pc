@@ -842,14 +842,14 @@ int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, in
   for (uint32_t k = 0; k < records; ++k) {
     uint8_t* r = w + 272 + size_t(k) * 160;
     if (std::all_of(r, r + 160, [](uint8_t b) { return b == 0; })) continue;
-    if (const auto nm = names.find(Le16(r + 0x90)); nm != names.end()) {  // (the name: 64 bytes at +0x10)
+    const uint16_t id = Le16(r + 0x90);
+    if (const auto nm = names.find(id); nm != names.end()) {  // (the name: 64 bytes at +0x10)
       uint8_t buf[64] = {};
       std::memcpy(buf, nm->second.data(), std::min<size_t>(nm->second.size(), 63));
       if (std::memcmp(r + 0x10, buf, 64)) std::memcpy(r + 0x10, buf, 64), ++set;
     }
-    const auto f = waze.find(Le16(r + 0x90));
-    if (f == waze.end()) continue;
-    if (std::memcmp(r, f->second.data(), 16)) std::memcpy(r, f->second.data(), 16), ++set;
+    const auto f = waze.find(id);
+    if (f != waze.end() && std::memcmp(r, f->second.data(), 16)) std::memcpy(r, f->second.data(), 16), ++set;
   }
   uint32_t count[128] = {};
   for (uint32_t k = 0; k < records; ++k)
@@ -999,6 +999,8 @@ fs::path BackstageGimmickPac(const fs::path& game) {
   return {};
 }
 
+void LoadMoveTables(const fs::path& game);  // (below: the move tables for a match's fallback, cam_mod_moves.cpp)
+
 // ---- The entrances the packs add (CREATE AN ENTRANCE's MODS rows, cae_mod_motions.cpp):
 // pacentry lines EVP? <n> (n < 10000) are entrances, EVP? <10000 + 1000k + n> their CAE parts.
 // The label: the superstar mod's name (manifest name=) for a mod's own moves/, else the script's
@@ -1135,6 +1137,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "gm.pac", kGimmickPac, "plist360.h", "plist360_4x3.h", "stamp.txt"})
       fs::remove(overlay / f, ec);  // (nothing to serve: free the space)
     fs::remove_all(overlay / "evt", ec);
+    LoadMoveTables(game);  // (a removed pack's moves in movesets: the match fallback still needs the tables)
     return;
   }
   Packs packs;
@@ -1176,6 +1179,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
       Register(vfs, overlay);
       g_folder = "Mods\\PacOverlay";
       REXLOG_INFO("[svr2011] move packs: {} packs ({} items), overlay up to date", dirs.size(), packs.count);
+      LoadMoveTables(game);
       return;
     }
   }
@@ -1216,12 +1220,14 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   ok = ok && WriteList(game, overlay, "plist360.h", pacs, extra) && WriteList(game, overlay, "plist360_4x3.h", pacs, extra);
   if (!ok) {
     REXLOG_WARN("[svr2011] move packs: merging failed - the game plays without them");
+    LoadMoveTables(game);
     return;
   }
   std::ofstream(overlay / "stamp.txt", std::ios::binary) << stamp;
   Register(vfs, overlay);
   g_folder = "Mods\\PacOverlay";
   REXLOG_INFO("[svr2011] move packs: merged");
+  LoadMoveTables(game);
 }
 
 }  // namespace svr2011
@@ -1236,9 +1242,137 @@ namespace {
 // the last MOVS/WAZE loaded (after the packs' patch).
 std::mutex g_usable_mutex;
 std::vector<bool> g_usable;  // (empty: not loaded yet)
+std::vector<uint16_t> g_defaults;  // category -> its fallback move (CategoryDefaultMove)
+std::vector<bool> g_record, g_bits;  // a record with the id at all / with category bits (MoveMissing)
+std::vector<bool> g_past_pack;       // ids a pack has given (Mods\PacOverlay\pack_moves.txt, kept across starts)
+std::vector<bool> g_stock_ok;        // the stock game plays the id without packs (a record with bits, or EXH data)
+
+// MoveUsable's list and CategoryDefaultMove's table from MOVS/WAZE records as in the file (the packs' patch
+// applied): at start-up from misc.pac (a match never loads MOVS/WAZE itself - CREATE A MOVE-SET does) and
+// again at each load (sub_8237E708).
+void SetMoveTables(const uint8_t* w) {
+  std::vector<bool> usable(65536, false), record(65536, false);
+  for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
+    const uint8_t* r = w + 272 + size_t(k) * 160;
+    record[Le16(r + 0x90)] = true;
+    if (std::any_of(r, r + 16, [](uint8_t b) { return b != 0; })) usable[Le16(r + 0x90)] = true;
+  }
+  std::vector<bool> bits = usable;
+  // (a move pack's own moves count whatever the records say: Sabu's Arabian
+  // Facebuster 6861 has 2011's motions and the pack's bits but no record of
+  // its own in the file - it plays)
+  for (const auto& [id, b] : g_waze) usable[id] = true;
+  for (const auto& [id, from] : g_copies) usable[id] = true;
+  for (const auto& [id, n] : g_names) usable[id] = true;
+  // per category, the move a slot falls back to in a match when its own has no record (cam_mod_moves.cpp):
+  // the first game move (not a pack's) of that category the game always shows (unlock 512 or 1-3), else
+  // its first game move
+  std::vector<uint16_t> defaults(128, 0), any(128, 0);
+  for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
+    const uint8_t* r = w + 272 + size_t(k) * 160;
+    const uint16_t id = Le16(r + 0x90), unlock = Le16(r + 0x78);
+    if (!id || g_waze.count(id) || g_copies.count(id) || g_names.count(id)) continue;
+    const bool shown = unlock == 512 || (unlock >= 1 && unlock <= 3);
+    for (int c = 0; c < 128; ++c) {
+      if (!(r[c >> 3] >> (c & 7) & 1)) continue;
+      if (!any[c]) any[c] = id;
+      if (shown && !defaults[c]) defaults[c] = id;
+    }
+  }
+  for (int c = 0; c < 128; ++c)
+    if (!defaults[c]) defaults[c] = any[c];
+  std::lock_guard lock(g_usable_mutex);
+  g_usable = std::move(usable);
+  g_defaults = std::move(defaults);
+  g_record = std::move(record);
+  g_bits = std::move(bits);
+}
 }  // namespace
 
 namespace svr2011 {
+void LoadMoveTables(const fs::path& game) {
+  const fs::path overlay = game / "Mods" / "PacOverlay" / "misc.pac";
+  std::error_code ec;
+  const fs::path src = fs::exists(overlay, ec) ? overlay : game / "pac" / "misc.pac";
+  Bytes blob;
+  if (!ReadEntry(src, "MOVS/WAZE", blob)) {
+    REXLOG_WARN("[svr2011] move packs: no MOVS/WAZE in {} - no match fallback for removed moves", src.string());
+    return;
+  }
+  Bytes w = svrfmt::Unpack(blob);
+  if (w.size() < 272 + 160 || std::memcmp(w.data() + 272 + 16, "* test motion *", 15)) return;
+  int fixed = 0;
+  PatchWaze(w.data(), w.size(), g_waze, &fixed, g_names, g_copies);  // (the overlay's is patched already: no change)
+  SetMoveTables(w.data());
+  // the ids packs have given so far (this start's added): a removed pack's move keeps a cut record without
+  // bits, which stock movesets' moves can have too - only a past pack's id there is "missing"
+  std::vector<bool> past(65536, false);
+  const fs::path list = game / "Mods" / "PacOverlay" / "pack_moves.txt";
+  {
+    std::ifstream in(list);
+    for (int id; in >> id;)
+      if (id > 0 && id < 65536) past[id] = true;
+  }
+  bool added = false;
+  auto mark = [&](uint16_t id) {
+    if (!past[id]) past[id] = true, added = true;
+  };
+  for (const auto& [id, b] : g_waze) mark(id);
+  for (const auto& [id, nm] : g_names) mark(id);
+  for (const auto& [id, from] : g_copies) mark(id);
+  if (added) {
+    fs::create_directories(list.parent_path(), ec);
+    std::ofstream out(list, std::ios::trunc);
+    for (int id = 1; id < 65536; ++id)
+      if (past[id]) out << id << '\n';
+  }
+  // what the stock game can play without packs: its own misc.pac's records with bits and EXH data
+  std::vector<bool> stock_ok(65536, false);
+  Bytes sw, sd;
+  if (ReadEntry(game / "pac" / "misc.pac", "MOVS/WAZE", sw)) {
+    const Bytes w0 = svrfmt::Unpack(sw);
+    if (w0.size() >= 272)
+      for (uint32_t k = 0, n = Le32(w0.data() + 4); k < n && 272 + size_t(k + 1) * 160 <= w0.size(); ++k) {
+        const uint8_t* r = w0.data() + 272 + size_t(k) * 160;
+        if (std::any_of(r, r + 16, [](uint8_t b) { return b != 0; })) stock_ok[Le16(r + 0x90)] = true;
+      }
+  }
+  if (ReadEntry(game / "pac" / "misc.pac", "WAZA/DATA", sd)) {
+    std::vector<svrfmt::PachEntry> kids, groups;
+    if (svrfmt::PachRead(svrfmt::Unpack(sd), kids) && !kids.empty() && svrfmt::PachRead(svrfmt::Unpack(kids[0].data), groups))
+      for (const auto& g : groups) {
+        const Bytes t = svrfmt::Unpack(g.data);
+        if (t.size() < 8 || std::memcmp(t.data(), "EXH", 3)) continue;
+        for (size_t o = 8; o + 36 <= t.size(); o += 36) stock_ok[Le16(t.data() + o)] = true;
+      }
+  }
+  {
+    std::lock_guard lock(g_usable_mutex);
+    g_past_pack = std::move(past);
+    g_stock_ok = std::move(stock_ok);
+  }
+  REXLOG_INFO("[svr2011] move packs: move tables from {} ({} records)", src.filename().string(), Le32(w.data() + 4));
+}
+}  // namespace svr2011
+
+namespace svr2011 {
+// (g_waze / g_names / g_copies are set once at start-up, before the game runs)
+bool PackMove(uint16_t id) { return g_waze.count(id) || g_names.count(id) || g_copies.count(id); }
+
+uint16_t CategoryDefaultMove(int category) {
+  std::lock_guard lock(g_usable_mutex);
+  return category >= 0 && size_t(category) < g_defaults.size() ? g_defaults[category] : 0;
+}
+
+bool MoveMissing(uint16_t id) {
+  // only a move a pack gave once, no pack gives now and the stock game can't play: stock movesets name moves
+  // without records, bits or EXH data that play fine, so nothing wider can be trusted
+  if (!id || PackMove(id)) return false;
+  std::lock_guard lock(g_usable_mutex);
+  if (g_past_pack.empty() || !g_past_pack[id]) return false;
+  return g_stock_ok.empty() || !g_stock_ok[id];
+}
+
 int MoveUsable(uint16_t id) {
   std::lock_guard lock(g_usable_mutex);
   if (g_usable.empty()) return -1;
@@ -1260,23 +1394,8 @@ REX_HOOK_RAW(sub_8237E708) {
       REXLOG_INFO("[svr2011] move packs: MOVS/WAZE loaded ({} records): {} moves set, {} category counts updated",
                   Le32(w + 4), set, fixed);
   }
-  if (data && Le32(base + data + 4) < 20000 && !std::memcmp(base + data + 272 + 16, "* test motion *", 15)) {
-    // (records still as in the file: id at +0x90, bits +0..+15)
-    const uint8_t* w = base + data;
-    std::vector<bool> usable(65536, false);
-    for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
-      const uint8_t* r = w + 272 + size_t(k) * 160;
-      if (std::any_of(r, r + 16, [](uint8_t b) { return b != 0; })) usable[Le16(r + 0x90)] = true;
-    }
-    // (a move pack's own moves count whatever the records say: Sabu's Arabian
-    // Facebuster 6861 has 2011's motions and the pack's bits but no record of
-    // its own in the file - it plays)
-    for (const auto& [id, b] : g_waze) usable[id] = true;
-    for (const auto& [id, from] : g_copies) usable[id] = true;
-    for (const auto& [id, n] : g_names) usable[id] = true;
-    std::lock_guard lock(g_usable_mutex);
-    g_usable = std::move(usable);
-  }
+  if (data && Le32(base + data + 4) < 20000 && !std::memcmp(base + data + 272 + 16, "* test motion *", 15))
+    SetMoveTables(base + data);  // (records still as in the file: id at +0x90, bits +0..+15)
   __imp__sub_8237E708(ctx, base);
 }
 
