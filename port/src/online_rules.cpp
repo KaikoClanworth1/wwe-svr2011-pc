@@ -41,7 +41,7 @@ int64_t NowMs() {
       .count();
 }
 
-enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5, kGauntletElim = 6 };
+enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5, kGauntletElim = 6, kSlobber = 7 };
 struct Option {
   Mode mode;
   int set;
@@ -62,6 +62,8 @@ constexpr Option kMysteryOpt{kMystery, 0, "MYSTERY OPPONENT",
 constexpr const char* kMysteryName = "MYSTERY OPPONENT";
 constexpr Option kGeOpt{kGauntletElim, 0, "GAUNTLET ELIMINATOR",
                         "Two start; four CPU entrants come in one a minute. Last one standing wins."};
+constexpr Option kSkOpt{kSlobber, 0, "SLOBBER KNOCKER",
+                        "You two as a team against a line of CPU opponents, one at a time, until one of you is beaten."};
 
 // The mode's normal matches (one on one, two on two, 3-man, 4-man) and
 // their Extreme Rules ones; 6-man tag and handicap have no Extreme Rules
@@ -76,6 +78,7 @@ std::vector<Option> OptionsFor(uint32_t rule) {
     for (int k = 0; k < 3; ++k) o.push_back(kStage[k]);
     if (rule == 0x0D) o.push_back(kMysteryOpt);  // (TRIPLE THREAT: 2 players + the hidden CPU)
     if (rule == 0x08) o.push_back(kGeOpt);       // (6-MAN: 2 players + 4 CPU entrants)
+    if (rule == 0x08) o.push_back(kSkOpt);       // (6-MAN: the 2 players against 4 CPUs in turn)
   } else if (rule >= 0x4D && rule <= 0x50) {
     o.push_back(kWe);
   } else if (rule >= 0x31 && rule <= 0x34) {
@@ -220,7 +223,7 @@ void OnlineRulesLobby(PPCContext& ctx, uint8_t* base, uint32_t lobby) {
   };
   // GAUNTLET ELIMINATOR (6-MAN): slots 2-5 the CPU entrants - each vacant one
   // made a CPU once (a CPU slot is never rolled again); slots 0-1 the players.
-  if (Mode(*v >> 16) == kGauntletElim) {
+  if (Mode(*v >> 16) == kGauntletElim || Mode(*v >> 16) == kSlobber) {  // (SLOBBER KNOCKER: the opponents, the same way)
     for (uint32_t j = 2; j < slots; ++j)
       if (vacant_slot(j)) {
         REXLOG_INFO("online rules: GAUNTLET ELIMINATOR - CPU entrant in slot {}", j);
@@ -268,6 +271,9 @@ OnlineRulesSetup OnlineRulesFor(uint32_t rule) {
     s.stages = true;
   } else if (mode == kMystery) {
     s.mystery = true;  // (the lobby's CPU is the opponent: nothing to change in the rule)
+  } else if (mode == kSlobber) {
+    s.slobber = true;
+    s.rule = 0x52;  // (the gauntlet, set up as SLOBBER KNOCKER: match_types.cpp)
   } else if (mode == kGauntletElim) {
     s.ge = true;
     s.rule = 0x52;  // (the gauntlet, set up as GAUNTLET ELIMINATOR: match_types.cpp)
