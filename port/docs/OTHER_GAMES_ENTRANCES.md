@@ -22,7 +22,7 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 |---|---|---|---|---|
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
 | SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, converted offline (Andre 3066, Bret Hart 3077) |
-| SmackDown! Shut Your Mouth (PS2) | - | 114 | - | researched: HCTP back end + a new SYDT script reader |
+| SmackDown! Shut Your Mouth (PS2) | SLES_512.83 | 114 | `sym_entrance.py` (game sym) | ready, all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
 | SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
 | WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
 | SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
@@ -69,6 +69,13 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
 
 ## SmackDown! Shut Your Mouth, SvR 2006, Just Bring It (PS2) - research
 
+- **Shut Your Mouth converter:** `tools/sym_entrance.py` (game `sym`; formats and rules in its docstring):
+  own DPAC reader (doubled row counts), SYDT -> parse_sevp's dicts, halfword records re-framed to HCTP's,
+  slot-relative roots / cameras baked to world (yaw turns the root), ground fix per slot, SYM's takes
+  placed into 2011's 5 segments by where the entrant starts (alternates of equal length dropped; a
+  1-frame stand-in for an empty segment), camera 0 of 2 (`camera=1` to switch), prop 172 -> 2014, other
+  props dropped. All 114 convert offline; Kane 3021 vs HCTP 3007: heights and root paths line up.
+  Not played in game yet; whether 1-frame segments play well is untested.
 - **Shut Your Mouth:** `PAC/EVTENT.PAC` motion banks 3000-3113 (HCTP's format, but frame records sized
   in halfwords: a byte < 0x80 skips frames, else (b & 0x7f) x 2 bytes) and only the compact `SYDT`
   script (a reader reproduces HCTP's and SvR 2004's full scripts 534/534 and 100/100); 2-7 segments
