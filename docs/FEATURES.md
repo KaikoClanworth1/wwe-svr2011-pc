@@ -151,6 +151,8 @@ still being tested.
 - **An entrance per attire** for superstar mods (`attire<N>_entrance=<number>` in the manifest), like Rey Mysterio's "Evil" attire in the stock game.
 - **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
 - **Ground head submissions with Sabu / The Sandman installed** no longer freeze (the game's motion search missed stock moves after a mod's added motions).
+- **A match with a keyboard or PlayStation player crashed at load** (from the button-picture change); fixed.
+- **Practice ring tips** (GAMEPLAY TIPS, the Load Successful box) show player 1's own button pictures - keyboard, PlayStation or Xbox.
 - **Keyboard and mouse button pictures** from WWE 2K15 PC (every key, plus mouse buttons), and the keyboard / PlayStation pictures on character select drawn right.
 - **Texture packs**: textures loaded into reused memory (Created Superstars, the select screen's superstars) can now be dumped and replaced.
 - **The mouse is only captured when the game window really has focus** (a game in the background could grab the cursor in keyboard-and-mouse mode).

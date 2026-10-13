@@ -40,6 +40,7 @@ if ($WithModMaker) {
                      "moves_port.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py",
                      "wwe13_pack.py", "arena_tool.py",  # (imports checked transitively 13 Oct: arena_port needs these two)
                      "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py",  # (entrance_port: PS2 discs, SYM, SvR 2006)
+                     "hand_tracks.py", "svr06_hands.py", "finger_retarget.py",  # (entrance_port: finger tracks)
                      "model_budget.py", "xact.py", "svr07_char.py")) {  # (superstar_port: the match's vertex budget; SvR 2007 XACT themes)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }

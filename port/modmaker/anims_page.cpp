@@ -455,6 +455,58 @@ void Left() {
 int g_test_key = -1;
 void TestKey(int key) { g_test_key = key; }
 
+// --pose-compare <dump>,<star>,<dummy>,<motion>[,<x>]: the game's pose dump against this view (phase B)
+struct {
+  std::wstring dump;
+  int star = 0, dummy = 0, motion = 0, x = -1;  // (x -1: any variant)
+  std::shared_ptr<const Bytes> bank;
+  bool started = false, bank_tried = false;
+} g_cmp;
+void TestCompare(const std::wstring& spec) {
+  const size_t c = spec.find(L',');
+  if (c == std::wstring::npos) return;
+  g_cmp.dump = spec.substr(0, c);
+  swscanf_s(spec.c_str() + c + 1, L"%d,%d,%d,%d", &g_cmp.star, &g_cmp.dummy, &g_cmp.motion, &g_cmp.x);
+}
+void RunCompare() {
+  if (!g_cmp.started) {
+    g_cmp.started = true;
+    char_preview::SetModel(ChPac(g_cmp.star), g_game);
+    char_preview::SetDummy(ChPac(g_cmp.dummy));
+  }
+  if (!g_cmp.bank_tried) {  // the match banks (m.pac MOT BM00..BM09): the first YMBs bank with the motion
+    g_cmp.bank_tried = true;
+    for (int k = 0; k < 11 && !g_cmp.bank; ++k) {  // (BM00-BM09, then CAF's MOT: the match idles)
+      Bytes entry;
+      const std::string name = k < 10 ? "BM0" + std::to_string(k) : std::string("MOT ");
+      if (!ReadPacEntry(fs::path(g_game) / L"pac" / L"m.pac", name.c_str(), entry, k < 10 ? nullptr : "CAF ")) continue;
+      std::vector<PachEntry> kids;
+      if (!PachRead(Unpack(entry), kids)) continue;
+      for (const auto& kd : kids) {
+        auto raw = std::make_shared<Bytes>(Unpack(kd.data));
+        if (raw->size() < 0x114 || std::memcmp(raw->data(), "YMBs", 4)) continue;
+        const uint32_t n = Le32(&(*raw)[0x110]);
+        for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw->size(); ++i) {
+          const uint8_t* e = &(*raw)[0x114 + 16 * i];
+          if (int(Le16(e + 2)) == g_cmp.motion && (g_cmp.x < 0 || e[1] == g_cmp.x)) {
+            g_cmp.bank = raw;
+            Log("compare: motion " + std::to_string(g_cmp.motion) + " in m.pac MOT/" + name + " child " + std::to_string(kd.id));
+            break;
+          }
+        }
+        if (g_cmp.bank) break;
+      }
+    }
+    if (!g_cmp.bank) Log("compare: motion " + std::to_string(g_cmp.motion) + " not in m.pac's match banks");
+  }
+  const std::string r = char_preview::ComparePoseDump(g_cmp.dump, g_cmp.bank, g_cmp.motion, g_cmp.x);
+  if (r.empty() && g_cmp.bank) return;  // (the models still loading)
+  Log("compare:\n" + r);
+  WriteLogTo(g_cmp.dump + L".compare.log");
+  g_cmp.dump.clear();
+  PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+}
+
 void TestStart(int star_id, int bank, int motion, int dummy_id) {
   g_test_star = star_id, g_test_bank = bank, g_test_motion = motion, g_test_dummy = dummy_id;
 }
@@ -473,6 +525,7 @@ void TestPlay(int star_id, int dummy_id, int move) {
 }
 
 void Draw() {
+  if (!g_cmp.dump.empty()) RunCompare();
   if (g_watch_pending && IndexReady() && !Busy()) Watch(g_watch_pending), g_move_id = g_watch_pending, g_watch_pending = 0;
   if (g_test_star > 0 && !g_game.empty()) {  // the test aid, once
     const auto& stars = Stars();

@@ -45,6 +45,9 @@ std::atomic<int> g_phase{kBoot};
 Clock::time_point g_phase_since = Clock::now();
 int g_hold_off = 0;  // ms START is kept from the Start Screen
 bool g_logged[3] = {};
+// in the practice ring: from the Start Screen's START until the main menu
+// shows (skipped or not) - its pictures are player 1's (pad_icons.cpp)
+std::atomic<bool> g_practice{false};
 
 void Enter(Phase p) {
   g_phase = p;
@@ -67,6 +70,7 @@ void FastStartScreenFrame(uint8_t* base, uint32_t screen) {
 void FastStartPressStart(uint8_t* base, uint32_t screen, uint32_t pad) {
   (void)pad;
   if (!screen || Rd32(base + screen) != kStartScreenVtable || g_phase.load() != kStartScreen) return;
+  g_practice = true;
   if (REXCVAR_GET(skip_training)) {
     REXLOG_INFO("fast start: skipping the practice ring");
     Enter(kTraining);
@@ -77,6 +81,10 @@ void FastStartPressStart(uint8_t* base, uint32_t screen, uint32_t pad) {
 
 void FastStartInput(uint8_t* base, uint32_t state) {
   if (!state) return;
+  if (g_practice.load()) {
+    uint32_t group = 0, row = 0;
+    if (ScriptMenuState(&group, &row) && group == 1) g_practice = false;
+  }
   const int phase = g_phase.load();
   if (phase == kDone) return;
   uint8_t* buttons = base + state + 4;
@@ -113,5 +121,7 @@ void FastStartInput(uint8_t* base, uint32_t state) {
     Wr32(base + state, Rd32(base + state) + 1);
   }
 }
+
+bool InPracticeRing() { return g_practice.load(); }
 
 }  // namespace svr2011

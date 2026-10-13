@@ -785,6 +785,11 @@ std::array<float, 3> HandAngles(int id, int k, float t) {
 }
 
 // The skeleton's body: the 21 animated bones and the limbs (not attachments, fingers, face).
+struct IkNumbers {
+  float d = 0, L = 0, bend = 0;
+};
+IkNumbers g_ik_last[4];  // (the last Pose's solve, per limb: for the pose-dump comparison)
+
 bool BodyBone(const std::string& n) {
   for (const char* b : kBones)
     if (n == b) return true;
@@ -794,7 +799,7 @@ bool BodyBone(const std::string& n) {
 }
 
 // World transforms of every bone for the motion at `key` (rotation keys).
-std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
+std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vector<Xf>* locals_out = nullptr) {
   const float kAng = 6.2831853f / 65536.0f, kMove = 1e-4f;
   const size_t nb = ch.bones.size();
   std::vector<Xf> local(nb);
@@ -820,9 +825,25 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
       std::memcpy(rest, local[size_t(i)].r, sizeof rest);
       MulR(rest, e, local[size_t(i)].r);
     } else {
-      Euler(rot[c], local[size_t(i)].r);
+      // YMBs, as the game builds the pose (sub_823A4420): the IK bones aren't driven, sakotsu / te take y and z,
+      // tsumasaki y only; the rest replaces the bone's rotation
+      if (c == 6 || c == 7 || c == 10 || c == 11 || c == 13 || c == 14 || c == 17 || c == 18) continue;
+      float e[3] = {rot[c][0], rot[c][1], rot[c][2]};
+      if (c == 5 || c == 8 || c == 9 || c == 12) e[0] = 0;
+      if (c == 16 || c == 20) e[0] = e[2] = 0;
+      Euler(e, local[size_t(i)].r);
     }
   }
+  if (!m.fk)  // the kote's x roll: on the forearm twist bones (half each when there are two)
+    for (int side = 0; side < 2; ++side) {
+      const float roll = rot[side ? 11 : 7][0];
+      const char* x1 = side ? "r_kote_x" : "l_kote_x";
+      const char* x2 = side ? "r_kote_x2" : "l_kote_x2";
+      const bool two = find(x2) >= 0;
+      const float e[3] = {two ? roll * 0.5f : roll, 0, 0};
+      if (const int i = find(x1); i >= 0) Euler(e, local[size_t(i)].r);
+      if (const int i = find(x2); i >= 0) Euler(e, local[size_t(i)].r);
+    }
   const int root = find("root");
   if (root >= 0)
     local[size_t(root)].t = {Key(m.root[0], 2 * key, false, kMove), Key(m.root[1], 2 * key, false, kMove),
@@ -865,51 +886,87 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
     }
   };
   fk();
-  if (root < 0 || m.fk) return w;  // (YMKs: the limbs have their own rotations)
-  const V3 root_p = w[size_t(root)].t, fwd{0, 0, -1};
+  if (root < 0 || m.fk) {  // (YMKs: the limbs have their own rotations)
+    if (locals_out) *locals_out = local;
+    return w;
+  }
+  const V3 root_p = w[size_t(root)].t;
+  // the game's solve (sub_823A4DD8), in the parent frame: arms the sakotsu's, legs the root's
   struct Limb {
-    const char *up, *lo, *end;
-    float sign;
-    int roll;  // the kote channel (x): the forearm's roll, or -1
+    const char *up, *lo, *parent;
+    bool arm;
   };
-  const Limb limbs[4] = {{"l_ninoude", "l_kote", "l_te", 1, 7},
-                         {"r_ninoude", "r_kote", "r_te", 1, 11},
-                         {"l_momo", "l_sune", "l_ashi", -1, -1},
-                         {"r_momo", "r_sune", "r_ashi", -1, -1}};
+  const Limb limbs[4] = {{"l_ninoude", "l_kote", "l_sakotsu", true},
+                         {"r_ninoude", "r_kote", "r_sakotsu", true},
+                         {"l_momo", "l_sune", "root", false},
+                         {"r_momo", "r_sune", "root", false}};
+  auto rot_x = [](float a, float r[3][3]) { const float e[3] = {a, 0, 0}; Euler(e, r); };
+  auto rot_y = [](float a, float r[3][3]) { const float e[3] = {0, a, 0}; Euler(e, r); };
   for (int l = 0; l < 4; ++l) {
-    const int iu = find(limbs[l].up), il = find(limbs[l].lo), ie = find(limbs[l].end);
-    if (iu < 0 || il < 0 || ie < 0) continue;
-    const int pu = ch.bones[size_t(iu)].parent, pl = ch.bones[size_t(il)].parent;
-    if (pu < 0 || pl < 0) continue;
-    const V3 S = w[size_t(iu)].t;
-    const float L1 = Len(w[size_t(il)].t - S), L2 = Len(w[size_t(ie)].t - w[size_t(il)].t);
-    const V3 target = root_p + V3{Key(m.ik[size_t(l)][0], 2 * key, false, kMove),
-                                  Key(m.ik[size_t(l)][1], 2 * key, false, kMove),
+    const int iu = find(limbs[l].up), il = find(limbs[l].lo), ip = find(limbs[l].parent);
+    if (iu < 0 || il < 0 || ip < 0) continue;
+    const int su = ch.bones[size_t(iu)].parent;  // (the upper bone's own parent in the skeleton)
+    if (su < 0) continue;
+    const Xf& P = w[size_t(ip)];
+    const Xf Pi = Inverse(P);
+    const V3 S = Apply(Pi, w[size_t(iu)].t);  // the shoulder / hip in the parent frame
+    const V3 target = root_p + V3{Key(m.ik[size_t(l)][0], 2 * key, false, kMove), Key(m.ik[size_t(l)][1], 2 * key, false, kMove),
                                   Key(m.ik[size_t(l)][2], 2 * key, false, kMove)};
-    V3 a = target - S;
-    const float dist = std::max(1e-4f, std::min(Len(a), (L1 + L2) * 0.9999f));
-    a = Norm(a);
-    const V3 d0 = Norm(fwd - a * Dot(fwd, a));
-    const float th = Key(m.pole[size_t(l)], key, true, kAng);
-    const V3 d = d0 * std::cos(th) + Cross(a, d0) * std::sin(th);
-    const float cosA = std::clamp((L1 * L1 + dist * dist - L2 * L2) / (2 * L1 * dist), -1.0f, 1.0f);
-    const float sinA = std::sqrt(std::max(0.0f, 1 - cosA * cosA));
-    const V3 J = S + a * (L1 * cosA) + d * (L1 * sinA), E = S + a * dist;
-    float R[3][3];
-    Aim(J - S, d, limbs[l].sign, R);
-    TransposeMul(w[size_t(pu)].r, R, local[size_t(iu)].r);
-    fk();
-    Aim(E - J, d, limbs[l].sign, R);
-    if (limbs[l].roll >= 0) {
-      const float e[3] = {rot[limbs[l].roll][0], 0, 0};
-      float rx[3][3], tmp[3][3];
-      Euler(e, rx);
-      MulR(R, rx, tmp);
-      std::memcpy(R, tmp, sizeof R);
+    V3 v = Apply(Pi, target) - S;
+    // L: 2 x the upper segment (the game assumes equal segments) - shoulder / hip to elbow / knee, measured in
+    // the world (the lower bone hangs off the twist bone half way down: its own offset is half a segment)
+    const float L = 2 * Len(w[size_t(il)].t - w[size_t(iu)].t);
+    float d = Len(v);
+    if (L <= 1e-4f || d <= 1e-5f) continue;
+    const float lim = (limbs[l].arm ? 0.99f : 0.99999f) * L;
+    if (d >= lim) d = limbs[l].arm ? lim : lim + (d - lim) * 0.3f;
+    float bend = d >= L ? 0.0f : 2 * std::acos(std::min(d / L, 0.99999f));
+    if (!limbs[l].arm) bend = -bend;
+    g_ik_last[l] = {Len(v), L, bend};
+    const V3 n = Norm(v);
+    // Align: the shortest arc +X -> n (axis X x n)
+    float A[3][3];
+    {
+      const V3 axis{0, -n.z, n.y};
+      const float al = Len(axis), ang = std::acos(std::clamp(n.x, -1.0f, 1.0f));
+      if (al < 1e-6f) {
+        float id[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        if (n.x < 0) id[0][0] = -1, id[1][1] = -1;  // (half turn about z)
+        std::memcpy(A, id, sizeof A);
+      } else {
+        const V3 k = axis * (1 / al);
+        const float c = std::cos(ang), sn = std::sin(ang), t = 1 - c;
+        A[0][0] = c + k.x * k.x * t, A[0][1] = k.x * k.y * t - k.z * sn, A[0][2] = k.x * k.z * t + k.y * sn;
+        A[1][0] = k.y * k.x * t + k.z * sn, A[1][1] = c + k.y * k.y * t, A[1][2] = k.y * k.z * t - k.x * sn;
+        A[2][0] = k.z * k.x * t - k.y * sn, A[2][1] = k.z * k.y * t + k.x * sn, A[2][2] = c + k.z * k.z * t;
+      }
     }
-    TransposeMul(w[size_t(pl)].r, R, local[size_t(il)].r);
+    float pole = Key(m.pole[size_t(l)], key, true, kAng);
+    if (limbs[l].arm) pole -= 3.14159265f;
+    float Rx[3][3], Ry[3][3], t1[3][3], R[3][3], world[3][3];
+    rot_x(pole, Rx);
+    rot_y(-bend * 0.5f, Ry);
+    MulR(A, Rx, t1);
+    MulR(t1, Ry, R);                                     // the upper bone in the parent frame
+    MulR(P.r, R, world);                                 // ... in the world
+    TransposeMul(w[size_t(su)].r, world, local[size_t(iu)].r);  // ... under its own parent
+    // the twist bone (ninoude_x / momo_x, between the upper and the lower bone) takes half the upper bone's roll
+    // about its own axis (x): a = swing-twist angle / 2 - fitted to the game's pose dump (0.0 deg off)
+    if (const int it = find((std::string(limbs[l].up) + "_x").c_str()); it >= 0 && ch.bones[size_t(it)].parent == iu) {
+      const float (&F)[3][3] = local[size_t(iu)].r;
+      const float qw = std::sqrt(std::max(0.0f, 1 + F[0][0] + F[1][1] + F[2][2])) * 0.5f;
+      const float qx = qw > 1e-6f ? (F[2][1] - F[1][2]) / (4 * qw) : 1.0f;
+      const float a = std::atan2(qx, qw);  // (2 atan2(qx, qw) / 2)
+      float back[3][3], upper[3][3];
+      rot_x(-a, back);
+      MulR(local[size_t(iu)].r, back, upper);
+      std::memcpy(local[size_t(iu)].r, upper, sizeof upper);
+      rot_x(a, local[size_t(it)].r);
+    }
+    rot_y(bend, local[size_t(il)].r);
     fk();
   }
+  if (locals_out) *locals_out = local;
   return w;
 }
 
@@ -1583,6 +1640,148 @@ void SetModel(const std::wstring& ch_pac, const std::wstring& game) {
 }
 
 void SetDummy(const std::wstring& ch_pac) { LoadSlot(1, ch_pac); }
+
+std::string ComparePoseDump(const std::wstring& dump, std::shared_ptr<const std::vector<uint8_t>> bank, int id, int x) {
+  if (!bank || !g_slots[0].ch || !g_slots[1].ch) return "";
+  // the dump: per person and frame the last line (pass 1 after pass 0)
+  struct Line {
+    int x = 0, y = 0, mirrored = 0, players = 1;
+    float time = 0;
+    float A[3], E[3], R[3], Y;
+    std::array<std::array<float, 12>, 33> part;
+    std::array<bool, 33> has{};
+  };
+  std::map<int, std::map<int, Line>> by;  // person -> frame -> line
+  if (FILE* f = _wfopen(dump.c_str(), L"rb")) {
+    char buf[32768];
+    while (std::fgets(buf, sizeof buf, f)) {
+      unsigned F = 0, P = 0, M = 0, S = 0, Rq = 0;
+      int used = 0;
+      if (std::sscanf(buf, "F %u P %u M %u S %u Rq %u Q%n", &F, &P, &M, &S, &Rq, &used) < 5 || int(M) != id) continue;
+      Line l{};
+      const char* p = buf + used;
+      auto num = [&](float& v) { char* e; v = std::strtof(p, &e); p = e; };
+      {  // the players: id x y mirrored time weight, the newest first
+        int k = 0;
+        for (;; ++k) {
+          while (*p == ' ') ++p;
+          if (*p == 'A' || !*p) break;
+          float q[6];
+          for (float& v : q) num(v);
+          if (k == 0) l.x = int(q[1]), l.y = int(q[2]), l.mirrored = int(q[3]), l.time = q[4];
+        }
+        l.players = k;
+        p = std::strchr(p, 'A');
+        if (!p) continue;
+        ++p;
+      }
+      for (float& v : l.A) num(v);
+      p = std::strchr(p, 'E') + 1;
+      for (float& v : l.E) num(v);
+      p = std::strchr(p, 'R') + 1;
+      for (float& v : l.R) num(v);
+      p = std::strchr(p, 'Y') + 1;
+      num(l.Y);
+      p = std::strchr(p, 'B') + 1;
+      for (int i = 0; i < 33; ++i) {
+        while (*p == ' ') ++p;
+        if (*p == '-' && (p[1] == ' ' || p[1] == '\n' || p[1] == '\r' || p[1] == 0)) { ++p; continue; }  // (none)
+        for (float& v : l.part[size_t(i)]) num(v);
+        l.has[size_t(i)] = true;
+      }
+      by[int(P)][int(F)] = l;
+    }
+    std::fclose(f);
+  }
+  if (by.empty()) return "no lines for motion " + std::to_string(id) + " in the dump";
+  static const char* kPartNames[33] = {"root", "koshi", "mune", "kubi", "atama", "l_sakotsu", "l_ninoude", "l_kote", "l_te",
+                                       "r_sakotsu", "r_ninoude", "r_kote", "r_te", "l_momo", "l_sune", "l_ashi", "l_tsumasaki",
+                                       "r_momo", "r_sune", "r_ashi", "r_tsumasaki", "", "", "", "", "", "", "l_kote_x", "r_kote_x",
+                                       "", "", "l_kote_x2", "r_kote_x2"};
+  std::string out;
+  char b[256];
+  int track = 0;
+  std::map<int, std::vector<std::pair<float, float>>> root_of;  // track -> (frame, game root height / viewer)
+  (void)x;
+  for (const auto& [person, frames] : by) {
+    const Slot& sl = g_slots[person == 0 ? 0 : 1];  // (person 0 on the model, the other on the dummy)
+    const Line& first = frames.begin()->second;
+    Motion m;
+    std::string err;
+    if (!DecodeMotion(*bank, id, first.x, first.y, m, err)) {
+      out += "person " + std::to_string(person) + " (x " + std::to_string(first.x) + " y " + std::to_string(first.y) + "): " + err + "\n";
+      ++track;
+      continue;
+    }
+    int blended = 0, mirrored = 0;
+    std::map<std::string, int> idx;
+    for (size_t i = 0; i < sl.ch->bones.size(); ++i) idx.emplace(sl.ch->bones[i].name, int(i));
+    const int f0 = frames.begin()->first;
+    double sum[33] = {}, mx[33] = {};
+    int cnt[33] = {};
+    double fit_sum[4] = {}, fit_d[4] = {}, fit_bg[4] = {}, fit_bv[4] = {};
+    int fit_n[4] = {};
+    std::snprintf(b, sizeof b, "person %d = track %d: frames %d..%d (%zu lines), motion keys %d\n", person, track, f0,
+                  frames.rbegin()->first, frames.size(), m.keys);
+    out += b;
+    for (const auto& [F, l] : frames) {
+      const float key = std::clamp(l.time * 0.5f, 0.0f, float(m.keys - 1));
+      if (l.players > 1) ++blended;  // (layered: other players drive some parts too - counted, kept)
+      if (l.mirrored) ++mirrored;
+      std::vector<Xf> loc;
+      Pose(*sl.ch, m, key, &loc);
+      {  // the game's bend from its lower bones (kote 7 / 11, sune 14 / 18: RotY(bend), row form)
+        static const int kLower[4] = {7, 11, 14, 18};
+        for (int k = 0; k < 4; ++k) {
+          if (!l.has[size_t(kLower[k])] || g_ik_last[k].L <= 0) continue;
+          const auto& g = l.part[size_t(kLower[k])];
+          // row form RotY rows (c,0,-s)(0,1,0)(s,0,c): s = g[6], c = g[0]
+          const float bg = std::atan2(g[6], g[0]);
+          const float half = std::fabs(bg) * 0.5f;
+          if (half < 0.05f) continue;
+          fit_sum[k] += g_ik_last[k].d / std::cos(half) / g_ik_last[k].L;
+          fit_d[k] += g_ik_last[k].d, fit_bg[k] += bg, fit_bv[k] += g_ik_last[k].bend, ++fit_n[k];
+        }
+      }
+      for (int i = 0; i < 33; ++i) {
+        if (!l.has[size_t(i)] || !kPartNames[i][0]) continue;
+        const auto it = idx.find(kPartNames[i]);
+        if (it == idx.end()) continue;
+        const auto& g = l.part[size_t(i)];
+        const Xf& v = loc[size_t(it->second)];
+        // game rows (row-vector form) -> column form: C[r][c] = G[c][r]; trace(V^T C) = sum V[k][c] * C[k][c]
+        double tr = 0;
+        for (int r = 0; r < 3; ++r)
+          for (int c = 0; c < 3; ++c) tr += double(v.r[r][c]) * double(g[size_t(c * 3 + r)]);
+        const double ang = std::acos(std::clamp((tr - 1) / 2, -1.0, 1.0)) * 57.29578;
+        sum[i] += ang, mx[i] = std::max(mx[i], ang), ++cnt[i];
+      }
+      if ((F - f0) % 20 == 0) {
+        std::snprintf(b, sizeof b, "  F%d key %.1f: fighter %.2f %.2f %.2f yaw %.3f | pose root %.2f %.2f %.2f | game root h %.2f view root %.2f %.2f %.2f\n",
+                      F, key, l.A[0], l.A[1], l.A[2], l.E[1], l.R[0], l.R[1], l.R[2], l.part[0][10], loc[size_t(idx["root"])].t.x,
+                      loc[size_t(idx["root"])].t.y, loc[size_t(idx["root"])].t.z);
+        out += b;
+      }
+    }
+    std::snprintf(b, sizeof b, "  x %d y %d; %d frames layered with other players, %d mirrored\n", first.x, first.y, blended, mirrored);
+    out += b;
+    static const char* kLimb[4] = {"l arm", "r arm", "l leg", "r leg"};
+    for (int k = 0; k < 4; ++k)
+      if (fit_n[k]) {
+        std::snprintf(b, sizeof b, "  IK %s: L needed / this view's L = %.3f (d %.2f, L %.2f; bend game %.1f view %.1f deg, %d frames)\n",
+                      kLimb[k], fit_sum[k] / fit_n[k], fit_d[k] / fit_n[k], g_ik_last[k].L, fit_bg[k] / fit_n[k] * 57.2958,
+                      fit_bv[k] / fit_n[k] * 57.2958, fit_n[k]);
+        out += b;
+      }
+    for (int i = 0; i < 33; ++i)
+      if (cnt[i]) {
+        std::snprintf(b, sizeof b, "  %-12s mean %6.1f max %6.1f deg\n", kPartNames[i], sum[i] / cnt[i], mx[i]);
+        out += b;
+      }
+    ++track;
+  }
+  return out;
+}
 
 void SetAttire(int attire) {
   attire = std::clamp(attire, 1, 4);

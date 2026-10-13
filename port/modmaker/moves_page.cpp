@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <sstream>
 
 #include "app.h"
@@ -107,13 +108,21 @@ void ParsePack(Pack& p) {
   if (p.motions.empty() && p.waze.empty()) p.errors.push_back("pack.txt has no motion or waze lines.");
 }
 
+// The pack's own move records: waze lines and wazecopy (a stock record copied under a new id).
+size_t RecordCount(const Pack& p) {
+  std::set<int> ids;
+  for (const auto& w : p.waze) ids.insert(w.first);
+  for (const auto& c : p.copies) ids.insert(c.first);
+  return ids.size();
+}
+
 void OpenFolder(const std::wstring& f) {
   g_pack.folder = f;
   ParsePack(g_pack);
   if (!g_pack.name[0]) std::snprintf(g_pack.name, sizeof g_pack.name, "%s", FileName(f).c_str());
   g_sel = -1;
   Touch();
-  Status(g_pack.loaded ? "Pack: " + std::to_string(g_pack.motions.size()) + " motions, " + std::to_string(g_pack.waze.size()) + " moves"
+  Status(g_pack.loaded ? "Pack: " + std::to_string(g_pack.motions.size()) + " motions, " + std::to_string(RecordCount(g_pack)) + " moves"
                        : "That folder has no pack.txt.");
 }
 
@@ -281,9 +290,11 @@ void Draw() {
   TextField("Version (optional)", g_pack.version, sizeof g_pack.version, "1.0");
   if (g_pack.loaded) {
     ImGui::Separator();
-    ImGui::Text("%zu motions (%s) for %zu moves; %zu waze, %d exh, %d event and %d mbd records", g_pack.motions.size(),
-                Human(g_pack.bytes).c_str(), [&] { std::map<int, int> ids; for (const auto& m : g_pack.motions) ids[m.id]++; for (const auto& w : g_pack.waze) ids[w.first]++; return ids.size(); }(),
-                g_pack.waze.size(), g_pack.exh, g_pack.evt, g_pack.mbd);
+    ImGui::Text("%zu motions (%s) for %zu moves; %zu move records (waze / wazecopy), %d exh, %d event and %d mbd records",
+                g_pack.motions.size(), Human(g_pack.bytes).c_str(),
+                [&] { std::set<int> ids; for (const auto& m : g_pack.motions) ids.insert(m.id); for (const auto& w : g_pack.waze) ids.insert(w.first);
+                      for (const auto& c : g_pack.copies) ids.insert(c.first); return ids.size(); }(),
+                RecordCount(g_pack), g_pack.exh, g_pack.evt, g_pack.mbd);
     ImGui::BeginChild("list", ImVec2(0, -(problems.empty() ? 0 : 30 * g_scale * float(std::min<size_t>(problems.size(), 4)))), false);
     MoveList();
     ImGui::EndChild();
