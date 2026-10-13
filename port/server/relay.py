@@ -27,6 +27,11 @@ registers from its P2P socket with it every few seconds,
 and is answered with a welcome; from then on its forwards come over UDP and
 packets for it go there (the https download keeps working: a game whose UDP
 goes quiet for 20 s gets its packets there again).
+
+With an edge (--relay-edge, relay_edge.py on the VPS that takes the UDP):
+the tickets are signed (relay_link.py) and the UDP half runs there; this
+server keeps the https streams and passes packets to and from the edge over
+the link - between two UDP players they never come here.
 """
 import asyncio
 import os
@@ -36,6 +41,8 @@ import struct
 import time
 
 from aiohttp import web
+
+import relay_link as rl
 
 MAGIC = b"SVRR"
 VERSION = 1
@@ -105,9 +112,31 @@ class UdpEndpoint(asyncio.DatagramProtocol):
             self.relay.log("relay: udp packet from %s:%d dropped (%s)" % (addr[0], addr[1], e))
 
 
+class LinkEndpoint(asyncio.DatagramProtocol):
+    def __init__(self, relay):
+        self.relay = relay
+
+    def connection_made(self, transport):
+        self.relay.link = transport
+
+    def datagram_received(self, data, addr):
+        try:
+            self.relay.on_link(data)
+        except Exception as e:
+            self.relay.log("relay: link packet dropped (%s)" % e)
+
+    def error_received(self, exc):
+        pass  # (the edge not up yet: the keepalive tries again)
+
+
 class Relay:
-    def __init__(self, service, log, udp_port=0):
+    def __init__(self, service, log, udp_port=0, edge=None, secret=None):
         self.service, self.log = service, log
+        self.edge, self.secret = edge, secret  # (host, port) of relay_edge.py's link; its shared secret
+        self.link = None                        # the link socket
+        self.edge_games = set()                 # ids of the edge's UDP games (its last state)
+        self.edge_seen = 0.0
+        self.ticket_names = {}                  # id -> account name (the edge's games in the log)
         self.games = {}  # id -> Game (with a download open)
         self.relayed = 0
         self.sessions = 0  # games that came on since the start
@@ -118,6 +147,16 @@ class Relay:
         self.udp_by_addr = {}   # (ip, port) -> id
 
     async def start_udp(self, app):
+        if self.edge:
+            loop = asyncio.get_running_loop()
+            await loop.create_datagram_endpoint(lambda: LinkEndpoint(self), remote_addr=self.edge)
+            keepalive = asyncio.ensure_future(self.keep_linked())
+            self.log("relay: UDP on the edge %s:%d (players' port %d)" % (self.edge[0], self.edge[1], self.udp_port))
+            yield
+            keepalive.cancel()
+            if self.link:
+                self.link.close()
+            return
         if self.udp_port:
             loop = asyncio.get_running_loop()
             await loop.create_datagram_endpoint(lambda: UdpEndpoint(self), local_addr=("0.0.0.0", self.udp_port))
@@ -126,8 +165,47 @@ class Relay:
         if self.transport:
             self.transport.close()
 
+    # -- the edge
+    def edge_up(self):
+        return self.link and time.monotonic() - self.edge_seen < 3.0
+
+    async def keep_linked(self):
+        while True:
+            self.link.sendto(rl.link_packet(self.secret, rl.STATE, b""))
+            await asyncio.sleep(1.0)
+            if self.edge_games and not self.edge_up():
+                self.log("relay: the edge went quiet")
+                self.edge_games = set()
+
+    def on_link(self, data):
+        got = rl.read_link(self.secret, data)
+        if not got:
+            return
+        kind, body = got
+        if not self.edge_up():
+            self.log("relay: edge linked")
+        self.edge_seen = time.monotonic()
+        if kind == rl.STATE:
+            relayed, ids = rl.read_state(body)
+            ids = set(ids)
+            for gid in ids - self.edge_games:
+                self.log("relay: %s (%s) on UDP at the edge" % (gid.hex(), self.ticket_names.get(gid, "?")))
+            self.edge_games = ids
+            if relayed:
+                self.relayed += relayed
+                self.service.stats.count("relayed", relayed)
+        elif kind == rl.FORWARD and len(body) > 6:
+            to, out = body[:6], body[6:]
+            if to in self.games:
+                self.games[to].put(out)  # (https only: the edge had it, or hasn't)
+        elif kind == rl.SEARCH and len(body) > 6:
+            self.broadcast(body[:6], body[6:], from_edge=True)
+
     def deliver(self, to, out):
         """A packet for game `to`: over UDP while it registers there, else its download."""
+        if self.edge and to in self.edge_games and self.edge_up():
+            self.link.sendto(rl.link_packet(self.secret, rl.FORWARD, to + out))
+            return True
         g = self.udp_games.get(to)
         if g and g.fresh() and self.transport:
             self.transport.sendto(out, g.addr)
@@ -137,10 +215,13 @@ class Relay:
             return True
         return False
 
-    def broadcast(self, sender, out):
+    def broadcast(self, sender, out, from_edge=False):
+        if self.edge and not from_edge and self.edge_up():
+            self.link.sendto(rl.link_packet(self.secret, rl.SEARCH, sender + out))
+        skip = self.edge_games if self.edge_up() else set()  # (the edge reaches those)
         recent = {}
         for g in list(self.games.values()) + [g for g in self.udp_games.values() if g.fresh()]:
-            if g.id != sender and (g.id not in recent or g.seen > recent[g.id]):
+            if g.id != sender and g.id not in skip and (g.id not in recent or g.seen > recent[g.id]):
                 recent[g.id] = g.seen
         for gid in sorted(recent, key=lambda i: -recent[i])[:MAX_BROADCAST]:
             self.deliver(gid, out)
@@ -152,6 +233,11 @@ class Relay:
             return web.Response(status=401)
         if not gid or not self.udp_port:
             return web.Response(status=404)
+        if self.edge:
+            self.ticket_names[gid] = account["name"]
+            if len(self.ticket_names) > 4 * MAX_GAMES:
+                self.ticket_names = {gid: account["name"]}
+            return web.json_response({"port": self.udp_port, "ticket": rl.make_ticket(self.secret, gid).hex()})
         now = time.monotonic()
         for t in [t for t, (_, _, exp) in self.tickets.items() if exp < now]:
             del self.tickets[t]

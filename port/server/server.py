@@ -404,7 +404,10 @@ class Service:
         self.accounts = Accounts(self.store)
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
-        self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0))
+        edge = getattr(args, "relay_edge", None)
+        self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0),
+                                 edge=(edge.rsplit(":", 1)[0], int(edge.rsplit(":", 1)[1])) if edge else None,
+                                 secret=relay.rl.read_secret(args.relay_secret) if edge else None)
         self.leaderboards = leaderboards.Leaderboards(self.store)
         # the ONLINE menu's NEWS: how many play now, first
         self.sake.news_prefix = lambda: "%d player%s online now. " % (
@@ -1116,7 +1119,12 @@ def main():
     ap.add_argument("--media-quota-mb", type=int, default=8192, help="entrance songs and movies one player may store")
     ap.add_argument("--relay-udp-port", type=int, default=0,
                     help="the match relay over UDP too (e.g. 36500; open it in the firewall); 0: https only")
+    ap.add_argument("--relay-edge", default=None,
+                    help="host:port of relay_edge.py's link (it takes the UDP; --relay-udp-port: the players' port there)")
+    ap.add_argument("--relay-secret", default=None, help="the file with the secret shared with the edge")
     args = ap.parse_args()
+    if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
+        ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")
     service = Service(args)

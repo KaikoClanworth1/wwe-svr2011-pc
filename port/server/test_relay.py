@@ -15,6 +15,7 @@ import aiohttp
 
 HDR = b"SVRR\x01"
 REGISTER, WELCOME, FORWARD, FROM = 1, 2, 3, 4
+BROADCAST = b"\xff" * 6
 
 
 def frame(data):
@@ -148,6 +149,39 @@ async def main(server):
                 check(False, "udp: b's ticket doesn't register c")
             except asyncio.TimeoutError:
                 check(True, "udp: b's ticket doesn't register c")
+            # c on UDP too: b <-> c (with an edge: never through the server)
+            async with session.get(c.url() + "/udp", headers={"Authorization": "Bearer " + c.token}) as r:
+                udp_c = await r.json()
+            got_c = asyncio.Queue()
+
+            class ProtoC(asyncio.DatagramProtocol):
+                def datagram_received(self, data, addr):
+                    got_c.put_nowait(data)
+            tr_c, _ = await loop.create_datagram_endpoint(ProtoC, remote_addr=(host, udp_c["port"]))
+            tr_c.sendto(HDR + bytes([REGISTER]) + c.gid + bytes.fromhex(udp_c["ticket"]))
+            w = await asyncio.wait_for(got_c.get(), 3)
+            check(w[:6] == HDR + bytes([WELCOME]), "udp: c registered with its ticket")
+            await asyncio.sleep(0.3)  # (the server hears of it)
+            for i in range(50):
+                tr.sendto(HDR + bytes([FORWARD]) + c.gid + b"u%02d" % i)
+            ms = [(await asyncio.wait_for(got_c.get(), 3))[12:] for _ in range(50)]
+            check(sorted(ms) == [b"u%02d" % i for i in range(50)], "udp: 50 packets b (udp) -> c (udp)")
+            tr_c.sendto(HDR + bytes([FORWARD]) + b.gid + b"to b from c")
+            m = await asyncio.wait_for(got.get(), 3)
+            check(m[12:] == b"to b from c", "udp: c (udp) -> b (udp)")
+            a.send(HDR + bytes([FORWARD]) + c.gid + b"to c over udp")
+            m = await asyncio.wait_for(got_c.get(), 3)
+            check(m[12:] == b"to c over udp", "udp: a (https) -> c (udp)")
+            tr.sendto(HDR + bytes([FORWARD]) + BROADCAST + b"udp search")
+            m1 = await asyncio.wait_for(got_c.get(), 3)
+            m2 = await a.next()
+            check(m1[12:] == b"udp search" and m2[12:] == b"udp search", "udp: b's search reaches a (https) and c (udp)")
+            try:
+                await asyncio.wait_for(got.get(), 0.5)
+                check(False, "udp: b doesn't get its own search")
+            except asyncio.TimeoutError:
+                check(True, "udp: b doesn't get its own search")
+            tr_c.close()
             tr.close()
         else:
             print("skip  udp (the server has no --relay-udp-port)")
