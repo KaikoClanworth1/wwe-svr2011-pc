@@ -23,7 +23,7 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
 | SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, converted offline (Andre 3066, Bret Hart 3077) |
 | SmackDown! Shut Your Mouth (PS2) | - | 114 | - | researched: HCTP back end + a new SYDT script reader |
-| SmackDown! vs. Raw 2006 (PS2) | - | 95 | - | researched: 2008 script path little-endian, bodies as HCTP; 2/3 also in SvR 2007 |
+| SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
 | WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
 | SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
 | WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, converted offline (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
@@ -75,6 +75,12 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
   with alternates, 2 cameras, character roots relative to the slot (bake to absolute), own prop ids.
   Unique: Hollywood Hogan, DDP, X-Pac, Raven, Lawler, JR, Earl Hebner. Plan: SYDT reader in front of
   HCTP's back end.
+- **SvR 2006 converter:** `tools/svr06_entrance.py` (game `svr06`; its docstring has the formats and
+  rules): 2007's rules on the little-endian script (PS2 byte-order traps as 2007-2011), belt 2021 ->
+  5009, bodies re-encoded (`hctp_entrance.conv_char_pose`), face/hand tracks, pyro and ops 24/65/185
+  dropped, a 1-frame intro made for the 4 entrances without one, 4077's extra slots dropped. Andre
+  4066 vs the svr07 path's 4109: same frames, roots within 0.4, bones ~1 degree except the foot pitch
+  2006 does not store. `list` gives `in_svr07` (prefer the 2007 version when there is one).
 - **SvR 2006:** `PAC/EVT.PAC` (a DPAC variant with doubled group counts), 95 entrances 4000-4500; the
   script is 2007/2008's layout little-endian, cameras already 2011's 29-byte keys, floor-level stage;
   bodies need HCTP-style re-encoding; ops 24, 65, 185 differ in size. About two thirds are in SvR

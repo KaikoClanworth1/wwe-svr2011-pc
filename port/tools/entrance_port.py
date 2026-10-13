@@ -279,6 +279,7 @@ GAMES = collections.OrderedDict([
     ('wwe2k17', dict(name='WWE 2K17', platform='x360', disc_hint='545408BA', status='ready')),
     ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
     ('svr04', dict(name='SmackDown! vs. Raw', platform='ps2', disc_hint='SLES_527.81', status='ready')),
+    ('svr06', dict(name='SmackDown! vs. Raw 2006', platform='ps2', disc_hint='SLES_536.76', status='ready')),
 ])
 # (disc_hint: the Xbox 360 title id / PS2 serial discfs.open(iso).info() reports)
 
@@ -410,6 +411,22 @@ def svr04_list(src, game_pac):
 
 def svr04_convert(src, entrance, number, name, parts, rep):
     return hctp_convert(src, entrance, number, name, parts, rep, 'svr04')
+
+
+# ---- SmackDown! vs. Raw 2006 (PS2): tools/svr06_entrance.py (PAC/EVT.PAC; 2007's script layout in
+#      little-endian, HCTP-style bodies re-encoded); about two thirds also exist in SvR 2007 (in_svr07)
+
+def svr06_list(src, game_pac):
+    import svr06_entrance
+    return svr06_entrance.list_entrances(src, game_pac=game_pac)
+
+
+def svr06_convert(src, entrance, number, name, parts, rep, game_pac=None):
+    import svr06_entrance
+    try:
+        return svr06_entrance.convert(src, entrance, number, name, rep, game_pac=game_pac)
+    except ValueError as x:
+        raise InputError(str(x))
 
 
 def svr10_entrances(src):
@@ -737,10 +754,10 @@ def low_convert(src, entrance, number, name, parts, rep, game_pac=None):
     return evp11, evt11
 
 
-LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'low': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'svr04': svr04_list, 'wwe13': wwe13_list,
+LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'low': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'svr04': svr04_list, 'svr06': svr06_list, 'wwe13': wwe13_list,
            'wwe12': w13_list('wwe12'), 'wwe2k14': w13_list('wwe2k14'), 'wwe2k15': w13_list('wwe2k15'),
            'wwe2k16': w13_list('wwe2k16'), 'wwe2k17': w13_list('wwe2k17')}
-CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'low': low_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'svr04': svr04_convert, 'wwe13': wwe13_convert,
+CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'low': low_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'svr04': svr04_convert, 'svr06': svr06_convert, 'wwe13': wwe13_convert,
               'wwe12': w13_convert('wwe12'), 'wwe2k14': w13_convert('wwe2k14'), 'wwe2k15': w13_convert('wwe2k15'),
               'wwe2k16': w13_convert('wwe2k16'), 'wwe2k17': w13_convert('wwe2k17')}
 
@@ -795,7 +812,7 @@ PYRO_GAMES = ('svr10', 'wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k
 def pyro(src, g, entrance, number, d, rep):
     """the source entrance's PCE6/LPE6 particle set -> pack d/pyro + pacentry lines (notes only on failure)"""
     if g not in PYRO_GAMES:
-        if g in ('svr07', 'svr09'):
+        if g in ('svr07', 'svr09', 'svr06'):
             rep['notes'].append('pyro: %s particle sets are an older format (not converted)' % GAMES[g]['name'])
         return
     try:
