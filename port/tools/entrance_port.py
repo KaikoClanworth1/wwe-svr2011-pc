@@ -806,6 +806,8 @@ def cmd_list(a):
     src = open_source(opt(a, '--src'))
     progress(5, 'reading entrances')
     out = LISTERS[g](src, find_game_pac(opt(a, '--game-pac')))
+    for r in out:                      # (the Mod Maker contract's item key: what convert --entrance takes)
+        r.setdefault('key', str(r['number']))
     progress(100, '%d entrances' % len(out))
     return out
 
@@ -971,6 +973,8 @@ def cmd_convert(a):
         rep['files'] = sorted(os.path.relpath(os.path.join(r, f), out) for r, _, fs in os.walk(d) for f in fs)
         if '--titantron' in a:
             titantron(src, a, entrance, out, rep)
+        rep['out'] = d                 # (the move pack folder; the Mod Maker opens it on the Moves page)
+        rep['opens'] = 'moves'
         rep['ok'] = True
     except InputError:
         raise
