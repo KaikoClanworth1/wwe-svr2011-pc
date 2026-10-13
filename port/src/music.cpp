@@ -154,8 +154,11 @@ class Player {
 
   void Run() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) {
-      REXLOG_WARN("user music: Media Foundation unavailable");
+    // (mfplat / mfreadwrite are delay-loaded: Windows "N" without the Media Feature Pack has neither)
+    if (!LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) ||
+        !LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) ||
+        FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) {
+      REXLOG_WARN("user music: Media Foundation unavailable (Windows N: the Media Feature Pack)");
       return;
     }
     if (FAILED(XAudio2Create(&xaudio2_, 0, XAUDIO2_DEFAULT_PROCESSOR)) ||
