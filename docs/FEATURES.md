@@ -154,6 +154,7 @@ still being tested.
 - **Sabu 1.4**: his d-pad-left taunt ("Sit Down", a move 2011 cut) no longer freezes him and the match end.
 - **Custom titantrons kept**: editing a modded superstar's entrance no longer swaps his user movie for the first one in the list.
 - **R-Truth's entrance** plays his theme and his vocal (only the vocal played: a pause the game sends right after his music starts kept the theme stopped).
+- **Mod Maker: SvR 2008 backstage and WWE '13 arena conversions** work in the released Mod Maker again (two helper scripts were missing from Mod Maker Tools since 2.0.5).
 - **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
 
 ## New in 2.0.6
