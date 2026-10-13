@@ -38,7 +38,9 @@ branches (x 90-92) are the template's. The template's in-stream events are moved
 with the new length, its jumps to itself point to the new move. Its record (pack `wazecopy`),
 name (`wazename`), per-key EXH / sound / MBD records (exh / evt / mbd) go with it. Not
 carried: finger poses (the template's hands), the source's own sounds and damage timing
-(the template's, retimed). Submission and taunt templates (YMBs banks) are left out for now.
+(the template's, retimed). A template on YMBs banks (a taunt; moveset_port passes the base's) gets the
+source's attacker (and victim) as YMBs channels: ymbs_retarget.py solves the game's limb IK + rotations
+(worst joint error in the notes), ymbs.py encodes; the motion keeps the template's header times.
 """
 import json
 import os
@@ -285,6 +287,15 @@ class Game11:
             blob = self.SM.tree_get(blob, [int(x, 16) for x in parts[2:]])
         return pac, ymks.read_bank(self.SM.unpack(blob))
 
+    def bank_raw(self, path):
+        """(pac, the bank's unpacked bytes) - YMBs banks, which ymks doesn't read"""
+        pac = 'mpsp.pac' if path.startswith('MOTP') else 'm.pac'
+        parts = path.split('/')
+        blob = self.SM.entry_get(self.groups(pac), parts[0].ljust(4).encode(), parts[1].ljust(4).encode())
+        if len(parts) > 2:
+            blob = self.SM.tree_get(blob, [int(x, 16) for x in parts[2:]])
+        return pac, self.SM.unpack(blob)
+
     def banks_of(self, mid):
         """[(path, kind, [(x, y)])]"""
         out = []
@@ -500,9 +511,48 @@ def convert(a, rep):
     progress(60, 'tracks')
     offset = None
     nmot = 0
+    ymb_ns, ymb_solved = None, {}
     for path, kind, ks in g11.banks_of(tid):
+        if kind == 'YMBs':   # (taunts, submissions: ADPCM channels with limb IK - ymbs_retarget)
+            import ymbs
+            import ymbs_retarget as YR
+            pac, raw = g11.bank_raw(path)
+            bank = ymbs.Bank(raw)
+            ends = sorted({e[3] for e in bank.dir} | {len(raw) - bank.base})
+            packed = path.startswith('MOTP')
+            for x, y in ks:
+                k = bank.find(tid, x, y)
+                if k is None:
+                    continue
+                typ, nseg, itv, pad, f0, f1, f2, f3 = bank.hdr[k]
+                blk = (att if y == 0 else vic) if x < 90 and y in (0, 1) else None
+                data = None
+                if blk is not None:
+                    ymb_ns = ymb_ns or YR.nodes11()
+                    try:
+                        sample = YR.w13_sampler(R, blk)
+                        if y not in ymb_solved:   # (the same motion in every bank: solved once)
+                            ymb_solved[y] = YR.solve(ymb_ns, sample, nf)
+                        data, frames = YR.build_motion(bank, ymb_ns, sample, nf, typ, ymb_solved[y])
+                        worst = YR.check(bank, data, frames, typ, sample, ymb_ns)
+                        rep['notes'].append('%s x%d y%d: YMBs motion, %d keys, worst joint %.2f units' %
+                                            (path, x, y, frames, worst))
+                        hdr = struct.pack('<BBBB4f', typ, 0, 1, 0, f0, f1, f2, f3)
+                    except (StopIteration, IndexError) as ex:   # (a channel table this solver doesn't fill)
+                        rep['warnings'].append('%s x%d y%d: the template\'s motion (%s)' % (path, x, y, ex or 'channels'))
+                        data = None
+                if data is None:   # (props, cameras, branches, the other person: the template's)
+                    off = bank.dir[k][3]
+                    data = raw[bank.base + off: bank.base + next(e for e in ends if e > off)]
+                    frames = bank.dir[k][4]
+                    hdr = raw[bank.base + 4 + 20 * k: bank.base + 24 + 20 * k]
+                fn = 'motions/%d_%d_%d_%s.ymb' % (new_id, x, y, path.replace('/', '').lower())   # (per bank: channel tables differ)
+                open(os.path.join(pd, fn), 'wb').write(data)
+                lines.append('motion %s %s %d %d %d %d %s %s' % (pac, path, new_id, x, y, frames, fn, hdr.hex()))
+                nmot += 1
+            continue
         if kind != 'YMKs':
-            rep['dropped'].append('bank %s (YMBs: submissions / taunts not done yet)' % path)
+            rep['dropped'].append('bank %s (%s)' % (path, kind))
             continue
         pac, bank = g11.bank(path)
         packed = path.startswith('MOTP')

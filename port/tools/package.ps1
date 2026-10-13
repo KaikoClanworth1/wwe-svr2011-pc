@@ -37,7 +37,7 @@ if ($WithModMaker) {
                      "superstar_port.py", "svr08_char.py", "entrance_port.py", "ymks.py", "svr08_entrance.py",
                      "hctp_entrance.py", "hctp_motion.py", "svr10_entrance.py", "wwe13_entrance.py", "w13_retarget.py",
                      "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py",
-                     "moves_port.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py",
+                     "moves_port.py", "ymbs.py", "ymbs_retarget.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py",
                      "wwe13_pack.py", "arena_tool.py",  # (imports checked transitively 13 Oct: arena_port needs these two)
                      "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py",  # (entrance_port: PS2 discs, SYM, SvR 2006)
                      "hand_tracks.py", "svr06_hands.py", "finger_retarget.py",  # (entrance_port: finger tracks)

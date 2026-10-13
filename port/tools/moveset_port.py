@@ -13,7 +13,8 @@ For each slot of the source game's profile that tools/moveset_maps.json maps to 
 moves.txt holds the slots that differ from the base's profile (0xOFF=id). Every row is reported.
 A 2011 move is used when it has a motion (some records are cut moves) and 2011's own roster has it in that
 slot or in the same menu group (pro_slots.json "menu") - a strike doesn't land in a grapple slot.
-Submissions and taunts on YMBs banks can't be ported yet (moves_port): those keep the base's.
+Taunts are ported on a taunt template (the base's taunt in that slot, else another 2011 taunt on YMBs
+banks): moves_port's YMBs path. Submissions on YMBs banks keep the base's.
 """
 import collections
 import json
@@ -76,6 +77,11 @@ def port_moveset(c):
     rows = []
     to_port = collections.OrderedDict()   # source id -> [2011 offsets]
     src_index = c.mgame.index() if c.mgame is not None else {}
+    templ = {}   # source id -> the 2011 taunt template (YMBs banks)
+
+    def ymbs_taunt(mid):
+        return mid in moved and any(kd == 'YMBs' for p, kd, ks in g11m.banks_of(mid))
+    any_taunt = None
     for so, to in sorted(smap.items()):
         if so + 2 > len(c.pro) or to // 2 >= N11:
             continue
@@ -93,13 +99,21 @@ def port_moveset(c):
         if fit:
             area[to // 2] = fit[0]
             rows.append((so, to, v, nm, 'same move in 2011', fit[0]))
-        elif v in src_index and c.port and c.mgame is not None and menu_of.get(to) != 'Taunts':
-            # (taunts play from YMBs banks moves_port can't build yet: on a strike template they'd be a strike)
+        elif v in src_index and c.port and c.mgame is not None:
+            if menu_of.get(to) == 'Taunts' and v not in templ:   # (a taunt plays from YMBs banks: a taunt template)
+                t = base[to // 2] if ymbs_taunt(base[to // 2]) else None
+                if t is None:
+                    if any_taunt is None:
+                        any_taunt = next((x for x in sorted(in_menu) if 'Taunts' in in_menu[x] and ymbs_taunt(x)), 0)
+                    t = any_taunt or None
+                if t is None:
+                    rows.append((so, to, v, nm, 'base kept (no 2011 taunt template)', base[to // 2]))
+                    continue
+                templ[v] = t
             to_port.setdefault(v, []).append(to)
         else:
             rows.append((so, to, v, nm, 'base kept (%s)' % (
                 ('no motion in 2011' if not any(x in moved for x in cand) else 'used elsewhere in 2011') if cand else
-                'a taunt: not portable yet' if menu_of.get(to) == 'Taunts' and v in src_index else
                                                              'no porter for this game yet' if c.mgame is None else
                                                              'no motion in the source' if v not in src_index else
                                                              'porting off'), base[to // 2]))
@@ -132,6 +146,8 @@ def port_moveset(c):
             r = {'notes': [], 'warnings': [], 'dropped': []}
             a = dict(game=c.gid, item=str(v), out=os.path.join(pdir, str(v)), pac11=c.pac11, svrmod=c.svrmod,
                      id=str(new_id), _g=c.mgame, _g11=g11m)
+            if v in templ:
+                a['template'] = str(templ[v])
             try:
                 MP.convert(a, r)
             except Exception as e:   # noqa: BLE001
