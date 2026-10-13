@@ -92,6 +92,8 @@ int g_test_pose = -1;
 std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
 int g_test_simple = -1;   // --simple <step>
+std::wstring g_test_take;  // --simple-take <svrmod>,<0 look | 1 everything>
+bool g_test_take_all = false;
 bool g_test_fbx_make = false;
 std::wstring g_test_fbx_report;  // --fbx-report <out>  // --star-fbx-make: Make the model from the FBX, the log to <work>\make.log, quit
 std::string g_test_fbx_map;
@@ -1440,6 +1442,7 @@ void Draw() {
       WriteFile(Utf8(g_test_fbx_report), Bytes(text.begin(), text.end()));
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
+    if (!g_test_take.empty()) TakeFromMod(g_test_take, g_test_take_all);
     if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
@@ -2033,7 +2036,37 @@ void TestMoveset(const std::string& spec) {
 
 void TestFbx(const std::wstring& fbx, const std::string& map) { g_test_fbx = fbx, g_test_fbx_map = map; }
 
+// A converted superstar (.svrmod) into this project: just its look (model, attires, height), or everything it
+// brings (music, movie, pictures, moves, entrance) - the name, style and Simple step stay the user's when set.
+bool TakeFromMod(const std::wstring& svrmod, bool everything) {
+  Bytes zip;
+  ProjectIn in;
+  in.dir = fs::path(svrmod).parent_path() / fs::path(svrmod).stem();
+  if (!ReadFile(Utf8(svrmod), zip) || !ZipRead(zip, in.files)) return Status("That converted superstar can't be read: " + Utf8(svrmod)), false;
+  const ZipEntry* txt = in.Find("manifest.txt");
+  if (!txt) return Status("The converted superstar has no manifest."), false;
+  in.text.assign(txt->data.begin(), txt->data.end());
+  const StarProject keep = g_star;
+  if (!Read(in, true)) {
+    g_star = keep;
+    return Status("The converted superstar couldn't be read."), false;
+  }
+  if (!everything) {
+    const StarProject got = g_star;
+    g_star = keep;
+    g_star.model = got.model, g_star.height = got.height;
+    for (int a = 1; a < 4; ++a) g_star.attires[a] = got.attires[a], std::memcpy(g_star.attire_names[a], got.attire_names[a], sizeof got.attire_names[a]);
+  } else {
+    if (keep.name[0]) std::memcpy(g_star.name, keep.name, sizeof g_star.name), std::memcpy(g_star.short_name, keep.short_name, sizeof g_star.short_name);
+    g_star.simple = keep.simple, g_star.simple_step = keep.simple_step;
+  }
+  Touch();
+  Status(everything ? "The superstar came in with its look, music, pictures and moves." : "Your superstar has the new look.");
+  return true;
+}
+
 void TestSimple(int step) { g_test_simple = step; }
+void TestSimpleTake(const std::wstring& svrmod, bool everything) { g_test_take = svrmod, g_test_take_all = everything; }
 void TestFbxMake() { g_test_fbx_make = true; }
 void TestFbxReport(const std::wstring& out) {  // with --star-fbx: the import report to <out> (automatic mapping), quit
   g_test_fbx_report = out;

@@ -78,7 +78,8 @@ void Install(bool start);
 void SetPicture(const Image& src);
 std::wstring StyleChPac();  // the fighting style's superstar's model (pac\ch\ch<id>.pac)
 void SimpleDraw();          // simple_star.cpp
-void FbxRows(bool simple);  // Model from an FBX: pick, report, bone matching, meshes, Make
+void FbxRows(bool simple);
+bool TakeFromMod(const std::wstring& svrmod, bool everything);  // a converted superstar's look (or all of it) into this project  // Model from an FBX: pick, report, bone matching, meshes, Make
 
 }  // namespace star_page
 }  // namespace mm

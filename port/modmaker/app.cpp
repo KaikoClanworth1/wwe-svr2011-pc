@@ -2331,6 +2331,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-fbx-make")) star_page::TestFbxMake();
     else if (!wcscmp(argv[i], L"--fbx-report") && more) star_page::TestFbxReport(argv[++i]);  // with --star-fbx: the import report, quit  // with --star-fbx: Make the model, log, quit
+    else if (!wcscmp(argv[i], L"--simple-take") && more) {  // <svrmod>,<0|1>: a converted superstar's look (0) or all of it (1) into the project
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      star_page::TestSimpleTake(v.substr(0, c), c != std::wstring::npos && v.substr(c + 1) == L"1");
+    }
+    else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
     else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
     else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
       const std::wstring v = argv[++i];

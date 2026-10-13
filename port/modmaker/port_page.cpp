@@ -434,10 +434,18 @@ void NativeArenas(const std::string& game, const std::string& game_name) {
 }
 
 // The converted thing onto its page.
+// Embedded (the Superstar page's Simple mode): a converted superstar is handed back, not opened as a project.
+bool g_embedded = false;
+std::wstring g_embedded_result;
+
 void OpenResult() {
   const std::string out = g_result["out"].Str(), opens = g_result["opens"].Str();
   const fs::path p = Wide(out);
   std::error_code ec;
+  if (g_embedded && Lower(p.extension().string()) == ".svrmod") {
+    g_embedded_result = p.wstring();
+    return;
+  }
   if (Lower(p.extension().string()) == ".svrmod") {
     ProjectOpen(p.wstring());
     return;
@@ -493,53 +501,8 @@ void DiscRow() {
 }  // namespace
 
 void TestClear() { CacheJob(false, true); }
-
-void TestStart(const std::string& spec) {
-  std::vector<std::string> p;
-  for (size_t at = 0; at <= spec.size();) {
-    size_t c = spec.find(',', at);
-    if (c == std::string::npos || p.size() == 3) c = spec.size();  // (the options may hold commas)
-    p.push_back(spec.substr(at, c - at));
-    at = c + 1;
-  }
-  if (p.size() < 3) return;
-  for (int k = 0; k < kKindCount; ++k)
-    if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = g_force_kind = k;
-  const std::wstring src = Wide(p[1]);
-  std::error_code ec;
-  if (fs::is_directory(src, ec)) g_folder = src;
-  else g_image = src;
-  g_test_item = p[2];
-  g_native_test = g_kind >= 0 && std::wstring(kKinds[g_kind].script) == L"arena_port.py" ? p[2] : "";
-  if (p.size() > 3) std::snprintf(g_options, sizeof g_options, "%s", p[3].c_str());
-  g_test_stage = 0;
-}
-
-void Draw() {
-  Heading("Port from another game", "Bring a superstar, arena, moves, an entrance or more from your other WWE discs into "
-                                    "SvR 2011: pick the disc, what to port and the item; it opens on its page to finish.");
-  if (PythonExe().empty() || !PythonMissing().empty()) {
-    ImGui::TextColored(kWarn, "The converters need Python 3 with numpy and Pillow%s.",
-                       PythonExe().empty() ? " (install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow))" : (": " + PythonMissing()).c_str());
-    if (ImGui::SmallButton("Check again")) RecheckTools();
-    return;
-  }
-  DiscRow();
-  CacheRow();
-  if (Source().empty()) return;
-  ImGui::Spacing();
-  if (ImGui::BeginTabBar("kinds")) {
-    for (int k = 0; k < kKindCount; ++k)
-      if (ImGui::BeginTabItem(kKinds[k].title, nullptr, k == g_force_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
-        if (g_force_kind < 0 || g_force_kind == k) {
-          g_force_kind = -1;
-          if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
-        }
-        ImGui::EndTabItem();
-      }
-    ImGui::EndTabBar();
-  }
-  const int k = g_kind;
+// A kind's steps: the game, the list, convert, the result.
+void KindBody(int k) {
   ImGui::TextDisabled("%s", kKinds[k].about);
   if (!HaveScript(k)) {
     ImGui::TextDisabled("This converter (%s) isn't in this build yet.", Utf8(kKinds[k].script).c_str());
@@ -689,7 +652,7 @@ void Draw() {
   if (!g_result_error.empty()) ImGui::TextColored(kBad, "%s", g_result_error.c_str());
   if (g_result.type == Json::Type::kObject && g_result["ok"].Truthy()) {
     ImGui::SameLine();
-    if (ImGui::Button(g_result["opens"].Str() == "belt" || g_result["opens"].Str() == "weapon" ? "Install the pack" : "5. Open it to finish")) OpenResult();
+    if (ImGui::Button(g_result["opens"].Str() == "belt" || g_result["opens"].Str() == "weapon" ? "Install the pack" : g_embedded ? "5. Use it" : "5. Open it to finish")) OpenResult();
     if (const int t = std::atoi(g_result["template"].Str().c_str()); t > 0)  // (moves: what it was built on)
       ImGui::TextDisabled("Built on the 2011 move %s (%d)%s; record %s. Not right? Pick a template above and convert again.",
                           MoveName(t).c_str(), t, g_template > 0 ? "" : ", picked automatically", g_result["id"].Str().c_str());
@@ -703,6 +666,77 @@ void Draw() {
     }
   }
 }
+
+
+void TestStart(const std::string& spec) {
+  std::vector<std::string> p;
+  for (size_t at = 0; at <= spec.size();) {
+    size_t c = spec.find(',', at);
+    if (c == std::string::npos || p.size() == 3) c = spec.size();  // (the options may hold commas)
+    p.push_back(spec.substr(at, c - at));
+    at = c + 1;
+  }
+  if (p.size() < 3) return;
+  for (int k = 0; k < kKindCount; ++k)
+    if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = g_force_kind = k;
+  const std::wstring src = Wide(p[1]);
+  std::error_code ec;
+  if (fs::is_directory(src, ec)) g_folder = src;
+  else g_image = src;
+  g_test_item = p[2];
+  g_native_test = g_kind >= 0 && std::wstring(kKinds[g_kind].script) == L"arena_port.py" ? p[2] : "";
+  if (p.size() > 3) std::snprintf(g_options, sizeof g_options, "%s", p[3].c_str());
+  g_test_stage = 0;
+}
+
+void Draw() {
+  Heading("Port from another game", "Bring a superstar, arena, moves, an entrance or more from your other WWE discs into "
+                                    "SvR 2011: pick the disc, what to port and the item; it opens on its page to finish.");
+  if (PythonExe().empty() || !PythonMissing().empty()) {
+    ImGui::TextColored(kWarn, "The converters need Python 3 with numpy and Pillow%s.",
+                       PythonExe().empty() ? " (install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow))" : (": " + PythonMissing()).c_str());
+    if (ImGui::SmallButton("Check again")) RecheckTools();
+    return;
+  }
+  DiscRow();
+  CacheRow();
+  if (Source().empty()) return;
+  ImGui::Spacing();
+  if (ImGui::BeginTabBar("kinds")) {
+    for (int k = 0; k < kKindCount; ++k)
+      if (ImGui::BeginTabItem(kKinds[k].title, nullptr, k == g_force_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (g_force_kind < 0 || g_force_kind == k) {
+          g_force_kind = -1;
+          if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
+        }
+        ImGui::EndTabItem();
+      }
+    ImGui::EndTabBar();
+  }
+  KindBody(g_kind);
+}
+
+void SuperstarFlow() {
+  if (PythonExe().empty() || !PythonMissing().empty()) {
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(kWarn, "Bringing superstars from older games needs Python 3 with numpy and Pillow%s.",
+                       PythonExe().empty() ? " (the launcher's Setup page installs them)" : (": " + PythonMissing()).c_str());
+    ImGui::PopTextWrapPos();
+    if (ImGui::SmallButton("Check again")) RecheckTools();
+    return;
+  }
+  DiscRow();
+  if (Source().empty()) return;
+  int k = 0;
+  for (int i = 0; i < kKindCount; ++i)
+    if (std::wstring(kKinds[i].script) == L"superstar_port.py") k = i;
+  if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
+  g_embedded = true;
+  KindBody(k);
+  g_embedded = false;
+}
+std::wstring EmbeddedResult() { return g_embedded_result; }
+void ClearEmbeddedResult() { g_embedded_result.clear(); }
 
 }  // namespace port_page
 }  // namespace mm

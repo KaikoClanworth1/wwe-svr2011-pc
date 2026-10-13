@@ -130,8 +130,9 @@ void StepName() {
 }
 
 char g_find[64] = "";
+int g_look_mode = -1;  // the Look step's way in (-1: by the project)
 void StepLook() {
-  static int mode = -1;  // 0 a game superstar, 1 an older disc, 2 an FBX
+  int& mode = g_look_mode;  // 0 a game superstar, 1 an older disc, 2 an FBX
   if (mode < 0) mode = g_star.fbx.empty() ? 0 : 2;  // (a project with an FBX opens on it)
   const float w = CardWidth(), h = 80 * g_scale;
   const int per_row = CardsPerRow(w);
@@ -183,7 +184,19 @@ void StepLook() {
     ImGui::PopTextWrapPos();
     FbxRows(true);
   } else {
-    ImGui::TextDisabled("Coming next: this way in is being built. Pick a superstar in the game for now.");
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("Pick the disc, list its superstars and convert one. The Mod Maker reads your disc images as they are.");
+    ImGui::PopTextWrapPos();
+    if (const std::wstring got = port_page::EmbeddedResult(); !got.empty()) {
+      ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1), "Converted. What should your superstar take from it?");
+      PushAccent();
+      if (ImGui::Button("Just the look", ImVec2(180 * g_scale, 0))) TakeFromMod(got, false), port_page::ClearEmbeddedResult();
+      PopAccent();
+      ImGui::SameLine();
+      if (ImGui::Button("Everything (look, music, pictures, moves)", ImVec2(0, 0))) TakeFromMod(got, true), port_page::ClearEmbeddedResult();
+      ImGui::Spacing();
+    }
+    port_page::SuperstarFlow();
   }
   ImGui::Spacing();
   if (ImGui::SmallButton("Use a model file instead...")) {
@@ -192,12 +205,76 @@ void StepLook() {
   }
 }
 
+// A popup to pick a game superstar by name (true when picked).
+bool RosterPopup(const char* id, int& picked) {
+  bool hit = false;
+  if (ImGui::BeginPopup(id)) {
+    static char find[64] = "";
+    if (ImGui::IsWindowAppearing()) find[0] = 0, ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(240 * g_scale);
+    ImGui::InputTextWithHint("##f", "Find a superstar...", find, sizeof find);
+    ImGui::BeginChild("names", ImVec2(240 * g_scale, 300 * g_scale));
+    const std::string f = Lower(find);
+    for (const auto& st : Stars()) {
+      if (!f.empty() && Lower(st.name).find(f) == std::string::npos) continue;
+      if (ImGui::Selectable((st.name + "##" + std::to_string(st.id)).c_str())) picked = st.id, hit = true, ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndChild();
+    ImGui::EndPopup();
+  }
+  return hit;
+}
+
+std::string LookName(const std::wstring& pac) {
+  const int id = GameStarOf(pac);
+  if (const StarInfo* s = id ? StarById(id) : nullptr) return s->name + "'s";
+  return FileName(pac);
+}
+
 void StepAttires() {
   const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
-  ImGui::Text("Your superstar's look has %d attire%s.", int(own.size()), own.size() == 1 ? "" : "s");
-  ImGui::TextDisabled("Click a number above the 3D view to see each one.");
+  auto own_has = [&](int n) {  // (the game counts them in order from 1)
+    for (int k = 1; k <= n; ++k)
+      if (std::find(own.begin(), own.end(), k) == own.end()) return false;
+    return true;
+  };
+  ImGui::TextUnformatted("Attire 1 is your superstar's look (the Look step).");
   ImGui::Spacing();
-  ImGui::TextDisabled("Coming next: adding outfits from other superstars here.");
+  for (int a = 1; a < 4; ++a) {
+    ImGui::PushID(a);
+    const bool from_model = g_star.attires[a].empty() && own_has(a + 1);
+    const std::string now = !g_star.attires[a].empty() ? LookName(g_star.attires[a]) + " outfit"
+                            : from_model                ? std::string("the look's own attire ") + std::to_string(a + 1)
+                                                        : std::string("none");
+    ImGui::Text("Attire %d:", a + 1);
+    ImGui::SameLine(90 * g_scale);
+    ImGui::TextUnformatted(now.c_str());
+    ImGui::Indent(90 * g_scale);
+    if (ImGui::SmallButton("Another superstar's...")) ImGui::OpenPopup("roster");
+    int picked = 0;
+    if (RosterPopup("roster", picked)) g_star.attires[a] = GameChPac(picked), Touch();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("A model file...")) {
+      const std::wstring f = PickFile(false, L"A character model (ch.pac): its first attire", kPacFilter, 1);
+      if (!f.empty()) g_star.attires[a] = f, Touch();
+    }
+    if (!g_star.attires[a].empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Remove")) g_star.attires[a].clear(), Touch();
+    }
+    if (!g_star.attires[a].empty() || from_model) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("See it")) g_view_attire = a + 1;
+      ImGui::SetNextItemWidth(220 * g_scale);
+      if (ImGui::InputTextWithHint("##name", ("its name (ATTIRE " + std::to_string(a + 1) + ")").c_str(), g_star.attire_names[a],
+                                   sizeof g_star.attire_names[a]))
+        Touch();
+    }
+    ImGui::Unindent(90 * g_scale);
+    ImGui::Spacing();
+    ImGui::PopID();
+    if (g_star.attires[a].empty() && !from_model) break;  // (in order: the next one after this)
+  }
 }
 
 void StepMusic() {
@@ -275,6 +352,8 @@ void StepFinish() {
 }
 
 }  // namespace
+
+void TestSimpleLook(int mode) { g_look_mode = mode; }
 
 void SimpleDraw() {
   int& step = g_star.simple_step;

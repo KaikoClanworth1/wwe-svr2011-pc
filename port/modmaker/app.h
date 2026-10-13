@@ -351,7 +351,7 @@ namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); vo
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
                       void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
-                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
+                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestSimpleTake(const std::wstring& svrmod, bool everything); void TestSimpleLook(int mode); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
                       // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
                       const std::vector<std::string>& AnnouncerNames();
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
@@ -369,7 +369,9 @@ namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file
                        // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
                        void UseArenaFile(const std::wstring& file, const std::string& name); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); }
+namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear();
+                      // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
+                      void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult(); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
 namespace pac_editor {  // a copy of any pac, edited and saved elsewhere (Game assets)
 bool Open(svrfmt::Bytes pac, const std::string& label, const std::wstring& from, const std::string& note);
