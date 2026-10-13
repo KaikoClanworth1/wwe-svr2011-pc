@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include "app.h"
+#include "mod_check.h"
 
 namespace mm {
 namespace moves_page {
@@ -192,7 +193,7 @@ void Install() {
         return;
       }
     }
-    Status("Installed: the game merges the moves into its files when it next starts (a few seconds) (" + PathStr(dir) + ").");
+    Status("Installed: the game merges the moves into its files when it next starts (a few seconds) (" + PathStr(dir) + ")." + InstallReport("Moves", dir));
   });
 }
 

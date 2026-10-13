@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "mod_check.h"
 #include "../launcher/bg_map.h"
 
 namespace mm {
@@ -131,7 +132,7 @@ void InstallPack() {
       Status("Could not write into " + PathStr(dir) + " (is the game running?)");
       return;
     }
-  Status("Installed: the main menu shows these after its own 12 pictures from the next game start (" + PathStr(dir) + ").");
+  Status("Installed: the main menu shows these after its own 12 pictures from the next game start (" + PathStr(dir) + ")." + InstallReport("Backgrounds", dir));
 }
 
 void Problems(std::vector<Problem>& p) {

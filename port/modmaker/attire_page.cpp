@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "mod_check.h"
 #include "char_preview.h"
 #include "pac_attires.h"
 #include "svrfmt/pac.h"
@@ -121,7 +122,7 @@ void Install() {
       Status("Could not write into " + PathStr(dir) + " (is the game running?)");
       return;
     }
-  Status("Installed into " + PathStr(dir) + ": the attire is on CHANGE ATTIRE from the next game start.");
+  Status("Installed into " + PathStr(dir) + ": the attire is on CHANGE ATTIRE from the next game start." + InstallReport("Attires", dir));
 }
 
 // The attires of a superstar that installed, switched-on attire mods ask for (attire=1-4; this mod's own folder and

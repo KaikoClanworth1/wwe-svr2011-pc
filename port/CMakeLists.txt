@@ -267,7 +267,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${doc_path}")
     endforeach()
     add_executable(svr2011_modmaker WIN32
-        modmaker/app.cpp modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/simple_star.cpp modmaker/signs_page.cpp modmaker/backgrounds_page.cpp
+        modmaker/app.cpp modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/simple_star.cpp modmaker/mod_check.cpp modmaker/signs_page.cpp modmaker/backgrounds_page.cpp
         modmaker/media_page.cpp modmaker/moves_page.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
         modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
         modmaker/tool_run.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c

@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "mod_check.h"
 #include "svrfmt/pac.h"
 
 namespace mm {
@@ -221,7 +222,7 @@ void Install() {
   fs::remove(dir / L"disabled", ec);  // (installing switches it on)
   for (const auto& f : files)
     if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) { Status("Could not write into " + PathStr(dir)); return; }
-  Status("Installed: the match type is in the game's menus when it next starts (" + PathStr(dir) + ").");
+  Status("Installed: the match type is in the game's menus when it next starts (" + PathStr(dir) + ")." + InstallReport("MatchTypes", dir));
 }
 
 void RuleView(const Rule& r) {

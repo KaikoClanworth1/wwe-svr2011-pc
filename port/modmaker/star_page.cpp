@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "app.h"
+#include "mod_check.h"
 #include "char_preview.h"
 #include "json.h"
 #include "pac_attires.h"
@@ -867,7 +868,7 @@ void Install(bool start) {
         Status("Could not write into " + PathStr(dir) + " (is the game running?)");
         return;
       }
-    Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ").");
+    Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ")." + InstallReport("Superstars", dir));
     if (start) StartGame();
   });
 }
