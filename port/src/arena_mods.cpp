@@ -1035,6 +1035,38 @@ void UseBackstageRow(int i) {
 
 void SetMatchLoading(bool loading) { g_match_loading = loading; }
 
+std::string ArenaModInUse(int* tile) {
+  const auto* c = static_cast<const CustomArena*>(g_committed_custom);
+  if (!c || g_committed_host < 0) return "";
+  if (tile) *tile = g_committed_host;
+  return c->id;
+}
+
+bool UseArenaMod(const std::string& folder, int tile) {
+  static int used = -1;  // (the tile this game plays another's arena on)
+  if (folder.empty() || tile < 0 || tile >= 100) {
+    if (used >= 0) {
+      RedirectArena(used, "");
+      SetDecodeSwaps(nullptr, -1);
+      SetRingRules(std::string());
+      REXLOG_INFO("[svr2011] arena mods: the online session's custom arena off");
+    }
+    used = -1;
+    return true;
+  }
+  for (const auto& c : g_customs) {
+    if (c.id != folder) continue;
+    if (used >= 0 && used != tile) RedirectArena(used, "");
+    SetDecodeSwaps(&c, tile);
+    SetRingRules(c.manifest);
+    RedirectArena(tile, c.file);
+    if (used != tile) REXLOG_INFO("[svr2011] arena mods: the online session's custom arena {} on arena {}", c.name, tile);
+    used = tile;
+    return true;
+  }
+  return false;
+}
+
 int ArenaNumberFor(int arena) { return arena >= 0 && arena < 100 && g_number_for[arena] ? g_number_for[arena] : arena; }
 
 void ArenaSelectPad(uint32_t user, uint16_t buttons) {

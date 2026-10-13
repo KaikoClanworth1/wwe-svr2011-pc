@@ -424,6 +424,15 @@ const std::string& GameplayModSet() {
   return set;
 }
 
+bool ModKey(const std::string& kind, const std::string& folder, std::string* key, std::string* label) {
+  static const auto set = ParseSet(GameplayModSet());
+  const auto it = set.find(kind + "/" + folder);
+  if (it == set.end()) return false;
+  if (key) *key = it->second.id + "	" + it->second.version + "	" + it->second.crc;
+  if (label) *label = Describe(it->second);
+  return true;
+}
+
 uint64_t GameplayModSetHash() {
   const std::string& s = GameplayModSet();
   if (s.empty()) return 0;
@@ -432,8 +441,13 @@ uint64_t GameplayModSetHash() {
   return h;
 }
 
-std::string ModSetDifference(const std::string& mine, const std::string& theirs) {
-  const auto a = ParseSet(mine), b = ParseSet(theirs);
+std::string ModSetDifference(const std::string& mine, const std::string& theirs, bool superstars) {
+  auto a = ParseSet(mine), b = ParseSet(theirs);
+  if (!superstars) {  // (checked in the lobby: online_mods.h)
+    for (auto* m : {&a, &b})
+      for (auto it = m->begin(); it != m->end();)
+        it = it->second.kind == "Superstars" || it->second.kind == "Arenas" ? m->erase(it) : std::next(it);
+  }
   std::vector<std::string> parts;
   for (const auto& [key, l] : b)
     if (!a.count(key)) parts.push_back("they have " + Describe(l) + ", you don't");

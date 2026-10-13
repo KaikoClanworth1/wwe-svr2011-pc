@@ -86,7 +86,8 @@ constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
   kFileRequest = 7, kFilePart = 8,  // (files peers fetch from each other: P2PFetch)
-  kModsRefused = 9                  // (a searcher's mods differ: its set, for the host's notice)
+  kModsRefused = 9,                 // (a searcher's mods differ: its set, for the host's notice)
+  kMods = 14                        // (a lobby's superstar mods: online_mods.cpp)
 };
 // Round trips to the peers a match exchanges game packets with (net_sim.h);
 // game packets with the last few repeated (a peer that pings takes them).
@@ -589,6 +590,7 @@ std::map<uint64_t, Session> g_found;          // the last search's sessions
 // An invite accepted (online_overlay.cpp): its session comes first in searches,
 // its private slots open to this game (as the console's invites let in).
 uint64_t g_invited = 0;
+std::atomic<P2PModHandler> g_mod_handler{nullptr};
 Clock::time_point g_invited_at{};
 
 // A match is on while a peer-network session is (XSESSION_CREATE_USES_PEER_NETWORK;
@@ -676,7 +678,9 @@ std::string Mismatch(Reader& r) {
     if (r.need(vn)) version.assign(reinterpret_cast<const char*>(r.p + r.at), vn), r.at += vn;
   }
   if (std::string why = svr2011::VersionDifference(version); !why.empty()) return why;
-  return svr2011::ModSetDifference(svr2011::GameplayModSet(), set);
+  // (superstar and arena mods are checked in the lobby - per pick, per
+  // session: online_mods.h - the others here)
+  return svr2011::ModSetDifference(svr2011::GameplayModSet(), set, false);
 }
 
 void TellModsRefused(const uint8_t* host_xnaddr);  // (below: tells a host its sessions were left out)
@@ -1076,6 +1080,11 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
         }
       }
       if (current) NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed);
+      break;
+    }
+    case kMods: {  // (online_mods.cpp: the rest is its own)
+      P2PModHandler handler = g_mod_handler.load();
+      if (handler && r.ok && r.at <= r.n) handler(r.p + r.at, r.n - r.at);
       break;
     }
     case kFileRequest:
@@ -1833,6 +1842,36 @@ void SetPortRules(uint32_t value) {
 }
 
 std::optional<uint32_t> PortRules() { return P2PSessionProperty(kPortRules); }
+
+P2PLobby P2PMatchLobby() {
+  P2PLobby out;
+  std::lock_guard lock(g_mutex);
+  const Local* best = nullptr;
+  for (const auto& [obj, local] : g_sessions) {
+    if (!(local.session.flags & 0x20)) continue;  // (a match's, not the ONLINE menu's presence session)
+    if (!best || (local.host && !best->host)) best = &local;
+  }
+  if (!best) return out;
+  out.in = true, out.host = best->host, out.session = best->session.id;
+  for (uint64_t x : best->members_public) out.members.push_back(x);
+  for (uint64_t x : best->members_private) out.members.push_back(x);
+  return out;
+}
+
+void SetP2PModHandler(P2PModHandler handler) { g_mod_handler = handler; }
+
+void P2PSendMods(const std::vector<uint8_t>& payload) {
+  if (g_socket == kBadSocket || payload.size() > 50000) return;
+  std::vector<Path> peers;
+  {
+    std::lock_guard lock(g_mutex);
+    for (const auto& [mac, p] : g_peers) peers.push_back(PathOf(mac, p));
+  }
+  Writer w;
+  w.b = Header(kMods, NewNonce());
+  w.bytes(payload.data(), payload.size());
+  for (const auto& p : peers) Send(p, w.b);
+}
 
 std::optional<bool> P2PRanked() {
   std::lock_guard lock(g_mutex);

@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace rex::memory {
 class Memory;
@@ -70,5 +71,19 @@ std::optional<uint32_t> PortRules();
 // X_CONTEXT_GAME_TYPE, set as the player enters RANKED MATCH / PLAYER MATCH,
 // before CREATE SESSION): true Ranked, false Player Match; nullopt: not set yet.
 std::optional<bool> P2PRanked();
+
+// The match session this game is in (hosted, or else joined): its id and
+// members (online ids, this game's too); in = false when there's none.
+struct P2PLobby {
+  bool in = false, host = false;
+  uint64_t session = 0;
+  std::vector<uint64_t> members;
+};
+P2PLobby P2PMatchLobby();
+// The lobby's superstar mods (online_mods.cpp): a message to every peer this
+// game knows, and the handler of those that come (on the network thread).
+using P2PModHandler = void (*)(const uint8_t* data, size_t size);
+void SetP2PModHandler(P2PModHandler handler);
+void P2PSendMods(const std::vector<uint8_t>& payload);
 
 }  // namespace svr2011

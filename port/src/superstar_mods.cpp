@@ -1879,6 +1879,10 @@ std::vector<uint32_t> SuperstarModIds() {
 }
 
 bool IsSuperstarMod(uint32_t id) { return ModOf(id) != nullptr; }
+std::string SuperstarModFolder(uint32_t id) {
+  const Mod* m = ModOf(id);
+  return m ? m->folder : std::string();
+}
 uint32_t SuperstarModBase(uint32_t id) {
   const Mod* m = ModOf(id);
   return m ? m->base : 0;

@@ -55,7 +55,15 @@ const std::string& GameplayModSet();
 uint64_t GameplayModSetHash();
 
 // Why two sets differ, for both players: "Your mods don't match: they have
-// Practice Arena 1.0, you don't; ..." (`theirs`: the other side's set).
-std::string ModSetDifference(const std::string& mine, const std::string& theirs);
+// Practice Arena 1.0, you don't; ..." (`theirs`: the other side's set;
+// superstars = false leaves superstar and arena mods out: they are
+// checked in the lobby, online_mods.h).
+std::string ModSetDifference(const std::string& mine, const std::string& theirs, bool superstars = true);
+// A mod as the online checks know it (Mods/<kind>/<folder>, kind
+// "Superstars" or "Arenas"): its key "<folder> <version> <CRC of its
+// gameplay files>" (tab-separated) - the same key on two games means the
+// same mod - and its name for messages ("Sabu 1.3"); false when it isn't in
+// the set.
+bool ModKey(const std::string& kind, const std::string& folder, std::string* key, std::string* label);
 
 }  // namespace svr2011
