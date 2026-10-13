@@ -491,6 +491,12 @@ void PadIconsTextureUploaded(uint32_t physical_base, uint32_t width, uint32_t he
 
 void SetPadIconsOwner(int user_index) { t_owner = user_index; }
 
+std::atomic<int> g_last_start{0};
+void PadIconsStartPressed(uint32_t user_index) {
+  if (g_last_start.exchange(int(user_index)) != int(user_index) && std::getenv("SVR2011_PAD_ICONS_LOG"))
+    REXLOG_INFO("pad icons: START from player {}", user_index);
+}
+
 }  // namespace svr2011
 
 // The page search: sub_826AD450(font, code) -> the page holding code (or -1).
@@ -499,8 +505,8 @@ REX_HOOK_RAW(sub_826AD450) {
   if (svr2011::g_enabled && ctx.r4.u32 >= svr2011::kFirstCode) {
     // (debug: SVR2011_PAD_ICONS_LOG=2 - who looks icons up with no owner: the
     // guest call chain, each new one once)
-    static const bool chains = [] { const char* v = std::getenv("SVR2011_PAD_ICONS_LOG"); return v && *v == '2'; }();
-    if (chains && svr2011::t_owner < 0) {
+    static const int chains = [] { const char* v = std::getenv("SVR2011_PAD_ICONS_LOG"); return v && *v >= '2' ? *v - '0' : 0; }();
+    if (chains && (svr2011::t_owner < 0 || chains >= 3)) {
       std::string chain = fmt::format("{:08X}", uint32_t(ctx.lr));
       uint32_t sp = ctx.r1.u32;
       for (int k = 0; k < 10; ++k) {  // (each frame a little above the last: the stack's own)
@@ -512,7 +518,7 @@ REX_HOOK_RAW(sub_826AD450) {
       static std::mutex m;
       static std::set<std::string> seen;
       std::lock_guard lock(m);
-      if (seen.insert(chain).second) REXLOG_INFO("pad icons: no owner, code {:04X}: {}", ctx.r4.u32, chain);
+      if (seen.insert(fmt::format("{} {}", svr2011::t_owner, chain)).second) REXLOG_INFO("pad icons: owner {}, code {:04X}: {}", svr2011::t_owner, ctx.r4.u32, chain);
     }
     svr2011::Prepare(ctx.r3.u32);
   }
@@ -797,6 +803,17 @@ REX_HOOK_RAW(sub_826E6060) {
   if (copy) Wr32(base + record + 80, copy);
   __imp__sub_826E6060(ctx, base);
   if (copy) Wr32(base + record + 80, original);
+}
+
+// - the in-match menu bar (the pause menu's "SELECT / CANCEL", its pages'):
+//   sub_82426200, a draw of its own class (vtable 0x820183A0; the menus'
+//   bar, sub_824364A8, is another) -> the hints sub_82407DC8 / sub_82407EA8.
+//   It is the pausing player's: the last to press START.
+REX_EXTERN(__imp__sub_82426200);
+REX_HOOK_RAW(sub_82426200) {
+  using namespace svr2011;
+  OwnerScope scope(g_enabled && t_owner < 0 ? g_last_start.load() : t_owner);
+  __imp__sub_82426200(ctx, base);
 }
 
 // - a character select panel: sub_82467C18(cursor + 28), the slot at +256;
