@@ -54,6 +54,16 @@ struct FbxImportOptions {
 bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,
                      const std::string& template_path, const std::string& out_dir, FbxImportReport& rep,
                      const FbxImportOptions& opts = {});
+// The import report (before Make): what's wrong with the model, in plain words with a fix each - polycount against
+// the game's budget, skin (rigid meshes, unweighted vertices, over 4 bones), rig (missing main bones, no fingers /
+// eyes, unknown names), mesh (no UVs, NaN points, degenerate triangles, hidden parts), pictures (missing, unreadable,
+// big, many materials), size. targets / rig: the mapping (ReadFbxSkeleton order) and DetectRig's name.
+struct FbxIssue {
+  int level = 0;  // 2 must fix, 1 warning, 0 tip
+  std::string text, fix;
+};
+std::vector<FbxIssue> FbxInspect(const std::string& fbx_path, const std::vector<std::string>& targets, const std::string& rig,
+                                 const FbxImportOptions& opts);
 // The FBX's meshes as the import sees them: one per mesh node and material ("node / material").
 struct FbxMeshInfo {
   std::string name, kind;  // (kind: the guess)

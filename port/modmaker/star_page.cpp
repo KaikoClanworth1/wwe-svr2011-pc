@@ -92,7 +92,8 @@ int g_test_pose = -1;
 std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
 int g_test_simple = -1;   // --simple <step>
-bool g_test_fbx_make = false;  // --star-fbx-make: Make the model from the FBX, the log to <work>\make.log, quit
+bool g_test_fbx_make = false;
+std::wstring g_test_fbx_report;  // --fbx-report <out>  // --star-fbx-make: Make the model from the FBX, the log to <work>\make.log, quit
 std::string g_test_fbx_map;
 bool g_test_done = false;
 
@@ -926,6 +927,67 @@ void ParsePairs(const std::string& t, std::map<std::string, std::string>& m) {
 std::string FbxMapText() { return PairsText(g_star.fbx_map); }
 void ParseFbxMap(const std::string& t) { ParsePairs(t, g_star.fbx_map); }
 
+// The import report: FbxInspect's list for the FBX and the choices (read in the background when they change), and
+// what Make found (g_fbx_after: the reduction, the size, the builder's notes, the built model's checks).
+std::vector<FbxIssue> g_fbx_report, g_fbx_after;
+std::string g_fbx_report_key;  // what g_fbx_report is for
+bool g_fbx_report_busy = false;
+FbxImportOptions FbxOptions() {
+  FbxImportOptions opts;
+  for (const auto& [k, v] : g_star.fbx_on) opts.include[k] = v == "1";
+  opts.kind = g_star.fbx_kind, opts.picture = g_star.fbx_pic;
+  return opts;
+}
+void IssueList(const std::vector<FbxIssue>& list) {
+  for (size_t k = 0; k < list.size(); ++k) {
+    const FbxIssue& is = list[k];
+    ImGui::PushID(int(k));
+    static const ImVec4 kCol[3] = {ImVec4(0.6f, 0.75f, 1, 1), ImVec4(1, 0.8f, 0.35f, 1), ImVec4(1, 0.45f, 0.4f, 1)};
+    static const char* kLabel[3] = {"Tip:", "Warning:", "Must fix:"};
+    const int lv = std::clamp(is.level, 0, 2);
+    ImGui::TextColored(kCol[lv], "%s", kLabel[lv]);
+    ImGui::SameLine();
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextUnformatted(is.text.c_str());
+    if (!is.fix.empty()) ImGui::TextDisabled("Fix it: %s", is.fix.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::PopID();
+  }
+}
+void FbxReportPanel(const FbxRig& r) {
+  std::error_code ec;
+  const auto t = fs::last_write_time(g_star.fbx, ec);
+  const std::string key = Utf8(g_star.fbx) + "|" + std::to_string(t.time_since_epoch().count()) + "|" + FbxMapText() + "|" +
+                          PairsText(g_star.fbx_on) + "|" + PairsText(g_star.fbx_pic);
+  if (key != g_fbx_report_key && !g_fbx_report_busy && !Busy()) {
+    g_fbx_report_busy = true;
+    std::vector<std::string> targets;
+    for (size_t i = 0; i < r.bones.size(); ++i) targets.push_back(FbxTarget(r, i));
+    const std::string fbx = Utf8(g_star.fbx), rig = r.rig;
+    const FbxImportOptions opts = FbxOptions();
+    RunInBackground([key, fbx, targets, rig, opts] {
+      Progress("Checking the model ...");
+      auto list = FbxInspect(fbx, targets, rig, opts);
+      OnUiThread([key, list] { g_fbx_report = list, g_fbx_report_key = key, g_fbx_report_busy = false; });
+    });
+  }
+  int counts[3] = {};
+  for (const auto& is : g_fbx_report) ++counts[std::clamp(is.level, 0, 2)];
+  const std::string head = g_fbx_report_key.empty() ? std::string("Model check: reading ...")
+                           : g_fbx_report.empty()   ? std::string("Model check: nothing wrong found")
+                                                    : "Model check: " + std::to_string(counts[2]) + " must fix, " + std::to_string(counts[1]) +
+                                                          " warnings, " + std::to_string(counts[0]) + " tips";
+  if (g_fbx_report.empty()) {
+    ImGui::TextDisabled("%s", head.c_str());
+    return;
+  }
+  if (counts[2]) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+  if (ImGui::TreeNode("fbxreport", "%s", head.c_str())) {
+    IssueList(g_fbx_report);
+    ImGui::TreePop();
+  }
+}
+
 // The FBX -> build.json (FbxToBuildInput) -> ch.pac (tools/svr11_build.py), in <game>\Mods\.convert\<name>_fbx.
 constexpr const wchar_t* kFbxBuilder = L"svr11_build.py";
 void MakeFromFbx() {
@@ -936,10 +998,9 @@ void MakeFromFbx() {
   const int tid = kStyles[g_star.style].template_id;
   const std::wstring tpl = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(tid) + L".pac")).wstring();
   const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / (Wide(IdFrom(g_star.name, "superstar")) + L"_fbx");
-  FbxImportOptions opts;
-  for (const auto& [k, v] : g_star.fbx_on) opts.include[k] = v == "1";
-  opts.kind = g_star.fbx_kind, opts.picture = g_star.fbx_pic;
+  const FbxImportOptions opts = FbxOptions();
   const std::string fbx = Utf8(g_star.fbx);
+  g_fbx_after.clear();
   auto test_end = [work] {
     if (!g_test_fbx_make) return;
     WriteLogTo((work / L"make.log").wstring());
@@ -962,6 +1023,22 @@ void MakeFromFbx() {
         " pictures; scaled x" + std::to_string(rep.scale).substr(0, 5) + " to the game's legs (it was " +
         std::to_string(int(rep.height_cm + 0.5)) + " cm tall)");
     const double scale = rep.scale;
+    std::vector<FbxIssue> after;
+    if (rep.reduced_from)
+      after.push_back({0, "Cut from " + std::to_string(rep.reduced_from) + " to " + std::to_string(rep.vertices) + " vertices to fit the game.",
+                       "Look it over in the 3D view; reduce it yourself in Blender for full control."});
+    for (const auto& w : rep.warnings) after.push_back({1, w, ""});
+    {
+      const double back = 1.0 / std::max(0.01, rep.scale);
+      char line[200];
+      std::snprintf(line, sizeof line, "It is %d cm tall. The game plays it at the fighting style's size; Height brings it back to x%.2f",
+                    int(rep.height_cm + 0.5), std::clamp(back, 0.8, 1.25));
+      std::string text = line;
+      if (back < 0.8 || back > 1.25) text += std::string(" - the nearest the game allows, so it plays ") + (back < 0.8 ? "taller" : "shorter") + " than it is.";
+      else text += ".";
+      after.push_back({back < 0.8 || back > 1.25 ? 1 : 0, text, back < 0.8 || back > 1.25 ? "Fine for most models; the moves are made for sizes near the roster's." : ""});
+    }
+    OnUiThread([after] { g_fbx_after = after; });
     WhenIdle([work, tpl, scale, test_end] {
       const std::wstring in = (work / L"build.json").wstring(), out = (work / L"ch.pac").wstring(), report = (work / L"report.json").wstring();
       std::error_code ec;
@@ -975,14 +1052,25 @@ void MakeFromFbx() {
         if (code != 0 || !fs::exists(out)) {
           const std::string why = parsed ? j["error"].Str() : std::string();
           Status("The model could not be built from the FBX" + (why.empty() ? std::string(" (see the log).") : ": " + why));
+          g_fbx_after.push_back({2, "The model couldn't be built" + (why.empty() ? std::string(" (the log says why).") : ": " + why), "Turn off a mesh or two in Meshes, or reduce it in Blender, then Make again."});
           Log("svr11_build (" + std::to_string(code) + "): " + text);
           test_end();
           return;
         }
-        if (parsed)
-          for (const auto& a : j["attires"].items)
+        if (parsed) {
+          for (const auto& a : j["attires"].items) {
             Log("FBX model: " + a["pages"].Str() + " of 192 memory pages" +
                 (a["dropped"].items.empty() ? std::string() : ", " + std::to_string(a["dropped"].items.size()) + " blood layers left out to fit"));
+            g_fbx_after.push_back({a["dropped"].items.empty() ? 0 : 1, "Uses " + a["pages"].Str() + " of the 192 memory pages a wrestler gets" +
+                                   (a["dropped"].items.empty() ? std::string(".") : "; its blood layers were left out to fit (no blood on it in matches)."), ""});
+          }
+          for (const auto& w : j["warnings"].items) g_fbx_after.push_back({0, w.Str(), ""});
+        }
+        {
+          std::vector<Problem> checks;
+          ModelCheckProblems(out, "The built model", checks);
+          for (const auto& c : checks) g_fbx_after.push_back({c.error ? 2 : 1, c.text, c.fix});
+        }
         g_star.model = out;
         // the game holds the hips at the fighting style's height: the model was scaled to it; height= brings it back
         const double back = 1.0 / std::max(0.01, scale);
@@ -997,8 +1085,8 @@ void MakeFromFbx() {
   });
 }
 
-void FbxRows() {
-  FileRow("Model from an FBX (optional)...", g_star.fbx, "none", kFbxFilter, 1,
+void FbxRows(bool simple) {
+  FileRow(simple ? "Pick an FBX file..." : "Model from an FBX (optional)...", g_star.fbx, "none", kFbxFilter, 1,
           "A rigged model (Unity / VRChat, Mixamo, Blender Rigify, 3ds Max Biped, UE Mannequin and rigs named like them):\n"
           "its bones are matched to the 2011 skeleton by their names; the table below lets you change any of them.");
   if (g_star.fbx.empty()) return;
@@ -1019,7 +1107,8 @@ void FbxRows() {
                       missing ? (", " + std::to_string(missing) + " of the main 2011 bones missing").c_str() : "",
                       int(g_star.fbx_map.size()));
 
-  if (ImGui::TreeNode("Bone mapping")) {
+  FbxReportPanel(r);
+  if (ImGui::TreeNode("bonemap", "%s", simple ? (missing ? "Fix the matching (some main bones are missing)" : "Bone matching") : "Bone mapping")) {
     ImGui::BeginDisabled(g_star.fbx_map.empty());
     if (ImGui::SmallButton("Back to the automatic mapping")) g_star.fbx_map.clear(), Touch();
     ImGui::EndDisabled();
@@ -1075,7 +1164,7 @@ void FbxRows() {
     ImGui::TreePop();
   }
   if (g_fbx_open_once) ImGui::SetScrollHereY(0.3f), ImGui::SetNextItemOpen(true), g_fbx_open_once = false;  // (test aid)
-  if (ImGui::TreeNode("Meshes")) {
+  if (ImGui::TreeNode("meshes", "%s", simple ? "Clothes and parts" : "Meshes")) {
     ImGui::TextDisabled("(hidden ones - an avatar's toggled-off clothes - start off)");
     if (ImGui::BeginTable("fbxmeshes", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
                           ImVec2(0, std::min(260.0f, 34.0f + 30.0f * float(r.meshes.size())) * g_scale))) {
@@ -1140,6 +1229,10 @@ void FbxRows() {
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip("Poses it into the game's stance with the mapping above, moves its weights to the 2011 bones, packs its\n"
                       "pictures into one sheet and builds a ch.pac on the fighting style's superstar (the model above then uses it).");
+  if (!g_fbx_after.empty()) {
+    ImGui::TextUnformatted("After Make");
+    IssueList(g_fbx_after);
+  }
   ImGui::Unindent();
 }
 
@@ -1336,6 +1429,17 @@ void Draw() {
     if (!g_test_model.empty()) g_star.model = g_test_model;
     if (!g_test_fbx.empty()) g_star.fbx = g_test_fbx, ParseFbxMap(g_test_fbx_map), g_fbx_open_once = true;
     if (g_test_fbx_make && !g_star.fbx.empty()) WhenIdle([] { MakeFromFbx(); });
+    if (!g_test_fbx_report.empty() && !g_star.fbx.empty()) {
+      const FbxRig& r = FbxSkeleton();
+      std::vector<std::string> targets;
+      for (size_t i = 0; i < r.bones.size(); ++i) targets.push_back(FbxTarget(r, i));
+      std::string text = "rig: " + r.rig + "\n";
+      static const char* kLabel[3] = {"TIP", "WARNING", "MUST FIX"};
+      for (const auto& is : FbxInspect(Utf8(g_star.fbx), targets, r.rig, FbxOptions()))
+        text += std::string(kLabel[std::clamp(is.level, 0, 2)]) + ": " + is.text + (is.fix.empty() ? "" : "\n    fix: " + is.fix) + "\n";
+      WriteFile(Utf8(g_test_fbx_report), Bytes(text.begin(), text.end()));
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    }
     if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
@@ -1532,7 +1636,7 @@ void Draw() {
     if (ImGui::SmallButton("Export to FBX...")) ExportModelFbx(g_star.model, g_view_attire, g_star.name);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model (the attire the preview shows) with its skeleton, skin weights and textures, for Blender and other tools.");
   }
-  FbxRows();
+  FbxRows(false);
   FileRow("Theme song (optional)...", g_star.song, "the style's", kSoundFilter, 1);
   ThemeGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
@@ -1931,6 +2035,9 @@ void TestFbx(const std::wstring& fbx, const std::string& map) { g_test_fbx = fbx
 
 void TestSimple(int step) { g_test_simple = step; }
 void TestFbxMake() { g_test_fbx_make = true; }
+void TestFbxReport(const std::wstring& out) {  // with --star-fbx: the import report to <out> (automatic mapping), quit
+  g_test_fbx_report = out;
+}
 
 void TestHeight(float scale) { g_star.height = std::clamp(scale, 0.8f, 1.25f); }
 

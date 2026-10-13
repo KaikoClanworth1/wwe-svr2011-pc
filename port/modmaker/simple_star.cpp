@@ -131,7 +131,8 @@ void StepName() {
 
 char g_find[64] = "";
 void StepLook() {
-  static int mode = 0;  // 0 a game superstar, 1 an older disc, 2 an FBX
+  static int mode = -1;  // 0 a game superstar, 1 an older disc, 2 an FBX
+  if (mode < 0) mode = g_star.fbx.empty() ? 0 : 2;  // (a project with an FBX opens on it)
   const float w = CardWidth(), h = 80 * g_scale;
   const int per_row = CardsPerRow(w);
   if (Card("game", "A superstar in the game", "Use the look of anyone on the roster.", mode == 0, w, h)) mode = 0;
@@ -176,6 +177,11 @@ void StepLook() {
       ImGui::PopID();
     }
     ImGui::EndChild();
+  } else if (mode == 2) {
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("Pick a rigged model (one with a skeleton). The Mod Maker matches its bones to the game's, checks it, and builds your superstar from it.");
+    ImGui::PopTextWrapPos();
+    FbxRows(true);
   } else {
     ImGui::TextDisabled("Coming next: this way in is being built. Pick a superstar in the game for now.");
   }

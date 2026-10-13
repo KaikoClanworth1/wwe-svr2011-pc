@@ -246,6 +246,12 @@ std::string DetectRig(const std::vector<RigBone>& bones) {
              s.find("proximal") != std::string::npos;
     blender_lr += s.size() > 2 && (s.substr(s.size() - 2) == ".l" || s.substr(s.size() - 2) == ".r");
   }
+  {  // the 2011 skeleton itself (the Mod Maker's own export, or a model made on it)
+    int own = 0;
+    for (const auto& b : bones)
+      for (const char* n : {"root", "koshi", "mune", "kubi", "atama", "l_ninoude", "r_ninoude", "l_momo", "r_momo"}) own += b.name == n;
+    if (own >= 7) return "SvR 2011 skeleton";
+  }
   if (mixamo > 5) return "Mixamo";
   if (rigify > 5) return "Blender Rigify";
   if (biped > 5) return "3ds Max Biped";

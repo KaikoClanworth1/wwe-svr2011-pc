@@ -1488,4 +1488,218 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   return true;
 }
 
+// ---------------------------------------------------------------- FBX import report (what's wrong with a model)
+
+namespace {
+std::string Thousands(long long v) {
+  std::string s = std::to_string(v);
+  for (int i = int(s.size()) - 3; i > 0; i -= 3) s.insert(size_t(i), ",");
+  return s;
+}
+bool PictureExtOk(const std::string& file) {
+  std::string e = LowerStr(PathStr(fs::u8path(file).extension()));
+  return e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".tga" || e == ".bmp" || e == ".psd" || e.empty();
+}
+}  // namespace
+
+std::vector<FbxIssue> FbxInspect(const std::string& fbx_path, const std::vector<std::string>& targets, const std::string& rig,
+                                 const FbxImportOptions& opts) {
+  std::vector<FbxIssue> out;
+  auto add = [&](int level, std::string text, std::string fix) { out.push_back({level, std::move(text), std::move(fix)}); };
+  ufbx_load_opts lo = {};
+  lo.target_axes = ufbx_axes_right_handed_y_up;
+  lo.target_unit_meters = 0.1f;
+  lo.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
+  ufbx_error ue;
+  ufbx_scene* scene = ufbx_load_file(fbx_path.c_str(), &lo, &ue);
+  if (!scene) {
+    add(2, "The file can't be read as an FBX: " + std::string(ue.description.data, ue.description.length) + ".",
+        "Export it again as FBX (binary, version 7.x) from your 3D program.");
+    return out;
+  }
+  struct Free {
+    ufbx_scene* s;
+    ~Free() { ufbx_free_scene(s); }
+  } free_scene{scene};
+
+  // the rig
+  std::set<std::string> have;
+  for (const auto& t : targets)
+    if (!t.empty()) have.insert(t);
+  if (targets.empty()) {
+    add(2, "The model has no skeleton (no bones and no skin).", "Rig it first (Mixamo can rig a model for free), then export the FBX with its armature.");
+  } else {
+    if (rig.rfind("unknown", 0) == 0) add(1, "The skeleton's bone names aren't from a rig the Mod Maker knows; it matched what it could by name.",
+                              "Check Bone mapping: each main bone (hips, spine, head, arms, legs) should have an FBX bone.");
+    struct Need {
+      const char* what;
+      std::vector<const char*> bones;
+    };
+    const Need needs[] = {{"hips", {"root"}},
+                          {"spine", {"koshi", "mune"}},
+                          {"neck and head", {"kubi", "atama"}},
+                          {"arms", {"l_ninoude", "l_kote", "l_te", "r_ninoude", "r_kote", "r_te"}},
+                          {"legs", {"l_momo", "l_sune", "l_ashi", "r_momo", "r_sune", "r_ashi"}}};
+    for (const auto& n : needs) {
+      std::string miss;
+      for (const char* b : n.bones)
+        if (!have.count(b)) miss += (miss.empty() ? "" : ", ") + std::string(b);
+      if (!miss.empty()) add(2, std::string("The skeleton is missing bones for the ") + n.what + " (" + miss + ").",
+                             "Bone mapping: pick the FBX bone for each one. Without them that part can't move.");
+    }
+    bool fingers = false, eyes = false;
+    for (const auto& t : have) fingers |= t.find("yubi") != std::string::npos, eyes |= t == "l_eye" || t == "r_eye";
+    if (!fingers) add(0, "No finger bones: the hands keep one pose (fists and grabs won't show).", "Fine for gloves or mitts; a rig with finger bones looks better.");
+    if (!eyes) add(0, "No eye bones: the eyes won't move or blink.", "Fine if the eyes are painted on; otherwise add LeftEye / RightEye bones.");
+  }
+
+  // the meshes
+  std::set<const ufbx_node*> bone_nodes;
+  for (size_t i = 0; i < scene->skin_clusters.count; ++i)
+    if (scene->skin_clusters.data[i]->bone_node) bone_nodes.insert(scene->skin_clusters.data[i]->bone_node);
+  long long verts = 0, tris = 0, unweighted = 0, over4 = 0, degenerate = 0, nan = 0, no_uv_tris = 0;
+  std::vector<std::string> rigid, hidden, no_uv;
+  double lo_y = 1e30, hi_y = -1e30;
+  std::map<const ufbx_material*, std::string> materials;  // (a material's first mesh, for the picture pick)
+  for (size_t ni = 0; ni < scene->nodes.count; ++ni) {
+    const ufbx_node* node = scene->nodes.data[ni];
+    const ufbx_mesh* mesh = node->mesh;
+    if (!mesh || mesh->num_faces == 0) continue;
+    const std::string name(node->name.data, node->name.length);
+    bool on = node->visible;
+    for (const auto& [k, v] : opts.include)
+      if (k == name || k.rfind(name + " / ", 0) == 0) on = v;
+    if (!on) {
+      hidden.push_back(name);
+      continue;
+    }
+    for (size_t m = 0; m < mesh->materials.count; ++m) {
+      const ufbx_material* mat = mesh->materials.data[m];
+      const std::string key = name + " / " + std::string(mat->name.data, mat->name.length);
+      if (!opts.picture.count(key)) materials.emplace(mat, key);  // (a picture picked for it: fine)
+    }
+    // vertices as the game counts them: one per position + normal + UV value (as the build shares them)
+    std::set<std::array<uint32_t, 6>> seen;
+    auto bits = [](double v) {
+      const float f = float(v);
+      uint32_t u;
+      std::memcpy(&u, &f, 4);
+      return u;
+    };
+    for (size_t ix = 0; ix < mesh->num_indices; ++ix) {
+      std::array<uint32_t, 6> k{mesh->vertex_indices.data[ix], 0, 0, 0, 0, 0};
+      if (mesh->vertex_normal.exists) {
+        const ufbx_vec3 q = mesh->vertex_normal.values.data[mesh->vertex_normal.indices.data[ix]];
+        k[1] = bits(q.x), k[2] = bits(q.y), k[3] = bits(q.z);
+      }
+      if (mesh->vertex_uv.exists) {
+        const ufbx_vec2 q = mesh->vertex_uv.values.data[mesh->vertex_uv.indices.data[ix]];
+        k[4] = bits(q.x), k[5] = bits(q.y);
+      }
+      seen.insert(k);
+    }
+    verts += (long long)seen.size();
+    tris += (long long)mesh->num_triangles;
+    if (!mesh->vertex_uv.exists) no_uv.push_back(name), no_uv_tris += (long long)mesh->num_triangles;
+    const M gw = FromUfbx(node->geometry_to_world);
+    for (size_t v = 0; v < mesh->vertices.count; ++v) {
+      const ufbx_vec3 p = mesh->vertices.data[v];
+      if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+        ++nan;
+        continue;
+      }
+      const V3 w = Apply(gw, V3{p.x, p.y, p.z});
+      lo_y = std::min(lo_y, w[1]), hi_y = std::max(hi_y, w[1]);
+    }
+    std::vector<uint32_t> tri(size_t(mesh->max_face_triangles) * 3 + 3);
+    for (size_t f = 0; f < mesh->num_faces; ++f) {
+      const uint32_t n = ufbx_triangulate_face(tri.data(), tri.size(), mesh, mesh->faces.data[f]);
+      for (uint32_t t = 0; t < n; ++t) {
+        const ufbx_vec3 a = mesh->vertices.data[mesh->vertex_indices.data[tri[t * 3]]], b = mesh->vertices.data[mesh->vertex_indices.data[tri[t * 3 + 1]]],
+                        c = mesh->vertices.data[mesh->vertex_indices.data[tri[t * 3 + 2]]];
+        if (Len(Cross(Sub(V3{b.x, b.y, b.z}, V3{a.x, a.y, a.z}), Sub(V3{c.x, c.y, c.z}, V3{a.x, a.y, a.z}))) < 1e-10) ++degenerate;
+      }
+    }
+    const ufbx_skin_deformer* sk = mesh->skin_deformers.count ? mesh->skin_deformers.data[0] : nullptr;
+    if (!sk) {
+      rigid.push_back(name);
+      continue;
+    }
+    for (size_t v = 0; v < sk->vertices.count; ++v) {
+      uint32_t used = 0;
+      for (uint32_t k = 0; k < sk->vertices.data[v].num_weights; ++k) used += sk->weights.data[sk->vertices.data[v].weight_begin + k].weight > 1e-4;
+      if (used == 0) ++unweighted;
+      else if (used > 4) ++over4;
+    }
+  }
+  auto list = [](const std::vector<std::string>& v) {
+    std::string s;
+    for (size_t i = 0; i < v.size() && i < 4; ++i) s += (i ? ", " : "") + v[i];
+    return v.size() > 4 ? s + " and " + std::to_string(v.size() - 4) + " more" : s;
+  };
+  // polycount: the game gives a wrestler 192 memory pages - about 10,500 vertices
+  const int limit = opts.max_vertices > 0 ? opts.max_vertices : 10500;
+  if (verts > limit * 3)
+    add(1, Thousands(verts) + " vertices, " + Thousands(tris) + " triangles: far over what the game holds (about " + Thousands(limit) +
+               "). Make will cut it to about " + Thousands(limit) + ", losing a lot of detail.",
+        "Reduce it in Blender first (Decimate modifier, or remove hidden parts), then import again: you choose what to keep.");
+  else if (verts > limit)
+    add(0, Thousands(verts) + " vertices, " + Thousands(tris) + " triangles: Make will cut it to about " + Thousands(limit) +
+               " to fit the game (some detail will be lost).",
+        "For full control, reduce it in Blender first (Decimate modifier).");
+  // skin
+  if (!rigid.empty())
+    add(1, "No skin on " + list(rigid) + ": " + (rigid.size() == 1 ? "it moves" : "they move") + " stiffly with the bone above, or the hips.",
+        "Fine for hard things (a belt buckle, glasses); clothes and hair need skin weights (Blender: parent with automatic weights).");
+  if (unweighted)
+    add(1, Thousands(unweighted) + " vertices have no skin weights: they stay with the hips and stretch when the body moves.",
+        "Blender: select them in Weight Paint and give them weights, or re-parent with automatic weights.");
+  if (over4) add(0, Thousands(over4) + " vertices use more than 4 bones: the game keeps the 4 strongest.", "Usually invisible. Blender: Limit Total (4) to see the result first.");
+  // mesh
+  if (!no_uv.empty())
+    add(2, "No UV map on " + list(no_uv) + ": the picture can't be placed on " + (no_uv.size() == 1 ? "it" : "them") + ".",
+        "Unwrap it in your 3D program (Blender: Smart UV Project) and export again.");
+  if (nan) add(2, Thousands(nan) + " broken points (not-a-number positions): the game would crash.", "Blender: Mesh > Clean Up, then export again.");
+  if (degenerate) add(0, Thousands(degenerate) + " triangles have no area (dropped).", "Harmless. Blender: Mesh > Clean Up > Degenerate Dissolve.");
+  if (!hidden.empty()) add(0, list(hidden) + (hidden.size() == 1 ? " is" : " are") + " hidden in the file and left out.", "Turn them on in Meshes if you want them.");
+  // textures
+  int missing = 0, big = 0, odd = 0;
+  std::set<std::string> pictures;  // (distinct files: materials sharing one count once)
+  std::string missing_names, odd_names;
+  const fs::path dir = fs::u8path(fbx_path).parent_path();
+  for (const auto& [m, key] : materials) {
+    const std::string mname(m->name.data, m->name.length);
+    const ufbx_texture* t = MaterialTexture(m, false);
+    if (!t) {
+      ++missing, missing_names += (missing_names.empty() ? "" : ", ") + mname;
+      continue;
+    }
+    const std::string file(t->filename.data, t->filename.length);
+    if (!pictures.insert(file.empty() ? "embedded" + std::to_string(t->element_id) : LowerStr(file)).second) continue;
+    if (!file.empty() && !PictureExtOk(file)) {
+      ++odd, odd_names += (odd_names.empty() ? "" : ", ") + PathStr(fs::u8path(file).filename());
+      continue;
+    }
+    Image img;
+    std::string where;
+    if (!LoadFbxTexture(t, dir, img, where)) ++missing, missing_names += (missing_names.empty() ? "" : ", ") + mname + " (file not found)";
+    else if (img.w > 2048 || img.h > 2048) ++big;
+  }
+  if (missing)
+    add(1, "No picture for " + missing_names + ": " + (missing == 1 ? "it comes" : "they come") + " out plain grey.",
+        "Meshes: Pick... a picture for each, or export the FBX with its textures (Blender: Path Mode Copy + Embed Textures).");
+  if (odd) add(1, "Pictures in a format the Mod Maker can't read: " + odd_names + ".", "Save them as PNG and pick them in Meshes.");
+  if (big) add(0, std::to_string(big) + " picture" + (big == 1 ? " is" : "s are") + " bigger than 2048: everything shares one 2048 sheet, so they get smaller.", "Nothing to do; fine detail softens.");
+  if (pictures.size() > 8)
+    add(0, std::to_string(pictures.size()) + " pictures share one 2048 sheet: each gets only a small part of it.", "Bake them into one atlas in your 3D program for sharper pictures.");
+  // size
+  if (hi_y > lo_y) {
+    const double cm = (hi_y - lo_y) * 10;
+    if (cm < 50 || cm > 300)
+      add(1, "The model is " + std::to_string(int(cm + 0.5)) + " cm tall: its units look wrong.",
+          "Export again in metres or centimetres (Blender: Apply Scale; Unity: Scale Factor 1). Make sizes it to the game anyway.");
+  }
+  return out;
+}
+
 }  // namespace svrfmt
