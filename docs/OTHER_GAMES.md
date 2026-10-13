@@ -99,6 +99,78 @@ Done in the Mod Maker (`svrfmt/wwe13.cpp`). Notes:
 - The TitanTron videos are Bink 2, which can't be converted.
 - Arenas without a 0x192 table set get a made one.
 
-## Belts and weapons
+## Belts and weapons (D11 research, Arena Porting)
 
-See D11 (research in progress).
+### Where 2011 keeps them
+
+- **Title belts:** models in `pac/evt/evtobj.pac`, group SOBJ, one entry per
+  object id. SOBJ/LIST names them (64-byte records: u16 id, name).
+  - There are 12 titles: IC, U.S., WWE, Hardcore, Women's, WWE Tag Team,
+    Cruiserweight, World Heavyweight, World Tag Team, ECW, Divas and Million
+    Dollar.
+  - Each comes in several forms: Stretched 2002-2010 / 2305 / 2308 / 2512,
+    Folded 2012-2020 / 2306 / 2309 / 2513, Rolled 2022-2030 / 2307 / 2310 /
+    2514, and the variants 3xxx / 4xxx / 5xxx.
+  - The belt you pick up in a match is a weapon: `bgEtc.pac`
+    STG/WPON/0x000E, 14 packs, each a folded belt JBOY (named by its SOBJ id)
+    with two textures and a small XML. The textures are `k2002`-`k2009_01/02`,
+    `cenab_01/02` (WWE spinner), `2050`, `2306`, `2309` and `mdb_01/02`.
+  - The `belts` branch scales them (title_belt_scale, `title_belts.cpp`).
+- **Weapons:** `pac/bg/bgEtc.pac`, group STG/WPON (and WPBS, the backstage set).
+  - **0x9C40** is the weapon settings text, one line per model number: `{mdl,
+    type, se_hit, se_drop, hp, weight 0-3, damage, up to 5 hit spheres (x, y,
+    z, r)}`. The model is the WPON pack id x 10 (40 chair -> 0x4, 140 belt ->
+    0xE). The type is the behaviour class, e.g. 3 chair, 6 ladder, 11 table,
+    14 belt, 21 bat, 30 crutch. There are 58 models: barbed bat, gong,
+    chair, tables, announce tables, shovel, ladder, belts, steps, signs,
+    crutch, cane, umbrella, trash can, fire extinguisher, speaker, monitor,
+    bottles, tube light, tire, TV, Triple H's sledgehammer, bat, cue, tire
+    iron, camera, pillow.
+  - **0xAFC8-0xAFCF / 0xC350-0xC354** are per-stage placement texts: model,
+    position, rotation, start motion, place (ring / outside / crowd).
+  - **0x9C41 / 0xA028 (WADD) / 0xAFD2** are binary tables, not decoded yet.
+  - **Packs:** each WPON pack is a PACH holding a model JBOY (0x0), a texture
+    set (0xA) and optional extras.
+  - The Fixes chat's `SVR2011_TEST_ITEM_LOG` (`belts` branch) logs the stock
+    under the ring and the CPU's weapon choices.
+
+### Swap or add?
+
+- **Swap: yes.** A belt or weapon is a model + texture set in a pac entry.
+  - **Reskin (same model):** works today with **texture packs** (native
+    renderer: `Texture Packs\<pack>\..._<hash16>.dds/png`, matched on the
+    XXH3 of the top level). A belt has two textures per title.
+  - **Model swap:** needs the game to serve changed copies of `evtobj.pac` /
+    `bgEtc.pac`. The move-pack overlay (Mods/PacOverlay, `move_packs.cpp`)
+    already does that for m.pac / misc.pac / mpsp.pac.
+- **Add a title: no.** The 12 title slots are fixed in the game's code and
+  saves; 2011 has no Create-a-Championship. Unused slots (Hardcore,
+  Cruiserweight, Million Dollar) could be given a new look, but showing them
+  as new titles in the menus is game research.
+- **Add a weapon: maybe.** The settings are a text table parsed by the game,
+  so a new model number with an existing type may work, but the stock under
+  the ring and the spawn lists are not mapped yet. Research first.
+
+### From other games
+
+- **SvR 2010:** the same weapon table (the same 58 models and types) and
+  `evtobj.pac` belts in the same JBOY format, so its belt designs (the older
+  titles) can be model swaps once the game side above exists.
+- **WWE '13:** belts and weapons are JBOY with WWE '13's 0xB8 mesh descriptor
+  inside its LZX container, which `svrfmt/wwe13.cpp` already reads; units
+  are cm (x 0.1).
+- **SvR 2008 and the rest:** research.
+
+### Proposed mod formats (to agree with ModMakerUIRework)
+
+- **Phase 1, reskins (no game work):** the Mod Maker writes a texture pack,
+  `Texture Packs\<name>\<owner>_<texture>_<hash16>.dds`, from the stock
+  belt or weapon textures (`belt_port.py` / `weapon_port.py list` give the
+  names, sizes and hash16 of each title's or weapon's textures).
+- **Phase 2, model swaps (game side needed):**
+  - `type=belt`, `title=<IC|US|WWE|HARDCORE|WOMENS|WWE_TAG|CRUISER|WHC|WORLD_TAG|ECW|DIVAS|MILLION>`,
+    with `stretched.jboy`, `folded.jboy`, `rolled.jboy` and `textures.bin`
+    (a texture set).
+  - `type=weapon`, `model=<number>`, with `model.jboy`, `textures.bin` and
+    optional stats keys (`hp=`, `weight=`, `damage=`, `spheres=`).
+  - Both go through a pac overlay for `evtobj.pac` / `bgEtc.pac`.
