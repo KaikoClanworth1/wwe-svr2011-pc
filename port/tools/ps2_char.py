@@ -1,7 +1,7 @@
 """PS2 superstar models -> SvR 2011 character pacs (superstar mods), through svr11_build.py.
 
     py ps2_char.py --list <disc iso or extract folder>
-    py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> [--attire N|all]
+    py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> [--attire N|all] [--no-gear]
 
 --list prints JSON {game, disc_serial, characters: [{id, name, raw_id, source, attires: [{attire, source,
 bones, meshes}]}]}. The convert writes into <out dir>: model.json (svr11_build's neutral model), tex_*.png
@@ -293,6 +293,11 @@ class HCTP:
         tex = texbank(e[9]) if 9 in e else {}
         return body, parts, tex
 
+    def gear(self, ch, at):
+        """an attire's entrance gear model ids (part 2: glasses, a vest, a cape)"""
+        id_ = (ch << 8) | (at << 4) | 2
+        return [id_] if id_ in self.entries else []
+
 
 class SYM(HCTP):
     """SmackDown! Shut Your Mouth: HCTP's formats; model ids are character * 16 + n: n 0/1, 2/3, 4/5 an
@@ -335,6 +340,16 @@ class SYM(HCTP):
             ats = chars.setdefault(ch, {})
             ats[max(ats, default=-1) + 1] = id_
         return chars
+
+    def gear(self, ch, at):
+        """the character's first small 6-9 model (glasses, a vest) for its first attire (SYM doesn't say
+        which attire wears it)"""
+        if at != min(self.characters().get(ch, {0: 0})):
+            return []
+        for id_ in sorted(self.entries):
+            if id_ >> 4 == ch and 6 <= (id_ & 0xF) <= 9 and 0 < self.shape(id_)[0] < self.GEAR_VERTS:
+                return [id_]
+        return []
 
 
 GAMES = [SYM, HCTP]
@@ -402,9 +417,16 @@ def pose(nodes):
 
 
 def part_nodes(part, body):
-    """a part's node index -> the body's node index (by name)"""
+    """a part's node index -> the body's node index (by name; a bone the body lacks: its nearest ancestor
+    the body has)"""
     bidx = {nd['name']: i for i, nd in enumerate(body['nodes'])}
-    return [bidx.get(nd['name'], 0) for nd in part['nodes']]
+    out = []
+    for i, nd in enumerate(part['nodes']):
+        k = i
+        while k >= 0 and part['nodes'][k]['name'] not in bidx:
+            k = part['nodes'][k]['parent']
+        out.append(bidx[part['nodes'][k]['name']] if k >= 0 else 0)
+    return out
 
 
 def build_model(body, parts, tex, out_dir, template, tag):
@@ -493,7 +515,7 @@ def build_model(body, parts, tex, out_dir, template, tag):
     return dict(meshes=meshes, joints=joints), info
 
 
-def convert(path, id_, out_dir, template, attire='all'):
+def convert(path, id_, out_dir, template, attire='all', gear=True):
     g = open_game(path)
     chars = g.characters()
     if id_ not in chars:
@@ -510,8 +532,19 @@ def convert(path, id_, out_dir, template, attire='all'):
         body, parts, tex = g.model(mid)
         a, info = build_model(body, parts, tex, out_dir, template, '%04x' % mid)
         joints = joints or a['joints']
-        model['attires'].append(dict(name=None, meshes=a['meshes']))
-        infos.append(dict(attire=at, model_id='%04x' % mid, raw_name=body['name'], **info))
+        entry = dict(name=None, meshes=a['meshes'])
+        gids = g.gear(id_, at) if gear else []
+        if gids:   # (the attire wearing its gear: the game's entrance model)
+            gparts, gtex = [], dict(tex)
+            for gid in gids:
+                gb, gp, gt = g.model(gid)
+                gparts += [gb] + gp
+                gtex.update(gt)
+            ga, _ = build_model(body, parts + gparts, gtex, out_dir, template, '%04x' % mid)
+            entry['entrance_gear'] = dict(meshes=ga['meshes'])
+        model['attires'].append(entry)
+        infos.append(dict(attire=at, model_id='%04x' % mid, raw_name=body['name'],
+                          gear=['%04x' % x for x in gids], **info))
     for a in model['attires']:
         a.pop('name')
     model['joints'] = joints
@@ -560,6 +593,7 @@ def main(argv):
     ap.add_argument('out', nargs='?')
     ap.add_argument('--template')
     ap.add_argument('--attire', default='all')
+    ap.add_argument('--no-gear', action='store_true', help='leave the entrance gear out')
     a = ap.parse_args(argv)
     try:
         if a.list:
@@ -567,7 +601,7 @@ def main(argv):
             return 0
         if not (a.disc and a.id and a.out and a.template):
             ap.error('give <disc> <id> <out dir> --template <2011 ch.pac>, or --list <disc>')
-        return convert(a.disc, int(a.id, 16), a.out, a.template, a.attire)
+        return convert(a.disc, int(a.id, 16), a.out, a.template, a.attire, not a.no_gear)
     except BadInput as e:
         print(json.dumps(dict(ok=False, error=str(e))))
         return 2
