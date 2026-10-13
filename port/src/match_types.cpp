@@ -162,6 +162,11 @@ constexpr int kGePeople = 6;
 int g_ge_row = -1, g_ge_er_row = -1;  // their places in the group
 bool g_pending_ge = false;
 bool g_ge = false;  // the match set up is a Gauntlet Eliminator
+// ONLINE: the session's port rules play another rule than the session's own
+// (GAUNTLET ELIMINATOR: 6-MAN 0x08 -> the gauntlet 0x52). The lobby's set-up
+// (sub_827374A0) sees it, but the match's live rules are built again from
+// the session's rule at its start (sub_828C48E8): there it's swapped too.
+uint32_t g_online_from = ~0u, g_online_to = ~0u;
 uint32_t g_ge_text[4] = {};
 
 // ELIMINATION: after NORMAL in TRIPLE THREAT (rule 0x0D) and FATAL-4-WAY
@@ -786,7 +791,11 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
     if (rule == kGauntlet && g_ge) {  // (six: people 2-5 the entrants, each his own team)
       rec[0] = 0, rec[1] = uint8_t(kGePeople);  // (a big-endian u16)
       rec2[34] = uint8_t(kGePeople);
-      for (int i = 2; i < kGePeople; ++i) rec[2 + i * 3] = uint8_t(i), rec[2 + i * 3 + 1] = uint8_t(i), rec[2 + i * 3 + 2] = 2;
+      // (kind 2 - manager slots - while the select screen runs, 3 as the people
+      // are built; online there's no select screen and the people builder
+      // isn't run: 3 at once)
+      const uint8_t kind = g_online_to == kGauntlet ? 3 : 2;
+      for (int i = 2; i < kGePeople; ++i) rec[2 + i * 3] = uint8_t(i), rec[2 + i * 3 + 1] = uint8_t(i), rec[2 + i * 3 + 2] = kind;
     }
     if (rule == kGauntlet && g_slobber) {
       // (and a third: person 4 - the gauntlet has 4 people, the 5-person one
@@ -985,11 +994,19 @@ REX_HOOK_RAW(sub_827374A0) {
   // offline rows, on both sides, before the match is set up.
   const svr2011::OnlineRulesSetup online = svr2011::OnlineRulesFor(rule);
   svr2011::MysteryOpponentOnline(online.on && online.mystery && !Rd32(base + kStoryContext));
+  g_online_from = g_online_to = ~0u;
+  if (online.on && !Rd32(base + kStoryContext) && online.rule != rule) g_online_from = rule, g_online_to = online.rule;
   if (online.on && !Rd32(base + kStoryContext)) {
     rule = online.rule;
     ctx.r4.u64 = rule;
     g_pending_weapons = online.weapons;
     g_pending_stages = online.stages;
+    if (online.ge) {  // (as the GAUNTLET ELIMINATOR row: the gauntlet reshaped for six, each his own team)
+      g_pending_ge = true;
+      g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
+      g_pending_like = kLumberjackLike;
+      g_pending_select_only = true;
+    }
     g_pending_set = online.set;
   }
   // Test aid: SVR2011_TEST_SETUP_TRACE=1 - each match set-up with its caller
@@ -1251,6 +1268,24 @@ REX_HOOK_RAW(sub_828BBEF0) {
   }
   svr2011::MysteryOpponentFill(base, ctx.r3.u32);  // (mystery_opponent.h)
   __imp__sub_828BBEF0(ctx, base);
+}
+
+// ONLINE: the match's slots are filled from the lobby (sub_828BB290(match),
+// not the offline people builder above): GAUNTLET ELIMINATOR's entrants
+// (people 2-5) are waiting ones (kind 3) and everyone is his own team, as
+// the offline builder makes them.
+REX_EXTERN(__imp__sub_828BB290);
+REX_HOOK_RAW(sub_828BB290) {
+  const uint32_t match = ctx.r3.u32;
+  __imp__sub_828BB290(ctx, base);
+  if (g_ge && g_online_to == kGauntlet && match) {
+    for (uint32_t i = 0; i < uint32_t(kGePeople); ++i) {
+      uint8_t* slot = base + match + kSlots + i * kSlotSize;
+      slot[5] = uint8_t(i);
+      if (i >= 2) slot[4] = 3;
+    }
+    REXLOG_INFO("match types: online GAUNTLET ELIMINATOR - people 2-5 waiting entrants, each his own team");
+  }
 }
 
 // -- The whole backstage ---------------------------------------------------
@@ -2681,6 +2716,14 @@ REX_HOOK_RAW(sub_82490558) {
 REX_EXTERN(__imp__sub_828C48E8);
 REX_HOOK_RAW(sub_828C48E8) {
   constexpr uint32_t kSavedElimination = 18;
+  if (g_online_from != ~0u && ctx.r3.u32 == g_online_from) {
+    REXLOG_INFO("match types: online - the live rules of rule {:02X} built as {:02X} (port rules)", g_online_from, g_online_to);
+    ctx.r3.u64 = g_online_to;
+    // GAUNTLET ELIMINATOR: each his own team (the lobby's are the 6-man's 3 on 3)
+    if (g_online_to == kGauntlet && g_ge)
+      if (const uint32_t match = Rd32(base + 0x82EDEB48))
+        for (uint32_t i = 0; i < uint32_t(kGePeople); ++i) base[match + kSlots + i * kSlotSize + 5] = uint8_t(i);
+  }
   const uint32_t rule = ctx.r3.u32, live = ctx.r4.u32, saved = ctx.r5.u32;
   const bool elim = g_elimination && (rule == kTripleThreat || rule == kFatal4Way) && saved;
   const bool extreme_bytes = g_weapons && WeaponsRule(rule) && (rule < kExtremeFirst || rule > kExtremeLast);

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cfloat>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -40,7 +41,7 @@ int64_t NowMs() {
       .count();
 }
 
-enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5 };
+enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5, kGauntletElim = 6 };
 struct Option {
   Mode mode;
   int set;
@@ -59,6 +60,8 @@ constexpr Option kInside{kWeaponsInside, 0, "WEAPONS INSIDE", "Chairs and other 
 constexpr Option kMysteryOpt{kMystery, 0, "MYSTERY OPPONENT",
                              "A hidden CPU superstar fills the last slot - revealed at their entrance."};
 constexpr const char* kMysteryName = "MYSTERY OPPONENT";
+constexpr Option kGeOpt{kGauntletElim, 0, "GAUNTLET ELIMINATOR",
+                        "Two start; four CPU entrants come in one a minute. Last one standing wins."};
 
 // The mode's normal matches (one on one, two on two, 3-man, 4-man) and
 // their Extreme Rules ones; 6-man tag and handicap have no Extreme Rules
@@ -72,6 +75,7 @@ std::vector<Option> OptionsFor(uint32_t rule) {
     o.push_back(kWe);
     for (int k = 0; k < 3; ++k) o.push_back(kStage[k]);
     if (rule == 0x0D) o.push_back(kMysteryOpt);  // (TRIPLE THREAT: 2 players + the hidden CPU)
+    if (rule == 0x08) o.push_back(kGeOpt);       // (6-MAN: 2 players + 4 CPU entrants)
   } else if (rule >= 0x4D && rule <= 0x50) {
     o.push_back(kWe);
   } else if (rule >= 0x31 && rule <= 0x34) {
@@ -98,7 +102,7 @@ bool CreateSessionShown() { return NowMs() - g_cs_at.load() < 300; }
 // The picked match (CREATE SESSION's name read).
 uint32_t PickedRule() { return g_cs_rule.load(); }
 std::string Describe(uint32_t value) {
-  for (uint32_t rule : {0x00u, 0x31u, 0x3Cu, 0x0Du})
+  for (uint32_t rule : {0x00u, 0x31u, 0x3Cu, 0x0Du, 0x08u})
     for (const Option& o : OptionsFor(rule))
       if (Value(o) == value) return o.name;
   return "UNKNOWN";
@@ -208,8 +212,23 @@ void OnlineRulesPad(uint16_t buttons) {
 // slot (MysteryCovers).
 void OnlineRulesLobby(PPCContext& ctx, uint8_t* base, uint32_t lobby) {
   const auto v = PortRules();
-  if (!v || Mode(*v >> 16) != kMystery) return;
+  if (!v) return;
   const uint32_t slots = OnlineLobbySlots(base, lobby);
+  auto vacant_slot = [&](uint32_t j) {
+    const uint8_t* rec = OnlineLobbyRecord(base, lobby, j);
+    return (uint32_t(rec[0]) << 24 | uint32_t(rec[1]) << 16 | uint32_t(rec[2]) << 8 | rec[3]) < 5;
+  };
+  // GAUNTLET ELIMINATOR (6-MAN): slots 2-5 the CPU entrants - each vacant one
+  // made a CPU once (a CPU slot is never rolled again); slots 0-1 the players.
+  if (Mode(*v >> 16) == kGauntletElim) {
+    for (uint32_t j = 2; j < slots; ++j)
+      if (vacant_slot(j)) {
+        REXLOG_INFO("online rules: GAUNTLET ELIMINATOR - CPU entrant in slot {}", j);
+        OnlineLobbyMakeCpu(ctx, base, lobby, j, nullptr);
+      }
+    return;
+  }
+  if (Mode(*v >> 16) != kMystery) return;
   int vacant = -1;
   for (uint32_t j = 0; j < slots; ++j) {
     const uint8_t* rec = OnlineLobbyRecord(base, lobby, j);
@@ -249,6 +268,9 @@ OnlineRulesSetup OnlineRulesFor(uint32_t rule) {
     s.stages = true;
   } else if (mode == kMystery) {
     s.mystery = true;  // (the lobby's CPU is the opponent: nothing to change in the rule)
+  } else if (mode == kGauntletElim) {
+    s.ge = true;
+    s.rule = 0x52;  // (the gauntlet, set up as GAUNTLET ELIMINATOR: match_types.cpp)
   } else {
     s.weapons = true;  // (Tables & Ladders, Weapons Inside: the structure's weapons)
   }
