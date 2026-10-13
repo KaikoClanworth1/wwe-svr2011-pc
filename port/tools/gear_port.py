@@ -1,7 +1,14 @@
 """Entrance gear from one character model pac onto another (a coat, hat or shirt for the entrance).
 
     py gear_port.py --gear-from <donor ch.pac>,<attire> --onto <target ch.pac>,<attire> <out ch.pac> [report.json]
-    (also: py svr11_build.py --gear-from ... --onto ... <out> [report.json])
+    py gear_port.py --gear-json <gear.json> --onto <target ch.pac>,<attire> <out ch.pac> [report.json]
+    (also: py svr11_build.py --gear-from / --gear-json ... --onto ... <out> [report.json])
+
+--gear-json: gear meshes made elsewhere (the Mod Maker's FBX path) - {"version": 1, "meshes": [...] (the
+svr11_build.py mesh format, already on the target's A-pose in 2011 space, weights by 2011 / extra bone
+names), "textures": {"color": png, "normal": png (optional)}, "extra_bones": [{"name", "parent",
+"position": [x, y, z] (2011 world)}]}: built with svr11_build (one sheet, Mk flat), then onto the target as
+below (sheets side by side, masks blanked, the budget), the target's own pieces all kept.
 
 A character's entrance gear is its pac entry "<id><attire - 1>4" (kind 4): a whole model of the wrestler
 wearing it, worn for the entrance instead of the wrestler model (kind 2). In the stock pacs it is built
@@ -220,7 +227,16 @@ def transplant(donor, d_att, target, t_att, out, report=None):
         nm.textures = hn
         out_kids[k] = jboy.write(nm)
         rep['notes'].append('child 0x%x: %d gear piece(s) added (a hat)' % (k, len(extra_h)))
-    # one sheet each: the target's on the left half, the donor's on the right
+    dt_a = dict(W.tex_bundle_read(d4[0xa])) if 0xa in d4 else {}
+    dt_c = dict(W.tex_bundle_read(d4[0xc])) if 0xc in d4 else {}
+    sway = {k: d4[k] for k in (0x3c, 0x3d) if k in d4 and extra}   # (sway data for the extra bones)
+    return assemble(rep, te, tn2, out_kids, body_m, len(mt.meshes), dt_a, dt_c, sway, target, out, report,
+                    len(gear), len(extra))
+
+
+def assemble(rep, te, tn2, out_kids, body_m, n_own, dt_a, dt_c, sway, target, out, report, n_gear, n_extra):
+    """the target attire's kind 4: sheets side by side (target left, gear right), blank damage masks, sway
+    data, the vertex budget (covered target pieces left out), written into the target pac"""
     import io
     from PIL import Image
 
@@ -228,12 +244,10 @@ def transplant(donor, d_att, target, t_att, out, report=None):
         a = Image.open(io.BytesIO(t_dds)).convert('RGBA')
         b = Image.open(io.BytesIO(d_dds)).convert('RGBA') if d_dds else a
         w, h = a.size
-        out = Image.new('RGBA', (w, h))
-        out.paste(W.resize_rgba(a, (w // 2, h)), (0, 0))
-        out.paste(W.resize_rgba(b, (w // 2, h)), (w // 2, 0))
-        return W.dds_encode(out, fourcc)
-    dt_a = dict(W.tex_bundle_read(d4[0xa])) if 0xa in d4 else {}
-    dt_c = dict(W.tex_bundle_read(d4[0xc])) if 0xc in d4 else {}
+        out_im = Image.new('RGBA', (w, h))
+        out_im.paste(W.resize_rgba(a, (w // 2, h)), (0, 0))
+        out_im.paste(W.resize_rgba(b, (w // 2, h)), (w // 2, 0))
+        return W.dds_encode(out_im, fourcc)
     ta = W.tex_bundle_read(out_kids[0xa])
     tc = W.tex_bundle_read(out_kids[0xc])
     dl = {n.lower(): d for n, d in dt_a.items()}
@@ -247,17 +261,16 @@ def transplant(donor, d_att, target, t_att, out, report=None):
         if k in out_kids:
             n, d = W.tex_bundle_read(out_kids[k])[0]
             out_kids[k] = W.tex_bundle_write([(n, d[:128] + bytes(len(d) - 128))], out_kids[k][:16])
-    for k in (0x3c, 0x3d):   # (sway data for the extra bones)
-        if k in d4 and extra:
-            out_kids[k] = d4[k]
+    out_kids.update(sway)
+    own = body_m.meshes[:n_own]
     pages, parts = model_budget.attire_pages(out_kids)
     if pages > model_budget.LIMIT:
         # over the budget: leave out the target's body pieces the gear covers (95 % of their vertices within
         # 0.6 units of it - Undertaker's coat sits 0.3-0.5 off the torso), the most covered first, until it fits
-        posed = body_m.meshes[len(mt.meshes):]
+        posed = body_m.meshes[n_own:]
         G = np.array([v[:3] for s_ in posed for v in s_.verts], float)
         cover = []
-        for k, s_ in enumerate(mt.meshes):
+        for k, s_ in enumerate(own):
             P = np.array([v[:3] for v in s_.verts], float)
             d = min_dist(P, G)
             if np.percentile(d, 95) < 0.6:
@@ -267,7 +280,7 @@ def transplant(donor, d_att, target, t_att, out, report=None):
             if pages <= model_budget.LIMIT:
                 break
             drop.add(k)
-            body_m.meshes = [s_ for j, s_ in enumerate(mt.meshes) if j not in drop] + posed
+            body_m.meshes = [s_ for j, s_ in enumerate(own) if j not in drop] + posed
             for j, s_ in enumerate(body_m.meshes):
                 s_.u74 = j
             out_kids[0] = jboy.write(body_m)
@@ -280,15 +293,119 @@ def transplant(donor, d_att, target, t_att, out, report=None):
     name4 = tn2[:7] + b'4'
     ents = [(b'EMD ', n, b) for n, b in te if n != name4] + [(b'EMD ', name4, W.pack_kids(out_kids))]
     W.write_epk8(target, ents, out)
-    rep.update(ok=True, out=out, entry=name4.decode(), gear_meshes=len(gear), extra_bones=len(extra), pages=pages)
+    rep.update(ok=True, out=out, entry=name4.decode(), gear_meshes=n_gear, extra_bones=n_extra, pages=pages)
     if report:
         open(report, 'w').write(json.dumps(rep, indent=1))
     print(json.dumps(rep, indent=1))
     return rep
 
 
+def gear_json(path, target, t_att, out, report=None):
+    """gear meshes from a gear.json (the Mod Maker's FBX path: already in 2011 space on the target's A-pose,
+    weights by 2011 bone / extra bone names) onto a target attire's kind 4"""
+    import svr11_build as B
+    rep = {'ok': False, 'notes': [], 'warnings': []}
+    g = json.load(open(path, encoding='utf-8'))
+    if not g.get('meshes'):
+        raise SystemExit('gear.json has no meshes')
+    te = entries(target)
+    tn2, tb2 = find(te, t_att, 2)
+    if not tb2:
+        raise SystemExit('the target has no attire %d' % t_att)
+    t2 = kids_of(tb2)
+    mt = jboy.read(t2[0])
+    # the gear built as an attire on the target (template) plus its extra bones: meshes, palettes, sheets
+    b = B.Builder({'template': target, 'attires': []}, os.path.dirname(os.path.abspath(path)))
+    for m in g['meshes']:
+        m['kind'] = 'skin'   # (one model, the skin shader: a hat too)
+    spec = {'meshes': g['meshes'], 'textures': g.get('textures') or {}, 'extra_bones': g.get('extra_bones') or []}
+    gk, gr = b.gear(spec, 'gear')
+    rep['warnings'] += b.warnings
+    gm = jboy.read(gk[0])
+    gnames = [n['name'] for n in gm.nodes]
+    # the target's node table plus the extra bones (positions in 2011 world space, no rotation)
+    nodes = [dict(n) for n in mt.nodes]
+    tidx = {n['name']: i for i, n in enumerate(nodes)}
+    Wt = worlds(t2[0])
+    n_extra = 0
+    for eb in spec['extra_bones']:
+        if eb['name'][:15] in tidx:
+            continue
+        pi = tidx.get(eb.get('parent'), tidx.get('mune', 0))
+        t = Wt[pi][:3, :3].T @ (np.array(eb['position'], float) - Wt[pi][:3, 3])
+        n = dict(nodes[pi])
+        n.update(name=eb['name'][:15], t=tuple(float(x) for x in t), r=(0.0, 0.0, 0.0),
+                 u48=(pi,) + tuple(n.get('u48', (0, 0, 0, 0))[1:]), sphere=(0.0, 0.0, 0.0, 0.0))
+        nodes.append(n)
+        M = np.eye(4)
+        M[:3, 3] = t
+        Wt.append(Wt[pi] @ M)
+        tidx[n['name']] = len(nodes) - 1
+        n_extra += 1
+
+    def halve(uvs, right):
+        return [(min(1.0, max(0.0, u)) * 0.5 + (0.5 if right else 0.0), v) for u, v in uvs]
+    tex_names = list(mt.textures)
+    posed = []
+    for s_ in gm.meshes:
+        ns = jboy.Mesh()
+        ns.__dict__.update(s_.__dict__)
+        ns.palette = [tidx.get(gnames[p - 1], 0) + 1 if 0 < p <= len(gnames) else 1 for p in s_.palette]
+        params = []
+        for name, typ, val in s_.params:
+            if typ == 0x0f:
+                k = struct.unpack('>i', val[:4])[0]
+                if k >= 0:
+                    tn = gm.textures[k] if k < len(gm.textures) else ''
+                    if tn not in tex_names:
+                        tex_names.append(tn)
+                    val = struct.pack('>i', tex_names.index(tn)) + val[4:]
+            params.append((name, typ, val))
+        ns.params = params
+        ns.uvs = halve(s_.uvs, True)
+        posed.append(ns)
+    out_kids = {k: v for k, v in t2.items() if k not in (0x7530, 0x7531, 0x7532, 0xc8, 0xc9)}
+    body_m = jboy.Model()
+    body_m.__dict__.update(mt.__dict__)
+    body_m.nodes = nodes
+    own = []
+    for s_ in mt.meshes:
+        n_ = jboy.Mesh()
+        n_.__dict__.update(s_.__dict__)
+        n_.uvs = halve(s_.uvs, False)
+        own.append(n_)
+    body_m.meshes = own + posed
+    for k, s_ in enumerate(body_m.meshes):
+        s_.u74 = k
+    body_m.textures = tex_names
+    out_kids[0] = jboy.write(body_m)
+    for k in (0x2710, 0x4e20):   # (hair / lashes: the target's, on the left half of the sheet now)
+        if k in t2 and t2[k][:4] == b'JBOY':
+            hm = jboy.read(t2[k])
+            for s_ in hm.meshes:
+                s_.uvs = halve(s_.uvs, False)
+            hm.nodes = nodes
+            out_kids[k] = jboy.write(hm)
+    rep['notes'].append('%d gear mesh(es) from %s, %d extra bones' % (len(posed), os.path.basename(path), n_extra))
+    dt_a = dict(W.tex_bundle_read(gk[0xa]))
+    dt_c = dict(W.tex_bundle_read(gk[0xc]))
+    return assemble(rep, te, tn2, out_kids, body_m, len(own), dt_a, dt_c, {}, target, out, report, len(posed), n_extra)
+
+
 def main(argv):
     args = [a for a in argv[1:]]
+    if '--gear-json' in args:
+        try:
+            gj = args[args.index('--gear-json') + 1]
+            target = args[args.index('--onto') + 1]
+        except IndexError:
+            print(__doc__)
+            return 2
+        rest = [a for i, a in enumerate(args) if a not in ('--gear-json', '--onto') and
+                (i == 0 or args[i - 1] not in ('--gear-json', '--onto'))]
+        tp, ta = target.rsplit(',', 1)
+        gear_json(gj, tp, int(ta), rest[0], rest[1] if len(rest) > 1 else None)
+        return 0
     try:
         donor = args[args.index('--gear-from') + 1]
         target = args[args.index('--onto') + 1]

@@ -3,6 +3,8 @@
     py svr11_build.py <model.json> <out ch.pac> [report.json]
     py svr11_build.py --gear-from <donor ch.pac>,<attire> --onto <target ch.pac>,<attire> <out ch.pac> [report.json]
                       (entrance gear moved from one character onto another: gear_port.py)
+    py svr11_build.py --gear-json <gear.json> --onto <target ch.pac>,<attire> <out ch.pac> [report.json]
+                      (gear meshes from the FBX path onto an existing model's attire: gear_port.py)
 
 The caller (FBX reader + tools/rig_maps.json) has already retargeted the meshes to the 2011 bind
 skeleton (tools/svr11_skeleton.json: 10 cm units, -Y up, -Z front, pelvis origin, A-pose) and
@@ -533,7 +535,7 @@ class Builder:
 
 
 def main(argv):
-    if '--gear-from' in argv:   # (entrance gear from one pac onto another: gear_port.py)
+    if '--gear-from' in argv or '--gear-json' in argv:   # (entrance gear onto a pac: gear_port.py)
         import gear_port
         return gear_port.main(argv)
     ap = argparse.ArgumentParser()
