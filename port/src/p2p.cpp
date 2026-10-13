@@ -49,6 +49,7 @@
 #include "frame_rate.h"
 #include "online_files.h"
 #include "online_net.h"
+#include "port_map.h"
 #include "net_sim.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
@@ -219,6 +220,7 @@ struct Me {
   Mac mac{};
   uint64_t xuid = 0;
 } g_me;
+std::atomic<uint16_t> g_mapped_port{0};  // (the router forwards it: port_map.h; STUN's port doesn't replace it)
 
 // A game port's real port: + 20000 (the game's own, UDP 1001, is below 1024,
 // which Android and Linux don't let apps bind) + the port base's offset (two
@@ -1106,6 +1108,7 @@ bool OnStun(const uint8_t* data, size_t size) {
       uint16_t port = Be16(data + at + 6);
       uint32_t ip = Be32(data + at + 8);
       if (type == 0x0020) port ^= uint16_t(kStunCookie >> 16), ip ^= kStunCookie;
+      if (const uint16_t mapped = g_mapped_port.load()) port = mapped;  // (forwarded by the router: that one)
       if (g_me.online != ip || g_me.online_port != port) {
         REXLOG_INFO("p2p: public address {}:{} (STUN)", Ip(ip), port);
       }
@@ -2007,6 +2010,14 @@ void InstallP2P(rex::memory::Memory* memory) {
   std::thread(Receive).detach();
   std::thread(Keepalive).detach();
   std::thread(PingLoop).detach();
+  // The router asked to forward the P2P port (port_map.h; not for a test's
+  // second game on this PC, which names its own address)
+  if (REXCVAR_GET(p2p_address).empty() && g_me.lan >> 24 != 127)
+    StartPortMapping(g_me.base, g_me.lan, [](uint32_t ip, uint16_t port) {
+      g_mapped_port = port;
+      if (ip) g_me.online = ip;
+      g_me.online_port = port;
+    });
   rex::kernel::xam::OnlineHooks hooks;
   hooks.title_xnaddr = TitleXnAddr;
   hooks.xnaddr_to_inaddr = XnAddrToInAddr;

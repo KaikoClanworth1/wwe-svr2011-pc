@@ -38,6 +38,7 @@
 #include "paint_pages.h"
 #include "match_types.h"
 #include "online_rules.h"
+#include "port_map.h"
 #include "mystery_opponent.h"
 #include "arena_mods.h"
 #include "story_designer.h"
@@ -610,4 +611,11 @@ void Svr2011App::OnPostLoadXexImage() {
     std::ofstream(dump, std::ios::binary)
         .write(reinterpret_cast<const char*>(image), REX_IMAGE_SIZE);
   }
+}
+
+// The window closing (the app hard-exits after: no atexit) - the router's
+// port mapping removed first.
+bool Svr2011App::OnWindowCloseRequested() {
+  svr2011::StopPortMapping();
+  return true;
 }

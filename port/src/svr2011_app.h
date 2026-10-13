@@ -24,4 +24,5 @@ class Svr2011App : public rex::ReXApp {
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override;
   void OnConfigureFonts(ImFontAtlas* atlas) override;
   void OnPostLoadXexImage() override;
+  bool OnWindowCloseRequested() override;  // (the router's port mapping removed: port_map.h)
 };

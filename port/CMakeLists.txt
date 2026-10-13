@@ -53,6 +53,7 @@ set(SVR2011_SOURCES
     src/slobber_knocker.cpp
     src/gauntlet_eliminator.cpp
     src/movie_sync.cpp
+    src/port_map.cpp
     src/thread_cpu.cpp
     src/online_rules.cpp
     src/three_stages.cpp
@@ -217,7 +218,7 @@ if(WIN32 OR ANDROID)
     target_include_directories(svr2011 PRIVATE launcher)
 endif()
 if(WIN32)
-    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 d3d11 dxgi dxguid dbghelp ws2_32 winhttp
+    target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 d3d11 dxgi dxguid dbghelp ws2_32 iphlpapi winhttp
         mfplat mfreadwrite mfuuid delayimp)
     # d3d12.dll is loaded only when the game draws with Direct3D 12: Windows
     # without it (or GPUs without it, on Direct3D 11) still start the game.
