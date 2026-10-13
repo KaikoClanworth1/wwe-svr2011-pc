@@ -530,32 +530,26 @@ uint32_t VersionOf(uint32_t object, Kind kind) {
 // texture object).
 std::mutex g_records_mutex;
 
-// A texture record's object (+80) for a player's kind: the version's copy
-// for PlayStation / keyboard, the game's own object back for Xbox. (each
-// record remembers the game's object; a new one the game puts there wins)
-std::map<uint32_t, uint32_t> g_record_originals;
+// A texture record's picture for a player's kind: the version's copy for
+// PlayStation / keyboard (record -> {the game's object, our copy}). The copy
+// is only put in the record while the record is bound for drawing
+// (sub_826E6060, below): a copy left in the record was freed by the game
+// with the record (a match with a keyboard player crashed at load: the
+// game's heap free of an object from the port's system heap).
+struct RecordWant {
+  uint32_t original, copy;
+};
+std::map<uint32_t, RecordWant> g_record_want;
 
 void SwapRecordObject(uint32_t record, Kind kind) {
   constexpr uint32_t kTextureRecord = 0x8205CF48;  // (vtable)
   if (!Readable(record) || Rd32(g_base + record) != kTextureRecord || Rd32(g_base + record + 52) != 0) return;
-  const uint32_t current = Rd32(g_base + record + 80);
-  std::lock_guard lock(g_records_mutex);
-  auto it = g_record_originals.find(record);
-  uint32_t original = current;
-  if (it != g_record_originals.end()) {
-    bool ours = false;
-    {
-      std::lock_guard copies(g_copies_mutex);
-      for (const auto& [key, c] : g_copies) ours |= c.object == current;
-    }
-    original = ours ? it->second : current;
-  }
+  const uint32_t original = Rd32(g_base + record + 80);
   uint32_t want = 0;
   if (kind == kPlayStation || kind == kKeyboard) want = VersionOf(original, kind);
-  const uint32_t target = want ? want : original;
-  if (want) g_record_originals[record] = original;
-  else if (it != g_record_originals.end()) g_record_originals.erase(record);
-  if (current != target) Wr32(g_base + record + 80, target);
+  std::lock_guard lock(g_records_mutex);
+  if (want) g_record_want[record] = RecordWant{original, want};
+  else g_record_want.erase(record);
 }
 
 // The player behind a character select slot: its setup record's controller
@@ -758,6 +752,28 @@ REX_HOOK_RAW(sub_82418B70) {
   }
   OwnerScope scope(owner);
   __imp__sub_82418B70(ctx, base);
+}
+
+// A texture record bound for drawing: sub_826E6060(record, sampler) -
+// SetTexture(record + 80) (kind 0 records, +52 == 0). A record with a
+// version for its player draws the copy, then gets the game's object back.
+REX_EXTERN(__imp__sub_826E6060);
+REX_HOOK_RAW(sub_826E6060) {
+  using namespace svr2011;
+  const uint32_t record = ctx.r3.u32;
+  uint32_t original = 0, copy = 0;
+  if (g_enabled) {
+    std::lock_guard lock(g_records_mutex);
+    if (auto it = g_record_want.find(record); it != g_record_want.end()) {
+      if (Rd32(base + record + 80) == it->second.original && Rd32(base + record + 52) == 0)
+        original = it->second.original, copy = it->second.copy;
+      else
+        g_record_want.erase(it);  // (the record holds another picture now)
+    }
+  }
+  if (copy) Wr32(base + record + 80, copy);
+  __imp__sub_826E6060(ctx, base);
+  if (copy) Wr32(base + record + 80, original);
 }
 
 // - a character select panel: sub_82467C18(cursor + 28), the slot at +256;
