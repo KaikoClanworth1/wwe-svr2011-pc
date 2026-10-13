@@ -4,6 +4,8 @@
 // (<id> = a character id, the files beside the manifest):
 //
 //   video.<id>=<file.bik>    that superstar's entrance (titantron) video
+//                            (or <file.mp4>: played HD where the platform
+//                            decodes it, else <file.bik> beside it; hd_movies.h)
 //   theme.<id>=<song>        his entrance theme (.mp3 / .m4a / .wav / ...)
 //   theme_gain.<id>=<dB>     that theme's level, -20..+6 (the Mod Maker's
 //                            loudness match; 0 / none: as the file is)
@@ -65,6 +67,7 @@
 #include "../modmaker/svrfmt/texture.h"
 #include "arena_mods.h"
 #include "music.h"
+#include "hd_movies.h"
 #include "superstar_mods.h"
 #include "user_movies.h"
 
@@ -239,8 +242,10 @@ void CopyMediaMovies(const fs::path& movies) {
   for (const auto& p : ReadPacks())
     for (const auto& [k, v] : p.lines) {
       uint32_t id;
-      if (KeyId(k, "video.", id) && fs::path(v).extension() == ".bik")
-        CopyIfChanged(p.folder / v, movies / (MediaName(p, "video", id) + ".bik"));
+      // (an .mp4's: its .bik fallback of the same name; hd_movies.h)
+      const fs::path bik = fs::path(v).extension() == ".mp4" ? fs::path(v).replace_extension(".bik") : fs::path(v);
+      if (KeyId(k, "video.", id) && bik.extension() == ".bik" && fs::exists(p.folder / bik))
+        CopyIfChanged(p.folder / bik, movies / (MediaName(p, "video", id) + ".bik"));
     }
 }
 
@@ -254,6 +259,7 @@ void InstallMediaMods(rex::memory::Memory* memory) {
       uint32_t id;
       if (KeyId(k, "video.", id)) {
         const std::string file = MediaName(p, "video", id) + ".bik";
+        if (fs::path(v).extension() == ".mp4" && fs::exists(p.folder / v, ec)) RegisterHdMovie(file, p.folder / v);
         if (fs::exists(UserMoviesFolder() / file, ec)) {
           g_videos[id] = ReserveUserMovie(file);
           FinishUserMovie(file);

@@ -57,6 +57,7 @@
 #include "jukebox.h"
 #include "media_mods.h"
 #include "music.h"
+#include "hd_movies.h"
 #include "user_movies.h"
 
 namespace fs = std::filesystem;
@@ -331,10 +332,16 @@ void InstallMedia(Mod& m, const fs::path& folder, const std::string& song, const
       svr2011::SetSongGain(to, song_gain);
     }
   }
-  if (!movie.empty() && fs::exists(folder / movie, ec) && fs::path(movie).extension() == ".bik") {
+  // (an .mp4: played HD where the platform decodes it, else its .bik of the
+  // same name - the Mod Maker makes both; hd_movies.h)
+  const bool mp4 = !movie.empty() && fs::path(movie).extension() == ".mp4";
+  const std::string bik = mp4 ? fs::path(movie).replace_extension(".bik").string() : movie;
+  if (!movie.empty() && fs::path(bik).extension() == ".bik") {
     const fs::path movies = svr2011::UserMoviesFolder();
     const std::string file = name + ".bik";
-    if (!movies.empty() && CopyIfChanged(folder / movie, movies / file)) {
+    bool ok = !movies.empty() && fs::exists(folder / bik, ec) && CopyIfChanged(folder / bik, movies / file);
+    if (mp4 && !movies.empty() && fs::exists(folder / movie, ec) && svr2011::RegisterHdMovie(file, folder / movie)) ok = true;
+    if (ok) {
       m.movie = svr2011::ReserveUserMovie(file);
       svr2011::FinishUserMovie(file);
     }
@@ -1414,8 +1421,7 @@ std::map<std::string, std::string> CawCalls() {
     char line[256];
     while (std::fgets(line, sizeof line, f)) {
       std::string l = line;
-      while (!l.empty() && (l.back() == '
-' || l.back() == '')) l.pop_back();
+      while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
       const size_t eq = l.rfind('=');
       if (eq == std::string::npos || eq == 0) continue;
       std::string name;
@@ -1991,8 +1997,9 @@ void CopySuperstarMovies(const std::filesystem::path& movies) {
       }
       std::fclose(t);
     }
+    if (!movie.empty() && fs::path(movie).extension() == ".mp4") movie = fs::path(movie).replace_extension(".bik").string();
     if (!movie.empty() && fs::path(movie).extension() == ".bik" && fs::exists(e.path() / movie, ec))
-      CopyIfChanged(e.path() / movie, movies / (FileName(name) + ".bik"));
+      CopyIfChanged(e.path() / movie, movies / (FileName(name) + ".bik"));  // (an .mp4's: its .bik fallback)
   }
 }
 

@@ -9,6 +9,8 @@
 // movie when other movies are added or removed.
 #include "user_movies.h"
 
+#include "hd_movies.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -387,7 +389,8 @@ REX_HOOK_RAW(sub_828B52D8) {
   const int id = ctx.r3.s32;
   __imp__sub_828B52D8(ctx, base);
   // Tests: SVR2011_TEST_MOVIE=<file in the movies folder> plays it for every
-  // entrance (e.g. a test pattern, to see what the titantron shows).
+  // entrance (e.g. a test pattern, to see what the titantron shows); a full
+  // path to an .mp4: that, as an HD movie (hd_movies.h; "hdtest.bik").
   static const std::string test_movie = [] {
     char* v = nullptr;
     size_t n = 0;
@@ -395,6 +398,9 @@ REX_HOOK_RAW(sub_828B52D8) {
     if (_dupenv_s(&v, &n, "SVR2011_TEST_MOVIE") == 0 && v) {
       s = v;
       free(v);
+    }
+    if (s.size() > 4 && s.substr(s.size() - 4) == ".mp4") {
+      s = svr2011::RegisterHdMovie("hdtest.bik", std::filesystem::path(s)) ? svr2011::HdMovieFile("hdtest.bik") : "";
     }
     return s;
   }();
@@ -409,7 +415,8 @@ REX_HOOK_RAW(sub_828B52D8) {
     std::lock_guard lock(g_mutex);
     if (auto it = g_ids.find(id); it != g_ids.end()) file = it->second;
   }
-  const std::string path = file.empty() ? "GAME:\\movies\\titantron\\999.bik" : "umovie:\\" + file;
+  // (an HD movie - an .mp4 the platform decodes: its stub, hd_movies.h)
+  const std::string path = file.empty() ? "GAME:\\movies\\titantron\\999.bik" : "umovie:\\" + svr2011::HdMovieFile(file);
   if (path.size() < 250) std::memcpy(base + ctx.r3.u32, path.c_str(), path.size() + 1);
 }
 
