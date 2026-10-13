@@ -131,6 +131,15 @@ still being tested.
 - **VIBRATION ON / OFF** (OPTIONS → CONTROLS).
 - **Mystery Opponent**: once you pick your superstar the CPU's pick locks by itself and shows only a "?" on its panel; the opponent stays hidden on the VS screen until the entrance.
 
+### Mod Maker
+- **Simple mode** ("Make my first superstar"): ten plain steps - name and style, look (a superstar in the game, one from an older game's disc, or a 3D model), attires, music, entrance (watch the walk to the ring), moves and taunts (watch them on your model), pose and pictures (taken from the 3D view), extras, finish with "Fix it" for every problem. It's a view of the same project: switch to the full editor at any time.
+- **Port from a disc**: superstars, entrances, arenas, moves, belts and weapons from your own discs of SvR 2004-2011, Here Comes the Pain, Shut Your Mouth, Legends of WrestleMania, WWE '12, '13 and 2K14-2K17 (PS2 and Xbox 360), read straight from the ISO; each item shows whether 2011 already has it.
+- **FBX**: export any superstar (skeleton, weights, textures) and import a 3D model as a superstar - Unity / VRChat, Mixamo, Rigify, 3ds Max Biped, UE Mannequin and WWE 2K skeletons are mapped automatically (an editable table for the rest), big models are reduced to fit the game, and a model check lists what's wrong (polycount, weights, missing bones, pictures, size).
+- **Installed mods**: every installed mod by type, with superstars playing their moveset, taunts and pose, move packs played on any superstar, and arenas in a read-only 3D view.
+- **Animations** match the game (the game's own arm and leg solving, finger poses, real blood with a Blood / Damage switch, hit spheres), and match moves play by name.
+- **Pac editor** for any game file archive (export / replace / add / remove, saved as a copy), **attires inside a model** (add / replace / remove), **all four superstar pictures** set separately, theme volume, hometown and announcer pickers, a select-screen pose picker, belt and weapon reskins, and warnings before a mod can crash the game.
+- **Optional tools**: Bink 2 videos (WWE '13+ titantrons) convert when you install RAD Video Tools yourself; vgmstream ships for WWE '12+ themes.
+
 ### Fixes
 - **Road to WrestleMania VS. UNDERTAKER** accepts downloaded Created Superstars (the game only allowed ones made on that profile).
 - **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start (that part only worked from 06646a9: every start merged the move packs again, up to ~30 s on a hard drive).
