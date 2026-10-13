@@ -37,7 +37,7 @@ if ($WithModMaker) {
                      "superstar_port.py", "svr08_char.py", "entrance_port.py", "ymks.py", "svr08_entrance.py",
                      "hctp_entrance.py", "hctp_motion.py", "svr10_entrance.py", "wwe13_entrance.py", "w13_retarget.py",
                      "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py",
-                     "moves_port.py", "attire_port.py", "pro_slots.json", "announcer_calls.json")) {
+                     "moves_port.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py")) {
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
     }

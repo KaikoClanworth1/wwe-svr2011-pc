@@ -183,6 +183,20 @@ const std::string& GameString(int id);
 // +0x10, the id at +0x90), loaded on first use; "" if unknown.
 const std::string& MoveName(int id);
 const std::map<int, std::string>& MoveNames();
+// The entrances the game can play (checklist D5): the stock ones (pac\evt\
+// Nyujyo*.pac, EVP scripts, name at +0x22) and those installed move packs add
+// (pack.txt "pacentry <pac> EVPx <number> <file>" in Mods\Moves\* and in
+// superstar mods' moves\). Read in the background: empty until EntrancesReady().
+struct EntranceInfo {
+  int number = 0;
+  std::string name;
+  std::string from;  // "" stock, else the pack folder's name
+};
+const std::vector<EntranceInfo>& Entrances();
+bool EntrancesReady();
+void ReloadEntrances();
+// A pack folder's entrances (its pack.txt pacentry EVP lines).
+std::vector<EntranceInfo> PackEntrances(const fs::path& pack);
 // A song's integrated loudness in LUFS (BS.1770; loudness.cpp). Slow: call it from a worker.
 bool MeasureLufs(const std::wstring& file, double* lufs, std::string* error);
 constexpr double kThemeTargetLufs = -24.0;  // where a mod's theme sits next to the game's own
@@ -327,7 +341,7 @@ namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestMoveset(const std::string& spec); }
+                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }

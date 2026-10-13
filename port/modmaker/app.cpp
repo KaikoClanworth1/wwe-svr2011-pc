@@ -15,6 +15,7 @@
 #include <cstring>
 #include <chrono>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #include "char_preview.h"
@@ -777,6 +778,97 @@ void LoadMoveset() {
   Log("moveset: " + std::to_string(g_move_infos.size()) + " moves, " + std::to_string(real.size()) + " roster profiles");
 }
 }  // namespace
+
+namespace {
+std::vector<EntranceInfo> g_entrances, g_entrances_next;
+std::atomic<int> g_entrances_state{0};  // 0 not read, 1 reading, 2 read, 3 ready
+
+std::string EvpName(const Bytes& stored) {
+  const Bytes b = Unpack(stored);
+  if (b.size() < 0x42) return "";
+  std::string n(reinterpret_cast<const char*>(&b[0x22]), strnlen(reinterpret_cast<const char*>(&b[0x22]), 32));
+  while (!n.empty() && n.back() == ' ') n.pop_back();
+  return n;
+}
+}  // namespace
+
+std::vector<EntranceInfo> PackEntrances(const fs::path& pack) {
+  std::vector<EntranceInfo> out;
+  Bytes t;
+  if (!ReadFile(PathStr(pack / L"pack.txt"), t)) return out;
+  const std::string s(t.begin(), t.end());
+  for (size_t at = 0; at < s.size();) {
+    size_t e = s.find('\n', at);
+    if (e == std::string::npos) e = s.size();
+    std::string line = s.substr(at, e - at);
+    at = e + 1;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    char pac[260], group[16], name[64], file[260];
+    if (std::sscanf(line.c_str(), "pacentry %259s %15s %63s %259s", pac, group, name, file) != 4) continue;
+    if (std::strncmp(group, "EVP", 3) || !std::isdigit(uint8_t(name[0]))) continue;
+    EntranceInfo i;
+    i.number = std::atoi(name);
+    Bytes f;
+    if (ReadFile(PathStr(pack / Wide(file)), f)) i.name = EvpName(f);
+    i.from = PathStr(pack.filename());
+    out.push_back(std::move(i));
+  }
+  return out;
+}
+
+void ReloadEntrances() {
+  int expect = g_entrances_state.load();
+  if (expect == 1 || !g_entrances_state.compare_exchange_strong(expect, 1)) return;
+  std::thread([game = g_game] {
+    std::vector<EntranceInfo> out;
+    std::set<int> seen;
+    std::error_code ec;
+    std::vector<fs::path> pacs;
+    for (const auto& e : fs::directory_iterator(fs::path(game) / L"pac" / L"evt", ec))
+      if (Lower(PathStr(e.path().filename())).rfind("nyujyo", 0) == 0) pacs.push_back(e.path());
+    std::sort(pacs.begin(), pacs.end());
+    for (const auto& p : pacs) {
+      PacIndex idx;
+      if (!ReadPacIndex(p, idx)) continue;
+      for (const auto& e : idx.entries) {
+        if (e.group.rfind("EVP", 0) != 0 || e.name.empty() || !std::isdigit(uint8_t(e.name[0]))) continue;
+        const int n = std::atoi(e.name.c_str());
+        if (n <= 0 || n >= 1000 || !seen.insert(n).second) continue;
+        Bytes b;
+        EntranceInfo i;
+        i.number = n;
+        if (ReadPacEntry(p, e, b)) i.name = EvpName(b);
+        out.push_back(std::move(i));
+      }
+    }
+    for (const wchar_t* where : {L"Moves", L"Superstars"})
+      for (const auto& e : fs::directory_iterator(fs::path(game) / L"Mods" / where, ec)) {
+        if (!e.is_directory(ec) || fs::exists(e.path() / L"disabled", ec)) continue;
+        const fs::path pack = std::wstring(where) == L"Moves" ? e.path() : e.path() / L"moves";
+        for (auto& i : PackEntrances(pack))
+          if (seen.insert(i.number).second) out.push_back(std::move(i));
+      }
+    std::sort(out.begin(), out.end(), [](const EntranceInfo& a, const EntranceInfo& b) { return a.number < b.number; });
+    g_entrances_next = std::move(out);
+    g_entrances_state = 2;
+  }).detach();
+}
+
+bool EntrancesReady() {
+  if (g_entrances_state == 0) ReloadEntrances();
+  if (g_entrances_state == 2) {
+    g_entrances = std::move(g_entrances_next);
+    g_entrances_next.clear();
+    g_entrances_state = 3;
+    Log("entrances: " + std::to_string(g_entrances.size()) + " installed");
+  }
+  return g_entrances_state == 3;
+}
+
+const std::vector<EntranceInfo>& Entrances() {
+  static const std::vector<EntranceInfo> kNone;
+  return EntrancesReady() ? g_entrances : kNone;
+}
 
 const std::map<int, MoveInfo>& MoveInfos() {
   LoadMoveset();
@@ -1756,6 +1848,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   int star_id = 0, star_call = -1;
   float star_height = 0;
   std::string star_moveset;
+  int star_entrance = 0;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures, background_files;
@@ -1848,6 +1941,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
+    else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--star-voice") && more) star_voice = argv[++i];
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
@@ -1932,6 +2027,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
   if (star_height > 0) star_page::TestHeight(star_height);
   if (!star_moveset.empty()) star_page::TestMoveset(star_moveset);
+  if (star_entrance) star_page::TestEntrance(star_entrance);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);

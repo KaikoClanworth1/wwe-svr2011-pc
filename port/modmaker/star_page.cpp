@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <set>
 #include <thread>
 
 #include "app.h"
@@ -89,6 +91,7 @@ struct StarProject {
   std::wstring model, song, movie, voice;
   std::wstring attires[4];        // [1..3]: attires 2-4 from other model pacs (their first attire)
   char attire_names[4][32] = {};  // [1..3]: their names on CHANGE ATTIRE ("" = ATTIRE N)
+  int attire_entrance[4] = {-1, -1, -1, -1};  // [1..3]: attire<N>_entrance= (-1: the superstar's entrance)
   Picture picture;                // its own select picture (512): else a silhouette
   Image picture_small;            // the 256 bust made with it
   int call = -1;                  // -1: "The Superstar"
@@ -169,6 +172,49 @@ struct Job {
   std::vector<Image> signs;
   std::wstring moves, pack;
 };
+
+// ---- entrances (D5)
+
+// An entrance number picked from the installed ones (stock + packs); -1 = the default.
+bool EntrancePicker(const char* label, int& value, const char* none, float width = 320) {
+  std::string cur = none;
+  if (value > 0) {
+    cur = std::to_string(value);
+    for (const auto& e : Entrances())
+      if (e.number == value) cur += "  " + (e.name.empty() ? std::string("(no name)") : e.name) + (e.from.empty() ? "" : "  [" + e.from + "]");
+  }
+  bool changed = false;
+  ImGui::SetNextItemWidth(width * g_scale);
+  if (ImGui::BeginCombo(label, cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+    static char find[32] = "";
+    if (ImGui::IsWindowAppearing()) find[0] = 0, ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##f", "find a number or a name", find, sizeof find);
+    if (ImGui::Selectable(none, value <= 0)) value = -1, changed = true;
+    if (!EntrancesReady()) ImGui::TextDisabled("Reading the entrances ...");
+    const std::string f = Lower(find);
+    for (const auto& e : Entrances()) {
+      const std::string row = std::to_string(e.number) + "  " + (e.name.empty() ? "(no name)" : e.name) + (e.from.empty() ? "" : "  [" + e.from + "]");
+      if (!f.empty() && Lower(row).find(f) == std::string::npos) continue;
+      if (ImGui::Selectable((row + "##" + std::to_string(e.number)).c_str(), value == e.number)) value = e.number, changed = true;
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
+// The model pac carries an entrance outfit: an EMD entry of kind 4 for its first attire ("%06d%02d", last digits 04).
+bool HasEntranceOutfit(const std::wstring& pac) {
+  static std::map<std::wstring, bool> cache;
+  const auto it = cache.find(pac);
+  if (it != cache.end()) return it->second;
+  PacIndex idx;
+  bool has = false;
+  if (ReadPacIndex(fs::path(pac), idx))
+    for (const auto& e : idx.entries)
+      if (e.group == "EMD " && e.name.size() == 8 && e.name.compare(6, 2, "04") == 0) has = true;
+  return cache[pac] = has;
+}
 
 // ---- the moveset by name (D4)
 
@@ -457,6 +503,9 @@ bool PrepareJob(Job& j) {
   if (const std::string h = HeightText(); !h.empty()) j.manifest += "height=" + h + "\n";
   if (const std::string g = GainText(); !g.empty() && !g_star.song.empty()) j.manifest += "theme_gain=" + g + "\n";
   if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
+  for (int a = 1; a < 4; ++a)
+    if (!g_star.attires[a].empty() && g_star.attire_entrance[a] > 0)
+      j.manifest += "attire" + std::to_string(a + 1) + "_entrance=" + std::to_string(g_star.attire_entrance[a]) + "\n";
   if (g_star.announcer[0]) j.manifest += std::string("announcer=") + g_star.announcer + "\n";
   if (g_star.own_abilities) {
     j.manifest += "abilities=";
@@ -625,6 +674,27 @@ void Problems(std::vector<Problem>& p) {
                           "The game may not play it from this slot. Pick one from the slot's list."));
     }
   }
+  if (EntrancesReady()) {  // entrances that aren't installed: no entrance plays
+    std::set<int> have;
+    for (const auto& e : Entrances()) have.insert(e.number);
+    if (!g_star.pack.empty())
+      for (const auto& e : PackEntrances(g_star.pack)) have.insert(e.number);
+    auto check = [&](int n, const std::string& who) {
+      if (n > 0 && !have.count(n))
+        p.push_back(Warning(who + ": entrance " + std::to_string(n) + " isn't installed - no entrance would play.",
+                            "Install the move pack that adds it, carry it in this mod (More: Move pack folder), or pick another."));
+    };
+    check(g_star.entrance, "The superstar");
+    for (int a = 1; a < 4; ++a)
+      if (!g_star.attires[a].empty()) check(g_star.attire_entrance[a], "Attire " + std::to_string(a + 1));
+  }
+  for (int a = 0; a < 4; ++a) {  // a model pac with an entrance outfit (EMD kind 4): worn during the entrance
+    const std::wstring& f = a ? g_star.attires[a] : g_star.model;
+    if (!f.empty() && HasEntranceOutfit(f))
+      p.push_back(Warning((a ? "Attire " + std::to_string(a + 1) : std::string("The model")) +
+                          " carries an entrance outfit (a coat or the like from the superstar it came from): it is "
+                          "worn during the entrance.", "Fine if wanted; otherwise use a model pac without one."));
+  }
   if (!g_star.moves.empty()) {
     const FileCheck& c = Check(g_star.moves, "any");
     if (!c.exists) p.push_back(Error("The moves list file is missing: " + FileName(g_star.moves)));
@@ -766,24 +836,10 @@ void Draw() {
   MovesetSection();
   if (ImGui::CollapsingHeader("More: entrance, announcer, abilities, moves")) {
     ImGui::Indent();
-    // entrance: a superstar's (number = id) or Jeff Hardy's 2010 one the game ships unused
-    const auto& stars = Stars();
-    std::string cur = "The style's";
-    if (g_star.entrance == 535) cur = "Jeff Hardy's (SvR 2010, unused by the game)";
-    else if (g_star.entrance >= 0) {
-      const StarInfo* s = StarById(g_star.entrance);
-      cur = (s ? s->name : "Superstar " + std::to_string(g_star.entrance)) + "'s";
-    }
-    ImGui::SetNextItemWidth(320 * g_scale);
-    if (ImGui::BeginCombo("Entrance", cur.c_str())) {
-      if (ImGui::Selectable("The style's", g_star.entrance < 0)) g_star.entrance = -1;
-      if (ImGui::Selectable("Jeff Hardy's (SvR 2010, unused by the game)", g_star.entrance == 535)) g_star.entrance = 535;
-      for (const auto& s : stars)
-        if (ImGui::Selectable((s.name + "'s##e" + std::to_string(s.id)).c_str(), g_star.entrance == s.id)) g_star.entrance = s.id;
-      ImGui::EndCombo();
-    }
-    Hint("The entrance motions and pyro (the music and movie are the files below). Each of the game's superstars has "
-         "one; the game also ships Jeff Hardy's from SvR 2010 without using it.");
+    if (EntrancePicker("Entrance", g_star.entrance, "The style's")) Touch();
+    Hint("The entrance motions and pyro (the music and movie are the files above): any the game has - every "
+         "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
+         "(the Port page makes them from other games). Attires 2-4 can have their own.");
     TextField("Announcer name (optional)", g_star.announcer, sizeof g_star.announcer, "e.g. JEFFHARDY");
     Hint("A name the ring announcer's sound banks have clips of (letters and digits, as the banks spell it: "
          "JEFFHARDY). The announcer then says it. It wins over a name recording; the name call above stays for the "
@@ -847,6 +903,10 @@ void Draw() {
       ImGui::SetNextItemWidth(160 * g_scale);
       ImGui::InputTextWithHint(("##an" + std::to_string(a)).c_str(), ("ATTIRE " + std::to_string(a + 1)).c_str(),
                                g_star.attire_names[a], sizeof g_star.attire_names[a]);
+      ImGui::SameLine();
+      ImGui::PushID(a);
+      if (EntrancePicker("##ae", g_star.attire_entrance[a], "its entrance: the superstar's", 200)) Touch();
+      ImGui::PopID();
     }
   }
   ImGui::TextDisabled("Attire 1 is the model above; each extra attire is another pac's first attire.");
@@ -910,7 +970,9 @@ std::string StateText() {
                   "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) +
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
   for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
-  for (int a = 1; a < 4; ++a) s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a];
+  for (int a = 1; a < 4; ++a)
+    s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a] + "|" +
+         std::to_string(g_star.attire_entrance[a]);
   s += "\nmoveset=" + MovesetText();
   s += "\nentrance=" + std::to_string(g_star.entrance) + "\nannouncer=" + g_star.announcer + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
@@ -939,6 +1001,7 @@ void WriteProject(ProjectOut& out) {
   for (int a = 1; a < 4; ++a) {
     out.File("attire" + std::to_string(a + 1), g_star.attires[a], "star/attire" + std::to_string(a + 1));
     out.Key("attire" + std::to_string(a + 1) + "_name", g_star.attire_names[a]);
+    if (g_star.attire_entrance[a] > 0) out.Key("attire" + std::to_string(a + 1) + "_entrance", g_star.attire_entrance[a]);
   }
   if (g_star.entrance >= 0) out.Key("entrance", g_star.entrance);
   out.Key("announcer", g_star.announcer);
@@ -989,6 +1052,7 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.call = in.GetInt("call", -1);
   if (const std::string h = in.Get("height"); !h.empty()) g_star.height = std::clamp(float(std::atof(h.c_str())), 0.8f, 1.25f);
   g_star.entrance = in.GetInt("entrance", -1);
+  for (int a = 1; a < 4; ++a) g_star.attire_entrance[a] = in.GetInt(("attire" + std::to_string(a + 1) + "_entrance").c_str(), -1);
   std::snprintf(g_star.announcer, sizeof g_star.announcer, "%s", in.Get("announcer").c_str());
   if (const std::string a = in.Get("abilities"); !a.empty()) {
     g_star.own_abilities = true;
@@ -1083,6 +1147,8 @@ void SetModel(const std::wstring& ch_pac) {
   g_star.model = ch_pac;
   Touch();
 }
+
+void TestEntrance(int n) { g_star.entrance = n; }
 
 void TestMoveset(const std::string& spec) {
   ParseMoveset(spec, ',');

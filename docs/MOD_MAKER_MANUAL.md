@@ -112,6 +112,11 @@ mods).
 - **Theme volume:** under the theme song, a volume in dB the game applies (left
   out at 0). Measure reads the song's loudness; Match the game sets the volume
   so it sits with the game's own themes (about -24 LUFS).
+- **Entrances:** under More, the entrance by number and name - every one the
+  game has and every one an installed move pack adds (the Port page makes them
+  from other games); attires 2-4 can each have their own. A number that isn't
+  installed warns (no entrance would play), and so does a model that carries
+  an entrance outfit (Undertaker's, Punk's, Cena's, HBK's, Morrison's coats).
 - **Moveset:** the style's moves slot by slot; pick another for any slot by
   name (each slot lists the game's moves of its kind; "all moves" lists the
   rest, a move pack's moves go by number). Saved as the mod's moves.txt.
