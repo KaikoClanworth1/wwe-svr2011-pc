@@ -164,14 +164,17 @@ int DiffuseSlot(const Mesh& s) {
   return -1;
 }
 
-bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
+std::atomic<int> g_attire{1};  // the model's attire shown (1-4)
+
+bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire = 1) {
   if (pac.size() < 0x4000 || std::memcmp(pac.data(), "EPK8", 4)) {
     err = "not a character model pac (EPK8)";
     return false;
   }
-  // the EMD group, the attire 1 model (name "......02"), else any model
+  // the EMD group, the attire's model (name "......<attire-1>2"), else attire 1's, else any model
   Bytes emd;
-  bool attire1 = false;
+  bool attire1 = false, wanted = false;
+  const char want = char('0' + std::clamp(attire, 1, 9) - 1);
   for (size_t p = 0x800; p + 12 <= 0x4000;) {
     if (!Le32(&pac[p])) break;
     const bool is_emd = !std::memcmp(&pac[p], "EMD ", 4);
@@ -181,9 +184,10 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
       const std::string name(reinterpret_cast<const char*>(&pac[p]), 8);
       const size_t off = 0x4000 + size_t(Le32(&pac[p + 8])) * 0x800, size = size_t(Le32(&pac[p + 12])) * 0x100;
       if (!is_emd || name[0] == 0 || name[7] != '2' || off + size > pac.size()) continue;
-      if (emd.empty() || (name[6] == '0' && !attire1)) {
+      if (!wanted && (emd.empty() || name[6] == want || (name[6] == '0' && !attire1))) {
         emd.assign(pac.begin() + off, pac.begin() + off + size);
         attire1 = name[6] == '0';
+        wanted = name[6] == want;
       }
     }
   }
@@ -197,13 +201,14 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
     return false;
   }
   std::vector<Model> models;
+  std::vector<uint32_t> model_ids;  // (their PACH child ids)
   for (const auto& k : kids) {
     Bytes raw = Unpack(k.data);
     if (IsJboy(raw)) {
       Model m;
       if (JboyRead(raw, m)) {
-        if (k.id == 0) models.insert(models.begin(), std::move(m));
-        else models.push_back(std::move(m));
+        if (k.id == 0) models.insert(models.begin(), std::move(m)), model_ids.insert(model_ids.begin(), k.id);
+        else models.push_back(std::move(m)), model_ids.push_back(k.id);
       }
     } else if (IsTextureBundle(raw)) {
       std::vector<BundleTexture> texs;
@@ -225,9 +230,12 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
     by_name.emplace(b.name, int(ch.bones.size()));
     ch.bones.push_back(b);
   }
-  for (const Model& m : models) {
-    const bool blood = m.name.rfind("blood", 0) == 0;
-    const bool cutout = blood || m.name.find("hair") != std::string::npos || m.name.find("eyelash") != std::string::npos;
+  for (size_t mi = 0; mi < models.size(); ++mi) {
+    const Model& m = models[mi];
+    // blood overlays: blood_* / Blood_face (the names' case varies) or PACH children 0x7530-0x7532
+    const std::string lname = Lower(m.name);
+    const bool blood = lname.rfind("blood", 0) == 0 || (model_ids[mi] >= 0x7530 && model_ids[mi] <= 0x7532);
+    const bool cutout = blood || lname.find("hair") != std::string::npos || lname.find("eyelash") != std::string::npos;
     for (const Mesh& s : m.meshes) {
       PMesh pm;
       const int slot = DiffuseSlot(s);
@@ -780,8 +788,22 @@ std::array<float, 3> HandAngles(int id, int k, float t) {
   return v;
 }
 
+// The skeleton's body: the 21 animated bones and the limbs (not attachments, fingers, face).
+struct IkNumbers {
+  float d = 0, L = 0, bend = 0;
+};
+IkNumbers g_ik_last[4];  // (the last Pose's solve, per limb: for the pose-dump comparison)
+
+bool BodyBone(const std::string& n) {
+  for (const char* b : kBones)
+    if (n == b) return true;
+  for (const char* b : {"l_ninoude", "r_ninoude", "l_kote", "r_kote", "l_te", "r_te", "l_momo", "r_momo", "l_sune", "r_sune", "l_ashi", "r_ashi"})
+    if (n == b) return true;
+  return false;
+}
+
 // World transforms of every bone for the motion at `key` (rotation keys).
-std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
+std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vector<Xf>* locals_out = nullptr) {
   const float kAng = 6.2831853f / 65536.0f, kMove = 1e-4f;
   const size_t nb = ch.bones.size();
   std::vector<Xf> local(nb);
@@ -807,9 +829,25 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
       std::memcpy(rest, local[size_t(i)].r, sizeof rest);
       MulR(rest, e, local[size_t(i)].r);
     } else {
-      Euler(rot[c], local[size_t(i)].r);
+      // YMBs, as the game builds the pose (sub_823A4420): the IK bones aren't driven, sakotsu / te take y and z,
+      // tsumasaki y only; the rest replaces the bone's rotation
+      if (c == 6 || c == 7 || c == 10 || c == 11 || c == 13 || c == 14 || c == 17 || c == 18) continue;
+      float e[3] = {rot[c][0], rot[c][1], rot[c][2]};
+      if (c == 5 || c == 8 || c == 9 || c == 12) e[0] = 0;
+      if (c == 16 || c == 20) e[0] = e[2] = 0;
+      Euler(e, local[size_t(i)].r);
     }
   }
+  if (!m.fk)  // the kote's x roll: on the forearm twist bones (half each when there are two)
+    for (int side = 0; side < 2; ++side) {
+      const float roll = rot[side ? 11 : 7][0];
+      const char* x1 = side ? "r_kote_x" : "l_kote_x";
+      const char* x2 = side ? "r_kote_x2" : "l_kote_x2";
+      const bool two = find(x2) >= 0;
+      const float e[3] = {two ? roll * 0.5f : roll, 0, 0};
+      if (const int i = find(x1); i >= 0) Euler(e, local[size_t(i)].r);
+      if (const int i = find(x2); i >= 0) Euler(e, local[size_t(i)].r);
+    }
   const int root = find("root");
   if (root >= 0)
     local[size_t(root)].t = {Key(m.root[0], 2 * key, false, kMove), Key(m.root[1], 2 * key, false, kMove),
@@ -852,51 +890,87 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
     }
   };
   fk();
-  if (root < 0 || m.fk) return w;  // (YMKs: the limbs have their own rotations)
-  const V3 root_p = w[size_t(root)].t, fwd{0, 0, -1};
+  if (root < 0 || m.fk) {  // (YMKs: the limbs have their own rotations)
+    if (locals_out) *locals_out = local;
+    return w;
+  }
+  const V3 root_p = w[size_t(root)].t;
+  // the game's solve (sub_823A4DD8), in the parent frame: arms the sakotsu's, legs the root's
   struct Limb {
-    const char *up, *lo, *end;
-    float sign;
-    int roll;  // the kote channel (x): the forearm's roll, or -1
+    const char *up, *lo, *parent;
+    bool arm;
   };
-  const Limb limbs[4] = {{"l_ninoude", "l_kote", "l_te", 1, 7},
-                         {"r_ninoude", "r_kote", "r_te", 1, 11},
-                         {"l_momo", "l_sune", "l_ashi", -1, -1},
-                         {"r_momo", "r_sune", "r_ashi", -1, -1}};
+  const Limb limbs[4] = {{"l_ninoude", "l_kote", "l_sakotsu", true},
+                         {"r_ninoude", "r_kote", "r_sakotsu", true},
+                         {"l_momo", "l_sune", "root", false},
+                         {"r_momo", "r_sune", "root", false}};
+  auto rot_x = [](float a, float r[3][3]) { const float e[3] = {a, 0, 0}; Euler(e, r); };
+  auto rot_y = [](float a, float r[3][3]) { const float e[3] = {0, a, 0}; Euler(e, r); };
   for (int l = 0; l < 4; ++l) {
-    const int iu = find(limbs[l].up), il = find(limbs[l].lo), ie = find(limbs[l].end);
-    if (iu < 0 || il < 0 || ie < 0) continue;
-    const int pu = ch.bones[size_t(iu)].parent, pl = ch.bones[size_t(il)].parent;
-    if (pu < 0 || pl < 0) continue;
-    const V3 S = w[size_t(iu)].t;
-    const float L1 = Len(w[size_t(il)].t - S), L2 = Len(w[size_t(ie)].t - w[size_t(il)].t);
-    const V3 target = root_p + V3{Key(m.ik[size_t(l)][0], 2 * key, false, kMove),
-                                  Key(m.ik[size_t(l)][1], 2 * key, false, kMove),
+    const int iu = find(limbs[l].up), il = find(limbs[l].lo), ip = find(limbs[l].parent);
+    if (iu < 0 || il < 0 || ip < 0) continue;
+    const int su = ch.bones[size_t(iu)].parent;  // (the upper bone's own parent in the skeleton)
+    if (su < 0) continue;
+    const Xf& P = w[size_t(ip)];
+    const Xf Pi = Inverse(P);
+    const V3 S = Apply(Pi, w[size_t(iu)].t);  // the shoulder / hip in the parent frame
+    const V3 target = root_p + V3{Key(m.ik[size_t(l)][0], 2 * key, false, kMove), Key(m.ik[size_t(l)][1], 2 * key, false, kMove),
                                   Key(m.ik[size_t(l)][2], 2 * key, false, kMove)};
-    V3 a = target - S;
-    const float dist = std::max(1e-4f, std::min(Len(a), (L1 + L2) * 0.9999f));
-    a = Norm(a);
-    const V3 d0 = Norm(fwd - a * Dot(fwd, a));
-    const float th = Key(m.pole[size_t(l)], key, true, kAng);
-    const V3 d = d0 * std::cos(th) + Cross(a, d0) * std::sin(th);
-    const float cosA = std::clamp((L1 * L1 + dist * dist - L2 * L2) / (2 * L1 * dist), -1.0f, 1.0f);
-    const float sinA = std::sqrt(std::max(0.0f, 1 - cosA * cosA));
-    const V3 J = S + a * (L1 * cosA) + d * (L1 * sinA), E = S + a * dist;
-    float R[3][3];
-    Aim(J - S, d, limbs[l].sign, R);
-    TransposeMul(w[size_t(pu)].r, R, local[size_t(iu)].r);
-    fk();
-    Aim(E - J, d, limbs[l].sign, R);
-    if (limbs[l].roll >= 0) {
-      const float e[3] = {rot[limbs[l].roll][0], 0, 0};
-      float rx[3][3], tmp[3][3];
-      Euler(e, rx);
-      MulR(R, rx, tmp);
-      std::memcpy(R, tmp, sizeof R);
+    V3 v = Apply(Pi, target) - S;
+    // L: 2 x the upper segment (the game assumes equal segments) - shoulder / hip to elbow / knee, measured in
+    // the world (the lower bone hangs off the twist bone half way down: its own offset is half a segment)
+    const float L = 2 * Len(w[size_t(il)].t - w[size_t(iu)].t);
+    float d = Len(v);
+    if (L <= 1e-4f || d <= 1e-5f) continue;
+    const float lim = (limbs[l].arm ? 0.99f : 0.99999f) * L;
+    if (d >= lim) d = limbs[l].arm ? lim : lim + (d - lim) * 0.3f;
+    float bend = d >= L ? 0.0f : 2 * std::acos(std::min(d / L, 0.99999f));
+    if (!limbs[l].arm) bend = -bend;
+    g_ik_last[l] = {Len(v), L, bend};
+    const V3 n = Norm(v);
+    // Align: the shortest arc +X -> n (axis X x n)
+    float A[3][3];
+    {
+      const V3 axis{0, -n.z, n.y};
+      const float al = Len(axis), ang = std::acos(std::clamp(n.x, -1.0f, 1.0f));
+      if (al < 1e-6f) {
+        float id[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        if (n.x < 0) id[0][0] = -1, id[1][1] = -1;  // (half turn about z)
+        std::memcpy(A, id, sizeof A);
+      } else {
+        const V3 k = axis * (1 / al);
+        const float c = std::cos(ang), sn = std::sin(ang), t = 1 - c;
+        A[0][0] = c + k.x * k.x * t, A[0][1] = k.x * k.y * t - k.z * sn, A[0][2] = k.x * k.z * t + k.y * sn;
+        A[1][0] = k.y * k.x * t + k.z * sn, A[1][1] = c + k.y * k.y * t, A[1][2] = k.y * k.z * t - k.x * sn;
+        A[2][0] = k.z * k.x * t - k.y * sn, A[2][1] = k.z * k.y * t + k.x * sn, A[2][2] = c + k.z * k.z * t;
+      }
     }
-    TransposeMul(w[size_t(pl)].r, R, local[size_t(il)].r);
+    float pole = Key(m.pole[size_t(l)], key, true, kAng);
+    if (limbs[l].arm) pole -= 3.14159265f;
+    float Rx[3][3], Ry[3][3], t1[3][3], R[3][3], world[3][3];
+    rot_x(pole, Rx);
+    rot_y(-bend * 0.5f, Ry);
+    MulR(A, Rx, t1);
+    MulR(t1, Ry, R);                                     // the upper bone in the parent frame
+    MulR(P.r, R, world);                                 // ... in the world
+    TransposeMul(w[size_t(su)].r, world, local[size_t(iu)].r);  // ... under its own parent
+    // the twist bone (ninoude_x / momo_x, between the upper and the lower bone) takes half the upper bone's roll
+    // about its own axis (x): a = swing-twist angle / 2 - fitted to the game's pose dump (0.0 deg off)
+    if (const int it = find((std::string(limbs[l].up) + "_x").c_str()); it >= 0 && ch.bones[size_t(it)].parent == iu) {
+      const float (&F)[3][3] = local[size_t(iu)].r;
+      const float qw = std::sqrt(std::max(0.0f, 1 + F[0][0] + F[1][1] + F[2][2])) * 0.5f;
+      const float qx = qw > 1e-6f ? (F[2][1] - F[1][2]) / (4 * qw) : 1.0f;
+      const float a = std::atan2(qx, qw);  // (2 atan2(qx, qw) / 2)
+      float back[3][3], upper[3][3];
+      rot_x(-a, back);
+      MulR(local[size_t(iu)].r, back, upper);
+      std::memcpy(local[size_t(iu)].r, upper, sizeof upper);
+      rot_x(a, local[size_t(it)].r);
+    }
+    rot_y(bend, local[size_t(il)].r);
     fk();
   }
+  if (locals_out) *locals_out = local;
   return w;
 }
 
@@ -907,23 +981,35 @@ struct GpuVertex {
 };
 struct Cb {
   float viewproj[16];
-  float flags[4];  // x: alpha test
+  float flags[4];  // x: alpha test, y: the floor
+  float key[4];    // toward the key light (view space, camera relative: upper left)
+  float fill[4];   // toward the fill light (lower right)
+  float fwd[4];    // the camera's forward
+  float shadow[2][4];  // the floor's contact shadows: x, z, radius, strength (0: none)
 };
 
 const char* kShader = R"(
-cbuffer C : register(b0) { row_major float4x4 viewproj; float4 flags; };
+cbuffer C : register(b0) { row_major float4x4 viewproj; float4 flags; float4 key; float4 fill; float4 fwd; float4 shadow[2]; };
 struct VI { float3 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD; };
-struct VO { float4 p : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD; };
-VO vs(VI i) { VO o; o.p = mul(float4(i.p, 1), viewproj); o.n = i.n; o.uv = i.uv; return o; }
+struct VO { float4 p : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD0; float3 w : TEXCOORD1; };
+VO vs(VI i) { VO o; o.p = mul(float4(i.p, 1), viewproj); o.n = i.n; o.uv = i.uv; o.w = i.p; return o; }
 Texture2D t : register(t0);
 SamplerState s : register(s0);
 float4 ps(VO i) : SV_Target {
   float4 tx = t.Sample(s, i.uv);
   if (flags.x > 0.5 && tx.a < 0.3) discard;
   float3 n = normalize(i.n + 1e-5);
-  float key = saturate(dot(n, normalize(float3(-0.4, 0.6, 0.7))));
-  float rim = saturate(dot(n, normalize(float3(0.6, 0.3, -0.7))));
-  return float4(tx.rgb * (0.38 + 0.62 * key + 0.25 * rim), 1);
+  if (dot(n, fwd.xyz) > 0) n = -n;  // (two-sided: cloth, hair cards)
+  float k = saturate(dot(n, key.xyz)), f = saturate(dot(n, fill.xyz));
+  if (flags.y > 0.5) {  // the floor, with the people's contact shadows
+    float dark = 1;
+    for (int j = 0; j < 2; ++j)
+      if (shadow[j].w > 0) dark *= 1 - shadow[j].w * 0.55 * smoothstep(shadow[j].z, 0, length(i.w.xz - shadow[j].xy));
+    return float4(tx.rgb * (0.62 + 0.38 * k) * dark, 1);
+  }
+  float amb = lerp(0.30, 0.52, 0.5 + 0.5 * n.y);
+  float rim = pow(1 - saturate(dot(n, -fwd.xyz)), 3) * 0.45;
+  return float4(tx.rgb * (amb + 0.80 * k + 0.28 * f + rim), 1);
 }
 )";
 
@@ -937,11 +1023,16 @@ ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_raster = nullptr;
 ID3D11DepthStencilState* g_depth = nullptr;
 ID3D11ShaderResourceView* g_white = nullptr;
+ID3D11ShaderResourceView* g_floor_tex = nullptr;  // the ring canvas with a 1 m grid
+ID3D11Buffer* g_floor_vb = nullptr;               // 4 vertices, set each frame (the floor height)
+ID3D11Buffer* g_floor_ib = nullptr;
+constexpr float kFloorHalf = 40;                  // model units (10 cm): an 8 m square
 ID3D11Texture2D* g_rt = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 ID3D11ShaderResourceView* g_rt_srv = nullptr;
 ID3D11DepthStencilView* g_dsv = nullptr;
 int g_rt_w = 0, g_rt_h = 0;
+bool g_capturing = false;  // (Capture: a clear background, no floor, the model alone)
 
 struct GpuMesh {
   ID3D11Buffer* vb = nullptr;
@@ -965,6 +1056,7 @@ struct Slot {
   std::vector<Xf> bind_inv;
   std::shared_ptr<Motion> motion;  // its track of the chosen motion (nullptr: the idle / bind pose)
   std::vector<Xf> world;           // the bones as posed this frame (the hit spheres' frame)
+  bool hidden = false;             // (the dummy, while a motion with no track for it plays)
   const Motion* shown = nullptr;   // the motion posed, at key
   float key = 0;
 };
@@ -975,7 +1067,7 @@ std::shared_ptr<Motion> g_idle;
 std::string g_status, g_motion_status;
 Playback g_play;
 std::shared_ptr<const Bytes> g_bank;
-float g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
+float g_yaw = 0.35f, g_pitch = 0.22f, g_zoom = 1;
 V3 g_center{0, 0, 0}, g_pan{0, 0, 0};
 float g_height = 20;
 bool g_blood = false;  // the blood overlays shown
@@ -1177,6 +1269,40 @@ bool CreatePipeline() {
   g_dev->CreateTexture2D(&td, &srd, &tex);
   g_dev->CreateShaderResourceView(tex, nullptr, &g_white);
   tex->Release();
+  {  // the floor: canvas grey, a line every metre (8 cells), the middle lines darker, darker towards the edge
+    constexpr int N = 512, cell = N / 8;
+    std::vector<uint32_t> px(size_t(N) * N);
+    for (int y = 0; y < N; ++y)
+      for (int x = 0; x < N; ++x) {
+        const float dx = (x + 0.5f) / N - 0.5f, dy = (y + 0.5f) / N - 0.5f;
+        const float edge = std::clamp(1.0f - (std::max(std::fabs(dx), std::fabs(dy)) - 0.30f) * 3.0f, 0.55f, 1.0f);
+        float v = 0.74f;
+        const bool line = x % cell < 2 || y % cell < 2, mid = std::abs(x - N / 2) < 2 || std::abs(y - N / 2) < 2;
+        if (line) v = 0.60f;
+        if (mid) v = 0.50f;
+        v *= edge;
+        const uint32_t c = uint32_t(std::clamp(v, 0.0f, 1.0f) * 255);
+        px[size_t(y) * N + x] = 0xFF000000u | uint32_t(std::min(255u, c + 6)) << 16 | c << 8 | c;
+      }
+    D3D11_TEXTURE2D_DESC fd = td;
+    fd.Width = fd.Height = N;
+    D3D11_SUBRESOURCE_DATA fs = {px.data(), N * 4, 0};
+    ID3D11Texture2D* ft = nullptr;
+    if (SUCCEEDED(g_dev->CreateTexture2D(&fd, &fs, &ft))) g_dev->CreateShaderResourceView(ft, nullptr, &g_floor_tex), ft->Release();
+    D3D11_BUFFER_DESC vd = {};
+    vd.ByteWidth = 4 * sizeof(GpuVertex);
+    vd.Usage = D3D11_USAGE_DYNAMIC;
+    vd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    vd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    g_dev->CreateBuffer(&vd, nullptr, &g_floor_vb);
+    const uint32_t idx[6] = {0, 1, 2, 0, 2, 3};
+    D3D11_BUFFER_DESC id = {};
+    id.ByteWidth = sizeof idx;
+    id.Usage = D3D11_USAGE_IMMUTABLE;
+    id.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA is = {idx, 0, 0};
+    g_dev->CreateBuffer(&id, &is, &g_floor_ib);
+  }
   return true;
 }
 
@@ -1224,6 +1350,10 @@ void ViewProj(float aspect, float out[16]) {
 float g_frame_lo[3], g_frame_hi[3];  // the bounds gathered over the slots skinned this frame
 float g_height_scale = 1;            // the model's (slot 0) size from its feet
 float g_feet = 0, g_feet_next = 1e30f, g_top_next = -1e30f, g_tall = 0;  // slot 0's lowest / highest y (view, unscaled)
+// the floor under a motion (view y): its lowest bone over the whole motion, less a sole - in-ring motions
+// (finishers) are keyed on the ring canvas, above the arena floor (0) the stances and taunts stand on
+float g_motion_floor = 0;
+bool g_has_motion_floor = false;
 
 void Skin(Slot& sl, const std::vector<Xf>& pose) {
   float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
@@ -1262,7 +1392,7 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
 
 void Render(int w, int h) {
   ResizeTarget(w, h);
-  const float clear[4] = {0.11f, 0.12f, 0.14f, 1};
+  const float clear[4] = {0.11f, 0.12f, 0.14f, g_capturing ? 0.0f : 1.0f};
   g_ctx->ClearRenderTargetView(g_rtv, clear);
   g_ctx->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1, 0);
   if (!g_slots[0].ch || !g_vs) return;
@@ -1277,6 +1407,11 @@ void Render(int w, int h) {
   g_feet_next = 1e30f, g_top_next = -1e30f;
   for (Slot& sl : g_slots) {
     if (!sl.ch) continue;
+    sl.hidden = &sl == &g_slots[1] && g_bank && !sl.motion;  // (a one-person motion: no dummy standing in the way)
+    if (sl.hidden) {
+      sl.world.clear(), sl.shown = nullptr;
+      continue;
+    }
     const Motion* m = sl.motion ? sl.motion.get() : (&sl == &g_slots[0] || !g_bank) ? g_idle.get() : nullptr;
     if (m) {
       const float key = m == clock ? g_play.key : std::fmod(g_play.key, float(std::max(1, m->keys)));
@@ -1291,20 +1426,49 @@ void Render(int w, int h) {
     }
   }
   if (g_feet_next <= g_top_next) g_feet = g_feet_next, g_tall = g_top_next - g_feet_next;
-  const bool fk_frame = g_frame && clock && clock->fk && clock->keys > 1;
-  if (fk_frame) {  // a match move: framed over the whole motion (bone positions,
-    // every few keys, plus a body's half width) - the people move metres during it
+  const bool fk_frame = g_frame && clock && clock != g_idle.get() && clock->keys > 1;
+  if (fk_frame) {  // a motion: framed over all of it (bone positions, every few keys,
+    // plus a body's half width) - the people move metres during it
+    float lowest = 1e30f;
     for (const Slot& sl : g_slots) {
       if (!sl.ch) continue;
       const Motion* m = sl.motion ? sl.motion.get() : nullptr;
       if (!m) continue;
       const int step = std::max(1, m->keys / 16);
-      for (int k = 0; k < m->keys; k += step)
-        for (const Xf& x : Pose(*sl.ch, *m, float(k))) {
+      for (int k = 0; k < m->keys; k += step) {
+        const auto pose = Pose(*sl.ch, *m, float(k));
+        for (size_t bi = 0; bi < pose.size(); ++bi) {
+          const Xf& x = pose[bi];
           const float v[3] = {x.t.x, -x.t.y, -x.t.z};
+          if (BodyBone(sl.ch->bones[bi].name)) lowest = std::min(lowest, v[1]);  // (body bones: attachments sit anywhere)
           for (int c = 0; c < 3; ++c) g_frame_lo[c] = std::min(g_frame_lo[c], v[c] - 2), g_frame_hi[c] = std::max(g_frame_hi[c], v[c] + 2);
         }
+      }
     }
+    if (std::getenv("MM_FEET_LOG"))  // (debug: each person's root and lowest foot, every few keys)
+      for (int si = 0; si < 2; ++si) {
+        const Slot& sl = g_slots[si];
+        if (!sl.ch || !sl.motion) continue;
+        std::string line = "feet " + std::to_string(si) + ":";
+        for (int k = 0; k < sl.motion->keys; k += 4) {
+          const auto w = Pose(*sl.ch, *sl.motion, float(k));
+          float foot = 1e30f, root = 0;
+          for (size_t i = 0; i < w.size(); ++i) {
+            const std::string& n = sl.ch->bones[i].name;
+            if (n == "root") root = -w[i].t.y;
+            if (n.find("ashi") != std::string::npos || n.find("tsumasaki") != std::string::npos) foot = std::min(foot, -w[i].t.y);
+          }
+          char b[48];
+          std::snprintf(b, sizeof b, " k%d r%.1f f%.1f", k, root, foot);
+          line += b;
+        }
+        mm::Log(line);
+      }
+    g_has_motion_floor = lowest < 1e29f;
+    g_motion_floor = lowest - 0.3f;  // (the lowest bone, a toe, sits a few cm above the sole)
+    g_frame_lo[1] = std::min(g_frame_lo[1], g_motion_floor);
+  } else if (g_frame) {
+    g_has_motion_floor = false;
   }
   if (g_frame && g_frame_lo[0] <= g_frame_hi[0]) {  // framed as posed (the idle stands on the floor)
     const float* lo = g_frame_lo;
@@ -1315,7 +1479,7 @@ void Render(int w, int h) {
     // (20 tall, ~11 radius) comes out as before
     const V3 ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
     g_height = std::max(1.0f, Len(ext) * 0.5f * 1.84f);
-    if (fk_frame) g_height *= 0.72f;  // (the bounds hold the whole move: most of it happens nearer the middle)
+    if (fk_frame) g_height *= 0.86f;  // (the bounds hold the whole move: most of it happens nearer the middle)
     g_pan = {};
     g_frame = false;
   }
@@ -1334,15 +1498,73 @@ void Render(int w, int h) {
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
   float viewproj[16];
   ViewProj(float(w) / float(h), viewproj);
-  for (const Slot& sl : g_slots)
-  for (const GpuMesh& g : sl.gpu) {
-    if (g.blood && (!g_blood || g.blood_missing)) continue;
+  // camera relative lights: the key from the camera's upper left, the fill from its lower right
+  V3 fwd, right, up;
+  {
+    const float dist = g_height * 1.85f * g_zoom, cp = std::cos(g_pitch);
+    const V3 at = g_center + g_pan, eye = at + V3{std::sin(g_yaw) * dist * cp, dist * std::sin(g_pitch), std::cos(g_yaw) * dist * cp};
+    fwd = Norm(at - eye), right = Norm(Cross(V3{0, 1, 0}, fwd)), up = Cross(fwd, right);
+  }
+  const V3 key = Norm(fwd * -0.55f + up * 0.75f - right * 0.45f), fill = Norm(fwd * -0.6f - up * 0.15f + right * 0.75f);
+  // contact shadows: under each person's hips, as strong as they are near the floor
+  const float floor_y = (g_has_motion_floor && g_slots[0].motion ? g_motion_floor : g_feet * (1 - g_height_scale)) - 0.02f;
+  float shadows[2][4] = {};
+  for (int si = 0; si < 2; ++si) {
+    const Slot& sl = g_slots[size_t(si)];
+    if (!sl.ch || sl.world.size() != sl.ch->bones.size()) continue;
+    float lowest = 1e30f, hx = 0, hz = 0;
+    bool hips = false;
+    for (size_t bi = 0; bi < sl.world.size(); ++bi) {
+      const std::string& n = sl.ch->bones[bi].name;
+      if (!BodyBone(n)) continue;
+      const float vy = -sl.world[bi].t.y;
+      lowest = std::min(lowest, vy);
+      if (n == "koshi") hx = sl.world[bi].t.x, hz = -sl.world[bi].t.z, hips = true;
+    }
+    if (!hips) continue;
+    const float above = std::max(0.0f, lowest - floor_y);
+    shadows[si][0] = hx, shadows[si][1] = hz, shadows[si][2] = 7.0f;
+    shadows[si][3] = std::clamp(1.0f - above / 14.0f, 0.15f, 1.0f);
+  }
+  auto set_cb = [&](float cutout, float floor) {
     D3D11_MAPPED_SUBRESOURCE ms;
-    if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
+    if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
     Cb* c = static_cast<Cb*>(ms.pData);
     std::memcpy(c->viewproj, viewproj, 64);
-    c->flags[0] = g.cutout ? 1.0f : 0.0f;
+    c->flags[0] = cutout, c->flags[1] = floor, c->flags[2] = c->flags[3] = 0;
+    const float k4[4] = {key.x, key.y, key.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
+    std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);
+    std::memcpy(c->shadow, shadows, sizeof shadows);
     g_ctx->Unmap(g_cb, 0);
+    return true;
+  };
+  // the floor: the game's (y 0), where the model's height scale puts it
+  if (g_floor_vb && g_floor_tex && !g_capturing) {
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (SUCCEEDED(g_ctx->Map(g_floor_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+      // (a motion's own floor; else the game's, y 0, where the model's height scale puts it)
+      const float y = floor_y, a = kFloorHalf;
+      // under the people (the framed centre, on the metre grid: the lines stay put while the camera moves)
+      const float cx = std::round(g_center.x / 10) * 10, cz = std::round(g_center.z / 10) * 10;
+      GpuVertex* v = static_cast<GpuVertex*>(ms.pData);
+      v[0] = {{cx - a, y, cz - a}, {0, 1, 0}, {0, 0}}, v[1] = {{cx + a, y, cz - a}, {0, 1, 0}, {1, 0}};
+      v[2] = {{cx + a, y, cz + a}, {0, 1, 0}, {1, 1}}, v[3] = {{cx - a, y, cz + a}, {0, 1, 0}, {0, 1}};
+      g_ctx->Unmap(g_floor_vb, 0);
+      if (set_cb(0, 1)) {
+        const UINT stride = sizeof(GpuVertex), offset = 0;
+        g_ctx->IASetVertexBuffers(0, 1, &g_floor_vb, &stride, &offset);
+        g_ctx->IASetIndexBuffer(g_floor_ib, DXGI_FORMAT_R32_UINT, 0);
+        g_ctx->PSSetShaderResources(0, 1, &g_floor_tex);
+        g_ctx->DrawIndexed(6, 0, 0);
+      }
+    }
+  }
+  for (const Slot& sl : g_slots)
+  if (!g_capturing || &sl == &g_slots[0])
+  for (const GpuMesh& g : sl.gpu) {
+    if (sl.hidden) break;
+    if (g.blood && (!g_blood || g.blood_missing)) continue;
+    if (!set_cb(g.cutout ? 1.0f : 0.0f, 0)) continue;
     const UINT stride = sizeof(GpuVertex), offset = 0;
     g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
     g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
@@ -1361,6 +1583,34 @@ void Render(int w, int h) {
 
 }  // namespace
 
+bool Capture(int size, std::vector<uint8_t>& rgba) {
+  if (!g_slots[0].ch || !g_dev) return false;
+  const bool playing = g_play.playing;
+  g_play.playing = false;  // (the pose as it is now)
+  g_capturing = true;
+  Render(size, size);
+  g_capturing = false;
+  g_play.playing = playing;
+  D3D11_TEXTURE2D_DESC td = {};
+  g_rt->GetDesc(&td);
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  ID3D11Texture2D* st = nullptr;
+  if (FAILED(g_dev->CreateTexture2D(&td, nullptr, &st))) return false;
+  g_ctx->CopyResource(st, g_rt);
+  D3D11_MAPPED_SUBRESOURCE ms;
+  bool ok = false;
+  if (SUCCEEDED(g_ctx->Map(st, 0, D3D11_MAP_READ, 0, &ms))) {
+    rgba.resize(size_t(size) * size * 4);
+    for (int y = 0; y < size; ++y) std::memcpy(&rgba[size_t(y) * size * 4], static_cast<const uint8_t*>(ms.pData) + size_t(y) * ms.RowPitch, size_t(size) * 4);
+    g_ctx->Unmap(st, 0);
+    ok = true;
+  }
+  st->Release();
+  return ok;
+}
+
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
   g_dev = dev;
   g_ctx = ctx;
@@ -1371,7 +1621,7 @@ void Shutdown() {
   for (Slot& sl : g_slots) FreeCharacter(sl);
   Release(g_rt_srv), Release(g_rtv), Release(g_rt), Release(g_dsv);
   Release(g_vs), Release(g_ps), Release(g_layout), Release(g_cb), Release(g_sampler), Release(g_raster);
-  Release(g_depth), Release(g_white);
+  Release(g_depth), Release(g_white), Release(g_floor_tex), Release(g_floor_vb), Release(g_floor_ib);
 }
 
 void LoadSlot(int which, const std::wstring& ch_pac) {
@@ -1392,7 +1642,7 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
     auto ch = std::make_shared<Character>();
     std::string err;
     Bytes pac;
-    bool ok = ReadWide(ch_pac, pac) && LoadCharacter(pac, *ch, err);
+    bool ok = ReadWide(ch_pac, pac) && LoadCharacter(pac, *ch, err, which == 0 ? g_attire.load() : 1);
     if (!ok && err.empty()) err = "could not read the file";
     std::shared_ptr<Motion> idle;
     std::string idle_err;
@@ -1415,8 +1665,7 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
             " ms" + (idle ? " (with the idle)" : ""));
     if (which == 0) {
       char s[160];
-      std::snprintf(s, sizeof s, "%zu vertices, %zu bones%s", ch->verts, ch->bones.size(),
-                    g_bank ? "" : g_idle ? ", playing the idle stance" : "");
+      std::snprintf(s, sizeof s, "%zu vertices, %zu bones", ch->verts, ch->bones.size());
       g_status = s;
       if (!g_idle && !idle_err.empty()) g_status += " (no idle: " + idle_err + ")";
     }
@@ -1432,6 +1681,161 @@ void SetModel(const std::wstring& ch_pac, const std::wstring& game) {
 }
 
 void SetDummy(const std::wstring& ch_pac) { LoadSlot(1, ch_pac); }
+
+std::string ComparePoseDump(const std::wstring& dump, std::shared_ptr<const std::vector<uint8_t>> bank, int id, int x) {
+  if (!bank || !g_slots[0].ch || !g_slots[1].ch) return "";
+  // the dump: per person and frame the last line (pass 1 after pass 0)
+  struct Line {
+    int x = 0, y = 0, mirrored = 0, players = 1;
+    float time = 0;
+    float A[3], E[3], R[3], Y;
+    std::array<std::array<float, 12>, 33> part;
+    std::array<bool, 33> has{};
+  };
+  std::map<int, std::map<int, Line>> by;  // person -> frame -> line
+  if (FILE* f = _wfopen(dump.c_str(), L"rb")) {
+    char buf[32768];
+    while (std::fgets(buf, sizeof buf, f)) {
+      unsigned F = 0, P = 0, M = 0, S = 0, Rq = 0;
+      int used = 0;
+      if (std::sscanf(buf, "F %u P %u M %u S %u Rq %u Q%n", &F, &P, &M, &S, &Rq, &used) < 5 || int(M) != id) continue;
+      Line l{};
+      const char* p = buf + used;
+      auto num = [&](float& v) { char* e; v = std::strtof(p, &e); p = e; };
+      {  // the players: id x y mirrored time weight, the newest first
+        int k = 0;
+        for (;; ++k) {
+          while (*p == ' ') ++p;
+          if (*p == 'A' || !*p) break;
+          float q[6];
+          for (float& v : q) num(v);
+          if (k == 0) l.x = int(q[1]), l.y = int(q[2]), l.mirrored = int(q[3]), l.time = q[4];
+        }
+        l.players = k;
+        p = std::strchr(p, 'A');
+        if (!p) continue;
+        ++p;
+      }
+      for (float& v : l.A) num(v);
+      p = std::strchr(p, 'E') + 1;
+      for (float& v : l.E) num(v);
+      p = std::strchr(p, 'R') + 1;
+      for (float& v : l.R) num(v);
+      p = std::strchr(p, 'Y') + 1;
+      num(l.Y);
+      p = std::strchr(p, 'B') + 1;
+      for (int i = 0; i < 33; ++i) {
+        while (*p == ' ') ++p;
+        if (*p == '-' && (p[1] == ' ' || p[1] == '\n' || p[1] == '\r' || p[1] == 0)) { ++p; continue; }  // (none)
+        for (float& v : l.part[size_t(i)]) num(v);
+        l.has[size_t(i)] = true;
+      }
+      by[int(P)][int(F)] = l;
+    }
+    std::fclose(f);
+  }
+  if (by.empty()) return "no lines for motion " + std::to_string(id) + " in the dump";
+  static const char* kPartNames[33] = {"root", "koshi", "mune", "kubi", "atama", "l_sakotsu", "l_ninoude", "l_kote", "l_te",
+                                       "r_sakotsu", "r_ninoude", "r_kote", "r_te", "l_momo", "l_sune", "l_ashi", "l_tsumasaki",
+                                       "r_momo", "r_sune", "r_ashi", "r_tsumasaki", "", "", "", "", "", "", "l_kote_x", "r_kote_x",
+                                       "", "", "l_kote_x2", "r_kote_x2"};
+  std::string out;
+  char b[256];
+  int track = 0;
+  std::map<int, std::vector<std::pair<float, float>>> root_of;  // track -> (frame, game root height / viewer)
+  (void)x;
+  for (const auto& [person, frames] : by) {
+    const Slot& sl = g_slots[person == 0 ? 0 : 1];  // (person 0 on the model, the other on the dummy)
+    const Line& first = frames.begin()->second;
+    Motion m;
+    std::string err;
+    if (!DecodeMotion(*bank, id, first.x, first.y, m, err)) {
+      out += "person " + std::to_string(person) + " (x " + std::to_string(first.x) + " y " + std::to_string(first.y) + "): " + err + "\n";
+      ++track;
+      continue;
+    }
+    int blended = 0, mirrored = 0;
+    std::map<std::string, int> idx;
+    for (size_t i = 0; i < sl.ch->bones.size(); ++i) idx.emplace(sl.ch->bones[i].name, int(i));
+    const int f0 = frames.begin()->first;
+    double sum[33] = {}, mx[33] = {};
+    int cnt[33] = {};
+    double fit_sum[4] = {}, fit_d[4] = {}, fit_bg[4] = {}, fit_bv[4] = {};
+    int fit_n[4] = {};
+    std::snprintf(b, sizeof b, "person %d = track %d: frames %d..%d (%zu lines), motion keys %d\n", person, track, f0,
+                  frames.rbegin()->first, frames.size(), m.keys);
+    out += b;
+    for (const auto& [F, l] : frames) {
+      const float key = std::clamp(l.time * 0.5f, 0.0f, float(m.keys - 1));
+      if (l.players > 1) ++blended;  // (layered: other players drive some parts too - counted, kept)
+      if (l.mirrored) ++mirrored;
+      std::vector<Xf> loc;
+      Pose(*sl.ch, m, key, &loc);
+      {  // the game's bend from its lower bones (kote 7 / 11, sune 14 / 18: RotY(bend), row form)
+        static const int kLower[4] = {7, 11, 14, 18};
+        for (int k = 0; k < 4; ++k) {
+          if (!l.has[size_t(kLower[k])] || g_ik_last[k].L <= 0) continue;
+          const auto& g = l.part[size_t(kLower[k])];
+          // row form RotY rows (c,0,-s)(0,1,0)(s,0,c): s = g[6], c = g[0]
+          const float bg = std::atan2(g[6], g[0]);
+          const float half = std::fabs(bg) * 0.5f;
+          if (half < 0.05f) continue;
+          fit_sum[k] += g_ik_last[k].d / std::cos(half) / g_ik_last[k].L;
+          fit_d[k] += g_ik_last[k].d, fit_bg[k] += bg, fit_bv[k] += g_ik_last[k].bend, ++fit_n[k];
+        }
+      }
+      for (int i = 0; i < 33; ++i) {
+        if (!l.has[size_t(i)] || !kPartNames[i][0]) continue;
+        const auto it = idx.find(kPartNames[i]);
+        if (it == idx.end()) continue;
+        const auto& g = l.part[size_t(i)];
+        const Xf& v = loc[size_t(it->second)];
+        // game rows (row-vector form) -> column form: C[r][c] = G[c][r]; trace(V^T C) = sum V[k][c] * C[k][c]
+        double tr = 0;
+        for (int r = 0; r < 3; ++r)
+          for (int c = 0; c < 3; ++c) tr += double(v.r[r][c]) * double(g[size_t(c * 3 + r)]);
+        const double ang = std::acos(std::clamp((tr - 1) / 2, -1.0, 1.0)) * 57.29578;
+        sum[i] += ang, mx[i] = std::max(mx[i], ang), ++cnt[i];
+      }
+      if ((F - f0) % 20 == 0) {
+        std::snprintf(b, sizeof b, "  F%d key %.1f: fighter %.2f %.2f %.2f yaw %.3f | pose root %.2f %.2f %.2f | game root h %.2f view root %.2f %.2f %.2f\n",
+                      F, key, l.A[0], l.A[1], l.A[2], l.E[1], l.R[0], l.R[1], l.R[2], l.part[0][10], loc[size_t(idx["root"])].t.x,
+                      loc[size_t(idx["root"])].t.y, loc[size_t(idx["root"])].t.z);
+        out += b;
+      }
+    }
+    std::snprintf(b, sizeof b, "  x %d y %d; %d frames layered with other players, %d mirrored\n", first.x, first.y, blended, mirrored);
+    out += b;
+    static const char* kLimb[4] = {"l arm", "r arm", "l leg", "r leg"};
+    for (int k = 0; k < 4; ++k)
+      if (fit_n[k]) {
+        std::snprintf(b, sizeof b, "  IK %s: L needed / this view's L = %.3f (d %.2f, L %.2f; bend game %.1f view %.1f deg, %d frames)\n",
+                      kLimb[k], fit_sum[k] / fit_n[k], fit_d[k] / fit_n[k], g_ik_last[k].L, fit_bg[k] / fit_n[k] * 57.2958,
+                      fit_bv[k] / fit_n[k] * 57.2958, fit_n[k]);
+        out += b;
+      }
+    for (int i = 0; i < 33; ++i)
+      if (cnt[i]) {
+        std::snprintf(b, sizeof b, "  %-12s mean %6.1f max %6.1f deg\n", kPartNames[i], sum[i] / cnt[i], mx[i]);
+        out += b;
+      }
+    ++track;
+  }
+  return out;
+}
+
+void SetAttire(int attire) {
+  attire = std::clamp(attire, 1, 4);
+  if (g_attire.exchange(attire) == attire) return;
+  std::wstring file;
+  {
+    std::lock_guard lock(g_mutex);
+    file = g_slots[0].file;
+    g_slots[0].file.clear();  // (LoadSlot reloads only a new file)
+  }
+  if (!file.empty()) LoadSlot(0, file);
+}
+int Attire() { return g_attire.load(); }
 
 bool SetMotion(std::shared_ptr<const Bytes> bank, int id, int x, std::string* err) {
   std::lock_guard lock(g_mutex);
@@ -1475,7 +1879,7 @@ bool HasBlood() {
 Playback& Play() { return g_play; }
 
 void ResetCamera() {
-  g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
+  g_yaw = 0.35f, g_pitch = 0.22f, g_zoom = 1;
   g_pan = {};
   g_frame = true;
 }
@@ -1590,8 +1994,9 @@ void Draw(float w, float h) {
       g_pan = g_pan - right * (io.MouseDelta.x * k) + V3{0, io.MouseDelta.y * k, 0};
     }
     if (io.MouseWheel != 0) g_zoom = std::clamp(g_zoom * (io.MouseWheel > 0 ? 0.88f : 1.14f), 0.25f, 4.0f);
-    if (!ImGui::IsAnyMouseDown() && io.MouseWheel == 0)
-      ImGui::SetTooltip("Left drag: turn   Right drag: tilt   Middle drag: pan   Wheel: zoom");
+    const ImVec2 a = ImGui::GetItemRectMin();
+    ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + 8, a.y + 6), IM_COL32(200, 200, 200, 120),
+                                        "Left drag: turn   Right drag: tilt   Middle drag: pan   Wheel: zoom");
   }
 }
 
@@ -1600,7 +2005,10 @@ float ModelHeight() { return g_slots[0].ch ? g_tall : 0.0f; }
 
 std::string Status() {
   std::lock_guard lock(g_mutex);
-  return g_status;
+  if (!g_slots[0].ch || g_status.find(" bones") == std::string::npos) return g_status;
+  // (what plays now, not what played when the model loaded)
+  if (g_bank && g_play.id >= 0) return g_status + ", motion " + std::to_string(g_play.id) + (g_play.x ? " variant " + std::to_string(g_play.x) : "");
+  return g_status + (g_idle ? ", the idle stance" : ", the bind pose");
 }
 
 }  // namespace char_preview

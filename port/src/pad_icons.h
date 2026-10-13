@@ -46,4 +46,8 @@ void PadIconsTextureUploaded(uint32_t physical_base, uint32_t width, uint32_t he
 // The player the prompts being drawn belong to (-1: shared by everyone).
 void SetPadIconsOwner(int user_index);
 
+// A player's pad state as the game reads it (XInput layout): pictures shared
+// by everyone follow the last player to press something.
+void PadIconsInput(uint32_t user_index, const uint8_t* state);
+
 }  // namespace svr2011

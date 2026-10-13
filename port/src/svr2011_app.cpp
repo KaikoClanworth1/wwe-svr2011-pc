@@ -59,6 +59,7 @@
 #include "music.h"
 #include "saves.h"
 #include "user_movies.h"
+#include "cae_mod_motions.h"
 #include "native/native_renderer.h"
 #include "frame_stats.h"
 #include "keyboard_typing.h"
@@ -83,6 +84,12 @@
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
+
+#ifndef SVR2011_D3D_TRACE
+namespace svr2011 {
+void InstallModelMem(rex::memory::Memory* memory);  // (model_mem.cpp: failed buffer allocations logged)
+}
+#endif
 #endif
 
 REXCVAR_DEFINE_STRING(saves_folder, "", "Storage",
@@ -517,6 +524,7 @@ void Svr2011App::OnPostLoadXexImage() {
   {
     std::filesystem::path movies = rex::filesystem::GetExecutableFolder() / "Custom Movies";
     if (std::string dir = Env("SVR2011_MOVIES"); !dir.empty()) movies = dir;
+    svr2011::InstallCaeModMotions(runtime()->memory());  // (CREATE AN ENTRANCE's MODS rows)
     std::error_code ec;
     std::filesystem::create_directories(movies, ec);
     // (HD movies' stubs, hd_movies.h: the folder made before the mount - the
@@ -566,6 +574,9 @@ void Svr2011App::OnPostLoadXexImage() {
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
   svr2011::KeepWindowAlive();
+#ifndef SVR2011_D3D_TRACE
+  svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)
+#endif
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)

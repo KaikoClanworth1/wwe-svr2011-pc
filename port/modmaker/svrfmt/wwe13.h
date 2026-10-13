@@ -34,7 +34,7 @@ bool IsJboy13(const Bytes& b);
 bool Jboy13Read(const Bytes& in, Model& out, std::string* error = nullptr);
 
 struct Convert13Stats {
-  int models = 0, meshes = 0, uvscroll = 0, lightmaps_dropped = 0;
+  int models = 0, meshes = 0, uvscroll = 0, lightmaps_dropped = 0, lightmaps_baked = 0;
 };
 // Scales positions (verts, nodes, spheres) by `scale` and turns the WWE '13
 // materials into SvR2011 yDefault / yUVScroll ones (colours, diffuse,
@@ -44,7 +44,8 @@ void ConvertModel13(Model& m, float scale, Convert13Stats& st);
 
 // HMD collision in cm -> 10 cm.
 Bytes ConvertHmd13(const Bytes& raw, float scale);
-// c351 model flags: light numbers SvR2011 has no light for -> nearest it has.
+// c351 model flags: shadow flags of floor pieces dropped (the light numbers stay:
+// the arena keeps its own light bank 0x7530).
 std::string ConvertFlags13(const std::string& text);
 // Light groups by part (stands 108, barrier/floor mats 102), for parts WWE '13 lit with light maps.
 std::string RelightByRole13(const std::string& text, const std::map<uint32_t, std::string>& names, int stand_light);

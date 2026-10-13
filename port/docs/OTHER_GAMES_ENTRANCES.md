@@ -21,17 +21,17 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | game | disc id | entrances | converter | status |
 |---|---|---|---|---|
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
-| SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, converted offline (Andre 3066, Bret Hart 3077) |
-| SmackDown! Shut Your Mouth (PS2) | - | 114 | - | researched: HCTP back end + a new SYDT script reader |
-| SmackDown! vs. Raw 2006 (PS2) | - | 95 | - | researched: 2008 script path little-endian, bodies as HCTP; 2/3 also in SvR 2007 |
+| SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, played in game (Andre 3066 as 490) |
+| SmackDown! Shut Your Mouth (PS2) | SLES_512.83 | 114 | `sym_entrance.py` (game sym) | ready, all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
+| SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
 | WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
 | SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
-| WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, converted offline (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
+| WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, played in game (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
 | SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, played in game (Mr. Kennedy 4062 as 495) |
 | SvR 2010 (X360) | 54510844 | 203 (191 in 2011) | `svr10_entrance.py` | ready, played in game (Mr. Kennedy) |
-| Legends of WrestleMania (X360) | 54510838 | 157 (89 not in 2009 / 2011) | `entrance_port.py` (2009 path) | ready, converted offline (Andre 4019, Hogan & Beefcake 4313); gondola entrances not supported |
+| Legends of WrestleMania (X360) | 54510838 | 157 (89 not in 2009 / 2011) | `entrance_port.py` (2009 path) | ready, played in game (Andre 4019 as 493); gondola entrances not supported |
 | WWE '12 (X360) | 54510890 | 247 (149 in 2011) | `wwe13_entrance.py --game wwe12` | ready, validated offline (Rey 123, Austin 101: 1-2 cm) |
 | WWE '13 (X360) | 545108B4 | 317 (150 in 2011) | `wwe13_entrance.py` | ready, played in game (Mankind 246 as 497); titantrons need Bink 2 |
 | WWE 2K14 (X360) | 545408B2 | 347 | `wwe13_entrance.py --game wwe2k14` | ready, validated offline on segments 2K14 did not re-cut (1-2 cm); titantrons need Bink 2 |
@@ -69,12 +69,25 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
 
 ## SmackDown! Shut Your Mouth, SvR 2006, Just Bring It (PS2) - research
 
+- **Shut Your Mouth converter:** `tools/sym_entrance.py` (game `sym`; formats and rules in its docstring):
+  own DPAC reader (doubled row counts), SYDT -> parse_sevp's dicts, halfword records re-framed to HCTP's,
+  slot-relative roots / cameras baked to world (yaw turns the root), ground fix per slot, SYM's takes
+  placed into 2011's 5 segments by where the entrant starts (alternates of equal length dropped; a
+  1-frame stand-in for an empty segment), camera 0 of 2 (`camera=1` to switch), prop 172 -> 2014, other
+  props dropped. All 114 convert offline; Kane 3021 vs HCTP 3007: heights and root paths line up.
+  Not played in game yet; whether 1-frame segments play well is untested.
 - **Shut Your Mouth:** `PAC/EVTENT.PAC` motion banks 3000-3113 (HCTP's format, but frame records sized
   in halfwords: a byte < 0x80 skips frames, else (b & 0x7f) x 2 bytes) and only the compact `SYDT`
   script (a reader reproduces HCTP's and SvR 2004's full scripts 534/534 and 100/100); 2-7 segments
   with alternates, 2 cameras, character roots relative to the slot (bake to absolute), own prop ids.
   Unique: Hollywood Hogan, DDP, X-Pac, Raven, Lawler, JR, Earl Hebner. Plan: SYDT reader in front of
   HCTP's back end.
+- **SvR 2006 converter:** `tools/svr06_entrance.py` (game `svr06`; its docstring has the formats and
+  rules): 2007's rules on the little-endian script (PS2 byte-order traps as 2007-2011), belt 2021 ->
+  5009, bodies re-encoded (`hctp_entrance.conv_char_pose`), face/hand tracks, pyro and ops 24/65/185
+  dropped, a 1-frame intro made for the 4 entrances without one, 4077's extra slots dropped. Andre
+  4066 vs the svr07 path's 4109: same frames, roots within 0.4, bones ~1 degree except the foot pitch
+  2006 does not store. `list` gives `in_svr07` (prefer the 2007 version when there is one).
 - **SvR 2006:** `PAC/EVT.PAC` (a DPAC variant with doubled group counts), 95 entrances 4000-4500; the
   script is 2007/2008's layout little-endian, cameras already 2011's 29-byte keys, floor-level stage;
   bodies need HCTP-style re-encoding; ops 24, 65, 185 differ in size. About two thirds are in SvR
@@ -335,3 +348,19 @@ formats the name from the table at 0x82D60EC0 (kind 0 = `/PCE6/%04d`, 1 `/PCOT`,
 `sub_826A17D0` checks the entry exists, `sub_826A31B8` loads it. So an added `PCE6/<0nnn>` is
 loaded for entrance nnn; whether every source game's emitter ids match the converted EVT's
 events is checked per game (2010 -> 2011 sets are byte-identical for shared entrances).
+
+## Hands (fingers)
+
+2011's entrances do not switch hand shapes by event (no op 21 in any stock entrance): the entrant's
+fingers have their own tracks beside the body y0 - y2 = right hand, y3 = left hand (y1 = face) - one
+record per frame in the hand-pose library's layout (15 sub-records [k][count][s8 x][s8 y][s8 z], k 0-14
+left / 15-29 right; docs/HAND_POSES.md), the first with the event block `40 05 00 00 00 00 89 00 01 00 00`.
+
+| converter | fingers |
+|---|---|
+| SvR 2007-2010, LoW (and their PS2 discs) | the source's y1-y3 tracks are kept |
+| HCTP, SvR 2004, Shut Your Mouth | made from the source's hand events: op 16 `10 ss iiii` (ss 1 left / 2 right, pose ids = 2011's 0-105 / 200-305; ss 0 = face) -> `tools/hand_tracks.py` builds y2/y3 per 2011 segment from the 2011 game's pose library (m.pac MVMT/STAT/99, `--game-pac` needed), 5-frame blends. Goldberg 3047: 10 tracks from 8 events, played in game |
+| SvR 2006 | its y2/y3 keys are 2011's finger values in joint-mask groups (`0x78` right / `0x79` left `[op][count][u16 mask][s8 xyz per bit]`, plain 5-byte sub-records otherwise): `tools/svr06_hands.py` expands them losslessly (812 / 812 tracks of the 93 entrances; vs SvR 2007's re-releases ~1 step) |
+| WWE '12 - 2K17 | the Biped finger bones retargeted onto 2011's 30 finger joints: `tools/finger_retarget.py` (hand-frame chain, fixed ch246 -> ch104 hand alignment, `bind * Rz Ry Rx` as the library, solved parent first on the quantised chain); vs 2011's own 107 Kane / 101 Austin: fist / open agree 97-99% of frames, median 1 degree. Bind tables are WWE '13's (assumed for '12 / 2K14-2K17) |
+
+The Mod Maker's future entrance preview reads y2/y3 the same way (ModMakerUIRework).

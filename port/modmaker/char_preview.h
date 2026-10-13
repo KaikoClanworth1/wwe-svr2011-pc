@@ -21,6 +21,12 @@ void Shutdown();
 void SetModel(const std::wstring& ch_pac, const std::wstring& game);
 // The second character, for the victim's track ("" = none).
 void SetDummy(const std::wstring& ch_pac);
+// The model's attire shown (1-4: its EMD entry ......<n-1>2; one it doesn't have: the first). Reloads the model.
+void SetAttire(int attire);
+// Test aid (Animations phase B): the game's pose dump (src/pose_dump.cpp lines) for motion id / x against this
+// view's pose of the same tracks - person 0's on the model, the other on the dummy; "" until both are loaded.
+std::string ComparePoseDump(const std::wstring& dump, std::shared_ptr<const std::vector<uint8_t>> bank, int id, int x);
+int Attire();
 // A motion from a YMBs bank: track 0 plays on the model, track 1 on the dummy.
 // An empty bank (or ClearMotion) goes back to the idle. False (with why) when
 // the motion isn't in the bank or its layout isn't understood.
@@ -39,6 +45,8 @@ Playback& Play();
 // The preview, w x h: left drag turns, right drag tilts, wheel zooms, middle drag pans.
 void Draw(float w, float h);
 void ResetCamera();
+// The view as it is now, size x size RGBA: the model alone on a clear background (alpha 0), no floor - a picture.
+bool Capture(int size, std::vector<uint8_t>& rgba);
 // The blood overlays (the model's blood_* parts, as matches show them) on / off.
 void SetBlood(bool on);
 bool Blood();

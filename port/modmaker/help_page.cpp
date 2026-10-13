@@ -224,7 +224,7 @@ void Draw() {
     }
     if (!guide.empty()) {
       PushAccent();
-      if (ImGui::Button("Open the full guide (pictures and tutorials)")) ShellExecuteW(nullptr, L"open", guide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      if (ImGui::Button("Open the full guide (pictures and tutorials)")) ShellOpen(guide);
       PopAccent();
       ImGui::SameLine();
     }

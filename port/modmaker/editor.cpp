@@ -282,6 +282,7 @@ size_t g_budget_file = 0, g_budget_unpacked = 0, g_budget_file_max = 0, g_budget
 size_t g_budget_biggest = 0;
 uint32_t g_budget_biggest_id = 0;
 
+bool g_readonly = false;  // (the view scene: camera only)
 bool g_quiet = false;  // (budget builds)
 bool g_glow_pass = false;
 
@@ -1715,7 +1716,7 @@ void ViewportInput(bool hovered) {
     }
   }
   Obj* sel = g_sel >= 0 && g_sel < int(g_objs.size()) ? &g_objs[g_sel] : nullptr;
-  const bool can_edit = sel && sel->movable && g_tool != Tool::kSelect;
+  const bool can_edit = !g_readonly && sel && sel->movable && g_tool != Tool::kSelect;
   // the start of every selected object (a drag moves them together)
   static std::vector<std::pair<int, std::array<float, 5>>> drag_starts;
   if (g_grid) {  // a 1 m grid on the floor round the view's target, 5 m lines brighter
@@ -1729,6 +1730,7 @@ void ViewportInput(bool hovered) {
       if (ToScreen({cx - 300, y, cz + k * 10.f}, a) && ToScreen({cx + 300, y, cz + k * 10.f}, b)) dl->AddLine(a, b, col);
     }
   }
+  if (g_readonly) return;  // (the view scene: no selection, no gizmo, no edits)
   // gizmo: axes from the selection's pivot (screen space), 6 m long
   ImVec2 base_s, axis_s[3];
   bool gizmo = false;
@@ -2016,6 +2018,86 @@ void FocusArea() {
 bool Busy() { return g_budget_busy; }
 bool HasArena() { return g_arena != nullptr; }
 int EditCount() { return g_edits; }
+
+// ---- the view scene
+struct ViewScene {
+  Arena* arena = nullptr;
+  std::string title;
+  std::vector<Obj> objs;
+  std::map<std::pair<int, int>, GpuMesh> gpu;
+  std::map<std::string, ID3D11ShaderResourceView*> tex;
+  std::vector<bool> model_dirty;
+  int sel = -1;
+  std::vector<int> multi;
+  RingSpec ring;
+  Lighting light;
+  std::vector<Snapshot> undo, redo;
+  V3 target{0, -12, 0};
+  int area_lo = -1;
+  std::vector<std::pair<int, int>> area;
+  float spot[5] = {};
+  float yaw = 0.0f, pitch = 0.32f, dist = 190;
+  int edits = 0, budget_edits = -1;
+  std::chrono::steady_clock::time_point last_edit;
+};
+ViewScene g_view;
+
+// The view scene in, the edited one out (and back: the same call again).
+void SwapScene() {
+  ViewScene& v = g_view;
+  std::swap(g_arena, v.arena), std::swap(g_title, v.title), std::swap(g_objs, v.objs), std::swap(g_gpu, v.gpu);
+  std::swap(g_tex, v.tex), std::swap(g_model_dirty, v.model_dirty), std::swap(g_sel, v.sel), std::swap(g_multi, v.multi);
+  std::swap(g_ring, v.ring), std::swap(g_light, v.light), std::swap(g_undo, v.undo), std::swap(g_redo, v.redo);
+  std::swap(g_target, v.target), std::swap(g_area_lo, v.area_lo), std::swap(g_area, v.area);
+  for (int k = 0; k < 5; ++k) std::swap(g_spot[k], v.spot[k]);
+  std::swap(g_yaw, v.yaw), std::swap(g_pitch, v.pitch), std::swap(g_dist, v.dist);
+  const int e = g_edits;
+  g_edits = v.edits, v.edits = e;
+  std::swap(g_budget_edits, v.budget_edits), std::swap(g_last_edit, v.last_edit);
+}
+
+void ViewArena(Arena* arena, const std::string& title, const std::string& manifest) {
+  if (g_budget_thread.joinable()) g_budget_thread.join();  // (it reads the edited arena)
+  SwapScene();
+  ForgetGpu();
+  ForgetTextures();
+  g_arena = arena, g_title = title;
+  FromManifest(manifest);
+  if (g_arena) BuildObjects();
+  ViewPreset(0);
+  SwapScene();
+}
+
+void DrawView(float w, float h) {
+  if (!g_view.arena) {
+    ImGui::TextDisabled("No arena to show.");
+    return;
+  }
+  SwapScene();
+  g_readonly = true;
+  const int iw = std::max(16, int(w)), ih = std::max(16, int(h));
+  ResizeTarget(iw, ih);
+  g_vp_min = ImGui::GetCursorScreenPos();
+  g_vp_size = ImVec2(float(iw), float(ih));
+  RenderScene();
+  ImGui::InvisibleButton("view_vp", g_vp_size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+  const bool hovered = ImGui::IsItemHovered();
+  ImGui::GetWindowDrawList()->AddImage(ImTextureID(reinterpret_cast<uintptr_t>(g_rt_srv)), g_vp_min, ImVec2(g_vp_min.x + iw, g_vp_min.y + ih));
+  ViewportInput(hovered);
+  ImGui::GetWindowDrawList()->AddText(ImVec2(g_vp_min.x + 8, g_vp_min.y + 6), IM_COL32(200, 200, 210, 160),
+                                      "Right drag: orbit   Middle drag: pan   Wheel: zoom   (a view: nothing here changes the arena)");
+  g_readonly = false;
+  SwapScene();
+}
+
+void ClearView() {
+  SwapScene();
+  ForgetGpu();
+  ForgetTextures();
+  g_objs.clear(), g_model_dirty.clear(), g_undo.clear(), g_redo.clear();
+  g_arena = nullptr;
+  SwapScene();
+}
 
 void TestEdit() {
   if (!g_arena) return;

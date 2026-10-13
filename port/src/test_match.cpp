@@ -3,6 +3,7 @@
 //
 //   SVR2011_TEST_MATCH="people=JOHN CENA,RANDY ORTON arena=11 cpu=all"
 //
+// attires=2,1: each person's attire (1-4, in person order; default 1).
 // people: roster names (as the log's "match:" lines print them), ids, or
 // CAW<N> (the Created Superstar in save slot N - enough for the entrances
 // and the ring announcer; the match itself crashed once: the select screen's
@@ -18,6 +19,7 @@
 // screen's choice (below).
 
 #include <cctype>
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <sstream>
@@ -49,6 +51,7 @@ void Wr32(uint8_t* p, uint32_t v) {
 struct TestMatch {
   bool set = false;
   std::vector<std::string> people;  // names or ids
+  std::vector<int> attires;          // attires=<n>,... (1-4) per person, in person order (default 1)
   int arena = -1;
   bool all_cpu = false;  // cpu=all: every person a CPU (the picks too)
 };
@@ -84,6 +87,10 @@ const TestMatch& Config() {
           while (!name.empty() && name.back() == ' ') name.pop_back();
           if (!name.empty()) m.people.push_back(name);
         }
+      } else if (key == "attires") {
+        std::stringstream list(value);
+        std::string n;
+        while (std::getline(list, n, ',')) m.attires.push_back(std::clamp(std::atoi(n.c_str()), 1, 4));
       } else if (key == "arena") {
         m.arena = std::atoi(value.c_str());
       } else if (key == "cpu") {
@@ -200,7 +207,9 @@ REX_HOOK_RAW(sub_828BC5E8) {
       }
       uint8_t* slot = base + match + kSlots + i * kSlotSize;
       const bool picked = Rd32(slot + 8) != kNoPick;
-      Wr32(slot + 8, id * 100 + 2);  // (attire: the first, as the select screen gives)
+      // (attire: the first, as the select screen gives, unless attires= names another)
+      const int attire = i < m.attires.size() ? m.attires[i] : 1;
+      Wr32(slot + 8, id * 100 + uint32_t(attire - 1) * 10 + 2);
       Wr16(slot + 54, id);
       // (the slot's title - +37, the one the ring announcer names - is the new
       // person's, from the save's title holders as sub_825EA208 asks; the

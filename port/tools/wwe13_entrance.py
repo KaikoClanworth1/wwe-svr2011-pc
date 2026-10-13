@@ -70,6 +70,7 @@ import ymks  # noqa: E402
 import svr08_entrance as S  # noqa: E402
 import yanm_decode as Y  # noqa: E402
 import w13_retarget as WR  # noqa: E402
+import finger_retarget as FR  # noqa: E402  (the entrant's y2 / y3 finger tracks)
 
 TYPES = {S.TYPE_CHAR: 'char', S.TYPE_PROP: 'prop', (0x10000, 0): 'camera', (1, 0): 'rope',
          (0, 0x01000000): 'turnbuckle', S.TYPE_GLOBAL: 'global'}
@@ -521,10 +522,19 @@ def convert_events(evs, okind, nframes, rep):
 # ============================================================================ tracks
 
 def camera_track(m, nframes, events):
+    # (tracks by role: 2K16 / 2K17's second camera block names them with another last hash digit -
+    # '#5edfdf5c' / '#70d304a7' - and has no target track: the eye's own rotation is used)
+    role = {}
+    for n in m['tracks']:
+        for h in (H_EYE, H_TGT, H_FOV):
+            if n == h:
+                role[h] = n
+            elif n[:-1] == h[:-1]:
+                role.setdefault(h, n)
     recs = []
     for f in range(nframes):
         t = min(2 * f, m['frames'] - 1)
-        ev = {n: Y.sample_track(tr, t) for n, tr in m['tracks'].items() if n in (H_EYE, H_TGT, H_FOV)}
+        ev = {h: Y.sample_track(m['tracks'][n], t) for h, n in role.items()}
         eye = np.array(ev[H_EYE]['pos'] if ev.get(H_EYE) and ev[H_EYE]['pos'] else (0, 0, 0), float)
         R13 = WR.qmat(ev[H_EYE]['rot']) if ev.get(H_EYE) and ev[H_EYE]['rot'] else None
         if R13 is None:                            # (no rotation track: look at the target, no roll)
@@ -630,6 +640,7 @@ def convert_evp(evp13, number, stock, props11, name, rep):
 def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None, ik=True):
     leaves = leaves_of(evz13)
     RT = WR.Retarget(bind, ik=ik)
+    FT = FR.Retarget()
     ents = []
     todo = [(i, leaves[i]) for i in sorted(leaves) if i < len(e['objs']) and blocks(leaves[i])]
     ent = next((i for i, o in enumerate(e['objs']) if kind(o) == 'char'), None)
@@ -655,6 +666,10 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
                     rep['dropped'].append('object %d (%d,%d): character track y%d' % (i, x, y, y))
                     continue
                 data = WR.body_track(RT.keys(m, nf), evs)
+                if i == ent:   # (the Biped finger bones -> 2011's y2 / y3 finger tracks: finger_retarget.py)
+                    for yy, hd in FR.finger_tracks(m, nf, FT).items():
+                        ents.append(dict(y=yy, x=x, id=25000 + i, frames=nf, rt=S.RT_2011, data=hd, share=False,
+                                         tail_off=None))
             elif k == 'camera':
                 if y not in (0, 1):
                     rep['dropped'].append('object %d (%d,%d): camera track y%d' % (i, x, y, y))

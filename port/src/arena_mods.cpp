@@ -268,7 +268,7 @@ struct Banner {
   // player's pages showed banners on the wrong tiles, half drawn)
   std::vector<uint32_t> guest;
 };
-std::vector<Banner> g_banners;  // the 20 originals
+std::vector<Banner> g_banners;  // the originals (the arena select's and the online screen's)
 
 struct CustomArena {
   std::string id, name, file;  // file: relative to the game folder
@@ -285,6 +285,8 @@ std::vector<CustomArena> g_customs;
 uint32_t g_select_widget = 0;
 std::atomic<int64_t> g_select_seen{0};  // when the arena grid was last updated (ms)
 std::atomic<int> g_cursor_custom{-1};    // custom arena under the cursor (label)
+int g_locate_tries = 0;      // banners looked for again on the online screen
+int64_t g_located_at = 0;
 int g_page = 0;              // 0 = the game's arenas
 // each player's page buttons as last read (ArenaSelectPad): LB 0x100, RB
 // 0x200, LT 0x400, RT 0x800 (the triggers pressed past a quarter); A 0x1000
@@ -301,13 +303,54 @@ constexpr uint32_t kSelectVtable = 0x8201D200;
 struct Tile {
   const char* banner;
   int arena;
+  const char* online;  // its picture on the online screen (menu/menuHD.pac MENU/OLKI)
 };
 constexpr Tile kTiles[20] = {
-    {"arena_SD", 0},   {"arena_RAW", 1},   {"arena_WM26", 11},  {"arena_slam", 4}, {"arena_SS", 17},
-    {"arena_HinC", 6}, {"arena_Judg", 13}, {"arena_BASH", 15},  {"arena_NoC", 14}, {"arena_BP", 5},
-    {"arena_RR", 9},   {"arena_BR", 18},   {"arena_Series", 7}, {"arena_TLC", 8},  {"arena_ttt", 3},
-    {"arena_EC", 10},  {"arena_back", 12}, {"arena_EXT", 16},   {"arena_ECW", 2},  {"arena_drui", 19},
+    {"arena_SD", 0, "PPV_sd"},       {"arena_RAW", 1, "PPV_raw"},   {"arena_WM26", 11, "PPV_WM26"},
+    {"arena_slam", 4, "PPV_Slam"},   {"arena_SS", 17, "PPV_super"}, {"arena_HinC", 6, "PPV_HinC"},
+    {"arena_Judg", 13, "PPV_JD"},    {"arena_BASH", 15, "PPV_BASH"}, {"arena_NoC", 14, "PPV_NoC"},
+    {"arena_BP", 5, "PPV_BP"},       {"arena_RR", 9, "PPV_RR"},     {"arena_BR", 18, "PPV_BR"},
+    {"arena_Series", 7, "PPV_SS"},   {"arena_TLC", 8, "PPV_TLC"},   {"arena_ttt", 3, "PPV_ttt"},
+    {"arena_EC", 10, "PPV_EC"},      {"arena_back", 12, "PPV_back"}, {"arena_EXT", 16, "PPV_EXT"},
+    {"arena_ECW", 2, "PPV_ECW"},     {"arena_drui", 19, "PPV_druid"},
 };
+// The online CREATE SESSION's arena select is a screen of its own (made by
+// sub_82521D18, 1184 bytes; its base screen at +28 - vtable 0x82029020 - is
+// updated through the same grid update, sub_823D4FC0(screen + 28), but is no
+// 5 x 4 grid): its tiles come from a table (*(screen + 1176) +4: 8-byte
+// entries, the arena number first; +24 the count) - the same banners in
+// another order - and the cursor is the tile sub_82521EF8(screen, tile) sets
+// (it makes that tile's arena the screen's, +1168). Its banners are not the
+// arena select's: PPV_* in menu/menuHD.pac (SD: menuSD.pac) MENU/OLKI, the
+// same 256 x 128 DXT5 (Survivor Series is PPV_SS there, Superstars
+// PPV_super - the other way round from arena_SS / arena_Series).
+constexpr uint32_t kOnlineSelectVtable = 0x82029020;
+Tile g_online_tiles[20];
+const Tile* g_tiles = kTiles;  // the open screen's order
+
+// Tile k's picture on the open screen.
+const char* PictureOf(int k) { return g_tiles == g_online_tiles ? g_tiles[k].online : g_tiles[k].banner; }
+std::atomic<int> g_online_tile{0};  // (the online screen's cursor: sub_82521EF8)
+
+// The online screen's order, from its table (false: not the 20 arenas).
+bool ReadOnlineTiles(const uint8_t* base, uint32_t screen) {
+  auto rd = [base](uint32_t a) {
+    const uint8_t* q = base + a;
+    return uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
+  };
+  const uint32_t desc = rd(screen + 1176);
+  if (!desc || rd(desc + 24) < 20 || !rd(desc + 4)) return false;
+  const uint32_t entries = rd(desc + 4);
+  for (int k = 0; k < 20; ++k) {
+    const int arena = int(rd(entries + 8 * k));
+    const Tile* t = nullptr;
+    for (const Tile& x : kTiles)
+      if (x.arena == arena) t = &x;
+    if (!t) return false;
+    g_online_tiles[k] = *t;
+  }
+  return true;
+}
 
 // DDS block data -> the layout the game keeps (16-bit words byte-swapped)
 svrfmt::Bytes Swap16(const uint8_t* p, size_t n) {
@@ -344,6 +387,32 @@ void LoadBanners() {
               g_banners.push_back({t.name, std::move(blocks), {}});
       }
     }
+  // The online screen's: every version of each (the groups and the HD / SD
+  // files hold differing copies; whichever the game loaded is found).
+  for (const char* file : {"menuHD.pac", "menuSD.pac"}) {
+    svrfmt::Bytes md;
+    svrfmt::Epac me;
+    if (!svrfmt::ReadFile((g_game / "pac" / "menu" / file).string(), md) || !svrfmt::EpacRead(md, me)) continue;
+    for (const auto& g : me.groups)
+      for (const auto& en : g.entries) {
+        if (en.name != "OLKI") continue;
+        std::vector<svrfmt::PachEntry> ents;
+        if (!svrfmt::PachRead(en.data, ents)) continue;
+        for (const auto& pe : ents) {
+          std::vector<svrfmt::BundleTexture> texs;
+          if (!svrfmt::BundleRead(svrfmt::Unpack(pe.data), texs)) continue;
+          for (auto& t : texs) {
+            if (std::none_of(std::begin(kTiles), std::end(kTiles), [&](const Tile& x) { return t.name == x.online; }))
+              continue;
+            svrfmt::Bytes blocks = BannerBlocks(t.data);
+            if (blocks.empty() || std::any_of(g_banners.begin(), g_banners.end(),
+                                              [&](const Banner& b) { return b.name == t.name && b.data == blocks; }))
+              continue;
+            g_banners.push_back({t.name, std::move(blocks), {}});
+          }
+        }
+      }
+  }
 }
 
 // Custom arenas on the pages: each on the tile of the arena it was made
@@ -355,7 +424,7 @@ std::vector<std::array<int, 20>> g_layout;  // pages 2.. : tile -> index in g_cu
 
 int TileOf(const std::string& banner) {
   for (int k = 0; k < 20; ++k)
-    if (banner == kTiles[k].banner) return k;
+    if (banner == g_tiles[k].banner) return k;
   return -1;
 }
 
@@ -441,33 +510,48 @@ int64_t NowMs() {
 }
 
 // Finds each banner in guest physical memory (4 KB view) by a run of blocks.
+// A block of the banner to look for it by: one of two colours mixed (a flat
+// block - black, a solid alpha half - is everywhere: block 300's alpha half,
+// the same in each opaque picture, made 3 million candidates and a 1 s
+// hitch once the online screen's banners were looked for too).
+size_t KeyBlock(const svrfmt::Bytes& d) {
+  for (size_t n = 0; n < kBannerBlocks; ++n) {
+    const size_t i = (kBannerBlocks / 2 + n) % kBannerBlocks;
+    const uint8_t* q = d.data() + 16 * i + 8;  // (the colour half)
+    if (std::memcmp(q, q + 2, 2) && !(q[4] == q[5] && q[5] == q[6] && q[6] == q[7])) return i;
+  }
+  return 300;
+}
+
 void LocateBanners() {
   uint8_t* b = g_memory->virtual_membase();
   for (auto& bn : g_banners) bn.guest.clear();
-  // one pass: block 300's first 8 bytes -> the banners starting so there
-  std::unordered_map<uint64_t, std::vector<Banner*>> keys;
+  // one pass: a key block's colour half -> the banners (and where it is in them)
+  std::unordered_map<uint64_t, std::vector<std::pair<Banner*, size_t>>> keys;
   for (auto& bn : g_banners) {
+    const size_t blk = KeyBlock(bn.data);
     uint64_t k;
-    std::memcpy(&k, bn.data.data() + 16 * 300, 8);
-    keys[k].push_back(&bn);
+    std::memcpy(&k, bn.data.data() + 16 * blk + 8, 8);
+    keys[k].push_back({&bn, blk});
   }
   int partial = 0;
   constexpr uint64_t hi = 0xFFFF0000;
   ForEachRegion(0xE0000000, hi, [&](uint64_t at, uint64_t end) {
-    for (uint64_t a = at + 16 * 300; a + 64 <= end; a += 16) {
+    for (uint64_t a = at; a + 64 <= end; a += 16) {
       uint64_t k;
-      std::memcpy(&k, b + a, 8);
+      std::memcpy(&k, b + a + 8, 8);
       const auto it = keys.find(k);
       if (it == keys.end()) continue;
-      const uint64_t start = a - 16 * 300;
-      for (Banner* bn : it->second) {
+      for (const auto& [bn, blk] : it->second) {
+        if (a < at + 16 * blk) continue;
+        const uint64_t start = a - 16 * blk;
         // (a texture can run on into the next region: the whole of it mapped)
         rex::memory::HeapAllocationInfo info;
         const uint64_t last = start + bn->data.size() - 1;
         const bool mapped = last < end || (last < hi && Committed(uint32_t(last), info));
         if (mapped && !std::memcmp(b + start, bn->data.data(), bn->data.size()))
           bn->guest.push_back(uint32_t(start));
-        else if (!std::memcmp(b + a, bn->data.data() + 16 * 300, 64))
+        else if (!std::memcmp(b + a, bn->data.data() + 16 * blk, 16))
           ++partial;
       }
     }
@@ -476,12 +560,6 @@ void LocateBanners() {
   for (const auto& bn : g_banners) found += !bn.guest.empty(), copies += int(bn.guest.size());
   REXLOG_INFO("[svr2011] arena select: {} of {} banners found ({} places, {} partial matches left alone)", found,
               g_banners.size(), copies, partial);
-}
-
-Banner* BannerOf(const char* name) {
-  for (auto& bn : g_banners)
-    if (bn.name == name) return &bn;
-  return nullptr;
 }
 
 // A dark grey tile for unused places on custom pages.
@@ -502,6 +580,12 @@ const CustomArena* CustomAt(int k) {
   return i >= 0 ? &g_customs[i] : nullptr;
 }
 
+// The online screen's title over the grid (the tile's arena name, looked up
+// from 0x828B5A00 as the cursor moves - "SUMMERSLAM" over a custom arena on
+// its tile): the custom arena's name, in capitals as the game's.
+uint32_t g_title_text = 0;
+constexpr uint32_t kOnlineTitleCaller = 0x828B5A00;
+
 // Draws the current page into the 20 banner textures.
 const svrfmt::Bytes& EmptyTile();
 
@@ -519,33 +603,35 @@ bool PageStillShown(const uint8_t* base) {
   if (g_page == 0) return false;
   int checked = 0;
   for (int k = 0; k < 20; ++k) {
-    const Banner* bn = BannerOf(kTiles[k].banner);
     const svrfmt::Bytes* src = PageBanner(k);
-    if (!bn || !src || bn->guest.empty()) continue;
-    for (const uint32_t at : bn->guest)
-      if (std::memcmp(base + at, src->data(), src->size())) {
-        size_t first = 0;
-        while (first < src->size() && base[at + first] == (*src)[first]) ++first;
-        REXLOG_INFO("[svr2011] arena select: page {} tile {} not shown at {:08X} (differs from byte {} of {})",
-                    g_page + 1, k, at, first, src->size());
-        return false;
-      }
-    ++checked;
+    if (!src) continue;
+    for (const Banner& bn : g_banners) {
+      if (bn.name != PictureOf(k)) continue;
+      for (const uint32_t at : bn.guest)
+        if (std::memcmp(base + at, src->data(), src->size())) {
+          size_t first = 0;
+          while (first < src->size() && base[at + first] == (*src)[first]) ++first;
+          REXLOG_INFO("[svr2011] arena select: page {} tile {} not shown at {:08X} (differs from byte {} of {})",
+                      g_page + 1, k, at, first, src->size());
+          return false;
+        }
+      checked += !bn.guest.empty();
+    }
   }
   return checked > 0;
 }
 
 void ShowPage(uint8_t* base) {
-  for (int k = 0; k < 20; ++k) {
-    Banner* bn = BannerOf(kTiles[k].banner);
-    if (!bn || bn->guest.empty()) continue;
-    const svrfmt::Bytes* src = PageBanner(k);
-    if (!src) src = &bn->data;
-    for (const uint32_t at : bn->guest) {
-      std::memcpy(base + at, src->data(), src->size());
-      svr2011::native::GuestWritten(at, uint32_t(src->size()));  // (re-checked at once, not tile by tile)
+  for (int k = 0; k < 20; ++k)
+    for (const Banner& bn : g_banners) {  // (each version of the tile's picture found)
+      if (bn.name != PictureOf(k) || bn.guest.empty()) continue;
+      const svrfmt::Bytes* src = PageBanner(k);
+      if (!src) src = &bn.data;
+      for (const uint32_t at : bn.guest) {
+        std::memcpy(base + at, src->data(), src->size());
+        svr2011::native::GuestWritten(at, uint32_t(src->size()));  // (re-checked at once, not tile by tile)
+      }
     }
-  }
   REXLOG_INFO("[svr2011] arena select: page {} / {}", g_page + 1, Pages());
 }
 
@@ -777,7 +863,7 @@ void FollowCursor(int row, int col) {
   g_cursor_custom = c ? int(c - g_customs.data()) : -1;
   // the tile's arena: the one the game loads (LayOutPages puts each custom
   // arena on the tile of the arena it was made from)
-  const int host = c ? kTiles[row * 5 + col].arena : -1;
+  const int host = c ? g_tiles[row * 5 + col].arena : -1;
   if (c == g_redirected_custom && host == g_redirected_host) return;
   g_redirected_custom = c;
   SetDecodeSwaps(c, host);
@@ -787,7 +873,7 @@ void FollowCursor(int row, int col) {
   if (c) {
     svr2011::RedirectArena(host, c->file);
     g_redirected_host = host;
-    REXLOG_INFO("[svr2011] arena select: {} on {}", c->name, kTiles[row * 5 + col].banner);
+    REXLOG_INFO("[svr2011] arena select: {} on {}", c->name, g_tiles[row * 5 + col].banner);
   }
 }
 
@@ -843,11 +929,13 @@ REX_HOOK_RAW(sub_826A17D0) {
 
 // The grid widget update: arena select pages.
 REX_EXTERN(__imp__sub_823D4FC0);
+REX_EXTERN(__imp__sub_82521EF8);
 REX_HOOK_RAW(sub_823D4FC0) {
   const uint32_t w = ctx.r3.u32;
   uint8_t* p = base + w;
   auto rd = [&](uint32_t o) { return uint32_t(p[o]) << 24 | p[o + 1] << 16 | p[o + 2] << 8 | p[o + 3]; };
-  if (g_customs.empty() || rd(0) != kSelectVtable) {
+  const bool online_grid = rd(0) == kOnlineSelectVtable && ReadOnlineTiles(base, w - 28);
+  if (g_customs.empty() || (rd(0) != kSelectVtable && !online_grid)) {
     // Test aid (SVR2011_TEST_LOBBY_LOG): other 5-column grids (the online
     // CREATE SESSION's arena select?), once per vtable.
     static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
@@ -873,8 +961,17 @@ REX_HOOK_RAW(sub_823D4FC0) {
                   w, g_select_widget, NowMs() - g_select_seen.load(), g_page + 1);
     g_select_widget = w;
     g_page = 0;
+    // (the online screen's tile order: the pages laid out for it)
+    {
+      const Tile* t = online_grid ? g_online_tiles : kTiles;
+      g_tiles = t;
+      LayOutPages();  // (each custom arena on its base's tile, in this screen's order)
+      if (online_grid) REXLOG_INFO("[svr2011] arena select: the online screen ({} pages)", Pages());
+    }
     if (g_banners.empty()) LoadBanners();
     LocateBanners();
+    g_locate_tries = 0;
+    g_located_at = NowMs();
     // A custom arena already chosen (the screen opened again from the match
     // screen): its page again, with it still played - the game puts the
     // cursor on its tile (its base arena's). Going back to page 1 here
@@ -895,6 +992,19 @@ REX_HOOK_RAW(sub_823D4FC0) {
       FollowCursor(4, 0);  // (nothing redirected)
     }
   }
+  // The online screen loads its banners after it opens (none in memory at
+  // its first update - page 2 showed page 1's pictures): looked for again
+  // every 500 ms for 15 s, the page drawn once they are there.
+  if (online_grid && g_locate_tries < 30 && NowMs() - g_located_at > 500 &&
+      std::none_of(g_banners.begin(), g_banners.end(), [](const Banner& bn) { return !bn.guest.empty(); })) {
+    ++g_locate_tries;
+    g_located_at = NowMs();
+    LocateBanners();
+    const bool found = std::any_of(g_banners.begin(), g_banners.end(), [](const Banner& bn) { return !bn.guest.empty(); });
+    if (found && g_page > 0) ShowPage(base);
+    if (!found && g_locate_tries == 30)
+      REXLOG_WARN("[svr2011] arena select: the online screen's banners not found in 15 s (pages keep the game's pictures)");
+  }
   g_select_seen = NowMs();
   // Test aid: SVR2011_TEST_SELECT_HITCH=<ms>: the grid stalls that long every
   // 2 s (a slow PC's hitches, which sent page 2 back to page 1).
@@ -906,9 +1016,12 @@ REX_HOOK_RAW(sub_823D4FC0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(hitch));
     }
   }
-  const uint32_t row = rd(28), col = rd(44), cols = rd(48);
+  // (the cursor: the offline grid's row and column; the online screen's tile)
+  const uint32_t at = uint32_t(g_online_tile.load());
+  const uint32_t row = online_grid ? at / 5 : rd(28), col = online_grid ? at % 5 : rd(44), cols = online_grid ? 5 : rd(48);
   __imp__sub_823D4FC0(ctx, base);
-  const uint32_t new_col = rd(44), new_row = rd(28);
+  const uint32_t now_at = uint32_t(g_online_tile.load());
+  const uint32_t new_col = online_grid ? now_at % 5 : rd(44), new_row = online_grid ? now_at / 5 : rd(28);
   // Past an edge: the cursor jumped from the last column to the first or back
   // in its row (the game wraps it), whatever moved it - a check of the button
   // field's direction bits missed a 2.0.3 player's presses. Any player's
@@ -962,11 +1075,41 @@ REX_HOOK_RAW(sub_823D4FC0) {
     g_page = page;
     REXLOG_INFO("[svr2011] arena select: page turned ({})", why);
     ShowPage(base);
+    // (the online screen's title over the grid - the tile's arena name - is
+    // set by its cursor: set again, for the name on this page)
+    if (online_grid && now_at < 20) {
+      PPCContext c = ctx;
+      c.r3.u64 = w - 28;
+      c.r4.u64 = now_at;
+      __imp__sub_82521EF8(c, base);
+    }
   }
   FollowCursor(int(new_row), int(new_col));
 }
 
+// The online arena select's cursor (sub_82521EF8(screen, tile): that tile's
+// arena becomes the screen's).
+REX_EXTERN(__imp__sub_82521EF8);
+REX_HOOK_RAW(sub_82521EF8) {
+  g_online_tile = int(ctx.r4.u32 < 25 ? ctx.r4.u32 : 0);
+  __imp__sub_82521EF8(ctx, base);
+}
+
 namespace svr2011 {
+
+uint32_t ArenaSelectString(uint32_t caller) {
+  if (caller != kOnlineTitleCaller || g_tiles != g_online_tiles || NowMs() - g_select_seen.load() > 500) return 0;
+  const CustomArena* c = CustomAt(g_online_tile.load() % 20);
+  if (!c || !g_memory) return 0;
+  constexpr uint32_t kSize = 128;
+  if (!g_title_text) g_title_text = g_memory->SystemHeapAlloc(kSize);
+  if (!g_title_text) return 0;
+  char* t = g_memory->TranslateVirtual<char*>(g_title_text);
+  size_t n = 0;
+  for (; n + 1 < kSize && n < c->name.size(); ++n) t[n] = char(std::toupper(uint8_t(c->name[n])));
+  t[n] = 0;
+  return g_title_text;
+}
 
 // Backstage areas (Mods/Backstage/<id>: manifest type=backstage, area=<0-6>,
 // arena.pac = bg78 with that room rebuilt; Mod Maker): bg78 holds all seven
@@ -1045,14 +1188,19 @@ void UseBackstageRow(int i) {
 void SetMatchLoading(bool loading) { g_match_loading = loading; }
 
 std::string ArenaModInUse(int* tile) {
-  const auto* c = static_cast<const CustomArena*>(g_committed_custom);
-  if (!c || g_committed_host < 0) return "";
-  if (tile) *tile = g_committed_host;
+  // (the arena redirected is the one the match loads - the online screen's A
+  // closes it before a commit is seen)
+  const auto* c = static_cast<const CustomArena*>(g_redirected_custom);
+  if (!c || g_redirected_host < 0) return "";
+  if (tile) *tile = g_redirected_host;
   return c->id;
 }
 
 bool UseArenaMod(const std::string& folder, int tile) {
   static int used = -1;  // (the tile this game plays another's arena on)
+  static std::string used_folder;
+  if (folder == used_folder && (folder.empty() ? used < 0 : tile == used)) return true;  // (as it is)
+  used_folder = folder;
   if (folder.empty() || tile < 0 || tile >= 100) {
     if (used >= 0) {
       RedirectArena(used, "");

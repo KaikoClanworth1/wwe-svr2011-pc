@@ -39,12 +39,24 @@ if ($WithModMaker) {
                      "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py",
                      "moves_port.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py",
                      "wwe13_pack.py", "arena_tool.py",  # (imports checked transitively 13 Oct: arena_port needs these two)
-                     "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py")) {  # (entrance_port: PS2 discs, SYM, SvR 2006)
+                     "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py",  # (entrance_port: PS2 discs, SYM, SvR 2006)
+                     "hand_tracks.py", "svr06_hands.py", "finger_retarget.py",  # (entrance_port: finger tracks)
+                     "entrance_ring.py",  # (Simple mode: an entrance's tracks for the preview)
+                     "model_budget.py", "xact.py", "svr07_char.py", "wwise.py",
+                     "svr11_build.py", "svr11_skeleton.json", "rig_maps.json", "rig_maps.py", "svr11_skeleton.py")) {  # (FBX import: builder + skeleton / rig maps)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
     }
     $data = Join-Path $PSScriptRoot "data"  # (reskin_port.py's stock texture table)
     if (Test-Path $data) { Copy-Item $data (Join-Path $mmtools "data") -Recurse -Force }
+    # vgmstream (the Wwise Vorbis theme decoder wwise.py runs; port\third_party\vgmstream, not in git:
+    # the official release, version and SHA-256 in its VERSION.txt) -> Mod Maker Tools\vgmstream
+    $vgm = Join-Path $port "third_party\vgmstream"
+    if (Test-Path (Join-Path $vgm "vgmstream-cli.exe")) {
+        $vdst = Join-Path $mmtools "vgmstream"
+        New-Item -ItemType Directory -Force $vdst | Out-Null
+        Get-ChildItem $vgm -File | Copy-Item -Destination $vdst   # (VERSION.txt too: where it came from + its SHA-256)
+    } else { Write-Warning "no $vgm\vgmstream-cli.exe - WWE '12+ themes won't convert" }
     # (and svrmod.exe, which svrfmt.py runs to compress pac entries: modmaker/build_cli.sh)
     $cli = Join-Path $port "out\modmaker\svrmod.exe"
     if (Test-Path $cli) { Copy-Item $cli $mmtools } else { Write-Warning "no $cli (modmaker\build_cli.sh) - the converters can't compress" }
@@ -53,6 +65,24 @@ if ($WithModMaker) {
     if (Test-Path $guide) { Copy-Item $guide (Join-Path $stage "Mod Maker Guide") -Recurse }
 }
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
+# The Visual C++ runtime the programs use (dynamic CRT), app-local beside them
+# (Microsoft's redistributable files, from the build machine's Visual Studio
+# Redist folder - the toolset the programs were linked with or newer): players
+# without the VC++ redistributable can start the game, nothing to install.
+$vcrt = @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_atomic_wait.dll")
+$redist = @("${env:ProgramFiles}\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio") |
+    Where-Object { Test-Path $_ } |
+    ForEach-Object { Get-ChildItem $_ -Directory -Recurse -Depth 8 -Filter "Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue } |
+    Where-Object { $_.FullName -match "\\Redist\\MSVC\\[0-9.]+\\x64\\" -and $_.FullName -notmatch "onecore|debug" } |
+    Sort-Object { [version]($_.FullName -replace '.*\\Redist\\MSVC\\([0-9.]+)\\.*', '$1') } -Descending |
+    Select-Object -First 1
+if (-not $redist) { throw "no Visual Studio Redist\MSVC\<version>\x64\Microsoft.VC14x.CRT folder - the release needs the VC++ runtime DLLs" }
+foreach ($f in $vcrt) {
+    $src = Join-Path $redist.FullName $f
+    if (-not (Test-Path $src)) { throw "$f is missing from $($redist.FullName)" }
+    Copy-Item $src $stage
+}
+Write-Host "VC++ runtime from $($redist.FullName)"
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
 # The native renderer's shaders (converted from the game's by
 # tools/convert_shaders.py; without them it draws nothing).

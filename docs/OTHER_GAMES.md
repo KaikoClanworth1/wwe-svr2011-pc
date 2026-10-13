@@ -16,13 +16,13 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 
 | Game | Arena files | State | How |
 |---|---|---|---|
-| SvR 2007 (360) | | research | not extracted yet |
+| **SvR 2007 (360)** | `pac/bg/bg<k>.pac`, many arenas each | **ready** | as 2008, plus the host's arena motions |
 | **SvR 2008 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | texture sets moved to 2011's ids, crowd from a 2011 arena (`--pac11`) |
 | **SvR 2009 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | as 2008, plus light numbers remapped |
 | **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
 | **WWE '12 (360)** | `pac/bg/bgNN.pac`, plain EPAC | **ready (in the Mod Maker)** | the WWE '13 converter (`svrmod wwe13`) takes it as is |
 | **WWE '13 (360)** | `pac/bg/bgNN.pac`, `0x0FF512ED` LZX container around an EPK8 | **ready (in the Mod Maker)** | `svrfmt/wwe13.cpp` (`svrmod wwe13`); see below |
-| WWE 2K14 (360) | | research | not extracted yet |
+| **WWE 2K14 (360)** | `pac/bg/bgNN.pac`, EPAC with ZLIB entries | **ready (in the Mod Maker)** | the WWE '13 converter: ZLIB unpacked, the host's arena motions |
 
 ### SvR 2010
 
@@ -70,6 +70,27 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
   SummerSlam 4, Survivor Series 7, Royal Rumble 9, Judgment Day 13, Night of
   Champions 14, Bash 15, Extreme Rules 16). Otherwise its own number.
   `--base` changes it.
+
+### SvR 2007
+
+- **Format:** `pac/bg/bg0.pac`-`bg7.pac` each hold several stages: groups
+  `STG<k>` with entries `00NN`. The arenas are 0000-0019, in `bg0`-`bg1`
+  (0020+ are copies); `bg5`-`bg7` are backstage.
+  - The texture sets are 0xC8 / 0xC9, as in 2008.
+  - The crowd is loose models and seat files (0x4E20-0x52FF).
+  - The group count's high 16 bits hold a per-file constant
+    (`svrfmt.epac_read` masks it).
+- **Conversion:** the 2008 path. 2007's crowd pieces and 0x9C40-0x9CFF are
+  left out. Its arena motions (0x7530) crashed the 2011 load, found by
+  swapping entries a group at a time, so they come from the 2011 host.
+- **Tested:** RAW (0001) plays in 2011.
+- **Arenas:** 00 SmackDown, 01 RAW, 02 ECW (?), 04 SummerSlam,
+  05 Unforgiven, 06 No Mercy, 07 Survivor Series, 08 Armageddon,
+  09 Royal Rumble, 10 No Way Out, 11 WrestleMania 22, 12 Backlash,
+  13 Judgment Day, 14 Vengeance, 15 Bash, 16 New Year's Revolution,
+  17 One Night Stand, 18 Cyber Sunday (?), 19 Saturday Night's Main Event
+  (from the texture names).
+- **Pictures:** no VS picture was found for RAW yet, so the banner is plain.
 
 ### SvR 2008
 
@@ -138,6 +159,23 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
   when the arena has none; without it the crowd is black.
 - **Tested:** RAW (bg01) plays in 2011, crowd lit.
 
+### WWE 2K14
+
+- **Format:** EPAC whose entries (and PACH children) are `ZLIB`-packed:
+  `"ZLIB"`, u32 0x1230, u32 packed size, u32 unpacked size, then a zlib
+  stream; equal sizes mean stored. A few small texts (0xEB29) are bare zlib
+  streams. Unpacked, it is WWE '12 / '13's layout and model format.
+- **Conversion:** the WWE '13 converter (`svrfmt::Unpack` reads ZLIB). Two
+  2K14 entries crash 2011's arena load and come from the 2011 host:
+  - the arena motions, 0x7530 YMKs (found by swapping entries one group at
+    a time);
+  - the bare-zlib texts.
+
+  `tools/wwe2k14_unzlib.py` writes an unpacked copy for inspection.
+- **Tested:** RAW (bg01) converted straight from the disc file plays in 2011
+  (355 models; 19 entries from the host).
+- **Size:** 2K14 arenas are big. RAW needed many textures halved to fit.
+
 ### WWE '13
 
 Done in the Mod Maker (`svrfmt/wwe13.cpp`). Notes:
@@ -194,17 +232,17 @@ layout known, some fields not; **unknown** = not looked at or not found.
 | **Moveset (PRO)** | 412 B, other slot order - **partly** | 450 B - **decoded** (Sabu, Sandman) | 450 + 10 B at +0xEA, entrance block +0xE4 - **partly** | 932 B - **decoded** (`svr10_superstar.py` MAP) | 1072 B, '13 move ids, entrance block +0x1d4 - **partly** | 1180 B - **decoded** (Mankind) | 1276 B (about 48 slots more than '13) - **partly** |
 | **Attires** | one EMD per attire; kind 4 = entrance gear | like 2007 | like 2008, kind 4 has its own costume bones | same as 2011 | same naming as 2011 | 3 per superstar (Mankind) | many (Cena 10); no face animation child |
 | **Renders** | `menu/menuHD.pac` MENU SF2A 256 bust, SF2B 512 body, SF2D 256 waist-up - **decoded** | `menu/menuHD.pac` MENU SSFA/SSFC (nested PACH by id) - **decoded** | `DLC_HD.pac` MENU SSFA/B (256 x 512) / SSFC (nested PACH) - **decoded** | `DLC_HD.pac` SSFA/B/C - **decoded** | `menu/menuHD.pac` SSFA/B/C, 2011 sizes - **decoded** | `menuHD.pac` SSFA/B/C - **decoded** | `menu/menuHD.pac` SSFA/B/C, byte-for-byte 2011's format - **decoded** |
-| **Theme** | XACT: `music/DVD_Music.xwb` + cue names in `sound.pac` XACT/MUSI (`%04d_%d`) - **partly** | `sound/music.yaf` id*100, XMA1 - **decoded** | `music1/2.yaf` id*100, XMA1 - **decoded** | `music1.yaf` id*100, XMA2 - **decoded** | `Music.pck` `Play_MUS_%04d_0_0` (bank v56) - **decoded** | `Music.pck` `Play_MUS_%04d_a_b` - **decoded** | `Game_Sound_M.pck` + events in `Game_Sound_E_S.pck` "Entrance_Music_E_S" (event ids sequential, superstar -> theme table not found) - **partly** |
+| **Theme** | XACT: `music/DVD_Music.xwb` + cue names in `sound.pac` XACT/MUSI (`%04d_%d`) - **decoded** (`tools/xact.py`) | `sound/music.yaf` id*100, XMA1 - **decoded** | `music1/2.yaf` id*100, XMA1 - **decoded** | `music1.yaf` id*100, XMA2 - **decoded** | `Music.pck` `Play_MUS_%04d_0_0` (bank v56) - **decoded** | `Music.pck` `Play_MUS_%04d_a_b` - **decoded** | events `Play_MUS_%04d_0_0` (PRO music) in `Game_Sound_E_S.pck`, their streams in `Game_Sound_M.pck` - **decoded** (`wwise.theme` stream_pck) |
 | **Titantron** | `%02d.bik`, Bink 1 | Bink 1 | Bink 1 | Bink 1 | Bink 1 (some 640 / 1280) | **Bink 2: can't be converted** | **Bink 2** |
 | **Names** | CHAR/DAT (176 B) +0x1C | CHAR/DAT (232 B) +0x20 | CHAR/DAT (252 B) +38, like 2010 | CHAR/DAT | CHAR/DAT +0x2E | string.pac SDB (ZLIB) | string.pac SDB 60000 + id |
-| **Ratings / abilities** | 2 x 8, small scale; no abilities - **partly** | 8 values | 8 values like 2010; no abilities | 8 values + abilities | 12 values; abilities not found | 14 values | CHAR/DAT 208 B - **partly** |
+| **Ratings / abilities** | 2 x 8, small scale; no abilities - **partly** | 8 values | 8 values like 2010; no abilities | 8 values + abilities | 12 values at DAT +4..+15 (copy at +16) - **mapped** to 2011's 7 (+5, +8, +9, +12, +7, +14, +13 [+5]; fitted on 117 shared superstars); abilities not found | not in DAT / PRO (not found) | 14 values at DAT +36..+49 - only loosely like 2011's (re-rated), not mapped |
 | **Ids** | the 2008 id space (78 shared) | 0-92 | 2008 id + 100 = 2010/2011 id | 2011 ids | 2011 ids (100-292 the same people), new 322-343 | own | own; CAS-built superstars in `chHeads.pac` (159 Piper, 372-375) - big job |
 
 ### Converter plan
 
 | From | Model | Renders | Theme | Moveset | Moves |
 |---|---|---|---|---|---|
-| SvR 2007 | `svr08_char.py` + bake the per-part textures (biggest job) | easy: SF2B -> SSFA/SSFB, SF2A -> SSFC + portrait | new XACT reader (XWB + cue table) | new 412 B slot map | 2008 path; EXH 24 -> 36 B; most motions also exist in 2008 |
+| SvR 2007 | done: `svr07_char.py` (per-part textures baked into 2011's sheets; superstar_port svr2007) | easy: SF2B -> SSFA/SSFB, SF2A -> SSFC + portrait | done: `tools/xact.py theme` (the longest MUS_<id>_N cue, ffmpeg) | new 412 B slot map | 2008 path; EXH 24 -> 36 B; most motions also exist in 2008 |
 | SvR 2008 | done (`svr08_char.py`) | done | done (yaf) | done by hand (Sabu, Sandman): make it a slot map | done by hand: becomes the shared old-game path |
 | SvR 2009 | `svr08_char.py` + hex entry names (small) | pad 256 x 512 to 512 | yaf as 2008 (music id at PRO +0xE4) | the 2008 map shifted 10 B | 2008 path + an event-op rewriter (biggest job) |
 | SvR 2010 | done | done | done | done | done (`svr10_moves.py`) |
@@ -222,6 +260,30 @@ EXH, WAZE and the victim's follow-up motion come from the most similar stock
 length, the way the WWE '13 Mankind moves were made. The `list` command reports per superstar which moves
 exist in 2011, which can be ported and which can't.
 
+### Building character models (FBX import, all converters)
+
+`tools/svr11_build.py` builds a ch.pac from a neutral model (the Mod Maker's FBX import); the rules it and
+`w13_char.py` / `svr08_char.py` follow are in `tools/svr11_skeleton.json` ("mesh_rules"), the rig maps in
+`tools/rig_maps.json`. Checked against stock pacs (13 Oct):
+
+- Vertex memory: 192 pages per attire (`model_budget.py`). Stock bodies reach 11,252 vertices (ch301); the
+  page count, not a vertex count, is the limit. Palettes <= 20 bones; positions / normals / UVs must be finite.
+- Hair / lash models (0x2710 / 0x4e20) have their own node tables, usually reduced (hair 29-141 nodes,
+  lashes mostly 34), with 1-4 influences (hair mostly 4). Ours carry the full body table with up to 4
+  influences and play (Mankind, the ch104 round trip, the Cena FBX sample).
+- Entries: stock pacs hold 1-4 (attires); the EPK8 index size and the group count field (entries x 4) must
+  match, or mounting crashes.
+- Face pivots: the eyeball vertices sit 0.05-0.19 in front of `l_eye` / `r_eye` on stock models. When a
+  model's differ from the template's by more than 0.15, `svr11_build.py` moves the bones under `atama` by the
+  difference (the mesh stays); otherwise blinking pushes the lids forward and the eyes seem to pop out.
+- Colour alpha: on skin it's the specular level, not opacity (stock ch104 has ~617k texels below 4 under
+  its skin and draws them solid); hair / lash cards cut out with it.
+- Texture slots a template block leaves unbound stay unbound, and mips are resized with RGB and alpha
+  apart (Pillow premultiplies: low colour alpha turned the smaller mips into red specks on the skin).
+
+The crash, face-pivot and alpha findings were first documented by robert32's SvR Port Doctor; we
+re-measured each on stock data (only the face pivots and the NaN check changed our code).
+
 ### Collision
 
 - 2011 models have **no collision bones**. 2007, 2008 and 2009 bodies carry 48
@@ -233,6 +295,18 @@ exist in 2011, which can be ported and which can't.
   differs between games; converters keep the 2011 template's.
 - For a collision view, the 2011 game data to read is still to be found
   (guess: CHAR/DAT or the 0x28 table).
+
+### Visibility trees and borrowed entries (all SvR 2007-2009 conversions)
+
+- SvR2011 draws only the arena models its visibility tree (0xC364) lists.
+  2007-2009 arena files have no tree, so their floor, stands and barricades
+  were culled: the user saw a black floor and no barricades. The converter
+  now builds a flat tree, one node per arena model, boxed from its vertices
+  in 2011's axes (x, z, -y) x 0.1.
+- The borrowed entries (crowd, table pictures, card, light set) always come
+  from 2011's RAW. 2008 SummerSlam with SummerSlam's own crashed the load on
+  its slot; with RAW's it plays there. The base slot still sets the tile, the
+  VS theme and the size budget.
 
 ## Belts and weapons (D11 research, Arena Porting)
 

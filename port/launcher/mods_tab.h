@@ -20,6 +20,11 @@ int mods_notify(const NMHDR *nm);
 int mods_rename(const WCHAR *folder, const WCHAR *name);
 int mods_remove(const WCHAR *game, const WCHAR *folder);
 int mods_print_superstars(const WCHAR *game);
+/* Two switched-on attire mods on one superstar's attire: the newer moves to a free attire (its manifest
+   rewritten), or the player is told to switch one off. fresh: a mod just installed (the newer), or NULL.
+   -> lines said (report: the text). */
+int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size_t report_n);
+int mods_print_attires(const WCHAR *game);
 /* Installs a .svrmod into <game_dir>/Mods (the + button without its dialog;
    tests: --mods-add <file>). 1 on success; the tab's status says why not. */
 int mods_install(const WCHAR *game_dir, const WCHAR *zip);

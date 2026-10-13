@@ -27,6 +27,9 @@ extern "C" {
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "svrfmt/disc.h"
+#include "rig_map.h"
+#include "svrfmt/char_fbx.h"
+#include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
 
@@ -42,6 +45,15 @@ HWND g_wnd = nullptr;
 std::wstring g_game;
 float g_scale = 1;
 bool g_behind = false;
+
+void ShellOpen(const std::wstring& what) {
+  if (what.empty()) return;
+  if (g_behind) {
+    Log("(test: would open " + Utf8(what) + ")");
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", what.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
 PageId g_page = PageId::kArena;
 std::wstring g_project_file;
 PageId g_project_page = PageId::kArena;
@@ -210,6 +222,10 @@ std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* 
                       const wchar_t* def_ext, const wchar_t* def_name) {
   IFileDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a file dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                               IID_PPV_ARGS(&dlg))))
     return out;
@@ -260,6 +276,10 @@ std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPE
 std::wstring PickFolder(const wchar_t* title) {
   IFileOpenDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a folder dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return out;
   DWORD opt = 0;
   dlg->GetOptions(&opt);
@@ -1083,6 +1103,130 @@ Image GameLook(const Image& src) {
   return out;
 }
 
+const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
+  struct Cached {
+    fs::file_time_type time;
+    uintmax_t size = 0;
+    std::vector<ModelPages> pages;
+  };
+  static std::map<std::wstring, Cached> cache;
+  static const std::vector<ModelPages> none;
+  std::error_code ec;
+  const auto t = fs::last_write_time(pac, ec);
+  if (ec) return none;
+  const uintmax_t size = fs::file_size(pac, ec);
+  auto it = cache.find(pac);
+  if (it != cache.end() && it->second.time == t && it->second.size == size) return it->second.pages;
+  Cached c{t, size, {}};
+  Bytes d;
+  Epac e;
+  if (ReadFile(Utf8(pac), d) && EpacRead(d, e))
+    for (const auto& g : e.groups) {
+      if (g.type.rfind("EMD", 0) != 0) continue;
+      for (const auto& en : g.entries) {
+        if (en.name.empty() || en.name.back() != '2') continue;  // (kind 2: the wrestler's model)
+        std::vector<PachEntry> kids;
+        if (!PachRead(Unpack(en.data), kids)) continue;
+        int pages = 0, blood = 0;
+        for (const auto& k : kids) {
+          const Bytes raw = Unpack(k.data);
+          Model m;
+          if (!IsJboy(raw) || !JboyRead(raw, m)) continue;
+          int mp = 0;
+          for (const auto& s : m.meshes) {
+            const uint32_t blocks = s.raw.size() >= 0x60 ? Be32(&s.raw[0x5C]) : 1;
+            size_t idx = 0;
+            for (const auto& st : s.strips) idx += st.indices.size();
+            mp += int((s.verts.size() * (std::max(1u, blocks) == 1 ? 32 : 44) + 4095) / 4096 + (idx * 2 + 4095) / 4096);
+          }
+          pages += mp;
+          if (k.id >= 0x7530 && k.id <= 0x7532) blood += mp;
+        }
+        c.pages.push_back({en.name, pages, blood});
+      }
+    }
+  std::string line = "model budget: " + Utf8(fs::path(pac).filename().wstring());
+  for (const auto& p : c.pages) line += "  " + p.entry + " " + std::to_string(p.pages);
+  Log(line);
+  return (cache[pac] = std::move(c)).pages;
+}
+
+void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name) {
+  const std::wstring dir = PickFolder(L"A folder for the FBX (the textures go in a textures folder beside it)");
+  if (dir.empty()) return;
+  const std::string id = IdFrom(name.empty() ? "model" : name, "model") + (attire > 1 ? "_attire" + std::to_string(attire) : "");
+  RunInBackground([pac, attire, dir, id] {
+    Progress("Writing the FBX ...");
+    Bytes b;
+    svrfmt::CharExportReport rep;
+    const bool ok = ReadFile(Utf8(pac), b) && svrfmt::ExportCharacterFbx(b, attire, Utf8(dir), id, rep);
+    for (const auto& w : rep.warnings) Log("  " + w);
+    Status(ok ? "Exported " + id + ".fbx: " + std::to_string(rep.bones) + " bones, " + std::to_string(rep.meshes) + " meshes, " +
+                    std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.textures) + " textures (" + Utf8(dir) + ")."
+              : "The FBX could not be written: " + (rep.warnings.empty() ? std::string("see the log") : rep.warnings.front()));
+  });
+}
+
+std::vector<int> ModelAttires(const std::wstring& pac) {
+  std::vector<int> v;
+  for (const auto& p : ModelBudget(pac))
+    if (p.entry.size() >= 8 && std::isdigit(uint8_t(p.entry[6]))) v.push_back(p.entry[6] - '0' + 1);
+  std::sort(v.begin(), v.end());
+  v.erase(std::unique(v.begin(), v.end()), v.end());
+  return v;
+}
+
+void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::vector<Problem>& out) {
+  struct Cached {
+    fs::file_time_type time;
+    uintmax_t size = 0;
+    svrfmt::CharModelIssues issues;
+  };
+  static std::map<std::wstring, Cached> cache;
+  std::error_code ec;
+  const auto t = fs::last_write_time(pac, ec);
+  const uintmax_t size = fs::file_size(pac, ec);
+  if (ec) return;
+  auto it = cache.find(pac);
+  if (it == cache.end() || it->second.time != t || it->second.size != size) {
+    Cached c{t, size, {}};
+    Bytes b;
+    if (ReadFile(Utf8(pac), b)) c.issues = svrfmt::CheckCharacterModel(b, 1);
+    it = cache.insert_or_assign(pac, std::move(c)).first;
+  }
+  const auto& is = it->second.issues;
+  for (const auto& m : is.nan_meshes)
+    out.push_back(Error(who + "'s model has broken points (not-a-number values) in " + m + ": the game crashes on it.",
+                        "Export the model again, or rebuild it (Model from an FBX)."));
+  for (int e = 0; e < 2; ++e)
+    if (is.eye_off[e] > 0.15) {
+      char d[16];
+      std::snprintf(d, sizeof d, "%.1f", is.eye_off[e] * 10);
+      out.push_back(Warning(who + "'s " + (e ? "right" : "left") + " eye is " + d + " cm from its eye bone: it pops out when the face blinks.",
+                            "Model from an FBX moves the eye bones onto the eyes; or fix the eye in the source model."));
+    }
+}
+
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out) {
+  const ModelPages* worst = nullptr;
+  for (const auto& p : ModelBudget(pac)) {
+    if (!worst || p.pages > worst->pages) worst = &p;
+    if (first_only) break;
+  }
+  if (!worst || worst->pages <= kModelPagesWarn) return;
+  const std::string what = who + "'s model needs " + std::to_string(worst->pages) + " of the " + std::to_string(kModelPages) +
+                           " memory pages a wrestler gets in a match" + (first_only ? "" : " (entry " + worst->entry + ")");
+  const char* fix = "Use a model with fewer vertices or weight blocks (or without blood overlays, JBOY children "
+                    "0x7530-0x7532: the Port page's conversions leave them out).";
+  // (as the game: over the limit it drops the blood overlays, then leaves out a model still over)
+  if (worst->pages - worst->blood > kModelPages)
+    out.push_back(Error(what + ": the game leaves this model out, even without its blood overlays.", fix));
+  else if (worst->pages > kModelPages)
+    out.push_back(Warning(what + ": the game drops its blood overlays to fit (no blood on it in matches).", fix));
+  else
+    out.push_back(Warning(what + ": close to the limit (stock models reach about 180-192).", fix));
+}
+
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {
   // framed the game's way on 512 x 512 (FitFigure); the bust (SSFC): that at
   // 3/4 size, its top 256 rows around the figure's middle; the face icon:
@@ -1133,6 +1277,34 @@ void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int s
       if (done) done(ok ? out : L"");
     });
   });
+}
+
+void ViewFooter() {
+  ImGui::PushID("viewfooter");
+  if (ImGui::SmallButton("Reset view")) char_preview::ResetCamera();
+  ImGui::SameLine();
+  const bool has = char_preview::HasBlood();
+  ImGui::BeginDisabled(!has);
+  bool blood = char_preview::Blood() && has;
+  if (ImGui::Checkbox("Blood", &blood)) char_preview::SetBlood(blood);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip(has ? "The blood a superstar gets in a match, on the face and body." : "This model has no blood layers.");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!blood);
+  int stage = char_preview::BloodStage();
+  static const char* kLevels[] = {"light", "medium", "heavy"};
+  ImGui::TextUnformatted("Damage");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x, 70 * g_scale, 110 * g_scale));
+  if (ImGui::SliderInt("##damage", &stage, 0, 2, kLevels[std::clamp(stage, 0, 2)], ImGuiSliderFlags_NoInput)) char_preview::SetBloodStage(stage);
+  ImGui::EndDisabled();
+  ImGui::SameLine();  // (the hint on this line when it fits what's left of it)
+  if (const char* hint = "Drag to turn, scroll to zoom"; ImGui::GetContentRegionAvail().x > ImGui::CalcTextSize(hint).x + 8 * g_scale)
+    ImGui::TextDisabled("%s", hint);
+  else
+    ImGui::NewLine();
+  ImGui::PopID();
 }
 
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem) {
@@ -1337,6 +1509,7 @@ const PageDesc kPages[] = {
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
     {PageId::kAnims, "Animations", "", nullptr, anims_page::Draw},
+    {PageId::kInstalled, "Installed mods", "", nullptr, installed_page::Draw},
     {PageId::kIcons, "Icons & renders", "", nullptr, icons_page::Draw},
     {PageId::kHelp, "Manual", "Help", nullptr, help_page::Draw},
 };
@@ -1526,6 +1699,8 @@ bool ProjectSave(bool ask_name) {
   return true;
 }
 
+bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file);
+
 bool ProjectOpen(const std::wstring& file) {
   Bytes zip;
   ProjectIn in;
@@ -1535,7 +1710,27 @@ bool ProjectOpen(const std::wstring& file) {
     Status("That is not a project or a mod the Mod Maker can open: " + Utf8(file));
     return false;
   }
-  const bool mod = Lower(FileName(file)).ends_with(".svrmod");
+  return ProjectOpenIn(in, Lower(FileName(file)).ends_with(".svrmod"), file);
+}
+
+bool ProjectOpenFolder(const std::wstring& dir) {
+  ProjectIn in;
+  in.dir = fs::path(dir);  // (Extract writes into the project cache under LocalAppData, never here)
+  std::error_code ec;
+  for (const auto& e : fs::recursive_directory_iterator(dir, ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    Bytes b;
+    if (!ReadFile(PathStr(e.path()), b)) continue;
+    in.files.push_back({fs::relative(e.path(), dir, ec).generic_string(), std::move(b)});
+  }
+  if (in.files.empty()) {
+    Status("Nothing to open in " + Utf8(dir) + ".");
+    return false;
+  }
+  return ProjectOpenIn(in, true, (fs::path(dir) / L"manifest.txt").wstring());
+}
+
+bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file) {
   const ZipEntry* txt = in.Find(mod ? "manifest.txt" : "project.txt");
   if (!txt) {
     Status(mod ? "That mod has no manifest.txt." : "That project has no project.txt.");
@@ -1748,9 +1943,10 @@ void StatusBar() {
   const bool untouched = ProjectUntouched();
   if (untouched) g_problems.clear();
   const int errors = ErrorCount(g_problems), warnings = int(g_problems.size()) - errors;
-  char pb[64];
+  char pb[128];
   if (g_problems.empty()) std::snprintf(pb, sizeof pb, untouched ? "Nothing made yet" : "No problems");
-  else std::snprintf(pb, sizeof pb, "%d error%s, %d warning%s", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
+  else std::snprintf(pb, sizeof pb, "%s%s%d error%s, %d warning%s", g_page != g_project_page ? PageName(g_project_page) : "",
+                     g_page != g_project_page ? " project: " : "", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
   const float w = ImGui::CalcTextSize(pb).x + ImGui::CalcTextSize("Log").x + 60 * g_scale;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w));
   if (!g_problems.empty()) ImGui::PushStyleColor(ImGuiCol_Text, errors ? kBad : kWarn);
@@ -1917,6 +2113,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   double shot_after = 6;
+  std::vector<std::pair<double, std::wstring>> page_at;  // --page-at <page>@<s>[,...]: page switches at those times (tests)
   int star_id = 0, star_call = -1;
   float star_height = 0;
   std::string star_moveset;
@@ -1948,9 +2145,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--shot") && more) shot = argv[++i];
     else if (!wcscmp(argv[i], L"--shot-after") && more) shot_after = _wtof(argv[++i]);
+    else if (!wcscmp(argv[i], L"--page-at") && more) {
+      const std::wstring v = argv[++i];
+      for (size_t at = 0; at < v.size();) {
+        size_t c = v.find(L',', at);
+        if (c == std::wstring::npos) c = v.size();
+        const std::wstring item = v.substr(at, c - at);
+        if (const size_t a = item.find(L'@'); a != std::wstring::npos) page_at.push_back({_wtof(item.c_str() + a + 1), item.substr(0, a)});
+        at = c + 1;
+      }
+    }
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--test-moves-save") && more) moves_save = argv[++i];
+    else if (!wcscmp(argv[i], L"--caw-announcer") && more) caw_page::TestAnnouncer(Utf8(argv[++i]));  // <CLIP> (- clears), with --caw <index>
     else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
       std::wstring a = argv[++i];
       std::vector<std::wstring> parts;
@@ -1999,10 +2207,113 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
-    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
-      int a[4] = {0, -1, -1, 0};
-      swscanf_s(argv[++i], L"%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3]);
+    else if (!wcscmp(argv[i], L"--fbx-map") && more) {  // <fbx>,<out file>: its skeleton, the rig found and the mapping
+      const std::wstring v = argv[++i];
+      const size_t c = v.find(L',');
+      std::vector<svrfmt::FbxBone> fb;
+      std::string err, out;
+      if (c != std::wstring::npos && svrfmt::ReadFbxSkeleton(Utf8(v.substr(0, c)), fb, err)) {
+        std::vector<RigBone> rb;
+        for (const auto& b : fb) rb.push_back({b.name, b.parent});
+        const auto map = MapRig(rb);
+        out = "rig: " + DetectRig(rb) + "\n";
+        int mapped = 0, skinned = 0, skinned_mapped = 0;
+        for (size_t k = 0; k < fb.size(); ++k) {
+          mapped += !map[k].empty(), skinned += fb[k].skinned, skinned_mapped += fb[k].skinned && !map[k].empty();
+          out += "  " + fb[k].name + (fb[k].skinned ? " *" : "") + " -> " + (map[k].empty() ? "(folds into its parent)" : map[k]) + "\n";
+        }
+        out += std::to_string(fb.size()) + " bones, " + std::to_string(mapped) + " mapped; " + std::to_string(skinned) +
+               " with weights, " + std::to_string(skinned_mapped) + " of them mapped\n";
+      } else {
+        out = "FAILED: " + err + "\n";
+      }
+      if (c != std::wstring::npos) WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--fbx-build-input") && more) {  // <fbx>,<template pac>,<out dir>: the automatic mapping, build.json + report.txt
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a == std::wstring::npos || b == std::wstring::npos) return 1;
+      const std::string fbx = Utf8(v.substr(0, a)), tpl = Utf8(v.substr(a + 1, b - a - 1)), dir = Utf8(v.substr(b + 1));
+      std::vector<svrfmt::FbxBone> fb;
+      std::string err, out;
+      Bytes pac;
+      svrfmt::FbxImportReport rep;
+      bool ok = false;
+      if (svrfmt::ReadFbxSkeleton(fbx, fb, err) && ReadFile(tpl, pac)) {
+        std::vector<RigBone> rb;
+        for (const auto& k : fb) rb.push_back({k.name, k.parent});
+        ok = svrfmt::FbxToBuildInput(fbx, MapRig(rb), pac, tpl, dir, rep);
+      }
+      char line[256];
+      std::snprintf(line, sizeof line, "%s: %d meshes, %d vertices, %d triangles, %d textures (sheet %d), %d bones aimed (worst %.3f deg), %d 2011 bones, scale %.4f, height %.1f cm\n",
+                    ok ? "OK" : "FAILED", rep.meshes, rep.vertices, rep.triangles, rep.textures, rep.atlas, rep.aimed, rep.aim_error_deg, rep.bones_used, rep.scale, rep.height_cm);
+      if (rep.reduced_from) out += "  reduced from " + std::to_string(rep.reduced_from) + " vertices\n";
+      out = out + line + err + (rep.aim_worst.empty() ? "" : "  worst aim: " + rep.aim_worst + "\n");
+      for (const auto& w : rep.warnings) out += "  warning: " + w + "\n";
+      for (const auto& w : rep.skipped) out += "  skipped: " + w + "\n";
+      for (const auto& w : rep.mesh_lines) out += "  mesh: " + w + "\n";
+      std::error_code ec;
+      fs::create_directories(fs::u8path(dir), ec);
+      WriteFile(dir + "/report.txt", Bytes(out.begin(), out.end()));
+      return ok ? 0 : 1;
+    }
+    else if (!wcscmp(argv[i], L"--model-check") && more) {  // <pac>[;<pac>...],<out>: the D12 model checks, a line per pac
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      if (c == std::wstring::npos) return 1;
+      std::string out;
+      std::wstring list = v.substr(0, c);
+      for (size_t a = 0; a <= list.size();) {
+        size_t b = list.find(L';', a);
+        if (b == std::wstring::npos) b = list.size();
+        const std::wstring pac = list.substr(a, b - a);
+        a = b + 1;
+        Bytes d;
+        const auto is = ReadFile(Utf8(pac), d) ? svrfmt::CheckCharacterModel(d, 1) : svrfmt::CharModelIssues();
+        char line[256];
+        std::snprintf(line, sizeof line, "%s: read %d, nan %d, eyes %.3f %.3f\n", FileName(pac).c_str(), int(is.read), int(is.nan_meshes.size()), is.eye_off[0], is.eye_off[1]);
+        out += line;
+      }
+      WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--rig-selftest")) {  // the rig mapper against each known rig's standard names
+      const auto fails = RigSelfTest();
+      std::string out = "rig self test: " + std::to_string(fails.size()) + " failed\n";
+      for (const auto& f : fails) out += "  " + f + "\n";
+      if (++i < argc) WriteFile(Utf8(argv[i]), Bytes(out.begin(), out.end()));
+      return fails.empty() ? 0 : 1;
+    }
+    else if (!wcscmp(argv[i], L"--export-char-fbx") && more) {  // <pac>,<attire>,<out dir>: export, read back, log, quit
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a != std::wstring::npos && b != std::wstring::npos) {
+        Bytes pac;
+        svrfmt::CharExportReport rep;
+        const std::wstring out = v.substr(b + 1);
+        const int attire = _wtoi(v.substr(a + 1, b - a - 1).c_str());
+        const bool ok = ReadFile(Utf8(v.substr(0, a)), pac) && svrfmt::ExportCharacterFbx(pac, attire, Utf8(out), "test", rep);
+        Log(std::string("test: export ") + (ok ? "ok" : "FAILED") + ": " + std::to_string(rep.bones) + " bones, " + std::to_string(rep.meshes) +
+            " meshes, " + std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.triangles) + " triangles, " +
+            std::to_string(rep.textures) + " textures");
+        for (const auto& w : rep.warnings) Log("  " + w);
+        if (ok)
+          for (const auto& l : svrfmt::CheckCharacterFbx(pac, attire, Utf8(out) + "\\test.fbx")) Log("test: read back: " + l);
+        WriteLogTo(out + L"\\test.log");
+        return 0;
+      }
+    }
+    else if (!wcscmp(argv[i], L"--installed") && more) installed_page::TestSelect(Utf8(argv[++i])), g_page = PageId::kInstalled;
+    else if (!wcscmp(argv[i], L"--moves-put") && more) moves_page::TestPut(argv[++i]), g_page = PageId::kMoves;
+    else if (!wcscmp(argv[i], L"--pac-attires") && more) attire_page::TestPacAttires(argv[++i]), g_page = PageId::kAttire;
+    else if (!wcscmp(argv[i], L"--pose-compare") && more) anims_page::TestCompare(argv[++i]), g_page = PageId::kAnims;
+    else if (!wcscmp(argv[i], L"--view-attire") && more) char_preview::SetAttire(_wtoi(argv[++i]));  // the 3D view's attire
+    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>[,<key: paused there>]]
+      int a[5] = {0, -1, -1, 0, -1};
+      swscanf_s(argv[++i], L"%d,%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3], &a[4]);
       anims_page::TestStart(a[0], a[1], a[2], a[3]);
+      anims_page::TestKey(a[4]);
       g_page = PageId::kAnims;
     }
     else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
@@ -2017,6 +2328,24 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-movie") && more) star_movie = argv[++i];
     else if (!wcscmp(argv[i], L"--star-picture") && more) star_picture = argv[++i];
     else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-fbx-make")) star_page::TestFbxMake();
+    else if (!wcscmp(argv[i], L"--fbx-report") && more) star_page::TestFbxReport(argv[++i]);  // with --star-fbx: the import report, quit  // with --star-fbx: Make the model, log, quit
+    else if (!wcscmp(argv[i], L"--simple-take") && more) {  // <svrmod>,<0|1>: a converted superstar's look (0) or all of it (1) into the project
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      star_page::TestSimpleTake(v.substr(0, c), c != std::wstring::npos && v.substr(c + 1) == L"1");
+    }
+    else if (!wcscmp(argv[i], L"--simple-ring") && more) star_page::TestSimpleRing(_wtoi(argv[++i]));  // an entrance's walk to the ring in Simple's preview
+    else if (!wcscmp(argv[i], L"--simple-capture") && more) star_page::TestSimpleCapture(argv[++i]);  // the 3D view as the select picture -> <png>, quit
+    else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
+    else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
+    else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
+      const std::wstring v = argv[++i];
+      const size_t c = v.find(L',');
+      star_page::TestFbx(v.substr(0, c), c == std::wstring::npos ? std::string() : Utf8(v.substr(c + 1)));
+    }
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
@@ -2143,7 +2472,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }
@@ -2226,6 +2555,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
     g_ctx->ClearRenderTargetView(g_rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    while (!page_at.empty() && ImGui::GetTime() >= page_at.front().first) {  // (test aid --page-at)
+      const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match",
+                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
+      for (int k = 0; k < int(std::size(names)) && k < int(PageId::kCount); ++k)
+        if (page_at.front().second == names[k]) g_page = PageId(k), Log("test: page " + Utf8(names[k]));
+      page_at.erase(page_at.begin());
+    }
     if (!shot.empty() && ImGui::GetTime() >= shot_after && !Busy()) {  // the frame to a PNG, then quit
       ID3D11Texture2D* back = nullptr;
       g_swap->GetBuffer(0, IID_PPV_ARGS(&back));

@@ -44,6 +44,9 @@ extern HWND g_wnd;
 extern std::wstring g_game;  // the installed game folder ("" = none)
 extern float g_scale;        // UI scale (1 at 96 dpi with the 17 px font)
 extern bool g_behind;        // --behind: a test run; the window is never shown, games it starts stay hidden too
+// Opens a file, folder or link with the shell (Explorer, the browser) - never in a --behind test (logged instead),
+// never an empty path.
+void ShellOpen(const std::wstring& what);
 
 // An RGBA picture as a shader resource (nullptr for an empty picture).
 ID3D11ShaderResourceView* MakeTexture(const Image& img);
@@ -118,6 +121,7 @@ struct Problem {
   bool error = true;   // false: a warning (shown, does not block)
   std::string text;    // what is wrong
   std::string fix;     // what to do (optional)
+  int step = -1;      // (the Superstar page's Simple mode: the step that fixes it)
 };
 inline Problem Error(std::string text, std::string fix = "") { return {true, std::move(text), std::move(fix)}; }
 inline Problem Warning(std::string text, std::string fix = "") { return {false, std::move(text), std::move(fix)}; }
@@ -251,7 +255,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -275,7 +279,9 @@ extern PageId g_project_page;
 bool ProjectDirty();
 void ProjectNew(PageId type);
 bool ProjectSave(bool ask_name);
-bool ProjectOpen(const std::wstring& file);  // .svrproj or .svrmod
+bool ProjectOpen(const std::wstring& file);
+// An installed mod's folder (Mods\<type>\<folder>) opened as a project, as its .svrmod would be (the folder is only read).
+bool ProjectOpenFolder(const std::wstring& dir);  // .svrproj or .svrmod
 void ProjectReset();
 
 // ---------------------------------------------------------------- settings
@@ -340,24 +346,32 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
                                                 const std::wstring& gimmick_pac, const std::string& gimmick); }
 namespace backstage_page { extern PageHooks hooks; }
-namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::wstring& model, const std::string& name,
+namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion); void TestStart(int id, const std::wstring& model, const std::string& name,
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png);
+                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
+                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestSimpleTake(const std::wstring& svrmod, bool everything); void TestSimpleLook(int mode); void TestSimpleCapture(const std::wstring& png); void TestSimpleRing(int n); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
+                      // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
+                      const std::vector<std::string>& AnnouncerNames();
+                      bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
                       bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
                       bool EntranceOutfit(const std::wstring& pac); }
-namespace attire_page { extern PageHooks hooks; void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
+namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
-namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
-namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
-namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
+namespace moves_page { extern PageHooks hooks; void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
+namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
+namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host);
+                       // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
+                       void UseArenaFile(const std::wstring& file, const std::string& name); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); }
+namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear();
+                      // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
+                      void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult(); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
 namespace pac_editor {  // a copy of any pac, edited and saved elsewhere (Game assets)
 bool Open(svrfmt::Bytes pac, const std::string& label, const std::wstring& from, const std::string& note);
@@ -366,9 +380,29 @@ void Close();
 void Draw();
 void TestEdit(const std::wstring& spec);
 }
-namespace anims_page { bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
+namespace anims_page { bool AnyMotion(int id); void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
+namespace installed_page { void Draw(); void TestSelect(const std::string& spec); }
 namespace help_page { void Draw(); }
+
+// A superstar model (ch.pac) to FBX, picked folder, in the background (svrfmt/char_fbx): <folder>\<name>.fbx + textures.
+void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name);
+// A character model pac's match memory (D12): per wrestler attire entry (EMD ...2) the 4 KB pages its meshes'
+// vertex and index buffers take - the game gives each wrestler 192; over that the match load crashes.
+constexpr int kModelPages = 192, kModelPagesWarn = 180;
+struct ModelPages {
+  std::string entry;  // the EMD entry ("00013902": attire 1)
+  int pages = 0;
+  int blood = 0;  // of them, the blood overlays' (JBOY children 0x7530-0x7532: the game drops them first when over)
+};
+const std::vector<ModelPages>& ModelBudget(const std::wstring& pac);  // (cached by file time / size)
+// The attires a model pac holds (its kind-2 EMD entries %06d%02d: attire*10 + 2), 1-based, in order. The game
+// uses a superstar mod's in-pac attires contiguous from 1, at most 4.
+std::vector<int> ModelAttires(const std::wstring& pac);
+// The problem line for a model over (error) or near (warning) the budget; who: "The model", "Attire 2" ...
+// D12 model checks (CheckCharacterModel; robert32's SvR Port Doctor findings): NaN values, eyes off their bones.
+void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::vector<Problem>& out);
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out);
 
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);
@@ -385,5 +419,8 @@ Image GameLook(const Image& src);
 void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done);
 // A "From a video..." button that makes the Bink into <game>\Mods\.convert and sets `movie`.
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem);
+// The footer under every superstar 3D view: Reset view, Blood (off by default) and its Damage level (the game's
+// light / medium / heavy blood), the mouse hint. One state for all views.
+void ViewFooter();
 
 }  // namespace mm

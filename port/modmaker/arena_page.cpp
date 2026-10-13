@@ -139,7 +139,7 @@ void ExportArena(int i) {
     std::snprintf(b, sizeof b, "Exported %d objects and %d textures to %s", rep.models, rep.textures, out.c_str());
     Status(b);
     Log("  Open arena.fbx in Blender (File > Import > FBX). 1 Blender unit = 1 metre.");
-    ShellExecuteA(nullptr, "open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    ShellOpen(Wide(out));
   });
 }
 

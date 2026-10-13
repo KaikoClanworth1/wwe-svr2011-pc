@@ -17,6 +17,7 @@
 #include <spdlog/sinks/base_sink.h>
 
 #include "keyboard_typing.h"
+#include "pad_types.h"
 #include "story_designer.h"
 #include "touch_controls.h"
 
@@ -159,6 +160,11 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     (side == "R" || side == "r" ? step.right_trigger : step.left_trigger) =
         static_cast<uint8_t>(std::clamp(v, 0, 255));
     queue_.push_back(step);
+  } else if (verb == "padtype") {  // (test aid: pad_types.h - applied as the line is read)
+    int player = 0;
+    std::string type;
+    in >> player >> type;
+    if (player >= 1) svr2011::SetTestPadType(uint32_t(player - 1), type);
   } else if (verb == "wait") {
     in >> step.ms;
     queue_.push_back(step);

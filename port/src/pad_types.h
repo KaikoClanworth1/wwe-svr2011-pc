@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <rex/input/device_assignment.h>
@@ -32,6 +33,9 @@ constexpr uint32_t kMaxPlayers = 4;
 
 // Player user_index's controller (kNone: no device).
 PadType PlayerPadType(uint32_t user_index);
+// Test aid (script input "padtype <player 1..8> <xbox|ps|kb|none>"): a
+// player's controller type from now on.
+void SetTestPadType(uint32_t player, const std::string& type);
 // The types the connected players use (bit 1 << PadType).
 uint32_t PadTypesInUse();
 // Bumped each time the players' devices change.

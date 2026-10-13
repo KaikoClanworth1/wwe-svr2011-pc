@@ -109,6 +109,17 @@ FILES
                      updates two of them once for the PC: the menu text
                      (pac\string.pac) and the menus (pac\menu\menu.pac)
 
+CREDITS
+  The Visual C++ runtime DLLs beside the programs (msvcp140.dll,
+  vcruntime140.dll, vcruntime140_1.dll, msvcp140_atomic_wait.dll) are
+  Microsoft's, redistributed under the Visual Studio redistributable terms.
+  The launcher's Setup tab can install tools for the Mod Maker into Tools\
+  (Python, numpy, Pillow, ffmpeg): their licences are in Tools\LICENSES.
+  Mod Maker Tools\vgmstream is vgmstream r2117 (https://github.com/vgmstream/vgmstream),
+  which decodes the theme songs of WWE '12 and later for the superstar
+  converter; its licence is Mod Maker Tools\vgmstream\COPYING, and its
+  *-vgmstream-*.dll files are FFmpeg libraries under the LGPL.
+
 STATUS
   Preview. Menus, exhibition matches with entrances, Create modes (superstar,
   entrance, Paint Tool), WWE Universe and saving all work, at 60 fps.

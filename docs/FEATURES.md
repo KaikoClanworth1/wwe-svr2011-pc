@@ -106,6 +106,7 @@ still being tested.
 - **Player and Ranked kept apart**: a Ranked search no longer lands in a Player Match, or the other way round.
 - **Latest version only**: an old version can't go online; the game's own message says to update (the launcher's Check for updates, or GitHub).
 - **Mods must match**: a session with different gameplay mods is hidden, and the game's own message names the mods that differ.
+- **Custom arenas online**: CREATE SESSION has the custom arena pages too; everyone needs the session's arena (same version) - otherwise the match waits and says who lacks which arena.
 - **Superstar mods online**: a superstar mod can be picked online when everyone in the lobby has it (same version), in Player and Ranked matches; each PC's own mod numbers are translated, so everyone sees the same superstar. Picking one someone lacks shows "The user/s in the lobby do not have the mods installed you do." with who lacks what; a late joiner without it can join, but START waits until the pick changes. Superstar mods no longer hide sessions.
 - **FIRST BLOOD** in Player Match (one on one and 3-man EXTREME RULES MATCHES; switch mod `online_first_blood`).
 - **PORT RULES** on CREATE SESSION (Player Match): the port's own match types online - Weapons Everywhere, the Three Stages sets, Hell in a Cell Tables & Ladders, Weapons Inside - chosen with LB / RB, shown in both lobbies.
@@ -115,6 +116,7 @@ still being tested.
 - **Ping indicator** (GRAPHICS → DISPLAY → ONLINE PING): bars and milliseconds while online.
 - **Invites**: a pop-up when a friend invites you (with an on/off switch in the overlay), and X INVITE FRIENDS in the lobby opens an invite panel. **Accepting an invite from anywhere** takes the game into the inviter's lobby by itself (during a match or an editor it waits until you're back at a menu).
 - **Online overlay**: BACK + RB opens it once per press (it could open and close at once); BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
+- **Other players' Created Superstars' pictures** show in the online lobby, and your own no longer falls back to the silhouette when someone else picks one (each picture is sent once and kept; you need a Created Superstar of your own for others' to show).
 - **Your own Created Superstar's picture** shows in the online lobby (it was the CREATE A SUPERSTAR outline); lobby chat stays within the chat box's 21 characters.
 - **CPU players in Player Matches**: the host presses Y on an empty slot (Y ADD CPU / REMOVE CPU) and picks the CPU's superstar with A; the match plays in sync on every machine (needs at least two human players).
 - **Router port opening (UPnP / NAT-PMP)**: online, the game asks the player's router to open its own port for an hour (renewed, removed when the game closes) so more players connect directly; GRAPHICS → DISPLAY → ROUTER PORT (UPNP) turns it off.
@@ -128,6 +130,15 @@ still being tested.
 ### Options
 - **VIBRATION ON / OFF** (OPTIONS → CONTROLS).
 - **Mystery Opponent**: once you pick your superstar the CPU's pick locks by itself and shows only a "?" on its panel; the opponent stays hidden on the VS screen until the entrance.
+
+### Mod Maker
+- **Simple mode** ("Make my first superstar"): ten plain steps - name and style, look (a superstar in the game, one from an older game's disc, or a 3D model), attires, music, entrance (watch the walk to the ring), moves and taunts (watch them on your model), pose and pictures (taken from the 3D view), extras, finish with "Fix it" for every problem. It's a view of the same project: switch to the full editor at any time.
+- **Port from a disc**: superstars, entrances, arenas, moves, belts and weapons from your own discs of SvR 2004-2011, Here Comes the Pain, Shut Your Mouth, Legends of WrestleMania, WWE '12, '13 and 2K14-2K17 (PS2 and Xbox 360), read straight from the ISO; each item shows whether 2011 already has it.
+- **FBX**: export any superstar (skeleton, weights, textures) and import a 3D model as a superstar - Unity / VRChat, Mixamo, Rigify, 3ds Max Biped, UE Mannequin and WWE 2K skeletons are mapped automatically (an editable table for the rest), big models are reduced to fit the game, and a model check lists what's wrong (polycount, weights, missing bones, pictures, size).
+- **Installed mods**: every installed mod by type, with superstars playing their moveset, taunts and pose, move packs played on any superstar, and arenas in a read-only 3D view.
+- **Animations** match the game (the game's own arm and leg solving, finger poses, real blood with a Blood / Damage switch, hit spheres), and match moves play by name.
+- **Pac editor** for any game file archive (export / replace / add / remove, saved as a copy), **attires inside a model** (add / replace / remove), **all four superstar pictures** set separately, theme volume, hometown and announcer pickers, a select-screen pose picker, belt and weapon reskins, and warnings before a mod can crash the game.
+- **Optional tools**: Bink 2 videos (WWE '13+ titantrons) convert when you install RAD Video Tools yourself; vgmstream ships for WWE '12+ themes.
 
 ### Fixes
 - **Road to WrestleMania VS. UNDERTAKER** accepts downloaded Created Superstars (the game only allowed ones made on that profile).
@@ -143,16 +154,29 @@ still being tested.
 - **Universe: superstar mods can't hold a title** (a mod has no Universe place, so the title got stuck with a holder nobody could book); saves where one does get the previous holder back.
 - **Superstar mod slots**: removing a mod in the launcher / Android frees its slot; the game reuses the slots of mods whose folder is gone.
 - **137 superstar mods** (was 72): 65 more of the game's empty superstar ids take mods; old saves load as before, and mods already installed keep their ids. **More than 137 installed**: the launcher's Mods tab and the Android Mods page say how many fit and mark the ones left out (NOT IN GAME), instead of dropping them silently. Mods already in the game keep their place (so their saves stay right); switching one off gives its place to the next waiting mod at the next start. The game lists the left-out ones in `Mods\Superstars\left_out.txt`.
+- **Mod entrances in CREATE AN ENTRANCE**: every installed mod entrance is listed as "MOD: <name>" at the end of the MOTION lists (normal mode, champion and multi-title too) and as parts in each scene's MOTION list (advanced), for any superstar or CAW. A saved entrance whose mod is removed shows "MISSING MOD" and plays the superstar's own parts instead of silently turning into Alicia Fox's entrance (which also happened to DLC entrances the lists left out).
+- **Attire mods** (Mods\Attires): a new or replacement attire for any roster superstar (model, name, entrance), made on the Mod Maker's Attires page; superstar mods can carry attires 1-4 inside their own model file. Superstar mods can also have a separate full-body render (`render_full.dds`).
+- **Attire mod clashes**: when two attire mods want the same attire of a superstar, the launcher (and the Android app) keeps the first installed and moves the newer to the next free attire, telling you; the game resolves it the same way if the launcher wasn't used. Superstars with entrance gear (Undertaker, CM Punk, John Cena, Shawn Michaels, John Morrison) take replaced attires only - a new attire hangs their match load.
+- **Oversized mod models no longer crash the match**: a wrestler's model has a 768 KB budget in a match; a mod over it loses its blood overlays, or is left out with a log line, instead of crashing at load (converted models are fitted to it; the Mod Maker warns).
+- **Ported arenas**: SvR 2007-2009 arenas no longer have a black floor and missing barricades, and WWE '12 / '13 / 2K14 arenas' floors are lit; the bundled RAW IS WAR arena is updated (1.7: its own lighting, mats and barricade drawn solid).
+- **Superstar mods' select-screen pose**: a mod now strikes its base superstar's pose on the character select / VS panels (it got a random default pose), or the one set with `pose=` (a pose motion or another superstar's).
 - **An entrance per attire** for superstar mods (`attire<N>_entrance=<number>` in the manifest), like Rey Mysterio's "Evil" attire in the stock game.
 - **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
 - **Ground head submissions with Sabu / The Sandman installed** no longer freeze (the game's motion search missed stock moves after a mod's added motions).
+- **A match with a keyboard or PlayStation player crashed at load** (from the button-picture change); fixed.
+- **Pause menu button bar** (SELECT / CANCEL) shows the buttons of the player who paused - keyboard keys or PlayStation buttons, not always Xbox.
+- **Superstar mods in Create an Entrance** open on the mod's own entrance (a mod in a slot that was empty in the save opened on entrance 0); a player's own pick is kept, and a changed entrance= in the mod wins over the old saved copy.
+- **Practice ring tips** (GAMEPLAY TIPS, the Load Successful box) show player 1's own button pictures - keyboard, PlayStation or Xbox.
 - **Keyboard and mouse button pictures** from WWE 2K15 PC (every key, plus mouse buttons), and the keyboard / PlayStation pictures on character select drawn right.
 - **Texture packs**: textures loaded into reused memory (Created Superstars, the select screen's superstars) can now be dumped and replaced.
 - **The mouse is only captured when the game window really has focus** (a game in the background could grab the cursor in keyboard-and-mouse mode).
 - **Less CPU on weak PCs**: the GPU VSync thread sleeps until the vblank instead of spinning through it, and the timer thread waits for its next timer instead of yielding in a loop (together about 15-18% of a core freed); the log shows each thread group's CPU every 5 s (for slow-PC reports).
+- **Windows N editions**: the game, launcher and Mod Maker start without Microsoft's Media Feature Pack (before, they likely didn't start at all); only .mp4 movies and your own music need it.
+- **First time setup** (launcher, new Setup tab, shown once): what the game and the Mod Maker need, found / missing / optional, and one-click installs of the Mod Maker's tools (Python + numpy + Pillow, ffmpeg) into the game folder from the official sites - no admin rights. The release now carries the Visual C++ runtime files.
 - **Less CPU on high-refresh screens (Direct3D 12 / 11)**: the window is only redrawn when the game has a new frame (Vulkan already did this); before, it redrew at the monitor's rate - 144 times a second on a 144 Hz screen for 60 game frames. Measured: the UI thread 43% -> 3% of a core (D3D12), frame rate unchanged. `d3d_throttle_ui_paints = false` turns it off.
 - **VSync really syncs**: with VSync on, frames no longer tear on Direct3D 12, Direct3D 11 or Vulkan (it only paced the game before); the log names the present mode.
 - **Cutscene movies keep up with their sound** on slow PCs (the video fell 4-6 s behind in Road to WrestleMania); full-speed PCs are unchanged.
+- **Sabu 1.5 and The Sandman 1.1**: their models no longer show red specks at a distance or a stray texture on some parts (converter bugs, now fixed for all new ports too).
 - **Sabu 1.4**: his d-pad-left taunt ("Sit Down", a move 2011 cut) no longer freezes him and the match end.
 - **HD entrance movies**: a superstar or media mod's movie can be an .mp4 up to 1080p, shown on the arena screens at up to 1024x1024 (the game's largest; 320x320 before), decoded on the graphics card; the launcher makes a .bik copy for PCs that can't play .mp4 (Steam Deck, Windows N).
 - **Hometowns and name calls**: superstar mods can have a hometown the announcer says (`hometown=`); Created Superstars can use a stock superstar's name calls (`Mods\caw_announcer.txt`); theme volume per mod (`theme_gain=`).
