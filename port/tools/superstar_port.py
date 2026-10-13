@@ -29,6 +29,12 @@ Games:
     svr2008   SvR 2008 - the same as 2009 (ids: 2011 id = 2008 id + 100)
     svr2007   SvR 2007 - the same, its per-part textures baked (svr07_char.py), XACT themes (xact.py);
               ratings stay the base's
+    wwe12     WWE '12 - model (w13_char.py, within the vertex budget), attires, renders, theme
+              (wwise.py + vgmstream), entrance + titantron (entrance_port.py; Bink 2 opt in), announcer;
+              ratings and moveset stay the base's
+    wwe13     WWE '13 - the same, from its xcompressed pacs (--svrmod)
+    wwe2k14   WWE 2K14 - the same, names from string.pac, the first 4 of its attires; no theme yet
+              (its superstar -> theme table isn't decoded)
     others    listed with status "research" (docs/OTHER_GAMES.md)
 
 --src may be a disc image (read through discfs.py); the files a conversion needs are
@@ -61,8 +67,8 @@ GAMES = [
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
     dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
-    dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='research'),
-    dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research'),
+    dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
+    dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
 ]
 READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
 
@@ -823,12 +829,94 @@ class GameW:
                 and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
 
 
+class GameW13(GameW):
+    """WWE '13: as WWE '12, in xcompressed pacs (svrmod xdec); chEtc CHAR/DAT 324 B (name +58, scale +52,
+    gender +256, weight class +292 [guess: 102 of 138 shared superstars agree]), CHAR/PRO 1180 B with
+    the entrance block at +576 (music, movie, entrance); themes Play_MUS_<music>_0_0; titantrons are
+    Bink 2 (entrance_port --titantron: bink2_convert with the player's decoder, opt in)."""
+
+    year = 13
+    label = "WWE '13"
+    suffix = '_13'
+    game_id = 'wwe13'
+    dat_name, dat_scale, dat_gender, dat_class, pro_entrance = 58, 52, 256, 292, 576
+
+    def __init__(self, src, svrmod=None):
+        import wwe13_entrance as WE
+        self.WE = WE
+        GameW.__init__(self, src, WE.find_svrmod(svrmod))
+
+    def pac_bytes(self, rel):
+        raw = open(self.src.get(rel), 'rb').read()
+        return self.WE.xdec(raw, self.svrmod) if raw[:4] == b'\x0f\xf5\x12\xed' else raw
+
+
+class GameW2K14(GameW13):
+    """WWE 2K14: xcompressed like '13; chEtc CHAR/DAT 208 B (name string id u16 +10 -> string.pac SDB table
+    5000 child 0, English; height +22 in 2011's units; weight class +26; gender +27, 1 = diva), CHAR/PRO
+    1276 B with the entrance block at +576 as '13; model pacs say EPAC with 16-byte entries, several
+    attires (Cena 10), each a wrestler model (kind 2) and a second one (kind 4) - the first four kind 2
+    become the 2011 attires; renders menu/menuHD.pac in 2011's format. Themes: Game_Sound_M.pck, but the
+    superstar -> theme event table isn't decoded (events in Game_Sound_E_S.pck "Entrance_Music_E_S" are
+    numbered in order), so no theme yet."""
+
+    year = 14
+    label = 'WWE 2K14'
+    suffix = '_2k14'
+    game_id = 'wwe2k14'
+    dat_name, dat_scale, dat_gender, dat_class, pro_entrance = 10, 22, 27, 26, 576
+    dat_size = 208
+    max_attires = 4
+    theme_missing = "WWE 2K14's superstar -> theme table isn't decoded yet: no theme (add one in the Mod Maker)"
+
+    def __init__(self, src, svrmod=None):
+        GameW13.__init__(self, src, svrmod)
+        names = self._names()
+        for i, r in self.raw_dat.items():   # (the name is a string id: rebuild the 2011-shaped record's name)
+            if len(r) < 28:
+                continue
+            nm = names.get(struct.unpack_from('<H', r, self.dat_name)[0], '').encode('latin1', 'replace')[:31]
+            x = bytearray(self.dat[i])
+            x[34:66] = bytes(32)
+            x[170:202] = bytes(32)
+            x[34:34 + len(nm)] = nm
+            x[170:170 + len(nm)] = nm
+            self.dat[i] = bytes(x)
+
+    def _names(self):
+        """string.pac SDB 5000 (English) child 0: {u32 0, u32 count, count x {offset, length, id}} -> {id: text}"""
+        g = self.MP.read_pac(self.pac_bytes('pac/string.pac'))
+        es = {n: b for t, ents in g for n, b in ents}
+        if b'5000' not in es:
+            return {}
+        u = self.MP.unz(dict(svrfmt.pach_read(self.MP.unz(es[b'5000'])))[0])
+        out = {}
+        for k in range(struct.unpack_from('<I', u, 4)[0]):
+            off, ln, sid = struct.unpack_from('<3I', u, 8 + 12 * k)
+            out[sid] = u[off:off + ln].split(b'\0')[0].decode('utf-8', 'replace')
+        return out
+
+    def music_pck(self):
+        return self.src.get('sound/Game_Sound_M.pck') if self.src.has('sound/Game_Sound_M.pck') else None
+
+    def theme_events(self, music, cid):
+        return []
+
+
 def model_w(g, cid, pac11, out, portrait):
     """w13_char on the (decoded) EPK8 model pac -> [entries], notes"""
     import w13_char
     import tempfile
     raw = g.pac_bytes(g.chpac_rel(cid))
     tmp = os.path.join(tempfile.gettempdir(), 'svr_w_ch%d.pac' % cid)
+    left = []
+    if getattr(g, 'max_attires', 0):   # (2K14: wrestler models only, the first four attires, as an EPK8)
+        ents = [(n, b) for t, es in g.MP.read_pac(raw) if t == b'EMD ' for n, b in es if n.endswith(b'2')]
+        ents.sort(key=lambda e: e[0])
+        left = [n.decode('latin1') for n, _ in ents[g.max_attires:]]
+        w13_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), [(b'EMD ', n, b) for n, b in ents[:g.max_attires]],
+                            tmp)
+        raw = open(tmp, 'rb').read()
     open(tmp, 'wb').write(raw)
     ptmp = None
     if portrait:   # (w13_char takes the portrait as a file)
@@ -842,6 +930,7 @@ def model_w(g, cid, pac11, out, portrait):
                 os.remove(f)
         except OSError:
             pass
+    return left
 
 
 def buildW(cid, outdir, o, rep):
@@ -884,7 +973,9 @@ def buildW(cid, outdir, o, rep):
          'no %s render: the base\'s' % gw.label)
     progress(20, 'model')
     if gw.has_chpac(cid):
-        model_w(gw, cid, pac11, os.path.join(mod, 'ch.pac'), portrait)
+        left = model_w(gw, cid, pac11, os.path.join(mod, 'ch.pac'), portrait)
+        if left:
+            drop('attires past %d (2011 has 4 at most): %s' % (gw.max_attires, ', '.join(left)))
         import model_budget
         pages = model_budget.model_pages(os.path.join(mod, 'ch.pac'))
         note('model: %s ch%d.pac, %d attires (w13_char)' % (gw.label, cid, len(pages)))
@@ -893,16 +984,17 @@ def buildW(cid, outdir, o, rep):
                 note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
     else:
         warn('%s has no model for %d: the base\'s is used' % (gw.label, cid))
-    drop('ratings, abilities (%s\'s 12 ratings aren\'t mapped yet): the base\'s' % gw.label)
+    drop('ratings, abilities (%s\'s aren\'t mapped yet): the base\'s' % gw.label)
     if not o.get('no_moves') and base != i11:
         drop('moveset: the base\'s for now')
     music, movie, ent, alt = gw.entrance_block(cid)
     # theme
     progress(45, 'theme')
     import wwise
+    events = gw.theme_events(music, cid)
     try:
-        ev, why = wwise.theme(gw.music_pck(), gw.theme_events(music, cid), os.path.join(mod, 'theme.mp3'), work,
-                              o.get('vgmstream'))
+        ev, why = (wwise.theme(gw.music_pck(), events, os.path.join(mod, 'theme.mp3'), work, o.get('vgmstream'))
+                   if events and gw.music_pck() else (None, getattr(gw, 'theme_missing', 'no theme events')))
     except Exception as e:   # noqa: BLE001
         ev, why = None, str(e)[:160]
     if ev:
@@ -976,7 +1068,7 @@ def buildW(cid, outdir, o, rep):
 
 # --------------------------------------------------------------------------- commands
 
-def open_game(game, src):
+def open_game(game, src, svrmod=None):
     if game == 'svr2010':
         S = svr10()
         pac = src.get_dir('pac/ch', lambda n: n.lower() == 'chetc.pac').rsplit(os.sep, 1)[0]
@@ -994,8 +1086,8 @@ def open_game(game, src):
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
         return g
-    if game == 'wwe12':
-        g = GameW(src)
+    if game in ('wwe12', 'wwe13', 'wwe2k14'):
+        g = GameW(src) if game == 'wwe12' else GameW13(src, svrmod) if game == 'wwe13' else GameW2K14(src, svrmod)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFA'}
         return g
     raise BadInput('game %s is not ready (status research; docs/OTHER_GAMES.md)' % game)
@@ -1004,7 +1096,7 @@ def open_game(game, src):
 def cmd_list(a):
     S = svr10()
     src = Src(a['src'], os.path.join(a.get('cache') or os.path.join(HERE, 'work', 'src'), a['game']))
-    g = open_game(a['game'], src)
+    g = open_game(a['game'], src, a.get('svrmod'))
     g11, snd = game11(a['pac11'])
     play = playable11(g11)
     out = []
@@ -1029,14 +1121,15 @@ def cmd_convert(a):
     os.makedirs(outdir, exist_ok=True)
     src = Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
     progress(1, 'reading the game')
-    g = open_game(a['game'], src)
+    g = open_game(a['game'], src, a.get('svrmod'))
     g11, snd = game11(a['pac11'])
     rep = dict(ok=False, out=None, folder=None, opens='superstar', warnings=[], dropped=[], notes=[])
     o = dict(a, src=src, src_game=g, g11=g11, snd=snd)
     for k in ('base', 'entrance', 'call'):
         if o.get(k) is not None:
             o[k] = int(o[k])
-    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW}[a['game']]
+    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW, 'wwe13': buildW,
+          'wwe2k14': buildW}[a['game']]
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
     progress(100, 'done')
