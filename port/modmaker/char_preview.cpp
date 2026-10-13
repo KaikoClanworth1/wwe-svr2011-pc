@@ -780,6 +780,15 @@ std::array<float, 3> HandAngles(int id, int k, float t) {
   return v;
 }
 
+// The skeleton's body: the 21 animated bones and the limbs (not attachments, fingers, face).
+bool BodyBone(const std::string& n) {
+  for (const char* b : kBones)
+    if (n == b) return true;
+  for (const char* b : {"l_ninoude", "r_ninoude", "l_kote", "r_kote", "l_te", "r_te", "l_momo", "r_momo", "l_sune", "r_sune", "l_ashi", "r_ashi"})
+    if (n == b) return true;
+  return false;
+}
+
 // World transforms of every bone for the motion at `key` (rotation keys).
 std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
   const float kAng = 6.2831853f / 65536.0f, kMove = 1e-4f;
@@ -907,23 +916,35 @@ struct GpuVertex {
 };
 struct Cb {
   float viewproj[16];
-  float flags[4];  // x: alpha test
+  float flags[4];  // x: alpha test, y: the floor
+  float key[4];    // toward the key light (view space, camera relative: upper left)
+  float fill[4];   // toward the fill light (lower right)
+  float fwd[4];    // the camera's forward
+  float shadow[2][4];  // the floor's contact shadows: x, z, radius, strength (0: none)
 };
 
 const char* kShader = R"(
-cbuffer C : register(b0) { row_major float4x4 viewproj; float4 flags; };
+cbuffer C : register(b0) { row_major float4x4 viewproj; float4 flags; float4 key; float4 fill; float4 fwd; float4 shadow[2]; };
 struct VI { float3 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD; };
-struct VO { float4 p : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD; };
-VO vs(VI i) { VO o; o.p = mul(float4(i.p, 1), viewproj); o.n = i.n; o.uv = i.uv; return o; }
+struct VO { float4 p : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD0; float3 w : TEXCOORD1; };
+VO vs(VI i) { VO o; o.p = mul(float4(i.p, 1), viewproj); o.n = i.n; o.uv = i.uv; o.w = i.p; return o; }
 Texture2D t : register(t0);
 SamplerState s : register(s0);
 float4 ps(VO i) : SV_Target {
   float4 tx = t.Sample(s, i.uv);
   if (flags.x > 0.5 && tx.a < 0.3) discard;
   float3 n = normalize(i.n + 1e-5);
-  float key = saturate(dot(n, normalize(float3(-0.4, 0.6, 0.7))));
-  float rim = saturate(dot(n, normalize(float3(0.6, 0.3, -0.7))));
-  return float4(tx.rgb * (0.38 + 0.62 * key + 0.25 * rim), 1);
+  if (dot(n, fwd.xyz) > 0) n = -n;  // (two-sided: cloth, hair cards)
+  float k = saturate(dot(n, key.xyz)), f = saturate(dot(n, fill.xyz));
+  if (flags.y > 0.5) {  // the floor, with the people's contact shadows
+    float dark = 1;
+    for (int j = 0; j < 2; ++j)
+      if (shadow[j].w > 0) dark *= 1 - shadow[j].w * 0.55 * smoothstep(shadow[j].z, 0, length(i.w.xz - shadow[j].xy));
+    return float4(tx.rgb * (0.62 + 0.38 * k) * dark, 1);
+  }
+  float amb = lerp(0.30, 0.52, 0.5 + 0.5 * n.y);
+  float rim = pow(1 - saturate(dot(n, -fwd.xyz)), 3) * 0.45;
+  return float4(tx.rgb * (amb + 0.80 * k + 0.28 * f + rim), 1);
 }
 )";
 
@@ -937,6 +958,10 @@ ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_raster = nullptr;
 ID3D11DepthStencilState* g_depth = nullptr;
 ID3D11ShaderResourceView* g_white = nullptr;
+ID3D11ShaderResourceView* g_floor_tex = nullptr;  // the ring canvas with a 1 m grid
+ID3D11Buffer* g_floor_vb = nullptr;               // 4 vertices, set each frame (the floor height)
+ID3D11Buffer* g_floor_ib = nullptr;
+constexpr float kFloorHalf = 40;                  // model units (10 cm): an 8 m square
 ID3D11Texture2D* g_rt = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 ID3D11ShaderResourceView* g_rt_srv = nullptr;
@@ -975,7 +1000,7 @@ std::shared_ptr<Motion> g_idle;
 std::string g_status, g_motion_status;
 Playback g_play;
 std::shared_ptr<const Bytes> g_bank;
-float g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
+float g_yaw = 0.35f, g_pitch = 0.22f, g_zoom = 1;
 V3 g_center{0, 0, 0}, g_pan{0, 0, 0};
 float g_height = 20;
 bool g_blood = false;  // the blood overlays shown
@@ -1177,6 +1202,40 @@ bool CreatePipeline() {
   g_dev->CreateTexture2D(&td, &srd, &tex);
   g_dev->CreateShaderResourceView(tex, nullptr, &g_white);
   tex->Release();
+  {  // the floor: canvas grey, a line every metre (8 cells), the middle lines darker, darker towards the edge
+    constexpr int N = 512, cell = N / 8;
+    std::vector<uint32_t> px(size_t(N) * N);
+    for (int y = 0; y < N; ++y)
+      for (int x = 0; x < N; ++x) {
+        const float dx = (x + 0.5f) / N - 0.5f, dy = (y + 0.5f) / N - 0.5f;
+        const float edge = std::clamp(1.0f - (std::max(std::fabs(dx), std::fabs(dy)) - 0.30f) * 3.0f, 0.55f, 1.0f);
+        float v = 0.74f;
+        const bool line = x % cell < 2 || y % cell < 2, mid = std::abs(x - N / 2) < 2 || std::abs(y - N / 2) < 2;
+        if (line) v = 0.60f;
+        if (mid) v = 0.50f;
+        v *= edge;
+        const uint32_t c = uint32_t(std::clamp(v, 0.0f, 1.0f) * 255);
+        px[size_t(y) * N + x] = 0xFF000000u | uint32_t(std::min(255u, c + 6)) << 16 | c << 8 | c;
+      }
+    D3D11_TEXTURE2D_DESC fd = td;
+    fd.Width = fd.Height = N;
+    D3D11_SUBRESOURCE_DATA fs = {px.data(), N * 4, 0};
+    ID3D11Texture2D* ft = nullptr;
+    if (SUCCEEDED(g_dev->CreateTexture2D(&fd, &fs, &ft))) g_dev->CreateShaderResourceView(ft, nullptr, &g_floor_tex), ft->Release();
+    D3D11_BUFFER_DESC vd = {};
+    vd.ByteWidth = 4 * sizeof(GpuVertex);
+    vd.Usage = D3D11_USAGE_DYNAMIC;
+    vd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    vd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    g_dev->CreateBuffer(&vd, nullptr, &g_floor_vb);
+    const uint32_t idx[6] = {0, 1, 2, 0, 2, 3};
+    D3D11_BUFFER_DESC id = {};
+    id.ByteWidth = sizeof idx;
+    id.Usage = D3D11_USAGE_IMMUTABLE;
+    id.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA is = {idx, 0, 0};
+    g_dev->CreateBuffer(&id, &is, &g_floor_ib);
+  }
   return true;
 }
 
@@ -1224,6 +1283,10 @@ void ViewProj(float aspect, float out[16]) {
 float g_frame_lo[3], g_frame_hi[3];  // the bounds gathered over the slots skinned this frame
 float g_height_scale = 1;            // the model's (slot 0) size from its feet
 float g_feet = 0, g_feet_next = 1e30f, g_top_next = -1e30f, g_tall = 0;  // slot 0's lowest / highest y (view, unscaled)
+// the floor under a motion (view y): its lowest bone over the whole motion, less a sole - in-ring motions
+// (finishers) are keyed on the ring canvas, above the arena floor (0) the stances and taunts stand on
+float g_motion_floor = 0;
+bool g_has_motion_floor = false;
 
 void Skin(Slot& sl, const std::vector<Xf>& pose) {
   float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
@@ -1291,20 +1354,49 @@ void Render(int w, int h) {
     }
   }
   if (g_feet_next <= g_top_next) g_feet = g_feet_next, g_tall = g_top_next - g_feet_next;
-  const bool fk_frame = g_frame && clock && clock->fk && clock->keys > 1;
-  if (fk_frame) {  // a match move: framed over the whole motion (bone positions,
-    // every few keys, plus a body's half width) - the people move metres during it
+  const bool fk_frame = g_frame && clock && clock != g_idle.get() && clock->keys > 1;
+  if (fk_frame) {  // a motion: framed over all of it (bone positions, every few keys,
+    // plus a body's half width) - the people move metres during it
+    float lowest = 1e30f;
     for (const Slot& sl : g_slots) {
       if (!sl.ch) continue;
       const Motion* m = sl.motion ? sl.motion.get() : nullptr;
       if (!m) continue;
       const int step = std::max(1, m->keys / 16);
-      for (int k = 0; k < m->keys; k += step)
-        for (const Xf& x : Pose(*sl.ch, *m, float(k))) {
+      for (int k = 0; k < m->keys; k += step) {
+        const auto pose = Pose(*sl.ch, *m, float(k));
+        for (size_t bi = 0; bi < pose.size(); ++bi) {
+          const Xf& x = pose[bi];
           const float v[3] = {x.t.x, -x.t.y, -x.t.z};
+          if (BodyBone(sl.ch->bones[bi].name)) lowest = std::min(lowest, v[1]);  // (body bones: attachments sit anywhere)
           for (int c = 0; c < 3; ++c) g_frame_lo[c] = std::min(g_frame_lo[c], v[c] - 2), g_frame_hi[c] = std::max(g_frame_hi[c], v[c] + 2);
         }
+      }
     }
+    if (std::getenv("MM_FEET_LOG"))  // (debug: each person's root and lowest foot, every few keys)
+      for (int si = 0; si < 2; ++si) {
+        const Slot& sl = g_slots[si];
+        if (!sl.ch || !sl.motion) continue;
+        std::string line = "feet " + std::to_string(si) + ":";
+        for (int k = 0; k < sl.motion->keys; k += 4) {
+          const auto w = Pose(*sl.ch, *sl.motion, float(k));
+          float foot = 1e30f, root = 0;
+          for (size_t i = 0; i < w.size(); ++i) {
+            const std::string& n = sl.ch->bones[i].name;
+            if (n == "root") root = -w[i].t.y;
+            if (n.find("ashi") != std::string::npos || n.find("tsumasaki") != std::string::npos) foot = std::min(foot, -w[i].t.y);
+          }
+          char b[48];
+          std::snprintf(b, sizeof b, " k%d r%.1f f%.1f", k, root, foot);
+          line += b;
+        }
+        mm::Log(line);
+      }
+    g_has_motion_floor = lowest < 1e29f;
+    g_motion_floor = lowest - 0.3f;  // (the lowest bone, a toe, sits a few cm above the sole)
+    g_frame_lo[1] = std::min(g_frame_lo[1], g_motion_floor);
+  } else if (g_frame) {
+    g_has_motion_floor = false;
   }
   if (g_frame && g_frame_lo[0] <= g_frame_hi[0]) {  // framed as posed (the idle stands on the floor)
     const float* lo = g_frame_lo;
@@ -1315,7 +1407,7 @@ void Render(int w, int h) {
     // (20 tall, ~11 radius) comes out as before
     const V3 ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
     g_height = std::max(1.0f, Len(ext) * 0.5f * 1.84f);
-    if (fk_frame) g_height *= 0.72f;  // (the bounds hold the whole move: most of it happens nearer the middle)
+    if (fk_frame) g_height *= 0.86f;  // (the bounds hold the whole move: most of it happens nearer the middle)
     g_pan = {};
     g_frame = false;
   }
@@ -1334,15 +1426,71 @@ void Render(int w, int h) {
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
   float viewproj[16];
   ViewProj(float(w) / float(h), viewproj);
+  // camera relative lights: the key from the camera's upper left, the fill from its lower right
+  V3 fwd, right, up;
+  {
+    const float dist = g_height * 1.85f * g_zoom, cp = std::cos(g_pitch);
+    const V3 at = g_center + g_pan, eye = at + V3{std::sin(g_yaw) * dist * cp, dist * std::sin(g_pitch), std::cos(g_yaw) * dist * cp};
+    fwd = Norm(at - eye), right = Norm(Cross(V3{0, 1, 0}, fwd)), up = Cross(fwd, right);
+  }
+  const V3 key = Norm(fwd * -0.55f + up * 0.75f - right * 0.45f), fill = Norm(fwd * -0.6f - up * 0.15f + right * 0.75f);
+  // contact shadows: under each person's hips, as strong as they are near the floor
+  const float floor_y = (g_has_motion_floor && g_slots[0].motion ? g_motion_floor : g_feet * (1 - g_height_scale)) - 0.02f;
+  float shadows[2][4] = {};
+  for (int si = 0; si < 2; ++si) {
+    const Slot& sl = g_slots[size_t(si)];
+    if (!sl.ch || sl.world.size() != sl.ch->bones.size()) continue;
+    float lowest = 1e30f, hx = 0, hz = 0;
+    bool hips = false;
+    for (size_t bi = 0; bi < sl.world.size(); ++bi) {
+      const std::string& n = sl.ch->bones[bi].name;
+      if (!BodyBone(n)) continue;
+      const float vy = -sl.world[bi].t.y;
+      lowest = std::min(lowest, vy);
+      if (n == "koshi") hx = sl.world[bi].t.x, hz = -sl.world[bi].t.z, hips = true;
+    }
+    if (!hips) continue;
+    const float above = std::max(0.0f, lowest - floor_y);
+    shadows[si][0] = hx, shadows[si][1] = hz, shadows[si][2] = 7.0f;
+    shadows[si][3] = std::clamp(1.0f - above / 14.0f, 0.15f, 1.0f);
+  }
+  auto set_cb = [&](float cutout, float floor) {
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
+    Cb* c = static_cast<Cb*>(ms.pData);
+    std::memcpy(c->viewproj, viewproj, 64);
+    c->flags[0] = cutout, c->flags[1] = floor, c->flags[2] = c->flags[3] = 0;
+    const float k4[4] = {key.x, key.y, key.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
+    std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);
+    std::memcpy(c->shadow, shadows, sizeof shadows);
+    g_ctx->Unmap(g_cb, 0);
+    return true;
+  };
+  // the floor: the game's (y 0), where the model's height scale puts it
+  if (g_floor_vb && g_floor_tex) {
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (SUCCEEDED(g_ctx->Map(g_floor_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+      // (a motion's own floor; else the game's, y 0, where the model's height scale puts it)
+      const float y = floor_y, a = kFloorHalf;
+      // under the people (the framed centre, on the metre grid: the lines stay put while the camera moves)
+      const float cx = std::round(g_center.x / 10) * 10, cz = std::round(g_center.z / 10) * 10;
+      GpuVertex* v = static_cast<GpuVertex*>(ms.pData);
+      v[0] = {{cx - a, y, cz - a}, {0, 1, 0}, {0, 0}}, v[1] = {{cx + a, y, cz - a}, {0, 1, 0}, {1, 0}};
+      v[2] = {{cx + a, y, cz + a}, {0, 1, 0}, {1, 1}}, v[3] = {{cx - a, y, cz + a}, {0, 1, 0}, {0, 1}};
+      g_ctx->Unmap(g_floor_vb, 0);
+      if (set_cb(0, 1)) {
+        const UINT stride = sizeof(GpuVertex), offset = 0;
+        g_ctx->IASetVertexBuffers(0, 1, &g_floor_vb, &stride, &offset);
+        g_ctx->IASetIndexBuffer(g_floor_ib, DXGI_FORMAT_R32_UINT, 0);
+        g_ctx->PSSetShaderResources(0, 1, &g_floor_tex);
+        g_ctx->DrawIndexed(6, 0, 0);
+      }
+    }
+  }
   for (const Slot& sl : g_slots)
   for (const GpuMesh& g : sl.gpu) {
     if (g.blood && (!g_blood || g.blood_missing)) continue;
-    D3D11_MAPPED_SUBRESOURCE ms;
-    if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
-    Cb* c = static_cast<Cb*>(ms.pData);
-    std::memcpy(c->viewproj, viewproj, 64);
-    c->flags[0] = g.cutout ? 1.0f : 0.0f;
-    g_ctx->Unmap(g_cb, 0);
+    if (!set_cb(g.cutout ? 1.0f : 0.0f, 0)) continue;
     const UINT stride = sizeof(GpuVertex), offset = 0;
     g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
     g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
@@ -1371,7 +1519,7 @@ void Shutdown() {
   for (Slot& sl : g_slots) FreeCharacter(sl);
   Release(g_rt_srv), Release(g_rtv), Release(g_rt), Release(g_dsv);
   Release(g_vs), Release(g_ps), Release(g_layout), Release(g_cb), Release(g_sampler), Release(g_raster);
-  Release(g_depth), Release(g_white);
+  Release(g_depth), Release(g_white), Release(g_floor_tex), Release(g_floor_vb), Release(g_floor_ib);
 }
 
 void LoadSlot(int which, const std::wstring& ch_pac) {
@@ -1415,8 +1563,7 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
             " ms" + (idle ? " (with the idle)" : ""));
     if (which == 0) {
       char s[160];
-      std::snprintf(s, sizeof s, "%zu vertices, %zu bones%s", ch->verts, ch->bones.size(),
-                    g_bank ? "" : g_idle ? ", playing the idle stance" : "");
+      std::snprintf(s, sizeof s, "%zu vertices, %zu bones", ch->verts, ch->bones.size());
       g_status = s;
       if (!g_idle && !idle_err.empty()) g_status += " (no idle: " + idle_err + ")";
     }
@@ -1475,7 +1622,7 @@ bool HasBlood() {
 Playback& Play() { return g_play; }
 
 void ResetCamera() {
-  g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
+  g_yaw = 0.35f, g_pitch = 0.22f, g_zoom = 1;
   g_pan = {};
   g_frame = true;
 }
@@ -1590,8 +1737,9 @@ void Draw(float w, float h) {
       g_pan = g_pan - right * (io.MouseDelta.x * k) + V3{0, io.MouseDelta.y * k, 0};
     }
     if (io.MouseWheel != 0) g_zoom = std::clamp(g_zoom * (io.MouseWheel > 0 ? 0.88f : 1.14f), 0.25f, 4.0f);
-    if (!ImGui::IsAnyMouseDown() && io.MouseWheel == 0)
-      ImGui::SetTooltip("Left drag: turn   Right drag: tilt   Middle drag: pan   Wheel: zoom");
+    const ImVec2 a = ImGui::GetItemRectMin();
+    ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + 8, a.y + 6), IM_COL32(200, 200, 200, 120),
+                                        "Left drag: turn   Right drag: tilt   Middle drag: pan   Wheel: zoom");
   }
 }
 
@@ -1600,7 +1748,10 @@ float ModelHeight() { return g_slots[0].ch ? g_tall : 0.0f; }
 
 std::string Status() {
   std::lock_guard lock(g_mutex);
-  return g_status;
+  if (!g_slots[0].ch || g_status.find(" bones") == std::string::npos) return g_status;
+  // (what plays now, not what played when the model loaded)
+  if (g_bank && g_play.id >= 0) return g_status + ", motion " + std::to_string(g_play.id) + (g_play.x ? " variant " + std::to_string(g_play.x) : "");
+  return g_status + (g_idle ? ", the idle stance" : ", the bind pose");
 }
 
 }  // namespace char_preview

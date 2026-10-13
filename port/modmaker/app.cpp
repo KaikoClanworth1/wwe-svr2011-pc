@@ -219,6 +219,10 @@ std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* 
                       const wchar_t* def_ext, const wchar_t* def_name) {
   IFileDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a file dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                               IID_PPV_ARGS(&dlg))))
     return out;
@@ -269,6 +273,10 @@ std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPE
 std::wstring PickFolder(const wchar_t* title) {
   IFileOpenDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a folder dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return out;
   DWORD opt = 0;
   dlg->GetOptions(&opt);
@@ -1757,9 +1765,10 @@ void StatusBar() {
   const bool untouched = ProjectUntouched();
   if (untouched) g_problems.clear();
   const int errors = ErrorCount(g_problems), warnings = int(g_problems.size()) - errors;
-  char pb[64];
+  char pb[128];
   if (g_problems.empty()) std::snprintf(pb, sizeof pb, untouched ? "Nothing made yet" : "No problems");
-  else std::snprintf(pb, sizeof pb, "%d error%s, %d warning%s", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
+  else std::snprintf(pb, sizeof pb, "%s%s%d error%s, %d warning%s", g_page != g_project_page ? PageName(g_project_page) : "",
+                     g_page != g_project_page ? " project: " : "", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
   const float w = ImGui::CalcTextSize(pb).x + ImGui::CalcTextSize("Log").x + 60 * g_scale;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w));
   if (!g_problems.empty()) ImGui::PushStyleColor(ImGuiCol_Text, errors ? kBad : kWarn);
@@ -2009,10 +2018,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
-    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
-      int a[4] = {0, -1, -1, 0};
-      swscanf_s(argv[++i], L"%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3]);
+    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>[,<key: paused there>]]
+      int a[5] = {0, -1, -1, 0, -1};
+      swscanf_s(argv[++i], L"%d,%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3], &a[4]);
       anims_page::TestStart(a[0], a[1], a[2], a[3]);
+      anims_page::TestKey(a[4]);
       g_page = PageId::kAnims;
     }
     else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
