@@ -189,7 +189,7 @@ layout known, some fields not; **unknown** = not looked at or not found.
 | **Model** | like 2008: `ch/chNN.pac` EMD `%02d%d%d`, JBOY mesh 0xB4 - **decoded** | 2011 skeleton, older shaders - **decoded** (`svr08_char.py`) | like 2008: EMD hex id `6602` = 0x66 attire 0 kind 2 - **decoded** (`svr08_char.py` ran unchanged, not tried in game) | same as 2011 - **decoded** (`svr10_char.py`) | like '13 (Biped rig in cm, mesh 0xB8, `yCh_*` shaders) in 2011's container - **decoded** (`w13_char.py` reader) | Biped in cm, floor origin - **decoded** (`w13_char.py`) | like '13 - **decoded** (`w13_char.py` reader unchanged); several attires per pac, each with a second (kind 4, guess: low-detail) model |
 | **Textures** | one diffuse + normal per body part (46 for Austin), no AO - **decoded**, needs baking into sheets | one set: color, normal, AO - **decoded** | like 2008 - **decoded** | same as 2011 - **decoded** | 2011's sets, color DXT1, no blood / cube map - **decoded** | like '12 - **decoded** | like '13; shared textures in `chCommon.pac` |
 | **Skeleton** | 2008's minus `kubi_x` (139) | 2011's + 48 `k*` (140) | 2008's + `r/l_kata_m` (142) | 2011's | '13 Biped (107; '13 has 109) | Biped | '13 Biped (109) |
-| **Motions** | 2008 banks (YMKs without the 16-byte header), 5 fewer event ops - **decoded** | YMKs without header, ops 192/193 - **decoded** | 2010 groups, 2008 banks, event table differs from 2008/2010/2011 (ops 4, 151, 208) - **partly** | YMKs, op 87 bit 7 - **decoded** | '13 ZMOT / YANM curves - **decoded**, not playable in 2011 | ZMOT / YANM - **decoded**, not playable | ZMOT / YANM like '13, groups renamed (C000, M001..), mot05/06 empty - **decoded**, not playable |
+| **Motions** | 2008 banks (YMKs without the 16-byte header), 5 fewer event ops - **decoded** | YMKs without header, ops 192/193 - **decoded** | 2010 groups, 2008 banks, event table differs from 2008/2010/2011 (ops 4, 151, 208) - **partly** | YMKs, op 87 bit 7 - **decoded** | '13 ZMOT / YANM curves - **decoded** (`yanm_decode.py`), retargeted to 2011's body bones (`w13_retarget.py`) | ZMOT / YANM - **decoded**, retargeted | ZMOT / YANM like '13, groups renamed (C000, M001..), mot05/06 empty - **decoded**, retargeted |
 | **Move records** | WAZE 144 B (id +0x88); EXH 24 B - **partly** | WAZE 144 B; EXH 32 B - **decoded** | WAZE 144 B, no EXH - **decoded** | WAZE 160 B; EXH 32 B - **decoded** | WAZE 160 B with '13's move ids; no EXH - **decoded** | '13 ids - **decoded** | WAZE 160 B in `createmode.pac` (2848, 390 new) - **decoded** |
 | **Moveset (PRO)** | 412 B, other slot order - **partly** | 450 B - **decoded** (Sabu, Sandman) | 450 + 10 B at +0xEA, entrance block +0xE4 - **partly** | 932 B - **decoded** (`svr10_superstar.py` MAP) | 1072 B, '13 move ids, entrance block +0x1d4 - **partly** | 1180 B - **decoded** (Mankind) | 1276 B (about 48 slots more than '13) - **partly** |
 | **Attires** | one EMD per attire; kind 4 = entrance gear | like 2007 | like 2008, kind 4 has its own costume bones | same as 2011 | same naming as 2011 | 3 per superstar (Mankind) | many (Cena 10); no face animation child |
@@ -208,12 +208,18 @@ layout known, some fields not; **unknown** = not looked at or not found.
 | SvR 2008 | done (`svr08_char.py`) | done | done (yaf) | done by hand (Sabu, Sandman): make it a slot map | done by hand: becomes the shared old-game path |
 | SvR 2009 | `svr08_char.py` + hex entry names (small) | pad 256 x 512 to 512 | yaf as 2008 (music id at PRO +0xE4) | the 2008 map shifted 10 B | 2008 path + an event-op rewriter (biggest job) |
 | SvR 2010 | done | done | done | done | done (`svr10_moves.py`) |
-| WWE '12 | `w13_char.py` on the plain EPK8 (small) | trivial | Wwise as '13 (bank v56) | new 1072 B map + the '13 move-id matching | **not portable yet** (YANM -> YMKs, as '13) |
-| WWE '13 | done (`w13_char.py`) | done | done | done by hand (Mankind) | a few by hand (YANM -> YMBs retarget); no general converter |
-| WWE 2K14 | `w13_char.py` (small; pick the wrestler model of each attire) | trivial (copy) | Wwise as '13 once the superstar -> event table is found | new 1276 B map + '13 matching | **not portable yet** (as '13) |
+| WWE '12 | `w13_char.py` on the plain EPK8 (small) | trivial | Wwise as '13 (bank v56) | new 1072 B map + the '13 move-id matching | poses through `yanm_decode` + `w13_retarget` (`Retarget(ik=False)`); events / EXH / WAZE from a similar stock 2011 move (to build: `moves_port.py`) |
+| WWE '13 | done (`w13_char.py`) | done | done | done by hand (Mankind) | a few by hand; general path as WWE '12 (to build: `moves_port.py`) |
+| WWE 2K14 | `w13_char.py` (small; pick the wrestler model of each attire) | trivial (copy) | Wwise as '13 once the superstar -> event table is found | new 1276 B map + '13 matching | as WWE '12 (to build) |
 
 Moves that 2011 already has are mapped by name and id to the stock move; only
-the rest need porting. The `list` command reports per superstar which moves
+the rest need porting. WWE '12 / '13 / 2K14 moves: the HCTP Entrance chat's
+`tools/yanm_decode.py` and `w13_retarget.py` (shared, not copied) give the
+attacker's and the victim's body keys at 30 Hz, both in the source's world
+frame; no finger bones (the 2011 template move's are kept). A move's events,
+EXH, WAZE and the victim's follow-up motion come from the most similar stock
+2011 move (same category and EXH group, closest length), timed to the new
+length, the way the WWE '13 Mankind moves were made. The `list` command reports per superstar which moves
 exist in 2011, which can be ported and which can't.
 
 ### Collision
