@@ -423,6 +423,10 @@ std::string SlotLabel(int slot) {
   return std::string("Slot ") + off;
 }
 
+}  // namespace
+std::string SlotName(int slot) { return SlotLabel(slot); }
+namespace {
+
 bool SlotFixed(int slot) {
   LoadSlotNames();
   const auto it = g_slot_names.find(slot);
@@ -454,6 +458,52 @@ void ParseMoveset(const std::string& t, char sep) {
   }
 }
 
+// Moves the installed move packs add (and the project's own pack): id, the stock move its record copies, name, pack
+struct PackMove {
+  int id = 0, from = 0;
+  std::string name, pack;
+};
+const std::vector<PackMove>& PackMoves() {
+  static std::vector<PackMove> v;
+  static double when = -100;
+  if (ImGui::GetTime() - when < 3) return v;
+  when = ImGui::GetTime();
+  v.clear();
+  std::vector<std::pair<fs::path, std::string>> packs;
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Moves", ec))
+    if (e.is_directory(ec)) packs.push_back({e.path(), Utf8(e.path().filename().wstring())});
+  if (!g_star.pack.empty()) packs.push_back({fs::path(g_star.pack), "this mod's pack"});
+  for (const auto& [dir, label] : packs) {
+    Bytes t;
+    if (!ReadFile(PathStr(dir / L"pack.txt"), t)) continue;
+    std::map<int, PackMove> by;
+    const std::string text(t.begin(), t.end());
+    for (size_t at = 0; at < text.size();) {
+      size_t nl = text.find('\n', at);
+      if (nl == std::string::npos) nl = text.size();
+      std::string line = text.substr(at, nl - at);
+      at = nl + 1;
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      int id = 0, from = 0;
+      char word[16] = "";
+      if (std::sscanf(line.c_str(), "%15s %d", word, &id) < 2 || id <= 0) continue;
+      if (std::strcmp(word, "waze") && std::strcmp(word, "wazecopy") && std::strcmp(word, "wazename")) continue;  // (motions, records)
+      PackMove& m = by[id];
+      m.id = id, m.pack = label;
+      if (!std::strcmp(word, "wazecopy") && std::sscanf(line.c_str(), "%*s %d %d", &id, &from) == 2) m.from = from;
+      else if (!std::strcmp(word, "waze")) m.from = m.from ? m.from : id;
+      else if (!std::strcmp(word, "wazename")) {
+        const size_t sp = line.find(' ', line.find(' ') + 1);
+        if (sp != std::string::npos) m.name = line.substr(sp + 1);
+      }
+    }
+    for (auto& [id, m] : by)
+      if (m.from) v.push_back(m);
+  }
+  return v;
+}
+
 void MovePicker() {
   if (g_pick_slot < 0) return;
   if (!ImGui::IsPopupOpen("pick_move")) ImGui::OpenPopup("pick_move");
@@ -480,6 +530,20 @@ void MovePicker() {
         ImGui::CloseCurrentPopup();
       }
     };
+    for (const PackMove& pm : PackMoves()) {  // installed packs' moves first (fitted by the move each copies)
+      if (!g_pick_any && !MoveFitsSlot(g_pick_slot, pm.from)) continue;
+      const std::string n = (pm.name.empty() ? MoveName(pm.from) : pm.name);
+      if (!f.empty() && Lower(n).find(f) == std::string::npos && std::to_string(pm.id).find(f) == std::string::npos) continue;
+      const auto it = g_star.moveset.find(g_pick_slot);
+      if (ImGui::Selectable((n + "  (" + std::to_string(pm.id) + ")  [" + pm.pack + "]##p" + std::to_string(pm.id)).c_str(),
+                            it != g_star.moveset.end() && it->second == pm.id)) {
+        g_star.moveset[g_pick_slot] = pm.id;
+        Touch();
+        g_pick_slot = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("From the move pack %s (a copy of move %d's record).", pm.pack.c_str(), pm.from);
+    }
     if (g_pick_any) for (const auto& [id, m] : MoveInfos()) row(id);
     else for (int id : MovesForSlot(g_pick_slot)) row(id);
     ImGui::EndChild();

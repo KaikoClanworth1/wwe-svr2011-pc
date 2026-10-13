@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <thread>
 
 #include "app.h"
@@ -74,19 +75,24 @@ struct BankPath {
 std::map<int, BankPath> g_kindex;  // move id -> where its motion is (the first bank that has track 0, x 0)
 std::atomic<int> g_kindex_state{0};  // 0 not built, 1 building, 2 ready
 std::map<int, BankPath> g_kindex_next;
+std::set<int> g_all_motions, g_all_motions_next;  // every motion id in m.pac (YMKs and YMBs, any track)
 int g_watch_pending = 0;  // (test aid: a move to watch once the index is there)
 
-void Walk(const Bytes& raw, const PacEntryInfo& e, std::vector<uint32_t>& path, std::map<int, BankPath>& out) {
+void Walk(const Bytes& raw, const PacEntryInfo& e, std::vector<uint32_t>& path, std::map<int, BankPath>& out, std::set<int>& all) {
   if (IsPach(raw)) {
     std::vector<PachEntry> kids;
     if (!PachRead(raw, kids)) return;
     for (auto& k : kids) {
       path.push_back(k.id);
-      Walk(Unpack(k.data), e, path, out);
+      Walk(Unpack(k.data), e, path, out, all);
       path.pop_back();
     }
+  } else if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMBs", 4)) {
+    const uint32_t n = Le32(&raw[0x110]);
+    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) all.insert(Le16(&raw[0x114 + 16 * i + 2]));
   } else if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMKs", 4)) {
     const uint32_t n = Le32(&raw[0x110]);
+    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) all.insert(Le16(&raw[0x114 + 16 * i + 2]));
     for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) {
       const uint8_t* d = &raw[0x114 + 16 * i];
       if (d[0] == 0 && d[1] == 0 && !out.count(Le16(d + 2))) out[Le16(d + 2)] = {e, path};
@@ -99,6 +105,7 @@ void BuildIndex() {
   if (!g_kindex_state.compare_exchange_strong(expect, 1)) return;
   std::thread([game = g_game] {
     std::map<int, BankPath> out;
+    std::set<int> all;
     const fs::path mpac = fs::path(game) / L"pac" / L"m.pac";
     PacIndex idx;
     if (ReadPacIndex(mpac, idx))
@@ -106,9 +113,10 @@ void BuildIndex() {
         Bytes raw;
         if (!ReadPacEntry(mpac, e, raw)) continue;
         std::vector<uint32_t> path;
-        Walk(Unpack(raw), e, path, out);
+        Walk(Unpack(raw), e, path, out, all);
       }
     g_kindex_next = std::move(out);
+    g_all_motions_next = std::move(all);
     g_kindex_state = 2;
   }).detach();
 }
@@ -117,6 +125,7 @@ bool IndexReady() {
   if (g_kindex_state == 0) BuildIndex();
   if (g_kindex_state == 2 && g_kindex.empty() && !g_kindex_next.empty()) {
     g_kindex = std::move(g_kindex_next);
+    g_all_motions = std::move(g_all_motions_next);
     Log("anims: " + std::to_string(g_kindex.size()) + " match moves indexed in m.pac");
   }
   return g_kindex_state == 2;
@@ -512,6 +521,7 @@ void TestStart(int star_id, int bank, int motion, int dummy_id) {
 }
 
 bool MovesIndexed() { return IndexReady(); }
+bool AnyMotion(int id) { return IndexReady() && g_all_motions.count(id); }
 bool HasMotion(int id) { return IndexReady() && g_kindex.count(id); }
 void WatchMove(int id) { Watch(id); }
 

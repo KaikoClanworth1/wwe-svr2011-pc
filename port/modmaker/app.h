@@ -343,7 +343,7 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
                                                 const std::wstring& gimmick_pac, const std::string& gimmick); }
 namespace backstage_page { extern PageHooks hooks; }
-namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::wstring& model, const std::string& name,
+namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); void TestStart(int id, const std::wstring& model, const std::string& name,
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
@@ -359,7 +359,7 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
-namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
+namespace moves_page { extern PageHooks hooks; void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host);
                        // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
@@ -374,7 +374,7 @@ void Close();
 void Draw();
 void TestEdit(const std::wstring& spec);
 }
-namespace anims_page { void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
+namespace anims_page { bool AnyMotion(int id); void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }
 

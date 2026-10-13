@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <thread>
 
 #include "app.h"
@@ -221,6 +222,35 @@ void List(int k, const std::string& game) {
               });
 }
 
+// A free 2011 move record for a converted move (moves_port --id): a WAZE record with no motion in any m.pac bank and
+// not used by an installed move pack - the one with the move's name first; 0 = let the converter pick.
+int FreeMoveRecord(const std::string& name) {
+  std::set<int> taken;
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Moves", ec)) {
+    Bytes t;
+    if (!e.is_directory(ec) || !svrfmt::ReadFile(Utf8((e.path() / L"pack.txt").wstring()), t)) continue;
+    const std::string s(t.begin(), t.end());
+    for (size_t at = 0; at < s.size();) {
+      size_t nl = s.find('\n', at);
+      if (nl == std::string::npos) nl = s.size();
+      char word[16] = "";
+      int id = 0;
+      if (std::sscanf(s.substr(at, nl - at).c_str(), "%15s %d", word, &id) == 2 &&
+          (!std::strcmp(word, "waze") || !std::strcmp(word, "wazecopy") || !std::strcmp(word, "wazename")))
+        taken.insert(id);
+      at = nl + 1;
+    }
+  }
+  int first = 0;
+  for (const auto& [id, m] : MoveInfos()) {
+    if (anims_page::AnyMotion(id) || taken.count(id)) continue;
+    if (!name.empty() && Lower(m.name) == Lower(name)) return id;
+    if (!first) first = id;
+  }
+  return first;
+}
+
 void Convert(int k, const std::string& game, const Json& item) {
   const std::string key = ItemKey(item);
   std::string safe;
@@ -233,7 +263,18 @@ void Convert(int k, const std::string& game, const Json& item) {
                                     L"--pac11", (fs::path(g_game) / L"pac").wstring()};
   if (entrance) args.push_back(L"--entrance"), args.push_back(Wide(key));  // (its own options: --entrance, --number)
   else args.push_back(L"--item"), args.push_back(Wide(key));
-  if (entrance && (game == "wwe13" || game == "wwe12" || game == "wwe2k14")) {  // xcompress: its svrmod.exe
+  const bool moves = std::wstring(kKinds[k].script) == L"moves_port.py";
+  if (moves) {  // (a free 2011 record, so packs don't collide: the converter's own pick can't see installed packs)
+    if (!anims_page::MovesIndexed()) {
+      Status("Reading m.pac's moves first (a few seconds) - press Convert again.");
+      return;
+    }
+    if (const int id = FreeMoveRecord(item["name"].Str()); id > 0) {
+      args.push_back(L"--id"), args.push_back(std::to_wstring(id));
+      Log("port: move record " + std::to_string(id) + " for " + item["name"].Str());
+    }
+  }
+  if ((entrance || moves) && (game == "wwe13" || game == "wwe12" || game == "wwe2k14")) {  // xcompress: its svrmod.exe
     for (const fs::path& cli : {fs::path(ToolsDir()) / L"svrmod.exe", fs::path(ToolsDir()) / L".." / L"out" / L"modmaker" / L"svrmod.exe"})
       if (fs::exists(cli, ec)) {
         args.push_back(L"--svrmod"), args.push_back(fs::weakly_canonical(cli, ec).wstring());
@@ -538,7 +579,8 @@ void Draw() {
   }
   const std::string want = std::to_string(k) + "|" + game + "|" + Utf8(Source());
   if (g_test_stage == 0 && !Busy()) List(k, game), g_test_stage = 1;
-  if (g_test_stage == 1 && !Busy() && g_list_for == want && (!g_list.items.empty() || !g_list_error.empty())) {
+  const bool index_wait = std::wstring(kKinds[k].script) == L"moves_port.py" && !anims_page::MovesIndexed();  // (Convert needs it)
+  if (g_test_stage == 1 && !Busy() && !index_wait && g_list_for == want && (!g_list.items.empty() || !g_list_error.empty())) {
     if (!g_list_error.empty()) Log("port test: list failed: " + g_list_error), g_test_stage = 3;
     for (int i = 0; g_test_stage == 1 && i < int(g_list.items.size()); ++i)
       if (ItemKey(g_list.items[size_t(i)]) == g_test_item) {
