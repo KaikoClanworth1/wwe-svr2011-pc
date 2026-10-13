@@ -22,7 +22,7 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 | **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
 | **WWE '12 (360)** | `pac/bg/bgNN.pac`, plain EPAC | **ready (in the Mod Maker)** | the WWE '13 converter (`svrmod wwe13`) takes it as is |
 | **WWE '13 (360)** | `pac/bg/bgNN.pac`, `0x0FF512ED` LZX container around an EPK8 | **ready (in the Mod Maker)** | `svrfmt/wwe13.cpp` (`svrmod wwe13`); see below |
-| WWE 2K14 (360) | | research | not extracted yet |
+| **WWE 2K14 (360)** | `pac/bg/bgNN.pac`, EPAC with ZLIB entries | **ready (in the Mod Maker)** | the WWE '13 converter: ZLIB unpacked, the host's arena motions |
 
 ### SvR 2010
 
@@ -137,6 +137,23 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
   takes them as they are. It now also adds the 2011 host's `aud_lightmap`
   when the arena has none; without it the crowd is black.
 - **Tested:** RAW (bg01) plays in 2011, crowd lit.
+
+### WWE 2K14
+
+- **Format:** EPAC whose entries (and PACH children) are `ZLIB`-packed:
+  `"ZLIB"`, u32 0x1230, u32 packed size, u32 unpacked size, then a zlib
+  stream; equal sizes mean stored. A few small texts (0xEB29) are bare zlib
+  streams. Unpacked, it is WWE '12 / '13's layout and model format.
+- **Conversion:** the WWE '13 converter (`svrfmt::Unpack` reads ZLIB). Two
+  2K14 entries crash 2011's arena load and come from the 2011 host:
+  - the arena motions, 0x7530 YMKs (found by swapping entries one group at
+    a time);
+  - the bare-zlib texts.
+
+  `tools/wwe2k14_unzlib.py` writes an unpacked copy for inspection.
+- **Tested:** RAW (bg01) converted straight from the disc file plays in 2011
+  (355 models; 19 entries from the host).
+- **Size:** 2K14 arenas are big. RAW needed many textures halved to fit.
 
 ### WWE '13
 

@@ -46,7 +46,7 @@ GAMES = [
     {'id': 'svr2010', 'name': "WWE SmackDown vs. Raw 2010", 'platform': 'x360', 'disc_hint': '54510844', 'status': 'ready'},
     {'id': 'wwe12', 'name': "WWE '12", 'platform': 'x360', 'disc_hint': '54510890', 'status': 'native'},
     {'id': 'wwe13', 'name': "WWE '13", 'platform': 'x360', 'disc_hint': '545108B4', 'status': 'native'},
-    {'id': 'wwe2k14', 'name': "WWE 2K14", 'platform': 'x360', 'disc_hint': '545408B2', 'status': 'research'},
+    {'id': 'wwe2k14', 'name': "WWE 2K14", 'platform': 'x360', 'disc_hint': '545408B2', 'status': 'native'},
 ]
 
 # 2011's arena select tiles: arena number -> banner / manifest base name (arena_mods.cpp kTiles)
@@ -503,7 +503,7 @@ def main(argv):
                 print(json.dumps(lists.get(a.game, bg_list)(disc)))
                 return 0
             if a.game not in ('svr2010', 'svr2008', 'svr2009'):
-                msg = ("WWE '12 / '13 arenas are converted by the Mod Maker itself" if a.game in ('wwe12', 'wwe13')
+                msg = ("WWE '12 / '13 / 2K14 arenas are converted by the Mod Maker itself" if a.game in ('wwe12', 'wwe13', 'wwe2k14')
                        else '%s arenas are not convertible yet (research)' % game['name'])
                 rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'notes': [msg]}
                 print(json.dumps(rep))
