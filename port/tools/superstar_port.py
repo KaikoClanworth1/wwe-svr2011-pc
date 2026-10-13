@@ -496,7 +496,14 @@ def entrance_from_names(names, g11):
     return None, None
 
 
-def write_mod(mod, man, out_svrmod):
+def write_mod(mod, man, out_svrmod, rep=None, pac11=None):
+    """mod/manifest.txt from man, then mod/ zipped to out_svrmod. With pac11: the model (mod/ch.pac) kept within
+    the match's vertex budget first (fit_budget - the game leaves an over-budget model out), what that takes
+    out added to rep['dropped']"""
+    if pac11 and os.path.exists(os.path.join(mod, 'ch.pac')):
+        for d_ in fit_budget(os.path.join(mod, 'ch.pac'), os.path.join(pac11, 'ch', 'ch104.pac')):
+            if rep is not None:
+                rep['dropped'].append(d_)
     order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'ratings', 'abilities', 'moves',
              'entrance', 'announcer', 'call', 'height', 'song', 'movie']
     txt = ''.join('%s=%s\n' % (k, man[k]) for k in order if k in man)
@@ -675,7 +682,7 @@ def build09(cid, outdir, o, rep):
         man['height'] = '%.2f' % round(min(1.25, max(0.80, float(o['height']))), 2)
     progress(95, 'packing')
     out = os.path.join(outdir, mid + '.svrmod')
-    txt = write_mod(mod, man, out)
+    txt = write_mod(mod, man, out, rep, pac11)
     log(txt)
     return out, mod
 
@@ -715,21 +722,21 @@ def build10(cid, outdir, o, rep):
             rep['notes'].append(line)
     # attire names (CHANGE ATTIRE): 2010's own, for the attires its model pac gives
     names = attire_names(src, cid)
+    man = collections.OrderedDict()
+    for line in open(os.path.join(mod, 'manifest.txt'), encoding='utf-8', errors='replace'):
+        if '=' in line:
+            k, v = line.rstrip('\r\n').split('=', 1)
+            man[k] = v
     if names and os.path.exists(os.path.join(mod, 'ch.pac')):
         digits = sorted(model_attires(os.path.join(mod, 'ch.pac')))
-        man = collections.OrderedDict()
-        for line in open(os.path.join(mod, 'manifest.txt'), encoding='utf-8', errors='replace'):
-            if '=' in line:
-                k, v = line.rstrip('\r\n').split('=', 1)
-                man[k] = v
         added = []
         for a in digits:
             if a >= 1 and a in names and 'attire%d_name' % (a + 1) not in man:
                 man['attire%d_name' % (a + 1)] = names[a][:31]
                 added.append('%d %s' % (a + 1, names[a]))
         if added:
-            write_mod(mod, man, out)
             rep['notes'].append('attire names from SvR 2010: ' + ', '.join(added))
+    write_mod(mod, man, out, rep, o['pac11'])
     return out, mod
 
 
@@ -1248,6 +1255,9 @@ def fit_budget(path, tmpl):
                 changed = True
                 out.append('attire %s: over the %d-page model budget even without eyelashes and blood' % (n, model_budget.LIMIT))
                 continue
+            if over():   # (the first attire: kept, but the game will leave the model out - the model needs fewer vertices)
+                out.append('attire %s: STILL over the %d-page model budget - the game will leave this superstar out '
+                           '(the model needs fewer vertices / triangles)' % (n, model_budget.LIMIT))
             ents.append((typ, name, blob))
     if changed:
         w13_char.write_epk8(tmpl, ents, path)
@@ -1344,8 +1354,6 @@ def buildW(cid, outdir, o, rep):
         left = model_w(gw, cid, pac11, os.path.join(mod, 'ch.pac'), portrait)
         if left:
             drop('attires past %d (2011 has 4 at most): %s' % (gw.max_attires, ', '.join(left)))
-        for d_ in fit_budget(os.path.join(mod, 'ch.pac'), os.path.join(pac11, 'ch', 'ch104.pac')):
-            drop(d_)
         import model_budget
         pages = model_budget.model_pages(os.path.join(mod, 'ch.pac'))
         note('model: %s ch%d.pac, %d attires (w13_char)' % (gw.label, cid, len(pages)))
@@ -1443,7 +1451,7 @@ def buildW(cid, outdir, o, rep):
         man['call'] = o.get('call') if o.get('call') is not None else S.CALL.get(i11, 69 if gw.dat[cid][208] else 77)
     progress(95, 'packing')
     out = os.path.join(outdir, mid + '.svrmod')
-    write_mod(mod, man, out)
+    write_mod(mod, man, out, rep, pac11)
     return out, mod
 
 

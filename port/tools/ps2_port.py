@@ -219,6 +219,6 @@ def build_ps2(cid, outdir, o, rep):
         man['height'] = '%.2f' % round(min(1.25, max(0.80, float(o['height']))), 2)
     SP.progress(95, 'packing')
     out = os.path.join(outdir, mid + '.svrmod')
-    txt = SP.write_mod(mod, man, out)
+    txt = SP.write_mod(mod, man, out, rep, o['pac11'])
     SP.log(txt)
     return out, mod
