@@ -22,7 +22,10 @@ module turns into sym_entrance's dicts:
         Character roots are relative to their take row (as SYM's slots); the camera has no row: its
         keys are world positions (0007: 7-49 units from the entrant in every take; relative to the
         entrant's row it would be 120-260 off on the stage / ramp).
-  * names: only in the ELF -> 'JBI <number>' unless --name.
+  * names: from the ELF's tables (team names for tag / trio entrances, else the cast's names), with
+        the JBI number: 'Hardy Boyz & Lita (JBI 6)', 'The Rock (JBI 31)', 'Triple H & Kurt Angle (JBI
+        scene 1001)'.
+  * hands: JBI's own pose library (M.PAC MOT/PTS), mapped to 2011's poses by finger curl.
 
   python jbi_entrance.py list <iso or extract folder>
   python jbi_entrance.py convert <iso> <JBI number> <2011 number> <out dir> [--name TEXT] [--no-ground]
@@ -227,9 +230,161 @@ def to_sym(num, script, bank):
     return dict(num=num, objs=objs)
 
 
+# ---------------------------------------------------------------------------------------------- names
+# The ELF keeps the names as plain tables (no code reading needed):
+#   * the roster: 84-byte records, name first, indexed by the cast model id (0 The Rock, 1 Steve
+#     Austin ... 45 Fred Durst), found as 'The Rock\0' with 'Steve Austin\0' 84 bytes on;
+#   * the tag / trio entrance lists: 36-byte records {u16 entrance number, s16 -1, name[32]}
+#     ('Tag Original1', 'Hardy Boyz & Lita', ...); their numbers are EN3's (checked by the cast:
+#     Hardy Boyz 5 = models 14 + 15, Hardy Boyz & Lita 6 = 14 + 15 + 16).
+# (The alphabetical 0-45 list beside them is the theme list; the singles motion list's ids are not
+# EN3 numbers.)  Singles and story scenes are named after their cast.
+
+def _cstr(b):
+    return b.split(b'\0')[0].decode('latin-1')
+
+
+def elf_names(elf):
+    """-> (roster {model id: name}, teams {entrance number: name}); empty when not found"""
+    roster, teams = {}, {}
+    p = elf.find(b'The Rock\0')
+    while p >= 0 and elf[p + 84:p + 97] != b'Steve Austin\0':
+        p = elf.find(b'The Rock\0', p + 1)
+    if p >= 0:
+        for i in range(64):
+            nm = _cstr(elf[p + 84 * i:p + 84 * i + 32])
+            if len(nm) < 2 or not all(32 <= ord(c) < 127 for c in nm):
+                break
+            roster[i] = nm
+    for anchor in (b'Tag Original1\0', b'Trio Original1\0'):
+        p = elf.find(anchor)
+        if p < 4:
+            continue
+        o = p - 4
+        while o >= 36 and struct.unpack_from('<h', elf, o - 36 + 2)[0] == -1 and _cstr(elf[o - 32:o])[:1].isalpha():
+            o -= 36
+        while struct.unpack_from('<h', elf, o + 2)[0] == -1 and _cstr(elf[o + 4:o + 36])[:1].isalpha():
+            num = struct.unpack_from('<H', elf, o)[0]
+            if num < 1000:
+                teams[num] = _cstr(elf[o + 4:o + 36])
+            o += 36
+    return roster, teams
+
+
+def entrance_name(num, script, roster, teams):
+    cast = [roster[m] for m in script['models'][:script['chars']] if m in roster]
+    if num in teams:
+        t = teams[num]
+        if cast and ('Original' in t or 'Champion' in t):     # (generic: say who)
+            t += ': ' + ' & '.join(cast)
+        return '%s (JBI %d)' % (t, num)
+    if not cast:
+        return 'JBI %04d' % num
+    who = ' & '.join(cast[:3]) + (' +%d' % (len(cast) - 3) if len(cast) > 3 else '')
+    return '%s (JBI %s%d)' % (who, 'scene ' if num >= 1000 else '', num)
+
+
+# ---------------------------------------------------------------------------------------------- hands
+# JBI's op 16 hand events (`10 ss iiii`, ss 1 left / 2 right) name poses of JBI's own library -
+# M.PAC MOT/PTS: ids 0-170 left / 200-370 right, one 60-byte record: per finger (thumb .. pinky) a
+# base joint [k][0][s16 x y z] and a bend [k][0][s16], k 0x3b-0x44 left / 0x45-0x4e right.  The ids
+# do NOT mean 2011's poses (23 shared ids, no likeness), so every id is mapped by its finger angles:
+# per finger the curl (fingers: z of every joint; thumb: y of every joint + z of the base), scaled per
+# library and finger to 0 = straight .. 1 = the library's 95th percentile, then the nearest 2011 pose
+# of the same hand (thumb weighted 0.5).  On 2011's own shapes the curl reads fist ~ 1 1 1 1 1, open
+# ~ 0, point 0 on the index, V index + middle, horns index + pinky.
+
+_R = 2 * math.pi / 65536
+HAND_W = (0.5, 1, 1, 1, 1)
+
+
+def jbi_hand_library(mpac):
+    """M.PAC -> {pose id: [finger][joint] (x, y, z) radians}, 5 fingers x 2 joints"""
+    bank = next((b for g, n, b in SYM.dpac(mpac) if (g, n) == ('MOT', 'PTS')), None)
+    out = {}
+    if bank is None:
+        return out
+    _T, ents = H.read_bank(bank)
+    for e in ents:
+        if e['id'] >= 400 or not e['data'] or e['id'] in out:
+            continue
+        r = SYM.records_hw(e['data'])[0][1]
+        if len(r) != 60:
+            continue
+        js, p = [], 0
+        while p < len(r):
+            j = (r[p] - 0x3b) if r[p] < 0x45 else (r[p] - 0x45)
+            if j % 2 == 0:
+                v = struct.unpack_from('<3h', r, p + 2)
+                p += 8
+            else:
+                v = (0, 0, struct.unpack_from('<h', r, p + 2)[0])
+                p += 4
+            js.append(tuple(x * _R for x in v))
+        out[e['id']] = [js[2 * f:2 * f + 2] for f in range(5)]
+    return out
+
+
+def _curls(P):
+    raw = {}
+    for i, p in P.items():
+        raw[i] = [sum(j[1] for j in p[0]) + p[0][0][2]] + [sum(j[2] for j in p[f]) for f in range(1, 5)]
+    scale = []
+    for f in range(5):
+        vs = [r[f] for r in raw.values()]
+        sgn = 1 if sum(vs) >= 0 else -1
+        hi = sorted(sgn * v for v in vs)[int(0.95 * (len(vs) - 1))] or 1.0
+        scale.append(sgn / hi)
+    return {i: [max(-0.2, min(1.2, r[f] * scale[f])) for f in range(5)] for i, r in raw.items()}
+
+
+def hand_map(jlib, lib):
+    """JBI pose id -> nearest 2011 pose id (same hand).  lib: hand_tracks.library()"""
+    lib11 = {i: [[tuple(v * 256 * _R for v in s[3 * f + j][1:]) for j in range(3)] for f in range(5)]
+             for i, s in lib.items() if i < 1000}
+    out = {}
+    for lo, hi in ((0, 200), (200, 1000)):
+        a = _curls({i: v for i, v in jlib.items() if lo <= i < hi})
+        b = _curls({i: v for i, v in lib11.items() if lo <= i < hi})
+        if not a or not b:
+            continue
+        for i, v in a.items():
+            out[i] = min(b, key=lambda t: sum(w * abs(x - y) for w, x, y in zip(HAND_W, v, b[t])))
+    return out
+
+
+def remap_hands(bank, hmap):
+    """rewrite op 16 hand ids of the character tracks through hmap -> (bank, events mapped)"""
+    T, _ = H.read_bank(bank)
+    count = [0]
+
+    def fix(key, d):
+        if not (CHAR_BASE <= key[0] < CHAR_BASE + 100) or not d:
+            return d
+        recs = []
+        for f, r in SYM.records_hw(d):
+            ev, pose = SYM.Y.split_record(r)
+            if ev:
+                lst, ok = SYM.Y.parse_events(ev, T)
+                if ok:
+                    nev = bytearray()
+                    for op, bb in lst:
+                        if op == 16 and len(bb) >= 4 and bb[1] in (1, 2):
+                            pid = struct.unpack_from('<H', bb, 2)[0]
+                            if pid in hmap:
+                                bb = bb[:2] + struct.pack('<H', hmap[pid]) + bb[4:]
+                                count[0] += 1
+                        nev += bb
+                    if len(nev) == len(ev):
+                        r = SYM.Y.join_record(bytes(nev), pose)
+            recs.append((f, r))
+        return _frame_hw(recs)
+    return repack_bank(bank, fix), count[0]
+
+
 def read_source(src):
     """src: a discfs disc / extract folder object, a path, or this function's result -> sym_entrance's
-    source dict (banks, script, names)"""
+    source dict (banks, script, names, hands)"""
     if isinstance(src, dict) and 'script' in src:
         return src
     if isinstance(src, str):
@@ -241,7 +396,12 @@ def read_source(src):
         return res
     if not src.exists(EN3):
         raise ValueError('not a Just Bring It disc: no %s' % EN3)
-    banks, script = {}, {}
+    roster, teams = {}, {}
+    elf = next((n for n in ('SLES_504.77', 'SLUS_201.22', 'SLPM_650.84') if src.exists(n)), None)
+    if elf:
+        roster, teams = elf_names(src.read(elf))
+    hands = jbi_hand_library(src.read('M.PAC')) if src.exists('M.PAC') else {}
+    banks, script, names = {}, {}, {}
     for num, items in en3_entries(src.read(EN3)).items():
         if 0 not in items or 1 not in items or len(items[0]) <= 0x200:
             continue
@@ -252,11 +412,12 @@ def read_source(src):
         except (ValueError, IndexError, struct.error):
             continue
         banks[num] = bank
-    return dict(banks=banks, script=script, names={}, game=GAME)
+        names[num] = entrance_name(num, sc, roster, teams)
+    return dict(banks=banks, script=script, names=names, game=GAME, hands=hands)
 
 
 def _name(src, num, name=None):
-    return name or 'JBI %04d' % num
+    return name or src.get('names', {}).get(num) or 'JBI %04d' % num
 
 
 def list_entrances(src):
@@ -268,6 +429,15 @@ def convert(src, entrance, number, name, rep, ground=True, skip=()):
     jbi = read_source(src)
     if entrance not in jbi['script']:
         raise ValueError('%s has no entrance %d' % (GAME_NAME, entrance))
+    lib = HE.DEFAULT_HAND_LIB
+    if lib and jbi.get('hands'):
+        hmap = hand_map(jbi['hands'], lib)
+        bank, n = remap_hands(jbi['banks'][entrance], hmap)
+        banks = dict(jbi['banks'])
+        banks[entrance] = bank
+        jbi = dict(jbi, banks=banks)
+        rep.setdefault('notes', []).append('hands: %d JBI hand events mapped to the nearest 2011 pose by '
+                                           'finger curl (M.PAC MOT/PTS)' % n)
     return SYM.convert(jbi, entrance, number, _name(jbi, entrance, name), rep, 0, ground, skip)
 
 
