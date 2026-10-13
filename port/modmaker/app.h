@@ -121,6 +121,7 @@ struct Problem {
   bool error = true;   // false: a warning (shown, does not block)
   std::string text;    // what is wrong
   std::string fix;     // what to do (optional)
+  int step = -1;      // (the Superstar page's Simple mode: the step that fixes it)
 };
 inline Problem Error(std::string text, std::string fix = "") { return {true, std::move(text), std::move(fix)}; }
 inline Problem Warning(std::string text, std::string fix = "") { return {false, std::move(text), std::move(fix)}; }
@@ -350,7 +351,7 @@ namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); vo
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
                       void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
-                      void TestFbx(const std::wstring& fbx, const std::string& map);  // FBX import mapping (map: fbx_map= text)
+                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step);  // FBX import mapping (map: fbx_map= text)
                       // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
                       const std::vector<std::string>& AnnouncerNames();
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);

@@ -2250,6 +2250,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
+    else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
     else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
       const std::wstring v = argv[++i];
       const size_t c = v.find(L',');

@@ -15,6 +15,7 @@
 #include "app.h"
 #include "char_preview.h"
 #include "json.h"
+#include "star_page_internal.h"
 #include "rig_map.h"
 #include "svrfmt/char_fbx.h"
 #include "svrfmt/pac.h"
@@ -26,7 +27,20 @@ namespace star_page {
 
 using namespace svrfmt;
 
-namespace {
+const Style kStyles[kStyleCount] = {
+    {"Powerhouse", "Big, slow and strong: power slams and bear hugs.", 125, false},
+    {"Brawler", "Strikes, clotheslines and a power finisher.", 160, false},
+    {"All-rounder", "A bit of everything: the main-event style.", 139, false},
+    {"Technical", "Holds, counters and a submission finisher.", 104, false},
+    {"Submission specialist", "Wears opponents down with holds.", 267, false},
+    {"High flyer", "Fast, light, off the top rope.", 123, false},
+    {"Showman", "Flashy moves and taunts.", 218, false},
+    {"Diva: powerhouse", "A strong Diva: slams and power moves.", 224, true},
+    {"Diva: high flyer", "A quick, acrobatic Diva.", 164, true},
+    {"Diva: technical", "A Diva who wrestles holds and counters.", 143, true},
+};
+
+
 
 // The Created Superstar nicknames the announcer and commentary can say
 // (call=<index>; the game's CAS_* list, sub_8261EAB0's table at 0x82043F98).
@@ -42,27 +56,6 @@ const char* const kNickNames[84] = {
     "The Samurai", "The Scorpion", "The Show", "The Soldier", "The Superstar", "The Tornado", "Thunder", "Vega",
     "Williams", "Yosef", "Youngblood"};
 
-// Fighting styles: a new superstar's moves, entrance motions and starting
-// attributes come from one (the game needs a full move-set). Each is a
-// template from the roster underneath.
-struct Style {
-  const char* name;
-  const char* about;
-  int template_id;  // a playable superstar (its move-set, entrance motions)
-  bool female;
-};
-const Style kStyles[] = {
-    {"Powerhouse", "Big, slow and strong: power slams and bear hugs.", 125, false},
-    {"Brawler", "Strikes, clotheslines and a power finisher.", 160, false},
-    {"All-rounder", "A bit of everything: the main-event style.", 139, false},
-    {"Technical", "Holds, counters and a submission finisher.", 104, false},
-    {"Submission specialist", "Wears opponents down with holds.", 267, false},
-    {"High flyer", "Fast, light, off the top rope.", 123, false},
-    {"Showman", "Flashy moves and taunts.", 218, false},
-    {"Diva: powerhouse", "A strong Diva: slams and power moves.", 224, true},
-    {"Diva: high flyer", "A quick, acrobatic Diva.", 164, true},
-    {"Diva: technical", "A Diva who wrestles holds and counters.", 143, true},
-};
 const char* const kAttributes[7] = {"Grapple", "Submission", "Speed", "Strikes", "Hardcore", "Charisma", "Durability"};
 
 // Abilities (record +230..: up to 8 ids; the name's string id is 0x9EA8 + id,
@@ -87,42 +80,10 @@ const Ability kAbilities[] = {
     {24, "Ring Escape", "Rolls out of the ring to recover."},
 };
 
-struct StarProject {
-  int style = 0;
-  int ratings[7] = {74, 74, 74, 74, 74, 74, 74};
-  bool ratings_set = false;  // (the style's, until moved)
-  char name[32] = "", short_name[32] = "", author[64] = "", version[16] = "1.0";
-  std::wstring model, song, movie, voice;
-  std::wstring attires[4];        // [1..3]: attires 2-4 from other model pacs (their first attire)
-  char attire_names[4][32] = {};  // [1..3]: their names on CHANGE ATTIRE ("" = ATTIRE N)
-  int attire_entrance[4] = {-1, -1, -1, -1};  // [1..3]: attire<N>_entrance= (-1: the superstar's entrance)
-  Picture picture;                // its own select picture (512): else a silhouette
-  Image picture_small;            // the 256 bust made with it (or own_bust)
-  bool own_bust = false;          // picture_small is the user's own bust picture
-  Image picture_full;             // own full-body picture (render_full.dds -> SSFB; none: render.dds)
-  bool game_look = false;         // the picture's tone moved toward the game's renders
-  Image picture_src;              // the picture as picked (this session: the game look can be undone)
-  int call = -1;                  // -1: "The Superstar"
-  float height = 1.0f;            // height=<scale> from the feet (0.80-1.25; 1: left out)
-  float theme_gain = 0.0f;        // theme_gain=<dB> (-20..+6; 0: left out)
-  std::vector<Picture> signs;     // its fans' signs (up to 4; 128 x 64)
-  // the SvR 2010-style extras (the game: superstar_mods.cpp)
-  int pose = -1;                  // pose=<motion id>: the select / VS panel's pose (-1: the style's)
-  int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
-  char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
-  char hometown_city[32] = "";    // hometown=<CITY>[,<STATE>]: the announcer's own hometown clips
-  char hometown_state[32] = "";
-  std::vector<int> abilities;     // abilities=a,b,... (empty: the style's)
-  bool own_abilities = false;
-  std::wstring moves;             // moves=moves.txt: lines 0xOFF=<move id> (a file picked as it is)
-  std::map<int, int> moveset;     // the page's picks: slot (0..223, offset slot*2) -> move id, after the file's lines
-  std::wstring pack;              // a move pack folder (pack.txt + motions/) copied in as moves/
-  // a model from an FBX (import): the file and the hand edits to its automatic bone mapping
-  std::wstring fbx;
-  std::map<std::string, std::string> fbx_map;  // source bone -> 2011 bone ("" = folds into its parent)
-  std::map<std::string, std::string> fbx_on, fbx_kind, fbx_pic;  // per mesh ("node / material"): "1"/"0", kind, picture file
-};
 StarProject g_star;
+std::wstring StyleChPac() {
+  return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(kStyles[g_star.style].template_id) + L".pac")).wstring();
+}
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
 int g_test_id = 0;
 std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
@@ -130,6 +91,7 @@ std::string g_test_hometown;
 int g_test_pose = -1;
 std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
+int g_test_simple = -1;   // --simple <step>
 std::string g_test_fbx_map;
 bool g_test_done = false;
 
@@ -216,7 +178,7 @@ struct Job {
 // ---- entrances (D5)
 
 // An entrance number picked from the installed ones (stock + packs); -1 = the default.
-bool EntrancePicker(const char* label, int& value, const char* none, float width = 320) {
+bool EntrancePicker(const char* label, int& value, const char* none, float width) {
   std::string cur = none;
   if (value > 0) {
     cur = std::to_string(value);
@@ -258,11 +220,11 @@ bool HasEntranceOutfit(const std::wstring& pac) {
 
 // ---- the moveset by name (D4)
 
-struct SlotName {
+struct SlotNameRow {
   std::string menu, slot;
   bool fixed = false;  // the same move for the whole roster: not shown
 };
-std::map<int, SlotName> g_slot_names;  // slot -> label (tools/pro_slots.json, when there)
+std::map<int, SlotNameRow> g_slot_names;  // slot -> label (tools/pro_slots.json, when there)
 bool g_slot_names_loaded = false;
 char g_moveset_find[48] = "";
 bool g_moveset_all = false;  // every slot, or the changed ones
@@ -408,7 +370,7 @@ void LoadSlotNames() {
     const size_t k = t.find("\"off\"", at);
     if (k == std::string::npos || k > end) continue;
     const int off = std::atoi(t.c_str() + t.find(':', k) + 1);
-    SlotName n;
+    SlotNameRow n;
     n.menu = str(at, end, "menu");
     n.slot = str(at, end, "slot");
     const size_t f = t.find("\"fixed\"", at);
@@ -432,10 +394,8 @@ std::string SlotLabel(int slot) {
   return std::string("Slot ") + off;
 }
 
-}  // namespace
 std::string SlotName(int slot) { return SlotLabel(slot); }
 void ShowPose(int motion);
-namespace {
 
 bool SlotFixed(int slot) {
   LoadSlotNames();
@@ -1180,8 +1140,16 @@ void FbxProblems(std::vector<Problem>& p) {
 }
 
 void Problems(std::vector<Problem>& p) {
+  size_t mark = p.size();
+  auto tag = [&](int step) {  // (Simple mode's "Fix it": the step for what the last section added)
+    for (size_t k = mark; k < p.size(); ++k)
+      if (p[k].step < 0) p[k].step = step;
+    mark = p.size();
+  };
   FbxProblems(p);
+  tag(kStepLook);
   if (!g_star.name[0]) p.push_back(Error("The superstar has no name."));
+  tag(kStepName);
   if (g_star.model.empty()) {
     p.push_back(Error("No model picked.", "Model (ch.pac): a character model pac, the game's (pac\\ch\\chNNN.pac) or a converted one."));
   } else {
@@ -1195,6 +1163,7 @@ void Problems(std::vector<Problem>& p) {
       if (std::find(own_attires.begin(), own_attires.end(), k) == own_attires.end()) return false;
     return true;
   };
+  tag(kStepLook);
   if (own_attires.size() > 4)
     p.push_back(Warning("The model pac has " + std::to_string(own_attires.size()) + " attires: the game uses the first 4."));
   for (int a = 1; a < 4; ++a) {
@@ -1204,18 +1173,22 @@ void Problems(std::vector<Problem>& p) {
     else if (!c.ok) p.push_back(Error("Attire " + std::to_string(a + 1) + " is " + c.note + "."));
     if (a > 1 && g_star.attires[a - 1].empty() && !in_model_attire(a)) p.push_back(Warning("Attire " + std::to_string(a + 1) + " is set but attire " + std::to_string(a) + " isn't: the game lists attires in order."));
   }
+  tag(kStepAttires);
   if (!g_star.movie.empty()) {
     const FileCheck& c = Check(g_star.movie, "bik");
     if (!c.exists) p.push_back(Error("The entrance movie file is missing: " + FileName(g_star.movie)));
     else if (!c.ok) p.push_back(Error("The entrance movie is " + c.note + ".", "The launcher's Movies tab makes .bik files from any video."));
     else if (c.w != 320 || c.h != 320) p.push_back(Warning("The entrance movie is " + std::to_string(c.w) + " x " + std::to_string(c.h) + "; the game's are 320 x 320 (it still plays, stretched)."));
   }
+  tag(kStepEntrance);
   for (const std::wstring* f : {&g_star.song, &g_star.voice})
     if (!f->empty() && !Check(*f, "any").exists) p.push_back(Error("A sound file is missing: " + FileName(*f)));
   if (!g_star.song.empty() && g_star.theme_gain == 0.0f)
     p.push_back(Warning("The theme plays at full level: the game's own are about 7 dB quieter.",
                         "Theme volume: Measure, then Match the game."));
+  tag(kStepMusic);
   if (g_star.picture.Empty()) p.push_back(Warning("No select picture: the select screen shows a silhouette where other modes show a render."));
+  tag(kStepPictures);
   for (const auto& [slot, id] : g_star.moveset) {
     if (!MoveInfos().count(id)) {
       if (g_star.pack.empty())
@@ -1226,6 +1199,7 @@ void Problems(std::vector<Problem>& p) {
                           "The game may not play it from this slot. Pick one from the slot's list."));
     }
   }
+  tag(kStepMoves);
   if (EntrancesReady()) {  // entrances that aren't installed: no entrance plays
     std::set<int> have;
     for (const auto& e : Entrances()) have.insert(e.number);
@@ -1240,6 +1214,7 @@ void Problems(std::vector<Problem>& p) {
     for (int a = 1; a < 4; ++a)
       if (!g_star.attires[a].empty() || g_star.attire_entrance[a] > 0) check(g_star.attire_entrance[a], "Attire " + std::to_string(a + 1));
   }
+  tag(kStepEntrance);
   for (int a = 0; a < 4; ++a) {  // the match memory (D12): every attire of the model, the first of attire pacs
     const std::wstring& f = a ? g_star.attires[a] : g_star.model;
     if (!f.empty()) BudgetProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), a != 0, p);
@@ -1251,6 +1226,7 @@ void Problems(std::vector<Problem>& p) {
                           " carries an entrance outfit (a coat or the like from the superstar it came from): it is "
                           "worn during the entrance.", "Fine if wanted; otherwise use a model pac without one."));
   }
+  tag(kStepLook);
   if (!g_star.moves.empty()) {
     const FileCheck& c = Check(g_star.moves, "any");
     if (!c.exists) p.push_back(Error("The moves list file is missing: " + FileName(g_star.moves)));
@@ -1259,6 +1235,7 @@ void Problems(std::vector<Problem>& p) {
     std::error_code ec;
     if (!fs::exists(fs::path(g_star.pack) / L"pack.txt", ec)) p.push_back(Error("The move pack folder has no pack.txt: " + FileName(g_star.pack), "A pack is a folder with pack.txt and motions/ (tools/movepack.py or the Moves page make one)."));
   }
+  tag(kStepMoves);
   for (char c : std::string(g_star.announcer))
     if (!std::isalnum(uint8_t(c))) { p.push_back(Error("The announcer name takes letters and digits only (e.g. JEFFHARDY).")); break; }
   bool bad_town = false;
@@ -1267,6 +1244,7 @@ void Problems(std::vector<Problem>& p) {
   if (bad_town) p.push_back(Error("The hometown takes the announcer's clip names: letters and digits (e.g. CAMERONNC)."));
   if (g_star.hometown_state[0] && !g_star.hometown_city[0]) p.push_back(Warning("A hometown state without a city isn't said: pick the city too."));
   if (g_star.own_abilities && g_star.abilities.empty()) p.push_back(Warning("Own abilities ticked but none chosen: the superstar gets no abilities."));
+  tag(kStepExtras);
   if (std::strlen(g_star.name) > 20 && !g_star.short_name[0]) p.push_back(Warning("A long name with no short name: the short name goes on the match screens."));
   if (!g_game.empty()) {
     int mods = 0;
@@ -1276,6 +1254,7 @@ void Problems(std::vector<Problem>& p) {
     if (mods >= 137) p.push_back(Error("The game already has 137 superstar mods installed: that is the limit.", "Remove one in the launcher's Mods tab."));
     else if (mods >= 132) p.push_back(Warning(std::to_string(mods) + " of 137 superstar mod slots are in use."));
   }
+  tag(kStepName);
 }
 
 int g_view_attire = 1;  // the attire the preview shows (1-4)
@@ -1333,6 +1312,7 @@ void Draw() {
     }
     if (!g_test_model.empty()) g_star.model = g_test_model;
     if (!g_test_fbx.empty()) g_star.fbx = g_test_fbx, ParseFbxMap(g_test_fbx_map), g_fbx_open_once = true;
+    if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
       Image img;
@@ -1352,7 +1332,19 @@ void Draw() {
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
   }
-  Heading("Superstar", "A new playable character under the M tile of the character select (up to 137 mods).");
+  if (g_star.simple) return SimpleDraw();
+  {
+    const float top = ImGui::GetCursorPosY();
+    Heading("Superstar", "A new playable character under the M tile of the character select (up to 137 mods).");
+    const ImVec2 after = ImGui::GetCursorPos();
+    const float bw = 280 * g_scale;
+    ImGui::SetCursorPos(ImVec2(std::max(0.0f, ImGui::GetWindowWidth() - bw - 24 * g_scale), top));
+    PushAccent();
+    if (ImGui::Button("Make my first superstar (Simple)", ImVec2(bw, 0))) g_star.simple = true;
+    PopAccent();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A step-by-step helper for this same superstar: name, look, music, entrance, moves, pictures.\nSwitch back here any time - nothing is lost.");
+    ImGui::SetCursorPos(after);
+  }
   std::vector<Problem> problems;
   Problems(problems);
   ImGui::BeginChild("form", ImVec2(-360 * g_scale, -48 * g_scale), false);
@@ -1688,7 +1680,7 @@ std::string StateText() {
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
   s += "\nfbx=" + Utf8(g_star.fbx) + "\nfbx_map=" + FbxMapText() + "\nfbx_on=" + PairsText(g_star.fbx_on) + "\nfbx_kind=" +
-       PairsText(g_star.fbx_kind) + "\nfbx_pic=" + PairsText(g_star.fbx_pic);
+       PairsText(g_star.fbx_kind) + "\nfbx_pic=" + PairsText(g_star.fbx_pic) + "\nsimple=" + std::to_string(g_star.simple);
   return s;
 }
 
@@ -1708,6 +1700,7 @@ void WriteProject(ProjectOut& out) {
   out.File("model", g_star.model, "star/model");
   out.Key("fbx", Utf8(g_star.fbx));  // (the FBX stays where it is: its textures sit beside it)
   out.Key("fbx_map", FbxMapText());
+  if (g_star.simple) out.Key("simple", 1), out.Key("simple_step", g_star.simple_step);
   out.Key("fbx_on", PairsText(g_star.fbx_on));
   out.Key("fbx_kind", PairsText(g_star.fbx_kind));
   out.Key("fbx_pic", PairsText(g_star.fbx_pic));
@@ -1811,6 +1804,8 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.model = file("model", "ch.pac");
   g_star.fbx = Wide(in.Get("fbx"));
   ParseFbxMap(in.Get("fbx_map"));
+  g_star.simple = in.GetInt("simple", 0) != 0;
+  g_star.simple_step = std::clamp(in.GetInt("simple_step", 0), 0, int(kStepCount) - 1);
   ParsePairs(in.Get("fbx_on"), g_star.fbx_on);
   ParsePairs(in.Get("fbx_kind"), g_star.fbx_kind);
   ParsePairs(in.Get("fbx_pic"), g_star.fbx_pic);
@@ -1879,7 +1874,6 @@ bool Read(const ProjectIn& in, bool mod) {
   return true;
 }
 
-}  // namespace
 
 void TestStart(int id, const std::wstring& model, const std::string& name, const std::wstring& picture,
                const std::wstring& save) {
@@ -1910,6 +1904,8 @@ void TestMoveset(const std::string& spec) {
 }
 
 void TestFbx(const std::wstring& fbx, const std::string& map) { g_test_fbx = fbx, g_test_fbx_map = map; }
+
+void TestSimple(int step) { g_test_simple = step; }
 
 void TestHeight(float scale) { g_star.height = std::clamp(scale, 0.8f, 1.25f); }
 
