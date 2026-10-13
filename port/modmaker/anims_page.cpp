@@ -237,6 +237,12 @@ void Controls() {
     ImGui::SameLine();
     if (ImGui::Checkbox("Blood", &blood)) char_preview::SetBlood(blood);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model's blood overlays, as a bloodied superstar shows them in a match.");
+    if (blood) {
+      ImGui::SameLine();
+      int stage = char_preview::BloodStage();
+      ImGui::SetNextItemWidth(90 * g_scale);
+      if (ImGui::Combo("##bs", &stage, "light\0medium\0heavy\0")) char_preview::SetBloodStage(stage);
+    }
   }
   ImGui::SameLine();
   if (ImGui::Button("Camera")) char_preview::ResetCamera();

@@ -43,6 +43,8 @@ void ResetCamera();
 void SetBlood(bool on);
 bool Blood();
 bool HasBlood();  // the model has blood overlays that can be shown (their textures found)
+void SetBloodStage(int stage);  // 0 light, 1 medium, 2 heavy (the game's blood textures by stage)
+int BloodStage();
 // The model's size from its feet (a superstar mod's height=, 0.80-1.25; 1 = as
 // made), shown live; the dummy keeps its own. ModelHeight: the model as posed
 // now, unscaled, in game units (1 = 10 cm; 0 until shown).

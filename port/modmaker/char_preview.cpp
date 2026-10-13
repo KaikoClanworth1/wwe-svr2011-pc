@@ -803,6 +803,7 @@ struct GpuMesh {
   bool cutout = false;
   bool blood = false;
   bool blood_missing = false;  // a blood overlay whose texture wasn't found: never drawn
+  int blood_kind = 0;          // 1 face, 2 body: drawn with the shared blood textures (misc.pac)
 };
 
 // state: slot 0 the model (track 0), slot 1 the dummy (track 1)
@@ -827,6 +828,9 @@ float g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
 V3 g_center{0, 0, 0}, g_pan{0, 0, 0};
 float g_height = 20;
 bool g_blood = false;  // the blood overlays shown
+int g_blood_stage = 2;  // which of the shared textures: stage 0 light .. 2 heavy
+std::map<std::string, ID3D11ShaderResourceView*> g_blood_srv;  // "bloodface0_2" -> texture (misc.pac BATS/INIT/110)
+bool g_blood_loaded = false;
 bool g_frame = false;  // (frame the camera on the next posed frame)
 
 void Release(IUnknown* p) {
@@ -882,6 +886,22 @@ ID3D11ShaderResourceView* MakeTexture(const Bytes& dds) {
   return srv;
 }
 
+// The game's shared blood textures, once: misc.pac BATS/INIT, PACH child 110 (a texture bundle).
+void LoadBloodTextures() {
+  if (g_blood_loaded) return;
+  g_blood_loaded = true;
+  Bytes entry;
+  if (g_game.empty() || !EpacEntry(fs::path(g_game) / L"pac" / L"misc.pac", "BATS", "INIT", entry)) return;
+  std::vector<PachEntry> kids;
+  if (!PachRead(Unpack(entry), kids)) return;
+  for (const auto& k : kids) {
+    if (k.id != 110) continue;
+    std::vector<BundleTexture> texs;
+    if (!BundleRead(Unpack(k.data), texs)) return;
+    for (const auto& t : texs) g_blood_srv[Lower(t.name)] = MakeTexture(t.data);
+  }
+}
+
 void Upload(Slot& sl, std::shared_ptr<Character> ch) {
   FreeCharacter(sl);
   sl.ch = std::move(ch);
@@ -906,7 +926,14 @@ void Upload(Slot& sl, std::shared_ptr<Character> ch) {
     g.count = UINT(pm.idx.size());
     g.cutout = pm.cutout;
     g.blood = pm.blood;
-    // (a blood texture in the model pac is an 8 x 8 white stand-in: the game's real ones are shared, not found yet - not shown)
+    if (pm.blood && (pm.tex == "bloodface" || pm.tex == "bloodbody")) {  // the game swaps in its shared ones (misc.pac)
+      LoadBloodTextures();
+      g.blood_kind = pm.tex == "bloodface" ? 1 : 2;
+      g.blood_missing = g_blood_srv.empty();
+      g_gpu.push_back(g);
+      continue;
+    }
+    // (another blood texture in the model pac may be an 8 x 8 white stand-in: not shown)
     const auto bt = g_char->textures.find(pm.tex);
     if (pm.blood && (bt == g_char->textures.end() || bt->second.size() < 128 || Le32(&bt->second[16]) <= 16)) {
       g.blood_missing = true;
@@ -1163,7 +1190,13 @@ void Render(int w, int h) {
     const UINT stride = sizeof(GpuVertex), offset = 0;
     g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
     g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
-    g_ctx->PSSetShaderResources(0, 1, &g.tex);
+    ID3D11ShaderResourceView* srv = g.tex;
+    if (g.blood_kind) {
+      const auto bit = g_blood_srv.find(std::string(g.blood_kind == 1 ? "bloodface0_" : "bloodbody0_") + std::to_string(g_blood_stage));
+      if (bit == g_blood_srv.end() || !bit->second) continue;
+      srv = bit->second;
+    }
+    g_ctx->PSSetShaderResources(0, 1, &srv);
     g_ctx->DrawIndexed(g.count, 0, 0);
   }
   ID3D11RenderTargetView* none = nullptr;
@@ -1271,6 +1304,9 @@ void ClearMotion() { SetMotion(nullptr, -1, 0); }
 
 void SetBlood(bool on) { g_blood = on; }
 bool Blood() { return g_blood; }
+
+void SetBloodStage(int stage) { g_blood_stage = std::clamp(stage, 0, 2); }
+int BloodStage() { return g_blood_stage; }
 
 bool HasBlood() {
   for (const Slot& sl : g_slots)
