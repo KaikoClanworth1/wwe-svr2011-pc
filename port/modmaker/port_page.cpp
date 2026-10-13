@@ -58,6 +58,7 @@ char g_options[256] = "";      // extra converter options (advanced)
 // --port-test: the steps run by themselves (list, convert, open)
 std::string g_test_item;
 int g_force_kind = -1;  // (the test's tab: ImGui reports the first tab selected until SetSelected takes)
+bool g_same_moves = false;      // (PS2 superstars: --same-moves, no "similar" stand-ins)
 bool g_test_fp = false;         // (--port-fullpreview: an entrance test's result opens in the Full preview)
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 
@@ -407,6 +408,7 @@ void Convert(int k, const std::string& game, const Json& item) {
     }
   }
   for (auto& x : SvrmodArgs(k, game)) args.push_back(x);
+  if (g_same_moves && game.rfind("ps2_", 0) == 0 && std::wstring(kKinds[k].script) == L"superstar_port.py") args.push_back(L"--same-moves");
   if (entrance && !g_settings.bink2_tool.empty())  // (its --titantron: Bink 2 movies through the player's tool)
     args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
   if (NeedsPicture(item) && !g_pp.pick.empty()) args.push_back(L"--picture"), args.push_back(Wide(g_pp.pick));
@@ -763,6 +765,11 @@ void KindBody(int k) {
     return;
   }
   const Json& item = g_list.items[size_t(g_pick)];
+  if (game.rfind("ps2_", 0) == 0 && std::wstring(kKinds[k].script) == L"superstar_port.py") {
+    ImGui::Checkbox("Same moves only (no similar ones)", &g_same_moves);
+    Hint("Ticked: only the moves 2011 has too come over; a move it lacks keeps the fighting style's. Unticked: a "
+         "similar 2011 move stands in for one it lacks (marked \"similar\" in the moveset, to swap if you like).");
+  }
   if (NeedsPicture(item)) {
     AskPictures(k, game, item);
     PicturePicker();
