@@ -1,4 +1,4 @@
-"""Wwise sound packages (.pck, big-endian Xbox 360) of SvR 2011 and later WWE games:
+r"""Wwise sound packages (.pck, big-endian Xbox 360) of SvR 2011 and later WWE games:
 an event's streamed sound, decoded (themes for the superstar converters).
 
     py wwise.py events <pck> <name>...            -> JSON {name: [stream id]}
@@ -13,8 +13,8 @@ target at +8 of the action body... see target_of) -> sounds (type 2: source id
 at +20, the stream) or containers whose bodies list children.
 
 Streams are Wwise Vorbis (RIFX, format 0xFFFF): ffmpeg can't decode them; the
-player's vgmstream-cli can (opt in, like Bink 2: --vgmstream, SVR2011_VGMSTREAM,
-next to the tools, in a 'Mod Maker Tools' folder, or on PATH). Without it the
+vgmstream-cli can: the port ships it (Mod Maker Tools\vgmstream, r2117; from
+port\third_party\vgmstream); else --vgmstream, SVR2011_VGMSTREAM or PATH. Without it the
 converters note "no theme" and go on.
 """
 import json
@@ -40,16 +40,21 @@ class Pck:
         """f: a path or a seekable reader (read / seek)"""
         self.f = open(f, 'rb') if isinstance(f, str) else f
         self.f.seek(0)
-        hd = self.f.read(0x400000)
+        hd = self.f.read(0x20)
         if hd[:4] != b'AKPK':
             raise ValueError('not a Wwise package')
         hs, ver, lm, bl, sl = struct.unpack_from('>IIIII', hd, 4)
+        self.f.seek(0)
+        hd = self.f.read(hs + 8)   # (the whole header: its tables can pass 4 MB, WWE '13)
 
         def lut(p, size):
             n = struct.unpack_from('>I', hd, p)[0]
             w = 24 if size > 20 * n + 4 else 20
             return [struct.unpack_from('>' + 'I' * (w // 4), hd, p + 4 + w * i) for i in range(n)]
-        p = 0x18 + lm
+        # the tables start after the header's fields: 0x18 (SvR 2011's version), or 0x1C when the header has an
+        # externals table size too (WWE '12 / '13) - whichever adds up to the header size
+        ext = struct.unpack_from('>I', hd, 0x18)[0]
+        p = (0x1C if 0x1C + lm + bl + sl + ext == hs + 8 else 0x18) + lm
         self.banks = lut(p, bl)
         self.streams = {s[0]: s for s in lut(p + bl, sl)}
         self._objs = None
@@ -134,12 +139,14 @@ class Pck:
 
 
 def find_vgmstream(arg=None):
-    cands = [arg, os.environ.get('SVR2011_VGMSTREAM'), os.path.join(HERE, 'vgmstream-cli.exe'),
-             os.path.join(HERE, 'vgmstream', 'vgmstream-cli.exe'), shutil.which('vgmstream-cli')]
+    # the one the port ships (Mod Maker Tools\vgmstream, beside these tools) first, then the player's own
+    cands = [arg, os.path.join(HERE, 'vgmstream', 'vgmstream-cli.exe')]
     p = HERE
     for _ in range(5):
-        cands.append(os.path.join(p, 'Mod Maker Tools', 'vgmstream-cli.exe'))
+        cands.append(os.path.join(p, 'Mod Maker Tools', 'vgmstream', 'vgmstream-cli.exe'))
+        cands.append(os.path.join(p, 'third_party', 'vgmstream', 'vgmstream-cli.exe'))
         p = os.path.dirname(p)
+    cands += [os.environ.get('SVR2011_VGMSTREAM'), os.path.join(HERE, 'vgmstream-cli.exe'), shutil.which('vgmstream-cli')]
     for c in cands:
         if c and os.path.exists(c):
             return c

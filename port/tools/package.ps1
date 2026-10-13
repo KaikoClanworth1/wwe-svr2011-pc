@@ -41,12 +41,20 @@ if ($WithModMaker) {
                      "wwe13_pack.py", "arena_tool.py",  # (imports checked transitively 13 Oct: arena_port needs these two)
                      "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py",  # (entrance_port: PS2 discs, SYM, SvR 2006)
                      "hand_tracks.py", "svr06_hands.py", "finger_retarget.py",  # (entrance_port: finger tracks)
-                     "model_budget.py", "xact.py", "svr07_char.py")) {  # (superstar_port: the match's vertex budget; SvR 2007 XACT themes)
+                     "model_budget.py", "xact.py", "svr07_char.py", "wwise.py")) {  # (superstar_port: the match's vertex budget; SvR 2007 XACT themes; WWE '12+ Wwise themes)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
     }
     $data = Join-Path $PSScriptRoot "data"  # (reskin_port.py's stock texture table)
     if (Test-Path $data) { Copy-Item $data (Join-Path $mmtools "data") -Recurse -Force }
+    # vgmstream (the Wwise Vorbis theme decoder wwise.py runs; port\third_party\vgmstream, not in git:
+    # the official release, version and SHA-256 in its VERSION.txt) -> Mod Maker Tools\vgmstream
+    $vgm = Join-Path $port "third_party\vgmstream"
+    if (Test-Path (Join-Path $vgm "vgmstream-cli.exe")) {
+        $vdst = Join-Path $mmtools "vgmstream"
+        New-Item -ItemType Directory -Force $vdst | Out-Null
+        Get-ChildItem $vgm -File | Copy-Item -Destination $vdst   # (VERSION.txt too: where it came from + its SHA-256)
+    } else { Write-Warning "no $vgm\vgmstream-cli.exe - WWE '12+ themes won't convert" }
     # (and svrmod.exe, which svrfmt.py runs to compress pac entries: modmaker/build_cli.sh)
     $cli = Join-Path $port "out\modmaker\svrmod.exe"
     if (Test-Path $cli) { Copy-Item $cli $mmtools } else { Write-Warning "no $cli (modmaker\build_cli.sh) - the converters can't compress" }
