@@ -231,7 +231,7 @@ def read_yobj(d):
                     strip.append((u32(d, pdata + 32 * j + 12), s_ / q_, t_ / q_,
                                   struct.unpack_from('<4f', d, pdata + 32 * j + 16)))
                 strips.append(strip)
-            mesh['subs'].append(dict(tex=u32(d, s + 0x28), strips=strips))
+            mesh['subs'].append(dict(tex=u32(d, s + 0x28), strips=strips, mat=d[s:s + 0xC0]))
         out['meshes'].append(mesh)
     return out
 
@@ -368,6 +368,8 @@ class Yukes:
         self.disc = disc
         serial = (disc.info() or {}).get('serial')
         self.game = SERIALS.get(serial, 'PS2 SmackDown (%s)' % serial)
+        # (material flags before SvR 2004: see build_model's cutout)
+        self.old_materials = any(k in self.game for k in ('Just Bring It', 'Shut Your Mouth', 'Here Comes the Pain'))
         self.entries = {}   # id -> (pac path, offset, size)
         self._shape = {}
         for p in self.PACS:
@@ -588,28 +590,35 @@ def part_nodes(part, body):
     return out
 
 
-def build_model(body, parts, tex, out_dir, template, tag):
+def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
     """-> (model.json dict, info)"""
     names11, folded = map_names(body['nodes'])
     D, Q = pose(body['nodes'])
     P = [nd['world'][3, :3] for nd in body['nodes']]
     # textures used -> png
-    pngs = {}
+    def cutout(sub):
+        """whether a PS2 submesh is drawn blended (hair cards, hair lines, laces): its material's flags (u32 at
+        +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear); SvR 2004 on: 0x05 opaque,
+        0x115 / 0x117 blended (bit 0x10: hair, strings, the blood overlay)"""
+        mat = sub.get('mat') or b''
+        if len(mat) < 0x28:
+            return False
+        f = u32(mat, 0x24)
+        return not f & 0x02 if old_materials else bool(f & 0x10)
 
-    def png(name):
-        k = name.lower()
-        if k not in pngs:
-            img = tex.get(k)
-            if img is None:
-                return None
-            fn = 'tex_%s_%s.png' % (tag, ''.join(c if c.isalnum() else '_' for c in k))
-            # (2011 reads the colour alpha as the specular level, not opacity: PS2 skin is matte - a low
-            # level, as stock skin, else the builder's derived level made the skin look like shiny plastic)
-            rgba = img.copy()
+    def png(name, keep_alpha):
+        """-> a PS2 texture's png. 2011's skin shader reads the colour alpha as the specular level, its hair
+        shader as opacity: a texture hair meshes use keeps its alpha; the others get a low specular level (PS2
+        skin is matte; the builder's derived level looked like shiny plastic)."""
+        img = tex.get(name.lower())
+        if img is None:
+            return None
+        fn = 'tex_%s_%s.png' % (tag, ''.join(c if c.isalnum() else '_' for c in name.lower()))
+        rgba = img.copy()
+        if not keep_alpha:
             rgba[..., 3] = SPECULAR
-            Image.fromarray(rgba, 'RGBA').save(os.path.join(out_dir, fn))
-            pngs[k] = fn
-        return pngs[k]
+        Image.fromarray(rgba, 'RGBA').save(os.path.join(out_dir, fn))
+        return fn
 
     meshes = []
     for src, nmap in [(body, None)] + [(p, part_nodes(p, body)) for p in parts]:
@@ -631,6 +640,8 @@ def build_model(body, parts, tex, out_dir, template, tag):
             # one output mesh per texture
             for si, sub in enumerate(m['subs']):
                 tname = src['textures'][sub['tex']] if sub['tex'] < len(src['textures']) else ''
+                if tname.lower().startswith('blood'):
+                    continue   # (the PS2's blood overlay: shown only while bleeding - 2011 has its own)
                 key = {}
                 pos, nrm, uvs, wts, tris, bones = [], [], [], [], [], []
                 bidx = {}
@@ -658,13 +669,18 @@ def build_model(body, parts, tex, out_dir, template, tag):
                             tris.append([a, b, c])
                 if not tris:
                     continue
-                kind = 'eye' if 'eye' in tname.lower() else 'skin'
+                kind = 'eye' if 'eye' in tname.lower() else 'hair' if cutout(sub) else 'skin'
                 mesh = dict(name='%s_m%d_%d' % (src['name'] or tag, mi, si), kind=kind, positions=pos, normals=nrm,
-                            uvs=uvs, bones=bones, weights=wts, triangles=tris)
-                p = png(tname) if tname else None
-                if p:
-                    mesh['textures'] = {'color': p}
+                            uvs=uvs, bones=bones, weights=wts, triangles=tris, _tex=tname)
                 meshes.append(mesh)
+    hair_tex = {m['_tex'].lower() for m in meshes if m['kind'] == 'hair'}
+    files = {}
+    for m in meshes:
+        t = m.pop('_tex')
+        if t and t.lower() not in files:
+            files[t.lower()] = png(t, t.lower() in hair_tex)
+        if t and files[t.lower()]:
+            m['textures'] = {'color': files[t.lower()]}
     wrap_textures(meshes, out_dir)
     joints = {}
     for i, nd in enumerate(body['nodes']):
@@ -739,7 +755,7 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
             raise BadInput('character %x has no attire %d' % (id_, at))
         mid = chars[id_][at]
         body, parts, tex = g.model(mid)
-        a, info = build_model(body, parts, tex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid))
+        a, info = build_model(body, parts, tex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid), g.old_materials)
         joints = joints or a['joints']
         entry = dict(name=None, meshes=a['meshes'])
         gids = g.gear(id_, at) if gear else []
@@ -749,7 +765,7 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
                 gb, gp, gt = g.model(gid)
                 gparts += [gb] + gp
                 gtex.update(gt)
-            ga, _ = build_model(body, parts + gparts, gtex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid))
+            ga, _ = build_model(body, parts + gparts, gtex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid), g.old_materials)
             entry['entrance_gear'] = dict(meshes=ga['meshes'])
         model['attires'].append(entry)
         infos.append(dict(attire=at, model_id='%0*x' % (8 if mid > 0xFFFF else 4, mid), raw_name=body['name'],
