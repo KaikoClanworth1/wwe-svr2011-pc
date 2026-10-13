@@ -44,7 +44,6 @@
 #include <rex/kernel/xam/online_hooks.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
-#include <rex/thread.h>
 
 #include "frame_rate.h"
 #include "online_files.h"
@@ -500,7 +499,6 @@ std::vector<uint8_t> DataV2(DataStream& st, uint16_t to, uint16_t from, const ui
 }
 
 void ProxyLoop(Proxy* proxy) {
-  rex::thread::set_current_thread_name("p2p proxy");
   std::vector<uint8_t> buf(65536);
   for (;;) {
     sockaddr_in from = {};
@@ -812,7 +810,6 @@ void OnDataV2(const uint8_t* data, size_t size, Via via) {
 // Once a second, a ping to each peer this game exchanges game packets with (it
 // has a proxy): their round trips for the log and the ping indicator (net_sim.h).
 void PingLoop() {
-  rex::thread::set_current_thread_name("p2p ping");
   for (;;) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     std::vector<Path> to;
@@ -1130,7 +1127,6 @@ void OnRelay(const uint8_t* data, size_t size) {
 }
 
 void Receive() {
-  rex::thread::set_current_thread_name("p2p receive");
   std::vector<uint8_t> buf(65536);
   for (;;) {
     sockaddr_in from = {};
@@ -1181,7 +1177,6 @@ void OnPipeData(const uint8_t* data, size_t size) {
 // (which also keeps its NAT's mapping open). Each pipe is two of the server's
 // connections: games outside online play don't hold any.
 void Keepalive() {
-  rex::thread::set_current_thread_name("p2p keepalive");
   using namespace std::chrono_literals;
   const bool relay = REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty();
   const std::string stun = REXCVAR_GET(p2p_stun);

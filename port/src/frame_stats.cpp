@@ -1,7 +1,6 @@
 // WWE SmackDown vs. Raw 2011 - guest frame timing (see frame_stats.h).
 
 #include "frame_stats.h"
-#include "thread_cpu.h"
 
 #include <algorithm>
 #include <atomic>
@@ -129,8 +128,6 @@ void OnFramePresented() {
         "<18ms {} / <35ms {} / <51ms {} / longer {})",
         g_fps, g_window_worst_ms, g_window_frames, secs, g_window_hist[0], g_window_hist[1],
         g_window_hist[2], g_window_hist[3]);
-    // (where the CPU went over the same window: thread_cpu.h)
-    if (const std::string threads = ThreadCpuLine(); !threads.empty()) REXLOG_INFO("{}", threads);
     if (!g_window_times.empty()) {
       // Finer: the median and the slow tail (a steady 60 is 16.7 / 16.7 / 16.7).
       std::vector<float>& v = g_window_times;

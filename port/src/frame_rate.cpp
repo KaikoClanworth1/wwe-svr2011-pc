@@ -24,7 +24,6 @@
 // extra ones repeat the controller reading and leave the characters' job to
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
-#include "thread_cpu.h"
 #include "fast_start.h"
 
 #if defined(_WIN32)
@@ -472,7 +471,6 @@ REX_HOOK_RAW(sub_8269D768) {
 REX_EXTERN(__imp__sub_8269C728);
 REX_HOOK_RAW(sub_8269C728) {
   g_logic_thread = std::this_thread::get_id();
-  svr2011::NoteThreadRole("logic");  // (thread_cpu.h)
   const auto saved = ctx;
   const uint32_t m = ctx.r3.u32;
   constexpr uint32_t kOwner = 0x82EC5F94;
