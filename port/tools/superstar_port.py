@@ -1312,9 +1312,9 @@ def buildW(cid, outdir, o, rep):
         r = gw.raw_dat[cid]
         man['ratings'] = ','.join(str(max(0, min(99, r[o] - m))) for o, m in gw.rating_map)
         note('ratings from %s DAT -> %s' % (gw.label, man['ratings']))
-        abilities_step(gw.game_id, gw, cid, man, note)
     else:
-        drop('ratings, abilities (%s): the base\'s' % gw.no_ratings)
+        drop('ratings (%s): the base\'s' % gw.no_ratings)
+    abilities_step(gw.game_id, gw, cid, man, note)   # (every game: its own list, else guessed from the ratings)
     music, movie, ent, alt = gw.entrance_block(cid)
     # theme
     progress(45, 'theme')
