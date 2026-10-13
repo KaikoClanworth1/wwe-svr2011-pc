@@ -45,6 +45,8 @@ Playback& Play();
 // The preview, w x h: left drag turns, right drag tilts, wheel zooms, middle drag pans.
 void Draw(float w, float h);
 void ResetCamera();
+// The view as it is now, size x size RGBA: the model alone on a clear background (alpha 0), no floor - a picture.
+bool Capture(int size, std::vector<uint8_t>& rgba);
 // The blood overlays (the model's blood_* parts, as matches show them) on / off.
 void SetBlood(bool on);
 bool Blood();

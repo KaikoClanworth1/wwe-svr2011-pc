@@ -79,6 +79,22 @@ void SetPicture(const Image& src);
 std::wstring StyleChPac();  // the fighting style's superstar's model (pac\ch\ch<id>.pac)
 void SimpleDraw();          // simple_star.cpp
 void FbxRows(bool simple);
+// the move-set: the picker (g_pick_slot >= 0 opens it), slot names, the preview of a pose
+extern int g_pick_slot;
+extern char g_pick_find[48];
+extern bool g_pick_any;
+extern bool g_watching;
+void MovePicker();
+std::string SlotLabel(int slot);
+void PreviewPose(int id);
+struct PoseChoice {
+  int id;
+  std::string label;
+};
+const std::vector<PoseChoice>& Poses();
+std::string PoseLabel(int id);
+extern const char* const kNickNames[84];
+extern const char* const kAttributes[7];
 bool TakeFromMod(const std::wstring& svrmod, bool everything);  // a converted superstar's look (or all of it) into this project  // Model from an FBX: pick, report, bone matching, meshes, Make
 
 }  // namespace star_page
