@@ -31,7 +31,7 @@ constexpr size_t kCasDataSize = 187504;         // an attire's data (DataVersion
 constexpr uint32_t kCasHeader = 0x22C;          // then the .cas from its start
 constexpr uint32_t kCawExt = 20 + 160000;       // the .cas's 'XLG1' record (caw_logos.cpp)
 constexpr uint32_t kLocalIds = 0x40000000;      // ids of our own: 0x40000000 | owner << 16 | n
-enum : uint8_t { kKindData = 1, kKindRecord = 2, kKindLogo = 3 };
+enum : uint8_t { kKindData = 1, kKindRecord = 2, kKindLogo = 3, kKindPicture = 4 };
 
 std::filesystem::path g_saves;
 std::mutex g_mutex;
@@ -219,8 +219,98 @@ std::optional<std::string> Remote(uint32_t id, uint8_t kind) {
   return d;
 }
 
+// -- Created Superstar pictures in the lobby -------------------------------------------
+//
+// NNCreateSuperStar.cas: 4 attire blocks of 149528 bytes from 746340, each
+// starting with the attire's 256 x 512 DXT5 render (as the game keeps it:
+// 16-bit words swapped, untiled) - what the lists and the lobby show. A
+// picture's key: "<owner's online id, 16 hex>:<superstar>:<attire>"; with
+// ":h" its hash (16 hex) - fetched first, so a render is sent once per
+// version (kept in Saves\.online\pictures\<hash>.bin).
+constexpr uint32_t kCasSize = 0x148FCC;
+constexpr uint32_t kAttireBlocks = 746340, kAttireBlock = 149528, kRender = 256 * 512;
+
+std::filesystem::path CawFile(uint32_t id) {
+  char name[32];
+  std::snprintf(name, sizeof name, "%02uCreateSuperStar.cas", id);
+  return g_saves / name;
+}
+
+uint64_t MyXuid() { return std::strtoull(rex::cvar::Query<std::string>("online_xuid").c_str(), nullptr, 16); }
+
+std::string Hex16(uint64_t v) {
+  char t[17];
+  std::snprintf(t, sizeof t, "%016llX", static_cast<unsigned long long>(v));
+  return t;
+}
+
+uint64_t Fnv(const std::string& d) {
+  uint64_t h = 1469598103934665603ull;
+  for (unsigned char c : d) h = (h ^ c) * 1099511628211ull;
+  return h;
+}
+
+std::string PictureKey(uint64_t owner, uint32_t id, uint32_t attire) {
+  return Hex16(owner) + ":" + std::to_string(id) + ":" + std::to_string(attire);
+}
+
+// This game's render of a Created Superstar's attire (nullopt: none).
+std::optional<std::string> MyRender(uint32_t id, uint32_t attire) {
+  if (id >= 50 || attire >= 4) return std::nullopt;
+  std::ifstream in(CawFile(id), std::ios::binary);
+  if (!in) return std::nullopt;
+  in.seekg(kAttireBlocks + std::streamoff(attire) * kAttireBlock);
+  std::string d(kRender, '\0');
+  if (!in.read(d.data(), kRender)) return std::nullopt;
+  return d;
+}
+
+// A peer asks for one of this game's pictures (or its hash).
+std::optional<std::string> PictureSource(const std::string& key) {
+  unsigned long long owner = 0;
+  unsigned id = 0, attire = 0;
+  char h = 0;
+  const int n = std::sscanf(key.c_str(), "%16llX:%u:%u:%c", &owner, &id, &attire, &h);
+  if (n < 3 || owner != MyXuid() || (n == 4 && h != 'h')) return std::nullopt;
+  auto d = MyRender(id, attire);
+  if (!d) return std::nullopt;
+  if (n == 4) return Hex16(Fnv(*d));
+  return d;
+}
+
+struct Picture {
+  bool busy = false, ready = false;
+  std::chrono::steady_clock::time_point tried{};
+  std::string render;
+};
+std::map<std::string, Picture> g_pictures;  // by key (under g_mutex)
+
+void FetchPicture(std::string key) {
+  std::string render;
+  const auto hash = P2PFetch(kKindPicture, key + ":h", std::chrono::seconds(10));
+  if (hash && hash->size() == 16 && hash->find_first_not_of("0123456789ABCDEF") == std::string::npos) {
+    const auto file = Dir() / "pictures" / (*hash + ".bin");
+    if (auto kept = ReadFile(file); kept && kept->size() == kRender && Hex16(Fnv(*kept)) == *hash) {
+      render = std::move(*kept);
+      REXLOG_INFO("online cas: picture {} kept here ({})", key, *hash);
+    } else if (auto d = P2PFetch(kKindPicture, key, std::chrono::seconds(20));
+               d && d->size() == kRender && Hex16(Fnv(*d)) == *hash) {
+      WriteFile(file, *d);
+      render = std::move(*d);
+      REXLOG_INFO("online cas: picture {} from its owner ({})", key, *hash);
+    }
+  }
+  if (render.empty()) REXLOG_INFO("online cas: picture {} not had", key);
+  std::lock_guard lock(g_mutex);
+  Picture& p = g_pictures[key];
+  p.busy = false;
+  p.tried = std::chrono::steady_clock::now();
+  if (!render.empty()) p.render = std::move(render), p.ready = true;
+}
+
 // What this game gives its peers.
 std::optional<std::string> Source(uint8_t kind, const std::string& key) {
+  if (kind == kKindPicture) return PictureSource(key);
   if (kind == kKindLogo) {
     if (key.size() != 16 || key.find_first_not_of("0123456789ABCDEF") != std::string::npos) return std::nullopt;
     return ReadFile(g_saves / ".logos" / (key + ".bin"));
@@ -413,6 +503,31 @@ std::optional<std::string> Answer(const std::string& method, const std::string& 
 }
 
 }  // namespace
+
+const std::string* OnlinePicture(uint64_t owner, uint32_t id, uint32_t attire) {
+  if (g_saves.empty() || !owner || id >= 50 || attire >= 4) return nullptr;
+  const std::string key = PictureKey(owner, id, attire);
+  std::lock_guard lock(g_mutex);
+  Picture& p = g_pictures[key];
+  if (p.ready) return &p.render;  // (never changed again: the pointer stays good)
+  if (p.busy || std::chrono::steady_clock::now() - p.tried < std::chrono::seconds(15)) return nullptr;
+  p.busy = true;
+  std::thread(FetchPicture, key).detach();
+  return nullptr;
+}
+
+std::vector<uint32_t> OnlineLocalCaws() {
+  static std::vector<uint32_t> found;
+  static auto checked = std::chrono::steady_clock::time_point{};
+  const auto now = std::chrono::steady_clock::now();
+  if (now - checked < std::chrono::seconds(10)) return found;
+  checked = now;
+  found.clear();
+  std::error_code ec;
+  for (uint32_t id = 0; id < 50; ++id)
+    if (std::filesystem::file_size(CawFile(id), ec) >= kCasSize && !ec) found.push_back(id);
+  return found;
+}
 
 void InstallOnlineCas(const std::filesystem::path& saves) {
   if (!rex::cvar::Query<bool>("online_enabled")) return;

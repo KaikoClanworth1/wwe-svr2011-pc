@@ -581,6 +581,7 @@ REX_HOOK_RAW(sub_8273A270) {
 // a CAW picture object, others the SSFC loader -, +4, +8, +12).
 REX_EXTERN(__imp__sub_8273BB60);
 REX_HOOK_RAW(sub_8273BB60) {
+  if (uint32_t(ctx.lr) == 0x8273C080 && ctx.r3.u32) svr2011::OnlineCawPictureFailed(base, ctx.r3.u32);
   static const bool log = std::getenv("SVR2011_TEST_IMG_LOG") != nullptr;
   if (log && ctx.r4.u32) {
     auto rd = [base](uint32_t a) {

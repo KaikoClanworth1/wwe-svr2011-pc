@@ -34,5 +34,9 @@ uint32_t OnlineString(uint32_t id);
 // Guest scratch memory for online_cpu.cpp's calls into the game (4 KB, the
 // game's thread only); 0 before InstallOnline.
 uint32_t OnlineScratch();
+// A picture holder's object failed to load and the holder falls back to its
+// "no picture" (sub_8273BB60 from 0x8273C080: online_cpu.cpp's Created
+// Superstar pictures shown with a stand-in - that one isn't usable).
+void OnlineCawPictureFailed(uint8_t* base, uint32_t holder);
 
 }  // namespace svr2011
