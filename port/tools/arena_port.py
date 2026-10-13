@@ -482,8 +482,10 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         bank = light_bank(unp(ents[0x7530]))
         # (set 10, the game's own light for the wrestlers and the ring, is the same in every arena
         # of a game; SvR 2008's side lights run at 1.2-3.0x - the others' at most ~1.5x, 2011's
-        # 0.6x - and blew the black turnbuckle pads out to cream in 2011: RAW's)
-        added = fill_lights(bank, light_bank(unp(eb[0x7530])), replace=(10,) if game == 'svr2008' else ())
+        # 0.6x - and blew the black turnbuckle pads out to cream in 2011. With SvR 2008's or 2009's
+        # set 10 some arenas crashed ~10 s into a match in the code that reads it (sub_822A6BD8,
+        # lr 822A6EE8: 2008 bg04 / bg06 / bg07, 2009 bg09 / bg17, run to run): RAW's)
+        added = fill_lights(bank, light_bank(unp(eb[0x7530])), replace=(10,) if game in ('svr2008', 'svr2009') else ())
         if added:
             ents[0x7530] = ymks.write_bank(bank)
             notes.append('light sets the game needs, from 2011 RAW: ' + ', '.join(map(str, added)))
