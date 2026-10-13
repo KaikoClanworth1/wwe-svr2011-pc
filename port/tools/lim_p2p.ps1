@@ -44,25 +44,27 @@ try {
         Copy-Item (Join-Path $runs $HostBase) $hostData -Recurse
     }
     $env:SVR2011_CONFIG = Join-Path $runs "test_config_lim_online.toml"; $env:SVR2011_USER_DATA = $hostData
-    & $s start -Name "$Name`_host" | Out-Null; Low ""
+    & $s start -Name "$Name`_host" | Out-Null
     $env:SVR2011_CONFIG = $cfg2; $env:SVR2011_USER_DATA = Join-Path $runs "test_userdata_lim2"
-    & $s start -Slot 2 -Name "$Name`_join" | Out-Null; Low "2"
+    & $s start -Slot 2 -Name "$Name`_join" | Out-Null
     In "" @("route online"); In "2" @("route online")
     Start-Sleep 70
     # host: MATCH -> PLAYER MATCH -> CREATE SESSION, the PORT RULES row, CONTINUE
     In "" @("press A", "wait 2500", "press DOWN", "wait 800", "press A", "wait 2500", "press DOWN", "wait 700", "press DOWN", "wait 700", "press A", "wait 3000")
     Start-Sleep 16
     if ($TargetRule) {
-        $order = @{ "00" = 0; "03" = 1; "05" = 1; "0D" = 2; "0E" = 3; "08" = 4; "0A" = 4 }   # (the MATCH TYPE list's people counts: 1, 2 on 2, 3, 4, 6)
+        $order = @{ "00" = 0; "03" = 1; "0D" = 2; "0E" = 3; "05" = 4; "08" = 5; "0A" = 5 }   # (the MATCH TYPE list's people counts: 1, 2 on 2, 3, 4, 5, 6)
         $hlog = Join-Path $runs "$Name`_host.log"
-        foreach ($try in 1..4) {
+        foreach ($try in 1..10) {
+            Start-Sleep 8   # (the list's result is logged once it has closed: never read a stale one)
             $now = (Select-String -Path $hlog -Pattern "CREATE SESSION match is rule ([0-9A-F]{2})" | Select-Object -Last 1)
             $cur = if ($now) { $now.Matches[0].Groups[1].Value } else { "00" }
             if ($cur -eq $TargetRule) { break }
-            $d = $order[$TargetRule] - $order[$cur]
-            $keys = @("press A 400", "wait 5000")
+            $d = (($order[$TargetRule] - $order[$cur]) % 6 + 6) % 6   # (the list wraps: the shorter way round)
+            if ($d -gt 3) { $d = $d - 6 }
+            $keys = @("press A 400", "wait 6000")
             $k = if ($d -gt 0) { "DOWN" } else { "UP" }
-            for ($i = 0; $i -lt [math]::Abs($d); $i++) { $keys += @("press $k 400", "wait 1500") }
+            for ($i = 0; $i -lt [math]::Abs($d); $i++) { $keys += @("press $k 400", "wait 3000") }
             $keys += @("press A 400", "wait 4000", "press A 400", "wait 4000", "press A 400", "wait 5000")
             In "" $keys; Start-Sleep ([int](($keys.Count / 2) * 3) + 8)
         }
