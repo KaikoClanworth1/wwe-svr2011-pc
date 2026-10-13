@@ -113,23 +113,49 @@ weapon-hand check `sub_821B3B70` is true. A viewer can ignore these.
 - The op -> handler table is at about 0x820100F4.
 - Code also sets the mask directly in a few places: 63 (all groups) in
   `sub_822D5958`, `sub_821CE318`, `sub_82235D18`; 2 (body) in `sub_823830D8`.
+- YMKs event **op 87** (0x57, 2 bytes: `57 mm`) sets the mask to `mm` and
+  **op 94** (0x5E, 1 byte) clears it: this is the pair ordinary strikes use
+  (measured, see below). The handlers are not traced, so whether op 87 also
+  swaps left / right for mirrored moves is unknown (probably, like op 40).
 
 ### What the data uses
 
-All of m.pac and mpsp.pac hold only **54** op 40 / op 41 windows, all in weapon
-motions (id 15190 in the WEAP, WEPB, WEAT, RU* banks, plus BM02 741). Typical
-windows are frames 9-17, 34-50 and 66-74. Masks seen: 11, 12, 13, 15, 29, 43, 63
-(13 = head + both arms is the most common).
+**Op 87 / op 94: every strike.** m.pac and mpsp.pac hold 2999 op 87 events in
+483 motions: 2182 windows closed by op 94, 817 that run to the motion's end, and
+137 op 94 without an op 87. Windows are short: mostly 3-5 key frames. Masks seen
+most: 63 (all groups, 1175), 8 (right arm, 317), 32 (right leg, 236), 50, 3, 12,
+48, 10, 4, 62.
 
-Ordinary strikes never use op 40, so their hits probably don't go through these
-spheres (likely a range / frame check instead). **Unverified**: settling it needs
-a short runtime log of `fighter + 596` and `collider + 440` per frame.
+**Op 40 / op 41: weapons only.** Just 54 windows, all in weapon motions (id 15190
+in the WEAP, WEPB, WEAT, RU* banks, plus BM02 741). Masks 11, 12, 13, 15, 29, 43, 63.
+
+### Runtime check (2026-10-13)
+
+`SVR2011_HIT_LOG=1` (branch d4-log, `src/hit_log.cpp`) logged a CPU-vs-CPU match
+(John Cena vs Randy Orton): per collider the motion, frame, `fighter + 596` and
+`collider + 440` on change, every sphere-pair hit of `sub_826A9BA0` and every
+`sub_82238F28` call.
+
+| Motion (BM00/4) | Op 87 at key | Op 94 at key | Logged mask | Logged window (fighter + 24) |
+|---|---|---|---|---|
+| 3128 | 10, mask 08 | 13 | 8, active 0x1C0 (spheres 6-8) | 21 - 27 |
+| 3860 | 10, mask 20 | 15 | 0x20, active 0x7000 (12-14) | 21 - 31 |
+| 3893 | 18, mask 3E | 25 | 0x3E, active 0x7FFE | 37 - 51 |
+
+- `fighter + 24` counts at twice the key frame rate: window = key x 2 (+1).
+- Each hit was a shape-test hit (attack sphere x target sphere, e.g. 8 x 2 =
+  right hand x koshi) from the broker (caller 0x823AC82C), followed by the hit
+  callback (caller 0x823AC934).
+- Motions 53, 220 and 234 showed active spheres with mask 0 (0x8000 = sphere 15;
+  0x1B0): the hard-coded per-motion tweaks in `sub_822763E8`.
+- Mask 2 (body, active 0x6) appeared in motions 20500, 59 and 6801: set from code.
 
 ## For the viewer
 
 1. The bone world matrices it already computes.
 2. The two tables above.
 3. Target spheres on both dummies all the time.
-4. An attack sphere only while the motion's op 40 -> op 41 window is open and
-   its group bit is in the mask (left / right swapped for mirrored moves).
-   For moves without op 40 there is nothing in the data to show.
+4. An attack sphere only while an op 87 -> op 94 window (strikes) or an
+   op 40 -> op 41 window (weapons) is open and its group bit is in the mask
+   (left / right swapped for mirrored moves). A window without its closing op
+   runs to the end of the motion.
