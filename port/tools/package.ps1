@@ -44,7 +44,7 @@ if ($WithModMaker) {
                      "entrance_ring.py",  # (Simple mode: an entrance's tracks for the preview)
                      "model_budget.py", "xact.py", "svr07_char.py", "wwise.py",
                      "svr11_build.py", "svr11_skeleton.json", "rig_maps.json", "rig_maps.py", "svr11_skeleton.py",
-                     "moveset_maps.py", "moveset_maps.json", "moveset_port.py", "fix_model.py")) {  # (FBX import: builder + skeleton / rig maps)
+                     "moveset_maps.py", "moveset_maps.json", "moveset_port.py", "fix_model.py", "gear_port.py")) {  # (FBX import: builder + skeleton / rig maps)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
     }
