@@ -350,12 +350,27 @@ def model_from_2008_family(src_pac, cid, pac11, out, portrait, hex_names):
     ents.sort(key=lambda e: e[1])
     first = ents[0][2]
     entries, kept = [], []
+    import model_budget
+    budget_notes = []
     for k, (s, att, kids) in enumerate(ents[:4]):
         o = svr08_char.attire(kids, tp, portrait, [0x20], first)
+        # a wrestler's vertex buffers get 192 pages in a match (model_budget.py): over that the
+        # match load crashes. Stock models without blood overlays exist (ch164): drop them first.
+        pg, _ = model_budget.attire_pages(o)
+        for drop in (0x7532, 0x7531, 0x7530):
+            if pg <= model_budget.LIMIT:
+                break
+            if drop in o:
+                del o[drop]
+                pg, _ = model_budget.attire_pages(o)
+                budget_notes.append('attire %s: blood overlay %#x left out (vertex memory)' % (s, drop))
+        if pg > model_budget.LIMIT:
+            budget_notes.append('attire %s: %d of %d pages of vertex memory - the match load may crash' % (s, pg, model_budget.LIMIT))
         name = b'%06d%02d' % (cid, k * 10 + 2)
         entries.append((name, svrfmt.pach_write([(i, svrfmt.bpe_encode(o[i], compress=True)) for i in sorted(o)])))
         kept.append((s, name.decode()))
     svr08_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), entries, out)
+    model_from_2008_family.notes = budget_notes
     return kept, [e[0] for e in ents[4:]]
 
 
@@ -462,6 +477,8 @@ def build09(cid, outdir, o, rep):
     elif g9.has_chpac(cid):
         kept, extra = model_from_2008_family(g9.chpac(cid), cid, pac11, os.path.join(mod, 'ch.pac'), portrait, True)
         note('model: %s ch%d.pac attires %s converted (svr08_char)' % (g9.label, cid, ', '.join('%s -> %s' % k for k in kept)))
+        for n in getattr(model_from_2008_family, 'notes', []):
+            (warn if 'may crash' in n else note)(n)
         for e in extra:
             drop('attire %s (a mod holds 4)' % e)
     else:
