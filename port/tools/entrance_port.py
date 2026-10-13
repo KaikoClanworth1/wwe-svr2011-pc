@@ -35,6 +35,7 @@ import svrfmt  # noqa: E402
 import ymks  # noqa: E402
 import svr08_entrance as E08  # noqa: E402
 import hctp_entrance as EH  # noqa: E402
+import svr10_entrance as E10  # noqa: E402
 
 
 class InputError(Exception):
@@ -180,6 +181,13 @@ def find_game_pac(arg):
 
 
 _stock = {}
+_stock_evp = {}
+
+
+def stock_2011_evps(game_pac):
+    """{number: EVP bytes} of 2011's own entrances"""
+    stock_2011(game_pac)
+    return _stock_evp.get(game_pac, {})
 
 
 def stock_2011(game_pac):
@@ -194,7 +202,9 @@ def stock_2011(game_pac):
             ents = epk8_read(open(os.path.join(game_pac, 'evt', f), 'rb').read())
             for (g, n), raw in ents.items():
                 if g.startswith('EVP') and n.isdigit() and int(n) < 10000:
-                    out[int(n)] = evp_name(unbpe(raw))
+                    u = unbpe(raw)
+                    out[int(n)] = evp_name(u)
+                    _stock_evp.setdefault(game_pac, {})[int(n)] = u
     _stock[game_pac] = out
     return out
 
@@ -231,7 +241,7 @@ GAMES = collections.OrderedDict([
     ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='research')),
     ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready')),
     ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='research')),
-    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='research')),
+    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='ready')),
     ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='research')),
     ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='research')),
     ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research')),
@@ -349,8 +359,76 @@ def hctp_convert(src, entrance, number, name, parts, rep):
     return evp, evt
 
 
-LISTERS = {'svr08': svr08_list, 'hctp': hctp_list}
-CONVERTERS = {'svr08': svr08_convert, 'hctp': hctp_convert}
+# ---- SvR 2010 (Xbox 360): pac/evt/Nyujyo0-3.pac, EPK8 groups EVP1-4/EVT1-4, numbers 100-840
+
+def svr10_entrances(src):
+    evp, evt = {}, {}
+    for f in src.listdir('pac/evt'):
+        if not re.match(r'(?i)nyujyo\d\.pac$', f):
+            continue
+        for (g, n), raw in pac_entries(src.read('pac/evt/' + f)).items():
+            if n.isdigit() and int(n) < 10000:
+                (evp if g.startswith('EVP') else evt if g.startswith('EVT') else {})[int(n)] = raw
+    return evp, evt
+
+
+def svr10_list(src, game_pac):
+    evp, evt = svr10_entrances(src)
+    out = []
+    for n in sorted(evp):
+        if n not in evt:
+            continue
+        try:
+            e = E08.parse_evp(evp[n], '2011')
+        except Exception as x:
+            log('svr10 %d: EVP not readable (%s)' % (n, x))
+            continue
+        nm = evp_name(evp[n])
+        frames = {}
+        try:
+            for x in ymks.read_bank(evt[n]).entries:
+                if x['id'] == 0 and x['y'] == 0 and x['x'] in (0, 5, 10, 15, 20):
+                    frames[x['x'] // 5] = x['frames']
+        except Exception:
+            pass
+        out.append(dict(number=n, name=nm, segments=len(frames), frames=[frames.get(k, 0) for k in range(5)],
+                        objects=len(e['objs']), props=[o['model'] for o in e['objs'] if (o['t0'], o['t1']) == E08.TYPE_PROP],
+                        has_pyro=any((o['t0'], o['t1']) == E08.TYPE_GLOBAL for o in e['objs']),
+                        has_movie=False, has_theme=False, in_2011=in_2011(nm, game_pac)))
+    return out
+
+
+def svr10_convert(src, entrance, number, name, parts, rep, game_pac=None):
+    evp, evt = svr10_entrances(src)
+    if entrance not in evp or entrance not in evt:
+        raise InputError('SvR 2010 has no entrance %d' % entrance)
+    progress(20, 'converting the script')
+    stock = stock_2011_evps(game_pac)
+    if not stock:
+        rep['warnings'].append('2011 pac folder not found: object 6 position templates and object 0 model rule skipped')
+    m0 = set()
+    for b in stock.values():
+        try:
+            m0.add(E08.parse_evp(b, '2011')['objs'][0]['model'])
+        except Exception:
+            pass
+    lines = []
+    e11 = E10.convert_evp(E08.parse_evp(evp[entrance], '2011'), number, m0, E10.obj6_templates(stock), lines)
+    if name:
+        nm = name.encode('latin-1', 'replace')[:29]
+        e11['name'] = nm + bytes(30 - len(nm))
+    progress(45, 'converting the tracks')
+    t11 = E10.convert_evt(evt[entrance], lines)
+    missing = [o['model'] for o in e11['objs'] if (o['t0'], o['t1']) == E08.TYPE_PROP and o['model'] in (2403, 2405)]
+    if missing:
+        rep['warnings'].append('props %s are not in 2011 (they will not show)' % missing)
+    rep['notes'] += lines
+    rep['dropped'] += [l for l in lines if l.startswith('dropped')]
+    return E08.build_evp(e11), t11
+
+
+LISTERS = {'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list}
+CONVERTERS = {'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert}
 
 
 # ============================================================================ commands
@@ -414,7 +492,9 @@ def cmd_convert(a):
                warnings=[], dropped=[], notes=[])
     try:
         progress(5, 'reading the source')
-        evp, evt = CONVERTERS[g](src, entrance, number, opt(a, '--name'), '--no-parts' not in a, rep)
+        conv = CONVERTERS[g]
+        kw = {'game_pac': gp} if 'game_pac' in conv.__code__.co_varnames else {}
+        evp, evt = conv(src, entrance, number, opt(a, '--name'), '--no-parts' not in a, rep, **kw)
         progress(60, 'checking')
         E08.parse_evp(evp, '2011')
         b = ymks.read_bank(evt)
