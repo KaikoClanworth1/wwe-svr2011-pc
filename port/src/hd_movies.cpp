@@ -159,8 +159,9 @@ bool MfOn() {
 ComPtr<IMFSourceReader> OpenReader(const fs::path& mp4, uint32_t w, uint32_t h) {
   ComPtr<IMFAttributes> attrs;
   ComPtr<IMFSourceReader> reader;
-  if (FAILED(MFCreateAttributes(&attrs, 1)) ||
+  if (FAILED(MFCreateAttributes(&attrs, 2)) ||
       FAILED(attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE)) ||
+      FAILED(attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE)) ||  // (the GPU's decoder where it has one)
       FAILED(MFCreateSourceReaderFromURL(mp4.wstring().c_str(), attrs.Get(), &reader)))
     return nullptr;
   const DWORD video = DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
@@ -244,6 +245,9 @@ class Decoder {
   };
 
   void Run() {
+    // (below the game's own threads: a frame late on the titantron is better
+    // than a frame late in the match)
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     if (!MfOn()) return;
     ComPtr<IMFSourceReader> reader = OpenReader(movie_.mp4, w_, h_);
     if (!reader) {
@@ -392,6 +396,7 @@ REX_HOOK_RAW(sub_82D49B80) {
     for (uint32_t k = 0; k < 260 && base[name + k]; ++k) n.push_back(char(base[name + k]));
   __imp__sub_82D49B80(ctx, base);
   const uint32_t bink = ctx.r3.u32;
+  if (LogOn()) REXLOG_INFO("[svr2011] hd movies: open {} -> {:08X}", n, bink);
   const std::string hd = std::string("\\") + kHdFolder + "\\";
   const size_t at = n.find(hd);
   if (!bink || at == std::string::npos) return;
@@ -439,5 +444,11 @@ REX_HOOK_RAW(sub_82592B90) {
   const uint32_t y = Rd32(base + set + 4), yp = Rd32(base + set + 8);
   const uint32_t cr = Rd32(base + set + 16), cp = Rd32(base + set + 20), cb = Rd32(base + set + 28);
   if (!y || !cr || !cb || !yp || !cp) return;
+  static int told = 0;
+  if (LogOn() && told < 3) {
+    ++told;
+    REXLOG_INFO("[svr2011] hd movies: frame {} set {} Y {:08X}/{} cR {:08X} cB {:08X}/{} planes {}x{}", frame, i, y, yp, cr,
+                cb, cp, Rd32(base + sets + 132), Rd32(base + sets + 136));
+  }
   it->second->Write(double(frame - 1) / kFps, base + y, yp, base + cr, base + cb, cp);
 }
