@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace svr2011 {
@@ -36,7 +37,9 @@ struct NetLink {
   float rtt_ms = 0;     // the latest
   float worst_ms = 0;   // the worst of the last 5 s
   bool relayed = false;
+  std::string name;     // (its player's name, when its pings carry it)
 };
 std::vector<NetLink> NetLinks();  // (peers answered within the last 5 s)
+void NetPeerName(uint32_t peer, const std::string& name);
 
 }  // namespace svr2011

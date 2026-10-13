@@ -152,6 +152,18 @@ static void DrawPing(ImGuiIO& io) {
     ImGui::Dummy(ImVec2(4 * (w + 2.0f), h));
     ImGui::SameLine();
     ImGui::TextColored(colour, "%.0f ms%s", worst, relayed ? " (relay)" : "");
+    // (outside a match - the lobby - or with more than one peer: every
+    // player and their own ping, so players can see who is far)
+    if (links.size() > 1 || !svr2011::InMatch()) {
+      ImGui::SetWindowFontScale(1.0f);
+      for (const auto& l : links) {
+        const ImVec4 c = l.rtt_ms < 150 ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f)
+                         : l.rtt_ms < 250 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f)
+                                          : ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
+        const std::string who = l.name.empty() ? "Player" : l.name;
+        ImGui::TextColored(c, "%s  %.0f ms%s", who.c_str(), l.rtt_ms, l.relayed ? " (relay)" : "");
+      }
+    }
   }
   ImGui::End();
 }
