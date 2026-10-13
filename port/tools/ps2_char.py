@@ -5,8 +5,8 @@
 
 --list prints JSON {game, disc_serial, characters: [{id, name, raw_id, source, attires: [{attire, source,
 bones, meshes}]}]}. The convert writes into <out dir>: model.json (svr11_build's neutral model), tex_*.png
-(the PS2 part textures), render_bust.png / render_wide.png (the PS2 select pictures, when
-the game has them), ch.pac and report.json (the builder's report + {game, id, sources: [{attire, model_id,
+(the PS2 part textures), render.dds / render_small.dds (the PS2 select pictures, when the
+game has them; left out otherwise), ch.pac and report.json (the builder's report + {game, id, sources: [{attire, model_id,
 raw_name, bones_folded, height_m}], scale, height_m, bones_folded}). Exit 0 ok, 2 bad input, 3 failed (the builder's codes).
 
 Games: SmackDown! Here Comes the Pain (HCTP), SmackDown! Shut Your Mouth (SYM: HCTP's formats, ids
@@ -111,6 +111,29 @@ def dpac(d):
                     out.append((tag, int(name, 16), 0x4000 + sec * 0x800, sz * 0x100))
                 cnt += 1
             off += 8 + 8 * cnt
+    return out
+
+
+def dpk8(d):
+    """DPK8 (the PS2 SvR 2010 / 2011) -> [(group, id, offset, size)]: groups {tag4, u32 n (0x4000: 12-byte
+    entries)}, entries {name8, u16 sector, u16 size / 0x100}; the EMD groups name their models in 8 hex
+    digits: a 4-digit prefix and the XXYZ id as before ("00010201": character 02, attire 0, part 1)"""
+    if d[:4] != b'DPK8':
+        raise BadInput('not a DPK8 archive')
+    out = []
+    off = 0x800
+    while off < 0x4000 and d[off:off + 4] != bytes(4):
+        tag = d[off:off + 4].decode('latin-1').strip()
+        n = u32(d, off + 4)
+        size = 12 if n & 0x4000 else 8
+        n &= 0x3FFF
+        for i in range(n):
+            p = off + 8 + size * i
+            name = d[p:p + size - 4].decode('latin-1')
+            sec, sz = struct.unpack_from('<HH', d, p + size - 4)
+            if tag.startswith('EMD') and name.strip() and all(c in '0123456789abcdefABCDEF' for c in name):
+                out.append((tag, int(name, 16), 0x4000 + sec * 0x800, sz * 0x100))
+        off += 8 + size * n
     return out
 
 
@@ -351,9 +374,9 @@ class Yukes:
             if not disc.exists(p):
                 continue
             head = disc.read(p, 0, 0x4000)
-            if head[:4] != b'DPAC':
+            if head[:4] not in (b'DPAC', b'DPK8'):
                 continue
-            for _, id_, off, size in dpac(head):
+            for _, id_, off, size in (dpac(head) if head[:4] == b'DPAC' else dpk8(head)):
                 self.entries[id_] = (p, off, size)
         if not self.entries:
             raise BadInput('no DPAC character archive (CH.PAC) on this disc')
@@ -387,7 +410,9 @@ class Yukes:
         """{(character, attire): [model ids]}"""
         out = {}
         for id_ in sorted(self.entries):
-            out.setdefault((id_ >> 8, (id_ >> 4) & 0xF), []).append(id_)
+            low = id_ & 0xFFFF   # (DPK8 names: a 4-digit prefix + the XXYZ id)
+            key = (low >> 8, (low >> 4) & 0xF)
+            out.setdefault(key, []).append(id_)
         return out
 
     def characters(self):
@@ -650,6 +675,26 @@ def build_model(body, parts, tex, out_dir, template, tag):
     return dict(meshes=meshes, joints=joints), info
 
 
+def write_renders(pics, out_dir):
+    """the PS2 select pictures -> the mod's renders (DXT5 with mips, as superstar_port writes them): the
+    128 x 128 bust -> render_small.dds (256 x 256), the 256 x 128 wide bust -> render.dds (doubled, at the
+    bottom of a transparent 512 x 512). PS2 has no full-body picture: no render_full.dds. -> {file: source}"""
+    import svr08_char
+    out = {}
+    if 'bust' in pics:
+        im = Image.fromarray(pics['bust'], 'RGBA').resize((256, 256), Image.LANCZOS)
+        open(os.path.join(out_dir, 'render_small.dds'), 'wb').write(svr08_char.dds_encode(im, 'DXT5'))
+        out['render_small.dds'] = 'bust'
+    if 'wide' in pics:
+        im = Image.fromarray(pics['wide'], 'RGBA')
+        im = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
+        canvas = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
+        canvas.paste(im, ((512 - im.width) // 2, 512 - im.height))
+        open(os.path.join(out_dir, 'render.dds'), 'wb').write(svr08_char.dds_encode(canvas, 'DXT5'))
+        out['render.dds'] = 'wide'
+    return out
+
+
 def wrap_textures(meshes, out_dir, most=4.0):
     """PS2 UVs wrap (a seam at 1.03, a strap tiled twice); the builder packs every texture into one sheet,
     where they would clamp: a texture used past 0..1 gets a copy covering the range it is used over
@@ -694,7 +739,7 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
             raise BadInput('character %x has no attire %d' % (id_, at))
         mid = chars[id_][at]
         body, parts, tex = g.model(mid)
-        a, info = build_model(body, parts, tex, out_dir, template, '%04x' % mid)
+        a, info = build_model(body, parts, tex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid))
         joints = joints or a['joints']
         entry = dict(name=None, meshes=a['meshes'])
         gids = g.gear(id_, at) if gear else []
@@ -704,19 +749,15 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
                 gb, gp, gt = g.model(gid)
                 gparts += [gb] + gp
                 gtex.update(gt)
-            ga, _ = build_model(body, parts + gparts, gtex, out_dir, template, '%04x' % mid)
+            ga, _ = build_model(body, parts + gparts, gtex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid))
             entry['entrance_gear'] = dict(meshes=ga['meshes'])
         model['attires'].append(entry)
-        infos.append(dict(attire=at, model_id='%04x' % mid, raw_name=body['name'],
+        infos.append(dict(attire=at, model_id='%0*x' % (8 if mid > 0xFFFF else 4, mid), raw_name=body['name'],
                           gear=['%04x' % x for x in gids], **info))
     for a in model['attires']:
         a.pop('name')
     model['joints'] = joints
-    renders = {}
-    for key, img in g.portraits(id_).items():
-        fn = 'render_%s.png' % key
-        Image.fromarray(img, 'RGBA').save(os.path.join(out_dir, fn))
-        renders[key] = fn
+    renders = write_renders(g.portraits(id_), out_dir)
     mj = os.path.join(out_dir, 'model.json')
     json.dump(model, open(mj, 'w'))
     pac_out = os.path.join(out_dir, 'ch.pac')
@@ -743,11 +784,11 @@ def list_disc(path):
             try:
                 body, parts, _ = g.model(mid)
             except BadInput as e:
-                c['attires'].append(dict(attire=at, raw_id='%04x' % mid, error=str(e)))
+                c['attires'].append(dict(attire=at, raw_id='%0*x' % (8 if mid > 0xFFFF else 4, mid), error=str(e)))
                 continue
             p = g.entries[mid][0]
             c.setdefault('name', body['name'])
-            c['attires'].append(dict(attire=at, raw_id='%04x' % mid, source='%s/EMD/%04x' % (p, mid),
+            c['attires'].append(dict(attire=at, raw_id='%0*x' % (8 if mid > 0xFFFF else 4, mid), source='%s/EMD/%0*x' % (p, 8 if mid > 0xFFFF else 4, mid),
                                      name=body['name'], bones=len(body['nodes']),
                                      meshes=sum(len(m['subs']) for m in body['meshes']), parts=len(parts)))
         out['characters'].append(c)
