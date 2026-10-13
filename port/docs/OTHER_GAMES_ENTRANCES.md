@@ -25,6 +25,7 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
 | SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, played in game (Mr. Kennedy 4062 as 495) |
 | SvR 2010 (X360) | 54510844 | 203 (191 in 2011) | `svr10_entrance.py` | ready, played in game (Mr. Kennedy) |
+| Legends of WrestleMania (X360) | 54510838 | 157 (89 not in 2009 / 2011) | `entrance_port.py` (2009 path) | ready, converted offline (Andre 4019, Hogan & Beefcake 4313); gondola entrances not supported |
 | WWE '12 (X360) | 54510890 | 247 (149 in 2011) | `wwe13_entrance.py --game wwe12` | ready, validated offline (Rey 123, Austin 101: 1-2 cm) |
 | WWE '13 (X360) | 545108B4 | 317 (150 in 2011) | `wwe13_entrance.py` | ready, played in game (Mankind 246 as 497); titantrons need Bink 2 |
 | WWE 2K14 (X360) | 545408B2 | 347 | `wwe13_entrance.py --game wwe2k14` | ready, validated offline on segments 2K14 did not re-cut (1-2 cm); titantrons need Bink 2 |
@@ -131,6 +132,25 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
   (and 9012, 9349) are missing in 2011 (silent).
 - **Titantron:** Bink 1 320x320 (same as 2011): copy as the mod's `movie=`. **Theme:**
   `music1.yaf` XMA2 records -> mp3 (`svr10_superstar.py` already does it).
+
+## WWE Legends of WrestleMania (Xbox 360)
+
+- **Where:** `pac/evt/Nyujyo0-3.pac` (EPAC, EVP1-4 / EVT1-4), 157 entrances 4001-4359: singles 4000 +
+  (superstar id - 100), champion versions 4200-4217, tag teams 4300-4329, and 29 "Gondola" (ring cart)
+  entrances 4170-4186 / 4230-4233 / 4350-4359. Profile CHAR/PRO 504 bytes: +0xE4 music, movie,
+  entrance, champion, gondola, gondola champion (attire 2 at +0xF0).
+- **Format:** SvR 2009's (2008's 28-byte objects, 2011 model ids and tail; headerless YMKs bank, every
+  op used has 2011's size, all body records decode); ~60% of the tracks are byte-identical to 2009's.
+- **Not in 2009 or 2011:** 89, mostly legends (Andre, Piper, Rude, Slaughter, Bundy, Yokozuna, Bulldog,
+  Studd, Road Warriors, Honky Tonk Man, Iron Sheik, Volkoff, Beefcake, Bossman, Duggan, Kamala, Bigelow,
+  Arn Anderson, Ultimate Warrior...), legend tag teams and champion versions.
+- **Rules** (`entrance_port.low_convert` = `svr09_convert(low=True)`): LoW's generic extras 10902 /
+  24802 / 24902 (and 11902 / 15902 except a tag partner at object 4) -> 13902 before the 2009 rules;
+  object 6's positions always from 2011's template; the inert last ring-cart prop (2552 / 2565) and its
+  tracks dropped. Gondola entrances are refused (exit 2) until the carts are ported.
+- **Props:** 30 of 43 in 2011; missing 2116, 2152, 2262, the carts and 2554/2555/2557/2562-2564/2568/2569
+  (warned). **Pyro:** 2009's older PCEN format (not converted). **Titantrons:** Bink 1 by superstar
+  id: `--titantron <id>`. **Themes:** `sound/music1.yaf` (2009-style).
 
 ## WWE '12 (Xbox 360)
 
