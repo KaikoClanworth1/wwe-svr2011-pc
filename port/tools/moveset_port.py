@@ -14,8 +14,7 @@ For each slot of the source game's profile that tools/moveset_maps.json maps to 
 moves.txt holds the slots that differ from the base's profile (0xOFF=id). Every row is reported.
 A 2011 move is used when it has a motion (some records are cut moves) and 2011's own roster has it in that
 slot or in the same menu group (pro_slots.json "menu") - a strike doesn't land in a grapple slot.
-Taunts (only with port_taunts - superstar_port --port-taunts - until a ported taunt is seen playing in
-game) are ported on a taunt template (the base's taunt in that slot, else another 2011 taunt on YMBs
+Taunts (unless port_taunts is False - superstar_port --no-taunts) are ported on a taunt template (the base's taunt in that slot, else another 2011 taunt on YMBs
 banks), on a free record in the template's thousand: moves_port's YMBs path. Submissions on YMBs banks
 keep the base's.
 """
@@ -102,9 +101,8 @@ def port_moveset(c):
         if fit:
             area[to // 2] = fit[0]
             rows.append((so, to, v, nm, 'same move in 2011', fit[0]))
-        elif menu_of.get(to) == 'Taunts' and v in src_index and not getattr(c, 'port_taunts', False):
-            # (ported YMBs taunts aren't seen playing in game yet - a frozen pose twice: off unless --port-taunts)
-            rows.append((so, to, v, nm, 'base kept (a taunt: --port-taunts to port it, not checked in game yet)',
+        elif menu_of.get(to) == 'Taunts' and v in src_index and not getattr(c, 'port_taunts', True):
+            rows.append((so, to, v, nm, 'base kept (a taunt: --no-taunts)',
                          base[to // 2]))
         elif v in src_index and c.port and c.mgame is not None:
             if menu_of.get(to) == 'Taunts' and v not in templ:   # (a taunt plays from YMBs banks: a taunt template)

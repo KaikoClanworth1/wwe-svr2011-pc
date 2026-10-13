@@ -5,10 +5,11 @@ Porting's reader for every Yuke's DPAC PS2 disc); this module adds what a supers
 them: the game's own names, a 2011 base, an entrance, renders, the manifest.
 
 Games (disc serials as ps2_char.SERIALS):
-    ps2_hctp   SmackDown! Here Comes the Pain - names: MOVES.PAC group LIST (a PAC at 0x4000) entry 6, u16
-               count then 32-byte records {u16 id, name[30]}; the id is the character's model-id digits
-               (XX of XXYZ) read as decimal (model 0x3900 -> 39 John Cena)
-    (SYM, SvR 2004 / 2006, the PS2 2007-2010: ps2_char reads their models; names not mapped yet)
+    ps2_sym, ps2_hctp, ps2_svr04, ps2_svr06, ps2_svr07, ps2_svr08, ps2_svr09, ps2_svr10
+Names: the game's CHAR records (tools/ps2_records.py, ModMaker's); a model's record number is its character
+digits (XX of model id XXYZ) read as decimal (HCTP model 0x3900 -> record 39 John Cena), PS2 2009 the id as a
+number, PS2 2010 the digits + 100 (NUMBERING). (HCTP also lists the roster in MOVES.PAC group LIST entry 6:
+u16 count, 32-byte {u16 id, name[30]}.)
 Characters ps2_char finds without a name (staff, props, copies) are left out of the list.
 Not yet: themes (BGM\\*.AFS, ADX), ratings, movesets - the base's.
 """
@@ -23,10 +24,21 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-GAMES = {   # game id -> (ps2_char game name, roster reader)
-    'ps2_hctp': 'WWE SmackDown! Here Comes the Pain',
+GAMES = {   # game id -> name
+    'ps2_sym': 'WWE SmackDown! Shut Your Mouth', 'ps2_hctp': 'WWE SmackDown! Here Comes the Pain',
+    'ps2_svr04': 'WWE SmackDown! vs. Raw (PS2)', 'ps2_svr06': 'WWE SmackDown! vs. Raw 2006 (PS2)',
+    'ps2_svr07': 'WWE SmackDown vs. Raw 2007 (PS2)', 'ps2_svr08': 'WWE SmackDown vs. Raw 2008 (PS2)',
+    'ps2_svr09': 'WWE SmackDown vs. Raw 2009 (PS2)', 'ps2_svr10': 'WWE SmackDown vs. Raw 2010 (PS2)',
 }
-SERIALS = {'ps2_hctp': ('SLES_520.36', 'SLUS_207.87')}
+SERIALS = {'ps2_sym': ('SLES_512.83', 'SLUS_205.12'), 'ps2_hctp': ('SLES_520.36', 'SLUS_207.87'),
+           'ps2_svr04': ('SLES_527.81', 'SLUS_209.36'), 'ps2_svr06': ('SLES_536.76', 'SLUS_211.34'),
+           'ps2_svr07': ('SLES_544.89', 'SLUS_214.27'), 'ps2_svr08': ('SLES_548.79',), 'ps2_svr09': ('SLES_552.51',),
+           'ps2_svr10': ('SLES_555.45',)}
+# model character id (XX of model id XXYZ) -> CHAR record number: the hex digits read as decimal (+ offset), or
+# the id as a number (PS2 2009); PS2 2007-2010 records are the X360 games' (2010's numbered from 100)
+NUMBERING = {'ps2_svr09': ('int', 0), 'ps2_svr10': ('dec', 100)}
+JUNK = re.compile(r'^(edit ?\d+|dlc ?\d+|0|dummy|motion test.*|moves? (set|man).*|.* bra \d+|average|speedy|wbm|green|red|'
+                  r'ojl|ktm|omp|ms|)$', re.I)   # (SYM's OJL / KTM / OMP / MS: no person)
 # (no gender in the name records: the women of the rosters by name - 2011's own gender wins when it has her)
 WOMEN = {'lita', 'trish stratus', 'stacy keibler', 'torrie wilson', 'victoria', 'sable', 'stephanie mcmahon', 'jazz',
          'molly holly', 'ivory', 'linda mcmahon', 'dawn marie', 'nidia', 'gail kim', 'jacqueline', 'terri'}
@@ -48,39 +60,46 @@ class GamePS2:
         import ps2_char as P
         self.P, self.game_id, self.path = P, game, path
         self.g = P.open_game(path)
-        self.label = GAMES[game].replace('WWE SmackDown! ', '')
+        serial = (self.g.disc.info() or {}).get('serial')
+        if serial and serial not in SERIALS[game]:
+            raise ValueError('this disc (%s) is not %s' % (serial, GAMES[game]))
+        self.label = GAMES[game].replace('WWE SmackDown! ', '').replace('WWE SmackDown ', '')
         self.chars = self.g.characters()   # {model char id: {attire: model id}}
         self.names = self._names()
         self.dat = {c: bytes(209) for c in self.roster()}   # (cmd_list reads a gender byte; see gender())
-        self.render_ids = {c for c in self.roster() if self.g.portraits(c)} if hasattr(self.g, 'portraits') else set()
+        self.render_ids = set()
+        for c in self.roster():
+            try:
+                if self.g.portraits(c):
+                    self.render_ids.add(c)
+            except Exception:   # noqa: BLE001  (ps2_char reads pictures by the id's digits: not every game's ids)
+                pass
 
     def _read(self, rel):
         d = self.g.disc
         return d.read(rel)
 
     def _names(self):
-        P = self.P
-        raw = self._read('PAC/MOVES.PAC')
-        lst = P.pac(raw[0x4000:])
-        b = lst.get(6, b'')
+        """{record number: name} from the game's CHAR records (tools/ps2_records.py), junk records left out"""
+        import ps2_records as R
         out = {}
-        if len(b) >= 2:
-            n = struct.unpack_from('<H', b, 0)[0]
-            for i in range(n):
-                o = 2 + 32 * i
-                if o + 32 > len(b):
-                    break
-                nm = b[o + 2:o + 32].split(b'\0')[0].decode('latin-1').strip()
-                if nm:
-                    out[struct.unpack_from('<H', b, o)[0]] = nm
+        for n, rec in R.table(self).items():
+            nm = R.record_name(self.game_id, rec)
+            if nm and not JUNK.match(nm):
+                out[n] = nm
         return out
 
     def number(self, c):
-        """model char id (0x39) -> the record number (39)"""
+        """model char id -> the CHAR record number (HCTP 0x39 -> 39; PS2 2009 0x66 -> 102; PS2 2010 0x10 -> 110)"""
+        kind, off = NUMBERING.get(self.game_id, ('dec', 0))
+        if kind == 'int':
+            return c + off
         try:
-            return int('%x' % c)
+            return int('%x' % c) + off
         except ValueError:
             return None
+
+    record_number = number
 
     def roster(self):
         return [c for c in sorted(self.chars) if self.number(c) in self.names]
