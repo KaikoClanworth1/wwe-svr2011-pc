@@ -9,9 +9,10 @@ namespace svr2011 {
 // This thread's role in the line ("logic", "render"); cheap after the first call.
 void NoteThreadRole(const char* role);
 
-// Every thread's CPU since the last call, as % of one core, grouped: the
-// noted roles, GPU / audio / p2p host threads by name, the busiest other guest
-// threads by start address. "" the first time.
-std::string ThreadCpuLine();
+// From now on, every 5 s on a thread of its own, a log line with every
+// thread's CPU over those 5 s as % of one core, grouped: the noted roles,
+// GPU / audio / p2p host threads by name, the busiest other guest threads by
+// start address.
+void StartThreadCpuLog();
 
 }  // namespace svr2011

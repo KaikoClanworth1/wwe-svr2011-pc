@@ -1,8 +1,11 @@
 // WWE SmackDown vs. Raw 2011 - per-thread CPU use, see thread_cpu.h.
 //
-// Every thread's CPU time is read (Windows: GetThreadTimes on a snapshot of
-// the process's threads; Android / Linux: /proc/self/task/<tid>/stat) and the
-// difference since the last call taken over the wall time between them.
+// A thread of its own, every 5 s: every thread's CPU time (Windows:
+// GetThreadTimes on handles kept open - the process's threads are listed with
+// a Toolhelp snapshot only once a minute, as it walks every thread on the
+// system and takes ~150 ms; Android / Linux: /proc/self/task/<tid>/stat) and
+// the difference over the 5 s. Never on a game thread: done on the frame
+// thread, the snapshot was a 150 ms hitch every 5 s.
 // Labels: the roles noted by hooks (the game's world update = logic, its
 // D3D Clear = render); host threads by name (GPU..., p2p..., audio); guest
 // threads otherwise by their start address ("g8216E098"), the same in every
@@ -18,6 +21,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +38,7 @@
 
 #include <rex/system/kernel_state.h>
 #include <rex/system/xthread.h>
+#include <rex/logging.h>
 #include <rex/thread.h>
 
 namespace svr2011 {
@@ -56,35 +61,61 @@ struct ThreadTime {
 #if defined(_WIN32)
 using GetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
 
-std::vector<ThreadTime> ReadThreads() {
-  std::vector<ThreadTime> out;
+struct Cached {
+  HANDLE handle = nullptr;
+  std::string name;
+};
+std::unordered_map<uint32_t, Cached> g_handles;  // (the worker's)
+Clock::time_point g_listed{};
+
+// The process's threads, again once a minute (handles kept open between).
+void ListThreads() {
   static const auto describe = reinterpret_cast<GetThreadDescriptionFn>(
       GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription"));  // (Windows 10 1607+)
   const DWORD pid = GetCurrentProcessId();
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  if (snap == INVALID_HANDLE_VALUE) return out;
+  if (snap == INVALID_HANDLE_VALUE) return;
+  std::unordered_map<uint32_t, Cached> now;
   THREADENTRY32 te = {};
   te.dwSize = sizeof(te);
   for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
     if (te.th32OwnerProcessID != pid) continue;
-    HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
-    if (!h) continue;
-    FILETIME c, e, k, u;
-    if (GetThreadTimes(h, &c, &e, &k, &u)) {
-      ThreadTime t;
-      t.tid = te.th32ThreadID;
-      t.cpu_ns = ((uint64_t(k.dwHighDateTime) << 32 | k.dwLowDateTime) +
-                  (uint64_t(u.dwHighDateTime) << 32 | u.dwLowDateTime)) * 100;
-      PWSTR d = nullptr;
-      if (describe && SUCCEEDED(describe(h, &d)) && d) {
-        for (const wchar_t* p = d; *p; ++p) t.name.push_back(*p < 128 ? char(*p) : '?');
-        LocalFree(d);
-      }
-      out.push_back(std::move(t));
+    if (auto it = g_handles.find(te.th32ThreadID); it != g_handles.end()) {
+      now[te.th32ThreadID] = it->second;
+      g_handles.erase(it);
+      continue;
     }
-    CloseHandle(h);
+    Cached c;
+    c.handle = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+    if (!c.handle) continue;
+    PWSTR d = nullptr;
+    if (describe && SUCCEEDED(describe(c.handle, &d)) && d) {
+      for (const wchar_t* p = d; *p; ++p) c.name.push_back(*p < 128 ? char(*p) : '?');
+      LocalFree(d);
+    }
+    now[te.th32ThreadID] = std::move(c);
   }
   CloseHandle(snap);
+  for (auto& [tid, c] : g_handles) CloseHandle(c.handle);  // (threads gone)
+  g_handles = std::move(now);
+}
+
+std::vector<ThreadTime> ReadThreads() {
+  if (g_listed == Clock::time_point{} || Clock::now() - g_listed > std::chrono::seconds(60)) {
+    ListThreads();
+    g_listed = Clock::now();
+  }
+  std::vector<ThreadTime> out;
+  for (const auto& [tid, c] : g_handles) {
+    FILETIME cr, e, k, u;
+    if (!GetThreadTimes(c.handle, &cr, &e, &k, &u)) continue;
+    ThreadTime t;
+    t.tid = tid;
+    t.cpu_ns = ((uint64_t(k.dwHighDateTime) << 32 | k.dwLowDateTime) +
+                (uint64_t(u.dwHighDateTime) << 32 | u.dwLowDateTime)) * 100;
+    t.name = c.name;
+    out.push_back(std::move(t));
+  }
   return out;
 }
 #else
@@ -143,14 +174,21 @@ void NoteThreadRole(const char* role) {
   g_roles[rex::thread::current_thread_system_id()] = role;
 }
 
-std::string ThreadCpuLine() {
+namespace {
+
+std::string Line() {
   const auto now = Clock::now();
   const std::vector<ThreadTime> threads = ReadThreads();
-  // guest threads: host id -> start address
-  std::unordered_map<uint32_t, uint32_t> guest;
-  if (auto* kernel = REX_KERNEL_STATE()) {
-    for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
-      if (auto* host = t->thread()) guest[host->system_id()] = t->creation_params()->start_address;
+  // guest threads: host id -> start address (again once a minute)
+  static std::unordered_map<uint32_t, uint32_t> guest;
+  static Clock::time_point guest_at{};
+  if (guest_at == Clock::time_point{} || now - guest_at > std::chrono::seconds(60)) {
+    guest_at = now;
+    guest.clear();
+    if (auto* kernel = REX_KERNEL_STATE()) {
+      for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
+        if (auto* host = t->thread()) guest[host->system_id()] = t->creation_params()->start_address;
+      }
     }
   }
   std::lock_guard lock(g_mutex);
@@ -186,6 +224,22 @@ std::string ThreadCpuLine() {
     line += fmt::format(", {} {:.0f}", label, pct);
   }
   return line;
+}
+
+}  // namespace
+
+void StartThreadCpuLog() {
+  static std::once_flag once;
+  if (std::getenv("SVR2011_TEST_NO_THREAD_CPU")) return;  // (test: without it)
+  std::call_once(once, [] {
+    std::thread([] {
+      rex::thread::set_current_thread_name("thread cpu log");
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        if (const std::string line = Line(); !line.empty()) REXLOG_INFO("{}", line);
+      }
+    }).detach();
+  });
 }
 
 }  // namespace svr2011
