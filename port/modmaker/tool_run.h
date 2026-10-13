@@ -25,6 +25,11 @@ std::wstring FfmpegExe();
 // when Python or the script is missing or a job already runs.
 bool RunTool(const std::wstring& script, const std::vector<std::wstring>& args, std::function<void(int)> done,
              const std::wstring& cwd = L"");
+// A converter of the Mod Maker 3 contract (docs/MOD_MAKER_3_PLAN.md section 4):
+// stdout is its JSON answer (handed to done with the exit code), stderr goes to
+// the log and its "progress <0-100> <text>" lines to the status bar.
+bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args,
+                 std::function<void(int code, const std::string& out)> done, const std::wstring& cwd = L"");
 // Any process the same way (a full command line).
 bool RunCommand(const std::wstring& cmdline, std::function<void(int)> done, const std::wstring& cwd = L"");
 

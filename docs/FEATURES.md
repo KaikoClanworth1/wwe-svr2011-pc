@@ -113,7 +113,7 @@ still being tested.
 - **Slobber Knocker online, co-op** (PORT RULES on a 6-man Player Match): the two players as a team against the host's four CPU opponents in turn.
 - **Ping indicator** (GRAPHICS → DISPLAY → ONLINE PING): bars and milliseconds while online.
 - **Invites**: a pop-up when a friend invites you (with an on/off switch in the overlay), and X INVITE FRIENDS in the lobby opens an invite panel. **Accepting an invite from anywhere** takes the game into the inviter's lobby by itself (during a match or an editor it waits until you're back at a menu).
-- **Online overlay**: BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
+- **Online overlay**: BACK + RB opens it once per press (it could open and close at once); BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
 - **Your own Created Superstar's picture** shows in the online lobby (it was the CREATE A SUPERSTAR outline); lobby chat stays within the chat box's 21 characters.
 - **CPU players in Player Matches**: the host presses Y on an empty slot (Y ADD CPU / REMOVE CPU) and picks the CPU's superstar with A; the match plays in sync on every machine (needs at least two human players).
 - **Router port opening (UPnP / NAT-PMP)**: online, the game asks the player's router to open its own port for an hour (renewed, removed when the game closes) so more players connect directly; GRAPHICS → DISPLAY → ROUTER PORT (UPNP) turns it off.
@@ -142,6 +142,7 @@ still being tested.
 - **Universe: superstar mods can't hold a title** (a mod has no Universe place, so the title got stuck with a holder nobody could book); saves where one does get the previous holder back.
 - **Superstar mod slots**: removing a mod in the launcher / Android frees its slot; the game reuses the slots of mods whose folder is gone.
 - **137 superstar mods** (was 72): 65 more of the game's empty superstar ids take mods; old saves load as before, and mods already installed keep their ids. **More than 137 installed**: the launcher's Mods tab and the Android Mods page say how many fit and mark the ones left out (NOT IN GAME), instead of dropping them silently. Mods already in the game keep their place (so their saves stay right); switching one off gives its place to the next waiting mod at the next start. The game lists the left-out ones in `Mods\Superstars\left_out.txt`.
+- **An entrance per attire** for superstar mods (`attire<N>_entrance=<number>` in the manifest), like Rey Mysterio's "Evil" attire in the stock game.
 - **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
 - **Ground head submissions with Sabu / The Sandman installed** no longer freeze (the game's motion search missed stock moves after a mod's added motions).
 - **Keyboard and mouse button pictures** from WWE 2K15 PC (every key, plus mouse buttons), and the keyboard / PlayStation pictures on character select drawn right.

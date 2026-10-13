@@ -31,9 +31,18 @@ if ($WithModMaker) {
     $mmtools = Join-Path $stage "Mod Maker Tools"
     New-Item -ItemType Directory -Force $mmtools | Out-Null
     foreach ($t in @("svrfmt.py", "jboy.py", "ch_tool.py", "svr10_char.py", "svr10_bruise.py", "svr10_moves.py",
-                     "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py")) {
-        Copy-Item (Join-Path $PSScriptRoot $t) $mmtools
+                     "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py",
+                     "discfs.py", "arena_port.py",
+                     # the Port page's converters (Mod Maker 3 contract) and what they import / read
+                     "superstar_port.py", "svr08_char.py", "entrance_port.py", "ymks.py", "svr08_entrance.py",
+                     "hctp_entrance.py", "hctp_motion.py", "svr10_entrance.py", "wwe13_entrance.py", "w13_retarget.py",
+                     "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py",
+                     "moves_port.py", "attire_port.py", "pro_slots.json", "announcer_calls.json")) {
+        $f = Join-Path $PSScriptRoot $t
+        if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
     }
+    $data = Join-Path $PSScriptRoot "data"  # (reskin_port.py's stock texture table)
+    if (Test-Path $data) { Copy-Item $data (Join-Path $mmtools "data") -Recurse -Force }
     # (and svrmod.exe, which svrfmt.py runs to compress pac entries: modmaker/build_cli.sh)
     $cli = Join-Path $port "out\modmaker\svrmod.exe"
     if (Test-Path $cli) { Copy-Item $cli $mmtools } else { Write-Warning "no $cli (modmaker\build_cli.sh) - the converters can't compress" }

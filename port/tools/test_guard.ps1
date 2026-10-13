@@ -28,6 +28,10 @@ function Test-IsTestGame($proc) {
 
 function Stop-TestGames {
     foreach ($p in Get-SvrGames) {
+        # (never a game run from its own copy under port\runs - onl_game,
+        # netperf_game, online_game, lim_game, opt_*...: another session's test,
+        # with up to 6 test games from several sessions at once)
+        if ([string]$p.ExecutablePath -match [regex]::Escape("\port\runs\")) { continue }
         # (not the online tests' games: online_session.ps1 runs them beside others;
         # nor the Limit Breaking and Optimizing sessions' games: lim_game, opt_*)
         if ((Test-IsTestGame $p) -and ([string]$p.CommandLine -notmatch [regex]::Escape("\runs\online_game\")) -and

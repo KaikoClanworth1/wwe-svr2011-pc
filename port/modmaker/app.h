@@ -167,6 +167,8 @@ struct PacIndex {
   std::vector<PacEntryInfo> entries;
 };
 bool ReadPacIndex(const fs::path& file, PacIndex& out);
+// The same from the file's first 0x4000 bytes (in memory / from a disc).
+bool ParsePacIndex(const Bytes& head, PacIndex& out);
 // One entry's data (by group + name, or the first entry with that name when
 // group is nullptr); false if absent.
 bool ReadPacEntry(const fs::path& file, const char* name, Bytes& out, const char* group = nullptr);
@@ -181,6 +183,26 @@ const std::string& GameString(int id);
 // +0x10, the id at +0x90), loaded on first use; "" if unknown.
 const std::string& MoveName(int id);
 const std::map<int, std::string>& MoveNames();
+// A song's integrated loudness in LUFS (BS.1770; loudness.cpp). Slow: call it from a worker.
+bool MeasureLufs(const std::wstring& file, double* lufs, std::string* error);
+constexpr double kThemeTargetLufs = -24.0;  // where a mod's theme sits next to the game's own
+// The move-set (checklist D4). A profile's move block is 224 u16 move ids
+// (CHAR/PRO +0x000..+0x1BF); a slot takes the moves whose WAZE category bits
+// include the slot's rule (the bits >= 90% of the roster's moves in that slot
+// share), and for the seated-top corner slots the same starting situation.
+constexpr int kMoveSlots = 224;
+struct MoveInfo {
+  int id = 0;
+  std::string name;
+  uint8_t bits[16] = {};
+  int situation = 0;
+};
+const std::map<int, MoveInfo>& MoveInfos();
+// A superstar's 224 slots (empty if it has no profile).
+std::vector<int> ProfileMoves(int star_id);
+// Whether a move fits a slot (unknown moves: false); the moves that do, by name.
+bool MoveFitsSlot(int slot, int move_id);
+const std::vector<int>& MovesForSlot(int slot);
 bool GameRunning();
 void StartGame(const std::wstring& extra_env = L"");
 
@@ -213,7 +235,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -249,10 +271,29 @@ struct Settings {
   bool maximized = false;
   bool log_open = false;
   int font = 17;
+  std::vector<std::wstring> disc_folders;  // where the disc images are ("" list = the defaults)
 };
 extern Settings g_settings;
 void SaveSettings();
 void AddRecent(const std::wstring& file);
+
+// ---------------------------------------------------------------- disc images (checklist D1)
+
+// The user's other WWE discs (Xbox 360 / PS2 images) in the settings' disc
+// folders (default D:\Roms\Xbox 360\WWE and D:\Roms\Playstation 2\WWE Games).
+struct DiscRef {
+  std::wstring path;
+  std::string id;    // XEX title id / PS2 serial
+  std::string game;  // the game's name (by id), else the file name
+  bool xbox = false;
+};
+// Read in the background on first use: empty until DiscsReady().
+const std::vector<DiscRef>& Discs();
+bool DiscsReady();
+void RescanDiscs();
+std::vector<std::wstring> DiscFolders();
+// "SmackDown vs. Raw 2008 (Xbox 360)" for a title id / serial ("" if unknown).
+std::string DiscGameName(const std::string& id);
 
 // ---------------------------------------------------------------- widgets
 
@@ -286,7 +327,7 @@ namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); }
+                      void TestHeight(float scale); void TestMoveset(const std::string& spec); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
@@ -296,7 +337,15 @@ namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring&
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
+namespace port_page { void Draw(); void TestStart(const std::string& spec); }
+namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
+namespace pac_editor {  // a copy of any pac, edited and saved elsewhere (Game assets)
+bool Open(svrfmt::Bytes pac, const std::string& label, const std::wstring& from, const std::string& note);
+bool IsOpen();
+void Close();
+void Draw();
+void TestEdit(const std::wstring& spec);
+}
 namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }

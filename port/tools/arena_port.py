@@ -1,0 +1,308 @@
+"""Arenas from other games -> SvR 2011 arena mods (docs/MOD_MAKER_3_PLAN.md section 4).
+
+    py tools/arena_port.py games
+    py tools/arena_port.py list --game <id> --src <ISO or extract folder>
+    py tools/arena_port.py convert --game <id> --src <...> --item <bgNN> --out <dir> [--base <0-19>] [--name <text>]
+
+stdout is JSON only; logs and `progress <0-100> <text>` lines go to stderr.
+Exit codes: 0 ok, 2 bad input, 3 conversion failed.
+
+What each game needs (docs/OTHER_GAMES.md, "Arenas"):
+- svr2010: the arena files are the same EPAC / JBOY / texture sets as 2011's;
+  a 2010 arena plays in 2011 unchanged (tested: RAW bg01, 2026-10-13). The
+  mod is the file as it is, plus a banner (2010's arena select banner,
+  MatchHD MENU/MASI) and, where the base arena's VS theme has one 1024 x 512
+  background, a VS and a loading picture from 2010's own VS theme (M<nn>I).
+  The game gives the file its slot's stage name (arena_mods.cpp RedirectArena).
+- wwe13: converted by the Mod Maker itself (svrfmt/wwe13.cpp); listed here
+  as "native".
+- svr2008 and the rest: research (status "research"; convert exits 3).
+"""
+import argparse
+import io
+import json
+import os
+import struct
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import discfs  # noqa: E402
+import svrfmt  # noqa: E402
+
+GAMES = [
+    {'id': 'svr2007', 'name': "WWE SmackDown vs. Raw 2007", 'platform': 'x360', 'disc_hint': '545107E0', 'status': 'research'},
+    {'id': 'svr2008', 'name': "WWE SmackDown vs. Raw 2008", 'platform': 'x360', 'disc_hint': '5451080B', 'status': 'research'},
+    {'id': 'svr2009', 'name': "WWE SmackDown vs. Raw 2009", 'platform': 'x360', 'disc_hint': '54510826', 'status': 'research'},
+    {'id': 'svr2010', 'name': "WWE SmackDown vs. Raw 2010", 'platform': 'x360', 'disc_hint': '54510844', 'status': 'ready'},
+    {'id': 'wwe12', 'name': "WWE '12", 'platform': 'x360', 'disc_hint': '54510890', 'status': 'research'},
+    {'id': 'wwe13', 'name': "WWE '13", 'platform': 'x360', 'disc_hint': '545108B4', 'status': 'native'},
+    {'id': 'wwe2k14', 'name': "WWE 2K14", 'platform': 'x360', 'disc_hint': '545408B2', 'status': 'research'},
+]
+
+# 2011's arena select tiles: arena number -> banner / manifest base name (arena_mods.cpp kTiles)
+BASE_NAMES = {0: 'arena_SD', 1: 'arena_RAW', 2: 'arena_ECW', 3: 'arena_ttt', 4: 'arena_slam', 5: 'arena_BP',
+              6: 'arena_HinC', 7: 'arena_Series', 8: 'arena_TLC', 9: 'arena_RR', 10: 'arena_EC', 11: 'arena_WM26',
+              12: 'arena_back', 13: 'arena_Judg', 14: 'arena_NoC', 15: 'arena_BASH', 16: 'arena_EXT', 17: 'arena_SS',
+              18: 'arena_BR', 19: 'arena_drui'}
+# a base theme's one 1024 x 512 VS background (MatchHD MENU/M<nn>I), where it has one
+VS_BACKGROUND = {0: 'bg_sd', 1: 'RAW01', 3: 'troops_tex05', 4: 'BG', 11: 'wm_bg01'}
+
+# SvR 2010: arena number -> (select banner name in MASI, show, 2011 arena of that show)
+# (from each bgNN's own texture names; bg16 / bg20 / bg22 / bg25 are story copies)
+SVR2010 = {
+    0: ('arena_SD', 'SmackDown', 0), 1: ('arena_raw', 'RAW', 1), 2: ('arena_ecw', 'ECW', 2),
+    4: ('arena_SS', 'SummerSlam', 4), 5: ('arena_UG', 'Unforgiven', None), 6: ('arena_no', 'No Mercy', None),
+    7: ('arena_sur', 'Survivor Series', 7), 8: ('arena_arm', 'Armageddon', None), 9: ('arena_RR', 'Royal Rumble', 9),
+    10: ('arena_out', 'No Way Out', None), 11: ('arena_WM25', 'WrestleMania 25', None), 12: ('arena_back', 'Backlash', None),
+    13: ('arena_judg', 'Judgment Day', 13), 14: ('arena_NoC', 'Night of Champions', 14),
+    15: ('arena_GAB', 'The Great American Bash', 15), 18: ('arena_CS', 'Cyber Sunday', None),
+    24: (None, 'Extreme Rules', 16),
+}
+MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (a bigger file can run out of the arena heap)
+
+
+class BadInput(Exception):
+    pass
+
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
+
+
+def progress(p, text):
+    print('progress %d %s' % (p, text), file=sys.stderr, flush=True)
+
+
+def textures(raw):
+    """A texture set (u32 count, 32-byte records name[16] 'dds' size offset) -> [(name, dds bytes)]."""
+    n = struct.unpack_from('<I', raw, 0)[0]
+    if not (0 < n < 600) or 16 + 32 * n > len(raw) or raw[32:35] != b'dds':
+        return []
+    out = []
+    for i in range(n):
+        r = raw[16 + 32 * i:48 + 32 * i]
+        size, off = struct.unpack_from('<II', r, 20)
+        out.append((r[:16].split(b'\0')[0].decode('latin-1'), raw[off:off + size]))
+    return out
+
+
+def group_textures(pac_bytes, entry_name):
+    """Every texture of an EPAC entry (MENU/<entry_name>), from its PACH children."""
+    _, groups, _ = svrfmt.epac_read(pac_bytes)
+    out = []
+    for _, ents in groups:
+        for nm, blob in ents:
+            if nm.split(b'\0')[0].decode('latin-1') != entry_name or blob[:4] != b'PACH':
+                continue
+            for _, child in svrfmt.pach_read(blob):
+                raw = svrfmt.bpe_decode(child) if child[:4] == b'BPE ' else child
+                out += textures(raw)
+    return out
+
+
+def image(dds):
+    from PIL import Image
+    return Image.open(io.BytesIO(dds)).convert('RGBA')
+
+
+def dds_dxt5(img):
+    b = io.BytesIO()
+    img.convert('RGBA').save(b, 'DDS', pixel_format='DXT5')
+    return b.getvalue()
+
+
+def fit(img, w, h):
+    """img scaled to cover w x h, centred and cropped."""
+    from PIL import Image
+    s = max(w / img.width, h / img.height)
+    im = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))), Image.LANCZOS)
+    x, y = (im.width - w) // 2, (im.height - h) // 2
+    return im.crop((x, y, x + w, y + h))
+
+
+def banner_tile(banner, art):
+    """A 256 x 128 tile: a wide banner fills it; a square one (2010's PPVs) is
+    shown whole, over its VS picture darkened (or black)."""
+    from PIL import Image, ImageEnhance
+    if banner.width >= 1.6 * banner.height:
+        return fit(banner, 256, 128)
+    bg = fit(art, 256, 128) if art is not None else Image.new('RGBA', (256, 128), (0, 0, 0, 255))
+    bg = ImageEnhance.Brightness(bg.convert('RGB')).enhance(0.45).convert('RGBA')
+    s = 128 / banner.height
+    b = banner.resize((max(1, round(banner.width * s)), 128), Image.LANCZOS)
+    bg.paste(b, ((256 - b.width) // 2, 0), b)
+    return bg
+
+
+# -- SvR 2010 ------------------------------------------------------------------
+
+def svr2010_list(disc):
+    items = []
+    for n, (banner, show, in11) in sorted(SVR2010.items()):
+        path = 'pac/bg/bg%02d.pac' % n
+        if not disc.exists(path):
+            continue
+        items.append({'key': 'bg%02d' % n, 'name': show, 'arena': n, 'size': disc.size(path),
+                      'banner': banner, 'in_2011': in11})
+    return items
+
+
+def svr2010_convert(disc, key, out, base=None, name=None):
+    warnings, notes, dropped = [], [], []
+    try:
+        n = int(key[2:]) if key.lower().startswith('bg') else int(key)
+    except ValueError:
+        raise BadInput('item %r: expected bgNN' % key)
+    if n not in SVR2010:
+        raise BadInput('item %r: not an arena of SvR 2010 (story copies are left out)' % key)
+    banner_name, show, in11 = SVR2010[n]
+    path = 'pac/bg/bg%02d.pac' % n
+    if not disc.exists(path):
+        raise BadInput('%s not on the disc' % path)
+    if base is None:
+        base = in11 if in11 is not None else (n if n in BASE_NAMES else 3)
+    if base not in BASE_NAMES:
+        raise BadInput('base %r: 0-19' % base)
+    name = name or '%s (SvR 2010)' % show
+    mod_id = 'svr2010_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
+
+    progress(5, 'reading %s' % path)
+    arena = disc.read(path)
+    if arena[:4] != b'EPAC':
+        raise RuntimeError('%s: not an EPAC arena' % path)
+    if len(arena) > MAX_ARENA:
+        warnings.append('the arena file is %d bytes; 2011 hosts hold about 9.0-9.6 MB' % len(arena))
+    mod = os.path.join(out, mod_id)
+    os.makedirs(os.path.join(mod, 'vs'), exist_ok=True)
+    with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
+        f.write(arena)
+
+    progress(40, 'pictures')
+    match = disc.read('pac/menu/MatchHD.pac') if disc.exists('pac/menu/MatchHD.pac') else None
+    banner = None
+    if match and banner_name:
+        for nm, dds in group_textures(match, 'MASI'):
+            if nm == banner_name:
+                banner = image(dds)
+    art = None  # the 2010 VS theme's biggest picture
+    if match:
+        theme = group_textures(match, 'M%02dI' % n)
+        best = 0
+        for nm, dds in theme:
+            try:
+                im = image(dds)
+            except Exception:
+                continue
+            if im.width * im.height > best and im.width >= 256:
+                art, best = im, im.width * im.height
+    if banner is None and art is not None:
+        banner = art
+        notes.append('no select banner on the disc for this arena: the banner is cut from its VS picture')
+    from PIL import Image
+    if banner is None:
+        banner = Image.new('RGBA', (256, 128), (30, 30, 30, 255))
+        warnings.append('no banner or VS picture found: a plain banner was made')
+    with open(os.path.join(mod, 'banner.dds'), 'wb') as f:
+        f.write(dds_dxt5(banner_tile(banner, art)))
+    if art is not None:
+        with open(os.path.join(mod, 'load.dds'), 'wb') as f:
+            f.write(dds_dxt5(fit(art, 1024, 512)))
+        if base in VS_BACKGROUND:
+            with open(os.path.join(mod, 'vs', VS_BACKGROUND[base] + '.dds'), 'wb') as f:
+                f.write(dds_dxt5(fit(art, 1024, 512)))
+        else:
+            notes.append("the VS screen keeps %s's theme (it has no single 1024 x 512 background)" % BASE_NAMES[base])
+    else:
+        notes.append('no loading or VS picture (no VS theme for this arena on the disc)')
+    if not os.listdir(os.path.join(mod, 'vs')):
+        os.rmdir(os.path.join(mod, 'vs'))
+
+    with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
+        f.write('type=arena\nid=%s\nname=%s\nauthor=SvR 2010 arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
+                % (mod_id, name, 'bg%02d' % n, BASE_NAMES[base]))
+    progress(80, 'packing')
+    import wwe13_pack
+    svrmod = os.path.join(out, mod_id + '.svrmod')
+    old = sys.stdout
+    sys.stdout = sys.stderr  # (the packer prints a line)
+    try:
+        wwe13_pack.pack(mod, svrmod, 'Port tools (SvR 2010)')
+    finally:
+        sys.stdout = old
+    notes.append('base %s (tile %d on the custom arena pages); the game renames its stage to the slot\'s' % (BASE_NAMES[base], base))
+    if n not in (0, 1, 2, 4, 7, 9, 13, 14, 15) and in11 is None:
+        notes.append('2011 has no %s arena: the mod sits on the %s tile' % (show, BASE_NAMES[base]))
+    progress(100, 'done')
+    return {'ok': True, 'out': svrmod, 'folder': mod, 'opens': 'arena', 'warnings': warnings, 'dropped': dropped,
+            'notes': notes}
+
+
+def bg_list(disc):
+    """Arena files of a game not yet supported (for the research table)."""
+    items = []
+    for nm in sorted(disc.listdir('pac/bg')):
+        low = nm.lower()
+        if low.startswith('bg') and low.endswith('.pac') and low[2:4].isdigit():
+            items.append({'key': low[:-4], 'name': low[:-4], 'arena': int(low[2:4]), 'size': disc.size('pac/bg/' + nm),
+                          'in_2011': None})
+    return items
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog='arena_port.py')
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    sub.add_parser('games')
+    p = sub.add_parser('list')
+    p.add_argument('--game', required=True)
+    p.add_argument('--src', required=True)
+    p.add_argument('--pac11')
+    p = sub.add_parser('convert')
+    p.add_argument('--game', required=True)
+    p.add_argument('--src', required=True)
+    p.add_argument('--item', required=True)
+    p.add_argument('--out', required=True)
+    p.add_argument('--base', type=int)
+    p.add_argument('--name')
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit:
+        print(json.dumps({'ok': False, 'error': 'bad arguments'}))
+        return 2
+    if a.cmd == 'games':
+        print(json.dumps(GAMES))
+        return 0
+    game = next((g for g in GAMES if g['id'] == a.game), None)
+    try:
+        if not game:
+            raise BadInput('unknown game %r' % a.game)
+        if not os.path.exists(a.src):
+            raise BadInput('--src %s: not found' % a.src)
+        with discfs.open(a.src) as disc:
+            if a.cmd == 'list':
+                print(json.dumps(svr2010_list(disc) if a.game == 'svr2010' else bg_list(disc)))
+                return 0
+            if a.game != 'svr2010':
+                msg = ("WWE '13 arenas are converted by the Mod Maker itself" if a.game == 'wwe13'
+                       else '%s arenas are not convertible yet (research)' % game['name'])
+                rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'notes': [msg]}
+                print(json.dumps(rep))
+                return 3
+            os.makedirs(a.out, exist_ok=True)
+            rep = svr2010_convert(disc, a.item, a.out, a.base, a.name)
+            with open(os.path.join(a.out, 'report.json'), 'w') as f:
+                json.dump(rep, f, indent=1)
+            print(json.dumps(rep))
+            return 0
+    except BadInput as e:
+        print(json.dumps({'ok': False, 'error': str(e)}))
+        return 2
+    except Exception as e:  # noqa: BLE001 - reported to the Mod Maker
+        log('failed: %r' % e)
+        print(json.dumps({'ok': False, 'error': str(e), 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [],
+                          'notes': []}))
+        return 3
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
