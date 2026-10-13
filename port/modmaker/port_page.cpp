@@ -203,13 +203,26 @@ std::string ItemKey(const Json& item) {
   return {};
 }
 
+// WWE '12 - 2K17 pacs are xcompressed: the converters read them through svrmod.exe (the Mod Maker's own pac tool) -
+// next to the scripts in Mod Maker Tools, or the dev tree's out\modmaker; passed as --svrmod when found.
+std::vector<std::wstring> SvrmodArgs(int k, const std::string& game) {
+  const std::wstring script = kKinds[k].script;
+  if (game.rfind("wwe", 0) != 0 || (script != L"superstar_port.py" && script != L"entrance_port.py" && script != L"moves_port.py")) return {};
+  std::error_code ec;
+  for (const fs::path& cli : {fs::path(ToolsDir()) / L"svrmod.exe", fs::path(ToolsDir()) / L".." / L"out" / L"modmaker" / L"svrmod.exe"})
+    if (fs::exists(cli, ec)) return {L"--svrmod", fs::weakly_canonical(cli, ec).wstring()};
+  return {};
+}
+
 void List(int k, const std::string& game) {
   const std::wstring src = Source();
   g_list_for = std::to_string(k) + "|" + game + "|" + Utf8(src);
   g_list = Json();
   g_list_error.clear();
   g_pick = -1;
-  RunToolJson(kKinds[k].script, {L"list", L"--game", Wide(game), L"--src", src, L"--pac11", (fs::path(g_game) / L"pac").wstring()},
+  std::vector<std::wstring> largs = {L"list", L"--game", Wide(game), L"--src", src, L"--pac11", (fs::path(g_game) / L"pac").wstring()};
+  for (auto& x : SvrmodArgs(k, game)) largs.push_back(x);
+  RunToolJson(kKinds[k].script, largs,
               [want = g_list_for](int code, const std::string& out) {
                 if (want != g_list_for) return;
                 Json j;
@@ -281,7 +294,9 @@ void AskPictures(int k, const std::string& game, const Json& item) {
   const fs::path cache = WorkDir() / Wide(game + "_pictures");
   std::error_code ec;
   fs::create_directories(cache, ec);
-  RunToolJson(kKinds[k].script, {L"pictures", L"--game", Wide(game), L"--src", Source(), L"--item", Wide(ItemKey(item)), L"--out", cache.wstring()},
+  std::vector<std::wstring> pargs = {L"pictures", L"--game", Wide(game), L"--src", Source(), L"--item", Wide(ItemKey(item)), L"--out", cache.wstring()};
+  for (auto& x : SvrmodArgs(k, game)) pargs.push_back(x);
+  RunToolJson(kKinds[k].script, pargs,
               [want](int code, const std::string& out) {
     if (g_pp.for_ != want) return;
     Json j;
@@ -317,9 +332,13 @@ void PicturePicker() {
   } else {
     ImGui::TextDisabled("(this game's pictures have no names: pick the one that's this superstar)");
   }
-  ImGui::SetNextItemWidth(200 * g_scale);
-  ImGui::InputTextWithHint("##picfind", "find by name", g_pp.find, sizeof g_pp.find);
-  ImGui::SameLine();
+  bool named = false;  // (a find box only when the pictures have names: 2K17's are hashes)
+  for (const auto& p : pics.items) named |= !p["name"].Str().empty();
+  if (named) {
+    ImGui::SetNextItemWidth(200 * g_scale);
+    ImGui::InputTextWithHint("##picfind", "find by name", g_pp.find, sizeof g_pp.find);
+    ImGui::SameLine();
+  }
   if (ImGui::SmallButton("No picture")) g_pp.pick.clear();
   const std::string f = Lower(g_pp.find);
   const float tw = 72 * g_scale;
@@ -359,7 +378,7 @@ void PicturePicker() {
   if (const auto it = g_pp.thumbs.find(g_pp.pick); !g_pp.pick.empty() && it != g_pp.thumbs.end() && !it->second.Empty())
     it->second.Draw(180 * g_scale, 180 * g_scale);
   else
-    ImGui::TextDisabled(g_pp.pick.empty() ? "No picture picked:\nthe mod gets the\nstyle's silhouette." : "");
+    ImGui::TextDisabled(g_pp.pick.empty() ? "No picture picked:\nthe mod keeps the\nbase superstar's." : "");
   ImGui::EndGroup();
 }
 
@@ -387,13 +406,7 @@ void Convert(int k, const std::string& game, const Json& item) {
       Log("port: move record " + std::to_string(id) + " for " + item["name"].Str());
     }
   }
-  if ((entrance || moves) && (game == "wwe13" || game == "wwe12" || game == "wwe2k14")) {  // xcompress: its svrmod.exe
-    for (const fs::path& cli : {fs::path(ToolsDir()) / L"svrmod.exe", fs::path(ToolsDir()) / L".." / L"out" / L"modmaker" / L"svrmod.exe"})
-      if (fs::exists(cli, ec)) {
-        args.push_back(L"--svrmod"), args.push_back(fs::weakly_canonical(cli, ec).wstring());
-        break;
-      }
-  }
+  for (auto& x : SvrmodArgs(k, game)) args.push_back(x);
   if (entrance && !g_settings.bink2_tool.empty())  // (its --titantron: Bink 2 movies through the player's tool)
     args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
   if (NeedsPicture(item) && !g_pp.pick.empty()) args.push_back(L"--picture"), args.push_back(Wide(g_pp.pick));
