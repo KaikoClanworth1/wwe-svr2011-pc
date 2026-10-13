@@ -565,7 +565,7 @@ bool ParsePacIndex(const Bytes& idx, PacIndex& out) {
   for (size_t p = 0x800; p + 12 <= 0x4000;) {
     if (!Le32(&idx[p])) break;
     const std::string group(reinterpret_cast<const char*>(&idx[p]), 4);
-    const uint32_t cnt = out.epk8 ? Le16(&idx[p + 4]) : Le32(&idx[p + 4]) / 3;
+    const uint32_t cnt = out.epk8 ? Le16(&idx[p + 4]) / 4 : Le32(&idx[p + 4]) / 3;  // (count words: 16-byte / 12-byte entries)
     p += 12;
     for (uint32_t i = 0; i < cnt && p + esz <= 0x4000; ++i, p += esz) {
       PacEntryInfo e;
@@ -1574,6 +1574,29 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   LoadSettings();
   int argc = 0;
   wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  // --test-repack <folder>,<report.txt>: every EPAC / EPK8 under the folder read and written
+  // back in memory (the pac tool's saves must be byte-identical when nothing changed); no window
+  for (int i = 1; i + 1 < argc; ++i)
+    if (!wcscmp(argv[i], L"--test-repack")) {
+      const std::wstring a = argv[i + 1];
+      const size_t comma = a.find(L',');
+      const fs::path folder = a.substr(0, comma), report = comma == std::wstring::npos ? L"repack.txt" : a.substr(comma + 1);
+      int files = 0, same = 0;
+      std::string out;
+      std::error_code ec;
+      for (const auto& e : fs::recursive_directory_iterator(folder, ec)) {
+        if (!e.is_regular_file(ec) || Lower(e.path().extension().string()) != ".pac") continue;
+        Bytes d;
+        svrfmt::Epac pac;
+        if (!ReadFile(PathStr(e.path()), d) || !svrfmt::EpacRead(d, pac)) continue;
+        ++files;
+        if (svrfmt::EpacWrite(pac) == d) ++same;
+        else out += "differs: " + PathStr(e.path()) + "\n";
+      }
+      out += "repack: " + std::to_string(same) + " / " + std::to_string(files) + " identical\n";
+      WriteFile(PathStr(report), Bytes(out.begin(), out.end()));
+      return same == files ? 0 : 1;
+    }
   // test aids: --editor <arena tile 0-19> opens the editor on it, --open <mod> opens a mod,
   // --editor-view <0-2> a camera preset, --select <name> an object; --page <n>; the
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save

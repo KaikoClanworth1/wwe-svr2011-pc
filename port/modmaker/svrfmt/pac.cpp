@@ -222,7 +222,70 @@ Bytes PachWrite(const std::vector<PachEntry>& entries) {
 
 // ------------------------------------------------------------------ EPAC
 
+bool Epk8Read(const Bytes& in, Epac& out) {
+  out = {};
+  out.epk8 = true;
+  out.header.assign(in.begin(), in.begin() + 0x800);
+  size_t p = 0x800;
+  uint32_t used = 0;
+  while (p + 12 <= 0x4000) {
+    if (!Le32(&in[p])) break;
+    EpacGroup g;
+    g.type.assign(reinterpret_cast<const char*>(&in[p]), 4);
+    const uint32_t cnt = Le16(&in[p + 4]) / 4;
+    g.number = Le16(&in[p + 6]);
+    g.extra = Le32(&in[p + 8]);
+    p += 12;
+    for (uint32_t i = 0; i < cnt; ++i, p += 16) {
+      if (p + 16 > 0x4000) return false;
+      const size_t off = 0x4000 + size_t(Le32(&in[p + 8])) * 0x800;
+      const size_t size = size_t(Le32(&in[p + 12])) * 0x100;
+      if (off + size > in.size()) return false;
+      g.entries.push_back({Name16(&in[p], 8), Bytes(in.begin() + off, in.begin() + off + size)});
+    }
+    used += 12 + 16 * uint32_t(g.entries.size());
+    out.groups.push_back(std::move(g));
+  }
+  out.toc_extra = int32_t(Le32(&in[4]) - used);
+  const size_t data_end = 0x4000 + size_t(Le32(&in[8]));
+  if (data_end <= in.size()) out.trailer.assign(in.begin() + data_end, in.end());
+  return true;
+}
+
+Bytes Epk8Write(const Epac& e) {
+  Bytes out(e.header);
+  out.resize(0x800, 0);
+  Bytes toc, body;
+  uint32_t used = 0;
+  for (const auto& g : e.groups) {
+    AppName(toc, g.type, 4);
+    const size_t at = toc.size();
+    toc.resize(at + 8);
+    PutLe32(&toc[at], uint32_t(g.entries.size() * 4) | uint32_t(g.number) << 16);
+    PutLe32(&toc[at + 4], g.extra);
+    for (const auto& en : g.entries) {
+      Pad(body, 0x800);
+      AppName(toc, en.name, 8);
+      AppLe32(toc, uint32_t(body.size() / 0x800));
+      AppLe32(toc, uint32_t((en.data.size() + 0xFF) / 0x100));
+      App(body, en.data);
+      Pad(body, 0x100);
+    }
+    used += 12 + 16 * uint32_t(g.entries.size());
+  }
+  Pad(body, 0x800);
+  toc.resize(0x3800, 0);
+  App(out, toc);
+  PutLe32(&out[4], uint32_t(int32_t(used) + e.toc_extra));
+  PutLe32(&out[8], uint32_t(body.size()));
+  App(out, body);
+  if (!e.trailer.empty()) App(out, e.trailer);
+  else out.resize(out.size() + 0x800, 0);
+  return out;
+}
+
 bool EpacRead(const Bytes& in, Epac& out) {
+  if (in.size() >= 0x4000 && !std::memcmp(in.data(), "EPK8", 4)) return Epk8Read(in, out);
   if (in.size() < 0x4000 || std::memcmp(in.data(), "EPAC", 4)) return false;
   out = {};
   out.header.assign(in.begin(), in.begin() + 0x800);
@@ -248,6 +311,7 @@ bool EpacRead(const Bytes& in, Epac& out) {
 }
 
 Bytes EpacWrite(const Epac& e) {
+  if (e.epk8) return Epk8Write(e);
   Bytes out(e.header);
   out.resize(0x800, 0);
   Bytes toc, body;

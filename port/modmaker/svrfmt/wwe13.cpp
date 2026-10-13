@@ -191,16 +191,7 @@ bool ArchiveRead(const Bytes& in, Epac& out, std::string* error) {
   if (d->size() < 0x4000) return fail("too small");
   if (!std::memcmp(d->data(), "EPAC", 4)) return EpacRead(*d, out) || fail("bad EPAC");
   if (std::memcmp(d->data(), "EPK8", 4)) return fail("not an EPAC / EPK8 archive");
-  // EPK8: the EPAC table with a flag in each group's count word
-  Bytes copy = *d;
-  std::memcpy(copy.data(), "EPAC", 4);
-  for (size_t p = 0x800; p + 12 <= 0x4000;) {
-    if (!Le32(&copy[p])) break;
-    const uint32_t cnt = Le32(&copy[p + 4]) & 0xFFFF;
-    PutLe32(&copy[p + 4], cnt);
-    p += 12 + 12 * size_t(cnt / 3);
-  }
-  return EpacRead(copy, out) || fail("bad EPK8");
+  return EpacRead(*d, out) || fail("bad EPK8");  // (16-byte entries, 8-char names: pac.h)
 }
 
 // ------------------------------------------------------------------ JBOY
