@@ -31,7 +31,8 @@ if ($WithModMaker) {
     $mmtools = Join-Path $stage "Mod Maker Tools"
     New-Item -ItemType Directory -Force $mmtools | Out-Null
     foreach ($t in @("svrfmt.py", "jboy.py", "ch_tool.py", "svr10_char.py", "svr10_bruise.py", "svr10_moves.py",
-                     "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py")) {
+                     "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py",
+                     "discfs.py", "arena_port.py")) {
         Copy-Item (Join-Path $PSScriptRoot $t) $mmtools
     }
     # (and svrmod.exe, which svrfmt.py runs to compress pac entries: modmaker/build_cli.sh)
