@@ -26,6 +26,8 @@ ROOT = os.path.dirname(os.path.dirname(PORT))  # D:\Xbox Games Ports
 EXTRACT = {'svr2007': 'SvR2007 Extract', 'svr2008': 'SvR2008 Extract', 'svr2009': 'SvR2009 Extract',
            'svr2010': 'SvR2010 Extract', 'wwe12': 'WWE12 Extract', 'wwe13': 'WWE13 Extract', 'wwe2k14': 'WWE2K14 Extract'}
 NATIVE = ('wwe12', 'wwe13', 'wwe2k14')
+# conversions run at idle priority (the user's CPU rule); the test game itself does not
+IDLE = 0x40 if os.name == 'nt' else 0  # IDLE_PRIORITY_CLASS
 
 
 def runs_dir(a):
@@ -61,7 +63,7 @@ def convert(a, game, it, slot, pac_out):
     if game in NATIVE:
         host = os.path.join(G11, 'bg', 'bg%02d.pac' % slot)
         r = subprocess.run([a.svrmod, 'wwe13', os.path.join(src, 'pac', 'bg', it['key'] + '.pac'), host, pac_out],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, creationflags=IDLE)
         text = (r.stdout + r.stderr).strip().splitlines()
         notes = [l.strip() for l in text if l.strip().startswith(('models', 'entry', 'texture', 'ring model'))
                  or 'halved' in l or l.startswith('wrote')]
@@ -72,7 +74,7 @@ def convert(a, game, it, slot, pac_out):
     work = os.path.join(out_dir(a), 'conv', game + '_' + it['key'])
     r = subprocess.run([sys.executable, os.path.join(HERE, 'arena_port.py'), 'convert', '--game', game, '--src', src,
                         '--item', it['key'], '--out', work, '--base', str(slot), '--pac11', G11],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, creationflags=IDLE)
     try:
         rep = json.loads(r.stdout)
     except ValueError:
@@ -158,7 +160,7 @@ def table(a):
     lines = ['# Arenas from other games: full pass results', '',
              'Every arena converted (`tools/arena_port.py`, `svrmod wwe13`) and played in one short muted',
              '1-on-1 with entrances (`tools/arena_fullpass.py`). Look columns are filled from the shots.', '',
-             '| Game | Arena | Show | Slot | Loads | fps (worst ms) | Halved | From 2011 | Notes |',
+             '| Game | Arena | Show | Slot | Loads | fps median (lowest 5 s) | Halved | From 2011 | Notes |',
              '|---|---|---|---|---|---|---|---|---|']
     for r in sorted(recs.values(), key=lambda r: (r['game'], r['key'])):
         txt = ' '.join(r.get('notes', []))
@@ -166,7 +168,15 @@ def table(a):
         halved = m.group(1) if m else ''
         m = re.search(r'\((\d+) from the host', txt)
         host = m.group(1) if m else ('crowd, tables, card' if 'crowd' in txt else '')
-        fps = '' if r.get('fps') is None else '%s (%s)' % (r['fps'], r.get('worst_ms'))
+        # median of the match's 5-second fps samples (the first ones carry the load's stutters)
+        fps = ''
+        log = os.path.join(a.runs, 's08%s.log' % r['tag'])
+        if os.path.exists(log):
+            text = open(log, encoding='utf-8', errors='replace').read()
+            after = text.split('match: rule 0D', 1)[-1] if 'match: rule 0D' in text else ''
+            vals = sorted(float(x) for x in re.findall(r'fps: ([\d.]+) avg', after))
+            if vals:
+                fps = '%.1f (low %.1f)' % (vals[len(vals) // 2], vals[0])
         extra = '; '.join(n for n in r.get('notes', []) if 'lights' in n or 'failed' in n or 'no VS' in n)
         lines.append('| %s | %s | %s | %d | %s | %s | %s | %s | %s |' % (
             r['game'], r['key'], r.get('name') or '', r['slot'], r['state'], fps, halved, host, extra))
