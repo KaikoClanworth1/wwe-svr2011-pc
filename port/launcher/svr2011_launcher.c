@@ -25,6 +25,8 @@
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
+ *                        --setup-check <game folder>   (the Setup tab's rows, no window)
+ *                        --setup-install <game folder> <python|ffmpeg|all> --yes   (its downloads, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -55,6 +57,9 @@
 #include "mods_tab.h"
 #include "music_tab.h"
 #include "texpacks_tab.h"
+#include "setup_tab.h"
+static void setup_go_install(void);
+static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
@@ -98,11 +103,12 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 #define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
+#define ID_SETUP_BASE 1200 /* the Setup tab's (setup_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -2019,7 +2025,7 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     { TAB_MODS, 0xE90F, L"Mods" },          { TAB_TEXPACKS, 0xE8B9, L"Texture packs" },
     { TAB_PAINT, 0xE790, L"Paint Tool" },   { TAB_MOVIES, 0xE714, L"Movies" },
     { TAB_DLC, 0xE7B8, L"DLC" },            { TAB_INSTALL, 0xE896, L"Install" },
-    { TAB_ANDROID, 0xE8EA, L"Android" },
+    { TAB_ANDROID, 0xE8EA, L"Android" },     { TAB_SETUP, 0xE73E, L"Setup" },
 };
 #define NAV_N   ((int)(sizeof k_nav / sizeof k_nav[0]))
 #define NAV_TOP 96
@@ -2238,6 +2244,8 @@ static void show_tab(int t)
         roster_show(s_game_dir);
     if (t == TAB_TEXPACKS)
         texpacks_show(s_game_dir);
+    if (t == TAB_SETUP)
+        setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
@@ -2549,7 +2557,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -2849,6 +2857,8 @@ static void build_ui(void)
     roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
+    /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
+    setup_build(s_wnd, add, TAB_SETUP, ID_SETUP_BASE, setup_go_install);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -6439,7 +6449,8 @@ static void paint_window(HDC dc)
 {
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install the game", L"DLC",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Android", L"Mods",
-                                                    L"Music", L"Roster: sort categories" };
+                                                    L"Music", L"Roster: sort categories", L"Texture packs",
+                                                    L"First time setup" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -6553,7 +6564,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
-            roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)))
+            roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)) ||
+            setup_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_REPORT:
@@ -6911,6 +6923,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_CLOSE:
+        if (setup_busy() &&
+            MessageBoxW(w, L"Stop the setup's download and close?", WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
+            return 0;
         if (s_busy) {
             if (MessageBoxW(w, L"Stop the installation and close?", WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
                 return 0;
@@ -6980,6 +6995,15 @@ static void capture_wnd(HWND wnd, const WCHAR *file)
     DeleteObject(bmp);
     DeleteDC(mdc);
     ReleaseDC(wnd, wdc);
+}
+
+/* The Setup tab's "Install tab" button. */
+static void setup_go_install(void) { show_tab(TAB_INSTALL); }
+
+/* --setup-install's progress lines. */
+static void setup_console_progress(int permille, const WCHAR *text)
+{
+    if (text) wprintf(L"[%3d%%] %s\n", permille / 10, text);
 }
 
 /* --install: print to the console the launcher was started from. */
@@ -7086,6 +7110,34 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         ok = adb_get(apk_console_progress, err, 600) &&
              adb_install(s_adb, s_game_dir, s_apk_src, &s_cancel, apk_console_progress, err, 600);
         wprintf(ok ? L"ok: %s\n" : L"failed: %s\n", err);
+        return ok ? 0 : 1;
+    }
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--setup-check")) {   /* <game folder>: the Setup tab's rows */
+        static const WCHAR *const state[] = { L"found", L"missing", L"optional" };
+        SetupRow rows[SETUP_N];
+        int k;
+        console_setup();
+        setup_check(argv[2], s_launcher_dir, rows);
+        for (k = 0; k < SETUP_N; k++)
+            wprintf(L"%s: %s - %s\n", rows[k].name, state[rows[k].state], rows[k].detail);
+        return 0;
+    }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--setup-install")) {   /* <game folder> <python|ffmpeg|all> --yes */
+        WCHAR err[600] = L"", list[1024];
+        unsigned long long total;
+        unsigned items = !wcscmp(argv[3], L"python") ? 1u << SETUP_PYTHON
+                       : !wcscmp(argv[3], L"ffmpeg") ? 1u << SETUP_FFMPEG
+                       : !wcscmp(argv[3], L"all") ? (1u << SETUP_PYTHON) | (1u << SETUP_FFMPEG) : 0;
+        int ok;
+        console_setup();
+        setup_describe(items, list, 1024, &total);
+        wprintf(L"%s", list);
+        if (!items || argc < 5 || wcscmp(argv[4], L"--yes")) {   /* (the downloads need a yes) */
+            wprintf(L"not downloaded: add --yes\n");
+            return 1;
+        }
+        ok = setup_install(argv[2], items, setup_console_progress, &s_cancel, err, 600);
+        wprintf(ok ? L"ok\n" : L"failed: %s\n", err);
         return ok ? 0 : 1;
     }
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--report")) {   /* <game folder>: Report a problem, no window */
@@ -7226,7 +7278,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -7307,6 +7359,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         music_add_files(s_game_dir, &capture_music, 1);
     if (capture_tag)
         roster_tag(s_game_dir, _wtoi(capture_tag[0]), capture_tag[1]);
+    /* The first start (launcher.ini SetupShown): the Setup tab, what's found and what's missing. */
+    if (capture_tab < 0 && !GetPrivateProfileIntW(L"Launcher", L"SetupShown", 0, s_launcher_ini)) {
+        WritePrivateProfileStringW(L"Launcher", L"SetupShown", L"1", s_launcher_ini);
+        capture_tab = TAB_SETUP;
+    }
     show_tab(capture_tab >= 0 ? capture_tab : (is_game_folder(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
     if (capture_file) {
         /* Drawn off-screen, never activated (tests run beside the user's work). */
