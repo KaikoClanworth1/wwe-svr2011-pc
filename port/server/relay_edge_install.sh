@@ -52,7 +52,8 @@ echo "default zone $zone, wg0 zone $wgzone"
 # rules something else (the WireGuard setup) may rely on. Nothing else is touched:
 # no wg / wg-quick, the masquerade stays.
 fw() { firewall-cmd "$@" && firewall-cmd --permanent "$@"; }
-fw --zone="$zone" --remove-forward-port="$fwd" || true
+firewall-cmd --zone="$zone" --remove-forward-port="$fwd" || true
+firewall-cmd --permanent --zone="$zone" --remove-forward-port="$fwd" || true
 fw --zone="$zone" --add-port=36500/udp
 fw --zone="$wgzone" --add-rich-rule="$link_rule"
 
