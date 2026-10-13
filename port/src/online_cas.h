@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace svr2011 {
 
@@ -36,8 +37,8 @@ void InstallOnlineCas(const std::filesystem::path& saves);
 // Saves\.online\pictures by its hash). nullptr while it's being fetched -
 // the first ask starts it - or when nobody had it (asked again after 15 s).
 const std::string* OnlinePicture(uint64_t owner, uint32_t id, uint32_t attire);
-// A Created Superstar of this game whose .cas a picture object can read (it
-// then shows the render given instead: online_cpu.cpp); -1 none.
-int OnlineLocalCaw();
+// This game's Created Superstars whose .cas a picture object can read (it
+// then shows the render given instead: online_cpu.cpp); empty: none.
+std::vector<uint32_t> OnlineLocalCaws();
 
 }  // namespace svr2011

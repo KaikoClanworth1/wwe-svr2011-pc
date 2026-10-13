@@ -72,7 +72,9 @@
   <a href="#concepts">Projects, mods, problems</a>
   <h2>Tutorials</h2>
   <a href="#tut-port">Port from another game</a>
+  <a href="#tut-simple">Your first superstar (Simple)</a>
   <a href="#tut-superstar">Your first superstar</a>
+  <a href="#tut-fbx">A superstar from a 3D model</a>
   <a href="#tut-attire">Attires</a>
   <a href="#tut-arena">Your first arena</a>
   <a href="#tut-blender">An arena in Blender</a>
@@ -228,6 +230,49 @@
 </ol>
 <div class="note"><b>Needs Python</b> (see <a href="#install">Setting up</a>): the converters are the port's Python tools. WWE '12 and '13 arenas convert without it (Other games page).</div>
 <div class="tip"><b>The work folder</b> (<code>Mods\.convert\port</code> in the game folder) keeps the converters' copies of the disc's files - a superstar can take close to 1 GB. Its size shows on the page with <b>Clear it</b>; above 3 GB the oldest are removed after a conversion.</div>
+</section>
+
+<section id="tut-simple">
+<h2>Tutorial: your first superstar (Simple mode)</h2>
+<p>Never made a mod? Simple mode walks you through a superstar one step at a time. Each step has one thing to choose and a line saying what it is. Anything you skip comes from the fighting style you pick, so your superstar works from the very first step.</p>
+<ol class="steps">
+  <li>Press <b>Superstar</b> on the rail, then the red <b>Make my first superstar (Simple)</b> button at the top. (<b>Full editor</b> takes you back to the full page at any time: nothing is lost either way.)</li>
+  <li><b>Name and style</b>: type a name and pick how they fight. The style gives them a full set of moves, an entrance and their strength to start with.
+    <figure><img src="img/simple_name.png" alt="Simple mode, step 1: the name and the fighting style cards, the 3D view on the right"><figcaption>Step 1: the steps on the left, the step in the middle, your superstar in 3D on the right.</figcaption></figure></li>
+  <li><b>Look</b>: what your superstar looks like. Three ways in:
+    <ul>
+      <li><b>A superstar in the game</b>: click anyone on the roster.</li>
+      <li><b>From an older game</b>: pick one of your disc images (SvR 2006 - 2010, WWE '12 - 2K14), list its superstars, convert one, then choose <b>Just the look</b> or <b>Everything</b> (look, music, pictures, moves).</li>
+      <li><b>Import a 3D model</b>: your own model as an FBX - see <a href="#tut-fbx">A superstar from a 3D model</a>.</li>
+    </ul>
+    <figure><img src="img/simple_look.png" alt="Simple mode, Look step: the three ways in and the roster with pictures"><figcaption>Look: click a superstar on the roster.</figcaption></figure></li>
+  <li><b>Attires</b>: up to three more outfits - another superstar's, or a model file - each with a name. <b>See it</b> shows it in 3D.</li>
+  <li><b>Music</b>: pick a song. <b>Match the game</b> makes it as loud as the game's own songs.</li>
+  <li><b>Entrance</b>: pick an entrance, and if you like a big screen video (<b>Make one from any video...</b>).</li>
+  <li><b>Moves</b> and <b>Taunts</b>: the signature moves, finishers and taunts. <b>Watch it</b> plays the move on your superstar; <b>Change...</b> picks another.
+    <figure><img src="img/simple_moves.png" alt="Simple mode, Moves step: signature moves and finishers with Change and Watch it buttons"><figcaption>Moves: everything else comes from the style.</figcaption></figure></li>
+  <li><b>Pictures</b>: the pose on the select screen, and the select picture. Turn and zoom the 3D view (drag, scroll), then <b>Take it from the 3D view</b> - or use a picture of your own.
+    <figure><img src="img/simple_pictures.png" alt="Simple mode, Pictures step: the pose picker, Take it from the 3D view, the picture made from it"><figcaption>Pictures: the 3D view becomes the select screen picture.</figcaption></figure></li>
+  <li><b>Extras</b>: strength, height and what the announcer calls them. Skip it if you like.</li>
+  <li><b>Finish</b>: a summary with <b>Change</b> links, and anything to check - <i>Must fix</i> (red) or <i>Tip</i> - each with <b>Fix it</b>, which takes you to its step. Then <b>Save as mod</b>, <b>Install into game</b> or <b>Test in game</b>.
+    <figure><img src="img/simple_finish.png" alt="Simple mode, Finish step: the summary, two tips with Fix it, Save as mod, Install into game, Test in game"><figcaption>Finish: check, then save or play.</figcaption></figure></li>
+</ol>
+<div class="tip">Under every 3D view: <b>Reset view</b>, and <b>Blood</b> with its <b>Damage</b> level - the blood a superstar gets in a match. It starts off.</div>
+</section>
+
+<section id="tut-fbx">
+<h2>Tutorial: a superstar from a 3D model (FBX)</h2>
+<p>A model of your own - from Blender, Unity / VRChat, Mixamo, Rigify, 3ds Max or Unreal - as a playable superstar. It needs a skeleton (a rig) with skin weights; Mixamo can rig a model for free.</p>
+<ol class="steps">
+  <li>Simple mode: <b>Look</b> → <b>Import a 3D model</b> → <b>Pick an FBX file...</b> (the full page: <b>Model from an FBX</b>).</li>
+  <li>The Mod Maker matches the model's bones to the game's by their names and says which rig it found. <b>Model check</b> lists what's wrong with the model, in plain words with a fix for each: too many polygons, parts without skin weights, missing bones, pictures it can't find, no UV map, the wrong size.</li>
+  <li>Missing main bones? Open <b>Fix the matching</b> (full page: <b>Bone mapping</b>) and pick the model's bone for each game bone.</li>
+  <li><b>Clothes and parts</b> (full page: <b>Meshes</b>): turn parts on or off (an avatar's hidden outfits start off), say which part is hair, eyes or eyelashes, and pick a picture for any part without one.</li>
+  <li><b>Make the model from the FBX</b>. It poses the model into the game's stance, moves its skin onto the game's bones, packs its pictures into one sheet, cuts it down to what the game holds (about 10,500 vertices) and builds the model. <b>After Make</b> says what it did - how much it cut, its real height and the Height it gets, how much of the game's memory it uses.
+    <figure><img src="img/simple_fbx.png" alt="Simple mode, Import a 3D model: the FBX picked, the model check, the bone matching and the parts list"><figcaption>Import a 3D model: the check, the bone matching and the parts.</figcaption></figure></li>
+  <li>Look it over in the 3D view (it plays the game's idle stance), then carry on with the next steps.</li>
+</ol>
+<div class="warn"><b>Far too many polygons?</b> The Mod Maker cuts the model to fit the game, but you choose better what to keep: reduce it in Blender first (Decimate modifier, or delete hidden parts).</div>
 </section>
 
 <section id="tut-superstar">
@@ -532,7 +577,14 @@ made_with=Mod Maker 2.0.5
   <tr><td>The arena loads as an empty hall or crashes</td><td>Make sure the mod says which arena it plays in place of (base) and that no model is over the size ceiling; the Size budget panel and the conversion report show the heavy ones.</td></tr>
   <tr><td>A superstar mod doesn't show up</td><td>137 is the limit; check the launcher's Mods tab that it is on; a mod needs <code>ch.pac</code> and a name.</td></tr>
   <tr><td>Theme too loud</td><td>Make it about -24 LUFS (the game's own are about 7 dB under full level).</td></tr>
+  <tr><td>"The model has broken points (not-a-number values)"</td><td>Some vertex positions aren't numbers: the game would crash. Export the model again, or rebuild it with Model from an FBX.</td></tr>
+  <tr><td>"The left / right eye is N cm from its eye bone"</td><td>The eyes would pop out when the face blinks. Model from an FBX moves the eye bones onto the eyes; otherwise fix the eye in the source model.</td></tr>
+  <tr><td>"Make will cut it to about 10,500 vertices"</td><td>The game holds about that much of a wrestler. Fine for most models; for full control reduce it in Blender first.</td></tr>
+  <tr><td>"No skin on ..." / "N vertices have no skin weights"</td><td>Those parts ride stiffly on a bone or stay at the hips. Give them weights (Blender: parent with automatic weights).</td></tr>
+  <tr><td>"No picture for ...: it comes out plain grey"</td><td>The FBX doesn't link that part's texture. Pick a picture for it in Clothes and parts / Meshes, or export the FBX with its textures.</td></tr>
+  <tr><td>"Attire N of ... is already used by ..."</td><td>An installed attire mod has that slot. The launcher moves the newer one to the next free attire; or pick the free one now.</td></tr>
 </table>
+<p>The broken-points and eye checks come from robert32's SvR Port Doctor findings - thanks.</p>
 </section>
 
 <section id="faq">

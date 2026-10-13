@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -46,6 +47,7 @@
 #include "generated/default/svr2011_init.h"
 #include "online.h"
 #include "online_cas.h"
+#include "online_chat.h"
 #include "online_mods.h"
 #include "online_overlay.h"
 #include "online_rules.h"
@@ -219,6 +221,11 @@ uint8_t* g_lobby_base = nullptr;
 }  // namespace
 
 namespace svr2011 {
+bool OnlineLobbySeenWithin(int64_t ms) {
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()).count();
+  return now - g_lobby_seen.load() <= ms;
+}
 // (online_rules.h: the port rules' CPUs)
 bool OnlineLobbyView(uint32_t* state, uint32_t* cursor, uint8_t** base, uint32_t* lobby) {
   const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -253,6 +260,7 @@ REX_HOOK_RAW(sub_824E6510) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
     g_lobby_state = state, g_lobby_cursor = j, g_lobby_addr = L, g_lobby_base = base;  // (OnlineLobbyView: online_rules.cpp's covers)
     svr2011::OnlineModsFrame(ctx, base);
+    svr2011::OnlineChatFrame(ctx, base);
     PicturesFrame(ctx, base, L);
     g_lobby_seen = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -648,32 +656,44 @@ REX_HOOK_RAW(sub_828A6078) {
   if (g_edit_msg && int(j) == g_edit) Wr32(Record(base, L, j), kCpuState);
 }
 
-// The lobby's superstar pictures - each slot's card and the SUPERSTAR INFO
-// panel - are set by sub_8251DB28(item, panel): item +0 the slot (-1: the
-// panel), +8 the superstar, +12 the attire; by its kind (sub_828B78C0: 1
-// stock, 2 an added one, 3 a Created Superstar 0..49) it asks for the picture
-// (sub_8251BA48(slot + 1, {id, 2}, {attire + 10, 0}, 0): the picture holder
-// then shows it - a Created Superstar's through its own picture object, as
-// the superstar list does) - but not for a Created Superstar: its picture
-// was turned off (panel +8 -> +22724 = 0) and the card kept the vacant
-// slot's silhouette. Here this player's own Created Superstar is asked for
-// as the stock ones are (and the host's CPU's: his own too).
+// The lobby's superstar pictures: each slot's card (sub_8251E6F8(cards, ?,
+// slot, superstar, attire): its picture cards + 48 + slot * 352) and the
+// SUPERSTAR INFO panel (sub_8251DB28(item, panel): one item, +0 the slot,
+// +8 the superstar, +12 the attire; its picture item + 160) first show the
+// vacant silhouette (holder 0), then by the superstar's kind (sub_828B78C0:
+// 1 stock, 2 an added one, 3 a Created Superstar 0..49) ask for its picture
+// (sub_8251BA48(slot + 1, {id, 2}, {attire + 10, 0}, 0)) and, answered
+// "ready" (3), show the slot's holder (sub_8251BB28 -> sub_827023A0); still
+// loading, the lobby's pollers show it when it is. A Created Superstar's was
+// never asked for (the panel's switch, panel + 22724, turned off): the
+// silhouette. Here this player's own is asked for as the stock ones are (and
+// the host's CPU's: his own too) - by both, and shown at once when ready (a
+// picture already loaded - after another player's pick - had stayed the
+// silhouette).
 //
 // Another player's is his, not ours (the same number is another Superstar
 // here, or none): its render comes from its owner (online_cas.h). The
-// picture is asked for with one of our Created Superstars - the picture
-// object reads that one's .cas (sub_8273B868: the attire's 149528-byte block,
-// the 256 x 512 render first, to object + 0x2DC7C) - tagged (+20 of the
-// request: kPictureTag | n), and the render is put in its block before it is
-// shown (sub_828DB5C8(image, block)). Until the render has come the card
-// keeps the silhouette; the lobby's frame then asks again.
+// picture is asked for with one of our Created Superstars (a stand-in) - the
+// picture object reads that one's .cas (sub_8273B868: the attire's
+// 149528-byte block, the 256 x 512 render first, to object + 0x2DC7C) -
+// tagged (+20 of the request: kPictureTag | n), and the render is put in its
+// block before it is shown (sub_828DB5C8(image, block)). Until the render has
+// come the card keeps the silhouette; the lobby's frame then asks again.
 namespace {
-constexpr uint32_t kXuids = 0x2CF20;  // L + kXuids + 8 * slot: the slot's player
+constexpr uint32_t kGss = 0x82EDE910;  // -> the network library (sub_8288EC28: a net player's online id)
 constexpr uint32_t kPictureTag = 0x50490000;
 constexpr uint32_t kObjectBlock = 0x2DC7C;
 constexpr uint32_t kRenderSize = 256 * 512;
+constexpr uint32_t kPictureOn = 22724;     // panel + : the panel's picture polled (the game clears it)
+constexpr uint32_t kPanelShown = 22492;    // panel + : the picture it polls
+constexpr uint32_t kCardPicture = 48, kCardSize = 352;
 std::vector<const std::string*> g_given;          // renders given out (the tag's n)
 std::map<uint32_t, const std::string*> g_tagged;  // picture object -> the render to show
+std::map<uint32_t, uint32_t> g_object_stand_in;   // picture object -> the stand-in it reads
+std::vector<uint32_t> g_unusable;                 // stand-ins whose picture failed (this lobby; the superstar list loading the same .cas then)
+// The Created Superstar of ours each slot shows another player's with: one
+// no other slot uses (two slots' pictures on the same .cas: blank cards).
+int g_stand_in[6] = {-1, -1, -1, -1, -1, -1};
 
 uint32_t TagFor(const std::string* render) {
   for (size_t n = 0; n < g_given.size(); ++n)
@@ -682,102 +702,213 @@ uint32_t TagFor(const std::string* render) {
   return kPictureTag | uint32_t(g_given.size() - 1);
 }
 
-uint64_t Rd64(const uint8_t* p) { return uint64_t(Rd32(p)) << 32 | Rd32(p + 4); }
-
-// A card still waiting for its render (asked again from the lobby's frame).
-struct Waiting {
-  uint32_t item = 0, ctl = 0, L = 0, id = 0;
-  int64_t since = 0;
-};
-Waiting g_waiting[6];
-
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-void AskPicture(PPCContext c, uint8_t* base, int32_t slot, uint32_t id, uint32_t attire, uint32_t tag) {
-  c.r3.u64 = uint32_t(slot + 1);
+// A slot's player's online id (the network library's: the lobby's table at
+// L + 0x2CF20 was empty on the host for a joiner's slot).
+uint64_t OwnerOf(PPCContext ctx, uint8_t* base, const uint8_t* rec) {
+  ctx.r3.u64 = Rd32(base + kGss), ctx.r4.u64 = Rd32(rec + 4);
+  if (!ctx.r3.u32) return 0;
+  sub_8288EC28(ctx, base);
+  return ctx.r3.u64;
+}
+
+// Is slot j this game's own Superstar (its player's, or the host's CPU's)?
+bool Ours(PPCContext ctx, uint8_t* base, uint32_t L, uint32_t j) {
+  const uint8_t* rec = Record(base, L, j);
+  return j == Rd32(base + L + 20) || (IsCpu(rec) && IsHost(ctx, base));
+}
+
+// A stand-in for slot j (-1: none free).
+int StandIn(PPCContext ctx, uint8_t* base, uint32_t L, uint32_t j) {
+  std::vector<uint32_t> mine = svr2011::OnlineLocalCaws();
+  for (const uint32_t bad : g_unusable) mine.erase(std::remove(mine.begin(), mine.end(), bad), mine.end());
+  auto used = [&](uint32_t id) {
+    for (uint32_t k = 0; k < SlotCount(base, L); ++k) {
+      if (k == j) continue;
+      if (g_stand_in[k] == int(id)) return true;
+      const uint8_t* rec = Record(base, L, k);
+      if (Rd32(rec) >= 5 && Rd32(rec + 136) == id && Ours(ctx, base, L, k)) return true;
+    }
+    return false;
+  };
+  if (g_stand_in[j] >= 0 && std::find(mine.begin(), mine.end(), uint32_t(g_stand_in[j])) != mine.end() &&
+      !used(uint32_t(g_stand_in[j])))
+    return g_stand_in[j];
+  for (const uint32_t id : mine)
+    if (!used(id)) return g_stand_in[j] = int(id);
+  return g_stand_in[j] = -1;
+}
+
+// A slot's card as the game last set it (asked again from the lobby's
+// frame: its render come, or its stand-in picked here since).
+struct Card {
+  uint32_t cards = 0, r4 = 0, id = 0, attire = 0, L = 0;
+  bool again = false;
+  int64_t since = 0;
+};
+Card g_cards[6];
+
+// What a Created Superstar's picture on slot j is asked with: {its own
+// number, 0} ours, {a stand-in, its tag} another player's; nullopt: none (yet).
+std::optional<std::pair<uint32_t, uint32_t>> PictureAsk(PPCContext ctx, uint8_t* base, uint32_t L, uint32_t j,
+                                                        uint32_t id, uint32_t attire) {
+  const uint8_t* rec = Record(base, L, j);
+  if (Ours(ctx, base, L, j)) {
+    g_stand_in[j] = -1;
+    // (another slot shown with this one: asked again, with another)
+    for (uint32_t k = 0; k < 6; ++k)
+      if (k != j && g_stand_in[k] == int(id)) g_stand_in[k] = -1, g_cards[k].again = true;
+    return std::pair<uint32_t, uint32_t>{id, 0};
+  }
+  const uint64_t owner = IsCpu(rec) ? 0 : OwnerOf(ctx, base, rec);
+  if (!owner) return std::nullopt;
+  const std::string* render = svr2011::OnlinePicture(owner, id, attire);
+  const int local = StandIn(ctx, base, L, j);
+  if (!render || local < 0) {
+    if (LogOn())
+      REXLOG_INFO("online cpu: picture of slot {}: {:016X}'s Created Superstar {} attire {}: {}", j, owner, id, attire,
+                  local < 0 ? "no Created Superstar here to show it with" : "its render is on its way");
+    if (local >= 0) g_cards[j].again = true;
+    return std::nullopt;
+  }
+  return std::pair<uint32_t, uint32_t>{uint32_t(local), TagFor(render)};
+}
+
+uint32_t AskPicture(PPCContext c, uint8_t* base, uint32_t slot, uint32_t id, uint32_t attire, uint32_t tag) {
+  c.r3.u64 = slot + 1;
   c.r4.u64 = (uint64_t(id) << 32) | 2;
   c.r5.u64 = uint64_t(attire + 10) << 32;
   c.r6.u64 = tag;  // (+16 stays 0: non-zero is another kind of picture)
   sub_8251BA48(c, base);
+  return c.r3.u32;  // (3: ready)
+}
+
+// Created Superstar pictures load one at a time: the picture objects read
+// their .cas through one job queue, and of two loading at once one failed
+// (the holder then shows its "no picture", 322 - sub_8273BF28). Another is
+// asked for once the one loading is ready (or after 8 s); 0: not yet.
+struct Loading {
+  int slot = -1;
+  uint32_t id = 0, attire = 0, tag = 0;
+  int64_t since = 0;
+};
+Loading g_loading;
+
+uint32_t AskCaw(PPCContext c, uint8_t* base, uint32_t slot, uint32_t id, uint32_t attire, uint32_t tag) {
+  if (g_loading.slot >= 0 && g_loading.slot != int(slot)) {
+    const uint32_t was = AskPicture(c, base, uint32_t(g_loading.slot), g_loading.id, g_loading.attire, g_loading.tag);
+    if (was != 3 && NowMs() - g_loading.since < 8000) return 0;
+    g_loading.slot = -1;
+  }
+  const uint32_t answer = AskPicture(c, base, slot, id, attire, tag);
+  if (answer == 3) {
+    if (g_loading.slot == int(slot)) g_loading.slot = -1;
+  } else {
+    const bool same = g_loading.slot == int(slot) && g_loading.id == id && g_loading.attire == attire && g_loading.tag == tag;
+    g_loading = {int(slot), id, attire, tag, same ? g_loading.since : NowMs()};
+  }
+  return answer;
+}
+
+// A picture (a card's, the panel's) shown from the slot's holder.
+void ShowFromHolder(PPCContext c, uint8_t* base, uint32_t picture, uint32_t slot) {
+  const uint32_t tmp = svr2011::OnlineScratch();
+  if (!tmp) return;
+  c.r3.u64 = tmp + 2048, c.r4.u64 = slot + 1, c.r5.u64 = 1;
+  sub_8251BB28(c, base);
+  const uint32_t handle = c.r3.u32;
+  if (!handle) return;
+  c.r3.u64 = picture;
+  c.r4.u64 = uint64_t(Rd32(base + handle)) << 32 | Rd32(base + handle + 4);
+  sub_827023A0(c, base);
 }
 }  // namespace
 
+// A slot's card.
+REX_EXTERN(__imp__sub_8251E6F8);
+REX_HOOK_RAW(sub_8251E6F8) {
+  const PPCContext saved = ctx;
+  const uint32_t cards = ctx.r3.u32, slot = ctx.r5.u32, id = ctx.r6.u32, attire = ctx.r7.u32;
+  __imp__sub_8251E6F8(ctx, base);
+  const uint32_t L = Lobby(base);
+  if (!cards || !L || slot >= 6) return;
+  g_cards[slot] = {cards, saved.r4.u32, id, attire, L, false, NowMs()};
+  if (id >= 50) {
+    g_stand_in[slot] = -1;
+    if (g_loading.slot == int(slot)) g_loading.slot = -1;
+    return;
+  }
+  const auto ask = PictureAsk(saved, base, L, slot, id, attire);
+  if (LogOn()) {  // (when it changes: the cards are set again and again)
+    static std::string last[6];
+    const std::string now = "Created Superstar " + std::to_string(id) +
+                            (!ask ? " - not yet" : ask->second ? " (another player's, with ours " + std::to_string(ask->first) + ")" : " (ours)");
+    if (now != last[slot]) REXLOG_INFO("online cpu: card of slot {}: {}", slot, now);
+    last[slot] = now;
+  }
+  if (!ask) return;
+  const uint32_t answer = AskCaw(saved, base, slot, ask->first, attire, ask->second);
+  if (answer == 3) ShowFromHolder(saved, base, cards + kCardPicture + slot * kCardSize, slot);
+  if (!answer) g_cards[slot].again = true;  // (another loading: after it)
+}
+
+// The SUPERSTAR INFO panel.
 REX_EXTERN(__imp__sub_8251DB28);
 REX_HOOK_RAW(sub_8251DB28) {
   const uint32_t item = ctx.r3.u32, ctl = ctx.r4.u32;
   const PPCContext saved = ctx;
+  // (the switch as it was: put back when this shows none)
+  const uint32_t panel = ctl ? Rd32(base + ctl + 8) : 0;
+  const uint32_t was_on = panel ? Rd32(base + panel + kPictureOn) : 0;
   __imp__sub_8251DB28(ctx, base);
-  if (!item || !ctl) return;
-  const int32_t slot = int32_t(Rd32(base + item));
+  if (!item || !panel) return;
+  const uint32_t slot = Rd32(base + item);
   const uint32_t id = Rd32(base + item + 8), attire = Rd32(base + item + 12);
   const uint32_t L = Lobby(base);
-  if (slot >= 0 && slot < 6) g_waiting[slot] = {};
-  if (id >= 50 || !L || slot < -1 || slot >= 6) return;
-  const uint32_t me = Rd32(base + L + 20);  // (this machine's slot)
-  bool mine = false;
-  uint64_t owner = 0;  // (another player's: his online id)
-  if (slot >= 0) {
-    const uint8_t* rec = Record(base, L, uint32_t(slot));
-    PPCContext c = saved;
-    mine = uint32_t(slot) == me || (IsCpu(rec) && IsHost(c, base));
-    if (!mine && !IsCpu(rec)) owner = Rd64(base + L + kXuids + 8 * uint32_t(slot));
-  } else {  // (the panel: whoever the cursor is on - ours if only our slot has this superstar)
-    int others = 0;
-    bool other_cpu = false;
-    for (uint32_t j = 0; j < SlotCount(base, L); ++j) {
-      const uint8_t* rec = Record(base, L, j);
-      if (Rd32(rec) < 5 || Rd32(rec + 136) != id) continue;
-      if (j == me) mine = true;
-      else if (IsCpu(rec)) other_cpu = true;
-      else ++others, owner = Rd64(base + L + kXuids + 8 * j);
-    }
-    mine = mine && !others && !other_cpu;
-    if (mine || others != 1 || other_cpu) owner = 0;
-  }
-  if (mine) {
-    if (LogOn()) REXLOG_INFO("online cpu: picture of slot {}: Created Superstar {} (ours: shown)", slot, id);
-    AskPicture(saved, base, slot, id, attire, 0);
-    if (const uint32_t panel = Rd32(base + ctl + 8)) Wr32(base + panel + 22724, 1);
+  if (!L || slot >= 6 || id >= 50) return;
+  const auto ask = PictureAsk(saved, base, L, slot, id, attire);
+  if (!ask) {
+    Wr32(base + panel + kPictureOn, was_on);
     return;
   }
-  if (!owner) return;
-  const std::string* render = svr2011::OnlinePicture(owner, id, attire);
-  const int local = svr2011::OnlineLocalCaw();
-  if (!render || local < 0) {
-    if (LogOn())
-      REXLOG_INFO("online cpu: picture of slot {}: {:016X}'s Created Superstar {} attire {}: {}", slot, owner, id, attire,
-                  local < 0 ? "no Created Superstar here to show it with" : "its render is on its way");
-    if (slot >= 0 && local >= 0) g_waiting[slot] = {item, ctl, L, id, NowMs()};
+  const uint32_t answer = AskCaw(saved, base, slot, ask->first, attire, ask->second);
+  if (!answer) {
+    Wr32(base + panel + kPictureOn, was_on);
     return;
   }
-  if (LogOn())
-    REXLOG_INFO("online cpu: picture of slot {}: {:016X}'s Created Superstar {} attire {} (shown with ours, {})", slot, owner,
-                id, attire, local);
-  AskPicture(saved, base, slot, uint32_t(local), attire, TagFor(render));
-  if (const uint32_t panel = Rd32(base + ctl + 8)) Wr32(base + panel + 22724, 1);
+  if (answer == 3) {
+    ShowFromHolder(saved, base, item + 160, slot);
+    Wr32(base + panel + kPanelShown, item + 160);
+  }
+  Wr32(base + panel + kPictureOn, 1);
 }
 
 namespace {
-// The lobby's frame: cards whose render has come since are asked for again.
+// The lobby's frame: cards to ask again (their render come, their stand-in
+// picked here) - the card's update again, as the game made it.
 void PicturesFrame(PPCContext& ctx, uint8_t* base, uint32_t L) {
+  static uint32_t lobby = 0;
+  if (L != lobby) lobby = L, g_unusable.clear();  // (a stand-in that failed is tried again in the next lobby)
   static int64_t last = 0;
   if (NowMs() - last < 250) return;
   last = NowMs();
-  for (int32_t j = 0; j < 6; ++j) {
-    Waiting& w = g_waiting[j];
-    if (!w.item) continue;
-    if (w.L != L || NowMs() - w.since > 60000 || int32_t(Rd32(base + w.item)) != j || Rd32(base + w.item + 8) != w.id) {
-      w = {};
+  for (uint32_t j = 0; j < 6; ++j) {
+    Card& c = g_cards[j];
+    if (!c.again || !c.cards) continue;
+    const uint8_t* rec = Record(base, L, j);
+    if (c.L != L || NowMs() - c.since > 60000 || Rd32(rec + 136) != c.id) {
+      c = {};
       continue;
     }
-    const uint64_t owner = Rd64(base + L + kXuids + 8 * uint32_t(j));
-    if (!svr2011::OnlinePicture(owner, w.id, Rd32(base + w.item + 12))) continue;
-    PPCContext c = ctx;
-    c.r3.u64 = w.item, c.r4.u64 = w.ctl;
-    w = {};
-    sub_8251DB28(c, base);  // (this hook: now with the render)
+    const uint64_t owner = Ours(ctx, base, L, j) || IsCpu(rec) ? 0 : OwnerOf(ctx, base, rec);
+    if (owner && !svr2011::OnlinePicture(owner, c.id, c.attire)) continue;
+    PPCContext p = ctx;
+    p.r3.u64 = c.cards, p.r4.u64 = c.r4, p.r5.u64 = j, p.r6.u64 = c.id, p.r7.u64 = c.attire;
+    c.again = false;
+    sub_8251E6F8(p, base);  // (the hook above)
   }
 }
 }  // namespace
@@ -789,10 +920,13 @@ REX_HOOK_RAW(sub_8273A0B0) {
   const uint32_t obj = ctx.r3.u32, req = ctx.r4.u32;
   if (obj && req) {
     const uint32_t tag = Rd32(base + req + 20);
-    if ((tag & 0xFFFF0000) == kPictureTag && (tag & 0xFFFF) < g_given.size())
+    if ((tag & 0xFFFF0000) == kPictureTag && (tag & 0xFFFF) < g_given.size()) {
       g_tagged[obj] = g_given[tag & 0xFFFF];
-    else
+      g_object_stand_in[obj] = Rd32(base + req);
+    } else {
       g_tagged.erase(obj);
+      g_object_stand_in.erase(obj);
+    }
   }
   __imp__sub_8273A0B0(ctx, base);
 }
@@ -813,3 +947,18 @@ REX_HOOK_RAW(sub_828DB5C8) {
   __imp__sub_828DB5C8(ctx, base);
 }
 
+namespace svr2011 {
+void OnlineCawPictureFailed(uint8_t* base, uint32_t holder) {
+  const uint32_t obj = Rd32(base + holder + 24);
+  const auto it = g_object_stand_in.find(obj);
+  if (it == g_object_stand_in.end()) return;
+  const uint32_t id = it->second;
+  g_object_stand_in.erase(it);
+  g_tagged.erase(obj);
+  if (std::find(g_unusable.begin(), g_unusable.end(), id) == g_unusable.end()) g_unusable.push_back(id);
+  REXLOG_INFO("online cpu: our Created Superstar {} can't stand in for another player's picture (it didn't load) - another", id);
+  for (uint32_t k = 0; k < 6; ++k)
+    if (g_stand_in[k] == int(id)) g_stand_in[k] = -1, g_cards[k].again = true;
+  if (g_loading.slot >= 0 && g_loading.id == id) g_loading.slot = -1;
+}
+}  // namespace svr2011

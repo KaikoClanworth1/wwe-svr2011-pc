@@ -85,5 +85,10 @@ P2PLobby P2PMatchLobby();
 using P2PModHandler = void (*)(const uint8_t* data, size_t size);
 void SetP2PModHandler(P2PModHandler handler);
 void P2PSendMods(const std::vector<uint8_t>& payload);
+// Lobby chat longer than the game's 64 bytes (online_chat.cpp): the same, a
+// message kind of its own.
+using P2PChatHandler = void (*)(const uint8_t* data, size_t size);
+void SetP2PChatHandler(P2PChatHandler handler);
+void P2PSendChat(const std::vector<uint8_t>& payload);
 
 }  // namespace svr2011

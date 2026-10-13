@@ -49,6 +49,8 @@ const uint8_t* OnlineLobbyRecord(uint8_t* base, uint32_t lobby, uint32_t j);
 bool OnlineLobbyIsCpu(uint8_t* base, uint32_t lobby, uint32_t j);
 // The Player Match lobby on screen (its last frame within 300 ms): its state, its cursor slot, the memory, the lobby.
 bool OnlineLobbyView(uint32_t* state, uint32_t* cursor, uint8_t** base, uint32_t* lobby);
+// Was the lobby's screen up within `ms` (its keyboard over it stops its frames)?
+bool OnlineLobbySeenWithin(int64_t ms);
 void OnlineLobbyMakeCpu(PPCContext& ctx, uint8_t* base, uint32_t lobby, uint32_t j, const char* shown);
 
 }  // namespace svr2011

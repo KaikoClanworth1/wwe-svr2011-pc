@@ -34,7 +34,7 @@ struct BankDesc {
 const BankDesc kBanks[] = {
     {"STAT", 3, "Stances", "The ring stances (the idle 20000 and the others the move-set offers)."},
     {"BASE", 6, "Taunts", "Taunts and poses (9000s)."},
-    {"ANAS", 23, "Entrances (ring)", "Motions of the entrance's ring part (21000s), both people."},
+    {"ANAS", 23, "ANAS (21000s)", "The 21000s: paired with the stances (21000 with 20000), not entrances - an entrance's motions are in its own bank (the Superstar page's entrance preview)."},
     {"FINI", 24, "Finishers A", "Finisher previews, part 1."},
     {"FINI", 25, "Finishers B", "Finisher previews, part 2."},
     {"FINI", 26, "Finishers C", "Finisher previews, part 3."},
@@ -220,7 +220,7 @@ std::string MotionLabel(int id) {
   const std::string& n = MoveName(id);
   if (!n.empty()) return n;
   if (id >= 20000 && id < 21000) return id == 20000 ? "Idle stance" : "Stance " + std::to_string(id - 20000);
-  if (id >= 21000 && id < 22000) return "Entrance motion " + std::to_string(id - 21000);
+  if (id >= 21000 && id < 22000) return "ANAS motion " + std::to_string(id - 21000);
   if (id >= 9000 && id < 10000) return "Taunt " + std::to_string(id - 9000);
   if (id >= 18000 && id < 19000) return "Finisher preview " + std::to_string(id);
   if (id >= 30000 && id < 31000) return "Finisher preview " + std::to_string(id);

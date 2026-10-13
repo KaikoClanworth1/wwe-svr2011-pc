@@ -1,6 +1,8 @@
 // Attires inside a character model pac (pac_attires.h).
 #include "pac_attires.h"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <cctype>
 
@@ -87,6 +89,87 @@ bool PacCopyAttire(Epac& dst, int to, const Epac& src, int from, std::string* er
     const bool na = Named(a), nb = Named(b);
     return na != nb ? na : na && a.name < b.name;
   });
+  return true;
+}
+
+std::vector<int> PacGearAttires(const Epac& pac) {
+  std::vector<int> v;
+  if (const EpacGroup* g = Emd(pac))
+    for (const auto& e : g->entries)
+      if (Named(e) && e.name[7] == '4' && !e.data.empty()) v.push_back(AttireOf(e));
+  std::sort(v.begin(), v.end());
+  v.erase(std::unique(v.begin(), v.end()), v.end());
+  return v;
+}
+
+bool PacRemoveGear(Epac& pac, int attire, std::string* error) {
+  EpacGroup* g = Emd(pac);
+  if (!g) {
+    if (error) *error = "not a character model pac (no EMD group)";
+    return false;
+  }
+  for (auto& e : g->entries)
+    if (AttireOf(e) == attire && e.name[7] == '4') Clear(e);
+  return true;
+}
+
+bool PacCopyGear(Epac& dst, int to, const Epac& src, int from, std::string* error) {
+  auto fail = [&](const char* why) { if (error) *error = why; return false; };
+  EpacGroup* dg = Emd(dst);
+  const EpacGroup* sg = Emd(src);
+  if (!dg || !sg) return fail("not a character model pac (no EMD group)");
+  const EpacEntry* in = nullptr;
+  for (const auto& e : sg->entries)
+    if (AttireOf(e) == from && e.name[7] == '4' && !e.data.empty()) in = &e;
+  if (!in) return fail("that attire has no entrance gear");
+  EpacEntry e = *in;  // (copied before dst's rows change: src may be dst)
+  for (auto& x : dg->entries)
+    if (AttireOf(x) == to && x.name[7] == '4') Clear(x);
+  std::string prefix = Prefix(*dg);
+  if (prefix.empty()) prefix = Prefix(*sg);
+  e.name = prefix + char('0' + to - 1) + '4';
+  if (dst.wide && e.name.size() < 8) e.name.resize(8, '\0');
+  auto row = std::find_if(dg->entries.begin(), dg->entries.end(), [](const EpacEntry& x) { return !Named(x) && x.data.empty(); });
+  if (row != dg->entries.end()) *row = std::move(e);
+  else dg->entries.push_back(std::move(e));
+  std::stable_sort(dg->entries.begin(), dg->entries.end(), [](const EpacEntry& a, const EpacEntry& b) {
+    const bool na = Named(a), nb = Named(b);
+    return na != nb ? na : na && a.name < b.name;
+  });
+  return true;
+}
+
+bool PacNoGear(Epac& pac, int attire, std::string* error) {
+  auto fail = [&](const char* why) { if (error) *error = why; return false; };
+  EpacGroup* g = Emd(pac);
+  if (!g) return fail("not a character model pac (no EMD group)");
+  const EpacEntry* body = nullptr;
+  for (const auto& e : g->entries)
+    if (AttireOf(e) == attire && e.name[7] == '2' && !e.data.empty()) body = &e;
+  if (!body) return fail("that attire has no model");
+  EpacEntry e = *body;
+  for (auto& x : g->entries)
+    if (AttireOf(x) == attire && x.name[7] == '4') Clear(x);
+  e.name[7] = '4';
+  auto row = std::find_if(g->entries.begin(), g->entries.end(), [](const EpacEntry& x) { return !Named(x) && x.data.empty(); });
+  if (row != g->entries.end()) *row = std::move(e);
+  else g->entries.push_back(std::move(e));
+  std::stable_sort(g->entries.begin(), g->entries.end(), [](const EpacEntry& x, const EpacEntry& y) {
+    const bool nx = Named(x), ny = Named(y);
+    return nx != ny ? nx : nx && x.name < y.name;
+  });
+  return true;
+}
+
+bool PacApplyGear(Epac& pac, const std::map<int, std::string>& ops, std::string* error) {
+  const Epac orig = pac;  // ("from" reads the gear as it was)
+  for (const auto& [a, op] : ops) {
+    if (op == "off") {
+      if (!(a == 1 ? PacRemoveGear(pac, a, error) : PacNoGear(pac, a, error))) return false;
+    } else if (op.rfind("from", 0) == 0) {
+      if (!PacCopyGear(pac, a, orig, std::atoi(op.c_str() + 4), error)) return false;
+    }
+  }
   return true;
 }
 

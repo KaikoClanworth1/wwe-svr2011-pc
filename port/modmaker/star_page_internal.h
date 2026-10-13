@@ -61,6 +61,8 @@ struct StarProject {
   // Simple mode (simple_star.cpp): the guided view of this same project, and its step
   bool simple = false;
   int simple_step = 0;
+  // entrance gear per attire (1-4): "off" leaves it out, "from<k>" gives it the model's attire k's gear
+  std::map<int, std::string> gear;
 };
 extern StarProject g_star;
 extern int g_view_attire;  // the attire the preview shows (1-4)
@@ -78,6 +80,25 @@ void Install(bool start);
 void SetPicture(const Image& src);
 std::wstring StyleChPac();  // the fighting style's superstar's model (pac\ch\ch<id>.pac)
 void SimpleDraw();          // simple_star.cpp
+void FbxRows(bool simple);
+void GearRows(bool simple);  // entrance gear per attire: has it, show it, leave it out, give it another attire's
+// the move-set: the picker (g_pick_slot >= 0 opens it), slot names, the preview of a pose
+extern int g_pick_slot;
+extern char g_pick_find[48];
+extern bool g_pick_any;
+extern bool g_watching;
+void MovePicker();
+std::string SlotLabel(int slot);
+void PreviewPose(int id);
+struct PoseChoice {
+  int id;
+  std::string label;
+};
+const std::vector<PoseChoice>& Poses();
+std::string PoseLabel(int id);
+extern const char* const kNickNames[84];
+extern const char* const kAttributes[7];
+bool TakeFromMod(const std::wstring& svrmod, bool everything);  // a converted superstar's look (or all of it) into this project  // Model from an FBX: pick, report, bone matching, meshes, Make
 
 }  // namespace star_page
 }  // namespace mm

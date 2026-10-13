@@ -4,7 +4,9 @@ decoder the PLAYER installed - opt in, nothing of RAD's ships with the port.
 The port's movie tools read Bink 1 only; Bink 2 needs one of:
   - RAD Video Tools (free from RAD Game Tools, Windows x64:
     https://www.radgametools.com/bnkdown.htm): radvideo64.exe's converter,
-    "radvideo64.exe binkconv <in> <out.mp4> /#" (/#: no Done button); its
+    only POINTED TO: its converter opens windows even started hidden, so the
+    player converts in RAD's own window (Convert a file -> MP4) and gives the
+    Mod Maker the .mp4 - never run from here; its
     MP4 export goes through Windows Media Foundation (H.264);
   - Librempeg (an FFmpeg fork with a Bink 2 decoder, GPLv3:
     https://github.com/librempeg/librempeg): its ffmpeg.exe. Mainline FFmpeg
@@ -43,6 +45,27 @@ NO_TOOL = ("Bink 2 movies need a decoder you install yourself: RAD Video Tools (
            + RAD_PAGE + ") or Librempeg's ffmpeg. Install one and set its path in the Mod Maker's settings "
            "(Enable Bink 2 conversion). The import goes on without the titantron.")
 EARLY = "abcde"
+# radvideo64 ignores "hidden" (a window opened and the conversion waited in a
+# test, 2026-10-13): never run from here; the player converts in RAD's own
+# window and gives the Mod Maker the .mp4.
+RAD_MANUAL = ("RAD Video Tools can't convert in the background (it opens its own window). Convert this movie in "
+              "RAD Video Tools yourself (Convert a file -> MP4), then pick the .mp4 in the Mod Maker. "
+              "The import goes on without the titantron.")
+RAD_MANUAL_EARLY = ("This titantron is an early Bink 2 movie (WWE '13's format) that only RAD Video Tools reads. "
+                    "Open it in RAD Video Tools (free from RAD Game Tools, " + RAD_PAGE + "), use Convert a file "
+                    "-> MP4, then pick the .mp4 in the Mod Maker. The import goes on without the titantron.")
+
+
+def _hidden():
+    """subprocess options so a decoder never shows a window (Windows: no
+    console, SW_HIDE). RAD Video Tools' radvideo64 showed a window even started
+    hidden in a test (2026-10-13), then waited: see RAD_MANUAL."""
+    if os.name != "nt":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {"startupinfo": si, "creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 def progress(pct, text):
@@ -72,7 +95,7 @@ def warnings_for(info):
 
 def _ffmpeg_has_bink2(path):
     try:
-        r = subprocess.run([path, "-hide_banner", "-decoders"], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([path, "-hide_banner", "-decoders"], capture_output=True, text=True, timeout=30, **_hidden())
     except (OSError, subprocess.SubprocessError):
         return False
     return any("bink2" in line.lower() or "binkvideo2" in line.lower() for line in r.stdout.splitlines())
@@ -85,13 +108,15 @@ def _kind(path):
     name = os.path.basename(path).lower()
     if name.startswith("radvideo"):
         return "rad"
-    if name.startswith("ffmpeg") and _ffmpeg_has_bink2(path):
+    if (name.startswith("ffmpeg") or name.startswith("librempeg")) and _ffmpeg_has_bink2(path):
         return "librempeg"
     return None
 
 
 def find_tool(tool=None):
-    """(kind, path) of the decoder to use, or (None, None)."""
+    """(kind, path): Librempeg's ffmpeg (run hidden) when there is one, else
+    RAD Video Tools (only ever pointed to - the player converts in its own
+    window), else (None, None)."""
     candidates = []
     if tool:
         candidates.append(tool)
@@ -102,15 +127,15 @@ def find_tool(tool=None):
         if base:
             for sub in ("RADVideo", "RAD Video Tools", os.path.join("RAD Game Tools", "RADVideo")):
                 candidates.append(os.path.join(base, sub, "radvideo64.exe"))
-    for exe in ("radvideo64.exe", "ffmpeg.exe"):
+    for exe in ("librempeg.exe", "ffmpeg.exe", "radvideo64.exe"):
         found = shutil.which(exe)
         if found:
             candidates.append(found)
-    for c in candidates:
-        k = _kind(c)
-        if k:
+    found = [(k, c) for c in candidates for k in [_kind(c)] if k]
+    for k, c in found:
+        if k == "librempeg":
             return k, c
-    return None, None
+    return found[0] if found else (None, None)
 
 
 def convert(src, dst, tool=None):
@@ -119,6 +144,11 @@ def convert(src, dst, tool=None):
         return 2, {"ok": False, "error": "not a Bink 2 movie (no KB2 header): " + src, "warnings": []}
     warnings = warnings_for(info)
     kind, path = find_tool(tool)
+    # (an early file - KB2a-e, WWE '13's - Librempeg can't read; RAD is never
+    # run by itself: both are the player's to convert in RAD's own window)
+    if info["revision"] in EARLY or kind == "rad":
+        return 3, {"ok": False, "error": RAD_MANUAL_EARLY if info["revision"] in EARLY else RAD_MANUAL,
+                   "manual": True, "download": RAD_PAGE, "warnings": warnings, "revision": info["revision"]}
     if not kind:
         return 3, {"ok": False, "error": NO_TOOL, "download": RAD_PAGE, "warnings": warnings,
                    "revision": info["revision"]}
@@ -126,16 +156,15 @@ def convert(src, dst, tool=None):
     part = dst + ".part.mp4"
     if os.path.exists(part):
         os.remove(part)
-    progress(5, "converting with " + ("RAD Video Tools" if kind == "rad" else "Librempeg"))
-    attempts = ([[path, "binkconv", src, part, "/#"]] if kind == "rad" else
-                [[path, "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-an", "-c:v", "libx264",
+    progress(5, "converting with Librempeg")
+    attempts = ([[path, "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-an", "-c:v", "libx264",
                   "-pix_fmt", "yuv420p", "-crf", "18", part],
                  [path, "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-an", "-c:v", "mpeg4",
-                  "-q:v", "2", part]])
+                  "-q:v", "2", part]])  # (never radvideo64: it opens windows)
     err = ""
     for cmd in attempts:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, **_hidden())
             err = (r.stderr or r.stdout or "").strip()[-400:]
         except (OSError, subprocess.SubprocessError) as e:
             err = str(e)

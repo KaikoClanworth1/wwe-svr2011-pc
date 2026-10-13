@@ -165,14 +165,16 @@ int DiffuseSlot(const Mesh& s) {
 }
 
 std::atomic<int> g_attire{1};  // the model's attire shown (1-4)
+std::atomic<bool> g_gear{false};       // entrance gear shown (kind 4) when the attire has it
+std::atomic<bool> g_gear_have{false};  // the shown attire has entrance gear
 
-bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire = 1) {
+bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire = 1, bool want_gear = false) {
   if (pac.size() < 0x4000 || std::memcmp(pac.data(), "EPK8", 4)) {
     err = "not a character model pac (EPK8)";
     return false;
   }
   // the EMD group, the attire's model (name "......<attire-1>2"), else attire 1's, else any model
-  Bytes emd;
+  Bytes emd, gear;
   bool attire1 = false, wanted = false;
   const char want = char('0' + std::clamp(attire, 1, 9) - 1);
   for (size_t p = 0x800; p + 12 <= 0x4000;) {
@@ -183,6 +185,7 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire
     for (uint32_t i = 0; i < cnt && p + 16 <= 0x4000; ++i, p += 16) {
       const std::string name(reinterpret_cast<const char*>(&pac[p]), 8);
       const size_t off = 0x4000 + size_t(Le32(&pac[p + 8])) * 0x800, size = size_t(Le32(&pac[p + 12])) * 0x100;
+      if (is_emd && name[0] != 0 && name[7] == '4' && name[6] == want && off + size <= pac.size()) gear.assign(pac.begin() + off, pac.begin() + off + size);
       if (!is_emd || name[0] == 0 || name[7] != '2' || off + size > pac.size()) continue;
       if (!wanted && (emd.empty() || name[6] == want || (name[6] == '0' && !attire1))) {
         emd.assign(pac.begin() + off, pac.begin() + off + size);
@@ -194,6 +197,10 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire
   if (emd.empty()) {
     err = "no model in it (EMD)";
     return false;
+  }
+  if (want_gear) {
+    g_gear_have = !gear.empty();
+    if (!gear.empty() && g_gear) emd = std::move(gear);  // (the entrance model instead)
   }
   std::vector<PachEntry> kids;
   if (!PachRead(Unpack(emd), kids)) {
@@ -1032,6 +1039,7 @@ ID3D11RenderTargetView* g_rtv = nullptr;
 ID3D11ShaderResourceView* g_rt_srv = nullptr;
 ID3D11DepthStencilView* g_dsv = nullptr;
 int g_rt_w = 0, g_rt_h = 0;
+bool g_capturing = false;  // (Capture: a clear background, no floor, the model alone)
 
 struct GpuMesh {
   ID3D11Buffer* vb = nullptr;
@@ -1391,7 +1399,7 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
 
 void Render(int w, int h) {
   ResizeTarget(w, h);
-  const float clear[4] = {0.11f, 0.12f, 0.14f, 1};
+  const float clear[4] = {0.11f, 0.12f, 0.14f, g_capturing ? 0.0f : 1.0f};
   g_ctx->ClearRenderTargetView(g_rtv, clear);
   g_ctx->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1, 0);
   if (!g_slots[0].ch || !g_vs) return;
@@ -1538,7 +1546,7 @@ void Render(int w, int h) {
     return true;
   };
   // the floor: the game's (y 0), where the model's height scale puts it
-  if (g_floor_vb && g_floor_tex) {
+  if (g_floor_vb && g_floor_tex && !g_capturing) {
     D3D11_MAPPED_SUBRESOURCE ms;
     if (SUCCEEDED(g_ctx->Map(g_floor_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
       // (a motion's own floor; else the game's, y 0, where the model's height scale puts it)
@@ -1559,6 +1567,7 @@ void Render(int w, int h) {
     }
   }
   for (const Slot& sl : g_slots)
+  if (!g_capturing || &sl == &g_slots[0])
   for (const GpuMesh& g : sl.gpu) {
     if (sl.hidden) break;
     if (g.blood && (!g_blood || g.blood_missing)) continue;
@@ -1580,6 +1589,34 @@ void Render(int w, int h) {
 }
 
 }  // namespace
+
+bool Capture(int size, std::vector<uint8_t>& rgba) {
+  if (!g_slots[0].ch || !g_dev) return false;
+  const bool playing = g_play.playing;
+  g_play.playing = false;  // (the pose as it is now)
+  g_capturing = true;
+  Render(size, size);
+  g_capturing = false;
+  g_play.playing = playing;
+  D3D11_TEXTURE2D_DESC td = {};
+  g_rt->GetDesc(&td);
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  ID3D11Texture2D* st = nullptr;
+  if (FAILED(g_dev->CreateTexture2D(&td, nullptr, &st))) return false;
+  g_ctx->CopyResource(st, g_rt);
+  D3D11_MAPPED_SUBRESOURCE ms;
+  bool ok = false;
+  if (SUCCEEDED(g_ctx->Map(st, 0, D3D11_MAP_READ, 0, &ms))) {
+    rgba.resize(size_t(size) * size * 4);
+    for (int y = 0; y < size; ++y) std::memcpy(&rgba[size_t(y) * size * 4], static_cast<const uint8_t*>(ms.pData) + size_t(y) * ms.RowPitch, size_t(size) * 4);
+    g_ctx->Unmap(st, 0);
+    ok = true;
+  }
+  st->Release();
+  return ok;
+}
 
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
   g_dev = dev;
@@ -1612,7 +1649,7 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
     auto ch = std::make_shared<Character>();
     std::string err;
     Bytes pac;
-    bool ok = ReadWide(ch_pac, pac) && LoadCharacter(pac, *ch, err, which == 0 ? g_attire.load() : 1);
+    bool ok = ReadWide(ch_pac, pac) && LoadCharacter(pac, *ch, err, which == 0 ? g_attire.load() : 1, which == 0);
     if (!ok && err.empty()) err = "could not read the file";
     std::shared_ptr<Motion> idle;
     std::string idle_err;
@@ -1806,6 +1843,18 @@ void SetAttire(int attire) {
   if (!file.empty()) LoadSlot(0, file);
 }
 int Attire() { return g_attire.load(); }
+void SetGear(bool on) {
+  if (g_gear.exchange(on) == on) return;
+  std::wstring file;
+  {
+    std::lock_guard lock(g_mutex);
+    file = g_slots[0].file;
+    g_slots[0].file.clear();
+  }
+  if (!file.empty()) LoadSlot(0, file);
+}
+bool Gear() { return g_gear.load(); }
+bool HasGear() { return g_gear_have.load(); }
 
 bool SetMotion(std::shared_ptr<const Bytes> bank, int id, int x, std::string* err) {
   std::lock_guard lock(g_mutex);

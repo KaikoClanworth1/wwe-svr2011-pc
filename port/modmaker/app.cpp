@@ -1103,11 +1103,12 @@ Image GameLook(const Image& src) {
   return out;
 }
 
+std::map<std::wstring, std::vector<ModelPages>> g_gear_budget;  // (ModelBudget's kind-4 entries)
 const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
   struct Cached {
     fs::file_time_type time;
     uintmax_t size = 0;
-    std::vector<ModelPages> pages;
+    std::vector<ModelPages> pages, gear;
   };
   static std::map<std::wstring, Cached> cache;
   static const std::vector<ModelPages> none;
@@ -1124,7 +1125,7 @@ const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
     for (const auto& g : e.groups) {
       if (g.type.rfind("EMD", 0) != 0) continue;
       for (const auto& en : g.entries) {
-        if (en.name.empty() || en.name.back() != '2') continue;  // (kind 2: the wrestler's model)
+        if (en.name.empty() || (en.name.back() != '2' && en.name.back() != '4')) continue;  // (kind 2: the wrestler's model; 4: entrance gear)
         std::vector<PachEntry> kids;
         if (!PachRead(Unpack(en.data), kids)) continue;
         int pages = 0, blood = 0;
@@ -1142,13 +1143,21 @@ const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
           pages += mp;
           if (k.id >= 0x7530 && k.id <= 0x7532) blood += mp;
         }
-        c.pages.push_back({en.name, pages, blood});
+        (en.name.back() == '4' ? c.gear : c.pages).push_back({en.name, pages, blood});
       }
     }
   std::string line = "model budget: " + Utf8(fs::path(pac).filename().wstring());
   for (const auto& p : c.pages) line += "  " + p.entry + " " + std::to_string(p.pages);
   Log(line);
+  g_gear_budget[pac] = c.gear;
   return (cache[pac] = std::move(c)).pages;
+}
+
+const std::vector<ModelPages>& GearBudget(const std::wstring& pac) {
+  ModelBudget(pac);  // (fills both)
+  static const std::vector<ModelPages> none;
+  const auto it = g_gear_budget.find(pac);
+  return it == g_gear_budget.end() ? none : it->second;
 }
 
 void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name) {
@@ -1290,7 +1299,17 @@ void ViewFooter() {
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip(has ? "The blood a superstar gets in a match, on the face and body." : "This model has no blood layers.");
-  ImGui::SameLine();
+  if (char_preview::HasGear() || char_preview::Gear()) {
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!char_preview::HasGear());
+    bool gear = char_preview::Gear() && char_preview::HasGear();
+    if (ImGui::Checkbox("Entrance gear", &gear)) char_preview::SetGear(gear);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip(char_preview::HasGear() ? "What they wear for the entrance (a coat, hat or shirt)." : "This attire has no entrance gear.");
+  }
+  if (ImGui::GetContentRegionAvail().x - ImGui::GetItemRectMax().x + ImGui::GetCursorScreenPos().x > ImGui::CalcTextSize("Damage").x + 130 * g_scale)
+    ImGui::SameLine();  // (else the Damage slider on its own line)
   ImGui::BeginDisabled(!blood);
   int stage = char_preview::BloodStage();
   static const char* kLevels[] = {"light", "medium", "heavy"};
@@ -1299,10 +1318,11 @@ void ViewFooter() {
   ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x, 70 * g_scale, 110 * g_scale));
   if (ImGui::SliderInt("##damage", &stage, 0, 2, kLevels[std::clamp(stage, 0, 2)], ImGuiSliderFlags_NoInput)) char_preview::SetBloodStage(stage);
   ImGui::EndDisabled();
-  if (const char* hint = "Drag to turn, scroll to zoom"; ImGui::GetContentRegionAvail().x > ImGui::CalcTextSize(hint).x + 24 * g_scale) {
-    ImGui::SameLine();
+  ImGui::SameLine();  // (the hint on this line when it fits what's left of it)
+  if (const char* hint = "Drag to turn, scroll to zoom"; ImGui::GetContentRegionAvail().x > ImGui::CalcTextSize(hint).x + 8 * g_scale)
     ImGui::TextDisabled("%s", hint);
-  }
+  else
+    ImGui::NewLine();
   ImGui::PopID();
 }
 
@@ -2329,7 +2349,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
-    else if (!wcscmp(argv[i], L"--star-fbx-make")) star_page::TestFbxMake();  // with --star-fbx: Make the model, log, quit
+    else if (!wcscmp(argv[i], L"--star-fbx-make")) star_page::TestFbxMake();
+    else if (!wcscmp(argv[i], L"--fbx-report") && more) star_page::TestFbxReport(argv[++i]);  // with --star-fbx: the import report, quit  // with --star-fbx: Make the model, log, quit
+    else if (!wcscmp(argv[i], L"--simple-take") && more) {  // <svrmod>,<0|1>: a converted superstar's look (0) or all of it (1) into the project
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      star_page::TestSimpleTake(v.substr(0, c), c != std::wstring::npos && v.substr(c + 1) == L"1");
+    }
+    else if (!wcscmp(argv[i], L"--simple-ring") && more) star_page::TestSimpleRing(_wtoi(argv[++i]));  // an entrance's walk to the ring in Simple's preview
+    else if (!wcscmp(argv[i], L"--simple-capture") && more) star_page::TestSimpleCapture(argv[++i]);  // the 3D view as the select picture -> <png>, quit
+    else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
     else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
     else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
       const std::wstring v = argv[++i];
@@ -2342,6 +2371,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
+    else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views
+    else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
     else if (!wcscmp(argv[i], L"--hits")) char_preview::SetHits(true);
     else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac>[,<save .svrmod>]
       const std::wstring a = argv[++i];

@@ -41,6 +41,7 @@ if ($WithModMaker) {
                      "wwe13_pack.py", "arena_tool.py",  # (imports checked transitively 13 Oct: arena_port needs these two)
                      "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py",  # (entrance_port: PS2 discs, SYM, SvR 2006)
                      "hand_tracks.py", "svr06_hands.py", "finger_retarget.py",  # (entrance_port: finger tracks)
+                     "entrance_ring.py",  # (Simple mode: an entrance's tracks for the preview)
                      "model_budget.py", "xact.py", "svr07_char.py", "wwise.py",
                      "svr11_build.py", "svr11_skeleton.json", "rig_maps.json", "rig_maps.py", "svr11_skeleton.py",
                      "moveset_maps.py", "moveset_maps.json", "moveset_port.py", "fix_model.py")) {  # (FBX import: builder + skeleton / rig maps)

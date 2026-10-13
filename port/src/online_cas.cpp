@@ -516,16 +516,16 @@ const std::string* OnlinePicture(uint64_t owner, uint32_t id, uint32_t attire) {
   return nullptr;
 }
 
-int OnlineLocalCaw() {
-  static int found = -1;
+std::vector<uint32_t> OnlineLocalCaws() {
+  static std::vector<uint32_t> found;
   static auto checked = std::chrono::steady_clock::time_point{};
   const auto now = std::chrono::steady_clock::now();
   if (now - checked < std::chrono::seconds(10)) return found;
   checked = now;
-  found = -1;
+  found.clear();
   std::error_code ec;
-  for (uint32_t id = 0; id < 50 && found < 0; ++id)
-    if (std::filesystem::file_size(CawFile(id), ec) >= kCasSize && !ec) found = int(id);
+  for (uint32_t id = 0; id < 50; ++id)
+    if (std::filesystem::file_size(CawFile(id), ec) >= kCasSize && !ec) found.push_back(id);
   return found;
 }
 
