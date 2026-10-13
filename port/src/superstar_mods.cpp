@@ -57,6 +57,7 @@
 #include "jukebox.h"
 #include "media_mods.h"
 #include "music.h"
+#include "hd_movies.h"
 #include "user_movies.h"
 
 namespace fs = std::filesystem;
@@ -128,6 +129,11 @@ struct Mod {
   // e.g. JEFFHARDY): the ring announcer says it with the game's own
   // RA_*_<NAME>_* clips, in the categories where the base says its own name
   std::string announcer;
+  // its hometown for the ring announcer (manifest hometown=<CITY>[,<STATE>]:
+  // the game's own clips, RA_*_HTC_<CITY>_0 / RA_*_HTS_<STATE>_0, e.g.
+  // hometown=CAMERONNC or hometown=DEATHVALLEY,PARTSUNKNOWN): the CAW
+  // introduction ("from <city>, <state> ... <name>") with its name calls
+  std::string hometown_city, hometown_state;
   // its own moves over the base's (manifest moves=<file>: lines "0xOFF=id",
   // a byte offset in the profile's move block, 0..0x1BF, and a move id)
   std::vector<std::pair<uint16_t, uint16_t>> moves;
@@ -316,18 +322,27 @@ bool CopyIfChanged(const fs::path& from, const fs::path& to) {
   return fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
 }
 
-void InstallMedia(Mod& m, const fs::path& folder, const std::string& song, const std::string& movie) {
+void InstallMedia(Mod& m, const fs::path& folder, const std::string& song, const std::string& movie, float song_gain) {
   std::error_code ec;
   const std::string name = FileName(m.name);
   if (!song.empty() && fs::exists(folder / song, ec)) {
     const fs::path music = svr2011::UserMusicFolder();
-    if (!music.empty() && CopyIfChanged(folder / song, music / (name + fs::path(song).extension().string())))
+    const fs::path to = music / (name + fs::path(song).extension().string());
+    if (!music.empty() && CopyIfChanged(folder / song, to)) {
       m.song = name;
+      svr2011::SetSongGain(to, song_gain);
+    }
   }
-  if (!movie.empty() && fs::exists(folder / movie, ec) && fs::path(movie).extension() == ".bik") {
+  // (an .mp4: played HD where the platform decodes it, else its .bik of the
+  // same name - the Mod Maker makes both; hd_movies.h)
+  const bool mp4 = !movie.empty() && fs::path(movie).extension() == ".mp4";
+  const std::string bik = mp4 ? fs::path(movie).replace_extension(".bik").string() : movie;
+  if (!movie.empty() && fs::path(bik).extension() == ".bik") {
     const fs::path movies = svr2011::UserMoviesFolder();
     const std::string file = name + ".bik";
-    if (!movies.empty() && CopyIfChanged(folder / movie, movies / file)) {
+    bool ok = !movies.empty() && fs::exists(folder / bik, ec) && CopyIfChanged(folder / bik, movies / file);
+    if (mp4 && !movies.empty() && fs::exists(folder / movie, ec) && svr2011::RegisterHdMovie(file, folder / movie)) ok = true;
+    if (ok) {
       m.movie = svr2011::ReserveUserMovie(file);
       svr2011::FinishUserMovie(file);
     }
@@ -510,6 +525,7 @@ void LoadMods() {
     m.folder = f.filename().string();
     m.name = m.short_name = m.folder;
     std::string song, movie, moves;
+    float song_gain = 0.0f;  // theme_gain=<dB>: the theme's level (-20..+6, the Mod Maker's loudness match)
     std::string attires[4];  // attire<N>= (1-4): another pac's first attire as attire N
     if (FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb")) {
       char line[512];
@@ -520,6 +536,7 @@ void LoadMods() {
         if (l.rfind("short=", 0) == 0) m.short_name = l.substr(6);
         if (l.rfind("base=", 0) == 0) m.base = uint32_t(std::atoi(l.c_str() + 5));
         if (l.rfind("song=", 0) == 0) song = l.substr(5);
+        if (l.rfind("theme_gain=", 0) == 0) song_gain = std::clamp(float(std::atof(l.c_str() + 11)), -20.0f, 6.0f);
         if (l.rfind("movie=", 0) == 0) movie = l.substr(6);
         if (l.rfind("voice=", 0) == 0 && l.size() > 6) m.voice = f / l.substr(6);
         if (l.rfind("style=", 0) == 0) m.styled = true;
@@ -537,6 +554,13 @@ void LoadMods() {
           m.attire_names[l[6] - '1'] = l.substr(13);
         if (l.rfind("call=", 0) == 0 && l.size() > 5 && std::isdigit(uint8_t(l[5])))
           m.call = std::clamp(std::atoi(l.c_str() + 5), 0, 83);
+        if (l.rfind("hometown=", 0) == 0) {
+          std::string* to = &m.hometown_city;
+          for (char c : l.substr(9)) {
+            if (c == ',') to = &m.hometown_state;
+            else if (std::isalnum(uint8_t(c)) && to->size() < 40) to->push_back(char(std::toupper(uint8_t(c))));
+          }
+        }
         if (l.rfind("announcer=", 0) == 0) {
           for (char c : l.substr(10))
             if (std::isalnum(uint8_t(c)) && m.announcer.size() < 24) m.announcer.push_back(char(std::toupper(uint8_t(c))));
@@ -586,7 +610,7 @@ void LoadMods() {
       // (added below, once the mod has its id)
       m.sign_files = std::move(signs);
     }
-    InstallMedia(m, f, song, movie);
+    InstallMedia(m, f, song, movie, song_gain);
     ReadApplied(m, f);
     m.slot = slot_of(m.folder);
     if (!m.slot) {
@@ -1231,7 +1255,7 @@ bool NameCallLog() {
 // of category c at T+420+c*8, its names at *(T+424+c*8). Categories 2, 4, 5,
 // 8, 40, 41, 42 are by character id ("dummy" for the mods' ids).
 constexpr uint32_t kSoundMgr = 0x82EC4C18;
-constexpr uint32_t kIdCategories[] = {2, 4, 5, 8, 40, 41, 42};
+constexpr uint32_t kIdCategories[] = {2, 4, 5, 8, 9, 40, 41, 42};
 // The table: T from sub_825FDDC0(*(sub_825E5E68() + 32), &T), as
 // sub_825EA4E8 reads it.
 uint32_t CallTable(PPCContext& ctx, uint8_t* base) {
@@ -1285,7 +1309,7 @@ void WriteAnnouncerNames(PPCContext& ctx, uint8_t* base, const Mod& m) {
   std::string token(b8 + 10, strnlen(b8 + 10, 50));
   if (const size_t u = token.rfind('_'); u != std::string::npos) token.resize(u);
   if (token.empty()) return;
-  for (uint32_t c = 0; c < 45; ++c) {
+  for (uint32_t c = 1; c <= 45; ++c) {  // (the categories are 1..45: sub_825EA4E8)
     const char* b = entry(c, m.base);
     char* d = entry(c, m.slot);
     if (!b || !d) continue;
@@ -1299,16 +1323,182 @@ void WriteAnnouncerNames(PPCContext& ctx, uint8_t* base, const Mod& m) {
     std::memcpy(d, n.data(), n.size());
   }
 }
+// hometown=: the announcer's introduction scripts (sound.pac, sub_825EA590)
+// are a Superstar's (+0 >= 50: his whole recorded introduction, category 16)
+// or a Created Superstar's (... city (category 10, index +12), state (11,
+// +16; left out when the city's clip names it), the nickname's name calls
+// (12 / 13 / 43 / 44 / 45, and 3 "accompanied by", index +20)). A mod with a
+// hometown takes the second with the city and state set, and its nickname is
+// a virtual index (kNameRow + the row of its name calls by character id)
+// that sub_825EA4E8 below points at those rows (8 / 9 / 40 / 41 / 42 / 2).
+constexpr uint32_t kNameRow = 0x4000;  // (below 0x8000: the index is sign-extended)
+constexpr uint32_t kNoState = 59;      // (a state with no clip: THE CARIBBEAN)
+
+// The entry of category c whose name is "RA_JR_<prefix>_<token>_..." (-1: none).
+int FindCall(uint8_t* base, uint32_t T, uint32_t c, const char* prefix, const std::string& token) {
+  const uint32_t count = Rd32(base + T + 420 + c * 8), names = Rd32(base + T + 424 + c * 8);
+  if (!names) return -1;
+  const std::string want = std::string("RA_JR_") + prefix + "_" + token + "_";
+  for (uint32_t i = 0; i < count; ++i)
+    if (!std::strncmp(reinterpret_cast<const char*>(base + names + i * 64), want.c_str(), want.size())) return int(i);
+  return -1;
+}
+
+bool Hometown(PPCContext& ctx, uint8_t* base, uint32_t out, const Mod& m) {
+  const uint32_t T = CallTable(ctx, base);
+  if (!T) return false;
+  const int city = FindCall(base, T, 10, "HTC", m.hometown_city);
+  const int state = m.hometown_state.empty() ? -1 : FindCall(base, T, 11, "HTS", m.hometown_state);
+  if (city < 0 || (state < 0 && !m.hometown_state.empty())) {
+    static bool told = false;
+    if (!told) REXLOG_WARN("[svr2011] superstar mods: {}: no hometown clip {},{}", m.name, m.hometown_city, m.hometown_state);
+    told = true;
+    return false;
+  }
+  uint32_t nick;
+  if (!m.announcer.empty()) {
+    WriteAnnouncerNames(ctx, base, m);
+    nick = kNameRow + m.slot;
+  } else if (!m.voice.empty()) {
+    WriteCallNames(ctx, base, m.slot);
+    nick = kNameRow + m.slot;
+  } else if (m.call >= 0) {
+    nick = uint32_t(m.call);  // (a Created Superstar nickname's own calls)
+  } else {
+    nick = kNameRow + m.base;
+  }
+  Wr32(base + out, 0);  // (the Created Superstar script)
+  Wr32(base + out + 12, uint32_t(city));
+  Wr32(base + out + 16, state < 0 ? kNoState : uint32_t(state));
+  base[out + 20] = uint8_t(nick >> 8), base[out + 21] = uint8_t(nick);
+  if (NameCallLog()) REXLOG_INFO("[svr2011] name call: {} from city {} state {}, names row {:X}", m.name, city, state, nick);
+  return true;
+}
+
+// sub_825EA4E8(_, &name, category, index): the announcer's event name. A
+// virtual nickname (Hometown) in a nickname category: the name call of that
+// row in the same kind of category by character id.
+REX_EXTERN(__imp__sub_825EA4E8);
+REX_HOOK_RAW(sub_825EA4E8) {
+  const uint32_t name = ctx.r4.u32, c = ctx.r5.u32, i = ctx.r6.u32 & 0xFFFF;
+  __imp__sub_825EA4E8(ctx, base);
+  if (!name || i < kNameRow || i >= kNameRow + 0x1000) return;
+  uint32_t to = 0;
+  switch (c) {
+    case 12: to = 8; break;
+    case 13: to = 9; break;
+    case 43: to = 40; break;
+    case 44: to = 41; break;
+    case 45: to = 42; break;
+    case 3: to = 2; break;
+    default: return;
+  }
+  const uint32_t T = CallTable(ctx, base);
+  if (!T) return;
+  const uint32_t row = i - kNameRow, count = Rd32(base + T + 420 + to * 8), names = Rd32(base + T + 424 + to * 8);
+  if (names && row < count) Wr32(base + name, names + row * 64);
+}
+
+// A Created Superstar with a stock Superstar's name calls: <game>/Mods/
+// caw_announcer.txt, lines "<his full name>=<NAME>" (a name call's clip,
+// port/tools/announcer_calls.json's superstars, or one the banks still have:
+// JEFFHARDY). The announcer then takes the Superstar introduction - NAME's
+// own recorded one (his hometown, his name). A NAME with no row of its own
+// gets the CAW's row (by its id, 0..49: "dummy", unused) written from Matt
+// Hardy's with the name swapped (WriteAnnouncerNames).
+constexpr uint32_t kTemplateCall = 112;  // (Matt Hardy: every category his name is in)
+std::map<std::string, std::string> CawCalls() {
+  static std::map<std::string, std::string> calls;
+  static fs::file_time_type stamp{};
+  const fs::path file = g_game / "Mods" / "caw_announcer.txt";
+  std::error_code ec;
+  const auto t = fs::last_write_time(file, ec);
+  if (ec) {
+    calls.clear();
+    return calls;
+  }
+  if (t == stamp) return calls;
+  stamp = t;
+  calls.clear();
+  if (FILE* f = std::fopen(file.string().c_str(), "rb")) {
+    char line[256];
+    while (std::fgets(line, sizeof line, f)) {
+      std::string l = line;
+      while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+      const size_t eq = l.rfind('=');
+      if (eq == std::string::npos || eq == 0) continue;
+      std::string name;
+      for (char c : l.substr(eq + 1))
+        if (std::isalnum(uint8_t(c)) && name.size() < 24) name.push_back(char(std::toupper(uint8_t(c))));
+      if (!name.empty()) calls[l.substr(0, eq)] = name;
+    }
+    std::fclose(f);
+  }
+  REXLOG_INFO("[svr2011] superstar mods: {} Created Superstars with stock name calls", calls.size());
+  return calls;
+}
+
+// The Created Superstar in slot `slot`: his full name (roster record +34,
+// UTF-16BE) and id (+32).
+bool CawName(PPCContext& ctx, uint8_t* base, uint32_t slot, std::string* name, uint32_t* id) {
+  const uint32_t roster = Rd32(base + 0x82EDEA88);
+  if (!roster) return false;
+  const auto saved = ctx;
+  ctx.r3.u64 = roster;
+  ctx.r4.u64 = slot;
+  sub_828B5A18(ctx, base);
+  const uint32_t rec = ctx.r3.u32;
+  ctx = saved;
+  if (!rec) return false;
+  *id = uint32_t(base[rec + 32]) << 8 | base[rec + 33];
+  name->clear();
+  for (uint32_t k = 0; k < 40; ++k) {
+    const uint16_t c = uint16_t(base[rec + 34 + k * 2]) << 8 | base[rec + 35 + k * 2];
+    if (!c) break;
+    name->push_back(c < 0x80 ? char(c) : '?');
+  }
+  return !name->empty();
+}
+
+void CawCall(PPCContext& ctx, uint8_t* base, uint32_t out, uint32_t slot) {
+  const auto calls = CawCalls();
+  if (calls.empty() && !NameCallLog()) return;
+  std::string name;
+  uint32_t id = 0;
+  if (!CawName(ctx, base, slot, &name, &id) || id >= 50) return;
+  if (NameCallLog()) REXLOG_INFO("[svr2011] name call: Created Superstar \"{}\" (id {})", name, id);
+  const auto c = calls.find(name);
+  if (c == calls.end()) return;
+  const uint32_t T = CallTable(ctx, base);
+  if (!T) return;
+  if (const int s = FindCall(base, T, 8, "SSN", c->second); s >= 50) {
+    Wr32(base + out, uint32_t(s));
+    Wr32(base + out + 4, uint32_t(s));
+  } else {
+    Mod t;
+    t.base = kTemplateCall, t.slot = id, t.announcer = c->second;
+    WriteAnnouncerNames(ctx, base, t);
+    Wr32(base + out, kTemplateCall);  // (the Superstar script; his rows at the CAW's id)
+    Wr32(base + out + 4, id);
+  }
+  if (NameCallLog()) REXLOG_INFO("[svr2011] name call: Created Superstar {} (id {}) as {}", name, id, c->second);
+}
+
 REX_EXTERN(__imp__sub_825EA208);
 REX_HOOK_RAW(sub_825EA208) {
-  const uint32_t out = ctx.r3.u32;
+  const uint32_t out = ctx.r3.u32, slot = ctx.r4.u32;
   __imp__sub_825EA208(ctx, base);
   if (!out) return;
+  if (Rd32(base + out) < 50) {
+    CawCall(ctx, base, out, slot);
+    return;
+  }
   if (NameCallLog())
     REXLOG_INFO("[svr2011] name call: announcer id {} call {} nickname {}", Rd32(base + out), Rd32(base + out + 4),
                 Rd16(base + out + 20));
   const Mod* m = ModOf(Rd32(base + out));
   if (!m) return;
+  if (!m->hometown_city.empty() && Hometown(ctx, base, out, *m)) return;
   if (!m->announcer.empty()) {  // (the game's own clips of that name)
     WriteAnnouncerNames(ctx, base, *m);
     return;
@@ -1875,8 +2065,13 @@ void CopySuperstarMovies(const std::filesystem::path& movies) {
       }
       std::fclose(t);
     }
+    const std::string mp4 = !movie.empty() && fs::path(movie).extension() == ".mp4" ? movie : std::string();
+    if (!mp4.empty()) movie = fs::path(movie).replace_extension(".bik").string();
     if (!movie.empty() && fs::path(movie).extension() == ".bik" && fs::exists(e.path() / movie, ec))
-      CopyIfChanged(e.path() / movie, movies / (FileName(name) + ".bik"));
+      CopyIfChanged(e.path() / movie, movies / (FileName(name) + ".bik"));  // (an .mp4's: its .bik fallback)
+    // (an .mp4: its stub and probe now, before the mount - hd_movies.h)
+    if (!mp4.empty() && fs::exists(e.path() / mp4, ec))
+      svr2011::PrepareHdMovie(movies, FileName(name) + ".bik", e.path() / mp4);
   }
 }
 

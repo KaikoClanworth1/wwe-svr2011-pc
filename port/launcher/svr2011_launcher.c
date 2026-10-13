@@ -7050,7 +7050,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         wprintf(L"updated %s to %s\n", s_game_dir, s_up.version);
         return 0;
     }
-    /* --movie-make <video> <bottom or -> <fit 0-2> <seconds> <out.bik> (tests) */
+    /* --movie-make <video> <bottom or -> <fit 0-2> <seconds> <out.bik> [size 320|640|1024] (tests; the
+     * HD .bik fallback of an .mp4 entrance movie) */
     if (argv && argc >= 7 && !wcscmp(argv[1], L"--movie-make")) {
         static MovieJob job;
         console_setup();
@@ -7059,6 +7060,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         job.fit = _wtoi(argv[4]);
         job.max_seconds = _wtoi(argv[5]);
         wcscpy_s(job.out, MAX_PATH, argv[6]);
+        if (argc >= 8) job.size = _wtoi(argv[7]);
         if (!movie_make(&job)) { wprintf(L"failed: %s\n", job.err); return 1; }
         wprintf(L"ok: %d frames\n", job.frames);
         return 0;

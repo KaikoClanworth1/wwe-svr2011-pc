@@ -45,6 +45,7 @@ set(SVR2011_SOURCES
     src/user_movies.cpp
     src/entrance_media.cpp
     src/movie_transcode.cpp
+    src/hd_movies.cpp
     src/p2p.cpp
     src/net_stats.cpp
     src/net_sim.cpp

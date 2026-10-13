@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <map>
 #include <mutex>
@@ -48,6 +49,23 @@
 namespace svr2011 {
 
 namespace {
+
+// Songs' gains (SetSongGain): by lower-case file name, as factors.
+std::mutex g_gain_mutex;
+std::map<std::u16string, float> g_gains;
+
+std::u16string GainKey(const std::filesystem::path& file) {
+  std::u16string k = file.filename().u16string();
+  for (char16_t& c : k)
+    if (c >= u'A' && c <= u'Z') c = char16_t(c - u'A' + u'a');
+  return k;
+}
+
+float SongGain(const std::filesystem::path& file) {
+  std::lock_guard lock(g_gain_mutex);
+  const auto g = g_gains.find(GainKey(file));
+  return g == g_gains.end() ? 1.0f : g->second;
+}
 
 using rex::kernel::xam::apps::XmpApp;
 
@@ -192,6 +210,7 @@ class Player {
 
  private:
   bool Open(const std::filesystem::path& path) {
+    song_gain_ = SongGain(path);
     ComPtr<IMFSourceReader> reader;
     if (FAILED(MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader))) {
       REXLOG_WARN("user music: cannot open {}", path.string());
@@ -245,6 +264,7 @@ class Player {
       std::lock_guard lock(mutex_);
       v = game_volume_;
     }
+    v *= song_gain_;  // (the song's own: a mod's theme_gain=)
     if (rex::cvar::GetFlagByName("audio_mute") == "true") v = 0.0f;
     if (v != volume_) {
       volume_ = v;
@@ -305,6 +325,7 @@ class Player {
   bool has_request_ = false;
   bool paused_ = false;
   float game_volume_ = 1.0f;
+  float song_gain_ = 1.0f;
 
   // The player thread's own.
   ComPtr<IXAudio2> xaudio2_;
@@ -412,6 +433,7 @@ class Player {
 
  private:
   bool Open(const std::filesystem::path& path) {
+    song_gain_ = SongGain(path);
     fd_ = open(path.c_str(), O_RDONLY);
     if (fd_ < 0) {
       REXLOG_WARN("user music: cannot open {}", path.string());
@@ -496,6 +518,7 @@ class Player {
       std::lock_guard lock(mutex_);
       v = game_volume_;
     }
+    v *= song_gain_;  // (the song's own: a mod's theme_gain=)
     if (rex::cvar::GetFlagByName("audio_mute") == "true") v = 0.0f;
     if (v != volume_) {
       volume_ = v;
@@ -565,6 +588,7 @@ class Player {
   bool has_request_ = false;
   bool paused_ = false;
   float game_volume_ = 1.0f;
+  float song_gain_ = 1.0f;
 
   // The player thread's own.
   std::filesystem::path song_;
@@ -649,6 +673,13 @@ std::vector<std::filesystem::path> UserMusicSongs() {
   }
   std::sort(songs.begin(), songs.end());
   return songs;
+}
+
+void SetSongGain(const std::filesystem::path& file, float db) {
+  db = std::clamp(db, -20.0f, 6.0f);
+  std::lock_guard lock(g_gain_mutex);
+  if (db == 0.0f) g_gains.erase(GainKey(file));
+  else g_gains[GainKey(file)] = std::pow(10.0f, db / 20.0f);
 }
 
 std::filesystem::path UserMusicSong(const std::string& name) {
