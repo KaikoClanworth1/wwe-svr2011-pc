@@ -24,7 +24,7 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, played in game (Andre 3066 as 490) |
 | SmackDown! Shut Your Mouth (PS2) | SLES_512.83 | 114 | `sym_entrance.py` (game sym) | ready, played in game (Hollywood Hogan 3044 as 491); all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
 | SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, played in game (JYD 4080 as 492); all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
-| WWF SmackDown! Just Bring It (PS2) | SLES_504.77 | 348 | `jbi_entrance.py` (game jbi; SYM's back end) | ready, played in game (JBI 0001 as 499); all 348 convert offline |
+| WWF SmackDown! Just Bring It (PS2) | SLES_504.77 | 348 | `jbi_entrance.py` (game jbi; SYM's back end) | ready, played in game (Chris Benoit, JBI 1, as 499; again with the mapped fingers); all 348 convert offline, named from the ELF |
 | SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
 | WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, played in game (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
@@ -116,11 +116,22 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
   - Floor: a JBI take row can sit at the stage while its roots already walk the arena (0007 takes 3-4,
     row z 244, entrant from the ramp foot into the ring), so the stage floor fix goes by where the
     entrant starts (`at_z`), not by the row.
-  - Hands: op 16 as SYM, but only 477 of 1534 hand events name a pose in 2011's library (0-105 /
-    200-305); the rest are 106-126 / 306-326 (JBI's own poses: its pose library is not mapped). Unknown
-    ids are skipped (the hand keeps its shape). SYM: 1091 of 1150.
-  - Names are only in the ELF: entrances are labelled `JBI <number>` (`--name` sets one). Lines 0 and
-    3-6 of the script (flags / event values) and the cast model ids are not decoded.
+  - Hands: op 16 as SYM (`10 ss iiii`), but the ids are JBI's own library, not 2011's: M.PAC
+    `MOT/PTS`, ids 0-170 left / 200-370 right, one 60-byte record per pose = per finger (thumb ..
+    pinky) a base joint `[k][0][s16 x y z]` and a bend `[k][0][s16]` (k 0x3b-0x44 left, 0x45-0x4e
+    right). Only 23 ids exist in both libraries and they don't look alike, so every JBI id is mapped
+    by its finger angles (`hand_map`): per finger a curl (fingers: z of every joint; thumb: y of every
+    joint + z of the base), scaled per library and finger to 0 straight .. 1 (95th percentile), then
+    the nearest 2011 pose of the same hand (thumb weighted 0.5). Checked on 2011's labelled shapes
+    (fist ~ 1 1 1 1 1, open ~ 0, point / V / horns read right) and on JBI: pose 1 -> fist 3, 2 -> a
+    pointing hand, 11 -> open 11, 126 -> horns 64, 108 -> relaxed 2. 1746 hand events mapped; the
+    finger tracks now use 1305 events (477 before, and those were wrong shapes).
+  - Names from the ELF's tables (`elf_names`): the roster (84-byte records by cast model id, 0 The
+    Rock .. 45 Fred Durst) and the tag / trio entrance lists (36-byte `{u16 EN3 number, s16 -1,
+    name[32]}`). Tag / trio entrances get the team name (generic ones plus the cast: "Tag Champion:
+    Triple H & Steve Austin (JBI 3)"), others the cast ("Chris Benoit (JBI 1)", story scenes "...
+    (JBI scene 1001)"); all 348 unique. The alphabetical 0-45 list next to them is the theme list,
+    and the singles motion list's ids are not EN3 numbers (not used).
   All 348 convert and self-check offline. Played in game: JBI 0001 as 499 (test star first, stage ->
   ramp -> ring, no crash).
 
@@ -387,7 +398,7 @@ left / 15-29 right; docs/HAND_POSES.md), the first with the event block `40 05 0
 | converter | fingers |
 |---|---|
 | SvR 2007-2010, LoW (and their PS2 discs) | the source's y1-y3 tracks are kept |
-| HCTP, SvR 2004, Shut Your Mouth, Just Bring It | made from the source's hand events: op 16 `10 ss iiii` (ss 1 left / 2 right, pose ids = 2011's 0-105 / 200-305; ss 0 = face) -> `tools/hand_tracks.py` builds y2/y3 per 2011 segment from the 2011 game's pose library (m.pac MVMT/STAT/99, `--game-pac` needed), 5-frame blends. Goldberg 3047: 10 tracks from 8 events, played in game. Just Bring It: only 31% of its hand events name a 2011 pose (ids 106-126 / 306-326 skipped) |
+| HCTP, SvR 2004, Shut Your Mouth, Just Bring It | made from the source's hand events: op 16 `10 ss iiii` (ss 1 left / 2 right, pose ids = 2011's 0-105 / 200-305; ss 0 = face) -> `tools/hand_tracks.py` builds y2/y3 per 2011 segment from the 2011 game's pose library (m.pac MVMT/STAT/99, `--game-pac` needed), 5-frame blends. Goldberg 3047: 10 tracks from 8 events, played in game. Just Bring It: its own pose library (M.PAC MOT/PTS) mapped to the nearest 2011 pose by finger curl |
 | SvR 2006 | its y2/y3 keys are 2011's finger values in joint-mask groups (`0x78` right / `0x79` left `[op][count][u16 mask][s8 xyz per bit]`, plain 5-byte sub-records otherwise): `tools/svr06_hands.py` expands them losslessly (812 / 812 tracks of the 93 entrances; vs SvR 2007's re-releases ~1 step) |
 | WWE '12 - 2K17 | the Biped finger bones retargeted onto 2011's 30 finger joints: `tools/finger_retarget.py` (hand-frame chain, fixed ch246 -> ch104 hand alignment, `bind * Rz Ry Rx` as the library, solved parent first on the quantised chain); vs 2011's own 107 Kane / 101 Austin: fist / open agree 97-99% of frames, median 1 degree. Bind tables are WWE '13's (assumed for '12 / 2K14-2K17) |
 

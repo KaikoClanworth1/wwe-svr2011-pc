@@ -455,6 +455,8 @@ def jbi_convert(src, entrance, number, name, parts, rep, game_pac=None):
     import jbi_entrance
     hand_library(game_pac)
     try:
+        if not name:
+            rep['name'] = jbi_entrance.read_source(src).get('names', {}).get(entrance, '')
         return jbi_entrance.convert(src, entrance, number, name, rep)
     except ValueError as x:
         raise InputError(str(x))
