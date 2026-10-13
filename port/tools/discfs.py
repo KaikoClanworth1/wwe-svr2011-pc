@@ -332,6 +332,9 @@ def _main(argv):
         print(json.dumps({"ok": False, "error": str(e)}))
         return 2
     with d:
+        if len(argv) > 3 and not d.exists(argv[3]):
+            print(json.dumps({"ok": False, "error": "not on the disc: " + argv[3]}))
+            return 2
         if argv[1] == "info":
             print(json.dumps(d.info()))
         elif argv[1] == "ls":
