@@ -235,9 +235,10 @@ def _g11_slots(g11, pac11, work):
     return _G11[pac11]
 
 
-def similar(res, g11, base, pac11, work):
+def similar(res, g11, base, pac11, work, near=True):
     """the slots port_moveset kept: a 2011 move of the same name with another number ("Snap Jab" ->
-    "Snap Jab 2") that 2011's roster uses in that slot or its menu group -> 'similar move in 2011 (name)'"""
+    "Snap Jab 2") that 2011's roster uses in that slot or its menu group -> 'similar move in 2011 (name)'
+    (near=False: only the same id and name -> 'same move in 2011 (same id: name)')"""
     moved, in_slot, in_menu, menu_of, stems = _g11_slots(g11, pac11, work)
     w11, w = g11.waze(), res['ps2_names']
     area = list(struct.unpack_from('<%dH' % (len(g11.pro[base]) // 2), g11.pro[base], 0))
@@ -253,7 +254,7 @@ def similar(res, g11, base, pac11, work):
             if v in c:   # (the same id and name in both games: the series kept the move - its own record)
                 area[to // 2] = v
                 row = (so, to, v, nm, 'same move in 2011 (same id: %s)' % w11[v][1], v)
-            elif c:
+            elif c and near:
                 x = max(c, key=lambda x: (in_slot[x][to], -x))   # (the one 2011's roster has in this slot most)
                 area[to // 2] = x
                 row = (so, to, v, nm, 'similar move in 2011 (%s)' % w11[x][1], x)
@@ -265,8 +266,8 @@ def similar(res, g11, base, pac11, work):
 
 
 def port(g, cid, base, g11, pac11, work, mod=None, rep=None, near=True):
-    """moveset_port.port_moveset's result for the superstar (+ the similar moves, near=True), or None (no
-    profile / map)"""
+    """moveset_port.port_moveset's result for the superstar (+ the similar moves; near=False: the same moves
+    only - superstar_port --same-moves), or None (no profile / map)"""
     import moveset_port
     pro = profile(g, cid)
     if pro is None:
@@ -278,11 +279,31 @@ def port(g, cid, base, g11, pac11, work, mod=None, rep=None, near=True):
     res = moveset_port.port_moveset(c)
     if res is not None:
         res['ps2_names'] = w
-        if near:
-            similar(res, g11, base, pac11, work)
+        similar(res, g11, base, pac11, work, near)
         # (slots without a named move - empty, 2010's fixed markers - keep the base's and aren't reported)
         res['rows'] = [r for r in res['rows'] if w.get(r[2]) or not r[4].startswith('base kept')]
     return res
+
+
+def labelled(res, label, g11):
+    """moves.txt's lines, each slot under a comment saying where its move came from (the game and the Mod Maker
+    skip '#' lines; no '=' in them):  # similar: Snap Jab (Here Comes the Pain) -> Snap Jab 1"""
+    import moves_port as MP
+    why = {}
+    for so, to, v, nm, verdict, nid in res['rows']:
+        if verdict.startswith(('same move', 'similar move')):
+            why[to] = ('similar' if verdict.startswith('similar') else 'same', res['ps2_names'].get(v, nm))
+    w11 = g11.waze()
+    out = []
+    for ln in res['moves_txt']:
+        off = int(ln.split('=')[0], 16)
+        if off in why:
+            kind, nm = why[off]
+            to_nm = w11.get(int(ln.split('=')[1]), (b'', ''))[1]
+            c = '# %s: %s (%s)%s' % (kind, nm, label, ' -> %s' % to_nm if to_nm and MP.norm(to_nm) != MP.norm(nm) else '')
+            out.append(c.replace('=', '-'))
+        out.append(ln)
+    return out
 
 
 def moveset_step(g, cid, base, o, work, mod, man, rep):
@@ -290,17 +311,17 @@ def moveset_step(g, cid, base, o, work, mod, man, rep):
     import moveset_port
     note, drop = rep['notes'].append, rep['dropped'].append
     try:
-        res = port(g, cid, base, o['g11'], o['pac11'], work, mod, rep)
+        res = port(g, cid, base, o['g11'], o['pac11'], work, mod, rep, near=not o.get('same_moves'))
     except (OSError, ValueError, KeyError, struct.error) as e:   # (a disc not as researched: the base's, said why)
         drop('moveset: the base\'s (%s moves could not be read: %s)' % (g.label, e))
         return
     if res is None:
         drop('moveset: the base\'s (no %s move profile for this superstar)' % g.label)
         return
-    if res['moves_txt']:
-        open(os.path.join(mod, 'moves.txt'), 'w', newline='\n').write('\n'.join(res['moves_txt']) + '\n')
-        man['moves'] = 'moves.txt'
     w = res['ps2_names']
+    if res['moves_txt']:
+        open(os.path.join(mod, 'moves.txt'), 'w', newline='\n').write('\n'.join(labelled(res, g.label, o['g11'])) + '\n')
+        man['moves'] = 'moves.txt'
     with open(os.path.join(work, 'moves_table.tsv'), 'w', encoding='utf-8') as f:
         f.write('src_off\toff2011\tsrc_id\tname\tverdict\tid_in_slot\n')
         for so, to, v, nm, verdict, nid in res['rows']:
