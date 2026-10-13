@@ -93,13 +93,15 @@ class FolderSource:
 def open_source(path):
     if not path or not os.path.exists(path):
         raise InputError('--src not found: %s' % path)
-    if os.path.isdir(path):
-        return FolderSource(path)
     try:
-        import discfs  # (the Mod Maker's disc reader, D1)
+        import discfs  # (the Mod Maker's disc reader, D1: folders, X360 XDVDFS, PS2 ISO 9660)
+        return discfs.open(path)
     except ImportError:
+        if os.path.isdir(path):
+            return FolderSource(path)
         raise InputError('reading a disc image needs tools/discfs.py; give an extract folder instead')
-    return discfs.open(path)
+    except Exception as x:
+        raise InputError('cannot read --src %s: %s' % (path, x))
 
 
 # ============================================================================ containers
@@ -226,16 +228,16 @@ def in_2011(name, game_pac):
 # ============================================================================ games
 
 GAMES = collections.OrderedDict([
-    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint=['SmackDown vs. Raw 2007', 'SvR 2007', '545107D1'], status='research')),
-    ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint=['SmackDown vs. Raw 2008', 'SvR 2008', '545107FC'], status='ready')),
-    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint=['SmackDown vs. Raw 2009', 'SvR 2009', '54510832'], status='research')),
-    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint=['SmackDown vs. Raw 2010', 'SvR 2010', '5451084C'], status='research')),
-    ('wwe12', dict(name="WWE '12", platform='x360', disc_hint=['WWE 12', "WWE '12", '5451087B'], status='research')),
-    ('wwe13', dict(name="WWE '13", platform='x360', disc_hint=['WWE 13', "WWE '13", '54510886'], status='research')),
-    ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint=['WWE 2K14', '2K14', '545408A7'], status='research')),
-    ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint=['Here Comes the Pain', 'SLES_520.36', 'SLUS_207.87'], status='ready')),
+    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='research')),
+    ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready')),
+    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='research')),
+    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='research')),
+    ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='research')),
+    ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='research')),
+    ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research')),
+    ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
 ])
-# (title ids are best guesses until the discs are read: match by the name substrings first)
+# (disc_hint: the Xbox 360 title id / PS2 serial discfs.open(iso).info() reports)
 
 
 # ---- SvR 2008 (Xbox 360): pac/evt/Nyujyo0-3.pac, EPAC groups EVP1-4/EVT1-4, numbers 4000+
