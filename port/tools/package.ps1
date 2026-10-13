@@ -45,7 +45,7 @@ if ($WithModMaker) {
                      "model_budget.py", "xact.py", "svr07_char.py", "wwise.py",
                      "svr11_build.py", "svr11_skeleton.json", "rig_maps.json", "rig_maps.py", "svr11_skeleton.py",
                      "moveset_maps.py", "moveset_maps.json", "moveset_port.py", "fix_model.py", "gear_port.py",
-                     "ps2_char.py")) {  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder)
+                     "ps2_char.py", "ps2_port.py")) {  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
     }

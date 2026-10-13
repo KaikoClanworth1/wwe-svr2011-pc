@@ -70,6 +70,8 @@ GAMES = [
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
     dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
+    dict(id='ps2_hctp', name='WWE SmackDown! Here Comes the Pain', platform='ps2', disc_hints=['SLES_520.36', 'SLUS_207.87'],
+         status='ready'),
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
@@ -102,6 +104,7 @@ class Src:
         if not os.path.exists(path):
             raise BadInput('--src not found: %s' % path)
         self.d = discfs.open(path)
+        self.path = path
         self.folder = path if self.d.kind == 'folder' else None
         self.cache = cache
         if not self.d.exists('pac'):
@@ -1426,6 +1429,11 @@ def open_game(game, src, svrmod=None):
         g = g(src) if game == 'wwe12' else g(src, svrmod)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFA'}
         return g
+    if game.startswith('ps2_'):
+        import ps2_port
+        if game not in ps2_port.GAMES:
+            raise BadInput('game %s is not ready (status research; docs/OTHER_GAMES.md)' % game)
+        return ps2_port.GamePS2(game, src.path)
     raise BadInput('game %s is not ready (status research; docs/OTHER_GAMES.md)' % game)
 
 
@@ -1438,9 +1446,10 @@ def cmd_list(a):
     out = []
     for c in g.roster():
         r = g.dat[c]
+        woman = g.gender(c, g11) if hasattr(g, 'gender') else r[208]   # (PS2: also finds the 2011 namesake)
         i11 = g.id11(c) if hasattr(g, 'id11') else c
         same = i11 in play and S.norm(g11.name(i11)) == S.norm(g.name(c))
-        out.append(dict(key=str(c), name=g.name(c), short=g.short(c), gender='female' if r[208] else 'male',
+        out.append(dict(key=str(c), name=g.name(c), short=g.short(c), gender='female' if woman else 'male',
                         model=bool(g.has_chpac(c)), render=c in g.render_ids,
                         in_2011=i11 if same else None))
         if hasattr(g, 'pictures'):   # (2K17: renders under hashed names - the user picks one: pictures)
@@ -1509,7 +1518,10 @@ def cmd_convert(a):
             o[k] = int(o[k])
     fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW, 'wwe13': buildW,
           'wwe2k14': buildW, 'wwe2k15': buildW, 'wwe2k16': buildW,
-          'wwe2k17': buildW}[a['game']]
+          'wwe2k17': buildW}.get(a['game'])
+    if fn is None and a['game'].startswith('ps2_'):
+        import ps2_port
+        fn = ps2_port.build_ps2
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
     progress(100, 'done')
