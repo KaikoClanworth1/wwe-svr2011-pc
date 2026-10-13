@@ -80,6 +80,7 @@
   <a href="#tut-signs">Crowd signs</a>
   <a href="#tut-media">Videos, renders, music</a>
   <a href="#tut-moves">New moves</a>
+  <a href="#tut-port-move">Port a move and use it</a>
   <a href="#tut-match">Match types</a>
   <a href="#tut-other">From other games</a>
   <a href="#tut-caw">Created Superstar pictures</a>
@@ -385,13 +386,32 @@
 <section id="tut-moves">
 <h2>Tutorial: new moves</h2>
 <figure><img src="img/moves.png" alt="The Moves page listing a pack's moves with names, tracks and frames"><figcaption>A move pack opened: every move with its name, tracks (A attacker, V victim, numbers props and cameras) and frames.</figcaption></figure>
-<p>Moves the game doesn't have come as a <b>move pack</b>: the motions and the move's table records. Packs are made from SvR 2010 by the <i>Other games</i> page (SvR 2010 moves tab, or a whole superstar), or by hand with the port's tools.</p>
+<p>Moves the game doesn't have come as a <b>move pack</b>: the motions and the move's table records. Packs are made from your other discs by the <a href="#tut-port">Port page</a> (Moves tab), from SvR 2010 by the <i>Other games</i> page (SvR 2010 moves tab, or a whole superstar), or by hand with the port's tools.</p>
 <ol class="steps">
   <li><b>Moves</b> on the rail → <b>Open a pack folder...</b> (a folder with <code>pack.txt</code> and <code>motions\</code>). The page checks every line and lists the moves.</li>
   <li>Red problems: missing motion files, bad records. Yellow: moves with motions but no category bits (they can't be put in a move-set - fine for reactions).</li>
   <li><b>Save as mod</b> (installs into <code>Mods\Moves</code>) - or, to carry the moves inside a superstar, pick the same folder on the Superstar page under <b>More → Move pack folder</b>.</li>
   <li>The game merges every enabled pack into copies of its files when it starts (a few seconds the first time, then only when a pack changes). Use the moves in CREATE A MOVE-SET.</li>
 </ol>
+<div class="warn"><b>A move only plays from a moveset.</b> The game gathers each wrestler's moves from his moveset, so a move that is only in a pack is never used. The <b>Used by</b> column says which movesets have each move, and the page warns about moves that are in none - see the next tutorial.</div>
+</section>
+
+<section id="tut-port-move">
+<h2>Tutorial: port a move and use it</h2>
+<p>A move from WWE '12, '13 or 2K14 (more games as their converters come) into a superstar's moveset, ready for a match.</p>
+<ol class="steps">
+  <li><b>Port from a disc</b> → pick the disc → <b>Moves</b> tab → <b>3. List what's on the disc</b>. Find the move by name; tick <i>hide what 2011 already has</i>.</li>
+  <li><b>Template (a 2011 move)</b>: the 2011 move the new one is built on - its table record (what kind of move it is, where it can be done, the damage) and its timing. <i>Automatic</i> picks one of the same kind; if the result shows a poor match (a powerbomb built on a strike), pick one by name - a powerbomb for a powerbomb - and convert again.</li>
+  <li><b>4. Convert</b>. The move gets a free 2011 move number of its own (it never takes one another installed pack uses), and the page says which template it was built on. <b>5. Open it to finish</b> opens the pack on the Moves page.</li>
+  <li><b>Install into game</b> on the Moves page (or <b>Save as mod</b> to share it).</li>
+  <li>Put it in a moveset - <b>without this the game never plays it</b>:
+    <ul>
+      <li>a <b>superstar mod you have installed</b>: select the move on the Moves page, then under <b>Put it in a superstar mod's moveset</b> pick the mod and a slot (only slots the move fits are listed) → <b>Put it in</b>;</li>
+      <li>your <b>superstar project</b>: on the Superstar page, <b>Moveset</b> → the slot → the installed packs' moves are at the top of the list (marked with their pack);</li>
+      <li>any wrestler, in the game: <b>CREATE A MOVE-SET</b>.</li>
+    </ul></li>
+</ol>
+<div class="tip">The Moves page's <b>Used by</b> column turns from "no moveset" to the number of movesets once it is in one.</div>
 </section>
 
 <section id="tut-match">
