@@ -117,7 +117,7 @@ still being tested.
 - **Your own Created Superstar's picture** shows in the online lobby (it was the CREATE A SUPERSTAR outline); lobby chat stays within the chat box's 21 characters.
 - **CPU players in Player Matches**: the host presses Y on an empty slot (Y ADD CPU / REMOVE CPU) and picks the CPU's superstar with A; the match plays in sync on every machine (needs at least two human players).
 - **Router port opening (UPnP / NAT-PMP)**: online, the game asks the player's router to open its own port for an hour (renewed, removed when the game closes) so more players connect directly; GRAPHICS → DISPLAY → ROUTER PORT (UPNP) turns it off.
-- **UDP match relay** (live on the server): players who can't connect directly go through the server over UDP instead of https (no stall on a lost packet).
+- **UDP match relay** (live on the server): players who can't connect directly go through the server over UDP instead of https (no stall on a lost packet). The relay runs on the VPS itself (the relay edge, live 13 Oct), so relayed packets no longer make a round trip to the home server: about 30 ms less per packet.
 
 ### Menus and graphics
 - **900P and 1080P** render resolutions (GRAPHICS → RENDER RESOLUTION).
