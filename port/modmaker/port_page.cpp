@@ -209,12 +209,6 @@ void List(int k, const std::string& game) {
               });
 }
 
-// fn once no background job runs (a job's own done callback comes while it still counts as busy)
-void WhenIdle(std::function<void()> fn) {
-  if (!Busy()) fn();
-  else OnUiThread([fn] { WhenIdle(fn); });
-}
-
 void Convert(int k, const std::string& game, const Json& item) {
   const std::string key = item["key"].Str();
   std::string safe;
@@ -234,6 +228,8 @@ void Convert(int k, const std::string& game, const Json& item) {
         break;
       }
   }
+  if (entrance && !g_settings.bink2_tool.empty())  // (its --titantron: Bink 2 movies through the player's tool)
+    args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
   for (auto& o : Options()) args.push_back(o);
   g_result = Json();
   g_result_error.clear();

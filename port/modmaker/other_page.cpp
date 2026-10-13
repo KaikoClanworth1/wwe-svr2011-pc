@@ -21,6 +21,8 @@
 #include "svrfmt/wwe13.h"
 #include "tool_run.h"
 
+#include <shellapi.h>
+
 namespace mm {
 namespace other_page {
 
@@ -380,6 +382,55 @@ void TestConvertW13(const std::wstring& file, int host) {
   });
 }
 
+// ---- Bink 2 videos (.bk2: WWE 2K15 and later) - opt-in, the player's own tool
+
+std::string g_bink2_state;  // "" not asked, else what Find said
+bool g_bink2_asked = false;
+
+void Bink2Section() {
+  if (!ImGui::CollapsingHeader("Enable Bink 2 conversion (.bk2 videos: WWE '13 and later)")) return;
+  ImGui::Indent();
+  ImGui::TextWrapped("Titantrons and movies of WWE 2K15 and later are Bink 2. The Mod Maker can turn them into the "
+                     "game's movies when you have a tool that reads Bink 2 - RAD Video Tools (free from RAD) or an "
+                     "ffmpeg built with a Bink 2 decoder. Neither comes with the Mod Maker. Then \"From a video...\" "
+                     "takes .bk2 files.");
+  ImGui::SetNextItemWidth(420 * g_scale);
+  std::string shown = g_settings.bink2_tool.empty() ? std::string("(look in the usual places)") : Utf8(g_settings.bink2_tool);
+  ImGui::InputText("##bk2", shown.data(), shown.size() + 1, ImGuiInputTextFlags_ReadOnly);
+  ImGui::SameLine();
+  if (ImGui::Button("Choose the tool...")) {
+    static const COMDLG_FILTERSPEC kExe[1] = {{L"radvideo64.exe or ffmpeg.exe", L"*.exe"}};
+    const std::wstring f = PickFile(false, L"RAD Video Tools (radvideo64.exe) or a Bink 2 ffmpeg.exe", kExe, 1);
+    if (!f.empty()) g_settings.bink2_tool = f, SaveSettings(), g_bink2_asked = false;
+  }
+  if (!g_settings.bink2_tool.empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x")) g_settings.bink2_tool.clear(), SaveSettings(), g_bink2_asked = false;
+  }
+  if (!g_bink2_asked && !Busy() && ToolsReady(false)) {
+    g_bink2_asked = true;
+    g_bink2_state = "looking ...";
+    std::vector<std::wstring> args = {L"find"};
+    if (!g_settings.bink2_tool.empty()) args.push_back(L"--tool"), args.push_back(g_settings.bink2_tool);
+    RunToolJson(L"bink2_convert.py", args, [](int code, const std::string& text) {
+      const auto field = [&](const char* key) {
+        const size_t k = text.find(std::string("\"") + key + "\"");
+        if (k == std::string::npos) return std::string();
+        const size_t q1 = text.find('"', text.find(':', k) + 1), q2 = text.find('"', q1 + 1);
+        return q1 == std::string::npos || q2 == std::string::npos ? std::string() : text.substr(q1 + 1, q2 - q1 - 1);
+      };
+      g_bink2_state = code == 0 ? "found: " + field("kind") + " - " + field("path") : "not found";
+    });
+  }
+  ImGui::TextColored(g_bink2_state.rfind("found", 0) == 0 ? ImVec4(0.55f, 0.85f, 0.55f, 1) : kWarn, "%s", g_bink2_state.c_str());
+  if (g_bink2_state == "not found") {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("RAD's download page"))
+      ShellExecuteW(nullptr, L"open", L"https://www.radgametools.com/bnkdown.htm", nullptr, nullptr, SW_SHOWNORMAL);
+  }
+  ImGui::Unindent();
+}
+
 void Draw() {
   Heading("Other games", "Arenas, superstars, moves and backstage areas from WWE '13, SvR 2010 and SvR 2008, "
                          "converted the way the bundled mods were, each landing on its page to finish and save.");
@@ -392,6 +443,7 @@ void Draw() {
                       PythonExe().empty() ? "not found" : Utf8(PythonExe()).c_str(),
                       ToolsDir().empty() ? "not found" : Utf8(ToolsDir()).c_str(),
                       FfmpegExe().empty() ? "not found" : "found");
+  Bink2Section();
   if (ImGui::BeginTabBar("other_tabs")) {
     if (ImGui::BeginTabItem("WWE '13 arena")) { Wwe13ArenaTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("WWE '13 superstar")) { Wwe13StarTab(); ImGui::EndTabItem(); }

@@ -106,6 +106,8 @@ void Status(const std::string& s);
 // Progress() to say what it is doing (shown in the status line).
 void RunInBackground(std::function<void()> fn);
 bool Busy();
+// fn once no background job runs (a job's own done callback comes while it still counts as busy).
+void WhenIdle(std::function<void()> fn);
 void Progress(const std::string& what);
 // Runs fn on the UI thread before the next frame (from a background job).
 void OnUiThread(std::function<void()> fn);
@@ -286,6 +288,7 @@ struct Settings {
   bool log_open = false;
   int font = 17;
   std::vector<std::wstring> disc_folders;  // where the disc images are ("" list = the defaults)
+  std::wstring bink2_tool;                 // radvideo64.exe / a Bink 2 ffmpeg the player chose ("" = look for one)
 };
 extern Settings g_settings;
 void SaveSettings();

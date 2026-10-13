@@ -337,6 +337,11 @@ void RunInBackground(std::function<void()> fn) {
 
 bool Busy() { return g_busy; }
 
+void WhenIdle(std::function<void()> fn) {
+  if (!Busy()) fn();
+  else OnUiThread([fn] { WhenIdle(fn); });
+}
+
 void OnUiThread(std::function<void()> fn) {
   std::lock_guard lock(g_ui_mutex);
   g_ui_queue.push_back(std::move(fn));
@@ -1087,7 +1092,7 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
   ImGui::PushID(label);
   bool pressed = false;
   if (ImGui::Button(label, ImVec2(220 * g_scale, 0))) {
-    const COMDLG_FILTERSPEC spec[] = {{L"Videos and pictures", L"*.mp4;*.mov;*.m4v;*.avi;*.wmv;*.mkv;*.webm;*.png;*.jpg;*.jpeg;*.bmp"}};
+    const COMDLG_FILTERSPEC spec[] = {{L"Videos and pictures", L"*.mp4;*.mov;*.m4v;*.avi;*.wmv;*.mkv;*.webm;*.bk2;*.bik2;*.png;*.jpg;*.jpeg;*.bmp"}};
     const std::wstring f = PickFile(false, L"A video (or a picture) for the entrance movie", spec, 1);
     if (!f.empty()) {
       const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
@@ -1095,7 +1100,24 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
       fs::create_directories(work, ec);
       const std::wstring out = (work / (Wide(IdFrom(stem, "movie")) + L"_" + fs::path(f).stem().wstring() + L".bik")).wstring();
       std::wstring* target = &movie;
-      MakeBink(f, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); });
+      const std::string ext = Lower(fs::path(f).extension().string());
+      if (ext == ".bk2" || ext == ".bik2") {  // Bink 2 (WWE 2K15 and later): through the player's RAD tool to .mp4 first
+        const std::wstring mp4 = (work / (fs::path(f).stem().wstring() + L"_bink2.mp4")).wstring();
+        std::vector<std::wstring> args = {f, mp4};
+        if (!g_settings.bink2_tool.empty()) args.push_back(L"--tool"), args.push_back(g_settings.bink2_tool);
+        RunToolJson(L"bink2_convert.py", args, [mp4, out, target](int code, const std::string& text) {
+          const size_t e = text.find("\"error\"");
+          if (code != 0 || !fs::exists(mp4)) {
+            Status("The Bink 2 video didn't convert" + (e == std::string::npos ? std::string(" (see the log).") : ": see the log.") +
+                   " Bink 2 needs RAD Video Tools (free, radgametools.com) - set it on the Other games page.");
+            Log("bink2: " + text);
+            return;
+          }
+          WhenIdle([mp4, out, target] { MakeBink(mp4, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); }); });
+        });
+      } else {
+        MakeBink(f, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); });
+      }
       pressed = true;
     }
   }
@@ -1134,6 +1156,7 @@ void LoadSettings() {
   g_settings.log_open = Value(t, "log_open") == "1";
   if (!Value(t, "font").empty()) g_settings.font = std::clamp(std::atoi(Value(t, "font").c_str()), 12, 28);
   for (const auto& f : Values(t, "disc_folder")) g_settings.disc_folders.push_back(Wide(f));
+  g_settings.bink2_tool = Wide(Value(t, "bink2_tool"));
 }
 
 }  // namespace
@@ -1146,6 +1169,7 @@ void SaveSettings() {
        "\nmaximized=" + (g_settings.maximized ? "1" : "0") + "\nlog_open=" + (g_settings.log_open ? "1" : "0") +
        "\nfont=" + std::to_string(g_settings.font) + "\n";
   for (const auto& f : g_settings.disc_folders) t += "disc_folder=" + Utf8(f) + "\n";
+  if (!g_settings.bink2_tool.empty()) t += "bink2_tool=" + Utf8(g_settings.bink2_tool) + "\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
 }
 
