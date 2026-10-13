@@ -30,7 +30,9 @@ blocks, triangle strips joined with degenerates, vertex colour FFFFFFFF, the tem
 per kind (skin yBumpMapSS, eye yReflect, hair, lash yDefault), textures to DXT5 with full mips (colour
 alpha = specular level unless the png has one; Mk from the mask or flat), the template's other
 children and blood overlays, the 192-page vertex budget (blood overlays dropped first, else an
-error), blank damage masks (Mask1-3), EPK8 with one EMD group.
+error), blank damage masks (Mask1-3), face pivots moved onto the model's eyes when they're off by more
+than 0.15, EPK8 with one EMD group. (The face pivots and the NaN check follow findings first documented by
+robert32's SvR Port Doctor.)
 
 stdout: JSON report {ok, out, attires: [{name, meshes, pages, dropped}], warnings, error}.
 Exit 0 ok, 2 bad input, 3 failed (over budget...).
@@ -284,6 +286,62 @@ class Builder:
         s.raw = bytes(md)
         return s
 
+    def face_pivots(self, meshes):
+        """Eye / lid / brow / mouth pivots onto the model's eyes: the eyeball vertices (on l_eye / r_eye) sit in front
+        of their bone by the template's own offset; when the model's differ by more than 0.15 the bones under atama
+        move by the difference (the mesh stays). Otherwise blinking pushes the lids forward and the eyes look like
+        they pop out. (Finding first documented by robert32's SvR Port Doctor.)"""
+        c = self.conv
+        def worlds(nodes):
+            Wn = []
+            for j, nd in enumerate(nodes):
+                fr = c.tframe[j]
+                p = fr['parent'] if j else -1
+                M = np.eye(4)
+                M[:3, :3] = W.rot(fr['r'])
+                M[:3, 3] = nd['t']
+                Wn.append(M if p < 0 else Wn[p] @ M)
+            return Wn
+
+        def eye_centres(verts_by_bone):
+            return {b: np.mean(P, 0) for b, P in verts_by_bone.items() if P}
+        sides = [self.index[n] for n in ('l_eye', 'r_eye') if n in self.index]
+        if 'atama' not in self.index or not sides:
+            return
+        mine = {b: [] for b in sides}
+        for m in meshes:
+            if m.get('kind') != 'eye':
+                continue
+            for v, ws in enumerate(m['_w']):
+                b = max(ws, key=lambda x: x[1])[0]
+                if b in mine:
+                    mine[b].append(m['positions'][v])
+        tmpl = {b: [] for b in sides}
+        for s in c.body.meshes:
+            if s.shader != 'yReflect':
+                continue
+            nw = len(s.weights)
+            flat = [e for blk in s.weights for e in blk]
+            for v in range(len(s.verts)):
+                e = max(flat[v * nw:(v + 1) * nw], key=lambda x: x[1])
+                b = s.palette[e[0][0]] - 1 if e[0][0] < len(s.palette) else -1
+                if b in tmpl:
+                    tmpl[b].append(s.verts[v][:3])
+        Wm, Wt = worlds(self.nodes), worlds(c.tnodes)
+        cm, ct = eye_centres(mine), eye_centres(tmpl)
+        d = [(cm[b] - Wm[b][:3, 3]) - (ct[b] - Wt[b][:3, 3]) for b in sides if b in cm and b in ct]
+        if not d:
+            return
+        delta = np.mean(d, 0)
+        if np.linalg.norm(delta) <= 0.15:
+            return
+        a = self.index['atama']
+        Ra = Wm[a][:3, :3]
+        for j, nd in enumerate(self.nodes):
+            if c.tframe[j]['parent'] == a and j:
+                nd['t'] = tuple(float(x) for x in np.array(nd['t']) + Ra.T @ delta)
+        self.warnings.append('face pivots moved by (%.2f, %.2f, %.2f) onto the model eyes' % tuple(delta))
+
     def weights(self, m):
         """bone names -> node indices; top 4 per vertex, renormalised"""
         bidx = []
@@ -309,9 +367,15 @@ class Builder:
             for key in ('normals', 'uvs', 'weights'):
                 if len(m.get(key, [])) != n:
                     raise BuildError('%s: %d positions but %d %s' % (m.get('name'), n, len(m.get(key, [])), key))
+            for key in ('positions', 'normals', 'uvs'):
+                if not np.isfinite(np.asarray(m[key], float)).all():
+                    raise BuildError('%s: %s has NaN / infinite values' % (m.get('name'), key))
             if m.get('kind', 'skin') not in ('skin', 'eye', 'hair', 'lash'):
                 raise BuildError('%s: kind %s' % (m.get('name'), m.get('kind')))
             m['_w'] = self.weights(m)
+        if not getattr(self, '_faced', False):
+            self._faced = True
+            self.face_pivots(meshes)
         # sheets: the attire's own, or per-mesh ones packed into one
         at = a.get('textures', {})
         col_key = lambda m: (m.get('textures') or {}).get('color') or at.get('color') or ''   # noqa: E731
