@@ -116,7 +116,8 @@ still being tested.
 - **Online overlay**: BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
 - **Your own Created Superstar's picture** shows in the online lobby (it was the CREATE A SUPERSTAR outline); lobby chat stays within the chat box's 21 characters.
 - **CPU players in Player Matches**: the host presses Y on an empty slot (Y ADD CPU / REMOVE CPU) and picks the CPU's superstar with A; the match plays in sync on every machine (needs at least two human players).
-- 🧪 **UDP match relay** (server side off until enabled).
+- **Router port opening (UPnP / NAT-PMP)**: online, the game asks the player's router to open its own port for an hour (renewed, removed when the game closes) so more players connect directly; GRAPHICS → DISPLAY → ROUTER PORT (UPNP) turns it off.
+- 🧪 **UDP match relay**: players who can't connect directly go through the server over UDP instead of https (no stall on a lost packet).
 
 ### Menus and graphics
 - **900P and 1080P** render resolutions (GRAPHICS → RENDER RESOLUTION).
