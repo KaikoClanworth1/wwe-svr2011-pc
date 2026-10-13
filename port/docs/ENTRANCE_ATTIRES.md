@@ -65,7 +65,11 @@ props, salute, ring pose), the match followed; log `superstar mods: Sabu attire 
 
 Model pac entries are named `%06d%02d`: id, attire * 10 + kind. Kind 2 = the match model,
 **kind 4 = the entrance model**. `sub_828C3AC8` picks the entrance model per member: kind 4 if
-that file exists for the attire, kind 1 for Created Superstars (ids < 50) [L], else kind 2;
+that file exists for the attire, kind 1 for Created Superstars (ids < 50) [L], else - played in game
+2026-10-13, a Cena mod in attire 2 - **attire 1's kind 4** (`..04`) when it exists, not the attire's
+kind 2: with no `..14` Cena entered attire 2 in attire 1's cap and shirt, with an added `..14` (a copy
+of his attire-2 model) without the cap [C]. So an added kind-4 entry for another attire is worn, and
+leaving an attire's gear out needs an explicit kind 4 of its own (e.g. a copy of its kind 2);
 `sub_82750BD8` builds the entrance character from that key. Stock kind-4 entries: 00010304
 Undertaker, 00013104 Punk, 00013904 Cena, 00014504 HBK, 00017504 Morrison (coats, hats).
 No event that toggles costume parts was found: the outfit stays for the whole entrance and the
