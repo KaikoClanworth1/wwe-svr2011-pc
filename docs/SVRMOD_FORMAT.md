@@ -65,6 +65,7 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `entrance=<number>` | the entrance motions and pyro: a superstar's id, or 535 (Jeff Hardy's SvR 2010 one) |
 | `attire<N>_entrance=<number>` | optional: attire N's own entrance (N 1-4, the mod's attire numbering: attire2= is N 2). Only installed numbers play (the stock ones, or a move pack's pacentry lines); a model pac with an EMD kind-4 entry (name ending 04) wears that entrance outfit during its entrance |
 | `song=theme.<ext>` | the entrance theme (.mp3 .m4a .aac .wav .flac .wma .ogg); plays at full level, make it about -24 LUFS |
+| `pose=<id>` | optional: the character select panel's pose (the select / VS screen): a pose motion id (32500 and up: 32500-32505 generic men, 32510-32515 women, the superstars' own 32520-32591), or a superstar id below 512 for that superstar's pose; missing = the base's |
 | `hometown=<CITY>[,<STATE>]` | optional: where the ring announcer says the superstar is from, with the game's own clips (`RA_*_HTC_<CITY>_0` / `RA_*_HTS_<STATE>_0`; the lists: tools/announcer_calls.json), e.g. `hometown=CAMERONNC` or `hometown=DEATHVALLEY,PARTSUNKNOWN` |
 | `theme_gain=<dB>` | optional: the theme's volume, -20.0 to +6.0 dB in one decimal (missing = 0). The game plays a mod's theme at full level, about 7 dB over its own; the Mod Maker measures the song and suggests the gain for about -24 LUFS. Media packs: `theme_gain.<id>=` next to `theme.<id>=` |
 | `movie=movie.bik` | the entrance movie, 320 x 320 Bink |
