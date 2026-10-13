@@ -152,6 +152,8 @@ still being tested.
 - **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
 - **Ground head submissions with Sabu / The Sandman installed** no longer freeze (the game's motion search missed stock moves after a mod's added motions).
 - **A match with a keyboard or PlayStation player crashed at load** (from the button-picture change); fixed.
+- **Pause menu button bar** (SELECT / CANCEL) shows the buttons of the player who paused - keyboard keys or PlayStation buttons, not always Xbox.
+- **Superstar mods in Create an Entrance** open on the mod's own entrance (a mod in a slot that was empty in the save opened on entrance 0); a player's own pick is kept, and a changed entrance= in the mod wins over the old saved copy.
 - **Practice ring tips** (GAMEPLAY TIPS, the Load Successful box) show player 1's own button pictures - keyboard, PlayStation or Xbox.
 - **Keyboard and mouse button pictures** from WWE 2K15 PC (every key, plus mouse buttons), and the keyboard / PlayStation pictures on character select drawn right.
 - **Texture packs**: textures loaded into reused memory (Created Superstars, the select screen's superstars) can now be dumped and replaced.
