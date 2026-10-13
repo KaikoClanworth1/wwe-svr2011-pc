@@ -132,32 +132,35 @@ py tools/<kind>_port.py convert --game <id> --src <...> --item <key> --out <dir>
 
 ## 5. What the Mod Maker needs from the game side
 
-| Need | For | Who (proposed) |
-|---|---|---|
-| `entrance=` per attire (`attire<N>_entrance=`), entrance outfit | D5 | HCTP Entrance Porting (offered) |
-| `theme_gain=<dB>` (or loudness applied by the game) | D7 | Extras |
-| `hometown=<clip id>` and stock name calls for mods and CAWs | D8 | Extras (announcer) |
-| a mod that adds attires to a stock superstar (`type=attire`?) | D6 | Superstar Porting + game side |
-| which files hold the 4 renders and how each is used | D7 | Superstar Porting (research) |
-| the select / VS screen motion per superstar (key + data) | D7 | game side (owner to be named) |
-| the characters' collision volumes (where in ch.pac / the motion data) | D4 | Superstar Porting (research) |
-| the overall rating formula (or where the game stores it) | D13 | Mod Maker (offline, from the roster data) |
-| belt / weapon mod formats | D11 | Arena Porting |
-| per-game format table (D2) | all | Superstar Porting |
+| Need | For | Who | State (13 Oct) |
+|---|---|---|---|
+| `entrance=` per attire (`attire<N>_entrance=`), entrance outfit (entrance-only gear: jacket, mask, hat) | D5 | HCTP Entrance Porting | keys proposed; `entrance_port.py` on branch entrance-fixes (d4a11aa, 240693a) |
+| `theme_gain=<dB>` (-20.0..+6.0, 1 decimal, missing = 0; media packs `theme_gain.<id>=`) | D7 | Extras | agreed; game side on branch media-d7d8 |
+| `.mp4` entrance movies (`movie=` may name an .mp4, a same-named .bik fallback next to it for the Deck) | D7 | Extras | agreed; a C++ entry point in launcher/movie_maker.c (320 / 640 / 1024) |
+| `hometown=<city clip>[,<state clip>]`, `announcer=<clip>`; clip list `tools/announcer_calls.json` | D8 | Extras | agreed; game side on media-d7d8, untested |
+| CAWs using a stock name call: `<game>\Mods\caw_announcer.txt`, lines `<CAW full name>=<clip>` | D8 | Extras (game), Mod Maker (CAW pictures page) | agreed |
+| a mod that adds attires to a stock superstar | D6 | Superstar Porting + game side | coming in docs/OTHER_GAMES.md |
+| which files hold the 4 renders and how each is used | D7 | Superstar Porting | coming in docs/OTHER_GAMES.md |
+| the select / VS screen pose motion per superstar (key + hook) | D7 | Superstar Porting (proposed to Main) | open |
+| the characters' collision volumes | D4 | Superstar Porting | coming in docs/OTHER_GAMES.md |
+| the overall rating formula | D13 | Mod Maker (offline, from the roster data) | open |
+| belts / weapons: phase 1 texture packs (`belt_port.py` / `weapon_port.py`), phase 2 `type=belt` / `type=weapon` with a pac overlay | D11 | Arena Porting | phase 1 agreed; docs/OTHER_GAMES.md on branch arena-port |
+| per-game format table (D2) | all | Superstar Porting | coming in docs/OTHER_GAMES.md |
 
-## 6. Questions for the user
+## 6. The user's answers (13 Oct)
 
-1. D7 "select / VS screen animation": the pose the superstar plays on the
-   character select / VS screen (a motion choice per mod)? Or an animated
-   (moving) render picture?
-2. D9 "animations right for every platform": motions from PS2 and Xbox 360
-   discs shown correctly in the viewer? Or the Mod Maker itself running on
-   other platforms (Steam Deck / Linux)?
-3. D7 "render template": a ready-made background / frame that makes your
-   render look like the game's (lighting, crop, size), so a plain photo or
-   3D render fits in?
-4. D5 "entrance outfits": clothing worn only during the entrance (a jacket,
-   a mask), then the match attire?
+1. D7 select / VS screen animation: the pose motion. The user picks which
+   in-game motion the superstar plays on the select and VS screens (needs a
+   game-side hook).
+2. D9 "right for every platform": both. PS2 and 360 motions must play right
+   in the preview and after porting, and the Mod Maker should run on Linux,
+   the Steam Deck and Android too. The second part is a later phase
+   (section 8), assessed first.
+3. D7 render template: makes the user's picture match. A frame, lighting and
+   size template that turns their own picture into a render in the game's
+   style.
+4. D5 entrance outfits: entrance-only gear (jacket, mask, hat), worn for the
+   entrance and taken off for the match. HCTP Entrance owns the game side.
 
 ## 7. Tests
 
@@ -172,3 +175,25 @@ py tools/<kind>_port.py convert --game <id> --src <...> --item <key> --out <dir>
   `convert`, and the mod it makes passes the page's problems check.
 - Game tests: only with a slot from Main; muted, `--monitor=2`, mnk_mode and
   p2p_port_mapping off.
+
+## 8. The Mod Maker on Linux, the Steam Deck and Android (later phase)
+
+What ties it to Windows today, and what each needs:
+
+| Part | Today | For Linux / Deck | For Android |
+|---|---|---|---|
+| Window, input | Win32 | SDL3 (the game already uses SDL) | SDL3 (touch: bigger hit targets, no hover tooltips) |
+| Drawing | Direct3D 11 (ImGui backend + the 3D editor / character preview shaders) | Vulkan or OpenGL 3.3 backend; the editor's and the preview's shaders as GLSL / SPIR-V | Vulkan / GLES 3 |
+| UI | Dear ImGui | unchanged | unchanged, with a touch-sized style |
+| File pickers | COM IFileDialog | SDL3 dialogs (portal on the Deck) | the Storage Access Framework (content URIs, not paths) |
+| Video / audio decode (From a video, theme meter, .mp4) | Media Foundation | ffmpeg (libav*) or a bundled decoder | MediaCodec (as the game's Android build) |
+| Converters | `py.exe` + Python tools (tool_run.cpp) | `python3` (present on the Deck's desktop mode) | no Python: converters run on a PC, or the needed ones get C++ ports |
+| Paths, processes | `_wfopen`, CreateProcess, ShellExecute | POSIX equivalents (small wrapper) | app storage + SAF |
+
+Running under Proton on the Deck may already work for most pages (D3D11 via
+DXVK), but Media Foundation video decode does not, and Python tools would
+need a Windows Python inside the prefix. The native route is: (1) move file
+access, process start and pickers behind a small platform layer; (2) SDL3 +
+a second ImGui / 3D backend; (3) replace Media Foundation with ffmpeg on
+Linux. Android comes after that, with touch layout and SAF, and without the
+Python converters.
