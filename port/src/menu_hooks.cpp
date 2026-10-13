@@ -38,6 +38,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "achievements_page.h"
+#include "arena_mods.h"
 #include "graphics_page.h"
 #include "jukebox.h"
 #include "backgrounds_page.h"
@@ -286,6 +287,10 @@ REX_EXTERN(__imp__sub_82153EF8);
 REX_HOOK_RAW(sub_82153EF8) {
   if (!g_string_manager) g_string_manager = ctx.r3.u32;  // (for the log's menu names)
   if (const uint32_t s = svr2011::OnlineString(ctx.r4.u32)) {  // (online.h)
+    ctx.r3.u64 = s;
+    return;
+  }
+  if (const uint32_t s = svr2011::ArenaSelectString(uint32_t(ctx.lr))) {  // (arena_mods.h)
     ctx.r3.u64 = s;
     return;
   }

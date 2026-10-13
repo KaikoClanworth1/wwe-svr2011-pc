@@ -580,6 +580,12 @@ const CustomArena* CustomAt(int k) {
   return i >= 0 ? &g_customs[i] : nullptr;
 }
 
+// The online screen's title over the grid (the tile's arena name, looked up
+// from 0x828B5A00 as the cursor moves - "SUMMERSLAM" over a custom arena on
+// its tile): the custom arena's name, in capitals as the game's.
+uint32_t g_title_text = 0;
+constexpr uint32_t kOnlineTitleCaller = 0x828B5A00;
+
 // Draws the current page into the 20 banner textures.
 const svrfmt::Bytes& EmptyTile();
 
@@ -923,6 +929,7 @@ REX_HOOK_RAW(sub_826A17D0) {
 
 // The grid widget update: arena select pages.
 REX_EXTERN(__imp__sub_823D4FC0);
+REX_EXTERN(__imp__sub_82521EF8);
 REX_HOOK_RAW(sub_823D4FC0) {
   const uint32_t w = ctx.r3.u32;
   uint8_t* p = base + w;
@@ -1068,6 +1075,14 @@ REX_HOOK_RAW(sub_823D4FC0) {
     g_page = page;
     REXLOG_INFO("[svr2011] arena select: page turned ({})", why);
     ShowPage(base);
+    // (the online screen's title over the grid - the tile's arena name - is
+    // set by its cursor: set again, for the name on this page)
+    if (online_grid && now_at < 20) {
+      PPCContext c = ctx;
+      c.r3.u64 = w - 28;
+      c.r4.u64 = now_at;
+      __imp__sub_82521EF8(c, base);
+    }
   }
   FollowCursor(int(new_row), int(new_col));
 }
@@ -1081,6 +1096,20 @@ REX_HOOK_RAW(sub_82521EF8) {
 }
 
 namespace svr2011 {
+
+uint32_t ArenaSelectString(uint32_t caller) {
+  if (caller != kOnlineTitleCaller || g_tiles != g_online_tiles || NowMs() - g_select_seen.load() > 500) return 0;
+  const CustomArena* c = CustomAt(g_online_tile.load() % 20);
+  if (!c || !g_memory) return 0;
+  constexpr uint32_t kSize = 128;
+  if (!g_title_text) g_title_text = g_memory->SystemHeapAlloc(kSize);
+  if (!g_title_text) return 0;
+  char* t = g_memory->TranslateVirtual<char*>(g_title_text);
+  size_t n = 0;
+  for (; n + 1 < kSize && n < c->name.size(); ++n) t[n] = char(std::toupper(uint8_t(c->name[n])));
+  t[n] = 0;
+  return g_title_text;
+}
 
 // Backstage areas (Mods/Backstage/<id>: manifest type=backstage, area=<0-6>,
 // arena.pac = bg78 with that room rebuilt; Mod Maker): bg78 holds all seven

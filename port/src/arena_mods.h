@@ -40,6 +40,10 @@ void SetMatchLoading(bool loading);
 std::string ArenaModInUse(int* tile);
 bool UseArenaMod(const std::string& folder, int tile);
 
+// String lookups (menu_hooks.cpp, r3 for the lookup from `caller`, 0 for the
+// game's): the online arena screen's title on a custom arena's tile.
+uint32_t ArenaSelectString(uint32_t caller);
+
 // The arena number a match in that arena plays as (RedirectArena: the stock
 // practice ring on another tile plays as 29); the arena itself otherwise.
 int ArenaNumberFor(int arena);
