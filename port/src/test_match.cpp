@@ -191,6 +191,20 @@ REX_HOOK_RAW(sub_828BC5E8) {
       const bool picked = Rd32(slot + 8) != kNoPick;
       Wr32(slot + 8, id * 100 + 2);  // (attire: the first, as the select screen gives)
       Wr16(slot + 54, id);
+      // (the slot's title - +37, the one the ring announcer names - is the new
+      // person's, from the save's title holders as sub_825EA208 asks; the
+      // menu's pick's otherwise: a non-champion announced as "the WWE
+      // Champion")
+      auto held = [&](uint32_t kind) {
+        PPCContext c = ctx;
+        c.r3.u64 = id, c.r4.u64 = kind;
+        sub_828BDEF8(c, base);
+        return c.r3.u32 & 0xFF;
+      };
+      uint32_t title = held(1);
+      if (title == 255) title = held(2);
+      slot[37] = uint8_t(title);
+      if (title == 255) slot[39] = 255, slot[38] &= uint8_t(~1);
       if (!picked) {
         slot[5] = uint8_t(i);  // (a team of its own)
         slot[4] = 0;           // (kind: a wrestler)

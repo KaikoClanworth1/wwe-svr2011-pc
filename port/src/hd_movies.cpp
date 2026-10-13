@@ -61,7 +61,11 @@ extern "C" {
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <d3d11.h>
+#include <strmif.h>
 #include <wrl/client.h>
+#include <initguid.h>  // (codecapi.h's GUIDs, defined here)
+#include <codecapi.h>
 using Microsoft::WRL::ComPtr;
 #endif
 
@@ -155,11 +159,38 @@ bool MfOn() {
   return state == 1;
 }
 
-// A source reader for `mp4` giving NV12 at w x h (scaled by the reader).
-ComPtr<IMFSourceReader> OpenReader(const fs::path& mp4, uint32_t w, uint32_t h) {
+// The GPU's video decoder for the readers: a D3D11 device (video support,
+// shared by the movies' threads) in a DXGI device manager - without one
+// Media Foundation decodes H.264 and scales on the CPU, next to the game's
+// own threads. nullptr: none (no such GPU / driver): the CPU then.
+IMFDXGIDeviceManager* GpuManager() {
+  static std::once_flag once;
+  static ComPtr<IMFDXGIDeviceManager> manager;
+  std::call_once(once, [] {
+    ComPtr<ID3D11Device> device;
+    D3D_FEATURE_LEVEL level;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr,
+                                 0, D3D11_SDK_VERSION, &device, &level, nullptr)))
+      return;
+    ComPtr<ID3D10Multithread> mt;
+    if (SUCCEEDED(device.As(&mt))) mt->SetMultithreadProtected(TRUE);
+    UINT token = 0;
+    ComPtr<IMFDXGIDeviceManager> m;
+    if (FAILED(MFCreateDXGIDeviceManager(&token, &m)) || FAILED(m->ResetDevice(device.Get(), token))) return;
+    manager = m;
+  });
+  return manager.Get();
+}
+
+// A source reader for `mp4` giving NV12 at w x h (scaled by the reader; on
+// the GPU when `gpu` and there is one).
+ComPtr<IMFSourceReader> OpenReader(const fs::path& mp4, uint32_t w, uint32_t h, bool gpu = false) {
   ComPtr<IMFAttributes> attrs;
   ComPtr<IMFSourceReader> reader;
-  if (FAILED(MFCreateAttributes(&attrs, 2)) ||
+  IMFDXGIDeviceManager* manager = gpu ? GpuManager() : nullptr;
+  if (gpu && !manager) return nullptr;
+  if (FAILED(MFCreateAttributes(&attrs, 3)) ||
+      (manager && FAILED(attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, manager))) ||
       FAILED(attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE)) ||
       FAILED(attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE)) ||  // (the GPU's decoder where it has one)
       FAILED(MFCreateSourceReaderFromURL(mp4.wstring().c_str(), attrs.Get(), &reader)))
@@ -249,12 +280,33 @@ class Decoder {
     // than a frame late in the match)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     if (!MfOn()) return;
-    ComPtr<IMFSourceReader> reader = OpenReader(movie_.mp4, w_, h_);
+    // (the GPU's decoder where it has one, else the CPU's)
+    bool gpu = true;
+    ComPtr<IMFSourceReader> reader = OpenReader(movie_.mp4, w_, h_, true);
+    if (!reader) {
+      gpu = false;
+      reader = OpenReader(movie_.mp4, w_, h_);
+      // (the CPU's: its decoder on 2 threads - its own work queue took half
+      // a core next to the game's threads)
+      ComPtr<IMFSourceReaderEx> ex;
+      ComPtr<IMFTransform> decoder;
+      ComPtr<ICodecAPI> codec;
+      GUID category = {};
+      if (reader && SUCCEEDED(reader.As(&ex)) &&
+          SUCCEEDED(ex->GetTransformForStream(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &category, &decoder)) &&
+          SUCCEEDED(decoder.As(&codec))) {
+        VARIANT v;
+        VariantInit(&v);
+        v.vt = VT_UI4;
+        v.ulVal = 2;
+        codec->SetValue(&CODECAPI_AVDecNumWorkerThreads, &v);
+      }
+    }
     if (!reader) {
       REXLOG_WARN("[svr2011] hd movies: can't decode {}", movie_.mp4.string());
       return;
     }
-    if (LogOn()) REXLOG_INFO("[svr2011] hd movies: decoding {} at {}x{}", movie_.mp4.string(), w_, h_);
+    if (LogOn()) REXLOG_INFO("[svr2011] hd movies: decoding {} at {}x{} ({})", movie_.mp4.string(), w_, h_, gpu ? "GPU" : "CPU");
     double last = -1;
     bool ended = false;
     while (!stop_) {
@@ -347,12 +399,18 @@ std::map<uint32_t, std::unique_ptr<Decoder>> g_open;  // by the guest Bink
 
 namespace svr2011 {
 
-bool RegisterHdMovie(const std::string& file, const fs::path& mp4) {
-  const fs::path movies = UserMoviesFolder();
+bool PrepareHdMovie(const fs::path& movies, const std::string& file, const fs::path& mp4) {
   if (movies.empty()) return false;
+  {
+    std::lock_guard lock(g_mutex);
+    if (const auto it = g_movies.find(Lower(file)); it != g_movies.end() && it->second.mp4 == mp4) return true;
+  }
   double seconds = 0;
   uint32_t sw = 0, sh = 0;
-  if (!Probe(mp4, &seconds, &sw, &sh) || seconds <= 0) {
+  bool decodes = false;
+  // (on a thread of its own: Media Foundation's COM set-up stays off the caller's)
+  std::thread([&] { decodes = Probe(mp4, &seconds, &sw, &sh); }).join();
+  if (!decodes || seconds <= 0) {
     REXLOG_INFO("[svr2011] hd movies: {} doesn't play here (no decoder) - its .bik does", mp4.filename().string());
     return false;
   }
@@ -378,6 +436,17 @@ bool RegisterHdMovie(const std::string& file, const fs::path& mp4) {
   std::lock_guard lock(g_mutex);
   g_movies[Lower(file)] = std::move(m);
   return true;
+}
+
+bool RegisterHdMovie(const std::string& file, const fs::path& mp4) {
+  {
+    std::lock_guard lock(g_mutex);
+    if (const auto it = g_movies.find(Lower(file)); it != g_movies.end() && it->second.mp4 == mp4) return true;
+  }
+  // (not prepared at start: a stub written now may not open until the next
+  // start - the umovie: device knows the files it found at its mount)
+  REXLOG_WARN("[svr2011] hd movies: {} wasn't prepared at start", file);
+  return PrepareHdMovie(UserMoviesFolder(), file, mp4);
 }
 
 std::string HdMovieFile(const std::string& file) {

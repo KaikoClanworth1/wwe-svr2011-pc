@@ -16,6 +16,11 @@ namespace svr2011 {
 // true: the mp4 plays here.
 bool RegisterHdMovie(const std::string& file, const std::filesystem::path& mp4);
 
+// The same, at start before Custom Movies is mounted (`movies`): the probe
+// and the stub then cost nothing during a match, and the stub is a file the
+// mount found. RegisterHdMovie later just finds it.
+bool PrepareHdMovie(const std::filesystem::path& movies, const std::string& file, const std::filesystem::path& mp4);
+
 // The file the game opens for user movie `file` (".hd\<file>" for an HD
 // one, else `file`).
 std::string HdMovieFile(const std::string& file);

@@ -46,6 +46,7 @@
 #include "ring_rules.h"
 #include "superstar_mods.h"
 #include "crowd_signs.h"
+#include "hd_movies.h"
 #include "media_mods.h"
 #include "frame_rate.h"
 #include "perf_hooks.h"
@@ -520,7 +521,9 @@ void Svr2011App::OnPostLoadXexImage() {
     // (HD movies' stubs, hd_movies.h: the folder made before the mount - the
     // device knows the folders it found then)
     std::filesystem::create_directories(movies / ".hd", ec);
-    svr2011::CopySuperstarMovies(movies);  // (arenas branch: superstar_mods.h)
+    svr2011::CopySuperstarMovies(movies);  // (and the HD movies' stubs)
+    if (std::string t = Env("SVR2011_TEST_MOVIE"); t.size() > 4 && t.substr(t.size() - 4) == ".mp4")
+      svr2011::PrepareHdMovie(movies, "hdtest.bik", t);  // (tests: user_movies.cpp)  // (arenas branch: superstar_mods.h)
     svr2011::CopyMediaMovies(movies);      // (arenas branch: media_mods.h)
     auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\USERMOVIES", movies, true);
     auto* fs = runtime()->file_system();

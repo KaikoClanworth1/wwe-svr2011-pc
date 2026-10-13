@@ -246,6 +246,9 @@ void CopyMediaMovies(const fs::path& movies) {
       const fs::path bik = fs::path(v).extension() == ".mp4" ? fs::path(v).replace_extension(".bik") : fs::path(v);
       if (KeyId(k, "video.", id) && bik.extension() == ".bik" && fs::exists(p.folder / bik))
         CopyIfChanged(p.folder / bik, movies / (MediaName(p, "video", id) + ".bik"));
+      // (an .mp4: its stub and probe now, before the mount - hd_movies.h)
+      if (KeyId(k, "video.", id) && fs::path(v).extension() == ".mp4" && fs::exists(p.folder / v))
+        PrepareHdMovie(movies, MediaName(p, "video", id) + ".bik", p.folder / v);
     }
 }
 

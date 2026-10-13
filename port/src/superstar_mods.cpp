@@ -2064,9 +2064,13 @@ void CopySuperstarMovies(const std::filesystem::path& movies) {
       }
       std::fclose(t);
     }
-    if (!movie.empty() && fs::path(movie).extension() == ".mp4") movie = fs::path(movie).replace_extension(".bik").string();
+    const std::string mp4 = !movie.empty() && fs::path(movie).extension() == ".mp4" ? movie : std::string();
+    if (!mp4.empty()) movie = fs::path(movie).replace_extension(".bik").string();
     if (!movie.empty() && fs::path(movie).extension() == ".bik" && fs::exists(e.path() / movie, ec))
       CopyIfChanged(e.path() / movie, movies / (FileName(name) + ".bik"));  // (an .mp4's: its .bik fallback)
+    // (an .mp4: its stub and probe now, before the mount - hd_movies.h)
+    if (!mp4.empty() && fs::exists(e.path() / mp4, ec))
+      svr2011::PrepareHdMovie(movies, FileName(name) + ".bik", e.path() / mp4);
   }
 }
 
