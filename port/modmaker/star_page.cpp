@@ -8,10 +8,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 #include "app.h"
 #include "char_preview.h"
 #include "svrfmt/pac.h"
+#include "tool_run.h"
 
 namespace mm {
 namespace star_page {
@@ -91,13 +93,15 @@ struct StarProject {
   Image picture_small;            // the 256 bust made with it
   int call = -1;                  // -1: "The Superstar"
   float height = 1.0f;            // height=<scale> from the feet (0.80-1.25; 1: left out)
+  float theme_gain = 0.0f;        // theme_gain=<dB> (-20..+6; 0: left out)
   std::vector<Picture> signs;     // its fans' signs (up to 4; 128 x 64)
   // the SvR 2010-style extras (the game: superstar_mods.cpp)
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
   char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
   std::vector<int> abilities;     // abilities=a,b,... (empty: the style's)
   bool own_abilities = false;
-  std::wstring moves;             // moves=moves.txt: lines 0xOFF=<move id>
+  std::wstring moves;             // moves=moves.txt: lines 0xOFF=<move id> (a file picked as it is)
+  std::map<int, int> moveset;     // the page's picks: slot (0..223, offset slot*2) -> move id, after the file's lines
   std::wstring pack;              // a move pack folder (pack.txt + motions/) copied in as moves/
 };
 StarProject g_star;
@@ -157,6 +161,7 @@ void SetPicture(const Image& src) {
 
 // Everything the build needs, copied off the UI thread.
 struct Job {
+  std::map<int, int> moveset;
   std::string id, manifest;
   std::wstring model, song, movie, voice, attires[4];
   std::string attire_names[4];
@@ -164,6 +169,268 @@ struct Job {
   std::vector<Image> signs;
   std::wstring moves, pack;
 };
+
+// ---- the moveset by name (D4)
+
+struct SlotName {
+  std::string menu, slot;
+  bool fixed = false;  // the same move for the whole roster: not shown
+};
+std::map<int, SlotName> g_slot_names;  // slot -> label (tools/pro_slots.json, when there)
+bool g_slot_names_loaded = false;
+char g_moveset_find[48] = "";
+bool g_moveset_all = false;  // every slot, or the changed ones
+bool g_moveset_open_once = false;  // (test aid: the section open)
+int g_pick_slot = -1;
+char g_pick_find[48] = "";
+bool g_pick_any = false;
+
+// tools/pro_slots.json: [{"off": 122, "menu": "...", "slot": "...", "fixed": false}, ...]
+void LoadSlotNames() {
+  if (g_slot_names_loaded) return;
+  g_slot_names_loaded = true;
+  Bytes b;
+  if (!ReadFile(Utf8((fs::path(ToolsDir()) / L"pro_slots.json").wstring()), b)) return;
+  const std::string t(b.begin(), b.end());
+  auto str = [&](size_t obj, size_t end, const char* key) {
+    const size_t k = t.find(std::string("\"") + key + "\"", obj);
+    if (k == std::string::npos || k > end) return std::string();
+    const size_t q1 = t.find('"', t.find(':', k) + 1), q2 = q1 == std::string::npos ? q1 : t.find('"', q1 + 1);
+    return q1 == std::string::npos || q2 == std::string::npos || q2 > end ? std::string() : t.substr(q1 + 1, q2 - q1 - 1);
+  };
+  for (size_t at = t.find('{'); at != std::string::npos; at = t.find('{', at + 1)) {
+    const size_t end = t.find('}', at);
+    if (end == std::string::npos) break;
+    const size_t k = t.find("\"off\"", at);
+    if (k == std::string::npos || k > end) continue;
+    const int off = std::atoi(t.c_str() + t.find(':', k) + 1);
+    SlotName n;
+    n.menu = str(at, end, "menu");
+    n.slot = str(at, end, "slot");
+    const size_t f = t.find("\"fixed\"", at);
+    n.fixed = f != std::string::npos && f < end && t.compare(t.find(':', f) + 1, 5, " true") == 0;
+    if (off >= 0 && off < 2 * kMoveSlots && !(off & 1)) g_slot_names[off / 2] = n;
+  }
+  Log("moveset: " + std::to_string(g_slot_names.size()) + " slot names from pro_slots.json");
+}
+
+std::string SlotLabel(int slot) {
+  LoadSlotNames();
+  char off[16];
+  std::snprintf(off, sizeof off, "0x%03X", slot * 2);
+  const auto it = g_slot_names.find(slot);
+  if (it != g_slot_names.end() && !it->second.slot.empty())
+    return (it->second.menu.empty() ? "" : it->second.menu + ": ") + it->second.slot;
+  const int o = slot * 2;  // (known without the table: taunts, signatures, finishers)
+  if (o >= 0x12 && o <= 0x18) return "Taunt " + std::to_string((o - 0x12) / 2 + 1);
+  if (o == 0x1E || o == 0x20) return "Signature " + std::to_string((o - 0x1E) / 2 + 1);
+  if (o == 0x22 || o == 0x24) return "Finisher " + std::to_string((o - 0x22) / 2 + 1);
+  return std::string("Slot ") + off;
+}
+
+bool SlotFixed(int slot) {
+  LoadSlotNames();
+  const auto it = g_slot_names.find(slot);
+  return it != g_slot_names.end() && it->second.fixed;
+}
+
+std::string MovesetText() {
+  std::string s;
+  for (const auto& [slot, id] : g_star.moveset) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%s0x%03X=%d", s.empty() ? "" : ",", slot * 2, id);
+    s += b;
+  }
+  return s;
+}
+
+// "0xOFF=id" items split by sep (a project's key, or a moves.txt's lines)
+void ParseMoveset(const std::string& t, char sep) {
+  for (size_t at = 0; at < t.size();) {
+    size_t e = t.find(sep, at);
+    if (e == std::string::npos) e = t.size();
+    const std::string item = t.substr(at, e - at);
+    at = e + 1;
+    const size_t eq = item.find('=');
+    if (eq == std::string::npos) continue;
+    const int off = int(std::strtol(item.c_str(), nullptr, 0));
+    const int id = std::atoi(item.c_str() + eq + 1);
+    if (off >= 0 && off < 2 * kMoveSlots && !(off & 1) && id > 0) g_star.moveset[off / 2] = id;
+  }
+}
+
+void MovePicker() {
+  if (g_pick_slot < 0) return;
+  if (!ImGui::IsPopupOpen("pick_move")) ImGui::OpenPopup("pick_move");
+  ImGui::SetNextWindowSize(ImVec2(460 * g_scale, 420 * g_scale), ImGuiCond_Appearing);
+  if (ImGui::BeginPopup("pick_move")) {
+    ImGui::TextUnformatted(SlotLabel(g_pick_slot).c_str());
+    ImGui::SetNextItemWidth(260 * g_scale);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##f", "find a move", g_pick_find, sizeof g_pick_find);
+    ImGui::SameLine();
+    ImGui::Checkbox("all moves", &g_pick_any);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every move, not only the ones of this slot's kind (those may not play from it).");
+    const std::string f = Lower(g_pick_find);
+    ImGui::BeginChild("list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 1.4f), true);
+    auto row = [&](int id) {
+      const std::string& n = MoveName(id);
+      if (!f.empty() && Lower(n).find(f) == std::string::npos && std::to_string(id).find(f) == std::string::npos) return;
+      const std::string label = n + "  (" + std::to_string(id) + ")##" + std::to_string(id);
+      const auto it = g_star.moveset.find(g_pick_slot);
+      if (ImGui::Selectable(label.c_str(), it != g_star.moveset.end() && it->second == id)) {
+        g_star.moveset[g_pick_slot] = id;
+        Touch();
+        g_pick_slot = -1;
+        ImGui::CloseCurrentPopup();
+      }
+    };
+    if (g_pick_any) for (const auto& [id, m] : MoveInfos()) row(id);
+    else for (int id : MovesForSlot(g_pick_slot)) row(id);
+    ImGui::EndChild();
+    static int typed = 0;
+    ImGui::SetNextItemWidth(110 * g_scale);
+    ImGui::InputInt("##id", &typed, 0);
+    ImGui::SameLine();
+    if (ImGui::Button("Use this move id") && typed > 0) g_star.moveset[g_pick_slot] = typed, Touch(), g_pick_slot = -1, ImGui::CloseCurrentPopup();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A move by number - e.g. one a move pack adds (it isn't in the game's list).");
+    ImGui::EndPopup();
+  } else {
+    g_pick_slot = -1;
+  }
+}
+
+void MovesetSection() {
+  const int changed = int(g_star.moveset.size());
+  const std::string head = "Moveset" + (changed ? " (" + std::to_string(changed) + " changed)" : std::string(": the style's")) + "###moveset";
+  if (g_moveset_open_once) ImGui::SetNextItemOpen(true), g_moveset_open_once = false;
+  if (!ImGui::CollapsingHeader(head.c_str())) return;
+  ImGui::Indent();
+  ImGui::TextWrapped("The moves the superstar does, slot by slot: the style's superstar's moves, and the ones you "
+                     "pick instead. Each slot's list holds the game's moves of that kind (a strike slot takes "
+                     "strikes, a finisher slot finishers). The game's CREATE A MOVE-SET can change them later too.");
+  if (MoveInfos().empty()) {
+    ImGui::TextDisabled("The game's moves didn't load (misc.pac).");
+    ImGui::Unindent();
+    return;
+  }
+  const std::vector<int> base = ProfileMoves(kStyles[g_star.style].template_id);
+  ImGui::SetNextItemWidth(240 * g_scale);
+  ImGui::InputTextWithHint("##mf", "find a slot or a move", g_moveset_find, sizeof g_moveset_find);
+  ImGui::SameLine();
+  ImGui::Checkbox("all slots", &g_moveset_all);
+  ImGui::SameLine();
+  if (changed && ImGui::SmallButton("Back to the style's moves")) g_star.moveset.clear(), Touch();
+  if (!g_moveset_all && !changed) ImGui::TextDisabled("Tick \"all slots\" (or find one) to change a move.");
+  const std::string f = Lower(g_moveset_find);
+  if (ImGui::BeginTable("moveset", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY,
+                        ImVec2(0, 300 * g_scale))) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("slot", ImGuiTableColumnFlags_WidthFixed, 220 * g_scale);
+    ImGui::TableSetupColumn("the style's move", ImGuiTableColumnFlags_WidthFixed, 200 * g_scale);
+    ImGui::TableSetupColumn("this superstar's move", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 24 * g_scale);
+    ImGui::TableHeadersRow();
+    for (int s = 0; s < kMoveSlots; ++s) {
+      const auto it = g_star.moveset.find(s);
+      const bool mine = it != g_star.moveset.end();
+      if (SlotFixed(s) && !mine) continue;
+      const int was = s < int(base.size()) ? base[size_t(s)] : 0;
+      if (!was && !mine) continue;  // (an empty slot in the style's set)
+      const std::string label = SlotLabel(s);
+      const std::string& was_name = MoveName(was);
+      const std::string now_name = mine ? (MoveName(it->second).empty() ? "move " + std::to_string(it->second) : MoveName(it->second)) : "";
+      if (!f.empty() && Lower(label).find(f) == std::string::npos && Lower(was_name).find(f) == std::string::npos &&
+          Lower(now_name).find(f) == std::string::npos)
+        continue;
+      if (f.empty() && !g_moveset_all && !mine) continue;
+      ImGui::PushID(s);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(label.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%s", was_name.empty() ? (was ? std::to_string(was).c_str() : "-") : was_name.c_str());
+      ImGui::TableNextColumn();
+      const bool fits = !mine || MoveFitsSlot(s, it->second);
+      if (mine && !fits) ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+      if (ImGui::Button(mine ? (now_name + "##p").c_str() : "the style's (pick another)##p", ImVec2(-1, 0)))
+        g_pick_slot = s, g_pick_find[0] = 0, g_pick_any = false;
+      if (mine && !fits) ImGui::PopStyleColor();
+      ImGui::TableNextColumn();
+      if (mine && ImGui::SmallButton("x")) g_star.moveset.erase(s), Touch();
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  MovePicker();
+  ImGui::Unindent();
+}
+
+// theme_gain= as written (1 decimal), "" at 0.0 (the key left out)
+std::string GainText() {
+  const int t = int(std::lround(std::clamp(g_star.theme_gain, -20.0f, 6.0f) * 10));
+  if (!t) return "";
+  char b[16];
+  std::snprintf(b, sizeof b, "%s%d.%d", t < 0 ? "-" : "", std::abs(t) / 10, std::abs(t) % 10);
+  return b;
+}
+
+// the theme's measured loudness (a worker measures; the page shows it)
+std::wstring g_lufs_for;
+double g_lufs = 0;
+std::string g_lufs_note;
+bool g_lufs_busy = false;
+
+void MeasureTheme() {
+  if (g_star.song.empty() || g_lufs_busy) return;
+  g_lufs_busy = true;
+  g_lufs_note = "measuring ...";
+  const std::wstring f = g_star.song;
+  std::thread([f] {
+    double l = 0;
+    std::string err;
+    const bool ok = MeasureLufs(f, &l, &err);
+    OnUiThread([f, ok, l, err] {
+      g_lufs_busy = false;
+      if (f != g_star.song) return;  // (another song by now)
+      g_lufs_for = f;
+      g_lufs = l;
+      char b[160];
+      if (ok) std::snprintf(b, sizeof b, "%.1f LUFS (the game's themes sit near %.0f)", l, kThemeTargetLufs);
+      g_lufs_note = ok ? b : "could not measure: " + err;
+      if (!ok) g_lufs_for.clear();
+    });
+  }).detach();
+}
+
+void ThemeGainRow() {
+  if (g_star.song.empty()) return;
+  ImGui::Indent();
+  ImGui::SetNextItemWidth(236 * g_scale);
+  ImGui::SliderFloat("##gain", &g_star.theme_gain, -20.0f, 6.0f, "%+.1f dB");
+  ImGui::SameLine(0, 4 * g_scale);
+  ImGui::SetNextItemWidth(80 * g_scale);
+  ImGui::InputFloat("Theme volume", &g_star.theme_gain, 0, 0, "%.1f");
+  g_star.theme_gain = std::clamp(std::round(g_star.theme_gain * 10) / 10, -20.0f, 6.0f);
+  Hint("How loud the theme plays, in dB over the file: the game plays a mod's theme at full level, about 7 dB over "
+       "its own. Measure finds the song's loudness; Match the game sets the volume so it sits with the game's "
+       "themes (about -24 LUFS).");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(g_lufs_busy);
+  if (ImGui::SmallButton("Measure")) MeasureTheme();
+  ImGui::EndDisabled();
+  const bool measured = g_lufs_for == g_star.song;
+  if (measured) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Match the game")) {
+      g_star.theme_gain = float(std::clamp(kThemeTargetLufs - g_lufs, -20.0, 6.0));
+      g_star.theme_gain = std::round(g_star.theme_gain * 10) / 10;
+      Touch();
+    }
+  }
+  if (!g_lufs_note.empty() && (measured || g_lufs_busy || g_lufs_note.rfind("could", 0) == 0)) ImGui::TextDisabled("%s", g_lufs_note.c_str());
+  ImGui::Unindent();
+}
 
 // height= as written (2 decimals), "" at 1.00 (the key left out)
 std::string HeightText() {
@@ -188,6 +455,7 @@ bool PrepareJob(Job& j) {
   for (int k = 0; k < 7; ++k) j.manifest += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "\n");
   if (g_star.call >= 0) j.manifest += "call=" + std::to_string(g_star.call) + "\n";
   if (const std::string h = HeightText(); !h.empty()) j.manifest += "height=" + h + "\n";
+  if (const std::string g = GainText(); !g.empty() && !g_star.song.empty()) j.manifest += "theme_gain=" + g + "\n";
   if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
   if (g_star.announcer[0]) j.manifest += std::string("announcer=") + g_star.announcer + "\n";
   if (g_star.own_abilities) {
@@ -195,8 +463,8 @@ bool PrepareJob(Job& j) {
     for (size_t k = 0; k < g_star.abilities.size(); ++k) j.manifest += (k ? "," : "") + std::to_string(g_star.abilities[k]);
     j.manifest += "\n";
   }
-  if (!g_star.moves.empty()) j.manifest += "moves=moves.txt\n";
-  j.moves = g_star.moves, j.pack = g_star.pack;
+  if (!g_star.moves.empty() || !g_star.moveset.empty()) j.manifest += "moves=moves.txt\n";
+  j.moves = g_star.moves, j.pack = g_star.pack, j.moveset = g_star.moveset;
   j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
   j.picture = g_star.picture.image, j.picture_small = g_star.picture_small;
@@ -249,9 +517,15 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     files.push_back({"movie.bik", std::move(m)});
     man += "movie=movie.bik\n";
   }
-  if (!j.moves.empty()) {
+  if (!j.moves.empty() || !j.moveset.empty()) {  // the file's lines, then the page's picks (later lines win)
     Bytes t;
-    if (!ReadFile(Utf8(j.moves), t)) { Status("Could not read the moves list: " + Utf8(j.moves)); return false; }
+    if (!j.moves.empty() && !ReadFile(Utf8(j.moves), t)) { Status("Could not read the moves list: " + Utf8(j.moves)); return false; }
+    if (!t.empty() && t.back() != '\n') t.push_back('\n');
+    for (const auto& [slot, id] : j.moveset) {
+      char line[32];
+      std::snprintf(line, sizeof line, "0x%03X=%d\n", slot * 2, id);
+      t.insert(t.end(), line, line + std::strlen(line));
+    }
     files.push_back({"moves.txt", std::move(t)});
   }
   if (!j.pack.empty()) {  // the move pack: pack.txt and motions/* as moves/
@@ -337,8 +611,20 @@ void Problems(std::vector<Problem>& p) {
   }
   for (const std::wstring* f : {&g_star.song, &g_star.voice})
     if (!f->empty() && !Check(*f, "any").exists) p.push_back(Error("A sound file is missing: " + FileName(*f)));
-  if (!g_star.song.empty()) p.push_back(Warning("Theme songs play at full level: the game's own are about 7 dB quieter. Make yours about -24 LUFS.", ""));
+  if (!g_star.song.empty() && g_star.theme_gain == 0.0f)
+    p.push_back(Warning("The theme plays at full level: the game's own are about 7 dB quieter.",
+                        "Theme volume: Measure, then Match the game."));
   if (g_star.picture.Empty()) p.push_back(Warning("No select picture: the select screen shows a silhouette where other modes show a render."));
+  for (const auto& [slot, id] : g_star.moveset) {
+    if (!MoveInfos().count(id)) {
+      if (g_star.pack.empty())
+        p.push_back(Warning(SlotLabel(slot) + ": move " + std::to_string(id) + " isn't one of the game's moves.",
+                            "It needs a move pack that adds it (More: Move pack folder), or pick another."));
+    } else if (!MoveFitsSlot(slot, id)) {
+      p.push_back(Warning(SlotLabel(slot) + ": " + MoveName(id) + " isn't a move of this kind.",
+                          "The game may not play it from this slot. Pick one from the slot's list."));
+    }
+  }
   if (!g_star.moves.empty()) {
     const FileCheck& c = Check(g_star.moves, "any");
     if (!c.exists) p.push_back(Error("The moves list file is missing: " + FileName(g_star.moves)));
@@ -429,6 +715,18 @@ void Draw() {
     ImGui::SetNextItemWidth(320 * g_scale);
     if (ImGui::SliderInt(kAttributes[k], &g_star.ratings[k], 1, 99)) g_star.ratings_set = true;
   }
+  {  // the overall (D13): the average of the seven, as the select screens' rating
+    int sum = 0;
+    for (int k = 0; k < 7; ++k) sum += g_star.ratings[k];
+    const int overall = (sum + 3) / 7;
+    ImGui::SetNextItemWidth(320 * g_scale);
+    ImGui::BeginDisabled();
+    int shown = overall;
+    ImGui::SliderInt("Overall", &shown, 1, 99);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(the average of the seven)");
+  }
   {  // height=: the model's size from its feet
     ImGui::SetNextItemWidth(236 * g_scale);
     ImGui::SliderFloat("##height", &g_star.height, 0.8f, 1.25f, "%.2f");
@@ -465,6 +763,7 @@ void Draw() {
        "can have (or record the name below).");
   TextField("Author (optional)", g_star.author, sizeof g_star.author);
   TextField("Version (optional)", g_star.version, sizeof g_star.version, "1.0");
+  MovesetSection();
   if (ImGui::CollapsingHeader("More: entrance, announcer, abilities, moves")) {
     ImGui::Indent();
     // entrance: a superstar's (number = id) or Jeff Hardy's 2010 one the game ships unused
@@ -509,9 +808,9 @@ void Draw() {
       ImGui::Unindent();
     }
     const COMDLG_FILTERSPEC txt[] = {{L"Moves list (*.txt)", L"*.txt"}};
-    FileRow("Moves list (optional)...", g_star.moves, "the style's moves", txt, 1,
-            "moves.txt: lines 0xOFF=<move id> that change the style's move-set (OFF a byte offset in the profile's "
-            "move block, 0..0x1BF, even). docs/SUPERSTAR_MODS.md explains it.");
+    FileRow("Moves list file (optional)...", g_star.moves, "none: the slots below", txt, 1,
+            "A moves.txt someone made: lines 0xOFF=<move id> (OFF a byte offset in the profile's move block, "
+            "0..0x1BF, even). Your picks in the Moveset section below go after its lines and win.");
     ImGui::PushID("pack");
     if (ImGui::Button("Move pack folder (optional)...", ImVec2(220 * g_scale, 0))) {
       const std::wstring f = PickFolder(L"The move pack folder (pack.txt + motions)");
@@ -535,6 +834,7 @@ void Draw() {
   FileRow("Model (ch.pac)...", g_star.model, "required: the superstar's model", kPacFilter, 1,
           "A character model pac: one of the game's (pac\\ch\\chNNN.pac) or one converted from another game.");
   FileRow("Theme song (optional)...", g_star.song, "the style's", kSoundFilter, 1);
+  ThemeGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
           "A 320 x 320 Bink movie: From a video... makes one here, the launcher's Movies tab too.");
   ImGui::SameLine();
@@ -607,10 +907,11 @@ void Draw() {
 std::string StateText() {
   std::string s = std::string("name=") + g_star.name + "\nshort=" + g_star.short_name + "\nstyle=" +
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
-                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) +
+                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) +
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
   for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
   for (int a = 1; a < 4; ++a) s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a];
+  s += "\nmoveset=" + MovesetText();
   s += "\nentrance=" + std::to_string(g_star.entrance) + "\nannouncer=" + g_star.announcer + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
@@ -632,6 +933,7 @@ void WriteProject(ProjectOut& out) {
   if (const std::string h = HeightText(); !h.empty()) out.Key("height", h);
   out.File("model", g_star.model, "star/model");
   out.File("song", g_star.song, "star/theme");
+  if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", g_star.movie, "star/movie");
   out.File("voice", g_star.voice, "star/voice");
   for (int a = 1; a < 4; ++a) {
@@ -646,6 +948,7 @@ void WriteProject(ProjectOut& out) {
     out.Key("abilities", a);
   }
   out.File("moves", g_star.moves, "star/moves");
+  if (!g_star.moveset.empty()) out.Key("moveset", MovesetText());
   if (!g_star.pack.empty()) {  // the pack's files, as the mod carries them
     out.Key("pack", "moves");
     out.Key("pack.from", Utf8(g_star.pack));
@@ -712,6 +1015,11 @@ bool Read(const ProjectIn& in, bool mod) {
   if (mod && g_star.model.empty() && in.Find("ch.pac")) g_star.model = in.Extract("ch.pac");
   g_star.moves = file("moves", "moves.txt");
   if (mod && g_star.moves.empty() && !in.Get("moves").empty() && in.Find(in.Get("moves"))) g_star.moves = in.Extract(in.Get("moves"));
+  ParseMoveset(in.Get("moveset"), ',');
+  if (mod && !g_star.moves.empty()) {  // a mod's moves.txt comes into the slot list (editable by name)
+    Bytes t;
+    if (ReadFile(Utf8(g_star.moves), t)) ParseMoveset(std::string(t.begin(), t.end()), '\n'), g_star.moves.clear();
+  }
   {  // the move pack: every moves/* file out, the folder is the pack
     bool any = false;
     std::wstring folder;
@@ -727,6 +1035,7 @@ bool Read(const ProjectIn& in, bool mod) {
     else if (any) g_star.pack = folder;
   }
   g_star.song = file("song", nullptr);
+  if (const std::string g = in.Get("theme_gain"); !g.empty()) g_star.theme_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 6.0f);
   g_star.movie = file("movie", nullptr);
   g_star.voice = file("voice", nullptr);
   for (int a = 1; a < 4; ++a) {
@@ -773,6 +1082,11 @@ void TestStart(int id, const std::wstring& model, const std::string& name, const
 void SetModel(const std::wstring& ch_pac) {
   g_star.model = ch_pac;
   Touch();
+}
+
+void TestMoveset(const std::string& spec) {
+  ParseMoveset(spec, ',');
+  g_moveset_open_once = true;
 }
 
 void TestHeight(float scale) { g_star.height = std::clamp(scale, 0.8f, 1.25f); }

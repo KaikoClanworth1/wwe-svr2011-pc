@@ -921,6 +921,22 @@ void ArenaProblems(std::vector<Problem>& p) {
   if (editor::Ring().VisibleRopes() < 3 && editor::Ring().VisibleRopes() > 0)
     p.push_back(Warning("Fewer than three ropes: rope moves are limited to the ropes left (the game adapts)."));
   if (editor::Ring().VisibleRopes() == 0) p.push_back(Warning("No ropes: no rope moves, no rope breaks, a hardcore-style ring."));
+  // limits and crash risks (D12): a model the game can't hold, an arena over its room
+  editor::BudgetInfo b;
+  if (g_proj.arena >= 0 && editor::Budget(b)) {
+    char id[16];
+    std::snprintf(id, sizeof id, "0x%X", b.biggest_id);
+    if (b.biggest > 430 * 1024)
+      p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): models over about 430 KB "
+                          "have crashed the arena's load.", "Split it, cut its polygons, or hide parts of it (3D editor)."));
+    else if (b.biggest > 360 * 1024)
+      p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): close to the ~430 KB that "
+                          "crashed arena loads."));
+    if (b.file > b.file_max || b.unpacked > b.unpacked_max)
+      p.push_back(Warning("The arena is over the game's room for it (" + Human(std::max(b.file, b.unpacked)) + " of " +
+                          Human(std::max(b.file_max, b.unpacked_max)) + "): saving halves the biggest textures until it fits.",
+                          "Smaller pictures or fewer added objects keep them sharp."));
+  }
 }
 
 void BackstageProblems(std::vector<Problem>& p) {

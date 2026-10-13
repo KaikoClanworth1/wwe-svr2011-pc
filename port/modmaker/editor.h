@@ -46,6 +46,15 @@ void Draw();
 bool Busy();
 bool HasArena();   // an arena is set
 int EditCount();   // grows with every edit (the project's dirty check)
+// The size budget (measured in the background after edits): the arena's file
+// and unpacked sizes against the shipped one's, and the biggest model you
+// changed or added (unpacked), for the problems list. False until measured.
+struct BudgetInfo {
+  size_t file = 0, file_max = 0, unpacked = 0, unpacked_max = 0;
+  size_t biggest = 0;          // the biggest changed / added model, unpacked
+  uint32_t biggest_id = 0;
+};
+bool Budget(BudgetInfo& out);
 void Shutdown();
 // test aid: a camera preset (0 hard camera, 1 top, 2 from the stage; -1 none)
 // and an object to select (by name) once an arena is set

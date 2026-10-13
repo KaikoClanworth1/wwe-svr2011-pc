@@ -3,6 +3,8 @@
 
 #include "app.h"
 
+#include <thread>
+
 namespace mm {
 
 namespace {
@@ -92,6 +94,67 @@ int RunCapture(const std::wstring& cmdline, const std::wstring& cwd) {
   return int(code);
 }
 
+// stdout collected, stderr logged on a thread of its own (progress lines to the bar).
+int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::string& out) {
+  SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
+  HANDLE ord = nullptr, owr = nullptr, erd = nullptr, ewr = nullptr;
+  if (!CreatePipe(&ord, &owr, &sa, 0)) return -1;
+  if (!CreatePipe(&erd, &ewr, &sa, 0)) {
+    CloseHandle(ord), CloseHandle(owr);
+    return -1;
+  }
+  SetHandleInformation(ord, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(erd, HANDLE_FLAG_INHERIT, 0);
+  STARTUPINFOW si = {sizeof si};
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = owr;
+  si.hStdError = ewr;
+  si.hStdInput = nullptr;
+  PROCESS_INFORMATION pi = {};
+  std::wstring cmd = cmdline;
+  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
+                                 nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+  CloseHandle(owr);
+  CloseHandle(ewr);
+  if (!ok) {
+    CloseHandle(ord), CloseHandle(erd);
+    Log("Could not start: " + Utf8(cmdline));
+    return -1;
+  }
+  std::thread err([erd] {
+    std::string line;
+    char buf[4096];
+    DWORD n = 0;
+    auto flush = [&] {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.rfind("progress ", 0) == 0) {
+        const size_t sp = line.find(' ', 9);
+        Progress(sp == std::string::npos ? line.substr(9) : line.substr(9, sp - 9) + "%  " + line.substr(sp + 1, 110));
+      } else if (!line.empty()) {
+        Log("  " + line);
+      }
+      line.clear();
+    };
+    while (ReadFile(erd, buf, sizeof buf, &n, nullptr) && n)
+      for (DWORD i = 0; i < n; ++i)
+        if (buf[i] == '\n') flush();
+        else line += buf[i];
+    flush();
+    CloseHandle(erd);
+  });
+  char buf[8192];
+  DWORD n = 0;
+  while (ReadFile(ord, buf, sizeof buf, &n, nullptr) && n) out.append(buf, n);
+  CloseHandle(ord);
+  err.join();
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD code = DWORD(-1);
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return int(code);
+}
+
 }  // namespace
 
 std::wstring ToolsDir() { Check(); return g_tools; }
@@ -148,6 +211,40 @@ bool RunCommand(const std::wstring& cmdline, std::function<void(int)> done, cons
     Progress("Running ...");
     const int code = RunCapture(cmdline, cwd);
     OnUiThread([done, code] { if (done) done(code); });
+  });
+  return true;
+}
+
+bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args,
+                 std::function<void(int, const std::string&)> done, const std::wstring& cwd) {
+  Check();
+  if (g_python.empty()) {
+    Status("Python 3 is needed for this (python.org; tick 'Add to PATH'), then Recheck.");
+    return false;
+  }
+  if (g_tools.empty() || !fs::exists(fs::path(g_tools) / script)) {
+    Status("The converter " + Utf8(script) + " isn't in the Mod Maker Tools folder.");
+    return false;
+  }
+  if (Busy()) {
+    Status("Still working on the last job: wait a moment.");
+    return false;
+  }
+  std::wstring cmd = Quote(g_python) + L" -X utf8 " + Quote((fs::path(g_tools) / script).wstring());
+  for (const auto& a : args) cmd += L" " + Quote(a);
+  std::wstring work = cwd;  // (as RunTool: what a script drops lands in Mods\.convert)
+  if (work.empty()) {
+    const fs::path w = fs::path(g_game) / L"Mods" / L".convert";
+    std::error_code ec;
+    fs::create_directories(w, ec);
+    work = w.wstring();
+  }
+  Log("> " + Utf8(cmd));
+  RunInBackground([cmd, cwd = work, done] {
+    Progress("Running ...");
+    std::string out;
+    const int code = RunCaptureJson(cmd, cwd, out);
+    OnUiThread([done, code, out] { if (done) done(code, out); });
   });
   return true;
 }

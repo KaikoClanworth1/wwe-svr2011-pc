@@ -11,7 +11,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 72.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>`, `attire1..4_entrance=<number>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
@@ -245,7 +245,14 @@ the slot. A save made with the mod keeps the player's own edits.
   +0x14, +0x16 and +0x18. Example: 535 is Jeff Hardy's, which 2011 ships in
   `evt/Nyujyo7.pac`, along with its pyro sound bank `Pyro_Jeff_Hardy` in
   Entrance.pck, though no profile uses it. The music and movie still follow
-  `song=` / `movie=`.
+  `song=` / `movie=`. Any entrance number works: a stock one, or one a move
+  pack adds (converted from another game: `tools/entrance_port.py`,
+  docs/OTHER_GAMES_ENTRANCES.md).
+- **`attire<N>_entrance=<number>`** (N = 1-4, the mod's attire): that attire
+  walks out with its own entrance, with or without a title - like Rey
+  Mysterio's "Evil" attire, which the stock game does in code. A created
+  entrance (CREATE AN ENTRANCE) and a team's entrance still win. Details:
+  docs/ENTRANCE_ATTIRES.md.
 - **`abilities=a,b,...`:** up to 8 ability ids at record +230 (0 ends the
   list). 2011 uses 1, 7, 9, 11, 12, 14, 19, 20, 22, 23, 24.
 - **`announcer=<NAME>`:** the ring announcer's own clips of a name the sound

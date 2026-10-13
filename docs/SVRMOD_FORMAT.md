@@ -64,6 +64,7 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `voice=voice.<ext>` | a recording of the name the announcer plays |
 | `entrance=<number>` | the entrance motions and pyro: a superstar's id, or 535 (Jeff Hardy's SvR 2010 one) |
 | `song=theme.<ext>` | the entrance theme (.mp3 .m4a .aac .wav .flac .wma .ogg); plays at full level, make it about -24 LUFS |
+| `theme_gain=<dB>` | optional: the theme's volume, -20.0 to +6.0 dB in one decimal (missing = 0). The game plays a mod's theme at full level, about 7 dB over its own; the Mod Maker measures the song and suggests the gain for about -24 LUFS. Media packs: `theme_gain.<id>=` next to `theme.<id>=` |
 | `movie=movie.bik` | the entrance movie, 320 x 320 Bink |
 | `attire2..4=attireN.pac`, `attireN_name=` | more attires: another model pac's first attire each |
 | `render.dds`, `render_small.dds` | the select picture: 512 x 512 and the 256 x 256 bust, DXT5 |
