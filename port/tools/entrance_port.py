@@ -255,9 +255,9 @@ GAMES = collections.OrderedDict([
     ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready')),
     ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready')),
     ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='ready')),
-    ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='research')),
+    ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='ready')),
     ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='ready')),
-    ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research')),
+    ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready')),
     ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
 ])
 # (disc_hint: the Xbox 360 title id / PS2 serial discfs.open(iso).info() reports)
@@ -442,41 +442,56 @@ def svr10_convert(src, entrance, number, name, parts, rep, game_pac=None):
 
 # ---- WWE '13 (Xbox 360): pac/evt/Entrance00-08.pac + Entrance_dlc01.pac, xcompressed (svrmod xdec),
 #      EPK8 groups 'EVP ' / 'EVZ ' (YANM motion records), numbers 50-856; tools/wwe13_entrance.py
+# ---- WWE '12: pac/evt/Nyujyo0-9,A.pac (plain EPK8, EVP?/EVZ?), FK bodies; WWE 2K14: Entrance00-08.pac
+#      (xcompressed EPAC): the same converter with --game (wwe13_entrance.GAMES)
 
 SVRMOD = None          # --svrmod (else found next to the tools / the Mod Maker)
 _w13 = {}
 
 
-def wwe13_entrances(src):
-    key = id(src)
+def wwe13_entrances(src, game='wwe13'):
+    key = (id(src), game)
     if key not in _w13:
         try:
             sv = E13.find_svrmod(SVRMOD)
         except E13.ToolMissing as x:
-            raise InputError(str(x))
+            if SVRMOD:
+                raise InputError(str(x))
+            sv = None                     # (only needed for xcompressed pacs: read_source says so)
         try:
-            _w13[key] = E13.read_source(src, sv)
-        except FileNotFoundError as x:
+            _w13[key] = E13.read_source(src, sv, game)
+        except (FileNotFoundError, E13.ToolMissing) as x:
             raise InputError(str(x))
     return _w13[key]
 
 
-def wwe13_list(src, game_pac):
-    evp, evz = wwe13_entrances(src)
-    return E13.entry_list(evp, evz, game_pac)
+def w13_list(game):
+    def lister(src, game_pac):
+        evp, evz = wwe13_entrances(src, game)
+        return E13.entry_list(evp, evz, game_pac)
+    return lister
 
 
-def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None):
-    evp, evz = wwe13_entrances(src)
+def w13_convert(game):
+    def conv(src, entrance, number, name, parts, rep, game_pac=None):
+        return wwe13_convert(src, entrance, number, name, parts, rep, game_pac, game)
+    return conv
+
+
+wwe13_list = w13_list('wwe13')
+
+
+def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='wwe13'):
+    evp, evz = wwe13_entrances(src, game)
     if entrance not in evp or entrance not in evz:
-        raise InputError("WWE '13 has no entrance %d" % entrance)
+        raise InputError("%s has no entrance %d" % (E13.GAMES[game]['name'], entrance))
     if not game_pac:
         rep['warnings'].append('2011 pac folder not found: prop tracks, the lights object and the model checks are skipped')
     progress(15, 'converting the script and tracks')
 
     def prog(done, total, kind):
         progress(15 + int(40 * done / total), 'tracks %d/%d (%s)' % (done, total, kind))
-    evp11, evt11, r = E13.convert(evp[entrance], evz[entrance], number, game_pac, name, progress=prog)
+    evp11, evt11, r = E13.convert(evp[entrance], evz[entrance], number, game_pac, name, progress=prog, game=game)
     for k in ('notes', 'warnings', 'dropped'):
         rep[k] += r[k]
     rep['notes'].append('not converted: pyro (prtcls.pac PCE6), titantron (Bink 2), theme, face / finger tracks')
@@ -630,8 +645,10 @@ def svr09_convert(src, entrance, number, name, parts, rep, game_pac=None):
     return E08.build_evp(e11), t11
 
 
-LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'wwe13': wwe13_list}
-CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'wwe13': wwe13_convert}
+LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'wwe13': wwe13_list,
+           'wwe12': w13_list('wwe12'), 'wwe2k14': w13_list('wwe2k14')}
+CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'wwe13': wwe13_convert,
+              'wwe12': w13_convert('wwe12'), 'wwe2k14': w13_convert('wwe2k14')}
 
 
 # ============================================================================ commands

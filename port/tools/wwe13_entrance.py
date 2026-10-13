@@ -1,8 +1,9 @@
-"""WWE '13 (Xbox 360) entrance -> SvR 2011 entrance.
+"""WWE '13 (Xbox 360) entrance -> SvR 2011 entrance; also WWE '12 and WWE 2K14 (--game wwe12 / wwe2k14).
 
 Used by tools/entrance_port.py (game id wwe13); formats and rules: docs/OTHER_GAMES_ENTRANCES.md
 (WWE '13). Standalone:
 
+  (every command takes --game wwe13 | wwe12 | wwe2k14, default wwe13)
   python wwe13_entrance.py list <WWE13 extract> [--svrmod exe]
   python wwe13_entrance.py convert <WWE13 extract> <entrance> <2011 number> <out dir> [--game-pac dir] [--svrmod exe]
   python wwe13_entrance.py validate <WWE13 extract> --game-pac <2011 pac dir> <n> [<n> ...] [--step k]
@@ -11,6 +12,14 @@ Used by tools/entrance_port.py (game id wwe13); formats and rules: docs/OTHER_GA
 Source: pac/evt/Entrance00..08.pac, Entrance_dlc01.pac, xcompressed (0x0FF512ED): decoded with the
 Mod Maker's `svrmod xdec` (found next to this script, in out/modmaker, in a 'Mod Maker Tools' folder
 of an ancestor, or --svrmod / SVRMOD), then EPK8 groups 'EVP ' (script) and 'EVZ ' (tracks).
+
+WWE '12: pac/evt/Nyujyo0-9,A.pac, plain EPK8 (no xcompress), groups EVP1-5,E-I,K / EVZ1-5,E-I,K; same
+records, but the bodies are plain FK (no IK calves: the retarget runs with ik=False); its own event
+kinds prop/camera 31/t1 and char 130/t1 are dropped (reported).
+WWE 2K14: pac/evt/Entrance00..08.pac, xcompressed, the inside is 'EPAC' with EPK8-style group headers
+(kind bit 0: 8-byte names, count field / 4; else 4-byte names, count field / 3); motion leaves carry an
+id string ("25000101_A00_def", ignored: the leaf index is the object); 40 EVPs have a new tail
+(type-13 records: ignored, the standard tail is written); generic extra 25500 -> 13902.
 
 The EVP is 2011's own layout (same objects, 212-byte slots, ids 25000+n). Rules:
 - object count flag bits masked, the 2011 standard tail (music 999, movie 999), +0x44 = 0;
@@ -56,7 +65,10 @@ import w13_retarget as WR  # noqa: E402
 
 TYPES = {S.TYPE_CHAR: 'char', S.TYPE_PROP: 'prop', (0x10000, 0): 'camera', (1, 0): 'rope',
          (0, 0x01000000): 'turnbuckle', S.TYPE_GLOBAL: 'global'}
-GENERIC13 = {19202, 10402, 51200, 12502, 13902}
+GENERIC13 = {19202, 10402, 51200, 12502, 13902, 25500}
+GAMES = {'wwe13': dict(name="WWE '13", files=r'(?i)entrance(\d\d|_dlc\d\d)\.pac$', ik=True),
+         'wwe12': dict(name="WWE '12", files=r'(?i)nyujyo[0-9a-z]\.pac$', ik=False),
+         'wwe2k14': dict(name='WWE 2K14', files=r'(?i)entrance\d\d\.pac$', ik=True)}
 # slot words (u32 index in the 212-byte slot) holding positions in cm: 2011 = WWE '13 / 10
 POS_WORDS = {'char': [w + j * 6 + d for j in range(5) for d in range(3) for w in (4,)],
              'rope': [4 + j * 6 + d for j in range(8) for d in range(3)],
@@ -107,9 +119,12 @@ def find_svrmod(arg=None):
 
 
 def xdec(raw, svrmod):
-    """WWE '13 xcompressed pac -> EPK8 bytes (svrmod xdec), cached in the temp folder"""
-    if raw[:4] == b'EPK8':
+    """WWE '13 / 2K14 xcompressed pac -> EPK8 / EPAC bytes (svrmod xdec), cached in the temp folder"""
+    if raw[:4] in (b'EPK8', b'EPAC'):
         return raw
+    if not svrmod:
+        raise ToolMissing('svrmod.exe (the Mod Maker\'s pac tool, needed to decode xcompressed pacs) was not found: '
+                          'put it next to this script or give --svrmod')
     key = hashlib.sha1(raw[:1 << 16] + struct.pack('<Q', len(raw)) + raw[-4096:]).hexdigest()[:20]
     cache = os.path.join(tempfile.gettempdir(), 'svr_wwe13_xdec')
     os.makedirs(cache, exist_ok=True)
@@ -131,23 +146,25 @@ def xdec(raw, svrmod):
         raise RuntimeError('svrmod xdec failed: %s' % (r.stderr or r.stdout).decode('latin-1', 'replace').strip()[:300])
     os.replace(out + '.tmp', out)
     d = open(out, 'rb').read()
-    if d[:4] != b'EPK8':
-        raise RuntimeError('svrmod xdec did not give an EPK8 pac')
+    if d[:4] not in (b'EPK8', b'EPAC'):
+        raise RuntimeError('svrmod xdec did not give an EPK8 / EPAC pac')
     return d
 
 
 def epk8_entries(d):
-    """EPK8 -> {(group, name): unpacked bytes}; group header {4CC, u16 count*4, u16 kind, u32}; kind bit 0:
-    16-byte entries (name[8]), else 12-byte (name[4])"""
+    """EPK8 / 2K14 EPAC -> {(group, name): unpacked bytes}; group header {4CC, u16 count field, u16 kind, u32};
+    kind bit 0: 16-byte entries (name[8]), count field / 4; else 12-byte (name[4]), count field / 4 in EPK8
+    and / 3 in EPAC"""
     out = collections.OrderedDict()
+    epac = d[:4] == b'EPAC'
     tsz = struct.unpack_from('<I', d, 4)[0]
-    p, end = 0x800, 0x800 + tsz
+    p, end = 0x800, (0x4000 if epac else 0x800 + tsz)
     while p < end and d[p:p + 4].strip(b'\0'):
         typ = d[p:p + 4].decode('latin-1')
         cnt4, kind = struct.unpack_from('<HH', d, p + 4)
         p += 12
         nl = 8 if kind & 1 else 4
-        for _ in range(cnt4 // 4):
+        for _ in range(cnt4 // (3 if epac and not kind & 1 else 4)):
             nm = d[p:p + nl].decode('latin-1').strip(' \0')
             sec, sz = struct.unpack_from('<II', d, p + nl)
             b = d[0x4000 + sec * 0x800:0x4000 + sec * 0x800 + sz * 0x100]
@@ -156,18 +173,20 @@ def epk8_entries(d):
     return out
 
 
-def read_source(src, svrmod):
-    """src: object with listdir/read (entrance_port.FolderSource or discfs) -> (evp {n: bytes}, evz {n: bytes})"""
+def read_source(src, svrmod, game='wwe13'):
+    """src: object with listdir/read (entrance_port.FolderSource or discfs) -> (evp {n: bytes}, evz {n: bytes});
+    svrmod may be None for WWE '12 (plain pacs)"""
     evp, evz = {}, {}
-    pacs = [f for f in src.listdir('pac/evt') if re.match(r'(?i)entrance(\d\d|_dlc\d\d)\.pac$', f)]
+    g_ = GAMES[game]
+    pacs = [f for f in src.listdir('pac/evt') if re.match(g_['files'], f)]
     if not pacs:
-        raise FileNotFoundError('no pac/evt/Entrance*.pac in the source (a WWE \'13 extract or disc)')
+        raise FileNotFoundError('no entrance pacs in pac/evt (a %s extract or disc?)' % g_['name'])
     for f in sorted(pacs):
         for (g, n), b in epk8_entries(xdec(src.read('pac/evt/' + f), svrmod)).items():
             if n.isdigit() and int(n) < 10000:
-                if g == 'EVP ':
+                if g.startswith('EVP'):
                     evp[int(n)] = b
-                elif g == 'EVZ ':
+                elif g.startswith('EVZ'):
                     evz[int(n)] = b
     return evp, evz
 
@@ -464,12 +483,12 @@ def is_static(m):
 
 # ============================================================================ convert
 
-def convert(evp13, evz13, number, game_pac=None, name=None, bind='rest', progress=None):
+def convert(evp13, evz13, number, game_pac=None, name=None, bind='rest', progress=None, game='wwe13'):
     """-> (evp bytes, evt bytes, report dict)"""
     stock, props11 = stock_2011(game_pac)
     rep = dict(notes=[], warnings=[], dropped=[], dropped_events=collections.Counter())
     e, src_num, nm = convert_evp(evp13, number, stock, props11, name, rep)
-    return convert_tracks(e, evz13, src_num, nm, stock, rep, bind, progress)
+    return convert_tracks(e, evz13, src_num, nm, stock, rep, bind, progress, ik=GAMES[game]['ik'])
 
 
 def convert_evp(evp13, number, stock, props11, name, rep):
@@ -512,9 +531,9 @@ def convert_evp(evp13, number, stock, props11, name, rep):
     return e, src_num, nm
 
 
-def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None):
+def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None, ik=True):
     leaves = dict(svrfmt.pach_read(evz13))
-    RT = WR.Retarget(bind)
+    RT = WR.Retarget(bind, ik=ik)
     ents = []
     todo = [(i, leaves[i]) for i in sorted(leaves) if i < len(e['objs']) and blocks(leaves[i])]
     nwork = sum(len(blocks(l)) for _, l in todo) or 1
@@ -655,7 +674,7 @@ def sample11(data, nframes):
 JOINTS = ['root', 'atama', 'l_te', 'r_te', 'l_ashi', 'r_ashi']
 
 
-def validate(evp13, evz13, number, game_pac, step=1, binds=('rest', 'own')):
+def validate(evp13, evz13, number, game_pac, step=1, binds=('rest', 'own'), game='wwe13'):
     """compare the conversion of WWE '13 entrance `number` with 2011's own `number` -> report lines"""
     stock, _ = stock_2011(game_pac)
     if number not in stock:
@@ -681,7 +700,7 @@ def validate(evp13, evz13, number, game_pac, step=1, binds=('rest', 'own')):
     lines.append('  EVP slots equal to 2011 (positions /10): ' + '  '.join('%s %d/%d' % (k, v[0], v[0] + v[1]) for k, v in sorted(st.items())) +
                  '  objects %d vs %d' % (len(ec['objs']), len(e11['objs'])))
     for bind in binds:
-        RT = WR.Retarget(bind)
+        RT = WR.Retarget(bind, ik=GAMES[game]['ik'])
         Sk = WR.Skel11(bind)
         for x, y, off in blocks(leaves.get(0, b'')):
             if y != 0:
@@ -795,20 +814,30 @@ def main(argv):
     svr = _opt(a, '--svrmod')
     gp = _opt(a, '--game-pac')
     step = int(_opt(a, '--step', '1'))
+    game = _opt(a, '--game', 'wwe13')
+    if game not in GAMES:
+        log('error: --game must be one of %s' % ', '.join(GAMES))
+        return 2
     cmd = a.pop(0)
     try:
         sv = find_svrmod(svr)
     except ToolMissing as x:
+        sv = None
+        if svr:
+            log('error: %s' % x)
+            return 2
+    try:
+        evp, evz = read_source(_Folder(a[0]), sv, game)
+    except ToolMissing as x:
         log('error: %s' % x)
         return 2
-    evp, evz = read_source(_Folder(a[0]), sv)
     if cmd == 'list':
         for r in entry_list(evp, evz, gp):
             print('%4d  %-28s %s objects %d props %s in_2011 %s' % (r['number'], r['name'], r['frames'], r['objects'], r['props'], r['in_2011']))
     elif cmd == 'convert':
         n, num, out = int(a[1]), int(a[2]), a[3]
         os.makedirs(out, exist_ok=True)
-        p, t, rep = convert(evp[n], evz[n], num, gp)
+        p, t, rep = convert(evp[n], evz[n], num, gp, game=game)
         open(os.path.join(out, '%d_evp.bin' % num), 'wb').write(p)
         open(os.path.join(out, '%d_evt.bin' % num), 'wb').write(t)
         for k in ('notes', 'warnings', 'dropped'):
@@ -816,7 +845,7 @@ def main(argv):
                 print(k[:-1] if k != 'dropped' else k, l)
     elif cmd == 'validate':
         for n in a[1:]:
-            for l in validate(evp[int(n)], evz[int(n)], int(n), gp, step):
+            for l in validate(evp[int(n)], evz[int(n)], int(n), gp, step, game=game):
                 print(l)
     else:
         print(__doc__)

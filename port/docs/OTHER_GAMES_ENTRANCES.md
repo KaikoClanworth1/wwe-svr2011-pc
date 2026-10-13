@@ -21,13 +21,13 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | game | disc id | entrances | converter | status |
 |---|---|---|---|---|
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
-| SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, converted offline (Andre 4109), not played yet |
+| SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
 | SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, converted offline (4062, 4317), not played yet |
 | SvR 2010 (X360) | 54510844 | 203 (191 in 2011) | `svr10_entrance.py` | ready, played in game (Mr. Kennedy) |
-| WWE '12 (X360) | 54510890 | 247 (149 in 2011) | - | researched: WWE '13's converter without IK (to do) |
+| WWE '12 (X360) | 54510890 | 247 (149 in 2011) | `wwe13_entrance.py --game wwe12` | ready, validated offline (Rey 123, Austin 101: 1-2 cm) |
 | WWE '13 (X360) | 545108B4 | 317 (150 in 2011) | `wwe13_entrance.py` | ready, validated offline (135 shared entrances), not played yet; titantrons need Bink 2 |
-| WWE 2K14 (X360) | 545408B2 | 347 | - | researched: WWE '13's converter + an EPAC reader (to do) |
+| WWE 2K14 (X360) | 545408B2 | 347 | `wwe13_entrance.py --game wwe2k14` | ready, validated offline on segments 2K14 did not re-cut (1-2 cm); titantrons need Bink 2 |
 
 ## SmackDown! Here Comes the Pain (PS2)
 
@@ -144,7 +144,10 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
   `w13_retarget` with IK off); cameras as WWE '13 (exact); 87 of 90 event kinds as in '13.
 - **Props:** 35 of 44 exist in 2011; missing Del Rio's car 2636, 2649, DLC 2653-2658. **Pyro:**
   2011's format. **Titantrons:** Bink 1 (21 at 640x640, not tried). **Themes:** Wwise `Music.pck`.
-- **Converter:** to do: a WWE '12 switch in `wwe13_entrance.py` (EVZ reader, IK off).
+- **Converter:** `wwe13_entrance.py --game wwe12` (`entrance_port.py` game `wwe12`; plain pacs, no
+  svrmod needed; `Retarget(ik=False)`). Validated against 2011's own 123 Rey Mysterio and 101 Steve
+  Austin: root exact, head / hands / feet median 0.3-2.2 cm (95%: 1-8 cm), EVP slots 162-167 of
+  168 equal. WWE '12-only event kinds (char 31/t1 ...) are dropped and reported.
 
 ## WWE '13 (Xbox 360)
 
@@ -194,8 +197,12 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
 - **Props:** 65 used: 32 in 2011, 9 from '13, 23 new (boned props would be static). **Pyro:** 444
   sets, copy into PCE6 / LPE6. **Titantrons:** 116 Bink 2 (blocked as for '13). **Themes:**
   probably `Game_Sound_M.pck` (map unknown).
-- **Converter:** to do: `wwe13_entrance.py` with a 2K14 switch (EPAC reader, leaf ids, the edge
-  cases above).
+- **Converter:** `wwe13_entrance.py --game wwe2k14` (`entrance_port.py` game `wwe2k14`; the shared
+  reader takes EPK8 and EPAC, kind-0 groups / 3 in EPAC; generic 25500 -> 13902; odd tails replaced
+  by the standard tail; leaf id strings ignored). Validated against 2011's 101 / 123: segments 2K14
+  kept as they were match within 1-2 cm (feet 0.6-0.9 cm); re-cut segments (other frame counts,
+  e.g. Austin x5, Rey x5-x20) differ, as expected. Not converted: boned/cloth prop motion, pyro,
+  Bink 2 titantrons, themes.
 
 ## Per-attire entrances and entrance outfits (game side)
 
