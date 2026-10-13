@@ -22,10 +22,22 @@
 // down it leaves the match.)
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <string>
 
 namespace svr2011 {
 
 void InstallOnlineCas(const std::filesystem::path& saves);
+
+// Other players' Created Superstar pictures in the online lobby
+// (online_cpu.cpp): the 256 x 512 render of attire `attire` of `owner`'s
+// Created Superstar `id`, from its owner over P2P (once per version: kept in
+// Saves\.online\pictures by its hash). nullptr while it's being fetched -
+// the first ask starts it - or when nobody had it (asked again after 15 s).
+const std::string* OnlinePicture(uint64_t owner, uint32_t id, uint32_t attire);
+// A Created Superstar of this game whose .cas a picture object can read (it
+// then shows the render given instead: online_cpu.cpp); -1 none.
+int OnlineLocalCaw();
 
 }  // namespace svr2011
