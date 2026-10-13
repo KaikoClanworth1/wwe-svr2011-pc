@@ -119,18 +119,37 @@ void Install() {
   Status("Installed into " + PathStr(dir) + ": the attire is on CHANGE ATTIRE from the next game start.");
 }
 
-// Other installed attire mods taking the same superstar and slot (the first A-Z wins).
-std::string Conflict() {
+// The attires of a superstar that installed, switched-on attire mods ask for (attire=1-4; this mod's own folder and
+// "disabled" ones left out): slot -> the first mod's name (A-Z by folder, as the game and the launcher take them).
+// The rule (game, launcher, Android): an attire is taken by the superstar's own pac or by such a mod; two mods on one
+// attire clash - the launcher moves the newer to the next free attire (neither), or asks to switch one off.
+std::map<int, std::string> ModAttires(int star) {
+  std::map<int, std::string> out;
   std::error_code ec;
-  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Attires", ec)) {
-    if (!e.is_directory(ec) || PathStr(e.path().filename()) == ModId() || fs::exists(e.path() / L"disabled", ec)) continue;
+  std::vector<fs::path> dirs;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Attires", ec))
+    if (e.is_directory(ec)) dirs.push_back(e.path());
+  std::sort(dirs.begin(), dirs.end());
+  for (const auto& d : dirs) {
+    if (PathStr(d.filename()) == ModId() || fs::exists(d / L"disabled", ec)) continue;
     Bytes t;
-    if (!ReadFile(PathStr(e.path() / L"manifest.txt"), t)) continue;
-    const std::string s(t.begin(), t.end());
-    if (Value(s, "superstar") == std::to_string(g_at.star) && g_at.slot && Value(s, "attire") == std::to_string(g_at.slot))
-      return PathStr(e.path().filename());
+    if (!ReadFile(PathStr(d / L"manifest.txt"), t)) continue;
+    const std::string m(t.begin(), t.end());
+    if (Value(m, "type") != "attire" || Value(m, "superstar") != std::to_string(star)) continue;
+    const int a = std::atoi(Value(m, "attire").c_str());
+    if (a < 1 || a > 4) continue;
+    const std::string name = Value(m, "name");
+    out.emplace(a, name.empty() ? PathStr(d.filename()) : name);
   }
-  return "";
+  return out;
+}
+// The lowest attire neither in the superstar's pac nor asked for by a mod (0: none of the 4).
+int NextFreeAttire(int star) {
+  const auto now = CurrentAttires(star);
+  const auto mods = ModAttires(star);
+  for (int a = 1; a <= 4; ++a)
+    if (std::find(now.begin(), now.end(), a) == now.end() && !mods.count(a)) return a;
+  return 0;
 }
 
 void Problems(std::vector<Problem>& p) {
@@ -158,10 +177,20 @@ void Problems(std::vector<Problem>& p) {
     const auto now = CurrentAttires(g_at.star);
     if (!g_at.slot && now.size() >= 4)
       p.push_back(Error("The superstar already has 4 attires - the game's limit.", "Replace one of them instead."));
-    if (g_at.slot && std::find(now.begin(), now.end(), g_at.slot) == now.end())
+    const auto mods = ModAttires(g_at.star);
+    const int next = NextFreeAttire(g_at.star);
+    const StarInfo* who = StarById(g_at.star);
+    const std::string star = who ? who->name : "superstar " + std::to_string(g_at.star);
+    if (g_at.slot && mods.count(g_at.slot)) {
+      p.push_back(Warning("Attire " + std::to_string(g_at.slot) + " of " + star + " is already used by \"" + mods.at(g_at.slot) + "\" (installed). " +
+                              (next ? "If you install this, the launcher moves it to attire " + std::to_string(next) + "."
+                                    : star + " has no free attire (4 at most): the launcher will ask to switch one off."),
+                          next ? "Pick attire " + std::to_string(next) + " (or A new attire) now." : "Switch one attire mod off in the launcher's Mods tab."));
+    } else if (g_at.slot && std::find(now.begin(), now.end(), g_at.slot) == now.end()) {
       p.push_back(Warning("The superstar has no attire " + std::to_string(g_at.slot) + " now: this adds it as attire " + std::to_string(g_at.slot) + "."));
-    if (const std::string c = Conflict(); !c.empty())
-      p.push_back(Warning("The installed attire mod " + c + " takes the same attire: the first by name (A-Z) wins."));
+    }
+    if (!g_at.slot && !next && now.size() < 4)
+      p.push_back(Error(star + " has no free attire (4 at most): installed attire mods use the rest.", "Replace one of the attires, or switch an attire mod off in the launcher's Mods tab."));
   }
   if (!g_at.name[0]) p.push_back(Warning("No name: CHANGE ATTIRE shows ATTIRE N."));
 }
@@ -197,12 +226,29 @@ void Draw() {
     for (int a : now) list += (list.empty() ? "" : ", ") + std::to_string(a);
     ImGui::TextDisabled("Attires in the model pac: %s (of 4; some may be locked in the game)", list.empty() ? "none found" : list.c_str());
     if (ImGui::RadioButton("A new attire", g_at.slot == 0)) g_at.slot = 0, Touch();
+    const auto mods = ModAttires(g_at.star);
     for (int a = 1; a <= 4; ++a) {
       ImGui::SameLine();
       const bool exists = std::find(now.begin(), now.end(), a) != now.end();
-      if (ImGui::RadioButton(((exists ? "Replace " : "Attire ") + std::to_string(a) + (exists ? "" : " (free?)")).c_str(), g_at.slot == a)) g_at.slot = a, Touch();
-      if (!exists && ImGui::IsItemHovered())
-        ImGui::SetTooltip("No model for it in the superstar's pac: free if the game allows (its attire table decides how many a superstar has).");
+      const bool modded = mods.count(a) > 0;
+      if (ImGui::RadioButton(((exists ? "Replace " : "Attire ") + std::to_string(a) + (modded ? " (a mod's)" : exists ? "" : " (free?)")).c_str(), g_at.slot == a)) g_at.slot = a, Touch();
+      if (ImGui::IsItemHovered()) {
+        if (modded) ImGui::SetTooltip("Used by the installed attire mod \"%s\".", mods.at(a).c_str());
+        else if (!exists) ImGui::SetTooltip("No model for it in the superstar's pac: free if the game allows (its attire table decides how many a superstar has).");
+        else ImGui::SetTooltip("The game's own attire %d: this replaces it.", a);
+      }
+    }
+    const int next = NextFreeAttire(g_at.star);
+    if (g_at.slot && mods.count(g_at.slot)) {
+      ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "Attire %d is already used by \"%s\".", g_at.slot, mods.at(g_at.slot).c_str());
+      if (next) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(("Use attire " + std::to_string(next)).c_str())) g_at.slot = next, Touch();
+      }
+    } else if (g_at.slot && std::find(now.begin(), now.end(), g_at.slot) != now.end()) {
+      ImGui::TextDisabled("Replaces the game's attire %d.", g_at.slot);
+    } else if (!g_at.slot) {
+      ImGui::TextDisabled("%s", next ? ("It becomes attire " + std::to_string(next) + " (the next free one).").c_str() : "No attire is free: replace one instead.");
     }
   }
   if (FileRow("Model (ch.pac)...", g_at.model, "none", kPacFilter, 1, "A character model pac - one of the game's, a superstar mod's or a "
