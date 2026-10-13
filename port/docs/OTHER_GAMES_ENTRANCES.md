@@ -224,6 +224,15 @@ only when it enters first (re-run if the order flipped).
 overlay (src/move_packs.cpp BuildEntryPac, format "movepacks 10") writes pacentry lines into EPAC
 pacs too (4-character names, u32 count x 3, entries packed only when the group's own are).
 Checked in game: 2010 411 (Cena PPV) as 494 - `move packs: prtcls.pac: 2 entries added`, the
-copied prtcls.pac loads, the entrance plays, no crash. Not confirmed yet: a visible difference
-against the same run without the set (screenshots every 1.5 s looked the same) - the open question
-is whether the game draws PCE6 <n> for an added entrance number or needs another table.
+copied prtcls.pac loads, the entrance plays, no crash. A visible difference against the same run without the set was not
+caught (screenshots every 1.5 s looked the same; short bursts fall between them).
+
+How the game finds it (code, so no table is needed): `sub_8275F548` (entrance setup) loads, for a
+wrestler without a created entrance, particle kind 0 with the number from the loaded entrance
+script (`lhz 0(*(entrance + 12))`, the EVP's own number, which the converters set to the new
+number); created entrances load kind 5 (`/PCCH/%04d`) per part number (`sub_82756880`), and kind 7
+the arena's set. `sub_8275F490(kind, n)` -> `sub_82152518` builds the request, `sub_82152B20`
+formats the name from the table at 0x82D60EC0 (kind 0 = `/PCE6/%04d`, 1 `/PCOT`, 7 `/PCCH` ...),
+`sub_826A17D0` checks the entry exists, `sub_826A31B8` loads it. So an added `PCE6/<0nnn>` is
+loaded for entrance nnn; whether every source game's emitter ids match the converted EVT's
+events is checked per game (2010 -> 2011 sets are byte-identical for shared entrances).
