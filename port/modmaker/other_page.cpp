@@ -81,14 +81,16 @@ int g_w13_host = 1;  // tile (RAW: the bundled ones used it)
 Wwe13Options g_w13;
 char g_w13_drop[128] = "";
 char g_w13_name[64] = "";
+bool g_show_arena_tab = false;  // (the Port page handed a file: that tab comes up)
 
 void Wwe13ArenaTab() {
-  ImGui::TextWrapped("A WWE '13 arena (its pac\\bg\\bgNN.pac, compressed or not) rebuilt as a 2011 arena in the "
+  ImGui::TextWrapped("A WWE '12, '13 or 2K14 arena (its pac\\bg\\bgNN.pac, compressed or not; the Port page reads it off "
+                     "the disc) rebuilt as a 2011 arena in the "
                      "place of a host arena, which gives the room, the ring and the aprons. The result opens on the "
                      "Arena page: give it a banner and a name there and save it. This is how RAW IS WAR, SmackDown "
                      "1999, Royal Rumble 1998 and King of the Ring 1998 were made.");
   ImGui::Spacing();
-  if (FileRow("WWE '13 arena file...", g_w13_file, "pick a bgNN.pac", kPacFilter, 1) && g_w13_name[0] == 0)
+  if (FileRow("Arena file...", g_w13_file, "pick a bgNN.pac", kPacFilter, 1) && g_w13_name[0] == 0)
     std::snprintf(g_w13_name, sizeof g_w13_name, "%s", IdFrom(FileName(g_w13_file), "wwe13").c_str());
   ImGui::SetNextItemWidth(320 * g_scale);
   if (ImGui::BeginCombo("Host arena (the room it plays in)", g_arenas[g_w13_host].name)) {
@@ -359,6 +361,12 @@ void Svr08Tab() {
 
 }  // namespace
 
+void UseArenaFile(const std::wstring& file, const std::string& name) {
+  g_w13_file = file;
+  std::snprintf(g_w13_name, sizeof g_w13_name, "%s", name.c_str());
+  g_show_arena_tab = true;
+}
+
 // test aid: --convert-w13 <wwe13 bgNN.pac>,<host tile>: converts at start (then --shot shows the editor)
 void TestConvertW13(const std::wstring& file, int host) {
   g_w13_file = file;
@@ -445,7 +453,11 @@ void Draw() {
                       FfmpegExe().empty() ? "not found" : "found");
   Bink2Section();
   if (ImGui::BeginTabBar("other_tabs")) {
-    if (ImGui::BeginTabItem("WWE '12 / '13 arena")) { Wwe13ArenaTab(); ImGui::EndTabItem(); }
+    if (ImGui::BeginTabItem("WWE '12 / '13 / 2K14 arena", nullptr, g_show_arena_tab ? ImGuiTabItemFlags_SetSelected : 0)) {
+      g_show_arena_tab = false;
+      Wwe13ArenaTab();
+      ImGui::EndTabItem();
+    }
     if (ImGui::BeginTabItem("WWE '13 superstar")) { Wwe13StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 superstar")) { Svr10StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 moves")) { Svr10MovesTab(); ImGui::EndTabItem(); }

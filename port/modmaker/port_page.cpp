@@ -301,6 +301,93 @@ void Convert(int k, const std::string& game, const Json& item) {
               });
 }
 
+// ---- "native" games (arenas of WWE '12 / '13 / 2K14): the Mod Maker's own converter (Other games page) takes
+// the arena pac; here the disc's (or folder's) pac\bg\bgNN.pac are listed and the picked one is copied out to it.
+struct NativePac {
+  std::string name;  // bgNN.pac
+  int entry = -1;    // in the disc (-1: g_folder file)
+  uint64_t size = 0;
+};
+std::string g_native_for;
+std::vector<NativePac> g_native;
+int g_native_pick = -1;
+std::string g_native_test;  // (--port-test: the item to use)
+
+void NativeArenas(const std::string& game, const std::string& game_name) {
+  const std::string want = game + "|" + Utf8(Source());
+  if (g_native_for != want) {  // the bg pacs, once per source (the disc's table is in memory: quick)
+    g_native_for = want, g_native.clear(), g_native_pick = -1;
+    if (!g_image.empty()) {
+      svrfmt::Disc disc;
+      if (disc.Open(g_image)) {
+        const int bg = disc.Find("pac/bg");
+        if (bg >= 0)
+          for (int c : disc.At(bg).children)
+            if (const auto& e = disc.At(c); !e.dir && Lower(e.name).rfind("bg", 0) == 0 && Lower(e.name).ends_with(".pac"))
+              g_native.push_back({e.name, c, e.size});
+      }
+    } else {
+      std::error_code ec;
+      for (const auto& e : fs::directory_iterator(fs::path(g_folder) / L"pac" / L"bg", ec)) {
+        const std::string n = Utf8(e.path().filename().wstring());
+        if (e.is_regular_file(ec) && Lower(n).rfind("bg", 0) == 0 && Lower(n).ends_with(".pac")) g_native.push_back({n, -1, e.file_size(ec)});
+      }
+    }
+    std::sort(g_native.begin(), g_native.end(), [](const NativePac& a, const NativePac& b) { return a.name < b.name; });
+  }
+  ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish on the Other games page "
+                     "(host arena, options, Convert).", game_name.c_str());
+  if (g_native.empty()) {
+    ImGui::TextColored(kWarn, "No pac\bg\bgNN.pac found here.");
+    return;
+  }
+  ImGui::SetNextItemWidth(260 * g_scale);
+  const std::string cur = g_native_pick >= 0 ? g_native[size_t(g_native_pick)].name : "pick an arena pac";
+  if (ImGui::BeginCombo("3. The arena", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+    for (int i = 0; i < int(g_native.size()); ++i) {
+      char mb[32];
+      std::snprintf(mb, sizeof mb, "  %.1f MB", g_native[size_t(i)].size / 1048576.0);
+      if (ImGui::Selectable((g_native[size_t(i)].name + mb).c_str(), g_native_pick == i)) g_native_pick = i;
+    }
+    ImGui::EndCombo();
+  }
+  if (!g_native_test.empty()) {  // (test: pick by name)
+    for (int i = 0; i < int(g_native.size()); ++i)
+      if (Lower(g_native[size_t(i)].name) == Lower(g_native_test)) g_native_pick = i;
+    if (g_native_pick < 0) Log("port test: no arena pac " + g_native_test), g_native_test.clear();
+  }
+  ImGui::BeginDisabled(g_native_pick < 0 || Busy());
+  PushAccent();
+  const bool use = ImGui::Button("4. Use this arena (Other games page)", ImVec2(320 * g_scale, 0)) || (!g_native_test.empty() && g_native_pick >= 0 && !Busy());
+  PopAccent();
+  ImGui::EndDisabled();
+  if (!use) return;
+  g_native_test.clear();
+  const NativePac p = g_native[size_t(g_native_pick)];
+  const std::wstring image = g_image, folder = g_folder;
+  const fs::path out = WorkDir() / Wide("Arenas_" + game + "_" + p.name);
+  RunInBackground([p, image, folder, out, game] {
+    Progress("Copying " + p.name + " off the disc ...");
+    Bytes b;
+    bool ok = false;
+    if (p.entry >= 0) {
+      svrfmt::Disc disc;
+      ok = disc.Open(image) && disc.ReadAll(p.entry, b);
+    } else {
+      ok = svrfmt::ReadFile(Utf8((fs::path(folder) / L"pac" / L"bg" / Wide(p.name)).wstring()), b);
+    }
+    std::error_code ec;
+    fs::create_directories(out.parent_path(), ec);
+    if (!ok || !svrfmt::WriteFile(Utf8(out.wstring()), b)) { Status("Could not copy " + p.name + "."); return; }
+    OnUiThread([out, p, game] {
+      Log("port: " + p.name + " -> " + Utf8(out.wstring()) + " (Other games page)");
+      other_page::UseArenaFile(out.wstring(), IdFrom(game + "_" + fs::path(p.name).stem().string(), "arena"));
+      GoTo(PageId::kOther);
+      CacheJob(true, false, out.parent_path());
+    });
+  });
+}
+
 // The converted thing onto its page.
 void OpenResult() {
   const std::string out = g_result["out"].Str(), opens = g_result["opens"].Str();
@@ -378,6 +465,7 @@ void TestStart(const std::string& spec) {
   if (fs::is_directory(src, ec)) g_folder = src;
   else g_image = src;
   g_test_item = p[2];
+  g_native_test = g_kind >= 0 && std::wstring(kKinds[g_kind].script) == L"arena_port.py" ? p[2] : "";
   if (p.size() > 3) std::snprintf(g_options, sizeof g_options, "%s", p[3].c_str());
   g_test_stage = 0;
 }
@@ -428,8 +516,7 @@ void Draw() {
     const std::string status = g["status"].Str();
     ImGui::Text("2. %s: %s", g["name"].Str().c_str(), status == "ready" ? "ready" : status.c_str());
     if (status == "native") {
-      ImGui::TextWrapped("The Mod Maker converts these itself: Other games page.");
-      if (ImGui::Button("Open the Other games page")) GoTo(PageId::kOther);
+      NativeArenas(game, g["name"].Str());
       return;
     }
     if (status != "ready") {

@@ -361,7 +361,9 @@ namespace media_page { extern PageHooks hooks; void TestStart(int arena, const s
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
-namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
+namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host);
+                       // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
+                       void UseArenaFile(const std::wstring& file, const std::string& name); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
 namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
