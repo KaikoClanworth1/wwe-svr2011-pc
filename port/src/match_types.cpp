@@ -1972,21 +1972,25 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   }
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a
   // match the first two people's position, area bytes (+441, +444) and motion;
-  // SVR2011_TEST_CELL_ROOF=<y> - at match frame 180 both are put at that
-  // height (x -15 / +15, z 0), once.
+  // SVR2011_TEST_CELL_ROOF=<y> - from match frame 180 to 240 both are put at
+  // that height (y is down: the roof -60.5), x -30 / +30, z 30 - the real
+  // position vector (*(+304)) and its copy (+288), area +444 10 (the roof).
   if (static const bool cell_log = std::getenv("SVR2011_TEST_CELL") != nullptr; cell_log) {
     const uint32_t frames = Rd32(base + 0x82E3CD0C);
     static uint32_t last = 0;
     static bool moved = false;
     if (frames < last) moved = false;
-    if (static const char* roof = std::getenv("SVR2011_TEST_CELL_ROOF"); roof && !moved && frames >= 180) {
-      moved = true;
+    if (static const char* roof = std::getenv("SVR2011_TEST_CELL_ROOF"); roof && frames >= 180 && frames < 240) {
       const float y = float(std::atof(roof));
       for (uint32_t i = 0; i < 2; ++i)
         if (const uint32_t c = Rd32(base + kChars + i * 4)) {
-          WrF(base + c + 288, i ? 15.0f : -15.0f), WrF(base + c + 292, y), WrF(base + c + 296, 0.0f);
-          REXLOG_INFO("match types: cell test - person {} put at height {}", i, y);
+          const float x = i ? 30.0f : -30.0f, z = 30.0f;
+          if (const uint32_t v = Rd32(base + c + 304)) WrF(base + v, x), WrF(base + v + 4, y), WrF(base + v + 8, z);
+          WrF(base + c + 288, x), WrF(base + c + 292, y), WrF(base + c + 296, z);
+          base[c + 444] = 10;
+          if (!moved) REXLOG_INFO("match types: cell test - person {} put on the roof ({}, {}, {})", i, x, y, z);
         }
+      moved = true;
     }
     if (frames / 60 != last / 60 || frames < last) {
       std::string s;
