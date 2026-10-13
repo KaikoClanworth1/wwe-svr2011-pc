@@ -92,6 +92,7 @@ still being tested.
 ### Matches
 - **Three Stages of Hell sets**: THREE STAGES OF HELL opens a list of sets - NORMAL / FALLS COUNT ANYWHERE / LAST MAN STANDING, NORMAL / FIRST BLOOD / FINISHERS (a fall counts only within 10 s of a finisher or signature), NORMAL / LAST MAN STANDING / SUBMISSION, and HELL IN A CELL: FIRST BLOOD / LAST MAN STANDING / SUBMISSION (1v1, 2v2, triple threat, fatal-4-way). Count-outs no longer end the whole match.
 - **Hell in a Cell: Tables & Ladders**: each cell match (1v1, 2v2, triple threat, fatal-4-way) has a version with tables, ladders and chairs inside the cell (switch mod `hiac_tables_ladders`).
+- **Hell in a Cell: Start on the Roof** (each cell submenu, and PORT RULES online): everyone starts on top of the cell; the game's own ways down end the roof fight (thrown off, through the roof, climbing down), then pins count below (switch mod `hiac_roof_start`).
 - **Steel Cage / Inferno: Weapons Inside**: chairs and hand weapons in the ring, no DQ (switch mods `cage_weapons`, `inferno_weapons`).
 - **Gauntlet Eliminator** (HANDICAP): six superstars, two start, one more each minute (sooner if only one is left), a pin or submission eliminates, the last one standing wins; plus an EXTREME RULES version with weapons and no DQ (switch mod `gauntlet_eliminator`).
 - **6-Man Weapons Everywhere** is every man for himself (it played as a tag match), DQ is really off (the pause menu showed "Press Start Button"), no count-outs, and the floor weapons no longer lie against the barrier.
