@@ -22,8 +22,8 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 |---|---|---|---|---|
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
 | SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, played in game (Andre 3066 as 490) |
-| SmackDown! Shut Your Mouth (PS2) | SLES_512.83 | 114 | `sym_entrance.py` (game sym) | ready, all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
-| SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
+| SmackDown! Shut Your Mouth (PS2) | SLES_512.83 | 114 | `sym_entrance.py` (game sym) | ready, played in game (Hollywood Hogan 3044 as 491); all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
+| SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, played in game (JYD 4080 as 492); all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
 | WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
 | SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
 | WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, played in game (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
@@ -75,7 +75,7 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
   placed into 2011's 5 segments by where the entrant starts (alternates of equal length dropped; a
   1-frame stand-in for an empty segment), camera 0 of 2 (`camera=1` to switch), prop 172 -> 2014, other
   props dropped. All 114 convert offline; Kane 3021 vs HCTP 3007: heights and root paths line up.
-  Not played in game yet; whether 1-frame segments play well is untested.
+  Played in game: Hollywood Hogan 3044 as 491 (test star first, stage -> ramp -> ring, no crash).
 - **Shut Your Mouth:** `PAC/EVTENT.PAC` motion banks 3000-3113 (HCTP's format, but frame records sized
   in halfwords: a byte < 0x80 skips frames, else (b & 0x7f) x 2 bytes) and only the compact `SYDT`
   script (a reader reproduces HCTP's and SvR 2004's full scripts 534/534 and 100/100); 2-7 segments
@@ -87,7 +87,8 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
   5009, bodies re-encoded (`hctp_entrance.conv_char_pose`), face/hand tracks, pyro and ops 24/65/185
   dropped, a 1-frame intro made for the 4 entrances without one, 4077's extra slots dropped. Andre
   4066 vs the svr07 path's 4109: same frames, roots within 0.4, bones ~1 degree except the foot pitch
-  2006 does not store. `list` gives `in_svr07` (prefer the 2007 version when there is one).
+  2006 does not store. `list` gives `in_svr07` (prefer the 2007 version when there is one). Played in
+  game: JYD 4080 as 492 (test star first, stage -> ramp -> ring, no crash).
 - **SvR 2006:** `PAC/EVT.PAC` (a DPAC variant with doubled group counts), 95 entrances 4000-4500; the
   script is 2007/2008's layout little-endian, cameras already 2011's 29-byte keys, floor-level stage;
   bodies need HCTP-style re-encoding; ops 24, 65, 185 differ in size. About two thirds are in SvR
