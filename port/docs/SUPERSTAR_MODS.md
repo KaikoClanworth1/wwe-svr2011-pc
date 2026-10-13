@@ -11,7 +11,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 72.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>`, `attire1..4_entrance=<number>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `pose=<id>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>`, `attire1..4_entrance=<number>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
@@ -265,6 +265,16 @@ the slot. A save made with the mod keeps the player's own edits.
     (`*_SSN_JEFFHARDY_0..2` name calls of 2-3 s, `*_SSP_JEFFHARDY_0..5,9`
     introductions of 8-12 s), which nothing used.
   - It takes priority over `voice=`. `call=` then only picks the commentary.
+- **`pose=<id>`:** the pose its model plays on the character select / VS
+  panel. A motion id (32500 and up), or a superstar id (below 512) to copy that
+  superstar's pose; missing = the base's pose. `sub_8273D4A0(mgr, slot)` picks
+  it: the slot's id in the {id, motion} pairs of DLC_HD/SD.pac MMDL "MMMN"
+  (mgr+1392, 90 pairs; -1 = none), else the next of a rotating list (male
+  32500-32505, female 32510-32515), else 32500. Mods aren't in the pairs, so
+  before this they took a rotating pose. Poses in the table: 32520-32555,
+  32580-32583, 32590-32596 (`SVR2011_TEST_POSE_LOG=1` logs the table;
+  `SVR2011_TEST_POSE_AS=<id>=<mod id>` puts a mod's pose on that superstar's
+  panel, for tests). The select screen is the only place the game uses it.
 - **`height=<scale>`:** its size against the base's, 0.80-1.25 (1.05 = 5%
   taller; missing = the base's own). Record +28 is the superstar's scale, 4.12
   fixed point (4096 = 1.0, most are near it): the skeleton is built with its
