@@ -1815,6 +1815,20 @@ int EntranceForAttire(PPCContext& ctx, uint8_t* base, uint32_t mgr, uint32_t idx
   return n;
 }
 }  // namespace
+// Test aid SVR2011_TEST_CAE_LOG: the entrance block CREATE AN ENTRANCE's page loads
+// (sub_82753570(mgr, out): out = a copy of mgr+36, 280 bytes) - music +12, movie +14,
+// entrance +16, champion +18, multi-title +20, created entrance flag +195.
+REX_EXTERN(__imp__sub_82753570);
+REX_HOOK_RAW(sub_82753570) {
+  const uint32_t out = ctx.r4.u32;
+  __imp__sub_82753570(ctx, base);
+  static const bool on = std::getenv("SVR2011_TEST_CAE_LOG") != nullptr;
+  if (on && out)
+    REXLOG_INFO("[svr2011] cae: block music {} movie {} entrance {} champion {} multi {} created {}", Rd16(base + out + 12),
+                Rd16(base + out + 14), Rd16(base + out + 16), Rd16(base + out + 18), Rd16(base + out + 20),
+                base[out + 195]);
+}
+
 REX_EXTERN(__imp__sub_82756538);
 REX_HOOK_RAW(sub_82756538) {
   const uint32_t mgr = ctx.r3.u32, idx = ctx.r4.u32, part = ctx.r5.u32;
