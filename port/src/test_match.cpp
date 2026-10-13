@@ -3,8 +3,10 @@
 //
 //   SVR2011_TEST_MATCH="people=JOHN CENA,RANDY ORTON arena=11 cpu=all"
 //
-// people: roster names (as the log's "match:" lines print them) or ids,
-// comma-separated, in person order; arena: the arena id (the "match:" line's
+// people: roster names (as the log's "match:" lines print them), ids, or
+// CAW<N> (the Created Superstar in save slot N - enough for the entrances
+// and the ring announcer; the match itself crashed once: the select screen's
+// own CAW set-up isn't done), comma-separated, in person order; arena: the arena id (the "match:" line's
 // "arena N"). The rule stays SVR2011_TEST_RULE's (match_types.cpp). With
 // "route match" (script_input.h) a test goes from the start to that match.
 //
@@ -182,8 +184,17 @@ REX_HOOK_RAW(sub_828BC5E8) {
     const uint32_t match = ctx.r3.u32;
     std::string done;
     for (uint32_t i = 0; i < m.people.size(); ++i) {
-      const uint32_t id = FindSuperstar(base, m.people[i]);
-      if (!id) {
+      // (CAW<N>: the Created Superstar in save slot N, character id N - not
+      // in the roster's record table)
+      const std::string& who = m.people[i];
+      const bool caw = who.size() > 3 && Upper(who.substr(0, 3)) == "CAW" && std::isdigit(uint8_t(who[3]));
+      const uint32_t caw_id = caw ? uint32_t(std::atoi(who.c_str() + 3)) : 0;
+      if (caw && caw_id >= 50) {
+        REXLOG_WARN("test match: no Created Superstar slot {}", caw_id);
+        continue;
+      }
+      const uint32_t id = caw ? caw_id : FindSuperstar(base, who);
+      if (!id && !caw) {
         REXLOG_WARN("test match: no superstar '{}'", m.people[i]);
         continue;
       }
@@ -211,7 +222,8 @@ REX_HOOK_RAW(sub_828BC5E8) {
         slot[-8] = 1;          // (controller: the CPU)
       }
       if (m.all_cpu) slot[-8] = 1;  // (cpu=all: the picks too)
-      done += (done.empty() ? "" : ", ") + std::string(reinterpret_cast<const char*>(Record(base, id) + kName));
+      done += (done.empty() ? "" : ", ") +
+              (caw ? "CAW " + std::to_string(id) : std::string(reinterpret_cast<const char*>(Record(base, id) + kName)));
     }
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
                 Rd32(base + kLive + kArena));
