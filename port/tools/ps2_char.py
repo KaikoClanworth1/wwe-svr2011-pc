@@ -43,6 +43,7 @@ import argparse
 import json
 import math
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -57,6 +58,7 @@ import discfs  # noqa: E402
 SKELETON = json.load(open(os.path.join(HERE, 'svr11_skeleton.json')))
 B11 = {b['name']: b for b in SKELETON['bones']}
 SPECULAR = 48   # colour alpha = specular level (2011 skin: about 40-60)
+CUTOUT_TRIS = 0.15   # an opaque-drawn mesh with more triangle middles on see-through texels is a cut-out too
 
 # a bone's segment: bone -> the child it points at (2011 names)
 SEGMENT = {'koshi': 'mune', 'mune': 'kubi', 'kubi': 'atama'}
@@ -452,7 +454,10 @@ class Yukes:
                         if b[:4] == b'BPE ':
                             b = svrfmt.bpe_decode(b)
                         self._spf[key] = pac(b)
-        n = int('%x' % ch)
+        try:
+            n = int('%x' % ch)
+        except ValueError:   # (PS2 2009 ids aren't decimal digits)
+            return {}
         out = {}
         for key, pics in self._spf.items():
             if n in pics:
@@ -499,8 +504,22 @@ class SYM(Yukes):
             ats[max(ats, default=-1) + 1] = id_
         return chars
 
+    pictures = None   # (picture index -> MENU.PAC entry name; set from the character records: sym_pictures)
+
     def portraits(self, ch):
-        return {}   # (MENU.PAC "MNSP" 0000.. are in the game's own roster order, not the model ids': later)
+        """{'wide': 256 x 128} - MENU.PAC's per-character TIM2s ("0000".., 256 x 128). They are in the game's
+        own order: not the model ids' nor the CHAR record numbers' (record 0 = The Rock, picture 0000 = X-Pac),
+        so none until a record -> picture index is known (self.pictures: {character: picture number})"""
+        if not self.pictures or ch not in self.pictures or not self.disc.exists('PAC/MENU.PAC'):
+            return {}
+        name = '%04d' % self.pictures[ch]
+        for ents in named_groups(self.disc.read('PAC/MENU.PAC', 0, 0x4000)).values():
+            if name in ents:
+                try:
+                    return {'wide': tim2(self.disc.read('PAC/MENU.PAC', *ents[name]))}
+                except BadInput:
+                    return {}
+        return {}
 
     def gear(self, ch, at):
         """the character's first small 6-9 model (glasses, a vest) for its first attire (SYM doesn't say
@@ -596,15 +615,29 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
     D, Q = pose(body['nodes'])
     P = [nd['world'][3, :3] for nd in body['nodes']]
     # textures used -> png
+    def see_through(name, uvs, tris):
+        """an opaque-drawn mesh that is a cut-out all the same (SvR 2004 on alpha-test every mesh: the 2007 Rock's
+        head cap showed white; not JBI / SYM / HCTP, whose alpha means other things): its texture's alpha is see-through-or-solid (not SYM's gloss masks) and many of its
+        triangles' middles fall on see-through texels (not corners: island edges touch a sheet's unused parts)"""
+        img = tex.get(name.lower())
+        if img is None or not tris:
+            return False
+        al = img[..., 3]
+        if float(((al < 16) | (al > 240)).mean()) < 0.9:
+            return False
+        h, w = al.shape
+        mids = [((uvs[i][0] + uvs[j][0] + uvs[k][0]) / 3, (uvs[i][1] + uvs[j][1] + uvs[k][1]) / 3) for i, j, k in tris]
+        return sum(1 for u, v in mids if al[int(v * h) % h, int(u * w) % w] < 128) / len(mids) > CUTOUT_TRIS
+
     def cutout(sub):
         """whether a PS2 submesh is drawn blended (hair cards, hair lines, laces): its material's flags (u32 at
-        +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear); SvR 2004 on: 0x05 opaque,
+        +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear) in a model that has 0x07; SvR 2004 on: 0x05 opaque,
         0x115 / 0x117 blended (bit 0x10: hair, strings, the blood overlay)"""
         mat = sub.get('mat') or b''
         if len(mat) < 0x28:
             return False
         f = u32(mat, 0x24)
-        return not f & 0x02 if old_materials else bool(f & 0x10)
+        return (not f & 0x02 and mixed) if old_materials else bool(f & 0x10)
 
     def png(name, keep_alpha):
         """-> a PS2 texture's png. 2011's skin shader reads the colour alpha as the specular level, its hair
@@ -621,6 +654,9 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
         return fn
 
     meshes = []
+    # (JBI / SYM / HCTP: 0x05 means blended only in a model that also has 0x07 - the Rock's and Austin's
+    # models are all 0x05, all solid)
+    mixed = any(u32(sub['mat'], 0x24) & 0x02 for m in body['meshes'] for sub in m['subs'] if len(sub.get('mat') or b'') >= 0x28)
     for src, nmap in [(body, None)] + [(p, part_nodes(p, body)) for p in parts]:
         for mi, m in enumerate(src['meshes']):
             # vertices to the A-pose, weights to 2011 names
@@ -669,7 +705,7 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
                             tris.append([a, b, c])
                 if not tris:
                     continue
-                kind = 'eye' if 'eye' in tname.lower() else 'hair' if cutout(sub) else 'skin'
+                kind = 'eye' if 'eye' in tname.lower() else 'hair' if cutout(sub) or (not old_materials and see_through(tname, uvs, tris)) else 'skin'
                 mesh = dict(name='%s_m%d_%d' % (src['name'] or tag, mi, si), kind=kind, positions=pos, normals=nrm,
                             uvs=uvs, bones=bones, weights=wts, triangles=tris, _tex=tname)
                 meshes.append(mesh)
@@ -701,6 +737,12 @@ def write_renders(pics, out_dir):
         im = Image.fromarray(pics['bust'], 'RGBA').resize((256, 256), Image.LANCZOS)
         open(os.path.join(out_dir, 'render_small.dds'), 'wb').write(svr08_char.dds_encode(im, 'DXT5'))
         out['render_small.dds'] = 'bust'
+    if 'bust' not in pics and 'wide' in pics:   # (SYM: the wide picture's middle as the bust)
+        wide = Image.fromarray(pics['wide'], 'RGBA')
+        x = (wide.width - wide.height) // 2
+        im = wide.crop((x, 0, x + wide.height, wide.height)).resize((256, 256), Image.LANCZOS)
+        open(os.path.join(out_dir, 'render_small.dds'), 'wb').write(svr08_char.dds_encode(im, 'DXT5'))
+        out['render_small.dds'] = 'wide (middle)'
     if 'wide' in pics:
         im = Image.fromarray(pics['wide'], 'RGBA')
         im = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
@@ -746,38 +788,78 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
     if id_ not in chars:
         raise BadInput('no character %x (have %s)' % (id_, ' '.join('%x' % c for c in sorted(chars))))
     ats = sorted(chars[id_]) if str(attire) == 'all' else [int(x) for x in str(attire).split(',') if x.strip()]
+    for at in ats:
+        if at not in chars[id_]:
+            raise BadInput('character %x has no attire %d' % (id_, at))
     os.makedirs(out_dir, exist_ok=True)
+    # an attire over the game's vertex page budget: its gear version is left out, else its next lighter body
+    # (2006 and later keep a match body and a lighter one), until the builder takes it
+    body_of = {at: chars[id_][at] for at in ats}
+    no_gear = set() if gear else set(ats)
+    fitted = []
+    for _ in range(12):
+        rep, rc = build_pac(g, id_, ats, body_of, no_gear, out_dir, template)
+        m = re.search(r'(\d{8}): (\d+) vertex pages', rep.get('error') or '') if not rep.get('ok') else None
+        if not m:
+            break
+        k, kind = int(m.group(1)[4:6]), int(m.group(1)[6:8])
+        if not 0 <= k < len(ats):
+            break
+        at = ats[k]
+        if kind == 4 and at not in no_gear:
+            no_gear.add(at)
+            fitted.append('attire %d: %s pages with its gear - the gear version left out' % (at, m.group(2)))
+            continue
+        lighter = [i for i in sorted(g.groups().get(group_key(g, body_of[at]), []), key=lambda i: -g.shape(i)[0])
+                   if g.shape(i)[0] < g.shape(body_of[at])[0] and g.shape(i)[0] >= g.GEAR_VERTS]
+        if not lighter:
+            break
+        fitted.append('attire %d: %s pages - the lighter body %0*x instead of %0*x' % (
+            at, m.group(2), 8 if lighter[0] > 0xFFFF else 4, lighter[0], 8 if body_of[at] > 0xFFFF else 4, body_of[at]))
+        body_of[at] = lighter[0]
+    rep['fitted'] = fitted
+    json.dump(rep, open(os.path.join(out_dir, 'report.json'), 'w'), indent=1)
+    print(json.dumps(rep))
+    return rc
+
+
+def group_key(g, id_):
+    """the (character, attire) a model id belongs to, as g.groups() keys them"""
+    for k, ids in g.groups().items():
+        if id_ in ids:
+            return k
+    return None
+
+
+def build_pac(g, id_, ats, body_of, no_gear, out_dir, template):
+    """model.json for these attires (body_of: attire -> model id; no_gear: attires without the gear version)
+    and svr11_build -> (report, exit code)"""
     model = dict(version=1, template=os.path.abspath(template), attires=[])
     infos = []
     joints = None
     for at in ats:
-        if at not in chars[id_]:
-            raise BadInput('character %x has no attire %d' % (id_, at))
-        mid = chars[id_][at]
+        mid = body_of[at]
+        tag = '%0*x' % (8 if mid > 0xFFFF else 4, mid)
         body, parts, tex = g.model(mid)
-        a, info = build_model(body, parts, tex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid), g.old_materials)
+        a, info = build_model(body, parts, tex, out_dir, template, tag, g.old_materials)
         joints = joints or a['joints']
-        entry = dict(name=None, meshes=a['meshes'])
-        gids = g.gear(id_, at) if gear else []
+        entry = dict(meshes=a['meshes'])
+        gids = g.gear(id_, at) if at not in no_gear else []
         if gids:   # (the attire wearing its gear: the game's entrance model)
             gparts, gtex = [], dict(tex)
             for gid in gids:
                 gb, gp, gt = g.model(gid)
                 gparts += [gb] + gp
                 gtex.update(gt)
-            ga, _ = build_model(body, parts + gparts, gtex, out_dir, template, '%0*x' % (8 if mid > 0xFFFF else 4, mid), g.old_materials)
+            ga, _ = build_model(body, parts + gparts, gtex, out_dir, template, tag, g.old_materials)
             entry['entrance_gear'] = dict(meshes=ga['meshes'])
         model['attires'].append(entry)
-        infos.append(dict(attire=at, model_id='%0*x' % (8 if mid > 0xFFFF else 4, mid), raw_name=body['name'],
-                          gear=['%04x' % x for x in gids], **info))
-    for a in model['attires']:
-        a.pop('name')
+        infos.append(dict(attire=at, model_id=tag, raw_name=body['name'], gear=['%04x' % x for x in gids], **info))
     model['joints'] = joints
     renders = write_renders(g.portraits(id_), out_dir)
     mj = os.path.join(out_dir, 'model.json')
     json.dump(model, open(mj, 'w'))
-    pac_out = os.path.join(out_dir, 'ch.pac')
-    r = subprocess.run([sys.executable, os.path.join(HERE, 'svr11_build.py'), mj, pac_out,
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'svr11_build.py'), mj, os.path.join(out_dir, 'ch.pac'),
                         os.path.join(out_dir, 'build_report.json')], capture_output=True, text=True)
     try:
         rep = json.loads(r.stdout)
@@ -786,9 +868,7 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
     rep.update(game=g.game, id='%x' % id_, sources=infos, scale=1.0, renders=renders,
                height_m=max((i['height_m'] or 0) for i in infos),
                bones_folded=sorted({f for i in infos for f in i['bones_folded']}))
-    json.dump(rep, open(os.path.join(out_dir, 'report.json'), 'w'), indent=1)
-    print(json.dumps(rep))
-    return r.returncode
+    return rep, r.returncode
 
 
 def list_disc(path):
