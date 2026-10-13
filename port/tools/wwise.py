@@ -97,7 +97,7 @@ class Pck:
                     p += 8 + ln
         return self._objs
 
-    def event_streams(self, name):
+    def event_streams(self, name, streams=None):
         """event -> [stream source ids] through its play actions and containers"""
         objs = self.objs()
         ev = objs.get(fnv(name))
@@ -125,7 +125,7 @@ class Pck:
                 t, do = objs[o]
                 if t == 2:
                     for off in (20, 16, 12, 8, 24):   # (the source id: a stream the package has)
-                        if off + 4 <= len(do) and struct.unpack_from('>I', do, off)[0] in self.streams:
+                        if off + 4 <= len(do) and struct.unpack_from('>I', do, off)[0] in (streams or self.streams):
                             out.append(struct.unpack_from('>I', do, off)[0])
                             break
                 else:
@@ -153,12 +153,14 @@ def find_vgmstream(arg=None):
     return None
 
 
-def theme(pck, events, out_mp3, work, vgmstream=None, lufs=-24.0):
+def theme(pck, events, out_mp3, work, vgmstream=None, lufs=-24.0, stream_pck=None):
     """the first of `events` with a stream -> mp3 at `lufs`. -> (event, note) or (None, why)"""
     import svr10_superstar as S
     pk = pck if isinstance(pck, Pck) else Pck(pck)
+    # (WWE 2K14: the events in one package, Game_Sound_E_S.pck, their streams in another, Game_Sound_M.pck)
+    sp = pk if stream_pck is None else stream_pck if isinstance(stream_pck, Pck) else Pck(stream_pck)
     for ev in events:
-        sids = pk.event_streams(ev)
+        sids = pk.event_streams(ev, sp.streams)
         if not sids:
             continue
         vg = find_vgmstream(vgmstream)
@@ -166,7 +168,7 @@ def theme(pck, events, out_mp3, work, vgmstream=None, lufs=-24.0):
             return None, '%s found, but no vgmstream-cli to decode Wwise Vorbis (opt in: --vgmstream)' % ev
         wem = os.path.join(work, 'theme.wem')
         wav = os.path.join(work, 'theme.wav')
-        open(wem, 'wb').write(pk.stream(sids[0]))
+        open(wem, 'wb').write(sp.stream(sids[0]))
         r = subprocess.run([vg, '-o', wav, wem], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if r.returncode or not os.path.exists(wav):
             return None, 'vgmstream could not decode %s' % ev
