@@ -1,9 +1,13 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "pac.h"
 
+// (zlib: the launcher's inflate, linked into the Mod Maker and svrmod only -
+// SVRFMT_INFLATE; the game, which builds this file too, reads no ZLIB entries)
+#ifdef SVRFMT_INFLATE
 extern "C" {
 #include "../../launcher/unzip.h"
 }
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -189,9 +193,14 @@ Bytes BpeEncode(const Bytes& raw) {
 // unpacked size, then a zlib stream (2-byte header, deflate); stored as is
 // when the sizes are equal. A bare zlib stream (0x78 0x01/9C/DA) also occurs.
 static bool ZlibUnpack(const Bytes& in, size_t at, size_t packed, size_t usize, Bytes& out) {
+#ifdef SVRFMT_INFLATE
   if (at + packed > in.size() || packed < 2) return false;
   out.assign(usize, 0);
   return usize && unzip_inflate(&in[at + 2], packed - 2, out.data(), usize);
+#else
+  (void)in, (void)at, (void)packed, (void)usize, (void)out;
+  return false;
+#endif
 }
 
 Bytes Unpack(const Bytes& entry) {
