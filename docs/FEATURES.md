@@ -141,6 +141,7 @@ still being tested.
 - **Custom arenas on page 2 of SELECT ARENA** stay chosen (going back into the arena select reset to page 1 and the stock arena played); LT / RT turn the pages too.
 - **Universe: superstar mods can't hold a title** (a mod has no Universe place, so the title got stuck with a holder nobody could book); saves where one does get the previous holder back.
 - **Superstar mod slots**: removing a mod in the launcher / Android frees its slot; the game reuses the slots of mods whose folder is gone.
+- **More than 72 superstar mods installed**: the launcher's Mods tab and the Android Mods page say how many fit and mark the ones left out (NOT IN GAME), instead of dropping them silently. Mods already in the game keep their place (so their saves stay right); switching one off gives its place to the next waiting mod at the next start. The game lists the left-out ones in `Mods\Superstars\left_out.txt`.
 - **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
 - **Ground head submissions with Sabu / The Sandman installed** no longer freeze (the game's motion search missed stock moves after a mod's added motions).
 - **Keyboard and mouse button pictures** from WWE 2K15 PC (every key, plus mouse buttons), and the keyboard / PlayStation pictures on character select drawn right.
