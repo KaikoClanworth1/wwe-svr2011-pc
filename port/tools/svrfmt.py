@@ -206,7 +206,9 @@ def epac_read(data):
         typ = data[p:p + 4]
         if typ == b'\0\0\0\0':
             break
-        cnt = struct.unpack_from('<I', data, p + 4)[0] // 3
+        # (entries x 3 in the low 16 bits; the high half is a per-file constant
+        # in SvR 2007 pacs and a flag in WWE '13's EPK8)
+        cnt = (struct.unpack_from('<I', data, p + 4)[0] & 0xFFFF) // 3
         p += 12
         ents = []
         for _ in range(cnt):
