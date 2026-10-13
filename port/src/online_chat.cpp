@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -275,14 +276,32 @@ std::optional<std::string> OnlineChatTakeOwn() {
 }  // namespace svr2011
 
 // The field's cursor set (sub_8272E568(field, cursor, ?)): from 0x82731298 the
-// field opened (or was cleared) - the kept start goes.
+// field opened (or was cleared) - the kept start goes. It also sets the
+// keyboard's "LEFT n" (the characters left: *(field + 1304) + 0x1ABF0, its
+// "changed" + 0x1ABEC - by the layout, +96 of the settings: 1, 2 or 3 lines
+// shown): the chat's is what's left of the whole message, not of the field.
 REX_EXTERN(__imp__sub_8272E568);
 REX_HOOK_RAW(sub_8272E568) {
+  using namespace svr2011;
+  const uint32_t field = ctx.r3.u32;
   if (uint32_t(ctx.lr) == 0x82731298 && ctx.r4.u32 == 0) {
-    std::lock_guard lock(svr2011::g_mutex);
-    svr2011::g_prefix.clear();
+    std::lock_guard lock(g_mutex);
+    g_prefix.clear();
   }
   __imp__sub_8272E568(ctx, base);
+  if (!ChatField(base, field)) return;
+  const char* text = FieldText(base, field);
+  const uint32_t ui = Be32(base + field + 1304), layout = Be32(base + Be32(base + field + 44) + 96);
+  if (!text || !ui || layout < 1 || layout > 3) return;
+  size_t used;
+  {
+    std::lock_guard lock(g_mutex);
+    used = Chars(g_prefix) + Chars(std::string(text, strnlen(text, 64)));
+  }
+  static constexpr uint32_t kLeft[] = {0x1ABF0, 0x1B9F0, 0x1C8F0};  // (44016, 47600, 51440)
+  const uint32_t left = uint32_t(used < kChatMax ? kChatMax - used : 0);
+  Wr32(base + ui + kLeft[layout - 1], left);
+  Wr32(base + ui + kLeft[layout - 1] - 4, 1);
 }
 
 // Backspace (sub_8272EDF0(field, ...)): the field near empty, the kept start
@@ -340,6 +359,7 @@ REX_HOOK_RAW(sub_828A7A28) {
   }
   const auto start = OnlineChatSend(whole);
   if (!start) {
+    REXLOG_INFO("online chat: a message too soon after the last - not sent");
     OnlineChatShow("", "(One message every 1.5 seconds - that one wasn't sent.)");
     ctx.r3.u64 = 0;
     return;
@@ -349,5 +369,14 @@ REX_HOOK_RAW(sub_828A7A28) {
     std::lock_guard lock(g_mutex);
     g_own = whole;
   }
+  // (test aid SVR2011_TEST_CHAT_TWICE: every message is sent again at once - too soon, the note)
+  static const bool twice = std::getenv("SVR2011_TEST_CHAT_TWICE") != nullptr;
+  PPCContext again = ctx;
   __imp__sub_828A7A28(ctx, base);
+  static bool in_again = false;
+  if (twice && !in_again) {
+    in_again = true;
+    sub_828A7A28(again, base);
+    in_again = false;
+  }
 }
