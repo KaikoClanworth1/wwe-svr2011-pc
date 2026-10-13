@@ -34,7 +34,7 @@ bool IsJboy13(const Bytes& b);
 bool Jboy13Read(const Bytes& in, Model& out, std::string* error = nullptr);
 
 struct Convert13Stats {
-  int models = 0, meshes = 0, uvscroll = 0, lightmaps_dropped = 0;
+  int models = 0, meshes = 0, uvscroll = 0, lightmaps_dropped = 0, lightmaps_baked = 0;
 };
 // Scales positions (verts, nodes, spheres) by `scale` and turns the WWE '13
 // materials into SvR2011 yDefault / yUVScroll ones (colours, diffuse,
