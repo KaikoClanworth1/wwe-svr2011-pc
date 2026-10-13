@@ -287,7 +287,8 @@ class Game08(Game09):
         self.g = S.Game.__new__(S.Game)
         self.g.pac, self.g.year = os.path.dirname(misc), 8
         self.g.dat = {}
-        for i, r in pach(ch[(b'CHAR', b'DAT ')]).items():
+        self.raw_dat = pach(ch[(b'CHAR', b'DAT ')])   # (as stored: abilities_port reads the fighting styles, +227 / +228)
+        for i, r in self.raw_dat.items():
             # laid out as a 2010 record (after its 4-byte header) for the shared helpers
             x = bytearray(264)
             x[0:8] = r[4:12]
@@ -519,6 +520,19 @@ def choose_base_old(g, g11, cid):
     return best, 'gender %d, weight class %d, scale %d vs %d' % (gender, wclass, struct.unpack_from('<H', g11.dat[best], 28)[0], scale)
 
 
+def abilities_step(game, g, cid, man, note):
+    """the source's abilities as 2011's (tools/abilities_port.py) into man['abilities']; notes what was mapped
+    or guessed (none: the base's)"""
+    import abilities_port
+    game = {'Game09': 'svr2009', 'Game08': 'svr2008', 'Game07': 'svr2007'}.get(game, game)
+    ratings = [int(x) for x in man['ratings'].split(',')] if man.get('ratings') else None
+    ids, ar = abilities_port.map_abilities(game, cid, g, ratings)
+    if ids:
+        man['abilities'] = ','.join(map(str, ids))
+    for line in abilities_port.report_lines(getattr(g, 'label', game), ids, ar):
+        note(line)
+
+
 def build09(cid, outdir, o, rep):
     S = svr10()
     g9, g11, snd, pac11 = o['src_game'], o['g11'], o['snd'], o['pac11']
@@ -589,7 +603,7 @@ def build09(cid, outdir, o, rep):
     if any(x not in (0, 50) for x in r[:7]):
         man['ratings'] = ','.join(str(max(0, x - 1)) for x in r[:7])
         note('ratings %s %s -> %s' % (g9.label, list(r[:8]), man['ratings']))
-    drop('abilities (%s has none): the base\'s' % g9.label)
+    abilities_step(type(g9).__name__, g9, cid, man, note)
     # moves
     if not o.get('no_moves') and base != i11:
         moveset_step(g9, cid, base, o, work, mod, man, rep)
@@ -1298,7 +1312,7 @@ def buildW(cid, outdir, o, rep):
         r = gw.raw_dat[cid]
         man['ratings'] = ','.join(str(max(0, min(99, r[o] - m))) for o, m in gw.rating_map)
         note('ratings from %s DAT -> %s' % (gw.label, man['ratings']))
-        drop('abilities (%s\'s aren\'t mapped yet): the base\'s' % gw.label)
+        abilities_step(gw.game_id, gw, cid, man, note)
     else:
         drop('ratings, abilities (%s): the base\'s' % gw.no_ratings)
     music, movie, ent, alt = gw.entrance_block(cid)

@@ -235,8 +235,13 @@ layout known, some fields not; **unknown** = not looked at or not found.
 | **Theme** | XACT: `music/DVD_Music.xwb` + cue names in `sound.pac` XACT/MUSI (`%04d_%d`) - **decoded** (`tools/xact.py`) | `sound/music.yaf` id*100, XMA1 - **decoded** | `music1/2.yaf` id*100, XMA1 - **decoded** | `music1.yaf` id*100, XMA2 - **decoded** | `Music.pck` `Play_MUS_%04d_0_0` (bank v56) - **decoded** | `Music.pck` `Play_MUS_%04d_a_b` - **decoded** | events `Play_MUS_%04d_0_0` (PRO music) in `Game_Sound_E_S.pck`, their streams in `Game_Sound_M.pck` - **decoded** (`wwise.theme` stream_pck) |
 | **Titantron** | `%02d.bik`, Bink 1 | Bink 1 | Bink 1 | Bink 1 | Bink 1 (some 640 / 1280) | **Bink 2: can't be converted** | **Bink 2** |
 | **Names** | CHAR/DAT (176 B) +0x1C | CHAR/DAT (232 B) +0x20 | CHAR/DAT (252 B) +38, like 2010 | CHAR/DAT | CHAR/DAT +0x2E | string.pac SDB (ZLIB) | string.pac SDB 60000 + id |
-| **Ratings / abilities** | 2 x 8, small scale; no abilities - **partly** | 8 values | 8 values like 2010; no abilities | 8 values + abilities | 12 values at DAT +4..+15 (copy at +16) - **mapped** to 2011's 7 (+5, +8, +9, +12, +7, +14, +13 [+5]; fitted on 117 shared superstars); abilities not found | not in DAT / PRO (not found) | 14 values at DAT +36..+49 - only loosely like 2011's (re-rated), not mapped |
+| **Ratings / abilities** | 2 x 8, small scale; no abilities - **partly** | 8 values; no ability list: 2 fighting styles (DAT +227 / +228 raw) - **mapped** by style | 8 values like 2010; abilities DAT +232 raw (2011's ids) - **mapped** | 8 values + abilities (+234 raw, 2011's ids) - **mapped** | 12 values at DAT +4..+15 (copy at +16) - **mapped** to 2011's 7 (+5, +8, +9, +12, +7, +14, +13 [+5]; fitted on 117 shared superstars); abilities DAT +260 raw (2011's ids; 14 = Comeback) - **mapped** | ratings not in DAT / PRO (not found); abilities DAT +274 raw - **mapped** | 14 values at DAT +36..+49 - only loosely like 2011's (re-rated), not mapped; abilities DAT +56 raw - **mapped** |
 | **Ids** | the 2008 id space (78 shared) | 0-92 | 2008 id + 100 = 2010/2011 id | 2011 ids | 2011 ids (100-292 the same people), new 322-343 | own | own; CAS-built superstars in `chHeads.pac` (159 Piper, 372-375) - big job |
+
+Abilities: `tools/abilities_port.py` (superstar_port calls it): SvR 2009 .. 2K17 share 2011's ability
+numbering (14 is Comeback from '12 on: mapped to Kip-Up as a guess; 22 Possum Pin -> Leverage Pin); 2K15 +56,
+2K16 +60, 2K17 +64 (raw DAT). SvR 2008's fighting styles and SvR 2007's ratings give a guessed set; the report
+says which were guessed.
 
 ### Converter plan
 
