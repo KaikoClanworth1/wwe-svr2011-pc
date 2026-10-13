@@ -139,6 +139,7 @@ struct PMesh {
   std::vector<uint32_t> idx;
   std::string tex;  // lower case
   bool cutout = false;  // (hair, lashes: alpha tested)
+  bool blood = false;   // a blood overlay (blood_*): drawn only with SetBlood(true)
 };
 struct Bone {
   std::string name;
@@ -200,7 +201,7 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
     Bytes raw = Unpack(k.data);
     if (IsJboy(raw)) {
       Model m;
-      if (JboyRead(raw, m) && m.name.rfind("blood", 0) != 0) {
+      if (JboyRead(raw, m)) {
         if (k.id == 0) models.insert(models.begin(), std::move(m));
         else models.push_back(std::move(m));
       }
@@ -225,12 +226,14 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err) {
     ch.bones.push_back(b);
   }
   for (const Model& m : models) {
-    const bool cutout = m.name.find("hair") != std::string::npos || m.name.find("eyelash") != std::string::npos;
+    const bool blood = m.name.rfind("blood", 0) == 0;
+    const bool cutout = blood || m.name.find("hair") != std::string::npos || m.name.find("eyelash") != std::string::npos;
     for (const Mesh& s : m.meshes) {
       PMesh pm;
       const int slot = DiffuseSlot(s);
       pm.tex = slot >= 0 && slot < int(m.textures.size()) ? Lower(m.textures[slot]) : "color";
       pm.cutout = cutout;
+      pm.blood = blood;
       const size_t vc = s.verts.size();
       pm.pos.resize(vc), pm.nrm.resize(vc), pm.uv.resize(vc), pm.inf.resize(vc);
       auto node_of = [&](int palette_slot) {
@@ -798,6 +801,8 @@ struct GpuMesh {
   UINT count = 0;
   ID3D11ShaderResourceView* tex = nullptr;
   bool cutout = false;
+  bool blood = false;
+  bool blood_missing = false;  // a blood overlay whose texture wasn't found: never drawn
 };
 
 // state: slot 0 the model (track 0), slot 1 the dummy (track 1)
@@ -821,6 +826,7 @@ std::shared_ptr<const Bytes> g_bank;
 float g_yaw = 0.35f, g_pitch = 0.08f, g_zoom = 1;
 V3 g_center{0, 0, 0}, g_pan{0, 0, 0};
 float g_height = 20;
+bool g_blood = false;  // the blood overlays shown
 bool g_frame = false;  // (frame the camera on the next posed frame)
 
 void Release(IUnknown* p) {
@@ -899,6 +905,14 @@ void Upload(Slot& sl, std::shared_ptr<Character> ch) {
     g_dev->CreateBuffer(&ib, &sd, &g.ib);
     g.count = UINT(pm.idx.size());
     g.cutout = pm.cutout;
+    g.blood = pm.blood;
+    // (a blood texture in the model pac is an 8 x 8 white stand-in: the game's real ones are shared, not found yet - not shown)
+    const auto bt = g_char->textures.find(pm.tex);
+    if (pm.blood && (bt == g_char->textures.end() || bt->second.size() < 128 || Le32(&bt->second[16]) <= 16)) {
+      g.blood_missing = true;
+      g_gpu.push_back(g);
+      continue;
+    }
     auto it = g_textures.find(pm.tex);
     if (it == g_textures.end()) {
       auto src = g_char->textures.find(pm.tex);
@@ -1139,6 +1153,7 @@ void Render(int w, int h) {
   ViewProj(float(w) / float(h), viewproj);
   for (const Slot& sl : g_slots)
   for (const GpuMesh& g : sl.gpu) {
+    if (g.blood && (!g_blood || g.blood_missing)) continue;
     D3D11_MAPPED_SUBRESOURCE ms;
     if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
     Cb* c = static_cast<Cb*>(ms.pData);
@@ -1253,6 +1268,16 @@ bool SetMotion(std::shared_ptr<const Bytes> bank, int id, int x, std::string* er
 }
 
 void ClearMotion() { SetMotion(nullptr, -1, 0); }
+
+void SetBlood(bool on) { g_blood = on; }
+bool Blood() { return g_blood; }
+
+bool HasBlood() {
+  for (const Slot& sl : g_slots)
+    for (const GpuMesh& g : sl.gpu)
+      if (g.blood && !g.blood_missing) return true;
+  return false;
+}
 
 Playback& Play() { return g_play; }
 

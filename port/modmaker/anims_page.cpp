@@ -232,6 +232,12 @@ void Controls() {
   ImGui::SliderFloat("##speed", &p.speed, 0.1f, 2.0f, "x%.1f");
   ImGui::SameLine();
   ImGui::Checkbox("Loop", &p.loop);
+  bool blood = char_preview::Blood();
+  if (char_preview::HasBlood()) {
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Blood", &blood)) char_preview::SetBlood(blood);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model's blood overlays, as a bloodied superstar shows them in a match.");
+  }
   ImGui::SameLine();
   if (ImGui::Button("Camera")) char_preview::ResetCamera();
   ImGui::SameLine();

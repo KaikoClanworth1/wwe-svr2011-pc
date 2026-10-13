@@ -39,6 +39,10 @@ Playback& Play();
 // The preview, w x h: left drag turns, right drag tilts, wheel zooms, middle drag pans.
 void Draw(float w, float h);
 void ResetCamera();
+// The blood overlays (the model's blood_* parts, as matches show them) on / off.
+void SetBlood(bool on);
+bool Blood();
+bool HasBlood();  // the model has blood overlays that can be shown (their textures found)
 // The model's size from its feet (a superstar mod's height=, 0.80-1.25; 1 = as
 // made), shown live; the dummy keeps its own. ModelHeight: the model as posed
 // now, unscaled, in game units (1 = 10 cm; 0 until shown).
