@@ -55,6 +55,7 @@ std::string g_result_error;
 char g_options[256] = "";      // extra converter options (advanced)
 // --port-test: the steps run by themselves (list, convert, open)
 std::string g_test_item;
+int g_force_kind = -1;  // (the test's tab: ImGui reports the first tab selected until SetSelected takes)
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
@@ -192,6 +193,13 @@ std::vector<std::wstring> Options() {  // the advanced field, split on spaces ("
   return v;
 }
 
+// An item's handle for convert: "key" (most converters), "id", or entrance_port's "number".
+std::string ItemKey(const Json& item) {
+  for (const char* f : {"key", "id", "number"})
+    if (const std::string v = item[f].Str(); !v.empty()) return v;
+  return {};
+}
+
 void List(int k, const std::string& game) {
   const std::wstring src = Source();
   g_list_for = std::to_string(k) + "|" + game + "|" + Utf8(src);
@@ -214,7 +222,7 @@ void List(int k, const std::string& game) {
 }
 
 void Convert(int k, const std::string& game, const Json& item) {
-  const std::string key = item["key"].Str();
+  const std::string key = ItemKey(item);
   std::string safe;
   for (char c : game + "_" + key) safe += std::isalnum(uint8_t(c)) ? c : '_';
   const fs::path out = WorkDir() / Wide(std::string(kKinds[k].title) + "_" + safe);
@@ -237,14 +245,26 @@ void Convert(int k, const std::string& game, const Json& item) {
   for (auto& o : Options()) args.push_back(o);
   g_result = Json();
   g_result_error.clear();
-  auto run = [k](std::vector<std::wstring> a) {
-    RunToolJson(kKinds[k].script, a, [](int code, const std::string& text) {
+  auto run = [k, out, entrance](std::vector<std::wstring> a) {
+    RunToolJson(kKinds[k].script, a, [out, entrance](int code, const std::string& text) {
     Json j;
     if (!ParseJson(text, j) || j.type != Json::Type::kObject) {
       g_result_error = "the converter stopped (exit " + std::to_string(code) + "): see the log";
       return;
     }
     g_result = std::move(j);
+    if (g_result["out"].Str().empty()) {  // (entrance_port's report has no out / opens: its pack is <out>\pack)
+      Json o;
+      o.type = Json::Type::kString;
+      o.s = Utf8((entrance ? out / L"pack" : out).wstring());
+      g_result.fields.push_back({"out", std::move(o)});
+      if (entrance && g_result["opens"].Str().empty()) {
+        Json m;
+        m.type = Json::Type::kString;
+        m.s = "moves";
+        g_result.fields.push_back({"opens", std::move(m)});
+      }
+    }
     if (code != 0 || !g_result["ok"].Truthy())
       g_result_error = g_result["error"].Str().empty() ? "the conversion failed (exit " + std::to_string(code) + ")" : g_result["error"].Str();
     else
@@ -303,6 +323,14 @@ void OpenResult() {
               : "Installed into Texture Packs\\" + Utf8(p.filename().wstring()) + ": tick it in the launcher's Texture packs tab.");
     return;
   }
+  if (out.empty() || !fs::exists(p, ec)) {
+    Status("The converter didn't say where its result is: see the log.");
+    return;
+  }
+  if (g_test_stage >= 0) {  // (tests never open windows)
+    Log("port test: would open " + out);
+    return;
+  }
   ShellExecuteW(nullptr, L"open", p.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
@@ -344,7 +372,7 @@ void TestStart(const std::string& spec) {
   }
   if (p.size() < 3) return;
   for (int k = 0; k < kKindCount; ++k)
-    if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = k;
+    if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = g_force_kind = k;
   const std::wstring src = Wide(p[1]);
   std::error_code ec;
   if (fs::is_directory(src, ec)) g_folder = src;
@@ -369,8 +397,11 @@ void Draw() {
   ImGui::Spacing();
   if (ImGui::BeginTabBar("kinds")) {
     for (int k = 0; k < kKindCount; ++k)
-      if (ImGui::BeginTabItem(kKinds[k].title, nullptr, g_test_stage == 0 && k == g_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
-        if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
+      if (ImGui::BeginTabItem(kKinds[k].title, nullptr, k == g_force_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (g_force_kind < 0 || g_force_kind == k) {
+          g_force_kind = -1;
+          if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
+        }
         ImGui::EndTabItem();
       }
     ImGui::EndTabBar();
@@ -423,7 +454,7 @@ void Draw() {
   if (g_test_stage == 1 && !Busy() && g_list_for == want && (!g_list.items.empty() || !g_list_error.empty())) {
     if (!g_list_error.empty()) Log("port test: list failed: " + g_list_error), g_test_stage = 3;
     for (int i = 0; g_test_stage == 1 && i < int(g_list.items.size()); ++i)
-      if (g_list.items[size_t(i)]["key"].Str() == g_test_item) {
+      if (ItemKey(g_list.items[size_t(i)]) == g_test_item) {
         Log("port test: " + std::to_string(g_list.items.size()) + " listed; converting " + g_test_item);
         g_pick = i;
         Convert(k, game, g_list.items[size_t(i)]);
@@ -462,8 +493,8 @@ void Draw() {
       const Json& it = g_list.items[size_t(i)];
       const bool have = !it["in_2011"].IsNull();
       if (have && g_hide_have) continue;
-      const std::string name = it["name"].Str().empty() ? it["key"].Str() : it["name"].Str();
-      if (!f.empty() && Lower(name).find(f) == std::string::npos && Lower(it["key"].Str()).find(f) == std::string::npos) continue;
+      const std::string name = it["name"].Str().empty() ? ItemKey(it) : it["name"].Str();
+      if (!f.empty() && Lower(name).find(f) == std::string::npos && Lower(ItemKey(it)).find(f) == std::string::npos) continue;
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       if (ImGui::Selectable((name + "##" + std::to_string(i)).c_str(), g_pick == i, ImGuiSelectableFlags_SpanAllColumns)) g_pick = i;
@@ -492,7 +523,7 @@ void Draw() {
        "--no-moves for superstars. Usually none are needed.");
   ImGui::BeginDisabled(Busy());
   PushAccent();
-  if (ImGui::Button(("4. Convert " + (item["name"].Str().empty() ? item["key"].Str() : item["name"].Str())).c_str())) Convert(k, game, item);
+  if (ImGui::Button(("4. Convert " + (item["name"].Str().empty() ? ItemKey(item) : item["name"].Str())).c_str())) Convert(k, game, item);
   PopAccent();
   ImGui::EndDisabled();
   if (!g_result_error.empty()) ImGui::TextColored(kBad, "%s", g_result_error.c_str());
