@@ -16,7 +16,7 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 
 | Game | Arena files | State | How |
 |---|---|---|---|
-| SvR 2007 (360) | | research | not extracted yet |
+| **SvR 2007 (360)** | `pac/bg/bg<k>.pac`, many arenas each | **ready** | as 2008, plus the host's arena motions |
 | **SvR 2008 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | texture sets moved to 2011's ids, crowd from a 2011 arena (`--pac11`) |
 | **SvR 2009 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | as 2008, plus light numbers remapped |
 | **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
@@ -70,6 +70,27 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
   SummerSlam 4, Survivor Series 7, Royal Rumble 9, Judgment Day 13, Night of
   Champions 14, Bash 15, Extreme Rules 16). Otherwise its own number.
   `--base` changes it.
+
+### SvR 2007
+
+- **Format:** `pac/bg/bg0.pac`-`bg7.pac` each hold several stages: groups
+  `STG<k>` with entries `00NN`. The arenas are 0000-0019, in `bg0`-`bg1`
+  (0020+ are copies); `bg5`-`bg7` are backstage.
+  - The texture sets are 0xC8 / 0xC9, as in 2008.
+  - The crowd is loose models and seat files (0x4E20-0x52FF).
+  - The group count's high 16 bits hold a per-file constant
+    (`svrfmt.epac_read` masks it).
+- **Conversion:** the 2008 path. 2007's crowd pieces and 0x9C40-0x9CFF are
+  left out. Its arena motions (0x7530) crashed the 2011 load, found by
+  swapping entries a group at a time, so they come from the 2011 host.
+- **Tested:** RAW (0001) plays in 2011.
+- **Arenas:** 00 SmackDown, 01 RAW, 02 ECW (?), 04 SummerSlam,
+  05 Unforgiven, 06 No Mercy, 07 Survivor Series, 08 Armageddon,
+  09 Royal Rumble, 10 No Way Out, 11 WrestleMania 22, 12 Backlash,
+  13 Judgment Day, 14 Vengeance, 15 Bash, 16 New Year's Revolution,
+  17 One Night Stand, 18 Cyber Sunday (?), 19 Saturday Night's Main Event
+  (from the texture names).
+- **Pictures:** no VS picture was found for RAW yet, so the banner is plain.
 
 ### SvR 2008
 

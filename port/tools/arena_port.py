@@ -40,7 +40,7 @@ import discfs  # noqa: E402
 import svrfmt  # noqa: E402
 
 GAMES = [
-    {'id': 'svr2007', 'name': "WWE SmackDown vs. Raw 2007", 'platform': 'x360', 'disc_hint': '545107E0', 'status': 'research'},
+    {'id': 'svr2007', 'name': "WWE SmackDown vs. Raw 2007", 'platform': 'x360', 'disc_hint': '545107E0', 'status': 'ready'},
     {'id': 'svr2008', 'name': "WWE SmackDown vs. Raw 2008", 'platform': 'x360', 'disc_hint': '5451080B', 'status': 'ready'},
     {'id': 'svr2009', 'name': "WWE SmackDown vs. Raw 2009", 'platform': 'x360', 'disc_hint': '54510826', 'status': 'ready'},
     {'id': 'svr2010', 'name': "WWE SmackDown vs. Raw 2010", 'platform': 'x360', 'disc_hint': '54510844', 'status': 'ready'},
@@ -85,6 +85,15 @@ SVR2009 = {
     9: ('Royal Rumble', 9), 10: ('No Way Out', None), 11: ('WrestleMania XXIV', None), 12: ('Backlash', None),
     13: ('Judgment Day', 13), 14: ('Night of Champions', 14), 15: ('The Great American Bash', 15),
     16: ('One Night Stand', None), 17: ('Cyber Sunday', None), 18: ('Vengeance', None),
+}
+# SvR 2007: stage number -> (show, 2011 arena of that show). Its arenas are
+# entries STG<k>/00NN of pac/bg/bg<k>.pac (k = NN // 10); 0020+ are copies.
+SVR2007 = {
+    0: ('SmackDown', 0), 1: ('RAW', 1), 2: ('ECW', 2), 4: ('SummerSlam', 4), 5: ('Unforgiven', None),
+    6: ('No Mercy', None), 7: ('Survivor Series', 7), 8: ('Armageddon', None), 9: ('Royal Rumble', 9),
+    10: ('No Way Out', None), 11: ('WrestleMania 22', None), 12: ('Backlash', None), 13: ('Judgment Day', 13),
+    14: ('Vengeance', None), 15: ('The Great American Bash', 15), 16: ("New Year's Revolution", None),
+    17: ('One Night Stand', None), 18: ('Cyber Sunday', None), 19: ("Saturday Night's Main Event", None),
 }
 HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0xEE48, 0xEA6C)
 MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (a bigger file can run out of the arena heap)
@@ -321,18 +330,22 @@ def remap_lights(flags, host_flags):
     return re.sub(rb'l\((\d+)\)', sub, flags), missing
 
 
+def svr2007_path(n):
+    return 'pac/bg/bg%d.pac' % (n // 10)
+
+
 def svr2008_list(disc, table=None):
     items = []
     for n, (show, in11) in sorted((table or SVR2008).items()):
-        path = 'pac/bg/bg%02d.pac' % n
+        path = svr2007_path(n) if table is SVR2007 else 'pac/bg/bg%02d.pac' % n
         if disc.exists(path):
             items.append({'key': 'bg%02d' % n, 'name': show, 'arena': n, 'size': disc.size(path), 'in_2011': in11})
     return items
 
 
 def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008'):
-    table = SVR2009 if game == 'svr2009' else SVR2008
-    year = '2009' if game == 'svr2009' else '2008'
+    table = {'svr2009': SVR2009, 'svr2007': SVR2007}.get(game, SVR2008)
+    year = game[3:]
     warnings, notes, dropped = [], [], []
     try:
         n = int(key[2:]) if key.lower().startswith('bg') else int(key)
@@ -350,14 +363,25 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     name = name or '%s (SvR %s)' % (show, year)
     mod_id = game + '_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
     progress(3, 'reading bg%02d' % n)
-    src = disc.read('pac/bg/bg%02d.pac' % n)
     host = open(find_host(pac11, base), 'rb').read()
-    _, ga, _ = svrfmt.epac_read(src)
     hb, gb, tb = svrfmt.epac_read(host)
     eb = dict(svrfmt.pach_read(gb[0][1][0][1]))
+    if game == 'svr2007':  # one stage of a many-stage pac
+        _, ga, _ = svrfmt.epac_read(disc.read(svr2007_path(n)))
+        stage = next((b for typ, es in ga for nm, b in es if typ.startswith(b'STG') and nm == b'%04d' % n), None)
+        if stage is None:
+            raise BadInput('%s has no stage %04d' % (svr2007_path(n), n))
+    else:
+        _, ga, _ = svrfmt.epac_read(disc.read('pac/bg/bg%02d.pac' % n))
+        stage = ga[0][1][0][1]
     ents = {}
-    for i, x in svrfmt.pach_read(ga[0][1][0][1]):
+    for i, x in svrfmt.pach_read(stage):
+        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF)
+        if game == 'svr2007' and (0x4E20 <= i <= 0x52FF or 0x9C40 <= i <= 0x9CFF):
+            continue
         ents[{0xC8: 0x190, 0xC9: 0x191}.get(i, i)] = x
+    if game == 'svr2007' and 0x7530 in eb:  # its arena motions crashed the 2011 load
+        ents[0x7530] = eb[0x7530]
     if 0x190 not in ents:
         raise RuntimeError('bg%02d: no texture set (0xC8)' % n)
     for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
@@ -499,17 +523,18 @@ def main(argv):
         with discfs.open(a.src) as disc:
             if a.cmd == 'list':
                 lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
-                         'svr2009': lambda d: svr2008_list(d, SVR2009)}
+                         'svr2009': lambda d: svr2008_list(d, SVR2009),
+                         'svr2007': lambda d: svr2008_list(d, SVR2007)}
                 print(json.dumps(lists.get(a.game, bg_list)(disc)))
                 return 0
-            if a.game not in ('svr2010', 'svr2008', 'svr2009'):
+            if a.game not in ('svr2010', 'svr2008', 'svr2009', 'svr2007'):
                 msg = ("WWE '12 / '13 / 2K14 arenas are converted by the Mod Maker itself" if a.game in ('wwe12', 'wwe13', 'wwe2k14')
                        else '%s arenas are not convertible yet (research)' % game['name'])
                 rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'notes': [msg]}
                 print(json.dumps(rep))
                 return 3
             os.makedirs(a.out, exist_ok=True)
-            if a.game in ('svr2008', 'svr2009'):
+            if a.game in ('svr2007', 'svr2008', 'svr2009'):
                 rep = svr2008_convert(disc, a.item, a.out, a.pac11, a.base, a.name, a.game)
             else:
                 rep = svr2010_convert(disc, a.item, a.out, a.base, a.name)
