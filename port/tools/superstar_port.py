@@ -26,6 +26,7 @@ Games:
               ratings, abilities, the moveset and the moves 2011 lacks as a move pack)
     svr2009   SvR 2009 - model (svr08_char.py), renders, theme, titantron, ratings, entrance,
               announcer; the moveset stays the base's for now (the 2009 slot map is next)
+    svr2008   SvR 2008 - the same as 2009 (ids: 2011 id = 2008 id + 100)
     others    listed with status "research" (docs/OTHER_GAMES.md)
 
 --src may be a disc image (read through discfs.py); the files a conversion needs are
@@ -55,7 +56,7 @@ PAC11 = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'Game Files', 'pac'
 GAMES = [
     dict(id='svr2010', name='WWE SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='ready'),
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
-    dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='research'),
+    dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
     dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='research'),
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='research'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='research'),
@@ -158,6 +159,11 @@ class Game09:
     EMD entries named by 2 hex digits of the id + attire + kind; evt/Nyujyo*.pac are EPAC."""
 
     year = 9
+    label = 'SvR 2009'
+    suffix = '_09'
+
+    def id11(self, i):
+        return i
 
     def __init__(self, src):
         S = svr10()
@@ -237,6 +243,77 @@ class Game09:
     def roster(self):
         return [c for c in sorted(self.g.dat) if 100 <= c < 400 and self.named(c)
                 and not self.name(c).upper().startswith(('MOTION', 'MOVES', 'EDIT', 'DLC', 'DUMMY', 'MATERIAL', 'LEGEND MOTEST'))
+                and self.has_chpac(c)]
+
+
+class Game08(Game09):
+    """SvR 2008 (docs/OTHER_GAMES.md): misc.pac CHAR/DAT (232 B: name +0x20, ratings +4..+11,
+    gender +206, weight class +207, scale +26) and CHAR/PRO (450 B, no entrance block: the theme
+    is music.yaf record id*100, the titantron movies/titantron/%02d.bik, the entrance 4000 + id);
+    renders menu/menuHD.pac MENU/SSFA (512) / SSFB (512 x 256) / SSFC (256), nested PACH by id;
+    ch/chNN.pac with EMD names id attire kind in decimal. 2011 id = 2008 id + 100."""
+
+    year = 8
+    label = 'SvR 2008'
+    suffix = '_08'
+
+    def id11(self, i):
+        return i + 100
+
+    def __init__(self, src):
+        S = svr10()
+        self.src = src
+        misc = src.get('pac/misc.pac')
+        h, g, t = svrfmt.epac_read(open(misc, 'rb').read())
+        ch = {(ty, n): b for ty, es in g for n, b in es}
+
+        def pach(b):
+            return {i: ch_tool.unpack(d) for i, d in svrfmt.pach_read(ch_tool.unpack(b))}
+        self.g = S.Game.__new__(S.Game)
+        self.g.pac, self.g.year = os.path.dirname(misc), 8
+        self.g.dat = {}
+        for i, r in pach(ch[(b'CHAR', b'DAT ')]).items():
+            # laid out as a 2010 record (after its 4-byte header) for the shared helpers
+            x = bytearray(264)
+            x[0:8] = r[4:12]
+            nm = r[0x20:0x60].split(b'\0')[0][:36]
+            x[34:34 + len(nm)] = nm
+            x[170:170 + len(nm)] = nm
+            x[28:30] = r[26:28]
+            x[208], x[209] = r[206], r[207]
+            self.g.dat[i] = bytes(x)
+        self.g.pro = pach(ch[(b'CHAR', b'PRO ')])
+        self.g.ssf, self.g._evp, self.g._waze = {}, None, None
+        self._ssf = None
+        self._evp = None
+
+    def entrance_block(self, i):
+        return (i, i, 4000 + i, 0)
+
+    def ssf(self):
+        if self._ssf is None:
+            self._ssf = {}
+            h, g, t = svrfmt.epac_read(open(self.src.get('pac/menu/menuHD.pac'), 'rb').read())
+            for ty, es in g:
+                for n, b in es:
+                    if ty == b'MENU' and n in (b'SSFA', b'SSFB', b'SSFC'):
+                        outer = svrfmt.pach_read(ch_tool.unpack(b))
+                        for i, d in svrfmt.pach_read(ch_tool.unpack(outer[0][1])):
+                            self._ssf[(n.decode(), i)] = d
+        return self._ssf
+
+    def chpac(self, i):
+        return self.src.get('pac/ch/ch%02d.pac' % i)
+
+    def has_chpac(self, i):
+        return self.src.has('pac/ch/ch%02d.pac' % i)
+
+    def titantron(self, n):
+        return self.src.get('movies/titantron/%02d.bik' % n)
+
+    def roster(self):
+        return [c for c in sorted(self.g.dat) if c < 100 and self.named(c)
+                and not self.name(c).upper().startswith(('MOTION', 'MOVES', 'EDIT', 'DLC', 'DUMMY'))
                 and self.has_chpac(c)]
 
 
@@ -326,13 +403,26 @@ def write_mod(mod, man, out_svrmod):
     return txt
 
 
+def choose_base_old(g, g11, cid):
+    """the playable 2011 superstar of the same gender and weight class with the closest body scale
+    (the 2008-family profiles use another move-id layout, so moves aren't compared)"""
+    S = svr10()
+    r = g.g.dat[cid]
+    gender, wclass, scale = r[208], r[209], struct.unpack_from('<H', r, 28)[0]
+    cands = [c for c in S.candidates_11(g11) if g11.dat[c][208] == gender]
+    same = [c for c in cands if g11.dat[c][209] == wclass] or cands
+    best = min(same, key=lambda c: abs(struct.unpack_from('<H', g11.dat[c], 28)[0] - scale))
+    return best, 'gender %d, weight class %d, scale %d vs %d' % (gender, wclass, struct.unpack_from('<H', g11.dat[best], 28)[0], scale)
+
+
 def build09(cid, outdir, o, rep):
     S = svr10()
     g9, g11, snd, pac11 = o['src_game'], o['g11'], o['snd'], o['pac11']
     if cid not in g9.g.dat or not g9.named(cid):
-        raise BadInput('SvR 2009 has no superstar %d' % cid)
+        raise BadInput('%s has no superstar %d' % (g9.label, cid))
     name = g9.name(cid)
-    mid = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + '_09'
+    i11 = g9.id11(cid)
+    mid = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + g9.suffix
     work = os.path.join(outdir, '.work_%d' % cid)
     mod = os.path.join(outdir, mid)
     for d in (work, mod):
@@ -341,16 +431,16 @@ def build09(cid, outdir, o, rep):
         os.makedirs(d)
     note, warn, drop = rep['notes'].append, rep['warnings'].append, rep['dropped'].append
     progress(5, 'base superstar')
-    same11 = cid in playable11(g11) and S.norm(g11.name(cid)) == S.norm(name)
+    same11 = i11 in playable11(g11) and S.norm(g11.name(i11)) == S.norm(name)
     if o.get('base'):
         base, why = o['base'], 'option'
     elif same11:
-        base, why = cid, '2011 has him: his own moves, entrance and commentary'
+        base, why = i11, '2011 has him: his own moves, entrance and commentary'
     else:
-        base, why = S.choose_base(g9.g, g11, cid)
+        base, why = choose_base_old(g9, g11, cid)
     note('base %d %s (%s)' % (base, g11.name(base), why))
     man = collections.OrderedDict(type='superstar', id=mid, name=name[:31], short=(g9.short(cid) or name)[:31],
-                                  base=base, author='SvR 2009 port', made_with='Port tools (SvR 2009)', version='1.0')
+                                  base=base, author=g9.label + ' port', made_with='Port tools (%s)' % g9.label, version='1.0')
     # renders (and the portrait from the bust)
     progress(15, 'renders')
     ssf = g9.ssf()
@@ -361,30 +451,30 @@ def build09(cid, outdir, o, rep):
     body = ssf.get(('SSFB', cid)) or ssf.get(('SSFA', cid))
     if body:
         open(os.path.join(mod, 'render.dds'), 'wb').write(pad_render(ch_tool.unpack(body)))
-        note('renders: DLC_HD MENU SSFB/SSFC %d (256 x 512 padded to 512)' % cid)
+        note('renders: %s SSFB/SSFC %d (padded to 512 x 512)' % (g9.label, cid))
     else:
-        warn('no 2009 render: the base\'s are used')
+        warn('no %s render: the base\'s are used' % g9.label)
     # model
     progress(25, 'model')
-    if o.get('model') == '11' and same11 and g11.chpac(cid):
-        shutil.copyfile(g11.chpac(cid), os.path.join(mod, 'ch.pac'))
-        note('model: 2011\'s own ch%d.pac (--model 11)' % cid)
+    if o.get('model') == '11' and same11 and g11.chpac(i11):
+        shutil.copyfile(g11.chpac(i11), os.path.join(mod, 'ch.pac'))
+        note('model: 2011\'s own ch%d.pac (--model 11)' % i11)
     elif g9.has_chpac(cid):
         kept, extra = model_from_2008_family(g9.chpac(cid), cid, pac11, os.path.join(mod, 'ch.pac'), portrait, True)
-        note('model: 2009 ch%d.pac attires %s converted (svr08_char)' % (cid, ', '.join('%s -> %s' % k for k in kept)))
+        note('model: %s ch%d.pac attires %s converted (svr08_char)' % (g9.label, cid, ', '.join('%s -> %s' % k for k in kept)))
         for e in extra:
             drop('attire %s (a mod holds 4)' % e)
     else:
-        warn('SvR 2009 has no model for %d: the base\'s is used' % cid)
+        warn('%s has no model for %d: the base\'s is used' % (g9.label, cid))
     # ratings
     r = g9.g.dat[cid]
     if any(x not in (0, 50) for x in r[:7]):
         man['ratings'] = ','.join(str(max(0, x - 1)) for x in r[:7])
-        note('ratings 2009 %s -> %s' % (list(r[:8]), man['ratings']))
-    drop('abilities (SvR 2009 has none): the base\'s')
+        note('ratings %s %s -> %s' % (g9.label, list(r[:8]), man['ratings']))
+    drop('abilities (%s has none): the base\'s' % g9.label)
     # moves
-    if not o.get('no_moves') and base != cid:
-        drop('moveset: the base\'s for now (2009 -> 2011 slot map not done yet)')
+    if not o.get('no_moves') and base != i11:
+        drop('moveset: the base\'s for now (%s -> 2011 slot map not done yet)' % g9.label)
     # entrance
     progress(55, 'entrance')
     music, movie, ent, alt = g9.entrance_block(cid)
@@ -393,7 +483,7 @@ def build09(cid, outdir, o, rep):
     else:
         e, via = entrance_from_names([g9.evp().get(ent), name, g9.short(cid)], g11)
         be = g11.entrance_block(base)[2]
-        if not e and base != cid:
+        if not e and base != i11:
             e, via = (483 if r[208] else 522), 'generic (2011 has none of his)'
         if e and e != be:
             man['entrance'] = e
@@ -408,26 +498,28 @@ def build09(cid, outdir, o, rep):
             note('theme: music yaf record %d -> theme.mp3 (%.1f LUFS %+.1f dB)' % (m * 100, src, gain))
             break
     else:
-        warn('no 2009 theme (music id %d)' % music)
+        warn('no %s theme (music id %d)' % (g9.label, music))
     progress(85, 'titantron')
     for m in (movie, cid):
         p = g9.titantron(m) if m not in (0, 255) else None
         if p:
             shutil.copyfile(p, os.path.join(mod, 'movie.bik'))
             man['movie'] = 'movie.bik'
-            note('titantron: movies/titantron/%03d.bik' % m)
+            note('titantron: movies/titantron/%s' % os.path.basename(p))
             break
     else:
-        warn('no 2009 titantron (movie id %d)' % movie)
+        warn('no %s titantron (movie id %d)' % (g9.label, movie))
     # announcer, commentary
-    nm, clips = snd.announcer(S.ra_candidates(g9.g, g11, cid))
+    class _NoNames:   # (the 2011 record of the same number may be someone else)
+        def name(self, i): return g11.name(i11) if same11 else ''
+    nm, clips = snd.announcer(S.ra_candidates(g9.g, _NoNames(), cid))
     if nm:
         man['announcer'] = nm
         note('announcer %s (2011 has his name calls)' % nm)
     else:
         warn('2011 has no ring-announcer recording of his name')
-    if not (base == cid and snd.commentary(cid)):
-        man['call'] = o.get('call') if o.get('call') is not None else S.CALL.get(cid, 69 if r[208] else 77)
+    if not (base == i11 and snd.commentary(i11)):
+        man['call'] = o.get('call') if o.get('call') is not None else S.CALL.get(i11, 69 if r[208] else 77)
     if o.get('height'):
         man['height'] = '%.2f' % round(min(1.25, max(0.80, float(o['height']))), 2)
     progress(95, 'packing')
@@ -488,8 +580,8 @@ def open_game(game, src):
         g.render_ids = {i for (t, i) in g.ssf if t == 'SSFB'}
         g.entrance_block_ = g.entrance_block
         return g
-    if game == 'svr2009':
-        g = Game09(src)
+    if game in ('svr2009', 'svr2008'):
+        g = (Game09 if game == 'svr2009' else Game08)(src)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
         return g
@@ -505,10 +597,11 @@ def cmd_list(a):
     out = []
     for c in g.roster():
         r = g.dat[c]
-        same = c in play and S.norm(g11.name(c)) == S.norm(g.name(c))
+        i11 = g.id11(c) if hasattr(g, 'id11') else c
+        same = i11 in play and S.norm(g11.name(i11)) == S.norm(g.name(c))
         out.append(dict(key=str(c), name=g.name(c), short=g.short(c), gender='female' if r[208] else 'male',
                         model=bool(g.has_chpac(c)), render=c in g.render_ids,
-                        in_2011=c if same else None))
+                        in_2011=i11 if same else None))
     return out
 
 
@@ -530,7 +623,7 @@ def cmd_convert(a):
     for k in ('base', 'entrance', 'call'):
         if o.get(k) is not None:
             o[k] = int(o[k])
-    fn = {'svr2010': build10, 'svr2009': build09}[a['game']]
+    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09}[a['game']]
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
     progress(100, 'done')
