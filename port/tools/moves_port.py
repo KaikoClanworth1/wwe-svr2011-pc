@@ -67,6 +67,9 @@ GAMES = [
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
+    dict(id='wwe2k15', name='WWE 2K15', platform='x360', disc_hint='545408B6', status='ready'),
+    dict(id='wwe2k16', name='WWE 2K16', platform='x360', disc_hint='315A07D2', status='ready'),
+    dict(id='wwe2k17', name='WWE 2K17', platform='x360', disc_hint='545408BA', status='ready'),
     dict(id='svr2010', name='WWE SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='research'),
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
@@ -242,6 +245,111 @@ class Game14(Game13):
         self.waze = waze_records(raw)
         self._m = None
         self._index = None
+
+
+class Game2K15(Game14):
+    """WWE 2K15: as 2K14 - createmode.pac MOVS/WAZE, ZMVM in mot07 / mot08.pac (YANM records)."""
+
+
+class Game2K16(Game14):
+    """WWE 2K16: as 2K14, its pacs' tables in 20-byte entries (superstar_port.epac20) where read_pac fails
+    (createmode.pac, mot07 / mot08.pac)."""
+
+    def __init__(self, src, svrmod=None):
+        import wwe13_entrance as WE
+        self.WE = WE
+        self.svrmod = WE.find_svrmod(svrmod)
+        self.src = src
+        g = self._read(self.pac_bytes('pac/createmode.pac'))
+        raw = unz(next(b for t, es in g if t == b'MOVS' for n, b in es if n.strip(b'\0 ') == b'WAZE'))
+        self.waze = waze_records(raw)
+        self._m = None
+        self._index = None
+
+    @staticmethod
+    def _read(raw):
+        try:
+            return read_pac(raw)
+        except ValueError:
+            return __import__('superstar_port').epac20(raw)
+
+    def _groups(self):
+        if self._m is None:
+            self._m = []
+            self.skipped = []
+            for rel in self.motion_pacs():
+                try:
+                    self._m += [(t, [(n.strip(b'\0 '), b) for n, b in es]) for t, es in self._read(self.pac_bytes(rel))]
+                except Exception as e:   # noqa: BLE001
+                    self.skipped.append('%s (%s)' % (rel, str(e)[:120]))
+                    log('moves_port: %s skipped: %s' % (rel, e))
+        return self._m
+
+
+class Game2K17(Game14):
+    """WWE 2K17: HSPC pacs (superstar_port.hspc / shdc; names hashed). Move names: createmode.pac's entry
+    that reads as a MOVS/WAZE table (stored, not compressed). Motions: pac/ingame/motion/all_mot<N>.pac,
+    each ids N * 10000.. : SHDC trees (thousands -> hundreds -> the move id) whose leaves are the 2K14
+    motion records (YANM blocks); one variant per move. index() keys them {move id: {0: (pac, path)}}."""
+
+    MOTION_DIR = 'pac/ingame/motion'
+
+    def __init__(self, src, svrmod=None):
+        import wwe13_entrance as WE
+        self.WE = WE
+        self.svrmod = WE.find_svrmod(svrmod)
+        self.src = src
+        sp = __import__('superstar_port')
+        self.SP = sp
+        tables = [waze_records(b) for _, b in sp.hspc(self.pac_bytes('pac/createmode.pac')) if len(b) > 4000]
+        self.waze = max(tables, key=len) if tables else {}
+        self._m = None
+        self._index = None
+        self._raw = {}
+
+    def motion_pacs(self):
+        return [self.MOTION_DIR + '/' + n for n in sorted(self.src.d.listdir(self.MOTION_DIR))
+                if re.match(r'all_mot\d+\.pac$', n.lower())]
+
+    def _tops(self, rel):
+        if rel not in self._raw:
+            self._raw[rel] = self.SP.hspc(self.pac_bytes(rel))
+        return self._raw[rel]
+
+    def index(self):
+        if self._index is None:
+            self._index = {}
+            self.skipped = []
+
+            def walk(b, rel, path, depth):
+                if b[:4] in (b'BPE ', b'ZLIB'):
+                    b = unz(b)
+                if b[:4] == b'SHDC' and depth < 6:
+                    for i, x in self.SP.shdc(b):
+                        walk(x, rel, path + [i], depth + 1)
+                elif path and b.count(b'YANM'):
+                    self._index.setdefault(path[-1], {}).setdefault(0, (rel, path))
+            for rel in self.motion_pacs():
+                try:
+                    for k, (_, b) in enumerate(self._tops(rel)):
+                        walk(b, rel, [k], 0)
+                except Exception as e:   # noqa: BLE001
+                    self.skipped.append('%s (%s)' % (rel, str(e)[:120]))
+                    log('moves_port: %s skipped: %s' % (rel, e))
+        return self._index
+
+    def record(self, cat, path):
+        b = self._tops(cat)[path[0]][1]
+        for i in path[1:]:
+            if b[:4] in (b'BPE ', b'ZLIB'):
+                b = unz(b)
+            b = dict(self.SP.shdc(b))[i]
+        return unz(b) if b[:4] in (b'BPE ', b'ZLIB') else b
+
+
+# the source game classes by game id (wwe12's takes only src)
+GAME_CLASS = {'wwe12': Game12, 'wwe13': Game13, 'wwe2k14': Game14, 'wwe2k15': Game2K15, 'wwe2k16': Game2K16,
+              'wwe2k17': Game2K17}
 
 
 class Game0789:
@@ -819,10 +927,8 @@ def convert(a, rep):
 def open_game(a, src, work=None):
     if a['game'] in OLD:
         return Game0789(src, work or os.path.join(HERE, 'work', 'm0789_' + a['game']))
-    if a['game'] == 'wwe13':
-        return Game13(src, a.get('svrmod'))
-    if a['game'] == 'wwe2k14':
-        return Game14(src, a.get('svrmod'))
+    if a['game'] in GAME_CLASS and a['game'] != 'wwe12':
+        return GAME_CLASS[a['game']](src, a.get('svrmod'))
     return Game12(src)
 
 

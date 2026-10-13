@@ -147,6 +147,18 @@ std::vector<WeaponsRow> g_weapons_rows;
 constexpr uint32_t kRoofLabel = 0x0FA0B120, kRoofText = 0x0FA0B121;
 std::vector<WeaponsRow> g_roof_rows;
 bool g_pending_roof = false;
+// CPUs left alone on the cell's roof climb down: a CPU wrestler (its match
+// slot's controller, slot -8, 1, and controller port +1152 4 or more) alone up there (area +444 10, no other
+// wrestler 0-5 on it) for 25 s of match frames takes the game's own
+// way down - the climb-down a player starts with the action button pushed
+// towards an edge (sub_8230A760: area 10, the edge check sub_821BE8F8, then
+// sub_82397228(char, 1672)) - from his free state (the post-hook of its
+// handler sub_82292D50). The CPUs' AI never picks it on purpose (a 4-CPU
+// fatal-4-way stayed up 4 min). Only match state decides (frames, places,
+// slots): the same on both machines online. Humans are never touched. Test
+// aids: SVR2011_TEST_ROOF_DOWN=0 off; SVR2011_TEST_ROOF_DOWN_SECS=<s>.
+constexpr uint32_t kRoofArea = 10, kClimbDown = 1672;
+uint32_t g_roof_alone_since[6] = {};  // match frame + 1 since that person is alone on the roof (0: not)
 bool g_roof = false;  // the match set up starts on the cell's roof
 bool g_pending_weapons = false;
 bool g_weapons = false;  // the match set up is a WEAPONS EVERYWHERE one
@@ -909,6 +921,57 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
 }
 
 }  // namespace svr2011
+
+// A wrestler's free state (standing, nothing on): sub_82292D50(state), the
+// character *(state +280). After it: a CPU alone on the roof long enough
+// climbs down (above, g_roof_alone_since) - as if it pressed the action button
+// towards the nearest edge.
+REX_EXTERN(__imp__sub_82292D50);
+REX_HOOK_RAW(sub_82292D50) {
+  const uint32_t c = Rd32(base + ctx.r3.u32 + 280);
+  const uint32_t motion = c ? Rd32(base + c + 212) : 0;
+  const PPCContext saved = ctx;
+  __imp__sub_82292D50(ctx, base);
+  static const bool off = [] { const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN"); return v && *v == '0'; }();
+  static const uint32_t alone_frames = [] {
+    const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN_SECS");
+    return uint32_t((v ? std::max(1, std::atoi(v)) : 25) * 60);
+  }();
+  if (off || !c || base[c + 444] != kRoofArea || Rd32(base + c + 212) != motion) return;  // (on the roof, nothing started)
+  const uint32_t person = Rd32(base + c + 1156), frames = Rd32(base + 0x82E3CD0C);
+  // (test aid: SVR2011_TEST_ROOF_DOWN_LOG=1 - once a second, a free wrestler on the roof and what the check sees)
+  if (static const bool log = std::getenv("SVR2011_TEST_ROOF_DOWN_LOG") != nullptr; log && frames && frames % 60 == 0) {
+    const uint32_t m = Rd32(base + 0x82EDEB48);
+    REXLOG_INFO("match types: roof - person {} alone {} frames, slot ctl {}, port {}, held {:X}, x {:.0f} z {:.0f}", person,
+                person < 6 && g_roof_alone_since[person] ? frames + 1 - g_roof_alone_since[person] : 0,
+                m && person < 6 ? base[m + 432 + person * 2116 - 8] : 255, Rd32(base + c + 1152), Rd32(base + c + 1828),
+                [&] { const uint32_t u = Rd32(base + c + 288); float f; std::memcpy(&f, &u, 4); return f; }(),
+                [&] { const uint32_t u = Rd32(base + c + 296); float f; std::memcpy(&f, &u, 4); return f; }());
+  }
+  if (person >= 6 || !g_roof_alone_since[person] || frames + 1 - g_roof_alone_since[person] < alone_frames) return;
+  if (Rd32(base + c + 1828) != ~0u) return;  // (holding something: the edge check goes by it)
+  const uint32_t match = Rd32(base + 0x82EDEB48);
+  // (a CPU only: its slot's controller 1 and its character's controller port +1152 not a pad's, 0-3 - a
+  // test match's cpu=all marks person 0's slot too while a pad still plays him)
+  if (!match || base[match + 432 + person * 2116 - 8] != 1 || Rd32(base + c + 1152) < 4) return;
+  // The nearest edge: the way the wrestler is farthest out (octants of +2212:
+  // 0 -z, 2 -x, 4 +z, 6 +x) - the edge check wants more than 20 out that way.
+  const auto rd_f = [&](uint32_t at) { const uint32_t u = Rd32(base + at); float f; std::memcpy(&f, &u, 4); return f; };
+  const float x = rd_f(c + 288), z = rd_f(c + 296);
+  const uint32_t octant = std::fabs(x) > std::fabs(z) ? (x < 0 ? 2u : 6u) : (z < 0 ? 0u : 4u);
+  if (std::max(std::fabs(x), std::fabs(z)) <= 20.0f) return;  // (near the middle: later, as he moves)
+  Wr32(base + c + 2212, octant);
+  PPCContext k = saved;
+  k.r3.u64 = c;
+  sub_821BE8F8(k, base);
+  if (!k.r3.u32) return;
+  k = saved;
+  k.r3.u64 = c, k.r4.u64 = kClimbDown;
+  sub_82397228(k, base);
+  REXLOG_INFO("match types: CPU person {} alone on the roof {} s - climbs down (x {:.0f} z {:.0f}, octant {}, motion {})",
+              person, (frames + 1 - g_roof_alone_since[person]) / 60, x, z, octant, Rd32(base + c + 212));
+  g_roof_alone_since[person] = 0;
+}
 
 // The menu table is read: sub_82BAA6E8(menus, table, size).
 REX_EXTERN(__imp__sub_82BAA6E8);
@@ -2021,9 +2084,11 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
     if (frames < 90) {
       constexpr float kSpot[4][2] = {{-30.0f, 30.0f}, {30.0f, -30.0f}, {30.0f, 30.0f}, {-30.0f, -30.0f}};
       constexpr float kRoofY = -60.5f;
+      // (test aid: SVR2011_TEST_ROOF_SKIP=<person> - that one starts in the ring, e.g. the idle player 0)
+      static const int skip = [] { const char* v = std::getenv("SVR2011_TEST_ROOF_SKIP"); return v ? std::atoi(v) : -1; }();
       for (uint32_t i = 0, k = 0; i < 6 && k < 4; ++i) {
         const uint32_t c = Rd32(base + kChars + i * 4);
-        if (!c || Rd32(base + c + 1800) >= 30) continue;
+        if (!c || Rd32(base + c + 1800) >= 30 || int(i) == skip) continue;
         const float x = kSpot[k][0], z = kSpot[k][1];
         ++k;
         if (const uint32_t v = Rd32(base + c + 304)) WrF(base + v, x), WrF(base + v + 4, kRoofY), WrF(base + v + 8, z);
@@ -2034,6 +2099,23 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
       placed_frames = frames;
     } else {
       placed_frames = ~0u;
+    }
+  }
+  // CPUs alone on the roof: since when (the climb-down: sub_82292D50's hook)
+  {
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    uint32_t on_roof[6] = {}, n = 0;
+    for (uint32_t i = 0; i < 6; ++i) {
+      const uint32_t c = Rd32(base + kChars + i * 4);
+      on_roof[i] = c && base[c + 444] == kRoofArea;
+      n += on_roof[i];
+    }
+    for (uint32_t i = 0; i < 6; ++i) {
+      if (on_roof[i] && n == 1) {
+        if (!g_roof_alone_since[i] || frames + 1 < g_roof_alone_since[i]) g_roof_alone_since[i] = frames + 1;
+      } else {
+        g_roof_alone_since[i] = 0;
+      }
     }
   }
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a

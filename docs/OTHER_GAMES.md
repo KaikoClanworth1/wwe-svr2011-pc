@@ -238,6 +238,10 @@ layout known, some fields not; **unknown** = not looked at or not found.
 | **Ratings / abilities** | 2 x 8, small scale; no abilities - **partly** | 8 values; no ability list: 2 fighting styles (DAT +227 / +228 raw) - **mapped** by style | 8 values like 2010; abilities DAT +232 raw (2011's ids) - **mapped** | 8 values + abilities (+234 raw, 2011's ids) - **mapped** | 12 values at DAT +4..+15 (copy at +16) - **mapped** to 2011's 7 (+5, +8, +9, +12, +7, +14, +13 [+5]; fitted on 117 shared superstars); abilities DAT +260 raw (2011's ids; 14 = Comeback) - **mapped** | ratings not in DAT / PRO (not found); abilities DAT +274 raw - **mapped** | 14 values at DAT +36..+49 - only loosely like 2011's (re-rated), not mapped; abilities DAT +56 raw - **mapped** |
 | **Ids** | the 2008 id space (78 shared) | 0-92 | 2008 id + 100 = 2010/2011 id | 2011 ids | 2011 ids (100-292 the same people), new 322-343 | own | own; CAS-built superstars in `chHeads.pac` (159 Piper, 372-375) - big job |
 
+Ratings: `tools/ratings_port.py` (superstar_port calls it): WWE '12 +4..+15, '13 +4..+17, 2K14 / 2K15 +36..+49,
+2K16 +40..+53, 2K17 +44..+57, SvR 2007 +0..+7 (raw DAT; '13 on: 14 values, 2K15 on re-rated) fitted onto 2011's
+seven on the superstars each shares with 2011 (mean error ~4.6-6.1 vs ~8-9 for the roster mean).
+
 Abilities: `tools/abilities_port.py` (superstar_port calls it): SvR 2009 .. 2K17 share 2011's ability
 numbering (14 is Comeback from '12 on: mapped to Kip-Up as a guess; 22 Possum Pin -> Leverage Pin); 2K15 +56,
 2K16 +60, 2K17 +64 (raw DAT). SvR 2008's fighting styles and SvR 2007's ratings give a guessed set; the report

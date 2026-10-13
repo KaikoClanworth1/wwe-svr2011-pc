@@ -50,6 +50,8 @@ def source_waze(gid, src, svrmod):
         return MP.Game13(src, svrmod).waze
     if gid == 'wwe2k14':
         return MP.Game14(src, svrmod).waze
+    if gid in ('wwe2k15', 'wwe2k16', 'wwe2k17'):
+        return MP.GAME_CLASS[gid](src, svrmod).waze
     raise SystemExit('no move names for %s yet' % gid)
 
 
@@ -125,13 +127,14 @@ def main(argv):
     ap.add_argument('--src', required=True)
     ap.add_argument('--pac11', default=SP.PAC11 if hasattr(SP, 'PAC11') else MP.PAC11)
     ap.add_argument('--svrmod')
+    ap.add_argument('--cache', help='where the files a disc image gives are copied (default tools/work/src/<game>)')
     ap.add_argument('--pac10', default=r'D:\Xbox Games Ports\SvR2010 Extract\pac', help='SvR 2010 pac (the chain for 2007-2009)')
     a = ap.parse_args(argv[1:])
     g11, _ = SP.game11(a.pac11)
     by11 = collections.defaultdict(set)
     for i, (bits, nm) in g11.waze().items():
         by11[MP.norm(nm)].add(i)
-    src = SP.Src(a.src, None)
+    src = SP.Src(a.src, a.cache or os.path.join(HERE, 'work', 'src', a.game))
     g = SP.open_game(a.game, src, a.svrmod)
     w = source_waze(a.game, src, a.svrmod)
 

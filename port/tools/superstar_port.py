@@ -358,7 +358,8 @@ class Game07(Game08):
         self.g = S.Game.__new__(S.Game)
         self.g.pac, self.g.year = os.path.dirname(misc), 7
         self.g.dat = {}
-        for i, r in pach(ch[(b'CHAR', b'DAT ')]).items():
+        self.raw_dat = pach(ch[(b'CHAR', b'DAT ')])   # (as stored: ratings_port reads its 8 ratings, a 7..20 scale)
+        for i, r in self.raw_dat.items():
             x = bytearray(264)
             nm = r[0x1C:0x4B].split(b'\0')[0][:32]
             x[34:34 + len(nm)] = nm
@@ -606,6 +607,12 @@ def build09(cid, outdir, o, rep):
     if any(x not in (0, 50) for x in r[:7]):
         man['ratings'] = ','.join(str(max(0, x - 1)) for x in r[:7])
         note('ratings %s %s -> %s' % (g9.label, list(r[:8]), man['ratings']))
+    if type(g9).__name__ == 'Game07':   # (another scale: fitted, tools/ratings_port.py)
+        import ratings_port
+        rr, rrep = ratings_port.map_ratings('svr2007', cid, g9)
+        if rr:
+            man['ratings'] = ','.join(map(str, rr))
+        note(ratings_port.report_line(g9.label, rr, rrep))
     abilities_step(type(g9).__name__, g9, cid, man, note)
     # moves
     if not o.get('no_moves') and base != i11:
@@ -947,7 +954,6 @@ class GameW2K15(GameW2K14):
     suffix = '_2k15'
     game_id = 'wwe2k15'
     no_ratings = "2K15's ratings (DAT +36..+49, 2K14's layout) aren't mapped"
-    moveset_map = False   # (no moveset_maps.json map for 2K15 yet: the base's moves)
 
     def entrance_block(self, i):
         p = self.pro.get(i)
@@ -1213,6 +1219,41 @@ def model_w(g, cid, pac11, out, portrait):
     return left
 
 
+def fit_budget(path, tmpl):
+    """keep every attire of the converted ch.pac at `path` within the match's 192 pages (model_budget) once the
+    game leaves its blood overlays out (0x7530-0x7532; the game does that itself): over it, the eyelashes
+    (0x4e20) go; still over, the attire goes (the first one stays) - the game leaves a model over the
+    budget out altogether. -> [what was taken out]"""
+    import model_budget
+    import w13_char
+    raw = open(path, 'rb').read()
+    _, groups = ch_tool.epk8_read(raw)
+    ents, out, changed = [], [], False
+    for typ, es in groups:
+        for name, blob in es:
+            if not name.strip(b'\0'):
+                continue
+            kids = {i: ch_tool.unpack(x) for i, x in svrfmt.pach_read(ch_tool.unpack(blob))}
+
+            def over():
+                return model_budget.attire_pages({k: v for k, v in kids.items() if k not in (0x7530, 0x7531, 0x7532)})[0] \
+                    > model_budget.LIMIT
+            n = name.decode('latin1').strip('\0 ')
+            if over() and 0x4e20 in kids:
+                del kids[0x4e20]
+                blob = w13_char.pack_kids(kids)
+                changed = True
+                out.append('attire %s: its eyelashes (over the %d-page model budget with them)' % (n, model_budget.LIMIT))
+            if over() and ents:
+                changed = True
+                out.append('attire %s: over the %d-page model budget even without eyelashes and blood' % (n, model_budget.LIMIT))
+                continue
+            ents.append((typ, name, blob))
+    if changed:
+        w13_char.write_epk8(tmpl, ents, path)
+    return out
+
+
 def moveset_step(gw, cid, base, o, work, mod, man, rep):
     """the superstar's own moveset (moveset_port.py): moves.txt over the base's profile, ported moves
     as a move pack in the mod's moves/ folder"""
@@ -1225,7 +1266,7 @@ def moveset_step(gw, cid, base, o, work, mod, man, rep):
     if cid not in pro:
         drop('moveset: the base\'s (no %s profile for %d)' % (gw.label, cid))
         return
-    mg = {'wwe12': MP.Game12, 'wwe13': MP.Game13, 'wwe2k14': MP.Game14}.get(gid)
+    mg = MP.GAME_CLASS.get(gid)
     if mg is not None:
         mgame = mg(o['src']) if gid == 'wwe12' else mg(o['src'], getattr(gw, 'svrmod', None))
         waze = mgame.waze
@@ -1303,6 +1344,8 @@ def buildW(cid, outdir, o, rep):
         left = model_w(gw, cid, pac11, os.path.join(mod, 'ch.pac'), portrait)
         if left:
             drop('attires past %d (2011 has 4 at most): %s' % (gw.max_attires, ', '.join(left)))
+        for d_ in fit_budget(os.path.join(mod, 'ch.pac'), os.path.join(pac11, 'ch', 'ch104.pac')):
+            drop(d_)
         import model_budget
         pages = model_budget.model_pages(os.path.join(mod, 'ch.pac'))
         note('model: %s ch%d.pac, %d attires (w13_char)' % (gw.label, cid, len(pages)))
@@ -1311,12 +1354,13 @@ def buildW(cid, outdir, o, rep):
                 note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
     else:
         warn('%s has no model for %d: the base\'s is used' % (gw.label, cid))
-    if gw.rating_map:
-        r = gw.raw_dat[cid]
-        man['ratings'] = ','.join(str(max(0, min(99, r[o] - m))) for o, m in gw.rating_map)
-        note('ratings from %s DAT -> %s' % (gw.label, man['ratings']))
+    import ratings_port   # (fitted on the superstars each game shares with 2011)
+    rr, rrep = ratings_port.map_ratings(gw.game_id, cid, gw)
+    if rr:
+        man['ratings'] = ','.join(map(str, rr))
+        note(ratings_port.report_line(gw.label, rr, rrep))
     else:
-        drop('ratings (%s): the base\'s' % gw.no_ratings)
+        drop('ratings (%s): the base\'s' % (rrep['note'] or gw.no_ratings))
     abilities_step(gw.game_id, gw, cid, man, note)   # (every game: its own list, else guessed from the ratings)
     music, movie, ent, alt = gw.entrance_block(cid)
     # theme
