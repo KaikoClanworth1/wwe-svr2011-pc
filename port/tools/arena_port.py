@@ -337,12 +337,15 @@ def light_ids(bank):
     return sorted({e['id'] for e in bank.entries})
 
 
-def fill_lights(bank, host_bank, ids=EXE_LIGHTS):
+def fill_lights(bank, host_bank, ids=EXE_LIGHTS, replace=()):
     """Light sets the game looks up by number that the arena's bank lacks (SvR 2007 has no 11-14;
-    its own bank crashed the 2011 load without them) are copied from 2011 RAW's -> [ids added]"""
+    its own bank crashed the 2011 load without them) are copied from 2011 RAW's -> [ids added].
+    Sets in `replace` are RAW's even when the arena has them."""
+    if replace:
+        bank.entries = [e for e in bank.entries if e['id'] not in replace]
     have = set(light_ids(bank))
     added = []
-    for i in ids:
+    for i in list(ids) + [r for r in replace if r not in ids]:
         if i in have:
             continue
         ents = [dict(e) for e in host_bank.entries if e['id'] == i]
@@ -471,7 +474,10 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     if 0x7530 in ents and 0x7530 in eb:  # the arena's own lights, plus the sets the game needs
         import ymks
         bank = light_bank(unp(ents[0x7530]))
-        added = fill_lights(bank, light_bank(unp(eb[0x7530])))
+        # (set 10, the game's own light for the wrestlers and the ring, is the same in every arena
+        # of a game; SvR 2008's side lights run at 1.2-3.0x - the others' at most ~1.5x, 2011's
+        # 0.6x - and blew the black turnbuckle pads out to cream in 2011: RAW's)
+        added = fill_lights(bank, light_bank(unp(eb[0x7530])), replace=(10,) if game == 'svr2008' else ())
         if added:
             ents[0x7530] = ymks.write_bank(bank)
             notes.append('light sets the game needs, from 2011 RAW: ' + ', '.join(map(str, added)))
