@@ -5,9 +5,11 @@
 // `games`, `list`, `convert`, JSON on stdout). The list says what 2011
 // already has; the converted mod opens on its page to finish and save.
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <map>
+#include <thread>
 
 #include "app.h"
 #include "json.h"
@@ -56,6 +58,73 @@ std::string g_test_item;
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
+
+// ---- the work folder (<game>\Mods\.convert\port): the converters' results and their copies of disc files
+constexpr uint64_t kTrimAbove = 3ull << 30, kTrimTo = 3ull << 29;  // 3 GB -> 1.5 GB
+std::atomic<uint64_t> g_cache_bytes{0};
+std::atomic<bool> g_cache_busy{false};
+bool g_cache_known = false;
+
+fs::path WorkDir() { return fs::path(g_game) / L"Mods" / L".convert" / L"port"; }
+
+uint64_t FolderBytes(const fs::path& f) {
+  uint64_t n = 0;
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(f, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
+    if (it->is_regular_file(ec)) n += it->file_size(ec);
+  return n;
+}
+
+// Measure (and with keep, trim: oldest folders out until under kTrimTo; "clear": everything) on a thread.
+void CacheJob(bool trim, bool clear_all, fs::path keep = {}) {
+  if (g_cache_busy.exchange(true)) return;
+  std::thread([dir = WorkDir(), trim, clear_all, keep] {
+    std::error_code ec;
+    struct Item {
+      fs::path path;
+      fs::file_time_type when;
+      uint64_t bytes;
+    };
+    std::vector<Item> items;
+    uint64_t total = 0;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+      if (!e.is_directory(ec)) continue;
+      const uint64_t b = FolderBytes(e.path());
+      items.push_back({e.path(), e.last_write_time(ec), b});
+      total += b;
+    }
+    std::string removed;
+    if (clear_all || (trim && total > kTrimAbove)) {
+      std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.when < b.when; });
+      for (const auto& it : items) {
+        if (!clear_all && total <= kTrimTo) break;
+        if (!keep.empty() && fs::equivalent(it.path, keep, ec)) continue;
+        fs::remove_all(it.path, ec);
+        if (!ec) total -= it.bytes, removed += (removed.empty() ? "" : ", ") + Utf8(it.path.filename().wstring());
+      }
+    }
+    g_cache_bytes = total;
+    g_cache_busy = false;
+    OnUiThread([removed] {
+      g_cache_known = true;
+      if (!removed.empty()) Log("port: work folder trimmed: " + removed);
+    });
+  }).detach();
+}
+
+void CacheRow() {
+  if (!g_cache_known && !g_cache_busy) CacheJob(false, false);
+  const uint64_t b = g_cache_bytes;
+  ImGui::TextDisabled("Port work folder: %s", g_cache_busy && !g_cache_known ? "measuring ..." : Human(size_t(b)).c_str());
+  ImGui::SameLine();
+  Hint("The converters' results and their copies of the disc's files (Mods\\.convert\\port in the game folder). "
+       "Converted mods open from here; once saved or installed they aren't needed. Above 3 GB the oldest are "
+       "removed after a conversion.");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(Busy() || g_cache_busy || !b);
+  if (ImGui::SmallButton("Clear it")) CacheJob(false, true);
+  ImGui::EndDisabled();
+}
 
 std::wstring Source() {
   if (!g_image.empty()) return g_image;
@@ -150,7 +219,7 @@ void Convert(int k, const std::string& game, const Json& item) {
   const std::string key = item["key"].Str();
   std::string safe;
   for (char c : game + "_" + key) safe += std::isalnum(uint8_t(c)) ? c : '_';
-  const fs::path out = fs::path(g_game) / L"Mods" / L".convert" / L"port" / Wide(std::string(kKinds[k].title) + "_" + safe);
+  const fs::path out = WorkDir() / Wide(std::string(kKinds[k].title) + "_" + safe);
   std::error_code ec;
   fs::create_directories(out, ec);
   const bool entrance = std::wstring(kKinds[k].script) == L"entrance_port.py";
@@ -180,6 +249,7 @@ void Convert(int k, const std::string& game, const Json& item) {
       g_result_error = g_result["error"].Str().empty() ? "the conversion failed (exit " + std::to_string(code) + ")" : g_result["error"].Str();
     else
       Status("Converted: " + g_result["out"].Str());
+    CacheJob(true, false, fs::path(Wide(g_result["out"].Str())).parent_path());  // (measure, trim above 3 GB)
     });
   };
   if (!entrance) {
@@ -262,6 +332,8 @@ void DiscRow() {
 
 }  // namespace
 
+void TestClear() { CacheJob(false, true); }
+
 void TestStart(const std::string& spec) {
   std::vector<std::string> p;
   for (size_t at = 0; at <= spec.size();) {
@@ -292,6 +364,7 @@ void Draw() {
     return;
   }
   DiscRow();
+  CacheRow();
   if (Source().empty()) return;
   ImGui::Spacing();
   if (ImGui::BeginTabBar("kinds")) {

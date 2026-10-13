@@ -337,7 +337,7 @@ namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring&
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace port_page { void Draw(); void TestStart(const std::string& spec); }
+namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
 namespace pac_editor {  // a copy of any pac, edited and saved elsewhere (Game assets)
 bool Open(svrfmt::Bytes pac, const std::string& label, const std::wstring& from, const std::string& note);
