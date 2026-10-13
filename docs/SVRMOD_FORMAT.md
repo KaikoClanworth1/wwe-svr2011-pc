@@ -71,7 +71,7 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `moves=moves.txt` | lines `0xOFF=<move id>`: the move at byte offset OFF (0..0x1BF, even) of the profile's move block, over the base's |
 | `moves\pack.txt`, `moves\motions\*` | a move pack carried inside the mod (below) |
 
-Game: `src/superstar_mods.cpp` (72 slots: `Mods\Superstars\slots.txt` keeps
+Game: `src/superstar_mods.cpp` (137 slots: `Mods\Superstars\slots.txt` keeps
 each mod's id), `src/managers.cpp` (the M tile list).
 
 ## type=moves (`Mods\Moves\<id>`)
