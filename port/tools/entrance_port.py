@@ -392,7 +392,15 @@ def hctp_list(src, game_pac, game='hctp'):
     return out
 
 
-def hctp_convert(src, entrance, number, name, parts, rep, game='hctp'):
+def hand_library(game_pac):
+    """the 2011 hand-pose library for the HCTP-path converters' finger tracks (hand_tracks.py)"""
+    import hand_tracks
+    EH.DEFAULT_HAND_LIB = hand_tracks.library(game_pac) if game_pac else {}
+    return EH.DEFAULT_HAND_LIB
+
+
+def hctp_convert(src, entrance, number, name, parts, rep, game='hctp', game_pac=None):
+    hand_library(game_pac)
     s, names = hctp_src(src)
     if entrance not in EH.parse_sevp(s['sevp']) or len(s['banks'].get(entrance, b'')) <= 512:
         raise InputError('%s has no entrance %d' % (GAMES[game]['name'], entrance))
@@ -410,8 +418,8 @@ def svr04_list(src, game_pac):
     return hctp_list(src, game_pac, 'svr04')
 
 
-def svr04_convert(src, entrance, number, name, parts, rep):
-    return hctp_convert(src, entrance, number, name, parts, rep, 'svr04')
+def svr04_convert(src, entrance, number, name, parts, rep, game_pac=None):
+    return hctp_convert(src, entrance, number, name, parts, rep, 'svr04', game_pac)
 
 
 # ---- SmackDown! vs. Raw 2006 (PS2): tools/svr06_entrance.py (PAC/EVT.PAC; 2007's script layout in
@@ -425,8 +433,9 @@ def sym_list(src, game_pac):
     return sym_entrance.list_entrances(src)
 
 
-def sym_convert(src, entrance, number, name, parts, rep):
+def sym_convert(src, entrance, number, name, parts, rep, game_pac=None):
     import sym_entrance
+    hand_library(game_pac)
     try:
         return sym_entrance.convert(src, entrance, number, name, rep)
     except ValueError as x:

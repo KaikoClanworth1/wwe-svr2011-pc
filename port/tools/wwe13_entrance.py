@@ -521,10 +521,19 @@ def convert_events(evs, okind, nframes, rep):
 # ============================================================================ tracks
 
 def camera_track(m, nframes, events):
+    # (tracks by role: 2K16 / 2K17's second camera block names them with another last hash digit -
+    # '#5edfdf5c' / '#70d304a7' - and has no target track: the eye's own rotation is used)
+    role = {}
+    for n in m['tracks']:
+        for h in (H_EYE, H_TGT, H_FOV):
+            if n == h:
+                role[h] = n
+            elif n[:-1] == h[:-1]:
+                role.setdefault(h, n)
     recs = []
     for f in range(nframes):
         t = min(2 * f, m['frames'] - 1)
-        ev = {n: Y.sample_track(tr, t) for n, tr in m['tracks'].items() if n in (H_EYE, H_TGT, H_FOV)}
+        ev = {h: Y.sample_track(m['tracks'][n], t) for h, n in role.items()}
         eye = np.array(ev[H_EYE]['pos'] if ev.get(H_EYE) and ev[H_EYE]['pos'] else (0, 0, 0), float)
         R13 = WR.qmat(ev[H_EYE]['rot']) if ev.get(H_EYE) and ev[H_EYE]['rot'] else None
         if R13 is None:                            # (no rotation track: look at the target, no roll)

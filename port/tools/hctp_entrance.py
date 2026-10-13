@@ -35,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import ymks as Y  # noqa: E402
 import hctp_motion as H  # noqa: E402
+import hand_tracks as HT  # noqa: E402
 import svr08_entrance as S  # noqa: E402
 
 CAM_FLAG = 0x4000               # HCTP camera tracks: track id | 0x4000 (3047: 9950 -> 26334)
@@ -449,7 +450,10 @@ def slot11(j, on, evt_id, params, parent):
     return bytes(s)
 
 
-def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, game='hctp'):
+DEFAULT_HAND_LIB = {}             # (hand_tracks.library(game pac): set by entrance_port for every caller)
+
+
+def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, game='hctp', hand_lib=None):
     """-> (evp bytes, evt bytes, report Counter, notes list); game: hctp / svr04 (GAMES)"""
     cfg = GAMES[game]
     prop_map = PROP_MAP if prop_map is None else prop_map
@@ -524,6 +528,45 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
                 rep['tracks %s' % kinds[i]] += 1
             hk0 = next((hk for hk, a, b in pl[j] if (i, hk) in conv), pl[j][0][0])
             slot_src[(i, j)] = o['slots'][hk0] if hk0 < len(o['slots']) else None
+    # ---- the hands: HCTP switches hand shapes by event (op 16 `10 ss iiii`: ss 1 left / 2 right, 2011's
+    # pose ids 0-105 / 200-305; ss 0 = the face); 2011's entrances animate the fingers on the entrant's
+    # y3 (left) / y2 (right) tracks: made from the pose library (hand_tracks.py), per 2011 segment
+    hand_lib = DEFAULT_HAND_LIB if hand_lib is None else hand_lib
+    if hand_lib and ent < len(script['objs']):
+        o = script['objs'][ent]
+        shape = {1: None, 2: None}
+        made = 0
+        for j in sorted(pl):
+            evs = {1: [], 2: []}
+            off = 0
+            for hk, a, b in pl[j]:
+                full = conv.get((ent, hk), (None, None, 0))[2]
+                b2 = full if b is None else b
+                s = o['slots'][hk] if hk < len(o['slots']) else None
+                e = tracks.get((s['tid'], s['tx'], s['ty'])) if s else None
+                if e and e['data']:
+                    for f, r in H.records(e['data']):
+                        if not a <= f < b2:
+                            continue
+                        ev, _ = Y.split_record(r)
+                        if not ev:
+                            continue
+                        for op, bb in Y.parse_events(ev, T)[0]:
+                            if op == 16 and len(bb) >= 4 and bb[1] in (1, 2):
+                                evs[bb[1]].append((off + f - a, struct.unpack_from('<H', bb, 2)[0]))
+                off += b2 - a
+            n = seg_frames.get(j, 0)
+            if n <= 0:
+                continue
+            for hand in (1, 2):
+                data, shape[hand] = HT.track(evs[hand], n, hand, hand_lib, shape[hand])
+                if data:
+                    Y.insert_motion(bank, S.ID_SHIFT + ent, 5 * j, HT.Y_OF[hand], data, n, S.RT_2011)
+                    made += 1
+            rep['hand events'] += len(evs[1]) + len(evs[2])
+        notes.append('hands: %d finger tracks from %d hand events' % (made, rep['hand events']))
+    else:
+        notes.append('hands: no finger tracks (the 2011 pac folder - m.pac pose library - not given)')
     objs = []
     for i, o in enumerate(script['objs']):
         kind = kinds[i]

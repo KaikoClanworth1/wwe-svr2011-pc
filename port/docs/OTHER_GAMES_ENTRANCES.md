@@ -348,3 +348,18 @@ formats the name from the table at 0x82D60EC0 (kind 0 = `/PCE6/%04d`, 1 `/PCOT`,
 `sub_826A17D0` checks the entry exists, `sub_826A31B8` loads it. So an added `PCE6/<0nnn>` is
 loaded for entrance nnn; whether every source game's emitter ids match the converted EVT's
 events is checked per game (2010 -> 2011 sets are byte-identical for shared entrances).
+
+## Hands (fingers)
+
+2011's entrances do not switch hand shapes by event (no op 21 in any stock entrance): the entrant's
+fingers have their own tracks beside the body y0 - y2 = right hand, y3 = left hand (y1 = face) - one
+record per frame in the hand-pose library's layout (15 sub-records [k][count][s8 x][s8 y][s8 z], k 0-14
+left / 15-29 right; docs/HAND_POSES.md), the first with the event block `40 05 00 00 00 00 89 00 01 00 00`.
+
+| converter | fingers |
+|---|---|
+| SvR 2007-2010, LoW (and their PS2 discs) | the source's y1-y3 tracks are kept |
+| HCTP, SvR 2004, Shut Your Mouth | made from the source's hand events: op 16 `10 ss iiii` (ss 1 left / 2 right, pose ids = 2011's 0-105 / 200-305; ss 0 = face) -> `tools/hand_tracks.py` builds y2/y3 per 2011 segment from the 2011 game's pose library (m.pac MVMT/STAT/99, `--game-pac` needed), 5-frame blends. Goldberg 3047: 10 tracks from 8 events, played in game |
+| SvR 2006, WWE '12 - 2K17 | not yet (2006: own sub-track encoding; WWE: Biped finger bones to retarget) |
+
+The Mod Maker's future entrance preview reads y2/y3 the same way (ModMakerUIRework).
