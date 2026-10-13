@@ -132,6 +132,7 @@ struct Mod {
   // a byte offset in the profile's move block, 0..0x1BF, and a move id)
   std::vector<std::pair<uint16_t, uint16_t>> moves;
   int entrance = -1;            // entrance number (manifest entrance=; profile +0x1C0 +0x14..+0x18)
+  int attire_entrance[4] = {-1, -1, -1, -1};  // per attire (manifest attire<N>_entrance=; EntranceForAttire)
   std::vector<uint8_t> abilities;  // (manifest abilities=a,b,...; record +230.., up to 8)
   // its height: a factor of the base's (manifest height=1.05; 0 = the base's)
   double height = 0;
@@ -545,6 +546,8 @@ void LoadMods() {
           if (h > 0) m.height = std::clamp(h, 0.80, 1.25);
         }
         if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
+        if (l.rfind("attire", 0) == 0 && l.size() > 17 && l[6] >= '1' && l[6] <= '4' && !l.compare(7, 10, "_entrance="))
+          m.attire_entrance[l[6] - '1'] = std::clamp(std::atoi(l.c_str() + 17), 0, 65535);
         if (l.rfind("abilities=", 0) == 0) {
           for (const char* q = l.c_str() + 10; *q && m.abilities.size() < 8;) {
             if (const int a = std::atoi(q); a > 0 && a < 256) m.abilities.push_back(uint8_t(a));
@@ -1334,6 +1337,70 @@ REX_HOOK_RAW(sub_8261EAB0) {
   if (NameCallLog() && buf)
     REXLOG_INFO("[svr2011] name call: commentary {} -> {} \"{:.40}\"", n, used, reinterpret_cast<const char*>(base + buf));
 }
+// ---- An entrance per attire (manifest attire<N>_entrance=<number>)
+//
+// The match takes a wrestler's entrance number from the entrance manager's
+// copy of his profile block (S = mgr + 36 + idx * 280, idx = his match slot):
+// sub_82756538(mgr, idx, part) the normal one (part 0: S+16 unless he has a
+// created entrance, S+195 != 0), sub_82756718 / sub_82756768(mgr, idx) the
+// champion and multi-title ones; sub_8275E480 then picks among them by the
+// titles he holds. The stock game varies it by attire only in code (Rey
+// Mysterio's "Evil" attire -> 512 in sub_8275E480). Here a mod's attire with
+// its own entrance gets it from all three, so it is used with or without a
+// title; a team entrance (sub_82756260) and a created entrance are left alone.
+// The attire is the match slot's costume key (slot record
+// *(0x82E3DDFC) + 132 + idx * 52, +16: id * 100 + attire * 10 + kind; mod
+// attire N = attire digit N - 1). Research: docs/ENTRANCE_ATTIRES.md.
+namespace {
+constexpr uint32_t kSlotTable = 0x82E3DDFC, kSlotsAt = 132, kSlotSize = 52, kSlotKey = 16;
+int EntranceForAttire(PPCContext& ctx, uint8_t* base, uint32_t mgr, uint32_t idx, bool part0) {
+  if (idx >= 16) return -1;
+  const uint32_t table = Rd32(base + kSlotTable);
+  if (!table) return -1;
+  const uint32_t key = Rd32(base + table + kSlotsAt + idx * kSlotSize + kSlotKey);
+  const Mod* m = ModOf(key / 100);
+  const uint32_t attire = key / 10 % 10;
+  if (!m || attire >= 4 || m->attire_entrance[attire] <= 0) return -1;
+  if (part0 && base[mgr + 36 + idx * 280 + 195]) return -1;  // (a created entrance)
+  const auto saved = ctx;
+  ctx.r3.u64 = mgr;
+  ctx.r4.u64 = idx;
+  sub_82756260(ctx, base);  // (a team's entrance)
+  const bool team = ctx.r3.u32 != 0;
+  ctx = saved;
+  if (team) return -1;
+  static int logged = 0;
+  if (logged++ < 16)
+    REXLOG_INFO("[svr2011] superstar mods: {} attire {}: entrance {}", m->name, attire + 1, m->attire_entrance[attire]);
+  return m->attire_entrance[attire];
+}
+}  // namespace
+REX_EXTERN(__imp__sub_82756538);
+REX_HOOK_RAW(sub_82756538) {
+  const uint32_t mgr = ctx.r3.u32, idx = ctx.r4.u32, part = ctx.r5.u32;
+  __imp__sub_82756538(ctx, base);
+  if (part != 0 || ctx.r3.u32 == 0) return;
+  const auto r = ctx.r3;
+  if (const int n = EntranceForAttire(ctx, base, mgr, idx, true); n > 0) ctx.r3.u64 = uint32_t(n);
+  else ctx.r3 = r;
+}
+REX_EXTERN(__imp__sub_82756718);
+REX_HOOK_RAW(sub_82756718) {
+  const uint32_t mgr = ctx.r3.u32, idx = ctx.r4.u32;
+  __imp__sub_82756718(ctx, base);
+  const auto r = ctx.r3;
+  if (const int n = EntranceForAttire(ctx, base, mgr, idx, false); n > 0) ctx.r3.u64 = uint32_t(n);
+  else ctx.r3 = r;
+}
+REX_EXTERN(__imp__sub_82756768);
+REX_HOOK_RAW(sub_82756768) {
+  const uint32_t mgr = ctx.r3.u32, idx = ctx.r4.u32;
+  __imp__sub_82756768(ctx, base);
+  const auto r = ctx.r3;
+  if (const int n = EntranceForAttire(ctx, base, mgr, idx, false); n > 0) ctx.r3.u64 = uint32_t(n);
+  else ctx.r3 = r;
+}
+
 // Audio events by name (sub_82BEC030(name, ...)): a mod's own announcer
 // event ("Play_RA_xx_MOD_<id>_<category>", WriteCallNames) plays its
 // recorded name instead (the game's sound engine has no such event: silent).
