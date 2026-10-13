@@ -199,6 +199,8 @@ def build_ps2(cid, outdir, o, rep):
     for s in pr.get('sources', []):
         if s.get('gear'):
             note('attire %s: entrance gear %s (kind 4)' % (s['attire'], ', '.join(s['gear'])))
+    for f in pr.get('fitted', []):   # (ps2_char fits the 192-page budget: what it gave up)
+        drop('model: %s' % f)
     for w in pr.get('warnings', [])[:8]:
         warn('model: %s' % w)
     if pr.get('height_m') and not o.get('height'):
