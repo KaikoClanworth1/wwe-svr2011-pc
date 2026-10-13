@@ -42,9 +42,9 @@ import svrfmt  # noqa: E402
 GAMES = [
     {'id': 'svr2007', 'name': "WWE SmackDown vs. Raw 2007", 'platform': 'x360', 'disc_hint': '545107E0', 'status': 'research'},
     {'id': 'svr2008', 'name': "WWE SmackDown vs. Raw 2008", 'platform': 'x360', 'disc_hint': '5451080B', 'status': 'ready'},
-    {'id': 'svr2009', 'name': "WWE SmackDown vs. Raw 2009", 'platform': 'x360', 'disc_hint': '54510826', 'status': 'research'},
+    {'id': 'svr2009', 'name': "WWE SmackDown vs. Raw 2009", 'platform': 'x360', 'disc_hint': '54510826', 'status': 'ready'},
     {'id': 'svr2010', 'name': "WWE SmackDown vs. Raw 2010", 'platform': 'x360', 'disc_hint': '54510844', 'status': 'ready'},
-    {'id': 'wwe12', 'name': "WWE '12", 'platform': 'x360', 'disc_hint': '54510890', 'status': 'research'},
+    {'id': 'wwe12', 'name': "WWE '12", 'platform': 'x360', 'disc_hint': '54510890', 'status': 'native'},
     {'id': 'wwe13', 'name': "WWE '13", 'platform': 'x360', 'disc_hint': '545108B4', 'status': 'native'},
     {'id': 'wwe2k14', 'name': "WWE 2K14", 'platform': 'x360', 'disc_hint': '545408B2', 'status': 'research'},
 ]
@@ -76,6 +76,15 @@ SVR2008 = {
     13: ('Judgment Day', 13), 14: ('Vengeance', None), 15: ('The Great American Bash', 15),
     16: ("New Year's Revolution", None), 17: ('One Night Stand', None), 18: ('December to Dismember', None),
     19: ('Cyber Sunday', None),
+}
+# SvR 2009: arena number -> (show, 2011 arena of that show); the same layout as 2008's
+# (its own crowd and 0x7922 are an older format: replaced by the host's / left out)
+SVR2009 = {
+    0: ('SmackDown', 0), 1: ('RAW', 1), 2: ('ECW', 2), 3: ('Tribute to the Troops', 3), 4: ('SummerSlam', 4),
+    5: ('Unforgiven', None), 6: ('No Mercy', None), 7: ('Survivor Series', 7), 8: ('Armageddon', None),
+    9: ('Royal Rumble', 9), 10: ('No Way Out', None), 11: ('WrestleMania XXIV', None), 12: ('Backlash', None),
+    13: ('Judgment Day', 13), 14: ('Night of Champions', 14), 15: ('The Great American Bash', 15),
+    16: ('One Night Stand', None), 17: ('Cyber Sunday', None), 18: ('Vengeance', None),
 }
 HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0xEE48, 0xEA6C)
 MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (a bigger file can run out of the arena heap)
@@ -293,32 +302,53 @@ def find_host(pac11, base):
     raise BadInput('--pac11 %s: no bg%02d.pac (give the SvR 2011 game folder)' % (pac11, base))
 
 
-def svr2008_list(disc):
+def remap_lights(flags, host_flags):
+    """Model flag text (0xC351): light numbers l(n) the 2011 host arena has no
+    light for go to its nearest one of the same hundred (SvR 2009's l(502)
+    crashed the 2011 arena load; 2011 has 501)."""
+    import re
+    have = sorted({int(x) for x in re.findall(rb'l\((\d+)\)', host_flags)})
+    missing = {}
+
+    def sub(m):
+        n = int(m.group(1))
+        if n in have or not have:
+            return m.group(0)
+        same = [h for h in have if h // 100 == n // 100] or have
+        to = min(same, key=lambda h: abs(h - n))
+        missing[n] = to
+        return b'l(%d)' % to
+    return re.sub(rb'l\((\d+)\)', sub, flags), missing
+
+
+def svr2008_list(disc, table=None):
     items = []
-    for n, (show, in11) in sorted(SVR2008.items()):
+    for n, (show, in11) in sorted((table or SVR2008).items()):
         path = 'pac/bg/bg%02d.pac' % n
         if disc.exists(path):
             items.append({'key': 'bg%02d' % n, 'name': show, 'arena': n, 'size': disc.size(path), 'in_2011': in11})
     return items
 
 
-def svr2008_convert(disc, key, out, pac11, base=None, name=None):
+def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008'):
+    table = SVR2009 if game == 'svr2009' else SVR2008
+    year = '2009' if game == 'svr2009' else '2008'
     warnings, notes, dropped = [], [], []
     try:
         n = int(key[2:]) if key.lower().startswith('bg') else int(key)
     except ValueError:
         raise BadInput('item %r: expected bgNN' % key)
-    if n not in SVR2008:
-        raise BadInput('item %r: not an arena of SvR 2008 (story copies are left out)' % key)
+    if n not in table:
+        raise BadInput('item %r: not an arena of SvR %s (story copies are left out)' % (key, year))
     if not pac11:
-        raise BadInput('SvR 2008 arenas need --pac11 <SvR 2011 game folder> (crowd and table pictures)')
-    show, in11 = SVR2008[n]
+        raise BadInput('SvR 2008 / 2009 arenas need --pac11 <SvR 2011 game folder> (crowd and table pictures)')
+    show, in11 = table[n]
     if base is None:
         base = in11 if in11 is not None else (n if n in BASE_NAMES else 3)
     if base not in BASE_NAMES:
         raise BadInput('base %r: 0-19' % base)
-    name = name or '%s (SvR 2008)' % show
-    mod_id = 'svr2008_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
+    name = name or '%s (SvR %s)' % (show, year)
+    mod_id = game + '_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
     progress(3, 'reading bg%02d' % n)
     src = disc.read('pac/bg/bg%02d.pac' % n)
     host = open(find_host(pac11, base), 'rb').read()
@@ -330,10 +360,18 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None):
         ents[{0xC8: 0x190, 0xC9: 0x191}.get(i, i)] = x
     if 0x190 not in ents:
         raise RuntimeError('bg%02d: no texture set (0xC8)' % n)
+    for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
+        ents.pop(i, None)
     for i in HOST_ENTRIES:
         if i in eb:
             ents[i] = eb[i]
-    notes.append('crowd, announce table pictures and card from 2011 %s (2008 arenas have none)' % BASE_NAMES[base])
+    if 0xC351 in ents and 0xC351 in eb:
+        unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
+        flags, moved = remap_lights(unp(ents[0xC351]), unp(eb[0xC351]))
+        if moved:
+            ents[0xC351] = svrfmt.bpe_encode(flags, compress=True)
+            notes.append('lights 2011 has no copy of, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
+    notes.append('crowd, announce table pictures and card from 2011 %s' % BASE_NAMES[base])
 
     def build(tex_blob):
         e = dict(ents)
@@ -399,15 +437,15 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None):
     if not os.listdir(os.path.join(mod, 'vs')):
         os.rmdir(os.path.join(mod, 'vs'))
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
-        f.write('type=arena\nid=%s\nname=%s\nauthor=SvR 2008 arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, n, BASE_NAMES[base]))
+        f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
+                % (mod_id, name, year, n, BASE_NAMES[base]))
     progress(92, 'packing the mod')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
     old = sys.stdout
     sys.stdout = sys.stderr
     try:
-        wwe13_pack.pack(mod, svrmod, 'Port tools (SvR 2008)')
+        wwe13_pack.pack(mod, svrmod, 'Port tools (SvR %s)' % year)
     finally:
         sys.stdout = old
     if in11 is None:
@@ -460,18 +498,19 @@ def main(argv):
             raise BadInput('--src %s: not found' % a.src)
         with discfs.open(a.src) as disc:
             if a.cmd == 'list':
-                lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list}
+                lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
+                         'svr2009': lambda d: svr2008_list(d, SVR2009)}
                 print(json.dumps(lists.get(a.game, bg_list)(disc)))
                 return 0
-            if a.game not in ('svr2010', 'svr2008'):
-                msg = ("WWE '13 arenas are converted by the Mod Maker itself" if a.game == 'wwe13'
+            if a.game not in ('svr2010', 'svr2008', 'svr2009'):
+                msg = ("WWE '12 / '13 arenas are converted by the Mod Maker itself" if a.game in ('wwe12', 'wwe13')
                        else '%s arenas are not convertible yet (research)' % game['name'])
                 rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'notes': [msg]}
                 print(json.dumps(rep))
                 return 3
             os.makedirs(a.out, exist_ok=True)
-            if a.game == 'svr2008':
-                rep = svr2008_convert(disc, a.item, a.out, a.pac11, a.base, a.name)
+            if a.game in ('svr2008', 'svr2009'):
+                rep = svr2008_convert(disc, a.item, a.out, a.pac11, a.base, a.name, a.game)
             else:
                 rep = svr2010_convert(disc, a.item, a.out, a.base, a.name)
             with open(os.path.join(a.out, 'report.json'), 'w') as f:

@@ -18,9 +18,9 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 |---|---|---|---|
 | SvR 2007 (360) | | research | not extracted yet |
 | **SvR 2008 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | texture sets moved to 2011's ids, crowd from a 2011 arena (`--pac11`) |
-| SvR 2009 (360) | | research | not extracted yet |
+| **SvR 2009 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | as 2008, plus light numbers remapped |
 | **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
-| WWE '12 (360) | | research | not extracted yet |
+| **WWE '12 (360)** | `pac/bg/bgNN.pac`, plain EPAC | **ready (in the Mod Maker)** | the WWE '13 converter (`svrmod wwe13`) takes it as is |
 | **WWE '13 (360)** | `pac/bg/bgNN.pac`, `0x0FF512ED` LZX container around an EPK8 | **ready (in the Mod Maker)** | `svrfmt/wwe13.cpp` (`svrmod wwe13`); see below |
 | WWE 2K14 (360) | | research | not extracted yet |
 
@@ -111,6 +111,32 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 - **Crowd seats:** the 2011 base arena's crowd sits in that hall's seat
   layout, so it fits 2008's stands only roughly. RAW looks right; other halls
   are not checked yet.
+
+### SvR 2009
+
+- **Format:** as 2008 (texture sets at 0xC8 / 0xC9), plus a crowd (0x4E20 /
+  0x4E21) and 0x7922 in older formats. Those are replaced by the 2011 base
+  arena's crowd, and 0x7922 is left out.
+- **Lights:** 2009's model flags (0xC351) use light `l(502)`, which 2011
+  doesn't have; it crashed the arena load. Every light number the 2011 base
+  arena has no copy of goes to its nearest one of the same hundred
+  (502 -> 501, 106 -> 105). `arena_port.py` does this for 2008 too.
+- **Tested:** RAW (bg01) plays in 2011.
+- **Arenas:** 00 SmackDown, 01 RAW, 02 ECW, 03 Tribute to the Troops,
+  04 SummerSlam, 05 Unforgiven, 06 No Mercy, 07 Survivor Series,
+  08 Armageddon, 09 Royal Rumble, 10 No Way Out, 11 WrestleMania XXIV,
+  12 Backlash, 13 Judgment Day, 14 Night of Champions, 15 Bash,
+  16 One Night Stand, 17 Cyber Sunday, 18 Vengeance (from the texture
+  names; check in game).
+
+### WWE '12
+
+- **Format:** the arena files are plain EPAC (no LZX container), in WWE
+  '13's model format (cm, 0xB8 mesh descriptors) with 2011's entries.
+- **Conversion:** the WWE '13 converter (`svrmod wwe13` / the Mod Maker)
+  takes them as they are. It now also adds the 2011 host's `aud_lightmap`
+  when the arena has none; without it the crowd is black.
+- **Tested:** RAW (bg01) plays in 2011, crowd lit.
 
 ### WWE '13
 
