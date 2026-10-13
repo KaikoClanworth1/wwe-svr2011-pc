@@ -1018,6 +1018,10 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   if (se.empty()) return fail("WWE '13 file: no stage index (PACH)");
   Arena host;
   if (!host.LoadData(host_file, error)) return false;
+  // WWE 2K14 (its entries packed as "ZLIB"): its arena motions (0x7530 YMKs)
+  // crash SvR2011's arena load; the host's are used
+  bool k14 = false;
+  for (const auto& e : se) k14 = k14 || (e.data.size() >= 4 && !std::memcmp(e.data.data(), "ZLIB", 4));
 
   std::map<uint32_t, Bytes> outm;  // id -> stored entry
   std::map<uint32_t, Model> pending;  // converted arena models (written after the barrier corners)
@@ -1052,6 +1056,14 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       continue;
     }
     if (e.id == 0x7532 || e.id == 0x7533) { ++rep.dropped; continue; }  // (WWE '13 only)
+    if (k14 && e.id == 0x7530 && hostm.count(e.id)) { outm[e.id] = hostm[e.id]->data; ++rep.from_host; continue; }
+    // (2K14 stores a few small texts - ring zones 0xEB29 - as bare zlib streams
+    // of unknown size: the host's, which match)
+    if (k14 && e.data.size() > 2 && e.data[0] == 0x78 && hostm.count(e.id)) {
+      outm[e.id] = hostm[e.id]->data;
+      ++rep.from_host;
+      continue;
+    }
     Bytes raw = Unpack(e.data);
     if (IsJboy(raw)) {
       Model m;

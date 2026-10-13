@@ -1,6 +1,10 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "pac.h"
 
+extern "C" {
+#include "../../launcher/unzip.h"
+}
+
 #include <algorithm>
 #include <cstdio>
 #include <functional>
@@ -181,7 +185,22 @@ Bytes BpeEncode(const Bytes& raw) {
   return out;
 }
 
+// WWE 2K14 entries: "ZLIB", u32 version (0x1230), u32 packed size, u32
+// unpacked size, then a zlib stream (2-byte header, deflate); stored as is
+// when the sizes are equal. A bare zlib stream (0x78 0x01/9C/DA) also occurs.
+static bool ZlibUnpack(const Bytes& in, size_t at, size_t packed, size_t usize, Bytes& out) {
+  if (at + packed > in.size() || packed < 2) return false;
+  out.assign(usize, 0);
+  return usize && unzip_inflate(&in[at + 2], packed - 2, out.data(), usize);
+}
+
 Bytes Unpack(const Bytes& entry) {
+  if (entry.size() >= 16 && !std::memcmp(entry.data(), "ZLIB", 4)) {
+    const uint32_t packed = Le32(&entry[8]), usize = Le32(&entry[12]);
+    if (packed == usize && 16 + size_t(usize) <= entry.size()) return Bytes(entry.begin() + 16, entry.begin() + 16 + usize);
+    Bytes out;
+    return ZlibUnpack(entry, 16, packed, usize, out) ? out : Bytes{};
+  }
   if (!IsBpe(entry)) return entry;
   Bytes out;
   if (!BpeDecode(entry, out)) return {};
