@@ -40,13 +40,13 @@ import discfs  # noqa: E402
 import svrfmt  # noqa: E402
 
 GAMES = [
-    {'id': 'svr2007', 'name': "WWE SmackDown vs. Raw 2007", 'platform': 'x360', 'disc_hint': '545107E0', 'status': 'research'},
+    {'id': 'svr2007', 'name': "WWE SmackDown vs. Raw 2007", 'platform': 'x360', 'disc_hint': '545107E0', 'status': 'ready'},
     {'id': 'svr2008', 'name': "WWE SmackDown vs. Raw 2008", 'platform': 'x360', 'disc_hint': '5451080B', 'status': 'ready'},
     {'id': 'svr2009', 'name': "WWE SmackDown vs. Raw 2009", 'platform': 'x360', 'disc_hint': '54510826', 'status': 'ready'},
     {'id': 'svr2010', 'name': "WWE SmackDown vs. Raw 2010", 'platform': 'x360', 'disc_hint': '54510844', 'status': 'ready'},
     {'id': 'wwe12', 'name': "WWE '12", 'platform': 'x360', 'disc_hint': '54510890', 'status': 'native'},
     {'id': 'wwe13', 'name': "WWE '13", 'platform': 'x360', 'disc_hint': '545108B4', 'status': 'native'},
-    {'id': 'wwe2k14', 'name': "WWE 2K14", 'platform': 'x360', 'disc_hint': '545408B2', 'status': 'research'},
+    {'id': 'wwe2k14', 'name': "WWE 2K14", 'platform': 'x360', 'disc_hint': '545408B2', 'status': 'native'},
 ]
 
 # 2011's arena select tiles: arena number -> banner / manifest base name (arena_mods.cpp kTiles)
@@ -85,6 +85,15 @@ SVR2009 = {
     9: ('Royal Rumble', 9), 10: ('No Way Out', None), 11: ('WrestleMania XXIV', None), 12: ('Backlash', None),
     13: ('Judgment Day', 13), 14: ('Night of Champions', 14), 15: ('The Great American Bash', 15),
     16: ('One Night Stand', None), 17: ('Cyber Sunday', None), 18: ('Vengeance', None),
+}
+# SvR 2007: stage number -> (show, 2011 arena of that show). Its arenas are
+# entries STG<k>/00NN of pac/bg/bg<k>.pac (k = NN // 10); 0020+ are copies.
+SVR2007 = {
+    0: ('SmackDown', 0), 1: ('RAW', 1), 2: ('ECW', 2), 4: ('SummerSlam', 4), 5: ('Unforgiven', None),
+    6: ('No Mercy', None), 7: ('Survivor Series', 7), 8: ('Armageddon', None), 9: ('Royal Rumble', 9),
+    10: ('No Way Out', None), 11: ('WrestleMania 22', None), 12: ('Backlash', None), 13: ('Judgment Day', 13),
+    14: ('Vengeance', None), 15: ('The Great American Bash', 15), 16: ("New Year's Revolution", None),
+    17: ('One Night Stand', None), 18: ('Cyber Sunday', None), 19: ("Saturday Night's Main Event", None),
 }
 HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0xEE48, 0xEA6C)
 MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (a bigger file can run out of the arena heap)
@@ -321,18 +330,55 @@ def remap_lights(flags, host_flags):
     return re.sub(rb'l\((\d+)\)', sub, flags), missing
 
 
+def vis_tree(ents):
+    """A visibility tree (entry 0xC364) for an arena that has none: SvR2011 culls every arena
+    model its tree doesn't list (2007-2009 arenas came out with a black floor and no barricades).
+    One node per arena model (ids below 0x190), boxed by its vertices: 3ds Max axes in metres,
+    (x, z, -y) x 0.1 of the model's units, as 2011's own trees."""
+    import jboy
+    boxes = []
+    for i, x in sorted(ents.items()):
+        if i >= 0x190:
+            continue
+        d = svrfmt.bpe_decode(x) if x[:4] == b'BPE ' else x
+        if d[:4] != b'JBOY':
+            continue
+        m = jboy.read(d)
+        v = [p for msh in m.meshes for p in msh.verts]
+        if not v:
+            continue
+        xs, ys, zs = [p[0] * 0.1 for p in v], [p[2] * 0.1 for p in v], [-p[1] * 0.1 for p in v]
+        boxes.append((m.name, (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))))
+    if not boxes:
+        return None
+    root = [min(b[1][k] for b in boxes) for k in range(3)] + [max(b[1][k] for b in boxes) for k in range(3, 6)]
+
+    def f(b):
+        return ' '.join('%g' % round(c, 5) for c in b)
+    out = [';<\u30a2\u30ea\u30fc\u30ca\u30e2\u30c7\u30eb\u5206\u5272\u306b\u3088\u308b\u53ef\u8996\u5224\u5b9a'
+           '\u30c7\u30fc\u30bf\u30d5\u30a1\u30a4\u30eb>', ';\u5ea7\u6a19\u7cfb=3ds max', '',
+           'NODE MY_NAME = VT_ROOT', '{', '\t' + f(root), '}', str(len(boxes)), '']
+    for name, b in boxes:
+        out += ['NODE MY_NAME = %s PARENT_NAME = VT_ROOT' % name, '{', '\t' + f(b), '}', '0', '']
+    return '\r\n'.join(out).encode('cp932')
+
+
+def svr2007_path(n):
+    return 'pac/bg/bg%d.pac' % (n // 10)
+
+
 def svr2008_list(disc, table=None):
     items = []
     for n, (show, in11) in sorted((table or SVR2008).items()):
-        path = 'pac/bg/bg%02d.pac' % n
+        path = svr2007_path(n) if table is SVR2007 else 'pac/bg/bg%02d.pac' % n
         if disc.exists(path):
             items.append({'key': 'bg%02d' % n, 'name': show, 'arena': n, 'size': disc.size(path), 'in_2011': in11})
     return items
 
 
 def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008'):
-    table = SVR2009 if game == 'svr2009' else SVR2008
-    year = '2009' if game == 'svr2009' else '2008'
+    table = {'svr2009': SVR2009, 'svr2007': SVR2007}.get(game, SVR2008)
+    year = game[3:]
     warnings, notes, dropped = [], [], []
     try:
         n = int(key[2:]) if key.lower().startswith('bg') else int(key)
@@ -350,14 +396,29 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     name = name or '%s (SvR %s)' % (show, year)
     mod_id = game + '_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
     progress(3, 'reading bg%02d' % n)
-    src = disc.read('pac/bg/bg%02d.pac' % n)
+    # the file's layout and size budget: the base slot's arena; the borrowed entries (crowd,
+    # table pictures, card, light set): always 2011's RAW (a 2008 arena with SummerSlam's
+    # crowd / lights crashed the load on its slot; with RAW's it plays there)
     host = open(find_host(pac11, base), 'rb').read()
-    _, ga, _ = svrfmt.epac_read(src)
     hb, gb, tb = svrfmt.epac_read(host)
-    eb = dict(svrfmt.pach_read(gb[0][1][0][1]))
+    _, graw, _ = svrfmt.epac_read(open(find_host(pac11, 1), 'rb').read())
+    eb = dict(svrfmt.pach_read(graw[0][1][0][1]))
+    if game == 'svr2007':  # one stage of a many-stage pac
+        _, ga, _ = svrfmt.epac_read(disc.read(svr2007_path(n)))
+        stage = next((b for typ, es in ga for nm, b in es if typ.startswith(b'STG') and nm == b'%04d' % n), None)
+        if stage is None:
+            raise BadInput('%s has no stage %04d' % (svr2007_path(n), n))
+    else:
+        _, ga, _ = svrfmt.epac_read(disc.read('pac/bg/bg%02d.pac' % n))
+        stage = ga[0][1][0][1]
     ents = {}
-    for i, x in svrfmt.pach_read(ga[0][1][0][1]):
+    for i, x in svrfmt.pach_read(stage):
+        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF)
+        if game == 'svr2007' and (0x4E20 <= i <= 0x52FF or 0x9C40 <= i <= 0x9CFF):
+            continue
         ents[{0xC8: 0x190, 0xC9: 0x191}.get(i, i)] = x
+    if game == 'svr2007' and 0x7530 in eb:  # its arena motions crashed the 2011 load
+        ents[0x7530] = eb[0x7530]
     if 0x190 not in ents:
         raise RuntimeError('bg%02d: no texture set (0xC8)' % n)
     for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
@@ -365,13 +426,18 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     for i in HOST_ENTRIES:
         if i in eb:
             ents[i] = eb[i]
+    if 0xC364 not in ents:
+        tree = vis_tree(ents)
+        if tree:
+            ents[0xC364] = svrfmt.bpe_encode(tree, compress=True)
+            notes.append('visibility tree made from the arena models (the game had none)')
     if 0xC351 in ents and 0xC351 in eb:
         unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
         flags, moved = remap_lights(unp(ents[0xC351]), unp(eb[0xC351]))
         if moved:
             ents[0xC351] = svrfmt.bpe_encode(flags, compress=True)
             notes.append('lights 2011 has no copy of, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
-    notes.append('crowd, announce table pictures and card from 2011 %s' % BASE_NAMES[base])
+    notes.append('crowd, announce table pictures and card from 2011 RAW')
 
     def build(tex_blob):
         e = dict(ents)
@@ -499,17 +565,18 @@ def main(argv):
         with discfs.open(a.src) as disc:
             if a.cmd == 'list':
                 lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
-                         'svr2009': lambda d: svr2008_list(d, SVR2009)}
+                         'svr2009': lambda d: svr2008_list(d, SVR2009),
+                         'svr2007': lambda d: svr2008_list(d, SVR2007)}
                 print(json.dumps(lists.get(a.game, bg_list)(disc)))
                 return 0
-            if a.game not in ('svr2010', 'svr2008', 'svr2009'):
-                msg = ("WWE '12 / '13 arenas are converted by the Mod Maker itself" if a.game in ('wwe12', 'wwe13')
+            if a.game not in ('svr2010', 'svr2008', 'svr2009', 'svr2007'):
+                msg = ("WWE '12 / '13 / 2K14 arenas are converted by the Mod Maker itself" if a.game in ('wwe12', 'wwe13', 'wwe2k14')
                        else '%s arenas are not convertible yet (research)' % game['name'])
                 rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'notes': [msg]}
                 print(json.dumps(rep))
                 return 3
             os.makedirs(a.out, exist_ok=True)
-            if a.game in ('svr2008', 'svr2009'):
+            if a.game in ('svr2007', 'svr2008', 'svr2009'):
                 rep = svr2008_convert(disc, a.item, a.out, a.pac11, a.base, a.name, a.game)
             else:
                 rep = svr2010_convert(disc, a.item, a.out, a.base, a.name)

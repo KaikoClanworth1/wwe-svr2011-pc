@@ -16,13 +16,13 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 
 | Game | Arena files | State | How |
 |---|---|---|---|
-| SvR 2007 (360) | | research | not extracted yet |
+| **SvR 2007 (360)** | `pac/bg/bg<k>.pac`, many arenas each | **ready** | as 2008, plus the host's arena motions |
 | **SvR 2008 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | texture sets moved to 2011's ids, crowd from a 2011 arena (`--pac11`) |
 | **SvR 2009 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | as 2008, plus light numbers remapped |
 | **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
 | **WWE '12 (360)** | `pac/bg/bgNN.pac`, plain EPAC | **ready (in the Mod Maker)** | the WWE '13 converter (`svrmod wwe13`) takes it as is |
 | **WWE '13 (360)** | `pac/bg/bgNN.pac`, `0x0FF512ED` LZX container around an EPK8 | **ready (in the Mod Maker)** | `svrfmt/wwe13.cpp` (`svrmod wwe13`); see below |
-| WWE 2K14 (360) | | research | not extracted yet |
+| **WWE 2K14 (360)** | `pac/bg/bgNN.pac`, EPAC with ZLIB entries | **ready (in the Mod Maker)** | the WWE '13 converter: ZLIB unpacked, the host's arena motions |
 
 ### SvR 2010
 
@@ -70,6 +70,27 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
   SummerSlam 4, Survivor Series 7, Royal Rumble 9, Judgment Day 13, Night of
   Champions 14, Bash 15, Extreme Rules 16). Otherwise its own number.
   `--base` changes it.
+
+### SvR 2007
+
+- **Format:** `pac/bg/bg0.pac`-`bg7.pac` each hold several stages: groups
+  `STG<k>` with entries `00NN`. The arenas are 0000-0019, in `bg0`-`bg1`
+  (0020+ are copies); `bg5`-`bg7` are backstage.
+  - The texture sets are 0xC8 / 0xC9, as in 2008.
+  - The crowd is loose models and seat files (0x4E20-0x52FF).
+  - The group count's high 16 bits hold a per-file constant
+    (`svrfmt.epac_read` masks it).
+- **Conversion:** the 2008 path. 2007's crowd pieces and 0x9C40-0x9CFF are
+  left out. Its arena motions (0x7530) crashed the 2011 load, found by
+  swapping entries a group at a time, so they come from the 2011 host.
+- **Tested:** RAW (0001) plays in 2011.
+- **Arenas:** 00 SmackDown, 01 RAW, 02 ECW (?), 04 SummerSlam,
+  05 Unforgiven, 06 No Mercy, 07 Survivor Series, 08 Armageddon,
+  09 Royal Rumble, 10 No Way Out, 11 WrestleMania 22, 12 Backlash,
+  13 Judgment Day, 14 Vengeance, 15 Bash, 16 New Year's Revolution,
+  17 One Night Stand, 18 Cyber Sunday (?), 19 Saturday Night's Main Event
+  (from the texture names).
+- **Pictures:** no VS picture was found for RAW yet, so the banner is plain.
 
 ### SvR 2008
 
@@ -137,6 +158,23 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
   takes them as they are. It now also adds the 2011 host's `aud_lightmap`
   when the arena has none; without it the crowd is black.
 - **Tested:** RAW (bg01) plays in 2011, crowd lit.
+
+### WWE 2K14
+
+- **Format:** EPAC whose entries (and PACH children) are `ZLIB`-packed:
+  `"ZLIB"`, u32 0x1230, u32 packed size, u32 unpacked size, then a zlib
+  stream; equal sizes mean stored. A few small texts (0xEB29) are bare zlib
+  streams. Unpacked, it is WWE '12 / '13's layout and model format.
+- **Conversion:** the WWE '13 converter (`svrfmt::Unpack` reads ZLIB). Two
+  2K14 entries crash 2011's arena load and come from the 2011 host:
+  - the arena motions, 0x7530 YMKs (found by swapping entries one group at
+    a time);
+  - the bare-zlib texts.
+
+  `tools/wwe2k14_unzlib.py` writes an unpacked copy for inspection.
+- **Tested:** RAW (bg01) converted straight from the disc file plays in 2011
+  (355 models; 19 entries from the host).
+- **Size:** 2K14 arenas are big. RAW needed many textures halved to fit.
 
 ### WWE '13
 
@@ -233,6 +271,18 @@ exist in 2011, which can be ported and which can't.
   differs between games; converters keep the 2011 template's.
 - For a collision view, the 2011 game data to read is still to be found
   (guess: CHAR/DAT or the 0x28 table).
+
+### Visibility trees and borrowed entries (all SvR 2007-2009 conversions)
+
+- SvR2011 draws only the arena models its visibility tree (0xC364) lists.
+  2007-2009 arena files have no tree, so their floor, stands and barricades
+  were culled: the user saw a black floor and no barricades. The converter
+  now builds a flat tree, one node per arena model, boxed from its vertices
+  in 2011's axes (x, z, -y) x 0.1.
+- The borrowed entries (crowd, table pictures, card, light set) always come
+  from 2011's RAW. 2008 SummerSlam with SummerSlam's own crashed the load on
+  its slot; with RAW's it plays there. The base slot still sets the tile, the
+  VS theme and the size budget.
 
 ## Belts and weapons (D11 research, Arena Porting)
 

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace rex::filesystem {
 class VirtualFileSystem;
@@ -29,5 +30,18 @@ const std::string& PacListFolder();
 // (no record, or one 2011 kept for a cut move: no motion either), -1 before
 // the records are loaded.
 int MoveUsable(uint16_t id);
+
+// The entrances the move packs add (pacentry EVP? <n>, n < 10000), for CREATE AN ENTRANCE's MODS
+// rows (cae_mod_motions.cpp): label = the superstar mod's name, else the script's own name and the
+// game it was converted from; parts: bit k set when CAE part 10000 + 1000k + n is in the pack too.
+struct ModEntrance {
+  int number = 0;
+  std::string label;
+  uint8_t parts = 0;
+};
+std::vector<ModEntrance> ModEntrances();
+
+// Is there an entrance script `n` (an entrance or a CAE part) - the game's own (pac\evt) or a pack's?
+bool EntranceScriptExists(int n);
 
 }  // namespace svr2011

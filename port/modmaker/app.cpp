@@ -27,6 +27,7 @@ extern "C" {
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "svrfmt/disc.h"
+#include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
 
@@ -42,6 +43,15 @@ HWND g_wnd = nullptr;
 std::wstring g_game;
 float g_scale = 1;
 bool g_behind = false;
+
+void ShellOpen(const std::wstring& what) {
+  if (what.empty()) return;
+  if (g_behind) {
+    Log("(test: would open " + Utf8(what) + ")");
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", what.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
 PageId g_page = PageId::kArena;
 std::wstring g_project_file;
 PageId g_project_page = PageId::kArena;
@@ -210,6 +220,10 @@ std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* 
                       const wchar_t* def_ext, const wchar_t* def_name) {
   IFileDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a file dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                               IID_PPV_ARGS(&dlg))))
     return out;
@@ -260,6 +274,10 @@ std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPE
 std::wstring PickFolder(const wchar_t* title) {
   IFileOpenDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a folder dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return out;
   DWORD opt = 0;
   dlg->GetOptions(&opt);
@@ -1083,6 +1101,76 @@ Image GameLook(const Image& src) {
   return out;
 }
 
+const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
+  struct Cached {
+    fs::file_time_type time;
+    uintmax_t size = 0;
+    std::vector<ModelPages> pages;
+  };
+  static std::map<std::wstring, Cached> cache;
+  static const std::vector<ModelPages> none;
+  std::error_code ec;
+  const auto t = fs::last_write_time(pac, ec);
+  if (ec) return none;
+  const uintmax_t size = fs::file_size(pac, ec);
+  auto it = cache.find(pac);
+  if (it != cache.end() && it->second.time == t && it->second.size == size) return it->second.pages;
+  Cached c{t, size, {}};
+  Bytes d;
+  Epac e;
+  if (ReadFile(Utf8(pac), d) && EpacRead(d, e))
+    for (const auto& g : e.groups) {
+      if (g.type.rfind("EMD", 0) != 0) continue;
+      for (const auto& en : g.entries) {
+        if (en.name.empty() || en.name.back() != '2') continue;  // (kind 2: the wrestler's model)
+        std::vector<PachEntry> kids;
+        if (!PachRead(Unpack(en.data), kids)) continue;
+        int pages = 0;
+        for (const auto& k : kids) {
+          const Bytes raw = Unpack(k.data);
+          Model m;
+          if (!IsJboy(raw) || !JboyRead(raw, m)) continue;
+          for (const auto& s : m.meshes) {
+            const uint32_t blocks = s.raw.size() >= 0x60 ? Be32(&s.raw[0x5C]) : 1;
+            size_t idx = 0;
+            for (const auto& st : s.strips) idx += st.indices.size();
+            pages += int((s.verts.size() * (std::max(1u, blocks) == 1 ? 32 : 44) + 4095) / 4096 + (idx * 2 + 4095) / 4096);
+          }
+        }
+        c.pages.push_back({en.name, pages});
+      }
+    }
+  std::string line = "model budget: " + Utf8(fs::path(pac).filename().wstring());
+  for (const auto& p : c.pages) line += "  " + p.entry + " " + std::to_string(p.pages);
+  Log(line);
+  return (cache[pac] = std::move(c)).pages;
+}
+
+std::vector<int> ModelAttires(const std::wstring& pac) {
+  std::vector<int> v;
+  for (const auto& p : ModelBudget(pac))
+    if (p.entry.size() >= 8 && std::isdigit(uint8_t(p.entry[6]))) v.push_back(p.entry[6] - '0' + 1);
+  std::sort(v.begin(), v.end());
+  v.erase(std::unique(v.begin(), v.end()), v.end());
+  return v;
+}
+
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out) {
+  int worst = 0;
+  std::string entry;
+  for (const auto& p : ModelBudget(pac)) {
+    if (p.pages > worst) worst = p.pages, entry = p.entry;
+    if (first_only) break;
+  }
+  if (worst <= kModelPagesWarn) return;
+  const std::string what = who + "'s model needs " + std::to_string(worst) + " of the " + std::to_string(kModelPages) +
+                           " memory pages a wrestler gets in a match" + (first_only ? "" : " (entry " + entry + ")");
+  const char* fix = "Drop its blood overlays (JBOY children 0x7530-0x7532: the Port page's conversions do) or use a "
+                    "model with fewer vertices or weight blocks.";
+  if (worst > kModelPages) out.push_back(Error(what + ": the match load crashes.", fix));
+  else out.push_back(Warning(what + ": close to the limit (stock models reach about 180-192).", fix));
+}
+
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {
   // framed the game's way on 512 x 512 (FitFigure); the bust (SSFC): that at
   // 3/4 size, its top 256 rows around the figure's middle; the face icon:
@@ -1748,9 +1836,10 @@ void StatusBar() {
   const bool untouched = ProjectUntouched();
   if (untouched) g_problems.clear();
   const int errors = ErrorCount(g_problems), warnings = int(g_problems.size()) - errors;
-  char pb[64];
+  char pb[128];
   if (g_problems.empty()) std::snprintf(pb, sizeof pb, untouched ? "Nothing made yet" : "No problems");
-  else std::snprintf(pb, sizeof pb, "%d error%s, %d warning%s", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
+  else std::snprintf(pb, sizeof pb, "%s%s%d error%s, %d warning%s", g_page != g_project_page ? PageName(g_project_page) : "",
+                     g_page != g_project_page ? " project: " : "", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
   const float w = ImGui::CalcTextSize(pb).x + ImGui::CalcTextSize("Log").x + 60 * g_scale;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w));
   if (!g_problems.empty()) ImGui::PushStyleColor(ImGuiCol_Text, errors ? kBad : kWarn);
@@ -1951,6 +2040,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--test-moves-save") && more) moves_save = argv[++i];
+    else if (!wcscmp(argv[i], L"--caw-announcer") && more) caw_page::TestAnnouncer(Utf8(argv[++i]));  // <CLIP> (- clears), with --caw <index>
     else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
       std::wstring a = argv[++i];
       std::vector<std::wstring> parts;
@@ -1999,10 +2089,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
-    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
-      int a[4] = {0, -1, -1, 0};
-      swscanf_s(argv[++i], L"%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3]);
+    else if (!wcscmp(argv[i], L"--view-attire") && more) char_preview::SetAttire(_wtoi(argv[++i]));  // the 3D view's attire
+    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>[,<key: paused there>]]
+      int a[5] = {0, -1, -1, 0, -1};
+      swscanf_s(argv[++i], L"%d,%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3], &a[4]);
       anims_page::TestStart(a[0], a[1], a[2], a[3]);
+      anims_page::TestKey(a[4]);
       g_page = PageId::kAnims;
     }
     else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
@@ -2017,6 +2109,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-movie") && more) star_movie = argv[++i];
     else if (!wcscmp(argv[i], L"--star-picture") && more) star_picture = argv[++i];
     else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);

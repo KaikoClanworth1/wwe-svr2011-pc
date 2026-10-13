@@ -102,6 +102,12 @@ struct Packs {
   // EPK8 pac (under pac\, lower case, e.g. "evt\nyujyo5.pac") -> "GROUP/name" -> unpacked data
   // (pacentry lines: whole entries added to / replacing the pac's, e.g. an entrance's EVPE/EVTE)
   std::map<std::string, std::map<std::string, Bytes>> entries;
+  // every pacentry line read (also without the data): for the entrances the packs add (ModEntrances)
+  struct EntryLine {
+    std::string pac, group, name;
+    fs::path dir, file;
+  };
+  std::vector<EntryLine> entry_lines;
   size_t count = 0;
 };
 
@@ -213,6 +219,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       stamp += file + " " + std::to_string(data ? uintmax_t(bytes.size()) : size) + " " +
                std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
       p.entries[pac].emplace(group + "/" + name, std::move(bytes));  // (the first pack's wins)
+      p.entry_lines.push_back({pac, group, name, dir, dir / fs::u8path(file)});
     } else {
       continue;
     }
@@ -992,6 +999,117 @@ fs::path BackstageGimmickPac(const fs::path& game) {
   return {};
 }
 
+// ---- The entrances the packs add (CREATE AN ENTRANCE's MODS rows, cae_mod_motions.cpp):
+// pacentry lines EVP? <n> (n < 10000) are entrances, EVP? <10000 + 1000k + n> their CAE parts.
+// The label: the superstar mod's name (manifest name=) for a mod's own moves/, else the script's
+// own name (EVP +0x22) and the game it came from (the pack.txt's first line, as the converters
+// write it: "# <game> entrance <n> as 2011 <m>").
+namespace {
+std::mutex g_ent_mutex;
+std::vector<ModEntrance> g_mod_entrances;
+std::set<int> g_mod_scripts;  // every EVP number the packs add (entrances and parts)
+
+std::string ManifestName(const fs::path& mod) {
+  std::ifstream in(mod / "manifest.txt");
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("name=", 0) == 0) return line.substr(5);
+  }
+  return mod.filename().string();
+}
+
+std::string ScriptName(const fs::path& evp) {  // (EVP +0x22: 30 bytes, NUL padded; '_' as space)
+  std::ifstream in(evp, std::ios::binary);
+  char buf[0x40] = {};
+  if (!in.read(buf, sizeof(buf))) return "";
+  std::string s(buf + 0x22, strnlen(buf + 0x22, 30));
+  std::replace(s.begin(), s.end(), '_', ' ');
+  return s;
+}
+
+std::string PackGame(const fs::path& dir) {  // ("# WWE '13 entrance 246 as 2011 497" -> "WWE '13")
+  std::ifstream in(dir / "pack.txt");
+  std::string line;
+  if (!std::getline(in, line) || line.rfind("# ", 0) != 0) return "";
+  const size_t e = line.find(" entrance ");
+  return e == std::string::npos ? "" : line.substr(2, e - 2);
+}
+}  // namespace
+
+void SetModEntrances(const std::vector<Packs::EntryLine>& lines) {
+  std::map<int, ModEntrance> ents;
+  std::set<int> scripts;
+  std::map<fs::path, int> per_dir;  // (entrances per pack: a mod with several gets the script name too)
+  for (const auto& l : lines) {
+    if (l.group.rfind("EVP", 0) != 0 || l.name.empty() || l.name.find_first_not_of("0123456789") != std::string::npos)
+      continue;
+    const int n = std::atoi(l.name.c_str());
+    scripts.insert(n);
+    if (n < 10000 && !ents.count(n)) per_dir[l.dir]++;
+  }
+  for (const auto& l : lines) {
+    if (l.group.rfind("EVP", 0) != 0 || l.name.empty() || l.name.find_first_not_of("0123456789") != std::string::npos)
+      continue;
+    const int n = std::atoi(l.name.c_str());
+    if (n >= 10000 || ents.count(n)) continue;
+    ModEntrance e;
+    e.number = n;
+    const std::string script = ScriptName(l.file);
+    const bool mod_moves = l.dir.filename() == "moves" && l.dir.parent_path().parent_path().filename() == "Superstars";
+    if (mod_moves) {
+      e.label = ManifestName(l.dir.parent_path());
+      if (per_dir[l.dir] > 1 && !script.empty()) e.label += " - " + script;
+    } else {
+      const std::string game = PackGame(l.dir);
+      e.label = script.empty() ? l.dir.filename().string() : script;
+      if (!game.empty()) e.label += " (" + game + ")";
+    }
+    if (e.label.size() > 40) e.label.resize(40);
+    for (int k = 0; k < 5; ++k)
+      if (scripts.count(10000 + 1000 * k + n)) e.parts |= uint8_t(1u << k);
+    ents[n] = e;
+  }
+  std::lock_guard lock(g_ent_mutex);
+  g_mod_entrances.clear();
+  for (auto& [n, e] : ents) g_mod_entrances.push_back(std::move(e));
+  g_mod_scripts = std::move(scripts);
+  if (!g_mod_entrances.empty()) REXLOG_INFO("[svr2011] move packs: {} mod entrances", g_mod_entrances.size());
+}
+
+std::vector<ModEntrance> ModEntrances() {
+  std::lock_guard lock(g_ent_mutex);
+  return g_mod_entrances;
+}
+
+bool EntranceScriptExists(int n) {
+  // the game's own: the EVP groups of pac\evt\*.pac (EPK8 tables: groups {4CC, u16 count * 4, u16, u32},
+  // 16-byte entries {name[8], sector, size}), read once
+  static const std::set<int> stock = [] {
+    std::set<int> s;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(rex::filesystem::GetExecutableFolder() / "pac" / "evt", ec)) {
+      std::ifstream in(e.path(), std::ios::binary);
+      Bytes head(0x4000);
+      if (!in.read(reinterpret_cast<char*>(head.data()), 0x4000) || std::memcmp(head.data(), "EPK8", 4)) continue;
+      for (size_t q = 0x800; q + 12 <= 0x4000 && Le32(&head[q]);) {
+        const bool evp = !std::memcmp(&head[q], "EVP", 3);
+        const uint32_t cnt = Le16(&head[q + 4]) / 4;
+        q += 12;
+        for (uint32_t i = 0; i < cnt && q + 16 <= 0x4000; ++i, q += 16) {
+          const std::string nm(reinterpret_cast<char*>(&head[q]), 8);
+          if (evp && std::isdigit(static_cast<unsigned char>(nm[0]))) s.insert(std::atoi(nm.c_str()));
+        }
+      }
+    }
+    REXLOG_INFO("[svr2011] move packs: {} stock entrance scripts", s.size());
+    return s;
+  }();
+  if (stock.count(n)) return true;
+  std::lock_guard lock(g_ent_mutex);
+  return g_mod_scripts.count(n) != 0;
+}
+
 void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   if (const char* v = std::getenv("SVR2011_TEST_PLIST"); v && *v) {  // (test aid: a folder made by hand)
     g_folder = v;
@@ -1037,6 +1155,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   };
   read_packs(false);
+  SetModEntrances(packs.entry_lines);
   WarnOverrides(packs);
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));

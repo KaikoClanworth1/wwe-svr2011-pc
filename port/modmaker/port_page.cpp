@@ -55,6 +55,7 @@ std::string g_result_error;
 char g_options[256] = "";      // extra converter options (advanced)
 // --port-test: the steps run by themselves (list, convert, open)
 std::string g_test_item;
+int g_force_kind = -1;  // (the test's tab: ImGui reports the first tab selected until SetSelected takes)
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
@@ -158,8 +159,12 @@ const Json& GameFor(int k) {
   const auto it = g_games.find(k);
   if (it == g_games.end() || it->second.type != Json::Type::kArray) return kNone;
   const std::string id = SourceId();
-  for (const auto& g : it->second.items)
-    if (!id.empty() && g["disc_hint"].Str() == id) return g;
+  if (id.empty()) return kNone;
+  for (const auto& g : it->second.items) {  // disc_hint, or any of disc_hints (one game on several discs: x360 + PS2)
+    if (g["disc_hint"].Str() == id) return g;
+    for (const auto& h : g["disc_hints"].items)
+      if (h.Str() == id) return g;
+  }
   return kNone;
 }
 
@@ -188,6 +193,13 @@ std::vector<std::wstring> Options() {  // the advanced field, split on spaces ("
   return v;
 }
 
+// An item's handle for convert: "key" (most converters), "id", or entrance_port's "number".
+std::string ItemKey(const Json& item) {
+  for (const char* f : {"key", "id", "number"})
+    if (const std::string v = item[f].Str(); !v.empty()) return v;
+  return {};
+}
+
 void List(int k, const std::string& game) {
   const std::wstring src = Source();
   g_list_for = std::to_string(k) + "|" + game + "|" + Utf8(src);
@@ -210,7 +222,7 @@ void List(int k, const std::string& game) {
 }
 
 void Convert(int k, const std::string& game, const Json& item) {
-  const std::string key = item["key"].Str();
+  const std::string key = ItemKey(item);
   std::string safe;
   for (char c : game + "_" + key) safe += std::isalnum(uint8_t(c)) ? c : '_';
   const fs::path out = WorkDir() / Wide(std::string(kKinds[k].title) + "_" + safe);
@@ -233,14 +245,26 @@ void Convert(int k, const std::string& game, const Json& item) {
   for (auto& o : Options()) args.push_back(o);
   g_result = Json();
   g_result_error.clear();
-  auto run = [k](std::vector<std::wstring> a) {
-    RunToolJson(kKinds[k].script, a, [](int code, const std::string& text) {
+  auto run = [k, out, entrance](std::vector<std::wstring> a) {
+    RunToolJson(kKinds[k].script, a, [out, entrance](int code, const std::string& text) {
     Json j;
     if (!ParseJson(text, j) || j.type != Json::Type::kObject) {
       g_result_error = "the converter stopped (exit " + std::to_string(code) + "): see the log";
       return;
     }
     g_result = std::move(j);
+    if (g_result["out"].Str().empty()) {  // (entrance_port's report has no out / opens: its pack is <out>\pack)
+      Json o;
+      o.type = Json::Type::kString;
+      o.s = Utf8((entrance ? out / L"pack" : out).wstring());
+      g_result.fields.push_back({"out", std::move(o)});
+      if (entrance && g_result["opens"].Str().empty()) {
+        Json m;
+        m.type = Json::Type::kString;
+        m.s = "moves";
+        g_result.fields.push_back({"opens", std::move(m)});
+      }
+    }
     if (code != 0 || !g_result["ok"].Truthy())
       g_result_error = g_result["error"].Str().empty() ? "the conversion failed (exit " + std::to_string(code) + ")" : g_result["error"].Str();
     else
@@ -277,6 +301,93 @@ void Convert(int k, const std::string& game, const Json& item) {
               });
 }
 
+// ---- "native" games (arenas of WWE '12 / '13 / 2K14): the Mod Maker's own converter (Other games page) takes
+// the arena pac; here the disc's (or folder's) pac\bg\bgNN.pac are listed and the picked one is copied out to it.
+struct NativePac {
+  std::string name;  // bgNN.pac
+  int entry = -1;    // in the disc (-1: g_folder file)
+  uint64_t size = 0;
+};
+std::string g_native_for;
+std::vector<NativePac> g_native;
+int g_native_pick = -1;
+std::string g_native_test;  // (--port-test: the item to use)
+
+void NativeArenas(const std::string& game, const std::string& game_name) {
+  const std::string want = game + "|" + Utf8(Source());
+  if (g_native_for != want) {  // the bg pacs, once per source (the disc's table is in memory: quick)
+    g_native_for = want, g_native.clear(), g_native_pick = -1;
+    if (!g_image.empty()) {
+      svrfmt::Disc disc;
+      if (disc.Open(g_image)) {
+        const int bg = disc.Find("pac/bg");
+        if (bg >= 0)
+          for (int c : disc.At(bg).children)
+            if (const auto& e = disc.At(c); !e.dir && Lower(e.name).rfind("bg", 0) == 0 && Lower(e.name).ends_with(".pac"))
+              g_native.push_back({e.name, c, e.size});
+      }
+    } else {
+      std::error_code ec;
+      for (const auto& e : fs::directory_iterator(fs::path(g_folder) / L"pac" / L"bg", ec)) {
+        const std::string n = Utf8(e.path().filename().wstring());
+        if (e.is_regular_file(ec) && Lower(n).rfind("bg", 0) == 0 && Lower(n).ends_with(".pac")) g_native.push_back({n, -1, e.file_size(ec)});
+      }
+    }
+    std::sort(g_native.begin(), g_native.end(), [](const NativePac& a, const NativePac& b) { return a.name < b.name; });
+  }
+  ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish on the Other games page "
+                     "(host arena, options, Convert).", game_name.c_str());
+  if (g_native.empty()) {
+    ImGui::TextColored(kWarn, "No pac\bg\bgNN.pac found here.");
+    return;
+  }
+  ImGui::SetNextItemWidth(260 * g_scale);
+  const std::string cur = g_native_pick >= 0 ? g_native[size_t(g_native_pick)].name : "pick an arena pac";
+  if (ImGui::BeginCombo("3. The arena", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+    for (int i = 0; i < int(g_native.size()); ++i) {
+      char mb[32];
+      std::snprintf(mb, sizeof mb, "  %.1f MB", g_native[size_t(i)].size / 1048576.0);
+      if (ImGui::Selectable((g_native[size_t(i)].name + mb).c_str(), g_native_pick == i)) g_native_pick = i;
+    }
+    ImGui::EndCombo();
+  }
+  if (!g_native_test.empty()) {  // (test: pick by name)
+    for (int i = 0; i < int(g_native.size()); ++i)
+      if (Lower(g_native[size_t(i)].name) == Lower(g_native_test)) g_native_pick = i;
+    if (g_native_pick < 0) Log("port test: no arena pac " + g_native_test), g_native_test.clear();
+  }
+  ImGui::BeginDisabled(g_native_pick < 0 || Busy());
+  PushAccent();
+  const bool use = ImGui::Button("4. Use this arena (Other games page)", ImVec2(320 * g_scale, 0)) || (!g_native_test.empty() && g_native_pick >= 0 && !Busy());
+  PopAccent();
+  ImGui::EndDisabled();
+  if (!use) return;
+  g_native_test.clear();
+  const NativePac p = g_native[size_t(g_native_pick)];
+  const std::wstring image = g_image, folder = g_folder;
+  const fs::path out = WorkDir() / Wide("Arenas_" + game + "_" + p.name);
+  RunInBackground([p, image, folder, out, game] {
+    Progress("Copying " + p.name + " off the disc ...");
+    Bytes b;
+    bool ok = false;
+    if (p.entry >= 0) {
+      svrfmt::Disc disc;
+      ok = disc.Open(image) && disc.ReadAll(p.entry, b);
+    } else {
+      ok = svrfmt::ReadFile(Utf8((fs::path(folder) / L"pac" / L"bg" / Wide(p.name)).wstring()), b);
+    }
+    std::error_code ec;
+    fs::create_directories(out.parent_path(), ec);
+    if (!ok || !svrfmt::WriteFile(Utf8(out.wstring()), b)) { Status("Could not copy " + p.name + "."); return; }
+    OnUiThread([out, p, game] {
+      Log("port: " + p.name + " -> " + Utf8(out.wstring()) + " (Other games page)");
+      other_page::UseArenaFile(out.wstring(), IdFrom(game + "_" + fs::path(p.name).stem().string(), "arena"));
+      GoTo(PageId::kOther);
+      CacheJob(true, false, out.parent_path());
+    });
+  });
+}
+
 // The converted thing onto its page.
 void OpenResult() {
   const std::string out = g_result["out"].Str(), opens = g_result["opens"].Str();
@@ -299,7 +410,15 @@ void OpenResult() {
               : "Installed into Texture Packs\\" + Utf8(p.filename().wstring()) + ": tick it in the launcher's Texture packs tab.");
     return;
   }
-  ShellExecuteW(nullptr, L"open", p.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  if (out.empty() || !fs::exists(p, ec)) {
+    Status("The converter didn't say where its result is: see the log.");
+    return;
+  }
+  if (g_test_stage >= 0) {  // (tests never open windows)
+    Log("port test: would open " + out);
+    return;
+  }
+  ShellOpen(p.wstring());
 }
 
 void DiscRow() {
@@ -340,12 +459,13 @@ void TestStart(const std::string& spec) {
   }
   if (p.size() < 3) return;
   for (int k = 0; k < kKindCount; ++k)
-    if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = k;
+    if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = g_force_kind = k;
   const std::wstring src = Wide(p[1]);
   std::error_code ec;
   if (fs::is_directory(src, ec)) g_folder = src;
   else g_image = src;
   g_test_item = p[2];
+  g_native_test = g_kind >= 0 && std::wstring(kKinds[g_kind].script) == L"arena_port.py" ? p[2] : "";
   if (p.size() > 3) std::snprintf(g_options, sizeof g_options, "%s", p[3].c_str());
   g_test_stage = 0;
 }
@@ -365,8 +485,11 @@ void Draw() {
   ImGui::Spacing();
   if (ImGui::BeginTabBar("kinds")) {
     for (int k = 0; k < kKindCount; ++k)
-      if (ImGui::BeginTabItem(kKinds[k].title, nullptr, g_test_stage == 0 && k == g_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
-        if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
+      if (ImGui::BeginTabItem(kKinds[k].title, nullptr, k == g_force_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (g_force_kind < 0 || g_force_kind == k) {
+          g_force_kind = -1;
+          if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
+        }
         ImGui::EndTabItem();
       }
     ImGui::EndTabBar();
@@ -393,8 +516,7 @@ void Draw() {
     const std::string status = g["status"].Str();
     ImGui::Text("2. %s: %s", g["name"].Str().c_str(), status == "ready" ? "ready" : status.c_str());
     if (status == "native") {
-      ImGui::TextWrapped("The Mod Maker converts these itself: Other games page.");
-      if (ImGui::Button("Open the Other games page")) GoTo(PageId::kOther);
+      NativeArenas(game, g["name"].Str());
       return;
     }
     if (status != "ready") {
@@ -419,7 +541,7 @@ void Draw() {
   if (g_test_stage == 1 && !Busy() && g_list_for == want && (!g_list.items.empty() || !g_list_error.empty())) {
     if (!g_list_error.empty()) Log("port test: list failed: " + g_list_error), g_test_stage = 3;
     for (int i = 0; g_test_stage == 1 && i < int(g_list.items.size()); ++i)
-      if (g_list.items[size_t(i)]["key"].Str() == g_test_item) {
+      if (ItemKey(g_list.items[size_t(i)]) == g_test_item) {
         Log("port test: " + std::to_string(g_list.items.size()) + " listed; converting " + g_test_item);
         g_pick = i;
         Convert(k, game, g_list.items[size_t(i)]);
@@ -456,20 +578,25 @@ void Draw() {
     ImGui::TableHeadersRow();
     for (int i = 0; i < int(g_list.items.size()); ++i) {
       const Json& it = g_list.items[size_t(i)];
-      const bool have = !it["in_2011"].IsNull();
+      const bool have = it["in_2011"].Truthy();  // (a name / id, or true; false / missing = new)
       if (have && g_hide_have) continue;
-      const std::string name = it["name"].Str().empty() ? it["key"].Str() : it["name"].Str();
-      if (!f.empty() && Lower(name).find(f) == std::string::npos && Lower(it["key"].Str()).find(f) == std::string::npos) continue;
+      const std::string name = it["name"].Str().empty() ? ItemKey(it) : it["name"].Str();
+      if (!f.empty() && Lower(name).find(f) == std::string::npos && Lower(ItemKey(it)).find(f) == std::string::npos) continue;
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       if (ImGui::Selectable((name + "##" + std::to_string(i)).c_str(), g_pick == i, ImGuiSelectableFlags_SpanAllColumns)) g_pick = i;
       ImGui::TableNextColumn();
       if (have) ImGui::TextColored(kWarn, "has it (%s)", it["in_2011"].Str().c_str());
       else ImGui::TextDisabled("new");
+      if (it["in_svr07"].Truthy()) {  // (svr06 entrances: SvR 2007 has the same one, a better source)
+        ImGui::SameLine();
+        ImGui::TextColored(kWarn, "SvR 2007 has it");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("SvR 2007's version of this entrance is the better source: port it from that disc.");
+      }
       ImGui::TableNextColumn();
       std::string details;  // the converter's other fields, short
       for (const auto& [key, v] : it.fields) {
-        if (key == "name" || key == "in_2011" || v.type == Json::Type::kArray || v.type == Json::Type::kObject || v.IsNull()) continue;
+        if (key == "name" || key == "in_2011" || key == "in_svr07" || key == "key" || v.type == Json::Type::kArray || v.type == Json::Type::kObject || v.IsNull()) continue;
         if (!details.empty()) details += "  ";
         details += key + " " + v.Str();
       }
@@ -488,7 +615,7 @@ void Draw() {
        "--no-moves for superstars. Usually none are needed.");
   ImGui::BeginDisabled(Busy());
   PushAccent();
-  if (ImGui::Button(("4. Convert " + (item["name"].Str().empty() ? item["key"].Str() : item["name"].Str())).c_str())) Convert(k, game, item);
+  if (ImGui::Button(("4. Convert " + (item["name"].Str().empty() ? ItemKey(item) : item["name"].Str())).c_str())) Convert(k, game, item);
   PopAccent();
   ImGui::EndDisabled();
   if (!g_result_error.empty()) ImGui::TextColored(kBad, "%s", g_result_error.c_str());

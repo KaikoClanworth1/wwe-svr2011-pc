@@ -915,7 +915,7 @@ constexpr uint32_t kPlayerRows[] = {kPmQuick, kPmCustom, kPmCreate, kPmPrivate};
 constexpr uint32_t kCustomRows[] = {kCmType, kCmContent, kCmSearch};
 constexpr uint32_t kOnlineScreen = 0x5EC;  // (the main-menu object's group while in the online menus)
 constexpr uint32_t kBarList = 207;         // the session list's help bar
-constexpr uint32_t kBarLobbyA = 1220, kBarLobbyB = 1223, kBarJoining = 204;
+constexpr uint32_t kBarJoining = 204;
 constexpr uint32_t kBarJoinBox = 201;      // JOIN THIS SESSION? (YES / NO)
 constexpr uint32_t kBarMessage = 2;        // a message box (A SELECT)
 
@@ -1058,7 +1058,9 @@ void WalkTick() {
   uint32_t group = 0, row = 0;
   const bool menu = ScriptMenuState(&group, &row);
   const uint32_t bar = g_help_bar.load();
-  const bool in_lobby = group == kOnlineScreen && (bar == kBarLobbyA || bar == kBarLobbyB || bar == kBarJoining);
+  // (a session's lobby: its bars are 1200..1239 - one per match size and
+  // cursor - and the joining box's)
+  const bool in_lobby = group == kOnlineScreen && ((bar >= 1200 && bar < 1240) || bar == kBarJoining);
   const auto in_step = now - g_walk.step_at;
   switch (g_walk.step) {
     case Step::kWait: {

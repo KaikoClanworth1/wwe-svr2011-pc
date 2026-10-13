@@ -39,7 +39,8 @@ struct Attire {
 };
 struct Caw {
   fs::path file;
-  std::string label;  // "01 CREATED SUPERSTAR" + the name if found
+  std::string label;  // "01. <name>" (the save's slot number and the record's name)
+  std::string name;   // the record's name (+0x22, 8-bit as the game has it): caw_announcer.txt's key
   int slot = -1;      // the save's slot (SaveData.dat record)
   Attire attires[4];
   bool loaded = false;
@@ -51,6 +52,53 @@ int g_sel = -1;
 int g_test_index = -1, g_test_attire = 0;  // --caw <index>[,<attire>,<picture>[,save]]
 std::wstring g_test_picture;
 bool g_test_save = false;
+std::string g_test_announcer;  // --caw-announcer <CLIP>: set for the --caw <index> CAW
+
+// <game>\Mods\caw_announcer.txt: "<CAW full name>=<CLIP>" lines, kept in order (also names no save has now)
+std::vector<std::pair<std::string, std::string>> g_calls;
+fs::path CallsFile() { return fs::path(g_game) / L"Mods" / L"caw_announcer.txt"; }
+void LoadCalls() {
+  g_calls.clear();
+  Bytes b;
+  if (!ReadFile(PathStr(CallsFile()), b)) return;
+  std::string t(b.begin(), b.end()), line;
+  for (size_t at = 0; at <= t.size();) {
+    size_t e = t.find('\n', at);
+    if (e == std::string::npos) e = t.size();
+    line = t.substr(at, e - at);
+    at = e + 1;
+    while (!line.empty() && line.back() == '\r') line.pop_back();
+    const size_t eq = line.rfind('=');  // (as the game splits it)
+    if (eq != std::string::npos && eq > 0) g_calls.push_back({line.substr(0, eq), line.substr(eq + 1)});
+  }
+}
+std::string CallFor(const std::string& name) {
+  for (const auto& [n, clip] : g_calls)
+    if (n == name) return clip;
+  return {};
+}
+bool SetCall(const std::string& name, const std::string& clip) {
+  bool found = false;
+  for (auto it = g_calls.begin(); it != g_calls.end();)
+    if (it->first == name) {
+      if (clip.empty() || found) it = g_calls.erase(it);
+      else it->second = clip, found = true, ++it;
+    } else ++it;
+  if (!found && !clip.empty()) g_calls.push_back({name, clip});
+  std::string t;
+  for (const auto& [n, c] : g_calls) t += n + "=" + c + "\r\n";
+  std::error_code ec;
+  fs::create_directories(CallsFile().parent_path(), ec);
+  return WriteFile(PathStr(CallsFile()), Bytes(t.begin(), t.end()));
+}
+// The record's 8-bit name as UTF-8 for showing (the game's text is Latin-1-like).
+std::string Shown(const std::string& raw) {
+  std::string out;
+  for (unsigned char ch : raw)
+    if (ch < 0x80) out += char(ch);
+    else out += char(0xC0 | ch >> 6), out += char(0x80 | (ch & 0x3F));
+  return out;
+}
 
 // ---- the picture format: raw DXT5 blocks, every 16-bit word swapped
 
@@ -141,8 +189,15 @@ void Scan() {
     Caw c;
     c.file = f;
     c.label = LabelOf(f);
+    if (FILE* fp = _wfopen(f.c_str(), L"rb")) {  // (the record's name only: the whole save is read when picked)
+      char n[41] = {};
+      if (std::fseek(fp, long(kRecordAt + 0x22), SEEK_SET) == 0 && std::fread(n, 1, 40, fp) == 40) c.name = n;
+      std::fclose(fp);
+      if (!c.name.empty()) c.label = c.label.substr(0, 3) + " " + Shown(c.name);
+    }
     g_caws.push_back(std::move(c));
   }
+  LoadCalls();
 }
 
 // A picture fitted into 256 x 512 (centred, transparent around) and its head thumb.
@@ -230,6 +285,8 @@ bool Save(Caw& c, std::string& err) {
 
 }  // namespace
 
+void TestAnnouncer(const std::string& clip) { g_test_announcer = clip; }
+
 void TestStart(int index, int attire, const std::wstring& picture, bool save) {
   g_test_index = index, g_test_attire = attire, g_test_picture = picture, g_test_save = save;
 }
@@ -252,12 +309,17 @@ void Draw() {
           PostMessageW(g_wnd, WM_CLOSE, 0, 0);
         }
       }
+      if (!g_test_announcer.empty() && !c.name.empty()) {
+        Log(SetCall(c.name, g_test_announcer == "-" ? "" : g_test_announcer) ? "test: caw announcer set" : "test: caw announcer not written");
+        WriteLogTo(CallsFile().wstring() + L".log");
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      }
     }
     g_test_index = -1;
   }
   Heading("CAW pictures", "The picture the game shows for a Created Superstar in its lists (the one FINALIZE made), "
                           "replaced from any picture of yours. Edits go into the save in the game's Saves folder; a "
-                          ".bak copy is kept the first time.");
+                          ".bak copy is kept the first time. The Ring announcer row gives a CAW a superstar's own introduction.");
   if (g_game.empty()) {
     ImGui::TextDisabled("No game folder.");
     return;
@@ -288,7 +350,8 @@ void Draw() {
   if (ImGui::IsItemHovered()) ImGui::SetTooltip("Someone else's Created Superstar (.cas, or an Xbox 360 package) into a free slot of the game's saves.");
   if (g_caws.empty()) ImGui::TextWrapped("No Created Superstar saves in %s.", PathStr(fs::path(g_game) / L"Saves").c_str());
   for (int i = 0; i < int(g_caws.size()); ++i)
-    if (ImGui::Selectable((g_caws[i].label + "##" + std::to_string(i)).c_str(), g_sel == i)) {
+    if (ImGui::Selectable((g_caws[i].label + (CallFor(g_caws[i].name).empty() ? "" : "  > " + CallFor(g_caws[i].name)) + "##" +
+                           std::to_string(i)).c_str(), g_sel == i)) {
       g_sel = i;
       if (!g_caws[i].loaded) LoadCaw(g_caws[i]);
     }
@@ -308,6 +371,17 @@ void Draw() {
     return;
   }
   ImGui::Text("%s  (save slot %d, %s)", c.label.c_str(), c.slot, PathStr(c.file.filename()).c_str());
+  if (!c.name.empty()) {  // the ring announcer: a stock superstar's name call for this CAW (caw_announcer.txt)
+    char clip[32];
+    std::snprintf(clip, sizeof clip, "%s", CallFor(c.name).c_str());
+    if (star_page::PickClip("Ring announcer", clip, sizeof clip, star_page::AnnouncerNames(), "the game's own (a nickname)", 300)) {
+      if (SetCall(c.name, clip)) Status(clip[0] ? Shown(c.name) + " is announced as " + clip + " (Mods\\caw_announcer.txt)." : Shown(c.name) + ": the game's own call again.");
+      else Status("Could not write " + PathStr(CallsFile()) + ".");
+    }
+    Hint("The ring announcer introduces this Created Superstar with a superstar's own recorded introduction and name "
+         "(JEFFHARDY: \"... from Cameron, North Carolina, Jeff Hardy!\"). Written to Mods\\caw_announcer.txt at once - "
+         "no save needed, the game picks it up even while running. Keyed by the name, so a renamed CAW needs it again.");
+  }
   bool pending = false;
   for (int a = 0; a < 4; ++a) {
     Attire& at = c.attires[a];

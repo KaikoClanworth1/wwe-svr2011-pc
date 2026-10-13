@@ -200,6 +200,8 @@ std::string MotionLabel(int id) {
   if (id >= 20000 && id < 21000) return id == 20000 ? "Idle stance" : "Stance " + std::to_string(id - 20000);
   if (id >= 21000 && id < 22000) return "Entrance motion " + std::to_string(id - 21000);
   if (id >= 9000 && id < 10000) return "Taunt " + std::to_string(id - 9000);
+  if (id >= 18000 && id < 19000) return "Finisher preview " + std::to_string(id);
+  if (id >= 30000 && id < 31000) return "Finisher preview " + std::to_string(id);
   return "Motion " + std::to_string(id);
 }
 
@@ -351,6 +353,21 @@ void Left() {
       }
     ImGui::EndCombo();
   }
+  if (!g_model.empty()) {  // the model's attires (its EMD kind-2 entries)
+    const std::vector<int> att = ModelAttires(g_model);
+    if (att.size() > 1) {
+      ImGui::TextDisabled("Attire");
+      for (int a : att) {
+        ImGui::SameLine();
+        const bool on = a == char_preview::Attire();
+        if (on) PushAccent();
+        if (ImGui::SmallButton((std::to_string(a) + "##aa").c_str())) char_preview::SetAttire(a);
+        if (on) PopAccent();
+      }
+    } else if (char_preview::Attire() != 1) {
+      char_preview::SetAttire(1);
+    }
+  }
   if (ImGui::Button("A model file (ch.pac)...", ImVec2(-1, 0))) {
     const std::wstring f = PickFile(false, L"A character model pac", kPacFilter, 1);
     if (!f.empty()) g_star = -1, g_model = f, char_preview::SetModel(g_model, g_game);
@@ -413,14 +430,16 @@ void Left() {
   const std::string filter = Lower(g_filter);
   ImGui::BeginChild("list", ImVec2(0, list_h), true);
   for (const Row& r : rows) {
-    const std::string label = MotionLabel(r.id) + (r.x ? "  v" + std::to_string(r.x) : "");
+    const std::string label = MotionLabel(r.id) + (r.x ? ", variant " + std::to_string(r.x) : "");
     if (!filter.empty() && Lower(label).find(filter) == std::string::npos && std::to_string(r.id).find(filter) == std::string::npos) continue;
     const bool on = g_sel_id == r.id && g_sel_x == r.x;
     char line[160];
-    std::snprintf(line, sizeof line, "%s%s##%d_%d", label.c_str(), r.victim ? "  (2)" : "", r.id, r.x);
+    std::snprintf(line, sizeof line, "%s%s##%d_%d", label.c_str(), r.victim ? "  - 2 people" : "", r.id, r.x);
     if (ImGui::Selectable(line, on)) Pick(r.id, r.x);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("motion %d x%d, %d frames%s", r.id, r.x, r.frames, r.victim ? ", with the other person's track" : "");
+      ImGui::SetTooltip("Motion %d%s, %d frames (%.1f s).%s%s", r.id, r.x ? (" variant " + std::to_string(r.x)).c_str() : "", r.frames,
+                        r.frames / 30.0f, r.victim ? "\n2 people: the other person's part plays on the dummy." : "",
+                        r.x ? "\nVariants: the same move for another situation (the game picks one by size or position)." : "");
   }
   ImGui::EndChild();
   ImGui::EndTabItem();
@@ -432,6 +451,9 @@ void Left() {
 }
 
 }  // namespace
+
+int g_test_key = -1;
+void TestKey(int key) { g_test_key = key; }
 
 void TestStart(int star_id, int bank, int motion, int dummy_id) {
   g_test_star = star_id, g_test_bank = bank, g_test_motion = motion, g_test_dummy = dummy_id;
@@ -469,6 +491,7 @@ void Draw() {
   if (g_test_motion >= 0 && g_bank >= 0 && g_banks.count(g_bank) && !g_loading) {
     Pick(g_test_motion, 0);
     g_test_motion = -1;
+    if (g_test_key >= 0) char_preview::Play().key = float(g_test_key), char_preview::Play().playing = false;
   }
   Heading("Animations", "A superstar playing the game's motions: stances, taunts, finisher previews, the entrance's "
                         "ring part. Pick who, pick a set, click a motion.");

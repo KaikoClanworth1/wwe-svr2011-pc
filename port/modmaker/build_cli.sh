@@ -14,7 +14,7 @@ mspack="$sdk/thirdparty/libmspack/libmspack/mspack"
   -o "$here/../out/modmaker/obj/lzxd.o" "$mspack/lzxd.c"
 # zip reading (svrfmt/zip_write.cpp unzip_inflate): the launcher's inflate
 clang -O2 -w -c -o "$here/../out/modmaker/obj/unzip.o" "$here/../launcher/unzip.c"
-clang++ -std=c++20 -O2 -Wall -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS \
+clang++ -std=c++20 -O2 -Wall -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS -DSVRFMT_INFLATE \
   -I "$sdk/thirdparty/stb" -I "$here/third_party/ufbx" -I "$mspack" \
   -o "$here/../out/modmaker/svrmod.exe" "$here/svrmod_cli.cpp" "$here"/svrfmt/*.cpp \
   "$here/../out/modmaker/obj/ufbx.o" "$here/../out/modmaker/obj/lzxd.o" "$here/../out/modmaker/obj/unzip.o" -lole32 -lwindowscodecs

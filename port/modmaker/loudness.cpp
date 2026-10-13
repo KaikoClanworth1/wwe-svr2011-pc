@@ -55,7 +55,10 @@ bool MeasureLufs(const std::wstring& file, double* lufs, std::string* error) {
     return false;
   };
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);  // (a worker thread)
-  static const bool started = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
+  // (mfplat / mfreadwrite are delay-loaded: Windows "N" without the Media Feature Pack has neither)
+  static const bool started = LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+                              LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+                              SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
   if (!started) return fail("Media Foundation didn't start");
   IMFSourceReader* rd = nullptr;
   if (FAILED(MFCreateSourceReaderFromURL(file.c_str(), nullptr, &rd))) return fail("the song didn't open (format not supported?)");
