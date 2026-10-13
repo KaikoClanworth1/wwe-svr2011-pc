@@ -66,7 +66,7 @@ bool ToolsReady(bool ffmpeg_too) {
     return false;
   }
   if (ffmpeg_too && FfmpegExe().empty()) {
-    ImGui::TextColored(kWarn, "ffmpeg is needed too (on PATH or in C:\\ffmpeg\\bin) for the theme songs.");
+    ImGui::TextColored(kWarn, "ffmpeg is needed too for the theme songs (the launcher's Setup page installs it).");
     return false;
   }
   return true;

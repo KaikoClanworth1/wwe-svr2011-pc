@@ -20,6 +20,19 @@ std::wstring ExeDir() {
   return fs::path(buf).parent_path().wstring();
 }
 
+// A Microsoft Store app alias (the 0-byte python.exe that opens the Store) - a real Store Python isn't one.
+bool IsAlias(const std::wstring& p) {
+  WIN32_FILE_ATTRIBUTE_DATA a;
+  return !GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &a) || (a.nFileSizeHigh == 0 && a.nFileSizeLow == 0);
+}
+
+// The launcher's First time setup puts Python (numpy, Pillow) and ffmpeg in <game>\Tools.
+std::vector<fs::path> ToolsHomes() {
+  std::vector<fs::path> out = {fs::path(ExeDir()) / L"Tools"};
+  if (!g_game.empty()) out.push_back(fs::path(g_game) / L"Tools");
+  return out;
+}
+
 // The first program on PATH with that name ("" = none).
 std::wstring OnPath(const wchar_t* name) {
   wchar_t buf[MAX_PATH * 2];
@@ -39,14 +52,32 @@ void Check() {
       g_tools = fs::weakly_canonical(cand, ec).wstring();
       break;
     }
-  // Python: the launcher (py), then python on PATH - not the Store stub
+  // Python: the launcher setup's (<game>\Tools\python), then python / python3 on PATH (not the Store's
+  // 0-byte alias), then the py launcher
+  for (const auto& home : ToolsHomes())
+    if (g_python.empty() && fs::exists(home / L"python" / L"python.exe", ec)) g_python = (home / L"python" / L"python.exe").wstring();
   for (const wchar_t* name : {L"python.exe", L"python3.exe"}) {
+    if (!g_python.empty()) break;
     const std::wstring p = OnPath(name);
-    if (!p.empty() && p.find(L"WindowsApps") == std::wstring::npos) { g_python = p; break; }
+    if (!p.empty() && !IsAlias(p)) g_python = p;
   }
   if (g_python.empty() && !OnPath(L"py.exe").empty()) g_python = OnPath(L"py.exe");
-  g_ffmpeg = OnPath(L"ffmpeg.exe");
+  // ffmpeg: the setup's, then PATH, then C:\ffmpeg\bin; the setup's goes first on the scripts' PATH too
+  // (their shutil.which('ffmpeg') finds it: children inherit this process's environment)
+  for (const auto& home : ToolsHomes())
+    if (g_ffmpeg.empty() && fs::exists(home / L"ffmpeg" / L"ffmpeg.exe", ec)) {
+      g_ffmpeg = (home / L"ffmpeg" / L"ffmpeg.exe").wstring();
+      wchar_t path[32767];
+      const DWORD n = GetEnvironmentVariableW(L"PATH", path, DWORD(std::size(path)));
+      const std::wstring dir = (home / L"ffmpeg").wstring();
+      if (n < std::size(path) && std::wstring(path, n).find(dir) == std::wstring::npos)
+        SetEnvironmentVariableW(L"PATH", (dir + L";" + std::wstring(path, n)).c_str());
+    }
+  if (g_ffmpeg.empty()) g_ffmpeg = OnPath(L"ffmpeg.exe");
   if (g_ffmpeg.empty() && fs::exists(L"C:\\ffmpeg\\bin\\ffmpeg.exe", ec)) g_ffmpeg = L"C:\\ffmpeg\\bin\\ffmpeg.exe";
+  Log("tools: scripts " + (g_tools.empty() ? std::string("not found") : Utf8(g_tools)) + ", Python " +
+      (g_python.empty() ? std::string("not found") : Utf8(g_python)) + ", ffmpeg " +
+      (g_ffmpeg.empty() ? std::string("not found") : Utf8(g_ffmpeg)));
 }
 
 // Runs a command with no window, reading its output into the log; returns the exit code.
@@ -166,7 +197,7 @@ std::string PythonMissing() {
   Check();
   if (g_missing_checked) return g_missing;
   g_missing_checked = true;
-  if (g_python.empty()) return g_missing = "Python 3 (python.org; tick 'Add to PATH')";
+  if (g_python.empty()) return g_missing = "Python 3 - install the Mod Maker tools from the launcher's Setup page";
   // a quick import check, no window
   const std::wstring probe = Quote(g_python) + L" -c \"import numpy, PIL; print('ok')\"";
   SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
@@ -219,7 +250,7 @@ bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& ar
                  std::function<void(int, const std::string&)> done, const std::wstring& cwd) {
   Check();
   if (g_python.empty()) {
-    Status("Python 3 is needed for this (python.org; tick 'Add to PATH'), then Recheck.");
+    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page, then Recheck.");
     return false;
   }
   if (g_tools.empty() || !fs::exists(fs::path(g_tools) / script)) {
@@ -253,7 +284,7 @@ bool RunTool(const std::wstring& script, const std::vector<std::wstring>& args, 
              const std::wstring& cwd) {
   Check();
   if (g_python.empty()) {
-    Status("Python 3 is needed for this (python.org; tick 'Add to PATH'), then Recheck.");
+    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page, then Recheck.");
     return false;
   }
   if (g_tools.empty()) {
