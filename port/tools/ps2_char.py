@@ -802,7 +802,7 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
         m = re.search(r'(\d{8}): (\d+) vertex pages', rep.get('error') or '') if not rep.get('ok') else None
         if not m:
             break
-        k, kind = int(m.group(1)[4:6]), int(m.group(1)[6:8])
+        k, kind = int(m.group(1)[6]), int(m.group(1)[7])   # (entry names: 6-digit id, attire index, kind)
         if not 0 <= k < len(ats):
             break
         at = ats[k]
