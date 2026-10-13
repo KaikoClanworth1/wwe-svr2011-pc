@@ -27,7 +27,8 @@ Games:
             HCTP Entrance chat's, shared); WWE '12 bodies are plain FK (ik=False).
     wwe13   WWE '13 - the same, in xcompressed pacs (svrmod xdec: --svrmod or found as
             wwe13_entrance.py finds it); its bodies use the IK stream
-    others  "research" (2K14: move records in createmode.pac; next)
+    wwe2k14 WWE 2K14 - the same; move records in createmode.pac, categories coded (templates from
+            every category)
 
 How a move is made (the WWE '13 Mankind moves' method): the attacker (y 0) and the victim
 (y 1) of every x the template has are the source's blocks 0 and 1, one key a frame at 30 Hz,
@@ -57,7 +58,7 @@ PAC11 = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'Game Files', 'pac'
 GAMES = [
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
-    dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research'),
+    dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
     dict(id='svr2010', name='WWE SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='research'),
 ]
 READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
@@ -212,6 +213,23 @@ class Game13(Game12):
 
     def motion_pacs(self):
         return ['pac/' + n for n in sorted(self.src.d.listdir('pac')) if re.match(r'(dlc_)?mot\d+\.pac$', n.lower())]
+
+
+class Game14(Game13):
+    """WWE 2K14: as WWE '13, its move records in createmode.pac MOVS/WAZE (the name 8 bytes earlier
+    in the record: waze_records finds the grid), ZMVM in mot07 / mot08.pac with categories renamed to
+    codes (C000, M001, ...): templates are looked for in every category."""
+
+    def __init__(self, src, svrmod=None):
+        import wwe13_entrance as WE
+        self.WE = WE
+        self.svrmod = WE.find_svrmod(svrmod)
+        self.src = src
+        g = read_pac(self.pac_bytes('pac/createmode.pac'))
+        raw = unz(next(b for t, es in g if t == b'MOVS' for n, b in es if n == b'WAZE'))
+        self.waze = waze_records(raw)
+        self._m = None
+        self._index = None
 
 
 def waze_records(raw):
@@ -447,7 +465,7 @@ def convert(a, rep):
     progress(25, '2011 banks')
     g11 = Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
     R0 = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
-    cat11 = CATS.get(cat0, 'STN1')
+    cat11 = CATS.get(cat0, '')   # ('': every category - 2K14's coded ones)
     gap = None
     if vic is not None:
         k0, k1 = R0.keys(att, 2), R0.keys(vic, 2)
@@ -532,6 +550,8 @@ def convert(a, rep):
 def open_game(a, src):
     if a['game'] == 'wwe13':
         return Game13(src, a.get('svrmod'))
+    if a['game'] == 'wwe2k14':
+        return Game14(src, a.get('svrmod'))
     return Game12(src)
 
 
