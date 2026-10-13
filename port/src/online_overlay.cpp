@@ -365,6 +365,7 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   int gx_ = 0, gy_ = 0;
   uint16_t prev_buttons_ = 0;
   bool wait_release_ = false, combo_down_ = false;
+  Clock::time_point toggled_at_{};  // (BACK + RB: one toggle per press)
   bool invite_mode_ = false;  // opened by the lobby's X INVITE FRIENDS: the friends only, mid-screen
   Clock::time_point opened_at_{}, repeat_at_{};
   std::set<std::string> seen_invites_;  // (the notice: once each)
@@ -426,12 +427,15 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
     if (known) {
       const uint16_t b = st.gamepad.buttons;
       const bool combo = (b & X_INPUT_GAMEPAD_BACK) && (b & X_INPUT_GAMEPAD_RIGHT_SHOULDER);
-      if (combo && !combo_down_) g_toggle = true;
+      // (one press: the held state read just after opening can miss the
+      // combo for a frame - it then seemed pressed again, and closed it)
+      if (combo && !combo_down_ && Clock::now() - toggled_at_ > std::chrono::milliseconds(500)) g_toggle = true;
       combo_down_ = combo;
     }
   }
   if (g_toggle.exchange(false)) {
     REXLOG_INFO("online overlay: {}", g_open ? "closed" : "opened");
+    toggled_at_ = Clock::now();
     if (g_open) {
       Close();
     } else {
