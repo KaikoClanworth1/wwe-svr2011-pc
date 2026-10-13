@@ -22,7 +22,7 @@ Options (convert):
     --no-moves      keep the base's moves
     --no-port       his moves 2011 has, but port none (WWE '12 / '13 / 2K14: faster)
     --max-port N    port at most N moves (default 40)
-    --port-taunts   port his taunts too (YMBs; not seen playing in game yet - off: the base's taunts)
+    --no-taunts     keep the base's taunts (his own are ported by default: YMBs moves, moves_port)
 
 Games:
     svr2010   SvR 2010 - everything (svr10_superstar.py: model, renders, theme, titantron,
@@ -70,8 +70,14 @@ GAMES = [
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
     dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
-    dict(id='ps2_hctp', name='WWE SmackDown! Here Comes the Pain', platform='ps2', disc_hints=['SLES_520.36', 'SLUS_207.87'],
-         status='ready'),
+    dict(id='ps2_sym', name='WWE SmackDown! Shut Your Mouth', platform='ps2', disc_hints=['SLES_512.83', 'SLUS_205.12'], status='ready'),
+    dict(id='ps2_hctp', name='WWE SmackDown! Here Comes the Pain', platform='ps2', disc_hints=['SLES_520.36', 'SLUS_207.87'], status='ready'),
+    dict(id='ps2_svr04', name='WWE SmackDown! vs. Raw (PS2)', platform='ps2', disc_hints=['SLES_527.81', 'SLUS_209.36'], status='ready'),
+    dict(id='ps2_svr06', name='WWE SmackDown! vs. Raw 2006 (PS2)', platform='ps2', disc_hints=['SLES_536.76', 'SLUS_211.34'], status='ready'),
+    dict(id='ps2_svr07', name='WWE SmackDown vs. Raw 2007 (PS2)', platform='ps2', disc_hints=['SLES_544.89', 'SLUS_214.27'], status='ready'),
+    dict(id='ps2_svr08', name='WWE SmackDown vs. Raw 2008 (PS2)', platform='ps2', disc_hints=['SLES_548.79'], status='ready'),
+    dict(id='ps2_svr09', name='WWE SmackDown vs. Raw 2009 (PS2)', platform='ps2', disc_hints=['SLES_552.51'], status='ready'),
+    dict(id='ps2_svr10', name='WWE SmackDown vs. Raw 2010 (PS2)', platform='ps2', disc_hints=['SLES_555.45'], status='ready'),
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
@@ -1288,7 +1294,7 @@ def moveset_step(gw, cid, base, o, work, mod, man, rep):
     c = moveset_port.Ctx(gid=gid, cid=cid, base=base, g11=o['g11'], pro=pro[cid], waze=waze, mgame=mgame,
                          pac11=o['pac11'], svrmod=getattr(gw, 'svrmod', None), work=work, mod=mod, rep=rep,
                          port=not o.get('no_port'), max_port=o.get('max_port', 40),
-                         port_taunts=bool(o.get('port_taunts')),
+                         port_taunts=not o.get('no_taunts'),
                          same_ids=gid in moveset_maps.SAME_IDS)
     res = moveset_port.port_moveset(c)
     if res is None:
@@ -1587,7 +1593,7 @@ def main(argv):
     cmd = argv[1]
     a = dict(pac11=PAC11)
     i = 2
-    flags = {'--no-moves': 'no_moves', '--no-port': 'no_port', '--port-taunts': 'port_taunts'}
+    flags = {'--no-moves': 'no_moves', '--no-port': 'no_port', '--no-taunts': 'no_taunts', '--port-taunts': 'port_taunts'}
     while i < len(argv):
         k = argv[i]
         if k in flags:
