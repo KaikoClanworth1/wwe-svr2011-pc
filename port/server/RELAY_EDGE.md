@@ -30,24 +30,15 @@ address (sho-ti.me, which is the VPS) on the port the server tells it.
 
 1. **A secret.** On the PC, in the service folder:
    `python -c "import secrets; print(secrets.token_hex(32))" > relay_secret.txt`.
-   Copy the same file to the VPS, for example `/opt/svr-relay/secret.txt`,
-   with `chmod 600`.
-2. **The edge on the VPS.** Copy `relay_edge.py` and `relay_link.py` to
-   `/opt/svr-relay/`. It needs Python 3.8 or newer and nothing else. Then add
-   a systemd unit:
-
-       [Unit]
-       Description=SvR2011 online relay edge
-       After=network-online.target wg-quick@wg0.service
-       [Service]
-       ExecStart=/usr/bin/python3 /opt/svr-relay/relay_edge.py --udp-port 36500 --link 10.8.0.1:36501 --secret /opt/svr-relay/secret.txt
-       DynamicUser=yes
-       Restart=always
-       [Install]
-       WantedBy=multi-user.target
-
-   `10.8.0.1` is the VPS's own address in the tunnel. Check it with
-   `ip addr show wg0`. The link must never be on the public address.
+2. **The edge on the VPS.** Put `relay_edge.py`, `relay_link.py`,
+   `relay_edge_install.sh`, `relay_edge_uninstall.sh` and the secret (named
+   `secret.txt`) in one folder, copy it to the VPS, and run
+   `sudo bash relay_edge_install.sh` there. It needs Python 3.8 or newer and
+   nothing else. It checks that `wg0` is `10.8.0.1` (the link must never be on
+   the public address), copies the files to `/opt/svr-relay/` (secret `chmod 600`),
+   adds the systemd unit `svr-relay-edge` and does step 3. The unit runs with
+   `DynamicUser=yes`, so it gets the root-only secret through
+   `LoadCredential=secret:/opt/svr-relay/secret.txt` and `--secret %d/secret`.
 3. **The VPS firewall.**
    - Remove the forward of UDP 36500 to 10.8.0.2. The masquerade stays if
      anything else uses it.
@@ -64,8 +55,8 @@ address (sho-ti.me, which is the VPS) on the port the server tells it.
    the edge's log (`journalctl -u svr-relay-edge`) shows
    `edge: relayed N here, ...`.
 
-**Going back:** stop the edge, put the VPS forward back, remove the two
-server arguments and restart the server.
+**Going back:** `sudo bash relay_edge_uninstall.sh` on the VPS (stops the edge and
+puts the forward back), then remove the two server arguments and restart the server.
 
 ## Tests
 
