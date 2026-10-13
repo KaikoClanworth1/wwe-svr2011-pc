@@ -48,6 +48,7 @@
 #include "startup_pump.h"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <cctype>
 #include <cstdint>
@@ -132,6 +133,12 @@ bool ReadAll(const fs::path& p, Bytes& out) {
 
 // ---- reading the packs
 
+// The motion ids the enabled packs bring as YMBs (streamed) motions - a
+// motion line with a 20-byte header (YmbsInsert) - for the game's "streamed
+// motion" flag (sub_82154F00, below). Set as the packs are read (each start,
+// merged or not), read in matches.
+std::atomic<bool> g_ymbs_motion[0x8000] = {};
+
 // data false: the lists and the stamp only (no motion files read - enough to
 // see that the overlay is up to date: thousands of small files on a hard
 // drive with a cold cache took 35 s). A missing motion file counts in both
@@ -163,7 +170,16 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       Motion m;
       m.id = uint16_t(id), m.x = uint8_t(x), m.y = uint8_t(y), m.frames = frames;
       m.hdr = Hex(hdr);
+      if (m.hdr.size() == 20) g_ymbs_motion[id & 0x7FFF] = true;
       m.pack = (dir.filename() == "moves" ? dir.parent_path() : dir).filename().string();
+      // (the motion file in the stamp - size and time, no read: a pack whose
+      // motion files changed but not its pack.txt was kept merged as it was)
+      {
+        std::error_code ec;
+        const uintmax_t size = fs::file_size(dir / fs::u8path(file), ec);
+        stamp += file + " " + std::to_string(ec ? 0 : size) + " " +
+                 std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
+      }
       if (data) {
         svr2011::KeepWindowAlive();
         if (!ReadAll(dir / fs::u8path(file), m.data)) {
@@ -410,7 +426,9 @@ bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   Bytes out(raw.begin(), raw.begin() + 0x110);
   svrfmt::AppLe32(out, uint32_t(ents.size()));
   svrfmt::App(out, dir);
-  out.insert(out.end(), raw.begin() + long(db), raw.begin() + long(db) + 4);
+  // (the database's word: the header size << 16 | the motion count - stock
+  // 0x140138 for 312 - the new count, not the old one)
+  svrfmt::AppLe32(out, (Le32(&raw[db]) & 0xFFFF0000u) | uint32_t(ents.size() & 0xFFFF));
   svrfmt::App(out, hdrs);
   svrfmt::App(out, body);
   raw = std::move(out);
@@ -956,6 +974,18 @@ void Register(rex::filesystem::VirtualFileSystem* vfs, const fs::path& overlay) 
   }
 }
 
+// pack.txt by its content (FNV-1a): a same-size edit keeps its size, and a
+// copied pack can keep an old time.
+std::string ContentStamp(const fs::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  uint64_t h = 1469598103934665603ull;
+  char c;
+  while (in.get(c)) h = (h ^ uint8_t(c)) * 1099511628211ull;
+  char hex[17];
+  std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+  return p.filename().string() + " " + hex + "\n";
+}
+
 std::string FileStamp(const fs::path& p) {
   std::error_code ec;
   const auto size = fs::file_size(p, ec);
@@ -1145,7 +1175,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     stamp = std::string(kFormat) + "\n";
     for (const auto& d : dirs) {
       ReadPack(d, packs, stamp, data);
-      stamp += FileStamp(d / "pack.txt");
+      stamp += ContentStamp(d / "pack.txt");
     }
     // (the game's own files too - in both reads, or the saved stamp never
     // matches the next start's and every start merges again)
@@ -1306,4 +1336,20 @@ REX_HOOK_RAW(sub_82379158) {
     const uint32_t id = moveset ? (uint32_t(base[moveset + (slot + 2) * 2]) << 8 | base[moveset + (slot + 2) * 2 + 1]) : 0;
     REXLOG_WARN("[svr2011] moveset: slot {} move {} not in its list (caller {:08X}) - none shown", slot, id, lr);
   }
+}
+
+// "Is this motion streamed (YMBs)": sub_82154F00(id) -> its byte in the game's
+// motion flag table (*0x82DDBBE4, bound *0x82DDBBE0, loaded from a data file:
+// set for the stock YMBs ids, 9000-9779). The motion code goes by it - 0 sends
+// a YMBs motion down the keyframe path (sub_82309798 -> 82394360, sub_823B8F30):
+// a pack's new YMBs taunt (3894, even with stock 9602's own data) held one
+// pose its whole length. A pack's YMBs motion ids answer 1.
+REX_EXTERN(__imp__sub_82154F00);
+REX_HOOK_RAW(sub_82154F00) {
+  const uint32_t id = ctx.r3.u32 & 0x7FFF;
+  __imp__sub_82154F00(ctx, base);
+  if ((ctx.r3.u32 & 0xFF) || !g_ymbs_motion[id].load(std::memory_order_relaxed)) return;
+  ctx.r3.u64 = 1;
+  static std::atomic<bool> told[0x8000] = {};
+  if (!told[id].exchange(true)) REXLOG_INFO("[svr2011] move packs: motion {} streamed (YMBs, a pack's)", id);
 }
