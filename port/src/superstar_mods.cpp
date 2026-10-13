@@ -1462,10 +1462,11 @@ bool CawName(PPCContext& ctx, uint8_t* base, uint32_t slot, std::string* name, u
 
 void CawCall(PPCContext& ctx, uint8_t* base, uint32_t out, uint32_t slot) {
   const auto calls = CawCalls();
-  if (calls.empty()) return;
+  if (calls.empty() && !NameCallLog()) return;
   std::string name;
   uint32_t id = 0;
   if (!CawName(ctx, base, slot, &name, &id) || id >= 50) return;
+  if (NameCallLog()) REXLOG_INFO("[svr2011] name call: Created Superstar \"{}\" (id {})", name, id);
   const auto c = calls.find(name);
   if (c == calls.end()) return;
   const uint32_t T = CallTable(ctx, base);
