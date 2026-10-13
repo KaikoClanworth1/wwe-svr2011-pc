@@ -284,6 +284,8 @@ def tim2(b):
     CT24 or CT16; CSM1 swizzled unless the CLUT type says CSM2); alpha 0..0x80 -> 0..255"""
     if b[:4] != b'TIM2':
         raise BadInput('not a TIM2 picture')
+    if b[5] == 1:   # (format 1: the picture header 128-byte aligned - SYM's MNSP 0006 / 0014 / 0042 ...)
+        b = b[:16] + b[0x80:]
     _, _, img_size, hdr_size, ncol, _, _, clut_type, img_type, w, h = struct.unpack_from('<IIIHHBBBBHH', b, 16)
     data = 16 + hdr_size
 
@@ -504,22 +506,23 @@ class SYM(Yukes):
             ats[max(ats, default=-1) + 1] = id_
         return chars
 
-    pictures = None   # (picture index -> MENU.PAC entry name; set from the character records: sym_pictures)
+    pictures = None   # ({character: picture number}: sym_pictures, read on first use)
 
     def portraits(self, ch):
-        """{'wide': 256 x 128} - MENU.PAC's per-character TIM2s ("0000".., 256 x 128). They are in the game's
-        own order: not the model ids' nor the CHAR record numbers' (record 0 = The Rock, picture 0000 = X-Pac),
-        so none until a record -> picture index is known (self.pictures: {character: picture number})"""
-        if not self.pictures or ch not in self.pictures or not self.disc.exists('PAC/MENU.PAC'):
+        """{'wide': 256 x 128} - MENU.PAC "MNSP" per-character TIM2s ("0000".."0062", 256 x 128), picture n
+        = record n of the select roster (sym_pictures)"""
+        if self.pictures is None:
+            self.pictures = sym_pictures(self.disc, self.characters())
+        if ch not in self.pictures:
             return {}
+        ents = sym_groups(self.disc.read('PAC/MENU.PAC', 0, 0x4000)).get('MNSP', {})
         name = '%04d' % self.pictures[ch]
-        for ents in named_groups(self.disc.read('PAC/MENU.PAC', 0, 0x4000)).values():
-            if name in ents:
-                try:
-                    return {'wide': tim2(self.disc.read('PAC/MENU.PAC', *ents[name]))}
-                except BadInput:
-                    return {}
-        return {}
+        if name not in ents:
+            return {}
+        try:
+            return {'wide': tim2(self.disc.read('PAC/MENU.PAC', *ents[name]))}
+        except BadInput:
+            return {}
 
     def gear(self, ch, at):
         """the character's first small 6-9 model (glasses, a vest) for its first attire (SYM doesn't say
@@ -530,6 +533,55 @@ class SYM(Yukes):
             if id_ >> 4 == ch and 6 <= (id_ & 0xF) <= 9 and 0 < self.shape(id_)[0] < self.GEAR_VERTS:
                 return [id_]
         return []
+
+
+def sym_groups(head):
+    """SYM DPAC named groups -> {group: {entry name: (offset, size)}}: {tag[4], u16 2 x count, u16 sector}
+    then the rows {name[4], u16 sector, u16 size / 0x100} (named_groups reads HCTP's single count and
+    runs into the next group); numbered groups (bit 15) skipped"""
+    out = {}
+    off = 0x800
+    while off + 8 <= 0x4000 and head[off:off + 4] != bytes(4):
+        tag = head[off:off + 4].decode('latin-1').strip()
+        n = struct.unpack_from('<H', head, off + 4)[0]
+        if n & 0x8000:
+            off += 8 + 4 * (n & 0x7FFF)
+            continue
+        ents = out.setdefault(tag, {})
+        for i in range(n // 2):
+            p = off + 8 + 8 * i
+            sec, sz = struct.unpack_from('<HH', head, p + 4)
+            ents[head[p:p + 4].decode('latin-1').strip()] = (0x4000 + sec * 0x800, sz * 0x100)
+        off += 8 + 8 * (n // 2)
+    return out
+
+
+def sym_pictures(disc, characters):
+    """SYM: {character: MNSP picture number}.  The select pictures follow the select roster, MENU.PAC "MNCM"
+    "CHAR" item 0: 116-byte records {+2 u16 CHAR record number, +4 name}, alphabetical (Al Snow, Albert,
+    Big Show, The Big Valbowski ... X-Pac: 60); picture n = record n (checked by eye, all 60).  The
+    character's record number = its id's hex digits read as decimal (0x48 -> X-Pac's record 48)."""
+    if not disc.exists('PAC/MENU.PAC'):
+        return {}
+    ents = sym_groups(disc.read('PAC/MENU.PAC', 0, 0x4000)).get('MNCM', {})
+    if 'CHAR' not in ents:
+        return {}
+    tab = pac(disc.read('PAC/MENU.PAC', *ents['CHAR'])).get(0, b'')
+    by_record = {}
+    for n in range(len(tab) // 116):
+        r = tab[116 * n:116 * n + 116]
+        if not r[4:5].isalpha():
+            break
+        by_record.setdefault(struct.unpack_from('<H', r, 2)[0], n)
+    out = {}
+    for ch in characters:
+        try:
+            rec = int('%x' % ch)
+        except ValueError:
+            continue
+        if rec in by_record:
+            out[ch] = by_record[rec]
+    return out
 
 
 GAMES = [SYM, Yukes]
