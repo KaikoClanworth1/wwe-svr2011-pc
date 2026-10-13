@@ -348,7 +348,7 @@ class Builder:
             sel = [m for m in meshes if m.get('kind', 'skin') in kinds]
             if not sel and key:
                 continue
-            tm = {0: self.conv.body, 0x2710: self.conv.hair, 0x4e20: self.conv.lash}[key]
+            tm = {0: self.conv.body, 0x2710: self.conv.hair or self.conv.body, 0x4e20: self.conv.lash}[key]
             model = jboy.Model()
             model.header, model.name, model.group = tm.header, tm.name, tm.group
             model.name_tail = getattr(tm, 'name_tail', b'')

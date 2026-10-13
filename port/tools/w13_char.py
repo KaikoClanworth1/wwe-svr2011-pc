@@ -193,7 +193,8 @@ class Conv:
         n, b = groups[0][1][0]
         self.t = {i: ch_tool.unpack(x) for i, x in svrfmt.pach_read(ch_tool.unpack(b))}
         self.body = jboy.read(self.t[0])
-        self.hair = jboy.read(self.t[0x2710])
+        # (some templates have no hair model, ch139: hair then takes the body's skin block)
+        self.hair = jboy.read(self.t[0x2710]) if 0x2710 in self.t else None
         self.lash = jboy.read(self.t[0x4e20])
         self.tnodes = self.body.nodes           # jboy.py dicts (written back as read)
         self.tframe = read13_nodes(self.t[0])    # true frames (r at +32, parent at +48)
@@ -202,7 +203,7 @@ class Conv:
         ms = self.body.meshes
         self.p_skin = skin_template(ms)
         self.p_eye = next(s for s in ms if s.shader == 'yReflect')
-        self.p_hair = self.hair.meshes[-1]
+        self.p_hair = self.hair.meshes[-1] if self.hair else self.p_skin
         self.p_lash = self.lash.meshes[0]
         self.ttex = dict(tex_bundle_read(self.t[0xa]))
 
@@ -323,7 +324,7 @@ class Conv:
         body = self.model(body13, self.body, nodes, nmap, origin, tex_body, kind)
         out[0] = jboy.write(body)
         # hair / mustache (transA) and eyelash (transB): same skeleton, by name
-        for src, dst, tm, slots in ((0x2710, 0x2710, self.hair, {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}),
+        for src, dst, tm, slots in ((0x2710, 0x2710, self.hair or self.body, {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}),
                                     (0x4e22, 0x4e20, self.lash, {'texDiffuse': 'color'})):
             if src not in kids13 or kids13[src][:4] != b'JBOY':
                 continue
