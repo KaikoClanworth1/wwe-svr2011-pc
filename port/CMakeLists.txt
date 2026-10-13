@@ -42,6 +42,7 @@ set(SVR2011_SOURCES
     src/dlc.cpp
     src/caw_logos.cpp
     src/user_movies.cpp
+    src/cae_mod_motions.cpp
     src/entrance_media.cpp
     src/movie_transcode.cpp
     src/p2p.cpp
