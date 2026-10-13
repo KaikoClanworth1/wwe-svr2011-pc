@@ -2026,22 +2026,6 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
     } else {
       placed_frames = ~0u;
     }
-    // (CPUs can fight on up there for ever - no pins count on the roof: after
-    // 90 s with someone still on it, its two breakable middle panels give way
-    // - the break-through's flags, 0x82E2BE7C bits 0x2 / 0x8 - and whoever
-    // crosses them drops into the ring)
-    static bool broken = false;
-    if (frames < 90) broken = false;
-    if (!broken && frames >= 90 * 60) {
-      bool someone = false;
-      for (uint32_t i = 0; i < 6; ++i)
-        if (const uint32_t c = Rd32(base + kChars + i * 4); c && base[c + 444] == 10) someone = true;
-      if (someone) {
-        broken = true;
-        base[0x82E2BE7C + 3] |= 0x0A;
-        REXLOG_INFO("match types: START ON THE ROOF - 90 s up there: the roof's middle panels give way");
-      }
-    }
   }
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a
   // match the first two people's position, area bytes (+441, +444) and motion;
