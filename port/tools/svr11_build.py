@@ -1,6 +1,8 @@
 """Neutral model -> SvR 2011 character pac (ch.pac): the builder the Mod Maker's FBX import calls.
 
     py svr11_build.py <model.json> <out ch.pac> [report.json]
+    py svr11_build.py --gear-from <donor ch.pac>,<attire> --onto <target ch.pac>,<attire> <out ch.pac> [report.json]
+                      (entrance gear moved from one character onto another: gear_port.py)
 
 The caller (FBX reader + tools/rig_maps.json) has already retargeted the meshes to the 2011 bind
 skeleton (tools/svr11_skeleton.json: 10 cm units, -Y up, -Z front, pelvis origin, A-pose) and
@@ -13,6 +15,10 @@ named the weights by 2011 bones. model.json:
                                                          nodes to the model's proportions (translation only)
      "attires": [{
         "name": "<EPK8 entry name, optional: the template's own names in order>",
+        "entrance_gear": {...},   optional: the same attire wearing its entrance gear (a coat, hat, shirt) -
+                                  "meshes" / "textures" as below, plus "extra_bones": [{"name", "parent",
+                                  "position": [x, y, z]}] (appended; weights may name them) -> entry
+                                  "<id><attire - 1>4", which the game wears for the entrance
         "textures": {"color": "<png>", "normal": "<png>", "mask": "<png, optional>"},
         "meshes": [{
             "name": "...", "kind": "skin" | "eye" | "hair" | "lash",
@@ -474,11 +480,62 @@ class Builder:
             kids, r = self.attire(a, name.decode('latin-1'))
             entries.append((b'EMD ', name, W.pack_kids(kids)))
             rep.append(r)
+            if a.get('entrance_gear'):   # (the same attire wearing its entrance gear: entry "<id><attire>4")
+                gname = name[:7] + b'4'
+                gk, gr = self.gear(a['entrance_gear'], gname.decode('latin-1'))
+                entries.append((b'EMD ', gname, W.pack_kids(gk)))
+                gr['kind'] = 4
+                rep.append(gr)
         W.write_epk8(self.template, entries, out)
         return rep
 
+    def with_bones(self, extra):
+        """the node table plus extra bones [{name, parent, position (world, 2011 space)}] appended (coat tails,
+        hat): local translation from the parent's world frame, no rotation -> (nodes, index)"""
+        c = self.conv
+        nodes = [dict(n) for n in self.nodes]
+        index = dict(self.index)
+        Wn = []
+        for j, nd in enumerate(nodes):
+            fr = c.tframe[j]
+            p = fr['parent'] if j else -1
+            M = np.eye(4)
+            M[:3, :3] = W.rot(fr['r'])
+            M[:3, 3] = nd['t']
+            Wn.append(M if p < 0 else Wn[p] @ M)
+        for b in extra or []:
+            if b['name'] in index:
+                continue
+            pi = index.get(b.get('parent'), index.get('mune', 0))
+            P = Wn[pi]
+            t = P[:3, :3].T @ (np.array(b['position'], float) - P[:3, 3])
+            nodes.append({'name': b['name'][:15], 't': tuple(float(x) for x in t), 'r': (0.0, 0.0, 0.0), 'u40': 0,
+                          'parent': 0, 'u48': (pi, 0, 0, 0), 'sphere': (0.0, 0.0, 0.0, 0.0)})
+            M = np.eye(4)
+            M[:3, 3] = t
+            Wn.append(P @ M)
+            index[b['name']] = len(nodes) - 1
+        return nodes, index
+
+    def gear(self, g, entry_name):
+        """an entrance gear entry (kind 4): built like an attire on the node table plus its extra bones; no
+        blood overlays, no portrait (the stock ones have neither)"""
+        keep = self.nodes, self.index, getattr(self, '_faced', False)
+        self.nodes, self.index = self.with_bones(g.get('extra_bones'))
+        self._faced = True   # (the face pivots were set from the attire)
+        try:
+            kids, r = self.attire(g, entry_name)
+        finally:
+            self.nodes, self.index, self._faced = keep
+        for k in (0x7530, 0x7531, 0x7532, 0xc8, 0xc9):
+            kids.pop(k, None)
+        return kids, r
+
 
 def main(argv):
+    if '--gear-from' in argv:   # (entrance gear from one pac onto another: gear_port.py)
+        import gear_port
+        return gear_port.main(argv)
     ap = argparse.ArgumentParser()
     ap.add_argument('model')
     ap.add_argument('out')
