@@ -25,7 +25,9 @@ Games:
     wwe12   WWE '12 - motions are WWE '13's ZMOT/YANM curves on the Biped rig: decoded by
             yanm_decode.py and retargeted to 2011's body bones by w13_retarget.py (the
             HCTP Entrance chat's, shared); WWE '12 bodies are plain FK (ik=False).
-    others  "research" (WWE '13 / 2K14: the same motions inside xcompressed pacs; next)
+    wwe13   WWE '13 - the same, in xcompressed pacs (svrmod xdec: --svrmod or found as
+            wwe13_entrance.py finds it); its bodies use the IK stream
+    others  "research" (2K14: move records in createmode.pac; next)
 
 How a move is made (the WWE '13 Mankind moves' method): the attacker (y 0) and the victim
 (y 1) of every x the template has are the source's blocks 0 and 1, one key a frame at 30 Hz,
@@ -54,7 +56,7 @@ PAC11 = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'Game Files', 'pac'
 
 GAMES = [
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
-    dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='research'),
+    dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research'),
     dict(id='svr2010', name='WWE SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='research'),
 ]
@@ -63,7 +65,7 @@ READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
 CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 'GRND', 'CORN': 'CORN',
         'CETB': 'CETB', 'ROPE': 'ROPE', 'APRO': 'APRO', 'RUN ': 'RUN ', 'TEAM': 'TEAM', 'FINI': 'FINI',
         'SPE1': 'STN1', 'SPE2': 'STN2', 'ANAS': 'ANAS', 'RUMB': 'RUMB', 'LADR': 'LADR', 'CELL': 'CELL',
-        'ABIL': 'ABIL', 'DIVI': 'CORN', 'APR2': 'APRO', 'ANA2': 'ANAS', 'WEAP': 'STAT'}
+        'ABIL': 'ABIL', 'DIVI': 'CORN', 'APR2': 'APRO', 'ANA2': 'ANAS', 'WEAP': 'STAT', 'APR1': 'APRO', 'SPE0': 'STN1'}
 
 
 class BadInput(Exception):
@@ -83,6 +85,43 @@ def norm(s):
     return re.sub(r'[^a-z0-9]', '', re.sub(r'^\d+ ', '', s))
 
 
+def read_pac(raw):
+    """EPAC / EPK8 groups [(type, [(name, data)])] whichever the entry size: bit 0 of a group's
+    flags (u16 after the count) picks 16-byte entries with 8-character names, else 12-byte with 4;
+    the magic doesn't decide it (WWE '13's misc.pac says EPK8 with 12-byte entries, 2K14's ch pacs
+    EPAC with 16-byte ones); a table that doesn't read is tried the other way"""
+    def parse(prefer_wide):
+        out, q = [], 0x800
+        while q + 12 <= 0x4000:
+            typ = raw[q:q + 4]
+            if typ == b'\0\0\0\0':
+                break
+            cnt, flags = struct.unpack_from('<HH', raw, q + 4)
+            wide = bool(flags & 1) if prefer_wide is None else prefer_wide
+            esz = 16 if wide else 12
+            n = cnt // (4 if wide else 3)
+            q += 12
+            ents = []
+            for _ in range(n):
+                if q + esz > 0x4000:
+                    raise ValueError('table')
+                nm = raw[q:q + esz - 8]
+                sec, sz = struct.unpack_from('<II', raw, q + esz - 8)
+                o = 0x4000 + sec * 0x800
+                if o + sz * 0x100 > len(raw) + 0x800:
+                    raise ValueError('entry')
+                ents.append((nm.split(b'\0')[0].strip(), raw[o:o + sz * 0x100]))
+                q += esz
+            out.append((typ, ents))
+        return out
+    for pref in (None, False, True):
+        try:
+            return parse(pref)
+        except (ValueError, struct.error):
+            continue
+    raise ValueError('not a pac table')
+
+
 def unz(b):
     """a pac entry: BPE (Yuke's) or ZLIB ("ZLIB", u32, u32 packed, u32 size, zlib data at +16)"""
     if b[:4] == b'ZLIB':
@@ -98,22 +137,28 @@ class Game12:
 
     def __init__(self, src):
         self.src = src
-        g = svrfmt.epac_read(open(src.get('pac/misc.pac'), 'rb').read())[1]
+        g = read_pac(self.pac_bytes('pac/misc.pac'))
         raw = unz(dict(((t, n), b) for t, es in g for n, b in es)[(b'MOVS', b'WAZE')])
-        n = struct.unpack_from('<I', raw, 4)[0]
-        self.waze = {}
-        for k in range(n):
-            r = raw[0x430 + 160 * k: 0x430 + 160 * (k + 1)]
-            if len(r) < 160 or not r.strip(b'\0'):
-                continue
-            mid = struct.unpack_from('<H', r, 0x90)[0]
-            self.waze.setdefault(mid, r[0x10:0x50].split(b'\0')[0].decode('latin1').strip())
+        self.waze = waze_records(raw)
         self._m = None
         self._index = None
 
+    def pac_bytes(self, rel):
+        return open(self.src.get(rel), 'rb').read()
+
+    def motion_pacs(self):
+        return ['pac/m.pac']
+
     def _groups(self):
         if self._m is None:
-            self._m = svrfmt.epac_read(open(self.src.get('pac/m.pac'), 'rb').read())[1]
+            self._m = []
+            self.skipped = []
+            for rel in self.motion_pacs():
+                try:
+                    self._m += read_pac(self.pac_bytes(rel))
+                except Exception as e:   # noqa: BLE001  (a pac svrmod can't decode: its moves are left out)
+                    self.skipped.append('%s (%s)' % (rel, str(e)[:120]))
+                    log('moves_port: %s skipped: %s' % (rel, e))
         return self._m
 
     def index(self):
@@ -143,11 +188,51 @@ class Game12:
         return self._index
 
     def record(self, cat, path):
-        b = dict(next(es for t, es in self._groups() if t == b'ZMVM'))[cat.encode('latin1')]
+        b = next(bb for t, es in self._groups() if t == b'ZMVM' for n, bb in es if n == cat.encode('latin1'))
         raw = unz(b)
         for i in path:
             raw = unz(dict(svrfmt.pach_read(raw))[i])
         return raw
+
+
+class Game13(Game12):
+    """WWE '13: the same motions and move records, in xcompressed (0x0FF512ED) pacs - decoded by
+    the Mod Maker's svrmod xdec (wwe13_entrance.find_svrmod / xdec); misc.pac MOVS/WAZE (an "EPK8"
+    with 12-byte entries); ZMVM in mot06-08.pac (and mot0x / dlc_mot ones that have it)."""
+
+    def __init__(self, src, svrmod=None):
+        import wwe13_entrance as WE
+        self.WE = WE
+        self.svrmod = WE.find_svrmod(svrmod)
+        Game12.__init__(self, src)
+
+    def pac_bytes(self, rel):
+        raw = open(self.src.get(rel), 'rb').read()
+        return self.WE.xdec(raw, self.svrmod) if raw[:4] == b'\x0f\xf5\x12\xed' else raw
+
+    def motion_pacs(self):
+        return ['pac/' + n for n in sorted(self.src.d.listdir('pac')) if re.match(r'(dlc_)?mot\d+\.pac$', n.lower())]
+
+
+def waze_records(raw):
+    """{move id: name} from a MOVS/WAZE table: 160-byte records (name +0x10, id +0x90) on a grid whose
+    start differs by game ('12 0x430): the start where the most records hold a readable name"""
+    def score(s):
+        ok = 0
+        for k in range(64):
+            nm = raw[s + 160 * k + 0x10: s + 160 * k + 0x30].split(b'\0')[0]
+            ok += bool(nm) and all(32 <= c < 127 for c in nm)
+        return ok
+    start = max(range(0x10, 0x1000, 8), key=score)
+    out = {}
+    for s in range(start, len(raw) - 159, 160):
+        r = raw[s:s + 160]
+        if not r.strip(b'\0'):
+            continue
+        nm = r[0x10:0x50].split(b'\0')[0]
+        if nm and all(32 <= c < 127 for c in nm):
+            out.setdefault(struct.unpack_from('<H', r, 0x90)[0], nm.decode('latin1').strip())
+    return out
 
 
 # --------------------------------------------------------------------------- SvR 2011
@@ -222,7 +307,12 @@ class Game11:
             for i in free:
                 if norm(self.waze[i][1]) == norm(name):
                     return i, 'the free record with the same name'
-        return (free[0], 'the first free record') if free else (None, '')
+        if not free:
+            return None, ''
+        # (another converted move should get another record: picked by the name, not the first free one;
+        # the Mod Maker passes --id to keep clear of the packs already installed)
+        h = zlib.crc32((name or '').encode('utf-8'))
+        return free[h % len(free)], 'a free record picked by the name (%d free; --id to choose)' % len(free)
 
 
 # --------------------------------------------------------------------------- convert
@@ -242,7 +332,7 @@ def choose_template(g11, cat, frames, gap=None):
     import ymks
     best = None
     for path, (kind, keys, size) in g11.idx.items():
-        if not path.startswith('MVMT/' + cat.strip()) or kind != 'YMKs':
+        if not path.startswith('MVMT/' + (cat.strip() if cat else '')) or kind != 'YMKs':
             continue
         ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} & {k[0] for k in keys if k[1] == 0 and k[2] == 1}
         if not ids:
@@ -250,6 +340,8 @@ def choose_template(g11, cat, frames, gap=None):
         pac, bank = g11.bank(path)
         for e in bank.entries:
             if e['id'] in ids and e['x'] == 0 and e['y'] == 0:
+                if e['id'] not in g11.waze:   # (motions without a move record: wazecopy needs one)
+                    continue
                 if any(kd == 'YMBs' for p, kd, ks in g11.banks_of(e['id'])):
                     continue
                 score = abs(e['frames'] - frames) / 10.0
@@ -321,7 +413,7 @@ def convert(a, rep):
     os.makedirs(outdir, exist_ok=True)
     src = sp.Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
     progress(2, 'reading the game')
-    g = Game12(src)
+    g = open_game(a, src)
     try:
         mid = int(a['item'])
     except ValueError:
@@ -354,7 +446,7 @@ def convert(a, rep):
     nf = max(1, (att['frames'] - 1) // 2)
     progress(25, '2011 banks')
     g11 = Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
-    R0 = WR.Retarget(bind='rest', twist=True, ik=False)
+    R0 = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     cat11 = CATS.get(cat0, 'STN1')
     gap = None
     if vic is not None:
@@ -362,6 +454,9 @@ def convert(a, rep):
         gap = ((k0[0][0][0] - k1[0][0][0]) ** 2 + (k0[0][0][2] - k1[0][0][2]) ** 2) ** 0.5
         rep['notes'].append('source start gap %.0f units' % gap)
     tid = int(a['template']) if a.get('template') else choose_template(g11, cat11, nf, gap)
+    if not tid and not a.get('template'):   # (no two-person move of that category in 2011: any category)
+        tid = choose_template(g11, '', nf, gap)
+        cat11 = 'any'
     if not tid or tid not in g11.waze:
         raise BadInput('no 2011 template move (category %s); give --template' % cat11)
     if a.get('id'):
@@ -377,7 +472,7 @@ def convert(a, rep):
     pd = os.path.join(outdir, pack)
     os.makedirs(os.path.join(pd, 'motions'), exist_ok=True)
     progress(40, 'retargeting')
-    R = WR.Retarget(bind='rest', twist=True, ik=False)
+    R = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     keys_of = {0: [R.keys(att, nf), R.keys(vic, nf) if vic is not None else None]}
     xs = [0]
     lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
@@ -427,15 +522,23 @@ def convert(a, rep):
     open(os.path.join(pd, 'pack.txt'), 'w', newline='\n').write('\n'.join(lines) + '\n')
     rep['notes'].append('%d motions in %d banks, %d frames at 30 Hz' % (nmot, len(g11.banks_of(tid)), nf))
     rep['dropped'].append('finger poses (the template\'s); the source\'s own sounds and damage timing (the template\'s, retimed)')
+    for sk in getattr(g, 'skipped', []):
+        rep['warnings'].append('not readable, its moves left out: ' + sk)
     rep.update(ok=True, out=pd, folder=pd, id=new_id, name=name, template=tid)
     progress(100, 'done')
     return rep
 
 
+def open_game(a, src):
+    if a['game'] == 'wwe13':
+        return Game13(src, a.get('svrmod'))
+    return Game12(src)
+
+
 def cmd_list(a):
     sp = __import__('superstar_port')
     src = sp.Src(a['src'], os.path.join(a.get('cache') or os.path.join(HERE, 'work', 'src'), a['game']))
-    g = Game12(src)
+    g = open_game(a, src)
     idx = g.index()
     import svr10_superstar as SS
     w11 = SS.Game(a['pac11'], 11).waze()
