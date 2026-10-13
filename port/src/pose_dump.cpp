@@ -2,11 +2,14 @@
 // Mod Maker's animation viewer to be checked against (Animations rework,
 // phase B).
 //
-// SVR2011_TEST_POSE_DUMP=<motion>[,<motion>...]: while a fighter plays one of
-// those motions (fighter +212), every IK solve (sub_823A4DD8, the hook in
-// small_rig.cpp) writes one line to SVR2011_TEST_POSE_DUMP_FILE (default
-// pose_dump.txt in the working folder):
-//   F <match frame> P <person> M <motion> S <pass> A <fighter pos +288> E <fighter Euler +272>
+// SVR2011_TEST_POSE_DUMP=<motion>[,<motion>...]: while a character plays one
+// of those motions - its newest motion player (ch+3248 + 832 * ch[3232]: id
+// +598 u16, bit 15 mirrored; fighter +212 is only a request) - every IK solve
+// (sub_823A4DD8, the hook in small_rig.cpp) writes one line to
+// SVR2011_TEST_POSE_DUMP_FILE (default pose_dump.txt in the working folder):
+//   F <match frame> P <person> M <motion> S <pass> Rq <fighter +212>
+//   Q <players sampled (weight >= 0.001), the newest first: id x y mirrored time weight ...>
+//   A <fighter pos +288> E <fighter Euler +272>
 //   R <pose root +1760+64> O <origin Euler +1760+112> <origin pos +1760+128> Y <extra yaw +1760+472>
 //   B <33 parts: the local matrix each part pointer (ch+1336+4i) holds - 3 rotation rows and the
 //      translation row, 12 floats, row-vector form; "-" for none>
@@ -40,6 +43,9 @@ float RdF(const uint8_t* p) {
 bool Pointer(uint32_t a) { return a >= 0x40000000 && a < 0xC0000000 && !(a & 3); }
 
 constexpr uint32_t kPose = 1760, kParts = 1336, kMatchFrames = 0x82E3CD0C;
+constexpr uint32_t kPlayers = 3248, kPlayerSize = 832, kNewest = 3232;  // (motion players; the newest one's index)
+
+uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
 
 struct Config {
   bool on = false;
@@ -120,7 +126,10 @@ void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
     if (misses++ < 5) REXLOG_INFO("[svr2011] pose dump: ch {:08X} - node {:08X} +32 {:08X} isn't a CHAR", ch, n, fighter);
     return;
   }
-  const uint32_t motion = Rd32(base + fighter + 212), person = Rd32(base + fighter + 1156);
+  const uint32_t newest = Rd32(base + ch + kNewest);
+  if (newest >= 6) return;
+  const uint8_t* player = base + ch + kPlayers + kPlayerSize * newest;
+  const uint32_t motion = Rd16(player + 598) & 0x7FFF, person = Rd32(base + fighter + 1156);
   static uint32_t playing[16] = {};
   const uint32_t pi = person < 16 ? person : 15;
   if (!c.motions.count(motion)) {
@@ -135,8 +144,19 @@ void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
   const uint8_t* P = base + ch + kPose;
   std::string s;
   char b[96];
-  std::snprintf(b, sizeof b, "F %u P %u M %u S %u A", Rd32(base + kMatchFrames), person, motion, pass);
+  std::snprintf(b, sizeof b, "F %u P %u M %u S %u Rq %u Q", Rd32(base + kMatchFrames), person, motion, pass,
+                Rd32(base + fighter + 212));
   s += b;
+  for (uint32_t k = 0; k < 6; ++k) {  // the newest first, then the others still blended in
+    const uint32_t i = (newest + k) % 6;
+    const uint8_t* pl = base + ch + kPlayers + kPlayerSize * i;
+    const float w = RdF(pl + 528);
+    if (k && !(w >= 0.001f)) continue;
+    const uint16_t id = Rd16(pl + 598);
+    std::snprintf(b, sizeof b, " %u %u %u %u %.2f %.3f", id & 0x7FFF, pl[600], pl[601], id >> 15, RdF(pl + 584), w);
+    s += b;
+  }
+  s += " A";
   Vec(s, base + fighter + 288, 3);
   s += " E";
   Vec(s, base + fighter + 272, 3);
