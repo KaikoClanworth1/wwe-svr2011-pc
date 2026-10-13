@@ -194,9 +194,11 @@ constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
 // row in 6-MAN and HANDICAP.
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
 // Its submenu: one row per set of stages (three_stages.cpp kSets), labels
-// kStagesSetLabel + 2 * set (+1 its description). Sets 3 (TABLE / TLC /
-// LADDER) and 4 (HELL IN A CELL) only where the mode has those matches: one
-// on one, two on two, triple threat, fatal-4-way.
+// kStagesSetLabel + 2 * set (+1 its description: 0x0FA0B114-0x0FA0B11F).
+// Sets 3 (TABLE / TLC / LADDER), 5 (TABLE / LADDER / TABLE) and 4 (HELL IN A
+// CELL) only where the mode has those matches: one on one, two on two,
+// triple threat, fatal-4-way; 3 and 5 are the switch mod
+// three_stages_tables_ladders.
 constexpr uint32_t kStagesSetLabel = 0x0FA0B114;
 struct StagesRow {
   uint32_t group, index;
@@ -239,14 +241,24 @@ std::vector<StagesRow> g_stages_rows;
 bool g_pending_stages = false;
 int g_pending_set = 0;
 uint32_t g_stages_set_text[2 * svr2011::kThreeStagesSets] = {};
-// A set's match in a mode (its normal one): the TLC or cell one for sets 3, 4.
+// A set's match in a mode (its normal one): the TLC one for sets 3 and 5, the
+// cell one for set 4.
 uint32_t SetRule(uint32_t normal, int set) {
   constexpr uint32_t kNormals[] = {0x00, 0x03, 0x0D, 0x0E}, kTlc[] = {0x48, 0x49, 0x4A, 0x4B}, kCell[] = {0x31, 0x32, 0x33, 0x34};
   for (int i = 0; i < 4; ++i)
-    if (normal == kNormals[i]) return set == 3 ? kTlc[i] : set == 4 ? kCell[i] : normal;
+    if (normal == kNormals[i]) return set == 3 || set == 5 ? kTlc[i] : set == 4 ? kCell[i] : normal;
   return normal;
 }
-int SetsFor(uint32_t normal) { return SetRule(normal, 3) != normal ? svr2011::kThreeStagesSets : 3; }
+// The sets a mode's submenu offers, in row order: the three normal ones, then
+// (one on one, two on two, triple threat, fatal-4-way) the table / ladder
+// ones (switch mod three_stages_tables_ladders) and the cell one.
+std::vector<int> SetsFor(uint32_t normal) {
+  std::vector<int> sets{0, 1, 2};
+  if (SetRule(normal, 3) == normal) return sets;
+  if (svr2011::MatchTypeOn("three_stages_tables_ladders")) sets.push_back(5), sets.push_back(3);
+  sets.push_back(4);
+  return sets;
+}
 
 // The modes with an EXTREME RULES row (group, its normal match: THREE STAGES
 // OF HELL's first fall). Their EXTREME RULES becomes a submenu of EXTREME
@@ -367,13 +379,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       if (Rd32(r + 0x54) == kScreenMatch && Rd32(r + 0x5C) == s.normal) like = r;
     }
     if (!like) return;
-    // (set 3, TABLE / TLC / LADDER, not offered yet: the prize can't hang again
-    // for a third stage, and the TLC match has no referee for a pin stage -
-    // test aid SVR2011_TEST_3S_TLC=1 offers it)
-    static const bool tlc = std::getenv("SVR2011_TEST_3S_TLC") != nullptr;
-    std::vector<int> offered;
-    for (int k = 0; k < SetsFor(s.normal); ++k)
-      if (k != 3 || tlc) offered.push_back(k);
+    const std::vector<int> offered = SetsFor(s.normal);
     const int sets = int(offered.size());
     for (int row = 0; row < sets; ++row) {
       const int k = offered[size_t(row)];
@@ -599,7 +605,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
       node += uint32_t(kinds.size());
       ++group;
-      if (stage_sets.parent) node += uint32_t(SetsFor(stage_sets.normal)), ++group, stage_sets = {};
+      if (stage_sets.parent) node += uint32_t(SetsFor(stage_sets.normal).size()), ++group, stage_sets = {};
     } else if (const uint32_t rule = Rd32(rec + 0x5C);
                weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !mode) {
       const uint32_t in_group = Rd32(rec + 0x18);
@@ -638,7 +644,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
           Wr32(row.data() + 0x40, 0);
           copy = row;
           AddStageSets({node, Rd32(rec + 0x14) + 0x100, m.normal}, group, node + 1);
-          node += 1 + uint32_t(SetsFor(m.normal));
+          node += 1 + uint32_t(SetsFor(m.normal).size());
           ++group;
         }
         uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
@@ -854,6 +860,7 @@ bool MatchTypeOn(const char* id) {
     for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
                           "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
                           "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders", "hiac_roof_start",
+                          "three_stages_tables_ladders",
                           "gauntlet_eliminator", "cage_weapons", "inferno_weapons", "online_first_blood"}) {
       m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
       if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
@@ -985,7 +992,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
   // (test aid SVR2011_TEST_MODE: ONE ON ONE NORMAL as the mode's row)
   if (g_test_mode != TestMode::kNone && result == 2000) {
     switch (g_test_mode) {
-      case TestMode::kThreeStages: {  // (SVR2011_TEST_3S_SET=<0-4>: the set; its match is SVR2011_TEST_RULE's)
+      case TestMode::kThreeStages: {  // (SVR2011_TEST_3S_SET=<0-5>: the set; its match is SVR2011_TEST_RULE's)
         g_pending_stages = true;
         const char* s = std::getenv("SVR2011_TEST_3S_SET");
         g_pending_set = s ? std::atoi(s) : 0;
@@ -2567,7 +2574,9 @@ uint32_t MatchTypeString(uint32_t id) {
         "TABLE / TLC / LADDER",
         "Through a table, then a TLC fall for the prize, then a Ladder fall for it.",
         "CELL: BLOOD / LMS / SUB",
-        "Inside Hell in a Cell: First Blood, then Last Man Standing, then Submission."};
+        "Inside Hell in a Cell: First Blood, then Last Man Standing, then Submission.",
+        "TABLE / LADDER / TABLE",
+        "Through a table, then a Ladder fall for the prize, then through a table again."};
     const uint32_t k = id - kStagesSetLabel;
     if (!g_stages_set_text[k]) {
       const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);

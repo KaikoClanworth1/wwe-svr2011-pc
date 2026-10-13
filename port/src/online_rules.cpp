@@ -54,7 +54,9 @@ constexpr Option kStage[] = {
     {kStages, 0, "THREE STAGES: NORMAL / FCA / LMS", "First to two falls: Normal, Falls Count Anywhere, Last Man Standing."},
     {kStages, 1, "THREE STAGES: NORMAL / BLOOD / FINISHER", "First to two falls: Normal, First Blood, Finishers."},
     {kStages, 2, "THREE STAGES: NORMAL / LMS / SUBMISSION", "First to two falls: Normal, Last Man Standing, Submission."},
-    {kStages, 4, "THREE STAGES: CELL BLOOD / LMS / SUB", "Inside the cell: First Blood, Last Man Standing, Submission."}};
+    {kStages, 4, "THREE STAGES: CELL BLOOD / LMS / SUB", "Inside the cell: First Blood, Last Man Standing, Submission."},
+    {kStages, 5, "THREE STAGES: TABLE / LADDER / TABLE", "First to two falls: Table, Ladder (the prize), Table."},
+    {kStages, 3, "THREE STAGES: TABLE / TLC / LADDER", "First to two falls: Table, TLC (the prize), Ladder (the prize)."}};
 constexpr Option kTl{kTablesLadders, 0, "TABLES & LADDERS", "Tables, ladders and chairs lying inside the cell."};
 constexpr Option kInside{kWeaponsInside, 0, "WEAPONS INSIDE", "Chairs and other weapons lying in the ring."};
 constexpr Option kMysteryOpt{kMystery, 0, "MYSTERY OPPONENT",
@@ -82,6 +84,9 @@ std::vector<Option> OptionsFor(uint32_t rule) {
     if (rule == 0x08) o.push_back(kSkOpt);       // (6-MAN: the 2 players against 4 CPUs in turn)
   } else if (rule >= 0x4D && rule <= 0x50) {
     o.push_back(kWe);
+  } else if (rule >= 0x48 && rule <= 0x4B) {  // (TLC: the table / ladder sets, played in it)
+    o.push_back(kStage[4]);  // (as the other PORT RULES options: not by the switch mods - both sides must agree)
+    o.push_back(kStage[5]);
   } else if (rule >= 0x31 && rule <= 0x34) {
     o.push_back(kTl);
     o.push_back(kStage[3]);
@@ -107,7 +112,7 @@ bool CreateSessionShown() { return NowMs() - g_cs_at.load() < 300; }
 // The picked match (CREATE SESSION's name read).
 uint32_t PickedRule() { return g_cs_rule.load(); }
 std::string Describe(uint32_t value) {
-  for (uint32_t rule : {0x00u, 0x31u, 0x3Cu, 0x0Du, 0x08u})
+  for (uint32_t rule : {0x00u, 0x31u, 0x3Cu, 0x0Du, 0x08u, 0x48u})
     for (const Option& o : OptionsFor(rule))
       if (Value(o) == value) return o.name;
   return "UNKNOWN";

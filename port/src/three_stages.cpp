@@ -5,14 +5,17 @@
 // triple threat 0x0D, fatal-4-way 0x0E, 6-man tag 0x08, one on two tornado
 // 0x0F.
 //
-// Its submenu has five sets of three stages (ThreeStagesSetup's set):
+// Its submenu has six sets of three stages (ThreeStagesSetup's set):
 //   0 NORMAL / FALLS COUNT ANYWHERE / LAST MAN STANDING (below);
 //   1 NORMAL / FIRST BLOOD / FINISHERS;
 //   2 NORMAL / LAST MAN STANDING / SUBMISSION;
 //   3 TABLE / TLC / LADDER - played as the mode's TLC match (0x48-0x4B: the
 //     prize hangs, tables and ladders are there from the bell);
 //   4 HELL IN A CELL: FIRST BLOOD / LAST MAN STANDING / SUBMISSION - played as
-//     the mode's cell match (0x31-0x34: the cell stands from the bell).
+//     the mode's cell match (0x31-0x34: the cell stands from the bell);
+//   5 TABLE / LADDER / TABLE - played as the mode's TLC match too (one prize
+//     fall, between two table falls).
+// Sets 3 and 5 are the switch mod three_stages_tables_ladders.
 // What loads at the bell (a cell, a cage, the prize, the table and ladder
 // models) can't change mid-match: a set needing one is played in that rule
 // from the start and only what wins a fall changes (live option bytes:
@@ -45,6 +48,17 @@
 //           without +56: no rope breaks, no DQ, no ring-out; pin or give up
 //           in the ring).
 // The score is shown over the match.
+//
+// The prize (sets 3 and 5, in the TLC match): a fall for it is the climb
+// controller's lost code 6 (sub_8223D7E8, as the climber's grab motion
+// plays). One that doesn't win the match, or one in a stage that isn't for
+// the prize (a CPU climbs in a table stage too), is taken back; kPrizeWait
+// later (the prize held up a moment) the climber falls off his ladder - the
+// game's own fall when a ladder goes over (sub_82289118: the ladder let go,
+// sub_82396E80(char, 28159, 6, 0, 0.0)) - since the prize-held pose 28113
+// only ends with the match; the prize leaves his hands (+1828, the held
+// weapon) and hangs again: the manager's (0x82E3BC30) re-hang, sub_8223BA48
+// - the game's own at a match's (re)start.
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
@@ -60,7 +74,10 @@
 #include <rex/logging.h>
 #include <rex/ui/imgui_dialog.h>
 
+#include <rex/ppc.h>
+
 #include "frame_rate.h"
+#include "generated/default/svr2011_init.h"
 #include "match_hud.h"
 #include "match_types.h"
 
@@ -88,6 +105,7 @@ constexpr Kind kSets[svr2011::kThreeStagesSets][3] = {
     {kNormal, kLms, kSubmission},
     {kTable, kTlc, kLadder},
     {kFirstBlood, kLms, kSubmission},
+    {kTable, kLadder, kTable},
 };
 constexpr uint32_t kSixManTag = 0x08;  // (LAST MAN STANDING: NO DISQUALIFICATION, see above)
 constexpr int64_t kFinisherWindow = 10000;  // ms
@@ -201,6 +219,19 @@ void ApplyStage(uint8_t* base, int stage) {
   REXLOG_INFO("three stages: fall {} - {}", stage + 1, StageName(stage));
 }
 
+// The prize: a fall for it taken back, the climber off his ladder and the
+// prize back up kPrizeWait later.
+constexpr uint8_t kPrizeLost = 6;
+constexpr uint32_t kPrizeManager = 0x82E3BC30, kMotion = 212, kHeld = 1828, kObjects = 0x82DE0220;
+constexpr uint32_t kLadderObject = 11, kLadderFall = 28159;
+constexpr int64_t kPrizeWait = 1500;  // ms
+std::atomic<int64_t> g_prize_since{0};  // ms: a prize fall taken back (0: none)
+bool PrizeStage(int stage) {
+  const Kind k = KindOf(stage);
+  return k == kLadder || k == kTlc;
+}
+bool GrabMotion(uint32_t m) { return (m >= 1641 && m <= 1643) || (m >= 28110 && m <= 28115); }
+
 // FINISHERS: the last move cinematic (ms).
 std::atomic<int64_t> g_cinematic_at{0};
 
@@ -252,6 +283,7 @@ void ThreeStagesSetup(bool on, int set) {
   g_stage = 0;
   g_no_dq = false;
   g_sides = 0;
+  g_prize_since = 0;
   for (auto& f : g_falls) f = 0;
   if (on) REXLOG_INFO("three stages: on - {} / {} / {}", kKindName[kSets[g_set][0]], kKindName[kSets[g_set][1]],
                       kKindName[kSets[g_set][2]]);
@@ -306,15 +338,48 @@ void ThreeStagesUpdate(uint8_t* base) {
   std::string all;
   for (uint32_t i = 0; i < 9; ++i)
     if (const uint32_t c = Rd32(base + kChars + i * 4))
-      all += fmt::format(" {}:{:08X} state {} lost {} by {} team {} role {} area {} person {}", i, c, base[c + 446],
-                         base[c + kLost], base[c + kBeatenBy], Rd32(base + c + 1800), Rd32(base + c + 2624),
-                         base[c + 444], Rd32(base + c + 2660));
+      all += fmt::format(" {}:{:08X} state {} lost {} by {} team {} role {} area {} person {} motion {} held {:X}", i, c,
+                         base[c + 446], base[c + kLost], base[c + kBeatenBy], Rd32(base + c + 1800), Rd32(base + c + 2624),
+                         base[c + 444], Rd32(base + c + 2660), Rd32(base + c + kMotion), Rd32(base + c + kHeld));
   std::string opt;
   for (int i = 0; i < 40; ++i) opt += fmt::format("{:02X}", base[kLive + i]);
   REXLOG_INFO("three stages: live {} characters{}", opt, all);
 }
 
-void ThreeStagesBeforeJudge(uint8_t* base) {
+void Wr32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v); }
+
+// The prize back up: out of the climber's hands, the climber off his ladder
+// (the ladder's own fall), the manager's re-hang.
+void PrizeRehang(PPCContext& ctx, uint8_t* base, const uint32_t (&chars)[6]) {
+  const uint32_t mgr = Rd32(base + kPrizeManager);
+  if (!mgr) return;
+  const uint32_t prize = Rd32(base + mgr + 52), id = prize ? Rd32(base + prize + 1152) : ~0u;
+  for (uint32_t c : chars) {
+    if (!c) continue;
+    const uint32_t motion = Rd32(base + c + kMotion);
+    if (prize && Rd32(base + c + kHeld) == id) {
+      Wr32(base + c + kHeld, ~0u);  // (-1: nothing held)
+      REXLOG_INFO("three stages: person {} lets go of the prize (motion {})", Rd32(base + c + kPerson), motion);
+    }
+    if (!GrabMotion(motion)) continue;
+    // (his ladder: one he is on lets him go - as sub_82289118 does)
+    for (uint32_t s = 0; s < 72; ++s)
+      if (const uint32_t o = Rd32(base + kObjects + s * 4); o && Rd32(base + o + 80) == kLadderObject && Rd32(base + o + 96) == c)
+        Wr32(base + o + 44, ~0u), Wr32(base + o + 96, 0);
+    if (Rd32(base + c + kHeld) != ~0u) Wr32(base + c + kHeld, ~0u);
+    PPCContext f = ctx;
+    f.r3.u64 = c, f.r4.u64 = kLadderFall, f.r5.u64 = 6, f.r6.u64 = 0, f.f1.f64 = 0.0;
+    sub_82396E80(f, base);
+    REXLOG_INFO("three stages: person {} falls off the ladder (motion {} -> {})", Rd32(base + c + kPerson), motion,
+                Rd32(base + c + kMotion));
+  }
+  PPCContext c = ctx;
+  c.r3.u64 = mgr;
+  sub_8223BA48(c, base);
+  REXLOG_INFO("three stages: the prize hangs again");
+}
+
+void ThreeStagesBeforeJudge(PPCContext& ctx, uint8_t* base) {
   if (!g_on.load() || !svr2011::InMatch() || !g_live0_saved) return;
   uint32_t chars[6] = {};
   int people = 0;
@@ -324,6 +389,17 @@ void ThreeStagesBeforeJudge(uint8_t* base) {
   g_seen = NowMs();
   FindSides(base, chars);  // (in person order: the score's order)
   if (Rd32(base + kLive + kMatchOver)) return;
+  // A prize fall taken back: the climb controller may give it again as the
+  // grab plays - taken back again; kPrizeWait later the climber falls off
+  // and the prize hangs again.
+  if (const int64_t since = g_prize_since.load()) {
+    for (uint32_t c : chars)
+      if (c && base[c + kLost] == kPrizeLost) base[c + kLost] = 0, base[c + kBeatenBy] = 0;
+    if (NowMs() - since < kPrizeWait) return;
+    g_prize_since = 0;
+    PrizeRehang(ctx, base, chars);
+    return;
+  }
   // Test aid: SVR2011_TEST_3S_FALL=<s> - every <s> seconds a person of the
   // second side (then the first, in turn) loses a fall - falls 1 and 2 only.
   static const int every = [] { const char* v = std::getenv("SVR2011_TEST_3S_FALL"); return v ? std::atoi(v) : 0; }();
@@ -360,6 +436,15 @@ void ThreeStagesBeforeJudge(uint8_t* base) {
       winner = int(g_side_team[0].load() == uint32_t(loser) ? g_side_team[1].load() : g_side_team[0].load());
     REXLOG_INFO("three stages: person {} (team {}) lost (code {}, by {}) - fall to team {}", Rd32(base + c + kPerson),
                 loser, base[c + kLost], by, winner);
+    const bool prize = base[c + kLost] == kPrizeLost;
+    // The prize taken in a stage not for it (a table one): no fall - it hangs again
+    if (prize && !PrizeStage(g_stage.load())) {
+      REXLOG_INFO("three stages: the prize taken in a {} fall - doesn't count, it hangs again", StageName(g_stage.load()));
+      base[c + kLost] = 0;
+      base[c + kBeatenBy] = 0;
+      g_prize_since = NowMs();
+      return;
+    }
     // FINISHERS: not within kFinisherWindow of a finisher / signature - taken back, not counted
     if (KindOf(g_stage.load()) == kFinishers && NowMs() - g_cinematic_at.load() > kFinisherWindow) {
       REXLOG_INFO("three stages: no finisher before it - the fall doesn't count");
@@ -376,6 +461,7 @@ void ThreeStagesBeforeJudge(uint8_t* base) {
     if (won >= 2) return;  // (the judge ends the match)
     base[c + kLost] = 0;   // (taken back: the match goes on)
     base[c + kBeatenBy] = 0;
+    if (prize) g_prize_since = NowMs();  // (the prize back up when the climber is down)
     g_stage = std::min(g_stage.load() + 1, 2);
     ApplyStage(base, g_stage.load());
     return;
