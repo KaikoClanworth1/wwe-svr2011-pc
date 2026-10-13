@@ -184,9 +184,16 @@ tab), `manifest.txt`:
 | `model=attire.pac` | a character model pac; its first attire is used |
 | `entrance=<n>` | optional, the entrance that attire gets (as `attireN_entrance=`) |
 
-- The model's first attire is copied to `Mods/SuperstarOverlay/ch<id>_x<N>.pac`
-  with the superstar's id and the attire's digit in its EMD names, and mounted
-  with the other overlay pacs. The game finds models by entry name.
+- A new attire: the model's first attire is copied to
+  `Mods/SuperstarOverlay/ch<id>_x<N>.pac` with the superstar's id and the
+  attire's digit in its EMD names, and mounted with the other overlay pacs. The
+  game finds models by entry name.
+- A replaced attire (one the game's own pac has): of two entries with one name
+  the game uses the first, its own, so a mounted pac isn't enough. The model
+  goes into an overlay copy of the game's pac instead: a generated move pack
+  (`Mods/SuperstarOverlay/attirepacks/<folder>/pack.txt`: `pacentry
+  ch\chNNN.pac EMD <entry> entry.bin`), merged by the move-pack overlay
+  (docs/MOVE_PACKS.md). Model entries are stored as plain PACHs, as the game's.
 - The two lookups above answer for the superstar too: the count goes up to
   the highest attire a mod gives (4 at most), and a mod's attire gets its
   `{name, unlock -1}` pair (string ids from 0xB400); the others keep the game's.
@@ -194,8 +201,14 @@ tab), `manifest.txt`:
   and the other is logged. `new` on a superstar with 4 attires is left out.
 - A `disabled` file in the folder turns it off.
 
-Not verified yet: whether a mod that replaces an attire the game's own pac has
-wins over it (both have the entry name).
+- Every model (a superstar mod's ch.pac and attire pacs, an attire mod's model)
+  must fit the match's vertex memory: 192 pages per wrestler
+  (`tools/model_budget.py`). Over it, the blood overlays (0x7532, 0x7531,
+  0x7530) are left out of the overlay copy; still over, the mod is left out,
+  with a log line.
+
+Tested: an attire mod replacing Mark Henry's attire 1 with Sabu's model plays
+in a match. Not tested yet: `attire=new` on CHANGE ATTIRE.
 
 ### Select screen framing
 
