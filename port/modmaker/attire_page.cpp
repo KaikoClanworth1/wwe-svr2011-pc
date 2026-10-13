@@ -238,8 +238,7 @@ void Problems(std::vector<Problem>& p) {
     if (gear > kModelPages)
       p.push_back(Warning("The entrance gear needs " + std::to_string(gear) + " of the " + std::to_string(kModelPages) +
                               " memory pages a wrestler gets: the entrance may not load.", "Leave the gear out, or use a lighter one."));
-    if (g_at.gear.rfind("from", 0) == 0)
-      p.push_back(Warning("This attire wears attire " + std::to_string(k) + "'s entrance gear: the game should wear it (not yet tried in a match).", "Install and try it; leave it out if it doesn't show."));
+
   }
 }
 

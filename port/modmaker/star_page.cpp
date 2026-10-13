@@ -1301,14 +1301,17 @@ std::vector<int> AttireCount() {  // the attires the mod has, 1..4
     if (a == 1 || !g_star.attires[a - 1].empty() || std::find(own.begin(), own.end(), a) != own.end()) v.push_back(a);
   return v;
 }
-// What attire a wears for its entrance: 0 none, else the attire (of the model) whose gear it is.
+// What attire a wears for its entrance: 0 none, else the attire (of the model) whose gear it is. In game an attire
+// with no gear of its own wears attire 1's (HCTP Entrance Porting, played: no ..14 -> ..04).
 int GearShown(int a) {
   const auto op = g_star.gear.find(a);
   if (op != g_star.gear.end() && op->second == "off") return 0;
   if (op != g_star.gear.end() && op->second.rfind("from", 0) == 0) return std::atoi(op->second.c_str() + 4);
   const auto [pac, in] = AttireSource(a);
   const auto g = pac.empty() ? std::vector<int>() : GearOf(pac);
-  return std::find(g.begin(), g.end(), in) != g.end() ? a : 0;
+  if (std::find(g.begin(), g.end(), in) != g.end()) return a;
+  if (a > 1 && pac == g_star.model && GearShown(1) == 1) return 1;  // (attire 1's, the game's fallback)
+  return 0;
 }
 
 void GearRows(bool simple) {
@@ -1328,12 +1331,14 @@ void GearRows(bool simple) {
     ImGui::PushID(1000 + a);
     const auto [pac, in] = AttireSource(a);
     const auto pg = GearOf(pac);
-    const bool has = std::find(pg.begin(), pg.end(), in) != pg.end();
     const int shown = GearShown(a);
+    const bool chosen = g_star.gear.count(a) > 0;
+    const bool has = shown != 0 || (chosen && g_star.gear[a] == "off");
     ImGui::Text("Attire %d:", a);
     ImGui::SameLine(90 * g_scale);
-    if (!shown) ImGui::TextDisabled("%s", has ? "gear left out" : "no gear");
+    if (!shown) ImGui::TextDisabled("%s", chosen ? "gear left out" : "no gear");
     else if (shown == a) ImGui::TextUnformatted("its own gear");
+    else if (!chosen) ImGui::Text("attire %d's (the game's default)", shown);
     else ImGui::Text("attire %d's gear", shown);
     ImGui::SameLine();
     ImGui::BeginDisabled(!shown);
@@ -1378,9 +1383,7 @@ void GearProblems(std::vector<Problem>& p) {
       p.push_back(Warning("Attire " + std::to_string(a) + "'s entrance gear needs " + std::to_string(gear) + " of the " + std::to_string(kModelPages) +
                               " memory pages a wrestler gets: the entrance may not load.",
                           "Leave the gear out (Entrance gear), or use a lighter one."));
-    if (g_star.gear.count(a) && g_star.gear.at(a).rfind("from", 0) == 0)
-      p.push_back(Warning("Attire " + std::to_string(a) + " wears attire " + std::to_string(shown) + "'s entrance gear: the game should wear it (not yet tried in a match).",
-                          "Test in game; if it doesn't show, leave it out."));
+
   }
 }
 
@@ -1468,9 +1471,7 @@ void Problems(std::vector<Problem>& p) {
     if (!f.empty()) ModelCheckProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), p);
   }
   for (int a : AttireCount()) {  // gear inherited from the superstar a model came from: said once, plainly
-    const auto [pac, in] = AttireSource(a);
-    const auto g = pac.empty() ? std::vector<int>() : GearOf(pac);
-    if (std::find(g.begin(), g.end(), in) != g.end() && !g_star.gear.count(a)) {
+    if (GearShown(a) && !g_star.gear.count(a)) {
       p.push_back(Warning("Attire " + std::to_string(a) + " has entrance gear from the superstar the model came from (a coat, hat or shirt worn for the entrance).",
                           "Fine if wanted; otherwise Entrance gear > Leave it out."));
       p.back().step = kStepAttires;

@@ -139,11 +139,33 @@ bool PacCopyGear(Epac& dst, int to, const Epac& src, int from, std::string* erro
   return true;
 }
 
+bool PacNoGear(Epac& pac, int attire, std::string* error) {
+  auto fail = [&](const char* why) { if (error) *error = why; return false; };
+  EpacGroup* g = Emd(pac);
+  if (!g) return fail("not a character model pac (no EMD group)");
+  const EpacEntry* body = nullptr;
+  for (const auto& e : g->entries)
+    if (AttireOf(e) == attire && e.name[7] == '2' && !e.data.empty()) body = &e;
+  if (!body) return fail("that attire has no model");
+  EpacEntry e = *body;
+  for (auto& x : g->entries)
+    if (AttireOf(x) == attire && x.name[7] == '4') Clear(x);
+  e.name[7] = '4';
+  auto row = std::find_if(g->entries.begin(), g->entries.end(), [](const EpacEntry& x) { return !Named(x) && x.data.empty(); });
+  if (row != g->entries.end()) *row = std::move(e);
+  else g->entries.push_back(std::move(e));
+  std::stable_sort(g->entries.begin(), g->entries.end(), [](const EpacEntry& x, const EpacEntry& y) {
+    const bool nx = Named(x), ny = Named(y);
+    return nx != ny ? nx : nx && x.name < y.name;
+  });
+  return true;
+}
+
 bool PacApplyGear(Epac& pac, const std::map<int, std::string>& ops, std::string* error) {
   const Epac orig = pac;  // ("from" reads the gear as it was)
   for (const auto& [a, op] : ops) {
     if (op == "off") {
-      if (!PacRemoveGear(pac, a, error)) return false;
+      if (!(a == 1 ? PacRemoveGear(pac, a, error) : PacNoGear(pac, a, error))) return false;
     } else if (op.rfind("from", 0) == 0) {
       if (!PacCopyGear(pac, a, orig, std::atoi(op.c_str() + 4), error)) return false;
     }

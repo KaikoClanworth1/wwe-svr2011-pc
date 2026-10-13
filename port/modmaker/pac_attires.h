@@ -31,7 +31,11 @@ std::vector<int> PacGearAttires(const svrfmt::Epac& pac);  // the attires with g
 bool PacRemoveGear(svrfmt::Epac& pac, int attire, std::string* error);
 // Attire `to` of dst gets attire `from`'s gear of src (dst's own gear for `to` replaced).
 bool PacCopyGear(svrfmt::Epac& dst, int to, const svrfmt::Epac& src, int from, std::string* error);
-// The gear choices per attire ("off" leaves it out, "from<k>" gives it attire k's gear of the same pac), applied.
+// Attire `a` (2-9) explicitly without gear: its kind 4 = a copy of its own kind 2. (In game, an attire with no kind 4
+// of its own wears attire 1's gear "..04" - HCTP Entrance Porting, played - so leaving it out needs this entry.)
+bool PacNoGear(svrfmt::Epac& pac, int attire, std::string* error);
+// The gear choices per attire ("off" leaves it out - attire 1: no ..04; others: PacNoGear - "from<k>" gives it
+// attire k's gear of the same pac), applied.
 bool PacApplyGear(svrfmt::Epac& pac, const std::map<int, std::string>& ops, std::string* error);
 
 }  // namespace mm
