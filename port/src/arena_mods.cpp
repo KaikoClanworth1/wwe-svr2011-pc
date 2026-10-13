@@ -31,6 +31,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -54,6 +55,7 @@
 #include <imgui.h>
 #include <rex/filesystem.h>
 #include <rex/filesystem/entry.h>
+#include <rex/thread.h>
 #include <rex/filesystem/vfs.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -720,8 +722,14 @@ struct LoadPic {
   int part = 0;            // 0 whole, 1 left half, 2 right half
 };
 std::vector<LoadPic> g_load_pics;  // every loading picture of the game (distinct)
+// (read on a thread of its own at start - LoadHD.pac whole, 2-3.5 s on a
+// desktop - and only when an installed custom arena has a loading picture;
+// SetDecodeSwaps waits for it)
+std::mutex g_load_pics_mutex;
+std::condition_variable g_load_pics_cv;
+bool g_load_pics_ready = false;
 
-void LoadLoadingPictures() {
+void ReadLoadingPictures() {
   svrfmt::Bytes d;
   svrfmt::Epac e;
   if (!svrfmt::ReadFile((g_game / "pac" / "menu" / "LoadHD.pac").string(), d) || !svrfmt::EpacRead(d, e)) return;
@@ -757,6 +765,32 @@ void LoadLoadingPictures() {
   REXLOG_INFO("[svr2011] arena mods: {} loading screen pictures", g_load_pics.size());
 }
 
+void LoadLoadingPictures() {
+  const bool wanted = std::any_of(g_customs.begin(), g_customs.end(), [](const CustomArena& c) { return !c.load.empty(); });
+  if (!wanted) {
+    REXLOG_INFO("[svr2011] arena mods: no custom loading screens - the game's own aren't read");
+    std::lock_guard lock(g_load_pics_mutex);
+    g_load_pics_ready = true;
+    return;
+  }
+  // (plain host file reads and its own vectors only: nothing the game's threads use)
+  std::thread([] {
+    rex::thread::set_current_thread_name("arena loading pictures");
+    ReadLoadingPictures();
+    {
+      std::lock_guard lock(g_load_pics_mutex);
+      g_load_pics_ready = true;
+    }
+    g_load_pics_cv.notify_all();
+  }).detach();
+}
+
+// The loading pictures read (at most `wait` for them; false: not yet).
+bool LoadingPicturesReady(std::chrono::milliseconds wait) {
+  std::unique_lock lock(g_load_pics_mutex);
+  return g_load_pics_cv.wait_for(lock, wait, [] { return g_load_pics_ready; });
+}
+
 // The custom arena's picture cut to fit (whole, or a half: 1024 x 512 DXT5
 // rows are 256 blocks of 16 bytes).
 svrfmt::Bytes LoadPart(const svrfmt::Bytes& load, int part) {
@@ -780,7 +814,10 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
       if (std::find(t->sizes.begin(), t->sizes.end(), original.size()) == t->sizes.end()) t->sizes.push_back(original.size());
       t->swaps.push_back({name, std::move(original), std::move(mine), loading});
     };
-    if (!c->load.empty()) {
+    if (!c->load.empty() && !LoadingPicturesReady(std::chrono::seconds(10))) {
+      REXLOG_WARN("[svr2011] arena mods: the game's loading pictures still not read after 10 s - {} keeps the game's",
+                  c->id);
+    } else if (!c->load.empty()) {
       const svrfmt::Bytes load = Swap16(c->load.data(), c->load.size());  // (kept swapped: back to file order)
       for (const auto& lp : g_load_pics) add(lp.name, lp.original, LoadPart(load, lp.part), true);
     }
