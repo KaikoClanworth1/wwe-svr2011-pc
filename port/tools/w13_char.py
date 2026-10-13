@@ -159,6 +159,33 @@ def is_primary(n13, n11):
 
 
 # ---------------------------------------------------------------- conversion
+def skin_template(meshes):
+    """The body skin mesh to copy parameters from: the parameter set most yBumpMapSS meshes share
+    (ch104: 22 of 27 - tiling noise 100 x 50, tiling effect 0.02 / 0.15 / 0.1), without a wrinkle,
+    muscle or bruise part, the largest of those. (The first skin mesh is a special one: tile count 1,
+    tiling effect 1.0 - with the noise bound as its tiling map it paints red spots over the body.)
+    -> a copy with the wrinkle / muscle / bruise part numbers 0."""
+    import collections
+    skin = [s for s in meshes if s.shader == 'yBumpMapSS']
+
+    def sig(s):
+        return tuple((n, v) for n, t, v in s.params if t != 0x0f and not n.startswith(('g_f2Wrinkle', 'g_f2Muscle', 'g_i')))
+
+    def parts(s):
+        return sum(struct.unpack('>i', v[:4])[0] != 0 for n, t, v in s.params
+                   if n in ('g_iWrinkleParts', 'g_iMuscleParts', 'g_iBruiseParts'))
+    common = collections.Counter(sig(s) for s in skin).most_common(1)[0][0]
+    pick = [s for s in skin if sig(s) == common]
+    best = min(pick, key=lambda s: (parts(s), -len(s.verts)))
+    # (a part number picks a region of the wrinkle / muscle maps the converted models don't carry: none)
+    out = jboy.Mesh()
+    out.__dict__.update(best.__dict__)
+    zero = struct.pack('>i', 0)
+    out.params = [(n, t, zero + v[4:] if n in ('g_iWrinkleParts', 'g_iMuscleParts', 'g_iBruiseParts') else v)
+                  for n, t, v in best.params]
+    return out
+
+
 class Conv:
     def __init__(self, tmpl_pac, portrait=None):
         self.portrait = open(portrait, 'rb').read() if portrait else None
@@ -173,7 +200,7 @@ class Conv:
         self.tindex = {nd['name']: i for i, nd in enumerate(self.tnodes)}
         # parameter blocks by kind
         ms = self.body.meshes
-        self.p_skin = next(s for s in ms if s.shader == 'yBumpMapSS' and s.vfmt == 0)
+        self.p_skin = skin_template(ms)
         self.p_eye = next(s for s in ms if s.shader == 'yReflect')
         self.p_hair = self.hair.meshes[-1]
         self.p_lash = self.lash.meshes[0]
@@ -245,7 +272,7 @@ class Conv:
         # parameters: the template's, its texture slots pointed at our names
         s.params = []
         for name, typ, val in tmpl.params:
-            if typ == 0x0f:
+            if typ == 0x0f and struct.unpack('>i', val[:4])[0] >= 0:   # (a slot the template leaves unbound stays so)
                 want = slot_names.get(name)
                 k = textures.index(want) if want in textures else -1
                 val = struct.pack('>i', k) + val[4:]
@@ -392,18 +419,32 @@ def add_alpha(color_dds, normal_dds=None, cut_tris=()):
     return dds_encode(rgba, 'DXT5')
 
 
+def resize_rgba(img, size, method=None):
+    """resize without Pillow's premultiplied alpha: RGB and A each on their own (the colour sheets'
+    alpha is a specular level around 45 - premultiplied, the RGB of the smaller mips turns to specks)"""
+    method = Image.BOX if method is None else method
+    if img.mode != 'RGBA':
+        return img.resize(size, method)
+    rgb = img.convert('RGB').resize(size, method)
+    rgb.putalpha(img.getchannel('A').resize(size, method))
+    return rgb
+
+
 def dds_encode(img, fourcc):
     w, h = img.size
     mips = int(math.log2(max(w, h))) + 1
     out = None
     for m in range(mips):
-        im = img if m == 0 else img.resize((max(1, w >> m), max(1, h >> m)), Image.BOX)
+        im = img if m == 0 else resize_rgba(img, (max(1, w >> m), max(1, h >> m)))
         b = io.BytesIO()
         im.save(b, 'DDS', pixel_format=fourcc)
         v = b.getvalue()
         out = bytearray(v) if out is None else out + v[128:]
     struct.pack_into('<I', out, 8, struct.unpack_from('<I', out, 8)[0] | 0x20000)
     struct.pack_into('<I', out, 28, mips)
+    # (the linear size = the top level's bytes, as Yuke's sheets have it: PIL writes a pitch there, and the
+    # game reading it to step through the mips draws the smaller ones from the wrong place)
+    struct.pack_into('<I', out, 20, max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * (8 if fourcc == 'DXT1' else 16))
     struct.pack_into('<I', out, 108, struct.unpack_from('<I', out, 108)[0] | 0x400008)
     return bytes(out)
 

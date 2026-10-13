@@ -87,18 +87,32 @@ def tex_write(texs, head):
     return (struct.pack('<I', n) + head[4:16] + recs).ljust(off, b'\0') + blobs
 
 
+def resize_rgba(img, size, method=None):
+    """resize without Pillow's premultiplied alpha: RGB and A each on their own (the colour sheets'
+    alpha is a specular level around 45 - premultiplied, the RGB of the smaller mips turns to specks)"""
+    method = Image.BOX if method is None else method
+    if img.mode != 'RGBA':
+        return img.resize(size, method)
+    rgb = img.convert('RGB').resize(size, method)
+    rgb.putalpha(img.getchannel('A').resize(size, method))
+    return rgb
+
+
 def dds_encode(img, fourcc):
     w, h = img.size
     mips = int(math.log2(max(w, h))) + 1
     out = None
     for m in range(mips):
-        im = img if m == 0 else img.resize((max(1, w >> m), max(1, h >> m)), Image.BOX)
+        im = img if m == 0 else resize_rgba(img, (max(1, w >> m), max(1, h >> m)))
         b = io.BytesIO()
         im.save(b, 'DDS', pixel_format=fourcc)
         v = b.getvalue()
         out = bytearray(v) if out is None else out + v[128:]
     struct.pack_into('<I', out, 8, struct.unpack_from('<I', out, 8)[0] | 0x20000)
     struct.pack_into('<I', out, 28, mips)
+    # (the linear size = the top level's bytes, as Yuke's sheets have it: PIL writes a pitch there, and the
+    # game reading it to step through the mips draws the smaller ones from the wrong place)
+    struct.pack_into('<I', out, 20, max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * (8 if fourcc == 'DXT1' else 16))
     struct.pack_into('<I', out, 108, struct.unpack_from('<I', out, 108)[0] | 0x400008)
     return bytes(out)
 
@@ -121,7 +135,8 @@ class Template:
         self.parent = [struct.unpack_from('>i', d, B + nptr + 80 * i + 48)[0] for i in range(nnode)]
         self.index = {n['name']: i for i, n in enumerate(self.body.nodes)}
         ms = self.body.meshes
-        self.p_skin = next(s for s in ms if s.shader == 'yBumpMapSS' and s.vfmt == 0)
+        from w13_char import skin_template
+        self.p_skin = skin_template(ms)   # (not the first skin mesh: see skin_template)
         self.p_eye = next(s for s in ms if s.shader == 'yReflect')
         self.p_hair = self.hair.meshes[-1]
         self.p_lash = self.lash.meshes[0]
@@ -163,7 +178,7 @@ def mesh(s8, tmpl, nmap, textures, slots):
     s.strips = [(6, idx) for idx in s8['strips']]
     s.params = []
     for name, typ, val in tmpl.params:
-        if typ == 0x0f:
+        if typ == 0x0f and struct.unpack('>i', val[:4])[0] >= 0:   # (a slot the template leaves unbound stays so)
             want = slots.get(name)
             k = textures.index(want) if want in textures else -1
             val = struct.pack('>i', k) + val[4:]
@@ -241,7 +256,7 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
             w, h = body.size
             x0, y0, x1, y1 = int(BOX[0] * w), int(BOX[1] * h), int(round(BOX[2] * w)), int(round(BOX[3] * h))
             im = body.copy()
-            im.paste(piece.resize((x1 - x0, y1 - y0), Image.LANCZOS), (x0, y0))
+            im.paste(resize_rgba(piece, (x1 - x0, y1 - y0), Image.LANCZOS), (x0, y0))
             return im
         color_d = dds_encode(paint(dds_img(color), dds_img(cpick('_c'))), 'DXT5')
         normal_d = dds_encode(paint(dds_img(normal), dds_img(cpick('_n'))), 'DXT5')

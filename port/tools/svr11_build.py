@@ -1,0 +1,447 @@
+"""Neutral model -> SvR 2011 character pac (ch.pac): the builder the Mod Maker's FBX import calls.
+
+    py svr11_build.py <model.json> <out ch.pac> [report.json]
+
+The caller (FBX reader + tools/rig_maps.json) has already retargeted the meshes to the 2011 bind
+skeleton (tools/svr11_skeleton.json: 10 cm units, -Y up, -Z front, pelvis origin, A-pose) and
+named the weights by 2011 bones. model.json:
+
+    {"version": 1,
+     "template": "<a stock 2011 chNNN.pac: node frames, shader parameters, face animation, cube map>",
+     "portrait": "<256 x 256 png / dds, optional>",
+     "joints":   {"<2011 bone>": [x, y, z], ...},         optional: world positions that move those
+                                                         nodes to the model's proportions (translation only)
+     "attires": [{
+        "name": "<EPK8 entry name, optional: the template's own names in order>",
+        "textures": {"color": "<png>", "normal": "<png>", "mask": "<png, optional>"},
+        "meshes": [{
+            "name": "...", "kind": "skin" | "eye" | "hair" | "lash",
+            "positions": [[x, y, z], ...], "normals": [[x, y, z], ...], "uvs": [[u, v], ...],  (v down)
+            "bones": ["l_te", ...],
+            "weights": [[[bone index, weight], ...], ...],   per vertex, any count (top 4 kept, renormalised)
+            "triangles": [[a, b, c], ...],
+            "textures": {"color": "<png>", "normal": "<png>"}   optional: per-mesh sheets, packed into the
+                                                               attire's one colour / normal sheet (UVs remapped)
+        }, ...]}]}
+
+Paths are relative to model.json. What the builder does (the rules in svr11_skeleton.json "mesh_rules"):
+palettes of <= 20 bones (meshes split as needed, <= 65535 vertices each), weights vertex-major in 1-4
+blocks, triangle strips joined with degenerates, vertex colour FFFFFFFF, the template's parameter blocks
+per kind (skin yBumpMapSS, eye yReflect, hair, lash yDefault), textures to DXT5 with full mips (colour
+alpha = specular level unless the png has one; Mk from the mask or flat), the template's other
+children and blood overlays, the 192-page vertex budget (blood overlays dropped first, else an
+error), blank damage masks (Mask1-3), EPK8 with one EMD group.
+
+stdout: JSON report {ok, out, attires: [{name, meshes, pages, dropped}], warnings, error}.
+Exit 0 ok, 2 bad input, 3 failed (over budget...).
+"""
+import argparse
+import io
+import json
+import math
+import os
+import struct
+import sys
+
+import numpy as np
+from PIL import Image
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import jboy  # noqa: E402
+import model_budget  # noqa: E402
+import w13_char as W  # noqa: E402
+
+MAX_PAL = 20
+MAX_VERTS = 65535
+COLOR_SIZE = (2048, 1024)     # the stock colour sheet
+NORMAL_SIZE = (1024, 1024)
+MK_SIZE = (512, 256)
+SKIN_SLOTS = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
+EYE_SLOTS = {'texDiffuse': 'color', 'texCubeRefction': 'cubemap', 'texRefctionReg': 'color', 'texOcclusion': 'mk'}
+LASH_SLOTS = {'texDiffuse': 'color'}
+TEX_BODY = ['color', 'normal', 'mk', 'noise', 'cubemap']
+
+
+class BuildError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- geometry
+def stripify(tris):
+    """triangle list -> one degenerate-joined strip (strip_tris convention: odd triangles flipped)"""
+    tris = [tuple(t) for t in tris if len(set(t)) == 3]
+    edge = {}
+    for i, (a, b, c) in enumerate(tris):
+        for e in ((a, b), (b, c), (c, a)):
+            edge.setdefault(e, []).append(i)
+    used = [False] * len(tris)
+
+    def cyc(t):
+        return {t, (t[1], t[2], t[0]), (t[2], t[0], t[1])}
+
+    def grow(first, start):
+        s = list(start)
+        took = [first]
+        while True:
+            a, b = s[-2], s[-1]
+            k = len(s) - 2           # the new triangle's index in the strip
+            nxt = None
+            for e in ((a, b), (b, a)):
+                for j in edge.get((e[1], e[0]), []) + edge.get(e, []):
+                    if used[j] or j in took:
+                        continue
+                    d = next(v for v in tris[j] if v not in (a, b))
+                    drawn = (a, b, d) if k % 2 == 0 else (b, a, d)
+                    if drawn in cyc(tris[j]):
+                        nxt = (j, d)
+                        break
+                if nxt:
+                    break
+            if not nxt:
+                return s, took
+            took.append(nxt[0])
+            s.append(nxt[1])
+
+    strips = []
+    for i, t in enumerate(tris):
+        if used[i]:
+            continue
+        best = None
+        for rot in (t, (t[1], t[2], t[0]), (t[2], t[0], t[1])):
+            s, took = grow(i, rot)
+            if best is None or len(s) > len(best[0]):
+                best = (s, took)
+        used[i] = True
+        for j in best[1]:
+            used[j] = True
+        strips.append(best[0])
+    out = []
+    for s in strips:
+        if out:
+            out += [out[-1], s[0]]
+            if len(out) % 2:          # keep the next strip's first triangle on an even index
+                out.append(s[0])
+        out += s
+    return out
+
+
+def split_by_palette(tris, vbones):
+    """-> [list of triangle indices], each needing <= 20 bones and <= 65535 vertices"""
+    order = sorted(range(len(tris)), key=lambda i: (min(vbones[tris[i][0]] or (0,)), i))
+    groups, cur, bones, verts = [], [], set(), set()
+    for i in order:
+        tb = set(vbones[tris[i][0]]) | set(vbones[tris[i][1]]) | set(vbones[tris[i][2]])
+        tv = set(tris[i])
+        if cur and (len(bones | tb) > MAX_PAL or len(verts | tv) > MAX_VERTS):
+            groups.append(cur)
+            cur, bones, verts = [], set(), set()
+        cur.append(i)
+        bones |= tb
+        verts |= tv
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+# ---------------------------------------------------------------- textures
+def load_png(path):
+    return Image.open(path).convert('RGBA')
+
+
+def has_alpha(im):
+    return im.getextrema()[3][0] < 255
+
+
+def spec_alpha(im):
+    """2011 colour alpha = specular level: a mid value from the brightness (w13_char.add_alpha)"""
+    rgb = im.convert('RGB')
+    out = rgb.copy()
+    out.putalpha(rgb.convert('L').point(lambda v: 40 + v // 3))
+    return out
+
+
+class Atlas:
+    """per-mesh sheets -> one sheet: a grid of equal cells (UVs must lie in 0..1)"""
+
+    def __init__(self, keys):
+        self.keys = list(dict.fromkeys(keys))
+        n = max(1, len(self.keys))
+        self.cols = int(math.ceil(math.sqrt(n)))
+        self.rows = int(math.ceil(n / self.cols))
+
+    def cell(self, key):
+        i = self.keys.index(key)
+        return i % self.cols, i // self.cols
+
+    def uv(self, key, u, v):
+        if len(self.keys) <= 1:
+            return u, v
+        cx, cy = self.cell(key)
+        return (cx + min(1.0, max(0.0, u))) / self.cols, (cy + min(1.0, max(0.0, v))) / self.rows
+
+    def sheet(self, images, size, fill):
+        if len(self.keys) <= 1:
+            im = images.get(self.keys[0]) if self.keys else None
+            return W.resize_rgba(im or Image.new('RGBA', size, fill), size, Image.LANCZOS)
+        out = Image.new('RGBA', size, fill)
+        cw, ch = size[0] // self.cols, size[1] // self.rows
+        for k in self.keys:
+            im = images.get(k)
+            if im is None:
+                continue
+            cx, cy = self.cell(k)
+            out.paste(W.resize_rgba(im, (cw, ch), Image.LANCZOS), (cx * cw, cy * ch))
+        return out
+
+
+# ---------------------------------------------------------------- build
+class Builder:
+    def __init__(self, spec, base):
+        self.spec, self.base = spec, base
+        self.warnings = []
+        tp = self.path(spec['template'])
+        portrait = spec.get('portrait')
+        self.conv = W.Conv(tp)
+        self.template = tp
+        if portrait:
+            p = self.path(portrait)
+            self.portrait = open(p, 'rb').read() if p.lower().endswith('.dds') else \
+                W.dds_encode(W.resize_rgba(load_png(p), (256, 256), Image.LANCZOS), 'DXT5')
+        else:
+            self.portrait = None
+        self.nodes = self.posed_nodes(spec.get('joints') or {})
+        self.index = {n['name']: i for i, n in enumerate(self.nodes)}
+
+    def path(self, p):
+        return p if os.path.isabs(p) else os.path.join(self.base, p)
+
+    def posed_nodes(self, joints):
+        """the template's node table with the given world positions (w13_char.Conv.nodes_for)"""
+        c = self.conv
+        unknown = [j for j in joints if j not in c.tindex]
+        if unknown:
+            self.warnings.append('joints not in the template, ignored: %s' % ', '.join(unknown[:10]))
+        nodes = [dict(nd) for nd in c.tnodes]
+        Wn = []
+        for j, nd in enumerate(nodes):
+            fr = c.tframe[j]
+            p = fr['parent'] if j else -1
+            if nd['name'] in joints and p >= 0:
+                Rp, Pp = Wn[p][:3, :3], Wn[p][:3, 3]
+                nd['t'] = tuple(float(x) for x in Rp.T @ (np.array(joints[nd['name']], float) - Pp))
+            M = np.eye(4)
+            M[:3, :3] = W.rot(fr['r'])
+            M[:3, 3] = nd['t']
+            Wn.append(M if p < 0 else Wn[p] @ M)
+        return nodes
+
+    def template_mesh(self, kind):
+        c = self.conv
+        return {'skin': (c.p_skin, SKIN_SLOTS), 'eye': (c.p_eye, EYE_SLOTS), 'hair': (c.p_hair, SKIN_SLOTS),
+                'lash': (c.p_lash, LASH_SLOTS)}[kind]
+
+    def jmesh(self, m, kind, tri_idx, uvmap, textures):
+        """one 2011 mesh from the triangles tri_idx of neutral mesh m"""
+        tmpl, slots = self.template_mesh(kind)
+        tris = [m['triangles'][i] for i in tri_idx]
+        used = sorted({v for t in tris for v in t})
+        remap = {v: k for k, v in enumerate(used)}
+        pal = sorted({b for v in used for b, _ in m['_w'][v]})
+        slot = {b: k for k, b in enumerate(pal)}
+        nw = max(1, max(len(m['_w'][v]) for v in used))
+        s = jboy.Mesh()
+        s.raw = bytes(tmpl.raw)
+        s.u74 = 0
+        s.shader = tmpl.shader
+        s.vfmt = tmpl.vfmt
+        s.palette = [b + 1 for b in pal]
+        P, N = m['positions'], m['normals']
+        s.verts = [(float(P[v][0]), float(P[v][1]), float(P[v][2]), float(N[v][0]), float(N[v][1]), float(N[v][2]), 0xFFFFFFFF)
+                   for v in used]
+        s.uvs = [uvmap(m['uvs'][v]) for v in used]
+        flat = []
+        for v in used:
+            ws = m['_w'][v]
+            flat += [((slot[b], 0, 0, 0), w) for b, w in ws] + [((255, 0, 0, 0), 0.0)] * (nw - len(ws))
+        vc = len(used)
+        s.weights = [flat[j * vc:(j + 1) * vc] for j in range(nw)]   # (vertex-major data, jboy's block view)
+        s.strips = [(6, stripify([tuple(remap[v] for v in t) for t in tris]))]
+        s.u04 = 1
+        s.params = []
+        for name, typ, val in tmpl.params:
+            if typ == 0x0f and struct.unpack('>i', val[:4])[0] >= 0:   # (a slot the template leaves unbound stays so)
+                want = slots.get(name)
+                k = textures.index(want) if want in textures else -1
+                val = struct.pack('>i', k) + val[4:]
+            s.params.append((name, typ, val))
+        A = np.array([v[:3] for v in s.verts])
+        cen = (A.min(0) + A.max(0)) / 2
+        r = float(np.sqrt(((A - cen) ** 2).sum(1)).max())
+        md = bytearray(s.raw)
+        struct.pack_into('>I', md, 0x8C, tmpl.vfmt)
+        struct.pack_into('>4f', md, 0xA4, float(cen[0]), float(cen[1]), float(cen[2]), r)
+        s.raw = bytes(md)
+        return s
+
+    def weights(self, m):
+        """bone names -> node indices; top 4 per vertex, renormalised"""
+        bidx = []
+        for b in m['bones']:
+            if b not in self.index:
+                self.warnings.append('%s: bone %s is not in the template, its weights go to root' % (m.get('name'), b))
+            bidx.append(self.index.get(b, self.index.get('root', 0)))
+        out = []
+        for vw in m['weights']:
+            acc = {}
+            for bi, w in vw:
+                if w > 0:
+                    acc[bidx[int(bi)]] = acc.get(bidx[int(bi)], 0.0) + float(w)
+            top = sorted(acc.items(), key=lambda x: -x[1])[:4]
+            tot = sum(w for _, w in top)
+            out.append([(b, w / tot) for b, w in top] if tot > 0 else [(self.index.get('root', 0), 1.0)])
+        return out
+
+    def attire(self, a, entry_name):
+        meshes = a['meshes']
+        for m in meshes:
+            n = len(m['positions'])
+            for key in ('normals', 'uvs', 'weights'):
+                if len(m.get(key, [])) != n:
+                    raise BuildError('%s: %d positions but %d %s' % (m.get('name'), n, len(m.get(key, [])), key))
+            if m.get('kind', 'skin') not in ('skin', 'eye', 'hair', 'lash'):
+                raise BuildError('%s: kind %s' % (m.get('name'), m.get('kind')))
+            m['_w'] = self.weights(m)
+        # sheets: the attire's own, or per-mesh ones packed into one
+        at = a.get('textures', {})
+        col_key = lambda m: (m.get('textures') or {}).get('color') or at.get('color') or ''   # noqa: E731
+        atlas = Atlas([col_key(m) for m in meshes if m.get('kind', 'skin') != 'lash'] or [''])
+        for m in meshes:
+            u = [uv for uv in m['uvs']]
+            if atlas.keys and len(atlas.keys) > 1 and any(not (-0.001 <= x <= 1.001) for uv in u for x in uv):
+                self.warnings.append('%s: UVs outside 0..1 are clamped in the packed sheet' % m.get('name'))
+        colors, normals = {}, {}
+        for m in meshes:
+            k = col_key(m)
+            if k and k not in colors:
+                colors[k] = load_png(self.path(k))
+            nk = (m.get('textures') or {}).get('normal') or at.get('normal')
+            if k and nk and k not in normals:
+                normals[k] = load_png(self.path(nk))
+        color = atlas.sheet(colors, COLOR_SIZE, (128, 128, 128, 255))
+        if not any(has_alpha(im) for im in colors.values()):
+            color = spec_alpha(color)
+        normal = atlas.sheet(normals, NORMAL_SIZE, (128, 128, 255, 255))
+        if at.get('mask'):
+            mk = W.resize_rgba(load_png(self.path(at['mask'])), MK_SIZE, Image.LANCZOS)
+            r, g, b, al = mk.split()
+            mk = Image.merge('RGBA', (Image.new('L', mk.size, 0), g, b, al))
+        else:
+            mk = Image.new('RGBA', MK_SIZE, (0, 230, 230, 255))   # (stock Mk averages: no bruises, light occlusion)
+
+        def uvmap_for(m):
+            k = col_key(m)
+            return lambda uv: atlas.uv(k, float(uv[0]), float(uv[1]))
+
+        kids = {}
+        for key, kinds, texs in ((0, ('skin', 'eye'), TEX_BODY), (0x2710, ('hair',), TEX_BODY), (0x4e20, ('lash',), ['color'])):
+            sel = [m for m in meshes if m.get('kind', 'skin') in kinds]
+            if not sel and key:
+                continue
+            tm = {0: self.conv.body, 0x2710: self.conv.hair, 0x4e20: self.conv.lash}[key]
+            model = jboy.Model()
+            model.header, model.name, model.group = tm.header, tm.name, tm.group
+            model.name_tail = getattr(tm, 'name_tail', b'')
+            model.textures = texs
+            model.nodes = self.nodes
+            model.meshes = []
+            for m in sel:
+                vb = [tuple(b for b, _ in ws) for ws in m['_w']]
+                for g in split_by_palette(m['triangles'], vb):
+                    s = self.jmesh(m, m.get('kind', 'skin'), g, uvmap_for(m), texs)
+                    s.u74 = len(model.meshes)
+                    model.meshes.append(s)
+            if not model.meshes:
+                raise BuildError('no skin / eye meshes')
+            kids[key] = jboy.write(model)
+        t = self.conv.t
+        # (Mk as stock: DXT1, alpha 255 - a lower alpha shows red spots over the skin)
+        mk.putalpha(255)
+        tex_a = [('normal', W.dds_encode(normal, 'DXT5')), ('noise', self.conv.ttex['noise']), ('Mk', W.dds_encode(mk, 'DXT1'))]
+        tex_a += [(n, d) for n, d in self.conv.ttex.items() if n.lower().startswith(('bloodhair', 'bloodhand', 'blood'))]
+        kids[0xa] = W.tex_bundle_write(tex_a, t[0xa][:16])
+        kids[0xc] = W.tex_bundle_write([('color', W.dds_encode(color, 'DXT5'))], t[0xc][:16])
+        # damage masks Mask1-3 (0xd-0xf: A4R4G4B4 on the colour sheet's UVs; without them the skin shows red
+        # spots): blank, in the template's own format
+        for k in (0xd, 0xe, 0xf):
+            if k in t:
+                n, d = W.tex_bundle_read(t[k])[0]
+                kids[k] = W.tex_bundle_write([(n, d[:128] + bytes(len(d) - 128))], t[k][:16])
+        for k in (0xb, 0x28, 0x32, 0x50, 0x64, 0x7530, 0x7531, 0x7532):
+            if k in t:
+                kids[k] = t[k]
+        for k in (0xc8, 0xc9):
+            if k in t:
+                kids[k] = self.portrait or t[k]
+        # budget
+        dropped = []
+        pages, parts = model_budget.attire_pages(kids)
+        for k in (0x7532, 0x7531, 0x7530):
+            if pages <= model_budget.LIMIT:
+                break
+            if k in kids:
+                del kids[k]
+                dropped.append(hex(k))
+                pages, parts = model_budget.attire_pages(kids)
+        if pages > model_budget.LIMIT:
+            raise BuildError('%s: %d vertex pages, the game has %d per wrestler (%s) - reduce the vertex / triangle count'
+                             % (entry_name, pages, model_budget.LIMIT, ', '.join('%s %d' % kv for kv in parts.items())))
+        nmesh = sum(len(jboy.read(kids[k]).meshes) for k in (0, 0x2710, 0x4e20) if k in kids)
+        return kids, {'name': entry_name, 'meshes': nmesh, 'pages': pages, 'parts': parts, 'dropped': dropped}
+
+    def build(self, out):
+        import ch_tool
+        _, groups = ch_tool.epk8_read(open(self.template, 'rb').read())
+        names = [n for n, _ in groups[0][1] if n.strip(b'\0')]
+        entries, rep = [], []
+        for i, a in enumerate(self.spec['attires']):
+            nm = a.get('name')
+            name = nm.encode('latin-1') if nm else (names[i] if i < len(names) else b'%08d' % (10400 + i))
+            kids, r = self.attire(a, name.decode('latin-1'))
+            entries.append((b'EMD ', name, W.pack_kids(kids)))
+            rep.append(r)
+        W.write_epk8(self.template, entries, out)
+        return rep
+
+
+def main(argv):
+    ap = argparse.ArgumentParser()
+    ap.add_argument('model')
+    ap.add_argument('out')
+    ap.add_argument('report_pos', nargs='?', metavar='report.json')
+    ap.add_argument('--report')
+    a = ap.parse_args(argv[1:])
+    a.report = a.report or a.report_pos
+    rep = {'ok': False, 'out': a.out, 'warnings': []}
+    code = 0
+    try:
+        spec = json.load(open(a.model, encoding='utf-8'))
+        b = Builder(spec, os.path.dirname(os.path.abspath(a.model)))
+        rep['attires'] = b.build(a.out)
+        rep['warnings'] = b.warnings
+        rep['ok'] = True
+    except BuildError as e:
+        rep['error'] = str(e)
+        code = 3
+    except (KeyError, ValueError, OSError) as e:
+        rep['error'] = '%s: %s' % (type(e).__name__, e)
+        code = 2
+    s = json.dumps(rep, indent=1)
+    if a.report:
+        open(a.report, 'w', encoding='utf-8').write(s)
+    print(s)
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
