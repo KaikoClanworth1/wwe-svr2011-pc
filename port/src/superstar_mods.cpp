@@ -254,7 +254,9 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::p
 // each source's name, size and time as they were built from (times alone
 // won't do: an installed mod's files carry the zip's old dates).
 std::string Stamp(const std::vector<fs::path>& srcs) {
-  std::string st;
+  // (the overlay format's version: a change rebuilds every overlay once -
+  // 2: models kept within the match's vertex budget, FitModelBudget)
+  std::string st = "overlay 2\n";
   std::error_code ec;
   for (const auto& p : srcs) {
     if (!fs::exists(p, ec)) continue;
@@ -475,6 +477,81 @@ uint32_t AttireMask(const fs::path& pac, uint32_t id) {
   return mask;
 }
 
+// ---- A wrestler's vertex memory in a match (tools/model_budget.py)
+// Each wrestler's model gets a 768 KB physical window (the game's XMemAlloc
+// allocator 128): 192 pages of 4 KB. The loader (sub_826E73F8) makes a vertex
+// buffer (vertices x 32 bytes with one weight block, x 44 with 2-4) and an
+// index buffer (x 2) per mesh, each rounded up to pages. Over 192 the next one
+// gets nothing and the match load crashes (an unchecked null). The largest
+// stock models fill it exactly. A mod's model over it: its blood overlays
+// (children 0x7532, 0x7531, 0x7530; stock ch164 has none) are left out of the
+// overlay copy until it fits, else the mod is left out - with a log line.
+constexpr uint32_t kModelPageLimit = 192;
+
+uint32_t JboyPages(const svrfmt::Bytes& d) {
+  if (d.size() < 0x48 || std::memcmp(d.data(), "JBOY", 4)) return 0;
+  auto r32 = [&](size_t o) -> uint32_t { return o + 4 <= d.size() ? Rd32(&d[o]) : 0; };
+  constexpr size_t B = 8;
+  const uint32_t nmesh = r32(0x18), mptr = r32(0x1C);
+  uint32_t pages = 0;
+  for (uint32_t i = 0; i < nmesh && i < 4096; ++i) {
+    const size_t o = B + mptr + 0xB4 * size_t(i);
+    if (o + 0xB4 > d.size()) break;
+    const uint32_t verts = r32(o), strips = r32(o + 4), blocks = r32(o + 0x5C), iptr = r32(o + 0x98);
+    uint64_t idx = 0;
+    for (uint32_t k = 0; k < strips && k < 4096; ++k) idx += r32(B + iptr + 12 * size_t(k) + 4);
+    const uint64_t vb = uint64_t(verts) * (blocks <= 1 ? 32 : 44), ib = idx * 2;
+    pages += uint32_t((vb + 4095) / 4096 + (ib + 4095) / 4096);
+  }
+  return pages;
+}
+
+// Pages of one EMD entry (an attire's PACH); `kids` gets its children.
+uint32_t EntryPages(const svrfmt::Bytes& entry, std::vector<svrfmt::PachEntry>* kids = nullptr) {
+  std::vector<svrfmt::PachEntry> k;
+  if (!svrfmt::PachRead(svrfmt::Unpack(entry), k)) return 0;
+  uint32_t pages = 0;
+  for (const auto& c : k) pages += JboyPages(svrfmt::Unpack(c.data));
+  if (kids) *kids = std::move(k);
+  return pages;
+}
+
+// Keeps a model pac's attires (kind 2 entries) within the budget: blood
+// overlays left out where needed. -> false: an attire still doesn't fit.
+// `notes` gets what was done.
+bool FitModelBudget(svrfmt::Bytes& pac, std::string& notes) {
+  svrfmt::Epac e;
+  if (!svrfmt::EpacRead(pac, e)) return true;  // (not readable here: left to the game)
+  bool changed = false, fits = true;
+  for (auto& g : e.groups) {
+    if (g.type != "EMD ") continue;
+    for (auto& en : g.entries) {
+      if (en.name.size() < 8 || en.name[7] != '2') continue;
+      std::vector<svrfmt::PachEntry> kids;
+      uint32_t pages = EntryPages(en.data, &kids);
+      const uint32_t before = pages;
+      for (uint32_t drop : {0x7532u, 0x7531u, 0x7530u}) {
+        if (pages <= kModelPageLimit) break;
+        const auto it = std::find_if(kids.begin(), kids.end(), [&](const svrfmt::PachEntry& c) { return c.id == drop; });
+        if (it == kids.end()) continue;
+        pages -= JboyPages(svrfmt::Unpack(it->data));
+        kids.erase(it);
+        en.data = svrfmt::PachWrite(kids);
+        changed = true;
+      }
+      if (pages != before)
+        notes += " attire " + std::to_string((en.name[6] - '0') + 1) + ": " + std::to_string(before) + " -> " +
+                 std::to_string(pages) + " pages (blood overlays left out);";
+      if (pages > kModelPageLimit) {
+        fits = false;
+        notes += " attire " + std::to_string((en.name[6] - '0') + 1) + ": " + std::to_string(pages) + " pages;";
+      }
+    }
+  }
+  if (changed) pac = svrfmt::EpacWrite(e);
+  return fits;
+}
+
 void LoadMods() {
   std::error_code ec;
   const fs::path dir = g_game / "Mods" / "Superstars";
@@ -631,8 +708,20 @@ void LoadMods() {
     std::snprintf(nm, sizeof nm, "ch%03u.pac", m.slot);
     if (!Current(overlay / nm, {f / "ch.pac", f / "manifest.txt"})) {
       svrfmt::Bytes ch;
-      if (!svrfmt::ReadFile((f / "ch.pac").string(), ch) || !RenameModel(ch, m.slot, -1, 0, drop) ||
-          !svrfmt::WriteFile((overlay / nm).string(), ch)) {
+      if (!svrfmt::ReadFile((f / "ch.pac").string(), ch)) {
+        REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
+        continue;
+      }
+      std::string notes;
+      if (!FitModelBudget(ch, notes)) {
+        REXLOG_WARN("[svr2011] superstar mods: {}: model over the match's 768 KB per-wrestler budget ({} pages "
+                    "at most):{} - left out, it would crash the match load (tools/model_budget.py)",
+                    m.folder, kModelPageLimit, notes);
+        left_out.push_back(m.folder);
+        continue;
+      }
+      if (!notes.empty()) REXLOG_INFO("[svr2011] superstar mods: {}: vertex memory:{}", m.folder, notes);
+      if (!RenameModel(ch, m.slot, -1, 0, drop) || !svrfmt::WriteFile((overlay / nm).string(), ch)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
         continue;
       }
@@ -646,8 +735,13 @@ void LoadMods() {
       const fs::path src = f / attires[a];
       if (!Current(overlay / an, {src, f / "manifest.txt"})) {
         svrfmt::Bytes d;
-        if (!svrfmt::ReadFile(src.string(), d) || !RenameModel(d, m.slot, 0, a) ||
-            !svrfmt::WriteFile((overlay / an).string(), d)) {
+        std::string notes;
+        if (svrfmt::ReadFile(src.string(), d) && !FitModelBudget(d, notes)) {
+          REXLOG_WARN("[svr2011] superstar mods: {}: {} is over the match's 768 KB per-wrestler budget:{} - attire left out",
+                      m.folder, attires[a], notes);
+          continue;
+        }
+        if (d.empty() || !RenameModel(d, m.slot, 0, a) || !svrfmt::WriteFile((overlay / an).string(), d)) {
           REXLOG_WARN("[svr2011] superstar mods: {}: {} is not a character model pac", m.folder, attires[a]);
           continue;
         }
@@ -797,13 +891,24 @@ void LoadAttireMods() {
         continue;
       }
     }
+    if (own >> a.attire & 1) {  // (replaces the game's: its model is in the pac overlay, PrepareAttirePacks)
+      REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {} (replaces the game's) ({})", a.folder, a.id,
+                  a.attire + 1, a.name);
+      g_attire_mods.push_back(std::move(a));
+      continue;
+    }
     char an[40];
     std::snprintf(an, sizeof an, "ch%03u_x%u.pac", a.id, a.attire + 1);
     const fs::path src = f / model;
     if (!Current(overlay / an, {src, f / "manifest.txt"})) {
       svrfmt::Bytes d;
-      if (!svrfmt::ReadFile(src.string(), d) || !RenameModel(d, a.id, 0, int(a.attire)) ||
-          !svrfmt::WriteFile((overlay / an).string(), d)) {
+      std::string notes;
+      if (svrfmt::ReadFile(src.string(), d) && !FitModelBudget(d, notes)) {
+        REXLOG_WARN("[svr2011] attire mods: {}: {} is over the match's 768 KB per-wrestler budget:{} - left out", a.folder,
+                    model, notes);
+        continue;
+      }
+      if (d.empty() || !RenameModel(d, a.id, 0, int(a.attire)) || !svrfmt::WriteFile((overlay / an).string(), d)) {
         REXLOG_WARN("[svr2011] attire mods: {}: {} is not a character model pac (EPK8 with EMD models)", a.folder, model);
         continue;
       }
@@ -2307,6 +2412,78 @@ uint32_t SuperstarModBase(uint32_t id) {
 }
 
 void AddOverlayMount(const std::string& file) { g_extra_mounts.push_back("smods:\\" + file); }
+
+// Attire mods replacing an attire the game's own pac has: the game finds the
+// first entry with a name, its own, so a mounted guest pac isn't used. The
+// mod's model goes into an overlay copy of the game's pac instead, as a move
+// pack's pacentry (move_packs.cpp): one generated pack per such mod.
+void PrepareAttirePacks(const fs::path& game) {
+  std::error_code ec;
+  const fs::path dir = game / "Mods" / "Attires", out = game / "Mods" / "SuperstarOverlay" / "attirepacks";
+  std::set<std::string> keep;
+  std::vector<fs::path> folders;
+  for (const auto& e : fs::directory_iterator(dir, ec))
+    if (e.is_directory(ec) && !fs::exists(e.path() / "disabled", ec) && fs::exists(e.path() / "manifest.txt", ec))
+      folders.push_back(e.path());
+  std::sort(folders.begin(), folders.end());
+  std::set<std::pair<uint32_t, uint32_t>> taken;
+  for (const auto& f : folders) {
+    std::string type, which, model = "attire.pac";
+    uint32_t id = 0;
+    if (FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb")) {
+      char line[512];
+      while (std::fgets(line, sizeof line, t)) {
+        std::string l(line);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        const size_t eq = l.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+        if (k == "type") type = v;
+        else if (k == "superstar") id = uint32_t(std::atoi(v.c_str()));
+        else if (k == "attire") which = v;
+        else if (k == "model") model = v;
+      }
+      std::fclose(t);
+    }
+    const int n = std::atoi(which.c_str());
+    if (type != "attire" || id < 100 || id > 321 || n < 1 || n > 4) continue;
+    const uint32_t a = uint32_t(n - 1);
+    char stock[32];
+    std::snprintf(stock, sizeof stock, "ch%03u.pac", id);
+    if (!(AttireMask(game / "pac" / "ch" / stock, id) >> a & 1)) continue;  // (a new attire: mounted as a guest pac)
+    if (!taken.insert({id, a}).second) continue;
+    const fs::path pd = out / f.filename();
+    keep.insert(f.filename().string());
+    if (Current(pd / "pack.txt", {f / model, f / "manifest.txt"})) continue;
+    svrfmt::Bytes d;
+    svrfmt::Epac e;
+    std::string notes;
+    if (!svrfmt::ReadFile((f / model).string(), d) || !FitModelBudget(d, notes) || !svrfmt::EpacRead(d, e)) {
+      REXLOG_WARN("[svr2011] attire mods: {}: {} is not a usable character model pac{}", f.filename().string(), model,
+                  notes.empty() ? "" : " (over the match's vertex budget:" + notes + ")");
+      continue;
+    }
+    const svrfmt::EpacEntry* first = nullptr;
+    for (const auto& g : e.groups)
+      if (g.type == "EMD ")
+        for (const auto& en : g.entries)
+          if (en.name.size() >= 8 && en.name[7] == '2' && (!first || en.name[6] < first->name[6])) first = &en;
+    if (!first) continue;
+    fs::create_directories(pd, ec);
+    char name[16];
+    std::snprintf(name, sizeof name, "%06u%u2", id, a);
+    char line[128];
+    std::snprintf(line, sizeof line, "pacentry ch\\%s EMD %s entry.bin\n", stock, name);
+    if (!svrfmt::WriteFile((pd / "entry.bin").string(), svrfmt::Unpack(first->data)) ||
+        !svrfmt::WriteFile((pd / "pack.txt").string(), svrfmt::Bytes(line, line + std::strlen(line))))
+      continue;
+    MarkCurrent(pd / "pack.txt", {f / model, f / "manifest.txt"});
+    REXLOG_INFO("[svr2011] attire mods: {}: {} attire {} through the pac overlay ({})", f.filename().string(), stock, n,
+                name);
+  }
+  for (const auto& e : fs::directory_iterator(out, ec))  // (packs of mods gone or switched off)
+    if (e.is_directory(ec) && !keep.count(e.path().filename().string())) fs::remove_all(e.path(), ec);
+}
 
 uint32_t SuperstarModString(uint32_t id) {
   for (const auto& n : g_attire_names)

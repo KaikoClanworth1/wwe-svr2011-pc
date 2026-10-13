@@ -44,6 +44,7 @@
 // instead of sub_82595428). Unchanged entries are streamed from the original
 // files; changed ones are re-compressed (real BPE).
 #include "move_packs.h"
+#include "superstar_mods.h"
 #include "startup_pump.h"
 
 #include <algorithm>
@@ -197,6 +198,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
     } else if (kind == "pacentry") {
       std::string pac, group, name, file;
       in >> pac >> group >> name >> file;
+      if (group.size() == 3) group += ' ';  // ("EMD": the model group "EMD ", attire mods)
       if (group.size() != 4 || name.empty() || name.size() > 8 || file.empty()) continue;
       for (auto& c : pac) c = c == '/' ? '\\' : char(std::tolower(static_cast<unsigned char>(c)));
       if (pac.find("..") != std::string::npos || pac.size() < 5 || pac.compare(pac.size() - 4, 4, ".pac")) continue;
@@ -658,7 +660,9 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
       continue;
     }
     bool bpe = !epac;
-    if (epac && !g->ents.empty()) {
+    // (stored as the group's own entries are: evt's EPK8 entries are BPE-packed, a
+    // model pac's EMD entries plain PACHs - BPE-packed, the game couldn't load one)
+    if (!g->ents.empty()) {
       char magic[4] = {};
       in.seekg(std::streamoff(0x4000 + uint64_t(g->ents[0].sector) * 0x800));
       bpe = in.read(magic, 4) && !std::memcmp(magic, "BPE ", 4);
@@ -998,7 +1002,10 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   std::error_code ec;
   // the packs: superstar mods' moves/ folders and Mods/Moves/<pack>
   std::vector<fs::path> dirs;
-  for (const fs::path& root : {game / "Mods" / "Superstars", game / "Mods" / "Moves"})
+  // (attire mods replacing an attire the game's pac has: generated packs, a pacentry line each)
+  PrepareAttirePacks(game);
+  for (const fs::path& root : {game / "Mods" / "Superstars", game / "Mods" / "Moves",
+                               game / "Mods" / "SuperstarOverlay" / "attirepacks"})
     for (const auto& e : fs::directory_iterator(root, ec)) {
       if (!e.is_directory() || fs::exists(e.path() / "disabled", ec)) continue;
       const fs::path d = root.filename() == "Superstars" ? e.path() / "moves" : e.path();
