@@ -114,7 +114,45 @@ class HCTP:
         return sum(1 for n in self.prof if self.indexes(n)[which] == i) >= 4
 
 
-GAMES = (HCTP,)
+class SYM(HCTP):
+    """Shut Your Mouth: PAC/M.PAC group CHAR holds per-character move entries "0000".. and then ALL, the
+    profiles (an inner PAC keyed by the record number, 329-byte BPE records); CEventBGM / CEventTitantron::
+    SetData read the record's music / movie (+0x13F / +0x13E). Music n: ADS/BGM<n / 30>/BGM<n>.ADS (Sony
+    SShd/SSbd ADPCM); movie n: MOVIE/TT<n / 30>/<n>.IPU (the ELF's "\\MOVIE\\TT%01d\\%03d.IPU")."""
+
+    def __init__(self, disc):
+        import ps2_char as P
+        import svrfmt
+        self.disc, self.P = disc, P
+        m = disc.read('PAC/M.PAC')
+        c = m.find(b'CHAR', 0x800, 0x4000)
+        p = m.find(b'ALL ', c, 0x4000) if c >= 0 else -1
+        if c < 0 or p < 0 or m[c + 8:c + 12] == b'ALL ':
+            raise ValueError('not a Shut Your Mouth M.PAC')
+        sec, sz = struct.unpack_from('<HH', m, p + 4)
+        all_ = m[0x4000 + sec * 0x800:0x4000 + sec * 0x800 + sz * 0x100]
+        self.prof = {k: svrfmt.bpe_decode(v) if v[:4] == b'BPE ' else v for k, v in P.pac(all_).items()}
+        if not self.prof or len(next(iter(self.prof.values()))) != 329:
+            raise ValueError('Shut Your Mouth profiles not found')
+        self.label, self.music_off, self.movie_off = 'Shut Your Mouth', 0x13F, 0x13E
+        self._bgm, self._mov = {}, {}
+
+    def bgm(self, i):
+        rel = 'ADS/BGM%d/BGM%03d.ADS' % (i // 30, i)
+        try:
+            return 'BGM%03d.ADS' % i, self.disc.read(rel)
+        except Exception:   # noqa: BLE001
+            return None, None
+
+    def movie(self, i):
+        rel = 'MOVIE/TT%d/%03d.IPU' % (i // 30, i)
+        try:
+            return '%03d.IPU' % i, self.disc.read(rel)
+        except Exception:   # noqa: BLE001
+            return None, None
+
+
+GAMES = (HCTP, SYM)
 
 
 def open_media(disc):
@@ -142,7 +180,7 @@ def theme(g, number, out_mp3, work, vgmstream=None, lufs=-24.0):
     if not vg:
         return None, 'music %d (%s) found, but no vgmstream-cli to decode ADX (opt in: --vgmstream)' % (mi, nm)
     os.makedirs(work, exist_ok=True)
-    src, wav = os.path.join(work, 'theme.adx'), os.path.join(work, 'theme.wav')
+    src, wav = os.path.join(work, 'theme' + os.path.splitext(nm)[1].lower()), os.path.join(work, 'theme.wav')
     open(src, 'wb').write(b)
     r = subprocess.run([vg, '-o', wav, src], capture_output=True)
     if r.returncode or not os.path.exists(wav):
@@ -170,7 +208,7 @@ def titantron(g, number, out_mp4, work):
     if not b:
         return None, 'movie %d is missing on the disc' % vi
     os.makedirs(work, exist_ok=True)
-    src = os.path.join(work, 'titantron.sfd')
+    src = os.path.join(work, 'titantron' + os.path.splitext(nm)[1].lower())
     open(src, 'wb').write(b)
     r = subprocess.run([S.ffmpeg(), '-hide_banner', '-loglevel', 'error', '-y', '-i', src, '-an', '-c:v', 'libx264',
                         '-crf', '20', '-preset', 'medium', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out_mp4],
