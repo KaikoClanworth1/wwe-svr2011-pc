@@ -109,6 +109,12 @@ mods).
   starting attributes (from one of the game's superstars underneath). Move
   the attribute sliders as you like; the moves can be changed in the game's
   CREATE A MOVE-SET.
+- **Theme volume:** under the theme song, a volume in dB the game applies (left
+  out at 0). Measure reads the song's loudness; Match the game sets the volume
+  so it sits with the game's own themes (about -24 LUFS).
+- **Moveset:** the style's moves slot by slot; pick another for any slot by
+  name (each slot lists the game's moves of its kind; "all moves" lists the
+  rest, a move pack's moves go by number). Saved as the mod's moves.txt.
 - **Height (scale):** the superstar's size against the base's (1.00 = the
   base's own size, left out of the mod; 1.05 = 5% taller), for converted or
   older models that come out too tall or short. The preview shows the size the
