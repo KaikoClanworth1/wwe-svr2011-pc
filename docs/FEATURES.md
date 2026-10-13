@@ -116,6 +116,7 @@ still being tested.
 - **Ping indicator** (GRAPHICS → DISPLAY → ONLINE PING): bars and milliseconds while online.
 - **Invites**: a pop-up when a friend invites you (with an on/off switch in the overlay), and X INVITE FRIENDS in the lobby opens an invite panel. **Accepting an invite from anywhere** takes the game into the inviter's lobby by itself (during a match or an editor it waits until you're back at a menu).
 - **Online overlay**: BACK + RB opens it once per press (it could open and close at once); BACK + RB no longer reaches the game's menus; Add friend takes typing (and a letter grid on a controller); PLAYER REVIEW no longer locks the game.
+- **Other players' Created Superstars' pictures** show in the online lobby, and your own no longer falls back to the silhouette when someone else picks one (each picture is sent once and kept; you need a Created Superstar of your own for others' to show).
 - **Your own Created Superstar's picture** shows in the online lobby (it was the CREATE A SUPERSTAR outline); lobby chat stays within the chat box's 21 characters.
 - **CPU players in Player Matches**: the host presses Y on an empty slot (Y ADD CPU / REMOVE CPU) and picks the CPU's superstar with A; the match plays in sync on every machine (needs at least two human players).
 - **Router port opening (UPnP / NAT-PMP)**: online, the game asks the player's router to open its own port for an hour (renewed, removed when the game closes) so more players connect directly; GRAPHICS → DISPLAY → ROUTER PORT (UPNP) turns it off.
