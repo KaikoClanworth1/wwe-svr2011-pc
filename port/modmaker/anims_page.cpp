@@ -232,6 +232,12 @@ void Controls() {
   ImGui::SliderFloat("##speed", &p.speed, 0.1f, 2.0f, "x%.1f");
   ImGui::SameLine();
   ImGui::Checkbox("Loop", &p.loop);
+  ImGui::SameLine();
+  bool hits = char_preview::Hits();
+  if (ImGui::Checkbox("Hit spheres", &hits)) char_preview::SetHits(hits);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("The game's hit volumes: green the spheres a superstar is hit on, red the attacking ones while a "
+                      "move turns them on (only weapon moves do, in the game's own data).");
   bool blood = char_preview::Blood();
   if (char_preview::HasBlood()) {
     ImGui::SameLine();

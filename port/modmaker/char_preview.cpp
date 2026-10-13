@@ -299,6 +299,7 @@ struct Motion {
     int frame, side, id, blend;  // side 1 left, 2 right; a pose of the hand library
   };
   std::vector<HandEvent> hands;
+  std::vector<std::pair<int, int>> attack;  // (frame, group mask): op 40 sets the attack spheres' groups, op 41 clears (0)
 };
 
 // ---- hands: the finger poses (m.pac MVMT/STAT child 99), picked by YMKs event op 21
@@ -388,6 +389,7 @@ void Ch16(Reader& r, int K, char mode, Channel& c) {
 bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& err) {
   if (b.size() < 0x114) return err = "not a motion bank", false;
   m.hands.clear();
+  m.attack.clear();
   const uint32_t n = Le32(&b[0x110]);
   const size_t base = 0x114 + 16 * size_t(n);
   if (base > b.size()) return err = "the bank's directory runs past it", false;
@@ -450,6 +452,8 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
         const size_t n = b[0x10 + op];  // (the bank's event-size table, head +0x10)
         if (!n || e + n > q || e + n > sz) break;
         if (op == 21 && n >= 6) m.hands.push_back({frame, r[e + 1], int(Le16(r + e + 2)), int(Le16(r + e + 4))});
+        if (op == 40 && n >= 2) m.attack.push_back({frame, r[e + 1]});
+        if (op == 41) m.attack.push_back({frame, 0});
         e += n;
       }
     }
@@ -501,8 +505,10 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
   if (!any) return err = "track " + std::to_string(y) + " has no body poses (a camera or a prop)", false;
   // per frame: keys between records blended in a straight line (angles the short way round)
   auto hands = std::move(m.hands);
+  auto attack = std::move(m.attack);
   m = Motion();
   m.hands = std::move(hands);
+  m.attack = std::move(attack);
   m.fk = true;
   m.keys = last + 1;
   for (int k = 0; k < 21; ++k)
@@ -951,6 +957,9 @@ struct Slot {
   std::map<std::string, ID3D11ShaderResourceView*> textures;
   std::vector<Xf> bind_inv;
   std::shared_ptr<Motion> motion;  // its track of the chosen motion (nullptr: the idle / bind pose)
+  std::vector<Xf> world;           // the bones as posed this frame (the hit spheres' frame)
+  const Motion* shown = nullptr;   // the motion posed, at key
+  float key = 0;
 };
 std::mutex g_mutex;
 std::wstring g_game;
@@ -1264,15 +1273,19 @@ void Render(int w, int h) {
     const Motion* m = sl.motion ? sl.motion.get() : (&sl == &g_slots[0] || !g_bank) ? g_idle.get() : nullptr;
     if (m) {
       const float key = m == clock ? g_play.key : std::fmod(g_play.key, float(std::max(1, m->keys)));
-      Skin(sl, Pose(*sl.ch, *m, key));
+      sl.world = Pose(*sl.ch, *m, key);
+      sl.shown = m, sl.key = key;
+      Skin(sl, sl.world);
     } else {
       std::vector<Xf> bind(sl.bind_inv.size());
       for (size_t i = 0; i < bind.size(); ++i) bind[i] = Inverse(sl.bind_inv[i]);
+      sl.world = bind, sl.shown = nullptr;
       Skin(sl, bind);
     }
   }
   if (g_feet_next <= g_top_next) g_feet = g_feet_next, g_tall = g_top_next - g_feet_next;
-  if (g_frame && clock && clock->fk && clock->keys > 1) {  // a match move: framed over the whole motion (bone positions,
+  const bool fk_frame = g_frame && clock && clock->fk && clock->keys > 1;
+  if (fk_frame) {  // a match move: framed over the whole motion (bone positions,
     // every few keys, plus a body's half width) - the people move metres during it
     for (const Slot& sl : g_slots) {
       if (!sl.ch) continue;
@@ -1282,7 +1295,7 @@ void Render(int w, int h) {
       for (int k = 0; k < m->keys; k += step)
         for (const Xf& x : Pose(*sl.ch, *m, float(k))) {
           const float v[3] = {x.t.x, -x.t.y, -x.t.z};
-          for (int c = 0; c < 3; ++c) g_frame_lo[c] = std::min(g_frame_lo[c], v[c] - 3), g_frame_hi[c] = std::max(g_frame_hi[c], v[c] + 3);
+          for (int c = 0; c < 3; ++c) g_frame_lo[c] = std::min(g_frame_lo[c], v[c] - 2), g_frame_hi[c] = std::max(g_frame_hi[c], v[c] + 2);
         }
     }
   }
@@ -1295,6 +1308,7 @@ void Render(int w, int h) {
     // (20 tall, ~11 radius) comes out as before
     const V3 ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
     g_height = std::max(1.0f, Len(ext) * 0.5f * 1.84f);
+    if (fk_frame) g_height *= 0.72f;  // (the bounds hold the whole move: most of it happens nearer the middle)
     g_pan = {};
     g_frame = false;
   }
@@ -1459,6 +1473,81 @@ void ResetCamera() {
   g_frame = true;
 }
 
+// ---- hit volumes (HIT_VOLUMES.md): spheres on bones, the same for every character; centre = the
+// bone's world matrix x (offset, 0, 0) - one exception on z; model units
+struct HitSphere {
+  const char* bone;
+  float r, x, z;
+  int group;  // attack groups: 1 head, 2 body, 4 / 8 left / right arm, 16 / 32 left / right leg, 64 special
+};
+const HitSphere kTargets[] = {
+    {"atama", 1.7f, 1, 0, 0},    {"mune", 2.5f, 2, 0, 0},     {"koshi", 2.5f, 0, 0, 0},
+    {"l_ninoude", 1.2f, 1, 0, 0}, {"l_kote", 1.2f, 0, 0, 0},  {"l_kote", 1.2f, 2, 0, 0},
+    {"r_ninoude", 1.2f, 1, 0, 0}, {"r_kote", 1.2f, 0, 0, 0},  {"r_kote", 1.2f, 2, 0, 0},
+    {"l_momo", 1.7f, 1.7f, 0, 0}, {"l_sune", 1.7f, 0, 0, 0},  {"l_sune", 1.7f, 2.7f, 0, 0},
+    {"r_momo", 1.7f, 1.7f, 0, 0}, {"r_sune", 1.7f, 0, 0, 0},  {"r_sune", 1.7f, 2.7f, 0, 0},
+};
+const HitSphere kAttacks[] = {
+    {"atama", 1.8f, 1, 0, 1},       {"mune", 3.2f, 2, 0, 2},       {"koshi", 3.0f, 0, 0, 2},
+    {"l_ninoude", 1.5f, 1.2f, 0, 4}, {"l_kote", 1.5f, 0, 0, 4},    {"l_te", 1.5f, 0, 0, 4},
+    {"r_ninoude", 1.5f, 1.2f, 0, 8}, {"r_kote", 1.5f, 0, 0, 8},    {"r_te", 1.5f, 0, 0, 8},
+    {"l_momo", 2.0f, 2, 0, 16},      {"l_sune", 2.0f, 0, 0, 16},   {"l_ashi", 1.8f, 0, 0, 16},
+    {"r_momo", 2.0f, 2, 0, 32},      {"r_sune", 2.0f, 0, 0, 32},   {"r_ashi", 1.8f, 0, 0, 32},
+    {"l_kote", 3.0f, 0, -3, 64},
+};
+bool g_hits = false;
+
+int AttackMask(const Motion* m, float key) {
+  int mask = 0;
+  if (m)
+    for (const auto& [frame, value] : m->attack)
+      if (float(frame) <= key) mask = value;
+  return mask;
+}
+
+void DrawHits(ImVec2 origin, float w, float h) {
+  float vp[16];
+  ViewProj(w / h, vp);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->PushClipRect(origin, ImVec2(origin.x + w, origin.y + h), true);
+  // the camera's right (a sphere's screen radius)
+  const float dist = g_height * 1.85f * g_zoom, cp = std::cos(g_pitch);
+  const V3 at = g_center + g_pan, eye = at + V3{std::sin(g_yaw) * dist * cp, dist * std::sin(g_pitch), std::cos(g_yaw) * dist * cp};
+  const V3 right = Norm(Cross(V3{0, 1, 0}, Norm(at - eye)));
+  auto project = [&](V3 v, ImVec2& out) {
+    const float cx = v.x * vp[0] + v.y * vp[4] + v.z * vp[8] + vp[12], cy = v.x * vp[1] + v.y * vp[5] + v.z * vp[9] + vp[13];
+    const float cw = v.x * vp[3] + v.y * vp[7] + v.z * vp[11] + vp[15];
+    if (cw <= 0.01f) return false;
+    out = ImVec2(origin.x + (cx / cw * 0.5f + 0.5f) * w, origin.y + (0.5f - cy / cw * 0.5f) * h);
+    return true;
+  };
+  for (int si = 0; si < 2; ++si) {
+    const Slot& sl = g_slots[si];
+    if (!sl.ch || sl.world.size() != sl.ch->bones.size()) continue;
+    const float sc = si == 0 ? g_height_scale : 1.0f;
+    auto sphere = [&](const HitSphere& hs, ImU32 col) {
+      int bi = -1;
+      for (size_t i = 0; i < sl.ch->bones.size(); ++i)
+        if (sl.ch->bones[i].name == hs.bone) { bi = int(i); break; }
+      if (bi < 0) return;
+      const V3 c = Apply(sl.world[size_t(bi)], V3{hs.x, 0, hs.z});
+      const V3 v{c.x * sc, g_feet + (-c.y - g_feet) * sc, -c.z * sc};  // (the view's y up, as Skin)
+      ImVec2 a, b;
+      if (!project(v, a) || !project(v + right * (hs.r * sc), b)) return;
+      const float rp = std::max(2.0f, std::hypot(b.x - a.x, b.y - a.y));
+      dl->AddCircle(a, rp, col, 20, 1.5f);
+    };
+    for (const auto& t : kTargets) sphere(t, IM_COL32(60, 220, 110, 200));
+    const int mask = AttackMask(sl.shown, sl.key);
+    for (const auto& a : kAttacks)
+      if (mask & a.group) sphere(a, IM_COL32(255, 70, 70, 230));
+  }
+  dl->PopClipRect();
+}
+
+void SetHits(bool on) { g_hits = on; }
+bool Hits() { return g_hits; }
+
 void Draw(float w, float h) {
   {
     std::lock_guard lock(g_mutex);
@@ -1479,6 +1568,7 @@ void Draw(float w, float h) {
   }
   Render(std::max(16, int(w)), std::max(16, int(h)));
   ImGui::Image(ImTextureID(reinterpret_cast<uintptr_t>(g_rt_srv)), ImVec2(w, h));
+  if (g_hits) DrawHits(ImGui::GetItemRectMin(), w, h);
   if (ImGui::IsItemHovered()) {
     const ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_yaw -= io.MouseDelta.x * 0.01f;
