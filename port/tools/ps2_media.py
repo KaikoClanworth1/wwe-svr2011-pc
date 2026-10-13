@@ -1,29 +1,39 @@
 """PS2 SmackDown superstars' entrance themes and titantrons -> a 2011 superstar mod's theme.mp3 / movie.mp4
 (ps2_port.build_ps2 calls media(); Superstar Porting's ps2_port owns the rest of the mod).
 
-    py ps2_media.py list <disc>                      -> JSON [{number, name, music, movie, theme, titantron}]
-    py ps2_media.py convert <disc> <number> <out dir> [--vgmstream <exe>]
+    py ps2_media.py list <disc> [--game ps2_xxx]               -> JSON [{number, music, movie, theme, titantron}]
+    py ps2_media.py convert <disc> <number> <out dir> [--game ps2_xxx] [--vgmstream <exe>]
 
-HCTP (SmackDown! Here Comes the Pain), found in the ELF (symbols): CEventBGM::Start / CEventTitantron::Start
-play the profile's music / movie index (CCharProp data +0x17F / +0x17E, a 0x20-byte header ahead of the
-record; an edited entrance overrides them). The profiles: PAC/M.PAC group CHAR entry ALL (the path
-"/CHAR/ALL" CManDatReader reads), an inner PAC keyed by the character number (ps2_port's: the model id's
-digits read as decimal, 39 John Cena), BPE records of 365 bytes in the edit (CAW) format: +0x15F music,
-+0x15E movie.
-  music i: BGM/BGM00<i / 40>.AFS entry i % 40 (pj_sound_bgmindex2afsbgm), CRI ADX (the AFS name table says
-           bgm<i>.adx; "silent48k16bit.adx" = no theme) -> vgmstream -> mp3 at -24 LUFS (2011's level for
-           mod themes)
-  movie i: MOVIE/PMV00x.AFS entry pal_nmv<i>.sfd (CRI Sofdec: MPEG video + ADX; "missing.sfd" = none)
-           -> ffmpeg -> H.264 movie.mp4 without sound (the theme plays on its own); the .bik fallback is
-           made at import / install, as for every movie.mp4
-Checked: the CHAR/ALL indexes of Triple H / Jericho / HBK point at the bgm tracks whose chroma matches
-2011's own recordings of their themes; the movie indexes equal the edit menus' movie list (MOVES.PAC LIST 0).
-Other PS2 games: not yet (media() returns {} with a note).
+Every game keeps a music and a movie index in the superstar's profile record (the CHAR record number is the
+key, as ps2_port's g.number(cid)); themes become theme.mp3 at -24 LUFS (2011's level for mod themes, through
+vgmstream), titantrons H.264 movie.mp4 without sound (the theme plays on its own; the .bik fallback is made
+at import / install as for every movie.mp4).
+
+ps2_sym   PAC/M.PAC CHAR group: per-character entries "0000".., then ALL = an inner PAC of 329-byte BPE
+          records: music +0x13F, movie +0x13E (CEventBGM / CEventTitantron::SetData in the ELF, which has
+          symbols). Music n = ADS/BGM<n/30>/BGM<n>.ADS (Sony ADS); movie n = MOVIE/TT<n/30>/<n>.IPU (the ELF's
+          "\\MOVIE\\TT%01d\\%03d.IPU"; ffmpeg's ipu decoder).
+ps2_hctp  PAC/M.PAC CHAR/ALL (the "/CHAR/ALL" CManDatReader reads), 365-byte BPE records: music +0x15F, movie
+          +0x15E (CEventBGM / CEventTitantron::Start read the profile +0x17F / +0x17E past a 0x20 header).
+          Music i = BGM/BGM00<i/40>.AFS entry i%40 (pj_sound_bgmindex2afsbgm), named bgm<i>.adx (CRI ADX);
+          movie i = MOVIE/PMV00x.AFS pal_nmv<i>.sfd (CRI Sofdec).
+ps2_svr04 as HCTP, 384-byte records: movie +0x17B, music +0x17C (the next byte repeats it); movies
+          MOVIE/NMVP00x.AFS nmv<i>.sfd ("missing_PAL.sfd" on the PAL disc where a movie was cut).
+ps2_svr06 PAC/M.PAC CHAR/PRO (432 B): movie +0x13C, music +0x13D; music bgm<i>.adx in BGM/BGM<k>.AFS (by name),
+          movies MOVIEP/NMVP00x.AFS nmv<i>.sfd.
+ps2_svr07-10  the X360 games' records byte for byte: CHAR/PRO (MISC.PAC 2007/08, CH/CHETC.PAC 2009/10);
+          entrance block music / movie u16 at PRO +0xE4 (2009) / +0x178 (2010), 2007/2008 have none (the
+          record number is both, as the X360 converter has it). Music m = SOUND/MUSIC*.YAF record m*100 (2008-10;
+          YAF table {size, offset, id}, records CRI ADX), 2007 MUSIC/ENTRANCE.AFS "<m>_0.adx" (_1 / _2 cuts);
+          movie v = MOVIE/NMV*.AFS nmv<v>.sfd.
+Left out with a warning (the base's kept): silent / dummy ADX, missing movies, and indexes four or more
+profiles share (the game's stand-ins: placeholder records, PAL cuts - SvR 2004's The Rock -> movie 57).
+Checked: HCTP Triple H / Jericho / HBK and SYM Triple H / Jericho records point at the tracks whose chroma
+matches 2011's own recordings of their themes; HCTP's movie indexes equal its edit menus' movie list.
 """
 import json
 import os
 import re
-import shutil
 import struct
 import subprocess
 import sys
@@ -36,46 +46,148 @@ def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
-def afs(raw):
-    """CRI AFS -> [(name, bytes)] (names from the trailing name table, else '')"""
-    if raw[:4] != b'AFS\0':
-        raise ValueError('not an AFS archive')
-    n = struct.unpack_from('<I', raw, 4)[0]
-    ents = [struct.unpack_from('<II', raw, 8 + 8 * i) for i in range(n)]
-    nt = struct.unpack_from('<I', raw, 8 + 8 * n)[0]
-    out = []
-    for i, (o, s) in enumerate(ents):
-        nm = raw[nt + 48 * i:nt + 48 * i + 32].split(b'\0')[0].decode('latin-1') if nt else ''
-        out.append((nm, raw[o:o + s]))
-    return out
+class Afs:
+    """a CRI AFS on the disc, read entry by entry: .names [name], .get(i) / .by_name(name) -> bytes"""
+
+    def __init__(self, disc, rel):
+        self.disc, self.rel = disc, rel
+        h = disc.read(rel, 0, 0x80000)
+        if h[:4] != b'AFS\0':
+            raise ValueError('%s: not an AFS archive' % rel)
+        n = struct.unpack_from('<I', h, 4)[0]
+        if 8 + 8 * n + 8 > len(h):
+            h = disc.read(rel, 0, 16 + 8 * n)
+        self.ents = [struct.unpack_from('<II', h, 8 + 8 * i) for i in range(n)]
+        nt, ns = struct.unpack_from('<II', h, 8 + 8 * n)
+        raw = disc.read(rel, nt, ns) if nt and ns else b''
+        self.names = [raw[48 * i:48 * i + 32].split(b'\0')[0].decode('latin-1') if raw else '' for i in range(n)]
+
+    def get(self, i):
+        o, s = self.ents[i]
+        return bytes(self.disc.read(self.rel, o, s)) if s else b''
 
 
-class HCTP:
-    """HCTP and SvR 2004 (the same profile store; the layout by record size): record size -> (label, music
-    offset, movie offset, movie archives)"""
-    LAYOUTS = {365: ('Here Comes the Pain', 0x15F, 0x15E, 'MOVIE/PMV%03d.AFS'),
-               384: ('SmackDown! vs. Raw (2004)', 0x17C, 0x17B, 'MOVIE/NMVP%03d.AFS')}
+def _listdir(disc, rel):
+    try:
+        return sorted(disc.listdir(rel))
+    except Exception:   # noqa: BLE001
+        return []
 
-    def __init__(self, disc):
-        import ps2_char as P
-        import svrfmt
-        self.disc, self.P = disc, P
-        m = disc.read('PAC/M.PAC')
-        all_ = None
-        p = m.find(b'CHAR', 0x800, 0x4000)   # (DPAC header: 'CHAR' {u16, u16 sector}, then {'ALL ', u16 sector, u16 size / 0x100})
-        while 0 <= p and m[p + 8:p + 12] != b'ALL ':
-            p = m.find(b'CHAR', p + 4, 0x4000)
-        if p >= 0:
-            sec, sz = struct.unpack_from('<HH', m, p + 12)
-            all_ = m[0x4000 + sec * 0x800:0x4000 + sec * 0x800 + sz * 0x100]
-        if all_ is None:
-            raise ValueError('no CHAR/ALL in PAC/M.PAC')
-        self.prof = {k: svrfmt.bpe_decode(v) if v[:4] == b'BPE ' else v for k, v in P.pac(all_).items()}
-        size = max(set(len(r) for r in self.prof.values()), key=lambda n: sum(len(r) == n for r in self.prof.values()))
-        if size not in self.LAYOUTS:
-            raise ValueError('profile records of %d bytes: layout not known' % size)
-        self.label, self.music_off, self.movie_off, self.movie_afs = self.LAYOUTS[size]
-        self._bgm, self._mov = {}, None
+
+def _pac_profiles(disc, rel, entry):
+    """{record number: record} from a DPAC's CHAR group entry (ALL / PRO), an inner PAC of BPE records"""
+    import ps2_char as P
+    import ps2_records as R
+    import svrfmt
+    head = disc.read(rel, 0, 0x4000)
+    for t, name, off, size in R._groups(head):
+        if t == b'CHAR' and name.strip() == entry:
+            raw = bytes(disc.read(rel, off, size))
+            return {k: svrfmt.bpe_decode(v) if v[:4] == b'BPE ' else v for k, v in P.pac(raw).items()}
+    raise ValueError('no CHAR/%s in %s' % (entry, rel))
+
+
+class Media:
+    """a PS2 game's profiles, music and movies; subclasses fill prof / indexes / bgm / movie"""
+    label = ''
+
+    def indexes(self, number):
+        """-> (music index, movie index) or (None, None)"""
+        raise NotImplementedError
+
+    def bgm(self, i):
+        """-> (file name, bytes) or (None, None)"""
+        raise NotImplementedError
+
+    def movie(self, i):
+        """-> (file name, bytes) or (None, None)"""
+        raise NotImplementedError
+
+    def generic(self, which, i):
+        """an index four or more profiles share is the game's stand-in (placeholder records, a PAL disc's cut
+        movies), not the superstar's own; a tag team shares two"""
+        if not hasattr(self, '_uses'):
+            self._uses = ({}, {})
+            for n in self.prof:
+                for k, v in enumerate(self.indexes(n)):
+                    if v is not None:
+                        self._uses[k][v] = self._uses[k].get(v, 0) + 1
+        return self._uses[which].get(i, 0) >= 4
+
+
+class AfsNamed(Media):
+    """music / movie files found by name in AFS archives: bgm<i>.adx, (pal_)nmv<i>.sfd"""
+    BGM_GLOB, MOVIE_GLOB = r'BGM\d*\.AFS$', r'P?N?MVP?\d+\.AFS$'
+    BGM_DIR, MOVIE_DIR = 'BGM', 'MOVIE'
+
+    def _index(self, d, pat, rx):
+        out = {}
+        for f in _listdir(self.disc, d):
+            if not re.match(pat, f.upper()):
+                continue
+            try:
+                a = Afs(self.disc, d + '/' + f)
+            except Exception:   # noqa: BLE001
+                continue
+            for k, nm in enumerate(a.names):
+                m = re.match(rx, nm.lower())
+                if m:
+                    out.setdefault(int(m.group(1)), (nm, a, k))
+        return out
+
+    def bgm(self, i):
+        if not hasattr(self, '_b'):
+            self._b = self._index(self.BGM_DIR, self.BGM_GLOB, r'bgm(\d+)\.adx$')
+            self._slots = {}
+            for f in _listdir(self.disc, self.BGM_DIR):
+                m = re.match(r'BGM(\d+)\.AFS$', f.upper())
+                if m:
+                    try:
+                        a = Afs(self.disc, self.BGM_DIR + '/' + f)
+                    except Exception:   # noqa: BLE001
+                        continue
+                    self._slots[int(m.group(1))] = a
+        if i in self._b:
+            nm, a, k = self._b[i]
+            return nm, a.get(k)
+        a = self._slots.get(i // 40)   # (HCTP / 2004: index i is BGM00<i/40>.AFS entry i%40 - a stand-in there)
+        if a is not None and i % 40 < len(a.names):
+            return a.names[i % 40] or 'entry %d' % (i % 40), a.get(i % 40)
+        return None, None
+
+    def movie(self, i):
+        if not hasattr(self, '_m'):
+            self._m = self._index(self.MOVIE_DIR, self.MOVIE_GLOB, r'(?:pal_)?nmv(\d+)\.sfd$')
+        if i not in self._m:
+            return None, None
+        nm, a, k = self._m[i]
+        return nm, a.get(k)
+
+
+class HCTP(AfsNamed):
+    """HCTP and SvR 2004 (the profile store PAC/M.PAC CHAR/ALL), SvR 2006 (CHAR/PRO): game id -> (label,
+    profile entry, music offset, movie offset, movie folder)"""
+    LAYOUTS = {'ps2_hctp': ('Here Comes the Pain', 'ALL', 0x15F, 0x15E, 'MOVIE'),
+               'ps2_svr04': ('SmackDown! vs. Raw (2004)', 'ALL', 0x17C, 0x17B, 'MOVIE'),
+               'ps2_svr06': ('SmackDown! vs. Raw 2006', 'PRO', 0x13D, 0x13C, 'MOVIEP')}
+    SIZES = {365: 'ps2_hctp', 384: 'ps2_svr04', 432: 'ps2_svr06'}
+
+    def __init__(self, disc, game_id=None):
+        self.disc = disc
+        if game_id is None:   # (by the record size)
+            for gid in ('ps2_hctp', 'ps2_svr06'):
+                try:
+                    prof = _pac_profiles(disc, 'PAC/M.PAC', self.LAYOUTS[gid][1])
+                except Exception:   # noqa: BLE001
+                    continue
+                size = max(set(map(len, prof.values())), key=lambda n: sum(len(r) == n for r in prof.values()))
+                if size in self.SIZES:
+                    game_id = self.SIZES[size]
+                    break
+            else:
+                raise ValueError('not HCTP / SvR 2004 / 2006')
+        self.label, entry, self.music_off, self.movie_off, self.MOVIE_DIR = self.LAYOUTS[game_id]
+        self.prof = _pac_profiles(disc, 'PAC/M.PAC', entry)
 
     def indexes(self, number):
         r = self.prof.get(number)
@@ -83,82 +195,97 @@ class HCTP:
             return None, None
         return r[self.music_off], r[self.movie_off]
 
-    def bgm(self, i):
-        f = 'BGM/BGM%03d.AFS' % (i // 40)
-        if f not in self._bgm:
-            try:
-                self._bgm[f] = afs(self.disc.read(f))
-            except Exception:   # noqa: BLE001
-                self._bgm[f] = []
-        ents = self._bgm[f]
-        if i % 40 >= len(ents):
+
+class SYM(Media):
+    """Shut Your Mouth: CHAR group's ALL entry, music +0x13F / movie +0x13E, ADS / IPU files"""
+    label = 'Shut Your Mouth'
+
+    def __init__(self, disc, game_id=None):
+        self.disc = disc
+        self.prof = _pac_profiles(disc, 'PAC/M.PAC', 'ALL')
+        if len(next(iter(self.prof.values()))) != 329:
+            raise ValueError('not Shut Your Mouth')
+
+    def indexes(self, number):
+        r = self.prof.get(number)
+        return (r[0x13F], r[0x13E]) if r and len(r) > 0x13F else (None, None)
+
+    def _file(self, rel, nm):
+        try:
+            return nm, bytes(self.disc.read(rel))
+        except Exception:   # noqa: BLE001
             return None, None
-        return ents[i % 40]
+
+    def bgm(self, i):
+        return self._file('ADS/BGM%d/BGM%03d.ADS' % (i // 30, i), 'BGM%03d.ADS' % i)
 
     def movie(self, i):
-        if self._mov is None:
-            self._mov = {}
-            for k in range(10):
+        return self._file('MOVIE/TT%d/%03d.IPU' % (i // 30, i), '%03d.IPU' % i)
+
+
+class Twin360(AfsNamed):
+    """SvR 2007-2010 (PS2): the X360 versions' records; themes in YAF (2008-10) / ENTRANCE.AFS (2007)"""
+    LAYOUTS = {'ps2_svr07': ('SmackDown vs. Raw 2007 (PS2)', 'PAC/MISC.PAC', None),
+               'ps2_svr08': ('SmackDown vs. Raw 2008 (PS2)', 'PAC/MISC.PAC', None),
+               'ps2_svr09': ('SmackDown vs. Raw 2009 (PS2)', 'PAC/CH/CHETC.PAC', 0xE4),
+               'ps2_svr10': ('SmackDown vs. Raw 2010 (PS2)', 'PAC/CH/CHETC.PAC', 0x178)}
+
+    def __init__(self, disc, game_id=None):
+        self.disc = disc
+        if game_id not in self.LAYOUTS:
+            raise ValueError('not a PS2 SvR 2007-2010 (give the game id)')
+        self.game_id = game_id
+        self.label, rel, self.block = self.LAYOUTS[game_id]
+        self.prof = _pac_profiles(disc, rel, 'PRO')
+
+    def indexes(self, number):
+        r = self.prof.get(number)
+        if r is None:
+            return None, None
+        if self.block is None:
+            return number, number
+        if len(r) < self.block + 4:
+            return None, None
+        return struct.unpack_from('<2H', r, self.block)
+
+    def bgm(self, i):
+        if self.game_id == 'ps2_svr07':
+            if not hasattr(self, '_e'):
                 try:
-                    for nm, b in afs(self.disc.read(self.movie_afs % k)):
-                        m = re.match(r'(?:pal_)?nmv(\d+)\.sfd$', nm.lower())
-                        if m:
-                            self._mov.setdefault(int(m.group(1)), (nm, b))
+                    self._e = Afs(self.disc, 'MUSIC/ENTRANCE.AFS')
                 except Exception:   # noqa: BLE001
-                    break
-        return self._mov.get(i, (None, None))
-
-    def generic(self, which, i):
-        """an index four or more profiles share is the game's stand-in (placeholder records, a PAL disc's
-        missing movies: SvR 2004's The Rock -> movie 57), not the superstar's own; a tag team shares two"""
-        return sum(1 for n in self.prof if self.indexes(n)[which] == i) >= 4
-
-
-class SYM(HCTP):
-    """Shut Your Mouth: PAC/M.PAC group CHAR holds per-character move entries "0000".. and then ALL, the
-    profiles (an inner PAC keyed by the record number, 329-byte BPE records); CEventBGM / CEventTitantron::
-    SetData read the record's music / movie (+0x13F / +0x13E). Music n: ADS/BGM<n / 30>/BGM<n>.ADS (Sony
-    SShd/SSbd ADPCM); movie n: MOVIE/TT<n / 30>/<n>.IPU (the ELF's "\\MOVIE\\TT%01d\\%03d.IPU")."""
-
-    def __init__(self, disc):
-        import ps2_char as P
-        import svrfmt
-        self.disc, self.P = disc, P
-        m = disc.read('PAC/M.PAC')
-        c = m.find(b'CHAR', 0x800, 0x4000)
-        p = m.find(b'ALL ', c, 0x4000) if c >= 0 else -1
-        if c < 0 or p < 0 or m[c + 8:c + 12] == b'ALL ':
-            raise ValueError('not a Shut Your Mouth M.PAC')
-        sec, sz = struct.unpack_from('<HH', m, p + 4)
-        all_ = m[0x4000 + sec * 0x800:0x4000 + sec * 0x800 + sz * 0x100]
-        self.prof = {k: svrfmt.bpe_decode(v) if v[:4] == b'BPE ' else v for k, v in P.pac(all_).items()}
-        if not self.prof or len(next(iter(self.prof.values()))) != 329:
-            raise ValueError('Shut Your Mouth profiles not found')
-        self.label, self.music_off, self.movie_off = 'Shut Your Mouth', 0x13F, 0x13E
-        self._bgm, self._mov = {}, {}
-
-    def bgm(self, i):
-        rel = 'ADS/BGM%d/BGM%03d.ADS' % (i // 30, i)
-        try:
-            return 'BGM%03d.ADS' % i, self.disc.read(rel)
-        except Exception:   # noqa: BLE001
+                    self._e = None
+            if self._e is not None and '%04d_0.adx' % i in self._e.names:
+                k = self._e.names.index('%04d_0.adx' % i)
+                return self._e.names[k], self._e.get(k)
             return None, None
-
-    def movie(self, i):
-        rel = 'MOVIE/TT%d/%03d.IPU' % (i // 30, i)
-        try:
-            return '%03d.IPU' % i, self.disc.read(rel)
-        except Exception:   # noqa: BLE001
+        if not hasattr(self, '_y'):
+            self._y = {}
+            for f in _listdir(self.disc, 'SOUND'):
+                if re.match(r'MUSIC\d*\.YAF$', f.upper()):
+                    rel = 'SOUND/' + f
+                    h = self.disc.read(rel, 0, 0x40000)
+                    n, _a, _v, rs, to = struct.unpack_from('<IIIII', h, 0x18)
+                    if to + rs * n > len(h):
+                        h = self.disc.read(rel, 0, to + rs * n)
+                    for k in range(n):
+                        size, off, rid = struct.unpack_from('<III', h, to + rs * k)
+                        self._y.setdefault(rid, (rel, off, size))
+        rid = i * 100
+        if rid not in self._y:
             return None, None
+        rel, off, size = self._y[rid]
+        return '%s record %d.adx' % (rel.split('/')[-1], rid), bytes(self.disc.read(rel, off, size))
 
 
-GAMES = (HCTP, SYM)
-
-
-def open_media(disc):
-    for G in GAMES:
+def open_media(disc, game_id=None):
+    """the game's media reader (by game id; without one, the games found by their files), or None"""
+    if game_id in Twin360.LAYOUTS:
+        return Twin360(disc, game_id)
+    order = {'ps2_sym': (SYM,), 'ps2_hctp': (HCTP,), 'ps2_svr04': (HCTP,), 'ps2_svr06': (HCTP,)}.get(game_id, (HCTP, SYM))
+    for G in order:
         try:
-            return G(disc)
+            return G(disc, game_id if game_id in HCTP.LAYOUTS else None)
         except Exception:   # noqa: BLE001
             continue
     return None
@@ -178,7 +305,7 @@ def theme(g, number, out_mp3, work, vgmstream=None, lufs=-24.0):
         return None, 'music %d is %s' % (mi, nm or 'missing')
     vg = wwise.find_vgmstream(vgmstream)
     if not vg:
-        return None, 'music %d (%s) found, but no vgmstream-cli to decode ADX (opt in: --vgmstream)' % (mi, nm)
+        return None, 'music %d (%s) found, but no vgmstream-cli to decode it (opt in: --vgmstream)' % (mi, nm)
     os.makedirs(work, exist_ok=True)
     src, wav = os.path.join(work, 'theme' + os.path.splitext(nm)[1].lower()), os.path.join(work, 'theme.wav')
     open(src, 'wb').write(b)
@@ -202,9 +329,9 @@ def titantron(g, number, out_mp4, work):
     _, vi = g.indexes(number)
     if vi is None:
         return None, 'no profile for character %d' % number
-    nm, b = g.movie(vi)
     if g.generic(1, vi):
-        return None, 'movie %d (%s) is the game\'s shared stand-in, not his own' % (vi, nm)
+        return None, 'movie %d is the game\'s shared stand-in, not his own' % vi
+    nm, b = g.movie(vi)
     if not b:
         return None, 'movie %d is missing on the disc' % vi
     os.makedirs(work, exist_ok=True)
@@ -226,7 +353,7 @@ def media(game_id, disc, number, mod, work, rep, vgmstream=None):
     """ps2_port's hook: theme.mp3 / movie.mp4 into the mod folder -> manifest entries {song, movie} for what
     was made ({} when neither could be: why in rep['warnings']); None when this game's music and movies aren't
     read yet"""
-    g = open_media(disc)
+    g = open_media(disc, game_id or None)
     if g is None:
         return None
     out = {}
@@ -248,26 +375,28 @@ def media(game_id, disc, number, mod, work, rep, vgmstream=None):
 def main(argv):
     import discfs
     if len(argv) < 3 or argv[1] not in ('list', 'convert'):
-        print(json.dumps({'error': 'usage: list <disc> | convert <disc> <number> <out dir> [--vgmstream <exe>]'}))
+        print(json.dumps({'error': 'usage: list <disc> [--game G] | convert <disc> <number> <out dir> [--game G] [--vgmstream <exe>]'}))
         return 2
     disc = discfs.open(argv[2])
-    g = open_media(disc)
+    gid = argv[argv.index('--game') + 1] if '--game' in argv else None
+    g = open_media(disc, gid)
     if g is None:
-        print(json.dumps({'ok': False, 'error': 'not a PS2 game ps2_media reads yet'}))
+        print(json.dumps({'ok': False, 'error': 'not a PS2 game ps2_media reads (2007-2010 need --game)'}))
         return 2
     if argv[1] == 'list':
         out = []
         for n in sorted(g.prof):
             mi, vi = g.indexes(n)
-            bn = g.bgm(mi)[0] if mi is not None else None
-            out.append(dict(number=n, music=mi, movie=vi, theme=bn, titantron=g.movie(vi)[0] if vi is not None else None))
+            out.append(dict(number=n, music=mi, movie=vi,
+                            theme=None if mi is None or g.generic(0, mi) else g.bgm(mi)[0],
+                            titantron=None if vi is None or g.generic(1, vi) else (g.movie(vi)[0])))
         print(json.dumps(out, indent=1))
         return 0
     number, outdir = int(argv[3]), os.path.abspath(argv[4])
     vg = argv[argv.index('--vgmstream') + 1] if '--vgmstream' in argv else None
     os.makedirs(outdir, exist_ok=True)
     rep = dict(notes=[], warnings=[], dropped=[])
-    res = media('', disc, number, outdir, os.path.join(outdir, '.work'), rep, vg)
+    res = media(gid, disc, number, outdir, os.path.join(outdir, '.work'), rep, vg)
     print(json.dumps(dict(ok=True, manifest=res, **rep), indent=1))
     return 0
 
