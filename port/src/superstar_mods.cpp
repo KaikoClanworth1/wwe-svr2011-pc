@@ -2711,6 +2711,8 @@ const std::vector<std::pair<uint32_t, uint32_t>>& MotionSwaps() {
 // such a bank is looked up again: binary search over the sorted part, then the
 // tail one by one. Returns the bank's +272 (as the game's) and *index; 0 if
 // none has the key.
+// (Not covered: sub_82394740, a second bank search at motion start - no tail
+// fallback; it only reads a per-slot byte, 0 for m.pac, so harmless so far.)
 namespace {
 uint8_t* GuestAt(uint8_t* base, uint32_t a) { return base + a + (a >= 0xE0000000u ? 0x1000u : 0u); }
 struct BankOrder { uint32_t count = 0, last = 0, sorted = 0; };  // sorted: entries in order from 0
