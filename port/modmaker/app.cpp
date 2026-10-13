@@ -1028,19 +1028,66 @@ void PushAccent() {
 }
 void PopAccent() { ImGui::PopStyleColor(2); }
 
+Image FitFigure(const Image& src, int size) {
+  // the figure: alpha > 32, when the picture has a transparent background
+  int l = src.w, t = src.h, r = -1, b = -1;
+  bool cut = false;
+  for (int y = 0; y < src.h; ++y)
+    for (int x = 0; x < src.w; ++x) {
+      if (src.rgba[(size_t(y) * src.w + x) * 4 + 3] <= 32) { cut = true; continue; }
+      l = std::min(l, x), r = std::max(r, x), t = std::min(t, y), b = std::max(b, y);
+    }
+  if (!cut || r < 0) l = 0, t = 0, r = src.w - 1, b = src.h - 1;
+  const int cw = r - l + 1, ch = b - t + 1;
+  Image crop;
+  crop.w = cw, crop.h = ch;
+  crop.rgba.resize(size_t(cw) * ch * 4);
+  for (int y = 0; y < ch; ++y)
+    std::memcpy(&crop.rgba[size_t(y) * cw * 4], &src.rgba[(size_t(t + y) * src.w + l) * 4], size_t(cw) * 4);
+  // a cut-out fills the height (no wider than 96%: then the width decides and it stands on the bottom);
+  // a full picture fits whole, top aligned
+  const float k = cut ? std::min(float(size) / ch, size * 0.96f / cw) : std::min(float(size) / cw, float(size) / ch);
+  const int w = std::clamp(int(cw * k + 0.5f), 1, size), h = std::clamp(int(ch * k + 0.5f), 1, size);
+  const Image fit = Resize(crop, w, h);
+  Image out;
+  out.w = out.h = size;
+  out.rgba.assign(size_t(size) * size * 4, 0);
+  const int x0 = (size - w) / 2, y0 = cut ? size - h : 0;
+  for (int y = 0; y < h; ++y)
+    std::memcpy(&out.rgba[(size_t(y0 + y) * size + x0) * 4], &fit.rgba[size_t(y) * w * 4], size_t(w) * 4);
+  return out;
+}
+
+Image GameLook(const Image& src) {
+  // the figure's luminance mean / spread and saturation, moved half way to the stock renders' medians
+  double sum = 0, sum2 = 0, sat = 0, n = 0;
+  for (size_t i = 0; i + 3 < src.rgba.size(); i += 4) {
+    if (src.rgba[i + 3] < 128) continue;
+    const double r = src.rgba[i] / 255.0, g = src.rgba[i + 1] / 255.0, b = src.rgba[i + 2] / 255.0;
+    const double lum = 0.299 * r + 0.587 * g + 0.114 * b, mx = std::max({r, g, b}), mn = std::min({r, g, b});
+    sum += lum, sum2 += lum * lum, sat += mx > 1e-3 ? (mx - mn) / mx : 0, n += 1;
+  }
+  if (n < 100) return src;
+  const double mean = sum / n, sd = std::sqrt(std::max(1e-6, sum2 / n - mean * mean)), s = sat / n;
+  const double want_mean = (mean + 0.386) / 2, want_sd = (sd + 0.214) / 2, want_s = (s + 0.412) / 2;
+  const double gain = std::clamp(want_sd / sd, 0.5, 2.0), sgain = s > 1e-3 ? std::clamp(want_s / s, 0.5, 2.0) : 1.0;
+  Image out = src;
+  for (size_t i = 0; i + 3 < out.rgba.size(); i += 4) {
+    const double r = src.rgba[i] / 255.0, g = src.rgba[i + 1] / 255.0, b = src.rgba[i + 2] / 255.0;
+    const double lum = 0.299 * r + 0.587 * g + 0.114 * b, nl = (lum - mean) * gain + want_mean;
+    for (int c = 0; c < 3; ++c) {
+      const double v = nl + ((c == 0 ? r : c == 1 ? g : b) - lum) * sgain;
+      out.rgba[i + c] = uint8_t(std::clamp(v, 0.0, 1.0) * 255 + 0.5);
+    }
+  }
+  return out;
+}
+
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {
-  // fitted into 512 x 512 (top aligned, centred); the bust (SSFC): that at
+  // framed the game's way on 512 x 512 (FitFigure); the bust (SSFC): that at
   // 3/4 size, its top 256 rows around the figure's middle; the face icon:
   // the bust's top middle at 64 x 64
-  Image big;
-  big.w = big.h = 512;
-  big.rgba.assign(size_t(512) * 512 * 4, 0);
-  const float k = std::min(512.0f / src.w, 512.0f / src.h);
-  const int w = std::max(1, int(src.w * k)), h = std::max(1, int(src.h * k));
-  const Image fit = Resize(src, w, h);
-  const int x0 = (512 - w) / 2;
-  for (int y = 0; y < h; ++y)
-    std::memcpy(&big.rgba[(size_t(y) * 512 + x0) * 4], &fit.rgba[size_t(y) * w * 4], size_t(w) * 4);
+  Image big = FitFigure(src, 512);
   const Image three = Resize(big, 384, 384);
   double sx = 0, sa = 0;
   for (int y = 0; y < 256; ++y)

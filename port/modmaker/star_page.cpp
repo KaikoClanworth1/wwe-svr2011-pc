@@ -93,7 +93,10 @@ struct StarProject {
   char attire_names[4][32] = {};  // [1..3]: their names on CHANGE ATTIRE ("" = ATTIRE N)
   int attire_entrance[4] = {-1, -1, -1, -1};  // [1..3]: attire<N>_entrance= (-1: the superstar's entrance)
   Picture picture;                // its own select picture (512): else a silhouette
-  Image picture_small;            // the 256 bust made with it
+  Image picture_small;            // the 256 bust made with it (or own_bust)
+  bool own_bust = false;          // picture_small is the user's own bust picture
+  bool game_look = false;         // the picture's tone moved toward the game's renders
+  Image picture_src;              // the picture as picked (this session: the game look can be undone)
   int call = -1;                  // -1: "The Superstar"
   float height = 1.0f;            // height=<scale> from the feet (0.80-1.25; 1: left out)
   float theme_gain = 0.0f;        // theme_gain=<dB> (-20..+6; 0: left out)
@@ -156,10 +159,31 @@ std::string StarId() { return IdFrom(g_star.name, "superstar"); }
 
 void SetPicture(const Image& src) {
   Image render, bust, icon;
-  MakeRenders(src, render, bust, icon);
+  MakeRenders(g_star.game_look ? GameLook(src) : src, render, bust, icon);
   g_star.picture.Set(std::move(render));
-  g_star.picture_small = std::move(bust);
+  if (!g_star.own_bust) g_star.picture_small = std::move(bust);
   Touch();
+}
+
+// The model pac's own portrait (every attire PACH's children 200 / 201: a 256 x 256 DXT5 DDS, BPE): the bust.
+// Converters fill it from the other game's bust; a stock pac copy would show that superstar.
+bool SetPortrait(Bytes& pac, const Image& bust) {
+  svrfmt::Epac e;
+  if (!bust.w || !svrfmt::EpacRead(pac, e)) return false;
+  const Bytes dds = svrfmt::BpeEncode(DdsEncode(bust.w == 256 && bust.h == 256 ? bust : Resize(bust, 256, 256), DxtFormat::kDxt5, false));
+  int n = 0;
+  for (auto& g : e.groups)
+    for (auto& en : g.entries) {
+      std::vector<svrfmt::PachEntry> kids;
+      if (!svrfmt::IsPach(en.data) || !svrfmt::PachRead(en.data, kids)) continue;
+      bool hit = false;
+      for (auto& k : kids)
+        if (k.id == 200 || k.id == 201) k.data = dds, hit = true;
+      if (hit) en.data = svrfmt::PachWrite(kids), ++n;
+    }
+  if (!n) return false;
+  pac = svrfmt::EpacWrite(e);
+  return true;
 }
 
 // Everything the build needs, copied off the UI thread.
@@ -555,6 +579,10 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     return false;
   }
   std::string man = j.manifest;
+  if (j.picture_small.w) {
+    Progress("Putting the bust in the model's portrait ...");
+    SetPortrait(ch, j.picture_small);
+  }
   files.push_back({"ch.pac", std::move(ch)});
   auto add = [&](const std::wstring& src, const std::string& stem, const char* key, const char* what) {
     if (src.empty()) return true;
@@ -577,6 +605,7 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
       return false;
     }
     const std::string n = "attire" + std::to_string(a + 1) + ".pac";
+    if (j.picture_small.w) SetPortrait(pac, j.picture_small);
     files.push_back({n, std::move(pac)});
     man += "attire" + std::to_string(a + 1) + "=" + n + "\n";
     if (!j.attire_names[a].empty()) man += "attire" + std::to_string(a + 1) + "_name=" + j.attire_names[a] + "\n";
@@ -965,15 +994,61 @@ void Draw() {
   if (ImGui::Button("Select picture (optional)...", ImVec2(220 * g_scale, 0))) {
     const std::wstring f = PickFile(false, L"Select screen picture (a PNG with a transparent background is best)", kPictureFilter, 1);
     Image img;
-    if (!f.empty() && LoadPicture(f, img)) SetPicture(img), Log("Select picture set from " + Utf8(f));
+    if (!f.empty() && LoadPicture(f, img)) g_star.picture_src = img, SetPicture(img), Log("Select picture set from " + Utf8(f));
   }
   ImGui::SameLine();
   if (g_star.picture.Empty()) ImGui::TextDisabled("a silhouette");
   else ImGui::TextUnformatted("your picture");
   if (!g_star.picture.Empty()) {
     ImGui::SameLine();
-    if (ImGui::SmallButton("x")) g_star.picture.Clear(), g_star.picture_small = Image(), Touch();
+    if (ImGui::SmallButton("x")) g_star.picture.Clear(), g_star.picture_small = Image(), g_star.picture_src = Image(), g_star.own_bust = false, Touch();
   }
+  Hint("Framed the way the game's renders are: a picture with a transparent background is cropped to the person, "
+       "who fills the picture top to bottom, centred. It is the select screen's render and the full-body one (the "
+       "game's SSFA and SSFB); the bust below is the small one (SSFC) and the model's own portrait.");
+  ImGui::Indent(16 * g_scale);
+  ImGui::BeginDisabled(g_star.picture_src.w == 0 && !g_star.game_look);
+  if (ImGui::Checkbox("Game look", &g_star.game_look) && g_star.picture_src.w) SetPicture(g_star.picture_src);
+  ImGui::EndDisabled();
+  Hint("Moves the picture's brightness, contrast and colour half way toward the game's renders. Pick the picture "
+       "again to change this after reopening a project.");
+  if (ImGui::Button("Bust picture (optional)...", ImVec2(204 * g_scale, 0))) {
+    const std::wstring f = PickFile(false, L"Bust picture: head and shoulders (a PNG with a transparent background is best)", kPictureFilter, 1);
+    Image img;
+    if (!f.empty() && LoadPicture(f, img)) {
+      g_star.picture_small = FitFigure(g_star.game_look ? GameLook(img) : img, 256), g_star.own_bust = true, Touch();
+      Log("Bust picture set from " + Utf8(f));
+    }
+  }
+  ImGui::SameLine();
+  if (g_star.own_bust) {
+    ImGui::TextUnformatted("your bust");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##bust")) {
+      g_star.own_bust = false, g_star.picture_small = Image();
+      if (g_star.picture_src.w) SetPicture(g_star.picture_src);
+      else if (!g_star.picture.Empty()) {  // (from the framed render)
+        Image render, bust, icon;
+        MakeRenders(g_star.picture.image, render, bust, icon);
+        g_star.picture_small = std::move(bust);
+      }
+      Touch();
+    }
+  } else ImGui::TextDisabled(g_star.picture.Empty() ? "none" : "made from the picture");
+  Hint("The small render (256 x 256, the game's SSFC) and the model's own portrait. Made from the top of the select "
+       "picture unless you give one; a head-and-shoulders picture, cropped and framed like the game's.");
+  if (!g_star.picture.Empty()) {
+    g_star.picture.Draw(72 * g_scale, 72 * g_scale);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select screen and full body (render.dds)");
+    if (g_star.picture_small.w) {
+      static Picture bust_view;
+      if (bust_view.image.rgba != g_star.picture_small.rgba) bust_view.Set(g_star.picture_small);
+      ImGui::SameLine();
+      bust_view.Draw(72 * g_scale, 72 * g_scale);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bust and the model's portrait (render_small.dds)");
+    }
+  }
+  ImGui::Unindent(16 * g_scale);
   ImGui::PopID();
   ImGui::Spacing();
   DrawProblems(problems);
@@ -1048,6 +1123,8 @@ void WriteProject(ProjectOut& out) {
     }
   }
   out.Png("picture", g_star.picture.image, "star/picture");
+  if (g_star.own_bust) out.Png("bust", g_star.picture_small, "star/bust");
+  if (g_star.game_look) out.Key("game_look", "1");
   for (size_t k = 0; k < g_star.signs.size(); ++k) out.Png("sign" + std::to_string(k + 1), g_star.signs[k].image, "star/sign" + std::to_string(k + 1));
 }
 
@@ -1149,7 +1226,10 @@ bool Read(const ProjectIn& in, bool mod) {
         g_star.signs.push_back(std::move(p));
       }
   } else {
+    g_star.game_look = false;  // (the saved picture has it already)
+    if (in.Png("bust", img)) g_star.picture_small = img, g_star.own_bust = true;
     if (in.Png("picture", img)) SetPicture(img);
+    g_star.game_look = in.GetInt("game_look", 0) != 0;
     for (int k = 1; k <= 4; ++k)
       if (in.Png(("sign" + std::to_string(k)).c_str(), img)) {
         Picture p;

@@ -197,7 +197,7 @@ std::string PythonMissing() {
   Check();
   if (g_missing_checked) return g_missing;
   g_missing_checked = true;
-  if (g_python.empty()) return g_missing = "Python 3 - install the Mod Maker tools from the launcher's Setup page";
+  if (g_python.empty()) return g_missing = "Python 3 - install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow)";
   // a quick import check, no window
   const std::wstring probe = Quote(g_python) + L" -c \"import numpy, PIL; print('ok')\"";
   SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
@@ -250,7 +250,7 @@ bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& ar
                  std::function<void(int, const std::string&)> done, const std::wstring& cwd) {
   Check();
   if (g_python.empty()) {
-    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page, then Recheck.");
+    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow), then Recheck.");
     return false;
   }
   if (g_tools.empty() || !fs::exists(fs::path(g_tools) / script)) {
@@ -284,7 +284,7 @@ bool RunTool(const std::wstring& script, const std::vector<std::wstring>& args, 
              const std::wstring& cwd) {
   Check();
   if (g_python.empty()) {
-    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page, then Recheck.");
+    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow), then Recheck.");
     return false;
   }
   if (g_tools.empty()) {

@@ -372,6 +372,12 @@ namespace help_page { void Draw(); }
 
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);
+// A picture framed the game's way on a size x size canvas: a cut-out (transparent background) is cropped to the
+// figure and fills the height, centred (the stock renders: top to bottom, ~85% wide); a picture without
+// transparency is fitted whole, top aligned.
+Image FitFigure(const Image& src, int size);
+// The figure's tone half way to the stock renders' median (brightness 0.39, contrast 0.21, saturation 0.41).
+Image GameLook(const Image& src);
 
 // A video or picture -> a 320 x 320 Bink entrance movie (the launcher's movie
 // maker), in the background; done(out or "" on failure) on the UI thread.

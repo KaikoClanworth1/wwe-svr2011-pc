@@ -355,7 +355,7 @@ void Draw() {
                                     "SvR 2011: pick the disc, what to port and the item; it opens on its page to finish.");
   if (PythonExe().empty() || !PythonMissing().empty()) {
     ImGui::TextColored(kWarn, "The converters need Python 3 with numpy and Pillow%s.",
-                       PythonExe().empty() ? " (install the Mod Maker tools from the launcher's Setup page)" : (": " + PythonMissing()).c_str());
+                       PythonExe().empty() ? " (install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow))" : (": " + PythonMissing()).c_str());
     if (ImGui::SmallButton("Check again")) RecheckTools();
     return;
   }
