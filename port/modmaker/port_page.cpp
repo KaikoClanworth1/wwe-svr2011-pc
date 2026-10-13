@@ -158,8 +158,12 @@ const Json& GameFor(int k) {
   const auto it = g_games.find(k);
   if (it == g_games.end() || it->second.type != Json::Type::kArray) return kNone;
   const std::string id = SourceId();
-  for (const auto& g : it->second.items)
-    if (!id.empty() && g["disc_hint"].Str() == id) return g;
+  if (id.empty()) return kNone;
+  for (const auto& g : it->second.items) {  // disc_hint, or any of disc_hints (one game on several discs: x360 + PS2)
+    if (g["disc_hint"].Str() == id) return g;
+    for (const auto& h : g["disc_hints"].items)
+      if (h.Str() == id) return g;
+  }
   return kNone;
 }
 
