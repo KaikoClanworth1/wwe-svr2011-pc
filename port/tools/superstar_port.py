@@ -355,7 +355,8 @@ class Game07(Game08):
         self.g = S.Game.__new__(S.Game)
         self.g.pac, self.g.year = os.path.dirname(misc), 7
         self.g.dat = {}
-        for i, r in pach(ch[(b'CHAR', b'DAT ')]).items():
+        self.raw_dat = pach(ch[(b'CHAR', b'DAT ')])   # (as stored: ratings_port reads its 8 ratings, a 7..20 scale)
+        for i, r in self.raw_dat.items():
             x = bytearray(264)
             nm = r[0x1C:0x4B].split(b'\0')[0][:32]
             x[34:34 + len(nm)] = nm
@@ -603,6 +604,12 @@ def build09(cid, outdir, o, rep):
     if any(x not in (0, 50) for x in r[:7]):
         man['ratings'] = ','.join(str(max(0, x - 1)) for x in r[:7])
         note('ratings %s %s -> %s' % (g9.label, list(r[:8]), man['ratings']))
+    if type(g9).__name__ == 'Game07':   # (another scale: fitted, tools/ratings_port.py)
+        import ratings_port
+        rr, rrep = ratings_port.map_ratings('svr2007', cid, g9)
+        if rr:
+            man['ratings'] = ','.join(map(str, rr))
+        note(ratings_port.report_line(g9.label, rr, rrep))
     abilities_step(type(g9).__name__, g9, cid, man, note)
     # moves
     if not o.get('no_moves') and base != i11:
@@ -1308,12 +1315,13 @@ def buildW(cid, outdir, o, rep):
                 note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
     else:
         warn('%s has no model for %d: the base\'s is used' % (gw.label, cid))
-    if gw.rating_map:
-        r = gw.raw_dat[cid]
-        man['ratings'] = ','.join(str(max(0, min(99, r[o] - m))) for o, m in gw.rating_map)
-        note('ratings from %s DAT -> %s' % (gw.label, man['ratings']))
+    import ratings_port   # (fitted on the superstars each game shares with 2011)
+    rr, rrep = ratings_port.map_ratings(gw.game_id, cid, gw)
+    if rr:
+        man['ratings'] = ','.join(map(str, rr))
+        note(ratings_port.report_line(gw.label, rr, rrep))
     else:
-        drop('ratings (%s): the base\'s' % gw.no_ratings)
+        drop('ratings (%s): the base\'s' % (rrep['note'] or gw.no_ratings))
     abilities_step(gw.game_id, gw, cid, man, note)   # (every game: its own list, else guessed from the ratings)
     music, movie, ent, alt = gw.entrance_block(cid)
     # theme
