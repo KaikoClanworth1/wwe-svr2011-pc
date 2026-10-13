@@ -1276,7 +1276,13 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       for (const auto& v : m.pos) sole = std::max(sole, v[1]);
     V3 troot{0, 0, 0};
     tpl_pos("root", troot);
-    if (tfloor - troot[1] > 1 && sole > 1) scale = (tfloor - troot[1]) / sole;
+    if (opts.gear_json) {  // (gear pieces have no feet: sized by the skeleton - the hips to the ankles, as the template's)
+      V3 tl, tr;
+      const double have = 0.5 * (game(origin(posed[size_t(src_of["l_ashi"])]))[1] + game(origin(posed[size_t(src_of["r_ashi"])]))[1]);
+      if (tpl_pos("l_ashi", tl) && tpl_pos("r_ashi", tr) && have > 1) scale = 0.5 * ((tl[1] - troot[1]) + (tr[1] - troot[1])) / have;
+    } else if (tfloor - troot[1] > 1 && sole > 1) {
+      scale = (tfloor - troot[1]) / sole;
+    }
     for (auto& m : meshes)
       for (auto& v : m.pos) v = {v[0] * scale, v[1] * scale, v[2] * scale};
   }

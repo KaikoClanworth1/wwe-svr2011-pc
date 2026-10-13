@@ -95,6 +95,7 @@ std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
 int g_test_simple = -1;   // --simple <step>
 std::string g_test_gear;  // --star-gear <attire>:<op>,...
+std::string g_test_gear_fbx;  // --star-gear-fbx <attire>:<fbx>
 std::string g_test_gear_from;  // --star-gear-from <attire>:<donor id>: the transplant, the log to <work>\gear.log, quit
 std::wstring g_test_take;  // --simple-take <svrmod>,<0 look | 1 everything>
 bool g_test_take_all = false;
@@ -1758,6 +1759,17 @@ void Draw() {
       });
       // (a failure closes too: after the tool, Busy() is false and the model unchanged)
     }
+    if (const size_t c = g_test_gear_fbx.find(':'); c != std::string::npos && !g_star.model.empty()) {
+      const int at = std::atoi(g_test_gear_fbx.c_str());
+      const std::wstring fbx = Wide(g_test_gear_fbx.substr(c + 1));
+      WhenIdle([at, fbx] {
+        GearFromFbx(g_star.model, at, fbx, [](const std::wstring& made) {
+          g_star.model = made, Log("test: gear fitted " + Utf8(made));
+          WriteLogTo((fs::path(g_game) / L"Mods" / L".convert" / L"gear" / L"gear.log").wstring());
+          PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+        });
+      });
+    }
     if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
@@ -2395,6 +2407,7 @@ bool TakeFromMod(const std::wstring& svrmod, bool everything) {
 void TestSimple(int step) { g_test_simple = step; }
 void TestGear(const std::string& spec) { g_test_gear = spec; }
 void TestGearFrom(const std::string& spec) { g_test_gear_from = spec; }
+void TestGearFbx(const std::string& spec) { g_test_gear_fbx = spec; }
 void TestSimpleTake(const std::wstring& svrmod, bool everything) { g_test_take = svrmod, g_test_take_all = everything; }
 void TestFbxMake() { g_test_fbx_make = true; }
 void TestFbxReport(const std::wstring& out) {  // with --star-fbx: the import report to <out> (automatic mapping), quit
