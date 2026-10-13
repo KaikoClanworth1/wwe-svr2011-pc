@@ -12,8 +12,9 @@ systemctl daemon-reload
 
 zone=$(firewall-cmd --get-default-zone)
 wgzone=$(firewall-cmd --get-zone-of-interface=wg0 2>/dev/null || echo "$zone")
-firewall-cmd --permanent --zone="$wgzone" --remove-rich-rule="$link_rule"
-firewall-cmd --permanent --zone="$zone" --remove-port=36500/udp
-firewall-cmd --permanent --zone="$zone" --add-forward-port="$fwd"
-firewall-cmd --reload
+# now and saved, no --reload (see the installer); the tunnel and masquerade are untouched
+fw() { firewall-cmd "$@"; firewall-cmd --permanent "$@"; }
+fw --zone="$wgzone" --remove-rich-rule="$link_rule"
+fw --zone="$zone" --remove-port=36500/udp
+fw --zone="$zone" --add-forward-port="$fwd"
 echo "done - the edge is gone and UDP 36500 goes to the PC again (/opt/svr-relay is kept)"

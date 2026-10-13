@@ -4,6 +4,7 @@
 # (the same secret as the PC server's relay_secret.txt):
 #   sudo bash relay_edge_install.sh
 # Undo: sudo bash relay_edge_uninstall.sh
+# It never touches the WireGuard tunnel (no wg / wg-quick, no reload, masquerade kept).
 set -euo pipefail
 src="$(cd "$(dirname "$0")" && pwd)"
 fwd='port=36500:proto=udp:toport=36500:toaddr=10.8.0.2'
@@ -47,10 +48,13 @@ echo "== firewall"
 zone=$(firewall-cmd --get-default-zone)
 wgzone=$(firewall-cmd --get-zone-of-interface=wg0 2>/dev/null || echo "$zone")
 echo "default zone $zone, wg0 zone $wgzone"
-firewall-cmd --permanent --zone="$zone" --remove-forward-port="$fwd" || true
-firewall-cmd --permanent --zone="$zone" --add-port=36500/udp
-firewall-cmd --permanent --zone="$wgzone" --add-rich-rule="$link_rule"
-firewall-cmd --reload
+# each change now and saved, with no --reload: a reload would drop runtime-only
+# rules something else (the WireGuard setup) may rely on. Nothing else is touched:
+# no wg / wg-quick, the masquerade stays.
+fw() { firewall-cmd "$@" && firewall-cmd --permanent "$@"; }
+fw --zone="$zone" --remove-forward-port="$fwd" || true
+fw --zone="$zone" --add-port=36500/udp
+fw --zone="$wgzone" --add-rich-rule="$link_rule"
 
 sleep 2
 echo "== check"
