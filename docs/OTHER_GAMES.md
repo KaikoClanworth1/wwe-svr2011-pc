@@ -242,7 +242,7 @@ layout known, some fields not; **unknown** = not looked at or not found.
 
 | From | Model | Renders | Theme | Moveset | Moves |
 |---|---|---|---|---|---|
-| SvR 2007 | `svr08_char.py` + bake the per-part textures (biggest job) | easy: SF2B -> SSFA/SSFB, SF2A -> SSFC + portrait | done: `tools/xact.py theme` (the longest MUS_<id>_N cue, ffmpeg) | new 412 B slot map | 2008 path; EXH 24 -> 36 B; most motions also exist in 2008 |
+| SvR 2007 | done: `svr07_char.py` (per-part textures baked into 2011's sheets; superstar_port svr2007) | easy: SF2B -> SSFA/SSFB, SF2A -> SSFC + portrait | done: `tools/xact.py theme` (the longest MUS_<id>_N cue, ffmpeg) | new 412 B slot map | 2008 path; EXH 24 -> 36 B; most motions also exist in 2008 |
 | SvR 2008 | done (`svr08_char.py`) | done | done (yaf) | done by hand (Sabu, Sandman): make it a slot map | done by hand: becomes the shared old-game path |
 | SvR 2009 | `svr08_char.py` + hex entry names (small) | pad 256 x 512 to 512 | yaf as 2008 (music id at PRO +0xE4) | the 2008 map shifted 10 B | 2008 path + an event-op rewriter (biggest job) |
 | SvR 2010 | done | done | done | done | done (`svr10_moves.py`) |
