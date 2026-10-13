@@ -24,7 +24,7 @@ A match type mod is a folder `Mods\MatchTypes\<id>\` holding a `manifest.txt`
 |---|---|---|
 | `type=matchtype`, `id=`, `name=`, `author=`, `version=`, `made_with=` | both | as every mod |
 | `about=` | both | one line for the launcher / Mod Maker |
-| `builtin=<key>` | 1 | the port match type this mod switches: `falls_count_anywhere`, `championship_scramble`, `royal_rumble_15_25`, `lumberjack`, `free_roaming_backstage`, `backstage_more_people`, `weapons_everywhere`, `slobber_knocker`, `three_stages_of_hell`, `elimination`, `mystery_opponent`, `hiac_tables_ladders`, `gauntlet_eliminator`, `cage_weapons`, `inferno_weapons`, `online_first_blood` |
+| `builtin=<key>` | 1 | the port match type this mod switches: `falls_count_anywhere`, `championship_scramble`, `royal_rumble_15_25`, `lumberjack`, `free_roaming_backstage`, `backstage_more_people`, `weapons_everywhere`, `slobber_knocker`, `three_stages_of_hell`, `elimination`, `mystery_opponent`, `hiac_tables_ladders`, `hiac_roof_start`, `gauntlet_eliminator`, `cage_weapons`, `inferno_weapons`, `online_first_blood` |
 | `base=0xNN` | 2 | the rule record (misc.pac RUL, 0x00-0x76) the match starts from: its slots, flags and family |
 | `menu=<list>` | 2 | the menu list that gets the row: `ONE ON ONE`, `TWO ON TWO`, `TRIPLE THREAT`, `FATAL-4-WAY`, `6-MAN`, `HANDICAP`, `ROYAL RUMBLE`, `BACKSTAGE` |
 | `submenu=<text>` | 2 | the submenu inside that list (e.g. `EXTREME RULES`); made when missing. Required for `ONE ON ONE` (its list is full: 14 rows, the most a list shows) |

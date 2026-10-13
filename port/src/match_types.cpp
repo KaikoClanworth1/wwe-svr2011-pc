@@ -137,6 +137,16 @@ struct WeaponsRow {
   uint32_t index;  // its place in the group
 };
 std::vector<WeaponsRow> g_weapons_rows;
+// HELL IN A CELL: START ON THE ROOF - a third row of each cell submenu (match
+// type mod hiac_roof_start): everyone is put on the cell's roof at the bell
+// (MatchTypesUpdate). The roof is the area +444 10, the height y -60.5 (y is
+// down) of the real position vector *(char +304) - the shove-off, the
+// break-through and climbing down work from there as after a climb; no pins
+// count up there (the game's own rule), so the fight comes down to finish.
+constexpr uint32_t kRoofLabel = 0x0FA0B120, kRoofText = 0x0FA0B121;
+std::vector<WeaponsRow> g_roof_rows;
+bool g_pending_roof = false;
+bool g_roof = false;  // the match set up starts on the cell's roof
 bool g_pending_weapons = false;
 bool g_weapons = false;  // the match set up is a WEAPONS EVERYWHERE one
 uint32_t g_weapons_text[2] = {};
@@ -287,7 +297,7 @@ int g_test_rule = -1;
 // Test aid: SVR2011_TEST_MODE=<mode> - ONE ON ONE NORMAL (route match) plays
 // a mode only a runtime row gives: three_stages, elimination_tt,
 // elimination_f4w, weapons, slobber, lumberjack (as if its row was picked).
-enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack, kGauntletElim, kGauntletElimEr, kMystery };
+enum class TestMode { kNone, kThreeStages, kElimTT, kElimF4W, kWeapons, kSlobber, kLumberjack, kGauntletElim, kGauntletElimEr, kMystery, kRoof };
 TestMode g_test_mode = TestMode::kNone;
 
 // Node ids (+0x1C): the game finds a node by binary search over the table
@@ -302,6 +312,7 @@ TestMode g_test_mode = TestMode::kNone;
 std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   if (size < kFirst || Rd32(table) != 1) return {};
   g_weapons_rows.clear();
+  g_roof_rows.clear();
   g_stages_rows.clear();
   g_elim_rows.clear();
   const uint32_t total = Rd32(table + 4), shown = Rd32(table + 8);
@@ -339,6 +350,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   bool structure_on[std::size(kStructures)];
   for (size_t s = 0; s < std::size(kStructures); ++s) structure_on[s] = svr2011::MatchTypeOn(kStructures[s].mod);
   const bool gauntlet_elim = svr2011::MatchTypeOn("gauntlet_eliminator");
+  const bool roof_start = svr2011::MatchTypeOn("hiac_roof_start");
   const bool more_backstage = svr2011::MatchTypeOn("backstage_more_people");
   const bool free_roam_on = svr2011::MatchTypeOn("free_roaming_backstage");
   // THREE STAGES OF HELL's sets: rows of a submenu (its node `parent`, depth
@@ -489,7 +501,9 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       ++group;
     }
     if (const uint32_t rule = Rd32(rec + 0x5C), st = StructureOf(rule) ? uint32_t(StructureOf(rule) - kStructures) : ~0u;
-        st != ~0u && structure_on[st] && submenu) {
+        st != ~0u && (structure_on[st] || (st == 0 && roof_start)) && submenu) {
+      // (the cell: its weapons row and / or START ON THE ROOF)
+      const bool with_weapons = structure_on[st], with_roof = st == 0 && roof_start;
       // The row becomes a submenu (a new node in its place) of the match and
       // its weapons one (a new group).
       out.resize(out.size() - kRec);
@@ -502,24 +516,33 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       Wr32(row.data() + 0x3C, (Rd32(row.data() + 0x3C) & ~2u) | (Rd32(rec + 0x3C) & 2u));
       Wr32(row.data() + 0x40, Rd32(rec + 0x40));
       out.insert(out.end(), row.begin(), row.end());
-      for (uint32_t k = 0; k < 2; ++k) {  // (the match, the weapons one)
+      // (the match, the weapons one, the roof one)
+      const uint32_t leaves = 1 + (with_weapons ? 1 : 0) + (with_roof ? 1 : 0);
+      for (uint32_t k = 0; k < leaves; ++k) {
+        const bool is_weapons = k == 1 && with_weapons, is_roof = k == leaves - 1 && with_roof;
         std::vector<uint8_t> leaf(rec, rec + kRec);
         Wr32(leaf.data() + 0x18, group);
         Wr32(leaf.data() + 0x1C, node + k);
         Wr32(leaf.data() + 0x38, Rd32(rec + 0x1C));
         Wr32(leaf.data() + 0x14, Rd32(rec + 0x14) + 0x100);  // (depth +0x16: one down)
         Wr32(leaf.data() + 0x40, 0);
-        Wr32(leaf.data() + 0x3C, k == 1 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
-        if (k == 1) {
+        Wr32(leaf.data() + 0x3C, k == leaves - 1 ? Rd32(rec + 0x3C) | 2u : Rd32(rec + 0x3C) & ~2u);
+        if (is_weapons) {
           Wr32(leaf.data() + 0x00, kStructures[st].label);
           Wr32(leaf.data() + 0x04, kStructures[st].text);
           g_weapons_rows.push_back({group, k});
         }
+        if (is_roof) {
+          Wr32(leaf.data() + 0x00, kRoofLabel);
+          Wr32(leaf.data() + 0x04, kRoofText);
+          g_roof_rows.push_back({group, k});
+        }
         tail.insert(tail.end(), leaf.begin(), leaf.end());
         ++added;
       }
-      REXLOG_INFO("match types: rule {:02X} submenu with {}, group {:02X}", rule, kStructures[st].name, group);
-      node += 2;
+      REXLOG_INFO("match types: rule {:02X} submenu with {}{}, group {:02X}", rule, with_weapons ? kStructures[st].name : "",
+                  with_roof ? " + START ON THE ROOF" : "", group);
+      node += leaves;
       ++group;
       continue;
     }
@@ -830,7 +853,7 @@ bool MatchTypeOn(const char* id) {
     std::error_code ec;
     for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
                           "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
-                          "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders",
+                          "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders", "hiac_roof_start",
                           "gauntlet_eliminator", "cage_weapons", "inferno_weapons", "online_first_blood"}) {
       m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
       if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
@@ -861,7 +884,8 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
                                {"gauntlet_eliminator", TestMode::kGauntletElim, int(kGauntlet)},
                                {"gauntlet_eliminator_er", TestMode::kGauntletElimEr, int(kGauntlet)},
                                {"lumberjack", TestMode::kLumberjack, int(kLumberjack)},
-                               {"mystery", TestMode::kMystery, 0}};
+                               {"mystery", TestMode::kMystery, 0},
+                               {"roof", TestMode::kRoof, int(kCellFirst)}};
     for (const Mode& k : kModes)
       if (m == k.name) {
         g_test_mode = k.mode;
@@ -936,6 +960,9 @@ REX_HOOK_RAW(sub_8243FCC8) {
   g_pending_weapons = ge_er;  // (GAUNTLET ELIMINATOR: EXTREME RULES)
   for (const WeaponsRow& w : g_weapons_rows)
     if (group == w.group && ctx_row == w.index) g_pending_weapons = true;
+  g_pending_roof = false;
+  for (const WeaponsRow& w : g_roof_rows)
+    if (group == w.group && ctx_row == w.index) g_pending_roof = true;
   for (int k = 0; k < 8; ++k)
     if (group == kBackstage1v1Group && g_own_row_index[k] >= 0 && ctx_row == uint32_t(g_own_row_index[k]))
       g_pending_own_row = k;
@@ -968,6 +995,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
       case TestMode::kElimF4W: g_pending_elimination = true; break;
       case TestMode::kWeapons: g_pending_weapons = true; break;
       case TestMode::kMystery: g_pending_mystery = true; break;
+      case TestMode::kRoof: g_pending_roof = true; break;
       case TestMode::kGauntletElim:
       case TestMode::kGauntletElimEr:
         g_pending_ge = true;
@@ -1007,6 +1035,7 @@ REX_HOOK_RAW(sub_827374A0) {
     ctx.r4.u64 = rule;
     g_pending_weapons = online.weapons;
     g_pending_stages = online.stages;
+    if (online.roof) g_pending_roof = true;
     if (online.slobber) {  // (as the SLOBBER KNOCKER row, for six: the players a team against the CPUs)
       g_pending_slobber = true;
       g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
@@ -1055,6 +1084,9 @@ REX_HOOK_RAW(sub_827374A0) {
   }
   g_slobber = g_pending_slobber && rule == kGauntlet && !Rd32(base + kStoryContext);
   g_pending_slobber = false;
+  g_roof = g_pending_roof && rule >= kCellFirst && rule <= kCellLast && !Rd32(base + kStoryContext);
+  g_pending_roof = false;
+  if (g_roof) REXLOG_INFO("match types: HELL IN A CELL - START ON THE ROOF (rule {:02X})", rule);
   g_ge = g_pending_ge && rule == kGauntlet && !Rd32(base + kStoryContext);
   g_pending_ge = false;
   if (g_ge) {
@@ -1970,23 +2002,52 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
       }
     last = frames;
   }
+  // START ON THE ROOF: from the bell for 1.5 s everyone in it (people 0-3,
+  // not the referee or the commentators) is held on the roof - a corner
+  // spot each, off the breakable middle panels (|x| < 13): the real
+  // position vector, its copy and the area.
+  if (g_roof && base[0x82E3DE00] >= kCellFirst && base[0x82E3DE00] <= kCellLast) {
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    static uint32_t placed_frames = ~0u;
+    if (frames < 90) {
+      constexpr float kSpot[4][2] = {{-30.0f, 30.0f}, {30.0f, -30.0f}, {30.0f, 30.0f}, {-30.0f, -30.0f}};
+      constexpr float kRoofY = -60.5f;
+      for (uint32_t i = 0, k = 0; i < 6 && k < 4; ++i) {
+        const uint32_t c = Rd32(base + kChars + i * 4);
+        if (!c || Rd32(base + c + 1800) >= 30) continue;
+        const float x = kSpot[k][0], z = kSpot[k][1];
+        ++k;
+        if (const uint32_t v = Rd32(base + c + 304)) WrF(base + v, x), WrF(base + v + 4, kRoofY), WrF(base + v + 8, z);
+        WrF(base + c + 288, x), WrF(base + c + 292, kRoofY), WrF(base + c + 296, z);
+        base[c + 444] = 10;
+      }
+      if (placed_frames == ~0u) REXLOG_INFO("match types: START ON THE ROOF - everyone on the roof (frame {})", frames);
+      placed_frames = frames;
+    } else {
+      placed_frames = ~0u;
+    }
+  }
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a
   // match the first two people's position, area bytes (+441, +444) and motion;
-  // SVR2011_TEST_CELL_ROOF=<y> - at match frame 180 both are put at that
-  // height (x -15 / +15, z 0), once.
+  // SVR2011_TEST_CELL_ROOF=<y> - from match frame 180 to 240 both are put at
+  // that height (y is down: the roof -60.5), x -30 / +30, z 30 - the real
+  // position vector (*(+304)) and its copy (+288), area +444 10 (the roof).
   if (static const bool cell_log = std::getenv("SVR2011_TEST_CELL") != nullptr; cell_log) {
     const uint32_t frames = Rd32(base + 0x82E3CD0C);
     static uint32_t last = 0;
     static bool moved = false;
     if (frames < last) moved = false;
-    if (static const char* roof = std::getenv("SVR2011_TEST_CELL_ROOF"); roof && !moved && frames >= 180) {
-      moved = true;
+    if (static const char* roof = std::getenv("SVR2011_TEST_CELL_ROOF"); roof && frames >= 180 && frames < 240) {
       const float y = float(std::atof(roof));
       for (uint32_t i = 0; i < 2; ++i)
         if (const uint32_t c = Rd32(base + kChars + i * 4)) {
-          WrF(base + c + 288, i ? 15.0f : -15.0f), WrF(base + c + 292, y), WrF(base + c + 296, 0.0f);
-          REXLOG_INFO("match types: cell test - person {} put at height {}", i, y);
+          const float x = i ? 30.0f : -30.0f, z = 30.0f;
+          if (const uint32_t v = Rd32(base + c + 304)) WrF(base + v, x), WrF(base + v + 4, y), WrF(base + v + 8, z);
+          WrF(base + c + 288, x), WrF(base + c + 292, y), WrF(base + c + 296, z);
+          base[c + 444] = 10;
+          if (!moved) REXLOG_INFO("match types: cell test - person {} put on the roof ({}, {}, {})", i, x, y, z);
         }
+      moved = true;
     }
     if (frames / 60 != last / 60 || frames < last) {
       std::string s;
@@ -2470,6 +2531,19 @@ namespace svr2011 {
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
   if (const uint32_t t = MysteryOpponentString(id, g_memory)) return t;
+  if ((id == kRoofLabel || id == kRoofText) && g_memory) {
+    static uint32_t text[2] = {};
+    const uint32_t k = id == kRoofText;
+    const char* s = k ? "The match starts on top of the cell. No pins count up there: shove your opponent off, break "
+                        "through the roof or climb down to finish it."
+                      : "START ON THE ROOF";
+    if (!text[k]) {
+      const uint32_t n = uint32_t(std::strlen(s) + 1);
+      text[k] = g_memory->SystemHeapAlloc(n);
+      std::memcpy(g_memory->TranslateVirtual<char*>(text[k]), s, n);
+    }
+    return text[k];
+  }
   for (size_t s = 0; s < std::size(kStructures) && g_memory; ++s) {
     const StructureWeapons& st = kStructures[s];
     if (id != st.label && id != st.text) continue;
