@@ -8,7 +8,8 @@ bones, meshes}]}]}. The convert writes into <out dir>: model.json (svr11_build's
 (the PS2 part textures), ch.pac and report.json (the builder's report + {game, id, sources: [{attire, model_id,
 raw_name, bones_folded, height_m}], scale, height_m, bones_folded}). Exit 0 ok, 2 bad input, 3 failed (the builder's codes).
 
-Games: SmackDown! Here Comes the Pain (HCTP). The PS2 data (HCTP):
+Games: SmackDown! Here Comes the Pain (HCTP), SmackDown! Shut Your Mouth (SYM: HCTP's formats, ids
+character * 16 + n - see class SYM). The PS2 data (HCTP):
 
 - PAC\\CH.PAC / CH2.PAC: DPAC (u32 "DPAC", ..., groups from 0x800, data from 0x4000; group "EMD": u16
   n | 0x8000, u16 start sector, n x {u16 id, u16 size / 0x100}, entries 0x800-aligned). Model id XXYZ (hex
@@ -254,6 +255,8 @@ class HCTP:
     pacs = ('PAC/CH.PAC', 'PAC/CH2.PAC')
 
     def __init__(self, disc):
+        if type(self) is HCTP and disc.exists('PAC/DJ.PAC'):   # (Shut Your Mouth: class SYM)
+            raise BadInput('not Here Comes the Pain')
         self.disc = disc
         self.entries = {}   # id -> (pac path, offset, size)
         for p in self.pacs:
@@ -291,7 +294,50 @@ class HCTP:
         return body, parts, tex
 
 
-GAMES = [HCTP]
+class SYM(HCTP):
+    """SmackDown! Shut Your Mouth: HCTP's formats; model ids are character * 16 + n: n 0/1, 2/3, 4/5 an
+    attire's detailed (even, 96 nodes) and match (odd, 92) body; 6-9 extra bodies and gear (glasses, a
+    vest: a few hundred vertices)."""
+    game = 'WWE SmackDown! Shut Your Mouth'
+    GEAR_VERTS = 600
+
+    def __init__(self, disc):
+        if not (disc.exists('PAC/DJ.PAC') and disc.exists('PAC/FINKEL.PAC')):   # (SYM's own pacs)
+            raise BadInput('not Shut Your Mouth')
+        super().__init__(disc)
+
+    def shape(self, id_):
+        """-> (vertex count, the model's texture names) of an entry's body"""
+        e = self.entry(id_)
+        if 2 not in e or e[2][:4] != b'YOBJ':
+            return 0, frozenset()
+        y = read_yobj(e[2])
+        return sum(len(m['pos']) for m in y['meshes']), frozenset(t.lower() for t in y['textures'])
+
+    def characters(self):
+        chars = {}
+        for id_ in sorted(self.entries):
+            ch, n = id_ >> 4, id_ & 0xF
+            ats = chars.setdefault(ch, {})
+            if n <= 5:
+                at = n // 2
+                if at not in ats or n % 2 == 0:
+                    ats[at] = id_
+        for id_ in sorted(self.entries):   # (6-9: more bodies - not gear, not another copy of an attire's)
+            ch, n = id_ >> 4, id_ & 0xF
+            if not 6 <= n <= 9:
+                continue
+            verts, texs = self.shape(id_)
+            if verts < self.GEAR_VERTS:
+                continue
+            if any(self.shape(o)[1] == texs for o in self.entries if o >> 4 == ch and (o & 0xF) <= 5):
+                continue
+            ats = chars.setdefault(ch, {})
+            ats[max(ats, default=-1) + 1] = id_
+        return chars
+
+
+GAMES = [SYM, HCTP]
 
 
 def open_game(path):
