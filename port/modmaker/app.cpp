@@ -42,6 +42,15 @@ HWND g_wnd = nullptr;
 std::wstring g_game;
 float g_scale = 1;
 bool g_behind = false;
+
+void ShellOpen(const std::wstring& what) {
+  if (what.empty()) return;
+  if (g_behind) {
+    Log("(test: would open " + Utf8(what) + ")");
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", what.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
 PageId g_page = PageId::kArena;
 std::wstring g_project_file;
 PageId g_project_page = PageId::kArena;

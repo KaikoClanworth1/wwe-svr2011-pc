@@ -44,6 +44,9 @@ extern HWND g_wnd;
 extern std::wstring g_game;  // the installed game folder ("" = none)
 extern float g_scale;        // UI scale (1 at 96 dpi with the 17 px font)
 extern bool g_behind;        // --behind: a test run; the window is never shown, games it starts stay hidden too
+// Opens a file, folder or link with the shell (Explorer, the browser) - never in a --behind test (logged instead),
+// never an empty path.
+void ShellOpen(const std::wstring& what);
 
 // An RGBA picture as a shader resource (nullptr for an empty picture).
 ID3D11ShaderResourceView* MakeTexture(const Image& img);

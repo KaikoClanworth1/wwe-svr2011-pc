@@ -331,7 +331,7 @@ void OpenResult() {
     Log("port test: would open " + out);
     return;
   }
-  ShellExecuteW(nullptr, L"open", p.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  ShellOpen(p.wstring());
 }
 
 void DiscRow() {
@@ -491,7 +491,7 @@ void Draw() {
     ImGui::TableHeadersRow();
     for (int i = 0; i < int(g_list.items.size()); ++i) {
       const Json& it = g_list.items[size_t(i)];
-      const bool have = !it["in_2011"].IsNull();
+      const bool have = it["in_2011"].Truthy();  // (a name / id, or true; false / missing = new)
       if (have && g_hide_have) continue;
       const std::string name = it["name"].Str().empty() ? ItemKey(it) : it["name"].Str();
       if (!f.empty() && Lower(name).find(f) == std::string::npos && Lower(ItemKey(it)).find(f) == std::string::npos) continue;
@@ -501,10 +501,15 @@ void Draw() {
       ImGui::TableNextColumn();
       if (have) ImGui::TextColored(kWarn, "has it (%s)", it["in_2011"].Str().c_str());
       else ImGui::TextDisabled("new");
+      if (it["in_svr07"].Truthy()) {  // (svr06 entrances: SvR 2007 has the same one, a better source)
+        ImGui::SameLine();
+        ImGui::TextColored(kWarn, "SvR 2007 has it");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("SvR 2007's version of this entrance is the better source: port it from that disc.");
+      }
       ImGui::TableNextColumn();
       std::string details;  // the converter's other fields, short
       for (const auto& [key, v] : it.fields) {
-        if (key == "name" || key == "in_2011" || v.type == Json::Type::kArray || v.type == Json::Type::kObject || v.IsNull()) continue;
+        if (key == "name" || key == "in_2011" || key == "in_svr07" || key == "key" || v.type == Json::Type::kArray || v.type == Json::Type::kObject || v.IsNull()) continue;
         if (!details.empty()) details += "  ";
         details += key + " " + v.Str();
       }

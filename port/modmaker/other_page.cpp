@@ -426,7 +426,7 @@ void Bink2Section() {
   if (g_bink2_state == "not found") {
     ImGui::SameLine();
     if (ImGui::SmallButton("RAD's download page"))
-      ShellExecuteW(nullptr, L"open", L"https://www.radgametools.com/bnkdown.htm", nullptr, nullptr, SW_SHOWNORMAL);
+      ShellOpen(L"https://www.radgametools.com/bnkdown.htm");
   }
   ImGui::Unindent();
 }
