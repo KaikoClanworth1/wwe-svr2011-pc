@@ -203,13 +203,26 @@ std::string ItemKey(const Json& item) {
   return {};
 }
 
+// WWE '12 - 2K17 pacs are xcompressed: the converters read them through svrmod.exe (the Mod Maker's own pac tool) -
+// next to the scripts in Mod Maker Tools, or the dev tree's out\modmaker; passed as --svrmod when found.
+std::vector<std::wstring> SvrmodArgs(int k, const std::string& game) {
+  const std::wstring script = kKinds[k].script;
+  if (game.rfind("wwe", 0) != 0 || (script != L"superstar_port.py" && script != L"entrance_port.py" && script != L"moves_port.py")) return {};
+  std::error_code ec;
+  for (const fs::path& cli : {fs::path(ToolsDir()) / L"svrmod.exe", fs::path(ToolsDir()) / L".." / L"out" / L"modmaker" / L"svrmod.exe"})
+    if (fs::exists(cli, ec)) return {L"--svrmod", fs::weakly_canonical(cli, ec).wstring()};
+  return {};
+}
+
 void List(int k, const std::string& game) {
   const std::wstring src = Source();
   g_list_for = std::to_string(k) + "|" + game + "|" + Utf8(src);
   g_list = Json();
   g_list_error.clear();
   g_pick = -1;
-  RunToolJson(kKinds[k].script, {L"list", L"--game", Wide(game), L"--src", src, L"--pac11", (fs::path(g_game) / L"pac").wstring()},
+  std::vector<std::wstring> largs = {L"list", L"--game", Wide(game), L"--src", src, L"--pac11", (fs::path(g_game) / L"pac").wstring()};
+  for (auto& x : SvrmodArgs(k, game)) largs.push_back(x);
+  RunToolJson(kKinds[k].script, largs,
               [want = g_list_for](int code, const std::string& out) {
                 if (want != g_list_for) return;
                 Json j;
@@ -256,6 +269,119 @@ int FreeMoveRecord(const std::string& name) {
   return first;
 }
 
+// The picture picker (a game whose renders can't be tied to superstars - WWE 2K17's hashed names): the converter's
+// `pictures` verb lists every render as a thumbnail with its best guess for the item; the pick goes to convert as
+// --picture <key>.
+struct PicturePick {
+  std::string for_;        // kind|game|src|item the list is for
+  bool asked = false;
+  Json list;               // {"pictures": [{key, thumb, w, h, name}], "guess": {key, score, confident, from} | null}
+  std::string error;
+  std::string pick;        // the key picked ("" none)
+  std::map<std::string, Picture> thumbs;
+  char find[48] = "";
+};
+PicturePick g_pp;
+
+bool NeedsPicture(const Json& item) { return item["needs_picture"].Truthy(); }
+
+void AskPictures(int k, const std::string& game, const Json& item) {
+  const std::string want = std::to_string(k) + "|" + game + "|" + Utf8(Source()) + "|" + ItemKey(item);
+  if (g_pp.for_ == want && (g_pp.asked || Busy())) return;
+  if (g_pp.for_ != want) g_pp = PicturePick(), g_pp.for_ = want;
+  if (Busy()) return;
+  g_pp.asked = true;
+  const fs::path cache = WorkDir() / Wide(game + "_pictures");
+  std::error_code ec;
+  fs::create_directories(cache, ec);
+  std::vector<std::wstring> pargs = {L"pictures", L"--game", Wide(game), L"--src", Source(), L"--item", Wide(ItemKey(item)), L"--out", cache.wstring()};
+  for (auto& x : SvrmodArgs(k, game)) pargs.push_back(x);
+  RunToolJson(kKinds[k].script, pargs,
+              [want](int code, const std::string& out) {
+    if (g_pp.for_ != want) return;
+    Json j;
+    if (code != 0 || !ParseJson(out, j) || j.type != Json::Type::kObject) {
+      g_pp.error = "the converter couldn't list the pictures (exit " + std::to_string(code) + "): see the log";
+      return;
+    }
+    g_pp.list = std::move(j);
+    const Json& g = g_pp.list["guess"];
+    if (g.type == Json::Type::kObject && g["confident"].Truthy()) g_pp.pick = g["key"].Str();
+  });
+}
+
+// The grid: every picture, the guess outlined, the pick shown big.
+void PicturePicker() {
+  if (!g_pp.error.empty()) {
+    ImGui::TextColored(kBad, "%s", g_pp.error.c_str());
+    return;
+  }
+  const Json& pics = g_pp.list["pictures"];
+  if (pics.items.empty()) {
+    ImGui::TextDisabled("Reading the disc's pictures ...");
+    return;
+  }
+  const Json& g = g_pp.list["guess"];
+  const std::string guess = g.type == Json::Type::kObject ? g["key"].Str() : "";
+  ImGui::TextUnformatted("The select picture");
+  ImGui::SameLine();
+  if (!guess.empty()) {
+    char score[16];
+    std::snprintf(score, sizeof score, "%d%%", int(std::lround(g["score"].n * 100)));
+    ImGui::TextDisabled("(best guess: %s match%s%s)", score, g["from"].Str().empty() ? "" : " with ", g["from"].Str().c_str());
+  } else {
+    ImGui::TextDisabled("(this game's pictures have no names: pick the one that's this superstar)");
+  }
+  bool named = false;  // (a find box only when the pictures have names: 2K17's are hashes)
+  for (const auto& p : pics.items) named |= !p["name"].Str().empty();
+  if (named) {
+    ImGui::SetNextItemWidth(200 * g_scale);
+    ImGui::InputTextWithHint("##picfind", "find by name", g_pp.find, sizeof g_pp.find);
+    ImGui::SameLine();
+  }
+  if (ImGui::SmallButton("No picture")) g_pp.pick.clear();
+  const std::string f = Lower(g_pp.find);
+  const float tw = 72 * g_scale;
+  ImGui::BeginChild("pics", ImVec2(-200 * g_scale, 2.2f * (tw + 8 * g_scale)), true);
+  const int per_row = std::max(1, int((ImGui::GetContentRegionAvail().x + 6 * g_scale) / (tw + 6 * g_scale)));
+  int n = 0;
+  for (const auto& p : pics.items) {
+    const std::string key = p["key"].Str(), name = p["name"].Str();
+    if (!f.empty() && Lower(name).find(f) == std::string::npos && Lower(key).find(f) == std::string::npos) continue;
+    if (n++ % per_row) ImGui::SameLine(0, 6 * g_scale);
+    ImGui::PushID(key.c_str());
+    ImGui::BeginGroup();  // (one item for SameLine, whatever the picture draws)
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    if (ImGui::IsRectVisible(ImVec2(tw, tw))) {  // (thumbnails load on first sight)
+      auto it = g_pp.thumbs.find(key);
+      if (it == g_pp.thumbs.end()) {
+        Image img;
+        if (LoadPicture(Wide(p["thumb"].Str()), img)) it = g_pp.thumbs.emplace(key, Picture()).first, it->second.Set(std::move(img));
+        else it = g_pp.thumbs.emplace(key, Picture()).first;
+      }
+      if (!it->second.Empty()) it->second.Draw(tw, tw);
+      else ImGui::Dummy(ImVec2(tw, tw));
+    } else {
+      ImGui::Dummy(ImVec2(tw, tw));
+    }
+    ImGui::EndGroup();
+    if (ImGui::IsItemClicked()) g_pp.pick = key;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", name.empty() ? key.c_str() : name.c_str());
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (key == g_pp.pick) dl->AddRect(at, ImVec2(at.x + tw, at.y + tw), IM_COL32(220, 40, 60, 255), 4 * g_scale, 0, 3 * g_scale);
+    else if (key == guess) dl->AddRect(at, ImVec2(at.x + tw, at.y + tw), IM_COL32(240, 200, 90, 255), 4 * g_scale, 0, 1.5f * g_scale);
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  ImGui::SameLine();
+  ImGui::BeginGroup();
+  if (const auto it = g_pp.thumbs.find(g_pp.pick); !g_pp.pick.empty() && it != g_pp.thumbs.end() && !it->second.Empty())
+    it->second.Draw(180 * g_scale, 180 * g_scale);
+  else
+    ImGui::TextDisabled(g_pp.pick.empty() ? "No picture picked:\nthe mod keeps the\nbase superstar's." : "");
+  ImGui::EndGroup();
+}
+
 void Convert(int k, const std::string& game, const Json& item) {
   const std::string key = ItemKey(item);
   std::string safe;
@@ -280,15 +406,10 @@ void Convert(int k, const std::string& game, const Json& item) {
       Log("port: move record " + std::to_string(id) + " for " + item["name"].Str());
     }
   }
-  if ((entrance || moves) && (game == "wwe13" || game == "wwe12" || game == "wwe2k14")) {  // xcompress: its svrmod.exe
-    for (const fs::path& cli : {fs::path(ToolsDir()) / L"svrmod.exe", fs::path(ToolsDir()) / L".." / L"out" / L"modmaker" / L"svrmod.exe"})
-      if (fs::exists(cli, ec)) {
-        args.push_back(L"--svrmod"), args.push_back(fs::weakly_canonical(cli, ec).wstring());
-        break;
-      }
-  }
+  for (auto& x : SvrmodArgs(k, game)) args.push_back(x);
   if (entrance && !g_settings.bink2_tool.empty())  // (its --titantron: Bink 2 movies through the player's tool)
     args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
+  if (NeedsPicture(item) && !g_pp.pick.empty()) args.push_back(L"--picture"), args.push_back(Wide(g_pp.pick));
   for (auto& o : Options()) args.push_back(o);
   g_result = Json();
   g_result_error.clear();
@@ -566,7 +687,10 @@ void KindBody(int k) {
   if (g_test_stage == 1 && !Busy() && !index_wait && g_list_for == want && (!g_list.items.empty() || !g_list_error.empty())) {
     if (!g_list_error.empty()) Log("port test: list failed: " + g_list_error), g_test_stage = 3;
     for (int i = 0; g_test_stage == 1 && i < int(g_list.items.size()); ++i)
-      if (ItemKey(g_list.items[size_t(i)]) == g_test_item) {
+      if (!g_test_item.empty() && g_test_item.back() == '?' && ItemKey(g_list.items[size_t(i)]) + "?" == g_test_item) {
+        Log("port test: " + std::to_string(g_list.items.size()) + " listed; selected " + g_test_item);  // ("<key>?": picked, not converted)
+        g_pick = i, g_test_stage = 3;
+      } else if (ItemKey(g_list.items[size_t(i)]) == g_test_item) {
         Log("port test: " + std::to_string(g_list.items.size()) + " listed; converting " + g_test_item);
         g_pick = i;
         Convert(k, game, g_list.items[size_t(i)]);
@@ -639,6 +763,10 @@ void KindBody(int k) {
     return;
   }
   const Json& item = g_list.items[size_t(g_pick)];
+  if (NeedsPicture(item)) {
+    AskPictures(k, game, item);
+    PicturePicker();
+  }
   ImGui::SetNextItemWidth(360 * g_scale);
   ImGui::InputTextWithHint("Options (advanced)", "e.g. --height 1.05 --no-moves", g_options, sizeof g_options);
   Hint("Extra options the converter takes (each converter's --help lists them), e.g. --base <id> --height <scale> "
