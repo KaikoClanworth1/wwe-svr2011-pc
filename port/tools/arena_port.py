@@ -20,8 +20,9 @@ What each game needs (docs/OTHER_GAMES.md, "Arenas"):
   0xC8 / 0xC9, ids 2011 uses for models (the 2011 arena load crashed on them):
   they move to 0x190 / 0x191. 2008 has no crowd, announce table pictures,
   card or visibility tree in the arena file: the crowd (0x4E20-0x4E23,
-  0x4E2A), 0x192, 0xEE48 and 0xEA6C come from the 2011 arena of the base slot
-  (--pac11 <2011 game folder>). Textures are halved (top mip dropped, biggest
+  0x4E2A), 0x192, 0xEE48, 0xEA6C and the turnbuckle covers come from 2011 RAW
+  (--pac11 <2011 game folder>). The arena keeps its own lights (0x7530), plus the
+  light sets the game looks up itself that it lacks (2007: 11-14). Textures are halved (top mip dropped, biggest
   first) until the file is no bigger than that host's. Pictures: 2008's VS
   theme (M<nn>I) has its art; there is no select banner, so it is cut from it.
   Tested: RAW (bg01) plays in 2011 with the 2011 crowd.
@@ -96,6 +97,10 @@ SVR2007 = {
     17: ('One Night Stand', None), 18: ('Cyber Sunday', None), 19: ("Saturday Night's Main Event", None),
 }
 HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0xEE48, 0xEA6C)
+# SvR 2007-2009 turnbuckle covers (ar_cover10-13): a black logo pad (rin_tb00) inside a white taped
+# shell (rin_tb10) that 2011 draws over the pad - the "white turnbuckles". 2011 RAW's covers are the
+# same black logo pads with no shell, on the same ring.
+HOST_COVERS = (0x3C4, 0x3C5, 0x3C6, 0x3C7)
 MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (a bigger file can run out of the arena heap)
 
 
@@ -311,23 +316,60 @@ def find_host(pac11, base):
     raise BadInput('--pac11 %s: no bg%02d.pac (give the SvR 2011 game folder)' % (pac11, base))
 
 
-def remap_lights(flags, host_flags):
-    """Model flag text (0xC351): light numbers l(n) the 2011 host arena has no
-    light for go to its nearest one of the same hundred (SvR 2009's l(502)
-    crashed the 2011 arena load; 2011 has 501)."""
+# Arena lights: entry 0x7530 of each arena is a YMKs bank of light sets (ids 10-14, 20, 30, 100-117,
+# 200-202, 300-306, 450-454, 500-503 in 2011 RAW). Each set: ground / sky colour (y 0 / 1), up to 4
+# directional lights (y 10-13) and moving lights (y 50-59), as 25-byte keys (position, rotation,
+# colour). The model flags (0xC351) pick a set per model with l(n), the light zones (0xC353) per
+# area of the floor (entrance stage, ramp); a model without l() gets set 100. Every SvR 2007-2010
+# and WWE '12-2K14 arena has its own bank in this format, with the same id plan.
+EXE_LIGHTS = (10, 11, 12, 13, 14, 20, 30, 31, 100, 110, 115, 500)  # sets the game looks up itself
+
+
+def light_bank(raw):
+    """0x7530 bytes (2007-2009: no YMKs header, which 2011 accepts) -> ymks.Bank"""
+    import ymks
+    if raw[:4] not in (b'YMKs', b'YMBs'):
+        raw = b'YMKs' + struct.pack('<I', 0x100) + bytes(8) + raw
+    return ymks.read_bank(raw)
+
+
+def light_ids(bank):
+    return sorted({e['id'] for e in bank.entries})
+
+
+def fill_lights(bank, host_bank, ids=EXE_LIGHTS):
+    """Light sets the game looks up by number that the arena's bank lacks (SvR 2007 has no 11-14;
+    its own bank crashed the 2011 load without them) are copied from 2011 RAW's -> [ids added]"""
+    have = set(light_ids(bank))
+    added = []
+    for i in ids:
+        if i in have:
+            continue
+        ents = [dict(e) for e in host_bank.entries if e['id'] == i]
+        if ents:
+            ents[0]['share'] = False
+            bank.entries += ents
+            added.append(i)
+    return added
+
+
+def remap_lights(flags, have):
+    """Model flag text (0xC351): l(n) / le(n) / lg(n) sets missing from the light bank the arena
+    ships (have: its ids) go to the nearest set of the same hundred (an unknown set is index -1
+    in the game)."""
     import re
-    have = sorted({int(x) for x in re.findall(rb'l\((\d+)\)', host_flags)})
+    have = sorted(have)
     missing = {}
 
     def sub(m):
-        n = int(m.group(1))
+        n = int(m.group(2))
         if n in have or not have:
             return m.group(0)
         same = [h for h in have if h // 100 == n // 100] or have
         to = min(same, key=lambda h: abs(h - n))
         missing[n] = to
-        return b'l(%d)' % to
-    return re.sub(rb'l\((\d+)\)', sub, flags), missing
+        return m.group(1) + b'(%d)' % to
+    return re.sub(rb'\b(l[eg]?)\((\d+)\)', sub, flags), missing
 
 
 def vis_tree(ents):
@@ -417,26 +459,33 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         if game == 'svr2007' and (0x4E20 <= i <= 0x52FF or 0x9C40 <= i <= 0x9CFF):
             continue
         ents[{0xC8: 0x190, 0xC9: 0x191}.get(i, i)] = x
-    if game == 'svr2007' and 0x7530 in eb:  # its arena motions crashed the 2011 load
-        ents[0x7530] = eb[0x7530]
     if 0x190 not in ents:
         raise RuntimeError('bg%02d: no texture set (0xC8)' % n)
     for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
         ents.pop(i, None)
-    for i in HOST_ENTRIES:
+    for i in HOST_ENTRIES + HOST_COVERS:
         if i in eb:
             ents[i] = eb[i]
+    unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
+    have = None
+    if 0x7530 in ents and 0x7530 in eb:  # the arena's own lights, plus the sets the game needs
+        import ymks
+        bank = light_bank(unp(ents[0x7530]))
+        added = fill_lights(bank, light_bank(unp(eb[0x7530])))
+        if added:
+            ents[0x7530] = ymks.write_bank(bank)
+            notes.append('light sets the game needs, from 2011 RAW: ' + ', '.join(map(str, added)))
+        have = light_ids(bank)
     if 0xC364 not in ents:
         tree = vis_tree(ents)
         if tree:
             ents[0xC364] = svrfmt.bpe_encode(tree, compress=True)
             notes.append('visibility tree made from the arena models (the game had none)')
-    if 0xC351 in ents and 0xC351 in eb:
-        unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
-        flags, moved = remap_lights(unp(ents[0xC351]), unp(eb[0xC351]))
+    if 0xC351 in ents and have:
+        flags, moved = remap_lights(unp(ents[0xC351]), have)
         if moved:
             ents[0xC351] = svrfmt.bpe_encode(flags, compress=True)
-            notes.append('lights 2011 has no copy of, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
+            notes.append('light sets missing from the arena, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
     notes.append('crowd, announce table pictures and card from 2011 RAW')
 
     def build(tex_blob):
