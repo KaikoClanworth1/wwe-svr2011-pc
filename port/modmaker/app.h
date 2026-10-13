@@ -344,7 +344,7 @@ namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); }
+                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
@@ -363,7 +363,7 @@ void Close();
 void Draw();
 void TestEdit(const std::wstring& spec);
 }
-namespace anims_page { void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
+namespace anims_page { bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }
 

@@ -425,6 +425,10 @@ void TestStart(int star_id, int bank, int motion, int dummy_id) {
   g_test_star = star_id, g_test_bank = bank, g_test_motion = motion, g_test_dummy = dummy_id;
 }
 
+bool MovesIndexed() { return IndexReady(); }
+bool HasMotion(int id) { return IndexReady() && g_kindex.count(id); }
+void WatchMove(int id) { Watch(id); }
+
 void TestWatch(int star_id, int dummy_id, int move) {
   g_test_star = star_id, g_test_dummy = dummy_id, g_watch_pending = move;
 }

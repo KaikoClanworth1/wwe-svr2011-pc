@@ -1974,6 +1974,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
+    else if (!wcscmp(argv[i], L"--star-watch") && more) star_page::TestWatchSlot(int(std::wcstol(argv[++i], nullptr, 0)));
     else if (!wcscmp(argv[i], L"--star-voice") && more) star_voice = argv[++i];
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);

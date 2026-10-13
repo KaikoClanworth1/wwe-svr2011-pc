@@ -227,6 +227,8 @@ bool g_slot_names_loaded = false;
 char g_moveset_find[48] = "";
 bool g_moveset_all = false;  // every slot, or the changed ones
 bool g_moveset_open_once = false;  // (test aid: the section open)
+bool g_watching = false;            // a slot's move plays in the preview
+int g_watch_slot_test = -1;         // (test aid --star-watch: this slot's move, once the moves are indexed)
 int g_pick_slot = -1;
 char g_pick_find[48] = "";
 bool g_pick_any = false;
@@ -349,8 +351,10 @@ void MovePicker() {
 void MovesetSection() {
   const int changed = int(g_star.moveset.size());
   const std::string head = "Moveset" + (changed ? " (" + std::to_string(changed) + " changed)" : std::string(": the style's")) + "###moveset";
+  const bool scroll = g_moveset_open_once;
   if (g_moveset_open_once) ImGui::SetNextItemOpen(true), g_moveset_open_once = false;
   if (!ImGui::CollapsingHeader(head.c_str())) return;
+  if (scroll) ImGui::SetScrollHereY(0.0f);
   ImGui::Indent();
   ImGui::TextWrapped("The moves the superstar does, slot by slot: the style's superstar's moves, and the ones you "
                      "pick instead. Each slot's list holds the game's moves of that kind (a strike slot takes "
@@ -369,13 +373,19 @@ void MovesetSection() {
   if (changed && ImGui::SmallButton("Back to the style's moves")) g_star.moveset.clear(), Touch();
   if (!g_moveset_all && !changed) ImGui::TextDisabled("Tick \"all slots\" (or find one) to change a move.");
   const std::string f = Lower(g_moveset_find);
-  if (ImGui::BeginTable("moveset", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY,
+  const bool can_watch = anims_page::MovesIndexed();
+  if (g_watching) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Back to the idle")) char_preview::ClearMotion(), char_preview::SetDummy(L""), g_watching = false;
+  }
+  if (ImGui::BeginTable("moveset", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY,
                         ImVec2(0, 300 * g_scale))) {
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("slot", ImGuiTableColumnFlags_WidthFixed, 220 * g_scale);
     ImGui::TableSetupColumn("the style's move", ImGuiTableColumnFlags_WidthFixed, 200 * g_scale);
     ImGui::TableSetupColumn("this superstar's move", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 24 * g_scale);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 30 * g_scale);
     ImGui::TableHeadersRow();
     for (int s = 0; s < kMoveSlots; ++s) {
       const auto it = g_star.moveset.find(s);
@@ -404,6 +414,21 @@ void MovesetSection() {
       if (mine && !fits) ImGui::PopStyleColor();
       ImGui::TableNextColumn();
       if (mine && ImGui::SmallButton("x")) g_star.moveset.erase(s), Touch();
+      ImGui::TableNextColumn();
+      const int play = mine ? it->second : was;
+      const bool test_now = g_watch_slot_test == s && can_watch && !Busy();
+      if (test_now) g_watch_slot_test = -1;
+      ImGui::BeginDisabled(!can_watch || Busy() || !anims_page::HasMotion(play));
+      if (ImGui::SmallButton(">##w") || test_now) {  // the move in the preview: the model does it, the style's superstar takes it
+        char_preview::SetDummy((fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(kStyles[g_star.style].template_id) + L".pac")).wstring());
+        anims_page::WatchMove(play);
+        g_watching = true;
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(anims_page::HasMotion(play) ? "Watch it in the preview (the style's superstar takes it)."
+                          : can_watch ? "This move's motion isn't in the game's banks (a move pack's: Animations > Play in game)."
+                                      : "Reading the game's moves ...");
       ImGui::PopID();
     }
     ImGui::EndTable();
@@ -1149,6 +1174,7 @@ void SetModel(const std::wstring& ch_pac) {
 }
 
 void TestEntrance(int n) { g_star.entrance = n; }
+void TestWatchSlot(int off) { g_watch_slot_test = off / 2, g_moveset_open_once = true, g_moveset_all = true; }
 
 void TestMoveset(const std::string& spec) {
   ParseMoveset(spec, ',');
