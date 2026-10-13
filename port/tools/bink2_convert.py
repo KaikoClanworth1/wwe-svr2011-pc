@@ -43,6 +43,24 @@ NO_TOOL = ("Bink 2 movies need a decoder you install yourself: RAD Video Tools (
            + RAD_PAGE + ") or Librempeg's ffmpeg. Install one and set its path in the Mod Maker's settings "
            "(Enable Bink 2 conversion). The import goes on without the titantron.")
 EARLY = "abcde"
+# radvideo64 ignores "hidden" (a window opened and the conversion waited in a
+# test): not run by itself unless SVR2011_BINK2_ALLOW_RAD=1; the player
+# converts in RAD's own window instead and gives the Mod Maker the .mp4.
+RAD_MANUAL = ("RAD Video Tools can't convert in the background (it opens its own window). Convert this movie in "
+              "RAD Video Tools yourself (Convert a file -> MP4), then pick the .mp4 in the Mod Maker. "
+              "The import goes on without the titantron.")
+
+
+def _hidden():
+    """subprocess options so a decoder never shows a window (Windows: no
+    console, SW_HIDE). RAD Video Tools' radvideo64 showed a window even started
+    hidden in a test (2026-10-13), then waited: see RAD_MANUAL."""
+    if os.name != "nt":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {"startupinfo": si, "creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 def progress(pct, text):
@@ -72,7 +90,7 @@ def warnings_for(info):
 
 def _ffmpeg_has_bink2(path):
     try:
-        r = subprocess.run([path, "-hide_banner", "-decoders"], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([path, "-hide_banner", "-decoders"], capture_output=True, text=True, timeout=30, **_hidden())
     except (OSError, subprocess.SubprocessError):
         return False
     return any("bink2" in line.lower() or "binkvideo2" in line.lower() for line in r.stdout.splitlines())
@@ -122,6 +140,9 @@ def convert(src, dst, tool=None):
     if not kind:
         return 3, {"ok": False, "error": NO_TOOL, "download": RAD_PAGE, "warnings": warnings,
                    "revision": info["revision"]}
+    if kind == "rad" and os.environ.get("SVR2011_BINK2_ALLOW_RAD") != "1":
+        return 3, {"ok": False, "error": RAD_MANUAL, "kind": kind, "tool": path, "manual": True,
+                   "warnings": warnings, "revision": info["revision"]}
     os.makedirs(os.path.dirname(os.path.abspath(dst)) or ".", exist_ok=True)
     part = dst + ".part.mp4"
     if os.path.exists(part):
@@ -135,7 +156,7 @@ def convert(src, dst, tool=None):
     err = ""
     for cmd in attempts:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, **_hidden())
             err = (r.stderr or r.stdout or "").strip()[-400:]
         except (OSError, subprocess.SubprocessError) as e:
             err = str(e)
