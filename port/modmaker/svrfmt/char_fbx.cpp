@@ -515,4 +515,665 @@ std::vector<std::string> CheckCharacterFbx(const Bytes& pac, int attire, const s
   return out;
 }
 
+// ---------------------------------------------------------------- FBX import (F3): the build input
+
+namespace {
+
+// a general affine inverse (source bind matrices can carry scale)
+M InvAffine(const M& a) {
+  const double(*r)[3] = a.r;
+  const double det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0]) +
+                     r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+  M o;
+  if (std::fabs(det) < 1e-12) return o;
+  const double k = 1.0 / det;
+  o.r[0][0] = (r[1][1] * r[2][2] - r[1][2] * r[2][1]) * k, o.r[0][1] = (r[0][2] * r[2][1] - r[0][1] * r[2][2]) * k;
+  o.r[0][2] = (r[0][1] * r[1][2] - r[0][2] * r[1][1]) * k, o.r[1][0] = (r[1][2] * r[2][0] - r[1][0] * r[2][2]) * k;
+  o.r[1][1] = (r[0][0] * r[2][2] - r[0][2] * r[2][0]) * k, o.r[1][2] = (r[0][2] * r[1][0] - r[0][0] * r[1][2]) * k;
+  o.r[2][0] = (r[1][0] * r[2][1] - r[1][1] * r[2][0]) * k, o.r[2][1] = (r[0][1] * r[2][0] - r[0][0] * r[2][1]) * k;
+  o.r[2][2] = (r[0][0] * r[1][1] - r[0][1] * r[1][0]) * k;
+  for (int i = 0; i < 3; ++i) o.t[i] = -(o.r[i][0] * a.t[0] + o.r[i][1] * a.t[1] + o.r[i][2] * a.t[2]);
+  return o;
+}
+M FromUfbx(const ufbx_matrix& u) {
+  M m;
+  m.r[0][0] = u.m00, m.r[0][1] = u.m01, m.r[0][2] = u.m02, m.t[0] = u.m03;
+  m.r[1][0] = u.m10, m.r[1][1] = u.m11, m.r[1][2] = u.m12, m.t[1] = u.m13;
+  m.r[2][0] = u.m20, m.r[2][1] = u.m21, m.r[2][2] = u.m22, m.t[2] = u.m23;
+  return m;
+}
+using V3 = std::array<double, 3>;
+V3 Apply(const M& m, const V3& p) {
+  return {m.r[0][0] * p[0] + m.r[0][1] * p[1] + m.r[0][2] * p[2] + m.t[0], m.r[1][0] * p[0] + m.r[1][1] * p[1] + m.r[1][2] * p[2] + m.t[1],
+          m.r[2][0] * p[0] + m.r[2][1] * p[1] + m.r[2][2] * p[2] + m.t[2]};
+}
+V3 ApplyDir(const M& m, const V3& p) {
+  return {m.r[0][0] * p[0] + m.r[0][1] * p[1] + m.r[0][2] * p[2], m.r[1][0] * p[0] + m.r[1][1] * p[1] + m.r[1][2] * p[2],
+          m.r[2][0] * p[0] + m.r[2][1] * p[1] + m.r[2][2] * p[2]};
+}
+V3 Sub(const V3& a, const V3& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+double Dot(const V3& a, const V3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+V3 Cross(const V3& a, const V3& b) { return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; }
+double Len(const V3& a) { return std::sqrt(Dot(a, a)); }
+V3 Norm(const V3& a) {
+  const double l = Len(a);
+  return l > 1e-12 ? V3{a[0] / l, a[1] / l, a[2] / l} : V3{0, 0, 0};
+}
+// the rotation (Rodrigues) about a unit axis
+M AxisAngle(const V3& k, double a) {
+  M m;
+  const double c = std::cos(a), s = std::sin(a), t = 1 - c;
+  m.r[0][0] = t * k[0] * k[0] + c, m.r[0][1] = t * k[0] * k[1] - s * k[2], m.r[0][2] = t * k[0] * k[2] + s * k[1];
+  m.r[1][0] = t * k[0] * k[1] + s * k[2], m.r[1][1] = t * k[1] * k[1] + c, m.r[1][2] = t * k[1] * k[2] - s * k[0];
+  m.r[2][0] = t * k[0] * k[2] - s * k[1], m.r[2][1] = t * k[1] * k[2] + s * k[0], m.r[2][2] = t * k[2] * k[2] + c;
+  return m;
+}
+// the shortest rotation taking direction a onto b
+M Swing(const V3& a0, const V3& b0) {
+  const V3 a = Norm(a0), b = Norm(b0);
+  V3 axis = Cross(a, b);
+  const double s = Len(axis), c = Dot(a, b);
+  if (s < 1e-9) {
+    if (c > 0) return M();
+    axis = Cross(a, std::fabs(a[0]) < 0.9 ? V3{1, 0, 0} : V3{0, 1, 0});  // (opposite: any perpendicular axis)
+  }
+  return AxisAngle(Norm(axis), std::atan2(s, c));
+}
+
+std::string LowerStr(std::string s) {
+  for (auto& ch : s) ch = char(std::tolower(uint8_t(ch)));
+  return s;
+}
+
+// the texture a material's colour / normal map comes from
+const ufbx_texture* MaterialTexture(const ufbx_material* m, bool normal) {
+  if (!m) return nullptr;
+  if (normal) {
+    if (m->pbr.normal_map.texture) return m->pbr.normal_map.texture;
+    if (m->fbx.normal_map.texture) return m->fbx.normal_map.texture;
+    return m->fbx.bump.texture;
+  }
+  if (m->pbr.base_color.texture) return m->pbr.base_color.texture;
+  return m->fbx.diffuse_color.texture;
+}
+
+// A texture's picture: embedded, at its path, beside the FBX, or found by name in the folders around it
+// (Unity / Blender projects keep them in a Textures folder next to the model's).
+bool LoadFbxTexture(const ufbx_texture* t, const fs::path& fbx_dir, Image& out, std::string& where) {
+  if (!t) return false;
+  if (t->content.size && LoadImageMemory(static_cast<const uint8_t*>(t->content.data), t->content.size, out)) return where = "embedded", true;
+  std::vector<std::string> names;
+  for (const ufbx_string* s : {&t->absolute_filename, &t->filename, &t->relative_filename})
+    if (s->length) names.emplace_back(s->data, s->length);
+  for (const auto& n : names) {
+    const fs::path p = fs::u8path(n);
+    for (const fs::path& c : {p, fbx_dir / p, fbx_dir / p.filename(), fbx_dir / "textures" / p.filename()}) {
+      std::error_code ec;
+      if (fs::is_regular_file(c, ec) && LoadImageFile(PathStr(c), out)) return where = PathStr(c), true;
+    }
+  }
+  if (names.empty()) return false;
+  const std::string want = LowerStr(PathStr(fs::u8path(names[0]).filename()));
+  for (const fs::path& root : {fbx_dir, fbx_dir.parent_path(), fbx_dir.parent_path().parent_path()}) {
+    std::error_code ec;
+    int seen = 0;
+    for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator() && seen < 20000; it.increment(ec), ++seen)
+      if (it->is_regular_file(ec) && LowerStr(PathStr(it->path().filename())) == want && LoadImageFile(PathStr(it->path()), out))
+        return where = PathStr(it->path()), true;
+  }
+  return false;
+}
+
+std::string JsonStr(const std::string& s) {
+  std::string o = "\"";
+  for (const char ch : s) {
+    if (ch == '"' || ch == '\\') o += '\\', o += ch;
+    else if (uint8_t(ch) < 0x20) o += ' ';
+    else o += ch;
+  }
+  return o + "\"";
+}
+std::string Num(double v) {
+  char b[32];
+  std::snprintf(b, sizeof b, "%.5g", std::fabs(v) < 1e-9 ? 0.0 : v);
+  return b;
+}
+
+// the 2011 pairs whose direction the source skeleton takes (bone -> the joint it points at), top down
+const char* const kAimPairs[][2] = {
+    {"koshi", "mune"},   {"mune", "kubi"},     {"kubi", "atama"},
+    {"l_sakotsu", "l_ninoude"}, {"l_ninoude", "l_kote"}, {"l_kote", "l_te"}, {"l_te", "l_yubi20"},
+    {"r_sakotsu", "r_ninoude"}, {"r_ninoude", "r_kote"}, {"r_kote", "r_te"}, {"r_te", "r_yubi20"},
+    {"l_yubi00", "l_yubi01"}, {"l_yubi01", "l_yubi02"}, {"l_yubi10", "l_yubi11"}, {"l_yubi11", "l_yubi12"},
+    {"l_yubi20", "l_yubi21"}, {"l_yubi21", "l_yubi22"}, {"l_yubi30", "l_yubi31"}, {"l_yubi31", "l_yubi32"},
+    {"l_yubi40", "l_yubi41"}, {"l_yubi41", "l_yubi42"},
+    {"r_yubi00", "r_yubi01"}, {"r_yubi01", "r_yubi02"}, {"r_yubi10", "r_yubi11"}, {"r_yubi11", "r_yubi12"},
+    {"r_yubi20", "r_yubi21"}, {"r_yubi21", "r_yubi22"}, {"r_yubi30", "r_yubi31"}, {"r_yubi31", "r_yubi32"},
+    {"r_yubi40", "r_yubi41"}, {"r_yubi41", "r_yubi42"},
+    {"l_momo", "l_sune"}, {"l_sune", "l_ashi"}, {"l_ashi", "l_tsumasaki"},
+    {"r_momo", "r_sune"}, {"r_sune", "r_ashi"}, {"r_ashi", "r_tsumasaki"},
+};
+
+struct OutMesh {
+  std::string name, kind, texture_key;
+  std::vector<V3> pos, nrm;
+  std::vector<std::array<double, 2>> uv;
+  std::vector<std::vector<std::pair<int, double>>> w;  // (2011 bone index in the output list, weight)
+  std::vector<std::array<int, 3>> tris;
+};
+
+}  // namespace
+
+bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,
+                     const std::string& template_path, const std::string& out_dir, FbxImportReport& rep) {
+  auto fail = [&](const std::string& e) { return rep.warnings.insert(rep.warnings.begin(), e), false; };
+  // the 2011 template skeleton (game axes, bind = rest)
+  Character tpl;
+  std::string err;
+  if (!ReadCharacter(template_pac, 1, tpl, err)) return fail("template: " + err);
+  std::map<std::string, int> tpl_by;
+  for (size_t i = 0; i < tpl.bones.size(); ++i) tpl_by.emplace(tpl.bones[i].name, int(i));
+  auto tpl_pos = [&](const std::string& n, V3& p) {
+    const auto it = tpl_by.find(n);
+    if (it == tpl_by.end()) return false;
+    const M& w = tpl.bones[size_t(it->second)].world;
+    p = {w.t[0], w.t[1], w.t[2]};
+    return true;
+  };
+
+  ufbx_load_opts lo = {};
+  lo.target_axes = ufbx_axes_right_handed_y_up;
+  lo.target_unit_meters = 0.1f;
+  lo.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
+  ufbx_error ue;
+  ufbx_scene* scene = ufbx_load_file(fbx_path.c_str(), &lo, &ue);
+  if (!scene) return fail("ufbx: " + std::string(ue.description.data, ue.description.length));
+  struct Free {
+    ufbx_scene* s;
+    ~Free() { ufbx_free_scene(s); }
+  } free_scene{scene};
+
+  // source bones: the same list (and order) as ReadFbxSkeleton
+  std::set<const ufbx_node*> skinned;
+  for (size_t i = 0; i < scene->skin_clusters.count; ++i)
+    if (scene->skin_clusters.data[i]->bone_node) skinned.insert(scene->skin_clusters.data[i]->bone_node);
+  std::vector<const ufbx_node*> nodes;
+  std::map<const ufbx_node*, int> index;
+  for (size_t i = 0; i < scene->nodes.count; ++i) {
+    const ufbx_node* n = scene->nodes.data[i];
+    if (!n->bone && !skinned.count(n)) continue;
+    index[n] = int(nodes.size());
+    nodes.push_back(n);
+  }
+  const size_t nb = nodes.size();
+  if (nb == 0) return fail("the FBX has no skeleton");
+  if (targets.size() != nb) return fail("the bone mapping doesn't match the FBX (" + std::to_string(targets.size()) + " for " + std::to_string(nb) + " bones)");
+  std::vector<int> parent(nb, -1);
+  for (size_t i = 0; i < nb; ++i)
+    for (const ufbx_node* p = nodes[i]->parent; p; p = p->parent)
+      if (const auto it = index.find(p); it != index.end()) {
+        parent[i] = it->second;
+        break;
+      }
+  // bind world matrices: a skin cluster's bind, else the parent's bind times the node's local
+  std::vector<M> bind(nb);
+  std::vector<bool> has_bind(nb);
+  for (size_t i = 0; i < scene->skin_clusters.count; ++i) {
+    const ufbx_skin_cluster* c = scene->skin_clusters.data[i];
+    if (const auto it = index.find(c->bone_node); it != index.end() && !has_bind[size_t(it->second)])
+      bind[size_t(it->second)] = FromUfbx(c->bind_to_world), has_bind[size_t(it->second)] = true;
+  }
+  std::function<void(size_t)> fill = [&](size_t i) {
+    if (has_bind[i]) return;
+    has_bind[i] = true;  // (no cycles)
+    if (parent[i] >= 0) fill(size_t(parent[i])), bind[i] = Mul(bind[size_t(parent[i])], FromUfbx(nodes[i]->node_to_parent));
+    else bind[i] = FromUfbx(nodes[i]->node_to_world);
+  };
+  for (size_t i = 0; i < nb; ++i) fill(i);
+  auto origin = [](const M& m) { return V3{m.t[0], m.t[1], m.t[2]}; };
+
+  // each 2011 bone's source bone (the topmost one mapped to it)
+  std::vector<int> depth(nb);
+  for (size_t i = 0; i < nb; ++i)
+    for (int p = parent[i]; p >= 0 && depth[i] <= int(nb); p = parent[size_t(p)]) ++depth[i];
+  std::map<std::string, int> src_of;
+  for (size_t i = 0; i < nb; ++i)
+    if (!targets[i].empty()) {
+      auto [it, fresh] = src_of.emplace(targets[i], int(i));
+      if (!fresh && depth[i] < depth[size_t(it->second)]) it->second = int(i);
+    }
+  for (const char* need : {"root", "l_ninoude", "r_ninoude", "atama", "l_ashi", "r_ashi"})
+    if (!src_of.count(need)) return fail(std::string("the mapping has no ") + need + " (Bone mapping)");
+
+  // game axes: C = diag(1, -1, -1) (y up -> -Y up), then a turn about the up axis putting the character's left on +X
+  M axes;
+  axes.r[1][1] = axes.r[2][2] = -1;
+  {
+    const V3 lat = ApplyDir(axes, Sub(origin(bind[size_t(src_of["l_ninoude"])]), origin(bind[size_t(src_of["r_ninoude"])])));
+    const double l = std::hypot(lat[0], lat[2]);
+    if (l > 1e-6) {
+      const double c = lat[0] / l, s = lat[2] / l;
+      M yaw;
+      yaw.r[0][0] = c, yaw.r[0][2] = s, yaw.r[2][0] = -s, yaw.r[2][2] = c;
+      axes = Mul(yaw, axes);
+    }
+  }
+  const M to_src = Inv(axes);  // (orthonormal)
+
+  // the pose: each pair's source bone turned (with everything under it) to the 2011 bone's direction
+  std::vector<M> posed = bind;
+  std::vector<std::vector<int>> kids(nb);
+  for (size_t i = 0; i < nb; ++i)
+    if (parent[i] >= 0) kids[size_t(parent[i])].push_back(int(i));
+  std::function<void(int, const M&)> turn = [&](int i, const M& rot) {
+    posed[size_t(i)] = Mul(rot, posed[size_t(i)]);
+    for (int k : kids[size_t(i)]) turn(k, rot);
+  };
+  // a hand's roll: the knuckle line (index -> pinky) as the template's, about the hand's axis (before its fingers aim)
+  auto roll = [&](char side) {
+    const std::string s(1, side);
+    const auto te = src_of.find(s + "_te"), mid = src_of.find(s + "_yubi20"), idx = src_of.find(s + "_yubi10"), pk = src_of.find(s + "_yubi40");
+    V3 tte, tmid, tidx, tpk;
+    if (te == src_of.end() || mid == src_of.end() || idx == src_of.end() || pk == src_of.end() || !tpl_pos(s + "_te", tte) ||
+        !tpl_pos(s + "_yubi20", tmid) || !tpl_pos(s + "_yubi10", tidx) || !tpl_pos(s + "_yubi40", tpk))
+      return;
+    const V3 p_te = origin(posed[size_t(te->second)]);
+    const V3 axis = Norm(Sub(origin(posed[size_t(mid->second)]), p_te));
+    auto flat = [&](V3 v) {
+      const double d = Dot(v, axis);
+      return Norm(V3{v[0] - d * axis[0], v[1] - d * axis[1], v[2] - d * axis[2]});
+    };
+    const V3 have = flat(Sub(origin(posed[size_t(pk->second)]), origin(posed[size_t(idx->second)])));
+    const V3 want = flat(ApplyDir(to_src, Sub(tpk, tidx)));
+    if (Len(have) < 0.5 || Len(want) < 0.5) return;
+    const double ang = std::atan2(Dot(Cross(have, want), axis), Dot(have, want));
+    M rot = AxisAngle(axis, ang);
+    const V3 r_p = ApplyDir(rot, p_te);
+    for (int k = 0; k < 3; ++k) rot.t[k] = p_te[k] - r_p[k];
+    turn(te->second, rot);
+  };
+  int aimed = 0;
+  for (const auto& pr : kAimPairs) {
+    const auto a = src_of.find(pr[0]), b = src_of.find(pr[1]);
+    V3 ta, tb;
+    if (a == src_of.end() || b == src_of.end() || !tpl_pos(pr[0], ta) || !tpl_pos(pr[1], tb)) continue;
+    const V3 pa = origin(posed[size_t(a->second)]), pb = origin(posed[size_t(b->second)]);
+    if (Len(Sub(pb, pa)) < 1e-6) continue;
+    const M sw = Swing(Sub(pb, pa), ApplyDir(to_src, Sub(tb, ta)));
+    M rot = sw;
+    const V3 r_pa = ApplyDir(sw, pa);
+    for (int k = 0; k < 3; ++k) rot.t[k] = pa[k] - r_pa[k];  // (about the bone's own joint)
+    turn(a->second, rot);
+    ++aimed;
+    if (std::string(pr[1]).ends_with("_yubi20")) roll(pr[0][0]);
+  }
+  rep.aimed = aimed;
+
+  // the output frame: game axes, the hips at 0; scaled (below, once the meshes are posed) so the soles sit as far
+  // below the hips as the template's (the game's motions hold the hips at its height: the feet then meet the floor)
+  const V3 hips = origin(posed[size_t(src_of["root"])]);
+  auto game = [&](const V3& p) { return ApplyDir(axes, Sub(p, hips)); };
+  double scale = 1;
+  if (game(origin(posed[size_t(src_of["l_ashi"])]))[1] < 1 || game(origin(posed[size_t(src_of["r_ashi"])]))[1] < 1)
+    rep.warnings.push_back("the ankles aren't below the hips: the model is upside down or the legs are mapped wrong");
+  auto out_pos = [&](const V3& p) {
+    const V3 g = game(p);
+    return V3{g[0] * scale, g[1] * scale, g[2] * scale};
+  };
+  {
+    const auto toe = src_of.find("l_tsumasaki");
+    if (toe != src_of.end() && game(origin(posed[size_t(toe->second)]))[2] > game(origin(posed[size_t(src_of["l_ashi"])]))[2])
+      rep.warnings.push_back("the toes point backwards: the FBX may be mirrored (left and right swapped)");
+  }
+
+  // the 2011 bones the weights name: the mapped ones, a folded bone's nearest mapped parent, or root
+  std::vector<std::string> wbone(nb);
+  for (size_t i = 0; i < nb; ++i) {
+    for (int p = int(i), n = 0; p >= 0 && n <= int(nb); p = parent[size_t(p)], ++n)
+      if (!targets[size_t(p)].empty()) {
+        wbone[i] = targets[size_t(p)];
+        break;
+      }
+    if (wbone[i].empty()) wbone[i] = "root";
+  }
+  std::vector<std::string> out_bones;
+  std::map<std::string, int> out_index;
+  auto bone_id = [&](const std::string& n) {
+    auto [it, fresh] = out_index.emplace(n, int(out_bones.size()));
+    if (fresh) out_bones.push_back(n);
+    return it->second;
+  };
+
+  // meshes: one per mesh node and material, posed by their weights (linear blend from the bind)
+  std::vector<M> skin(nb);
+  for (size_t i = 0; i < nb; ++i) skin[i] = Mul(posed[i], InvAffine(bind[i]));
+  const fs::path fbx_dir = fs::u8path(fbx_path).parent_path();
+  std::vector<OutMesh> meshes;
+  std::map<std::string, const ufbx_material*> tex_material;  // texture key -> a material using it
+  std::vector<uint32_t> tri(64);
+  for (size_t ni = 0; ni < scene->nodes.count; ++ni) {
+    const ufbx_node* node = scene->nodes.data[ni];
+    const ufbx_mesh* mesh = node->mesh;
+    if (!mesh || mesh->num_faces == 0) continue;
+    if (!node->visible) {
+      rep.skipped.push_back(std::string(node->name.data, node->name.length) + " (hidden)");
+      continue;
+    }
+    const ufbx_skin_deformer* sk = mesh->skin_deformers.count ? mesh->skin_deformers.data[0] : nullptr;
+    // a mesh without a skin rides on its nearest bone parent (or root)
+    int rigid = -1;
+    if (!sk)
+      for (const ufbx_node* p = node->parent; p && rigid < 0; p = p->parent)
+        if (const auto it = index.find(p); it != index.end()) rigid = it->second;
+    if (!sk && rigid < 0) rigid = src_of["root"];
+    const M geo_world = FromUfbx(node->geometry_to_world);
+    const size_t parts = std::max<size_t>(1, mesh->material_parts.count);
+    for (size_t pi = 0; pi < parts; ++pi) {
+      const ufbx_mesh_part* part = mesh->material_parts.count ? &mesh->material_parts.data[pi] : nullptr;
+      if (part && part->num_triangles == 0) continue;
+      const ufbx_material* mat = part && pi < mesh->materials.count ? mesh->materials.data[pi] : nullptr;
+      OutMesh om;
+      const std::string node_name(node->name.data, node->name.length);
+      const std::string mat_name = mat ? std::string(mat->name.data, mat->name.length) : "";
+      om.name = node_name + (mat_name.empty() ? "" : " / " + mat_name);
+      const std::string lname = LowerStr(node_name + " " + mat_name);
+      om.kind = lname.find("lash") != std::string::npos ? "lash"
+                : lname.find("hair") != std::string::npos ? "hair"
+                : (lname.find("eye") != std::string::npos && lname.find("brow") == std::string::npos) ? "eye?"
+                : "skin";  // ("eye?": an eye only when it's small, below)
+      const ufbx_texture* ct = MaterialTexture(mat, false);
+      om.texture_key = !ct ? "" : ct->filename.length ? LowerStr(std::string(ct->filename.data, ct->filename.length))
+                                                    : "embedded|" + std::to_string(ct->element_id);
+      if (!om.texture_key.empty()) tex_material.emplace(om.texture_key, mat);
+      std::map<std::array<uint32_t, 6>, int> verts;  // (position index, normal and uv values) -> output vertex
+      auto vertex = [&](uint32_t ix) {
+        const uint32_t vi = mesh->vertex_indices.data[ix];
+        const uint32_t nidx = mesh->vertex_normal.exists ? mesh->vertex_normal.indices.data[ix] : 0;
+        const uint32_t uidx = mesh->vertex_uv.exists ? mesh->vertex_uv.indices.data[ix] : 0;
+        auto bits = [](double v) {
+          const float f = float(v);
+          uint32_t u;
+          std::memcpy(&u, &f, 4);
+          return u;
+        };
+        std::array<uint32_t, 6> key{vi, 0, 0, 0, 0, 0};
+        if (mesh->vertex_normal.exists) {
+          const ufbx_vec3 q = mesh->vertex_normal.values.data[nidx];
+          key[1] = bits(q.x), key[2] = bits(q.y), key[3] = bits(q.z);
+        }
+        if (mesh->vertex_uv.exists) {
+          const ufbx_vec2 q = mesh->vertex_uv.values.data[uidx];
+          key[4] = bits(q.x), key[5] = bits(q.y);
+        }
+        if (const auto it = verts.find(key); it != verts.end()) return it->second;
+        const ufbx_vec3 gp = mesh->vertices.data[vi];
+        const V3 g{gp.x, gp.y, gp.z};
+        V3 n{0, -1, 0};
+        if (mesh->vertex_normal.exists) {
+          const ufbx_vec3 gn = mesh->vertex_normal.values.data[nidx];
+          n = {gn.x, gn.y, gn.z};
+        }
+        // the influences: (source bone, weight, bind world of the vertex for that bone)
+        V3 p{0, 0, 0}, nn{0, 0, 0};
+        std::map<int, double> w2011;
+        double sum = 0;
+        auto add = [&](int b, double w, const V3& wp, const V3& wn) {
+          const V3 q = Apply(skin[size_t(b)], wp), qn = ApplyDir(skin[size_t(b)], wn);
+          for (int k = 0; k < 3; ++k) p[k] += w * q[k], nn[k] += w * qn[k];
+          w2011[bone_id(wbone[size_t(b)])] += w;
+          sum += w;
+        };
+        if (sk && vi < sk->vertices.count) {
+          const ufbx_skin_vertex sv = sk->vertices.data[vi];
+          for (uint32_t k = 0; k < sv.num_weights; ++k) {
+            const ufbx_skin_weight sw = sk->weights.data[sv.weight_begin + k];
+            const ufbx_skin_cluster* c = sk->clusters.data[sw.cluster_index];
+            const auto it = index.find(c->bone_node);
+            if (it == index.end() || sw.weight <= 0) continue;
+            const M g2w = Mul(bind[size_t(it->second)], FromUfbx(c->geometry_to_bone));
+            add(it->second, sw.weight, Apply(g2w, g), ApplyDir(g2w, n));
+          }
+        }
+        if (sum <= 0) {  // (no weights: rides on its node's bone)
+          const int b = rigid >= 0 ? rigid : src_of["root"];
+          add(b, 1.0, Apply(geo_world, g), ApplyDir(geo_world, n));
+        }
+        for (int k = 0; k < 3; ++k) p[k] /= sum;
+        om.pos.push_back(out_pos(p));
+        om.nrm.push_back(Norm(ApplyDir(axes, nn)));
+        std::array<double, 2> uv{0, 0};
+        if (mesh->vertex_uv.exists) {
+          const ufbx_vec2 u = mesh->vertex_uv.values.data[uidx];
+          uv = {u.x, 1.0 - u.y};  // (v down)
+        }
+        om.uv.push_back(uv);
+        std::vector<std::pair<int, double>> wl;
+        for (const auto& [b, w] : w2011) wl.push_back({b, w / sum});
+        om.w.push_back(std::move(wl));
+        const int id = int(om.pos.size()) - 1;
+        verts.emplace(key, id);
+        return id;
+      };
+      auto faces = [&](uint32_t f) {
+        const ufbx_face face = mesh->faces.data[f];
+        if (face.num_indices < 3) return;
+        if (tri.size() < size_t(face.num_indices) * 3) tri.resize(size_t(face.num_indices) * 3);
+        const uint32_t n = ufbx_triangulate_face(tri.data(), tri.size(), mesh, face);
+        for (uint32_t t = 0; t < n; ++t) {
+          // the turn to game axes (det +1) keeps the winding
+          om.tris.push_back({vertex(tri[t * 3]), vertex(tri[t * 3 + 1]), vertex(tri[t * 3 + 2])});
+        }
+      };
+      if (part)
+        for (size_t k = 0; k < part->face_indices.count; ++k) faces(part->face_indices.data[k]);
+      else
+        for (uint32_t f = 0; f < mesh->num_faces; ++f) faces(f);
+      if (om.tris.empty()) continue;
+      if (om.kind == "eye?") {  // (an eye fits in 8 cm; a whole model named EYE doesn't)
+        V3 lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
+        for (const auto& p : om.pos)
+          for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], p[k]), hi[k] = std::max(hi[k], p[k]);
+        om.kind = Len(Sub(hi, lo)) < 0.8 ? "eye" : "skin";
+      }
+      if (om.pos.size() > 65535) rep.warnings.push_back(om.name + ": " + std::to_string(om.pos.size()) + " vertices (the game takes 65535 per mesh: the builder splits it)");
+      rep.vertices += int(om.pos.size()), rep.triangles += int(om.tris.size());
+      meshes.push_back(std::move(om));
+    }
+  }
+  if (meshes.empty()) return fail("the FBX has no visible meshes");
+  rep.meshes = int(meshes.size());
+  {
+    double tfloor = -1e30, sole = -1e30;
+    for (const auto& p : tpl.parts)
+      for (const auto& v : p.pos) tfloor = std::max(tfloor, v[1]);
+    for (const auto& m : meshes)
+      for (const auto& v : m.pos) sole = std::max(sole, v[1]);
+    V3 troot{0, 0, 0};
+    tpl_pos("root", troot);
+    if (tfloor - troot[1] > 1 && sole > 1) scale = (tfloor - troot[1]) / sole;
+    for (auto& m : meshes)
+      for (auto& v : m.pos) v = {v[0] * scale, v[1] * scale, v[2] * scale};
+  }
+  rep.scale = scale;
+
+  // textures: every colour (and normal) map in one sheet (shelf packed, up to 2048), the UVs moved into it
+  struct Sheet {
+    Image color, normal;
+    bool has_normal = false;
+    int x = 0, y = 0, w = 0, h = 0;
+  };
+  std::map<std::string, Sheet> sheets;
+  for (const auto& [key, mat] : tex_material) {
+    Sheet s;
+    std::string where;
+    if (!LoadFbxTexture(MaterialTexture(mat, false), fbx_dir, s.color, where)) {
+      rep.warnings.push_back("texture not found: " + key + " (the mesh gets plain grey)");
+      continue;
+    }
+    std::string nwhere;
+    s.has_normal = LoadFbxTexture(MaterialTexture(mat, true), fbx_dir, s.normal, nwhere);
+    ++rep.textures;
+    sheets.emplace(key, std::move(s));
+  }
+  {
+    std::set<std::string> bare;
+    for (const auto& m : meshes)
+      if (m.texture_key.empty()) bare.insert(m.name.substr(m.name.find(" / ") == std::string::npos ? 0 : m.name.find(" / ") + 3));
+    std::string list;
+    for (const auto& b : bare) list += (list.empty() ? "" : ", ") + b;
+    if (!list.empty()) rep.warnings.push_back("no colour texture on " + list + " (plain grey: pick its picture)");
+  }
+  // (meshes with no picture share one small grey patch)
+  bool any_plain = false;
+  for (const auto& m : meshes) any_plain |= !sheets.count(m.texture_key);
+  if (any_plain) {
+    Sheet s;
+    s.color.w = s.color.h = 32;
+    s.color.rgba.assign(32 * 32 * 4, 160);
+    sheets.emplace("", std::move(s));
+    for (auto& m : meshes)
+      if (!sheets.count(m.texture_key) || m.texture_key.empty()) m.texture_key = "";
+  }
+  int atlas = 0;
+  {
+    double area = 0;
+    for (const auto& [k, s] : sheets) area += double(s.color.w) * s.color.h;
+    double shrink = std::min(1.0, std::sqrt(2048.0 * 2048.0 * 0.85 / std::max(1.0, area)));
+    for (int tries = 0; tries < 40 && !atlas; ++tries, shrink *= 0.92) {
+      std::vector<std::pair<int, Sheet*>> order;
+      for (auto& [k, s] : sheets) {
+        s.w = std::max(8, int(s.color.w * shrink)), s.h = std::max(8, int(s.color.h * shrink));
+        order.push_back({s.h, &s});
+      }
+      std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (int size : {256, 512, 1024, 2048}) {
+        int x = 0, y = 0, row = 0;
+        bool fits = true;
+        for (auto& [h, s] : order) {
+          const int pw = s->w + 8, ph = s->h + 8;  // (4 px of edge around each: no bleeding between them)
+          if (x + pw > size) x = 0, y += row, row = 0;
+          if (pw > size || y + ph > size) {
+            fits = false;
+            break;
+          }
+          s->x = x + 4, s->y = y + 4, x += pw, row = std::max(row, ph);
+        }
+        if (fits) {
+          atlas = size;
+          break;
+        }
+      }
+    }
+    if (!atlas) return fail("the textures don't fit one 2048 sheet");
+  }
+  bool any_normal = false;
+  for (const auto& [k, s] : sheets) any_normal |= s.has_normal;
+  Image color, normal;
+  color.w = color.h = normal.w = normal.h = atlas;
+  color.rgba.assign(size_t(atlas) * atlas * 4, 0);
+  normal.rgba.assign(size_t(atlas) * atlas * 4, 0);
+  for (size_t k = 0; k < normal.rgba.size(); k += 4) normal.rgba[k] = 128, normal.rgba[k + 1] = 128, normal.rgba[k + 2] = 255, normal.rgba[k + 3] = 255;
+  std::set<std::string> keep_alpha;  // (hair and lash cards: the alpha is their cut-out; else it's the shine)
+  for (const auto& m : meshes)
+    if (m.kind == "hair" || m.kind == "lash") keep_alpha.insert(m.texture_key);
+  for (auto& [key, s] : sheets) {
+    const Image c = Resize(s.color, s.w, s.h);
+    const Image n = s.has_normal ? Resize(s.normal, s.w, s.h) : Image();
+    for (int y = -4; y < s.h + 4; ++y)
+      for (int x = -4; x < s.w + 4; ++x) {
+        const int sx = std::clamp(x, 0, s.w - 1), sy = std::clamp(y, 0, s.h - 1);
+        const size_t d = (size_t(s.y + y) * atlas + size_t(s.x + x)) * 4, src = (size_t(sy) * s.w + size_t(sx)) * 4;
+        for (int ch = 0; ch < 4; ++ch) color.rgba[d + size_t(ch)] = c.rgba[src + size_t(ch)];
+        if (!keep_alpha.count(key)) color.rgba[d + 3] = 48;  // (a low shine on skin and cloth)
+        if (s.has_normal)
+          for (int ch = 0; ch < 3; ++ch) normal.rgba[d + size_t(ch)] = n.rgba[src + size_t(ch)];
+      }
+  }
+  int wrapped = 0;
+  for (auto& m : meshes) {
+    const Sheet& s = sheets[m.texture_key];
+    for (auto& uv : m.uv) {
+      double u = uv[0], v = uv[1];
+      if (u < -0.001 || u > 1.001 || v < -0.001 || v > 1.001) ++wrapped, u -= std::floor(u), v -= std::floor(v);
+      uv = {(s.x + u * s.w) / atlas, (s.y + v * s.h) / atlas};
+    }
+  }
+  if (wrapped) rep.warnings.push_back(std::to_string(wrapped) + " vertices had UVs outside 0..1 (tiled textures): wrapped, check the look");
+  const fs::path dir = fs::u8path(out_dir);
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  if (!SavePng(PathStr(dir / "color.png"), color)) return fail("could not write " + PathStr(dir / "color.png"));
+  if (any_normal && !SavePng(PathStr(dir / "normal.png"), normal)) return fail("could not write normal.png");
+  rep.atlas = atlas;
+
+  // joints: the 2011 bones at the model's own proportions (the mapped ones; twist bones along their segment)
+  std::map<std::string, V3> joints;
+  for (const auto& [t, s] : src_of)
+    if (tpl_by.count(t)) joints[t] = out_pos(origin(posed[size_t(s)]));
+  for (const auto& b : tpl.bones) {
+    if (joints.count(b.name) || b.parent < 0) continue;
+    const bool twist = b.name.size() > 2 && (b.name.ends_with("_x") || b.name.ends_with("_x2"));
+    if (!twist) continue;
+    const std::string& pn = tpl.bones[size_t(b.parent)].name;
+    std::string next;  // the segment's end: ninoude -> kote, kote -> te, momo -> sune
+    for (const auto& pr : kAimPairs)
+      if (pn == pr[0]) next = pr[1];
+    V3 tp, tn, tx;
+    if (next.empty() || !joints.count(pn) || !joints.count(next) || !tpl_pos(pn, tp) || !tpl_pos(next, tn) || !tpl_pos(b.name, tx)) continue;
+    const V3 seg = Sub(tn, tp);
+    const double f = std::clamp(Dot(Sub(tx, tp), seg) / std::max(1e-9, Dot(seg, seg)), 0.0, 1.0);
+    const V3 a = joints[pn], c = joints[next];
+    joints[b.name] = {a[0] + f * (c[0] - a[0]), a[1] + f * (c[1] - a[1]), a[2] + f * (c[2] - a[2])};
+  }
+  // test: how far each aimed bone is from the template's direction (0 when the pose took)
+  for (const auto& pr : kAimPairs) {
+    V3 ta, tb;
+    if (!joints.count(pr[0]) || !joints.count(pr[1]) || !tpl_pos(pr[0], ta) || !tpl_pos(pr[1], tb)) continue;
+    const V3 d = Norm(Sub(joints[pr[1]], joints[pr[0]])), t = Norm(Sub(tb, ta));
+    const double e = std::acos(std::clamp(Dot(d, t), -1.0, 1.0)) * 180.0 / 3.14159265358979323846;
+    if (e > rep.aim_error_deg) rep.aim_error_deg = e, rep.aim_worst = std::string(pr[0]) + " -> " + pr[1];
+  }
+  // the model's height (feet to the top, cm, before the scale) for the report
+  double top = 1e30, bottom = -1e30;
+  for (const auto& m : meshes)
+    for (const auto& p : m.pos) top = std::min(top, p[1]), bottom = std::max(bottom, p[1]);
+  rep.height_cm = (bottom - top) * 10.0 / scale;
+
+  // the builder's input (tools/svr11_build.py)
+  std::string j = "{\"version\": 1, \"template\": " + JsonStr(template_path) + ",\n \"joints\": {";
+  bool first = true;
+  for (const auto& [n, p] : joints) {
+    j += std::string(first ? "" : ", ") + JsonStr(n) + ": [" + Num(p[0]) + ", " + Num(p[1]) + ", " + Num(p[2]) + "]";
+    first = false;
+  }
+  j += "},\n \"attires\": [{\"name\": \"\", \"textures\": {\"color\": \"color.png\"" + std::string(any_normal ? ", \"normal\": \"normal.png\"" : "") + "},\n  \"meshes\": [";
+  for (size_t mi = 0; mi < meshes.size(); ++mi) {
+    const OutMesh& m = meshes[mi];
+    j += std::string(mi ? ",\n   " : "\n   ") + "{\"name\": " + JsonStr(m.name) + ", \"kind\": \"" + m.kind + "\",\n    \"bones\": [";
+    for (size_t b = 0; b < out_bones.size(); ++b) j += std::string(b ? ", " : "") + JsonStr(out_bones[b]);
+    j += "],\n    \"positions\": [";
+    for (size_t k = 0; k < m.pos.size(); ++k) j += std::string(k ? "," : "") + "[" + Num(m.pos[k][0]) + "," + Num(m.pos[k][1]) + "," + Num(m.pos[k][2]) + "]";
+    j += "],\n    \"normals\": [";
+    for (size_t k = 0; k < m.nrm.size(); ++k) j += std::string(k ? "," : "") + "[" + Num(m.nrm[k][0]) + "," + Num(m.nrm[k][1]) + "," + Num(m.nrm[k][2]) + "]";
+    j += "],\n    \"uvs\": [";
+    for (size_t k = 0; k < m.uv.size(); ++k) j += std::string(k ? "," : "") + "[" + Num(m.uv[k][0]) + "," + Num(m.uv[k][1]) + "]";
+    j += "],\n    \"weights\": [";
+    for (size_t k = 0; k < m.w.size(); ++k) {
+      j += std::string(k ? "," : "") + "[";
+      for (size_t q = 0; q < m.w[k].size(); ++q) j += std::string(q ? "," : "") + "[" + std::to_string(m.w[k][q].first) + "," + Num(m.w[k][q].second) + "]";
+      j += "]";
+    }
+    j += "],\n    \"triangles\": [";
+    for (size_t k = 0; k < m.tris.size(); ++k)
+      j += std::string(k ? "," : "") + "[" + std::to_string(m.tris[k][0]) + "," + std::to_string(m.tris[k][1]) + "," + std::to_string(m.tris[k][2]) + "]";
+    j += "]}";
+    rep.mesh_lines.push_back(m.name + " (" + m.kind + "): " + std::to_string(m.pos.size()) + " vertices, " + std::to_string(m.tris.size()) + " triangles");
+  }
+  j += "]}]}\n";
+  if (!WriteFile(PathStr(dir / "build.json"), Bytes(j.begin(), j.end()))) return fail("could not write build.json");
+  rep.bones_used = int(out_bones.size());
+  return true;
+}
+
 }  // namespace svrfmt

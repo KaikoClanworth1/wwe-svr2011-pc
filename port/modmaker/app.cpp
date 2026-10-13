@@ -2171,6 +2171,33 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       if (c != std::wstring::npos) WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
       return 0;
     }
+    else if (!wcscmp(argv[i], L"--fbx-build-input") && more) {  // <fbx>,<template pac>,<out dir>: the automatic mapping, build.json + report.txt
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a == std::wstring::npos || b == std::wstring::npos) return 1;
+      const std::string fbx = Utf8(v.substr(0, a)), tpl = Utf8(v.substr(a + 1, b - a - 1)), dir = Utf8(v.substr(b + 1));
+      std::vector<svrfmt::FbxBone> fb;
+      std::string err, out;
+      Bytes pac;
+      svrfmt::FbxImportReport rep;
+      bool ok = false;
+      if (svrfmt::ReadFbxSkeleton(fbx, fb, err) && ReadFile(tpl, pac)) {
+        std::vector<RigBone> rb;
+        for (const auto& k : fb) rb.push_back({k.name, k.parent});
+        ok = svrfmt::FbxToBuildInput(fbx, MapRig(rb), pac, tpl, dir, rep);
+      }
+      char line[256];
+      std::snprintf(line, sizeof line, "%s: %d meshes, %d vertices, %d triangles, %d textures (sheet %d), %d bones aimed (worst %.3f deg), %d 2011 bones, scale %.4f, height %.1f cm\n",
+                    ok ? "OK" : "FAILED", rep.meshes, rep.vertices, rep.triangles, rep.textures, rep.atlas, rep.aimed, rep.aim_error_deg, rep.bones_used, rep.scale, rep.height_cm);
+      out = line + err + (rep.aim_worst.empty() ? "" : "  worst aim: " + rep.aim_worst + "\n");
+      for (const auto& w : rep.warnings) out += "  warning: " + w + "\n";
+      for (const auto& w : rep.skipped) out += "  skipped: " + w + "\n";
+      for (const auto& w : rep.mesh_lines) out += "  mesh: " + w + "\n";
+      std::error_code ec;
+      fs::create_directories(fs::u8path(dir), ec);
+      WriteFile(dir + "/report.txt", Bytes(out.begin(), out.end()));
+      return ok ? 0 : 1;
+    }
     else if (!wcscmp(argv[i], L"--rig-selftest")) {  // the rig mapper against each known rig's standard names
       const auto fails = RigSelfTest();
       std::string out = "rig self test: " + std::to_string(fails.size()) + " failed\n";
