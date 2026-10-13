@@ -452,6 +452,39 @@ std::string ConvertFlags13(const std::string& t) {
   return o;
 }
 
+// Light numbers l(n) the host arena has no light for go to its nearest one of
+// the same hundred (a light the arena lacks crashes the load: SvR 2009's and
+// WWE 2K14's l(502) on a 2011 RAW host).
+std::string HostLights13(const std::string& t, const std::string& host_flags) {
+  std::set<int> have;
+  for (size_t i = host_flags.find("l("); i != std::string::npos; i = host_flags.find("l(", i + 2))
+    have.insert(std::atoi(host_flags.c_str() + i + 2));
+  if (have.empty()) return t;
+  std::string o;
+  for (size_t i = 0; i < t.size();) {
+    if (t.compare(i, 2, "l(") == 0 && (i == 0 || t[i - 1] == ' ' || t[i - 1] == '	')) {
+      const size_t e = t.find(')', i);
+      if (e != std::string::npos && e - i < 8) {
+        int v = std::atoi(t.c_str() + i + 2);
+        if (!have.count(v)) {
+          int best = -1;
+          for (int h : have)
+            if (h / 100 == v / 100 && (best < 0 || std::abs(h - v) < std::abs(best - v))) best = h;
+          if (best < 0)
+            for (int h : have)
+              if (best < 0 || std::abs(h - v) < std::abs(best - v)) best = h;
+          v = best;
+        }
+        o += "l(" + std::to_string(v) + ")";
+        i = e + 1;
+        continue;
+      }
+    }
+    o += t[i++];
+  }
+  return o;
+}
+
 std::string RelightByRole13(const std::string& t, const std::map<uint32_t, std::string>& names, int stand_light) {
   // WWE '13 lights its stands with baked light maps and no light group; the
   // light maps are gone, so they take the lights SvR2011's RAW gives the
@@ -1103,6 +1136,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       std::string fl = ConvertFlags13(Text(raw));
       if (opt.role_lights) fl = RelightByRole13(fl, names, opt.stand_light);
       if (opt.no_spot_shadows) fl = NoSpotShadows13(fl, names);
+      if (hostm.count(0xC351)) fl = HostLights13(fl, Text(Unpack(hostm[0xC351]->data)));
       outm[e.id] = Pack(FromText(fl));
     } else if ((e.id == 0x4E20 || e.id == 0x4E2A) && IsPach(raw)) {
       if (opt.host_crowd && hostm.count(e.id)) { outm[e.id] = hostm[e.id]->data; ++rep.from_host; continue; }
