@@ -21,6 +21,12 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | game | disc id | entrances | converter | status |
 |---|---|---|---|---|
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
+| SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, converted offline (Andre 3066, Bret Hart 3077) |
+| SmackDown! Shut Your Mouth (PS2) | - | 114 | - | researched: HCTP back end + a new SYDT script reader |
+| SmackDown! vs. Raw 2006 (PS2) | - | 95 | - | researched: 2008 script path little-endian, bodies as HCTP; 2/3 also in SvR 2007 |
+| WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
+| SvR 2007-2011 (PS2) | - | same as 360 | - | researched: the 360 entrances in PS2 byte order (a ~110-line front end for the 360 converters) |
+| WWE 2K15 / 2K16 / 2K17 (X360) | - | 138 / 236 / 315 | - | researched: WWE '13 converter + new readers, 788-byte slots, one-take entrances |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
 | SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, played in game (Mr. Kennedy 4062 as 495) |
@@ -44,6 +50,68 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
   objects kept; prop 2019 (folded WWE Title) -> 2014.
 - **Pyro:** none in the data (HCTP's flashes are op 18 events, kept). **Titantron/theme:** from
   the profile.
+
+## SmackDown! vs. Raw (PS2, 2004)
+
+- **Where:** HCTP's files: `PAC/EVTENT.PAC` (DPAC) `EVET/<n>` motion banks 3000-3201 and `ENTR/SEVP`
+  (`hctp_entrance.parse_sevp` reads it unchanged); names in `PAC/MOVES.PAC` `MOVS/LIST` sub-entry 2
+  (BPE-packed, HCTP's {u16 number, name[30]} records). 96 entrances (The Rock, Andre, Mankind, Bret
+  Hart, Brutus Beefcake, Mr. McMahon...).
+- **Differences from HCTP:** 20-24 sub-scenes per object instead of 5: by position 0-3 hidden intro,
+  4-8 stage, 9-14 ramp, 15-18 ringside, 19-23 in the ring = 2011's 5 segments (whole sub-scenes
+  joined, no intro cut); camera keys of 19 bytes (f32 position, s16 rotation); most entrances carry
+  2 partner / valet characters (generic bodies). Same motion format, wide bone table, raised stage
+  (HCTP's ground fix applies).
+- **Converter:** `hctp_entrance.build(..., game='svr04')` (GAMES: segment groups, 24 slots, the
+  19-byte camera key) via `entrance_port.py --game svr04`. HCTP's output is unchanged (3047
+  byte-identical). Converted offline: 3066 Andre, 3077 Bret Hart. Not played yet.
+- **Media:** titantrons MPEG in AFS archives, themes CRI ADX (not converted). No pyro (flash ops only).
+
+## SmackDown! Shut Your Mouth, SvR 2006, Just Bring It (PS2) - research
+
+- **Shut Your Mouth:** `PAC/EVTENT.PAC` motion banks 3000-3113 (HCTP's format, but frame records sized
+  in halfwords: a byte < 0x80 skips frames, else (b & 0x7f) x 2 bytes) and only the compact `SYDT`
+  script (a reader reproduces HCTP's and SvR 2004's full scripts 534/534 and 100/100); 2-7 segments
+  with alternates, 2 cameras, character roots relative to the slot (bake to absolute), own prop ids.
+  Unique: Hollywood Hogan, DDP, X-Pac, Raven, Lawler, JR, Earl Hebner. Plan: SYDT reader in front of
+  HCTP's back end.
+- **SvR 2006:** `PAC/EVT.PAC` (a DPAC variant with doubled group counts), 95 entrances 4000-4500; the
+  script is 2007/2008's layout little-endian, cameras already 2011's 29-byte keys, floor-level stage;
+  bodies need HCTP-style re-encoding; ops 24, 65, 185 differ in size. About two thirds are in SvR
+  2007 (use svr07 for those: Andre 4066 = 2007 4109). Unique: JYD, Heidenreich, Rene Dupree, tag
+  entrances, Team Angle.
+- **Just Bring It:** `EN3.PAC`, 349 records of a motion bank (SYM framing) + a text CSV script with
+  an older op set and no segment structure; names only in the ELF. Not practical yet.
+
+## SvR 2007-2011 (PS2) - research
+
+The PS2 discs carry the same entrances as the 360 versions (2007 150, 2008 140, 2009 168, 2010 211,
+2011 238 - none PS2-only). Containers are the 360's in little-endian (DPAC 2007-2009, DPK8 2010-2011),
+scripts are the 360 EVP in PS2 byte order (two-u16 fields, raw type bytes: a little-endian parser +
+`build_evp` rebuilds the 360 bytes for 935/935), tracks are the same YMKs banks (2008 138/140 and 2009
+167/168 byte-identical; 2010/2011 character tracks are key-reduced). A ~110-line front end (container
+reader + `parse_evp_le`) lets the svr07-10 converters take a PS2 disc; 2008/2009 output then equals
+the 360-based one. Titantrons: Sofdec MPEG-1 224x192 in `MOVIE/NMV*.AFS`; themes CRI ADX; pyro sets are
+PS2 textures (not portable). The 360 discs are the better source.
+
+## WWE 2K15 / 2K16 / 2K17 (Xbox 360) - research
+
+- **2K15:** `pac/evt/Entrance00-10.pac`, xcompressed EPK8 (groups `EVP2`, `EVZ `): 138 entrances (a
+  cut-down 2K14: 291 numbers shared, 42 new). **2K16/2K17:** one pac per scene `pac/evt/NNNNN.pac`
+  (entrances 100-899, CAE parts 10000-14999), 20-byte table entries with 4-character names (number
+  from the file name); 2K17 has 115 in a new HSPC container (SHDC block instead of PACH). 236 / 315
+  entrances.
+- **Script:** 2K14's EVP (cm positions, segments 0/5/10/15/20) with **788-byte slots**: words 0-50 +
+  195-196 = 2K14's slot (56,297 / 56,442 shared slots equal); the rest are longer rope / turnbuckle key
+  lists (up to 32 keys, 2011 holds 8: resample 26 / 124 / 199 slots).
+- **Motion:** same records at 60 Hz, same Biped skeleton; 2K15 YANM v4, 2K16/2K17 v5 (`yanm_decode`
+  reads it: same pose within 0-1.7 cm); mode-4 YANM blocks (boned props only) must be skipped; y1 is a
+  32-track face rig (dropped). Checked: 2K15 Austin vs 2011's own 0-2 cm on segments not re-cut.
+- **One-take entrances (2K15):** ~61 put the whole entrance in segment 0 (2011 hides segment 0): use
+  2K16's re-cut of the same take (37 of 61) or an HCTP-style split.
+- **Other:** lights object moved to `pac/evt/light/elNNNNN.pac` (2011 donor used anyway); the event
+  table covers 82% (2K15) / 95% (2K16-17); new prop 2755 in nearly every new entrance, 2K17 uses 63
+  props 2011 lacks; pyro PCE6 (2K16-17 in `pac/particle/pce6NNNN.pac`); titantrons Bink 2.
 
 ## SvR 2007 (Xbox 360)
 

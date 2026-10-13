@@ -272,6 +272,7 @@ GAMES = collections.OrderedDict([
     ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='ready')),
     ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready')),
     ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
+    ('svr04', dict(name='SmackDown! vs. Raw', platform='ps2', disc_hint='SLES_527.81', status='ready')),
 ])
 # (disc_hint: the Xbox 360 title id / PS2 serial discfs.open(iso).info() reports)
 
@@ -343,8 +344,10 @@ def hctp_src(src):
     names = {}
     if src.exists('PAC/MOVES.PAC'):
         for g, n, b in EH.dpac(src.read('PAC/MOVES.PAC')):
-            if g == 'MOVE' and n == 'LIST':
+            if g in ('MOVE', 'MOVS') and n == 'LIST':     # (SvR 2004: MOVS/LIST, BPE-packed sub-entries)
                 for i, sub in EH.pac(b):
+                    if sub[:4] == b'BPE ':
+                        sub = svrfmt.bpe_decode(sub)
                     if i == 2:
                         for k in range(struct.unpack_from('<H', sub, 0)[0]):
                             r = sub[2 + 32 * k:2 + 32 * (k + 1)]
@@ -352,7 +355,7 @@ def hctp_src(src):
     return dict(banks=banks, sevp=entr['SEVP'], sydt=entr.get('SYDT')), names
 
 
-def hctp_list(src, game_pac):
+def hctp_list(src, game_pac, game='hctp'):
     s, names = hctp_src(src)
     sevp = EH.parse_sevp(s['sevp'])
     out = []
@@ -363,11 +366,16 @@ def hctp_list(src, game_pac):
         T, ents = EH.H.read_bank(bank)
         kinds = [EH.kind_of(o) for o in sevp[n]['objs']]
         frames = {}
+        groups = EH.GAMES[game]['groups'] or [(k, k + 1) for k in range(5)]
         for o, k in zip(sevp[n]['objs'], kinds):
             if k == 'char':
-                for i, sl in enumerate(o['slots'][:5]):
-                    e = next((x for x in ents if (x['id'], x['x'], x['y']) == (sl['tid'], sl['tx'], sl['ty'])), None)
-                    frames[i] = e['frames'] if e else 0
+                for j, (a, b) in enumerate(groups):
+                    tot = 0
+                    for sl in o['slots'][a:b]:
+                        e = next((x for x in ents if (x['id'], x['x'], x['y']) == (sl['tid'], sl['tx'], sl['ty'])), None)
+                        tot += e['frames'] if e else 0
+                    if a < len(o['slots']):
+                        frames[j] = tot
                 break
         out.append(dict(number=n, name=names.get(n, ''), segments=len(frames), frames=[frames.get(k, 0) for k in range(5)],
                         objects=len(kinds), props=[o['model'] for o, k in zip(sevp[n]['objs'], kinds) if k == 'prop'],
@@ -376,16 +384,27 @@ def hctp_list(src, game_pac):
     return out
 
 
-def hctp_convert(src, entrance, number, name, parts, rep):
+def hctp_convert(src, entrance, number, name, parts, rep, game='hctp'):
     s, names = hctp_src(src)
+    if entrance not in EH.parse_sevp(s['sevp']) or len(s['banks'].get(entrance, b'')) <= 512:
+        raise InputError('%s has no entrance %d' % (GAMES[game]['name'], entrance))
     progress(20, 'converting the script and tracks')
-    evp, evt, r, notes = EH.build(entrance, number, s, name or names.get(entrance, 'HCTP %d' % entrance))
+    evp, evt, r, notes = EH.build(entrance, number, s, name or names.get(entrance, '%s %d' % (game.upper(), entrance)),
+                                  game=game)
     rep['notes'] += notes + ['%s: %d' % kv for kv in sorted(r.items())]
     rep['dropped'] += ['%s: %d' % kv for kv in sorted(r.items()) if 'dropped' in kv[0]]
     return evp, evt
 
 
 # ---- SvR 2010 (Xbox 360): pac/evt/Nyujyo0-3.pac, EPK8 groups EVP1-4/EVT1-4, numbers 100-840
+
+def svr04_list(src, game_pac):
+    return hctp_list(src, game_pac, 'svr04')
+
+
+def svr04_convert(src, entrance, number, name, parts, rep):
+    return hctp_convert(src, entrance, number, name, parts, rep, 'svr04')
+
 
 def svr10_entrances(src):
     evp, evt = {}, {}
@@ -712,9 +731,9 @@ def low_convert(src, entrance, number, name, parts, rep, game_pac=None):
     return evp11, evt11
 
 
-LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'low': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'wwe13': wwe13_list,
+LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'low': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'svr04': svr04_list, 'wwe13': wwe13_list,
            'wwe12': w13_list('wwe12'), 'wwe2k14': w13_list('wwe2k14')}
-CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'low': low_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'wwe13': wwe13_convert,
+CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'low': low_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'svr04': svr04_convert, 'wwe13': wwe13_convert,
               'wwe12': w13_convert('wwe12'), 'wwe2k14': w13_convert('wwe2k14')}
 
 
