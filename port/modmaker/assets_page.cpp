@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 #include "app.h"
 #include "svrfmt/disc.h"
@@ -48,6 +49,7 @@ struct Node {
 
 std::unique_ptr<Node> g_root;
 Node* g_sel = nullptr;
+int g_tree_gen = 0;  // (a new tree: background results for the old one are dropped)
 std::wstring g_root_for;
 // where the tree comes from: the game folder, a disc image or any folder
 std::wstring g_source;  // "" = the game's pac folder
@@ -224,6 +226,7 @@ void Open(Node& n) {
     return;
   }
   if (n.kind == Kind::kFile) {
+    if (n.loading) return;
     Bytes head;
     if (!ReadRange(n, 0, 0x4000, head)) {
       n.error = "could not read the file";
@@ -231,17 +234,34 @@ void Open(Node& n) {
       return;
     }
     std::string how;
-    if (IsXcompress(head)) {  // WWE '13 and later: the pac inside an xcompress (LZX) wrapper
-      Bytes all, plain;
-      std::string err;
-      if (!ReadRange(n, 0, FileSize(n), all) || !XcompressDecode(all, plain, &err)) {
-        n.error = "the xcompress file did not unpack" + (err.empty() ? std::string() : ": " + err);
-        n.opened = true;
-        return;
-      }
-      how = "xcompress, ";
-      n.whole = std::make_shared<const Bytes>(std::move(plain));
-      ReadRange(n, 0, 0x4000, head);
+    if (IsXcompress(head)) {  // WWE '13 and later: the pac inside an xcompress (LZX) wrapper, unpacked on a thread
+      n.loading = true;
+      n.detail = "unpacking (xcompress) ...";
+      Node copy;  // (what the thread needs to read the file)
+      Inherit(copy, n);
+      const uint64_t size = FileSize(n);
+      std::thread([gen = g_tree_gen, node = &n, file = copy.file, disc = copy.disc, di = copy.di, size] {
+        Node src;
+        src.file = file, src.disc = disc, src.di = di;
+        Bytes all, plain;
+        std::string err;
+        const bool ok = ReadRange(src, 0, size, all) && XcompressDecode(all, plain, &err);
+        auto result = std::make_shared<Bytes>(std::move(plain));
+        OnUiThread([gen, node, ok, err, result] {
+          if (gen != g_tree_gen) return;  // (another tree by now)
+          node->loading = false;
+          if (!ok) {
+            node->error = "the xcompress file did not unpack" + (err.empty() ? std::string() : ": " + err);
+            node->opened = true;
+            return;
+          }
+          node->whole = std::make_shared<const Bytes>(std::move(*result));
+          node->detail.clear();
+          Open(*node);
+          if (node->detail.rfind("xcompress", 0) != 0) node->detail = "xcompress, " + node->detail;
+        });
+      }).detach();
+      return;
     }
     PacIndex idx;
     if (!ParsePacIndex(head, idx)) {  // not a pac: the file itself (PACH, a texture, text, ...)
@@ -758,6 +778,7 @@ void Draw() {
     g_root->kind = Kind::kFolder;
     g_root_for = want;
     g_sel = nullptr;
+    ++g_tree_gen;
     if (g_source.empty()) {
       g_root->label = "pac";
       g_root->file = fs::path(g_game) / L"pac";

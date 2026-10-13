@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <mutex>
 #include <thread>
 
@@ -321,7 +322,10 @@ void RunInBackground(std::function<void()> fn) {
   if (g_worker.joinable()) g_worker.join();
   g_busy = true;
   g_worker = std::thread([fn] {
+    const auto t0 = std::chrono::steady_clock::now();
     fn();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    if (ms >= 50) Log("perf: background job " + std::to_string(ms) + " ms");
     {
       std::lock_guard lock(g_log_mutex);
       g_progress.clear();
@@ -1451,9 +1455,11 @@ void StatusBar() {
     ImGui::TextUnformatted(status.c_str());
   }
   // right: problems and the log
+  // (a fresh, untouched project isn't counted: "no arena yet" is no problem before you start)
+  if (g_project_file.empty() && !ProjectDirty()) g_problems.clear();
   const int errors = ErrorCount(g_problems), warnings = int(g_problems.size()) - errors;
   char pb[64];
-  if (g_problems.empty()) std::snprintf(pb, sizeof pb, "No problems");
+  if (g_problems.empty()) std::snprintf(pb, sizeof pb, g_project_file.empty() && !ProjectDirty() ? "Nothing made yet" : "No problems");
   else std::snprintf(pb, sizeof pb, "%d error%s, %d warning%s", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
   const float w = ImGui::CalcTextSize(pb).x + ImGui::CalcTextSize("Log").x + 60 * g_scale;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w));
@@ -1603,6 +1609,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
   std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
+  std::wstring perf_tour;  // --perf-tour <report>: every page in turn, its first-frame and slowest times
   std::vector<std::wstring> run_tool_args;
   std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
@@ -1677,6 +1684,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--assets-source") && more) assets_page::TestSource(argv[++i]), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--test-pac-edit") && more) pac_editor::TestEdit(argv[++i]), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--perf-tour") && more) perf_tour = argv[++i];
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
       int a[4] = {0, -1, -1, 0};
@@ -1829,7 +1837,44 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    // timing (D17): startup to the first frame, a page's first frame, frames over 100 ms
+    static PageId timed_page = PageId::kCount;
+    static double tour_slowest = 0;
+    static int frames_on_page = 0;
+    const PageId page_now = g_page;
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
     Draw();
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    const double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(freq.QuadPart);
+    if (ImGui::GetFrameCount() == 1) {
+      FILETIME created, x1, x2, x3, now;
+      GetProcessTimes(GetCurrentProcess(), &created, &x1, &x2, &x3);
+      GetSystemTimeAsFileTime(&now);
+      const auto ticks = [](const FILETIME& f) { return (uint64_t(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+      Log("perf: started in " + std::to_string((ticks(now) - ticks(created)) / 10000) + " ms (first frame)");
+    }
+    if (page_now != timed_page) {
+      if (!perf_tour.empty() && timed_page != PageId::kCount)
+        Log("perf: " + std::string(PageName(timed_page)) + " slowest frame " + std::to_string(int(tour_slowest)) + " ms");
+      timed_page = page_now, frames_on_page = 0, tour_slowest = 0;
+      Log("perf: " + std::string(PageName(page_now)) + " first frame " + std::to_string(int(ms)) + " ms");
+    } else {
+      tour_slowest = std::max(tour_slowest, ms);
+      if (ms > 100) Log("perf: slow frame on " + std::string(PageName(page_now)) + ": " + std::to_string(int(ms)) + " ms");
+    }
+    if (!perf_tour.empty() && ++frames_on_page >= 90 && !Busy()) {  // the next page (the 3D editor needs an arena: skipped)
+      int next = int(g_page) + 1;
+      if (next == int(PageId::kEditor)) ++next;
+      if (next >= int(PageId::kCount)) {
+        WriteLogTo(perf_tour);
+        perf_tour.clear();
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      } else {
+        g_page = PageId(next);
+      }
+    }
     ImGui::Render();
     if (test_project_pending && !Busy() && ImGui::GetFrameCount() > 3) {
       test_project_pending = false;

@@ -21,12 +21,15 @@
 #define NOMINMAX
 #include "char_preview.h"
 
+namespace mm { void Log(const std::string& line); }  // (app.h)
+
 #include <windows.h>
 #include <d3dcompiler.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -1006,6 +1009,7 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
   const bool need_idle = !g_idle;
   const std::wstring game = g_game;
   std::thread([which, ch_pac, game, gen, need_idle] {
+    const auto t0 = std::chrono::steady_clock::now();
     auto ch = std::make_shared<Character>();
     std::string err;
     Bytes pac;
@@ -1026,6 +1030,9 @@ void LoadSlot(int which, const std::wstring& ch_pac) {
     }
     sl.pending = ch;
     if (idle) g_idle = idle;
+    mm::Log("perf: model loaded in " +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()) +
+            " ms" + (idle ? " (with the idle)" : ""));
     if (which == 0) {
       char s[160];
       std::snprintf(s, sizeof s, "%zu vertices, %zu bones%s", ch->verts, ch->bones.size(),
