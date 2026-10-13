@@ -445,7 +445,7 @@ void Draw() {
                       FfmpegExe().empty() ? "not found" : "found");
   Bink2Section();
   if (ImGui::BeginTabBar("other_tabs")) {
-    if (ImGui::BeginTabItem("WWE '13 arena")) { Wwe13ArenaTab(); ImGui::EndTabItem(); }
+    if (ImGui::BeginTabItem("WWE '12 / '13 arena")) { Wwe13ArenaTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("WWE '13 superstar")) { Wwe13StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 superstar")) { Svr10StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 moves")) { Svr10MovesTab(); ImGui::EndTabItem(); }
