@@ -200,11 +200,37 @@ std::vector<std::string> MapRig(const std::vector<RigBone>& bones) {
     }
   // root: the first hips bone only (an armature "Root" above the hips stays unmapped: it folds nowhere)
   bool root = false;
-  for (auto& o : out)
-    if (o == "root") {
-      if (root) o.clear();
+  int root_bone = -1;
+  for (size_t i = 0; i < out.size(); ++i)
+    if (out[i] == "root") {
+      if (root) out[i].clear();
+      else root_bone = int(i);
       root = true;
     }
+  // spine by structure (the same rule as the porting tools' rig_maps): the path from the hips to the clavicles'
+  // parent - its first bone the waist, its last the chest, the ones between fold into the waist; then the first bone
+  // from the chest toward the head is the neck, the ones after it up to the head fold into the neck
+  auto parent_of = [&](int i) { return i >= 0 ? bones[size_t(i)].parent : -1; };
+  int chest = -1;
+  for (size_t i = 0; i < out.size() && chest < 0; ++i)
+    if (out[i] == "l_sakotsu" || out[i] == "r_sakotsu") chest = parent_of(int(i));
+  if (chest >= 0 && out[size_t(chest)] == "kubi") chest = parent_of(chest);  // (Biped: clavicles hang from the neck)
+  if (root_bone >= 0 && chest >= 0 && chest != root_bone) {
+    std::vector<int> path;  // chest .. first bone above the hips
+    for (int p = chest; p >= 0 && p != root_bone && path.size() < bones.size(); p = parent_of(p)) path.push_back(p);
+    if (!path.empty() && parent_of(path.back()) == root_bone) {
+      for (size_t k = 0; k < path.size(); ++k)
+        out[size_t(path[k])] = k == 0 ? "mune" : k + 1 == path.size() ? "koshi" : "";
+      if (path.size() == 1) out[size_t(path[0])] = "koshi";  // one spine bone: the waist (the chest folds into it)
+      int head = -1;
+      for (size_t i = 0; i < out.size() && head < 0; ++i)
+        if (out[i] == "atama") head = int(i);
+      std::vector<int> neck;  // head's ancestors up to the chest
+      for (int p = parent_of(head); p >= 0 && p != chest && neck.size() < bones.size(); p = parent_of(p)) neck.push_back(p);
+      if (head >= 0 && parent_of(neck.empty() ? head : neck.back()) == chest)
+        for (size_t k = 0; k < neck.size(); ++k) out[size_t(neck[k])] = k + 1 == neck.size() ? "kubi" : "";
+    }
+  }
   return out;
 }
 
@@ -294,7 +320,19 @@ std::vector<std::string> RigSelfTest() {
                                       {"Jacket_Middle_1_Left", 5}, {"mixamorig:LeftUpLeg", 0}, {"mixamorig:LeftLeg", 17}};
     const char* want[] = {"root", "l_momo", "l_sune", "l_ashi", "koshi", "mune", "l_sakotsu", "l_ninoude", "l_kote", "l_te",
                           "l_yubi00", "l_yubi01", "l_yubi02", "l_yubi10", "l_yubi11", "l_yubi12", "", "l_momo", "l_momo"};
-    const auto got = MapRig(rig);
+    auto got = MapRig(rig);
+    const std::vector<RigBone> uni = {{"Hips", -1}, {"Spine", 0}, {"Chest", 1}, {"UpperChest", 2}, {"Neck", 3}, {"Head", 4},
+                                      {"LeftShoulder", 3}};
+    const char* uwant[] = {"root", "koshi", "", "mune", "kubi", "atama", "l_sakotsu"};
+    const auto ugot = MapRig(uni);
+    for (size_t i = 0; i < uni.size(); ++i)
+      if (ugot[i] != uwant[i]) fails.push_back("spine: " + uni[i].name + " -> " + (ugot[i].empty() ? "(none)" : ugot[i]) + ", want " + (uwant[i][0] ? uwant[i] : "(none)"));
+    const std::vector<RigBone> bip = {{"Bip01 Pelvis", -1}, {"Bip01 Spine", 0}, {"Bip01 Spine1", 1}, {"Bip01 Spine2", 2},
+                                      {"Bip01 Neck", 3}, {"Bip01 Head", 4}, {"Bip01 L Clavicle", 4}};
+    const char* bwant[] = {"root", "koshi", "", "mune", "kubi", "atama", "l_sakotsu"};
+    const auto bgot = MapRig(bip);
+    for (size_t i = 0; i < bip.size(); ++i)
+      if (bgot[i] != bwant[i]) fails.push_back("biped spine: " + bip[i].name + " -> " + (bgot[i].empty() ? "(none)" : bgot[i]) + ", want " + (bwant[i][0] ? bwant[i] : "(none)"));
     for (size_t i = 0; i < rig.size(); ++i)
       if (got[i] != want[i]) fails.push_back("chain: " + rig[i].name + " -> " + (got[i].empty() ? "(none)" : got[i]) + ", want " + (want[i][0] ? want[i] : "(none)"));
   }
