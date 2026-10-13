@@ -88,7 +88,10 @@ try {
     Start-Sleep 30
     $started = if ($TargetRule) { "\] match: rule $TargetRule" } else { "\] match: rule 0[0-9A-F], arena [0-9]+ - .*\(person 1" }
     foreach ($round in 1..3) {
-      if (Select-String -Path (Join-Path $runs "$Name`_join.log") -Pattern $started -Quiet) { break }
+      # (a match line after the joiner joined: the title demo's match lines come before)
+      $jl = Join-Path $runs "$Name`_join.log"
+      $joinedAt = (Select-String -Path $jl -Pattern "joined \(flags" | Select-Object -Last 1).LineNumber
+      if ($joinedAt -and (Select-String -Path $jl -Pattern $started | Where-Object { $_.LineNumber -gt $joinedAt })) { break }
       Shot "" "$Name`_host_round$round"; Shot "2" "$Name`_join_round$round"
       In "" @("press A 200", "wait 3000", "press A 200", "wait 6000")
       In "2" @("press A 200", "wait 6000", "press A 200", "wait 3000", "press A 200", "wait 6000")
