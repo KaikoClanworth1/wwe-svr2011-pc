@@ -192,8 +192,17 @@ def build_ps2(cid, outdir, o, rep):
         note('renders: the PS2 select pictures (%s)' % ', '.join('%s from the %s' % kv for kv in sorted(rn.items())))
     else:
         warn("no %s select picture: the base's renders" % g.label)
-    # ratings, abilities, moves: not mapped yet
-    drop('ratings, abilities and moves: the base\'s (%s records not mapped yet)' % g.label)
+    # ratings, abilities: the PS2 character records (tools/ratings_port.py, abilities_port.py, ps2_records.py)
+    import ratings_port
+    rr, rrep = ratings_port.map_ratings(g.game_id, cid, g)
+    if rr:
+        man['ratings'] = ','.join(map(str, rr))
+        note(ratings_port.report_line(g.label, rr, rrep))
+    else:
+        drop('ratings: the base\'s (%s)' % rrep['note'])
+    SP.abilities_step(g.game_id, g, cid, man, note)
+    # moves: not mapped yet
+    drop('moves: the base\'s (%s records not mapped yet)' % g.label)
     # entrance
     SP.progress(60, 'entrance')
     if o.get('entrance'):

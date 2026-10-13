@@ -15,6 +15,12 @@ The formulas are fitted on the superstars each game shares with 2011 (24-42 of t
 leave-one-out mean errors (vs ~8-9 for "the roster's mean"): '12 4.6, '13 5.1, 2K14 4.9, 2K15 6.1, 2K16 5.9,
 2K17 5.9, SvR 2007 5.9 - close, not exact: the games rate people differently (speed least of all).
 SvR 2008 / 2009 (and 2010, svr10_superstar) store 2011's own seven: superstar_port reads them itself.
+
+PS2 (tools/ps2_records.py reads the records from the disc): JBI 12 values 0-4, SYM 8 values 0-4, HCTP +0..+4
+(strength, submission, speed, technique, endurance; ~5-20), SvR 2004 +0x28..+0x2D (+ charisma), SvR 2006
++0..+7 (5-20) - fitted the same way on 12-22 shared superstars (errors JBI 4.7, SYM 5.9, HCTP 5.1, SvR04 4.9,
+SvR06 5.0 vs ~7 for the roster mean; each game's own speed field kept for speed). PS2 2007-2010 hold the X360
+games' records byte for byte: 2007 the svr2007 formula, 2008-2010 2011's seven at raw +4..+10 (display values).
 """
 import struct
 
@@ -47,7 +53,27 @@ RATING_LIN = {
                 (30.25, ((3, 3.125, 'u8'),)), (57.92, ((7, 1.357, 'u8'),)), (9.65, ((5, 4.384, 'u8'),)),
                 (43.5, ((4, 2.148, 'u8'),))),
 }
-ERROR = {'wwe12': 4.6, 'wwe13': 5.1, 'wwe2k14': 4.9, 'wwe2k15': 6.1, 'wwe2k16': 5.9, 'wwe2k17': 5.9, 'svr2007': 5.9}
+RATING_LIN.update({
+    'ps2_jbi': ((80.84, ((7, 5.374, 'u8'), (10, -4.415, 'u8'))), (57.72, ((1, 4.056, 'u8'), (4, 3.598, 'u8'))),
+                (55.59, ((8, -3.653, 'u8'), (10, 9.057, 'u8'))), (59.28, ((10, 7.207, 'u8'),)), (64.05, ((3, 5.841, 'u8'),)),
+                (82.17, ((6, -7.115, 'u8'), (10, 8.135, 'u8'))), (62.45, ((4, 4.079, 'u8'), (7, 2.404, 'u8')))),
+    'ps2_sym': ((70.46, ((4, 3.61, 'u8'),)), (59.79, ((0, 2.798, 'u8'), (1, 5.173, 'u8'))),
+                (63.87, ((4, -3.784, 'u8'), (6, 7.065, 'u8'))), (64.96, ((6, 6.058, 'u8'),)), (72.23, ((7, 3.173, 'u8'),)),
+                (76.84, ((6, 3.515, 'u8'),)), (62.6, ((0, 3.563, 'u8'), (3, 2.699, 'u8')))),
+    'ps2_hctp': ((43.58, ((0, 2.376, 'u8'),)), (48.04, ((1, 2.039, 'u8'),)), (30.81, ((2, 3.012, 'u8'),)),
+                 (38.76, ((1, 2.946, 'u8'),)), (39.67, ((0, 1.511, 'u8'), (3, 1.136, 'u8'))), (56.69, ((4, 1.766, 'u8'),)),
+                 (45.54, ((0, 2.133, 'u8'),))),
+    'ps2_svr04': ((32.9, ((40, 2.924, 'u8'),)), (45.93, ((41, 2.17, 'u8'),)), (38.47, ((42, 2.64, 'u8'),)),
+                  (24.82, ((41, 3.753, 'u8'),)), (26.71, ((40, 1.638, 'u8'), (45, 1.631, 'u8'))), (39.15, ((45, 2.698, 'u8'),)),
+                  (39.25, ((40, 2.382, 'u8'),))),
+    'ps2_svr06': ((63.32, ((0, 2.003, 'u8'), (2, -1.019, 'u8'))), (64.31, ((1, 1.037, 'u8'),)), (34.59, ((2, 2.903, 'u8'),)),
+                  (42.73, ((6, 2.67, 'u8'),)), (35.06, ((0, 1.021, 'u8'), (5, 1.824, 'u8'))),
+                  (11.32, ((5, 3.269, 'u8'), (7, 1.278, 'u8'))), (55.61, ((3, -1.25, 'u8'), (4, 2.61, 'u8')))),
+})
+RATING_LIN['ps2_svr07'] = RATING_LIN['svr2007']   # (the same records)
+DIRECT_PS2 = ('ps2_svr08', 'ps2_svr09', 'ps2_svr10')   # 2011's seven, raw +4..+10, display values
+ERROR = {'ps2_jbi': 4.7, 'ps2_sym': 5.9, 'ps2_hctp': 5.1, 'ps2_svr04': 4.9, 'ps2_svr06': 5.0, 'ps2_svr07': 5.9,
+         'wwe12': 4.6, 'wwe13': 5.1, 'wwe2k14': 4.9, 'wwe2k15': 6.1, 'wwe2k16': 5.9, 'wwe2k17': 5.9, 'svr2007': 5.9}
 # the record must reach the last field read
 NEED = {g: max(o + (2 if k == 'u16' else 1) for _b, terms in lin for o, _a, k in terms) for g, lin in RATING_LIN.items()}
 
@@ -63,8 +89,23 @@ def lin_ratings(r, lin):
 def map_ratings(game_id, cid, src):
     rep = dict(source='', error=None, note='')
     lin = RATING_LIN.get(game_id)
-    raw = getattr(src, 'raw_dat', None) or {}
-    r = raw.get(cid)
+    if game_id.startswith('ps2_'):
+        import ps2_records
+        try:
+            r = ps2_records.record(src, cid)
+        except Exception as e:  # (a disc layout not as researched: the base's, said why)
+            rep['note'] = 'the %s character table could not be read (%s)' % (game_id, e)
+            return None, rep
+        if game_id in DIRECT_PS2 and r is not None and len(r) >= 11:
+            vals = [max(1, min(99, x - 1)) for x in r[4:11]]
+            if len(set(vals)) == 1:
+                rep['note'] = 'the record has no real ratings (all %d)' % vals[0]
+                return None, rep
+            rep['source'] = '%s stores 2011\'s seven' % game_id
+            return vals, rep
+    else:
+        raw = getattr(src, 'raw_dat', None) or {}
+        r = raw.get(cid)
     if not lin:
         rep['note'] = 'no ratings formula for %s' % game_id
         return None, rep
@@ -81,6 +122,8 @@ def map_ratings(game_id, cid, src):
 
 
 def report_line(label, ratings, rep):
+    if ratings and rep.get('error') is None:
+        return 'ratings from %s -> %s (%s)' % (label, ','.join(map(str, ratings)), rep['source'])
     if ratings:
         return 'ratings from %s DAT -> %s (fitted on shared superstars: off by ~%s on average)' % (
             label, ','.join(map(str, ratings)), rep['error'])

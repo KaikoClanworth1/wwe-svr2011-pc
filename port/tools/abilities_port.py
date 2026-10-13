@@ -81,8 +81,26 @@ def guess_from_ratings(ratings):
 
 
 def map_abilities(game_id, cid, src, ratings=None, style=None):
+    """(PS2 game ids: ps2_svr08 / 09 / 10 hold the X360 games' records - read as those; the older PS2 games have
+    no per-superstar abilities: guessed from the ratings)"""
     rep = dict(mapped=[], guessed=[], dropped=[], notes=[])
     ids = []
+    if game_id.startswith('ps2_'):
+        import ps2_records
+        twin = ps2_records.X360_TWIN.get(game_id)
+        try:
+            rec = ps2_records.record(src, cid) if twin in ('svr2008', 'svr2009', 'svr2010') else None
+        except Exception as e:
+            rec = None
+            rep['notes'].append('the %s character table could not be read (%s)' % (game_id, e))
+        if rec is not None:
+            class _One:   # (the record as raw_dat, for the X360 path below)
+                raw_dat = {cid: rec}
+            src, game_id = _One(), twin
+        else:
+            rep['notes'].append('%s keeps no abilities' % game_id)
+            game_id = 'none'
+
 
     def add(a, kind, text):
         if a in USED_2011 and a not in ids and len(ids) < CAP:
