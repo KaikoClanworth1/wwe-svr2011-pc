@@ -19,7 +19,4 @@ void FastStartPressStart(uint8_t* base, uint32_t screen, uint32_t pad);
 // X_INPUT_STATE, +0 packet number, +4 buttons): the skips press START.
 void FastStartInput(uint8_t* base, uint32_t state);
 
-// In the practice ring (after the Start Screen, before the main menu).
-bool InPracticeRing();
-
 }  // namespace svr2011

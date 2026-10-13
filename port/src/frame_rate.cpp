@@ -722,7 +722,7 @@ REX_HOOK_RAW(sub_82905058) {
     base[out + 4] = uint8_t(b >> 8), base[out + 5] = uint8_t(b);
     svr2011::OnlineRulesPad(b);  // (LB / RB: the PORT RULES row - online_rules.h)
   }
-  if (out && ctx.r3.u32 == 0 && (base[out + 5] & 0x10)) svr2011::PadIconsStartPressed(user);  // (START: pad_icons.h)
+  if (out && ctx.r3.u32 == 0) svr2011::PadIconsInput(user, base + out);  // (who pressed last: pad_icons.h)
   if (r && out) {
     r->valid = true;
     r->result = ctx.r3.u32;

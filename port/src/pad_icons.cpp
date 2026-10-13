@@ -50,7 +50,6 @@
 #include <rex/system/xmemory.h>
 
 #include "generated/default/svr2011_init.h"
-#include "fast_start.h"
 #include "pad_types.h"
 
 namespace svr2011 {
@@ -83,22 +82,17 @@ bool g_enabled = false;
 thread_local int t_owner = -1;
 
 // The kind of pictures for the text / picture being drawn: its player's
-// controller, or (shared by everyone) what the players use - PlayStation if
-// all use one, pairs ("A / Cross") if they mix Xbox and PlayStation pads.
-Kind CurrentKind(bool pairs) {
+// controller (the match HUD, the character select panels), or - shared by
+// everyone: menus, their bars, the pause menu, tips - the controller of
+// whoever pressed something last (a key, a pad button, a trigger or stick
+// pushed: PadIconsInput), as most PC games do.
+std::atomic<int> g_last_input{0};
+Kind CurrentKind(bool) {
   auto of = [](PadType t) {
     return t == PadType::kPlayStation ? kPlayStation : t == PadType::kKeyboard ? kKeyboard : kXbox;
   };
   if (t_owner >= 0) return of(PlayerPadType(uint32_t(t_owner)));
-  // the practice ring (its GAMEPLAY TIPS, the profile's "Load Successful"):
-  // player 1 is the one there
-  if (InPracticeRing()) return of(PlayerPadType(0));
-  const uint32_t in_use = PadTypesInUse();
-  const bool ps = in_use & (1u << uint32_t(PadType::kPlayStation));
-  const bool xbox = in_use & (1u << uint32_t(PadType::kXbox));
-  const bool kb = in_use & (1u << uint32_t(PadType::kKeyboard));
-  if (ps) return xbox || kb ? (pairs ? kPair : kXbox) : kPlayStation;
-  return kb && !xbox ? kKeyboard : kXbox;
+  return of(PlayerPadType(uint32_t(g_last_input.load())));
 }
 
 // ---------------------------------------------------------------------------
@@ -491,10 +485,32 @@ void PadIconsTextureUploaded(uint32_t physical_base, uint32_t width, uint32_t he
 
 void SetPadIconsOwner(int user_index) { t_owner = user_index; }
 
-std::atomic<int> g_last_start{0};
-void PadIconsStartPressed(uint32_t user_index) {
-  if (g_last_start.exchange(int(user_index)) != int(user_index) && std::getenv("SVR2011_PAD_ICONS_LOG"))
-    REXLOG_INFO("pad icons: START from player {}", user_index);
+// A player's pad state read by the game (XInput layout, big-endian: +4
+// buttons, +6 / +7 triggers, +8.. sticks LX LY RX RY): a new press makes it
+// the last player to press something. (the keyboard player's right stick is
+// the mouse: moving it isn't a press)
+void PadIconsInput(uint32_t user_index, const uint8_t* state) {
+  if (user_index >= 8) return;
+  struct Last {
+    uint16_t buttons = 0;
+    bool lt = false, rt = false, ls = false, rs = false;
+  };
+  static Last last[8];
+  Last now;
+  now.buttons = uint16_t(state[4] << 8 | state[5]);
+  now.lt = state[6] > 128, now.rt = state[7] > 128;
+  auto out = [&](int at) {
+    const int x = int16_t(state[at] << 8 | state[at + 1]), y = int16_t(state[at + 2] << 8 | state[at + 3]);
+    return x * x + y * y > 16000 * 16000;
+  };
+  now.ls = out(8), now.rs = out(12);
+  Last& was = last[user_index];
+  const bool keyboard = PlayerPadType(user_index) == PadType::kKeyboard;
+  const bool pressed = (now.buttons & ~was.buttons) || (now.lt && !was.lt) || (now.rt && !was.rt) ||
+                       (now.ls && !was.ls) || (!keyboard && now.rs && !was.rs);
+  was = now;
+  if (pressed && g_last_input.exchange(int(user_index)) != int(user_index) && std::getenv("SVR2011_PAD_ICONS_LOG"))
+    REXLOG_INFO("[svr2011] pad icons: player {} pressed - shared pictures follow them", user_index + 1);
 }
 
 }  // namespace svr2011
@@ -803,17 +819,6 @@ REX_HOOK_RAW(sub_826E6060) {
   if (copy) Wr32(base + record + 80, copy);
   __imp__sub_826E6060(ctx, base);
   if (copy) Wr32(base + record + 80, original);
-}
-
-// - the in-match menu bar (the pause menu's "SELECT / CANCEL", its pages'):
-//   sub_82426200, a draw of its own class (vtable 0x820183A0; the menus'
-//   bar, sub_824364A8, is another) -> the hints sub_82407DC8 / sub_82407EA8.
-//   It is the pausing player's: the last to press START.
-REX_EXTERN(__imp__sub_82426200);
-REX_HOOK_RAW(sub_82426200) {
-  using namespace svr2011;
-  OwnerScope scope(g_enabled && t_owner < 0 ? g_last_start.load() : t_owner);
-  __imp__sub_82426200(ctx, base);
 }
 
 // - a character select panel: sub_82467C18(cursor + 28), the slot at +256;
