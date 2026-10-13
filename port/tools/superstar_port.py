@@ -23,6 +23,7 @@ Options (convert):
     --no-port       his moves 2011 has, but port none (WWE '12 / '13 / 2K14: faster)
     --max-port N    port at most N moves (default 40)
     --no-taunts     keep the base's taunts (his own are ported by default: YMBs moves, moves_port)
+    --same-moves    PS2 games: only 2011's same moves (no 'similar' ones, tools/ps2_moves.py)
 
 Games:
     svr2010   SvR 2010 - everything (svr10_superstar.py: model, renders, theme, titantron,
@@ -1593,7 +1594,8 @@ def main(argv):
     cmd = argv[1]
     a = dict(pac11=PAC11)
     i = 2
-    flags = {'--no-moves': 'no_moves', '--no-port': 'no_port', '--no-taunts': 'no_taunts', '--port-taunts': 'port_taunts'}
+    flags = {'--no-moves': 'no_moves', '--no-port': 'no_port', '--no-taunts': 'no_taunts', '--port-taunts': 'port_taunts',
+             '--same-moves': 'same_moves'}
     while i < len(argv):
         k = argv[i]
         if k in flags:
