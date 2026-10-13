@@ -84,12 +84,12 @@
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
+#endif
 
 #ifndef SVR2011_D3D_TRACE
 namespace svr2011 {
 void InstallModelMem(rex::memory::Memory* memory);  // (model_mem.cpp: failed buffer allocations logged)
 }
-#endif
 #endif
 
 REXCVAR_DEFINE_STRING(saves_folder, "", "Storage",
