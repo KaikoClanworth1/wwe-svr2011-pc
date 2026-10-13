@@ -150,6 +150,7 @@ struct Rtt {
   float last = 0;
   std::vector<std::pair<Clock::time_point, float>> recent;  // (the last 5 s)
   bool relayed = false;
+  std::string name;
 };
 std::mutex g_rtt_mutex;
 std::map<uint32_t, Rtt> g_rtts;
@@ -164,6 +165,11 @@ void NetRtt(uint32_t peer, double ms, bool relayed) {
   std::erase_if(r.recent, [&](const auto& e) { return now - e.first > std::chrono::seconds(5); });
 }
 
+void NetPeerName(uint32_t peer, const std::string& name) {
+  std::lock_guard lock(g_rtt_mutex);
+  g_rtts[peer].name = name;
+}
+
 std::vector<NetLink> NetLinks() {
   const auto now = Clock::now();
   std::vector<NetLink> links;
@@ -172,7 +178,7 @@ std::vector<NetLink> NetLinks() {
     std::erase_if(r.recent, [&](const auto& e) { return now - e.first > std::chrono::seconds(5); });
     if (r.recent.empty()) continue;
     NetLink l;
-    l.peer = peer, l.rtt_ms = r.last, l.relayed = r.relayed;
+    l.peer = peer, l.rtt_ms = r.last, l.relayed = r.relayed, l.name = r.name;
     for (const auto& e : r.recent) l.worst_ms = std::max(l.worst_ms, e.second);
     links.push_back(l);
   }

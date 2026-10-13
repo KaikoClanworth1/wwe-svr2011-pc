@@ -64,6 +64,9 @@ REXCVAR_DEFINE_STRING(p2p_stun, "stun.l.google.com:19302", "Online",
 REXCVAR_DEFINE_BOOL(p2p_force_relay, false, "Online", "Tests: every peer through the relay, never directly");
 REXCVAR_DEFINE_BOOL(p2p_lockstep, true, "Online",
                     "Matches step the world once a frame on both games (as on the console); off: tests only");
+REXCVAR_DEFINE_BOOL(p2p_send_every_frame, true, "Online",
+                    "Online matches send each frame's input at once and keep the input delay to the measured ping "
+                    "(lower lag on long links); off: the game's own send interval and delay");
 
 namespace svr2011 {
 
@@ -264,6 +267,8 @@ struct Peer {
   uint16_t seen_port = 0;
   bool data_v2 = false;                // it pings: it takes kDataV2
   Clock::time_point direct_ok{};       // (v2) a direct ping last came back directly
+  float rtt_direct = 0, rtt_relay = 0;  // (v2) each path's round trip, smoothed (ms; 0 not measured)
+  Clock::time_point relay_ok{};        // (v2) a relayed ping last came back
   std::map<std::pair<uint16_t, uint16_t>, uint32_t> delivered;  // (v2: last sequence passed on, by to / from port)
 };
 
@@ -819,15 +824,24 @@ void PingLoop() {
         Peer& p = it->second;
         Path direct = PathOf(mac, p);
         direct.relayed = false;
-        // A pinging peer's path: direct while a direct ping came back directly in
-        // the last 3 s, else the relay (when there is one) - checked every second.
+        // A pinging peer's path, checked every second: the relay when no direct
+        // ping came back in the last 3 s, or when it is clearly faster (15 ms;
+        // a far-off pair's internet route can be worse than the relay's);
+        // direct again once direct is within 5 ms of it.
         if (p.data_v2 && !ForceRelay()) {
           const bool ok = now - p.direct_ok < std::chrono::seconds(3);
-          const bool relay = !ok && g_relay_up && p.tunnel;
+          const bool relay_ok = g_relay_up && p.tunnel && now - p.relay_ok < std::chrono::seconds(3);
+          bool relay = !ok && g_relay_up && p.tunnel;
+          const char* why = relay ? "no direct round trip for 3 s" : "a direct round trip";
+          if (ok && relay_ok && p.rtt_direct > 0 && p.rtt_relay > 0) {
+            if (!p.relayed && p.rtt_relay + 15 < p.rtt_direct) relay = true, why = "faster";
+            else if (p.relayed && p.rtt_direct > p.rtt_relay + 5) relay = true;
+            else if (p.relayed) why = "as fast";
+          }
           if (relay != p.relayed) {
             p.relayed = relay;
-            REXLOG_INFO("p2p: peer {} {}", Ip(p.fake), relay ? "through the relay (no direct round trip for 3 s)"
-                                                             : "direct (a direct round trip)");
+            REXLOG_INFO("p2p: peer {} {} ({}; round trips direct {:.0f} ms, relay {:.0f} ms)", Ip(p.fake),
+                        relay ? "through the relay" : "direct", why, p.rtt_direct, p.rtt_relay);
           }
         }
         // (pings both ways for a tunnel peer: the direct one tells whether direct works)
@@ -843,6 +857,9 @@ void PingLoop() {
       Writer w;
       w.b = Header(kPing, NewNonce());
       w.u64(NowUs());
+      // (then this player's name, for the peers' lobby ping list; older games stop reading before it)
+      const std::string name = rex::cvar::Query<std::string>("online_name").substr(0, 32);
+      w.u8(uint8_t(name.size())), w.bytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
       NetSimSend([path, b = std::move(w.b)] { Send(path, b); });
     }
   }
@@ -1024,6 +1041,15 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       w.b = Header(kPong, nonce);
       w.u64(r.u64());
       if (r.ok) NetSimSend([back, b = std::move(w.b)] { Send(back, b); });
+      if (const size_t n = r.u8(); r.ok && n && r.need(n)) {  // (its player's name)
+        const std::string name(reinterpret_cast<const char*>(data + r.at), n);
+        uint32_t fake = 0;
+        {
+          std::lock_guard lock(g_mutex);
+          if (auto it = g_peers.find(mac); it != g_peers.end()) fake = it->second.fake;
+        }
+        if (fake) NetPeerName(fake, name);
+      }
       break;
     }
     case kPong: {
@@ -1034,9 +1060,14 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       {
         std::lock_guard lock(g_mutex);
         if (auto it = g_peers.find(mac); it != g_peers.end()) {
-          fake = it->second.fake;
-          if (!via.relayed) it->second.direct_ok = Clock::now();
-          current = via.relayed == it->second.relayed;
+          Peer& p = it->second;
+          fake = p.fake;
+          // (each path's round trip, smoothed: the path choice compares them)
+          const float ms = float(double(NowUs() - sent_us) / 1000.0);
+          float& path_rtt = via.relayed ? p.rtt_relay : p.rtt_direct;
+          path_rtt = path_rtt > 0 ? path_rtt * 0.7f + ms * 0.3f : ms;
+          (via.relayed ? p.relay_ok : p.direct_ok) = Clock::now();
+          current = via.relayed == p.relayed;
         }
       }
       if (current) NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed);

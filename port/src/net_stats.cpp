@@ -21,6 +21,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
@@ -28,6 +29,7 @@
 
 #include <fmt/format.h>
 
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -90,6 +92,15 @@ void Report(Clock::time_point now) {
 
 }  // namespace
 
+// Debug: SVR2011_NET_INPUT_LOG=<file> (below).
+FILE* InputLog() {
+  static FILE* f = [] {
+    const char* p = std::getenv("SVR2011_NET_INPUT_LOG");
+    return p && *p ? std::fopen(p, "w") : nullptr;
+  }();
+  return f;
+}
+
 // The lockstep send, once a frame (r3 = the match net object).
 REX_EXTERN(__imp__sub_82893BD0);
 REX_HOOK_RAW(sub_82893BD0) {
@@ -124,6 +135,114 @@ REX_HOOK_RAW(sub_82893BD0) {
     if (now - g_window_start >= std::chrono::seconds(5)) Report(now);
   }
   __imp__sub_82893BD0(ctx, base);
+  if (FILE* f = InputLog(); f && obj) {  // (the input just sent: the local entry's +48)
+    const uint8_t* o = base + obj;
+    for (uint32_t k = 0; k < std::min(Rd32(o + kCount), kMaxEntries); ++k)
+      if (Rd32(o + k * kEntrySize + 4) == Rd32(o + kLocal))
+        std::fprintf(f, "S %lld %08X\n", static_cast<long long>(NowMs()), Rd32(o + k * kEntrySize + 48));
+  }
+}
+
+// Debug: SVR2011_NET_INPUT_LOG=<file> - one line a lockstep frame after the
+// inputs are taken (sub_82893E18): ms, then per entry "slot:got own applied"
+// (+4, +44, +48 the input sampled and sent, +52 the input this frame applies)
+// - for measuring how many frames a press takes to apply, locally and remotely.
+REX_EXTERN(__imp__sub_82893E18);
+REX_HOOK_RAW(sub_82893E18) {
+  __imp__sub_82893E18(ctx, base);
+  FILE* f = InputLog();
+  const uint32_t obj = Rd32(base + kNetObject);
+  if (!f || !obj) return;
+  const uint8_t* o = base + obj;
+  const uint32_t n = std::min(Rd32(o + kCount), kMaxEntries);
+  std::string line = fmt::format("{} local {}", NowMs(), Rd32(o + kLocal));
+  for (uint32_t k = 0; k < n; ++k) {
+    const uint8_t* e = o + k * kEntrySize;
+    line += fmt::format(" | {}:{} {:08X} {:08X}", Rd32(e + 4), Rd32(e + kGotInput), Rd32(e + 48), Rd32(e + 52));
+  }
+  std::fprintf(f, "%s\n", line.c_str());
+}
+
+// (with the input log: every packet the game hands its socket - the guest's
+// sendto thunk sub_8298E3D8, r5 = its length)
+REX_EXTERN(__imp__sub_8298E3D8);
+REX_HOOK_RAW(sub_8298E3D8) {
+  if (FILE* f = InputLog()) {  // (+ the caller and the first bytes)
+    std::string head;
+    for (uint32_t i = 0; i < std::min<uint32_t>(ctx.r5.u32, 24); ++i) head += fmt::format("{:02X}", base[ctx.r4.u32 + i]);
+    std::fprintf(f, "P %lld %u %08X %s\n", static_cast<long long>(NowMs()), ctx.r5.u32, uint32_t(ctx.lr), head.c_str());
+  }
+  __imp__sub_8298E3D8(ctx, base);
+}
+
+// (with the input log: every packet the game reads - the recvfrom thunk
+// sub_8298E3A0: r4 the buffer, r3 back the length)
+REX_EXTERN(__imp__sub_8298E3A0);
+REX_HOOK_RAW(sub_8298E3A0) {
+  const uint32_t buf = ctx.r4.u32;
+  __imp__sub_8298E3A0(ctx, base);
+  FILE* f = InputLog();
+  const int32_t n = ctx.r3.s32;
+  if (!f || n <= 0) return;
+  std::string head;
+  for (int32_t i = 0; i < std::min<int32_t>(n, 24); ++i) head += fmt::format("{:02X}", base[buf + i]);
+  std::fprintf(f, "R %lld %d %s\n", static_cast<long long>(NowMs()), n, head.c_str());
+}
+
+REXCVAR_DECLARE(bool, p2p_send_every_frame);  // (p2p.cpp)
+
+// Lower lag on long links (p2p_send_every_frame). The game's lockstep (gss)
+// has no frame numbers: each game queues every frame's input to every player
+// and takes one from each player's queue a frame. Its input lead (frames from
+// a press to its frame, the same for every input of that player) is set once
+// before a match from the game's latency estimate (sub_829B3918: at least 6,
+// then a send interval of lead / 3 frames); inputs then go out only every
+// interval-th frame (the gate sub_829B4D30), and the lead has to cover that
+// wait as well as the trip. Measured at 120 / 180 / 250 ms one way: 9 / 16 /
+// 20 frames, presses applied 153 / 253 / 336 ms on; on a LAN 6 (87 ms).
+// Here: every frame's input goes out at once (interval 1), and the lead is
+// what the trip needs: the worst peer's measured one-way time + jitter + a
+// margin, in frames (never more than the game's own; at least 3). Each game
+// sets its own lead; gss gives its peers the frames to match.
+REX_EXTERN(__imp__sub_829CAD08);
+REX_HOOK_RAW(sub_829CAD08) {  // (the send interval getter: +3208, low byte)
+  __imp__sub_829CAD08(ctx, base);
+  if (REXCVAR_GET(p2p_send_every_frame) && ctx.r3.u32 > 1) ctx.r3.u64 = 1;
+}
+
+namespace {
+
+// The lead for the worst peer measured: one way + jitter + 12 ms, in frames
+// (0: no measurement yet).
+uint32_t PingLead() {
+  float one_way = -1, jitter = 0;
+  for (const auto& l : svr2011::NetLinks()) {
+    one_way = std::max(one_way, l.rtt_ms / 2);
+    jitter = std::max(jitter, (l.worst_ms - l.rtt_ms) / 2);
+  }
+  if (one_way < 0) return 0;
+  return uint32_t(std::ceil((one_way + jitter + 12.0f) / (1000.0f / 60.0f))) + 1;
+}
+
+}  // namespace
+
+// gss's lead setter (sub_829CAD20: +2920, frames); before a match it's called
+// from its "set latency" (sub_829B6018, lr 0x829B604C).
+REX_EXTERN(__imp__sub_829CAD20);
+REX_HOOK_RAW(sub_829CAD20) {
+  // (test: SVR2011_TEST_NET_LEAD=<frames> - that lead instead)
+  static const int test_lead = [] { const char* v = std::getenv("SVR2011_TEST_NET_LEAD"); return v ? std::atoi(v) : 0; }();
+  const uint32_t asked = ctx.r4.u32;
+  if (uint32_t(ctx.lr) == 0x829B604C) {
+    if (test_lead > 0) {
+      ctx.r4.u64 = uint32_t(test_lead);
+    } else if (REXCVAR_GET(p2p_send_every_frame)) {
+      if (const uint32_t lead = PingLead()) ctx.r4.u64 = std::clamp<uint32_t>(lead, 3, std::max<uint32_t>(asked, 3));
+    }
+    REXLOG_INFO("net: input lead {} frames (the game's {}){}", ctx.r4.u32, asked,
+                REXCVAR_GET(p2p_send_every_frame) ? ", inputs sent every frame" : "");
+  }
+  __imp__sub_829CAD20(ctx, base);
 }
 
 namespace svr2011 {
