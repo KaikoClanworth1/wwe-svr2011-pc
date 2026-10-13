@@ -10,8 +10,6 @@
 
 #include "bink_encode.h"
 
-#define MOVIE_W BINK_ENC_W
-#define MOVIE_H BINK_ENC_H
 #define FPS BINK_ENC_FPS
 
 #ifdef _WIN32
@@ -171,7 +169,7 @@ static int encode_plane(Bits *b, const uint8_t *cur, uint8_t *ref, int w, int h,
 }
 
 /* BGRA -> Y, U, V (4:2:0, BT.601 studio range as Bink's decoder expects). */
-static void to_yuv(const uint8_t *bgra, uint8_t *Y, uint8_t *U, uint8_t *V)
+static void to_yuv(const uint8_t *bgra, uint8_t *Y, uint8_t *U, uint8_t *V, int MOVIE_W, int MOVIE_H)
 {
     int x, y;
     for (y = 0; y < MOVIE_H; y++)
@@ -195,25 +193,37 @@ static void to_yuv(const uint8_t *bgra, uint8_t *Y, uint8_t *U, uint8_t *V)
 
 struct BinkWriter {
     FILE *f;
-    int frames, done;
+    int frames, done, w, h;
+    uint8_t *same; size_t same_n;  /* bink_writer_repeat's frame */
     uint8_t *Y, *U, *V, *rY, *rU, *rV;
     uint32_t *offs, largest;
     Bits b;
 };
 
+static int bink_writer_frame_yuv(BinkWriter *w);
+
 void bink_writer_free(BinkWriter *w)
 {
     if (!w) return;
-    free(w->b.p); free(w->Y); free(w->U); free(w->V); free(w->rY); free(w->rU); free(w->rV); free(w->offs);
+    free(w->b.p); free(w->same); free(w->Y); free(w->U); free(w->V); free(w->rY); free(w->rU); free(w->rV); free(w->offs);
     free(w);
 }
 
 BinkWriter *bink_writer_open(FILE *f, int frames)
 {
-    BinkWriter *w = (BinkWriter *)calloc(1, sizeof *w);
+    return bink_writer_open_size(f, frames, BINK_ENC_W, BINK_ENC_H);
+}
+
+BinkWriter *bink_writer_open_size(FILE *f, int frames, int MOVIE_W, int MOVIE_H)
+{
+    BinkWriter *w;
+    if (MOVIE_W < 16 || MOVIE_H < 16 || MOVIE_W > 1024 || MOVIE_H > 1024 || MOVIE_W % 16 || MOVIE_H % 16) return NULL;
+    w = (BinkWriter *)calloc(1, sizeof *w);
     if (!w) return NULL;
     w->f = f;
     w->frames = frames;
+    w->w = MOVIE_W;
+    w->h = MOVIE_H;
     w->Y = (uint8_t *)malloc(MOVIE_W * MOVIE_H); w->rY = (uint8_t *)calloc(MOVIE_W * MOVIE_H, 1);
     w->U = (uint8_t *)malloc(MOVIE_W * MOVIE_H / 4); w->rU = (uint8_t *)calloc(MOVIE_W * MOVIE_H / 4, 1);
     w->V = (uint8_t *)malloc(MOVIE_W * MOVIE_H / 4); w->rV = (uint8_t *)calloc(MOVIE_W * MOVIE_H / 4, 1);
@@ -229,10 +239,36 @@ BinkWriter *bink_writer_open(FILE *f, int frames)
 
 int bink_writer_frame(BinkWriter *w, const uint8_t *bgra)
 {
+    if (bgra) to_yuv(bgra, w->Y, w->U, w->V, w->w, w->h);
+    return bink_writer_frame_yuv(w);
+}
+
+int bink_writer_repeat(BinkWriter *w)
+{
+    size_t pos;
+    if (w->done == 0) return 0;
+    if (!w->same) {  /* (the first repeat: encoded - every block skips - and kept) */
+        const int r = bink_writer_frame_yuv(w);
+        if (r != 1) return r;
+        w->same = (uint8_t *)malloc(w->b.n);
+        if (!w->same) return 0;
+        memcpy(w->same, w->b.p, w->b.n);
+        w->same_n = w->b.n;
+        return 1;
+    }
+    pos = (size_t)bink_tell(w->f);
+    w->offs[w->done] = (uint32_t)pos;
+    if (fwrite(w->same, 1, w->same_n, w->f) != w->same_n) return -1;
+    w->done++;
+    return 1;
+}
+
+static int bink_writer_frame_yuv(BinkWriter *w)
+{
+    const int MOVIE_W = w->w, MOVIE_H = w->h;
     Bits *b = &w->b;
     size_t pos, ysize;
     const int key = w->done == 0;
-    to_yuv(bgra, w->Y, w->U, w->V);
     b->n = 0; b->bits = 0; b->acc = 0;
     bits_put(b, 0, 32);                                          /* size of the Y plane, below */
     if (!encode_plane(b, w->Y, w->rY, MOVIE_W, MOVIE_H, key, 2, 2)) return 0;
@@ -255,7 +291,7 @@ int bink_writer_close(BinkWriter *w)
     w->offs[n] = (uint32_t)bink_tell(w->f);
     memcpy(hdr, "BIKi", 4);
     hdr[1] = w->offs[n] - 8; hdr[2] = (uint32_t)n; hdr[3] = w->largest; hdr[4] = (uint32_t)n;
-    hdr[5] = MOVIE_W; hdr[6] = MOVIE_H; hdr[7] = FPS; hdr[8] = 1; hdr[9] = 0; hdr[10] = 0;
+    hdr[5] = (uint32_t)w->w; hdr[6] = (uint32_t)w->h; hdr[7] = FPS; hdr[8] = 1; hdr[9] = 0; hdr[10] = 0;
     bink_seek(w->f, 0, SEEK_SET);
     fwrite(hdr, 4, 11, w->f);
     fwrite(w->offs, 4, (size_t)n + 1, w->f);

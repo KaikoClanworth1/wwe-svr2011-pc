@@ -33,6 +33,10 @@ std::filesystem::path UserMusicSong(const std::string& name);
 // folder, sorted): MY WWE -> JUKEBOX -> MY MUSIC (jukebox.h).
 std::vector<std::filesystem::path> UserMusicSongs();
 
+// A song file's gain in dB (a mod's theme_gain=, -20..+6): applied while the
+// entrance player plays that file (by its file name; 0 removes it).
+void SetSongGain(const std::filesystem::path& file, float db);
+
 // Plays a short sound file once on its own voice (any format the songs can
 // be; honours audio_mute) - a superstar mod's recorded name call.
 void PlayClip(const std::filesystem::path& file);

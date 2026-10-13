@@ -31,6 +31,9 @@
 #define FPS 30
 #define TOP_H 220
 #define BOT_H (MOVIE_H - TOP_H)
+/* The same layout at a movie size of W x W (320 / 640 / 1024): the top
+ * W x top_h(W) is the big screen, the rest the stage strip. */
+static int top_h(int W) { return W * TOP_H / MOVIE_W; }
 
 /* ── pictures ── */
 
@@ -225,10 +228,10 @@ static int bink_pic_open(Pic *p, const WCHAR *path, int part, WCHAR *err, size_t
     p->h = bh;
     p->par = 1.0;
     p->by = 0;
-    if (bw == MOVIE_W && bh == MOVIE_H) {
-        p->by = part == PART_BOTTOM ? TOP_H : 0;
-        p->h = part == PART_BOTTOM ? BOT_H : TOP_H;
-        if (part == PART_TOP) p->par = (16.0 / 9.0) * TOP_H / MOVIE_W;
+    if (bw == bh && (bw == 320 || bw == 640 || bw == 1024)) {  /* a titantron movie at any of the sizes: its two parts */
+        p->by = part == PART_BOTTOM ? top_h(bw) : 0;
+        p->h = part == PART_BOTTOM ? bw - top_h(bw) : top_h(bw);
+        if (part == PART_TOP) p->par = (16.0 / 9.0) * top_h(bw) / bw;
     }
     p->bgra = (uint8_t *)calloc((size_t)p->w * p->h, 4);
     if (!p->bink_frame || !p->bgra) { swprintf_s(err, errn, L"Out of memory."); return 0; }
@@ -613,11 +616,12 @@ static void pic_draw(const Pic *p, double sx, double sy, double sw, double sh,
 }
 
 /* The top picture: the big screen, shown at 16:9, stored as 320 x 220. */
-static void draw_top(const Pic *p, int fit, uint8_t *frame)
+static void draw_top(const Pic *p, int fit, uint8_t *frame, int W)
 {
     const double screen = 16.0 / 9.0;
+    const int TH = top_h(W);
     double aspect, sx = 0, sy = 0, sw, sh;
-    int dx = 0, dy = 0, dw = MOVIE_W, dh = TOP_H;
+    int dx = 0, dy = 0, dw = W, dh = TH;
     if (!p->bgra) return;
     sx = p->cx; sy = p->cy; sw = p->cw; sh = p->ch;
     aspect = sw * p->par / sh;
@@ -625,36 +629,37 @@ static void draw_top(const Pic *p, int fit, uint8_t *frame)
         if (aspect > screen) { sw = sh * screen / p->par; sx = p->cx + (p->cw - sw) / 2; }
         else                 { sh = sw * p->par / screen; sy = p->cy + (p->ch - sh) / 2; }
     } else if (fit == MOVIE_FIT) {
-        if (aspect > screen) { dh = (int)(TOP_H * screen / aspect + 0.5); dy = (TOP_H - dh) / 2; }
-        else                 { dw = (int)(MOVIE_W * aspect / screen + 0.5); dx = (MOVIE_W - dw) / 2; }
+        if (aspect > screen) { dh = (int)(TH * screen / aspect + 0.5); dy = (TH - dh) / 2; }
+        else                 { dw = (int)(W * aspect / screen + 0.5); dx = (W - dw) / 2; }
     }
-    pic_draw(p, sx, sy, sw, sh, frame, MOVIE_W, dx, dy, dw, dh);
+    pic_draw(p, sx, sy, sw, sh, frame, W, dx, dy, dw, dh);
 }
 
 /* The bottom strip: 320 x 100, filled (cropped to its shape). */
-static void draw_bottom(const Pic *p, uint8_t *frame)
+static void draw_bottom(const Pic *p, uint8_t *frame, int W)
 {
-    const double strip = (double)MOVIE_W / BOT_H;
+    const int TH = top_h(W), BH = W - TH;
+    const double strip = (double)W / BH;
     double aspect, sx = 0, sy = 0, sw, sh;
     if (!p->bgra) return;
     sx = p->cx; sy = p->cy; sw = p->cw; sh = p->ch;
     aspect = sw * p->par / sh;
     if (aspect > strip) { sw = sh * strip / p->par; sx = p->cx + (p->cw - sw) / 2; }
     else                { sh = sw * p->par / strip; sy = p->cy + (p->ch - sh) / 2; }
-    pic_draw(p, sx, sy, sw, sh, frame, MOVIE_W, 0, TOP_H, MOVIE_W, BOT_H);
+    pic_draw(p, sx, sy, sw, sh, frame, W, 0, TH, W, BH);
 }
 
-static void compose(Pic *top, Pic *bottom, int fit, LONGLONG t, uint8_t *frame)
+static void compose(Pic *top, Pic *bottom, int fit, LONGLONG t, uint8_t *frame, int W)
 {
     size_t i;
-    for (i = 0; i < (size_t)MOVIE_W * MOVIE_H; i++) {
+    for (i = 0; i < (size_t)W * W; i++) {
         frame[i * 4 + 0] = frame[i * 4 + 1] = frame[i * 4 + 2] = 0;
         frame[i * 4 + 3] = 255;
     }
     pic_seek(top, t, 0);
     pic_seek(bottom, t, 1);
-    draw_top(top, fit, frame);
-    draw_bottom(bottom, frame);
+    draw_top(top, fit, frame, W);
+    draw_bottom(bottom, frame, W);
 }
 
 /* Media Foundation, started once (0: it can't be - a Windows "N" edition
@@ -675,7 +680,7 @@ int movie_preview(const WCHAR *video, const WCHAR *bottom, int fit, double secon
     mf_start();
     if (!pic_open(&top, video, PART_TOP, err, errn)) return 0;
     if (!pic_open(&bot, bottom, PART_BOTTOM, err, errn)) { pic_close(&top); return 0; }
-    compose(&top, &bot, fit, (LONGLONG)(seconds * 1e7), bgra);
+    compose(&top, &bot, fit, (LONGLONG)(seconds * 1e7), bgra, MOVIE_W);
     ok = 1;
     pic_close(&top);
     pic_close(&bot);
@@ -690,8 +695,10 @@ int movie_make(MovieJob *job)
     uint8_t *frame = NULL;
     LONGLONG length;
     int n, i, ok = 0;
+    const int W = job->size ? job->size : MOVIE_W;
     WCHAR tmp[MAX_PATH + 8];
     job->err[0] = 0;
+    if (W != 320 && W != 640 && W != 1024) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Movie size must be 320, 640 or 1024."); return 0; }
     mf_start();
     if (!pic_open(&top, job->video, PART_TOP, job->err, sizeof job->err / sizeof *job->err)) return 0;
     if (top.kind == 0) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Choose the video."); return 0; }
@@ -701,16 +708,16 @@ int movie_make(MovieJob *job)
         length = (LONGLONG)job->max_seconds * 10000000LL;
     n = (int)((length * FPS + 9999999) / 10000000);
     if (n < 1) n = 1;
-    frame = (uint8_t *)malloc((size_t)MOVIE_W * MOVIE_H * 4);
+    frame = (uint8_t *)malloc((size_t)W * W * 4);
     swprintf_s(tmp, sizeof tmp / sizeof *tmp, L"%s.part", job->out);
-    if (!frame || _wfopen_s(&f, tmp, L"wb") || !f || !(w = bink_writer_open(f, n))) {
+    if (!frame || _wfopen_s(&f, tmp, L"wb") || !f || !(w = bink_writer_open_size(f, n, W, W))) {
         wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not create the movie file.");
         goto done;
     }
     for (i = 0; i < n; i++) {
         int r;
         if (job->cancel) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Stopped."); goto done; }
-        compose(&top, &bot, job->fit, (LONGLONG)i * 10000000LL / FPS, frame);
+        compose(&top, &bot, job->fit, (LONGLONG)i * 10000000LL / FPS, frame, W);
         r = bink_writer_frame(w, frame);
         if (r == 0) goto nomem;
         if (r < 0) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not write the movie (disk full?)."); goto done; }

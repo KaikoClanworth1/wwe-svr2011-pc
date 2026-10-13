@@ -16,6 +16,8 @@ typedef struct MovieJob {
     WCHAR bottom[MAX_PATH];    /* the strip below it: picture or video; "" = black */
     int fit;                   /* MOVIE_FIT / MOVIE_FILL / MOVIE_STRETCH */
     int max_seconds;           /* 0 = the whole video */
+    int size;                  /* the movie's size: 0 / 320 (the game's own), 640 or 1024 (HD: the same
+                                  layout, the big screen the top size*220/320 rows) */
     WCHAR out[MAX_PATH];       /* the .bik to write */
     volatile LONG cancel;
     HWND notify;               /* gets `msg` with the percentage done */
@@ -27,6 +29,7 @@ typedef struct MovieJob {
 /* Writes job->out; 1 on success. Call from a worker thread (COM initialised). */
 int movie_make(MovieJob *job);
 
-/* The movie's frame at `seconds` as 320 x 320 BGRA (for a preview). */
+/* The movie's frame at `seconds` as 320 x 320 BGRA (for a preview; any size
+ * job looks the same, sharper). */
 int movie_preview(const WCHAR *video, const WCHAR *bottom, int fit, double seconds, uint8_t *bgra,
                   WCHAR *err, size_t errn);
