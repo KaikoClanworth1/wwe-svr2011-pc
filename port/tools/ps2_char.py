@@ -613,13 +613,13 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
 
     def cutout(sub):
         """whether a PS2 submesh is drawn blended (hair cards, hair lines, laces): its material's flags (u32 at
-        +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear); SvR 2004 on: 0x05 opaque,
+        +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear) in a model that has 0x07; SvR 2004 on: 0x05 opaque,
         0x115 / 0x117 blended (bit 0x10: hair, strings, the blood overlay)"""
         mat = sub.get('mat') or b''
         if len(mat) < 0x28:
             return False
         f = u32(mat, 0x24)
-        return not f & 0x02 if old_materials else bool(f & 0x10)
+        return (not f & 0x02 and mixed) if old_materials else bool(f & 0x10)
 
     def png(name, keep_alpha):
         """-> a PS2 texture's png. 2011's skin shader reads the colour alpha as the specular level, its hair
@@ -636,6 +636,9 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
         return fn
 
     meshes = []
+    # (JBI / SYM / HCTP: 0x05 means blended only in a model that also has 0x07 - the Rock's and Austin's
+    # models are all 0x05, all solid)
+    mixed = any(u32(sub['mat'], 0x24) & 0x02 for m in body['meshes'] for sub in m['subs'] if len(sub.get('mat') or b'') >= 0x28)
     for src, nmap in [(body, None)] + [(p, part_nodes(p, body)) for p in parts]:
         for mi, m in enumerate(src['meshes']):
             # vertices to the A-pose, weights to 2011 names
