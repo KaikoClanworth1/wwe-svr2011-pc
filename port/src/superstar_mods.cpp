@@ -1439,7 +1439,7 @@ std::map<std::string, std::string> CawCalls() {
 }
 
 // The Created Superstar in slot `slot`: his full name (roster record +34,
-// UTF-16BE) and id (+32).
+// 8-bit, as the roster's names are) and id (+32).
 bool CawName(PPCContext& ctx, uint8_t* base, uint32_t slot, std::string* name, uint32_t* id) {
   const uint32_t roster = Rd32(base + 0x82EDEA88);
   if (!roster) return false;
@@ -1452,11 +1452,7 @@ bool CawName(PPCContext& ctx, uint8_t* base, uint32_t slot, std::string* name, u
   if (!rec) return false;
   *id = uint32_t(base[rec + 32]) << 8 | base[rec + 33];
   name->clear();
-  for (uint32_t k = 0; k < 40; ++k) {
-    const uint16_t c = uint16_t(base[rec + 34 + k * 2]) << 8 | base[rec + 35 + k * 2];
-    if (!c) break;
-    name->push_back(c < 0x80 ? char(c) : '?');
-  }
+  for (uint32_t k = 0; k < 40 && base[rec + 34 + k]; ++k) name->push_back(char(base[rec + 34 + k]));
   return !name->empty();
 }
 
