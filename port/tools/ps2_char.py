@@ -597,6 +597,7 @@ def build_model(body, parts, tex, out_dir, template, tag):
                 if p:
                     mesh['textures'] = {'color': p}
                 meshes.append(mesh)
+    wrap_textures(meshes, out_dir)
     joints = {}
     for i, nd in enumerate(body['nodes']):
         if nd['name'] in B11 and nd['name'] not in joints:
@@ -604,6 +605,35 @@ def build_model(body, parts, tex, out_dir, template, tag):
     ys = [p[1] for m in meshes for p in m['positions']]
     info = dict(bones_folded=folded, scale=1.0, height_m=round((max(ys) - min(ys)) / 10.0, 2) if ys else None)
     return dict(meshes=meshes, joints=joints), info
+
+
+def wrap_textures(meshes, out_dir, most=4.0):
+    """PS2 UVs wrap (a seam at 1.03, a strap tiled twice); the builder packs every texture into one sheet,
+    where they would clamp: a texture used past 0..1 gets a copy covering the range it is used over
+    (pixels wrapped) and its meshes' UVs are mapped into it."""
+    by = {}
+    for m in meshes:
+        c = (m.get('textures') or {}).get('color')
+        if c:
+            by.setdefault(c, []).append(m)
+    for c, ms in by.items():
+        uv = np.array([q for m in ms for q in m['uvs']])
+        lo = np.minimum(np.floor(uv.min(0) * 64) / 64, 0.0)
+        hi = np.maximum(np.ceil(uv.max(0) * 64) / 64, 1.0)
+        hi = np.minimum(hi, lo + most)
+        if (lo >= 0).all() and (hi <= 1).all():
+            continue
+        img = np.array(Image.open(os.path.join(out_dir, c)))
+        h, w = img.shape[:2]
+        x0, x1 = int(round(lo[0] * w)), int(round(hi[0] * w))
+        y0, y1 = int(round(lo[1] * h)), int(round(hi[1] * h))
+        wrapped = img.take(np.arange(y0, y1) % h, 0).take(np.arange(x0, x1) % w, 1)
+        fn = c[:-4] + '_w.png'
+        Image.fromarray(wrapped).save(os.path.join(out_dir, fn))
+        span = hi - lo
+        for m in ms:
+            m['uvs'] = [[float((u - lo[0]) / span[0]), float((v - lo[1]) / span[1])] for u, v in m['uvs']]
+            m['textures']['color'] = fn
 
 
 def convert(path, id_, out_dir, template, attire='all', gear=True):
