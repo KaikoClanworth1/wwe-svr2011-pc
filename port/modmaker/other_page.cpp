@@ -84,7 +84,7 @@ char g_w13_name[64] = "";
 bool g_show_arena_tab = false;  // (the Port page handed a file: that tab comes up)
 
 void Wwe13ArenaTab() {
-  ImGui::TextWrapped("A WWE '12, '13 or 2K14 arena (its pac\\bg\\bgNN.pac, compressed or not; the Port page reads it off "
+  ImGui::TextWrapped("A WWE '12, '13, 2K14, 2K15, 2K16 or 2K17 arena (its pac\\bg\\bgNN.pac, compressed or not; the Port page reads it off "
                      "the disc) rebuilt as a 2011 arena in the "
                      "place of a host arena, which gives the room, the ring and the aprons. The result opens on the "
                      "Arena page: give it a banner and a name there and save it. This is how RAW IS WAR, SmackDown "
@@ -396,7 +396,7 @@ std::string g_bink2_state;  // "" not asked, else what Find said
 bool g_bink2_asked = false;
 
 void Bink2Section() {
-  if (!ImGui::CollapsingHeader("Enable Bink 2 conversion (.bk2 videos: WWE '13 and later)")) return;
+  if (!ImGui::CollapsingHeader("Enable Bink 2 conversion (.bk2 videos: WWE 2K15 and later)")) return;
   ImGui::Indent();
   ImGui::TextWrapped("Titantrons and movies of WWE 2K15 and later are Bink 2. The Mod Maker can turn them into the "
                      "game's movies when you have a tool that reads Bink 2 - RAD Video Tools (free from RAD) or an "
@@ -440,7 +440,7 @@ void Bink2Section() {
 }
 
 void Draw() {
-  Heading("Other games", "Arenas, superstars, moves and backstage areas from WWE '13, SvR 2010 and SvR 2008, "
+  Heading("Other games", "Arenas from WWE '12 to 2K17, superstars, moves and backstage areas from WWE '13, SvR 2010 and SvR 2008, "
                          "converted the way the bundled mods were, each landing on its page to finish and save.");
   if (g_game.empty()) {
     ImGui::TextDisabled("No game folder.");
@@ -453,7 +453,7 @@ void Draw() {
                       FfmpegExe().empty() ? "not found" : "found");
   Bink2Section();
   if (ImGui::BeginTabBar("other_tabs")) {
-    if (ImGui::BeginTabItem("WWE '12 / '13 / 2K14 arena", nullptr, g_show_arena_tab ? ImGuiTabItemFlags_SetSelected : 0)) {
+    if (ImGui::BeginTabItem("WWE '12 - 2K17 arena", nullptr, g_show_arena_tab ? ImGuiTabItemFlags_SetSelected : 0)) {
       g_show_arena_tab = false;
       Wwe13ArenaTab();
       ImGui::EndTabItem();

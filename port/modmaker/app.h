@@ -373,7 +373,7 @@ namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file
                        // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
                        void UseArenaFile(const std::wstring& file, const std::string& name); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear();
+namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult(); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }

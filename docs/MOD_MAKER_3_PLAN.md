@@ -143,7 +143,7 @@ py tools/<kind>_port.py convert --game <id> --src <...> --item <key> --out <dir>
 | which files hold the 4 renders and how each is used | D7 | Superstar Porting | coming in docs/OTHER_GAMES.md |
 | the select / VS screen pose motion per superstar (key + hook) | D7 | Superstar Porting (proposed to Main) | open |
 | the characters' collision volumes | D4 | Superstar Porting | coming in docs/OTHER_GAMES.md |
-| the overall rating formula | D13 | Mod Maker (offline, from the roster data) | open |
+| the overall rating formula | D13 | Mod Maker (offline, from the roster data) | done: sub_828B7950 = round(sum of the 7 x 10/63) + 1, at most 100 |
 | belts / weapons: phase 1 texture packs (`belt_port.py` / `weapon_port.py`), phase 2 `type=belt` / `type=weapon` with a pac overlay | D11 | Arena Porting | phase 1 agreed; docs/OTHER_GAMES.md on branch arena-port |
 | per-game format table (D2) | all | Superstar Porting | coming in docs/OTHER_GAMES.md |
 

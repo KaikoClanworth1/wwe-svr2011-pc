@@ -1847,17 +1847,14 @@ void Draw() {
     ImGui::SetNextItemWidth(320 * g_scale);
     if (ImGui::SliderInt(kAttributes[k], &g_star.ratings[k], 1, 99)) g_star.ratings_set = true;
   }
-  {  // the overall (D13): the average of the seven, as the select screens' rating
-    int sum = 0;
-    for (int k = 0; k < 7; ++k) sum += g_star.ratings[k];
-    const int overall = (sum + 3) / 7;
+  {  // the overall (D13), as the game works it out from the seven
     ImGui::SetNextItemWidth(320 * g_scale);
     ImGui::BeginDisabled();
-    int shown = overall;
-    ImGui::SliderInt("Overall", &shown, 1, 99);
+    int shown = OverallRating(g_star.ratings);
+    ImGui::SliderInt("Overall", &shown, 1, 100);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled("(the average of the seven)");
+    ImGui::TextDisabled("(the game's: from the seven together)");
   }
   {  // height=: the model's size from its feet
     ImGui::SetNextItemWidth(236 * g_scale);

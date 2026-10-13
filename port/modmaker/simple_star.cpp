@@ -442,7 +442,7 @@ void StepPictures() {
 }
 
 void StepExtras() {
-  ImGui::TextUnformatted("Strength");
+  ImGui::Text("Strength - overall %d", OverallRating(g_star.ratings));
   for (int k = 0; k < 7; ++k) {
     ImGui::SetNextItemWidth(260 * g_scale);
     if (ImGui::SliderInt(kAttributes[k], &g_star.ratings[k], 1, 99)) g_star.ratings_set = true, Touch();
