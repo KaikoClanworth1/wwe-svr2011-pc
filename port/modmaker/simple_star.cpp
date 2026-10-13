@@ -421,10 +421,14 @@ void StepExtras() {
   ImGui::TextDisabled("More (abilities, hometown, the announcer's own name clips) in the full editor.");
 }
 
-void StepLater(const char* what) {
-  FromStyle(what);
-  ImGui::Spacing();
-  ImGui::TextDisabled("Coming next: picking these here. The full editor can change them now.");
+// A problem's text without the file-level details a first-timer doesn't need ("(entry 00013902)").
+std::string Plain(std::string t) {
+  for (size_t a; (a = t.find(" (entry ")) != std::string::npos;) {
+    const size_t b = t.find(')', a);
+    if (b == std::string::npos) break;
+    t.erase(a, b - a + 1);
+  }
+  return t;
 }
 
 void StepFinish() {
@@ -443,8 +447,21 @@ void StepFinish() {
   const int now = GameStarOf(g_star.model);
   const StarInfo* s = now ? StarById(now) : nullptr;
   row(kStepLook, s ? "looks like " + s->name : g_star.model.empty() ? std::string("(none yet)") : FileName(g_star.model));
+  {
+    int extra = 0;
+    for (int a = 1; a < 4; ++a) extra += !g_star.attires[a].empty();
+    const int own = g_star.model.empty() ? 0 : int(ModelAttires(g_star.model).size());
+    row(kStepAttires, std::to_string(std::max(own, 1 + extra)) + " attire" + (std::max(own, 1 + extra) == 1 ? "" : "s"));
+  }
   row(kStepMusic, g_star.song.empty() ? std::string("the style's") : FileName(g_star.song));
   row(kStepEntrance, g_star.entrance < 0 ? std::string("the style's") : "entrance " + std::to_string(g_star.entrance));
+  {
+    int moves = 0, taunts = 0;
+    for (const auto& [slot, id] : g_star.moveset) (slot * 2 >= 0x12 && slot * 2 <= 0x18 ? taunts : moves) += 1;
+    row(kStepMoves, moves ? std::to_string(moves) + " of your own, the rest the style's" : std::string("the style's"));
+    row(kStepTaunts, taunts ? std::to_string(taunts) + " of your own" : std::string("the style's"));
+  }
+  row(kStepPictures, g_star.picture.Empty() ? std::string("none yet (a silhouette)") : std::string("your picture") + (g_star.pose >= 0 ? ", your pose" : ""));
   ImGui::Unindent();
   ImGui::Spacing();
   std::vector<Problem> problems;
@@ -459,7 +476,7 @@ void StepFinish() {
       ImGui::TextColored(p.error ? ImVec4(1, 0.45f, 0.4f, 1) : ImVec4(1, 0.8f, 0.35f, 1), p.error ? "Must fix:" : "Tip:");
       ImGui::SameLine();
       ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x - 90 * g_scale + ImGui::GetCursorPosX());
-      ImGui::TextUnformatted(p.text.c_str());
+      ImGui::TextUnformatted(Plain(p.text).c_str());
       ImGui::PopTextWrapPos();
       if (p.step >= 0 && p.step != kStepFinish) {
         ImGui::SameLine();
