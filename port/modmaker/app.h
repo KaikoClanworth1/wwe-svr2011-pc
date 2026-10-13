@@ -348,6 +348,9 @@ namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
                       void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h);
+                      // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
+                      const std::vector<std::string>& AnnouncerNames();
+                      bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
                       bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
                       bool EntranceOutfit(const std::wstring& pac); }
 namespace attire_page { extern PageHooks hooks; void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
@@ -357,7 +360,7 @@ namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::v
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
-namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
+namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
 namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); }

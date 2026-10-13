@@ -1960,6 +1960,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--test-moves-save") && more) moves_save = argv[++i];
+    else if (!wcscmp(argv[i], L"--caw-announcer") && more) caw_page::TestAnnouncer(Utf8(argv[++i]));  // <CLIP> (- clears), with --caw <index>
     else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
       std::wstring a = argv[++i];
       std::vector<std::wstring> parts;

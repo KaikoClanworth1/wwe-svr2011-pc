@@ -1365,6 +1365,10 @@ void TestEntrance(int n) { g_star.entrance = n; }
 bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
 bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }
 void TestFull(const std::wstring& png) { g_test_full = png; }
+const std::vector<std::string>& AnnouncerNames() { return AnnouncerCalls().names; }
+bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width) {
+  return ClipPicker(label, buf, size, clips, none, width);
+}
 void TestHometown(const std::string& h) { g_test_hometown = h; }
 void TestWatchSlot(int off) { g_watch_slot_test = off / 2, g_moveset_open_once = true, g_moveset_all = true; }
 
