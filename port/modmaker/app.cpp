@@ -1125,19 +1125,22 @@ const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
         if (en.name.empty() || en.name.back() != '2') continue;  // (kind 2: the wrestler's model)
         std::vector<PachEntry> kids;
         if (!PachRead(Unpack(en.data), kids)) continue;
-        int pages = 0;
+        int pages = 0, blood = 0;
         for (const auto& k : kids) {
           const Bytes raw = Unpack(k.data);
           Model m;
           if (!IsJboy(raw) || !JboyRead(raw, m)) continue;
+          int mp = 0;
           for (const auto& s : m.meshes) {
             const uint32_t blocks = s.raw.size() >= 0x60 ? Be32(&s.raw[0x5C]) : 1;
             size_t idx = 0;
             for (const auto& st : s.strips) idx += st.indices.size();
-            pages += int((s.verts.size() * (std::max(1u, blocks) == 1 ? 32 : 44) + 4095) / 4096 + (idx * 2 + 4095) / 4096);
+            mp += int((s.verts.size() * (std::max(1u, blocks) == 1 ? 32 : 44) + 4095) / 4096 + (idx * 2 + 4095) / 4096);
           }
+          pages += mp;
+          if (k.id >= 0x7530 && k.id <= 0x7532) blood += mp;
         }
-        c.pages.push_back({en.name, pages});
+        c.pages.push_back({en.name, pages, blood});
       }
     }
   std::string line = "model budget: " + Utf8(fs::path(pac).filename().wstring());
@@ -1156,19 +1159,23 @@ std::vector<int> ModelAttires(const std::wstring& pac) {
 }
 
 void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out) {
-  int worst = 0;
-  std::string entry;
+  const ModelPages* worst = nullptr;
   for (const auto& p : ModelBudget(pac)) {
-    if (p.pages > worst) worst = p.pages, entry = p.entry;
+    if (!worst || p.pages > worst->pages) worst = &p;
     if (first_only) break;
   }
-  if (worst <= kModelPagesWarn) return;
-  const std::string what = who + "'s model needs " + std::to_string(worst) + " of the " + std::to_string(kModelPages) +
-                           " memory pages a wrestler gets in a match" + (first_only ? "" : " (entry " + entry + ")");
-  const char* fix = "Drop its blood overlays (JBOY children 0x7530-0x7532: the Port page's conversions do) or use a "
-                    "model with fewer vertices or weight blocks.";
-  if (worst > kModelPages) out.push_back(Error(what + ": the match load crashes.", fix));
-  else out.push_back(Warning(what + ": close to the limit (stock models reach about 180-192).", fix));
+  if (!worst || worst->pages <= kModelPagesWarn) return;
+  const std::string what = who + "'s model needs " + std::to_string(worst->pages) + " of the " + std::to_string(kModelPages) +
+                           " memory pages a wrestler gets in a match" + (first_only ? "" : " (entry " + worst->entry + ")");
+  const char* fix = "Use a model with fewer vertices or weight blocks (or without blood overlays, JBOY children "
+                    "0x7530-0x7532: the Port page's conversions leave them out).";
+  // (as the game: over the limit it drops the blood overlays, then leaves out a model still over)
+  if (worst->pages - worst->blood > kModelPages)
+    out.push_back(Error(what + ": the game leaves this model out, even without its blood overlays.", fix));
+  else if (worst->pages > kModelPages)
+    out.push_back(Warning(what + ": the game drops its blood overlays to fit (no blood on it in matches).", fix));
+  else
+    out.push_back(Warning(what + ": close to the limit (stock models reach about 180-192).", fix));
 }
 
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {

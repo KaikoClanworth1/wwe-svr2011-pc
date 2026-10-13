@@ -384,6 +384,7 @@ constexpr int kModelPages = 192, kModelPagesWarn = 180;
 struct ModelPages {
   std::string entry;  // the EMD entry ("00013902": attire 1)
   int pages = 0;
+  int blood = 0;  // of them, the blood overlays' (JBOY children 0x7530-0x7532: the game drops them first when over)
 };
 const std::vector<ModelPages>& ModelBudget(const std::wstring& pac);  // (cached by file time / size)
 // The attires a model pac holds (its kind-2 EMD entries %06d%02d: attire*10 + 2), 1-based, in order. The game
