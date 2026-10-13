@@ -930,7 +930,6 @@ class GameW2K15(GameW2K14):
     suffix = '_2k15'
     game_id = 'wwe2k15'
     no_ratings = "2K15's ratings (DAT +36..+49, 2K14's layout) aren't mapped"
-    moveset_map = False   # (no moveset_maps.json map for 2K15 yet: the base's moves)
 
     def entrance_block(self, i):
         p = self.pro.get(i)
@@ -1208,7 +1207,7 @@ def moveset_step(gw, cid, base, o, work, mod, man, rep):
     if cid not in pro:
         drop('moveset: the base\'s (no %s profile for %d)' % (gw.label, cid))
         return
-    mg = {'wwe12': MP.Game12, 'wwe13': MP.Game13, 'wwe2k14': MP.Game14}.get(gid)
+    mg = MP.GAME_CLASS.get(gid)
     if mg is not None:
         mgame = mg(o['src']) if gid == 'wwe12' else mg(o['src'], getattr(gw, 'svrmod', None))
         waze = mgame.waze
