@@ -328,6 +328,67 @@ bool Jboy13Read(const Bytes& d, Model& m, std::string* error) {
   return true;
 }
 
+// WWE '12 / '13 / 2K14 light their floors, stands and props with baked light
+// maps (sampLightMapPrm). The floors' (fade_lightmap*, 512 x 512) are top-down
+// pictures of the whole floor placed by world position - the stage side at the
+// top - over the floor the meshes using them cover; the others are sampled
+// with the mesh's UVs. SvR2011 has no light
+// map shader and bakes its own arena lighting into vertex colours (its floors:
+// vertex format bit 1, greys). The light map is sampled at each vertex (UV
+// wrapped, bilinear) and multiplied into the vertex colour, which turns the
+// colour bit on - without it those meshes came out near black (the user's
+// "black floors").
+struct LightMap13 {
+  Image img;
+  bool top_down = false;
+  float x0 = 0, x1 = 1, z0 = 0, z1 = 1;  // the floor area it covers (source units)
+};
+
+void BakeLightMaps13(Model& m, const std::map<std::string, LightMap13>& lightmaps, int& baked) {
+  for (auto& s : m.meshes) {
+    const int slot = GetSlot(s, {"sampLightMapPrm"});
+    if (slot < 0 || slot >= int(m.textures.size())) continue;
+    auto it = lightmaps.find(Lower(m.textures[slot]));
+    if (it == lightmaps.end() || it->second.img.w <= 0 || s.uvs.size() != s.verts.size()) continue;
+    const LightMap13& L = it->second;
+    const Image& lm = L.img;
+    auto px = [&](int x, int y, int c) {
+      if (L.top_down) {
+        x = std::clamp(x, 0, lm.w - 1);
+        y = std::clamp(y, 0, lm.h - 1);
+      } else {
+        x = ((x % lm.w) + lm.w) % lm.w;
+        y = ((y % lm.h) + lm.h) % lm.h;
+      }
+      return float(lm.rgba[(size_t(y) * lm.w + x) * 4 + c]);
+    };
+    for (size_t k = 0; k < s.verts.size(); ++k) {
+      float u = s.uvs[k][0], v = s.uvs[k][1];
+      if (L.top_down) {
+        u = (s.verts[k].pos[0] - L.x0) / std::max(1e-3f, L.x1 - L.x0);
+        v = (L.z1 - s.verts[k].pos[2]) / std::max(1e-3f, L.z1 - L.z0);
+        u = std::clamp(u, 0.f, 0.999f), v = std::clamp(v, 0.f, 0.999f);
+      }
+      const float fx = u * lm.w - 0.5f, fy = v * lm.h - 0.5f;
+      const int x0 = int(std::floor(fx)), y0 = int(std::floor(fy));
+      const float ax = fx - x0, ay = fy - y0;
+      uint32_t& col = s.verts[k].color;
+      uint32_t out = col & 0xFF000000u;
+      for (int c = 0; c < 3; ++c) {
+        const float v = (px(x0, y0, c) * (1 - ax) + px(x0 + 1, y0, c) * ax) * (1 - ay) +
+                        (px(x0, y0 + 1, c) * (1 - ax) + px(x0 + 1, y0 + 1, c) * ax) * ay;
+        const int shift = 16 - 8 * c;  // ARGB: R 16, G 8, B 0
+        // (the source's own vertex colours are unused there - often black: replaced; light
+        // maps hold light at half scale, as SvR2011's vertex colours do)
+        out |= uint32_t(std::clamp(int(std::lround(v * 2.f)), 0, 255)) << shift;
+      }
+      col = out;
+    }
+    s.vfmt |= 2u;
+    ++baked;
+  }
+}
+
 void ConvertModel13(Model& m, float scale, Convert13Stats& st) {
   ++st.models;
   for (auto& n : m.nodes) {
@@ -1034,6 +1095,46 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   std::map<uint32_t, std::string> names;  // converted models
   std::map<uint32_t, const PachEntry*> hostm;
   for (const auto& e : host.entries) hostm[e.id] = &e;
+  // the source's light maps (by name), for BakeLightMaps13
+  std::map<std::string, LightMap13> lightmaps;
+  {
+    std::set<std::string> wanted;
+    std::map<std::string, std::array<float, 4>> bounds;  // name -> x0 x1 z0 z1 of the meshes using it
+    for (const auto& e : se) {
+      if (e.id >= 0x190) continue;
+      const Bytes raw = Unpack(e.data);
+      Model lm_model;
+      if (!IsJboy(raw) || !Jboy13Read(raw, lm_model)) continue;
+      for (const auto& msh : lm_model.meshes) {
+        const int slot = GetSlot(msh, {"sampLightMapPrm"});
+        if (slot < 0 || slot >= int(lm_model.textures.size())) continue;
+        const std::string n = Lower(lm_model.textures[slot]);
+        wanted.insert(n);
+        auto b = bounds.emplace(n, std::array<float, 4>{1e9f, -1e9f, 1e9f, -1e9f}).first;
+        for (const auto& v : msh.verts) {
+          b->second[0] = std::min(b->second[0], v.pos[0]), b->second[1] = std::max(b->second[1], v.pos[0]);
+          b->second[2] = std::min(b->second[2], v.pos[2]), b->second[3] = std::max(b->second[3], v.pos[2]);
+        }
+      }
+    }
+    for (const auto& e : se)
+      if (e.id >= 0x190 && e.id <= 0x192) {
+        std::vector<BundleTexture> texs;
+        if (!BundleRead(Unpack(e.data), texs)) continue;
+        for (const auto& t : texs)
+          if (wanted.count(Lower(t.name)) && !lightmaps.count(Lower(t.name))) {
+            LightMap13 L;
+            if (!DdsDecode(t.data, L.img)) continue;
+            const std::string n = Lower(t.name);
+            L.top_down = n.rfind("fade_lightmap", 0) == 0;
+            if (bounds.count(n)) {
+              const auto& b = bounds[n];
+              L.x0 = b[0], L.x1 = b[1], L.z0 = b[2], L.z1 = b[3];
+            }
+            lightmaps[n] = std::move(L);
+          }
+      }
+  }
 
   // WWE '13's ring materials (colours by diffuse texture name), for the host's ring parts
   std::map<std::string, std::array<float, 12>> ring_colours;
@@ -1075,6 +1176,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       Model m;
       std::string err;
       if (!Jboy13Read(raw, m, &err)) return fail("model " + std::to_string(e.id) + ": " + err);
+      BakeLightMaps13(m, lightmaps, rep.conv.lightmaps_baked);
       ConvertModel13(m, 0.1f, rep.conv);
       if (DropHangingScreens(m)) { ++rep.dropped; continue; }
       names[e.id] = m.name;
