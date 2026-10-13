@@ -4,7 +4,7 @@
   python entrance_port.py list --game <id> --src <extract folder or disc image> [--game-pac <2011 pac dir>]
   python entrance_port.py convert --game <id> --src <...> --entrance <n> --number <2011 n> --out <dir>
                                   [--name <text>] [--no-parts] [--game-pac <2011 pac dir>]
-                                  [--titantron [<movie n>]] [--bink2-tool <path>]
+                                  [--titantron [<movie n>]] [--bink2-tool <path>] [--no-pyro]
   (wwe13 also takes --svrmod <svrmod.exe>: its pacs are xcompressed; default: next to the tools or
    the Mod Maker; missing = exit 2)
   python entrance_port.py free-numbers [--game-pac <2011 pac dir>] [--mods <Mods dir>]
@@ -18,6 +18,11 @@ Contract (shared by the Mod Maker's converters, docs/MOD_MAKER_3_PLAN.md):
   goes in a superstar mod's moves/ or in Mods/Moves/<name>/, docs/MOVE_PACKS.md) and
   <out>/report.json {ok, game, entrance, number, name, files, warnings[], dropped[], notes[]},
   mirrored to stdout.
+- pyro: for games whose particle packs are 2011's format (svr10, wwe12, wwe13, wwe2k14) the
+  entrance's own set, pac/prtcls.pac PCE6 / LPE6 <0NNN> (keyed by entrance number), goes into the
+  pack as `pacentry prtcls.pac PCE6|LPE6 <0nnn> pyro/...` (an EPAC entry; the game's move-pack
+  overlay writes it into a copy of prtcls.pac). 2K14 has no LPE6: PCE6 is used for both (2011's
+  own are the same for 249 of 290). --no-pyro leaves it out.
 - --titantron: also copy the source game's titantron movies/titantron/<n>.* (n = the movie number
   given, else the source entrance number) to <out>/movie.bik (Bink 1, as is) or <out>/movie.mp4
   (Bink 2, WWE '13 / 2K14, through tools/bink2_convert.py and a decoder the player installed;
@@ -700,6 +705,40 @@ def cmd_free(a):
     return free_numbers(gp, mods)
 
 
+PYRO_GAMES = ('svr10', 'wwe12', 'wwe13', 'wwe2k14')
+
+
+def pyro(src, g, entrance, number, d, rep):
+    """the source entrance's PCE6/LPE6 particle set -> pack d/pyro + pacentry lines (notes only on failure)"""
+    if g not in PYRO_GAMES:
+        if g in ('svr07', 'svr09'):
+            rep['notes'].append('pyro: %s particle sets are an older format (not converted)' % GAMES[g]['name'])
+        return
+    try:
+        raw = src.read('pac/prtcls.pac')
+        if raw[:4] not in (b'EPAC', b'EPK8'):
+            raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+        ents = E13.epk8_entries(raw)
+    except Exception as x:
+        rep['notes'].append('pyro: pac/prtcls.pac not readable (%s)' % x)
+        return
+    name = '%04d' % entrance
+    pce = ents.get(('PCE6', name))
+    if pce is None:
+        rep['notes'].append('pyro: the source has no particle set for entrance %d' % entrance)
+        return
+    lpe = ents.get(('LPE6', name), pce)
+    os.makedirs(os.path.join(d, 'pyro'), exist_ok=True)
+    lines = []
+    for grp, b in (('PCE6', pce), ('LPE6', lpe)):
+        fn = 'pyro/%s_%04d.bin' % (grp, number)
+        open(os.path.join(d, fn), 'wb').write(b)
+        lines.append('pacentry prtcls.pac %s %04d %s' % (grp, number, fn))
+    with open(os.path.join(d, 'pack.txt'), 'a', newline='\r\n') as f:
+        f.write('\n'.join(lines) + '\n')
+    rep['notes'].append('pyro: prtcls.pac PCE6/LPE6 %s -> %04d%s' % (name, number, '' if ('LPE6', name) in ents else ' (LPE6 from PCE6)'))
+
+
 TITANTRON_DIRS = ('movies/titantron', 'MOVIES/TITANTRON', 'movies/Titantron')
 
 
@@ -794,6 +833,8 @@ def cmd_convert(a):
         os.makedirs(out, exist_ok=True)
         label = '%s entrance %d as 2011 %d' % (GAMES[g]['name'], entrance, number)
         d = EH.write_pack(out, number, files, label)
+        if '--no-pyro' not in a:
+            pyro(src, g, entrance, number, d, rep)
         rep['files'] = sorted(os.path.relpath(os.path.join(r, f), out) for r, _, fs in os.walk(d) for f in fs)
         if '--titantron' in a:
             titantron(src, a, entrance, out, rep)

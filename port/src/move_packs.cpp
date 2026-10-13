@@ -30,8 +30,9 @@
 //   evt <group> <16 bytes hex> <events hex>
 //   mbd <group> <8 bytes hex>
 //   pacentry <pac under pac\, e.g. evt\Nyujyo5.pac> <GROUP> <name> <file>
-//     (a whole entry of an EPK8 pac, unpacked: e.g. an entrance's script and
-//     motions, EVPE/EVTE <number>; added, or replacing the game's. The pac is
+//     (a whole entry of an EPK8 or EPAC pac, unpacked: e.g. an entrance's script
+//     and motions, EVPE/EVTE <number>, or its pyro, prtcls.pac PCE6/LPE6 <0NNN>
+//     (4-character names in EPAC); added, or replacing the game's. The pac is
 //     copied to the overlay with the entries in - never written in place)
 // Keys the game already has are left as they are.
 //
@@ -75,7 +76,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 9";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones)
+constexpr const char* kFormat = "movepacks 10";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -616,10 +617,16 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
   const fs::path src = game / "pac" / PacPath(pac), dst = overlay / PacPath(pac);
   std::ifstream in(src, std::ios::binary);
   Bytes head(0x4000);
-  if (!in || !in.read(reinterpret_cast<char*>(head.data()), 0x4000) || std::memcmp(head.data(), "EPK8", 4)) {
-    REXLOG_WARN("[svr2011] move packs: {} is not an EPK8 pac", pac);
+  if (!in || !in.read(reinterpret_cast<char*>(head.data()), 0x4000) ||
+      (std::memcmp(head.data(), "EPK8", 4) && std::memcmp(head.data(), "EPAC", 4))) {
+    REXLOG_WARN("[svr2011] move packs: {} is not an EPK8 / EPAC pac", pac);
     return false;
   }
+  // EPAC (prtcls.pac: an entrance's pyro PCE6/LPE6 <0NNN>): groups {4CC, u32 count * 3, u32 0},
+  // 12-byte entries {char name[4], u32 sector, u32 size / 0x100}; added entries are packed only
+  // when the group's own are (prtcls.pac's are plain PACH)
+  const bool epac = !std::memcmp(head.data(), "EPAC", 4);
+  const size_t name_len = epac ? 4 : 8, ent_len = name_len + 8;
   struct E {
     std::string name;
     uint32_t sector = 0, size256 = 0;
@@ -634,22 +641,30 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
   for (size_t q = 0x800; q + 12 <= 0x4000 && Le32(&head[q]);) {
     G g;
     g.type.assign(reinterpret_cast<char*>(&head[q]), 4);
-    const uint32_t n = Le16(&head[q + 4]) / 4;
-    g.extra.assign(head.begin() + long(q + 6), head.begin() + long(q + 12));
+    const uint32_t n = epac ? Le32(&head[q + 4]) / 3 : Le16(&head[q + 4]) / 4;
+    g.extra.assign(head.begin() + long(q + (epac ? 8 : 6)), head.begin() + long(q + 12));
     q += 12;
-    for (uint32_t i = 0; i < n && q + 16 <= 0x4000; ++i, q += 16)
-      g.ents.push_back({std::string(reinterpret_cast<char*>(&head[q]), 8), Le32(&head[q + 8]), Le32(&head[q + 12])});
+    for (uint32_t i = 0; i < n && q + ent_len <= 0x4000; ++i, q += ent_len)
+      g.ents.push_back({std::string(reinterpret_cast<char*>(&head[q]), name_len), Le32(&head[q + name_len]),
+                        Le32(&head[q + name_len + 4])});
     groups.push_back(std::move(g));
   }
   std::map<std::string, Bytes> packed;
   for (const auto& [key, raw] : add) {
-    const std::string type = key.substr(0, 4), name = (key.substr(5) + "        ").substr(0, 8);
+    const std::string type = key.substr(0, 4), name = (key.substr(5) + "        ").substr(0, name_len);
     auto g = std::find_if(groups.begin(), groups.end(), [&](const G& x) { return x.type == type; });
     if (g == groups.end()) {
       REXLOG_WARN("[svr2011] move packs: {} has no group {}", pac, type);
       continue;
     }
-    const Bytes& data = packed[key] = svrfmt::BpeEncode(raw);
+    bool bpe = !epac;
+    if (epac && !g->ents.empty()) {
+      char magic[4] = {};
+      in.seekg(std::streamoff(0x4000 + uint64_t(g->ents[0].sector) * 0x800));
+      bpe = in.read(magic, 4) && !std::memcmp(magic, "BPE ", 4);
+      in.clear();
+    }
+    const Bytes& data = packed[key] = bpe ? svrfmt::BpeEncode(raw) : raw;
     auto e = std::find_if(g->ents.begin(), g->ents.end(), [&](const E& x) { return x.name == name; });
     if (e == g->ents.end()) g->ents.push_back({name, 0, 0, &data});
     else e->data = &data;
@@ -667,7 +682,8 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
   uint64_t pos = 0;
   for (const auto& g : groups) {
     svrfmt::AppName(table, g.type, 4);
-    table.push_back(uint8_t(g.ents.size() * 4)), table.push_back(uint8_t(g.ents.size() * 4 >> 8));
+    if (epac) svrfmt::AppLe32(table, uint32_t(g.ents.size() * 3));
+    else table.push_back(uint8_t(g.ents.size() * 4)), table.push_back(uint8_t(g.ents.size() * 4 >> 8));
     table.insert(table.end(), g.extra.begin(), g.extra.end());
     for (const auto& e : g.ents) {
       if (pos % 0x800) out.write(reinterpret_cast<char*>(zeros.data()), std::streamsize(0x800 - pos % 0x800)), pos += 0x800 - pos % 0x800;

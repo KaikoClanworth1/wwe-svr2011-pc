@@ -215,3 +215,15 @@ Put the pack in a test superstar mod's `moves/` with `entrance=<n>` and run a 1-
 (SVR2011_TEST_MATCH). Check the log for `match profile: ... entrance <n>`. Whoever enters **second**
 gets a shortened entrance in this test route (seen with stock Randy Orton too), so judge the mod
 only when it enters first (re-run if the order flipped).
+
+## Pyro
+
+`entrance_port.py convert` adds the entrance's own particle set for svr10 / wwe12 / wwe13 / wwe2k14
+(`pac/prtcls.pac` PCE6 / LPE6 `<0NNN>`, plain PACH; 2K14 has no LPE6: PCE6 is used twice) as
+`pacentry prtcls.pac PCE6|LPE6 <0nnn> pyro/...`; `--no-pyro` leaves it out. The game's move-pack
+overlay (src/move_packs.cpp BuildEntryPac, format "movepacks 10") writes pacentry lines into EPAC
+pacs too (4-character names, u32 count x 3, entries packed only when the group's own are).
+Checked in game: 2010 411 (Cena PPV) as 494 - `move packs: prtcls.pac: 2 entries added`, the
+copied prtcls.pac loads, the entrance plays, no crash. Not confirmed yet: a visible difference
+against the same run without the set (screenshots every 1.5 s looked the same) - the open question
+is whether the game draws PCE6 <n> for an added entrance number or needs another table.
