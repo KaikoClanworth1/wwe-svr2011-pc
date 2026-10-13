@@ -15,6 +15,8 @@
 #include "app.h"
 #include "char_preview.h"
 #include "json.h"
+#include "rig_map.h"
+#include "svrfmt/char_fbx.h"
 #include "svrfmt/pac.h"
 #include "tool_run.h"
 
@@ -114,6 +116,9 @@ struct StarProject {
   std::wstring moves;             // moves=moves.txt: lines 0xOFF=<move id> (a file picked as it is)
   std::map<int, int> moveset;     // the page's picks: slot (0..223, offset slot*2) -> move id, after the file's lines
   std::wstring pack;              // a move pack folder (pack.txt + motions/) copied in as moves/
+  // a model from an FBX (import): the file and the hand edits to its automatic bone mapping
+  std::wstring fbx;
+  std::map<std::string, std::string> fbx_map;  // source bone -> 2011 bone ("" = folds into its parent)
 };
 StarProject g_star;
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
@@ -122,6 +127,8 @@ std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
 std::string g_test_hometown;
 int g_test_pose = -1;
 std::string g_test_name;
+std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
+std::string g_test_fbx_map;
 bool g_test_done = false;
 
 // Cheap per-file checks for the Problems list (cached by path + size + time).
@@ -882,7 +889,174 @@ void Install(bool start) {
   });
 }
 
+// ---- a model from an FBX: the source skeleton, its automatic mapping (rig_map) and the hand edits (g_star.fbx_map)
+
+const COMDLG_FILTERSPEC kFbxFilter[1] = {{L"FBX model (*.fbx)", L"*.fbx"}};
+const char* const kFbxCore[] = {"root", "koshi", "mune", "kubi", "atama", "l_sakotsu", "l_ninoude", "l_kote", "l_te",
+                                "r_sakotsu", "r_ninoude", "r_kote", "r_te", "l_momo", "l_sune", "l_ashi", "r_momo", "r_sune", "r_ashi"};
+
+struct FbxRig {
+  std::wstring path;
+  fs::file_time_type time{};
+  std::vector<FbxBone> bones;
+  std::vector<std::string> auto_map;  // MapRig's
+  std::vector<int> depth;
+  std::string rig, error;
+};
+FbxRig g_fbx_rig;
+bool g_fbx_open_once = false;  // (test aid: the mapping table open)
+
+// The FBX's skeleton (read again when the file or its time changes).
+const FbxRig& FbxSkeleton() {
+  std::error_code ec;
+  const auto t = fs::last_write_time(g_star.fbx, ec);
+  if (g_fbx_rig.path == g_star.fbx && g_fbx_rig.time == t) return g_fbx_rig;
+  g_fbx_rig = FbxRig();
+  g_fbx_rig.path = g_star.fbx, g_fbx_rig.time = t;
+  if (g_star.fbx.empty()) return g_fbx_rig;
+  if (!ReadFbxSkeleton(Utf8(g_star.fbx), g_fbx_rig.bones, g_fbx_rig.error)) return g_fbx_rig;
+  std::vector<RigBone> rb;
+  for (const auto& b : g_fbx_rig.bones) rb.push_back({b.name, b.parent});
+  g_fbx_rig.auto_map = MapRig(rb);
+  g_fbx_rig.rig = DetectRig(rb);
+  for (size_t i = 0; i < g_fbx_rig.bones.size(); ++i) {
+    int d = 0;
+    for (int p = g_fbx_rig.bones[i].parent; p >= 0 && d < int(g_fbx_rig.bones.size()); p = g_fbx_rig.bones[size_t(p)].parent) ++d;
+    g_fbx_rig.depth.push_back(d);
+  }
+  return g_fbx_rig;
+}
+
+// A source bone's 2011 bone: the hand edit, else the automatic one ("" = folds into its parent).
+std::string FbxTarget(const FbxRig& r, size_t i) {
+  const auto e = g_star.fbx_map.find(r.bones[i].name);
+  return e != g_star.fbx_map.end() ? e->second : r.auto_map[i];
+}
+// Where a bone's weights end up: its own 2011 bone or its nearest mapped parent's ("" = nowhere: above the hips).
+std::string FbxWeightsTo(const FbxRig& r, size_t i) {
+  for (int p = int(i), n = 0; p >= 0 && n <= int(r.bones.size()); p = r.bones[size_t(p)].parent, ++n)
+    if (std::string t = FbxTarget(r, size_t(p)); !t.empty()) return t;
+  return {};
+}
+
+// fbx_map=<source>><2011>|... ("<source>>" = folds); bone names have neither '|' nor '>' in the known rigs.
+std::string FbxMapText() {
+  std::string t;
+  for (const auto& [src, dst] : g_star.fbx_map) t += (t.empty() ? "" : "|") + src + ">" + dst;
+  return t;
+}
+void ParseFbxMap(const std::string& t) {
+  g_star.fbx_map.clear();
+  size_t a = 0;
+  while (a < t.size()) {
+    size_t b = t.find('|', a);
+    if (b == std::string::npos) b = t.size();
+    const std::string item = t.substr(a, b - a);
+    if (const size_t g = item.rfind('>'); g != std::string::npos && g > 0) g_star.fbx_map[item.substr(0, g)] = item.substr(g + 1);
+    a = b + 1;
+  }
+}
+
+void FbxRows() {
+  FileRow("Model from an FBX (optional)...", g_star.fbx, "none", kFbxFilter, 1,
+          "A rigged model (Unity / VRChat, Mixamo, Blender Rigify, 3ds Max Biped, UE Mannequin and rigs named like them):\n"
+          "its bones are matched to the 2011 skeleton by their names; the table below lets you change any of them.");
+  if (g_star.fbx.empty()) return;
+  const FbxRig& r = FbxSkeleton();
+  ImGui::Indent();
+  if (!r.error.empty()) {
+    ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "The FBX could not be read: %s", r.error.c_str());
+    ImGui::Unindent();
+    return;
+  }
+  int mapped = 0;
+  std::set<std::string> have;
+  for (size_t i = 0; i < r.bones.size(); ++i)
+    if (std::string t = FbxTarget(r, i); !t.empty()) ++mapped, have.insert(t);
+  int missing = 0;
+  for (const char* c : kFbxCore) missing += !have.count(c);
+  ImGui::TextDisabled("%s: %d of %d bones mapped%s, %d edited by hand", r.rig.c_str(), mapped, int(r.bones.size()),
+                      missing ? (", " + std::to_string(missing) + " of the main 2011 bones missing").c_str() : "",
+                      int(g_star.fbx_map.size()));
+  if (g_fbx_open_once) ImGui::SetScrollHereY(0.1f), ImGui::SetNextItemOpen(true), g_fbx_open_once = false;  // (test aid)
+  if (ImGui::TreeNode("Bone mapping")) {
+    ImGui::BeginDisabled(g_star.fbx_map.empty());
+    if (ImGui::SmallButton("Back to the automatic mapping")) g_star.fbx_map.clear(), Touch();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(an unmapped bone's weights go to its nearest mapped parent)");
+    const auto& targets = TargetBones();
+    if (ImGui::BeginTable("fbxmap", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+                          ImVec2(0, 340 * g_scale))) {
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("FBX bone");
+      ImGui::TableSetupColumn("SvR 2011 bone");
+      ImGui::TableSetupColumn("Its weights go to");
+      ImGui::TableHeadersRow();
+      for (size_t i = 0; i < r.bones.size(); ++i) {
+        const auto& b = r.bones[i];
+        const std::string cur = FbxTarget(r, i);
+        const bool edited = g_star.fbx_map.count(b.name) > 0;
+        ImGui::PushID(int(i));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Indent(float(std::min(r.depth[i], 12)) * 8 * g_scale + 0.001f);
+        if (b.skinned) ImGui::TextUnformatted(b.name.c_str());
+        else ImGui::TextDisabled("%s", b.name.c_str());
+        if (!b.skinned && ImGui::IsItemHovered()) ImGui::SetTooltip("No vertices use this bone.");
+        ImGui::Unindent(float(std::min(r.depth[i], 12)) * 8 * g_scale + 0.001f);
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1);
+        if (edited) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.8f, 0.35f, 1));
+        const std::string shown = cur.empty() ? std::string("(folds into its parent)") : cur;
+        if (ImGui::BeginCombo("##t", shown.c_str(), ImGuiComboFlags_HeightLarge)) {
+          if (edited) ImGui::PopStyleColor();
+          auto pick = [&](const std::string& t) {
+            if (t == r.auto_map[i]) g_star.fbx_map.erase(b.name);
+            else g_star.fbx_map[b.name] = t;
+            Touch();
+          };
+          if (ImGui::Selectable("(folds into its parent)", cur.empty())) pick("");
+          for (const auto& t : targets)
+            if (ImGui::Selectable(t.c_str(), t == cur)) pick(t);
+          ImGui::EndCombo();
+        } else if (edited) {
+          ImGui::PopStyleColor();
+        }
+        if (edited && ImGui::IsItemHovered())
+          ImGui::SetTooltip("Edited (the automatic choice: %s)", r.auto_map[i].empty() ? "folds into its parent" : r.auto_map[i].c_str());
+        ImGui::TableNextColumn();
+        const std::string to = FbxWeightsTo(r, i);
+        if (cur.empty()) ImGui::TextDisabled("%s", to.empty() ? "nowhere (above the hips)" : to.c_str());
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+    ImGui::TreePop();
+  }
+  ImGui::TextDisabled("Building the model from the FBX comes next; the mapping is kept in the project.");
+  ImGui::Unindent();
+}
+
+void FbxProblems(std::vector<Problem>& p) {
+  if (g_star.fbx.empty()) return;
+  const FbxRig& r = FbxSkeleton();
+  if (!r.error.empty()) {
+    p.push_back(Error("The FBX could not be read: " + r.error));
+    return;
+  }
+  std::set<std::string> have;
+  for (size_t i = 0; i < r.bones.size(); ++i)
+    if (std::string t = FbxTarget(r, i); !t.empty()) have.insert(t);
+  std::string miss;
+  for (const char* c : kFbxCore)
+    if (!have.count(c)) miss += (miss.empty() ? "" : ", ") + std::string(c);
+  if (!miss.empty())
+    p.push_back(Warning("The FBX's bone mapping has no " + miss + ".", "Model from an FBX > Bone mapping: pick the FBX bone for each."));
+}
+
 void Problems(std::vector<Problem>& p) {
+  FbxProblems(p);
   if (!g_star.name[0]) p.push_back(Error("The superstar has no name."));
   if (g_star.model.empty()) {
     p.push_back(Error("No model picked.", "Model (ch.pac): a character model pac, the game's (pac\\ch\\chNNN.pac) or a converted one."));
@@ -1034,6 +1208,7 @@ void Draw() {
       g_star.model = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_test_id) + L".pac")).wstring();
     }
     if (!g_test_model.empty()) g_star.model = g_test_model;
+    if (!g_test_fbx.empty()) g_star.fbx = g_test_fbx, ParseFbxMap(g_test_fbx_map), g_fbx_open_once = true;
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
       Image img;
@@ -1217,6 +1392,7 @@ void Draw() {
     if (ImGui::SmallButton("Export to FBX...")) ExportModelFbx(g_star.model, g_view_attire, g_star.name);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model (the attire the preview shows) with its skeleton, skin weights and textures, for Blender and other tools.");
   }
+  FbxRows();
   FileRow("Theme song (optional)...", g_star.song, "the style's", kSoundFilter, 1);
   ThemeGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
@@ -1387,6 +1563,7 @@ std::string StateText() {
   s += "\nentrance=" + std::to_string(g_star.entrance) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
+  s += "\nfbx=" + Utf8(g_star.fbx) + "\nfbx_map=" + FbxMapText();
   return s;
 }
 
@@ -1404,6 +1581,8 @@ void WriteProject(ProjectOut& out) {
   if (g_star.call >= 0) out.Key("call", g_star.call);
   if (const std::string h = HeightText(); !h.empty()) out.Key("height", h);
   out.File("model", g_star.model, "star/model");
+  out.Key("fbx", Utf8(g_star.fbx));  // (the FBX stays where it is: its textures sit beside it)
+  out.Key("fbx_map", FbxMapText());
   out.File("song", g_star.song, "star/theme");
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", g_star.movie, "star/movie");
@@ -1502,6 +1681,8 @@ bool Read(const ProjectIn& in, bool mod) {
     return in.Extract(n);
   };
   g_star.model = file("model", "ch.pac");
+  g_star.fbx = Wide(in.Get("fbx"));
+  ParseFbxMap(in.Get("fbx_map"));
   if (mod && g_star.model.empty() && in.Find("ch.pac")) g_star.model = in.Extract("ch.pac");
   g_star.moves = file("moves", "moves.txt");
   if (mod && g_star.moves.empty() && !in.Get("moves").empty() && in.Find(in.Get("moves"))) g_star.moves = in.Extract(in.Get("moves"));
@@ -1596,6 +1777,8 @@ void TestMoveset(const std::string& spec) {
   ParseMoveset(spec, ',');
   g_moveset_open_once = true;
 }
+
+void TestFbx(const std::wstring& fbx, const std::string& map) { g_test_fbx = fbx, g_test_fbx_map = map; }
 
 void TestHeight(float scale) { g_star.height = std::clamp(scale, 0.8f, 1.25f); }
 

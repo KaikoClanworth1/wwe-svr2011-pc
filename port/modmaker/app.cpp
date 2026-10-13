@@ -2223,6 +2223,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
+      const std::wstring v = argv[++i];
+      const size_t c = v.find(L',');
+      star_page::TestFbx(v.substr(0, c), c == std::wstring::npos ? std::string() : Utf8(v.substr(c + 1)));
+    }
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
