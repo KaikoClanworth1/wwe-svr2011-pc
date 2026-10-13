@@ -1212,6 +1212,11 @@ void Draw() {
   ImGui::TextUnformatted("Files");
   FileRow("Model (ch.pac)...", g_star.model, "required: the superstar's model", kPacFilter, 1,
           "A character model pac: one of the game's (pac\\ch\\chNNN.pac) or one converted from another game.");
+  if (!g_star.model.empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Export to FBX...")) ExportModelFbx(g_star.model, g_view_attire, g_star.name);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model (the attire the preview shows) with its skeleton, skin weights and textures, for Blender and other tools.");
+  }
   FileRow("Theme song (optional)...", g_star.song, "the style's", kSoundFilter, 1);
   ThemeGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,

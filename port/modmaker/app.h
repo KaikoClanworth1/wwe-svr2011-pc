@@ -381,6 +381,8 @@ namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace installed_page { void Draw(); void TestSelect(const std::string& spec); }
 namespace help_page { void Draw(); }
 
+// A superstar model (ch.pac) to FBX, picked folder, in the background (svrfmt/char_fbx): <folder>\<name>.fbx + textures.
+void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name);
 // A character model pac's match memory (D12): per wrestler attire entry (EMD ...2) the 4 KB pages its meshes'
 // vertex and index buffers take - the game gives each wrestler 192; over that the match load crashes.
 constexpr int kModelPages = 192, kModelPagesWarn = 180;

@@ -27,6 +27,7 @@ extern "C" {
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "svrfmt/disc.h"
+#include "svrfmt/char_fbx.h"
 #include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
@@ -1149,6 +1150,22 @@ const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
   return (cache[pac] = std::move(c)).pages;
 }
 
+void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name) {
+  const std::wstring dir = PickFolder(L"A folder for the FBX (the textures go in a textures folder beside it)");
+  if (dir.empty()) return;
+  const std::string id = IdFrom(name.empty() ? "model" : name, "model") + (attire > 1 ? "_attire" + std::to_string(attire) : "");
+  RunInBackground([pac, attire, dir, id] {
+    Progress("Writing the FBX ...");
+    Bytes b;
+    svrfmt::CharExportReport rep;
+    const bool ok = ReadFile(Utf8(pac), b) && svrfmt::ExportCharacterFbx(b, attire, Utf8(dir), id, rep);
+    for (const auto& w : rep.warnings) Log("  " + w);
+    Status(ok ? "Exported " + id + ".fbx: " + std::to_string(rep.bones) + " bones, " + std::to_string(rep.meshes) + " meshes, " +
+                    std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.textures) + " textures (" + Utf8(dir) + ")."
+              : "The FBX could not be written: " + (rep.warnings.empty() ? std::string("see the log") : rep.warnings.front()));
+  });
+}
+
 std::vector<int> ModelAttires(const std::wstring& pac) {
   std::vector<int> v;
   for (const auto& p : ModelBudget(pac))
@@ -2130,6 +2147,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
+    else if (!wcscmp(argv[i], L"--export-char-fbx") && more) {  // <pac>,<attire>,<out dir>: export, read back, log, quit
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a != std::wstring::npos && b != std::wstring::npos) {
+        Bytes pac;
+        svrfmt::CharExportReport rep;
+        const std::wstring out = v.substr(b + 1);
+        const int attire = _wtoi(v.substr(a + 1, b - a - 1).c_str());
+        const bool ok = ReadFile(Utf8(v.substr(0, a)), pac) && svrfmt::ExportCharacterFbx(pac, attire, Utf8(out), "test", rep);
+        Log(std::string("test: export ") + (ok ? "ok" : "FAILED") + ": " + std::to_string(rep.bones) + " bones, " + std::to_string(rep.meshes) +
+            " meshes, " + std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.triangles) + " triangles, " +
+            std::to_string(rep.textures) + " textures");
+        for (const auto& w : rep.warnings) Log("  " + w);
+        if (ok)
+          for (const auto& l : svrfmt::CheckCharacterFbx(pac, attire, Utf8(out) + "\\test.fbx")) Log("test: read back: " + l);
+        WriteLogTo(out + L"\\test.log");
+        return 0;
+      }
+    }
     else if (!wcscmp(argv[i], L"--installed") && more) installed_page::TestSelect(Utf8(argv[++i])), g_page = PageId::kInstalled;
     else if (!wcscmp(argv[i], L"--moves-put") && more) moves_page::TestPut(argv[++i]), g_page = PageId::kMoves;
     else if (!wcscmp(argv[i], L"--pac-attires") && more) attire_page::TestPacAttires(argv[++i]), g_page = PageId::kAttire;

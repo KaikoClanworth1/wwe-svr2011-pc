@@ -330,6 +330,16 @@ void SuperstarView(const Mod& m) {
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f == g_view.model ? "in the model pac" : FileName(f).c_str());
     }
   }
+  if (!g_view.model.empty()) {
+    if (ImGui::SmallButton("Export to FBX...")) {
+      std::wstring pac = g_view.model;
+      int attire = g_view.shown_attire;
+      for (const auto& [a, f] : g_view.attires)
+        if (a == g_view.shown_attire && f != g_view.model) pac = f, attire = 1;
+      ExportModelFbx(pac, attire, m.name);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model (the attire shown) with its skeleton, skin weights and textures, for Blender and other tools.");
+  }
   if (m.kind != "Superstars") return;
   // the motions: idle, pose, then every moveset slot it sets
   const bool ready = anims_page::MovesIndexed();
