@@ -695,10 +695,11 @@ std::vector<std::pair<std::string, svrfmt::Bytes>> VsTheme(int number) {
 // arena's loading picture after a match on it. The VS theme's pictures (only
 // on the VS screen) are swapped while the arena is chosen.
 struct DecodeSwap {
-  std::string name;        // the texture's name in its set
-  svrfmt::Bytes original;  // top level blocks as in the file
-  svrfmt::Bytes mine;
-  bool loading = false;    // a loading picture (only while a match loads)
+  std::string name;                           // the texture's name in its set
+  size_t size = 0;                            // its top level's size
+  uint64_t hash = 0;                          // Fnv of its top level as in the file (not the bytes: 240 x 512 KB)
+  std::shared_ptr<const svrfmt::Bytes> mine;  // (shared: one per part of the custom picture)
+  bool loading = false;                       // a loading picture (only while a match loads)
 };
 std::atomic<bool> g_match_loading{false};
 struct DecodeSwaps {
@@ -718,8 +719,10 @@ uint64_t Fnv(const uint8_t* p, size_t n) {
 
 struct LoadPic {
   std::string name;
-  svrfmt::Bytes original;  // top level blocks as in the file
-  int part = 0;            // 0 whole, 1 left half, 2 right half
+  size_t size = 0;    // the top level's size
+  uint64_t key = 0;   // Fnv of its middle 32 bytes (DecodeSwaps::keys)
+  uint64_t hash = 0;  // Fnv of the whole top level as in the file
+  int part = 0;       // 0 whole, 1 left half, 2 right half
 };
 std::vector<LoadPic> g_load_pics;  // every loading picture of the game (distinct)
 // (read on a thread of its own at start - LoadHD.pac whole, 2-3.5 s on a
@@ -728,6 +731,10 @@ std::vector<LoadPic> g_load_pics;  // every loading picture of the game (distinc
 std::mutex g_load_pics_mutex;
 std::condition_variable g_load_pics_cv;
 bool g_load_pics_ready = false;
+
+LoadPic PicOf(const std::string& name, const uint8_t* top, size_t size, int part) {
+  return {name, size, Fnv(top + size / 2, 32), Fnv(top, size), part};
+}
 
 void ReadLoadingPictures() {
   svrfmt::Bytes d;
@@ -746,8 +753,8 @@ void ReadLoadingPictures() {
           svrfmt::DdsInfo info;
           if (!svrfmt::DdsInfoOf(t.data, info) || info.format != svrfmt::DxtFormat::kDxt5) continue;
           if (info.w == 1024 && info.h == 512 && t.data.size() >= 128 + 1024 * 512) {
-            LoadPic lp{t.name, svrfmt::Bytes(t.data.begin() + 128, t.data.begin() + 128 + 1024 * 512), 0};
-            if (!seen[Fnv(lp.original.data(), lp.original.size()) ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
+            LoadPic lp = PicOf(t.name, t.data.data() + 128, 1024 * 512, 0);
+            if (!seen[lp.hash ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
               g_load_pics.push_back(std::move(lp));
           } else if (info.w == 512 && info.h == 512 && t.data.size() >= 128 + 512 * 512) {
             halves.push_back(&t);
@@ -755,9 +762,8 @@ void ReadLoadingPictures() {
         }
         std::sort(halves.begin(), halves.end(), [](auto* a, auto* b) { return a->name < b->name; });
         for (size_t k = 0; k < halves.size() && k < 2; ++k) {
-          LoadPic lp{halves[k]->name, svrfmt::Bytes(halves[k]->data.begin() + 128, halves[k]->data.begin() + 128 + 512 * 512),
-                     int(k) + 1};
-          if (!seen[Fnv(lp.original.data(), lp.original.size()) ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
+          LoadPic lp = PicOf(halves[k]->name, halves[k]->data.data() + 128, 512 * 512, int(k) + 1);
+          if (!seen[lp.hash ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
             g_load_pics.push_back(std::move(lp));
         }
       }
@@ -808,24 +814,33 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
   auto t = std::make_shared<DecodeSwaps>();
   if (c) {
     t->theme = host;
-    auto add = [&](const std::string& name, svrfmt::Bytes original, svrfmt::Bytes mine, bool loading) {
-      if (original.size() != mine.size() || original.size() < 64) return;
-      t->keys[Fnv(original.data() + original.size() / 2, 32)].push_back(t->swaps.size());
-      if (std::find(t->sizes.begin(), t->sizes.end(), original.size()) == t->sizes.end()) t->sizes.push_back(original.size());
-      t->swaps.push_back({name, std::move(original), std::move(mine), loading});
+    // (a game picture by its key / hash; the replacement shared - not 240
+    // copies of the game's pictures and 240 of the custom one's)
+    auto add = [&](const std::string& name, const LoadPic& orig, std::shared_ptr<const svrfmt::Bytes> mine, bool loading) {
+      if (!mine || orig.size != mine->size() || orig.size < 64) return;
+      t->keys[orig.key].push_back(t->swaps.size());
+      if (std::find(t->sizes.begin(), t->sizes.end(), orig.size) == t->sizes.end()) t->sizes.push_back(orig.size);
+      t->swaps.push_back({name, orig.size, orig.hash, std::move(mine), loading});
     };
     if (!c->load.empty() && !LoadingPicturesReady(std::chrono::seconds(10))) {
       REXLOG_WARN("[svr2011] arena mods: the game's loading pictures still not read after 10 s - {} keeps the game's",
                   c->id);
     } else if (!c->load.empty()) {
       const svrfmt::Bytes load = Swap16(c->load.data(), c->load.size());  // (kept swapped: back to file order)
-      for (const auto& lp : g_load_pics) add(lp.name, lp.original, LoadPart(load, lp.part), true);
+      std::shared_ptr<const svrfmt::Bytes> parts[3];
+      for (int k = 0; k < 3; ++k) parts[k] = std::make_shared<const svrfmt::Bytes>(LoadPart(load, k));
+      for (const auto& lp : g_load_pics)
+        if (lp.part >= 0 && lp.part < 3) add(lp.name, lp, parts[lp.part], true);
     }
     if (!c->vs.empty()) {
       const auto theme = VsTheme(host);
       for (const auto& [name, mine] : c->vs)
         for (const auto& [tname, orig] : theme)
-          if (tname == name) add(tname, Swap16(orig.data(), orig.size()), Swap16(mine.data(), mine.size()), false);
+          if (tname == name) {
+            const svrfmt::Bytes o = Swap16(orig.data(), orig.size());
+            add(tname, PicOf(tname, o.data(), o.size(), 0),
+                std::make_shared<const svrfmt::Bytes>(Swap16(mine.data(), mine.size())), false);
+          }
     }
   }
   REXLOG_INFO("[svr2011] arena mods: loading / VS pictures {} for {} (theme {:02})", t->swaps.size(),
@@ -866,12 +881,13 @@ void SwapDecoded(uint8_t* d, uint32_t size) {
       if (128 + level0 > sz) continue;
       auto it = t->keys.find(Fnv(top + level0 / 2, 32));
       if (it == t->keys.end()) continue;
+      uint64_t hash = 0;  // (the whole top level's: only once its key and name match)
       for (size_t k : it->second) {
         const auto& sw = t->swaps[k];
-        if (sw.original.size() != level0 || (sw.loading && !g_match_loading) || !NameIs(name, sw.name) ||
-            std::memcmp(top, sw.original.data(), level0))
-          continue;
-        std::memcpy(top, sw.mine.data(), level0);
+        if (sw.size != level0 || (sw.loading && !g_match_loading) || !NameIs(name, sw.name)) continue;
+        if (!hash) hash = Fnv(top, level0);
+        if (hash != sw.hash) continue;
+        std::memcpy(top, sw.mine->data(), level0);
         static int logged = 0;
         if (logged++ < 40) REXLOG_INFO("[svr2011] arena mods: picture {} swapped as it was unpacked", name);
         break;
