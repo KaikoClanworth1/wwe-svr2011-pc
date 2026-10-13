@@ -27,6 +27,7 @@ extern "C" {
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "svrfmt/disc.h"
+#include "rig_map.h"
 #include "svrfmt/char_fbx.h"
 #include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
@@ -2147,6 +2148,36 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
+    else if (!wcscmp(argv[i], L"--fbx-map") && more) {  // <fbx>,<out file>: its skeleton, the rig found and the mapping
+      const std::wstring v = argv[++i];
+      const size_t c = v.find(L',');
+      std::vector<svrfmt::FbxBone> fb;
+      std::string err, out;
+      if (c != std::wstring::npos && svrfmt::ReadFbxSkeleton(Utf8(v.substr(0, c)), fb, err)) {
+        std::vector<RigBone> rb;
+        for (const auto& b : fb) rb.push_back({b.name, b.parent});
+        const auto map = MapRig(rb);
+        out = "rig: " + DetectRig(rb) + "\n";
+        int mapped = 0, skinned = 0, skinned_mapped = 0;
+        for (size_t k = 0; k < fb.size(); ++k) {
+          mapped += !map[k].empty(), skinned += fb[k].skinned, skinned_mapped += fb[k].skinned && !map[k].empty();
+          out += "  " + fb[k].name + (fb[k].skinned ? " *" : "") + " -> " + (map[k].empty() ? "(folds into its parent)" : map[k]) + "\n";
+        }
+        out += std::to_string(fb.size()) + " bones, " + std::to_string(mapped) + " mapped; " + std::to_string(skinned) +
+               " with weights, " + std::to_string(skinned_mapped) + " of them mapped\n";
+      } else {
+        out = "FAILED: " + err + "\n";
+      }
+      if (c != std::wstring::npos) WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--rig-selftest")) {  // the rig mapper against each known rig's standard names
+      const auto fails = RigSelfTest();
+      std::string out = "rig self test: " + std::to_string(fails.size()) + " failed\n";
+      for (const auto& f : fails) out += "  " + f + "\n";
+      if (++i < argc) WriteFile(Utf8(argv[i]), Bytes(out.begin(), out.end()));
+      return fails.empty() ? 0 : 1;
+    }
     else if (!wcscmp(argv[i], L"--export-char-fbx") && more) {  // <pac>,<attire>,<out dir>: export, read back, log, quit
       const std::wstring v = argv[++i];
       const size_t a = v.find(L','), b = v.find(L',', a + 1);

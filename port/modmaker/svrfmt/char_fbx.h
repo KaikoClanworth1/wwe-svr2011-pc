@@ -19,6 +19,16 @@ struct CharExportReport {
 // attire: 1-4 (the EMD entry ......<attire-1>2). Writes <out_dir>/<name>.fbx and <out_dir>/textures/*.png.
 bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep);
 
+// An FBX's skeleton: every bone node (a skeleton node, or one a skin cluster uses), parent index (-1: none), in
+// file order, and for each its world rest position; false with err when the file doesn't read.
+struct FbxBone {
+  std::string name;
+  int parent = -1;
+  float pos[3] = {};
+  bool skinned = false;  // a skin cluster uses it (it has weights)
+};
+bool ReadFbxSkeleton(const std::string& path, std::vector<FbxBone>& out, std::string& err);
+
 // Test: the exported file read back (ufbx) against the pac - bones, bind matrices, vertices, weights; a line per check.
 std::vector<std::string> CheckCharacterFbx(const Bytes& pac, int attire, const std::string& fbx_path);
 

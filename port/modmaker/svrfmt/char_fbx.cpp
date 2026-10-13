@@ -415,6 +415,42 @@ bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir
   return true;
 }
 
+bool ReadFbxSkeleton(const std::string& path, std::vector<FbxBone>& out, std::string& err) {
+  ufbx_load_opts lo = {};
+  lo.target_axes = ufbx_axes_right_handed_y_up;
+  lo.target_unit_meters = 0.1f;  // (game units: 10 cm)
+  ufbx_error ue;
+  ufbx_scene* scene = ufbx_load_file(path.c_str(), &lo, &ue);
+  if (!scene) return err = "ufbx: " + std::string(ue.description.data, ue.description.length), false;
+  std::set<const ufbx_node*> skinned;
+  for (size_t i = 0; i < scene->skin_clusters.count; ++i)
+    if (scene->skin_clusters.data[i]->bone_node) skinned.insert(scene->skin_clusters.data[i]->bone_node);
+  std::map<const ufbx_node*, int> index;
+  for (size_t i = 0; i < scene->nodes.count; ++i) {
+    const ufbx_node* n = scene->nodes.data[i];
+    if (!n->bone && !skinned.count(n)) continue;
+    index[n] = int(out.size());
+    FbxBone b;
+    b.name.assign(n->name.data, n->name.length);
+    b.pos[0] = float(n->node_to_world.m03), b.pos[1] = float(n->node_to_world.m13), b.pos[2] = float(n->node_to_world.m23);
+    b.skinned = skinned.count(n) != 0;
+    out.push_back(b);
+  }
+  for (size_t i = 0; i < scene->nodes.count; ++i) {
+    const ufbx_node* n = scene->nodes.data[i];
+    const auto it = index.find(n);
+    if (it == index.end()) continue;
+    for (const ufbx_node* p = n->parent; p; p = p->parent)
+      if (const auto pi = index.find(p); pi != index.end()) {
+        out[size_t(it->second)].parent = pi->second;
+        break;
+      }
+  }
+  ufbx_free_scene(scene);
+  if (out.empty()) return err = "the FBX has no skeleton (no bones, no skin)", false;
+  return true;
+}
+
 std::vector<std::string> CheckCharacterFbx(const Bytes& pac, int attire, const std::string& fbx_path) {
   std::vector<std::string> out;
   Character ch;
