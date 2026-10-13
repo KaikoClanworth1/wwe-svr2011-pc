@@ -435,7 +435,13 @@ def sym_convert(src, entrance, number, name, parts, rep):
 
 def svr06_list(src, game_pac):
     import svr06_entrance
-    return svr06_entrance.list_entrances(src, game_pac=game_pac)
+    out = svr06_entrance.list_entrances(src, game_pac=game_pac)
+    for r in out:
+        # (a few 2006 script names run words together: "TheRock" -> "The Rock")
+        r['name'] = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', r['name'])
+        if r.get('in_2011') is None:
+            r['in_2011'] = in_2011(r['name'], game_pac)
+    return out
 
 
 def svr06_convert(src, entrance, number, name, parts, rep, game_pac=None):
