@@ -169,7 +169,7 @@ static int maker_present(void);
 static void scan(void)
 {
     static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes",
-                                         L"Backgrounds" };
+                                         L"Backgrounds", L"Attires" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -552,6 +552,7 @@ static int install_file(const WCHAR *zip)
         const int moves = !_wcsicmp(m.type, L"moves");
         const int match_type = !_wcsicmp(m.type, L"matchtype");
         const int background = !_wcsicmp(m.type, L"background");
+        const int attire = !_wcsicmp(m.type, L"attire");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
         if (signs || media || match_type) {
             wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
@@ -571,6 +572,16 @@ static int install_file(const WCHAR *zip)
             wcsncpy_s(kind, 32, L"Backgrounds", _TRUNCATE);
             goto place;
         }
+        if (attire) {  /* an attire for a superstar (Mods/Attires/<id>: manifest + attire.pac) */
+            swprintf_s(need1, MAX_PATH, L"%s\\attire.pac", tmp);
+            if (!exists(need1)) {
+                status(L"That attire mod is incomplete (it needs attire.pac).");
+                remove_tree(tmp, 0);
+                return 0;
+            }
+            wcsncpy_s(kind, 32, L"Attires", _TRUNCATE);
+            goto place;
+        }
         if (moves) {  /* a move pack: pack.txt + motions (docs/MOVE_PACKS.md) */
             swprintf_s(need1, MAX_PATH, L"%s\\pack.txt", tmp);
             if (!exists(need1)) {
@@ -583,7 +594,7 @@ static int install_file(const WCHAR *zip)
         }
         if (!arena && !star) {
             swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, backstage, superstar, sign, media, "
-                               L"move, match type and background mods.", m.name, m.type);
+                               L"move, match type, background and attire mods.", m.name, m.type);
             status(t);
             remove_tree(tmp, 0);
             return 0;
@@ -643,6 +654,8 @@ place:
                        : !wcscmp(kind, L"Backgrounds") ? L"Installed \"%s\". The main menu shows it after its own "
                                                          L"12 pictures."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
+                       : !wcscmp(kind, L"Attires") ? L"Installed \"%s\". The superstar has it on CHANGE ATTIRE the next "
+                                                     L"time the game starts."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
                                                    L"select (up to 137 superstar mods)."
                                                  : L"Installed \"%s\". It is on the arena select pages after the "
