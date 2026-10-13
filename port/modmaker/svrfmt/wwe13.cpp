@@ -145,36 +145,57 @@ bool XcompressDecode(const Bytes& d, Bytes& out, std::string* error) {
   }
   out.assign(size_t(total), 0);
   mspack_system sys = {MOpen, MClose, MRead, MWrite, MSeek, MTell, MMsg, MAlloc, MFree, MCopy, nullptr};
-  Bytes frames;
-  size_t op = 0;
-  for (uint32_t i = 0; i < n; ++i) {
-    // chunk i sits at file offset i * chunk (chunk 0 after the header)
-    size_t p = i ? size_t(i) * chunk : data;
-    const size_t end = std::min(d.size(), size_t(i + 1) * chunk);
+  // a chunk's frames from p: {u16 packed size} (32 KB unpacked) or {0xFF, u16 unpacked, u16 packed},
+  // read until the chunk's unpacked size; *after = where the next byte is
+  auto frames_at = [&](size_t p, size_t unpacked, Bytes& frames, size_t* after) {
     frames.clear();
-    while (p + 2 <= end) {
-      size_t c;
-      if (d[p] == 0xFF) {  // a frame with its own unpacked size
-        if (p + 5 > end) break;
+    size_t got = 0;
+    while (got < unpacked && p + 2 <= d.size()) {
+      size_t c, u = 0x8000;
+      if (d[p] == 0xFF) {
+        if (p + 5 > d.size()) return false;
+        u = size_t(d[p + 1]) << 8 | d[p + 2];
         c = size_t(d[p + 3]) << 8 | d[p + 4];
         p += 5;
       } else {
         c = size_t(d[p]) << 8 | d[p + 1];
         p += 2;
       }
-      if (!c || p + c > end) break;
-      frames.insert(frames.end(), d.begin() + p, d.begin() + p + c);
+      if (!c || p + c > d.size()) return false;
+      frames.insert(frames.end(), d.begin() + ptrdiff_t(p), d.begin() + ptrdiff_t(p + c));
       if (c & 1) frames.push_back(0);  // the LZX reader works in 16-bit words
       p += c;
+      got += u ? u : 0x8000;
     }
-    MemFile in{frames.data(), nullptr, frames.size(), 0};
-    MemFile o{nullptr, out.data() + op, sizes[i], 0};
+    *after = p;
+    return got >= unpacked;
+  };
+  auto decode = [&](const Bytes& frames, uint8_t* dst, uint32_t size) {
+    MemFile in{const_cast<uint8_t*>(frames.data()), nullptr, frames.size(), 0};
+    MemFile o{nullptr, dst, size, 0};
     lzxd_stream* l = lzxd_init(&sys, reinterpret_cast<mspack_file*>(&in), reinterpret_cast<mspack_file*>(&o),
-                               window_bits, 0, 0x8000, off_t(sizes[i]), 0);
-    if (!l) return fail("LZX init");
-    const int r = lzxd_decompress(l, off_t(sizes[i]));
+                               window_bits, 0, 0x8000, off_t(size), 0);
+    if (!l) return -1;
+    const int r = lzxd_decompress(l, off_t(size));
     lzxd_free(l);
+    return r;
+  };
+  Bytes frames;
+  size_t op = 0, next = data;  // (next: right after the previous chunk's frames)
+  for (uint32_t i = 0; i < n; ++i) {
+    // chunk i: usually at file offset i * chunk (chunk 0 after the header); some files pack them back to back
+    const size_t slot = i ? size_t(i) * chunk : data;
+    int r = -2;
+    size_t after = 0;
+    std::vector<size_t> starts{slot};
+    if (next != slot) starts.push_back(next);
+    for (const size_t start : starts) {
+      if (!frames_at(start, sizes[i], frames, &after)) continue;
+      r = decode(frames, out.data() + op, sizes[i]);
+      if (!r) break;
+    }
     if (r) return fail("LZX error " + std::to_string(r) + " in chunk " + std::to_string(i));
+    next = after;
     op += sizes[i];
   }
   return true;
@@ -191,16 +212,7 @@ bool ArchiveRead(const Bytes& in, Epac& out, std::string* error) {
   if (d->size() < 0x4000) return fail("too small");
   if (!std::memcmp(d->data(), "EPAC", 4)) return EpacRead(*d, out) || fail("bad EPAC");
   if (std::memcmp(d->data(), "EPK8", 4)) return fail("not an EPAC / EPK8 archive");
-  // EPK8: the EPAC table with a flag in each group's count word
-  Bytes copy = *d;
-  std::memcpy(copy.data(), "EPAC", 4);
-  for (size_t p = 0x800; p + 12 <= 0x4000;) {
-    if (!Le32(&copy[p])) break;
-    const uint32_t cnt = Le32(&copy[p + 4]) & 0xFFFF;
-    PutLe32(&copy[p + 4], cnt);
-    p += 12 + 12 * size_t(cnt / 3);
-  }
-  return EpacRead(copy, out) || fail("bad EPK8");
+  return EpacRead(*d, out) || fail("bad EPK8");  // (16-byte entries, 8-char names: pac.h)
 }
 
 // ------------------------------------------------------------------ JBOY

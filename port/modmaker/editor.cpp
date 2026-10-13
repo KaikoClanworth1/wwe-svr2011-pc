@@ -279,6 +279,8 @@ std::thread g_budget_thread;
 std::atomic<bool> g_budget_busy{false};
 std::mutex g_budget_mutex;
 size_t g_budget_file = 0, g_budget_unpacked = 0, g_budget_file_max = 0, g_budget_unpacked_max = 0;
+size_t g_budget_biggest = 0;
+uint32_t g_budget_biggest_id = 0;
 
 bool g_quiet = false;  // (budget builds)
 bool g_glow_pass = false;
@@ -1216,24 +1218,38 @@ void UpdateBudget() {
   ApplyBuild(*copy);
   g_quiet = false;
   g_budget_thread = std::thread([copy] {
-    size_t unpacked = 0;
+    size_t unpacked = 0, biggest = 0;
+    uint32_t biggest_id = 0;
+    auto note = [&](const ArenaModel& m, size_t size) {
+      if (size > biggest) biggest = size, biggest_id = m.id;
+    };
     for (const auto& e : copy->entries) {
       bool done = false;
       for (const auto& m : copy->models)
-        if (m.id == e.id && m.changed) unpacked += JboyWrite(m.model).size(), done = true;
+        if (m.id == e.id && m.changed) {
+          const size_t n = JboyWrite(m.model).size();
+          unpacked += n, done = true;
+          note(m, n);
+        }
       for (const auto& b : copy->bundles)
         if (b.id == e.id && b.changed) unpacked += BundleWrite(b.textures).size(), done = true;
       if (!done) unpacked += Unpack(e.data).size();
     }
     for (const auto& m : copy->models)
-      if (m.added) unpacked += JboyWrite(m.model).size();
+      if (m.added) {
+        const size_t n = JboyWrite(m.model).size();
+        unpacked += n;
+        note(m, n);
+      }
     const size_t file = copy->Save().size();
     std::lock_guard lock(g_budget_mutex);
     g_budget_file = file, g_budget_unpacked = unpacked;
+    g_budget_biggest = biggest, g_budget_biggest_id = biggest_id;
     g_budget_file_max = copy->original_file, g_budget_unpacked_max = copy->original_unpacked;
     g_budget_busy = false;
   });
 }
+
 
 // ---------------------------------------------------------------- lighting
 
@@ -2220,6 +2236,15 @@ void Draw() {
   if (ImGui::CollapsingHeader("Lighting")) LightingPanel();
   if (ImGui::CollapsingHeader("Size budget", ImGuiTreeNodeFlags_DefaultOpen)) BudgetPanel();
   ImGui::EndChild();
+}
+
+bool Budget(BudgetInfo& out) {
+  std::lock_guard lock(g_budget_mutex);
+  if (!g_budget_file_max) return false;
+  out.file = g_budget_file, out.file_max = g_budget_file_max;
+  out.unpacked = g_budget_unpacked, out.unpacked_max = g_budget_unpacked_max;
+  out.biggest = g_budget_biggest, out.biggest_id = g_budget_biggest_id;
+  return true;
 }
 
 }  // namespace editor

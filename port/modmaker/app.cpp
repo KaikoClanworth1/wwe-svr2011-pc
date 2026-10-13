@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <mutex>
 #include <thread>
 
@@ -24,6 +25,7 @@ extern "C" {
 }
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "svrfmt/disc.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
 
@@ -320,7 +322,10 @@ void RunInBackground(std::function<void()> fn) {
   if (g_worker.joinable()) g_worker.join();
   g_busy = true;
   g_worker = std::thread([fn] {
+    const auto t0 = std::chrono::steady_clock::now();
     fn();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    if (ms >= 50) Log("perf: background job " + std::to_string(ms) + " ms");
     {
       std::lock_guard lock(g_log_mutex);
       g_progress.clear();
@@ -551,26 +556,23 @@ bool ReadPacIndex(const fs::path& file, PacIndex& out) {
   FILE* f = _wfopen(file.c_str(), L"rb");
   if (!f) return false;
   Bytes idx(0x4000);
-  const bool ok = std::fread(idx.data(), 1, idx.size(), f) == idx.size() &&
-                  (!std::memcmp(idx.data(), "EPAC", 4) || !std::memcmp(idx.data(), "EPK8", 4));
+  const bool ok = std::fread(idx.data(), 1, idx.size(), f) == idx.size();
   std::fclose(f);
-  if (!ok) return false;
+  return ok && ParsePacIndex(idx, out);
+}
+
+bool ParsePacIndex(const Bytes& idx, PacIndex& out) {
+  out = PacIndex();
+  std::vector<svrfmt::EpacRow> rows;
+  if (!svrfmt::EpacTable(idx, 0, rows)) return false;
   out.epk8 = !std::memcmp(idx.data(), "EPK8", 4);
-  const size_t esz = out.epk8 ? 16 : 12, nlen = out.epk8 ? 8 : 4;
-  for (size_t p = 0x800; p + 12 <= 0x4000;) {
-    if (!Le32(&idx[p])) break;
-    const std::string group(reinterpret_cast<const char*>(&idx[p]), 4);
-    const uint32_t cnt = out.epk8 ? Le16(&idx[p + 4]) : Le32(&idx[p + 4]) / 3;
-    p += 12;
-    for (uint32_t i = 0; i < cnt && p + esz <= 0x4000; ++i, p += esz) {
-      PacEntryInfo e;
-      e.group = group;
-      const char* n = reinterpret_cast<const char*>(&idx[p]);
-      e.name.assign(n, strnlen(n, nlen));
-      e.offset = 0x4000 + uint64_t(Le32(&idx[p + nlen])) * 0x800;
-      e.size = Le32(&idx[p + nlen + 4]) * 0x100;
-      out.entries.push_back(std::move(e));
-    }
+  for (auto& r : rows) {
+    PacEntryInfo e;
+    e.group = std::move(r.group);
+    e.name = std::move(r.name);
+    e.offset = r.offset;
+    e.size = r.size;
+    out.entries.push_back(std::move(e));
   }
   return true;
 }
@@ -679,6 +681,129 @@ const std::map<int, std::string>& MoveNames() {
     }
   }
   return g_move_names;
+}
+
+namespace {
+std::map<int, MoveInfo> g_move_infos;
+std::map<int, std::vector<int>> g_profiles;  // star id -> 224 move ids
+struct SlotRule {
+  uint8_t bits[16] = {};
+  int situation = -1;  // (-1: any)
+};
+std::vector<SlotRule> g_slot_rules;
+std::vector<std::vector<int>> g_slot_moves;
+bool g_moveset_loaded = false;
+
+void LoadMoveset() {
+  if (g_moveset_loaded) return;
+  g_moveset_loaded = true;
+  if (g_game.empty()) return;
+  Bytes d;
+  Epac e;
+  if (ReadFile(PathStr(fs::path(g_game) / L"pac" / L"misc.pac"), d) && EpacRead(d, e))
+    for (const auto& g : e.groups)
+      for (const auto& en : g.entries) {
+        if (g.type != "MOVS" || en.name.rfind("WAZE", 0) != 0) continue;
+        const Bytes raw = Unpack(en.data);
+        size_t at = std::string::npos;
+        for (size_t i = 0x10; i + 16 < raw.size(); ++i)
+          if (!std::memcmp(&raw[i], "* test motion *", 15)) { at = i - 0x10; break; }
+        if (at == std::string::npos) continue;
+        for (size_t k = 0; at + 160 * (k + 1) <= raw.size(); ++k) {
+          const uint8_t* r = &raw[at + 160 * k];
+          MoveInfo m;
+          m.id = Le16(r + 0x90);
+          const char* nm = reinterpret_cast<const char*>(r + 0x10);
+          m.name.assign(nm, strnlen(nm, 64));
+          if (!m.id || m.name.empty() || g_move_infos.count(m.id)) continue;
+          std::memcpy(m.bits, r, 16);
+          m.situation = r[0x73];
+          g_move_infos[m.id] = std::move(m);
+        }
+      }
+  d.clear();
+  e = Epac();
+  std::map<int, std::string> names;
+  if (ReadFile(PathStr(fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac"), d) && EpacRead(d, e))
+    for (const auto& g : e.groups)
+      for (const auto& en : g.entries) {
+        if (g.type != "CHAR") continue;
+        std::vector<PachEntry> pe;
+        if (en.name.rfind("PRO", 0) == 0 && PachRead(Unpack(en.data), pe))
+          for (const auto& x : pe) {
+            const Bytes r = Unpack(x.data);
+            if (r.size() < 2 * kMoveSlots) continue;
+            std::vector<int> v(kMoveSlots);
+            for (int s = 0; s < kMoveSlots; ++s) v[size_t(s)] = Le16(&r[size_t(s) * 2]);
+            g_profiles[int(x.id)] = std::move(v);
+          }
+        if (en.name.rfind("DAT", 0) == 0 && PachRead(Unpack(en.data), pe))
+          for (const auto& x : pe) {
+            const Bytes r = Unpack(x.data);
+            if (r.size() >= 4 + 70) names[int(x.id)] = std::string(reinterpret_cast<const char*>(&r[4 + 34]), strnlen(reinterpret_cast<const char*>(&r[4 + 34]), 32));
+          }
+      }
+  // the real roster (named, not the motion tests)
+  std::vector<const std::vector<int>*> real;
+  for (const auto& [id, v] : g_profiles) {
+    const auto n = names.find(id);
+    if (id < 100 || id >= 9000 || n == names.end() || n->second.empty() || n->second == "0" || Lower(n->second).rfind("motion", 0) == 0) continue;
+    real.push_back(&v);
+  }
+  g_slot_rules.assign(kMoveSlots, SlotRule());
+  g_slot_moves.assign(kMoveSlots, {});
+  for (int s = 0; s < kMoveSlots; ++s) {
+    int count[128] = {}, n = 0;
+    std::map<int, int> sits;
+    for (const auto* v : real) {
+      const auto it = g_move_infos.find((*v)[size_t(s)]);
+      if (it == g_move_infos.end()) continue;
+      ++n;
+      for (int b = 0; b < 128; ++b)
+        if (it->second.bits[b / 8] >> (b % 8) & 1) ++count[b];
+      ++sits[it->second.situation];
+    }
+    SlotRule& rule = g_slot_rules[size_t(s)];
+    for (int b = 0; b < 128 && n; ++b)
+      if (count[b] * 10 >= n * 9 && b != 121 && b != 124 && b != 127) rule.bits[b / 8] |= uint8_t(1 << (b % 8));
+    for (const auto& [sit, c] : sits)
+      if ((sit == 13 || sit == 14) && c * 10 >= n * 9) rule.situation = sit;  // (opponent seated on the top turnbuckle)
+  }
+  for (const auto& [id, m] : g_move_infos)
+    for (int s = 0; s < kMoveSlots; ++s)
+      if (MoveFitsSlot(s, id)) g_slot_moves[size_t(s)].push_back(id);
+  for (auto& v : g_slot_moves)
+    std::sort(v.begin(), v.end(), [](int a, int b) { return g_move_infos[a].name < g_move_infos[b].name; });
+  Log("moveset: " + std::to_string(g_move_infos.size()) + " moves, " + std::to_string(real.size()) + " roster profiles");
+}
+}  // namespace
+
+const std::map<int, MoveInfo>& MoveInfos() {
+  LoadMoveset();
+  return g_move_infos;
+}
+
+std::vector<int> ProfileMoves(int star_id) {
+  LoadMoveset();
+  const auto it = g_profiles.find(star_id);
+  return it == g_profiles.end() ? std::vector<int>() : it->second;
+}
+
+bool MoveFitsSlot(int slot, int move_id) {
+  LoadMoveset();
+  if (slot < 0 || slot >= kMoveSlots || g_slot_rules.empty()) return false;
+  const auto it = g_move_infos.find(move_id);
+  if (it == g_move_infos.end()) return false;
+  const SlotRule& r = g_slot_rules[size_t(slot)];
+  for (int i = 0; i < 16; ++i)
+    if ((it->second.bits[i] & r.bits[i]) != r.bits[i]) return false;
+  return r.situation < 0 || it->second.situation == r.situation;
+}
+
+const std::vector<int>& MovesForSlot(int slot) {
+  static const std::vector<int> kNone;
+  LoadMoveset();
+  return slot >= 0 && slot < int(g_slot_moves.size()) ? g_slot_moves[size_t(slot)] : kNone;
 }
 
 const std::string& MoveName(int id) {
@@ -916,6 +1041,7 @@ void LoadSettings() {
   g_settings.maximized = Value(t, "maximized") == "1";
   g_settings.log_open = Value(t, "log_open") == "1";
   if (!Value(t, "font").empty()) g_settings.font = std::clamp(std::atoi(Value(t, "font").c_str()), 12, 28);
+  for (const auto& f : Values(t, "disc_folder")) g_settings.disc_folders.push_back(Wide(f));
 }
 
 }  // namespace
@@ -927,7 +1053,85 @@ void SaveSettings() {
        "\nwin_w=" + std::to_string(g_settings.win_w) + "\nwin_h=" + std::to_string(g_settings.win_h) +
        "\nmaximized=" + (g_settings.maximized ? "1" : "0") + "\nlog_open=" + (g_settings.log_open ? "1" : "0") +
        "\nfont=" + std::to_string(g_settings.font) + "\n";
+  for (const auto& f : g_settings.disc_folders) t += "disc_folder=" + Utf8(f) + "\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
+}
+
+// ---- disc images
+
+namespace {
+std::vector<DiscRef> g_discs, g_discs_next;
+std::atomic<int> g_discs_state{0};  // 0 not read, 1 reading, 2 read (g_discs_next waiting), 3 ready
+}  // namespace
+
+std::string DiscGameName(const std::string& id) {
+  static const std::map<std::string, const char*> kNames = {
+      {"545107E0", "SmackDown vs. Raw 2007 (Xbox 360)"}, {"5451080B", "SmackDown vs. Raw 2008 (Xbox 360)"},
+      {"54510826", "SmackDown vs. Raw 2009 (Xbox 360)"}, {"54510844", "SmackDown vs. Raw 2010 (Xbox 360)"},
+      {"54510838", "Legends of WrestleMania (Xbox 360)"}, {"54510890", "WWE '12 (Xbox 360)"},
+      {"545108B4", "WWE '13 (Xbox 360)"}, {"545408B2", "WWE 2K14 (Xbox 360)"}, {"545408B6", "WWE 2K15 (Xbox 360)"},
+      {"315A07D2", "WWE 2K16 (Xbox 360)"}, {"545408BA", "WWE 2K17 (Xbox 360)"},
+      {"SLES_504.77", "SmackDown! Just Bring It (PS2)"}, {"SLES_512.83", "SmackDown! Shut Your Mouth (PS2)"},
+      {"SLES_520.36", "SmackDown! Here Comes the Pain (PS2)"}, {"SLES_527.81", "SmackDown! vs. Raw (PS2)"},
+      {"SLES_536.76", "SmackDown! vs. Raw 2006 (PS2)"}, {"SLES_544.89", "SmackDown vs. Raw 2007 (PS2)"},
+      {"SLES_548.79", "SmackDown vs. Raw 2008 (PS2)"}, {"SLES_552.51", "SmackDown vs. Raw 2009 (PS2)"},
+      {"SLES_555.45", "SmackDown vs. Raw 2010 (PS2)"}, {"SLES_556.35", "SmackDown vs. Raw 2011 (PS2)"},
+      {"SLUS_203.85", "Crush Hour (PS2)"},
+  };
+  const auto it = kNames.find(id);
+  return it == kNames.end() ? std::string() : it->second;
+}
+
+std::vector<std::wstring> DiscFolders() {
+  if (!g_settings.disc_folders.empty()) return g_settings.disc_folders;
+  return {L"D:\\Roms\\Xbox 360\\WWE", L"D:\\Roms\\Playstation 2\\WWE Games"};
+}
+
+void RescanDiscs() {
+  int expect = g_discs_state.load();
+  if (expect == 1 || !g_discs_state.compare_exchange_strong(expect, 1)) return;
+  std::thread([folders = DiscFolders()] {
+    std::vector<DiscRef> out;
+    for (const auto& folder : folders) {
+      std::error_code ec;
+      std::vector<fs::path> isos;
+      for (const auto& e : fs::directory_iterator(folder, ec))
+        if (e.is_regular_file(ec) && Lower(e.path().extension().string()) == ".iso") isos.push_back(e.path());
+      std::sort(isos.begin(), isos.end());
+      for (const auto& p : isos) {
+        svrfmt::Disc d;
+        if (!d.Open(p.wstring())) continue;
+        DiscRef r;
+        r.path = p.wstring();
+        r.id = d.Id();
+        r.xbox = d.Xbox();
+        r.game = DiscGameName(r.id);
+        if (r.game.empty()) r.game = PathStr(p.stem()) + (r.xbox ? " (Xbox 360)" : " (PS2)");
+        out.push_back(std::move(r));
+      }
+    }
+    std::sort(out.begin(), out.end(), [](const DiscRef& a, const DiscRef& b) {
+      return a.xbox != b.xbox ? a.xbox : a.game < b.game;  // Xbox 360 first (the user's order)
+    });
+    g_discs_next = std::move(out);
+    g_discs_state = 2;
+  }).detach();
+}
+
+bool DiscsReady() {
+  if (g_discs_state == 0) RescanDiscs();
+  if (g_discs_state == 2) {
+    g_discs = std::move(g_discs_next);
+    g_discs_next.clear();
+    g_discs_state = 3;
+    Log("discs: " + std::to_string(g_discs.size()) + " disc images found");
+  }
+  return g_discs_state == 3;
+}
+
+const std::vector<DiscRef>& Discs() {
+  static const std::vector<DiscRef> kNone;
+  return DiscsReady() ? g_discs : kNone;
 }
 
 void AddRecent(const std::wstring& file) {
@@ -964,6 +1168,7 @@ const PageDesc kPages[] = {
     {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
+    {PageId::kPort, "Port from a disc", "", nullptr, port_page::Draw},
     {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
@@ -997,10 +1202,15 @@ void MarkSaved(PageId page) {
   g_saved_touches[page] = g_touches[page];
 }
 
+bool g_opened = false;  // a project or mod opened since the last reset
+
 void MarkAllSaved() {
   for (const auto& d : kPages)
     if (d.hooks) MarkSaved(d.id);
 }
+
+// Nothing made yet: nothing opened, nothing changed (an opened mod or project counts as made)
+bool ProjectUntouched() { return g_project_file.empty() && !g_opened && !ProjectDirty(); }
 
 // The shown page decides the project (the 3D editor belongs to the arena /
 // backstage page whose arena it holds).
@@ -1033,6 +1243,7 @@ void ProjectReset() {
     if (d.hooks && d.hooks->reset) d.hooks->reset();
   g_project_files.clear();
   g_project_file.clear();
+  g_opened = false;
   MarkAllSaved();
 }
 
@@ -1043,6 +1254,7 @@ void ProjectNew(PageId type) {
     if (PageHooks* o = Hooks(type == PageId::kArena ? PageId::kBackstage : PageId::kArena); o && o->reset) o->reset();
   }
   g_project_files[type].clear();
+  g_opened = false;
   g_page = type;
   FollowPage();
   MarkSaved(type);
@@ -1184,6 +1396,7 @@ bool ProjectOpen(const std::wstring& file) {
   FollowPage();
   AddRecent(file);
   MarkSaved(page->id);
+  g_opened = true;  // (made: its problems count even before a change)
   Status("Opened " + Utf8(file) + (mod ? " (a mod: save it as a project to keep working on it)." : "."));
   return true;
 }
@@ -1367,9 +1580,12 @@ void StatusBar() {
     ImGui::TextUnformatted(status.c_str());
   }
   // right: problems and the log
+  // (a fresh, untouched project isn't counted: "no arena yet" is no problem before you start)
+  const bool untouched = ProjectUntouched();
+  if (untouched) g_problems.clear();
   const int errors = ErrorCount(g_problems), warnings = int(g_problems.size()) - errors;
   char pb[64];
-  if (g_problems.empty()) std::snprintf(pb, sizeof pb, "No problems");
+  if (g_problems.empty()) std::snprintf(pb, sizeof pb, untouched ? "Nothing made yet" : "No problems");
   else std::snprintf(pb, sizeof pb, "%d error%s, %d warning%s", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
   const float w = ImGui::CalcTextSize(pb).x + ImGui::CalcTextSize("Log").x + 60 * g_scale;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w));
@@ -1490,18 +1706,56 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   LoadSettings();
   int argc = 0;
   wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  // --test-repack <folder>,<report.txt>: every EPAC / EPK8 under the folder read and written
+  // back in memory (the pac tool's saves must be byte-identical when nothing changed); no window
+  for (int i = 1; i + 1 < argc; ++i)
+    if (!wcscmp(argv[i], L"--test-repack")) {
+      const std::wstring a = argv[i + 1];
+      const size_t comma = a.find(L',');
+      const fs::path folder = a.substr(0, comma), report = comma == std::wstring::npos ? L"repack.txt" : a.substr(comma + 1);
+      int files = 0, same = 0;
+      std::string out;
+      std::error_code ec;
+      for (const auto& e : fs::recursive_directory_iterator(folder, ec)) {
+        if (!e.is_regular_file(ec) || Lower(e.path().extension().string()) != ".pac") continue;
+        Bytes d;
+        svrfmt::Epac pac;
+        if (!ReadFile(PathStr(e.path()), d) || !svrfmt::EpacRead(d, pac)) continue;
+        ++files;
+        if (svrfmt::EpacWrite(pac) == d) ++same;
+        else out += "differs: " + PathStr(e.path()) + "\n";
+      }
+      out += "repack: " + std::to_string(same) + " / " + std::to_string(files) + " identical\n";
+      WriteFile(PathStr(report), Bytes(out.begin(), out.end()));
+      return same == files ? 0 : 1;
+    }
+  // --test-lufs <song>,<report.txt>: the theme volume meter on one file; no window
+  for (int i = 1; i + 1 < argc; ++i)
+    if (!wcscmp(argv[i], L"--test-lufs")) {
+      const std::wstring a = argv[i + 1];
+      const size_t comma = a.find(L',');
+      double l = 0;
+      std::string err;
+      const bool ok = MeasureLufs(a.substr(0, comma), &l, &err);
+      char b[128];
+      std::snprintf(b, sizeof b, "%s %.2f LUFS %s\n", ok ? "ok" : "failed", l, err.c_str());
+      WriteFile(Utf8(comma == std::wstring::npos ? L"lufs.txt" : a.substr(comma + 1)), Bytes(b, b + std::strlen(b)));
+      return ok ? 0 : 1;
+    }
   // test aids: --editor <arena tile 0-19> opens the editor on it, --open <mod> opens a mod,
   // --editor-view <0-2> a camera preset, --select <name> an object; --page <n>; the
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
   std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
+  std::wstring perf_tour;  // --perf-tour <report>: every page in turn, its first-frame and slowest times
   std::vector<std::wstring> run_tool_args;
   std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   double shot_after = 6;
   int star_id = 0, star_call = -1;
   float star_height = 0;
+  std::string star_moveset;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures, background_files;
@@ -1568,6 +1822,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       g_page = PageId::kMatch;
     }
     else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--assets-source") && more) assets_page::TestSource(argv[++i]), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--test-pac-edit") && more) pac_editor::TestEdit(argv[++i]), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--perf-tour") && more) perf_tour = argv[++i];
+    else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
       int a[4] = {0, -1, -1, 0};
@@ -1588,6 +1846,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-picture") && more) star_picture = argv[++i];
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-voice") && more) star_voice = argv[++i];
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
@@ -1671,6 +1930,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (star_call >= 0 || !star_song.empty() || !star_movie.empty() || !star_voice.empty())
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
   if (star_height > 0) star_page::TestHeight(star_height);
+  if (!star_moveset.empty()) star_page::TestMoveset(star_moveset);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
@@ -1697,7 +1957,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }
@@ -1720,7 +1980,44 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    // timing (D17): startup to the first frame, a page's first frame, frames over 100 ms
+    static PageId timed_page = PageId::kCount;
+    static double tour_slowest = 0;
+    static int frames_on_page = 0;
+    const PageId page_now = g_page;
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
     Draw();
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    const double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(freq.QuadPart);
+    if (ImGui::GetFrameCount() == 1) {
+      FILETIME created, x1, x2, x3, now;
+      GetProcessTimes(GetCurrentProcess(), &created, &x1, &x2, &x3);
+      GetSystemTimeAsFileTime(&now);
+      const auto ticks = [](const FILETIME& f) { return (uint64_t(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+      Log("perf: started in " + std::to_string((ticks(now) - ticks(created)) / 10000) + " ms (first frame)");
+    }
+    if (page_now != timed_page) {
+      if (!perf_tour.empty() && timed_page != PageId::kCount)
+        Log("perf: " + std::string(PageName(timed_page)) + " slowest frame " + std::to_string(int(tour_slowest)) + " ms");
+      timed_page = page_now, frames_on_page = 0, tour_slowest = 0;
+      Log("perf: " + std::string(PageName(page_now)) + " first frame " + std::to_string(int(ms)) + " ms");
+    } else {
+      tour_slowest = std::max(tour_slowest, ms);
+      if (ms > 100) Log("perf: slow frame on " + std::string(PageName(page_now)) + ": " + std::to_string(int(ms)) + " ms");
+    }
+    if (!perf_tour.empty() && ++frames_on_page >= 90 && !Busy()) {  // the next page (the 3D editor needs an arena: skipped)
+      int next = int(g_page) + 1;
+      if (next == int(PageId::kEditor)) ++next;
+      if (next >= int(PageId::kCount)) {
+        WriteLogTo(perf_tour);
+        perf_tour.clear();
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      } else {
+        g_page = PageId(next);
+      }
+    }
     ImGui::Render();
     if (test_project_pending && !Busy() && ImGui::GetFrameCount() > 3) {
       test_project_pending = false;
