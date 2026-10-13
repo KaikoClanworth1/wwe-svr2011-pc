@@ -50,6 +50,7 @@
 #include <rex/system/xmemory.h>
 
 #include "generated/default/svr2011_init.h"
+#include "fast_start.h"
 #include "pad_types.h"
 
 namespace svr2011 {
@@ -89,6 +90,9 @@ Kind CurrentKind(bool pairs) {
     return t == PadType::kPlayStation ? kPlayStation : t == PadType::kKeyboard ? kKeyboard : kXbox;
   };
   if (t_owner >= 0) return of(PlayerPadType(uint32_t(t_owner)));
+  // the practice ring (its GAMEPLAY TIPS, the profile's "Load Successful"):
+  // player 1 is the one there
+  if (InPracticeRing()) return of(PlayerPadType(0));
   const uint32_t in_use = PadTypesInUse();
   const bool ps = in_use & (1u << uint32_t(PadType::kPlayStation));
   const bool xbox = in_use & (1u << uint32_t(PadType::kXbox));
@@ -492,7 +496,26 @@ void SetPadIconsOwner(int user_index) { t_owner = user_index; }
 // The page search: sub_826AD450(font, code) -> the page holding code (or -1).
 REX_EXTERN(__imp__sub_826AD450);
 REX_HOOK_RAW(sub_826AD450) {
-  if (svr2011::g_enabled && ctx.r4.u32 >= svr2011::kFirstCode) svr2011::Prepare(ctx.r3.u32);
+  if (svr2011::g_enabled && ctx.r4.u32 >= svr2011::kFirstCode) {
+    // (debug: SVR2011_PAD_ICONS_LOG=2 - who looks icons up with no owner: the
+    // guest call chain, each new one once)
+    static const bool chains = [] { const char* v = std::getenv("SVR2011_PAD_ICONS_LOG"); return v && *v == '2'; }();
+    if (chains && svr2011::t_owner < 0) {
+      std::string chain = fmt::format("{:08X}", uint32_t(ctx.lr));
+      uint32_t sp = ctx.r1.u32;
+      for (int k = 0; k < 10; ++k) {  // (each frame a little above the last: the stack's own)
+        const uint32_t next = svr2011::Rd32(base + sp);
+        if (next <= sp || next - sp > 0x4000 || (next & 0xFFF) == 0) break;  // (page-aligned: the stack's top)
+        sp = next;
+        chain += fmt::format(" {:08X}", svr2011::Rd32(base + sp - 8));
+      }
+      static std::mutex m;
+      static std::set<std::string> seen;
+      std::lock_guard lock(m);
+      if (seen.insert(chain).second) REXLOG_INFO("pad icons: no owner, code {:04X}: {}", ctx.r4.u32, chain);
+    }
+    svr2011::Prepare(ctx.r3.u32);
+  }
   __imp__sub_826AD450(ctx, base);
 }
 
