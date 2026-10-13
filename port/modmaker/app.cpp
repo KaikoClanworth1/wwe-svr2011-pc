@@ -2097,6 +2097,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--pac-attires") && more) attire_page::TestPacAttires(argv[++i]), g_page = PageId::kAttire;
+    else if (!wcscmp(argv[i], L"--pose-compare") && more) anims_page::TestCompare(argv[++i]), g_page = PageId::kAnims;
     else if (!wcscmp(argv[i], L"--view-attire") && more) char_preview::SetAttire(_wtoi(argv[++i]));  // the 3D view's attire
     else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>[,<key: paused there>]]
       int a[5] = {0, -1, -1, 0, -1};

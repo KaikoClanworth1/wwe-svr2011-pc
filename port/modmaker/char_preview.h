@@ -23,6 +23,9 @@ void SetModel(const std::wstring& ch_pac, const std::wstring& game);
 void SetDummy(const std::wstring& ch_pac);
 // The model's attire shown (1-4: its EMD entry ......<n-1>2; one it doesn't have: the first). Reloads the model.
 void SetAttire(int attire);
+// Test aid (Animations phase B): the game's pose dump (src/pose_dump.cpp lines) for motion id / x against this
+// view's pose of the same tracks - person 0's on the model, the other on the dummy; "" until both are loaded.
+std::string ComparePoseDump(const std::wstring& dump, std::shared_ptr<const std::vector<uint8_t>> bank, int id, int x);
 int Attire();
 // A motion from a YMBs bank: track 0 plays on the model, track 1 on the dummy.
 // An empty bank (or ClearMotion) goes back to the idle. False (with why) when
