@@ -1,4 +1,4 @@
-"""WWE '13 (Xbox 360) entrance -> SvR 2011 entrance; also WWE '12 and WWE 2K14 (--game wwe12 / wwe2k14).
+"""WWE '13 (Xbox 360) entrance -> SvR 2011 entrance; also WWE '12, 2K14, 2K15, 2K16, 2K17 (--game ...).
 
 Used by tools/entrance_port.py (game id wwe13); formats and rules: docs/OTHER_GAMES_ENTRANCES.md
 (WWE '13). Standalone:
@@ -20,6 +20,14 @@ WWE 2K14: pac/evt/Entrance00..08.pac, xcompressed, the inside is 'EPAC' with EPK
 (kind bit 0: 8-byte names, count field / 4; else 4-byte names, count field / 3); motion leaves carry an
 id string ("25000101_A00_def", ignored: the leaf index is the object); 40 EVPs have a new tail
 (type-13 records: ignored, the standard tail is written); generic extra 25500 -> 13902.
+
+WWE 2K15: pac/evt/Entrance00-10.pac, xcompressed EPK8 (groups EVP2 / EVZ); 2K16 / 2K17: one pac per scene,
+pac/evt/NNNNN.pac (entrances 100-899; xcompressed or not), 'EPAC' with 20-byte entries (4-character names:
+the number is the file name's) or 2K17's 'HSPC' (BPE blocks: the EVP, then the tracks as 'SHDC' instead of
+PACH). From 2K15 on the EVP's slots are 788 bytes: words 0-50 + 195-196 are 2K14's 212-byte slot, the rest
+longer rope / turnbuckle key lists (dropped: 2011 holds 8); evp_788_to_212 converts. 2K16 / 2K17 motion is
+YANM v5 (read as v4); mode-4 YANM blocks (boned props only) are skipped. 2K15 "one-take" entrances (the whole
+entrance in segment 0, which 2011 plays as the hidden intro) are reported: take 2K16's re-cut instead.
 
 The EVP is 2011's own layout (same objects, 212-byte slots, ids 25000+n). Rules:
 - object count flag bits masked, the 2011 standard tail (music 999, movie 999), +0x44 = 0;
@@ -68,7 +76,11 @@ TYPES = {S.TYPE_CHAR: 'char', S.TYPE_PROP: 'prop', (0x10000, 0): 'camera', (1, 0
 GENERIC13 = {19202, 10402, 51200, 12502, 13902, 25500}
 GAMES = {'wwe13': dict(name="WWE '13", files=r'(?i)entrance(\d\d|_dlc\d\d)\.pac$', ik=True),
          'wwe12': dict(name="WWE '12", files=r'(?i)nyujyo[0-9a-z]\.pac$', ik=False),
-         'wwe2k14': dict(name='WWE 2K14', files=r'(?i)entrance\d\d\.pac$', ik=True)}
+         'wwe2k14': dict(name='WWE 2K14', files=r'(?i)entrance\d\d\.pac$', ik=True),
+         'wwe2k15': dict(name='WWE 2K15', files=r'(?i)entrance\d\d\.pac$', ik=True, slot788=True),
+         'wwe2k16': dict(name='WWE 2K16', files=r'^\d{5}\.pac$', ik=True, slot788=True, per_file=True),
+         'wwe2k17': dict(name='WWE 2K17', files=r'^\d{5}\.pac$', ik=True, slot788=True, per_file=True)}
+XMAGIC = b'\x0f\xf5\x12\xed'
 # slot words (u32 index in the 212-byte slot) holding positions in cm: 2011 = WWE '13 / 10
 POS_WORDS = {'char': [w + j * 6 + d for j in range(5) for d in range(3) for w in (4,)],
              'rope': [4 + j * 6 + d for j in range(8) for d in range(3)],
@@ -120,7 +132,7 @@ def find_svrmod(arg=None):
 
 def xdec(raw, svrmod):
     """WWE '13 / 2K14 xcompressed pac -> EPK8 / EPAC bytes (svrmod xdec), cached in the temp folder"""
-    if raw[:4] in (b'EPK8', b'EPAC'):
+    if raw[:4] != XMAGIC:
         return raw
     if not svrmod:
         raise ToolMissing('svrmod.exe (the Mod Maker\'s pac tool, needed to decode xcompressed pacs) was not found: '
@@ -146,8 +158,8 @@ def xdec(raw, svrmod):
         raise RuntimeError('svrmod xdec failed: %s' % (r.stderr or r.stdout).decode('latin-1', 'replace').strip()[:300])
     os.replace(out + '.tmp', out)
     d = open(out, 'rb').read()
-    if d[:4] not in (b'EPK8', b'EPAC'):
-        raise RuntimeError('svrmod xdec did not give an EPK8 / EPAC pac')
+    if d[:4] not in (b'EPK8', b'EPAC', b'HSPC'):
+        raise RuntimeError('svrmod xdec did not give an EPK8 / EPAC / HSPC pac')
     return d
 
 
@@ -173,19 +185,101 @@ def epk8_entries(d):
     return out
 
 
+def epac16_entries(d):
+    """2K16 / 2K17 per-entrance EPAC: groups {4CC, u16 count field, u16 kind, u32 0}, 20-byte entries
+    {name[4], u32 sector, u32 size / 0x100, u32 size2 / 0x100, u32}: count field / 4"""
+    out = {}
+    p = 0x800
+    while p < 0x4000 and d[p:p + 4].strip(b'\0'):
+        typ = d[p:p + 4].decode('latin-1')
+        cnt, kind = struct.unpack_from('<HH', d, p + 4)
+        p += 12
+        for _ in range(cnt // 4):
+            nm = d[p:p + 4].decode('latin-1').strip(' \0')
+            sec, sz = struct.unpack_from('<II', d, p + 4)
+            b = d[0x4000 + sec * 0x800:0x4000 + sec * 0x800 + sz * 0x100]
+            out[(typ, nm)] = svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+            p += 20
+    return out
+
+
+def shdc_leaves(b):
+    """2K17 'SHDC' (PACH's place in HSPC pacs): u32 count at 0x38, table at u32 0x1C of {u32 leaf index,
+    u32 offset, u32 size, u32 0} -> [(leaf index, bytes)]"""
+    n = struct.unpack_from('<I', b, 0x38)[0]
+    t = struct.unpack_from('<I', b, 0x1C)[0]
+    out = []
+    for i in range(n):
+        idx, off, sz, _ = struct.unpack_from('<4I', b, t + 16 * i)
+        out.append((idx, b[off:off + sz]))
+    return out
+
+
+def scene_entries(d):
+    """2K16 / 2K17 scene pac -> (EVP bytes, track leaves [(index, bytes)]) or None"""
+    evp = evz = None
+    if d[:4] == b'EPAC':
+        for (t, n), v in epac16_entries(d).items():
+            if t.startswith('EVP') or t.startswith('EVE'):
+                evp = v
+            elif t.startswith('EVZ') or t.startswith('EVL'):
+                evz = svrfmt.pach_read(v) if v[:4] == b'PACH' else shdc_leaves(v)
+    elif d[:4] == b'HSPC':
+        for m in re.finditer(rb'BPE \x00\x01\x00\x00', d):
+            b = svrfmt.bpe_decode(d[m.start():])
+            if b[:4] == b'0FOP':
+                evp = b
+            elif b[:4] == b'SHDC':
+                evz = shdc_leaves(b)
+            elif b[:4] == b'PACH':
+                evz = svrfmt.pach_read(b)
+    return (evp, list(evz)) if evp and evz is not None else None
+
+
+def evp_788_to_212(d):
+    """2K15+ EVP (788-byte slots) -> 2K14 / 2011 layout (212-byte slots: words 0-50 + 195-196)"""
+    n = struct.unpack_from('>I', d, 0x40)[0] & 0xffff
+    t = struct.unpack_from('>I', d, 0x48)[0] + 8
+    e = dict(num=struct.unpack_from('>H', d, 0x20)[0], name=d[0x22:0x40], f10=S._u32(d, 0x10), f18=S._u32(d, 0x18),
+             f44=S._u32(d, 0x44), objs=[], tail=None, game='2011', n_hi=0)
+    for i in range(n):
+        idx, model, t0, t1, w4, w5, ns, bp = struct.unpack_from('>8I', d, t + 32 * i)
+        slots = []
+        for k in range(ns >> 16):
+            sl = d[bp + 8 + 788 * k:bp + 8 + 788 * (k + 1)]
+            slots.append(sl[:51 * 4] + sl[195 * 4:197 * 4])
+        e['objs'].append(dict(idx=idx, model=model, t0=t0, t1=t1, w4=w4, w5=w5, nslots=ns >> 16, lo=ns & 0xffff,
+                              slots=slots))
+    return S.build_evp(e)
+
+
+def leaves_of(evz):
+    """track leaves {object index: motion record} from a PACH (bytes) or a leaf list (2K17 SHDC)"""
+    return dict(evz) if isinstance(evz, list) else dict(svrfmt.pach_read(evz))
+
+
 def read_source(src, svrmod, game='wwe13'):
     """src: object with listdir/read (entrance_port.FolderSource or discfs) -> (evp {n: bytes}, evz {n: bytes});
     svrmod may be None for WWE '12 (plain pacs)"""
     evp, evz = {}, {}
     g_ = GAMES[game]
     pacs = [f for f in src.listdir('pac/evt') if re.match(g_['files'], f)]
+    if g_.get('per_file'):
+        pacs = [f for f in pacs if 100 <= int(f[:5]) <= 899]
     if not pacs:
         raise FileNotFoundError('no entrance pacs in pac/evt (a %s extract or disc?)' % g_['name'])
+    if g_.get('per_file'):
+        for f in sorted(pacs):
+            r = scene_entries(xdec(src.read('pac/evt/' + f), svrmod))
+            if r:
+                evp[int(f[:5])] = evp_788_to_212(r[0])
+                evz[int(f[:5])] = r[1]
+        return evp, evz
     for f in sorted(pacs):
         for (g, n), b in epk8_entries(xdec(src.read('pac/evt/' + f), svrmod)).items():
             if n.isdigit() and int(n) < 10000:
                 if g.startswith('EVP'):
-                    evp[int(n)] = b
+                    evp[int(n)] = evp_788_to_212(b) if g_.get('slot788') else b
                 elif g.startswith('EVZ'):
                     evz[int(n)] = b
     return evp, evz
@@ -212,6 +306,8 @@ def blocks(leaf):
         return []
     out = []
     for b in Y.parse_header(leaf)['blocks']:
+        if leaf[b['offset'] + 9] == 4:          # (mode-4 YANM: boned props in 2K16 / 2K17, not decoded)
+            continue
         try:
             out.append((int(b['name'][:4]), int(b['name'][4:]), b['offset']))
         except ValueError:
@@ -532,10 +628,14 @@ def convert_evp(evp13, number, stock, props11, name, rep):
 
 
 def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None, ik=True):
-    leaves = dict(svrfmt.pach_read(evz13))
+    leaves = leaves_of(evz13)
     RT = WR.Retarget(bind, ik=ik)
     ents = []
     todo = [(i, leaves[i]) for i in sorted(leaves) if i < len(e['objs']) and blocks(leaves[i])]
+    ent = next((i for i, o in enumerate(e['objs']) if kind(o) == 'char'), None)
+    if ent in leaves and {x for x, y, _ in blocks(leaves[ent]) if y == 0} == {0}:
+        rep['warnings'].append('one-take entrance: the whole entrance is in segment 0, which 2011 plays as the '
+                               'hidden intro (the entrant will not show); use another game\'s cut of it (2K16)')
     nwork = sum(len(blocks(l)) for _, l in todo) or 1
     done = 0
     for i, leaf in todo:
@@ -612,7 +712,7 @@ def entry_list(evp, evz, game_pac=None):
             continue
         nm = evp_name(e)
         frames = {}
-        leaves = dict(svrfmt.pach_read(evz[n]))
+        leaves = leaves_of(evz[n])
         ci = next((i for i, o in enumerate(e['objs']) if kind(o) == 'char'), 0)
         if ci in leaves:
             for x, y, off in blocks(leaves[ci]):
@@ -681,7 +781,7 @@ def validate(evp13, evz13, number, game_pac, step=1, binds=('rest', 'own'), game
         return ['2011 has no entrance %d' % number]
     e11, b11 = stock[number]
     e = parse_evp13(evp13)
-    leaves = dict(svrfmt.pach_read(evz13))
+    leaves = leaves_of(evz13)
     lines = ['== %d %s (2011: %s)' % (number, evp_name(e), evp_name(e11))]
     # EVP: converted slots vs 2011's (position words within 1e-3, everything else equal), per object kind
     rp = dict(notes=[], warnings=[], dropped=[])

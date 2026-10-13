@@ -271,6 +271,9 @@ GAMES = collections.OrderedDict([
     ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='ready')),
     ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='ready')),
     ('wwe2k14', dict(name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready')),
+    ('wwe2k15', dict(name='WWE 2K15', platform='x360', disc_hint='545408B6', status='ready')),
+    ('wwe2k16', dict(name='WWE 2K16', platform='x360', disc_hint='315A07D2', status='ready')),
+    ('wwe2k17', dict(name='WWE 2K17', platform='x360', disc_hint='545408BA', status='ready')),
     ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
     ('svr04', dict(name='SmackDown! vs. Raw', platform='ps2', disc_hint='SLES_527.81', status='ready')),
 ])
@@ -526,7 +529,7 @@ def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='
     evp11, evt11, r = E13.convert(evp[entrance], evz[entrance], number, game_pac, name, progress=prog, game=game)
     for k in ('notes', 'warnings', 'dropped'):
         rep[k] += r[k]
-    rep['notes'].append('not converted: pyro (prtcls.pac PCE6), theme, face / finger tracks; titantron only with --titantron (Bink 2: a decoder the player installs)')
+    rep['notes'].append('not converted: theme, face / finger tracks; titantron only with --titantron (Bink 2: a decoder the player installs)')
     return evp11, evt11
 
 
@@ -732,9 +735,11 @@ def low_convert(src, entrance, number, name, parts, rep, game_pac=None):
 
 
 LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'low': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'svr04': svr04_list, 'wwe13': wwe13_list,
-           'wwe12': w13_list('wwe12'), 'wwe2k14': w13_list('wwe2k14')}
+           'wwe12': w13_list('wwe12'), 'wwe2k14': w13_list('wwe2k14'), 'wwe2k15': w13_list('wwe2k15'),
+           'wwe2k16': w13_list('wwe2k16'), 'wwe2k17': w13_list('wwe2k17')}
 CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'low': low_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'svr04': svr04_convert, 'wwe13': wwe13_convert,
-              'wwe12': w13_convert('wwe12'), 'wwe2k14': w13_convert('wwe2k14')}
+              'wwe12': w13_convert('wwe12'), 'wwe2k14': w13_convert('wwe2k14'), 'wwe2k15': w13_convert('wwe2k15'),
+              'wwe2k16': w13_convert('wwe2k16'), 'wwe2k17': w13_convert('wwe2k17')}
 
 
 # ============================================================================ commands
@@ -779,7 +784,7 @@ def cmd_free(a):
     return free_numbers(gp, mods)
 
 
-PYRO_GAMES = ('svr10', 'wwe12', 'wwe13', 'wwe2k14')
+PYRO_GAMES = ('svr10', 'wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17')
 
 
 def pyro(src, g, entrance, number, d, rep):
@@ -789,10 +794,25 @@ def pyro(src, g, entrance, number, d, rep):
             rep['notes'].append('pyro: %s particle sets are an older format (not converted)' % GAMES[g]['name'])
         return
     try:
-        raw = src.read('pac/prtcls.pac')
-        if raw[:4] not in (b'EPAC', b'EPK8'):
-            raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
-        ents = E13.epk8_entries(raw)
+        if g in ('wwe2k16', 'wwe2k17'):                # (one particle pac per entrance)
+            fn = 'pac/particle/pce6%04d.pac' % entrance
+            raw = src.read(fn) if src.exists(fn) else b''
+            if not raw:
+                rep['notes'].append('pyro: the source has no %s' % fn)
+                return
+            if raw[:4] not in (b'EPAC', b'EPK8'):
+                raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+            ents = E13.epk8_entries(raw)
+            pce = next((b for (gg, n), b in ents.items() if gg == 'PCE6'), None)
+            if pce is None:
+                rep['notes'].append('pyro: %s has no PCE6 set' % fn)
+                return
+            ents = {('PCE6', '%04d' % entrance): pce}
+        else:
+            raw = src.read('pac/prtcls.pac')
+            if raw[:4] not in (b'EPAC', b'EPK8'):
+                raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+            ents = E13.epk8_entries(raw)
     except Exception as x:
         rep['notes'].append('pyro: pac/prtcls.pac not readable (%s)' % x)
         return

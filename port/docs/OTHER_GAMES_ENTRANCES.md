@@ -26,7 +26,7 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | SmackDown! vs. Raw 2006 (PS2) | - | 95 | - | researched: 2008 script path little-endian, bodies as HCTP; 2/3 also in SvR 2007 |
 | WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
 | SvR 2007-2011 (PS2) | - | same as 360 | - | researched: the 360 entrances in PS2 byte order (a ~110-line front end for the 360 converters) |
-| WWE 2K15 / 2K16 / 2K17 (X360) | - | 138 / 236 / 315 | - | researched: WWE '13 converter + new readers, 788-byte slots, one-take entrances |
+| WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, converted offline (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
 | SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, played in game (Mr. Kennedy 4062 as 495) |
@@ -94,7 +94,14 @@ reader + `parse_evp_le`) lets the svr07-10 converters take a PS2 disc; 2008/2009
 the 360-based one. Titantrons: Sofdec MPEG-1 224x192 in `MOVIE/NMV*.AFS`; themes CRI ADX; pyro sets are
 PS2 textures (not portable). The 360 discs are the better source.
 
-## WWE 2K15 / 2K16 / 2K17 (Xbox 360) - research
+## WWE 2K15 / 2K16 / 2K17 (Xbox 360)
+
+- **Converter:** `wwe13_entrance.py --game wwe2k15 / wwe2k16 / wwe2k17` (entrance_port games of the same
+  names): `scene_entries` reads 2K16/2K17's per-scene pacs (EPAC 20-byte entries or HSPC + SHDC),
+  `evp_788_to_212` the 788-byte slots, mode-4 YANM blocks skipped, a one-take entrance (only segment 0)
+  is converted but warned. Pyro: 2K15 `prtcls.pac`, 2K16/2K17 `pac/particle/pce6NNNN.pac`. Converted
+  offline: 2K15 369 Seth Rollins, 466 Cesaro (one-take, warned), 2K16 458 Kevin Owens, 2K17 292 Asuka
+  (HSPC). Not played yet. Prop 2755 (in nearly every new entrance) and 159 are not in 2011 (warned).
 
 - **2K15:** `pac/evt/Entrance00-10.pac`, xcompressed EPK8 (groups `EVP2`, `EVZ `): 138 entrances (a
   cut-down 2K14: 291 numbers shared, 42 new). **2K16/2K17:** one pac per scene `pac/evt/NNNNN.pac`
