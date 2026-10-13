@@ -41,7 +41,7 @@ void OnlineModsPickDone();
 void OnlineModsBlockFrom(PPCContext& ctx, uint8_t* base, uint32_t msg);
 void OnlineModsBlockStore(uint8_t* base, uint32_t data);
 // The lobby's frame (online_cpu.cpp's sub_824E6510 hook).
-void OnlineModsFrame(uint8_t* base);
+void OnlineModsFrame(PPCContext& ctx, uint8_t* base);
 // The lobby's start checks (sub_828AC668): false while a player lacks a
 // picked superstar or the session's arena.
 bool OnlineModsMayStart(uint8_t* base, uint32_t L);

@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <cstring>
 #include <fstream>
 #include <filesystem>
@@ -847,6 +848,14 @@ REX_HOOK_RAW(sub_823D4FC0) {
   uint8_t* p = base + w;
   auto rd = [&](uint32_t o) { return uint32_t(p[o]) << 24 | p[o + 1] << 16 | p[o + 2] << 8 | p[o + 3]; };
   if (g_customs.empty() || rd(0) != kSelectVtable) {
+    // Test aid (SVR2011_TEST_LOBBY_LOG): other 5-column grids (the online
+    // CREATE SESSION's arena select?), once per vtable.
+    static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
+    if (log) {
+      static std::set<uint32_t> seen;
+      if (seen.insert(rd(0)).second)
+        REXLOG_INFO("[svr2011] arena mods: a grid with vtable {:08X} ({} x {}, lr {:08X})", rd(0), rd(48), rd(32), uint32_t(ctx.lr));
+    }
     __imp__sub_823D4FC0(ctx, base);
     return;
   }

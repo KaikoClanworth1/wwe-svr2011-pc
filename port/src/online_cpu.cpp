@@ -246,7 +246,7 @@ REX_HOOK_RAW(sub_824E6510) {
   if (screen && L) {
     const uint32_t state = Rd32(base + screen + 1168), j = Rd32(base + screen + 1060);
     g_lobby_state = state, g_lobby_cursor = j, g_lobby_addr = L, g_lobby_base = base;  // (OnlineLobbyView: online_rules.cpp's covers)
-    svr2011::OnlineModsFrame(base);
+    svr2011::OnlineModsFrame(ctx, base);
     g_lobby_seen = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now().time_since_epoch()).count();
     static uint32_t last_state = 0xFFFFFFFF;

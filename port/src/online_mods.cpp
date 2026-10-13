@@ -388,6 +388,7 @@ uint32_t Lobby(uint8_t* base) {
 }
 
 constexpr uint32_t kBlocks = 3568, kBlockSize = 15044;
+constexpr uint32_t kChat = 0x82EDE92C;  // -> the lobby's CHAT lines
 
 // The block's superstar fields (+32 the id, u16).
 void TranslateBlock(uint8_t* block, uint64_t from) {
@@ -436,7 +437,7 @@ void OnlineModsPick(PPCContext& ctx, uint8_t* base, uint32_t msg) {
   const uint32_t mine = ToMine(from, id);
   if (mine != id && mine != kNone) Wr32(base + data, mine);
   // (a mod: everyone in the lobby must have it)
-  std::string key, name = "you";
+  std::string key, name = "this game";
   if (mine == kNone) {
     if (auto t = g_theirs.find(from); t != g_theirs.end()) key = t->second.key_of[id], name = t->second.name;
   } else if (auto k = MyMods().key_of.find(mine); k != MyMods().key_of.end()) {
@@ -458,7 +459,7 @@ void OnlineModsPick(PPCContext& ctx, uint8_t* base, uint32_t msg) {
   if (auto t = g_theirs.find(from); t != g_theirs.end() && t->second.label.count(key)) label = t->second.label[key];
   const std::string text = "The user/s in the lobby do not have the mods installed you do.\n" + label + ": " +
                            Join(lacking) + (lacking.size() == 1 ? " lacks it." : " lack it.");
-  REXLOG_INFO("online mods: {}'s pick {} refused - {}", name, label, Join(lacking));
+  REXLOG_INFO("online mods: the pick of {} by {} refused - {}", label, name, Join(lacking));
   if (!from || from == MyXuid()) {
     ShowNotice(text, 8.0f);
   } else {
@@ -481,10 +482,30 @@ void OnlineModsBlockStore(uint8_t* base, uint32_t data) {
   t_block_from = 0;
 }
 
-void OnlineModsFrame(uint8_t* base) {
-  // (a client: the records and blocks that came before the host's table)
+void OnlineModsFrame(PPCContext& ctx, uint8_t* base) {
   const uint32_t L = Lobby(base);
   if (!L) return;
+  // The lines waiting go into the lobby's CHAT (its 44-line ring at
+  // *0x82EDE92C: sub_828A7B38(chat, text)).
+  {
+    std::vector<std::string> lines;
+    const uint32_t chat = Rd32(base + kChat);
+    {
+      std::lock_guard lock(g_mutex);
+      if (chat && g_chat_text && !g_chat.empty()) lines.swap(g_chat);
+    }
+    for (const std::string& l : lines) {
+      char* out = g_memory->TranslateVirtual<char*>(g_chat_text);
+      const size_t n = std::min<size_t>(l.size(), 91);
+      std::memcpy(out, l.data(), n);
+      out[n] = 0;
+      PPCContext c = ctx;
+      c.r3.u64 = chat, c.r4.u64 = g_chat_text;
+      sub_828A7B38(c, base);
+      if (LogOn()) REXLOG_INFO("online mods: CHAT: {}", l);
+    }
+  }
+  // (a client: the records and blocks that came before the host's table)
   uint64_t host;
   {
     std::lock_guard lock(g_mutex);
@@ -602,28 +623,4 @@ REX_HOOK_RAW(sub_828AE4C8) {
     }
   }
   __imp__sub_828AE4C8(ctx, base);
-}
-
-// The lobby's CHAT (sub_828A7E40(chat, msg), the chat's message handler -
-// called for every lobby message): the lines waiting are added
-// (sub_828A7B38(chat, text)).
-REX_EXTERN(__imp__sub_828A7E40);
-REX_HOOK_RAW(sub_828A7E40) {
-  const uint32_t chat = ctx.r3.u32;
-  std::vector<std::string> lines;
-  {
-    std::lock_guard lock(g_mutex);
-    if (chat && g_chat_text && !g_chat.empty()) lines.swap(g_chat);
-  }
-  for (const std::string& l : lines) {
-    char* out = g_memory->TranslateVirtual<char*>(g_chat_text);
-    const size_t n = std::min<size_t>(l.size(), 91);
-    std::memcpy(out, l.data(), n);
-    out[n] = 0;
-    PPCContext c = ctx;
-    c.r3.u64 = chat, c.r4.u64 = g_chat_text;
-    sub_828A7B38(c, base);
-    if (LogOn()) REXLOG_INFO("online mods: CHAT: {}", l);
-  }
-  __imp__sub_828A7E40(ctx, base);
 }
