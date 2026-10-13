@@ -94,6 +94,7 @@ std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
 int g_test_simple = -1;   // --simple <step>
 std::string g_test_gear;  // --star-gear <attire>:<op>,...
+std::string g_test_gear_from;  // --star-gear-from <attire>:<donor id>: the transplant, the log to <work>\gear.log, quit
 std::wstring g_test_take;  // --simple-take <svrmod>,<0 look | 1 everything>
 bool g_test_take_all = false;
 bool g_test_fbx_make = false;
@@ -1314,6 +1315,72 @@ int GearShown(int a) {
   return 0;
 }
 
+const std::vector<int>& GearDonors() {
+  static std::vector<int> v;
+  static bool done = false;
+  if (done) return v;
+  done = true;
+  for (const auto& st : Stars()) {
+    PacIndex idx;
+    char id[8];
+    std::snprintf(id, sizeof id, "%06d", st.id);
+    if (ReadPacIndex(fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(st.id) + L".pac"), idx))
+      for (const auto& e : idx.entries)
+        if (e.group == "EMD " && e.name.size() == 8 && e.name.compare(0, 6, id) == 0 && e.name[7] == '4') {
+          v.push_back(st.id);
+          break;
+        }
+  }
+  return v;
+}
+
+bool GearDonorPopup(const char* id, int& picked) {
+  bool hit = false;
+  if (ImGui::BeginPopup(id)) {
+    ImGui::TextDisabled("Whose entrance gear?");
+    for (int d : GearDonors()) {
+      const StarInfo* s = StarById(d);
+      if (ImGui::Selectable(((s ? s->name : std::to_string(d)) + "##gd" + std::to_string(d)).c_str())) picked = d, hit = true, ImGui::CloseCurrentPopup();
+    }
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(300 * g_scale);
+    ImGui::TextDisabled("Coats, jackets, hats and robes carry over. A shirt painted on the skin (Cena's) doesn't.");
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
+  }
+  return hit;
+}
+
+void GearTransplant(const std::wstring& target, int attire, int donor, std::function<void(const std::wstring&)> done) {
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"gear";
+  std::error_code ec;
+  fs::create_directories(work, ec);
+  const std::wstring stem = fs::path(target).stem().wstring() + L"_a" + std::to_wstring(attire) + L"_gear" + std::to_wstring(donor);
+  const std::wstring out = (work / (stem + L".pac")).wstring(), report = (work / (stem + L".json")).wstring();
+  const std::wstring donor_pac = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(donor) + L".pac")).wstring();
+  fs::remove(out, ec);
+  const StarInfo* who = StarById(donor);
+  const std::string name = who ? who->name : std::to_string(donor);
+  Status("Fitting " + name + "'s entrance gear ...");
+  const bool started = RunToolJson(L"svr11_build.py", {L"--gear-from", donor_pac + L",1", L"--onto", target + L"," + std::to_wstring(attire), out, report},
+                                   [out, name, done](int code, const std::string& text) {
+    Json j;
+    const bool parsed = ParseJson(text, j);
+    if (code != 0 || !fs::exists(out) || (parsed && !j["ok"].Truthy())) {
+      const std::string why = parsed ? j["error"].Str() : std::string();
+      Status(name + "'s entrance gear couldn't be fitted" + (why.empty() ? std::string(" (see the log).") : ": " + why));
+      Log("gear: " + text);
+      return;
+    }
+    for (const char* list : {"notes", "warnings"})
+      for (const auto& w : j[list].items) Log("  gear: " + w.Str());
+    Status(name + "'s entrance gear fitted: " + j["gear_meshes"].Str() + " pieces, " + j["extra_bones"].Str() + " extra bones, " + j["pages"].Str() +
+           " of 192 memory pages.");
+    done(out);
+  });
+  if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
+}
+
 void GearRows(bool simple) {
   if (g_star.model.empty()) return;
   const std::vector<int> own_gear = GearOf(g_star.model);
@@ -1354,6 +1421,25 @@ void GearRows(bool simple) {
         if (off) g_star.gear[a] = "off";
         else g_star.gear.erase(a);
         Touch();
+      }
+    }
+    {
+      ImGui::SameLine();
+      ImGui::BeginDisabled(Busy());
+      if (ImGui::SmallButton("From another superstar...")) ImGui::OpenPopup("gear_donor");
+      ImGui::EndDisabled();
+      int donor = 0;
+      if (GearDonorPopup("gear_donor", donor)) {
+        const int at = a;
+        const bool own = pac == g_star.model;
+        GearTransplant(pac, in, donor, [at, own](const std::wstring& made) {
+          if (own) g_star.model = made;
+          else g_star.attires[at - 1] = made;
+          g_star.gear.erase(at);
+          g_view_attire = at;
+          char_preview::SetGear(true);
+          Touch();
+        });
       }
     }
     if (pac == g_star.model) {  // (the same model: another of its attires' gear)
@@ -1591,6 +1677,17 @@ void Draw() {
       const std::string item = g_test_gear.substr(a, b - a);
       if (const size_t c = item.find(':'); c != std::string::npos) g_star.gear[std::atoi(item.c_str())] = item.substr(c + 1);
       a = b + 1;
+    }
+    if (const size_t c = g_test_gear_from.find(':'); c != std::string::npos && !g_star.model.empty()) {
+      const int at = std::atoi(g_test_gear_from.c_str()), donor = std::atoi(g_test_gear_from.c_str() + c + 1);
+      auto finish = [] {
+        WriteLogTo((fs::path(g_game) / L"Mods" / L".convert" / L"gear" / L"gear.log").wstring());
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      };
+      WhenIdle([at, donor, finish] {
+        GearTransplant(g_star.model, at, donor, [finish](const std::wstring& made) { g_star.model = made, Log("test: gear fitted " + Utf8(made)), finish(); });
+      });
+      // (a failure closes too: after the tool, Busy() is false and the model unchanged)
     }
     if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
@@ -2228,6 +2325,7 @@ bool TakeFromMod(const std::wstring& svrmod, bool everything) {
 
 void TestSimple(int step) { g_test_simple = step; }
 void TestGear(const std::string& spec) { g_test_gear = spec; }
+void TestGearFrom(const std::string& spec) { g_test_gear_from = spec; }
 void TestSimpleTake(const std::wstring& svrmod, bool everything) { g_test_take = svrmod, g_test_take_all = everything; }
 void TestFbxMake() { g_test_fbx_make = true; }
 void TestFbxReport(const std::wstring& out) {  // with --star-fbx: the import report to <out> (automatic mapping), quit

@@ -2372,6 +2372,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
     else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views
+    else if (!wcscmp(argv[i], L"--star-gear-from") && more) star_page::TestGearFrom(Utf8(argv[++i]));  // <attire>:<donor id>: fit the donor's entrance gear, log, quit
     else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
     else if (!wcscmp(argv[i], L"--hits")) char_preview::SetHits(true);
     else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac>[,<save .svrmod>]

@@ -351,7 +351,11 @@ namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); vo
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
                       void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
-                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestGear(const std::string& spec); void TestSimpleTake(const std::wstring& svrmod, bool everything); void TestSimpleLook(int mode); void TestSimpleCapture(const std::wstring& png); void TestSimpleRing(int n); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
+                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step);
+                      // entrance gear from another superstar (tools/svr11_build.py --gear-from / --onto): the game superstars
+                      // with gear, a popup to pick one, and the transplant onto <target pac>'s attire (done(new pac) on success)
+                      const std::vector<int>& GearDonors(); bool GearDonorPopup(const char* id, int& picked);
+                      void GearTransplant(const std::wstring& target, int attire, int donor, std::function<void(const std::wstring&)> done); void TestGear(const std::string& spec); void TestGearFrom(const std::string& spec); void TestSimpleTake(const std::wstring& svrmod, bool everything); void TestSimpleLook(int mode); void TestSimpleCapture(const std::wstring& png); void TestSimpleRing(int n); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
                       // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
                       const std::vector<std::string>& AnnouncerNames();
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
