@@ -125,8 +125,11 @@ void Problems(std::vector<Problem>& p) {
     if (!exists) p.push_back(Error("The model file is missing: " + FileName(g_at.model)));
     else if (head.size() < 4 || std::memcmp(head.data(), "EPK8", 4))
       p.push_back(Error("That isn't a character model pac (EPK8)" + std::string(head.size() == 4 && !std::memcmp(head.data(), "EPAC", 4) ? ": an EPAC is an arena or menu pac." : ".")));
-    else if (star_page::EntranceOutfit(g_at.model))
-      p.push_back(Warning("The model carries an entrance outfit (a coat or the like): it is worn during this attire's entrance."));
+    else {
+      BudgetProblems(g_at.model, "This attire", true, p);
+      if (star_page::EntranceOutfit(g_at.model))
+        p.push_back(Warning("The model carries an entrance outfit (a coat or the like): it is worn during this attire's entrance."));
+    }
   }
   if (g_at.star >= 0) {
     const auto now = CurrentAttires(g_at.star);

@@ -378,6 +378,17 @@ namespace anims_page { void TestKey(int key); bool MovesIndexed(); bool HasMotio
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }
 
+// A character model pac's match memory (D12): per wrestler attire entry (EMD ...2) the 4 KB pages its meshes'
+// vertex and index buffers take - the game gives each wrestler 192; over that the match load crashes.
+constexpr int kModelPages = 192, kModelPagesWarn = 180;
+struct ModelPages {
+  std::string entry;  // the EMD entry ("00013902": attire 1)
+  int pages = 0;
+};
+const std::vector<ModelPages>& ModelBudget(const std::wstring& pac);  // (cached by file time / size)
+// The problem line for a model over (error) or near (warning) the budget; who: "The model", "Attire 2" ...
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out);
+
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);
 // A picture framed the game's way on a size x size canvas: a cut-out (transparent background) is cropped to the

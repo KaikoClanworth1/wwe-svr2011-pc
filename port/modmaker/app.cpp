@@ -27,6 +27,7 @@ extern "C" {
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "svrfmt/disc.h"
+#include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
 
@@ -1098,6 +1099,67 @@ Image GameLook(const Image& src) {
     }
   }
   return out;
+}
+
+const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
+  struct Cached {
+    fs::file_time_type time;
+    uintmax_t size = 0;
+    std::vector<ModelPages> pages;
+  };
+  static std::map<std::wstring, Cached> cache;
+  static const std::vector<ModelPages> none;
+  std::error_code ec;
+  const auto t = fs::last_write_time(pac, ec);
+  if (ec) return none;
+  const uintmax_t size = fs::file_size(pac, ec);
+  auto it = cache.find(pac);
+  if (it != cache.end() && it->second.time == t && it->second.size == size) return it->second.pages;
+  Cached c{t, size, {}};
+  Bytes d;
+  Epac e;
+  if (ReadFile(Utf8(pac), d) && EpacRead(d, e))
+    for (const auto& g : e.groups) {
+      if (g.type.rfind("EMD", 0) != 0) continue;
+      for (const auto& en : g.entries) {
+        if (en.name.empty() || en.name.back() != '2') continue;  // (kind 2: the wrestler's model)
+        std::vector<PachEntry> kids;
+        if (!PachRead(Unpack(en.data), kids)) continue;
+        int pages = 0;
+        for (const auto& k : kids) {
+          const Bytes raw = Unpack(k.data);
+          Model m;
+          if (!IsJboy(raw) || !JboyRead(raw, m)) continue;
+          for (const auto& s : m.meshes) {
+            const uint32_t blocks = s.raw.size() >= 0x60 ? Be32(&s.raw[0x5C]) : 1;
+            size_t idx = 0;
+            for (const auto& st : s.strips) idx += st.indices.size();
+            pages += int((s.verts.size() * (std::max(1u, blocks) == 1 ? 32 : 44) + 4095) / 4096 + (idx * 2 + 4095) / 4096);
+          }
+        }
+        c.pages.push_back({en.name, pages});
+      }
+    }
+  std::string line = "model budget: " + Utf8(fs::path(pac).filename().wstring());
+  for (const auto& p : c.pages) line += "  " + p.entry + " " + std::to_string(p.pages);
+  Log(line);
+  return (cache[pac] = std::move(c)).pages;
+}
+
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out) {
+  int worst = 0;
+  std::string entry;
+  for (const auto& p : ModelBudget(pac)) {
+    if (p.pages > worst) worst = p.pages, entry = p.entry;
+    if (first_only) break;
+  }
+  if (worst <= kModelPagesWarn) return;
+  const std::string what = who + "'s model needs " + std::to_string(worst) + " of the " + std::to_string(kModelPages) +
+                           " memory pages a wrestler gets in a match" + (first_only ? "" : " (entry " + entry + ")");
+  const char* fix = "Drop its blood overlays (JBOY children 0x7530-0x7532: the Port page's conversions do) or use a "
+                    "model with fewer vertices or weight blocks.";
+  if (worst > kModelPages) out.push_back(Error(what + ": the match load crashes.", fix));
+  else out.push_back(Warning(what + ": close to the limit (stock models reach about 180-192).", fix));
 }
 
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {

@@ -869,6 +869,10 @@ void Problems(std::vector<Problem>& p) {
     for (int a = 1; a < 4; ++a)
       if (!g_star.attires[a].empty()) check(g_star.attire_entrance[a], "Attire " + std::to_string(a + 1));
   }
+  for (int a = 0; a < 4; ++a) {  // the match memory (D12): every attire of the model, the first of attire pacs
+    const std::wstring& f = a ? g_star.attires[a] : g_star.model;
+    if (!f.empty()) BudgetProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), a != 0, p);
+  }
   for (int a = 0; a < 4; ++a) {  // a model pac with an entrance outfit (EMD kind 4): worn during the entrance
     const std::wstring& f = a ? g_star.attires[a] : g_star.model;
     if (!f.empty() && HasEntranceOutfit(f))
