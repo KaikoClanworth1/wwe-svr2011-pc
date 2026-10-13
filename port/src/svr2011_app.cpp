@@ -517,6 +517,9 @@ void Svr2011App::OnPostLoadXexImage() {
     if (std::string dir = Env("SVR2011_MOVIES"); !dir.empty()) movies = dir;
     std::error_code ec;
     std::filesystem::create_directories(movies, ec);
+    // (HD movies' stubs, hd_movies.h: the folder made before the mount - the
+    // device knows the folders it found then)
+    std::filesystem::create_directories(movies / ".hd", ec);
     svr2011::CopySuperstarMovies(movies);  // (arenas branch: superstar_mods.h)
     svr2011::CopyMediaMovies(movies);      // (arenas branch: media_mods.h)
     auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\USERMOVIES", movies, true);
