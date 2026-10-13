@@ -167,6 +167,8 @@ struct PacIndex {
   std::vector<PacEntryInfo> entries;
 };
 bool ReadPacIndex(const fs::path& file, PacIndex& out);
+// The same from the file's first 0x4000 bytes (in memory / from a disc).
+bool ParsePacIndex(const Bytes& head, PacIndex& out);
 // One entry's data (by group + name, or the first entry with that name when
 // group is nullptr); false if absent.
 bool ReadPacEntry(const fs::path& file, const char* name, Bytes& out, const char* group = nullptr);
@@ -249,10 +251,29 @@ struct Settings {
   bool maximized = false;
   bool log_open = false;
   int font = 17;
+  std::vector<std::wstring> disc_folders;  // where the disc images are ("" list = the defaults)
 };
 extern Settings g_settings;
 void SaveSettings();
 void AddRecent(const std::wstring& file);
+
+// ---------------------------------------------------------------- disc images (checklist D1)
+
+// The user's other WWE discs (Xbox 360 / PS2 images) in the settings' disc
+// folders (default D:\Roms\Xbox 360\WWE and D:\Roms\Playstation 2\WWE Games).
+struct DiscRef {
+  std::wstring path;
+  std::string id;    // XEX title id / PS2 serial
+  std::string game;  // the game's name (by id), else the file name
+  bool xbox = false;
+};
+// Read in the background on first use: empty until DiscsReady().
+const std::vector<DiscRef>& Discs();
+bool DiscsReady();
+void RescanDiscs();
+std::vector<std::wstring> DiscFolders();
+// "SmackDown vs. Raw 2008 (Xbox 360)" for a title id / serial ("" if unknown).
+std::string DiscGameName(const std::string& id);
 
 // ---------------------------------------------------------------- widgets
 
@@ -296,7 +317,7 @@ namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring&
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
+namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
 namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace help_page { void Draw(); }

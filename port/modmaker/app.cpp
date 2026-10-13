@@ -24,6 +24,7 @@ extern "C" {
 }
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "svrfmt/disc.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
 
@@ -551,10 +552,14 @@ bool ReadPacIndex(const fs::path& file, PacIndex& out) {
   FILE* f = _wfopen(file.c_str(), L"rb");
   if (!f) return false;
   Bytes idx(0x4000);
-  const bool ok = std::fread(idx.data(), 1, idx.size(), f) == idx.size() &&
-                  (!std::memcmp(idx.data(), "EPAC", 4) || !std::memcmp(idx.data(), "EPK8", 4));
+  const bool ok = std::fread(idx.data(), 1, idx.size(), f) == idx.size();
   std::fclose(f);
-  if (!ok) return false;
+  return ok && ParsePacIndex(idx, out);
+}
+
+bool ParsePacIndex(const Bytes& idx, PacIndex& out) {
+  out = PacIndex();
+  if (idx.size() < 0x4000 || (std::memcmp(idx.data(), "EPAC", 4) && std::memcmp(idx.data(), "EPK8", 4))) return false;
   out.epk8 = !std::memcmp(idx.data(), "EPK8", 4);
   const size_t esz = out.epk8 ? 16 : 12, nlen = out.epk8 ? 8 : 4;
   for (size_t p = 0x800; p + 12 <= 0x4000;) {
@@ -916,6 +921,7 @@ void LoadSettings() {
   g_settings.maximized = Value(t, "maximized") == "1";
   g_settings.log_open = Value(t, "log_open") == "1";
   if (!Value(t, "font").empty()) g_settings.font = std::clamp(std::atoi(Value(t, "font").c_str()), 12, 28);
+  for (const auto& f : Values(t, "disc_folder")) g_settings.disc_folders.push_back(Wide(f));
 }
 
 }  // namespace
@@ -927,7 +933,85 @@ void SaveSettings() {
        "\nwin_w=" + std::to_string(g_settings.win_w) + "\nwin_h=" + std::to_string(g_settings.win_h) +
        "\nmaximized=" + (g_settings.maximized ? "1" : "0") + "\nlog_open=" + (g_settings.log_open ? "1" : "0") +
        "\nfont=" + std::to_string(g_settings.font) + "\n";
+  for (const auto& f : g_settings.disc_folders) t += "disc_folder=" + Utf8(f) + "\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
+}
+
+// ---- disc images
+
+namespace {
+std::vector<DiscRef> g_discs, g_discs_next;
+std::atomic<int> g_discs_state{0};  // 0 not read, 1 reading, 2 read (g_discs_next waiting), 3 ready
+}  // namespace
+
+std::string DiscGameName(const std::string& id) {
+  static const std::map<std::string, const char*> kNames = {
+      {"545107E0", "SmackDown vs. Raw 2007 (Xbox 360)"}, {"5451080B", "SmackDown vs. Raw 2008 (Xbox 360)"},
+      {"54510826", "SmackDown vs. Raw 2009 (Xbox 360)"}, {"54510844", "SmackDown vs. Raw 2010 (Xbox 360)"},
+      {"54510838", "Legends of WrestleMania (Xbox 360)"}, {"54510890", "WWE '12 (Xbox 360)"},
+      {"545108B4", "WWE '13 (Xbox 360)"}, {"545408B2", "WWE 2K14 (Xbox 360)"}, {"545408B6", "WWE 2K15 (Xbox 360)"},
+      {"315A07D2", "WWE 2K16 (Xbox 360)"}, {"545408BA", "WWE 2K17 (Xbox 360)"},
+      {"SLES_504.77", "SmackDown! Just Bring It (PS2)"}, {"SLES_512.83", "SmackDown! Shut Your Mouth (PS2)"},
+      {"SLES_520.36", "SmackDown! Here Comes the Pain (PS2)"}, {"SLES_527.81", "SmackDown! vs. Raw (PS2)"},
+      {"SLES_536.76", "SmackDown! vs. Raw 2006 (PS2)"}, {"SLES_544.89", "SmackDown vs. Raw 2007 (PS2)"},
+      {"SLES_548.79", "SmackDown vs. Raw 2008 (PS2)"}, {"SLES_552.51", "SmackDown vs. Raw 2009 (PS2)"},
+      {"SLES_555.45", "SmackDown vs. Raw 2010 (PS2)"}, {"SLES_556.35", "SmackDown vs. Raw 2011 (PS2)"},
+      {"SLUS_203.85", "Crush Hour (PS2)"},
+  };
+  const auto it = kNames.find(id);
+  return it == kNames.end() ? std::string() : it->second;
+}
+
+std::vector<std::wstring> DiscFolders() {
+  if (!g_settings.disc_folders.empty()) return g_settings.disc_folders;
+  return {L"D:\\Roms\\Xbox 360\\WWE", L"D:\\Roms\\Playstation 2\\WWE Games"};
+}
+
+void RescanDiscs() {
+  int expect = g_discs_state.load();
+  if (expect == 1 || !g_discs_state.compare_exchange_strong(expect, 1)) return;
+  std::thread([folders = DiscFolders()] {
+    std::vector<DiscRef> out;
+    for (const auto& folder : folders) {
+      std::error_code ec;
+      std::vector<fs::path> isos;
+      for (const auto& e : fs::directory_iterator(folder, ec))
+        if (e.is_regular_file(ec) && Lower(e.path().extension().string()) == ".iso") isos.push_back(e.path());
+      std::sort(isos.begin(), isos.end());
+      for (const auto& p : isos) {
+        svrfmt::Disc d;
+        if (!d.Open(p.wstring())) continue;
+        DiscRef r;
+        r.path = p.wstring();
+        r.id = d.Id();
+        r.xbox = d.Xbox();
+        r.game = DiscGameName(r.id);
+        if (r.game.empty()) r.game = PathStr(p.stem()) + (r.xbox ? " (Xbox 360)" : " (PS2)");
+        out.push_back(std::move(r));
+      }
+    }
+    std::sort(out.begin(), out.end(), [](const DiscRef& a, const DiscRef& b) {
+      return a.xbox != b.xbox ? a.xbox : a.game < b.game;  // Xbox 360 first (the user's order)
+    });
+    g_discs_next = std::move(out);
+    g_discs_state = 2;
+  }).detach();
+}
+
+bool DiscsReady() {
+  if (g_discs_state == 0) RescanDiscs();
+  if (g_discs_state == 2) {
+    g_discs = std::move(g_discs_next);
+    g_discs_next.clear();
+    g_discs_state = 3;
+    Log("discs: " + std::to_string(g_discs.size()) + " disc images found");
+  }
+  return g_discs_state == 3;
+}
+
+const std::vector<DiscRef>& Discs() {
+  static const std::vector<DiscRef> kNone;
+  return DiscsReady() ? g_discs : kNone;
 }
 
 void AddRecent(const std::wstring& file) {
@@ -1568,6 +1652,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       g_page = PageId::kMatch;
     }
     else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--assets-source") && more) assets_page::TestSource(argv[++i]), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
       int a[4] = {0, -1, -1, 0};

@@ -9,9 +9,11 @@
 #include <cstring>
 
 #include "app.h"
+#include "svrfmt/disc.h"
 #include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
+#include "svrfmt/wwe13.h"
 
 namespace mm {
 namespace assets_page {
@@ -26,7 +28,10 @@ struct Node {
   Kind kind = Kind::kData;
   std::string label;    // what the tree shows
   std::string detail;   // the viewer's header line
-  fs::path file;        // the pac file (kFile and below)
+  fs::path file;        // the pac file (kFile and below) in a folder ...
+  std::shared_ptr<Disc> disc;          // ... or on a disc image: the disc and its entry (kFolder / kFile)
+  int di = -1;
+  std::shared_ptr<const Bytes> whole;  // kFile and below: the file in memory (an xcompress pac, unwrapped)
   PacEntryInfo entry;   // kEntry: where in the file
   uint32_t id = 0;      // kPach children: the PACH id
   Bytes data;           // the node's bytes, unpacked (kEntry and below; empty until opened)
@@ -44,6 +49,9 @@ struct Node {
 std::unique_ptr<Node> g_root;
 Node* g_sel = nullptr;
 std::wstring g_root_for;
+// where the tree comes from: the game folder, a disc image or any folder
+std::wstring g_source;  // "" = the game's pac folder
+std::string g_source_name = "This game (pac folder)";
 std::string g_test_path;  // --assets <label/label/...>: opened and selected once the tree exists
 char g_find[64] = "";
 float g_zoom = 1;
@@ -53,10 +61,12 @@ int g_hex_page = 0;
 
 bool Printable(const Bytes& b) {
   if (b.empty()) return false;
+  // printable up to the first NUL; a NUL ends text only after a real run of it
+  // (a short tag like "DPACX" then zeros is a binary header, not text)
   size_t n = 0;
   for (size_t i = 0; i < b.size() && i < 2048; ++i) {
     const uint8_t c = b[i];
-    if (c == 0 && i > 0) break;
+    if (c == 0) return n >= 16 || i + 1 == b.size();
     if (c >= 32 && c < 127 || c == '\n' || c == '\r' || c == '\t') ++n;
     else return false;
   }
@@ -122,6 +132,40 @@ std::string Tag(const Node& n) {
 
 // ---- building the tree
 
+// The node's file (or a part of it): from memory, the disc image or the folder.
+bool ReadRange(const Node& n, uint64_t offset, uint64_t length, Bytes& out) {
+  if (n.whole) {
+    const uint64_t at = std::min<uint64_t>(offset, n.whole->size()), len = std::min<uint64_t>(length, n.whole->size() - at);
+    out.assign(n.whole->begin() + ptrdiff_t(at), n.whole->begin() + ptrdiff_t(at + len));
+    return true;
+  }
+  if (n.disc) return n.disc->Read(n.di, offset, length, out);
+  FILE* f = _wfopen(n.file.c_str(), L"rb");
+  if (!f) return false;
+  _fseeki64(f, 0, SEEK_END);
+  const uint64_t size = uint64_t(_ftelli64(f));
+  offset = std::min(offset, size);
+  length = std::min(length, size - offset);
+  out.resize(size_t(length));
+  const bool ok = _fseeki64(f, int64_t(offset), SEEK_SET) == 0 && std::fread(out.data(), 1, out.size(), f) == out.size();
+  std::fclose(f);
+  return ok;
+}
+
+uint64_t FileSize(const Node& n) {
+  if (n.whole) return n.whole->size();
+  if (n.disc) return n.disc->At(n.di).size;
+  std::error_code ec;
+  return uint64_t(fs::file_size(n.file, ec));
+}
+
+void Inherit(Node& c, const Node& n) {
+  c.file = n.file;
+  c.disc = n.disc;
+  c.di = n.di;
+  c.whole = n.whole;
+}
+
 void SetData(Node& n, Bytes raw) {
   n.stored = raw.size();
   n.data = Unpack(raw);
@@ -136,7 +180,7 @@ void SetData(Node& n, Bytes raw) {
         char b[32];
         std::snprintf(b, sizeof b, "%u (0x%X)", k.id, k.id);
         c->label = b;
-        c->file = n.file;
+        Inherit(*c, n);
         c->stored = k.data.size();
         // small children are classified now (the tree shows what they are); big ones when opened
         if (k.data.size() <= 256 * 1024) SetData(*c, std::move(k.data));
@@ -150,7 +194,7 @@ void SetData(Node& n, Bytes raw) {
         auto c = std::make_unique<Node>();
         c->parent = &n;
         c->label = t.name;
-        c->file = n.file;
+        Inherit(*c, n);
         c->stored = t.data.size();
         c->data = std::move(t.data);
         c->kind = Kind::kTexture;
@@ -171,7 +215,7 @@ void Open(Node& n) {
   }
   if (n.kind == Kind::kEntry) {  // a pac entry: read from the file
     Bytes raw;
-    if (!ReadPacEntry(n.file, n.entry, raw)) {
+    if (!ReadRange(n, n.entry.offset, n.entry.size, raw)) {
       n.error = "could not read the entry";
       n.opened = true;
       return;
@@ -180,20 +224,51 @@ void Open(Node& n) {
     return;
   }
   if (n.kind == Kind::kFile) {
-    PacIndex idx;
-    if (!ReadPacIndex(n.file, idx)) {
-      n.error = "not an EPAC / EPK8 pac";
+    Bytes head;
+    if (!ReadRange(n, 0, 0x4000, head)) {
+      n.error = "could not read the file";
       n.opened = true;
       return;
     }
-    n.detail = std::string(idx.epk8 ? "EPK8" : "EPAC") + ", " + std::to_string(idx.entries.size()) + " entries";
+    std::string how;
+    if (IsXcompress(head)) {  // WWE '13 and later: the pac inside an xcompress (LZX) wrapper
+      Bytes all, plain;
+      std::string err;
+      if (!ReadRange(n, 0, FileSize(n), all) || !XcompressDecode(all, plain, &err)) {
+        n.error = "the xcompress file did not unpack" + (err.empty() ? std::string() : ": " + err);
+        n.opened = true;
+        return;
+      }
+      how = "xcompress, ";
+      n.whole = std::make_shared<const Bytes>(std::move(plain));
+      ReadRange(n, 0, 0x4000, head);
+    }
+    PacIndex idx;
+    if (!ParsePacIndex(head, idx)) {  // not a pac: the file itself (PACH, a texture, text, ...)
+      const uint64_t size = FileSize(n);
+      if (size > (96ull << 20)) {
+        n.error = "not an EPAC / EPK8 pac (" + std::to_string(size >> 20) + " MB: too big to show)";
+        n.opened = true;
+        return;
+      }
+      Bytes all;
+      if (!ReadRange(n, 0, size, all)) {
+        n.error = "could not read the file";
+        n.opened = true;
+        return;
+      }
+      SetData(n, std::move(all));
+      n.detail = how + KindName(n.kind);
+      return;
+    }
+    n.detail = how + (idx.epk8 ? "EPK8" : "EPAC") + ", " + std::to_string(idx.entries.size()) + " entries";
     Node* group = nullptr;
     for (const auto& e : idx.entries) {
       if (!group || group->label != e.group) {
         auto g = std::make_unique<Node>();
         g->kind = Kind::kGroup;
         g->label = e.group;
-        g->file = n.file;
+        Inherit(*g, n);
         g->parent = &n;
         g->opened = true;
         n.children.push_back(std::move(g));
@@ -202,11 +277,31 @@ void Open(Node& n) {
       auto c = std::make_unique<Node>();
       c->kind = Kind::kEntry;
       c->label = e.name;
-      c->file = n.file;
+      Inherit(*c, n);
       c->entry = e;
       c->stored = e.size;
       c->parent = group;
       group->children.push_back(std::move(c));
+    }
+    n.opened = true;
+    return;
+  }
+  if (n.kind == Kind::kFolder && n.disc) {  // a folder on a disc image: every file (non-pacs open as data)
+    std::vector<int> kids = n.disc->At(n.di).children;
+    std::sort(kids.begin(), kids.end(), [&](int a, int b) {
+      const auto &ea = n.disc->At(a), &eb = n.disc->At(b);
+      return ea.dir != eb.dir ? ea.dir : Lower(ea.name) < Lower(eb.name);
+    });
+    for (int k : kids) {
+      const DiscEntry& e = n.disc->At(k);
+      auto c = std::make_unique<Node>();
+      c->kind = e.dir ? Kind::kFolder : Kind::kFile;
+      c->label = e.name;
+      c->disc = n.disc;
+      c->di = k;
+      c->parent = &n;
+      c->stored = size_t(e.size);
+      n.children.push_back(std::move(c));
     }
     n.opened = true;
     return;
@@ -221,7 +316,8 @@ void Open(Node& n) {
     });
     for (const auto& e : items) {
       const bool dir = e.is_directory(ec);
-      if (!dir && Lower(e.path().extension().string()) != ".pac") continue;
+      if (!dir && !g_source.empty() && Lower(e.path().extension().string()) != ".pac" && e.file_size(ec) > (96ull << 20)) continue;
+      if (!dir && g_source.empty() && Lower(e.path().extension().string()) != ".pac") continue;
       auto c = std::make_unique<Node>();
       c->kind = dir ? Kind::kFolder : Kind::kFile;
       c->label = PathStr(e.path().filename());
@@ -554,7 +650,7 @@ void Viewer() {
     case Kind::kFile:
     case Kind::kGroup:
     case Kind::kFolder:
-      ImGui::Text("%zu items. Expand it in the tree.", n->children.size());
+      ImGui::Text("%zu %s. Expand it in the tree.", n->children.size(), n->children.size() == 1 ? "item" : "items");
       break;
     default:
       if (!n->data.empty()) HexView(n->data);
@@ -565,6 +661,11 @@ void Viewer() {
 }  // namespace
 
 void TestOpen(const std::string& path) { g_test_path = path; }
+
+void TestSource(const std::wstring& source) {
+  g_source = source;
+  g_source_name = PathStr(fs::path(source).filename());
+}
 
 // Opens the tree along a path of labels and selects the last.
 void OpenPath(const std::string& path) {
@@ -585,20 +686,82 @@ void OpenPath(const std::string& path) {
   if (n) Select(n);
 }
 
+// Where the tree comes from: this game, one of the user's discs, another image or a folder.
+void SourceRow() {
+  ImGui::SetNextItemWidth(420 * g_scale);
+  if (ImGui::BeginCombo("Look in", g_source_name.c_str())) {
+    if (ImGui::Selectable("This game (pac folder)", g_source.empty())) g_source.clear(), g_source_name = "This game (pac folder)";
+    if (!DiscsReady()) ImGui::TextDisabled("Reading your disc images ...");
+    else if (Discs().empty()) ImGui::TextDisabled("No disc images in the disc folders.");
+    for (const DiscRef& d : Discs()) {
+      const std::string label = d.game + "##" + Utf8(d.path);
+      if (ImGui::Selectable(label.c_str(), g_source == d.path)) g_source = d.path, g_source_name = d.game;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%s", Utf8(d.path).c_str(), d.id.c_str());
+    }
+    ImGui::Separator();
+    if (ImGui::Selectable("A disc image (.iso) ...")) {
+      static const COMDLG_FILTERSPEC kIso[1] = {{L"Disc images (*.iso)", L"*.iso"}};
+      const std::wstring f = PickFile(false, L"A disc image (Xbox 360 / PS2)", kIso, 1);
+      if (!f.empty()) g_source = f, g_source_name = PathStr(fs::path(f).filename());
+    }
+    if (ImGui::Selectable("A folder (an extracted disc) ...")) {
+      const std::wstring f = PickFolder(L"A folder with game files");
+      if (!f.empty()) g_source = f, g_source_name = PathStr(fs::path(f).filename());
+    }
+    ImGui::EndCombo();
+  }
+  Hint(("Look inside this game, or straight inside your other WWE discs (Xbox 360 and PS2 disc images, nothing "
+        "extracted): the disc images in the disc folders (" + Utf8(DiscFolders()[0]) + " ...) are listed by game. "
+        "WWE '13 and later pack most files with xcompress; they are unpacked when opened.").c_str());
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Disc folders...")) {
+    const std::wstring f = PickFolder(L"A folder with your disc images (added to the list)");
+    if (!f.empty()) {
+      if (g_settings.disc_folders.empty()) g_settings.disc_folders = DiscFolders();
+      if (std::find(g_settings.disc_folders.begin(), g_settings.disc_folders.end(), f) == g_settings.disc_folders.end())
+        g_settings.disc_folders.push_back(f);
+      SaveSettings();
+      RescanDiscs();
+    }
+  }
+}
+
 void Draw() {
-  Heading("Game assets", "Everything in the game's pac files, read-only: expand a file, click an entry to see what "
-                         "it is - textures, models, motion banks, string tables, roster records - and export any of it.");
+  Heading("Game assets", "Everything in the game's pac files - or in your other WWE discs - read-only: expand a "
+                         "file, click an entry to see what it is - textures, models, motion banks, string tables, "
+                         "roster records - and export any of it.");
   if (g_game.empty()) {
     ImGui::TextDisabled("No game folder.");
     return;
   }
-  if (!g_root || g_root_for != g_game) {
+  SourceRow();
+  const std::wstring want = g_source.empty() ? g_game : g_source;
+  if (!g_root || g_root_for != want) {
     g_root = std::make_unique<Node>();
     g_root->kind = Kind::kFolder;
-    g_root->label = "pac";
-    g_root->file = fs::path(g_game) / L"pac";
-    g_root_for = g_game;
+    g_root_for = want;
     g_sel = nullptr;
+    if (g_source.empty()) {
+      g_root->label = "pac";
+      g_root->file = fs::path(g_game) / L"pac";
+    } else if (fs::is_directory(g_source)) {
+      g_root->label = PathStr(fs::path(g_source).filename());
+      g_root->file = g_source;
+    } else {
+      auto disc = std::make_shared<Disc>();
+      std::string err;
+      if (!disc->Open(g_source, &err)) {
+        Status("That disc image did not open: " + err);
+        g_source.clear(), g_source_name = "This game (pac folder)";
+        g_root.reset();
+        return;
+      }
+      g_root->label = disc->Id().empty() ? PathStr(fs::path(g_source).filename()) : disc->Id();
+      g_root->disc = disc;
+      g_root->di = disc->Root();
+      g_root->detail = std::string(disc->Kind()) + ", " + std::to_string(disc->Count() - 1) + " files and folders";
+      Log("assets: " + g_source_name + " - " + g_root->detail);
+    }
     Open(*g_root);
     if (!g_test_path.empty()) OpenPath(g_test_path), g_test_path.clear();
   }
