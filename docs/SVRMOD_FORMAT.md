@@ -68,7 +68,8 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `theme_gain=<dB>` | optional: the theme's volume, -20.0 to +6.0 dB in one decimal (missing = 0). The game plays a mod's theme at full level, about 7 dB over its own; the Mod Maker measures the song and suggests the gain for about -24 LUFS. Media packs: `theme_gain.<id>=` next to `theme.<id>=` |
 | `movie=movie.bik` | the entrance movie, 320 x 320 Bink |
 | `attire2..4=attireN.pac`, `attireN_name=` | more attires: another model pac's first attire each |
-| `render.dds`, `render_small.dds` | the select picture: 512 x 512 and the 256 x 256 bust, DXT5 |
+| `render.dds`, `render_small.dds` | the select picture: 512 x 512 (SSFA, and SSFB without `render_full.dds`) and the 256 x 256 bust (SSFC), DXT5 |
+| `render_full.dds` | optional: the full-body render (SSFB), 512 x 512 DXT5; without it SSFB is `render.dds` |
 | `sign1..4.dds` | the fans' crowd signs, 128 x 64 DXT1 with mips |
 | `moves=moves.txt` | lines `0xOFF=<move id>`: the move at byte offset OFF (0..0x1BF, even) of the profile's move block, over the base's |
 | `moves\pack.txt`, `moves\motions\*` | a move pack carried inside the mod (below) |

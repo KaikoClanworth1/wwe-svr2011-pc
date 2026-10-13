@@ -95,6 +95,7 @@ struct StarProject {
   Picture picture;                // its own select picture (512): else a silhouette
   Image picture_small;            // the 256 bust made with it (or own_bust)
   bool own_bust = false;          // picture_small is the user's own bust picture
+  Image picture_full;             // own full-body picture (render_full.dds -> SSFB; none: render.dds)
   bool game_look = false;         // the picture's tone moved toward the game's renders
   Image picture_src;              // the picture as picked (this session: the game look can be undone)
   int call = -1;                  // -1: "The Superstar"
@@ -113,7 +114,7 @@ struct StarProject {
 StarProject g_star;
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
 int g_test_id = 0;
-std::wstring g_test_model, g_test_picture, g_test_save;
+std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
 std::string g_test_name;
 bool g_test_done = false;
 
@@ -192,7 +193,7 @@ struct Job {
   std::string id, manifest;
   std::wstring model, song, movie, voice, attires[4];
   std::string attire_names[4];
-  Image picture, picture_small;
+  Image picture, picture_small, picture_full;
   std::vector<Image> signs;
   std::wstring moves, pack;
 };
@@ -565,7 +566,7 @@ bool PrepareJob(Job& j) {
   j.moves = g_star.moves, j.pack = g_star.pack, j.moveset = g_star.moveset;
   j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
-  j.picture = g_star.picture.image, j.picture_small = g_star.picture_small;
+  j.picture = g_star.picture.image, j.picture_small = g_star.picture_small, j.picture_full = g_star.picture_full;
   for (const auto& s : g_star.signs) j.signs.push_back(s.image);
   return true;
 }
@@ -648,6 +649,7 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     files.push_back({"render.dds", DdsEncode(j.picture, DxtFormat::kDxt5, false)});
     files.push_back({"render_small.dds", DdsEncode(j.picture_small, DxtFormat::kDxt5, false)});
   }
+  if (j.picture_full.w) files.push_back({"render_full.dds", DdsEncode(j.picture_full, DxtFormat::kDxt5, false)});
   files.insert(files.begin(), ZipEntry{"manifest.txt", Bytes(man.begin(), man.end())});
   return true;
 }
@@ -803,6 +805,7 @@ void Draw() {
       Image img;
       if (LoadPicture(g_test_picture, img)) SetPicture(img);
     }
+    if (Image img; !g_test_full.empty() && LoadPicture(g_test_full, img)) g_star.picture_full = FitFigure(img, 512);
     if (!g_test_save.empty()) {
       Job j;
       PrepareJob(j);
@@ -1035,6 +1038,23 @@ void Draw() {
       Touch();
     }
   } else ImGui::TextDisabled(g_star.picture.Empty() ? "none" : "made from the picture");
+  if (ImGui::Button("Full body picture (optional)...", ImVec2(204 * g_scale, 0))) {
+    const std::wstring f = PickFile(false, L"Full body picture (a PNG with a transparent background is best)", kPictureFilter, 1);
+    Image img;
+    if (!f.empty() && LoadPicture(f, img)) {
+      g_star.picture_full = FitFigure(g_star.game_look ? GameLook(img) : img, 512), Touch();
+      Log("Full body picture set from " + Utf8(f));
+    }
+  }
+  ImGui::SameLine();
+  if (g_star.picture_full.w) {
+    ImGui::TextUnformatted("your full body picture");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##full")) g_star.picture_full = Image(), Touch();
+  } else ImGui::TextDisabled(g_star.picture.Empty() ? "none" : "the select picture");
+  Hint("The full-body render (512 x 512, the game's SSFB: the screens that show the whole superstar). Without one "
+       "the select picture is used, as the game's own superstars mostly do. Framed like the game's.");
+  ImGui::TextDisabled("Bust:");
   Hint("The small render (256 x 256, the game's SSFC) and the model's own portrait. Made from the top of the select "
        "picture unless you give one; a head-and-shoulders picture, cropped and framed like the game's.");
   if (!g_star.picture.Empty()) {
@@ -1047,6 +1067,13 @@ void Draw() {
       bust_view.Draw(72 * g_scale, 72 * g_scale);
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bust and the model's portrait (render_small.dds)");
     }
+  }
+  if (g_star.picture_full.w) {
+    static Picture full_view;
+    if (full_view.image.rgba != g_star.picture_full.rgba) full_view.Set(g_star.picture_full);
+    if (!g_star.picture.Empty()) ImGui::SameLine();
+    full_view.Draw(72 * g_scale, 72 * g_scale);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Full body (render_full.dds)");
   }
   ImGui::Unindent(16 * g_scale);
   ImGui::PopID();
@@ -1124,6 +1151,7 @@ void WriteProject(ProjectOut& out) {
   }
   out.Png("picture", g_star.picture.image, "star/picture");
   if (g_star.own_bust) out.Png("bust", g_star.picture_small, "star/bust");
+  if (g_star.picture_full.w) out.Png("full", g_star.picture_full, "star/full");
   if (g_star.game_look) out.Key("game_look", "1");
   for (size_t k = 0; k < g_star.signs.size(); ++k) out.Png("sign" + std::to_string(k + 1), g_star.signs[k].image, "star/sign" + std::to_string(k + 1));
 }
@@ -1219,6 +1247,7 @@ bool Read(const ProjectIn& in, bool mod) {
         g_star.picture_small = bust;
       }
     }
+    if (const ZipEntry* f = in.Find("render_full.dds"); f) DdsDecode(f->data, g_star.picture_full);
     for (int k = 1; k <= 4; ++k)
       if (const ZipEntry* s = in.Find("sign" + std::to_string(k) + ".dds"); s && DdsDecode(s->data, img)) {
         Picture p;
@@ -1228,6 +1257,7 @@ bool Read(const ProjectIn& in, bool mod) {
   } else {
     g_star.game_look = false;  // (the saved picture has it already)
     if (in.Png("bust", img)) g_star.picture_small = img, g_star.own_bust = true;
+    if (in.Png("full", img)) g_star.picture_full = img;
     if (in.Png("picture", img)) SetPicture(img);
     g_star.game_look = in.GetInt("game_look", 0) != 0;
     for (int k = 1; k <= 4; ++k)
@@ -1256,6 +1286,7 @@ void SetModel(const std::wstring& ch_pac) {
 void TestEntrance(int n) { g_star.entrance = n; }
 bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
 bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }
+void TestFull(const std::wstring& png) { g_test_full = png; }
 void TestWatchSlot(int off) { g_watch_slot_test = off / 2, g_moveset_open_once = true, g_moveset_all = true; }
 
 void TestMoveset(const std::string& spec) {
