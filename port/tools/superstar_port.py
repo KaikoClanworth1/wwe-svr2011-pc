@@ -47,6 +47,7 @@ import collections
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -71,6 +72,7 @@ GAMES = [
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
+    dict(id='wwe2k15', name='WWE 2K15', platform='x360', disc_hint='545408B6', status='ready'),
 ]
 READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
 
@@ -912,6 +914,63 @@ class GameW2K14(GameW13):
         return self.src.get('sound/Game_Sound_M.pck')
 
 
+class GameW2K15(GameW2K14):
+    """WWE 2K15: as 2K14 (DAT 208 B with the same fields, names in string.pac SDB 5000, themes in
+    Game_Sound_E_S / M.pck) except: model pacs are xcompressed EPK8s; CHAR/PRO is 1252 / 1332 B with the
+    entrance block at +576 as u32s (music, movie, entrance, alt): music and movie are id * 100 + variant
+    (10400 = Play_MUS_0104_0_0, movies/titantron/ent_0104_0_0.bk2; 0 / 299900 = generic); renders are
+    menu/menuHD2.pac SFAG / SFBG / SFCG (512 / 512 / 256): BPE'd raw 32-bit pixels after a 44-byte header
+    (side / 256 as BE u16 at +12), bytes R A B G (ARGB 16-bit swapped), bottom row first - made into DXT5 DDS here."""
+
+    year = 15
+    label = 'WWE 2K15'
+    suffix = '_2k15'
+    game_id = 'wwe2k15'
+    no_ratings = "2K15's ratings (DAT +36..+49, 2K14's layout) aren't mapped"
+    moveset_map = False   # (no moveset_maps.json map for 2K15 yet: the base's moves)
+
+    def entrance_block(self, i):
+        p = self.pro.get(i)
+        return struct.unpack_from('<4I', p, self.pro_entrance) if p and len(p) >= self.pro_entrance + 16 else (0, 0, i, i)
+
+    def theme_events(self, music, cid):
+        ev = ['Play_MUS_%04d_%d_0' % (music // 100, music % 100)] if 100 <= music < 100000 else []
+        return ev + ['Play_MUS_%04d_0_0' % cid]
+
+    def ssf(self):
+        if self._ssf is None:
+            self._ssf = _RawRenders()
+            names = {b'SFAG': 'SSFA', b'SFBG': 'SSFB', b'SFCG': 'SSFC'}
+            for t, es in self.MP.read_pac(self.pac_bytes('pac/menu/menuHD2.pac')):
+                if t in names:
+                    for n, b in es:
+                        if n.isdigit():
+                            dict.__setitem__(self._ssf, (names[t], int(n)), b)
+        return self._ssf
+
+
+class _RawRenders(dict):
+    """2K15 / 2K16 menuHD2 renders, made into DDS when read"""
+
+    def __getitem__(self, k):
+        v = dict.__getitem__(self, k)
+        if v[:4] == b'DDS ':
+            return v
+        import svr08_char
+        from PIL import Image
+        u = ch_tool.unpack(v)
+        side = math.isqrt((len(u) - 44) // 4)   # (header +12: BE u16 side / 256)
+        px = u[44:44 + side * side * 4]
+        if side < 16 or struct.unpack_from('>H', u, 12)[0] * 256 != side:
+            raise ValueError('render %s: %d bytes for side %d' % (k, len(u), side))
+        q = bytearray(len(px))
+        q[0::4], q[1::4], q[2::4], q[3::4] = px[0::4], px[3::4], px[2::4], px[1::4]   # R A B G -> R G B A
+        im = Image.frombytes('RGBA', (side, side), bytes(q)).transpose(Image.FLIP_TOP_BOTTOM)
+        v = svr08_char.dds_encode(im, 'DXT5')
+        dict.__setitem__(self, k, v)
+        return v
+
+
 def model_w(g, cid, pac11, out, portrait):
     """w13_char on the (decoded) EPK8 model pac -> [entries], notes"""
     import w13_char
@@ -1105,7 +1164,9 @@ def buildW(cid, outdir, o, rep):
                 note('entrance %d "%s" (2011 has his)' % (e, g11.evp().get(e, '?')))
     if 'movie' not in man:
         warn('no titantron (movie %d)' % movie)
-    if not o.get('no_moves') and base != i11:
+    if not getattr(gw, 'moveset_map', True):
+        drop('moveset: the base\'s (no %s moveset map yet)' % gw.label)
+    elif not o.get('no_moves') and base != i11:
         progress(70, 'moveset')
         moveset_step(gw, cid, base, o, work, mod, man, rep)
     progress(85, 'announcer')
@@ -1145,8 +1206,9 @@ def open_game(game, src, svrmod=None):
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
         return g
-    if game in ('wwe12', 'wwe13', 'wwe2k14'):
-        g = GameW(src) if game == 'wwe12' else GameW13(src, svrmod) if game == 'wwe13' else GameW2K14(src, svrmod)
+    if game in ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15'):
+        g = {'wwe12': GameW, 'wwe13': GameW13, 'wwe2k14': GameW2K14, 'wwe2k15': GameW2K15}[game]
+        g = g(src) if game == 'wwe12' else g(src, svrmod)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFA'}
         return g
     raise BadInput('game %s is not ready (status research; docs/OTHER_GAMES.md)' % game)
@@ -1188,7 +1250,7 @@ def cmd_convert(a):
         if o.get(k) is not None:
             o[k] = int(o[k])
     fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW, 'wwe13': buildW,
-          'wwe2k14': buildW}[a['game']]
+          'wwe2k14': buildW, 'wwe2k15': buildW}[a['game']]
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
     progress(100, 'done')
