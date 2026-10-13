@@ -1,13 +1,20 @@
 """World poses of a 2011 body -> YMBs motion channels (moves_port.py's taunt path; ymbs.py codec).
 
-The game's YMBs pose, as far as known (checked against stock taunts and with ported ones in game):
-rotation channels replace a node's local r (Euler zyx, R = Rz Ry Rx), the root translation replaces
-root t, limbs (ninoude-kote-te, momo-sune-ashi) are two-bone IK to root + IK vector, the knee /
-elbow side given by a pole angle that turns the forward axis (0, 0, -1, its part along the limb
-removed) about the limb. pose() is that forward model, solve_frame() its inverse: IK targets and
-poles from the target joints, then the rotation channels parents first, each against the pose the
-game will build from the channels so far. YMBs hands store only y / z: their twist about the
-forearm goes to the forearm roll (kote x), as w13_retarget does for YMKs.
+The game's YMBs pose (sub_823A4420 / the IK sub_823A4DD8, as the Mod Maker's char_preview.cpp builds it -
+checked bone by bone against the game's own pose dump, 9289602):
+  - rotation channels replace the bone's local rotation (Euler zyx, R = Rz Ry Rx), except the IK bones
+    (ninoude, kote, momo, sune: not driven); sakotsu / te take y and z only, tsumasaki y only; the root
+    translation replaces root t; the kote channel's x (roll) goes to the forearm twist bones kote_x /
+    kote_x2 (half each);
+  - the limbs are solved in their parent's frame (arms the sakotsu's, legs the root's) to the target
+    root + IK vector (world): two equal segments, L = 2 x the shoulder / hip to elbow / knee distance,
+    d clamped at 0.99 L for arms (legs soft), bend = 2 acos(d / L) (legs negative); upper bone (in the
+    parent frame) = Align(+X -> target) . RotX(pole, arms - pi) . RotY(-bend / 2), lower bone RotY(bend).
+pose() is that forward model; solve_frame() its inverse: the rotation channels parents first, each against
+the pose the game builds from the channels so far, the IK vector from the target hand / foot, the pole from
+where the target elbow / knee lies about the shoulder-target line (in the parent frame), the hand's roll
+about the forearm into the kote roll. (A first model with world-space poles about a fixed forward axis
+played as a frozen arms-out pose in game.)
 
     sample = w13_sampler(w13_retarget.Retarget(...), yanm block)     # t seconds -> {name: 4x4}
     data, frames = build_motion(bank, nodes11(), sample, frames30)   # a type-0 motion's bytes
@@ -77,100 +84,154 @@ def frame_values(seg, f):
     return out
 
 
-def _aim(x_dir, d, sign):
-    x = x_dir / np.linalg.norm(x_dir)
-    z = sign * (d - np.dot(d, x) * x)
-    z /= np.linalg.norm(z)
-    return np.column_stack([x, np.cross(z, x), z])
+IK_BONES = {6, 7, 10, 11, 13, 14, 17, 18}   # (MOT_BONES indices the game doesn't drive)
+YZ_ONLY = {5, 8, 9, 12}                    # sakotsu, te
+Y_ONLY = {16, 20}                          # tsumasaki
+GAME_LIMBS = [('l_ninoude', 'l_kote', 'l_sakotsu', True, 'l_te'), ('r_ninoude', 'r_kote', 'r_sakotsu', True, 'r_te'),
+              ('l_momo', 'l_sune', 'root', False, 'l_ashi'), ('r_momo', 'r_sune', 'root', False, 'r_ashi')]
 
 
-def pose(ns, vals):
+def _rx(a):
+    return euler([a, 0.0, 0.0])
+
+
+def _ry(a):
+    return euler([0.0, a, 0.0])
+
+
+def _align(n):
+    """the shortest arc +X -> n"""
+    axis = np.array([0.0, -n[2], n[1]])
+    al = np.linalg.norm(axis)
+    ang = math.acos(max(-1.0, min(1.0, n[0])))
+    if al < 1e-6:
+        return np.diag([1.0, 1.0, 1.0]) if n[0] >= 0 else np.diag([-1.0, -1.0, 1.0])
+    k = axis / al
+    c, sn, t = math.cos(ang), math.sin(ang), 1 - math.cos(ang)
+    return np.array([[c + k[0] * k[0] * t, k[0] * k[1] * t - k[2] * sn, k[0] * k[2] * t + k[1] * sn],
+                     [k[1] * k[0] * t + k[2] * sn, c + k[1] * k[1] * t, k[1] * k[2] * t - k[0] * sn],
+                     [k[2] * k[0] * t - k[1] * sn, k[2] * k[1] * t + k[0] * sn, c + k[2] * k[2] * t]])
+
+
+def _fk(ns, local):
+    W = []
+    for i, n in enumerate(ns):
+        W.append(local[i] if n['parent'] < 0 else W[n['parent']] @ local[i])
+    return W
+
+
+def _constrain(c, e):
+    e = list(e)
+    if c in YZ_ONLY:
+        e[0] = 0.0
+    if c in Y_ONLY:
+        e[0] = e[2] = 0.0
+    return e
+
+
+def pose(ns, vals, limbs=True):
     """the game's pose from channel values -> world 4x4 per node"""
     idx = {n['name']: i for i, n in enumerate(ns)}
     local = [_mat(euler(n['r']), n['t']) for n in ns]
     for c, name in enumerate(MOT_BONES):
-        if name in idx and vals['rot_has'][c]:
+        if name in idx and c not in IK_BONES and vals['rot_has'][c]:
             i = idx[name]
-            local[i] = _mat(euler(vals['rot'][c]), ns[i]['t'])
+            local[i] = _mat(euler(_constrain(c, vals['rot'][c])), ns[i]['t'])
     local[idx['root']][:3, 3] = vals['root_t']
-
-    def fk():
-        W = []
-        for i, n in enumerate(ns):
-            W.append(local[i] if n['parent'] < 0 else W[n['parent']] @ local[i])
+    for side in ('l', 'r'):   # (the kote's roll on the twist bones, half each when there are two)
+        roll = vals['rot'][MOT_BONES.index(side + '_kote')][0]
+        two = (side + '_kote_x2') in idx
+        for nm in (side + '_kote_x', side + '_kote_x2'):
+            if nm in idx:
+                local[idx[nm]][:3, :3] = _rx(roll * 0.5 if two else roll)
+    W = _fk(ns, local)
+    if not limbs:
         return W
-    W = fk()
     root_p = W[idx['root']][:3, 3]
-    fwd = np.array([0, 0, -1.0])
-    for ti, (up, lo, end) in enumerate(LIMBS):
-        sgn = 1 if ti < 2 else -1
-        twist_bone = lo if ti < 2 else None
-        iu, il, ie = idx[up], idx[lo], idx[end]
-        S = W[iu][:3, 3]
-        L1 = np.linalg.norm(W[il][:3, 3] - S)
-        L2 = np.linalg.norm(W[ie][:3, 3] - W[il][:3, 3])
-        T = root_p + vals['ik'][ti]
-        a = T - S
-        dist = min(np.linalg.norm(a), (L1 + L2) * 0.9999)
-        a = a / np.linalg.norm(a)
-        d0 = fwd - np.dot(fwd, a) * a
-        d0 /= np.linalg.norm(d0)
-        th = vals['twist'][ti]
-        d = d0 * math.cos(th) + np.cross(a, d0) * math.sin(th)
-        cosA = (L1 * L1 + dist * dist - L2 * L2) / (2 * L1 * dist)
-        sinA = math.sqrt(max(0.0, 1 - cosA * cosA))
-        J = S + a * (L1 * cosA) + d * (L1 * sinA)
-        E = S + a * dist
-        local[iu][:3, :3] = W[ns[iu]['parent']][:3, :3].T @ _aim(J - S, d, sgn)
-        W = fk()
-        Rl = _aim(E - J, d, sgn)
-        if twist_bone:   # (forearm roll channel, x, from the motion)
-            Rl = Rl @ euler([vals['rot'][MOT_BONES.index(twist_bone)][0], 0, 0])
-        local[il][:3, :3] = W[ns[il]['parent']][:3, :3].T @ Rl
-        W = fk()
-    return W
+    for l, (up, lo, par, arm, end) in enumerate(GAME_LIMBS):
+        iu, il, ip = idx[up], idx[lo], idx[par]
+        su = ns[iu]['parent']
+        P = W[ip]
+        Pr = P[:3, :3]
+        S = Pr.T @ (W[iu][:3, 3] - P[:3, 3])
+        v = Pr.T @ (root_p + vals['ik'][l] - P[:3, 3]) - S
+        L = 2 * np.linalg.norm(W[il][:3, 3] - W[iu][:3, 3])
+        d = np.linalg.norm(v)
+        if L <= 1e-4 or d <= 1e-5:
+            continue
+        lim = (0.99 if arm else 0.99999) * L
+        if d >= lim:
+            d = lim if arm else lim + (d - lim) * 0.3
+        bend = 0.0 if d >= L else 2 * math.acos(min(d / L, 0.99999))
+        if not arm:
+            bend = -bend
+        pole = vals['twist'][l] - (math.pi if arm else 0.0)
+        R = _align(v / np.linalg.norm(v)) @ _rx(pole) @ _ry(-bend * 0.5)
+        local[iu][:3, :3] = W[su][:3, :3].T @ (Pr @ R)
+        local[il][:3, :3] = _ry(bend)
+    return _fk(ns, local)
+
+
+def _yz(R):
+    return [0.0, math.asin(max(-1.0, min(1.0, -R[2, 0]))), math.atan2(R[1, 0], R[0, 0])]
+
+
+def _y(R):
+    return [0.0, math.atan2(R[0, 2] - R[2, 0], R[0, 0] + R[2, 2]), 0.0]
 
 
 def solve_frame(ns, target, rot=True):
-    """target: name -> 4x4 world for the MOT bones -> values in frame_values() form. rot=False: the
-    root translation, IK targets and poles only (the 60 Hz channels)"""
+    """target: name -> 4x4 world for the MOT bones -> values in frame_values() form. rot=False: the root
+    translation and IK vectors only (the 60 Hz channels; the poles come from the 30 Hz solve)"""
     idx = {n['name']: i for i, n in enumerate(ns)}
-    vals = {'root_t': target['root'][:3, 3].copy(), 'ik': [], 'twist': [],
+    vals = {'root_t': target['root'][:3, 3].copy(), 'ik': [], 'twist': [0.0] * 4,
             'rot': [[0.0, 0.0, 0.0] for _ in MOT_BONES], 'rot_has': [True] * len(MOT_BONES)}
     root_p = target['root'][:3, 3]
-    fwd = np.array([0, 0, -1.0])
-    for up, lo, end in LIMBS:
-        S, J, E = target[up][:3, 3], target[lo][:3, 3], target[end][:3, 3]
-        vals['ik'].append(E - root_p)
-        a = E - S
-        a = a / np.linalg.norm(a)
-        d0 = fwd - np.dot(fwd, a) * a
-        d0 /= np.linalg.norm(d0)
-        dj = (J - S) - np.dot(J - S, a) * a
-        n = np.linalg.norm(dj)
-        vals['twist'].append(0.0 if n < 1e-6 else
-                             math.atan2(np.dot(np.cross(d0, dj / n), a), np.dot(d0, dj / n)))
+    for up, lo, par, arm, end in GAME_LIMBS:
+        vals['ik'].append(target[end][:3, 3] - root_p)
     if not rot:
         return vals
+
+    def solve_pole(l):
+        up, lo, par, arm, end = GAME_LIMBS[l]
+        W = pose(ns, vals, limbs=False)
+        P = W[idx[par]]
+        Pr = P[:3, :3]
+        S = Pr.T @ (W[idx[up]][:3, 3] - P[:3, 3])
+        v = Pr.T @ (target[end][:3, 3] - P[:3, 3]) - S
+        w = Pr.T @ (target[lo][:3, 3] - P[:3, 3]) - S
+        nv = np.linalg.norm(v)
+        if nv < 1e-6:
+            return
+        n = v / nv
+        q = _align(n).T @ (w - np.dot(w, n) * n)
+        if np.hypot(q[1], q[2]) < 1e-6:   # (straight: keep the last pole)
+            return
+        sgn = 1.0 if arm else -1.0
+        vals['twist'][l] = math.atan2(-q[1] * sgn, q[2] * sgn) + (math.pi if arm else 0.0)
+
     for c, name in enumerate(MOT_BONES):
         if name not in idx:
             continue
-        Wp = pose(ns, vals)
+        if c in IK_BONES:
+            if c in (6, 10, 13, 17):   # (at the upper bone: that limb's pole)
+                solve_pole({6: 0, 10: 1, 13: 2, 17: 3}[c])
+            continue
+        W = pose(ns, vals)
         i = idx[name]
         par = ns[i]['parent']
-        Rpar = np.eye(3) if par < 0 else Wp[par][:3, :3]
-        vals['rot'][c] = euler_zyx(Rpar.T @ target[name][:3, :3])
-    for side in ('l', 'r'):
-        ck, ct = MOT_BONES.index(side + '_kote'), MOT_BONES.index(side + '_te')
-        par = ns[idx[side + '_te']]['parent']
-        for _ in range(4):
-            Wp = pose(ns, vals)
-            x = euler_zyx(Wp[par][:3, :3].T @ target[side + '_te'][:3, :3])[0]
-            if abs(x) < 1e-4:
-                break
-            vals['rot'][ck][0] += x
-        Wp = pose(ns, vals)
-        vals['rot'][ct] = euler_zyx(Wp[par][:3, :3].T @ target[side + '_te'][:3, :3])
+        Rl = (np.eye(3) if par < 0 else W[par][:3, :3].T) @ target[name][:3, :3]
+        vals['rot'][c] = _yz(Rl) if c in YZ_ONLY else _y(Rl) if c in Y_ONLY else euler_zyx(Rl)
+        if name.endswith('_te'):   # (the hand's roll about the forearm -> kote x, then the hand again)
+            ck = MOT_BONES.index(name[:2] + 'kote')
+            for _ in range(4):
+                W = pose(ns, vals)
+                x = euler_zyx(W[par][:3, :3].T @ target[name][:3, :3])[0]
+                if abs(x) < 1e-4:
+                    break
+                vals['rot'][ck][0] += x
+            W = pose(ns, vals)
+            vals['rot'][c] = _yz(W[par][:3, :3].T @ target[name][:3, :3])
     return vals
 
 
@@ -247,7 +308,7 @@ def check(bank, data, frames, typ, sample, ns, mid=0x7ffe):
     for f in range(0, frames + 1, max(1, frames // 6)):
         tg = sample(f / 30.0)
         Wp = pose(ns, frame_values(seg, f))
-        for nm in ('root', 'l_te', 'r_te', 'l_ashi', 'r_ashi', 'atama'):
+        for nm in ('root', 'l_te', 'r_te', 'l_ashi', 'r_ashi', 'atama', 'l_kote', 'r_kote', 'l_sune', 'r_sune'):
             worst = max(worst, float(np.linalg.norm(Wp[idx[nm]][:3, 3] - tg[nm][:3, 3])))
     return worst
 
