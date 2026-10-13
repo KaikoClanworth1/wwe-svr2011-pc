@@ -83,6 +83,12 @@
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
+
+#ifndef SVR2011_D3D_TRACE
+namespace svr2011 {
+void InstallModelMem(rex::memory::Memory* memory);  // (model_mem.cpp: failed buffer allocations logged)
+}
+#endif
 #endif
 
 REXCVAR_DEFINE_STRING(saves_folder, "", "Storage",
@@ -566,6 +572,9 @@ void Svr2011App::OnPostLoadXexImage() {
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
   svr2011::KeepWindowAlive();
+#ifndef SVR2011_D3D_TRACE
+  svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)
+#endif
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)
