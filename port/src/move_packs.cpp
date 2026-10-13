@@ -1006,13 +1006,15 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
       ReadPack(d, packs, stamp, data);
       stamp += FileStamp(d / "pack.txt");
     }
+    // (the game's own files too - in both reads, or the saved stamp never
+    // matches the next start's and every start merges again)
+    for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h"})
+      stamp += FileStamp(game / "pac" / f);
+    for (const auto& [pac, e] : packs.entries) stamp += FileStamp(game / "pac" / PacPath(pac));
+    if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   };
   read_packs(false);
   WarnOverrides(packs);
-  for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h"})
-    stamp += FileStamp(game / "pac" / f);
-  for (const auto& [pac, e] : packs.entries) stamp += FileStamp(game / "pac" / PacPath(pac));
-  if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));
   for (const auto& [pac, e] : packs.entries) pacs.insert(pac);  // ("evt\nyujyo5.pac": WriteList maps pac\evt\... to it)
