@@ -1051,6 +1051,7 @@ struct Slot {
   std::vector<Xf> bind_inv;
   std::shared_ptr<Motion> motion;  // its track of the chosen motion (nullptr: the idle / bind pose)
   std::vector<Xf> world;           // the bones as posed this frame (the hit spheres' frame)
+  bool hidden = false;             // (the dummy, while a motion with no track for it plays)
   const Motion* shown = nullptr;   // the motion posed, at key
   float key = 0;
 };
@@ -1401,6 +1402,11 @@ void Render(int w, int h) {
   g_feet_next = 1e30f, g_top_next = -1e30f;
   for (Slot& sl : g_slots) {
     if (!sl.ch) continue;
+    sl.hidden = &sl == &g_slots[1] && g_bank && !sl.motion;  // (a one-person motion: no dummy standing in the way)
+    if (sl.hidden) {
+      sl.world.clear(), sl.shown = nullptr;
+      continue;
+    }
     const Motion* m = sl.motion ? sl.motion.get() : (&sl == &g_slots[0] || !g_bank) ? g_idle.get() : nullptr;
     if (m) {
       const float key = m == clock ? g_play.key : std::fmod(g_play.key, float(std::max(1, m->keys)));
@@ -1550,6 +1556,7 @@ void Render(int w, int h) {
   }
   for (const Slot& sl : g_slots)
   for (const GpuMesh& g : sl.gpu) {
+    if (sl.hidden) break;
     if (g.blood && (!g_blood || g.blood_missing)) continue;
     if (!set_cb(g.cutout ? 1.0f : 0.0f, 0)) continue;
     const UINT stride = sizeof(GpuVertex), offset = 0;

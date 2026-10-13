@@ -1432,6 +1432,7 @@ const PageDesc kPages[] = {
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
     {PageId::kAnims, "Animations", "", nullptr, anims_page::Draw},
+    {PageId::kInstalled, "Installed mods", "", nullptr, installed_page::Draw},
     {PageId::kIcons, "Icons & renders", "", nullptr, icons_page::Draw},
     {PageId::kHelp, "Manual", "Help", nullptr, help_page::Draw},
 };
@@ -1621,6 +1622,8 @@ bool ProjectSave(bool ask_name) {
   return true;
 }
 
+bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file);
+
 bool ProjectOpen(const std::wstring& file) {
   Bytes zip;
   ProjectIn in;
@@ -1630,7 +1633,27 @@ bool ProjectOpen(const std::wstring& file) {
     Status("That is not a project or a mod the Mod Maker can open: " + Utf8(file));
     return false;
   }
-  const bool mod = Lower(FileName(file)).ends_with(".svrmod");
+  return ProjectOpenIn(in, Lower(FileName(file)).ends_with(".svrmod"), file);
+}
+
+bool ProjectOpenFolder(const std::wstring& dir) {
+  ProjectIn in;
+  in.dir = fs::path(dir);  // (Extract writes into the project cache under LocalAppData, never here)
+  std::error_code ec;
+  for (const auto& e : fs::recursive_directory_iterator(dir, ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    Bytes b;
+    if (!ReadFile(PathStr(e.path()), b)) continue;
+    in.files.push_back({fs::relative(e.path(), dir, ec).generic_string(), std::move(b)});
+  }
+  if (in.files.empty()) {
+    Status("Nothing to open in " + Utf8(dir) + ".");
+    return false;
+  }
+  return ProjectOpenIn(in, true, (fs::path(dir) / L"manifest.txt").wstring());
+}
+
+bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file) {
   const ZipEntry* txt = in.Find(mod ? "manifest.txt" : "project.txt");
   if (!txt) {
     Status(mod ? "That mod has no manifest.txt." : "That project has no project.txt.");
@@ -2096,6 +2119,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
+    else if (!wcscmp(argv[i], L"--installed") && more) installed_page::TestSelect(Utf8(argv[++i])), g_page = PageId::kInstalled;
     else if (!wcscmp(argv[i], L"--moves-put") && more) moves_page::TestPut(argv[++i]), g_page = PageId::kMoves;
     else if (!wcscmp(argv[i], L"--pac-attires") && more) attire_page::TestPacAttires(argv[++i]), g_page = PageId::kAttire;
     else if (!wcscmp(argv[i], L"--pose-compare") && more) anims_page::TestCompare(argv[++i]), g_page = PageId::kAnims;

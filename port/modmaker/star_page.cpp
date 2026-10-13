@@ -425,6 +425,7 @@ std::string SlotLabel(int slot) {
 
 }  // namespace
 std::string SlotName(int slot) { return SlotLabel(slot); }
+void ShowPose(int motion);
 namespace {
 
 bool SlotFixed(int slot) {
@@ -1577,6 +1578,7 @@ void TestEntrance(int n) { g_star.entrance = n; }
 bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
 bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }
 void TestFull(const std::wstring& png) { g_test_full = png; }
+void ShowPose(int motion) { PreviewPose(motion); }
 const std::vector<std::string>& AnnouncerNames() { return AnnouncerCalls().names; }
 bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width) {
   return ClipPicker(label, buf, size, clips, none, width);

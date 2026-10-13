@@ -254,7 +254,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -278,7 +278,9 @@ extern PageId g_project_page;
 bool ProjectDirty();
 void ProjectNew(PageId type);
 bool ProjectSave(bool ask_name);
-bool ProjectOpen(const std::wstring& file);  // .svrproj or .svrmod
+bool ProjectOpen(const std::wstring& file);
+// An installed mod's folder (Mods\<type>\<folder>) opened as a project, as its .svrmod would be (the folder is only read).
+bool ProjectOpenFolder(const std::wstring& dir);  // .svrproj or .svrmod
 void ProjectReset();
 
 // ---------------------------------------------------------------- settings
@@ -343,7 +345,7 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
                                                 const std::wstring& gimmick_pac, const std::string& gimmick); }
 namespace backstage_page { extern PageHooks hooks; }
-namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); void TestStart(int id, const std::wstring& model, const std::string& name,
+namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion); void TestStart(int id, const std::wstring& model, const std::string& name,
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
@@ -376,6 +378,7 @@ void TestEdit(const std::wstring& spec);
 }
 namespace anims_page { bool AnyMotion(int id); void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
+namespace installed_page { void Draw(); void TestSelect(const std::string& spec); }
 namespace help_page { void Draw(); }
 
 // A character model pac's match memory (D12): per wrestler attire entry (EMD ...2) the 4 KB pages its meshes'

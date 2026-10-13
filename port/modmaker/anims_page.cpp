@@ -71,8 +71,17 @@ int g_game_dummy = -1;  // index in Stars() (-1: the Dummy above)
 struct BankPath {
   PacEntryInfo entry;
   std::vector<uint32_t> kids;  // PACH child ids down to the bank
+  int x = 0;                   // the variant played (0, else the first the bank has)
 };
-std::map<int, BankPath> g_kindex;  // move id -> where its motion is (the first bank that has track 0, x 0)
+std::map<int, BankPath> g_kindex;  // move id -> where its motion is (the first bank with its track 0, x 0 preferred)
+
+// A track-0 entry into the index: the first bank that has the move, x 0 over other variants.
+void Note(std::map<int, BankPath>& out, const uint8_t* d, const PacEntryInfo& e, const std::vector<uint32_t>& path) {
+  if (d[0] != 0) return;
+  const int id = Le16(d + 2);
+  const auto it = out.find(id);
+  if (it == out.end() || (it->second.x != 0 && d[1] == 0)) out[id] = {e, path, d[1]};
+}
 std::atomic<int> g_kindex_state{0};  // 0 not built, 1 building, 2 ready
 std::map<int, BankPath> g_kindex_next;
 std::set<int> g_all_motions, g_all_motions_next;  // every motion id in m.pac (YMKs and YMBs, any track)
@@ -89,13 +98,17 @@ void Walk(const Bytes& raw, const PacEntryInfo& e, std::vector<uint32_t>& path, 
     }
   } else if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMBs", 4)) {
     const uint32_t n = Le32(&raw[0x110]);
-    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) all.insert(Le16(&raw[0x114 + 16 * i + 2]));
+    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) {
+      const uint8_t* d = &raw[0x114 + 16 * i];
+      all.insert(Le16(d + 2));
+      Note(out, d, e, path);  // (taunts, submissions: YMBs)
+    }
   } else if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMKs", 4)) {
     const uint32_t n = Le32(&raw[0x110]);
     for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) all.insert(Le16(&raw[0x114 + 16 * i + 2]));
     for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) {
       const uint8_t* d = &raw[0x114 + 16 * i];
-      if (d[0] == 0 && d[1] == 0 && !out.count(Le16(d + 2))) out[Le16(d + 2)] = {e, path};
+      Note(out, d, e, path);
     }
   }
 }
@@ -155,9 +168,9 @@ void Watch(int id) {
       cur = std::move(next);
     }
     auto bank = std::make_shared<const Bytes>(std::move(cur));
-    OnUiThread([id, ok, bank] {
+    OnUiThread([id, ok, bank, x = where.x] {
       std::string err;
-      if (!ok || !char_preview::SetMotion(bank, id, 0, &err)) {
+      if (!ok || !char_preview::SetMotion(bank, id, x, &err)) {
         Status("That move's motion can't be shown here: " + (err.empty() ? std::string("the bank didn't read") : err) + ".");
         return;
       }
