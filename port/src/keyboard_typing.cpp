@@ -21,6 +21,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include "generated/default/svr2011_init.h"
+#include "online_chat.h"
 #include "story_designer.h"
 
 namespace {
@@ -300,6 +301,7 @@ REX_HOOK_RAW(sub_8274B0A8) {  // a keyboard's key handling, each frame
 // +44 per line, +52 more lines allowed).
 REX_EXTERN(__imp__sub_82730110);
 REX_HOOK_RAW(sub_82730110) {
+  if (svr2011::OnlineChatBeforeInsert(ctx, base, ctx.r3.u32)) return;  // (online_chat.h: the lobby chat's field)
   static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
   static uint32_t logged = 0;
   if (log && ctx.r3.u32 && ctx.r3.u32 != logged) {

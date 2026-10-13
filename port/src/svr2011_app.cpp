@@ -79,6 +79,7 @@
 #include "startup_pump.h"
 #include "leaderboards.h"
 #include "online_mods.h"
+#include "online_chat.h"
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
@@ -605,6 +606,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // ... and the online leaderboards (leaderboards.h)
   svr2011::InstallLeaderboards(runtime()->memory(), runtime()->kernel_state());
   svr2011::InstallOnlineMods(runtime()->memory());  // (superstar / arena mods in online lobbies)
+  svr2011::InstallOnlineChat();  // (lobby chat longer than the game's)
 
   // Developer aid: SVR2011_DUMP_IMAGE=<file> writes the loaded (decrypted,
   // decompressed) executable image for analysis tools (port/tools/).
