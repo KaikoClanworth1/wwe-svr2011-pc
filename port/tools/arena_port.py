@@ -48,7 +48,13 @@ GAMES = [
     {'id': 'wwe12', 'name': "WWE '12", 'platform': 'x360', 'disc_hint': '54510890', 'status': 'native'},
     {'id': 'wwe13', 'name': "WWE '13", 'platform': 'x360', 'disc_hint': '545108B4', 'status': 'native'},
     {'id': 'wwe2k14', 'name': "WWE 2K14", 'platform': 'x360', 'disc_hint': '545408B2', 'status': 'native'},
+    # 2K15: plain EPAC + "ZLIB" entries as 2K14; 2K16: the same inside xcompress; 2K17: xcompressed 'HSPC'
+    # with an 'SHDC' stage index (svrfmt/wwe13.cpp HspcStage13) - the same entries and model format
+    {'id': 'wwe2k15', 'name': "WWE 2K15", 'platform': 'x360', 'disc_hint': '545408B6', 'status': 'native'},
+    {'id': 'wwe2k16', 'name': "WWE 2K16", 'platform': 'x360', 'disc_hint': '315A07D2', 'status': 'native'},
+    {'id': 'wwe2k17', 'name': "WWE 2K17", 'platform': 'x360', 'disc_hint': '545408BA', 'status': 'native'},
 ]
+NATIVE_GAMES = ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17')
 
 # 2011's arena select tiles: arena number -> banner / manifest base name (arena_mods.cpp kTiles)
 BASE_NAMES = {0: 'arena_SD', 1: 'arena_RAW', 2: 'arena_ECW', 3: 'arena_ttt', 4: 'arena_slam', 5: 'arena_BP',
@@ -625,7 +631,7 @@ def main(argv):
                 print(json.dumps(lists.get(a.game, bg_list)(disc)))
                 return 0
             if a.game not in ('svr2010', 'svr2008', 'svr2009', 'svr2007'):
-                msg = ("WWE '12 / '13 / 2K14 arenas are converted by the Mod Maker itself" if a.game in ('wwe12', 'wwe13', 'wwe2k14')
+                msg = ("WWE '12 - 2K17 arenas are converted by the Mod Maker itself (svrmod wwe13)" if a.game in NATIVE_GAMES
                        else '%s arenas are not convertible yet (research)' % game['name'])
                 rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'notes': [msg]}
                 print(json.dumps(rep))
