@@ -262,20 +262,6 @@ void Controls() {
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("The game's hit volumes: green the spheres a superstar is hit on, red the attacking ones while a "
                       "move turns them on (strikes and weapon moves; a few moves switch them in code and show none here).");
-  bool blood = char_preview::Blood();
-  if (char_preview::HasBlood()) {
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Blood", &blood)) char_preview::SetBlood(blood);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model's blood overlays, as a bloodied superstar shows them in a match.");
-    if (blood) {
-      ImGui::SameLine();
-      int stage = char_preview::BloodStage();
-      ImGui::SetNextItemWidth(90 * g_scale);
-      if (ImGui::Combo("##bs", &stage, "light\0medium\0heavy\0")) char_preview::SetBloodStage(stage);
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Camera")) char_preview::ResetCamera();
   ImGui::SameLine();
   ImGui::TextDisabled("%s", p.keys ? (std::to_string(p.keys / 30.0f).substr(0, 4) + " s at 30 keys/s").c_str() : "");
 }
@@ -582,9 +568,10 @@ void Draw() {
   ImGui::BeginChild("view", ImVec2(0, 0), false);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   char_preview::SetHeight(1.0f);  // (the Superstar page's height= is its own)
-  char_preview::Draw(avail.x, std::max(100.0f, avail.y - 64 * g_scale));
+  char_preview::Draw(avail.x, std::max(100.0f, avail.y - 90 * g_scale));
   const std::string st = char_preview::Status();
   if (!st.empty()) ImGui::TextDisabled("%s", st.c_str());
+  ViewFooter();
   Controls();
   ImGui::EndChild();
 }

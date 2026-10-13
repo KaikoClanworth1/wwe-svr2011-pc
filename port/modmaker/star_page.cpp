@@ -1296,8 +1296,9 @@ void Preview() {
   ImGui::BeginGroup();
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   const float w = std::max(220 * g_scale, avail.x);
-  const float h = std::clamp(avail.y - (g_star.picture.Empty() ? 40 : 150) * g_scale, 300 * g_scale, w * 1.5f);
+  const float h = std::clamp(avail.y - (g_star.picture.Empty() ? 66 : 176) * g_scale, 300 * g_scale, w * 1.5f);
   char_preview::Draw(w, h);
+  ViewFooter();
   if (!char_preview::Status().empty()) ImGui::TextDisabled("%s", char_preview::Status().c_str());
   if (!g_star.picture.Empty()) {
     g_star.picture.Draw(110 * g_scale, 110 * g_scale);

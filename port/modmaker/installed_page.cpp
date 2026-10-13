@@ -534,7 +534,8 @@ void Draw() {
     ImGui::BeginChild("view3d", ImVec2(0, 0), true);
     if (m.kind != "Moves") ShowModel();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    char_preview::Draw(avail.x, std::max(200.0f, avail.y - 30 * g_scale));
+    char_preview::Draw(avail.x, std::max(200.0f, avail.y - (m.kind != "Moves" ? 56 : 30) * g_scale));
+    if (m.kind != "Moves") ViewFooter();
     ImGui::TextDisabled("%s", char_preview::Status().c_str());
     ImGui::EndChild();
   }

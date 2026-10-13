@@ -201,13 +201,14 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire
     return false;
   }
   std::vector<Model> models;
+  std::vector<uint32_t> model_ids;  // (their PACH child ids)
   for (const auto& k : kids) {
     Bytes raw = Unpack(k.data);
     if (IsJboy(raw)) {
       Model m;
       if (JboyRead(raw, m)) {
-        if (k.id == 0) models.insert(models.begin(), std::move(m));
-        else models.push_back(std::move(m));
+        if (k.id == 0) models.insert(models.begin(), std::move(m)), model_ids.insert(model_ids.begin(), k.id);
+        else models.push_back(std::move(m)), model_ids.push_back(k.id);
       }
     } else if (IsTextureBundle(raw)) {
       std::vector<BundleTexture> texs;
@@ -229,9 +230,12 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire
     by_name.emplace(b.name, int(ch.bones.size()));
     ch.bones.push_back(b);
   }
-  for (const Model& m : models) {
-    const bool blood = m.name.rfind("blood", 0) == 0;
-    const bool cutout = blood || m.name.find("hair") != std::string::npos || m.name.find("eyelash") != std::string::npos;
+  for (size_t mi = 0; mi < models.size(); ++mi) {
+    const Model& m = models[mi];
+    // blood overlays: blood_* / Blood_face (the names' case varies) or PACH children 0x7530-0x7532
+    const std::string lname = Lower(m.name);
+    const bool blood = lname.rfind("blood", 0) == 0 || (model_ids[mi] >= 0x7530 && model_ids[mi] <= 0x7532);
+    const bool cutout = blood || lname.find("hair") != std::string::npos || lname.find("eyelash") != std::string::npos;
     for (const Mesh& s : m.meshes) {
       PMesh pm;
       const int slot = DiffuseSlot(s);

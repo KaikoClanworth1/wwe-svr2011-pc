@@ -234,7 +234,8 @@ void Draw() {
   char_preview::SetModel(g_at.model, g_game);
   char_preview::SetHeight(1.0f);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
-  char_preview::Draw(avail.x, std::max(200.0f, avail.y - 70 * g_scale));
+  char_preview::Draw(avail.x, std::max(200.0f, avail.y - 96 * g_scale));
+  ViewFooter();
   if (!char_preview::Status().empty()) ImGui::TextDisabled("%s", char_preview::Status().c_str());
   ImGui::EndGroup();
   switch (ModButtons(problems, false)) {

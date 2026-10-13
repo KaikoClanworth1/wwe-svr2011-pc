@@ -1248,6 +1248,33 @@ void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int s
   });
 }
 
+void ViewFooter() {
+  ImGui::PushID("viewfooter");
+  if (ImGui::SmallButton("Reset view")) char_preview::ResetCamera();
+  ImGui::SameLine();
+  const bool has = char_preview::HasBlood();
+  ImGui::BeginDisabled(!has);
+  bool blood = char_preview::Blood() && has;
+  if (ImGui::Checkbox("Blood", &blood)) char_preview::SetBlood(blood);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip(has ? "The blood a superstar gets in a match, on the face and body." : "This model has no blood layers.");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!blood);
+  int stage = char_preview::BloodStage();
+  static const char* kLevels[] = {"light", "medium", "heavy"};
+  ImGui::TextUnformatted("Damage");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x, 70 * g_scale, 110 * g_scale));
+  if (ImGui::SliderInt("##damage", &stage, 0, 2, kLevels[std::clamp(stage, 0, 2)], ImGuiSliderFlags_NoInput)) char_preview::SetBloodStage(stage);
+  ImGui::EndDisabled();
+  if (const char* hint = "Drag to turn, scroll to zoom"; ImGui::GetContentRegionAvail().x > ImGui::CalcTextSize(hint).x + 24 * g_scale) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", hint);
+  }
+  ImGui::PopID();
+}
+
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem) {
   ImGui::PushID(label);
   bool pressed = false;

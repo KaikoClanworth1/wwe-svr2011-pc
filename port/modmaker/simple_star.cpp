@@ -325,10 +325,7 @@ void SimpleDraw() {
 
   // the 3D view (right): drag to turn, wheel to zoom
   ImGui::BeginChild("view", ImVec2(0, -52 * g_scale), true);
-  if (ImGui::SmallButton("Reset view")) char_preview::ResetCamera();
-  ImGui::SameLine();
-  ImGui::TextDisabled("Drag to turn, scroll to zoom");
-  Preview();
+  Preview();  // (its footer: Reset view, Blood, Damage)
   ImGui::EndChild();
 
   // Back / Next (bottom)

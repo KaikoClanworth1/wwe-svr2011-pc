@@ -415,5 +415,8 @@ Image GameLook(const Image& src);
 void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done);
 // A "From a video..." button that makes the Bink into <game>\Mods\.convert and sets `movie`.
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem);
+// The footer under every superstar 3D view: Reset view, Blood (off by default) and its Damage level (the game's
+// light / medium / heavy blood), the mouse hint. One state for all views.
+void ViewFooter();
 
 }  // namespace mm
