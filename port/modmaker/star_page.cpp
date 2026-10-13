@@ -14,6 +14,7 @@
 
 #include "app.h"
 #include "char_preview.h"
+#include "json.h"
 #include "svrfmt/pac.h"
 #include "tool_run.h"
 
@@ -105,6 +106,8 @@ struct StarProject {
   // the SvR 2010-style extras (the game: superstar_mods.cpp)
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
   char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
+  char hometown_city[32] = "";    // hometown=<CITY>[,<STATE>]: the announcer's own hometown clips
+  char hometown_state[32] = "";
   std::vector<int> abilities;     // abilities=a,b,... (empty: the style's)
   bool own_abilities = false;
   std::wstring moves;             // moves=moves.txt: lines 0xOFF=<move id> (a file picked as it is)
@@ -115,6 +118,7 @@ StarProject g_star;
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
 int g_test_id = 0;
 std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
+std::string g_test_hometown;
 std::string g_test_name;
 bool g_test_done = false;
 
@@ -257,6 +261,54 @@ int g_watch_slot_test = -1;         // (test aid --star-watch: this slot's move,
 int g_pick_slot = -1;
 char g_pick_find[48] = "";
 bool g_pick_any = false;
+
+// tools/announcer_calls.json (Extras): the ring announcer's clips - cities (HTC), states (HTS), superstar names (SSN)
+struct Calls {
+  bool loaded = false;
+  std::vector<std::string> cities, states, names;
+};
+const Calls& AnnouncerCalls() {
+  static Calls c;
+  if (c.loaded) return c;
+  c.loaded = true;
+  Bytes b;
+  Json j;
+  if (!ReadFile(Utf8((fs::path(ToolsDir()) / L"announcer_calls.json").wstring()), b) || !ParseJson(std::string(b.begin(), b.end()), j)) return c;
+  auto list = [&](const char* key, std::vector<std::string>& out) {
+    for (const auto& e : j[key].items)
+      if (const std::string clip = e["clip"].Str(); !clip.empty()) out.push_back(clip);
+  };
+  list("cities", c.cities), list("states", c.states), list("superstars", c.names);
+  std::sort(c.names.begin(), c.names.end());
+  return c;
+}
+
+// A clip picked from a list (with a find box), or typed; "" = none.
+bool ClipPicker(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width = 320) {
+  bool changed = false;
+  ImGui::SetNextItemWidth(width * g_scale);
+  if (ImGui::BeginCombo(label, buf[0] ? buf : none, ImGuiComboFlags_HeightLarge)) {
+    static char find[32] = "";
+    if (ImGui::IsWindowAppearing()) find[0] = 0, ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##find", "find, or type a clip name and press Enter", find, sizeof find);
+    if (ImGui::IsItemDeactivatedAfterEdit() && ImGui::IsKeyPressed(ImGuiKey_Enter) && find[0]) {
+      std::string t;
+      for (char ch : std::string(find)) if (std::isalnum(uint8_t(ch))) t += char(std::toupper(uint8_t(ch)));
+      std::snprintf(buf, size, "%s", t.c_str()), changed = true;
+      ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::Selectable(none, !buf[0])) buf[0] = 0, changed = true;
+    std::string f;
+    for (char ch : std::string(find)) if (std::isalnum(uint8_t(ch))) f += char(std::toupper(uint8_t(ch)));
+    for (const auto& c : clips) {
+      if (!f.empty() && c.find(f) == std::string::npos) continue;
+      if (ImGui::Selectable(c.c_str(), c == buf)) std::snprintf(buf, size, "%s", c.c_str()), changed = true;
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
 
 // tools/pro_slots.json: [{"off": 122, "menu": "...", "slot": "...", "fixed": false}, ...]
 void LoadSlotNames() {
@@ -557,6 +609,8 @@ bool PrepareJob(Job& j) {
     if (!g_star.attires[a].empty() && g_star.attire_entrance[a] > 0)
       j.manifest += "attire" + std::to_string(a + 1) + "_entrance=" + std::to_string(g_star.attire_entrance[a]) + "\n";
   if (g_star.announcer[0]) j.manifest += std::string("announcer=") + g_star.announcer + "\n";
+  if (g_star.hometown_city[0])
+    j.manifest += std::string("hometown=") + g_star.hometown_city + (g_star.hometown_state[0] ? std::string(",") + g_star.hometown_state : "") + "\n";
   if (g_star.own_abilities) {
     j.manifest += "abilities=";
     for (size_t k = 0; k < g_star.abilities.size(); ++k) j.manifest += (k ? "," : "") + std::to_string(g_star.abilities[k]);
@@ -761,6 +815,11 @@ void Problems(std::vector<Problem>& p) {
   }
   for (char c : std::string(g_star.announcer))
     if (!std::isalnum(uint8_t(c))) { p.push_back(Error("The announcer name takes letters and digits only (e.g. JEFFHARDY).")); break; }
+  bool bad_town = false;
+  for (const char* h : {g_star.hometown_city, g_star.hometown_state})
+    for (const char* c = h; *c; ++c) bad_town |= !std::isalnum(uint8_t(*c));
+  if (bad_town) p.push_back(Error("The hometown takes the announcer's clip names: letters and digits (e.g. CAMERONNC)."));
+  if (g_star.hometown_state[0] && !g_star.hometown_city[0]) p.push_back(Warning("A hometown state without a city isn't said: pick the city too."));
   if (g_star.own_abilities && g_star.abilities.empty()) p.push_back(Warning("Own abilities ticked but none chosen: the superstar gets no abilities."));
   if (std::strlen(g_star.name) > 20 && !g_star.short_name[0]) p.push_back(Warning("A long name with no short name: the short name goes on the match screens."));
   if (!g_game.empty()) {
@@ -806,6 +865,10 @@ void Draw() {
       if (LoadPicture(g_test_picture, img)) SetPicture(img);
     }
     if (Image img; !g_test_full.empty() && LoadPicture(g_test_full, img)) g_star.picture_full = FitFigure(img, 512);
+    if (const size_t c = g_test_hometown.find(','); !g_test_hometown.empty()) {
+      std::snprintf(g_star.hometown_city, sizeof g_star.hometown_city, "%s", g_test_hometown.substr(0, c).c_str());
+      std::snprintf(g_star.hometown_state, sizeof g_star.hometown_state, "%s", c == std::string::npos ? "" : g_test_hometown.substr(c + 1).c_str());
+    }
     if (!g_test_save.empty()) {
       Job j;
       PrepareJob(j);
@@ -897,10 +960,17 @@ void Draw() {
     Hint("The entrance motions and pyro (the music and movie are the files above): any the game has - every "
          "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
          "(the Port page makes them from other games). Attires 2-4 can have their own.");
-    TextField("Announcer name (optional)", g_star.announcer, sizeof g_star.announcer, "e.g. JEFFHARDY");
-    Hint("A name the ring announcer's sound banks have clips of (letters and digits, as the banks spell it: "
-         "JEFFHARDY). The announcer then says it. It wins over a name recording; the name call above stays for the "
-         "commentators.");
+    const Calls& calls = AnnouncerCalls();
+    if (ClipPicker("Announcer name", g_star.announcer, sizeof g_star.announcer, calls.names, "none (optional)")) Touch();
+    Hint("A name the ring announcer's sound banks have clips of (as the banks spell it: JEFFHARDY) - the list is the "
+         "names the game has; type another and press Enter. The announcer then says it. It wins over a name "
+         "recording; the name call above stays for the commentators.");
+    if (ClipPicker("Hometown", g_star.hometown_city, sizeof g_star.hometown_city, calls.cities, "none (optional)")) Touch();
+    Hint("Where the ring announcer says the superstar is from (\"from Cameron, NC ...\"): the cities the game has "
+         "clips of, as in Create-a-Superstar's HOMETOWN. A city with its state in the clip (CAMERONNC) needs no state.");
+    ImGui::SameLine();
+    if (ClipPicker("##state", g_star.hometown_state, sizeof g_star.hometown_state, calls.states, "no state", 140)) Touch();
+    if (calls.cities.empty()) ImGui::TextDisabled("(announcer_calls.json not found next to the tools: type the clip names)");
     if (ImGui::Checkbox("Own abilities", &g_star.own_abilities)) Touch();
     Hint("The superstar's abilities (up to 8). Unticked: the style's.");
     if (g_star.own_abilities) {
@@ -1101,7 +1171,7 @@ std::string StateText() {
     s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a] + "|" +
          std::to_string(g_star.attire_entrance[a]);
   s += "\nmoveset=" + MovesetText();
-  s += "\nentrance=" + std::to_string(g_star.entrance) + "\nannouncer=" + g_star.announcer + "\nmoves=" + Utf8(g_star.moves) +
+  s += "\nentrance=" + std::to_string(g_star.entrance) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
   return s;
@@ -1132,6 +1202,8 @@ void WriteProject(ProjectOut& out) {
   }
   if (g_star.entrance >= 0) out.Key("entrance", g_star.entrance);
   out.Key("announcer", g_star.announcer);
+  if (g_star.hometown_city[0])
+    out.Key("hometown", std::string(g_star.hometown_city) + (g_star.hometown_state[0] ? std::string(",") + g_star.hometown_state : ""));
   if (g_star.own_abilities) {
     std::string a = "-";  // (a lone '-': own abilities, none chosen)
     for (size_t k = 0; k < g_star.abilities.size(); ++k) a = (k ? a + "," : std::string()) + std::to_string(g_star.abilities[k]);
@@ -1184,6 +1256,12 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.entrance = in.GetInt("entrance", -1);
   for (int a = 1; a < 4; ++a) g_star.attire_entrance[a] = in.GetInt(("attire" + std::to_string(a + 1) + "_entrance").c_str(), -1);
   std::snprintf(g_star.announcer, sizeof g_star.announcer, "%s", in.Get("announcer").c_str());
+  {
+    const std::string h = in.Get("hometown");
+    const size_t c = h.find(',');
+    std::snprintf(g_star.hometown_city, sizeof g_star.hometown_city, "%s", h.substr(0, c).c_str());
+    std::snprintf(g_star.hometown_state, sizeof g_star.hometown_state, "%s", c == std::string::npos ? "" : h.substr(c + 1).c_str());
+  }
   if (const std::string a = in.Get("abilities"); !a.empty()) {
     g_star.own_abilities = true;
     for (size_t at = 0; at < a.size();) {
@@ -1287,6 +1365,7 @@ void TestEntrance(int n) { g_star.entrance = n; }
 bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
 bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }
 void TestFull(const std::wstring& png) { g_test_full = png; }
+void TestHometown(const std::string& h) { g_test_hometown = h; }
 void TestWatchSlot(int off) { g_watch_slot_test = off / 2, g_moveset_open_once = true, g_moveset_all = true; }
 
 void TestMoveset(const std::string& spec) {

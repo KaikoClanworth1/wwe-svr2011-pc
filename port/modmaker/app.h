@@ -344,7 +344,7 @@ namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png);
+                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h);
                       bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
                       bool EntranceOutfit(const std::wstring& pac); }
 namespace attire_page { extern PageHooks hooks; void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
