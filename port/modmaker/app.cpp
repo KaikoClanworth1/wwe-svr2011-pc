@@ -1279,6 +1279,7 @@ const PageDesc kPages[] = {
     {PageId::kEditor, "   3D editor", "", nullptr, DrawEditor},
     {PageId::kBackstage, "Backstage", "", &backstage_page::hooks, nullptr},
     {PageId::kStar, "Superstar", "", &star_page::hooks, nullptr},
+    {PageId::kAttire, "Attires", "", &attire_page::hooks, nullptr},
     {PageId::kMoves, "Moves", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
@@ -1974,6 +1975,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
+    else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac>[,<save .svrmod>]
+      const std::wstring a = argv[++i];
+      const size_t c1 = a.find(L','), c2 = a.find(L',', c1 + 1), c3 = a.find(L',', c2 + 1);
+      attire_page::TestStart(_wtoi(a.c_str()), a.substr(c2 + 1, c3 == std::wstring::npos ? std::wstring::npos : c3 - c2 - 1),
+                             _wtoi(a.c_str() + c1 + 1), c3 == std::wstring::npos ? L"" : a.substr(c3 + 1));
+      g_page = PageId::kAttire;
+    }
     else if (!wcscmp(argv[i], L"--star-watch") && more) star_page::TestWatchSlot(int(std::wcstol(argv[++i], nullptr, 0)));
     else if (!wcscmp(argv[i], L"--star-voice") && more) star_voice = argv[++i];
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
@@ -2086,7 +2094,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }

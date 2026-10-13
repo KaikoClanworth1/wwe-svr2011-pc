@@ -1174,6 +1174,8 @@ void SetModel(const std::wstring& ch_pac) {
 }
 
 void TestEntrance(int n) { g_star.entrance = n; }
+bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
+bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }
 void TestWatchSlot(int off) { g_watch_slot_test = off / 2, g_moveset_open_once = true, g_moveset_all = true; }
 
 void TestMoveset(const std::string& spec) {
