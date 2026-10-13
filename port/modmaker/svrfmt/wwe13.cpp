@@ -190,6 +190,12 @@ bool XcompressDecode(const Bytes& d, Bytes& out, std::string* error) {
     std::vector<size_t> starts{slot};
     if (next != slot) starts.push_back(next);
     for (const size_t start : starts) {
+      // a stored chunk (2K14): u16 0, then its bytes as they are
+      if (start + 2 + sizes[i] <= d.size() && d[start] == 0 && d[start + 1] == 0) {
+        std::memcpy(out.data() + op, &d[start + 2], sizes[i]);
+        after = start + 2 + sizes[i], r = 0;
+        break;
+      }
       if (!frames_at(start, sizes[i], frames, &after)) continue;
       r = decode(frames, out.data() + op, sizes[i]);
       if (!r) break;
