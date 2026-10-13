@@ -295,7 +295,7 @@ void Draw() {
           ImGui::OpenPopup("rename");
         }
         if (ImGui::BeginPopup("rename")) {
-          const size_t max = g_pac.epk8 ? 8 : 4;
+          const size_t max = g_pac.wide ? 8 : 4;
           ImGui::SetNextItemWidth(140 * g_scale);
           ImGui::InputText("##n", g_new_name, max + 1);
           ImGui::SameLine();
@@ -330,7 +330,7 @@ void Draw() {
       if (PickData(b)) {
         auto& v = g_pac.groups[size_t(add_to)].entries;
         EpacEntry en;
-        const size_t max = g_pac.epk8 ? 8 : 4;
+        const size_t max = g_pac.wide ? 8 : 4;
         en.name = "NEW" + std::to_string(v.size());
         if (en.name.size() > max) en.name.resize(max);
         en.data = Pack(b, !v.empty() && IsBpe(v.front().data));

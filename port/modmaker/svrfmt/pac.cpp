@@ -222,117 +222,138 @@ Bytes PachWrite(const std::vector<PachEntry>& entries) {
 
 // ------------------------------------------------------------------ EPAC
 
-bool Epk8Read(const Bytes& in, Epac& out) {
-  out = {};
-  out.epk8 = true;
-  out.header.assign(in.begin(), in.begin() + 0x800);
+namespace {
+
+bool IsArchive(const Bytes& in) {
+  return in.size() >= 0x4000 && (!std::memcmp(in.data(), "EPAC", 4) || !std::memcmp(in.data(), "EPK8", 4));
+}
+
+// The group table read with one entry size; false when it doesn't fit (a count
+// that isn't a whole number of entries, a table past 0x4000, an entry past the
+// file's end, a name that isn't text).
+struct RawGroup {
+  std::string type;
+  uint16_t number = 0;
+  uint32_t extra = 0;
+  std::vector<std::pair<std::string, std::pair<uint32_t, uint32_t>>> entries;  // name, (sector, size / 0x100)
+};
+bool ReadTable(const Bytes& in, bool wide, uint64_t file_size, std::vector<RawGroup>& out, uint32_t* used) {
+  out.clear();
+  const size_t esz = wide ? 16 : 12, nlen = wide ? 8 : 4, words = esz / 4;
   size_t p = 0x800;
-  uint32_t used = 0;
+  *used = 0;
   while (p + 12 <= 0x4000) {
     if (!Le32(&in[p])) break;
-    EpacGroup g;
+    RawGroup g;
     g.type.assign(reinterpret_cast<const char*>(&in[p]), 4);
-    const uint32_t cnt = Le16(&in[p + 4]) / 4;
+    const uint32_t w = Le16(&in[p + 4]);
+    if (w % words) return false;
     g.number = Le16(&in[p + 6]);
     g.extra = Le32(&in[p + 8]);
     p += 12;
-    for (uint32_t i = 0; i < cnt; ++i, p += 16) {
-      if (p + 16 > 0x4000) return false;
-      const size_t off = 0x4000 + size_t(Le32(&in[p + 8])) * 0x800;
-      const size_t size = size_t(Le32(&in[p + 12])) * 0x100;
-      if (off + size > in.size()) return false;
-      g.entries.push_back({Name16(&in[p], 8), Bytes(in.begin() + off, in.begin() + off + size)});
+    const uint32_t cnt = w / uint32_t(words);
+    if (p + esz * cnt > 0x4000) return false;
+    for (uint32_t k = 0; k < cnt; ++k, p += esz) {
+      const uint8_t* e = &in[p];
+      for (size_t c = 0; c < nlen && e[c]; ++c)
+        if (e[c] < 0x20) return false;  // (names may be Shift-JIS: only control bytes rule a layout out)
+      const uint32_t sec = Le32(e + nlen), sz = Le32(e + nlen + 4);
+      if (sec >= 0x200000) return false;  // (past 4 GB: name bytes read as a sector - the wrong entry size)
+      if (file_size && 0x4000 + uint64_t(sec) * 0x800 + uint64_t(sz) * 0x100 > file_size + 0x800) return false;
+      g.entries.push_back({Name16(e, nlen), {sec, sz}});
     }
-    used += 12 + 16 * uint32_t(g.entries.size());
-    out.groups.push_back(std::move(g));
+    *used += 12 + uint32_t(esz) * cnt;
+    out.push_back(std::move(g));
   }
-  out.toc_extra = int32_t(Le32(&in[4]) - used);
-  const size_t data_end = 0x4000 + size_t(Le32(&in[8]));
-  if (data_end <= in.size()) out.trailer.assign(in.begin() + data_end, in.end());
   return true;
 }
 
-Bytes Epk8Write(const Epac& e) {
+// The consistent layout: the flag's (bit 0 at group +6), then the magic's, then the other.
+bool ReadAnyTable(const Bytes& in, uint64_t file_size, std::vector<RawGroup>& out, bool& wide, uint32_t& used) {
+  if (!IsArchive(in)) return false;
+  const bool magic16 = !std::memcmp(in.data(), "EPK8", 4);
+  const bool flag16 = Le32(&in[0x800]) && (Le16(&in[0x806]) & 1);
+  for (bool w : {flag16, magic16, !magic16})
+    if (ReadTable(in, w, file_size, out, &used)) {
+      wide = w;
+      return true;
+    }
+  return false;
+}
+
+}  // namespace
+
+bool EpacTable(const Bytes& head, uint64_t file_size, std::vector<EpacRow>& rows, bool* wide) {
+  rows.clear();
+  std::vector<RawGroup> gs;
+  bool w = false;
+  uint32_t used = 0;
+  if (!ReadAnyTable(head, file_size, gs, w, used)) return false;
+  for (const auto& g : gs)
+    for (const auto& [name, at] : g.entries)
+      rows.push_back({g.type, name, 0x4000 + uint64_t(at.first) * 0x800, at.second * 0x100});
+  if (wide) *wide = w;
+  return true;
+}
+
+bool EpacRead(const Bytes& in, Epac& out) {
+  std::vector<RawGroup> gs;
+  bool wide = false;
+  uint32_t used = 0;
+  if (!ReadAnyTable(in, in.size(), gs, wide, used)) return false;
+  out = {};
+  out.epk8 = !std::memcmp(in.data(), "EPK8", 4);
+  out.wide = wide;
+  out.header.assign(in.begin(), in.begin() + 0x800);
+  bool any_extra = false, sectors = true;
+  for (const auto& g : gs) {
+    EpacGroup eg;
+    eg.type = g.type;
+    eg.number = g.number;
+    eg.extra = g.extra;
+    if (g.extra) {
+      any_extra = true;
+      if (g.entries.empty() || g.entries.front().second.first != g.extra) sectors = false;
+    }
+    for (const auto& [name, at] : g.entries) {
+      const size_t off = 0x4000 + size_t(at.first) * 0x800, size = size_t(at.second) * 0x100;
+      if (off + size > in.size()) return false;
+      eg.entries.push_back({name, Bytes(in.begin() + ptrdiff_t(off), in.begin() + ptrdiff_t(off + size))});
+    }
+    out.groups.push_back(std::move(eg));
+  }
+  out.group_sectors = any_extra && sectors;
+  out.toc_extra = int32_t(Le32(&in[4]) - used);
+  const size_t data_end = 0x4000 + size_t(Le32(&in[8]));
+  if (data_end <= in.size()) out.trailer.assign(in.begin() + ptrdiff_t(data_end), in.end());
+  return true;
+}
+
+Bytes EpacWrite(const Epac& e) {
   Bytes out(e.header);
   out.resize(0x800, 0);
+  const size_t esz = e.wide ? 16 : 12, nlen = e.wide ? 8 : 4;
   Bytes toc, body;
   uint32_t used = 0;
   for (const auto& g : e.groups) {
     AppName(toc, g.type, 4);
-    const size_t at = toc.size();
-    toc.resize(at + 8);
-    PutLe32(&toc[at], uint32_t(g.entries.size() * 4) | uint32_t(g.number) << 16);
-    PutLe32(&toc[at + 4], g.extra);
+    AppLe32(toc, uint32_t(g.entries.size() * (esz / 4)) | uint32_t(g.number) << 16);
+    Pad(body, 0x800);
+    AppLe32(toc, e.group_sectors ? uint32_t(body.size() / 0x800) : g.extra);
     for (const auto& en : g.entries) {
       Pad(body, 0x800);
-      AppName(toc, en.name, 8);
+      AppName(toc, en.name, nlen);
       AppLe32(toc, uint32_t(body.size() / 0x800));
       AppLe32(toc, uint32_t((en.data.size() + 0xFF) / 0x100));
       App(body, en.data);
       Pad(body, 0x100);
     }
-    used += 12 + 16 * uint32_t(g.entries.size());
+    used += 12 + uint32_t(esz * g.entries.size());
   }
   Pad(body, 0x800);
   toc.resize(0x3800, 0);
   App(out, toc);
   PutLe32(&out[4], uint32_t(int32_t(used) + e.toc_extra));
-  PutLe32(&out[8], uint32_t(body.size()));
-  App(out, body);
-  if (!e.trailer.empty()) App(out, e.trailer);
-  else out.resize(out.size() + 0x800, 0);
-  return out;
-}
-
-bool EpacRead(const Bytes& in, Epac& out) {
-  if (in.size() >= 0x4000 && !std::memcmp(in.data(), "EPK8", 4)) return Epk8Read(in, out);
-  if (in.size() < 0x4000 || std::memcmp(in.data(), "EPAC", 4)) return false;
-  out = {};
-  out.header.assign(in.begin(), in.begin() + 0x800);
-  size_t p = 0x800;
-  while (p + 12 <= 0x4000) {
-    if (!Le32(&in[p])) break;
-    EpacGroup g;
-    g.type.assign(reinterpret_cast<const char*>(&in[p]), 4);
-    const uint32_t cnt = Le32(&in[p + 4]) / 3;
-    p += 12;
-    for (uint32_t i = 0; i < cnt; ++i, p += 12) {
-      const size_t off = 0x4000 + size_t(Le32(&in[p + 4])) * 0x800;
-      const size_t size = size_t(Le32(&in[p + 8])) * 0x100;
-      if (off + size > in.size()) return false;
-      g.entries.push_back({std::string(reinterpret_cast<const char*>(&in[p]), 4),
-                           Bytes(in.begin() + off, in.begin() + off + size)});
-    }
-    out.groups.push_back(std::move(g));
-  }
-  const size_t data_end = 0x4000 + size_t(Le32(&in[8]));
-  if (data_end <= in.size()) out.trailer.assign(in.begin() + data_end, in.end());
-  return true;
-}
-
-Bytes EpacWrite(const Epac& e) {
-  if (e.epk8) return Epk8Write(e);
-  Bytes out(e.header);
-  out.resize(0x800, 0);
-  Bytes toc, body;
-  for (const auto& g : e.groups) {
-    AppName(toc, g.type, 4);
-    AppLe32(toc, uint32_t(g.entries.size() * 3));
-    AppLe32(toc, 0);
-    for (const auto& en : g.entries) {
-      Pad(body, 0x800);
-      AppName(toc, en.name, 4);
-      AppLe32(toc, uint32_t(body.size() / 0x800));
-      AppLe32(toc, uint32_t((en.data.size() + 0xFF) / 0x100));
-      App(body, en.data);
-      Pad(body, 0x100);
-    }
-  }
-  Pad(body, 0x800);
-  const uint32_t toc_size = uint32_t(toc.size());  // (+4: the game reads only this much of the table)
-  toc.resize(0x3800, 0);
-  App(out, toc);
-  PutLe32(&out[4], toc_size);
   PutLe32(&out[8], uint32_t(body.size()));
   App(out, body);
   if (!e.trailer.empty()) App(out, e.trailer);
