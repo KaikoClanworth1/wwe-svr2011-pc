@@ -29,6 +29,12 @@ Games:
             wwe13_entrance.py finds it); its bodies use the IK stream
     wwe2k14 WWE 2K14 - the same; move records in createmode.pac, categories coded (templates from
             every category)
+    svr2007 / svr2008 / svr2009  SvR 2007-2009 - their m.pac banks are 2011's YMKs banks without the
+            16-byte header (same 0x7d body records, same move ids as 2011): the tracks are copied (Sabu's
+            make08 method) - every x / y of the move, 2008-only event ops 192 / 193 dropped, jumps to the
+            move pointed at the new id - into the banks of a 2011 template of the same kind (its record,
+            EXH / sound / MBD records, sound frames scaled to the new length). Moves on the old YMBs banks
+            (submissions, taunts) aren't read yet.
 
 How a move is made (the WWE '13 Mankind moves' method): the attacker (y 0) and the victim
 (y 1) of every x the template has are the source's blocks 0 and 1, one key a frame at 30 Hz,
@@ -62,7 +68,11 @@ GAMES = [
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
     dict(id='svr2010', name='WWE SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='research'),
+    dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
+    dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
+    dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
 ]
+OLD = ('svr2007', 'svr2008', 'svr2009')
 READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
 # WWE '12 ZMVM category -> SvR 2011 MVMT bank (moveset menu categories)
 CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 'GRND', 'CORN': 'CORN',
@@ -234,6 +244,201 @@ class Game14(Game13):
         self._index = None
 
 
+class Game0789:
+    """SvR 2007-2009: misc.pac MOVS/WAZE (144-byte records, name +0x10, id +0x88); every m.pac bank whose
+    data reads as a YMKs bank once given the 16-byte header (the old YMBs ones don't)."""
+
+    def __init__(self, src, work=None):
+        import pickle
+        import svr10_moves as SM
+        self.src, self.SM = src, SM
+        g = read_pac(open(src.get('pac/misc.pac'), 'rb').read())
+        raw = unz(dict(((t, n), b) for t, es in g for n, b in es)[(b'MOVS', b'WAZE')])
+        self.waze = {}
+        for q in range(0, len(raw) - 143, 144):
+            nm = raw[q + 0x10:q + 0x50].split(b'\0')[0]
+            if len(nm) > 2 and all(32 <= c < 127 for c in nm):
+                self.waze.setdefault(struct.unpack_from('<H', raw, q + 0x88)[0], nm.decode('latin1').strip())
+        self.groups = SM.read_epac(src.get('pac/m.pac'))[1]
+        cache = os.path.join(work, 'index0789.pkl') if work else None
+        if cache and os.path.exists(cache):
+            self.banks = pickle.load(open(cache, 'rb'))
+        else:
+            self.banks = {}   # path -> [(id, x, y, frames)]
+            for t, es in self.groups:
+                for n, b in es:
+                    self._walk(SM.unpack(b), [t.decode('latin1').strip(), n.decode('latin1').strip()])
+            if cache:
+                os.makedirs(work, exist_ok=True)
+                pickle.dump(self.banks, open(cache, 'wb'))
+        self._index = None
+        self.skipped = []
+
+    @staticmethod
+    def as_bank(raw):
+        import ymks
+        if len(raw) < 0x104 or raw[:4] in (b'PACH', b'YMKs', b'YMBs', b'PAC '):
+            return None
+        n = struct.unpack_from('<I', raw, 0x100)[0]
+        if not 0 < n < 20000 or 0x104 + 16 * n > len(raw):
+            return None
+        try:
+            return ymks.read_bank(b'YMKs' + struct.pack('<I', 0x100) + bytes(8) + raw)
+        except Exception:   # noqa: BLE001
+            return None
+
+    def _walk(self, raw, path):
+        if raw[:4] == b'PACH':
+            for i, d in svrfmt.pach_read(raw):
+                self._walk(self.SM.unpack(d), path + ['%x' % i])
+            return
+        b = self.as_bank(raw)
+        if b is not None:
+            self.banks['/'.join(path)] = [(e['id'], e['x'], e['y'], e['frames']) for e in b.entries]
+
+    def bank(self, path):
+        parts = path.split('/')
+        blob = self.SM.entry_get(self.groups, parts[0].ljust(4).encode(), parts[1].ljust(4).encode())
+        raw = self.SM.tree_get(blob, [int(x, 16) for x in parts[2:]])
+        return self.as_bank(raw)
+
+    def index(self):
+        """{move id: {x: (bank group, path)}} - per move, the bank with the most of its tracks"""
+        if self._index is None:
+            best = {}
+            for path, ents in self.banks.items():
+                cnt = {}
+                for mid, x, y, fr in ents:
+                    cnt[mid] = cnt.get(mid, 0) + 1
+                for mid, c in cnt.items():
+                    if c > best.get(mid, (0, ''))[0] or (c == best[mid][0] and path.startswith('MOT/')):
+                        best[mid] = (c, path)
+            self._index = {}
+            for mid, (c, path) in best.items():
+                for m2, x, y, fr in self.banks[path]:
+                    if m2 == mid:
+                        self._index.setdefault(mid, {})[x] = (path.split('/')[1], path)
+        return self._index
+
+
+def clean_events08(evs, old, new):
+    """2008-only event ops 192 / 193 dropped; jumps (ops 49 / 50) to the move -> its new id"""
+    out = []
+    for e in evs:
+        if e and e[0] in (192, 193):
+            continue
+        e = bytearray(e)
+        if e and e[0] in (49, 50) and len(e) >= 3 and struct.unpack_from('<H', e, 1)[0] == old:
+            struct.pack_into('<H', e, 1, new)
+        out.append(bytes(e))
+    return out
+
+
+def convert0789(a, rep, outdir, g):
+    import ymks
+    mid = int(a['item'])
+    idx = g.index()
+    if mid not in idx:
+        raise BadInput("%s has no motion for move %d on a YMKs bank" % (a['game'], mid))
+    name = (a.get('name') or g.waze.get(mid) or 'MOVE %d' % mid)[:63]
+    path0 = idx[mid][min(idx[mid])][1]
+    b8 = g.bank(path0)
+    tracks = [e for e in b8.entries if e['id'] == mid]
+    e00 = next((e for e in tracks if e['x'] == 0 and e['y'] == 0), tracks[0])
+    nf = e00['frames']
+    rep['notes'].append('source bank %s: %d tracks, %d frames' % (path0, len(tracks), nf))
+    e01 = next((e for e in tracks if e['x'] == 0 and e['y'] == 1), None)
+    gap = None
+    if e01 is not None:
+        try:
+            gap = start_gap(ymks.body_keys(e00['data'], b8.T), ymks.body_keys(e01['data'], b8.T))
+        except Exception:   # noqa: BLE001
+            gap = None
+    progress(25, '2011 banks')
+    g11 = a.get('_g11') or Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
+    tid, how = (int(a['template']), 'option') if a.get('template') else (None, '')
+    paired = e01 is not None
+    if not tid and mid in g11.waze and any(g11.waze[mid][0]):   # (2011 keeps the move's record - cut
+        bits = g11.waze[mid][0]                                           # ones have no category bits)
+        same = {i for i, (b, n) in g11.waze.items() if b == bits and i in g11.moved}
+        if same:
+            tid = choose_template(g11, '', nf, gap, same, paired)
+            how = 'the same move category bits, the closest start gap and length'
+    if not tid:
+        tid = choose_template(g11, '', nf, gap, None, paired)
+        how = ('two-person moves: ' if paired else 'one-person moves (a strike): ') + 'the closest start gap and length'
+    if not tid or tid not in g11.waze:
+        raise BadInput('no 2011 template move; give --template')
+    if a.get('id'):
+        new_id, why = int(a['id']), 'option'
+    elif mid in g11.waze and mid not in g11.moved and mid > 1000:
+        new_id, why = mid, 'the same id: a record 2011 keeps without a motion'
+    else:
+        new_id, why = g11.free_record(name)
+    if not new_id:
+        raise RuntimeError('no free 2011 move record')
+    rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], how))
+    rep['notes'].append('2011 id %d (%s)' % (new_id, why))
+    pack = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')[:40] or 'move_%d' % mid
+    pd = os.path.join(outdir, pack)
+    os.makedirs(os.path.join(pd, 'motions'), exist_ok=True)
+    lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
+    progress(50, 'tracks')
+    dlen = None
+    nmot = 0
+    for path, kind, ks in g11.banks_of(tid):
+        if kind != 'YMKs':
+            rep['dropped'].append('bank %s (%s)' % (path, kind))
+            continue
+        pac, bank = g11.bank(path)
+        if dlen is None:
+            d0 = bank.find(tid, 0, 0)
+            dlen = d0['frames'] if d0 else None
+        packed = path.startswith('MOTP')
+        for e in tracks:
+            x, y = e['x'], e['y']
+            if path.startswith('MVMT') and (x, y) not in ((0, 0), (0, 1)) and not any(xx == x for xx, yy in ks):
+                continue   # (menu banks: the body tracks only)
+            keys = None
+            if y in (0, 1, 2):
+                try:
+                    keys = ymks.body_keys(e['data'], b8.T, False)
+                except Exception:   # noqa: BLE001
+                    keys = None
+            if keys is not None:
+                for k in keys:
+                    k['events'] = clean_events08(k['events'], mid, new_id)
+                    if not k.get('has_pose', True):
+                        k['root'] = k['bones'] = None
+                data = ymks.build_motion(keys, max(1, e['frames']), packed=packed and y in (0, 1))
+            else:
+                if packed:
+                    continue   # (MOTP: the characters only)
+                data = e['data']
+            fn = 'motions/%d_%d_%d_%s.ymk' % (new_id, x, y, path.replace('/', '').lower())
+            open(os.path.join(pd, fn), 'wb').write(data)
+            lines.append('motion %s %s %d %d %d %d %s' % (pac, path, new_id, x, y, e['frames'], fn))
+            nmot += 1
+    scale = nf / float(dlen or nf)
+    for kind, grp, r, ev in g11.records(tid):
+        r = bytearray(r)
+        struct.pack_into('<H', r, 0, new_id)
+        if kind == 'evt':   # (sound frames to the new length)
+            ev2 = bytearray(ev)
+            for o in range(0, len(ev2) - 3, 4):
+                sid, fr = struct.unpack_from('<Hh', ev2, o)
+                struct.pack_into('<Hh', ev2, o, sid, int(round(fr * scale)))
+            lines.append('evt %d %s %s' % (grp, bytes(r).hex(), bytes(ev2).hex()))
+        else:
+            lines.append('%s %d %s' % (kind, grp, bytes(r).hex()))
+    open(os.path.join(pd, 'pack.txt'), 'w', newline='\n').write('\n'.join(lines) + '\n')
+    rep['notes'].append('%d motions, the source\'s tracks copied (%d frames; template %s)' % (nmot, nf, dlen))
+    rep['dropped'].append('2008-only event ops 192 / 193; the source\'s own sounds (the template\'s, retimed)')
+    rep.update(ok=True, out=pd, folder=pd, id=new_id, name=name, template=tid)
+    progress(100, 'done')
+    return rep
+
+
 def waze_records(raw):
     """{move id: name} from a MOVS/WAZE table: 160-byte records (name +0x10, id +0x90) on a grid whose
     start differs by game ('12 0x430): the start where the most records hold a readable name"""
@@ -329,9 +534,13 @@ class Game11:
                     out.append(('mbd', i, r, b''))
         return out
 
-    def free_record(self, name=None):
-        """a record 2011 keeps without motions (a cut move): the one named `name`, else the first"""
+    def free_record(self, name=None, near=None):
+        """a record 2011 keeps without motions (a cut move): the one named `name`, else the first. near: a
+        template id - only records in its thousand (a taunt in 9000-9999: an in-match taunt on a record
+        elsewhere, 3894, wasn't found - Sabu's 9040 was)"""
         free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000]
+        if near is not None and any(i // 1000 == near // 1000 for i in free):
+            free = [i for i in free if i // 1000 == near // 1000]
         if name:
             for i in free:
                 if norm(self.waze[i][1]) == norm(name):
@@ -355,7 +564,7 @@ def start_gap(k0, k1):
     return ((r0[0] - r1[0]) ** 2 + (r0[2] - r1[2]) ** 2) ** 0.5
 
 
-def choose_template(g11, cat, frames, gap=None):
+def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
     the attacker / victim start distance (a running move needs a running template) and the length"""
     import ymks
@@ -364,12 +573,16 @@ def choose_template(g11, cat, frames, gap=None):
         if not path.startswith('MVMT/' + (cat.strip() if cat else '')) or kind != 'YMKs':
             continue
         ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} & {k[0] for k in keys if k[1] == 0 and k[2] == 1}
+        if not paired:   # (a one-person move - a strike: the victim reacts with its own motion)
+            ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} - {k[0] for k in keys if k[2] == 1}
         if not ids:
             continue
         pac, bank = g11.bank(path)
         for e in bank.entries:
             if e['id'] in ids and e['x'] == 0 and e['y'] == 0:
                 if e['id'] not in g11.waze:   # (motions without a move record: wazecopy needs one)
+                    continue
+                if allowed is not None and e['id'] not in allowed:
                     continue
                 if any(kd == 'YMBs' for p, kd, ks in g11.banks_of(e['id'])):
                     continue
@@ -445,7 +658,9 @@ def convert(a, rep):
     if g is None:
         src = sp.Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
         progress(2, 'reading the game')
-        g = open_game(a, src)
+        g = open_game(a, src, os.path.join(outdir, '.work_cache'))
+    if a['game'] in OLD:
+        return convert0789(a, rep, outdir, g)
     try:
         mid = int(a['item'])
     except ValueError:
@@ -493,8 +708,9 @@ def convert(a, rep):
         raise BadInput('no 2011 template move (category %s); give --template' % cat11)
     if a.get('id'):
         new_id, why = int(a['id']), 'option'
-    else:
-        new_id, why = g11.free_record(name)
+    else:   # (a YMBs template - a taunt: a record in its thousand)
+        ymb = any(kd == 'YMBs' for p, kd, ks in g11.banks_of(tid))
+        new_id, why = g11.free_record(name, tid if ymb else None)
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], 'option' if a.get('template') else
@@ -600,7 +816,9 @@ def convert(a, rep):
     return rep
 
 
-def open_game(a, src):
+def open_game(a, src, work=None):
+    if a['game'] in OLD:
+        return Game0789(src, work or os.path.join(HERE, 'work', 'm0789_' + a['game']))
     if a['game'] == 'wwe13':
         return Game13(src, a.get('svrmod'))
     if a['game'] == 'wwe2k14':
