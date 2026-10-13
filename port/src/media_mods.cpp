@@ -5,6 +5,8 @@
 //
 //   video.<id>=<file.bik>    that superstar's entrance (titantron) video
 //   theme.<id>=<song>        his entrance theme (.mp3 / .m4a / .wav / ...)
+//   theme_gain.<id>=<dB>     that theme's level, -20..+6 (the Mod Maker's
+//                            loudness match; 0 / none: as the file is)
 //   render.<id>=<file.dds>   his select / menu renders: 512 x 512 DXT5
 //   bust.<id>=<file.dds>     ... the 256 x 256 bust
 //   icon.<id>=<file.dds>     ... the 64 x 64 face icon
@@ -258,9 +260,14 @@ void InstallMediaMods(rex::memory::Memory* memory) {
         }
       } else if (KeyId(k, "theme.", id)) {
         const std::string name = MediaName(p, "theme", id);
-        if (fs::exists(p.folder / v, ec) &&
-            CopyIfChanged(p.folder / v, UserMusicFolder() / (name + fs::path(v).extension().string())))
+        const fs::path to = UserMusicFolder() / (name + fs::path(v).extension().string());
+        if (fs::exists(p.folder / v, ec) && CopyIfChanged(p.folder / v, to)) {
           g_themes[id] = name;
+          float gain = 0.0f;
+          for (const auto& [gk, gv] : p.lines)
+            if (gk == "theme_gain." + std::to_string(id)) gain = float(std::atof(gv.c_str()));
+          SetSongGain(to, gain);
+        }
       } else if (k.rfind("sound.", 0) == 0 || k == "menu_music") {
         if (fs::exists(p.folder / v, ec)) g_sounds[k == "menu_music" ? "Menu_Music" : k.substr(6)] = p.folder / v;
       } else if (KeyId(k, "arena.", id) && id < 100) {
