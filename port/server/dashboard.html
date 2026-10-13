@@ -94,6 +94,8 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       <div class="s" id="s-down"></div></div>
     <div class="tile"><div class="k">Online play (relay)</div><div class="v" id="v-relay">&ndash;</div>
       <div class="s" id="s-relay"></div></div>
+    <div class="tile"><div class="k">Online matches (30 days)</div><div class="v" id="v-net">&ndash;</div>
+      <div class="s" id="s-net"></div></div>
   </div>
 
   <h2>History <span class="spacer"></span>
@@ -244,6 +246,15 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       el('v-relay').innerHTML = (n.relay_games || 0) + '<small> game' + (n.relay_games === 1 ? '' : 's') + ' now</small>';
       el('s-relay').textContent = (t.today.sessions || 0) + ' joined today · ' + (t.all.sessions || 0) + ' in all · ' +
         (t.all.relayed || 0).toLocaleString() + ' packets';
+      var g = d.net || {matches: 0, path: {}, nat: {}, rtt: {}, steps: {}};
+      function pct(o, k) { return g.matches ? Math.round((o[k] || 0) * 100 / g.matches) + '%' : '0%'; }
+      el('v-net').innerHTML = g.matches + '<small> reported</small>';
+      el('s-net').textContent = 'direct ' + pct(g.path, 'direct') + ' · relay ' + pct(g.path, 'relay') + ' · LAN ' +
+        pct(g.path, 'lan') + ' · NAT: cone ' + pct(g.nat, 'cone') + ', symmetric ' + pct(g.nat, 'symmetric') +
+        ', router-mapped ' + pct(g.nat, 'mapped') + ', unknown ' + pct(g.nat, 'unknown') +
+        (Object.keys(g.steps).length ? ' (symmetric steps ' + Object.keys(g.steps).map(function (k) {
+          return (k === '99' ? 'random' : k) + ': ' + g.steps[k]; }).join(', ') + ')' : '') +
+        ' · ping ' + Object.keys(g.rtt).map(function (k) { return '≤' + (k === '100000' ? '∞' : k) + ' ms: ' + g.rtt[k]; }).join(', ');
       hist = d.history; charts();
       el('err').textContent = '';
     }).catch(function (e) { el('err').textContent = 'Stats: ' + e.message; });

@@ -279,6 +279,9 @@ class Stats:
                     peak INTEGER, players INTEGER, uploads INTEGER, downloads INTEGER,
                     logins INTEGER, registrations INTEGER, refused INTEGER);
                 CREATE TABLE IF NOT EXISTS player_days (day TEXT, account INTEGER, PRIMARY KEY (day, account));
+                CREATE TABLE IF NOT EXISTS netreports (
+                    day TEXT, version TEXT, path TEXT, nat TEXT, step INTEGER, rtt INTEGER, count INTEGER,
+                    PRIMARY KEY (day, version, path, nat, step, rtt));
             """)
             # (online play through the relay, added later: games open at once, games
             # that came on, packets passed on)
@@ -405,6 +408,7 @@ class Service:
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
         edge = getattr(args, "relay_edge", None)
+        self.netreport_last = {}  # account id -> its last match report (memory only)
         self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0),
                                  edge=(edge.rsplit(":", 1)[0], int(edge.rsplit(":", 1)[1])) if edge else None,
                                  secret=relay.rl.read_secret(args.relay_secret) if edge else None)
@@ -639,6 +643,54 @@ class Service:
 
     def lb_names(self):
         return {a["id"]: a["name"] for a in self.accounts.all()}
+
+    # The games' per-match connection reports (p2p.cpp): how online matches
+    # connected - only counts per day, nothing about who or from where.
+    NET_PATHS = ("direct", "relay", "lan")
+    NET_NATS = ("cone", "symmetric", "mapped", "open", "unknown")
+    NET_RTT = (50, 100, 150, 250, 400, 100000)  # (upper bounds, ms)
+
+    async def api_netreport(self, request):
+        account = self.account(request)
+        if not account:
+            return web.json_response({"ok": False}, status=401)
+        last = self.netreport_last.get(account["id"], 0)
+        if now() - last < 20:  # (one a match: a few a minute at most)
+            return web.json_response({"ok": False}, status=429)
+        self.netreport_last[account["id"]] = now()
+        try:
+            body = await request.json()
+            path, nat = str(body.get("path")), str(body.get("nat"))
+            step = max(-1000, min(1000, int(body.get("step") or 0)))
+            rtt = max(0, int(body.get("rtt") or 0))
+            version = re.sub(r"[^0-9A-Za-z.\-]", "", str(body.get("version") or ""))[:24] or "?"
+        except (ValueError, TypeError, AttributeError):
+            return web.json_response({"ok": False}, status=400)
+        if path not in self.NET_PATHS or nat not in self.NET_NATS:
+            return web.json_response({"ok": False}, status=400)
+        step = step if abs(step) <= 16 else 99  # (a small steady step: port prediction can follow it)
+        rtt = next(b for b in self.NET_RTT if rtt <= b)
+        with self.store.lock:
+            self.store.db.execute(
+                "INSERT INTO netreports VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT (day, version, path, nat, step, rtt) "
+                "DO UPDATE SET count = count + 1", (time.strftime("%Y-%m-%d"), version, path, nat, step, rtt))
+            self.store.db.commit()
+        return web.json_response({"ok": True})
+
+    def netreport_summary(self, days=30):
+        since = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 86400))
+        out = {"matches": 0, "path": {}, "nat": {}, "rtt": {}, "steps": {}}
+        with self.store.lock:
+            rows = self.store.db.execute("SELECT path, nat, step, rtt, SUM(count) FROM netreports WHERE day >= ? "
+                                         "GROUP BY path, nat, step, rtt", (since,)).fetchall()
+        for path, nat, step, rtt, n in rows:
+            out["matches"] += n
+            out["path"][path] = out["path"].get(path, 0) + n
+            out["nat"][nat] = out["nat"].get(nat, 0) + n
+            out["rtt"][str(rtt)] = out["rtt"].get(str(rtt), 0) + n
+            if nat == "symmetric":
+                out["steps"][str(step)] = out["steps"].get(str(step), 0) + n
+        return out
 
     async def api_stats(self, request):
         account = self.account(request)
@@ -912,6 +964,7 @@ class Service:
             },
             "history": {"step": step, "rows": history,
                         "columns": ["t"] + list(Stats.COLUMNS)},
+            "net": self.netreport_summary(),
         })
 
     def _free_space(self):
@@ -1081,6 +1134,7 @@ class Service:
         app.router.add_post(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/invite", self.api_invite)
         app.router.add_post(b + "/api/stats/{what}", self.api_stats)
+        app.router.add_post(b + "/api/netreport", self.api_netreport)
         app.router.add_route("*", b + "/api/logo/{hash}", self.api_logo)
         app.router.add_get(b + "/api/logos/wanted", self.api_logos_wanted)
         app.router.add_post(b + "/api/media", self.api_media_post)

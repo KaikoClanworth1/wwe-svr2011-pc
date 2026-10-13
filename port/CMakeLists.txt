@@ -267,8 +267,8 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${doc_path}")
     endforeach()
     add_executable(svr2011_modmaker WIN32
-        modmaker/app.cpp modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/simple_star.cpp modmaker/signs_page.cpp modmaker/backgrounds_page.cpp
-        modmaker/media_page.cpp modmaker/moves_page.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
+        modmaker/app.cpp modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/simple_star.cpp modmaker/mod_check.cpp modmaker/signs_page.cpp modmaker/backgrounds_page.cpp
+        modmaker/media_page.cpp modmaker/full_preview.cpp modmaker/audio_out.cpp modmaker/moves_page.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
         modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
         modmaker/tool_run.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c
         modmaker/svrfmt/wwe13.cpp ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack/lzxd.c modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
@@ -288,7 +288,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_MM_VERSION LIMIT_COUNT 1)
     target_compile_definitions(svr2011_modmaker PRIVATE "PORT_VERSION=\"${SVR2011_MM_VERSION}\"")
     target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32
-        mfplat mfreadwrite mfuuid propsys delayimp)
+        mfplat mfreadwrite mfuuid propsys delayimp xaudio2)
     # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
     target_link_options(svr2011_modmaker PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")

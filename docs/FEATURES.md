@@ -90,7 +90,7 @@ still being tested.
 ## New in 2.0.7 *(in progress - not released yet)*
 
 ### Matches
-- **Three Stages of Hell sets**: THREE STAGES OF HELL opens a list of sets - NORMAL / FALLS COUNT ANYWHERE / LAST MAN STANDING, NORMAL / FIRST BLOOD / FINISHERS (a fall counts only within 10 s of a finisher or signature), NORMAL / LAST MAN STANDING / SUBMISSION, and HELL IN A CELL: FIRST BLOOD / LAST MAN STANDING / SUBMISSION (1v1, 2v2, triple threat, fatal-4-way). Count-outs no longer end the whole match.
+- **Three Stages of Hell sets**: THREE STAGES OF HELL opens a list of sets - NORMAL / FALLS COUNT ANYWHERE / LAST MAN STANDING, NORMAL / FIRST BLOOD / FINISHERS (a fall counts only within 10 s of a finisher or signature), NORMAL / LAST MAN STANDING / SUBMISSION, HELL IN A CELL: FIRST BLOOD / LAST MAN STANDING / SUBMISSION, and in a TLC ring TABLE / LADDER / TABLE and TABLE / TLC / LADDER - the prize hangs again after it's pulled down (1v1, 2v2, triple threat, fatal-4-way; switch mod `three_stages_tables_ladders`). Count-outs no longer end the whole match.
 - **Hell in a Cell: Tables & Ladders**: each cell match (1v1, 2v2, triple threat, fatal-4-way) has a version with tables, ladders and chairs inside the cell (switch mod `hiac_tables_ladders`).
 - **Hell in a Cell: Start on the Roof** (each cell submenu, and PORT RULES online): everyone starts on top of the cell; the game's own ways down end the roof fight (thrown off, through the roof, climbing down), then pins count below (switch mod `hiac_roof_start`).
 - **Steel Cage / Inferno: Weapons Inside**: chairs and hand weapons in the ring, no DQ (switch mods `cage_weapons`, `inferno_weapons`).

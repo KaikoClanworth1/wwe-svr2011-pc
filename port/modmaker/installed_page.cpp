@@ -13,6 +13,7 @@
 #include <set>
 
 #include "app.h"
+#include "mod_check.h"
 #include "char_preview.h"
 #include "editor.h"
 #include "svrfmt/arena.h"
@@ -90,6 +91,7 @@ struct View {
 };
 View g_view;
 std::unique_ptr<svrfmt::Arena> g_arena;  // (an arena mod's, shown by the editor's view scene)
+std::string g_arena_name, g_arena_text;  // (what it was shown with: RestoreView)
 
 std::map<int, int> ReadMoveset(const fs::path& f) {
   std::map<int, int> out;
@@ -246,14 +248,15 @@ void Select(int i) {
     if (kFiles.count(ext) && key != "made_with" && !fs::exists(m.dir / fs::u8path(v), ec))
       g_view.problems.push_back(Error("The manifest names " + v + " (" + key + "=) but the folder has no such file."));
   }
-  if (m.text.empty()) g_view.problems.push_back(Error("No manifest.txt: the launcher and the game don't know what this is."));
+  {  // the mod doctor (mod_check.cpp): every rule the game and the launcher apply to this type
+    auto more = CheckModFolder(m.kind, m.dir);
+    g_view.problems.insert(g_view.problems.end(), more.begin(), more.end());
+  }
   if (m.kind == "Superstars" || m.kind == "Attires") {
     g_view.model = (m.dir / (m.kind == "Superstars" ? L"ch.pac" : L"attire.pac")).wstring();
     if (!fs::exists(g_view.model, ec)) {
-      if (m.kind == "Superstars") g_view.problems.push_back(Error("No ch.pac: the superstar has no model."));
       g_view.model.clear();
     } else {
-      BudgetProblems(g_view.model, m.kind == "Superstars" ? "The superstar" : "This attire", m.kind == "Attires", g_view.problems);
       for (int a : ModelAttires(g_view.model))
         if (a <= 4) g_view.attires.push_back({a, g_view.model});
       if (m.kind == "Attires" && g_view.attires.size() > 1) g_view.attires.resize(1);
@@ -263,7 +266,6 @@ void Select(int i) {
         auto it = std::find_if(g_view.attires.begin(), g_view.attires.end(), [&](const auto& p) { return p.first == a; });
         if (it != g_view.attires.end()) it->second = (m.dir / fs::u8path(f)).wstring();
         else g_view.attires.push_back({a, (m.dir / fs::u8path(f)).wstring()});
-        BudgetProblems((m.dir / fs::u8path(f)).wstring(), "Attire " + std::to_string(a), true, g_view.problems);
       }
     std::sort(g_view.attires.begin(), g_view.attires.end());
     std::string mv = Value(m.text, "moves");
@@ -282,6 +284,7 @@ void Select(int i) {
     std::string err;
     if (a->Load(PathStr(m.dir / fs::u8path(file)), &err)) {
       g_arena = std::move(a);
+      g_arena_name = m.name, g_arena_text = m.text;
       editor::ViewArena(g_arena.get(), m.name, m.text);
     } else {
       g_view.problems.push_back(Error("The arena didn't read: " + err + "."));
@@ -427,8 +430,19 @@ void PackView() {
 
 void TestSelect(const std::string& spec) { g_test_select = spec; }
 
+// The arena shown again in the editor's read-only view (after the Full preview used that view).
+void RestoreView() {
+  if (g_arena) editor::ViewArena(g_arena.get(), g_arena_name, g_arena_text);
+}
+
+std::vector<Problem> g_set_problems;   // CheckInstalledSet: the mods together
+std::wstring g_set_for;                 // (the game folder it was made for)
+std::vector<Problem> g_file_problems;  // the last "Check a .svrmod..."
+std::string g_file_checked;
+
 void Draw() {
   if (g_scanned_for != g_game) Scan();
+  if (g_set_for != g_game) g_set_problems = CheckInstalledSet(), g_set_for = g_game;
   if (!g_test_select.empty()) {  // (test aid: "<kind>/<folder>[,<move>[,<key>]]")
     const size_t c = g_test_select.find(',');
     if (c != std::string::npos) std::sscanf(g_test_select.c_str() + c + 1, "%d,%d", &g_test_move, &g_test_key);
@@ -450,9 +464,26 @@ void Draw() {
   Heading("Installed mods", "Every mod in the game folder's Mods, to look at: superstars with their model, attires and moves "
                             "played here, move packs on any superstar, arenas and the picture mods. Read-only unless you click.");
   ImGui::BeginChild("mods_list", ImVec2(300 * g_scale, 0), true);
-  if (ImGui::SmallButton("Rescan")) Scan();
+  if (ImGui::SmallButton("Rescan")) Scan(), g_set_problems = CheckInstalledSet();
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Check a .svrmod...")) {
+    const std::wstring f = PickFile(false, L"A mod to check (.svrmod)", kModFilter, 1);
+    if (!f.empty()) g_file_problems = CheckSvrmod(f), g_file_checked = FileName(f);
+  }
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Checks a mod file the way the game and the launcher will read it, without installing it.");
   ImGui::SameLine();
   if (ImGui::SmallButton(("The open project: " + std::string(PageName(g_project_page))).c_str())) GoTo(g_project_page);
+  if (!g_file_checked.empty()) {
+    if (ImGui::TreeNodeEx("filecheck", ImGuiTreeNodeFlags_DefaultOpen, "%s: %s", g_file_checked.c_str(), g_file_problems.empty() ? "nothing wrong found" : "to check")) {
+      if (!g_file_problems.empty()) DrawProblems(g_file_problems);
+      if (ImGui::SmallButton("Close##fc")) g_file_checked.clear();
+      ImGui::TreePop();
+    }
+  }
+  if (!g_set_problems.empty() && ImGui::TreeNodeEx("setcheck", ImGuiTreeNodeFlags_DefaultOpen, "Your mods together (%d)", int(g_set_problems.size()))) {
+    DrawProblems(g_set_problems);
+    ImGui::TreePop();
+  }
   if (g_mods.empty()) ImGui::TextWrapped("No mods in %s.", PathStr(fs::path(g_game) / L"Mods").c_str());
   std::string last;
   bool open = true;

@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "mod_check.h"
 #include "char_preview.h"
 #include "pac_attires.h"
 #include "svrfmt/pac.h"
@@ -121,7 +122,7 @@ void Install() {
       Status("Could not write into " + PathStr(dir) + " (is the game running?)");
       return;
     }
-  Status("Installed into " + PathStr(dir) + ": the attire is on CHANGE ATTIRE from the next game start.");
+  Status("Installed into " + PathStr(dir) + ": the attire is on CHANGE ATTIRE from the next game start." + InstallReport("Attires", dir));
 }
 
 // The attires of a superstar that installed, switched-on attire mods ask for (attire=1-4; this mod's own folder and
@@ -349,8 +350,19 @@ void Draw() {
       ImGui::SameLine();
       if (ImGui::SmallButton("Show it##gear")) char_preview::SetAttire(from_k ? from_k : g_at.from), char_preview::SetGear(true);
     }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(Busy());
+    if (ImGui::SmallButton("From another superstar...##gear")) ImGui::OpenPopup("gear_donor");
+    ImGui::EndDisabled();
+    int donor = 0;
+    if (star_page::GearDonorPopup("gear_donor", donor))
+      star_page::GearTransplant(g_at.model, g_at.from, donor, [](const std::wstring& made) {
+        g_at.model = made, g_at.gear.clear();
+        char_preview::SetGear(true);
+        Touch();
+      });
     Hint("A coat, hat or shirt worn only for the entrance (the model's EMD kind 4 for that attire: the whole wrestler in it). "
-         "Leave it out to walk out in the attire itself.");
+         "Leave it out to walk out in the attire itself; From another superstar fits their coat or hat onto this model.");
   }
   TextField("Name on CHANGE ATTIRE", g_at.name, sizeof g_at.name, "e.g. 2003 GEAR");
   if (star_page::PickEntrance("Entrance (optional)", g_at.entrance, "the superstar's")) Touch();

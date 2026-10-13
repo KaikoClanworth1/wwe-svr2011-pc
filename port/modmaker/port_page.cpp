@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "app.h"
+#include "full_preview.h"
 #include "json.h"
 #include "svrfmt/disc.h"
 #include "tool_run.h"
@@ -57,6 +58,7 @@ char g_options[256] = "";      // extra converter options (advanced)
 // --port-test: the steps run by themselves (list, convert, open)
 std::string g_test_item;
 int g_force_kind = -1;  // (the test's tab: ImGui reports the first tab selected until SetSelected takes)
+bool g_test_fp = false;         // (--port-fullpreview: an entrance test's result opens in the Full preview)
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
@@ -501,6 +503,20 @@ void DiscRow() {
 }  // namespace
 
 void TestClear() { CacheJob(false, true); }
+void TestFullPreview() { g_test_fp = true; }
+// The ported entrance (g_result: its move pack and number), played whole by `who` before it is installed.
+int g_fp_who = 139;
+void PortedEntrancePreview(const Json& item) {
+  full_preview::Request r;
+  r.entrance = std::atoi(g_result["number"].Str().c_str());
+  r.star = g_fp_who;
+  r.model = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_fp_who) + L".pac")).wstring();
+  r.pack = Wide(g_result["out"].Str());
+  r.title = (item["name"].Str().empty() ? ItemKey(item) : item["name"].Str()) + " (ported)";
+  Log("port: full preview of entrance " + std::to_string(r.entrance) + " from " + g_result["out"].Str());
+  full_preview::Open(r);
+}
+
 // A kind's steps: the game, the list, convert, the result.
 void KindBody(int k) {
   ImGui::TextDisabled("%s", kKinds[k].about);
@@ -561,7 +577,12 @@ void KindBody(int k) {
   if (g_test_stage == 2 && !Busy() && (g_result.type == Json::Type::kObject || !g_result_error.empty())) {
     Log("port test: convert " + (g_result_error.empty() ? "ok: " + g_result["out"].Str() : "FAILED: " + g_result_error));
     g_test_stage = 3;
-    if (g_result_error.empty()) OpenResult();
+    if (g_result_error.empty()) {
+      if (g_test_fp && std::wstring(kKinds[k].script) == L"entrance_port.py" && g_pick >= 0 && g_pick < int(g_list.items.size()))
+        PortedEntrancePreview(g_list.items[size_t(g_pick)]);
+      else
+        OpenResult();
+    }
   }
   ImGui::BeginDisabled(Busy());
   if (ImGui::Button(g_list_for == want ? "List again" : "3. List what's on the disc")) List(k, game);
@@ -656,8 +677,21 @@ void KindBody(int k) {
     if (const int t = std::atoi(g_result["template"].Str().c_str()); t > 0)  // (moves: what it was built on)
       ImGui::TextDisabled("Built on the 2011 move %s (%d)%s; record %s. Not right? Pick a template above and convert again.",
                           MoveName(t).c_str(), t, g_template > 0 ? "" : ", picked automatically", g_result["id"].Str().c_str());
-    if (g_result["opens"].Str() == "moves")
+    if (g_result["opens"].Str() == "moves" && std::wstring(kKinds[k].script) != L"entrance_port.py")
       ImGui::TextColored(kWarn, "To use it in matches, put it in a superstar's moveset (the Moves page, or a superstar's Moveset section).");
+    if (std::wstring(kKinds[k].script) == L"entrance_port.py" && std::atoi(g_result["number"].Str().c_str()) > 0) {
+      // the ported entrance, played whole before it is installed: its own pack is looked in first
+      const StarInfo* w = StarById(g_fp_who);
+      ImGui::SetNextItemWidth(220 * g_scale);
+      if (ImGui::BeginCombo("##fpwho", w ? w->name.c_str() : "a superstar", ImGuiComboFlags_HeightLarge)) {
+        for (const auto& st : Stars())
+          if (ImGui::Selectable((st.name + "##fp" + std::to_string(st.id)).c_str(), st.id == g_fp_who)) g_fp_who = st.id;
+        ImGui::EndCombo();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Full preview")) PortedEntrancePreview(item);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("The whole ported entrance in the practice arena, worn by the superstar picked here.");
+    }
     for (const char* list : {"warnings", "dropped", "notes"}) {
       const Json& v = g_result[list];
       for (const auto& w : v.items)

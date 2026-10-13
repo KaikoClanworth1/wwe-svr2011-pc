@@ -24,8 +24,11 @@ PORT = os.path.dirname(HERE)
 G11 = os.environ.get('SVR2011_GAME_PAC', r'D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Game Files\pac')
 ROOT = os.path.dirname(os.path.dirname(PORT))  # D:\Xbox Games Ports
 EXTRACT = {'svr2007': 'SvR2007 Extract', 'svr2008': 'SvR2008 Extract', 'svr2009': 'SvR2009 Extract',
-           'svr2010': 'SvR2010 Extract', 'wwe12': 'WWE12 Extract', 'wwe13': 'WWE13 Extract', 'wwe2k14': 'WWE2K14 Extract'}
-NATIVE = ('wwe12', 'wwe13', 'wwe2k14')
+           'svr2010': 'SvR2010 Extract', 'wwe12': 'WWE12 Extract', 'wwe13': 'WWE13 Extract', 'wwe2k14': 'WWE2K14 Extract',
+           # (no extract: read from the disc image)
+           'wwe2k15': r'D:\Roms\Xbox 360\WWE\WWE 2K15.iso', 'wwe2k16': r'D:\Roms\Xbox 360\WWE\WWE 2K16.iso',
+           'wwe2k17': r'D:\Roms\Xbox 360\WWE\WWE 2K17.iso'}
+NATIVE = ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17')
 # conversions run at idle priority (the user's CPU rule); the test game itself does not
 IDLE = 0x40 if os.name == 'nt' else 0  # IDLE_PRIORITY_CLASS
 
@@ -43,8 +46,13 @@ def out_dir(a):
 def arenas(game):
     src = os.path.join(ROOT, EXTRACT[game])
     if game in NATIVE:
-        bg = os.path.join(src, 'pac', 'bg')
-        names = sorted(n for n in os.listdir(bg) if re.fullmatch(r'bg\d\d\.pac', n.lower()))
+        if src.lower().endswith('.iso'):
+            import discfs
+            with discfs.open(src) as d:
+                names = sorted(n for n in d.listdir('pac/bg') if re.fullmatch(r'bg\d\d\.pac', n.lower()))
+        else:
+            bg = os.path.join(src, 'pac', 'bg')
+            names = sorted(n for n in os.listdir(bg) if re.fullmatch(r'bg\d\d\.pac', n.lower()))
         return [{'key': n[:-4].lower(), 'name': n[:-4].lower(), 'arena': int(n[2:4])} for n in names]
     r = subprocess.run([sys.executable, os.path.join(HERE, 'arena_port.py'), 'list', '--game', game, '--src', src],
                        capture_output=True, text=True)
@@ -62,7 +70,13 @@ def convert(a, game, it, slot, pac_out):
     notes = []
     if game in NATIVE:
         host = os.path.join(G11, 'bg', 'bg%02d.pac' % slot)
-        r = subprocess.run([a.svrmod, 'wwe13', os.path.join(src, 'pac', 'bg', it['key'] + '.pac'), host, pac_out],
+        source = os.path.join(src, 'pac', 'bg', it['key'] + '.pac')
+        if src.lower().endswith('.iso'):  # the arena's pac out of the disc image, for svrmod
+            import discfs
+            source = os.path.join(out_dir(a), 'src_%s_%s.pac' % (game, it['key']))
+            with discfs.open(src) as d:
+                open(source, 'wb').write(d.read('pac/bg/' + next(n for n in d.listdir('pac/bg') if n.lower() == it['key'] + '.pac')))
+        r = subprocess.run([a.svrmod, 'wwe13', source, host, pac_out],
                            capture_output=True, text=True, creationflags=IDLE)
         text = (r.stdout + r.stderr).strip().splitlines()
         notes = [l.strip() for l in text if l.strip().startswith(('models', 'entry', 'texture', 'ring model', 'light sets'))
@@ -188,7 +202,7 @@ def table(a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('cmd', choices=['run', 'table'])
-    ap.add_argument('--games', default='svr2007,svr2008,svr2009,svr2010,wwe12,wwe13,wwe2k14')
+    ap.add_argument('--games', default='svr2007,svr2008,svr2009,svr2010,wwe12,wwe13,wwe2k14,wwe2k15,wwe2k16,wwe2k17')
     ap.add_argument('--only')
     ap.add_argument('--retry', action='store_true')
     ap.add_argument('--runs', default=r'D:\Xbox Games Ports\SvR2011 Arenas\port\runs')

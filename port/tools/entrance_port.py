@@ -897,6 +897,8 @@ def titantron(src, a, entrance, out, rep):
     v = opt(a, '--titantron')
     n = int(v) if v and v.isdigit() else entrance
     found = None
+    # (2K15+: ent_<id>_<variant>_0.bk2, the PRO's movie being id * 100 + variant)
+    ent = ('ent_%04d_%d_0' % (n // 100, n % 100)) if n >= 10000 else None
     for d in TITANTRON_DIRS:
         try:
             names = src.listdir(d)
@@ -904,7 +906,7 @@ def titantron(src, a, entrance, out, rep):
             continue
         for f in names:
             stem, ext = os.path.splitext(f)
-            if stem.isdigit() and int(stem) == n and ext.lower() in ('.bik', '.bik2', '.bk2'):
+            if (stem.isdigit() and int(stem) == n or stem.lower() == ent) and ext.lower() in ('.bik', '.bik2', '.bk2'):
                 found = d + '/' + f
                 break
         if found:

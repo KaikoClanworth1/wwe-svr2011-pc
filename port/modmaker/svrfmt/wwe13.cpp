@@ -207,6 +207,40 @@ bool XcompressDecode(const Bytes& d, Bytes& out, std::string* error) {
   return true;
 }
 
+// WWE 2K17 arena pacs: xcompressed 'HSPC' instead of EPAC. The stage index is an
+// 'SHDC' block in PACH's place: u32 count at +0x38, table at u32 +0x1C of
+// {u32 entry id, u32 offset (from the SHDC), u32 size, u32 0}; the entries are
+// 2K14's ("ZLIB" packed, the same ids and formats).
+bool ShdcRead13(const Bytes& d, size_t s, std::vector<PachEntry>& out);
+
+bool HspcStage13(const Bytes& in, std::vector<PachEntry>& se) {
+  Bytes plain;
+  const Bytes* d = &in;
+  if (IsXcompress(in)) {
+    if (!XcompressDecode(in, plain, nullptr)) return false;
+    d = &plain;
+  }
+  if (d->size() < 0x40 || std::memcmp(d->data(), "HSPC", 4)) return false;
+  for (size_t s = 0; s + 0x40 <= d->size(); s += 0x800)
+    if (!std::memcmp(&(*d)[s], "SHDC", 4)) return ShdcRead13(*d, s, se) && !se.empty();
+  return false;
+}
+
+// An 'SHDC' block at `s` of `d` -> its entries (as stored)
+bool ShdcRead13(const Bytes& d, size_t s, std::vector<PachEntry>& out) {
+  if (s + 0x40 > d.size() || std::memcmp(&d[s], "SHDC", 4)) return false;
+  const uint32_t n = Le32(&d[s + 0x38]), t = Le32(&d[s + 0x1C]);
+  if (s + t + size_t(n) * 16 > d.size()) return false;
+  out.clear();
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* r = &d[s + t + 16 * i];
+    const size_t off = s + Le32(r + 4), size = Le32(r + 8);
+    if (off + size > d.size()) return false;
+    out.push_back({Le32(r), Bytes(d.begin() + off, d.begin() + off + size)});
+  }
+  return true;
+}
+
 bool ArchiveRead(const Bytes& in, Epac& out, std::string* error) {
   auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
   Bytes plain;
@@ -1212,12 +1246,14 @@ bool DropHangingScreens(Model& m) {
 bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13Options& opt, Bytes& out,
                          Wwe13Report& rep, std::string* error) {
   auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
-  Epac src;
-  if (!ArchiveRead(wwe13, src, error)) return false;
   std::vector<PachEntry> se;
-  for (const auto& g : src.groups)
-    for (const auto& e : g.entries)
-      if (IsPach(e.data) && se.empty()) PachRead(e.data, se);
+  if (!HspcStage13(wwe13, se)) {  // (WWE 2K17's container; else EPAC / EPK8)
+    Epac src;
+    if (!ArchiveRead(wwe13, src, error)) return false;
+    for (const auto& g : src.groups)
+      for (const auto& e : g.entries)
+        if (IsPach(e.data) && se.empty()) PachRead(e.data, se);
+  }
   if (se.empty()) return fail("WWE '13 file: no stage index (PACH)");
   Arena host;
   if (!host.LoadData(host_file, error)) return false;
@@ -1310,6 +1346,12 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       continue;
     }
     Bytes raw = Unpack(e.data);
+    // 2K17 nests 'SHDC' blocks where 2K14 has PACHs (its crowd packs 0x4E20 / 0x4E2A: left
+    // as they were, the crowd was missing): the same entries, written as a PACH
+    if (raw.size() >= 4 && !std::memcmp(raw.data(), "SHDC", 4)) {
+      std::vector<PachEntry> kids;
+      if (ShdcRead13(raw, 0, kids)) raw = PachWrite(kids);
+    }
     if (IsJboy(raw)) {
       Model m;
       std::string err;

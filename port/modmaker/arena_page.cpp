@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include "app.h"
+#include "mod_check.h"
 #include <shellapi.h>
 
 #include "editor.h"
@@ -316,9 +317,9 @@ bool InstallFiles(const BuildJob& job, const std::vector<ZipEntry>& files) {
       return false;
     }
   if (job.backstage)
-    Status(std::string("Installed: backstage brawls in the ") + kAreas[job.area].name + " play it (" + PathStr(dir) + ").");
+    Status(std::string("Installed: backstage brawls in the ") + kAreas[job.area].name + " play it (" + PathStr(dir) + ")." + InstallReport("Backstage", dir));
   else
-    Status("Installed: it is on the arena select pages after the game's arenas (" + PathStr(dir) + ").");
+    Status("Installed: it is on the arena select pages after the game's arenas (" + PathStr(dir) + ")." + InstallReport("Arenas", dir));
   return true;
 }
 

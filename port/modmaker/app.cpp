@@ -4,6 +4,7 @@
 // signs_page.cpp, backgrounds_page.cpp, media_page.cpp, moves_page.cpp, assets_page.cpp,
 // anims_page.cpp, icons_page.cpp, help_page.cpp; the 3D editor is editor.cpp.
 #include "app.h"
+#include "mod_check.h"
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -20,6 +21,7 @@
 
 #include "char_preview.h"
 #include "editor.h"
+#include "full_preview.h"
 #include "tool_run.h"
 extern "C" {
 #include "../launcher/movie_maker.h"
@@ -2028,6 +2030,7 @@ void Draw() {
   if (log_h) LogPanel(log_h);
   StatusBar();
   ImGui::End();
+  full_preview::Draw();  // (its own window, over the page)
   // Ctrl+S saves the project
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && Hooks(g_project_page)) ProjectSave(false);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
@@ -2223,6 +2226,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--assets-source") && more) assets_page::TestSource(argv[++i]), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--test-pac-edit") && more) pac_editor::TestEdit(argv[++i]), g_page = PageId::kAssets;
     else if (!wcscmp(argv[i], L"--perf-tour") && more) perf_tour = argv[++i];
+    else if (!wcscmp(argv[i], L"--port-fullpreview")) port_page::TestFullPreview();  // with --port-test on an entrance: its result in the Full preview
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
@@ -2297,6 +2301,29 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
       return 0;
     }
+    else if (!wcscmp(argv[i], L"--check-mods") && more) {  // <out>: every installed mod checked (mod_check), then quit (--game first)
+      const std::wstring out = argv[++i];
+      std::string text;
+      auto put = [&](const std::string& who, const std::vector<Problem>& p) {
+        for (const auto& x : p) text += who + (x.error ? " | MUST FIX | " : " | check | ") + x.text + (x.fix.empty() ? "" : " | " + x.fix) + "\n";
+      };
+      put("(set)", CheckInstalledSet());
+      std::error_code ec;
+      for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes"})
+        for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / kind, ec))
+          if (e.is_directory(ec) && e.path().filename().wstring()[0] != L'.') put(std::string(kind) + "/" + Utf8(e.path().filename().wstring()), CheckModFolder(kind, e.path()));
+      WriteFile(Utf8(out), Bytes(text.begin(), text.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--check-svrmod") && more) {  // <file>,<out>: a .svrmod checked, then quit
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      std::string text;
+      for (const auto& x : CheckSvrmod(v.substr(0, c))) text += std::string(x.error ? "MUST FIX | " : "check | ") + x.text + "\n";
+      if (text.empty()) text = "clean\n";
+      if (c != std::wstring::npos) WriteFile(Utf8(v.substr(c + 1)), Bytes(text.begin(), text.end()));
+      return 0;
+    }
     else if (!wcscmp(argv[i], L"--rig-selftest")) {  // the rig mapper against each known rig's standard names
       const auto fails = RigSelfTest();
       std::string out = "rig self test: " + std::to_string(fails.size()) + " failed\n";
@@ -2324,6 +2351,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       }
     }
     else if (!wcscmp(argv[i], L"--installed") && more) installed_page::TestSelect(Utf8(argv[++i])), g_page = PageId::kInstalled;
+    else if (!wcscmp(argv[i], L"--full-preview") && more) {  // <entrance>,<star>[,<key>[,<camera 0/1>]]: the Full preview
+      int e = -1, s = -1, cam = 1;
+      float key = -1;
+      std::swscanf(argv[++i], L"%d,%d,%f,%d", &e, &s, &key, &cam);
+      full_preview::TestOpen(e, s, key, cam != 0);
+    }
+    else if (!wcscmp(argv[i], L"--full-preview-song") && more) full_preview::TestSong(argv[++i]);
+    else if (!wcscmp(argv[i], L"--full-preview-movie") && more) full_preview::TestMovie(argv[++i]);
     else if (!wcscmp(argv[i], L"--moves-put") && more) moves_page::TestPut(argv[++i]), g_page = PageId::kMoves;
     else if (!wcscmp(argv[i], L"--pac-attires") && more) attire_page::TestPacAttires(argv[++i]), g_page = PageId::kAttire;
     else if (!wcscmp(argv[i], L"--pose-compare") && more) anims_page::TestCompare(argv[++i]), g_page = PageId::kAnims;
@@ -2372,6 +2407,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
     else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views
+    else if (!wcscmp(argv[i], L"--star-gear-fbx") && more) star_page::TestGearFbx(Utf8(argv[++i]));  // <attire>:<fbx>: fit the FBX gear, log, quit
+    else if (!wcscmp(argv[i], L"--star-gear-from") && more) star_page::TestGearFrom(Utf8(argv[++i]));  // <attire>:<donor id>: fit the donor's entrance gear, log, quit
     else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
     else if (!wcscmp(argv[i], L"--hits")) char_preview::SetHits(true);
     else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac>[,<save .svrmod>]

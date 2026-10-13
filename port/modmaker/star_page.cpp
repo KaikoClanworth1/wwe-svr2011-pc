@@ -13,10 +13,12 @@
 #include <thread>
 
 #include "app.h"
+#include "mod_check.h"
 #include "char_preview.h"
 #include "json.h"
 #include "pac_attires.h"
 #include "star_page_internal.h"
+#include "full_preview.h"
 #include "rig_map.h"
 #include "svrfmt/char_fbx.h"
 #include "svrfmt/pac.h"
@@ -94,6 +96,8 @@ std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
 int g_test_simple = -1;   // --simple <step>
 std::string g_test_gear;  // --star-gear <attire>:<op>,...
+std::string g_test_gear_fbx;  // --star-gear-fbx <attire>:<fbx>
+std::string g_test_gear_from;  // --star-gear-from <attire>:<donor id>: the transplant, the log to <work>\gear.log, quit
 std::wstring g_test_take;  // --simple-take <svrmod>,<0 look | 1 everything>
 bool g_test_take_all = false;
 bool g_test_fbx_make = false;
@@ -866,7 +870,7 @@ void Install(bool start) {
         Status("Could not write into " + PathStr(dir) + " (is the game running?)");
         return;
       }
-    Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ").");
+    Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ")." + InstallReport("Superstars", dir));
     if (start) StartGame();
   });
 }
@@ -1314,6 +1318,135 @@ int GearShown(int a) {
   return 0;
 }
 
+// The Full preview (full_preview.cpp) of entrance n for this project: its superstar in the attire the preview
+// shows, in that attire's entrance gear (GearShown), with the project's theme, titantron and move pack.
+void OpenFullPreview(int n) {
+  full_preview::Request r;
+  r.entrance = n;
+  r.star = kStyles[g_star.style].template_id;
+  const int gear = GearShown(g_view_attire);
+  const auto [pac, in] = AttireSource(gear ? gear : g_view_attire);
+  r.model = !pac.empty() ? pac : StyleChPac();
+  r.attire = !pac.empty() ? in : 1;
+  r.gear = gear != 0;
+  r.song = g_star.song, r.movie = g_star.movie, r.pack = g_star.pack;
+  r.title = g_star.name[0] ? g_star.name : "your superstar";
+  full_preview::Open(r);
+}
+
+const std::vector<int>& GearDonors() {
+  static std::vector<int> v;
+  static bool done = false;
+  if (done) return v;
+  done = true;
+  for (const auto& st : Stars()) {
+    PacIndex idx;
+    char id[8];
+    std::snprintf(id, sizeof id, "%06d", st.id);
+    if (ReadPacIndex(fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(st.id) + L".pac"), idx))
+      for (const auto& e : idx.entries)
+        if (e.group == "EMD " && e.name.size() == 8 && e.name.compare(0, 6, id) == 0 && e.name[7] == '4') {
+          v.push_back(st.id);
+          break;
+        }
+  }
+  return v;
+}
+
+bool GearDonorPopup(const char* id, int& picked) {
+  bool hit = false;
+  if (ImGui::BeginPopup(id)) {
+    ImGui::TextDisabled("Whose entrance gear?");
+    for (int d : GearDonors()) {
+      const StarInfo* s = StarById(d);
+      if (ImGui::Selectable(((s ? s->name : std::to_string(d)) + "##gd" + std::to_string(d)).c_str())) picked = d, hit = true, ImGui::CloseCurrentPopup();
+    }
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(300 * g_scale);
+    ImGui::TextDisabled("Coats, jackets, hats and robes carry over. A shirt painted on the skin (Cena's) doesn't.");
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
+  }
+  return hit;
+}
+
+void GearTransplant(const std::wstring& target, int attire, int donor, std::function<void(const std::wstring&)> done) {
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"gear";
+  std::error_code ec;
+  fs::create_directories(work, ec);
+  const std::wstring stem = fs::path(target).stem().wstring() + L"_a" + std::to_wstring(attire) + L"_gear" + std::to_wstring(donor);
+  const std::wstring out = (work / (stem + L".pac")).wstring(), report = (work / (stem + L".json")).wstring();
+  const std::wstring donor_pac = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(donor) + L".pac")).wstring();
+  fs::remove(out, ec);
+  const StarInfo* who = StarById(donor);
+  const std::string name = who ? who->name : std::to_string(donor);
+  Status("Fitting " + name + "'s entrance gear ...");
+  const bool started = RunToolJson(L"svr11_build.py", {L"--gear-from", donor_pac + L",1", L"--onto", target + L"," + std::to_wstring(attire), out, report},
+                                   [out, name, done](int code, const std::string& text) {
+    Json j;
+    const bool parsed = ParseJson(text, j);
+    if (code != 0 || !fs::exists(out) || (parsed && !j["ok"].Truthy())) {
+      const std::string why = parsed ? j["error"].Str() : std::string();
+      Status(name + "'s entrance gear couldn't be fitted" + (why.empty() ? std::string(" (see the log).") : ": " + why));
+      Log("gear: " + text);
+      return;
+    }
+    for (const char* list : {"notes", "warnings"})
+      for (const auto& w : j[list].items) Log("  gear: " + w.Str());
+    Status(name + "'s entrance gear fitted: " + j["gear_meshes"].Str() + " pieces, " + j["extra_bones"].Str() + " extra bones, " + j["pages"].Str() +
+           " of 192 memory pages.");
+    done(out);
+  });
+  if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
+}
+
+// Entrance gear from an FBX: the pieces (a coat or hat skinned to a humanoid rig) posed onto this model's body
+// (FbxToBuildInput with it as the template, automatic bone matching), then svr11_build --gear-json --onto.
+void GearFromFbx(const std::wstring& target, int attire, const std::wstring& fbx, std::function<void(const std::wstring&)> done) {
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"gear" / (fs::path(fbx).stem().wstring() + L"_gear");
+  const std::wstring out = (work.parent_path() / (fs::path(target).stem().wstring() + L"_a" + std::to_wstring(attire) + L"_fbxgear.pac")).wstring();
+  Status("Fitting the gear from " + Utf8(fs::path(fbx).filename().wstring()) + " ...");
+  RunInBackground([target, attire, fbx, work, out, done] {
+    Progress("Posing the gear onto the model ...");
+    std::vector<FbxBone> fb;
+    std::string err;
+    Bytes pac;
+    FbxImportReport rep;
+    FbxImportOptions opts;
+    opts.gear_json = true;
+    bool ok = ReadFbxSkeleton(Utf8(fbx), fb, err) && ReadFile(Utf8(target), pac);
+    if (ok) {
+      std::vector<RigBone> rb;
+      for (const auto& b : fb) rb.push_back({b.name, b.parent});
+      ok = FbxToBuildInput(Utf8(fbx), MapRig(rb), pac, Utf8(target), PathStr(work), rep, opts);
+    }
+    for (const auto& w : rep.warnings) Log("  gear FBX: " + w);
+    if (!ok) {
+      Status("The gear FBX couldn't be read: " + (rep.warnings.empty() ? err : rep.warnings.front()));
+      return;
+    }
+    WhenIdle([target, attire, work, out, done] {
+      const std::wstring report = out.substr(0, out.size() - 4) + L".json";
+      const bool started = RunToolJson(L"svr11_build.py", {L"--gear-json", (work / L"gear.json").wstring(), L"--onto", target + L"," + std::to_wstring(attire), out, report},
+                                       [out, done](int code, const std::string& text) {
+        Json j;
+        const bool parsed = ParseJson(text, j);
+        if (code != 0 || !fs::exists(out) || (parsed && !j["ok"].Truthy())) {
+          const std::string why = parsed ? j["error"].Str() : std::string();
+          Status("The gear couldn't be fitted" + (why.empty() ? std::string(" (see the log).") : ": " + why));
+          Log("gear: " + text);
+          return;
+        }
+        for (const char* list : {"notes", "warnings"})
+          for (const auto& w : j[list].items) Log("  gear: " + w.Str());
+        Status("The gear is fitted: " + j["gear_meshes"].Str() + " pieces, " + j["pages"].Str() + " of 192 memory pages.");
+        done(out);
+      });
+      if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
+    });
+  });
+}
+
 void GearRows(bool simple) {
   if (g_star.model.empty()) return;
   const std::vector<int> own_gear = GearOf(g_star.model);
@@ -1354,6 +1487,46 @@ void GearRows(bool simple) {
         if (off) g_star.gear[a] = "off";
         else g_star.gear.erase(a);
         Touch();
+      }
+    }
+    {
+      ImGui::SameLine();
+      ImGui::BeginDisabled(Busy());
+      if (ImGui::SmallButton("From another superstar...")) ImGui::OpenPopup("gear_donor");
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(Busy());
+      if (ImGui::SmallButton("From a 3D model...")) {
+        const std::wstring f = PickFile(false, L"The gear as an FBX (a coat or hat skinned to a humanoid rig)", kFbxFilter, 1);
+        if (!f.empty()) {
+          const int at = a;
+          const bool own = pac == g_star.model;
+          GearFromFbx(pac, in, f, [at, own](const std::wstring& made) {
+            if (own) g_star.model = made;
+            else g_star.attires[at - 1] = made;
+            g_star.gear.erase(at);
+            g_view_attire = at;
+            char_preview::SetGear(true);
+            Touch();
+          });
+        }
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("A coat, jacket, hat or robe made in Blender (or any 3D program), skinned to a humanoid rig\n"
+                          "(the Mod Maker matches its bones by name, as for a whole model): fitted onto this attire's body.");
+      int donor = 0;
+      if (GearDonorPopup("gear_donor", donor)) {
+        const int at = a;
+        const bool own = pac == g_star.model;
+        GearTransplant(pac, in, donor, [at, own](const std::wstring& made) {
+          if (own) g_star.model = made;
+          else g_star.attires[at - 1] = made;
+          g_star.gear.erase(at);
+          g_view_attire = at;
+          char_preview::SetGear(true);
+          Touch();
+        });
       }
     }
     if (pac == g_star.model) {  // (the same model: another of its attires' gear)
@@ -1592,6 +1765,28 @@ void Draw() {
       if (const size_t c = item.find(':'); c != std::string::npos) g_star.gear[std::atoi(item.c_str())] = item.substr(c + 1);
       a = b + 1;
     }
+    if (const size_t c = g_test_gear_from.find(':'); c != std::string::npos && !g_star.model.empty()) {
+      const int at = std::atoi(g_test_gear_from.c_str()), donor = std::atoi(g_test_gear_from.c_str() + c + 1);
+      auto finish = [] {
+        WriteLogTo((fs::path(g_game) / L"Mods" / L".convert" / L"gear" / L"gear.log").wstring());
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      };
+      WhenIdle([at, donor, finish] {
+        GearTransplant(g_star.model, at, donor, [finish](const std::wstring& made) { g_star.model = made, Log("test: gear fitted " + Utf8(made)), finish(); });
+      });
+      // (a failure closes too: after the tool, Busy() is false and the model unchanged)
+    }
+    if (const size_t c = g_test_gear_fbx.find(':'); c != std::string::npos && !g_star.model.empty()) {
+      const int at = std::atoi(g_test_gear_fbx.c_str());
+      const std::wstring fbx = Wide(g_test_gear_fbx.substr(c + 1));
+      WhenIdle([at, fbx] {
+        GearFromFbx(g_star.model, at, fbx, [](const std::wstring& made) {
+          g_star.model = made, Log("test: gear fitted " + Utf8(made));
+          WriteLogTo((fs::path(g_game) / L"Mods" / L".convert" / L"gear" / L"gear.log").wstring());
+          PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+        });
+      });
+    }
     if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
@@ -1652,17 +1847,14 @@ void Draw() {
     ImGui::SetNextItemWidth(320 * g_scale);
     if (ImGui::SliderInt(kAttributes[k], &g_star.ratings[k], 1, 99)) g_star.ratings_set = true;
   }
-  {  // the overall (D13): the average of the seven, as the select screens' rating
-    int sum = 0;
-    for (int k = 0; k < 7; ++k) sum += g_star.ratings[k];
-    const int overall = (sum + 3) / 7;
+  {  // the overall (D13), as the game works it out from the seven
     ImGui::SetNextItemWidth(320 * g_scale);
     ImGui::BeginDisabled();
-    int shown = overall;
-    ImGui::SliderInt("Overall", &shown, 1, 99);
+    int shown = OverallRating(g_star.ratings);
+    ImGui::SliderInt("Overall", &shown, 1, 100);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled("(the average of the seven)");
+    ImGui::TextDisabled("(the game's: from the seven together)");
   }
   {  // height=: the model's size from its feet
     ImGui::SetNextItemWidth(236 * g_scale);
@@ -1704,6 +1896,9 @@ void Draw() {
   if (ImGui::CollapsingHeader("More: entrance, announcer, abilities, moves")) {
     ImGui::Indent();
     if (EntrancePicker("Entrance", g_star.entrance, "The style's")) Touch();
+    ImGui::SameLine();
+    if (ImGui::Button("Full preview")) OpenFullPreview(g_star.entrance >= 0 ? g_star.entrance : kStyles[g_star.style].template_id);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The whole entrance in the practice arena: its camera, the theme, the titantron.");
     Hint("The entrance motions and pyro (the music and movie are the files above): any the game has - every "
          "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
          "(the Port page makes them from other games). Attires 2-4 can have their own.");
@@ -2228,6 +2423,8 @@ bool TakeFromMod(const std::wstring& svrmod, bool everything) {
 
 void TestSimple(int step) { g_test_simple = step; }
 void TestGear(const std::string& spec) { g_test_gear = spec; }
+void TestGearFrom(const std::string& spec) { g_test_gear_from = spec; }
+void TestGearFbx(const std::string& spec) { g_test_gear_fbx = spec; }
 void TestSimpleTake(const std::wstring& svrmod, bool everything) { g_test_take = svrmod, g_test_take_all = everything; }
 void TestFbxMake() { g_test_fbx_make = true; }
 void TestFbxReport(const std::wstring& out) {  // with --star-fbx: the import report to <out> (automatic mapping), quit

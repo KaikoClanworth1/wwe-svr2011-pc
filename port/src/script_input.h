@@ -60,6 +60,9 @@ bool ScriptMenuState(uint32_t* group, uint32_t* row);
 int ScriptMenuRow(uint32_t group, const std::string& label, int* rows);
 std::string ScriptMenuTexts(uint32_t group);
 uint32_t ScriptMenuSelects(uint32_t* group, uint32_t* row);
+// The menu table the game reads when the port changed it (match_types.cpp:
+// its rows added) - the steps' row places come from it, not menu.pac's.
+void ScriptMenuTable(const uint8_t* table, size_t size);
 
 using rex::X_RESULT;
 using rex::X_STATUS;

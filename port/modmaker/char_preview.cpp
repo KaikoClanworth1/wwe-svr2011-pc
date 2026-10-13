@@ -302,6 +302,7 @@ struct Channel {
   float scale = 1;
   std::vector<int32_t> v;  // keys
 };
+struct HandPose;
 struct Motion {
   int keys = 0;  // rotation keys (30 a second)
   std::array<Channel, 3> root;
@@ -315,6 +316,9 @@ struct Motion {
   };
   std::vector<HandEvent> hands;
   std::vector<std::pair<int, int>> attack;  // (frame, group mask): op 40 sets the attack spheres' groups, op 41 clears (0)
+  // an entrance's finger tracks (the entrant's y3 = left, y2 = right: one library-style record a frame, docs/HAND_POSES.md),
+  // used instead of the op 21 hand poses when there (full_preview.cpp)
+  std::array<std::shared_ptr<const HandPose>, 2> fingers;
 };
 
 // ---- hands: the finger poses (m.pac MVMT/STAT child 99), picked by YMKs event op 21
@@ -719,6 +723,36 @@ float Key(const Channel& c, float at, bool angle, float unit) {
 bool EpacEntry(const fs::path& file, const char* group, const char* name, Bytes& out);
 
 // The hand library, once (m.pac MVMT/STAT, PACH child 99: a YMKs bank of poses by id).
+// A track of hand-pose records (the library's, and an entrance's finger tracks): per record, after its
+// events, 5-byte sub-records [k][count][s8 x][s8 y][s8 z] (k: finger joint 0-14 left, 15-29 right).
+HandPose ParseHandRecords(const uint8_t* d, size_t size, int frames) {
+  HandPose hp;
+  hp.frames = std::max(1, frames);
+  int frame = 0;
+  for (size_t p = 0; p < size;) {
+    const uint8_t c = d[p];
+    if (c < 0x60) { frame += c, ++p; continue; }
+    size_t sz;
+    if (c == 0x60) {
+      if (p + 3 > size) break;
+      sz = size_t(d[p + 1]) | size_t(d[p + 2]) << 8, p += 3;
+    } else {
+      sz = c - 0x60u, ++p;
+    }
+    if (p + sz > size) break;
+    const uint8_t* r = d + p;
+    p += sz;
+    size_t q = sz && (r[0] & 0x80) ? 1 + (r[0] & 0x7Fu) : 0;
+    for (; q + 5 <= sz; q += 5) {
+      const int k = r[q];
+      if (k >= 30) break;
+      hp.keys[size_t(k)].push_back({frame, int(int8_t(r[q + 2])) * 256, int(int8_t(r[q + 3])) * 256, int(int8_t(r[q + 4])) * 256});
+    }
+    ++frame;
+  }
+  return hp;
+}
+
 void LoadHands(const std::wstring& game) {
   std::lock_guard lock(g_hand_mutex);
   if (g_hand_loaded) return;
@@ -746,45 +780,17 @@ void LoadHands(const std::wstring& game) {
       const uint32_t o = Le32(&bank[0x114 + 16 * j + 4]);
       if (o > off && o < end) end = o;
     }
-    HandPose hp;
-    hp.frames = std::max(1, int(Le32(e + 8)));
-    const uint8_t* d = &bank[base + off];
-    const size_t size = end - off;
-    int frame = 0;
-    for (size_t p = 0; p < size;) {
-      const uint8_t c = d[p];
-      if (c < 0x60) { frame += c, ++p; continue; }
-      size_t sz;
-      if (c == 0x60) {
-        if (p + 3 > size) break;
-        sz = size_t(d[p + 1]) | size_t(d[p + 2]) << 8, p += 3;
-      } else {
-        sz = c - 0x60u, ++p;
-      }
-      if (p + sz > size) break;
-      const uint8_t* r = d + p;
-      p += sz;
-      size_t q = sz && (r[0] & 0x80) ? 1 + (r[0] & 0x7Fu) : 0;
-      for (; q + 5 <= sz; q += 5) {
-        const int k = r[q];
-        if (k >= 30) break;
-        hp.keys[size_t(k)].push_back({frame, int(int8_t(r[q + 2])) * 256, int(int8_t(r[q + 3])) * 256, int(int8_t(r[q + 4])) * 256});
-      }
-      ++frame;
-    }
-    lib[id] = std::move(hp);
+    lib[id] = ParseHandRecords(&bank[base + off], end - off, int(Le32(e + 8)));
   }
   g_hand_lib = std::move(lib);
   g_hand_ready = true;
 }
 
 // A hand pose's angles (s16 codes) for finger bone k at time t (looped for animated poses).
-std::array<float, 3> HandAngles(int id, int k, float t) {
-  const auto it = g_hand_lib.find(id);
-  if (it == g_hand_lib.end()) return {0, 0, 0};
-  const auto& ks = it->second.keys[size_t(k)];
+std::array<float, 3> PoseAngles(const HandPose& hp, int k, float t, bool loop) {
+  const auto& ks = hp.keys[size_t(k)];
   if (ks.empty()) return {0, 0, 0};
-  if (it->second.frames > 1) t = std::fmod(std::max(0.0f, t), float(it->second.frames));
+  if (loop && hp.frames > 1) t = std::fmod(std::max(0.0f, t), float(hp.frames));
   size_t j = 0;
   while (j + 1 < ks.size() && float(ks[j + 1][0]) <= t) ++j;
   std::array<float, 3> v = {float(ks[j][1]), float(ks[j][2]), float(ks[j][3])};
@@ -793,6 +799,11 @@ std::array<float, 3> HandAngles(int id, int k, float t) {
     for (int a = 0; a < 3; ++a) v[size_t(a)] += (float(ks[j + 1][size_t(a) + 1]) - v[size_t(a)]) * f;
   }
   return v;
+}
+std::array<float, 3> HandAngles(int id, int k, float t) {
+  const auto it = g_hand_lib.find(id);
+  if (it == g_hand_lib.end()) return {0, 0, 0};
+  return PoseAngles(it->second, k, t, true);
 }
 
 // The skeleton's body: the 21 animated bones and the limbs (not attachments, fingers, face).
@@ -859,8 +870,11 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vecto
   if (root >= 0)
     local[size_t(root)].t = {Key(m.root[0], 2 * key, false, kMove), Key(m.root[1], 2 * key, false, kMove),
                              Key(m.root[2], 2 * key, false, kMove)};
-  if (g_hand_ready) {  // fingers: the hand poses the motion's events pick (else the ring idle 10 / 210)
+  if (g_hand_ready || m.fingers[0] || m.fingers[1]) {  // fingers: an entrance's tracks, else the hand poses
+    // the motion's events pick (else the ring idle 10 / 210)
     for (int side = 1; side <= 2; ++side) {
+      const HandPose* track = m.fingers[size_t(side - 1)].get();
+      if (!track && !g_hand_ready) continue;
       const Motion::HandEvent* cur = nullptr;
       const Motion::HandEvent* prev = nullptr;
       for (const auto& e : m.hands)
@@ -875,9 +889,9 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vecto
         std::snprintf(name, sizeof name, "%c_yubi%d%d", side == 1 ? 'l' : 'r', k / 3, k % 3);
         const int i = find(name);
         if (i < 0) continue;
-        const auto a = HandAngles(cur_id, bone, since);
+        const auto a = track ? PoseAngles(*track, bone, key, false) : HandAngles(cur_id, bone, since);
         std::array<float, 3> v = a;
-        if (w < 1) {
+        if (w < 1 && !track) {
           const auto b2 = HandAngles(prev_id, bone, prev ? key - float(prev->frame) : key);
           for (int c = 0; c < 3; ++c) v[size_t(c)] = b2[size_t(c)] + (a[size_t(c)] - b2[size_t(c)]) * w;
         }
@@ -1616,6 +1630,140 @@ bool Capture(int size, std::vector<uint8_t>& rgba) {
   }
   st->Release();
   return ok;
+}
+
+// ---- the Full preview (full_preview.cpp): an entrance's tracks decoded apart from the page's motion, the model
+// drawn into another view's target (the arena's) with that view's camera, in game coordinates
+
+struct Clip {
+  Motion m;
+};
+
+namespace {
+// A track's data in a YMKs bank: (start, size, frames), or false.
+bool TrackData(const Bytes& b, int id, int x, int y, const uint8_t** d, size_t* size, int* frames) {
+  if (b.size() < 0x114 || std::memcmp(b.data(), "YMKs", 4)) return false;
+  const uint32_t n = Le32(&b[0x110]);
+  const size_t base = 0x114 + 16 * size_t(n);
+  if (base > b.size()) return false;
+  const size_t dl = b.size() - base;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* e = &b[0x114 + 16 * i];
+    if (e[0] != y || e[1] != x || Le16(e + 2) != id) continue;
+    const uint32_t off = Le32(e + 4);
+    if (off >= dl) return false;
+    size_t end = dl;
+    for (uint32_t j = 0; j < n; ++j) {
+      const uint32_t o = Le32(&b[0x114 + 16 * j + 4]);
+      if (o > off && o < end) end = o;
+    }
+    *d = &b[base + off], *size = end - off, *frames = int(Le32(e + 8));
+    return true;
+  }
+  return false;
+}
+}  // namespace
+
+std::shared_ptr<Clip> DecodeClip(const std::vector<uint8_t>& bank, int id, int x, std::string* err) {
+  auto c = std::make_shared<Clip>();
+  std::string e;
+  if (!DecodeYmks(bank, id, x, 0, c->m, e)) {
+    if (err) *err = e;
+    return nullptr;
+  }
+  for (int side = 0; side < 2; ++side) {  // (y3 left, y2 right)
+    const uint8_t* d = nullptr;
+    size_t size = 0;
+    int frames = 0;
+    if (TrackData(bank, id, x, side == 0 ? 3 : 2, &d, &size, &frames))
+      c->m.fingers[size_t(side)] = std::make_shared<const HandPose>(ParseHandRecords(d, size, frames));
+  }
+  return c;
+}
+
+int ClipKeys(const Clip& c) { return c.m.keys; }
+bool ClipHasFingers(const Clip& c) { return c.m.fingers[0] || c.m.fingers[1]; }
+
+bool ModelReady() {
+  {  // (a model loaded in the background is uploaded here too: no page preview may be drawing)
+    std::lock_guard lock(g_mutex);
+    Slot& sl = g_slots[0];
+    if (sl.pending) Upload(sl, std::move(sl.pending)), sl.pending.reset();
+  }
+  return g_slots[0].ch && !g_slots[0].gpu.empty() && g_vs;
+}
+
+std::vector<TraceKey> ClipTrace(const Clip& clip) {
+  std::vector<TraceKey> out;
+  const Slot& sl = g_slots[0];
+  if (!sl.ch) return out;
+  for (int k = 0; k < std::max(1, clip.m.keys); ++k) {
+    const auto w = Pose(*sl.ch, clip.m, float(k));
+    TraceKey t;
+    for (size_t i = 0; i < w.size(); ++i) {
+      const std::string& n = sl.ch->bones[i].name;
+      if (n == "root") t.x = w[i].t.x, t.z = w[i].t.z;
+      if (n.find("ashi") != std::string::npos || n.find("tsumasaki") != std::string::npos) t.foot = std::max(t.foot, w[i].t.y);
+    }
+    out.push_back(t);
+  }
+  return out;
+}
+
+void RenderInto(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float view[16],
+                const float proj[16], const Clip* clip, float key, const float offset[3]) {
+  Slot& sl = g_slots[0];
+  if (!sl.ch || !g_vs || !clip || sl.gpu.empty()) return;
+  sl.world = Pose(*sl.ch, clip->m, key);
+  Skin(sl, sl.world);  // (written y up: a half turn about x - undone in the matrix)
+  // the skinned (y up) space -> game space (y, z negated), moved by `offset`, then the view
+  float fv[16], viewproj[16];
+  std::memcpy(fv, view, sizeof fv);
+  for (int j = 0; j < 4; ++j)
+    fv[12 + j] += (offset ? offset[0] * view[j] + offset[1] * view[4 + j] + offset[2] * view[8 + j] : 0);
+  for (int j = 0; j < 4; ++j) fv[4 + j] = -fv[4 + j], fv[8 + j] = -fv[8 + j];
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) {
+      float sum = 0;
+      for (int k = 0; k < 4; ++k) sum += fv[i * 4 + k] * proj[k * 4 + j];
+      viewproj[i * 4 + j] = sum;
+    }
+  // camera relative lights (as Render): the camera's axes in the skinned (y up) space
+  const V3 right = Norm(V3{fv[0], fv[4], fv[8]}), up = Norm(V3{fv[1], fv[5], fv[9]}), fwd = Norm(V3{fv[2], fv[6], fv[10]});
+  const V3 key_l = Norm(fwd * -0.55f + up * 0.75f - right * 0.45f), fill = Norm(fwd * -0.6f - up * 0.15f + right * 0.75f);
+  D3D11_VIEWPORT vp = {0, 0, float(w), float(h), 0, 1};
+  g_ctx->RSSetViewports(1, &vp);
+  g_ctx->OMSetRenderTargets(1, &rtv, dsv);
+  g_ctx->OMSetDepthStencilState(g_depth, 0);
+  g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+  g_ctx->RSSetState(g_raster);
+  g_ctx->IASetInputLayout(g_layout);
+  g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  g_ctx->VSSetShader(g_vs, nullptr, 0);
+  g_ctx->PSSetShader(g_ps, nullptr, 0);
+  g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
+  g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
+  g_ctx->PSSetSamplers(0, 1, &g_sampler);
+  for (const GpuMesh& g : sl.gpu) {
+    if (g.blood) continue;
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
+    Cb* c = static_cast<Cb*>(ms.pData);
+    std::memset(c, 0, sizeof *c);
+    std::memcpy(c->viewproj, viewproj, 64);
+    c->flags[0] = g.cutout ? 1.0f : 0.0f;
+    const float k4[4] = {key_l.x, key_l.y, key_l.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
+    std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);
+    g_ctx->Unmap(g_cb, 0);
+    const UINT stride = sizeof(GpuVertex), offset = 0;
+    g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
+    g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
+    ID3D11ShaderResourceView* srv = g.tex;
+    g_ctx->PSSetShaderResources(0, 1, &srv);
+    g_ctx->DrawIndexed(g.count, 0, 0);
+  }
+  ID3D11RenderTargetView* none = nullptr;
+  g_ctx->OMSetRenderTargets(1, &none, nullptr);
 }
 
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx) {

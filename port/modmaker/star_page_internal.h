@@ -65,7 +65,17 @@ struct StarProject {
   std::map<int, std::string> gear;
 };
 extern StarProject g_star;
+// The overall rating as the game works it out (sub_828B7950, used by the select screen's OVERALL list and ~28 more
+// places): the seven attributes summed, x 10/63 (a float), + 0.5 cut toward zero, + 1, at most 100.
+inline int OverallRating(const int r[7]) {
+  int sum = 0;
+  for (int k = 0; k < 7; ++k) sum += r[k];
+  const int v = int(float(sum) * 0.15873015f + 0.5f) + 1;
+  return v > 100 ? 100 : v;
+}
 extern int g_view_attire;  // the attire the preview shows (1-4)
+// The Full preview window (full_preview.cpp) of entrance n for this project (star_page.cpp).
+void OpenFullPreview(int n);
 
 // Simple mode's steps; Problems tag each problem with the step that fixes it (Problem::step).
 enum SimpleStep { kStepName, kStepLook, kStepAttires, kStepMusic, kStepEntrance, kStepMoves, kStepTaunts, kStepPictures,

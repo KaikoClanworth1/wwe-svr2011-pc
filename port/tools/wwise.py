@@ -124,7 +124,7 @@ class Pck:
                 seen.add(o)
                 t, do = objs[o]
                 if t == 2:
-                    for off in (20, 16, 12, 8, 24):   # (the source id: a stream the package has)
+                    for off in (20, 16, 12, 8, 24, 5):   # (the source id: a stream the package has; +5 in v113 banks, 2K16)
                         if off + 4 <= len(do) and struct.unpack_from('>I', do, off)[0] in (streams or self.streams):
                             out.append(struct.unpack_from('>I', do, off)[0])
                             break

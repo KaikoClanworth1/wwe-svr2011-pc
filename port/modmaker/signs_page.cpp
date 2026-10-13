@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "mod_check.h"
 
 namespace mm {
 namespace signs_page {
@@ -82,7 +83,7 @@ void InstallPack() {
       Status("Could not write into " + PathStr(dir) + " (is the game running?)");
       return;
     }
-  Status("Installed: the crowd holds these signs in every match from the next game start (" + PathStr(dir) + ").");
+  Status("Installed: the crowd holds these signs in every match from the next game start (" + PathStr(dir) + ")." + InstallReport("Signs", dir));
 }
 
 void Problems(std::vector<Problem>& p) {
