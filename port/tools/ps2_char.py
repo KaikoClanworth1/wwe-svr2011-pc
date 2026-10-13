@@ -57,6 +57,7 @@ import discfs  # noqa: E402
 SKELETON = json.load(open(os.path.join(HERE, 'svr11_skeleton.json')))
 B11 = {b['name']: b for b in SKELETON['bones']}
 SPECULAR = 48   # colour alpha = specular level (2011 skin: about 40-60)
+CUTOUT_TRIS = 0.15   # an opaque-drawn mesh with more triangle middles on see-through texels is a cut-out too
 
 # a bone's segment: bone -> the child it points at (2011 names)
 SEGMENT = {'koshi': 'mune', 'mune': 'kubi', 'kubi': 'atama'}
@@ -596,6 +597,20 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
     D, Q = pose(body['nodes'])
     P = [nd['world'][3, :3] for nd in body['nodes']]
     # textures used -> png
+    def see_through(name, uvs, tris):
+        """an opaque-drawn mesh that is a cut-out all the same (SvR 2004 on alpha-test every mesh: the 2007 Rock's
+        head cap showed white; not JBI / SYM / HCTP, whose alpha means other things): its texture's alpha is see-through-or-solid (not SYM's gloss masks) and many of its
+        triangles' middles fall on see-through texels (not corners: island edges touch a sheet's unused parts)"""
+        img = tex.get(name.lower())
+        if img is None or not tris:
+            return False
+        al = img[..., 3]
+        if float(((al < 16) | (al > 240)).mean()) < 0.9:
+            return False
+        h, w = al.shape
+        mids = [((uvs[i][0] + uvs[j][0] + uvs[k][0]) / 3, (uvs[i][1] + uvs[j][1] + uvs[k][1]) / 3) for i, j, k in tris]
+        return sum(1 for u, v in mids if al[int(v * h) % h, int(u * w) % w] < 128) / len(mids) > CUTOUT_TRIS
+
     def cutout(sub):
         """whether a PS2 submesh is drawn blended (hair cards, hair lines, laces): its material's flags (u32 at
         +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear); SvR 2004 on: 0x05 opaque,
@@ -669,7 +684,7 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
                             tris.append([a, b, c])
                 if not tris:
                     continue
-                kind = 'eye' if 'eye' in tname.lower() else 'hair' if cutout(sub) else 'skin'
+                kind = 'eye' if 'eye' in tname.lower() else 'hair' if cutout(sub) or (not old_materials and see_through(tname, uvs, tris)) else 'skin'
                 mesh = dict(name='%s_m%d_%d' % (src['name'] or tag, mi, si), kind=kind, positions=pos, normals=nrm,
                             uvs=uvs, bones=bones, weights=wts, triangles=tris, _tex=tname)
                 meshes.append(mesh)
