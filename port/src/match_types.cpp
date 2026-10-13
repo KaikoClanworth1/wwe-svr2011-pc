@@ -40,6 +40,7 @@
 #include "arena_mods.h"
 #include "match_hud.h"
 #include "online_rules.h"
+#include "script_input.h"
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -925,6 +926,7 @@ REX_HOOK_RAW(sub_82BAA6E8) {
     return;
   }
   std::memcpy(base + copy, rows.data(), rows.size());
+  svr2011::ScriptMenuTable(rows.data(), rows.size());  // (scripted tests' "menu" steps: the rows as shown)
   ctx.r4.u64 = copy;
   ctx.r5.u64 = uint32_t(rows.size());
   __imp__sub_82BAA6E8(ctx, base);
