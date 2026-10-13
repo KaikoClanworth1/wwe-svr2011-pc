@@ -1,7 +1,7 @@
 """PS2 superstar models -> SvR 2011 character pacs (superstar mods), through svr11_build.py.
 
     py ps2_char.py --list <disc iso or extract folder>
-    py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> [--attire N|all] [--no-gear]
+    py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> [--attire N[,N..]|all] [--no-gear]
 
 --list prints JSON {game, disc_serial, characters: [{id, name, raw_id, source, attires: [{attire, source,
 bones, meshes}]}]}. The convert writes into <out dir>: model.json (svr11_build's neutral model), tex_*.png
@@ -745,7 +745,7 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
     chars = g.characters()
     if id_ not in chars:
         raise BadInput('no character %x (have %s)' % (id_, ' '.join('%x' % c for c in sorted(chars))))
-    ats = sorted(chars[id_]) if attire == 'all' else [int(attire)]
+    ats = sorted(chars[id_]) if str(attire) == 'all' else [int(x) for x in str(attire).split(',') if x.strip()]
     os.makedirs(out_dir, exist_ok=True)
     model = dict(version=1, template=os.path.abspath(template), attires=[])
     infos = []
@@ -818,7 +818,7 @@ def main(argv):
     ap.add_argument('id', nargs='?')
     ap.add_argument('out', nargs='?')
     ap.add_argument('--template')
-    ap.add_argument('--attire', default='all')
+    ap.add_argument('--attire', default='all', help='all, one attire or a list: 0,2,3 (in this order)')
     ap.add_argument('--no-gear', action='store_true', help='leave the entrance gear out')
     a = ap.parse_args(argv)
     try:
