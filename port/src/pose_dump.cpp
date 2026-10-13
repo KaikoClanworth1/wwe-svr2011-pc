@@ -103,7 +103,10 @@ void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
   const Config& c = Cfg();
   if (!c.on || !Pointer(ch)) return;
   static bool said = false;
-  if (!said) said = true, REXLOG_INFO("[svr2011] pose dump: on, {} motion(s), into {}", c.motions.size(), c.file);
+  if (!said) {
+    said = true;
+    REXLOG_INFO("[svr2011] pose dump: on, {} motion(s), into {}", c.motions.size(), c.file);
+  }
   // the fighter: the character node's 3rd parent (+16), its +32 (as small_rig.cpp)
   uint32_t n = ch;
   for (int i = 0; i < 3 && Pointer(n); ++i) n = Rd32(base + n + 16);
