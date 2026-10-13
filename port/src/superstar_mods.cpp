@@ -119,6 +119,7 @@ struct Mod {
   // else was the player's choice in the game and stays
   std::vector<std::string> songs_set;
   std::vector<int> movies_set;
+  std::vector<int> entrances_set;  // (entrance= numbers set: a slot still holding one follows the manifest)
   int call = -1;  // name call: -1 the base's, else a Created Superstar nickname (0-83)
   // made with a fighting style (Mod Maker "Create a new superstar"): base= is
   // only its template - its own attributes, a nickname name call (The
@@ -430,6 +431,17 @@ void SetEntranceMedia(uint8_t* profile, const Mod& m, const uint8_t* base_profil
     if (m.movie) e[kMovie] = uint8_t(m.movie >> 8), e[kMovie + 1] = uint8_t(m.movie);
     else std::memcpy(e + kMovie, b + kMovie, 2);
   }
+  // The entrance number (+0x14, alternates +0x16 / +0x18) the same way: the manifest's entrance= while
+  // the slot holds one the port set before, the base's, or none (0 / 0xFFFF: a save made while the slot
+  // was a placeholder - CREATE AN ENTRANCE opened the Sandman's slot on 0). A player's own pick stays.
+  if (m.entrance >= 0) {
+    const int now = e[0x14] << 8 | e[0x15];
+    const int base_e = b[0x14] << 8 | b[0x15];
+    if (now == 0 || now == 0xFFFF || now == base_e ||
+        std::find(m.entrances_set.begin(), m.entrances_set.end(), now) != m.entrances_set.end())
+      for (uint32_t k : {0x14u, 0x16u, 0x18u})
+        e[k] = uint8_t(m.entrance >> 8), e[k + 1] = uint8_t(m.entrance);
+  }
   if (std::memcmp(before, e, sizeof before))
     REXLOG_INFO("[svr2011] superstar mods: id {} entrance: music {}{}, movie {}", m.slot,
                 int(e[kMusic] << 8 | e[kMusic + 1]), m.song.empty() ? "" : " (" + m.song + ")",
@@ -445,15 +457,19 @@ void ReadApplied(Mod& m, const fs::path& folder) {
       while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
       if (l.rfind("song=", 0) == 0) m.songs_set.push_back(l.substr(5));
       if (l.rfind("movie=", 0) == 0) m.movies_set.push_back(std::atoi(l.c_str() + 6));
+      if (l.rfind("entrance=", 0) == 0) m.entrances_set.push_back(std::atoi(l.c_str() + 9));
     }
     std::fclose(t);
   }
   bool add_song = !m.song.empty() && std::find(m.songs_set.begin(), m.songs_set.end(), m.song) == m.songs_set.end();
   bool add_movie = m.movie && std::find(m.movies_set.begin(), m.movies_set.end(), m.movie) == m.movies_set.end();
-  if (!add_song && !add_movie) return;
+  bool add_entrance = m.entrance >= 0 &&
+                      std::find(m.entrances_set.begin(), m.entrances_set.end(), m.entrance) == m.entrances_set.end();
+  if (!add_song && !add_movie && !add_entrance) return;
   if (FILE* t = std::fopen((folder / ".applied").string().c_str(), "ab")) {
     if (add_song) std::fprintf(t, "song=%s\n", m.song.c_str()), m.songs_set.push_back(m.song);
     if (add_movie) std::fprintf(t, "movie=%d\n", m.movie), m.movies_set.push_back(m.movie);
+    if (add_entrance) std::fprintf(t, "entrance=%d\n", m.entrance), m.entrances_set.push_back(m.entrance);
     std::fclose(t);
   }
 }
@@ -1799,6 +1815,20 @@ int EntranceForAttire(PPCContext& ctx, uint8_t* base, uint32_t mgr, uint32_t idx
   return n;
 }
 }  // namespace
+// Test aid SVR2011_TEST_CAE_LOG: the entrance block CREATE AN ENTRANCE's page loads
+// (sub_82753570(mgr, out): out = a copy of mgr+36, 280 bytes) - music +12, movie +14,
+// entrance +16, champion +18, multi-title +20, created entrance flag +195.
+REX_EXTERN(__imp__sub_82753570);
+REX_HOOK_RAW(sub_82753570) {
+  const uint32_t out = ctx.r4.u32;
+  __imp__sub_82753570(ctx, base);
+  static const bool on = std::getenv("SVR2011_TEST_CAE_LOG") != nullptr;
+  if (on && out)
+    REXLOG_INFO("[svr2011] cae: block music {} movie {} entrance {} champion {} multi {} created {}", Rd16(base + out + 12),
+                Rd16(base + out + 14), Rd16(base + out + 16), Rd16(base + out + 18), Rd16(base + out + 20),
+                base[out + 195]);
+}
+
 REX_EXTERN(__imp__sub_82756538);
 REX_HOOK_RAW(sub_82756538) {
   const uint32_t mgr = ctx.r3.u32, idx = ctx.r4.u32, part = ctx.r5.u32;
