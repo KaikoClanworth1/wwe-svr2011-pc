@@ -280,6 +280,8 @@ void StepAttires() {
     ImGui::PopID();
     if (g_star.attires[a].empty() && !from_model) break;  // (in order: the next one after this)
   }
+  ImGui::Separator();
+  GearRows(true);
 }
 
 void StepMusic() {

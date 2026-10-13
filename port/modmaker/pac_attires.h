@@ -5,6 +5,7 @@
 // every other entry and the table's row count (removed rows become empty).
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -23,5 +24,14 @@ bool PacCopyAttire(svrfmt::Epac& dst, int to, const svrfmt::Epac& src, int from,
 bool PacRemoveAttire(svrfmt::Epac& pac, int a, std::string* error);
 // Only attire `a`, as attire 1 (an attire mod's attire.pac from any attire of a pac).
 bool PacOnlyAttire(svrfmt::Epac& pac, int a, std::string* error);
+
+// Entrance gear: attire N's kind-4 entry "<id><N-1>4" - the whole wrestler wearing the entrance outfit (coat, hat,
+// shirt), worn for the entrance instead of kind 2 when it exists (HCTP Entrance Porting, docs/ENTRANCE_ATTIRES.md 4).
+std::vector<int> PacGearAttires(const svrfmt::Epac& pac);  // the attires with gear, sorted
+bool PacRemoveGear(svrfmt::Epac& pac, int attire, std::string* error);
+// Attire `to` of dst gets attire `from`'s gear of src (dst's own gear for `to` replaced).
+bool PacCopyGear(svrfmt::Epac& dst, int to, const svrfmt::Epac& src, int from, std::string* error);
+// The gear choices per attire ("off" leaves it out, "from<k>" gives it attire k's gear of the same pac), applied.
+bool PacApplyGear(svrfmt::Epac& pac, const std::map<int, std::string>& ops, std::string* error);
 
 }  // namespace mm

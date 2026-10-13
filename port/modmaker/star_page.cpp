@@ -15,6 +15,7 @@
 #include "app.h"
 #include "char_preview.h"
 #include "json.h"
+#include "pac_attires.h"
 #include "star_page_internal.h"
 #include "rig_map.h"
 #include "svrfmt/char_fbx.h"
@@ -92,6 +93,7 @@ int g_test_pose = -1;
 std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
 int g_test_simple = -1;   // --simple <step>
+std::string g_test_gear;  // --star-gear <attire>:<op>,...
 std::wstring g_test_take;  // --simple-take <svrmod>,<0 look | 1 everything>
 bool g_test_take_all = false;
 bool g_test_fbx_make = false;
@@ -177,6 +179,7 @@ struct Job {
   Image picture, picture_small, picture_full;
   std::vector<Image> signs;
   std::wstring moves, pack;
+  std::map<int, std::string> gear;  // (entrance gear choices)
 };
 
 // ---- entrances (D5)
@@ -724,6 +727,7 @@ bool PrepareJob(Job& j) {
   if (!g_star.moves.empty() || !g_star.moveset.empty()) j.manifest += "moves=moves.txt\n";
   j.moves = g_star.moves, j.pack = g_star.pack, j.moveset = g_star.moveset;
   j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice;
+  j.gear = g_star.gear;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
   j.picture = g_star.picture.image, j.picture_small = g_star.picture_small, j.picture_full = g_star.picture_full;
   for (const auto& s : g_star.signs) j.signs.push_back(s.image);
@@ -742,6 +746,17 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
   if (j.picture_small.w) {
     Progress("Putting the bust in the model's portrait ...");
     SetPortrait(ch, j.picture_small);
+  }
+  {  // entrance gear choices for the model's own attires
+    std::map<int, std::string> ops;
+    for (const auto& [a, op] : j.gear)
+      if (a >= 1 && a <= 4 && (a == 1 || j.attires[a - 1].empty())) ops[a] = op;
+    Epac e;
+    std::string err;
+    if (!ops.empty() && EpacRead(ch, e)) {
+      if (PacApplyGear(e, ops, &err)) ch = EpacWrite(e);
+      else Log("entrance gear: " + err);
+    }
   }
   files.push_back({"ch.pac", std::move(ch)});
   auto add = [&](const std::wstring& src, const std::string& stem, const char* key, const char* what) {
@@ -766,6 +781,11 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     }
     const std::string n = "attire" + std::to_string(a + 1) + ".pac";
     if (j.picture_small.w) SetPortrait(pac, j.picture_small);
+    if (const auto g = j.gear.find(a + 1); g != j.gear.end() && g->second == "off") {  // (its first attire's gear left out)
+      Epac e;
+      std::string err;
+      if (EpacRead(pac, e) && PacRemoveGear(e, 1, &err)) pac = EpacWrite(e);
+    }
     files.push_back({n, std::move(pac)});
     man += "attire" + std::to_string(a + 1) + "=" + n + "\n";
     if (!j.attire_names[a].empty()) man += "attire" + std::to_string(a + 1) + "_name=" + j.attire_names[a] + "\n";
@@ -1251,6 +1271,119 @@ void FbxProblems(std::vector<Problem>& p) {
     p.push_back(Warning("The FBX's bone mapping has no " + miss + ".", "Model from an FBX > Bone mapping: pick the FBX bone for each."));
 }
 
+// ---- entrance gear (EMD kind 4: the whole wrestler in the outfit worn for the entrance) per attire
+
+// The pac an attire comes from and its attire in it (the model's own, or an attire file's first).
+std::pair<std::wstring, int> AttireSource(int a) {
+  if (a > 1 && !g_star.attires[a - 1].empty()) return {g_star.attires[a - 1], 1};
+  return {g_star.model, a};
+}
+std::vector<int> GearOf(const std::wstring& pac) {
+  std::vector<int> v;
+  for (const auto& p : GearBudget(pac))
+    if (p.entry.size() >= 8 && std::isdigit(uint8_t(p.entry[6]))) v.push_back(p.entry[6] - '0' + 1);
+  return v;
+}
+int GearPages(const std::wstring& pac, int attire) {
+  for (const auto& p : GearBudget(pac))
+    if (p.entry.size() >= 8 && p.entry[6] - '0' + 1 == attire) return p.pages;
+  return 0;
+}
+int AttirePages(const std::wstring& pac, int attire) {
+  for (const auto& p : ModelBudget(pac))
+    if (p.entry.size() >= 8 && p.entry[6] - '0' + 1 == attire) return p.pages;
+  return 0;
+}
+std::vector<int> AttireCount() {  // the attires the mod has, 1..4
+  const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  std::vector<int> v;
+  for (int a = 1; a <= 4; ++a)
+    if (a == 1 || !g_star.attires[a - 1].empty() || std::find(own.begin(), own.end(), a) != own.end()) v.push_back(a);
+  return v;
+}
+// What attire a wears for its entrance: 0 none, else the attire (of the model) whose gear it is.
+int GearShown(int a) {
+  const auto op = g_star.gear.find(a);
+  if (op != g_star.gear.end() && op->second == "off") return 0;
+  if (op != g_star.gear.end() && op->second.rfind("from", 0) == 0) return std::atoi(op->second.c_str() + 4);
+  const auto [pac, in] = AttireSource(a);
+  const auto g = pac.empty() ? std::vector<int>() : GearOf(pac);
+  return std::find(g.begin(), g.end(), in) != g.end() ? a : 0;
+}
+
+void GearRows(bool simple) {
+  if (g_star.model.empty()) return;
+  const std::vector<int> own_gear = GearOf(g_star.model);
+  bool any = !own_gear.empty();
+  for (int a = 2; a <= 4; ++a)
+    if (!g_star.attires[a - 1].empty() && !GearOf(g_star.attires[a - 1]).empty()) any = true;
+  if (!any && g_star.gear.empty()) {
+    ImGui::TextDisabled("Entrance gear: none (they walk out in their attire).");
+    return;
+  }
+  ImGui::TextUnformatted("Entrance gear");
+  ImGui::SameLine();
+  ImGui::TextDisabled(simple ? "(a coat, hat or shirt worn only for the entrance)" : "(EMD kind 4: the outfit worn for the entrance, per attire)");
+  for (int a : AttireCount()) {
+    ImGui::PushID(1000 + a);
+    const auto [pac, in] = AttireSource(a);
+    const auto pg = GearOf(pac);
+    const bool has = std::find(pg.begin(), pg.end(), in) != pg.end();
+    const int shown = GearShown(a);
+    ImGui::Text("Attire %d:", a);
+    ImGui::SameLine(90 * g_scale);
+    if (!shown) ImGui::TextDisabled("%s", has ? "gear left out" : "no gear");
+    else if (shown == a) ImGui::TextUnformatted("its own gear");
+    else ImGui::Text("attire %d's gear", shown);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!shown);
+    if (ImGui::SmallButton("Show it")) {
+      g_view_attire = a;
+      char_preview::SetGear(true);
+    }
+    ImGui::EndDisabled();
+    if (has) {
+      ImGui::SameLine();
+      bool off = g_star.gear.count(a) && g_star.gear[a] == "off";
+      if (ImGui::Checkbox("Leave it out", &off)) {
+        if (off) g_star.gear[a] = "off";
+        else g_star.gear.erase(a);
+        Touch();
+      }
+    }
+    if (pac == g_star.model) {  // (the same model: another of its attires' gear)
+      for (int k : own_gear) {
+        if (k == a || shown == k) continue;
+        ImGui::SameLine();
+        if (ImGui::SmallButton(("Use attire " + std::to_string(k) + "'s gear").c_str())) g_star.gear[a] = "from" + std::to_string(k), Touch();
+      }
+      if (g_star.gear.count(a) && g_star.gear[a].rfind("from", 0) == 0) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Undo")) g_star.gear.erase(a), Touch();
+      }
+    }
+    ImGui::PopID();
+  }
+}
+
+void GearProblems(std::vector<Problem>& p) {
+  if (g_star.model.empty()) return;
+  for (int a : AttireCount()) {
+    const int shown = GearShown(a);
+    if (!shown) continue;
+    const auto [pac, in] = AttireSource(a);
+    // (the gear model loads instead of the attire's for the entrance: stock Undertaker's two together are ~370 pages)
+    const int gear = GearPages(shown == a ? pac : g_star.model, shown == a ? in : shown);
+    if (gear > kModelPages)
+      p.push_back(Warning("Attire " + std::to_string(a) + "'s entrance gear needs " + std::to_string(gear) + " of the " + std::to_string(kModelPages) +
+                              " memory pages a wrestler gets: the entrance may not load.",
+                          "Leave the gear out (Entrance gear), or use a lighter one."));
+    if (g_star.gear.count(a) && g_star.gear.at(a).rfind("from", 0) == 0)
+      p.push_back(Warning("Attire " + std::to_string(a) + " wears attire " + std::to_string(shown) + "'s entrance gear: the game should wear it (not yet tried in a match).",
+                          "Test in game; if it doesn't show, leave it out."));
+  }
+}
+
 void Problems(std::vector<Problem>& p) {
   size_t mark = p.size();
   auto tag = [&](int step) {  // (Simple mode's "Fix it": the step for what the last section added)
@@ -1260,6 +1393,8 @@ void Problems(std::vector<Problem>& p) {
   };
   FbxProblems(p);
   tag(kStepLook);
+  GearProblems(p);
+  tag(kStepAttires);
   if (!g_star.name[0]) p.push_back(Error("The superstar has no name."));
   tag(kStepName);
   if (g_star.model.empty()) {
@@ -1332,12 +1467,14 @@ void Problems(std::vector<Problem>& p) {
     if (!f.empty()) BudgetProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), a != 0, p);
     if (!f.empty()) ModelCheckProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), p);
   }
-  for (int a = 0; a < 4; ++a) {  // a model pac with an entrance outfit (EMD kind 4): worn during the entrance
-    const std::wstring& f = a ? g_star.attires[a] : g_star.model;
-    if (!f.empty() && HasEntranceOutfit(f))
-      p.push_back(Warning((a ? "Attire " + std::to_string(a + 1) : std::string("The model")) +
-                          " carries an entrance outfit (a coat or the like from the superstar it came from): it is "
-                          "worn during the entrance.", "Fine if wanted; otherwise use a model pac without one."));
+  for (int a : AttireCount()) {  // gear inherited from the superstar a model came from: said once, plainly
+    const auto [pac, in] = AttireSource(a);
+    const auto g = pac.empty() ? std::vector<int>() : GearOf(pac);
+    if (std::find(g.begin(), g.end(), in) != g.end() && !g_star.gear.count(a)) {
+      p.push_back(Warning("Attire " + std::to_string(a) + " has entrance gear from the superstar the model came from (a coat, hat or shirt worn for the entrance).",
+                          "Fine if wanted; otherwise Entrance gear > Leave it out."));
+      p.back().step = kStepAttires;
+    }
   }
   tag(kStepLook);
   if (!g_star.moves.empty()) {
@@ -1380,7 +1517,15 @@ void Preview() {
     if (a == 1 || !g_star.attires[a - 1].empty() || std::find(own.begin(), own.end(), a) != own.end()) have.push_back(a);
   if (std::find(have.begin(), have.end(), g_view_attire) == have.end()) g_view_attire = 1;
   const bool from_file = g_view_attire > 1 && !g_star.attires[g_view_attire - 1].empty();
-  char_preview::SetAttire(from_file ? 1 : g_view_attire);
+  {  // entrance gear: the choice made for this attire (left out / another attire's)
+    const int shown = GearShown(g_view_attire);
+    if (char_preview::Gear() && shown && shown != g_view_attire && !from_file) {
+      char_preview::SetAttire(shown);
+    } else {
+      char_preview::SetAttire(from_file ? 1 : g_view_attire);
+      if (char_preview::Gear() && !shown) char_preview::SetGear(false);
+    }
+  }
   char_preview::SetModel(from_file ? g_star.attires[g_view_attire - 1] : g_star.model, g_game);
   if (have.size() > 1) {
     ImGui::TextDisabled("Attire");
@@ -1439,6 +1584,13 @@ void Draw() {
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
     if (!g_test_take.empty()) TakeFromMod(g_test_take, g_test_take_all);
+    for (size_t a = 0; a < g_test_gear.size();) {
+      size_t b = g_test_gear.find(',', a);
+      if (b == std::string::npos) b = g_test_gear.size();
+      const std::string item = g_test_gear.substr(a, b - a);
+      if (const size_t c = item.find(':'); c != std::string::npos) g_star.gear[std::atoi(item.c_str())] = item.substr(c + 1);
+      a = b + 1;
+    }
     if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
@@ -1636,6 +1788,7 @@ void Draw() {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model (the attire the preview shows) with its skeleton, skin weights and textures, for Blender and other tools.");
   }
   FbxRows(false);
+  GearRows(false);
   FileRow("Theme song (optional)...", g_star.song, "the style's", kSoundFilter, 1);
   ThemeGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
@@ -1806,6 +1959,7 @@ std::string StateText() {
   s += "\nentrance=" + std::to_string(g_star.entrance) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
+  for (const auto& [a, op] : g_star.gear) s += "\ngear" + std::to_string(a) + "=" + op;
   s += "\nfbx=" + Utf8(g_star.fbx) + "\nfbx_map=" + FbxMapText() + "\nfbx_on=" + PairsText(g_star.fbx_on) + "\nfbx_kind=" +
        PairsText(g_star.fbx_kind) + "\nfbx_pic=" + PairsText(g_star.fbx_pic) + "\nsimple=" + std::to_string(g_star.simple);
   return s;
@@ -1828,6 +1982,11 @@ void WriteProject(ProjectOut& out) {
   out.Key("fbx", Utf8(g_star.fbx));  // (the FBX stays where it is: its textures sit beside it)
   out.Key("fbx_map", FbxMapText());
   if (g_star.simple) out.Key("simple", 1), out.Key("simple_step", g_star.simple_step);
+  {
+    std::map<std::string, std::string> g;
+    for (const auto& [a, op] : g_star.gear) g[std::to_string(a)] = op;
+    out.Key("gear", PairsText(g));
+  }
   out.Key("fbx_on", PairsText(g_star.fbx_on));
   out.Key("fbx_kind", PairsText(g_star.fbx_kind));
   out.Key("fbx_pic", PairsText(g_star.fbx_pic));
@@ -1933,6 +2092,11 @@ bool Read(const ProjectIn& in, bool mod) {
   ParseFbxMap(in.Get("fbx_map"));
   g_star.simple = in.GetInt("simple", 0) != 0;
   g_star.simple_step = std::clamp(in.GetInt("simple_step", 0), 0, int(kStepCount) - 1);
+  {
+    std::map<std::string, std::string> g;
+    ParsePairs(in.Get("gear"), g);
+    for (const auto& [a, op] : g) g_star.gear[std::atoi(a.c_str())] = op;
+  }
   ParsePairs(in.Get("fbx_on"), g_star.fbx_on);
   ParsePairs(in.Get("fbx_kind"), g_star.fbx_kind);
   ParsePairs(in.Get("fbx_pic"), g_star.fbx_pic);
@@ -2062,6 +2226,7 @@ bool TakeFromMod(const std::wstring& svrmod, bool everything) {
 }
 
 void TestSimple(int step) { g_test_simple = step; }
+void TestGear(const std::string& spec) { g_test_gear = spec; }
 void TestSimpleTake(const std::wstring& svrmod, bool everything) { g_test_take = svrmod, g_test_take_all = everything; }
 void TestFbxMake() { g_test_fbx_make = true; }
 void TestFbxReport(const std::wstring& out) {  // with --star-fbx: the import report to <out> (automatic mapping), quit

@@ -27,6 +27,7 @@ struct AttireProject {
   std::wstring model;     // a ch pac
   int from = 1;           // which of its attires (attire.pac carries only that one, as attire 1)
   int entrance = -1;      // entrance= (-1: the superstar's)
+  std::string gear;       // entrance gear: "" as the model has it, "off" left out, "from<k>" the model's attire k's
 };
 // The editor of the attires inside a pac (a copy: saved elsewhere, the game's pac folder never written)
 struct {
@@ -78,10 +79,14 @@ bool Build(std::vector<ZipEntry>& files) {
     Status("Pick the superstar and a character model pac first.");
     return false;
   }
-  if (g_at.from > 1) {  // (another attire of the pac: only it, as attire 1)
+  if (g_at.from > 1 || !g_at.gear.empty()) {  // (another attire of the pac: only it, as attire 1; the gear choice)
     Epac e;
     std::string err;
-    if (!EpacRead(pac, e) || !PacOnlyAttire(e, g_at.from, &err)) {
+    bool ok = EpacRead(pac, e);
+    if (ok && g_at.gear.rfind("from", 0) == 0) ok = PacCopyGear(e, g_at.from, Epac(e), std::atoi(g_at.gear.c_str() + 4), &err);
+    if (ok && g_at.from > 1) ok = PacOnlyAttire(e, g_at.from, &err);
+    if (ok && g_at.gear == "off") ok = PacRemoveGear(e, 1, &err);
+    if (!ok) {
       Status("Attire " + std::to_string(g_at.from) + " of the model could not be taken: " + err + ".");
       return false;
     }
@@ -173,6 +178,13 @@ int NextFreeAttire(int star) {
   return 0;
 }
 
+std::vector<int> GearOf(const std::wstring& pac) {
+  std::vector<int> v;
+  for (const auto& g : GearBudget(pac))
+    if (g.entry.size() >= 8 && std::isdigit(uint8_t(g.entry[6]))) v.push_back(g.entry[6] - '0' + 1);
+  return v;
+}
+
 void Problems(std::vector<Problem>& p) {
   if (g_at.star < 0) p.push_back(Error("No superstar yet.", "Pick whose attire this is."));
   if (g_at.model.empty()) p.push_back(Error("No model yet.", "A character model pac (ch.pac): its first attire becomes this attire."));
@@ -190,8 +202,7 @@ void Problems(std::vector<Problem>& p) {
       p.push_back(Error("That isn't a character model pac (EPK8)" + std::string(head.size() == 4 && !std::memcmp(head.data(), "EPAC", 4) ? ": an EPAC is an arena or menu pac." : ".")));
     else {
       BudgetProblems(g_at.model, "This attire", true, p);
-      if (star_page::EntranceOutfit(g_at.model))
-        p.push_back(Warning("The model carries an entrance outfit (a coat or the like): it is worn during this attire's entrance."));
+
     }
   }
   if (g_at.star >= 0) {
@@ -219,6 +230,17 @@ void Problems(std::vector<Problem>& p) {
       p.push_back(Error(star + " has no free attire (4 at most): installed attire mods use the rest.", "Replace one of the attires, or switch an attire mod off in the launcher's Mods tab."));
   }
   if (!g_at.name[0]) p.push_back(Warning("No name: CHANGE ATTIRE shows ATTIRE N."));
+  if (!g_at.model.empty() && g_at.gear != "off") {  // the gear's memory, on top of the attire's own (until measured)
+    const int k = g_at.gear.rfind("from", 0) == 0 ? std::atoi(g_at.gear.c_str() + 4) : g_at.from;
+    int gear = 0;  // (it loads instead of the attire's model for the entrance: stock gear + attire reach ~370 pages)
+    for (const auto& g : GearBudget(g_at.model))
+      if (g.entry.size() >= 8 && g.entry[6] - '0' + 1 == k) gear = g.pages;
+    if (gear > kModelPages)
+      p.push_back(Warning("The entrance gear needs " + std::to_string(gear) + " of the " + std::to_string(kModelPages) +
+                              " memory pages a wrestler gets: the entrance may not load.", "Leave the gear out, or use a lighter one."));
+    if (g_at.gear.rfind("from", 0) == 0)
+      p.push_back(Warning("This attire wears attire " + std::to_string(k) + "'s entrance gear: the game should wear it (not yet tried in a match).", "Install and try it; leave it out if it doesn't show."));
+  }
 }
 
 void Draw() {
@@ -301,6 +323,36 @@ void Draw() {
       Hint("The model pac holds several attires: the one picked becomes this attire (the mod carries only it).");
     }
   }
+  if (!g_at.model.empty()) {  // entrance gear (EMD kind 4): what this attire wears for the entrance
+    const auto gear = GearOf(g_at.model);
+    const bool has = std::find(gear.begin(), gear.end(), g_at.from) != gear.end();
+    ImGui::TextDisabled("Entrance gear");
+    ImGui::SameLine();
+    const int from_k = g_at.gear.rfind("from", 0) == 0 ? std::atoi(g_at.gear.c_str() + 4) : 0;
+    if (g_at.gear == "off") ImGui::TextUnformatted("left out");
+    else if (from_k) ImGui::Text("attire %d's", from_k);
+    else ImGui::TextUnformatted(has ? "its own (worn for the entrance)" : "none");
+    if (has || from_k) {
+      ImGui::SameLine();
+      bool off = g_at.gear == "off";
+      if (ImGui::Checkbox("Leave it out##gear", &off)) g_at.gear = off ? "off" : "", Touch();
+    }
+    for (int k : gear) {
+      if (k == g_at.from || k == from_k) continue;
+      ImGui::SameLine();
+      if (ImGui::SmallButton(("Use attire " + std::to_string(k) + "'s gear").c_str())) g_at.gear = "from" + std::to_string(k), Touch();
+    }
+    if (from_k) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Undo##gear")) g_at.gear.clear(), Touch();
+    }
+    if ((has || from_k) && g_at.gear != "off") {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Show it##gear")) char_preview::SetAttire(from_k ? from_k : g_at.from), char_preview::SetGear(true);
+    }
+    Hint("A coat, hat or shirt worn only for the entrance (the model's EMD kind 4 for that attire: the whole wrestler in it). "
+         "Leave it out to walk out in the attire itself.");
+  }
   TextField("Name on CHANGE ATTIRE", g_at.name, sizeof g_at.name, "e.g. 2003 GEAR");
   if (star_page::PickEntrance("Entrance (optional)", g_at.entrance, "the superstar's")) Touch();
   TextField("Author (optional)", g_at.author, sizeof g_at.author);
@@ -312,7 +364,11 @@ void Draw() {
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginGroup();
-  char_preview::SetAttire(g_at.from);
+  {  // (the gear another attire lends: shown on that attire's entry)
+    const int from_k = g_at.gear.rfind("from", 0) == 0 ? std::atoi(g_at.gear.c_str() + 4) : 0;
+    char_preview::SetAttire(char_preview::Gear() && from_k ? from_k : g_at.from);
+    if (g_at.gear == "off" && char_preview::Gear()) char_preview::SetGear(false);
+  }
   char_preview::SetModel(g_at.model, g_game);
   char_preview::SetHeight(1.0f);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -457,7 +513,7 @@ void RunEditorTest() {
 std::string StateText() {
   return "star=" + std::to_string(g_at.star) + "\nslot=" + std::to_string(g_at.slot) + "\nname=" + g_at.name +
          "\nmodel=" + Utf8(g_at.model) + "\nentrance=" + std::to_string(g_at.entrance) + "\nauthor=" + g_at.author +
-         "\nversion=" + g_at.version;
+         "\nversion=" + g_at.version + "\ngear=" + g_at.gear;
 }
 
 void Reset() { g_at = AttireProject(); }
@@ -469,6 +525,7 @@ void WriteProject(ProjectOut& out) {
   out.Key("author", g_at.author);
   out.Key("version", g_at.version);
   if (g_at.entrance > 0) out.Key("entrance", g_at.entrance);
+  out.Key("gear", g_at.gear);
   if (g_at.from > 1) out.Key("from_attire", g_at.from);
   out.File("model", g_at.model, "attire/model");
 }
@@ -480,6 +537,7 @@ bool Read(const ProjectIn& in, bool mod) {
   std::snprintf(g_at.name, sizeof g_at.name, "%s", in.Get("name").c_str());
   std::snprintf(g_at.author, sizeof g_at.author, "%s", in.Get("author").c_str());
   std::snprintf(g_at.version, sizeof g_at.version, "%s", in.Get("version").c_str());
+  g_at.gear = in.Get("gear");
   if (!g_at.version[0]) std::snprintf(g_at.version, sizeof g_at.version, "1.0");
   g_at.entrance = in.GetInt("entrance", -1);
   g_at.from = mod ? 1 : std::clamp(in.GetInt("from_attire", 1), 1, 9);  // (a mod's attire.pac holds only its attire)

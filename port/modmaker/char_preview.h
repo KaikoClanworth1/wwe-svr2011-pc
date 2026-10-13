@@ -27,6 +27,11 @@ void SetAttire(int attire);
 // view's pose of the same tracks - person 0's on the model, the other on the dummy; "" until both are loaded.
 std::string ComparePoseDump(const std::wstring& dump, std::shared_ptr<const std::vector<uint8_t>> bank, int id, int x);
 int Attire();
+// Entrance gear (EMD kind 4, the outfit worn for the entrance): shown instead of the attire's model when on and the
+// attire has one (HasGear: the shown attire has it).
+void SetGear(bool on);
+bool Gear();
+bool HasGear();
 // A motion from a YMBs bank: track 0 plays on the model, track 1 on the dummy.
 // An empty bank (or ClearMotion) goes back to the idle. False (with why) when
 // the motion isn't in the bank or its layout isn't understood.

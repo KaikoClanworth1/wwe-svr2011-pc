@@ -61,6 +61,8 @@ struct StarProject {
   // Simple mode (simple_star.cpp): the guided view of this same project, and its step
   bool simple = false;
   int simple_step = 0;
+  // entrance gear per attire (1-4): "off" leaves it out, "from<k>" gives it the model's attire k's gear
+  std::map<int, std::string> gear;
 };
 extern StarProject g_star;
 extern int g_view_attire;  // the attire the preview shows (1-4)
@@ -79,6 +81,7 @@ void SetPicture(const Image& src);
 std::wstring StyleChPac();  // the fighting style's superstar's model (pac\ch\ch<id>.pac)
 void SimpleDraw();          // simple_star.cpp
 void FbxRows(bool simple);
+void GearRows(bool simple);  // entrance gear per attire: has it, show it, leave it out, give it another attire's
 // the move-set: the picker (g_pick_slot >= 0 opens it), slot names, the preview of a pose
 extern int g_pick_slot;
 extern char g_pick_find[48];

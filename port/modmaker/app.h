@@ -351,7 +351,7 @@ namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); vo
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
                       void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
-                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestSimpleTake(const std::wstring& svrmod, bool everything); void TestSimpleLook(int mode); void TestSimpleCapture(const std::wstring& png); void TestSimpleRing(int n); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
+                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestGear(const std::string& spec); void TestSimpleTake(const std::wstring& svrmod, bool everything); void TestSimpleLook(int mode); void TestSimpleCapture(const std::wstring& png); void TestSimpleRing(int n); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
                       // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
                       const std::vector<std::string>& AnnouncerNames();
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
@@ -396,6 +396,9 @@ struct ModelPages {
   int blood = 0;  // of them, the blood overlays' (JBOY children 0x7530-0x7532: the game drops them first when over)
 };
 const std::vector<ModelPages>& ModelBudget(const std::wstring& pac);  // (cached by file time / size)
+// The entrance gear entries' pages (EMD kind 4: "<id><attire-1>4"): it loads instead of the attire's model for the
+// entrance (stock Undertaker's gear + attire together are ~370 pages and play), so each counts against 192 alone.
+const std::vector<ModelPages>& GearBudget(const std::wstring& pac);
 // The attires a model pac holds (its kind-2 EMD entries %06d%02d: attire*10 + 2), 1-based, in order. The game
 // uses a superstar mod's in-pac attires contiguous from 1, at most 4.
 std::vector<int> ModelAttires(const std::wstring& pac);
