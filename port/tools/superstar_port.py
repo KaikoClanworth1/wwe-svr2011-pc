@@ -1110,8 +1110,43 @@ class GameW2K17(GameW2K16):
     def ssf(self):
         return self._ssf
 
+    def pictures(self):
+        """SSFaceHD.pac's renders -> [(key, 512 render, 256 render)] (raw, BPE'd) in storage order: the big
+        ones first, then the small ones in the same order (a pair = one superstar); key = the big one's name
+        hash in hex"""
+        if not hasattr(self, '_pics'):
+            big, small = [], []
+            for hs, b in hspc(self.pac_bytes('pac/menu/SSFaceHD.pac')):
+                if b[:4] == b'BPE ':
+                    side = math.isqrt((len(ch_tool.unpack(b)) - 44) // 4)
+                    (big if side == 512 else small if side == 256 else []).append((hs, b))
+            self._pics = [('%016x' % hb, b, s_) for (hb, b), (_, s_) in zip(big, small)]
+        return self._pics
+
+    def pick_render(self, cid, key):
+        """--picture <key>: that picture pair of pictures() as this superstar's renders"""
+        pics = {k: (b, s_) for k, b, s_ in self.pictures()}
+        if key.lower() not in pics:
+            raise BadInput('--picture %s: not one of %s\'s %d pictures (see pictures)' % (key, self.label, len(pics)))
+        dict.__setitem__(self._ssf, ('SSFA', cid), pics[key.lower()][0])
+        dict.__setitem__(self._ssf, ('SSFC', cid), pics[key.lower()][1])
+
     def model_entries(self, raw):
         return attires(svrfmt.pach_write(shdc(b)) for _, b in hspc(raw) if b[:4] == b'SHDC')
+
+
+def raw_image(v):
+    """a 2K15+ raw render (BPE'd or not): 44-byte header (+12: BE u16 side / 256), then R A B G pixels,
+    bottom row first -> a PIL RGBA image"""
+    from PIL import Image
+    u = ch_tool.unpack(v)
+    side = math.isqrt((len(u) - 44) // 4)
+    px = u[44:44 + side * side * 4]
+    if side < 16 or struct.unpack_from('>H', u, 12)[0] * 256 != side:
+        raise ValueError('raw render: %d bytes for side %d' % (len(u), side))
+    q = bytearray(len(px))
+    q[0::4], q[1::4], q[2::4], q[3::4] = px[0::4], px[3::4], px[2::4], px[1::4]   # R A B G -> R G B A
+    return Image.frombytes('RGBA', (side, side), bytes(q)).transpose(Image.FLIP_TOP_BOTTOM)
 
 
 class _RawRenders(dict):
@@ -1122,16 +1157,7 @@ class _RawRenders(dict):
         if v[:4] == b'DDS ':
             return v
         import svr08_char
-        from PIL import Image
-        u = ch_tool.unpack(v)
-        side = math.isqrt((len(u) - 44) // 4)   # (header +12: BE u16 side / 256)
-        px = u[44:44 + side * side * 4]
-        if side < 16 or struct.unpack_from('>H', u, 12)[0] * 256 != side:
-            raise ValueError('render %s: %d bytes for side %d' % (k, len(u), side))
-        q = bytearray(len(px))
-        q[0::4], q[1::4], q[2::4], q[3::4] = px[0::4], px[3::4], px[2::4], px[1::4]   # R A B G -> R G B A
-        im = Image.frombytes('RGBA', (side, side), bytes(q)).transpose(Image.FLIP_TOP_BOTTOM)
-        v = svr08_char.dds_encode(im, 'DXT5')
+        v = svr08_char.dds_encode(raw_image(v), 'DXT5')
         dict.__setitem__(self, k, v)
         return v
 
@@ -1248,7 +1274,8 @@ def buildW(cid, outdir, o, rep):
         if (grp, cid) in ssf:
             open(os.path.join(mod, fn), 'wb').write(pad_render(ch_tool.unpack(ssf[(grp, cid)])))
     note('renders: %s menuHD SSFA / SSFB / SSFC %d' % (gw.label, cid) if ('SSFA', cid) in ssf else
-         'no %s render: the base\'s' % gw.label)
+         'no %s render: the base\'s%s' % (gw.label, ' (its renders are unnamed: pick one with pictures + --picture)'
+                                          if hasattr(gw, 'pictures') else ''))
     progress(20, 'model')
     if gw.has_chpac(cid):
         left = model_w(gw, cid, pac11, os.path.join(mod, 'ch.pac'), portrait)
@@ -1397,7 +1424,46 @@ def cmd_list(a):
         out.append(dict(key=str(c), name=g.name(c), short=g.short(c), gender='female' if r[208] else 'male',
                         model=bool(g.has_chpac(c)), render=c in g.render_ids,
                         in_2011=i11 if same else None))
+        if hasattr(g, 'pictures'):   # (2K17: renders under hashed names - the user picks one: pictures)
+            out[-1]['needs_picture'] = True
     return out
+
+
+def cmd_pictures(a):
+    """pictures --game G --src S --out D [--item K]: a game's unnamed renders (2K17) for a picture picker:
+    D/<key>.png thumbnails (128 px, made once; a second call only lists them) -> {pictures: [{key, thumb, w, h,
+    name}], guess}; convert --picture <key> takes that picture (the 512 render + its 256 one). guess is null:
+    the pictures match no other game's renders (new shoots) and their names are hashed"""
+    if not a.get('out'):
+        raise BadInput('pictures needs --out')
+    outdir = os.path.abspath(a['out'])
+    os.makedirs(outdir, exist_ok=True)
+    idx = os.path.join(outdir, 'pictures.json')
+    if os.path.exists(idx):
+        try:
+            pics = json.load(open(idx))
+            if all(os.path.exists(p['thumb']) for p in pics):
+                return dict(pictures=pics, guess=None)
+        except (ValueError, KeyError, TypeError):
+            pass
+    src = Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
+    g = open_game(a['game'], src, a.get('svrmod'))
+    if not hasattr(g, 'pictures'):
+        raise BadInput('%s names its renders by superstar id: no picker needed' % a['game'])
+    progress(5, 'reading the pictures')
+    out = []
+    pics = g.pictures()
+    for k, (key, big, _) in enumerate(pics):
+        f = os.path.join(outdir, key + '.png')
+        im = raw_image(big)
+        w, h = im.size
+        im.thumbnail((128, 128))
+        im.save(f)
+        out.append(dict(key=key, thumb=f, w=w, h=h, name=''))
+        progress(5 + 95 * (k + 1) // len(pics), 'pictures')
+    json.dump(out, open(idx, 'w'))
+    shutil.rmtree(os.path.join(outdir, '.src_' + a['game']), ignore_errors=True)
+    return dict(pictures=out, guess=None)
 
 
 def cmd_convert(a):
@@ -1412,6 +1478,10 @@ def cmd_convert(a):
     src = Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
     progress(1, 'reading the game')
     g = open_game(a['game'], src, a.get('svrmod'))
+    if a.get('picture'):
+        if not hasattr(g, 'pick_render'):
+            raise BadInput('--picture is for games with unnamed renders (wwe2k17)')
+        g.pick_render(cid, a['picture'])
     g11, snd = game11(a['pac11'])
     rep = dict(ok=False, out=None, folder=None, opens='superstar', warnings=[], dropped=[], notes=[])
     o = dict(a, src=src, src_game=g, g11=g11, snd=snd)
@@ -1429,7 +1499,7 @@ def cmd_convert(a):
 
 def main(argv):
     if len(argv) < 2 or argv[1] in ('-h', '--help'):
-        print(json.dumps({'error': 'usage: games | list --game G --src S | convert --game G --src S --item K --out D'}))
+        print(json.dumps({'error': 'usage: games | list --game G --src S | convert --game G --src S --item K --out D [--picture KEY] | pictures --game G --src S --out D'}))
         return 2
     cmd = argv[1]
     a = dict(pac11=PAC11)
@@ -1450,7 +1520,7 @@ def main(argv):
     try:
         if cmd == 'games':
             res = GAMES
-        elif cmd in ('list', 'convert'):
+        elif cmd in ('list', 'convert', 'pictures'):
             if a.get('game') not in {g['id'] for g in GAMES}:
                 raise BadInput('unknown --game %r (see games)' % a.get('game'))
             if a['game'] not in READY:
@@ -1459,6 +1529,8 @@ def main(argv):
                 raise BadInput('--src is needed')
             if cmd == 'list':
                 res = cmd_list(a)
+            elif cmd == 'pictures':
+                res = cmd_pictures(a)
             else:
                 rep_path = os.path.join(os.path.abspath(a['out']), 'report.json') if a.get('out') else None
                 res = cmd_convert(a)
