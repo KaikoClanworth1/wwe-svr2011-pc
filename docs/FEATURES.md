@@ -153,6 +153,9 @@ still being tested.
 - **VSync really syncs**: with VSync on, frames no longer tear on Direct3D 12, Direct3D 11 or Vulkan (it only paced the game before); the log names the present mode.
 - **Cutscene movies keep up with their sound** on slow PCs (the video fell 4-6 s behind in Road to WrestleMania); full-speed PCs are unchanged.
 - **Sabu 1.4**: his d-pad-left taunt ("Sit Down", a move 2011 cut) no longer freezes him and the match end.
+- **HD entrance movies**: a superstar or media mod's movie can be an .mp4 up to 1080p, shown on the arena screens at up to 1024x1024 (the game's largest; 320x320 before), decoded on the graphics card; the launcher makes a .bik copy for PCs that can't play .mp4 (Steam Deck, Windows N).
+- **Hometowns and name calls**: superstar mods can have a hometown the announcer says (`hometown=`); Created Superstars can use a stock superstar's name calls (`Mods\caw_announcer.txt`); theme volume per mod (`theme_gain=`).
+- **Online CPU picker**: with the host's own slot empty, A picked for the CPU slot instead; invites into a triple threat lobby reported "couldn't join" after joining.
 - **Custom titantrons kept**: editing a modded superstar's entrance no longer swaps his user movie for the first one in the list.
 - **R-Truth's entrance** plays his theme and his vocal (only the vocal played: a pause the game sends right after his music starts kept the theme stopped).
 - **Mod Maker: SvR 2008 backstage and WWE '13 arena conversions** work in the released Mod Maker again (two helper scripts were missing from Mod Maker Tools since 2.0.5).
