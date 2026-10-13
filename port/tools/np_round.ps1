@@ -1,4 +1,4 @@
-# netperf: one measured round - two games on this PC (host 36000, joiner
+﻿# netperf: one measured round - two games on this PC (host 36000, joiner
 # 36100) through the tunnel, a 1v1 Player Match (entrances off), 60 s of
 # play, both stopped. The test settings are set here, so both games get them.
 #   np_round.ps1 -Name np4 [-Delay "75,40,1"] [-Seconds 60]
@@ -31,13 +31,13 @@ In "" "title" "menu ONLINE" "wait 15000" "press A 200" "wait 55000" "press DOWN 
      "press DOWN 200" "wait 1200" "press DOWN 200" "wait 1200" "press A 200" "wait 12000" `
      "press DOWN 200" "wait 900" "press DOWN 200" "wait 900" "press DOWN 200" "wait 900" "press RIGHT 200" "wait 1200" `
      "press DOWN 200" "wait 900" "press DOWN 200" "wait 900" "press A 200"
-if (-not (Wait-Log "$Name`_host" "session .* hosted \(flags 42F" 0 300)) { "host: no session"; & $s shot "$Name`_host_fail"; return }
+if (-not (Wait-Log "$Name`_host" "session .* hosted \(flags 42F" 0 300)) { "host: no session"; & $s shot "$Name`_host_fail"; & $s stop | Out-Null; return }  # (a failed round leaves no game running)
 # joiner: ONLINE -> MATCH -> PLAYER MATCH -> QUICK MATCH -> YES
 if ($InputLog) { $env:SVR2011_NET_INPUT_LOG = Join-Path $runs "$Name`_join.inp" }
 & $s start -Slot 2 -Name "$Name`_join" -UserData (Join-Path $runs "test_userdata_ent_up") -Config $JoinConfig | Out-Null
 In "2" "title" "menu ONLINE" "wait 15000" "press A 200" "wait 55000" "press DOWN 200" "wait 1500" "press A 200" "wait 12000" `
      "press A 200" "wait 15000" "press A 200"
-if (-not (Wait-Log "$Name`_host" "join remote" 0 300)) { "joiner: didn't join"; & $s shot -Slot 2 "$Name`_join_fail"; return }
+if (-not (Wait-Log "$Name`_host" "join remote" 0 300)) { "joiner: didn't join"; & $s shot -Slot 2 "$Name`_join_fail"; & $s stop | Out-Null; & $s stop -Slot 2 | Out-Null; return }
 Start-Sleep 12
 # picks: the host 1P (the first Superstar), the joiner 2P, one to the right
 In "" "press A 200" "wait 4000" "press A 200" "wait 3000" "press A 200" "wait 3000" "press A 200"
