@@ -14,6 +14,8 @@
 
 #include "app.h"
 #include "char_preview.h"
+#include "editor.h"
+#include "svrfmt/arena.h"
 #include "svrfmt/pac.h"
 
 namespace mm {
@@ -87,6 +89,7 @@ struct View {
   int play_star = -1, play_dummy = -1;
 };
 View g_view;
+std::unique_ptr<svrfmt::Arena> g_arena;  // (an arena mod's, shown by the editor's view scene)
 
 std::map<int, int> ReadMoveset(const fs::path& f) {
   std::map<int, int> out;
@@ -192,6 +195,7 @@ std::shared_ptr<const Bytes> PackBank(int id) {
 std::wstring ChPac(int id) { return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(id) + L".pac")).wstring(); }
 
 void Select(int i) {
+  if (g_arena) editor::ClearView(), g_arena.reset();
   g_sel = i;
   g_view = View();
   g_view.index = i;
@@ -271,6 +275,18 @@ void Select(int i) {
     if (fs::exists(m.dir / L"moves" / L"pack.txt", ec)) ReadPack(m.dir / L"moves");
   }
   if (m.kind == "Moves") ReadPack(m.dir);
+  if (m.kind == "Arenas") {  // the arena itself, read for the read-only 3D view
+    std::string file = Value(m.text, "file");
+    if (file.empty()) file = "arena.pac";
+    auto a = std::make_unique<svrfmt::Arena>();
+    std::string err;
+    if (a->Load(PathStr(m.dir / fs::u8path(file)), &err)) {
+      g_arena = std::move(a);
+      editor::ViewArena(g_arena.get(), m.name, m.text);
+    } else {
+      g_view.problems.push_back(Error("The arena didn't read: " + err + "."));
+    }
+  }
   const auto& stars = Stars();
   for (int k = 0; k < int(stars.size()); ++k) {  // (a move pack's moves played on: the base, else the first)
     if (stars[size_t(k)].id == (g_view.base > 0 ? g_view.base : 139)) g_view.play_star = k;
@@ -478,6 +494,10 @@ void Draw() {
   ImGui::Separator();
   // the type's view: the 3D view (superstars, attires, move packs) on the right of its lists
   const bool three_d = m.kind == "Superstars" || m.kind == "Attires" || m.kind == "Moves";
+  if (m.kind == "Arenas" && g_arena) {  // the arena in 3D (a view: the open arena project is untouched)
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    editor::DrawView(avail.x, std::max(260.0f * g_scale, avail.y * 0.62f));
+  }
   if (three_d) {
     ImGui::BeginChild("lists", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 0), false);
     if (m.kind == "Moves") PackView();
@@ -496,8 +516,7 @@ void Draw() {
     ImGui::TextDisabled("%s", g_view.pic_names[k].c_str());
     ImGui::EndGroup();
   }
-  if (m.kind == "Arenas")
-    ImGui::TextWrapped("The arena itself: Open in its page shows it in the 3D editor (its pictures above).");
+
   if (ImGui::CollapsingHeader("manifest.txt")) ImGui::TextUnformatted(m.text.c_str());
   ImGui::EndChild();
   if (three_d) {

@@ -43,6 +43,12 @@ void SetArena(svrfmt::Arena* arena, const std::string& title);
 void SetArea(const std::vector<std::pair<int, int>>& ids, const float* spot = nullptr);
 // The editor's whole UI, filling the current ImGui window region.
 void Draw();
+// A second, read-only scene (the Installed mods page): an arena shown without touching the one being edited.
+// ViewArena takes the arena (kept alive by the caller until ClearView) and its manifest (ring / lighting keys);
+// DrawView draws it in w x h with an orbit camera only.
+void ViewArena(svrfmt::Arena* arena, const std::string& title, const std::string& manifest);
+void DrawView(float w, float h);
+void ClearView();
 bool Busy();
 bool HasArena();   // an arena is set
 int EditCount();   // grows with every edit (the project's dirty check)

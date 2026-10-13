@@ -2036,6 +2036,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   double shot_after = 6;
+  std::vector<std::pair<double, std::wstring>> page_at;  // --page-at <page>@<s>[,...]: page switches at those times (tests)
   int star_id = 0, star_call = -1;
   float star_height = 0;
   std::string star_moveset;
@@ -2067,6 +2068,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--shot") && more) shot = argv[++i];
     else if (!wcscmp(argv[i], L"--shot-after") && more) shot_after = _wtof(argv[++i]);
+    else if (!wcscmp(argv[i], L"--page-at") && more) {
+      const std::wstring v = argv[++i];
+      for (size_t at = 0; at < v.size();) {
+        size_t c = v.find(L',', at);
+        if (c == std::wstring::npos) c = v.size();
+        const std::wstring item = v.substr(at, c - at);
+        if (const size_t a = item.find(L'@'); a != std::wstring::npos) page_at.push_back({_wtof(item.c_str() + a + 1), item.substr(0, a)});
+        at = c + 1;
+      }
+    }
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--test-moves-save") && more) moves_save = argv[++i];
@@ -2271,7 +2282,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }
@@ -2354,6 +2365,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
     g_ctx->ClearRenderTargetView(g_rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    while (!page_at.empty() && ImGui::GetTime() >= page_at.front().first) {  // (test aid --page-at)
+      const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match",
+                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
+      for (int k = 0; k < int(std::size(names)) && k < int(PageId::kCount); ++k)
+        if (page_at.front().second == names[k]) g_page = PageId(k), Log("test: page " + Utf8(names[k]));
+      page_at.erase(page_at.begin());
+    }
     if (!shot.empty() && ImGui::GetTime() >= shot_after && !Busy()) {  // the frame to a PNG, then quit
       ID3D11Texture2D* back = nullptr;
       g_swap->GetBuffer(0, IID_PPV_ARGS(&back));
