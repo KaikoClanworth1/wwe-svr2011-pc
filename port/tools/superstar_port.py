@@ -20,6 +20,8 @@ Options (convert):
     --height S      height=S (0.80-1.25)
     --model src|11  the model from the source game (default) or 2011's own when it has one
     --no-moves      keep the base's moves
+    --no-port       his moves 2011 has, but port none (WWE '12 / '13 / 2K14: faster)
+    --max-port N    port at most N moves (default 40)
 
 Games:
     svr2010   SvR 2010 - everything (svr10_superstar.py: model, renders, theme, titantron,
@@ -585,7 +587,7 @@ def build09(cid, outdir, o, rep):
     drop('abilities (%s has none): the base\'s' % g9.label)
     # moves
     if not o.get('no_moves') and base != i11:
-        drop('moveset: the base\'s for now (%s -> 2011 slot map not done yet)' % g9.label)
+        moveset_step(g9, cid, base, o, work, mod, man, rep)
     # entrance
     progress(55, 'entrance')
     music, movie, ent, alt = g9.entrance_block(cid)
@@ -940,6 +942,48 @@ def model_w(g, cid, pac11, out, portrait):
     return left
 
 
+def moveset_step(gw, cid, base, o, work, mod, man, rep):
+    """the superstar's own moveset (moveset_port.py): moves.txt over the base's profile, ported moves
+    as a move pack in the mod's moves/ folder"""
+    import moveset_port
+    import moveset_maps
+    import moves_port as MP
+    note, warn, drop = rep['notes'].append, rep['warnings'].append, rep['dropped'].append
+    gid = o['game']
+    pro = moveset_maps.profiles(gw)
+    if cid not in pro:
+        drop('moveset: the base\'s (no %s profile for %d)' % (gw.label, cid))
+        return
+    mg = {'wwe12': MP.Game12, 'wwe13': MP.Game13, 'wwe2k14': MP.Game14}.get(gid)
+    if mg is not None:
+        mgame = mg(o['src']) if gid == 'wwe12' else mg(o['src'], getattr(gw, 'svrmod', None))
+        waze = mgame.waze
+    else:   # (SvR 2007-2009: move names from misc.pac, ids 2011's; no porter yet)
+        mgame, waze = None, moveset_maps.waze_old(o['src'])
+    c = moveset_port.Ctx(gid=gid, cid=cid, base=base, g11=o['g11'], pro=pro[cid], waze=waze, mgame=mgame,
+                         pac11=o['pac11'], svrmod=getattr(gw, 'svrmod', None), work=work, mod=mod, rep=rep,
+                         port=not o.get('no_port'), max_port=o.get('max_port', 40),
+                         same_ids=gid in moveset_maps.SAME_IDS)
+    res = moveset_port.port_moveset(c)
+    if res is None:
+        drop('moveset: the base\'s (no %s moveset map yet)' % gw.label)
+        return
+    if res['pack']:
+        moveset_port.merge_pack(res['pack'], mod)
+    if res['moves_txt']:
+        open(os.path.join(mod, 'moves.txt'), 'w', newline='\n').write('\n'.join(res['moves_txt']) + '\n')
+        man['moves'] = 'moves.txt'
+    with open(os.path.join(work, 'moves_table.tsv'), 'w', encoding='utf-8') as f:
+        f.write('src_off\toff2011\tsrc_id\tname\tverdict\tid_in_slot\n')
+        for so, to, v, nm, verdict, nid in res['rows']:
+            f.write('%s\t0x%03x\t%d\t%s\t%s\t%d\n' % ('' if so is None else '0x%03x' % so, to, v, nm, verdict, nid))
+    note('moveset: %d slots over the base (%s); table in .work/moves_table.tsv' % (len(res['moves_txt']),
+                                                                                   moveset_port.summary(res)))
+    kept = [r for r in res['rows'] if r[4].startswith('base kept')]
+    if kept:
+        drop('moveset: %d slots keep the base\'s move (see moves_table.tsv)' % len(kept))
+
+
 def buildW(cid, outdir, o, rep):
     import subprocess
     S = svr10()
@@ -998,8 +1042,6 @@ def buildW(cid, outdir, o, rep):
         drop('abilities (%s\'s aren\'t mapped yet): the base\'s' % gw.label)
     else:
         drop('ratings, abilities (%s): the base\'s' % gw.no_ratings)
-    if not o.get('no_moves') and base != i11:
-        drop('moveset: the base\'s for now')
     music, movie, ent, alt = gw.entrance_block(cid)
     # theme
     progress(45, 'theme')
@@ -1063,6 +1105,9 @@ def buildW(cid, outdir, o, rep):
                 note('entrance %d "%s" (2011 has his)' % (e, g11.evp().get(e, '?')))
     if 'movie' not in man:
         warn('no titantron (movie %d)' % movie)
+    if not o.get('no_moves') and base != i11:
+        progress(70, 'moveset')
+        moveset_step(gw, cid, base, o, work, mod, man, rep)
     progress(85, 'announcer')
 
     class _Names:
@@ -1139,7 +1184,7 @@ def cmd_convert(a):
     g11, snd = game11(a['pac11'])
     rep = dict(ok=False, out=None, folder=None, opens='superstar', warnings=[], dropped=[], notes=[])
     o = dict(a, src=src, src_game=g, g11=g11, snd=snd)
-    for k in ('base', 'entrance', 'call'):
+    for k in ('base', 'entrance', 'call', 'max_port'):
         if o.get(k) is not None:
             o[k] = int(o[k])
     fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW, 'wwe13': buildW,
@@ -1157,7 +1202,7 @@ def main(argv):
     cmd = argv[1]
     a = dict(pac11=PAC11)
     i = 2
-    flags = {'--no-moves': 'no_moves'}
+    flags = {'--no-moves': 'no_moves', '--no-port': 'no_port'}
     while i < len(argv):
         k = argv[i]
         if k in flags:

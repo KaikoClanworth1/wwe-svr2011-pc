@@ -429,9 +429,12 @@ def convert(a, rep):
     sp = __import__('superstar_port')
     outdir = os.path.abspath(a['out'])
     os.makedirs(outdir, exist_ok=True)
-    src = sp.Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
-    progress(2, 'reading the game')
-    g = open_game(a, src)
+    # (a['_g'] / a['_g11']: games already opened - moveset_port converts a superstar's moves in a row)
+    g = a.get('_g')
+    if g is None:
+        src = sp.Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
+        progress(2, 'reading the game')
+        g = open_game(a, src)
     try:
         mid = int(a['item'])
     except ValueError:
@@ -463,7 +466,7 @@ def convert(a, rep):
         rep['warnings'].append('no two-person block in the source motion: the attacker only, the victim stays the template\'s')
     nf = max(1, (att['frames'] - 1) // 2)
     progress(25, '2011 banks')
-    g11 = Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
+    g11 = a.get('_g11') or Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
     R0 = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     cat11 = CATS.get(cat0, '')   # ('': every category - 2K14's coded ones)
     gap = None
