@@ -222,6 +222,9 @@ void List(int k, const std::string& game) {
               });
 }
 
+int g_template = 0;          // moves: --template <2011 move id> (0: the converter's own pick)
+char g_template_find[48] = "";
+
 // A free 2011 move record for a converted move (moves_port --id): a WAZE record with no motion in any m.pac bank and
 // not used by an installed move pack - the one with the move's name first; 0 = let the converter pick.
 int FreeMoveRecord(const std::string& name) {
@@ -264,6 +267,7 @@ void Convert(int k, const std::string& game, const Json& item) {
   if (entrance) args.push_back(L"--entrance"), args.push_back(Wide(key));  // (its own options: --entrance, --number)
   else args.push_back(L"--item"), args.push_back(Wide(key));
   const bool moves = std::wstring(kKinds[k].script) == L"moves_port.py";
+  if (moves && g_template > 0) args.push_back(L"--template"), args.push_back(std::to_wstring(g_template));
   if (moves) {  // (a free 2011 record, so packs don't collide: the converter's own pick can't see installed packs)
     if (!anims_page::MovesIndexed()) {
       Status("Reading m.pac's moves first (a few seconds) - press Convert again.");
@@ -655,6 +659,28 @@ void Draw() {
   ImGui::InputTextWithHint("Options (advanced)", "e.g. --height 1.05 --no-moves", g_options, sizeof g_options);
   Hint("Extra options the converter takes (each converter's --help lists them), e.g. --base <id> --height <scale> "
        "--no-moves for superstars. Usually none are needed.");
+  if (std::wstring(kKinds[k].script) == L"moves_port.py") {  // the 2011 move it is built on
+    ImGui::SetNextItemWidth(360 * g_scale);
+    const std::string cur = g_template > 0 ? MoveName(g_template) + "  (" + std::to_string(g_template) + ")" : "automatic (the converter picks one of the same kind)";
+    if (ImGui::BeginCombo("Template (a 2011 move)", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+      if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+      ImGui::SetNextItemWidth(-1);
+      ImGui::InputTextWithHint("##tf", "find a 2011 move by name or number", g_template_find, sizeof g_template_find);
+      if (ImGui::Selectable("automatic", g_template <= 0)) g_template = 0;
+      const std::string f = Lower(g_template_find);
+      int shown = 0;
+      for (const auto& [id, m] : MoveInfos()) {
+        if (!anims_page::AnyMotion(id)) continue;  // (only moves with motions can be templates)
+        if (!f.empty() && Lower(m.name).find(f) == std::string::npos && std::to_string(id).find(f) == std::string::npos) continue;
+        if (++shown > 300) { ImGui::TextDisabled("... type more to narrow it down"); break; }
+        if (ImGui::Selectable((m.name + "  (" + std::to_string(id) + ")##t" + std::to_string(id)).c_str(), g_template == id)) g_template = id;
+      }
+      ImGui::EndCombo();
+    }
+    Hint("The 2011 move the ported move is built on: its table record (category, damage, where it can be done), its "
+         "timing events and banks. Pick one of the same kind - a powerbomb for a powerbomb - when the automatic "
+         "choice looks wrong (shown after converting).");
+  }
   ImGui::BeginDisabled(Busy());
   PushAccent();
   if (ImGui::Button(("4. Convert " + (item["name"].Str().empty() ? ItemKey(item) : item["name"].Str())).c_str())) Convert(k, game, item);
@@ -664,6 +690,11 @@ void Draw() {
   if (g_result.type == Json::Type::kObject && g_result["ok"].Truthy()) {
     ImGui::SameLine();
     if (ImGui::Button(g_result["opens"].Str() == "belt" || g_result["opens"].Str() == "weapon" ? "Install the pack" : "5. Open it to finish")) OpenResult();
+    if (const int t = std::atoi(g_result["template"].Str().c_str()); t > 0)  // (moves: what it was built on)
+      ImGui::TextDisabled("Built on the 2011 move %s (%d)%s; record %s. Not right? Pick a template above and convert again.",
+                          MoveName(t).c_str(), t, g_template > 0 ? "" : ", picked automatically", g_result["id"].Str().c_str());
+    if (g_result["opens"].Str() == "moves")
+      ImGui::TextColored(kWarn, "To use it in matches, put it in a superstar's moveset (the Moves page, or a superstar's Moveset section).");
     for (const char* list : {"warnings", "dropped", "notes"}) {
       const Json& v = g_result[list];
       for (const auto& w : v.items)
