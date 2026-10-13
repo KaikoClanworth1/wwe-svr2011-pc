@@ -353,7 +353,7 @@ namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
                       bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
                       bool EntranceOutfit(const std::wstring& pac); }
-namespace attire_page { extern PageHooks hooks; void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
+namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
