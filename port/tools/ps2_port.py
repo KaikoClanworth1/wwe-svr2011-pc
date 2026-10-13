@@ -235,7 +235,14 @@ def build_ps2(cid, outdir, o, rep):
             man['entrance'] = e
         note('entrance %s "%s" (%s)' % (man.get('entrance', be), g11.evp().get(man.get('entrance', be), '?'),
                                          via or 'the base\'s'))
-    drop('theme and titantron: the base\'s (PS2 BGM *.AFS not mapped yet)')
+    # theme + titantron (tools/ps2_media.py, Extras'): the profile's music / movie
+    SP.progress(70, 'theme, titantron')
+    import ps2_media
+    got = ps2_media.media(g.game_id, g.g.disc, g.number(cid), mod, os.path.join(work, 'media'), rep, o.get('vgmstream'))
+    if got is None:
+        drop('theme and titantron: the base\'s (%s\'s music / movies not read yet)' % g.label)
+    else:
+        man.update(got)
     # announcer, commentary
     nm, clips = snd.announcer([name])
     if nm:
