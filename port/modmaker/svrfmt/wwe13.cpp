@@ -1300,6 +1300,16 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
           t->data = ht.data;
           for (auto& b : a.bundles) b.changed = true;
         }
+  // the crowd's light (aud_lightmap: the game samples it by name; without it
+  // the crowd is drawn black): the host's when the arena has none (WWE '12 and
+  // WWE '13 arenas never do; an extra texture of that name still wins below)
+  if (!find(a, "aud_lightmap") && !a.bundles.empty())
+    for (const auto& hb : host.bundles)
+      for (const auto& ht : hb.textures)
+        if (Lower(ht.name) == "aud_lightmap" && !find(a, ht.name)) {
+          a.bundles[0].textures.push_back(ht);
+          a.bundles[0].changed = true;
+        }
   // extra pictures (e.g. SvR2011 code objects' textures by name) and the arena card
   for (const auto& t : opt.extra_textures) {
     if (BundleTexture* have = find(a, t.name)) have->data = t.data;
