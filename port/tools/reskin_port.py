@@ -113,7 +113,13 @@ def encode(img, fmt):
         mips += 1
         if img.width <= 4 or img.height <= 4:
             break
-        img = img.resize((img.width // 2, img.height // 2), Image.BOX)
+        half = (img.width // 2, img.height // 2)
+        if img.mode == 'RGBA':   # (RGB and A on their own: Pillow premultiplies, and a low alpha - the colour
+            a = img.getchannel('A').resize(half, Image.BOX)   # sheets' specular level - turns the RGB to specks)
+            img = img.convert('RGB').resize(half, Image.BOX)
+            img.putalpha(a)
+        else:
+            img = img.resize(half, Image.BOX)
     struct.pack_into('<I', out, 8, struct.unpack_from('<I', out, 8)[0] | 0x20000)
     struct.pack_into('<I', out, 28, mips)
     struct.pack_into('<I', out, 108, struct.unpack_from('<I', out, 108)[0] | 0x400008)

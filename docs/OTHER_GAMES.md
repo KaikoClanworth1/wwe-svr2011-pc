@@ -260,6 +260,30 @@ EXH, WAZE and the victim's follow-up motion come from the most similar stock
 length, the way the WWE '13 Mankind moves were made. The `list` command reports per superstar which moves
 exist in 2011, which can be ported and which can't.
 
+### Building character models (FBX import, all converters)
+
+`tools/svr11_build.py` builds a ch.pac from a neutral model (the Mod Maker's FBX import); the rules it and
+`w13_char.py` / `svr08_char.py` follow are in `tools/svr11_skeleton.json` ("mesh_rules"), the rig maps in
+`tools/rig_maps.json`. Checked against stock pacs (13 Oct):
+
+- Vertex memory: 192 pages per attire (`model_budget.py`). Stock bodies reach 11,252 vertices (ch301); the
+  page count, not a vertex count, is the limit. Palettes <= 20 bones; positions / normals / UVs must be finite.
+- Hair / lash models (0x2710 / 0x4e20) have their own node tables, usually reduced (hair 29-141 nodes,
+  lashes mostly 34), with 1-4 influences (hair mostly 4). Ours carry the full body table with up to 4
+  influences and play (Mankind, the ch104 round trip, the Cena FBX sample).
+- Entries: stock pacs hold 1-4 (attires); the EPK8 index size and the group count field (entries x 4) must
+  match, or mounting crashes.
+- Face pivots: the eyeball vertices sit 0.05-0.19 in front of `l_eye` / `r_eye` on stock models. When a
+  model's differ from the template's by more than 0.15, `svr11_build.py` moves the bones under `atama` by the
+  difference (the mesh stays); otherwise blinking pushes the lids forward and the eyes seem to pop out.
+- Colour alpha: on skin it's the specular level, not opacity (stock ch104 has ~617k texels below 4 under
+  its skin and draws them solid); hair / lash cards cut out with it.
+- Texture slots a template block leaves unbound stay unbound, and mips are resized with RGB and alpha
+  apart (Pillow premultiplies: low colour alpha turned the smaller mips into red specks on the skin).
+
+The crash, face-pivot and alpha findings were first documented by robert32's SvR Port Doctor; we
+re-measured each on stock data (only the face pivots and the NaN check changed our code).
+
 ### Collision
 
 - 2011 models have **no collision bones**. 2007, 2008 and 2009 bodies carry 48
