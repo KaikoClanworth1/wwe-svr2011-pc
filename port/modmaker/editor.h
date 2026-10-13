@@ -49,6 +49,18 @@ void Draw();
 void ViewArena(svrfmt::Arena* arena, const std::string& title, const std::string& manifest);
 void DrawView(float w, float h);
 void ClearView();
+// The view's camera given by the caller (the Full preview: an entrance's camera track): view and projection,
+// game coordinates, row vectors (HLSL row_major + mul(v, M)) - DrawView uses it and the mouse doesn't move it,
+// until ClearViewCamera. The projection's depth range should be 1 .. 5000 (the editor's).
+void SetViewCamera(const float view[16], const float proj[16]);
+void ClearViewCamera();
+// Drawn after the view's scene into the same target and depth (w x h), with the camera used: the Full preview's
+// wrestler. Empty: none.
+using ViewExtraFn = std::function<void(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h,
+                                       const float view[16], const float proj[16])>;
+void SetViewExtra(ViewExtraFn fn);
+// The view's labels / mouse hint shown (the Full preview turns them off).
+void SetViewHint(bool on);
 bool Busy();
 bool HasArena();   // an arena is set
 int EditCount();   // grows with every edit (the project's dirty check)

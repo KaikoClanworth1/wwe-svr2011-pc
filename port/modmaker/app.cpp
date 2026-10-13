@@ -21,6 +21,7 @@
 
 #include "char_preview.h"
 #include "editor.h"
+#include "full_preview.h"
 #include "tool_run.h"
 extern "C" {
 #include "../launcher/movie_maker.h"
@@ -2029,6 +2030,7 @@ void Draw() {
   if (log_h) LogPanel(log_h);
   StatusBar();
   ImGui::End();
+  full_preview::Draw();  // (its own window, over the page)
   // Ctrl+S saves the project
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && Hooks(g_project_page)) ProjectSave(false);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
@@ -2348,6 +2350,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       }
     }
     else if (!wcscmp(argv[i], L"--installed") && more) installed_page::TestSelect(Utf8(argv[++i])), g_page = PageId::kInstalled;
+    else if (!wcscmp(argv[i], L"--full-preview") && more) {  // <entrance>,<star>[,<key>[,<camera 0/1>]]: the Full preview
+      int e = -1, s = -1, cam = 1;
+      float key = -1;
+      std::swscanf(argv[++i], L"%d,%d,%f,%d", &e, &s, &key, &cam);
+      full_preview::TestOpen(e, s, key, cam != 0);
+    }
+    else if (!wcscmp(argv[i], L"--full-preview-song") && more) full_preview::TestSong(argv[++i]);
     else if (!wcscmp(argv[i], L"--moves-put") && more) moves_page::TestPut(argv[++i]), g_page = PageId::kMoves;
     else if (!wcscmp(argv[i], L"--pac-attires") && more) attire_page::TestPacAttires(argv[++i]), g_page = PageId::kAttire;
     else if (!wcscmp(argv[i], L"--pose-compare") && more) anims_page::TestCompare(argv[++i]), g_page = PageId::kAnims;

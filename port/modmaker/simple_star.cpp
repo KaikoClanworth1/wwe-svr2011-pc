@@ -329,6 +329,10 @@ void StepEntrance() {
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       ImGui::SetTooltip("Your superstar does the entrance's ring part in the 3D view (the lights, pyro and video only show in the game).");
+    ImGui::SameLine();
+    if (ImGui::Button("Watch the whole entrance", ImVec2(240 * g_scale, 0))) OpenFullPreview(n);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("A window with the whole entrance in the practice arena: the entrance's camera, your theme and big screen video.");
   }
   ImGui::Spacing();
   ImGui::TextUnformatted("Big screen video (optional)");

@@ -18,6 +18,7 @@
 #include "json.h"
 #include "pac_attires.h"
 #include "star_page_internal.h"
+#include "full_preview.h"
 #include "rig_map.h"
 #include "svrfmt/char_fbx.h"
 #include "svrfmt/pac.h"
@@ -1317,6 +1318,22 @@ int GearShown(int a) {
   return 0;
 }
 
+// The Full preview (full_preview.cpp) of entrance n for this project: its superstar in the attire the preview
+// shows, in that attire's entrance gear (GearShown), with the project's theme, titantron and move pack.
+void OpenFullPreview(int n) {
+  full_preview::Request r;
+  r.entrance = n;
+  r.star = kStyles[g_star.style].template_id;
+  const int gear = GearShown(g_view_attire);
+  const auto [pac, in] = AttireSource(gear ? gear : g_view_attire);
+  r.model = !pac.empty() ? pac : StyleChPac();
+  r.attire = !pac.empty() ? in : 1;
+  r.gear = gear != 0;
+  r.song = g_star.song, r.movie = g_star.movie, r.pack = g_star.pack;
+  r.title = g_star.name[0] ? g_star.name : "your superstar";
+  full_preview::Open(r);
+}
+
 const std::vector<int>& GearDonors() {
   static std::vector<int> v;
   static bool done = false;
@@ -1882,6 +1899,9 @@ void Draw() {
   if (ImGui::CollapsingHeader("More: entrance, announcer, abilities, moves")) {
     ImGui::Indent();
     if (EntrancePicker("Entrance", g_star.entrance, "The style's")) Touch();
+    ImGui::SameLine();
+    if (ImGui::Button("Full preview")) OpenFullPreview(g_star.entrance >= 0 ? g_star.entrance : kStyles[g_star.style].template_id);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The whole entrance in the practice arena: its camera, the theme, the titantron.");
     Hint("The entrance motions and pyro (the music and movie are the files above): any the game has - every "
          "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
          "(the Port page makes them from other games). Attires 2-4 can have their own.");

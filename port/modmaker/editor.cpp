@@ -1078,6 +1078,12 @@ int Pick(V3 o, V3 d, float* t_out = nullptr) {
   return best;
 }
 
+// the read-only view's camera and extra drawing (SetViewCamera / SetViewExtra: the Full preview)
+bool g_vcam_set = false;
+M4 g_vcam_view, g_vcam_proj;
+ViewExtraFn g_view_extra;
+bool g_view_hint = true;
+
 void RenderScene() {
   const float clear[4] = {0.05f, 0.055f, 0.065f, 1};
   g_ctx->ClearRenderTargetView(g_rtv, clear);
@@ -1096,8 +1102,9 @@ void RenderScene() {
   g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
   g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
-  const M4 view = LookAt(Eye(), g_target, {0, -1, 0});
-  const M4 proj = Perspective(0.9f, float(g_rt_w) / float(std::max(1, g_rt_h)), 1.0f, 5000.0f, g_mirror);
+  const bool given = g_readonly && g_vcam_set;  // (the view's camera from the caller)
+  const M4 view = given ? g_vcam_view : LookAt(Eye(), g_target, {0, -1, 0});
+  const M4 proj = given ? g_vcam_proj : Perspective(0.9f, float(g_rt_w) / float(std::max(1, g_rt_h)), 1.0f, 5000.0f, g_mirror);
   g_viewproj = Mul(view, proj);
   float light[3];
   LightTint(light);
@@ -1202,6 +1209,7 @@ void RenderScene() {
     for (int k : g_objs[i].meshes) DrawMesh(g_objs[i].model, k);
   }
   g_ctx->RSSetState(g_solid);
+  if (g_readonly && g_view_extra) g_view_extra(g_rtv, g_dsv, g_rt_w, g_rt_h, view.m, proj.m);
   ID3D11RenderTargetView* none = nullptr;
   g_ctx->OMSetRenderTargets(1, &none, nullptr);
 }
@@ -2083,12 +2091,22 @@ void DrawView(float w, float h) {
   ImGui::InvisibleButton("view_vp", g_vp_size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
   const bool hovered = ImGui::IsItemHovered();
   ImGui::GetWindowDrawList()->AddImage(ImTextureID(reinterpret_cast<uintptr_t>(g_rt_srv)), g_vp_min, ImVec2(g_vp_min.x + iw, g_vp_min.y + ih));
-  ViewportInput(hovered);
-  ImGui::GetWindowDrawList()->AddText(ImVec2(g_vp_min.x + 8, g_vp_min.y + 6), IM_COL32(200, 200, 210, 160),
-                                      "Right drag: orbit   Middle drag: pan   Wheel: zoom   (a view: nothing here changes the arena)");
+  if (!g_vcam_set) ViewportInput(hovered);
+  if (g_view_hint)
+    ImGui::GetWindowDrawList()->AddText(ImVec2(g_vp_min.x + 8, g_vp_min.y + 6), IM_COL32(200, 200, 210, 160),
+                                        "Right drag: orbit   Middle drag: pan   Wheel: zoom   (a view: nothing here changes the arena)");
   g_readonly = false;
   SwapScene();
 }
+
+void SetViewCamera(const float view[16], const float proj[16]) {
+  std::memcpy(g_vcam_view.m, view, sizeof g_vcam_view.m);
+  std::memcpy(g_vcam_proj.m, proj, sizeof g_vcam_proj.m);
+  g_vcam_set = true;
+}
+void ClearViewCamera() { g_vcam_set = false; }
+void SetViewExtra(ViewExtraFn fn) { g_view_extra = std::move(fn); }
+void SetViewHint(bool on) { g_view_hint = on; }
 
 void ClearView() {
   SwapScene();

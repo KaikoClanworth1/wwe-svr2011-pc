@@ -66,6 +66,8 @@ struct StarProject {
 };
 extern StarProject g_star;
 extern int g_view_attire;  // the attire the preview shows (1-4)
+// The Full preview window (full_preview.cpp) of entrance n for this project (star_page.cpp).
+void OpenFullPreview(int n);
 
 // Simple mode's steps; Problems tag each problem with the step that fixes it (Problem::step).
 enum SimpleStep { kStepName, kStepLook, kStepAttires, kStepMusic, kStepEntrance, kStepMoves, kStepTaunts, kStepPictures,

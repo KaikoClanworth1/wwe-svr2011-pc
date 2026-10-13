@@ -70,4 +70,21 @@ float ModelHeight();
 // "Loading...", what is shown ("11089 vertices, 102 bones, idle") or why not.
 std::string Status();
 
+// The Full preview (full_preview.cpp): an entrance's entrant track (body y0, with its finger tracks y2 / y3 when the
+// bank has them) decoded apart from the page's motion, and the model drawn with it into another view's target
+// (rtv / dsv, w x h) with that view's camera - game coordinates, row vectors, as editor.cpp; no floor or framing.
+struct Clip;
+std::shared_ptr<Clip> DecodeClip(const std::vector<uint8_t>& bank, int id, int x, std::string* err = nullptr);
+int ClipKeys(const Clip& clip);
+bool ClipHasFingers(const Clip& clip);
+bool ModelReady();  // the model is loaded and on the GPU (uploads a model loaded in the background)
+// Per key of the clip, on the model: the root's x / z and the lowest foot's y (game coordinates, y down).
+struct TraceKey {
+  float x = 0, z = 0, foot = -1e30f;
+};
+std::vector<TraceKey> ClipTrace(const Clip& clip);
+// offset: added to the posed model (game coordinates; nullptr = none) - the Full preview's ground.
+void RenderInto(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float view[16],
+                const float proj[16], const Clip* clip, float key, const float offset[3] = nullptr);
+
 }  // namespace char_preview
