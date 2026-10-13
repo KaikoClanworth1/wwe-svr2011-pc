@@ -270,7 +270,12 @@ REX_HOOK_RAW(sub_824E6510) {
     const bool a = (svr2011::OnlineRawPad() & 0x1000) != 0;  // (XINPUT_GAMEPAD_A)
     const bool a_pressed = a && !a_down;
     a_down = a;
-    if (a_pressed && g_edit < 0 && REXCVAR_GET(online_cpu_slots) && (state == 11 || state == 22) &&
+    // (not while the host's own slot is unclaimed: A then claims it - the
+    // cursor field still said the CPU's slot, and the host's own pick went to
+    // the CPU)
+    const uint32_t mine = Rd32(base + L + 20);
+    const bool own_claimed = mine < SlotCount(base, L) && Rd32(Record(base, L, mine)) >= 5;
+    if (a_pressed && g_edit < 0 && REXCVAR_GET(online_cpu_slots) && (state == 11 || state == 22) && own_claimed &&
         j < SlotCount(base, L) && IsCpu(Record(base, L, j)) && IsHost(ctx, base)) {
       if (const uint32_t panel = Panel0(base)) {
         g_edit = int(j);
