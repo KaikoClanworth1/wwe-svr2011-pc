@@ -1637,6 +1637,70 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   if (!opt.card.empty())
     for (auto& en : a.entries)
       if (en.id == 0xEE48) en.data = Pack(opt.card);
+  // Opaque arena models' pictures: WWE '12 / '13 / 2K14 keep a gloss mask in
+  // the diffuse alpha (their materials have no separate specular map) and
+  // SvR2011 blends by it (as the posts below), so 2K14's ringside mats
+  // (alpha 0.2-0.55) and black barricade came out see-through over the black
+  // under the floor. In SvR2011 the model flags (0xC351) make a model
+  // see-through: s / a / k (blended), c (cut out), i / j / o (drawn after).
+  // Pictures only models without those flags use get alpha 255, in the DXT
+  // blocks (DXT3: explicit alpha, DXT5: both end points 255, indices 0).
+  {
+    std::map<uint32_t, bool> see;  // model id -> see-through flag
+    for (const auto& en : a.entries)
+      if (en.id == 0xC351) {
+        const std::string t = Text(Unpack(en.data));
+        size_t i = 0;
+        while (i < t.size()) {
+          size_t e = t.find('\n', i);
+          if (e == std::string::npos) e = t.size();
+          const std::string line = t.substr(i, e - i);
+          i = e + 1;
+          char* end = nullptr;
+          const long id = std::strtol(line.c_str(), &end, 10);
+          if (end == line.c_str() || line.compare(0, 2, "//") == 0) continue;
+          bool s = false;
+          for (size_t k = size_t(end - line.c_str()); k < line.size(); ++k) {
+            const char c = line[k];
+            const bool word = (k == 0 || line[k - 1] == ' ' || line[k - 1] == '\t') &&
+                              (k + 1 >= line.size() || line[k + 1] == ' ' || line[k + 1] == '\t' || line[k + 1] == '\r');
+            if (word && std::strchr("sakcijo", c)) s = true;
+          }
+          see[uint32_t(id)] = s;
+        }
+      }
+    std::set<std::string> opaque_tex, see_tex;
+    for (const auto& am : a.models) {
+      if (am.id >= 0x190) continue;  // (arena models; the ring is the host's)
+      auto it = see.find(am.id);
+      const bool s = it != see.end() && it->second;
+      for (const auto& msh : am.model.meshes) {
+        const int slot = GetSlot(msh, {"texDiffuse"});
+        if (slot >= 0 && slot < int(am.model.textures.size())) (s ? see_tex : opaque_tex).insert(Lower(am.model.textures[slot]));
+      }
+    }
+    int made = 0;
+    for (auto& b : a.bundles)
+      for (auto& t : b.textures) {
+        const std::string n = Lower(t.name);
+        DdsInfo info;
+        if (!opaque_tex.count(n) || see_tex.count(n) || !DdsInfoOf(t.data, info)) continue;
+        if (info.format != DxtFormat::kDxt3 && info.format != DxtFormat::kDxt5) continue;
+        bool changed = false;
+        for (size_t k = 128; k + 16 <= t.data.size(); k += 16) {
+          uint8_t* blk = &t.data[k];
+          if (info.format == DxtFormat::kDxt3) {
+            for (int j = 0; j < 8; ++j) changed |= blk[j] != 0xFF, blk[j] = 0xFF;
+          } else {
+            const uint8_t want[8] = {0xFF, 0xFF, 0, 0, 0, 0, 0, 0};
+            changed |= std::memcmp(blk, want, 8) != 0;
+            std::memcpy(blk, want, 8);
+          }
+        }
+        if (changed) ++made, b.changed = true;
+      }
+    if (made) rep.notes.push_back("pictures of opaque models made opaque (gloss masks in their alpha): " + std::to_string(made));
+  }
   // the posts' picture: WWE '13 keeps a specular mask in its alpha (0.75-0.84);
   // SvR2011 blends the post with it, so the black post shows grey: opaque
   if (opt.host_ring && opt.ring_meshes)
