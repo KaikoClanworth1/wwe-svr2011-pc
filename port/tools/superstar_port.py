@@ -60,7 +60,7 @@ GAMES = [
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
     dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
-    dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='research'),
+    dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='research'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research'),
 ]
@@ -739,6 +739,241 @@ def attire_names(src, cid):
         return {}
 
 
+# --------------------------------------------------------------------------- WWE '12 / '13 / 2K14
+
+class GameW:
+    """WWE '12 (docs/OTHER_GAMES.md): pac/ch/chEtc.pac CHAR/DAT (290 B: name +0x2E, scale +40, gender +238,
+    weight class +239, selectable +251; 12 ratings - not 2011's 7: left to the base), CHAR/PRO (1072 B,
+    entrance block +0x1D4: music, movie, entrance, alt); models pac/ch/chNNN.pac (WWE '13's rig and
+    shaders in an EPK8: w13_char.py); renders menu/menuHD.pac SSFA / SSFB / SSFC (2011's format);
+    themes sound/Music.pck Play_MUS_<music>_0_0 (Wwise Vorbis: wwise.py + the player's vgmstream);
+    entrances and titantrons through entrance_port.py. Superstar ids are 2011's for 100-292."""
+
+    year = 12
+    label = "WWE '12"
+    suffix = '_12'
+    game_id = 'wwe12'
+    dat_name, dat_scale, dat_gender, dat_class, pro_entrance = 0x2E, 40, 238, 239, 0x1D4
+
+    def __init__(self, src, svrmod=None):
+        import moves_port as MP
+        self.MP, self.src, self.svrmod = MP, src, svrmod
+        g = MP.read_pac(self.pac_bytes('pac/ch/chEtc.pac'))
+        ch = {(t, n): b for t, es in g for n, b in es}
+
+        def pach(b):
+            return {i: MP.unz(d) for i, d in svrfmt.pach_read(MP.unz(b))}
+        self.raw_dat = pach(ch[(b'CHAR', b'DAT')])
+        self.pro = pach(ch[(b'CHAR', b'PRO')])
+        self.dat = {}
+        for i, r in self.raw_dat.items():   # (laid out as 2011's for the shared helpers)
+            x = bytearray(264)
+            nm = r[self.dat_name:self.dat_name + 32].split(b'\0')[0][:31]
+            x[34:34 + len(nm)] = nm
+            x[170:170 + len(nm)] = nm
+            x[28:30] = r[self.dat_scale:self.dat_scale + 2]
+            x[208], x[209] = r[self.dat_gender], r[self.dat_class]
+            self.dat[i] = bytes(x)
+        self._ssf = None
+
+    def pac_bytes(self, rel):
+        return open(self.src.get(rel), 'rb').read()
+
+    def name(self, i):
+        r = self.dat.get(i)
+        return r[34:66].split(b'\0')[0].decode('latin1').strip() if r else ''
+
+    def short(self, i):
+        return self.name(i)
+
+    def named(self, i):
+        return self.name(i) not in ('', '0')
+
+    def id11(self, i):
+        return i
+
+    def chpac_rel(self, i):
+        return 'pac/ch/ch%d.pac' % i
+
+    def has_chpac(self, i):
+        return self.src.has(self.chpac_rel(i))
+
+    def ssf(self):
+        if self._ssf is None:
+            self._ssf = {}
+            for t, es in self.MP.read_pac(self.pac_bytes('pac/menu/menuHD.pac')):
+                if t in (b'SSFA', b'SSFB', b'SSFC'):
+                    for n, b in es:
+                        if n.isdigit():
+                            self._ssf[(t.decode(), int(n))] = b
+        return self._ssf
+
+    def entrance_block(self, i):
+        p = self.pro.get(i)
+        return struct.unpack_from('<4H', p, self.pro_entrance) if p and len(p) >= self.pro_entrance + 8 else (i, i, i, i)
+
+    def music_pck(self):
+        return self.src.get('sound/Music.pck')
+
+    def theme_events(self, music, cid):
+        return ['Play_MUS_%04d_0_0' % m for m in (music, cid) if m]
+
+    def roster(self):
+        return [c for c in sorted(self.dat) if 100 <= c < 400 and self.named(c) and self.has_chpac(c)
+                and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
+
+
+def model_w(g, cid, pac11, out, portrait):
+    """w13_char on the (decoded) EPK8 model pac -> [entries], notes"""
+    import w13_char
+    import tempfile
+    raw = g.pac_bytes(g.chpac_rel(cid))
+    tmp = os.path.join(tempfile.gettempdir(), 'svr_w_ch%d.pac' % cid)
+    open(tmp, 'wb').write(raw)
+    ptmp = None
+    if portrait:   # (w13_char takes the portrait as a file)
+        ptmp = tmp + '.portrait.dds'
+        open(ptmp, 'wb').write(portrait)
+    with contextlib.redirect_stdout(sys.stderr):
+        w13_char.convert(tmp, out, os.path.join(pac11, 'ch', 'ch104.pac'), ptmp)
+    for f in (tmp, ptmp):
+        try:
+            if f:
+                os.remove(f)
+        except OSError:
+            pass
+
+
+def buildW(cid, outdir, o, rep):
+    import subprocess
+    S = svr10()
+    gw, g11, snd, pac11 = o['src_game'], o['g11'], o['snd'], o['pac11']
+    if cid not in gw.dat or not gw.named(cid):
+        raise BadInput('%s has no superstar %d' % (gw.label, cid))
+    name = gw.name(cid).title() if gw.name(cid).isupper() else gw.name(cid)
+    mid = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + gw.suffix
+    work = os.path.join(outdir, '.work_%d' % cid)
+    mod = os.path.join(outdir, mid)
+    for d in (work, mod):
+        if os.path.exists(d):
+            shutil.rmtree(d)
+        os.makedirs(d)
+    note, warn, drop = rep['notes'].append, rep['warnings'].append, rep['dropped'].append
+    progress(5, 'base superstar')
+    i11 = gw.id11(cid)
+    same11 = i11 in playable11(g11) and S.norm(g11.name(i11)) == S.norm(gw.name(cid))
+    if o.get('base'):
+        base, why = o['base'], 'option'
+    elif same11:
+        base, why = i11, '2011 has him: his own moves and commentary'
+    else:
+        base, why = choose_base_old(type('G', (), {'g': type('D', (), {'dat': gw.dat})})(), g11, cid)
+    note('base %d %s (%s)' % (base, g11.name(base), why))
+    man = collections.OrderedDict(type='superstar', id=mid, name=name[:31], short=name[:31], base=base,
+                                  author=gw.label + ' port', made_with='Port tools (%s)' % gw.label, version='1.0')
+    progress(12, 'renders')
+    ssf = gw.ssf()
+    portrait = None
+    if ('SSFC', cid) in ssf:
+        portrait = ch_tool.unpack(ssf[('SSFC', cid)])
+        open(os.path.join(mod, 'render_small.dds'), 'wb').write(portrait)
+    for grp, fn in (('SSFA', 'render.dds'), ('SSFB', 'render_full.dds')):
+        if (grp, cid) in ssf:
+            open(os.path.join(mod, fn), 'wb').write(pad_render(ch_tool.unpack(ssf[(grp, cid)])))
+    note('renders: %s menuHD SSFA / SSFB / SSFC %d' % (gw.label, cid) if ('SSFA', cid) in ssf else
+         'no %s render: the base\'s' % gw.label)
+    progress(20, 'model')
+    if gw.has_chpac(cid):
+        model_w(gw, cid, pac11, os.path.join(mod, 'ch.pac'), portrait)
+        import model_budget
+        pages = model_budget.model_pages(os.path.join(mod, 'ch.pac'))
+        note('model: %s ch%d.pac, %d attires (w13_char)' % (gw.label, cid, len(pages)))
+        for n_, pg, parts in pages:
+            if pg > model_budget.LIMIT:
+                note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
+    else:
+        warn('%s has no model for %d: the base\'s is used' % (gw.label, cid))
+    drop('ratings, abilities (%s\'s 12 ratings aren\'t mapped yet): the base\'s' % gw.label)
+    if not o.get('no_moves') and base != i11:
+        drop('moveset: the base\'s for now')
+    music, movie, ent, alt = gw.entrance_block(cid)
+    # theme
+    progress(45, 'theme')
+    import wwise
+    try:
+        ev, why = wwise.theme(gw.music_pck(), gw.theme_events(music, cid), os.path.join(mod, 'theme.mp3'), work,
+                              o.get('vgmstream'))
+    except Exception as e:   # noqa: BLE001
+        ev, why = None, str(e)[:160]
+    if ev:
+        man['song'] = 'theme.mp3'
+        note('theme: %s (%s) -> theme.mp3' % (ev, why))
+    else:
+        warn('theme: %s' % why)
+    # entrance + titantron (entrance_port)
+    progress(60, 'entrance')
+    if o.get('entrance'):
+        man['entrance'] = o['entrance']
+    else:
+        try:
+            fr = subprocess.run([sys.executable, os.path.join(HERE, 'entrance_port.py'), 'free-numbers', '--game-pac', pac11,
+                                 '--mods', os.path.join(os.path.dirname(pac11), 'Mods')], capture_output=True, text=True)
+            free = json.loads(fr.stdout or '[]')
+            free = free if isinstance(free, list) else free.get('free', [])
+        except Exception:   # noqa: BLE001
+            free = []
+        number = i11 if i11 in free else (free[0] if free else None)
+        if number:
+            cmd = [sys.executable, os.path.join(HERE, 'entrance_port.py'), 'convert', '--game', gw.game_id,
+                   '--src', o['src'].folder or o['src'].d.path, '--entrance', str(ent), '--number', str(number),
+                   '--out', os.path.join(work, 'entrance'), '--name', name, '--game-pac', pac11, '--titantron', str(movie)]
+            if gw.svrmod:
+                cmd += ['--svrmod', gw.svrmod]
+            if o.get('bink2_tool'):
+                cmd += ['--bink2-tool', o['bink2_tool']]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                er = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+            except Exception:   # noqa: BLE001
+                er = {}
+            pk = os.path.join(work, 'entrance', 'pack')
+            if r.returncode == 0 and os.path.exists(os.path.join(pk, 'pack.txt')):
+                shutil.copytree(pk, os.path.join(mod, 'moves'), dirs_exist_ok=True)
+                man['entrance'] = number
+                note('entrance: %s %d -> 2011 number %d (entrance_port)' % (gw.label, ent, number))
+                for f in ('movie.bik', 'movie.mp4'):
+                    if os.path.exists(os.path.join(work, 'entrance', f)):
+                        shutil.copyfile(os.path.join(work, 'entrance', f), os.path.join(mod, f))
+                        man['movie'] = f
+                        note('titantron: %s %d -> %s' % (gw.label, movie, f))
+                        break
+                rep['warnings'] += ['entrance: ' + w for w in er.get('warnings', [])]
+            else:
+                warn('entrance %d not converted (%s)' % (ent, (er.get('error') or r.stderr.strip()[-160:] or '?')))
+        if 'entrance' not in man:
+            e, via = entrance_from_names([name], g11)
+            if e:
+                man['entrance'] = e
+                note('entrance %d "%s" (2011 has his)' % (e, g11.evp().get(e, '?')))
+    if 'movie' not in man:
+        warn('no titantron (movie %d)' % movie)
+    progress(85, 'announcer')
+
+    class _Names:
+        def name(self, i): return g11.name(i11) if same11 else ''
+    nm, clips = snd.announcer(S.ra_candidates(type('G', (), {'name': lambda s, i: name, 'short': lambda s, i: name})(),
+                                              _Names(), cid))
+    if nm:
+        man['announcer'] = nm
+        note('announcer %s' % nm)
+    if not (base == i11 and snd.commentary(i11)):
+        man['call'] = o.get('call') if o.get('call') is not None else S.CALL.get(i11, 69 if gw.dat[cid][208] else 77)
+    progress(95, 'packing')
+    out = os.path.join(outdir, mid + '.svrmod')
+    write_mod(mod, man, out)
+    return out, mod
+
+
 # --------------------------------------------------------------------------- commands
 
 def open_game(game, src):
@@ -758,6 +993,10 @@ def open_game(game, src):
         g = {'svr2009': Game09, 'svr2008': Game08, 'svr2007': Game07}[game](src)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
+        return g
+    if game == 'wwe12':
+        g = GameW(src)
+        g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFA'}
         return g
     raise BadInput('game %s is not ready (status research; docs/OTHER_GAMES.md)' % game)
 
@@ -797,7 +1036,7 @@ def cmd_convert(a):
     for k in ('base', 'entrance', 'call'):
         if o.get(k) is not None:
             o[k] = int(o[k])
-    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09}[a['game']]
+    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW}[a['game']]
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
     progress(100, 'done')
