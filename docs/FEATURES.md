@@ -106,6 +106,7 @@ still being tested.
 - **Player and Ranked kept apart**: a Ranked search no longer lands in a Player Match, or the other way round.
 - **Latest version only**: an old version can't go online; the game's own message says to update (the launcher's Check for updates, or GitHub).
 - **Mods must match**: a session with different gameplay mods is hidden, and the game's own message names the mods that differ.
+- **Superstar mods online**: a superstar mod can be picked online when everyone in the lobby has it (same version), in Player and Ranked matches; each PC's own mod numbers are translated, so everyone sees the same superstar. Picking one someone lacks shows "The user/s in the lobby do not have the mods installed you do." with who lacks what; a late joiner without it can join, but START waits until the pick changes. Superstar mods no longer hide sessions.
 - **FIRST BLOOD** in Player Match (one on one and 3-man EXTREME RULES MATCHES; switch mod `online_first_blood`).
 - **PORT RULES** on CREATE SESSION (Player Match): the port's own match types online - Weapons Everywhere, the Three Stages sets, Hell in a Cell Tables & Ladders, Weapons Inside - chosen with LB / RB, shown in both lobbies.
 - **Mystery Opponent online** (PORT RULES on a triple threat Player Match): the two players face a hidden CPU picked by the host, shown as "?" in the lobby and revealed at his entrance (he enters last).
