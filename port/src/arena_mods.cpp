@@ -308,6 +308,37 @@ constexpr Tile kTiles[20] = {
     {"arena_RR", 9},   {"arena_BR", 18},   {"arena_Series", 7}, {"arena_TLC", 8},  {"arena_ttt", 3},
     {"arena_EC", 10},  {"arena_back", 12}, {"arena_EXT", 16},   {"arena_ECW", 2},  {"arena_drui", 19},
 };
+// The online CREATE SESSION's arena select is a screen of its own (made by
+// sub_82521D18, 1184 bytes; its base screen at +28 - vtable 0x82029020 - is
+// updated through the same grid update, sub_823D4FC0(screen + 28), but is no
+// 5 x 4 grid): its tiles come from a table (*(screen + 1176) +4: 8-byte
+// entries, the arena number first; +24 the count) - the same banners in
+// another order - and the cursor is the tile sub_82521EF8(screen, tile) sets
+// (it makes that tile's arena the screen's, +1168).
+constexpr uint32_t kOnlineSelectVtable = 0x82029020;
+Tile g_online_tiles[20];
+const Tile* g_tiles = kTiles;  // the open screen's order
+std::atomic<int> g_online_tile{0};  // (the online screen's cursor: sub_82521EF8)
+
+// The online screen's order, from its table (false: not the 20 arenas).
+bool ReadOnlineTiles(const uint8_t* base, uint32_t screen) {
+  auto rd = [base](uint32_t a) {
+    const uint8_t* q = base + a;
+    return uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
+  };
+  const uint32_t desc = rd(screen + 1176);
+  if (!desc || rd(desc + 24) < 20 || !rd(desc + 4)) return false;
+  const uint32_t entries = rd(desc + 4);
+  for (int k = 0; k < 20; ++k) {
+    const int arena = int(rd(entries + 8 * k));
+    const Tile* t = nullptr;
+    for (const Tile& x : kTiles)
+      if (x.arena == arena) t = &x;
+    if (!t) return false;
+    g_online_tiles[k] = *t;
+  }
+  return true;
+}
 
 // DDS block data -> the layout the game keeps (16-bit words byte-swapped)
 svrfmt::Bytes Swap16(const uint8_t* p, size_t n) {
@@ -355,7 +386,7 @@ std::vector<std::array<int, 20>> g_layout;  // pages 2.. : tile -> index in g_cu
 
 int TileOf(const std::string& banner) {
   for (int k = 0; k < 20; ++k)
-    if (banner == kTiles[k].banner) return k;
+    if (banner == g_tiles[k].banner) return k;
   return -1;
 }
 
@@ -519,7 +550,7 @@ bool PageStillShown(const uint8_t* base) {
   if (g_page == 0) return false;
   int checked = 0;
   for (int k = 0; k < 20; ++k) {
-    const Banner* bn = BannerOf(kTiles[k].banner);
+    const Banner* bn = BannerOf(g_tiles[k].banner);
     const svrfmt::Bytes* src = PageBanner(k);
     if (!bn || !src || bn->guest.empty()) continue;
     for (const uint32_t at : bn->guest)
@@ -537,7 +568,7 @@ bool PageStillShown(const uint8_t* base) {
 
 void ShowPage(uint8_t* base) {
   for (int k = 0; k < 20; ++k) {
-    Banner* bn = BannerOf(kTiles[k].banner);
+    Banner* bn = BannerOf(g_tiles[k].banner);
     if (!bn || bn->guest.empty()) continue;
     const svrfmt::Bytes* src = PageBanner(k);
     if (!src) src = &bn->data;
@@ -777,7 +808,7 @@ void FollowCursor(int row, int col) {
   g_cursor_custom = c ? int(c - g_customs.data()) : -1;
   // the tile's arena: the one the game loads (LayOutPages puts each custom
   // arena on the tile of the arena it was made from)
-  const int host = c ? kTiles[row * 5 + col].arena : -1;
+  const int host = c ? g_tiles[row * 5 + col].arena : -1;
   if (c == g_redirected_custom && host == g_redirected_host) return;
   g_redirected_custom = c;
   SetDecodeSwaps(c, host);
@@ -787,7 +818,7 @@ void FollowCursor(int row, int col) {
   if (c) {
     svr2011::RedirectArena(host, c->file);
     g_redirected_host = host;
-    REXLOG_INFO("[svr2011] arena select: {} on {}", c->name, kTiles[row * 5 + col].banner);
+    REXLOG_INFO("[svr2011] arena select: {} on {}", c->name, g_tiles[row * 5 + col].banner);
   }
 }
 
@@ -847,7 +878,8 @@ REX_HOOK_RAW(sub_823D4FC0) {
   const uint32_t w = ctx.r3.u32;
   uint8_t* p = base + w;
   auto rd = [&](uint32_t o) { return uint32_t(p[o]) << 24 | p[o + 1] << 16 | p[o + 2] << 8 | p[o + 3]; };
-  if (g_customs.empty() || rd(0) != kSelectVtable) {
+  const bool online_grid = rd(0) == kOnlineSelectVtable && ReadOnlineTiles(base, w - 28);
+  if (g_customs.empty() || (rd(0) != kSelectVtable && !online_grid)) {
     // Test aid (SVR2011_TEST_LOBBY_LOG): other 5-column grids (the online
     // CREATE SESSION's arena select?), once per vtable.
     static const bool log = std::getenv("SVR2011_TEST_LOBBY_LOG") != nullptr;
@@ -873,6 +905,13 @@ REX_HOOK_RAW(sub_823D4FC0) {
                   w, g_select_widget, NowMs() - g_select_seen.load(), g_page + 1);
     g_select_widget = w;
     g_page = 0;
+    // (the online screen's tile order: the pages laid out for it)
+    {
+      const Tile* t = online_grid ? g_online_tiles : kTiles;
+      g_tiles = t;
+      LayOutPages();  // (each custom arena on its base's tile, in this screen's order)
+      if (online_grid) REXLOG_INFO("[svr2011] arena select: the online screen ({} pages)", Pages());
+    }
     if (g_banners.empty()) LoadBanners();
     LocateBanners();
     // A custom arena already chosen (the screen opened again from the match
@@ -906,9 +945,12 @@ REX_HOOK_RAW(sub_823D4FC0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(hitch));
     }
   }
-  const uint32_t row = rd(28), col = rd(44), cols = rd(48);
+  // (the cursor: the offline grid's row and column; the online screen's tile)
+  const uint32_t at = uint32_t(g_online_tile.load());
+  const uint32_t row = online_grid ? at / 5 : rd(28), col = online_grid ? at % 5 : rd(44), cols = online_grid ? 5 : rd(48);
   __imp__sub_823D4FC0(ctx, base);
-  const uint32_t new_col = rd(44), new_row = rd(28);
+  const uint32_t now_at = uint32_t(g_online_tile.load());
+  const uint32_t new_col = online_grid ? now_at % 5 : rd(44), new_row = online_grid ? now_at / 5 : rd(28);
   // Past an edge: the cursor jumped from the last column to the first or back
   // in its row (the game wraps it), whatever moved it - a check of the button
   // field's direction bits missed a 2.0.3 player's presses. Any player's
@@ -964,6 +1006,14 @@ REX_HOOK_RAW(sub_823D4FC0) {
     ShowPage(base);
   }
   FollowCursor(int(new_row), int(new_col));
+}
+
+// The online arena select's cursor (sub_82521EF8(screen, tile): that tile's
+// arena becomes the screen's).
+REX_EXTERN(__imp__sub_82521EF8);
+REX_HOOK_RAW(sub_82521EF8) {
+  g_online_tile = int(ctx.r4.u32 < 25 ? ctx.r4.u32 : 0);
+  __imp__sub_82521EF8(ctx, base);
 }
 
 namespace svr2011 {
@@ -1045,14 +1095,19 @@ void UseBackstageRow(int i) {
 void SetMatchLoading(bool loading) { g_match_loading = loading; }
 
 std::string ArenaModInUse(int* tile) {
-  const auto* c = static_cast<const CustomArena*>(g_committed_custom);
-  if (!c || g_committed_host < 0) return "";
-  if (tile) *tile = g_committed_host;
+  // (the arena redirected is the one the match loads - the online screen's A
+  // closes it before a commit is seen)
+  const auto* c = static_cast<const CustomArena*>(g_redirected_custom);
+  if (!c || g_redirected_host < 0) return "";
+  if (tile) *tile = g_redirected_host;
   return c->id;
 }
 
 bool UseArenaMod(const std::string& folder, int tile) {
   static int used = -1;  // (the tile this game plays another's arena on)
+  static std::string used_folder;
+  if (folder == used_folder && (folder.empty() ? used < 0 : tile == used)) return true;  // (as it is)
+  used_folder = folder;
   if (folder.empty() || tile < 0 || tile >= 100) {
     if (used >= 0) {
       RedirectArena(used, "");
