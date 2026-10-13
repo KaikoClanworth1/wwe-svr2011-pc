@@ -126,11 +126,26 @@ void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
     if (misses++ < 5) REXLOG_INFO("[svr2011] pose dump: ch {:08X} - node {:08X} +32 {:08X} isn't a CHAR", ch, n, fighter);
     return;
   }
-  const uint32_t newest = Rd32(base + ch + kNewest), person = Rd32(base + fighter + 1156);
-  static int notes = 0;
-  if (newest >= 6) {
-    if (notes++ < 10) REXLOG_INFO("[svr2011] pose dump: person {} ch {:08X} - newest player index {} out of range", person, ch, newest);
-    return;
+  uint32_t newest = Rd32(base + ch + kNewest);
+  const uint32_t person = Rd32(base + fighter + 1156);
+  static int notes = 0, range_notes = 0;
+  if (newest >= 6) {  // (-1 in matches: the sampled player with the most weight)
+    float best = 0.001f;
+    for (uint32_t i = 0; i < 6; ++i)
+      if (const float w = RdF(base + ch + kPlayers + kPlayerSize * i + 528); w >= best) best = w, newest = i;
+    if (newest >= 6) {
+      if (range_notes++ < 4) {
+        std::string raw;
+        for (uint32_t i = 0; i < 6; ++i) {
+          const uint8_t* pl = base + ch + kPlayers + kPlayerSize * i;
+          char t[48];
+          std::snprintf(t, sizeof t, " [%u: id %u w %g]", i, Rd16(pl + 598), RdF(pl + 528));
+          raw += t;
+        }
+        REXLOG_INFO("[svr2011] pose dump: person {} ch {:08X} - no player sampled (newest index {}):{}", person, ch, Rd32(base + ch + kNewest), raw);
+      }
+      return;
+    }
   }
   const uint8_t* player = base + ch + kPlayers + kPlayerSize * newest;
   const uint32_t motion = Rd16(player + 598) & 0x7FFF;
