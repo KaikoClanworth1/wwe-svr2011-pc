@@ -109,6 +109,15 @@ Where a pack goes:
 A `disabled` file in the mod or pack folder turns it off. Keys the game
 already has are left alone.
 
+A move a pack adds only plays for a wrestler whose moveset has it (a superstar
+mod's `moves.txt`, or Create-A-Moveset): each wrestler's match bank is gathered
+from the `MOT/RR..` banks by his profile. Forced in a test
+(`SVR2011_TEST_FORCE_MOVE`) on a wrestler without it, it isn't found.
+
+`tools/moves_port.py` (WWE '12 / '13) writes such packs from other games' moves:
+the source's bodies on a 2011 template move's record, banks and events
+(docs/OTHER_GAMES.md).
+
 ## How the game uses them
 
 Packs are read in path order: `Mods\Moves\<pack>`, then
