@@ -21,7 +21,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = os.path.dirname(HERE)
-G11 = os.path.join(os.path.dirname(PORT), 'Game Files', 'pac')
+G11 = os.environ.get('SVR2011_GAME_PAC', r'D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Game Files\pac')
 ROOT = os.path.dirname(os.path.dirname(PORT))  # D:\Xbox Games Ports
 EXTRACT = {'svr2007': 'SvR2007 Extract', 'svr2008': 'SvR2008 Extract', 'svr2009': 'SvR2009 Extract',
            'svr2010': 'SvR2010 Extract', 'wwe12': 'WWE12 Extract', 'wwe13': 'WWE13 Extract', 'wwe2k14': 'WWE2K14 Extract'}

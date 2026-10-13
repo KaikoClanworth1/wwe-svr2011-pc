@@ -272,6 +272,18 @@ exist in 2011, which can be ported and which can't.
 - For a collision view, the 2011 game data to read is still to be found
   (guess: CHAR/DAT or the 0x28 table).
 
+### Visibility trees and borrowed entries (all SvR 2007-2009 conversions)
+
+- SvR2011 draws only the arena models its visibility tree (0xC364) lists.
+  2007-2009 arena files have no tree, so their floor, stands and barricades
+  were culled: the user saw a black floor and no barricades. The converter
+  now builds a flat tree, one node per arena model, boxed from its vertices
+  in 2011's axes (x, z, -y) x 0.1.
+- The borrowed entries (crowd, table pictures, card, light set) always come
+  from 2011's RAW. 2008 SummerSlam with SummerSlam's own crashed the load on
+  its slot; with RAW's it plays there. The base slot still sets the tile, the
+  VS theme and the size budget.
+
 ## Belts and weapons (D11 research, Arena Porting)
 
 ### Where 2011 keeps them

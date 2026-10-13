@@ -330,6 +330,39 @@ def remap_lights(flags, host_flags):
     return re.sub(rb'l\((\d+)\)', sub, flags), missing
 
 
+def vis_tree(ents):
+    """A visibility tree (entry 0xC364) for an arena that has none: SvR2011 culls every arena
+    model its tree doesn't list (2007-2009 arenas came out with a black floor and no barricades).
+    One node per arena model (ids below 0x190), boxed by its vertices: 3ds Max axes in metres,
+    (x, z, -y) x 0.1 of the model's units, as 2011's own trees."""
+    import jboy
+    boxes = []
+    for i, x in sorted(ents.items()):
+        if i >= 0x190:
+            continue
+        d = svrfmt.bpe_decode(x) if x[:4] == b'BPE ' else x
+        if d[:4] != b'JBOY':
+            continue
+        m = jboy.read(d)
+        v = [p for msh in m.meshes for p in msh.verts]
+        if not v:
+            continue
+        xs, ys, zs = [p[0] * 0.1 for p in v], [p[2] * 0.1 for p in v], [-p[1] * 0.1 for p in v]
+        boxes.append((m.name, (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))))
+    if not boxes:
+        return None
+    root = [min(b[1][k] for b in boxes) for k in range(3)] + [max(b[1][k] for b in boxes) for k in range(3, 6)]
+
+    def f(b):
+        return ' '.join('%g' % round(c, 5) for c in b)
+    out = [';<\u30a2\u30ea\u30fc\u30ca\u30e2\u30c7\u30eb\u5206\u5272\u306b\u3088\u308b\u53ef\u8996\u5224\u5b9a'
+           '\u30c7\u30fc\u30bf\u30d5\u30a1\u30a4\u30eb>', ';\u5ea7\u6a19\u7cfb=3ds max', '',
+           'NODE MY_NAME = VT_ROOT', '{', '\t' + f(root), '}', str(len(boxes)), '']
+    for name, b in boxes:
+        out += ['NODE MY_NAME = %s PARENT_NAME = VT_ROOT' % name, '{', '\t' + f(b), '}', '0', '']
+    return '\r\n'.join(out).encode('cp932')
+
+
 def svr2007_path(n):
     return 'pac/bg/bg%d.pac' % (n // 10)
 
@@ -363,9 +396,13 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     name = name or '%s (SvR %s)' % (show, year)
     mod_id = game + '_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
     progress(3, 'reading bg%02d' % n)
+    # the file's layout and size budget: the base slot's arena; the borrowed entries (crowd,
+    # table pictures, card, light set): always 2011's RAW (a 2008 arena with SummerSlam's
+    # crowd / lights crashed the load on its slot; with RAW's it plays there)
     host = open(find_host(pac11, base), 'rb').read()
     hb, gb, tb = svrfmt.epac_read(host)
-    eb = dict(svrfmt.pach_read(gb[0][1][0][1]))
+    _, graw, _ = svrfmt.epac_read(open(find_host(pac11, 1), 'rb').read())
+    eb = dict(svrfmt.pach_read(graw[0][1][0][1]))
     if game == 'svr2007':  # one stage of a many-stage pac
         _, ga, _ = svrfmt.epac_read(disc.read(svr2007_path(n)))
         stage = next((b for typ, es in ga for nm, b in es if typ.startswith(b'STG') and nm == b'%04d' % n), None)
@@ -389,13 +426,18 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     for i in HOST_ENTRIES:
         if i in eb:
             ents[i] = eb[i]
+    if 0xC364 not in ents:
+        tree = vis_tree(ents)
+        if tree:
+            ents[0xC364] = svrfmt.bpe_encode(tree, compress=True)
+            notes.append('visibility tree made from the arena models (the game had none)')
     if 0xC351 in ents and 0xC351 in eb:
         unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
         flags, moved = remap_lights(unp(ents[0xC351]), unp(eb[0xC351]))
         if moved:
             ents[0xC351] = svrfmt.bpe_encode(flags, compress=True)
             notes.append('lights 2011 has no copy of, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
-    notes.append('crowd, announce table pictures and card from 2011 %s' % BASE_NAMES[base])
+    notes.append('crowd, announce table pictures and card from 2011 RAW')
 
     def build(tex_blob):
         e = dict(ents)
