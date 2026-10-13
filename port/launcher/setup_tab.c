@@ -90,6 +90,8 @@ static int on_path(const WCHAR *exe, WCHAR *out)
     return GetFileAttributesExW(out, GetFileExInfoStandard, &a) && (a.nFileSizeLow || a.nFileSizeHigh);
 }
 
+static int python_works(const WCHAR *python, DWORD wait_ms);
+
 /* ---- checking */
 
 void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
@@ -103,10 +105,10 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
     join(p, game, L"default.xex");
     if (exists(p)) {
         rows[SETUP_GAME].state = SETUP_FOUND;
-        swprintf_s(rows[SETUP_GAME].detail, 400, L"installed in %s", game);
+        swprintf_s(rows[SETUP_GAME].detail, 400, L"in %s", game);
     } else {
         rows[SETUP_GAME].state = SETUP_MISSING;
-        wcscpy_s(rows[SETUP_GAME].detail, 400, L"not installed: install them from your own disc image (Install tab)");
+        wcscpy_s(rows[SETUP_GAME].detail, 400, L"install them from your own disc image (Install tab)");
     }
 
     rows[SETUP_VCRT].name = L"Visual C++ runtime";
@@ -119,11 +121,11 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
     if (!miss[0]) {
         rows[SETUP_VCRT].state = SETUP_FOUND;
         join(p, launcher, k_vcrt[0]);
-        wcscpy_s(rows[SETUP_VCRT].detail, 400, exists(p) ? L"found (next to the launcher)"
-                                                          : wine ? L"found (Wine / Proton's own)" : L"found (Windows)");
+        wcscpy_s(rows[SETUP_VCRT].detail, 400, exists(p) ? L"next to the launcher"
+                                                          : wine ? L"Wine / Proton's own" : L"Windows' own");
     } else {
         rows[SETUP_VCRT].state = SETUP_MISSING;
-        swprintf_s(rows[SETUP_VCRT].detail, 400, L"missing %s: copy them from the release zip next to the game, "
+        swprintf_s(rows[SETUP_VCRT].detail, 400, L"%s: copy them from the release zip next to the game, "
                    L"or install Microsoft's VC++ redistributable (aka.ms/vs/17/release/vc_redist.x64.exe)", miss);
     }
 
@@ -133,13 +135,13 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
         HMODULE b = LoadLibraryExW(L"mfreadwrite.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (a && b) {
             rows[SETUP_MF].state = SETUP_FOUND;
-            wcscpy_s(rows[SETUP_MF].detail, 400, L"found: your own music, HD movies and the Movie Maker work");
+            wcscpy_s(rows[SETUP_MF].detail, 400, L"your own music, HD movies and the Movie Maker work");
         } else {
             rows[SETUP_MF].state = SETUP_MISSING;
             wcscpy_s(rows[SETUP_MF].detail, 400,
                      wine ? L"not in this Wine / Proton prefix: the game plays, without your own music and MP4 "
                             L"movies (.bik movies work)"
-                          : L"missing (a Windows \"N\" edition): install the Media Feature Pack from Optional "
+                          : L"a Windows \"N\" edition: install the Media Feature Pack from Optional "
                             L"features for your own music, MP4 movies and the Movie Maker");
         }
         if (a) FreeLibrary(a);
@@ -155,15 +157,24 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
         join(pil, q, L"PIL");
         if (exists(p) && exists(np) && exists(pil)) {
             rows[SETUP_PYTHON].state = SETUP_FOUND;
-            wcscpy_s(rows[SETUP_PYTHON].detail, 400, L"found in Tools\\python (for the Mod Maker's converters)");
+            wcscpy_s(rows[SETUP_PYTHON].detail, 400, L"in Tools\\python (for the Mod Maker's converters)");
+        } else if (on_path(L"python.exe", q) || on_path(L"python3.exe", q) || on_path(L"py.exe", q)) {
+            /* the player's own Python: fine when it has numpy and Pillow (asked once per launcher run -
+               a few seconds at most, no window) */
+            static WCHAR asked[MAX_PATH];
+            static int works;
+            if (_wcsicmp(asked, q)) {
+                wcscpy_s(asked, MAX_PATH, q);
+                works = python_works(q, 8000);
+            }
+            rows[SETUP_PYTHON].state = works ? SETUP_FOUND : SETUP_MISSING;
+            swprintf_s(rows[SETUP_PYTHON].detail, 400,
+                       works ? L"your own Python, with numpy and Pillow: %s"
+                             : L"%s is on PATH, but without numpy and Pillow: install them into it "
+                               L"(pip install numpy pillow), or the Mod Maker's own below", q);
         } else {
             rows[SETUP_PYTHON].state = SETUP_MISSING;
-            if (on_path(L"python.exe", q) || on_path(L"py.exe", q))
-                swprintf_s(rows[SETUP_PYTHON].detail, 400, L"not in Tools (the Mod Maker's \"Other games\" and "
-                           L"\"Port\" pages): %s is on PATH - fine if it has numpy and Pillow", q);
-            else
-                wcscpy_s(rows[SETUP_PYTHON].detail, 400, L"missing: only the Mod Maker's \"Other games\" and "
-                         L"\"Port\" pages need it");
+            wcscpy_s(rows[SETUP_PYTHON].detail, 400, L"only the Mod Maker's \"Other games\" and \"Port\" pages need it");
         }
     }
 
@@ -171,13 +182,13 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
     join(p, game, L"Tools\\ffmpeg\\ffmpeg.exe");
     if (exists(p)) {
         rows[SETUP_FFMPEG].state = SETUP_FOUND;
-        wcscpy_s(rows[SETUP_FFMPEG].detail, 400, L"found in Tools\\ffmpeg");
+        wcscpy_s(rows[SETUP_FFMPEG].detail, 400, L"in Tools\\ffmpeg");
     } else if (on_path(L"ffmpeg.exe", q) || exists(wcscpy(q, L"C:\\ffmpeg\\bin\\ffmpeg.exe"))) {
         rows[SETUP_FFMPEG].state = SETUP_FOUND;
-        swprintf_s(rows[SETUP_FFMPEG].detail, 400, L"found: %s", q);
+        swprintf_s(rows[SETUP_FFMPEG].detail, 400, L"%s", q);
     } else {
         rows[SETUP_FFMPEG].state = SETUP_OPTIONAL;
-        wcscpy_s(rows[SETUP_FFMPEG].detail, 400, L"optional: only for SvR 2010 superstars' theme songs (Mod Maker)");
+        wcscpy_s(rows[SETUP_FFMPEG].detail, 400, L"only for SvR 2010 superstars' theme songs (Mod Maker)");
     }
 
     rows[SETUP_BINK2].name = L"Bink 2 tool";
@@ -194,8 +205,8 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
             }
         }
         rows[SETUP_BINK2].state = found ? SETUP_FOUND : SETUP_OPTIONAL;
-        if (found) swprintf_s(rows[SETUP_BINK2].detail, 400, L"found: %s", q);
-        else wcscpy_s(rows[SETUP_BINK2].detail, 400, L"optional: only for .bk2 videos - RAD Video Tools, your own "
+        if (found) swprintf_s(rows[SETUP_BINK2].detail, 400, L"%s", q);
+        else wcscpy_s(rows[SETUP_BINK2].detail, 400, L"only for .bk2 videos - RAD Video Tools, your own "
                       L"download from RAD's site");
     }
 
@@ -203,10 +214,10 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
     join(p, launcher, L"platform-tools\\adb.exe");
     if (exists(p) || on_path(L"adb.exe", q)) {
         rows[SETUP_ADB].state = SETUP_FOUND;
-        swprintf_s(rows[SETUP_ADB].detail, 400, L"found: %s", exists(p) ? p : q);
+        swprintf_s(rows[SETUP_ADB].detail, 400, L"%s", exists(p) ? p : q);
     } else {
         rows[SETUP_ADB].state = SETUP_OPTIONAL;
-        wcscpy_s(rows[SETUP_ADB].detail, 400, L"optional: downloaded when you install to a phone (Android tab)");
+        wcscpy_s(rows[SETUP_ADB].detail, 400, L"downloaded when you install to a phone (Android tab)");
     }
 }
 
@@ -347,7 +358,7 @@ static int fix_pth(const WCHAR *pydir)
 }
 
 /* Runs `python -c "import numpy, PIL; print('ok')"` (no window): 1 when it says ok. */
-static int python_works(const WCHAR *python)
+static int python_works(const WCHAR *python, DWORD wait_ms)
 {
     WCHAR cmd[MAX_PATH + 96];
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
@@ -368,7 +379,7 @@ static int python_works(const WCHAR *python)
     if (CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
         CloseHandle(wr);
         wr = NULL;
-        if (WaitForSingleObject(pi.hProcess, 60000) == WAIT_OBJECT_0 && ReadFile(rd, buf, sizeof buf - 1, &got, NULL)) {
+        if (WaitForSingleObject(pi.hProcess, wait_ms) == WAIT_OBJECT_0 && ReadFile(rd, buf, sizeof buf - 1, &got, NULL)) {
             buf[got] = 0;
             ok = strstr(buf, "ok") != NULL;
         } else {
@@ -434,7 +445,7 @@ static int install_python(const WCHAR *game, const WCHAR *tmp, setup_progress_fn
     }
     if (progress) progress(950, L"Checking Python\x2026");
     join(exe, py, L"python.exe");
-    if (!python_works(exe)) {
+    if (!python_works(exe, 60000)) {
         swprintf_s(err, errn, L"Python was installed, but \"import numpy, PIL\" didn't work in it.");
         return 0;
     }
@@ -570,7 +581,7 @@ void setup_build(HWND wnd, mods_add_fn add, int tab, int id_base, setup_goto_fn 
     s_wnd = wnd;
     s_base = id_base;
     s_go_install = go_install;
-    add(tab, L"Button", L"First time setup", BS_GROUPBOX, x, 4, 560, 446, 0);
+    add(tab, L"Button", L"What this PC has", BS_GROUPBOX, x, 4, 560, 446, 0);
     s_ctl[S_INTRO] = add(tab, L"Static", L"What the game and its tools need on this PC. The game itself needs only "
                          L"the first three; Python and ffmpeg are for the Mod Maker's converters.",
                          SS_LEFT | SS_NOPREFIX, x + 16, 34, 528, 34, id_base + S_INTRO);

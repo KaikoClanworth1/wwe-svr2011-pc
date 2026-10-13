@@ -2028,8 +2028,8 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     { TAB_ANDROID, 0xE8EA, L"Android" },     { TAB_SETUP, 0xE73E, L"Setup" },
 };
 #define NAV_N   ((int)(sizeof k_nav / sizeof k_nav[0]))
-#define NAV_TOP 96
-#define NAV_H   42
+#define NAV_TOP 80      /* (14 tabs above the version line) */
+#define NAV_H   38
 
 /* A group box: a card the window draws on the page. */
 typedef struct { int tab, x, y, w, h; WCHAR title[64]; } Card;
