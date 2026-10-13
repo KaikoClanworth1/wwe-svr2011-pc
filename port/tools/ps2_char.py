@@ -5,7 +5,8 @@
 
 --list prints JSON {game, disc_serial, characters: [{id, name, raw_id, source, attires: [{attire, source,
 bones, meshes}]}]}. The convert writes into <out dir>: model.json (svr11_build's neutral model), tex_*.png
-(the PS2 part textures), ch.pac and report.json (the builder's report + {game, id, sources: [{attire, model_id,
+(the PS2 part textures), render_bust.png / render_wide.png (the PS2 select pictures, when
+the game has them), ch.pac and report.json (the builder's report + {game, id, sources: [{attire, model_id,
 raw_name, bones_folded, height_m}], scale, height_m, bones_folded}). Exit 0 ok, 2 bad input, 3 failed (the builder's codes).
 
 Games: SmackDown! Here Comes the Pain (HCTP), SmackDown! Shut Your Mouth (SYM: HCTP's formats, ids
@@ -248,6 +249,69 @@ def texbank(d):
     return out
 
 
+def tim2(b):
+    """TIM2 (its first picture) -> RGBA uint8 (h, w, 4): 32 / 24-bit, or 8 / 4-bit with a CLUT (CT32,
+    CT24 or CT16; CSM1 swizzled unless the CLUT type says CSM2); alpha 0..0x80 -> 0..255"""
+    if b[:4] != b'TIM2':
+        raise BadInput('not a TIM2 picture')
+    _, _, img_size, hdr_size, ncol, _, _, clut_type, img_type, w, h = struct.unpack_from('<IIIHHBBBBHH', b, 16)
+    data = 16 + hdr_size
+
+    def c32(a):
+        a = a.reshape(-1, 4).astype(np.int32)
+        a[:, 3] = np.minimum(a[:, 3] * 2, 255)
+        return a
+    if img_type == 3:
+        return c32(np.frombuffer(b, np.uint8, w * h * 4, data)).reshape(h, w, 4).astype(np.uint8)
+    if img_type == 2:
+        rgb = np.frombuffer(b, np.uint8, w * h * 3, data).reshape(h, w, 3)
+        return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
+    if img_type not in (4, 5):
+        raise BadInput('TIM2 picture type %d' % img_type)
+    if img_type == 5:
+        idx = np.frombuffer(b, np.uint8, w * h, data)
+    else:
+        p4 = np.frombuffer(b, np.uint8, w * h // 2, data)
+        idx = np.empty(w * h, np.uint8)
+        idx[0::2], idx[1::2] = p4 & 15, p4 >> 4
+    cp = data + img_size
+    ct = clut_type & 0x1F
+    if ct == 3:
+        pal = c32(np.frombuffer(b, np.uint8, ncol * 4, cp))
+    elif ct == 2:
+        rgb = np.frombuffer(b, np.uint8, ncol * 3, cp).reshape(-1, 3).astype(np.int32)
+        pal = np.concatenate([rgb, np.full((ncol, 1), 255, np.int32)], 1)
+    else:
+        v = np.frombuffer(b, '<u2', ncol, cp).astype(np.int32)
+        pal = np.stack([(v & 31) << 3, ((v >> 5) & 31) << 3, ((v >> 10) & 31) << 3, np.where(v & 0x8000, 255, 0)], 1)
+    if img_type == 5 and not clut_type & 0x80:
+        i = np.arange(len(pal))
+        pal = pal[(i & 0xE7) | ((i & 8) << 1) | ((i & 16) >> 1)]
+    return pal[idx].reshape(h, w, 4).astype(np.uint8)
+
+
+def named_groups(head):
+    """DPAC named groups -> {group: {entry name: (offset, size)}} ({name4, u16 sector, u16 size / 0x100})"""
+    out = {}
+    off = 0x800
+    while off < 0x4000 and head[off:off + 4] != bytes(4):
+        tag = head[off:off + 4].decode('latin-1')
+        n = u32(head, off + 4)
+        if n & 0x8000:
+            off += 8 + 4 * (n & 0x7FFF)
+            continue
+        ents = {}
+        for i in range(n):
+            p = off + 8 + 8 * i
+            if p + 8 > len(head) or head[p:p + 4] == bytes(4):
+                break
+            sec, sz = struct.unpack_from('<HH', head, p + 4)
+            ents[head[p:p + 4].decode('latin-1')] = (0x4000 + sec * 0x800, sz * 0x100)
+        out[tag] = ents
+        off += 8 + 8 * len(ents)
+    return out
+
+
 # ------------------------------------------------------------------ the games
 
 class HCTP:
@@ -292,6 +356,30 @@ class HCTP:
         parts = [read_yobj(e[k]) for k in (6, 7) if k in e and e[k][:4] == b'YOBJ']
         tex = texbank(e[9]) if 9 in e else {}
         return body, parts, tex
+
+    def portraits(self, ch):
+        """{'bust': 128 x 128, 'wide': 256 x 128} RGBA - the select pictures (MENU.PAC "MENU" SPFA / SPFB:
+        BPE'd PACs of 90 TIM2s; picture n = the character id's hex digits read as decimal: 0x30 -> 30)"""
+        if not hasattr(self, '_spf'):
+            self._spf = {}
+            if self.disc.exists('PAC/MENU.PAC'):
+                import svrfmt
+                ents = named_groups(self.disc.read('PAC/MENU.PAC', 0, 0x4000)).get('MENU', {})
+                for key, nm in (('bust', 'SPFA'), ('wide', 'SPFB')):
+                    if nm in ents:
+                        b = pac(self.disc.read('PAC/MENU.PAC', *ents[nm])).get(0, b'')
+                        if b[:4] == b'BPE ':
+                            b = svrfmt.bpe_decode(b)
+                        self._spf[key] = pac(b)
+        n = int('%x' % ch)
+        out = {}
+        for key, pics in self._spf.items():
+            if n in pics:
+                try:
+                    out[key] = tim2(pics[n])
+                except BadInput:
+                    pass
+        return out
 
     def gear(self, ch, at):
         """an attire's entrance gear model ids (part 2: glasses, a vest, a cape)"""
@@ -340,6 +428,9 @@ class SYM(HCTP):
             ats = chars.setdefault(ch, {})
             ats[max(ats, default=-1) + 1] = id_
         return chars
+
+    def portraits(self, ch):
+        return {}   # (MENU.PAC "MNSP" 0000.. are in the game's own roster order, not the model ids': later)
 
     def gear(self, ch, at):
         """the character's first small 6-9 model (glasses, a vest) for its first attire (SYM doesn't say
@@ -548,6 +639,11 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
     for a in model['attires']:
         a.pop('name')
     model['joints'] = joints
+    renders = {}
+    for key, img in g.portraits(id_).items():
+        fn = 'render_%s.png' % key
+        Image.fromarray(img, 'RGBA').save(os.path.join(out_dir, fn))
+        renders[key] = fn
     mj = os.path.join(out_dir, 'model.json')
     json.dump(model, open(mj, 'w'))
     pac_out = os.path.join(out_dir, 'ch.pac')
@@ -557,7 +653,7 @@ def convert(path, id_, out_dir, template, attire='all', gear=True):
         rep = json.loads(r.stdout)
     except ValueError:
         rep = dict(ok=False, error=(r.stderr or r.stdout)[-2000:])
-    rep.update(game=g.game, id='%x' % id_, sources=infos, scale=1.0,
+    rep.update(game=g.game, id='%x' % id_, sources=infos, scale=1.0, renders=renders,
                height_m=max((i['height_m'] or 0) for i in infos),
                bones_folded=sorted({f for i in infos for f in i['bones_folded']}))
     json.dump(rep, open(os.path.join(out_dir, 'report.json'), 'w'), indent=1)
