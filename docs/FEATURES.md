@@ -150,6 +150,7 @@ still being tested.
 - **Texture packs**: textures loaded into reused memory (Created Superstars, the select screen's superstars) can now be dumped and replaced.
 - **The mouse is only captured when the game window really has focus** (a game in the background could grab the cursor in keyboard-and-mouse mode).
 - **Less CPU on weak PCs**: the GPU VSync thread sleeps until the vblank instead of spinning through it, and the timer thread waits for its next timer instead of yielding in a loop (together about 15-18% of a core freed); the log shows each thread group's CPU every 5 s (for slow-PC reports).
+- **Less CPU on high-refresh screens (Direct3D 12 / 11)**: the window is only redrawn when the game has a new frame (Vulkan already did this); before, it redrew at the monitor's rate - 144 times a second on a 144 Hz screen for 60 game frames. Measured: the UI thread 43% -> 3% of a core (D3D12), frame rate unchanged. `d3d_throttle_ui_paints = false` turns it off.
 - **VSync really syncs**: with VSync on, frames no longer tear on Direct3D 12, Direct3D 11 or Vulkan (it only paced the game before); the log names the present mode.
 - **Cutscene movies keep up with their sound** on slow PCs (the video fell 4-6 s behind in Road to WrestleMania); full-speed PCs are unchanged.
 - **Sabu 1.4**: his d-pad-left taunt ("Sit Down", a move 2011 cut) no longer freezes him and the match end.
