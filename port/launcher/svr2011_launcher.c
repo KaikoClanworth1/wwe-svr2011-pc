@@ -7164,6 +7164,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* Tests: --mods-superstars <game folder> lists the superstar mods, those
+       over the 72-id limit marked, as the Mods tab does. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--mods-superstars")) {
+        console_setup();
+        mods_print_superstars(argv[2]);
+        LocalFree(argv);
+        return 0;
+    }
     /* Tests: --mods-remove <game folder> <mod folder> removes a mod as the Mods
        list's Remove does (a superstar mod's slots.txt line goes too). */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--mods-remove")) {

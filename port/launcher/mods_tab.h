@@ -19,6 +19,7 @@ int mods_notify(const NMHDR *nm);
 /* A background's name (manifest.txt name=). 1 on success. */
 int mods_rename(const WCHAR *folder, const WCHAR *name);
 int mods_remove(const WCHAR *game, const WCHAR *folder);
+int mods_print_superstars(const WCHAR *game);
 /* Installs a .svrmod into <game_dir>/Mods (the + button without its dialog;
    tests: --mods-add <file>). 1 on success; the tab's status says why not. */
 int mods_install(const WCHAR *game_dir, const WCHAR *zip);

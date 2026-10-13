@@ -116,6 +116,15 @@ final class ModsPage {
             return;
         }
         Arrays.sort(dirs, (x, y) -> x.getName().compareToIgnoreCase(y.getName()));
+        java.util.Set<String> leftOut = superstarsLeftOut(stars);
+        if (!leftOut.isEmpty()) {
+            int on = 0;
+            if (stars != null) for (File f : stars) if (!new File(f, "disabled").exists()) on++;
+            TextView over = a_.text((on - leftOut.size()) + " of " + on + " superstar mods fit - " + leftOut.size()
+                + " aren't in the game (72 is the limit). Switch some off to choose which play.", 15, LauncherActivity.kRed);
+            over.setPadding(0, a_.dp(8), 0, a_.dp(8));
+            installed_.addView(over);
+        }
         for (File d : dirs) {
             Map<String, String> m = manifest(d);
             String name = m.containsKey("name") ? m.get("name") : d.getName();
@@ -125,7 +134,8 @@ final class ModsPage {
             boolean backPack = d.getParentFile().getName().equals("Backstage");
             boolean matchType = d.getParentFile().getName().equals("MatchTypes");
             boolean pic = d.getParentFile().getName().equals("Backgrounds");
-            String hint = (pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+            String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the 72 limit. " : "")
+                + (pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
                 + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : "arena.pac").length()));
@@ -142,6 +152,7 @@ final class ModsPage {
                     if (checked) off.delete();
                     else new FileOutputStream(off).close();
                     a_.status(name + (checked ? " is on." : " is off.") + " (from the next game start)");
+                    if (star) installed_.post(this::refresh);  // (which superstar mods fit: 72 ids)
                 } catch (IOException e) {
                     a_.status("Could not change " + name + ": " + e.getMessage());
                 }
@@ -201,6 +212,37 @@ final class ModsPage {
             o.write(keep.toString().getBytes(StandardCharsets.UTF_8));
         } catch (IOException ignored) {
         }
+    }
+
+    // The game has 72 ids for superstar mods (src/superstar_mods.cpp), kept per
+    // folder in Mods/Superstars/slots.txt. As the game does: a mod that's on
+    // and holds an id keeps it; the others wait, in folder order, for the ids
+    // left (those of mods switched off or gone included). -> the waiting ones
+    // that don't fit.
+    static java.util.Set<String> superstarsLeftOut(File[] stars) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        if (stars == null) return out;
+        java.util.Set<String> held = new java.util.HashSet<>();
+        File slots = new File(superstarsFolder(), "slots.txt");
+        if (slots.isFile()) {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(slots), StandardCharsets.UTF_8))) {
+                for (String line; (line = r.readLine()) != null; ) {
+                    int tab = line.lastIndexOf('\t');
+                    if (tab > 0) held.add(line.substring(0, tab));
+                }
+            } catch (IOException ignored) {
+            }
+        }
+        int holders = 0;
+        java.util.List<String> waiting = new java.util.ArrayList<>();
+        for (File f : stars) {
+            if (new File(f, "disabled").exists()) continue;
+            if (held.contains(f.getName())) holders++;
+            else waiting.add(f.getName());
+        }
+        java.util.Collections.sort(waiting);
+        for (int i = 72 - holders; i < waiting.size(); i++) if (i >= 0) out.add(waiting.get(i));
+        return out;
     }
 
     static void deleteTree(File f) {

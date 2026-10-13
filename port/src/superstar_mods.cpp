@@ -456,6 +456,7 @@ void LoadMods() {
   fs::create_directories(overlay, ec);
   auto slots = ReadSlots(dir / "slots.txt");
   bool slots_changed = false;
+  std::vector<std::string> left_out;  // (over the limit: Mods/Superstars/left_out.txt, for the launcher)
   auto slot_of = [&](const std::string& folder) -> uint32_t {
     for (const auto& s : slots)
       if (s.first == folder) return s.second;
@@ -468,13 +469,19 @@ void LoadMods() {
       return id;
     }
     // All ids taken: one held by a mod whose folder is gone (removed by hand,
-    // or by an older launcher that left its line) is given to this one. Only
-    // then - a mod moved out for a while and back keeps its id (and the edits
-    // saves hold for it) while there is room.
+    // or by an older launcher that left its line) or switched off ("disabled":
+    // the player's way to choose which mods play when there are more than
+    // ids) is given to this one. Only then - a mod moved out for a while and
+    // back keeps its id (and the edits saves hold for it) while there is room.
+    // Mods are taken in folder order, those holding an id first in effect (an
+    // id never moves from a mod that's on), so who waits is the same each start.
     for (auto& s : slots) {
       std::error_code e;
-      if (fs::is_directory(dir / fs::path(s.first), e)) continue;  // (folder names as written: ANSI code page)
-      REXLOG_INFO("[svr2011] superstar mods: id {} of {} (its folder is gone) goes to {}", s.second, s.first, folder);
+      const fs::path held = dir / fs::path(s.first);  // (folder names as written: ANSI code page)
+      const bool gone = !fs::exists(held / "ch.pac", e), off = fs::exists(held / "disabled", e);
+      if (!gone && !off) continue;
+      REXLOG_INFO("[svr2011] superstar mods: id {} of {} (its folder is {}) goes to {}", s.second, s.first,
+                  gone ? "gone" : "switched off", folder);
       s.first = folder;
       slots_changed = true;
       return s.second;
@@ -565,8 +572,9 @@ void LoadMods() {
     ReadApplied(m, f);
     m.slot = slot_of(m.folder);
     if (!m.slot) {
-      REXLOG_WARN("[svr2011] superstar mods: only {} fit, {} left out (a line in slots.txt for a mod that is "
-                  "gone can be removed)", std::size(kPool), m.folder);
+      REXLOG_WARN("[svr2011] superstar mods: only {} fit, {} left out (switch another mod off to make room)",
+                  std::size(kPool), m.folder);
+      left_out.push_back(m.folder);
       continue;
     }
     char nm[32];
@@ -625,6 +633,15 @@ void LoadMods() {
     if (m.signs) svr2011::AddCharacterSigns(m.slot, m.sign_files);
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {})", m.name, m.slot, m.base);
     g_mods.push_back(std::move(m));
+  }
+  {  // the mods left out at this start, one folder a line (none: no file)
+    const fs::path lo = dir / "left_out.txt";
+    if (left_out.empty()) {
+      fs::remove(lo, ec);
+    } else if (FILE* t = std::fopen(lo.string().c_str(), "wb")) {
+      for (const auto& f : left_out) std::fprintf(t, "%s\n", f.c_str());
+      std::fclose(t);
+    }
   }
   if (slots_changed) {
     if (FILE* t = std::fopen((dir / "slots.txt").string().c_str(), "wb")) {
