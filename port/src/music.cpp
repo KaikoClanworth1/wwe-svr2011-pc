@@ -211,6 +211,8 @@ class Player {
  private:
   bool Open(const std::filesystem::path& path) {
     song_gain_ = SongGain(path);
+    if (song_gain_ != 1.0f)
+      REXLOG_INFO("user music: {} at {:.1f} dB (theme_gain)", path.filename().string(), 20.0f * std::log10(song_gain_));
     ComPtr<IMFSourceReader> reader;
     if (FAILED(MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader))) {
       REXLOG_WARN("user music: cannot open {}", path.string());
@@ -434,6 +436,8 @@ class Player {
  private:
   bool Open(const std::filesystem::path& path) {
     song_gain_ = SongGain(path);
+    if (song_gain_ != 1.0f)
+      REXLOG_INFO("user music: {} at {:.1f} dB (theme_gain)", path.filename().string(), 20.0f * std::log10(song_gain_));
     fd_ = open(path.c_str(), O_RDONLY);
     if (fd_ < 0) {
       REXLOG_WARN("user music: cannot open {}", path.string());
