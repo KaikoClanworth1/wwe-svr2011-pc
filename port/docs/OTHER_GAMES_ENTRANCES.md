@@ -23,10 +23,10 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
-| SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, converted offline (4062, 4317), not played yet |
+| SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, played in game (Mr. Kennedy 4062 as 495) |
 | SvR 2010 (X360) | 54510844 | 203 (191 in 2011) | `svr10_entrance.py` | ready, played in game (Mr. Kennedy) |
 | WWE '12 (X360) | 54510890 | 247 (149 in 2011) | `wwe13_entrance.py --game wwe12` | ready, validated offline (Rey 123, Austin 101: 1-2 cm) |
-| WWE '13 (X360) | 545108B4 | 317 (150 in 2011) | `wwe13_entrance.py` | ready, validated offline (135 shared entrances), not played yet; titantrons need Bink 2 |
+| WWE '13 (X360) | 545108B4 | 317 (150 in 2011) | `wwe13_entrance.py` | ready, played in game (Mankind 246 as 497); titantrons need Bink 2 |
 | WWE 2K14 (X360) | 545408B2 | 347 | `wwe13_entrance.py --game wwe2k14` | ready, validated offline on segments 2K14 did not re-cut (1-2 cm); titantrons need Bink 2 |
 
 ## SmackDown! Here Comes the Pain (PS2)
@@ -180,7 +180,7 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
   feet 0.7-0.9 cm, head 0.6 cm, root 0; 595 of 642 segments under 3 cm everywhere (the rest were
   hand-edited by Yuke's for 2011). Cameras 0.01-0.04 cm / 0.01 deg. Events: a table from the
   shared entrances. Lights/effects object: a stock 2011 donor's tracks. Not converted: pyro, the
-  Bink 2 titantron, the theme. Mankind 246 -> 497 converted, not played yet.
+  Bink 2 titantron, the theme. Mankind 246 -> 497 played in game (lighting, walk, crawl under the rope).
 
 ## WWE 2K14 (Xbox 360)
 
@@ -208,3 +208,10 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
 
 docs/ENTRANCE_ATTIRES.md: `attire<N>_entrance=<n>` (Rey Mysterio's "Evil" style), entrance
 outfits (EMD kind 4 per attire, already working for mods).
+
+## Testing a converted entrance
+
+Put the pack in a test superstar mod's `moves/` with `entrance=<n>` and run a 1-on-1 test match
+(SVR2011_TEST_MATCH). Check the log for `match profile: ... entrance <n>`. Whoever enters **second**
+gets a shortened entrance in this test route (seen with stock Randy Orton too), so judge the mod
+only when it enters first (re-run if the order flipped).
