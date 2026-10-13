@@ -1886,6 +1886,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--behind")) behind = true, g_behind = true;
+    else if (!wcscmp(argv[i], L"--watch") && more) {  // <star id>,<dummy id>,<move id>: a match move watched here
+      int a[3] = {0, 0, 0};
+      swscanf_s(argv[++i], L"%d,%d,%d", &a[0], &a[1], &a[2]);
+      anims_page::TestWatch(a[0], a[1], a[2]);
+      g_page = PageId::kAnims;
+    }
     else if (!wcscmp(argv[i], L"--test-play") && more) {  // <star id>,<dummy id>,<move id>: Play in game
       int a[3] = {0, 0, 0};
       swscanf_s(argv[++i], L"%d,%d,%d", &a[0], &a[1], &a[2]);

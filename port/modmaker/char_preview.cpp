@@ -291,6 +291,7 @@ struct Motion {
   std::array<Channel, 4> pole;
   std::array<std::array<Channel, 3>, 21> rot;  // empty: that axis is 0
   std::array<bool, 21> has{};
+  bool fk = false;  // YMKs: every bone has its rotation (no IK for the limbs)
 };
 
 const int kStep[8] = {57, 57, 57, 57, 77, 102, 128, 153};
@@ -360,7 +361,159 @@ void Ch16(Reader& r, int K, char mode, Channel& c) {
   for (auto& x : c.v) x = Wrap16(x);
 }
 
+// ---- YMKs (the match moves: m.pac MOT banks; tools/ymks.py and YMKS_SPEC.md)
+// Directory as YMBs; a motion's data is a frame stream (byte < 0x60: skip that
+// many frames; 0x60 + u16 size or 0x61..0xFF = size + 0x60: a record taking
+// one frame). A record may start with an event block (bit 7: its size), then
+// body sub-records: a root (0.01 model units, f32 or s16) and bone rotations
+// (s16 angles, Euler z*y*x) for all 21 bones or a masked few, reached in
+// count + 1 frames.
+bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& err) {
+  if (b.size() < 0x114) return err = "not a motion bank", false;
+  const uint32_t n = Le32(&b[0x110]);
+  const size_t base = 0x114 + 16 * size_t(n);
+  if (base > b.size()) return err = "the bank's directory runs past it", false;
+  const size_t dl = b.size() - base;
+  int found = -1;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* e = &b[0x114 + 16 * i];
+    if (e[0] == y && e[1] == x && Le16(e + 2) == id) { found = int(i); break; }
+  }
+  if (found < 0) return err = "track " + std::to_string(y) + " isn't in the bank", false;
+  const uint32_t off = Le32(&b[0x114 + 16 * size_t(found) + 4]);
+  if (off >= dl) return err = "an empty motion", false;
+  size_t end = dl;  // (the data runs to the next entry's start)
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t o = Le32(&b[0x114 + 16 * i + 4]);
+    if (o > off && o < end) end = o;
+  }
+  const uint8_t* d = &b[base + off];
+  const size_t size = end - off;
+  // M1 bone types (ymks.TYPES_M1): which axes, how stored
+  static const int kTypes[21] = {7, 7, 7, 6, 0x17, 6, 7, 3, 6, 6, 7, 3, 6, 7, 2, 0x17, 2, 7, 2, 0x17, 2};
+  auto axes = [](int t) { return t == 2 ? "y" : t == 3 ? "xy" : t == 4 ? "z" : t == 6 ? "yz" : "xyz"; };
+  struct Key1 { int frame; int v; };
+  std::array<std::array<std::vector<Key1>, 3>, 21> rk;
+  std::array<std::vector<std::pair<int, float>>, 3> root;
+  auto rd_bone = [&](const uint8_t* q, size_t left, int bone, int frame) -> size_t {
+    const char* ax = axes(kTypes[bone]);
+    const size_t need = 2 * std::strlen(ax);
+    if (need > left) return size_t(-1);
+    for (size_t k = 0; ax[k]; ++k) {
+      const int a = ax[k] - 'x';
+      rk[size_t(bone)][size_t(a)].push_back({frame, int(int16_t(Le16(q + 2 * k)))});
+    }
+    return need;
+  };
+  auto set_root = [&](int frame, float rx, float ry, float rz) {
+    root[0].push_back({frame, rx}), root[1].push_back({frame, ry}), root[2].push_back({frame, rz});
+  };
+  auto f32 = [](const uint8_t* q) { return LeF(q); };
+  auto s16r = [](const uint8_t* q) { return float(int16_t(Le16(q))); };
+  int frame = 0, last = 0;
+  for (size_t p = 0; p < size;) {
+    const uint8_t c = d[p];
+    if (c < 0x60) { frame += c, ++p; continue; }
+    size_t sz;
+    if (c == 0x60) {
+      if (p + 3 > size) break;
+      sz = size_t(d[p + 1]) | size_t(d[p + 2]) << 8, p += 3;
+    } else {
+      sz = c - 0x60u, ++p;
+    }
+    if (p + sz > size) break;
+    const uint8_t* r = d + p;
+    p += sz;
+    size_t q = 0;
+    if (sz && (r[0] & 0x80)) q = 1 + (r[0] & 0x7Fu);  // (events: not shown here)
+    while (q + 1 < sz) {
+      const uint8_t op = r[q];
+      const size_t left = sz - q;
+      auto bones = [&](size_t at, uint32_t mask) -> size_t {
+        for (int k = 0; k < 21; ++k)
+          if (mask >> k & 1) {
+            const size_t used = rd_bone(r + at, sz - at, k, frame);
+            if (used == size_t(-1)) return size_t(-1);
+            at += used;
+          }
+        return at;
+      };
+      size_t next = size_t(-1);
+      if (op == 0x7E && left >= 8) set_root(frame, s16r(r + q + 2), s16r(r + q + 4), s16r(r + q + 6)), next = q + 8;
+      else if (op == 0x7F && left >= 14) set_root(frame, f32(r + q + 2), f32(r + q + 6), f32(r + q + 10)), next = q + 14;
+      else if (op == 0x7B && left >= 9) set_root(frame, s16r(r + q + 3), s16r(r + q + 5), s16r(r + q + 7)), next = q + 9;
+      else if (op == 0x76 && left >= 7) next = q + 7;
+      else if (op == 0x74 && left >= 3) {
+        size_t t = q + 1;
+        if (r[t++]) t += 2;
+        if (t < sz && r[t++]) t += 4;
+        next = t;
+      } else if (op == 0x7D && left >= 14) set_root(frame, f32(r + q + 2), f32(r + q + 6), f32(r + q + 10)), next = bones(q + 14, 0x1FFFFF);
+      else if (op == 0x7C && left >= 8) set_root(frame, s16r(r + q + 2), s16r(r + q + 4), s16r(r + q + 6)), next = bones(q + 8, 0x1FFFFF);
+      else if (op >= 0x60 && op <= 0x6F && left >= 7) set_root(frame, s16r(r + q + 1), s16r(r + q + 3), s16r(r + q + 5)), next = bones(q + 7, 0x1FFFFF);
+      else if ((op == 0x7A && left >= 17) || (op == 0x75 && left >= 11) || (op >= 0x50 && op <= 0x5F && left >= 16)) {
+        size_t at;
+        if (op == 0x7A) set_root(frame, f32(r + q + 2), f32(r + q + 6), f32(r + q + 10)), at = q + 14;
+        else if (op == 0x75) set_root(frame, s16r(r + q + 2), s16r(r + q + 4), s16r(r + q + 6)), at = q + 8;
+        else set_root(frame, f32(r + q + 1), f32(r + q + 5), f32(r + q + 9)), at = q + 13;
+        const uint32_t mask = r[at] | uint32_t(r[at + 1]) << 8 | uint32_t(r[at + 2]) << 16;
+        next = bones(at + 3, mask);
+      } else if (op < 21 && left >= 2) {  // one bone: [bone][count][data]
+        const size_t used = rd_bone(r + q + 2, sz - q - 2, op, frame);
+        if (used != size_t(-1)) next = q + 2 + used;
+      }
+      if (next == size_t(-1) || next > sz) break;  // (an unknown sub-record, or the stock quirk of a few left-over bytes)
+      q = next;
+    }
+    last = frame;
+    ++frame;
+  }
+  bool any = false;
+  for (const auto& b2 : rk)
+    for (const auto& a : b2) any |= !a.empty();
+  if (!any) return err = "track " + std::to_string(y) + " has no body poses (a camera or a prop)", false;
+  // per frame: keys between records blended in a straight line (angles the short way round)
+  m = Motion();
+  m.fk = true;
+  m.keys = last + 1;
+  for (int k = 0; k < 21; ++k)
+    for (int a = 0; a < 3; ++a) {
+      const auto& ks = rk[size_t(k)][size_t(a)];
+      if (ks.empty()) continue;
+      m.has[size_t(k)] = true;
+      Channel& ch = m.rot[size_t(k)][size_t(a)];
+      ch.v.resize(size_t(m.keys));
+      size_t j = 0;
+      for (int f = 0; f < m.keys; ++f) {
+        while (j + 1 < ks.size() && ks[j + 1].frame <= f) ++j;
+        int v = ks[j].v;
+        if (f > ks[j].frame && j + 1 < ks.size()) {
+          const float t = float(f - ks[j].frame) / float(ks[j + 1].frame - ks[j].frame);
+          const int dv = int(int16_t(uint16_t(ks[j + 1].v - ks[j].v)));
+          v = ks[j].v + int(std::lround(dv * t));
+        }
+        ch.v[size_t(f)] = v;
+      }
+    }
+  for (int a = 0; a < 3; ++a) {  // root, in the YMBs channel's units (1e-4) at its 60-a-second rate
+    const auto& ks = root[size_t(a)];
+    Channel& ch = m.root[size_t(a)];
+    if (ks.empty()) continue;
+    ch.v.resize(size_t(m.keys) * 2);
+    size_t j = 0;
+    for (int f = 0; f < m.keys; ++f) {
+      while (j + 1 < ks.size() && ks[j + 1].first <= f) ++j;
+      float v = ks[j].second;
+      if (f > ks[j].first && j + 1 < ks.size())
+        v += (ks[j + 1].second - v) * float(f - ks[j].first) / float(ks[j + 1].first - ks[j].first);
+      ch.v[size_t(f) * 2] = ch.v[size_t(f) * 2 + 1] = int32_t(std::lround(v * 0.01f / 1e-4f));
+    }
+  }
+  return true;
+}
+
 bool DecodeMotion(const Bytes& b, int id, int x, int y, Motion& m, std::string& err) {
+  if (b.size() >= 4 && !std::memcmp(b.data(), "YMKs", 4)) return DecodeYmks(b, id, x, y, m, err);
   if (b.size() < 0x114 || std::memcmp(b.data(), "YMBs", 4)) {
     err = "the bank is not YMBs (match moves are YMKs, which only the game plays)";
     return false;
@@ -526,7 +679,15 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
     for (int a = 0; a < 3; ++a) rot[c][a] = Key(m.rot[size_t(c)][size_t(a)], key, true, kAng);
   for (int c = 0; c < 21; ++c) {
     const int i = find(kBones[c]);
-    if (i >= 0 && m.has[size_t(c)]) Euler(rot[c], local[size_t(i)].r);
+    if (i < 0 || !m.has[size_t(c)]) continue;
+    if (m.fk) {  // YMKs: on top of the bone's rest rotation (the angles are small: a pose's offsets)
+      float e[3][3], rest[3][3];
+      Euler(rot[c], e);
+      std::memcpy(rest, local[size_t(i)].r, sizeof rest);
+      MulR(rest, e, local[size_t(i)].r);
+    } else {
+      Euler(rot[c], local[size_t(i)].r);
+    }
   }
   const int root = find("root");
   if (root >= 0)
@@ -540,7 +701,7 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key) {
     }
   };
   fk();
-  if (root < 0) return w;
+  if (root < 0 || m.fk) return w;  // (YMKs: the limbs have their own rotations)
   const V3 root_p = w[size_t(root)].t, fwd{0, 0, -1};
   struct Limb {
     const char *up, *lo, *end;
@@ -935,6 +1096,20 @@ void Render(int w, int h) {
     }
   }
   if (g_feet_next <= g_top_next) g_feet = g_feet_next, g_tall = g_top_next - g_feet_next;
+  if (g_frame && clock && clock->fk && clock->keys > 1) {  // a match move: framed over the whole motion (bone positions,
+    // every few keys, plus a body's half width) - the people move metres during it
+    for (const Slot& sl : g_slots) {
+      if (!sl.ch) continue;
+      const Motion* m = sl.motion ? sl.motion.get() : nullptr;
+      if (!m) continue;
+      const int step = std::max(1, m->keys / 16);
+      for (int k = 0; k < m->keys; k += step)
+        for (const Xf& x : Pose(*sl.ch, *m, float(k))) {
+          const float v[3] = {x.t.x, -x.t.y, -x.t.z};
+          for (int c = 0; c < 3; ++c) g_frame_lo[c] = std::min(g_frame_lo[c], v[c] - 3), g_frame_hi[c] = std::max(g_frame_hi[c], v[c] + 3);
+        }
+    }
+  }
   if (g_frame && g_frame_lo[0] <= g_frame_hi[0]) {  // framed as posed (the idle stands on the floor)
     const float* lo = g_frame_lo;
     const float* hi = g_frame_hi;

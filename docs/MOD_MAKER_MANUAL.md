@@ -263,11 +263,13 @@ A superstar playing the game's motions. Pick who (a superstar, or any
   part, finisher previews, abilities - play in the view. Play / pause, step,
   scrub, speed, loop; the camera turns (left drag), tilts (right drag), pans
   (middle drag) and zooms (wheel).
-- **In the game:** the match moves (grapples, strikes, a move pack's moves)
-  are in a format only the game plays. Pick one by name and Play in game
-  starts a test match - the superstar against the dummy, both
-  computer-controlled - where the move is done every few seconds. Close the
-  game when done.
+- **Match moves:** pick one by name (grapples, strikes, finishers ...).
+  **Watch here** plays it in the view - the superstar does it, the dummy
+  takes it - from the game's own motion banks (m.pac, the 2,800 moves the
+  game ships). **Play in game** starts a test match instead - the superstar
+  against the dummy, both computer-controlled - where the move is done every
+  few seconds; that is the way to see a move pack's moves. Close the game
+  when done.
 
 ## Icons & renders
 

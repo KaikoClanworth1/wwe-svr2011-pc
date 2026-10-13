@@ -1,11 +1,15 @@
 // Animations page: a character playing the game's motions. The menu banks
 // in m.pac MVMT (YMBs: stances, taunts, finisher previews...) play here, on
-// the superstar and, for two-person motions, a dummy; the match moves (YMKs
-// banks) only the game plays - "Play in game" starts a test match with a
-// dummy and forces the move (SVR2011_TEST_MATCH + SVR2011_TEST_FORCE_MOVE).
+// the superstar and, for two-person motions, a dummy. The match moves (YMKs
+// banks: MOT/...) play here too ("Watch here": the superstar does it, the
+// dummy takes it), or in a test match with a dummy where the game forces the
+// move (SVR2011_TEST_MATCH + SVR2011_TEST_FORCE_MOVE).
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <thread>
 
 #include "app.h"
 #include "char_preview.h"
@@ -61,6 +65,98 @@ char g_move_filter[64] = "";
 int g_move_id = 0;
 int g_every = 6;
 int g_game_dummy = -1;  // index in Stars() (-1: the Dummy above)
+
+// ---- the match moves' banks (YMKs in m.pac: MOT/..., MVMT/...), indexed once
+struct BankPath {
+  PacEntryInfo entry;
+  std::vector<uint32_t> kids;  // PACH child ids down to the bank
+};
+std::map<int, BankPath> g_kindex;  // move id -> where its motion is (the first bank that has track 0, x 0)
+std::atomic<int> g_kindex_state{0};  // 0 not built, 1 building, 2 ready
+std::map<int, BankPath> g_kindex_next;
+int g_watch_pending = 0;  // (test aid: a move to watch once the index is there)
+
+void Walk(const Bytes& raw, const PacEntryInfo& e, std::vector<uint32_t>& path, std::map<int, BankPath>& out) {
+  if (IsPach(raw)) {
+    std::vector<PachEntry> kids;
+    if (!PachRead(raw, kids)) return;
+    for (auto& k : kids) {
+      path.push_back(k.id);
+      Walk(Unpack(k.data), e, path, out);
+      path.pop_back();
+    }
+  } else if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMKs", 4)) {
+    const uint32_t n = Le32(&raw[0x110]);
+    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) {
+      const uint8_t* d = &raw[0x114 + 16 * i];
+      if (d[0] == 0 && d[1] == 0 && !out.count(Le16(d + 2))) out[Le16(d + 2)] = {e, path};
+    }
+  }
+}
+
+void BuildIndex() {
+  int expect = 0;
+  if (!g_kindex_state.compare_exchange_strong(expect, 1)) return;
+  std::thread([game = g_game] {
+    std::map<int, BankPath> out;
+    const fs::path mpac = fs::path(game) / L"pac" / L"m.pac";
+    PacIndex idx;
+    if (ReadPacIndex(mpac, idx))
+      for (const auto& e : idx.entries) {
+        Bytes raw;
+        if (!ReadPacEntry(mpac, e, raw)) continue;
+        std::vector<uint32_t> path;
+        Walk(Unpack(raw), e, path, out);
+      }
+    g_kindex_next = std::move(out);
+    g_kindex_state = 2;
+  }).detach();
+}
+
+bool IndexReady() {
+  if (g_kindex_state == 0) BuildIndex();
+  if (g_kindex_state == 2 && g_kindex.empty() && !g_kindex_next.empty()) {
+    g_kindex = std::move(g_kindex_next);
+    Log("anims: " + std::to_string(g_kindex.size()) + " match moves indexed in m.pac");
+  }
+  return g_kindex_state == 2;
+}
+
+// The move's bank read in the background, then played here (track 0 the superstar, 1 the dummy).
+void Watch(int id) {
+  const auto it = g_kindex.find(id);
+  if (it == g_kindex.end()) {
+    Status("Move " + std::to_string(id) + " has no motion in m.pac (a move pack's, or one only the game builds): use Play in game.");
+    return;
+  }
+  const BankPath where = it->second;
+  RunInBackground([id, where] {
+    Progress("Reading the move's motions ...");
+    Bytes raw;
+    bool ok = ReadPacEntry(fs::path(g_game) / L"pac" / L"m.pac", where.entry, raw);
+    Bytes cur = ok ? Unpack(raw) : Bytes();
+    for (uint32_t kid : where.kids) {
+      std::vector<PachEntry> kids;
+      ok = ok && PachRead(cur, kids);
+      Bytes next;
+      bool hit = false;
+      for (auto& k : kids)
+        if (ok && k.id == kid) next = Unpack(k.data), hit = true;
+      ok = ok && hit;
+      cur = std::move(next);
+    }
+    auto bank = std::make_shared<const Bytes>(std::move(cur));
+    OnUiThread([id, ok, bank] {
+      std::string err;
+      if (!ok || !char_preview::SetMotion(bank, id, 0, &err)) {
+        Status("That move's motion can't be shown here: " + (err.empty() ? std::string("the bank didn't read") : err) + ".");
+        return;
+      }
+      g_sel_id = -1;
+      Status("Watching " + MoveName(id) + " (move " + std::to_string(id) + ").");
+    });
+  });
+}
 
 std::wstring ChPac(int id) { return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(id) + L".pac")).wstring(); }
 
@@ -210,6 +306,14 @@ void InGameSection() {
       if (ImGui::Selectable((stars[i].name + "##gd" + std::to_string(i)).c_str(), g_game_dummy == i)) g_game_dummy = i;
     ImGui::EndCombo();
   }
+  const bool ready = IndexReady();
+  ImGui::BeginDisabled(!ready || Busy() || g_move_id <= 0);
+  PushAccent();
+  if (ImGui::Button(ready ? "Watch here" : "Watch here (reading m.pac ...)", ImVec2(-1, 0))) Watch(g_move_id);
+  PopAccent();
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("The move's motion played here: the superstar does it, the dummy takes it.");
   ImGui::PushStyleColor(ImGuiCol_Button, kGood);
   if (ImGui::Button("Play in game", ImVec2(-1, 0))) PlayInGame();
   ImGui::PopStyleColor();
@@ -315,12 +419,17 @@ void TestStart(int star_id, int bank, int motion, int dummy_id) {
   g_test_star = star_id, g_test_bank = bank, g_test_motion = motion, g_test_dummy = dummy_id;
 }
 
+void TestWatch(int star_id, int dummy_id, int move) {
+  g_test_star = star_id, g_test_dummy = dummy_id, g_watch_pending = move;
+}
+
 int g_test_play_move = 0;
 void TestPlay(int star_id, int dummy_id, int move) {
   g_test_star = star_id, g_test_dummy = dummy_id, g_test_play_move = move;
 }
 
 void Draw() {
+  if (g_watch_pending && IndexReady() && !Busy()) Watch(g_watch_pending), g_move_id = g_watch_pending, g_watch_pending = 0;
   if (g_test_star > 0 && !g_game.empty()) {  // the test aid, once
     const auto& stars = Stars();
     for (int i = 0; i < int(stars.size()); ++i) {
