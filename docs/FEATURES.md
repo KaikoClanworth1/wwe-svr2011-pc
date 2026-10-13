@@ -130,7 +130,7 @@ still being tested.
 
 ### Fixes
 - **Road to WrestleMania VS. UNDERTAKER** accepts downloaded Created Superstars (the game only allowed ones made on that profile).
-- **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start.
+- **First start on a hard drive**: no more "Not Responding" (and Windows closing the game) while mods are prepared - unchanged mods aren't re-read at every start (that part only worked from 06646a9: every start merged the move packs again, up to ~30 s on a hard drive).
 - **Highlight reel clip save**: saving a video clip mid-match with a full memory pool is cancelled with a message instead of crashing.
 - **Sabu**: his top-rope corner moves no longer lift the opponent a body-height above the turnbuckle (2011's own seated moves); the SvR 2010 converter keeps corner slots for seated moves.
 - **Black screen at start in game folders with non-English letters** (e.g. `oyun yüklü`, Cyrillic): the settings file never loaded; the programs now use UTF-8 paths throughout (Windows 10 1903 and later).
@@ -141,7 +141,7 @@ still being tested.
 - **Custom arenas on page 2 of SELECT ARENA** stay chosen (going back into the arena select reset to page 1 and the stock arena played); LT / RT turn the pages too.
 - **Universe: superstar mods can't hold a title** (a mod has no Universe place, so the title got stuck with a holder nobody could book); saves where one does get the previous holder back.
 - **Superstar mod slots**: removing a mod in the launcher / Android frees its slot; the game reuses the slots of mods whose folder is gone.
-- **More than 72 superstar mods installed**: the launcher's Mods tab and the Android Mods page say how many fit and mark the ones left out (NOT IN GAME), instead of dropping them silently. Mods already in the game keep their place (so their saves stay right); switching one off gives its place to the next waiting mod at the next start. The game lists the left-out ones in `Mods\Superstars\left_out.txt`.
+- **137 superstar mods** (was 72): 65 more of the game's empty superstar ids take mods; old saves load as before, and mods already installed keep their ids. **More than 137 installed**: the launcher's Mods tab and the Android Mods page say how many fit and mark the ones left out (NOT IN GAME), instead of dropping them silently. Mods already in the game keep their place (so their saves stay right); switching one off gives its place to the next waiting mod at the next start. The game lists the left-out ones in `Mods\Superstars\left_out.txt`.
 - **Superstar mods with moves the game can't play** keep their base superstar's moves for those (logged), instead of freezing.
 - **Ground head submissions with Sabu / The Sandman installed** no longer freeze (the game's motion search missed stock moves after a mod's added motions).
 - **Keyboard and mouse button pictures** from WWE 2K15 PC (every key, plus mouse buttons), and the keyboard / PlayStation pictures on character select drawn right.
