@@ -6,15 +6,18 @@ For each slot of the source game's profile that tools/moveset_maps.json maps to 
   - fixed 2011 slots (the same id for the whole roster, pro_slots.json) stay as they are;
   - the source move translated by name (MOVS/WAZE) to a 2011 move whose motion is in the slot's
     category (pro_slots.json "bank") -> that move;
-  - else, when the source has its motion and a porter exists (moves_port.py: WWE '12 / '13 / 2K14),
+  - else, when the source has its motion and a porter exists (moves_port.py: WWE '12 / '13 / 2K14, SvR
+    2007-2009 - their tracks copied onto 2011's own record of the move),
     the move is ported (the template method) into a move pack inside the mod, on a free 2011
     record - one per source move, picked by the superstar and move so two mods rarely meet;
   - else the base's move stays.
 moves.txt holds the slots that differ from the base's profile (0xOFF=id). Every row is reported.
 A 2011 move is used when it has a motion (some records are cut moves) and 2011's own roster has it in that
 slot or in the same menu group (pro_slots.json "menu") - a strike doesn't land in a grapple slot.
-Taunts are ported on a taunt template (the base's taunt in that slot, else another 2011 taunt on YMBs
-banks): moves_port's YMBs path. Submissions on YMBs banks keep the base's.
+Taunts (only with port_taunts - superstar_port --port-taunts - until a ported taunt is seen playing in
+game) are ported on a taunt template (the base's taunt in that slot, else another 2011 taunt on YMBs
+banks), on a free record in the template's thousand: moves_port's YMBs path. Submissions on YMBs banks
+keep the base's.
 """
 import collections
 import json
@@ -99,6 +102,10 @@ def port_moveset(c):
         if fit:
             area[to // 2] = fit[0]
             rows.append((so, to, v, nm, 'same move in 2011', fit[0]))
+        elif menu_of.get(to) == 'Taunts' and v in src_index and not getattr(c, 'port_taunts', False):
+            # (ported YMBs taunts aren't seen playing in game yet - a frozen pose twice: off unless --port-taunts)
+            rows.append((so, to, v, nm, 'base kept (a taunt: --port-taunts to port it, not checked in game yet)',
+                         base[to // 2]))
         elif v in src_index and c.port and c.mgame is not None:
             if menu_of.get(to) == 'Taunts' and v not in templ:   # (a taunt plays from YMBs banks: a taunt template)
                 t = base[to // 2] if ymbs_taunt(base[to // 2]) else None
@@ -133,8 +140,13 @@ def port_moveset(c):
                 continue
             h = zlib.crc32(('%s/%d/%d' % (c.gid, c.cid, v)).encode())
             new_id = None
-            for d in range(len(free)):
-                cand = free[(h + d) % len(free)]
+            if getattr(c, 'same_ids', False) and v in w11 and v not in g11m.moved and v > 1000 and v not in used:
+                new_id = v   # (SvR 2007-2009: 2011 keeps the move's own record, without a motion)
+            pool = free
+            if v in templ:   # (a taunt: a record in the template's thousand - 9000-9999; elsewhere the match didn't find it)
+                pool = [i for i in free if i // 1000 == templ[v] // 1000] or free
+            for d in range(len(pool) if new_id is None else 0):
+                cand = pool[(h + d) % len(pool)]
                 if cand not in used:
                     new_id = cand
                     break

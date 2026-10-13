@@ -22,6 +22,7 @@ Options (convert):
     --no-moves      keep the base's moves
     --no-port       his moves 2011 has, but port none (WWE '12 / '13 / 2K14: faster)
     --max-port N    port at most N moves (default 40)
+    --port-taunts   port his taunts too (YMBs; not seen playing in game yet - off: the base's taunts)
 
 Games:
     svr2010   SvR 2010 - everything (svr10_superstar.py: model, renders, theme, titantron,
@@ -958,11 +959,15 @@ def moveset_step(gw, cid, base, o, work, mod, man, rep):
     if mg is not None:
         mgame = mg(o['src']) if gid == 'wwe12' else mg(o['src'], getattr(gw, 'svrmod', None))
         waze = mgame.waze
-    else:   # (SvR 2007-2009: move names from misc.pac, ids 2011's; no porter yet)
+    elif gid in MP.OLD:   # (SvR 2007-2009: 2011's ids; the tracks copied - moves_port.Game0789)
+        mgame = MP.Game0789(o['src'], os.path.join(work, '.m0789'))
+        waze = mgame.waze
+    else:
         mgame, waze = None, moveset_maps.waze_old(o['src'])
     c = moveset_port.Ctx(gid=gid, cid=cid, base=base, g11=o['g11'], pro=pro[cid], waze=waze, mgame=mgame,
                          pac11=o['pac11'], svrmod=getattr(gw, 'svrmod', None), work=work, mod=mod, rep=rep,
                          port=not o.get('no_port'), max_port=o.get('max_port', 40),
+                         port_taunts=bool(o.get('port_taunts')),
                          same_ids=gid in moveset_maps.SAME_IDS)
     res = moveset_port.port_moveset(c)
     if res is None:
@@ -1202,7 +1207,7 @@ def main(argv):
     cmd = argv[1]
     a = dict(pac11=PAC11)
     i = 2
-    flags = {'--no-moves': 'no_moves', '--no-port': 'no_port'}
+    flags = {'--no-moves': 'no_moves', '--no-port': 'no_port', '--port-taunts': 'port_taunts'}
     while i < len(argv):
         k = argv[i]
         if k in flags:
