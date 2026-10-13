@@ -53,6 +53,7 @@ struct StarProject {
   bool own_abilities = false;
   std::wstring moves;             // moves=moves.txt: lines 0xOFF=<move id> (a file picked as it is)
   std::map<int, int> moveset;     // the page's picks: slot (0..223, offset slot*2) -> move id, after the file's lines
+  std::map<int, std::string> moveset_note;  // slot -> where a ported move came from ("same: ..." / "similar: ..." / "edited")
   std::wstring pack;              // a move pack folder (pack.txt + motions/) copied in as moves/
   // a model from an FBX (import): the file and the hand edits to its automatic bone mapping
   std::wstring fbx;
@@ -100,6 +101,7 @@ extern bool g_watching;
 void MovePicker();
 std::string SlotLabel(int slot);
 void PreviewPose(int id);
+void MoveNoteTag(int slot);  // a ported slot's "same / similar / edited" tag (moves.txt's comments)
 struct PoseChoice {
   int id;
   std::string label;

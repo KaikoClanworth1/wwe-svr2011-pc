@@ -421,18 +421,43 @@ std::string MovesetText() {
 }
 
 // "0xOFF=id" items split by sep (a project's key, or a moves.txt's lines)
+// "0xOFF=id" items; a ported mod's moves.txt says before a slot where its move came from ("# same: <move> (<game>)" /
+// "# similar: <move> (<game>) -> <2011 move>"): kept as that slot's note.
 void ParseMoveset(const std::string& t, char sep) {
+  std::string note;
   for (size_t at = 0; at < t.size();) {
     size_t e = t.find(sep, at);
     if (e == std::string::npos) e = t.size();
-    const std::string item = t.substr(at, e - at);
+    std::string item = t.substr(at, e - at);
     at = e + 1;
+    if (!item.empty() && item.back() == '\r') item.pop_back();
+    if (item.rfind("# same:", 0) == 0 || item.rfind("# similar:", 0) == 0) {
+      note = item.substr(2);
+      continue;
+    }
     const size_t eq = item.find('=');
     if (eq == std::string::npos) continue;
     const int off = int(std::strtol(item.c_str(), nullptr, 0));
     const int id = std::atoi(item.c_str() + eq + 1);
-    if (off >= 0 && off < 2 * kMoveSlots && !(off & 1) && id > 0) g_star.moveset[off / 2] = id;
+    if (off >= 0 && off < 2 * kMoveSlots && !(off & 1) && id > 0) {
+      g_star.moveset[off / 2] = id;
+      if (!note.empty()) g_star.moveset_note[off / 2] = note;
+    }
+    note.clear();
   }
+}
+
+// A slot's note as a short tag ("similar: DDT 16") and the whole line for the tooltip.
+void MoveNoteTag(int slot) {
+  const auto it = g_star.moveset_note.find(slot);
+  if (it == g_star.moveset_note.end()) return;
+  const std::string& n = it->second;
+  const bool similar = n.rfind("similar:", 0) == 0;
+  std::string tag = n.substr(0, n.find(" ("));
+  ImGui::SameLine();
+  ImGui::TextColored(similar ? ImVec4(1, 0.8f, 0.35f, 1) : ImVec4(0.55f, 0.75f, 0.55f, 1), "%s", tag.c_str());
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", similar ? (n + "\nA guess: the source game's move wasn't in 2011, so a similar one was picked - swap it if you like.").c_str() : n.c_str());
 }
 
 // Moves the installed move packs add (and the project's own pack): id, the stock move its record copies, name, pack
@@ -501,7 +526,7 @@ void MovePicker() {
       const std::string label = n + "  (" + std::to_string(id) + ")##" + std::to_string(id);
       const auto it = g_star.moveset.find(g_pick_slot);
       if (ImGui::Selectable(label.c_str(), it != g_star.moveset.end() && it->second == id)) {
-        g_star.moveset[g_pick_slot] = id;
+        g_star.moveset[g_pick_slot] = id, g_star.moveset_note.erase(g_pick_slot), g_star.moveset_note[g_pick_slot] = "edited";
         Touch();
         g_pick_slot = -1;
         ImGui::CloseCurrentPopup();
@@ -514,7 +539,7 @@ void MovePicker() {
       const auto it = g_star.moveset.find(g_pick_slot);
       if (ImGui::Selectable((n + "  (" + std::to_string(pm.id) + ")  [" + pm.pack + "]##p" + std::to_string(pm.id)).c_str(),
                             it != g_star.moveset.end() && it->second == pm.id)) {
-        g_star.moveset[g_pick_slot] = pm.id;
+        g_star.moveset[g_pick_slot] = pm.id, g_star.moveset_note[g_pick_slot] = "edited";
         Touch();
         g_pick_slot = -1;
         ImGui::CloseCurrentPopup();
@@ -528,7 +553,7 @@ void MovePicker() {
     ImGui::SetNextItemWidth(110 * g_scale);
     ImGui::InputInt("##id", &typed, 0);
     ImGui::SameLine();
-    if (ImGui::Button("Use this move id") && typed > 0) g_star.moveset[g_pick_slot] = typed, Touch(), g_pick_slot = -1, ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Use this move id") && typed > 0) g_star.moveset[g_pick_slot] = typed, g_star.moveset_note[g_pick_slot] = "edited", Touch(), g_pick_slot = -1, ImGui::CloseCurrentPopup();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("A move by number - e.g. one a move pack adds (it isn't in the game's list).");
     ImGui::EndPopup();
   } else {
@@ -592,6 +617,7 @@ void MovesetSection() {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(label.c_str());
+      MoveNoteTag(s);
       ImGui::TableNextColumn();
       ImGui::TextDisabled("%s", was_name.empty() ? (was ? std::to_string(was).c_str() : "-") : was_name.c_str());
       ImGui::TableNextColumn();
@@ -601,7 +627,7 @@ void MovesetSection() {
         g_pick_slot = s, g_pick_find[0] = 0, g_pick_any = false;
       if (mine && !fits) ImGui::PopStyleColor();
       ImGui::TableNextColumn();
-      if (mine && ImGui::SmallButton("x")) g_star.moveset.erase(s), Touch();
+      if (mine && ImGui::SmallButton("x")) g_star.moveset.erase(s), g_star.moveset_note.erase(s), Touch();
       ImGui::TableNextColumn();
       const int play = mine ? it->second : was;
       const bool test_now = g_watch_slot_test == s && can_watch && !Busy();

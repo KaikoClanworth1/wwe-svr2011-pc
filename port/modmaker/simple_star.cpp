@@ -352,6 +352,7 @@ void SlotRow(int slot, const char* label, bool two_people) {
   ImGui::SameLine(150 * g_scale);
   ImGui::TextUnformatted(now ? MoveName(now).c_str() : "-");
   if (mine == g_star.moveset.end()) ImGui::SameLine(), ImGui::TextDisabled("(the style's)");
+  else MoveNoteTag(slot);
   ImGui::Indent(150 * g_scale);
   if (ImGui::SmallButton("Change...")) g_pick_slot = slot, g_pick_find[0] = 0, g_pick_any = false;
   ImGui::SameLine();
@@ -366,7 +367,7 @@ void SlotRow(int slot, const char* label, bool two_people) {
     ImGui::SetTooltip(anims_page::MovesIndexed() ? "This move can only be watched in the game." : "Reading the game's moves ...");
   if (mine != g_star.moveset.end()) {
     ImGui::SameLine();
-    if (ImGui::SmallButton("Use the style's")) g_star.moveset.erase(slot), Touch();
+    if (ImGui::SmallButton("Use the style's")) g_star.moveset.erase(slot), g_star.moveset_note.erase(slot), Touch();
   }
   ImGui::Unindent(150 * g_scale);
   ImGui::Spacing();
