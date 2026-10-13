@@ -1453,13 +1453,19 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   rep.height_cm = (bottom - top) * 10.0 / scale;
 
   // the builder's input (tools/svr11_build.py)
-  std::string j = "{\"version\": 1, \"template\": " + JsonStr(template_path) + ",\n \"joints\": {";
-  bool first = true;
-  for (const auto& [n, p] : joints) {
-    j += std::string(first ? "" : ", ") + JsonStr(n) + ": [" + Num(p[0]) + ", " + Num(p[1]) + ", " + Num(p[2]) + "]";
-    first = false;
+  const std::string textures = "{\"color\": \"color.png\"" + std::string(any_normal ? ", \"normal\": \"normal.png\"" : "") + "}";
+  std::string j;
+  if (opts.gear_json) {  // (gear pieces only: posed and sized onto the template's body; their weights on its bones)
+    j = "{\"version\": 1, \"textures\": " + textures + ", \"extra_bones\": [],\n \"meshes\": [";
+  } else {
+    j = "{\"version\": 1, \"template\": " + JsonStr(template_path) + ",\n \"joints\": {";
+    bool first = true;
+    for (const auto& [n, p] : joints) {
+      j += std::string(first ? "" : ", ") + JsonStr(n) + ": [" + Num(p[0]) + ", " + Num(p[1]) + ", " + Num(p[2]) + "]";
+      first = false;
+    }
+    j += "},\n \"attires\": [{\"name\": \"\", \"textures\": " + textures + ",\n  \"meshes\": [";
   }
-  j += "},\n \"attires\": [{\"name\": \"\", \"textures\": {\"color\": \"color.png\"" + std::string(any_normal ? ", \"normal\": \"normal.png\"" : "") + "},\n  \"meshes\": [";
   for (size_t mi = 0; mi < meshes.size(); ++mi) {
     const OutMesh& m = meshes[mi];
     j += std::string(mi ? ",\n   " : "\n   ") + "{\"name\": " + JsonStr(m.name) + ", \"kind\": \"" + m.kind + "\",\n    \"bones\": [";
@@ -1482,8 +1488,8 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     j += "]}";
     rep.mesh_lines.push_back(m.name + " (" + m.kind + "): " + std::to_string(m.pos.size()) + " vertices, " + std::to_string(m.tris.size()) + " triangles");
   }
-  j += "]}]}\n";
-  if (!WriteFile(PathStr(dir / "build.json"), Bytes(j.begin(), j.end()))) return fail("could not write build.json");
+  j += opts.gear_json ? "]}\n" : "]}]}\n";
+  if (!WriteFile(PathStr(dir / (opts.gear_json ? "gear.json" : "build.json")), Bytes(j.begin(), j.end()))) return fail("could not write the build input");
   rep.bones_used = int(out_bones.size());
   return true;
 }

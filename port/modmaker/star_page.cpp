@@ -1381,6 +1381,53 @@ void GearTransplant(const std::wstring& target, int attire, int donor, std::func
   if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
 }
 
+// Entrance gear from an FBX: the pieces (a coat or hat skinned to a humanoid rig) posed onto this model's body
+// (FbxToBuildInput with it as the template, automatic bone matching), then svr11_build --gear-json --onto.
+void GearFromFbx(const std::wstring& target, int attire, const std::wstring& fbx, std::function<void(const std::wstring&)> done) {
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"gear" / (fs::path(fbx).stem().wstring() + L"_gear");
+  const std::wstring out = (work.parent_path() / (fs::path(target).stem().wstring() + L"_a" + std::to_wstring(attire) + L"_fbxgear.pac")).wstring();
+  Status("Fitting the gear from " + Utf8(fs::path(fbx).filename().wstring()) + " ...");
+  RunInBackground([target, attire, fbx, work, out, done] {
+    Progress("Posing the gear onto the model ...");
+    std::vector<FbxBone> fb;
+    std::string err;
+    Bytes pac;
+    FbxImportReport rep;
+    FbxImportOptions opts;
+    opts.gear_json = true;
+    bool ok = ReadFbxSkeleton(Utf8(fbx), fb, err) && ReadFile(Utf8(target), pac);
+    if (ok) {
+      std::vector<RigBone> rb;
+      for (const auto& b : fb) rb.push_back({b.name, b.parent});
+      ok = FbxToBuildInput(Utf8(fbx), MapRig(rb), pac, Utf8(target), PathStr(work), rep, opts);
+    }
+    for (const auto& w : rep.warnings) Log("  gear FBX: " + w);
+    if (!ok) {
+      Status("The gear FBX couldn't be read: " + (rep.warnings.empty() ? err : rep.warnings.front()));
+      return;
+    }
+    WhenIdle([target, attire, work, out, done] {
+      const std::wstring report = out.substr(0, out.size() - 4) + L".json";
+      const bool started = RunToolJson(L"svr11_build.py", {L"--gear-json", (work / L"gear.json").wstring(), L"--onto", target + L"," + std::to_wstring(attire), out, report},
+                                       [out, done](int code, const std::string& text) {
+        Json j;
+        const bool parsed = ParseJson(text, j);
+        if (code != 0 || !fs::exists(out) || (parsed && !j["ok"].Truthy())) {
+          const std::string why = parsed ? j["error"].Str() : std::string();
+          Status("The gear couldn't be fitted" + (why.empty() ? std::string(" (see the log).") : ": " + why));
+          Log("gear: " + text);
+          return;
+        }
+        for (const char* list : {"notes", "warnings"})
+          for (const auto& w : j[list].items) Log("  gear: " + w.Str());
+        Status("The gear is fitted: " + j["gear_meshes"].Str() + " pieces, " + j["pages"].Str() + " of 192 memory pages.");
+        done(out);
+      });
+      if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
+    });
+  });
+}
+
 void GearRows(bool simple) {
   if (g_star.model.empty()) return;
   const std::vector<int> own_gear = GearOf(g_star.model);
@@ -1428,6 +1475,27 @@ void GearRows(bool simple) {
       ImGui::BeginDisabled(Busy());
       if (ImGui::SmallButton("From another superstar...")) ImGui::OpenPopup("gear_donor");
       ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(Busy());
+      if (ImGui::SmallButton("From a 3D model...")) {
+        const std::wstring f = PickFile(false, L"The gear as an FBX (a coat or hat skinned to a humanoid rig)", kFbxFilter, 1);
+        if (!f.empty()) {
+          const int at = a;
+          const bool own = pac == g_star.model;
+          GearFromFbx(pac, in, f, [at, own](const std::wstring& made) {
+            if (own) g_star.model = made;
+            else g_star.attires[at - 1] = made;
+            g_star.gear.erase(at);
+            g_view_attire = at;
+            char_preview::SetGear(true);
+            Touch();
+          });
+        }
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("A coat, jacket, hat or robe made in Blender (or any 3D program), skinned to a humanoid rig\n"
+                          "(the Mod Maker matches its bones by name, as for a whole model): fitted onto this attire's body.");
       int donor = 0;
       if (GearDonorPopup("gear_donor", donor)) {
         const int at = a;

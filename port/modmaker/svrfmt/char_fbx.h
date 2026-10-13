@@ -50,6 +50,7 @@ struct FbxImportOptions {
   std::map<std::string, bool> include;
   std::map<std::string, std::string> kind, picture;
   int max_vertices = 10500;  // all meshes together (the game's budget; 0 = as they are)
+  bool gear_json = false;    // write gear.json (entrance gear pieces for svr11_build --gear-json --onto) instead of build.json
 };
 bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,
                      const std::string& template_path, const std::string& out_dir, FbxImportReport& rep,
