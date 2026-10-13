@@ -1,4 +1,4 @@
-# A scripted CPU-vs-CPU match for the limits work (runs\lim_game): one game,
+﻿# A scripted CPU-vs-CPU match for the limits work (runs\lim_game): one game,
 # muted, screen 2 behind every window, below normal, test saves. The menus
 # to ONE ON ONE (route normal) with SVR2011_TEST_MATCH's people, then -Secs of
 # the match (from when its clock runs) with a shot every -ShotEvery s.
@@ -59,7 +59,7 @@ $p = Start-Process (Join-Path $game "svr2011.exe") -WorkingDirectory $game -Argu
 try {
     for ($t = 0; $t -lt 100; $t++) { $p.Refresh(); if ($p.HasExited -or $p.MainWindowHandle -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 100 }
     if (-not $p.HasExited) {
-        try { $p.PriorityClass = "BelowNormal" } catch {}
+        try { $p.PriorityClass = "Normal" } catch {}
         [void][WC]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, $SvrParkX, 0, 0, 0, $SvrParkFlags)
         [void][WC]::ShowWindow($p.MainWindowHandle, 4)
     }

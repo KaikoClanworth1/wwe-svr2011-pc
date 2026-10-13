@@ -584,8 +584,14 @@ A No DQ match with weapons already lying in and around the ring at the bell.
 **Menu:** THREE STAGES OF HELL (EXTREME RULES submenus, and 6-MAN / HANDICAP) is a submenu of sets:
 - NORMAL / FCA / LMS (as before), NORMAL / BLOOD / FINISHER, NORMAL / LMS / SUBMISSION - every mode;
 - CELL: BLOOD / LMS / SUB - one on one, two on two, triple threat, fatal-4-way, played as that mode's Hell in a Cell (0x31-0x34: the cell stands from the bell).
-- TABLE / TLC / LADDER is written (played as the mode's TLC match, 0x48-0x4B) but not offered (test aid `SVR2011_TEST_3S_TLC=1`): after a TLC stage the prize can't hang again for a third, and the TLC match has no referee for a pin stage.
+- TABLE / LADDER / TABLE and TABLE / TLC / LADDER - one on one, two on two, triple threat, fatal-4-way, played as that mode's TLC match (0x48-0x4B: tables, ladders and the prize from the bell). Switch mod `three_stages_tables_ladders` (inside the Three Stages submenu); online PORT RULES options on the TLC rules.
 Under the `three_stages_of_hell` switch mod.
+
+**The prize hangs again** (sets 3 and 5): a fall for the prize is the climb controller's lost code 6 (`sub_8223D7E8` / `sub_8223C170`; `SetLost` = `sub_82243660(char, reason, by)`). The climber keeps it as his held weapon (char +1828 = prize +1152) and stays in the prize-held pose 28113, which only ends with the match. For a prize fall that doesn't end the match - or a prize taken in a table stage, which doesn't count - `three_stages.cpp` takes the fall back (again for 1.5 s, the controller may give it again), then:
+- the climber lets go (+1828 = -1) and falls off his ladder the game's own way when a ladder goes over (`sub_82289118`): the ladder object (table 0x82DE0220, type +80 11) he is on gets +44 -1, +96 0, then `sub_82396E80(char, 28159, 6, 0, 0.0)` (28160 / 28364 are the other falls; r5 6 = the ladder motion class, char +216);
+- the prize manager (pointer at 0x82E3BC30; +52 the prize, +112 pull count) re-hangs it: `sub_8223BA48(manager)` (vtable +16), the game's own at a match (re)start - the prize back at its hang spot, its state block from its template, the hooks / rope re-placed.
+- Motions: 28110 hanging from the prize (pulls; a pull wins at the 4th 10 %, 5th 30 %, then always), 28113-28115 the prize pulled down / held, 1641-1643 the other grab; 20500 standing idle. A ladder +212 15010 = standing.
+- Tested: set 5 from its ladder fall (CPU vs idle P1) - the prize fall counted, the climber fell off, the prize hung again, fall 3 (TABLE) went on.
 
 **How (`three_stages.cpp` kSets / ApplyStage):** each stage starts from the match's own rules (saved at its first update) and sets only what wins a fall: +1 pinfall, +7 give up, +17 falls count anywhere, +18 table, +19 ladder, +24 TLC, +26 last man standing, +40 first blood. What loads at the bell (a cell, a cage, the prize, table / ladder models) can't change mid-match, so a set needing one is played in that rule from the start.
 - Count-outs are off in every stage: a count-out ends the match outside the falls judge (a normal fall 1 ended so).
