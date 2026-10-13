@@ -1272,8 +1272,11 @@ REX_HOOK_RAW(sub_828BBEF0) {
 
 // ONLINE: the match's slots are filled from the lobby (sub_828BB290(match),
 // not the offline people builder above): GAUNTLET ELIMINATOR's entrants
-// (people 2-5) are waiting ones (kind 3) and everyone is his own team, as
-// the offline builder makes them.
+// (people 2-5) are waiting ones and everyone is his own team, as offline.
+// The person's kind is the slot's +0 word (the rule record's kind, copied
+// by the set-up sub_828BD278 from the match's rule at +8 - online the
+// session's 6-man, kinds 0): 3 = a waiting entrant (role 3, state 1 when the
+// character is made). (+4 is the slot's no-pad / CPU flag.)
 REX_EXTERN(__imp__sub_828BB290);
 REX_HOOK_RAW(sub_828BB290) {
   const uint32_t match = ctx.r3.u32;
@@ -1282,7 +1285,7 @@ REX_HOOK_RAW(sub_828BB290) {
     for (uint32_t i = 0; i < uint32_t(kGePeople); ++i) {
       uint8_t* slot = base + match + kSlots + i * kSlotSize;
       slot[5] = uint8_t(i);
-      if (i >= 2) slot[4] = 3;
+      if (i >= 2) slot[0] = 0, slot[1] = 0, slot[2] = 0, slot[3] = 3;
     }
     REXLOG_INFO("match types: online GAUNTLET ELIMINATOR - people 2-5 waiting entrants, each his own team");
   }
