@@ -27,6 +27,8 @@ Games:
     svr2009   SvR 2009 - model (svr08_char.py), renders, theme, titantron, ratings, entrance,
               announcer; the moveset stays the base's for now (the 2009 slot map is next)
     svr2008   SvR 2008 - the same as 2009 (ids: 2011 id = 2008 id + 100)
+    svr2007   SvR 2007 - the same, its per-part textures baked (svr07_char.py), XACT themes (xact.py);
+              ratings stay the base's
     others    listed with status "research" (docs/OTHER_GAMES.md)
 
 --src may be a disc image (read through discfs.py); the files a conversion needs are
@@ -57,7 +59,7 @@ GAMES = [
     dict(id='svr2010', name='WWE SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', status='ready'),
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
-    dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='research'),
+    dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='research'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='research'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='research'),
@@ -317,6 +319,79 @@ class Game08(Game09):
                 and self.has_chpac(c)]
 
 
+class Game07(Game08):
+    """SvR 2007 (docs/OTHER_GAMES.md): 2008's id space (2011 id = id + 100); misc.pac CHAR/DAT
+    176 B (name +0x1C, weight class +147 with 0 = diva, scale +22; its ratings use another scale:
+    left to the base); renders menu/menuHD.pac MENU SF2B (512 body) / SF2A (256 bust); models
+    with per-part textures (svr07_char.py bakes them); themes XACT (xact.py); titantron %02d.bik."""
+
+    year = 7
+    label = 'SvR 2007'
+    suffix = '_07'
+
+    def __init__(self, src):
+        S = svr10()
+        self.src = src
+        misc = src.get('pac/misc.pac')
+        h, g, t = svrfmt.epac_read(open(misc, 'rb').read())
+        ch = {(ty, n): b for ty, es in g for n, b in es}
+
+        def pach(b):
+            return {i: ch_tool.unpack(d) for i, d in svrfmt.pach_read(ch_tool.unpack(b))}
+        self.g = S.Game.__new__(S.Game)
+        self.g.pac, self.g.year = os.path.dirname(misc), 7
+        self.g.dat = {}
+        for i, r in pach(ch[(b'CHAR', b'DAT ')]).items():
+            x = bytearray(264)
+            nm = r[0x1C:0x4B].split(b'\0')[0][:32]
+            x[34:34 + len(nm)] = nm
+            x[170:170 + len(nm)] = nm
+            x[28:30] = r[22:24]
+            x[208] = 1 if r[147] == 0 else 0
+            x[209] = r[147]
+            self.g.dat[i] = bytes(x)
+        self.g.pro = pach(ch[(b'CHAR', b'PRO ')])
+        self.g.ssf, self.g._evp, self.g._waze = {}, None, None
+        self._ssf = None
+        self._evp = None
+
+    def ssf(self):
+        if self._ssf is None:
+            self._ssf = {}
+            h, g, t = svrfmt.epac_read(open(self.src.get('pac/menu/menuHD.pac'), 'rb').read())
+            for ty, es in g:
+                for n, b in es:
+                    kind = {b'SF2B': 'SSFB', b'SF2A': 'SSFC'}.get(n)
+                    if ty != b'MENU' or not kind:
+                        continue
+                    outer = svrfmt.pach_read(ch_tool.unpack(b))
+                    if len(outer) == 1 and ch_tool.unpack(outer[0][1])[:4] == b'PACH':
+                        outer = svrfmt.pach_read(ch_tool.unpack(outer[0][1]))
+                    for i, d in outer:
+                        self._ssf[(kind, i)] = d
+        return self._ssf
+
+    def evp(self):
+        """{entrance number: name} from evt/evt*.pac (EPAC, EVP groups; name at +0x22)"""
+        if self._evp is None:
+            self._evp = {}
+            for n in self.src.d.listdir('pac/evt'):
+                if not re.match(r'evt\d+\.pac$', n.lower()):
+                    continue
+                try:
+                    h, g, t = svrfmt.epac_read(open(self.src.get('pac/evt/' + n), 'rb').read())
+                except Exception:   # noqa: BLE001
+                    continue
+                for ty, es in g:
+                    if ty[:3] != b'EVP':
+                        continue
+                    for nm, b in es:
+                        if nm.strip(b'\0 ').isdigit():
+                            d = ch_tool.unpack(b)
+                            self._evp[int(nm)] = d[0x22:0x42].split(b'\0')[0].decode('latin1').strip()
+        return self._evp
+
+
 def pad_render(dds, size=512):
     """a 256 x 512 render on a transparent 512 x 512, DXT5 with mips"""
     from PIL import Image
@@ -475,6 +550,18 @@ def build09(cid, outdir, o, rep):
     if o.get('model') == '11' and same11 and g11.chpac(i11):
         shutil.copyfile(g11.chpac(i11), os.path.join(mod, 'ch.pac'))
         note('model: 2011\'s own ch%d.pac (--model 11)' % i11)
+    elif g9.has_chpac(cid) and g9.year == 7:   # (per-part textures: baked into 2011's sheets)
+        import svr07_char
+        kept7, extra = svr07_char.convert(g9.chpac(cid), os.path.join(mod, 'ch.pac'), os.path.join(pac11, 'ch', 'ch104.pac'),
+                                          cid, portrait)
+        note('model: %s ch%02d.pac attires %s converted (svr07_char: %s)' % (
+            g9.label, cid, ', '.join('%s -> %s' % k[:2] for k in kept7), '; '.join(k[2] for k in kept7)))
+        import model_budget
+        for n_, pg, parts in model_budget.model_pages(os.path.join(mod, 'ch.pac')):
+            if pg > model_budget.LIMIT:
+                note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
+        for e in extra:
+            drop('attire %s (a mod holds 4)' % e)
     elif g9.has_chpac(cid):
         kept, extra = model_from_2008_family(g9.chpac(cid), cid, pac11, os.path.join(mod, 'ch.pac'), portrait, True)
         note('model: %s ch%d.pac attires %s converted (svr08_char)' % (g9.label, cid, ', '.join('%s -> %s' % k for k in kept)))
@@ -508,15 +595,24 @@ def build09(cid, outdir, o, rep):
         note('entrance %s "%s" (%s)' % (man.get('entrance', be), g11.evp().get(man.get('entrance', be), '?'), via or 'the base\'s'))
     # theme, titantron
     progress(65, 'theme')
-    recs = g9.music_records()
-    for m in (music, cid):
+    recs = {} if g9.year == 7 else g9.music_records()
+    if g9.year == 7:   # (XACT: the longest MUS_<id>_N cue)
+        import xact
+        th = xact.theme(g9.src.d, cid, os.path.join(mod, 'theme.mp3'), work)
+        if th:
+            man['song'] = 'theme.mp3'
+            note('theme: XACT cue %s (%.0f s) -> theme.mp3' % th)
+        else:
+            warn('no %s theme (music id %d)' % (g9.label, cid))
+    for m in ((music, cid) if g9.year != 7 else ()):
         if m not in (0, 255) and m * 100 in recs:
             src, gain = theme_from_record(recs[m * 100], os.path.join(mod, 'theme.mp3'), work)
             man['song'] = 'theme.mp3'
             note('theme: music yaf record %d -> theme.mp3 (%.1f LUFS %+.1f dB)' % (m * 100, src, gain))
             break
     else:
-        warn('no %s theme (music id %d)' % (g9.label, music))
+        if g9.year != 7:
+            warn('no %s theme (music id %d)' % (g9.label, music))
     progress(85, 'titantron')
     for m in (movie, cid):
         p = g9.titantron(m) if m not in (0, 255) else None
@@ -658,8 +754,8 @@ def open_game(game, src):
         g.render_ids = {i for (t, i) in g.ssf if t == 'SSFB'}
         g.entrance_block_ = g.entrance_block
         return g
-    if game in ('svr2009', 'svr2008'):
-        g = (Game09 if game == 'svr2009' else Game08)(src)
+    if game in ('svr2009', 'svr2008', 'svr2007'):
+        g = {'svr2009': Game09, 'svr2008': Game08, 'svr2007': Game07}[game](src)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
         return g
@@ -701,7 +797,7 @@ def cmd_convert(a):
     for k in ('base', 'entrance', 'call'):
         if o.get(k) is not None:
             o[k] = int(o[k])
-    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09}[a['game']]
+    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09}[a['game']]
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
     progress(100, 'done')
