@@ -142,6 +142,9 @@ struct Mod {
   std::vector<uint8_t> abilities;  // (manifest abilities=a,b,...; record +230.., up to 8)
   // its height: a factor of the base's (manifest height=1.05; 0 = the base's)
   double height = 0;
+  // its select / VS screen pose (manifest pose=): a superstar id (< 512, that
+  // superstar's pose) or a pose motion id itself; 0 = its base's pose
+  uint32_t pose = 0;
 };
 std::vector<Mod> g_mods;
 std::vector<std::string> g_extra_mounts;  // other overlay pacs (smods:\<file>; AddOverlayMount)
@@ -569,6 +572,7 @@ void LoadMods() {
           const double h = std::atof(l.c_str() + 7);
           if (h > 0) m.height = std::clamp(h, 0.80, 1.25);
         }
+        if (l.rfind("pose=", 0) == 0) m.pose = uint32_t(std::clamp(std::atoi(l.c_str() + 5), 0, 65535));
         if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
         if (l.rfind("attire", 0) == 0 && l.size() > 17 && l[6] >= '1' && l[6] <= '4' && !l.compare(7, 10, "_entrance="))
           m.attire_entrance[l[6] - '1'] = std::clamp(std::atoi(l.c_str() + 17), 0, 65535);
@@ -1728,6 +1732,60 @@ REX_HOOK_RAW(sub_8273D1D0) {
     }
   }
   Wr32(base + field, id);
+}
+
+// ---- The select / VS screen pose
+// sub_8273D4A0(mgr, slot) gives the motion the panel's model plays: the
+// slot's id (as for the framing above) looked up in {id, motion} pairs
+// (mgr+1392, count mgr+1380; motion -1 = none); not found, the next motion of
+// a rotating list (mgr+1388 / +1376 when sub_828B6950() == 1, else mgr+1384 /
+// +1372); no lists, 32500. A mod isn't in the pairs, so it took a rotating
+// pose: now its base's, or the manifest's pose= (a superstar id: that
+// superstar's pose; else a motion id itself).
+uint32_t PoseOf(uint8_t* base, uint32_t mgr, uint32_t id) {
+  const uint32_t pairs = Rd32(base + mgr + 1392), count = Rd32(base + mgr + 1380);
+  if (!pairs || count > 4096) return 0;
+  for (uint32_t i = 0; i < count; ++i)
+    if (Rd32(base + pairs + i * 8) == id && Rd32(base + pairs + i * 8 + 4) != 0xFFFFFFFFu)
+      return Rd32(base + pairs + i * 8 + 4);
+  return 0;
+}
+REX_EXTERN(__imp__sub_8273D4A0);
+REX_HOOK_RAW(sub_8273D4A0) {
+  const uint32_t mgr = ctx.r3.u32, slot = mgr + ctx.r4.u32 * 116;
+  const uint32_t id = Rd32(base + slot + (Rd32(base + slot + 20) == 1 ? 64 : 44));
+  static bool listed = false;
+  if (!listed && std::getenv("SVR2011_TEST_POSE_LOG")) {
+    listed = true;
+    const uint32_t pairs = Rd32(base + mgr + 1392), count = Rd32(base + mgr + 1380);
+    std::string t;
+    for (uint32_t i = 0; pairs && i < count && i < 4096; ++i)
+      t += fmt::format(" {}:{}", Rd32(base + pairs + i * 8), int32_t(Rd32(base + pairs + i * 8 + 4)));
+    REXLOG_INFO("[svr2011] select pose: {} pairs:{}", count, t);
+    for (int k = 0; k < 2; ++k) {
+      const uint32_t list = Rd32(base + mgr + (k ? 1388 : 1384)), n = Rd32(base + mgr + (k ? 1376 : 1372));
+      std::string u;
+      for (uint32_t i = 0; list && i < n && i < 256; ++i) u += fmt::format(" {}", Rd32(base + list + i * 4));
+      REXLOG_INFO("[svr2011] select pose: rotating list {} ({}):{}", k, n, u);
+    }
+  }
+  // (test aid SVR2011_TEST_POSE_AS=<id>=<mod id>: that superstar's panel
+  // takes the mod's pose - the select cursor starts on a disc superstar)
+  uint32_t as = id;
+  if (const char* v = std::getenv("SVR2011_TEST_POSE_AS"); v && uint32_t(std::atoi(v)) == id)
+    if (const char* q = std::strchr(v, '=')) as = uint32_t(std::atoi(q + 1));
+  const Mod* m = ModOf(as);
+  uint32_t motion = 0;
+  if (m) motion = m->pose >= 512 ? m->pose : PoseOf(base, mgr, m->pose ? m->pose : m->base);
+  if (!motion) {
+    __imp__sub_8273D4A0(ctx, base);
+    if (std::getenv("SVR2011_TEST_POSE_LOG")) REXLOG_INFO("[svr2011] select pose: id {} -> {}", id, ctx.r3.u32);
+    return;
+  }
+  static std::set<uint32_t> told;
+  if (told.insert(id << 16 ^ motion).second)
+    REXLOG_INFO("[svr2011] select pose: mod id {} plays {}", as, motion);
+  ctx.r3.u64 = motion;
 }
 
 // The file system's pacs registered (from the ARC / from each pac's header).
