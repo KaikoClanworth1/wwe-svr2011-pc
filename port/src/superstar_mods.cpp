@@ -199,6 +199,11 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::p
   svrfmt::Epac src;
   if (!svrfmt::ReadFile((g_game / "pac" / "DLC_HD.pac").string(), d) || !svrfmt::EpacRead(d, src)) return false;
   const svrfmt::Bytes big = OwnRender(folder / "render.dds", 512), small = OwnRender(folder / "render_small.dds", 256);
+  // (render_full.dds, optional: SSFB's own full-body picture; else SSFB is render.dds too)
+  const svrfmt::Bytes full = OwnRender(folder / "render_full.dds", 512);
+  auto own_for = [&](const std::string& type) -> const svrfmt::Bytes& {
+    return type == "SSFC" ? small : (type == "SSFB" && !full.empty()) ? full : big;
+  };
   svrfmt::Epac e;
   e.header = src.header;
   e.trailer = src.trailer;
@@ -211,7 +216,7 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::p
       const int key = std::atoi(en.name.c_str());
       if (generic) {  // (the game's silhouette, 9000, for every attire)
         if (key != 9000) continue;
-        const svrfmt::Bytes& own = g.type == "SSFC" ? small : big;
+        const svrfmt::Bytes& own = own_for(g.type);
         for (int a = 0; a < 4; ++a) {
           char gn[8];
           std::snprintf(gn, sizeof gn, "%04d", a * 1000 + int(slot));
@@ -223,7 +228,7 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::p
       if (key % 1000 != int(base)) continue;
       char nm[8];
       std::snprintf(nm, sizeof nm, "%04d", (key / 1000) * 1000 + int(slot));
-      const svrfmt::Bytes& own = g.type == "SSFC" ? small : big;
+      const svrfmt::Bytes& own = own_for(g.type);
       og.entries.push_back({nm, own.empty() ? en.data : own});
       ++n;
     }
@@ -641,7 +646,8 @@ void LoadMods() {
     }
     std::snprintf(nm, sizeof nm, "ssf%03u.pac", m.slot);
     // (the renders depend on base=: rebuilt with the manifest)
-    const std::vector<fs::path> render_srcs = {f / "manifest.txt", f / "render.dds", f / "render_small.dds"};
+    const std::vector<fs::path> render_srcs = {f / "manifest.txt", f / "render.dds", f / "render_small.dds",
+                                               f / "render_full.dds"};
     if (Current(overlay / nm, render_srcs) ||
         (BuildRenders(overlay / nm, m.base, m.slot, f, m.styled) && (MarkCurrent(overlay / nm, render_srcs), true)))
       m.ssf_guest = std::string("smods:\\") + nm;
@@ -669,6 +675,123 @@ void LoadMods() {
   }
 }
 
+const Mod* ModOf(uint32_t id);
+
+// ---- Attire mods (D6): another attire for a stock superstar.
+// <game>/Mods/Attires/<folder>/manifest.txt: type=attire, superstar=<id>,
+// attire=<1-4>|new, name=, model=<a ch pac: its first attire is used>,
+// entrance= (optional). The model pac's first attire is copied to the overlay
+// with the superstar's id and the attire's digit in its EMD names
+// (ch<id>_x<N>.pac), mounted with the other overlay pacs; the game finds
+// models by entry name. "new" takes the first attire the superstar's own pac
+// doesn't have. Four attires at most; of two mods on one attire the first
+// folder (A-Z) is used. The count and the {name, unlock} pair answer for it
+// (sub_828C4140 / sub_828C4060 below).
+struct AttireMod {
+  std::string folder, name;
+  uint32_t id = 0, attire = 0;  // attire: 0-3 (the digit)
+  int entrance = -1;
+};
+std::vector<AttireMod> g_attire_mods;
+std::unordered_map<uint32_t, uint32_t> g_attire_pairs;  // id -> guest 4 x {name string id, unlock}
+std::unordered_map<uint32_t, uint32_t> g_attire_own;    // id -> attires its own pac has (bit mask)
+constexpr uint32_t kAttireModNameIds = 0xB400;           // string ids for attire mods' names
+
+const AttireMod* AttireModOf(uint32_t id, uint32_t attire) {
+  for (const auto& a : g_attire_mods)
+    if (a.id == id && a.attire == attire) return &a;
+  return nullptr;
+}
+
+void LoadAttireMods() {
+  std::error_code ec;
+  const fs::path dir = g_game / "Mods" / "Attires";
+  const fs::path overlay = g_game / "Mods" / "SuperstarOverlay";
+  if (!fs::is_directory(dir, ec)) return;
+  std::vector<fs::path> folders;
+  for (const auto& e : fs::directory_iterator(dir, ec))
+    if (e.is_directory(ec) && !fs::exists(e.path() / "disabled", ec) && fs::exists(e.path() / "manifest.txt", ec))
+      folders.push_back(e.path());
+  std::sort(folders.begin(), folders.end());
+  fs::create_directories(overlay, ec);
+  for (const auto& f : folders) {
+    AttireMod a;
+    a.folder = f.filename().string();
+    std::string type, model = "attire.pac", which;
+    if (FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb")) {
+      char line[512];
+      while (std::fgets(line, sizeof line, t)) {
+        std::string l(line);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        const size_t eq = l.find('=');
+        if (eq == std::string::npos || l[0] == '#') continue;
+        const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+        if (k == "type") type = v;
+        else if (k == "superstar") a.id = uint32_t(std::atoi(v.c_str()));
+        else if (k == "attire") which = v;
+        else if (k == "name") a.name = v.substr(0, 31);
+        else if (k == "model") model = v;
+        else if (k == "entrance") a.entrance = std::clamp(std::atoi(v.c_str()), 0, 65535);
+      }
+      std::fclose(t);
+    }
+    if (type != "attire") continue;
+    if (a.id < 100 || a.id > 321 || ModOf(a.id)) {
+      REXLOG_WARN("[svr2011] attire mods: {}: superstar={} is not a stock superstar (a superstar mod takes attireN= in "
+                  "its own manifest)", a.folder, a.id);
+      continue;
+    }
+    char stock[32];
+    std::snprintf(stock, sizeof stock, "ch%03u.pac", a.id);
+    if (!g_attire_own.count(a.id)) g_attire_own[a.id] = AttireMask(g_game / "pac" / "ch" / stock, a.id);
+    const uint32_t own = g_attire_own[a.id];
+    uint32_t taken = own;
+    for (const auto& o : g_attire_mods)
+      if (o.id == a.id) taken |= 1u << o.attire;
+    if (which == "new") {
+      a.attire = 4;
+      for (uint32_t k = 0; k < 4; ++k)
+        if (!(taken >> k & 1)) {
+          a.attire = k;
+          break;
+        }
+      if (a.attire >= 4) {
+        REXLOG_WARN("[svr2011] attire mods: {}: superstar {} has 4 attires already (attire=new needs a free one)", a.folder,
+                    a.id);
+        continue;
+      }
+    } else {
+      const int n = std::atoi(which.c_str());
+      if (n < 1 || n > 4) {
+        REXLOG_WARN("[svr2011] attire mods: {}: attire={} (1-4 or new)", a.folder, which);
+        continue;
+      }
+      a.attire = uint32_t(n - 1);
+      if (AttireModOf(a.id, a.attire)) {
+        REXLOG_WARN("[svr2011] attire mods: {}: superstar {} attire {} is taken by {} (first folder A-Z wins)", a.folder,
+                    a.id, n, AttireModOf(a.id, a.attire)->folder);
+        continue;
+      }
+    }
+    char an[40];
+    std::snprintf(an, sizeof an, "ch%03u_x%u.pac", a.id, a.attire + 1);
+    const fs::path src = f / model;
+    if (!Current(overlay / an, {src, f / "manifest.txt"})) {
+      svrfmt::Bytes d;
+      if (!svrfmt::ReadFile(src.string(), d) || !RenameModel(d, a.id, 0, int(a.attire)) ||
+          !svrfmt::WriteFile((overlay / an).string(), d)) {
+        REXLOG_WARN("[svr2011] attire mods: {}: {} is not a character model pac (EPK8 with EMD models)", a.folder, model);
+        continue;
+      }
+      MarkCurrent(overlay / an, {src, f / "manifest.txt"});
+    }
+    g_extra_mounts.push_back(std::string("smods:\\") + an);
+    REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {}{} ({})", a.folder, a.id, a.attire + 1,
+                (own >> a.attire & 1) ? " (replaces the game's)" : " (new)", a.name);
+    g_attire_mods.push_back(std::move(a));
+  }
+}
+
 const Mod* ModOf(uint32_t id) {
   for (const auto& m : g_mods)
     if (m.slot == id) return &m;
@@ -689,6 +812,7 @@ void GrowDirectory(uint8_t* base) {
   if (!start || end < start || end - start > (64u << 20)) return;
   uint32_t need = 0x10000;
   for (const auto& m : g_mods) need += uint32_t(2 + m.attire_guests.size()) * 0x4000;  // (a directory each, at most)
+  need += uint32_t(g_extra_mounts.size()) * 0x4000;
   const uint32_t at = g_memory->SystemHeapAlloc(end - start + need, 0x40);
   if (!at) return;
   std::memcpy(base + at, base + start, end - start);
@@ -1360,7 +1484,10 @@ int EntranceForAttire(PPCContext& ctx, uint8_t* base, uint32_t mgr, uint32_t idx
   const uint32_t key = Rd32(base + table + kSlotsAt + idx * kSlotSize + kSlotKey);
   const Mod* m = ModOf(key / 100);
   const uint32_t attire = key / 10 % 10;
-  if (!m || attire >= 4 || m->attire_entrance[attire] <= 0) return -1;
+  int own = -1;  // (an attire mod's entrance=)
+  if (!m)
+    if (const AttireMod* am = AttireModOf(key / 100, attire); am && am->entrance > 0) own = am->entrance;
+  if (own <= 0 && (!m || attire >= 4 || m->attire_entrance[attire] <= 0)) return -1;
   if (part0 && base[mgr + 36 + idx * 280 + 195]) return -1;  // (a created entrance)
   const auto saved = ctx;
   ctx.r3.u64 = mgr;
@@ -1370,9 +1497,10 @@ int EntranceForAttire(PPCContext& ctx, uint8_t* base, uint32_t mgr, uint32_t idx
   ctx = saved;
   if (team) return -1;
   static int logged = 0;
+  const int n = own > 0 ? own : m->attire_entrance[attire];
   if (logged++ < 16)
-    REXLOG_INFO("[svr2011] superstar mods: {} attire {}: entrance {}", m->name, attire + 1, m->attire_entrance[attire]);
-  return m->attire_entrance[attire];
+    REXLOG_INFO("[svr2011] superstar mods: {} attire {}: entrance {}", m ? m->name : std::to_string(key / 100), attire + 1, n);
+  return n;
 }
 }  // namespace
 REX_EXTERN(__imp__sub_82756538);
@@ -1481,12 +1609,24 @@ REX_HOOK_RAW(sub_828C4140) {
     ctx.r3.u64 = m->attires;
     return;
   }
+  const uint32_t id = ctx.r4.u32;
   __imp__sub_828C4140(ctx, base);
+  if (g_attire_pairs.count(id)) {  // (attire mods: up to the last attire one of them gives)
+    uint32_t n = ctx.r3.u32;
+    for (const auto& a : g_attire_mods)
+      if (a.id == id) n = std::max(n, a.attire + 1);
+    ctx.r3.u64 = std::min(n, 4u);
+  }
 }
 REX_EXTERN(__imp__sub_828C4060);
 REX_HOOK_RAW(sub_828C4060) {
   if (const Mod* m = ModOf(ctx.r4.u32); m && m->attires > 1 && m->attire_pairs) {
     ctx.r3.u64 = ctx.r5.u32 < m->attires ? m->attire_pairs + ctx.r5.u32 * 8 : 0;
+    return;
+  }
+  if (const auto it = g_attire_pairs.find(ctx.r4.u32); it != g_attire_pairs.end() && ctx.r5.u32 < 4 &&
+      AttireModOf(ctx.r4.u32, ctx.r5.u32)) {
+    ctx.r3.u64 = it->second + ctx.r5.u32 * 8;
     return;
   }
   __imp__sub_828C4060(ctx, base);
@@ -1903,6 +2043,7 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
     }).detach();
   g_game = rex::filesystem::GetExecutableFolder();
   LoadMods();
+  LoadAttireMods();
   // the attires' COS pairs and names (string ids kAttireNameIds + mod * 4 + attire)
   uint8_t* b = memory->virtual_membase();
   for (size_t i = 0; i < g_mods.size(); ++i) {
@@ -1922,6 +2063,21 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
       Wr32(b + m.attire_pairs + a * 8 + 4, 0xFFFFFFFFu);
     }
     REXLOG_INFO("[svr2011] superstar mods: {}: {} attires", m.name, m.attires);
+  }
+  // attire mods' pairs: their names (string ids kAttireModNameIds + k), always available
+  for (size_t k = 0; k < g_attire_mods.size(); ++k) {
+    const AttireMod& a = g_attire_mods[k];
+    uint32_t& pairs = g_attire_pairs[a.id];
+    if (!pairs) {
+      pairs = memory->SystemHeapAlloc(32);
+      for (uint32_t i = 0; i < 4; ++i) Wr32(b + pairs + i * 8, 9), Wr32(b + pairs + i * 8 + 4, 0xFFFFFFFFu);
+    }
+    const std::string text = a.name.empty() ? "ATTIRE " + std::to_string(a.attire + 1) : a.name;
+    const uint32_t at = memory->SystemHeapAlloc(uint32_t(text.size() + 1));
+    std::memcpy(b + at, text.c_str(), text.size() + 1);
+    const uint32_t name = kAttireModNameIds + uint32_t(k);
+    g_attire_names.push_back({name, at});
+    Wr32(b + pairs + a.attire * 8, name);
   }
   // The overlay files as smods:\<file>: a device of their own, made after they
   // are written (a host device lists its folder once, so GAME: would not see

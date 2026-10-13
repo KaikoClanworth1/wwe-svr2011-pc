@@ -16,6 +16,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 72.
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
 | `render.dds`, `render_small.dds` | (optional) its select-screen render: 512 x 512 and the 256 x 256 bust, DXT5 (the Mod Maker makes them from any picture) |
+| `render_full.dds` | (optional) a separate 512 x 512 full-body picture for SSFB (the select screen in some modes); without it SSFB is `render.dds` too |
 | `voice.<ext>` | (optional) a recording of the name: the ring announcer "says" it |
 | `attireN.pac` | (optional, N = 2-4) another model pac: its first attire becomes the mod's attire N |
 | `moves.txt` | (optional, `moves=`) its own moves over the base's: lines `0xOFF=<move id>`, OFF a byte offset in the profile's move block (0..0x1BF, even) |
@@ -168,6 +169,33 @@ aside. So mods get all their base's attires, plus up to 4 in all.
 
 Tested: ADVANCED shows CHANGE ATTIRE "ATTIRE 3", and the model switches to the
 attire pac's (Orton on a Jericho mod).
+
+### Attire mods (an attire for a stock superstar)
+
+`Mods/Attires/<folder>/` (the Mod Maker's Attires page, the launcher's Mods
+tab), `manifest.txt`:
+
+| key | |
+|---|---|
+| `type=attire` | |
+| `superstar=<id>` | a superstar the game has (100-321). A superstar mod takes `attireN=` in its own manifest instead |
+| `attire=<1-4>` or `new` | replace that attire, or take the first one the superstar's own pac doesn't have |
+| `name=` | shown on CHANGE ATTIRE (31 characters) |
+| `model=attire.pac` | a character model pac; its first attire is used |
+| `entrance=<n>` | optional, the entrance that attire gets (as `attireN_entrance=`) |
+
+- The model's first attire is copied to `Mods/SuperstarOverlay/ch<id>_x<N>.pac`
+  with the superstar's id and the attire's digit in its EMD names, and mounted
+  with the other overlay pacs. The game finds models by entry name.
+- The two lookups above answer for the superstar too: the count goes up to
+  the highest attire a mod gives (4 at most), and a mod's attire gets its
+  `{name, unlock -1}` pair (string ids from 0xB400); the others keep the game's.
+- 4 attires at most. Of two mods on one attire the first folder (A-Z) is used
+  and the other is logged. `new` on a superstar with 4 attires is left out.
+- A `disabled` file in the folder turns it off.
+
+Not verified yet: whether a mod that replaces an attire the game's own pac has
+wins over it (both have the entry name).
 
 ### Select screen framing
 
