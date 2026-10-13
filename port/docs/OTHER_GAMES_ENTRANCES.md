@@ -24,7 +24,7 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, played in game (Andre 3066 as 490) |
 | SmackDown! Shut Your Mouth (PS2) | SLES_512.83 | 114 | `sym_entrance.py` (game sym) | ready, played in game (Hollywood Hogan 3044 as 491); all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
 | SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, played in game (JYD 4080 as 492); all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
-| WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
+| WWF SmackDown! Just Bring It (PS2) | SLES_504.77 | 348 | `jbi_entrance.py` (game jbi; SYM's back end) | ready, played in game (JBI 0001 as 499); all 348 convert offline |
 | SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
 | WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, played in game (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
@@ -94,8 +94,35 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
   bodies need HCTP-style re-encoding; ops 24, 65, 185 differ in size. About two thirds are in SvR
   2007 (use svr07 for those: Andre 4066 = 2007 4109). Unique: JYD, Heidenreich, Rene Dupree, tag
   entrances, Team Angle.
-- **Just Bring It:** `EN3.PAC`, 349 records of a motion bank (SYM framing) + a text CSV script with
-  an older op set and no segment structure; names only in the ELF. Not practical yet.
+- **Just Bring It converter:** `tools/jbi_entrance.py` (game `jbi`; formats in its docstring). The
+  motion is SYM's, so the module only reads JBI's container and script into sym_entrance's dicts and
+  SYM's pipeline does the rest (no ELF study needed):
+  - `EN3.PAC`: DPAC with one group `ENMT` {u16 0x8000 | 349, u16 0}, rows {u16 BCD number, u16 size /
+    0x100}, data from 0x4000, sector aligned. Each row is a `PAC ` {u32 n; n x (u16 id, u24 offset, u24
+    size)}: item 0 the motion bank (CEKey, SYM's halfword framing), item 1 the script (CRLF text).
+    Entrances 0-78 and 1000-1268 (348); 9999 is a shared bank, not an entrance.
+  - Track keys are SYM's transposed: id 9000 + take, x 0, y = cast index (characters); id 25384 + take,
+    x 0, y 50 (camera). 1500 x 0-10 (4-frame static objects), 9010 and 9999 (1 record): dropped.
+  - Bodies: the same 21-bone records as SYM / HCTP (`hctp_motion.decode_body`, H_TYPES_WIDE, identical
+    channel masks). Camera: SYM's 13-byte key `[c][s16 pos x3][s16 rot x3]` + pad, with c = frames to
+    the next key - 1; JBI keys sparsely (8 keys for 539 frames) and without an event block, so a span
+    >= 0x80 would read as one: the reader puts an empty event block in front and splits such spans with
+    an interpolated key (2 keys in all of JBI).
+  - Script: line 1 the character count, line 2 the 6 cast model ids (255 = none), line 7 the take
+    count, then per take 6 rows `x,y,z,yaw` (one per cast index; units 1/100 of SYM's, yaw in degrees).
+    Character roots are relative to their row (SYM's slots; yaw sign checked by take-to-take
+    continuity, 0007 takes 6 -> 7 at 88 degrees). The camera has no row: its keys are world positions
+    (0007: 7-49 units from the entrant in every take; relative to a row they'd be 120-260 off).
+  - Floor: a JBI take row can sit at the stage while its roots already walk the arena (0007 takes 3-4,
+    row z 244, entrant from the ramp foot into the ring), so the stage floor fix goes by where the
+    entrant starts (`at_z`), not by the row.
+  - Hands: op 16 as SYM, but only 477 of 1534 hand events name a pose in 2011's library (0-105 /
+    200-305); the rest are 106-126 / 306-326 (JBI's own poses: its pose library is not mapped). Unknown
+    ids are skipped (the hand keeps its shape). SYM: 1091 of 1150.
+  - Names are only in the ELF: entrances are labelled `JBI <number>` (`--name` sets one). Lines 0 and
+    3-6 of the script (flags / event values) and the cast model ids are not decoded.
+  All 348 convert and self-check offline. Played in game: JBI 0001 as 499 (test star first, stage ->
+  ramp -> ring, no crash).
 
 ## SvR 2007-2011 (PS2) - research
 
@@ -360,7 +387,7 @@ left / 15-29 right; docs/HAND_POSES.md), the first with the event block `40 05 0
 | converter | fingers |
 |---|---|
 | SvR 2007-2010, LoW (and their PS2 discs) | the source's y1-y3 tracks are kept |
-| HCTP, SvR 2004, Shut Your Mouth | made from the source's hand events: op 16 `10 ss iiii` (ss 1 left / 2 right, pose ids = 2011's 0-105 / 200-305; ss 0 = face) -> `tools/hand_tracks.py` builds y2/y3 per 2011 segment from the 2011 game's pose library (m.pac MVMT/STAT/99, `--game-pac` needed), 5-frame blends. Goldberg 3047: 10 tracks from 8 events, played in game |
+| HCTP, SvR 2004, Shut Your Mouth, Just Bring It | made from the source's hand events: op 16 `10 ss iiii` (ss 1 left / 2 right, pose ids = 2011's 0-105 / 200-305; ss 0 = face) -> `tools/hand_tracks.py` builds y2/y3 per 2011 segment from the 2011 game's pose library (m.pac MVMT/STAT/99, `--game-pac` needed), 5-frame blends. Goldberg 3047: 10 tracks from 8 events, played in game. Just Bring It: only 31% of its hand events name a 2011 pose (ids 106-126 / 306-326 skipped) |
 | SvR 2006 | its y2/y3 keys are 2011's finger values in joint-mask groups (`0x78` right / `0x79` left `[op][count][u16 mask][s8 xyz per bit]`, plain 5-byte sub-records otherwise): `tools/svr06_hands.py` expands them losslessly (812 / 812 tracks of the 93 entrances; vs SvR 2007's re-releases ~1 step) |
 | WWE '12 - 2K17 | the Biped finger bones retargeted onto 2011's 30 finger joints: `tools/finger_retarget.py` (hand-frame chain, fixed ch246 -> ch104 hand alignment, `bind * Rz Ry Rx` as the library, solved parent first on the quantised chain); vs 2011's own 107 Kane / 101 Austin: fist / open agree 97-99% of frames, median 1 degree. Bind tables are WWE '13's (assumed for '12 / 2K14-2K17) |
 

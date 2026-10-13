@@ -279,6 +279,7 @@ GAMES = collections.OrderedDict([
     ('wwe2k17', dict(name='WWE 2K17', platform='x360', disc_hint='545408BA', status='ready')),
     ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
     ('sym', dict(name='SmackDown! Shut Your Mouth', platform='ps2', disc_hint='SLES_512.83', status='ready')),
+    ('jbi', dict(name='WWF SmackDown! Just Bring It', platform='ps2', disc_hint='SLES_504.77', status='ready')),
     ('svr04', dict(name='SmackDown! vs. Raw', platform='ps2', disc_hint='SLES_527.81', status='ready')),
     ('svr06', dict(name='SmackDown! vs. Raw 2006', platform='ps2', disc_hint='SLES_536.76', status='ready')),
 ])
@@ -438,6 +439,23 @@ def sym_convert(src, entrance, number, name, parts, rep, game_pac=None):
     hand_library(game_pac)
     try:
         return sym_entrance.convert(src, entrance, number, name, rep)
+    except ValueError as x:
+        raise InputError(str(x))
+
+
+# ---- WWF SmackDown! Just Bring It (PS2): tools/jbi_entrance.py (EN3.PAC, CSV scripts; SYM's motion codec,
+#      fed through sym_entrance). Numbers 0-78 and 1000-1268; names only in the ELF ("JBI <n>").
+
+def jbi_list(src, game_pac):
+    import jbi_entrance
+    return jbi_entrance.list_entrances(src)
+
+
+def jbi_convert(src, entrance, number, name, parts, rep, game_pac=None):
+    import jbi_entrance
+    hand_library(game_pac)
+    try:
+        return jbi_entrance.convert(src, entrance, number, name, rep)
     except ValueError as x:
         raise InputError(str(x))
 
@@ -786,10 +804,10 @@ def low_convert(src, entrance, number, name, parts, rep, game_pac=None):
     return evp11, evt11
 
 
-LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'low': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'svr04': svr04_list, 'svr06': svr06_list, 'sym': sym_list, 'wwe13': wwe13_list,
+LISTERS = {'svr07': old_list(SRC07), 'svr09': old_list(SRC09), 'low': old_list(SRC09), 'svr08': svr08_list, 'svr10': svr10_list, 'hctp': hctp_list, 'svr04': svr04_list, 'svr06': svr06_list, 'sym': sym_list, 'jbi': jbi_list, 'wwe13': wwe13_list,
            'wwe12': w13_list('wwe12'), 'wwe2k14': w13_list('wwe2k14'), 'wwe2k15': w13_list('wwe2k15'),
            'wwe2k16': w13_list('wwe2k16'), 'wwe2k17': w13_list('wwe2k17')}
-CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'low': low_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'svr04': svr04_convert, 'svr06': svr06_convert, 'sym': sym_convert, 'wwe13': wwe13_convert,
+CONVERTERS = {'svr07': svr07_convert, 'svr09': svr09_convert, 'low': low_convert, 'svr08': svr08_convert, 'svr10': svr10_convert, 'hctp': hctp_convert, 'svr04': svr04_convert, 'svr06': svr06_convert, 'sym': sym_convert, 'jbi': jbi_convert, 'wwe13': wwe13_convert,
               'wwe12': w13_convert('wwe12'), 'wwe2k14': w13_convert('wwe2k14'), 'wwe2k15': w13_convert('wwe2k15'),
               'wwe2k16': w13_convert('wwe2k16'), 'wwe2k17': w13_convert('wwe2k17')}
 
