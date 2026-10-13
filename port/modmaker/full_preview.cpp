@@ -106,13 +106,14 @@ ID3D11Texture2D* g_tt_tex = nullptr;
 ID3D11ShaderResourceView* g_tt_srv = nullptr;
 std::vector<uint8_t> g_tt_bgra;
 int g_tt_shown = -1;
+std::string g_tt_note;  // why the titantron can't show ("" = it shows, or there's none)
 
 // the test aid
 bool g_test_pending = false;
 int g_test_entrance = -1, g_test_star = -1;
 float g_test_key = -1;
 bool g_test_camera = true;
-std::wstring g_test_song;
+std::wstring g_test_song, g_test_movie;
 
 uint32_t Be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 uint32_t Le32(const uint8_t* p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24; }
@@ -451,6 +452,7 @@ void CloseTitantron() {
   if (g_tt_srv) g_tt_srv->Release(), g_tt_srv = nullptr;
   if (g_tt_tex) g_tt_tex->Release(), g_tt_tex = nullptr;
   g_tt_shown = -1;
+  g_tt_note.clear();
 }
 
 void OpenTitantron(const std::wstring& file) {
@@ -460,6 +462,11 @@ void OpenTitantron(const std::wstring& file) {
   g_bink = bink_open(file.c_str(), err, 256);
   if (!g_bink) {
     Log("full preview: the titantron movie didn't open: " + Utf8(file) + " (" + Utf8(err) + ")");
+    Bytes head;
+    if (svrfmt::ReadFile(PathStr(fs::path(file)), head) && head.size() >= 3 && !std::memcmp(head.data(), "KB2", 3))
+      g_tt_note = "A Bink 2 movie (WWE 2K15 and later):\nthe preview and the game play it\nonce it's converted (Other games\npage: Bink 2 tool).";
+    else
+      g_tt_note = "The titantron movie didn't open\n(see the log).";
     return;
   }
   const int w = bink_width(g_bink), h = bink_height(g_bink);
@@ -617,6 +624,7 @@ void Close() {
   editor::ClearViewCamera();
   editor::SetViewHint(true);
   editor::ClearView();
+  installed_page::RestoreView();  // (the Installed page's arena, if it had one in that view)
   g_cur.reset();
   {
     std::lock_guard lock(g_mu);
@@ -627,6 +635,7 @@ void Close() {
 }
 
 void TestSong(const std::wstring& file) { g_test_song = file; }
+void TestMovie(const std::wstring& file) { g_test_movie = file; }
 
 void TestOpen(int entrance, int star, float key, bool camera) {
   g_test_pending = true, g_test_entrance = entrance, g_test_star = star, g_test_key = key, g_test_camera = camera;
@@ -640,6 +649,7 @@ void Draw() {
     r.model = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_test_star) + L".pac")).wstring();
     r.gear = true;
     r.song = g_test_song;
+    r.movie = g_test_movie;
     const StarInfo* si = StarById(g_test_star);
     r.title = si ? si->name : "superstar " + std::to_string(g_test_star);
     Open(r);
@@ -707,6 +717,12 @@ void Draw() {
         dl->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(230, 230, 235, 230), "Loading the superstar...");
       if (s.slot == 0) dl->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(230, 230, 235, 200), "The intro (the superstar comes out after it)");
       // the titantron, in a corner (the practice arena has no screen)
+      if (g_titantron_on && !g_tt_note.empty()) {  // (one that can't play: why)
+        const ImVec2 ts = ImGui::CalcTextSize(g_tt_note.c_str());
+        const ImVec2 a(at.x + w - ts.x - 22 * g_scale, at.y + 10 * g_scale), b(at.x + w - 10 * g_scale, a.y + ts.y + 12 * g_scale);
+        dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 200));
+        dl->AddText(ImVec2(a.x + 6 * g_scale, a.y + 6 * g_scale), IM_COL32(230, 200, 140, 255), g_tt_note.c_str());
+      }
       if (g_titantron_on && g_bink && g_tt_srv) {
         TitantronAt(g_key / 30.0);
         const float tw = std::min(w * 0.24f, 240 * g_scale), th = tw * float(bink_height(g_bink)) / float(std::max(1, bink_width(g_bink)));

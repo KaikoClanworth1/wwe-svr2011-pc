@@ -386,7 +386,7 @@ void TestEdit(const std::wstring& spec);
 }
 namespace anims_page { bool AnyMotion(int id); void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
-namespace installed_page { void Draw(); void TestSelect(const std::string& spec); }
+namespace installed_page { void Draw(); void TestSelect(const std::string& spec); void RestoreView(); }
 namespace help_page { void Draw(); }
 
 // A superstar model (ch.pac) to FBX, picked folder, in the background (svrfmt/char_fbx): <folder>\<name>.fbx + textures.

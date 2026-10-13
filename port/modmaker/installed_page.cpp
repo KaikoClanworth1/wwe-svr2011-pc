@@ -91,6 +91,7 @@ struct View {
 };
 View g_view;
 std::unique_ptr<svrfmt::Arena> g_arena;  // (an arena mod's, shown by the editor's view scene)
+std::string g_arena_name, g_arena_text;  // (what it was shown with: RestoreView)
 
 std::map<int, int> ReadMoveset(const fs::path& f) {
   std::map<int, int> out;
@@ -283,6 +284,7 @@ void Select(int i) {
     std::string err;
     if (a->Load(PathStr(m.dir / fs::u8path(file)), &err)) {
       g_arena = std::move(a);
+      g_arena_name = m.name, g_arena_text = m.text;
       editor::ViewArena(g_arena.get(), m.name, m.text);
     } else {
       g_view.problems.push_back(Error("The arena didn't read: " + err + "."));
@@ -427,6 +429,11 @@ void PackView() {
 }  // namespace
 
 void TestSelect(const std::string& spec) { g_test_select = spec; }
+
+// The arena shown again in the editor's read-only view (after the Full preview used that view).
+void RestoreView() {
+  if (g_arena) editor::ViewArena(g_arena.get(), g_arena_name, g_arena_text);
+}
 
 std::vector<Problem> g_set_problems;   // CheckInstalledSet: the mods together
 std::wstring g_set_for;                 // (the game folder it was made for)

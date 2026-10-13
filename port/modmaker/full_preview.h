@@ -31,6 +31,8 @@ void Draw();
 void TestOpen(int entrance, int star, float key, bool camera);
 // Test aid --full-preview-song <file>: the theme the test opens with (else the profile's).
 void TestSong(const std::wstring& file);
+// Test aid --full-preview-movie <file>: the titantron movie the test opens with.
+void TestMovie(const std::wstring& file);
 
 }  // namespace full_preview
 }  // namespace mm
