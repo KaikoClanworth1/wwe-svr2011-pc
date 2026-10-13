@@ -84,7 +84,9 @@ async def main(server):
         ok &= bool(cond)
 
     async with aiohttp.ClientSession() as session:
-        tokens = [await account(session, server, "rly%s%d" % (secrets.token_hex(3), i)) for i in range(3)]
+        names = ["rly%s%d" % (secrets.token_hex(3), i) for i in range(3)]
+        print("accounts (throwaway, delete after): " + ", ".join(names))
+        tokens = [await account(session, server, n) for n in names]
         check(all(tokens), "three throwaway accounts")
         games = [Game(session, server, t, bytes([2]) + secrets.token_bytes(5)) for t in tokens]
         for g in games:
