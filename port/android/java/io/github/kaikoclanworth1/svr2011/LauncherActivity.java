@@ -519,6 +519,13 @@ public class LauncherActivity extends Activity {
         }
         if (drivers_ != null && !drivers_.readyToPlay(this::play)) return;  // (Mali: alpha mode first)
         settings_.save();
+        String clash = ModsPage.attireGuard(null);  // (two attire mods on one attire: the newer one moves)
+        if (!clash.isEmpty()) {
+            new android.app.AlertDialog.Builder(this).setTitle("Attire mods").setMessage(clash)
+                .setPositiveButton("Play", (dl, w) -> startActivity(new Intent(this, GameActivity.class)))
+                .setNegativeButton("Not now", null).show();
+            return;
+        }
         startActivity(new Intent(this, GameActivity.class));
     }
 

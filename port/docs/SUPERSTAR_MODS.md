@@ -197,8 +197,36 @@ tab), `manifest.txt`:
 - The two lookups above answer for the superstar too: the count goes up to
   the highest attire a mod gives (4 at most), and a mod's attire gets its
   `{name, unlock -1}` pair (string ids from 0xB400); the others keep the game's.
-- 4 attires at most. Of two mods on one attire the first folder (A-Z) is used
-  and the other is logged. `new` on a superstar with 4 attires is left out.
+- 4 attires at most. Two mods on one attire (the user's rule, 13 Oct): an attire
+  is free when the superstar's own pac doesn't have it and no switched-on attire
+  mod asks for it.
+  - The launchers (PC Mods tab: `mods_attire_guard`, when an attire mod is
+    installed and when Play starts the game; Android Mods page: `attireGuard`,
+    on install, on switching one on and on Play) keep the attire for the mod
+    installed first and move the newer one to the next free attire, rewriting
+    its `attire=` (with a `# moved from attire N` line) and saying so. With none
+    free they tell the player to switch one off.
+  - The game (games started without a launcher): the attire numbers asked for
+    are given in folder order (A-Z), the first keeping its attire; then the ones
+    that lost theirs and the `new` ones take the free attires in folder order,
+    or are left out with a log line. The same every start.
+  - The Mod Maker's Attires page warns when the attire chosen is already used
+    by an installed mod.
+  - Superstar mods' `attireN=` can't clash with these: attire mods only take
+    stock superstars.
+- Entrance gear superstars (Undertaker 103, CM Punk 131, John Cena 139, Shawn
+  Michaels 145, John Morrison 175: their pac has a kind 4 model, `%06d04`, the
+  coat / hat / shirt they come out in) take replaced attires only. Any attire
+  past their own never finishes loading the match (tested: Cena / Undertaker
+  attire 3 through a guest pac, through the pac overlay, with a kind 4 row
+  beside it, even with no mod at all through the test aid); Jericho and Mark
+  Henry load new attires fine. Their DLC third attires (CM Punk's 00013122)
+  come with the DLC's own chEtc.pac, so per-attire character data is the lead.
+  Until that is found the game leaves a new attire for them out (log line),
+  the launchers count no free attire for them and say why, and the Mod Maker
+  shouldn't offer one.
+  - Test: `"SvR2011 Launcher.exe" --mods-attires <game>` runs the launcher's
+    guard and prints what it did.
 - A `disabled` file in the folder turns it off.
 
 - Every model (a superstar mod's ch.pac and attire pacs, an attire mod's model)
@@ -208,7 +236,8 @@ tab), `manifest.txt`:
   with a log line.
 
 Tested: an attire mod replacing Mark Henry's attire 1 with Sabu's model plays
-in a match. Not tested yet: `attire=new` on CHANGE ATTIRE.
+in a match; new attires (guest pacs) on Mark Henry (2) and Chris Jericho (3 and
+4, the launcher's move) play in matches (13 Oct).
 
 ### Select screen framing
 
