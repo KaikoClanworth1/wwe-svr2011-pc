@@ -101,9 +101,14 @@ def dpac(d):
                 out.append((tag, id_, pos, sz * 0x100))
                 pos += (sz * 0x100 + 0x7FF) & ~0x7FF
             off += 8 + 4 * n
-        else:   # (named groups: {name4, u16 sector, u16 size})
+        else:   # (named groups: {name4, u16 sector, u16 size}; SvR 2009 names its models "6601")
             cnt = 0
-            while cnt < n and d[off + 8 + 8 * cnt:off + 12 + 8 * cnt] != bytes(4):
+            while cnt < n and off + 16 + 8 * cnt <= len(d) and d[off + 8 + 8 * cnt:off + 12 + 8 * cnt] != bytes(4):
+                p = off + 8 + 8 * cnt
+                name = d[p:p + 4].decode('latin-1')
+                if tag.startswith('EMD') and all(c in '0123456789abcdefABCDEF' for c in name):
+                    sec, sz = struct.unpack_from('<HH', d, p + 4)
+                    out.append((tag, int(name, 16), 0x4000 + sec * 0x800, sz * 0x100))
                 cnt += 1
             off += 8 + 8 * cnt
     return out
@@ -314,38 +319,87 @@ def named_groups(head):
 
 # ------------------------------------------------------------------ the games
 
-class HCTP:
-    game = 'WWE SmackDown! Here Comes the Pain'
-    pacs = ('PAC/CH.PAC', 'PAC/CH2.PAC')
+SERIALS = {   # PS2 disc serial -> game
+    'SLES_504.77': 'WWF SmackDown! Just Bring It', 'SLUS_202.69': 'WWF SmackDown! Just Bring It',
+    'SLES_512.83': 'WWE SmackDown! Shut Your Mouth', 'SLUS_205.12': 'WWE SmackDown! Shut Your Mouth',
+    'SLES_520.36': 'WWE SmackDown! Here Comes the Pain', 'SLUS_207.87': 'WWE SmackDown! Here Comes the Pain',
+    'SLES_527.81': 'WWE SmackDown! vs. Raw (2004)', 'SLUS_209.36': 'WWE SmackDown! vs. Raw (2004)',
+    'SLES_536.76': 'WWE SmackDown! vs. Raw 2006', 'SLUS_211.34': 'WWE SmackDown! vs. Raw 2006',
+    'SLES_544.89': 'WWE SmackDown vs. Raw 2007 (PS2)', 'SLUS_214.27': 'WWE SmackDown vs. Raw 2007 (PS2)',
+    'SLES_548.79': 'WWE SmackDown vs. Raw 2008 (PS2)', 'SLES_552.51': 'WWE SmackDown vs. Raw 2009 (PS2)',
+}
+
+
+class Yukes:
+    """Yuke's PS2 SmackDowns with DPAC character archives (HCTP, SvR 2004, 2006, the PS2 2007 - 2009):
+    model ids XXYZ - character, attire, part. What a part number means differs by game (HCTP 0 / 1 the
+    match / detailed body and 2 gear, SvR 2004 1 the body and 2 gear, SvR 2006 1 / 2 two bodies and 4
+    gear), so: per character and attire the biggest model is the body, models under GEAR_VERTS vertices
+    are gear."""
+    PACS = ('PAC/CH.PAC', 'PAC/CH2.PAC', 'PAC/CH3.PAC', 'PAC/CH/CH.PAC', 'PAC/CH/CH2.PAC', 'PAC/CH/CH3.PAC',
+            'CH.PAC', 'CH2.PAC')
+    PARTS = (6, 7, 26, 27)   # (attached parts: pads)
+    GEAR_VERTS = 600
 
     def __init__(self, disc):
-        if type(self) is HCTP and disc.exists('PAC/DJ.PAC'):   # (Shut Your Mouth: class SYM)
-            raise BadInput('not Here Comes the Pain')
         self.disc = disc
+        serial = (disc.info() or {}).get('serial')
+        self.game = SERIALS.get(serial, 'PS2 SmackDown (%s)' % serial)
         self.entries = {}   # id -> (pac path, offset, size)
-        for p in self.pacs:
+        self._shape = {}
+        for p in self.PACS:
             if not disc.exists(p):
                 continue
             head = disc.read(p, 0, 0x4000)
+            if head[:4] != b'DPAC':
+                continue
             for _, id_, off, size in dpac(head):
                 self.entries[id_] = (p, off, size)
         if not self.entries:
-            raise BadInput('no PAC/CH.PAC on this disc')
+            raise BadInput('no DPAC character archive (CH.PAC) on this disc')
 
     def entry(self, id_):
+        """an entry's PAC -> {id: bytes} (BPE'd parts, as SvR 2006 / 2007 store them, decoded)"""
         p, off, size = self.entries[id_]
-        return pac(self.disc.read(p, off, size))
+        out = pac(self.disc.read(p, off, size))
+        for k, v in out.items():
+            if v[:4] == b'BPE ':
+                import svrfmt
+                out[k] = svrfmt.bpe_decode(v)
+        return out
+
+    def shape(self, id_):
+        """-> (vertex count, the model's texture names) of an entry's model (cached)"""
+        if id_ not in self._shape:
+            e = self.entry(id_)
+            if 2 not in e or e[2][:4] != b'YOBJ':
+                self._shape[id_] = (0, frozenset())
+            else:
+                try:
+                    y = read_yobj(e[2])
+                    self._shape[id_] = (sum(len(m['pos']) for m in y['meshes']),
+                                        frozenset(t.lower() for t in y['textures']))
+                except BadInput:
+                    self._shape[id_] = (0, frozenset())
+        return self._shape[id_]
+
+    def groups(self):
+        """{(character, attire): [model ids]}"""
+        out = {}
+        for id_ in sorted(self.entries):
+            out.setdefault((id_ >> 8, (id_ >> 4) & 0xF), []).append(id_)
+        return out
 
     def characters(self):
-        """{character: {attire: model id}} - the detailed body (Z=1) when there is one, else Z=0"""
-        chars = {}
-        for id_ in sorted(self.entries):
-            ch, at, part = id_ >> 8, (id_ >> 4) & 0xF, id_ & 0xF
-            if part in (0, 1):
-                cur = chars.setdefault(ch, {}).get(at)
-                if cur is None or part == 1:
-                    chars[ch][at] = id_
-        return chars
+        """{character: {attire: model id}} - each attire's biggest model"""
+        if not hasattr(self, '_chars'):
+            chars = {}
+            for (ch, at), ids in self.groups().items():
+                best = max(ids, key=lambda i: self.shape(i)[0])
+                if self.shape(best)[0] >= self.GEAR_VERTS:
+                    chars.setdefault(ch, {})[at] = best
+            self._chars = chars
+        return self._chars
 
     def model(self, id_):
         """-> (body YOBJ dict, [part YOBJ dicts], textures {name: RGBA})"""
@@ -353,7 +407,7 @@ class HCTP:
         if 2 not in e:
             raise BadInput('%04x has no model' % id_)
         body = read_yobj(e[2])
-        parts = [read_yobj(e[k]) for k in (6, 7) if k in e and e[k][:4] == b'YOBJ']
+        parts = [read_yobj(e[k]) for k in self.PARTS if k in e and e[k][:4] == b'YOBJ']
         tex = texbank(e[9]) if 9 in e else {}
         return body, parts, tex
 
@@ -382,30 +436,19 @@ class HCTP:
         return out
 
     def gear(self, ch, at):
-        """an attire's entrance gear model ids (part 2: glasses, a vest, a cape)"""
-        id_ = (ch << 8) | (at << 4) | 2
-        return [id_] if id_ in self.entries else []
+        """an attire's entrance gear: its small models (glasses, a vest, a cape)"""
+        return [i for i in self.groups().get((ch, at), []) if 0 < self.shape(i)[0] < self.GEAR_VERTS]
 
 
-class SYM(HCTP):
+class SYM(Yukes):
     """SmackDown! Shut Your Mouth: HCTP's formats; model ids are character * 16 + n: n 0/1, 2/3, 4/5 an
     attire's detailed (even, 96 nodes) and match (odd, 92) body; 6-9 extra bodies and gear (glasses, a
     vest: a few hundred vertices)."""
-    game = 'WWE SmackDown! Shut Your Mouth'
-    GEAR_VERTS = 600
-
     def __init__(self, disc):
         if not (disc.exists('PAC/DJ.PAC') and disc.exists('PAC/FINKEL.PAC')):   # (SYM's own pacs)
             raise BadInput('not Shut Your Mouth')
         super().__init__(disc)
-
-    def shape(self, id_):
-        """-> (vertex count, the model's texture names) of an entry's body"""
-        e = self.entry(id_)
-        if 2 not in e or e[2][:4] != b'YOBJ':
-            return 0, frozenset()
-        y = read_yobj(e[2])
-        return sum(len(m['pos']) for m in y['meshes']), frozenset(t.lower() for t in y['textures'])
+        self.game = SERIALS['SLES_512.83']
 
     def characters(self):
         chars = {}
@@ -443,7 +486,7 @@ class SYM(HCTP):
         return []
 
 
-GAMES = [SYM, HCTP]
+GAMES = [SYM, Yukes]
 
 
 def open_game(path):
