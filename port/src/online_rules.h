@@ -31,6 +31,7 @@ struct OnlineRulesSetup {
   bool weapons = false, stages = false;
   bool mystery = false;  // (MYSTERY OPPONENT: the host's hidden CPU in the lobby)
   bool ge = false;       // (GAUNTLET ELIMINATOR: the lobby's CPUs are the entrants; rule 0x52)
+  bool slobber = false;  // (SLOBBER KNOCKER: the 2 players a team against the lobby's CPUs in turn; rule 0x52)
   int set = 0;
 };
 OnlineRulesSetup OnlineRulesFor(uint32_t rule);

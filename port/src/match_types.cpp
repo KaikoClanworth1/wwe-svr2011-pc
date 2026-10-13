@@ -797,7 +797,13 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
       const uint8_t kind = g_online_to == kGauntlet ? 3 : 2;
       for (int i = 2; i < kGePeople; ++i) rec[2 + i * 3] = uint8_t(i), rec[2 + i * 3 + 1] = uint8_t(i), rec[2 + i * 3 + 2] = kind;
     }
-    if (rule == kGauntlet && g_slobber) {
+    if (rule == kGauntlet && g_slobber && g_online_to == kGauntlet) {
+      // ONLINE (co-op): six - the 2 players a team (0), the lobby's 4 CPUs the
+      // other (1); the kinds are the match slots' (sub_828BB290 below)
+      rec[0] = 0, rec[1] = 6;
+      rec2[34] = 6;
+      for (int i = 0; i < 6; ++i) rec[2 + i * 3] = uint8_t(i), rec[2 + i * 3 + 1] = i < 2 ? 0 : 1, rec[2 + i * 3 + 2] = i < 3 ? 0 : 3;
+    } else if (rule == kGauntlet && g_slobber) {
       // (and a third: person 4 - the gauntlet has 4 people, the 5-person one
       // 0x58 shows 5 work)
       const uint8_t* five = base + rules + 0x58 * kRuleSize;  // (the 5-person gauntlet's count)
@@ -1001,6 +1007,12 @@ REX_HOOK_RAW(sub_827374A0) {
     ctx.r4.u64 = rule;
     g_pending_weapons = online.weapons;
     g_pending_stages = online.stages;
+    if (online.slobber) {  // (as the SLOBBER KNOCKER row, for six: the players a team against the CPUs)
+      g_pending_slobber = true;
+      g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
+      g_pending_like = kLumberjackLike;
+      g_pending_select_only = true;
+    }
     if (online.ge) {  // (as the GAUNTLET ELIMINATOR row: the gauntlet reshaped for six, each his own team)
       g_pending_ge = true;
       g_pending_rule_lo = g_pending_rule_hi = kGauntlet;
@@ -1254,7 +1266,7 @@ REX_HOOK_RAW(sub_828BBEF0) {
   if (base[0x82E3DE00] == kLumberjack && !Rd32(base + kStoryContext) && ctx.r3.u32) {
     FillLumberjackSlots(base, ctx.r3.u32);
   }
-  if (g_slobber && base[0x82E3DE00] == kGauntlet && ctx.r3.u32) {  // (the 2 waiting opponents)
+  if (g_slobber && g_online_to != kGauntlet && base[0x82E3DE00] == kGauntlet && ctx.r3.u32) {  // (the 2 waiting opponents; online: the lobby's)
     if (const uint32_t rules = Rd32(base + kRules))
       for (int i = 2; i < kSlobberPeople; ++i) base[rules + kGauntlet * kRuleSize + 2 + i * 3 + 2] = 3;
     FillRandomSlots(base, ctx.r3.u32, kSlobberPeople - 2, 1, 3, "slobber knocker opponents");
@@ -1288,6 +1300,16 @@ REX_HOOK_RAW(sub_828BB290) {
       if (i >= 2) slot[0] = 0, slot[1] = 0, slot[2] = 0, slot[3] = 3;
     }
     REXLOG_INFO("match types: online GAUNTLET ELIMINATOR - people 2-5 waiting entrants, each his own team");
+  }
+  // SLOBBER KNOCKER (co-op): the players (0, 1) team 0; the CPUs team 1 -
+  // person 2 in the ring, 3-5 waiting (kind 3) to come in in turn
+  if (g_slobber && g_online_to == kGauntlet && match) {
+    for (uint32_t i = 0; i < 6; ++i) {
+      uint8_t* slot = base + match + kSlots + i * kSlotSize;
+      slot[5] = i < 2 ? 0 : 1;
+      slot[0] = 0, slot[1] = 0, slot[2] = 0, slot[3] = i >= 3 ? 3 : 0;
+    }
+    REXLOG_INFO("match types: online SLOBBER KNOCKER - the players a team against the CPUs, 3 waiting");
   }
 }
 
