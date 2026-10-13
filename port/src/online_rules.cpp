@@ -41,7 +41,7 @@ int64_t NowMs() {
       .count();
 }
 
-enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5, kGauntletElim = 6, kSlobber = 7 };
+enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5, kGauntletElim = 6, kSlobber = 7, kRoof = 8 };
 struct Option {
   Mode mode;
   int set;
@@ -62,6 +62,7 @@ constexpr Option kMysteryOpt{kMystery, 0, "MYSTERY OPPONENT",
 constexpr const char* kMysteryName = "MYSTERY OPPONENT";
 constexpr Option kGeOpt{kGauntletElim, 0, "GAUNTLET ELIMINATOR",
                         "Two start; four CPU entrants come in one a minute. Last one standing wins."};
+constexpr Option kRoofOpt{kRoof, 0, "START ON THE ROOF", "The match starts on top of the cell: no pins up there."};
 constexpr Option kSkOpt{kSlobber, 0, "SLOBBER KNOCKER",
                         "You two as a team against a line of CPU opponents, one at a time, until one of you is beaten."};
 
@@ -84,6 +85,7 @@ std::vector<Option> OptionsFor(uint32_t rule) {
   } else if (rule >= 0x31 && rule <= 0x34) {
     o.push_back(kTl);
     o.push_back(kStage[3]);
+    o.push_back(kRoofOpt);
   } else if ((rule >= 0x3C && rule <= 0x3F) || rule == 0x51) {
     o.push_back(kInside);
   }
@@ -271,6 +273,8 @@ OnlineRulesSetup OnlineRulesFor(uint32_t rule) {
     s.stages = true;
   } else if (mode == kMystery) {
     s.mystery = true;  // (the lobby's CPU is the opponent: nothing to change in the rule)
+  } else if (mode == kRoof) {
+    s.roof = true;  // (the cell's match itself: everyone on its roof at the bell, match_types.cpp)
   } else if (mode == kSlobber) {
     s.slobber = true;
     s.rule = 0x52;  // (the gauntlet, set up as SLOBBER KNOCKER: match_types.cpp)
