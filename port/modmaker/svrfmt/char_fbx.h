@@ -62,6 +62,16 @@ struct FbxMeshInfo {
 };
 bool FbxListMeshes(const std::string& fbx_path, std::vector<FbxMeshInfo>& out, std::string& err);
 
+// Model checks for the Problems list (D12; found by robert32's SvR Port Doctor): a mesh with not-a-number values
+// (the game crashes), eyes far from their eye bones (they pop out when the face blinks: the eyeball vertices' centre
+// against l_eye / r_eye, in game units). Empty when the model reads and passes.
+struct CharModelIssues {
+  std::vector<std::string> nan_meshes;
+  double eye_off[2] = {0, 0};  // l_eye, r_eye: the distance (-1: no eye bone or no vertices on it)
+  bool read = false;
+};
+CharModelIssues CheckCharacterModel(const Bytes& pac, int attire);
+
 // Test: the exported file read back (ufbx) against the pac - bones, bind matrices, vertices, weights; a line per check.
 std::vector<std::string> CheckCharacterFbx(const Bytes& pac, int attire, const std::string& fbx_path);
 

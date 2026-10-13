@@ -351,7 +351,7 @@ namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); vo
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
                       void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
-                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step);  // FBX import mapping (map: fbx_map= text)
+                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestFbxMake();  // FBX import mapping (map: fbx_map= text)
                       // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
                       const std::vector<std::string>& AnnouncerNames();
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
@@ -398,6 +398,8 @@ const std::vector<ModelPages>& ModelBudget(const std::wstring& pac);  // (cached
 // uses a superstar mod's in-pac attires contiguous from 1, at most 4.
 std::vector<int> ModelAttires(const std::wstring& pac);
 // The problem line for a model over (error) or near (warning) the budget; who: "The model", "Attire 2" ...
+// D12 model checks (CheckCharacterModel; robert32's SvR Port Doctor findings): NaN values, eyes off their bones.
+void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::vector<Problem>& out);
 void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out);
 
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).

@@ -92,6 +92,7 @@ int g_test_pose = -1;
 std::string g_test_name;
 std::wstring g_test_fbx;  // --star-fbx <fbx>[,<fbx_map>]
 int g_test_simple = -1;   // --simple <step>
+bool g_test_fbx_make = false;  // --star-fbx-make: Make the model from the FBX, the log to <work>\make.log, quit
 std::string g_test_fbx_map;
 bool g_test_done = false;
 
@@ -939,7 +940,12 @@ void MakeFromFbx() {
   for (const auto& [k, v] : g_star.fbx_on) opts.include[k] = v == "1";
   opts.kind = g_star.fbx_kind, opts.picture = g_star.fbx_pic;
   const std::string fbx = Utf8(g_star.fbx);
-  RunInBackground([fbx, targets, tpl, work, opts] {
+  auto test_end = [work] {
+    if (!g_test_fbx_make) return;
+    WriteLogTo((work / L"make.log").wstring());
+    PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+  };
+  RunInBackground([fbx, targets, tpl, work, opts, test_end] {
     Progress("Posing the FBX into the game's stance ...");
     Bytes pac;
     FbxImportReport rep;
@@ -948,17 +954,19 @@ void MakeFromFbx() {
     for (const auto& w : rep.skipped) Log("  FBX: left out " + w);
     if (!ok) {
       Status("The FBX could not be posed: " + (rep.warnings.empty() ? std::string("is the template ") + Utf8(tpl) + " there?" : rep.warnings.front()));
+      Log("FBX: not posed");
+      OnUiThread(test_end);
       return;
     }
     Log("FBX: " + std::to_string(rep.meshes) + " meshes, " + std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.textures) +
         " pictures; scaled x" + std::to_string(rep.scale).substr(0, 5) + " to the game's legs (it was " +
         std::to_string(int(rep.height_cm + 0.5)) + " cm tall)");
     const double scale = rep.scale;
-    WhenIdle([work, tpl, scale] {
+    WhenIdle([work, tpl, scale, test_end] {
       const std::wstring in = (work / L"build.json").wstring(), out = (work / L"ch.pac").wstring(), report = (work / L"report.json").wstring();
       std::error_code ec;
       fs::remove(out, ec);
-      const bool started = RunToolJson(kFbxBuilder, {in, out, report}, [out, scale](int code, const std::string& text) {
+      const bool started = RunToolJson(kFbxBuilder, {in, out, report}, [out, scale, test_end](int code, const std::string& text) {
         // its answer: {"ok", "error", "warnings": [...], "attires": [{"pages", "dropped": [...]}]}
         Json j;
         const bool parsed = ParseJson(text, j);
@@ -968,6 +976,7 @@ void MakeFromFbx() {
           const std::string why = parsed ? j["error"].Str() : std::string();
           Status("The model could not be built from the FBX" + (why.empty() ? std::string(" (see the log).") : ": " + why));
           Log("svr11_build (" + std::to_string(code) + "): " + text);
+          test_end();
           return;
         }
         if (parsed)
@@ -980,8 +989,10 @@ void MakeFromFbx() {
         g_star.height = float(std::clamp(back, 0.8, 1.25));
         Touch();
         Status("Built the model from the FBX" + std::string(back < 0.8 || back > 1.25 ? " (its own size is beyond the height range: set to the nearest)" : "") + ".");
+        Log("FBX: built " + Utf8(out) + ", height " + std::to_string(g_star.height).substr(0, 4));
+        test_end();
       });
-      if (!started) Status("The model builder (" + Utf8(kFbxBuilder) + ") couldn't start: see the log.");
+      if (!started) Status("The model builder (" + Utf8(kFbxBuilder) + ") couldn't start: see the log."), Log("FBX: builder not started"), test_end();
     });
   });
 }
@@ -1228,6 +1239,7 @@ void Problems(std::vector<Problem>& p) {
   for (int a = 0; a < 4; ++a) {  // the match memory (D12): every attire of the model, the first of attire pacs
     const std::wstring& f = a ? g_star.attires[a] : g_star.model;
     if (!f.empty()) BudgetProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), a != 0, p);
+    if (!f.empty()) ModelCheckProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), p);
   }
   for (int a = 0; a < 4; ++a) {  // a model pac with an entrance outfit (EMD kind 4): worn during the entrance
     const std::wstring& f = a ? g_star.attires[a] : g_star.model;
@@ -1323,6 +1335,7 @@ void Draw() {
     }
     if (!g_test_model.empty()) g_star.model = g_test_model;
     if (!g_test_fbx.empty()) g_star.fbx = g_test_fbx, ParseFbxMap(g_test_fbx_map), g_fbx_open_once = true;
+    if (g_test_fbx_make && !g_star.fbx.empty()) WhenIdle([] { MakeFromFbx(); });
     if (g_test_simple >= 0) g_star.simple = true, g_star.simple_step = std::min(g_test_simple, int(kStepCount) - 1);
     if (!g_test_name.empty()) std::snprintf(g_star.name, sizeof g_star.name, "%s", g_test_name.c_str());
     if (!g_test_picture.empty()) {
@@ -1917,6 +1930,7 @@ void TestMoveset(const std::string& spec) {
 void TestFbx(const std::wstring& fbx, const std::string& map) { g_test_fbx = fbx, g_test_fbx_map = map; }
 
 void TestSimple(int step) { g_test_simple = step; }
+void TestFbxMake() { g_test_fbx_make = true; }
 
 void TestHeight(float scale) { g_star.height = std::clamp(scale, 0.8f, 1.25f); }
 

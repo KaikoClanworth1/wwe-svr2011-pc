@@ -215,6 +215,38 @@ bool ReadCharacter(const Bytes& pac, int attire, Character& ch, std::string& err
 
 }  // namespace
 
+CharModelIssues CheckCharacterModel(const Bytes& pac, int attire) {
+  CharModelIssues out;
+  out.eye_off[0] = out.eye_off[1] = -1;
+  Character ch;
+  std::string err;
+  if (!ReadCharacter(pac, attire, ch, err)) return out;
+  out.read = true;
+  for (const auto& p : ch.parts) {
+    bool bad = false;
+    for (size_t k = 0; k < p.pos.size() && !bad; ++k)
+      for (int c = 0; c < 3; ++c) bad |= !std::isfinite(p.pos[k][size_t(c)]);  // (positions: a stock model has NaN normals / UVs on unused vertices)
+    if (bad) out.nan_meshes.push_back(p.name);
+  }
+  const char* eyes[2] = {"l_eye", "r_eye"};
+  for (int e = 0; e < 2; ++e) {
+    int bone = -1;
+    for (size_t i = 0; i < ch.bones.size(); ++i)
+      if (ch.bones[i].name == eyes[e]) bone = int(i);
+    if (bone < 0) continue;
+    double sum[3] = {0, 0, 0};
+    int n = 0;
+    for (const auto& p : ch.parts)
+      for (size_t k = 0; k < p.pos.size(); ++k)
+        if (p.inf[k][0].first == bone && p.inf[k][0].second > 0.5 && std::isfinite(p.pos[k][0]))
+          for (int c = 0; c < 3; ++c) sum[c] += p.pos[k][size_t(c)], n += c == 0;
+    if (!n) continue;
+    const M& w = ch.bones[size_t(bone)].world;
+    out.eye_off[e] = std::sqrt(std::pow(sum[0] / n - w.t[0], 2) + std::pow(sum[1] / n - w.t[1], 2) + std::pow(sum[2] / n - w.t[2], 2));
+  }
+  return out;
+}
+
 bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep) {
   Character ch;
   std::string err;

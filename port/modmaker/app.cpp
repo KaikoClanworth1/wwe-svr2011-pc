@@ -1176,6 +1176,37 @@ std::vector<int> ModelAttires(const std::wstring& pac) {
   return v;
 }
 
+void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::vector<Problem>& out) {
+  struct Cached {
+    fs::file_time_type time;
+    uintmax_t size = 0;
+    svrfmt::CharModelIssues issues;
+  };
+  static std::map<std::wstring, Cached> cache;
+  std::error_code ec;
+  const auto t = fs::last_write_time(pac, ec);
+  const uintmax_t size = fs::file_size(pac, ec);
+  if (ec) return;
+  auto it = cache.find(pac);
+  if (it == cache.end() || it->second.time != t || it->second.size != size) {
+    Cached c{t, size, {}};
+    Bytes b;
+    if (ReadFile(Utf8(pac), b)) c.issues = svrfmt::CheckCharacterModel(b, 1);
+    it = cache.insert_or_assign(pac, std::move(c)).first;
+  }
+  const auto& is = it->second.issues;
+  for (const auto& m : is.nan_meshes)
+    out.push_back(Error(who + "'s model has broken points (not-a-number values) in " + m + ": the game crashes on it.",
+                        "Export the model again, or rebuild it (Model from an FBX)."));
+  for (int e = 0; e < 2; ++e)
+    if (is.eye_off[e] > 0.15) {
+      char d[16];
+      std::snprintf(d, sizeof d, "%.1f", is.eye_off[e] * 10);
+      out.push_back(Warning(who + "'s " + (e ? "right" : "left") + " eye is " + d + " cm from its eye bone: it pops out when the face blinks.",
+                            "Model from an FBX moves the eye bones onto the eyes; or fix the eye in the source model."));
+    }
+}
+
 void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out) {
   const ModelPages* worst = nullptr;
   for (const auto& p : ModelBudget(pac)) {
@@ -2226,6 +2257,26 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       WriteFile(dir + "/report.txt", Bytes(out.begin(), out.end()));
       return ok ? 0 : 1;
     }
+    else if (!wcscmp(argv[i], L"--model-check") && more) {  // <pac>[;<pac>...],<out>: the D12 model checks, a line per pac
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      if (c == std::wstring::npos) return 1;
+      std::string out;
+      std::wstring list = v.substr(0, c);
+      for (size_t a = 0; a <= list.size();) {
+        size_t b = list.find(L';', a);
+        if (b == std::wstring::npos) b = list.size();
+        const std::wstring pac = list.substr(a, b - a);
+        a = b + 1;
+        Bytes d;
+        const auto is = ReadFile(Utf8(pac), d) ? svrfmt::CheckCharacterModel(d, 1) : svrfmt::CharModelIssues();
+        char line[256];
+        std::snprintf(line, sizeof line, "%s: read %d, nan %d, eyes %.3f %.3f\n", FileName(pac).c_str(), int(is.read), int(is.nan_meshes.size()), is.eye_off[0], is.eye_off[1]);
+        out += line;
+      }
+      WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
+      return 0;
+    }
     else if (!wcscmp(argv[i], L"--rig-selftest")) {  // the rig mapper against each known rig's standard names
       const auto fails = RigSelfTest();
       std::string out = "rig self test: " + std::to_string(fails.size()) + " failed\n";
@@ -2278,6 +2329,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-fbx-make")) star_page::TestFbxMake();  // with --star-fbx: Make the model, log, quit
     else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
     else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
       const std::wstring v = argv[++i];
