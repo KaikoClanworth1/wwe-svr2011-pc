@@ -39,6 +39,11 @@ import svr08_entrance as S  # noqa: E402
 
 CAM_FLAG = 0x4000               # HCTP camera tracks: track id | 0x4000 (3047: 9950 -> 26334)
 SEGMENTS = 5                     # HCTP slots 0..4 -> 2011 slots 0, 5, 10, 15, 20
+# SmackDown! vs. Raw (2004, PS2): HCTP's files and formats, but 20-24 sub-scenes per object; by position
+# 0-3 hidden intro, 4-8 stage, 9-14 ramp, 15-18 ringside, 19-23 in the ring = 2011's 5 segments (no
+# intro cut needed); camera keys of 19 bytes (f32 position, s16 rotation). docs/OTHER_GAMES_ENTRANCES.md
+GAMES = {'hctp': dict(segments=SEGMENTS, groups=None),
+         'svr04': dict(segments=24, groups=[(0, 4), (4, 9), (9, 15), (15, 19), (19, 24)])}
 SLOTS_11 = 21
 HSLOT = 40
 CAM_FOV = 0.7217285633087158     # key fov; with op 112 in the track 2011 uses the zoom instead (section 5)
@@ -336,6 +341,11 @@ def convert_records(kind, data, T, rep, ground_fix=True, fov=CAM_FOV, shifts=Non
             ev2 = filter_events(ev, T, KEEP_CAM, rep, 'camera', {113: cam_follow})
             if len(pose) == 13:
                 p2 = conv_cam_pose(pose, shift_for_frame(shifts, f) if (ground_fix and shifts) else 0.0, fov)
+            elif len(pose) == 19:                # (SvR 2004: [count][f32 x3][s16 rotation x3])
+                pos = list(struct.unpack_from('<3f', pose, 1))
+                rot = struct.unpack_from('<3h', pose, 13)
+                pos[1] += (shift_for_frame(shifts, f) if (ground_fix and shifts) else 0.0) / 0.01
+                p2 = bytes([pose[0]]) + struct.pack('<3f3ff', *pos, *[v * Y.ANG for v in rot], fov)
             else:
                 p2 = pose
                 if pose:
@@ -411,6 +421,12 @@ def intro_end(char_recs, cam_recs, hidden_y=15.0):
     return up
 
 
+def plan_groups(nseg, groups):
+    """2011 segment -> the whole source sub-scenes grouped by position (SvR 2004)"""
+    return {j: [(k, 0, None) for k in range(a, min(b, nseg))] for j, (a, b) in enumerate(groups)
+            if a < nseg}
+
+
 def plan(nseg, intro):
     """2011 segment (0..4) -> [(HCTP segment, from frame, to frame or None)].
     2011's 5 segments: 0 intro (entrant hidden, titantron), 1 stage, 2 ramp, 3 ringside and into
@@ -433,8 +449,9 @@ def slot11(j, on, evt_id, params, parent):
     return bytes(s)
 
 
-def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None):
-    """-> (evp bytes, evt bytes, report Counter, notes list)"""
+def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, game='hctp'):
+    """-> (evp bytes, evt bytes, report Counter, notes list); game: hctp / svr04 (GAMES)"""
+    cfg = GAMES[game]
     prop_map = PROP_MAP if prop_map is None else prop_map
     sevp = parse_sevp(src['sevp'])
     if hnum not in sevp:
@@ -447,7 +464,7 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None):
     bank = Y.Bank(b'YMKs' + struct.pack('<I', 0x100) + bytes(8) + S.T11, [])
     bank.lead = b''
     kinds = [kind_of(o) for o in script['objs']]
-    nseg = min(SEGMENTS, max(len(o['slots']) for o in script['objs']))
+    nseg = min(cfg['segments'], max(len(o['slots']) for o in script['objs']))
     # every HCTP track converted per HCTP segment: conv[(object, segment)] = (kind, recs, frames)
     conv = {}
     shifts = {}
@@ -468,9 +485,12 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None):
     ent = next((i for i, kd in enumerate(kinds) if kd == 'char'), 0)
     cam = next((i for i, kd in enumerate(kinds) if kd == 'camera'), None)
     intro = 0
-    if (ent, 0) in conv and cam is not None and (cam, 0) in conv:
-        intro = intro_end(conv[(ent, 0)][1], conv[(cam, 0)][1])
-    pl = plan(nseg, intro)
+    if cfg['groups']:
+        pl = plan_groups(nseg, cfg['groups'])
+    else:
+        if (ent, 0) in conv and cam is not None and (cam, 0) in conv:
+            intro = intro_end(conv[(ent, 0)][1], conv[(cam, 0)][1])
+        pl = plan(nseg, intro)
     notes.append('segments: ' + '; '.join('2011 %d <- %s' % (j, ' + '.join(
         'HCTP %d [%d..%s)' % (hk, a, '' if b is None else b) for hk, a, b in pl[j])) for j in sorted(pl)))
     seg_frames = {}

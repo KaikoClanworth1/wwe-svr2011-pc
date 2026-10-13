@@ -21,10 +21,17 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 | game | disc id | entrances | converter | status |
 |---|---|---|---|---|
 | SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
+| SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, converted offline (Andre 3066, Bret Hart 3077) |
+| SmackDown! Shut Your Mouth (PS2) | - | 114 | - | researched: HCTP back end + a new SYDT script reader |
+| SmackDown! vs. Raw 2006 (PS2) | - | 95 | - | researched: 2008 script path little-endian, bodies as HCTP; 2/3 also in SvR 2007 |
+| WWF SmackDown! Just Bring It (PS2) | - | 349 records | - | researched: older engine, not practical yet |
+| SvR 2007-2011 (PS2) | - | same as 360 | - | researched: the 360 entrances in PS2 byte order (a ~110-line front end for the 360 converters) |
+| WWE 2K15 / 2K16 / 2K17 (X360) | - | 138 / 236 / 315 | - | researched: WWE '13 converter + new readers, 788-byte slots, one-take entrances |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
 | SvR 2009 (X360) | 54510826 | 168 (149 in 2011) | `entrance_port.py` (2010 rules) | ready, played in game (Mr. Kennedy 4062 as 495) |
 | SvR 2010 (X360) | 54510844 | 203 (191 in 2011) | `svr10_entrance.py` | ready, played in game (Mr. Kennedy) |
+| Legends of WrestleMania (X360) | 54510838 | 157 (89 not in 2009 / 2011) | `entrance_port.py` (2009 path) | ready, converted offline (Andre 4019, Hogan & Beefcake 4313); gondola entrances not supported |
 | WWE '12 (X360) | 54510890 | 247 (149 in 2011) | `wwe13_entrance.py --game wwe12` | ready, validated offline (Rey 123, Austin 101: 1-2 cm) |
 | WWE '13 (X360) | 545108B4 | 317 (150 in 2011) | `wwe13_entrance.py` | ready, played in game (Mankind 246 as 497); titantrons need Bink 2 |
 | WWE 2K14 (X360) | 545408B2 | 347 | `wwe13_entrance.py --game wwe2k14` | ready, validated offline on segments 2K14 did not re-cut (1-2 cm); titantrons need Bink 2 |
@@ -43,6 +50,68 @@ Details: docs/HCTP_ENTRANCES.md (+ HCTP_ENTRANCE_EVENTS.md).
   objects kept; prop 2019 (folded WWE Title) -> 2014.
 - **Pyro:** none in the data (HCTP's flashes are op 18 events, kept). **Titantron/theme:** from
   the profile.
+
+## SmackDown! vs. Raw (PS2, 2004)
+
+- **Where:** HCTP's files: `PAC/EVTENT.PAC` (DPAC) `EVET/<n>` motion banks 3000-3201 and `ENTR/SEVP`
+  (`hctp_entrance.parse_sevp` reads it unchanged); names in `PAC/MOVES.PAC` `MOVS/LIST` sub-entry 2
+  (BPE-packed, HCTP's {u16 number, name[30]} records). 96 entrances (The Rock, Andre, Mankind, Bret
+  Hart, Brutus Beefcake, Mr. McMahon...).
+- **Differences from HCTP:** 20-24 sub-scenes per object instead of 5: by position 0-3 hidden intro,
+  4-8 stage, 9-14 ramp, 15-18 ringside, 19-23 in the ring = 2011's 5 segments (whole sub-scenes
+  joined, no intro cut); camera keys of 19 bytes (f32 position, s16 rotation); most entrances carry
+  2 partner / valet characters (generic bodies). Same motion format, wide bone table, raised stage
+  (HCTP's ground fix applies).
+- **Converter:** `hctp_entrance.build(..., game='svr04')` (GAMES: segment groups, 24 slots, the
+  19-byte camera key) via `entrance_port.py --game svr04`. HCTP's output is unchanged (3047
+  byte-identical). Converted offline: 3066 Andre, 3077 Bret Hart. Not played yet.
+- **Media:** titantrons MPEG in AFS archives, themes CRI ADX (not converted). No pyro (flash ops only).
+
+## SmackDown! Shut Your Mouth, SvR 2006, Just Bring It (PS2) - research
+
+- **Shut Your Mouth:** `PAC/EVTENT.PAC` motion banks 3000-3113 (HCTP's format, but frame records sized
+  in halfwords: a byte < 0x80 skips frames, else (b & 0x7f) x 2 bytes) and only the compact `SYDT`
+  script (a reader reproduces HCTP's and SvR 2004's full scripts 534/534 and 100/100); 2-7 segments
+  with alternates, 2 cameras, character roots relative to the slot (bake to absolute), own prop ids.
+  Unique: Hollywood Hogan, DDP, X-Pac, Raven, Lawler, JR, Earl Hebner. Plan: SYDT reader in front of
+  HCTP's back end.
+- **SvR 2006:** `PAC/EVT.PAC` (a DPAC variant with doubled group counts), 95 entrances 4000-4500; the
+  script is 2007/2008's layout little-endian, cameras already 2011's 29-byte keys, floor-level stage;
+  bodies need HCTP-style re-encoding; ops 24, 65, 185 differ in size. About two thirds are in SvR
+  2007 (use svr07 for those: Andre 4066 = 2007 4109). Unique: JYD, Heidenreich, Rene Dupree, tag
+  entrances, Team Angle.
+- **Just Bring It:** `EN3.PAC`, 349 records of a motion bank (SYM framing) + a text CSV script with
+  an older op set and no segment structure; names only in the ELF. Not practical yet.
+
+## SvR 2007-2011 (PS2) - research
+
+The PS2 discs carry the same entrances as the 360 versions (2007 150, 2008 140, 2009 168, 2010 211,
+2011 238 - none PS2-only). Containers are the 360's in little-endian (DPAC 2007-2009, DPK8 2010-2011),
+scripts are the 360 EVP in PS2 byte order (two-u16 fields, raw type bytes: a little-endian parser +
+`build_evp` rebuilds the 360 bytes for 935/935), tracks are the same YMKs banks (2008 138/140 and 2009
+167/168 byte-identical; 2010/2011 character tracks are key-reduced). A ~110-line front end (container
+reader + `parse_evp_le`) lets the svr07-10 converters take a PS2 disc; 2008/2009 output then equals
+the 360-based one. Titantrons: Sofdec MPEG-1 224x192 in `MOVIE/NMV*.AFS`; themes CRI ADX; pyro sets are
+PS2 textures (not portable). The 360 discs are the better source.
+
+## WWE 2K15 / 2K16 / 2K17 (Xbox 360) - research
+
+- **2K15:** `pac/evt/Entrance00-10.pac`, xcompressed EPK8 (groups `EVP2`, `EVZ `): 138 entrances (a
+  cut-down 2K14: 291 numbers shared, 42 new). **2K16/2K17:** one pac per scene `pac/evt/NNNNN.pac`
+  (entrances 100-899, CAE parts 10000-14999), 20-byte table entries with 4-character names (number
+  from the file name); 2K17 has 115 in a new HSPC container (SHDC block instead of PACH). 236 / 315
+  entrances.
+- **Script:** 2K14's EVP (cm positions, segments 0/5/10/15/20) with **788-byte slots**: words 0-50 +
+  195-196 = 2K14's slot (56,297 / 56,442 shared slots equal); the rest are longer rope / turnbuckle key
+  lists (up to 32 keys, 2011 holds 8: resample 26 / 124 / 199 slots).
+- **Motion:** same records at 60 Hz, same Biped skeleton; 2K15 YANM v4, 2K16/2K17 v5 (`yanm_decode`
+  reads it: same pose within 0-1.7 cm); mode-4 YANM blocks (boned props only) must be skipped; y1 is a
+  32-track face rig (dropped). Checked: 2K15 Austin vs 2011's own 0-2 cm on segments not re-cut.
+- **One-take entrances (2K15):** ~61 put the whole entrance in segment 0 (2011 hides segment 0): use
+  2K16's re-cut of the same take (37 of 61) or an HCTP-style split.
+- **Other:** lights object moved to `pac/evt/light/elNNNNN.pac` (2011 donor used anyway); the event
+  table covers 82% (2K15) / 95% (2K16-17); new prop 2755 in nearly every new entrance, 2K17 uses 63
+  props 2011 lacks; pyro PCE6 (2K16-17 in `pac/particle/pce6NNNN.pac`); titantrons Bink 2.
 
 ## SvR 2007 (Xbox 360)
 
@@ -131,6 +200,25 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
   (and 9012, 9349) are missing in 2011 (silent).
 - **Titantron:** Bink 1 320x320 (same as 2011): copy as the mod's `movie=`. **Theme:**
   `music1.yaf` XMA2 records -> mp3 (`svr10_superstar.py` already does it).
+
+## WWE Legends of WrestleMania (Xbox 360)
+
+- **Where:** `pac/evt/Nyujyo0-3.pac` (EPAC, EVP1-4 / EVT1-4), 157 entrances 4001-4359: singles 4000 +
+  (superstar id - 100), champion versions 4200-4217, tag teams 4300-4329, and 29 "Gondola" (ring cart)
+  entrances 4170-4186 / 4230-4233 / 4350-4359. Profile CHAR/PRO 504 bytes: +0xE4 music, movie,
+  entrance, champion, gondola, gondola champion (attire 2 at +0xF0).
+- **Format:** SvR 2009's (2008's 28-byte objects, 2011 model ids and tail; headerless YMKs bank, every
+  op used has 2011's size, all body records decode); ~60% of the tracks are byte-identical to 2009's.
+- **Not in 2009 or 2011:** 89, mostly legends (Andre, Piper, Rude, Slaughter, Bundy, Yokozuna, Bulldog,
+  Studd, Road Warriors, Honky Tonk Man, Iron Sheik, Volkoff, Beefcake, Bossman, Duggan, Kamala, Bigelow,
+  Arn Anderson, Ultimate Warrior...), legend tag teams and champion versions.
+- **Rules** (`entrance_port.low_convert` = `svr09_convert(low=True)`): LoW's generic extras 10902 /
+  24802 / 24902 (and 11902 / 15902 except a tag partner at object 4) -> 13902 before the 2009 rules;
+  object 6's positions always from 2011's template; the inert last ring-cart prop (2552 / 2565) and its
+  tracks dropped. Gondola entrances are refused (exit 2) until the carts are ported.
+- **Props:** 30 of 43 in 2011; missing 2116, 2152, 2262, the carts and 2554/2555/2557/2562-2564/2568/2569
+  (warned). **Pyro:** 2009's older PCEN format (not converted). **Titantrons:** Bink 1 by superstar
+  id: `--titantron <id>`. **Themes:** `sound/music1.yaf` (2009-style).
 
 ## WWE '12 (Xbox 360)
 
