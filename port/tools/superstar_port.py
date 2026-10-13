@@ -33,8 +33,8 @@ Games:
               (wwise.py + vgmstream), entrance + titantron (entrance_port.py; Bink 2 opt in), announcer;
               ratings and moveset stay the base's
     wwe13     WWE '13 - the same, from its xcompressed pacs (--svrmod)
-    wwe2k14   WWE 2K14 - the same, names from string.pac, the first 4 of its attires; no theme yet
-              (its superstar -> theme table isn't decoded)
+    wwe2k14   WWE 2K14 - the same, names from string.pac, the first 4 of its attires, themes from
+              Game_Sound_E_S.pck events + Game_Sound_M.pck streams
     others    listed with status "research" (docs/OTHER_GAMES.md)
 
 --src may be a disc image (read through discfs.py); the files a conversion needs are
@@ -760,6 +760,10 @@ class GameW:
     suffix = '_12'
     game_id = 'wwe12'
     dat_name, dat_scale, dat_gender, dat_class, pro_entrance = 0x2E, 40, 238, 239, 0x1D4
+    # 2011's 7 ratings (DAT +0..+6, display - 1) from '12's 12 (DAT +4..+15, the same scale): (offset, minus),
+    # each the '12 value closest to 2011's over the 117 superstars both games have (mean error 1.6-2.6)
+    rating_map = ((5, 0), (8, 0), (9, 0), (12, 0), (7, 0), (14, 0), (13, -5))
+    no_ratings = ''
 
     def __init__(self, src, svrmod=None):
         import moves_port as MP
@@ -840,6 +844,8 @@ class GameW13(GameW):
     suffix = '_13'
     game_id = 'wwe13'
     dat_name, dat_scale, dat_gender, dat_class, pro_entrance = 58, 52, 256, 292, 576
+    rating_map = None
+    no_ratings = "WWE '13's ratings aren't in its DAT / PRO records (not found yet)"
 
     def __init__(self, src, svrmod=None):
         import wwe13_entrance as WE
@@ -856,9 +862,9 @@ class GameW2K14(GameW13):
     5000 child 0, English; height +22 in 2011's units; weight class +26; gender +27, 1 = diva), CHAR/PRO
     1276 B with the entrance block at +576 as '13; model pacs say EPAC with 16-byte entries, several
     attires (Cena 10), each a wrestler model (kind 2) and a second one (kind 4) - the first four kind 2
-    become the 2011 attires; renders menu/menuHD.pac in 2011's format. Themes: Game_Sound_M.pck, but the
-    superstar -> theme event table isn't decoded (events in Game_Sound_E_S.pck "Entrance_Music_E_S" are
-    numbered in order), so no theme yet."""
+    become the 2011 attires; renders menu/menuHD.pac in 2011's format. Themes: the events
+    Play_MUS_<music>_0_0 as '12 / '13, in sound/Game_Sound_E_S.pck; their streams in sound/Game_Sound_M.pck
+    (wwise.theme stream_pck)."""
 
     year = 14
     label = 'WWE 2K14'
@@ -866,8 +872,9 @@ class GameW2K14(GameW13):
     game_id = 'wwe2k14'
     dat_name, dat_scale, dat_gender, dat_class, pro_entrance = 10, 22, 27, 26, 576
     dat_size = 208
+    no_ratings = ("2K14's 14 ratings (DAT +36..+49) match 2011's only loosely - it re-rated people - so they "
+                  "aren't mapped")
     max_attires = 4
-    theme_missing = "WWE 2K14's superstar -> theme table isn't decoded yet: no theme (add one in the Mod Maker)"
 
     def __init__(self, src, svrmod=None):
         GameW13.__init__(self, src, svrmod)
@@ -897,10 +904,10 @@ class GameW2K14(GameW13):
         return out
 
     def music_pck(self):
-        return self.src.get('sound/Game_Sound_M.pck') if self.src.has('sound/Game_Sound_M.pck') else None
+        return self.src.get('sound/Game_Sound_E_S.pck')
 
-    def theme_events(self, music, cid):
-        return []
+    def stream_pck(self):
+        return self.src.get('sound/Game_Sound_M.pck')
 
 
 def model_w(g, cid, pac11, out, portrait):
@@ -984,7 +991,13 @@ def buildW(cid, outdir, o, rep):
                 note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
     else:
         warn('%s has no model for %d: the base\'s is used' % (gw.label, cid))
-    drop('ratings, abilities (%s\'s aren\'t mapped yet): the base\'s' % gw.label)
+    if gw.rating_map:
+        r = gw.raw_dat[cid]
+        man['ratings'] = ','.join(str(max(0, min(99, r[o] - m))) for o, m in gw.rating_map)
+        note('ratings from %s DAT -> %s' % (gw.label, man['ratings']))
+        drop('abilities (%s\'s aren\'t mapped yet): the base\'s' % gw.label)
+    else:
+        drop('ratings, abilities (%s): the base\'s' % gw.no_ratings)
     if not o.get('no_moves') and base != i11:
         drop('moveset: the base\'s for now')
     music, movie, ent, alt = gw.entrance_block(cid)
@@ -993,7 +1006,8 @@ def buildW(cid, outdir, o, rep):
     import wwise
     events = gw.theme_events(music, cid)
     try:
-        ev, why = (wwise.theme(gw.music_pck(), events, os.path.join(mod, 'theme.mp3'), work, o.get('vgmstream'))
+        ev, why = (wwise.theme(gw.music_pck(), events, os.path.join(mod, 'theme.mp3'), work, o.get('vgmstream'),
+                               stream_pck=gw.stream_pck() if hasattr(gw, 'stream_pck') else None)
                    if events and gw.music_pck() else (None, getattr(gw, 'theme_missing', 'no theme events')))
     except Exception as e:   # noqa: BLE001
         ev, why = None, str(e)[:160]
