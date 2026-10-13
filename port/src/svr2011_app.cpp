@@ -59,6 +59,7 @@
 #include "music.h"
 #include "saves.h"
 #include "user_movies.h"
+#include "cae_mod_motions.h"
 #include "native/native_renderer.h"
 #include "frame_stats.h"
 #include "keyboard_typing.h"
@@ -517,6 +518,7 @@ void Svr2011App::OnPostLoadXexImage() {
   {
     std::filesystem::path movies = rex::filesystem::GetExecutableFolder() / "Custom Movies";
     if (std::string dir = Env("SVR2011_MOVIES"); !dir.empty()) movies = dir;
+    svr2011::InstallCaeModMotions(runtime()->memory());  // (CREATE AN ENTRANCE's MODS rows)
     std::error_code ec;
     std::filesystem::create_directories(movies, ec);
     // (HD movies' stubs, hd_movies.h: the folder made before the mount - the

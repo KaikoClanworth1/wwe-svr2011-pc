@@ -30,6 +30,7 @@
 #include <rex/system/xmemory.h>
 
 #include "ascii_fold.h"  // (launcher/)
+#include "cae_mod_motions.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -225,6 +226,11 @@ REX_HOOK_RAW(sub_8287DFD0) {
     movies = items && Rd16(base, table + (category + 96) * 2) > 1 && Rd16(base, items + 6) == kNoneId;
   }
   __imp__sub_8287DFD0(ctx, base);
+  {  // (the other filler of this hook: the MODS rows of the entrance motion lists)
+    const auto r3 = ctx.r3;
+    svr2011::CaeModRows(ctx, base, list, category);
+    ctx.r3 = r3;
+  }
   if (!movies) return;
   const uint32_t count = Rd32(base, list), rows_at = Rd32(base, list + 8);
   // Tools: SVR2011_DUMP_MOVIE_NAMES=<file> writes "<id><TAB><name>" for the
@@ -362,9 +368,12 @@ REX_HOOK_RAW(sub_8287E960) {
 // the others (+136..+156 -> +160..+180, the "unchanged" baseline).
 REX_EXTERN(__imp__sub_828823E0);
 REX_HOOK_RAW(sub_828823E0) {
-  const uint32_t value = ctx.r4.u32;
+  const uint32_t list = ctx.r3.u32, value = ctx.r4.u32;
   __imp__sub_828823E0(ctx, base);
   if (t_in_page && ctx.r3.s32 < 0 && int(value) >= kFirstId && int(value) <= kLastId) t_page_movie = int(value);
+  // (an entrance motion list missing the stored number - a removed mod's: a MISSING MOD row keeps it)
+  if (ctx.r3.s32 < 0)
+    if (const int row = svr2011::CaeMissingRow(ctx, base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
 }
 REX_EXTERN(__imp__sub_82875320);
 REX_HOOK_RAW(sub_82875320) {

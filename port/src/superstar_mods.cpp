@@ -23,6 +23,7 @@
 // - owned: DLC-flagged ids must be owned (sub_828C1288 / sub_82589198):
 //   mods are.
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
+#include "cae_mod_motions.h"
 #include "superstar_mods.h"
 #include "move_packs.h"
 #include "startup_pump.h"
@@ -1569,10 +1570,13 @@ REX_EXTERN(__imp__sub_82756538);
 REX_HOOK_RAW(sub_82756538) {
   const uint32_t mgr = ctx.r3.u32, idx = ctx.r4.u32, part = ctx.r5.u32;
   __imp__sub_82756538(ctx, base);
-  if (part != 0 || ctx.r3.u32 == 0) return;
-  const auto r = ctx.r3;
-  if (const int n = EntranceForAttire(ctx, base, mgr, idx, true); n > 0) ctx.r3.u64 = uint32_t(n);
-  else ctx.r3 = r;
+  if (part == 0 && ctx.r3.u32 != 0) {
+    const auto r = ctx.r3;
+    if (const int n = EntranceForAttire(ctx, base, mgr, idx, true); n > 0) ctx.r3.u64 = uint32_t(n);
+    else ctx.r3 = r;
+  }
+  // (a number whose mod is gone: cae_mod_motions.cpp)
+  ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, int(part), ctx.r3.u32);
 }
 REX_EXTERN(__imp__sub_82756718);
 REX_HOOK_RAW(sub_82756718) {
@@ -1581,6 +1585,7 @@ REX_HOOK_RAW(sub_82756718) {
   const auto r = ctx.r3;
   if (const int n = EntranceForAttire(ctx, base, mgr, idx, false); n > 0) ctx.r3.u64 = uint32_t(n);
   else ctx.r3 = r;
+  ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, -1, ctx.r3.u32);
 }
 REX_EXTERN(__imp__sub_82756768);
 REX_HOOK_RAW(sub_82756768) {
@@ -1589,6 +1594,7 @@ REX_HOOK_RAW(sub_82756768) {
   const auto r = ctx.r3;
   if (const int n = EntranceForAttire(ctx, base, mgr, idx, false); n > 0) ctx.r3.u64 = uint32_t(n);
   else ctx.r3 = r;
+  ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, -1, ctx.r3.u32);
 }
 
 // Audio events by name (sub_82BEC030(name, ...)): a mod's own announcer
