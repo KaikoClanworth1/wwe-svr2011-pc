@@ -353,6 +353,15 @@ def hand_map(jlib, lib):
     return out
 
 
+class _NoPose(dict):
+    """every id -> 0xFFFF (no 2011 pose: hand_tracks skips it)"""
+    def __contains__(self, k):
+        return True
+
+    def __getitem__(self, k):
+        return 0xFFFF
+
+
 def remap_hands(bank, hmap):
     """rewrite op 16 hand ids of the character tracks through hmap -> (bank, events mapped)"""
     T, _ = H.read_bank(bank)
@@ -430,7 +439,14 @@ def convert(src, entrance, number, name, rep, ground=True, skip=()):
     if entrance not in jbi['script']:
         raise ValueError('%s has no entrance %d' % (GAME_NAME, entrance))
     lib = HE.DEFAULT_HAND_LIB
-    if lib and jbi.get('hands'):
+    if lib and not jbi.get('hands'):              # (a lone EN3.PAC: no M.PAC - JBI ids would pick wrong shapes)
+        bank, n = remap_hands(jbi['banks'][entrance], _NoPose())
+        banks = dict(jbi['banks'])
+        banks[entrance] = bank
+        jbi = dict(jbi, banks=banks)
+        rep.setdefault('notes', []).append('hands: no JBI pose library (M.PAC): %d hand events left out, the '
+                                           'fingers keep the ring pose' % n)
+    elif lib and jbi.get('hands'):
         hmap = hand_map(jbi['hands'], lib)
         bank, n = remap_hands(jbi['banks'][entrance], hmap)
         banks = dict(jbi['banks'])

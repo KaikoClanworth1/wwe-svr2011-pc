@@ -8,6 +8,8 @@
   (wwe13 also takes --svrmod <svrmod.exe>: its pacs are xcompressed; default: next to the tools or
    the Mod Maker; missing = exit 2)
   python entrance_port.py free-numbers [--game-pac <2011 pac dir>] [--mods <Mods dir>]
+  python entrance_port.py detect --src <one entrance file>
+        -> {game, name, platform, entrances, file, detected, limits[]} (list / convert take the same file)
 
 Contract (shared by the Mod Maker's converters, docs/MOD_MAKER_3_PLAN.md):
 - stdout carries only the JSON result; logs go to stderr, progress lines on stderr read exactly
@@ -31,6 +33,13 @@ Contract (shared by the Mod Maker's converters, docs/MOD_MAKER_3_PLAN.md):
   failure.
 - --src is an extract folder or a disc image (tools/discfs.py when present: Xbox 360 XDVDFS /
   PS2 ISO 9660); paths inside it are the disc's own (e.g. pac/evt/Nyujyo0.pac, PAC/EVTENT.PAC).
+- --src may also be ONE entrance file copied off a disc (any name): a 360 pac/evt pac (SvR 2007
+  evt1/2.pac, SvR 2008-WWE '12 Nyujyo*.pac, WWE '13-2K15 Entrance*.pac, 2K16 / 2K17 <entrance>.pac -
+  keep that name or give --entrance) or a PS2 PAC/EVTENT.PAC (HCTP, SvR 2004, SYM), PAC/EVT.PAC
+  (SvR 2006), EN3.PAC (JBI).  --game is then optional (detected from the format; --game wins).  The
+  motion converts in full - script, every track, camera - as every game keeps them in that file.  Not
+  in a lone file (report.lone.limits, also in notes): the theme, the titantron, pyro, PS2 names
+  (numbers only), JBI's hand poses (fingers stay in the ring pose).  WWE '13+ pacs still need svrmod.
 
 Games: docs/OTHER_GAMES_ENTRANCES.md (formats and what converts); per-game converters
 tools/svr08_entrance.py (SvR 2008), tools/svr10_entrance.py (SvR 2010), tools/hctp_entrance.py (HCTP)
@@ -119,6 +128,184 @@ def open_source(path):
         raise InputError('reading a disc image needs tools/discfs.py; give an extract folder instead')
     except Exception as x:
         raise InputError('cannot read --src %s: %s' % (path, x))
+
+
+# ============================================================================ a lone entrance file
+# --src may be one entrance pac copied off a disc (no disc, no folder).  Every supported game keeps an
+# entrance's script and all its tracks - camera included - in that one file (checked on every stock pac:
+# 2007-2K15 EVP + EVT/EVZ side by side in the same pac, 2K16 / 2K17 one pac per entrance, PS2 the whole
+# set in one file), so the motion converts in full.  What a lone file can't give: lone_limits().
+
+LONE_MAGIC = (b'EPAC', b'EPK8', b'DPAC', b'HSPC', b'\x0f\xf5\x12\xed')
+XCOMPRESS = b'\x0f\xf5\x12\xed'
+LONE_PATH = {   # game -> the path the game's reader looks for (the lone file is served there)
+    'svr07': 'pac/evt/evt1.pac', 'svr08': 'pac/evt/Nyujyo0.pac', 'svr09': 'pac/evt/Nyujyo0.pac',
+    'low': 'pac/evt/Nyujyo0.pac', 'svr10': 'pac/evt/Nyujyo0.pac', 'wwe12': 'pac/evt/Nyujyo0.pac',
+    'wwe13': 'pac/evt/Entrance00.pac', 'wwe2k14': 'pac/evt/Entrance00.pac', 'wwe2k15': 'pac/evt/Entrance00.pac',
+    'wwe2k16': 'pac/evt/%05d.pac', 'wwe2k17': 'pac/evt/%05d.pac',
+    'hctp': 'PAC/EVTENT.PAC', 'svr04': 'PAC/EVTENT.PAC', 'sym': 'PAC/EVTENT.PAC', 'svr06': 'PAC/EVT.PAC',
+    'jbi': 'EN3.PAC'}
+
+
+def lone_limits(g):
+    """what the disc has beside the entrance file (said in every lone-file report)"""
+    out = ['the theme music is not in any entrance file (pick the song for the mod)',
+           'the titantron movie is on the disc (movies/titantron), not in the entrance file: --titantron needs the disc']
+    if g in PYRO_GAMES:
+        out.append('pyro (the particle set) is in another pac (pac/prtcls.pac; 2K16 / 2K17 pac/particle/pce6NNNN.pac): '
+                   'not converted from a lone file')
+    if g in ('hctp', 'svr04', 'sym'):
+        out.append('entrance names are in PAC/MOVES.PAC on the disc: the list shows numbers only')
+    if g == 'jbi':
+        out.append("names are in the game's ELF and the hand poses in M.PAC on the disc: numbers only, and the "
+                   "fingers keep their ring pose (JBI's pose ids mean nothing without its pose library)")
+    return out
+
+
+def _norm(p):
+    return p.replace('\\', '/').strip('/').lower()
+
+
+class LoneSource:
+    """one entrance file served at the path its game reads (discfs's calls: exists / isdir / listdir / read /
+    size / info / walk); everything else on the 'disc' is missing"""
+
+    def __init__(self, path, vpath, data):
+        self.path, self.vpath, self._data = path, vpath, data
+
+    def exists(self, path):
+        return _norm(path) == _norm(self.vpath) or self.isdir(path)
+
+    def isdir(self, path):
+        return _norm(path) == _norm(os.path.dirname(self.vpath)) != ''
+
+    def listdir(self, path=''):
+        return [os.path.basename(self.vpath)] if _norm(path) == _norm(os.path.dirname(self.vpath)) else []
+
+    def read(self, path, off=None, size=None):
+        if _norm(path) != _norm(self.vpath):
+            raise InputError('a lone entrance file has no %s' % path)
+        d = self._data
+        return d if off is None else d[off:off + (len(d) - off if size is None else size)]
+
+    def size(self, path):
+        return len(self.read(path))
+
+    def info(self):
+        return {}
+
+    def walk(self):
+        return [(self.vpath, len(self._data))]
+
+
+def is_lone_file(path):
+    if not path or not os.path.isfile(path):
+        return False
+    with open(path, 'rb') as f:
+        return f.read(4) in LONE_MAGIC
+
+
+def _evp_class(ents):
+    """the most common EVP size % 4480 (an object = 21 x 212-byte slots + 28) = the header's size: SvR 2007 / 2008
+    160, SvR 2009 / LoW 176, SvR 2010 240, WWE '12 224-288, WWE '13 / 2K14 128-192 (2K15's 788-byte slots: any)"""
+    c = collections.Counter()
+    for (g, n), b in ents.items():
+        if g.startswith('EVP') and n.isdigit() and int(n) < 10000 and b[:4] == b'0FOP':
+            c[struct.unpack_from('>I', b, 4)[0] % 4480] += 1
+    return c.most_common(1)[0][0] if c else None
+
+
+def _obj_bytes(ents):
+    """the largest EVP bytes per cast object (+0x40 low 16 bits = objects): <= ~4.5 K with 212-byte slots, ~16.6 K
+    with 2K15's 788-byte ones (2K15 pacs hold small EVPs too: the largest decides)"""
+    v = [struct.unpack_from('>I', b, 4)[0] // max(1, struct.unpack_from('>I', b, 0x40)[0] & 0xffff)
+         for (g, n), b in ents.items() if g.startswith('EVP') and b[:4] == b'0FOP' and len(b) >= 0x44]
+    return max(v) if v else 0
+
+
+def _first_evt(ents):
+    return next((b for (g, n), b in sorted(ents.items()) if g.startswith('EVT') and n.isdigit() and int(n) < 9999), b'')
+
+
+def detect_lone(path, data):
+    """-> the game id of a lone entrance file, from its format (InputError: not an entrance file we read).
+    PS2: the DPAC's first group - ENMT JBI, EVNT SvR 2006, EVET named rows SYM, EVET numbered + ENTR with
+    an EVTM row SvR 2004, else HCTP.  X360: xcompressed pacs decoded (svrmod), HSPC 2K17, a scene pac 2K16;
+    EVZ tracks: ~16.6 K EVP bytes per object or an xcompressed EPK8 with EVP2 2K15, xcompressed WWE '13 (EPK8) / 2K14 (EPAC), else WWE '12 (unless
+    its EVP class says a decoded '13 / 2K14); EVT tracks: YMKs or class
+    240 SvR 2010, 160 SvR 2007 (event size table op 127 = 0) / 2008, 176 LoW (op 72 sized) / SvR 2009."""
+    name = os.path.basename(path)
+    if data[:4] == b'DPAC':
+        tag = data[0x800:0x804]
+        if tag == b'ENMT':
+            return 'jbi'
+        if tag == b'EVNT':
+            return 'svr06'
+        if tag == b'EVET':
+            n = struct.unpack_from('<H', data, 0x804)[0]
+            if not n & 0x8000:
+                return 'sym'
+            off = 0x808 + 4 * (n & 0x7FFF)
+            if data[off:off + 4] == b'ENTR':
+                rows = [data[off + 8 + 8 * i:off + 12 + 8 * i] for i in range(struct.unpack_from('<H', data, off + 4)[0])]
+                return 'svr04' if b'EVTM' in rows else 'hctp'
+        raise InputError('%s: a PS2 DPAC, but not an entrance pac (EVTENT.PAC / EVT.PAC / EN3.PAC)' % name)
+    d, dec = data, False
+    if data[:4] == XCOMPRESS:
+        try:
+            d, dec = E13.xdec(data, E13.find_svrmod(SVRMOD)), True
+        except E13.ToolMissing as x:
+            raise InputError(str(x))
+    if d[:4] == b'HSPC':
+        return 'wwe2k17'
+    if d[:4] not in (b'EPAC', b'EPK8'):
+        raise InputError('%s: not an entrance pac (%r)' % (name, d[:4]))
+    if dec and d[:4] == b'EPAC':
+        try:
+            if E13.scene_entries(d):
+                return 'wwe2k16'                   # (one entrance per pac: 2K16, or a 2K17 EPAC one - same format)
+        except Exception:
+            pass
+    try:
+        ents = E13.epk8_entries(d) if dec else pac_entries(d)
+    except Exception:
+        ents = {}
+    if not any(g.startswith('EVP') for g, n in ents):
+        raise InputError('%s: an EPAC / EPK8 without entrance scripts (EVP)' % name)
+    groups = {g[:3] for g, n in ents}
+    cls = _evp_class(ents)
+    if 'EVZ' in groups:
+        if _obj_bytes(ents) > 10000 or dec and d[:4] == b'EPK8' and any(g == 'EVP2' for g, n in ents):
+            return 'wwe2k15'                       # (788-byte slots; its group is EVP2, WWE '13's 'EVP ')
+        if dec or cls is not None and cls < 200:   # (xcompressed, or one decoded by hand)
+            return 'wwe2k14' if d[:4] == b'EPAC' else 'wwe13'
+        return 'wwe12'
+    t = _first_evt(ents)
+    if cls == 240 or t[:4] == b'YMKs':
+        return 'svr10'
+    if cls == 160:
+        return 'svr07' if len(t) > 127 and t[127] == 0 else 'svr08'
+    if cls == 176:
+        return 'low' if len(t) > 72 and t[72] else 'svr09'
+    raise InputError('%s: an entrance pac, but its game was not recognised (EVP class %s): give --game' % (name, cls))
+
+
+def lone_source(path, g=None, entrance=None):
+    """-> (source, game, detected game) for a lone entrance file; g (--game) wins over the detection"""
+    with open(path, 'rb') as f:
+        data = f.read()
+    found = detect_lone(path, data)
+    g = g or found
+    vp = LONE_PATH.get(g)
+    if vp is None:
+        raise InputError('%s entrances can not come from a lone file' % g)
+    if '%05d' in vp:                               # (2K16 / 2K17: the entrance number is the file's name)
+        m = re.match(r'(\d{5})\.pac$', os.path.basename(path), re.I)
+        n = int(m.group(1)) if m else entrance
+        if n is None:
+            raise InputError('%s: name the file <entrance>.pac (00584.pac) or give --entrance' % os.path.basename(path))
+        vp = vp % n
+    return LoneSource(path, vp, data), g, found
 
 
 # ============================================================================ containers
@@ -827,8 +1014,8 @@ def cmd_games(a):
             for k, v in GAMES.items()]
 
 
-def game_of(a):
-    g = opt(a, '--game')
+def game_of(a, lone=None):
+    g = opt(a, '--game') or lone
     if g not in GAMES:
         raise InputError('unknown --game %r (games: %s)' % (g, ', '.join(GAMES)))
     if g not in LISTERS:
@@ -836,9 +1023,42 @@ def game_of(a):
     return g
 
 
-def cmd_list(a):
+def source_of(a):
+    """-> (source, game, lone info or None): --src a disc / folder (--game needed) or one entrance file (--game
+    optional: detected from the format)"""
+    path = opt(a, '--src')
+    if is_lone_file(path):
+        ent = opt(a, '--entrance')
+        src, g, found = lone_source(path, opt(a, '--game'), int(ent) if ent and ent.isdigit() else None)
+        g = game_of(a, g)
+        info = dict(file=os.path.basename(path), detected=found, limits=lone_limits(g))
+        if g != found:
+            info['warning'] = 'the file looks like %s, read as %s (--game)' % (GAMES[found]['name'], GAMES[g]['name'])
+        return src, g, info
     g = game_of(a)
-    src = open_source(opt(a, '--src'))
+    return open_source(path), g, None
+
+
+def cmd_detect(a):
+    """--src <one entrance file> -> {game, name, platform, entrances, limits[]} (what list / convert will use)"""
+    path = opt(a, '--src')
+    if not is_lone_file(path):
+        raise InputError('detect takes one entrance file (EPAC / EPK8 / DPAC / xcompressed pac): %s' % path)
+    src, g, info = source_of(a)
+    try:
+        n = len(LISTERS[g](src, None))
+    except InputError:
+        raise
+    except Exception as x:
+        raise InputError('%s: read as %s, but its entrances are not readable (%s)' % (info['file'], GAMES[g]['name'], x))
+    out = dict(game=g, name=GAMES[g]['name'], platform=GAMES[g]['platform'], entrances=n, **info)
+    if g == 'wwe2k16':
+        out['note'] = 'WWE 2K16 and 2K17 EPAC entrance pacs are the same format (converted the same way)'
+    return out
+
+
+def cmd_list(a):
+    src, g, lone = source_of(a)
     progress(5, 'reading entrances')
     out = LISTERS[g](src, find_game_pac(opt(a, '--game-pac')))
     for r in out:                      # (the Mod Maker contract's item key: what convert --entrance takes)
@@ -964,8 +1184,7 @@ def titantron(src, a, entrance, out, rep):
 
 
 def cmd_convert(a):
-    g = game_of(a)
-    src = open_source(opt(a, '--src'))
+    src, g, lone = source_of(a)
     try:
         entrance, number = int(opt(a, '--entrance')), int(opt(a, '--number'))
     except (TypeError, ValueError):
@@ -980,6 +1199,11 @@ def cmd_convert(a):
         raise InputError('2011 already has entrance %d (%s): pick a free number (free-numbers)' % (number, stock_2011(gp)[number]))
     rep = dict(ok=False, game=g, entrance=entrance, number=number, name=opt(a, '--name', ''), files=[],
                warnings=[], dropped=[], notes=[])
+    if lone:
+        rep['lone'] = lone
+        rep['notes'] += ['lone file %s: %s' % (lone['file'], x) for x in lone['limits']]
+        if 'warning' in lone:
+            rep['warnings'].append(lone['warning'])
     try:
         progress(5, 'reading the source')
         conv = CONVERTERS[g]
@@ -1005,10 +1229,10 @@ def cmd_convert(a):
         os.makedirs(out, exist_ok=True)
         label = '%s entrance %d as 2011 %d' % (GAMES[g]['name'], entrance, number)
         d = EH.write_pack(out, number, files, label)
-        if '--no-pyro' not in a:
+        if '--no-pyro' not in a and not lone:
             pyro(src, g, entrance, number, d, rep)
         rep['files'] = sorted(os.path.relpath(os.path.join(r, f), out) for r, _, fs in os.walk(d) for f in fs)
-        if '--titantron' in a:
+        if '--titantron' in a and not lone:
             titantron(src, a, entrance, out, rep)
         rep['out'] = d                 # (the move pack folder; the Mod Maker opens it on the Moves page)
         rep['opens'] = 'moves'
@@ -1032,7 +1256,8 @@ def main(argv):
         return 2
     global SVRMOD
     SVRMOD = opt(argv, '--svrmod')
-    cmd = {'games': cmd_games, 'list': cmd_list, 'convert': cmd_convert, 'free-numbers': cmd_free}.get(argv[0])
+    cmd = {'games': cmd_games, 'detect': cmd_detect, 'list': cmd_list, 'convert': cmd_convert,
+           'free-numbers': cmd_free}.get(argv[0])
     if not cmd:
         print('unknown command %r' % argv[0], file=sys.stderr)
         return 2
