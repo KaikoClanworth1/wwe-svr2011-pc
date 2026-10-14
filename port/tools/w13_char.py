@@ -209,6 +209,9 @@ def _euler_zyx(R):
     return (0.0, y, math.atan2(-R[0, 1], R[1, 1]))
 
 
+align_x, euler_zyx = _align_x, _euler_zyx   # (svr11_build builds its chains with them)
+
+
 def hair_chains(m13):
     """WWE '13 hair model -> {root name: [node indices, root first]}: kami_bNN, kami_bNN_00, _01 ... (the tie's
     kami_b15 stays folded into the chest / waist)"""

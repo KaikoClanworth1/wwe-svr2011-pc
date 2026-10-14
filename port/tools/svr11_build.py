@@ -18,6 +18,11 @@ named the weights by 2011 bones. model.json:
      "attires": [{
         "name": "<optional; only '<template id><attire digit>2' is accepted (the entry name the game looks up),
                  anything else - a display name - is ignored with a warning>",
+        "hair_chains": [[[x, y, z], ...], ...],   optional: moving hair - per strand its joints, root (on the
+                                  scalp) to tip, 2011 world space, at least 4: built as kami_b00, kami_b00_00 ...
+                                  under atama (one segment length a chain, each bone aimed at the next; at most
+                                  16), weights may name them (the tip's go to the node before), 0x3C stock-like,
+                                  0x3D the template's (docs/HAIR_PHYSICS.md)
         "entrance_gear": {...},   optional: the same attire wearing its entrance gear (a coat, hat, shirt) -
                                   "meshes" / "textures" as below, plus "extra_bones": [{"name", "parent",
                                   "position": [x, y, z]}] (appended; weights may name them) -> entry
@@ -304,10 +309,14 @@ class Builder:
         def worlds(nodes):
             Wn = []
             for j, nd in enumerate(nodes):
-                fr = c.tframe[j]
-                p = fr['parent'] if j else -1
+                if j < len(c.tframe):
+                    fr = c.tframe[j]
+                    p, r = (fr['parent'] if j else -1), fr['r']
+                else:   # (appended: extra bones / hair chains - their own true r and parent)
+                    p = nd['u48'][0]
+                    r = (nd['r'][1], nd['r'][2], struct.unpack('>f', struct.pack('>I', nd['u40']))[0])
                 M = np.eye(4)
-                M[:3, :3] = W.rot(fr['r'])
+                M[:3, :3] = W.rot(r)
                 M[:3, 3] = nd['t']
                 Wn.append(M if p < 0 else Wn[p] @ M)
             return Wn
@@ -486,7 +495,17 @@ class Builder:
                 if not (isinstance(nm, str) and nm.encode('latin-1', 'replace') == name):
                     self.warnings.append('attire %d: "name" %r is not the entry name %s the game looks up - ignored'
                                          % (i + 1, nm, name.decode()))
-            kids, r = self.attire(a, name.decode('latin-1'))
+            if a.get('hair_chains'):   # (moving hair: the chains in this attire's node table, 0x3C / 0x3D written)
+                keep = self.nodes, self.index
+                self.nodes, self.index = self.with_bones(None, a['hair_chains'])
+                try:
+                    kids, r = self.attire(a, name.decode('latin-1'))
+                finally:
+                    self.nodes, self.index = keep
+                kids.update(self.hair_kids())
+                r['hair_chains'] = len(self.chain_roots)
+            else:
+                kids, r = self.attire(a, name.decode('latin-1'))
             entries.append((b'EMD ', name, W.pack_kids(kids)))
             rep.append(r)
             if a.get('entrance_gear'):   # (the same attire wearing its entrance gear: entry "<id><attire>4")
@@ -498,7 +517,7 @@ class Builder:
         W.write_epk8(self.template, entries, out)
         return rep
 
-    def with_bones(self, extra):
+    def with_bones(self, extra, chains=None):
         """the node table plus extra bones [{name, parent, position (world, 2011 space)}] appended (coat tails,
         hat): local translation from the parent's world frame, no rotation -> (nodes, index)"""
         c = self.conv
@@ -524,13 +543,57 @@ class Builder:
             M[:3, 3] = t
             Wn.append(P @ M)
             index[b['name']] = len(nodes) - 1
+        self.chain_roots = []
+        for ci, joints in enumerate((chains or [])[:16]):   # (hair physics chains, docs/HAIR_PHYSICS_PLAN.md B1)
+            P = [np.array(j, float) for j in joints]
+            if len(P) < 4:   # (a chain needs a pivot, a pinned node, one that moves and a tip target)
+                self.warnings.append('hair chain %d: %d joints, at least 4 needed - left out' % (ci, len(P)))
+                continue
+            root = 'kami_b%02d' % len(self.chain_roots)
+            L = float(np.mean([np.linalg.norm(P[k + 1] - P[k]) for k in range(len(P) - 1)]))
+            pi = index.get('atama', 0)
+            Rw = W.align_x(P[1] - P[0])
+            Ra = Wn[pi][:3, :3]
+            prev = None
+            for k in range(len(P)):
+                name = root if k == 0 else '%s_%02d' % (root, k - 1)
+                if k == 0:
+                    t, R = Ra.T @ (P[0] - Wn[pi][:3, 3]), Ra.T @ Rw
+                else:
+                    Rk = W.align_x(P[k + 1] - P[k]) if k + 1 < len(P) else Rw
+                    t, R = np.array([L, 0.0, 0.0]), Rw.T @ Rk
+                    Rw = Rk
+                r = W.euler_zyx(R)
+                par = pi if k == 0 else prev
+                nodes.append({'name': name, 't': tuple(float(x) for x in t), 'r': (0.0, float(r[0]), float(r[1])),
+                              'u40': struct.unpack('>I', struct.pack('>f', float(r[2])))[0], 'parent': 0,
+                              'u48': (par, 0, 0, 0), 'sphere': (0.0, 0.0, 0.0, 0.0)})
+                M = np.eye(4)
+                M[:3, :3] = W.rot(r)
+                M[:3, 3] = t
+                Wn.append(Wn[par] @ M)
+                prev = len(nodes) - 1
+                index[name] = prev
+            index['%s_%02d' % (root, len(P) - 2)] = index['%s_%02d' % (root, len(P) - 3)] if len(P) > 3 else index[root]
+            self.chain_roots.append(root)   # (the tip is only a target: weights naming it go to the node before)
         return nodes, index
+
+    def hair_kids(self):
+        """0x3C (stock-like line per chain) and 0x3D (the template's collision, else ch102's) for the chains built"""
+        if not getattr(self, 'chain_roots', None):
+            return {}
+        txt = '; hair chains (svr11_build): kami_bNN radius visc grav spring damp A lencorr bend movecorr\r\n' + ''.join(
+            ' %s 0.1500 0.1000 0.0340 0.0000 0.0000 0 0.0000 0.0300 0.0000 \r\n' % r for r in self.chain_roots)
+        col = self.conv.t.get(0x3d)
+        if col is None:
+            col = W.Conv(os.path.join(os.path.dirname(self.template), 'ch102.pac')).t[0x3d]
+        return {0x3c: txt.encode('latin-1'), 0x3d: col}
 
     def gear(self, g, entry_name):
         """an entrance gear entry (kind 4): built like an attire on the node table plus its extra bones; no
         blood overlays, no portrait (the stock ones have neither)"""
         keep = self.nodes, self.index, getattr(self, '_faced', False)
-        self.nodes, self.index = self.with_bones(g.get('extra_bones'))
+        self.nodes, self.index = self.with_bones(g.get('extra_bones'), g.get('hair_chains'))
         self._faced = True   # (the face pivots were set from the attire)
         try:
             kids, r = self.attire(g, entry_name)
@@ -538,6 +601,7 @@ class Builder:
             self.nodes, self.index, self._faced = keep
         for k in (0x7530, 0x7531, 0x7532, 0xc8, 0xc9):
             kids.pop(k, None)
+        kids.update(self.hair_kids())
         return kids, r
 
 
