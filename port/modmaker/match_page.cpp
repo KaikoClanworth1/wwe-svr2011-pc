@@ -218,11 +218,8 @@ void Install() {
   std::vector<ZipEntry> files;
   Build(files);
   const fs::path dir = fs::path(g_game) / L"Mods" / L"MatchTypes" / fs::u8path(Id());
-  std::error_code ec;
-  fs::create_directories(dir, ec);
-  fs::remove(dir / L"disabled", ec);  // (installing switches it on)
-  for (const auto& f : files)
-    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) { Status("Could not write into " + PathStr(dir)); return; }
+  std::string why;  // (the folder replaced as a whole: no "disabled" file - installing switches it on)
+  if (!InstallModFiles(dir, files, &why)) { Status("Not installed: " + why); return; }
   Status("Installed: the match type is in the game's menus when it next starts (" + PathStr(dir) + ")." + InstallReport("MatchTypes", dir));
 }
 

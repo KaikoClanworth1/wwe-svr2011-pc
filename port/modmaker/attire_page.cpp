@@ -124,14 +124,11 @@ void Install() {
   std::vector<ZipEntry> files;
   if (!Build(files)) return;
   const fs::path dir = fs::path(g_game) / L"Mods" / L"Attires" / fs::u8path(ModId());
-  std::error_code ec;
-  fs::remove_all(dir, ec);
-  fs::create_directories(dir, ec);
-  for (const auto& f : files)
-    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-      Status("Could not write into " + PathStr(dir) + " (is the game running?)");
-      return;
-    }
+  std::string why;
+  if (!InstallModFiles(dir, files, &why)) {
+    Status("Not installed: " + why);
+    return;
+  }
   Status("Installed into " + PathStr(dir) + ": the attire is on CHANGE ATTIRE from the next game start." + InstallReport("Attires", dir));
 }
 

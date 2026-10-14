@@ -124,14 +124,11 @@ void InstallPack() {
   std::vector<ZipEntry> files;
   if (!BuildPack(files)) return;
   const fs::path dir = fs::path(g_game) / L"Mods" / L"Backgrounds" / fs::u8path(PackId());
-  std::error_code ec;
-  fs::remove_all(dir, ec);
-  fs::create_directories(dir, ec);
-  for (const auto& f : files)
-    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-      Status("Could not write into " + PathStr(dir) + " (is the game running?)");
-      return;
-    }
+  std::string why;
+  if (!InstallModFiles(dir, files, &why)) {
+    Status("Not installed: " + why);
+    return;
+  }
   Status("Installed: the main menu shows these after its own 12 pictures from the next game start (" + PathStr(dir) + ")." + InstallReport("Backgrounds", dir));
 }
 

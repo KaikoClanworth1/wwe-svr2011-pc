@@ -185,13 +185,10 @@ void Install() {
     if (!Build(j, files)) return;
     const fs::path dir = fs::path(g_game) / L"Mods" / L"Moves" / fs::u8path(j.id);
     std::error_code ec;
-    fs::remove_all(dir, ec);
-    for (const auto& f : files) {
-      fs::create_directories((dir / fs::u8path(f.name)).parent_path(), ec);
-      if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-        Status("Could not write into " + PathStr(dir) + " (is the game running?)");
-        return;
-      }
+    std::string why;
+    if (!InstallModFiles(dir, files, &why)) {
+      Status("Not installed: " + why);
+      return;
     }
     Status("Installed: the game merges the moves into its files when it next starts (a few seconds) (" + PathStr(dir) + ")." + InstallReport("Moves", dir));
   });

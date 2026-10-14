@@ -75,14 +75,11 @@ void InstallPack() {
   std::vector<ZipEntry> files;
   if (!BuildPack(files)) return;
   const fs::path dir = fs::path(g_game) / L"Mods" / L"Signs" / fs::u8path(PackId());
-  std::error_code ec;
-  fs::remove_all(dir, ec);
-  fs::create_directories(dir, ec);
-  for (const auto& f : files)
-    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-      Status("Could not write into " + PathStr(dir) + " (is the game running?)");
-      return;
-    }
+  std::string why;
+  if (!InstallModFiles(dir, files, &why)) {
+    Status("Not installed: " + why);
+    return;
+  }
   Status("Installed: the crowd holds these signs in every match from the next game start (" + PathStr(dir) + ")." + InstallReport("Signs", dir));
 }
 
@@ -230,14 +227,11 @@ std::vector<ZipEntry> PackFiles(const std::string& id, const std::string& name, 
 
 bool InstallPack(const std::string& id, const std::vector<ZipEntry>& files) {
   const fs::path dir = fs::path(g_game) / L"Mods" / L"Signs" / fs::u8path(id);
-  std::error_code ec;
-  fs::remove_all(dir, ec);
-  fs::create_directories(dir, ec);
-  for (const auto& f : files)
-    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-      Log("Could not write into " + PathStr(dir) + " (is the game running?)");
-      return false;
-    }
+  std::string why;
+  if (!InstallModFiles(dir, files, &why)) {
+    Log("signs: not installed: " + why);
+    return false;
+  }
   const std::string doctor = InstallReport("Signs", dir);
   if (!doctor.empty()) Log("signs: " + doctor);
   return true;

@@ -1036,14 +1036,11 @@ void Install(bool start) {
     std::vector<ZipEntry> files;
     if (!BuildFiles(j, files)) return;
     const fs::path dir = fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(j.id);
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    for (const auto& f : files)
-      if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-        Status("Could not write into " + PathStr(dir) + " (is the game running?)");
-        return;
-      }
+    std::string why;
+    if (!InstallModFiles(dir, files, &why)) {
+      Status("Not installed: " + why);
+      return;
+    }
     Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ")." + InstallReport("Superstars", dir));
     if (start) StartGame();
   });
@@ -2908,6 +2905,7 @@ void SetModel(const std::wstring& ch_pac) {
 }
 
 void TestEntrance(int n) { g_star.entrance = n; }
+void TestInstall() { Install(false); }
 bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
 bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }
 void TestFull(const std::wstring& png) { g_test_full = png; }

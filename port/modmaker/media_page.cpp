@@ -232,14 +232,11 @@ void Install() {
     std::vector<ZipEntry> files;
     if (!BuildFiles(j, files)) return;
     const fs::path dir = fs::path(g_game) / L"Mods" / L"Media" / fs::u8path(j.id);
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    for (const auto& f : files)
-      if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-        Status("Could not write into " + PathStr(dir) + " (is the game running?)");
-        return;
-      }
+    std::string why;
+    if (!InstallModFiles(dir, files, &why)) {
+      Status("Not installed: " + why);
+      return;
+    }
     Status("Installed: it takes effect the next time the game starts (" + PathStr(dir) + ")." + InstallReport("Media", dir));
   });
 }

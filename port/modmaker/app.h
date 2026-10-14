@@ -154,7 +154,16 @@ bool FixButtons(const Problem& p, bool accent_first = true);
 void RunFix(const FixAction& f);
 int FixesDone();
 // Test aid --run-fix: tries the pending one on this list (logged); true when it ran or reported.
-bool TestFixOn(const std::vector<Problem>& problems);  // (how many fixes ran: pages that cache problems check again when it changes)
+bool TestFixOn(const std::vector<Problem>& problems);
+
+// ---- installing a mod's files (every page's Install)
+// The files into <game>\Mods\<kind>\<id> (dir): written into a staging folder beside it (sub folders made), then
+// swapped in for the old one. False with why: the real Windows error in plain words - access denied (read-only,
+// Windows' Controlled folder access, an antivirus, OneDrive), a file in use (by which program; the Mod Maker's own
+// preview is closed and it tries once more), a path too long, a full drive. May run on a worker thread.
+bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, std::string* why);
+// The programs that have a file under `dir` open (Windows' Restart Manager), "" none / unknown.
+std::string WhoHolds(const fs::path& dir);  // (how many fixes ran: pages that cache problems check again when it changes)
 // A Save / Install button row: disabled (with the errors as a tooltip) while
 // the page has errors or a job runs. Returns which was pressed (0 none,
 // 1 save as mod, 2 install, 3 install and start the game), after confirming
@@ -402,7 +411,7 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
+                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
                       void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step);
                       // entrance gear from another superstar (tools/svr11_build.py --gear-from / --onto): the game superstars
                       // with gear, a popup to pick one, and the transplant onto <target pac>'s attire (done(new pac) on success)

@@ -319,13 +319,11 @@ void SaveModTo(const std::wstring& f, std::function<void(bool)> done) {
 bool InstallFiles(const BuildJob& job, const std::vector<ZipEntry>& files) {
   const fs::path dir = fs::path(g_game) / L"Mods" / (job.backstage ? L"Backstage" : L"Arenas") / fs::u8path(job.id);
   std::error_code ec;
-  fs::remove_all(dir, ec);  // (an older install's files, e.g. VS pictures no longer replaced)
-  fs::create_directories(dir, ec);
-  for (const auto& f : files)
-    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
-      Status("Could not write into " + PathStr(dir) + " (is the game running?)");
-      return false;
-    }
+  std::string why;  // (the old install replaced as a whole: e.g. VS pictures no longer replaced go)
+  if (!InstallModFiles(dir, files, &why)) {
+    Status("Not installed: " + why);
+    return false;
+  }
   if (job.backstage)
     Status(std::string("Installed: backstage brawls in the ") + kAreas[job.area].name + " play it (" + PathStr(dir) + ")." + InstallReport("Backstage", dir));
   else

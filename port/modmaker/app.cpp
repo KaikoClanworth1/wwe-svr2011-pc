@@ -21,6 +21,9 @@
 
 #include "char_preview.h"
 #include "disc_list.h"
+#include "audio_out.h"
+#include <future>
+#include <restartmanager.h>
 #include "simple_port.h"
 #include "model_materials.h"
 #include "model_materials.h"
@@ -386,7 +389,143 @@ int ErrorCount(const std::vector<Problem>& p) {
   return n;
 }
 
+// ---- installing a mod's files
+
+std::string WhoHolds(const fs::path& dir) {
+  std::vector<std::wstring> files;
+  std::error_code ec;
+  for (const auto& e : fs::recursive_directory_iterator(dir, ec))
+    if (e.is_regular_file(ec) && files.size() < 256) files.push_back(e.path().wstring());
+  if (files.empty()) return "";
+  DWORD session = 0;
+  WCHAR key[CCH_RM_SESSION_KEY + 1] = {};
+  if (RmStartSession(&session, 0, key) != ERROR_SUCCESS) return "";
+  std::vector<LPCWSTR> names;
+  for (const auto& f : files) names.push_back(f.c_str());
+  std::string who;
+  if (RmRegisterResources(session, UINT(names.size()), names.data(), 0, nullptr, 0, nullptr) == ERROR_SUCCESS) {
+    UINT need = 0, have = 16;
+    DWORD reason = 0;
+    std::vector<RM_PROCESS_INFO> info(have);
+    if (RmGetList(session, &need, &have, info.data(), &reason) == ERROR_SUCCESS)
+      for (UINT i = 0; i < have; ++i) {
+        const std::string n = Utf8(info[i].strAppName);
+        if (who.find(n) == std::string::npos) who += (who.empty() ? "" : ", ") + n;
+      }
+  }
+  RmEndSession(session);
+  return who;
+}
+
+namespace {
+// A Windows error on `path`, in plain words.
+std::string Explain(DWORD err, const fs::path& path, const fs::path& dir) {
+  const std::string p = PathStr(path);
+  const bool onedrive = Lower(PathStr(dir)).find("onedrive") != std::string::npos;
+  switch (err) {
+    case ERROR_ACCESS_DENIED:
+      return "Windows refused to let the Mod Maker write into " + PathStr(dir) + " (access denied). The folder may be read-only, "
+             "blocked by Windows Security's \"Controlled folder access\" or an antivirus" + (onedrive ? ", or held by OneDrive (the game is in a OneDrive folder)" : "") +
+             ". Allow the Mod Maker there, or move the game to a plain folder such as C:\\Games\\SvR2011.";
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION: {
+      const std::string who = WhoHolds(dir);
+      return FileName(path.wstring()) + " is in use" + (who.empty() ? " by another program" : " by " + who) + ": close " +
+             (who.empty() ? "it" : "that") + " and install again.";
+    }
+    case ERROR_FILENAME_EXCED_RANGE:
+    case ERROR_PATH_NOT_FOUND:
+      return p.size() > 240 ? "The path is too long for Windows (" + std::to_string(p.size()) + " characters): move the game to a shorter folder, such as C:\\Games\\SvR2011."
+                            : "Windows couldn't make the folder " + PathStr(path.parent_path()) + ".";
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+      return "The drive is full: free some space and install again.";
+    case ERROR_WRITE_PROTECT:
+      return "The drive is write-protected.";
+    default: {
+      wchar_t* msg = nullptr;
+      FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, err, 0,
+                     reinterpret_cast<LPWSTR>(&msg), 0, nullptr);
+      std::string m = msg ? Utf8(msg) : "error " + std::to_string(err);
+      if (msg) LocalFree(msg);
+      while (!m.empty() && (m.back() == '\n' || m.back() == '\r' || m.back() == '.')) m.pop_back();
+      return "Windows couldn't write " + p + ": " + m + ".";
+    }
+  }
+}
+
+bool WriteOne(const fs::path& path, const Bytes& data, DWORD& err) {
+  std::error_code ec;
+  fs::create_directories(path.parent_path(), ec);
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return err = GetLastError(), false;
+  DWORD done = 0;
+  const BOOL ok = data.empty() || ::WriteFile(h, data.data(), DWORD(data.size()), &done, nullptr);
+  err = ok ? 0 : GetLastError();
+  CloseHandle(h);
+  return ok && done == data.size();
+}
+
+// The Mod Maker's own open files (a song playing, the Full preview's video), let go on the UI thread.
+void ReleaseOwnFiles() {
+  auto done = std::make_shared<std::promise<void>>();
+  std::future<void> f = done->get_future();
+  OnUiThread([done] {
+    audio_out::Unload();
+    if (full_preview::IsOpen()) full_preview::Close();
+    done->set_value();
+  });
+  f.wait_for(std::chrono::seconds(3));
+}
+}  // namespace
+
+bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, std::string* why) {
+  std::error_code ec;
+  const fs::path stage = dir.parent_path() / (L"." + dir.filename().wstring() + L".new");
+  const fs::path old = dir.parent_path() / (L"." + dir.filename().wstring() + L".old");
+  fs::remove_all(stage, ec);
+  fs::remove_all(old, ec);
+  for (const auto& f : files) {
+    if (f.name.empty() || f.name.back() == '/') continue;
+    DWORD err = 0;
+    if (!WriteOne(stage / fs::u8path(f.name), f.data, err)) {
+      if (why) *why = Explain(err, stage / fs::u8path(f.name), dir);
+      Log("install: writing " + f.name + " failed (Windows error " + std::to_string(err) + ")");
+      fs::remove_all(stage, ec);
+      return false;
+    }
+  }
+  // the old one out of the way, the new one in (a folder held open fails here: the Mod Maker's own let go, once more)
+  for (int attempt = 0; fs::exists(dir, ec); ++attempt) {
+    if (MoveFileExW(dir.c_str(), old.c_str(), 0)) break;
+    const DWORD err = GetLastError();
+    const std::string who = WhoHolds(dir);
+    Log("install: moving the old folder failed (Windows error " + std::to_string(err) + ")" + (who.empty() ? "" : ", held by " + who));
+    const bool mine = who.find("Mod Maker") != std::string::npos || who.find("SvR2011 Mod Maker") != std::string::npos;
+    if (attempt == 0 && (mine || who.empty())) {
+      ReleaseOwnFiles();
+      Sleep(300);
+      continue;
+    }
+    if (why)
+      *why = !who.empty() ? "The old copy of the mod (" + PathStr(dir) + ") is in use by " + who + ": close " + (mine ? "its preview" : "that program") + " and install again."
+                          : Explain(err, dir, dir);
+    fs::remove_all(stage, ec);
+    return false;
+  }
+  if (!MoveFileExW(stage.c_str(), dir.c_str(), 0)) {
+    const DWORD err = GetLastError();
+    MoveFileExW(old.c_str(), dir.c_str(), 0);  // (the old one back)
+    if (why) *why = Explain(err, dir, dir);
+    fs::remove_all(stage, ec);
+    return false;
+  }
+  fs::remove_all(old, ec);
+  return true;
+}
+
 int g_fixes_done = 0;
+int g_test_install_frames = -1;  // --install-star: the Superstar page's Install, once the page settled (test aid)
 std::string g_test_fix;  // --run-fix "<text>[|<n>]": fix n (0: the recommended) of the page's first problem with <text>
 int g_test_fix_frames = 0;
 
@@ -1818,6 +1957,7 @@ std::wstring ProjectIn::Extract(const std::string& name) const {
   std::error_code ec;
   fs::create_directories(cache, ec);
   const fs::path out = cache / fs::u8path(name);
+  fs::create_directories(out.parent_path(), ec);  // (moves/motions/...: sub folders - without them a mod's pack was lost on open)
   if (!WriteFile(PathStr(out), e->data)) return {};
   return out.wstring();
 }
@@ -2240,6 +2380,8 @@ void Draw() {
   g_problems.clear();
   if (PageHooks* h = Hooks(g_project_page); h && h->problems) h->problems(g_problems);
   if (!g_test_fix.empty() && g_page != PageId::kInstalled && ++g_test_fix_frames > 90 && !Busy()) TestFixOn(g_problems);
+  if (g_test_install_frames >= 0 && g_test_fix.empty() && ++g_test_install_frames > 120 && !Busy())
+    g_test_install_frames = -1, Log("test: install"), star_page::TestInstall();
 
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(vp->Pos);
@@ -2731,7 +2873,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
-    else if (!wcscmp(argv[i], L"--run-fix") && more) g_test_fix = Utf8(argv[++i]);  // "<text>[|<n>]" (see g_test_fix)
+    else if (!wcscmp(argv[i], L"--run-fix") && more) g_test_fix = Utf8(argv[++i]);
+    else if (!wcscmp(argv[i], L"--install-star")) g_test_install_frames = 0;  // "<text>[|<n>]" (see g_test_fix)
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
     else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views
