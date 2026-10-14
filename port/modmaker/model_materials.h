@@ -35,10 +35,20 @@ struct MeshMat {
   float spec = 0, spec_pow = 0, tint[3] = {1, 1, 1};
   uint32_t flags = 0;
   bool has_spec = false, has_tint = false, normal_slot = false;  // (the shader has these parameters)
+  bool skin_shine = false;  // the game's skin shader: the shine follows the normal map's alpha (SkinShine)
 };
+
+// Which of the game's pixel shaders draws a mesh decides where its shine mask is (read from the game's shaders,
+// matched to draws by their g_fSpecularLev): the skin shaders (sweat, wrinkles, muscles) take it from the normal
+// map's alpha - the colour's alpha is then the sweat's shine - and every other one from the colour's alpha. The
+// skin shaders are used for a yBumpMapSS mesh that is culled (flag 0x2), has a tiling map and a non-zero
+// g_fSweatSPA; the same mesh made double-sided gets the colour-alpha shader.
+bool SkinShine(const std::string& shader, uint32_t flags, bool has_tiling, float sweat_spa);
 
 // The meshes of attire `attire` (1-4; gear: its entrance-gear model) of a character pac.
 bool ReadMaterials(const svrfmt::Bytes& pac, int attire, bool gear, std::vector<MeshMat>& out, std::string* error = nullptr);
+// Every attire's meshes as text: model, mesh, shader, flags +0x88, each parameter (name, type, value) - a test aid.
+std::string DumpMaterials(const svrfmt::Bytes& pac);
 
 // Edits keyed by (model child id, mesh) written into attire `attire` (gear: its gear model): the parameters,
 // the flags, a normal map picture added to the attire's texture bundle. Unchanged when nothing applies.

@@ -152,6 +152,7 @@ struct PMesh {
   float tint[3] = {1, 1, 1};
   uint32_t mflags = 0x6;
   std::string ntex;  // the normal map (lower case; "" none)
+  bool skin_params = false;  // yBumpMapSS with a tiling map and g_fSweatSPA: culled, the game's skin shader (mm::SkinShine)
   std::vector<V3> tan;  // tangents (from the UVs) for the normal map
   uint32_t model_id = 0;  // its model's PACH child id and its index there (the material panel's key)
   int mesh_index = 0;
@@ -304,7 +305,14 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
       pm.tex = slot >= 0 && slot < int(m.textures.size()) ? Lower(m.textures[slot]) : "color";
       // the material: the mesh's own parameters and flags (the game's), the cut-out from its flags
       if (s.raw.size() >= 0x8C) pm.mflags = Be32(&s.raw[0x88]);
+      bool tiling = false;
+      float sweat_spa = 0;
       for (const auto& p : s.params) {
+        if (p.name == "texTilingMap" && p.type == 0x0f && p.value.size() >= 4) tiling = int32_t(Be32(p.value.data())) >= 0;
+        if (p.name == "g_fSweatSPA" && p.type == 0x0a && p.value.size() >= 4) {
+          const uint32_t u = Be32(p.value.data());
+          std::memcpy(&sweat_spa, &u, 4);
+        }
         if (p.name == "g_fSpecularLev" && p.type == 0x0a && p.value.size() >= 4) {
           const uint32_t u = Be32(p.value.data());
           std::memcpy(&pm.spec, &u, 4);
@@ -320,6 +328,7 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
           if (slot >= 0 && slot < int(m.textures.size())) pm.ntex = Lower(m.textures[size_t(slot)]);
         }
       }
+      pm.skin_params = mm::SkinShine(s.shader, 0x2, tiling, sweat_spa);  // (culled or not: the flags as drawn)
       pm.cutout = blood || (s.raw.size() >= 0x8C ? (pm.mflags & 0x100) != 0 : name_cutout);
       pm.blood = blood;
       const size_t vc = s.verts.size();
@@ -1094,7 +1103,7 @@ struct Cb {
   float fill[4];   // toward the fill light (lower right)
   float fwd[4];    // the camera's forward
   float shadow[2][4];  // the floor's contact shadows: x, z, radius, strength (0: none)
-  float mat[4];        // x shine (g_fSpecularLev), y its power, z a normal map, w the shine from the colour's alpha
+  float mat[4];        // x shine (g_fSpecularLev), y its power, z a normal map, w the shine's mask (UseMaterial)
   float tint[4];       // the colour multiplier (g_f4MatDifCol)
 };
 
@@ -1105,6 +1114,7 @@ struct VO { float4 p : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD0; fl
 VO vs(VI i) { VO o; o.p = mul(float4(i.p, 1), viewproj); o.n = i.n; o.uv = i.uv; o.w = i.p; o.t = i.t; return o; }
 Texture2D t : register(t0);
 Texture2D tn : register(t1);
+Texture2D tm : register(t2);
 SamplerState s : register(s0);
 float4 ps(VO i) : SV_Target {
   float4 tx = t.Sample(s, i.uv);
@@ -1127,7 +1137,7 @@ float4 ps(VO i) : SV_Target {
   float amb = lerp(0.30, 0.52, 0.5 + 0.5 * n.y);
   float rim = pow(1 - saturate(dot(n, -fwd.xyz)), 3) * 0.45;
   float3 h = normalize(key.xyz - fwd.xyz);  // the key light's highlight
-  float mask = mat.w > 1.5 ? dot(tx.rgb, float3(0.3, 0.59, 0.11)) : mat.w > 0.5 ? tx.a : 1;
+  float mask = mat.w > 2.5 ? tm.Sample(s, i.uv).a : mat.w > 1.5 ? dot(tx.rgb, float3(0.3, 0.59, 0.11)) : mat.w > 0.5 ? tx.a : 1;
   float shine = saturate(mat.x / 2) * mask * pow(saturate(dot(n, h)), clamp(mat.y, 1, 300)) * 0.9;
   return float4(tx.rgb * tint.rgb * (amb + 0.80 * k + 0.28 * f + rim) + shine * k, 1);
 }
@@ -1159,9 +1169,11 @@ struct GpuMesh {
   ID3D11Buffer* vb = nullptr;
   ID3D11Buffer* ib = nullptr;
   ID3D11ShaderResourceView* ntex = nullptr;  // the normal map (null: none)
+  ID3D11ShaderResourceView* mask = nullptr;  // a skin's shine mask: this map's alpha (the pac's normal map, kept when it's replaced)
   float spec = 0.5f, spec_pow = 50, tint[3] = {1, 1, 1};
   bool culled = true;
-  int spec_alpha = 1;  // the shine's mask: 0 none, 1 the colour's alpha, 2 its brightness (the panel's preview)
+  bool skin_params = false;  // (PMesh) - culled too: the game's skin shader, shine from the normal map's alpha
+  int spec_alpha = -1;  // the shine's mask: -1 the game's (skin: the normal map's alpha, else the colour's), 0 none, 1 the colour's alpha, 2 its brightness
   uint32_t model_id = 0;
   int mesh_index = 0;
   size_t pm = 0;  // (its index in the character's meshes)
@@ -1317,8 +1329,9 @@ void Upload(Slot& sl, std::shared_ptr<Character> ch) {
         const auto src = g_char->textures.find(pm.ntex);
         nit = g_textures.emplace(pm.ntex, src == g_char->textures.end() ? nullptr : MakeTexture(src->second)).first;
       }
-      g.ntex = nit->second;
+      g.ntex = g.mask = nit->second;
     }
+    g.skin_params = pm.skin_params;
     if (pm.blood && (pm.tex == "bloodface" || pm.tex == "bloodbody")) {  // the game swaps in its shared ones (misc.pac)
       LoadBloodTextures();
       g.blood_kind = pm.tex == "bloodface" ? 1 : 2;
@@ -1849,11 +1862,15 @@ int g_highlight_frame = -10;  // (it lasts while the panel keeps setting it: a p
 std::map<std::wstring, ID3D11ShaderResourceView*> g_preview_normals;  // picture file -> texture
 ID3D11ShaderResourceView* g_flat_normal = nullptr;
 
+std::map<std::wstring, bool> g_preview_normal_alpha;  // (the picture has an alpha of its own: a skin's new shine mask)
 ID3D11ShaderResourceView* PreviewNormal(const std::wstring& file) {
   auto it = g_preview_normals.find(file);
   if (it != g_preview_normals.end()) return it->second;
   Image img;
   ID3D11ShaderResourceView* v = mm::LoadPicture(file, img) ? MakeTexture(DdsEncode(img, DxtFormat::kArgb, true)) : nullptr;
+  bool own = false;
+  for (size_t q = 3; q < img.rgba.size() && !own; q += 4) own = img.rgba[q] != 255;
+  g_preview_normal_alpha[file] = own;
   return g_preview_normals[file] = v;
 }
 
@@ -1873,7 +1890,10 @@ GpuMesh Previewed(const GpuMesh& g) {
   if (e.has_tint) std::memcpy(o.tint, e.tint, sizeof o.tint);
   if (e.cutout >= 0) o.cutout = e.cutout != 0;
   if (e.two_sided >= 0) o.culled = e.two_sided == 0;
-  if (e.normal == 1) o.ntex = PreviewNormal(e.normal_file);
+  if (e.normal == 1) {  // (as PatchMaterials: a skin keeps its old shine mask unless the picture has an alpha)
+    o.ntex = PreviewNormal(e.normal_file);
+    if (g_preview_normal_alpha[e.normal_file]) o.mask = o.ntex;
+  }
   if (e.normal == 2) {
     if (!g_flat_normal) {
       Image img;
@@ -1883,20 +1903,24 @@ GpuMesh Previewed(const GpuMesh& g) {
     }
     o.ntex = g_flat_normal;
   }
-  if (e.spec_alpha) o.spec_alpha = e.spec_alpha == 2 ? 0 : e.spec_alpha == 3 ? 2 : 1;
+  if (e.spec_alpha) o.spec_alpha = e.spec_alpha == 2 ? 0 : e.spec_alpha == 3 ? 2 : -1;
   return o;
 }
 
 // A mesh's material for the shader (null: neutral - the floor, the ring): constants, normal map at t1, culling.
 void UseMaterial(Cb* c, const GpuMesh* g) {
   c->mat[0] = g ? g->spec : 0, c->mat[1] = g ? g->spec_pow : 1, c->mat[2] = g && g->ntex ? 1.0f : 0.0f;
-  c->mat[3] = g && !g->cutout ? float(g->spec_alpha) : 0.0f;  // (a cut-out's alpha is its see-through, not its shine)
+  // the shine's mask, as the game's pixel shaders take it: 3 the mask map's alpha (the skin shaders: a culled
+  // yBumpMapSS with tiling and sweat), 1 the colour's alpha (every other one - a cut-out's too), 2 its brightness, 0 none
+  float mode = 0;
+  if (g) mode = g->spec_alpha >= 0 ? float(g->spec_alpha) : g->skin_params && g->culled && g->mask ? 3.0f : 1.0f;
+  c->mat[3] = mode;
   for (int k = 0; k < 3; ++k) c->tint[k] = g ? g->tint[k] : 1;
   c->tint[3] = 1;
 }
 void BindMaterial(const GpuMesh* g) {
-  ID3D11ShaderResourceView* n = g && g->ntex ? g->ntex : nullptr;
-  g_ctx->PSSetShaderResources(1, 1, &n);
+  ID3D11ShaderResourceView* n[2] = {g && g->ntex ? g->ntex : nullptr, g && g->mask ? g->mask : nullptr};
+  g_ctx->PSSetShaderResources(1, 2, n);
   g_ctx->RSSetState(g && g->culled && g_raster_cull ? g_raster_cull : g_raster);
 }
 
