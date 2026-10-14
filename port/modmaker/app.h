@@ -341,7 +341,7 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void TestInGame(); void SetTestSave(const std::wstring& f, int lib); void StartNew(int tile);
                        void StartBackstage(int area);
                        // a converted arena.pac as the arena project (host tile, name), into the 3D editor
-                       void SetArenaFromPac(const Bytes& pac, int host, const std::string& name);
+                       void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source = "");
                        // a converted bg78 as a backstage project: area, name, and its own-area gimmick pac (or "")
                        void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
                                                 const std::wstring& gimmick_pac, const std::string& gimmick); }
@@ -429,5 +429,10 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
 // The footer under every superstar 3D view: Reset view, Blood (off by default) and its Damage level (the game's
 // light / medium / heavy blood), the mouse hint. One state for all views.
 void ViewFooter();
+// WWE '12 - 2K17 "bgNN" pacs from 60 up aren't arenas (docs/ARENA_PORT_RESULTS.md, special stages): backstage rooms
+// (bg67, bg78 - which crashes on an arena slot) and studio / photo stages (a white mat over a black void). The
+// number of a "...bgNN..." file / source name (-1: none), and whether it is one of those.
+int ArenaPacNumber(const std::string& name);
+inline bool SpecialStage(const std::string& name) { return ArenaPacNumber(name) >= 60; }
 
 }  // namespace mm

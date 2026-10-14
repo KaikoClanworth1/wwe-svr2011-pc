@@ -514,16 +514,30 @@ void NativeArenas(const std::string& game, const std::string& game_name) {
   ImGui::SetNextItemWidth(260 * g_scale);
   const std::string cur = g_native_pick >= 0 ? g_native[size_t(g_native_pick)].name : "pick an arena pac";
   if (ImGui::BeginCombo("3. The arena", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
-    for (int i = 0; i < int(g_native.size()); ++i) {
-      char mb[32];
-      std::snprintf(mb, sizeof mb, "  %.1f MB", g_native[size_t(i)].size / 1048576.0);
-      if (ImGui::Selectable((g_native[size_t(i)].name + mb).c_str(), g_native_pick == i)) g_native_pick = i;
+    for (int pass = 0; pass < 2; ++pass) {  // the arenas, then the special stages (not arenas: can't be picked)
+      if (pass == 1) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Backstage / studio (not arenas)");
+      }
+      for (int i = 0; i < int(g_native.size()); ++i) {
+        if (SpecialStage(g_native[size_t(i)].name) != (pass == 1)) continue;
+        char mb[32];
+        std::snprintf(mb, sizeof mb, "  %.1f MB", g_native[size_t(i)].size / 1048576.0);
+        if (pass == 1) {
+          ImGui::TextDisabled("  %s%s", g_native[size_t(i)].name.c_str(), mb);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A backstage room or a studio / photo stage, not an arena: on an arena slot it shows a white mat over a black "
+                              "void, or crashes (bg78).");
+        } else if (ImGui::Selectable((g_native[size_t(i)].name + mb).c_str(), g_native_pick == i)) {
+          g_native_pick = i;
+        }
+      }
     }
     ImGui::EndCombo();
   }
   if (!g_native_test.empty()) {  // (test: pick by name)
     for (int i = 0; i < int(g_native.size()); ++i)
-      if (Lower(g_native[size_t(i)].name) == Lower(g_native_test)) g_native_pick = i;
+      if (Lower(g_native[size_t(i)].name) == Lower(g_native_test) && !SpecialStage(g_native[size_t(i)].name)) g_native_pick = i;
     if (g_native_pick < 0) Log("port test: no arena pac " + g_native_test), g_native_test.clear();
   }
   ImGui::BeginDisabled(g_native_pick < 0 || Busy());

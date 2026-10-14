@@ -447,6 +447,13 @@ void CheckArena(const fs::path& dir, std::vector<Problem>& p) {
     if (e.is_regular_file(ec) && Ext(PathStr(e.path())) == ".dds")
       if (const std::string is = DdsIssue(e.path(), 0, 0, {DxtFormat::kDxt5}, "DXT5"); !is.empty())
         p.push_back(Warning("vs\\" + PathStr(e.path().filename()) + " " + is + ": the VS screen skips it.", "Make it DXT5 (Arena page)."));
+  if (const std::string src = Trim(m.Get("source")); SpecialStage(src)) {  // (converted from a WWE '12+ special stage)
+    if (ArenaPacNumber(src) == 78)
+      p.push_back(Error("It was made from " + src + ", a backstage room, not an arena: it crashes on an arena slot.", "Remove it; port an arena (bg00 - bg59) instead."));
+    else
+      p.push_back(Warning("It was made from " + src + ", a backstage room or studio stage, not an arena: in a match it shows a white mat over "
+                          "a black void.", "Port an arena (bg00 - bg59) instead."));
+  }
   if (const std::string base = Trim(m.Get("base")); !base.empty() &&
       std::find_if(std::begin(kArenaBases), std::end(kArenaBases), [&](const char* x) { return base == x; }) == std::end(kArenaBases))
     p.push_back(Problem{false, "base=" + base + " isn't one of the 20 arena tiles: the arena goes on an extra page.", "Pick the arena it plays in place of (Arena page)."});

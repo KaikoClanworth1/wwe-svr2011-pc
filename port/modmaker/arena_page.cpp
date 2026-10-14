@@ -65,6 +65,7 @@ struct Project {
   bool has_box = false;
   float box[4] = {0, 0, 30, 30};    // box=x,z,half x,half z (game units, 10 cm)
   float camera = 0, camera_height = 0;  // 0 = the game's
+  std::string source;               // source=<game> bgNN: the other game's arena it was converted from
 };
 Project g_proj;
 int g_sel = 0;    // the tile under the cursor on the Start tab
@@ -261,6 +262,7 @@ bool PrepareBuild(BuildJob& job) {
   job.id = ModId();
   job.manifest = "type=arena\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
                  "\nversion=" + g_proj.version + "\n" + MadeWith() + "base=" + g_arenas[g_proj.arena].banner + "\n" +
+                 (g_proj.source.empty() ? std::string() : "source=" + g_proj.source + "\n") +
                  editor::ManifestLines();
   return true;
 }
@@ -735,13 +737,14 @@ void StartBackstage(int area) {
   LoadInBackground(PathStr(fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac"), nullptr, true, false);
 }
 
-void SetArenaFromPac(const Bytes& pac, int host, const std::string& name) {
+void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source) {
   LeaveBackstage();
   g_proj = Project();
   editor::Ring() = RingSpec();
   editor::Light() = editor::Lighting();
   editor::SetArena(nullptr, "");
   std::snprintf(g_proj.name, sizeof g_proj.name, "%s", name.c_str());
+  g_proj.source = source;
   g_sel = host;
   g_proj.arena = host;
   auto a = std::make_unique<Arena>();
@@ -805,6 +808,7 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
     if (host < 0) { Status("The mod does not say which arena it is built on (base=)."); return false; }
   }
   std::snprintf(g_proj.name, sizeof g_proj.name, "%s", in.Get("name").c_str());
+  g_proj.source = in.Get("source");
   std::snprintf(g_proj.author, sizeof g_proj.author, "%s", in.Get("author").c_str());
   std::snprintf(g_proj.version, sizeof g_proj.version, "%s", in.Get("version").c_str());
   if (!g_proj.version[0]) std::snprintf(g_proj.version, sizeof g_proj.version, "1.0");
@@ -859,6 +863,7 @@ void WriteProject(ProjectOut& out) {
   if (g_proj.backstage >= 0) out.Key("area", g_proj.backstage);
   else if (g_proj.arena >= 0) out.Key("base", g_arenas[g_proj.arena].banner), out.Key("tile", g_proj.arena);
   out.Key("fbx", g_proj.fbx);
+  out.Key("source", g_proj.source);
   out.text += editor::ManifestLines();
   for (int k = 0; k < 3; ++k) out.Key("ring.tex" + std::to_string(k), editor::Ring().ropes[k].texture);
   if (g_proj.backstage >= 0 && g_proj.own_area) {
