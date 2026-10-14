@@ -70,6 +70,9 @@ KINDS = {
     74: ([], []),                    # CGmMoveCar path points
     73: ([1, 2], []),                # CGmMoveCar: the two traffic cars (hctp_room drives them)
     96: ([], []),                    # GmFountainThrow: whip into the fountain (centre in params 1, 2)
+    12: ([0], []),                   # GmCarMany (room 33): a taxi (hctp_room drives it to its anchor)
+    13: ([], []),                    # its anchor (the lane's end)
+    20: ([0, 9], []),                # GmHeli: body, propeller (its flight path is its own motion, act 10)
 }
 
 
