@@ -1,4 +1,4 @@
-﻿// The 3D character view (char_preview.h): the superstar page's preview and
+// The 3D character view (char_preview.h): the superstar page's preview and
 // the Animations page.
 //
 // Model: ch.pac is EPK8; its EMD group has one PACH per attire and kind
@@ -35,6 +35,7 @@ namespace mm { void Log(const std::string& line); }  // (app.h)
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -243,6 +244,34 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
     b.parent = n.parent >= 0 && n.parent < int(models[0].nodes.size()) ? n.parent : -1;
     by_name.emplace(b.name, int(ch.bones.size()));
     ch.bones.push_back(b);
+  }
+  // The other models' own bones (the hair's kami_* chains: PACH child 10000 "HAIR" has its own node table, each
+  // strand root under atama, each segment under the one before - parent at +48) join the skeleton after the
+  // body's, so they follow the head instead of falling back to root (hair left at the hips, stretched). A parent
+  // the body has is found by name; one it lacks is added first. Rigid for now: the game's hair physics moves them.
+  for (size_t mi = 1; mi < models.size(); ++mi) {
+    const Model& m = models[mi];
+    std::function<int(int, int)> add = [&](int local, int depth) -> int {
+      if (local < 0 || local >= int(m.nodes.size()) || depth > 64) return -1;
+      const auto& n = m.nodes[size_t(local)];
+      if (auto it = by_name.find(n.name); it != by_name.end()) return it->second;
+      Bone b;
+      b.name = n.name;
+      std::memcpy(b.t, n.t, 12);
+      std::memcpy(b.r, n.r, 12);
+      b.parent = n.parent != local ? add(n.parent, depth + 1) : -1;  // (before it: parents precede children)
+      by_name.emplace(b.name, int(ch.bones.size()));
+      ch.bones.push_back(b);
+      return int(ch.bones.size()) - 1;
+    };
+    const size_t before = ch.bones.size();
+    for (int i = 0; i < int(m.nodes.size()); ++i) add(i, 0);
+    if (ch.bones.size() > before) {  // (the log: how many, and the first one's way up to the body)
+      std::string chain;
+      for (int b = int(before), hops = 0; b >= 0 && hops < 12; b = ch.bones[size_t(b)].parent, ++hops)
+        chain += (chain.empty() ? "" : " < ") + ch.bones[size_t(b)].name;
+      mm::Log("model: " + m.name + " adds " + std::to_string(ch.bones.size() - before) + " bones (" + chain + ")");
+    }
   }
   for (size_t mi = 0; mi < models.size(); ++mi) {
     const Model& m = models[mi];
