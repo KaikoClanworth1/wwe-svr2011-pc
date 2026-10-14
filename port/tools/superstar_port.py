@@ -94,6 +94,19 @@ class BadInput(Exception):
     pass
 
 
+def missing(rel):
+    return 'the game files have no %s (an incomplete extract? use the whole disc folder or the ISO)' % rel
+
+
+def rel_to(path, src):
+    """a missing file's path in the game files (pac/ch/chEtc.pac), not the whole path"""
+    try:
+        r = os.path.relpath(os.path.abspath(path), os.path.abspath(src)) if src else path
+    except ValueError:
+        return path
+    return path if r.startswith('..') else r.replace('\\', '/')
+
+
 def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
@@ -143,6 +156,13 @@ class Src:
                     off += n
             os.replace(tmp, dst)
         return dst
+
+    def need(self, rel):
+        """get(rel), or a plain BadInput naming the missing file (an incomplete extract)"""
+        p = self.get(rel)
+        if p is None:
+            raise BadInput(missing(rel))
+        return p
 
     def get_dir(self, rel, pred=lambda n: True):
         for n in self.d.listdir(rel):
@@ -242,7 +262,7 @@ class Game09:
             for n in self.src.d.listdir('pac/evt'):
                 if not n.lower().startswith('nyujyo'):
                     continue
-                h, g, t = svrfmt.epac_read(open(self.src.get('pac/evt/' + n), 'rb').read())
+                h, g, t = svrfmt.epac_read(open(self.src.need('pac/evt/' + n), 'rb').read())
                 for ty, es in g:
                     if ty[:3] != b'EVP':
                         continue
@@ -289,7 +309,7 @@ class Game08(Game09):
     def __init__(self, src):
         S = svr10()
         self.src = src
-        misc = src.get('pac/misc.pac')
+        misc = src.need('pac/misc.pac')
         h, g, t = svrfmt.epac_read(open(misc, 'rb').read())
         ch = {(ty, n): b for ty, es in g for n, b in es}
 
@@ -320,7 +340,7 @@ class Game08(Game09):
     def ssf(self):
         if self._ssf is None:
             self._ssf = {}
-            h, g, t = svrfmt.epac_read(open(self.src.get('pac/menu/menuHD.pac'), 'rb').read())
+            h, g, t = svrfmt.epac_read(open(self.src.need('pac/menu/menuHD.pac'), 'rb').read())
             for ty, es in g:
                 for n, b in es:
                     if ty == b'MENU' and n in (b'SSFA', b'SSFB', b'SSFC'):
@@ -357,7 +377,7 @@ class Game07(Game08):
     def __init__(self, src):
         S = svr10()
         self.src = src
-        misc = src.get('pac/misc.pac')
+        misc = src.need('pac/misc.pac')
         h, g, t = svrfmt.epac_read(open(misc, 'rb').read())
         ch = {(ty, n): b for ty, es in g for n, b in es}
 
@@ -384,7 +404,7 @@ class Game07(Game08):
     def ssf(self):
         if self._ssf is None:
             self._ssf = {}
-            h, g, t = svrfmt.epac_read(open(self.src.get('pac/menu/menuHD.pac'), 'rb').read())
+            h, g, t = svrfmt.epac_read(open(self.src.need('pac/menu/menuHD.pac'), 'rb').read())
             for ty, es in g:
                 for n, b in es:
                     kind = {b'SF2B': 'SSFB', b'SF2A': 'SSFC'}.get(n)
@@ -405,7 +425,7 @@ class Game07(Game08):
                 if not re.match(r'evt\d+\.pac$', n.lower()):
                     continue
                 try:
-                    h, g, t = svrfmt.epac_read(open(self.src.get('pac/evt/' + n), 'rb').read())
+                    h, g, t = svrfmt.epac_read(open(self.src.need('pac/evt/' + n), 'rb').read())
                 except Exception:   # noqa: BLE001
                     continue
                 for ty, es in g:
@@ -778,7 +798,7 @@ def attire_names(src, cid):
     40-byte records {u32 id, u32 attires, 4 x {u32 name string id, s32 unlock}}) and string.pac
     entry "0000" child 3 (sdb: id -> text) - SvR 2010's layout, as 2011's"""
     try:
-        g = svrfmt.epac_read(open(src.get('pac/misc.pac'), 'rb').read())[1]
+        g = svrfmt.epac_read(open(src.need('pac/misc.pac'), 'rb').read())[1]
         init = ch_tool.unpack(dict(((ty, n), b) for ty, es in g for n, b in es)[(b'BATS', b'INIT')])
         c5 = ch_tool.unpack(dict(svrfmt.pach_read(init))[5])
         if c5[:4] != b'COS\0':
@@ -790,7 +810,7 @@ def attire_names(src, cid):
             recs[i] = [struct.unpack_from('<I', r, 8 + 8 * a)[0] for a in range(min(cnt, 4))]
         if cid not in recs:
             return {}
-        g = svrfmt.epac_read(open(src.get('pac/string.pac'), 'rb').read())[1]
+        g = svrfmt.epac_read(open(src.need('pac/string.pac'), 'rb').read())[1]
         table = ch_tool.unpack(dict(((ty, n), b) for ty, es in g for n, b in es)[(b'SDB ', b'0000')])
         sdb = ch_tool.unpack(dict(svrfmt.pach_read(table))[3])
         text = {}
@@ -844,7 +864,7 @@ class GameW:
         self._ssf = None
 
     def pac_bytes(self, rel):
-        return open(self.src.get(rel), 'rb').read()
+        return open(self.src.need(rel), 'rb').read()
 
     def name(self, i):
         r = self.dat.get(i)
@@ -910,7 +930,7 @@ class GameW13(GameW):
         GameW.__init__(self, src, WE.find_svrmod(svrmod))
 
     def pac_bytes(self, rel):
-        raw = open(self.src.get(rel), 'rb').read()
+        raw = open(self.src.need(rel), 'rb').read()
         return self.WE.xdec(raw, self.svrmod) if raw[:4] == b'\x0f\xf5\x12\xed' else raw
 
 
@@ -1639,8 +1659,8 @@ def main(argv):
                 res = cmd_convert(a)
         else:
             raise BadInput('unknown command %r' % cmd)
-    except BadInput as e:
-        print(json.dumps({'ok': False, 'error': str(e)}))
+    except (BadInput, FileNotFoundError) as e:
+        print(json.dumps({'ok': False, 'error': str(e) if isinstance(e, BadInput) else missing(rel_to(e.filename or str(e), a.get('src')))}))
         return 2
     except Exception as e:   # noqa: BLE001
         traceback.print_exc(file=sys.stderr)

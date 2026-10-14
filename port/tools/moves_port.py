@@ -160,7 +160,7 @@ class Game12:
         self._index = None
 
     def pac_bytes(self, rel):
-        return open(self.src.get(rel), 'rb').read()
+        return open(self.src.need(rel), 'rb').read()
 
     def motion_pacs(self):
         return ['pac/m.pac']
@@ -223,7 +223,7 @@ class Game13(Game12):
         Game12.__init__(self, src)
 
     def pac_bytes(self, rel):
-        raw = open(self.src.get(rel), 'rb').read()
+        raw = open(self.src.need(rel), 'rb').read()
         return self.WE.xdec(raw, self.svrmod) if raw[:4] == b'\x0f\xf5\x12\xed' else raw
 
     def motion_pacs(self):
@@ -360,14 +360,14 @@ class Game0789:
         import pickle
         import svr10_moves as SM
         self.src, self.SM = src, SM
-        g = read_pac(open(src.get('pac/misc.pac'), 'rb').read())
+        g = read_pac(open(src.need('pac/misc.pac'), 'rb').read())
         raw = unz(dict(((t, n), b) for t, es in g for n, b in es)[(b'MOVS', b'WAZE')])
         self.waze = {}
         for q in range(0, len(raw) - 143, 144):
             nm = raw[q + 0x10:q + 0x50].split(b'\0')[0]
             if len(nm) > 2 and all(32 <= c < 127 for c in nm):
                 self.waze.setdefault(struct.unpack_from('<H', raw, q + 0x88)[0], nm.decode('latin1').strip())
-        self.groups = SM.read_epac(src.get('pac/m.pac'))[1]
+        self.groups = SM.read_epac(src.need('pac/m.pac'))[1]
         cache = os.path.join(work, 'index0789.pkl') if work else None
         if cache and os.path.exists(cache):
             self.banks = pickle.load(open(cache, 'rb'))
@@ -987,10 +987,14 @@ def main(argv):
                 res = convert(a, rep)
         else:
             raise BadInput('unknown command %r' % cmd)
-    except BadInput as e:
-        print(json.dumps({'ok': False, 'error': str(e)}))
+    except (BadInput, FileNotFoundError) as e:
+        print(json.dumps({'ok': False, 'error': __import__('superstar_port').missing(__import__('superstar_port').rel_to(e.filename or str(e), a.get('src')))
+                          if isinstance(e, FileNotFoundError) else str(e)}))
         return 2
     except Exception as e:   # noqa: BLE001
+        if type(e).__name__ == 'BadInput':   # (superstar_port's: Src.need, a missing file)
+            print(json.dumps({'ok': False, 'error': str(e)}))
+            return 2
         traceback.print_exc(file=sys.stderr)
         res = dict(rep, ok=False, error='%s: %s' % (type(e).__name__, e))
         if rep_path:

@@ -209,11 +209,7 @@ class Iso9660(_Image):
 
     def info(self):
         out = {"kind": self.kind, "volume": self.volume, "files": sum(1 for k, e in self.index.items() if not e[2])}
-        if self.exists("SYSTEM.CNF"):
-            for line in self.read("SYSTEM.CNF").decode("latin-1").splitlines():
-                if line.replace(" ", "").upper().startswith("BOOT2="):
-                    boot = line.split("=", 1)[1].strip()
-                    out["serial"] = boot.replace("cdrom0:", "").strip("\\/").split(";")[0]
+        out.update(_cnf_info(self))
         return out
 
 
@@ -275,6 +271,7 @@ class Folder:
         out = {"kind": self.kind, "files": sum(1 for _ in self.walk())}
         if self.exists("default.xex"):
             out.update(_xex_info(self.read("default.xex", 0, 0x10000)))
+        out.update(_cnf_info(self))   # (an extracted PS2 disc: its serial, as from the image)
         return out
 
     def close(self):
@@ -285,6 +282,17 @@ class Folder:
 
     def __exit__(self, *a):
         pass
+
+
+def _cnf_info(d):
+    """A PS2 disc's serial from its SYSTEM.CNF (BOOT2 = cdrom0:\\SLUS_123.45;1)."""
+    out = {}
+    if d.exists("SYSTEM.CNF"):
+        for line in d.read("SYSTEM.CNF").decode("latin-1").splitlines():
+            if line.replace(" ", "").upper().startswith("BOOT2="):
+                boot = line.split("=", 1)[1].strip()
+                out["serial"] = boot.replace("cdrom0:", "").strip("\\/").split(";")[0]
+    return out
 
 
 def _xex_info(head):
