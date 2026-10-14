@@ -1523,6 +1523,8 @@ bool Room32Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m
   return false;
 }
 
+void UpdateLion(PPCContext& ctx, uint8_t* base, Prop& p);
+
 void UpdateRoom32(PPCContext& ctx, uint8_t* base) {
   for (Prop& p : g_room.props) {
     if (p.kind == "locker") UpdateLocker(ctx, base, p);
@@ -1532,6 +1534,78 @@ void UpdateRoom32(PPCContext& ctx, uint8_t* base) {
     if (p.kind == "brokenwall") UpdateBrokenWall(ctx, base, p);
     if (p.kind == "sandbag") UpdateSandbag(ctx, base, p);
     if (p.kind == "treadmill") UpdateTreadmill(ctx, base, p);
+    if (p.kind == "lion") UpdateLion(ctx, base, p);
+  }
+}
+
+// -- Rooms 35 / 36 (outside arena B) ----------------------------------------
+// (HCTP's flood and tower collapse are dead code there - not ported.)
+
+// CGmRion (700 / 701), the lion statues: running straight at one of its three climb areas (params 2 / 4 / 6)
+// climbs it (acts params 3 / 5 / 7 = 12006 / 12007 / 12005) onto its top (12008 / 12011 / 12012); there the
+// action button (X), or 601 HCTP frames, dives off (HCTP 3550 - here the jump down, 12505).
+bool OnLion(PPCContext& ctx, uint8_t* base, uint32_t m) {
+  return m == RoomKey(12005) || m == RoomKey(12006) || m == RoomKey(12007) || m == RoomKey(12008) ||
+         m == RoomKey(12011) || m == RoomKey(12012);
+}
+
+void LionClimb(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, int i, float x, float y, float z) {
+  if (p.who) return;
+  const float yaw = RdF(base + f + 276), fx = std::sin(yaw), fz = std::cos(yaw);
+  const float dx = p.x - x, dz = p.z - z, len = std::max(0.01f, std::sqrt(dx * dx + dz * dz));
+  if ((dx * fx + dz * fz) / len < 0.8f) return;  // (HCTP: straight at the face, within 6 degrees)
+  for (size_t k : {2u, 4u, 6u}) {
+    if (!InShape(p, int(Param(p, k)), x, y, z, 3.0f)) continue;
+    const float to = std::atan2(dx, dz);
+    PlaceFighter(base, f, x, y, z, to);
+    WrF(base + f + 276, to);
+    JumpAct(ctx, base, f, RoomKey(Param(p, k + 1)));
+    p.who = f, p.timer = 0;
+    REXLOG_INFO("hctp: fighter {} climbs {}", i, p.name);
+    return;
+  }
+}
+
+void UpdateLion(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (!p.who) return;
+  const uint32_t f = p.who, m = Rd32(base + f + 212);
+  if (!OnLion(ctx, base, m)) {  // (he left it some other way)
+    p.who = 0;
+    return;
+  }
+  const bool on_top = m == RoomKey(12008) || m == RoomKey(12011) || m == RoomKey(12012);
+  if (!on_top) return;
+  ++p.timer;
+  const uint32_t input = svr2011::FighterInput(f);
+  if ((input && (Rd32(base + input + 52) & kButtonX)) || p.timer >= 2 * 601) {
+    JumpAct(ctx, base, f, kJumpDown);
+    p.who = 0;
+    REXLOG_INFO("hctp: he dives off {}", p.name);
+  }
+}
+
+// GmFountainThrow (710 / 711, room 35): an Irish whip next to a fountain (radius sqrt 600 of its centre) -
+// attacker and victim play 12027 together: thrown into the water.
+void FountainThrow(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t victim, int vi) {
+  if (p.cooldown > 0) return;
+  float d2 = 0;
+  const uint32_t att = Nearest(base, victim, &d2);
+  if (!att || d2 > 60.0f * 60.0f) return;
+  JumpAct(ctx, base, att, RoomKey(12027), 0, 0);
+  JumpAct(ctx, base, victim, RoomKey(12027), 0, 1);
+  p.cooldown = 2 * 140;
+  REXLOG_INFO("hctp: fighter {} is thrown into the fountain", vi);
+}
+
+void Room35Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m, float x, float y, float z) {
+  const bool running = base[f + 1286] != 0;
+  for (Prop& p : g_room.props) {
+    if (p.kind == "lion" && running && m != kWhipRun) LionClimb(ctx, base, p, f, i, x, y, z);
+    if (p.kind == "fountainthrow" && m == kWhipRun) {
+      const float cx = (p.zone[0] + p.zone[1]) / 2, cz = (p.zone[4] + p.zone[5]) / 2;
+      if (p.has_zone && (x - cx) * (x - cx) + (z - cz) * (z - cz) <= 600.0f && std::fabs(y) < 2.0f)
+        FountainThrow(ctx, base, p, f, i);
+    }
   }
 }
 
@@ -1606,6 +1680,7 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
     const bool x_pressed = input && (Rd32(base + input + 52) & kButtonX);
     if (HctpRoom() != 30) {
       Room31Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z);
+      Room35Fighter(ctx, base, f, i, m, x, y, z);
       if (Room32Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z, x_pressed)) {
         s.motion = Rd32(base + f + 212);
         continue;
@@ -1809,6 +1884,14 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       if (p.kind == "locker" && at(600) && &p == FindKind("locker")) LockerHit(ctx, base, p, f1, 1);
       if (p.kind == "toilet" && at(1100)) ToiletHit(ctx, base, p, f1, 1);
       if (p.kind == "shower" && at(1700) && &p == FindKind("shower")) ShowerHit(ctx, base, p, f1, 1);
+      // (rooms 35 / 36: fighter 1 climbs the first lion at 300; the fountain throw at 1100)
+      if (p.kind == "lion" && at(300) && &p == FindKind("lion") && !p.who) {
+        JumpAct(ctx, base, f1, RoomKey(Param(p, 3)));
+        PlaceFighter(base, f1, p.x, p.y, p.z, p.ry);
+        p.who = f1, p.timer = 0;
+        REXLOG_INFO("hctp: fighter 1 climbs {} (test)", p.name);
+      }
+      if (p.kind == "fountainthrow" && at(1100) && &p == FindKind("fountainthrow")) FountainThrow(ctx, base, p, f1, 1);
     }
   }
   if (g_steam_now && frame >= 300 && frame < 302)

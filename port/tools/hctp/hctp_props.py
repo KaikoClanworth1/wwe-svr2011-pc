@@ -69,6 +69,7 @@ KINDS = {
     86: ([], []),                    # CForkliftBoxSupply: the crate reload zone
     74: ([], []),                    # CGmMoveCar path points
     73: ([1, 2], []),                # CGmMoveCar: the two traffic cars (hctp_room drives them)
+    96: ([], []),                    # GmFountainThrow: whip into the fountain (centre in params 1, 2)
 }
 
 
