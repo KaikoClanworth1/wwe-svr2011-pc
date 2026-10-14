@@ -45,9 +45,16 @@ if ($WithModMaker) {
                      "model_budget.py", "xact.py", "svr07_char.py", "wwise.py",
                      "svr11_build.py", "svr11_skeleton.json", "rig_maps.json", "rig_maps.py", "svr11_skeleton.py",
                      "moveset_maps.py", "moveset_maps.json", "moveset_port.py", "fix_model.py", "gear_port.py",
-                     "ps2_char.py", "ps2_port.py")) {  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder)
+                     "ps2_char.py", "ps2_port.py",  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder)
+                     "backstage_port.py")) {  # (backstage_port: HCTP backstage rooms - its scripts in hctp\ below)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
+    }
+    # backstage_port.py's room scripts (tools\hctp, the motion converter in hctp\mot): the .py files only
+    foreach ($sub in @("hctp", "hctp\mot")) {
+        $dst = Join-Path $mmtools $sub
+        New-Item -ItemType Directory -Force $dst | Out-Null
+        Get-ChildItem (Join-Path $PSScriptRoot $sub) -Filter *.py | Copy-Item -Destination $dst
     }
     $data = Join-Path $PSScriptRoot "data"  # (reskin_port.py's stock texture table)
     if (Test-Path $data) { Copy-Item $data (Join-Path $mmtools "data") -Recurse -Force }

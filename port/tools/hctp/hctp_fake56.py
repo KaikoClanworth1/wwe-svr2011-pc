@@ -9,12 +9,13 @@ Blend-alpha submeshes of the opaque room models go to one extra model (flag s).
 """
 import io
 import struct
+import os
 import sys
 
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import svrfmt as f  # noqa: E402
 import jboy  # noqa: E402
 import arena_tool as at  # noqa: E402
