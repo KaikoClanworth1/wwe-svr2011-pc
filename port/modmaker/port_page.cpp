@@ -285,6 +285,20 @@ struct PicturePick {
 PicturePick g_pp;
 
 bool NeedsPicture(const Json& item) { return item["needs_picture"].Truthy(); }
+// The converter's "status": "crashes" (converts, but 2011 crashes at load - its full pass) or "special" (not an item
+// of the kind, e.g. a WWE '12+ backstage room): greyed, not pickable, its "reason" as the tooltip.
+bool Blocked(const Json& item) {
+  const std::string st = item["status"].Str();
+  return st == "crashes" || st == "special";
+}
+void BlockedRow(const std::string& text, const Json& item) {
+  ImGui::TextDisabled("%s", text.c_str());
+  if (ImGui::IsItemHovered()) {
+    const std::string why = item["reason"].Str();
+    ImGui::SetTooltip("%s%s", item["status"].Str() == "crashes" ? "Crashes the game: " : "Not portable: ",
+                      why.empty() ? "known from the converter's full pass." : why.c_str());
+  }
+}
 
 void AskPictures(int k, const std::string& game, const Json& item) {
   const std::string want = std::to_string(k) + "|" + game + "|" + Utf8(Source()) + "|" + ItemKey(item);
@@ -483,7 +497,20 @@ std::vector<NativePac> g_native;
 int g_native_pick = -1;
 std::string g_native_test;  // (--port-test: the item to use)
 
-void NativeArenas(const std::string& game, const std::string& game_name) {
+// A native pac's entry in the converter's list ("bg37"), or null: its status / reason is the one source of truth.
+const Json& NativeItem(const NativePac& p) {
+  static const Json none;
+  const std::string key = Lower(p.name.substr(0, p.name.rfind('.')));
+  for (const Json& it : g_list.items)
+    if (Lower(ItemKey(it)) == key) return it;
+  return none;
+}
+bool NativeBlocked(const NativePac& p) {
+  const Json& it = NativeItem(p);
+  return it.IsNull() ? SpecialStage(p.name) : Blocked(it);
+}
+
+void NativeArenas(int k, const std::string& game, const std::string& game_name) {
   const std::string want = game + "|" + Utf8(Source());
   if (g_native_for != want) {  // the bg pacs, once per source (the disc's table is in memory: quick)
     g_native_for = want, g_native.clear(), g_native_pick = -1;
@@ -505,6 +532,7 @@ void NativeArenas(const std::string& game, const std::string& game_name) {
     }
     std::sort(g_native.begin(), g_native.end(), [](const NativePac& a, const NativePac& b) { return a.name < b.name; });
   }
+  if (g_list_for != std::to_string(k) + "|" + want) List(k, game);  // (the converter's list: only each pac's status)
   ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish on the Other games page "
                      "(host arena, options, Convert).", game_name.c_str());
   if (g_native.empty()) {
@@ -514,20 +542,25 @@ void NativeArenas(const std::string& game, const std::string& game_name) {
   ImGui::SetNextItemWidth(260 * g_scale);
   const std::string cur = g_native_pick >= 0 ? g_native[size_t(g_native_pick)].name : "pick an arena pac";
   if (ImGui::BeginCombo("3. The arena", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
-    for (int pass = 0; pass < 2; ++pass) {  // the arenas, then the special stages (not arenas: can't be picked)
+    for (int pass = 0; pass < 2; ++pass) {  // the arenas, then the ones that crash / aren't arenas (can't be picked)
       if (pass == 1) {
         ImGui::Separator();
-        ImGui::TextDisabled("Backstage / studio (not arenas)");
+        ImGui::TextDisabled("Not portable (crash the game, or backstage / studio stages)");
       }
       for (int i = 0; i < int(g_native.size()); ++i) {
-        if (SpecialStage(g_native[size_t(i)].name) != (pass == 1)) continue;
+        if (NativeBlocked(g_native[size_t(i)]) != (pass == 1)) continue;
         char mb[32];
         std::snprintf(mb, sizeof mb, "  %.1f MB", g_native[size_t(i)].size / 1048576.0);
         if (pass == 1) {
-          ImGui::TextDisabled("  %s%s", g_native[size_t(i)].name.c_str(), mb);
-          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("A backstage room or a studio / photo stage, not an arena: on an arena slot it shows a white mat over a black "
-                              "void, or crashes (bg78).");
+          const Json& it = NativeItem(g_native[size_t(i)]);
+          if (!it.IsNull()) {
+            BlockedRow("  " + g_native[size_t(i)].name + mb, it);
+          } else {
+            ImGui::TextDisabled("  %s%s", g_native[size_t(i)].name.c_str(), mb);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("A backstage room or a studio / photo stage, not an arena: on an arena slot it shows a white mat over a black "
+                                "void, or crashes (bg78).");
+          }
         } else if (ImGui::Selectable((g_native[size_t(i)].name + mb).c_str(), g_native_pick == i)) {
           g_native_pick = i;
         }
@@ -535,11 +568,12 @@ void NativeArenas(const std::string& game, const std::string& game_name) {
     }
     ImGui::EndCombo();
   }
-  if (!g_native_test.empty()) {  // (test: pick by name)
+  if (!g_native_test.empty() && (!g_list.items.empty() || !g_list_error.empty())) {  // (test: pick by name, once the statuses are in)
     for (int i = 0; i < int(g_native.size()); ++i)
-      if (Lower(g_native[size_t(i)].name) == Lower(g_native_test) && !SpecialStage(g_native[size_t(i)].name)) g_native_pick = i;
+      if (Lower(g_native[size_t(i)].name) == Lower(g_native_test) && !NativeBlocked(g_native[size_t(i)])) g_native_pick = i;
     if (g_native_pick < 0) Log("port test: no arena pac " + g_native_test), g_native_test.clear();
   }
+  if (g_native_pick >= 0 && NativeBlocked(g_native[size_t(g_native_pick)])) g_native_pick = -1;  // (its status came in after the pick)
   ImGui::BeginDisabled(g_native_pick < 0 || Busy());
   PushAccent();
   const bool use = ImGui::Button("4. Use this arena (Other games page)", ImVec2(320 * g_scale, 0)) || (!g_native_test.empty() && g_native_pick >= 0 && !Busy());
@@ -677,7 +711,7 @@ void KindBody(int k) {
     const std::string status = g["status"].Str();
     ImGui::Text("2. %s: %s", g["name"].Str().c_str(), status == "ready" ? "ready" : status.c_str());
     if (status == "native") {
-      NativeArenas(game, g["name"].Str());
+      NativeArenas(k, game, g["name"].Str());
       return;
     }
     if (status != "ready") {
@@ -706,6 +740,9 @@ void KindBody(int k) {
       if (!g_test_item.empty() && g_test_item.back() == '?' && ItemKey(g_list.items[size_t(i)]) + "?" == g_test_item) {
         Log("port test: " + std::to_string(g_list.items.size()) + " listed; selected " + g_test_item);  // ("<key>?": picked, not converted)
         g_pick = i, g_test_stage = 3;
+      } else if (ItemKey(g_list.items[size_t(i)]) == g_test_item && Blocked(g_list.items[size_t(i)])) {
+        Log("port test: " + g_test_item + " is " + g_list.items[size_t(i)]["status"].Str() + ": not converted");
+        g_test_stage = 3;
       } else if (ItemKey(g_list.items[size_t(i)]) == g_test_item) {
         Log("port test: " + std::to_string(g_list.items.size()) + " listed; converting " + g_test_item);
         g_pick = i;
@@ -754,7 +791,8 @@ void KindBody(int k) {
       if (!f.empty() && Lower(name).find(f) == std::string::npos && Lower(ItemKey(it)).find(f) == std::string::npos) continue;
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      if (ImGui::Selectable((name + "##" + std::to_string(i)).c_str(), g_pick == i, ImGuiSelectableFlags_SpanAllColumns)) g_pick = i;
+      if (Blocked(it)) BlockedRow(name + (it["status"].Str() == "crashes" ? "  (crashes)" : "  (not portable)"), it);
+      else if (ImGui::Selectable((name + "##" + std::to_string(i)).c_str(), g_pick == i, ImGuiSelectableFlags_SpanAllColumns)) g_pick = i;
       ImGui::TableNextColumn();
       if (have) ImGui::TextColored(kWarn, "has it (%s)", it["in_2011"].Str().c_str());
       else ImGui::TextDisabled("new");
@@ -766,7 +804,7 @@ void KindBody(int k) {
       ImGui::TableNextColumn();
       std::string details;  // the converter's other fields, short
       for (const auto& [key, v] : it.fields) {
-        if (key == "name" || key == "in_2011" || key == "in_svr07" || key == "key" || v.type == Json::Type::kArray || v.type == Json::Type::kObject || v.IsNull()) continue;
+        if (key == "name" || key == "in_2011" || key == "in_svr07" || key == "key" || key == "status" || key == "reason" || v.type == Json::Type::kArray || v.type == Json::Type::kObject || v.IsNull()) continue;
         if (!details.empty()) details += "  ";
         details += key + " " + v.Str();
       }
@@ -774,7 +812,7 @@ void KindBody(int k) {
     }
     ImGui::EndTable();
   }
-  if (g_pick < 0 || g_pick >= int(g_list.items.size())) {
+  if (g_pick < 0 || g_pick >= int(g_list.items.size()) || Blocked(g_list.items[size_t(g_pick)])) {
     ImGui::TextDisabled("4. Pick one to convert.");
     return;
   }
