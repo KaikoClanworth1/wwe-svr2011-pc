@@ -30,6 +30,7 @@
 #include <d3d11.h>
 
 #include <algorithm>
+#include <random>
 #include <cstdio>
 #include <atomic>
 #include <cctype>
@@ -127,6 +128,8 @@ float PartStart(const Loaded& L, int part) {
 }
 
 Request g_req;
+int g_cam_pin = -1;  // the camera tracks: -1 the game's way (one at random each play), 0 A (y0), 1 B (y1)
+int g_cam_now = 1;   // the ones this play uses
 bool g_test_view_on = false;  // (test aid --full-preview-view)
 float g_test_view[16], g_test_fov = 30, g_test_xs = 1;  // (x sign of the projection)
 FILE* g_dump = nullptr;  // (test aid --full-preview-dump: every key's camera and bones, then closed)
@@ -548,10 +551,10 @@ std::unique_ptr<Loaded> LoadAll(const Request& req, const std::wstring& game) {
       s.keys = std::max(s.keys, frames);
       if (s.body) s.keys = std::max(s.keys, char_preview::ClipKeys(*s.body)), L->fingers |= char_preview::ClipHasFingers(*s.body);
     }
-    // (the camera's y1, else y0: the game plays one of the two per entrance - dumped in game, one run y0's keys
-    // exactly, the next y1's)
-    if (cam >= 0 && (Track(evt, kIdShift + cam, s.slot, 1, &d, &size, &frames) ||
-                     Track(evt, kIdShift + cam, s.slot, 0, &d, &size, &frames))) {
+    // (the camera's y0 = A or y1 = B, else the other: the game plays one of the two per entrance, at random - dumped
+    // in game, one run y0's keys exactly, the next y1's with the same people and arena)
+    if (cam >= 0 && (Track(evt, kIdShift + cam, s.slot, g_cam_now, &d, &size, &frames) ||
+                     Track(evt, kIdShift + cam, s.slot, 1 - g_cam_now, &d, &size, &frames))) {
       DecodeCamera(evt, d, size, s);
       s.keys = std::max(s.keys, frames);
     }
@@ -977,6 +980,7 @@ void Open(const Request& r) {
   if (!r.model.empty()) char_preview::SetModel(r.model, g_game);
   char_preview::SetAttire(std::max(1, r.attire));
   char_preview::SetGear(r.gear);
+  g_cam_now = g_cam_pin >= 0 ? g_cam_pin : int(std::random_device{}() & 1);
   const int gen = ++g_gen;
   g_load_state = 1;
   const Request req = r;
@@ -1019,6 +1023,7 @@ void Close() {
 void TestSong(const std::wstring& file) { g_test_song = file; }
 void TestMovie(const std::wstring& file) { g_test_movie = file; }
 void TestDump(const std::wstring& file) { g_dump_file = file; }
+void TestCameras(const std::wstring& ab) { g_cam_pin = !ab.empty() && (ab[0] == L'A' || ab[0] == L'a') ? 0 : 1; }
 void TestView(const std::wstring& spec) {
   float v[18];
   int n = 0;
@@ -1184,6 +1189,27 @@ void Draw() {
       if (ImGui::Checkbox("Theme music", &g_music_on)) SetPlaying(g_playing);
       ImGui::SameLine();
       ImGui::Checkbox("Titantron", &g_titantron_on);
+      ImGui::SameLine();
+      {  // the entrance's two camera tracks (the game plays one at random)
+        const char* names[] = {"random", "A", "B"};
+        int pick = g_cam_pin + 1;
+        ImGui::SetNextItemWidth(150 * g_scale);
+        const std::string label = g_cam_pin < 0 ? std::string("random: ") + (g_cam_now ? "B" : "A") : names[pick];
+        if (ImGui::BeginCombo("Cameras", label.c_str())) {
+          for (int i = 0; i < 3; ++i)
+            if (ImGui::Selectable(names[i], i == pick) && i != pick) {
+              g_cam_pin = i - 1;
+              if (g_cam_pin >= 0 && g_cam_pin != g_cam_now) {  // (another track: loaded again, at the same key)
+                g_test_key = g_key, g_test_camera = g_use_camera;
+                Open(g_req);
+              }
+            }
+          ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("An entrance has two sets of camera shots (A and B). The game picks one at random each time it\n"
+                            "plays; so does this preview. Pick one to keep it.");
+      }
       if (char_preview::HasGear() || char_preview::Gear()) {  // (the attire has an entrance outfit: kind 4)
         ImGui::SameLine();
         bool gear = char_preview::Gear();

@@ -38,6 +38,8 @@ void TestMovie(const std::wstring& file);
 // Test aid --full-preview-dump <file>: once loaded, every key from 0 (one a frame): "K key S slot L local-key lift y
 // V <view 16> P <proj 0, 5> B <bone x y z>..." (game coordinates, as drawn), then the file is closed.
 void TestDump(const std::wstring& file);
+// Test aid --full-preview-cameras <A|B>: that camera track set kept (else one at random, as the game).
+void TestCameras(const std::wstring& ab);
 // Test aid --full-preview-view <16 floats>,<fov degrees>: the view drawn with that camera (a game camera dump's view
 // matrix, row vectors) instead of the entrance's.
 void TestView(const std::wstring& spec);
