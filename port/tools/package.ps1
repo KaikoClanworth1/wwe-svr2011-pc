@@ -45,7 +45,7 @@ if ($WithModMaker) {
                      "model_budget.py", "xact.py", "svr07_char.py", "wwise.py",
                      "svr11_build.py", "svr11_skeleton.json", "rig_maps.json", "rig_maps.py", "svr11_skeleton.py",
                      "moveset_maps.py", "moveset_maps.json", "moveset_port.py", "fix_model.py", "gear_port.py",
-                     "ps2_char.py", "ps2_port.py",  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder)
+                     "ps2_char.py", "ps2_port.py", "ps2_media.py",  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder; ps2_media: their themes / titantrons)
                      "backstage_port.py")) {  # (backstage_port: HCTP backstage rooms - its scripts in hctp\ below)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
@@ -58,6 +58,28 @@ if ($WithModMaker) {
     }
     $data = Join-Path $PSScriptRoot "data"  # (reskin_port.py's stock texture table)
     if (Test-Path $data) { Copy-Item $data (Join-Path $mmtools "data") -Recurse -Force }
+    # Import audit: every staged script's imports (top-level, inside functions, __import__('x')) that are
+    # tools\*.py modules must be staged too - beside the script or at the top of Mod Maker Tools (2.1.0 shipped
+    # ps2_port.py without ps2_media.py: "ModuleNotFoundError: No module named 'ps2_media'").
+    $missing = @()
+    foreach ($py in Get-ChildItem $mmtools -Filter *.py -Recurse) {
+        $mods = @()
+        foreach ($line in Get-Content $py.FullName) {
+            if ($line -match '^\s*import\s+(.+)$') {
+                $mods += ($Matches[1] -split '#')[0] -split ',' | ForEach-Object { (($_.Trim() -split '\s+')[0] -split '\.')[0] }
+            } elseif ($line -match '^\s*from\s+([A-Za-z_][\w.]*)\s+import') {
+                $mods += ($Matches[1] -split '\.')[0]
+            }
+            foreach ($m in [regex]::Matches($line, "__import__\(\s*['""]([A-Za-z_]\w*)['""]")) { $mods += $m.Groups[1].Value }
+        }
+        foreach ($m in ($mods | Where-Object { $_ } | Sort-Object -Unique)) {
+            if (-not (Test-Path (Join-Path $PSScriptRoot "$m.py"))) { continue }   # (not one of ours: the standard library, numpy...)
+            if ((Test-Path (Join-Path $py.DirectoryName "$m.py")) -or (Test-Path (Join-Path $mmtools "$m.py"))) { continue }
+            $missing += "$($py.Name) imports $m (tools\$m.py)"
+        }
+    }
+    if ($missing) { throw "Mod Maker Tools is missing modules its scripts import - add them to the list above:`n  " + ($missing -join "`n  ") }
+    Write-Host "Mod Maker Tools: imports checked ($(@(Get-ChildItem $mmtools -Filter *.py -Recurse).Count) scripts)"
     # vgmstream (the Wwise Vorbis theme decoder wwise.py runs; port\third_party\vgmstream, not in git:
     # the official release, version and SHA-256 in its VERSION.txt) -> Mod Maker Tools\vgmstream
     $vgm = Join-Path $port "third_party\vgmstream"
