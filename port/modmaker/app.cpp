@@ -2123,6 +2123,7 @@ void Draw() {
   StatusBar();
   ImGui::End();
   full_preview::Draw();  // (its own window, over the page)
+  ToolsPanel();          // (the Mod Maker tools: found / missing, Install what's missing)
   // Ctrl+S saves the project
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && Hooks(g_project_page)) ProjectSave(false);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
@@ -2587,6 +2588,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-mat") && more) star_page::TestMaterials(Utf8(argv[++i]), false);
     else if (!wcscmp(argv[i], L"--open-materials")) star_page::TestMaterials("", true);
+    else if (!wcscmp(argv[i], L"--tools-panel")) TestToolsPanel(false, L"");
+    else if (!wcscmp(argv[i], L"--tools-install")) TestToolsPanel(true, L"");
+    else if (!wcscmp(argv[i], L"--tools-install-from") && more) TestToolsPanel(false, argv[++i]);
     else if (!wcscmp(argv[i], L"--alpha-fixture") && more) {  // <pac>,<out pac>,<id:mesh>;<id:mesh>...: the cut-out fixture (mm::AlphaFixture), then quit
       const std::wstring v = argv[++i];
       const size_t a = v.find(L','), b = v.find(L',', a + 1);
@@ -2686,6 +2690,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!g_game.empty() && LoadBanners()) Status("Game folder: " + Utf8(g_game));
   else if (!g_game.empty()) Status("The game folder's menu files could not be read: " + Utf8(g_game));
   else Status("No game folder: nothing can be read. Click the game folder button at the top right.");
+  StartupToolsCheck();  // (Python, numpy, Pillow, the scripts, svrmod.exe: the panel opens when one is missing)
   editor::Hooks hooks;
   hooks.log = [](const std::string& s) { Log(s); };
   hooks.test_in_game = [] { arena_page::TestInGame(); };

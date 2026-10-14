@@ -63,6 +63,7 @@ int g_force_kind = -1;  // (the test's tab: ImGui reports the first tab selected
 bool g_same_moves = false;      // (PS2 superstars: --same-moves, no "similar" stand-ins)
 bool g_test_fp = false;         // (--port-fullpreview: an entrance test's result opens in the Full preview)
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
+std::string g_test_game;        // (--port-test kind@game: a folder's game, as picked in its combo)
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
 
@@ -206,15 +207,13 @@ std::string ItemKey(const Json& item) {
   return {};
 }
 
-// WWE '12 - 2K17 pacs are xcompressed: the converters read them through svrmod.exe (the Mod Maker's own pac tool) -
-// next to the scripts in Mod Maker Tools, or the dev tree's out\modmaker; passed as --svrmod when found.
+// WWE '12 - 2K17 pacs are xcompressed: the converters read them through svrmod.exe (the Mod Maker's own pac tool),
+// always the Mod Maker Tools folder's (SvrmodExe) passed as --svrmod - none from a search of their own. Missing: an
+// empty --svrmod, which RunToolJson turns into the tools panel ("Missing: svrmod.exe").
 std::vector<std::wstring> SvrmodArgs(int k, const std::string& game) {
   const std::wstring script = kKinds[k].script;
   if (game.rfind("wwe", 0) != 0 || (script != L"superstar_port.py" && script != L"entrance_port.py" && script != L"moves_port.py")) return {};
-  std::error_code ec;
-  for (const fs::path& cli : {fs::path(ToolsDir()) / L"svrmod.exe", fs::path(ToolsDir()) / L".." / L"out" / L"modmaker" / L"svrmod.exe"})
-    if (fs::exists(cli, ec)) return {L"--svrmod", fs::weakly_canonical(cli, ec).wstring()};
-  return {};
+  return {L"--svrmod", SvrmodExe()};
 }
 
 void List(int k, const std::string& game) {
@@ -736,6 +735,8 @@ void KindBody(int k) {
     static int pick = 0;
     const auto& all = g_games[k].items;
     if (all.empty()) return;
+    for (int i = 0; !g_test_game.empty() && i < int(all.size()); ++i)
+      if (all[size_t(i)]["id"].Str() == g_test_game) pick = i;
     pick = std::clamp(pick, 0, int(all.size()) - 1);
     ImGui::SetNextItemWidth(320 * g_scale);
     if (ImGui::BeginCombo("2. The folder's game", all[size_t(pick)]["name"].Str().c_str())) {
@@ -913,6 +914,7 @@ void TestStart(const std::string& spec) {
     at = c + 1;
   }
   if (p.size() < 3) return;
+  if (const size_t at = p[0].find('@'); at != std::string::npos) g_test_game = p[0].substr(at + 1), p[0].resize(at);
   for (int k = 0; k < kKindCount; ++k)
     if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = g_force_kind = k;
   const std::wstring src = Wide(p[1]);
@@ -929,8 +931,9 @@ void Draw() {
   Heading("Port from another game", "Bring a superstar, arena, moves, an entrance or more from your other WWE discs into "
                                     "SvR 2011: pick the disc, what to port and the item; it opens on its page to finish.");
   if (PythonExe().empty() || !PythonMissing().empty()) {
-    ImGui::TextColored(kWarn, "The converters need Python 3 with numpy and Pillow%s.",
-                       PythonExe().empty() ? " (install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow))" : (": " + PythonMissing()).c_str());
+    ImGui::TextColored(kWarn, "The converters need Python 3 with numpy and Pillow: missing %s.", PythonMissing().c_str());
+    if (ImGui::Button("Install what's missing...")) OpenToolsPanel();
+    ImGui::SameLine();
     if (ImGui::SmallButton("Check again")) RecheckTools();
     return;
   }
@@ -955,9 +958,11 @@ void Draw() {
 void SuperstarFlow() {
   if (PythonExe().empty() || !PythonMissing().empty()) {
     ImGui::PushTextWrapPos(0);
-    ImGui::TextColored(kWarn, "Bringing superstars from older games needs Python 3 with numpy and Pillow%s.",
-                       PythonExe().empty() ? " (the launcher's Setup page installs them)" : (": " + PythonMissing()).c_str());
+    ImGui::TextColored(kWarn, "Bringing superstars from older games needs Python 3 with numpy and Pillow: missing %s.",
+                       PythonMissing().c_str());
     ImGui::PopTextWrapPos();
+    if (ImGui::Button("Install what's missing...")) OpenToolsPanel();
+    ImGui::SameLine();
     if (ImGui::SmallButton("Check again")) RecheckTools();
     return;
   }
