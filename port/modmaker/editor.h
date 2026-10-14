@@ -69,6 +69,9 @@ void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv);
 // the Full preview's screens, lit in game by their own light set. masks: an LED wall's dot grid textures (drawn over
 // the screen: their holes lit dots, the screen between them). Empty: none.
 void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks = {});
+// Alpha cut-outs only on the models whose C351 line has a transparency flag (s a k c i j o), the rest opaque - as the
+// game draws them (the Full preview: bg29's barrier panels have alpha but no flag). Off: every texture's alpha cuts.
+void SetGameTransparency(bool on);
 // Drawn after the view's scene into the same target and depth (w x h), with the camera used: the Full preview's
 // wrestler. Empty: none.
 using ViewExtraFn = std::function<void(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h,

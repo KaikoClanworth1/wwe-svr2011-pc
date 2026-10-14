@@ -72,6 +72,8 @@ void SetHeight(float scale);
 float Height();
 // The model scaled about its root's x / z instead of the origin (the Full preview: a walk far from the ring).
 void SetScaleAtRoot(bool on);
+// The height it's scaled from with SetScaleAtRoot (game y; NaN: the lowest foot bone as posed each frame).
+void SetScalePivotY(float game_y);
 float ModelHeight();
 // "Loading...", what is shown ("11089 vertices, 102 bones, idle") or why not.
 std::string Status();

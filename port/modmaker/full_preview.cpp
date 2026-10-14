@@ -30,6 +30,7 @@
 #include <d3d11.h>
 
 #include <algorithm>
+#include <limits>
 #include <random>
 #include <cstdio>
 #include <atomic>
@@ -92,6 +93,7 @@ struct Seg {
   std::vector<float> lift;  // per key: the y added to put the entrant on the practice arena's ground (Ground)
   std::vector<CamKey> cam;
   std::vector<ZoomEvent> zoom;
+  std::vector<float> pivot;  // per key: the size's height pivot (game y: Ground)
   int height_ref = -1;  // op 113 `71 c`: from this frame the camera follows the entrant's height (-1: not)
 };
 // A ringside object the game puts out for the match (the steel steps): bgEtc.pac STG/WPON pack <model>, placed by
@@ -651,32 +653,35 @@ void Ground(Seg& s, const StageGrid& g) {
     for (int j = std::max(0, k - ease); j <= std::min(n - 1, k + ease); ++j) sum += raw[size_t(j)], ++c;
     s.lift[size_t(k)] = sum / float(std::max(1, c));
   }
-  // The feet on what they walk on, as the game keeps them (measured: Big Show 125's bones in game - his lowest toe bone
-  // 0.08-0.19 above the stage, the ramp, the floor and the mat; the keys alone left them 1.2 below everything outside
-  // the ring): where the lowest foot bone would be under the surface (the mat inside the apron, else the floor / stage
-  // / ramp) the entrant goes up until it's 0.17 above it - eased as the lift, never down.
-  std::vector<float> up(static_cast<size_t>(n), 0.0f);
+  // the size's height pivot per key: the lowest foot bone, smoothed (a median over +-10 keys, then eased +-8) - the
+  // feet taking turns don't move it (a pivot following each frame's lowest bone made the body jump), steps up do
+  std::vector<float> foot(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) foot[size_t(k)] = tr[size_t(k)].foot > -1e29f ? tr[size_t(k)].foot : (k ? foot[size_t(k - 1)] : 0.0f);
+  std::vector<float> med(static_cast<size_t>(n));
   for (int k = 0; k < n; ++k) {
-    const auto& t = tr[size_t(k)];
-    if (t.foot < -1e29f) continue;
-    const bool ring = std::fabs(t.x) <= kApronOut && std::fabs(t.z) <= kApronOut;
-    const float surface = ring ? kMatY : g.At(t.x, t.z);   // (game coordinates, y down)
-    const float toe = t.foot + kSceneY + s.lift[size_t(k)];
-    up[size_t(k)] = std::max(0.0f, toe - (surface - 0.17f));
+    std::vector<float> win(foot.begin() + std::max(0, k - 10), foot.begin() + std::min(n, k + 11));
+    std::nth_element(win.begin(), win.begin() + win.size() / 2, win.end());
+    med[size_t(k)] = win[win.size() / 2];
   }
+  s.pivot.assign(static_cast<size_t>(n), 0.0f);
   for (int k = 0; k < n; ++k) {
     float sum = 0;
     int c = 0;
-    for (int j = std::max(0, k - ease); j <= std::min(n - 1, k + ease); ++j) sum += up[size_t(j)], ++c;
-    s.lift[size_t(k)] -= sum / float(std::max(1, c));
+    for (int j = std::max(0, k - ease); j <= std::min(n - 1, k + ease); ++j) sum += med[size_t(j)], ++c;
+    s.pivot[size_t(k)] = sum / float(std::max(1, c));
   }
 }
 
 StageGrid g_stage;  // (the loaded arena's)
 
-float LiftAt(const Seg& s, float key) {
-  return s.lift.empty() ? 0.0f : s.lift[size_t(std::clamp(int(key), 0, int(s.lift.size()) - 1))];
+// a per-key table at a fractional key, in a straight line between keys (the view runs 60 a second, the keys 30)
+float KeyLerp(const std::vector<float>& v, float key) {
+  if (v.empty()) return 0.0f;
+  const float k = std::clamp(key, 0.0f, float(v.size() - 1));
+  const size_t a = size_t(k), b = std::min(a + 1, v.size() - 1);
+  return v[a] + (v[b] - v[a]) * (k - float(a));
 }
+float LiftAt(const Seg& s, float key) { return KeyLerp(s.lift, key); }
 
 // ---- the camera at a segment's key
 
@@ -909,6 +914,7 @@ void Apply(std::unique_ptr<Loaded> L) {
   char_preview::SetHeight(g_cur->scale), char_preview::SetScaleAtRoot(true);  // (the superstar's size, as the game draws it)
   // the practice arena's screens (the titantron, the LED walls behind the dot masks): self-lit, as in game
   editor::SetSelfLit({"tf_titan", "tf_titan1", "tf_titan_l"}, {"raw_p_black", "raw_p_black2"});
+  editor::SetGameTransparency(!std::getenv("SVR2011_MM_NO_GAME_ALPHA"));  // (test aid: the env turns it off for an A/B shot)
   Log("full preview: the superstar's size x" + std::to_string(g_cur->scale));
   if (g_cur->arena) editor::ViewArena(g_cur->arena.get(), "Practice arena", "");
   g_stage = StageGrid();
@@ -933,9 +939,10 @@ void Apply(std::unique_ptr<Loaded> L) {
     }
     const float last = float(std::max(0, char_preview::ClipKeys(*s.body) - 1)), key = std::min(g_local_key, last);
     const float off[3] = {0, kSceneY + LiftAt(s, key), 0};  // (the camera gets the same)
+    char_preview::SetScalePivotY(s.pivot.empty() ? std::numeric_limits<float>::quiet_NaN() : KeyLerp(s.pivot, key));
     char_preview::RenderInto(rtv, dsv, w, h, view, proj, s.body.get(), key, off);
     if (g_dump) {  // (test aid: this key's camera and the entrant's bones, as drawn)
-      std::fprintf(g_dump, "K %.0f S %d L %.2f lift %.3f V", g_key, s.slot, key, off[1]);
+      std::fprintf(g_dump, "K %.2f S %d L %.2f lift %.3f V", g_key, s.slot, key, off[1]);
       for (int i = 0; i < 16; ++i) std::fprintf(g_dump, " %.5f", view[i]);
       std::fprintf(g_dump, " P %.5f %.5f B", proj[0], proj[5]);
       for (const auto& b : char_preview::EntrantBones()) std::fprintf(g_dump, " %s %.3f %.3f %.3f", b.name.c_str(), b.t[0], b.t[1], b.t[2]);
@@ -1030,6 +1037,8 @@ void Close() {
   CloseTitantron();
   editor::SetViewExtra(nullptr);
   editor::SetSelfLit({});
+  editor::SetGameTransparency(false);
+  char_preview::SetScalePivotY(std::numeric_limits<float>::quiet_NaN());
   editor::ClearViewCamera();
   editor::SetViewHint(true);
   editor::ClearView();
@@ -1118,7 +1127,11 @@ void Draw() {
           std::fclose(g_dump), g_dump = nullptr, g_dump_file.clear();
           Log("full preview: dump done");
         } else {
-          g_key += 1;
+          static const float step = [] {
+            const char* e = std::getenv("SVR2011_MM_DUMP_STEP");  // (test aid: the dump's key step, 1 by default)
+            return e ? std::max(0.05f, float(std::atof(e))) : 1.0f;
+          }();
+          g_key += step;
         }
       }
       if (g_playing) {

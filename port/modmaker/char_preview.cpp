@@ -32,6 +32,7 @@ bool LoadPicture(const std::wstring& file, svrfmt::Image& out);
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <limits>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -656,13 +657,21 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
     Channel& ch = m.root[size_t(a)];
     if (ks.empty()) continue;
     ch.v.resize(size_t(m.keys) * 2);
+    std::vector<float> per(size_t(m.keys));
     size_t j = 0;
     for (int f = 0; f < m.keys; ++f) {
       while (j + 1 < ks.size() && ks[j + 1].first <= f) ++j;
       float v = ks[j].second;
       if (f > ks[j].first && j + 1 < ks.size())
         v += (ks[j + 1].second - v) * float(f - ks[j].first) / float(ks[j + 1].first - ks[j].first);
-      ch.v[size_t(f) * 2] = ch.v[size_t(f) * 2 + 1] = int32_t(std::lround(v * 0.01f / 1e-4f));
+      per[size_t(f)] = v;
+    }
+    // (the odd 60-a-second samples half way to the next frame's - both the frame's own made the root hold half a key
+    // and jump: the whole body judders at 30 a second against a smooth 60 a second camera)
+    for (int f = 0; f < m.keys; ++f) {
+      const float a = per[size_t(f)], b = per[size_t(std::min(f + 1, m.keys - 1))];
+      ch.v[size_t(f) * 2] = int32_t(std::lround(a * 0.01f / 1e-4f));
+      ch.v[size_t(f) * 2 + 1] = int32_t(std::lround((a + b) * 0.5f * 0.01f / 1e-4f));
     }
   }
   return true;
@@ -1562,6 +1571,7 @@ float g_height_scale = 1;            // the model's (slot 0) size from its feet
 bool g_scale_at_root = false;        // (the Full preview: scaled about the root's x / z, not the origin - it walks far)
 float g_pivot[2] = {0, 0};           // (that x / z, game coordinates: the last Skin's root)
 float g_pivot_y = 0;                 // (and the height it's scaled from: the lowest foot bone - view y, up)
+float g_pivot_fixed = std::numeric_limits<float>::quiet_NaN();  // (SetScalePivotY: that height, fixed - game y)
 float g_feet = 0, g_feet_next = 1e30f, g_top_next = -1e30f, g_tall = 0;  // slot 0's lowest / highest y (view, unscaled)
 // the floor under a motion (view y): its lowest bone over the whole motion, less a sole - in-ring motions
 // (finishers) are keyed on the ring canvas, above the arena floor (0) the stances and taunts stand on
@@ -1587,6 +1597,8 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
       if (n.find("ashi") != std::string::npos || n.find("tsumasaki") != std::string::npos) low = std::max(low, pose[i].t.y);
     }
     if (low > -1e29f) fy = -low;
+    if (!std::isnan(g_pivot_fixed)) fy = -g_pivot_fixed;  // (the Full preview's: one per part - a pivot that follows
+    // the lowest foot each frame made the whole body jump as the feet took turns)
     g_pivot_y = fy;
   }
   for (size_t m = 0; m < sl.gpu.size(); ++m) {
@@ -2938,6 +2950,7 @@ void Draw(float w, float h) {
 void SetHeight(float scale) { g_height_scale = std::clamp(scale, 0.5f, 2.0f); }
 float Height() { return g_height_scale; }
 void SetScaleAtRoot(bool on) { g_scale_at_root = on; }
+void SetScalePivotY(float game_y) { g_pivot_fixed = game_y; }
 float ModelHeight() { return g_slots[0].ch ? g_tall : 0.0f; }
 
 std::string Status() {

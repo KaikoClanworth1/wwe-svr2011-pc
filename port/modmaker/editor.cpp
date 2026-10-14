@@ -233,6 +233,10 @@ int g_cb_mode_now = -1;
 std::set<std::string> g_self_lit;    // (SetSelfLit: screens drawn at their own brightness)
 std::set<std::string> g_led_mask;    // (SetSelfLit's masks: a screen's dot grid over it, its holes the lit dots)
 ID3D11BlendState* g_led_blend = nullptr;
+bool g_game_alpha = false;           // (SetGameTransparency: alpha cuts only on the C351-flagged models, as the game)
+const svrfmt::Arena* g_cut_arena = nullptr;
+std::vector<char> g_cut;             // (per model: its C351 line has a transparency flag)
+std::map<uint32_t, std::string> ModelFlagsOf(const svrfmt::Arena& arena);
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_solid = nullptr;
 ID3D11RasterizerState* g_wire = nullptr;
@@ -352,7 +356,7 @@ float4 ps(VO i) : SV_Target {
   float4 tx = t.Sample(s, i.uv);
   if (flat.w < -0.5) return float4(tx.rgb * tx.a * i.c.rgb * tint.rgb * 0.6, 0);
   if (mode.x > 1.5) return float4(tint.rgb * 0.55, 1 - tx.a);  // (an LED mask: its holes are lit dots, blended)
-  if (tx.a < 0.25) discard;
+  if (tx.a < 0.25 && mode.y < 0.5) discard;  // (mode.y: an opaque model - the game's alpha there isn't see-through)
   if (mode.x > 0.5) return float4(tx.rgb * tint.rgb, 1);  // (self-lit: a screen)
   float3 n = normalize(i.n + 1e-5);
   float d = abs(dot(n, normalize(float3(0.35, -1.0, 0.25))));
@@ -626,12 +630,29 @@ void DrawMesh(int model, int mesh) {
   g_ctx->IASetIndexBuffer(g->ib, DXGI_FORMAT_R16_UINT, 0);
   ID3D11ShaderResourceView* srv = TextureFor(g->tex);
   g_ctx->PSSetShaderResources(0, 1, &srv);
-  const int mode = g_led_mask.count(g->tex) ? 2 : g_self_lit.count(g->tex) ? 1 : 0;
+  int mode = g_led_mask.count(g->tex) ? 2 : g_self_lit.count(g->tex) ? 1 : 0;
+  if (g_game_alpha && g_arena) {
+    if (g_cut_arena != g_arena) {  // (2011's transparency flags, docs: s a k c i j o as words of a model's C351 line)
+      g_cut_arena = g_arena;
+      g_cut.assign(g_arena->models.size(), 0);
+      const auto flags = ModelFlagsOf(*g_arena);
+      for (size_t i = 0; i < g_arena->models.size(); ++i) {
+        const auto f = flags.find(g_arena->models[i].id);
+        if (f == flags.end()) {
+          g_cut[i] = 1;  // (no line: as before)
+          continue;
+        }
+        for (const char* w : {" s ", " a ", " k ", " c ", " i ", " j ", " o "})
+          if (f->second.find(w) != std::string::npos) g_cut[i] = 1;
+      }
+    }
+    if (model >= 0 && size_t(model) < g_cut.size() && !g_cut[size_t(model)] && mode == 0) mode = 3;
+  }
   if (mode != g_cb_mode_now && g_cb_mode && !g_glow_pass) {
     if (mode == 2 || g_cb_mode_now == 2) g_ctx->OMSetBlendState(mode == 2 ? g_led_blend : nullptr, nullptr, 0xFFFFFFFF);
     D3D11_MAPPED_SUBRESOURCE ms;
     if (SUCCEEDED(g_ctx->Map(g_cb_mode, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
-      const float v[4] = {float(mode), 0, 0, 0};
+      const float v[4] = {mode == 3 ? 0.0f : float(mode), mode == 3 ? 1.0f : 0.0f, 0, 0};
       std::memcpy(ms.pData, v, sizeof v);
       g_ctx->Unmap(g_cb_mode, 0);
       g_cb_mode_now = mode;
@@ -1149,6 +1170,7 @@ void RenderScene() {
   g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
   g_ctx->PSSetConstantBuffers(1, 1, &g_cb_mode);
   g_cb_mode_now = -1;  // (its value: set again by the first mesh)
+  g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);  // (an LED mask drawn last mustn't leave its blend on)
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
   const bool given = g_readonly && g_vcam_set;  // (the view's camera from the caller)
   const M4 view = given ? g_vcam_view : LookAt(Eye(), g_target, {0, -1, 0});
@@ -2222,6 +2244,7 @@ void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv) 
   else g_tex_override.erase(name);
 }
 void SetViewExtra(ViewExtraFn fn) { g_view_extra = std::move(fn); }
+void SetGameTransparency(bool on) { g_game_alpha = on, g_cut_arena = nullptr; }
 void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks) {
   g_self_lit = std::set<std::string>(textures.begin(), textures.end());
   g_led_mask = std::set<std::string>(masks.begin(), masks.end());
