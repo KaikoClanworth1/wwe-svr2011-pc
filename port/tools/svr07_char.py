@@ -91,7 +91,7 @@ def bake(kids):
             n = sl.get('texNormal')
             if n in tex and not n.startswith('dummy'):
                 normal_of.setdefault(d, n)
-    images = {d: Image.open(io.BytesIO(tex[d])).convert('RGBA') for d in set(diffuse_of.values())}
+    images = {d: Image.open(io.BytesIO(tex[d])).convert('RGBA') for d in sorted(set(diffuse_of.values()))}   # (sorted: a set's order follows the hash seed - the packed sheet changed every run)
     scale, boxes = pack({d: im.size for d, im in images.items()}, *COLOR)
     color = Image.new('RGBA', COLOR, (128, 128, 128, 255))
     normal = Image.new('RGBA', NORMAL, (128, 128, 255, 255))
