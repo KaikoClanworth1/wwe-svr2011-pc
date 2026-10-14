@@ -1891,6 +1891,7 @@ GpuMesh Previewed(const GpuMesh& g) {
   if (e.has_spec) o.spec = e.spec;
   if (e.has_tint) std::memcpy(o.tint, e.tint, sizeof o.tint);
   if (e.cutout >= 0) o.cutout = e.cutout != 0;
+  if (e.cutout == 1) o.skin_params = false;  // (PatchMaterials: g_fSweatSPA 0 - the colour-alpha shader, which cuts)
   if (e.two_sided >= 0) o.culled = e.two_sided == 0;
   if (e.normal == 1) {  // (as PatchMaterials: a skin keeps its old shine mask unless the picture has an alpha)
     o.ntex = PreviewNormal(e.normal_file);
@@ -2128,7 +2129,7 @@ void Render(int w, int h) {
     if (sl.hidden) break;
     const GpuMesh g = &sl == &g_slots[0] && (!g_mat_preview.empty() || g_highlight.second >= 0) ? Previewed(g0) : g0;
     if (g.blood && (!g_blood || g.blood_missing)) continue;
-    if (!set_cb(g.cutout ? 1.0f : 0.0f, 0, &g)) continue;
+    if (!set_cb(g.cutout && !(g.skin_params && g.culled) ? 1.0f : 0.0f, 0, &g)) continue;  // (the game's skin shaders can't cut)
     const UINT stride = sizeof(GpuVertex), offset = 0;
     g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
     g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
@@ -2403,7 +2404,7 @@ void DrawPosed(Slot& sl, const std::vector<Xf>& pose, ID3D11RenderTargetView* rt
     Cb* c = static_cast<Cb*>(ms.pData);
     std::memset(c, 0, sizeof *c);
     std::memcpy(c->viewproj, viewproj, 64);
-    c->flags[0] = g.cutout ? 1.0f : 0.0f;
+    c->flags[0] = g.cutout && !(g.skin_params && g.culled) ? 1.0f : 0.0f;
     UseMaterial(c, &g);
     const float k4[4] = {key_l.x, key_l.y, key_l.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
     std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);

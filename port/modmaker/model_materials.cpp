@@ -146,6 +146,68 @@ std::string DumpMaterials(const Bytes& pac) {
   return o;
 }
 
+bool AlphaFixture(Bytes& pac, const std::vector<std::pair<uint32_t, int>>& meshes, std::string* error) {
+  Epac e;
+  if (!EpacRead(pac, e)) return Fail(error, "not a model pac");
+  EpacEntry* en = AttireEntry(e, 1, false);
+  if (!en) return Fail(error, "no attire 1");
+  std::vector<PachEntry> kids;
+  if (!PachRead(Unpack(en->data), kids)) return Fail(error, "the attire is not a PACH");
+  // the UV boxes, by colour picture name
+  std::map<std::string, std::vector<std::array<float, 4>>> boxes;
+  for (const auto& k : kids) {
+    const Bytes raw = Unpack(k.data);
+    Model m;
+    if (!IsJboy(raw) || !JboyRead(raw, m)) continue;
+    for (const auto& [id, mi] : meshes) {
+      if (id != k.id || mi < 0 || mi >= int(m.meshes.size())) continue;
+      const Mesh& s = m.meshes[size_t(mi)];
+      const Param* cp = Find(s, "texDiffuse");
+      const int slot = cp && cp->value.size() >= 4 ? int(int32_t(RdBe(cp->value))) : -1;
+      if (slot < 0 || slot >= int(m.textures.size()) || s.uvs.empty()) continue;
+      std::array<float, 4> b = {1e9f, 1e9f, -1e9f, -1e9f};
+      for (const auto& uv : s.uvs)
+        b[0] = std::min(b[0], uv[0]), b[1] = std::min(b[1], uv[1]), b[2] = std::max(b[2], uv[0]), b[3] = std::max(b[3], uv[1]);
+      boxes[m.textures[size_t(slot)]].push_back(b);
+    }
+  }
+  if (boxes.empty()) return Fail(error, "none of the meshes found");
+  static const uint8_t kStripe[8][3] = {{255, 0, 0}, {255, 128, 0}, {255, 255, 0}, {0, 255, 0}, {0, 255, 255}, {0, 0, 255}, {160, 0, 255}, {255, 0, 255}};
+  int done = 0;
+  for (auto& k : kids) {
+    const Bytes raw = Unpack(k.data);
+    std::vector<BundleTexture> b;
+    if (!IsTextureBundle(raw) || !BundleRead(raw, b)) continue;
+    bool changed = false;
+    for (auto& t : b) {
+      const auto it = boxes.find(t.name);
+      Image img;
+      if (it == boxes.end() || !DdsDecode(t.data, img)) continue;
+      for (const auto& bx : it->second) {
+        const int x0 = std::clamp(int(bx[0] * img.w), 0, img.w - 1), x1 = std::clamp(int(bx[2] * img.w), 0, img.w - 1);
+        const int y0 = std::clamp(int(bx[1] * img.h), 0, img.h - 1), y1 = std::clamp(int(bx[3] * img.h), 0, img.h - 1);
+        const int split = x0 + (x1 - x0) * 6 / 10, cell = std::max(4, (split - x0) / 8);
+        for (int y = y0; y <= y1; ++y)
+          for (int x = x0; x <= x1; ++x) {
+            uint8_t* p = &img.rgba[(size_t(y) * size_t(img.w) + size_t(x)) * 4];
+            if (x < split) {
+              p[3] = (((x - x0) / cell + (y - y0) / cell) & 1) ? 255 : 0;
+            } else {
+              const int s = std::min(7, (x - split) * 8 / std::max(1, x1 - split + 1));
+              p[0] = kStripe[s][0], p[1] = kStripe[s][1], p[2] = kStripe[s][2], p[3] = uint8_t(16 + 32 * s);
+            }
+          }
+      }
+      t.data = DdsEncode(img, DxtFormat::kDxt5), changed = true, ++done;
+    }
+    if (changed) k.data = BundleWrite(b);
+  }
+  if (!done) return Fail(error, "the colour picture wasn't found");
+  en->data = PachWrite(kids);
+  pac = EpacWrite(e);
+  return true;
+}
+
 bool PatchMaterials(Bytes& pac, int attire, bool gear, const std::map<std::pair<uint32_t, int>, MatEdit>& edits, std::string* error) {
   bool any = false;
   for (const auto& [k, ed] : edits) any |= !ed.Empty();
@@ -195,6 +257,10 @@ bool PatchMaterials(Bytes& pac, int attire, bool gear, const std::map<std::pair<
         uint32_t f = RdBe(s.raw, 0x88);
         if (ed.cutout >= 0) f = ed.cutout ? f | 0x110 : f & ~0x110u;
         if (ed.two_sided >= 0) f = ed.two_sided ? f & ~0x2u : f | 0x2;
+        // (the skin shaders never write the picture's alpha, so they can't cut out - seen in game: a cut-out skin
+        // part stays whole. g_fSweatSPA 0 gets it the colour-alpha shader, which does - as stock skin without sweat)
+        if (ed.cutout == 1 && SkinShineOf(s, f))
+          if (Param* p = Find(s, "g_fSweatSPA"); p && p->value.size() >= 4) FWr(p->value, 0, 0.0f);
         WrBe(s.raw, 0x88, f), changed = true;
       }
       if (ed.normal != 0)
