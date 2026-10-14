@@ -920,6 +920,9 @@ void Apply(std::unique_ptr<Loaded> L) {
       for (int i = 0; i < 16; ++i) std::fprintf(g_dump, " %.5f", view[i]);
       std::fprintf(g_dump, " P %.5f %.5f B", proj[0], proj[5]);
       for (const auto& b : char_preview::EntrantBones()) std::fprintf(g_dump, " %s %.3f %.3f %.3f", b.name.c_str(), b.t[0], b.t[1], b.t[2]);
+      std::fprintf(g_dump, " R");
+      for (const auto& b : char_preview::EntrantBones())
+        for (float v : b.r) std::fprintf(g_dump, " %.4f", v);
       std::fputc('\n', g_dump);
       g_dump_done = g_key;
     }

@@ -936,11 +936,16 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vecto
   for (int c = 0; c < 21; ++c) {
     const int i = find(kBones[c]);
     if (i < 0 || !m.has[size_t(c)]) continue;
-    if (m.fk) {  // YMKs: on top of the bone's rest rotation (the angles are small: a pose's offsets)
-      float e[3][3], rest[3][3];
-      Euler(rot[c], e);
-      std::memcpy(rest, local[size_t(i)].r, sizeof rest);
-      MulR(rest, e, local[size_t(i)].r);
+    if (m.fk) {  // YMKs, as the game poses them (measured: Big Show 125's bone matrices in his entrance): the key on
+      // the bone's rest frame - its rest snapped to quarter turns (root 90, koshi 180, sakotsu +-90 stay) - not on the
+      // bind pose's splay (momo -+15, ninoude +-15, kote 20 degrees aren't in the game's poses); the twists below
+      const bool kote = c == 7 || c == 11;
+      const float e[3] = {kote ? 0.0f : rot[c][0], rot[c][1], rot[c][2]};  // (the kote's x roll: on its twist bones)
+      float snapped[3], frame[3][3], key[3][3];
+      for (int a = 0; a < 3; ++a) snapped[a] = std::round(ch.bones[size_t(i)].r[a] / 1.5707963f) * 1.5707963f;
+      Euler(snapped, frame);
+      Euler(e, key);
+      MulR(frame, key, local[size_t(i)].r);
     } else {
       // YMBs, as the game builds the pose (sub_823A4420): the IK bones aren't driven, sakotsu / te take y and z,
       // tsumasaki y only; the rest replaces the bone's rotation
@@ -951,6 +956,40 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vecto
       Euler(e, local[size_t(i)].r);
     }
   }
+  if (m.fk)  // YMKs twists, as the game's entrance poses (measured: Big Show 125, the game's bone matrices)
+    for (int side = 0; side < 2; ++side) {
+      // the upper arm / thigh: their twist about the bone (x) split with the twist bone - ninoude_x half, momo_x 0.435
+      // of it (the thigh keeping 0.435 too); the swing stays on the bone
+      struct Tw {
+        int c;
+        const char *bone, *twb;
+        float share, keep;
+      };
+      const Tw tws[2] = {{side ? 10 : 6, side ? "r_ninoude" : "l_ninoude", side ? "r_ninoude_x" : "l_ninoude_x", 0.5f, 0.5f},
+                         {side ? 17 : 13, side ? "r_momo" : "l_momo", side ? "r_momo_x" : "l_momo_x", 0.435f, 0.435f}};
+      for (const Tw& tw : tws) {
+        const int i = find(tw.bone), j = find(tw.twb);
+        if (i < 0 || j < 0 || !m.has[size_t(tw.c)]) continue;
+        const float (&r)[3][3] = local[size_t(i)].r;
+        const float qw = 0.5f * std::sqrt(std::max(0.0f, 1 + r[0][0] + r[1][1] + r[2][2]));
+        const float qx = qw > 1e-5f ? (r[2][1] - r[1][2]) / (4 * qw) : 0.0f;
+        const float twist = 2 * std::atan2(qx, qw);  // (about x)
+        const float off[3] = {-(1 - tw.keep) * twist, 0, 0}, mine[3] = {tw.share * twist, 0, 0};
+        float rx[3][3], cur[3][3];
+        Euler(off, rx);
+        std::memcpy(cur, local[size_t(i)].r, sizeof cur);
+        MulR(cur, rx, local[size_t(i)].r);
+        Euler(mine, local[size_t(j)].r);
+      }
+      // the forearm: the kote's x roll, half on each twist bone (all on one when there's one)
+      const float roll = rot[side ? 11 : 7][0];
+      const char* x1 = side ? "r_kote_x" : "l_kote_x";
+      const char* x2 = side ? "r_kote_x2" : "l_kote_x2";
+      const bool two = find(x2) >= 0;
+      const float e[3] = {two ? roll * 0.5f : roll, 0, 0};
+      if (const int i = find(x1); i >= 0) Euler(e, local[size_t(i)].r);
+      if (const int i = find(x2); i >= 0) Euler(e, local[size_t(i)].r);
+    }
   if (!m.fk)  // the kote's x roll: on the forearm twist bones (half each when there are two)
     for (int side = 0; side < 2; ++side) {
       const float roll = rot[side ? 11 : 7][0];
@@ -2357,6 +2396,8 @@ std::vector<BonePos> EntrantBones() {
   for (size_t i = 0; i < sl.world.size(); ++i) {
     BonePos b{sl.ch->bones[i].name, {}};
     ScaledPoint(sl.world[i].t.x, sl.world[i].t.y, sl.world[i].t.z, b.t);
+    for (int a = 0; a < 3; ++a)
+      for (int c = 0; c < 3; ++c) b.r[a * 3 + c] = sl.world[i].r[a][c];
     out.push_back(b);
   }
   return out;

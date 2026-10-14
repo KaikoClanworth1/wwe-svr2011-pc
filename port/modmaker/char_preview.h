@@ -123,6 +123,7 @@ bool EntrantBone(const char* name, float r[9], float t[3]);
 struct BonePos {
   std::string name;
   float t[3];
+  float r[9] = {};  // (its world rotation, row-major, unscaled)
 };
 std::vector<BonePos> EntrantBones();
 // A prop's own bones turned by its track (bone k: Euler angles, R = Rz Ry Rx; off = its rest).

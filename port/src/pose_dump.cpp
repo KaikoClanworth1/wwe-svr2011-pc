@@ -238,6 +238,56 @@ void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
   Flush(false);
 }
 
+// Test aid SVR2011_TEST_BONE_SCAN=<tick>: at that camera tick, where the entrant's posed bones are (the 33 part
+// pointers are empty during an entrance): the character's first 12 KB searched for runs of rigid 4 x 4 matrices (row
+// vectors, translation last) or 3 x 4 ones (translation in the 4th column) near the pose root (or root-relative). Logged.
+// SVR2011_TEST_BONE_DUMP: the entrance lines carry the bones it found (W: ch+0x670, W2: ch+0x1140, 43 each: the
+// model's "hige" node list order - r_kuchi ... root).
+bool Phys(uint32_t a, uint32_t len) { return a >= 0xA0000000u && a + len <= 0xC0000000u && !(a & 3); }
+int MatrixAt(uint8_t* base, uint32_t a, const float root[3]) {  // 0 none, 1 4x4 row vectors, 2 3x4 columns
+  float m[16];
+  for (int i = 0; i < 16; ++i) m[i] = RdF(base + a + 4 * i);
+  for (float v : m)
+    if (!(std::fabs(v) < 1e5f)) return 0;
+  auto unit = [](float x, float y, float z) { return std::fabs(x * x + y * y + z * z - 1) < 0.08f; };
+  auto near = [&](float x, float y, float z) {
+    return (std::fabs(x - root[0]) < 40 && std::fabs(y - root[1]) < 40 && std::fabs(z - root[2]) < 40) ||
+           (std::fabs(x) < 40 && std::fabs(y) < 40 && std::fabs(z) < 40);  // (or root-relative)
+  };
+  if (unit(m[0], m[1], m[2]) && unit(m[4], m[5], m[6]) && unit(m[8], m[9], m[10]) && std::fabs(m[3]) < 1e-3f &&
+      std::fabs(m[7]) < 1e-3f && std::fabs(m[11]) < 1e-3f && std::fabs(m[15] - 1) < 1e-3f && near(m[12], m[13], m[14]))
+    return 1;
+  if (unit(m[0], m[4], m[8]) && unit(m[1], m[5], m[9]) && unit(m[2], m[6], m[10]) && near(m[3], m[7], m[11])) return 2;
+  return 0;
+}
+void ScanBlock(uint8_t* base, uint32_t a, uint32_t len, const float root[3], const std::string& path, int& reports) {
+  if (!Phys(a, len)) return;
+  for (int kind = 1; kind <= 2; ++kind) {
+    const uint32_t stride = kind == 1 ? 64 : 48;
+    for (uint32_t o = 0; o + stride <= len && reports < 60; o += 16) {
+      if (MatrixAt(base, a + o, root) != kind) continue;
+      uint32_t n = 1;
+      while (o + (n + 1) * stride <= len && MatrixAt(base, a + o + n * stride, root) == kind) ++n;
+      if (n >= 8) {
+        ++reports;
+        REXLOG_INFO("[svr2011] bone scan: {} +{:X} ({:08X}): {} {} matrices, first t {:.2f} {:.2f} {:.2f}", path, o, a + o, n,
+                    kind == 1 ? "4x4" : "3x4", RdF(base + a + o + (kind == 1 ? 48 : 12)),
+                    RdF(base + a + o + (kind == 1 ? 52 : 28)), RdF(base + a + o + (kind == 1 ? 56 : 44)));
+        o += n * stride - 16;
+      }
+    }
+  }
+}
+void BoneScan(uint8_t* base, uint32_t ch) {
+  float root[3];
+  for (int i = 0; i < 3; ++i) root[i] = RdF(base + ch + kPose + 64 + 4 * i);
+  REXLOG_INFO("[svr2011] bone scan: ch {:08X}, pose root {:.2f} {:.2f} {:.2f}", ch, root[0], root[1], root[2]);
+  int reports = 0;
+  ScanBlock(base, ch, 12288, root, "ch", reports);  // (the character only: the bones are at +0x670 / +0x1140, found
+  // by following its pointers too - which can read unmapped pages, so no longer done)
+  REXLOG_INFO("[svr2011] bone scan: done, {} runs", reports);
+}
+
 // SVR2011_TEST_CAMERA_DUMP (with SVR2011_TEST_POSE_DUMP, into the same file): after each camera update
 // (sub_8239C5C0: cam+80 = the fov in degrees, from +240; +16..+111 = the pose copied from +352..+447) one line
 //   C <tick> F <match frame> <cam> fov <+80> z <+240> zm <+1320> ms <wall clock> V <+16..+111: 24 floats>
@@ -245,6 +295,11 @@ void CameraDump(uint8_t* base, uint32_t cam) {
   const Config& c = Cfg();
   if (!c.camera || !Pointer(cam)) return;
   ++g_tick;
+  static const long scan_at = [] {
+    const char* e = std::getenv("SVR2011_TEST_BONE_SCAN");
+    return e ? std::atol(e) : -1L;
+  }();
+  if (scan_at >= 0 && long(g_tick) == scan_at && Phys(g_seen[0].ch, 12288)) BoneScan(base, g_seen[0].ch);
   std::string s;
   char b[128];
   const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -259,6 +314,16 @@ void CameraDump(uint8_t* base, uint32_t cam) {
       std::snprintf(b, sizeof b, "E %u P %u", g_tick, p);
       s += b;
       Tail(base, g_seen[p].ch, g_seen[p].fighter, s, false);
+      if (p == 0 && std::getenv("SVR2011_TEST_BONE_DUMP")) {  // (the posed bones, found by the bone scan: ch+0x670
+        // and ch+0x1140, 43 4 x 4 world matrices each - rotation rows 3 x 3 and the translation row)
+        for (uint32_t set : {0x670u, 0x1140u}) {
+          s += set == 0x670u ? " W" : " W2";
+          for (uint32_t k = 0; k < 43; ++k) {
+            const uint8_t* m = base + g_seen[p].ch + set + 64 * k;
+            Vec(s, m, 3), Vec(s, m + 16, 3), Vec(s, m + 32, 3), Vec(s, m + 48, 3);
+          }
+        }
+      }
       s += '\n';
     }
   {
