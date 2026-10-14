@@ -38,7 +38,7 @@ SERIALS = {'ps2_jbi': ('SLES_504.77', 'SLUS_202.69'), 'ps2_sym': ('SLES_512.83',
 # model character id (XX of model id XXYZ) -> CHAR record number: the hex digits read as decimal (+ offset), or
 # the id as a number (PS2 2009); PS2 2007-2010 records are the X360 games' (2010's numbered from 100)
 UNGROUPED = {'ps2_jbi'}   # (every model its own id, attire 0: a superstar's models share a name)
-NUMBERING = {'ps2_jbi': ('dec100', 0), 'ps2_svr09': ('int', 0), 'ps2_svr10': ('dec', 100)}
+NUMBERING = {'ps2_jbi': ('dec100', 0), 'ps2_svr09': ('int', 0)}
 JUNK = re.compile(r'^(edit ?\d+|dlc ?\d+|0|dummy|motion test.*|moves? (set|man).*|.* bra \d+|average|speedy|wbm|green|red|'
                   r'ojl|ktm|omp|ms|unknown \d+.*|)$', re.I)   # (SYM's OJL / KTM / OMP / MS: no person)
 # (no gender in the name records: the women of the rosters by name - 2011's own gender wins when it has her)
