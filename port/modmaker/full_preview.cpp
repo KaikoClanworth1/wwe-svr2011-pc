@@ -888,6 +888,8 @@ void Apply(std::unique_ptr<Loaded> L) {
   g_cur = std::move(L);
   if (!g_cur->error.empty()) return;
   char_preview::SetHeight(g_cur->scale), char_preview::SetScaleAtRoot(true);  // (the superstar's size, as the game draws it)
+  // the practice arena's screens (the titantron, the LED walls behind the dot masks): self-lit, as in game
+  editor::SetSelfLit({"tf_titan", "tf_titan1", "tf_titan_l"}, {"raw_p_black", "raw_p_black2"});
   Log("full preview: the superstar's size x" + std::to_string(g_cur->scale));
   if (g_cur->arena) editor::ViewArena(g_cur->arena.get(), "Practice arena", "");
   g_stage = StageGrid();
@@ -1005,6 +1007,7 @@ void Close() {
   audio_out::Unload();
   CloseTitantron();
   editor::SetViewExtra(nullptr);
+  editor::SetSelfLit({});
   editor::ClearViewCamera();
   editor::SetViewHint(true);
   editor::ClearView();

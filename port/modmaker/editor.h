@@ -65,6 +65,10 @@ void ClearViewCamera();
 // An arena texture drawn with another picture (the Full preview: the titantron movie on the screen's tf_titan);
 // nullptr puts the arena's own back. The caller keeps the view alive while it's set.
 void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv);
+// Textures drawn self-lit (their own colours, the lighting preset's tint only - not the vertex colours or the light):
+// the Full preview's screens, lit in game by their own light set. masks: an LED wall's dot grid textures (drawn over
+// the screen: their holes lit dots, the screen between them). Empty: none.
+void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks = {});
 // Drawn after the view's scene into the same target and depth (w x h), with the camera used: the Full preview's
 // wrestler. Empty: none.
 using ViewExtraFn = std::function<void(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h,

@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -214,6 +215,11 @@ ID3D11VertexShader* g_vs = nullptr;
 ID3D11PixelShader* g_ps = nullptr;
 ID3D11InputLayout* g_layout = nullptr;
 ID3D11Buffer* g_cb = nullptr;
+ID3D11Buffer* g_cb_mode = nullptr;   // (b1: mode.x 1 = self-lit, the textures in g_self_lit)
+int g_cb_mode_now = -1;
+std::set<std::string> g_self_lit;    // (SetSelfLit: screens drawn at their own brightness)
+std::set<std::string> g_led_mask;    // (SetSelfLit's masks: a screen's dot grid over it, its holes the lit dots)
+ID3D11BlendState* g_led_blend = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_solid = nullptr;
 ID3D11RasterizerState* g_wire = nullptr;
@@ -314,6 +320,7 @@ cbuffer C : register(b0) {
   float4 tint;
   float4 flat;
 };
+cbuffer D : register(b1) { float4 mode; };
 struct VI { float3 p : POSITION; float3 n : NORMAL; float4 c : COLOR; float2 uv : TEXCOORD; };
 struct VO { float4 p : SV_Position; float3 n : NORMAL; float4 c : COLOR; float2 uv : TEXCOORD; };
 VO vs(VI i) {
@@ -331,7 +338,9 @@ float4 ps(VO i) : SV_Target {
   if (flat.w > 0.5) return float4(flat.rgb, 1);
   float4 tx = t.Sample(s, i.uv);
   if (flat.w < -0.5) return float4(tx.rgb * tx.a * i.c.rgb * tint.rgb * 0.6, 0);
+  if (mode.x > 1.5) return float4(tint.rgb * 0.55, 1 - tx.a);  // (an LED mask: its holes are lit dots, blended)
   if (tx.a < 0.25) discard;
+  if (mode.x > 0.5) return float4(tx.rgb * tint.rgb, 1);  // (self-lit: a screen)
   float3 n = normalize(i.n + 1e-5);
   float d = abs(dot(n, normalize(float3(0.35, -1.0, 0.25))));
   return float4(tx.rgb * i.c.rgb * tint.rgb * (0.55 + 0.45 * d), 1);
@@ -362,6 +371,8 @@ bool CreatePipeline() {
   bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   g_dev->CreateBuffer(&bd, nullptr, &g_cb);
+  bd.ByteWidth = 16;
+  g_dev->CreateBuffer(&bd, nullptr, &g_cb_mode);
   D3D11_SAMPLER_DESC sd = {};
   sd.Filter = D3D11_FILTER_ANISOTROPIC;
   sd.MaxAnisotropy = 8;
@@ -394,6 +405,9 @@ bool CreatePipeline() {
   bl.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
   bl.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
   g_dev->CreateBlendState(&bl, &g_add);
+  bl.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;  // (LED masks: dest x (1 - a) + dot colour x a)
+  bl.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+  g_dev->CreateBlendState(&bl, &g_led_blend);
   // a white texture for meshes without one
   const uint32_t white = 0xFFFFFFFFu;
   D3D11_TEXTURE2D_DESC td = {};
@@ -599,6 +613,17 @@ void DrawMesh(int model, int mesh) {
   g_ctx->IASetIndexBuffer(g->ib, DXGI_FORMAT_R16_UINT, 0);
   ID3D11ShaderResourceView* srv = TextureFor(g->tex);
   g_ctx->PSSetShaderResources(0, 1, &srv);
+  const int mode = g_led_mask.count(g->tex) ? 2 : g_self_lit.count(g->tex) ? 1 : 0;
+  if (mode != g_cb_mode_now && g_cb_mode && !g_glow_pass) {
+    if (mode == 2 || g_cb_mode_now == 2) g_ctx->OMSetBlendState(mode == 2 ? g_led_blend : nullptr, nullptr, 0xFFFFFFFF);
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (SUCCEEDED(g_ctx->Map(g_cb_mode, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+      const float v[4] = {float(mode), 0, 0, 0};
+      std::memcpy(ms.pData, v, sizeof v);
+      g_ctx->Unmap(g_cb_mode, 0);
+      g_cb_mode_now = mode;
+    }
+  }
   g_ctx->DrawIndexed(g->count, 0, 0);
 }
 
@@ -1109,6 +1134,8 @@ void RenderScene() {
   g_ctx->PSSetShader(g_ps, nullptr, 0);
   g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
   g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
+  g_ctx->PSSetConstantBuffers(1, 1, &g_cb_mode);
+  g_cb_mode_now = -1;  // (its value: set again by the first mesh)
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
   const bool given = g_readonly && g_vcam_set;  // (the view's camera from the caller)
   const M4 view = given ? g_vcam_view : LookAt(Eye(), g_target, {0, -1, 0});
@@ -2182,6 +2209,10 @@ void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv) 
   else g_tex_override.erase(name);
 }
 void SetViewExtra(ViewExtraFn fn) { g_view_extra = std::move(fn); }
+void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks) {
+  g_self_lit = std::set<std::string>(textures.begin(), textures.end());
+  g_led_mask = std::set<std::string>(masks.begin(), masks.end());
+}
 void SetViewHint(bool on) { g_view_hint = on; }
 
 void ClearView() {
