@@ -264,10 +264,12 @@ struct RawGroup {
   uint16_t number = 0;
   uint32_t extra = 0;
   std::vector<std::pair<std::string, std::pair<uint32_t, uint32_t>>> entries;  // name, (sector, size / 0x100)
+  std::vector<uint32_t> tails;  // (20-byte entries) each entry's last u32
 };
-bool ReadTable(const Bytes& in, bool wide, uint64_t file_size, std::vector<RawGroup>& out, uint32_t* used) {
+// esz: 12, 16 (8-char names) or 20 (WWE 2K16: name[4], sector, size, the size again, tail; count = entries x 4)
+bool ReadTable(const Bytes& in, size_t esz, uint64_t file_size, std::vector<RawGroup>& out, uint32_t* used) {
   out.clear();
-  const size_t esz = wide ? 16 : 12, nlen = wide ? 8 : 4, words = esz / 4;
+  const size_t nlen = esz == 16 ? 8 : 4, words = esz == 12 ? 3 : 4;
   size_t p = 0x800;
   *used = 0;
   while (p + 12 <= 0x4000) {
@@ -287,8 +289,10 @@ bool ReadTable(const Bytes& in, bool wide, uint64_t file_size, std::vector<RawGr
         if (e[c] < 0x20) return false;  // (names may be Shift-JIS: only control bytes rule a layout out)
       const uint32_t sec = Le32(e + nlen), sz = Le32(e + nlen + 4);
       if (sec >= 0x200000) return false;  // (past 4 GB: name bytes read as a sector - the wrong entry size)
+      if (esz == 20 && Le32(e + 12) != sz) return false;  // (2K16 gives the size twice)
       if (file_size && 0x4000 + uint64_t(sec) * 0x800 + uint64_t(sz) * 0x100 > file_size + 0x800) return false;
       g.entries.push_back({Name16(e, nlen), {sec, sz}});
+      g.tails.push_back(esz == 20 ? Le32(e + 16) : 0);
     }
     *used += 12 + uint32_t(esz) * cnt;
     out.push_back(std::move(g));
@@ -296,14 +300,14 @@ bool ReadTable(const Bytes& in, bool wide, uint64_t file_size, std::vector<RawGr
   return true;
 }
 
-// The consistent layout: the flag's (bit 0 at group +6), then the magic's, then the other.
-bool ReadAnyTable(const Bytes& in, uint64_t file_size, std::vector<RawGroup>& out, bool& wide, uint32_t& used) {
+// The consistent layout: the flag's (bit 0 at group +6), then the magic's, then the other, then 2K16's 20 bytes.
+bool ReadAnyTable(const Bytes& in, uint64_t file_size, std::vector<RawGroup>& out, size_t& esz, uint32_t& used) {
   if (!IsArchive(in)) return false;
   const bool magic16 = !std::memcmp(in.data(), "EPK8", 4);
   const bool flag16 = Le32(&in[0x800]) && (Le16(&in[0x806]) & 1);
-  for (bool w : {flag16, magic16, !magic16})
-    if (ReadTable(in, w, file_size, out, &used)) {
-      wide = w;
+  for (size_t e : {size_t(flag16 ? 16 : 12), size_t(magic16 ? 16 : 12), size_t(magic16 ? 12 : 16), size_t(20)})
+    if (ReadTable(in, e, file_size, out, &used)) {
+      esz = e;
       return true;
     }
   return false;
@@ -314,24 +318,25 @@ bool ReadAnyTable(const Bytes& in, uint64_t file_size, std::vector<RawGroup>& ou
 bool EpacTable(const Bytes& head, uint64_t file_size, std::vector<EpacRow>& rows, bool* wide) {
   rows.clear();
   std::vector<RawGroup> gs;
-  bool w = false;
+  size_t esz = 12;
   uint32_t used = 0;
-  if (!ReadAnyTable(head, file_size, gs, w, used)) return false;
+  if (!ReadAnyTable(head, file_size, gs, esz, used)) return false;
   for (const auto& g : gs)
     for (const auto& [name, at] : g.entries)
       rows.push_back({g.type, name, 0x4000 + uint64_t(at.first) * 0x800, at.second * 0x100});
-  if (wide) *wide = w;
+  if (wide) *wide = esz == 16;
   return true;
 }
 
 bool EpacRead(const Bytes& in, Epac& out) {
   std::vector<RawGroup> gs;
-  bool wide = false;
+  size_t esz = 12;
   uint32_t used = 0;
-  if (!ReadAnyTable(in, in.size(), gs, wide, used)) return false;
+  if (!ReadAnyTable(in, in.size(), gs, esz, used)) return false;
   out = {};
   out.epk8 = !std::memcmp(in.data(), "EPK8", 4);
-  out.wide = wide;
+  out.wide = esz == 16;
+  out.e20 = esz == 20;
   out.header.assign(in.begin(), in.begin() + 0x800);
   bool any_extra = false, sectors = true;
   for (const auto& g : gs) {
@@ -343,10 +348,11 @@ bool EpacRead(const Bytes& in, Epac& out) {
       any_extra = true;
       if (g.entries.empty() || g.entries.front().second.first != g.extra) sectors = false;
     }
-    for (const auto& [name, at] : g.entries) {
+    for (size_t k = 0; k < g.entries.size(); ++k) {
+      const auto& [name, at] = g.entries[k];
       const size_t off = 0x4000 + size_t(at.first) * 0x800, size = size_t(at.second) * 0x100;
       if (off + size > in.size()) return false;
-      eg.entries.push_back({name, Bytes(in.begin() + ptrdiff_t(off), in.begin() + ptrdiff_t(off + size))});
+      eg.entries.push_back({name, Bytes(in.begin() + ptrdiff_t(off), in.begin() + ptrdiff_t(off + size)), g.tails[k]});
     }
     out.groups.push_back(std::move(eg));
   }
@@ -360,12 +366,12 @@ bool EpacRead(const Bytes& in, Epac& out) {
 Bytes EpacWrite(const Epac& e) {
   Bytes out(e.header);
   out.resize(0x800, 0);
-  const size_t esz = e.wide ? 16 : 12, nlen = e.wide ? 8 : 4;
+  const size_t esz = e.e20 ? 20 : e.wide ? 16 : 12, nlen = e.wide ? 8 : 4, words = e.e20 ? 4 : esz / 4;
   Bytes toc, body;
   uint32_t used = 0;
   for (const auto& g : e.groups) {
     AppName(toc, g.type, 4);
-    AppLe32(toc, uint32_t(g.entries.size() * (esz / 4)) | uint32_t(g.number) << 16);
+    AppLe32(toc, uint32_t(g.entries.size() * words) | uint32_t(g.number) << 16);
     Pad(body, 0x800);
     AppLe32(toc, e.group_sectors ? uint32_t(body.size() / 0x800) : g.extra);
     for (const auto& en : g.entries) {
@@ -373,6 +379,10 @@ Bytes EpacWrite(const Epac& e) {
       AppName(toc, en.name, nlen);
       AppLe32(toc, uint32_t(body.size() / 0x800));
       AppLe32(toc, uint32_t((en.data.size() + 0xFF) / 0x100));
+      if (e.e20) {
+        AppLe32(toc, uint32_t((en.data.size() + 0xFF) / 0x100));
+        AppLe32(toc, en.tail);
+      }
       App(body, en.data);
       Pad(body, 0x100);
     }
