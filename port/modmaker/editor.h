@@ -43,9 +43,54 @@ void SetArena(svrfmt::Arena* arena, const std::string& title);
 void SetArea(const std::vector<std::pair<int, int>>& ids, const float* spot = nullptr);
 // The editor's whole UI, filling the current ImGui window region.
 void Draw();
+// A second, read-only scene (the Installed mods page): an arena shown without touching the one being edited.
+// ViewArena takes the arena (kept alive by the caller until ClearView) and its manifest (ring / lighting keys);
+// DrawView draws it in w x h with an orbit camera only.
+void ViewArena(svrfmt::Arena* arena, const std::string& title, const std::string& manifest);
+// An arena's ring kit as the game puts it out (its own rope heights): each part's model (index into arena.models)
+// with its world matrix (row-major, row vectors, game space: y down) - for views that draw a ring without the
+// editor's scene (char_preview's basic ring).
+struct RingPart {
+  int model = -1;
+  float m[16] = {};
+};
+std::vector<RingPart> RingPlacements(const svrfmt::Arena& a);
+void DrawView(float w, float h);
+void ClearView();
+// The view's camera given by the caller (the Full preview: an entrance's camera track): view and projection,
+// game coordinates, row vectors (HLSL row_major + mul(v, M)) - DrawView uses it and the mouse doesn't move it,
+// until ClearViewCamera. The projection's depth range should be 1 .. 5000 (the editor's).
+void SetViewCamera(const float view[16], const float proj[16]);
+void ClearViewCamera();
+// An arena texture drawn with another picture (the Full preview: the titantron movie on the screen's tf_titan);
+// nullptr puts the arena's own back. The caller keeps the view alive while it's set.
+void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv);
+// Textures drawn self-lit (their own colours, the lighting preset's tint only - not the vertex colours or the light):
+// the Full preview's screens, lit in game by their own light set. masks: an LED wall's dot grid textures (drawn over
+// the screen: their holes lit dots, the screen between them). Empty: none.
+void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks = {});
+// Alpha cut-outs only on the models whose C351 line has a transparency flag (s a k c i j o), the rest opaque - as the
+// game draws them (the Full preview: bg29's barrier panels have alpha but no flag). Off: every texture's alpha cuts.
+void SetGameTransparency(bool on);
+// Drawn after the view's scene into the same target and depth (w x h), with the camera used: the Full preview's
+// wrestler. Empty: none.
+using ViewExtraFn = std::function<void(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h,
+                                       const float view[16], const float proj[16])>;
+void SetViewExtra(ViewExtraFn fn);
+// The view's labels / mouse hint shown (the Full preview turns them off).
+void SetViewHint(bool on);
 bool Busy();
 bool HasArena();   // an arena is set
 int EditCount();   // grows with every edit (the project's dirty check)
+// The size budget (measured in the background after edits): the arena's file
+// and unpacked sizes against the shipped one's, and the biggest model you
+// changed or added (unpacked), for the problems list. False until measured.
+struct BudgetInfo {
+  size_t file = 0, file_max = 0, unpacked = 0, unpacked_max = 0;
+  size_t biggest = 0;          // the biggest changed / added model, unpacked
+  uint32_t biggest_id = 0;
+};
+bool Budget(BudgetInfo& out);
 void Shutdown();
 // test aid: a camera preset (0 hard camera, 1 top, 2 from the stage; -1 none)
 // and an object to select (by name) once an arena is set

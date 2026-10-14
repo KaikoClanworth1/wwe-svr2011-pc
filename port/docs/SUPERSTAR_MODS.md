@@ -11,11 +11,12 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 72.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `pose=<id>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>`, `attire1..4_entrance=<number>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
 | `render.dds`, `render_small.dds` | (optional) its select-screen render: 512 x 512 and the 256 x 256 bust, DXT5 (the Mod Maker makes them from any picture) |
+| `render_full.dds` | (optional) a separate 512 x 512 full-body picture for SSFB (the select screen in some modes); without it SSFB is `render.dds` too |
 | `voice.<ext>` | (optional) a recording of the name: the ring announcer "says" it |
 | `attireN.pac` | (optional, N = 2-4) another model pac: its first attire becomes the mod's attire N |
 | `moves.txt` | (optional, `moves=`) its own moves over the base's: lines `0xOFF=<move id>`, OFF a byte offset in the profile's move block (0..0x1BF, even) |
@@ -169,6 +170,75 @@ aside. So mods get all their base's attires, plus up to 4 in all.
 Tested: ADVANCED shows CHANGE ATTIRE "ATTIRE 3", and the model switches to the
 attire pac's (Orton on a Jericho mod).
 
+### Attire mods (an attire for a stock superstar)
+
+`Mods/Attires/<folder>/` (the Mod Maker's Attires page, the launcher's Mods
+tab), `manifest.txt`:
+
+| key | |
+|---|---|
+| `type=attire` | |
+| `superstar=<id>` | a superstar the game has (100-321). A superstar mod takes `attireN=` in its own manifest instead |
+| `attire=<1-4>` or `new` | replace that attire, or take the first one the superstar's own pac doesn't have |
+| `name=` | shown on CHANGE ATTIRE (31 characters) |
+| `model=attire.pac` | a character model pac; its first attire is used |
+| `entrance=<n>` | optional, the entrance that attire gets (as `attireN_entrance=`) |
+
+- A new attire: the model's first attire is copied to
+  `Mods/SuperstarOverlay/ch<id>_x<N>.pac` with the superstar's id and the
+  attire's digit in its EMD names, and mounted with the other overlay pacs. The
+  game finds models by entry name.
+- A replaced attire (one the game's own pac has): of two entries with one name
+  the game uses the first, its own, so a mounted pac isn't enough. The model
+  goes into an overlay copy of the game's pac instead: a generated move pack
+  (`Mods/SuperstarOverlay/attirepacks/<folder>/pack.txt`: `pacentry
+  ch\chNNN.pac EMD <entry> entry.bin`), merged by the move-pack overlay
+  (docs/MOVE_PACKS.md). Model entries are stored as plain PACHs, as the game's.
+- The two lookups above answer for the superstar too: the count goes up to
+  the highest attire a mod gives (4 at most), and a mod's attire gets its
+  `{name, unlock -1}` pair (string ids from 0xB400); the others keep the game's.
+- 4 attires at most. Two mods on one attire (the user's rule, 13 Oct): an attire
+  is free when the superstar's own pac doesn't have it and no switched-on attire
+  mod asks for it.
+  - The launchers (PC Mods tab: `mods_attire_guard`, when an attire mod is
+    installed and when Play starts the game; Android Mods page: `attireGuard`,
+    on install, on switching one on and on Play) keep the attire for the mod
+    installed first and move the newer one to the next free attire, rewriting
+    its `attire=` (with a `# moved from attire N` line) and saying so. With none
+    free they tell the player to switch one off.
+  - The game (games started without a launcher): the attire numbers asked for
+    are given in folder order (A-Z), the first keeping its attire; then the ones
+    that lost theirs and the `new` ones take the free attires in folder order,
+    or are left out with a log line. The same every start.
+  - The Mod Maker's Attires page warns when the attire chosen is already used
+    by an installed mod.
+  - Superstar mods' `attireN=` can't clash with these: attire mods only take
+    stock superstars.
+- Entrance gear superstars (Undertaker 103, CM Punk 131, John Cena 139, Shawn
+  Michaels 145, John Morrison 175: their pac has a kind 4 model, `%06d04`, the
+  coat / hat / shirt they come out in) take replaced attires only. Any attire
+  past their own never finishes loading the match (tested: Cena / Undertaker
+  attire 3 through a guest pac, through the pac overlay, with a kind 4 row
+  beside it, even with no mod at all through the test aid); Jericho and Mark
+  Henry load new attires fine. Their DLC third attires (CM Punk's 00013122)
+  come with the DLC's own chEtc.pac, so per-attire character data is the lead.
+  Until that is found the game leaves a new attire for them out (log line),
+  the launchers count no free attire for them and say why, and the Mod Maker
+  shouldn't offer one.
+  - Test: `"SvR2011 Launcher.exe" --mods-attires <game>` runs the launcher's
+    guard and prints what it did.
+- A `disabled` file in the folder turns it off.
+
+- Every model (a superstar mod's ch.pac and attire pacs, an attire mod's model)
+  must fit the match's vertex memory: 192 pages per wrestler
+  (`tools/model_budget.py`). Over it, the blood overlays (0x7532, 0x7531,
+  0x7530) are left out of the overlay copy; still over, the mod is left out,
+  with a log line.
+
+Tested: an attire mod replacing Mark Henry's attire 1 with Sabu's model plays
+in a match; new attires (guest pacs) on Mark Henry (2) and Chris Jericho (3 and
+4, the launcher's move) play in matches (13 Oct).
+
 ### Select screen framing
 
 Where the panel's 3D model stands comes from a placement table keyed by
@@ -245,7 +315,14 @@ the slot. A save made with the mod keeps the player's own edits.
   +0x14, +0x16 and +0x18. Example: 535 is Jeff Hardy's, which 2011 ships in
   `evt/Nyujyo7.pac`, along with its pyro sound bank `Pyro_Jeff_Hardy` in
   Entrance.pck, though no profile uses it. The music and movie still follow
-  `song=` / `movie=`.
+  `song=` / `movie=`. Any entrance number works: a stock one, or one a move
+  pack adds (converted from another game: `tools/entrance_port.py`,
+  docs/OTHER_GAMES_ENTRANCES.md).
+- **`attire<N>_entrance=<number>`** (N = 1-4, the mod's attire): that attire
+  walks out with its own entrance, with or without a title - like Rey
+  Mysterio's "Evil" attire, which the stock game does in code. A created
+  entrance (CREATE AN ENTRANCE) and a team's entrance still win. Details:
+  docs/ENTRANCE_ATTIRES.md.
 - **`abilities=a,b,...`:** up to 8 ability ids at record +230 (0 ends the
   list). 2011 uses 1, 7, 9, 11, 12, 14, 19, 20, 22, 23, 24.
 - **`announcer=<NAME>`:** the ring announcer's own clips of a name the sound
@@ -258,6 +335,16 @@ the slot. A save made with the mod keeps the player's own edits.
     (`*_SSN_JEFFHARDY_0..2` name calls of 2-3 s, `*_SSP_JEFFHARDY_0..5,9`
     introductions of 8-12 s), which nothing used.
   - It takes priority over `voice=`. `call=` then only picks the commentary.
+- **`pose=<id>`:** the pose its model plays on the character select / VS
+  panel. A motion id (32500 and up), or a superstar id (below 512) to copy that
+  superstar's pose; missing = the base's pose. `sub_8273D4A0(mgr, slot)` picks
+  it: the slot's id in the {id, motion} pairs of DLC_HD/SD.pac MMDL "MMMN"
+  (mgr+1392, 90 pairs; -1 = none), else the next of a rotating list (male
+  32500-32505, female 32510-32515), else 32500. Mods aren't in the pairs, so
+  before this they took a rotating pose. Poses in the table: 32520-32555,
+  32580-32583, 32590-32596 (`SVR2011_TEST_POSE_LOG=1` logs the table;
+  `SVR2011_TEST_POSE_AS=<id>=<mod id>` puts a mod's pose on that superstar's
+  panel, for tests). The select screen is the only place the game uses it.
 - **`height=<scale>`:** its size against the base's, 0.80-1.25 (1.05 = 5%
   taller; missing = the base's own). Record +28 is the superstar's scale, 4.12
   fixed point (4096 = 1.0, most are near it): the skeleton is built with its

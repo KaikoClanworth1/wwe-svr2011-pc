@@ -21,6 +21,8 @@
 #include "svrfmt/wwe13.h"
 #include "tool_run.h"
 
+#include <shellapi.h>
+
 namespace mm {
 namespace other_page {
 
@@ -54,6 +56,8 @@ bool ToolsReady(bool ffmpeg_too) {
   if (!missing.empty()) {
     ImGui::TextColored(kWarn, "Needs %s.", missing.c_str());
     ImGui::SameLine();
+    if (ImGui::SmallButton("Install what's missing...")) OpenToolsPanel();
+    ImGui::SameLine();
     if (ImGui::SmallButton("Recheck")) RecheckTools();
     return false;
   }
@@ -64,7 +68,9 @@ bool ToolsReady(bool ffmpeg_too) {
     return false;
   }
   if (ffmpeg_too && FfmpegExe().empty()) {
-    ImGui::TextColored(kWarn, "ffmpeg is needed too (on PATH or in C:\\ffmpeg\\bin) for the theme songs.");
+    ImGui::TextColored(kWarn, "ffmpeg is needed too for the theme songs.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Install it...")) OpenToolsPanel();
     return false;
   }
   return true;
@@ -79,14 +85,16 @@ int g_w13_host = 1;  // tile (RAW: the bundled ones used it)
 Wwe13Options g_w13;
 char g_w13_drop[128] = "";
 char g_w13_name[64] = "";
+bool g_show_arena_tab = false;  // (the Port page handed a file: that tab comes up)
 
 void Wwe13ArenaTab() {
-  ImGui::TextWrapped("A WWE '13 arena (its pac\\bg\\bgNN.pac, compressed or not) rebuilt as a 2011 arena in the "
+  ImGui::TextWrapped("A WWE '12, '13, 2K14, 2K15, 2K16 or 2K17 arena (its pac\\bg\\bgNN.pac, compressed or not; the Port page reads it off "
+                     "the disc) rebuilt as a 2011 arena in the "
                      "place of a host arena, which gives the room, the ring and the aprons. The result opens on the "
                      "Arena page: give it a banner and a name there and save it. This is how RAW IS WAR, SmackDown "
                      "1999, Royal Rumble 1998 and King of the Ring 1998 were made.");
   ImGui::Spacing();
-  if (FileRow("WWE '13 arena file...", g_w13_file, "pick a bgNN.pac", kPacFilter, 1) && g_w13_name[0] == 0)
+  if (FileRow("Arena file...", g_w13_file, "pick a bgNN.pac", kPacFilter, 1) && g_w13_name[0] == 0)
     std::snprintf(g_w13_name, sizeof g_w13_name, "%s", IdFrom(FileName(g_w13_file), "wwe13").c_str());
   ImGui::SetNextItemWidth(320 * g_scale);
   if (ImGui::BeginCombo("Host arena (the room it plays in)", g_arenas[g_w13_host].name)) {
@@ -117,7 +125,11 @@ void Wwe13ArenaTab() {
     ImGui::Unindent();
   }
   ImGui::Spacing();
-  ImGui::BeginDisabled(g_w13_file.empty() || Busy());
+  const bool special = !g_w13_file.empty() && SpecialStage(Utf8(fs::path(g_w13_file).filename().wstring()));
+  if (special)
+    ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "bg60 and up in WWE '12 - 2K17 are backstage rooms and studio stages, not arenas: on an arena "
+                                                   "slot they show a white mat over a black void, or crash (bg78).");
+  ImGui::BeginDisabled(g_w13_file.empty() || Busy() || special);
   PushAccent();
   if (ImGui::Button("Convert and open on the Arena page", ImVec2(320 * g_scale, 0))) {
     Wwe13Options opt = g_w13;
@@ -132,7 +144,10 @@ void Wwe13ArenaTab() {
     const std::wstring file = g_w13_file;
     const int host = g_w13_host;
     const std::string name = g_w13_name;
-    RunInBackground([file, host, opt, name] {
+    std::string source = Utf8(fs::path(file).stem().wstring());  // ("Arenas_wwe2k16_bg01" from the Port page, or "bg01")
+    if (source.rfind("Arenas_", 0) == 0) source = source.substr(7);
+    std::replace(source.begin(), source.end(), '_', ' ');
+    RunInBackground([file, host, opt, name, source] {
       Progress("Reading the WWE '13 arena ...");
       Bytes w13, hostpac;
       if (!ReadFile(Utf8(file), w13)) { Status("Could not read " + Utf8(file)); return; }
@@ -148,7 +163,7 @@ void Wwe13ArenaTab() {
       std::snprintf(b, sizeof b, "Converted: %d models, %d meshes, %d entries (%d from the host, %d dropped, %d ring parts).",
                     rep.conv.models, rep.conv.meshes, rep.entries, rep.from_host, rep.dropped, rep.ring_parts);
       Status(b);
-      OnUiThread([out, host, name] { arena_page::SetArenaFromPac(out, host, name); });
+      OnUiThread([out, host, name, source] { arena_page::SetArenaFromPac(out, host, name, source); });
     });
   }
   PopAccent();
@@ -357,6 +372,12 @@ void Svr08Tab() {
 
 }  // namespace
 
+void UseArenaFile(const std::wstring& file, const std::string& name) {
+  g_w13_file = file;
+  std::snprintf(g_w13_name, sizeof g_w13_name, "%s", name.c_str());
+  g_show_arena_tab = true;
+}
+
 // test aid: --convert-w13 <wwe13 bgNN.pac>,<host tile>: converts at start (then --shot shows the editor)
 void TestConvertW13(const std::wstring& file, int host) {
   g_w13_file = file;
@@ -380,8 +401,57 @@ void TestConvertW13(const std::wstring& file, int host) {
   });
 }
 
+// ---- Bink 2 videos (.bk2: WWE 2K15 and later) - opt-in, the player's own tool
+
+std::string g_bink2_state;  // "" not asked, else what Find said
+bool g_bink2_asked = false;
+
+void Bink2Section() {
+  if (!ImGui::CollapsingHeader("Enable Bink 2 conversion (.bk2 videos: WWE 2K15 and later)")) return;
+  ImGui::Indent();
+  ImGui::TextWrapped("Titantrons and movies of WWE 2K15 and later are Bink 2. The Mod Maker can turn them into the "
+                     "game's movies when you have a tool that reads Bink 2 - RAD Video Tools (free from RAD) or an "
+                     "ffmpeg built with a Bink 2 decoder. Neither comes with the Mod Maker. Then \"From a video...\" "
+                     "takes .bk2 files.");
+  ImGui::SetNextItemWidth(420 * g_scale);
+  std::string shown = g_settings.bink2_tool.empty() ? std::string("(look in the usual places)") : Utf8(g_settings.bink2_tool);
+  ImGui::InputText("##bk2", shown.data(), shown.size() + 1, ImGuiInputTextFlags_ReadOnly);
+  ImGui::SameLine();
+  if (ImGui::Button("Choose the tool...")) {
+    static const COMDLG_FILTERSPEC kExe[1] = {{L"radvideo64.exe or ffmpeg.exe", L"*.exe"}};
+    const std::wstring f = PickFile(false, L"RAD Video Tools (radvideo64.exe) or a Bink 2 ffmpeg.exe", kExe, 1);
+    if (!f.empty()) g_settings.bink2_tool = f, SaveSettings(), g_bink2_asked = false;
+  }
+  if (!g_settings.bink2_tool.empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x")) g_settings.bink2_tool.clear(), SaveSettings(), g_bink2_asked = false;
+  }
+  if (!g_bink2_asked && !Busy() && ToolsReady(false)) {
+    g_bink2_asked = true;
+    g_bink2_state = "looking ...";
+    std::vector<std::wstring> args = {L"find"};
+    if (!g_settings.bink2_tool.empty()) args.push_back(L"--tool"), args.push_back(g_settings.bink2_tool);
+    RunToolJson(L"bink2_convert.py", args, [](int code, const std::string& text) {
+      const auto field = [&](const char* key) {
+        const size_t k = text.find(std::string("\"") + key + "\"");
+        if (k == std::string::npos) return std::string();
+        const size_t q1 = text.find('"', text.find(':', k) + 1), q2 = text.find('"', q1 + 1);
+        return q1 == std::string::npos || q2 == std::string::npos ? std::string() : text.substr(q1 + 1, q2 - q1 - 1);
+      };
+      g_bink2_state = code == 0 ? "found: " + field("kind") + " - " + field("path") : "not found";
+    });
+  }
+  ImGui::TextColored(g_bink2_state.rfind("found", 0) == 0 ? ImVec4(0.55f, 0.85f, 0.55f, 1) : kWarn, "%s", g_bink2_state.c_str());
+  if (g_bink2_state == "not found") {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("RAD's download page"))
+      ShellOpen(L"https://www.radgametools.com/bnkdown.htm");
+  }
+  ImGui::Unindent();
+}
+
 void Draw() {
-  Heading("Other games", "Arenas, superstars, moves and backstage areas from WWE '13, SvR 2010 and SvR 2008, "
+  Heading("Other games", "Arenas from WWE '12 to 2K17, superstars, moves and backstage areas from WWE '13, SvR 2010 and SvR 2008, "
                          "converted the way the bundled mods were, each landing on its page to finish and save.");
   if (g_game.empty()) {
     ImGui::TextDisabled("No game folder.");
@@ -392,8 +462,13 @@ void Draw() {
                       PythonExe().empty() ? "not found" : Utf8(PythonExe()).c_str(),
                       ToolsDir().empty() ? "not found" : Utf8(ToolsDir()).c_str(),
                       FfmpegExe().empty() ? "not found" : "found");
+  Bink2Section();
   if (ImGui::BeginTabBar("other_tabs")) {
-    if (ImGui::BeginTabItem("WWE '13 arena")) { Wwe13ArenaTab(); ImGui::EndTabItem(); }
+    if (ImGui::BeginTabItem("WWE '12 - 2K17 arena", nullptr, g_show_arena_tab ? ImGuiTabItemFlags_SetSelected : 0)) {
+      g_show_arena_tab = false;
+      Wwe13ArenaTab();
+      ImGui::EndTabItem();
+    }
     if (ImGui::BeginTabItem("WWE '13 superstar")) { Wwe13StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 superstar")) { Svr10StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 moves")) { Svr10MovesTab(); ImGui::EndTabItem(); }

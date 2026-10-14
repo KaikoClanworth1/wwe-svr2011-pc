@@ -63,10 +63,16 @@ One backstage mod plays at a time (the last enabled folder by name). Game:
 | `announcer=<NAME>` | letters and digits: a name the announcer's sound banks have clips of (e.g. `JEFFHARDY`); wins over `voice=` |
 | `voice=voice.<ext>` | a recording of the name the announcer plays |
 | `entrance=<number>` | the entrance motions and pyro: a superstar's id, or 535 (Jeff Hardy's SvR 2010 one) |
+| `attire<N>_entrance=<number>` | optional: attire N's own entrance (N 1-4, the mod's attire numbering: attire2= is N 2). Only installed numbers play (the stock ones, or a move pack's pacentry lines); a model pac with an EMD kind-4 entry (name ending 04) wears that entrance outfit during its entrance |
 | `song=theme.<ext>` | the entrance theme (.mp3 .m4a .aac .wav .flac .wma .ogg); plays at full level, make it about -24 LUFS |
+| `music=<1-253>` | optional, instead of `song=`: one of the game's own entrance themes by its music id (a stock superstar's profile music, e.g. 103 Undertaker's); plays at the game's own level, the mod carries no file. `song=` wins when both are there |
+| `pose=<id>` | optional: the character select panel's pose (the select / VS screen): a pose motion id (32500 and up: 32500-32505 generic men, 32510-32515 women, the superstars' own 32520-32591), or a superstar id below 512 for that superstar's pose; missing = the base's |
+| `hometown=<CITY>[,<STATE>]` | optional: where the ring announcer says the superstar is from, with the game's own clips (`RA_*_HTC_<CITY>_0` / `RA_*_HTS_<STATE>_0`; the lists: tools/announcer_calls.json), e.g. `hometown=CAMERONNC` or `hometown=DEATHVALLEY,PARTSUNKNOWN` |
+| `theme_gain=<dB>` | optional: the theme's volume, -20.0 to +6.0 dB in one decimal (missing = 0). The game plays a mod's theme at full level, about 7 dB over its own; the Mod Maker measures the song and suggests the gain for about -24 LUFS. Media packs: `theme_gain.<id>=` next to `theme.<id>=` |
 | `movie=movie.bik` | the entrance movie, 320 x 320 Bink |
 | `attire2..4=attireN.pac`, `attireN_name=` | more attires: another model pac's first attire each |
-| `render.dds`, `render_small.dds` | the select picture: 512 x 512 and the 256 x 256 bust, DXT5 |
+| `render.dds`, `render_small.dds` | the select picture: 512 x 512 (SSFA, and SSFB without `render_full.dds`) and the 256 x 256 bust (SSFC), DXT5 |
+| `render_full.dds` | optional: the full-body render (SSFB), 512 x 512 DXT5; without it SSFB is `render.dds` |
 | `sign1..4.dds` | the fans' crowd signs, 128 x 64 DXT1 with mips |
 | `moves=moves.txt` | lines `0xOFF=<move id>`: the move at byte offset OFF (0..0x1BF, even) of the profile's move block, over the base's |
 | `moves\pack.txt`, `moves\motions\*` | a move pack carried inside the mod (below) |

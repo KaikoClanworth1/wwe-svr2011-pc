@@ -40,6 +40,7 @@ struct Arena {
   std::vector<ArenaTextureSet> bundles; // top-level texture bundles
 
   size_t original_file = 0;  // .pac size as shipped
+  double fit_margin = 1.0;   // FitFile's target as a share of the budget
 
   bool Load(const std::string& path, std::string* error = nullptr);
   // From memory (a mod's arena.pac). The budget (original_*) is then the

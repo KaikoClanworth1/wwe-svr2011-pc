@@ -109,6 +109,17 @@ mods).
   starting attributes (from one of the game's superstars underneath). Move
   the attribute sliders as you like; the moves can be changed in the game's
   CREATE A MOVE-SET.
+- **Theme volume:** under the theme song, a volume in dB the game applies (left
+  out at 0). Measure reads the song's loudness; Match the game sets the volume
+  so it sits with the game's own themes (about -24 LUFS).
+- **Entrances:** under More, the entrance by number and name - every one the
+  game has and every one an installed move pack adds (the Port page makes them
+  from other games); attires 2-4 can each have their own. A number that isn't
+  installed warns (no entrance would play), and so does a model that carries
+  an entrance outfit (Undertaker's, Punk's, Cena's, HBK's, Morrison's coats).
+- **Moveset:** the style's moves slot by slot; pick another for any slot by
+  name (each slot lists the game's moves of its kind; "all moves" lists the
+  rest, a move pack's moves go by number). Saved as the mod's moves.txt.
 - **Height (scale):** the superstar's size against the base's (1.00 = the
   base's own size, left out of the mod; 1.05 = 5% taller), for converted or
   older models that come out too tall or short. The preview shows the size the
@@ -127,6 +138,23 @@ mods).
   best: the render, the bust and the face icon are made from it).
 - The preview on the right shows the model playing its idle stance - a quick
   check that an imported model works. Drag to turn it.
+- **Make my first superstar (Simple):** the same superstar step by step - name
+  and style, look, attires, music, entrance, moves, taunts, pictures, extras,
+  finish - each step one choice with a line on what it is. Whatever you skip
+  comes from the fighting style, so the mod is valid from the first step. Full
+  editor goes back to this page; nothing is lost either way.
+- **Model from an FBX:** a rigged model from Blender, Unity / VRChat, Mixamo,
+  Rigify, 3ds Max Biped or the UE Mannequin. Its bones are matched to the
+  game's by their names (Bone mapping: change any), its meshes listed (on /
+  off, kind, picture), and Make the model poses it into the game's stance,
+  moves its weights onto the game's bones, packs its pictures into one sheet,
+  brings it within the game's memory and builds the `ch.pac`.
+- **Under the 3D view:** Reset view, Blood (off at first) and its Damage level
+  - the blood a superstar gets in a match.
+- **Model checks:** besides the memory budget, a model with broken points
+  (not-a-number positions: the game crashes) is an error, and eyes more than
+  1.5 cm from their eye bones (they pop out when the face blinks) a warning.
+  These two come from robert32's SvR Port Doctor findings - thanks.
 
 Theme songs play at full level while the game's own are about 7 dB quieter:
 make yours about -24 LUFS.
@@ -252,11 +280,13 @@ A superstar playing the game's motions. Pick who (a superstar, or any
   part, finisher previews, abilities - play in the view. Play / pause, step,
   scrub, speed, loop; the camera turns (left drag), tilts (right drag), pans
   (middle drag) and zooms (wheel).
-- **In the game:** the match moves (grapples, strikes, a move pack's moves)
-  are in a format only the game plays. Pick one by name and Play in game
-  starts a test match - the superstar against the dummy, both
-  computer-controlled - where the move is done every few seconds. Close the
-  game when done.
+- **Match moves:** pick one by name (grapples, strikes, finishers ...).
+  **Watch here** plays it in the view - the superstar does it, the dummy
+  takes it - from the game's own motion banks (m.pac, the 2,800 moves the
+  game ships). **Play in game** starts a test match instead - the superstar
+  against the dummy, both computer-controlled - where the move is done every
+  few seconds; that is the way to see a move pack's moves. Close the game
+  when done.
 
 ## Icons & renders
 

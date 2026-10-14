@@ -25,6 +25,8 @@
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
+ *                        --setup-check <game folder>   (the Setup tab's rows, no window)
+ *                        --setup-install <game folder> <python|ffmpeg|all> --yes   (its downloads, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -55,6 +57,9 @@
 #include "mods_tab.h"
 #include "music_tab.h"
 #include "texpacks_tab.h"
+#include "setup_tab.h"
+static void setup_go_install(void);
+static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
@@ -87,6 +92,7 @@
 /* Who made it and where it's free - on the window and the top of every page
    (copies of the port were re-uploaded, sending players to other channels). */
 #define REPO_URL          L"https://github.com/KaikoClanworth1/wwe-svr2011-pc"
+#define KOFI_URL          L"https://ko-fi.com/kaikoclanworth"
 #define CREDIT_LINE       L"Launcher - Version " PORT_VERSION L" - By KaikoClanworth"
 #define CREDIT_LINK       L"Download free at github.com/KaikoClanworth1/wwe-svr2011-pc"
 #define MAIN_TITLE        CREDIT_LINE L" - " CREDIT_LINK
@@ -98,11 +104,12 @@
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 #define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
+#define ID_SETUP_BASE 1200 /* the Setup tab's (setup_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -161,6 +168,7 @@ static HFONT     s_icons, s_nav, s_card, s_huge;
 static HFONT     s_mark_font;                     /* Verify game files' mark (the icon font, large) */  /* the look: sidebar icons and labels, card titles, page title */
 static int       s_cur_tab = -1, s_nav_hover = -1;
 static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
+static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
 static int       s_dpi = 96;
 static HICON     s_icon;
 static HWND      s_ctl[TAB_COUNT][32];
@@ -1917,6 +1925,28 @@ static void play(void)
     }
     if (s_settings_dirty)
         settings_save();
+    {  /* two attire mods on one attire: the newer moves to a free one (mods_tab.c) */
+        static WCHAR clash[4096];
+        if (mods_attire_guard(s_game_dir, NULL, clash, 4096))
+            MessageBoxW(s_wnd, clash, WINDOW_TITLE L" - attire mods", MB_OK | MB_ICONINFORMATION);
+    }
+    {  /* the VC++ runtime the game needs: Windows' own (or a copy the player put next to the game) */
+        WCHAR ver[40], q[700], own[MAX_PATH];
+        int st;
+        setup_vcrt_cleanup(s_game_dir, NULL, 0);
+        join(own, s_game_dir, L"msvcp140.dll");
+        st = file_exists(own) ? SETUP_VCRT_OK : setup_vcrt_system(ver, 40);
+        if (st != SETUP_VCRT_OK) {
+            int a;
+            swprintf_s(q, 700, L"The game needs Microsoft's Visual C++ runtime (x64), version 14.%d or newer. "
+                               L"This PC has %s%s.\n\nOpen Microsoft's download page (vc_redist.x64.exe) now? Install "
+                               L"it, then press Play again.\n\nYes: open the page.  No: start the game anyway.",
+                       SETUP_VCRT_MIN_MINOR, st == SETUP_VCRT_OLD ? L"an older one, " : L"none", ver);
+            a = MessageBoxW(s_wnd, q, WINDOW_TITLE, MB_YESNOCANCEL | MB_ICONWARNING);
+            if (a == IDYES) ShellExecuteW(s_wnd, L"open", SETUP_VCRT_URL, NULL, NULL, SW_SHOWNORMAL);
+            if (a != IDNO) return;
+        }
+    }
     join(exe, s_game_dir, GAME_EXE);
     swprintf_s(cmd, MAX_PATH + 4, L"\"%s\"", exe);
     memset(&si, 0, sizeof si);
@@ -2019,11 +2049,11 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     { TAB_MODS, 0xE90F, L"Mods" },          { TAB_TEXPACKS, 0xE8B9, L"Texture packs" },
     { TAB_PAINT, 0xE790, L"Paint Tool" },   { TAB_MOVIES, 0xE714, L"Movies" },
     { TAB_DLC, 0xE7B8, L"DLC" },            { TAB_INSTALL, 0xE896, L"Install" },
-    { TAB_ANDROID, 0xE8EA, L"Android" },
+    { TAB_ANDROID, 0xE8EA, L"Android" },     { TAB_SETUP, 0xE73E, L"Setup" },
 };
 #define NAV_N   ((int)(sizeof k_nav / sizeof k_nav[0]))
-#define NAV_TOP 96
-#define NAV_H   42
+#define NAV_TOP 80      /* (14 tabs above the version line) */
+#define NAV_H   38
 
 /* A group box: a card the window draws on the page. */
 typedef struct { int tab, x, y, w, h; WCHAR title[64]; } Card;
@@ -2238,6 +2268,8 @@ static void show_tab(int t)
         roster_show(s_game_dir);
     if (t == TAB_TEXPACKS)
         texpacks_show(s_game_dir);
+    if (t == TAB_SETUP)
+        setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     TabCtrl_SetCurSel(s_tab, t);
@@ -2549,7 +2581,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -2849,6 +2881,8 @@ static void build_ui(void)
     roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
+    /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
+    setup_build(s_wnd, add, TAB_SETUP, ID_SETUP_BASE, setup_go_install);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -6439,7 +6473,8 @@ static void paint_window(HDC dc)
 {
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install the game", L"DLC",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Android", L"Mods",
-                                                    L"Music", L"Roster: sort categories" };
+                                                    L"Music", L"Roster: sort categories", L"Texture packs",
+                                                    L"First time setup" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -6488,6 +6523,20 @@ static void paint_window(HDC dc)
     swprintf_s(v, 64, L"Version %s", PORT_VERSION);
     r.left = S(20); r.right = S(SB_W - 10); r.top = cl.bottom - S(34); r.bottom = cl.bottom - S(12);
     DrawTextW(dc, v, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    /* "Support me: ko-fi" above the version: the link opens the Ko-fi page. */
+    {
+        SIZE z;
+        RECT k = { S(20), cl.bottom - S(56), S(SB_W - 10), cl.bottom - S(34) };
+        DrawTextW(dc, L"Support me: ", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L"Support me: ", 12, &z);
+        k.left += z.cx;
+        SetTextColor(dc, C_ACCENT);
+        DrawTextW(dc, L"ko-fi", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L"ko-fi", 5, &z);
+        s_kofi_link.left = k.left; s_kofi_link.right = k.left + z.cx;
+        s_kofi_link.top = k.top; s_kofi_link.bottom = k.top + z.cy;
+        SetTextColor(dc, RGB(120, 120, 132));
+    }
     /* The credit, top right of every page: the link opens the release page. */
     {
         RECT c;
@@ -6553,7 +6602,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
-            roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)))
+            roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)) ||
+            setup_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
         case ID_REPORT:
@@ -6850,6 +6900,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(w, L"open", REPO_URL, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
+        if (PtInRect(&s_kofi_link, pt)) {
+            ShellExecuteW(w, L"open", KOFI_URL, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
         if (k >= 0 && k_nav[k].tab != s_cur_tab)
             show_tab(k_nav[k].tab);
         return 0;
@@ -6877,7 +6931,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
-            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt)) {
+            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt)) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
             }
@@ -6911,6 +6965,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_CLOSE:
+        if (setup_busy() &&
+            MessageBoxW(w, L"Stop the setup's download and close?", WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
+            return 0;
         if (s_busy) {
             if (MessageBoxW(w, L"Stop the installation and close?", WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
                 return 0;
@@ -6982,6 +7039,15 @@ static void capture_wnd(HWND wnd, const WCHAR *file)
     ReleaseDC(wnd, wdc);
 }
 
+/* The Setup tab's "Install tab" button. */
+static void setup_go_install(void) { show_tab(TAB_INSTALL); }
+
+/* --setup-install's progress lines. */
+static void setup_console_progress(int permille, const WCHAR *text)
+{
+    if (text) wprintf(L"[%3d%%] %s\n", permille / 10, text);
+}
+
 /* --install: print to the console the launcher was started from. */
 static void console_setup(void)
 {
@@ -7026,6 +7092,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         for (k = 0; k < 20 && file_exists(old) && !DeleteFileW(old); k++)
             Sleep(250);
     }
+    /* The VC++ runtime DLLs 2.1.0 shipped next to the programs (14.29): an overlay built for the newer runtime
+       players have (Discord, Steam, RTSS, NVIDIA...) failed in our processes there - "unable to start correctly
+       (0xc0000142)". Gone from both folders at every start (so after an update too); Windows' own is used. */
+    setup_vcrt_cleanup(s_launcher_dir, NULL, 0);
+    if (s_game_dir[0] && !same_dir(s_game_dir, s_launcher_dir))
+        setup_vcrt_cleanup(s_game_dir, NULL, 0);
+    /* --vcrt [<folder>]: the same for a folder, and the system runtime's state (tests) */
+    if (argv && argc >= 2 && !wcscmp(argv[1], L"--vcrt")) {
+        WCHAR log[300], ver[40];
+        int n, st;
+        console_setup();
+        n = argc >= 3 ? setup_vcrt_cleanup(argv[2], log, 300) : 0;
+        if (n) wprintf(L"removed %d: %s\n", n, log);
+        else if (argc >= 3) wprintf(L"nothing to remove in %s\n", argv[2]);
+        st = setup_vcrt_system(ver, 40);
+        wprintf(L"system runtime: %s %s\n", st == SETUP_VCRT_OK ? L"ok" : st == SETUP_VCRT_OLD ? L"older than needed"
+                                                                       : L"missing", ver);
+        return st == SETUP_VCRT_OK ? 0 : 3;
+    }
 
     /* --install <image> <folder>: install without a window (tests). */
     if (argv && argc >= 5 && (!wcscmp(argv[1], L"--paint-export") || !wcscmp(argv[1], L"--paint-import"))) {
@@ -7047,10 +7132,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         wprintf(L"newest release %s (%s), this is %s\n", s_up.version, s_up.url, from);
         if (!version_newer(s_up.version, from)) { wprintf(L"up to date\n"); return 0; }
         if (!up_install(err, 600)) { wprintf(L"update failed: %s\n", err); return 1; }
+        setup_vcrt_cleanup(s_game_dir, NULL, 0);   /* (2.1.0's VC++ DLLs, as at a start) */
         wprintf(L"updated %s to %s\n", s_game_dir, s_up.version);
         return 0;
     }
-    /* --movie-make <video> <bottom or -> <fit 0-2> <seconds> <out.bik> (tests) */
+    /* --movie-make <video> <bottom or -> <fit 0-2> <seconds> <out.bik> [size 320|640|1024] (tests; the
+     * HD .bik fallback of an .mp4 entrance movie) */
     if (argv && argc >= 7 && !wcscmp(argv[1], L"--movie-make")) {
         static MovieJob job;
         console_setup();
@@ -7059,6 +7146,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         job.fit = _wtoi(argv[4]);
         job.max_seconds = _wtoi(argv[5]);
         wcscpy_s(job.out, MAX_PATH, argv[6]);
+        if (argc >= 8) job.size = _wtoi(argv[7]);
         if (!movie_make(&job)) { wprintf(L"failed: %s\n", job.err); return 1; }
         wprintf(L"ok: %d frames\n", job.frames);
         return 0;
@@ -7084,6 +7172,34 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         ok = adb_get(apk_console_progress, err, 600) &&
              adb_install(s_adb, s_game_dir, s_apk_src, &s_cancel, apk_console_progress, err, 600);
         wprintf(ok ? L"ok: %s\n" : L"failed: %s\n", err);
+        return ok ? 0 : 1;
+    }
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--setup-check")) {   /* <game folder>: the Setup tab's rows */
+        static const WCHAR *const state[] = { L"found", L"missing", L"optional" };
+        SetupRow rows[SETUP_N];
+        int k;
+        console_setup();
+        setup_check(argv[2], s_launcher_dir, rows);
+        for (k = 0; k < SETUP_N; k++)
+            wprintf(L"%s: %s - %s\n", rows[k].name, state[rows[k].state], rows[k].detail);
+        return 0;
+    }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--setup-install")) {   /* <game folder> <python|ffmpeg|all> --yes */
+        WCHAR err[600] = L"", list[1024];
+        unsigned long long total;
+        unsigned items = !wcscmp(argv[3], L"python") ? 1u << SETUP_PYTHON
+                       : !wcscmp(argv[3], L"ffmpeg") ? 1u << SETUP_FFMPEG
+                       : !wcscmp(argv[3], L"all") ? (1u << SETUP_PYTHON) | (1u << SETUP_FFMPEG) : 0;
+        int ok;
+        console_setup();
+        setup_describe(items, list, 1024, &total);
+        wprintf(L"%s", list);
+        if (!items || argc < 5 || wcscmp(argv[4], L"--yes")) {   /* (the downloads need a yes) */
+            wprintf(L"not downloaded: add --yes\n");
+            return 1;
+        }
+        ok = setup_install(argv[2], items, setup_console_progress, &s_cancel, err, 600);
+        wprintf(ok ? L"ok\n" : L"failed: %s\n", err);
         return ok ? 0 : 1;
     }
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--report")) {   /* <game folder>: Report a problem, no window */
@@ -7172,6 +7288,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return 0;
     }
+    /* Tests: --mods-attires <game folder> moves clashing attire mods as Play does and prints what it said. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--mods-attires")) {
+        console_setup();
+        mods_print_attires(argv[2]);
+        LocalFree(argv);
+        return 0;
+    }
     /* Tests: --mods-remove <game folder> <mod folder> removes a mod as the Mods
        list's Remove does (a superstar mod's slots.txt line goes too). */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--mods-remove")) {
@@ -7224,7 +7347,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -7305,6 +7428,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         music_add_files(s_game_dir, &capture_music, 1);
     if (capture_tag)
         roster_tag(s_game_dir, _wtoi(capture_tag[0]), capture_tag[1]);
+    /* The first start (launcher.ini SetupShown): the Setup tab, what's found and what's missing. */
+    if (capture_tab < 0 && !GetPrivateProfileIntW(L"Launcher", L"SetupShown", 0, s_launcher_ini)) {
+        WritePrivateProfileStringW(L"Launcher", L"SetupShown", L"1", s_launcher_ini);
+        capture_tab = TAB_SETUP;
+    }
     show_tab(capture_tab >= 0 ? capture_tab : (is_game_folder(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
     if (capture_file) {
         /* Drawn off-screen, never activated (tests run beside the user's work). */

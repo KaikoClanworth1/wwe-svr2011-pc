@@ -168,7 +168,10 @@ struct MfThread {
   bool ok = false, co_ok = false;
   MfThread() {
     co_ok = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
-    ok = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
+    // (mfplat / mfreadwrite are delay-loaded: Windows "N" without the Media Feature Pack has neither)
+    ok = LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+         LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+         SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
   }
   ~MfThread() {
     if (ok) MFShutdown();

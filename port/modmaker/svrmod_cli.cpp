@@ -251,6 +251,7 @@ int Wwe13(int argc, char** argv) {
   Wwe13Options opt;
   for (int i = 5; i < argc; ++i) {
     if (!std::strcmp(argv[i], "host-crowd")) opt.host_crowd = true;
+    if (!std::strncmp(argv[i], "fit=", 4)) opt.fit = std::atof(argv[i] + 4);
     if (!std::strcmp(argv[i], "keep-textures")) opt.prune_textures = false;
     if (!std::strcmp(argv[i], "prune-textures")) opt.prune_textures = true;
     if (!std::strcmp(argv[i], "wwe13-ring")) opt.host_ring = false;

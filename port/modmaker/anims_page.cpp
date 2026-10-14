@@ -1,11 +1,16 @@
 // Animations page: a character playing the game's motions. The menu banks
 // in m.pac MVMT (YMBs: stances, taunts, finisher previews...) play here, on
-// the superstar and, for two-person motions, a dummy; the match moves (YMKs
-// banks) only the game plays - "Play in game" starts a test match with a
-// dummy and forces the move (SVR2011_TEST_MATCH + SVR2011_TEST_FORCE_MOVE).
+// the superstar and, for two-person motions, a dummy. The match moves (YMKs
+// banks: MOT/...) play here too ("Watch here": the superstar does it, the
+// dummy takes it), or in a test match with a dummy where the game forces the
+// move (SVR2011_TEST_MATCH + SVR2011_TEST_FORCE_MOVE).
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <set>
+#include <thread>
 
 #include "app.h"
 #include "char_preview.h"
@@ -29,7 +34,7 @@ struct BankDesc {
 const BankDesc kBanks[] = {
     {"STAT", 3, "Stances", "The ring stances (the idle 20000 and the others the move-set offers)."},
     {"BASE", 6, "Taunts", "Taunts and poses (9000s)."},
-    {"ANAS", 23, "Entrances (ring)", "Motions of the entrance's ring part (21000s), both people."},
+    {"ANAS", 23, "ANAS (21000s)", "The 21000s: paired with the stances (21000 with 20000), not entrances - an entrance's motions are in its own bank (the Superstar page's entrance preview)."},
     {"FINI", 24, "Finishers A", "Finisher previews, part 1."},
     {"FINI", 25, "Finishers B", "Finisher previews, part 2."},
     {"FINI", 26, "Finishers C", "Finisher previews, part 3."},
@@ -61,6 +66,119 @@ char g_move_filter[64] = "";
 int g_move_id = 0;
 int g_every = 6;
 int g_game_dummy = -1;  // index in Stars() (-1: the Dummy above)
+
+// ---- the match moves' banks (YMKs in m.pac: MOT/..., MVMT/...), indexed once
+struct BankPath {
+  PacEntryInfo entry;
+  std::vector<uint32_t> kids;  // PACH child ids down to the bank
+  int x = 0;                   // the variant played (0, else the first the bank has)
+};
+std::map<int, BankPath> g_kindex;  // move id -> where its motion is (the first bank with its track 0, x 0 preferred)
+
+// A track-0 entry into the index: the first bank that has the move, x 0 over other variants.
+void Note(std::map<int, BankPath>& out, const uint8_t* d, const PacEntryInfo& e, const std::vector<uint32_t>& path) {
+  if (d[0] != 0) return;
+  const int id = Le16(d + 2);
+  const auto it = out.find(id);
+  if (it == out.end() || (it->second.x != 0 && d[1] == 0)) out[id] = {e, path, d[1]};
+}
+std::atomic<int> g_kindex_state{0};  // 0 not built, 1 building, 2 ready
+std::map<int, BankPath> g_kindex_next;
+std::set<int> g_all_motions, g_all_motions_next;  // every motion id in m.pac (YMKs and YMBs, any track)
+int g_watch_pending = 0;  // (test aid: a move to watch once the index is there)
+
+void Walk(const Bytes& raw, const PacEntryInfo& e, std::vector<uint32_t>& path, std::map<int, BankPath>& out, std::set<int>& all) {
+  if (IsPach(raw)) {
+    std::vector<PachEntry> kids;
+    if (!PachRead(raw, kids)) return;
+    for (auto& k : kids) {
+      path.push_back(k.id);
+      Walk(Unpack(k.data), e, path, out, all);
+      path.pop_back();
+    }
+  } else if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMBs", 4)) {
+    const uint32_t n = Le32(&raw[0x110]);
+    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) {
+      const uint8_t* d = &raw[0x114 + 16 * i];
+      all.insert(Le16(d + 2));
+      Note(out, d, e, path);  // (taunts, submissions: YMBs)
+    }
+  } else if (raw.size() >= 0x114 && !std::memcmp(raw.data(), "YMKs", 4)) {
+    const uint32_t n = Le32(&raw[0x110]);
+    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) all.insert(Le16(&raw[0x114 + 16 * i + 2]));
+    for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw.size(); ++i) {
+      const uint8_t* d = &raw[0x114 + 16 * i];
+      Note(out, d, e, path);
+    }
+  }
+}
+
+void BuildIndex() {
+  int expect = 0;
+  if (!g_kindex_state.compare_exchange_strong(expect, 1)) return;
+  std::thread([game = g_game] {
+    std::map<int, BankPath> out;
+    std::set<int> all;
+    const fs::path mpac = fs::path(game) / L"pac" / L"m.pac";
+    PacIndex idx;
+    if (ReadPacIndex(mpac, idx))
+      for (const auto& e : idx.entries) {
+        Bytes raw;
+        if (!ReadPacEntry(mpac, e, raw)) continue;
+        std::vector<uint32_t> path;
+        Walk(Unpack(raw), e, path, out, all);
+      }
+    g_kindex_next = std::move(out);
+    g_all_motions_next = std::move(all);
+    g_kindex_state = 2;
+  }).detach();
+}
+
+bool IndexReady() {
+  if (g_kindex_state == 0) BuildIndex();
+  if (g_kindex_state == 2 && g_kindex.empty() && !g_kindex_next.empty()) {
+    g_kindex = std::move(g_kindex_next);
+    g_all_motions = std::move(g_all_motions_next);
+    Log("anims: " + std::to_string(g_kindex.size()) + " match moves indexed in m.pac");
+  }
+  return g_kindex_state == 2;
+}
+
+// The move's bank read in the background, then played here (track 0 the superstar, 1 the dummy).
+void Watch(int id) {
+  const auto it = g_kindex.find(id);
+  if (it == g_kindex.end()) {
+    Status("Move " + std::to_string(id) + " has no motion in m.pac (a move pack's, or one only the game builds): use Play in game.");
+    return;
+  }
+  const BankPath where = it->second;
+  RunInBackground([id, where] {
+    Progress("Reading the move's motions ...");
+    Bytes raw;
+    bool ok = ReadPacEntry(fs::path(g_game) / L"pac" / L"m.pac", where.entry, raw);
+    Bytes cur = ok ? Unpack(raw) : Bytes();
+    for (uint32_t kid : where.kids) {
+      std::vector<PachEntry> kids;
+      ok = ok && PachRead(cur, kids);
+      Bytes next;
+      bool hit = false;
+      for (auto& k : kids)
+        if (ok && k.id == kid) next = Unpack(k.data), hit = true;
+      ok = ok && hit;
+      cur = std::move(next);
+    }
+    auto bank = std::make_shared<const Bytes>(std::move(cur));
+    OnUiThread([id, ok, bank, x = where.x] {
+      std::string err;
+      if (!ok || !char_preview::SetMotion(bank, id, x, &err)) {
+        Status("That move's motion can't be shown here: " + (err.empty() ? std::string("the bank didn't read") : err) + ".");
+        return;
+      }
+      g_sel_id = -1;
+      Status("Watching " + MoveName(id) + " (move " + std::to_string(id) + ").");
+    });
+  });
+}
 
 std::wstring ChPac(int id) { return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(id) + L".pac")).wstring(); }
 
@@ -102,8 +220,10 @@ std::string MotionLabel(int id) {
   const std::string& n = MoveName(id);
   if (!n.empty()) return n;
   if (id >= 20000 && id < 21000) return id == 20000 ? "Idle stance" : "Stance " + std::to_string(id - 20000);
-  if (id >= 21000 && id < 22000) return "Entrance motion " + std::to_string(id - 21000);
+  if (id >= 21000 && id < 22000) return "ANAS motion " + std::to_string(id - 21000);
   if (id >= 9000 && id < 10000) return "Taunt " + std::to_string(id - 9000);
+  if (id >= 18000 && id < 19000) return "Finisher preview " + std::to_string(id);
+  if (id >= 30000 && id < 31000) return "Finisher preview " + std::to_string(id);
   return "Motion " + std::to_string(id);
 }
 
@@ -137,7 +257,11 @@ void Controls() {
   ImGui::SameLine();
   ImGui::Checkbox("Loop", &p.loop);
   ImGui::SameLine();
-  if (ImGui::Button("Camera")) char_preview::ResetCamera();
+  bool hits = char_preview::Hits();
+  if (ImGui::Checkbox("Hit spheres", &hits)) char_preview::SetHits(hits);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("The game's hit volumes: green the spheres a superstar is hit on, red the attacking ones while a "
+                      "move turns them on (strikes and weapon moves; a few moves switch them in code and show none here).");
   ImGui::SameLine();
   ImGui::TextDisabled("%s", p.keys ? (std::to_string(p.keys / 30.0f).substr(0, 4) + " s at 30 keys/s").c_str() : "");
 }
@@ -210,6 +334,14 @@ void InGameSection() {
       if (ImGui::Selectable((stars[i].name + "##gd" + std::to_string(i)).c_str(), g_game_dummy == i)) g_game_dummy = i;
     ImGui::EndCombo();
   }
+  const bool ready = IndexReady();
+  ImGui::BeginDisabled(!ready || Busy() || g_move_id <= 0);
+  PushAccent();
+  if (ImGui::Button(ready ? "Watch here" : "Watch here (reading m.pac ...)", ImVec2(-1, 0))) Watch(g_move_id);
+  PopAccent();
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("The move's motion played here: the superstar does it, the dummy takes it.");
   ImGui::PushStyleColor(ImGuiCol_Button, kGood);
   if (ImGui::Button("Play in game", ImVec2(-1, 0))) PlayInGame();
   ImGui::PopStyleColor();
@@ -228,6 +360,21 @@ void Left() {
         char_preview::SetModel(g_model, g_game);
       }
     ImGui::EndCombo();
+  }
+  if (!g_model.empty()) {  // the model's attires (its EMD kind-2 entries)
+    const std::vector<int> att = ModelAttires(g_model);
+    if (att.size() > 1) {
+      ImGui::TextDisabled("Attire");
+      for (int a : att) {
+        ImGui::SameLine();
+        const bool on = a == char_preview::Attire();
+        if (on) PushAccent();
+        if (ImGui::SmallButton((std::to_string(a) + "##aa").c_str())) char_preview::SetAttire(a);
+        if (on) PopAccent();
+      }
+    } else if (char_preview::Attire() != 1) {
+      char_preview::SetAttire(1);
+    }
   }
   if (ImGui::Button("A model file (ch.pac)...", ImVec2(-1, 0))) {
     const std::wstring f = PickFile(false, L"A character model pac", kPacFilter, 1);
@@ -291,14 +438,16 @@ void Left() {
   const std::string filter = Lower(g_filter);
   ImGui::BeginChild("list", ImVec2(0, list_h), true);
   for (const Row& r : rows) {
-    const std::string label = MotionLabel(r.id) + (r.x ? "  v" + std::to_string(r.x) : "");
+    const std::string label = MotionLabel(r.id) + (r.x ? ", variant " + std::to_string(r.x) : "");
     if (!filter.empty() && Lower(label).find(filter) == std::string::npos && std::to_string(r.id).find(filter) == std::string::npos) continue;
     const bool on = g_sel_id == r.id && g_sel_x == r.x;
     char line[160];
-    std::snprintf(line, sizeof line, "%s%s##%d_%d", label.c_str(), r.victim ? "  (2)" : "", r.id, r.x);
+    std::snprintf(line, sizeof line, "%s%s##%d_%d", label.c_str(), r.victim ? "  - 2 people" : "", r.id, r.x);
     if (ImGui::Selectable(line, on)) Pick(r.id, r.x);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("motion %d x%d, %d frames%s", r.id, r.x, r.frames, r.victim ? ", with the other person's track" : "");
+      ImGui::SetTooltip("Motion %d%s, %d frames (%.1f s).%s%s", r.id, r.x ? (" variant " + std::to_string(r.x)).c_str() : "", r.frames,
+                        r.frames / 30.0f, r.victim ? "\n2 people: the other person's part plays on the dummy." : "",
+                        r.x ? "\nVariants: the same move for another situation (the game picks one by size or position)." : "");
   }
   ImGui::EndChild();
   ImGui::EndTabItem();
@@ -311,8 +460,72 @@ void Left() {
 
 }  // namespace
 
+int g_test_key = -1;
+void TestKey(int key) { g_test_key = key; }
+
+// --pose-compare <dump>,<star>,<dummy>,<motion>[,<x>]: the game's pose dump against this view (phase B)
+struct {
+  std::wstring dump;
+  int star = 0, dummy = 0, motion = 0, x = -1;  // (x -1: any variant)
+  std::shared_ptr<const Bytes> bank;
+  bool started = false, bank_tried = false;
+} g_cmp;
+void TestCompare(const std::wstring& spec) {
+  const size_t c = spec.find(L',');
+  if (c == std::wstring::npos) return;
+  g_cmp.dump = spec.substr(0, c);
+  swscanf_s(spec.c_str() + c + 1, L"%d,%d,%d,%d", &g_cmp.star, &g_cmp.dummy, &g_cmp.motion, &g_cmp.x);
+}
+void RunCompare() {
+  if (!g_cmp.started) {
+    g_cmp.started = true;
+    char_preview::SetModel(ChPac(g_cmp.star), g_game);
+    char_preview::SetDummy(ChPac(g_cmp.dummy));
+  }
+  if (!g_cmp.bank_tried) {  // the match banks (m.pac MOT BM00..BM09): the first YMBs bank with the motion
+    g_cmp.bank_tried = true;
+    for (int k = 0; k < 11 && !g_cmp.bank; ++k) {  // (BM00-BM09, then CAF's MOT: the match idles)
+      Bytes entry;
+      const std::string name = k < 10 ? "BM0" + std::to_string(k) : std::string("MOT ");
+      if (!ReadPacEntry(fs::path(g_game) / L"pac" / L"m.pac", name.c_str(), entry, k < 10 ? nullptr : "CAF ")) continue;
+      std::vector<PachEntry> kids;
+      if (!PachRead(Unpack(entry), kids)) continue;
+      for (const auto& kd : kids) {
+        auto raw = std::make_shared<Bytes>(Unpack(kd.data));
+        if (raw->size() < 0x114 || std::memcmp(raw->data(), "YMBs", 4)) continue;
+        const uint32_t n = Le32(&(*raw)[0x110]);
+        for (uint32_t i = 0; i < n && 0x114 + 16 * (i + 1) <= raw->size(); ++i) {
+          const uint8_t* e = &(*raw)[0x114 + 16 * i];
+          if (int(Le16(e + 2)) == g_cmp.motion && (g_cmp.x < 0 || e[1] == g_cmp.x)) {
+            g_cmp.bank = raw;
+            Log("compare: motion " + std::to_string(g_cmp.motion) + " in m.pac MOT/" + name + " child " + std::to_string(kd.id));
+            break;
+          }
+        }
+        if (g_cmp.bank) break;
+      }
+    }
+    if (!g_cmp.bank) Log("compare: motion " + std::to_string(g_cmp.motion) + " not in m.pac's match banks");
+  }
+  const std::string r = char_preview::ComparePoseDump(g_cmp.dump, g_cmp.bank, g_cmp.motion, g_cmp.x);
+  if (r.empty() && g_cmp.bank) return;  // (the models still loading)
+  Log("compare:\n" + r);
+  WriteLogTo(g_cmp.dump + L".compare.log");
+  g_cmp.dump.clear();
+  PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+}
+
 void TestStart(int star_id, int bank, int motion, int dummy_id) {
   g_test_star = star_id, g_test_bank = bank, g_test_motion = motion, g_test_dummy = dummy_id;
+}
+
+bool MovesIndexed() { return IndexReady(); }
+bool AnyMotion(int id) { return IndexReady() && g_all_motions.count(id); }
+bool HasMotion(int id) { return IndexReady() && g_kindex.count(id); }
+void WatchMove(int id) { Watch(id); }
+
+void TestWatch(int star_id, int dummy_id, int move) {
+  g_test_star = star_id, g_test_dummy = dummy_id, g_watch_pending = move;
 }
 
 int g_test_play_move = 0;
@@ -321,6 +534,8 @@ void TestPlay(int star_id, int dummy_id, int move) {
 }
 
 void Draw() {
+  if (!g_cmp.dump.empty()) RunCompare();
+  if (g_watch_pending && IndexReady() && !Busy()) Watch(g_watch_pending), g_move_id = g_watch_pending, g_watch_pending = 0;
   if (g_test_star > 0 && !g_game.empty()) {  // the test aid, once
     const auto& stars = Stars();
     for (int i = 0; i < int(stars.size()); ++i) {
@@ -338,6 +553,7 @@ void Draw() {
   if (g_test_motion >= 0 && g_bank >= 0 && g_banks.count(g_bank) && !g_loading) {
     Pick(g_test_motion, 0);
     g_test_motion = -1;
+    if (g_test_key >= 0) char_preview::Play().key = float(g_test_key), char_preview::Play().playing = false;
   }
   Heading("Animations", "A superstar playing the game's motions: stances, taunts, finisher previews, the entrance's "
                         "ring part. Pick who, pick a set, click a motion.");
@@ -352,9 +568,10 @@ void Draw() {
   ImGui::BeginChild("view", ImVec2(0, 0), false);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   char_preview::SetHeight(1.0f);  // (the Superstar page's height= is its own)
-  char_preview::Draw(avail.x, std::max(100.0f, avail.y - 64 * g_scale));
+  char_preview::Draw(avail.x, std::max(100.0f, avail.y - 90 * g_scale));
   const std::string st = char_preview::Status();
   if (!st.empty()) ImGui::TextDisabled("%s", st.c_str());
+  ViewFooter();
   Controls();
   ImGui::EndChild();
 }

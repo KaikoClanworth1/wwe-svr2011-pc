@@ -96,12 +96,16 @@ uint32_t Be32(const uint8_t* p) {
 }
 
 // For the log: the menus' entries by (group, row) -> their label string id,
-// from the installed menu.pac's table (MFLO/0000: 0x74-byte records, a
-// group's records consecutive, hidden ones - +0x41 bit 0 - not shown), and
-// the game's string table (the first lookup's manager).
+// from the menu table the game reads (MFLO/0000: 0x74-byte records, a
+// group's records consecutive, hidden ones - +0x41 bit 0 - not shown): the
+// port's, with its rows added (match_types.cpp, ScriptMenuTable), else the
+// installed menu.pac's; and the game's string table (the first lookup's
+// manager).
 uint32_t g_string_manager = 0;
 std::map<std::pair<uint32_t, uint32_t>, uint32_t> g_menu_labels;
 bool g_menu_labels_read = false;
+std::vector<uint8_t> g_menu_table;          // (the port's table, as the game got it)
+std::atomic<bool> g_menu_texts_stale{false};  // (a new table after the texts were read)
 
 // For scripted tests (script_input.h): the main-menu object, the entries'
 // label texts by (group, row) and a count of the entries chosen.
@@ -113,12 +117,23 @@ std::atomic<uint32_t> g_menu_selected{0};  // (group << 16 | row of the last one
 
 void ReadMenuLabels() {
   g_menu_labels_read = true;
-  const auto file = rex::filesystem::GetExecutableFolder() / "pac" / "menu" / "menu.pac";
-  std::ifstream in(file, std::ios::binary);
-  if (!in) return;
-  std::vector<uint8_t> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  constexpr size_t kMflo = 0x25F000, kFirst = kMflo + 0x28, kRec = 0x74;
-  if (d.size() < kMflo + 0x6800) return;
+  g_menu_labels.clear();
+  std::vector<uint8_t> d;
+  size_t kMflo = 0;
+  {
+    std::lock_guard lock(g_menu_mutex);
+    d = g_menu_table;
+  }
+  if (d.empty()) {
+    const auto file = rex::filesystem::GetExecutableFolder() / "pac" / "menu" / "menu.pac";
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return;
+    d.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    kMflo = 0x25F000;
+    if (d.size() < kMflo + 0x6800) return;
+  }
+  const size_t kFirst = kMflo + 0x28, kRec = 0x74;
+  if (d.size() < kFirst) return;
   const uint32_t total = Be32(&d[kMflo + 4]);
   std::map<uint32_t, uint32_t> rows;  // group -> next row
   for (uint32_t i = 0; i < total && kFirst + (i + 1) * kRec <= d.size(); ++i) {
@@ -150,7 +165,7 @@ std::string LabelText(PPCContext& ctx, uint8_t* base, uint32_t id) {
 
 // The scripts' view of the menus, once (the first time the menu is used).
 void ReadMenuTexts(PPCContext& ctx, uint8_t* base) {
-  if (!g_menu_labels_read) ReadMenuLabels();
+  if (!g_menu_labels_read || g_menu_texts_stale.exchange(false)) ReadMenuLabels();
   std::map<std::pair<uint32_t, uint32_t>, std::string> texts;
   for (const auto& [key, id] : g_menu_labels) texts[key] = LabelText(ctx, base, id);
   if (std::getenv("SVR2011_INPUT_FILE")) {  // (scripted tests: the names a "menu" step can use)
@@ -199,6 +214,14 @@ std::string ScriptMenuTexts(uint32_t group) {
   for (auto it = g_menu_texts.lower_bound({group, 0}); it != g_menu_texts.end() && it->first.first == group; ++it)
     s += (s.empty() ? "" : ", ") + it->second;
   return s;
+}
+
+void ScriptMenuTable(const uint8_t* table, size_t size) {
+  {
+    std::lock_guard lock(g_menu_mutex);
+    g_menu_table.assign(table, table + size);
+  }
+  g_menu_texts_stale = true;  // (read again at the menu's next use: the rows' places moved)
 }
 
 uint32_t ScriptMenuSelects(uint32_t* group, uint32_t* row) {
@@ -395,7 +418,7 @@ REX_HOOK_RAW(sub_82153EF8) {
 // by_player (r4) is 1 when the player pressed A.
 REX_EXTERN(__imp__sub_82447210);
 REX_HOOK_RAW(sub_82447210) {
-  if (!g_menu) ReadMenuTexts(ctx, base);
+  if (!g_menu || g_menu_texts_stale.load()) ReadMenuTexts(ctx, base);
   g_menu = base + ctx.r3.u32;
   if (ctx.r4.u32 == 1) {
     const uint8_t* menu = base + ctx.r3.u32;

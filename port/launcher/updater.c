@@ -65,13 +65,15 @@ static int http_get(Http *h, const WCHAR *url, const WCHAR *accept, WCHAR *err, 
             || !WinHttpReceiveResponse(h->request, NULL)
             || !WinHttpQueryHeaders(h->request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                                     WINHTTP_HEADER_NAME_BY_INDEX, &status, &len, WINHTTP_NO_HEADER_INDEX)) {
-        swprintf_s(err, errn, L"Could not reach GitHub (error %lu). Check your internet connection.", GetLastError());
+        swprintf_s(err, errn, L"Could not reach %s (error %lu). Check your internet connection.", host, GetLastError());
         http_close(h);
         return 0;
     }
     if (status != 200) {
-        swprintf_s(err, errn, status == 403 ? L"GitHub is limiting requests right now (HTTP 403); try again later."
-                                            : L"GitHub answered HTTP %lu.", status);
+        if (status == 403)
+            swprintf_s(err, errn, L"%s is limiting requests right now (HTTP 403); try again later.", host);
+        else
+            swprintf_s(err, errn, L"%s answered HTTP %lu.", host, status);
         http_close(h);
         return 0;
     }
@@ -209,8 +211,26 @@ int update_check_version(const WCHAR *version, UpdateInfo *out, WCHAR *err, size
     return update_read(api, out, err, errn);
 }
 
+typedef struct { HWND notify; UINT msg; int last; } NotifyCtx;
+
+static void notify_progress(uint64_t done, uint64_t total, void *ctx)
+{
+    NotifyCtx *n = (NotifyCtx *)ctx;
+    int pct;
+    if (!n->notify || !total) return;
+    pct = (int)(done * 100 / total);
+    if (pct != n->last) { n->last = pct; PostMessageW(n->notify, n->msg, (WPARAM)pct, 0); }
+}
+
 int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, volatile LONG *cancel,
                     WCHAR *err, size_t errn)
+{
+    NotifyCtx n = { notify, msg, -1 };
+    return update_download_cb(url, path, notify_progress, &n, cancel, err, errn);
+}
+
+int update_download_cb(const WCHAR *url, const WCHAR *path, update_progress_fn progress, void *ctx,
+                       volatile LONG *cancel, WCHAR *err, size_t errn)
 {
     Http h;
     HANDLE f;
@@ -218,7 +238,7 @@ int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, 
     DWORD len_size = sizeof len_text, got, wrote;
     uint64_t total = 0, done = 0;
     char *buf;
-    int ok = 0, last = -1;
+    int ok = 0;
     if (!http_get(&h, url, L"Accept: application/octet-stream", err, errn))
         return 0;
     if (WinHttpQueryHeaders(h.request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, len_text,
@@ -234,7 +254,12 @@ int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, 
         if (cancel && *cancel) { swprintf_s(err, errn, L"Stopped."); goto out; }
         got = 0;
         if (!WinHttpReadData(h.request, buf, 1 << 20, &got)) {
-            swprintf_s(err, errn, L"The download was interrupted (error %lu).", GetLastError());
+            DWORD e = GetLastError();
+            if (e == ERROR_WINHTTP_TIMEOUT)   /* (no data for the receive timeout, 30 s) */
+                swprintf_s(err, errn, L"The download stalled (nothing came for 30 seconds). Check your internet "
+                                      L"connection and try again.");
+            else
+                swprintf_s(err, errn, L"The download was interrupted (error %lu).", e);
             goto out;
         }
         if (!got) break;
@@ -243,10 +268,7 @@ int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, 
             goto out;
         }
         done += got;
-        if (notify && total) {
-            int pct = (int)(done * 100 / total);
-            if (pct != last) { last = pct; PostMessageW(notify, msg, (WPARAM)pct, 0); }
-        }
+        if (progress) progress(done, total, ctx);
     }
     if (total && done != total) { swprintf_s(err, errn, L"The download was incomplete."); goto out; }
     ok = 1;

@@ -29,6 +29,7 @@
 #include <wchar.h>
 
 #include "backgrounds.h"
+#include "movie_maker.h"
 #include "unzip.h"
 
 enum { MODS_MAX = 512 };
@@ -169,7 +170,7 @@ static int maker_present(void);
 static void scan(void)
 {
     static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes",
-                                         L"Backgrounds" };
+                                         L"Backgrounds", L"Attires" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -307,6 +308,228 @@ static void free_superstar_slot(const WCHAR *game, const WCHAR *folder)
         fclose(f);
     }
     free(out);
+}
+
+/* ---- Two attire mods on one attire (Mods\Attires\<folder>: type=attire, superstar=<id>, attire=<1-4>|new).
+   The rule the game, this tab, the phone's Mods page and the Mod Maker share: a superstar's attire is
+   free when his own pac (pac\ch\ch<id>.pac, EMD entries "%06d%d2") doesn't have it and no switched-on
+   attire mod asks for it. Of two switched-on mods asking for the same attire the one installed first
+   keeps it (a mod just installed is the newer one); the other moves to the superstar's next free attire
+   (1-4) - its manifest's attire= is rewritten, with a "# moved" line - or, with none free, it stays and
+   the player is told to switch one off (the game then leaves it out: src/superstar_mods.cpp
+   LoadAttireMods). Run when an attire mod is installed and when Play starts the game. */
+static const struct { int id; const WCHAR *name; const WCHAR *note; } k_roster[] = {
+#include "roster_names.inc"
+};
+
+static const WCHAR *roster_name(int id, WCHAR *buf, size_t n)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof k_roster / sizeof k_roster[0]); i++)
+        if (k_roster[i].id == id) return k_roster[i].name;
+    swprintf_s(buf, n, L"superstar %d", id);
+    return buf;
+}
+
+/* Attires 1-4 (bits 0-3) the superstar's own pac has; *gear: it also has other model kinds for attire 1 (the
+   entrance gear superstars - Undertaker, CM Punk, Cena, Shawn Michaels, Morrison: kind 4). A new attire for
+   them doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds): only their own can be replaced. */
+static unsigned own_attires(const WCHAR *game, int id, int *gear)
+{
+    WCHAR path[MAX_PATH];
+    unsigned char d[0x4000];
+    unsigned mask = 0;
+    char want[8];
+    size_t p;
+    FILE *f = NULL;
+    swprintf_s(path, MAX_PATH, L"%s\\pac\\ch\\ch%03d.pac", game, id);
+    *gear = 0;
+    if (_wfopen_s(&f, path, L"rb") || !f) return 0;
+    p = fread(d, 1, sizeof d, f);
+    fclose(f);
+    if (p != sizeof d || memcmp(d, "EPK8", 4)) return 0;
+    sprintf_s(want, sizeof want, "%06d", id);
+    for (p = 0x800; p + 12 <= sizeof d;) {
+        unsigned k, entries;
+        int emd;
+        if (!memcmp(d + p, "\0\0\0\0", 4)) break;
+        emd = !memcmp(d + p, "EMD ", 4);
+        entries = (d[p + 4] | d[p + 5] << 8) / 4;
+        p += 12;
+        for (k = 0; k < entries && p + 16 <= sizeof d; k++, p += 16)
+            if (emd && !memcmp(d + p, want, 6) && d[p + 6] >= '0' && d[p + 6] <= '3') {
+                if (d[p + 7] == '2') mask |= 1u << (d[p + 6] - '0');
+                else if (d[p + 6] == '0' && d[p + 7] >= '0' && d[p + 7] <= '9') *gear = 1;
+            }
+    }
+    return mask;
+}
+
+typedef struct {
+    WCHAR folder[MAX_PATH], name[128];
+    int id, attire;            /* attire 1-4, 0 = new */
+    unsigned long long born;   /* folder creation time: the order they were installed in */
+    int fresh;                 /* the mod just installed */
+} AttireMod;
+
+static int attire_older(const AttireMod *a, const AttireMod *b)
+{
+    if (a->fresh != b->fresh) return b->fresh;
+    if (a->born != b->born) return a->born < b->born;
+    return wcscmp(a->folder, b->folder) < 0;
+}
+
+/* attire=<n> into the mod's manifest, the other lines kept, and a note why. */
+static int set_attire(const WCHAR *folder, int from, int to, const WCHAR *keeper)
+{
+    WCHAR man[MAX_PATH], tmp[MAX_PATH];
+    FILE *in = NULL, *out = NULL;
+    char line[1024], k8[256];
+    int done = 0;
+    swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", folder);
+    swprintf_s(tmp, MAX_PATH, L"%s\\manifest.new", folder);
+    if (_wfopen_s(&in, man, L"rb") || !in) return 0;
+    if (_wfopen_s(&out, tmp, L"wb") || !out) { fclose(in); return 0; }
+    WideCharToMultiByte(CP_UTF8, 0, keeper, -1, k8, sizeof k8, NULL, NULL);
+    while (fgets(line, sizeof line, in)) {
+        if (!strncmp(line, "attire=", 7) && !done) {
+            fprintf(out, "attire=%d\n# moved from attire %d by the launcher (%s has attire %d)\n", to, from, k8, from);
+            done = 1;
+            continue;
+        }
+        fputs(line, out);
+        if (line[0] && line[strlen(line) - 1] != '\n') fputs("\n", out);
+    }
+    fclose(in);
+    fclose(out);
+    return done && MoveFileExW(tmp, man, MOVEFILE_REPLACE_EXISTING);
+}
+
+/* -> moves + warnings made (report: one line each, may be NULL). */
+int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size_t report_n)
+{
+    static AttireMod mods[MODS_MAX];
+    int n = 0, i, j, said = 0;
+    WCHAR pat[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    if (report && report_n) report[0] = 0;
+    swprintf_s(pat, MAX_PATH, L"%s\\Mods\\Attires\\*", game);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        WCHAR man[MAX_PATH], off[MAX_PATH];
+        FILE *f = NULL;
+        char line[512];
+        int attire_mod = 0;
+        AttireMod *a = &mods[n];
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' || n >= MODS_MAX) continue;
+        ZeroMemory(a, sizeof *a);
+        swprintf_s(a->folder, MAX_PATH, L"%s\\Mods\\Attires\\%s", game, fd.cFileName);
+        swprintf_s(off, MAX_PATH, L"%s\\disabled", a->folder);
+        if (exists(off)) continue;
+        swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", a->folder);
+        if (_wfopen_s(&f, man, L"rb") || !f) continue;
+        a->attire = -1;
+        while (fgets(line, sizeof line, f)) {
+            char *eq = strchr(line, '='), *e;
+            if (!eq || line[0] == '#') continue;
+            *eq++ = 0;
+            for (e = eq + strlen(eq); e > eq && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ');) *--e = 0;
+            if (!strcmp(line, "type")) attire_mod = !strcmp(eq, "attire");
+            else if (!strcmp(line, "superstar")) a->id = atoi(eq);
+            else if (!strcmp(line, "attire")) a->attire = !strcmp(eq, "new") ? 0 : atoi(eq);
+            else if (!strcmp(line, "name")) MultiByteToWideChar(CP_UTF8, 0, eq, -1, a->name, 128);
+        }
+        fclose(f);
+        if (!attire_mod || a->id < 100 || a->id > 321 || a->attire < 0 || a->attire > 4) continue;
+        if (!a->name[0]) wcsncpy_s(a->name, 128, fd.cFileName, _TRUNCATE);
+        a->born = ((unsigned long long)fd.ftCreationTime.dwHighDateTime << 32) | fd.ftCreationTime.dwLowDateTime;
+        a->fresh = fresh && !_wcsicmp(a->folder, fresh);
+        n++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    for (i = 0; i < n; i++) {
+        unsigned used, own;
+        int k, news = 0, gear = 0;
+        if (mods[i].id < 0) continue;  /* (a superstar already done) */
+        own = used = own_attires(game, mods[i].id, &gear);
+        /* the attires asked for, the oldest mod on each keeping it */
+        for (j = 0; j < n; j++) {
+            AttireMod *a = &mods[j];
+            int best = 1;
+            if (a->id != mods[i].id || !a->attire) continue;
+            for (k = 0; k < n; k++)
+                if (k != j && mods[k].id == a->id && mods[k].attire == a->attire && attire_older(&mods[k], a)) best = 0;
+            if (best) used |= 1u << (a->attire - 1);
+        }
+        if (gear) used = 0xF;  /* (no new attires for them: nothing free to move to) */
+        for (j = 0; j < n; j++) {
+            AttireMod *a = &mods[j], *keeper = NULL;
+            WCHAR who[48], t[512];
+            int to = 0;
+            if (a->id != mods[i].id) continue;
+            if (!a->attire) { news++; continue; }
+            if (gear && !(own >> (a->attire - 1) & 1)) {  /* (a new attire for a gear superstar: left out by the game) */
+                swprintf_s(t, 512, L"\"%s\" gives %s an attire %d, but %s wears entrance gear and new attires for them "
+                                   L"don't load in the game yet: the game leaves it out (replacing attire 1-%d works).\r\n",
+                           a->name, roster_name(a->id, who, 48), a->attire, roster_name(a->id, who, 48),
+                           own & 4 ? 3 : own & 2 ? 2 : 1);
+                if (report) wcsncat_s(report, report_n, t, _TRUNCATE);
+                said++;
+                continue;
+            }
+            for (k = 0; k < n; k++)
+                if (k != j && mods[k].id == a->id && mods[k].attire == a->attire && attire_older(&mods[k], a))
+                    if (!keeper || attire_older(&mods[k], keeper)) keeper = &mods[k];
+            if (!keeper) continue;
+            for (k = 0; k < 4 && !to; k++)
+                if (!(used >> k & 1)) to = k + 1;
+            if (to && set_attire(a->folder, a->attire, to, keeper->name)) {
+                used |= 1u << (to - 1);
+                swprintf_s(t, 512, L"\"%s\" and \"%s\" both use %s's attire %d: \"%s\" moved to attire %d.\r\n",
+                           keeper->name, a->name, roster_name(a->id, who, 48), a->attire, a->name, to);
+                a->attire = to;
+            } else if (gear)
+                swprintf_s(t, 512, L"\"%s\" and \"%s\" both use %s's attire %d. %s wears entrance gear, and new attires "
+                                   L"for them don't load in the game yet, so neither can move: switch one off, or the "
+                                   L"game leaves \"%s\" out.\r\n",
+                           keeper->name, a->name, roster_name(a->id, who, 48), a->attire, roster_name(a->id, who, 48),
+                           a->name);
+            else
+                swprintf_s(t, 512, L"\"%s\" and \"%s\" both use %s's attire %d and there is no free attire to "
+                                   L"move one to (4 at most): switch one off, or the game leaves \"%s\" out.\r\n",
+                           keeper->name, a->name, roster_name(a->id, who, 48), a->attire, a->name);
+            if (report) wcsncat_s(report, report_n, t, _TRUNCATE);
+            said++;
+        }
+        /* attire=new ones take what is left (the game hands them out in folder order) */
+        for (k = 0; k < 4; k++)
+            if (!(used >> k & 1) && news) news--;
+        if (news) {
+            WCHAR who[48], t[256];
+            swprintf_s(t, 256, gear ? L"%s wears entrance gear: new attires for them don't load in the game yet, so "
+                                      L"%d attire=new mod%s stay%s out: switch %s off.\r\n"
+                                    : L"%s has no free attire for %d attire=new mod%s (4 at most): switch some off.\r\n",
+                       roster_name(mods[i].id, who, 48), news, news == 1 ? L"" : L"s", news == 1 ? L"s" : L"",
+                       news == 1 ? L"it" : L"them");
+            if (report) wcsncat_s(report, report_n, t, _TRUNCATE);
+            said++;
+        }
+        for (j = n - 1; j >= i; j--)
+            if (mods[j].id == mods[i].id && j != i) mods[j].id = -1;
+        mods[i].id = -1;
+    }
+    return said;
+}
+
+/* Tests: --mods-attires <game folder> runs the guard as Play does and prints what it did. */
+int mods_print_attires(const WCHAR *game)
+{
+    static WCHAR report[8192];
+    const int n = mods_attire_guard(game, NULL, report, 8192);
+    wprintf(L"%s%d\n", report, n);
+    return 1;
 }
 
 static int pick_file(WCHAR *out)
@@ -526,6 +749,42 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
     }
 }
 
+/* A superstar / media mod's .mp4 entrance movies (movie= / video.<id>=) that
+ * have no .bik of the same name beside them get one (1024 x 1024, the movie
+ * on the big screen): the game plays the .bik where the platform can't decode
+ * the .mp4 (Proton on the Steam Deck, Windows "N" editions). The Mod Maker
+ * writes both; this covers mods made by hand. */
+static void make_movie_fallbacks(const WCHAR *dir)
+{
+    WCHAR man[MAX_PATH];
+    FILE *f;
+    char line[1024];
+    swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", dir);
+    if (_wfopen_s(&f, man, L"rb") || !f) return;
+    while (fgets(line, sizeof line, f)) {
+        char *v = strchr(line, '='), *e;
+        WCHAR file[MAX_PATH];
+        size_t n;
+        static MovieJob job;
+        if (!v || (strncmp(line, "movie=", 6) && strncmp(line, "video.", 6))) continue;
+        v++;
+        for (e = v + strlen(v); e > v && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' '); ) *--e = 0;
+        n = strlen(v);
+        if (n < 5 || _stricmp(v + n - 4, ".mp4")) continue;
+        if (!MultiByteToWideChar(CP_UTF8, 0, v, -1, file, MAX_PATH)) continue;
+        ZeroMemory(&job, sizeof job);
+        swprintf_s(job.video, MAX_PATH, L"%s\\%s", dir, file);
+        swprintf_s(job.out, MAX_PATH, L"%s\\%s", dir, file);
+        wcscpy_s(job.out + wcslen(job.out) - 4, 5, L".bik");
+        if (exists(job.out) || !exists(job.video)) continue;
+        job.fit = MOVIE_FIT;
+        job.size = 1024;
+        status(L"Making the mod's movie for PCs that can't play its MP4 (Steam Deck)...");
+        if (!movie_make(&job)) status(job.err);
+    }
+    fclose(f);
+}
+
 static int install_file(const WCHAR *zip)
 {
     WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512], kind[32];
@@ -552,6 +811,7 @@ static int install_file(const WCHAR *zip)
         const int moves = !_wcsicmp(m.type, L"moves");
         const int match_type = !_wcsicmp(m.type, L"matchtype");
         const int background = !_wcsicmp(m.type, L"background");
+        const int attire = !_wcsicmp(m.type, L"attire");
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
         if (signs || media || match_type) {
             wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
@@ -571,6 +831,16 @@ static int install_file(const WCHAR *zip)
             wcsncpy_s(kind, 32, L"Backgrounds", _TRUNCATE);
             goto place;
         }
+        if (attire) {  /* an attire for a superstar (Mods/Attires/<id>: manifest + attire.pac) */
+            swprintf_s(need1, MAX_PATH, L"%s\\attire.pac", tmp);
+            if (!exists(need1)) {
+                status(L"That attire mod is incomplete (it needs attire.pac).");
+                remove_tree(tmp, 0);
+                return 0;
+            }
+            wcsncpy_s(kind, 32, L"Attires", _TRUNCATE);
+            goto place;
+        }
         if (moves) {  /* a move pack: pack.txt + motions (docs/MOVE_PACKS.md) */
             swprintf_s(need1, MAX_PATH, L"%s\\pack.txt", tmp);
             if (!exists(need1)) {
@@ -583,7 +853,7 @@ static int install_file(const WCHAR *zip)
         }
         if (!arena && !star) {
             swprintf_s(t, 512, L"\"%s\" is a %s mod; this version installs arena, backstage, superstar, sign, media, "
-                               L"move, match type and background mods.", m.name, m.type);
+                               L"move, match type, background and attire mods.", m.name, m.type);
             status(t);
             remove_tree(tmp, 0);
             return 0;
@@ -633,6 +903,7 @@ place:
         }
     }
     wcscpy_s(s_installed, MAX_PATH, dst);
+    if (!wcscmp(kind, L"Superstars") || !wcscmp(kind, L"Media")) make_movie_fallbacks(dst);
     scan();
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
@@ -643,11 +914,23 @@ place:
                        : !wcscmp(kind, L"Backgrounds") ? L"Installed \"%s\". The main menu shows it after its own "
                                                          L"12 pictures."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
+                       : !wcscmp(kind, L"Attires") ? L"Installed \"%s\". The superstar has it on CHANGE ATTIRE the next "
+                                                     L"time the game starts."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
                                                    L"select (up to 137 superstar mods)."
                                                  : L"Installed \"%s\". It is on the arena select pages after the "
                                                    L"game's own arenas.",
                m.name[0] ? m.name : m.id);
+    if (!wcscmp(kind, L"Attires")) {  /* (two attire mods on one attire: the new one moves) */
+        static WCHAR clash[2048];
+        if (mods_attire_guard(s_game, dst, clash, 2048)) {
+            scan();
+            fill();
+            wcsncat_s(t, 512, L" ", _TRUNCATE);
+            wcsncat_s(t, 512, clash, _TRUNCATE);
+            if (s_wnd) MessageBoxW(s_wnd, clash, L"Attire mods", MB_OK | MB_ICONINFORMATION);
+        }
+    }
     status(t);
     return 1;
 }

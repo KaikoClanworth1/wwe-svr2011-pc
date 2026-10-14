@@ -35,10 +35,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import ymks as Y  # noqa: E402
 import hctp_motion as H  # noqa: E402
+import hand_tracks as HT  # noqa: E402
 import svr08_entrance as S  # noqa: E402
 
 CAM_FLAG = 0x4000               # HCTP camera tracks: track id | 0x4000 (3047: 9950 -> 26334)
 SEGMENTS = 5                     # HCTP slots 0..4 -> 2011 slots 0, 5, 10, 15, 20
+# SmackDown! vs. Raw (2004, PS2): HCTP's files and formats, but 20-24 sub-scenes per object; by position
+# 0-3 hidden intro, 4-8 stage, 9-14 ramp, 15-18 ringside, 19-23 in the ring = 2011's 5 segments (no
+# intro cut needed); camera keys of 19 bytes (f32 position, s16 rotation). docs/OTHER_GAMES_ENTRANCES.md
+GAMES = {'hctp': dict(segments=SEGMENTS, groups=None),
+         'svr04': dict(segments=24, groups=[(0, 4), (4, 9), (9, 15), (15, 19), (19, 24)])}
 SLOTS_11 = 21
 HSLOT = 40
 CAM_FOV = 0.7217285633087158     # key fov; with op 112 in the track 2011 uses the zoom instead (section 5)
@@ -336,6 +342,11 @@ def convert_records(kind, data, T, rep, ground_fix=True, fov=CAM_FOV, shifts=Non
             ev2 = filter_events(ev, T, KEEP_CAM, rep, 'camera', {113: cam_follow})
             if len(pose) == 13:
                 p2 = conv_cam_pose(pose, shift_for_frame(shifts, f) if (ground_fix and shifts) else 0.0, fov)
+            elif len(pose) == 19:                # (SvR 2004: [count][f32 x3][s16 rotation x3])
+                pos = list(struct.unpack_from('<3f', pose, 1))
+                rot = struct.unpack_from('<3h', pose, 13)
+                pos[1] += (shift_for_frame(shifts, f) if (ground_fix and shifts) else 0.0) / 0.01
+                p2 = bytes([pose[0]]) + struct.pack('<3f3ff', *pos, *[v * Y.ANG for v in rot], fov)
             else:
                 p2 = pose
                 if pose:
@@ -411,6 +422,12 @@ def intro_end(char_recs, cam_recs, hidden_y=15.0):
     return up
 
 
+def plan_groups(nseg, groups):
+    """2011 segment -> the whole source sub-scenes grouped by position (SvR 2004)"""
+    return {j: [(k, 0, None) for k in range(a, min(b, nseg))] for j, (a, b) in enumerate(groups)
+            if a < nseg}
+
+
 def plan(nseg, intro):
     """2011 segment (0..4) -> [(HCTP segment, from frame, to frame or None)].
     2011's 5 segments: 0 intro (entrant hidden, titantron), 1 stage, 2 ramp, 3 ringside and into
@@ -433,8 +450,12 @@ def slot11(j, on, evt_id, params, parent):
     return bytes(s)
 
 
-def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None):
-    """-> (evp bytes, evt bytes, report Counter, notes list)"""
+DEFAULT_HAND_LIB = {}             # (hand_tracks.library(game pac): set by entrance_port for every caller)
+
+
+def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, game='hctp', hand_lib=None):
+    """-> (evp bytes, evt bytes, report Counter, notes list); game: hctp / svr04 (GAMES)"""
+    cfg = GAMES[game]
     prop_map = PROP_MAP if prop_map is None else prop_map
     sevp = parse_sevp(src['sevp'])
     if hnum not in sevp:
@@ -447,7 +468,7 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None):
     bank = Y.Bank(b'YMKs' + struct.pack('<I', 0x100) + bytes(8) + S.T11, [])
     bank.lead = b''
     kinds = [kind_of(o) for o in script['objs']]
-    nseg = min(SEGMENTS, max(len(o['slots']) for o in script['objs']))
+    nseg = min(cfg['segments'], max(len(o['slots']) for o in script['objs']))
     # every HCTP track converted per HCTP segment: conv[(object, segment)] = (kind, recs, frames)
     conv = {}
     shifts = {}
@@ -468,9 +489,12 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None):
     ent = next((i for i, kd in enumerate(kinds) if kd == 'char'), 0)
     cam = next((i for i, kd in enumerate(kinds) if kd == 'camera'), None)
     intro = 0
-    if (ent, 0) in conv and cam is not None and (cam, 0) in conv:
-        intro = intro_end(conv[(ent, 0)][1], conv[(cam, 0)][1])
-    pl = plan(nseg, intro)
+    if cfg['groups']:
+        pl = plan_groups(nseg, cfg['groups'])
+    else:
+        if (ent, 0) in conv and cam is not None and (cam, 0) in conv:
+            intro = intro_end(conv[(ent, 0)][1], conv[(cam, 0)][1])
+        pl = plan(nseg, intro)
     notes.append('segments: ' + '; '.join('2011 %d <- %s' % (j, ' + '.join(
         'HCTP %d [%d..%s)' % (hk, a, '' if b is None else b) for hk, a, b in pl[j])) for j in sorted(pl)))
     seg_frames = {}
@@ -504,6 +528,45 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None):
                 rep['tracks %s' % kinds[i]] += 1
             hk0 = next((hk for hk, a, b in pl[j] if (i, hk) in conv), pl[j][0][0])
             slot_src[(i, j)] = o['slots'][hk0] if hk0 < len(o['slots']) else None
+    # ---- the hands: HCTP switches hand shapes by event (op 16 `10 ss iiii`: ss 1 left / 2 right, 2011's
+    # pose ids 0-105 / 200-305; ss 0 = the face); 2011's entrances animate the fingers on the entrant's
+    # y3 (left) / y2 (right) tracks: made from the pose library (hand_tracks.py), per 2011 segment
+    hand_lib = DEFAULT_HAND_LIB if hand_lib is None else hand_lib
+    if hand_lib and ent < len(script['objs']):
+        o = script['objs'][ent]
+        shape = {1: None, 2: None}
+        made = 0
+        for j in sorted(pl):
+            evs = {1: [], 2: []}
+            off = 0
+            for hk, a, b in pl[j]:
+                full = conv.get((ent, hk), (None, None, 0))[2]
+                b2 = full if b is None else b
+                s = o['slots'][hk] if hk < len(o['slots']) else None
+                e = tracks.get((s['tid'], s['tx'], s['ty'])) if s else None
+                if e and e['data']:
+                    for f, r in H.records(e['data']):
+                        if not a <= f < b2:
+                            continue
+                        ev, _ = Y.split_record(r)
+                        if not ev:
+                            continue
+                        for op, bb in Y.parse_events(ev, T)[0]:
+                            if op == 16 and len(bb) >= 4 and bb[1] in (1, 2):
+                                evs[bb[1]].append((off + f - a, struct.unpack_from('<H', bb, 2)[0]))
+                off += b2 - a
+            n = seg_frames.get(j, 0)
+            if n <= 0:
+                continue
+            for hand in (1, 2):
+                data, shape[hand] = HT.track(evs[hand], n, hand, hand_lib, shape[hand])
+                if data:
+                    Y.insert_motion(bank, S.ID_SHIFT + ent, 5 * j, HT.Y_OF[hand], data, n, S.RT_2011)
+                    made += 1
+            rep['hand events'] += len(evs[1]) + len(evs[2])
+        notes.append('hands: %d finger tracks from %d hand events' % (made, rep['hand events']))
+    else:
+        notes.append('hands: no finger tracks (the 2011 pac folder - m.pac pose library - not given)')
     objs = []
     for i, o in enumerate(script['objs']):
         kind = kinds[i]

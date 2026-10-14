@@ -145,37 +145,98 @@ bool XcompressDecode(const Bytes& d, Bytes& out, std::string* error) {
   }
   out.assign(size_t(total), 0);
   mspack_system sys = {MOpen, MClose, MRead, MWrite, MSeek, MTell, MMsg, MAlloc, MFree, MCopy, nullptr};
-  Bytes frames;
-  size_t op = 0;
-  for (uint32_t i = 0; i < n; ++i) {
-    // chunk i sits at file offset i * chunk (chunk 0 after the header)
-    size_t p = i ? size_t(i) * chunk : data;
-    const size_t end = std::min(d.size(), size_t(i + 1) * chunk);
+  // a chunk's frames from p: {u16 packed size} (32 KB unpacked) or {0xFF, u16 unpacked, u16 packed},
+  // read until the chunk's unpacked size; *after = where the next byte is
+  auto frames_at = [&](size_t p, size_t unpacked, Bytes& frames, size_t* after) {
     frames.clear();
-    while (p + 2 <= end) {
-      size_t c;
-      if (d[p] == 0xFF) {  // a frame with its own unpacked size
-        if (p + 5 > end) break;
+    size_t got = 0;
+    while (got < unpacked && p + 2 <= d.size()) {
+      size_t c, u = 0x8000;
+      if (d[p] == 0xFF) {
+        if (p + 5 > d.size()) return false;
+        u = size_t(d[p + 1]) << 8 | d[p + 2];
         c = size_t(d[p + 3]) << 8 | d[p + 4];
         p += 5;
       } else {
         c = size_t(d[p]) << 8 | d[p + 1];
         p += 2;
       }
-      if (!c || p + c > end) break;
-      frames.insert(frames.end(), d.begin() + p, d.begin() + p + c);
+      if (!c || p + c > d.size()) return false;
+      frames.insert(frames.end(), d.begin() + ptrdiff_t(p), d.begin() + ptrdiff_t(p + c));
       if (c & 1) frames.push_back(0);  // the LZX reader works in 16-bit words
       p += c;
+      got += u ? u : 0x8000;
     }
-    MemFile in{frames.data(), nullptr, frames.size(), 0};
-    MemFile o{nullptr, out.data() + op, sizes[i], 0};
+    *after = p;
+    return got >= unpacked;
+  };
+  auto decode = [&](const Bytes& frames, uint8_t* dst, uint32_t size) {
+    MemFile in{const_cast<uint8_t*>(frames.data()), nullptr, frames.size(), 0};
+    MemFile o{nullptr, dst, size, 0};
     lzxd_stream* l = lzxd_init(&sys, reinterpret_cast<mspack_file*>(&in), reinterpret_cast<mspack_file*>(&o),
-                               window_bits, 0, 0x8000, off_t(sizes[i]), 0);
-    if (!l) return fail("LZX init");
-    const int r = lzxd_decompress(l, off_t(sizes[i]));
+                               window_bits, 0, 0x8000, off_t(size), 0);
+    if (!l) return -1;
+    const int r = lzxd_decompress(l, off_t(size));
     lzxd_free(l);
+    return r;
+  };
+  Bytes frames;
+  size_t op = 0, next = data;  // (next: right after the previous chunk's frames)
+  for (uint32_t i = 0; i < n; ++i) {
+    // chunk i: usually at file offset i * chunk (chunk 0 after the header); some files pack them back to back
+    const size_t slot = i ? size_t(i) * chunk : data;
+    int r = -2;
+    size_t after = 0;
+    std::vector<size_t> starts{slot};
+    if (next != slot) starts.push_back(next);
+    for (const size_t start : starts) {
+      // a stored chunk (2K14): u16 0, then its bytes as they are
+      if (start + 2 + sizes[i] <= d.size() && d[start] == 0 && d[start + 1] == 0) {
+        std::memcpy(out.data() + op, &d[start + 2], sizes[i]);
+        after = start + 2 + sizes[i], r = 0;
+        break;
+      }
+      if (!frames_at(start, sizes[i], frames, &after)) continue;
+      r = decode(frames, out.data() + op, sizes[i]);
+      if (!r) break;
+    }
     if (r) return fail("LZX error " + std::to_string(r) + " in chunk " + std::to_string(i));
+    next = after;
     op += sizes[i];
+  }
+  return true;
+}
+
+// WWE 2K17 arena pacs: xcompressed 'HSPC' instead of EPAC. The stage index is an
+// 'SHDC' block in PACH's place: u32 count at +0x38, table at u32 +0x1C of
+// {u32 entry id, u32 offset (from the SHDC), u32 size, u32 0}; the entries are
+// 2K14's ("ZLIB" packed, the same ids and formats).
+bool ShdcRead13(const Bytes& d, size_t s, std::vector<PachEntry>& out);
+
+bool HspcStage13(const Bytes& in, std::vector<PachEntry>& se) {
+  Bytes plain;
+  const Bytes* d = &in;
+  if (IsXcompress(in)) {
+    if (!XcompressDecode(in, plain, nullptr)) return false;
+    d = &plain;
+  }
+  if (d->size() < 0x40 || std::memcmp(d->data(), "HSPC", 4)) return false;
+  for (size_t s = 0; s + 0x40 <= d->size(); s += 0x800)
+    if (!std::memcmp(&(*d)[s], "SHDC", 4)) return ShdcRead13(*d, s, se) && !se.empty();
+  return false;
+}
+
+// An 'SHDC' block at `s` of `d` -> its entries (as stored)
+bool ShdcRead13(const Bytes& d, size_t s, std::vector<PachEntry>& out) {
+  if (s + 0x40 > d.size() || std::memcmp(&d[s], "SHDC", 4)) return false;
+  const uint32_t n = Le32(&d[s + 0x38]), t = Le32(&d[s + 0x1C]);
+  if (s + t + size_t(n) * 16 > d.size()) return false;
+  out.clear();
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* r = &d[s + t + 16 * i];
+    const size_t off = s + Le32(r + 4), size = Le32(r + 8);
+    if (off + size > d.size()) return false;
+    out.push_back({Le32(r), Bytes(d.begin() + off, d.begin() + off + size)});
   }
   return true;
 }
@@ -191,16 +252,7 @@ bool ArchiveRead(const Bytes& in, Epac& out, std::string* error) {
   if (d->size() < 0x4000) return fail("too small");
   if (!std::memcmp(d->data(), "EPAC", 4)) return EpacRead(*d, out) || fail("bad EPAC");
   if (std::memcmp(d->data(), "EPK8", 4)) return fail("not an EPAC / EPK8 archive");
-  // EPK8: the EPAC table with a flag in each group's count word
-  Bytes copy = *d;
-  std::memcpy(copy.data(), "EPAC", 4);
-  for (size_t p = 0x800; p + 12 <= 0x4000;) {
-    if (!Le32(&copy[p])) break;
-    const uint32_t cnt = Le32(&copy[p + 4]) & 0xFFFF;
-    PutLe32(&copy[p + 4], cnt);
-    p += 12 + 12 * size_t(cnt / 3);
-  }
-  return EpacRead(copy, out) || fail("bad EPK8");
+  return EpacRead(*d, out) || fail("bad EPK8");  // (16-byte entries, 8-char names: pac.h)
 }
 
 // ------------------------------------------------------------------ JBOY
@@ -310,6 +362,67 @@ bool Jboy13Read(const Bytes& d, Model& m, std::string* error) {
   return true;
 }
 
+// WWE '12 / '13 / 2K14 light their floors, stands and props with baked light
+// maps (sampLightMapPrm). The floors' (fade_lightmap*, 512 x 512) are top-down
+// pictures of the whole floor placed by world position - the stage side at the
+// top - over the floor the meshes using them cover; the others are sampled
+// with the mesh's UVs. SvR2011 has no light
+// map shader and bakes its own arena lighting into vertex colours (its floors:
+// vertex format bit 1, greys). The light map is sampled at each vertex (UV
+// wrapped, bilinear) and multiplied into the vertex colour, which turns the
+// colour bit on - without it those meshes came out near black (the user's
+// "black floors").
+struct LightMap13 {
+  Image img;
+  bool top_down = false;
+  float x0 = 0, x1 = 1, z0 = 0, z1 = 1;  // the floor area it covers (source units)
+};
+
+void BakeLightMaps13(Model& m, const std::map<std::string, LightMap13>& lightmaps, int& baked) {
+  for (auto& s : m.meshes) {
+    const int slot = GetSlot(s, {"sampLightMapPrm"});
+    if (slot < 0 || slot >= int(m.textures.size())) continue;
+    auto it = lightmaps.find(Lower(m.textures[slot]));
+    if (it == lightmaps.end() || it->second.img.w <= 0 || s.uvs.size() != s.verts.size()) continue;
+    const LightMap13& L = it->second;
+    const Image& lm = L.img;
+    auto px = [&](int x, int y, int c) {
+      if (L.top_down) {
+        x = std::clamp(x, 0, lm.w - 1);
+        y = std::clamp(y, 0, lm.h - 1);
+      } else {
+        x = ((x % lm.w) + lm.w) % lm.w;
+        y = ((y % lm.h) + lm.h) % lm.h;
+      }
+      return float(lm.rgba[(size_t(y) * lm.w + x) * 4 + c]);
+    };
+    for (size_t k = 0; k < s.verts.size(); ++k) {
+      float u = s.uvs[k][0], v = s.uvs[k][1];
+      if (L.top_down) {
+        u = (s.verts[k].pos[0] - L.x0) / std::max(1e-3f, L.x1 - L.x0);
+        v = (L.z1 - s.verts[k].pos[2]) / std::max(1e-3f, L.z1 - L.z0);
+        u = std::clamp(u, 0.f, 0.999f), v = std::clamp(v, 0.f, 0.999f);
+      }
+      const float fx = u * lm.w - 0.5f, fy = v * lm.h - 0.5f;
+      const int x0 = int(std::floor(fx)), y0 = int(std::floor(fy));
+      const float ax = fx - x0, ay = fy - y0;
+      uint32_t& col = s.verts[k].color;
+      uint32_t out = col & 0xFF000000u;
+      for (int c = 0; c < 3; ++c) {
+        const float v = (px(x0, y0, c) * (1 - ax) + px(x0 + 1, y0, c) * ax) * (1 - ay) +
+                        (px(x0, y0 + 1, c) * (1 - ax) + px(x0 + 1, y0 + 1, c) * ax) * ay;
+        const int shift = 16 - 8 * c;  // ARGB: R 16, G 8, B 0
+        // (the source's own vertex colours are unused there - often black: replaced; light
+        // maps hold light at half scale, as SvR2011's vertex colours do)
+        out |= uint32_t(std::clamp(int(std::lround(v * 2.f)), 0, 255)) << shift;
+      }
+      col = out;
+    }
+    s.vfmt |= 2u;
+    ++baked;
+  }
+}
+
 void ConvertModel13(Model& m, float scale, Convert13Stats& st) {
   ++st.models;
   for (auto& n : m.nodes) {
@@ -399,24 +512,10 @@ Bytes ConvertHmd13(const Bytes& raw, float scale) {
 }
 
 std::string ConvertFlags13(const std::string& t) {
-  // lights SvR2011 arenas use: 100-111, 120-127, 300-308, 501, 502. WWE '13
-  // defines its lights in the arena (entries 0x7532/0x7533, by light number);
-  // SvR2011 has no such entry, so 128-135 go to the light whose WWE '13
-  // definition is nearest (colours and directions)
-  static const std::map<int, int> kMap = {{128, 127}, {129, 126}, {130, 121}, {131, 126},
-                                          {132, 121}, {133, 121}, {134, 121}, {135, 124}};
+  // (the light numbers l(n) stay: the arena keeps its own light bank 0x7530,
+  // see LightBank13)
   std::string o;
   for (size_t i = 0; i < t.size();) {
-    if (t.compare(i, 2, "l(") == 0 && (i == 0 || t[i - 1] == ' ' || t[i - 1] == '\t')) {
-      const size_t e = t.find(')', i);
-      if (e != std::string::npos && e - i < 8) {
-        const int v = std::atoi(t.c_str() + i + 2);
-        auto it = kMap.find(v);
-        o += "l(" + std::to_string(it != kMap.end() ? it->second : v) + ")";
-        i = e + 1;
-        continue;
-      }
-    }
     // "p" / "pg" / "pe": the model drops a shadow. WWE '13 marks its floor
     // pieces and mats; SvR2011 projects those shadows flat onto the canvas
     // (grey slabs and dashes on the mat): left out
@@ -433,6 +532,189 @@ std::string ConvertFlags13(const std::string& t) {
           i = e;
           continue;
         }
+      }
+    }
+    o += t[i++];
+  }
+  return o;
+}
+
+// Arena lights: entry 0x7530 is the arena's bank of light sets (YMKs, LE:
+// [16-byte header], event-size table T[256], u32 count, count x {u8 y, u8 x,
+// u16 set id, u32 offset, u32 frames, u32 rt}, key streams). A set: ground /
+// sky colour (y 0 / 1), up to 4 directional lights (y 10-13), moving crowd
+// lights (y 50-59). The model flags (0xC351 l(n)) and the light zones (0xC353)
+// pick sets by id; an id the bank lacks is index -1 in the game. WWE '12 /
+// '13 / 2K14 banks have the SvR2011 format and id plan (their y 14 track is
+// ignored), but lack sets the game looks up itself (110, 115) and some the
+// flags name (111, and RAW's 102 / 108 given by RelightByRole13).
+constexpr int kExeLights13[] = {10, 11, 12, 13, 14, 20, 30, 31, 100, 110, 115, 500};
+
+struct LightDir13 { uint8_t y, x; uint16_t id; uint32_t off, frames, rt; };
+
+bool LightBankRead13(const Bytes& b, size_t& head, std::vector<LightDir13>& dirs, size_t& data) {
+  head = (b.size() >= 4 && (!std::memcmp(b.data(), "YMKs", 4) || !std::memcmp(b.data(), "YMBs", 4))) ? 16 : 0;
+  if (b.size() < head + 0x104) return false;
+  const uint32_t n = Le32(&b[head + 0x100]);
+  data = head + 0x104 + size_t(n) * 16;
+  if (n > 100000 || data > b.size()) return false;
+  dirs.clear();
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* r = &b[head + 0x104 + 16 * i];
+    dirs.push_back({r[0], r[1], Le16(r + 2), Le32(r + 4), Le32(r + 8), Le32(r + 12)});
+  }
+  return true;
+}
+
+std::set<int> LightIds13(const Bytes& bank) {
+  size_t head, data;
+  std::vector<LightDir13> dirs;
+  std::set<int> ids;
+  if (LightBankRead13(bank, head, dirs, data))
+    for (const auto& d : dirs) ids.insert(d.id);
+  return ids;
+}
+
+// The sets in `want` the bank lacks are copied from the host's (2011 RAW's)
+// bank: directory records appended, their key streams after the data. Sets
+// neither the host has nor `want` names are dropped (unused): every set costs
+// the game ~18 KB of stage memory (two 8608-byte players and a 928-byte
+// object), and WWE 2K14's 52 crashed its arena load (in the object motion
+// loader sub_82183C10, after the light sets); with 41 or 47 it plays.
+Bytes FillLights13(const Bytes& bank, const Bytes& host, const std::set<int>& want, std::vector<int>& added,
+                   std::vector<int>& unused) {
+  size_t head, data, hh, hdata;
+  std::vector<LightDir13> dirs, hd;
+  if (!LightBankRead13(bank, head, dirs, data) || !LightBankRead13(host, hh, hd, hdata)) return bank;
+  std::set<int> host_ids;
+  for (const auto& d : hd) host_ids.insert(d.id);
+  {
+    std::vector<LightDir13> keep;
+    for (const auto& d : dirs)
+      if (host_ids.count(d.id) || want.count(d.id)) keep.push_back(d);
+      else if (unused.empty() || unused.back() != d.id) unused.push_back(d.id);
+    dirs.swap(keep);
+  }
+  std::set<int> have;
+  for (const auto& d : dirs) have.insert(d.id);
+  std::set<uint32_t> hoffs;
+  for (const auto& d : hd) hoffs.insert(d.off);
+  const size_t hlen = host.size() - hdata;
+  Bytes extra;
+  std::map<uint32_t, uint32_t> moved;  // host offset -> new offset (shared streams stay shared)
+  const uint32_t base = uint32_t(bank.size() - data);
+  for (int id : want) {
+    if (have.count(id)) continue;
+    bool any = false;
+    for (const auto& d : hd) {
+      if (d.id != id || d.off > hlen) continue;
+      auto mv = moved.find(d.off);
+      if (mv == moved.end()) {
+        auto nx = hoffs.upper_bound(d.off);
+        const size_t end = (nx == hoffs.end() || *nx > hlen) ? hlen : *nx;
+        mv = moved.emplace(d.off, base + uint32_t(extra.size())).first;
+        App(extra, &host[hdata + d.off], end - d.off);
+      }
+      dirs.push_back({d.y, d.x, d.id, mv->second, d.frames, d.rt});
+      any = true;
+    }
+    if (any) added.push_back(id);
+  }
+  if (added.empty() && unused.empty()) return bank;
+  Bytes out(bank.begin(), bank.begin() + head + 0x100);
+  AppLe32(out, uint32_t(dirs.size()));
+  for (const auto& d : dirs) {
+    out.push_back(d.y), out.push_back(d.x), out.push_back(uint8_t(d.id)), out.push_back(uint8_t(d.id >> 8));
+    AppLe32(out, d.off), AppLe32(out, d.frames), AppLe32(out, d.rt);
+  }
+  out.insert(out.end(), bank.begin() + data, bank.end());
+  App(out, extra);
+  return out;
+}
+
+// The l(n) / le(n) / lg(n) numbers of a flags text
+std::set<int> FlagLights13(const std::string& t) {
+  std::set<int> ids;
+  for (size_t i = t.find('('); i != std::string::npos; i = t.find('(', i + 1)) {
+    size_t s = i;
+    if (s >= 1 && (t[s - 1] == 'e' || t[s - 1] == 'g')) --s;
+    if (s >= 1 && t[s - 1] == 'l' && (s == 1 || t[s - 2] == ' ' || t[s - 2] == '\t'))
+      ids.insert(std::atoi(t.c_str() + i + 1));
+  }
+  return ids;
+}
+
+// The light sets a zones text (0xC353) names
+std::set<int> ZoneLights13(const std::string& t) {
+  std::set<int> ids;
+  size_t i = 0;
+  while (i < t.size()) {
+    size_t e = t.find('\n', i);
+    if (e == std::string::npos) e = t.size();
+    const std::string line = t.substr(i, e - i);
+    i = e + 1;
+    float v[4];
+    int l[4];
+    if (line.compare(0, 2, "//") != 0 &&
+        std::sscanf(line.c_str(), "%f %f %f %f %d %d %d %d", &v[0], &v[1], &v[2], &v[3], &l[0], &l[1], &l[2], &l[3]) == 8)
+      for (int k : l) ids.insert(k);
+  }
+  return ids;
+}
+
+// WWE '12 / '13 / 2K14 light zones (0xC353: "x0 z0 x1 z1 L0 L1 L2 ambient", the
+// entrance stage and ramp) are in cm, SvR2011's in its arena units (x 0.1)
+std::string ScaleZones13(const std::string& t, float k) {
+  std::string o;
+  size_t i = 0;
+  while (i < t.size()) {
+    size_t e = t.find('\n', i);
+    if (e == std::string::npos) e = t.size(); else ++e;
+    std::string line = t.substr(i, e - i), eol;
+    i = e;
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) eol.insert(eol.begin(), line.back()), line.pop_back();
+    float v[4];
+    int l[4];
+    const size_t c = line.find(';');
+    const std::string body = line.substr(0, c);
+    if (line.compare(0, 2, "//") != 0 &&
+        std::sscanf(body.c_str(), "%f %f %f %f %d %d %d %d", &v[0], &v[1], &v[2], &v[3], &l[0], &l[1], &l[2], &l[3]) == 8) {
+      char buf[160];
+      std::snprintf(buf, sizeof buf, "%7.1f  %7.1f   %7.1f  %7.1f    %d  %d  %d  %d", v[0] * k, v[1] * k, v[2] * k, v[3] * k,
+                    l[0], l[1], l[2], l[3]);
+      const std::string comment = c == std::string::npos ? "" : "     " + line.substr(c);
+      line = buf + comment;
+    }
+    o += line + eol;
+  }
+  return o;
+}
+
+// Light numbers l(n) the shipped bank has no set for go to its nearest one of
+// the same hundred.
+std::string BankLights13(const std::string& t, const std::set<int>& have) {
+  if (have.empty()) return t;
+  std::string o;
+  for (size_t i = 0; i < t.size();) {
+    size_t k = i + 1;
+    if (t[i] == 'l' && k < t.size() && (t[k] == 'e' || t[k] == 'g')) ++k;
+    if (t[i] == 'l' && k < t.size() && t[k] == '(' && (i == 0 || t[i - 1] == ' ' || t[i - 1] == '	')) {
+      const size_t e = t.find(')', i);
+      if (e != std::string::npos && e - i < 9) {
+        const std::string word = t.substr(i, k - i);
+        int v = std::atoi(t.c_str() + k + 1);
+        if (!have.count(v)) {
+          int best = -1;
+          for (int h : have)
+            if (h / 100 == v / 100 && (best < 0 || std::abs(h - v) < std::abs(best - v))) best = h;
+          if (best < 0)
+            for (int h : have)
+              if (best < 0 || std::abs(h - v) < std::abs(best - v)) best = h;
+          v = best;
+        }
+        o += word + "(" + std::to_string(v) + ")";
+        i = e + 1;
+        continue;
       }
     }
     o += t[i++];
@@ -559,10 +841,26 @@ std::string ConvertVisTree13(const std::string& t, float scale) {
   return o;
 }
 
+// A crowd area file: no "(" seat entries; its first data line is numbers
+bool IsCrowdArea13(const std::string& t) {
+  if (t.find('(') != std::string::npos) return false;
+  size_t pos = 0;
+  while (pos < t.size()) {
+    size_t nl = t.find('\n', pos);
+    const std::string tl = Trim(t.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
+    pos = nl == std::string::npos ? t.size() : nl + 1;
+    if (tl.empty() || tl[0] == ';') continue;
+    return std::isdigit(static_cast<unsigned char>(tl[0])) || tl[0] == '-' || tl[0] == '.';
+  }
+  return false;
+}
+
 std::string ConvertCrowdText13(const std::string& t, float scale) {
-  // seat files: "A (x, z, y, w); count" -> all four scaled. Area files
-  // ("; R" / "; NR"): rows of numbers, all positions.
-  const bool area = t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0;
+  // seat files: "A (x, z, y, w); count" -> all four scaled. Area files: rows
+  // of numbers, all positions ("; R" / "; NR"; WWE 2K14 names them freely -
+  // "; off_scr_audience_r", "; audience_a", "; kyauku_a" ... - and those left
+  // in cm crashed the crowd code): told by their content
+  const bool area = IsCrowdArea13(t);
   std::string o;
   size_t pos = 0;
   while (pos < t.size()) {
@@ -793,7 +1091,7 @@ Bytes ConvertCrowd(const Bytes& raw, Wwe13Report& rep) {
       r = JboyWrite(m);
     } else if (r.size() > 4 && r[0] == ';') {
       const std::string t = Text(r);
-      if (t.find('(') != std::string::npos || t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0)
+      if (t.find('(') != std::string::npos || IsCrowdArea13(t))
         r = FromText(ConvertCrowdText13(t, 0.1f));
     } else {
       continue;
@@ -964,21 +1262,69 @@ bool DropHangingScreens(Model& m) {
 bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13Options& opt, Bytes& out,
                          Wwe13Report& rep, std::string* error) {
   auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
-  Epac src;
-  if (!ArchiveRead(wwe13, src, error)) return false;
   std::vector<PachEntry> se;
-  for (const auto& g : src.groups)
-    for (const auto& e : g.entries)
-      if (IsPach(e.data) && se.empty()) PachRead(e.data, se);
+  if (!HspcStage13(wwe13, se)) {  // (WWE 2K17's container; else EPAC / EPK8)
+    Epac src;
+    if (!ArchiveRead(wwe13, src, error)) return false;
+    for (const auto& g : src.groups)
+      for (const auto& e : g.entries)
+        if (IsPach(e.data) && se.empty()) PachRead(e.data, se);
+  }
   if (se.empty()) return fail("WWE '13 file: no stage index (PACH)");
   Arena host;
   if (!host.LoadData(host_file, error)) return false;
+  // WWE 2K14 (its entries packed as "ZLIB")
+  bool k14 = false;
+  for (const auto& e : se) k14 = k14 || (e.data.size() >= 4 && !std::memcmp(e.data.data(), "ZLIB", 4));
 
   std::map<uint32_t, Bytes> outm;  // id -> stored entry
   std::map<uint32_t, Model> pending;  // converted arena models (written after the barrier corners)
   std::map<uint32_t, std::string> names;  // converted models
   std::map<uint32_t, const PachEntry*> hostm;
   for (const auto& e : host.entries) hostm[e.id] = &e;
+  Bytes bank13;  // the arena's light bank (0x7530)
+  std::string flags13;  // its converted model flags (0xC351)
+  bool has_flags13 = false;
+  // the source's light maps (by name), for BakeLightMaps13
+  std::map<std::string, LightMap13> lightmaps;
+  {
+    std::set<std::string> wanted;
+    std::map<std::string, std::array<float, 4>> bounds;  // name -> x0 x1 z0 z1 of the meshes using it
+    for (const auto& e : se) {
+      if (e.id >= 0x190) continue;
+      const Bytes raw = Unpack(e.data);
+      Model lm_model;
+      if (!IsJboy(raw) || !Jboy13Read(raw, lm_model)) continue;
+      for (const auto& msh : lm_model.meshes) {
+        const int slot = GetSlot(msh, {"sampLightMapPrm"});
+        if (slot < 0 || slot >= int(lm_model.textures.size())) continue;
+        const std::string n = Lower(lm_model.textures[slot]);
+        wanted.insert(n);
+        auto b = bounds.emplace(n, std::array<float, 4>{1e9f, -1e9f, 1e9f, -1e9f}).first;
+        for (const auto& v : msh.verts) {
+          b->second[0] = std::min(b->second[0], v.pos[0]), b->second[1] = std::max(b->second[1], v.pos[0]);
+          b->second[2] = std::min(b->second[2], v.pos[2]), b->second[3] = std::max(b->second[3], v.pos[2]);
+        }
+      }
+    }
+    for (const auto& e : se)
+      if (e.id >= 0x190 && e.id <= 0x192) {
+        std::vector<BundleTexture> texs;
+        if (!BundleRead(Unpack(e.data), texs)) continue;
+        for (const auto& t : texs)
+          if (wanted.count(Lower(t.name)) && !lightmaps.count(Lower(t.name))) {
+            LightMap13 L;
+            if (!DdsDecode(t.data, L.img)) continue;
+            const std::string n = Lower(t.name);
+            L.top_down = n.rfind("fade_lightmap", 0) == 0;
+            if (bounds.count(n)) {
+              const auto& b = bounds[n];
+              L.x0 = b[0], L.x1 = b[1], L.z0 = b[2], L.z1 = b[3];
+            }
+            lightmaps[n] = std::move(L);
+          }
+      }
+  }
 
   // WWE '13's ring materials (colours by diffuse texture name), for the host's ring parts
   std::map<std::string, std::array<float, 12>> ring_colours;
@@ -1007,11 +1353,26 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       continue;
     }
     if (e.id == 0x7532 || e.id == 0x7533) { ++rep.dropped; continue; }  // (WWE '13 only)
+    if (e.id == 0x7530) { bank13 = Unpack(e.data); continue; }  // (written after the flags: LightBank13)
+    // (2K14 stores a few small texts - ring zones 0xEB29 - as bare zlib streams
+    // of unknown size: the host's, which match)
+    if (k14 && e.data.size() > 2 && e.data[0] == 0x78 && hostm.count(e.id)) {
+      outm[e.id] = hostm[e.id]->data;
+      ++rep.from_host;
+      continue;
+    }
     Bytes raw = Unpack(e.data);
+    // 2K17 nests 'SHDC' blocks where 2K14 has PACHs (its crowd packs 0x4E20 / 0x4E2A: left
+    // as they were, the crowd was missing): the same entries, written as a PACH
+    if (raw.size() >= 4 && !std::memcmp(raw.data(), "SHDC", 4)) {
+      std::vector<PachEntry> kids;
+      if (ShdcRead13(raw, 0, kids)) raw = PachWrite(kids);
+    }
     if (IsJboy(raw)) {
       Model m;
       std::string err;
       if (!Jboy13Read(raw, m, &err)) return fail("model " + std::to_string(e.id) + ": " + err);
+      BakeLightMaps13(m, lightmaps, rep.conv.lightmaps_baked);
       ConvertModel13(m, 0.1f, rep.conv);
       if (DropHangingScreens(m)) { ++rep.dropped; continue; }
       names[e.id] = m.name;
@@ -1091,16 +1452,61 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       std::string fl = ConvertFlags13(Text(raw));
       if (opt.role_lights) fl = RelightByRole13(fl, names, opt.stand_light);
       if (opt.no_spot_shadows) fl = NoSpotShadows13(fl, names);
-      outm[e.id] = Pack(FromText(fl));
+      flags13 = fl, has_flags13 = true;
+    } else if (e.id == 0xC353) {
+      outm[e.id] = Pack(FromText(ScaleZones13(Text(raw), 0.1f)));
     } else if ((e.id == 0x4E20 || e.id == 0x4E2A) && IsPach(raw)) {
       if (opt.host_crowd && hostm.count(e.id)) { outm[e.id] = hostm[e.id]->data; ++rep.from_host; continue; }
       outm[e.id] = Pack(ConvertCrowd(raw, rep));
     } else {
-      outm[e.id] = e.data;  // as stored
+      // as stored; 2K14's "ZLIB" packing repacked (the game unpacks BPE only:
+      // its object motions 0x7531 and 0x7922 left as ZLIB crashed the arena load)
+      outm[e.id] = (e.data.size() >= 4 && !std::memcmp(e.data.data(), "ZLIB", 4)) ? Pack(raw) : e.data;
     }
   }
   if (opt.barrier_corners) BakeBarrierCorners(pending, rep);
-  for (auto& [id, m] : pending) outm[id] = Pack(JboyWrite(m));
+  // LightBank13: the arena's own light sets, plus those the game looks up
+  // itself and the flags name that it lacks, from the 2011 host arena's bank
+  if (!bank13.empty()) {
+    std::set<int> want(std::begin(kExeLights13), std::end(kExeLights13));
+    if (has_flags13)
+      for (int id : FlagLights13(flags13)) want.insert(id);
+    if (outm.count(0xC353))
+      for (int id : ZoneLights13(Text(Unpack(outm[0xC353])))) want.insert(id);
+    std::vector<int> added, unused;
+    if (hostm.count(0x7530)) bank13 = FillLights13(bank13, Unpack(hostm[0x7530]->data), want, added, unused);
+    if (!added.empty()) {
+      std::string n = "light sets from the 2011 host arena:";
+      for (int id : added) n += " " + std::to_string(id);
+      rep.notes.push_back(n);
+    }
+    if (!unused.empty()) {
+      std::string n = "light sets nothing uses, left out:";
+      for (int id : unused) n += " " + std::to_string(id);
+      rep.notes.push_back(n);
+    }
+    outm[0x7530] = Pack(bank13);
+  }
+  if (has_flags13) outm[0xC351] = Pack(FromText(BankLights13(flags13, LightIds13(outm.count(0x7530) ? Unpack(outm[0x7530]) : Bytes()))));
+  // A model over ~822 KB crashes 2011's arena load (WWE '13 bg35 / 45 / 47: 826-829 KB, KOTR '98's
+  // cables 826 KB; 797-822 KB play): over kMaxModel its biggest meshes are left out until it fits
+  constexpr size_t kMaxModel = 800000;
+  for (auto& [id, m] : pending) {
+    Bytes j = JboyWrite(m);
+    int dropped = 0;
+    while (j.size() > kMaxModel && m.meshes.size() > 1) {
+      size_t big = 0;
+      for (size_t k = 1; k < m.meshes.size(); ++k)
+        if (m.meshes[k].verts.size() > m.meshes[big].verts.size()) big = k;
+      m.meshes.erase(m.meshes.begin() + big);
+      ++dropped;
+      j = JboyWrite(m);
+    }
+    if (dropped)
+      rep.notes.push_back("model " + m.name + " (" + std::to_string(id) + ") over the game's model size: " +
+                          std::to_string(dropped) + " biggest mesh(es) left out");
+    outm[id] = Pack(j);
+  }
   // the host's: the ring kit, and data files WWE '13 has none of (not its
   // models; not its ad boards or titantron flip-book, placed for its own hall)
   for (const auto& e : host.entries)
@@ -1288,6 +1694,16 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
           t->data = ht.data;
           for (auto& b : a.bundles) b.changed = true;
         }
+  // the crowd's light (aud_lightmap: the game samples it by name; without it
+  // the crowd is drawn black): the host's when the arena has none (WWE '12 and
+  // WWE '13 arenas never do; an extra texture of that name still wins below)
+  if (!find(a, "aud_lightmap") && !a.bundles.empty())
+    for (const auto& hb : host.bundles)
+      for (const auto& ht : hb.textures)
+        if (Lower(ht.name) == "aud_lightmap" && !find(a, ht.name)) {
+          a.bundles[0].textures.push_back(ht);
+          a.bundles[0].changed = true;
+        }
   // extra pictures (e.g. SvR2011 code objects' textures by name) and the arena card
   for (const auto& t : opt.extra_textures) {
     if (BundleTexture* have = find(a, t.name)) have->data = t.data;
@@ -1297,6 +1713,70 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   if (!opt.card.empty())
     for (auto& en : a.entries)
       if (en.id == 0xEE48) en.data = Pack(opt.card);
+  // Opaque arena models' pictures: WWE '12 / '13 / 2K14 keep a gloss mask in
+  // the diffuse alpha (their materials have no separate specular map) and
+  // SvR2011 blends by it (as the posts below), so 2K14's ringside mats
+  // (alpha 0.2-0.55) and black barricade came out see-through over the black
+  // under the floor. In SvR2011 the model flags (0xC351) make a model
+  // see-through: s / a / k (blended), c (cut out), i / j / o (drawn after).
+  // Pictures only models without those flags use get alpha 255, in the DXT
+  // blocks (DXT3: explicit alpha, DXT5: both end points 255, indices 0).
+  {
+    std::map<uint32_t, bool> see;  // model id -> see-through flag
+    for (const auto& en : a.entries)
+      if (en.id == 0xC351) {
+        const std::string t = Text(Unpack(en.data));
+        size_t i = 0;
+        while (i < t.size()) {
+          size_t e = t.find('\n', i);
+          if (e == std::string::npos) e = t.size();
+          const std::string line = t.substr(i, e - i);
+          i = e + 1;
+          char* end = nullptr;
+          const long id = std::strtol(line.c_str(), &end, 10);
+          if (end == line.c_str() || line.compare(0, 2, "//") == 0) continue;
+          bool s = false;
+          for (size_t k = size_t(end - line.c_str()); k < line.size(); ++k) {
+            const char c = line[k];
+            const bool word = (k == 0 || line[k - 1] == ' ' || line[k - 1] == '\t') &&
+                              (k + 1 >= line.size() || line[k + 1] == ' ' || line[k + 1] == '\t' || line[k + 1] == '\r');
+            if (word && std::strchr("sakcijo", c)) s = true;
+          }
+          see[uint32_t(id)] = s;
+        }
+      }
+    std::set<std::string> opaque_tex, see_tex;
+    for (const auto& am : a.models) {
+      if (am.id >= 0x190) continue;  // (arena models; the ring is the host's)
+      auto it = see.find(am.id);
+      const bool s = it != see.end() && it->second;
+      for (const auto& msh : am.model.meshes) {
+        const int slot = GetSlot(msh, {"texDiffuse"});
+        if (slot >= 0 && slot < int(am.model.textures.size())) (s ? see_tex : opaque_tex).insert(Lower(am.model.textures[slot]));
+      }
+    }
+    int made = 0;
+    for (auto& b : a.bundles)
+      for (auto& t : b.textures) {
+        const std::string n = Lower(t.name);
+        DdsInfo info;
+        if (!opaque_tex.count(n) || see_tex.count(n) || !DdsInfoOf(t.data, info)) continue;
+        if (info.format != DxtFormat::kDxt3 && info.format != DxtFormat::kDxt5) continue;
+        bool changed = false;
+        for (size_t k = 128; k + 16 <= t.data.size(); k += 16) {
+          uint8_t* blk = &t.data[k];
+          if (info.format == DxtFormat::kDxt3) {
+            for (int j = 0; j < 8; ++j) changed |= blk[j] != 0xFF, blk[j] = 0xFF;
+          } else {
+            const uint8_t want[8] = {0xFF, 0xFF, 0, 0, 0, 0, 0, 0};
+            changed |= std::memcmp(blk, want, 8) != 0;
+            std::memcpy(blk, want, 8);
+          }
+        }
+        if (changed) ++made, b.changed = true;
+      }
+    if (made) rep.notes.push_back("pictures of opaque models made opaque (gloss masks in their alpha): " + std::to_string(made));
+  }
   // the posts' picture: WWE '13 keeps a specular mask in its alpha (0.75-0.84);
   // SvR2011 blends the post with it, so the black post shows grey: opaque
   if (opt.host_ring && opt.ring_meshes)
@@ -1375,6 +1855,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
     }
   }
   // (the canvas is the picture most on screen: something else gives way)
+  a.fit_margin = opt.fit;
   rep.halved = a.FitFile({"rin_mat00"});
   out = a.Save(error);
   if (error && !error->empty()) return false;

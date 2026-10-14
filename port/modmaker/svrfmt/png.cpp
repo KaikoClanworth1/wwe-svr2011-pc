@@ -5,6 +5,7 @@
 #define STBI_ONLY_JPEG
 #define STBI_ONLY_TGA
 #define STBI_ONLY_BMP
+#define STBI_ONLY_PSD
 #include "stb_image.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -18,6 +19,17 @@ namespace svrfmt {
 bool LoadImageFile(const std::string& path, Image& out) {
   int w, h, n;
   stbi_uc* p = stbi_load(path.c_str(), &w, &h, &n, 4);
+  if (!p) return false;
+  out.w = w;
+  out.h = h;
+  out.rgba.assign(p, p + size_t(w) * h * 4);
+  stbi_image_free(p);
+  return true;
+}
+
+bool LoadImageMemory(const uint8_t* data, size_t size, Image& out) {
+  int w, h, n;
+  stbi_uc* p = stbi_load_from_memory(data, int(size), &w, &h, &n, 4);
   if (!p) return false;
   out.w = w;
   out.h = h;

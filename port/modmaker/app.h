@@ -44,6 +44,9 @@ extern HWND g_wnd;
 extern std::wstring g_game;  // the installed game folder ("" = none)
 extern float g_scale;        // UI scale (1 at 96 dpi with the 17 px font)
 extern bool g_behind;        // --behind: a test run; the window is never shown, games it starts stay hidden too
+// Opens a file, folder or link with the shell (Explorer, the browser) - never in a --behind test (logged instead),
+// never an empty path.
+void ShellOpen(const std::wstring& what);
 
 // An RGBA picture as a shader resource (nullptr for an empty picture).
 ID3D11ShaderResourceView* MakeTexture(const Image& img);
@@ -106,6 +109,8 @@ void Status(const std::string& s);
 // Progress() to say what it is doing (shown in the status line).
 void RunInBackground(std::function<void()> fn);
 bool Busy();
+// fn once no background job runs (a job's own done callback comes while it still counts as busy).
+void WhenIdle(std::function<void()> fn);
 void Progress(const std::string& what);
 // Runs fn on the UI thread before the next frame (from a background job).
 void OnUiThread(std::function<void()> fn);
@@ -116,6 +121,7 @@ struct Problem {
   bool error = true;   // false: a warning (shown, does not block)
   std::string text;    // what is wrong
   std::string fix;     // what to do (optional)
+  int step = -1;      // (the Superstar page's Simple mode: the step that fixes it)
 };
 inline Problem Error(std::string text, std::string fix = "") { return {true, std::move(text), std::move(fix)}; }
 inline Problem Warning(std::string text, std::string fix = "") { return {false, std::move(text), std::move(fix)}; }
@@ -167,6 +173,8 @@ struct PacIndex {
   std::vector<PacEntryInfo> entries;
 };
 bool ReadPacIndex(const fs::path& file, PacIndex& out);
+// The same from the file's first 0x4000 bytes (in memory / from a disc).
+bool ParsePacIndex(const Bytes& head, PacIndex& out);
 // One entry's data (by group + name, or the first entry with that name when
 // group is nullptr); false if absent.
 bool ReadPacEntry(const fs::path& file, const char* name, Bytes& out, const char* group = nullptr);
@@ -181,6 +189,47 @@ const std::string& GameString(int id);
 // +0x10, the id at +0x90), loaded on first use; "" if unknown.
 const std::string& MoveName(int id);
 const std::map<int, std::string>& MoveNames();
+// The entrances the game can play (checklist D5): the stock ones (pac\evt\
+// Nyujyo*.pac, EVP scripts, name at +0x22) and those installed move packs add
+// (pack.txt "pacentry <pac> EVPx <number> <file>" in Mods\Moves\* and in
+// superstar mods' moves\). Read in the background: empty until EntrancesReady().
+struct EntranceInfo {
+  int number = 0;
+  std::string name;
+  std::string from;  // "" stock, else the pack folder's name
+};
+const std::vector<EntranceInfo>& Entrances();
+bool EntrancesReady();
+void ReloadEntrances();
+// A pack folder's entrances (its pack.txt pacentry EVP lines).
+std::vector<EntranceInfo> PackEntrances(const fs::path& pack);
+// A song's integrated loudness in LUFS (BS.1770; loudness.cpp). Slow: call it from a worker.
+bool MeasureLufs(const std::wstring& file, double* lufs, std::string* error);
+constexpr double kThemeTargetLufs = -24.0;  // where a mod's theme sits next to the game's own
+// The move-set (checklist D4). A profile's move block is 224 u16 move ids
+// (CHAR/PRO +0x000..+0x1BF); a slot takes the moves whose WAZE category bits
+// include the slot's rule (the bits >= 90% of the roster's moves in that slot
+// share), and for the seated-top corner slots the same starting situation.
+constexpr int kMoveSlots = 224;
+struct MoveInfo {
+  int id = 0;
+  std::string name;
+  uint8_t bits[16] = {};
+  int situation = 0;
+};
+const std::map<int, MoveInfo>& MoveInfos();
+// A superstar's 224 slots (empty if it has no profile).
+std::vector<int> ProfileMoves(int star_id);
+// The material panel (material_panel.cpp): the meshes of `pac`'s attire `attire_in_pac` (gear: its entrance gear
+// model) with their shine / normal map / colour / see-through / both sides; edits in `edits` keyed by the 3D view's
+// attire (view_attire), previewed live. Simple's plain words with `simple`. -> true when an edit changed.
+bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int view_attire,
+                   std::map<std::tuple<int, bool, uint32_t, int>, struct MatEdit>& edits, bool simple);
+// A superstar's entrance theme: the game's music id (profile +0x1C0 +0x10; 1-253 the game's own themes), 0 if none.
+int ProfileMusic(int star_id);
+// Whether a move fits a slot (unknown moves: false); the moves that do, by name.
+bool MoveFitsSlot(int slot, int move_id);
+const std::vector<int>& MovesForSlot(int slot);
 bool GameRunning();
 void StartGame(const std::wstring& extra_env = L"");
 
@@ -213,7 +262,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -237,7 +286,9 @@ extern PageId g_project_page;
 bool ProjectDirty();
 void ProjectNew(PageId type);
 bool ProjectSave(bool ask_name);
-bool ProjectOpen(const std::wstring& file);  // .svrproj or .svrmod
+bool ProjectOpen(const std::wstring& file);
+// An installed mod's folder (Mods\<type>\<folder>) opened as a project, as its .svrmod would be (the folder is only read).
+bool ProjectOpenFolder(const std::wstring& dir);  // .svrproj or .svrmod
 void ProjectReset();
 
 // ---------------------------------------------------------------- settings
@@ -249,10 +300,30 @@ struct Settings {
   bool maximized = false;
   bool log_open = false;
   int font = 17;
+  std::vector<std::wstring> disc_folders;  // where the disc images are ("" list = the defaults)
+  std::wstring bink2_tool;                 // radvideo64.exe / a Bink 2 ffmpeg the player chose ("" = look for one)
 };
 extern Settings g_settings;
 void SaveSettings();
 void AddRecent(const std::wstring& file);
+
+// ---------------------------------------------------------------- disc images (checklist D1)
+
+// The user's other WWE discs (Xbox 360 / PS2 images) in the settings' disc
+// folders (default D:\Roms\Xbox 360\WWE and D:\Roms\Playstation 2\WWE Games).
+struct DiscRef {
+  std::wstring path;
+  std::string id;    // XEX title id / PS2 serial
+  std::string game;  // the game's name (by id), else the file name
+  bool xbox = false;
+};
+// Read in the background on first use: empty until DiscsReady().
+const std::vector<DiscRef>& Discs();
+bool DiscsReady();
+void RescanDiscs();
+std::vector<std::wstring> DiscFolders();
+// "SmackDown vs. Raw 2008 (Xbox 360)" for a title id / serial ("" if unknown).
+std::string DiscGameName(const std::string& id);
 
 // ---------------------------------------------------------------- widgets
 
@@ -277,32 +348,85 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void TestInGame(); void SetTestSave(const std::wstring& f, int lib); void StartNew(int tile);
                        void StartBackstage(int area);
                        // a converted arena.pac as the arena project (host tile, name), into the 3D editor
-                       void SetArenaFromPac(const Bytes& pac, int host, const std::string& name);
+                       void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source = "");
                        // a converted bg78 as a backstage project: area, name, and its own-area gimmick pac (or "")
                        void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
                                                 const std::wstring& gimmick_pac, const std::string& gimmick); }
 namespace backstage_page { extern PageHooks hooks; }
-namespace star_page { extern PageHooks hooks; void TestStart(int id, const std::wstring& model, const std::string& name,
+namespace star_page { void TestMaterials(const std::string& spec, bool open);
+extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion); void TestStart(int id, const std::wstring& model, const std::string& name,
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); }
+                      void TestHeight(float scale); void TestMoveset(const std::string& spec); void TestEntrance(int n); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
+                      void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step);
+                      // entrance gear from another superstar (tools/svr11_build.py --gear-from / --onto): the game superstars
+                      // with gear, a popup to pick one, and the transplant onto <target pac>'s attire (done(new pac) on success)
+                      const std::vector<int>& GearDonors(); bool GearDonorPopup(const char* id, int& picked);
+                      void GearTransplant(const std::wstring& target, int attire, int donor, std::function<void(const std::wstring&)> done); void TestGear(const std::string& spec); void TestGearFrom(const std::string& spec); void TestGearFbx(const std::string& spec); void TestSimpleTake(const std::wstring& svrmod, bool everything); void TestSimpleLook(int mode); void TestSimpleCapture(const std::wstring& png); void TestSimpleRing(int n); void TestFbxMake(); void TestFbxReport(const std::wstring& out);  // FBX import mapping (map: fbx_map= text)
+                      // the ring announcer's superstar name clips (tools/announcer_calls.json) and the clip picker
+                      const std::vector<std::string>& AnnouncerNames();
+                      bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
+                      bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
+                      bool EntranceOutfit(const std::wstring& pac); }
+namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
-namespace moves_page { extern PageHooks hooks; void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
-namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); }
-namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host); }
+namespace moves_page { extern PageHooks hooks; void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
+namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
+namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host);
+                       // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
+                       void UseArenaFile(const std::wstring& file, const std::string& name); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace assets_page { void Draw(); void TestOpen(const std::string& path); }
-namespace anims_page { void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
+namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
+                      // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
+                      void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult(); }
+namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
+namespace pac_editor {  // a copy of any pac, edited and saved elsewhere (Game assets)
+bool Open(svrfmt::Bytes pac, const std::string& label, const std::wstring& from, const std::string& note);
+bool IsOpen();
+void Close();
+void Draw();
+void TestEdit(const std::wstring& spec);
+}
+namespace anims_page { bool AnyMotion(int id); void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
+namespace installed_page { void Draw(); void TestSelect(const std::string& spec); void RestoreView(); }
 namespace help_page { void Draw(); }
+
+// A superstar model (ch.pac) to FBX, picked folder, in the background (svrfmt/char_fbx): <folder>\<name>.fbx + textures.
+void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name);
+// A character model pac's match memory (D12): per wrestler attire entry (EMD ...2) the 4 KB pages its meshes'
+// vertex and index buffers take - the game gives each wrestler 192; over that the match load crashes.
+constexpr int kModelPages = 192, kModelPagesWarn = 180;
+struct ModelPages {
+  std::string entry;  // the EMD entry ("00013902": attire 1)
+  int pages = 0;
+  int blood = 0;  // of them, the blood overlays' (JBOY children 0x7530-0x7532: the game drops them first when over)
+};
+const std::vector<ModelPages>& ModelBudget(const std::wstring& pac);  // (cached by file time / size)
+// The entrance gear entries' pages (EMD kind 4: "<id><attire-1>4"): it loads instead of the attire's model for the
+// entrance (stock Undertaker's gear + attire together are ~370 pages and play), so each counts against 192 alone.
+const std::vector<ModelPages>& GearBudget(const std::wstring& pac);
+// The attires a model pac holds (its kind-2 EMD entries %06d%02d: attire*10 + 2), 1-based, in order. The game
+// uses a superstar mod's in-pac attires contiguous from 1, at most 4.
+std::vector<int> ModelAttires(const std::wstring& pac);
+// The problem line for a model over (error) or near (warning) the budget; who: "The model", "Attire 2" ...
+// D12 model checks (CheckCharacterModel; robert32's SvR Port Doctor findings): NaN values, eyes off their bones.
+void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::vector<Problem>& out);
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out);
 
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);
+// A picture framed the game's way on a size x size canvas: a cut-out (transparent background) is cropped to the
+// figure and fills the height, centred (the stock renders: top to bottom, ~85% wide); a picture without
+// transparency is fitted whole, top aligned.
+Image FitFigure(const Image& src, int size);
+// The figure's tone half way to the stock renders' median (brightness 0.39, contrast 0.21, saturation 0.41).
+Image GameLook(const Image& src);
 
 // A video or picture -> a 320 x 320 Bink entrance movie (the launcher's movie
 // maker), in the background; done(out or "" on failure) on the UI thread.
@@ -310,5 +434,13 @@ void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);
 void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done);
 // A "From a video..." button that makes the Bink into <game>\Mods\.convert and sets `movie`.
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem);
+// The footer under every superstar 3D view: Reset view, Blood (off by default) and its Damage level (the game's
+// light / medium / heavy blood), the mouse hint. One state for all views.
+void ViewFooter();
+// WWE '12 - 2K17 "bgNN" pacs from 60 up aren't arenas (docs/ARENA_PORT_RESULTS.md, special stages): backstage rooms
+// (bg67, bg78 - which crashes on an arena slot) and studio / photo stages (a white mat over a black void). The
+// number of a "...bgNN..." file / source name (-1: none), and whether it is one of those.
+int ArenaPacNumber(const std::string& name);
+inline bool SpecialStage(const std::string& name) { return ArenaPacNumber(name) >= 60; }
 
 }  // namespace mm

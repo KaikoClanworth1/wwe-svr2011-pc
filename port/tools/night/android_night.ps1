@@ -49,7 +49,10 @@ Sh "cp $(Q "$game/svr2011.toml") $(Q $tomlBackup)" | Out-Null
 # Media volume 0 all night (MY MUSIC runs are unmuted; the phone stays silent); put back at the end.
 $volumeFile = Join-Path $night "android_volume.txt"  # (the phone's own, kept across restarts of this runner)
 $volume = (((& $adb shell cmd media_session volume --stream 3 --get 2>$null) -join " ") -replace '.*volume is (\d+).*', '$1')
-if (Test-Path $volumeFile) { $volume = (Get-Content $volumeFile -Raw).Trim() } else { Set-Content $volumeFile $volume }
+# (a file left by a runner stopped half-way, the same night - an older one is stale: the phone's own now)
+if ((Test-Path $volumeFile) -and ((Get-Date) - (Get-Item $volumeFile).LastWriteTime).TotalHours -lt 12) {
+    $volume = (Get-Content $volumeFile -Raw).Trim()
+} else { Set-Content $volumeFile $volume }
 & $adb shell cmd media_session volume --stream 3 --set 0 2>$null | Out-Null
 # MY MUSIC's test songs (runs/night/android_music) in test_run/night_music (the player's Music is never touched).
 $music = Join-Path $night "android_music"

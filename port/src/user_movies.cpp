@@ -9,6 +9,8 @@
 // movie when other movies are added or removed.
 #include "user_movies.h"
 
+#include "hd_movies.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -28,6 +30,7 @@
 #include <rex/system/xmemory.h>
 
 #include "ascii_fold.h"  // (launcher/)
+#include "cae_mod_motions.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -223,6 +226,11 @@ REX_HOOK_RAW(sub_8287DFD0) {
     movies = items && Rd16(base, table + (category + 96) * 2) > 1 && Rd16(base, items + 6) == kNoneId;
   }
   __imp__sub_8287DFD0(ctx, base);
+  {  // (the other filler of this hook: the MODS rows of the entrance motion lists)
+    const auto r3 = ctx.r3;
+    svr2011::CaeModRows(ctx, base, list, category);
+    ctx.r3 = r3;
+  }
   if (!movies) return;
   const uint32_t count = Rd32(base, list), rows_at = Rd32(base, list + 8);
   // Tools: SVR2011_DUMP_MOVIE_NAMES=<file> writes "<id><TAB><name>" for the
@@ -360,9 +368,12 @@ REX_HOOK_RAW(sub_8287E960) {
 // the others (+136..+156 -> +160..+180, the "unchanged" baseline).
 REX_EXTERN(__imp__sub_828823E0);
 REX_HOOK_RAW(sub_828823E0) {
-  const uint32_t value = ctx.r4.u32;
+  const uint32_t list = ctx.r3.u32, value = ctx.r4.u32;
   __imp__sub_828823E0(ctx, base);
   if (t_in_page && ctx.r3.s32 < 0 && int(value) >= kFirstId && int(value) <= kLastId) t_page_movie = int(value);
+  // (an entrance motion list missing the stored number - a removed mod's: a MISSING MOD row keeps it)
+  if (ctx.r3.s32 < 0)
+    if (const int row = svr2011::CaeMissingRow(ctx, base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
 }
 REX_EXTERN(__imp__sub_82875320);
 REX_HOOK_RAW(sub_82875320) {
@@ -387,7 +398,8 @@ REX_HOOK_RAW(sub_828B52D8) {
   const int id = ctx.r3.s32;
   __imp__sub_828B52D8(ctx, base);
   // Tests: SVR2011_TEST_MOVIE=<file in the movies folder> plays it for every
-  // entrance (e.g. a test pattern, to see what the titantron shows).
+  // entrance (e.g. a test pattern, to see what the titantron shows); a full
+  // path to an .mp4: that, as an HD movie (hd_movies.h; "hdtest.bik").
   static const std::string test_movie = [] {
     char* v = nullptr;
     size_t n = 0;
@@ -395,6 +407,9 @@ REX_HOOK_RAW(sub_828B52D8) {
     if (_dupenv_s(&v, &n, "SVR2011_TEST_MOVIE") == 0 && v) {
       s = v;
       free(v);
+    }
+    if (s.size() > 4 && s.substr(s.size() - 4) == ".mp4") {
+      s = svr2011::RegisterHdMovie("hdtest.bik", std::filesystem::path(s)) ? svr2011::HdMovieFile("hdtest.bik") : "";
     }
     return s;
   }();
@@ -409,7 +424,8 @@ REX_HOOK_RAW(sub_828B52D8) {
     std::lock_guard lock(g_mutex);
     if (auto it = g_ids.find(id); it != g_ids.end()) file = it->second;
   }
-  const std::string path = file.empty() ? "GAME:\\movies\\titantron\\999.bik" : "umovie:\\" + file;
+  // (an HD movie - an .mp4 the platform decodes: its stub, hd_movies.h)
+  const std::string path = file.empty() ? "GAME:\\movies\\titantron\\999.bik" : "umovie:\\" + svr2011::HdMovieFile(file);
   if (path.size() < 250) std::memcpy(base + ctx.r3.u32, path.c_str(), path.size() + 1);
 }
 

@@ -31,6 +31,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -54,6 +55,7 @@
 #include <imgui.h>
 #include <rex/filesystem.h>
 #include <rex/filesystem/entry.h>
+#include <rex/thread.h>
 #include <rex/filesystem/vfs.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -693,10 +695,11 @@ std::vector<std::pair<std::string, svrfmt::Bytes>> VsTheme(int number) {
 // arena's loading picture after a match on it. The VS theme's pictures (only
 // on the VS screen) are swapped while the arena is chosen.
 struct DecodeSwap {
-  std::string name;        // the texture's name in its set
-  svrfmt::Bytes original;  // top level blocks as in the file
-  svrfmt::Bytes mine;
-  bool loading = false;    // a loading picture (only while a match loads)
+  std::string name;                           // the texture's name in its set
+  size_t size = 0;                            // its top level's size
+  uint64_t hash = 0;                          // Fnv of its top level as in the file (not the bytes: 240 x 512 KB)
+  std::shared_ptr<const svrfmt::Bytes> mine;  // (shared: one per part of the custom picture)
+  bool loading = false;                       // a loading picture (only while a match loads)
 };
 std::atomic<bool> g_match_loading{false};
 struct DecodeSwaps {
@@ -716,12 +719,24 @@ uint64_t Fnv(const uint8_t* p, size_t n) {
 
 struct LoadPic {
   std::string name;
-  svrfmt::Bytes original;  // top level blocks as in the file
-  int part = 0;            // 0 whole, 1 left half, 2 right half
+  size_t size = 0;    // the top level's size
+  uint64_t key = 0;   // Fnv of its middle 32 bytes (DecodeSwaps::keys)
+  uint64_t hash = 0;  // Fnv of the whole top level as in the file
+  int part = 0;       // 0 whole, 1 left half, 2 right half
 };
 std::vector<LoadPic> g_load_pics;  // every loading picture of the game (distinct)
+// (read on a thread of its own at start - LoadHD.pac whole, 2-3.5 s on a
+// desktop - and only when an installed custom arena has a loading picture;
+// SetDecodeSwaps waits for it)
+std::mutex g_load_pics_mutex;
+std::condition_variable g_load_pics_cv;
+bool g_load_pics_ready = false;
 
-void LoadLoadingPictures() {
+LoadPic PicOf(const std::string& name, const uint8_t* top, size_t size, int part) {
+  return {name, size, Fnv(top + size / 2, 32), Fnv(top, size), part};
+}
+
+void ReadLoadingPictures() {
   svrfmt::Bytes d;
   svrfmt::Epac e;
   if (!svrfmt::ReadFile((g_game / "pac" / "menu" / "LoadHD.pac").string(), d) || !svrfmt::EpacRead(d, e)) return;
@@ -738,8 +753,8 @@ void LoadLoadingPictures() {
           svrfmt::DdsInfo info;
           if (!svrfmt::DdsInfoOf(t.data, info) || info.format != svrfmt::DxtFormat::kDxt5) continue;
           if (info.w == 1024 && info.h == 512 && t.data.size() >= 128 + 1024 * 512) {
-            LoadPic lp{t.name, svrfmt::Bytes(t.data.begin() + 128, t.data.begin() + 128 + 1024 * 512), 0};
-            if (!seen[Fnv(lp.original.data(), lp.original.size()) ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
+            LoadPic lp = PicOf(t.name, t.data.data() + 128, 1024 * 512, 0);
+            if (!seen[lp.hash ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
               g_load_pics.push_back(std::move(lp));
           } else if (info.w == 512 && info.h == 512 && t.data.size() >= 128 + 512 * 512) {
             halves.push_back(&t);
@@ -747,14 +762,39 @@ void LoadLoadingPictures() {
         }
         std::sort(halves.begin(), halves.end(), [](auto* a, auto* b) { return a->name < b->name; });
         for (size_t k = 0; k < halves.size() && k < 2; ++k) {
-          LoadPic lp{halves[k]->name, svrfmt::Bytes(halves[k]->data.begin() + 128, halves[k]->data.begin() + 128 + 512 * 512),
-                     int(k) + 1};
-          if (!seen[Fnv(lp.original.data(), lp.original.size()) ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
+          LoadPic lp = PicOf(halves[k]->name, halves[k]->data.data() + 128, 512 * 512, int(k) + 1);
+          if (!seen[lp.hash ^ Fnv(reinterpret_cast<const uint8_t*>(lp.name.data()), lp.name.size())]++)
             g_load_pics.push_back(std::move(lp));
         }
       }
     }
   REXLOG_INFO("[svr2011] arena mods: {} loading screen pictures", g_load_pics.size());
+}
+
+void LoadLoadingPictures() {
+  const bool wanted = std::any_of(g_customs.begin(), g_customs.end(), [](const CustomArena& c) { return !c.load.empty(); });
+  if (!wanted) {
+    REXLOG_INFO("[svr2011] arena mods: no custom loading screens - the game's own aren't read");
+    std::lock_guard lock(g_load_pics_mutex);
+    g_load_pics_ready = true;
+    return;
+  }
+  // (plain host file reads and its own vectors only: nothing the game's threads use)
+  std::thread([] {
+    rex::thread::set_current_thread_name("arena loading pictures");
+    ReadLoadingPictures();
+    {
+      std::lock_guard lock(g_load_pics_mutex);
+      g_load_pics_ready = true;
+    }
+    g_load_pics_cv.notify_all();
+  }).detach();
+}
+
+// The loading pictures read (at most `wait` for them; false: not yet).
+bool LoadingPicturesReady(std::chrono::milliseconds wait) {
+  std::unique_lock lock(g_load_pics_mutex);
+  return g_load_pics_cv.wait_for(lock, wait, [] { return g_load_pics_ready; });
 }
 
 // The custom arena's picture cut to fit (whole, or a half: 1024 x 512 DXT5
@@ -774,21 +814,33 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
   auto t = std::make_shared<DecodeSwaps>();
   if (c) {
     t->theme = host;
-    auto add = [&](const std::string& name, svrfmt::Bytes original, svrfmt::Bytes mine, bool loading) {
-      if (original.size() != mine.size() || original.size() < 64) return;
-      t->keys[Fnv(original.data() + original.size() / 2, 32)].push_back(t->swaps.size());
-      if (std::find(t->sizes.begin(), t->sizes.end(), original.size()) == t->sizes.end()) t->sizes.push_back(original.size());
-      t->swaps.push_back({name, std::move(original), std::move(mine), loading});
+    // (a game picture by its key / hash; the replacement shared - not 240
+    // copies of the game's pictures and 240 of the custom one's)
+    auto add = [&](const std::string& name, const LoadPic& orig, std::shared_ptr<const svrfmt::Bytes> mine, bool loading) {
+      if (!mine || orig.size != mine->size() || orig.size < 64) return;
+      t->keys[orig.key].push_back(t->swaps.size());
+      if (std::find(t->sizes.begin(), t->sizes.end(), orig.size) == t->sizes.end()) t->sizes.push_back(orig.size);
+      t->swaps.push_back({name, orig.size, orig.hash, std::move(mine), loading});
     };
-    if (!c->load.empty()) {
+    if (!c->load.empty() && !LoadingPicturesReady(std::chrono::seconds(10))) {
+      REXLOG_WARN("[svr2011] arena mods: the game's loading pictures still not read after 10 s - {} keeps the game's",
+                  c->id);
+    } else if (!c->load.empty()) {
       const svrfmt::Bytes load = Swap16(c->load.data(), c->load.size());  // (kept swapped: back to file order)
-      for (const auto& lp : g_load_pics) add(lp.name, lp.original, LoadPart(load, lp.part), true);
+      std::shared_ptr<const svrfmt::Bytes> parts[3];
+      for (int k = 0; k < 3; ++k) parts[k] = std::make_shared<const svrfmt::Bytes>(LoadPart(load, k));
+      for (const auto& lp : g_load_pics)
+        if (lp.part >= 0 && lp.part < 3) add(lp.name, lp, parts[lp.part], true);
     }
     if (!c->vs.empty()) {
       const auto theme = VsTheme(host);
       for (const auto& [name, mine] : c->vs)
         for (const auto& [tname, orig] : theme)
-          if (tname == name) add(tname, Swap16(orig.data(), orig.size()), Swap16(mine.data(), mine.size()), false);
+          if (tname == name) {
+            const svrfmt::Bytes o = Swap16(orig.data(), orig.size());
+            add(tname, PicOf(tname, o.data(), o.size(), 0),
+                std::make_shared<const svrfmt::Bytes>(Swap16(mine.data(), mine.size())), false);
+          }
     }
   }
   REXLOG_INFO("[svr2011] arena mods: loading / VS pictures {} for {} (theme {:02})", t->swaps.size(),
@@ -829,12 +881,13 @@ void SwapDecoded(uint8_t* d, uint32_t size) {
       if (128 + level0 > sz) continue;
       auto it = t->keys.find(Fnv(top + level0 / 2, 32));
       if (it == t->keys.end()) continue;
+      uint64_t hash = 0;  // (the whole top level's: only once its key and name match)
       for (size_t k : it->second) {
         const auto& sw = t->swaps[k];
-        if (sw.original.size() != level0 || (sw.loading && !g_match_loading) || !NameIs(name, sw.name) ||
-            std::memcmp(top, sw.original.data(), level0))
-          continue;
-        std::memcpy(top, sw.mine.data(), level0);
+        if (sw.size != level0 || (sw.loading && !g_match_loading) || !NameIs(name, sw.name)) continue;
+        if (!hash) hash = Fnv(top, level0);
+        if (hash != sw.hash) continue;
+        std::memcpy(top, sw.mine->data(), level0);
         static int logged = 0;
         if (logged++ < 40) REXLOG_INFO("[svr2011] arena mods: picture {} swapped as it was unpacked", name);
         break;
@@ -884,6 +937,41 @@ void FollowCursor(int row, int col) {
 // as another arena (RedirectArena: the stock practice ring) gets that number
 // here, on the screen, before the copy - as if picked in SELECT ARENA. (Not on
 // the live record after it: parts of the load keep the number they read first.)
+// The crowd's flip-flop buffer index (0x82E35380: sub_8217D070 flips it 0 <-> 1
+// once a frame; the crowd renderer sub_8217DCE8 picks buffer 0x82D61290 +
+// index * 0x1E00C by it). Ported WWE 2K14+ arenas now and then crashed at load
+// with it holding garbage (~8133: lr 8217FF84, a null count array) - under load,
+// in the full pass, not in repeat runs of the same files. It has two valid
+// states: anything else is reset to 0, logged once per match with the arena and
+// the crowd frame count.
+std::atomic<int> g_crowd_arena{-1};
+std::atomic<uint32_t> g_crowd_frames{0};
+std::atomic<bool> g_crowd_guard_logged{false};
+
+void CrowdIndexGuard(uint8_t* base, const char* where) {
+  constexpr uint32_t kCrowdIndex = 0x82E35380;
+  uint8_t* q = base + kCrowdIndex;
+  const uint32_t v = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
+  if (v <= 1) return;
+  q[0] = q[1] = q[2] = q[3] = 0;
+  if (!g_crowd_guard_logged.exchange(true))
+    REXLOG_WARN("[svr2011] crowd guard: buffer index {:08X} (not 0 / 1) reset to 0 in {} - arena {}, crowd frame {}", v,
+                where, g_crowd_arena.load(), g_crowd_frames.load());
+}
+
+REX_EXTERN(__imp__sub_8217D070);
+REX_HOOK_RAW(sub_8217D070) {
+  CrowdIndexGuard(base, "the flip");
+  g_crowd_frames.fetch_add(1);
+  __imp__sub_8217D070(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_8217DCE8);
+REX_HOOK_RAW(sub_8217DCE8) {
+  CrowdIndexGuard(base, "the crowd renderer");
+  __imp__sub_8217DCE8(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_82773F00);
 REX_HOOK_RAW(sub_82773F00) {
   constexpr uint32_t kMatchScreen = 0x82EDEB48, kScreenArena = 244;
@@ -891,8 +979,10 @@ REX_HOOK_RAW(sub_82773F00) {
     const uint8_t* q = base + a;
     return uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
   };
+  g_crowd_guard_logged = false, g_crowd_frames = 0;  // (the crowd guard: once per match)
   if (const uint32_t screen = rd(kMatchScreen)) {
     const uint32_t arena = rd(screen + kScreenArena);
+    g_crowd_arena = int(arena);
     const int as = svr2011::ArenaNumberFor(int(arena));
     if (as != int(arena)) {
       uint8_t* q = base + screen + kScreenArena;
@@ -1131,8 +1221,9 @@ void LoadBackstage() {
   for (const auto& d : dirs) {
     BackstageRow r;
     r.file = fs::relative(d / "arena.pac", g_game, ec).generic_string();
+    r.dir = d.string();  // (full path)
     if (FILE* t = std::fopen((d / "manifest.txt").string().c_str(), "rb")) {
-      char line[512];
+      char line[4096];
       while (std::fgets(line, sizeof line, t)) {
         std::string l = line;
         while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
@@ -1143,6 +1234,38 @@ void LoadBackstage() {
         if (l.rfind("camera_height=", 0) == 0) r.camera_height = float(std::atof(l.c_str() + 14));
         if (l.rfind("box=", 0) == 0)
           r.has_box = std::sscanf(l.c_str() + 4, "%f,%f,%f,%f", &r.box[0], &r.box[1], &r.box[2], &r.box[3]) == 4;
+        if (l.rfind("hctp=", 0) == 0) r.hctp = std::atoi(l.c_str() + 5);
+        if (l.rfind("load_weapons=", 0) == 0) {
+          std::string v = l.substr(13);
+          for (size_t at = 0; at < v.size();) {
+            const size_t end = std::min(v.find(',', at), v.size());
+            if (const int m = std::atoi(v.substr(at, end - at).c_str()); m > 0) r.load_weapons.push_back(m);
+            at = end + 1;
+          }
+        }
+        if (l.rfind("start=", 0) == 0) {
+          size_t at = 6;
+          while (at < l.size()) {
+            const size_t end = std::min(l.find(';', at), l.size());
+            BackstageRow::Start s{};
+            if (std::sscanf(l.substr(at, end - at).c_str(), "%f,%f,%f,%f", &s.x, &s.z, &s.facing, &s.y) >= 3)
+              r.starts.push_back(s);
+            at = end + 1;
+          }
+        }
+        if (l == "weapons=none") r.no_weapons = true;
+        if (l.rfind("weapons=", 0) == 0) {
+          size_t at = 8;
+          while (at < l.size()) {
+            const size_t end = std::min(l.find(';', at), l.size());
+            BackstageRow::Weapon w{};
+            if (std::sscanf(l.substr(at, end - at).c_str(), "%d,%f,%f,%f,%f", &w.model, &w.x, &w.y, &w.z, &w.yaw) ==
+                    5 &&
+                w.model > 0 && w.model < 256)
+              r.weapons.push_back(w);
+            at = end + 1;
+          }
+        }
       }
       std::fclose(t);
     }

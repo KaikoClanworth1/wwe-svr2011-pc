@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "mod_check.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/pac.h"
 extern "C" {
@@ -239,7 +240,7 @@ void Install() {
         Status("Could not write into " + PathStr(dir) + " (is the game running?)");
         return;
       }
-    Status("Installed: it takes effect the next time the game starts (" + PathStr(dir) + ").");
+    Status("Installed: it takes effect the next time the game starts (" + PathStr(dir) + ")." + InstallReport("Media", dir));
   });
 }
 

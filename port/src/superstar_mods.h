@@ -18,6 +18,12 @@ class VirtualFileSystem;
 namespace svr2011 {
 
 void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileSystem* vfs);
+
+// Attire mods that replace an attire a stock superstar's own pac has: a move
+// pack each (Mods/SuperstarOverlay/attirepacks/<folder>: "pacentry
+// ch\chNNN.pac EMD <entry> <file>"), merged by InstallMovePacks into an overlay
+// copy of the game's pac. Called by InstallMovePacks before it lists the packs.
+void PrepareAttirePacks(const std::filesystem::path& game);
 // Before the Custom Movies folder is mounted (its device lists the files
 // once): the mods' entrance movies are copied into it.
 void CopySuperstarMovies(const std::filesystem::path& movies);

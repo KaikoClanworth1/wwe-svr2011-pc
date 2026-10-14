@@ -3,8 +3,11 @@
 //
 //   SVR2011_TEST_MATCH="people=JOHN CENA,RANDY ORTON arena=11 cpu=all"
 //
-// people: roster names (as the log's "match:" lines print them) or ids,
-// comma-separated, in person order; arena: the arena id (the "match:" line's
+// attires=2,1: each person's attire (1-4, in person order; default 1).
+// people: roster names (as the log's "match:" lines print them), ids, or
+// CAW<N> (the Created Superstar in save slot N - enough for the entrances
+// and the ring announcer; the match itself crashed once: the select screen's
+// own CAW set-up isn't done), comma-separated, in person order; arena: the arena id (the "match:" line's
 // "arena N"). The rule stays SVR2011_TEST_RULE's (match_types.cpp). With
 // "route match" (script_input.h) a test goes from the start to that match.
 //
@@ -16,6 +19,7 @@
 // screen's choice (below).
 
 #include <cctype>
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <sstream>
@@ -47,6 +51,7 @@ void Wr32(uint8_t* p, uint32_t v) {
 struct TestMatch {
   bool set = false;
   std::vector<std::string> people;  // names or ids
+  std::vector<int> attires;          // attires=<n>,... (1-4) per person, in person order (default 1)
   int arena = -1;
   bool all_cpu = false;  // cpu=all: every person a CPU (the picks too)
 };
@@ -82,6 +87,10 @@ const TestMatch& Config() {
           while (!name.empty() && name.back() == ' ') name.pop_back();
           if (!name.empty()) m.people.push_back(name);
         }
+      } else if (key == "attires") {
+        std::stringstream list(value);
+        std::string n;
+        while (std::getline(list, n, ',')) m.attires.push_back(std::clamp(std::atoi(n.c_str()), 1, 4));
       } else if (key == "arena") {
         m.arena = std::atoi(value.c_str());
       } else if (key == "cpu") {
@@ -182,22 +191,48 @@ REX_HOOK_RAW(sub_828BC5E8) {
     const uint32_t match = ctx.r3.u32;
     std::string done;
     for (uint32_t i = 0; i < m.people.size(); ++i) {
-      const uint32_t id = FindSuperstar(base, m.people[i]);
-      if (!id) {
+      // (CAW<N>: the Created Superstar in save slot N, character id N - not
+      // in the roster's record table)
+      const std::string& who = m.people[i];
+      const bool caw = who.size() > 3 && Upper(who.substr(0, 3)) == "CAW" && std::isdigit(uint8_t(who[3]));
+      const uint32_t caw_id = caw ? uint32_t(std::atoi(who.c_str() + 3)) : 0;
+      if (caw && caw_id >= 50) {
+        REXLOG_WARN("test match: no Created Superstar slot {}", caw_id);
+        continue;
+      }
+      const uint32_t id = caw ? caw_id : FindSuperstar(base, who);
+      if (!id && !caw) {
         REXLOG_WARN("test match: no superstar '{}'", m.people[i]);
         continue;
       }
       uint8_t* slot = base + match + kSlots + i * kSlotSize;
       const bool picked = Rd32(slot + 8) != kNoPick;
-      Wr32(slot + 8, id * 100 + 2);  // (attire: the first, as the select screen gives)
+      // (attire: the first, as the select screen gives, unless attires= names another)
+      const int attire = i < m.attires.size() ? m.attires[i] : 1;
+      Wr32(slot + 8, id * 100 + uint32_t(attire - 1) * 10 + 2);
       Wr16(slot + 54, id);
+      // (the slot's title - +37, the one the ring announcer names - is the new
+      // person's, from the save's title holders as sub_825EA208 asks; the
+      // menu's pick's otherwise: a non-champion announced as "the WWE
+      // Champion")
+      auto held = [&](uint32_t kind) {
+        PPCContext c = ctx;
+        c.r3.u64 = id, c.r4.u64 = kind;
+        sub_828BDEF8(c, base);
+        return c.r3.u32 & 0xFF;
+      };
+      uint32_t title = held(1);
+      if (title == 255) title = held(2);
+      slot[37] = uint8_t(title);
+      if (title == 255) slot[39] = 255, slot[38] &= uint8_t(~1);
       if (!picked) {
         slot[5] = uint8_t(i);  // (a team of its own)
         slot[4] = 0;           // (kind: a wrestler)
         slot[-8] = 1;          // (controller: the CPU)
       }
       if (m.all_cpu) slot[-8] = 1;  // (cpu=all: the picks too)
-      done += (done.empty() ? "" : ", ") + std::string(reinterpret_cast<const char*>(Record(base, id) + kName));
+      done += (done.empty() ? "" : ", ") +
+              (caw ? "CAW " + std::to_string(id) : std::string(reinterpret_cast<const char*>(Record(base, id) + kName)));
     }
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
                 Rd32(base + kLive + kArena));

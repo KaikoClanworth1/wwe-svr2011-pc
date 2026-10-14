@@ -46,6 +46,7 @@
 #include "ring_rules.h"
 #include "superstar_mods.h"
 #include "crowd_signs.h"
+#include "hd_movies.h"
 #include "media_mods.h"
 #include "frame_rate.h"
 #include "perf_hooks.h"
@@ -58,6 +59,8 @@
 #include "music.h"
 #include "saves.h"
 #include "user_movies.h"
+#include "cae_mod_motions.h"
+#include "cam_mod_moves.h"
 #include "native/native_renderer.h"
 #include "frame_stats.h"
 #include "keyboard_typing.h"
@@ -83,6 +86,12 @@
 #include "p2p.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
+#endif
+
+#ifndef SVR2011_D3D_TRACE
+namespace svr2011 {
+void InstallModelMem(rex::memory::Memory* memory);  // (model_mem.cpp: failed buffer allocations logged)
+}
 #endif
 
 REXCVAR_DEFINE_STRING(saves_folder, "", "Storage",
@@ -437,6 +446,21 @@ void Svr2011App::OnPostLoadXexImage() {
       *static_cast<volatile int*>(nullptr) = 1;
     }).detach();
   }
+#if defined(_WIN32)
+  // Test aid: SVR2011_TEST_LOAD_DLL=<dll> - loads it as an overlay (Discord, RTSS...) gets loaded into the game,
+  // and says whether its start-up (DllMain) worked: with 2.1.0's 14.29 VC++ DLLs next to the game, one built
+  // for the newer runtime failed there (0xc0000142 when it comes in at the process start).
+  if (auto dll = Env("SVR2011_TEST_LOAD_DLL"); !dll.empty()) {
+    HMODULE m = LoadLibraryA(dll.c_str());
+    DWORD e = m ? 0 : GetLastError();
+    char where[MAX_PATH] = "";
+    if (HMODULE rt = GetModuleHandleA("msvcp140.dll")) GetModuleFileNameA(rt, where, MAX_PATH);
+    if (m)
+      REXLOG_INFO("SVR2011_TEST_LOAD_DLL: {} loaded (msvcp140 from {})", dll, where);
+    else
+      REXLOG_WARN("SVR2011_TEST_LOAD_DLL: {} failed, error {} (msvcp140 from {})", dll, e, where);
+  }
+#endif
   // Entrances, finishers and other post-processed scenes sample the frame's
   // resolved colour texture through fetch constants whose type field is 0
   // ("invalid"); the Xbox 360 samples them as textures, the emulator's default
@@ -517,9 +541,16 @@ void Svr2011App::OnPostLoadXexImage() {
   {
     std::filesystem::path movies = rex::filesystem::GetExecutableFolder() / "Custom Movies";
     if (std::string dir = Env("SVR2011_MOVIES"); !dir.empty()) movies = dir;
+    svr2011::InstallCaeModMotions(runtime()->memory());  // (CREATE AN ENTRANCE's MODS rows)
+    svr2011::InstallCamModMoves(runtime()->memory());    // (CREATE A MOVE-SET's MOD rows)
     std::error_code ec;
     std::filesystem::create_directories(movies, ec);
-    svr2011::CopySuperstarMovies(movies);  // (arenas branch: superstar_mods.h)
+    // (HD movies' stubs, hd_movies.h: the folder made before the mount - the
+    // device knows the folders it found then)
+    std::filesystem::create_directories(movies / ".hd", ec);
+    svr2011::CopySuperstarMovies(movies);  // (and the HD movies' stubs)
+    if (std::string t = Env("SVR2011_TEST_MOVIE"); t.size() > 4 && t.substr(t.size() - 4) == ".mp4")
+      svr2011::PrepareHdMovie(movies, "hdtest.bik", t);  // (tests: user_movies.cpp)  // (arenas branch: superstar_mods.h)
     svr2011::CopyMediaMovies(movies);      // (arenas branch: media_mods.h)
     auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\USERMOVIES", movies, true);
     auto* fs = runtime()->file_system();
@@ -561,6 +592,9 @@ void Svr2011App::OnPostLoadXexImage() {
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
   svr2011::KeepWindowAlive();
+#ifndef SVR2011_D3D_TRACE
+  svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)
+#endif
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)

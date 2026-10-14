@@ -1,4 +1,4 @@
-﻿// The Arena Editor (Mod Maker, arenas branch). See editor.h.
+// The Arena Editor (Mod Maker, arenas branch). See editor.h.
 //
 // Game space: 1 unit = 10 cm, y points down (floor ~0, ring mat -12). The
 // view keeps game space and looks with "up" = -y. Objects are the arena's
@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -82,8 +83,11 @@ M4 LookAt(V3 eye, V3 at, V3 up) {
   std::memcpy(r.m, v, sizeof v);
   return r;
 }
+// x flipped: the game's view is left-handed - with the plain LookAt basis the writing on barriers and the stage
+// read mirrored next to the game's own shots (as the Full preview's did, 165a6fe). `mirror`
+// shows it the other way round. Only the view flips: positions are the game's either way.
 M4 Perspective(float fovy, float aspect, float zn, float zf, bool mirror) {
-  const float ys = 1.0f / std::tan(fovy / 2), xs = ys / aspect * (mirror ? -1.0f : 1.0f);
+  const float ys = 1.0f / std::tan(fovy / 2), xs = ys / aspect * (mirror ? 1.0f : -1.0f);
   M4 r;
   const float v[16] = {xs, 0, 0, 0, 0, ys, 0, 0, 0, 0, zf / (zf - zn), 1, 0, 0, -zn * zf / (zf - zn), 0};
   std::memcpy(r.m, v, sizeof v);
@@ -97,6 +101,19 @@ M4 Place(V3 t, float yaw) {
   std::memcpy(r.m, v, sizeof v);
   return r;
 }
+// A corner's turnbuckle link (ar_tb1, 952): the model is one link along x from its post (-32, -32) - x -33.3 ..
+// -26.6 at z -32. In game each corner's three run from the post to the corner pad (ar_cover10-13 at +-28, +-28):
+// turned 45 degrees about the post, then the corner by quarter turns about the ring's centre (only the quarter turns
+// left the links lying along a side, pointing away from the pads - "turnbuckles in the wrong place").
+M4 TurnbuckleAt(int corner, float y) {
+  constexpr float kPost = -32.0f;
+  const float d = -0.78539816f;  // (+x -> the diagonal into the ring)
+  const float cd = std::cos(d), sd = std::sin(d);
+  const float ox = kPost - (kPost * cd + kPost * sd), oz = kPost - (-kPost * sd + kPost * cd);  // post - R(d) post
+  const float a = float(corner) * 1.57079633f, ca = std::cos(a), sa = std::sin(a);
+  return Place({ox * ca + oz * sa, y, -ox * sa + oz * ca}, a + d);
+}
+
 bool Invert(const M4& a, M4& out) {
   const float* m = a.m;
   float inv[16];
@@ -211,6 +228,15 @@ ID3D11VertexShader* g_vs = nullptr;
 ID3D11PixelShader* g_ps = nullptr;
 ID3D11InputLayout* g_layout = nullptr;
 ID3D11Buffer* g_cb = nullptr;
+ID3D11Buffer* g_cb_mode = nullptr;   // (b1: mode.x 1 = self-lit, the textures in g_self_lit)
+int g_cb_mode_now = -1;
+std::set<std::string> g_self_lit;    // (SetSelfLit: screens drawn at their own brightness)
+std::set<std::string> g_led_mask;    // (SetSelfLit's masks: a screen's dot grid over it, its holes the lit dots)
+ID3D11BlendState* g_led_blend = nullptr;
+bool g_game_alpha = false;           // (SetGameTransparency: alpha cuts only on the C351-flagged models, as the game)
+const svrfmt::Arena* g_cut_arena = nullptr;
+std::vector<char> g_cut;             // (per model: its C351 line has a transparency flag)
+std::map<uint32_t, std::string> ModelFlagsOf(const svrfmt::Arena& arena);
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_solid = nullptr;
 ID3D11RasterizerState* g_wire = nullptr;
@@ -257,6 +283,8 @@ bool g_show_ceilings = false;
 float g_spot[5] = {};
 float g_yaw = 0.6f, g_pitch = 0.5f, g_dist = 180;
 bool g_mirror = false;
+// +1 / -1: which way the camera's x shows on screen (drags and arrow keys follow the screen, mirrored or not)
+float ScreenX() { return g_mirror ? 1.0f : -1.0f; }
 bool g_show_ring = true;
 M4 g_viewproj;
 ImVec2 g_vp_min, g_vp_size;
@@ -279,7 +307,10 @@ std::thread g_budget_thread;
 std::atomic<bool> g_budget_busy{false};
 std::mutex g_budget_mutex;
 size_t g_budget_file = 0, g_budget_unpacked = 0, g_budget_file_max = 0, g_budget_unpacked_max = 0;
+size_t g_budget_biggest = 0;
+uint32_t g_budget_biggest_id = 0;
 
+bool g_readonly = false;  // (the view scene: camera only)
 bool g_quiet = false;  // (budget builds)
 bool g_glow_pass = false;
 
@@ -306,6 +337,7 @@ cbuffer C : register(b0) {
   float4 tint;
   float4 flat;
 };
+cbuffer D : register(b1) { float4 mode; };
 struct VI { float3 p : POSITION; float3 n : NORMAL; float4 c : COLOR; float2 uv : TEXCOORD; };
 struct VO { float4 p : SV_Position; float3 n : NORMAL; float4 c : COLOR; float2 uv : TEXCOORD; };
 VO vs(VI i) {
@@ -323,7 +355,9 @@ float4 ps(VO i) : SV_Target {
   if (flat.w > 0.5) return float4(flat.rgb, 1);
   float4 tx = t.Sample(s, i.uv);
   if (flat.w < -0.5) return float4(tx.rgb * tx.a * i.c.rgb * tint.rgb * 0.6, 0);
-  if (tx.a < 0.25) discard;
+  if (mode.x > 1.5) return float4(tint.rgb * 0.55, 1 - tx.a);  // (an LED mask: its holes are lit dots, blended)
+  if (tx.a < 0.25 && mode.y < 0.5) discard;  // (mode.y: an opaque model - the game's alpha there isn't see-through)
+  if (mode.x > 0.5) return float4(tx.rgb * tint.rgb, 1);  // (self-lit: a screen)
   float3 n = normalize(i.n + 1e-5);
   float d = abs(dot(n, normalize(float3(0.35, -1.0, 0.25))));
   return float4(tx.rgb * i.c.rgb * tint.rgb * (0.55 + 0.45 * d), 1);
@@ -354,6 +388,8 @@ bool CreatePipeline() {
   bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   g_dev->CreateBuffer(&bd, nullptr, &g_cb);
+  bd.ByteWidth = 16;
+  g_dev->CreateBuffer(&bd, nullptr, &g_cb_mode);
   D3D11_SAMPLER_DESC sd = {};
   sd.Filter = D3D11_FILTER_ANISOTROPIC;
   sd.MaxAnisotropy = 8;
@@ -386,6 +422,9 @@ bool CreatePipeline() {
   bl.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
   bl.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
   g_dev->CreateBlendState(&bl, &g_add);
+  bl.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;  // (LED masks: dest x (1 - a) + dot colour x a)
+  bl.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+  g_dev->CreateBlendState(&bl, &g_led_blend);
   // a white texture for meshes without one
   const uint32_t white = 0xFFFFFFFFu;
   D3D11_TEXTURE2D_DESC td = {};
@@ -427,7 +466,10 @@ void ResizeTarget(int w, int h) {
   depth->Release();
 }
 
+std::map<std::string, ID3D11ShaderResourceView*> g_tex_override;  // (SetTextureOverride: the Full preview's titantron)
+
 ID3D11ShaderResourceView* TextureFor(const std::string& name) {
+  if (auto o = g_tex_override.find(name); o != g_tex_override.end() && o->second) return o->second;
   if (name.empty()) return g_white;
   auto it = g_tex.find(name);
   if (it != g_tex.end()) return it->second ? it->second : g_white;
@@ -588,6 +630,34 @@ void DrawMesh(int model, int mesh) {
   g_ctx->IASetIndexBuffer(g->ib, DXGI_FORMAT_R16_UINT, 0);
   ID3D11ShaderResourceView* srv = TextureFor(g->tex);
   g_ctx->PSSetShaderResources(0, 1, &srv);
+  int mode = g_led_mask.count(g->tex) ? 2 : g_self_lit.count(g->tex) ? 1 : 0;
+  if (g_game_alpha && g_arena) {
+    if (g_cut_arena != g_arena) {  // (2011's transparency flags, docs: s a k c i j o as words of a model's C351 line)
+      g_cut_arena = g_arena;
+      g_cut.assign(g_arena->models.size(), 0);
+      const auto flags = ModelFlagsOf(*g_arena);
+      for (size_t i = 0; i < g_arena->models.size(); ++i) {
+        const auto f = flags.find(g_arena->models[i].id);
+        if (f == flags.end()) {
+          g_cut[i] = 1;  // (no line: as before)
+          continue;
+        }
+        for (const char* w : {" s ", " a ", " k ", " c ", " i ", " j ", " o "})
+          if (f->second.find(w) != std::string::npos) g_cut[i] = 1;
+      }
+    }
+    if (model >= 0 && size_t(model) < g_cut.size() && !g_cut[size_t(model)] && mode == 0) mode = 3;
+  }
+  if (mode != g_cb_mode_now && g_cb_mode && !g_glow_pass) {
+    if (mode == 2 || g_cb_mode_now == 2) g_ctx->OMSetBlendState(mode == 2 ? g_led_blend : nullptr, nullptr, 0xFFFFFFFF);
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (SUCCEEDED(g_ctx->Map(g_cb_mode, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+      const float v[4] = {mode == 3 ? 0.0f : float(mode), mode == 3 ? 1.0f : 0.0f, 0, 0};
+      std::memcpy(ms.pData, v, sizeof v);
+      g_ctx->Unmap(g_cb_mode, 0);
+      g_cb_mode_now = mode;
+    }
+  }
   g_ctx->DrawIndexed(g->count, 0, 0);
 }
 
@@ -675,10 +745,9 @@ std::string Label(const ArenaModel& am) {
 
 // The arena's per-model flag table (entry 50001, text: "<model id> <flags>"):
 // "m(<n>)" placed by animation track n, "r" also drawn mirrored (x -> -x).
-std::map<uint32_t, std::string> ModelFlags() {
+std::map<uint32_t, std::string> ModelFlagsOf(const svrfmt::Arena& arena) {
   std::map<uint32_t, std::string> flags;
-  if (!g_arena) return flags;
-  for (const auto& e : g_arena->entries) {
+  for (const auto& e : arena.entries) {
     if (e.id != 50001) continue;
     const Bytes t = Unpack(e.data);
     std::string text(t.begin(), t.end()), line;
@@ -694,6 +763,7 @@ std::map<uint32_t, std::string> ModelFlags() {
   }
   return flags;
 }
+std::map<uint32_t, std::string> ModelFlags() { return g_arena ? ModelFlagsOf(*g_arena) : std::map<uint32_t, std::string>(); }
 
 void BuildObjects() {
   g_objs.clear();
@@ -1075,6 +1145,12 @@ int Pick(V3 o, V3 d, float* t_out = nullptr) {
   return best;
 }
 
+// the read-only view's camera and extra drawing (SetViewCamera / SetViewExtra: the Full preview)
+bool g_vcam_set = false;
+M4 g_vcam_view, g_vcam_proj;
+ViewExtraFn g_view_extra;
+bool g_view_hint = true;
+
 void RenderScene() {
   const float clear[4] = {0.05f, 0.055f, 0.065f, 1};
   g_ctx->ClearRenderTargetView(g_rtv, clear);
@@ -1092,9 +1168,13 @@ void RenderScene() {
   g_ctx->PSSetShader(g_ps, nullptr, 0);
   g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
   g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
+  g_ctx->PSSetConstantBuffers(1, 1, &g_cb_mode);
+  g_cb_mode_now = -1;  // (its value: set again by the first mesh)
+  g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);  // (an LED mask drawn last mustn't leave its blend on)
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
-  const M4 view = LookAt(Eye(), g_target, {0, -1, 0});
-  const M4 proj = Perspective(0.9f, float(g_rt_w) / float(std::max(1, g_rt_h)), 1.0f, 5000.0f, g_mirror);
+  const bool given = g_readonly && g_vcam_set;  // (the view's camera from the caller)
+  const M4 view = given ? g_vcam_view : LookAt(Eye(), g_target, {0, -1, 0});
+  const M4 proj = given ? g_vcam_proj : Perspective(0.9f, float(g_rt_w) / float(std::max(1, g_rt_h)), 1.0f, 5000.0f, g_mirror);
   g_viewproj = Mul(view, proj);
   float light[3];
   LightTint(light);
@@ -1151,18 +1231,22 @@ void RenderScene() {
         if (!g_show_ring || !g_ring.turnbuckles) break;
         for (int corner = 0; corner < 4; ++corner)
           for (int r = 0; r < 3; ++r) {
-            SetCb(Place({0, RopeY(r), 0}, corner * kPi / 2), light);
+            SetCb(TurnbuckleAt(corner, RopeY(r)), light);
             for (int k : o.meshes) DrawMesh(o.model, k);
           }
         break;
       case Role::kApron: {
         if (!g_show_ring) break;
-        const bool second = g_arena->models[o.model].id == 974;
+        // The game makes four panels, 974 / 973 / 974 / 973 round the ring (the ring object's +152..+164), so
+        // bs_ar_epron2 (974) is on the two z sides - the ramp's, with the arena's second picture (Superstars:
+        // WWE.COM) - and bs_ar_epron (973) on the two x sides. A panel's front (its triangles' winding; the
+        // normals say +z, for the light) faces -z at z = 0: each goes out along its front, so the picture
+        // reads from outside the ring.
+        const bool z_sides = g_arena->models[o.model].id == 974;
         for (int side = 0; side < 2; ++side) {
-          const float yaw = (second ? kPi / 2 : 0) + side * kPi;
+          const float yaw = (z_sides ? 0 : kPi / 2) + side * kPi;
           const float c = std::cos(yaw), s = std::sin(yaw);
-          // the panel faces +z at z = 0: move it out along its facing
-          SetCb(Place({kApronOut * s, 0, kApronOut * c}, yaw), light);
+          SetCb(Place({-kApronOut * s, 0, -kApronOut * c}, yaw), light);
           for (int k : o.meshes) DrawMesh(o.model, k);
         }
         break;
@@ -1199,6 +1283,7 @@ void RenderScene() {
     for (int k : g_objs[i].meshes) DrawMesh(g_objs[i].model, k);
   }
   g_ctx->RSSetState(g_solid);
+  if (g_readonly && g_view_extra) g_view_extra(g_rtv, g_dsv, g_rt_w, g_rt_h, view.m, proj.m);
   ID3D11RenderTargetView* none = nullptr;
   g_ctx->OMSetRenderTargets(1, &none, nullptr);
 }
@@ -1216,24 +1301,38 @@ void UpdateBudget() {
   ApplyBuild(*copy);
   g_quiet = false;
   g_budget_thread = std::thread([copy] {
-    size_t unpacked = 0;
+    size_t unpacked = 0, biggest = 0;
+    uint32_t biggest_id = 0;
+    auto note = [&](const ArenaModel& m, size_t size) {
+      if (size > biggest) biggest = size, biggest_id = m.id;
+    };
     for (const auto& e : copy->entries) {
       bool done = false;
       for (const auto& m : copy->models)
-        if (m.id == e.id && m.changed) unpacked += JboyWrite(m.model).size(), done = true;
+        if (m.id == e.id && m.changed) {
+          const size_t n = JboyWrite(m.model).size();
+          unpacked += n, done = true;
+          note(m, n);
+        }
       for (const auto& b : copy->bundles)
         if (b.id == e.id && b.changed) unpacked += BundleWrite(b.textures).size(), done = true;
       if (!done) unpacked += Unpack(e.data).size();
     }
     for (const auto& m : copy->models)
-      if (m.added) unpacked += JboyWrite(m.model).size();
+      if (m.added) {
+        const size_t n = JboyWrite(m.model).size();
+        unpacked += n;
+        note(m, n);
+      }
     const size_t file = copy->Save().size();
     std::lock_guard lock(g_budget_mutex);
     g_budget_file = file, g_budget_unpacked = unpacked;
+    g_budget_biggest = biggest, g_budget_biggest_id = biggest_id;
     g_budget_file_max = copy->original_file, g_budget_unpacked_max = copy->original_unpacked;
     g_budget_busy = false;
   });
 }
+
 
 // ---------------------------------------------------------------- lighting
 
@@ -1689,17 +1788,17 @@ void ViewportInput(bool hovered) {
     if (io.MouseWheel != 0) g_dist = std::clamp(g_dist * std::pow(0.88f, io.MouseWheel), 10.0f, 2000.0f);
     if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
       const ImVec2 d = io.MouseDelta;
-      g_yaw -= d.x * 0.006f;
+      g_yaw -= ScreenX() * d.x * 0.006f;
       g_pitch = std::clamp(g_pitch + d.y * 0.006f, -0.2f, 1.55f);
     }
     if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
       const ImVec2 d = io.MouseDelta;
       const V3 fwd = Norm(g_target - Eye()), right = Norm(Cross({0, -1, 0}, fwd)), up = Cross(fwd, right);
-      g_target = g_target - right * (d.x * g_dist * 0.0015f) + up * (d.y * g_dist * 0.0015f);
+      g_target = g_target - right * (ScreenX() * d.x * g_dist * 0.0015f) + up * (d.y * g_dist * 0.0015f);
     }
   }
   Obj* sel = g_sel >= 0 && g_sel < int(g_objs.size()) ? &g_objs[g_sel] : nullptr;
-  const bool can_edit = sel && sel->movable && g_tool != Tool::kSelect;
+  const bool can_edit = !g_readonly && sel && sel->movable && g_tool != Tool::kSelect;
   // the start of every selected object (a drag moves them together)
   static std::vector<std::pair<int, std::array<float, 5>>> drag_starts;
   if (g_grid) {  // a 1 m grid on the floor round the view's target, 5 m lines brighter
@@ -1713,6 +1812,7 @@ void ViewportInput(bool hovered) {
       if (ToScreen({cx - 300, y, cz + k * 10.f}, a) && ToScreen({cx + 300, y, cz + k * 10.f}, b)) dl->AddLine(a, b, col);
     }
   }
+  if (g_readonly) return;  // (the view scene: no selection, no gizmo, no edits)
   // gizmo: axes from the selection's pivot (screen space), 6 m long
   ImVec2 base_s, axis_s[3];
   bool gizmo = false;
@@ -1831,7 +1931,7 @@ void ViewportInput(bool hovered) {
     } else if (g_drag_axis == 4) {
       const float dx = m.x - g_drag_mouse.x;
       if (g_tool == Tool::kRotate) {
-        float yaw = g_drag_start_yaw + dx * 0.01f;
+        float yaw = g_drag_start_yaw + ScreenX() * dx * 0.01f;
         if (g_snap) yaw = std::round(yaw / (kPi / 12)) * (kPi / 12);
         sel->yaw = yaw;
       } else if (g_tool == Tool::kScale) {
@@ -1870,8 +1970,8 @@ void ViewportInput(bool hovered) {
     {
       V3 d;
       const float step = g_snap_step * (io.KeyShift ? 10 : 1);
-      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) d.x -= step;
-      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) d.x += step;
+      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) d.x -= ScreenX() * step;  // (left / right on the screen from the hard camera)
+      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) d.x += ScreenX() * step;
       if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) d.z -= step;
       if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) d.z += step;
       if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) d.y -= step;
@@ -1934,6 +2034,7 @@ void ViewPreset(int which) {
     case 0: g_target = {0, -12, 0}, g_yaw = 0.0f, g_pitch = 0.32f, g_dist = 190; break;   // hard camera
     case 1: g_target = {0, -12, 0}, g_yaw = 0.0f, g_pitch = 1.5f, g_dist = 420; break;    // top
     case 2: g_target = {0, -12, 0}, g_yaw = kPi, g_pitch = 0.25f, g_dist = 260; break;    // from the stage
+    case 3: g_target = {0, -12, 0}, g_yaw = kPi / 2, g_pitch = 0.25f, g_dist = 190; break;  // from the side (test aid --editor-view 3)
   }
 }
 
@@ -2000,6 +2101,164 @@ void FocusArea() {
 bool Busy() { return g_budget_busy; }
 bool HasArena() { return g_arena != nullptr; }
 int EditCount() { return g_edits; }
+
+// ---- the view scene
+struct ViewScene {
+  Arena* arena = nullptr;
+  std::string title;
+  std::vector<Obj> objs;
+  std::map<std::pair<int, int>, GpuMesh> gpu;
+  std::map<std::string, ID3D11ShaderResourceView*> tex;
+  std::vector<bool> model_dirty;
+  int sel = -1;
+  std::vector<int> multi;
+  RingSpec ring;
+  Lighting light;
+  std::vector<Snapshot> undo, redo;
+  V3 target{0, -12, 0};
+  int area_lo = -1;
+  std::vector<std::pair<int, int>> area;
+  float spot[5] = {};
+  float yaw = 0.0f, pitch = 0.32f, dist = 190;
+  int edits = 0, budget_edits = -1;
+  std::chrono::steady_clock::time_point last_edit;
+};
+ViewScene g_view;
+
+// The view scene in, the edited one out (and back: the same call again).
+void SwapScene() {
+  ViewScene& v = g_view;
+  std::swap(g_arena, v.arena), std::swap(g_title, v.title), std::swap(g_objs, v.objs), std::swap(g_gpu, v.gpu);
+  std::swap(g_tex, v.tex), std::swap(g_model_dirty, v.model_dirty), std::swap(g_sel, v.sel), std::swap(g_multi, v.multi);
+  std::swap(g_ring, v.ring), std::swap(g_light, v.light), std::swap(g_undo, v.undo), std::swap(g_redo, v.redo);
+  std::swap(g_target, v.target), std::swap(g_area_lo, v.area_lo), std::swap(g_area, v.area);
+  for (int k = 0; k < 5; ++k) std::swap(g_spot[k], v.spot[k]);
+  std::swap(g_yaw, v.yaw), std::swap(g_pitch, v.pitch), std::swap(g_dist, v.dist);
+  const int e = g_edits;
+  g_edits = v.edits, v.edits = e;
+  std::swap(g_budget_edits, v.budget_edits), std::swap(g_last_edit, v.last_edit);
+}
+
+std::vector<RingPart> RingPlacements(const svrfmt::Arena& a) {
+  std::vector<RingPart> out;
+  const auto flags = ModelFlagsOf(a);
+  bool per_rope = false;  // (the twelve per-rope models replace the four side ones, as the game draws them)
+  for (const auto& am : a.models) per_rope |= RoleOf(am.id) == Role::kRopePerRope;
+  auto put = [&](int mi, const M4& m) {
+    RingPart p;
+    p.model = mi;
+    std::memcpy(p.m, m.m, sizeof p.m);
+    out.push_back(p);
+  };
+  auto rope_y = [](int r) { return kMatY - kGameBase - float(r) * kGameGap; };  // (the game's own rope heights)
+  for (int mi = 0; mi < int(a.models.size()); ++mi) {
+    const auto& am = a.models[size_t(mi)];
+    if (am.zone != Zone::kRing) continue;
+    const uint32_t id = am.id;
+    switch (RoleOf(id)) {
+      case Role::kNormal: {
+        const auto f = flags.find(id);
+        if (f != flags.end() && f->second.find("m(") != std::string::npos) break;  // (placed by an animation track)
+        put(mi, M4());
+        bool mirrored = false;
+        if (f != flags.end())
+          for (char s1 : {' ', '\t', '\r'})
+            for (char s2 : {' ', '\t', '\r'}) mirrored |= f->second.find(std::string(1, s1) + "r" + s2) != std::string::npos;
+        if (mirrored) {  // (the game's mirrored copy, x -> -x)
+          M4 m;
+          m.m[0] = -1;
+          put(mi, m);
+        }
+        break;
+      }
+      case Role::kRopeSide:
+        if (!per_rope)
+          for (int r = 0; r < 3; ++r) put(mi, Place(RopeOffset(id) + V3{0, rope_y(r), 0}, 0));
+        break;
+      case Role::kRopePerRope:
+        put(mi, Place(RopeOffset(kSideRope[(id - 900) % 4]) + V3{0, rope_y(int(id - 900) / 4), 0}, 0));
+        break;
+      case Role::kPad:
+        for (int r = 0; r < 3; ++r) put(mi, Place({0, rope_y(r), 0}, 0));
+        break;
+      case Role::kTurnbuckle:
+        for (int corner = 0; corner < 4; ++corner)
+          for (int r = 0; r < 3; ++r) put(mi, TurnbuckleAt(corner, rope_y(r)));
+        break;
+      case Role::kApron:  // (as drawn above: 974 on the z sides, 973 on the x sides, each out along its front)
+        for (int side = 0; side < 2; ++side) {
+          const float yaw = (id == 974 ? 0 : kPi / 2) + float(side) * kPi, c = std::cos(yaw), s = std::sin(yaw);
+          put(mi, Place({-kApronOut * s, 0, -kApronOut * c}, yaw));
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
+void ViewArena(Arena* arena, const std::string& title, const std::string& manifest) {
+  if (g_budget_thread.joinable()) g_budget_thread.join();  // (it reads the edited arena)
+  SwapScene();
+  ForgetGpu();
+  ForgetTextures();
+  g_arena = arena, g_title = title;
+  FromManifest(manifest);
+  if (g_arena) BuildObjects();
+  ViewPreset(0);
+  SwapScene();
+}
+
+void DrawView(float w, float h) {
+  if (!g_view.arena) {
+    ImGui::TextDisabled("No arena to show.");
+    return;
+  }
+  SwapScene();
+  g_readonly = true;
+  const int iw = std::max(16, int(w)), ih = std::max(16, int(h));
+  ResizeTarget(iw, ih);
+  g_vp_min = ImGui::GetCursorScreenPos();
+  g_vp_size = ImVec2(float(iw), float(ih));
+  RenderScene();
+  ImGui::InvisibleButton("view_vp", g_vp_size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+  const bool hovered = ImGui::IsItemHovered();
+  ImGui::GetWindowDrawList()->AddImage(ImTextureID(reinterpret_cast<uintptr_t>(g_rt_srv)), g_vp_min, ImVec2(g_vp_min.x + iw, g_vp_min.y + ih));
+  if (!g_vcam_set) ViewportInput(hovered);
+  if (g_view_hint)
+    ImGui::GetWindowDrawList()->AddText(ImVec2(g_vp_min.x + 8, g_vp_min.y + 6), IM_COL32(200, 200, 210, 160),
+                                        "Right drag: orbit   Middle drag: pan   Wheel: zoom   (a view: nothing here changes the arena)");
+  g_readonly = false;
+  SwapScene();
+}
+
+void SetViewCamera(const float view[16], const float proj[16]) {
+  std::memcpy(g_vcam_view.m, view, sizeof g_vcam_view.m);
+  std::memcpy(g_vcam_proj.m, proj, sizeof g_vcam_proj.m);
+  g_vcam_set = true;
+}
+void ClearViewCamera() { g_vcam_set = false; }
+void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv) {
+  if (srv) g_tex_override[name] = srv;
+  else g_tex_override.erase(name);
+}
+void SetViewExtra(ViewExtraFn fn) { g_view_extra = std::move(fn); }
+void SetGameTransparency(bool on) { g_game_alpha = on, g_cut_arena = nullptr; }
+void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks) {
+  g_self_lit = std::set<std::string>(textures.begin(), textures.end());
+  g_led_mask = std::set<std::string>(masks.begin(), masks.end());
+}
+void SetViewHint(bool on) { g_view_hint = on; }
+
+void ClearView() {
+  SwapScene();
+  ForgetGpu();
+  ForgetTextures();
+  g_objs.clear(), g_model_dirty.clear(), g_undo.clear(), g_redo.clear();
+  g_arena = nullptr;
+  SwapScene();
+}
 
 void TestEdit() {
   if (!g_arena) return;
@@ -2220,6 +2479,15 @@ void Draw() {
   if (ImGui::CollapsingHeader("Lighting")) LightingPanel();
   if (ImGui::CollapsingHeader("Size budget", ImGuiTreeNodeFlags_DefaultOpen)) BudgetPanel();
   ImGui::EndChild();
+}
+
+bool Budget(BudgetInfo& out) {
+  std::lock_guard lock(g_budget_mutex);
+  if (!g_budget_file_max) return false;
+  out.file = g_budget_file, out.file_max = g_budget_file_max;
+  out.unpacked = g_budget_unpacked, out.unpacked_max = g_budget_unpacked_max;
+  out.biggest = g_budget_biggest, out.biggest_id = g_budget_biggest_id;
+  return true;
 }
 
 }  // namespace editor

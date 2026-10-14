@@ -30,8 +30,9 @@
 //   evt <group> <16 bytes hex> <events hex>
 //   mbd <group> <8 bytes hex>
 //   pacentry <pac under pac\, e.g. evt\Nyujyo5.pac> <GROUP> <name> <file>
-//     (a whole entry of an EPK8 pac, unpacked: e.g. an entrance's script and
-//     motions, EVPE/EVTE <number>; added, or replacing the game's. The pac is
+//     (a whole entry of an EPK8 or EPAC pac, unpacked: e.g. an entrance's script
+//     and motions, EVPE/EVTE <number>, or its pyro, prtcls.pac PCE6/LPE6 <0NNN>
+//     (4-character names in EPAC); added, or replacing the game's. The pac is
 //     copied to the overlay with the entries in - never written in place)
 // Keys the game already has are left as they are.
 //
@@ -43,9 +44,11 @@
 // instead of sub_82595428). Unchanged entries are streamed from the original
 // files; changed ones are re-compressed (real BPE).
 #include "move_packs.h"
+#include "superstar_mods.h"
 #include "startup_pump.h"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <cctype>
 #include <cstdint>
@@ -75,7 +78,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 9";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones)
+constexpr const char* kFormat = "movepacks 10";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -100,6 +103,12 @@ struct Packs {
   // EPK8 pac (under pac\, lower case, e.g. "evt\nyujyo5.pac") -> "GROUP/name" -> unpacked data
   // (pacentry lines: whole entries added to / replacing the pac's, e.g. an entrance's EVPE/EVTE)
   std::map<std::string, std::map<std::string, Bytes>> entries;
+  // every pacentry line read (also without the data): for the entrances the packs add (ModEntrances)
+  struct EntryLine {
+    std::string pac, group, name;
+    fs::path dir, file;
+  };
+  std::vector<EntryLine> entry_lines;
   size_t count = 0;
 };
 
@@ -123,6 +132,12 @@ bool ReadAll(const fs::path& p, Bytes& out) {
 }
 
 // ---- reading the packs
+
+// The motion ids the enabled packs bring as YMBs (streamed) motions - a
+// motion line with a 20-byte header (YmbsInsert) - for the game's "streamed
+// motion" flag (sub_82154F00, below). Set as the packs are read (each start,
+// merged or not), read in matches.
+std::atomic<bool> g_ymbs_motion[0x8000] = {};
 
 // data false: the lists and the stamp only (no motion files read - enough to
 // see that the overlay is up to date: thousands of small files on a hard
@@ -155,7 +170,16 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       Motion m;
       m.id = uint16_t(id), m.x = uint8_t(x), m.y = uint8_t(y), m.frames = frames;
       m.hdr = Hex(hdr);
+      if (m.hdr.size() == 20) g_ymbs_motion[id & 0x7FFF] = true;
       m.pack = (dir.filename() == "moves" ? dir.parent_path() : dir).filename().string();
+      // (the motion file in the stamp - size and time, no read: a pack whose
+      // motion files changed but not its pack.txt was kept merged as it was)
+      {
+        std::error_code ec;
+        const uintmax_t size = fs::file_size(dir / fs::u8path(file), ec);
+        stamp += file + " " + std::to_string(ec ? 0 : size) + " " +
+                 std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
+      }
       if (data) {
         svr2011::KeepWindowAlive();
         if (!ReadAll(dir / fs::u8path(file), m.data)) {
@@ -196,6 +220,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
     } else if (kind == "pacentry") {
       std::string pac, group, name, file;
       in >> pac >> group >> name >> file;
+      if (group.size() == 3) group += ' ';  // ("EMD": the model group "EMD ", attire mods)
       if (group.size() != 4 || name.empty() || name.size() > 8 || file.empty()) continue;
       for (auto& c : pac) c = c == '/' ? '\\' : char(std::tolower(static_cast<unsigned char>(c)));
       if (pac.find("..") != std::string::npos || pac.size() < 5 || pac.compare(pac.size() - 4, 4, ".pac")) continue;
@@ -210,6 +235,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       stamp += file + " " + std::to_string(data ? uintmax_t(bytes.size()) : size) + " " +
                std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
       p.entries[pac].emplace(group + "/" + name, std::move(bytes));  // (the first pack's wins)
+      p.entry_lines.push_back({pac, group, name, dir, dir / fs::u8path(file)});
     } else {
       continue;
     }
@@ -400,7 +426,9 @@ bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   Bytes out(raw.begin(), raw.begin() + 0x110);
   svrfmt::AppLe32(out, uint32_t(ents.size()));
   svrfmt::App(out, dir);
-  out.insert(out.end(), raw.begin() + long(db), raw.begin() + long(db) + 4);
+  // (the database's word: the header size << 16 | the motion count - stock
+  // 0x140138 for 312 - the new count, not the old one)
+  svrfmt::AppLe32(out, (Le32(&raw[db]) & 0xFFFF0000u) | uint32_t(ents.size() & 0xFFFF));
   svrfmt::App(out, hdrs);
   svrfmt::App(out, body);
   raw = std::move(out);
@@ -616,10 +644,16 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
   const fs::path src = game / "pac" / PacPath(pac), dst = overlay / PacPath(pac);
   std::ifstream in(src, std::ios::binary);
   Bytes head(0x4000);
-  if (!in || !in.read(reinterpret_cast<char*>(head.data()), 0x4000) || std::memcmp(head.data(), "EPK8", 4)) {
-    REXLOG_WARN("[svr2011] move packs: {} is not an EPK8 pac", pac);
+  if (!in || !in.read(reinterpret_cast<char*>(head.data()), 0x4000) ||
+      (std::memcmp(head.data(), "EPK8", 4) && std::memcmp(head.data(), "EPAC", 4))) {
+    REXLOG_WARN("[svr2011] move packs: {} is not an EPK8 / EPAC pac", pac);
     return false;
   }
+  // EPAC (prtcls.pac: an entrance's pyro PCE6/LPE6 <0NNN>): groups {4CC, u32 count * 3, u32 0},
+  // 12-byte entries {char name[4], u32 sector, u32 size / 0x100}; added entries are packed only
+  // when the group's own are (prtcls.pac's are plain PACH)
+  const bool epac = !std::memcmp(head.data(), "EPAC", 4);
+  const size_t name_len = epac ? 4 : 8, ent_len = name_len + 8;
   struct E {
     std::string name;
     uint32_t sector = 0, size256 = 0;
@@ -634,22 +668,32 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
   for (size_t q = 0x800; q + 12 <= 0x4000 && Le32(&head[q]);) {
     G g;
     g.type.assign(reinterpret_cast<char*>(&head[q]), 4);
-    const uint32_t n = Le16(&head[q + 4]) / 4;
-    g.extra.assign(head.begin() + long(q + 6), head.begin() + long(q + 12));
+    const uint32_t n = epac ? Le32(&head[q + 4]) / 3 : Le16(&head[q + 4]) / 4;
+    g.extra.assign(head.begin() + long(q + (epac ? 8 : 6)), head.begin() + long(q + 12));
     q += 12;
-    for (uint32_t i = 0; i < n && q + 16 <= 0x4000; ++i, q += 16)
-      g.ents.push_back({std::string(reinterpret_cast<char*>(&head[q]), 8), Le32(&head[q + 8]), Le32(&head[q + 12])});
+    for (uint32_t i = 0; i < n && q + ent_len <= 0x4000; ++i, q += ent_len)
+      g.ents.push_back({std::string(reinterpret_cast<char*>(&head[q]), name_len), Le32(&head[q + name_len]),
+                        Le32(&head[q + name_len + 4])});
     groups.push_back(std::move(g));
   }
   std::map<std::string, Bytes> packed;
   for (const auto& [key, raw] : add) {
-    const std::string type = key.substr(0, 4), name = (key.substr(5) + "        ").substr(0, 8);
+    const std::string type = key.substr(0, 4), name = (key.substr(5) + "        ").substr(0, name_len);
     auto g = std::find_if(groups.begin(), groups.end(), [&](const G& x) { return x.type == type; });
     if (g == groups.end()) {
       REXLOG_WARN("[svr2011] move packs: {} has no group {}", pac, type);
       continue;
     }
-    const Bytes& data = packed[key] = svrfmt::BpeEncode(raw);
+    bool bpe = !epac;
+    // (stored as the group's own entries are: evt's EPK8 entries are BPE-packed, a
+    // model pac's EMD entries plain PACHs - BPE-packed, the game couldn't load one)
+    if (!g->ents.empty()) {
+      char magic[4] = {};
+      in.seekg(std::streamoff(0x4000 + uint64_t(g->ents[0].sector) * 0x800));
+      bpe = in.read(magic, 4) && !std::memcmp(magic, "BPE ", 4);
+      in.clear();
+    }
+    const Bytes& data = packed[key] = bpe ? svrfmt::BpeEncode(raw) : raw;
     auto e = std::find_if(g->ents.begin(), g->ents.end(), [&](const E& x) { return x.name == name; });
     if (e == g->ents.end()) g->ents.push_back({name, 0, 0, &data});
     else e->data = &data;
@@ -667,7 +711,8 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
   uint64_t pos = 0;
   for (const auto& g : groups) {
     svrfmt::AppName(table, g.type, 4);
-    table.push_back(uint8_t(g.ents.size() * 4)), table.push_back(uint8_t(g.ents.size() * 4 >> 8));
+    if (epac) svrfmt::AppLe32(table, uint32_t(g.ents.size() * 3));
+    else table.push_back(uint8_t(g.ents.size() * 4)), table.push_back(uint8_t(g.ents.size() * 4 >> 8));
     table.insert(table.end(), g.extra.begin(), g.extra.end());
     for (const auto& e : g.ents) {
       if (pos % 0x800) out.write(reinterpret_cast<char*>(zeros.data()), std::streamsize(0x800 - pos % 0x800)), pos += 0x800 - pos % 0x800;
@@ -815,14 +860,14 @@ int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, in
   for (uint32_t k = 0; k < records; ++k) {
     uint8_t* r = w + 272 + size_t(k) * 160;
     if (std::all_of(r, r + 160, [](uint8_t b) { return b == 0; })) continue;
-    if (const auto nm = names.find(Le16(r + 0x90)); nm != names.end()) {  // (the name: 64 bytes at +0x10)
+    const uint16_t id = Le16(r + 0x90);
+    if (const auto nm = names.find(id); nm != names.end()) {  // (the name: 64 bytes at +0x10)
       uint8_t buf[64] = {};
       std::memcpy(buf, nm->second.data(), std::min<size_t>(nm->second.size(), 63));
       if (std::memcmp(r + 0x10, buf, 64)) std::memcpy(r + 0x10, buf, 64), ++set;
     }
-    const auto f = waze.find(Le16(r + 0x90));
-    if (f == waze.end()) continue;
-    if (std::memcmp(r, f->second.data(), 16)) std::memcpy(r, f->second.data(), 16), ++set;
+    const auto f = waze.find(id);
+    if (f != waze.end() && std::memcmp(r, f->second.data(), 16)) std::memcpy(r, f->second.data(), 16), ++set;
   }
   uint32_t count[128] = {};
   for (uint32_t k = 0; k < records; ++k)
@@ -929,6 +974,18 @@ void Register(rex::filesystem::VirtualFileSystem* vfs, const fs::path& overlay) 
   }
 }
 
+// pack.txt by its content (FNV-1a): a same-size edit keeps its size, and a
+// copied pack can keep an old time.
+std::string ContentStamp(const fs::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  uint64_t h = 1469598103934665603ull;
+  char c;
+  while (in.get(c)) h = (h ^ uint8_t(c)) * 1099511628211ull;
+  char hex[17];
+  std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+  return p.filename().string() + " " + hex + "\n";
+}
+
 std::string FileStamp(const fs::path& p) {
   std::error_code ec;
   const auto size = fs::file_size(p, ec);
@@ -972,6 +1029,119 @@ fs::path BackstageGimmickPac(const fs::path& game) {
   return {};
 }
 
+void LoadMoveTables(const fs::path& game);  // (below: the move tables for a match's fallback, cam_mod_moves.cpp)
+
+// ---- The entrances the packs add (CREATE AN ENTRANCE's MODS rows, cae_mod_motions.cpp):
+// pacentry lines EVP? <n> (n < 10000) are entrances, EVP? <10000 + 1000k + n> their CAE parts.
+// The label: the superstar mod's name (manifest name=) for a mod's own moves/, else the script's
+// own name (EVP +0x22) and the game it came from (the pack.txt's first line, as the converters
+// write it: "# <game> entrance <n> as 2011 <m>").
+namespace {
+std::mutex g_ent_mutex;
+std::vector<ModEntrance> g_mod_entrances;
+std::set<int> g_mod_scripts;  // every EVP number the packs add (entrances and parts)
+
+std::string ManifestName(const fs::path& mod) {
+  std::ifstream in(mod / "manifest.txt");
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("name=", 0) == 0) return line.substr(5);
+  }
+  return mod.filename().string();
+}
+
+std::string ScriptName(const fs::path& evp) {  // (EVP +0x22: 30 bytes, NUL padded; '_' as space)
+  std::ifstream in(evp, std::ios::binary);
+  char buf[0x40] = {};
+  if (!in.read(buf, sizeof(buf))) return "";
+  std::string s(buf + 0x22, strnlen(buf + 0x22, 30));
+  std::replace(s.begin(), s.end(), '_', ' ');
+  return s;
+}
+
+std::string PackGame(const fs::path& dir) {  // ("# WWE '13 entrance 246 as 2011 497" -> "WWE '13")
+  std::ifstream in(dir / "pack.txt");
+  std::string line;
+  if (!std::getline(in, line) || line.rfind("# ", 0) != 0) return "";
+  const size_t e = line.find(" entrance ");
+  return e == std::string::npos ? "" : line.substr(2, e - 2);
+}
+}  // namespace
+
+void SetModEntrances(const std::vector<Packs::EntryLine>& lines) {
+  std::map<int, ModEntrance> ents;
+  std::set<int> scripts;
+  std::map<fs::path, int> per_dir;  // (entrances per pack: a mod with several gets the script name too)
+  for (const auto& l : lines) {
+    if (l.group.rfind("EVP", 0) != 0 || l.name.empty() || l.name.find_first_not_of("0123456789") != std::string::npos)
+      continue;
+    const int n = std::atoi(l.name.c_str());
+    scripts.insert(n);
+    if (n < 10000 && !ents.count(n)) per_dir[l.dir]++;
+  }
+  for (const auto& l : lines) {
+    if (l.group.rfind("EVP", 0) != 0 || l.name.empty() || l.name.find_first_not_of("0123456789") != std::string::npos)
+      continue;
+    const int n = std::atoi(l.name.c_str());
+    if (n >= 10000 || ents.count(n)) continue;
+    ModEntrance e;
+    e.number = n;
+    const std::string script = ScriptName(l.file);
+    const bool mod_moves = l.dir.filename() == "moves" && l.dir.parent_path().parent_path().filename() == "Superstars";
+    if (mod_moves) {
+      e.label = ManifestName(l.dir.parent_path());
+      if (per_dir[l.dir] > 1 && !script.empty()) e.label += " - " + script;
+    } else {
+      const std::string game = PackGame(l.dir);
+      e.label = script.empty() ? l.dir.filename().string() : script;
+      if (!game.empty()) e.label += " (" + game + ")";
+    }
+    if (e.label.size() > 40) e.label.resize(40);
+    for (int k = 0; k < 5; ++k)
+      if (scripts.count(10000 + 1000 * k + n)) e.parts |= uint8_t(1u << k);
+    ents[n] = e;
+  }
+  std::lock_guard lock(g_ent_mutex);
+  g_mod_entrances.clear();
+  for (auto& [n, e] : ents) g_mod_entrances.push_back(std::move(e));
+  g_mod_scripts = std::move(scripts);
+  if (!g_mod_entrances.empty()) REXLOG_INFO("[svr2011] move packs: {} mod entrances", g_mod_entrances.size());
+}
+
+std::vector<ModEntrance> ModEntrances() {
+  std::lock_guard lock(g_ent_mutex);
+  return g_mod_entrances;
+}
+
+bool EntranceScriptExists(int n) {
+  // the game's own: the EVP groups of pac\evt\*.pac (EPK8 tables: groups {4CC, u16 count * 4, u16, u32},
+  // 16-byte entries {name[8], sector, size}), read once
+  static const std::set<int> stock = [] {
+    std::set<int> s;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(rex::filesystem::GetExecutableFolder() / "pac" / "evt", ec)) {
+      std::ifstream in(e.path(), std::ios::binary);
+      Bytes head(0x4000);
+      if (!in.read(reinterpret_cast<char*>(head.data()), 0x4000) || std::memcmp(head.data(), "EPK8", 4)) continue;
+      for (size_t q = 0x800; q + 12 <= 0x4000 && Le32(&head[q]);) {
+        const bool evp = !std::memcmp(&head[q], "EVP", 3);
+        const uint32_t cnt = Le16(&head[q + 4]) / 4;
+        q += 12;
+        for (uint32_t i = 0; i < cnt && q + 16 <= 0x4000; ++i, q += 16) {
+          const std::string nm(reinterpret_cast<char*>(&head[q]), 8);
+          if (evp && std::isdigit(static_cast<unsigned char>(nm[0]))) s.insert(std::atoi(nm.c_str()));
+        }
+      }
+    }
+    REXLOG_INFO("[svr2011] move packs: {} stock entrance scripts", s.size());
+    return s;
+  }();
+  if (stock.count(n)) return true;
+  std::lock_guard lock(g_ent_mutex);
+  return g_mod_scripts.count(n) != 0;
+}
+
 void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   if (const char* v = std::getenv("SVR2011_TEST_PLIST"); v && *v) {  // (test aid: a folder made by hand)
     g_folder = v;
@@ -982,7 +1152,10 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   std::error_code ec;
   // the packs: superstar mods' moves/ folders and Mods/Moves/<pack>
   std::vector<fs::path> dirs;
-  for (const fs::path& root : {game / "Mods" / "Superstars", game / "Mods" / "Moves"})
+  // (attire mods replacing an attire the game's pac has: generated packs, a pacentry line each)
+  PrepareAttirePacks(game);
+  for (const fs::path& root : {game / "Mods" / "Superstars", game / "Mods" / "Moves",
+                               game / "Mods" / "SuperstarOverlay" / "attirepacks"})
     for (const auto& e : fs::directory_iterator(root, ec)) {
       if (!e.is_directory() || fs::exists(e.path() / "disabled", ec)) continue;
       const fs::path d = root.filename() == "Superstars" ? e.path() / "moves" : e.path();
@@ -994,6 +1167,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "gm.pac", kGimmickPac, "plist360.h", "plist360_4x3.h", "stamp.txt"})
       fs::remove(overlay / f, ec);  // (nothing to serve: free the space)
     fs::remove_all(overlay / "evt", ec);
+    LoadMoveTables(game);  // (a removed pack's moves in movesets: the match fallback still needs the tables)
     return;
   }
   Packs packs;
@@ -1004,7 +1178,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     stamp = std::string(kFormat) + "\n";
     for (const auto& d : dirs) {
       ReadPack(d, packs, stamp, data);
-      stamp += FileStamp(d / "pack.txt");
+      stamp += ContentStamp(d / "pack.txt");
     }
     // (the game's own files too - in both reads, or the saved stamp never
     // matches the next start's and every start merges again)
@@ -1014,6 +1188,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     if (!gm.empty()) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   };
   read_packs(false);
+  SetModEntrances(packs.entry_lines);
   WarnOverrides(packs);
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));
@@ -1034,6 +1209,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
       Register(vfs, overlay);
       g_folder = "Mods\\PacOverlay";
       REXLOG_INFO("[svr2011] move packs: {} packs ({} items), overlay up to date", dirs.size(), packs.count);
+      LoadMoveTables(game);
       return;
     }
   }
@@ -1074,12 +1250,14 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   ok = ok && WriteList(game, overlay, "plist360.h", pacs, extra) && WriteList(game, overlay, "plist360_4x3.h", pacs, extra);
   if (!ok) {
     REXLOG_WARN("[svr2011] move packs: merging failed - the game plays without them");
+    LoadMoveTables(game);
     return;
   }
   std::ofstream(overlay / "stamp.txt", std::ios::binary) << stamp;
   Register(vfs, overlay);
   g_folder = "Mods\\PacOverlay";
   REXLOG_INFO("[svr2011] move packs: merged");
+  LoadMoveTables(game);
 }
 
 }  // namespace svr2011
@@ -1094,9 +1272,137 @@ namespace {
 // the last MOVS/WAZE loaded (after the packs' patch).
 std::mutex g_usable_mutex;
 std::vector<bool> g_usable;  // (empty: not loaded yet)
+std::vector<uint16_t> g_defaults;  // category -> its fallback move (CategoryDefaultMove)
+std::vector<bool> g_record, g_bits;  // a record with the id at all / with category bits (MoveMissing)
+std::vector<bool> g_past_pack;       // ids a pack has given (Mods\PacOverlay\pack_moves.txt, kept across starts)
+std::vector<bool> g_stock_ok;        // the stock game plays the id without packs (a record with bits, or EXH data)
+
+// MoveUsable's list and CategoryDefaultMove's table from MOVS/WAZE records as in the file (the packs' patch
+// applied): at start-up from misc.pac (a match never loads MOVS/WAZE itself - CREATE A MOVE-SET does) and
+// again at each load (sub_8237E708).
+void SetMoveTables(const uint8_t* w) {
+  std::vector<bool> usable(65536, false), record(65536, false);
+  for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
+    const uint8_t* r = w + 272 + size_t(k) * 160;
+    record[Le16(r + 0x90)] = true;
+    if (std::any_of(r, r + 16, [](uint8_t b) { return b != 0; })) usable[Le16(r + 0x90)] = true;
+  }
+  std::vector<bool> bits = usable;
+  // (a move pack's own moves count whatever the records say: Sabu's Arabian
+  // Facebuster 6861 has 2011's motions and the pack's bits but no record of
+  // its own in the file - it plays)
+  for (const auto& [id, b] : g_waze) usable[id] = true;
+  for (const auto& [id, from] : g_copies) usable[id] = true;
+  for (const auto& [id, n] : g_names) usable[id] = true;
+  // per category, the move a slot falls back to in a match when its own has no record (cam_mod_moves.cpp):
+  // the first game move (not a pack's) of that category the game always shows (unlock 512 or 1-3), else
+  // its first game move
+  std::vector<uint16_t> defaults(128, 0), any(128, 0);
+  for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
+    const uint8_t* r = w + 272 + size_t(k) * 160;
+    const uint16_t id = Le16(r + 0x90), unlock = Le16(r + 0x78);
+    if (!id || g_waze.count(id) || g_copies.count(id) || g_names.count(id)) continue;
+    const bool shown = unlock == 512 || (unlock >= 1 && unlock <= 3);
+    for (int c = 0; c < 128; ++c) {
+      if (!(r[c >> 3] >> (c & 7) & 1)) continue;
+      if (!any[c]) any[c] = id;
+      if (shown && !defaults[c]) defaults[c] = id;
+    }
+  }
+  for (int c = 0; c < 128; ++c)
+    if (!defaults[c]) defaults[c] = any[c];
+  std::lock_guard lock(g_usable_mutex);
+  g_usable = std::move(usable);
+  g_defaults = std::move(defaults);
+  g_record = std::move(record);
+  g_bits = std::move(bits);
+}
 }  // namespace
 
 namespace svr2011 {
+void LoadMoveTables(const fs::path& game) {
+  const fs::path overlay = game / "Mods" / "PacOverlay" / "misc.pac";
+  std::error_code ec;
+  const fs::path src = fs::exists(overlay, ec) ? overlay : game / "pac" / "misc.pac";
+  Bytes blob;
+  if (!ReadEntry(src, "MOVS/WAZE", blob)) {
+    REXLOG_WARN("[svr2011] move packs: no MOVS/WAZE in {} - no match fallback for removed moves", src.string());
+    return;
+  }
+  Bytes w = svrfmt::Unpack(blob);
+  if (w.size() < 272 + 160 || std::memcmp(w.data() + 272 + 16, "* test motion *", 15)) return;
+  int fixed = 0;
+  PatchWaze(w.data(), w.size(), g_waze, &fixed, g_names, g_copies);  // (the overlay's is patched already: no change)
+  SetMoveTables(w.data());
+  // the ids packs have given so far (this start's added): a removed pack's move keeps a cut record without
+  // bits, which stock movesets' moves can have too - only a past pack's id there is "missing"
+  std::vector<bool> past(65536, false);
+  const fs::path list = game / "Mods" / "PacOverlay" / "pack_moves.txt";
+  {
+    std::ifstream in(list);
+    for (int id; in >> id;)
+      if (id > 0 && id < 65536) past[id] = true;
+  }
+  bool added = false;
+  auto mark = [&](uint16_t id) {
+    if (!past[id]) past[id] = true, added = true;
+  };
+  for (const auto& [id, b] : g_waze) mark(id);
+  for (const auto& [id, nm] : g_names) mark(id);
+  for (const auto& [id, from] : g_copies) mark(id);
+  if (added) {
+    fs::create_directories(list.parent_path(), ec);
+    std::ofstream out(list, std::ios::trunc);
+    for (int id = 1; id < 65536; ++id)
+      if (past[id]) out << id << '\n';
+  }
+  // what the stock game can play without packs: its own misc.pac's records with bits and EXH data
+  std::vector<bool> stock_ok(65536, false);
+  Bytes sw, sd;
+  if (ReadEntry(game / "pac" / "misc.pac", "MOVS/WAZE", sw)) {
+    const Bytes w0 = svrfmt::Unpack(sw);
+    if (w0.size() >= 272)
+      for (uint32_t k = 0, n = Le32(w0.data() + 4); k < n && 272 + size_t(k + 1) * 160 <= w0.size(); ++k) {
+        const uint8_t* r = w0.data() + 272 + size_t(k) * 160;
+        if (std::any_of(r, r + 16, [](uint8_t b) { return b != 0; })) stock_ok[Le16(r + 0x90)] = true;
+      }
+  }
+  if (ReadEntry(game / "pac" / "misc.pac", "WAZA/DATA", sd)) {
+    std::vector<svrfmt::PachEntry> kids, groups;
+    if (svrfmt::PachRead(svrfmt::Unpack(sd), kids) && !kids.empty() && svrfmt::PachRead(svrfmt::Unpack(kids[0].data), groups))
+      for (const auto& g : groups) {
+        const Bytes t = svrfmt::Unpack(g.data);
+        if (t.size() < 8 || std::memcmp(t.data(), "EXH", 3)) continue;
+        for (size_t o = 8; o + 36 <= t.size(); o += 36) stock_ok[Le16(t.data() + o)] = true;
+      }
+  }
+  {
+    std::lock_guard lock(g_usable_mutex);
+    g_past_pack = std::move(past);
+    g_stock_ok = std::move(stock_ok);
+  }
+  REXLOG_INFO("[svr2011] move packs: move tables from {} ({} records)", src.filename().string(), Le32(w.data() + 4));
+}
+}  // namespace svr2011
+
+namespace svr2011 {
+// (g_waze / g_names / g_copies are set once at start-up, before the game runs)
+bool PackMove(uint16_t id) { return g_waze.count(id) || g_names.count(id) || g_copies.count(id); }
+
+uint16_t CategoryDefaultMove(int category) {
+  std::lock_guard lock(g_usable_mutex);
+  return category >= 0 && size_t(category) < g_defaults.size() ? g_defaults[category] : 0;
+}
+
+bool MoveMissing(uint16_t id) {
+  // only a move a pack gave once, no pack gives now and the stock game can't play: stock movesets name moves
+  // without records, bits or EXH data that play fine, so nothing wider can be trusted
+  if (!id || PackMove(id)) return false;
+  std::lock_guard lock(g_usable_mutex);
+  if (g_past_pack.empty() || !g_past_pack[id]) return false;
+  return g_stock_ok.empty() || !g_stock_ok[id];
+}
+
 int MoveUsable(uint16_t id) {
   std::lock_guard lock(g_usable_mutex);
   if (g_usable.empty()) return -1;
@@ -1118,23 +1424,8 @@ REX_HOOK_RAW(sub_8237E708) {
       REXLOG_INFO("[svr2011] move packs: MOVS/WAZE loaded ({} records): {} moves set, {} category counts updated",
                   Le32(w + 4), set, fixed);
   }
-  if (data && Le32(base + data + 4) < 20000 && !std::memcmp(base + data + 272 + 16, "* test motion *", 15)) {
-    // (records still as in the file: id at +0x90, bits +0..+15)
-    const uint8_t* w = base + data;
-    std::vector<bool> usable(65536, false);
-    for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
-      const uint8_t* r = w + 272 + size_t(k) * 160;
-      if (std::any_of(r, r + 16, [](uint8_t b) { return b != 0; })) usable[Le16(r + 0x90)] = true;
-    }
-    // (a move pack's own moves count whatever the records say: Sabu's Arabian
-    // Facebuster 6861 has 2011's motions and the pack's bits but no record of
-    // its own in the file - it plays)
-    for (const auto& [id, b] : g_waze) usable[id] = true;
-    for (const auto& [id, from] : g_copies) usable[id] = true;
-    for (const auto& [id, n] : g_names) usable[id] = true;
-    std::lock_guard lock(g_usable_mutex);
-    g_usable = std::move(usable);
-  }
+  if (data && Le32(base + data + 4) < 20000 && !std::memcmp(base + data + 272 + 16, "* test motion *", 15))
+    SetMoveTables(base + data);  // (records still as in the file: id at +0x90, bits +0..+15)
   __imp__sub_8237E708(ctx, base);
 }
 
@@ -1164,4 +1455,20 @@ REX_HOOK_RAW(sub_82379158) {
     const uint32_t id = moveset ? (uint32_t(base[moveset + (slot + 2) * 2]) << 8 | base[moveset + (slot + 2) * 2 + 1]) : 0;
     REXLOG_WARN("[svr2011] moveset: slot {} move {} not in its list (caller {:08X}) - none shown", slot, id, lr);
   }
+}
+
+// "Is this motion streamed (YMBs)": sub_82154F00(id) -> its byte in the game's
+// motion flag table (*0x82DDBBE4, bound *0x82DDBBE0, loaded from a data file:
+// set for the stock YMBs ids, 9000-9779). The motion code goes by it - 0 sends
+// a YMBs motion down the keyframe path (sub_82309798 -> 82394360, sub_823B8F30):
+// a pack's new YMBs taunt (3894, even with stock 9602's own data) held one
+// pose its whole length. A pack's YMBs motion ids answer 1.
+REX_EXTERN(__imp__sub_82154F00);
+REX_HOOK_RAW(sub_82154F00) {
+  const uint32_t id = ctx.r3.u32 & 0x7FFF;
+  __imp__sub_82154F00(ctx, base);
+  if ((ctx.r3.u32 & 0xFF) || !g_ymbs_motion[id].load(std::memory_order_relaxed)) return;
+  ctx.r3.u64 = 1;
+  static std::atomic<bool> told[0x8000] = {};
+  if (!told[id].exchange(true)) REXLOG_INFO("[svr2011] move packs: motion {} streamed (YMBs, a pack's)", id);
 }

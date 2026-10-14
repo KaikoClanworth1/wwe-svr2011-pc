@@ -1,5 +1,9 @@
 #include "zip_write.h"
 
+extern "C" {
+#include "../../launcher/unzip.h"
+}
+
 namespace svrfmt {
 
 namespace {
@@ -77,8 +81,15 @@ bool ZipRead(const Bytes& zip, std::vector<ZipEntry>& out) {
     ZipEntry e;
     e.name.assign(reinterpret_cast<const char*>(&zip[p + 46]), nlen);
     const size_t data = size_t(local) + 30 + svrfmt::Le16(&zip[local + 26]) + svrfmt::Le16(&zip[local + 28]);
-    if (method != 0 || csize != usize || data + csize > zip.size()) return false;  // stored only
-    e.data.assign(zip.begin() + data, zip.begin() + data + csize);
+    if (data + csize > zip.size()) return false;
+    if (method == 0 && csize == usize) {
+      e.data.assign(zip.begin() + data, zip.begin() + data + csize);
+    } else if (method == 8) {  // deflate (zips made by Python's zipfile, 7-Zip, Explorer ...)
+      e.data.resize(usize);
+      if (usize && !unzip_inflate(&zip[data], csize, e.data.data(), usize)) return false;
+    } else {
+      return false;
+    }
     out.push_back(std::move(e));
     p += 46 + nlen + xlen + clen;
   }

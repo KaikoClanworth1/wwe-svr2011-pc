@@ -241,6 +241,11 @@ static int inflate_raw(const uint8_t *in, size_t in_len, uint8_t *out, size_t ou
     return s.out_pos == out_len;
 }
 
+int unzip_inflate(const unsigned char *in, size_t in_len, unsigned char *out, size_t out_len)
+{
+    return inflate_raw(in, in_len, out, out_len);
+}
+
 /* ---- zip -------------------------------------------------------------- */
 
 static uint32_t rd16(const uint8_t *p) { return p[0] | (p[1] << 8); }

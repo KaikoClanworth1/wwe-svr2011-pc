@@ -40,6 +40,7 @@
 #include "arena_mods.h"
 #include "match_hud.h"
 #include "online_rules.h"
+#include "script_input.h"
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -146,6 +147,18 @@ std::vector<WeaponsRow> g_weapons_rows;
 constexpr uint32_t kRoofLabel = 0x0FA0B120, kRoofText = 0x0FA0B121;
 std::vector<WeaponsRow> g_roof_rows;
 bool g_pending_roof = false;
+// CPUs left alone on the cell's roof climb down: a CPU wrestler (its match
+// slot's controller, slot -8, 1, and controller port +1152 4 or more) alone up there (area +444 10, no other
+// wrestler 0-5 on it) for 25 s of match frames takes the game's own
+// way down - the climb-down a player starts with the action button pushed
+// towards an edge (sub_8230A760: area 10, the edge check sub_821BE8F8, then
+// sub_82397228(char, 1672)) - from his free state (the post-hook of its
+// handler sub_82292D50). The CPUs' AI never picks it on purpose (a 4-CPU
+// fatal-4-way stayed up 4 min). Only match state decides (frames, places,
+// slots): the same on both machines online. Humans are never touched. Test
+// aids: SVR2011_TEST_ROOF_DOWN=0 off; SVR2011_TEST_ROOF_DOWN_SECS=<s>.
+constexpr uint32_t kRoofArea = 10, kClimbDown = 1672;
+uint32_t g_roof_alone_since[6] = {};  // match frame + 1 since that person is alone on the roof (0: not)
 bool g_roof = false;  // the match set up starts on the cell's roof
 bool g_pending_weapons = false;
 bool g_weapons = false;  // the match set up is a WEAPONS EVERYWHERE one
@@ -194,9 +207,11 @@ constexpr uint32_t kElimLabel = 0x0FA0B104, kElimText = 0x0FA0B105;
 // row in 6-MAN and HANDICAP.
 constexpr uint32_t kStagesLabel = 0x0FA0B106, kStagesText = 0x0FA0B107;
 // Its submenu: one row per set of stages (three_stages.cpp kSets), labels
-// kStagesSetLabel + 2 * set (+1 its description). Sets 3 (TABLE / TLC /
-// LADDER) and 4 (HELL IN A CELL) only where the mode has those matches: one
-// on one, two on two, triple threat, fatal-4-way.
+// kStagesSetLabel + 2 * set (+1 its description: 0x0FA0B114-0x0FA0B11F).
+// Sets 3 (TABLE / TLC / LADDER), 5 (TABLE / LADDER / TABLE) and 4 (HELL IN A
+// CELL) only where the mode has those matches: one on one, two on two,
+// triple threat, fatal-4-way; 3 and 5 are the switch mod
+// three_stages_tables_ladders.
 constexpr uint32_t kStagesSetLabel = 0x0FA0B114;
 struct StagesRow {
   uint32_t group, index;
@@ -239,14 +254,24 @@ std::vector<StagesRow> g_stages_rows;
 bool g_pending_stages = false;
 int g_pending_set = 0;
 uint32_t g_stages_set_text[2 * svr2011::kThreeStagesSets] = {};
-// A set's match in a mode (its normal one): the TLC or cell one for sets 3, 4.
+// A set's match in a mode (its normal one): the TLC one for sets 3 and 5, the
+// cell one for set 4.
 uint32_t SetRule(uint32_t normal, int set) {
   constexpr uint32_t kNormals[] = {0x00, 0x03, 0x0D, 0x0E}, kTlc[] = {0x48, 0x49, 0x4A, 0x4B}, kCell[] = {0x31, 0x32, 0x33, 0x34};
   for (int i = 0; i < 4; ++i)
-    if (normal == kNormals[i]) return set == 3 ? kTlc[i] : set == 4 ? kCell[i] : normal;
+    if (normal == kNormals[i]) return set == 3 || set == 5 ? kTlc[i] : set == 4 ? kCell[i] : normal;
   return normal;
 }
-int SetsFor(uint32_t normal) { return SetRule(normal, 3) != normal ? svr2011::kThreeStagesSets : 3; }
+// The sets a mode's submenu offers, in row order: the three normal ones, then
+// (one on one, two on two, triple threat, fatal-4-way) the table / ladder
+// ones (switch mod three_stages_tables_ladders) and the cell one.
+std::vector<int> SetsFor(uint32_t normal) {
+  std::vector<int> sets{0, 1, 2};
+  if (SetRule(normal, 3) == normal) return sets;
+  if (svr2011::MatchTypeOn("three_stages_tables_ladders")) sets.push_back(5), sets.push_back(3);
+  sets.push_back(4);
+  return sets;
+}
 
 // The modes with an EXTREME RULES row (group, its normal match: THREE STAGES
 // OF HELL's first fall). Their EXTREME RULES becomes a submenu of EXTREME
@@ -367,13 +392,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       if (Rd32(r + 0x54) == kScreenMatch && Rd32(r + 0x5C) == s.normal) like = r;
     }
     if (!like) return;
-    // (set 3, TABLE / TLC / LADDER, not offered yet: the prize can't hang again
-    // for a third stage, and the TLC match has no referee for a pin stage -
-    // test aid SVR2011_TEST_3S_TLC=1 offers it)
-    static const bool tlc = std::getenv("SVR2011_TEST_3S_TLC") != nullptr;
-    std::vector<int> offered;
-    for (int k = 0; k < SetsFor(s.normal); ++k)
-      if (k != 3 || tlc) offered.push_back(k);
+    const std::vector<int> offered = SetsFor(s.normal);
     const int sets = int(offered.size());
     for (int row = 0; row < sets; ++row) {
       const int k = offered[size_t(row)];
@@ -599,7 +618,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       REXLOG_INFO("match types: EXTREME RULES (rule {:02X}) submenu with WEAPONS EVERYWHERE, group {:02X}", rule, group);
       node += uint32_t(kinds.size());
       ++group;
-      if (stage_sets.parent) node += uint32_t(SetsFor(stage_sets.normal)), ++group, stage_sets = {};
+      if (stage_sets.parent) node += uint32_t(SetsFor(stage_sets.normal).size()), ++group, stage_sets = {};
     } else if (const uint32_t rule = Rd32(rec + 0x5C);
                weapons && rule >= kExtremeFirst && rule <= kExtremeLast && !mode) {
       const uint32_t in_group = Rd32(rec + 0x18);
@@ -638,7 +657,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
           Wr32(row.data() + 0x40, 0);
           copy = row;
           AddStageSets({node, Rd32(rec + 0x14) + 0x100, m.normal}, group, node + 1);
-          node += 1 + uint32_t(SetsFor(m.normal));
+          node += 1 + uint32_t(SetsFor(m.normal).size());
           ++group;
         }
         uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
@@ -854,6 +873,7 @@ bool MatchTypeOn(const char* id) {
     for (const char* k : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
                           "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
                           "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders", "hiac_roof_start",
+                          "three_stages_tables_ladders",
                           "gauntlet_eliminator", "cage_weapons", "inferno_weapons", "online_first_blood"}) {
       m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
       if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
@@ -902,6 +922,57 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
 
 }  // namespace svr2011
 
+// A wrestler's free state (standing, nothing on): sub_82292D50(state), the
+// character *(state +280). After it: a CPU alone on the roof long enough
+// climbs down (above, g_roof_alone_since) - as if it pressed the action button
+// towards the nearest edge.
+REX_EXTERN(__imp__sub_82292D50);
+REX_HOOK_RAW(sub_82292D50) {
+  const uint32_t c = Rd32(base + ctx.r3.u32 + 280);
+  const uint32_t motion = c ? Rd32(base + c + 212) : 0;
+  const PPCContext saved = ctx;
+  __imp__sub_82292D50(ctx, base);
+  static const bool off = [] { const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN"); return v && *v == '0'; }();
+  static const uint32_t alone_frames = [] {
+    const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN_SECS");
+    return uint32_t((v ? std::max(1, std::atoi(v)) : 25) * 60);
+  }();
+  if (off || !c || base[c + 444] != kRoofArea || Rd32(base + c + 212) != motion) return;  // (on the roof, nothing started)
+  const uint32_t person = Rd32(base + c + 1156), frames = Rd32(base + 0x82E3CD0C);
+  // (test aid: SVR2011_TEST_ROOF_DOWN_LOG=1 - once a second, a free wrestler on the roof and what the check sees)
+  if (static const bool log = std::getenv("SVR2011_TEST_ROOF_DOWN_LOG") != nullptr; log && frames && frames % 60 == 0) {
+    const uint32_t m = Rd32(base + 0x82EDEB48);
+    REXLOG_INFO("match types: roof - person {} alone {} frames, slot ctl {}, port {}, held {:X}, x {:.0f} z {:.0f}", person,
+                person < 6 && g_roof_alone_since[person] ? frames + 1 - g_roof_alone_since[person] : 0,
+                m && person < 6 ? base[m + 432 + person * 2116 - 8] : 255, Rd32(base + c + 1152), Rd32(base + c + 1828),
+                [&] { const uint32_t u = Rd32(base + c + 288); float f; std::memcpy(&f, &u, 4); return f; }(),
+                [&] { const uint32_t u = Rd32(base + c + 296); float f; std::memcpy(&f, &u, 4); return f; }());
+  }
+  if (person >= 6 || !g_roof_alone_since[person] || frames + 1 - g_roof_alone_since[person] < alone_frames) return;
+  if (Rd32(base + c + 1828) != ~0u) return;  // (holding something: the edge check goes by it)
+  const uint32_t match = Rd32(base + 0x82EDEB48);
+  // (a CPU only: its slot's controller 1 and its character's controller port +1152 not a pad's, 0-3 - a
+  // test match's cpu=all marks person 0's slot too while a pad still plays him)
+  if (!match || base[match + 432 + person * 2116 - 8] != 1 || Rd32(base + c + 1152) < 4) return;
+  // The nearest edge: the way the wrestler is farthest out (octants of +2212:
+  // 0 -z, 2 -x, 4 +z, 6 +x) - the edge check wants more than 20 out that way.
+  const auto rd_f = [&](uint32_t at) { const uint32_t u = Rd32(base + at); float f; std::memcpy(&f, &u, 4); return f; };
+  const float x = rd_f(c + 288), z = rd_f(c + 296);
+  const uint32_t octant = std::fabs(x) > std::fabs(z) ? (x < 0 ? 2u : 6u) : (z < 0 ? 0u : 4u);
+  if (std::max(std::fabs(x), std::fabs(z)) <= 20.0f) return;  // (near the middle: later, as he moves)
+  Wr32(base + c + 2212, octant);
+  PPCContext k = saved;
+  k.r3.u64 = c;
+  sub_821BE8F8(k, base);
+  if (!k.r3.u32) return;
+  k = saved;
+  k.r3.u64 = c, k.r4.u64 = kClimbDown;
+  sub_82397228(k, base);
+  REXLOG_INFO("match types: CPU person {} alone on the roof {} s - climbs down (x {:.0f} z {:.0f}, octant {}, motion {})",
+              person, (frames + 1 - g_roof_alone_since[person]) / 60, x, z, octant, Rd32(base + c + 212));
+  g_roof_alone_since[person] = 0;
+}
+
 // The menu table is read: sub_82BAA6E8(menus, table, size).
 REX_EXTERN(__imp__sub_82BAA6E8);
 REX_HOOK_RAW(sub_82BAA6E8) {
@@ -918,6 +989,7 @@ REX_HOOK_RAW(sub_82BAA6E8) {
     return;
   }
   std::memcpy(base + copy, rows.data(), rows.size());
+  svr2011::ScriptMenuTable(rows.data(), rows.size());  // (scripted tests' "menu" steps: the rows as shown)
   ctx.r4.u64 = copy;
   ctx.r5.u64 = uint32_t(rows.size());
   __imp__sub_82BAA6E8(ctx, base);
@@ -985,7 +1057,7 @@ REX_HOOK_RAW(sub_8243FCC8) {
   // (test aid SVR2011_TEST_MODE: ONE ON ONE NORMAL as the mode's row)
   if (g_test_mode != TestMode::kNone && result == 2000) {
     switch (g_test_mode) {
-      case TestMode::kThreeStages: {  // (SVR2011_TEST_3S_SET=<0-4>: the set; its match is SVR2011_TEST_RULE's)
+      case TestMode::kThreeStages: {  // (SVR2011_TEST_3S_SET=<0-5>: the set; its match is SVR2011_TEST_RULE's)
         g_pending_stages = true;
         const char* s = std::getenv("SVR2011_TEST_3S_SET");
         g_pending_set = s ? std::atoi(s) : 0;
@@ -1491,14 +1563,16 @@ REX_HOOK_RAW(sub_82227150) {
 // What the match camera frames: sub_82227690(camera) -> a sphere (centre
 // +16/+20/+24, radius +32) around every competitor. Backstage with more than
 // two people, it is centred on their average position instead (radius: the
-// farthest of them from it).
+// farthest of them from it). In an HCTP room's row (hctp=), fighters at
+// different heights (one up on the cage top, -Y up) are framed head to feet: the centre
+// between the lowest feet and the highest head, the radius at least half that.
 REX_EXTERN(__imp__sub_82227690);
 REX_HOOK_RAW(sub_82227690) {
   __imp__sub_82227690(ctx, base);
   const uint32_t sphere = ctx.r3.u32;
   if (!sphere || Rd32(base + kLiveSettings + 64) != 78) return;
   constexpr uint32_t kChars = 0x82E3CC50;
-  float xs[9], zs[9];
+  float xs[9], ys[9], zs[9];
   int n = 0;
   const auto saved = ctx;
   for (uint32_t i = 0; i < 9; ++i) {
@@ -1510,12 +1584,30 @@ REX_HOOK_RAW(sub_82227690) {
     const uint32_t pos = Rd32(base + ch + 304);
     if (!competitor || !pos) continue;
     xs[n] = RdF(base + pos);
+    ys[n] = RdF(base + pos + 4);
     zs[n] = RdF(base + pos + 8);
     ++n;
   }
   ctx = saved;
   ctx.r3.u64 = sphere;
-  if (n <= 2) return;
+  if (n == 0) return;
+  // (a wrestler stands about 19 tall)
+  float top = ys[0], feet = ys[0];
+  for (int i = 1; i < n; ++i) top = std::min(top, ys[i]), feet = std::max(feet, ys[i]);
+  // (an HCTP room's row only: 2011's own areas keep the game's framing)
+  const bool hctp_row = svr2011::g_active_row >= 0 &&
+                        size_t(svr2011::g_active_row) < svr2011::BackstageRows().size() &&
+                        svr2011::BackstageRows()[size_t(svr2011::g_active_row)].hctp > 0;
+  const auto frame_heights = [&] {
+    if (!hctp_row || feet - top <= 8.0f) return;
+    const float head = top - 19.0f;
+    WrF(base + sphere + 20, (head + feet) / 2);
+    if (RdF(base + sphere + 32) < (feet - head) / 2 + 4.0f) WrF(base + sphere + 32, (feet - head) / 2 + 4.0f);
+  };
+  if (n <= 2) {
+    frame_heights();
+    return;
+  }
   // Around the fighters near the player (1P: the first competitor): their
   // average; anyone farther away (another fight elsewhere) is left out, so
   // the camera stays close to the player's fight.
@@ -1538,6 +1630,7 @@ REX_HOOK_RAW(sub_82227690) {
   WrF(base + sphere + 16, mx);
   WrF(base + sphere + 24, mz);
   WrF(base + sphere + 32, r);
+  frame_heights();
 }
 
 // -- The whole backstage's fight box --------------------------------------
@@ -1665,6 +1758,38 @@ REX_HOOK_RAW(sub_822AD738) {
     __imp__sub_822AD738(ctx, base);
     std::memcpy(entry, saved, 24);
     return;
+  }
+  // A backstage mod's own area with start=: its fighters' places (x, z,
+  // facing; tenths, y 0) for the match, the room's table back after.
+  if (placer && !Rd32(base + kStoryContext) && svr2011::g_active_row >= 0 &&
+      size_t(svr2011::g_active_row) < svr2011::BackstageRows().size()) {
+    const auto& row = svr2011::BackstageRows()[size_t(svr2011::g_active_row)];
+    const uint32_t rule = ctx.r4.u32;
+    static int checks = 0;
+    if (checks++ < 6)
+      REXLOG_INFO("match types: start places? rule {:02X} area {} starts {}", rule, row.area, row.starts.size());
+    if (!row.starts.empty() && rule == kBackstage1v1FirstRule + uint32_t(row.area)) {
+      uint8_t* people = base + Rd32(base + placer + 4) + rule * 88 + 4;
+      const size_t n = std::min<size_t>(row.starts.size(), 7);
+      uint8_t saved[7 * 12];
+      std::memcpy(saved, people, n * 12);
+      for (size_t i = 0; i < n; ++i) {
+        uint8_t* p = people + i * 12;
+        const auto put = [&](int at, float v) {
+          const int16_t t = int16_t(std::lround(v * 10.0f));
+          p[at] = uint8_t(uint16_t(t) >> 8), p[at + 1] = uint8_t(t & 0xFF);
+        };
+        put(4, row.starts[i].x), put(6, row.starts[i].y), put(8, row.starts[i].z), put(10, row.starts[i].facing);
+      }
+      static int logged = -1;
+      if (logged != svr2011::g_active_row) {
+        logged = svr2011::g_active_row;
+        REXLOG_INFO("match types: '{}' starts at ({:.0f}, {:.0f})...", row.label, row.starts[0].x, row.starts[0].z);
+      }
+      __imp__sub_822AD738(ctx, base);
+      std::memcpy(people, saved, n * 12);
+      return;
+    }
   }
   if (ctx.r4.u32 != kLumberjack || !placer || Rd32(base + kStoryContext)) {
     __imp__sub_822AD738(ctx, base);
@@ -2012,9 +2137,11 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
     if (frames < 90) {
       constexpr float kSpot[4][2] = {{-30.0f, 30.0f}, {30.0f, -30.0f}, {30.0f, 30.0f}, {-30.0f, -30.0f}};
       constexpr float kRoofY = -60.5f;
+      // (test aid: SVR2011_TEST_ROOF_SKIP=<person> - that one starts in the ring, e.g. the idle player 0)
+      static const int skip = [] { const char* v = std::getenv("SVR2011_TEST_ROOF_SKIP"); return v ? std::atoi(v) : -1; }();
       for (uint32_t i = 0, k = 0; i < 6 && k < 4; ++i) {
         const uint32_t c = Rd32(base + kChars + i * 4);
-        if (!c || Rd32(base + c + 1800) >= 30) continue;
+        if (!c || Rd32(base + c + 1800) >= 30 || int(i) == skip) continue;
         const float x = kSpot[k][0], z = kSpot[k][1];
         ++k;
         if (const uint32_t v = Rd32(base + c + 304)) WrF(base + v, x), WrF(base + v + 4, kRoofY), WrF(base + v + 8, z);
@@ -2025,6 +2152,23 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
       placed_frames = frames;
     } else {
       placed_frames = ~0u;
+    }
+  }
+  // CPUs alone on the roof: since when (the climb-down: sub_82292D50's hook)
+  {
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    uint32_t on_roof[6] = {}, n = 0;
+    for (uint32_t i = 0; i < 6; ++i) {
+      const uint32_t c = Rd32(base + kChars + i * 4);
+      on_roof[i] = c && base[c + 444] == kRoofArea;
+      n += on_roof[i];
+    }
+    for (uint32_t i = 0; i < 6; ++i) {
+      if (on_roof[i] && n == 1) {
+        if (!g_roof_alone_since[i] || frames + 1 < g_roof_alone_since[i]) g_roof_alone_since[i] = frames + 1;
+      } else {
+        g_roof_alone_since[i] = 0;
+      }
     }
   }
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL=1 - each second of a
@@ -2329,9 +2473,44 @@ uint32_t WeaponHead(uint8_t* base, uint32_t rule) {
 }
 
 // Our list in (a WEAPONS EVERYWHERE match), or the game's back.
+uint32_t g_row_records = 0, g_row_records_row = ~0u, g_row_records_n = 0;  // guest: a backstage row's list
+
+// A backstage mod's own area with weapons=: its list for the area's rule.
+bool ApplyRowWeapons(uint8_t* base, uint32_t rule) {
+  if (svr2011::g_active_row < 0 || size_t(svr2011::g_active_row) >= svr2011::BackstageRows().size() || !g_memory ||
+      Rd32(base + kStoryContext))
+    return false;
+  const auto& row = svr2011::BackstageRows()[size_t(svr2011::g_active_row)];
+  if ((row.weapons.empty() && !row.no_weapons) || rule != kBackstage1v1FirstRule + uint32_t(row.area)) return false;
+  const uint32_t entry = WeaponEntry(base, rule);
+  if (!entry) return false;
+  const uint32_t n = uint32_t(std::min<size_t>(row.weapons.size(), 32));
+  if (g_row_records_row != uint32_t(svr2011::g_active_row)) {
+    if (!g_row_records) g_row_records = g_memory->SystemHeapAlloc(32 * 28);
+    if (!g_row_records) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+      uint8_t* r = base + g_row_records + i * 28;
+      const auto& w = row.weapons[i];
+      WrF(r, w.x), WrF(r + 4, w.y), WrF(r + 8, w.z);
+      WrF(r + 12, 0.f), WrF(r + 16, w.yaw), WrF(r + 20, 0.f);
+      r[24] = uint8_t(15010 >> 8), r[25] = uint8_t(15010 & 0xFF);  // (motion: lying)
+      r[26] = 1;                                                    // (on the floor)
+      r[27] = uint8_t(w.model);
+    }
+    g_row_records_row = uint32_t(svr2011::g_active_row);
+    g_row_records_n = n;
+    REXLOG_INFO("match types: '{}' brings {} weapons", row.label, n);
+  }
+  g_swapped = {entry, Rd32(base + entry), Rd32(base + entry + 4)};
+  Wr32(base + entry, g_row_records_n);
+  Wr32(base + entry + 4, g_row_records);
+  return true;
+}
+
 void ApplyWeapons(uint8_t* base) {
   RestoreWeapons(base);
   const uint32_t rule = base[0x82E3DE00];
+  if (ApplyRowWeapons(base, rule)) return;
   if (!g_weapons || !WeaponsRule(rule) || !g_memory) return;
   uint32_t entry = WeaponEntry(base, rule);
   uint32_t lent = 0;
@@ -2526,7 +2705,39 @@ REX_HOOK_RAW(sub_82837C30) {
   }
 }
 
+// The weapon models a match loads: sub_82301148(list) fills the wanted-model
+// list {s32 count; s32 ids[72]} with a hard-coded set per area (parking: 65,
+// 63, 17); 45010 (weapons=) only places them. A backstage mod row's weapon
+// models and load_weapons= join the list (sub_823010F0(list, id) appends, no
+// duplicates) - weapons the room makes later (sub_821D2070) need theirs loaded.
+REX_EXTERN(__imp__sub_82301148);
+REX_HOOK_RAW(sub_82301148) {
+  const uint32_t list = ctx.r3.u32;
+  __imp__sub_82301148(ctx, base);
+  const int r = svr2011::g_active_row;
+  if (!list || r < 0 || size_t(r) >= svr2011::BackstageRows().size() || Rd32(base + kStoryContext)) return;
+  const auto& row = svr2011::BackstageRows()[size_t(r)];
+  std::vector<int> models = row.load_weapons;
+  for (const auto& w : row.weapons) models.push_back(w.model);
+  if (models.empty()) return;
+  const auto saved = ctx;
+  for (int m : models) {
+    if (int32_t(Rd32(base + list)) >= 47) break;  // (48 loaded-model slots)
+    ctx.r3.u64 = list;
+    ctx.r4.u64 = uint32_t(m);
+    sub_823010F0(ctx, base);
+  }
+  ctx = saved;
+  REXLOG_INFO("match types: '{}' loads weapon models ({} wanted now)", row.label, int32_t(Rd32(base + list)));
+}
+
 namespace svr2011 {
+
+uint32_t FighterInput(uint32_t fighter) {
+  for (const Control& c : g_controls)
+    if (c.fighter == fighter) return c.input;
+  return 0;
+}
 
 // Menu text of the rows added here (menu_hooks.cpp's string lookup), else 0.
 uint32_t MatchTypeString(uint32_t id) {
@@ -2567,7 +2778,9 @@ uint32_t MatchTypeString(uint32_t id) {
         "TABLE / TLC / LADDER",
         "Through a table, then a TLC fall for the prize, then a Ladder fall for it.",
         "CELL: BLOOD / LMS / SUB",
-        "Inside Hell in a Cell: First Blood, then Last Man Standing, then Submission."};
+        "Inside Hell in a Cell: First Blood, then Last Man Standing, then Submission.",
+        "TABLE / LADDER / TABLE",
+        "Through a table, then a Ladder fall for the prize, then through a table again."};
     const uint32_t k = id - kStagesSetLabel;
     if (!g_stages_set_text[k]) {
       const uint32_t n = uint32_t(std::strlen(kText[k]) + 1);

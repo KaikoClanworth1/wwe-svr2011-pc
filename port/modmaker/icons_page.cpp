@@ -4,8 +4,10 @@
 // (M<nn>I) and loading screens (LoadHD.pac LOAD), the crowd's signs
 // (audience.pac AUDE/BORD). Any of them exports as PNG.
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 #include "app.h"
 #include "svrfmt/pac.h"
@@ -158,59 +160,79 @@ bool g_loads_loaded = false;
 void LoadVs(int tile) {
   if (g_vs.count(tile)) return;
   auto& v = g_vs[tile];
-  Bytes d;
-  Epac e;
-  if (!ReadFile(PathStr(fs::path(g_game) / L"pac" / L"menu" / L"MatchHD.pac"), d) || !EpacRead(d, e)) return;
   char group[8];
   std::snprintf(group, sizeof group, "M%02dI", g_arenas[tile].number);
-  for (const auto& g : e.groups)
-    for (const auto& en : g.entries) {
-      if (en.name != group) continue;
-      std::vector<PachEntry> ents;
-      if (!PachRead(en.data, ents)) continue;
-      for (const auto& pe : ents) {
-        std::vector<BundleTexture> texs;
-        if (!BundleRead(Unpack(pe.data), texs)) continue;
-        for (const auto& t : texs) {
-          Shown s;
-          s.name = t.name;
-          s.format = FormatName(t.data);
-          Image img;
-          if (DdsDecode(t.data, img)) s.w = img.w, s.h = img.h, s.pic.Set(std::move(img));
-          v.push_back(std::move(s));
-        }
-      }
+  Bytes entry;  // (only this arena's entry: not the whole 38 MB pac for each tile)
+  std::vector<PachEntry> ents;
+  if (!ReadPacEntry(fs::path(g_game) / L"pac" / L"menu" / L"MatchHD.pac", group, entry) || !PachRead(Unpack(entry), ents)) return;
+  for (const auto& pe : ents) {
+    std::vector<BundleTexture> texs;
+    if (!BundleRead(Unpack(pe.data), texs)) continue;
+    for (const auto& t : texs) {
+      Shown s;
+      s.name = t.name;
+      s.format = FormatName(t.data);
+      Image img;
+      if (DdsDecode(t.data, img)) s.w = img.w, s.h = img.h, s.pic.Set(std::move(img));
+      v.push_back(std::move(s));
     }
+  }
 }
 
+std::atomic<bool> g_loads_reading{false};
+
+// The loading screens (LoadHD.pac, 87 MB, ~200 pictures): read and decoded on a
+// thread of their own, handed to the page as they're ready (the tab stays live).
 void LoadLoads() {
   if (g_loads_loaded) return;
   g_loads_loaded = true;
-  Bytes d;
-  Epac e;
-  if (!ReadFile(PathStr(fs::path(g_game) / L"pac" / L"menu" / L"LoadHD.pac"), d) || !EpacRead(d, e)) return;
-  for (const auto& g : e.groups) {
-    if (g.type != "LOAD") continue;
-    for (const auto& en : g.entries) {
-      const Bytes raw = Unpack(en.data);
-      std::vector<BundleTexture> texs;
-      std::vector<PachEntry> ents;
-      if (IsTextureBundle(raw)) BundleRead(raw, texs);
-      else if (PachRead(raw, ents))
-        for (const auto& pe : ents) {
-          std::vector<BundleTexture> t2;
-          if (BundleRead(Unpack(pe.data), t2)) texs.insert(texs.end(), t2.begin(), t2.end());
+  g_loads_reading = true;
+  std::thread([game = g_game] {
+    struct Decoded {
+      std::string name, format;
+      Image img;
+      bool ok = false;
+    };
+    std::vector<Decoded> out;
+    Bytes d;
+    Epac e;
+    if (ReadFile(PathStr(fs::path(game) / L"pac" / L"menu" / L"LoadHD.pac"), d) && EpacRead(d, e)) {
+      d.clear();
+      d.shrink_to_fit();
+      for (const auto& g : e.groups) {
+        if (g.type != "LOAD") continue;
+        for (const auto& en : g.entries) {
+          const Bytes raw = Unpack(en.data);
+          std::vector<BundleTexture> texs;
+          std::vector<PachEntry> ents;
+          if (IsTextureBundle(raw)) BundleRead(raw, texs);
+          else if (PachRead(raw, ents))
+            for (const auto& pe : ents) {
+              std::vector<BundleTexture> t2;
+              if (BundleRead(Unpack(pe.data), t2)) texs.insert(texs.end(), t2.begin(), t2.end());
+            }
+          for (const auto& t : texs) {
+            Decoded x;
+            x.name = en.name + "/" + t.name;
+            x.format = FormatName(t.data);
+            x.ok = DdsDecode(t.data, x.img);
+            out.push_back(std::move(x));
+          }
         }
-      for (const auto& t : texs) {
-        Shown s;
-        s.name = en.name + "/" + t.name;
-        s.format = FormatName(t.data);
-        Image img;
-        if (DdsDecode(t.data, img)) s.w = img.w, s.h = img.h, s.pic.Set(std::move(img));
-        g_loads.push_back(std::move(s));
       }
     }
-  }
+    auto shared = std::make_shared<std::vector<Decoded>>(std::move(out));
+    OnUiThread([shared] {  // (pictures become textures on the UI thread)
+      for (auto& x : *shared) {
+        Shown s;
+        s.name = std::move(x.name);
+        s.format = std::move(x.format);
+        if (x.ok) s.w = x.img.w, s.h = x.img.h, s.pic.Set(std::move(x.img));
+        g_loads.push_back(std::move(s));
+      }
+      g_loads_reading = false;
+    });
+  }).detach();
 }
 
 void ArenasTab() {
@@ -245,6 +267,7 @@ void ArenasTab() {
   ImGui::TextUnformatted("Loading screens (LoadHD.pac LOAD)");
   ImGui::TextDisabled("An arena mod's load.dds replaces the one shown while its match loads (1024 x 512).");
   LoadLoads();
+  if (g_loads_reading) ImGui::TextDisabled("Reading the loading screens (LoadHD.pac) ...");
   k = 0;
   for (auto& s : g_loads) {
     if (k++ % 3) ImGui::SameLine();

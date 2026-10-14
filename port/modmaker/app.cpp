@@ -4,6 +4,7 @@
 // signs_page.cpp, backgrounds_page.cpp, media_page.cpp, moves_page.cpp, assets_page.cpp,
 // anims_page.cpp, icons_page.cpp, help_page.cpp; the 3D editor is editor.cpp.
 #include "app.h"
+#include "mod_check.h"
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -13,17 +14,26 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #include "char_preview.h"
+#include "model_materials.h"
+#include "hair_sim.h"
 #include "editor.h"
+#include "full_preview.h"
 #include "tool_run.h"
 extern "C" {
 #include "../launcher/movie_maker.h"
 }
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "svrfmt/disc.h"
+#include "rig_map.h"
+#include "svrfmt/char_fbx.h"
+#include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/png.h"
 
@@ -39,6 +49,15 @@ HWND g_wnd = nullptr;
 std::wstring g_game;
 float g_scale = 1;
 bool g_behind = false;
+
+void ShellOpen(const std::wstring& what) {
+  if (what.empty()) return;
+  if (g_behind) {
+    Log("(test: would open " + Utf8(what) + ")");
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", what.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
 PageId g_page = PageId::kArena;
 std::wstring g_project_file;
 PageId g_project_page = PageId::kArena;
@@ -207,6 +226,10 @@ std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* 
                       const wchar_t* def_ext, const wchar_t* def_name) {
   IFileDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a file dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                               IID_PPV_ARGS(&dlg))))
     return out;
@@ -257,6 +280,10 @@ std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPE
 std::wstring PickFolder(const wchar_t* title) {
   IFileOpenDialog* dlg = nullptr;
   std::wstring out;
+  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
+    Log("(test: a folder dialog was skipped: " + Utf8(title) + ")");
+    return out;
+  }
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return out;
   DWORD opt = 0;
   dlg->GetOptions(&opt);
@@ -320,7 +347,10 @@ void RunInBackground(std::function<void()> fn) {
   if (g_worker.joinable()) g_worker.join();
   g_busy = true;
   g_worker = std::thread([fn] {
+    const auto t0 = std::chrono::steady_clock::now();
     fn();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    if (ms >= 50) Log("perf: background job " + std::to_string(ms) + " ms");
     {
       std::lock_guard lock(g_log_mutex);
       g_progress.clear();
@@ -330,6 +360,11 @@ void RunInBackground(std::function<void()> fn) {
 }
 
 bool Busy() { return g_busy; }
+
+void WhenIdle(std::function<void()> fn) {
+  if (!Busy()) fn();
+  else OnUiThread([fn] { WhenIdle(fn); });
+}
 
 void OnUiThread(std::function<void()> fn) {
   std::lock_guard lock(g_ui_mutex);
@@ -551,26 +586,23 @@ bool ReadPacIndex(const fs::path& file, PacIndex& out) {
   FILE* f = _wfopen(file.c_str(), L"rb");
   if (!f) return false;
   Bytes idx(0x4000);
-  const bool ok = std::fread(idx.data(), 1, idx.size(), f) == idx.size() &&
-                  (!std::memcmp(idx.data(), "EPAC", 4) || !std::memcmp(idx.data(), "EPK8", 4));
+  const bool ok = std::fread(idx.data(), 1, idx.size(), f) == idx.size();
   std::fclose(f);
-  if (!ok) return false;
+  return ok && ParsePacIndex(idx, out);
+}
+
+bool ParsePacIndex(const Bytes& idx, PacIndex& out) {
+  out = PacIndex();
+  std::vector<svrfmt::EpacRow> rows;
+  if (!svrfmt::EpacTable(idx, 0, rows)) return false;
   out.epk8 = !std::memcmp(idx.data(), "EPK8", 4);
-  const size_t esz = out.epk8 ? 16 : 12, nlen = out.epk8 ? 8 : 4;
-  for (size_t p = 0x800; p + 12 <= 0x4000;) {
-    if (!Le32(&idx[p])) break;
-    const std::string group(reinterpret_cast<const char*>(&idx[p]), 4);
-    const uint32_t cnt = out.epk8 ? Le16(&idx[p + 4]) : Le32(&idx[p + 4]) / 3;
-    p += 12;
-    for (uint32_t i = 0; i < cnt && p + esz <= 0x4000; ++i, p += esz) {
-      PacEntryInfo e;
-      e.group = group;
-      const char* n = reinterpret_cast<const char*>(&idx[p]);
-      e.name.assign(n, strnlen(n, nlen));
-      e.offset = 0x4000 + uint64_t(Le32(&idx[p + nlen])) * 0x800;
-      e.size = Le32(&idx[p + nlen + 4]) * 0x100;
-      out.entries.push_back(std::move(e));
-    }
+  for (auto& r : rows) {
+    PacEntryInfo e;
+    e.group = std::move(r.group);
+    e.name = std::move(r.name);
+    e.offset = r.offset;
+    e.size = r.size;
+    out.entries.push_back(std::move(e));
   }
   return true;
 }
@@ -679,6 +711,228 @@ const std::map<int, std::string>& MoveNames() {
     }
   }
   return g_move_names;
+}
+
+namespace {
+std::map<int, MoveInfo> g_move_infos;
+std::map<int, std::vector<int>> g_profiles;  // star id -> 224 move ids
+std::map<int, int> g_profile_music;           // star id -> its theme's music id (ProfileMusic)
+struct SlotRule {
+  uint8_t bits[16] = {};
+  int situation = -1;  // (-1: any)
+};
+std::vector<SlotRule> g_slot_rules;
+std::vector<std::vector<int>> g_slot_moves;
+bool g_moveset_loaded = false;
+
+void LoadMoveset() {
+  if (g_moveset_loaded) return;
+  g_moveset_loaded = true;
+  if (g_game.empty()) return;
+  Bytes d;
+  Epac e;
+  if (ReadFile(PathStr(fs::path(g_game) / L"pac" / L"misc.pac"), d) && EpacRead(d, e))
+    for (const auto& g : e.groups)
+      for (const auto& en : g.entries) {
+        if (g.type != "MOVS" || en.name.rfind("WAZE", 0) != 0) continue;
+        const Bytes raw = Unpack(en.data);
+        size_t at = std::string::npos;
+        for (size_t i = 0x10; i + 16 < raw.size(); ++i)
+          if (!std::memcmp(&raw[i], "* test motion *", 15)) { at = i - 0x10; break; }
+        if (at == std::string::npos) continue;
+        for (size_t k = 0; at + 160 * (k + 1) <= raw.size(); ++k) {
+          const uint8_t* r = &raw[at + 160 * k];
+          MoveInfo m;
+          m.id = Le16(r + 0x90);
+          const char* nm = reinterpret_cast<const char*>(r + 0x10);
+          m.name.assign(nm, strnlen(nm, 64));
+          if (!m.id || m.name.empty() || g_move_infos.count(m.id)) continue;
+          std::memcpy(m.bits, r, 16);
+          m.situation = r[0x73];
+          g_move_infos[m.id] = std::move(m);
+        }
+      }
+  d.clear();
+  e = Epac();
+  std::map<int, std::string> names;
+  if (ReadFile(PathStr(fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac"), d) && EpacRead(d, e))
+    for (const auto& g : e.groups)
+      for (const auto& en : g.entries) {
+        if (g.type != "CHAR") continue;
+        std::vector<PachEntry> pe;
+        if (en.name.rfind("PRO", 0) == 0 && PachRead(Unpack(en.data), pe))
+          for (const auto& x : pe) {
+            const Bytes r = Unpack(x.data);
+            if (r.size() < 2 * kMoveSlots) continue;
+            std::vector<int> v(kMoveSlots);
+            for (int s = 0; s < kMoveSlots; ++s) v[size_t(s)] = Le16(&r[size_t(s) * 2]);
+            g_profiles[int(x.id)] = std::move(v);
+            if (r.size() >= 0x1C0 + 0x12) g_profile_music[int(x.id)] = Le16(&r[0x1C0 + 0x10]);
+          }
+        if (en.name.rfind("DAT", 0) == 0 && PachRead(Unpack(en.data), pe))
+          for (const auto& x : pe) {
+            const Bytes r = Unpack(x.data);
+            if (r.size() >= 4 + 70) names[int(x.id)] = std::string(reinterpret_cast<const char*>(&r[4 + 34]), strnlen(reinterpret_cast<const char*>(&r[4 + 34]), 32));
+          }
+      }
+  // the real roster (named, not the motion tests)
+  std::vector<const std::vector<int>*> real;
+  for (const auto& [id, v] : g_profiles) {
+    const auto n = names.find(id);
+    if (id < 100 || id >= 9000 || n == names.end() || n->second.empty() || n->second == "0" || Lower(n->second).rfind("motion", 0) == 0) continue;
+    real.push_back(&v);
+  }
+  g_slot_rules.assign(kMoveSlots, SlotRule());
+  g_slot_moves.assign(kMoveSlots, {});
+  for (int s = 0; s < kMoveSlots; ++s) {
+    int count[128] = {}, n = 0;
+    std::map<int, int> sits;
+    for (const auto* v : real) {
+      const auto it = g_move_infos.find((*v)[size_t(s)]);
+      if (it == g_move_infos.end()) continue;
+      ++n;
+      for (int b = 0; b < 128; ++b)
+        if (it->second.bits[b / 8] >> (b % 8) & 1) ++count[b];
+      ++sits[it->second.situation];
+    }
+    SlotRule& rule = g_slot_rules[size_t(s)];
+    for (int b = 0; b < 128 && n; ++b)
+      if (count[b] * 10 >= n * 9 && b != 121 && b != 124 && b != 127) rule.bits[b / 8] |= uint8_t(1 << (b % 8));
+    for (const auto& [sit, c] : sits)
+      if ((sit == 13 || sit == 14) && c * 10 >= n * 9) rule.situation = sit;  // (opponent seated on the top turnbuckle)
+  }
+  for (const auto& [id, m] : g_move_infos)
+    for (int s = 0; s < kMoveSlots; ++s)
+      if (MoveFitsSlot(s, id)) g_slot_moves[size_t(s)].push_back(id);
+  for (auto& v : g_slot_moves)
+    std::sort(v.begin(), v.end(), [](int a, int b) { return g_move_infos[a].name < g_move_infos[b].name; });
+  Log("moveset: " + std::to_string(g_move_infos.size()) + " moves, " + std::to_string(real.size()) + " roster profiles");
+}
+}  // namespace
+
+namespace {
+std::vector<EntranceInfo> g_entrances, g_entrances_next;
+std::atomic<int> g_entrances_state{0};  // 0 not read, 1 reading, 2 read, 3 ready
+
+std::string EvpName(const Bytes& stored) {
+  const Bytes b = Unpack(stored);
+  if (b.size() < 0x42) return "";
+  std::string n(reinterpret_cast<const char*>(&b[0x22]), strnlen(reinterpret_cast<const char*>(&b[0x22]), 32));
+  while (!n.empty() && n.back() == ' ') n.pop_back();
+  return n;
+}
+}  // namespace
+
+std::vector<EntranceInfo> PackEntrances(const fs::path& pack) {
+  std::vector<EntranceInfo> out;
+  Bytes t;
+  if (!ReadFile(PathStr(pack / L"pack.txt"), t)) return out;
+  const std::string s(t.begin(), t.end());
+  for (size_t at = 0; at < s.size();) {
+    size_t e = s.find('\n', at);
+    if (e == std::string::npos) e = s.size();
+    std::string line = s.substr(at, e - at);
+    at = e + 1;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    char pac[260], group[16], name[64], file[260];
+    if (std::sscanf(line.c_str(), "pacentry %259s %15s %63s %259s", pac, group, name, file) != 4) continue;
+    if (std::strncmp(group, "EVP", 3) || !std::isdigit(uint8_t(name[0]))) continue;
+    EntranceInfo i;
+    i.number = std::atoi(name);
+    Bytes f;
+    if (ReadFile(PathStr(pack / Wide(file)), f)) i.name = EvpName(f);
+    i.from = PathStr(pack.filename());
+    out.push_back(std::move(i));
+  }
+  return out;
+}
+
+void ReloadEntrances() {
+  int expect = g_entrances_state.load();
+  if (expect == 1 || !g_entrances_state.compare_exchange_strong(expect, 1)) return;
+  std::thread([game = g_game] {
+    std::vector<EntranceInfo> out;
+    std::set<int> seen;
+    std::error_code ec;
+    std::vector<fs::path> pacs;
+    for (const auto& e : fs::directory_iterator(fs::path(game) / L"pac" / L"evt", ec))
+      if (Lower(PathStr(e.path().filename())).rfind("nyujyo", 0) == 0) pacs.push_back(e.path());
+    std::sort(pacs.begin(), pacs.end());
+    for (const auto& p : pacs) {
+      PacIndex idx;
+      if (!ReadPacIndex(p, idx)) continue;
+      for (const auto& e : idx.entries) {
+        if (e.group.rfind("EVP", 0) != 0 || e.name.empty() || !std::isdigit(uint8_t(e.name[0]))) continue;
+        const int n = std::atoi(e.name.c_str());
+        if (n <= 0 || n >= 1000 || !seen.insert(n).second) continue;
+        Bytes b;
+        EntranceInfo i;
+        i.number = n;
+        if (ReadPacEntry(p, e, b)) i.name = EvpName(b);
+        out.push_back(std::move(i));
+      }
+    }
+    for (const wchar_t* where : {L"Moves", L"Superstars"})
+      for (const auto& e : fs::directory_iterator(fs::path(game) / L"Mods" / where, ec)) {
+        if (!e.is_directory(ec) || fs::exists(e.path() / L"disabled", ec)) continue;
+        const fs::path pack = std::wstring(where) == L"Moves" ? e.path() : e.path() / L"moves";
+        for (auto& i : PackEntrances(pack))
+          if (seen.insert(i.number).second) out.push_back(std::move(i));
+      }
+    std::sort(out.begin(), out.end(), [](const EntranceInfo& a, const EntranceInfo& b) { return a.number < b.number; });
+    g_entrances_next = std::move(out);
+    g_entrances_state = 2;
+  }).detach();
+}
+
+bool EntrancesReady() {
+  if (g_entrances_state == 0) ReloadEntrances();
+  if (g_entrances_state == 2) {
+    g_entrances = std::move(g_entrances_next);
+    g_entrances_next.clear();
+    g_entrances_state = 3;
+    Log("entrances: " + std::to_string(g_entrances.size()) + " installed");
+  }
+  return g_entrances_state == 3;
+}
+
+const std::vector<EntranceInfo>& Entrances() {
+  static const std::vector<EntranceInfo> kNone;
+  return EntrancesReady() ? g_entrances : kNone;
+}
+
+const std::map<int, MoveInfo>& MoveInfos() {
+  LoadMoveset();
+  return g_move_infos;
+}
+
+int ProfileMusic(int star_id) {
+  LoadMoveset();
+  const auto it = g_profile_music.find(star_id);
+  return it == g_profile_music.end() ? 0 : it->second;
+}
+
+std::vector<int> ProfileMoves(int star_id) {
+  LoadMoveset();
+  const auto it = g_profiles.find(star_id);
+  return it == g_profiles.end() ? std::vector<int>() : it->second;
+}
+
+bool MoveFitsSlot(int slot, int move_id) {
+  LoadMoveset();
+  if (slot < 0 || slot >= kMoveSlots || g_slot_rules.empty()) return false;
+  const auto it = g_move_infos.find(move_id);
+  if (it == g_move_infos.end()) return false;
+  const SlotRule& r = g_slot_rules[size_t(slot)];
+  for (int i = 0; i < 16; ++i)
+    if ((it->second.bits[i] & r.bits[i]) != r.bits[i]) return false;
+  return r.situation < 0 || it->second.situation == r.situation;
+}
+
+const std::vector<int>& MovesForSlot(int slot) {
+  static const std::vector<int> kNone;
+  LoadMoveset();
+  return slot >= 0 && slot < int(g_slot_moves.size()) ? g_slot_moves[size_t(slot)] : kNone;
 }
 
 const std::string& MoveName(int id) {
@@ -806,19 +1060,199 @@ void PushAccent() {
 }
 void PopAccent() { ImGui::PopStyleColor(2); }
 
+Image FitFigure(const Image& src, int size) {
+  // the figure: alpha > 32, when the picture has a transparent background
+  int l = src.w, t = src.h, r = -1, b = -1;
+  bool cut = false;
+  for (int y = 0; y < src.h; ++y)
+    for (int x = 0; x < src.w; ++x) {
+      if (src.rgba[(size_t(y) * src.w + x) * 4 + 3] <= 32) { cut = true; continue; }
+      l = std::min(l, x), r = std::max(r, x), t = std::min(t, y), b = std::max(b, y);
+    }
+  if (!cut || r < 0) l = 0, t = 0, r = src.w - 1, b = src.h - 1;
+  const int cw = r - l + 1, ch = b - t + 1;
+  Image crop;
+  crop.w = cw, crop.h = ch;
+  crop.rgba.resize(size_t(cw) * ch * 4);
+  for (int y = 0; y < ch; ++y)
+    std::memcpy(&crop.rgba[size_t(y) * cw * 4], &src.rgba[(size_t(t + y) * src.w + l) * 4], size_t(cw) * 4);
+  // a cut-out fills the height (no wider than 96%: then the width decides and it stands on the bottom);
+  // a full picture fits whole, top aligned
+  const float k = cut ? std::min(float(size) / ch, size * 0.96f / cw) : std::min(float(size) / cw, float(size) / ch);
+  const int w = std::clamp(int(cw * k + 0.5f), 1, size), h = std::clamp(int(ch * k + 0.5f), 1, size);
+  const Image fit = Resize(crop, w, h);
+  Image out;
+  out.w = out.h = size;
+  out.rgba.assign(size_t(size) * size * 4, 0);
+  const int x0 = (size - w) / 2, y0 = cut ? size - h : 0;
+  for (int y = 0; y < h; ++y)
+    std::memcpy(&out.rgba[(size_t(y0 + y) * size + x0) * 4], &fit.rgba[size_t(y) * w * 4], size_t(w) * 4);
+  return out;
+}
+
+Image GameLook(const Image& src) {
+  // the figure's luminance mean / spread and saturation, moved half way to the stock renders' medians
+  double sum = 0, sum2 = 0, sat = 0, n = 0;
+  for (size_t i = 0; i + 3 < src.rgba.size(); i += 4) {
+    if (src.rgba[i + 3] < 128) continue;
+    const double r = src.rgba[i] / 255.0, g = src.rgba[i + 1] / 255.0, b = src.rgba[i + 2] / 255.0;
+    const double lum = 0.299 * r + 0.587 * g + 0.114 * b, mx = std::max({r, g, b}), mn = std::min({r, g, b});
+    sum += lum, sum2 += lum * lum, sat += mx > 1e-3 ? (mx - mn) / mx : 0, n += 1;
+  }
+  if (n < 100) return src;
+  const double mean = sum / n, sd = std::sqrt(std::max(1e-6, sum2 / n - mean * mean)), s = sat / n;
+  const double want_mean = (mean + 0.386) / 2, want_sd = (sd + 0.214) / 2, want_s = (s + 0.412) / 2;
+  const double gain = std::clamp(want_sd / sd, 0.5, 2.0), sgain = s > 1e-3 ? std::clamp(want_s / s, 0.5, 2.0) : 1.0;
+  Image out = src;
+  for (size_t i = 0; i + 3 < out.rgba.size(); i += 4) {
+    const double r = src.rgba[i] / 255.0, g = src.rgba[i + 1] / 255.0, b = src.rgba[i + 2] / 255.0;
+    const double lum = 0.299 * r + 0.587 * g + 0.114 * b, nl = (lum - mean) * gain + want_mean;
+    for (int c = 0; c < 3; ++c) {
+      const double v = nl + ((c == 0 ? r : c == 1 ? g : b) - lum) * sgain;
+      out.rgba[i + c] = uint8_t(std::clamp(v, 0.0, 1.0) * 255 + 0.5);
+    }
+  }
+  return out;
+}
+
+std::map<std::wstring, std::vector<ModelPages>> g_gear_budget;  // (ModelBudget's kind-4 entries)
+const std::vector<ModelPages>& ModelBudget(const std::wstring& pac) {
+  struct Cached {
+    fs::file_time_type time;
+    uintmax_t size = 0;
+    std::vector<ModelPages> pages, gear;
+  };
+  static std::map<std::wstring, Cached> cache;
+  static const std::vector<ModelPages> none;
+  std::error_code ec;
+  const auto t = fs::last_write_time(pac, ec);
+  if (ec) return none;
+  const uintmax_t size = fs::file_size(pac, ec);
+  auto it = cache.find(pac);
+  if (it != cache.end() && it->second.time == t && it->second.size == size) return it->second.pages;
+  Cached c{t, size, {}};
+  Bytes d;
+  Epac e;
+  if (ReadFile(Utf8(pac), d) && EpacRead(d, e))
+    for (const auto& g : e.groups) {
+      if (g.type.rfind("EMD", 0) != 0) continue;
+      for (const auto& en : g.entries) {
+        if (en.name.empty() || (en.name.back() != '2' && en.name.back() != '4')) continue;  // (kind 2: the wrestler's model; 4: entrance gear)
+        std::vector<PachEntry> kids;
+        if (!PachRead(Unpack(en.data), kids)) continue;
+        int pages = 0, blood = 0;
+        for (const auto& k : kids) {
+          const Bytes raw = Unpack(k.data);
+          Model m;
+          if (!IsJboy(raw) || !JboyRead(raw, m)) continue;
+          int mp = 0;
+          for (const auto& s : m.meshes) {
+            const uint32_t blocks = s.raw.size() >= 0x60 ? Be32(&s.raw[0x5C]) : 1;
+            size_t idx = 0;
+            for (const auto& st : s.strips) idx += st.indices.size();
+            mp += int((s.verts.size() * (std::max(1u, blocks) == 1 ? 32 : 44) + 4095) / 4096 + (idx * 2 + 4095) / 4096);
+          }
+          pages += mp;
+          if (k.id >= 0x7530 && k.id <= 0x7532) blood += mp;
+        }
+        (en.name.back() == '4' ? c.gear : c.pages).push_back({en.name, pages, blood});
+      }
+    }
+  std::string line = "model budget: " + Utf8(fs::path(pac).filename().wstring());
+  for (const auto& p : c.pages) line += "  " + p.entry + " " + std::to_string(p.pages);
+  Log(line);
+  g_gear_budget[pac] = c.gear;
+  return (cache[pac] = std::move(c)).pages;
+}
+
+const std::vector<ModelPages>& GearBudget(const std::wstring& pac) {
+  ModelBudget(pac);  // (fills both)
+  static const std::vector<ModelPages> none;
+  const auto it = g_gear_budget.find(pac);
+  return it == g_gear_budget.end() ? none : it->second;
+}
+
+void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name) {
+  const std::wstring dir = PickFolder(L"A folder for the FBX (the textures go in a textures folder beside it)");
+  if (dir.empty()) return;
+  const std::string id = IdFrom(name.empty() ? "model" : name, "model") + (attire > 1 ? "_attire" + std::to_string(attire) : "");
+  RunInBackground([pac, attire, dir, id] {
+    Progress("Writing the FBX ...");
+    Bytes b;
+    svrfmt::CharExportReport rep;
+    const bool ok = ReadFile(Utf8(pac), b) && svrfmt::ExportCharacterFbx(b, attire, Utf8(dir), id, rep);
+    for (const auto& w : rep.warnings) Log("  " + w);
+    Status(ok ? "Exported " + id + ".fbx: " + std::to_string(rep.bones) + " bones, " + std::to_string(rep.meshes) + " meshes, " +
+                    std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.textures) + " textures (" + Utf8(dir) + ")."
+              : "The FBX could not be written: " + (rep.warnings.empty() ? std::string("see the log") : rep.warnings.front()));
+  });
+}
+
+std::vector<int> ModelAttires(const std::wstring& pac) {
+  std::vector<int> v;
+  for (const auto& p : ModelBudget(pac))
+    if (p.entry.size() >= 8 && std::isdigit(uint8_t(p.entry[6]))) v.push_back(p.entry[6] - '0' + 1);
+  std::sort(v.begin(), v.end());
+  v.erase(std::unique(v.begin(), v.end()), v.end());
+  return v;
+}
+
+void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::vector<Problem>& out) {
+  struct Cached {
+    fs::file_time_type time;
+    uintmax_t size = 0;
+    svrfmt::CharModelIssues issues;
+  };
+  static std::map<std::wstring, Cached> cache;
+  std::error_code ec;
+  const auto t = fs::last_write_time(pac, ec);
+  const uintmax_t size = fs::file_size(pac, ec);
+  if (ec) return;
+  auto it = cache.find(pac);
+  if (it == cache.end() || it->second.time != t || it->second.size != size) {
+    Cached c{t, size, {}};
+    Bytes b;
+    if (ReadFile(Utf8(pac), b)) c.issues = svrfmt::CheckCharacterModel(b, 1);
+    it = cache.insert_or_assign(pac, std::move(c)).first;
+  }
+  const auto& is = it->second.issues;
+  for (const auto& m : is.nan_meshes)
+    out.push_back(Error(who + "'s model has broken points (not-a-number values) in " + m + ": the game crashes on it.",
+                        "Export the model again, or rebuild it (Model from an FBX)."));
+  for (int e = 0; e < 2; ++e)
+    if (is.eye_off[e] > 0.15) {
+      char d[16];
+      std::snprintf(d, sizeof d, "%.1f", is.eye_off[e] * 10);
+      out.push_back(Warning(who + "'s " + (e ? "right" : "left") + " eye is " + d + " cm from its eye bone: it pops out when the face blinks.",
+                            "Model from an FBX moves the eye bones onto the eyes; or fix the eye in the source model."));
+    }
+}
+
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out) {
+  const ModelPages* worst = nullptr;
+  for (const auto& p : ModelBudget(pac)) {
+    if (!worst || p.pages > worst->pages) worst = &p;
+    if (first_only) break;
+  }
+  if (!worst || worst->pages <= kModelPagesWarn) return;
+  const std::string what = who + "'s model needs " + std::to_string(worst->pages) + " of the " + std::to_string(kModelPages) +
+                           " memory pages a wrestler gets in a match" + (first_only ? "" : " (entry " + worst->entry + ")");
+  const char* fix = "Use a model with fewer vertices or weight blocks (or without blood overlays, JBOY children "
+                    "0x7530-0x7532: the Port page's conversions leave them out).";
+  // (as the game: over the limit it drops the blood overlays, then leaves out a model still over)
+  if (worst->pages - worst->blood > kModelPages)
+    out.push_back(Error(what + ": the game leaves this model out, even without its blood overlays.", fix));
+  else if (worst->pages > kModelPages)
+    out.push_back(Warning(what + ": the game drops its blood overlays to fit (no blood on it in matches).", fix));
+  else
+    out.push_back(Warning(what + ": close to the limit (stock models reach about 180-192).", fix));
+}
+
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {
-  // fitted into 512 x 512 (top aligned, centred); the bust (SSFC): that at
+  // framed the game's way on 512 x 512 (FitFigure); the bust (SSFC): that at
   // 3/4 size, its top 256 rows around the figure's middle; the face icon:
   // the bust's top middle at 64 x 64
-  Image big;
-  big.w = big.h = 512;
-  big.rgba.assign(size_t(512) * 512 * 4, 0);
-  const float k = std::min(512.0f / src.w, 512.0f / src.h);
-  const int w = std::max(1, int(src.w * k)), h = std::max(1, int(src.h * k));
-  const Image fit = Resize(src, w, h);
-  const int x0 = (512 - w) / 2;
-  for (int y = 0; y < h; ++y)
-    std::memcpy(&big.rgba[(size_t(y) * 512 + x0) * 4], &fit.rgba[size_t(y) * w * 4], size_t(w) * 4);
+  Image big = FitFigure(src, 512);
   const Image three = Resize(big, 384, 384);
   double sx = 0, sa = 0;
   for (int y = 0; y < 256; ++y)
@@ -866,11 +1300,73 @@ void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int s
   });
 }
 
+int ArenaPacNumber(const std::string& name) {  // (the last "bg" followed by exactly two digits)
+  const std::string l = Lower(name);
+  int found = -1;
+  for (size_t at = 0; at + 4 <= l.size(); ++at)
+    if (l.compare(at, 2, "bg") == 0 && std::isdigit(uint8_t(l[at + 2])) && std::isdigit(uint8_t(l[at + 3])) &&
+        (at + 4 == l.size() || !std::isdigit(uint8_t(l[at + 4]))))
+      found = (l[at + 2] - '0') * 10 + (l[at + 3] - '0');
+  return found;
+}
+
+void ViewFooter() {
+  ImGui::PushID("viewfooter");
+  // (on the same line while a checkbox labelled `label` still fits there, else on the next)
+  auto next_fits = [](const char* label) {
+    const float need = ImGui::GetStyle().ItemSpacing.x + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
+    const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    if (ImGui::GetItemRectMax().x + need <= right) ImGui::SameLine();
+  };
+  if (ImGui::SmallButton("Reset view")) char_preview::ResetCamera();
+  ImGui::SameLine();
+  const bool has = char_preview::HasBlood();
+  ImGui::BeginDisabled(!has);
+  bool blood = char_preview::Blood() && has;
+  if (ImGui::Checkbox("Blood", &blood)) char_preview::SetBlood(blood);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip(has ? "The blood a superstar gets in a match, on the face and body." : "This model has no blood layers.");
+  next_fits("Physics");
+  bool physics = char_preview::Physics();
+  if (ImGui::Checkbox("Physics", &physics)) char_preview::SetPhysics(physics);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hair and body jiggle as the game moves them (the model's own settings).");
+  next_fits("Ring");
+  bool ring = char_preview::Ring();
+  if (ImGui::Checkbox("Ring", &ring)) char_preview::SetRing(ring, Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg29.pac").wstring()));
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("The practice arena's ring round the superstar (posts, ropes, turnbuckles, aprons), its canvas under their feet.");
+  if (char_preview::HasGear() || char_preview::Gear()) {
+    next_fits("Entrance gear");
+    ImGui::BeginDisabled(!char_preview::HasGear());
+    bool gear = char_preview::Gear() && char_preview::HasGear();
+    if (ImGui::Checkbox("Entrance gear", &gear)) char_preview::SetGear(gear);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip(char_preview::HasGear() ? "What they wear for the entrance (a coat, hat or shirt)." : "This attire has no entrance gear.");
+  }
+  if (ImGui::GetContentRegionAvail().x - ImGui::GetItemRectMax().x + ImGui::GetCursorScreenPos().x > ImGui::CalcTextSize("Damage").x + 130 * g_scale)
+    ImGui::SameLine();  // (else the Damage slider on its own line)
+  ImGui::BeginDisabled(!blood);
+  int stage = char_preview::BloodStage();
+  static const char* kLevels[] = {"light", "medium", "heavy"};
+  ImGui::TextUnformatted("Damage");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x, 70 * g_scale, 110 * g_scale));
+  if (ImGui::SliderInt("##damage", &stage, 0, 2, kLevels[std::clamp(stage, 0, 2)], ImGuiSliderFlags_NoInput)) char_preview::SetBloodStage(stage);
+  ImGui::EndDisabled();
+  ImGui::SameLine();  // (the hint on this line when it fits what's left of it)
+  if (const char* hint = "Drag to turn, scroll to zoom"; ImGui::GetContentRegionAvail().x > ImGui::CalcTextSize(hint).x + 8 * g_scale)
+    ImGui::TextDisabled("%s", hint);
+  else
+    ImGui::NewLine();
+  ImGui::PopID();
+}
+
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem) {
   ImGui::PushID(label);
   bool pressed = false;
   if (ImGui::Button(label, ImVec2(220 * g_scale, 0))) {
-    const COMDLG_FILTERSPEC spec[] = {{L"Videos and pictures", L"*.mp4;*.mov;*.m4v;*.avi;*.wmv;*.mkv;*.webm;*.png;*.jpg;*.jpeg;*.bmp"}};
+    const COMDLG_FILTERSPEC spec[] = {{L"Videos and pictures", L"*.mp4;*.mov;*.m4v;*.avi;*.wmv;*.mkv;*.webm;*.bk2;*.bik2;*.png;*.jpg;*.jpeg;*.bmp"}};
     const std::wstring f = PickFile(false, L"A video (or a picture) for the entrance movie", spec, 1);
     if (!f.empty()) {
       const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
@@ -878,7 +1374,24 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
       fs::create_directories(work, ec);
       const std::wstring out = (work / (Wide(IdFrom(stem, "movie")) + L"_" + fs::path(f).stem().wstring() + L".bik")).wstring();
       std::wstring* target = &movie;
-      MakeBink(f, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); });
+      const std::string ext = Lower(fs::path(f).extension().string());
+      if (ext == ".bk2" || ext == ".bik2") {  // Bink 2 (WWE 2K15 and later): through the player's RAD tool to .mp4 first
+        const std::wstring mp4 = (work / (fs::path(f).stem().wstring() + L"_bink2.mp4")).wstring();
+        std::vector<std::wstring> args = {f, mp4};
+        if (!g_settings.bink2_tool.empty()) args.push_back(L"--tool"), args.push_back(g_settings.bink2_tool);
+        RunToolJson(L"bink2_convert.py", args, [mp4, out, target](int code, const std::string& text) {
+          const size_t e = text.find("\"error\"");
+          if (code != 0 || !fs::exists(mp4)) {
+            Status("The Bink 2 video didn't convert" + (e == std::string::npos ? std::string(" (see the log).") : ": see the log.") +
+                   " Bink 2 needs RAD Video Tools (free, radgametools.com) - set it on the Other games page.");
+            Log("bink2: " + text);
+            return;
+          }
+          WhenIdle([mp4, out, target] { MakeBink(mp4, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); }); });
+        });
+      } else {
+        MakeBink(f, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); });
+      }
       pressed = true;
     }
   }
@@ -916,6 +1429,8 @@ void LoadSettings() {
   g_settings.maximized = Value(t, "maximized") == "1";
   g_settings.log_open = Value(t, "log_open") == "1";
   if (!Value(t, "font").empty()) g_settings.font = std::clamp(std::atoi(Value(t, "font").c_str()), 12, 28);
+  for (const auto& f : Values(t, "disc_folder")) g_settings.disc_folders.push_back(Wide(f));
+  g_settings.bink2_tool = Wide(Value(t, "bink2_tool"));
 }
 
 }  // namespace
@@ -927,7 +1442,86 @@ void SaveSettings() {
        "\nwin_w=" + std::to_string(g_settings.win_w) + "\nwin_h=" + std::to_string(g_settings.win_h) +
        "\nmaximized=" + (g_settings.maximized ? "1" : "0") + "\nlog_open=" + (g_settings.log_open ? "1" : "0") +
        "\nfont=" + std::to_string(g_settings.font) + "\n";
+  for (const auto& f : g_settings.disc_folders) t += "disc_folder=" + Utf8(f) + "\n";
+  if (!g_settings.bink2_tool.empty()) t += "bink2_tool=" + Utf8(g_settings.bink2_tool) + "\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
+}
+
+// ---- disc images
+
+namespace {
+std::vector<DiscRef> g_discs, g_discs_next;
+std::atomic<int> g_discs_state{0};  // 0 not read, 1 reading, 2 read (g_discs_next waiting), 3 ready
+}  // namespace
+
+std::string DiscGameName(const std::string& id) {
+  static const std::map<std::string, const char*> kNames = {
+      {"545107E0", "SmackDown vs. Raw 2007 (Xbox 360)"}, {"5451080B", "SmackDown vs. Raw 2008 (Xbox 360)"},
+      {"54510826", "SmackDown vs. Raw 2009 (Xbox 360)"}, {"54510844", "SmackDown vs. Raw 2010 (Xbox 360)"},
+      {"54510838", "Legends of WrestleMania (Xbox 360)"}, {"54510890", "WWE '12 (Xbox 360)"},
+      {"545108B4", "WWE '13 (Xbox 360)"}, {"545408B2", "WWE 2K14 (Xbox 360)"}, {"545408B6", "WWE 2K15 (Xbox 360)"},
+      {"315A07D2", "WWE 2K16 (Xbox 360)"}, {"545408BA", "WWE 2K17 (Xbox 360)"},
+      {"SLES_504.77", "SmackDown! Just Bring It (PS2)"}, {"SLES_512.83", "SmackDown! Shut Your Mouth (PS2)"},
+      {"SLES_520.36", "SmackDown! Here Comes the Pain (PS2)"}, {"SLES_527.81", "SmackDown! vs. Raw (PS2)"},
+      {"SLES_536.76", "SmackDown! vs. Raw 2006 (PS2)"}, {"SLES_544.89", "SmackDown vs. Raw 2007 (PS2)"},
+      {"SLES_548.79", "SmackDown vs. Raw 2008 (PS2)"}, {"SLES_552.51", "SmackDown vs. Raw 2009 (PS2)"},
+      {"SLES_555.45", "SmackDown vs. Raw 2010 (PS2)"}, {"SLES_556.35", "SmackDown vs. Raw 2011 (PS2)"},
+      {"SLUS_203.85", "Crush Hour (PS2)"},
+  };
+  const auto it = kNames.find(id);
+  return it == kNames.end() ? std::string() : it->second;
+}
+
+std::vector<std::wstring> DiscFolders() {
+  if (!g_settings.disc_folders.empty()) return g_settings.disc_folders;
+  return {L"D:\\Roms\\Xbox 360\\WWE", L"D:\\Roms\\Playstation 2\\WWE Games"};
+}
+
+void RescanDiscs() {
+  int expect = g_discs_state.load();
+  if (expect == 1 || !g_discs_state.compare_exchange_strong(expect, 1)) return;
+  std::thread([folders = DiscFolders()] {
+    std::vector<DiscRef> out;
+    for (const auto& folder : folders) {
+      std::error_code ec;
+      std::vector<fs::path> isos;
+      for (const auto& e : fs::directory_iterator(folder, ec))
+        if (e.is_regular_file(ec) && Lower(e.path().extension().string()) == ".iso") isos.push_back(e.path());
+      std::sort(isos.begin(), isos.end());
+      for (const auto& p : isos) {
+        svrfmt::Disc d;
+        if (!d.Open(p.wstring())) continue;
+        DiscRef r;
+        r.path = p.wstring();
+        r.id = d.Id();
+        r.xbox = d.Xbox();
+        r.game = DiscGameName(r.id);
+        if (r.game.empty()) r.game = PathStr(p.stem()) + (r.xbox ? " (Xbox 360)" : " (PS2)");
+        out.push_back(std::move(r));
+      }
+    }
+    std::sort(out.begin(), out.end(), [](const DiscRef& a, const DiscRef& b) {
+      return a.xbox != b.xbox ? a.xbox : a.game < b.game;  // Xbox 360 first (the user's order)
+    });
+    g_discs_next = std::move(out);
+    g_discs_state = 2;
+  }).detach();
+}
+
+bool DiscsReady() {
+  if (g_discs_state == 0) RescanDiscs();
+  if (g_discs_state == 2) {
+    g_discs = std::move(g_discs_next);
+    g_discs_next.clear();
+    g_discs_state = 3;
+    Log("discs: " + std::to_string(g_discs.size()) + " disc images found");
+  }
+  return g_discs_state == 3;
+}
+
+const std::vector<DiscRef>& Discs() {
+  static const std::vector<DiscRef> kNone;
+  return DiscsReady() ? g_discs : kNone;
 }
 
 void AddRecent(const std::wstring& file) {
@@ -959,15 +1553,18 @@ const PageDesc kPages[] = {
     {PageId::kEditor, "   3D editor", "", nullptr, DrawEditor},
     {PageId::kBackstage, "Backstage", "", &backstage_page::hooks, nullptr},
     {PageId::kStar, "Superstar", "", &star_page::hooks, nullptr},
+    {PageId::kAttire, "Attires", "", &attire_page::hooks, nullptr},
     {PageId::kMoves, "Moves", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
+    {PageId::kPort, "Port from a disc", "", nullptr, port_page::Draw},
     {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
     {PageId::kAnims, "Animations", "", nullptr, anims_page::Draw},
+    {PageId::kInstalled, "Installed mods", "", nullptr, installed_page::Draw},
     {PageId::kIcons, "Icons & renders", "", nullptr, icons_page::Draw},
     {PageId::kHelp, "Manual", "Help", nullptr, help_page::Draw},
 };
@@ -997,10 +1594,15 @@ void MarkSaved(PageId page) {
   g_saved_touches[page] = g_touches[page];
 }
 
+bool g_opened = false;  // a project or mod opened since the last reset
+
 void MarkAllSaved() {
   for (const auto& d : kPages)
     if (d.hooks) MarkSaved(d.id);
 }
+
+// Nothing made yet: nothing opened, nothing changed (an opened mod or project counts as made)
+bool ProjectUntouched() { return g_project_file.empty() && !g_opened && !ProjectDirty(); }
 
 // The shown page decides the project (the 3D editor belongs to the arena /
 // backstage page whose arena it holds).
@@ -1033,6 +1635,7 @@ void ProjectReset() {
     if (d.hooks && d.hooks->reset) d.hooks->reset();
   g_project_files.clear();
   g_project_file.clear();
+  g_opened = false;
   MarkAllSaved();
 }
 
@@ -1043,6 +1646,7 @@ void ProjectNew(PageId type) {
     if (PageHooks* o = Hooks(type == PageId::kArena ? PageId::kBackstage : PageId::kArena); o && o->reset) o->reset();
   }
   g_project_files[type].clear();
+  g_opened = false;
   g_page = type;
   FollowPage();
   MarkSaved(type);
@@ -1150,6 +1754,8 @@ bool ProjectSave(bool ask_name) {
   return true;
 }
 
+bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file);
+
 bool ProjectOpen(const std::wstring& file) {
   Bytes zip;
   ProjectIn in;
@@ -1159,7 +1765,85 @@ bool ProjectOpen(const std::wstring& file) {
     Status("That is not a project or a mod the Mod Maker can open: " + Utf8(file));
     return false;
   }
-  const bool mod = Lower(FileName(file)).ends_with(".svrmod");
+  return ProjectOpenIn(in, Lower(FileName(file)).ends_with(".svrmod"), file);
+}
+
+// Test aid --ui-script <txt>: ImGui events played into the (hidden) window at given times, inside the app - never
+// real input. One event a line, "<seconds> <what>": "move x y", "click x y" (left down + up, a frame apart),
+// "rclick x y", "wheel n", "type <text>", "key <Escape|Enter|Tab|Backspace|Down|Up>". x / y in the window's pixels
+// (as in a --shot picture). Lines starting with # are skipped.
+void UiScript(const std::wstring& file) {
+  struct Ev {
+    double t;
+    std::string what, arg;
+  };
+  static std::vector<Ev> evs;
+  static bool loaded = false;
+  static size_t next = 0;
+  static int up_frame = 0;  // (a click's button-up, the frame after its down)
+  ImGuiIO& io = ImGui::GetIO();
+  if (!loaded) {
+    loaded = true;
+    Bytes b;
+    if (ReadFile(Utf8(file), b)) {
+      std::string text(b.begin(), b.end()), line;
+      for (size_t at = 0; at <= text.size(); ++at) {
+        if (at < text.size() && text[at] != '\n') {
+          if (text[at] != '\r') line += text[at];
+          continue;
+        }
+        if (!line.empty() && line[0] != '#') {
+          char what[32] = {};
+          double t = 0;
+          int used = 0;
+          if (std::sscanf(line.c_str(), "%lf %31s %n", &t, what, &used) >= 2) evs.push_back({t, what, line.substr(size_t(used))});
+        }
+        line.clear();
+      }
+    }
+    Log("ui script: " + std::to_string(evs.size()) + " events");
+  }
+  if (up_frame && --up_frame == 0) io.AddMouseButtonEvent(0, false);
+  while (next < evs.size() && ImGui::GetTime() >= evs[next].t && !up_frame) {
+    const Ev& e = evs[next++];
+    float x = 0, y = 0;
+    std::sscanf(e.arg.c_str(), "%f %f", &x, &y);
+    if (e.what == "move") io.AddMousePosEvent(x, y);
+    else if (e.what == "click" || e.what == "rclick") {
+      io.AddMousePosEvent(x, y);
+      io.AddMouseButtonEvent(e.what == "click" ? 0 : 1, true);
+      if (e.what == "click") up_frame = 2;
+      else io.AddMouseButtonEvent(1, false);
+    } else if (e.what == "wheel") io.AddMouseWheelEvent(0, x);
+    else if (e.what == "type") io.AddInputCharactersUTF8(e.arg.c_str());
+    else if (e.what == "key") {
+      const ImGuiKey k = e.arg == "Escape" ? ImGuiKey_Escape : e.arg == "Enter" ? ImGuiKey_Enter : e.arg == "Tab" ? ImGuiKey_Tab
+                         : e.arg == "Backspace" ? ImGuiKey_Backspace : e.arg == "Down" ? ImGuiKey_DownArrow : ImGuiKey_UpArrow;
+      io.AddKeyEvent(k, true);
+      io.AddKeyEvent(k, false);
+    }
+    Log("ui script: " + e.what + " " + e.arg);
+  }
+}
+
+bool ProjectOpenFolder(const std::wstring& dir) {
+  ProjectIn in;
+  in.dir = fs::path(dir);  // (Extract writes into the project cache under LocalAppData, never here)
+  std::error_code ec;
+  for (const auto& e : fs::recursive_directory_iterator(dir, ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    Bytes b;
+    if (!ReadFile(PathStr(e.path()), b)) continue;
+    in.files.push_back({fs::relative(e.path(), dir, ec).generic_string(), std::move(b)});
+  }
+  if (in.files.empty()) {
+    Status("Nothing to open in " + Utf8(dir) + ".");
+    return false;
+  }
+  return ProjectOpenIn(in, true, (fs::path(dir) / L"manifest.txt").wstring());
+}
+
+bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file) {
   const ZipEntry* txt = in.Find(mod ? "manifest.txt" : "project.txt");
   if (!txt) {
     Status(mod ? "That mod has no manifest.txt." : "That project has no project.txt.");
@@ -1184,6 +1868,7 @@ bool ProjectOpen(const std::wstring& file) {
   FollowPage();
   AddRecent(file);
   MarkSaved(page->id);
+  g_opened = true;  // (made: its problems count even before a change)
   Status("Opened " + Utf8(file) + (mod ? " (a mod: save it as a project to keep working on it)." : "."));
   return true;
 }
@@ -1367,10 +2052,14 @@ void StatusBar() {
     ImGui::TextUnformatted(status.c_str());
   }
   // right: problems and the log
+  // (a fresh, untouched project isn't counted: "no arena yet" is no problem before you start)
+  const bool untouched = ProjectUntouched();
+  if (untouched) g_problems.clear();
   const int errors = ErrorCount(g_problems), warnings = int(g_problems.size()) - errors;
-  char pb[64];
-  if (g_problems.empty()) std::snprintf(pb, sizeof pb, "No problems");
-  else std::snprintf(pb, sizeof pb, "%d error%s, %d warning%s", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
+  char pb[128];
+  if (g_problems.empty()) std::snprintf(pb, sizeof pb, untouched ? "Nothing made yet" : "No problems");
+  else std::snprintf(pb, sizeof pb, "%s%s%d error%s, %d warning%s", g_page != g_project_page ? PageName(g_project_page) : "",
+                     g_page != g_project_page ? " project: " : "", errors, errors == 1 ? "" : "s", warnings, warnings == 1 ? "" : "s");
   const float w = ImGui::CalcTextSize(pb).x + ImGui::CalcTextSize("Log").x + 60 * g_scale;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w));
   if (!g_problems.empty()) ImGui::PushStyleColor(ImGuiCol_Text, errors ? kBad : kWarn);
@@ -1433,6 +2122,8 @@ void Draw() {
   if (log_h) LogPanel(log_h);
   StatusBar();
   ImGui::End();
+  full_preview::Draw();  // (its own window, over the page)
+  ToolsPanel();          // (the Mod Maker tools: found / missing, Install what's missing)
   // Ctrl+S saves the project
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && Hooks(g_project_page)) ProjectSave(false);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
@@ -1490,18 +2181,60 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   LoadSettings();
   int argc = 0;
   wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  // --test-repack <folder>,<report.txt>: every EPAC / EPK8 under the folder read and written
+  // back in memory (the pac tool's saves must be byte-identical when nothing changed); no window
+  for (int i = 1; i + 1 < argc; ++i)
+    if (!wcscmp(argv[i], L"--test-repack")) {
+      const std::wstring a = argv[i + 1];
+      const size_t comma = a.find(L',');
+      const fs::path folder = a.substr(0, comma), report = comma == std::wstring::npos ? L"repack.txt" : a.substr(comma + 1);
+      int files = 0, same = 0;
+      std::string out;
+      std::error_code ec;
+      for (const auto& e : fs::recursive_directory_iterator(folder, ec)) {
+        if (!e.is_regular_file(ec) || Lower(e.path().extension().string()) != ".pac") continue;
+        Bytes d;
+        svrfmt::Epac pac;
+        if (!ReadFile(PathStr(e.path()), d) || !svrfmt::EpacRead(d, pac)) continue;
+        ++files;
+        if (svrfmt::EpacWrite(pac) == d) ++same;
+        else out += "differs: " + PathStr(e.path()) + "\n";
+      }
+      out += "repack: " + std::to_string(same) + " / " + std::to_string(files) + " identical\n";
+      WriteFile(PathStr(report), Bytes(out.begin(), out.end()));
+      return same == files ? 0 : 1;
+    }
+  // --test-lufs <song>,<report.txt>: the theme volume meter on one file; no window
+  for (int i = 1; i + 1 < argc; ++i)
+    if (!wcscmp(argv[i], L"--test-lufs")) {
+      const std::wstring a = argv[i + 1];
+      const size_t comma = a.find(L',');
+      double l = 0;
+      std::string err;
+      const bool ok = MeasureLufs(a.substr(0, comma), &l, &err);
+      char b[128];
+      std::snprintf(b, sizeof b, "%s %.2f LUFS %s\n", ok ? "ok" : "failed", l, err.c_str());
+      WriteFile(Utf8(comma == std::wstring::npos ? L"lufs.txt" : a.substr(comma + 1)), Bytes(b, b + std::strlen(b)));
+      return ok ? 0 : 1;
+    }
   // test aids: --editor <arena tile 0-19> opens the editor on it, --open <mod> opens a mod,
   // --editor-view <0-2> a camera preset, --select <name> an object; --page <n>; the
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
   std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
+  std::wstring perf_tour;  // --perf-tour <report>: every page in turn, its first-frame and slowest times
   std::vector<std::wstring> run_tool_args;
   std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
+  std::wstring ui_script;  // --ui-script <txt>: ImGui input played in, no real input (see UiScript)
+  bool ring_view = false;
   double shot_after = 6;
+  std::vector<std::pair<double, std::wstring>> page_at;  // --page-at <page>@<s>[,...]: page switches at those times (tests)
   int star_id = 0, star_call = -1;
   float star_height = 0;
+  std::string star_moveset;
+  int star_entrance = 0;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures, background_files;
@@ -1515,6 +2248,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--behind")) behind = true, g_behind = true;
+    else if (!wcscmp(argv[i], L"--watch") && more) {  // <star id>,<dummy id>,<move id>: a match move watched here
+      int a[3] = {0, 0, 0};
+      swscanf_s(argv[++i], L"%d,%d,%d", &a[0], &a[1], &a[2]);
+      anims_page::TestWatch(a[0], a[1], a[2]);
+      g_page = PageId::kAnims;
+    }
     else if (!wcscmp(argv[i], L"--test-play") && more) {  // <star id>,<dummy id>,<move id>: Play in game
       int a[3] = {0, 0, 0};
       swscanf_s(argv[++i], L"%d,%d,%d", &a[0], &a[1], &a[2]);
@@ -1523,9 +2262,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--shot") && more) shot = argv[++i];
     else if (!wcscmp(argv[i], L"--shot-after") && more) shot_after = _wtof(argv[++i]);
+    else if (!wcscmp(argv[i], L"--ui-script") && more) ui_script = argv[++i];
+    else if (!wcscmp(argv[i], L"--page-at") && more) {
+      const std::wstring v = argv[++i];
+      for (size_t at = 0; at < v.size();) {
+        size_t c = v.find(L',', at);
+        if (c == std::wstring::npos) c = v.size();
+        const std::wstring item = v.substr(at, c - at);
+        if (const size_t a = item.find(L'@'); a != std::wstring::npos) page_at.push_back({_wtof(item.c_str() + a + 1), item.substr(0, a)});
+        at = c + 1;
+      }
+    }
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--test-moves-save") && more) moves_save = argv[++i];
+    else if (!wcscmp(argv[i], L"--caw-announcer") && more) caw_page::TestAnnouncer(Utf8(argv[++i]));  // <CLIP> (- clears), with --caw <index>
     else if (!wcscmp(argv[i], L"--caw") && more) {  // <index>[,<attire>,<picture>[,save]]
       std::wstring a = argv[++i];
       std::vector<std::wstring> parts;
@@ -1568,11 +2319,218 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       g_page = PageId::kMatch;
     }
     else if (!wcscmp(argv[i], L"--assets") && more) assets_page::TestOpen(Utf8(argv[++i])), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--assets-source") && more) assets_page::TestSource(argv[++i]), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--test-pac-edit") && more) pac_editor::TestEdit(argv[++i]), g_page = PageId::kAssets;
+    else if (!wcscmp(argv[i], L"--perf-tour") && more) perf_tour = argv[++i];
+    else if (!wcscmp(argv[i], L"--port-fullpreview")) port_page::TestFullPreview();  // with --port-test on an entrance: its result in the Full preview
+    else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
+    else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
-    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>]
-      int a[4] = {0, -1, -1, 0};
-      swscanf_s(argv[++i], L"%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3]);
+    else if (!wcscmp(argv[i], L"--fbx-map") && more) {  // <fbx>,<out file>: its skeleton, the rig found and the mapping
+      const std::wstring v = argv[++i];
+      const size_t c = v.find(L',');
+      std::vector<svrfmt::FbxBone> fb;
+      std::string err, out;
+      if (c != std::wstring::npos && svrfmt::ReadFbxSkeleton(Utf8(v.substr(0, c)), fb, err)) {
+        std::vector<RigBone> rb;
+        for (const auto& b : fb) rb.push_back({b.name, b.parent});
+        const auto map = MapRig(rb);
+        out = "rig: " + DetectRig(rb) + "\n";
+        int mapped = 0, skinned = 0, skinned_mapped = 0;
+        for (size_t k = 0; k < fb.size(); ++k) {
+          mapped += !map[k].empty(), skinned += fb[k].skinned, skinned_mapped += fb[k].skinned && !map[k].empty();
+          out += "  " + fb[k].name + (fb[k].skinned ? " *" : "") + " -> " + (map[k].empty() ? "(folds into its parent)" : map[k]) + "\n";
+        }
+        out += std::to_string(fb.size()) + " bones, " + std::to_string(mapped) + " mapped; " + std::to_string(skinned) +
+               " with weights, " + std::to_string(skinned_mapped) + " of them mapped\n";
+      } else {
+        out = "FAILED: " + err + "\n";
+      }
+      if (c != std::wstring::npos) WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--export-fbx") && more) {  // <pac>,<attire>,<out dir>,<name>: Export to FBX, then quit
+      std::vector<std::wstring> p;
+      const std::wstring v = argv[++i];
+      for (size_t at = 0; at <= v.size();) {
+        size_t c = v.find(L',', at);
+        if (c == std::wstring::npos) c = v.size();
+        p.push_back(v.substr(at, c - at)), at = c + 1;
+      }
+      Bytes b;
+      svrfmt::CharExportReport rep;
+      const bool ok = p.size() == 4 && ReadFile(Utf8(p[0]), b) && svrfmt::ExportCharacterFbx(b, _wtoi(p[1].c_str()), Utf8(p[2]), Utf8(p[3]), rep);
+      std::string t = std::string(ok ? "ok" : "failed") + ": " + std::to_string(rep.bones) + " bones\n";
+      for (const auto& w : rep.warnings) t += w + "\n";
+      if (p.size() == 4) WriteFile(Utf8(p[2]) + "/export.txt", Bytes(t.begin(), t.end()));
+      return ok ? 0 : 1;
+    }
+    else if (!wcscmp(argv[i], L"--fbx-build-input") && more) {  // <fbx>,<template pac>,<out dir>: the automatic mapping, build.json + report.txt
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a == std::wstring::npos || b == std::wstring::npos) return 1;
+      const std::string fbx = Utf8(v.substr(0, a)), tpl = Utf8(v.substr(a + 1, b - a - 1));
+      std::string dir = Utf8(v.substr(b + 1));
+      // (test: "<dir>|<mesh>=spec:1.5&tint:1,0.3,0.3&cut:1&both:1&alpha:flat&normal:<png>;..." - the builder's per-mesh material)
+      svrfmt::FbxImportOptions mopts;
+      if (const size_t bar = dir.find('|'); bar != std::string::npos) {
+        const std::string spec = dir.substr(bar + 1);
+        dir.resize(bar);
+        for (size_t at = 0; at < spec.size();) {
+          size_t e = spec.find(';', at);
+          if (e == std::string::npos) e = spec.size();
+          const std::string item = spec.substr(at, e - at);
+          at = e + 1;
+          const size_t eq = item.find('=');
+          if (eq == std::string::npos) continue;
+          svrfmt::FbxMaterial& f = mopts.material[item.substr(0, eq)];
+          std::string rest = item.substr(eq + 1);
+          for (size_t p = 0; p <= rest.size();) {
+            size_t q = rest.find('&', p);
+            if (q == std::string::npos) q = rest.size();
+            const std::string kv = rest.substr(p, q - p);
+            p = q + 1;
+            const size_t c = kv.find(':');
+            if (c == std::string::npos) continue;
+            const std::string k = kv.substr(0, c), val = kv.substr(c + 1);
+            if (k == "spec") f.specular = float(std::atof(val.c_str()));
+            if (k == "tint") f.has_tint = std::sscanf(val.c_str(), "%f,%f,%f", &f.tint[0], &f.tint[1], &f.tint[2]) == 3;
+            if (k == "cut") f.cutout = std::atoi(val.c_str());
+            if (k == "both") f.double_sided = std::atoi(val.c_str());
+            if (k == "alpha") f.specular_alpha = val;
+            if (k == "normal") f.normal = val;
+          }
+        }
+      }
+      std::vector<svrfmt::FbxBone> fb;
+      std::string err, out;
+      Bytes pac;
+      svrfmt::FbxImportReport rep;
+      bool ok = false;
+      if (svrfmt::ReadFbxSkeleton(fbx, fb, err) && ReadFile(tpl, pac)) {
+        std::vector<RigBone> rb;
+        for (const auto& k : fb) rb.push_back({k.name, k.parent});
+        ok = svrfmt::FbxToBuildInput(fbx, MapRig(rb), pac, tpl, dir, rep, mopts);
+      }
+      char line[256];
+      std::snprintf(line, sizeof line, "%s: %d meshes, %d vertices, %d triangles, %d textures (sheet %d), %d bones aimed (worst %.3f deg), %d 2011 bones, scale %.4f, height %.1f cm\n",
+                    ok ? "OK" : "FAILED", rep.meshes, rep.vertices, rep.triangles, rep.textures, rep.atlas, rep.aimed, rep.aim_error_deg, rep.bones_used, rep.scale, rep.height_cm);
+      if (rep.reduced_from) out += "  reduced from " + std::to_string(rep.reduced_from) + " vertices\n";
+      out = out + line + err + (rep.aim_worst.empty() ? "" : "  worst aim: " + rep.aim_worst + "\n");
+      for (const auto& w : rep.warnings) out += "  warning: " + w + "\n";
+      for (const auto& w : rep.skipped) out += "  skipped: " + w + "\n";
+      for (const auto& w : rep.mesh_lines) out += "  mesh: " + w + "\n";
+      std::error_code ec;
+      fs::create_directories(fs::u8path(dir), ec);
+      WriteFile(dir + "/report.txt", Bytes(out.begin(), out.end()));
+      return ok ? 0 : 1;
+    }
+    else if (!wcscmp(argv[i], L"--model-check") && more) {  // <pac>[;<pac>...],<out>: the D12 model checks, a line per pac
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      if (c == std::wstring::npos) return 1;
+      std::string out;
+      std::wstring list = v.substr(0, c);
+      for (size_t a = 0; a <= list.size();) {
+        size_t b = list.find(L';', a);
+        if (b == std::wstring::npos) b = list.size();
+        const std::wstring pac = list.substr(a, b - a);
+        a = b + 1;
+        Bytes d;
+        const auto is = ReadFile(Utf8(pac), d) ? svrfmt::CheckCharacterModel(d, 1) : svrfmt::CharModelIssues();
+        char line[256];
+        std::snprintf(line, sizeof line, "%s: read %d, nan %d, eyes %.3f %.3f\n", FileName(pac).c_str(), int(is.read), int(is.nan_meshes.size()), is.eye_off[0], is.eye_off[1]);
+        out += line;
+      }
+      WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--check-mods") && more) {  // <out>: every installed mod checked (mod_check), then quit (--game first)
+      const std::wstring out = argv[++i];
+      std::string text;
+      auto put = [&](const std::string& who, const std::vector<Problem>& p) {
+        for (const auto& x : p) text += who + (x.error ? " | MUST FIX | " : " | check | ") + x.text + (x.fix.empty() ? "" : " | " + x.fix) + "\n";
+      };
+      put("(set)", CheckInstalledSet());
+      std::error_code ec;
+      for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes"})
+        for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / kind, ec))
+          if (e.is_directory(ec) && e.path().filename().wstring()[0] != L'.') put(std::string(kind) + "/" + Utf8(e.path().filename().wstring()), CheckModFolder(kind, e.path()));
+      WriteFile(Utf8(out), Bytes(text.begin(), text.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--hair-ref") && more) {  // <dump>,<out>[,<floor y>]: the hair solver against the game's numbers, then quit
+      std::wstring v = argv[++i];
+      std::vector<std::wstring> p;
+      for (size_t at = 0; at <= v.size();) {
+        size_t c = v.find(L',', at);
+        if (c == std::wstring::npos) c = v.size();
+        p.push_back(v.substr(at, c - at)), at = c + 1;
+      }
+      Bytes d;
+      std::string rep = p.size() >= 2 && ReadFile(Utf8(p[0]), d)
+                            ? hair::ReplayDump(std::string(d.begin(), d.end()), p.size() > 2 ? float(_wtof(p[2].c_str())) : -12.0f)
+                            : "can't read the dump\n";
+      if (p.size() >= 2) WriteFile(Utf8(p[1]), Bytes(rep.begin(), rep.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--check-svrmod") && more) {  // <file>,<out>: a .svrmod checked, then quit
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      std::string text;
+      for (const auto& x : CheckSvrmod(v.substr(0, c))) text += std::string(x.error ? "MUST FIX | " : "check | ") + x.text + "\n";
+      if (text.empty()) text = "clean\n";
+      if (c != std::wstring::npos) WriteFile(Utf8(v.substr(c + 1)), Bytes(text.begin(), text.end()));
+      return 0;
+    }
+    else if (!wcscmp(argv[i], L"--rig-selftest")) {  // the rig mapper against each known rig's standard names
+      const auto fails = RigSelfTest();
+      std::string out = "rig self test: " + std::to_string(fails.size()) + " failed\n";
+      for (const auto& f : fails) out += "  " + f + "\n";
+      if (++i < argc) WriteFile(Utf8(argv[i]), Bytes(out.begin(), out.end()));
+      return fails.empty() ? 0 : 1;
+    }
+    else if (!wcscmp(argv[i], L"--export-char-fbx") && more) {  // <pac>,<attire>,<out dir>: export, read back, log, quit
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a != std::wstring::npos && b != std::wstring::npos) {
+        Bytes pac;
+        svrfmt::CharExportReport rep;
+        const std::wstring out = v.substr(b + 1);
+        const int attire = _wtoi(v.substr(a + 1, b - a - 1).c_str());
+        const bool ok = ReadFile(Utf8(v.substr(0, a)), pac) && svrfmt::ExportCharacterFbx(pac, attire, Utf8(out), "test", rep);
+        Log(std::string("test: export ") + (ok ? "ok" : "FAILED") + ": " + std::to_string(rep.bones) + " bones, " + std::to_string(rep.meshes) +
+            " meshes, " + std::to_string(rep.vertices) + " vertices, " + std::to_string(rep.triangles) + " triangles, " +
+            std::to_string(rep.textures) + " textures");
+        for (const auto& w : rep.warnings) Log("  " + w);
+        if (ok)
+          for (const auto& l : svrfmt::CheckCharacterFbx(pac, attire, Utf8(out) + "\\test.fbx")) Log("test: read back: " + l);
+        WriteLogTo(out + L"\\test.log");
+        return 0;
+      }
+    }
+    else if (!wcscmp(argv[i], L"--installed") && more) installed_page::TestSelect(Utf8(argv[++i])), g_page = PageId::kInstalled;
+    else if (!wcscmp(argv[i], L"--full-preview") && more) {  // <entrance>,<star>[,<key>[,<camera 0/1>]]: the Full preview
+      int e = -1, s = -1, cam = 1;
+      float key = -1;
+      std::swscanf(argv[++i], L"%d,%d,%f,%d", &e, &s, &key, &cam);
+      full_preview::TestOpen(e, s, key, cam != 0);
+    }
+    else if (!wcscmp(argv[i], L"--full-preview-song") && more) full_preview::TestSong(argv[++i]);
+    else if (!wcscmp(argv[i], L"--full-preview-movie") && more) full_preview::TestMovie(argv[++i]);
+    else if (!wcscmp(argv[i], L"--full-preview-dump") && more) full_preview::TestDump(argv[++i]);
+    else if (!wcscmp(argv[i], L"--pose-dump-motion") && more) char_preview::g_test_pose_dump = argv[++i];
+    else if (!wcscmp(argv[i], L"--full-preview-cameras") && more) full_preview::TestCameras(argv[++i]);
+    else if (!wcscmp(argv[i], L"--full-preview-view") && more) full_preview::TestView(argv[++i]);
+    else if (!wcscmp(argv[i], L"--moves-put") && more) moves_page::TestPut(argv[++i]), g_page = PageId::kMoves;
+    else if (!wcscmp(argv[i], L"--pac-attires") && more) attire_page::TestPacAttires(argv[++i]), g_page = PageId::kAttire;
+    else if (!wcscmp(argv[i], L"--pose-compare") && more) anims_page::TestCompare(argv[++i]), g_page = PageId::kAnims;
+    else if (!wcscmp(argv[i], L"--view-attire") && more) char_preview::SetAttire(_wtoi(argv[++i]));  // the 3D view's attire
+    else if (!wcscmp(argv[i], L"--anims") && more) {  // <star id>,<bank index>,<motion id>[,<dummy id>[,<key: paused there>]]
+      int a[5] = {0, -1, -1, 0, -1};
+      swscanf_s(argv[++i], L"%d,%d,%d,%d,%d", &a[0], &a[1], &a[2], &a[3], &a[4]);
       anims_page::TestStart(a[0], a[1], a[2], a[3]);
+      anims_page::TestKey(a[4]);
       g_page = PageId::kAnims;
     }
     else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
@@ -1586,10 +2544,86 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-song") && more) star_song = argv[++i];
     else if (!wcscmp(argv[i], L"--star-movie") && more) star_movie = argv[++i];
     else if (!wcscmp(argv[i], L"--star-picture") && more) star_picture = argv[++i];
+    else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-fbx-make")) star_page::TestFbxMake();
+    else if (!wcscmp(argv[i], L"--fbx-report") && more) star_page::TestFbxReport(argv[++i]);  // with --star-fbx: the import report, quit  // with --star-fbx: Make the model, log, quit
+    else if (!wcscmp(argv[i], L"--simple-take") && more) {  // <svrmod>,<0|1>: a converted superstar's look (0) or all of it (1) into the project
+      const std::wstring v = argv[++i];
+      const size_t c = v.rfind(L',');
+      star_page::TestSimpleTake(v.substr(0, c), c != std::wstring::npos && v.substr(c + 1) == L"1");
+    }
+    else if (!wcscmp(argv[i], L"--simple-ring") && more) star_page::TestSimpleRing(_wtoi(argv[++i]));  // an entrance's walk to the ring in Simple's preview
+    else if (!wcscmp(argv[i], L"--simple-capture") && more) star_page::TestSimpleCapture(argv[++i]);  // the 3D view as the select picture -> <png>, quit
+    else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
+    else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
+    else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
+      const std::wstring v = argv[++i];
+      const size_t c = v.find(L',');
+      star_page::TestFbx(v.substr(0, c), c == std::wstring::npos ? std::string() : Utf8(v.substr(c + 1)));
+    }
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
+    else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
+    else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
+    else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views
+    else if (!wcscmp(argv[i], L"--ring")) ring_view = true;
+    else if (!wcscmp(argv[i], L"--no-physics")) char_preview::SetPhysics(false);  // hair and jiggle off (test aid)  // the basic ring in the 3D views (once the game folder is known)
+    else if (!wcscmp(argv[i], L"--star-gear-fbx") && more) star_page::TestGearFbx(Utf8(argv[++i]));  // <attire>:<fbx>: fit the FBX gear, log, quit
+    else if (!wcscmp(argv[i], L"--star-gear-from") && more) star_page::TestGearFrom(Utf8(argv[++i]));  // <attire>:<donor id>: fit the donor's entrance gear, log, quit
+    else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
+    else if (!wcscmp(argv[i], L"--hits")) char_preview::SetHits(true);
+    else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac>[,<save .svrmod>]
+      const std::wstring a = argv[++i];
+      const size_t c1 = a.find(L','), c2 = a.find(L',', c1 + 1), c3 = a.find(L',', c2 + 1);
+      attire_page::TestStart(_wtoi(a.c_str()), a.substr(c2 + 1, c3 == std::wstring::npos ? std::wstring::npos : c3 - c2 - 1),
+                             _wtoi(a.c_str() + c1 + 1), c3 == std::wstring::npos ? L"" : a.substr(c3 + 1));
+      g_page = PageId::kAttire;
+    }
+    else if (!wcscmp(argv[i], L"--star-watch") && more) star_page::TestWatchSlot(int(std::wcstol(argv[++i], nullptr, 0)));
     else if (!wcscmp(argv[i], L"--star-voice") && more) star_voice = argv[++i];
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
+    else if (!wcscmp(argv[i], L"--star-mat") && more) star_page::TestMaterials(Utf8(argv[++i]), false);
+    else if (!wcscmp(argv[i], L"--open-materials")) star_page::TestMaterials("", true);
+    else if (!wcscmp(argv[i], L"--tools-panel")) TestToolsPanel(false, L"");
+    else if (!wcscmp(argv[i], L"--tools-install")) TestToolsPanel(true, L"");
+    else if (!wcscmp(argv[i], L"--tools-install-from") && more) TestToolsPanel(false, argv[++i]);
+    else if (!wcscmp(argv[i], L"--alpha-fixture") && more) {  // <pac>,<out pac>,<id:mesh>;<id:mesh>...: the cut-out fixture (mm::AlphaFixture), then quit
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a == std::wstring::npos || b == std::wstring::npos) return 1;
+      std::vector<std::pair<uint32_t, int>> ms;
+      for (const std::string item : {Utf8(v.substr(b + 1))}) {
+        size_t at = 0;
+        while (at < item.size()) {
+          size_t e = item.find(';', at);
+          if (e == std::string::npos) e = item.size();
+          unsigned id = 0;
+          int mesh = 0;
+          if (std::sscanf(item.substr(at, e - at).c_str(), "%u:%d", &id, &mesh) == 2) ms.push_back({id, mesh});
+          at = e + 1;
+        }
+      }
+      svrfmt::Bytes pac;
+      std::string err;
+      const bool ok = svrfmt::ReadFile(Utf8(v.substr(0, a)), pac) && mm::AlphaFixture(pac, ms, &err) &&
+                      svrfmt::WriteFile(Utf8(v.substr(a + 1, b - a - 1)), pac);
+      if (!ok) WriteFile(Utf8(v.substr(a + 1, b - a - 1)) + ".err", Bytes(err.begin(), err.end()));
+      return ok ? 0 : 1;
+    }
+    else if (!wcscmp(argv[i], L"--mat-dump") && more) {  // <pac>,<out.txt>: every mesh's shader, flags and parameters, then quit
+      const std::wstring a = argv[++i];
+      const size_t c = a.find(L',');
+      svrfmt::Bytes pac;
+      if (c != std::wstring::npos && svrfmt::ReadFile(Utf8(a.substr(0, c)), pac)) {
+        const std::string t = mm::DumpMaterials(pac);
+        if (FILE* f = _wfopen(a.substr(c + 1).c_str(), L"wb")) std::fwrite(t.data(), 1, t.size(), f), std::fclose(f);
+      }
+      return 0;
+    }
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--sign") && more) sign_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-sign-save") && more) sign_save = argv[++i];
@@ -1656,6 +2690,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!g_game.empty() && LoadBanners()) Status("Game folder: " + Utf8(g_game));
   else if (!g_game.empty()) Status("The game folder's menu files could not be read: " + Utf8(g_game));
   else Status("No game folder: nothing can be read. Click the game folder button at the top right.");
+  StartupToolsCheck();  // (Python, numpy, Pillow, the scripts, svrmod.exe: the panel opens when one is missing)
   editor::Hooks hooks;
   hooks.log = [](const std::string& s) { Log(s); };
   hooks.test_in_game = [] { arena_page::TestInGame(); };
@@ -1668,9 +2703,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
   // the test aids
   star_page::TestStart(star_id, star_model, star_name, star_picture, star_save);
+  if (ring_view) char_preview::SetRing(true, Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg29.pac").wstring()));
   if (star_call >= 0 || !star_song.empty() || !star_movie.empty() || !star_voice.empty())
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
   if (star_height > 0) star_page::TestHeight(star_height);
+  if (!star_moveset.empty()) star_page::TestMoveset(star_moveset);
+  if (star_entrance) star_page::TestEntrance(star_entrance);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
@@ -1697,7 +2735,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }
@@ -1719,8 +2757,46 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (behind && IsWindowVisible(g_wnd)) ShowWindow(g_wnd, SW_HIDE);  // (stays unseen)
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    if (!ui_script.empty()) UiScript(ui_script);
     ImGui::NewFrame();
+    // timing (D17): startup to the first frame, a page's first frame, frames over 100 ms
+    static PageId timed_page = PageId::kCount;
+    static double tour_slowest = 0;
+    static int frames_on_page = 0;
+    const PageId page_now = g_page;
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
     Draw();
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    const double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(freq.QuadPart);
+    if (ImGui::GetFrameCount() == 1) {
+      FILETIME created, x1, x2, x3, now;
+      GetProcessTimes(GetCurrentProcess(), &created, &x1, &x2, &x3);
+      GetSystemTimeAsFileTime(&now);
+      const auto ticks = [](const FILETIME& f) { return (uint64_t(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+      Log("perf: started in " + std::to_string((ticks(now) - ticks(created)) / 10000) + " ms (first frame)");
+    }
+    if (page_now != timed_page) {
+      if (!perf_tour.empty() && timed_page != PageId::kCount)
+        Log("perf: " + std::string(PageName(timed_page)) + " slowest frame " + std::to_string(int(tour_slowest)) + " ms");
+      timed_page = page_now, frames_on_page = 0, tour_slowest = 0;
+      Log("perf: " + std::string(PageName(page_now)) + " first frame " + std::to_string(int(ms)) + " ms");
+    } else {
+      tour_slowest = std::max(tour_slowest, ms);
+      if (ms > 100) Log("perf: slow frame on " + std::string(PageName(page_now)) + ": " + std::to_string(int(ms)) + " ms");
+    }
+    if (!perf_tour.empty() && ++frames_on_page >= 90 && !Busy()) {  // the next page (the 3D editor needs an arena: skipped)
+      int next = int(g_page) + 1;
+      if (next == int(PageId::kEditor)) ++next;
+      if (next >= int(PageId::kCount)) {
+        WriteLogTo(perf_tour);
+        perf_tour.clear();
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      } else {
+        g_page = PageId(next);
+      }
+    }
     ImGui::Render();
     if (test_project_pending && !Busy() && ImGui::GetFrameCount() > 3) {
       test_project_pending = false;
@@ -1743,6 +2819,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
     g_ctx->ClearRenderTargetView(g_rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    while (!page_at.empty() && ImGui::GetTime() >= page_at.front().first) {  // (test aid --page-at)
+      const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match",
+                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
+      for (int k = 0; k < int(std::size(names)) && k < int(PageId::kCount); ++k)
+        if (page_at.front().second == names[k]) g_page = PageId(k), Log("test: page " + Utf8(names[k]));
+      page_at.erase(page_at.begin());
+    }
     if (!shot.empty() && ImGui::GetTime() >= shot_after && !Busy()) {  // the frame to a PNG, then quit
       ID3D11Texture2D* back = nullptr;
       g_swap->GetBuffer(0, IID_PPV_ARGS(&back));

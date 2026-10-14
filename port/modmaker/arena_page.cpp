@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include "app.h"
+#include "mod_check.h"
 #include <shellapi.h>
 
 #include "editor.h"
@@ -64,6 +65,7 @@ struct Project {
   bool has_box = false;
   float box[4] = {0, 0, 30, 30};    // box=x,z,half x,half z (game units, 10 cm)
   float camera = 0, camera_height = 0;  // 0 = the game's
+  std::string source;               // source=<game> bgNN: the other game's arena it was converted from
 };
 Project g_proj;
 int g_sel = 0;    // the tile under the cursor on the Start tab
@@ -139,7 +141,7 @@ void ExportArena(int i) {
     std::snprintf(b, sizeof b, "Exported %d objects and %d textures to %s", rep.models, rep.textures, out.c_str());
     Status(b);
     Log("  Open arena.fbx in Blender (File > Import > FBX). 1 Blender unit = 1 metre.");
-    ShellExecuteA(nullptr, "open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    ShellOpen(Wide(out));
   });
 }
 
@@ -260,6 +262,7 @@ bool PrepareBuild(BuildJob& job) {
   job.id = ModId();
   job.manifest = "type=arena\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
                  "\nversion=" + g_proj.version + "\n" + MadeWith() + "base=" + g_arenas[g_proj.arena].banner + "\n" +
+                 (g_proj.source.empty() ? std::string() : "source=" + g_proj.source + "\n") +
                  editor::ManifestLines();
   return true;
 }
@@ -316,9 +319,9 @@ bool InstallFiles(const BuildJob& job, const std::vector<ZipEntry>& files) {
       return false;
     }
   if (job.backstage)
-    Status(std::string("Installed: backstage brawls in the ") + kAreas[job.area].name + " play it (" + PathStr(dir) + ").");
+    Status(std::string("Installed: backstage brawls in the ") + kAreas[job.area].name + " play it (" + PathStr(dir) + ")." + InstallReport("Backstage", dir));
   else
-    Status("Installed: it is on the arena select pages after the game's arenas (" + PathStr(dir) + ").");
+    Status("Installed: it is on the arena select pages after the game's arenas (" + PathStr(dir) + ")." + InstallReport("Arenas", dir));
   return true;
 }
 
@@ -734,13 +737,14 @@ void StartBackstage(int area) {
   LoadInBackground(PathStr(fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac"), nullptr, true, false);
 }
 
-void SetArenaFromPac(const Bytes& pac, int host, const std::string& name) {
+void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source) {
   LeaveBackstage();
   g_proj = Project();
   editor::Ring() = RingSpec();
   editor::Light() = editor::Lighting();
   editor::SetArena(nullptr, "");
   std::snprintf(g_proj.name, sizeof g_proj.name, "%s", name.c_str());
+  g_proj.source = source;
   g_sel = host;
   g_proj.arena = host;
   auto a = std::make_unique<Arena>();
@@ -804,6 +808,7 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
     if (host < 0) { Status("The mod does not say which arena it is built on (base=)."); return false; }
   }
   std::snprintf(g_proj.name, sizeof g_proj.name, "%s", in.Get("name").c_str());
+  g_proj.source = in.Get("source");
   std::snprintf(g_proj.author, sizeof g_proj.author, "%s", in.Get("author").c_str());
   std::snprintf(g_proj.version, sizeof g_proj.version, "%s", in.Get("version").c_str());
   if (!g_proj.version[0]) std::snprintf(g_proj.version, sizeof g_proj.version, "1.0");
@@ -858,6 +863,7 @@ void WriteProject(ProjectOut& out) {
   if (g_proj.backstage >= 0) out.Key("area", g_proj.backstage);
   else if (g_proj.arena >= 0) out.Key("base", g_arenas[g_proj.arena].banner), out.Key("tile", g_proj.arena);
   out.Key("fbx", g_proj.fbx);
+  out.Key("source", g_proj.source);
   out.text += editor::ManifestLines();
   for (int k = 0; k < 3; ++k) out.Key("ring.tex" + std::to_string(k), editor::Ring().ropes[k].texture);
   if (g_proj.backstage >= 0 && g_proj.own_area) {
@@ -921,6 +927,22 @@ void ArenaProblems(std::vector<Problem>& p) {
   if (editor::Ring().VisibleRopes() < 3 && editor::Ring().VisibleRopes() > 0)
     p.push_back(Warning("Fewer than three ropes: rope moves are limited to the ropes left (the game adapts)."));
   if (editor::Ring().VisibleRopes() == 0) p.push_back(Warning("No ropes: no rope moves, no rope breaks, a hardcore-style ring."));
+  // limits and crash risks (D12): a model the game can't hold, an arena over its room
+  editor::BudgetInfo b;
+  if (g_proj.arena >= 0 && editor::Budget(b)) {
+    char id[16];
+    std::snprintf(id, sizeof id, "0x%X", b.biggest_id);
+    if (b.biggest > 430 * 1024)
+      p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): models over about 430 KB "
+                          "have crashed the arena's load.", "Split it, cut its polygons, or hide parts of it (3D editor)."));
+    else if (b.biggest > 360 * 1024)
+      p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): close to the ~430 KB that "
+                          "crashed arena loads."));
+    if (b.file > b.file_max || b.unpacked > b.unpacked_max)
+      p.push_back(Warning("The arena is over the game's room for it (" + Human(std::max(b.file, b.unpacked)) + " of " +
+                          Human(std::max(b.file_max, b.unpacked_max)) + "): saving halves the biggest textures until it fits.",
+                          "Smaller pictures or fewer added objects keep them sharp."));
+  }
 }
 
 void BackstageProblems(std::vector<Problem>& p) {

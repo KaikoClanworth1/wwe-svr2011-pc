@@ -159,25 +159,174 @@ def is_primary(n13, n11):
 
 
 # ---------------------------------------------------------------- conversion
+def skin_template(meshes):
+    """The body skin mesh to copy parameters from: the parameter set most yBumpMapSS meshes share
+    (ch104: 22 of 27 - tiling noise 100 x 50, tiling effect 0.02 / 0.15 / 0.1), without a wrinkle,
+    muscle or bruise part, the largest of those. (The first skin mesh is a special one: tile count 1,
+    tiling effect 1.0 - with the noise bound as its tiling map it paints red spots over the body.)
+    -> a copy with the wrinkle / muscle / bruise part numbers 0."""
+    import collections
+    skin = [s for s in meshes if s.shader == 'yBumpMapSS']
+
+    def sig(s):
+        return tuple((n, v) for n, t, v in s.params if t != 0x0f and not n.startswith(('g_f2Wrinkle', 'g_f2Muscle', 'g_i')))
+
+    def parts(s):
+        return sum(struct.unpack('>i', v[:4])[0] != 0 for n, t, v in s.params
+                   if n in ('g_iWrinkleParts', 'g_iMuscleParts', 'g_iBruiseParts'))
+    common = collections.Counter(sig(s) for s in skin).most_common(1)[0][0]
+    pick = [s for s in skin if sig(s) == common]
+    best = min(pick, key=lambda s: (parts(s), -len(s.verts)))
+    # (a part number picks a region of the wrinkle / muscle maps the converted models don't carry: none)
+    out = jboy.Mesh()
+    out.__dict__.update(best.__dict__)
+    zero = struct.pack('>i', 0)
+    out.params = [(n, t, zero + v[4:] if n in ('g_iWrinkleParts', 'g_iMuscleParts', 'g_iBruiseParts') else v)
+                  for n, t, v in best.params]
+    return out
+
+
+# ---------------------------------------------------------------- hair physics chains (docs/HAIR_PHYSICS.md)
+
+def _align_x(d):
+    """the rotation turning +X to direction d (shortest arc)"""
+    d = np.asarray(d, float)
+    d = d / (np.linalg.norm(d) or 1.0)
+    x = np.array([1.0, 0.0, 0.0])
+    v = np.cross(x, d)
+    c = float(np.dot(x, d))
+    if np.linalg.norm(v) < 1e-9:
+        return np.eye(3) if c > 0 else np.diag([-1.0, -1.0, 1.0])
+    k = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + k + k @ k * (1.0 / (1.0 + c))
+
+
+def _euler_zyx(R):
+    """R = Rz Ry Rx (rot()) -> (x, y, z)"""
+    y = math.asin(max(-1.0, min(1.0, -R[2, 0])))
+    if abs(R[2, 0]) < 0.99999:
+        return (math.atan2(R[2, 1], R[2, 2]), y, math.atan2(R[1, 0], R[0, 0]))
+    return (0.0, y, math.atan2(-R[0, 1], R[1, 1]))
+
+
+align_x, euler_zyx = _align_x, _euler_zyx   # (svr11_build builds its chains with them)
+
+
+def hair_chains(m13):
+    """WWE '13 hair model -> {root name: [node indices, root first]}: kami_bNN, kami_bNN_00, _01 ... (the tie's
+    kami_b15 stays folded into the chest / waist)"""
+    names = {nd['name']: i for i, nd in enumerate(m13['nodes'])}
+    out = {}
+    for nn in range(16):
+        root = 'kami_b%02d' % nn
+        if nn == 15 or root not in names:
+            continue
+        chain = [names[root]]
+        k = 0
+        while '%s_%02d' % (root, k) in names:
+            chain.append(names['%s_%02d' % (root, k)])
+            k += 1
+        if len(chain) >= 3:
+            out[root] = chain
+    return out
+
+
+def hair_text_11(text13, roots):
+    """WWE '13 0x3C (SpringHairSetting: kami_bNN radius visc grav spring damp A lencorr bend movecorr, in cm) ->
+    2011's lines for these chains: the same columns, radius and gravity in 2011 units (x 0.1)"""
+    lines = [b'; hair chains from WWE \'13 (w13_char): kami_bNN radius visc grav spring damp A lencorr bend movecorr']
+    for raw in text13.replace(b'\r', b'').split(b'\n'):
+        tok = raw.split()
+        if not tok or tok[0].startswith(b';') or tok[0].decode('latin-1') not in roots or len(tok) < 10:
+            continue
+        try:
+            v = [float(x) for x in tok[1:10]]
+        except ValueError:
+            continue
+        v[0] *= 0.1
+        v[2] *= 0.1
+        lines.append((' %s %.4f %.4f %.4f %.4f %.4f %d %.4f %.4f %.4f ' % (
+            tok[0].decode('latin-1'), v[0], v[1], v[2], v[3], v[4], int(v[5]), v[6], v[7], v[8])).encode('latin-1'))
+    return b'\r\n'.join(lines) + b'\r\n'
+
+
 class Conv:
     def __init__(self, tmpl_pac, portrait=None):
+        self.tmpl_pac = tmpl_pac
         self.portrait = open(portrait, 'rb').read() if portrait else None
         _, groups = ch_tool.epk8_read(open(tmpl_pac, 'rb').read())
         n, b = groups[0][1][0]
         self.t = {i: ch_tool.unpack(x) for i, x in svrfmt.pach_read(ch_tool.unpack(b))}
         self.body = jboy.read(self.t[0])
-        self.hair = jboy.read(self.t[0x2710])
+        # (some templates have no hair model, ch139: hair then takes the body's skin block)
+        self.hair = jboy.read(self.t[0x2710]) if 0x2710 in self.t else None
         self.lash = jboy.read(self.t[0x4e20])
         self.tnodes = self.body.nodes           # jboy.py dicts (written back as read)
         self.tframe = read13_nodes(self.t[0])    # true frames (r at +32, parent at +48)
         self.tindex = {nd['name']: i for i, nd in enumerate(self.tnodes)}
         # parameter blocks by kind
         ms = self.body.meshes
-        self.p_skin = next(s for s in ms if s.shader == 'yBumpMapSS' and s.vfmt == 0)
+        self.p_skin = skin_template(ms)
         self.p_eye = next(s for s in ms if s.shader == 'yReflect')
-        self.p_hair = self.hair.meshes[-1]
+        self.p_hair = self.hair.meshes[-1] if self.hair else self.p_skin
         self.p_lash = self.lash.meshes[0]
         self.ttex = dict(tex_bundle_read(self.t[0xa]))
+
+    def world11(self, nodes):
+        """world 4x4 of a 2011 node table built from the template (true frames: tframe r, the table's t); appended
+        nodes carry their own true r ('r13') and parent ('p13')"""
+        W = []
+        for j, nd in enumerate(nodes):
+            if j < len(self.tframe):
+                r, p = self.tframe[j]['r'], self.tframe[j]['parent']
+            else:
+                r, p = nd['r13'], nd['p13']
+            M = np.eye(4)
+            M[:3, :3] = rot(r)
+            M[:3, 3] = nd['t']
+            W.append(M if p < 0 else W[p] @ M)
+        return W
+
+    def chain_nodes(self, nodes, m13, origin, chains):
+        """the hair model's 2011 table: nodes + each chain (docs/HAIR_PHYSICS.md B1): kami_bNN at the strand's root
+        under atama, every next node (L, 0, 0) - one L a chain, the mean of the WWE '13 segments - turned so +X
+        points at the following one -> (table, {13 node index: 2011 index})"""
+        W13 = world(m13['nodes'])
+        out = [dict(nd) for nd in nodes]
+        Wn = self.world11(out)
+        ia = self.tindex.get('atama', 0)
+        proto = dict(nodes[ia])
+        idx = {}
+
+        def add(name, t, R, parent):
+            r = _euler_zyx(R)
+            nd = dict(proto, name=name, t=tuple(float(x) for x in t), r=(0.0, float(r[0]), float(r[1])),
+                      u40=struct.unpack('>I', struct.pack('>f', float(r[2])))[0], parent=0, u48=(parent, 0, 0, 0),
+                      sphere=(0.0, 0.0, 0.0, 0.0), r13=r, p13=parent)
+            out.append(nd)
+            M = np.eye(4)
+            M[:3, :3] = rot(r)
+            M[:3, 3] = nd['t']
+            Wn.append(Wn[parent] @ M)
+            return len(out) - 1
+
+        for root, chain in chains.items():
+            P = [0.1 * (W13[i][:3, 3] - origin) for i in chain]
+            L = float(np.mean([np.linalg.norm(P[k + 1] - P[k]) for k in range(len(P) - 1)]))
+            Rw = _align_x(P[1] - P[0])
+            Ra = Wn[ia][:3, :3]
+            j = add(m13['nodes'][chain[0]]['name'], Ra.T @ (P[0] - Wn[ia][:3, 3]), Ra.T @ Rw, ia)
+            idx[chain[0]] = j
+            for k in range(1, len(chain)):
+                Rk = _align_x(P[k + 1] - P[k]) if k + 1 < len(chain) else Rw
+                j = add(m13['nodes'][chain[k]]['name'], (L, 0.0, 0.0), Rw.T @ Rk, j)
+                idx[chain[k]] = j
+                Rw = Rk
+            idx[chain[-1]] = idx[chain[-2]]   # (the tip is only a target: its weights go to the node before)
+        for nd in out:
+            nd.pop('r13', None)
+            nd.pop('p13', None)
+        return out, idx
 
     def nodes_for(self, m13):
         """2011 node table with the WWE '13 model's proportions, and the 13 -> 11 node map."""
@@ -245,7 +394,7 @@ class Conv:
         # parameters: the template's, its texture slots pointed at our names
         s.params = []
         for name, typ, val in tmpl.params:
-            if typ == 0x0f:
+            if typ == 0x0f and struct.unpack('>i', val[:4])[0] >= 0:   # (a slot the template leaves unbound stays so)
                 want = slot_names.get(name)
                 k = textures.index(want) if want in textures else -1
                 val = struct.pack('>i', k) + val[4:]
@@ -282,6 +431,9 @@ class Conv:
 
     def attire(self, kids13):
         """WWE '13 EMD children -> 2011 EMD children."""
+        if 0x271a in kids13 and 0x2710 not in kids13:   # (2K16+ keep the hair at 0x271a)
+            kids13 = dict(kids13)
+            kids13[0x2710] = kids13[0x271a]
         body13 = read13(kids13[0])
         nodes, nmap, origin = self.nodes_for(body13)
         SKIN = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
@@ -296,17 +448,25 @@ class Conv:
         body = self.model(body13, self.body, nodes, nmap, origin, tex_body, kind)
         out[0] = jboy.write(body)
         # hair / mustache (transA) and eyelash (transB): same skeleton, by name
-        for src, dst, tm, slots in ((0x2710, 0x2710, self.hair, {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}),
+        for src, dst, tm, slots in ((0x2710, 0x2710, self.hair or self.body, {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}),
                                     (0x4e22, 0x4e20, self.lash, {'texDiffuse': 'color'})):
             if src not in kids13 or kids13[src][:4] != b'JBOY':
                 continue
             m13 = read13(kids13[src])
+            hnodes, chain_idx = nodes, {}
+            chains = hair_chains(m13) if src == 0x2710 and 0x3c in kids13 else {}
+            if chains:   # (the hair moves: its chains, their 0x3C from WWE '13, the template's collision 0x3D)
+                hnodes, chain_idx = self.chain_nodes(nodes, m13, origin, chains)
+                self.hair_text = hair_text_11(kids13[0x3c], set(chains))
             sub_map = {}
             body_names = {b['name']: j for j, b in enumerate(body13['nodes'])}
             idx11 = {nd['name']: j for j, nd in enumerate(nodes)}
             for i, nd in enumerate(m13['nodes']):
                 # a body bone by name; else the 2011 node the name maps to; else
                 # the nearest ancestor that is one (hair chains hang off the head)
+                if i in chain_idx:
+                    sub_map[i] = chain_idx[i]
+                    continue
                 k = i
                 while k >= 0:
                     nm = m13['nodes'][k]['name']
@@ -320,7 +480,7 @@ class Conv:
                 else:
                     sub_map[i] = idx11.get('atama', 0)
             tmpl = tm.meshes[-1]
-            out[dst] = jboy.write(self.model(m13, tm, nodes, sub_map, origin, tex_body if dst == 0x2710 else ['color'],
+            out[dst] = jboy.write(self.model(m13, tm, hnodes, sub_map, origin, tex_body if dst == 0x2710 else ['color'],
                                              lambda s, t=tmpl, sl=slots: (t, sl)))
         # textures
         t13 = dict(tex_bundle_read(kids13[0xa]))
@@ -345,6 +505,14 @@ class Conv:
                 out[k] = kids13[k]
         for k in (0x28, 0x32, 0x50, 0x64):
             out[k] = self.t[k]
+        if getattr(self, 'hair_text', None):   # (hair chains: their parameters; body collision: the template's)
+            out[0x3c] = self.hair_text
+            self.hair_text = None
+            if 0x3d in self.t:
+                out[0x3d] = self.t[0x3d]
+            else:
+                import os as _os
+                out[0x3d] = Conv(_os.path.join(_os.path.dirname(self.tmpl_pac), 'ch102.pac')).t[0x3d]
         for k in (0x7530, 0x7531, 0x7532):
             if k in self.t:
                 out[k] = self.t[k]
@@ -392,18 +560,32 @@ def add_alpha(color_dds, normal_dds=None, cut_tris=()):
     return dds_encode(rgba, 'DXT5')
 
 
+def resize_rgba(img, size, method=None):
+    """resize without Pillow's premultiplied alpha: RGB and A each on their own (the colour sheets'
+    alpha is a specular level around 45 - premultiplied, the RGB of the smaller mips turns to specks)"""
+    method = Image.BOX if method is None else method
+    if img.mode != 'RGBA':
+        return img.resize(size, method)
+    rgb = img.convert('RGB').resize(size, method)
+    rgb.putalpha(img.getchannel('A').resize(size, method))
+    return rgb
+
+
 def dds_encode(img, fourcc):
     w, h = img.size
     mips = int(math.log2(max(w, h))) + 1
     out = None
     for m in range(mips):
-        im = img if m == 0 else img.resize((max(1, w >> m), max(1, h >> m)), Image.BOX)
+        im = img if m == 0 else resize_rgba(img, (max(1, w >> m), max(1, h >> m)))
         b = io.BytesIO()
         im.save(b, 'DDS', pixel_format=fourcc)
         v = b.getvalue()
         out = bytearray(v) if out is None else out + v[128:]
     struct.pack_into('<I', out, 8, struct.unpack_from('<I', out, 8)[0] | 0x20000)
     struct.pack_into('<I', out, 28, mips)
+    # (the linear size = the top level's bytes, as Yuke's sheets have it: PIL writes a pitch there, and the
+    # game reading it to step through the mips draws the smaller ones from the wrong place)
+    struct.pack_into('<I', out, 20, max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * (8 if fourcc == 'DXT1' else 16))
     struct.pack_into('<I', out, 108, struct.unpack_from('<I', out, 108)[0] | 0x400008)
     return bytes(out)
 

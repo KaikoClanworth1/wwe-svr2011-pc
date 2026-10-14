@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -40,6 +41,7 @@
 #include <unistd.h>
 #endif
 
+#include <fmt/format.h>
 #include <rex/cvar.h>
 #include <rex/kernel/xam/online_hooks.h>
 #include <rex/logging.h>
@@ -51,6 +53,7 @@
 #include "online_net.h"
 #include "port_map.h"
 #include "net_sim.h"
+#include "net_stats.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
@@ -64,6 +67,9 @@ REXCVAR_DEFINE_BOOL(p2p_relay, true, "Online",
 REXCVAR_DEFINE_STRING(p2p_stun, "stun.l.google.com:19302", "Online",
                       "The STUN server that tells this game its public address (off: none)");
 REXCVAR_DEFINE_BOOL(p2p_force_relay, false, "Online", "Tests: every peer through the relay, never directly");
+REXCVAR_DEFINE_BOOL(p2p_match_report, true, "Online",
+                    "After each online match, tell the server how it connected (direct / relay, the router's kind, "
+                    "the ping) - no addresses or names; the server keeps counts per day");
 REXCVAR_DEFINE_BOOL(p2p_lockstep, true, "Online",
                     "Matches step the world once a frame on both games (as on the console); off: tests only");
 REXCVAR_DEFINE_BOOL(p2p_send_every_frame, true, "Online",
@@ -223,6 +229,17 @@ struct Me {
   uint64_t xuid = 0;
 } g_me;
 std::atomic<uint16_t> g_mapped_port{0};  // (the router forwards it: port_map.h; STUN's port doesn't replace it)
+// The P2P socket's port outside the NAT as two far ends see it: STUN's (Google)
+// and the UDP relay's (the VPS). Different: a symmetric NAT - a new port per
+// destination, so a peer's punch to the port the relay saw misses.
+std::atomic<uint16_t> g_stun_port{0}, g_edge_port{0};
+
+// The match report (p2p_match_report): this match's paths, a second at a time.
+struct MatchReport {
+  uint32_t seconds = 0, direct = 0, relay = 0, lan = 0;  // (peer-seconds per path)
+  double rtt_sum = 0;
+  uint32_t rtt_n = 0;
+} g_report;
 
 // A game port's real port: + 20000 (the game's own, UDP 1001, is below 1024,
 // which Android and Linux don't let apps bind) + the port base's offset (two
@@ -817,6 +834,39 @@ void OnDataV2(const uint8_t* data, size_t size, Via via) {
   if (via.relayed) Punch(mac);
 }
 
+// The router's kind, from the ports the two far ends saw (g_stun_port /
+// g_edge_port) - and the step between them for a symmetric one.
+std::pair<const char*, int> NatKind() {
+  if (g_mapped_port) return {"mapped", 0};  // (UPnP / NAT-PMP opened the port: port_map.h)
+  if (g_me.online && g_me.online == g_me.lan) return {"open", 0};
+  const uint16_t stun = g_stun_port, edge = g_edge_port;
+  if (!stun || !edge) return {"unknown", 0};
+  if (stun == edge) return {"cone", 0};
+  return {"symmetric", int(edge) - int(stun)};
+}
+
+// Once, after a match: how it connected, to the server's counts (no address,
+// no name: the path, the router's kind, the average ping, the version).
+// Silent when it fails.
+void SendMatchReport(const MatchReport& r) {
+  if (!REXCVAR_GET(p2p_match_report)) return;
+  const uint32_t peer_secs = r.direct + r.relay + r.lan;
+  if (!peer_secs) return;
+  const char* path = r.relay * 2 >= peer_secs ? "relay" : r.lan * 2 > peer_secs ? "lan" : "direct";
+  const auto [nat, step] = NatKind();
+  const int rtt = r.rtt_n ? int(r.rtt_sum / r.rtt_n + 0.5) : 0;
+  std::string version;
+  for (const char c : PortVersion())
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-') version.push_back(c);
+  const std::string body = fmt::format(R"({{"version":"{}","path":"{}","nat":"{}","step":{},"rtt":{}}})",
+                                       version.substr(0, 24), path, nat, step, rtt);
+  REXLOG_INFO("p2p: match report {} ({} s; peer-seconds direct {}, relay {}, LAN {})", body, r.seconds, r.direct,
+              r.relay, r.lan);
+  std::thread([body] {
+    net::ServerRequest("POST", "/api/netreport", body, {{"Content-Type", "application/json"}});
+  }).detach();
+}
+
 // Once a second, a ping to each peer this game exchanges game packets with (it
 // has a proxy): their round trips for the log and the ping indicator (net_sim.h).
 void PingLoop() {
@@ -824,10 +874,21 @@ void PingLoop() {
   for (;;) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     std::vector<Path> to;
+    const bool in_match = NetStatsNow().active;
     {
       std::lock_guard lock(g_mutex);
       std::set<Mac> gamers;
       for (const auto& [key, proxy] : g_proxies) gamers.insert(proxy->mac);
+      if (in_match) {  // (the match report: each peer's path this second)
+        ++g_report.seconds;
+        for (const Mac& mac : gamers) {
+          const auto it = g_peers.find(mac);
+          if (it == g_peers.end()) continue;
+          const Peer& p = it->second;
+          ++(!p.tunnel ? g_report.lan : p.relayed ? g_report.relay : g_report.direct);
+          if (const float rtt = p.relayed ? p.rtt_relay : p.rtt_direct; rtt > 0) g_report.rtt_sum += rtt, ++g_report.rtt_n;
+        }
+      }
       const auto now = Clock::now();
       for (const Mac& mac : gamers) {
         auto it = g_peers.find(mac);
@@ -873,6 +934,13 @@ void PingLoop() {
       w.u8(uint8_t(name.size())), w.bytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
       NetSimSend([path, b = std::move(w.b)] { Send(path, b); });
     }
+    if (!in_match && g_report.seconds) {
+      if (g_report.seconds >= 30) SendMatchReport(g_report);  // (a match, not a lobby's blip)
+      g_report = {};
+    }
+    // (test: SVR2011_TEST_MATCH_REPORT=<s> - the report after that many seconds of the match, as if it ended)
+    static const uint32_t test_after = [] { const char* v = std::getenv("SVR2011_TEST_MATCH_REPORT"); return v ? uint32_t(std::atoi(v)) : 0u; }();
+    if (test_after && in_match && g_report.seconds == test_after) SendMatchReport(g_report);
   }
 }
 
@@ -1124,6 +1192,7 @@ bool OnStun(const uint8_t* data, size_t size) {
       uint16_t port = Be16(data + at + 6);
       uint32_t ip = Be32(data + at + 8);
       if (type == 0x0020) port ^= uint16_t(kStunCookie >> 16), ip ^= kStunCookie;
+      g_stun_port = port;  // (before a router mapping replaces it: the NAT's own choice)
       if (const uint16_t mapped = g_mapped_port.load()) port = mapped;  // (forwarded by the router: that one)
       if (g_me.online != ip || g_me.online_port != port) {
         REXLOG_INFO("p2p: public address {}:{} (STUN)", Ip(ip), port);
@@ -1167,6 +1236,7 @@ void Receive() {
       if (buf[5] == kWelcome && g_udp_welcome_ms.exchange(NowMs()) == 0) {
         REXLOG_INFO("p2p: relay over UDP up");
       }
+      if (buf[5] == kWelcome && n >= 12) g_edge_port = Be16(buf.data() + 10);  // (this socket's port as the VPS sees it)
       OnRelay(buf.data(), size_t(n));
       continue;
     }
