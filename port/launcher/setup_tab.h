@@ -16,6 +16,16 @@ typedef struct {
     WCHAR detail[400];
 } SetupRow;
 
+/* The Visual C++ runtime the game and the Mod Maker use - Windows' own (System32): SETUP_VCRT_OK, _OLD (older
+   than 14.<SETUP_VCRT_MIN_MINOR>) or _MISSING; `ver` its version ("14.51.36247"). */
+enum { SETUP_VCRT_OK, SETUP_VCRT_OLD, SETUP_VCRT_MISSING };
+#define SETUP_VCRT_MIN_MINOR 40
+#define SETUP_VCRT_URL L"https://aka.ms/vs/17/release/vc_redist.x64.exe"
+int setup_vcrt_system(WCHAR *ver, size_t vern);
+/* Deletes the VC++ runtime DLLs 2.1.0 shipped (version 14.29.x) from `dir` - copies a player put there keep;
+   one in use goes after a restart. The count; `log` (may be NULL) lists them. */
+int setup_vcrt_cleanup(const WCHAR *dir, WCHAR *log, size_t logn);
+
 /* Each item's state (rows[SETUP_N]). */
 void setup_check(const WCHAR *game_dir, const WCHAR *launcher_dir, SetupRow *rows);
 

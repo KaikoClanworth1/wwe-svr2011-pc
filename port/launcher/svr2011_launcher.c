@@ -1930,6 +1930,23 @@ static void play(void)
         if (mods_attire_guard(s_game_dir, NULL, clash, 4096))
             MessageBoxW(s_wnd, clash, WINDOW_TITLE L" - attire mods", MB_OK | MB_ICONINFORMATION);
     }
+    {  /* the VC++ runtime the game needs: Windows' own (or a copy the player put next to the game) */
+        WCHAR ver[40], q[700], own[MAX_PATH];
+        int st;
+        setup_vcrt_cleanup(s_game_dir, NULL, 0);
+        join(own, s_game_dir, L"msvcp140.dll");
+        st = file_exists(own) ? SETUP_VCRT_OK : setup_vcrt_system(ver, 40);
+        if (st != SETUP_VCRT_OK) {
+            int a;
+            swprintf_s(q, 700, L"The game needs Microsoft's Visual C++ runtime (x64), version 14.%d or newer. "
+                               L"This PC has %s%s.\n\nOpen Microsoft's download page (vc_redist.x64.exe) now? Install "
+                               L"it, then press Play again.\n\nYes: open the page.  No: start the game anyway.",
+                       SETUP_VCRT_MIN_MINOR, st == SETUP_VCRT_OLD ? L"an older one, " : L"none", ver);
+            a = MessageBoxW(s_wnd, q, WINDOW_TITLE, MB_YESNOCANCEL | MB_ICONWARNING);
+            if (a == IDYES) ShellExecuteW(s_wnd, L"open", SETUP_VCRT_URL, NULL, NULL, SW_SHOWNORMAL);
+            if (a != IDNO) return;
+        }
+    }
     join(exe, s_game_dir, GAME_EXE);
     swprintf_s(cmd, MAX_PATH + 4, L"\"%s\"", exe);
     memset(&si, 0, sizeof si);
@@ -7075,6 +7092,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         for (k = 0; k < 20 && file_exists(old) && !DeleteFileW(old); k++)
             Sleep(250);
     }
+    /* The VC++ runtime DLLs 2.1.0 shipped next to the programs (14.29): an overlay built for the newer runtime
+       players have (Discord, Steam, RTSS, NVIDIA...) failed in our processes there - "unable to start correctly
+       (0xc0000142)". Gone from both folders at every start (so after an update too); Windows' own is used. */
+    setup_vcrt_cleanup(s_launcher_dir, NULL, 0);
+    if (s_game_dir[0] && !same_dir(s_game_dir, s_launcher_dir))
+        setup_vcrt_cleanup(s_game_dir, NULL, 0);
+    /* --vcrt [<folder>]: the same for a folder, and the system runtime's state (tests) */
+    if (argv && argc >= 2 && !wcscmp(argv[1], L"--vcrt")) {
+        WCHAR log[300], ver[40];
+        int n, st;
+        console_setup();
+        n = argc >= 3 ? setup_vcrt_cleanup(argv[2], log, 300) : 0;
+        if (n) wprintf(L"removed %d: %s\n", n, log);
+        else if (argc >= 3) wprintf(L"nothing to remove in %s\n", argv[2]);
+        st = setup_vcrt_system(ver, 40);
+        wprintf(L"system runtime: %s %s\n", st == SETUP_VCRT_OK ? L"ok" : st == SETUP_VCRT_OLD ? L"older than needed"
+                                                                       : L"missing", ver);
+        return st == SETUP_VCRT_OK ? 0 : 3;
+    }
 
     /* --install <image> <folder>: install without a window (tests). */
     if (argv && argc >= 5 && (!wcscmp(argv[1], L"--paint-export") || !wcscmp(argv[1], L"--paint-import"))) {
@@ -7096,6 +7132,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         wprintf(L"newest release %s (%s), this is %s\n", s_up.version, s_up.url, from);
         if (!version_newer(s_up.version, from)) { wprintf(L"up to date\n"); return 0; }
         if (!up_install(err, 600)) { wprintf(L"update failed: %s\n", err); return 1; }
+        setup_vcrt_cleanup(s_game_dir, NULL, 0);   /* (2.1.0's VC++ DLLs, as at a start) */
         wprintf(L"updated %s to %s\n", s_game_dir, s_up.version);
         return 0;
     }

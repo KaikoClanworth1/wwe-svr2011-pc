@@ -65,33 +65,25 @@ if ($WithModMaker) {
         $vdst = Join-Path $mmtools "vgmstream"
         New-Item -ItemType Directory -Force $vdst | Out-Null
         Get-ChildItem $vgm -File | Copy-Item -Destination $vdst   # (VERSION.txt too: where it came from + its SHA-256)
-    } else { Write-Warning "no $vgm\vgmstream-cli.exe - WWE '12+ themes won't convert" }
-    # (and svrmod.exe, which svrfmt.py runs to compress pac entries: modmaker/build_cli.sh)
+    } else {   # (2.1.0 shipped without it: WWE '12+ themes didn't convert)
+        throw "no $vgm\vgmstream-cli.exe - WWE '12+ themes won't convert. Copy the vgmstream release (vgmstream-cli.exe, its DLLs and VERSION.txt) from the main checkout's port\third_party\vgmstream into $vgm, then package again."
+    }
+    # (and svrmod.exe, which svrfmt.py runs to compress pac entries and the WWE '13+ converters run to unpack)
     $cli = Join-Path $port "out\modmaker\svrmod.exe"
-    if (Test-Path $cli) { Copy-Item $cli $mmtools } else { Write-Warning "no $cli (modmaker\build_cli.sh) - the converters can't compress" }
+    if (Test-Path $cli) { Copy-Item $cli $mmtools } else {   # (2.1.0 shipped without it: "ToolMissing: svrmod.exe")
+        throw "no $cli - the Mod Maker's converters need it (WWE '13+ ports fail with ToolMissing: svrmod.exe). Build it in this checkout (bash port/modmaker/build_cli.sh -> port\out\modmaker\svrmod.exe), then package again."
+    }
     # the guide (pictures, diagrams, tutorials): docs/guide -> "Mod Maker Guide"
     $guide = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "docs\guide"
     if (Test-Path $guide) { Copy-Item $guide (Join-Path $stage "Mod Maker Guide") -Recurse }
 }
-Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name } | Copy-Item -Destination $stage
-# The Visual C++ runtime the programs use (dynamic CRT), app-local beside them
-# (Microsoft's redistributable files, from the build machine's Visual Studio
-# Redist folder - the toolset the programs were linked with or newer): players
-# without the VC++ redistributable can start the game, nothing to install.
+# No Visual C++ runtime DLLs in the release (2.1.1): the programs use Windows' own (the launcher has its
+# C runtime built in and points a player without one to Microsoft's vc_redist.x64). 2.1.0 shipped 14.29
+# copies next to the programs, and overlays built for the newer runtime (Discord, Steam, RTSS, NVIDIA...)
+# failed in our processes there: "unable to start correctly (0xc0000142)".
 $vcrt = @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_atomic_wait.dll")
-$redist = @("${env:ProgramFiles}\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio") |
-    Where-Object { Test-Path $_ } |
-    ForEach-Object { Get-ChildItem $_ -Directory -Recurse -Depth 8 -Filter "Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue } |
-    Where-Object { $_.FullName -match "\\Redist\\MSVC\\[0-9.]+\\x64\\" -and $_.FullName -notmatch "onecore|debug" } |
-    Sort-Object { [version]($_.FullName -replace '.*\\Redist\\MSVC\\([0-9.]+)\\.*', '$1') } -Descending |
-    Select-Object -First 1
-if (-not $redist) { throw "no Visual Studio Redist\MSVC\<version>\x64\Microsoft.VC14x.CRT folder - the release needs the VC++ runtime DLLs" }
-foreach ($f in $vcrt) {
-    $src = Join-Path $redist.FullName $f
-    if (-not (Test-Path $src)) { throw "$f is missing from $($redist.FullName)" }
-    Copy-Item $src $stage
-}
-Write-Host "VC++ runtime from $($redist.FullName)"
+Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name -and $vcrt -notcontains $_.Name.ToLower() } |
+    Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
 # The native renderer's shaders (converted from the game's by
 # tools/convert_shaders.py; without them it draws nothing).
@@ -163,6 +155,8 @@ Remove-Item $zip -ErrorAction SilentlyContinue
 # which Linux extractors such as the Steam Deck's Ark turn into files named
 # "native_shaders\x" instead of folders (no shaders: no native renderer).
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+# (never the VC++ runtime DLLs, from any source)
+foreach ($f in $vcrt) { if (Test-Path (Join-Path $stage $f)) { throw "$f is in the release folder - the release ships no VC++ runtime DLLs" } }
 $archive = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
 try {
     $root = (Resolve-Path $stage).Path.TrimEnd('\') + '\'

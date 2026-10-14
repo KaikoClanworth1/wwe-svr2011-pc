@@ -446,6 +446,21 @@ void Svr2011App::OnPostLoadXexImage() {
       *static_cast<volatile int*>(nullptr) = 1;
     }).detach();
   }
+#if defined(_WIN32)
+  // Test aid: SVR2011_TEST_LOAD_DLL=<dll> - loads it as an overlay (Discord, RTSS...) gets loaded into the game,
+  // and says whether its start-up (DllMain) worked: with 2.1.0's 14.29 VC++ DLLs next to the game, one built
+  // for the newer runtime failed there (0xc0000142 when it comes in at the process start).
+  if (auto dll = Env("SVR2011_TEST_LOAD_DLL"); !dll.empty()) {
+    HMODULE m = LoadLibraryA(dll.c_str());
+    DWORD e = m ? 0 : GetLastError();
+    char where[MAX_PATH] = "";
+    if (HMODULE rt = GetModuleHandleA("msvcp140.dll")) GetModuleFileNameA(rt, where, MAX_PATH);
+    if (m)
+      REXLOG_INFO("SVR2011_TEST_LOAD_DLL: {} loaded (msvcp140 from {})", dll, where);
+    else
+      REXLOG_WARN("SVR2011_TEST_LOAD_DLL: {} failed, error {} (msvcp140 from {})", dll, e, where);
+  }
+#endif
   // Entrances, finishers and other post-processed scenes sample the frame's
   // resolved colour texture through fetch constants whose type field is 0
   // ("invalid"); the Xbox 360 samples them as textures, the emulator's default

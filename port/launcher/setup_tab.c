@@ -3,8 +3,8 @@
  * Shown on the launcher's first start (launcher.ini SetupShown) and from
  * its sidebar: each thing a player needs, found or missing -
  *   Game files     the game from the player's disc image (Install tab)
- *   VC++ runtime   MSVCP140 / VCRUNTIME140 / VCRUNTIME140_1 / MSVCP140_ATOMIC_WAIT
- *                  (the release ships them next to the programs)
+ *   VC++ runtime   MSVCP140 / VCRUNTIME140 / VCRUNTIME140_1 / MSVCP140_ATOMIC_WAIT: Windows' own,
+ *                  14.40 or newer (the release ships none; Microsoft's vc_redist.x64 page in the browser)
  *   Media Foundation  user music, movies, Movie Maker (Windows "N": the
  *                  Media Feature Pack, from Windows' Optional features)
  *   Python 3 + numpy + Pillow   the Mod Maker's converters ("Other games",
@@ -63,6 +63,75 @@ static int is_wine(void)
     return nt && GetProcAddress(nt, "wine_get_version");
 }
 
+/* ---- the Visual C++ runtime
+ * The game and the Mod Maker use Windows' own VC++ runtime (the launcher has it built in). 2.1.0 shipped
+ * copies of the 14.29 DLLs next to the programs: an overlay (Discord, Steam, RTSS, NVIDIA...) built for the
+ * newer runtime players have then got them in our processes and its DllMain failed - "unable to start
+ * correctly (0xc0000142)". Ours (14.29.x) are deleted from the game folder; any other copy stays. Code built
+ * with the 14.40+ toolsets needs a 14.40+ runtime (std::mutex). */
+
+static int exists(const WCHAR *p);
+static void join(WCHAR *out, const WCHAR *a, const WCHAR *b);
+
+/* "14.29.30157.0" of a DLL file; 0 when it has none. */
+static int file_version(const WCHAR *path, WORD v[4])
+{
+    DWORD h = 0, n = GetFileVersionInfoSizeW(path, &h);
+    void *buf;
+    VS_FIXEDFILEINFO *fi;
+    UINT fl;
+    int ok = 0;
+    if (!n || !(buf = malloc(n))) return 0;
+    if (GetFileVersionInfoW(path, 0, n, buf) && VerQueryValueW(buf, L"\\", (void **)&fi, &fl) && fi) {
+        v[0] = HIWORD(fi->dwFileVersionMS); v[1] = LOWORD(fi->dwFileVersionMS);
+        v[2] = HIWORD(fi->dwFileVersionLS); v[3] = LOWORD(fi->dwFileVersionLS);
+        ok = 1;
+    }
+    free(buf);
+    return ok;
+}
+
+int setup_vcrt_cleanup(const WCHAR *dir, WCHAR *log, size_t logn)
+{
+    WCHAR p[MAX_PATH], old[MAX_PATH + 8];
+    WORD v[4];
+    int i, n = 0;
+    if (log && logn) log[0] = 0;
+    if (!dir || !dir[0]) return 0;
+    for (i = 0; i < 4; i++) {
+        join(p, dir, k_vcrt[i]);
+        if (!exists(p) || !file_version(p, v) || v[0] != 14 || v[1] != 29) continue;   /* (not ours: kept) */
+        if (!DeleteFileW(p)) {   /* (in use: out of the way now, gone after a restart) */
+            swprintf_s(old, MAX_PATH + 8, L"%s.old", p);
+            DeleteFileW(old);
+            if (!MoveFileExW(p, old, MOVEFILE_REPLACE_EXISTING)) continue;
+            MoveFileExW(old, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+        }
+        n++;
+        if (log) swprintf_s(log + wcslen(log), logn - wcslen(log), L"%s%s %u.%u.%u", log[0] ? L", " : L"",
+                            k_vcrt[i], v[0], v[1], v[2]);
+    }
+    return n;
+}
+
+int setup_vcrt_system(WCHAR *ver, size_t vern)
+{
+    WCHAR sys[MAX_PATH], p[MAX_PATH];
+    WORD v[4] = { 0 };
+    int i;
+    if (ver && vern) ver[0] = 0;
+    if (!GetSystemDirectoryW(sys, MAX_PATH)) return SETUP_VCRT_MISSING;
+    for (i = 0; i < 4; i++) {
+        HMODULE m = LoadLibraryExW(k_vcrt[i], NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!m) return SETUP_VCRT_MISSING;
+        FreeLibrary(m);
+    }
+    join(p, sys, L"msvcp140.dll");
+    if (!file_version(p, v)) return is_wine() ? SETUP_VCRT_OK : SETUP_VCRT_OLD;   /* (Wine's builtins: no version) */
+    if (ver) swprintf_s(ver, vern, L"%u.%u.%u", v[0], v[1], v[2]);
+    return v[0] > 14 || (v[0] == 14 && v[1] >= SETUP_VCRT_MIN_MINOR) ? SETUP_VCRT_OK : SETUP_VCRT_OLD;
+}
+
 static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
 
 static void join(WCHAR *out, const WCHAR *a, const WCHAR *b) { swprintf_s(out, MAX_PATH, L"%s\\%s", a, b); }
@@ -112,21 +181,24 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
     }
 
     rows[SETUP_VCRT].name = L"Visual C++ runtime";
-    miss[0] = 0;
-    for (i = 0; i < 4; i++) {
-        HMODULE m = LoadLibraryExW(k_vcrt[i], NULL, 0);
-        if (m) FreeLibrary(m);
-        else swprintf_s(miss + wcslen(miss), 200 - wcslen(miss), L"%s%s", miss[0] ? L", " : L"", k_vcrt[i]);
-    }
-    if (!miss[0]) {
-        rows[SETUP_VCRT].state = SETUP_FOUND;
-        join(p, launcher, k_vcrt[0]);
-        wcscpy_s(rows[SETUP_VCRT].detail, 400, exists(p) ? L"next to the launcher"
-                                                          : wine ? L"Wine / Proton's own" : L"Windows' own");
-    } else {
-        rows[SETUP_VCRT].state = SETUP_MISSING;
-        swprintf_s(rows[SETUP_VCRT].detail, 400, L"%s: copy them from the release zip next to the game, "
-                   L"or install Microsoft's VC++ redistributable (aka.ms/vs/17/release/vc_redist.x64.exe)", miss);
+    {
+        WCHAR ver[40];
+        int st = setup_vcrt_system(ver, 40);
+        (void)miss; (void)i;
+        if (st == SETUP_VCRT_OK) {
+            rows[SETUP_VCRT].state = SETUP_FOUND;
+            swprintf_s(rows[SETUP_VCRT].detail, 400, L"%s%s%s", wine ? L"Wine / Proton's own" : L"Windows' own",
+                       ver[0] ? L", version " : L"", ver);
+        } else {
+            rows[SETUP_VCRT].state = SETUP_MISSING;
+            swprintf_s(rows[SETUP_VCRT].detail, 400,
+                       st == SETUP_VCRT_OLD
+                           ? L"version %s is too old: the game and the Mod Maker need 14.%d or newer - install "
+                             L"Microsoft's VC++ redistributable (x64), then Check again"
+                           : L"%snot installed: the game and the Mod Maker need it (14.%d or newer) - install "
+                             L"Microsoft's VC++ redistributable (x64), then Check again",
+                       ver, SETUP_VCRT_MIN_MINOR);
+        }
     }
 
     rows[SETUP_MF].name = L"Media Foundation";
@@ -273,21 +345,47 @@ out:
     return ok;
 }
 
-/* Downloads k_files[f] to `path` and checks its size and SHA-256. */
-static int fetch(int f, const WCHAR *path, setup_progress_fn progress, volatile LONG *cancel, WCHAR *err, size_t errn)
+/* The bar and the line while a file comes: its share lo..hi of the bar, "12 of 115 MB" (the pinned size when
+   the server sends no length), at most once a percent. */
+typedef struct {
+    setup_progress_fn progress;
+    int f, lo, hi, last;
+} FetchCtx;
+
+static void fetch_progress(uint64_t done, uint64_t total, void *ctx)
+{
+    FetchCtx *c = (FetchCtx *)ctx;
+    WCHAR msg[256], a[32], b[32];
+    int pct;
+    if (!total) total = k_files[c->f].size;
+    pct = total ? (int)(done * 100 / total) : 0;
+    if (pct > 100) pct = 100;
+    if (pct == c->last) return;
+    c->last = pct;
+    mb_text(done, a, 32);
+    mb_text(total, b, 32);
+    swprintf_s(msg, 256, L"Downloading %s: %s of %s (%d%%)\x2026", k_files[c->f].name, a, b, pct);
+    c->progress(c->lo + (c->hi - c->lo) * pct / 100, msg);
+}
+
+/* Downloads k_files[f] to `path` (the bar from lo to hi permille) and checks its size and SHA-256. */
+static int fetch(int f, const WCHAR *path, setup_progress_fn progress, int lo, int hi, volatile LONG *cancel,
+                 WCHAR *err, size_t errn)
 {
     WIN32_FILE_ATTRIBUTE_DATA a;
     char sha[65];
     WCHAR msg[256], mb[32];
+    FetchCtx ctx = { progress, f, lo, hi, -1 };
     mb_text(k_files[f].size, mb, 32);
     /* (a download left by an earlier try that failed later, e.g. unpacking: used again when it checks out) */
     if (GetFileAttributesExW(path, GetFileExInfoStandard, &a) &&
         (((unsigned long long)a.nFileSizeHigh << 32) | a.nFileSizeLow) == k_files[f].size && sha256_file(path, sha) &&
         !strcmp(sha, k_files[f].sha256))
         return 1;
-    swprintf_s(msg, 256, L"Downloading %s (%s)\x2026", k_files[f].name, mb);
-    if (progress) progress(0, msg);
-    if (!update_download(k_files[f].url, path, NULL, 0, cancel, err, errn)) return 0;
+    swprintf_s(msg, 256, L"Downloading %s (%s): connecting\x2026", k_files[f].name, mb);
+    if (progress) progress(lo, msg);
+    if (!update_download_cb(k_files[f].url, path, progress ? fetch_progress : NULL, &ctx, cancel, err, errn))
+        return 0;
     if (!GetFileAttributesExW(path, GetFileExInfoStandard, &a) ||
         (((unsigned long long)a.nFileSizeHigh << 32) | a.nFileSizeLow) != k_files[f].size ||
         !sha256_file(path, sha) || strcmp(sha, k_files[f].sha256)) {
@@ -426,7 +524,7 @@ static int install_python(const WCHAR *game, const WCHAR *tmp, setup_progress_fn
     join(sp, py, L"Lib\\site-packages");
     for (f = F_PYTHON; f <= F_PILLOW; f++) {   /* (all three first: nothing changes unless all arrive) */
         swprintf_s(zip, MAX_PATH, L"%s\\svr2011-setup-%d.zip", tmp, f);
-        if (!fetch(f, zip, progress, cancel, err, errn)) return 0;
+        if (!fetch(f, zip, progress, (f - F_PYTHON) * 250, (f - F_PYTHON + 1) * 250, cancel, err, errn)) return 0;
         if (progress) progress((f - F_PYTHON + 1) * 250, NULL);
     }
     if (progress) progress(800, L"Unpacking Python, numpy and Pillow\x2026");
@@ -462,7 +560,7 @@ static int install_ffmpeg(const WCHAR *game, const WCHAR *tmp, setup_progress_fn
     WCHAR zip[MAX_PATH], unp[MAX_PATH], dir[MAX_PATH], from[MAX_PATH], to[MAX_PATH];
     swprintf_s(zip, MAX_PATH, L"%s\\svr2011-setup-ffmpeg.zip", tmp);
     swprintf_s(unp, MAX_PATH, L"%s\\svr2011-setup-ffmpeg", tmp);
-    if (!fetch(F_FFMPEG, zip, progress, cancel, err, errn)) return 0;
+    if (!fetch(F_FFMPEG, zip, progress, 0, 800, cancel, err, errn)) return 0;
     if (progress) progress(800, L"Unpacking ffmpeg\x2026");
     remove_tree(unp);
     mkdirs(unp);
@@ -506,7 +604,7 @@ int setup_install(const WCHAR *game, unsigned items, setup_progress_fn progress,
 /* ---- the tab */
 
 enum { S_INTRO, S_ROW0, S_INSTALL = S_ROW0 + SETUP_N, S_FFMPEG, S_RECHECK, S_GOTO_INSTALL, S_FEATURES, S_RAD,
-       S_STOP, S_PROGRESS, S_STATUS, S_DONE, S_COUNT };
+       S_STOP, S_PROGRESS, S_STATUS, S_DONE, S_VCRT, S_COUNT };
 
 static HWND s_wnd, s_ctl[S_COUNT];
 static int s_base;
@@ -535,6 +633,7 @@ static void refresh(void)
     ShowWindow(s_ctl[S_GOTO_INSTALL], s_rows[SETUP_GAME].state == SETUP_FOUND ? SW_HIDE : SW_SHOW);
     ShowWindow(s_ctl[S_FEATURES], s_rows[SETUP_MF].state == SETUP_FOUND || is_wine() ? SW_HIDE : SW_SHOW);
     ShowWindow(s_ctl[S_RAD], s_rows[SETUP_BINK2].state == SETUP_FOUND ? SW_HIDE : SW_SHOW);
+    ShowWindow(s_ctl[S_VCRT], s_rows[SETUP_VCRT].state == SETUP_FOUND ? SW_HIDE : SW_SHOW);
 }
 
 static void tab_progress(int permille, const WCHAR *text)
@@ -586,7 +685,11 @@ void setup_build(HWND wnd, mods_add_fn add, int tab, int id_base, setup_goto_fn 
                          L"the first three; Python and ffmpeg are for the Mod Maker's converters.",
                          SS_LEFT | SS_NOPREFIX, x + 16, 34, 528, 34, id_base + S_INTRO);
     for (i = 0, y = 72; i < SETUP_N; i++, y += 42)
-        s_ctl[S_ROW0 + i] = add(tab, L"Static", L"", SS_LEFT | SS_NOPREFIX, x + 16, y, 528, 40, id_base + S_ROW0 + i);
+        s_ctl[S_ROW0 + i] = add(tab, L"Static", L"", SS_LEFT | SS_NOPREFIX, x + 16, y,
+                                i == SETUP_VCRT ? 384 : 528, 40, id_base + S_ROW0 + i);
+    /* (the VC++ runtime's download page in the player's browser - Microsoft's own link, nothing downloaded here) */
+    s_ctl[S_VCRT] = add(tab, L"Button", L"Get the VC++ runtime", BS_PUSHBUTTON | WS_TABSTOP, x + 404, 72 + SETUP_VCRT * 42 + 4,
+                        140, 28, id_base + S_VCRT);
     y = 72 + SETUP_N * 42 + 4;
     s_ctl[S_INSTALL] = add(tab, L"Button", L"Install Python + numpy + Pillow (33 MB)", BS_DEFPUSHBUTTON | WS_TABSTOP,
                            x + 16, y, 270, 32, id_base + S_INSTALL);
@@ -630,6 +733,7 @@ int setup_command(int id, int code)
     case S_GOTO_INSTALL: if (s_go_install) s_go_install(); break;
     case S_FEATURES: ShellExecuteW(s_wnd, L"open", L"ms-settings:optionalfeatures", NULL, NULL, SW_SHOWNORMAL); break;
     case S_RAD: ShellExecuteW(s_wnd, L"open", L"https://www.radgametools.com/bnkdown.htm", NULL, NULL, SW_SHOWNORMAL); break;
+    case S_VCRT: ShellExecuteW(s_wnd, L"open", SETUP_VCRT_URL, NULL, NULL, SW_SHOWNORMAL); break;
     case S_DONE:
         s_busy = 0;
         SendMessageW(s_ctl[S_PROGRESS], PBM_SETPOS, s_ok ? 1000 : 0, 0);

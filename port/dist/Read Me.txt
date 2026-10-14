@@ -9,6 +9,10 @@ INSTALL
   2. Install tab: pick your disc image (.iso), pick a folder, press Install.
      Every file on the disc is copied out (about 5.3 GB) with a progress bar.
   3. Play tab: press Play.
+  The game and the Mod Maker need Microsoft's Visual C++ runtime (x64,
+  14.40 or newer) - most PCs have it. If yours hasn't, the launcher's
+  Setup tab and Play say so and open Microsoft's download
+  (https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
 SETTINGS (launcher, Settings tab - saved to svr2011.toml)
   Resolution   1280 x 720 is the game's native output and the default.
@@ -110,9 +114,6 @@ FILES
                      (pac\string.pac) and the menus (pac\menu\menu.pac)
 
 CREDITS
-  The Visual C++ runtime DLLs beside the programs (msvcp140.dll,
-  vcruntime140.dll, vcruntime140_1.dll, msvcp140_atomic_wait.dll) are
-  Microsoft's, redistributed under the Visual Studio redistributable terms.
   The launcher's Setup tab can install tools for the Mod Maker into Tools\
   (Python, numpy, Pillow, ffmpeg): their licences are in Tools\LICENSES.
   Mod Maker Tools\vgmstream is vgmstream r2117 (https://github.com/vgmstream/vgmstream),

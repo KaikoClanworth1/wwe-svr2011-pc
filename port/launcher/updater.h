@@ -25,3 +25,9 @@ int version_newer(const WCHAR *a, const WCHAR *b);
 /* Downloads `url` to `path`, posting `msg` (wParam = percent) to `notify`. */
 int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, volatile LONG *cancel,
                     WCHAR *err, size_t errn);
+
+/* As update_download, calling `progress` (from the downloading thread) as bytes come: done and the size the
+   server gave (0 when it gave none). */
+typedef void (*update_progress_fn)(uint64_t done, uint64_t total, void *ctx);
+int update_download_cb(const WCHAR *url, const WCHAR *path, update_progress_fn progress, void *ctx,
+                       volatile LONG *cancel, WCHAR *err, size_t errn);
