@@ -714,6 +714,7 @@ const std::map<int, std::string>& MoveNames() {
 namespace {
 std::map<int, MoveInfo> g_move_infos;
 std::map<int, std::vector<int>> g_profiles;  // star id -> 224 move ids
+std::map<int, int> g_profile_music;           // star id -> its theme's music id (ProfileMusic)
 struct SlotRule {
   uint8_t bits[16] = {};
   int situation = -1;  // (-1: any)
@@ -764,6 +765,7 @@ void LoadMoveset() {
             std::vector<int> v(kMoveSlots);
             for (int s = 0; s < kMoveSlots; ++s) v[size_t(s)] = Le16(&r[size_t(s) * 2]);
             g_profiles[int(x.id)] = std::move(v);
+            if (r.size() >= 0x1C0 + 0x12) g_profile_music[int(x.id)] = Le16(&r[0x1C0 + 0x10]);
           }
         if (en.name.rfind("DAT", 0) == 0 && PachRead(Unpack(en.data), pe))
           for (const auto& x : pe) {
@@ -900,6 +902,12 @@ const std::vector<EntranceInfo>& Entrances() {
 const std::map<int, MoveInfo>& MoveInfos() {
   LoadMoveset();
   return g_move_infos;
+}
+
+int ProfileMusic(int star_id) {
+  LoadMoveset();
+  const auto it = g_profile_music.find(star_id);
+  return it == g_profile_music.end() ? 0 : it->second;
 }
 
 std::vector<int> ProfileMoves(int star_id) {

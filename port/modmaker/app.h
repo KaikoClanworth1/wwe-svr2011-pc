@@ -220,6 +220,8 @@ struct MoveInfo {
 const std::map<int, MoveInfo>& MoveInfos();
 // A superstar's 224 slots (empty if it has no profile).
 std::vector<int> ProfileMoves(int star_id);
+// A superstar's entrance theme: the game's music id (profile +0x1C0 +0x10; 1-253 the game's own themes), 0 if none.
+int ProfileMusic(int star_id);
 // Whether a move fits a slot (unknown moves: false); the moves that do, by name.
 bool MoveFitsSlot(int slot, int move_id);
 const std::vector<int>& MovesForSlot(int slot);

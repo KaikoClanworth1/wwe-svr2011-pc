@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "app.h"
+#include "audio_out.h"
 #include "mod_check.h"
 #include "char_preview.h"
 #include "json.h"
@@ -699,6 +700,115 @@ void MeasureTheme() {
   }).detach();
 }
 
+// ---- the game's own themes (music= ids 1-253: the stock superstars' profile music, decoded with wwise.py to listen)
+
+struct StockTheme {
+  int music = 0;
+  std::string names;  // the superstars with it
+};
+
+const std::vector<StockTheme>& StockThemes() {
+  static std::vector<StockTheme> v;
+  if (v.empty()) {
+    std::map<int, std::string> by;
+    for (const StarInfo& st : Stars())
+      if (const int m = ProfileMusic(st.id); m >= 1 && m <= 253) by[m] += (by[m].empty() ? "" : ", ") + st.name;
+    for (const auto& [m, n] : by) v.push_back({m, n});
+    std::sort(v.begin(), v.end(), [](const StockTheme& a, const StockTheme& b) { return Lower(a.names) < Lower(b.names); });
+  }
+  return v;
+}
+
+std::string StockThemeName(int music) {
+  for (const StockTheme& t : StockThemes())
+    if (t.music == music) return t.names;
+  return "theme " + std::to_string(music);
+}
+
+int g_theme_playing = 0;  // the stock theme playing (0: none)
+bool g_theme_start = false;  // (Load decodes in the background: played once it's ready)
+std::string g_theme_note;
+
+// Plays (or stops) a stock theme: decoded once into Mods\.convert\themes (the Full preview's way).
+void PlayStockTheme(int music) {
+  if (g_theme_playing == music && (g_theme_start || audio_out::Playing())) {
+    audio_out::Pause();
+    g_theme_playing = 0, g_theme_start = false;
+    return;
+  }
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"themes";
+  const fs::path mp3 = work / (L"music_" + std::to_wstring(music) + L".mp3");
+  auto play = [music](const fs::path& f) {
+    audio_out::SetMuted(g_behind);  // (test runs are silent)
+    audio_out::Load(f.wstring());
+    g_theme_playing = music, g_theme_start = true, g_theme_note.clear();
+  };
+  std::error_code ec;
+  if (fs::exists(mp3, ec) && fs::file_size(mp3, ec) > 0) return play(mp3);
+  fs::create_directories(work, ec);
+  char ev[32];
+  std::snprintf(ev, sizeof ev, "Play_MUS_%04d_0_0", music);
+  g_theme_note = "getting the theme from the game's sound files...";
+  if (!RunToolJson(L"wwise.py", {L"theme", (fs::path(g_game) / L"sound" / L"Music.pck").wstring(), Wide(ev), mp3.wstring()},
+                   [mp3, play](int code, const std::string& text) {
+                     std::error_code e2;
+                     if (code == 0 && fs::exists(mp3, e2)) play(mp3);
+                     else g_theme_note = "couldn't read that theme (see the log)", Log("stock theme: wwise.py: " + text);
+                   }))
+    g_theme_note = "listening needs the Mod Maker tools (the launcher's Setup page)";
+}
+
+void StockThemeRow() {
+  static bool open = false;
+  static char find[64] = "";
+  if (g_theme_start && audio_out::State() != 0) {  // (decoded, or failed)
+    g_theme_start = false;
+    if (audio_out::State() == 1) audio_out::Play(0), Log("stock theme: " + std::to_string(g_theme_playing) + " playing (" + std::to_string(int(audio_out::Length())) + " s)");
+    else g_theme_playing = 0, g_theme_note = "couldn't play it: " + audio_out::Error();
+  }
+  const bool playing = g_theme_playing && (g_theme_start || audio_out::Playing());
+  if (g_star.music > 0) {
+    ImGui::TextUnformatted("The game's theme:");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.6f, 1), "%s", StockThemeName(g_star.music).c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton(playing && g_theme_playing == g_star.music ? "Stop##st" : "Play##st")) PlayStockTheme(g_star.music);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##st")) g_star.music = 0, Touch();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Back to the style's theme.");
+  }
+  if (ImGui::Button("A game theme...")) open = true, find[0] = 0, ImGui::OpenPopup("stock_theme");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("One of the game's own entrance themes, by superstar: it plays at the game's level and the mod carries no file.");
+  if (!g_theme_note.empty()) ImGui::SameLine(), ImGui::TextDisabled("%s", g_theme_note.c_str());
+  ImGui::SetNextWindowSize(ImVec2(440 * g_scale, 420 * g_scale), ImGuiCond_Always);  // (a popup sizes itself to its contents)
+  if (ImGui::BeginPopup("stock_theme")) {
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##find", "find a superstar", find, sizeof find);
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+    const std::string f = Lower(find);
+    ImGui::BeginChild("themes", ImVec2(0, 0), true);
+    for (const StockTheme& t : StockThemes()) {
+      if (!f.empty() && Lower(t.names).find(f) == std::string::npos) continue;
+      ImGui::PushID(t.music);
+      if (ImGui::SmallButton(playing && g_theme_playing == t.music ? "Stop" : "Play")) PlayStockTheme(t.music);
+      ImGui::SameLine();
+      if (ImGui::Selectable(t.names.c_str(), g_star.music == t.music)) {
+        g_star.music = t.music, g_star.song.clear(), Touch();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::PopID();
+    }
+    if (StockThemes().empty()) ImGui::TextDisabled("The game's superstars couldn't be read (the game folder's pac\\ch\\chEtc.pac).");
+    ImGui::EndChild();
+    ImGui::EndPopup();
+  } else if (open) {
+    open = false;
+    if (g_theme_playing) audio_out::Pause(), g_theme_playing = 0, g_theme_start = false;  // (closing the list stops it)
+  }
+}
+
 void ThemeGainRow() {
   if (g_star.song.empty()) return;
   ImGui::Indent();
@@ -753,6 +863,7 @@ bool PrepareJob(Job& j) {
   if (const std::string h = HeightText(); !h.empty()) j.manifest += "height=" + h + "\n";
   if (const std::string g = GainText(); !g.empty() && !g_star.song.empty()) j.manifest += "theme_gain=" + g + "\n";
   if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
+  if (g_star.song.empty() && g_star.music > 0) j.manifest += "music=" + std::to_string(g_star.music) + "\n";
   for (int a = 1; a < 4; ++a)
     if (g_star.attire_entrance[a] > 0)
       j.manifest += "attire" + std::to_string(a + 1) + "_entrance=" + std::to_string(g_star.attire_entrance[a]) + "\n";
@@ -2022,7 +2133,9 @@ void Draw() {
   }
   FbxRows(false);
   GearRows(false);
-  FileRow("Theme song (optional)...", g_star.song, "the style's", kSoundFilter, 1);
+  FileRow("Theme song (optional)...", g_star.song, g_star.music > 0 ? "the game's theme below" : "the style's", kSoundFilter, 1);
+  if (!g_star.song.empty() && g_star.music) g_star.music = 0;  // (a song file picked: it wins)
+  StockThemeRow();
   ThemeGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
           "A 320 x 320 Bink movie: From a video... makes one here, the launcher's Movies tab too.");
@@ -2182,7 +2295,7 @@ void Draw() {
 std::string StateText() {
   std::string s = std::string("name=") + g_star.name + "\nshort=" + g_star.short_name + "\nstyle=" +
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
-                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) +
+                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nmusic=" + std::to_string(g_star.music) +
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
   for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
   for (int a = 1; a < 4; ++a)
@@ -2224,6 +2337,7 @@ void WriteProject(ProjectOut& out) {
   out.Key("fbx_kind", PairsText(g_star.fbx_kind));
   out.Key("fbx_pic", PairsText(g_star.fbx_pic));
   out.File("song", g_star.song, "star/theme");
+  if (g_star.music > 0) out.Key("music", std::to_string(g_star.music));
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", g_star.movie, "star/movie");
   out.File("voice", g_star.voice, "star/voice");
@@ -2356,6 +2470,7 @@ bool Read(const ProjectIn& in, bool mod) {
     else if (any) g_star.pack = folder;
   }
   g_star.song = file("song", nullptr);
+  if (const int m = std::atoi(in.Get("music").c_str()); m >= 1 && m <= 253) g_star.music = m;
   if (const std::string g = in.Get("theme_gain"); !g.empty()) g_star.theme_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 6.0f);
   g_star.movie = file("movie", nullptr);
   g_star.voice = file("voice", nullptr);
