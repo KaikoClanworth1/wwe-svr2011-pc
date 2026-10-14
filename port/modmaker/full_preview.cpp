@@ -1046,6 +1046,12 @@ void Draw() {
       if (ImGui::Checkbox("Theme music", &g_music_on)) SetPlaying(g_playing);
       ImGui::SameLine();
       ImGui::Checkbox("Titantron", &g_titantron_on);
+      if (char_preview::HasGear() || char_preview::Gear()) {  // (the attire has an entrance outfit: kind 4)
+        ImGui::SameLine();
+        bool gear = char_preview::Gear();
+        if (ImGui::Checkbox("Entrance gear", &gear)) char_preview::SetGear(gear);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The outfit the attire wears for its entrance (on), or the match attire (off).");
+      }
 
       const std::string theme = audio_out::State() == 1 ? " - theme " + Clock(float(audio_out::Length() * 30)) :
                                 audio_out::State() == -1 ? " - no theme: " + audio_out::Error() :
