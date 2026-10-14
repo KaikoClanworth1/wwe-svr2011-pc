@@ -843,8 +843,9 @@ std::string ConvertVisTree13(const std::string& t, float scale) {
 
 std::string ConvertCrowdText13(const std::string& t, float scale) {
   // seat files: "A (x, z, y, w); count" -> all four scaled. Area files
-  // ("; R" / "; NR"): rows of numbers, all positions.
-  const bool area = t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0;
+  // ("; R" / "; NR", WWE 2K14+ also "; off_scr_audience_r" / "_nr"): rows of
+  // numbers, all positions (2K14's left in cm crashed the crowd code)
+  const bool area = t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0 || t.rfind("; off_scr_audience", 0) == 0;
   std::string o;
   size_t pos = 0;
   while (pos < t.size()) {
@@ -1075,7 +1076,8 @@ Bytes ConvertCrowd(const Bytes& raw, Wwe13Report& rep) {
       r = JboyWrite(m);
     } else if (r.size() > 4 && r[0] == ';') {
       const std::string t = Text(r);
-      if (t.find('(') != std::string::npos || t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0)
+      if (t.find('(') != std::string::npos || t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0 ||
+          t.rfind("; off_scr_audience", 0) == 0)
         r = FromText(ConvertCrowdText13(t, 0.1f));
     } else {
       continue;
