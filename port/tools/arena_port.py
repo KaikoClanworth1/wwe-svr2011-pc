@@ -62,6 +62,14 @@ KNOWN_CRASHES = {
     ('wwe13', 'bg37'): 'crashes at load (a memory allocation fails; not its size or models) - open',
     ('wwe2k14', 'bg12'): 'crashes at load (object motion loader, lr 826AEF18) - open',
     ('wwe2k14', 'bg17'): 'crashes at load (lr 82188A00) - open',
+    ('wwe2k14', 'bg44'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k14', 'bg45'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k14', 'bg46'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k14', 'bg48'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k14', 'bg50'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k14', 'bg51'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k14', 'bg53'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k14', 'bg54'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
 }
 
 
