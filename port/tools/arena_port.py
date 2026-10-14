@@ -611,14 +611,50 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
 
 
 def bg_list(disc):
-    """Arena files of a game not yet supported (for the research table)."""
+    """Every arena file of the disc's pac/bg (bgNN.pac, WWE '12's bg200 / bg201 too; not bgEtc)."""
+    import re
     items = []
-    for nm in sorted(disc.listdir('pac/bg')):
-        low = nm.lower()
-        if low.startswith('bg') and low.endswith('.pac') and low[2:4].isdigit():
-            items.append({'key': low[:-4], 'name': low[:-4], 'arena': int(low[2:4]), 'size': disc.size('pac/bg/' + nm),
-                          'in_2011': None})
-    return items
+    for nm in disc.listdir('pac/bg'):
+        m = re.fullmatch(r'bg(\d+)\.pac', nm.lower())
+        if m:
+            items.append({'key': nm.lower()[:-4], 'name': nm.lower()[:-4], 'arena': int(m.group(1)),
+                          'size': disc.size('pac/bg/' + nm), 'in_2011': None})
+    return sorted(items, key=lambda it: it['arena'])
+
+
+def arena_cache_root():
+    """where 'scan' keeps a disc's named arena list (SVR2011_ARENA_CACHE, else %LOCALAPPDATA%/SvR2011/arena_lists)"""
+    return os.environ.get('SVR2011_ARENA_CACHE') or os.path.join(
+        os.environ.get('LOCALAPPDATA') or tempfile.gettempdir(), 'SvR2011', 'arena_lists')
+
+
+def named_list(disc, game, src, items, cache_root=None, scan=False):
+    """WWE '12 - 2K17 'list' items with the game's own arena names ('name', 'bg' keeps bgNN) and, once
+    'scan' has run, 'thumb' (a PNG of the arena's match intro backdrop). Names are cached per disc."""
+    import arena_names as AN
+    path = AN.cache_dir(os.path.abspath(cache_root or arena_cache_root()), game, src)
+    cache = None if scan else AN.load_cache(path)
+    if cache is None:
+        progress(5, "reading the game's arena names")
+        strings, base = AN.strings(disc)
+        names = {str(it['arena']): AN.arena_name(strings, base, it['arena']) for it in items}
+        thumbs = {}
+        if scan:
+            progress(55, 'reading the arena pictures')
+            thumbs = {str(k): v for k, v in AN.thumbnails(disc, [it['arena'] for it in items], os.path.join(path, 'thumbs'),
+                                                          progress=progress).items()}
+        cache = {'game': game, 'src': os.path.abspath(src), 'base': base, 'names': names, 'thumbs': thumbs, 'scanned': scan}
+        AN.save_cache(path, cache)
+    for it in items:
+        n = cache['names'].get(str(it['arena']))
+        it['bg'] = it['key']
+        if n:
+            it['name'] = n
+        t = cache.get('thumbs', {}).get(str(it['arena']))
+        if t and os.path.exists(t):
+            it['thumb'] = t
+    progress(100, 'done')
+    return items, cache.get('scanned', False)
 
 
 def main(argv):
@@ -629,6 +665,11 @@ def main(argv):
     p.add_argument('--game', required=True)
     p.add_argument('--src', required=True)
     p.add_argument('--pac11')
+    p.add_argument('--cache')
+    p = sub.add_parser('scan')   # (WWE '12 - 2K17: read the disc once - names and pictures - into the cache)
+    p.add_argument('--game', required=True)
+    p.add_argument('--src', required=True)
+    p.add_argument('--cache')
     p = sub.add_parser('convert')
     p.add_argument('--game', required=True)
     p.add_argument('--src', required=True)
@@ -655,11 +696,14 @@ def main(argv):
             if not disc.isdir('pac/bg'):
                 raise BadInput('the game files have no pac/bg folder (an incomplete extract? use the whole disc '
                                'folder or the ISO)')
-            if a.cmd == 'list':
+            if a.cmd in ('list', 'scan'):
                 lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
                          'svr2009': lambda d: svr2008_list(d, SVR2009),
                          'svr2007': lambda d: svr2008_list(d, SVR2007)}
-                print(json.dumps(mark_items(a.game, lists.get(a.game, bg_list)(disc))))
+                items = lists.get(a.game, bg_list)(disc)
+                if a.game in NATIVE_GAMES:
+                    items, _ = named_list(disc, a.game, a.src, items, a.cache, scan=a.cmd == 'scan')
+                print(json.dumps(mark_items(a.game, items)))
                 return 0
             if a.game not in ('svr2010', 'svr2008', 'svr2009', 'svr2007'):
                 msg = ("WWE '12 - 2K17 arenas are converted by the Mod Maker itself (svrmod wwe13)" if a.game in NATIVE_GAMES

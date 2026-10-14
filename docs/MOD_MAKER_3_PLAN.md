@@ -132,6 +132,15 @@ py tools/<kind>_port.py convert --game <id> --src <...> --item <key> --out <dir>
   arena files bg60 and up: backstage rooms, studio / photo stages), with a
   `reason` for the last two. The wizard greys `crashes` and `special` items out.
   (`arena_port.py` sets it: `KNOWN_CRASHES`, `mark_items`.)
+- Arenas of WWE '12 - 2K17 (`arena_port.py`): every `pac/bg/bgN.pac` of the disc (bg00 - bg59, the
+  special stages 60+, WWE '12's bg200 / bg201), each item with `name` = the game's own arena name
+  (from its string table, e.g. "RAW IS WAR '97", "NXT TAKEOVER: BROOKLYN"; the file key when the
+  game has none), `bg` = the file key (`bg28`), and `thumb` = a PNG (320 x 160) of the arena's match
+  intro / loading backdrop once the disc was scanned. `py tools/arena_port.py scan --game <id>
+  --src <ISO or folder> [--cache <dir>]` reads the disc once (names and pictures, `progress` lines)
+  and caches the list (default `%LOCALAPPDATA%/SvR2011/arena_lists/<game>_<key>/arenas.json` +
+  `thumbs/bgNN.png`); `list` then answers from that cache (without a scan: names only, read once
+  and cached too). WWE 2K17 has no thumbnails (its menu pacs keep hashed names).
 - Output is a normal mod or pack: the Mod Maker opens it on its page, where
   the user finishes it and saves.
 
