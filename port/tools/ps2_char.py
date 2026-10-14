@@ -584,7 +584,42 @@ def sym_pictures(disc, characters):
     return out
 
 
-GAMES = [SYM, Yukes]
+class JBI(Yukes):
+    """WWF SmackDown! Just Bring It: CH.PAC at the disc root, one model per id (its own character: names come
+    from the game's records), each with ONE texture - a 1024 x 128 TIM2 strip (entry 1) its UVs map straight
+    into; the model's texture names are labels only. Parts 6 / 7 (pads)."""
+
+    def __init__(self, disc):
+        if not disc.exists('CH.PAC') or disc.exists('PAC/CH.PAC'):
+            raise BadInput('not Just Bring It')
+        super().__init__(disc)
+
+    def characters(self):
+        if not hasattr(self, '_chars'):
+            self._chars = {i: {0: i} for i in sorted(self.entries) if self.shape(i)[0] >= self.GEAR_VERTS}
+        return self._chars
+
+    def groups(self):
+        return {(i, 0): [i] for i in self.entries}
+
+    def model(self, id_):
+        e = self.entry(id_)
+        if 2 not in e or e[2][:4] != b'YOBJ':
+            raise BadInput('%04x has no model' % id_)
+        body = read_yobj(e[2])
+        parts = [read_yobj(e[k]) for k in (6, 7) if k in e and e[k][:4] == b'YOBJ']
+        strip = tim2(e[1]) if 1 in e and e[1][:4] == b'TIM2' else None
+        names = set(body['textures']) | {t for p in parts for t in p['textures']}
+        return body, parts, ({n.lower(): strip for n in names} if strip is not None else {})
+
+    def gear(self, ch, at):
+        return []
+
+    def portraits(self, ch):
+        return {}
+
+
+GAMES = [JBI, SYM, Yukes]
 
 
 def open_game(path):
