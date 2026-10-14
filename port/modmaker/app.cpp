@@ -26,6 +26,7 @@
 #include "editor.h"
 #include "full_preview.h"
 #include "tool_run.h"
+#include "session_log.h"
 extern "C" {
 #include "../launcher/movie_maker.h"
 }
@@ -316,6 +317,7 @@ bool LoadPicture(const std::wstring& file, Image& out) {
 // ---------------------------------------------------------------- log / work
 
 void Log(const std::string& s) {
+  session::Line(s);  // (the session log file, session_log.h)
   std::lock_guard lock(g_log_mutex);
   g_log.push_back(s);
   if (g_log.size() > 2000) g_log.erase(g_log.begin(), g_log.begin() + 500);
@@ -2023,7 +2025,14 @@ void TitleBar() {
   // right: the text size and the game folder
   const std::string game = g_game.empty() ? "No game folder" : Utf8(fs::path(g_game).filename().wstring());
   const float w = ImGui::CalcTextSize(game.c_str()).x + 40 * g_scale;
-  ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w - 60 * g_scale));
+  const float rw = ImGui::CalcTextSize("Report a problem...").x + 24 * g_scale;
+  ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - w - rw - 60 * g_scale));
+  if (ImGui::Button("Report a problem...")) {
+    PageHooks* h = Hooks(g_project_page);
+    session::OpenReport([h] { return h && h->state ? h->state() : std::string(); });
+  }
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Something went wrong? Make a report (a zip with what the Mod Maker did) to post.");
+  ImGui::SameLine();
   if (ImGui::Button("Aa")) ImGui::OpenPopup("text_size");
   if (ImGui::IsItemHovered()) ImGui::SetTooltip("Text size (applies the next time the Mod Maker starts).");
   if (ImGui::BeginPopup("text_size")) {
@@ -2166,6 +2175,7 @@ void Draw() {
   if (!g_drop_files.empty() && ++g_drop_frames > 2) g_drop_files.clear();  // (dropped where nothing takes files)
   full_preview::Draw();  // (its own window, over the page)
   ToolsPanel();          // (the Mod Maker tools: found / missing, Install what's missing)
+  session::Tick();       // (the session log file, page changes, the Report a problem window)
   // Ctrl+S saves the project
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && Hooks(g_project_page)) ProjectSave(false);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
@@ -2304,6 +2314,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--behind")) behind = true, g_behind = true;
+    else if (!wcscmp(argv[i], L"--test-report") && more) session::TestReport(Utf8(argv[++i]));  // <what happened>: Report a problem, no window, then quit
     else if (!wcscmp(argv[i], L"--watch") && more) {  // <star id>,<dummy id>,<move id>: a match move watched here
       int a[3] = {0, 0, 0};
       swscanf_s(argv[++i], L"%d,%d,%d", &a[0], &a[1], &a[2]);

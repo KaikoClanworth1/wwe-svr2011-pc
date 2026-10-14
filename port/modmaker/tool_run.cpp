@@ -2,7 +2,9 @@
 #include "tool_run.h"
 
 #include "app.h"
+#include "session_log.h"
 
+#include <chrono>
 #include <mutex>
 #include <thread>
 
@@ -174,7 +176,16 @@ void Check() {
 }
 
 // Runs a command with no window, reading its output into the log; returns the exit code.
+// The session log's line for a finished run: its exit code and time.
+void Finished(int code, std::chrono::steady_clock::time_point start) {
+  char b[96];
+  std::snprintf(b, sizeof b, "  (exit code %d, %.1f s)", code,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+  session::Line(b);
+}
+
 int RunCapture(const std::wstring& cmdline, const std::wstring& cwd) {
+  const auto start = std::chrono::steady_clock::now();
   SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
   HANDLE rd = nullptr, wr = nullptr;
   if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
@@ -215,11 +226,13 @@ int RunCapture(const std::wstring& cmdline, const std::wstring& cwd) {
   GetExitCodeProcess(pi.hProcess, &code);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  Finished(int(code), start);
   return int(code);
 }
 
 // stdout collected, stderr logged on a thread of its own (progress lines to the bar).
 int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::string& out) {
+  const auto start = std::chrono::steady_clock::now();
   SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
   HANDLE ord = nullptr, owr = nullptr, erd = nullptr, ewr = nullptr;
   if (!CreatePipe(&ord, &owr, &sa, 0)) return -1;
@@ -276,6 +289,8 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
   GetExitCodeProcess(pi.hProcess, &code);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  session::Raw("  its answer (stdout):", out.size() > (4u << 20) ? out.substr(out.size() - (4u << 20)) : out);
+  Finished(int(code), start);
   return int(code);
 }
 
@@ -498,6 +513,23 @@ std::wstring Bink2() {
   return L"";
 }
 }  // namespace
+
+std::string ToolsReport() {
+  RecheckTools();
+  const std::wstring py = PythonExe(), bink = Bink2();
+  const std::string missing = PythonMissing().empty() ? "" : g_missing;
+  auto row = [](bool ok, bool optional, const char* name, const std::string& detail) {
+    return std::string(ok ? "found    " : optional ? "optional " : "MISSING  ") + name + ": " + detail + "\n";
+  };
+  return row(!py.empty(), false, "Python 3", py.empty() ? "not found" : (IsToolsPython(py) ? "the Mod Maker's own: " : "your own: ") + Utf8(py)) +
+         row(!py.empty() && missing.empty(), false, "numpy + Pillow", missing.empty() ? (py.empty() ? "-" : "found") : "missing: " + missing) +
+         row(!ToolsDir().empty(), false, "Converter scripts", ToolsDir().empty() ? "not found" : Utf8(ToolsDir())) +
+         row(!SvrmodExe().empty(), false, "svrmod.exe", SvrmodExe().empty() ? "not found" : Utf8(SvrmodExe())) +
+         row(!VgmstreamExe().empty(), false, "vgmstream", VgmstreamExe().empty() ? "not found" : Utf8(VgmstreamExe())) +
+         row(!FfmpegExe().empty(), true, "ffmpeg", FfmpegExe().empty() ? "not found" : Utf8(FfmpegExe())) +
+         row(!bink.empty(), true, "Bink 2 tool", bink.empty() ? "not found" : Utf8(bink)) +
+         "Bink 2 tool chosen: " + (g_settings.bink2_tool.empty() ? std::string("(none)") : Utf8(g_settings.bink2_tool)) + "\n";
+}
 
 void OpenToolsPanel(const std::string& why) {
   g_panel_open = true;

@@ -34,6 +34,8 @@ void StartupToolsCheck();   // at start: the panel opens when something the conv
 // Before a Port / convert: true when Python with numpy and Pillow and the scripts are there; else the panel opens
 // (with what's missing) and false.
 bool ConvertersReady();
+// The panel's rows as text (rechecked now): the session log and Report a problem.
+std::string ToolsReport();
 // Test aids: --tools-panel (open it), --tools-install-from <dir with Tools\>: "Install what's missing" copies from
 // there instead of downloading (the same flow after), --tools-install (press it).
 void TestToolsPanel(bool install, const std::wstring& from);
