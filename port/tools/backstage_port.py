@@ -3,7 +3,9 @@
     py tools/backstage_port.py games
     py tools/backstage_port.py list --game <id> --src <ISO or extract folder>
     py tools/backstage_port.py convert --game <id> --src <...> --item <key> --out <mod folder>
-                                       --pac11 <2011 game folder> [--name <row name>]
+                                       --pac11 <2011 game folder> [--name <row name>] [--id <manifest id>]
+    (list also takes --pac11 and ignores it; convert's id defaults to the --out folder's name, letters,
+    digits and _ - the launcher installs a mod under Mods/<type>/<id>)
 
 stdout is JSON only; logs and `progress <0-100> <text>` lines go to stderr.
 Exit codes: 0 ok, 2 bad input, 3 conversion failed.
@@ -76,7 +78,7 @@ def pac_folder(pac11):
     raise BadInput('--pac11 %s: no pac/bg/bg78.pac and pac/gm.pac (the 2011 game folder)' % pac11)
 
 
-def hctp_convert(disc, item, out, pac11, name):
+def hctp_convert(disc, item, out, pac11, name, mod_id=None):
     import hctp_unpack
     import build_room
     hctp_check(disc)
@@ -94,10 +96,10 @@ def hctp_convert(disc, item, out, pac11, name):
         hctp_unpack.unpack(disc, unpacked, [room])
         os.makedirs(out, exist_ok=True)
         rep = build_room.build(room, unpacked, pac, work, out, name or '%s (HCTP)' % HCTP_ROOMS[room][0],
-                               progress=lambda p, t: progress(5 + p * 0.95, t))
+                               progress=lambda p, t: progress(5 + p * 0.95, t), mod_id=mod_id)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    return {'ok': True, 'out': out, 'opens': 'backstage', 'name': rep['name'], 'room': room,
+    return {'ok': True, 'out': out, 'opens': 'backstage', 'name': rep['name'], 'room': room, 'id': rep['id'],
             'files': rep['files'], 'warnings': [], 'dropped': [],
             'notes': ['installs as Mods/Backstage/%s; plays from its own row in BACKSTAGE' % os.path.basename(out.rstrip('/\\')),
                       HCTP_ROOMS[room][1]]}
@@ -110,6 +112,7 @@ def main(argv):
     p = sub.add_parser('list')
     p.add_argument('--game', required=True)
     p.add_argument('--src', required=True)
+    p.add_argument('--pac11')  # (accepted, not needed to list)
     p = sub.add_parser('convert')
     p.add_argument('--game', required=True)
     p.add_argument('--src', required=True)
@@ -117,6 +120,7 @@ def main(argv):
     p.add_argument('--out', required=True)
     p.add_argument('--pac11', required=True)
     p.add_argument('--name')
+    p.add_argument('--id')  # (the manifest id; default: the --out folder's name)
     try:
         a = ap.parse_args(argv)
     except SystemExit:
@@ -134,7 +138,7 @@ def main(argv):
             if a.cmd == 'list':
                 print(json.dumps(hctp_list(disc)))
                 return 0
-            rep = hctp_convert(disc, a.item, a.out, a.pac11, a.name)
+            rep = hctp_convert(disc, a.item, a.out, a.pac11, a.name, a.id)
             with open(os.path.join(a.out, 'report.json'), 'w') as f:
                 json.dump(rep, f, indent=1)
             print(json.dumps(rep))

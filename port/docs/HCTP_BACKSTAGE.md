@@ -8,12 +8,16 @@ cart out of the garage.
 
 ## Where things are
 
-- The disc: `D:\Roms\Playstation 2\WWE SmackDown! Here Comes the Pain (Europe).iso`,
+- For players: `tools/backstage_port.py` (Mod Maker Tools; the converter contract) builds any room from
+  their own disc into an installable `Mods\Backstage\<name>` folder:
+  `list --game hctp --src <ISO>` (hctp30 .. hctp36), `convert --game hctp --src <ISO> --item hctp31
+  --out <Mods\Backstage\Parking Lot (HCTP)> --pac11 <2011 game folder>` (about 14 s a room). It reads the
+  disc through `discfs` (`tools/hctp/hctp_unpack.py`) and runs `tools/hctp/build_room.py`.
+- The disc: `D:\Roms\Playstation 2\WWE Games\WWE SmackDown! Here Comes the Pain.iso`,
   extracted to `D:\Xbox Games Ports\HCTP Extract` (`PAC\*.PAC`, unpacked
   `_unpacked\bg\stg_XXXX`, `_unpacked\gm`, `_unpacked\m`).
 - Viewer pages (three.js, one per room): `HCTP Extract\viewer\index.html`.
-- Converter scripts and research notes are in the session scratchpad
-  (`hctp\`), to be moved into `port/tools` once settled:
+- Converter scripts in `port/tools/hctp` (research notes in the session scratchpad):
   - `hpac.py` (archives), `yobj.py` (models, textures), `to_glb.py` /
     `room_view.py` (viewer);
   - `hctp2jboy.py` (models -> JBOY), `hctp_fake56.py` (room -> stand-in
@@ -99,3 +103,33 @@ Pitfalls:
 wall triangles carry the low attribute byte 0xA0 + its index, so a fighter's
 touched attribute (+455) names the prop he hit; tris are HMD 1004 indices
 (after the converter's padding dummies).
+
+## Rooms 0x31 - 0x36
+
+| room | row (build_room.py ROOMS) | offset dx, dz | interactions (src/hctp_room.cpp) |
+|---|---|---|---|
+| 0x31 | Parking Lot | 140, -437.7 | broken cars (door / bonnet fly off, crushed by a body on the roof), fence / oil drums / equipment box, generator shock (12079), Irish whip into the trailer (12078 sync), background traffic car, drivable forklift (X on / off, A drive, R1 brake, Y reverse, stick steer, B tips the crate; 321 reloads it) |
+| 0x32 | Training Room | 103.5, -388 | lockers (shut in 120 frames), toilet stall, showers, shelves (items fall, become weapons), TV, breakable wall (cracks, then opens and knocks the TV over), sandbag (two pendulums, knocks down), treadmills (X on, A speeds up) |
+| 0x33 | Times Square | 86.5, -408 | six taxis (brake, run over, explode when someone goes down on the roof), lamp-post poles (X climbs, X jumps off), shop windows, ladder (0xE0) / wall (0xE6) climbs, helicopter (its act-10 path; X grabs the ladder) |
+| 0x34 | Outside the Arena | 205, -334, crop -60,345,-534,-322 | the extinguisher is 2011's own weapon (65); HCTP's other room-34 objects are dead data |
+| 0x35 / 0x36 | Fountain Square / (dry) | 235, -617.5 / -607 | lion statues (run straight at one: climb 12005-7; X or 601 frames dives off), fountain throw (Irish whip near a basin, 12027 sync; room 35); HCTP's flood and tower fall are dead code |
+
+What the converter does per room (beyond room 30's steps):
+- Models from the room's own 50001 flag list; models with the same flags merged (the parking slot has 15
+  free ids), event-only ('e') and light-motion additive layers left out, 'r' / 'y' (draw again mirrored /
+  turned) baked in, more than 64 meshes split. A stage over ~13k vertices fails 2011's GPU buffer allocation
+  at load (room 34: cropped).
+- Big collision indexes: cell counts padded off 0xFF, a zero tail so the entry decompresses in place.
+- Props of 22 more HCTP classes (hctp_props.KINDS), their tag params (p=), record models (m=) and HMD
+  shapes (h<id>=) in hctp.txt; pole tops and the helicopter's path as `pole` / `heli` lines.
+- Motion bank per room: bank_h3 + HCTP backstage acts 12000-12099 as 12600 + n, 12500-12599 as 12800 + n,
+  the room's object acts (50102) n as 12700 + n; jumps to 2011's downs 443 / 448 / 476 kept.
+- Weapons: HCTP's spots (50000 'w', GmWeaponPosRot) as 2011 weapons in `weapons=`, or `weapons=none`
+  (else 2011's parking weapons lie in the room); what props drop in `load_weapons=`.
+
+2011's input object (svr2011::FighterInput): +48 buttons held, +52 pressed this frame (X 0x80, A 0x40,
+B 0x20, Y 0x10, R1 0x08), +56 the stick's 8-way direction (4 up the screen = -z, 6 right = -x, 0 down; -1 none).
+
+Test switch `SVR2011_TEST_HCTP_ROOF=props` in rooms 31-36 drives the interactions on fighter 1 (cars,
+generator, slam; racks, wall, locker, toilet, shower; lion; window, pole) and puts fighter 0 (the scripted
+pad) by the forklift (31) / under the helicopter (33).

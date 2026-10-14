@@ -114,7 +114,7 @@ def room_bank(room, unpacked, pac11, mot):
     return out
 
 
-def build(room, unpacked, pac11, work, mod, name=None, progress=lambda p, t: None):
+def build(room, unpacked, pac11, work, mod, name=None, progress=lambda p, t: None, mod_id=None):
     """-> report dict; mod gets arena.pac, gimmick.pac, hctp.txt, manifest.txt."""
     import svrfmt as f
     import svr08_stage as s8
@@ -165,7 +165,9 @@ def build(room, unpacked, pac11, work, mod, name=None, progress=lambda p, t: Non
     if os.path.exists(wfile):
         os.remove(wfile)
     drops = sorted({int(l.split()[2]) for l in open(os.path.join(mod, 'hctp.txt')) if l.startswith('weapon ')})
-    lines = ['type=backstage', 'id=hctp_room_%d' % room, 'name=%s' % name, 'author=HCTP port', 'version=1.0', 'area=0',
+    # (id: the install folder's name - the launcher installs a mod under Mods/<type>/<id>)
+    mod_id = mod_id or re.sub(r'[^A-Za-z0-9_]', '_', os.path.basename(os.path.normpath(mod))) or 'hctp_room_%d' % room
+    lines = ['type=backstage', 'id=%s' % mod_id, 'name=%s' % name, 'author=HCTP port', 'version=1.0', 'area=0',
              'row=%s' % name, 'gimmick=78H3',
              'box=%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2),
              'camera_height=45', 'hctp=%d' % room, 'weapons=%s' % weapons]
@@ -174,7 +176,7 @@ def build(room, unpacked, pac11, work, mod, name=None, progress=lambda p, t: Non
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='').write('\r\n'.join(lines) + '\r\n')
     progress(100, 'done')
     sizes = {n: os.path.getsize(os.path.join(mod, n)) for n in os.listdir(mod)}
-    return {'room': room, 'name': name, 'files': sizes, 'weapons': weapons, 'stage_log': open(stage_log).read()[-400:]}
+    return {'room': room, 'name': name, 'id': mod_id, 'files': sizes, 'weapons': weapons, 'stage_log': open(stage_log).read()[-400:]}
 
 
 if __name__ == '__main__':
