@@ -101,6 +101,19 @@ M4 Place(V3 t, float yaw) {
   std::memcpy(r.m, v, sizeof v);
   return r;
 }
+// A corner's turnbuckle link (ar_tb1, 952): the model is one link along x from its post (-32, -32) - x -33.3 ..
+// -26.6 at z -32. In game each corner's three run from the post to the corner pad (ar_cover10-13 at +-28, +-28):
+// turned 45 degrees about the post, then the corner by quarter turns about the ring's centre (only the quarter turns
+// left the links lying along a side, pointing away from the pads - "turnbuckles in the wrong place").
+M4 TurnbuckleAt(int corner, float y) {
+  constexpr float kPost = -32.0f;
+  const float d = -0.78539816f;  // (+x -> the diagonal into the ring)
+  const float cd = std::cos(d), sd = std::sin(d);
+  const float ox = kPost - (kPost * cd + kPost * sd), oz = kPost - (-kPost * sd + kPost * cd);  // post - R(d) post
+  const float a = float(corner) * 1.57079633f, ca = std::cos(a), sa = std::sin(a);
+  return Place({ox * ca + oz * sa, y, -ox * sa + oz * ca}, a + d);
+}
+
 bool Invert(const M4& a, M4& out) {
   const float* m = a.m;
   float inv[16];
@@ -1196,7 +1209,7 @@ void RenderScene() {
         if (!g_show_ring || !g_ring.turnbuckles) break;
         for (int corner = 0; corner < 4; ++corner)
           for (int r = 0; r < 3; ++r) {
-            SetCb(Place({0, RopeY(r), 0}, corner * kPi / 2), light);
+            SetCb(TurnbuckleAt(corner, RopeY(r)), light);
             for (int k : o.meshes) DrawMesh(o.model, k);
           }
         break;
@@ -2148,7 +2161,7 @@ std::vector<RingPart> RingPlacements(const svrfmt::Arena& a) {
         break;
       case Role::kTurnbuckle:
         for (int corner = 0; corner < 4; ++corner)
-          for (int r = 0; r < 3; ++r) put(mi, Place({0, rope_y(r), 0}, float(corner) * kPi / 2));
+          for (int r = 0; r < 3; ++r) put(mi, TurnbuckleAt(corner, rope_y(r)));
         break;
       case Role::kApron:  // (as drawn above: 974 on the z sides, 973 on the x sides, each out along its front)
         for (int side = 0; side < 2; ++side) {
