@@ -1310,6 +1310,12 @@ int ArenaPacNumber(const std::string& name) {  // (the last "bg" followed by exa
 
 void ViewFooter() {
   ImGui::PushID("viewfooter");
+  // (on the same line while a checkbox labelled `label` still fits there, else on the next)
+  auto next_fits = [](const char* label) {
+    const float need = ImGui::GetStyle().ItemSpacing.x + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
+    const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    if (ImGui::GetItemRectMax().x + need <= right) ImGui::SameLine();
+  };
   if (ImGui::SmallButton("Reset view")) char_preview::ResetCamera();
   ImGui::SameLine();
   const bool has = char_preview::HasBlood();
@@ -1319,12 +1325,12 @@ void ViewFooter() {
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip(has ? "The blood a superstar gets in a match, on the face and body." : "This model has no blood layers.");
-  ImGui::SameLine();
+  next_fits("Ring");
   bool ring = char_preview::Ring();
   if (ImGui::Checkbox("Ring", &ring)) char_preview::SetRing(ring, Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg29.pac").wstring()));
   if (ImGui::IsItemHovered()) ImGui::SetTooltip("The practice arena's ring round the superstar (posts, ropes, turnbuckles, aprons), its canvas under their feet.");
   if (char_preview::HasGear() || char_preview::Gear()) {
-    ImGui::SameLine();
+    next_fits("Entrance gear");
     ImGui::BeginDisabled(!char_preview::HasGear());
     bool gear = char_preview::Gear() && char_preview::HasGear();
     if (ImGui::Checkbox("Entrance gear", &gear)) char_preview::SetGear(gear);

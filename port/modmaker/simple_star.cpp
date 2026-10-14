@@ -329,7 +329,10 @@ void StepEntrance() {
   {
     const int n = g_star.entrance >= 0 ? g_star.entrance : kStyles[g_star.style].template_id;  // (the style's: its superstar's)
     ImGui::BeginDisabled(Busy());
-    if (ImGui::Button("Watch the walk to the ring", ImVec2(240 * g_scale, 0))) WatchEntrance(n);
+    if (ImGui::Button("Watch the walk to the ring", ImVec2(240 * g_scale, 0))) {
+      if (char_preview::HasGear()) char_preview::SetGear(true);  // (worn for the entrance, as in the game)
+      WatchEntrance(n);
+    }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       ImGui::SetTooltip("Your superstar does the entrance's ring part in the 3D view (the lights, pyro and video only show in the game).");
@@ -339,6 +342,8 @@ void StepEntrance() {
       ImGui::SetTooltip("A window with the whole entrance in the practice arena: the entrance's camera, your theme and big screen video.");
   }
   ImGui::Spacing();
+  GearRows(true);  // (each attire's entrance gear; "Entrance gear" under the 3D view shows or hides it)
+  ImGui::Separator();
   ImGui::TextUnformatted("Big screen video (optional)");
   FileRow("Pick a video file...", g_star.movie, "the style's", kBinkFilter, 1, "A video made for the game's big screen (.bik).");
   ImGui::SameLine();
