@@ -156,7 +156,7 @@ std::vector<std::string> Arena::FitFile(const std::vector<std::string>& keep) {
     for (const auto& m : models)
       if (m.added) unpacked += JboyWrite(m.model).size();
     const size_t file = Save().size();
-    if (file <= original_file && unpacked <= original_unpacked) break;
+    if (file <= size_t(original_file * fit_margin) && unpacked <= size_t(original_unpacked * fit_margin)) break;
     BundleTexture* big = nullptr;
     ArenaTextureSet* set = nullptr;
     for (auto& b : bundles)
