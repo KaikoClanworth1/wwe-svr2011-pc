@@ -40,6 +40,7 @@
 #include "arena_mods.h"
 #include "match_hud.h"
 #include "online_rules.h"
+#include "p2p.h"
 #include "script_input.h"
 #include "generated/default/svr2011_init.h"
 
@@ -268,7 +269,7 @@ uint32_t SetRule(uint32_t normal, int set) {
 std::vector<int> SetsFor(uint32_t normal) {
   std::vector<int> sets{0, 1, 2};
   if (SetRule(normal, 3) == normal) return sets;
-  if (svr2011::MatchTypeOn("three_stages_tables_ladders")) sets.push_back(5), sets.push_back(3);
+  if (svr2011::MatchTypeSwitchOn("three_stages_tables_ladders")) sets.push_back(5), sets.push_back(3);
   sets.push_back(4);
   return sets;
 }
@@ -369,15 +370,15 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   std::vector<uint8_t> tail;  // the submenus' areas: new groups, at the end
   uint32_t added = 0;
   // (match type mods switched off: their rows aren't added)
-  const bool elimination = svr2011::MatchTypeOn("elimination"), slobber = svr2011::MatchTypeOn("slobber_knocker");
-  const bool mystery = svr2011::MatchTypeOn("mystery_opponent"), weapons = svr2011::MatchTypeOn("weapons_everywhere");
-  const bool stages = svr2011::MatchTypeOn("three_stages_of_hell");
+  const bool elimination = svr2011::MatchTypeSwitchOn("elimination"), slobber = svr2011::MatchTypeSwitchOn("slobber_knocker");
+  const bool mystery = svr2011::MatchTypeSwitchOn("mystery_opponent"), weapons = svr2011::MatchTypeSwitchOn("weapons_everywhere");
+  const bool stages = svr2011::MatchTypeSwitchOn("three_stages_of_hell");
   bool structure_on[std::size(kStructures)];
-  for (size_t s = 0; s < std::size(kStructures); ++s) structure_on[s] = svr2011::MatchTypeOn(kStructures[s].mod);
-  const bool gauntlet_elim = svr2011::MatchTypeOn("gauntlet_eliminator");
-  const bool roof_start = svr2011::MatchTypeOn("hiac_roof_start");
-  const bool more_backstage = svr2011::MatchTypeOn("backstage_more_people");
-  const bool free_roam_on = svr2011::MatchTypeOn("free_roaming_backstage");
+  for (size_t s = 0; s < std::size(kStructures); ++s) structure_on[s] = svr2011::MatchTypeSwitchOn(kStructures[s].mod);
+  const bool gauntlet_elim = svr2011::MatchTypeSwitchOn("gauntlet_eliminator");
+  const bool roof_start = svr2011::MatchTypeSwitchOn("hiac_roof_start");
+  const bool more_backstage = svr2011::MatchTypeSwitchOn("backstage_more_people");
+  const bool free_roam_on = svr2011::MatchTypeSwitchOn("free_roaming_backstage");
   // THREE STAGES OF HELL's sets: rows of a submenu (its node `parent`, depth
   // word +0x14 `depth`), in group `in_group`, nodes from `first_node`, each
   // a copy of a match row of the mode (`leaf_like`: the table's first row of
@@ -417,7 +418,7 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
     out.insert(out.end(), rec, rec + kRec);
     if (Rd32(rec + 0x54) != kScreenMatch) continue;
     for (const Row& row : kRows) {
-      if (Rd32(rec) != row.anchor || Rd32(rec + 0x18) != row.group || !svr2011::MatchTypeOn(row.mod)) continue;
+      if (Rd32(rec) != row.anchor || Rd32(rec + 0x18) != row.group || !svr2011::MatchTypeSwitchOn(row.mod)) continue;
       uint8_t* prev = out.data() + out.size() - kRec;
       std::vector<uint8_t> copy(prev, prev + kRec);
       Wr32(copy.data() + 0x00, row.label);
@@ -865,7 +866,7 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
 
 namespace svr2011 {
 
-bool MatchTypeOn(const char* id) {
+bool MatchTypeSwitchOn(const char* id) {
   static const std::map<std::string, bool> on = [] {
     std::map<std::string, bool> m;
     const std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "Mods" / "MatchTypes";
@@ -883,6 +884,8 @@ bool MatchTypeOn(const char* id) {
   const auto it = on.find(id);
   return it == on.end() || it->second;
 }
+
+bool MatchTypeOn(const char* id) { return MatchTypeSwitchOn(id) || svr2011::P2PMatchLobby().in; }
 
 void InstallMatchTypes(rex::memory::Memory* memory) {
   g_memory = memory;
@@ -2043,7 +2046,7 @@ void LumberjackBeforeJudge(uint8_t* base) {
 namespace {
 void OnlineFirstBlood(uint8_t* base) {
   static bool done = false;
-  if (done || !g_memory || !svr2011::MatchTypeOn("online_first_blood")) return;
+  if (done || !g_memory || !svr2011::MatchTypeSwitchOn("online_first_blood")) return;  // (the host's offer: its own switch)
   done = true;
   struct Add {
     uint32_t record, rule;
