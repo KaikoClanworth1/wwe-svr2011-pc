@@ -223,6 +223,7 @@ constexpr uint32_t kHitObject = 12515;  // HCTP 12014 hit-object reactions, vari
 constexpr uint32_t kWallGrab = 12507, kWallBreak = 12508, kWallRelease = 12545;
 constexpr uint32_t kLying = 1000;
 constexpr uint32_t kButtonX = 0x80;  // (input +52: pressed this frame)
+constexpr uint32_t kButtonB = 0x20, kButtonY = 0x10, kButtonR1 = 0x08;
 
 struct Prop {
   std::string name, kind;
@@ -281,6 +282,7 @@ struct Room {
   uint32_t crate_victim = 0;
   std::vector<std::array<float, 3>> poles;  // (room 33: the climbable poles' tops)
   int heli_t = 0;                            // (room 33: frames into the helicopter's flight)
+  std::vector<std::array<float, 5>> heli;    // (room 33: its flight keys - HCTP frame, x, y, z, yaw)
 };
 Room g_room;
 
@@ -365,6 +367,10 @@ bool LoadRoom(const std::string& dir) {
       Steam st;
       ls >> st.pid >> st.valve >> st.x >> st.y >> st.z >> st.dx >> st.dz >> st.len >> st.hw >> st.hh;
       g_room.steam.push_back(st);
+    } else if (what == "heli") {
+      std::array<float, 5> k{};
+      ls >> k[0] >> k[1] >> k[2] >> k[3] >> k[4];
+      g_room.heli.push_back(k);
     } else if (what == "pole") {
       int id = 0;
       std::array<float, 3> q{};
@@ -1248,6 +1254,10 @@ bool Room31Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m
 
 uint32_t RoomKey(float hctp_act) { return kRoomAct + uint32_t(hctp_act) - 12000; }
 
+// On his feet for an action-button gimmick: walking (20500), or standing still on the ground - motion 0
+// is standing as well as lying (a wrestler placed or idle since the bell).
+bool Afoot(uint32_t m, float y) { return m == kWalkBackstage || (m == 0 && std::fabs(y) < 1.0f); }
+
 // A victim held on a gimmick's act until 'until' (the act's last pose replayed, at the gimmick's place).
 void HoldVictim(PPCContext& ctx, uint8_t* base, const Prop& p, uint32_t key) {
   const uint32_t v = p.who;
@@ -1520,7 +1530,7 @@ bool Room32Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m
       if (dx * dx + dz * dz < 12.0f * 12.0f && !walking && m != prev && m != 0 && m != kLying)
         SandbagHit(ctx, base, p, f, whipped ? Param(p, 5, 1.5f) : Param(p, 3, 2.0f));
     }
-    if (p.kind == "treadmill" && p.state == 0 && p.cooldown == 0 && x_pressed && prev == kWalkBackstage) {
+    if (p.kind == "treadmill" && p.state == 0 && p.cooldown == 0 && x_pressed && Afoot(prev, y)) {
       const float dx = x - p.x, dz = z - p.z;
       if (dx * dx + dz * dz < Param(p, 2, 6.0f) * Param(p, 2, 6.0f) * 4.0f) {
         TreadmillOn(ctx, base, p, f, i);
@@ -1744,11 +1754,14 @@ void WindowHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
   REXLOG_INFO("hctp: fighter {} goes through {}", i, p.name);
 }
 
+bool HeliGrab(PPCContext& ctx, uint8_t* base, uint32_t f, int i, float x, float z);
+
 void Room33Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m, uint32_t prev, uint8_t touched,
                    float x, float y, float z, bool x_pressed) {
   for (Prop& p : g_room.props)
     if (p.kind == "window" && m == kWhipRun && InShape(p, int(Param(p, 5)), x, y, z, 6.0f)) WindowHit(ctx, base, p, f, i);
-  if (x_pressed && prev == kWalkBackstage && !g_poles.empty()) PoleClimb(ctx, base, f, i, x, y, z);
+  if (x_pressed && Afoot(prev, y) && !g_room.heli.empty() && HeliGrab(ctx, base, f, i, x, z)) return;
+  if (x_pressed && Afoot(prev, y) && !g_poles.empty()) PoleClimb(ctx, base, f, i, x, y, z);
   // the ladder (attribute 0xE0) and the wall up to the top level (0xE6): walking / running into them climbs
   const bool moving = m == kWalkBackstage || base[f + 1286];
   if (moving && touched == 0xE0 && m != RoomKey(12069)) {
@@ -1766,6 +1779,87 @@ void Room33Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m
   }
 }
 
+// GmHeli (512): flies its path (its act-10 root keys, interpolated); X under it grabs the rope ladder
+// (12000, then hanging 12001) - it climbs to ride height and the stick steers it within 60 of its path;
+// X lets go (12503), Y drops (12502); hit off the ladder: 12503.
+struct Heli {
+  uint32_t rider = 0;
+  float ox = 0, oz = 0, vx = 0, vz = 0, lift = 0;
+  int t = 0;
+};
+Heli g_heli;
+
+bool HeliPos(float* x, float* y, float* z, float* yaw) {
+  const auto& K = g_room.heli;
+  if (K.size() < 2) return false;
+  const float len = K.back()[0];
+  const float f = std::fmod(float(g_room.heli_t) / 2.0f, std::max(1.0f, len));
+  size_t k = 0;
+  while (k + 2 < K.size() && K[k + 1][0] <= f) ++k;
+  const float span = std::max(1.0f, K[k + 1][0] - K[k][0]), u = std::clamp((f - K[k][0]) / span, 0.0f, 1.0f);
+  *x = K[k][1] + (K[k + 1][1] - K[k][1]) * u + g_heli.ox;
+  *y = K[k][2] + (K[k + 1][2] - K[k][2]) * u + g_heli.lift;
+  *z = K[k][3] + (K[k + 1][3] - K[k][3]) * u + g_heli.oz;
+  *yaw = K[k][4] + std::remainder(K[k + 1][4] - K[k][4], 6.2831853f) * u;
+  return true;
+}
+
+bool HeliGrab(PPCContext& ctx, uint8_t* base, uint32_t f, int i, float x, float z) {
+  float hx, hy, hz, hyaw;
+  if (g_heli.rider || !HeliPos(&hx, &hy, &hz, &hyaw)) return false;
+  if (g_log) REXLOG_INFO("hctp: fighter {} X at ({:.0f} {:.0f}), the helicopter at ({:.0f} {:.0f} {:.0f})", i, x, z, hx, hy, hz);
+  // (=props test: the scripted pad's fighter grabs it from anywhere)
+  if ((x - hx) * (x - hx) + (z - hz) * (z - hz) > 120.0f && !(g_props_now && i == 0)) return false;
+  JumpAct(ctx, base, f, RoomKey(12000));
+  g_heli.rider = f, g_heli.t = 0;
+  REXLOG_INFO("hctp: fighter {} grabs the helicopter's ladder", i);
+  return true;
+}
+
+void UpdateHeli(PPCContext& ctx, uint8_t* base) {
+  Prop* h = FindKind("heli");
+  if (!h || g_room.heli.empty() || g_room.set_up_frames < 30) return;
+  ++g_room.heli_t;
+  const uint32_t f = g_heli.rider;
+  if (f) {
+    const uint32_t m = Rd32(base + f + 212);
+    const uint32_t input = svr2011::FighterInput(f);
+    const uint32_t pressed = input ? Rd32(base + input + 52) : 0;
+    const int32_t stick = input ? int32_t(Rd32(base + input + 56)) : -1;
+    ++g_heli.t;
+    g_heli.lift = std::max(-50.0f, g_heli.lift - 0.15f);  // (up to HCTP's ride height, -110)
+    if (stick >= 0 && stick < 8) {
+      const float a = float(stick - 4) * 0.785398f;
+      g_heli.vx = std::clamp(g_heli.vx - std::sin(a) * 0.025f, -2.0f, 2.0f);
+      g_heli.vz = std::clamp(g_heli.vz - std::cos(a) * 0.025f, -1.0f, 1.0f);
+    } else {
+      g_heli.vx *= 0.97f, g_heli.vz *= 0.97f;
+    }
+    g_heli.ox = std::clamp(g_heli.ox + g_heli.vx, -60.0f, 60.0f);
+    g_heli.oz = std::clamp(g_heli.oz + g_heli.vz, -60.0f, 60.0f);
+    const bool hanging = m == RoomKey(12000) || m == RoomKey(12001);
+    uint32_t drop = 0;
+    if (!hanging) drop = HighKey(12503);
+    else if ((pressed & kButtonX) && g_heli.t > 2 * 20) drop = HighKey(12503);
+    else if ((pressed & kButtonY) && g_heli.t > 2 * 20) drop = HighKey(12502);
+    if (drop) {
+      JumpAct(ctx, base, f, drop);
+      g_heli.rider = 0;
+      REXLOG_INFO("hctp: he lets go of the helicopter");
+    } else {
+      if (m == RoomKey(12000) ? g_heli.t >= 2 * Frames(RoomKey(12000), 40) : RdF(base + f + 24) >= float(Frames(m, 60) - 1))
+        JumpAct(ctx, base, f, RoomKey(12001));
+    }
+  } else {
+    g_heli.lift = std::min(0.0f, g_heli.lift + 0.15f);
+    g_heli.ox *= 0.99f, g_heli.oz *= 0.99f;
+  }
+  float x, y, z, yaw;
+  if (!HeliPos(&x, &y, &z, &yaw)) return;
+  for (int rec : h->recs) MoveRec(ctx, base, rec, x, y, z, 0, yaw, 0);
+  if (g_heli.rider) PlaceFighter(base, g_heli.rider, x, y + 38.0f, z + 4.0f, yaw);
+}
+
 void UpdateRoom33(PPCContext& ctx, uint8_t* base) {
   UpdateTraffic(ctx, base);
   UpdatePoles(ctx, base);
@@ -1777,7 +1871,6 @@ void UpdateRoom33(PPCContext& ctx, uint8_t* base) {
 // (86) onto whoever is in front (340). Driving into the reload zone (321) puts a new crate on (85).
 // X gets off (12084); knocked off: 12091. (input +48: buttons held, +52: pressed this frame; +56: the
 // stick's 8-way direction, -1 none - logged by the test to check)
-constexpr uint32_t kButtonB = 0x20, kButtonY = 0x10, kButtonR1 = 0x08;
 
 struct Forklift {
   uint32_t rider = 0;
@@ -1980,7 +2073,7 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
       Room31Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z);
       Room35Fighter(ctx, base, f, i, m, x, y, z);
       Room33Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z, x_pressed);
-      if (x_pressed && s.motion == kWalkBackstage)
+      if (x_pressed && Afoot(s.motion, y))
         if (Prop* fl = FindKind("forklift"); fl && ForkliftGetOn(ctx, base, *fl, f, i, x, z)) {
           s.motion = Rd32(base + f + 212);
           continue;
@@ -2148,6 +2241,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     g_later.clear();
     g_taxis.clear();
     g_fork = {};
+    g_heli = {};
     g_poles.clear();
     for (const auto& q : g_room.poles) g_poles.push_back({q[0], 0.0f, q[2]});
   }
@@ -2178,6 +2272,11 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   if (g_props_now && HctpRoom() == 31 && frame >= 1100 && frame < 1102)
     if (Prop* fl = FindKind("forklift"); fl && Rd32(base + kChars))
       PlaceFighter(base, Rd32(base + kChars), fl->x + 10.0f * std::cos(fl->ry), 0.0f, fl->z - 10.0f * std::sin(fl->ry), fl->ry);
+  // (room 33: fighter 0 - the test's pad - stands under the helicopter from 600 to 1200)
+  if (g_props_now && HctpRoom() == 33 && frame >= 600 && frame < 1200 && !g_heli.rider && Rd32(base + kChars)) {
+    float hx, hy, hz, hyaw;
+    if (HeliPos(&hx, &hy, &hz, &hyaw)) PlaceFighter(base, Rd32(base + kChars), hx, 0.0f, hz, 0.0f);
+  }
   if (g_props_now && HctpRoom() == 33 && frame >= 420 && frame < 422 && !g_poles.empty() && Rd32(base + kChars + 4)) {
     const uint32_t f1 = Rd32(base + kChars + 4);
     PlaceFighter(base, f1, g_poles[0].x, 0.0f, g_poles[0].z + 6.0f, 3.14159265f);
@@ -2230,11 +2329,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   UpdateRoom32(ctx, base);
   UpdateRoom33(ctx, base);
   UpdateForklift(ctx, base);
-  // (the helicopter flies its path: its own motion, the room's act 10, again when it ends)
-  if (Prop* h = FindKind("heli"); h && g_room.set_up_frames >= 30) {
-    if (g_room.heli_t == 0) PlayProp(ctx, base, *h, kObjAct + 10);
-    if (++g_room.heli_t >= 2 * Frames(kObjAct + 10, 1487)) g_room.heli_t = 0;
-  }
+  UpdateHeli(ctx, base);
 }
 
 }  // namespace svr2011
