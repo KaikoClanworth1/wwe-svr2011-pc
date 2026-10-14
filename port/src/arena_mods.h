@@ -75,6 +75,7 @@ struct BackstageRow {
     float x, y, z, yaw;
   };
   std::vector<Weapon> weapons;
+  bool no_weapons = false;  // weapons=none: no weapons lie in the area (not the room's own)
   std::string dir;  // the mod's folder (full path)
   // load_weapons=<model>,...: weapon models loaded for the match besides the area's own (the
   // game loads a hard-coded set per area; weapons= only places them) - for weapons made later

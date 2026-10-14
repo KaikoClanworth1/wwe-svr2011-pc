@@ -32,6 +32,7 @@ ROOM_30 = {
 ALPHA_ID = 18
 # parking model ids free for room models (the game hides 6, 7, 11 and 16 at times; 18 = the alpha parts)
 FREE_IDS = (0, 1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 15, 17, 19)
+MAX_MESHES = 64
 
 
 def room_table(stage):
@@ -53,6 +54,10 @@ def room_table(stage):
     for i in ids:
         f_ = fl.get(i, 'n')
         if 'e' in f_.split():
+            continue
+        # (an additive layer driven by a light motion - room 35's flood water, which never floods
+        # in HCTP: 2011 draws it as an opaque sheet over the square)
+        if 'a' in f_.split() and 'l(' in f_:
             continue
         groups.setdefault(f_, []).append(i)
     if len(groups) > len(FREE_IDS):
@@ -264,6 +269,22 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
             models[fid] = merge_jboy(parts, parts[0].name) if len(parts) > 1 else parts[0]
             # (only the letters 2011 knows: r / y are baked, l(..) / m(..) name HCTP motions)
             flags[fid] = ' '.join(k for k in fl.split() if k in ('n', 's', 'a', 'k', 'z', 'w', 'p')) or 'n'
+    # a model of more than MAX_MESHES meshes (room 34's ground: 99) is split over free ids
+    # (room 34 crashed at load with it whole; 71 load fine)
+    for fid in sorted(models):
+        while len(models[fid].meshes) > MAX_MESHES:
+            free = [i for i in FREE_IDS if i not in models]
+            if not free:
+                raise SystemExit('no free id to split a big model')
+            import copy
+            J = models[fid]
+            rest = copy.copy(J)
+            rest.meshes = J.meshes[MAX_MESHES:]
+            J.meshes = J.meshes[:MAX_MESHES]
+            for part in (J, rest):
+                part.nodes = [dict(n) for n in part.nodes]
+                part.nodes[0]['sphere'] = hctp2jboy.sphere_of([v[:3] for s in part.meshes for v in s.verts])
+            models[free[0]], flags[free[0]] = rest, flags[fid]
     if alpha_parts:
         import copy
         A = copy.copy(alpha_parts[0])

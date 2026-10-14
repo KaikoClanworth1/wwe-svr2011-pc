@@ -86,6 +86,7 @@ def opt(name):
     return v
 
 
-ov, rv = opt('--offset'), opt('--rotate')
+ov, rv, fv = opt('--offset'), opt('--rotate'), opt('--footprint')
 s8.build(pos[0], pos[1], pos[2], drop_cars='--drop-2011-cars' in a, report='--report' in a,
+         footprint=tuple(float(x) for x in fv.split(',')) if fv else s8.FOOTPRINT,
          offset=tuple(float(x) for x in ov.split(',')) if ov else None, rotate=int(rv) if rv else 0)
