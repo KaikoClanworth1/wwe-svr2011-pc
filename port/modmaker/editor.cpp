@@ -82,8 +82,11 @@ M4 LookAt(V3 eye, V3 at, V3 up) {
   std::memcpy(r.m, v, sizeof v);
   return r;
 }
+// x flipped: the game's view is left-handed - with the plain LookAt basis the writing on barriers and the stage
+// read mirrored next to the game's own shots (as the Full preview's did, 165a6fe). `mirror`
+// shows it the other way round. Only the view flips: positions are the game's either way.
 M4 Perspective(float fovy, float aspect, float zn, float zf, bool mirror) {
-  const float ys = 1.0f / std::tan(fovy / 2), xs = ys / aspect * (mirror ? -1.0f : 1.0f);
+  const float ys = 1.0f / std::tan(fovy / 2), xs = ys / aspect * (mirror ? 1.0f : -1.0f);
   M4 r;
   const float v[16] = {xs, 0, 0, 0, 0, ys, 0, 0, 0, 0, zf / (zf - zn), 1, 0, 0, -zn * zf / (zf - zn), 0};
   std::memcpy(r.m, v, sizeof v);
@@ -257,6 +260,8 @@ bool g_show_ceilings = false;
 float g_spot[5] = {};
 float g_yaw = 0.6f, g_pitch = 0.5f, g_dist = 180;
 bool g_mirror = false;
+// +1 / -1: which way the camera's x shows on screen (drags and arrow keys follow the screen, mirrored or not)
+float ScreenX() { return g_mirror ? 1.0f : -1.0f; }
 bool g_show_ring = true;
 M4 g_viewproj;
 ImVec2 g_vp_min, g_vp_size;
@@ -1714,13 +1719,13 @@ void ViewportInput(bool hovered) {
     if (io.MouseWheel != 0) g_dist = std::clamp(g_dist * std::pow(0.88f, io.MouseWheel), 10.0f, 2000.0f);
     if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
       const ImVec2 d = io.MouseDelta;
-      g_yaw -= d.x * 0.006f;
+      g_yaw -= ScreenX() * d.x * 0.006f;
       g_pitch = std::clamp(g_pitch + d.y * 0.006f, -0.2f, 1.55f);
     }
     if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
       const ImVec2 d = io.MouseDelta;
       const V3 fwd = Norm(g_target - Eye()), right = Norm(Cross({0, -1, 0}, fwd)), up = Cross(fwd, right);
-      g_target = g_target - right * (d.x * g_dist * 0.0015f) + up * (d.y * g_dist * 0.0015f);
+      g_target = g_target - right * (ScreenX() * d.x * g_dist * 0.0015f) + up * (d.y * g_dist * 0.0015f);
     }
   }
   Obj* sel = g_sel >= 0 && g_sel < int(g_objs.size()) ? &g_objs[g_sel] : nullptr;
@@ -1857,7 +1862,7 @@ void ViewportInput(bool hovered) {
     } else if (g_drag_axis == 4) {
       const float dx = m.x - g_drag_mouse.x;
       if (g_tool == Tool::kRotate) {
-        float yaw = g_drag_start_yaw + dx * 0.01f;
+        float yaw = g_drag_start_yaw + ScreenX() * dx * 0.01f;
         if (g_snap) yaw = std::round(yaw / (kPi / 12)) * (kPi / 12);
         sel->yaw = yaw;
       } else if (g_tool == Tool::kScale) {
@@ -1896,8 +1901,8 @@ void ViewportInput(bool hovered) {
     {
       V3 d;
       const float step = g_snap_step * (io.KeyShift ? 10 : 1);
-      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) d.x -= step;
-      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) d.x += step;
+      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) d.x -= ScreenX() * step;  // (left / right on the screen from the hard camera)
+      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) d.x += ScreenX() * step;
       if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) d.z -= step;
       if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) d.z += step;
       if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) d.y -= step;
