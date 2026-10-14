@@ -304,6 +304,7 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
 #endif
   // Automated tests: the only controller is one driven by a command file.
   if (std::string file = Env("SVR2011_INPUT_FILE"); !file.empty()) {
+    svr2011::InstallScriptLogSink();  // (now: logging is up, no game thread yet)
     config.input_factory = [file](bool) -> std::unique_ptr<rex::system::IInputSystem> {
       auto input = std::make_unique<rex::input::InputSystem>(nullptr);
       input->AddDriver(std::make_unique<svr2011::ScriptInputDriver>(file));

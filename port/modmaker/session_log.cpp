@@ -6,11 +6,13 @@
 #include <shlobj.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <mutex>
+#include <thread>
 
 #include "app.h"
 #include "mod_check.h"
@@ -285,8 +287,15 @@ std::string g_test;       // --test-report
 bool g_test_pending = false;
 int g_test_frames = 0;
 
-std::string ModDoctor() {
-  if (g_game.empty()) return "(no game folder)\n";
+// What the report needs from the UI thread, taken before the worker starts.
+struct Snapshot {
+  std::string description, system, project, tools;
+  std::wstring game, project_file;
+  bool test = false;
+};
+
+std::string ModDoctor(const std::wstring& game) {
+  if (game.empty()) return "(no game folder)\n";
   std::string text;
   auto put = [&](const std::string& who, const std::vector<Problem>& p) {
     if (p.empty()) text += who + " | ok\n";
@@ -295,23 +304,22 @@ std::string ModDoctor() {
   put("(set)", CheckInstalledSet());
   std::error_code ec;
   for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes"})
-    for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / kind, ec))
+    for (const auto& e : fs::directory_iterator(fs::path(game) / L"Mods" / kind, ec))
       if (e.is_directory(ec) && e.path().filename().wstring()[0] != L'.')
         put(std::string(kind) + "/" + Utf8(e.path().filename().wstring()), CheckModFolder(kind, e.path()));
   return text;
 }
 
-// Makes the zip; its path, or "" (logged).
-std::wstring MakeReport(const std::string& description) {
+// Makes the zip (a worker thread); its path, or "" (logged).
+std::wstring BuildReport(const Snapshot& s) {
   std::vector<ZipEntry> z;
   auto add = [&](std::string name, const std::string& text) {
     std::replace(name.begin(), name.end(), '\\', '/');
     const std::string r = Redact(text);
     z.push_back({name, Bytes(r.begin(), r.end())});
   };
-  Line("report: making a report");
-  add("report.txt", description + "\n\nSvR 2011 Mod Maker problem report, made " + Stamp("%Y-%m-%d %H:%M:%S") + "\n" +
-                        SystemText() +
+  add("report.txt", s.description + "\n\nSvR 2011 Mod Maker problem report, made " + Stamp("%Y-%m-%d %H:%M:%S") + "\n" +
+                        s.system +
                         "contents: the newest Mod Maker session logs (logs/), the open project's text files "
                         "(project/), the converters' newest report and log (convert/), the tools check (tools.txt), "
                         "the mod doctor on the installed mods (mod_doctor.txt); internet addresses, the Windows user "
@@ -321,18 +329,16 @@ std::wstring MakeReport(const std::string& description) {
     std::lock_guard lock(g_mutex);
     if (g_file) std::fflush(g_file);
   }
-  std::vector<fs::path> logs = Logs(LogDir());
-  if (!g_game.empty() && LogDir() != SettingsDir() / L"logs")  // (a session before the game folder was set)
+  const fs::path log_dir = s.game.empty() ? SettingsDir() / L"logs" : fs::path(s.game) / L"logs";
+  std::vector<fs::path> logs = Logs(log_dir);
+  if (log_dir != SettingsDir() / L"logs")  // (a session before the game folder was set)
     for (const auto& p : Logs(SettingsDir() / L"logs")) logs.push_back(p);
   for (size_t i = 0; i < logs.size() && i < kReportLogs; ++i)
     add("logs/" + PathStr(logs[i].filename()), ReadTail(logs[i], kTextCap));
   // the open project: its state, and the text files in its .svrproj / mod folder
-  std::string project = "page " + std::string(PageName(g_project_page)) + "\nfile " +
-                        (g_project_file.empty() ? std::string("(unsaved)") : Utf8(g_project_file)) + "\n\n";
-  if (g_state) project += g_state();
-  add("project/state.txt", project);
-  if (!g_project_file.empty()) {
-    const fs::path pf = g_project_file;
+  add("project/state.txt", s.project);
+  if (!s.project_file.empty()) {
+    const fs::path pf = s.project_file;
     std::error_code ec;
     if (fs::is_directory(pf, ec)) {
       for (const auto& e : fs::recursive_directory_iterator(pf, ec))
@@ -347,8 +353,8 @@ std::wstring MakeReport(const std::string& description) {
     }
   }
   // the converters' work folder: the newest report.json and log
-  if (!g_game.empty()) {
-    const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
+  if (!s.game.empty()) {
+    const fs::path work = fs::path(s.game) / L"Mods" / L".convert";
     const fs::path rep = Newest(work, [](const fs::path& p) { return Lower(PathStr(p.filename())) == "report.json"; });
     const fs::path log = Newest(work, [](const fs::path& p) { return Lower(p.extension().string()) == ".log"; });
     std::error_code ec;
@@ -356,10 +362,10 @@ std::wstring MakeReport(const std::string& description) {
     if (!log.empty()) add("convert/" + PathStr(fs::relative(log, work, ec)), ReadTail(log, kSmallCap));
     if (rep.empty() && log.empty()) add("convert/none.txt", "No report.json or log in Mods\\.convert.\n");
   }
-  add("tools.txt", ToolsReport());
-  add("mod_doctor.txt", ModDoctor());
+  add("tools.txt", s.tools);
+  add("mod_doctor.txt", ModDoctor(s.game));
   // the zip, where the launcher puts its reports
-  const fs::path dir = (g_game.empty() ? SettingsDir() : fs::path(g_game)) / L"Reports";
+  const fs::path dir = (s.game.empty() ? SettingsDir() : fs::path(s.game)) / L"Reports";
   std::error_code ec;
   fs::create_directories(dir, ec);
   const fs::path zip = dir / Wide("SvR2011-ModMaker-report-" + Stamp("%Y%m%d-%H%M%S") + ".zip");
@@ -371,6 +377,37 @@ std::wstring MakeReport(const std::string& description) {
   return zip.wstring();
 }
 
+std::atomic<bool> g_gathering{false};  // a report being made (its worker runs)
+
+// The UI thread's part, then the worker (the mod doctor reads every installed mod: a big Mods folder takes a while).
+void StartReport(const std::string& description, bool test) {
+  if (g_gathering) return;
+  Snapshot s;
+  s.description = description;
+  s.system = SystemText();
+  s.game = g_game;
+  s.project_file = g_project_file;
+  s.project = "page " + std::string(PageName(g_project_page)) + "\nfile " +
+              (g_project_file.empty() ? std::string("(unsaved)") : Utf8(g_project_file)) + "\n\n" + (g_state ? g_state() : "");
+  s.tools = ToolsReport();
+  s.test = test;
+  // (the game data the mod doctor shares with the pages, loaded here first: the pages read it while the worker runs)
+  if (!g_game.empty()) MoveInfos(), EntrancesReady();
+  Line("report: making a report");
+  g_gathering = true;
+  std::thread([s] {
+    const std::wstring zip = BuildReport(s);
+    OnUiThread([zip, test = s.test] {
+      g_gathering = false;
+      g_made = zip;
+      if (test) {
+        Log("report test: " + Utf8(zip));
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      }
+    });
+  }).detach();
+}
+
 std::string Describe() {
   return std::string("SvR 2011 Mod Maker ") + PORT_VERSION + "\nProblem: " + kKinds[g_kind] + "\nHappens: " + kAgain[g_again] +
          "\n\nWhat happened:\n" + g_what + "\n\nJust before:\n" + (g_before[0] ? g_before : "(not said)") + "\n";
@@ -380,7 +417,14 @@ void Window() {
   if (g_open) ImGui::OpenPopup("Report a problem"), g_open = false;
   ImGui::SetNextWindowSize(ImVec2(620 * g_scale, 0), ImGuiCond_Always);  // (the height fits each page)
   if (!ImGui::BeginPopupModal("Report a problem", nullptr, ImGuiWindowFlags_NoSavedSettings)) return;
-  if (g_made.empty()) {
+  if (g_gathering) {
+    const char spin[] = "|/-\\";
+    ImGui::Text("%c  Gathering the report ...", spin[int(ImGui::GetTime() * 8) & 3]);
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("The logs, your project, the converters' last report, the tools and the mod doctor on every "
+                        "installed mod - a big Mods folder takes a little while.");
+    ImGui::PopTextWrapPos();
+  } else if (g_made.empty()) {
     ImGui::TextWrapped("Tell us what went wrong. The report also has the Mod Maker's own record of what it did "
                        "(pages, projects, converters and their output) - no passwords, no internet addresses, no "
                        "disc images or game files.");
@@ -398,8 +442,7 @@ void Window() {
     ImGui::BeginDisabled(!said);
     if (ImGui::Button("Make the report")) {
       g_description = Describe();
-      g_made = MakeReport(g_description);
-      if (g_made.empty()) ImGui::CloseCurrentPopup();
+      StartReport(g_description, false);
     }
     ImGui::EndDisabled();
     if (!said && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Say what happened first.");
@@ -455,9 +498,7 @@ void Tick() {
   if (g_test_pending && ++g_test_frames > 30) {
     g_test_pending = false;
     std::strncpy(g_what, g_test.c_str(), sizeof g_what - 1);
-    g_made = MakeReport(Describe());
-    Log("report test: " + Utf8(g_made));
-    PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    StartReport(Describe(), true);  // (logs the zip and closes the Mod Maker when it's done)
   }
   Window();
 }

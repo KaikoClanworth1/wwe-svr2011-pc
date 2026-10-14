@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <set>
@@ -882,6 +883,11 @@ std::unordered_map<uint32_t, uint32_t> g_attire_own;    // id -> attires its own
 std::set<uint32_t> g_attire_gear;                         // ids with entrance gear models (ExtraKinds): no new attires
 constexpr uint32_t kAttireModNameIds = 0xB400;           // string ids for attire mods' names
 
+// Attire mods with no model (Simple entrance porting: "a superstar in the game"): only an entrance for one of the
+// superstar's own attires - not an attire of their own (no name, no slot of the attire rule); the first folder
+// (A-Z) for an attire keeps it. (id, attire digit) -> entrance.
+std::map<std::pair<uint32_t, uint32_t>, int> g_attire_entrance_only;
+
 const AttireMod* AttireModOf(uint32_t id, uint32_t attire) {
   for (const auto& a : g_attire_mods)
     if (a.id == id && a.attire == attire) return &a;
@@ -941,6 +947,19 @@ void LoadAttireMods() {
         REXLOG_WARN("[svr2011] attire mods: {}: attire={} (1-4 or new)", p.a.folder, p.which);
         continue;
       }
+    }
+    if (!fs::exists(f / p.model, ec)) {  // (no model: an entrance for one of the superstar's own attires, or nothing)
+      if (p.asked && p.a.entrance > 0) {
+        if (g_attire_entrance_only.emplace(std::make_pair(p.a.id, uint32_t(p.asked - 1)), p.a.entrance).second)
+          REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {}: entrance {} (no model of its own)", p.a.folder,
+                      p.a.id, p.asked, p.a.entrance);
+        else
+          REXLOG_WARN("[svr2011] attire mods: {}: superstar {} attire {} has an entrance from another mod already - left out",
+                      p.a.folder, p.a.id, p.asked);
+      } else {
+        REXLOG_WARN("[svr2011] attire mods: {}: no {} (and no entrance= for attire 1-4) - left out", p.a.folder, p.model);
+      }
+      continue;
     }
     char stock[32];
     std::snprintf(stock, sizeof stock, "ch%03u.pac", p.a.id);
@@ -1888,8 +1907,10 @@ int EntranceForAttire(PPCContext& ctx, uint8_t* base, uint32_t mgr, uint32_t idx
   const Mod* m = ModOf(key / 100);
   const uint32_t attire = key / 10 % 10;
   int own = -1;  // (an attire mod's entrance=)
-  if (!m)
+  if (!m) {
     if (const AttireMod* am = AttireModOf(key / 100, attire); am && am->entrance > 0) own = am->entrance;
+    else if (const auto it = g_attire_entrance_only.find({key / 100, attire}); it != g_attire_entrance_only.end()) own = it->second;
+  }
   if (own <= 0 && (!m || attire >= 4 || m->attire_entrance[attire] <= 0)) return -1;
   if (part0 && base[mgr + 36 + idx * 280 + 195]) return -1;  // (a created entrance)
   const auto saved = ctx;
@@ -2632,6 +2653,7 @@ void PrepareAttirePacks(const fs::path& game) {
     char stock[32];
     std::snprintf(stock, sizeof stock, "ch%03u.pac", id);
     if (!(AttireMask(game / "pac" / "ch" / stock, id) >> a & 1)) continue;  // (a new attire: mounted as a guest pac)
+    if (!fs::exists(f / model, ec)) continue;  // (no model: an entrance only, LoadAttireMods)
     if (!taken.insert({id, a}).second) continue;
     const fs::path pd = out / f.filename();
     keep.insert(f.filename().string());

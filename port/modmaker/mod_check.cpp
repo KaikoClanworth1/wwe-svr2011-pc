@@ -564,6 +564,36 @@ void CheckAttire(const fs::path& dir, std::vector<Problem>& p) {
   long slot = 0;
   if (at != "new" && !IsInt(at, 1, 4, &slot))
     p.push_back(Error("This outfit isn't set to one of the superstar's 4 outfit places: the game leaves it out.").With("Add it as a new outfit", Set(dir, "attire", "new")));
+  const std::string model = Trim(m.Get("model"));
+  const StarInfo* si = star >= 100 ? StarById(int(star)) : nullptr;
+  const std::string who = si ? si->name : std::string("the superstar");
+  long entrance = 0;
+  if (!Exists(dir / "attire.pac") && model.empty() && IsInt(Trim(m.Get("entrance")), 1, 65535, &entrance)) {
+    // (no model: only an entrance for one of the superstar's own attires - Simple entrance porting)
+    if (at == "new")
+      p.push_back(Error("This entrance isn't tied to one of " + who + "'s outfits, so the game can't use it.").With("Use outfit 1", Set(dir, "attire", "1")));
+    if (slot && star >= 100 && !g_game.empty()) {
+      const auto own = StarAttiresOf(int(star));
+      if (std::find(own.begin(), own.end(), int(slot)) == own.end())
+        p.push_back(Warning("This entrance is for outfit " + at + ", which " + who + " doesn't have: it's only used when a mod gives them that outfit.")
+                        .With("Use outfit 1", Set(dir, "attire", "1")));
+    }
+    std::error_code ec;
+    std::vector<fs::path> dirs;  // (another entrance for the same attire: the first A-Z keeps it)
+    for (const auto& e : fs::directory_iterator(dir.parent_path(), ec))
+      if (e.is_directory(ec) && e.path() != dir && !Exists(e.path() / "disabled")) dirs.push_back(e.path());
+    std::sort(dirs.begin(), dirs.end());
+    for (const auto& d : dirs) {
+      const Manifest o = ReadManifest(d);
+      if (Trim(o.Get("superstar")) == std::to_string(star) && Trim(o.Get("attire")) == at && !Trim(o.Get("entrance")).empty() &&
+          !Exists(d / "attire.pac") && Trim(o.Get("model")).empty() && d < dir) {
+        p.push_back(Warning("Another mod (\"" + PathStr(d.filename()) + "\") also gives " + who + " an entrance for outfit " + at +
+                            ", and it wins: this one isn't used.").With("Turn this one off", TurnOff(dir)).With("Turn the other off", TurnOff(d)));
+        break;
+      }
+    }
+    return;
+  }
   if (!Exists(dir / "attire.pac"))
     p.push_back(Error("The outfit's model file is missing: the launcher won't install it.").With(kOpen, OpenIt(dir)));
   else if (!PacIsEpk8WithModels(dir / "attire.pac", true))
@@ -584,7 +614,8 @@ void CheckAttire(const fs::path& dir, std::vector<Problem>& p) {
     std::sort(dirs.begin(), dirs.end());
     for (const auto& d : dirs) {
       const Manifest o = ReadManifest(d);
-      if (Trim(o.Get("superstar")) == std::to_string(star) && Trim(o.Get("attire")) == at) {
+      if (Trim(o.Get("superstar")) == std::to_string(star) && Trim(o.Get("attire")) == at &&
+          (Exists(d / "attire.pac") || !Trim(o.Get("model")).empty())) {  // (an entrance-only mod holds no attire)
         p.push_back(Warning("Another outfit mod (\"" + PathStr(d.filename()) + "\") wants the same outfit place: when you play, the launcher "
                             "moves one of them to a free place.").With("Add this one as a new outfit", Set(dir, "attire", "new")));
         break;

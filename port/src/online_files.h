@@ -10,10 +10,11 @@
 //
 // Mod set: the enabled mods that change gameplay - Mods\Superstars, Moves,
 // Arenas, Backstage (id, version, a CRC of their files but pictures, sounds
-// and movies) - and the match type switches (MatchTypes: on / off, they
-// change the menus). Cosmetic mods (texture packs, Signs, Media, menu
-// backgrounds, music) are left out. Two players play online only with the
-// same set.
+// and movies). Cosmetic mods (texture packs, Signs, Media, menu backgrounds,
+// music) and the match type switches (Mods\MatchTypes: they only change
+// the menus; in an online match every type is on, match_types.h) are left
+// out - the other side's "MatchTypes" lines (2.1.1 and older sent the
+// switches off) too. Two players play online only with the same set.
 //
 // Version: only the newest release goes online. At start (on a thread) the
 // newest release of the port's GitHub repository (as the launcher's updater:
