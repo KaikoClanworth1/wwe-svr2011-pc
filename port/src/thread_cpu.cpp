@@ -36,7 +36,10 @@
 
 #include <fmt/format.h>
 
+#include <rex/ppc.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/thread_state.h>
+#include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 #include <rex/logging.h>
 #include <rex/thread.h>
@@ -176,6 +179,59 @@ void NoteThreadRole(const char* role) {
 
 namespace {
 
+uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+
+// A hang note: where the guest thread `host_tid` is (its last call boundary:
+// lr = the last call made, ctr, r3, then the stack's saved return addresses).
+void LogSpinningThread(uint32_t host_tid, double pct, double logic) {
+  auto* kernel = REX_KERNEL_STATE();
+  auto* memory = kernel ? kernel->memory() : nullptr;
+  if (!memory) return;
+  uint8_t* base = memory->virtual_membase();
+  const auto readable = [&](uint32_t a) {
+    auto* heap = memory->LookupHeap(a);
+    return heap && heap->QueryRangeAccess(a, a + 3) != rex::memory::PageAccess::kNoAccess;
+  };
+  for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
+    if (!t || !t->thread() || t->thread()->system_id() != host_tid) continue;
+    if (!t->is_guest_thread() || !t->thread_state() || !t->thread_state()->context() || !t->pcr_ptr()) return;
+    const PPCContext* c = t->thread_state()->context();
+    const uint32_t hi = Rd32(base + t->pcr_ptr() + 0x70), lo = Rd32(base + t->pcr_ptr() + 0x74);
+    const auto in_stack = [&](uint32_t a) { return lo < hi && a >= lo && a + 4 <= hi && readable(a); };
+    std::string chain;
+    uint32_t sp = c->r1.u32;
+    for (int i = 0; i < 12 && in_stack(sp); ++i) {
+      const uint32_t prev = Rd32(base + sp);
+      if (prev <= sp || !in_stack(prev) || !in_stack(prev - 8)) break;
+      chain += fmt::format(" {:08X}", Rd32(base + prev - 8));
+      sp = prev;
+    }
+    REXLOG_WARN("hang? the game's logic thread at {:.1f}% for 20 s while thread {:08X} (g{:08X}) runs at {:.0f}%: lr {:08X} "
+                "ctr {:08X} r3 {:08X}, stack{}",
+                logic, t->thread_id(), t->creation_params()->start_address, pct, uint32_t(c->lr), c->ctr.u32,
+                c->r3.u32, chain.empty() ? " -" : chain);
+    return;
+  }
+}
+
+// Logic under 5% while one guest thread is above 90%, 4 samples (20 s) in a
+// row: noted once (again only after it ends). A start-up hang (2.1.1 report:
+// a job thread at 97% after the created superstars loaded, no main menu) left
+// nothing in the log saying where.
+void CheckHang(bool logic_seen, double logic, uint32_t top_tid, double top_pct) {
+  static int samples = 0;
+  static bool noted = false;
+  static const double busy = std::getenv("SVR2011_TEST_HANG_PCT") ? std::atof(std::getenv("SVR2011_TEST_HANG_PCT")) : 90.0;  // (test: lower)
+  if (!logic_seen || logic >= 5.0 || top_pct <= busy) {
+    samples = 0, noted = false;
+    return;
+  }
+  if (++samples >= 4 && !noted) {
+    noted = true;
+    LogSpinningThread(top_tid, top_pct, logic);
+  }
+}
+
 std::string Line() {
   const auto now = Clock::now();
   const std::vector<ThreadTime> threads = ReadThreads();
@@ -197,6 +253,8 @@ std::string Line() {
   g_last_at = now;
   std::map<std::string, double> by_label;
   std::unordered_map<uint32_t, uint64_t> next;
+  uint32_t top_tid = 0;  // (the busiest guest thread: the hang note)
+  double top_pct = 0;
   for (const ThreadTime& t : threads) {
     next[t.tid] = t.cpu_ns;
     if (first || wall_ns <= 0) continue;
@@ -210,10 +268,15 @@ std::string Line() {
     else if (auto g = guest.find(t.tid); g != guest.end()) label = fmt::format("g{:08X}", g->second);
     else if (Has(t.name, "timer")) label = "timers";
     else label = "other";
-    by_label[label] += 100.0 * double(delta) / wall_ns;
+    const double pct = 100.0 * double(delta) / wall_ns;
+    by_label[label] += pct;
+    if (label[0] == 'g' && label != "gpu" && pct > top_pct) top_tid = t.tid, top_pct = pct;
   }
   g_last_cpu = std::move(next);
   if (first) return {};
+  bool logic_seen = false;
+  for (const auto& [tid, role] : g_roles) logic_seen |= std::strcmp(role.c_str(), "logic") == 0;
+  CheckHang(logic_seen, by_label.count("logic") ? by_label["logic"] : 0.0, top_tid, top_pct);
   std::vector<std::pair<double, std::string>> sorted;
   double total = 0;
   for (const auto& [label, pct] : by_label) sorted.emplace_back(pct, label), total += pct;
