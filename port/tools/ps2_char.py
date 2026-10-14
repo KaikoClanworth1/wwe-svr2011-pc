@@ -119,7 +119,7 @@ def dpac(d):
 def dpk8(d):
     """DPK8 (the PS2 SvR 2010 / 2011) -> [(group, id, offset, size)]: groups {tag4, u32 n (0x4000: 12-byte
     entries)}, entries {name8, u16 sector, u16 size / 0x100}; the EMD groups name their models in 8 hex
-    digits: a 4-digit prefix and the XXYZ id as before ("00010201": character 02, attire 0, part 1)"""
+    digits: "000", the 3-digit superstar id, the attire, the part ("00010201": superstar 102, attire 0, part 1)"""
     if d[:4] != b'DPK8':
         raise BadInput('not a DPK8 archive')
     out = []
@@ -354,6 +354,7 @@ SERIALS = {   # PS2 disc serial -> game
     'SLES_536.76': 'WWE SmackDown! vs. Raw 2006', 'SLUS_211.34': 'WWE SmackDown! vs. Raw 2006',
     'SLES_544.89': 'WWE SmackDown vs. Raw 2007 (PS2)', 'SLUS_214.27': 'WWE SmackDown vs. Raw 2007 (PS2)',
     'SLES_548.79': 'WWE SmackDown vs. Raw 2008 (PS2)', 'SLES_552.51': 'WWE SmackDown vs. Raw 2009 (PS2)',
+    'SLES_555.45': 'WWE SmackDown vs. Raw 2010 (PS2)', 'SLES_556.35': 'WWE SmackDown vs. Raw 2011 (PS2)',
 }
 
 
@@ -376,6 +377,7 @@ class Yukes:
         self.old_materials = any(k in self.game for k in ('Just Bring It', 'Shut Your Mouth', 'Here Comes the Pain'))
         self.entries = {}   # id -> (pac path, offset, size)
         self._shape = {}
+        self.dpk8 = False   # (PS2 SvR 2010 / 2011: 8-digit names "000" + 3-digit superstar id + attire + part)
         for p in self.PACS:
             if not disc.exists(p):
                 continue
@@ -384,6 +386,8 @@ class Yukes:
                 continue
             for _, id_, off, size in (dpac(head) if head[:4] == b'DPAC' else dpk8(head)):
                 self.entries[id_] = (p, off, size)
+            if head[:4] == b'DPK8':
+                self.dpk8 = True
         if not self.entries:
             raise BadInput('no DPAC character archive (CH.PAC) on this disc')
 
@@ -416,8 +420,11 @@ class Yukes:
         """{(character, attire): [model ids]}"""
         out = {}
         for id_ in sorted(self.entries):
-            low = id_ & 0xFFFF   # (DPK8 names: a 4-digit prefix + the XXYZ id)
-            key = (low >> 8, (low >> 4) & 0xF)
+            if self.dpk8:   # ("00020101": superstar 201 (key 0x201: its decimal digits as hex), attire 0, part 1)
+                raw = '%08x' % id_
+                key = (int(raw[3:6], 16), int(raw[6], 16))
+            else:
+                key = (id_ >> 8, (id_ >> 4) & 0xF)
             out.setdefault(key, []).append(id_)
         return out
 
