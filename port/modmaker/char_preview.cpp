@@ -1138,8 +1138,10 @@ float4 ps(VO i) : SV_Target {
   float rim = pow(1 - saturate(dot(n, -fwd.xyz)), 3) * 0.45;
   float3 h = normalize(key.xyz - fwd.xyz);  // the key light's highlight
   float mask = mat.w > 2.5 ? tm.Sample(s, i.uv).a : mat.w > 1.5 ? dot(tx.rgb, float3(0.3, 0.59, 0.11)) : mat.w > 0.5 ? tx.a : 1;
-  float shine = saturate(mat.x / 2) * mask * pow(saturate(dot(n, h)), clamp(mat.y, 1, 300)) * 0.9;
-  return float4(tx.rgb * tint.rgb * (amb + 0.80 * k + 0.28 * f + rim) + shine * k, 1);
+  float3 h2 = normalize(fill.xyz - fwd.xyz);  // (the game lights skin with four lights: the fill shines too)
+  float pw = clamp(mat.y, 1, 300);
+  float shine = mat.x * 0.45 * mask * (pow(saturate(dot(n, h)), pw) + 0.6 * pow(saturate(dot(n, h2)), pw));  // (linear in g_fSpecularLev, as the game)
+  return float4(tx.rgb * tint.rgb * (amb + 0.80 * k + 0.28 * f + rim) + shine * max(k, f), 1);
 }
 )";
 
