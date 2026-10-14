@@ -38,7 +38,7 @@ SERIALS = {'ps2_jbi': ('SLES_504.77', 'SLUS_202.69'), 'ps2_sym': ('SLES_512.83',
 # model character id (XX of model id XXYZ) -> CHAR record number: the hex digits read as decimal (+ offset), or
 # the id as a number (PS2 2009); PS2 2007-2010 records are the X360 games' (2010's numbered from 100)
 UNGROUPED = {'ps2_jbi'}   # (every model its own id, attire 0: a superstar's models share a name)
-NUMBERING = {'ps2_svr09': ('int', 0), 'ps2_svr10': ('dec', 100)}
+NUMBERING = {'ps2_jbi': ('dec100', 0), 'ps2_svr09': ('int', 0), 'ps2_svr10': ('dec', 100)}
 JUNK = re.compile(r'^(edit ?\d+|dlc ?\d+|0|dummy|motion test.*|moves? (set|man).*|.* bra \d+|average|speedy|wbm|green|red|'
                   r'ojl|ktm|omp|ms|unknown \d+.*|)$', re.I)   # (SYM's OJL / KTM / OMP / MS: no person)
 # (no gender in the name records: the women of the rosters by name - 2011's own gender wins when it has her)
@@ -97,9 +97,10 @@ class GamePS2:
         if kind == 'int':
             return c + off
         try:
-            return int('%x' % c) + off
+            n = int('%x' % c)
         except ValueError:
             return None
+        return (n % 100 if kind == 'dec100' else n) + off   # (JBI: model XYY = attire X of record YY)
 
     record_number = number
 
@@ -115,9 +116,12 @@ class GamePS2:
         return out
 
     def same_name(self, c):
-        """the other models of this superstar in a game that keeps one model per id (JBI)"""
+        """the other models of this superstar in a game that keeps one model per id (JBI): his other attires (model
+        X<record>: the same record) first, then models of other records with his name"""
         n = self.name(c).lower()
-        return [x for x in sorted(self.chars) if x != c and self.number(x) in self.names and self.name(x).lower() == n]
+        same = [x for x in sorted(self.chars) if x != c and self.number(x) == self.number(c)]
+        return same + [x for x in sorted(self.chars) if x != c and x not in same and self.number(x) in self.names
+                       and self.name(x).lower() == n]
 
     def name(self, c):
         return self.names.get(self.number(c), '')
@@ -191,9 +195,12 @@ def build_ps2(cid, outdir, o, rep):
     SP.progress(15, 'model')
     ats = sorted(g.chars[cid])
     pick = [int(x) for x in o['attires'].split(',')] if o.get('attires') else ats[:4]
-    if g.game_id in UNGROUPED and g.same_name(cid):
-        drop('%d more %s model(s) of his (%s): one per mod for now' % (len(g.same_name(cid)), g.label,
-                                                                      ', '.join('%x' % x for x in g.same_name(cid))))
+    models = None
+    if g.game_id in UNGROUPED:   # (one model per id: his models by name become attires 1-4, ps2_char --models)
+        models = [cid] + g.same_name(cid)
+        if len(models) > 4:
+            drop('%s model(s) %s (a mod holds 4)' % (g.label, ', '.join('%x' % x for x in models[4:])))
+        models = models[:4]
     if len(ats) > 4 and not o.get('attires'):
         drop('attires %s (a mod holds 4; --attires to choose)' % ', '.join(str(a) for a in ats[4:]))
     pw = os.path.join(work, 'ps2_char')
@@ -203,6 +210,8 @@ def build_ps2(cid, outdir, o, rep):
     import subprocess
     args = [sys.executable, os.path.join(HERE, 'ps2_char.py'), g.path, '%x' % cid, pw, '--template', tmpl,
             '--attire', ','.join(str(a) for a in pick)]
+    if models:
+        args[-2:] = ['--models', ','.join('%x' % x for x in models)]
     r = subprocess.run(args, capture_output=True, text=True)
     try:
         pr = json.load(open(os.path.join(pw, 'report.json')))
