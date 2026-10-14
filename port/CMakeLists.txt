@@ -69,6 +69,7 @@ set(SVR2011_SOURCES
     src/sort_filters.cpp
     src/arena_mods.cpp
     src/ring_rules.cpp
+    src/hctp_room.cpp
     src/superstar_mods.cpp
     src/crowd_signs.cpp
     src/media_mods.cpp

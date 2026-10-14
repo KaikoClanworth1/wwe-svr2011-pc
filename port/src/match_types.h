@@ -35,6 +35,14 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base);
 // Menu text of the match rows added at run time (string id), else 0.
 uint32_t MatchTypeString(uint32_t id);
 
+// A fighter's input object (its control +36, seen once a frame; 0 if none):
+// +68 buttons pressed this frame, +76 held (X = 0x10).
+uint32_t FighterInput(uint32_t fighter);
+
+// Each world update (frame_rate.cpp): an HCTP backstage room's gimmicks
+// (hctp_room.cpp; only in a match from a row with hctp=).
+void HctpRoomUpdate(PPCContext& ctx, uint8_t* base);
+
 // Slobber Knocker (slobber_knocker.cpp): the match set up is one
 // (match_types.cpp), a new one starts, and each world update while it runs.
 bool SlobberKnockerMatch();
