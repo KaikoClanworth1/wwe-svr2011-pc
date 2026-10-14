@@ -937,6 +937,41 @@ void FollowCursor(int row, int col) {
 // as another arena (RedirectArena: the stock practice ring) gets that number
 // here, on the screen, before the copy - as if picked in SELECT ARENA. (Not on
 // the live record after it: parts of the load keep the number they read first.)
+// The crowd's flip-flop buffer index (0x82E35380: sub_8217D070 flips it 0 <-> 1
+// once a frame; the crowd renderer sub_8217DCE8 picks buffer 0x82D61290 +
+// index * 0x1E00C by it). Ported WWE 2K14+ arenas now and then crashed at load
+// with it holding garbage (~8133: lr 8217FF84, a null count array) - under load,
+// in the full pass, not in repeat runs of the same files. It has two valid
+// states: anything else is reset to 0, logged once per match with the arena and
+// the crowd frame count.
+std::atomic<int> g_crowd_arena{-1};
+std::atomic<uint32_t> g_crowd_frames{0};
+std::atomic<bool> g_crowd_guard_logged{false};
+
+void CrowdIndexGuard(uint8_t* base, const char* where) {
+  constexpr uint32_t kCrowdIndex = 0x82E35380;
+  uint8_t* q = base + kCrowdIndex;
+  const uint32_t v = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
+  if (v <= 1) return;
+  q[0] = q[1] = q[2] = q[3] = 0;
+  if (!g_crowd_guard_logged.exchange(true))
+    REXLOG_WARN("[svr2011] crowd guard: buffer index {:08X} (not 0 / 1) reset to 0 in {} - arena {}, crowd frame {}", v,
+                where, g_crowd_arena.load(), g_crowd_frames.load());
+}
+
+REX_EXTERN(__imp__sub_8217D070);
+REX_HOOK_RAW(sub_8217D070) {
+  CrowdIndexGuard(base, "the flip");
+  g_crowd_frames.fetch_add(1);
+  __imp__sub_8217D070(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_8217DCE8);
+REX_HOOK_RAW(sub_8217DCE8) {
+  CrowdIndexGuard(base, "the crowd renderer");
+  __imp__sub_8217DCE8(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_82773F00);
 REX_HOOK_RAW(sub_82773F00) {
   constexpr uint32_t kMatchScreen = 0x82EDEB48, kScreenArena = 244;
@@ -944,8 +979,10 @@ REX_HOOK_RAW(sub_82773F00) {
     const uint8_t* q = base + a;
     return uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
   };
+  g_crowd_guard_logged = false, g_crowd_frames = 0;  // (the crowd guard: once per match)
   if (const uint32_t screen = rd(kMatchScreen)) {
     const uint32_t arena = rd(screen + kScreenArena);
+    g_crowd_arena = int(arena);
     const int as = svr2011::ArenaNumberFor(int(arena));
     if (as != int(arena)) {
       uint8_t* q = base + screen + kScreenArena;
