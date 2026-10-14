@@ -104,7 +104,7 @@ for _, t, ppos, pry in hctp_props.placements(STAGE):
                        f"{C[:, 2].max():.1f} {C[:, 0].max():.1f} {C[:, 1].max():.1f}")
     for k in range(PUFFS):
         puffs.append((t, k, o))
-tb = yobj.texbank(open(STAGE + r'\00200.bin', 'rb').read())
+tb = hctp_fake56.texbank(STAGE)
 tex = {}
 for mid, (path, tl) in models.items():
     for t in tl:
@@ -142,7 +142,7 @@ spec = [dict(model=models[1237][0], pos=tuple(float(v) for v in o), ry=0.0, note
         for t, k, o in puffs] + spec
 os.makedirs(OUT, exist_ok=True)
 hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
-                   records=spots, bank=bank)
+                   records=spots, bank=bank, keep_models=False)
 
 
 # ------------------------------------------------------------ hctp.txt (hctp_room.cpp's room data)

@@ -41,6 +41,28 @@ KINDS = {
     # CGmCrateAndWinch: crates, cart (p1 goo_shd, the shadow, left out: drawn by
     # 2011 as a solid grey plank); moving coll
     54: ([0, 1], [3]),
+    # -- rooms 31-36 (solid collisions only: flat HMDs are zones, 2030 / 2095 small hit cubes);
+    # moving ones (CGmMoveCar 73, GmCarMany 12, GmHeli 20) start outside the rooms: hctp_room moves them
+    70: ([1, 2, 3, 4, 5, 6], [7]),   # CGmBrokenCar: body 1 / 2, tyre, door, bonnet, window; coll the body
+    81: ([0, 3], [2, 6]),            # CVehicleForkLift: forklift, crate on the forks (shadows 1334/1336 out)
+    97: ([0], [1]),                  # CGmThrowObjectHIdden: drum can
+    71: ([0], [1]),                  # CGmThrowObjectRepeat: equipment box
+    61: ([0, 1], []),                # GmLocker: the two doors
+    68: ([2], []),                   # gmToilet: the door
+    69: ([0], []),                   # gmSandBag (hangs; shadow 1282 out)
+    66: ([6, 9], []),                # gmShower: door, glass
+    65: ([0], []),                   # gmTrngMch: running machine
+    75: ([0], [2]),                  # gmBrokenWall: the wall whole, its panel coll
+    76: ([0, 1], [9]),               # gmTVClash: TV, stand
+    77: ([0], []),                   # gmRackWithObj: shelf
+    84: ([0], []),                   # gmAttackObjFade: shelf things
+    85: ([0], []),                   # gmAttackObjWeapon: bat, chair, pipe stand
+    62: ([4], [5]),                  # GmShowWindow: shop window
+    60: ([0], []),                   # (room 33) neon sign
+    25: ([0], [1]),                  # CGmRion: lion statue
+    27: ([0], []),                   # (rooms 35/36) sand
+    29: ([2, 3], [1]),               # CGmFountain: water, basin
+    24: ([1, 3], [8]),               # CGmTower: top, base (2 / 4: their broken copies)
 }
 
 
