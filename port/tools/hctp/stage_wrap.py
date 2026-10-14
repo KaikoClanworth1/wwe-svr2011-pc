@@ -5,11 +5,12 @@ in no cell), and a cell start ending in 0xFF is shifted by repeating the previou
 last triangle (tested twice: harmless)."""
 import math
 import struct
+import os
 import sys
 
 import numpy as np
 
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import svr08_stage as s8
 
 DUMMY_Y = 5000.0

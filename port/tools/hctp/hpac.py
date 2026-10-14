@@ -8,9 +8,10 @@ DPAC: "DPAC", u32 ?, u32 data size, u32 groups; groups from 0x800, data from 0x4
 PAC : "PAC ", u32 n, n x {u16 id, u24 off, u24 size}; offsets from end of table.
 """
 import struct
+import os
 import sys
 
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import svrfmt  # noqa: E402
 
 ZERO4 = bytes(4)

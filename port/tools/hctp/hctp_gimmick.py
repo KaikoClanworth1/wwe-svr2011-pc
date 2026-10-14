@@ -13,9 +13,10 @@ props spec (json list): {"model": <JBOY path>, "pos": [x,y,z], "ry": radians}
 """
 import json
 import struct
+import os
 import sys
 
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import svrfmt as f  # noqa: E402
 import jboy  # noqa: E402
 import arena_tool as at  # noqa: E402

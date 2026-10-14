@@ -1,6 +1,6 @@
 """Copy entries of a YMKs bank under new keys: rekey(bank, {(id, x): (new id, new x)}) (all tracks y)."""
-import struct, sys
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+import os, struct, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import svr08_gimmick as G
 
 def rekey(d, mapping, frames=None):

@@ -1,9 +1,9 @@
 """Render a built backstage mod (arena.pac parking models + gimmick.pac T23 objects at their locators,
 placed the way 2011 shows them: local (x, z) -> (x cos a - z sin a, x sin a + z cos a) + pos)."""
-import base64, io, math, struct, sys
+import base64, io, math, os, struct, sys
 import numpy as np
 from PIL import Image
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import svr08_stage as s8, svr08_gimmick as G, svrfmt as f, jboy, arena_tool as at
 import to_glb
 

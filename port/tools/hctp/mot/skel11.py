@@ -1,6 +1,7 @@
 """SvR2011 character skeleton (ch.pac body JBOY node table: name, t, r @+32, parent @+48; BE)."""
+import os
 import sys, struct, math
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 import ch_tool, svrfmt
 import w13_char
 

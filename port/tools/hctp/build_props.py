@@ -8,15 +8,17 @@ import sys
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import svr08_stage as s8
 import hctp_props, hctp_gimmick, hctp_fake56, hctp2jboy, yobj
 
 ROOM = int(os.environ.get('HCTP_ROOM', '30'))
-STAGE = r"D:\Xbox Games Ports\HCTP Extract\_unpacked\bg\stg_00%02d" % ROOM
+UNPACKED = os.environ.get('HCTP_UNPACKED', r"D:\Xbox Games Ports\HCTP Extract\_unpacked")
+STAGE = os.path.join(UNPACKED, 'bg', 'stg_00%02d' % ROOM)
 OUT = os.environ.get('HCTP_OUT', 'mod_row')
-BG78 = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\bg\bg78.pac"
-GM = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\gm.pac"
+PAC11 = os.environ.get('SVR11_PAC', r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac")
+BG78 = os.path.join(PAC11, 'bg', 'bg78.pac')
+GM = os.path.join(PAC11, 'gm.pac')
 BANK = os.environ.get('HCTP_BANK', 'out/mot/bank_h3.bin')
 DX, DZ = float(os.environ.get('HCTP_DX', '180')), float(os.environ.get('HCTP_DZ', '-440'))
 CLIMB_KEYS = {0xFB: 12541, 0xFD: 12542, 0xF4: 12503, 0xDF: 12503}
@@ -254,6 +256,17 @@ frames = {}
 for e in ents:
     if 12500 <= e[2] < 13400:
         frames[e[2]] = max(frames.get(e[2], 0), e[4])
+# The helicopter's flight (GmHeli: room act 10 on its body - its root keys are its path, 0.01 units, room
+# space): heli <hctp frame> <x> <y> <z> <yaw> lines, 2011 space
+if any(pr['kind'] == 20 for pr in plist):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mot'))
+    import hmot, objpose, fk
+    _, hents = hmot.read_bank(open(os.path.join(STAGE, '50102.bin'), 'rb').read())
+    he = next(e for e in hents if e['id'] == 10 and e.get('y', 0) == 0)
+    for fr, rot, tr, root in objpose.states(he['data']):
+        q = to2011(tuple(v * 0.01 for v in root))
+        ry = rot.get(0, (0, 0, 0))[1] * fk.ANG
+        weapon_lines.append(f"heli {fr} {q[0]:.2f} {q[1]:.2f} {q[2]:.2f} {(-ry + math.pi):.4f}")
 # Times Square's climbable poles (GmTimesPole: data rows of kind 40, params 1-3 = the pole top)
 for tid, (kd, prm) in sorted(tags.items()):
     if kd == 40 and len(prm) >= 4:

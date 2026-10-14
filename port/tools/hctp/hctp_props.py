@@ -16,14 +16,14 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import jboy  # noqa: E402
 import svr08_stage as s8  # noqa: E402
 
 import hctp2jboy  # noqa: E402
 import yobj  # noqa: E402
 
-GOBJ = r"D:\Xbox Games Ports\HCTP Extract\_unpacked\gm\GMMC_GOBJ"
+GOBJ = os.path.join(os.environ.get('HCTP_UNPACKED', r"D:\Xbox Games Ports\HCTP Extract\_unpacked"), 'gm', 'GMMC_GOBJ')
 
 # class kind -> (model params, solid collision params at rest) by param index (param[0] = model)
 # (indices into the tag's float list)

@@ -9,11 +9,12 @@ position so its winding is kept. Same units and axes as 2011 (y down).
 """
 import copy
 import struct
+import os
 import sys
 
 import numpy as np
 
-sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import jboy  # noqa: E402
 
 import yobj  # noqa: E402
