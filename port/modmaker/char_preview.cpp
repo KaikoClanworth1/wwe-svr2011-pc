@@ -1358,7 +1358,9 @@ void ViewProj(float aspect, float out[16]) {
   const V3 eye = at + V3{std::sin(g_yaw) * dist * cp, dist * sp, std::cos(g_yaw) * dist * cp};
   const V3 z = Norm(at - eye), x = Norm(Cross(V3{0, 1, 0}, z)), y = Cross(z, x);
   const float view[16] = {x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -Dot(x, eye), -Dot(y, eye), -Dot(z, eye), 1};
-  const float zn = 0.5f, zf = dist * 4, ys = 1.0f / std::tan(0.30f), xs = ys / aspect;
+  // (x flipped: the game's view is left-handed - with the plain basis the writing on shirts read mirrored next
+  // to the game's own shots; so the camera's x shows to the left on screen)
+  const float zn = 0.5f, zf = dist * 4, ys = 1.0f / std::tan(0.30f), xs = -ys / aspect;
   const float proj[16] = {xs, 0, 0, 0, 0, ys, 0, 0, 0, 0, zf / (zf - zn), 1, 0, 0, -zn * zf / (zf - zn), 0};
   for (int i = 0; i < 4; ++i)
     for (int j = 0; j < 4; ++j) {
@@ -1525,6 +1527,7 @@ void Render(int w, int h) {
     const float dist = g_height * 1.85f * g_zoom, cp = std::cos(g_pitch);
     const V3 at = g_center + g_pan, eye = at + V3{std::sin(g_yaw) * dist * cp, dist * std::sin(g_pitch), std::cos(g_yaw) * dist * cp};
     fwd = Norm(at - eye), right = Norm(Cross(V3{0, 1, 0}, fwd)), up = Cross(fwd, right);
+    right = right * -1.0f;  // (the screen's right: the view is x flipped, see ViewProj)
   }
   const V3 key = Norm(fwd * -0.55f + up * 0.75f - right * 0.45f), fill = Norm(fwd * -0.6f - up * 0.15f + right * 0.75f);
   // contact shadows: under each person's hips, as strong as they are near the floor
@@ -2149,16 +2152,16 @@ void Draw(float w, float h) {
   if (g_hits) DrawHits(ImGui::GetItemRectMin(), w, h);
   if (ImGui::IsItemHovered()) {
     const ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_yaw -= io.MouseDelta.x * 0.01f;
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_yaw += io.MouseDelta.x * 0.01f;  // (+: the view is x flipped)
     if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-      g_yaw -= io.MouseDelta.x * 0.01f;
+      g_yaw += io.MouseDelta.x * 0.01f;
       g_pitch = std::clamp(g_pitch + io.MouseDelta.y * 0.01f, -0.6f, 1.2f);
     }
     if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
       // pan in the view plane
       const float k = g_height * g_zoom * 0.0025f;
       const V3 right{std::cos(g_yaw), 0, -std::sin(g_yaw)};
-      g_pan = g_pan - right * (io.MouseDelta.x * k) + V3{0, io.MouseDelta.y * k, 0};
+      g_pan = g_pan + right * (io.MouseDelta.x * k) + V3{0, io.MouseDelta.y * k, 0};
     }
     if (io.MouseWheel != 0) g_zoom = std::clamp(g_zoom * (io.MouseWheel > 0 ? 0.88f : 1.14f), 0.25f, 4.0f);
     const ImVec2 a = ImGui::GetItemRectMin();
