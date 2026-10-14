@@ -56,6 +56,28 @@ GAMES = [
 ]
 NATIVE_GAMES = ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17')
 
+# Arenas that convert but crash 2011 at load (full pass, docs/ARENA_PORT_RESULTS.md): 'list' marks
+# them status 'crashes' with the reason, so the Mod Maker can grey them out
+KNOWN_CRASHES = {
+    ('wwe13', 'bg37'): 'crashes at load (a memory allocation fails; not its size or models) - open',
+    ('wwe2k14', 'bg12'): 'crashes at load (object motion loader, lr 826AEF18) - open',
+    ('wwe2k14', 'bg17'): 'crashes at load (lr 82188A00) - open',
+}
+
+
+def mark_items(game, items):
+    """'list' items get status: 'ok', 'crashes' (KNOWN_CRASHES) or 'special' (WWE '12+ bg60 and up:
+    backstage rooms, studio / photo stages - no arenas), and a reason for the last two"""
+    for it in items:
+        key = it.get('key', '')
+        if (game, key) in KNOWN_CRASHES:
+            it['status'], it['reason'] = 'crashes', KNOWN_CRASHES[(game, key)]
+        elif game in NATIVE_GAMES and key[:2] == 'bg' and key[2:4].isdigit() and int(key[2:4]) >= 60:
+            it['status'], it['reason'] = 'special', 'a backstage room or studio / photo stage, not an arena'
+        else:
+            it.setdefault('status', 'ok')
+    return items
+
 # 2011's arena select tiles: arena number -> banner / manifest base name (arena_mods.cpp kTiles)
 BASE_NAMES = {0: 'arena_SD', 1: 'arena_RAW', 2: 'arena_ECW', 3: 'arena_ttt', 4: 'arena_slam', 5: 'arena_BP',
               6: 'arena_HinC', 7: 'arena_Series', 8: 'arena_TLC', 9: 'arena_RR', 10: 'arena_EC', 11: 'arena_WM26',
@@ -630,7 +652,7 @@ def main(argv):
                 lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
                          'svr2009': lambda d: svr2008_list(d, SVR2009),
                          'svr2007': lambda d: svr2008_list(d, SVR2007)}
-                print(json.dumps(lists.get(a.game, bg_list)(disc)))
+                print(json.dumps(mark_items(a.game, lists.get(a.game, bg_list)(disc))))
                 return 0
             if a.game not in ('svr2010', 'svr2008', 'svr2009', 'svr2007'):
                 msg = ("WWE '12 - 2K17 arenas are converted by the Mod Maker itself (svrmod wwe13)" if a.game in NATIVE_GAMES
