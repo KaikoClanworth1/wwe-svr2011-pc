@@ -81,3 +81,29 @@ Every arena converted (`tools/arena_port.py`, `svrmod wwe13`) and played in one 
 | svr2010 | bg18 | Cyber Sunday | 18 | OK | 60.0 (low 60.0) |  |  |  |
 | svr2010 | bg24 | Extreme Rules | 16 | OK | 60.0 (low 60.0) |  |  | no loading or VS picture (no VS theme for this arena on the disc) |
 | wwe12 | bg00 | bg00 | 0 | NO MATCH |  | 4 | 17 |  |
+| wwe12 | bg01 | bg01 | 1 | OK | 60.0 (low 59.0) | 3 | 17 |  |
+| wwe12 | bg02 | bg02 | 2 | OK | 60.0 (low 59.6) | 5 | 17 |  |
+| wwe12 | bg03 | bg03 | 3 | OK | 60.0 (low 60.0) | 17 | 17 |  |
+| wwe12 | bg04 | bg04 | 4 | OK | 60.0 (low 50.6) | 9 | 17 |  |
+| wwe12 | bg05 | bg05 | 5 | OK | 60.0 (low 59.4) | 12 | 18 |  |
+| wwe12 | bg06 | bg06 | 6 | OK | 60.0 (low 60.0) | 2 | 17 |  |
+| wwe12 | bg07 | bg07 | 7 | OK | 60.0 (low 60.0) | 4 | 17 |  |
+| wwe12 | bg08 | bg08 | 8 | OK | 60.0 (low 60.0) | 3 | 17 |  |
+| wwe12 | bg09 | bg09 | 9 | OK | 60.0 (low 60.0) | 3 | 17 |  |
+| wwe12 | bg10 | bg10 | 10 | OK | 60.0 (low 59.8) | 7 | 17 |  |
+| wwe12 | bg11 | bg11 | 11 | OK | 60.0 (low 60.0) | 11 | 18 |  |
+| wwe12 | bg12 | bg12 | 12 | OK | 60.0 (low 51.4) | 8 | 17 |  |
+| wwe12 | bg13 | bg13 | 13 | OK | 60.0 (low 60.0) | 13 | 17 |  |
+| wwe12 | bg14 | bg14 | 14 | OK | 60.0 (low 58.8) | 1 | 17 |  |
+| wwe12 | bg15 | bg15 | 15 | OK | 60.0 (low 59.6) | 12 | 17 |  |
+| wwe12 | bg16 | bg16 | 16 | OK | 60.0 (low 60.0) | 6 | 17 |  |
+| wwe12 | bg17 | bg17 | 17 | OK | 60.0 (low 60.0) | 3 | 17 |  |
+| wwe12 | bg18 | bg18 | 18 | OK | 60.0 (low 59.8) |  | 17 |  |
+| wwe12 | bg19 | bg19 | 19 | OK | 60.0 (low 59.8) | 13 | 17 |  |
+| wwe12 | bg20 | bg20 | 1 | OK | 60.0 (low 59.8) | 1 | 20 |  |
+| wwe12 | bg21 | bg21 | 1 | OK | 60.0 (low 60.0) |  | 20 |  |
+| wwe12 | bg22 | bg22 | 1 | OK | 60.0 (low 56.2) |  | 19 |  |
+| wwe12 | bg23 | bg23 | 1 | OK | 60.0 (low 60.0) |  | 22 |  |
+| wwe13 | bg00 | bg00 | 0 | OK | 60.0 (low 59.4) | 5 | 18 |  |
+
+Special stages, not arenas (WWE '12+ bg60 and up: backstage rooms, studio / photo stages; not offered as arenas): wwe12 bg66 (OK), wwe12 bg67 (OK), wwe12 bg68 (OK), wwe12 bg76 (OK), wwe12 bg77 (OK), wwe12 bg78 (CRASH (lr 8215A008)), wwe12 bg79 (OK)
