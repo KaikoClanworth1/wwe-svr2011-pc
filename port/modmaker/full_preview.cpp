@@ -349,45 +349,24 @@ void DecodeProp(const Bytes& bank, const uint8_t* d, size_t size, PropTrack& t) 
   }
 }
 
-// The steel steps (and only them: the announce tables, bell and belt of the set stay out) from the ringside set.
+// The steel steps (and only them: the announce tables, bell and belt of the set stay out) from the ringside set
+// (char_preview::RingsideSteps).
 void RingsideStatics(const std::wstring& game, std::vector<Static>& out) {
-  Bytes wpon;
-  const fs::path etc = fs::path(game) / L"pac" / L"bg" / L"bgEtc.pac";
-  std::vector<svrfmt::PachEntry> kids;
-  if (!ReadPacEntry(etc, "WPON", wpon, "STG ") || !svrfmt::PachRead(svrfmt::Unpack(wpon), kids)) {
+  std::vector<uint8_t> steps;
+  std::vector<char_preview::StepPlace> places;
+  if (!char_preview::RingsideSteps(Utf8((fs::path(game) / L"pac" / L"bg" / L"bgEtc.pac").wstring()), steps, places)) {
     Log("full preview: the ring steps (pac\\bg\\bgEtc.pac STG/WPON) didn't load");
     return;
   }
-  Bytes table, steps;
-  for (const auto& k : kids)
-    if (k.id == 45010) table = svrfmt::Unpack(k.data);
-    else if (k.id == 32) steps = svrfmt::Unpack(k.data);
-  if (table.empty() || steps.empty()) return;
   std::string err;
   const int prop = char_preview::AddProp(steps, &err);
   if (prop < 0) return Log("full preview: the ring steps' model didn't load (" + err + ")");
-  // the chunk stream: "SubH" {s16 key, s16 records, s32 link}, "Data" {u32 chunk size, record}
-  int key = -1;
-  for (size_t p = 4; p + 8 <= table.size();) {
-    const uint8_t* c = &table[p];
-    if (!std::memcmp(c, "SubH", 4) && p + 12 <= table.size()) {
-      key = int16_t(Le16(c + 4)), p += 12;
-    } else if (!std::memcmp(c, "Data", 4)) {
-      const uint32_t size = Le32(c + 4);
-      if (size < 36 || p + size > table.size()) break;
-      if (key == 1000 && c[8 + 27] == 32) {
-        Static s;
-        s.prop = prop;
-        for (int a = 0; a < 3; ++a) s.t[a] = LeF(c + 8 + 4 * a);
-        const float yaw = LeF(c + 8 + 16) * 3.14159265f / 180.0f, cy = std::cos(yaw), sy = std::sin(yaw);
-        const float r[9] = {cy, 0, sy, 0, 1, 0, -sy, 0, cy};
-        std::memcpy(s.r, r, sizeof r);
-        out.push_back(s);
-      }
-      p += size;
-    } else {
-      break;
-    }
+  for (const auto& pl : places) {
+    Static s;
+    s.prop = prop;
+    std::memcpy(s.r, pl.r, sizeof s.r);
+    std::memcpy(s.t, pl.t, sizeof s.t);
+    out.push_back(s);
   }
 }
 
