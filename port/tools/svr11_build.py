@@ -478,7 +478,9 @@ class Builder:
         entries, rep = [], []
         for i, a in enumerate(self.spec['attires']):
             nm = a.get('name')
-            name = nm.encode('latin-1') if nm else (names[i] if i < len(names) else b'%08d' % (10400 + i))
+            # (past the template's own attires: its id, the next attire digit, kind 2 - '00010232' after ch102's three)
+            name = nm.encode('latin-1') if nm else (names[i] if i < len(names) else
+                                                    (names[0][:6] if names else b'000104') + b'%d2' % i)
             kids, r = self.attire(a, name.decode('latin-1'))
             entries.append((b'EMD ', name, W.pack_kids(kids)))
             rep.append(r)
