@@ -38,6 +38,8 @@ const Kind kKinds[] = {
     {"Attires", L"attire_port.py", "Attires for a superstar - a mod's own, or new ones for 2011's roster."},
     {"Belts", L"belt_port.py", "Title belts' looks, as a texture pack."},
     {"Weapons", L"weapon_port.py", "Weapons' looks, as a texture pack."},
+    {"Backstage", L"backstage_port.py", "A backstage room from another game, built into a copy of your own 2011 backstage files and "
+                                        "installed into the game's Mods\\Backstage (its own row in the BACKSTAGE list)."},
 };
 constexpr int kKindCount = int(sizeof kKinds / sizeof kKinds[0]);
 
@@ -221,7 +223,9 @@ void List(int k, const std::string& game) {
   g_list = Json();
   g_list_error.clear();
   g_pick = -1;
-  std::vector<std::wstring> largs = {L"list", L"--game", Wide(game), L"--src", src, L"--pac11", (fs::path(g_game) / L"pac").wstring()};
+  std::vector<std::wstring> largs = {L"list", L"--game", Wide(game), L"--src", src};
+  if (std::wstring(kKinds[k].script) != L"backstage_port.py")  // (its list takes no --pac11: the rooms don't depend on it)
+    largs.push_back(L"--pac11"), largs.push_back((fs::path(g_game) / L"pac").wstring());
   for (auto& x : SvrmodArgs(k, game)) largs.push_back(x);
   RunToolJson(kKinds[k].script, largs,
               [want = g_list_for](int code, const std::string& out) {
@@ -400,13 +404,16 @@ void PicturePicker() {
 void Convert(int k, const std::string& game, const Json& item) {
   const std::string key = ItemKey(item);
   std::string safe;
-  for (char c : game + "_" + key) safe += std::isalnum(uint8_t(c)) ? c : '_';
-  const fs::path out = WorkDir() / Wide(std::string(kKinds[k].title) + "_" + safe);
+  for (char c : std::wstring(kKinds[k].script) == L"backstage_port.py" ? key : game + "_" + key) safe += std::isalnum(uint8_t(c)) ? c : '_';
+  // a backstage room is built into a copy of the player's own bg78 / gm pacs, straight into the game's Mods\Backstage
+  const bool backstage = std::wstring(kKinds[k].script) == L"backstage_port.py";
+  const fs::path out = backstage ? fs::path(g_game) / L"Mods" / L"Backstage" / Wide(safe)
+                                 : WorkDir() / Wide(std::string(kKinds[k].title) + "_" + safe);
   std::error_code ec;
   fs::create_directories(out, ec);
   const bool entrance = std::wstring(kKinds[k].script) == L"entrance_port.py";
   std::vector<std::wstring> args = {L"convert", L"--game", Wide(game), L"--src", Source(), L"--out", out.wstring(),
-                                    L"--pac11", (fs::path(g_game) / L"pac").wstring()};
+                                    L"--pac11", backstage ? fs::path(g_game).wstring() : (fs::path(g_game) / L"pac").wstring()};
   if (entrance) args.push_back(L"--entrance"), args.push_back(Wide(key));  // (its own options: --entrance, --number)
   else args.push_back(L"--item"), args.push_back(Wide(key));
   const bool moves = std::wstring(kKinds[k].script) == L"moves_port.py";
@@ -628,6 +635,10 @@ void OpenResult() {
     GoTo(PageId::kMoves);
     return;
   }
+  if (opens == "backstage" && fs::exists(p / L"manifest.txt", ec)) {  // (installed already: opened as a project, the folder only read)
+    if (ProjectOpenFolder(p.wstring())) Status("Installed into Mods\\Backstage\\" + Utf8(p.filename().wstring()) + ", opened on the Backstage page.");
+    return;
+  }
   if (opens == "belt" || opens == "weapon") {  // a texture pack folder: into the game's Texture Packs
     const fs::path dst = fs::path(g_game) / L"Texture Packs" / p.filename();
     fs::create_directories(dst.parent_path(), ec);
@@ -691,6 +702,9 @@ void PortedEntrancePreview(const Json& item) {
 // A kind's steps: the game, the list, convert, the result.
 void KindBody(int k) {
   ImGui::TextDisabled("%s", kKinds[k].about);
+  if (std::wstring(kKinds[k].script) == L"backstage_port.py")
+    ImGui::TextColored(kWarn, "The room is read from your own Here Comes the Pain disc (PS2): pick your disc image above. Nothing of it "
+                              "comes with the Mod Maker or the port.");
   if (!HaveScript(k)) {
     ImGui::TextDisabled("This converter (%s) isn't in this build yet.", Utf8(kKinds[k].script).c_str());
     return;
@@ -827,7 +841,8 @@ void KindBody(int k) {
     PicturePicker();
   }
   ImGui::SetNextItemWidth(360 * g_scale);
-  ImGui::InputTextWithHint("Options (advanced)", "e.g. --height 1.05 --no-moves", g_options, sizeof g_options);
+  const bool room = std::wstring(kKinds[k].script) == L"backstage_port.py";
+  ImGui::InputTextWithHint("Options (advanced)", room ? "e.g. --name \"Parking Lot\" (the row's name)" : "e.g. --height 1.05 --no-moves", g_options, sizeof g_options);
   Hint("Extra options the converter takes (each converter's --help lists them), e.g. --base <id> --height <scale> "
        "--no-moves for superstars. Usually none are needed.");
   if (std::wstring(kKinds[k].script) == L"moves_port.py") {  // the 2011 move it is built on
