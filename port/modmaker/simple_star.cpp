@@ -341,17 +341,14 @@ void StepEntrance() {
   {
     const int n = g_star.entrance >= 0 ? g_star.entrance : kStyles[g_star.style].template_id;  // (the style's: its superstar's)
     ImGui::BeginDisabled(Busy());
-    if (ImGui::Button("Watch the walk to the ring", ImVec2(240 * g_scale, 0))) {
+    if (ImGui::Button("Watch the entrance", ImVec2(240 * g_scale, 0))) {
       if (char_preview::HasGear()) char_preview::SetGear(true);  // (worn for the entrance, as in the game)
-      WatchEntrance(n);
+      OpenFullPreview(n);  // (the Full preview: all five parts, placed as in the game, from the stage to the ring)
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("Your superstar does the entrance's ring part in the 3D view (the lights, pyro and video only show in the game).");
-    ImGui::SameLine();
-    if (ImGui::Button("Watch the whole entrance", ImVec2(240 * g_scale, 0))) OpenFullPreview(n);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("A window with the whole entrance in the practice arena: the entrance's camera, your theme and big screen video.");
+      ImGui::SetTooltip("A window with the whole entrance in the practice arena - stage, ramp and ring - with the entrance's camera, your "
+                        "theme and big screen video (\"Skip to the ring\" there jumps to the walk to the ring; the pyro only shows in the game).");
   }
   ImGui::Spacing();
   GearRows(true);  // (each attire's entrance gear; "Entrance gear" under the 3D view shows or hides it)

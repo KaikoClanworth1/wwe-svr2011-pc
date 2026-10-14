@@ -81,7 +81,7 @@ inline int OverallRating(const int r[7]) {
 extern int g_view_attire;  // the attire the preview shows (1-4)
 void MaterialsSection(bool simple);  // the material panel for the model the 3D view shows (its attire, its gear)
 // The Full preview window (full_preview.cpp) of entrance n for this project (star_page.cpp).
-void OpenFullPreview(int n);
+void OpenFullPreview(int n, int start_part = 0);  // (start_part: full_preview::Request)
 
 // Simple mode's steps; Problems tag each problem with the step that fixes it (Problem::step).
 enum SimpleStep { kStepName, kStepLook, kStepAttires, kStepMusic, kStepEntrance, kStepMoves, kStepTaunts, kStepPictures,

@@ -233,10 +233,7 @@ def hair_chains(m13):
 
 def hair_text_11(text13, roots):
     """WWE '13 0x3C (SpringHairSetting: kami_bNN radius visc grav spring damp A lencorr bend movecorr, in cm) ->
-    2011's lines for these chains: the same columns, radius and gravity in 2011 units (x 0.1), then kept inside
-    2011's own ranges (570 stock lines: radius 0.15-0.20, visc 0.10-0.15, grav 0.034-0.08, spring 0-0.02, bend
-    0.03-0.05, movecorr 0-0.45) - with WWE '13's own (visc 0.2, radius 0.25) the hair stretched more than 2011's:
-    segment length off by 34 % at the 90th percentile against stock Triple H's 20 % (hair_dump)"""
+    2011's lines for these chains: the same columns, radius and gravity in 2011 units (x 0.1)"""
     lines = [b'; hair chains from WWE \'13 (w13_char): kami_bNN radius visc grav spring damp A lencorr bend movecorr']
     for raw in text13.replace(b'\r', b'').split(b'\n'):
         tok = raw.split()
@@ -248,9 +245,6 @@ def hair_text_11(text13, roots):
             continue
         v[0] *= 0.1
         v[2] *= 0.1
-        for k, lo, hi in ((0, 0.15, 0.20), (1, 0.10, 0.15), (2, 0.034, 0.08), (3, 0.0, 0.02), (7, 0.03, 0.05),
-                          (8, 0.0, 0.45)):
-            v[k] = min(hi, max(lo, v[k]))
         lines.append((' %s %.4f %.4f %.4f %.4f %.4f %d %.4f %.4f %.4f ' % (
             tok[0].decode('latin-1'), v[0], v[1], v[2], v[3], v[4], int(v[5]), v[6], v[7], v[8])).encode('latin-1'))
     return b'\r\n'.join(lines) + b'\r\n'

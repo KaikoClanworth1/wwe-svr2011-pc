@@ -112,6 +112,18 @@ struct Loaded {
   int music = -1, movie = -1;  // the profile's (-1: none)
 };
 
+// Where part `part` (0-4; 4 the walk to the ring) starts on the timeline: the keys of the parts before it (0 when it
+// has no keys of its own).
+float PartStart(const Loaded& L, int part) {
+  if (part <= 0 || part >= 5) return 0;
+  float k = 0;
+  bool has = false;
+  for (const Seg& sg : L.segs)
+    if (sg.slot < kSlots[part]) k += float(sg.keys);
+    else has = true;
+  return has ? k : 0;
+}
+
 Request g_req;
 bool g_open = false;
 std::atomic<int> g_load_state{0};  // 0 idle, 1 loading, 2 loaded (g_next ready)
@@ -878,7 +890,7 @@ void Apply(std::unique_ptr<Loaded> L) {
   }
   OpenTitantron(movie);
   StartMusic(*g_cur);
-  g_key = 0;
+  g_key = PartStart(*g_cur, g_req.start_part);
   if (g_test_key >= 0) g_key = std::min(g_test_key, float(g_cur->total - 1)), g_use_camera = g_test_camera, g_test_key = -1;
   else SetPlaying(true);
 }
@@ -1054,6 +1066,12 @@ void Draw() {
       }
       ImGui::SameLine();
       if (ImGui::Button("Restart", ImVec2(90 * g_scale, 0))) g_key = 0, SetPlaying(true);
+      ImGui::SameLine();
+      const float ring = PartStart(L, 4);
+      ImGui::BeginDisabled(ring <= 0);
+      if (ImGui::Button("Skip to the ring", ImVec2(130 * g_scale, 0))) g_key = ring, SetPlaying(true);
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Plays from the walk to the ring (the last part).");
       ImGui::SameLine();
       ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetContentRegionAvail().x - 120 * g_scale));
       float k = g_key;

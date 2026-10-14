@@ -1496,7 +1496,7 @@ int GearShown(int a) {
 
 // The Full preview (full_preview.cpp) of entrance n for this project: its superstar in the attire the preview
 // shows, in that attire's entrance gear (GearShown), with the project's theme, titantron and move pack.
-void OpenFullPreview(int n) {
+void OpenFullPreview(int n, int start_part) {
   full_preview::Request r;
   r.entrance = n;
   r.star = kStyles[g_star.style].template_id;
@@ -1507,6 +1507,7 @@ void OpenFullPreview(int n) {
   r.gear = gear != 0;
   r.song = g_star.song, r.movie = g_star.movie, r.pack = g_star.pack;
   r.title = g_star.name[0] ? g_star.name : "your superstar";
+  r.start_part = start_part;
   full_preview::Open(r);
 }
 
