@@ -47,6 +47,14 @@ void Draw();
 // ViewArena takes the arena (kept alive by the caller until ClearView) and its manifest (ring / lighting keys);
 // DrawView draws it in w x h with an orbit camera only.
 void ViewArena(svrfmt::Arena* arena, const std::string& title, const std::string& manifest);
+// An arena's ring kit as the game puts it out (its own rope heights): each part's model (index into arena.models)
+// with its world matrix (row-major, row vectors, game space: y down) - for views that draw a ring without the
+// editor's scene (char_preview's basic ring).
+struct RingPart {
+  int model = -1;
+  float m[16] = {};
+};
+std::vector<RingPart> RingPlacements(const svrfmt::Arena& a);
 void DrawView(float w, float h);
 void ClearView();
 // The view's camera given by the caller (the Full preview: an entrance's camera track): view and projection,

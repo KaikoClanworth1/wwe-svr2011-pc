@@ -20,6 +20,7 @@
 // Yamaha style ADPCM. Rotations are keyed 30 a second, moves twice that.
 #define NOMINMAX
 #include "char_preview.h"
+#include "editor.h"
 
 namespace mm { void Log(const std::string& line); }  // (app.h)
 
@@ -1449,6 +1450,152 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
     for (int c = 0; c < 3; ++c) g_frame_lo[c] = std::min(g_frame_lo[c], lo[c]), g_frame_hi[c] = std::max(g_frame_hi[c], hi[c]);
 }
 
+// ---- the basic ring (SetRing): bg29's ring kit placed as the game does (editor::RingPlacements), baked once into
+// the view's space with its canvas at y 0; moved to the floor the people stand on (floor_y) when that changes
+struct RingDraw {
+  ID3D11Buffer* vb = nullptr;
+  ID3D11Buffer* ib = nullptr;
+  UINT count = 0;
+  ID3D11ShaderResourceView* tex = nullptr;
+  std::vector<GpuVertex> verts;  // (canvas at y 0)
+};
+std::vector<RingDraw> g_ring_draws;
+std::map<std::string, ID3D11ShaderResourceView*> g_ring_tex;
+bool g_ring_on = false, g_ring_built = false;
+std::string g_ring_pac;
+float g_ring_y = 1e30f;  // (the floor the vertex buffers were last moved to)
+constexpr float kRingMatY = -12.0f;  // (the canvas, game y)
+
+}  // namespace
+
+bool RingsideSteps(const std::string& bg_etc, std::vector<uint8_t>& model, std::vector<StepPlace>& places) {
+  Bytes d;
+  Epac e;
+  if (!ReadFile(bg_etc, d) || !EpacRead(d, e)) return false;
+  Bytes table;
+  model.clear(), places.clear();
+  for (const auto& g : e.groups)
+    for (const auto& en : g.entries) {
+      std::vector<PachEntry> kids;
+      if (g.type != "STG " || en.name != "WPON" || !PachRead(Unpack(en.data), kids)) continue;
+      for (const auto& k : kids)
+        if (k.id == 45010) table = Unpack(k.data);
+        else if (k.id == 32) model = Unpack(k.data);
+    }
+  // the chunk stream: "SubH" {s16 key, s16 records, s32 link}, "Data" {u32 chunk size, record}
+  int key = -1;
+  for (size_t p = 4; p + 8 <= table.size();) {
+    const uint8_t* c = &table[p];
+    if (!std::memcmp(c, "SubH", 4) && p + 12 <= table.size()) {
+      key = int16_t(Le16(c + 4)), p += 12;
+    } else if (!std::memcmp(c, "Data", 4)) {
+      const uint32_t size = Le32(c + 4);
+      if (size < 36 || p + size > table.size()) break;
+      if (key == 1000 && c[8 + 27] == 32) {
+        StepPlace s;
+        for (int a = 0; a < 3; ++a) s.t[a] = LeF(c + 8 + 4 * a);
+        const float yaw = LeF(c + 8 + 16) * 3.14159265f / 180.0f, cy = std::cos(yaw), sy = std::sin(yaw);
+        const float r[9] = {cy, 0, sy, 0, 1, 0, -sy, 0, cy};
+        std::memcpy(s.r, r, sizeof r);
+        places.push_back(s);
+      }
+      p += size;
+    } else {
+      break;
+    }
+  }
+  return !model.empty() && !places.empty();
+}
+
+namespace {
+
+void BuildRing() {
+  g_ring_built = true;
+  svrfmt::Arena a;
+  std::string err;
+  if (g_ring_pac.empty() || !a.Load(g_ring_pac, &err)) {
+    mm::Log("basic ring: " + g_ring_pac + " didn't load (" + err + ")");
+    return;
+  }
+  for (const auto& b : a.bundles)
+    for (const auto& t : b.textures)
+      if (!g_ring_tex.count(Lower(t.name))) g_ring_tex[Lower(t.name)] = MakeTexture(t.data);
+  size_t parts = 0;
+  for (const editor::RingPart& p : editor::RingPlacements(a)) {
+    const Model& md = a.models[size_t(p.model)].model;
+    const float* m = p.m;
+    ++parts;
+    for (const Mesh& s : md.meshes) {
+      RingDraw d;
+      const int slot = DiffuseSlot(s);
+      const auto tex = g_ring_tex.find(slot >= 0 && slot < int(md.textures.size()) ? Lower(md.textures[size_t(slot)]) : "");
+      d.tex = tex == g_ring_tex.end() ? g_white : tex->second;
+      for (size_t k = 0; k < s.verts.size(); ++k) {
+        const float* v = s.verts[k].pos;
+        const float* n = s.verts[k].normal;
+        const float x = v[0] * m[0] + v[1] * m[4] + v[2] * m[8] + m[12], y = v[0] * m[1] + v[1] * m[5] + v[2] * m[9] + m[13],
+                    z = v[0] * m[2] + v[1] * m[6] + v[2] * m[10] + m[14];
+        const float nx = n[0] * m[0] + n[1] * m[4] + n[2] * m[8], ny = n[0] * m[1] + n[1] * m[5] + n[2] * m[9],
+                    nz = n[0] * m[2] + n[1] * m[6] + n[2] * m[10];
+        const auto uv = k < s.uvs.size() ? s.uvs[k] : std::array<float, 2>{0, 0};
+        d.verts.push_back({{x, -(y - kRingMatY), -z}, {nx, -ny, -nz}, {uv[0], uv[1]}});  // (view space: game x, -y, -z)
+      }
+      std::vector<uint32_t> idx;
+      for (const auto& st : s.strips)
+        for (const auto& t : StripToTriangles(st.indices))
+          if (t[0] < d.verts.size() && t[1] < d.verts.size() && t[2] < d.verts.size()) idx.insert(idx.end(), {t[0], t[1], t[2]});
+      if (idx.empty() || d.verts.empty()) continue;
+      D3D11_BUFFER_DESC vd = {UINT(d.verts.size() * sizeof(GpuVertex)), D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER, D3D11_CPU_ACCESS_WRITE};
+      D3D11_BUFFER_DESC id = {UINT(idx.size() * 4), D3D11_USAGE_IMMUTABLE, D3D11_BIND_INDEX_BUFFER};
+      D3D11_SUBRESOURCE_DATA is = {idx.data()};
+      if (FAILED(g_dev->CreateBuffer(&vd, nullptr, &d.vb)) || FAILED(g_dev->CreateBuffer(&id, &is, &d.ib))) {
+        if (d.vb) d.vb->Release();
+        continue;
+      }
+      d.count = UINT(idx.size());
+      g_ring_draws.push_back(std::move(d));
+    }
+  }
+  // the steel steps at the corners (rigid: every vertex by its place, R p + t)
+  std::vector<uint8_t> steps;
+  std::vector<StepPlace> places;
+  Character sc;
+  const std::u8string etc = (fs::u8path(g_ring_pac).parent_path() / "bgEtc.pac").u8string();  // (UTF-8 paths)
+  if (RingsideSteps(std::string(etc.begin(), etc.end()), steps, places) && LoadEmd(steps, sc, err)) {
+    for (const auto& [name, dds] : sc.textures)
+      if (!g_ring_tex.count(name)) g_ring_tex[name] = MakeTexture(dds);
+    for (const StepPlace& pl : places)
+      for (const PMesh& pm : sc.meshes) {
+        RingDraw d;
+        const auto tex = g_ring_tex.find(pm.tex);
+        d.tex = tex == g_ring_tex.end() ? g_white : tex->second;
+        const float* R = pl.r;
+        for (size_t k = 0; k < pm.pos.size(); ++k) {
+          const V3 p = pm.pos[k], n = pm.nrm[k];
+          const float x = R[0] * p.x + R[1] * p.y + R[2] * p.z + pl.t[0], y = R[3] * p.x + R[4] * p.y + R[5] * p.z + pl.t[1],
+                      z = R[6] * p.x + R[7] * p.y + R[8] * p.z + pl.t[2];
+          const float nx = R[0] * n.x + R[1] * n.y + R[2] * n.z, ny = R[3] * n.x + R[4] * n.y + R[5] * n.z,
+                      nz = R[6] * n.x + R[7] * n.y + R[8] * n.z;
+          d.verts.push_back({{x, -(y - kRingMatY), -z}, {nx, -ny, -nz}, {pm.uv[k][0], pm.uv[k][1]}});
+        }
+        D3D11_BUFFER_DESC vd = {UINT(d.verts.size() * sizeof(GpuVertex)), D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER, D3D11_CPU_ACCESS_WRITE};
+        D3D11_BUFFER_DESC id = {UINT(pm.idx.size() * 4), D3D11_USAGE_IMMUTABLE, D3D11_BIND_INDEX_BUFFER};
+        D3D11_SUBRESOURCE_DATA is = {pm.idx.data()};
+        if (d.verts.empty() || pm.idx.empty() || FAILED(g_dev->CreateBuffer(&vd, nullptr, &d.vb)) || FAILED(g_dev->CreateBuffer(&id, &is, &d.ib))) {
+          if (d.vb) d.vb->Release();
+          continue;
+        }
+        d.count = UINT(pm.idx.size());
+        g_ring_draws.push_back(std::move(d));
+      }
+  } else {
+    mm::Log("basic ring: no steel steps (bgEtc.pac STG/WPON)");
+  }
+  g_ring_y = 1e30f;
+  mm::Log("basic ring: " + std::to_string(parts) + " parts, " + std::to_string(places.size()) + " steps, " +
+          std::to_string(g_ring_draws.size()) + " meshes from " + g_ring_pac);
+}
+
 void Render(int w, int h) {
   ResizeTarget(w, h);
   const float clear[4] = {0.11f, 0.12f, 0.14f, g_capturing ? 0.0f : 1.0f};
@@ -1603,7 +1750,7 @@ void Render(int w, int h) {
     D3D11_MAPPED_SUBRESOURCE ms;
     if (SUCCEEDED(g_ctx->Map(g_floor_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
       // (a motion's own floor; else the game's, y 0, where the model's height scale puts it)
-      const float y = floor_y, a = kFloorHalf;
+      const float y = floor_y + (g_ring_on ? kRingMatY : 0.0f), a = kFloorHalf;  // (the ring on: the arena floor, under its canvas)
       // under the people (the framed centre, on the metre grid: the lines stay put while the camera moves)
       const float cx = std::round(g_center.x / 10) * 10, cz = std::round(g_center.z / 10) * 10;
       GpuVertex* v = static_cast<GpuVertex*>(ms.pData);
@@ -1617,6 +1764,27 @@ void Render(int w, int h) {
         g_ctx->PSSetShaderResources(0, 1, &g_floor_tex);
         g_ctx->DrawIndexed(6, 0, 0);
       }
+    }
+  }
+  if (g_ring_on && !g_capturing) {
+    if (!g_ring_built) BuildRing();
+    if (std::fabs(g_ring_y - floor_y) > 1e-3f) {  // (to the floor the people stand on)
+      g_ring_y = floor_y;
+      for (RingDraw& d : g_ring_draws) {
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (FAILED(g_ctx->Map(d.vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
+        GpuVertex* v = static_cast<GpuVertex*>(ms.pData);
+        for (size_t k = 0; k < d.verts.size(); ++k) v[k] = d.verts[k], v[k].pos[1] += floor_y;
+        g_ctx->Unmap(d.vb, 0);
+      }
+    }
+    for (const RingDraw& d : g_ring_draws) {
+      if (!set_cb(0.0f, 0)) break;  // (opaque: the steps' alpha isn't a cut-out)
+      const UINT stride = sizeof(GpuVertex), offset = 0;
+      g_ctx->IASetVertexBuffers(0, 1, &d.vb, &stride, &offset);
+      g_ctx->IASetIndexBuffer(d.ib, DXGI_FORMAT_R32_UINT, 0);
+      g_ctx->PSSetShaderResources(0, 1, &d.tex);
+      g_ctx->DrawIndexed(d.count, 0, 0);
     }
   }
   for (const Slot& sl : g_slots)
@@ -1762,6 +1930,18 @@ void RenderInto(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w,
 
 // ---- props (the Full preview: an entrance's worn / held objects, evtobj.pac SOBJ models)
 std::vector<std::unique_ptr<Slot>> g_props;
+
+void SetRing(bool on, const std::string& arena_pac) {
+  if (arena_pac != g_ring_pac) {  // (another game folder: built again)
+    for (RingDraw& d : g_ring_draws) {
+      if (d.vb) d.vb->Release();
+      if (d.ib) d.ib->Release();
+    }
+    g_ring_draws.clear(), g_ring_built = false, g_ring_pac = arena_pac;
+  }
+  g_ring_on = on;
+}
+bool Ring() { return g_ring_on; }
 
 int AddProp(const std::vector<uint8_t>& sobj, std::string* err) {
   auto ch = std::make_shared<Character>();

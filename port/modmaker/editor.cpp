@@ -686,10 +686,9 @@ std::string Label(const ArenaModel& am) {
 
 // The arena's per-model flag table (entry 50001, text: "<model id> <flags>"):
 // "m(<n>)" placed by animation track n, "r" also drawn mirrored (x -> -x).
-std::map<uint32_t, std::string> ModelFlags() {
+std::map<uint32_t, std::string> ModelFlagsOf(const svrfmt::Arena& arena) {
   std::map<uint32_t, std::string> flags;
-  if (!g_arena) return flags;
-  for (const auto& e : g_arena->entries) {
+  for (const auto& e : arena.entries) {
     if (e.id != 50001) continue;
     const Bytes t = Unpack(e.data);
     std::string text(t.begin(), t.end()), line;
@@ -705,6 +704,7 @@ std::map<uint32_t, std::string> ModelFlags() {
   }
   return flags;
 }
+std::map<uint32_t, std::string> ModelFlags() { return g_arena ? ModelFlagsOf(*g_arena) : std::map<uint32_t, std::string>(); }
 
 void BuildObjects() {
   g_objs.clear();
@@ -2075,6 +2075,65 @@ void SwapScene() {
   const int e = g_edits;
   g_edits = v.edits, v.edits = e;
   std::swap(g_budget_edits, v.budget_edits), std::swap(g_last_edit, v.last_edit);
+}
+
+std::vector<RingPart> RingPlacements(const svrfmt::Arena& a) {
+  std::vector<RingPart> out;
+  const auto flags = ModelFlagsOf(a);
+  bool per_rope = false;  // (the twelve per-rope models replace the four side ones, as the game draws them)
+  for (const auto& am : a.models) per_rope |= RoleOf(am.id) == Role::kRopePerRope;
+  auto put = [&](int mi, const M4& m) {
+    RingPart p;
+    p.model = mi;
+    std::memcpy(p.m, m.m, sizeof p.m);
+    out.push_back(p);
+  };
+  auto rope_y = [](int r) { return kMatY - kGameBase - float(r) * kGameGap; };  // (the game's own rope heights)
+  for (int mi = 0; mi < int(a.models.size()); ++mi) {
+    const auto& am = a.models[size_t(mi)];
+    if (am.zone != Zone::kRing) continue;
+    const uint32_t id = am.id;
+    switch (RoleOf(id)) {
+      case Role::kNormal: {
+        const auto f = flags.find(id);
+        if (f != flags.end() && f->second.find("m(") != std::string::npos) break;  // (placed by an animation track)
+        put(mi, M4());
+        bool mirrored = false;
+        if (f != flags.end())
+          for (char s1 : {' ', '\t', '\r'})
+            for (char s2 : {' ', '\t', '\r'}) mirrored |= f->second.find(std::string(1, s1) + "r" + s2) != std::string::npos;
+        if (mirrored) {  // (the game's mirrored copy, x -> -x)
+          M4 m;
+          m.m[0] = -1;
+          put(mi, m);
+        }
+        break;
+      }
+      case Role::kRopeSide:
+        if (!per_rope)
+          for (int r = 0; r < 3; ++r) put(mi, Place(RopeOffset(id) + V3{0, rope_y(r), 0}, 0));
+        break;
+      case Role::kRopePerRope:
+        put(mi, Place(RopeOffset(kSideRope[(id - 900) % 4]) + V3{0, rope_y(int(id - 900) / 4), 0}, 0));
+        break;
+      case Role::kPad:
+        for (int r = 0; r < 3; ++r) put(mi, Place({0, rope_y(r), 0}, 0));
+        break;
+      case Role::kTurnbuckle:
+        for (int corner = 0; corner < 4; ++corner)
+          for (int r = 0; r < 3; ++r) put(mi, Place({0, rope_y(r), 0}, float(corner) * kPi / 2));
+        break;
+      case Role::kApron:  // (as drawn above: 974 on the z sides, 973 on the x sides, each out along its front)
+        for (int side = 0; side < 2; ++side) {
+          const float yaw = (id == 974 ? 0 : kPi / 2) + float(side) * kPi, c = std::cos(yaw), s = std::sin(yaw);
+          put(mi, Place({-kApronOut * s, 0, -kApronOut * c}, yaw));
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return out;
 }
 
 void ViewArena(Arena* arena, const std::string& title, const std::string& manifest) {
