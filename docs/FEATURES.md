@@ -98,6 +98,7 @@ still being tested.
 - **6-Man Weapons Everywhere** is every man for himself (it played as a tag match), DQ is really off (the pause menu showed "Press Start Button"), no count-outs, and the floor weapons no longer lie against the barrier.
 - **CPU opponents run again at 30 fps** - at 30 they could only walk (their run presses were lost between the game's two updates per frame).
 - **Practice Arena mod**: its crowd and floor show during the match (everything beyond the ring was black).
+- **Hell in a Cell roof**: CPUs left alone on the roof climb down (the game's own climb-down) instead of staying up there.
 
 ### Online
 - **Smoother online matches**: each packet repeats the last game inputs, so a lost packet no longer freezes both games (300 ms + 2% loss: from up to 40% of frames waiting to 0-1%); players stay on a path that works both ways instead of flipping between direct and relay.
@@ -133,7 +134,13 @@ still being tested.
 
 ### Mod Maker
 - **Simple mode** ("Make my first superstar"): ten plain steps - name and style, look (a superstar in the game, one from an older game's disc, or a 3D model), attires, music, entrance (watch the walk to the ring), moves and taunts (watch them on your model), pose and pictures (taken from the 3D view), extras, finish with "Fix it" for every problem. It's a view of the same project: switch to the full editor at any time.
-- **Port from a disc**: superstars, entrances, arenas, moves, belts and weapons from your own discs of SvR 2004-2011, Here Comes the Pain, Shut Your Mouth, Legends of WrestleMania, WWE '12, '13 and 2K14-2K17 (PS2 and Xbox 360), read straight from the ISO; each item shows whether 2011 already has it.
+- **Port from a disc**: superstars, entrances, arenas, moves, belts and weapons from your own discs, read straight from the ISO - Xbox 360 SvR 2007-2010, Legends of WrestleMania, WWE '12, '13 and 2K14-2K17, and all nine PS2 SmackDowns (Just Bring It, Shut Your Mouth, Here Comes the Pain, SmackDown! vs. Raw, SvR 2006 and the PS2 SvR 2007-2010); each item shows whether 2011 already has it.
+- **Ported superstars come complete**: their own moveset (the same 2011 move where 2011 has it, the rest ported into a move pack inside the mod; PS2 games use a similar 2011 move, marked "similar" to swap, or tick "Same moves only"), taunts, ratings and abilities fitted onto 2011's, theme and titantron, and a model fitted to the game's memory budget with its bone rests set the way 2011's motions expect. WWE 2K17's unnamed renders are picked from a picture grid.
+- **Full preview**: a whole entrance - all five parts - played in the practice arena with its own camera, fingers, theme and titantron, from the Superstar page or right after porting an entrance.
+- **Entrance gear**: the coat / hat / shirt a superstar wears only for the entrance (one per attire) - shown in the 3D views, taken from another superstar or built from an FBX of the gear, or left out.
+- **Mod doctor**: every installed mod (and any .svrmod before installing) checked the way the game and the launcher read it, in plain words with a fix each; plus the limits mods only hit together.
+- **Arenas that can't be ported** are greyed on the Port page with the reason (they crash 2011 at load, or WWE '12+ backstage / studio stages that aren't arenas).
+- **Overall rating** worked out from the seven attributes exactly as the game does.
 - **FBX**: export any superstar (skeleton, weights, textures) and import a 3D model as a superstar - Unity / VRChat, Mixamo, Rigify, 3ds Max Biped, UE Mannequin and WWE 2K skeletons are mapped automatically (an editable table for the rest), big models are reduced to fit the game, and a model check lists what's wrong (polycount, weights, missing bones, pictures, size).
 - **Installed mods**: every installed mod by type, with superstars playing their moveset, taunts and pose, move packs played on any superstar, and arenas in a read-only 3D view.
 - **Animations** match the game (the game's own arm and leg solving, finger poses, real blood with a Blood / Damage switch, hit spheres), and match moves play by name.
@@ -185,6 +192,10 @@ still being tested.
 - **R-Truth's entrance** plays his theme and his vocal (only the vocal played: a pause the game sends right after his music starts kept the theme stopped).
 - **Mod Maker: SvR 2008 backstage and WWE '13 arena conversions** work in the released Mod Maker again (two helper scripts were missing from Mod Maker Tools since 2.0.5).
 - **Mod Maker Tools**: `svrmod.exe` ships beside the converters (SvR 2010 move ports failed to find it).
+- **Mod moves in CREATE A MOVE-SET**: moves from move packs and superstar mods are at the end of every move list as "MOD: <name>", for any superstar or Created Superstar (in the match the move keeps its own name). A moveset whose pack is later removed plays that slot's ordinary move of its kind in the match until the pack is back, and saving one with such a tag-team finisher no longer crashes.
+- **Move packs**: moves whose motions are the game's streamed kind (taunts ported from other games) now play.
+- **Arena mods start faster**: the game's loading pictures are only read when a custom arena has one, off the start-up thread (2-3.5 s faster boot), and a custom loading / VS picture is shared (about 300 MB less memory).
+- **Arenas from WWE 2K15, 2K16 and 2K17**, and every SvR 2007-2010 and WWE '12 arena played in a full pass; WWE 2K14+ crowds and oversized WWE '13 models no longer crash the load.
 
 ## New in 2.0.6
 
