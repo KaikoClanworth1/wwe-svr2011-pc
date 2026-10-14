@@ -161,6 +161,24 @@ bool ReadCharacter(const Bytes& pac, int attire, Character& ch, std::string& err
     by_name.emplace(b.name, int(ch.bones.size()));
     ch.bones.push_back(b);
   }
+  // the other models' own bones (the hair model's kami_b chains: parent at +48, each strand root under atama)
+  // after the body's, so their weights stay on them instead of falling back to root
+  for (size_t mi = 1; mi < models.size(); ++mi) {
+    const Model& m = models[mi].second;
+    std::function<int(int, int)> add = [&](int local, int depth) -> int {
+      if (local < 0 || local >= int(m.nodes.size()) || depth > 64) return -1;
+      const auto& n = m.nodes[size_t(local)];
+      if (const auto it = by_name.find(n.name); it != by_name.end()) return it->second;
+      Bone b;
+      b.name = n.name;
+      b.local = Local(n.t, n.r);
+      b.parent = n.parent != local ? add(n.parent, depth + 1) : -1;
+      by_name.emplace(b.name, int(ch.bones.size()));
+      ch.bones.push_back(b);
+      return int(ch.bones.size()) - 1;
+    };
+    for (int i = 0; i < int(m.nodes.size()); ++i) add(i, 0);
+  }
   std::vector<bool> done(ch.bones.size());
   std::function<void(int)> world = [&](int i) {
     if (done[size_t(i)]) return;
@@ -245,6 +263,14 @@ CharModelIssues CheckCharacterModel(const Bytes& pac, int attire) {
     out.eye_off[e] = std::sqrt(std::pow(sum[0] / n - w.t[0], 2) + std::pow(sum[1] / n - w.t[1], 2) + std::pow(sum[2] / n - w.t[2], 2));
   }
   return out;
+}
+
+bool IsHairBoneName(const std::string& name) {
+  std::string l;
+  for (char c : name) l += char(std::tolower(uint8_t(c)));
+  for (const char* k : {"hair", "ponytail", "pony_tail", "braid", "bang", "fringe", "pigtail", "twintail", "dread", "kami", "tress"})
+    if (l.find(k) != std::string::npos) return true;
+  return false;
 }
 
 bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep) {
@@ -1118,6 +1144,44 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       }
     if (wbone[i].empty()) wbone[i] = "root";
   }
+  // Hair strands (svr11_build's "hair_chains": the game's kami_b chains, docs/HAIR_PHYSICS_PLAN.md B): unmapped
+  // bones under the head named like hair, from where one starts (its parent isn't hair, or branches) down its
+  // single children; 4 joints or more, the 16 longest. Their weights go on the builder's names - joint k of
+  // strand i "kami_b<i>" (k 0) / "kami_b<i>_<k-1>", the tip's on the joint before (the game never moves a tip).
+  std::vector<std::vector<int>> strands;
+  if (const auto head = src_of.find("atama"); head != src_of.end()) {
+    std::vector<std::vector<int>> kids(nb);
+    for (size_t i = 0; i < nb; ++i)
+      if (parent[i] >= 0) kids[size_t(parent[i])].push_back(int(i));
+    auto hairy = [&](int i) {
+      return targets[size_t(i)].empty() && IsHairBoneName(std::string(nodes[size_t(i)]->name.data, nodes[size_t(i)]->name.length));
+    };
+    auto under_head = [&](int i) {
+      for (int p = parent[size_t(i)], n = 0; p >= 0 && n <= int(nb); p = parent[size_t(p)], ++n)
+        if (p == head->second) return true;
+      return false;
+    };
+    int short_ones = 0;
+    for (size_t i = 0; i < nb; ++i) {
+      const int pa = parent[i];
+      if (!hairy(int(i)) || !under_head(int(i)) || (pa >= 0 && hairy(pa) && kids[size_t(pa)].size() == 1)) continue;
+      std::vector<int> s{int(i)};
+      while (kids[size_t(s.back())].size() == 1 && hairy(kids[size_t(s.back())][0]) && s.size() < 24) s.push_back(kids[size_t(s.back())][0]);
+      if (s.size() >= 4) strands.push_back(std::move(s));
+      else if (s.size() >= 2) ++short_ones;
+    }
+    std::stable_sort(strands.begin(), strands.end(), [](const auto& a, const auto& b) { return a.size() > b.size(); });
+    if (strands.size() > 16) rep.warnings.push_back(std::to_string(strands.size()) + " hair strands: the game moves 16 - the longest kept, the rest ride on the head"), strands.resize(16);
+    if (short_ones) rep.warnings.push_back(std::to_string(short_ones) + " hair strand(s) with under 4 bones ride on the head (the game's chains need 4)");
+    for (size_t si = 0; si < strands.size(); ++si)
+      for (size_t k = 0; k < strands[si].size(); ++k) {
+        const size_t j = k + 1 == strands[si].size() ? k - 1 : k;  // (the tip's weights on the joint before)
+        char n[32];
+        if (j == 0) std::snprintf(n, sizeof n, "kami_b%02d", int(si));
+        else std::snprintf(n, sizeof n, "kami_b%02d_%02d", int(si), int(j - 1));
+        wbone[size_t(strands[si][k])] = n;
+      }
+  }
   std::vector<std::string> out_bones;
   std::map<std::string, int> out_index;
   auto bone_id = [&](const std::string& n) {
@@ -1459,10 +1523,24 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   rep.height_cm = (bottom - top) * 10.0 / scale;
 
   // the builder's input (tools/svr11_build.py)
+  std::string hair_json;  // "hair_chains": each strand's joints, root to tip, in the game's space
+  if (!strands.empty()) {
+    hair_json = "\"hair_chains\": [";
+    for (size_t si = 0; si < strands.size(); ++si) {
+      hair_json += std::string(si ? ", " : "") + "[";
+      for (size_t k = 0; k < strands[si].size(); ++k) {
+        const V3 p = out_pos(origin(posed[size_t(strands[si][k])]));
+        hair_json += std::string(k ? ", " : "") + "[" + Num(p[0]) + ", " + Num(p[1]) + ", " + Num(p[2]) + "]";
+      }
+      hair_json += "]";
+    }
+    hair_json += "],\n ";
+    rep.mesh_lines.push_back("hair: " + std::to_string(strands.size()) + " strand(s) move in the game (kami_b00..)");
+  }
   const std::string textures = "{\"color\": \"color.png\"" + std::string(any_normal ? ", \"normal\": \"normal.png\"" : "") + "}";
   std::string j;
   if (opts.gear_json) {  // (gear pieces only: posed and sized onto the template's body; their weights on its bones)
-    j = "{\"version\": 1, \"textures\": " + textures + ", \"extra_bones\": [],\n \"meshes\": [";
+    j = "{\"version\": 1, \"textures\": " + textures + ", \"extra_bones\": [],\n " + hair_json + "\"meshes\": [";
   } else {
     j = "{\"version\": 1, \"template\": " + JsonStr(template_path) + ",\n \"joints\": {";
     bool first = true;
@@ -1470,7 +1548,7 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       j += std::string(first ? "" : ", ") + JsonStr(n) + ": [" + Num(p[0]) + ", " + Num(p[1]) + ", " + Num(p[2]) + "]";
       first = false;
     }
-    j += "},\n \"attires\": [{\"name\": \"\", \"textures\": " + textures + ",\n  \"meshes\": [";
+    j += "},\n \"attires\": [{\"name\": \"\", \"textures\": " + textures + ",\n  " + hair_json + "\"meshes\": [";
   }
   for (size_t mi = 0; mi < meshes.size(); ++mi) {
     const OutMesh& m = meshes[mi];

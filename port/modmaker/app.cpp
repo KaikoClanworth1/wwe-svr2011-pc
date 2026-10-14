@@ -2347,6 +2347,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       if (c != std::wstring::npos) WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
       return 0;
     }
+    else if (!wcscmp(argv[i], L"--export-fbx") && more) {  // <pac>,<attire>,<out dir>,<name>: Export to FBX, then quit
+      std::vector<std::wstring> p;
+      const std::wstring v = argv[++i];
+      for (size_t at = 0; at <= v.size();) {
+        size_t c = v.find(L',', at);
+        if (c == std::wstring::npos) c = v.size();
+        p.push_back(v.substr(at, c - at)), at = c + 1;
+      }
+      Bytes b;
+      svrfmt::CharExportReport rep;
+      const bool ok = p.size() == 4 && ReadFile(Utf8(p[0]), b) && svrfmt::ExportCharacterFbx(b, _wtoi(p[1].c_str()), Utf8(p[2]), Utf8(p[3]), rep);
+      std::string t = std::string(ok ? "ok" : "failed") + ": " + std::to_string(rep.bones) + " bones\n";
+      for (const auto& w : rep.warnings) t += w + "\n";
+      if (p.size() == 4) WriteFile(Utf8(p[2]) + "/export.txt", Bytes(t.begin(), t.end()));
+      return ok ? 0 : 1;
+    }
     else if (!wcscmp(argv[i], L"--fbx-build-input") && more) {  // <fbx>,<template pac>,<out dir>: the automatic mapping, build.json + report.txt
       const std::wstring v = argv[++i];
       const size_t a = v.find(L','), b = v.find(L',', a + 1);

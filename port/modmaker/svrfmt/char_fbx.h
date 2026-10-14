@@ -18,6 +18,10 @@ struct CharExportReport {
 };
 
 // attire: 1-4 (the EMD entry ......<attire-1>2). Writes <out_dir>/<name>.fbx and <out_dir>/textures/*.png.
+// A source bone named like hair (hair, ponytail, braid, bangs, fringe, pigtail, dread, kami, ...): FBX import
+// turns chains of them under the head into the game's moving hair (svr11_build "hair_chains").
+bool IsHairBoneName(const std::string& name);
+
 bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep);
 
 // An FBX's skeleton: every bone node (a skeleton node, or one a skin cluster uses), parent index (-1: none), in
