@@ -35,12 +35,15 @@ named the weights by 2011 bones. model.json:
             "weights": [[[bone index, weight], ...], ...],   per vertex, any count (top 4 kept, renormalised)
             "triangles": [[a, b, c], ...],
             "material": {                                   optional, per mesh:
-                "specular": 0.48,        shine (g_fSpecularLev: stock 0.15-2.0, skin 0.48), default the template's
+                "specular": 0.48,        shine (g_fSpecularLev: stock 0-100, skin ~0.5), default the template's; the colour alpha is the per-texel part
                 "normal": "<png>",       this mesh's normal map (same as textures.normal)
-                "tint": [r, g, b] | "#rrggbb",   multiplied into the colour (its own atlas cell)
+                "tint": [r, g, b] | "#rrggbb",   the mesh's colour multiplier (g_f4MatDifCol; stock 0.36-1.0)
                 "cutout": true,          see-through where the colour png's alpha is low (render flags 0x110, as
                                          stock hair cards); otherwise colour alpha = specular level
-                "double_sided": true},   back faces drawn (render flag 0x2 cleared, as stock double-sided parts)
+                "double_sided": true,    back faces drawn (render flag 0x2 cleared, as stock double-sided parts)
+                "specular_alpha": "texture" | "flat" | "brightness"},   the colour alpha (specular modulation):
+                                         the png's own / 255 (uniform) / from the brightness; default the png's
+                                         own when it has one, else brightness; ignored with "cutout" (opacity)
             "textures": {"color": "<png>", "normal": "<png>"}   optional: per-mesh sheets, packed into the
                                                                attire's one colour / normal sheet (UVs remapped)
         }, ...]}]}
@@ -308,8 +311,13 @@ class Builder:
                 want = slots.get(name)
                 k = textures.index(want) if want in textures else -1
                 val = struct.pack('>i', k) + val[4:]
-            if name == 'g_fSpecularLev' and mat.get('specular') is not None:   # (shine: stock 0.15-2.0, skin 0.48)
-                val = struct.pack('>f', min(4.0, max(0.0, float(mat['specular'])))) + val[4:]
+            if name == 'g_fSpecularLev' and mat.get('specular') is not None:   # (shine: stock 0-100, skin ~0.5)
+                val = struct.pack('>f', min(100.0, max(0.0, float(mat['specular'])))) + val[4:]
+            if name == 'g_f4MatDifCol' and mat.get('tint') and len(val) >= 16:   # (tint: the native colour multiplier)
+                rgba = list(struct.unpack('>4f', val[:16]))
+                for i, x in enumerate(tint_rgb(mat['tint'])):
+                    rgba[i] *= x
+                val = struct.pack('>4f', *rgba) + val[16:]
             s.params.append((name, typ, val))
         A = np.array([v[:3] for v in s.verts])
         cen = (A.min(0) + A.max(0)) / 2
@@ -430,12 +438,16 @@ class Builder:
         def norm_of(m):
             return mat(m).get('normal') or (m.get('textures') or {}).get('normal') or at.get('normal')
 
-        def col_key(m):   # (one atlas cell per colour png + tint + normal png)
+        def col_key(m):   # (one atlas cell per colour png + normal png + alpha mode; the tint is a mesh parameter)
             c = (m.get('textures') or {}).get('color') or at.get('color') or ''
             if not c:
                 return ''
-            tint = mat(m).get('tint')
-            return '%s|%s|%s' % (c, ','.join('%.3f' % x for x in tint_rgb(tint)) if tint else '', norm_of(m) or '')
+            return '%s|%s|%s' % (c, norm_of(m) or '', alpha_mode(m))
+
+        def alpha_mode(m):   # (what the cell's colour alpha means: cut-out opacity, or how specular is modulated)
+            if mat(m).get('cutout'):
+                return 'texture'
+            return mat(m).get('specular_alpha') or ''
         atlas = Atlas([col_key(m) for m in meshes if m.get('kind', 'skin') != 'lash'] or [''])
         for m in meshes:
             u = [uv for uv in m['uvs']]
@@ -446,14 +458,17 @@ class Builder:
             k = col_key(m)
             if k and k not in colors:
                 im = load_png(self.path(k.split('|')[0]))
-                if mat(m).get('tint'):   # (tint: multiplied into the colour)
-                    r_, g_, b_ = tint_rgb(mat(m)['tint'])
-                    ch = im.split()
-                    im = Image.merge('RGBA', (ch[0].point(lambda v: int(v * r_)), ch[1].point(lambda v: int(v * g_)),
-                                              ch[2].point(lambda v: int(v * b_)), ch[3]))
                 # (colour alpha: the png's own when it has one - a cut-out's mask, or a specular level the caller
                 # painted - else a specular level from the brightness, per cell)
-                colors[k] = im if has_alpha(im) else spec_alpha(im)
+                mode = alpha_mode(m)
+                if mode == 'flat':   # (uniform shine at the mesh's specular level)
+                    im = im.copy()
+                    im.putalpha(255)
+                elif mode == 'brightness':
+                    im = spec_alpha(im)
+                elif mode != 'texture' and not has_alpha(im):
+                    im = spec_alpha(im)
+                colors[k] = im
             nk = norm_of(m)
             if k and nk and k not in normals:
                 normals[k] = load_png(self.path(nk))
