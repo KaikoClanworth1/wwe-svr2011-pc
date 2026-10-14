@@ -662,13 +662,16 @@ def build09(cid, outdir, o, rep):
     abilities_step(type(g9).__name__, g9, cid, man, note)
     # moves
     if not o.get('no_moves') and base != i11:
-        moveset_step(g9, cid, base, o, work, mod, man, rep)
+        progress(40, 'moveset')
+        moveset_step(g9, cid, base, o, work, mod, man, rep, prog=(40, 55))
     # entrance
     progress(55, 'entrance')
     music, movie, ent, alt = g9.entrance_block(cid)
+    source_keys(man, o['game'], cid, ent, movie)
     if o.get('entrance'):
         man['entrance'] = o['entrance']
     else:
+        man['entrance_note'] = 'not ported (a 2011 entrance by name, else a generic one)'
         e, via = entrance_from_names([g9.evp().get(ent), name, g9.short(cid)], g11)
         be = g11.entrance_block(base)[2]
         if not e and base != i11:
@@ -775,8 +778,23 @@ def build10(cid, outdir, o, rep):
                 added.append('%d %s' % (a + 1, names[a]))
         if added:
             rep['notes'].append('attire names from SvR 2010: ' + ', '.join(added))
+    try:
+        ent10 = o['src_game'].entrance_block(cid)
+    except Exception:   # noqa: BLE001
+        ent10 = None
+    source_keys(man, 'svr10', cid, ent10[2] if ent10 else None, ent10[1] if ent10 else None)
     write_mod(mod, man, out, rep, o['pac11'])
     return out, mod
+
+
+def source_keys(man, game, cid, ent=None, movie=None):
+    """manifest source= / source_entrance= / source_movie=: where the mod came from (the Mod Maker's
+    "port the entrance" fixes run entrance_port.py convert --game <game> --entrance <source_entrance>)"""
+    man['source'] = '%s %d' % (game, cid)
+    if ent not in (None, 0, 255, 0xFFFF, 0xFFFFFFFF):
+        man['source_entrance'] = ent
+    if movie not in (None, 0, 255, 0xFFFF, 0xFFFFFFFF):
+        man['source_movie'] = movie
 
 
 def model_attires(pac):
@@ -1303,7 +1321,7 @@ def fit_budget(path, tmpl):
     return out
 
 
-def moveset_step(gw, cid, base, o, work, mod, man, rep):
+def moveset_step(gw, cid, base, o, work, mod, man, rep, prog=(70, 85)):
     """the superstar's own moveset (moveset_port.py): moves.txt over the base's profile, ported moves
     as a move pack in the mod's moves/ folder"""
     import moveset_port
@@ -1324,7 +1342,7 @@ def moveset_step(gw, cid, base, o, work, mod, man, rep):
         waze = mgame.waze
     else:
         mgame, waze = None, moveset_maps.waze_old(o['src'])
-    c = moveset_port.Ctx(gid=gid, cid=cid, base=base, g11=o['g11'], pro=pro[cid], waze=waze, mgame=mgame,
+    c = moveset_port.Ctx(prog=prog, gid=gid, cid=cid, base=base, g11=o['g11'], pro=pro[cid], waze=waze, mgame=mgame,
                          pac11=o['pac11'], svrmod=getattr(gw, 'svrmod', None), work=work, mod=mod, rep=rep,
                          port=not o.get('no_port'), max_port=o.get('max_port', 40),
                          port_taunts=not o.get('no_taunts'),
@@ -1427,6 +1445,7 @@ def buildW(cid, outdir, o, rep):
         warn('theme: %s' % why)
     # entrance + titantron (entrance_port)
     progress(60, 'entrance')
+    source_keys(man, gw.game_id, cid, ent, movie)
     if o.get('entrance'):
         man['entrance'] = o['entrance']
     else:
@@ -1464,7 +1483,11 @@ def buildW(cid, outdir, o, rep):
                         break
                 rep['warnings'] += ['entrance: ' + w for w in er.get('warnings', [])]
             else:
-                warn('entrance %d not converted (%s)' % (ent, (er.get('error') or r.stderr.strip()[-160:] or '?')))
+                why = (er.get('error') or r.stderr.strip()[-160:] or '?')
+                warn('entrance %d not converted (%s)' % (ent, why))
+                man['entrance_note'] = 'not converted: ' + ' '.join(why.split())[:120]
+        else:
+            man['entrance_note'] = 'not converted: no free 2011 entrance number'
         if 'entrance' not in man:
             e, via = entrance_from_names([name], g11)
             if e:
@@ -1495,6 +1518,111 @@ def buildW(cid, outdir, o, rep):
 
 
 # --------------------------------------------------------------------------- commands
+
+# --------------------------------------------------------------------------- one model pac (convert --src <ch*.pac>)
+
+SINGLE = {   # game -> (label, mod id suffix)
+    'svr2007': ('SvR 2007', '_07'), 'svr2008': ('SvR 2008', '_08'), 'svr2009': ('SvR 2009', '_09'),
+    'svr2010': ('SvR 2010', '_10'), 'wwe12': ("WWE '12", '_12'), 'wwe13': ("WWE '13", '_13'),
+    'wwe2k14': ('WWE 2K14', '_2k14'), 'wwe2k15': ('WWE 2K15', '_2k15'), 'wwe2k16': ('WWE 2K16', '_2k16'),
+    'wwe2k17': ('WWE 2K17', '_2k17')}
+SINGLE_MISSING = ["renders (the base's)", "theme (the base's)", "titantron (the base's)", "entrance (the base's)",
+                  "moveset (the base's)", "ratings and abilities (the base's)", 'name and profile (--name, else the file name)',
+                  'attire names']
+
+
+def build_single(cid, outdir, o, rep):
+    """a superstar mod from one model pac: its model and attires only (no profile, renders, theme, moves:
+    the base's, listed in the report's missing[]); the pac is read as the game's own ch pac"""
+    pac = os.path.abspath(o['src'])
+    game = o['game']
+    label, suffix = SINGLE[game]
+    g11, pac11 = o['g11'], o['pac11']
+    note, warn, drop = rep['notes'].append, rep['warnings'].append, rep['dropped'].append
+    name = (o.get('name') or '%s %d' % (label, cid))[:31]
+    mid = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + suffix if o.get('name') else 'ch%d%s' % (cid, suffix)
+    work = os.path.join(outdir, '.work_%d' % cid)
+    mod = os.path.join(outdir, mid)
+    for d in (work, mod):
+        if os.path.exists(d):
+            shutil.rmtree(d)
+        os.makedirs(d)
+    progress(5, 'base superstar')
+    if o.get('base'):
+        base, why = o['base'], 'option'
+    elif 100 <= cid <= 292 and cid in playable11(g11):
+        base, why = cid, ("2011's superstar with the same id (the games after 2011 keep its ids for most of "
+                          '100-292; a single pac has no profile: --base picks another)')
+    elif 100 <= cid <= 292 and cid in g11.dat and g11.dat[cid][208] == 1:
+        base, why = 174, ("a woman (2011's record %d is): a single pac has no profile - --base picks another" % cid)
+    else:
+        base, why = 104, 'default - a single pac has no profile: --base picks another (a woman: 174 Melina)'
+    if base not in g11.dat:
+        raise BadInput('--base %d is not a 2011 superstar' % base)
+    note('base %d %s (%s)' % (base, g11.name(base), why))
+    man = collections.OrderedDict(type='superstar', id=mid, name=name, short=name, base=base,
+                                  author=label + ' port', made_with='Port tools (%s, one model pac)' % label, version='1.0')
+    progress(20, 'model')
+    out = os.path.join(mod, 'ch.pac')
+    import model_budget
+    if game.startswith('wwe'):
+        import moves_port as MP
+
+        class _One:   # (the game's Src for its one file)
+            def need(self, rel):
+                return pac
+            get = need
+        cls = {'wwe12': GameW, 'wwe13': GameW13, 'wwe2k14': GameW2K14, 'wwe2k15': GameW2K15, 'wwe2k16': GameW2K16,
+               'wwe2k17': GameW2K17}[game]
+        g = cls.__new__(cls)
+        g.MP, g.src, g.svrmod = MP, _One(), o.get('svrmod')
+        if game != 'wwe12':
+            import wwe13_entrance as WE
+            g.WE, g.svrmod = WE, WE.find_svrmod(o.get('svrmod'))
+        try:
+            left = model_w(g, cid, pac11, out, None)
+        except BadInput:
+            raise
+        except Exception as e:   # noqa: BLE001
+            raise BadInput('%s is not a %s model pac (%s: %s)' % (os.path.basename(pac), label, type(e).__name__, str(e)[:120]))
+        if left:
+            drop('attires past %d (2011 has 4 at most): %s' % (g.max_attires, ', '.join(left)))
+    elif game == 'svr2007':
+        import svr07_char
+        kept7, extra = svr07_char.convert(pac, out, os.path.join(pac11, 'ch', 'ch104.pac'), cid, None)
+        note('attires %s (svr07_char)' % ', '.join('%s -> %s' % k[:2] for k in kept7))
+        for e in extra:
+            drop('attire %s (a mod holds 4)' % e)
+    elif game in ('svr2008', 'svr2009'):
+        kept, extra = model_from_2008_family(pac, cid, pac11, out, None, True)
+        note('attires %s (svr08_char)' % ', '.join('%s -> %s' % k for k in kept))
+        for e in extra:
+            drop('attire %s (a mod holds 4)' % e)
+    else:   # svr2010: model_from_2010 reads <pac10>/ch/ch<id>.pac
+        S = svr10()
+        p10 = os.path.join(work, 'pac10')
+        os.makedirs(os.path.join(p10, 'ch'))
+        shutil.copyfile(pac, os.path.join(p10, 'ch', 'ch%d.pac' % cid))
+        with contextlib.redirect_stdout(sys.stderr):
+            S.model_from_2010(p10, cid, pac11, out)
+    if not os.path.exists(out):
+        raise BadInput('no wrestler model in %s' % os.path.basename(pac))
+    pages = model_budget.model_pages(out)
+    note('model: %s %s, %d attires' % (label, os.path.basename(pac), len(pages)))
+    for n_, pg, parts in pages:
+        if pg > model_budget.LIMIT:
+            note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
+    source_keys(man, game, cid)
+    man['source_file'] = os.path.basename(pac)
+    rep['missing'] = list(SINGLE_MISSING)
+    warn('one model pac: only the model and its attires - ' + '; '.join(SINGLE_MISSING) +
+         ' (the full game folder or disc as --src gives them)')
+    progress(95, 'packing')
+    out_mod = os.path.join(outdir, mid + '.svrmod')
+    write_mod(mod, man, out_mod, rep, pac11)
+    return out_mod, mod
+
+
 
 def open_game(game, src, svrmod=None):
     if game == 'svr2010':
@@ -1586,14 +1714,32 @@ def cmd_pictures(a):
 
 
 def cmd_convert(a):
-    if not a.get('item') or not a.get('out'):
+    single = os.path.isfile(a.get('src') or '') and a['src'].lower().endswith('.pac')
+    if (not a.get('item') and not single) or not a.get('out'):
         raise BadInput('convert needs --item and --out')
     try:
-        cid = int(a['item'])
+        cid = int(a.get('item'))
     except ValueError:
         raise BadInput('--item is a superstar id (from list)')
+    except TypeError:   # (one model pac without --item: the id in its name, ch147.pac)
+        m = re.search(r'ch_?(\d+)', os.path.basename(a['src']), re.I)
+        if not m:
+            raise BadInput("convert needs --item (the superstar id; not in the pac's name)")
+        cid = int(m.group(1))
     outdir = os.path.abspath(a['out'])
     os.makedirs(outdir, exist_ok=True)
+    if single:   # (one model pac: build_single)
+        if a['game'] not in SINGLE:
+            raise BadInput("one model pac as --src: %s only (PS2 models are inside the disc's packs)" % ', '.join(SINGLE))
+        g11, snd = game11(a['pac11'])
+        rep = dict(ok=False, out=None, folder=None, opens='superstar', warnings=[], dropped=[], notes=[])
+        o = dict(a, g11=g11)
+        if o.get('base') is not None:
+            o['base'] = int(o['base'])
+        out, mod = build_single(cid, outdir, o, rep)
+        rep.update(ok=True, out=out, folder=mod)
+        progress(100, 'done')
+        return rep
     src = Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
     progress(1, 'reading the game')
     g = open_game(a['game'], src, a.get('svrmod'))
