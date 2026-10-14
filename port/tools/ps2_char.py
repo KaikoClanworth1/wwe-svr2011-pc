@@ -825,6 +825,10 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
             files[key] = png(t, key[1], sp)
         if files[key]:
             m['textures'] = {'color': files[key]}
+            if not key[1]:
+                # (the png's alpha is the PS2 specular: svr11_build reads a skin-shader mesh's shine from the
+                # normal alpha unless told the colour alpha is it - then it moves it there, colour alpha = sweat)
+                m['material'] = {'specular_alpha': 'texture'}
     wrap_textures(meshes, out_dir)
     joints = {}
     for i, nd in enumerate(body['nodes']):
