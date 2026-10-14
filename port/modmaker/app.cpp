@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "char_preview.h"
+#include "hair_sim.h"
 #include "editor.h"
 #include "full_preview.h"
 #include "tool_run.h"
@@ -1325,6 +1326,10 @@ void ViewFooter() {
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip(has ? "The blood a superstar gets in a match, on the face and body." : "This model has no blood layers.");
+  next_fits("Physics");
+  bool physics = char_preview::Physics();
+  if (ImGui::Checkbox("Physics", &physics)) char_preview::SetPhysics(physics);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hair and body jiggle as the game moves them (the model's own settings).");
   next_fits("Ring");
   bool ring = char_preview::Ring();
   if (ImGui::Checkbox("Ring", &ring)) char_preview::SetRing(ring, Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg29.pac").wstring()));
@@ -2404,6 +2409,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       WriteFile(Utf8(out), Bytes(text.begin(), text.end()));
       return 0;
     }
+    else if (!wcscmp(argv[i], L"--hair-ref") && more) {  // <dump>,<out>[,<floor y>]: the hair solver against the game's numbers, then quit
+      std::wstring v = argv[++i];
+      std::vector<std::wstring> p;
+      for (size_t at = 0; at <= v.size();) {
+        size_t c = v.find(L',', at);
+        if (c == std::wstring::npos) c = v.size();
+        p.push_back(v.substr(at, c - at)), at = c + 1;
+      }
+      Bytes d;
+      std::string rep = p.size() >= 2 && ReadFile(Utf8(p[0]), d)
+                            ? hair::ReplayDump(std::string(d.begin(), d.end()), p.size() > 2 ? float(_wtof(p[2].c_str())) : -12.0f)
+                            : "can't read the dump\n";
+      if (p.size() >= 2) WriteFile(Utf8(p[1]), Bytes(rep.begin(), rep.end()));
+      return 0;
+    }
     else if (!wcscmp(argv[i], L"--check-svrmod") && more) {  // <file>,<out>: a .svrmod checked, then quit
       const std::wstring v = argv[++i];
       const size_t c = v.rfind(L',');
@@ -2496,7 +2516,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
     else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views
-    else if (!wcscmp(argv[i], L"--ring")) ring_view = true;  // the basic ring in the 3D views (once the game folder is known)
+    else if (!wcscmp(argv[i], L"--ring")) ring_view = true;
+    else if (!wcscmp(argv[i], L"--no-physics")) char_preview::SetPhysics(false);  // hair and jiggle off (test aid)  // the basic ring in the 3D views (once the game folder is known)
     else if (!wcscmp(argv[i], L"--star-gear-fbx") && more) star_page::TestGearFbx(Utf8(argv[++i]));  // <attire>:<fbx>: fit the FBX gear, log, quit
     else if (!wcscmp(argv[i], L"--star-gear-from") && more) star_page::TestGearFrom(Utf8(argv[++i]));  // <attire>:<donor id>: fit the donor's entrance gear, log, quit
     else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]

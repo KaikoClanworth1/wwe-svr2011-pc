@@ -93,6 +93,9 @@ int AddProp(const std::vector<uint8_t>& sobj, std::string* err = nullptr);
 // The basic ring (off by default): the practice arena's ring kit (`arena_pac`: the game's pac\\bg\\bg29.pac,
 // UTF-8) round the model, its canvas where the model stands; read the first time it's turned on.
 void SetRing(bool on, const std::string& arena_pac);
+// Hair and body jiggle as the game moves them (the attire's PACH children 60 / 61 / 50; hair_sim.h), on by default.
+void SetPhysics(bool on);
+bool Physics();
 bool Ring();
 // The steel steps the game puts out at the ring (pac\\bg\\bgEtc.pac STG/WPON: pack 32 the model, placed by the
 // ringside set 45010 key 1000 - f32 position x3, f32 rotation x3 in degrees, s16 motion, u8 place, u8 model): the
