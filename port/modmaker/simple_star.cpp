@@ -136,7 +136,13 @@ void StepName() {
 
 char g_find[64] = "";
 int g_look_mode = -1;  // the Look step's way in (-1: by the project)
+void StepLook_();
 void StepLook() {
+  StepLook_();
+  ImGui::Spacing();
+  MaterialsSection(true);
+}
+void StepLook_() {
   int& mode = g_look_mode;  // 0 a game superstar, 1 an older disc, 2 an FBX
   if (mode < 0) mode = g_star.fbx.empty() ? 0 : 2;  // (a project with an FBX opens on it)
   const float w = CardWidth(), h = 80 * g_scale;
@@ -236,7 +242,13 @@ std::string LookName(const std::wstring& pac) {
   return FileName(pac);
 }
 
+void StepAttires_() ;
 void StepAttires() {
+  StepAttires_();
+  ImGui::Spacing();
+  MaterialsSection(true);
+}
+void StepAttires_() {
   const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
   auto own_has = [&](int n) {  // (the game counts them in order from 1)
     for (int k = 1; k <= n; ++k)

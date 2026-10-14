@@ -271,7 +271,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     endforeach()
     add_executable(svr2011_modmaker WIN32
         modmaker/app.cpp modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/simple_star.cpp modmaker/mod_check.cpp modmaker/signs_page.cpp modmaker/backgrounds_page.cpp
-        modmaker/media_page.cpp modmaker/full_preview.cpp modmaker/audio_out.cpp modmaker/video_mf.cpp modmaker/hair_sim.cpp modmaker/moves_page.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
+        modmaker/media_page.cpp modmaker/full_preview.cpp modmaker/audio_out.cpp modmaker/video_mf.cpp modmaker/hair_sim.cpp modmaker/model_materials.cpp modmaker/material_panel.cpp modmaker/moves_page.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
         modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
         modmaker/tool_run.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c
         modmaker/svrfmt/wwe13.cpp ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack/lzxd.c modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp

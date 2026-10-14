@@ -185,6 +185,7 @@ struct Job {
   std::vector<Image> signs;
   std::wstring moves, pack;
   std::map<int, std::string> gear;  // (entrance gear choices)
+  std::map<MatKey, MatEdit> mats;   // (the material panel's edits)
 };
 
 // ---- entrances (D5)
@@ -880,6 +881,7 @@ bool PrepareJob(Job& j) {
   j.moves = g_star.moves, j.pack = g_star.pack, j.moveset = g_star.moveset;
   j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice;
   j.gear = g_star.gear;
+  j.mats = g_star.mats;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
   j.picture = g_star.picture.image, j.picture_small = g_star.picture_small, j.picture_full = g_star.picture_full;
   for (const auto& s : g_star.signs) j.signs.push_back(s.image);
@@ -910,6 +912,18 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
       else Log("entrance gear: " + err);
     }
   }
+  // the material panel's edits: the model's own attires (and their gear) here, the other pacs' below
+  auto patch = [&](Bytes& pac, int view_attire, int attire_in_pac) {
+    for (const bool gear : {false, true}) {
+      std::map<std::pair<uint32_t, int>, MatEdit> ed;
+      for (const auto& [k, e] : j.mats)
+        if (std::get<0>(k) == view_attire && std::get<1>(k) == gear) ed[{std::get<2>(k), std::get<3>(k)}] = e;
+      std::string err;
+      if (!ed.empty() && !PatchMaterials(pac, attire_in_pac, gear, ed, &err)) Log("materials, attire " + std::to_string(view_attire) + ": " + err);
+    }
+  };
+  for (int a = 1; a <= 4; ++a)
+    if (a == 1 || j.attires[a - 1].empty()) patch(ch, a, a);
   files.push_back({"ch.pac", std::move(ch)});
   auto add = [&](const std::wstring& src, const std::string& stem, const char* key, const char* what) {
     if (src.empty()) return true;
@@ -938,6 +952,7 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
       std::string err;
       if (EpacRead(pac, e) && PacRemoveGear(e, 1, &err)) pac = EpacWrite(e);
     }
+    patch(pac, a + 1, 1);
     files.push_back({n, std::move(pac)});
     man += "attire" + std::to_string(a + 1) + "=" + n + "\n";
     if (!j.attire_names[a].empty()) man += "attire" + std::to_string(a + 1) + "_name=" + j.attire_names[a] + "\n";
@@ -1595,6 +1610,28 @@ void GearFromFbx(const std::wstring& target, int attire, const std::wstring& fbx
   });
 }
 
+void ApplyTestMaterials();
+extern bool g_test_open_mats;
+void MaterialsSection(bool simple) {
+  if (g_star.model.empty()) return;
+  ApplyTestMaterials();
+  const bool gear = char_preview::Gear() && char_preview::HasGear();
+  const auto [pac, in] = AttireSource(g_view_attire);
+  int n = 0;
+  for (const auto& [k, e] : g_star.mats) n += !e.Empty();
+  const std::string head = std::string(simple ? "Shine, bumps and colour" : "Materials") + (n ? " (" + std::to_string(n) + " changed)" : "") +
+                           "###materials";
+  if (g_test_open_mats) ImGui::SetNextItemOpen(true, ImGuiCond_Always), g_test_open_mats = false;
+  if (!ImGui::CollapsingHeader(head.c_str())) {
+    std::map<std::pair<uint32_t, int>, MatEdit> preview;  // (still shown while folded)
+    for (const auto& [k, e] : g_star.mats)
+      if (std::get<0>(k) == g_view_attire && std::get<1>(k) == gear) preview[{std::get<2>(k), std::get<3>(k)}] = e;
+    char_preview::SetMaterialPreview(preview);
+    return;
+  }
+  if (MaterialPanel(pac, in, gear, g_view_attire, g_star.mats, simple)) Touch();
+}
+
 void GearRows(bool simple) {
   if (g_star.model.empty()) return;
   const std::vector<int> own_gear = GearOf(g_star.model);
@@ -1947,6 +1984,7 @@ void Draw() {
       std::snprintf(g_star.hometown_city, sizeof g_star.hometown_city, "%s", g_test_hometown.substr(0, c).c_str());
       std::snprintf(g_star.hometown_state, sizeof g_star.hometown_state, "%s", c == std::string::npos ? "" : g_test_hometown.substr(c + 1).c_str());
     }
+    ApplyTestMaterials();  // (--star-mat before the test save)
     if (!g_test_save.empty()) {
       Job j;
       PrepareJob(j);
@@ -2133,6 +2171,7 @@ void Draw() {
   }
   FbxRows(false);
   GearRows(false);
+  MaterialsSection(false);
   FileRow("Theme song (optional)...", g_star.song, g_star.music > 0 ? "the game's theme below" : "the style's", kSoundFilter, 1);
   if (!g_star.song.empty() && g_star.music) g_star.music = 0;  // (a song file picked: it wins)
   StockThemeRow();
@@ -2295,7 +2334,7 @@ void Draw() {
 std::string StateText() {
   std::string s = std::string("name=") + g_star.name + "\nshort=" + g_star.short_name + "\nstyle=" +
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
-                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nmusic=" + std::to_string(g_star.music) +
+                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nmusic=" + std::to_string(g_star.music) + "\nmats=" + MaterialsText(g_star.mats) +
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
   for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
   for (int a = 1; a < 4; ++a)
@@ -2336,6 +2375,11 @@ void WriteProject(ProjectOut& out) {
   out.Key("fbx_on", PairsText(g_star.fbx_on));
   out.Key("fbx_kind", PairsText(g_star.fbx_kind));
   out.Key("fbx_pic", PairsText(g_star.fbx_pic));
+  {
+    std::string t = MaterialsText(g_star.mats);  // (one line: entries apart by tabs)
+    std::replace(t.begin(), t.end(), '\n', '\t');
+    out.Key("materials", t);
+  }
   out.File("song", g_star.song, "star/theme");
   if (g_star.music > 0) out.Key("music", std::to_string(g_star.music));
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
@@ -2470,6 +2514,11 @@ bool Read(const ProjectIn& in, bool mod) {
     else if (any) g_star.pack = folder;
   }
   g_star.song = file("song", nullptr);
+  {
+    std::string t = in.Get("materials");
+    std::replace(t.begin(), t.end(), '\t', '\n');
+    g_star.mats = MaterialsFromText(t);
+  }
   if (const int m = std::atoi(in.Get("music").c_str()); m >= 1 && m <= 253) g_star.music = m;
   if (const std::string g = in.Get("theme_gain"); !g.empty()) g_star.theme_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 6.0f);
   g_star.movie = file("movie", nullptr);
@@ -2513,6 +2562,48 @@ bool Read(const ProjectIn& in, bool mod) {
   return true;
 }
 
+
+// Test aids: --star-mat "<attire>,<gear 0/1>,<model id>,<mesh>:spec=1.5,tint=1/0.3/0.3,cut=1,both=0,normal=flat|asis|<png>"
+// (; between meshes) - the material panel's edits as if made by hand; --open-materials unfolds its section.
+std::string g_test_mats;
+bool g_test_open_mats = false;
+void TestMaterials(const std::string& spec, bool open) {
+  if (!spec.empty()) g_test_mats = spec;
+  if (open) g_test_open_mats = true;
+}
+void ApplyTestMaterials() {
+  if (g_test_mats.empty()) return;
+  std::string all = g_test_mats;
+  g_test_mats.clear();
+  for (size_t at = 0; at <= all.size();) {
+    size_t e = all.find(';', at);
+    if (e == std::string::npos) e = all.size();
+    const std::string one = all.substr(at, e - at);
+    at = e + 1;
+    int a = 1, g = 0, mesh = 0;
+    unsigned id = 0;
+    const size_t colon = one.find(':');
+    if (colon == std::string::npos || std::sscanf(one.c_str(), "%d,%d,%u,%d", &a, &g, &id, &mesh) != 4) continue;
+    MatEdit& m = g_star.mats[{a, g != 0, uint32_t(id), mesh}];
+    std::string rest = one.substr(colon + 1);
+    for (size_t p = 0; p <= rest.size();) {
+      size_t q = rest.find(',', p);
+      if (q == std::string::npos) q = rest.size();
+      const std::string kv = rest.substr(p, q - p);
+      p = q + 1;
+      const size_t eq = kv.find('=');
+      if (eq == std::string::npos) continue;
+      const std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
+      if (k == "spec") m.has_spec = true, m.spec = float(std::atof(v.c_str()));
+      if (k == "tint" && std::sscanf(v.c_str(), "%f/%f/%f", &m.tint[0], &m.tint[1], &m.tint[2]) == 3) m.has_tint = true;
+      if (k == "cut") m.cutout = std::atoi(v.c_str());
+      if (k == "both") m.two_sided = std::atoi(v.c_str());
+      if (k == "normal") m.normal = v == "flat" ? 2 : v == "asis" ? 0 : 1, m.normal_file = m.normal == 1 ? Wide(v) : std::wstring();
+    }
+    Log("test: material " + one);
+  }
+  Touch();
+}
 
 void TestStart(int id, const std::wstring& model, const std::string& name, const std::wstring& picture,
                const std::wstring& save) {

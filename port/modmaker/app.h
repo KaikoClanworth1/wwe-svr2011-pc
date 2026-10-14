@@ -220,6 +220,11 @@ struct MoveInfo {
 const std::map<int, MoveInfo>& MoveInfos();
 // A superstar's 224 slots (empty if it has no profile).
 std::vector<int> ProfileMoves(int star_id);
+// The material panel (material_panel.cpp): the meshes of `pac`'s attire `attire_in_pac` (gear: its entrance gear
+// model) with their shine / normal map / colour / see-through / both sides; edits in `edits` keyed by the 3D view's
+// attire (view_attire), previewed live. Simple's plain words with `simple`. -> true when an edit changed.
+bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int view_attire,
+                   std::map<std::tuple<int, bool, uint32_t, int>, struct MatEdit>& edits, bool simple);
 // A superstar's entrance theme: the game's music id (profile +0x1C0 +0x10; 1-253 the game's own themes), 0 if none.
 int ProfileMusic(int star_id);
 // Whether a move fits a slot (unknown moves: false); the moves that do, by name.
@@ -348,7 +353,8 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
                                                 const std::wstring& gimmick_pac, const std::string& gimmick); }
 namespace backstage_page { extern PageHooks hooks; }
-namespace star_page { extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion); void TestStart(int id, const std::wstring& model, const std::string& name,
+namespace star_page { void TestMaterials(const std::string& spec, bool open);
+extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion); void TestStart(int id, const std::wstring& model, const std::string& name,
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);

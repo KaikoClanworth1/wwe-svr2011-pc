@@ -4,6 +4,9 @@
 // motions, a second character (the dummy) on the victim's track. Formats:
 // docs/SUPERSTAR_MODS.md (character model), docs/MOVE_PACKS.md (banks).
 #pragma once
+#include <array>
+#include <map>
+#include "model_materials.h"
 
 #include <d3d11.h>
 
@@ -96,6 +99,12 @@ void SetRing(bool on, const std::string& arena_pac);
 // Hair and body jiggle as the game moves them (the attire's PACH children 60 / 61 / 50; hair_sim.h), on by default.
 void SetPhysics(bool on);
 bool Physics();
+// The material panel (model_materials.h): the shown model's edits previewed live, keyed by (model child id,
+// mesh index) - the model in the 3D view, its attire / gear as shown. Empty: as in the pac.
+void SetMaterialPreview(const std::map<std::pair<uint32_t, int>, mm::MatEdit>& edits);
+void SetHighlight(uint32_t model_id, int mesh);  // a mesh lit up in the 3D view (the panel's hovered one; -1 none)
+// A shown mesh's colour (or normal) texture as an ImGui texture id and its triangles' UVs (3 per triangle).
+bool MeshAtlas(uint32_t model_id, int mesh, bool normal, void** texture, std::vector<std::array<float, 2>>* uvs);
 bool Ring();
 // The steel steps the game puts out at the ring (pac\\bg\\bgEtc.pac STG/WPON: pack 32 the model, placed by the
 // ringside set 45010 key 1000 - f32 position x3, f32 rotation x3 in degrees, s16 motion, u8 place, u8 model): the

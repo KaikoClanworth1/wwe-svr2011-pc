@@ -1,6 +1,7 @@
 // The Superstar page's project and helpers, shared with its Simple mode
 // (simple_star.cpp: the guided view of the same project).
 #pragma once
+#include "model_materials.h"
 
 #include <map>
 #include <set>
@@ -65,6 +66,7 @@ struct StarProject {
   int simple_step = 0;
   // entrance gear per attire (1-4): "off" leaves it out, "from<k>" gives it the model's attire k's gear
   std::map<int, std::string> gear;
+  std::map<MatKey, MatEdit> mats;  // the material panel's edits: (attire 1-4, gear, model id, mesh) -> edit
 };
 extern StarProject g_star;
 // The overall rating as the game works it out (sub_828B7950, used by the select screen's OVERALL list and ~28 more
@@ -76,6 +78,7 @@ inline int OverallRating(const int r[7]) {
   return v > 100 ? 100 : v;
 }
 extern int g_view_attire;  // the attire the preview shows (1-4)
+void MaterialsSection(bool simple);  // the material panel for the model the 3D view shows (its attire, its gear)
 // The Full preview window (full_preview.cpp) of entrance n for this project (star_page.cpp).
 void OpenFullPreview(int n);
 

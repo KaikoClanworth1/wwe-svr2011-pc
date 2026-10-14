@@ -2548,6 +2548,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-watch") && more) star_page::TestWatchSlot(int(std::wcstol(argv[++i], nullptr, 0)));
     else if (!wcscmp(argv[i], L"--star-voice") && more) star_voice = argv[++i];
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
+    else if (!wcscmp(argv[i], L"--star-mat") && more) star_page::TestMaterials(Utf8(argv[++i]), false);
+    else if (!wcscmp(argv[i], L"--open-materials")) star_page::TestMaterials("", true);
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--sign") && more) sign_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-sign-save") && more) sign_save = argv[++i];

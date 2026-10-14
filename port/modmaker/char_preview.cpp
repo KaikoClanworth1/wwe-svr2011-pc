@@ -23,7 +23,10 @@
 #include "editor.h"
 #include "hair_sim.h"
 
-namespace mm { void Log(const std::string& line); }  // (app.h)
+namespace mm {
+void Log(const std::string& line);  // (app.h)
+bool LoadPicture(const std::wstring& file, svrfmt::Image& out);
+}
 
 #include <windows.h>
 #include <d3dcompiler.h>
@@ -150,6 +153,8 @@ struct PMesh {
   uint32_t mflags = 0x6;
   std::string ntex;  // the normal map (lower case; "" none)
   std::vector<V3> tan;  // tangents (from the UVs) for the normal map
+  uint32_t model_id = 0;  // its model's PACH child id and its index there (the material panel's key)
+  int mesh_index = 0;
 };
 struct Bone {
   std::string name;
@@ -291,8 +296,10 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
     const std::string lname = Lower(m.name);
     const bool blood = lname.rfind("blood", 0) == 0 || (model_ids[mi] >= 0x7530 && model_ids[mi] <= 0x7532);
     const bool name_cutout = lname.find("hair") != std::string::npos || lname.find("eyelash") != std::string::npos;
-    for (const Mesh& s : m.meshes) {
+    for (size_t si_ = 0; si_ < m.meshes.size(); ++si_) {
+      const Mesh& s = m.meshes[si_];
       PMesh pm;
+      pm.model_id = model_ids[mi], pm.mesh_index = int(si_);
       const int slot = DiffuseSlot(s);
       pm.tex = slot >= 0 && slot < int(m.textures.size()) ? Lower(m.textures[slot]) : "color";
       // the material: the mesh's own parameters and flags (the game's), the cut-out from its flags
@@ -1120,7 +1127,8 @@ float4 ps(VO i) : SV_Target {
   float amb = lerp(0.30, 0.52, 0.5 + 0.5 * n.y);
   float rim = pow(1 - saturate(dot(n, -fwd.xyz)), 3) * 0.45;
   float3 h = normalize(key.xyz - fwd.xyz);  // the key light's highlight
-  float shine = saturate(mat.x / 2) * (mat.w > 0.5 ? tx.a : 1) * pow(saturate(dot(n, h)), clamp(mat.y, 1, 300)) * 0.9;
+  float mask = mat.w > 1.5 ? dot(tx.rgb, float3(0.3, 0.59, 0.11)) : mat.w > 0.5 ? tx.a : 1;
+  float shine = saturate(mat.x / 2) * mask * pow(saturate(dot(n, h)), clamp(mat.y, 1, 300)) * 0.9;
   return float4(tx.rgb * tint.rgb * (amb + 0.80 * k + 0.28 * f + rim) + shine * k, 1);
 }
 )";
@@ -1153,6 +1161,10 @@ struct GpuMesh {
   ID3D11ShaderResourceView* ntex = nullptr;  // the normal map (null: none)
   float spec = 0.5f, spec_pow = 50, tint[3] = {1, 1, 1};
   bool culled = true;
+  int spec_alpha = 1;  // the shine's mask: 0 none, 1 the colour's alpha, 2 its brightness (the panel's preview)
+  uint32_t model_id = 0;
+  int mesh_index = 0;
+  size_t pm = 0;  // (its index in the character's meshes)
   UINT count = 0;
   ID3D11ShaderResourceView* tex = nullptr;
   bool cutout = false;
@@ -1298,6 +1310,7 @@ void Upload(Slot& sl, std::shared_ptr<Character> ch) {
     g.blood = pm.blood;
     g.spec = pm.spec, g.spec_pow = pm.spec_pow, std::memcpy(g.tint, pm.tint, sizeof g.tint);
     g.culled = (pm.mflags & 0x2) != 0;
+    g.model_id = pm.model_id, g.mesh_index = pm.mesh_index, g.pm = g_gpu.size();
     if (!pm.ntex.empty()) {
       auto nit = g_textures.find(pm.ntex);
       if (nit == g_textures.end()) {
@@ -1829,10 +1842,55 @@ void Physics(Slot& sl, std::vector<Xf>& world, const std::vector<Xf>& local, con
   }
 }
 
+// ---- the material panel's live preview (slot 0's meshes)
+std::map<std::pair<uint32_t, int>, mm::MatEdit> g_mat_preview;
+std::pair<uint32_t, int> g_highlight{~0u, -1};
+int g_highlight_frame = -10;  // (it lasts while the panel keeps setting it: a page without it, no glow)
+std::map<std::wstring, ID3D11ShaderResourceView*> g_preview_normals;  // picture file -> texture
+ID3D11ShaderResourceView* g_flat_normal = nullptr;
+
+ID3D11ShaderResourceView* PreviewNormal(const std::wstring& file) {
+  auto it = g_preview_normals.find(file);
+  if (it != g_preview_normals.end()) return it->second;
+  Image img;
+  ID3D11ShaderResourceView* v = mm::LoadPicture(file, img) ? MakeTexture(DdsEncode(img, DxtFormat::kArgb, true)) : nullptr;
+  return g_preview_normals[file] = v;
+}
+
+// g with the panel's edits on it (slot 0's meshes only).
+GpuMesh Previewed(const GpuMesh& g) {
+  if (g_highlight == std::make_pair(g.model_id, g.mesh_index) && ImGui::GetFrameCount() - g_highlight_frame <= 2) {  // (the panel's part: a warm glow, pulsing)
+    GpuMesh o = g;
+    const float t = 1.5f + 0.5f * std::sin(float(ImGui::GetTime()) * 6);
+    o.tint[0] *= t * 1.2f, o.tint[1] *= t * 0.9f, o.tint[2] *= t * 0.5f;
+    return o;
+  }
+  const auto it = g_mat_preview.find({g.model_id, g.mesh_index});
+  if (it == g_mat_preview.end()) return g;
+  const mm::MatEdit& e = it->second;
+  GpuMesh o = g;
+  if (e.has_spec) o.spec = e.spec;
+  if (e.has_tint) std::memcpy(o.tint, e.tint, sizeof o.tint);
+  if (e.cutout >= 0) o.cutout = e.cutout != 0;
+  if (e.two_sided >= 0) o.culled = e.two_sided == 0;
+  if (e.normal == 1) o.ntex = PreviewNormal(e.normal_file);
+  if (e.normal == 2) {
+    if (!g_flat_normal) {
+      Image img;
+      img.w = img.h = 4, img.rgba.assign(64, 0);
+      for (size_t q = 0; q < 64; q += 4) img.rgba[q] = 128, img.rgba[q + 1] = 128, img.rgba[q + 2] = 255, img.rgba[q + 3] = 255;
+      g_flat_normal = MakeTexture(DdsEncode(img, DxtFormat::kArgb, false));
+    }
+    o.ntex = g_flat_normal;
+  }
+  if (e.spec_alpha) o.spec_alpha = e.spec_alpha == 2 ? 0 : e.spec_alpha == 3 ? 2 : 1;
+  return o;
+}
+
 // A mesh's material for the shader (null: neutral - the floor, the ring): constants, normal map at t1, culling.
 void UseMaterial(Cb* c, const GpuMesh* g) {
   c->mat[0] = g ? g->spec : 0, c->mat[1] = g ? g->spec_pow : 1, c->mat[2] = g && g->ntex ? 1.0f : 0.0f;
-  c->mat[3] = g && !g->cutout ? 1.0f : 0.0f;  // (a cut-out's alpha is its see-through, not its shine)
+  c->mat[3] = g && !g->cutout ? float(g->spec_alpha) : 0.0f;  // (a cut-out's alpha is its see-through, not its shine)
   for (int k = 0; k < 3; ++k) c->tint[k] = g ? g->tint[k] : 1;
   c->tint[3] = 1;
 }
@@ -2040,8 +2098,9 @@ void Render(int w, int h) {
   }
   for (const Slot& sl : g_slots)
   if (!g_capturing || &sl == &g_slots[0])
-  for (const GpuMesh& g : sl.gpu) {
+  for (const GpuMesh& g0 : sl.gpu) {
     if (sl.hidden) break;
+    const GpuMesh g = &sl == &g_slots[0] && (!g_mat_preview.empty() || g_highlight.second >= 0) ? Previewed(g0) : g0;
     if (g.blood && (!g_blood || g.blood_missing)) continue;
     if (!set_cb(g.cutout ? 1.0f : 0.0f, 0, &g)) continue;
     const UINT stride = sizeof(GpuVertex), offset = 0;
@@ -2195,6 +2254,27 @@ void SetRing(bool on, const std::string& arena_pac) {
   g_ring_on = on;
 }
 bool Ring() { return g_ring_on; }
+void SetMaterialPreview(const std::map<std::pair<uint32_t, int>, mm::MatEdit>& edits) { g_mat_preview = edits; }
+void SetHighlight(uint32_t model_id, int mesh) { g_highlight = {model_id, mesh}, g_highlight_frame = ImGui::GetFrameCount(); }
+
+bool MeshAtlas(uint32_t model_id, int mesh, bool normal, void** texture, std::vector<std::array<float, 2>>* uvs) {
+  const Slot& sl = g_slots[0];
+  if (!sl.ch) return false;
+  for (const GpuMesh& g0 : sl.gpu) {
+    if (g0.model_id != model_id || g0.mesh_index != mesh) continue;
+    const GpuMesh g = g_mat_preview.empty() ? g0 : Previewed(g0);
+    ID3D11ShaderResourceView* v = normal ? g.ntex : g.tex;
+    if (texture) *texture = v;
+    if (uvs && g.pm < sl.ch->meshes.size()) {
+      const PMesh& pm = sl.ch->meshes[g.pm];
+      uvs->clear();
+      for (uint32_t i : pm.idx) uvs->push_back(i < pm.uv.size() ? pm.uv[i] : std::array<float, 2>{0, 0});
+    }
+    return v != nullptr;
+  }
+  return false;
+}
+
 void SetPhysics(bool on) {
   g_physics = on;
   for (Slot& sl : g_slots) sl.phys.settle = true;
