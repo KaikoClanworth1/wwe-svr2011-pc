@@ -110,7 +110,7 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
     ImGui::PushID(label);
     bool ch = false;
     // (the game draws a culled skin part with its skin shader: the shine follows the normal map's alpha there)
-    const bool skin = m.skin_shine && (e.two_sided >= 0 ? e.two_sided == 0 : (m.flags & 0x2) != 0);
+    const bool skin = m.skin_shine && (e.two_sided >= 0 ? e.two_sided == 0 : (m.flags & 0x2) != 0) && e.cutout != 1;
     // shine
     if (m.has_spec) {
       float v = e.has_spec ? e.spec : m.spec;
@@ -156,7 +156,12 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
     // see-through and both sides
     bool cut = e.cutout >= 0 ? e.cutout != 0 : (m.flags & 0x100) != 0;
     if (ImGui::Checkbox(simple ? "See-through where the picture is clear" : "See-through cut-out (alpha test)", &cut)) e.cutout = cut, ch = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where its picture's alpha is low it isn't drawn (lace, mesh, torn cloth) - the game's flag 0x110, as stock hair.");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(skin ? "Where its picture's alpha is low it isn't drawn (lace, mesh, torn cloth) - the game's flag 0x110, as stock hair.\n"
+                               "Skin part: the game's skin shader can't cut, so this also turns its sweat off (g_fSweatSPA 0): the shine then\n"
+                               "follows the colour picture's alpha. Cut-off point: alpha about 0.2-0.3."
+                             : "Where its picture's alpha is low it isn't drawn (lace, mesh, torn cloth) - the game's flag 0x110, as stock hair.\n"
+                               "Cut-off point: alpha about 0.2-0.3.");
     ImGui::SameLine();
     bool both = e.two_sided >= 0 ? e.two_sided != 0 : (m.flags & 0x2) == 0;
     if (ImGui::Checkbox(simple ? "Both sides" : "Double-sided", &both)) e.two_sided = both, ch = true;

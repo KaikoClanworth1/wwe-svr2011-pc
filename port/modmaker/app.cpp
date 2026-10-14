@@ -2583,6 +2583,29 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-mat") && more) star_page::TestMaterials(Utf8(argv[++i]), false);
     else if (!wcscmp(argv[i], L"--open-materials")) star_page::TestMaterials("", true);
+    else if (!wcscmp(argv[i], L"--alpha-fixture") && more) {  // <pac>,<out pac>,<id:mesh>;<id:mesh>...: the cut-out fixture (mm::AlphaFixture), then quit
+      const std::wstring v = argv[++i];
+      const size_t a = v.find(L','), b = v.find(L',', a + 1);
+      if (a == std::wstring::npos || b == std::wstring::npos) return 1;
+      std::vector<std::pair<uint32_t, int>> ms;
+      for (const std::string item : {Utf8(v.substr(b + 1))}) {
+        size_t at = 0;
+        while (at < item.size()) {
+          size_t e = item.find(';', at);
+          if (e == std::string::npos) e = item.size();
+          unsigned id = 0;
+          int mesh = 0;
+          if (std::sscanf(item.substr(at, e - at).c_str(), "%u:%d", &id, &mesh) == 2) ms.push_back({id, mesh});
+          at = e + 1;
+        }
+      }
+      svrfmt::Bytes pac;
+      std::string err;
+      const bool ok = svrfmt::ReadFile(Utf8(v.substr(0, a)), pac) && mm::AlphaFixture(pac, ms, &err) &&
+                      svrfmt::WriteFile(Utf8(v.substr(a + 1, b - a - 1)), pac);
+      if (!ok) WriteFile(Utf8(v.substr(a + 1, b - a - 1)) + ".err", Bytes(err.begin(), err.end()));
+      return ok ? 0 : 1;
+    }
     else if (!wcscmp(argv[i], L"--mat-dump") && more) {  // <pac>,<out.txt>: every mesh's shader, flags and parameters, then quit
       const std::wstring a = argv[++i];
       const size_t c = a.find(L',');
