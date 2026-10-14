@@ -52,7 +52,7 @@ KINDS = {
     69: ([0], []),                   # gmSandBag (hangs; shadow 1282 out)
     66: ([6, 9], []),                # gmShower: door, glass
     65: ([0], []),                   # gmTrngMch: running machine
-    75: ([0], [2]),                  # gmBrokenWall: the wall whole, its panel coll
+    75: ([0, 1, 13, 14], [2]),       # gmBrokenWall: whole, broken, falling piece, cracked (hctp_room hides 3); coll
     76: ([0, 1], [9]),               # gmTVClash: TV, stand
     77: ([0], []),                   # gmRackWithObj: shelf
     84: ([0], []),                   # gmAttackObjFade: shelf things
@@ -63,6 +63,13 @@ KINDS = {
     27: ([0], []),                   # (rooms 35/36) sand
     29: ([2, 3], [1]),               # CGmFountain: water, basin
     24: ([1, 3], [8]),               # CGmTower: top, base (2 / 4: their broken copies)
+    # no model: places hctp_room needs (zones in their params)
+    72: ([], []),                    # CGmPowerSupply: the generator's hit plane
+    98: ([], []),                    # gmHammerThrowAtk: whip into the trailer side
+    86: ([], []),                    # CForkliftBoxSupply: the crate reload zone
+    74: ([], []),                    # CGmMoveCar path points
+    73: ([1, 2], []),                # CGmMoveCar: the two traffic cars (hctp_room drives them)
+    96: ([], []),                    # GmFountainThrow: whip into the fountain (centre in params 1, 2)
 }
 
 
