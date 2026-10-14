@@ -112,7 +112,9 @@ def read(d):
              't': struct.unpack_from('>3f', d, o + 16),
              'r': struct.unpack_from('>3f', d, o + 28),
              'u40': _u32(d, o + 40),
-             'parent': struct.unpack_from('>i', d, o + 44)[0],
+             # (+44 is 0 in every stock model - 9018 checked; the hierarchy is the s32 at +48)
+             'u44': struct.unpack_from('>i', d, o + 44)[0],
+             'parent': struct.unpack_from('>i', d, o + 48)[0],
              'u48': struct.unpack_from('>4I', d, o + 48),
              'sphere': struct.unpack_from('>4f', d, o + 64)}
         m.nodes.append(n)
@@ -288,8 +290,10 @@ def write(m):
     for n in m.nodes:
         out += _name16(n['name'])
         out += struct.pack('>3f', *n['t']) + struct.pack('>3f', *n['r'])
-        out += struct.pack('>Ii', n['u40'], n['parent'])
-        out += struct.pack('>4I', *n['u48']) + struct.pack('>4f', *n['sphere'])
+        # (+48: u48 as given - its first word is the parent; a node made without u48 gets 'parent' there)
+        u48 = n['u48'] if 'u48' in n else (n.get('parent', -1) & 0xFFFFFFFF, 0, 0, 0)
+        out += struct.pack('>Ii', n['u40'], n.get('u44', 0))
+        out += struct.pack('>4I', *u48) + struct.pack('>4f', *n['sphere'])
     tex_at = len(out)
     for t in m.textures:
         out += _name16(t)
