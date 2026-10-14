@@ -68,6 +68,10 @@ using rex::X_RESULT;
 using rex::X_STATUS;
 using namespace rex::input;  // X_INPUT_* types and button bits
 
+// The "until" steps' log sink - once, at setup, before any game thread
+// (svr2011_app.cpp; adding a sink later races the threads' logging).
+void InstallScriptLogSink();
+
 class ScriptInputDriver final : public rex::input::InputDriver {
  public:
   explicit ScriptInputDriver(std::filesystem::path command_file);

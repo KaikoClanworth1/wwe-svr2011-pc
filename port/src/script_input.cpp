@@ -98,6 +98,18 @@ class UntilSink final : public spdlog::sinks::base_sink<std::mutex> {
 
 }  // namespace
 
+// The "until" steps' sink: added once at setup (svr2011_app.cpp, before any
+// game thread). rex::AddSink pushes onto each logger's sinks without a lock,
+// and spdlog walks them unlocked while it logs: added at the first poll (a
+// few seconds in), it raced the game files check thread's log line - a test
+// game crashed in spdlog's flush_ 4 s after start.
+void InstallScriptLogSink() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  rex::AddSink(std::make_shared<UntilSink>());
+}
+
 ScriptInputDriver::ScriptInputDriver(std::filesystem::path command_file)
     : InputDriver(nullptr, 0), file_(std::move(command_file)) {
   // (a copy the game restarted itself into - online_overlay.cpp: the commands
@@ -312,9 +324,8 @@ void ScriptInputDriver::PollFile() {
 
 ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
   std::lock_guard lock(mutex_);
-  if (!started_) {  // (the first poll: the logger is up)
+  if (!started_) {  // (the first poll; the "until" sink was added at setup: InstallScriptLogSink)
     started_ = true;
-    rex::AddSink(std::make_shared<UntilSink>());
     if (const char* route = std::getenv("SVR2011_ROUTE"); route && *route && !std::getenv("SVR2011_RELAUNCHED"))
       ParseLine(std::string("route ") + route);
   }
