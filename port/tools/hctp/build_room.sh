@@ -7,7 +7,7 @@ ROOM=$1; DX=$2; DZ=$3; MOD=$4; NAME=$5
 # (optional 6th: x0,x1,z0,z1 - a tighter crop than the parking footprint, for a room over 2011's
 # vertex budget: the stage's ~13k vertices; more fails the GPU buffer allocation at load)
 FP=${6:+--footprint $6}
-S=$(cd "$(dirname "$0")" && pwd)
+S=$(cd "$(dirname "$0")" && pwd -W)  # (Windows form: python imports from it)
 G="D:/Xbox Games Ports/WWE Smackdown Vs Raw 2011"
 T="$G/port/tools"
 STG="D:/Xbox Games Ports/HCTP Extract/_unpacked/bg/stg_00$ROOM"
@@ -49,6 +49,7 @@ print(','.join('%d=%d' % (k, k + $2) for k in sorted({x['id'] for x in e}) if $3
     cp out/mot/bank_wr.bin $BANK
   fi
 fi
+[ -f "$BANK" ] || { echo "no motion bank $BANK"; exit 1; }
 HCTP_BANK=$BANK HCTP_ROOM=$ROOM HCTP_DX=$DX HCTP_DZ=$DZ HCTP_OUT="$MOD" python "$S/build_props.py" | tail -1
 tail -3 out/bg78_hctp$ROOM.log
 # the fight box: the room's extent (cx, cz, half x, half z) from the stage log

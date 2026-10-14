@@ -248,6 +248,7 @@ struct Prop {
   std::map<int, std::array<float, 6>> shapes;
   int bits = 0;  // (car: 1 door off, 2 bonnet off, 4 crushed)
   int body = 0;  // (car: the body model shown, 0 whole / 1 dented)
+  uint32_t who = 0;  // (the wrestler it holds: locker, toilet, treadmill)
 };
 // A steam jet (HCTP particle 32 / 34, toggled by a valve): from (x, y, z)
 // along (dx, dz) for len, half width hw, half height hh.
@@ -738,6 +739,8 @@ void SetUp(PPCContext& ctx, uint8_t* base) {
   if (Prop* sh = FindKind("shutter"); sh && sh->recs.size() > 1) ShowRec(ctx, base, sh->recs[1], false);
   for (Prop& p : g_room.props) {
     if (p.kind == "car" && p.models.size() > 1 && !p.body) ShowModel(ctx, base, p, p.models[1], false);
+    if (p.kind == "brokenwall" && p.state == 0)
+      for (size_t k = 1; k < p.models.size(); ++k) ShowModel(ctx, base, p, p.models[k], false);
     if (p.kind == "movecar")
       for (int mdl : p.models) ShowModel(ctx, base, p, mdl, false);
   }
@@ -1231,6 +1234,307 @@ bool Room31Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m
   return false;
 }
 
+// -- Room 32 (training room) -------------------------------------------------
+// Nearly everything triggers on a wrestler whipped into it (HCTP attack mask 4): the victim in the
+// whip run inside the object's hit shape (param named per class, grown by 6).
+
+uint32_t RoomKey(float hctp_act) { return kRoomAct + uint32_t(hctp_act) - 12000; }
+
+// A victim held on a gimmick's act until 'until' (the act's last pose replayed, at the gimmick's place).
+void HoldVictim(PPCContext& ctx, uint8_t* base, const Prop& p, uint32_t key) {
+  const uint32_t v = p.who;
+  if (!v) return;
+  const int n = Frames(key, 60);
+  if (Rd32(base + v + 212) != key || RdF(base + v + 24) >= float(n - 2)) JumpAct(ctx, base, v, key, 0, 0, float(n - 2));
+  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+}
+
+// GmLocker (400): whipped in, he is shut inside (door 69 / body 70, him 12071) for 120 HCTP frames, then
+// comes out (door 71 / body 72, him 12072) and the door falls off (no 2011 locker-door weapon: it's hidden).
+void LockerHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
+  if (p.state || p.models.size() < 2) return;
+  p.state = 1, p.timer = 0, p.who = v;
+  PlayModel(ctx, base, p, p.models[1], kObjAct + uint32_t(Param(p, 4)));
+  PlayModel(ctx, base, p, p.models[0], kObjAct + uint32_t(Param(p, 3)));
+  JumpAct(ctx, base, v, RoomKey(Param(p, 2)));
+  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  REXLOG_INFO("hctp: fighter {} is shut in {}", i, p.name);
+}
+
+void UpdateLocker(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (p.state == 0 || p.state == 3) return;
+  ++p.timer;
+  if (p.state == 1) {
+    if (p.timer > 20) HoldVictim(ctx, base, p, RoomKey(Param(p, 2)));
+    if (p.timer >= 2 * (Frames(kObjAct + uint32_t(Param(p, 4)), 37) + 120)) {
+      PlayModel(ctx, base, p, p.models[1], kObjAct + uint32_t(Param(p, 9)));
+      PlayModel(ctx, base, p, p.models[0], kObjAct + uint32_t(Param(p, 8)));
+      JumpAct(ctx, base, p.who, RoomKey(Param(p, 7)));
+      PlaceFighter(base, p.who, p.x, p.y, p.z, p.ry);
+      p.state = 2, p.timer = 0;
+      REXLOG_INFO("hctp: {} opens - he comes out", p.name);
+    }
+  } else if (p.timer >= 2 * Frames(kObjAct + uint32_t(Param(p, 9)), 35)) {
+    ShowModel(ctx, base, p, p.models[1], false);  // (HCTP: the door falls off as weapon 55)
+    p.state = 3;
+  }
+}
+
+// gmToilet (405): whipped in, he sits in the stall (12076) and comes out (12077); the door (procedural in
+// HCTP) is out of the way meanwhile. Repeatable.
+void ToiletHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
+  if (p.state || p.cooldown > 0) return;
+  p.state = 1, p.timer = 0, p.who = v;
+  if (!p.models.empty()) ShowModel(ctx, base, p, p.models[0], false);
+  JumpAct(ctx, base, v, RoomKey(Param(p, 5)));
+  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  REXLOG_INFO("hctp: fighter {} is thrown into {}", i, p.name);
+}
+
+void UpdateToilet(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (p.state != 1) return;
+  ++p.timer;
+  // (HCTP: door frames 101..253 he's held in the stall)
+  if (p.timer > 2 * 101 && p.timer < 2 * 254) HoldVictim(ctx, base, p, RoomKey(Param(p, 5)));
+  if (p.timer == 2 * 254) {
+    JumpAct(ctx, base, p.who, RoomKey(Param(p, 7)));
+    PlaceFighter(base, p.who, p.x, p.y, p.z, p.ry);
+    if (!p.models.empty()) ShowModel(ctx, base, p, p.models[0], true);
+    p.state = 0, p.cooldown = 2 * 60;
+  }
+}
+
+// gmShower (420): whipped in, door and glass swing (92), he stands under the water (12086). 300 frames.
+void ShowerHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
+  if (p.cooldown > 0) return;
+  for (int m : p.models) PlayModel(ctx, base, p, m, kObjAct + uint32_t(Param(p, 7)));
+  JumpAct(ctx, base, v, RoomKey(Param(p, 1)));
+  PlaceFighter(base, v, p.x, p.y, p.z, 0.0f);
+  p.cooldown = 2 * 300;
+  REXLOG_INFO("hctp: fighter {} is thrown into {}", i, p.name);
+}
+
+// gmRackWithObj (440 / 445 / 467): whipped in, the shelf shakes and he reacts; again after 60 frames.
+// The items on it (gmAttackObjFade 460, gmAttackObjWeapon 465 / 466 / 468) stand at the same place: the
+// same whip knocks them down - one fades out, the others become weapons.
+void RackHit(PPCContext& ctx, uint8_t* base, Prop& r, uint32_t v, int i) {
+  if (r.cooldown > 0) return;
+  PlayProp(ctx, base, r, kObjAct + uint32_t(Param(r, 1)));
+  HitReaction(ctx, base, v);
+  r.cooldown = 2 * 60;
+  for (Prop& q : g_room.props)
+    if ((q.kind == "fade" || q.kind == "rackweapon") && q.state == 0 && std::fabs(q.x - r.x) < 3.0f &&
+        std::fabs(q.z - r.z) < 3.0f) {
+      PlayProp(ctx, base, q, kObjAct + uint32_t(Param(q, 3)));
+      q.state = 1, q.timer = 0;
+    }
+  REXLOG_INFO("hctp: fighter {} is thrown into {}", i, r.name);
+}
+
+void UpdateShelfItem(PPCContext& ctx, uint8_t* base, Prop& q) {
+  if (q.state != 1) return;
+  ++q.timer;
+  const int n = Frames(kObjAct + uint32_t(Param(q, 3)), 30);
+  if (q.kind == "fade" && q.timer == 2 * (n + int(Param(q, 5, 30)))) ShowProp(ctx, base, q, false), q.state = 2;
+  if (q.kind == "rackweapon" && q.timer == 2 * n) {
+    ShowProp(ctx, base, q, false);
+    for (const WeaponSpot& w : g_room.weapons)
+      if (w.hid == q.hid && std::fabs(w.x - q.x) < 20.0f && std::fabs(w.z - q.z) < 20.0f)
+        SpawnWeapon(ctx, base, w.model, w.x, w.y, w.z);
+    q.state = 2;
+  }
+}
+
+// gmTVClash (435): whipped into the stand, or the wall behind it broken: TV 80 / stand 81 fall, then the
+// TV is gone (HCTP: weapon 53, which 2011 lacks) and the stand fades; its collision goes.
+void TVFall(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v) {
+  if (p.state || p.models.size() < 2) return;
+  PlayModel(ctx, base, p, p.models[0], kObjAct + uint32_t(Param(p, 2)));
+  PlayModel(ctx, base, p, p.models[1], kObjAct + uint32_t(Param(p, 3)));
+  if (v) HitReaction(ctx, base, v);
+  DropCollision(base, p);
+  p.state = 1, p.timer = 0;
+  REXLOG_INFO("hctp: {} falls", p.name);
+}
+
+void UpdateTV(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (p.state != 1) return;
+  ++p.timer;
+  const int n = Frames(kObjAct + uint32_t(Param(p, 3)), 45);
+  if (p.timer == 2 * n) ShowModel(ctx, base, p, p.models[0], false);
+  if (p.timer == 2 * (n + 31)) ShowModel(ctx, base, p, p.models[1], false), p.state = 2;
+}
+
+// gmBrokenWall (430): models whole, broken, falling piece, cracked. The first whip / running hit cracks it,
+// the second breaks it open (83 on the broken wall, (83, 1) on the piece) and knocks the TV over; both
+// fade and the wall's collision goes - the passage is open.
+void WallHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
+  if (p.cooldown > 0 || p.state >= 2 || p.models.size() < 4) return;
+  if (v) HitReaction(ctx, base, v);
+  p.cooldown = 2 * 60;
+  if (p.state == 0) {
+    ShowModel(ctx, base, p, p.models[0], false);
+    ShowModel(ctx, base, p, p.models[3], true);
+    p.state = 1;
+    REXLOG_INFO("hctp: fighter {} cracks {}", i, p.name);
+    return;
+  }
+  ShowModel(ctx, base, p, p.models[3], false);
+  ShowModel(ctx, base, p, p.models[1], true);
+  ShowModel(ctx, base, p, p.models[2], true);
+  const uint32_t k = kObjAct + uint32_t(Param(p, 6));
+  PlayModel(ctx, base, p, p.models[1], k);
+  PlayModel(ctx, base, p, p.models[2], k, 1, 0);
+  p.state = 2, p.timer = 0;
+  for (Prop& t : g_room.props)
+    if (t.kind == "tv") TVFall(ctx, base, t, 0);
+  REXLOG_INFO("hctp: fighter {} breaks {} open", i, p.name);
+}
+
+void UpdateBrokenWall(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (p.state != 2) return;
+  ++p.timer;
+  if (p.timer == 2 * 64) DropCollision(base, p);
+  if (p.timer == 2 * (64 + 80)) {
+    ShowModel(ctx, base, p, p.models[1], false);
+    ShowModel(ctx, base, p, p.models[2], false);
+    p.state = 3;
+  }
+}
+
+// gmSandBag (415): hanging from the ceiling; a hit pushes it along the attacker's facing (strike p3,
+// whipped into it p5), two pendulums swing it (decay 0.998, +3 degrees a frame), a hard swing (> 18)
+// knocks standing wrestlers near its foot down (340).
+struct Swing {
+  float ax = 0, az = 0, phase = 0;
+};
+Swing g_bag;
+
+void SandbagHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, float push) {
+  if (p.cooldown > 2 * 50) return;
+  const float yaw = RdF(base + f + 276);
+  g_bag.ax += push * 4.0f * std::sin(yaw);
+  g_bag.az += push * 4.0f * std::cos(yaw);
+  g_bag.ax = std::clamp(g_bag.ax, -28.0f, 28.0f), g_bag.az = std::clamp(g_bag.az, -28.0f, 28.0f);
+  p.cooldown = 2 * 60;
+}
+
+void UpdateSandbag(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (p.recs.empty()) return;
+  g_bag.ax *= 0.998f, g_bag.az *= 0.998f;
+  g_bag.phase += 3.0f * 3.14159265f / 180.0f / 2.0f;
+  const float s = std::sin(g_bag.phase);
+  constexpr float kRad = 3.14159265f / 180.0f;
+  MoveRec(ctx, base, p.recs[0], p.x, p.y, p.z, g_bag.az * s * kRad, p.ry, -g_bag.ax * s * kRad);
+  if (std::fabs(g_bag.ax) + std::fabs(g_bag.az) <= 18.0f || p.cooldown > 2 * 50) return;
+  // (its foot: the bag hangs 50 down from its pivot - y -50 is its top)
+  for (int i = 0; i < 8; ++i) {
+    const uint32_t f = Rd32(base + kChars + i * 4);
+    if (!f || Rd32(base + f + 212) != kWalkBackstage) continue;
+    const float dx = RdF(base + f + 288) - (p.x + g_bag.az * s * 0.6f), dz = RdF(base + f + 296) - (p.z - g_bag.ax * s * 0.6f);
+    if (dx * dx + dz * dz < 6.0f * 6.0f) {
+      JumpAct(ctx, base, f, kHitByObject, uint32_t(std::rand() & 1));
+      REXLOG_INFO("hctp: the sandbag knocks fighter {} down", i);
+    }
+  }
+}
+
+// gmTrngMch (425): the action button (X) next to it puts him on the treadmill (12073, the belt 75); the
+// second button (A) mashed raises the speed (levels 0-2: him 12073 / 12074 / 12075, belt 75 / 76 / 77);
+// no press for 121 frames lowers it, at level 0 he steps off; X again steps off.
+constexpr uint32_t kButtonA = 0x40;  // (input +52)
+
+void TreadmillOn(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, int i) {
+  p.who = f, p.state = 1, p.count = 0, p.timer = 0;
+  JumpAct(ctx, base, f, RoomKey(12073));
+  PlaceFighter(base, f, p.x, p.y, p.z, p.ry - 1.5707963f);
+  PlayProp(ctx, base, p, kObjAct + uint32_t(Param(p, 6)));
+  REXLOG_INFO("hctp: fighter {} gets on {}", i, p.name);
+}
+
+void TreadmillOff(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (p.who) JumpAct(ctx, base, p.who, RoomKey(12059));
+  p.who = 0, p.state = 0, p.cooldown = 2 * 30;
+}
+
+void UpdateTreadmill(PPCContext& ctx, uint8_t* base, Prop& p) {
+  if (p.state != 1 || !p.who) return;
+  const uint32_t f = p.who, m = Rd32(base + f + 212);
+  const uint32_t want = RoomKey(12073.0f + float(p.count));
+  if (m != RoomKey(12073) && m != RoomKey(12074) && m != RoomKey(12075)) {  // knocked off
+    p.who = 0, p.state = 0;
+    return;
+  }
+  PlaceFighter(base, f, p.x, p.y, p.z, p.ry - 1.5707963f);
+  const uint32_t input = svr2011::FighterInput(f);
+  const uint32_t pressed = input ? Rd32(base + input + 52) : 0;
+  ++p.timer;
+  if (pressed & kButtonX) {
+    TreadmillOff(ctx, base, p);
+    return;
+  }
+  int lv = p.count;
+  if (pressed & kButtonA) {
+    lv = std::min(2, lv + (p.timer < 2 * 10 ? 1 : 0));
+    p.timer = 0;
+  } else if (p.timer > 2 * 121) {
+    if (lv == 0) {
+      TreadmillOff(ctx, base, p);
+      return;
+    }
+    --lv, p.timer = 0;
+  }
+  if (lv != p.count || (m != want && RdF(base + f + 24) >= float(Frames(want, 60) - 1))) {
+    p.count = lv;
+    JumpAct(ctx, base, f, RoomKey(12073.0f + float(lv)));
+    PlayProp(ctx, base, p, kObjAct + uint32_t(Param(p, size_t(6 + lv))));
+  }
+}
+
+bool Room32Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m, uint32_t prev, uint8_t touched,
+                   float x, float y, float z, bool x_pressed) {
+  const bool whipped = m == kWhipRun;
+  const bool walking = m == kWalkBackstage;
+  for (Prop& p : g_room.props) {
+    const auto hit = [&](size_t shape_param, float grow) {
+      return InShape(p, int(Param(p, shape_param)), x, y, z, grow);
+    };
+    if (p.kind == "locker" && whipped && hit(6, 16.0f)) LockerHit(ctx, base, p, f, i);
+    if (p.kind == "toilet" && whipped && hit(1, 8.0f)) ToiletHit(ctx, base, p, f, i);
+    if (p.kind == "shower" && whipped && hit(4, 8.0f)) ShowerHit(ctx, base, p, f, i);
+    if (p.kind == "rack" && whipped && hit(3, 8.0f)) RackHit(ctx, base, p, f, i);
+    if (p.kind == "tv" && !walking && (whipped || touched == p.attr)) TVFall(ctx, base, p, f);
+    if (p.kind == "brokenwall" && !walking && (whipped || base[f + 1286] || touched == p.attr) &&
+        (touched == p.attr || hit(2, 6.0f)))
+      WallHit(ctx, base, p, f, i);
+    if (p.kind == "sandbag") {
+      const float dx = x - p.x, dz = z - p.z;
+      if (dx * dx + dz * dz < 12.0f * 12.0f && !walking && m != prev && m != 0 && m != kLying)
+        SandbagHit(ctx, base, p, f, whipped ? Param(p, 5, 1.5f) : Param(p, 3, 2.0f));
+    }
+    if (p.kind == "treadmill" && p.state == 0 && p.cooldown == 0 && x_pressed && prev == kWalkBackstage) {
+      const float dx = x - p.x, dz = z - p.z;
+      if (dx * dx + dz * dz < Param(p, 2, 6.0f) * Param(p, 2, 6.0f) * 4.0f) {
+        TreadmillOn(ctx, base, p, f, i);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void UpdateRoom32(PPCContext& ctx, uint8_t* base) {
+  for (Prop& p : g_room.props) {
+    if (p.kind == "locker") UpdateLocker(ctx, base, p);
+    if (p.kind == "toilet") UpdateToilet(ctx, base, p);
+    if (p.kind == "fade" || p.kind == "rackweapon") UpdateShelfItem(ctx, base, p);
+    if (p.kind == "tv") UpdateTV(ctx, base, p);
+    if (p.kind == "brokenwall") UpdateBrokenWall(ctx, base, p);
+    if (p.kind == "sandbag") UpdateSandbag(ctx, base, p);
+    if (p.kind == "treadmill") UpdateTreadmill(ctx, base, p);
+  }
+}
+
 // -- Off the cage top (HCTP GapIn_BackOpenSpace, from the strike button):
 // up on the cage (y <= -28) near its front or east edge, X while walking
 // toward the edge puts him on the edge (HCTP SetGapPos) and he jumps down
@@ -1283,7 +1587,6 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
       for (Prop& p : g_room.props)
         if ((p.kind == "stack" || p.kind == "throw" || p.kind == "drums") && p.state == 0 && touched == p.attr)
           KnockOver(ctx, base, p, f);
-    if (HctpRoom() != 30) Room31Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z);
     // a knock-down on the roof
     // (lying: 0 here - backstage standing is 20500 - or 1000)
     const bool down = m == 0 || m == kLying, was_down = s.motion == 0 || s.motion == kLying;
@@ -1301,6 +1604,13 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
     // +68 gets them two frames later, when the strike X starts is already on)
     const uint32_t input = svr2011::FighterInput(f);
     const bool x_pressed = input && (Rd32(base + input + 52) & kButtonX);
+    if (HctpRoom() != 30) {
+      Room31Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z);
+      if (Room32Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z, x_pressed)) {
+        s.motion = Rd32(base + f + 212);
+        continue;
+      }
+    }
     if (g_log && i == 0 && input) {
       static std::string last;
       std::string hex;
@@ -1491,6 +1801,14 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       if (p.kind == "repeat" && at(300)) RepeatHit(ctx, base, p, f1, 1);
       if (p.kind == "power" && at(360)) PowerHit(ctx, base, p, f1, 1);
       if (p.kind == "hammer" && at(600)) HammerThrow(ctx, base, p, f1, 1);
+      // (room 32: a rack 300, the sandbag 300, the wall 420 / 480 (and the TV), a locker 600, the toilet
+      // 1100, a shower 1700)
+      if (p.kind == "rack" && at(300) && p.hid == 467) RackHit(ctx, base, p, f1, 1);
+      if (p.kind == "sandbag" && at(300)) SandbagHit(ctx, base, p, Rd32(base + kChars), 6.0f);
+      if (p.kind == "brokenwall" && (at(420) || at(480))) p.cooldown = 0, WallHit(ctx, base, p, 0, 1);
+      if (p.kind == "locker" && at(600) && &p == FindKind("locker")) LockerHit(ctx, base, p, f1, 1);
+      if (p.kind == "toilet" && at(1100)) ToiletHit(ctx, base, p, f1, 1);
+      if (p.kind == "shower" && at(1700) && &p == FindKind("shower")) ShowerHit(ctx, base, p, f1, 1);
     }
   }
   if (g_steam_now && frame >= 300 && frame < 302)
@@ -1507,6 +1825,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   }
   UpdateLater(ctx, base);
   UpdateMoveCar(ctx, base);
+  UpdateRoom32(ctx, base);
 }
 
 }  // namespace svr2011

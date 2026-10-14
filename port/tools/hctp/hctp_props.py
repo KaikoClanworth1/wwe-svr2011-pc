@@ -52,7 +52,7 @@ KINDS = {
     69: ([0], []),                   # gmSandBag (hangs; shadow 1282 out)
     66: ([6, 9], []),                # gmShower: door, glass
     65: ([0], []),                   # gmTrngMch: running machine
-    75: ([0], [2]),                  # gmBrokenWall: the wall whole, its panel coll
+    75: ([0, 1, 13, 14], [2]),       # gmBrokenWall: whole, broken, falling piece, cracked (hctp_room hides 3); coll
     76: ([0, 1], [9]),               # gmTVClash: TV, stand
     77: ([0], []),                   # gmRackWithObj: shelf
     84: ([0], []),                   # gmAttackObjFade: shelf things

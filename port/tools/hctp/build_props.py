@@ -184,6 +184,9 @@ n0 = struct.unpack_from('<I', open(STAGE + r'\00999.hmd', 'rb').read(), 4)[0]
 lists = hctp_props.world_collision_lists(STAGE, plist)
 fmap = final_index_map(n0 + sum(len(x) for x in lists))
 lines, at, rid = [], n0, 100 + len(puffs)
+weapon_lines = []
+# weapons the room's objects become (HCTP weapon -> 2011): bat 7 / lead pipe 148 -> kendo 88, chair 4
+HCTP_WEAPON_OBJ = {7: 88, 148: 88, 4: 4}
 for i, pr in enumerate(plist):
     kind = KIND.get(pr['kind'], f"k{pr['kind']}")
     recs = list(range(rid, rid + len(pr['models'])))
@@ -218,6 +221,11 @@ for i, pr in enumerate(plist):
                               for c in s8.tri_corners(np.array(s8.hmd_move(r, R, np.array(pr['pos']))))])
                 lo, hi = P.min(0), P.max(0)
                 extra += f" h{int(v)}={lo[0]:.1f},{hi[0]:.1f},{lo[1]:.1f},{hi[1]:.1f},{lo[2]:.1f},{hi[2]:.1f}"
+    if kind == 'rackweapon':   # gmAttackObjWeapon: the shelf item becomes weapon p5 (offsets p9..p11)
+        prm = tags[pr['id']][1]
+        if int(prm[5]) in HCTP_WEAPON_OBJ:
+            p2, _ = hctp_props.to_2011((pr['pos'][0] + prm[9], pr['pos'][1] + prm[10], pr['pos'][2] + prm[11]), 0.0, DX, DZ)
+            weapon_lines.append(f"weapon {pr['id']} {HCTP_WEAPON_OBJ[int(prm[5])]} {p2[0]:.2f} 0.00 {p2[2]:.2f}")  # (on the floor)
     if kind == 'hammer':   # gmHammerThrowAtk: its trigger box, params x 1..2 and z 5..6 (room space)
         prm = tags[pr['id']][1]
         P = np.array([to2011((xx, 0.0, zz)) for xx in prm[1:3] for zz in prm[5:7]])
@@ -241,6 +249,7 @@ frames = {}
 for e in ents:
     if 12500 <= e[2] < 13400:
         frames[e[2]] = max(frames.get(e[2], 0), e[4])
+lines += weapon_lines
 lines += steam_lines
 for k, (t, j, o) in enumerate(puffs):  # (the first records, in spec order)
     lines.append(f"prop steam{t}_{j} {t} puff 0 {o[0]:.2f} {o[1]:.2f} {o[2]:.2f} 0 recs={100 + k} tris=")
