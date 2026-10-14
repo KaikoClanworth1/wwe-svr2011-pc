@@ -21,6 +21,7 @@
 #define NOMINMAX
 #include "char_preview.h"
 #include "editor.h"
+#include "hair_sim.h"
 
 namespace mm { void Log(const std::string& line); }  // (app.h)
 
@@ -153,6 +154,7 @@ struct Character {
   std::vector<PMesh> meshes;
   std::map<std::string, Bytes> textures;  // lower case name -> DDS
   size_t verts = 0;
+  std::string bane60, bane61, bane50;  // the attire's hair chains / collision capsules / body jiggle (PACH 60 / 61 / 50 texts)
 };
 
 std::string Lower(std::string s) {
@@ -226,6 +228,8 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
         if (k.id == 0) models.insert(models.begin(), std::move(m)), model_ids.insert(model_ids.begin(), k.id);
         else models.push_back(std::move(m)), model_ids.push_back(k.id);
       }
+    } else if (k.id == 60 || k.id == 61 || k.id == 50) {  // (secondary motion texts: hair_sim.h)
+      (k.id == 60 ? ch.bane60 : k.id == 61 ? ch.bane61 : ch.bane50).assign(raw.begin(), raw.end());
     } else if (IsTextureBundle(raw)) {
       std::vector<BundleTexture> texs;
       if (BundleRead(raw, texs))
@@ -1117,6 +1121,16 @@ struct Slot {
   bool hidden = false;             // (the dummy, while a motion with no track for it plays)
   const Motion* shown = nullptr;   // the motion posed, at key
   float key = 0;
+  struct Phys {  // hair and jiggle (Physics): built once the character is in, settled on load / a new motion
+    bool built = false, settle = true;
+    std::vector<hair::Chain> chains;
+    std::vector<std::pair<int, hair::CapsuleParams>> caps;  // (bone, capsule)
+    std::vector<hair::Muscle> muscles;
+    std::vector<hair::MuscleRow> rows;
+    double acc = 0;
+    const void* motion = nullptr;
+    float last_key = 0;
+  } phys;
 };
 std::mutex g_mutex;
 std::wstring g_game;
@@ -1206,6 +1220,7 @@ void LoadBloodTextures() {
 void Upload(Slot& sl, std::shared_ptr<Character> ch) {
   FreeCharacter(sl);
   sl.ch = std::move(ch);
+  sl.phys = Slot::Phys();
   std::shared_ptr<Character>& g_char = sl.ch;
   std::vector<GpuMesh>& g_gpu = sl.gpu;
   std::map<std::string, ID3D11ShaderResourceView*>& g_textures = sl.textures;
@@ -1596,6 +1611,152 @@ void BuildRing() {
           std::to_string(g_ring_draws.size()) + " meshes from " + g_ring_pac);
 }
 
+// ---- secondary motion (hair_sim.h): the game's hair chains and body jiggle on the posed bones, at a fixed 60 Hz
+bool g_physics = true;
+
+hair::Rigid ToRigid(const Xf& x) {
+  hair::Rigid r;
+  for (int a = 0; a < 3; ++a)
+    for (int b = 0; b < 3; ++b) r.r[a][b] = x.r[a][b];
+  r.t = {x.t.x, x.t.y, x.t.z};
+  return r;
+}
+hair::V ToV(V3 v) { return {v.x, v.y, v.z}; }
+
+void BuildPhysics(Slot& sl) {
+  Slot::Phys& ph = sl.phys;
+  ph.built = true;
+  const Character& ch = *sl.ch;
+  std::map<std::string, int> idx;
+  for (size_t i = 0; i < ch.bones.size(); ++i) idx.emplace(ch.bones[i].name, int(i));
+  auto find = [&](const std::string& n) {
+    auto it = idx.find(n);
+    return it == idx.end() ? -1 : it->second;
+  };
+  for (const hair::ChainParams& cp : hair::ParseChains(ch.bane60)) {
+    if (cp.A != 0) continue;  // (2 of the game's 570 lines: their write-back moves nothing)
+    const int root = find(cp.root);
+    if (root < 0 || ch.bones[size_t(root)].parent < 0) continue;
+    hair::Chain c;
+    c.p = cp, c.parent = ch.bones[size_t(root)].parent;
+    c.n.push_back({}), c.n.back().bone = root;
+    for (int k = 0; k < 64; ++k) {  // kami_bNN_00, _01, ... until one is missing
+      char name[48];
+      std::snprintf(name, sizeof name, "%s_%02d", cp.root.c_str(), k);
+      const int b = find(name);
+      if (b < 0) break;
+      c.n.push_back({}), c.n.back().bone = b;
+    }
+    if (c.n.size() < 3) continue;
+    c.L.assign(c.n.size() - 1, ch.bones[size_t(c.n.back().bone)].t[0]);  // (every segment the last node's local x)
+    ph.chains.push_back(std::move(c));
+  }
+  for (const hair::CapsuleParams& cap : hair::ParseCapsules(ch.bane61))
+    if (const int b = find(cap.bone); b >= 0) ph.caps.push_back({b, cap});
+  ph.rows = hair::ParseMuscles(ch.bane50);
+  static const std::pair<const char*, int> kMuscles[15] = {
+      {"koshi", 0},     {"mune", 1},       {"kubi", 2},          {"l_sakotsu", 3},     {"r_sakotsu", 3},
+      {"l_momo", 4},    {"r_momo", 4},     {"l_momo_x", 5},      {"r_momo_x", 5},      {"l_sakotsu_m", 6},
+      {"r_sakotsu_m", 6}, {"l_ninoude_m", 7}, {"r_ninoude_m", 7}, {"l_kote_m", 8},     {"r_kote_m", 8}};
+  if (ph.rows.size() >= 9)
+    for (const auto& [name, row] : kMuscles)
+      if (const int b = find(name); b >= 0) {
+        hair::Muscle m;
+        m.bone = b, m.row = row;
+        ph.muscles.push_back(m);
+      }
+  if (!ph.chains.empty() || !ph.muscles.empty())
+    mm::Log("physics: " + std::to_string(ph.chains.size()) + " hair chains, " + std::to_string(ph.caps.size()) + " capsules, " +
+            std::to_string(ph.muscles.size()) + " jiggle bones");
+}
+
+// The rotation turning +X onto unit u (the shortest arc, 826A8890: identity when nearly parallel).
+void ArcFromX(hair::V u, float r[3][3]) {
+  const float c = std::clamp(u.x, -1.0f, 1.0f);  // (x . u)
+  const float ax = 0, ay = -u.z, az = u.y;        // x cross u
+  const float s = std::sqrt(ay * ay + az * az), angle = std::acos(c);
+  for (int a = 0; a < 3; ++a)
+    for (int b = 0; b < 3; ++b) r[a][b] = a == b ? 1.0f : 0.0f;
+  if (s < 1e-6f || std::fabs(angle) < 1e-4f) return;
+  const float k[3] = {ax / s, ay / s, az / s}, sn = std::sin(angle), cs = std::cos(angle), t = 1 - cs;
+  r[0][0] = cs + k[0] * k[0] * t, r[0][1] = k[0] * k[1] * t - k[2] * sn, r[0][2] = k[0] * k[2] * t + k[1] * sn;
+  r[1][0] = k[1] * k[0] * t + k[2] * sn, r[1][1] = cs + k[1] * k[1] * t, r[1][2] = k[1] * k[2] * t - k[0] * sn;
+  r[2][0] = k[2] * k[0] * t - k[1] * sn, r[2][1] = k[2] * k[1] * t + k[0] * sn, r[2][2] = cs + k[2] * k[2] * t;
+}
+
+// The bones' rest locals (for the bind pose, which has no motion).
+std::vector<Xf> BindLocals(const Character& ch) {
+  std::vector<Xf> l(ch.bones.size());
+  for (size_t i = 0; i < l.size(); ++i) Euler(ch.bones[i].r, l[i].r), l[i].t = {ch.bones[i].t[0], ch.bones[i].t[1], ch.bones[i].t[2]};
+  return l;
+}
+
+// One posed frame through the solvers: the hair bones' world transforms rewritten (8216CAE8), the jiggle bones'
+// moved (their skin only: what's below them was posed already). `motion`, `key`: a new motion or a jump back
+// (a loop, a restart) settles it again, as the game does at load (30 steps).
+void Physics(Slot& sl, std::vector<Xf>& world, const std::vector<Xf>& local, const void* motion, float key) {
+  if (!g_physics || !sl.ch || world.size() != sl.ch->bones.size() || local.size() != world.size()) return;
+  Slot::Phys& ph = sl.phys;
+  if (!ph.built) BuildPhysics(sl);
+  if (ph.chains.empty() && ph.muscles.empty()) return;
+  if (motion != ph.motion || key + 0.5f < ph.last_key) ph.settle = true;
+  ph.motion = motion, ph.last_key = key;
+  auto pos = [&](int b) { return ToV(world[size_t(b)].t); };
+  auto negz = [&](int b) { return hair::V{-world[size_t(b)].r[0][2], -world[size_t(b)].r[1][2], -world[size_t(b)].r[2][2]}; };
+  const float floor_y = g_has_motion_floor ? -g_motion_floor : 0.0f;  // (game y of what the people stand on)
+  std::vector<hair::Sphere> spheres;
+  for (const auto& [b, cap] : ph.caps) hair::CapsuleSpheres(cap, ToRigid(world[size_t(b)]), 1.0f, spheres);
+  std::vector<hair::V> mpos(ph.muscles.size());
+  for (size_t i = 0; i < ph.muscles.size(); ++i) mpos[i] = pos(ph.muscles[i].bone);
+  auto step = [&] {
+    for (hair::Chain& c : ph.chains) {
+      const hair::Rigid rw = ToRigid(world[size_t(c.n[0].bone)]);
+      hair::StepA(c, pos(c.n[0].bone), pos(c.n[1].bone), &rw);
+    }
+    for (hair::Chain& c : ph.chains) hair::StepB(c, negz(c.parent), negz(c.n[0].bone));
+    // (no collision while the character is below the floor: the game's tests, relative to its floor -12)
+    const bool skip = !ph.chains.empty() && (ph.chains[0].n[0].pos.y > floor_y + 17 || (!spheres.empty() && spheres[0].c.y > floor_y + 12));
+    for (hair::Chain& c : ph.chains) hair::StepC(c, spheres, floor_y, skip, false);
+    if (!ph.muscles.empty()) hair::MuscleStep(ph.muscles, ph.rows, mpos);
+  };
+  int steps = 0;
+  if (ph.settle) {
+    ph.settle = false, ph.acc = 0, steps = 30;
+    for (hair::Chain& c : ph.chains) hair::Reset(c, pos(c.parent));
+    for (size_t i = 0; i < ph.muscles.size(); ++i) hair::MuscleReset(ph.muscles[i], mpos[i]);
+  } else {
+    ph.acc += std::min(0.25, double(ImGui::GetIO().DeltaTime));
+    steps = int(ph.acc * 60.0);
+    ph.acc -= steps / 60.0;
+    steps = std::min(steps, 4);
+  }
+  for (int s = 0; s < steps; ++s) step();
+  // write-back (8216CAE8, A 0): each chain bone turned from +X to the next node, its world rebuilt down the chain
+  for (hair::Chain& c : ph.chains) {
+    Xf W = world[size_t(c.n[0].bone)];
+    float len = local[size_t(c.n[1].bone)].t.x;
+    for (size_t j = 1; j + 1 < c.n.size(); ++j) {
+      hair::V t = hair::Unapply(ToRigid(W), c.n[j + 1].pos);
+      t.x -= len;
+      const float tl = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+      Xf L = local[size_t(c.n[j].bone)];
+      ArcFromX(tl > 0 ? hair::V{t.x / tl, t.y / tl, t.z / tl} : hair::V{1, 0, 0}, L.r);
+      if (j >= 2) L.t = {len, 0, 0};
+      const hair::V d{c.n[j + 1].pos.x - c.n[j].pos.x, c.n[j + 1].pos.y - c.n[j].pos.y, c.n[j + 1].pos.z - c.n[j].pos.z};
+      W = Mul(W, L);
+      world[size_t(c.n[j].bone)] = W;
+      len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    }
+    for (size_t j = 1; j + 1 < c.n.size(); ++j) c.n[j].pos = ToV(world[size_t(c.n[j].bone)].t);
+  }
+  // the jiggle: each bone's skin moved by its mass's lag (gains per axis)
+  for (const hair::Muscle& m : ph.muscles) {
+    const hair::V o = hair::MuscleOffset(m, ph.rows[size_t(m.row)], ToRigid(world[size_t(m.bone)]));
+    Xf& w = world[size_t(m.bone)];
+    w.t = {w.t.x + o.x, w.t.y + o.y, w.t.z + o.z};
+  }
+}
+
 void Render(int w, int h) {
   ResizeTarget(w, h);
   const float clear[4] = {0.11f, 0.12f, 0.14f, g_capturing ? 0.0f : 1.0f};
@@ -1621,14 +1782,17 @@ void Render(int w, int h) {
     const Motion* m = sl.motion ? sl.motion.get() : (&sl == &g_slots[0] || !g_bank) ? g_idle.get() : nullptr;
     if (m) {
       const float key = m == clock ? g_play.key : std::fmod(g_play.key, float(std::max(1, m->keys)));
-      sl.world = Pose(*sl.ch, *m, key);
+      std::vector<Xf> locals;
+      sl.world = Pose(*sl.ch, *m, key, &locals);
       sl.shown = m, sl.key = key;
+      Physics(sl, sl.world, locals, m, key);
       Skin(sl, sl.world);
     } else {
       std::vector<Xf> bind(sl.bind_inv.size());
       for (size_t i = 0; i < bind.size(); ++i) bind[i] = Inverse(sl.bind_inv[i]);
       sl.world = bind, sl.shown = nullptr;
-      Skin(sl, bind);
+      Physics(sl, sl.world, BindLocals(*sl.ch), nullptr, 0);
+      Skin(sl, sl.world);
     }
   }
   if (g_feet_next <= g_top_next) g_feet = g_feet_next, g_tall = g_top_next - g_feet_next;
@@ -1924,7 +2088,9 @@ void RenderInto(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w,
                 const float proj[16], const Clip* clip, float key, const float offset[3]) {
   Slot& sl = g_slots[0];
   if (!sl.ch || !g_vs || !clip || sl.gpu.empty()) return;
-  sl.world = Pose(*sl.ch, clip->m, key);
+  std::vector<Xf> locals;
+  sl.world = Pose(*sl.ch, clip->m, key, &locals);
+  Physics(sl, sl.world, locals, clip, key);
   DrawPosed(sl, sl.world, rtv, dsv, w, h, view, proj, offset);
 }
 
@@ -1942,6 +2108,11 @@ void SetRing(bool on, const std::string& arena_pac) {
   g_ring_on = on;
 }
 bool Ring() { return g_ring_on; }
+void SetPhysics(bool on) {
+  g_physics = on;
+  for (Slot& sl : g_slots) sl.phys.settle = true;
+}
+bool Physics() { return g_physics; }
 
 int AddProp(const std::vector<uint8_t>& sobj, std::string* err) {
   auto ch = std::make_shared<Character>();
