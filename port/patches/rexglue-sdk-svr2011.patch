@@ -6046,7 +6046,7 @@ index 914b311..fce845f 100644
      REXGPU_ERROR("{}", msg);
    } else if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..d6494a6 100644
+index 23645ef..73f90ca 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -10,6 +10,7 @@
@@ -6090,7 +6090,7 @@ index 23645ef..d6494a6 100644
        std::find(present_modes.cbegin(), present_modes.cend(), VK_PRESENT_MODE_IMMEDIATE_KHR) !=
            present_modes.cend()) {
      // Allowing tearing to reduce latency, and possibly variable refresh rate
-@@ -1410,12 +1428,19 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+@@ -1410,12 +1428,22 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
      REXLOG_ERROR("VulkanPresenter: Failed to create a swapchain");
      return VK_NULL_HANDLE;
    }
@@ -6109,10 +6109,13 @@ index 23645ef..d6494a6 100644
 +      : mode == VK_PRESENT_MODE_IMMEDIATE_KHR    ? "immediate"
 +                                                 : "other",
 +      vsync ? "on" : "off");
++  REXLOG_INFO("VulkanPresenter: swapchain images asked {} (surface min {}, max {})",  // [svr2011]
++              swapchain_create_info.minImageCount, surface_capabilities.minImageCount,
++              surface_capabilities.maxImageCount);
  
    present_queue_family_out = queue_family_index_present;
    image_format_out = swapchain_create_info.imageFormat;
-@@ -1528,6 +1553,31 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+@@ -1528,6 +1556,34 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
    return true;
  }
  
@@ -6121,6 +6124,9 @@ index 23645ef..d6494a6 100644
 +REXCVAR_DEFINE_STRING(vulkan_throttle_ui_paints, "auto", "GPU",
 +                      "Paint only for new game frames, not at the display's rate for the overlay: auto (PCs, Mali "
 +                      "and Adreno GPUs), on, off");
++REXCVAR_DEFINE_STRING(vulkan_present_wait, "auto", "GPU",
++                      "Wait for each paint's GPU work before presenting (outside the queue lock): auto (Mali drivers "
++                      "older than r30), on, off");
 +
 +bool VulkanPresenter::ThrottleUIOnlyPaints() const {
 +  static const int mode = [] {
@@ -6144,7 +6150,7 @@ index 23645ef..d6494a6 100644
  Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
    // Begin the submission in place of the one not currently potentially used on
    // the GPU.
-@@ -1569,9 +1619,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1569,9 +1625,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
  
    VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
    uint32_t swapchain_image_index;
@@ -6156,7 +6162,7 @@ index 23645ef..d6494a6 100644
    switch (acquire_result) {
      case VK_SUCCESS:
      case VK_SUBOPTIMAL_KHR:
-@@ -1645,6 +1697,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1645,6 +1703,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      // multiple threads can't paint the main target at the same time).
    }
  
@@ -6176,7 +6182,7 @@ index 23645ef..d6494a6 100644
    if (guest_output_image) {
      VkExtent2D max_framebuffer_extent =
          util::GetMax2DFramebufferExtent(vulkan_device_->properties());
-@@ -1840,6 +1905,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1840,6 +1911,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                  swapchain_effect, paint_context_.swapchain_render_pass);
              if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
                guest_output_flow.effect_count = 0;
@@ -6188,7 +6194,7 @@ index 23645ef..d6494a6 100644
              }
            }
          }
-@@ -2196,8 +2266,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2196,8 +2272,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      }
      VkResult submit_result;
      {
@@ -6199,7 +6205,7 @@ index 23645ef..d6494a6 100644
        submit_result =
            dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence_acqusition.fence());
        if (ui_fence_acquisition.fence() != VK_NULL_HANDLE && submit_result == VK_SUCCESS) {
-@@ -2238,9 +2310,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2238,9 +2316,46 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
    present_info.pResults = nullptr;
    VkResult present_result;
    {
@@ -6207,7 +6213,20 @@ index 23645ef..d6494a6 100644
 +    // has finished everything queued - holding the only queue's lock, so the
 +    // game's and the renderer's submissions waited for the GPU and CPU and GPU
 +    // never overlapped. Wait for this paint here instead, without the lock.
-+    static const bool wait_before_present = vulkan_device_->properties().vendorID == 0x13B5;
++    // vulkan_present_wait auto: old Mali drivers only (below r30 - the tablet's
++    // r20 has the queue lock problem; the A51's r38p1 doesn't, and there the
++    // wait held presents to ~10 a second while the renderer made ~28). ARM
++    // puts rXpY in driverVersion as major X, minor Y.
++    static const bool wait_before_present = [this] {
++      const auto& props = vulkan_device_->properties();
++      const uint32_t r = VK_API_VERSION_MAJOR(props.driverVersion), p = VK_API_VERSION_MINOR(props.driverVersion);
++      const std::string v = REXCVAR_GET(vulkan_present_wait);
++      const bool wait = v == "on" || v == "true" ||
++                        ((v == "auto" || v.empty()) && props.vendorID == 0x13B5 && r < 30);
++      REXLOG_INFO("VulkanPresenter: driver version 0x{:08X} (r{}p{}), vendor 0x{:04X}: wait before present {} ({})",
++                  props.driverVersion, r, p, props.vendorID, wait ? "on" : "off", v);
++      return wait;
++    }();
 +    if (wait_before_present) {
 +      const auto svr_tw = std::chrono::steady_clock::now();
 +      paint_context_.submission_tracker.AwaitSubmissionCompletion(
