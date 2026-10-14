@@ -24,6 +24,7 @@ param([string]$Name = "p2", [switch]$HostOnly, [switch]$JoinOnly, [switch]$Play,
 # referee and both Superstars should stand in the same places).
 $s = Join-Path $PSScriptRoot "np_session.ps1"
 $runs = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
+& (Join-Path $PSScriptRoot "test_server.ps1") start | Out-Host  # (the local test server; np_session.ps1 stop stops it)
 $suffix = ""
 if ($Relay) { $suffix = "_relay" }
 function P([string]$slot, [string]$b, [double]$w) {
