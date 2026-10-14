@@ -300,11 +300,10 @@ std::string BuildModSet() {
       lines.push_back(std::string(kind) + "\t" + id + "\t" + version + "\t" + hex + "\t" + name);
     }
   }
-  // The match type switches: the ones off (all on - the default - adds nothing).
-  for (const char* id : {"falls_count_anywhere", "championship_scramble", "royal_rumble_15_25", "lumberjack",
-                         "free_roaming_backstage", "backstage_more_people", "weapons_everywhere", "slobber_knocker",
-                         "three_stages_of_hell", "elimination", "mystery_opponent"})
-    if (!svr2011::MatchTypeOn(id)) lines.push_back(std::string("MatchTypes\t") + id + "\toff\t-\t" + id);
+  // (The match type switches - Mods\MatchTypes - aren't in the set: they
+  // only add or remove the port's types from the menus; online the host
+  // picks the match (PORT RULES) and in a match session every type is on
+  // for both games: match_types.h MatchTypeOn.)
   // Test aid: SVR2011_TEST_MOD_SET_EXTRA="<kind>|<id>|<version>|<name>" - one
   // more mod in this game's set (two test games share one Mods folder).
   if (const char* v = std::getenv("SVR2011_TEST_MOD_SET_EXTRA"); v && *v) {
@@ -330,14 +329,14 @@ std::map<std::string, Line> ParseSet(const std::string& set) {
     Line x;
     std::istringstream f(l);
     if (std::getline(f, x.kind, '\t') && std::getline(f, x.id, '\t') && std::getline(f, x.version, '\t') &&
-        std::getline(f, x.crc, '\t') && std::getline(f, x.name))
+        std::getline(f, x.crc, '\t') && std::getline(f, x.name) &&
+        x.kind != "MatchTypes")  // (2.1.1 and older sent their match type switches off: left out)
       out[x.kind + "/" + x.id] = x;
   }
   return out;
 }
 
 std::string Describe(const Line& l) {
-  if (l.kind == "MatchTypes") return l.name + " switched off";
   return l.version == "-" ? l.name : l.name + " " + l.version;
 }
 

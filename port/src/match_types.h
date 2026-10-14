@@ -26,6 +26,13 @@ void InstallMatchTypes(rex::memory::Memory* memory);
 // three_stages_of_hell, elimination, mystery_opponent, hiac_tables_ladders, hiac_roof_start,
 // gauntlet_eliminator, cage_weapons, inferno_weapons, online_first_blood,
 // three_stages_tables_ladders.
+// MatchTypeSwitchOn: the player's own switch - the menus (which rows the
+// match menus and the online MATCH TYPE lists offer). MatchTypeOn: what a
+// match plays - the switch offline; in an online match session (p2p.h
+// P2PMatchLobby: hosted or joined) every type is on, so two games in one
+// lockstep match play the host's pick the same whatever their switches (the
+// switches aren't in the online mod set: online_files.h).
+bool MatchTypeSwitchOn(const char* id);
 bool MatchTypeOn(const char* id);
 
 // Each world update (frame_rate.cpp): the Lumberjack match's lumberjacks
