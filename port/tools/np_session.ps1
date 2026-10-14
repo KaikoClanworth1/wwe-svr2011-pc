@@ -143,6 +143,6 @@ switch ($Action) {
         $s = Get-OnlineSession
         "running pid $($s.proc.Id), cpu $([int]$s.proc.CPU)s"
     }
-    "stop" { Stop-OnlineSession; "stopped" }
+    "stop" { Stop-OnlineSession; "stopped"; & (Join-Path $PSScriptRoot "test_server.ps1") stop | Out-Null }  # (the test server: when no test game is left)
     default { "usage: online_session.ps1 start|input|shot|shotnative|status|stop" }
 }
