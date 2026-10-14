@@ -19,6 +19,7 @@ struct Request {
   std::wstring song, movie;   // the mod's own theme / titantron ("": the superstar's profile's)
   std::wstring pack;          // the project's own move pack folder ("" = none): looked in first
   std::string title;          // the window's subtitle (the superstar's name)
+  int start_part = 0;         // the part it starts playing at (0 the first; 4 the walk to the ring)
 };
 
 void Open(const Request& r);
