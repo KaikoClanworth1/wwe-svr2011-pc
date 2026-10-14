@@ -140,6 +140,9 @@ still being tested.
 - **Entrance gear**: the coat / hat / shirt a superstar wears only for the entrance (one per attire) - shown in the 3D views, taken from another superstar or built from an FBX of the gear, or left out.
 - **Mod doctor**: every installed mod (and any .svrmod before installing) checked the way the game and the launcher read it, in plain words with a fix each; plus the limits mods only hit together.
 - **Arenas that can't be ported** are greyed on the Port page with the reason (they crash 2011 at load, or WWE '12+ backstage / studio stages that aren't arenas).
+- **Moving hair**: the Mod Maker's 3D views run the game's own hair physics and body jiggle (a Physics switch); superstars ported from WWE '12-2K17 and imported 3D models keep moving hair in the game.
+- **Materials panel** for every part of a model, in the full editor and Simple mode: shine, colour tint, normal map, see-through and both sides, with the texture sheet shown - each checked against the game.
+- **Basic ring** switch under every 3D view; **pick a theme from the game's own songs** as well as an .mp3 (`music=`); the move / taunt picker's search and closing fixed; hair no longer stretches in the 3D views.
 - **Overall rating** worked out from the seven attributes exactly as the game does.
 - **FBX**: export any superstar (skeleton, weights, textures) and import a 3D model as a superstar - Unity / VRChat, Mixamo, Rigify, 3ds Max Biped, UE Mannequin and WWE 2K skeletons are mapped automatically (an editable table for the rest), big models are reduced to fit the game, and a model check lists what's wrong (polycount, weights, missing bones, pictures, size).
 - **Installed mods**: every installed mod by type, with superstars playing their moveset, taunts and pose, move packs played on any superstar, and arenas in a read-only 3D view.
@@ -196,6 +199,8 @@ still being tested.
 - **Mod moves in CREATE A MOVE-SET**: moves from move packs and superstar mods are at the end of every move list as "MOD: <name>", for any superstar or Created Superstar (in the match the move keeps its own name). A moveset whose pack is later removed plays that slot's ordinary move of its kind in the match until the pack is back, and saving one with such a tag-team finisher no longer crashes.
 - **Move packs**: moves whose motions are the game's streamed kind (taunts ported from other games) now play.
 - **Arena mods start faster**: the game's loading pictures are only read when a custom arena has one, off the start-up thread (2-3.5 s faster boot), and a custom loading / VS picture is shared (about 300 MB less memory).
+- **Android Mali phones with newer drivers** (r30 and later, e.g. Galaxy A51) show matches at about 24 fps instead of about 10 (a wait meant for old Mali drivers only).
+- **Converted arena crowds**: a crowd buffer index that could be corrupted while loading is reset instead of crashing (and logged).
 - **Arenas from WWE 2K15, 2K16 and 2K17**, and every SvR 2007-2010 and WWE '12 arena played in a full pass; WWE 2K14+ crowds and oversized WWE '13 models no longer crash the load.
 
 ## New in 2.0.6
