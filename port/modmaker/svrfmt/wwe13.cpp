@@ -841,11 +841,26 @@ std::string ConvertVisTree13(const std::string& t, float scale) {
   return o;
 }
 
+// A crowd area file: no "(" seat entries; its first data line is numbers
+bool IsCrowdArea13(const std::string& t) {
+  if (t.find('(') != std::string::npos) return false;
+  size_t pos = 0;
+  while (pos < t.size()) {
+    size_t nl = t.find('\n', pos);
+    const std::string tl = Trim(t.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
+    pos = nl == std::string::npos ? t.size() : nl + 1;
+    if (tl.empty() || tl[0] == ';') continue;
+    return std::isdigit(static_cast<unsigned char>(tl[0])) || tl[0] == '-' || tl[0] == '.';
+  }
+  return false;
+}
+
 std::string ConvertCrowdText13(const std::string& t, float scale) {
-  // seat files: "A (x, z, y, w); count" -> all four scaled. Area files
-  // ("; R" / "; NR", WWE 2K14+ also "; off_scr_audience_r" / "_nr"): rows of
-  // numbers, all positions (2K14's left in cm crashed the crowd code)
-  const bool area = t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0 || t.rfind("; off_scr_audience", 0) == 0;
+  // seat files: "A (x, z, y, w); count" -> all four scaled. Area files: rows
+  // of numbers, all positions ("; R" / "; NR"; WWE 2K14 names them freely -
+  // "; off_scr_audience_r", "; audience_a", "; kyauku_a" ... - and those left
+  // in cm crashed the crowd code): told by their content
+  const bool area = IsCrowdArea13(t);
   std::string o;
   size_t pos = 0;
   while (pos < t.size()) {
@@ -1076,8 +1091,7 @@ Bytes ConvertCrowd(const Bytes& raw, Wwe13Report& rep) {
       r = JboyWrite(m);
     } else if (r.size() > 4 && r[0] == ';') {
       const std::string t = Text(r);
-      if (t.find('(') != std::string::npos || t.rfind("; R", 0) == 0 || t.rfind("; NR", 0) == 0 ||
-          t.rfind("; off_scr_audience", 0) == 0)
+      if (t.find('(') != std::string::npos || IsCrowdArea13(t))
         r = FromText(ConvertCrowdText13(t, 0.1f));
     } else {
       continue;
