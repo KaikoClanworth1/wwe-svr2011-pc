@@ -73,7 +73,7 @@ motions convert without retargeting (only re-encoded).
 
 Test switches (SVR2011_TEST_HCTP_ROOF): `1` roof breaks at the first knock-down, `now` roof breaks at frame 300, `crate` fighter 1 shut in at frame 300, `steam` both valves opened at frame 300, `cart` the button cycle at frame 300, `props` railings, pipes and stacks knocked over at frame 300, `puff` a steam puff over fighter 0, `nograb` no cage-wall grabs or climbs (fence tests).
 
-Camera: backstage, fighters at different heights (one on the cage top) are framed head to feet (match_types.cpp, the sub_82227690 sphere: centre between the lowest feet and the highest head). One on top and one far off below can still leave the lower one at the frame's edge (the camera= distance cap).
+Camera: in an HCTP row (hctp=), fighters at different heights (one on the cage top) are framed head to feet (match_types.cpp, the sub_82227690 sphere: centre between the lowest feet and the highest head). One on top and one far off below can still leave the lower one at the frame's edge (the camera= distance cap).
 
 Known: walking off the frame into the open hole drops a fighter in by gravity without the step-in act (HCTP's GapIn needs X).
 
