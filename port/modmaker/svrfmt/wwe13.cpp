@@ -1855,6 +1855,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
     }
   }
   // (the canvas is the picture most on screen: something else gives way)
+  a.fit_margin = opt.fit;
   rep.halved = a.FitFile({"rin_mat00"});
   out = a.Save(error);
   if (error && !error->empty()) return false;

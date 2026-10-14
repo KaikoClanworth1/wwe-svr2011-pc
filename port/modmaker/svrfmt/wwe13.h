@@ -82,6 +82,7 @@ struct Wwe13Options {
   bool prune_textures = false;
   int stand_light = 108;     // light group for the stands (role lights)
   bool role_lights = true;   // stands, barrier: the host RAW arena's light groups (WWE '13 bakes them)
+  double fit = 1.0;          // textures halved until the file / unpacked size is this share of the host's
   std::vector<BundleTexture> extra_textures;  // added to the first set (replacing by name)
   Bytes card;                // entry 0xEE48 (256 x 128 DXT5 arena card), if given
 };
