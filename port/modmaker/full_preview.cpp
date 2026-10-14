@@ -798,7 +798,14 @@ void OpenTitantron(const std::wstring& file) {
     CloseTitantron();
 }
 
-// The titantron frame for `seconds` into the entrance (looped), decoded forward (back: from the start).
+// The titantron movie's length in seconds (0: none).
+double TitantronSeconds() {
+  if (g_tt_mf) return g_tt_mf->Seconds() > 0 ? g_tt_mf->Seconds() : 1e9;
+  if (!g_bink) return 0;
+  return double(std::max(1, bink_frames(g_bink))) * double(std::max<LONGLONG>(1, bink_frame_time(g_bink))) / 1e7;
+}
+
+// The titantron frame for `seconds` into the entrance, decoded forward (back: from the start).
 void TitantronAt(double seconds) {
   if (g_tt_mf && g_tt_tex) {
     if (!g_tt_mf->FrameAt(seconds, g_tt_bgra)) return;
@@ -1117,7 +1124,11 @@ void Draw() {
       }
       const ImVec2 at = ImGui::GetCursorScreenPos();
       // the titantron on the arena's screen (its tf_titan texture), else in a corner
-      const bool tt = g_titantron_on && (g_bink || g_tt_mf) && g_tt_srv;
+      // (once, from the entrance's start - then the screen shows the arena's own picture again, as the game: Big
+      // Show's 29 s 125.bik from tick 4, the SvR logo back on the screen after it, 14 Oct)
+      // The intro (segment 0) keeps the arena's picture too: the movie already runs (timed from the entrance's start)
+      // but the game's screen shows the arena's logo until the superstar is out (Big Show, keys 39-206).
+      const bool tt = g_titantron_on && (g_bink || g_tt_mf) && g_tt_srv && s.slot != 0 && g_key / 30.0 < TitantronSeconds();
       if (tt) TitantronAt(g_key / 30.0);
       editor::SetTextureOverride("tf_titan", tt && g_tt_screen ? g_tt_srv : nullptr);
       if (L.arena) {
