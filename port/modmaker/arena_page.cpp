@@ -938,50 +938,63 @@ void Reset() {
 
 void ArenaProblems(std::vector<Problem>& p) {
   if (g_proj.backstage >= 0) {  // (the Arena page while a backstage area is open)
-    p.push_back(Error("A backstage area is open, not an arena.", "Use the Backstage page, or pick an arena here."));
+    p.push_back(Error("A backstage area is open here, not an arena.").With("Go to the Backstage page", [] { GoTo(PageId::kBackstage); }));
     return;
   }
-  const auto at = [&](int step) { p.back().step = step; };  // (the Simple step that fixes it)
-  if (g_proj.arena < 0) p.push_back(Error("No arena yet.", "Open one in the 3D editor, start an empty one or import from Blender.")), at(kSaStart);
-  if (g_proj.arena >= 0 && g_simple && !g_proj.edited) p.push_back(Error("The arena is still loading.")), at(kSaStart);
-  if (!g_proj.name[0]) p.push_back(Error("The arena has no name.", "Details tab.")), at(kSaName);
-  else if (std::strlen(g_proj.name) > 31) p.push_back(Warning("The name is long: the select page shows about 30 letters.")), at(kSaName);
-  if (g_proj.arena >= 0 && g_proj.banner.Empty()) p.push_back(Warning("No banner picture: a dark banner is used on the select page.", "Details tab.")), at(kSaName);
+  const auto go = [](int step) { return [step] { if (g_simple) g_simple_step = step; }; };
+  if (g_proj.arena < 0) p.push_back(Error("Pick an arena to start from.").With("Pick one...", go(kSaStart)).At(kSaStart));
+  if (g_proj.arena >= 0 && g_simple && !g_proj.edited) p.push_back(Error("The arena is still loading - one moment.").At(kSaStart));
+  if (!g_proj.name[0]) p.push_back(Error("Your arena has no name yet.").With("Type a name", go(kSaName)).At(kSaName));
+  else if (std::strlen(g_proj.name) > 31)
+    p.push_back(Warning("The name is long: the arena select screen only shows about 30 letters of it.")
+                    .With("Shorten it to 30 letters", [] { g_proj.name[30] = 0; Touch(); }).At(kSaName));
+  if (g_proj.arena >= 0 && g_proj.banner.Empty())
+    p.push_back(Warning("No picture for the arena select screen: players see a dark tile.").With("Pick a picture...", go(kSaName)).At(kSaName));
   if (g_proj.arena >= 0 && !g_proj.edited && g_proj.fbx.empty())
-    p.push_back(Warning("Nothing changed yet: the mod would be a copy of the game's arena.")), at(kSaStart);
+    p.push_back(Warning("Nothing is changed yet: this would be a copy of the game's own arena.").At(kSaStart).Note());
   if (editor::Ring().VisibleRopes() < 3 && editor::Ring().VisibleRopes() > 0)
-    p.push_back(Warning("Fewer than three ropes: rope moves are limited to the ropes left (the game adapts).")), at(kSaRing);
-  if (editor::Ring().VisibleRopes() == 0) p.push_back(Warning("No ropes: no rope moves, no rope breaks, a hardcore-style ring.")), at(kSaRing);
-  if (g_proj.signs.size() > 64) p.push_back(Warning("A lot of crowd signs: each match shows at most 16, drawn from the game's and every pack's.")), at(kSaSigns);
+    p.push_back(Warning("The ring has fewer than three ropes: wrestlers can only use the ropes that are left.")
+                    .With("Put all three ropes back", [] { editor::Ring() = RingSpec(); Touch(); }, "the ring's ropes are back")
+                    .With("Keep it this way", [] {}, "kept").At(kSaRing));
+  if (editor::Ring().VisibleRopes() == 0)
+    p.push_back(Warning("The ring has no ropes: no rope moves and no rope breaks - a hardcore-style ring.")
+                    .With("Put the ropes back", [] { editor::Ring() = RingSpec(); Touch(); }, "the ring's ropes are back").At(kSaRing));
+  if (g_proj.signs.size() > 64)
+    p.push_back(Warning("A lot of crowd signs: a match shows at most 16 at a time, picked from the game's and every sign pack's.").At(kSaSigns).Note());
   // limits and crash risks (D12): a model the game can't hold, an arena over its room
   editor::BudgetInfo b;
   if (g_proj.arena >= 0 && editor::Budget(b)) {
-    char id[16];
-    std::snprintf(id, sizeof id, "0x%X", b.biggest_id);
     if (b.biggest > 430 * 1024)
-      p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): models over about 430 KB "
-                          "have crashed the arena's load.", "Split it, cut its polygons, or hide parts of it (3D editor).")), at(kSaLook);
+      p.push_back(Warning("One of the objects you added or changed is very big (" + Human(b.biggest) + "): arenas with objects this big "
+                          "have crashed while loading.", "Hide parts of it or use a simpler model.")
+                      .With("Open it in the 3D editor", [] { GoTo(PageId::kEditor); }).At(kSaLook));
     else if (b.biggest > 360 * 1024)
-      p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): close to the ~430 KB that "
-                          "crashed arena loads.")), at(kSaLook);
+      p.push_back(Warning("One of the objects you added or changed is big (" + Human(b.biggest) + "): close to the size that has crashed "
+                          "arenas while loading.").With("Open it in the 3D editor", [] { GoTo(PageId::kEditor); }).At(kSaLook));
     if (b.file > b.file_max || b.unpacked > b.unpacked_max)
-      p.push_back(Warning("The arena is over the game's room for it (" + Human(std::max(b.file, b.unpacked)) + " of " +
-                          Human(std::max(b.file_max, b.unpacked_max)) + "): saving halves the biggest textures until it fits.",
-                          "Smaller pictures or fewer added objects keep them sharp.")), at(kSaLook);
+      p.push_back(Warning("The arena is bigger than the game has room for: when it's saved, its biggest pictures are made smaller "
+                          "until it fits (they look a little softer).").At(kSaLook).Note());
   }
 }
 
 void BackstageProblems(std::vector<Problem>& p) {
-  if (g_proj.backstage < 0) p.push_back(Error("No area open yet.", "Pick an area and open it in the 3D editor."));
-  if (!g_proj.name[0]) p.push_back(Error("The mod has no name."));
-  if (g_proj.backstage >= 0 && !g_proj.edited) p.push_back(Error("The area is still loading."));
+  if (g_proj.backstage < 0) p.push_back(Error("Pick a backstage area to start from."));
+  if (!g_proj.name[0]) p.push_back(Error("Your area has no name yet."));
+  if (g_proj.backstage >= 0 && !g_proj.edited) p.push_back(Error("The area is still loading - one moment."));
   if (g_proj.own_area) {
-    if (!g_proj.row[0]) p.push_back(Error("An area of its own needs a row name (the menu row)."));
-    if (g_proj.gimmick[0] && std::strlen(g_proj.gimmick) != 4) p.push_back(Error("The gimmick name must be 4 letters (the pac's group name)."));
-    if (g_proj.gimmick[0] && g_proj.gimmick_pac.empty()) p.push_back(Error("A gimmick name needs its gimmick pac (or clear the name)."));
-    if (!g_proj.gimmick_pac.empty() && !g_proj.gimmick[0]) p.push_back(Error("The gimmick pac needs its 4-letter name."));
-    if (!g_proj.has_box) p.push_back(Warning("No fight box: the room's is used - wrong if your area is somewhere else."));
-    if (g_proj.has_box && (g_proj.box[2] < 5 || g_proj.box[3] < 5)) p.push_back(Warning("A very small fight box (under 50 cm each way)."));
+    if (!g_proj.row[0]) p.push_back(Error("A new area needs the name players pick it by in the BACKSTAGE menu."));
+    if (g_proj.gimmick[0] && std::strlen(g_proj.gimmick) != 4)
+      p.push_back(Error("The props' name must be exactly 4 letters, as in their file.").With("Clear it (no props)", [] { g_proj.gimmick[0] = 0; Touch(); }));
+    if (g_proj.gimmick[0] && g_proj.gimmick_pac.empty())
+      p.push_back(Error("A props name is set but no props file is picked.").With("Clear it (no props)", [] { g_proj.gimmick[0] = 0; Touch(); }));
+    if (!g_proj.gimmick_pac.empty() && !g_proj.gimmick[0])
+      p.push_back(Error("A props file is picked but its 4-letter name isn't set: the game won't load the props.")
+                      .With("Leave the props out", [] { g_proj.gimmick_pac.clear(); Touch(); }));
+    if (!g_proj.has_box)
+      p.push_back(Warning("No fighting area is marked: the room's own is used - wrong if your area is somewhere else in it."));
+    if (g_proj.has_box && (g_proj.box[2] < 5 || g_proj.box[3] < 5))
+      p.push_back(Warning("The fighting area is very small (under 50 cm each way): wrestlers barely fit.")
+                      .With("Make it 3 x 3 m", [] { g_proj.box[2] = g_proj.box[3] = 15; Touch(); }));
   }
 }
 

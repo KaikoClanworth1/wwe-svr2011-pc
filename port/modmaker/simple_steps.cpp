@@ -118,7 +118,32 @@ void ProblemList(const std::vector<Problem>& problems, int& step, int finish) {
     ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x - 90 * g_scale + ImGui::GetCursorPosX());
     ImGui::TextUnformatted(Plain(p.text).c_str());
     ImGui::PopTextWrapPos();
-    if (p.step >= 0 && p.step != finish) {
+    if (!p.fixes.empty()) {  // Fix it: the recommended fix, done here (and said); the others beside it
+      ImGui::SameLine();
+      PushAccent();
+      const bool fix = ImGui::SmallButton("Fix it");
+      PopAccent();
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", p.fixes[0].label.c_str());
+      if (fix) {
+        const FixAction f = p.fixes[0];
+        RunFix(f);
+        ImGui::PopID();
+        break;  // (the list changes)
+      }
+      if (p.fixes.size() > 1) {
+        ImGui::Indent();
+        Problem rest = p;
+        rest.fixes.erase(rest.fixes.begin());
+        ImGui::TextDisabled("or:");
+        ImGui::SameLine();
+        const bool pressed = FixButtons(rest, false);
+        ImGui::Unindent();
+        if (pressed) {
+          ImGui::PopID();
+          break;
+        }
+      }
+    } else if (p.step >= 0 && p.step != finish && !p.note) {
       ImGui::SameLine();
       if (ImGui::SmallButton("Fix it")) step = p.step;
     }

@@ -105,6 +105,26 @@ bool ReadMaterials(const Bytes& pac, int attire, bool gear, std::vector<MeshMat>
   return true;
 }
 
+bool StripBlood(const Bytes& in, Bytes& out, std::string* error) {
+  Epac e;
+  if (!EpacRead(in, e)) return Fail(error, "not a model pac");
+  int dropped = 0;
+  for (auto& g : e.groups)
+    for (auto& en : g.entries) {
+      if (en.name.size() < 8 || (en.name[7] != '2' && en.name[7] != '4')) continue;
+      std::vector<PachEntry> kids;
+      if (!PachRead(Unpack(en.data), kids)) continue;
+      const size_t before = kids.size();
+      kids.erase(std::remove_if(kids.begin(), kids.end(), [](const PachEntry& k) { return k.id >= 0x7530 && k.id <= 0x7532; }), kids.end());
+      if (kids.size() == before) continue;
+      dropped += int(before - kids.size());
+      en.data = PachWrite(kids);
+    }
+  if (!dropped) return Fail(error, "it has no blood overlays");
+  out = EpacWrite(e);
+  return true;
+}
+
 std::string DumpMaterials(const Bytes& pac) {
   std::string o;
   Epac e;

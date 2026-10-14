@@ -443,6 +443,15 @@ std::string g_file_checked;
 void Draw() {
   if (g_scanned_for != g_game) Scan();
   if (g_set_for != g_game) g_set_problems = CheckInstalledSet(), g_set_for = g_game;
+  static int fixes_seen = 0;
+  if (fixes_seen != FixesDone()) {  // (a fix button changed a mod: everything checked again, the same mod kept)
+    fixes_seen = FixesDone();
+    const fs::path was = g_sel >= 0 && g_sel < int(g_mods.size()) ? g_mods[size_t(g_sel)].dir : fs::path();
+    Scan();
+    g_set_problems = CheckInstalledSet();
+    for (int i = 0; i < int(g_mods.size()); ++i)
+      if (g_mods[size_t(i)].dir == was) Select(i);
+  }
   if (!g_test_select.empty()) {  // (test aid: "<kind>/<folder>[,<move>[,<key>]]")
     const size_t c = g_test_select.find(',');
     if (c != std::string::npos) std::sscanf(g_test_select.c_str() + c + 1, "%d,%d", &g_test_move, &g_test_key);
@@ -532,6 +541,8 @@ void Draw() {
   ImGui::SameLine();
   if (ImGui::Button("Show folder")) ShellOpen(m.dir.wstring());
   if (!g_view.problems.empty()) DrawProblems(g_view.problems);
+  static int test_frames = 0;
+  if (++test_frames > 60) TestFixOn(g_view.problems);  // (test aid --run-fix, on the selected mod)
   ImGui::Separator();
   // the type's view: the 3D view (superstars, attires, move packs) on the right of its lists
   const bool three_d = m.kind == "Superstars" || m.kind == "Attires" || m.kind == "Moves";

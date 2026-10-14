@@ -34,6 +34,9 @@ struct StarProject {
   std::wstring attires[4];        // [1..3]: attires 2-4 from other model pacs (their first attire)
   char attire_names[4][32] = {};  // [1..3]: their names on CHANGE ATTIRE ("" = ATTIRE N)
   int attire_entrance[4] = {-1, -1, -1, -1};  // [1..3]: attire<N>_entrance= (-1: the superstar's entrance)
+  // where a ported superstar came from (superstar_port.py: source=<game> <their id>, source_entrance=, entrance_note=)
+  std::string source_game, entrance_note;
+  int source_id = -1, source_entrance = -1;
   Picture picture;                // its own select picture (512): else a silhouette
   Image picture_small;            // the 256 bust made with it (or own_bust)
   bool own_bust = false;          // picture_small is the user's own bust picture

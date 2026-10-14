@@ -87,9 +87,10 @@ void InstallPack() {
 }
 
 void Problems(std::vector<Problem>& p) {
-  if (g_pack.signs.empty()) p.push_back(Error("No signs yet.", "Add pictures: any picture is fitted onto a white 128 x 64 board."));
-  if (!g_pack.name[0]) p.push_back(Warning("No pack name: \"My Signs\" is used."));
-  if (g_pack.signs.size() > 64) p.push_back(Warning("A lot of signs: each match shows at most 16, drawn from the game's and every pack's."));
+  if (g_pack.signs.empty()) p.push_back(Error("No signs yet: add pictures - each is fitted onto a white board."));
+  if (!g_pack.name[0]) p.push_back(Warning("The signs have no name yet: they'd be called \"My Signs\".")
+                                       .With("Call them \"My Signs\"", [] { std::snprintf(g_pack.name, sizeof g_pack.name, "My Signs"); Touch(); }));
+  if (g_pack.signs.size() > 64) p.push_back(Warning("A lot of signs: a match shows at most 16 at a time, picked from the game's and every sign pack's."));
 }
 
 void Draw() {

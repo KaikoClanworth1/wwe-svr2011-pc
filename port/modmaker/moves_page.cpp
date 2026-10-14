@@ -366,20 +366,21 @@ void PutPanel() {
 
 void Problems(std::vector<Problem>& p) {
   if (g_pack.folder.empty()) {
-    p.push_back(Error("No move pack yet.", "Open a pack folder (pack.txt + motions/), e.g. one made by tools/movepack.py."));
+    p.push_back(Error("No moves yet: open a folder of moves to work on."));
     return;
   }
   for (const auto& e : g_pack.errors) p.push_back(Error(e));
   int missing = 0;
   for (const auto& m : g_pack.motions) missing += m.missing;
-  if (missing) p.push_back(Error(std::to_string(missing) + " motion file(s) named in pack.txt are missing from the folder."));
-  if (!g_pack.name[0]) p.push_back(Warning("No pack name: \"My Moves\" is used."));
+  if (missing) p.push_back(Error(std::to_string(missing) + " of the moves' animation files are missing from the folder: those moves wouldn't play."));
+  if (!g_pack.name[0]) p.push_back(Warning("The moves have no name yet: they'd be called \"My Moves\".")
+                                       .With("Call them \"My Moves\"", [] { std::snprintf(g_pack.name, sizeof g_pack.name, "My Moves"); Touch(); }));
   std::vector<int> no_bits;
   for (const auto& m : g_pack.motions)
     if (m.y == 0 && !g_pack.waze.count(m.id) && !g_pack.copies.count(m.id) && std::find(no_bits.begin(), no_bits.end(), m.id) == no_bits.end())
       no_bits.push_back(m.id);
   if (!no_bits.empty() && no_bits.size() < g_pack.motions.size())
-    p.push_back(Warning(std::to_string(no_bits.size()) + " move(s) have motions but no waze line: they can't be put in a move-set (fine for reactions and extra tracks)."));
+    p.push_back(Warning(std::to_string(no_bits.size()) + " animation(s) aren't set up as moves, so no wrestler can be given them (fine for reactions)."));
   {  // moves no moveset uses: the game never plays them
     LoadMovesets();
     std::vector<int> unused;
@@ -396,8 +397,8 @@ void Problems(std::vector<Problem>& p) {
                           "Select the move and put it in a superstar mod's moveset below, or in a superstar project's Moveset section."));
     }
   }
-  if (g_pack.unknown) p.push_back(Warning(std::to_string(g_pack.unknown) + " line(s) of pack.txt aren't understood (the game skips them)."));
-  if (g_pack.bytes > 16000000) p.push_back(Warning("A big pack (" + Human(g_pack.bytes) + "): the game's match banks hold about 16 MB of motions for everyone."));
+  if (g_pack.unknown) p.push_back(Warning(std::to_string(g_pack.unknown) + " line(s) of the moves' list aren't understood: the game skips them."));
+  if (g_pack.bytes > 16000000) p.push_back(Warning("These moves are big (" + Human(g_pack.bytes) + "): a match has room for about 16 MB of moves for everyone in it."));
 }
 
 void MoveList() {

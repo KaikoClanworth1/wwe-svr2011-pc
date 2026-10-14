@@ -183,20 +183,20 @@ void Problems(std::vector<Problem>& p) {
   if (g_p.kind == 1) {
     if (!g_p.name[0]) p.push_back(Error("The match type has no name."));
     if (!RuleById(g_p.base)) p.push_back(Error("The base match isn't one of the game's rules."));
-    if (g_p.people < 2 || g_p.people > 6) p.push_back(Error("People: 2 to 6."));
+    if (g_p.people < 2 || g_p.people > 6) p.push_back(Error("A match needs 2 to 6 wrestlers.").With("Make it 2", [] { g_p.people = 2; Touch(); }));
     if (g_p.own_slots) {
       bool ok = true;
       for (int k = 0; k < g_p.people; ++k) ok &= g_p.slots[k][0] >= 0 && g_p.slots[k][0] < 6 && g_p.slots[k][1] >= 0 && g_p.slots[k][1] < 6 && g_p.slots[k][2] >= 0 && g_p.slots[k][2] < 4;
       if (!ok) p.push_back(Error("A slot's index / team must be 0-5 and its kind 0-3."));
     }
-    if (g_p.menu == 0 && !g_p.submenu[0]) p.push_back(Error("ONE ON ONE is full (14 rows, the most a list shows): give the row a submenu."));
-    p.push_back(Warning("Custom match types need the game side that is being built: until it ships, the game ignores this mod (a switch for a port match type works today)."));
-    p.push_back(Warning("Custom match types play offline, or online only when both players have the same mod."));
+    if (g_p.menu == 0 && !g_p.submenu[0]) p.push_back(Error("The ONE ON ONE menu is full (it shows 14 choices at most): your match needs a menu of its own inside it."));
+    p.push_back(Warning("Brand-new match types don't work in the game yet (switching the port's own match types on and off does): the game skips this one for now."));
+    p.push_back(Warning("Online, this match only works when both players have it installed."));
   }
   if (!g_game.empty()) {
     std::error_code ec;
     if (fs::exists(fs::path(g_game) / L"Mods" / L"MatchTypes" / fs::u8path(Id()) / L"manifest.txt", ec))
-      p.push_back(Warning("A match type mod with this id is installed already: Install replaces it."));
+      p.push_back(Warning("A match type with this name is installed already: installing replaces it."));
   }
 }
 

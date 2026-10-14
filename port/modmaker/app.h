@@ -117,15 +117,44 @@ void OnUiThread(std::function<void()> fn);
 
 // ---------------------------------------------------------------- problems
 
+// A one-click fix: a button that does the work (not an instruction).
+struct FixAction {
+  std::string label;            // "Use a 2011 entrance instead"
+  std::function<void()> run;    // done on the UI thread; it may start a background job
+  std::string done;             // what Simple's Fix it says it did ("" = the label)
+};
+// What's wrong, in plain words: what the player will see in the game and why - no ids, file keys or tool names.
 struct Problem {
   bool error = true;   // false: a warning (shown, does not block)
   std::string text;    // what is wrong
-  std::string fix;     // what to do (optional)
-  int step = -1;      // (the Superstar page's Simple mode: the step that fixes it)
+  std::string fix;     // a short line on what the buttons do / what else to do (optional)
+  int step = -1;      // (the Simple modes: the step that fixes it)
+  std::vector<FixAction> fixes;  // the fix buttons; the first is the recommended one (Simple's Fix it applies it)
+  bool note = false;             // nothing to fix: said so the player knows (no Fix it)
+  Problem With(std::string label, std::function<void()> run, std::string done = "") && {
+    fixes.push_back({std::move(label), std::move(run), std::move(done)});
+    return std::move(*this);
+  }
+  Problem At(int s) && {
+    step = s;
+    return std::move(*this);
+  }
+  Problem Note() && {
+    note = true;
+    return std::move(*this);
+  }
 };
 inline Problem Error(std::string text, std::string fix = "") { return {true, std::move(text), std::move(fix)}; }
 inline Problem Warning(std::string text, std::string fix = "") { return {false, std::move(text), std::move(fix)}; }
 int ErrorCount(const std::vector<Problem>& p);
+// A problem's fix buttons on the current line (SameLine first); true when one was pressed (its run() done, said in
+// the status bar).
+bool FixButtons(const Problem& p, bool accent_first = true);
+// Runs a fix and says so: "Done: <what>".
+void RunFix(const FixAction& f);
+int FixesDone();
+// Test aid --run-fix: tries the pending one on this list (logged); true when it ran or reported.
+bool TestFixOn(const std::vector<Problem>& problems);  // (how many fixes ran: pages that cache problems check again when it changes)
 // A Save / Install button row: disabled (with the errors as a tooltip) while
 // the page has errors or a job runs. Returns which was pressed (0 none,
 // 1 save as mod, 2 install, 3 install and start the game), after confirming
@@ -452,7 +481,9 @@ std::vector<int> ModelAttires(const std::wstring& pac);
 // The problem line for a model over (error) or near (warning) the budget; who: "The model", "Attire 2" ...
 // D12 model checks (CheckCharacterModel; robert32's SvR Port Doctor findings): NaN values, eyes off their bones.
 void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::vector<Problem>& out);
-void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out);
+// use (optional): a fix that swaps in a lighter copy of the model (without its blood) - it gets the copy's path.
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out,
+                    std::function<void(const std::wstring&)> use = nullptr);
 
 // The superstar picture -> the select renders (512 render, 256 bust, 64 icon).
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);

@@ -49,6 +49,9 @@ bool SkinShine(const std::string& shader, uint32_t flags, bool has_tiling, float
 bool ReadMaterials(const svrfmt::Bytes& pac, int attire, bool gear, std::vector<MeshMat>& out, std::string* error = nullptr);
 // Every attire's meshes as text: model, mesh, shader, flags +0x88, each parameter (name, type, value) - a test aid.
 std::string DumpMaterials(const svrfmt::Bytes& pac);
+// A copy of a character model without its blood overlays (PACH children 0x7530 - 0x7532, in every attire and its
+// entrance gear): the game's memory budget for a wrestler, as the Port page's conversions do. False: not a model pac.
+bool StripBlood(const svrfmt::Bytes& in, svrfmt::Bytes& out, std::string* error = nullptr);
 // Test aid: in attire 1's colour picture, over each listed mesh's UV box, a cut-out fixture in the alpha - the
 // left 60% a checkerboard of 0 / 255, the right 40% eight coloured stripes of alpha 16, 48 ... 240 (the alpha
 // test's threshold: which stripes are drawn).

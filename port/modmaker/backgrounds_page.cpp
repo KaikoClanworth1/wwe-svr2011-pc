@@ -137,8 +137,8 @@ void InstallPack() {
 
 void Problems(std::vector<Problem>& p) {
   if (g_pack.pictures.empty())
-    p.push_back(Error("No pictures yet.", "Add pictures: any size; each is fitted to the main menu without squashing."));
-  if (!g_pack.name[0]) p.push_back(Warning("No pack name: the first picture's name (or \"My Backgrounds\") is used."));
+    p.push_back(Error("No pictures yet: add pictures - any size, each is fitted to the main menu."));
+  if (!g_pack.name[0]) p.push_back(Warning("The backgrounds have no name yet: they'd take the first picture's name."));
 }
 
 void Draw() {

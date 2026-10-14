@@ -25,6 +25,8 @@
 #include "svrfmt/pac.h"
 #include "tool_run.h"
 #include "svrfmt/png.h"
+#include "disc_list.h"
+#include "imgui_internal.h"
 
 namespace mm {
 namespace star_page {
@@ -85,6 +87,8 @@ const Ability kAbilities[] = {
 };
 
 StarProject g_star;
+void GoStep(int step);  // (below: a fix that needs a choice opens its step in Simple mode)
+std::string Who();
 std::wstring StyleChPac() {
   return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(kStyles[g_star.style].template_id) + L".pac")).wstring();
 }
@@ -191,7 +195,14 @@ struct Job {
 // ---- entrances (D5)
 
 // An entrance number picked from the installed ones (stock + packs); -1 = the default.
+bool g_open_entrance_picker = false;  // (a fix: "Pick a 2011 entrance" opens the superstar's entrance list)
+
 bool EntrancePicker(const char* label, int& value, const char* none, float width) {
+  if (g_open_entrance_picker && !std::strcmp(label, "Entrance")) {
+    g_open_entrance_picker = false;
+    ImGui::SetScrollHereY(0.3f);
+    ImGui::OpenPopupEx(ImHashStr("##ComboPopup", 0, ImGui::GetID(label)));
+  }
   std::string cur = none;
   if (value > 0) {
     cur = std::to_string(value);
@@ -1438,7 +1449,8 @@ void FbxProblems(std::vector<Problem>& p) {
   if (g_star.fbx.empty()) return;
   const FbxRig& r = FbxSkeleton();
   if (!r.error.empty()) {
-    p.push_back(Error("The FBX could not be read: " + r.error));
+    p.push_back(Error("The FBX file couldn't be opened (" + r.error + ").")
+                    .With("Pick another FBX...", [] { GoStep(kStepLook); }));
     return;
   }
   std::set<std::string> have;
@@ -1448,7 +1460,8 @@ void FbxProblems(std::vector<Problem>& p) {
   for (const char* c : kFbxCore)
     if (!have.count(c)) miss += (miss.empty() ? "" : ", ") + std::string(c);
   if (!miss.empty())
-    p.push_back(Warning("The FBX's bone mapping has no " + miss + ".", "Model from an FBX > Bone mapping: pick the FBX bone for each."));
+    p.push_back(Warning("Some of the FBX's bones aren't matched to the game's skeleton (" + miss + "): those body parts won't move in the game.")
+                    .With("Match them...", [] { GoStep(kStepLook); }, "the bone list is open"));
 }
 
 // ---- entrance gear (EMD kind 4: the whole wrestler in the outfit worn for the entrance) per attire
@@ -1796,6 +1809,87 @@ void GearRows(bool simple) {
   }
 }
 
+// The superstar's name for messages ("Your superstar" until it has one).
+std::string Who() { return g_star.name[0] ? std::string(g_star.name) : std::string("Your superstar"); }
+
+void GoStep(int step) {  // (a fix that needs a choice: its step in Simple mode)
+  if (g_star.simple) g_star.simple_step = step;
+}
+
+// The game's name of a disc key ("WWE '13").
+std::string GameName(const std::string& key) {
+  const disc_list::Game* g = disc_list::GameByKey(key);
+  return g ? g->name : key;
+}
+
+// A ported superstar's own entrance, converted again from the disc in My game discs and carried in this mod (as
+// superstar_port.py does: entrance_port free-numbers, then convert; the pack joins the mod's moves).
+void PortEntrance() {
+  const std::wstring disc = disc_list::PathFor(g_star.source_game);
+  if (disc.empty()) {
+    GoTo(PageId::kDiscs);
+    Status("Add your " + GameName(g_star.source_game) + " disc here first, then press the fix again.");
+    return;
+  }
+  const std::wstring pac11 = (fs::path(g_game) / L"pac").wstring(), mods = (fs::path(g_game) / L"Mods").wstring();
+  const std::wstring work = (fs::path(g_game) / L"Mods" / L".convert" / L"entrance_fix" / Wide(g_star.source_game + "_" + std::to_string(g_star.source_entrance))).wstring();
+  RunToolJson(L"entrance_port.py", {L"free-numbers", L"--game-pac", pac11, L"--mods", mods}, [disc, pac11, work](int code, const std::string& out) {
+    Json j;
+    std::vector<int> free;
+    if (code == 0 && ParseJson(out, j)) {
+      const Json& list = j.type == Json::Type::kArray ? j : j["free"];
+      for (const auto& x : list.items) free.push_back(x.Int());
+    }
+    if (free.empty()) {
+      Status("No free entrance number left in the game: remove an installed entrance pack first.");
+      return;
+    }
+    const int number = std::find(free.begin(), free.end(), g_star.entrance) != free.end() ? g_star.entrance : free[0];
+    std::vector<std::wstring> args = {L"convert", L"--game", Wide(g_star.source_game), L"--src", disc, L"--entrance",
+                                      std::to_wstring(g_star.source_entrance), L"--number", std::to_wstring(number), L"--out", work,
+                                      L"--name", Wide(Who()), L"--game-pac", pac11};
+    if (g_star.source_game.rfind("wwe", 0) == 0) args.push_back(L"--svrmod"), args.push_back(SvrmodExe());
+    WhenIdle([args, work, number] {
+      RunToolJson(L"entrance_port.py", args, [work, number](int code, const std::string& out) {
+        const fs::path pack = fs::path(work) / L"pack";
+        std::error_code ec;
+        if (code != 0 || !fs::exists(pack / L"pack.txt", ec)) {
+          Json e;
+          Status("The entrance didn't convert" + (ParseJson(out, e) && !e["error"].Str().empty() ? ": " + e["error"].Str() : std::string(" (see the log).")));
+          return;
+        }
+        if (g_star.pack.empty()) {
+          g_star.pack = pack.wstring();
+        } else {  // (the mod's own moves: the entrance's files and pack.txt lines join them)
+          for (const auto& e : fs::recursive_directory_iterator(pack, ec)) {
+            if (!e.is_regular_file(ec) || e.path().filename() == L"pack.txt") continue;
+            const fs::path to = fs::path(g_star.pack) / fs::relative(e.path(), pack, ec);
+            fs::create_directories(to.parent_path(), ec);
+            fs::copy_file(e.path(), to, fs::copy_options::overwrite_existing, ec);
+          }
+          Bytes a, b;
+          ReadFile(PathStr(fs::path(g_star.pack) / L"pack.txt"), a);
+          ReadFile(PathStr(pack / L"pack.txt"), b);
+          std::string have(a.begin(), a.end());
+          if (!have.empty() && have.back() != '\n') have += "\n";
+          for (size_t at = 0; at < b.size();) {
+            size_t e = std::string(b.begin(), b.end()).find('\n', at);
+            if (e == std::string::npos) e = b.size();
+            const std::string line(b.begin() + long(at), b.begin() + long(e));
+            if (!line.empty() && have.find(line) == std::string::npos) have += line + "\n";
+            at = e + 1;
+          }
+          WriteFile(PathStr(fs::path(g_star.pack) / L"pack.txt"), Bytes(have.begin(), have.end()));
+        }
+        g_star.entrance = number;
+        g_star.entrance_note.clear();
+        Touch();
+        Status(Who() + "'s own entrance is in the mod now (from " + GameName(g_star.source_game) + ").");
+      });
+    });
+  });
+}
+
 void GearProblems(std::vector<Problem>& p) {
   if (g_star.model.empty()) return;
   for (int a : AttireCount()) {
@@ -1805,10 +1899,9 @@ void GearProblems(std::vector<Problem>& p) {
     // (the gear model loads instead of the attire's for the entrance: stock Undertaker's two together are ~370 pages)
     const int gear = GearPages(shown == a ? pac : g_star.model, shown == a ? in : shown);
     if (gear > kModelPages)
-      p.push_back(Warning("Attire " + std::to_string(a) + "'s entrance gear needs " + std::to_string(gear) + " of the " + std::to_string(kModelPages) +
-                              " memory pages a wrestler gets: the entrance may not load.",
-                          "Leave the gear out (Entrance gear), or use a lighter one."));
-
+      p.push_back(Warning("Attire " + std::to_string(a) + "'s entrance outfit (the coat or hat worn on the way to the ring) is too big "
+                          "for the game's memory: the entrance may not load.")
+                      .With("Leave the entrance outfit out", [a] { g_star.gear[a] = "off"; Touch(); }, "the entrance outfit is left out"));
   }
 }
 
@@ -1819,18 +1912,29 @@ void Problems(std::vector<Problem>& p) {
       if (p[k].step < 0) p[k].step = step;
     mark = p.size();
   };
+  const std::string who = Who();
   FbxProblems(p);
   tag(kStepLook);
   GearProblems(p);
   tag(kStepAttires);
-  if (!g_star.name[0]) p.push_back(Error("The superstar has no name."));
+  if (!g_star.name[0]) p.push_back(Error("Your superstar has no name yet.").With("Type a name", [] { GoStep(kStepName); }, "the name step is open"));
   tag(kStepName);
+  const std::wstring style_pac = StyleChPac();
+  auto use_style_model = [style_pac] { g_star.model = style_pac; Touch(); };
   if (g_star.model.empty()) {
-    p.push_back(Error("No model picked.", "Model (ch.pac): a character model pac, the game's (pac\\ch\\chNNN.pac) or a converted one."));
+    p.push_back(Error(who + " has no body yet: pick a model.")
+                    .With("Use the fighting style's body", use_style_model, "the fighting style's body is used")
+                    .With("Pick a model...", [] { GoStep(kStepLook); }, "the Look step is open"));
   } else {
     const FileCheck& c = Check(g_star.model, "pac");
-    if (!c.exists) p.push_back(Error("The model file is missing: " + FileName(g_star.model)));
-    else if (!c.ok) p.push_back(Error("The model is " + c.note + ": " + FileName(g_star.model)));
+    if (!c.exists)
+      p.push_back(Error(who + "'s model file was moved or deleted (" + FileName(g_star.model) + "), so there is no body.")
+                      .With("Pick it again...", [] { GoStep(kStepLook); }, "the Look step is open")
+                      .With("Use the fighting style's body", use_style_model, "the fighting style's body is used"));
+    else if (!c.ok)
+      p.push_back(Error("The file picked as " + who + "'s model isn't a wrestler model (" + c.note + ").")
+                      .With("Pick another...", [] { GoStep(kStepLook); }, "the Look step is open")
+                      .With("Use the fighting style's body", use_style_model, "the fighting style's body is used"));
   }
   const std::vector<int> own_attires = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
   auto in_model_attire = [&](int n) {
@@ -1840,38 +1944,81 @@ void Problems(std::vector<Problem>& p) {
   };
   tag(kStepLook);
   if (own_attires.size() > 4)
-    p.push_back(Warning("The model pac has " + std::to_string(own_attires.size()) + " attires: the game uses the first 4."));
+    p.push_back(Warning("The model has " + std::to_string(own_attires.size()) + " outfits: the game only offers the first 4.").Note());
   for (int a = 1; a < 4; ++a) {
     if (g_star.attires[a].empty()) continue;
+    auto drop = [a] { g_star.attires[a].clear(); Touch(); };
     const FileCheck& c = Check(g_star.attires[a], "pac");
-    if (!c.exists) p.push_back(Error("Attire " + std::to_string(a + 1) + "'s file is missing: " + FileName(g_star.attires[a])));
-    else if (!c.ok) p.push_back(Error("Attire " + std::to_string(a + 1) + " is " + c.note + "."));
-    if (a > 1 && g_star.attires[a - 1].empty() && !in_model_attire(a)) p.push_back(Warning("Attire " + std::to_string(a + 1) + " is set but attire " + std::to_string(a) + " isn't: the game lists attires in order."));
+    if (!c.exists)
+      p.push_back(Error("Outfit " + std::to_string(a + 1) + "'s file was moved or deleted (" + FileName(g_star.attires[a]) + ").")
+                      .With("Remove outfit " + std::to_string(a + 1), drop).With("Pick it again...", [] { GoStep(kStepAttires); }));
+    else if (!c.ok)
+      p.push_back(Error("The file picked as outfit " + std::to_string(a + 1) + " isn't a wrestler model (" + c.note + ").")
+                      .With("Remove outfit " + std::to_string(a + 1), drop).With("Pick another...", [] { GoStep(kStepAttires); }));
+    if (a > 1 && g_star.attires[a - 1].empty() && !in_model_attire(a))
+      p.push_back(Warning("Outfit " + std::to_string(a + 1) + " is set but outfit " + std::to_string(a) + " is empty: the game shows outfits "
+                          "in order, so this one never appears.")
+                      .With("Move it to outfit " + std::to_string(a), [a] {
+                        std::swap(g_star.attires[a - 1], g_star.attires[a]);
+                        std::swap(g_star.attire_names[a - 1], g_star.attire_names[a]);
+                        std::swap(g_star.attire_entrance[a - 1], g_star.attire_entrance[a]);
+                        Touch();
+                      }, "moved up one outfit"));
   }
   tag(kStepAttires);
   if (!g_star.movie.empty()) {
+    auto drop = [] { g_star.movie.clear(); Touch(); };
     const FileCheck& c = Check(g_star.movie, "bik");
-    if (!c.exists) p.push_back(Error("The entrance movie file is missing: " + FileName(g_star.movie)));
-    else if (!c.ok) p.push_back(Error("The entrance movie is " + c.note + ".", "The launcher's Movies tab makes .bik files from any video."));
-    else if (c.w != 320 || c.h != 320) p.push_back(Warning("The entrance movie is " + std::to_string(c.w) + " x " + std::to_string(c.h) + "; the game's are 320 x 320 (it still plays, stretched)."));
+    if (!c.exists)
+      p.push_back(Error("The big screen video was moved or deleted (" + FileName(g_star.movie) + ").")
+                      .With("Play no video of my own", drop, "the video is left out (the style's plays)").With("Pick it again...", [] { GoStep(kStepEntrance); }));
+    else if (!c.ok)
+      p.push_back(Error("The big screen video isn't a video the game can play (" + c.note + ").")
+                      .With("Pick another video...", [] { GoStep(kStepEntrance); }).With("Play no video of my own", drop, "the video is left out"));
+    else if (c.w != 320 || c.h != 320)
+      p.push_back(Warning("The big screen video is " + std::to_string(c.w) + " x " + std::to_string(c.h) +
+                          ": the big screen is square, so it plays stretched.").Note());
   }
   tag(kStepEntrance);
-  for (const std::wstring* f : {&g_star.song, &g_star.voice})
-    if (!f->empty() && !Check(*f, "any").exists) p.push_back(Error("A sound file is missing: " + FileName(*f)));
+  if (!g_star.song.empty() && !Check(g_star.song, "any").exists)
+    p.push_back(Error("The theme song was moved or deleted (" + FileName(g_star.song) + ").")
+                    .With("Play no song of my own", [] { g_star.song.clear(); Touch(); }, "the song is left out (the style's plays)")
+                    .With("Pick it again...", [] { GoStep(kStepMusic); }));
+  if (!g_star.voice.empty() && !Check(g_star.voice, "any").exists)
+    p.push_back(Error("The name recording was moved or deleted (" + FileName(g_star.voice) + ").")
+                    .With("Leave the recording out", [] { g_star.voice.clear(); Touch(); }));
   if (!g_star.song.empty() && g_star.theme_gain == 0.0f)
-    p.push_back(Warning("The theme plays at full level: the game's own are about 7 dB quieter.",
-                        "Theme volume: Measure, then Match the game."));
+    p.push_back(Warning("The theme song will play much louder than the game's own music.")
+                    .With("Match the game's volume", [] {
+                      if (g_lufs_for == g_star.song) {
+                        g_star.theme_gain = std::round(float(std::clamp(kThemeTargetLufs - g_lufs, -20.0, 6.0)) * 10) / 10;
+                        Touch();
+                      } else {
+                        MeasureTheme();  // (then Match: the measurement comes back in a moment)
+                        GoStep(kStepMusic);
+                      }
+                    }, "the song's volume is set to the game's"));
   tag(kStepMusic);
-  if (g_star.picture.Empty()) p.push_back(Warning("No select picture: the select screen shows a silhouette where other modes show a render."));
+  if (g_star.picture.Empty())
+    p.push_back(Warning("No picture for the select screen: players see a dark outline instead of " + who + ".")
+                    .With("Use the 3D view as the picture", [] {
+                      std::vector<uint8_t> rgba;
+                      Image img;
+                      img.w = img.h = 512;
+                      if (char_preview::Capture(512, rgba)) img.rgba = std::move(rgba), SetPicture(img), Touch();
+                    }, "the 3D view is the select picture")
+                    .With("Pick a picture...", [] { GoStep(kStepPictures); }));
   tag(kStepPictures);
   for (const auto& [slot, id] : g_star.moveset) {
+    const int s = slot;
+    auto style_move = [s] { g_star.moveset.erase(s); Touch(); };
     if (!MoveInfos().count(id)) {
       if (g_star.pack.empty())
-        p.push_back(Warning(SlotLabel(slot) + ": move " + std::to_string(id) + " isn't one of the game's moves.",
-                            "It needs a move pack that adds it (More: Move pack folder), or pick another."));
+        p.push_back(Warning(SlotLabel(slot) + ": that move isn't in the game, so " + who + " does the fighting style's move there.")
+                        .With("Use the style's move", style_move).With("Pick another...", [] { GoStep(kStepMoves); }));
     } else if (!MoveFitsSlot(slot, id)) {
-      p.push_back(Warning(SlotLabel(slot) + ": " + MoveName(id) + " isn't a move of this kind.",
-                          "The game may not play it from this slot. Pick one from the slot's list."));
+      p.push_back(Warning(SlotLabel(slot) + ": " + MoveName(id) + " is a different kind of move - the game may skip it there.")
+                      .With("Use the style's move", style_move).With("Pick another...", [] { GoStep(kStepMoves); }));
     }
   }
   tag(kStepMoves);
@@ -1880,55 +2027,100 @@ void Problems(std::vector<Problem>& p) {
     for (const auto& e : Entrances()) have.insert(e.number);
     if (!g_star.pack.empty())
       for (const auto& e : PackEntrances(g_star.pack)) have.insert(e.number);
-    auto check = [&](int n, const std::string& who) {
-      if (n > 0 && !have.count(n))
-        p.push_back(Warning(who + ": entrance " + std::to_string(n) + " isn't installed - no entrance would play.",
-                            "Install the move pack that adds it, carry it in this mod (More: Move pack folder), or pick another."));
-    };
-    check(g_star.entrance, "The superstar");
+    const bool can_port = !g_star.source_game.empty() && g_star.source_entrance >= 0;
+    if (g_star.entrance > 0 && !have.count(g_star.entrance)) {
+      Problem pr = Warning(who + " has no entrance yet - in the game " + who + " would walk out with none." +
+                           (g_star.entrance_note.empty() ? "" : " (Their own didn't come across" +
+                            [] { std::string n = g_star.entrance_note;  // (superstar_port's "not converted: <why>" / "not ported (...)")
+                                 for (const char* pre : {"not converted: ", "not converted", "not ported "})
+                                   if (n.rfind(pre, 0) == 0) n = n.substr(std::strlen(pre));
+                                 return n.empty() ? std::string(".)") : ": " + n + ")"; }()));
+      if (can_port)
+        pr = std::move(pr).With("Port " + who + "'s entrance from " + GameName(g_star.source_game), PortEntrance,
+                                "converting " + who + "'s entrance (it takes a minute)");
+      pr = std::move(pr).With("Use a 2011 entrance instead", [] { GoStep(kStepEntrance); g_open_entrance_picker = true; }, "the entrance list is open");
+      pr = std::move(pr).With("Leave it (the style's entrance)", [] { g_star.entrance = -1; Touch(); }, "the fighting style's entrance is used");
+      p.push_back(std::move(pr));
+    }
     for (int a = 1; a < 4; ++a)
-      if (!g_star.attires[a].empty() || g_star.attire_entrance[a] > 0) check(g_star.attire_entrance[a], "Attire " + std::to_string(a + 1));
+      if ((!g_star.attires[a].empty() || g_star.attire_entrance[a] > 0) && g_star.attire_entrance[a] > 0 && !have.count(g_star.attire_entrance[a]))
+        p.push_back(Warning("In outfit " + std::to_string(a + 1) + ", " + who + " would walk out with no entrance.")
+                        .With("Use " + who + "'s usual entrance", [a] { g_star.attire_entrance[a] = -1; Touch(); }));
   }
   tag(kStepEntrance);
   for (int a = 0; a < 4; ++a) {  // the match memory (D12): every attire of the model, the first of attire pacs
     const std::wstring& f = a ? g_star.attires[a] : g_star.model;
-    if (!f.empty()) BudgetProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), a != 0, p);
-    if (!f.empty()) ModelCheckProblems(f, a ? "Attire " + std::to_string(a + 1) : std::string("The superstar"), p);
+    if (!f.empty())
+      BudgetProblems(f, a ? "Outfit " + std::to_string(a + 1) : who, a != 0, p, [a](const std::wstring& lighter) {
+        (a ? g_star.attires[a] : g_star.model) = lighter;
+        Touch();
+      });
+    if (!f.empty()) ModelCheckProblems(f, a ? "Outfit " + std::to_string(a + 1) : who, p);
   }
   for (int a : AttireCount()) {  // gear inherited from the superstar a model came from: said once, plainly
     if (GearShown(a) && !g_star.gear.count(a)) {
-      p.push_back(Warning("Attire " + std::to_string(a) + " has entrance gear from the superstar the model came from (a coat, hat or shirt worn for the entrance).",
-                          "Fine if wanted; otherwise Entrance gear > Leave it out."));
-      p.back().step = kStepAttires;
+      p.push_back(Warning("Outfit " + std::to_string(a) + " comes with an entrance coat or hat from the wrestler the model was made from.")
+                      .With("Keep it", [a] { g_star.gear[a] = ""; Touch(); }, "the entrance outfit is kept")
+                      .With("Leave it out", [a] { g_star.gear[a] = "off"; Touch(); }, "the entrance outfit is left out")
+                      .At(kStepAttires));
     }
   }
   tag(kStepLook);
-  if (!g_star.moves.empty()) {
-    const FileCheck& c = Check(g_star.moves, "any");
-    if (!c.exists) p.push_back(Error("The moves list file is missing: " + FileName(g_star.moves)));
-  }
+  if (!g_star.moves.empty() && !Check(g_star.moves, "any").exists)
+    p.push_back(Error("The moves list file was moved or deleted (" + FileName(g_star.moves) + ").")
+                    .With("Use the fighting style's moves", [] { g_star.moves.clear(); Touch(); }));
   if (!g_star.pack.empty()) {
     std::error_code ec;
-    if (!fs::exists(fs::path(g_star.pack) / L"pack.txt", ec)) p.push_back(Error("The move pack folder has no pack.txt: " + FileName(g_star.pack), "A pack is a folder with pack.txt and motions/ (tools/movepack.py or the Moves page make one)."));
+    if (!fs::exists(fs::path(g_star.pack) / L"pack.txt", ec))
+      p.push_back(Error("The folder of extra moves (" + FileName(g_star.pack) + ") is broken: it has no list of its moves, so none of them would play.")
+                      .With("Leave the extra moves out", [] { g_star.pack.clear(); Touch(); }));
   }
   tag(kStepMoves);
+  auto clean = [](char* s) {  // letters and digits only, capitals (the announcer's clip names)
+    char* o = s;
+    for (const char* c = s; *c; ++c)
+      if (std::isalnum(uint8_t(*c))) *o++ = char(std::toupper(uint8_t(*c)));
+    *o = 0;
+  };
   for (char c : std::string(g_star.announcer))
-    if (!std::isalnum(uint8_t(c))) { p.push_back(Error("The announcer name takes letters and digits only (e.g. JEFFHARDY).")); break; }
+    if (!std::isalnum(uint8_t(c))) {
+      p.push_back(Error("The announcer's name can only have letters and digits (like JEFFHARDY): the announcer wouldn't say it.")
+                      .With("Take out the other characters", [clean] { clean(g_star.announcer); Touch(); }));
+      break;
+    }
   bool bad_town = false;
   for (const char* h : {g_star.hometown_city, g_star.hometown_state})
     for (const char* c = h; *c; ++c) bad_town |= !std::isalnum(uint8_t(*c));
-  if (bad_town) p.push_back(Error("The hometown takes the announcer's clip names: letters and digits (e.g. CAMERONNC)."));
-  if (g_star.hometown_state[0] && !g_star.hometown_city[0]) p.push_back(Warning("A hometown state without a city isn't said: pick the city too."));
-  if (g_star.own_abilities && g_star.abilities.empty()) p.push_back(Warning("Own abilities ticked but none chosen: the superstar gets no abilities."));
+  if (bad_town)
+    p.push_back(Error("The hometown can only have letters and digits (like CAMERONNC): the announcer wouldn't say it.")
+                    .With("Take out the other characters", [clean] { clean(g_star.hometown_city), clean(g_star.hometown_state); Touch(); }));
+  if (g_star.hometown_state[0] && !g_star.hometown_city[0])
+    p.push_back(Warning("A hometown state without a city isn't said by the announcer.")
+                    .With("Pick a city...", [] { GoStep(kStepExtras); }).With("Clear the state", [] { g_star.hometown_state[0] = 0; Touch(); }));
+  if (g_star.own_abilities && g_star.abilities.empty())
+    p.push_back(Warning(who + " is set to have their own abilities, but none are picked: " + who + " would have none.")
+                    .With("Use the fighting style's abilities", [] { g_star.own_abilities = false; Touch(); })
+                    .With("Pick abilities...", [] { GoStep(kStepExtras); }));
   tag(kStepExtras);
-  if (std::strlen(g_star.name) > 20 && !g_star.short_name[0]) p.push_back(Warning("A long name with no short name: the short name goes on the match screens."));
+  if (std::strlen(g_star.name) > 20 && !g_star.short_name[0])
+    p.push_back(Warning("The name is long: the match screens show a short name, and there isn't one yet.")
+                    .With("Make one from the name", [] {
+                      std::string n = g_star.name;
+                      const size_t sp = n.find_last_of(' ');  // (the last word, as the game's own: "ORTON")
+                      std::string s = sp != std::string::npos && n.size() - sp - 1 >= 3 ? n.substr(sp + 1) : n.substr(0, 20);
+                      std::snprintf(g_star.short_name, sizeof g_star.short_name, "%s", s.c_str());
+                      Touch();
+                    }));
   if (!g_game.empty()) {
     int mods = 0;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Superstars", ec))
       if (e.is_directory(ec) && fs::exists(e.path() / L"manifest.txt", ec)) ++mods;
-    if (mods >= 137) p.push_back(Error("The game already has 137 superstar mods installed: that is the limit.", "Remove one in the launcher's Mods tab."));
-    else if (mods >= 132) p.push_back(Warning(std::to_string(mods) + " of 137 superstar mod slots are in use."));
+    if (mods >= 137)
+      p.push_back(Error("The game already has 137 superstar mods - the most it can hold. Installing this one would leave one out.")
+                      .With("See my installed mods", [] { GoTo(PageId::kInstalled); }));
+    else if (mods >= 132)
+      p.push_back(Warning(std::to_string(137 - mods) + " superstar mod places left in the game (it holds 137).").Note());
   }
   tag(kStepName);
 }
@@ -2467,6 +2659,9 @@ void WriteProject(ProjectOut& out) {
     if (g_star.attire_entrance[a] > 0) out.Key("attire" + std::to_string(a + 1) + "_entrance", g_star.attire_entrance[a]);
   }
   if (g_star.entrance >= 0) out.Key("entrance", g_star.entrance);
+  if (!g_star.source_game.empty()) out.Key("source", g_star.source_game + (g_star.source_id >= 0 ? " " + std::to_string(g_star.source_id) : ""));
+  if (g_star.source_entrance >= 0) out.Key("source_entrance", g_star.source_entrance);
+  if (!g_star.entrance_note.empty()) out.Key("entrance_note", g_star.entrance_note);
   out.Key("announcer", g_star.announcer);
   if (g_star.pose >= 0) out.Key("pose", std::to_string(g_star.pose));
   if (g_star.hometown_city[0])
@@ -2521,6 +2716,14 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.call = in.GetInt("call", -1);
   if (const std::string h = in.Get("height"); !h.empty()) g_star.height = std::clamp(float(std::atof(h.c_str())), 0.8f, 1.25f);
   g_star.entrance = in.GetInt("entrance", -1);
+  {
+    const std::string src = in.Get("source");  // "<game> <their id>" (a ported superstar)
+    const size_t sp = src.find(' ');
+    g_star.source_game = src.substr(0, sp);
+    g_star.source_id = sp == std::string::npos ? -1 : std::atoi(src.c_str() + sp + 1);
+    g_star.source_entrance = in.GetInt("source_entrance", -1);
+    g_star.entrance_note = in.Get("entrance_note");
+  }
   g_star.pose = in.GetInt("pose", -1);
   if (g_star.pose >= 0 && g_star.pose < 512)  // (an id below 512: that superstar's pose)
     for (const auto& [star, motion] : kStarPoses)

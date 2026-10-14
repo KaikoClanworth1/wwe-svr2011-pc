@@ -22,6 +22,7 @@
 #include "char_preview.h"
 #include "disc_list.h"
 #include "model_materials.h"
+#include "model_materials.h"
 #include "hair_sim.h"
 #include "editor.h"
 #include "full_preview.h"
@@ -384,13 +385,74 @@ int ErrorCount(const std::vector<Problem>& p) {
   return n;
 }
 
+int g_fixes_done = 0;
+std::string g_test_fix;  // --run-fix "<text>[|<n>]": fix n (0: the recommended) of the page's first problem with <text>
+int g_test_fix_frames = 0;
+
+bool TestFixOn(const std::vector<Problem>& problems) {
+  if (g_test_fix.empty()) return false;
+  const size_t bar = g_test_fix.find('|');
+  const std::string want = g_test_fix.substr(0, bar);
+  const int n = bar == std::string::npos ? 0 : std::atoi(g_test_fix.c_str() + bar + 1);
+  for (const auto& p : problems)
+    Log("test: problem: " + p.text + (p.fixes.empty() ? "" : "  [" + std::to_string(p.fixes.size()) + " fixes: " + p.fixes[0].label + "]"));
+  bool done = false;
+  for (const auto& p : problems)
+    if (p.text.find(want) != std::string::npos && n < int(p.fixes.size())) {
+      Log("test: running fix \"" + p.fixes[size_t(n)].label + "\" of: " + p.text);
+      RunFix(p.fixes[size_t(n)]);
+      done = true;
+      break;
+    }
+  if (!done) Log("test: no problem with \"" + want + "\" and fix " + std::to_string(n));
+  g_test_fix.clear();
+  return true;
+}
+int FixesDone() { return g_fixes_done; }
+
+void RunFix(const FixAction& f) {
+  if (f.run) f.run();
+  ++g_fixes_done;
+  Status("Done: " + (f.done.empty() ? f.label : f.done));
+}
+
+bool FixButtons(const Problem& p, bool accent_first) {
+  bool pressed = false;
+  for (size_t k = 0; k < p.fixes.size(); ++k) {
+    ImGui::PushID(int(k));
+    const bool accent = k == 0 && accent_first;
+    if (accent) PushAccent();
+    if (ImGui::SmallButton(p.fixes[k].label.c_str())) {
+      const FixAction f = p.fixes[k];  // (the list is rebuilt: keep a copy)
+      RunFix(f);
+      pressed = true;
+    }
+    if (accent) PopAccent();
+    ImGui::PopID();
+    if (k + 1 < p.fixes.size()) ImGui::SameLine();
+  }
+  return pressed;
+}
+
 void DrawProblems(const std::vector<Problem>& problems) {
-  for (const auto& p : problems) {
+  for (size_t i = 0; i < problems.size(); ++i) {
+    const Problem& p = problems[i];
+    ImGui::PushID(int(i));
     ImGui::PushStyleColor(ImGuiCol_Text, p.error ? kBad : kWarn);
     ImGui::Bullet();
     ImGui::SameLine();
     ImGui::TextWrapped("%s%s%s", p.text.c_str(), p.fix.empty() ? "" : "  -  ", p.fix.c_str());
     ImGui::PopStyleColor();
+    if (!p.fixes.empty()) {
+      ImGui::Indent();
+      if (FixButtons(p)) {
+        ImGui::Unindent();
+        ImGui::PopID();
+        break;  // (the fix changed the list)
+      }
+      ImGui::Unindent();
+    }
+    ImGui::PopID();
   }
 }
 
@@ -1220,35 +1282,57 @@ void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::ve
   }
   const auto& is = it->second.issues;
   for (const auto& m : is.nan_meshes)
-    out.push_back(Error(who + "'s model has broken points (not-a-number values) in " + m + ": the game crashes on it.",
-                        "Export the model again, or rebuild it (Model from an FBX)."));
+    out.push_back(Error(who + "'s model is damaged (part " + m + " has broken points): the game would crash when it loads it.",
+                        "Export the model again from your 3D program, or make it again from the FBX."));
   for (int e = 0; e < 2; ++e)
     if (is.eye_off[e] > 0.15) {
       char d[16];
       std::snprintf(d, sizeof d, "%.1f", is.eye_off[e] * 10);
-      out.push_back(Warning(who + "'s " + (e ? "right" : "left") + " eye is " + d + " cm from its eye bone: it pops out when the face blinks.",
-                            "Model from an FBX moves the eye bones onto the eyes; or fix the eye in the source model."));
+      out.push_back(Warning(who + "'s " + (e ? "right" : "left") + " eye sits " + d + " cm away from where the game moves it: "
+                            "it pops out of the face when they blink.", "Making the model from the FBX puts the eyes right."));
     }
 }
 
-void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out) {
+void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_only, std::vector<Problem>& out,
+                    std::function<void(const std::wstring&)> use) {
   const ModelPages* worst = nullptr;
   for (const auto& p : ModelBudget(pac)) {
     if (!worst || p.pages > worst->pages) worst = &p;
     if (first_only) break;
   }
   if (!worst || worst->pages <= kModelPagesWarn) return;
-  const std::string what = who + "'s model needs " + std::to_string(worst->pages) + " of the " + std::to_string(kModelPages) +
-                           " memory pages a wrestler gets in a match" + (first_only ? "" : " (entry " + worst->entry + ")");
-  const char* fix = "Use a model with fewer vertices or weight blocks (or without blood overlays, JBOY children "
-                    "0x7530-0x7532: the Port page's conversions leave them out).";
+  const int pct = worst->pages * 100 / kModelPages;
+  // a lighter copy: the model without its blood, used in its place
+  auto lighter = [pac, use] {
+    Bytes in, out;
+    std::string err;
+    if (!ReadFile(Utf8(pac), in) || !StripBlood(in, out, &err)) {
+      Status("A lighter copy couldn't be made: " + (err.empty() ? std::string("the model didn't read") : err) + ".");
+      return;
+    }
+    const fs::path dir = fs::path(g_game) / L"Mods" / L".convert" / L"lighter";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path to = dir / (fs::path(pac).stem().wstring() + L"_noblood.pac");
+    if (!WriteFile(PathStr(to), out)) {
+      Status("A lighter copy couldn't be written into " + PathStr(dir) + ".");
+      return;
+    }
+    use(to.wstring());
+  };
   // (as the game: over the limit it drops the blood overlays, then leaves out a model still over)
-  if (worst->pages - worst->blood > kModelPages)
-    out.push_back(Error(what + ": the game leaves this model out, even without its blood overlays.", fix));
-  else if (worst->pages > kModelPages)
-    out.push_back(Warning(what + ": the game drops its blood overlays to fit (no blood on it in matches).", fix));
-  else
-    out.push_back(Warning(what + ": close to the limit (stock models reach about 180-192).", fix));
+  if (worst->pages - worst->blood > kModelPages) {
+    out.push_back(Error(who + "'s model is too big for the game's memory (" + std::to_string(pct) + "% of what a wrestler gets): "
+                        "the game would leave " + who + " out of matches.",
+                        "Use a model with fewer polygons, or one made from an FBX (the builder keeps to the limit)."));
+  } else if (worst->pages > kModelPages) {
+    Problem p = Warning(who + "'s model is a little too big for the game's memory: to fit, the game shows no blood on " + who +
+                        " in matches.");
+    if (use) p = std::move(p).With("Make a lighter copy without the blood", lighter, "a lighter copy of the model (without blood) is used");
+    out.push_back(std::move(p));
+  } else {
+    out.push_back(Warning(who + "'s model is close to the game's memory limit (" + std::to_string(pct) + "%): fine, but it can't get any bigger.").Note());
+  }
 }
 
 void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {
@@ -2151,6 +2235,7 @@ void Draw() {
   FollowPage();
   g_problems.clear();
   if (PageHooks* h = Hooks(g_project_page); h && h->problems) h->problems(g_problems);
+  if (!g_test_fix.empty() && g_page != PageId::kInstalled && ++g_test_fix_frames > 90 && !Busy()) TestFixOn(g_problems);
 
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(vp->Pos);
@@ -2637,6 +2722,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
+    else if (!wcscmp(argv[i], L"--run-fix") && more) g_test_fix = Utf8(argv[++i]);  // "<text>[|<n>]" (see g_test_fix)
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
     else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views

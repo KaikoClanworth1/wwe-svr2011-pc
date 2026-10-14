@@ -536,13 +536,7 @@ void StepFinish() {
     ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1), "The installed arena loads the way the game reads it.");
     return;
   }
-  for (const auto& p : g_doctor) {
-    ImGui::TextColored(p.error ? ImVec4(1, 0.45f, 0.4f, 1) : ImVec4(1, 0.8f, 0.35f, 1), p.error ? "Must fix:" : "Tip:");
-    ImGui::SameLine();
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextUnformatted((simple::Plain(p.text) + (p.fix.empty() ? "" : " - " + p.fix)).c_str());
-    ImGui::PopTextWrapPos();
-  }
+  DrawProblems(g_doctor);
 }
 
 // ---- the test aid

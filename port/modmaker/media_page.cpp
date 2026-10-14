@@ -245,8 +245,9 @@ void Install() {
 }
 
 void Problems(std::vector<Problem>& p) {
-  if (Empty()) p.push_back(Error("Nothing in the pack yet.", "Every item is optional: fill in only what you want to replace."));
-  if (!g_media.name[0]) p.push_back(Warning("No pack name: \"My Media\" is used."));
+  if (Empty()) p.push_back(Error("Nothing is in it yet: add a video, a song or a sound to replace."));
+  if (!g_media.name[0]) p.push_back(Warning("It has no name yet: it'd be called \"My Media\".")
+                                        .With("Call it \"My Media\"", [] { std::snprintf(g_media.name, sizeof g_media.name, "My Media"); Touch(); }));
   std::error_code ec;
   for (const auto& [id, s] : g_media.stars) {
     const StarInfo* st = StarById(id);
@@ -259,7 +260,7 @@ void Problems(std::vector<Problem>& p) {
     if (!fs::exists(f, ec)) p.push_back(Error("The sound file for " + ev + " is missing: " + FileName(f)));
   bool themes = false;
   for (const auto& [id, s] : g_media.stars) themes |= !s.theme.empty();
-  if (themes) p.push_back(Warning("Entrance themes play at full level: the game's own are about 7 dB quieter. Make yours about -24 LUFS."));
+  if (themes) p.push_back(Warning("Your entrance songs will play much louder than the game's own music.", "Make them quieter in a sound editor, or use the Superstar page's \"Match the game\"."));
 }
 
 void VideosTab() {
