@@ -138,6 +138,16 @@ bool ReadAll(const fs::path& p, Bytes& out) {
 // motion" flag (sub_82154F00, below). Set as the packs are read (each start,
 // merged or not), read in matches.
 std::atomic<bool> g_ymbs_motion[0x8000] = {};
+// The moves whose own body motion (y 0 / 1) a pack lists but doesn't have the
+// file of (an install missing files - a player's mod logged 306 "missing
+// motions/..."): such a move "plays" as nothing, and a CPU whose move-set
+// held them only reversed. They don't count as usable (MoveUsable), so a
+// superstar mod's slots naming them keep the base's moves (superstar_mods.cpp).
+// Game moves too: a pack lists a body motion for a move because the game has
+// none it plays (Sabu's Enzuigiri 3260 has a 2011 record, the motions are
+// 2010's) - at worst a slot keeps the base's move.
+std::mutex g_motionless_mutex;
+std::set<uint16_t> g_motionless;
 
 // data false: the lists and the stamp only (no motion files read - enough to
 // see that the overlay is up to date: thousands of small files on a hard
@@ -177,6 +187,10 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       {
         std::error_code ec;
         const uintmax_t size = fs::file_size(dir / fs::u8path(file), ec);
+        if (ec && y <= 1) {
+          std::lock_guard lock(g_motionless_mutex);
+          g_motionless.insert(uint16_t(id));
+        }
         stamp += file + " " + std::to_string(ec ? 0 : size) + " " +
                  std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
       }
@@ -1383,6 +1397,18 @@ void LoadMoveTables(const fs::path& game) {
     g_past_pack = std::move(past);
     g_stock_ok = std::move(stock_ok);
   }
+  {
+    std::string gone;
+    std::set<uint16_t> ids;
+    {
+      std::lock_guard lock(g_motionless_mutex);  // (a copy: MoveUsable takes the lock too)
+      ids = g_motionless;
+    }
+    for (uint16_t id : ids)
+      if (svr2011::MoveUsable(id) == 0) gone += " " + std::to_string(id);
+    if (!gone.empty())
+      REXLOG_WARN("[svr2011] move packs: moves without their motion files (not usable - movesets keep other moves):{}", gone);
+  }
   REXLOG_INFO("[svr2011] move packs: move tables from {} ({} records)", src.filename().string(), Le32(w.data() + 4));
 }
 }  // namespace svr2011
@@ -1406,9 +1432,13 @@ bool MoveMissing(uint16_t id) {
 }
 
 int MoveUsable(uint16_t id) {
-  std::lock_guard lock(g_usable_mutex);
-  if (g_usable.empty()) return -1;
-  return g_usable[id] ? 1 : 0;
+  {
+    std::lock_guard lock(g_usable_mutex);
+    if (g_usable.empty()) return -1;
+    if (!g_usable[id]) return 0;
+  }
+  std::lock_guard lock(g_motionless_mutex);
+  return g_motionless.count(id) ? 0 : 1;
 }
 }  // namespace svr2011
 
