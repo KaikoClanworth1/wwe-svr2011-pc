@@ -49,6 +49,7 @@
 #include "svrfmt/arena.h"
 #include "svrfmt/pac.h"
 #include "tool_run.h"
+#include "video_mf.h"
 extern "C" {
 #include "../launcher/bink_decode.h"
 }
@@ -132,6 +133,8 @@ ID3D11ShaderResourceView* g_tt_srv = nullptr;
 std::vector<uint8_t> g_tt_bgra;
 int g_tt_shown = -1;
 std::string g_tt_note;  // why the titantron can't show ("" = it shows, or there's none)
+std::unique_ptr<video_mf::Reader> g_tt_mf;  // (a movie Bink 1 can't open: a mod's movie.mp4, through Media Foundation)
+bool g_tt_screen = false;  // the arena has a titantron screen (tf_titan): the movie plays on it, not in a corner
 
 // the test aid
 bool g_test_pending = false;
@@ -681,6 +684,8 @@ void Matrices(const Cam& c, float aspect, float view[16], float proj[16]) {
 // ---- media
 
 void CloseTitantron() {
+  editor::SetTextureOverride("tf_titan", nullptr);
+  g_tt_mf.reset();
   if (g_bink) bink_close(g_bink), g_bink = nullptr;
   if (g_tt_srv) g_tt_srv->Release(), g_tt_srv = nullptr;
   if (g_tt_tex) g_tt_tex->Release(), g_tt_tex = nullptr;
@@ -693,8 +698,21 @@ void OpenTitantron(const std::wstring& file) {
   if (file.empty()) return;
   wchar_t err[256] = L"";
   g_bink = bink_open(file.c_str(), err, 256);
-  if (!g_bink) {
-    Log("full preview: the titantron movie didn't open: " + Utf8(file) + " (" + Utf8(err) + ")");
+  if (!g_bink) {  // (not Bink 1: Media Foundation - a mod's movie.mp4)
+    auto mf = std::make_unique<video_mf::Reader>();
+    std::string why;
+    if (mf->Open(file, why)) {
+      g_tt_mf = std::move(mf);
+      g_tt_bgra.assign(size_t(g_tt_mf->Width()) * g_tt_mf->Height() * 4, 0);
+      D3D11_TEXTURE2D_DESC td = {};
+      td.Width = UINT(g_tt_mf->Width()), td.Height = UINT(g_tt_mf->Height()), td.MipLevels = 1, td.ArraySize = 1;
+      td.Format = DXGI_FORMAT_B8G8R8A8_UNORM, td.SampleDesc.Count = 1;
+      td.Usage = D3D11_USAGE_DYNAMIC, td.BindFlags = D3D11_BIND_SHADER_RESOURCE, td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+      if (FAILED(g_dev->CreateTexture2D(&td, nullptr, &g_tt_tex)) || FAILED(g_dev->CreateShaderResourceView(g_tt_tex, nullptr, &g_tt_srv)))
+        CloseTitantron();
+      return;
+    }
+    Log("full preview: the titantron movie didn't open: " + Utf8(file) + " (" + Utf8(err) + "; " + why + ")");
     Bytes head;
     if (svrfmt::ReadFile(PathStr(fs::path(file)), head) && head.size() >= 3 && !std::memcmp(head.data(), "KB2", 3))
       g_tt_note = "A Bink 2 movie (WWE 2K15 and later):\nthe preview and the game play it\nonce it's converted (Other games\npage: Bink 2 tool).";
@@ -714,6 +732,17 @@ void OpenTitantron(const std::wstring& file) {
 
 // The titantron frame for `seconds` into the entrance (looped), decoded forward (back: from the start).
 void TitantronAt(double seconds) {
+  if (g_tt_mf && g_tt_tex) {
+    if (!g_tt_mf->FrameAt(seconds, g_tt_bgra)) return;
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (SUCCEEDED(g_ctx->Map(g_tt_tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+      const int w = g_tt_mf->Width(), h = g_tt_mf->Height();
+      for (int y = 0; y < h; ++y)
+        std::memcpy(static_cast<uint8_t*>(ms.pData) + size_t(y) * ms.RowPitch, &g_tt_bgra[size_t(y) * w * 4], size_t(w) * 4);
+      g_ctx->Unmap(g_tt_tex, 0);
+    }
+    return;
+  }
   if (!g_bink || !g_tt_tex) return;
   const int n = std::max(1, bink_frames(g_bink));
   const double ft = double(std::max<LONGLONG>(1, bink_frame_time(g_bink))) / 1e7;
@@ -783,6 +812,7 @@ void Apply(std::unique_ptr<Loaded> L) {
   if (g_cur->arena) editor::ViewArena(g_cur->arena.get(), "Practice arena", "");
   g_stage = StageGrid();
   if (g_cur->arena) BuildStageGrid(*g_cur->arena, g_stage);
+  g_tt_screen = g_cur->arena && g_cur->arena->FindTexture("tf_titan") != nullptr;
   editor::SetViewHint(false);
   editor::SetViewExtra([](ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float* view, const float* proj) {
     if (!g_cur) return;
@@ -965,6 +995,10 @@ void Draw() {
         editor::ClearViewCamera();
       }
       const ImVec2 at = ImGui::GetCursorScreenPos();
+      // the titantron on the arena's screen (its tf_titan texture), else in a corner
+      const bool tt = g_titantron_on && (g_bink || g_tt_mf) && g_tt_srv;
+      if (tt) TitantronAt(g_key / 30.0);
+      editor::SetTextureOverride("tf_titan", tt && g_tt_screen ? g_tt_srv : nullptr);
       if (L.arena) {
         editor::DrawView(w, h);
       } else {
@@ -975,16 +1009,16 @@ void Draw() {
       if (!char_preview::ModelReady() && s.slot != 0)
         dl->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(230, 230, 235, 230), "Loading the superstar...");
       if (s.slot == 0) dl->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(230, 230, 235, 200), "The intro (the superstar comes out after it)");
-      // the titantron, in a corner (the practice arena has no screen)
+      // the titantron in a corner where the arena has no screen
       if (g_titantron_on && !g_tt_note.empty()) {  // (one that can't play: why)
         const ImVec2 ts = ImGui::CalcTextSize(g_tt_note.c_str());
         const ImVec2 a(at.x + w - ts.x - 22 * g_scale, at.y + 10 * g_scale), b(at.x + w - 10 * g_scale, a.y + ts.y + 12 * g_scale);
         dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 200));
         dl->AddText(ImVec2(a.x + 6 * g_scale, a.y + 6 * g_scale), IM_COL32(230, 200, 140, 255), g_tt_note.c_str());
       }
-      if (g_titantron_on && g_bink && g_tt_srv) {
-        TitantronAt(g_key / 30.0);
-        const float tw = std::min(w * 0.24f, 240 * g_scale), th = tw * float(bink_height(g_bink)) / float(std::max(1, bink_width(g_bink)));
+      if (tt && !g_tt_screen) {
+        const int vw = g_bink ? bink_width(g_bink) : g_tt_mf->Width(), vh = g_bink ? bink_height(g_bink) : g_tt_mf->Height();
+        const float tw = std::min(w * 0.24f, 240 * g_scale), th = tw * float(vh) / float(std::max(1, vw));
         const ImVec2 a(at.x + w - tw - 10 * g_scale, at.y + 10 * g_scale), b(a.x + tw, a.y + th);
         dl->AddRectFilled(ImVec2(a.x - 3, a.y - 3), ImVec2(b.x + 3, b.y + 3), IM_COL32(0, 0, 0, 200));
         dl->AddImage(ImTextureID(reinterpret_cast<uintptr_t>(g_tt_srv)), a, b);

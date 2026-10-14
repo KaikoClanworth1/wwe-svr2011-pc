@@ -54,6 +54,9 @@ void ClearView();
 // until ClearViewCamera. The projection's depth range should be 1 .. 5000 (the editor's).
 void SetViewCamera(const float view[16], const float proj[16]);
 void ClearViewCamera();
+// An arena texture drawn with another picture (the Full preview: the titantron movie on the screen's tf_titan);
+// nullptr puts the arena's own back. The caller keeps the view alive while it's set.
+void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv);
 // Drawn after the view's scene into the same target and depth (w x h), with the camera used: the Full preview's
 // wrestler. Empty: none.
 using ViewExtraFn = std::function<void(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h,

@@ -435,7 +435,10 @@ void ResizeTarget(int w, int h) {
   depth->Release();
 }
 
+std::map<std::string, ID3D11ShaderResourceView*> g_tex_override;  // (SetTextureOverride: the Full preview's titantron)
+
 ID3D11ShaderResourceView* TextureFor(const std::string& name) {
+  if (auto o = g_tex_override.find(name); o != g_tex_override.end() && o->second) return o->second;
   if (name.empty()) return g_white;
   auto it = g_tex.find(name);
   if (it != g_tex.end()) return it->second ? it->second : g_white;
@@ -2115,6 +2118,10 @@ void SetViewCamera(const float view[16], const float proj[16]) {
   g_vcam_set = true;
 }
 void ClearViewCamera() { g_vcam_set = false; }
+void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv) {
+  if (srv) g_tex_override[name] = srv;
+  else g_tex_override.erase(name);
+}
 void SetViewExtra(ViewExtraFn fn) { g_view_extra = std::move(fn); }
 void SetViewHint(bool on) { g_view_hint = on; }
 
