@@ -1561,6 +1561,7 @@ float g_frame_lo[3], g_frame_hi[3];  // the bounds gathered over the slots skinn
 float g_height_scale = 1;            // the model's (slot 0) size from its feet
 bool g_scale_at_root = false;        // (the Full preview: scaled about the root's x / z, not the origin - it walks far)
 float g_pivot[2] = {0, 0};           // (that x / z, game coordinates: the last Skin's root)
+float g_pivot_y = 0;                 // (and the height it's scaled from: the lowest foot bone - view y, up)
 float g_feet = 0, g_feet_next = 1e30f, g_top_next = -1e30f, g_tall = 0;  // slot 0's lowest / highest y (view, unscaled)
 // the floor under a motion (view y): its lowest bone over the whole motion, less a sole - in-ring motions
 // (finishers) are keyed on the ring canvas, above the arena floor (0) the stances and taunts stand on
@@ -1574,8 +1575,20 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
   const bool frame = g_frame;
   const bool model = &sl == &g_slots[0];
   const float s = model ? g_height_scale : 1.0f;
-  float cx = 0, cz = 0;  // (the scale's x / z pivot)
-  if (model && g_scale_at_root && !pose.empty()) cx = pose[0].t.x, cz = pose[0].t.z, g_pivot[0] = cx, g_pivot[1] = cz;
+  float cx = 0, cz = 0, fy = g_feet;  // (the scale's pivot: x / z, and the height in view y)
+  if (model && g_scale_at_root && !pose.empty()) {
+    // (the Full preview: about the root's x / z and the feet as posed now - the last frame's lowest point isn't kept
+    // there, so the size went from the entrance frame's 0 and sank a big superstar 1.4 into the floor outside the
+    // ring, measured against the game's bones)
+    cx = pose[0].t.x, cz = pose[0].t.z, g_pivot[0] = cx, g_pivot[1] = cz;
+    float low = -1e30f;
+    for (size_t i = 0; i < pose.size() && i < sl.ch->bones.size(); ++i) {
+      const std::string& n = sl.ch->bones[i].name;
+      if (n.find("ashi") != std::string::npos || n.find("tsumasaki") != std::string::npos) low = std::max(low, pose[i].t.y);
+    }
+    if (low > -1e29f) fy = -low;
+    g_pivot_y = fy;
+  }
   for (size_t m = 0; m < sl.gpu.size(); ++m) {
     const PMesh& pm = sl.ch->meshes[m];
     ID3D11Buffer* vb = sl.gpu[m].vb;
@@ -1598,7 +1611,7 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
       if (!pm.tan.empty())
         for (int j = 0; j < 4; ++j)
           if (f.w[j] > 0) tg = tg + Rotate(skin[size_t(f.node[j])], pm.tan[k]) * f.w[j];
-      out[k] = {{cx + (p.x - cx) * s, g_feet + (-p.y - g_feet) * s, -(cz + (p.z - cz) * s)}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}, {tg.x, -tg.y, -tg.z}};
+      out[k] = {{cx + (p.x - cx) * s, fy + (-p.y - fy) * s, -(cz + (p.z - cz) * s)}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}, {tg.x, -tg.y, -tg.z}};
       if (frame)
         for (int c = 0; c < 3; ++c) lo[c] = std::min(lo[c], out[k].pos[c]), hi[c] = std::max(hi[c], out[k].pos[c]);
     }
@@ -2271,11 +2284,46 @@ std::shared_ptr<Clip> DecodeClip(const std::vector<uint8_t>& bank, int id, int x
 int ClipKeys(const Clip& c) { return c.m.keys; }
 bool ClipHasFingers(const Clip& c) { return c.m.fingers[0] || c.m.fingers[1]; }
 
+std::wstring g_test_pose_dump;  // (test aid --pose-dump-motion <YMKs bank file>,<id>,<x>,<out>)
+
 bool ModelReady() {
   {  // (a model loaded in the background is uploaded here too: no page preview may be drawing)
     std::lock_guard lock(g_mutex);
     Slot& sl = g_slots[0];
     if (sl.pending) Upload(sl, std::move(sl.pending)), sl.pending.reset();
+  }
+  if (!g_test_pose_dump.empty() && g_slots[0].ch) {  // (the motion posed on the model, every key: "K key B name x y z ...")
+    std::vector<std::wstring> f;
+    for (size_t a = 0, b; a <= g_test_pose_dump.size(); a = b + 1) {
+      b = g_test_pose_dump.find(L',', a);
+      if (b == std::wstring::npos) b = g_test_pose_dump.size();
+      f.push_back(g_test_pose_dump.substr(a, b - a));
+    }
+    g_test_pose_dump.clear();
+    Bytes bank;
+    std::string err;
+    std::shared_ptr<Clip> clip;
+    if (FILE* in = f.size() == 4 ? _wfopen(f[0].c_str(), L"rb") : nullptr) {
+      std::fseek(in, 0, SEEK_END);
+      bank.resize(size_t(std::ftell(in)));
+      std::fseek(in, 0, SEEK_SET);
+      bank.resize(std::fread(bank.data(), 1, bank.size(), in));
+      std::fclose(in);
+      clip = DecodeClip(bank, _wtoi(f[1].c_str()), _wtoi(f[2].c_str()), &err);
+    }
+    if (!clip) {
+      mm::Log("pose dump: the motion didn't decode (" + err + ")");
+    } else if (FILE* o = _wfopen(f[3].c_str(), L"w")) {
+      const Character& ch = *g_slots[0].ch;
+      for (int k = 0; k < std::max(1, clip->m.keys); ++k) {
+        const auto w = Pose(ch, clip->m, float(k));
+        std::fprintf(o, "K %d B", k);
+        for (size_t i = 0; i < w.size(); ++i) std::fprintf(o, " %s %.4f %.4f %.4f", ch.bones[i].name.c_str(), w[i].t.x, w[i].t.y, w[i].t.z);
+        std::fputc('\n', o);
+      }
+      std::fclose(o);
+      mm::Log("pose dump: " + std::to_string(clip->m.keys) + " keys written");
+    }
   }
   return g_slots[0].ch && !g_slots[0].gpu.empty() && g_vs;
 }
@@ -2373,7 +2421,8 @@ void ClearProps() {
 // a posed point of the entrant (game coordinates) where it's drawn: the model's scale applied as Skin does
 void ScaledPoint(float x, float y, float z, float out[3]) {
   const float s = g_height_scale, cx = g_scale_at_root ? g_pivot[0] : 0, cz = g_scale_at_root ? g_pivot[1] : 0;
-  out[0] = cx + (x - cx) * s, out[1] = -(g_feet + (-y - g_feet) * s), out[2] = cz + (z - cz) * s;
+  const float fy = g_scale_at_root ? g_pivot_y : g_feet;
+  out[0] = cx + (x - cx) * s, out[1] = -(fy + (-y - fy) * s), out[2] = cz + (z - cz) * s;
 }
 
 bool EntrantBone(const char* name, float r[9], float t[3]) {

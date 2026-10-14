@@ -83,7 +83,10 @@ struct Clip;
 std::shared_ptr<Clip> DecodeClip(const std::vector<uint8_t>& bank, int id, int x, std::string* err = nullptr);
 int ClipKeys(const Clip& clip);
 bool ClipHasFingers(const Clip& clip);
-bool ModelReady();  // the model is loaded and on the GPU (uploads a model loaded in the background)
+bool ModelReady();
+// Test aid --pose-dump-motion <YMKs bank file>,<id>,<x>,<out>: once the model is loaded (ModelReady), that motion posed
+// on it, every key: "K key B name x y z ..." (model space, unscaled).
+extern std::wstring g_test_pose_dump;  // the model is loaded and on the GPU (uploads a model loaded in the background)
 // Per key of the clip, on the model: the root's x / z and the lowest foot's y (game coordinates, y down).
 struct TraceKey {
   float x = 0, z = 0, foot = -1e30f;

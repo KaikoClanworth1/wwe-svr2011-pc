@@ -2518,6 +2518,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--full-preview-song") && more) full_preview::TestSong(argv[++i]);
     else if (!wcscmp(argv[i], L"--full-preview-movie") && more) full_preview::TestMovie(argv[++i]);
     else if (!wcscmp(argv[i], L"--full-preview-dump") && more) full_preview::TestDump(argv[++i]);
+    else if (!wcscmp(argv[i], L"--pose-dump-motion") && more) char_preview::g_test_pose_dump = argv[++i];
     else if (!wcscmp(argv[i], L"--full-preview-cameras") && more) full_preview::TestCameras(argv[++i]);
     else if (!wcscmp(argv[i], L"--full-preview-view") && more) full_preview::TestView(argv[++i]);
     else if (!wcscmp(argv[i], L"--moves-put") && more) moves_page::TestPut(argv[++i]), g_page = PageId::kMoves;

@@ -651,6 +651,25 @@ void Ground(Seg& s, const StageGrid& g) {
     for (int j = std::max(0, k - ease); j <= std::min(n - 1, k + ease); ++j) sum += raw[size_t(j)], ++c;
     s.lift[size_t(k)] = sum / float(std::max(1, c));
   }
+  // The feet on what they walk on, as the game keeps them (measured: Big Show 125's bones in game - his lowest toe bone
+  // 0.08-0.19 above the stage, the ramp, the floor and the mat; the keys alone left them 1.2 below everything outside
+  // the ring): where the lowest foot bone would be under the surface (the mat inside the apron, else the floor / stage
+  // / ramp) the entrant goes up until it's 0.17 above it - eased as the lift, never down.
+  std::vector<float> up(static_cast<size_t>(n), 0.0f);
+  for (int k = 0; k < n; ++k) {
+    const auto& t = tr[size_t(k)];
+    if (t.foot < -1e29f) continue;
+    const bool ring = std::fabs(t.x) <= kApronOut && std::fabs(t.z) <= kApronOut;
+    const float surface = ring ? kMatY : g.At(t.x, t.z);   // (game coordinates, y down)
+    const float toe = t.foot + kSceneY + s.lift[size_t(k)];
+    up[size_t(k)] = std::max(0.0f, toe - (surface - 0.17f));
+  }
+  for (int k = 0; k < n; ++k) {
+    float sum = 0;
+    int c = 0;
+    for (int j = std::max(0, k - ease); j <= std::min(n - 1, k + ease); ++j) sum += up[size_t(j)], ++c;
+    s.lift[size_t(k)] -= sum / float(std::max(1, c));
+  }
 }
 
 StageGrid g_stage;  // (the loaded arena's)

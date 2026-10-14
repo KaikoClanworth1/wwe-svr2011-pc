@@ -230,6 +230,13 @@ void PoseDump(uint8_t* base, uint32_t ch, uint32_t pass) {
     s += b;
   }
   Tail(base, ch, fighter, s);
+  if (std::getenv("SVR2011_TEST_BONE_DUMP")) {  // (the posed bones too: ch+0x670, as the entrance lines' W)
+    s += " W";
+    for (uint32_t k = 0; k < 43; ++k) {
+      const uint8_t* m = base + ch + 0x670 + 64 * k;
+      Vec(s, m, 3), Vec(s, m + 16, 3), Vec(s, m + 32, 3), Vec(s, m + 48, 3);
+    }
+  }
   s += '\n';
   {
     std::lock_guard lock(g_mutex);
@@ -314,7 +321,7 @@ void CameraDump(uint8_t* base, uint32_t cam) {
       std::snprintf(b, sizeof b, "E %u P %u", g_tick, p);
       s += b;
       Tail(base, g_seen[p].ch, g_seen[p].fighter, s, false);
-      if (p == 0 && std::getenv("SVR2011_TEST_BONE_DUMP")) {  // (the posed bones, found by the bone scan: ch+0x670
+      if (std::getenv("SVR2011_TEST_BONE_DUMP")) {  // (the posed bones, found by the bone scan: ch+0x670
         // and ch+0x1140, 43 4 x 4 world matrices each - rotation rows 3 x 3 and the translation row)
         for (uint32_t set : {0x670u, 0x1140u}) {
           s += set == 0x670u ? " W" : " W2";
