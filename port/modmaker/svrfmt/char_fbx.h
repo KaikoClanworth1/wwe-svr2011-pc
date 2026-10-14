@@ -50,7 +50,17 @@ struct FbxImportReport {
 };
 // The user's choices per mesh (by FbxMeshInfo::name): on / off (default: the visible ones), its kind ("skin", "eye",
 // "hair", "lash"; default by its name), a picture file in place of its material's.
+// A mesh's material for svr11_build ("material" in build.json): every field optional (-1 / empty: the builder's own).
+struct FbxMaterial {
+  float specular = -1;          // g_fSpecularLev
+  std::string normal;           // a PNG normal map
+  bool has_tint = false;
+  float tint[3] = {1, 1, 1};    // into g_f4MatDifCol
+  int cutout = -1, double_sided = -1;
+  std::string specular_alpha;   // "texture" | "flat" | "brightness"
+};
 struct FbxImportOptions {
+  std::map<std::string, FbxMaterial> material;  // by mesh name (as `include`)
   std::map<std::string, bool> include;
   std::map<std::string, std::string> kind, picture;
   int max_vertices = 10500;  // all meshes together (the game's budget; 0 = as they are)

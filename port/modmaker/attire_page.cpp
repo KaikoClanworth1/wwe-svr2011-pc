@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "model_materials.h"
 #include "mod_check.h"
 #include "char_preview.h"
 #include "pac_attires.h"
@@ -29,6 +30,7 @@ struct AttireProject {
   int from = 1;           // which of its attires (attire.pac carries only that one, as attire 1)
   int entrance = -1;      // entrance= (-1: the superstar's)
   std::string gear;       // entrance gear: "" as the model has it, "off" left out, "from<k>" the model's attire k's
+  std::map<MatKey, MatEdit> mats;  // the material panel's edits (keyed by the model pac's attire shown, gear)
 };
 // The editor of the attires inside a pac (a copy: saved elsewhere, the game's pac folder never written)
 struct {
@@ -80,6 +82,14 @@ bool Build(std::vector<ZipEntry>& files) {
     Status("Pick the superstar and a character model pac first.");
     return false;
   }
+  for (int a = 1; a <= 9; ++a)
+    for (const bool gear : {false, true}) {
+      std::map<std::pair<uint32_t, int>, MatEdit> ed;
+      for (const auto& [k, e] : g_at.mats)
+        if (std::get<0>(k) == a && std::get<1>(k) == gear) ed[{std::get<2>(k), std::get<3>(k)}] = e;
+      std::string err;
+      if (!ed.empty() && !PatchMaterials(pac, a, gear, ed, &err)) Log("materials, attire " + std::to_string(a) + ": " + err);
+    }
   if (g_at.from > 1 || !g_at.gear.empty()) {  // (another attire of the pac: only it, as attire 1; the gear choice)
     Epac e;
     std::string err;
@@ -371,6 +381,22 @@ void Draw() {
   ImGui::Spacing();
   DrawProblems(problems);
   ImGui::Spacing();
+  {
+    const int from_k = g_at.gear.rfind("from", 0) == 0 ? std::atoi(g_at.gear.c_str() + 4) : 0;
+    const bool gear = char_preview::Gear() && char_preview::HasGear();
+    const int shown = gear && from_k ? from_k : g_at.from;
+    int n = 0;
+    for (const auto& [k, e] : g_at.mats) n += !e.Empty();
+    const std::string head = "Materials" + (n ? " (" + std::to_string(n) + " changed)" : std::string()) + "###materials";
+    if (ImGui::CollapsingHeader(head.c_str())) {
+      if (MaterialPanel(g_at.model, shown, gear, shown, g_at.mats, false)) Touch();
+    } else {
+      std::map<std::pair<uint32_t, int>, MatEdit> preview;
+      for (const auto& [k, e] : g_at.mats)
+        if (std::get<0>(k) == shown && std::get<1>(k) == gear) preview[{std::get<2>(k), std::get<3>(k)}] = e;
+      char_preview::SetMaterialPreview(preview);
+    }
+  }
   if (ImGui::CollapsingHeader("Attires inside a model pac")) Editor();
   ImGui::EndChild();
   ImGui::SameLine();
@@ -524,7 +550,7 @@ void RunEditorTest() {
 std::string StateText() {
   return "star=" + std::to_string(g_at.star) + "\nslot=" + std::to_string(g_at.slot) + "\nname=" + g_at.name +
          "\nmodel=" + Utf8(g_at.model) + "\nentrance=" + std::to_string(g_at.entrance) + "\nauthor=" + g_at.author +
-         "\nversion=" + g_at.version + "\ngear=" + g_at.gear;
+         "\nversion=" + g_at.version + "\ngear=" + g_at.gear + "\nmats=" + MaterialsText(g_at.mats);
 }
 
 void Reset() { g_at = AttireProject(); }
@@ -539,6 +565,11 @@ void WriteProject(ProjectOut& out) {
   out.Key("gear", g_at.gear);
   if (g_at.from > 1) out.Key("from_attire", g_at.from);
   out.File("model", g_at.model, "attire/model");
+  {
+    std::string t = MaterialsText(g_at.mats);  // (one line: entries apart by tabs)
+    std::replace(t.begin(), t.end(), '\n', '\t');
+    out.Key("materials", t);
+  }
 }
 
 bool Read(const ProjectIn& in, bool mod) {
@@ -549,6 +580,11 @@ bool Read(const ProjectIn& in, bool mod) {
   std::snprintf(g_at.author, sizeof g_at.author, "%s", in.Get("author").c_str());
   std::snprintf(g_at.version, sizeof g_at.version, "%s", in.Get("version").c_str());
   g_at.gear = in.Get("gear");
+  {
+    std::string t = in.Get("materials");
+    std::replace(t.begin(), t.end(), '\t', '\n');
+    g_at.mats = MaterialsFromText(t);
+  }
   if (!g_at.version[0]) std::snprintf(g_at.version, sizeof g_at.version, "1.0");
   g_at.entrance = in.GetInt("entrance", -1);
   g_at.from = mod ? 1 : std::clamp(in.GetInt("from_attire", 1), 1, 9);  // (a mod's attire.pac holds only its attire)

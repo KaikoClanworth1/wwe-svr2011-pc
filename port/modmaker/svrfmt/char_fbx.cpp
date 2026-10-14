@@ -1569,7 +1569,20 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     j += "],\n    \"triangles\": [";
     for (size_t k = 0; k < m.tris.size(); ++k)
       j += std::string(k ? "," : "") + "[" + std::to_string(m.tris[k][0]) + "," + std::to_string(m.tris[k][1]) + "," + std::to_string(m.tris[k][2]) + "]";
-    j += "]}";
+    j += "]";
+    if (const auto mt = opts.material.find(m.name); mt != opts.material.end()) {  // (the material panel's choices)
+      const FbxMaterial& f = mt->second;
+      std::string mj;
+      auto field = [&](const std::string& kv) { mj += (mj.empty() ? "" : ", ") + kv; };
+      if (f.specular >= 0) field("\"specular\": " + Num(f.specular));
+      if (!f.normal.empty()) field("\"normal\": " + JsonStr(f.normal));
+      if (f.has_tint) field("\"tint\": [" + Num(f.tint[0]) + ", " + Num(f.tint[1]) + ", " + Num(f.tint[2]) + "]");
+      if (f.cutout >= 0) field(std::string("\"cutout\": ") + (f.cutout ? "true" : "false"));
+      if (f.double_sided >= 0) field(std::string("\"double_sided\": ") + (f.double_sided ? "true" : "false"));
+      if (!f.specular_alpha.empty()) field("\"specular_alpha\": " + JsonStr(f.specular_alpha));
+      if (!mj.empty()) j += ",\n    \"material\": {" + mj + "}";
+    }
+    j += "}";
     rep.mesh_lines.push_back(m.name + " (" + m.kind + "): " + std::to_string(m.pos.size()) + " vertices, " + std::to_string(m.tris.size()) + " triangles");
   }
   j += opts.gear_json ? "]}\n" : "]}]}\n";

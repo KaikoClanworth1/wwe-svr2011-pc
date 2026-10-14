@@ -1121,6 +1121,15 @@ FbxImportOptions FbxOptions() {
   FbxImportOptions opts;
   for (const auto& [k, v] : g_star.fbx_on) opts.include[k] = v == "1";
   opts.kind = g_star.fbx_kind, opts.picture = g_star.fbx_pic;
+  for (const auto& [name, e] : g_star.fbx_mat) {  // (the builder's per-mesh material)
+    svrfmt::FbxMaterial f;
+    if (e.has_spec) f.specular = e.spec;
+    if (e.normal == 1) f.normal = Utf8(e.normal_file);
+    if (e.has_tint) f.has_tint = true, std::copy(e.tint, e.tint + 3, f.tint);
+    f.cutout = e.cutout, f.double_sided = e.two_sided;
+    if (e.spec_alpha) f.specular_alpha = e.spec_alpha == 1 ? "texture" : e.spec_alpha == 2 ? "flat" : "brightness";
+    opts.material[name] = f;
+  }
   return opts;
 }
 void IssueList(const std::vector<FbxIssue>& list) {
@@ -1270,6 +1279,7 @@ void MakeFromFbx() {
   });
 }
 
+bool FbxMaterialCell(const std::string& mesh, bool simple);
 void FbxRows(bool simple) {
   FileRow(simple ? "Pick an FBX file..." : "Model from an FBX (optional)...", g_star.fbx, "none", kFbxFilter, 1,
           "A rigged model (Unity / VRChat, Mixamo, Blender Rigify, 3ds Max Biped, UE Mannequin and rigs named like them):\n"
@@ -1351,13 +1361,14 @@ void FbxRows(bool simple) {
   if (g_fbx_open_once) ImGui::SetScrollHereY(0.3f), ImGui::SetNextItemOpen(true), g_fbx_open_once = false;  // (test aid)
   if (ImGui::TreeNode("meshes", "%s", simple ? "Clothes and parts" : "Meshes")) {
     ImGui::TextDisabled("(hidden ones - an avatar's toggled-off clothes - start off)");
-    if (ImGui::BeginTable("fbxmeshes", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+    if (ImGui::BeginTable("fbxmeshes", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
                           ImVec2(0, std::min(260.0f, 34.0f + 30.0f * float(r.meshes.size())) * g_scale))) {
       ImGui::TableSetupScrollFreeze(0, 1);
       ImGui::TableSetupColumn("Mesh");
       ImGui::TableSetupColumn("Triangles", ImGuiTableColumnFlags_WidthFixed, 80 * g_scale);
       ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed, 110 * g_scale);
       ImGui::TableSetupColumn("Picture");
+      ImGui::TableSetupColumn(simple ? "Shine, bumps, colour" : "Material");
       ImGui::TableHeadersRow();
       static const char* kKinds[] = {"skin", "eye", "hair", "lash"};
       for (size_t i = 0; i < r.meshes.size(); ++i) {
@@ -1402,6 +1413,8 @@ void FbxRows(bool simple) {
             if (!f.empty()) g_star.fbx_pic[m.name] = Utf8(f), Touch();
           }
         }
+        ImGui::TableNextColumn();
+        if (FbxMaterialCell(m.name, simple)) Touch();
         ImGui::PopID();
       }
       ImGui::EndTable();
@@ -1612,6 +1625,57 @@ void GearFromFbx(const std::wstring& target, int attire, const std::wstring& fbx
 
 void ApplyTestMaterials();
 extern bool g_test_open_mats;
+// The FBX table's material cell: a button opening the mesh's builder material (svr11_build "material").
+bool FbxMaterialCell(const std::string& mesh, bool simple) {
+  bool ch = false;
+  MatEdit e = g_star.fbx_mat.count(mesh) ? g_star.fbx_mat[mesh] : MatEdit();
+  if (ImGui::SmallButton(e.Empty() ? "as built##mat" : "changed##mat")) ImGui::OpenPopup("fbxmat");
+  if (!e.Empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("Applied when the model is made (Make the model from the FBX).");
+  ImGui::SetNextWindowSize(ImVec2(420 * g_scale, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopup("fbxmat")) {
+    ImGui::TextUnformatted(mesh.c_str());
+    ImGui::TextDisabled("Used when the model is made from the FBX.");
+    bool hs = e.has_spec;
+    if (ImGui::Checkbox(simple ? "My own shine" : "Shine (specular level)", &hs)) e.has_spec = hs, ch = true;
+    if (e.has_spec) {
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(160 * g_scale);
+      if (ImGui::SliderFloat("##spec", &e.spec, 0, 4, "%.2f", ImGuiSliderFlags_Logarithmic)) ch = true;
+    }
+    static const char* kAlpha[] = {"as the builder does", "the picture's alpha", "even (flat)", "the picture's brightness"};
+    ImGui::SetNextItemWidth(200 * g_scale);
+    if (ImGui::Combo(simple ? "Where it shines" : "Shine pattern", &e.spec_alpha, kAlpha, 4)) ch = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Which places shine more: the colour picture's alpha, the same everywhere, or its bright places (not for see-through parts: there the alpha is the see-through).");
+    ImGui::TextUnformatted(simple ? "Bumps:" : "Normal map:");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", e.normal == 1 ? Utf8(fs::path(e.normal_file).filename().wstring()).c_str() : "the FBX's");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Pick...")) {
+      static const COMDLG_FILTERSPEC kPng[1] = {{L"PNG pictures", L"*.png"}};
+      const std::wstring f = PickFile(false, L"A normal map (PNG)", kPng, 1);
+      if (!f.empty()) e.normal = 1, e.normal_file = f, ch = true;
+    }
+    if (e.normal) ImGui::SameLine(), (ImGui::SmallButton("x##n") ? (e.normal = 0, e.normal_file.clear(), ch = true) : false);
+    bool ht = e.has_tint;
+    if (ImGui::Checkbox(simple ? "Colour it" : "Colour (multiplier)", &ht)) e.has_tint = ht, ch = true;
+    if (e.has_tint) ImGui::SameLine(), ch |= ImGui::ColorEdit3("##tint", e.tint, ImGuiColorEditFlags_NoInputs);
+    static const char* kTri[] = {"as the builder does", "no", "yes"};
+    int cut = e.cutout + 1, both = e.two_sided + 1;
+    ImGui::SetNextItemWidth(160 * g_scale);
+    if (ImGui::Combo(simple ? "See-through where clear" : "See-through cut-out", &cut, kTri, 3)) e.cutout = cut - 1, ch = true;
+    ImGui::SetNextItemWidth(160 * g_scale);
+    if (ImGui::Combo(simple ? "Both sides" : "Double-sided", &both, kTri, 3)) e.two_sided = both - 1, ch = true;
+    if (!e.Empty() && ImGui::Button("As built")) e = MatEdit(), ch = true;
+    ImGui::EndPopup();
+  }
+  if (ch) {
+    if (e.Empty()) g_star.fbx_mat.erase(mesh);
+    else g_star.fbx_mat[mesh] = e;
+  }
+  return ch;
+}
+
 void MaterialsSection(bool simple) {
   if (g_star.model.empty()) return;
   ApplyTestMaterials();
@@ -2346,7 +2410,7 @@ std::string StateText() {
   for (int a : g_star.abilities) s += "," + std::to_string(a);
   for (const auto& [a, op] : g_star.gear) s += "\ngear" + std::to_string(a) + "=" + op;
   s += "\nfbx=" + Utf8(g_star.fbx) + "\nfbx_map=" + FbxMapText() + "\nfbx_on=" + PairsText(g_star.fbx_on) + "\nfbx_kind=" +
-       PairsText(g_star.fbx_kind) + "\nfbx_pic=" + PairsText(g_star.fbx_pic) + "\nsimple=" + std::to_string(g_star.simple);
+       PairsText(g_star.fbx_kind) + "\nfbx_pic=" + PairsText(g_star.fbx_pic) + "\nfbx_mat=" + std::to_string(g_star.fbx_mat.size()) + "\nsimple=" + std::to_string(g_star.simple);
   return s;
 }
 
@@ -2375,6 +2439,15 @@ void WriteProject(ProjectOut& out) {
   out.Key("fbx_on", PairsText(g_star.fbx_on));
   out.Key("fbx_kind", PairsText(g_star.fbx_kind));
   out.Key("fbx_pic", PairsText(g_star.fbx_pic));
+  {
+    std::string t;
+    for (const auto& [name, e] : g_star.fbx_mat) {
+      std::string line = MaterialsText({{MatKey{1, false, 0u, 0}, e}});
+      if (!line.empty() && line.back() == '\n') line.pop_back();
+      t += (t.empty() ? "" : "\t") + name + "\x1f" + line;
+    }
+    out.Key("fbx_mat", t);
+  }
   {
     std::string t = MaterialsText(g_star.mats);  // (one line: entries apart by tabs)
     std::replace(t.begin(), t.end(), '\n', '\t');
@@ -2491,6 +2564,19 @@ bool Read(const ProjectIn& in, bool mod) {
   ParsePairs(in.Get("fbx_on"), g_star.fbx_on);
   ParsePairs(in.Get("fbx_kind"), g_star.fbx_kind);
   ParsePairs(in.Get("fbx_pic"), g_star.fbx_pic);
+  {
+    const std::string t = in.Get("fbx_mat");
+    for (size_t at = 0; at < t.size();) {
+      size_t e = t.find('\t', at);
+      if (e == std::string::npos) e = t.size();
+      const std::string item = t.substr(at, e - at);
+      at = e + 1;
+      const size_t sep = item.find('\x1f');
+      if (sep == std::string::npos) continue;
+      const auto m = MaterialsFromText(item.substr(sep + 1));
+      if (!m.empty()) g_star.fbx_mat[item.substr(0, sep)] = m.begin()->second;
+    }
+  }
   if (mod && g_star.model.empty() && in.Find("ch.pac")) g_star.model = in.Extract("ch.pac");
   g_star.moves = file("moves", "moves.txt");
   if (mod && g_star.moves.empty() && !in.Get("moves").empty() && in.Find(in.Get("moves"))) g_star.moves = in.Extract(in.Get("moves"));

@@ -67,6 +67,7 @@ struct StarProject {
   // entrance gear per attire (1-4): "off" leaves it out, "from<k>" gives it the model's attire k's gear
   std::map<int, std::string> gear;
   std::map<MatKey, MatEdit> mats;  // the material panel's edits: (attire 1-4, gear, model id, mesh) -> edit
+  std::map<std::string, MatEdit> fbx_mat;  // FBX import: a mesh's material for the builder (by mesh name)
 };
 extern StarProject g_star;
 // The overall rating as the game works it out (sub_828B7950, used by the select screen's OVERALL list and ~28 more

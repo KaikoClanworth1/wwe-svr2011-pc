@@ -2367,7 +2367,39 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       const std::wstring v = argv[++i];
       const size_t a = v.find(L','), b = v.find(L',', a + 1);
       if (a == std::wstring::npos || b == std::wstring::npos) return 1;
-      const std::string fbx = Utf8(v.substr(0, a)), tpl = Utf8(v.substr(a + 1, b - a - 1)), dir = Utf8(v.substr(b + 1));
+      const std::string fbx = Utf8(v.substr(0, a)), tpl = Utf8(v.substr(a + 1, b - a - 1));
+      std::string dir = Utf8(v.substr(b + 1));
+      // (test: "<dir>|<mesh>=spec:1.5&tint:1,0.3,0.3&cut:1&both:1&alpha:flat&normal:<png>;..." - the builder's per-mesh material)
+      svrfmt::FbxImportOptions mopts;
+      if (const size_t bar = dir.find('|'); bar != std::string::npos) {
+        const std::string spec = dir.substr(bar + 1);
+        dir.resize(bar);
+        for (size_t at = 0; at < spec.size();) {
+          size_t e = spec.find(';', at);
+          if (e == std::string::npos) e = spec.size();
+          const std::string item = spec.substr(at, e - at);
+          at = e + 1;
+          const size_t eq = item.find('=');
+          if (eq == std::string::npos) continue;
+          svrfmt::FbxMaterial& f = mopts.material[item.substr(0, eq)];
+          std::string rest = item.substr(eq + 1);
+          for (size_t p = 0; p <= rest.size();) {
+            size_t q = rest.find('&', p);
+            if (q == std::string::npos) q = rest.size();
+            const std::string kv = rest.substr(p, q - p);
+            p = q + 1;
+            const size_t c = kv.find(':');
+            if (c == std::string::npos) continue;
+            const std::string k = kv.substr(0, c), val = kv.substr(c + 1);
+            if (k == "spec") f.specular = float(std::atof(val.c_str()));
+            if (k == "tint") f.has_tint = std::sscanf(val.c_str(), "%f,%f,%f", &f.tint[0], &f.tint[1], &f.tint[2]) == 3;
+            if (k == "cut") f.cutout = std::atoi(val.c_str());
+            if (k == "both") f.double_sided = std::atoi(val.c_str());
+            if (k == "alpha") f.specular_alpha = val;
+            if (k == "normal") f.normal = val;
+          }
+        }
+      }
       std::vector<svrfmt::FbxBone> fb;
       std::string err, out;
       Bytes pac;
@@ -2376,7 +2408,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       if (svrfmt::ReadFbxSkeleton(fbx, fb, err) && ReadFile(tpl, pac)) {
         std::vector<RigBone> rb;
         for (const auto& k : fb) rb.push_back({k.name, k.parent});
-        ok = svrfmt::FbxToBuildInput(fbx, MapRig(rb), pac, tpl, dir, rep);
+        ok = svrfmt::FbxToBuildInput(fbx, MapRig(rb), pac, tpl, dir, rep, mopts);
       }
       char line[256];
       std::snprintf(line, sizeof line, "%s: %d meshes, %d vertices, %d triangles, %d textures (sheet %d), %d bones aimed (worst %.3f deg), %d 2011 bones, scale %.4f, height %.1f cm\n",
