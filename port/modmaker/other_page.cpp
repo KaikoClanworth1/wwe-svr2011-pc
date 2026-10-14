@@ -121,7 +121,11 @@ void Wwe13ArenaTab() {
     ImGui::Unindent();
   }
   ImGui::Spacing();
-  ImGui::BeginDisabled(g_w13_file.empty() || Busy());
+  const bool special = !g_w13_file.empty() && SpecialStage(Utf8(fs::path(g_w13_file).filename().wstring()));
+  if (special)
+    ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "bg60 and up in WWE '12 - 2K17 are backstage rooms and studio stages, not arenas: on an arena "
+                                                   "slot they show a white mat over a black void, or crash (bg78).");
+  ImGui::BeginDisabled(g_w13_file.empty() || Busy() || special);
   PushAccent();
   if (ImGui::Button("Convert and open on the Arena page", ImVec2(320 * g_scale, 0))) {
     Wwe13Options opt = g_w13;
@@ -136,7 +140,10 @@ void Wwe13ArenaTab() {
     const std::wstring file = g_w13_file;
     const int host = g_w13_host;
     const std::string name = g_w13_name;
-    RunInBackground([file, host, opt, name] {
+    std::string source = Utf8(fs::path(file).stem().wstring());  // ("Arenas_wwe2k16_bg01" from the Port page, or "bg01")
+    if (source.rfind("Arenas_", 0) == 0) source = source.substr(7);
+    std::replace(source.begin(), source.end(), '_', ' ');
+    RunInBackground([file, host, opt, name, source] {
       Progress("Reading the WWE '13 arena ...");
       Bytes w13, hostpac;
       if (!ReadFile(Utf8(file), w13)) { Status("Could not read " + Utf8(file)); return; }
@@ -152,7 +159,7 @@ void Wwe13ArenaTab() {
       std::snprintf(b, sizeof b, "Converted: %d models, %d meshes, %d entries (%d from the host, %d dropped, %d ring parts).",
                     rep.conv.models, rep.conv.meshes, rep.entries, rep.from_host, rep.dropped, rep.ring_parts);
       Status(b);
-      OnUiThread([out, host, name] { arena_page::SetArenaFromPac(out, host, name); });
+      OnUiThread([out, host, name, source] { arena_page::SetArenaFromPac(out, host, name, source); });
     });
   }
   PopAccent();

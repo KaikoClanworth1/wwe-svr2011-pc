@@ -584,7 +584,42 @@ def sym_pictures(disc, characters):
     return out
 
 
-GAMES = [SYM, Yukes]
+class JBI(Yukes):
+    """WWF SmackDown! Just Bring It: CH.PAC at the disc root, one model per id (its own character: names come
+    from the game's records), each with ONE texture - a 1024 x 128 TIM2 strip (entry 1) its UVs map straight
+    into; the model's texture names are labels only. Parts 6 / 7 (pads)."""
+
+    def __init__(self, disc):
+        if not disc.exists('CH.PAC') or disc.exists('PAC/CH.PAC'):
+            raise BadInput('not Just Bring It')
+        super().__init__(disc)
+
+    def characters(self):
+        if not hasattr(self, '_chars'):
+            self._chars = {i: {0: i} for i in sorted(self.entries) if self.shape(i)[0] >= self.GEAR_VERTS}
+        return self._chars
+
+    def groups(self):
+        return {(i, 0): [i] for i in self.entries}
+
+    def model(self, id_):
+        e = self.entry(id_)
+        if 2 not in e or e[2][:4] != b'YOBJ':
+            raise BadInput('%04x has no model' % id_)
+        body = read_yobj(e[2])
+        parts = [read_yobj(e[k]) for k in (6, 7) if k in e and e[k][:4] == b'YOBJ']
+        strip = tim2(e[1]) if 1 in e and e[1][:4] == b'TIM2' else None
+        names = set(body['textures']) | {t for p in parts for t in p['textures']}
+        return body, parts, ({n.lower(): strip for n in names} if strip is not None else {})
+
+    def gear(self, ch, at):
+        return []
+
+    def portraits(self, ch):
+        return {}
+
+
+GAMES = [JBI, SYM, Yukes]
 
 
 def open_game(path):
@@ -691,17 +726,27 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
         f = u32(mat, 0x24)
         return (not f & 0x02 and mixed) if old_materials else bool(f & 0x10)
 
-    def png(name, keep_alpha):
+    def spec_of(sub):
+        """the PS2 material's specular level (float +0x0C: 0.2 skin, 0.15 boots, 0.1 trunks, 0.05 laces) as 2011's
+        colour alpha; HCTP / SYM materials hold 1.0 there (not a level): the default"""
+        mat = sub.get('mat') or b''
+        if old_materials or len(mat) < 0x10:   # (JBI / SYM / HCTP: not a level - HCTP's 0.3-0.4 looked like plastic)
+            return SPECULAR
+        f = struct.unpack_from('<f', mat, 0x0C)[0]
+        return int(round(f * 255)) if 0.0 < f < 0.5 else SPECULAR
+
+    def png(name, keep_alpha, spec=SPECULAR):
         """-> a PS2 texture's png. 2011's skin shader reads the colour alpha as the specular level, its hair
         shader as opacity: a texture hair meshes use keeps its alpha; the others get a low specular level (PS2
         skin is matte; the builder's derived level looked like shiny plastic)."""
         img = tex.get(name.lower())
         if img is None:
             return None
-        fn = 'tex_%s_%s.png' % (tag, ''.join(c if c.isalnum() else '_' for c in name.lower()))
+        fn = 'tex_%s_%s%s.png' % (tag, ''.join(c if c.isalnum() else '_' for c in name.lower()), '_cut' if keep_alpha else '')
         rgba = img.copy()
         if not keep_alpha:
-            rgba[..., 3] = SPECULAR
+            rgba = bleed(rgba)   # (see-through texels a solid mesh still covers: their neighbours' colour, not white)
+            rgba[..., 3] = spec
         Image.fromarray(rgba, 'RGBA').save(os.path.join(out_dir, fn))
         return fn
 
@@ -759,16 +804,20 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
                     continue
                 kind = 'eye' if 'eye' in tname.lower() else 'hair' if cutout(sub) or (not old_materials and see_through(tname, uvs, tris)) else 'skin'
                 mesh = dict(name='%s_m%d_%d' % (src['name'] or tag, mi, si), kind=kind, positions=pos, normals=nrm,
-                            uvs=uvs, bones=bones, weights=wts, triangles=tris, _tex=tname)
+                            uvs=uvs, bones=bones, weights=wts, triangles=tris, _tex=tname, _spec=spec_of(sub))
                 meshes.append(mesh)
-    hair_tex = {m['_tex'].lower() for m in meshes if m['kind'] == 'hair'}
+    # (a texture both hair and solid meshes use: a see-through copy for the hair, a specular one for the rest)
     files = {}
     for m in meshes:
         t = m.pop('_tex')
-        if t and t.lower() not in files:
-            files[t.lower()] = png(t, t.lower() in hair_tex)
-        if t and files[t.lower()]:
-            m['textures'] = {'color': files[t.lower()]}
+        sp = m.pop('_spec')
+        if not t:
+            continue
+        key = (t.lower(), m['kind'] == 'hair')
+        if key not in files:
+            files[key] = png(t, key[1], sp)
+        if files[key]:
+            m['textures'] = {'color': files[key]}
     wrap_textures(meshes, out_dir)
     joints = {}
     for i, nd in enumerate(body['nodes']):
@@ -802,6 +851,30 @@ def write_renders(pics, out_dir):
         canvas.paste(im, ((512 - im.width) // 2, 512 - im.height))
         open(os.path.join(out_dir, 'render.dds'), 'wb').write(svr08_char.dds_encode(canvas, 'DXT5'))
         out['render.dds'] = 'wide'
+    return out
+
+
+def bleed(img, passes=48):
+    """RGBA with its see-through texels (alpha < 128) filled from the nearest solid ones (repeated 4-neighbour
+    averages): the PS2 alpha-tests them away, 2011's skin shader draws them - a head cap's white corner"""
+    rgb = img[..., :3].astype(np.float32)
+    solid = img[..., 3] >= 128
+    if solid.all() or not solid.any():
+        return img
+    for _ in range(passes):
+        if solid.all():
+            break
+        acc = np.zeros_like(rgb)
+        cnt = np.zeros(solid.shape, np.float32)
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            s_ = np.roll(solid, (dy, dx), (0, 1))
+            acc += np.roll(rgb, (dy, dx), (0, 1)) * s_[..., None]
+            cnt += s_
+        grow = ~solid & (cnt > 0)
+        rgb[grow] = acc[grow] / cnt[grow][:, None]
+        solid = solid | grow
+    out = img.copy()
+    out[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
     return out
 
 

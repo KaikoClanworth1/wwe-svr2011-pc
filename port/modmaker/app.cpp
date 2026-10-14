@@ -1290,6 +1290,16 @@ void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int s
   });
 }
 
+int ArenaPacNumber(const std::string& name) {  // (the last "bg" followed by exactly two digits)
+  const std::string l = Lower(name);
+  int found = -1;
+  for (size_t at = 0; at + 4 <= l.size(); ++at)
+    if (l.compare(at, 2, "bg") == 0 && std::isdigit(uint8_t(l[at + 2])) && std::isdigit(uint8_t(l[at + 3])) &&
+        (at + 4 == l.size() || !std::isdigit(uint8_t(l[at + 4]))))
+      found = (l[at + 2] - '0') * 10 + (l[at + 3] - '0');
+  return found;
+}
+
 void ViewFooter() {
   ImGui::PushID("viewfooter");
   if (ImGui::SmallButton("Reset view")) char_preview::ResetCamera();
