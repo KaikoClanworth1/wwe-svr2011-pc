@@ -34,6 +34,13 @@ named the weights by 2011 bones. model.json:
             "bones": ["l_te", ...],
             "weights": [[[bone index, weight], ...], ...],   per vertex, any count (top 4 kept, renormalised)
             "triangles": [[a, b, c], ...],
+            "material": {                                   optional, per mesh:
+                "specular": 0.48,        shine (g_fSpecularLev: stock 0.15-2.0, skin 0.48), default the template's
+                "normal": "<png>",       this mesh's normal map (same as textures.normal)
+                "tint": [r, g, b] | "#rrggbb",   multiplied into the colour (its own atlas cell)
+                "cutout": true,          see-through where the colour png's alpha is low (render flags 0x110, as
+                                         stock hair cards); otherwise colour alpha = specular level
+                "double_sided": true},   back faces drawn (render flag 0x2 cleared, as stock double-sided parts)
             "textures": {"color": "<png>", "normal": "<png>"}   optional: per-mesh sheets, packed into the
                                                                attire's one colour / normal sheet (UVs remapped)
         }, ...]}]}
@@ -165,6 +172,16 @@ def load_png(path):
     return Image.open(path).convert('RGBA')
 
 
+def tint_rgb(t):
+    """a tint: [r, g, b] (0-1, or 0-255 when any is over 1) or '#rrggbb' -> 3 multipliers 0-1"""
+    if isinstance(t, str):
+        h = t.lstrip('#')
+        return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    v = [float(x) for x in list(t)[:3]]
+    s = 255.0 if max(v) > 1.0 else 1.0
+    return tuple(min(1.0, max(0.0, x / s)) for x in v)
+
+
 def has_alpha(im):
     return im.getextrema()[3][0] < 255
 
@@ -284,17 +301,28 @@ class Builder:
         s.weights = [flat[j * vc:(j + 1) * vc] for j in range(nw)]   # (vertex-major data, jboy's block view)
         s.strips = [(6, stripify([tuple(remap[v] for v in t) for t in tris]))]
         s.u04 = 1
+        mat = m.get('material') or {}
         s.params = []
         for name, typ, val in tmpl.params:
             if typ == 0x0f and struct.unpack('>i', val[:4])[0] >= 0:   # (a slot the template leaves unbound stays so)
                 want = slots.get(name)
                 k = textures.index(want) if want in textures else -1
                 val = struct.pack('>i', k) + val[4:]
+            if name == 'g_fSpecularLev' and mat.get('specular') is not None:   # (shine: stock 0.15-2.0, skin 0.48)
+                val = struct.pack('>f', min(4.0, max(0.0, float(mat['specular'])))) + val[4:]
             s.params.append((name, typ, val))
         A = np.array([v[:3] for v in s.verts])
         cen = (A.min(0) + A.max(0)) / 2
         r = float(np.sqrt(((A - cen) ** 2).sum(1)).max())
         md = bytearray(s.raw)
+        # render flags (+0x88): 0x2 back faces culled (stock skin 0x6; double-sided parts 0x4), 0x10 | 0x100 the
+        # colour alpha cuts out / blends (stock hair cards and lashes 0x114)
+        fl = struct.unpack_from('>I', md, 0x88)[0]
+        if mat.get('double_sided') is not None:
+            fl = (fl & ~0x2) if mat['double_sided'] else (fl | 0x2)
+        if mat.get('cutout') is not None:
+            fl = (fl | 0x110) if mat['cutout'] else (fl & ~0x110)
+        struct.pack_into('>I', md, 0x88, fl)
         struct.pack_into('>I', md, 0x8C, tmpl.vfmt)
         struct.pack_into('>4f', md, 0xA4, float(cen[0]), float(cen[1]), float(cen[2]), r)
         s.raw = bytes(md)
@@ -396,7 +424,18 @@ class Builder:
             self.face_pivots(meshes)
         # sheets: the attire's own, or per-mesh ones packed into one
         at = a.get('textures', {})
-        col_key = lambda m: (m.get('textures') or {}).get('color') or at.get('color') or ''   # noqa: E731
+        def mat(m):
+            return m.get('material') or {}
+
+        def norm_of(m):
+            return mat(m).get('normal') or (m.get('textures') or {}).get('normal') or at.get('normal')
+
+        def col_key(m):   # (one atlas cell per colour png + tint + normal png)
+            c = (m.get('textures') or {}).get('color') or at.get('color') or ''
+            if not c:
+                return ''
+            tint = mat(m).get('tint')
+            return '%s|%s|%s' % (c, ','.join('%.3f' % x for x in tint_rgb(tint)) if tint else '', norm_of(m) or '')
         atlas = Atlas([col_key(m) for m in meshes if m.get('kind', 'skin') != 'lash'] or [''])
         for m in meshes:
             u = [uv for uv in m['uvs']]
@@ -406,12 +445,20 @@ class Builder:
         for m in meshes:
             k = col_key(m)
             if k and k not in colors:
-                colors[k] = load_png(self.path(k))
-            nk = (m.get('textures') or {}).get('normal') or at.get('normal')
+                im = load_png(self.path(k.split('|')[0]))
+                if mat(m).get('tint'):   # (tint: multiplied into the colour)
+                    r_, g_, b_ = tint_rgb(mat(m)['tint'])
+                    ch = im.split()
+                    im = Image.merge('RGBA', (ch[0].point(lambda v: int(v * r_)), ch[1].point(lambda v: int(v * g_)),
+                                              ch[2].point(lambda v: int(v * b_)), ch[3]))
+                # (colour alpha: the png's own when it has one - a cut-out's mask, or a specular level the caller
+                # painted - else a specular level from the brightness, per cell)
+                colors[k] = im if has_alpha(im) else spec_alpha(im)
+            nk = norm_of(m)
             if k and nk and k not in normals:
                 normals[k] = load_png(self.path(nk))
         color = atlas.sheet(colors, COLOR_SIZE, (128, 128, 128, 255))
-        if not any(has_alpha(im) for im in colors.values()):
+        if not colors:
             color = spec_alpha(color)
         normal = atlas.sheet(normals, NORMAL_SIZE, (128, 128, 255, 255))
         if at.get('mask'):
