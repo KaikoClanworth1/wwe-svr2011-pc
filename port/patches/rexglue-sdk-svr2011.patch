@@ -6046,7 +6046,7 @@ index 914b311..fce845f 100644
      REXGPU_ERROR("{}", msg);
    } else if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..f3693e8 100644
+index 23645ef..d6494a6 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -10,6 +10,7 @@
@@ -6112,24 +6112,29 @@ index 23645ef..f3693e8 100644
  
    present_queue_family_out = queue_family_index_present;
    image_format_out = swapchain_create_info.imageFormat;
-@@ -1528,6 +1553,26 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+@@ -1528,6 +1553,31 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
    return true;
  }
  
 +// [svr2011] Mali (vendor 0x13B5): the 4x A53 tablets - the paint at the display's
 +// rate cost a fifth of a core.
 +REXCVAR_DEFINE_STRING(vulkan_throttle_ui_paints, "auto", "GPU",
-+                      "Paint only for new game frames, not at the display's rate for the overlay: auto (on), on, "
-+                      "off");
++                      "Paint only for new game frames, not at the display's rate for the overlay: auto (PCs and "
++                      "Mali GPUs), on, off");
 +
 +bool VulkanPresenter::ThrottleUIOnlyPaints() const {
 +  static const int mode = [] {
 +    const std::string v = REXCVAR_GET(vulkan_throttle_ui_paints);
 +    return v == "on" ? 1 : v == "off" ? 0 : -1;
 +  }();
-+  // (auto: on everywhere since the D3D12 / D3D11 throttle - one present per game
-+  // frame, so variable refresh monitors follow the game; it was Mali-only)
++  // (auto: PCs - one present per game frame, so variable refresh monitors follow
++  // the game, as with D3D12 / D3D11 - and Mali; other phone GPUs (Adreno) stay
++  // off until measured there)
++#if defined(__ANDROID__)
++  return mode >= 0 ? mode == 1 : vulkan_device_->properties().vendorID == 0x13B5;
++#else
 +  return mode >= 0 ? mode == 1 : true;
++#endif
 +}
 +
 +// [svr2011] paint timing (phones: where the presenter's time goes)
@@ -6139,7 +6144,7 @@ index 23645ef..f3693e8 100644
  Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
    // Begin the submission in place of the one not currently potentially used on
    // the GPU.
-@@ -1569,9 +1614,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1569,9 +1619,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
  
    VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
    uint32_t swapchain_image_index;
@@ -6151,7 +6156,7 @@ index 23645ef..f3693e8 100644
    switch (acquire_result) {
      case VK_SUCCESS:
      case VK_SUBOPTIMAL_KHR:
-@@ -1645,6 +1692,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1645,6 +1697,19 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      // multiple threads can't paint the main target at the same time).
    }
  
@@ -6171,7 +6176,7 @@ index 23645ef..f3693e8 100644
    if (guest_output_image) {
      VkExtent2D max_framebuffer_extent =
          util::GetMax2DFramebufferExtent(vulkan_device_->properties());
-@@ -1840,6 +1900,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1840,6 +1905,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                  swapchain_effect, paint_context_.swapchain_render_pass);
              if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
                guest_output_flow.effect_count = 0;
@@ -6183,7 +6188,7 @@ index 23645ef..f3693e8 100644
              }
            }
          }
-@@ -2196,8 +2261,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2196,8 +2266,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      }
      VkResult submit_result;
      {
@@ -6194,7 +6199,7 @@ index 23645ef..f3693e8 100644
        submit_result =
            dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence_acqusition.fence());
        if (ui_fence_acquisition.fence() != VK_NULL_HANDLE && submit_result == VK_SUCCESS) {
-@@ -2238,9 +2305,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2238,9 +2310,33 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
    present_info.pResults = nullptr;
    VkResult present_result;
    {
