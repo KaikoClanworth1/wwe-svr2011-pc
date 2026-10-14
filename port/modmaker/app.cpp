@@ -1744,6 +1744,64 @@ bool ProjectOpen(const std::wstring& file) {
   return ProjectOpenIn(in, Lower(FileName(file)).ends_with(".svrmod"), file);
 }
 
+// Test aid --ui-script <txt>: ImGui events played into the (hidden) window at given times, inside the app - never
+// real input. One event a line, "<seconds> <what>": "move x y", "click x y" (left down + up, a frame apart),
+// "rclick x y", "wheel n", "type <text>", "key <Escape|Enter|Tab|Backspace|Down|Up>". x / y in the window's pixels
+// (as in a --shot picture). Lines starting with # are skipped.
+void UiScript(const std::wstring& file) {
+  struct Ev {
+    double t;
+    std::string what, arg;
+  };
+  static std::vector<Ev> evs;
+  static bool loaded = false;
+  static size_t next = 0;
+  static int up_frame = 0;  // (a click's button-up, the frame after its down)
+  ImGuiIO& io = ImGui::GetIO();
+  if (!loaded) {
+    loaded = true;
+    Bytes b;
+    if (ReadFile(Utf8(file), b)) {
+      std::string text(b.begin(), b.end()), line;
+      for (size_t at = 0; at <= text.size(); ++at) {
+        if (at < text.size() && text[at] != '\n') {
+          if (text[at] != '\r') line += text[at];
+          continue;
+        }
+        if (!line.empty() && line[0] != '#') {
+          char what[32] = {};
+          double t = 0;
+          int used = 0;
+          if (std::sscanf(line.c_str(), "%lf %31s %n", &t, what, &used) >= 2) evs.push_back({t, what, line.substr(size_t(used))});
+        }
+        line.clear();
+      }
+    }
+    Log("ui script: " + std::to_string(evs.size()) + " events");
+  }
+  if (up_frame && --up_frame == 0) io.AddMouseButtonEvent(0, false);
+  while (next < evs.size() && ImGui::GetTime() >= evs[next].t && !up_frame) {
+    const Ev& e = evs[next++];
+    float x = 0, y = 0;
+    std::sscanf(e.arg.c_str(), "%f %f", &x, &y);
+    if (e.what == "move") io.AddMousePosEvent(x, y);
+    else if (e.what == "click" || e.what == "rclick") {
+      io.AddMousePosEvent(x, y);
+      io.AddMouseButtonEvent(e.what == "click" ? 0 : 1, true);
+      if (e.what == "click") up_frame = 2;
+      else io.AddMouseButtonEvent(1, false);
+    } else if (e.what == "wheel") io.AddMouseWheelEvent(0, x);
+    else if (e.what == "type") io.AddInputCharactersUTF8(e.arg.c_str());
+    else if (e.what == "key") {
+      const ImGuiKey k = e.arg == "Escape" ? ImGuiKey_Escape : e.arg == "Enter" ? ImGuiKey_Enter : e.arg == "Tab" ? ImGuiKey_Tab
+                         : e.arg == "Backspace" ? ImGuiKey_Backspace : e.arg == "Down" ? ImGuiKey_DownArrow : ImGuiKey_UpArrow;
+      io.AddKeyEvent(k, true);
+      io.AddKeyEvent(k, false);
+    }
+    Log("ui script: " + e.what + " " + e.arg);
+  }
+}
+
 bool ProjectOpenFolder(const std::wstring& dir) {
   ProjectIn in;
   in.dir = fs::path(dir);  // (Extract writes into the project cache under LocalAppData, never here)
@@ -2144,6 +2202,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::vector<std::wstring> run_tool_args;
   std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
+  std::wstring ui_script;  // --ui-script <txt>: ImGui input played in, no real input (see UiScript)
   double shot_after = 6;
   std::vector<std::pair<double, std::wstring>> page_at;  // --page-at <page>@<s>[,...]: page switches at those times (tests)
   int star_id = 0, star_call = -1;
@@ -2177,6 +2236,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--shot") && more) shot = argv[++i];
     else if (!wcscmp(argv[i], L"--shot-after") && more) shot_after = _wtof(argv[++i]);
+    else if (!wcscmp(argv[i], L"--ui-script") && more) ui_script = argv[++i];
     else if (!wcscmp(argv[i], L"--page-at") && more) {
       const std::wstring v = argv[++i];
       for (size_t at = 0; at < v.size();) {
@@ -2562,6 +2622,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (behind && IsWindowVisible(g_wnd)) ShowWindow(g_wnd, SW_HIDE);  // (stays unseen)
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    if (!ui_script.empty()) UiScript(ui_script);
     ImGui::NewFrame();
     // timing (D17): startup to the first frame, a page's first frame, frames over 100 ms
     static PageId timed_page = PageId::kCount;
