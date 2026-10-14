@@ -30,7 +30,26 @@ ents.sort(key=lambda x: x[0])
 e[k] = (b'0078', f.pach_write(ents))
 print('stubs', sorted(i for i in range(20) if i not in have and i in d78))
 open('$MOD/arena.pac', 'wb').write(f.epac_write(h, [(ty, e)], t))"
-HCTP_ROOM=$ROOM HCTP_DX=$DX HCTP_DZ=$DZ HCTP_OUT="$MOD" python "$S/build_props.py" | tail -1
+# the room's motion bank (room 30: its own, bank_h3): bank_h3 + every HCTP backstage act 12000-12099
+# as 12600 + n, + the room's object acts (50102) n as 12700 + n (jumps to motions 2011 has under the same
+# number kept: 0, 1, 153 and the downs 443, 448, 476 - 1660, 1662, 1900, 683 2011 lacks)
+BANK=out/mot/bank_h3.bin
+if [ "$ROOM" != 30 ]; then
+  HB="D:/Xbox Games Ports/HCTP Extract/_unpacked/m/MOT_GAME"
+  ids() { python -c "
+import sys; sys.path.insert(0, r'$S/mot')
+import hbank
+T, e, d = hbank.streams(open(r'$1', 'rb').read())
+print(','.join('%d=%d' % (k, k + $2) for k in sorted({x['id'] for x in e}) if $3))"; }
+  [ -f out/mot/bank_wr.bin ] || python "$S/mot/hctp2ymks.py" "$HB/00004.bin" "$(ids "$HB/00004.bin" 600 '12000 <= k < 12100')"     --into out/mot/bank_h3.bin --out out/mot/bank_wr.bin --jumpmap 0=0,1=1,153=153,443=443,448=448,476=476 | tail -1
+  BANK=out/mot/bank_r$ROOM.bin
+  if [ -f "$STG/50102.bin" ]; then
+    python "$S/mot/hctp2ymks.py" "$STG/50102.bin" "$(ids "$STG/50102.bin" 12700 True)" --objects       --into out/mot/bank_wr.bin --out $BANK | tail -1
+  else
+    cp out/mot/bank_wr.bin $BANK
+  fi
+fi
+HCTP_BANK=$BANK HCTP_ROOM=$ROOM HCTP_DX=$DX HCTP_DZ=$DZ HCTP_OUT="$MOD" python "$S/build_props.py" | tail -1
 tail -3 out/bg78_hctp$ROOM.log
 # the fight box: the room's extent (cx, cz, half x, half z) from the stage log
 BOX=$(python -c "

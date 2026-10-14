@@ -63,6 +63,12 @@ KINDS = {
     27: ([0], []),                   # (rooms 35/36) sand
     29: ([2, 3], [1]),               # CGmFountain: water, basin
     24: ([1, 3], [8]),               # CGmTower: top, base (2 / 4: their broken copies)
+    # no model: places hctp_room needs (zones in their params)
+    72: ([], []),                    # CGmPowerSupply: the generator's hit plane
+    98: ([], []),                    # gmHammerThrowAtk: whip into the trailer side
+    86: ([], []),                    # CForkliftBoxSupply: the crate reload zone
+    74: ([], []),                    # CGmMoveCar path points
+    73: ([1, 2], []),                # CGmMoveCar: the two traffic cars (hctp_room drives them)
 }
 
 

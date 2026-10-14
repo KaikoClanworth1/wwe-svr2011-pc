@@ -17,7 +17,7 @@ STAGE = r"D:\Xbox Games Ports\HCTP Extract\_unpacked\bg\stg_00%02d" % ROOM
 OUT = os.environ.get('HCTP_OUT', 'mod_row')
 BG78 = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\bg\bg78.pac"
 GM = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\gm.pac"
-BANK = 'out/mot/bank_h3.bin'
+BANK = os.environ.get('HCTP_BANK', 'out/mot/bank_h3.bin')
 DX, DZ = float(os.environ.get('HCTP_DX', '180')), float(os.environ.get('HCTP_DZ', '-440'))
 CLIMB_KEYS = {0xFB: 12541, 0xFD: 12542, 0xF4: 12503, 0xDF: 12503}
 # props' rest poses (HCTP: idle acts, or the first frame of their fall / open act)
@@ -127,7 +127,13 @@ spec = []
 for pr in plist:
     pos, a = hctp_props.to_2011(pr['pos'], pr['ry'], DX, DZ)
     for mid in pr['models']:
-        spec.append(dict(model=models[mid][0], pos=pos, ry=a, note=f"{pr['id']} m{mid}", idle=REST.get(mid, 0)))
+        idle = REST.get(mid, 0)
+        if ROOM != 30:   # rooms 31-36: a model's rest act from its tag (kind: (model param, act param))
+            prm = hctp_props.gobj_tags(ROOM - 29)[pr['id']][1]
+            ix = {71: (0, 8), 81: (3, 4)}.get(pr['kind'])
+            if ix and int(prm[ix[0]]) == mid and prm[ix[1]] > 0:
+                idle = 12700 + int(prm[ix[1]])
+        spec.append(dict(model=models[mid][0], pos=pos, ry=a, note=f"{pr['id']} m{mid}", idle=idle))
 # climb spots from the room collision with props (HCTP coordinates, original attributes)
 hmd = open(STAGE + r'\00999.hmd', 'rb').read()
 extra = hctp_props.world_collision(STAGE, plist)
@@ -151,7 +157,12 @@ hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=
 #   weapon <hctp id> <model> <x> <y> <z>         (where a stack's weapon appears)
 #   key <key> <frames>                           (converted motions hctp_room plays)
 KIND = {89: 'stack', 51: 'throw', 47: 'wall', 46: 'roof', 37: 'switch', 39: 'valve', 44: 'shutter',
-        54: 'cart', 49: 'lamp', 36: 'crate'}
+        54: 'cart', 49: 'lamp', 36: 'crate',
+        # rooms 31-36 (re_rooms31_36.md)
+        70: 'car', 72: 'power', 73: 'movecar', 74: 'path', 98: 'hammer', 81: 'forklift', 86: 'boxsupply',
+        97: 'drums', 71: 'repeat', 61: 'locker', 68: 'toilet', 69: 'sandbag', 66: 'shower', 65: 'treadmill',
+        75: 'brokenwall', 76: 'tv', 77: 'rack', 84: 'fade', 85: 'rackweapon', 62: 'window', 60: 'neon',
+        25: 'lion', 27: 'sand', 29: 'fountain', 24: 'tower'}
 # HCTP weapon -> 2011 (WPBS): cardboard box 56 -> 17 (78_obj_cbox), barrel 57 -> trash can 63,
 # lead pipe 148 -> kendo stick 88 (no pipe in 2011), trash can 9 -> 63
 WEAPON_2011 = {56: 17, 57: 63, 148: 88, 9: 63}
@@ -193,8 +204,27 @@ for i, pr in enumerate(plist):
                           for c in s8.tri_corners(np.array(s8.hmd_move(r, R, np.array(pr['pos']))))])
             lo, hi = P.min(0), P.max(0)
             box += f" zone={lo[0]:.1f},{hi[0]:.1f},{lo[1]:.1f},{hi[1]:.1f},{lo[2]:.1f},{hi[2]:.1f}"
+    # rooms 31-36: the tag's params (p=), the record models in order (m=) and every HMD shape the params
+    # name as its 2011 box (h<id>=x0,x1,y0,y1,z0,z1: zones and alternate collisions)
+    extra = ''
+    if ROOM != 30:
+        prm = tags[pr['id']][1]
+        extra = f" p={','.join('%g' % v for v in prm)} m={','.join(map(str, pr['models']))}"
+        R = hctp_props.rot_y(pr['ry'])
+        for v in prm:
+            hf = f"{STAGE}/50101/{int(v):05d}.hmd"
+            if 2000 <= v < 3000 and v == int(v) and os.path.exists(hf):
+                P = np.array([to2011(c) for r in s8.hmd_read(open(hf, 'rb').read())
+                              for c in s8.tri_corners(np.array(s8.hmd_move(r, R, np.array(pr['pos']))))])
+                lo, hi = P.min(0), P.max(0)
+                extra += f" h{int(v)}={lo[0]:.1f},{hi[0]:.1f},{lo[1]:.1f},{hi[1]:.1f},{lo[2]:.1f},{hi[2]:.1f}"
+    if kind == 'hammer':   # gmHammerThrowAtk: its trigger box, params x 1..2 and z 5..6 (room space)
+        prm = tags[pr['id']][1]
+        P = np.array([to2011((xx, 0.0, zz)) for xx in prm[1:3] for zz in prm[5:7]])
+        lo, hi = P.min(0), P.max(0)
+        box += f" zone={lo[0]:.1f},{hi[0]:.1f},0,0,{lo[2]:.1f},{hi[2]:.1f}"
     lines.append(f"prop {pr['id']}_{i} {pr['id']} {kind} {0xA0 + i} {pos[0]:.2f} {pos[1]:.2f} {pos[2]:.2f} {a:.4f} "
-                 f"recs={','.join(map(str, recs))} tris={','.join(map(str, tris))}{box}")
+                 f"recs={','.join(map(str, recs))} tris={','.join(map(str, tris))}{box}{extra}")
     t = tags[pr['id']][1]
     if kind == 'stack':            # gmAttackObjAndWeapon: p4 (param 5) = the GmWeaponPosRot tag
         ws = tags.get(int(t[5]))
@@ -209,7 +239,7 @@ import svr08_gimmick as G
 T, ents, _ = G.bank_parse(bank)
 frames = {}
 for e in ents:
-    if 12500 <= e[2] < 12600:
+    if 12500 <= e[2] < 13400:
         frames[e[2]] = max(frames.get(e[2], 0), e[4])
 lines += steam_lines
 for k, (t, j, o) in enumerate(puffs):  # (the first records, in spec order)

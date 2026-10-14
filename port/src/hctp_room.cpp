@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -240,6 +241,13 @@ struct Prop {
   bool held = false;
   int cooldown = 0;
   std::vector<std::pair<float, float>> saved_y;  // collision y ranges, for RestoreCollision
+  // rooms 31-36: the HCTP tag's params (p=), the record models in order (m=), the HMD shapes the
+  // params name as 2011 boxes (h<id>=x0,x1,y0,y1,z0,z1)
+  std::vector<float> params;
+  std::vector<int> models;
+  std::map<int, std::array<float, 6>> shapes;
+  int bits = 0;  // (car: 1 door off, 2 bonnet off, 4 crushed)
+  int body = 0;  // (car: the body model shown, 0 whole / 1 dented)
 };
 // A steam jet (HCTP particle 32 / 34, toggled by a valve): from (x, y, z)
 // along (dx, dz) for len, half width hw, half height hh.
@@ -330,6 +338,20 @@ bool LoadRoom(const std::string& dir) {
         if (kv.rfind("box=", 0) == 0)
           p.has_box = std::sscanf(kv.c_str() + 4, "%f,%f,%f,%f,%f,%f", &p.box[0], &p.box[1], &p.box[2], &p.box[3],
                                   &p.box[4], &p.box[5]) == 6;
+        if (kv.rfind("p=", 0) == 0) {
+          std::istringstream ps(kv.substr(2));
+          std::string v;
+          while (std::getline(ps, v, ',')) p.params.push_back(float(std::atof(v.c_str())));
+        }
+        if (kv.rfind("m=", 0) == 0) p.models = Ints(kv.substr(2));
+        if (kv.size() > 2 && kv[0] == 'h' && std::isdigit(uint8_t(kv[1]))) {
+          std::array<float, 6> b{};
+          const int id = std::atoi(kv.c_str() + 1);
+          const size_t eq = kv.find('=');
+          if (eq != std::string::npos && std::sscanf(kv.c_str() + eq + 1, "%f,%f,%f,%f,%f,%f", &b[0], &b[1], &b[2],
+                                                     &b[3], &b[4], &b[5]) == 6)
+            p.shapes[id] = b;
+        }
       }
       g_room.props.push_back(std::move(p));
     } else if (what == "weapon") {
@@ -541,14 +563,20 @@ int Frames(uint32_t key, int fallback) {
   return it == g_room.frames.end() ? fallback : it->second;
 }
 
-// A prop's own fall motion: its HCTP object act, converted as 12500 + act.
+// Rooms 31-36: HCTP backstage acts 12000 + n are converted as 12600 + n, the room's object
+// acts n (its bank 50102) as 12700 + n (build_room.sh).
+constexpr uint32_t kRoomAct = 12600, kObjAct = 12700;
+
+float Param(const Prop& p, size_t i, float fallback = 0.0f) { return i < p.params.size() ? p.params[i] : fallback; }
+
+// A prop's own fall motion: room 30's converted keys; other rooms: its tag's object act (param 3).
 uint32_t FallKey(const Prop& p) {
   switch (p.hid) {
     case 202: return 12533;  // cardboard boxes collapse
     case 218: return 12526;  // barrels fall
     case 209: return 12524;  // lead pipes fall
     case 206: return 12528;  // a railing falls
-    default: return 0;
+    default: return Param(p, 3) > 0 ? kObjAct + uint32_t(Param(p, 3)) : 0;
   }
 }
 
@@ -584,8 +612,11 @@ void UpdateFall(PPCContext& ctx, uint8_t* base, Prop& p) {
   if (p.timer == 2 * std::max(n, p.hid == 209 ? 60 : 0))
     for (const WeaponSpot& w : g_room.weapons)
       if (w.hid == p.hid) SpawnWeapon(ctx, base, w.model, w.x, w.y, w.z);
-  // a railing: gone after HCTP's 42 + 30 frames
+  // a railing: gone after HCTP's 42 + 30 frames; other rooms' throw objects at their vanish start
+  // (param 4; it vanishes over param 5 frames)
   if (p.hid == 206 && p.timer == 2 * 72) ShowProp(ctx, base, p, false);
+  if (!p.params.empty() && Param(p, 4, -1) >= 0 && p.timer == 2 * int(Param(p, 4) + Param(p, 5) / 2))
+    ShowProp(ctx, base, p, false);
   if (p.held && p.timer > 2 * std::max(n, 72) + 10) p.state = 2;
 }
 
@@ -697,12 +728,19 @@ void PlaceFighter(uint8_t* base, uint32_t f, float x, float y, float z, float ya
 }
 
 // First frame: the closing shutter (HCTP syattar2) and the steam puffs hidden.
+void ShowModel(PPCContext& ctx, uint8_t* base, const Prop& p, int model, bool show);
+
 void SetUp(PPCContext& ctx, uint8_t* base) {
   // (again for the room's first frames: the elements may not be there yet
   // on the first one)
   if (g_room.set_up_frames >= 30) return;
   ++g_room.set_up_frames;
   if (Prop* sh = FindKind("shutter"); sh && sh->recs.size() > 1) ShowRec(ctx, base, sh->recs[1], false);
+  for (Prop& p : g_room.props) {
+    if (p.kind == "car" && p.models.size() > 1 && !p.body) ShowModel(ctx, base, p, p.models[1], false);
+    if (p.kind == "movecar")
+      for (int mdl : p.models) ShowModel(ctx, base, p, mdl, false);
+  }
   // (the steam puffs wait under the floor: an object hidden and shown again
   // isn't drawn while no key plays on it)
   for (Prop& p : g_room.props)
@@ -957,6 +995,242 @@ void UpdateCrate(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+// -- Rooms 31-36 (re_rooms31_36.md) ---------------------------------------
+// Props carry their HCTP tag params (p=), their record models in order (m=)
+// and the HMD shapes the params name (h<id>=); object acts n play as
+// kObjAct + n, HCTP backstage acts 12000 + n as kRoomAct + n.
+
+int RecOfModel(const Prop& p, int model) {
+  for (size_t i = 0; i < p.models.size() && i < p.recs.size(); ++i)
+    if (p.models[i] == model) return p.recs[i];
+  return -1;
+}
+
+// One of a prop's models plays (key, x, y) / is shown or hidden.
+void PlayModel(PPCContext& ctx, uint8_t* base, const Prop& p, int model, uint32_t key, uint32_t x = 0,
+               uint32_t y = 0) {
+  const int rec = RecOfModel(p, model);
+  if (rec < 0) return;
+  if (!HasKey(ctx, base, key, x, y)) {
+    REXLOG_WARN("hctp: {}: no motion ({}, {}, {}) for model {}", p.name, key, x, y, model);
+    return;
+  }
+  PlayRec(ctx, base, rec, key, x, y);
+}
+
+void ShowModel(PPCContext& ctx, uint8_t* base, const Prop& p, int model, bool show) {
+  if (const int rec = RecOfModel(p, model); rec >= 0) ShowRec(ctx, base, rec, show);
+}
+
+// Later: a model shown / hidden some frames from now (HCTP's vanish frames).
+struct LaterShow {
+  int frames;
+  size_t prop;
+  int model;
+  bool show;
+};
+std::vector<LaterShow> g_later;
+
+void Later(const Prop& p, int hctp_frames, int model, bool show) {
+  g_later.push_back({2 * hctp_frames, size_t(&p - g_room.props.data()), model, show});
+}
+
+void UpdateLater(PPCContext& ctx, uint8_t* base) {
+  for (size_t k = 0; k < g_later.size();) {
+    if (--g_later[k].frames > 0) {
+      ++k;
+      continue;
+    }
+    if (g_later[k].prop < g_room.props.size())
+      ShowModel(ctx, base, g_room.props[g_later[k].prop], g_later[k].model, g_later[k].show);
+    g_later.erase(g_later.begin() + std::ptrdiff_t(k));
+  }
+}
+
+// Inside one of a prop's HMD shapes grown by m (y: from m above its top to its foot).
+bool InShape(const Prop& p, int id, float x, float y, float z, float m) {
+  const auto it = p.shapes.find(id);
+  if (it == p.shapes.end()) return false;
+  const auto& b = it->second;
+  return x > b[0] - m && x < b[1] + m && z > b[4] - m && z < b[5] + m && y > b[2] - m && y < b[3] + m;
+}
+
+// The wrestler nearest to f (another one), and the squared distance.
+uint32_t Nearest(uint8_t* base, uint32_t f, float* d2) {
+  uint32_t best_f = 0;
+  float best = 1e18f;
+  for (int i = 0; i < 8; ++i) {
+    const uint32_t o = Rd32(base + kChars + i * 4);
+    if (!o || o == f) continue;
+    const float dx = RdF(base + o + 288) - RdF(base + f + 288), dz = RdF(base + o + 296) - RdF(base + f + 296);
+    if (dx * dx + dz * dz < best) best = dx * dx + dz * dz, best_f = o;
+  }
+  *d2 = best;
+  return best_f;
+}
+
+// The hit-object reaction (HCTP 12014: variants 0-5) for a wrestler driven into a gimmick.
+void HitReaction(PPCContext& ctx, uint8_t* base, uint32_t f) { JumpAct(ctx, base, f, kHitObject, uint32_t(std::rand() % 6)); }
+
+// CGmBrokenCar (310 / 318): models body whole, body dented, tyres, door, bonnet, windows (params 1-6),
+// collision 7, door zone 8, bonnet zone 9, acts 10 bonnet hit / 11 door hit / 12 crush / 13 bump.
+// Driven into the door zone: the door flies off; into the bonnet zone: the bonnet flies off, the body
+// shows dented; then a wrestler going down on its roof crushes it (windows shatter, tyres fly).
+void CarHit(PPCContext& ctx, uint8_t* base, Prop& c, uint32_t f, int i, float x, float y, float z, bool reacts,
+            int force = 0) {
+  if (c.models.size() < 6 || c.cooldown > 0) return;
+  const int body0 = c.models[0], body1 = c.models[1], tyres = c.models[2], door = c.models[3],
+            bonnet = c.models[4], windows = c.models[5];
+  // (force: the test switch - 1 the door zone, 2 the bonnet zone)
+  const bool in_door = force ? force == 1 : InShape(c, int(Param(c, 8)), x, y, z, 4.0f);
+  const bool in_bonnet = force ? force == 2 : InShape(c, int(Param(c, 9)), x, y, z, 4.0f);
+  if (c.bits & 4) {  // crushed: it rocks
+    PlayModel(ctx, base, c, body1, kObjAct + uint32_t(Param(c, 13)));
+    if (reacts) HitReaction(ctx, base, f);
+    c.cooldown = 2 * 60;
+    return;
+  }
+  if (in_door && !(c.bits & 1)) {
+    const uint32_t k = kObjAct + uint32_t(Param(c, 11));
+    PlayModel(ctx, base, c, c.body ? body1 : body0, k);
+    PlayModel(ctx, base, c, windows, kObjAct + 39);
+    PlayModel(ctx, base, c, door, k, 1, 0);
+    PlayModel(ctx, base, c, tyres, k);
+    if (!(c.bits & 2)) PlayModel(ctx, base, c, bonnet, k);
+    Later(c, 30, door, false);
+    c.bits |= 1;
+    REXLOG_INFO("hctp: fighter {} knocks {}'s door off", i, c.name);
+  } else if (in_bonnet && !(c.bits & 2)) {
+    const uint32_t k = kObjAct + uint32_t(Param(c, 10));
+    c.body = 1;
+    ShowModel(ctx, base, c, body0, false);
+    ShowModel(ctx, base, c, body1, true);
+    PlayModel(ctx, base, c, body1, k);
+    PlayModel(ctx, base, c, windows, kObjAct + 38);
+    PlayModel(ctx, base, c, bonnet, k, 1, 0);
+    PlayModel(ctx, base, c, tyres, k);
+    if (!(c.bits & 1)) PlayModel(ctx, base, c, door, k);
+    Later(c, 30, bonnet, false);
+    c.bits |= 2;
+    REXLOG_INFO("hctp: fighter {} knocks {}'s bonnet off", i, c.name);
+  } else {
+    return;
+  }
+  if (reacts) HitReaction(ctx, base, f);
+  c.cooldown = 2 * 60;
+}
+
+void CarCrush(PPCContext& ctx, uint8_t* base, Prop& c, int i) {
+  if (c.models.size() < 6 || (c.bits & 3) != 3 || (c.bits & 4)) return;
+  const uint32_t k = kObjAct + uint32_t(Param(c, 12));
+  PlayModel(ctx, base, c, c.models[1], k);
+  PlayModel(ctx, base, c, c.models[2], k, 1, 0);
+  Later(c, 30, c.models[2], false);
+  Later(c, 30, c.models[5], false);  // (the glass shatters)
+  c.bits |= 4;
+  c.cooldown = 2 * 60;
+  REXLOG_INFO("hctp: fighter {} crushes {}", i, c.name);
+}
+
+// CGmThrowObjectRepeat (341, the equipment box): driven into it, it jolts (param 3) and he reacts;
+// again after its re-arm time (param 13) - its collision always stands.
+void RepeatHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, int i) {
+  if (p.cooldown > 0) return;
+  PlayProp(ctx, base, p, kObjAct + uint32_t(Param(p, 3)));
+  HitReaction(ctx, base, f);
+  p.cooldown = 2 * int(Param(p, 13, 60)) + 2 * 60;
+  REXLOG_INFO("hctp: fighter {} is driven into {}", i, p.name);
+}
+
+// CGmPowerSupply (311, the generator - room geometry): driven into its hit plane (param 1) he is
+// electrocuted (param 2, HCTP 12079); again after param 13 frames.
+void PowerHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, int i) {
+  if (p.cooldown > 0) return;
+  JumpAct(ctx, base, f, kRoomAct + uint32_t(Param(p, 2, 12079)) - 12000);
+  p.cooldown = 2 * int(Param(p, 13, 300));
+  REXLOG_INFO("hctp: fighter {} is electrocuted by {}", i, p.name);
+}
+
+// gmHammerThrowAtk (317): an Irish whip into its box (the trailer side) - attacker and victim play
+// the sync act param 7 (HCTP 12078) together.
+void HammerThrow(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t victim, int vi) {
+  if (p.cooldown > 0) return;
+  float d2 = 0;
+  const uint32_t att = Nearest(base, victim, &d2);
+  if (!att || d2 > 80.0f * 80.0f) return;
+  const uint32_t k = kRoomAct + uint32_t(Param(p, 7, 12078)) - 12000;
+  JumpAct(ctx, base, att, k, 0, 0);
+  JumpAct(ctx, base, victim, k, 0, 1);
+  p.cooldown = 2 * 120;
+  REXLOG_INFO("hctp: fighter {} is thrown into the trailer ({})", vi, p.name);
+}
+
+// CGmMoveCar (312): a background car driving the path 312 -> 313 -> 314 -> 315 (param 3-5 ids),
+// the two car models (params 1, 2) taking turns, a wait of up to param 6 frames between runs.
+void UpdateMoveCar(PPCContext& ctx, uint8_t* base) {
+  for (Prop& c : g_room.props) {
+    if (c.kind != "movecar" || c.models.size() < 2) continue;
+    std::vector<std::array<float, 3>> path{{c.x, c.y, c.z}};
+    for (size_t k = 3; k < 6; ++k)
+      for (const Prop& q : g_room.props)
+        if (q.hid == int(Param(c, k))) path.push_back({q.x, q.y, q.z});
+    if (path.size() < 2) continue;
+    // count: frames into the run (negative: waiting); bits: which model drives
+    if (c.count < 0) {
+      ++c.count;
+      continue;
+    }
+    const float speed = 1.6f;  // (2011 units a frame)
+    float t = float(c.count) * speed;
+    size_t seg = 0;
+    for (; seg + 1 < path.size(); ++seg) {
+      const float dx = path[seg + 1][0] - path[seg][0], dz = path[seg + 1][2] - path[seg][2];
+      const float len = std::sqrt(dx * dx + dz * dz);
+      if (t <= len) break;
+      t -= len;
+    }
+    const int model = c.models[size_t(c.bits & 1)];
+    if (seg + 1 >= path.size()) {  // arrived: hide it, wait, the other car next
+      ShowModel(ctx, base, c, model, false);
+      c.bits ^= 1;
+      c.count = -(60 + std::rand() % std::max(1, 2 * int(Param(c, 6, 200))));
+      continue;
+    }
+    if (c.count == 0) ShowModel(ctx, base, c, model, true);
+    const auto& a = path[seg];
+    const auto& b = path[seg + 1];
+    const float dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    const float len = std::max(0.01f, std::sqrt(dx * dx + dz * dz));
+    const float u = t / len;
+    MoveRec(ctx, base, RecOfModel(c, model), a[0] + dx * u, a[1] + dy * u, a[2] + dz * u, 0, std::atan2(dx, dz), 0);
+    ++c.count;
+  }
+}
+
+// Room 31's per-wrestler checks (from Fighters): m his motion now, prev last frame's, touched the
+// attribute of the collision he touches.
+bool Room31Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m, uint32_t prev, uint8_t touched,
+                   float x, float y, float z) {
+  // (lying: 0 or 1000 - backstage standing / walking is 20500)
+  const bool walking = m == kWalkBackstage;
+  const bool whipped = m == kWhipRun;
+  const bool down = (m == 0 || m == kLying) && !(prev == 0 || prev == kLying);
+  for (Prop& p : g_room.props) {
+    if (p.kind == "car") {
+      // driven into it (whipped, or not walking against its body), or down on its roof
+      if (!walking && (whipped || touched == p.attr)) CarHit(ctx, base, p, f, i, x, y, z, true);
+      if (down && y < -3.9f && InShape(p, int(Param(p, 7)), x, y, z, 2.0f)) CarCrush(ctx, base, p, i);
+    } else if (p.kind == "repeat") {
+      if (!walking && touched == p.attr) RepeatHit(ctx, base, p, f, i);
+    } else if (p.kind == "power") {
+      if (whipped && InShape(p, int(Param(p, 1)), x, y, z, 6.0f)) PowerHit(ctx, base, p, f, i);
+    } else if (p.kind == "hammer") {
+      if (whipped && InZone(p, x, y, z)) HammerThrow(ctx, base, p, f, i);
+    }
+  }
+  return false;
+}
+
 // -- Off the cage top (HCTP GapIn_BackOpenSpace, from the strike button):
 // up on the cage (y <= -28) near its front or east edge, X while walking
 // toward the edge puts him on the edge (HCTP SetGapPos) and he jumps down
@@ -1007,7 +1281,9 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
     // thrown / whipped / running into a stack, railing or the lead pipes
     if (m != kWalkBackstage)
       for (Prop& p : g_room.props)
-        if ((p.kind == "stack" || p.kind == "throw") && p.state == 0 && touched == p.attr) KnockOver(ctx, base, p, f);
+        if ((p.kind == "stack" || p.kind == "throw" || p.kind == "drums") && p.state == 0 && touched == p.attr)
+          KnockOver(ctx, base, p, f);
+    if (HctpRoom() != 30) Room31Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z);
     // a knock-down on the roof
     // (lying: 0 here - backstage standing is 20500 - or 1000)
     const bool down = m == 0 || m == kLying, was_down = s.motion == 0 || s.motion == kLying;
@@ -1180,6 +1456,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   if (!g_room.loaded || g_room.dir != row.dir || frame < g_room.last_frame) {
     if (!LoadRoom(row.dir)) return;
     for (auto& s : g_fs) s = {};
+    g_later.clear();
   }
   g_room.last_frame = frame;
   if (!Rd32(base + kGimmickMgr) || !Rd32(base + kStage)) return;
@@ -1201,7 +1478,21 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     }
   if (g_props_now && frame >= 300)
     for (Prop& p : g_room.props)
-      if ((p.kind == "throw" || p.kind == "stack") && p.state == 0) KnockOver(ctx, base, p, 0);
+      if ((p.kind == "throw" || p.kind == "stack" || p.kind == "drums") && p.state == 0) KnockOver(ctx, base, p, 0);
+  // (=props in rooms 31-36: each car loses its door at 300, its bonnet at 420, is crushed at 540; the
+  // equipment box jolts at 300; fighter 1 is electrocuted at 360 and thrown into the trailer at 600)
+  if (g_props_now && HctpRoom() != 30 && Rd32(base + kChars + 4)) {
+    const uint32_t f1 = Rd32(base + kChars + 4);
+    const auto at = [frame](uint32_t n) { return frame >= n && frame < n + 2; };
+    for (Prop& p : g_room.props) {
+      if (p.kind == "car" && (at(300) || at(420)))
+        p.cooldown = 0, CarHit(ctx, base, p, f1, 1, 0, 0, 0, false, frame < 400 ? 1 : 2);
+      if (p.kind == "car" && at(540)) CarCrush(ctx, base, p, 1);
+      if (p.kind == "repeat" && at(300)) RepeatHit(ctx, base, p, f1, 1);
+      if (p.kind == "power" && at(360)) PowerHit(ctx, base, p, f1, 1);
+      if (p.kind == "hammer" && at(600)) HammerThrow(ctx, base, p, f1, 1);
+    }
+  }
   if (g_steam_now && frame >= 300 && frame < 302)
     for (Prop& p : g_room.props)
       if (p.kind == "valve" && p.state == 0) TurnValve(ctx, base, 0, -1, p);
@@ -1210,9 +1501,12 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     BreakRoof(ctx, base);
   DropIn(base);
   for (Prop& p : g_room.props) {
-    if (p.kind == "stack" || p.kind == "throw") UpdateFall(ctx, base, p);
+    if (p.kind == "stack" || p.kind == "throw" || p.kind == "drums") UpdateFall(ctx, base, p);
     if (p.kind == "wall") UpdateWall(ctx, base, p);
+    if (p.cooldown > 0 && p.kind != "wall" && p.kind != "valve") --p.cooldown;
   }
+  UpdateLater(ctx, base);
+  UpdateMoveCar(ctx, base);
 }
 
 }  // namespace svr2011
