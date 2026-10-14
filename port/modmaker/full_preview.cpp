@@ -30,6 +30,7 @@
 #include <d3d11.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -102,6 +103,7 @@ struct Loaded {
   std::vector<Static> statics;
   int number = -1;
   std::string name, source, error;
+  std::string pyro;  // the entrance's own pyro set, in words ("" none): not drawn (PRTC isn't decoded)
   std::vector<Seg> segs;
   int total = 0;
   bool fingers = false;
@@ -370,6 +372,47 @@ void RingsideStatics(const std::wstring& game, std::vector<Static>& out) {
   }
 }
 
+// The entrance's own pyro in words (prtcls.pac PCE6/<number>: emitters 0-99 are its own, 110+ the stage lights every
+// set has): "12 emitters: fireworks, smoke". Each emitter is a PACH with a PRTC particle script, whose TexGroup names
+// the textures; the kind is read from the names. "" when it has none.
+std::string PyroNote(const std::wstring& game, int number) {
+  if (number < 0) return {};
+  char key[8];
+  std::snprintf(key, sizeof key, "%04d", number);
+  Bytes set;
+  if (!ReadPacEntry(fs::path(game) / L"pac" / L"prtcls.pac", key, set, "PCE6")) return {};
+  std::vector<svrfmt::PachEntry> kids;
+  if (!svrfmt::PachRead(svrfmt::Unpack(set), kids)) return {};
+  static const struct { const char* prefix; const char* words; } kKinds[] = {
+      {"Hanabi", "fireworks"}, {"FireW", "fireworks"}, {"Fire0", "flames"}, {"Smoke", "smoke"}, {"Tsubu", "sparks"},
+      {"Tama", "fireballs"}, {"Bo0", "jets"}, {"Cross", "flashes"}, {"Light", "flashes"}, {"LG0", "flashes"}};
+  int emitters = 0;
+  std::vector<std::string> kinds;
+  for (const auto& k : kids) {
+    if (k.id >= 100) continue;
+    ++emitters;
+    std::vector<svrfmt::PachEntry> parts;
+    if (!svrfmt::PachRead(svrfmt::Unpack(k.data), parts)) continue;
+    for (const auto& part : parts) {
+      const Bytes prtc = svrfmt::Unpack(part.data);
+      if (prtc.size() < 4 || std::memcmp(prtc.data(), "PRTC", 4)) continue;
+      const std::string text(prtc.begin(), prtc.end());
+      for (size_t at = text.find("TexGroup"); at != std::string::npos && at < text.size(); at = text.find("TexGroup", at + 8)) {
+        for (const auto& kind : kKinds) {
+          const size_t hit = text.find(kind.prefix, at + 8);
+          if (hit != std::string::npos && hit < at + 0x400 &&
+              std::find(kinds.begin(), kinds.end(), kind.words) == kinds.end())
+            kinds.push_back(kind.words);
+        }
+      }
+    }
+  }
+  if (!emitters) return {};
+  std::string out = std::to_string(emitters) + (emitters == 1 ? " emitter" : " emitters");
+  for (size_t i = 0; i < kinds.size(); ++i) out += (i ? ", " : ": ") + kinds[i];
+  return out;
+}
+
 // The profile's entrance block of superstar `star` (chEtc.pac CHAR/PRO): music, movie numbers.
 void ProfileMedia(const std::wstring& game, int star, int& music, int& movie) {
   music = movie = -1;
@@ -475,6 +518,7 @@ std::unique_ptr<Loaded> LoadAll(const Request& req, const std::wstring& game) {
     return L;
   }
   RingsideStatics(game, L->statics);
+  L->pyro = PyroNote(game, req.entrance);
   ProfileMedia(game, req.star, L->music, L->movie);
   L->arena = std::make_unique<svrfmt::Arena>();
   std::string aerr;
@@ -1037,6 +1081,11 @@ void Draw() {
                                 g_music_note.empty() ? std::string() : " - " + g_music_note;
       ImGui::TextDisabled("Entrance %d %s - from %s%s%s", L.number, L.name.c_str(), L.source.c_str(),
                           L.fingers ? ", with its finger tracks" : "", theme.c_str());
+      if (!L.pyro.empty()) {
+        ImGui::TextDisabled("Pyro plays in game, not here: %s (prtcls.pac PCE6/%04d)", L.pyro.c_str(), L.number);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("The entrance's own particle set. The preview doesn't draw particles yet.");
+      }
     }
   }
   ImGui::End();
