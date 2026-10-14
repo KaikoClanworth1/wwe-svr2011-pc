@@ -1472,7 +1472,25 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
     outm[0x7530] = Pack(bank13);
   }
   if (has_flags13) outm[0xC351] = Pack(FromText(BankLights13(flags13, LightIds13(outm.count(0x7530) ? Unpack(outm[0x7530]) : Bytes()))));
-  for (auto& [id, m] : pending) outm[id] = Pack(JboyWrite(m));
+  // A model over ~822 KB crashes 2011's arena load (WWE '13 bg35 / 45 / 47: 826-829 KB, KOTR '98's
+  // cables 826 KB; 797-822 KB play): over kMaxModel its biggest meshes are left out until it fits
+  constexpr size_t kMaxModel = 800000;
+  for (auto& [id, m] : pending) {
+    Bytes j = JboyWrite(m);
+    int dropped = 0;
+    while (j.size() > kMaxModel && m.meshes.size() > 1) {
+      size_t big = 0;
+      for (size_t k = 1; k < m.meshes.size(); ++k)
+        if (m.meshes[k].verts.size() > m.meshes[big].verts.size()) big = k;
+      m.meshes.erase(m.meshes.begin() + big);
+      ++dropped;
+      j = JboyWrite(m);
+    }
+    if (dropped)
+      rep.notes.push_back("model " + m.name + " (" + std::to_string(id) + ") over the game's model size: " +
+                          std::to_string(dropped) + " biggest mesh(es) left out");
+    outm[id] = Pack(j);
+  }
   // the host's: the ring kit, and data files WWE '13 has none of (not its
   // models; not its ad boards or titantron flip-book, placed for its own hall)
   for (const auto& e : host.entries)
