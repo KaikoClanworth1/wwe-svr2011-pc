@@ -311,6 +311,8 @@ class Builder:
                 want = slots.get(name)
                 k = textures.index(want) if want in textures else -1
                 val = struct.pack('>i', k) + val[4:]
+            if name == 'g_fSweatSPA' and mat.get('cutout'):   # (a cut-out: off the skin shader, which never
+                val = struct.pack('>f', 0.0) + val[4:]          # outputs the colour alpha - SPA 0 cuts, in game)
             if name == 'g_fSpecularLev' and mat.get('specular') is not None:   # (shine: stock 0-100, skin ~0.5)
                 val = struct.pack('>f', min(100.0, max(0.0, float(mat['specular'])))) + val[4:]
             if name == 'g_f4MatDifCol' and mat.get('tint') and len(val) >= 16:   # (tint: the native colour multiplier)
