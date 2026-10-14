@@ -276,9 +276,14 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   ManifestBasics(m, "superstar", p);
   TrailingSpaces(m, p);
-  UnknownKeys(m, {"short", "base", "song", "theme_gain", "movie", "voice", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
+  UnknownKeys(m, {"short", "base", "song", "music", "theme_gain", "movie", "voice", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
                   "entrance", "abilities", "moves", "pack", "game_look"},
               {"attire"}, p);
+  if (const std::string mu = Trim(m.Get("music")); !mu.empty()) {  // (a theme of the game's own, by its music id)
+    const int v = std::atoi(mu.c_str());
+    if (v < 1 || v > 253) p.push_back(Warning("music=" + mu + " isn't one of the game's themes (1 - 253): the base's theme plays.", "Pick a theme on the Superstar page (A game theme...)."));
+    else if (!Trim(m.Get("song")).empty()) p.push_back(Warning("It has both song= and music=: the song file plays.", "Keep one of the two."));
+  }
   const fs::path ch = dir / "ch.pac";
   if (!Exists(ch)) p.push_back(Error("No ch.pac: the game skips this superstar.", "Add the model (Superstar page > Model)."));
   else if (!PacIsEpk8WithModels(ch)) p.push_back(Error("ch.pac isn't a character model (EPK8 with EMD models): the game skips this superstar.", "Pick a character model pac (pac\\ch\\chNNN.pac or a converted one)."));

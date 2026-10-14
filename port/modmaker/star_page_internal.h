@@ -45,6 +45,7 @@ struct StarProject {
   std::vector<Picture> signs;     // its fans' signs (up to 4; 128 x 64)
   // the SvR 2010-style extras (the game: superstar_mods.cpp)
   int pose = -1;                  // pose=<motion id>: the select / VS panel's pose (-1: the style's)
+  int music = 0;                  // music= : a theme of the game's own (its music id 1-253) instead of a song file; 0 = none
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
   char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
   char hometown_city[32] = "";    // hometown=<CITY>[,<STATE>]: the announcer's own hometown clips
@@ -86,6 +87,9 @@ void Problems(std::vector<Problem>& p);
 void Preview();  // the 3D view, the attire buttons, the select picture
 bool EntrancePicker(const char* label, int& value, const char* none, float width = 320);
 void ThemeGainRow();
+// "A game theme...": the game's own themes by superstar, each with a play button; sets g_star.music.
+void StockThemeRow();
+std::string StockThemeName(int music);  // the superstars whose theme it is
 void SaveMod();
 void Install(bool start);
 void SetPicture(const Image& src);

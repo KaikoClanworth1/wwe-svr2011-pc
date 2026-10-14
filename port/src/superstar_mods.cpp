@@ -114,11 +114,13 @@ struct Mod {
   uint32_t attire_pairs = 0;               // guest: 4 x {u32 name string id, s32 unlock} (sub_828C4060)
   std::string song;                 // its theme: a USER PLAYLIST name ("" = the base's)
   int movie = 0;                    // its entrance movie: a user movie id (0 = the base's)
+  int music = 0;                    // a theme of the game's own (manifest music=1-253, when there's no song=; 0 = the base's)
   // every theme / movie the port has set for it (<folder>/.applied): a slot
   // still holding one of them (or the base's) follows the manifest; anything
   // else was the player's choice in the game and stays
   std::vector<std::string> songs_set;
   std::vector<int> movies_set;
+  std::vector<int> musics_set;
   std::vector<int> entrances_set;  // (entrance= numbers set: a slot still holding one follows the manifest)
   int call = -1;  // name call: -1 the base's, else a Created Superstar nickname (0-83)
   // made with a fighting style (Mod Maker "Create a new superstar"): base= is
@@ -442,8 +444,9 @@ void SetEntranceMedia(uint8_t* profile, const Mod& m, const uint8_t* base_profil
   std::memcpy(before, e, sizeof before);
   const uint8_t* b = base_profile + kEntrance;
   const uint16_t music = uint16_t(e[kMusic] << 8 | e[kMusic + 1]);
-  const bool ours = music == kUserPlaylist &&
-                    std::find(m.songs_set.begin(), m.songs_set.end(), SongOf(e)) != m.songs_set.end();
+  const bool ours = (music == kUserPlaylist &&
+                     std::find(m.songs_set.begin(), m.songs_set.end(), SongOf(e)) != m.songs_set.end()) ||
+                    std::find(m.musics_set.begin(), m.musics_set.end(), int(music)) != m.musics_set.end();
   const bool bases = !std::memcmp(e + kMusic, b + kMusic, 2) &&
                      (music != kUserPlaylist || !std::memcmp(e + kSongName, b + kSongName, 80));
   if (ours || bases) {
@@ -456,6 +459,7 @@ void SetEntranceMedia(uint8_t* profile, const Mod& m, const uint8_t* base_profil
     } else {
       std::memcpy(e + kMusic, b + kMusic, 2);
       std::memcpy(e + kSongName, b + kSongName, 80);
+      if (m.music) e[kMusic] = uint8_t(m.music >> 8), e[kMusic + 1] = uint8_t(m.music);  // (a theme of the game's own)
     }
   }
   const int movie = e[kMovie] << 8 | e[kMovie + 1];
@@ -481,7 +485,7 @@ void SetEntranceMedia(uint8_t* profile, const Mod& m, const uint8_t* base_profil
                 int(e[kMovie] << 8 | e[kMovie + 1]));
 }
 
-// <folder>/.applied: "song=<name>" / "movie=<id>" lines, all ever set.
+// <folder>/.applied: "song=<name>" / "movie=<id>" / "music=<id>" / "entrance=<n>" lines, all ever set.
 void ReadApplied(Mod& m, const fs::path& folder) {
   if (FILE* t = std::fopen((folder / ".applied").string().c_str(), "rb")) {
     char line[256];
@@ -490,6 +494,7 @@ void ReadApplied(Mod& m, const fs::path& folder) {
       while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
       if (l.rfind("song=", 0) == 0) m.songs_set.push_back(l.substr(5));
       if (l.rfind("movie=", 0) == 0) m.movies_set.push_back(std::atoi(l.c_str() + 6));
+      if (l.rfind("music=", 0) == 0) m.musics_set.push_back(std::atoi(l.c_str() + 6));
       if (l.rfind("entrance=", 0) == 0) m.entrances_set.push_back(std::atoi(l.c_str() + 9));
     }
     std::fclose(t);
@@ -498,11 +503,13 @@ void ReadApplied(Mod& m, const fs::path& folder) {
   bool add_movie = m.movie && std::find(m.movies_set.begin(), m.movies_set.end(), m.movie) == m.movies_set.end();
   bool add_entrance = m.entrance >= 0 &&
                       std::find(m.entrances_set.begin(), m.entrances_set.end(), m.entrance) == m.entrances_set.end();
-  if (!add_song && !add_movie && !add_entrance) return;
+  bool add_music = m.music && std::find(m.musics_set.begin(), m.musics_set.end(), m.music) == m.musics_set.end();
+  if (!add_song && !add_movie && !add_entrance && !add_music) return;
   if (FILE* t = std::fopen((folder / ".applied").string().c_str(), "ab")) {
     if (add_song) std::fprintf(t, "song=%s\n", m.song.c_str()), m.songs_set.push_back(m.song);
     if (add_movie) std::fprintf(t, "movie=%d\n", m.movie), m.movies_set.push_back(m.movie);
     if (add_entrance) std::fprintf(t, "entrance=%d\n", m.entrance), m.entrances_set.push_back(m.entrance);
+    if (add_music) std::fprintf(t, "music=%d\n", m.music), m.musics_set.push_back(m.music);
     std::fclose(t);
   }
 }
@@ -706,6 +713,10 @@ void LoadMods() {
         }
         if (l.rfind("pose=", 0) == 0) m.pose = uint32_t(std::clamp(std::atoi(l.c_str() + 5), 0, 65535));
         if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
+        if (l.rfind("music=", 0) == 0) {  // (1-253: the game's own themes; 254 is the user playlist, 255 none)
+          const int v = std::atoi(l.c_str() + 6);
+          if (v >= 1 && v <= 253) m.music = v;
+        }
         if (l.rfind("attire", 0) == 0 && l.size() > 17 && l[6] >= '1' && l[6] <= '4' && !l.compare(7, 10, "_entrance="))
           m.attire_entrance[l[6] - '1'] = std::clamp(std::atoi(l.c_str() + 17), 0, 65535);
         if (l.rfind("abilities=", 0) == 0) {

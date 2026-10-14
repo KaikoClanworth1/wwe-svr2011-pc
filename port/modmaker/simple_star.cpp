@@ -285,8 +285,12 @@ void StepAttires() {
 }
 
 void StepMusic() {
-  FileRow("Pick a song...", g_star.song, "the style's", kSoundFilter, 1, "An MP3, WAV, OGG or other sound file.");
-  if (g_star.song.empty()) FromStyle("Music");
+  FileRow("Pick a song...", g_star.song, g_star.music > 0 ? "the game's theme below" : "the style's", kSoundFilter, 1,
+          "An MP3, WAV, OGG or other sound file.");
+  if (!g_star.song.empty() && g_star.music) g_star.music = 0;  // (a song file picked: it wins)
+  ImGui::TextDisabled("or");
+  StockThemeRow();
+  if (g_star.song.empty() && !g_star.music) FromStyle("Music");
   ImGui::Spacing();
   ThemeGainRow();
   if (!g_star.song.empty()) ImGui::TextDisabled("Tip: \"Match the game\" makes it as loud as the game's own songs.");
@@ -497,7 +501,7 @@ void StepFinish() {
     const int own = g_star.model.empty() ? 0 : int(ModelAttires(g_star.model).size());
     row(kStepAttires, std::to_string(std::max(own, 1 + extra)) + " attire" + (std::max(own, 1 + extra) == 1 ? "" : "s"));
   }
-  row(kStepMusic, g_star.song.empty() ? std::string("the style's") : FileName(g_star.song));
+  row(kStepMusic, !g_star.song.empty() ? FileName(g_star.song) : g_star.music > 0 ? "the game's theme: " + StockThemeName(g_star.music) : std::string("the style's"));
   row(kStepEntrance, g_star.entrance < 0 ? std::string("the style's") : "entrance " + std::to_string(g_star.entrance));
   {
     int moves = 0, taunts = 0;
