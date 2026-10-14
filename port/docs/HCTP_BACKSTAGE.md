@@ -133,3 +133,26 @@ B 0x20, Y 0x10, R1 0x08), +56 the stick's 8-way direction (4 up the screen = -z,
 Test switch `SVR2011_TEST_HCTP_ROOF=props` in rooms 31-36 drives the interactions on fighter 1 (cars,
 generator, slam; racks, wall, locker, toilet, shower; lion; window, pole) and puts fighter 0 (the scripted
 pad) by the forklift (31) / under the helicopter (33).
+
+## State when paused (2026-10-14, branch hctp-resume)
+
+Done and checked in game: all seven rooms build and load (60 fps) with their props, own weapons and
+interactions - room 30 (cage, roof, cart, valves, crate, fence veto, roof step-in), 31 (cars, fence / drums /
+box, generator, trailer slam, traffic car, forklift), 32 (lockers, toilet, showers, shelves, TV, wall,
+sandbag, treadmill), 33 (taxis, poles, shop windows, ladder / wall climbs, helicopter ride), 35 / 36 (lion
+climb). backstage_port.py converts any room from the player's ISO (checked: room 32 converted from the ISO
+with the real Game Files as --pac11 plays in game; ModMakerUIRework's Port page "Backstage" kind on main).
+
+Next steps (none started):
+- Generator lights-out (HCTP CChangeLightColor: room lights to 0.15 for 160 frames + a glare): needs 2011's
+  stage-light control found.
+- Room 30's button lamps (CGmSwitchLight 1246): drawn as grey slabs as plain objects - needs an additive /
+  emissive draw.
+- Fountain throw (room 35) and treadmill / sandbag knock-down: coded, not driven by a test yet (a real Irish
+  whip / A mashing with the scripted pad).
+- Lion statue fade (HCTP draws it at 0.3 when a wrestler is behind it), broken-car crushed collision (2098),
+  locker-door / TV / window weapons (2011 has no matching weapons), taxi and forklift solidity (static
+  collision only).
+- The 'X gimmicks' accept motion 0 (standing still) - a lying wrestler on the right spot can trigger them too;
+  a better standing test would fix it.
+- HCTP's own unknowns: re/re_rooms31_36.md "Unknown" sections.
