@@ -67,6 +67,11 @@ int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 std::string g_test_game;        // (--port-test kind@game: a folder's game, as picked in its combo)
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
+std::wstring g_file;   // or one arena file (.pac): arena_port.py detect says its game and what a lone file lacks
+Json g_detect;         // the detect answer for g_detect_for
+std::wstring g_detect_for;
+std::string g_detect_error;
+int g_file_game = 0;   // 0: the detected game, n: its also[n - 1] (the file can't tell, e.g. SvR 2008 / 2009)
 // Embedded (a Simple mode's steps): the result is handed back (EmbeddedResult), not opened on its page.
 bool g_embedded = false;
 std::wstring g_embedded_result;
@@ -139,12 +144,14 @@ void CacheRow() {
 }
 
 std::wstring Source() {
+  if (!g_file.empty()) return g_file;
   if (!g_image.empty()) return g_image;
   if (!g_folder.empty()) return g_folder;
   const auto& d = Discs();
   return g_disc >= 0 && g_disc < int(d.size()) ? d[size_t(g_disc)].path : L"";
 }
 std::string SourceId() {
+  if (!g_file.empty()) return {};  // (a lone file: its game comes from detect)
   if (!g_image.empty()) {
     static std::wstring for_image;
     static std::string id;
@@ -751,9 +758,104 @@ void OpenResult() {
   ShellOpen(p.wstring());
 }
 
+std::wstring PickArenaFile() {
+  static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena file (bgNN.pac)", L"*.pac"}};
+  return PickFile(false, L"One arena file from another game (SvR 2007 - WWE 2K17: pac\\bg\\bgNN.pac)", kPac, 1);
+}
+
+// One arena file (no disc): detect says the game (or a few it may be) and what a lone file can't bring. WWE '12 -
+// 2K17: the Mod Maker converts the file itself (as an arena off the disc); SvR 2007 - 2010: the usual list + convert,
+// with the game it returns.
+std::string FileArena(int k) {
+  if (g_detect_for != g_file && !Busy()) {
+    g_detect_for = g_file, g_detect = Json(), g_detect_error.clear(), g_file_game = 0;
+    RunToolJson(kKinds[k].script, {L"detect", L"--src", g_file}, [file = g_file](int code, const std::string& out) {
+      if (file != g_detect_for) return;
+      Json j;
+      const bool parsed = ParseJson(out, j) && j.type == Json::Type::kObject;
+      if (code == 0 && parsed && j["ok"].Truthy()) g_detect = std::move(j);
+      else g_detect_error = parsed && !j["error"].Str().empty() ? j["error"].Str() : "the converter stopped (exit " + std::to_string(code) + "): see the log";
+    });
+  }
+  if (!g_detect_error.empty()) {
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(kBad, "%s", g_detect_error.c_str());
+    ImGui::PopTextWrapPos();
+    return {};
+  }
+  if (g_detect.type != Json::Type::kObject) {
+    ImGui::TextDisabled("Reading the file ...");
+    return {};
+  }
+  std::vector<std::string> ids = {g_detect["game"].Str()};
+  for (const Json& a : g_detect["also"].items) ids.push_back(a.Str());
+  auto name_of = [k](const std::string& id) {
+    for (const Json& g : g_games[k].items)
+      if (g["id"].Str() == id) return g["name"].Str();
+    return id;
+  };
+  g_file_game = std::clamp(g_file_game, 0, int(ids.size()) - 1);
+  const std::string game = ids[size_t(g_file_game)];
+  if (g_detect["sure"].Truthy() || ids.size() == 1) {
+    ImGui::Text("2. An arena from %s", g_detect["game_name"].Str().c_str());
+  } else {
+    std::string all;
+    for (size_t i = 0; i < ids.size(); ++i) all += (i ? (i + 1 == ids.size() ? " or " : ", ") : "") + name_of(ids[i]);
+    ImGui::TextWrapped("2. An arena from %s (the file looks the same in these games).", all.c_str());
+    ImGui::SetNextItemWidth(260 * g_scale);
+    if (ImGui::BeginCombo("Which game it's from", name_of(game).c_str())) {
+      for (int i = 0; i < int(ids.size()); ++i)
+        if (ImGui::Selectable(name_of(ids[size_t(i)]).c_str(), g_file_game == i)) g_file_game = i;
+      ImGui::EndCombo();
+    }
+    Hint("Only the arena's name from the port's list depends on it: the arena itself converts the same.");
+  }
+  ImGui::PushTextWrapPos(0);
+  if (!g_detect["lacks"].items.empty()) {
+    ImGui::TextDisabled("On its own, the file can't bring:");
+    for (const Json& l : g_detect["lacks"].items) {  // (the converter's words, without its command-line options)
+      std::string t = l.Str();
+      for (const char* opt : {" (with --pac11)", " (--pac11)"})
+        for (size_t at; (at = t.find(opt)) != std::string::npos;) t.erase(at, std::strlen(opt));
+      ImGui::BulletText("%s", t.c_str());
+    }
+  }
+  for (const Json& n : g_detect["notes"].items) ImGui::TextColored(kWarn, "%s", n.Str().c_str());
+  ImGui::PopTextWrapPos();
+  if (g_detect["convert"].Str() != "mod_maker") return game;
+  // WWE '12 - 2K17: the file is the arena pac the Mod Maker converts
+  const Json& item = g_detect["items"].items.empty() ? Json() : g_detect["items"].items.front();
+  const std::string title = item["name"].Str().empty() ? Utf8(fs::path(g_file).stem().wstring()) : item["name"].Str();
+  if (Blocked(item)) {
+    BlockedRow(title + (item["status"].Str() == "crashes" ? "  (crashes the game)" : "  (not portable)"), item);
+    g_native_test.clear();
+    return {};
+  }
+  ImGui::Text("3. %s", title.c_str());
+  ImGui::BeginDisabled(Busy());
+  PushAccent();
+  const bool use = ImGui::Button((std::string(g_embedded ? "4. Use this arena" : "4. Use this arena (Other games page)") + "##lone").c_str(),
+                                 ImVec2(320 * g_scale, 0)) ||
+                   (!g_native_test.empty() && !Busy());
+  PopAccent();
+  ImGui::EndDisabled();
+  if (use) {
+    g_native_test.clear();
+    Log("port: one arena file " + Utf8(g_file) + " (" + game + ")");
+    if (g_embedded) {
+      g_embedded_result = g_file;
+    } else {
+      other_page::UseArenaFile(g_file, IdFrom(game + "_" + title, "arena"));
+      GoTo(PageId::kOther);
+    }
+  }
+  return {};
+}
+
 void DiscRow() {
   const auto& discs = Discs();
-  std::string label = !g_image.empty()  ? Utf8(fs::path(g_image).filename().wstring())
+  std::string label = !g_file.empty()   ? Utf8(fs::path(g_file).filename().wstring()) + " (one arena file)"
+                      : !g_image.empty()  ? Utf8(fs::path(g_image).filename().wstring())
                       : !g_folder.empty() ? Utf8(fs::path(g_folder).filename().wstring()) + " (folder)"
                       : g_disc >= 0 && g_disc < int(discs.size()) ? discs[size_t(g_disc)].game
                                                                    : "pick a disc";
@@ -762,18 +864,27 @@ void DiscRow() {
     if (!DiscsReady()) ImGui::TextDisabled("Looking for your discs ...");
     else if (discs.empty()) ImGui::TextDisabled("No discs yet: add them on My game discs (below).");
     for (int i = 0; i < int(discs.size()); ++i)
-      if (ImGui::Selectable((discs[size_t(i)].game + "##" + std::to_string(i)).c_str(), g_folder.empty() && g_image.empty() && g_disc == i))
-        g_disc = i, g_folder.clear(), g_image.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
+      if (ImGui::Selectable((discs[size_t(i)].game + "##" + std::to_string(i)).c_str(), Source() == discs[size_t(i)].path))
+        g_disc = i, g_folder.clear(), g_image.clear(), g_file.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
     ImGui::Separator();
     if (ImGui::Selectable("An extracted folder ...")) {
       const std::wstring f = PickFolder(L"A folder with another game's files (an extracted disc)");
-      if (!f.empty()) g_folder = f, g_image.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
+      if (!f.empty()) g_folder = f, g_image.clear(), g_file.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
+    }
+    if (ImGui::Selectable("One arena file (.pac) ...")) {
+      const std::wstring f = PickArenaFile();
+      if (!f.empty()) {
+        SetSource(f);
+        for (int k = 0; k < kKindCount; ++k)
+          if (std::wstring(kKinds[k].script) == L"arena_port.py") g_kind = g_force_kind = k;
+      }
     }
     if (ImGui::Selectable("My game discs ...")) GoTo(PageId::kDiscs);
     ImGui::EndCombo();
   }
   Hint("Your WWE games from My game discs (set once there: Find my discs searches a folder for them): Xbox 360 SvR "
-       "2007 to 2K17 and the PS2 games, disc images read as they are, or extracted folders.");
+       "2007 to 2K17 and the PS2 games, disc images read as they are, or extracted folders. Or one arena file "
+       "(bgNN.pac) on its own, from SvR 2007 to WWE 2K17.");
 }
 
 }  // namespace
@@ -809,12 +920,19 @@ void KindBody(int k) {
     return;
   }
   std::string game;
-  const Json& g = GameFor(k);
-  if (g.IsNull() && (g_folder.empty() || !SourceId().empty())) {
+  const Json& g = g_file.empty() ? GameFor(k) : Json();
+  if (!g_file.empty()) {
+    if (std::wstring(kKinds[k].script) != L"arena_port.py") {
+      ImGui::TextDisabled("One arena file holds only an arena: see the Arenas tab.");
+      return;
+    }
+    game = FileArena(k);
+    if (game.empty()) return;
+  } else if (g.IsNull() && (g_folder.empty() || !SourceId().empty())) {
     ImGui::TextColored(kWarn, "This converter doesn't know this disc (%s).", SourceId().c_str());
     return;
   }
-  if (!g.IsNull()) {
+  if (g_file.empty() && !g.IsNull()) {
     game = g["id"].Str();
     const std::string status = g["status"].Str();
     ImGui::Text("2. %s: %s", g["name"].Str().c_str(), status == "ready" ? "ready" : status.c_str());
@@ -826,7 +944,7 @@ void KindBody(int k) {
       ImGui::TextColored(kWarn, "Not portable yet: the format of this game is still being worked out.");
       return;
     }
-  } else {  // a folder: pick the game
+  } else if (g_file.empty()) {  // a folder: pick the game
     static int pick = 0;
     const auto& all = g_games[k].items;
     if (all.empty()) return;
@@ -1014,8 +1132,7 @@ void TestStart(const std::string& spec) {
     if (Lower(kKinds[k].title) == Lower(p[0]) || Utf8(kKinds[k].script) == p[0] + "_port.py") g_kind = g_force_kind = k;
   const std::wstring src = Wide(p[1]);
   std::error_code ec;
-  if (fs::is_directory(src, ec)) g_folder = src;
-  else g_image = src;
+  SetSource(src);
   g_test_item = p[2];
   g_native_test = g_kind >= 0 && std::wstring(kKinds[g_kind].script) == L"arena_port.py" ? p[2] : "";
   if (p.size() > 3) std::snprintf(g_options, sizeof g_options, "%s", p[3].c_str());
@@ -1075,12 +1192,13 @@ void EmbeddedFlow(const wchar_t* script, bool with_disc_row) {
 
 void SetSource(const std::wstring& path) {
   if (path == CurrentSource()) return;
-  g_image.clear(), g_folder.clear(), g_disc = -1;
+  g_image.clear(), g_folder.clear(), g_file.clear(), g_disc = -1;
   const auto& d = Discs();
   for (int i = 0; i < int(d.size()); ++i)
     if (d[size_t(i)].path == path) g_disc = i;
   std::error_code ec;
-  if (g_disc < 0 && !path.empty()) (fs::is_directory(path, ec) ? g_folder : g_image) = path;
+  if (g_disc < 0 && !path.empty())
+    (fs::is_directory(path, ec) ? g_folder : Lower(Utf8(fs::path(path).extension().wstring())) == ".pac" ? g_file : g_image) = path;
   g_list = Json(), g_list_for.clear(), g_result = Json(), g_result_error.clear();
 }
 std::wstring CurrentSource() { return Source(); }

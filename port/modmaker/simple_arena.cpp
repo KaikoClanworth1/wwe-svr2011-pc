@@ -42,6 +42,7 @@ bool NativeGame(const std::string& key) { return key.rfind("wwe", 0) == 0; }
 int g_start_mode = -1;      // 0 an arena in the game, 1 from my other games, 2 an empty hall
 std::string g_disc_key;     // (mode 1) the game picked
 bool choosing = true;       // (a game picked: its cards fold away, the arenas get the room)
+std::wstring g_lone_file;   // (mode 1) or one arena file (.pac) on its own, no disc
 int g_native_host = 1;      // a WWE '12 - 2K17 arena's host tile (RAW, as the bundled ones)
 std::string g_name_typed;   // the name the player typed (kept when the start changes)
 
@@ -213,7 +214,12 @@ void StartFromDisc() {
                       "or aren't arenas (backstage rooms, studios).");
   ImGui::PopTextWrapPos();
 
-  if (!g_disc_key.empty() && !disc_list::PathFor(g_disc_key).empty() && !choosing) {
+  const bool lone = !g_lone_file.empty();
+  if (lone && !choosing) {
+    ImGui::Text("The arena file %s", FileName(g_lone_file).c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Change")) choosing = true;
+  } else if (!g_disc_key.empty() && !disc_list::PathFor(g_disc_key).empty() && !choosing) {
     const disc_list::Game* g = disc_list::GameByKey(g_disc_key);
     ImGui::Text("Arenas from %s", g ? g->name : g_disc_key.c_str());
     ImGui::SameLine();
@@ -223,7 +229,7 @@ void StartFromDisc() {
   const int per_row = std::max(1, int((ImGui::GetContentRegionAvail().x + 8 * g_scale) / (w + 8 * g_scale)));
   int n = 0, missing = 0;
   for (const char* key : kArenaGames) {
-    if (!choosing && !g_disc_key.empty() && !disc_list::PathFor(g_disc_key).empty()) break;
+    if (!choosing && (lone || (!g_disc_key.empty() && !disc_list::PathFor(g_disc_key).empty()))) break;
     const disc_list::Game* g = disc_list::GameByKey(key);
     if (!g) continue;
     if (disc_list::PathFor(key).empty()) {
@@ -231,10 +237,19 @@ void StartFromDisc() {
       continue;
     }
     if (n++ % per_row) ImGui::SameLine(0, 8 * g_scale);
-    if (Card(key, g->name, NativeGame(key) ? "converted by the Mod Maker" : "converted by the arena tool", g_disc_key == key, w, h) &&
-        g_disc_key != key)
-      g_disc_key = key, port_page::ClearEmbeddedResult(), choosing = false;
+    if (Card(key, g->name, NativeGame(key) ? "converted by the Mod Maker" : "converted by the arena tool", !lone && g_disc_key == key, w, h) &&
+        (lone || g_disc_key != key))
+      g_disc_key = key, g_lone_file.clear(), port_page::ClearEmbeddedResult(), choosing = false;
     else if (g_disc_key == key && ImGui::IsItemClicked()) choosing = false;
+  }
+  if (choosing || (g_disc_key.empty() && !lone)) {
+    if (ImGui::Button("One arena file (.pac)...")) {
+      static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena file (bgNN.pac)", L"*.pac"}};
+      const std::wstring f = PickFile(false, L"One arena file from another game (SvR 2007 - WWE 2K17: pac\\bg\\bgNN.pac)", kPac, 1);
+      if (!f.empty()) g_lone_file = f, port_page::ClearEmbeddedResult(), choosing = false;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(no disc: just the arena's bgNN.pac, e.g. one a friend sent)");
   }
   if (!n && choosing) ImGui::TextColored(kWarn, "None of your games with arenas is in My game discs yet.");
   if (missing && choosing) {
@@ -242,9 +257,10 @@ void StartFromDisc() {
     ImGui::SameLine();
     if (ImGui::SmallButton("My game discs...")) GoTo(PageId::kDiscs);
   }
-  if (g_disc_key.empty() || disc_list::PathFor(g_disc_key).empty()) return;
+  if (g_lone_file.empty() && (g_disc_key.empty() || disc_list::PathFor(g_disc_key).empty())) return;
+  if (choosing && !g_lone_file.empty()) return;
   ImGui::Separator();
-  port_page::SetSource(disc_list::PathFor(g_disc_key));
+  port_page::SetSource(!g_lone_file.empty() ? g_lone_file : disc_list::PathFor(g_disc_key));
   const std::wstring got = port_page::EmbeddedResult();
   const std::string ext = Lower(Utf8(fs::path(got).extension().wstring()));
   if (!got.empty() && ext == ".svrmod") {  // SvR 2007 - 2010: the converter's arena mod, opened as the project
@@ -274,9 +290,11 @@ void StartFromDisc() {
     PopAccent();
     ImGui::EndDisabled();
     if (go) {
-      const disc_list::Game* g = disc_list::GameByKey(g_disc_key);
+      const disc_list::Game* g = g_lone_file.empty() ? disc_list::GameByKey(g_disc_key) : nullptr;
       const std::string stem = Utf8(fs::path(got).stem().wstring());
-      const std::string name = !g_name_typed.empty() ? g_name_typed : std::string(g ? g->name : "Arena") + " " + stem.substr(stem.rfind('_') + 1);
+      const std::string name = !g_name_typed.empty() ? g_name_typed
+                               : !g_lone_file.empty() ? stem
+                                                      : std::string(g ? g->name : "Arena") + " " + stem.substr(stem.rfind('_') + 1);
       port_page::ClearEmbeddedResult();
       other_page::ConvertArena(got, g_native_host, name, false);
     }
@@ -570,6 +588,12 @@ void TestRun() {
     } else if (p[0] == "empty" && p.size() > 1) {
       g_start_mode = 2;
       NewArena(std::clamp(std::atoi(p[1].c_str()), 0, 19), false);
+    } else if (p[0] == "file" && p.size() > 3) {  // file:<item>:<host>:<path of one arena pac>
+      g_start_mode = 1;
+      g_native_host = std::clamp(std::atoi(p[2].c_str()), 0, 19);
+      const size_t at = s.find(':', s.find(':', s.find(':') + 1) + 1) + 1;
+      g_lone_file = Wide(s.substr(at)), g_disc_key.clear(), choosing = false;
+      port_page::TestStart("Arenas," + s.substr(at) + "," + p[1]);
     } else if (p[0] == "disc" && p.size() > 2) {
       g_start_mode = 1;
       g_disc_key = p[1], choosing = false;
