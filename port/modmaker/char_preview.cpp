@@ -143,6 +143,13 @@ struct PMesh {
   std::string tex;  // lower case
   bool cutout = false;  // (hair, lashes: alpha tested)
   bool blood = false;   // a blood overlay (blood_*): drawn only with SetBlood(true)
+  // the material, as the game keeps it per mesh: shine g_fSpecularLev / g_iSpecularPow, the colour multiplier
+  // g_f4MatDifCol, the render flags (+0x88: 0x100 see-through cut-out, 0x2 culled - else both sides), texNormal
+  float spec = 0.5f, spec_pow = 50;
+  float tint[3] = {1, 1, 1};
+  uint32_t mflags = 0x6;
+  std::string ntex;  // the normal map (lower case; "" none)
+  std::vector<V3> tan;  // tangents (from the UVs) for the normal map
 };
 struct Bone {
   std::string name;
@@ -283,12 +290,30 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
     // blood overlays: blood_* / Blood_face (the names' case varies) or PACH children 0x7530-0x7532
     const std::string lname = Lower(m.name);
     const bool blood = lname.rfind("blood", 0) == 0 || (model_ids[mi] >= 0x7530 && model_ids[mi] <= 0x7532);
-    const bool cutout = blood || lname.find("hair") != std::string::npos || lname.find("eyelash") != std::string::npos;
+    const bool name_cutout = lname.find("hair") != std::string::npos || lname.find("eyelash") != std::string::npos;
     for (const Mesh& s : m.meshes) {
       PMesh pm;
       const int slot = DiffuseSlot(s);
       pm.tex = slot >= 0 && slot < int(m.textures.size()) ? Lower(m.textures[slot]) : "color";
-      pm.cutout = cutout;
+      // the material: the mesh's own parameters and flags (the game's), the cut-out from its flags
+      if (s.raw.size() >= 0x8C) pm.mflags = Be32(&s.raw[0x88]);
+      for (const auto& p : s.params) {
+        if (p.name == "g_fSpecularLev" && p.type == 0x0a && p.value.size() >= 4) {
+          const uint32_t u = Be32(p.value.data());
+          std::memcpy(&pm.spec, &u, 4);
+        } else if (p.name == "g_iSpecularPow" && p.type == 0x05 && p.value.size() >= 4) {
+          pm.spec_pow = float(int32_t(Be32(p.value.data())));
+        } else if (p.name == "g_f4MatDifCol" && p.type == 0x0d && p.value.size() >= 12) {
+          for (int c = 0; c < 3; ++c) {
+            const uint32_t u = Be32(&p.value[size_t(4 * c)]);
+            std::memcpy(&pm.tint[c], &u, 4);
+          }
+        } else if (p.name == "texNormal" && p.type == 0x0f && p.value.size() >= 4) {
+          const int slot = int(Be32(p.value.data()));
+          if (slot >= 0 && slot < int(m.textures.size())) pm.ntex = Lower(m.textures[size_t(slot)]);
+        }
+      }
+      pm.cutout = blood || (s.raw.size() >= 0x8C ? (pm.mflags & 0x100) != 0 : name_cutout);
       pm.blood = blood;
       const size_t vc = s.verts.size();
       pm.pos.resize(vc), pm.nrm.resize(vc), pm.uv.resize(vc), pm.inf.resize(vc);
@@ -323,6 +348,19 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
           if (t[0] < vc && t[1] < vc && t[2] < vc) pm.idx.insert(pm.idx.end(), {t[0], t[1], t[2]});
       if (pm.idx.empty()) continue;
       ch.verts += vc;
+      if (!pm.ntex.empty()) {  // tangents along +U (per triangle, summed per vertex)
+        pm.tan.assign(vc, V3{0, 0, 0});
+        for (size_t t = 0; t + 2 < pm.idx.size(); t += 3) {
+          const uint32_t a = pm.idx[t], b = pm.idx[t + 1], c = pm.idx[t + 2];
+          const V3 e1 = pm.pos[b] - pm.pos[a], e2 = pm.pos[c] - pm.pos[a];
+          const float u1 = pm.uv[b][0] - pm.uv[a][0], v1 = pm.uv[b][1] - pm.uv[a][1], u2 = pm.uv[c][0] - pm.uv[a][0],
+                      v2 = pm.uv[c][1] - pm.uv[a][1];
+          const float d = u1 * v2 - u2 * v1;
+          if (std::fabs(d) < 1e-12f) continue;
+          const V3 tg = (e1 * v2 - e2 * v1) * (1.0f / d);
+          for (uint32_t k : {a, b, c}) pm.tan[k] = pm.tan[k] + tg;
+        }
+      }
       ch.meshes.push_back(std::move(pm));
     }
   }
@@ -1040,6 +1078,7 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vecto
 
 struct GpuVertex {
   float pos[3], n[3], uv[2];
+  float t[3];  // tangent (normal-mapped meshes; else zero)
 };
 struct Cb {
   float viewproj[16];
@@ -1048,20 +1087,29 @@ struct Cb {
   float fill[4];   // toward the fill light (lower right)
   float fwd[4];    // the camera's forward
   float shadow[2][4];  // the floor's contact shadows: x, z, radius, strength (0: none)
+  float mat[4];        // x shine (g_fSpecularLev), y its power, z a normal map, w the shine from the colour's alpha
+  float tint[4];       // the colour multiplier (g_f4MatDifCol)
 };
 
 const char* kShader = R"(
-cbuffer C : register(b0) { row_major float4x4 viewproj; float4 flags; float4 key; float4 fill; float4 fwd; float4 shadow[2]; };
-struct VI { float3 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD; };
-struct VO { float4 p : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD0; float3 w : TEXCOORD1; };
-VO vs(VI i) { VO o; o.p = mul(float4(i.p, 1), viewproj); o.n = i.n; o.uv = i.uv; o.w = i.p; return o; }
+cbuffer C : register(b0) { row_major float4x4 viewproj; float4 flags; float4 key; float4 fill; float4 fwd; float4 shadow[2]; float4 mat; float4 tint; };
+struct VI { float3 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD; float3 t : TANGENT; };
+struct VO { float4 p : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD0; float3 w : TEXCOORD1; float3 t : TEXCOORD2; };
+VO vs(VI i) { VO o; o.p = mul(float4(i.p, 1), viewproj); o.n = i.n; o.uv = i.uv; o.w = i.p; o.t = i.t; return o; }
 Texture2D t : register(t0);
+Texture2D tn : register(t1);
 SamplerState s : register(s0);
 float4 ps(VO i) : SV_Target {
   float4 tx = t.Sample(s, i.uv);
   if (flags.x > 0.5 && tx.a < 0.3) discard;
   float3 n = normalize(i.n + 1e-5);
-  if (dot(n, fwd.xyz) > 0) n = -n;  // (two-sided: cloth, hair cards)
+  float side = dot(n, fwd.xyz) > 0 ? -1 : 1;
+  n *= side;  // (the back of a two-sided part: cloth, hair cards)
+  if (mat.z > 0.5 && dot(i.t, i.t) > 1e-8) {  // the normal map (tangent space, +U along the tangent)
+    float3 T = normalize(i.t - n * dot(n, i.t)), B = cross(n, T);
+    float3 m = tn.Sample(s, i.uv).xyz * 2 - 1;
+    n = normalize(T * m.x + B * m.y + n * max(m.z, 0.05));
+  }
   float k = saturate(dot(n, key.xyz)), f = saturate(dot(n, fill.xyz));
   if (flags.y > 0.5) {  // the floor, with the people's contact shadows
     float dark = 1;
@@ -1071,7 +1119,9 @@ float4 ps(VO i) : SV_Target {
   }
   float amb = lerp(0.30, 0.52, 0.5 + 0.5 * n.y);
   float rim = pow(1 - saturate(dot(n, -fwd.xyz)), 3) * 0.45;
-  return float4(tx.rgb * (amb + 0.80 * k + 0.28 * f + rim), 1);
+  float3 h = normalize(key.xyz - fwd.xyz);  // the key light's highlight
+  float shine = saturate(mat.x / 2) * (mat.w > 0.5 ? tx.a : 1) * pow(saturate(dot(n, h)), clamp(mat.y, 1, 300)) * 0.9;
+  return float4(tx.rgb * tint.rgb * (amb + 0.80 * k + 0.28 * f + rim) + shine * k, 1);
 }
 )";
 
@@ -1083,6 +1133,7 @@ ID3D11InputLayout* g_layout = nullptr;
 ID3D11Buffer* g_cb = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_raster = nullptr;
+ID3D11RasterizerState* g_raster_cull = nullptr;  // (culled meshes: render flag 0x2)
 ID3D11DepthStencilState* g_depth = nullptr;
 ID3D11ShaderResourceView* g_white = nullptr;
 ID3D11ShaderResourceView* g_floor_tex = nullptr;  // the ring canvas with a 1 m grid
@@ -1099,6 +1150,9 @@ bool g_capturing = false;  // (Capture: a clear background, no floor, the model 
 struct GpuMesh {
   ID3D11Buffer* vb = nullptr;
   ID3D11Buffer* ib = nullptr;
+  ID3D11ShaderResourceView* ntex = nullptr;  // the normal map (null: none)
+  float spec = 0.5f, spec_pow = 50, tint[3] = {1, 1, 1};
+  bool culled = true;
   UINT count = 0;
   ID3D11ShaderResourceView* tex = nullptr;
   bool cutout = false;
@@ -1242,6 +1296,16 @@ void Upload(Slot& sl, std::shared_ptr<Character> ch) {
     g.count = UINT(pm.idx.size());
     g.cutout = pm.cutout;
     g.blood = pm.blood;
+    g.spec = pm.spec, g.spec_pow = pm.spec_pow, std::memcpy(g.tint, pm.tint, sizeof g.tint);
+    g.culled = (pm.mflags & 0x2) != 0;
+    if (!pm.ntex.empty()) {
+      auto nit = g_textures.find(pm.ntex);
+      if (nit == g_textures.end()) {
+        const auto src = g_char->textures.find(pm.ntex);
+        nit = g_textures.emplace(pm.ntex, src == g_char->textures.end() ? nullptr : MakeTexture(src->second)).first;
+      }
+      g.ntex = nit->second;
+    }
     if (pm.blood && (pm.tex == "bloodface" || pm.tex == "bloodbody")) {  // the game swaps in its shared ones (misc.pac)
       LoadBloodTextures();
       g.blood_kind = pm.tex == "bloodface" ? 1 : 2;
@@ -1304,8 +1368,9 @@ bool CreatePipeline() {
       {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
       {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
       {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
+      {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0},
   };
-  g_dev->CreateInputLayout(il, 3, vsb->GetBufferPointer(), vsb->GetBufferSize(), &g_layout);
+  g_dev->CreateInputLayout(il, 4, vsb->GetBufferPointer(), vsb->GetBufferSize(), &g_layout);
   vsb->Release();
   psb->Release();
   D3D11_BUFFER_DESC bd = {};
@@ -1325,6 +1390,9 @@ bool CreatePipeline() {
   rd.CullMode = D3D11_CULL_NONE;
   rd.DepthClipEnable = TRUE;
   g_dev->CreateRasterizerState(&rd, &g_raster);
+  rd.CullMode = D3D11_CULL_BACK;  // (a culled mesh, flag 0x2: the game's fronts are clockwise in this view - checked on stock bodies)
+  rd.FrontCounterClockwise = FALSE;
+  g_dev->CreateRasterizerState(&rd, &g_raster_cull);
   D3D11_DEPTH_STENCIL_DESC dd = {};
   dd.DepthEnable = TRUE;
   dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
@@ -1455,7 +1523,11 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
       // y up for the view: y and z negated (a half turn about x); the model
       // scaled from its feet (last frame's lowest point)
       if (model) g_feet_next = std::min(g_feet_next, -p.y), g_top_next = std::max(g_top_next, -p.y);
-      out[k] = {{p.x * s, g_feet + (-p.y - g_feet) * s, -p.z * s}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}};
+      V3 tg{0, 0, 0};
+      if (!pm.tan.empty())
+        for (int j = 0; j < 4; ++j)
+          if (f.w[j] > 0) tg = tg + Rotate(skin[size_t(f.node[j])], pm.tan[k]) * f.w[j];
+      out[k] = {{p.x * s, g_feet + (-p.y - g_feet) * s, -p.z * s}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}, {tg.x, -tg.y, -tg.z}};
       if (frame)
         for (int c = 0; c < 3; ++c) lo[c] = std::min(lo[c], out[k].pos[c]), hi[c] = std::max(hi[c], out[k].pos[c]);
     }
@@ -1757,6 +1829,19 @@ void Physics(Slot& sl, std::vector<Xf>& world, const std::vector<Xf>& local, con
   }
 }
 
+// A mesh's material for the shader (null: neutral - the floor, the ring): constants, normal map at t1, culling.
+void UseMaterial(Cb* c, const GpuMesh* g) {
+  c->mat[0] = g ? g->spec : 0, c->mat[1] = g ? g->spec_pow : 1, c->mat[2] = g && g->ntex ? 1.0f : 0.0f;
+  c->mat[3] = g && !g->cutout ? 1.0f : 0.0f;  // (a cut-out's alpha is its see-through, not its shine)
+  for (int k = 0; k < 3; ++k) c->tint[k] = g ? g->tint[k] : 1;
+  c->tint[3] = 1;
+}
+void BindMaterial(const GpuMesh* g) {
+  ID3D11ShaderResourceView* n = g && g->ntex ? g->ntex : nullptr;
+  g_ctx->PSSetShaderResources(1, 1, &n);
+  g_ctx->RSSetState(g && g->culled && g_raster_cull ? g_raster_cull : g_raster);
+}
+
 void Render(int w, int h) {
   ResizeTarget(w, h);
   const float clear[4] = {0.11f, 0.12f, 0.14f, g_capturing ? 0.0f : 1.0f};
@@ -1897,11 +1982,13 @@ void Render(int w, int h) {
     shadows[si][0] = hx, shadows[si][1] = hz, shadows[si][2] = 7.0f;
     shadows[si][3] = std::clamp(1.0f - above / 14.0f, 0.15f, 1.0f);
   }
-  auto set_cb = [&](float cutout, float floor) {
+  auto set_cb = [&](float cutout, float floor, const GpuMesh* g = nullptr) {
+    BindMaterial(g);
     D3D11_MAPPED_SUBRESOURCE ms;
     if (FAILED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
     Cb* c = static_cast<Cb*>(ms.pData);
     std::memcpy(c->viewproj, viewproj, 64);
+    UseMaterial(c, g);
     c->flags[0] = cutout, c->flags[1] = floor, c->flags[2] = c->flags[3] = 0;
     const float k4[4] = {key.x, key.y, key.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
     std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);
@@ -1956,7 +2043,7 @@ void Render(int w, int h) {
   for (const GpuMesh& g : sl.gpu) {
     if (sl.hidden) break;
     if (g.blood && (!g_blood || g.blood_missing)) continue;
-    if (!set_cb(g.cutout ? 1.0f : 0.0f, 0)) continue;
+    if (!set_cb(g.cutout ? 1.0f : 0.0f, 0, &g)) continue;
     const UINT stride = sizeof(GpuVertex), offset = 0;
     g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
     g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
@@ -2211,9 +2298,11 @@ void DrawPosed(Slot& sl, const std::vector<Xf>& pose, ID3D11RenderTargetView* rt
     std::memset(c, 0, sizeof *c);
     std::memcpy(c->viewproj, viewproj, 64);
     c->flags[0] = g.cutout ? 1.0f : 0.0f;
+    UseMaterial(c, &g);
     const float k4[4] = {key_l.x, key_l.y, key_l.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
     std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);
     g_ctx->Unmap(g_cb, 0);
+    BindMaterial(&g);
     const UINT stride = sizeof(GpuVertex), offset = 0;
     g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
     g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
@@ -2221,6 +2310,7 @@ void DrawPosed(Slot& sl, const std::vector<Xf>& pose, ID3D11RenderTargetView* rt
     g_ctx->PSSetShaderResources(0, 1, &srv);
     g_ctx->DrawIndexed(g.count, 0, 0);
   }
+  BindMaterial(nullptr);
   ID3D11RenderTargetView* none = nullptr;
   g_ctx->OMSetRenderTargets(1, &none, nullptr);
 }
