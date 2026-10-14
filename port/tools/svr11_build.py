@@ -519,7 +519,7 @@ class Builder:
             P = Wn[pi]
             t = P[:3, :3].T @ (np.array(b['position'], float) - P[:3, 3])
             nodes.append({'name': b['name'][:15], 't': tuple(float(x) for x in t), 'r': (0.0, 0.0, 0.0), 'u40': 0,
-                          'parent': 0, 'u48': (pi, 0, 0, 0), 'sphere': (0.0, 0.0, 0.0, 0.0)})
+                          'parent': pi, 'u48': (pi, 0, 0, 0), 'sphere': (0.0, 0.0, 0.0, 0.0)})
             M = np.eye(4)
             M[:3, 3] = t
             Wn.append(P @ M)
