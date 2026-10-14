@@ -2481,7 +2481,7 @@ bool ApplyRowWeapons(uint8_t* base, uint32_t rule) {
       Rd32(base + kStoryContext))
     return false;
   const auto& row = svr2011::BackstageRows()[size_t(svr2011::g_active_row)];
-  if (row.weapons.empty() || rule != kBackstage1v1FirstRule + uint32_t(row.area)) return false;
+  if ((row.weapons.empty() && !row.no_weapons) || rule != kBackstage1v1FirstRule + uint32_t(row.area)) return false;
   const uint32_t entry = WeaponEntry(base, rule);
   if (!entry) return false;
   const uint32_t n = uint32_t(std::min<size_t>(row.weapons.size(), 32));

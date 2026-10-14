@@ -217,3 +217,33 @@ for k, (t, j, o) in enumerate(puffs):  # (the first records, in spec order)
 lines += [f"key {k} {v}" for k, v in sorted(frames.items())]
 open(f'{OUT}/hctp.txt', 'w').write('\n'.join(lines) + '\n')
 print(f'hctp.txt: {len(lines)} lines')
+
+
+# ------------------------------------------------------------ weapons.txt (the manifest's weapons= line)
+# The weapons lying in the room at the bell: HCTP's 50000.txt 'w' spots {id, 0, (x, y, z), (rx, ry, rz), 0, w}
+# and its GmWeaponPosRot placements (kind 95: p1 weapon, p5..p7 position, upper-level y stored +30), as
+# 2011 weapons; 'none' when nothing maps (else 2011's parking weapons would lie in the room).
+# HCTP weapon ids (M.PAC WPON_PROP: model = id x 10) -> 2011 (WPBS)
+HCTP_WEAPON = {3: 63, 9: 63, 8: 63, 13: 65, 4: 4, 7: 88, 102: 88, 148: 88, 150: 88, 56: 17, 57: 63}
+import re
+spots = []
+for line in open(os.path.join(STAGE, '50000.txt'), 'rb').read().decode('shift_jis', 'replace').splitlines():
+    m = re.match(r'\s*\{\s*(\d+)\s*,\s*\d+\s*,\s*\(([^)]*)\)\s*,\s*\(([^)]*)\)\s*,[^,]*,\s*@?w\s*\}', line.split('//')[0])
+    if m:
+        p = [float(v) for v in m.group(2).split(',')]
+        r = [float(v) for v in m.group(3).split(',')]
+        spots.append((int(m.group(1)), p, r[1]))
+for _, t, ppos, pry in hctp_props.placements(STAGE):
+    tg = tags.get(t)
+    if tg and tg[0] == 95:
+        w = tg[1]
+        spots.append((int(w[1]), [w[5], -abs(w[6]), w[7]], math.degrees(pry)))
+wl = []
+for wid, p, ry in spots:
+    if wid not in HCTP_WEAPON:
+        print(f'weapon {wid} at {p}: no 2011 weapon, left out')
+        continue
+    q, _ = hctp_props.to_2011(tuple(p), 0.0, DX, DZ)
+    wl.append(f'{HCTP_WEAPON[wid]},{q[0]:.1f},{q[1]:.1f},{q[2]:.1f},{(180.0 - ry) % 360:.0f}')
+open(f'{OUT}/weapons.txt', 'w').write(';'.join(wl) if wl else 'none')
+print(f'weapons: {len(wl)} of {len(spots)}')

@@ -1216,6 +1216,7 @@ void LoadBackstage() {
             at = end + 1;
           }
         }
+        if (l == "weapons=none") r.no_weapons = true;
         if (l.rfind("weapons=", 0) == 0) {
           size_t at = 8;
           while (at < l.size()) {

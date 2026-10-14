@@ -1,9 +1,12 @@
 #!/bin/sh
 # Any HCTP backstage room -> SvR2011 backstage row mod (run in a work folder holding out/mot/bank_h3.bin)
-#   sh build_room.sh <room 30..36> <dx> <dz> <mod folder> <row name>
+#   sh build_room.sh <room 30..36> <dx> <dz> <mod folder> <row name> [x0,x1,z0,z1]
 # (half turn + offset: put the room's centre on the parking fight-box centre (125, -410))
 set -e
 ROOM=$1; DX=$2; DZ=$3; MOD=$4; NAME=$5
+# (optional 6th: x0,x1,z0,z1 - a tighter crop than the parking footprint, for a room over 2011's
+# vertex budget: the stage's ~13k vertices; more fails the GPU buffer allocation at load)
+FP=${6:+--footprint $6}
 S=$(cd "$(dirname "$0")" && pwd)
 G="D:/Xbox Games Ports/WWE Smackdown Vs Raw 2011"
 T="$G/port/tools"
@@ -11,7 +14,7 @@ STG="D:/Xbox Games Ports/HCTP Extract/_unpacked/bg/stg_00$ROOM"
 mkdir -p out "$MOD"
 python "$S/hctp_fake56.py" "$STG" "$G/Extract GameFiles/pac/bg/bg78.pac" out/fake56_$ROOM.pac --report --climb-df > out/fake56_$ROOM.log
 python "$S/stage_wrap.py" out/fake56_$ROOM.pac "$G/Extract GameFiles/pac/bg/bg78.pac" out/bg78_hctp$ROOM.pac \
-  --rotate 180 --offset $DX,$DZ --drop-2011-cars --report > out/bg78_hctp$ROOM.log
+  --rotate 180 --offset $DX,$DZ --drop-2011-cars $FP --report > out/bg78_hctp$ROOM.log
 # the real stage first in STG; empty parking ids get stub models (the game looks some of them up by id)
 python -c "
 import sys; sys.path.insert(0, r'$T')
@@ -37,4 +40,9 @@ x0, x1, z0, z1 = map(float, m.groups())
 print('%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2))")
 printf 'type=backstage\r\nid=hctp_room_%s\r\nname=%s\r\nauthor=HCTP port\r\nversion=0.1\r\narea=0\r\nrow=%s\r\ngimmick=78H3\r\nbox=%s\r\ncamera_height=45\r\nhctp=%s\r\n' \
   "$ROOM" "$NAME" "$NAME" "$BOX" "$ROOM" > "$MOD/manifest.txt"
+# the room's weapons (build_props: HCTP's spots as 2011 weapons, or none) and the models its props drop
+printf 'weapons=%s\r\n' "$(cat "$MOD/weapons.txt")" >> "$MOD/manifest.txt"
+LW=$(awk '$1 == "weapon" {print $3}' "$MOD/hctp.txt" | sort -un | paste -sd, -)
+[ -n "$LW" ] && printf 'load_weapons=%s\r\n' "$LW" >> "$MOD/manifest.txt"
+rm -f "$MOD/weapons.txt"
 ls -la "$MOD"
