@@ -512,6 +512,25 @@ std::string g_native_for;
 std::vector<NativePac> g_native;
 int g_native_pick = -1;
 std::string g_native_test;  // (--port-test: the item to use)
+std::map<std::string, Picture> g_arena_thumbs;  // a scanned arena's picture (its PNG in the arena list cache)
+std::set<std::string> g_scan_asked;            // discs whose arena list was built (or asked) this session
+char g_arena_find[48] = "";
+bool g_scanning_list = false;
+
+// "Build the list": the disc read once for its arenas' names and pictures (arena_port.py scan, cached per disc), then
+// listed again from the cache.
+void ScanArenas(int k, const std::string& game) {
+  if (Busy() || g_scanning_list) return;
+  g_scan_asked.insert(game + "|" + Utf8(Source()));
+  g_scanning_list = true;
+  std::vector<std::wstring> args = {L"scan", L"--game", Wide(game), L"--src", Source()};
+  RunToolJson(kKinds[k].script, args, [k, game](int code, const std::string&) {
+    g_scanning_list = false;
+    if (code != 0) Status("The arena list couldn't be built (see the log): the arenas show by file name.");
+    g_list_for.clear();  // (listed again: names and pictures from the cache now)
+    WhenIdle([k, game] { List(k, game); });
+  });
+}
 
 // A native pac's entry in the converter's list ("bg37"), or null: its status / reason is the one source of truth.
 const Json& NativeItem(const NativePac& p) {
@@ -559,35 +578,91 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
     ImGui::TextColored(kWarn, "No pac\bg\bgNN.pac found here.");
     return;
   }
+  // the arenas as a grid of pictures with the game's own names (the list built once per disc: names + pictures)
+  bool named = false, pictured = false;
+  for (const Json& it : g_list.items) named |= !it["bg"].Str().empty() && it["name"].Str() != it["bg"].Str(), pictured |= !it["thumb"].Str().empty();
+  const std::string disc_key = game + "|" + Utf8(Source());
+  if (!g_list.items.empty() && !pictured && !g_scan_asked.count(disc_key) && !Busy()) ScanArenas(k, game);  // (the first time: by itself)
+  if (g_scanning_list) {
+    ImGui::TextColored(kWarn, "Building the list of %s's arenas (their names and pictures) - once per disc, about a minute ...", game_name.c_str());
+  } else if (!pictured) {
+    ImGui::BeginDisabled(Busy());
+    if (ImGui::Button("Build the list")) ScanArenas(k, game);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled(named ? "(adds the arenas' pictures)" : "(reads the arenas' names and pictures off the disc once)");
+  }
   ImGui::SetNextItemWidth(260 * g_scale);
-  const std::string cur = g_native_pick >= 0 ? g_native[size_t(g_native_pick)].name : "pick an arena pac";
-  if (ImGui::BeginCombo("3. The arena", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
-    for (int pass = 0; pass < 2; ++pass) {  // the arenas, then the ones that crash / aren't arenas (can't be picked)
-      if (pass == 1) {
+  ImGui::InputTextWithHint("##findarena", "Find an arena...", g_arena_find, sizeof g_arena_find);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%d arenas", int(g_native.size()));
+  const std::string find = Lower(g_arena_find);
+  auto title_of = [](const NativePac& p) {
+    const Json& it = NativeItem(p);
+    const std::string n = it.IsNull() ? std::string() : it["name"].Str();
+    return n.empty() ? p.name.substr(0, p.name.rfind('.')) : n;
+  };
+  const float tw = 176 * g_scale, th = tw * 0.5625f, gap = 8 * g_scale;
+  ImGui::BeginChild("arenagrid", ImVec2(0, std::max(220 * g_scale, ImGui::GetContentRegionAvail().y - 60 * g_scale)), true);
+  const int per_row = std::max(1, int((ImGui::GetContentRegionAvail().x + gap) / (tw + gap)));
+  for (int pass = 0; pass < 2; ++pass) {  // the arenas, then the ones that crash / aren't arenas (can't be picked)
+    int n = 0;
+    for (int i = 0; i < int(g_native.size()); ++i) {
+      const NativePac& np = g_native[size_t(i)];
+      if (NativeBlocked(np) != (pass == 1)) continue;
+      const std::string title = title_of(np);
+      if (!find.empty() && Lower(title).find(find) == std::string::npos && Lower(np.name).find(find) == std::string::npos) continue;
+      if (pass == 1 && n == 0) {
+        ImGui::Spacing();
         ImGui::Separator();
-        ImGui::TextDisabled("Not portable (crash the game, or backstage / studio stages)");
+        ImGui::TextDisabled("Not portable: they crash the game, or they're backstage rooms / studio stages");
       }
-      for (int i = 0; i < int(g_native.size()); ++i) {
-        if (NativeBlocked(g_native[size_t(i)]) != (pass == 1)) continue;
+      if (n++ % per_row) ImGui::SameLine(0, gap);
+      ImGui::PushID(i);
+      ImGui::BeginGroup();
+      const ImVec2 at = ImGui::GetCursorScreenPos();
+      const Json& it = NativeItem(np);
+      const std::string thumb = it.IsNull() ? std::string() : it["thumb"].Str();
+      Picture* pic = nullptr;
+      if (!thumb.empty()) {
+        auto t = g_arena_thumbs.find(thumb);
+        if (t == g_arena_thumbs.end()) {
+          Image img;
+          t = g_arena_thumbs.emplace(thumb, Picture()).first;
+          if (LoadPicture(Wide(thumb), img)) t->second.Set(std::move(img));
+        }
+        if (!t->second.Empty()) pic = &t->second;
+      }
+      if (pass == 1) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.35f);
+      if (pic) ImGui::Image(pic->Id(), ImVec2(tw, th));
+      else ImGui::Button(np.name.c_str(), ImVec2(tw, th));
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + tw);
+      ImGui::TextUnformatted(title.c_str());
+      ImGui::PopTextWrapPos();
+      if (pass == 1) ImGui::PopStyleVar();
+      ImGui::EndGroup();
+      const bool hovered = ImGui::IsItemHovered();
+      if (g_native_pick == i)
+        ImGui::GetWindowDrawList()->AddRect(ImVec2(at.x - 2, at.y - 2), ImVec2(at.x + tw + 2, at.y + th + 2), IM_COL32(230, 25, 50, 255), 4, 0, 3 * g_scale);
+      if (pass == 0 && ImGui::IsItemClicked()) g_native_pick = i;
+      if (hovered) {
         char mb[32];
-        std::snprintf(mb, sizeof mb, "  %.1f MB", g_native[size_t(i)].size / 1048576.0);
-        if (pass == 1) {
-          const Json& it = NativeItem(g_native[size_t(i)]);
-          if (!it.IsNull()) {
-            BlockedRow("  " + g_native[size_t(i)].name + mb, it);
-          } else {
-            ImGui::TextDisabled("  %s%s", g_native[size_t(i)].name.c_str(), mb);
-            if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("A backstage room or a studio / photo stage, not an arena: on an arena slot it shows a white mat over a black "
-                                "void, or crashes (bg78).");
-          }
-        } else if (ImGui::Selectable((g_native[size_t(i)].name + mb).c_str(), g_native_pick == i)) {
-          g_native_pick = i;
+        std::snprintf(mb, sizeof mb, "%.1f MB", np.size / 1048576.0);
+        if (pass == 1 && !it.IsNull()) {
+          const std::string why = it["reason"].Str();
+          ImGui::SetTooltip("%s (%s, %s)\n%s%s", title.c_str(), np.name.c_str(), mb, it["status"].Str() == "crashes" ? "Crashes the game: " : "Not portable: ",
+                            why.empty() ? "known from the converter's full pass." : why.c_str());
+        } else if (pass == 1) {
+          ImGui::SetTooltip("%s (%s)\nA backstage room or a studio stage, not an arena: on an arena slot it shows a white mat over a black void, or crashes.",
+                            title.c_str(), np.name.c_str());
+        } else {
+          ImGui::SetTooltip("%s\n%s, %s", title.c_str(), np.name.c_str(), mb);
         }
       }
+      ImGui::PopID();
     }
-    ImGui::EndCombo();
   }
+  ImGui::EndChild();
   if (!g_native_test.empty() && (!g_list.items.empty() || !g_list_error.empty())) {  // (test: pick by name, once the statuses are in)
     for (int i = 0; i < int(g_native.size()); ++i)
       if (Lower(g_native[size_t(i)].name) == Lower(g_native_test) && !NativeBlocked(g_native[size_t(i)])) g_native_pick = i;

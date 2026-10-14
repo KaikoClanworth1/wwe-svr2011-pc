@@ -41,6 +41,7 @@ bool NativeGame(const std::string& key) { return key.rfind("wwe", 0) == 0; }
 
 int g_start_mode = -1;      // 0 an arena in the game, 1 from my other games, 2 an empty hall
 std::string g_disc_key;     // (mode 1) the game picked
+bool choosing = true;       // (a game picked: its cards fold away, the arenas get the room)
 int g_native_host = 1;      // a WWE '12 - 2K17 arena's host tile (RAW, as the bundled ones)
 std::string g_name_typed;   // the name the player typed (kept when the start changes)
 
@@ -211,10 +212,18 @@ void StartFromDisc() {
   ImGui::TextDisabled("Your games from My game discs. Pick one, list its arenas and convert one. Greyed arenas crash the game "
                       "or aren't arenas (backstage rooms, studios).");
   ImGui::PopTextWrapPos();
+
+  if (!g_disc_key.empty() && !disc_list::PathFor(g_disc_key).empty() && !choosing) {
+    const disc_list::Game* g = disc_list::GameByKey(g_disc_key);
+    ImGui::Text("Arenas from %s", g ? g->name : g_disc_key.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Change game")) choosing = true;
+  }
   const float w = std::min(CardWidth(), 200 * g_scale), h = 58 * g_scale;
   const int per_row = std::max(1, int((ImGui::GetContentRegionAvail().x + 8 * g_scale) / (w + 8 * g_scale)));
   int n = 0, missing = 0;
   for (const char* key : kArenaGames) {
+    if (!choosing && !g_disc_key.empty() && !disc_list::PathFor(g_disc_key).empty()) break;
     const disc_list::Game* g = disc_list::GameByKey(key);
     if (!g) continue;
     if (disc_list::PathFor(key).empty()) {
@@ -224,10 +233,11 @@ void StartFromDisc() {
     if (n++ % per_row) ImGui::SameLine(0, 8 * g_scale);
     if (Card(key, g->name, NativeGame(key) ? "converted by the Mod Maker" : "converted by the arena tool", g_disc_key == key, w, h) &&
         g_disc_key != key)
-      g_disc_key = key, port_page::ClearEmbeddedResult();
+      g_disc_key = key, port_page::ClearEmbeddedResult(), choosing = false;
+    else if (g_disc_key == key && ImGui::IsItemClicked()) choosing = false;
   }
-  if (!n) ImGui::TextColored(kWarn, "None of your games with arenas is in My game discs yet.");
-  if (missing) {
+  if (!n && choosing) ImGui::TextColored(kWarn, "None of your games with arenas is in My game discs yet.");
+  if (missing && choosing) {
     ImGui::TextDisabled("%d more game%s with arenas can be added (SvR 2007 - 2010, WWE '12 - 2K17).", missing, missing == 1 ? "" : "s");
     ImGui::SameLine();
     if (ImGui::SmallButton("My game discs...")) GoTo(PageId::kDiscs);
@@ -562,7 +572,7 @@ void TestRun() {
       NewArena(std::clamp(std::atoi(p[1].c_str()), 0, 19), false);
     } else if (p[0] == "disc" && p.size() > 2) {
       g_start_mode = 1;
-      g_disc_key = p[1];
+      g_disc_key = p[1], choosing = false;
       if (p.size() > 3) g_native_host = std::clamp(std::atoi(p[3].c_str()), 0, 19);
       const std::wstring src = disc_list::PathFor(g_disc_key);
       if (src.empty()) Log("simple arena test: " + g_disc_key + " isn't in My game discs");
