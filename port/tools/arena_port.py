@@ -58,10 +58,15 @@ NATIVE_GAMES = ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17')
 
 # Arenas that convert but crash 2011 at load (full pass, docs/ARENA_PORT_RESULTS.md): 'list' marks
 # them status 'crashes' with the reason, so the Mod Maker can grey them out
+# (not listed: WWE 2K14 bg44-54 crashed once in the crowd renderer (lr 8217FF84) but played 5 of 5
+# repeat runs - bg51 x3, bg44 x2 - and bg55 / 56 likewise: an intermittent crash, open)
 KNOWN_CRASHES = {
     ('wwe13', 'bg37'): 'crashes at load (a memory allocation fails; not its size or models) - open',
     ('wwe2k14', 'bg12'): 'crashes at load (object motion loader, lr 826AEF18) - open',
     ('wwe2k14', 'bg17'): 'crashes at load (lr 82188A00) - open',
+    ('wwe2k15', 'bg13'): 'crashes at load (object motion loader, lr 826AEF18) - open',
+    ('wwe2k15', 'bg22'): 'crashes at load (object motion loader, lr 826AEF18) - open',
+    ('wwe2k15', 'bg31'): 'crashes at load (lr 8215A008, as the backstage rooms do: likely not an arena)',
 }
 
 
