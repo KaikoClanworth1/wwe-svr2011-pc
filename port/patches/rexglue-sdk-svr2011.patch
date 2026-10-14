@@ -6117,10 +6117,10 @@ index 23645ef..d6494a6 100644
  }
  
 +// [svr2011] Mali (vendor 0x13B5): the 4x A53 tablets - the paint at the display's
-+// rate cost a fifth of a core.
++// rate cost a fifth of a core. Adreno (0x5143): the same on the Fold 7 (Oct 2026).
 +REXCVAR_DEFINE_STRING(vulkan_throttle_ui_paints, "auto", "GPU",
-+                      "Paint only for new game frames, not at the display's rate for the overlay: auto (PCs and "
-+                      "Mali GPUs), on, off");
++                      "Paint only for new game frames, not at the display's rate for the overlay: auto (PCs, Mali "
++                      "and Adreno GPUs), on, off");
 +
 +bool VulkanPresenter::ThrottleUIOnlyPaints() const {
 +  static const int mode = [] {
@@ -6128,10 +6128,10 @@ index 23645ef..d6494a6 100644
 +    return v == "on" ? 1 : v == "off" ? 0 : -1;
 +  }();
 +  // (auto: PCs - one present per game frame, so variable refresh monitors follow
-+  // the game, as with D3D12 / D3D11 - and Mali; other phone GPUs (Adreno) stay
-+  // off until measured there)
++  // the game, as with D3D12 / D3D11 - Mali and Adreno (Fold 7: the same pacing, half
++  // the paints at 30 fps); other phone GPUs stay off until measured there)
 +#if defined(__ANDROID__)
-+  return mode >= 0 ? mode == 1 : vulkan_device_->properties().vendorID == 0x13B5;
++  return mode >= 0 ? mode == 1 : (vulkan_device_->properties().vendorID == 0x13B5 || vulkan_device_->properties().vendorID == 0x5143);
 +#else
 +  return mode >= 0 ? mode == 1 : true;
 +#endif
