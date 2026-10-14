@@ -8,12 +8,16 @@ cart out of the garage.
 
 ## Where things are
 
-- The disc: `D:\Roms\Playstation 2\WWE SmackDown! Here Comes the Pain (Europe).iso`,
+- For players: `tools/backstage_port.py` (Mod Maker Tools; the converter contract) builds any room from
+  their own disc into an installable `Mods\Backstage\<name>` folder:
+  `list --game hctp --src <ISO>` (hctp30 .. hctp36), `convert --game hctp --src <ISO> --item hctp31
+  --out <Mods\Backstage\Parking Lot (HCTP)> --pac11 <2011 game folder>` (about 14 s a room). It reads the
+  disc through `discfs` (`tools/hctp/hctp_unpack.py`) and runs `tools/hctp/build_room.py`.
+- The disc: `D:\Roms\Playstation 2\WWE Games\WWE SmackDown! Here Comes the Pain.iso`,
   extracted to `D:\Xbox Games Ports\HCTP Extract` (`PAC\*.PAC`, unpacked
   `_unpacked\bg\stg_XXXX`, `_unpacked\gm`, `_unpacked\m`).
 - Viewer pages (three.js, one per room): `HCTP Extract\viewer\index.html`.
-- Converter scripts and research notes are in the session scratchpad
-  (`hctp\`), to be moved into `port/tools` once settled:
+- Converter scripts in `port/tools/hctp` (research notes in the session scratchpad):
   - `hpac.py` (archives), `yobj.py` (models, textures), `to_glb.py` /
     `room_view.py` (viewer);
   - `hctp2jboy.py` (models -> JBOY), `hctp_fake56.py` (room -> stand-in
