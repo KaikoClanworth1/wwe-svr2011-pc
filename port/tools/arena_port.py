@@ -70,6 +70,9 @@ KNOWN_CRASHES = {
     ('wwe2k14', 'bg51'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
     ('wwe2k14', 'bg53'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
     ('wwe2k14', 'bg54'): 'crashes at load (crowd renderer, lr 8217FF84; crowd files in scale) - open',
+    ('wwe2k15', 'bg13'): 'crashes at load (object motion loader, lr 826AEF18) - open',
+    ('wwe2k15', 'bg22'): 'crashes at load (object motion loader, lr 826AEF18) - open',
+    ('wwe2k15', 'bg31'): 'crashes at load (lr 8215A008, as the backstage rooms do: likely not an arena)',
 }
 
 
