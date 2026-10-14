@@ -279,6 +279,8 @@ struct Room {
   // the equipment crate: 0 ready, 1 victim shut in, 2 climbing out, 3 resting
   int crate = 0, crate_t = 0;
   uint32_t crate_victim = 0;
+  std::vector<std::array<float, 3>> poles;  // (room 33: the climbable poles' tops)
+  int heli_t = 0;                            // (room 33: frames into the helicopter's flight)
 };
 Room g_room;
 
@@ -363,6 +365,11 @@ bool LoadRoom(const std::string& dir) {
       Steam st;
       ls >> st.pid >> st.valve >> st.x >> st.y >> st.z >> st.dx >> st.dz >> st.len >> st.hw >> st.hh;
       g_room.steam.push_back(st);
+    } else if (what == "pole") {
+      int id = 0;
+      std::array<float, 3> q{};
+      ls >> id >> q[0] >> q[1] >> q[2];
+      g_room.poles.push_back(q);
     } else if (what == "key") {
       uint32_t k = 0;
       int n = 0;
@@ -739,6 +746,7 @@ void SetUp(PPCContext& ctx, uint8_t* base) {
   if (Prop* sh = FindKind("shutter"); sh && sh->recs.size() > 1) ShowRec(ctx, base, sh->recs[1], false);
   for (Prop& p : g_room.props) {
     if (p.kind == "car" && p.models.size() > 1 && !p.body) ShowModel(ctx, base, p, p.models[1], false);
+    if ((p.kind == "window" || p.kind == "traffic") && p.state == 0) ShowProp(ctx, base, p, false);
     if (p.kind == "brokenwall" && p.state == 0)
       for (size_t k = 1; k < p.models.size(); ++k) ShowModel(ctx, base, p, p.models[k], false);
     if (p.kind == "movecar")
@@ -1609,6 +1617,160 @@ void Room35Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m
   }
 }
 
+// -- Room 33 (Times Square) -------------------------------------------------
+// HCTP's high-ground acts 12500-12599 are converted as 12800 + (n - 12500).
+uint32_t HighKey(int hctp_act) { return 12800u + uint32_t(hctp_act - 12500); }
+
+// GmCarMany / GmCarRun: a taxi drives its lane from its placement to its anchor (param 1) and starts again
+// after a delay (param 4 at first); it brakes for a wrestler in front of it, runs over one it reaches at
+// speed (12014), and blows up when a wrestler goes down on its roof (everyone near: 12015), coming back after.
+struct Taxi {
+  float speed = 0, top = 1.0f, along = 0;
+  int wait = 0;  // frames before it (re)starts
+  bool exploded = false;
+};
+std::map<size_t, Taxi> g_taxis;
+
+void UpdateTraffic(PPCContext& ctx, uint8_t* base) {
+  for (size_t k = 0; k < g_room.props.size(); ++k) {
+    Prop& c = g_room.props[k];
+    if (c.kind != "traffic" || c.recs.empty()) continue;
+    const Prop* end = nullptr;
+    for (const Prop& q : g_room.props)
+      if (q.hid == int(Param(c, 1))) end = &q;
+    if (!end) continue;
+    auto [it, fresh] = g_taxis.try_emplace(k);
+    Taxi& t = it->second;
+    if (fresh) t.wait = 2 * int(Param(c, 4, 300)), t.top = 0.8f + float(std::rand() % 64) / 100.0f;
+    const float dx = end->x - c.x, dz = end->z - c.z, len = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+    const float ux = dx / len, uz = dz / len;
+    if (t.wait > 0) {
+      if (--t.wait == 0) ShowProp(ctx, base, c, true), t.along = 0, t.speed = 0, t.exploded = false;
+      continue;
+    }
+    const float px = c.x + ux * t.along, pz = c.z + uz * t.along;
+    // brake for a wrestler 15..100 ahead in its lane, else speed up (HCTP per-frame speeds halved: 60 Hz)
+    bool blocked = false;
+    for (int i = 0; i < 8; ++i) {
+      const uint32_t f = Rd32(base + kChars + i * 4);
+      if (!f) continue;
+      const float wx = RdF(base + f + 288) - px, wz = RdF(base + f + 296) - pz, wy = RdF(base + f + 292);
+      const float ahead = wx * ux + wz * uz, side = std::fabs(-wx * uz + wz * ux);
+      if (wy < -1.0f) {
+        // on its roof: going down there blows it up
+        const uint32_t m = Rd32(base + f + 212);
+        if (wy > -25.0f && wy < -5.0f && std::fabs(ahead) < 25.0f && side < 12.0f && (m == 0 || m == kLying)) {
+          t.exploded = true;
+          ShowProp(ctx, base, c, false);
+          for (int j = 0; j < 8; ++j)
+            if (const uint32_t o = Rd32(base + kChars + j * 4); o && o != f) {
+              const float ox = RdF(base + o + 288) - px, oz = RdF(base + o + 296) - pz;
+              if (ox * ox + oz * oz < 70.0f * 70.0f) JumpAct(ctx, base, o, RoomKey(12015));
+            }
+          t.wait = 2 * (200 + std::rand() % 100);
+          REXLOG_INFO("hctp: fighter {} blows {} up", i, c.name);
+        }
+        continue;
+      }
+      if (side < 12.0f && ahead > 10.0f && ahead < 100.0f) blocked = true;
+      // run over (only at speed)
+      if (side < 9.0f && std::fabs(ahead) < 22.0f && t.speed > t.top / 3.0f) {
+        const uint32_t m = Rd32(base + f + 212);
+        if (m == kWalkBackstage || base[f + 1286]) {
+          HitReaction(ctx, base, f);
+          t.speed = 0;
+          REXLOG_INFO("hctp: {} runs fighter {} over", c.name, i);
+        }
+      }
+    }
+    if (t.exploded) continue;
+    t.speed = blocked ? std::max(0.0f, t.speed - 0.05f) : std::min(t.top / 2.0f, t.speed + 0.01f);
+    t.along += t.speed;
+    if (t.along >= len) {  // at its anchor: back to the start after a delay
+      ShowProp(ctx, base, c, false);
+      t.wait = 2 * (200 + std::rand() % 100);
+      continue;
+    }
+    for (int rec : c.recs) MoveRec(ctx, base, rec, c.x + ux * t.along, c.y, c.z + uz * t.along, 0, c.ry, 0);
+  }
+}
+
+// GmTimesPole: X at the foot of one of the four poles (within 10) climbs it (12009); on top X jumps down (12510).
+struct Pole {
+  float x, y, z;
+  uint32_t who = 0;
+  int timer = 0;
+};
+std::vector<Pole> g_poles;
+
+bool PoleClimb(PPCContext& ctx, uint8_t* base, uint32_t f, int i, float x, float y, float z) {
+  for (Pole& p : g_poles) {
+    if (p.who) continue;
+    const float dx = p.x - x, dz = p.z - z;
+    if (std::fabs(y) > 0.5f || dx * dx + dz * dz > 10.0f * 10.0f) continue;
+    WrF(base + f + 276, std::atan2(dx, dz));
+    JumpAct(ctx, base, f, RoomKey(12009));
+    p.who = f, p.timer = 0;
+    REXLOG_INFO("hctp: fighter {} climbs a pole", i);
+    return true;
+  }
+  return false;
+}
+
+void UpdatePoles(PPCContext& ctx, uint8_t* base) {
+  for (Pole& p : g_poles) {
+    if (!p.who) continue;
+    const uint32_t f = p.who;
+    if (Rd32(base + f + 212) != RoomKey(12009)) {
+      p.who = 0;
+      continue;
+    }
+    ++p.timer;
+    const uint32_t input = svr2011::FighterInput(f);
+    if (p.timer > 2 * 30 && ((input && (Rd32(base + input + 52) & kButtonX)) || p.timer >= 2 * 600)) {
+      JumpAct(ctx, base, f, HighKey(12510));
+      p.who = 0;
+      REXLOG_INFO("hctp: he jumps off the pole");
+    }
+  }
+}
+
+// GmShowWindow (550): whipped into it, the pane breaks (glass02, param 4, shown from then on) and he reacts.
+void WindowHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
+  if (p.state) return;
+  ShowProp(ctx, base, p, true);
+  HitReaction(ctx, base, v);
+  p.state = 1;
+  REXLOG_INFO("hctp: fighter {} goes through {}", i, p.name);
+}
+
+void Room33Fighter(PPCContext& ctx, uint8_t* base, uint32_t f, int i, uint32_t m, uint32_t prev, uint8_t touched,
+                   float x, float y, float z, bool x_pressed) {
+  for (Prop& p : g_room.props)
+    if (p.kind == "window" && m == kWhipRun && InShape(p, int(Param(p, 5)), x, y, z, 6.0f)) WindowHit(ctx, base, p, f, i);
+  if (x_pressed && prev == kWalkBackstage && !g_poles.empty()) PoleClimb(ctx, base, f, i, x, y, z);
+  // the ladder (attribute 0xE0) and the wall up to the top level (0xE6): walking / running into them climbs
+  const bool moving = m == kWalkBackstage || base[f + 1286];
+  if (moving && touched == 0xE0 && m != RoomKey(12069)) {
+    bool busy = false;
+    for (int j = 0; j < 8; ++j)
+      if (const uint32_t o = Rd32(base + kChars + j * 4); o && o != f && Rd32(base + o + 212) == RoomKey(12069)) busy = true;
+    if (!busy) {
+      JumpAct(ctx, base, f, RoomKey(12069));
+      REXLOG_INFO("hctp: fighter {} climbs the ladder", i);
+    }
+  }
+  if (moving && touched == 0xE6) {
+    JumpAct(ctx, base, f, HighKey(12517));
+    REXLOG_INFO("hctp: fighter {} climbs up", i);
+  }
+}
+
+void UpdateRoom33(PPCContext& ctx, uint8_t* base) {
+  UpdateTraffic(ctx, base);
+  UpdatePoles(ctx, base);
+}
+
 // -- Off the cage top (HCTP GapIn_BackOpenSpace, from the strike button):
 // up on the cage (y <= -28) near its front or east edge, X while walking
 // toward the edge puts him on the edge (HCTP SetGapPos) and he jumps down
@@ -1681,6 +1843,7 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
     if (HctpRoom() != 30) {
       Room31Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z);
       Room35Fighter(ctx, base, f, i, m, x, y, z);
+      Room33Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z, x_pressed);
       if (Room32Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z, x_pressed)) {
         s.motion = Rd32(base + f + 212);
         continue;
@@ -1842,6 +2005,9 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     if (!LoadRoom(row.dir)) return;
     for (auto& s : g_fs) s = {};
     g_later.clear();
+    g_taxis.clear();
+    g_poles.clear();
+    for (const auto& q : g_room.poles) g_poles.push_back({q[0], 0.0f, q[2]});
   }
   g_room.last_frame = frame;
   if (!Rd32(base + kGimmickMgr) || !Rd32(base + kStage)) return;
@@ -1866,6 +2032,11 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       if ((p.kind == "throw" || p.kind == "stack" || p.kind == "drums") && p.state == 0) KnockOver(ctx, base, p, 0);
   // (=props in rooms 31-36: each car loses its door at 300, its bonnet at 420, is crushed at 540; the
   // equipment box jolts at 300; fighter 1 is electrocuted at 360 and thrown into the trailer at 600)
+  if (g_props_now && HctpRoom() == 33 && frame >= 420 && frame < 422 && !g_poles.empty() && Rd32(base + kChars + 4)) {
+    const uint32_t f1 = Rd32(base + kChars + 4);
+    PlaceFighter(base, f1, g_poles[0].x, 0.0f, g_poles[0].z + 6.0f, 3.14159265f);
+    PoleClimb(ctx, base, f1, 1, g_poles[0].x, 0.0f, g_poles[0].z + 6.0f);
+  }
   if (g_props_now && HctpRoom() != 30 && Rd32(base + kChars + 4)) {
     const uint32_t f1 = Rd32(base + kChars + 4);
     const auto at = [frame](uint32_t n) { return frame >= n && frame < n + 2; };
@@ -1892,6 +2063,8 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
         REXLOG_INFO("hctp: fighter 1 climbs {} (test)", p.name);
       }
       if (p.kind == "fountainthrow" && at(1100) && &p == FindKind("fountainthrow")) FountainThrow(ctx, base, p, f1, 1);
+      // (room 33: fighter 1 goes through the first shop window at 300, climbs the first pole at 420)
+      if (p.kind == "window" && at(300) && &p == FindKind("window")) WindowHit(ctx, base, p, f1, 1);
     }
   }
   if (g_steam_now && frame >= 300 && frame < 302)
@@ -1909,6 +2082,12 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   UpdateLater(ctx, base);
   UpdateMoveCar(ctx, base);
   UpdateRoom32(ctx, base);
+  UpdateRoom33(ctx, base);
+  // (the helicopter flies its path: its own motion, the room's act 10, again when it ends)
+  if (Prop* h = FindKind("heli"); h && g_room.set_up_frames >= 30) {
+    if (g_room.heli_t == 0) PlayProp(ctx, base, *h, kObjAct + 10);
+    if (++g_room.heli_t >= 2 * Frames(kObjAct + 10, 1487)) g_room.heli_t = 0;
+  }
 }
 
 }  // namespace svr2011

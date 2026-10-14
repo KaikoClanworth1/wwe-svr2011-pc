@@ -162,7 +162,8 @@ KIND = {89: 'stack', 51: 'throw', 47: 'wall', 46: 'roof', 37: 'switch', 39: 'val
         70: 'car', 72: 'power', 73: 'movecar', 74: 'path', 98: 'hammer', 81: 'forklift', 86: 'boxsupply',
         97: 'drums', 71: 'repeat', 61: 'locker', 68: 'toilet', 69: 'sandbag', 66: 'shower', 65: 'treadmill',
         75: 'brokenwall', 76: 'tv', 77: 'rack', 84: 'fade', 85: 'rackweapon', 62: 'window', 60: 'neon',
-        25: 'lion', 27: 'sand', 29: 'fountain', 24: 'tower', 96: 'fountainthrow'}
+        25: 'lion', 27: 'sand', 29: 'fountain', 24: 'tower', 96: 'fountainthrow', 12: 'traffic', 13: 'anchor',
+        20: 'heli'}
 # HCTP weapon -> 2011 (WPBS): cardboard box 56 -> 17 (78_obj_cbox), barrel 57 -> trash can 63,
 # lead pipe 148 -> kendo stick 88 (no pipe in 2011), trash can 9 -> 63
 WEAPON_2011 = {56: 17, 57: 63, 148: 88, 9: 63}
@@ -253,6 +254,11 @@ frames = {}
 for e in ents:
     if 12500 <= e[2] < 13400:
         frames[e[2]] = max(frames.get(e[2], 0), e[4])
+# Times Square's climbable poles (GmTimesPole: data rows of kind 40, params 1-3 = the pole top)
+for tid, (kd, prm) in sorted(tags.items()):
+    if kd == 40 and len(prm) >= 4:
+        q = to2011((prm[1], prm[2], prm[3]))
+        weapon_lines.append(f"pole {tid} {q[0]:.2f} {q[1]:.2f} {q[2]:.2f}")
 lines += weapon_lines
 lines += steam_lines
 for k, (t, j, o) in enumerate(puffs):  # (the first records, in spec order)
