@@ -176,7 +176,13 @@ def table(a):
              '1-on-1 with entrances (`tools/arena_fullpass.py`). Look columns are filled from the shots.', '',
              '| Game | Arena | Show | Slot | Loads | fps median (lowest 5 s) | Halved | From 2011 | Notes |',
              '|---|---|---|---|---|---|---|---|---|']
+    special = []
     for r in sorted(recs.values(), key=lambda r: (r['game'], r['key'])):
+        # WWE '12+ bg60 and up are no arenas: backstage rooms (bg67 / bg78) and studio / photo
+        # stages of 2-5 models (bg66 / 76 / 77 / 79: no crowd or floor of their own) - listed apart
+        if r['game'] in NATIVE and int(r['key'][2:4]) >= 60:
+            special.append('%s %s (%s)' % (r['game'], r['key'], r['state']))
+            continue
         txt = ' '.join(r.get('notes', []))
         m = re.search(r'(\d+) textures (?:at half size|halved)', txt)
         halved = m.group(1) if m else ''
@@ -194,6 +200,9 @@ def table(a):
         extra = '; '.join(n for n in r.get('notes', []) if 'lights' in n or 'failed' in n or 'no VS' in n)
         lines.append('| %s | %s | %s | %d | %s | %s | %s | %s | %s |' % (
             r['game'], r['key'], r.get('name') or '', r['slot'], r['state'], fps, halved, host, extra))
+    if special:
+        lines += ['', "Special stages, not arenas (WWE '12+ bg60 and up: backstage rooms, studio / photo stages; "
+                  "not offered as arenas): " + ', '.join(special)]
     path = os.path.join(os.path.dirname(PORT), 'docs', 'ARENA_PORT_RESULTS.md')
     open(path, 'w', encoding='utf-8', newline='\n').write('\n'.join(lines) + '\n')
     print(path, len(recs))
