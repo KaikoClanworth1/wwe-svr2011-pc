@@ -103,9 +103,9 @@ void ReadBundle(const Bytes& b, std::map<std::string, Bytes>& out) {
   }
 }
 
-int DiffuseSlot(const Mesh& s) {
+int DiffuseSlot(const Mesh& s, const char* name = "texDiffuse") {
   for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) return int(Be32(p.value.data()));
+    if (p.type == 0x0f && p.name == name && p.value.size() >= 4) return int(Be32(p.value.data()));
   return -1;
 }
 
@@ -116,6 +116,7 @@ struct Bone {
 };
 struct Part {
   std::string name, texture;
+  std::string normal_texture;  // (texNormal: its alpha is a skin's shine mask - exported as the material's NormalMap)
   std::vector<std::array<double, 3>> pos, nrm;
   std::vector<std::array<double, 2>> uv;
   std::vector<std::array<std::pair<int, double>, 4>> inf;  // (bone, weight), weight 0 = none
@@ -196,6 +197,8 @@ bool ReadCharacter(const Bytes& pac, int attire, Character& ch, std::string& err
       p.name = (m.name.empty() ? "model" + std::to_string(id) : m.name) + (m.meshes.size() > 1 ? "_" + std::to_string(si) : "");
       const int slot = DiffuseSlot(s);
       p.texture = slot >= 0 && slot < int(m.textures.size()) ? m.textures[size_t(slot)] : "";
+      const int nslot = DiffuseSlot(s, "texNormal");
+      p.normal_texture = nslot >= 0 && nslot < int(m.textures.size()) ? m.textures[size_t(nslot)] : "";
       auto bone_of = [&](int palette_slot) {
         if (palette_slot < 0 || palette_slot >= int(s.palette.size())) return 0;
         const int local = s.palette[size_t(palette_slot)] - 1;
@@ -408,12 +411,17 @@ bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir
     mat.Add("MultiLayer").I(0);
     fbx::PVec(mat.Add("Properties70"), "DiffuseColor", "Color", 1, 1, 1);
     doc.Connect(matid, mid);
-    std::string tex;  // (the mesh's texDiffuse, as named in the bundles: case may differ)
-    for (const auto& w : written)
-      if (!part.texture.empty() && (w == part.texture || std::equal(w.begin(), w.end(), part.texture.begin(), part.texture.end(),
-                                                                     [](char a, char b) { return std::tolower(uint8_t(a)) == std::tolower(uint8_t(b)); })))
-        tex = w;
-    if (!tex.empty()) {
+    auto written_name = [&](const std::string& want) {  // (as named in the bundles: case may differ)
+      std::string t;
+      for (const auto& w : written)
+        if (!want.empty() && (w == want || std::equal(w.begin(), w.end(), want.begin(), want.end(),
+                                                      [](char a, char b) { return std::tolower(uint8_t(a)) == std::tolower(uint8_t(b)); })))
+          t = w;
+      return t;
+    };
+    for (const auto& [tex, slot_name] : {std::make_pair(written_name(part.texture), "DiffuseColor"),
+                                         std::make_pair(written_name(part.normal_texture), "NormalMap")}) {
+      if (tex.empty()) continue;
       const std::string rel = "textures/" + tex + ".png";
       const std::string abs = PathStr(fs::u8path(out_dir) / "textures" / fs::u8path(tex + ".png"));
       const int64_t tid = doc.NewId(), vid = doc.NewId();
@@ -433,7 +441,7 @@ bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir
       vd.Add("Filename").S(abs);
       vd.Add("RelativeFilename").S(rel);
       doc.Connect(vid, tid);
-      doc.Connect(tid, matid, "DiffuseColor");
+      doc.Connect(tid, matid, slot_name);
     }
     // the skin: a cluster per bone the mesh uses
     std::map<int, std::pair<std::vector<int32_t>, std::vector<double>>> by_bone;
@@ -1455,7 +1463,7 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   color.w = color.h = normal.w = normal.h = atlas;
   color.rgba.assign(size_t(atlas) * atlas * 4, 0);
   normal.rgba.assign(size_t(atlas) * atlas * 4, 0);
-  for (size_t k = 0; k < normal.rgba.size(); k += 4) normal.rgba[k] = 128, normal.rgba[k + 1] = 128, normal.rgba[k + 2] = 255, normal.rgba[k + 3] = 255;
+  for (size_t k = 0; k < normal.rgba.size(); k += 4) normal.rgba[k] = 128, normal.rgba[k + 1] = 128, normal.rgba[k + 2] = 255, normal.rgba[k + 3] = 48;
   std::set<std::string> keep_alpha;  // (hair and lash cards: the alpha is their cut-out; else it's the shine)
   for (const auto& m : meshes)
     if (m.kind == "hair" || m.kind == "lash") keep_alpha.insert(m.texture_key);
@@ -1469,7 +1477,7 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
         for (int ch = 0; ch < 4; ++ch) color.rgba[d + size_t(ch)] = c.rgba[src + size_t(ch)];
         if (!keep_alpha.count(key)) color.rgba[d + 3] = 48;  // (a low shine on skin and cloth)
         if (s.has_normal)
-          for (int ch = 0; ch < 3; ++ch) normal.rgba[d + size_t(ch)] = n.rgba[src + size_t(ch)];
+          for (int ch = 0; ch < 4; ++ch) normal.rgba[d + size_t(ch)] = n.rgba[src + size_t(ch)];  // (alpha: the skin's shine mask)
       }
   }
   int wrapped = 0;
