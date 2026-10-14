@@ -92,6 +92,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 /* Who made it and where it's free - on the window and the top of every page
    (copies of the port were re-uploaded, sending players to other channels). */
 #define REPO_URL          L"https://github.com/KaikoClanworth1/wwe-svr2011-pc"
+#define KOFI_URL          L"https://ko-fi.com/kaikoclanworth"
 #define CREDIT_LINE       L"Launcher - Version " PORT_VERSION L" - By KaikoClanworth"
 #define CREDIT_LINK       L"Download free at github.com/KaikoClanworth1/wwe-svr2011-pc"
 #define MAIN_TITLE        CREDIT_LINE L" - " CREDIT_LINK
@@ -167,6 +168,7 @@ static HFONT     s_icons, s_nav, s_card, s_huge;
 static HFONT     s_mark_font;                     /* Verify game files' mark (the icon font, large) */  /* the look: sidebar icons and labels, card titles, page title */
 static int       s_cur_tab = -1, s_nav_hover = -1;
 static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
+static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
 static int       s_dpi = 96;
 static HICON     s_icon;
 static HWND      s_ctl[TAB_COUNT][32];
@@ -6504,6 +6506,20 @@ static void paint_window(HDC dc)
     swprintf_s(v, 64, L"Version %s", PORT_VERSION);
     r.left = S(20); r.right = S(SB_W - 10); r.top = cl.bottom - S(34); r.bottom = cl.bottom - S(12);
     DrawTextW(dc, v, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    /* "Support me: ko-fi" above the version: the link opens the Ko-fi page. */
+    {
+        SIZE z;
+        RECT k = { S(20), cl.bottom - S(56), S(SB_W - 10), cl.bottom - S(34) };
+        DrawTextW(dc, L"Support me: ", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L"Support me: ", 12, &z);
+        k.left += z.cx;
+        SetTextColor(dc, C_ACCENT);
+        DrawTextW(dc, L"ko-fi", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L"ko-fi", 5, &z);
+        s_kofi_link.left = k.left; s_kofi_link.right = k.left + z.cx;
+        s_kofi_link.top = k.top; s_kofi_link.bottom = k.top + z.cy;
+        SetTextColor(dc, RGB(120, 120, 132));
+    }
     /* The credit, top right of every page: the link opens the release page. */
     {
         RECT c;
@@ -6867,6 +6883,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(w, L"open", REPO_URL, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
+        if (PtInRect(&s_kofi_link, pt)) {
+            ShellExecuteW(w, L"open", KOFI_URL, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
         if (k >= 0 && k_nav[k].tab != s_cur_tab)
             show_tab(k_nav[k].tab);
         return 0;
@@ -6894,7 +6914,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
-            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt)) {
+            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt)) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
             }
