@@ -9,6 +9,8 @@ A slot's move goes into the mapped 2011 slot when 2011 has the same move (by nam
 (moveset_port's rules); else the base's move stays (PS2 motions aren't ported). Where (research 2026-10-14):
 
   game       move names (id: name)                                      profile (u16 move ids)
+  ps2_jbi    EDIT.PAC group MOVS (a PAC), entry 999 (BPE): lists of     CHAR record (512 B) +0x0C..+0xE4 (SYM's + 4;
+             ~39-byte {.., u16 id, name} (the id right before the name)  SYM's move ids too)
   ps2_sym    PAC/MOVES.PAC CATE: a PAC of lists, u32 n + 40-byte        CHAR record (ps2_records) +0x08..+0xF2
              {u16 id, ., name +8}
   ps2_hctp   PAC/MOVES.PAC WAZA: 32-byte header, 64-byte {name[32],     CHAR record +0x10..+0x110
@@ -19,8 +21,9 @@ A slot's move goes into the mapped 2011 slot when 2011 has the same move (by nam
   ps2_svr07..09  as the X360 games byte for byte: their maps (moveset_maps.json svr2007-2009), 2011's ids
   ps2_svr10  MOVS/WAZE 160-byte records (svr10_superstar's)            CHAR/PRO: the X360 record's first 564 B;
                                                                         svr10_superstar.MAP for the slots
-The MOVES.PAC directory is one level (0x800: tag, u32 n, n x {tag, u16 sector, u16 size / 0x100}, data at
-0x4000 + sector * 0x800); MISC.PAC / M.PAC groups as ps2_records._groups.
+The MOVES.PAC (JBI: EDIT.PAC) directory is one level (0x800: tag, u32 n, {tag, u16 sector, u16 size / 0x100}
+until a zero tag - JBI's lists more than n - data at 0x4000 + sector * 0x800); MISC.PAC / M.PAC groups as
+ps2_records._groups.
 SYM / HCTP / SvR 2004 share one layout (SYM 8 bytes before HCTP, 2004 0x20 after, SYM ends at HCTP's +0xFA);
 the maps go section by section (taunts, finishers, strikes, front / rear grapples, ground, corner, top rope,
 running, Irish whip, tag team) in the slots' order - PS2 menus aren't 2011's, so a slot lands on a 2011 slot of
@@ -39,6 +42,7 @@ sys.path.insert(0, HERE)
 TWIN_MAP = {'ps2_svr07': 'svr2007', 'ps2_svr08': 'svr2008', 'ps2_svr09': 'svr2009'}
 SAME_IDS = ('ps2_svr07', 'ps2_svr08', 'ps2_svr09', 'ps2_svr10')
 NAMES = {   # game: (file, group or None = MOVES.PAC's own directory, entry, format)
+    'ps2_jbi': ('EDIT.PAC', None, 'MOVS', 'jbi'),
     'ps2_sym': ('PAC/MOVES.PAC', None, 'CATE', 'cate'), 'ps2_hctp': ('PAC/MOVES.PAC', None, 'WAZA', 'wz32'),
     'ps2_svr04': ('PAC/MOVES.PAC', None, 'WAZA', 'wzA0'), 'ps2_svr06': ('PAC/MISC.PAC', b'MOVS', 'WAZE', 'w144'),
     'ps2_svr07': ('PAC/MISC.PAC', b'MOVS', 'WAZE', 'w144'), 'ps2_svr08': ('PAC/MISC.PAC', b'MOVS', 'WAZE', 'w144'),
@@ -96,7 +100,8 @@ SVR06 = [(_r(0x0A, 4), T11), ([0x18, 0x1A], FIN11),
          ([0xE0, 0xE2, 0xE4, 0xE8], _r(0x150, 4)), ([0xF0], [0x158]), ([0xEA], [0x1A6]),
          ([0xF2, 0xF4], [0x172, 0x174]), ([0xEC, 0xF6], [0x176, 0x178]), ([0xEE, 0xFA], [0x17A, 0x17C]),
          (_r(0xFE, 4), _r(0x17E, 4)), (_r(0x108, 5), _r(0x18E, 5))]
-SECTIONS = {'ps2_sym': SYM, 'ps2_hctp': HCTP, 'ps2_svr04': SVR04, 'ps2_svr06': SVR06}
+JBI = _shift(SYM, 4)   # (JBI's record: SYM's slots 4 bytes on, the same sections)
+SECTIONS = {'ps2_jbi': JBI, 'ps2_sym': SYM, 'ps2_hctp': HCTP, 'ps2_svr04': SVR04, 'ps2_svr06': SVR06}
 
 
 def slot_map(game):
@@ -120,9 +125,10 @@ def map_key(game):
 # --------------------------------------------------------------------------- reading the disc
 
 def _moves_dir(head, entry):
-    n = struct.unpack_from('<I', head, 0x804)[0]
-    for k in range(min(n, 64)):
+    for k in range(64):   # (until a zero tag: JBI's EDIT.PAC lists more groups than its count says)
         p = 0x808 + 8 * k
+        if head[p:p + 4] == bytes(4):
+            break
         if head[p:p + 4].decode('latin-1').strip() == entry:
             sec, size = struct.unpack_from('<HH', head, p + 4)
             return 0x4000 + sec * 0x800, size * 0x100
@@ -146,6 +152,16 @@ def _names(b, fmt):
     if fmt in ('wz32', 'wzA0'):   # {name[32], data[32]: id +8} after the header
         for o in range(0x20 if fmt == 'wz32' else 0xA0, len(b) - 63, 64):
             out.setdefault(struct.unpack_from('<H', b, o + 40)[0], b[o:o + 32].split(b'\0')[0].decode('latin-1').strip())
+    elif fmt == 'jbi':   # a PAC; entry 999 (BPE): the move lists, each name right after its u16 id
+        import ps2_char
+        import svrfmt
+        v = ps2_char.pac(b)[999]
+        v = svrfmt.bpe_decode(v) if v[:4] == b'BPE ' else v
+        for m in re.finditer(rb'[A-Za-z0-9][ -~]{2,}?\x00', v):
+            if m.start() >= 2:
+                i = struct.unpack_from('<H', v, m.start() - 2)[0]
+                if 100 <= i < 40000:
+                    out.setdefault(i, m.group()[:-1].decode('latin-1').strip())
     elif fmt == 'cate':   # a PAC of category lists: u32 n, n x 40 bytes {u16 id, ., name +8}
         import ps2_char
         import svrfmt
@@ -341,7 +357,7 @@ def moveset_step(g, cid, base, o, work, mod, man, rep):
 def write_maps():
     import moveset_maps as MM
     data = json.load(open(MM.OUT)) if os.path.exists(MM.OUT) else {}
-    for game in ('ps2_sym', 'ps2_hctp', 'ps2_svr04', 'ps2_svr06', 'ps2_svr10'):
+    for game in ('ps2_jbi', 'ps2_sym', 'ps2_hctp', 'ps2_svr04', 'ps2_svr06', 'ps2_svr10'):
         m = slot_map(game)
         why = ('svr10_superstar.MAP (the X360 2010 record\'s move block)' if game == 'ps2_svr10' else
                'laid out by section from the roster (tools/ps2_moves.py SECTIONS)')
