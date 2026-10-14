@@ -16,7 +16,8 @@ named the weights by 2011 bones. model.json:
      "joints":   {"<2011 bone>": [x, y, z], ...},         optional: world positions that move those
                                                          nodes to the model's proportions (translation only)
      "attires": [{
-        "name": "<EPK8 entry name, optional: the template's own names in order>",
+        "name": "<optional; only '<template id><attire digit>2' is accepted (the entry name the game looks up),
+                 anything else - a display name - is ignored with a warning>",
         "entrance_gear": {...},   optional: the same attire wearing its entrance gear (a coat, hat, shirt) -
                                   "meshes" / "textures" as below, plus "extra_bones": [{"name", "parent",
                                   "position": [x, y, z]}] (appended; weights may name them) -> entry
@@ -477,10 +478,14 @@ class Builder:
         names = [n for n, _ in groups[0][1] if n.strip(b'\0')]
         entries, rep = [], []
         for i, a in enumerate(self.spec['attires']):
-            nm = a.get('name')
             # (the template's id, the attire digit, kind 2: '00010212' - not the template's i-th entry name, which on
             # the entrance-gear superstars (103 / 139 / 145) can be a kind 4 entry, and past its own attires none)
-            name = nm.encode('latin-1') if nm else (names[0][:6] if names else b'000104') + b'%d2' % i
+            name = (names[0][:6] if names else b'000104') + b'%d2' % i
+            nm = a.get('name')
+            if nm:   # (only an entry name the game finds: this id, this attire digit, kind 2 - a display name is not one)
+                if not (isinstance(nm, str) and nm.encode('latin-1', 'replace') == name):
+                    self.warnings.append('attire %d: "name" %r is not the entry name %s the game looks up - ignored'
+                                         % (i + 1, nm, name.decode()))
             kids, r = self.attire(a, name.decode('latin-1'))
             entries.append((b'EMD ', name, W.pack_kids(kids)))
             rep.append(r)
