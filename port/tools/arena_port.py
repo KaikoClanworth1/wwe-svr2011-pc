@@ -3,6 +3,8 @@
     py tools/arena_port.py games
     py tools/arena_port.py list --game <id> --src <ISO or extract folder>
     py tools/arena_port.py convert --game <id> --src <...> --item <bgNN> --out <dir> [--base <0-19>] [--name <text>]
+    py tools/arena_port.py detect --src <one arena .pac>     (which game / arena, what a lone file lacks)
+--src may also be one arena pac (list / convert: --game and --item then optional; see 'a lone arena file').
 
 stdout is JSON only; logs and `progress <0-100> <text>` lines go to stderr.
 Exit codes: 0 ok, 2 bad input, 3 conversion failed.
@@ -222,15 +224,16 @@ def svr2010_list(disc):
     return items
 
 
-def svr2010_convert(disc, key, out, base=None, name=None):
+def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010'):
     warnings, notes, dropped = [], [], []
     try:
         n = int(key[2:]) if key.lower().startswith('bg') else int(key)
     except ValueError:
         raise BadInput('item %r: expected bgNN' % key)
-    if n not in SVR2010:
+    lone = getattr(disc, 'lone', False)
+    if n not in SVR2010 and not lone:
         raise BadInput('item %r: not an arena of SvR 2010 (story copies are left out)' % key)
-    banner_name, show, in11 = SVR2010[n]
+    banner_name, show, in11 = SVR2010.get(n) if year == '2010' and n in SVR2010 else (None, 'Arena bg%02d' % n, None)
     path = 'pac/bg/bg%02d.pac' % n
     if not disc.exists(path):
         raise BadInput('%s not on the disc' % path)
@@ -238,8 +241,8 @@ def svr2010_convert(disc, key, out, base=None, name=None):
         base = in11 if in11 is not None else (n if n in BASE_NAMES else 3)
     if base not in BASE_NAMES:
         raise BadInput('base %r: 0-19' % base)
-    name = name or '%s (SvR 2010)' % show
-    mod_id = 'svr2010_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
+    name = name or '%s (SvR %s)' % (show, year)
+    mod_id = 'svr%s_' % year + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
 
     progress(5, 'reading %s' % path)
     arena = disc.read(path)
@@ -275,6 +278,11 @@ def svr2010_convert(disc, key, out, base=None, name=None):
         notes.append('no select banner on the disc for this arena: the banner is cut from its VS picture')
     from PIL import Image
     if banner is None:
+        banner = host_banner(pac11, base)
+        if banner is not None:
+            notes.append("no banner or VS picture %s: 2011's %s banner" % ('in a lone arena file' if lone else 'on the disc',
+                                                                          BASE_NAMES[base]))
+    if banner is None:
         banner = Image.new('RGBA', (256, 128), (30, 30, 30, 255))
         warnings.append('no banner or VS picture found: a plain banner was made')
     with open(os.path.join(mod, 'banner.dds'), 'wb') as f:
@@ -293,15 +301,15 @@ def svr2010_convert(disc, key, out, base=None, name=None):
         os.rmdir(os.path.join(mod, 'vs'))
 
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
-        f.write('type=arena\nid=%s\nname=%s\nauthor=SvR 2010 arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, 'bg%02d' % n, BASE_NAMES[base]))
+        f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
+                % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]))
     progress(80, 'packing')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
     old = sys.stdout
     sys.stdout = sys.stderr  # (the packer prints a line)
     try:
-        wwe13_pack.pack(mod, svrmod, 'Port tools (SvR 2010)')
+        wwe13_pack.pack(mod, svrmod, 'Port tools (SvR %s)' % year)
     finally:
         sys.stdout = old
     notes.append('base %s (tile %d on the custom arena pages); the game renames its stage to the slot\'s' % (BASE_NAMES[base], base))
@@ -461,11 +469,12 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         n = int(key[2:]) if key.lower().startswith('bg') else int(key)
     except ValueError:
         raise BadInput('item %r: expected bgNN' % key)
-    if n not in table:
+    lone = getattr(disc, 'lone', False)
+    if n not in table and not lone:
         raise BadInput('item %r: not an arena of SvR %s (story copies are left out)' % (key, year))
     if not pac11:
-        raise BadInput('SvR 2008 / 2009 arenas need --pac11 <SvR 2011 game folder> (crowd and table pictures)')
-    show, in11 = table[n]
+        raise BadInput('SvR 2007 - 2009 arenas need --pac11 <SvR 2011 game folder> (crowd and table pictures)')
+    show, in11 = table.get(n, ('Arena bg%02d' % n, None))
     if base is None:
         base = in11 if in11 is not None else (n if n in BASE_NAMES else 3)
     if base not in BASE_NAMES:
@@ -578,9 +587,15 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
             if im.width >= 256 and im.width * im.height > best:
                 art, best = im, im.width * im.height
     from PIL import Image
-    if art is None:
+    banner = art
+    if banner is None:
+        banner = host_banner(pac11, base)
+        if banner is not None:
+            notes.append("no VS picture %s: 2011's %s banner" % ('in a lone arena file' if lone else 'on the disc',
+                                                               BASE_NAMES[base]))
+    if banner is None:
         warnings.append('no VS picture for this arena on the disc: a plain banner was made')
-    banner = art if art is not None else Image.new('RGBA', (256, 128), (30, 30, 30, 255))
+        banner = Image.new('RGBA', (256, 128), (30, 30, 30, 255))
     with open(os.path.join(mod, 'banner.dds'), 'wb') as f:
         f.write(dds_dxt5(fit(banner, 256, 128)))
     if art is not None:
@@ -622,6 +637,194 @@ def bg_list(disc):
     return sorted(items, key=lambda it: it['arena'])
 
 
+# -- a lone arena file (no disc) -------------------------------------------------
+# list / convert / detect take --src <one arena .pac> (the file as it is on the disc, any name);
+# the game is told from the file. The markers, checked on every bgNN.pac (bg00-59) of SvR 2008-2011
+# and WWE '12-2K16 (2026-10-15; 2007 / 2K17 by their containers):
+#   xcompress (0FF512ED) around an HSPC -> 2K17 (around an EPAC / EPK8: '13 - 2K16, below)
+#   EPAC groups STG<k>, ten stages each -> 2007
+#   no texture set 0x190 (it is 0xC8) -> 2008 / 2009 (2009: a crowd 0x4E20 with parts, 0x7922, 0xC5 / 0xC6)
+#   ZLIB entries and 0x7532 -> 2K14 - 2K16 (EPK8 or 0x3E6: 2K15; 0x179-0x181 / 0x334 / 0x3CF-0x3D8 or a
+#     72-part crowd: 2K16; 0x3E7: 2K14, else 2K16 - 'sure' false where they can't be told apart: the same convert)
+#   BPE entries and 0x7532 -> WWE '12 / '13 (0xC8 or 0x7533: '13)
+#   BPE entries, no 0x7532 -> SvR 2010; a 72-part crowd or 0x132-0x13F: a SvR 2011 arena already
+#   DPAC / DPK8 -> a PS2 pac (the PS2 games keep every arena in one PAC/BG/BG.PAC): no PS2 arenas yet
+XCOMPRESS = b'\x0f\xf5\x12\xed'
+GAME_NAMES = dict((g['id'], g['name']) for g in GAMES)
+GAME_NAMES['svr2011'] = "WWE SmackDown vs. Raw 2011"
+WWE2K16_IDS = (0x179, 0x17A, 0x17B, 0x17D, 0x17E, 0x17F, 0x180, 0x181, 0x334, 0x3CF, 0x3D0, 0x3D1, 0x3D7, 0x3D8)
+SVR2011_IDS = (0x132, 0x133, 0x134, 0x135, 0x13D, 0x13E, 0x13F)
+SVR2010_IDS = (0x14A, 0x14B, 0x14C, 0x14D, 0x14E, 0x14F, 0x384, 0x385, 0x814C, 0xEA60, 0xFDE8)
+
+
+def classify(ids, zlib_entries, epk8, crowd_parts, xcompressed=False):
+    """(game, sure, others it could be) from a stage's entry ids - see the table above"""
+    ids = set(ids)
+    if 0x190 not in ids:
+        if crowd_parts or 0x7922 in ids or 0xC5 in ids or 0xC6 in ids:
+            return 'svr2009', True, []
+        return 'svr2008', False, ['svr2009']   # (4 of 2009's 26 arenas look the same: the same convert)
+    if zlib_entries and 0x7532 in ids:   # (SvR 2010 bg26 has ZLIB entries too)
+        if epk8 or 0x3E6 in ids:
+            return 'wwe2k15', True, []
+        if crowd_parts == 72 or ids & set(WWE2K16_IDS):
+            return 'wwe2k16', True, []
+        if 0x3E7 in ids:   # (2K15's three plain-EPAC arenas bg00-02 are the same as 2K14's)
+            return 'wwe2k14', xcompressed, [] if xcompressed else ['wwe2k15']
+        return 'wwe2k16', False, ['wwe2k15']
+    if 0x7532 in ids:
+        if 0xC8 in ids or 0x7533 in ids or epk8:
+            return 'wwe13', True, []
+        return 'wwe12', 0xEE48 in ids, [] if 0xEE48 in ids else ['wwe13']
+    if crowd_parts == 72 or ids & set(SVR2011_IDS):
+        return 'svr2011', True, []
+    return 'svr2010', bool(crowd_parts == 52 or ids & set(SVR2010_IDS)), []
+
+
+def detect_pac(raw):
+    """-> {'game', 'sure', 'also', 'stages': [stage numbers in the file], 'format'} or {'game': None, 'why'}"""
+    fmt = []
+    if raw[:4] == XCOMPRESS:
+        fmt.append('xcompress')
+        try:
+            import arena_names as AN
+            raw = AN._xdec(raw, None)
+        except Exception as e:  # noqa: BLE001 - svrmod.exe missing: still say what it is
+            return {'game': 'wwe13', 'sure': False, 'also': ['wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17'], 'stages': [],
+                    'format': 'xcompress', 'why': "a WWE '13 - 2K17 pac (xcompressed; %s)" % e}
+    if raw[:4] == b'HSPC':
+        return {'game': 'wwe2k17', 'sure': True, 'also': [], 'stages': [], 'format': '+'.join(fmt + ['HSPC'])}
+    if raw[:4] in (b'DPAC', b'DPK8'):
+        return {'game': None, 'format': raw[:4].decode(), 'why':
+                'a PS2 pac: the PS2 games keep every arena in one PAC/BG/BG.PAC, and PS2 arenas are not '
+                'convertible yet (only the Xbox 360 games: SvR 2007 - WWE 2K17)'}
+    if raw[:4] not in (b'EPAC', b'EPK8'):
+        return {'game': None, 'format': raw[:4].hex(), 'why': 'not an arena pac (no EPAC / EPK8 / HSPC / DPAC header)'}
+    fmt.append(raw[:4].decode())
+    import moves_port
+    try:
+        groups = moves_port.read_pac(raw)
+    except ValueError:
+        return {'game': None, 'format': '+'.join(fmt), 'why': 'its table does not read (a damaged or cut file?)'}
+    stages = []
+    for typ, ents in groups:
+        if typ[:3] == b'STG' and typ[3:4].isdigit():   # SvR 2007: STG<k>/00NN, ten stages a file
+            stages += [int(n) for n, b in ents if n.isdigit() and b[:4] == b'PACH']
+    if stages:
+        return {'game': 'svr2007', 'sure': True, 'also': [], 'stages': sorted(stages), 'format': '+'.join(fmt)}
+    stage = next(((n, b) for typ, ents in groups if typ == b'STG ' for n, b in ents if b[:4] == b'PACH'), None)
+    if stage is None:
+        return {'game': None, 'format': '+'.join(fmt), 'why': 'no arena (STG) entry: not an arena pac (a menu, '
+                                                              'character or cage pac?)'}
+    ents = svrfmt.pach_read(stage[1])
+    e = dict(ents)
+    crowd = 0
+    if 0x4E20 in e:
+        import arena_names as AN
+        u = AN._unz(e[0x4E20])
+        crowd = len(svrfmt.pach_read(u)) if u[:4] == b'PACH' else 0
+    zl = sum(b[:4] == b'ZLIB' for _, b in ents) > len(ents) // 2
+    game, sure, also = classify([i for i, _ in ents], zl, raw[:4] == b'EPK8', crowd, 'xcompress' in fmt)
+    num = [int(stage[0])] if stage[0].isdigit() else []
+    return {'game': game, 'sure': sure, 'also': also, 'stages': num, 'format': '+'.join(fmt)}
+
+
+class LoneDisc:
+    """One arena file standing in for a disc: only pac/bg/<the file> is there, so what the converters
+    look for elsewhere (the menu pictures, the string tables) is missing and they fall back"""
+    lone = True
+
+    def __init__(self, path, rel):
+        self.path, self.rel = os.path.abspath(path), rel.lower()
+
+    def _is(self, p):
+        return p.replace('\\', '/').strip('/').lower() == self.rel
+
+    def exists(self, p):
+        return self._is(p)
+
+    def isdir(self, p):
+        return p.replace('\\', '/').strip('/').lower() in ('', 'pac', 'pac/bg')
+
+    def listdir(self, p):
+        return [self.rel.rsplit('/', 1)[1]] if p.replace('\\', '/').strip('/').lower() == 'pac/bg' else []
+
+    def read(self, p):
+        if not self._is(p):
+            raise FileNotFoundError(p)
+        with open(self.path, 'rb') as f:
+            return f.read()
+
+    def size(self, p):
+        return os.path.getsize(self.path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def lone_stages(path, det):
+    """the stage numbers in a lone file: its own (EPAC entry name), else the file name's bgNN"""
+    import re
+    m = re.fullmatch(r'bg(\d+)', os.path.splitext(os.path.basename(path))[0].lower())
+    if det.get('stages'):
+        return det['stages']
+    return [int(m.group(1))] if m else []
+
+
+def lone_lacks(game):
+    """what a lone file can't give, in plain words, and what is used instead"""
+    out = ["the arena's name and pictures: they are in the disc's menu files, not in the arena file"]
+    if game in ('svr2007', 'svr2008', 'svr2009', 'svr2010', 'svr2011'):
+        out.append('name: the port\'s own list by arena number (bgNN), else "Arena bgNN"; select banner: '
+                   "2011's banner of the base arena (with --pac11), no own loading or VS picture (2011's stay)")
+    else:
+        out.append('name: bgNN (no thumbnail) - the game\'s own arena names come from its string.pac')
+    if game in ('svr2007', 'svr2008', 'svr2009'):
+        out.append("crowd, announce table pictures, card and the light sets it lacks: from 2011 RAW "
+                   "(--pac11), the same as with the whole disc")
+    out.append('nothing else: models, textures and lights are all in the arena file itself (no arena of '
+               'these games keeps textures in another pac)')
+    return out
+
+
+def lone_items(game, path, stages):
+    table = {'svr2007': SVR2007, 'svr2008': SVR2008, 'svr2009': SVR2009}.get(game)
+    items = []
+    for n in stages:
+        show = in11 = None
+        if game == 'svr2010' and n in SVR2010:
+            show, in11 = SVR2010[n][1:]
+        elif table and n in table:
+            show, in11 = table[n]
+        items.append({'key': 'bg%02d' % n, 'name': show or 'Arena bg%02d' % n, 'bg': 'bg%02d' % n, 'arena': n,
+                      'size': os.path.getsize(path), 'in_2011': in11})
+    if not stages:   # (a WWE 2K17 HSPC keeps no number: the file under its own name - the Mod Maker converts it whole)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        items.append({'key': 'file', 'name': stem, 'bg': None, 'arena': None, 'size': os.path.getsize(path),
+                      'in_2011': None})
+    return mark_items(game, items)
+
+
+def host_banner(pac11, base):
+    """2011's own select banner of arena <base> (MatchHD.pac MENU/MASI), as a PIL image - or None"""
+    if not pac11:
+        return None
+    for p in (os.path.join(pac11, 'pac', 'menu', 'MatchHD.pac'), os.path.join(pac11, 'menu', 'MatchHD.pac')):
+        if os.path.exists(p):
+            with open(p, 'rb') as f:
+                match = f.read()
+            for nm, dds in group_textures(match, 'MASI'):
+                if nm == BASE_NAMES.get(base):
+                    try:
+                        return image(dds)
+                    except Exception:  # noqa: BLE001
+                        return None
+    return None
+
+
 def arena_cache_root():
     """where 'scan' keeps a disc's named arena list (SVR2011_ARENA_CACHE, else %LOCALAPPDATA%/SvR2011/arena_lists)"""
     return os.environ.get('SVR2011_ARENA_CACHE') or os.path.join(
@@ -657,12 +860,62 @@ def named_list(disc, game, src, items, cache_root=None, scan=False):
     return items, cache.get('scanned', False)
 
 
+FAMILY = {'svr2007': 'svr2007', 'svr2008': 'svr2008', 'svr2009': 'svr2008', 'svr2010': 'svr2010', 'svr2011': 'svr2010'}
+LONE_MAGICS = (b'EPAC', b'EPK8', b'HSPC', b'DPAC', b'DPK8', XCOMPRESS)
+
+
+def is_lone(src):
+    """--src is one pac file (not a folder or a disc image)"""
+    if not os.path.isfile(src):
+        return False
+    with open(src, 'rb') as f:
+        return f.read(4) in LONE_MAGICS
+
+
+def lone_open(a):
+    """a lone --src: (game id, the detection, the stage numbers in it)"""
+    with open(a.src, 'rb') as f:
+        det = detect_pac(f.read())
+    if det['game'] is None:
+        raise BadInput('%s: %s' % (os.path.basename(a.src), det['why']))
+    game = det['game'] if a.game in (None, 'auto') else a.game
+    if game not in GAME_NAMES:
+        raise BadInput('unknown game %r' % a.game)
+    if det['sure'] and FAMILY.get(game, 'native') != FAMILY.get(det['game'], 'native'):
+        raise BadInput('%s is a %s arena, not %s (leave --game out and the file says which)'
+                       % (os.path.basename(a.src), GAME_NAMES[det['game']], GAME_NAMES[game]))
+    return game, det, lone_stages(a.src, det)
+
+
+def lone_detect_json(a):
+    with open(a.src, 'rb') as f:
+        det = detect_pac(f.read())
+    if det['game'] is None:
+        return {'ok': False, 'error': '%s: %s' % (os.path.basename(a.src), det['why']), 'format': det.get('format')}, 2
+    game = det['game']
+    stages = lone_stages(a.src, det)
+    out = {'ok': True, 'file': os.path.abspath(a.src), 'game': game, 'game_name': GAME_NAMES[game], 'sure': det['sure'],
+           'also': det['also'], 'format': det['format'], 'items': lone_items(game, a.src, stages),
+           'convert': 'mod_maker' if game in NATIVE_GAMES else 'arena_port', 'lacks': lone_lacks(game), 'notes': []}
+    if game == 'svr2011':
+        out['notes'].append('already a SvR 2011 arena: convert keeps the file as it is')
+    if not stages and game not in NATIVE_GAMES:
+        out['notes'].append('no arena number in the file or its name: name it bgNN.pac or give --item bgNN')
+    if game in NATIVE_GAMES:
+        out['mod_maker'] = 'svrmod wwe13 <this file> <2011 host bgNN.pac> <out.pac> - as for an arena off the disc'
+    if det.get('why'):
+        out['notes'].append(det['why'])
+    return out, 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog='arena_port.py')
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('games')
+    p = sub.add_parser('detect')   # (a lone arena pac: which game, its arena, what a lone file lacks)
+    p.add_argument('--src', required=True)
     p = sub.add_parser('list')
-    p.add_argument('--game', required=True)
+    p.add_argument('--game')       # (required for a disc; a lone pac: optional, the file says)
     p.add_argument('--src', required=True)
     p.add_argument('--pac11')
     p.add_argument('--cache')
@@ -671,9 +924,9 @@ def main(argv):
     p.add_argument('--src', required=True)
     p.add_argument('--cache')
     p = sub.add_parser('convert')
-    p.add_argument('--game', required=True)
+    p.add_argument('--game')
     p.add_argument('--src', required=True)
-    p.add_argument('--item', required=True)
+    p.add_argument('--item')       # (required for a disc; a lone pac: its own arena)
     p.add_argument('--out', required=True)
     p.add_argument('--base', type=int)
     p.add_argument('--name')
@@ -686,36 +939,88 @@ def main(argv):
     if a.cmd == 'games':
         print(json.dumps(GAMES))
         return 0
-    game = next((g for g in GAMES if g['id'] == a.game), None)
     try:
-        if not game:
-            raise BadInput('unknown game %r' % a.game)
         if not os.path.exists(a.src):
             raise BadInput('--src %s: not found' % a.src)
-        with discfs.open(a.src) as disc:
+        lone = is_lone(a.src)
+        if a.cmd == 'detect':
+            if not lone:
+                raise BadInput('--src %s: not a pac file (detect takes one arena pac)' % a.src)
+            out, code = lone_detect_json(a)
+            print(json.dumps(out))
+            return code
+        lone_note = []
+        if lone:
+            if a.cmd == 'scan':
+                raise BadInput('scan reads a whole disc (names and pictures); a lone arena pac has neither: use list')
+            gid, det, stages = lone_open(a)
+            if a.cmd == 'list':
+                print(json.dumps(lone_items(gid, a.src, stages)))
+                return 0
+            if gid in NATIVE_GAMES:
+                n = None
+            elif a.item:
+                try:
+                    n = int(a.item[2:]) if a.item.lower().startswith('bg') else int(a.item)
+                except ValueError:
+                    raise BadInput('item %r: expected bgNN' % a.item)
+                if stages and n not in stages:
+                    raise BadInput('item %r is not in this file (it holds %s)'
+                                   % (a.item, ', '.join('bg%02d' % k for k in stages)))
+            elif stages:
+                n = stages[0]
+            else:
+                raise BadInput('no arena number in %s or its name: name the file bgNN.pac or give --item bgNN'
+                               % os.path.basename(a.src))
+            maybe = '' if det['sure'] or not det['also'] else \
+                ' - told from the file; it may be ' + ' / '.join(GAME_NAMES[g] for g in det['also'])
+            lone_note = ['a lone arena file: %s%s' % (GAME_NAMES[gid], maybe)] + \
+                ['lone file - ' + x for x in lone_lacks(gid)]
+            if gid in NATIVE_GAMES:
+                rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'game': gid,
+                       'notes': ["WWE '12 - 2K17 arenas are converted by the Mod Maker itself: svrmod wwe13 "
+                                 "<this file> <2011 host bgNN.pac> <out.pac>"] + lone_note}
+                print(json.dumps(rep))
+                return 3
+            disc = LoneDisc(a.src, svr2007_path(n) if gid == 'svr2007' else 'pac/bg/bg%02d.pac' % n)
+            item, game_id = 'bg%02d' % n, gid
+        else:
+            if not a.game or (a.cmd == 'convert' and not a.item):
+                raise BadInput('--game%s needed for a disc or game folder'
+                               % (' and --item' if a.cmd == 'convert' else ''))
+            if a.game not in GAME_NAMES or a.game == 'svr2011':
+                raise BadInput('unknown game %r' % a.game)
+            disc = discfs.open(a.src)
+            item, game_id = a.item, a.game
+        with disc:
             if not disc.isdir('pac/bg'):
                 raise BadInput('the game files have no pac/bg folder (an incomplete extract? use the whole disc '
-                               'folder or the ISO)')
+                               'folder, the ISO or one arena pac)')
             if a.cmd in ('list', 'scan'):
                 lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
                          'svr2009': lambda d: svr2008_list(d, SVR2009),
                          'svr2007': lambda d: svr2008_list(d, SVR2007)}
-                items = lists.get(a.game, bg_list)(disc)
-                if a.game in NATIVE_GAMES:
-                    items, _ = named_list(disc, a.game, a.src, items, a.cache, scan=a.cmd == 'scan')
-                print(json.dumps(mark_items(a.game, items)))
+                items = lists.get(game_id, bg_list)(disc)
+                if game_id in NATIVE_GAMES:
+                    items, _ = named_list(disc, game_id, a.src, items, a.cache, scan=a.cmd == 'scan')
+                print(json.dumps(mark_items(game_id, items)))
                 return 0
-            if a.game not in ('svr2010', 'svr2008', 'svr2009', 'svr2007'):
-                msg = ("WWE '12 - 2K17 arenas are converted by the Mod Maker itself (svrmod wwe13)" if a.game in NATIVE_GAMES
-                       else '%s arenas are not convertible yet (research)' % game['name'])
+            if game_id not in FAMILY:
+                msg = ("WWE '12 - 2K17 arenas are converted by the Mod Maker itself (svrmod wwe13)" if game_id in NATIVE_GAMES
+                       else '%s arenas are not convertible yet (research)' % GAME_NAMES.get(game_id, game_id))
                 rep = {'ok': False, 'out': None, 'opens': 'arena', 'warnings': [], 'dropped': [], 'notes': [msg]}
                 print(json.dumps(rep))
                 return 3
             os.makedirs(a.out, exist_ok=True)
-            if a.game in ('svr2007', 'svr2008', 'svr2009'):
-                rep = svr2008_convert(disc, a.item, a.out, a.pac11, a.base, a.name, a.game)
+            if game_id in ('svr2007', 'svr2008', 'svr2009'):
+                rep = svr2008_convert(disc, item, a.out, a.pac11, a.base, a.name, game_id)
             else:
-                rep = svr2010_convert(disc, a.item, a.out, a.base, a.name)
+                rep = svr2010_convert(disc, item, a.out, a.base, a.name, a.pac11, '2011' if game_id == 'svr2011' else '2010')
+                if game_id == 'svr2011':
+                    rep['notes'].insert(0, 'already a SvR 2011 arena: the file is kept as it is')
+            if lone_note:
+                rep['notes'] = lone_note + rep['notes']
+                rep['game'] = game_id
             with open(os.path.join(a.out, 'report.json'), 'w') as f:
                 json.dump(rep, f, indent=1)
             print(json.dumps(rep))

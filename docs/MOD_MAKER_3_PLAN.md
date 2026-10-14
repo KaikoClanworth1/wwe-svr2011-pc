@@ -141,6 +141,21 @@ py tools/<kind>_port.py convert --game <id> --src <...> --item <key> --out <dir>
   and caches the list (default `%LOCALAPPDATA%/SvR2011/arena_lists/<game>_<key>/arenas.json` +
   `thumbs/bgNN.png`); `list` then answers from that cache (without a scan: names only, read once
   and cached too). WWE 2K17 has no thumbnails (its menu pacs keep hashed names).
+- One arena file instead of a disc (`arena_port.py`, 15 Oct): `--src` may be a lone arena pac
+  (a `bgNN.pac` as it is on the disc, any name; SvR 2007 - WWE 2K17, xcompressed or not).
+  `py tools/arena_port.py detect --src <file.pac>` -> `{ok, file, game, game_name, sure, also: [games
+  it may be instead], format, items: [the list items], convert: "arena_port"|"mod_maker", lacks:
+  [plain words], notes, mod_maker: <the svrmod line, natives only>}`; exit 2 with `error` for a PS2
+  pac (PS2 games keep every arena in one `BG.PAC`; no PS2 arenas yet) or a pac that isn't an arena.
+  `list` / `convert` take the file with `--game` optional (the file's own game; a `--game` of another
+  family is refused) and `--item` optional (the file's arena: its EPAC entry name, else the file name's
+  bgNN; SvR 2007 files hold ten). `sure` false = the file can't tell (2008 / 2009, 2K14 / 2K15 / 2K16:
+  the same convert). WWE '12 - 2K17: `convert` exits 3 as for a disc - the Mod Maker runs `svrmod
+  wwe13 <the file> <host> <out>` itself. A SvR 2011 arena file is taken as it is (game `svr2011`).
+  What a lone file can't give: the arena's name and pictures (the disc's menu files) - the name comes
+  from the port's own list by number (else "Arena bgNN"), the banner is 2011's banner of the base arena
+  (`--pac11`), no own loading / VS picture; WWE: bgNN, no thumbnail. Crowd, table pictures and the
+  light sets 2007 - 2009 lack come from 2011 RAW as with the disc; no arena keeps textures in another pac.
 - Output is a normal mod or pack: the Mod Maker opens it on its page, where
   the user finishes it and saves.
 
