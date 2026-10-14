@@ -1771,6 +1771,142 @@ void UpdateRoom33(PPCContext& ctx, uint8_t* base) {
   UpdatePoles(ctx, base);
 }
 
+// -- The forklift (room 31, CVehicleForkLift 320 + CForkliftBoxSupply 321) ------------------------
+// X next to either side gets on (12080 / 12081), seated 12085. Held buttons: A accelerates, R1 brakes,
+// Y reverses; the stick steers (12082 / 12083 while turning). B lifts the crate - it tips off the forks
+// (86) onto whoever is in front (340). Driving into the reload zone (321) puts a new crate on (85).
+// X gets off (12084); knocked off: 12091. (input +48: buttons held, +52: pressed this frame; +56: the
+// stick's 8-way direction, -1 none - logged by the test to check)
+constexpr uint32_t kButtonB = 0x20, kButtonY = 0x10, kButtonR1 = 0x08;
+
+struct Forklift {
+  uint32_t rider = 0;
+  int state = 0;  // 0 free, 1 getting on, 2 driving, 3 getting off
+  int t = 0;
+  float x = 0, z = 0, heading = 0, speed = 0;
+  bool moved = false;
+  int crate = 0, crate_t = 0;  // 0 on the forks, 1 lifting / tipping, 2 gone
+};
+Forklift g_fork;
+
+void ForkliftPlace(PPCContext& ctx, uint8_t* base, Prop& p) {
+  // (its static collision out once it moves: a solid box would stay at its old place)
+  if (!g_fork.moved) DropCollision(base, p), g_fork.moved = true;
+  for (size_t k = 0; k < p.recs.size(); ++k)
+    if (!(k == 1 && g_fork.crate == 2)) MoveRec(ctx, base, p.recs[k], g_fork.x, p.y, g_fork.z, 0, g_fork.heading, 0);
+}
+
+bool ForkliftGetOn(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, int i, float x, float z) {
+  if (g_fork.rider || g_fork.state) return false;
+  if (g_fork.x == 0 && g_fork.z == 0) g_fork.x = p.x, g_fork.z = p.z, g_fork.heading = p.ry;
+  for (int side = 0; side < 2; ++side) {
+    const float s = side ? -10.0f : 10.0f;
+    const float sx = g_fork.x + s * std::cos(g_fork.heading), sz = g_fork.z - s * std::sin(g_fork.heading);
+    if ((x - sx) * (x - sx) + (z - sz) * (z - sz) > 10.0f * 10.0f) continue;
+    g_fork.rider = f, g_fork.state = 1, g_fork.t = 0;
+    JumpAct(ctx, base, f, RoomKey(side ? 12081 : 12080));
+    REXLOG_INFO("hctp: fighter {} gets on {}", i, p.name);
+    return true;
+  }
+  return false;
+}
+
+void UpdateForklift(PPCContext& ctx, uint8_t* base) {
+  Prop* p = FindKind("forklift");
+  if (!p) return;
+  if (g_fork.x == 0 && g_fork.z == 0) g_fork.x = p->x, g_fork.z = p->z, g_fork.heading = p->ry;
+  // the crate
+  if (g_fork.crate == 1) {
+    ++g_fork.crate_t;
+    const float fx = std::sin(g_fork.heading), fz = std::cos(g_fork.heading);
+    if (g_fork.crate_t == 2 * 30) {  // it lands: whoever stands in front of the forks is hit
+      const float cx = g_fork.x - fx * 18.0f, cz = g_fork.z - fz * 18.0f;
+      for (int i = 0; i < 8; ++i)
+        if (const uint32_t o = Rd32(base + kChars + i * 4); o && o != g_fork.rider) {
+          const float dx = RdF(base + o + 288) - cx, dz = RdF(base + o + 296) - cz;
+          if (dx * dx + dz * dz < 14.0f * 14.0f) JumpAct(ctx, base, o, kHitByObject);
+        }
+    }
+    if (g_fork.crate_t == 2 * 60) {
+      if (p->recs.size() > 1) ShowRec(ctx, base, p->recs[1], false);
+      g_fork.crate = 2;
+    }
+  } else if (g_fork.crate == 2) {
+    for (const Prop& q : g_room.props)
+      if (q.kind == "boxsupply" && InShape(q, int(Param(q, 1)), g_fork.x, 0.0f, g_fork.z, 4.0f)) {
+        g_fork.crate = 0;
+        if (p->recs.size() > 1) {
+          ShowRec(ctx, base, p->recs[1], true);
+          PlayRec(ctx, base, p->recs[1], kObjAct + uint32_t(Param(*p, 4, 85)));
+        }
+        ForkliftPlace(ctx, base, *p);
+        REXLOG_INFO("hctp: a new crate on {}", p->name);
+      }
+  }
+  const uint32_t f = g_fork.rider;
+  if (!f) return;
+  const uint32_t m = Rd32(base + f + 212);
+  ++g_fork.t;
+  const uint32_t input = svr2011::FighterInput(f);
+  const uint32_t held = input ? Rd32(base + input + 48) : 0, pressed = input ? Rd32(base + input + 52) : 0;
+  const int32_t stick = input ? int32_t(Rd32(base + input + 56)) : -1;
+  if (g_log && g_fork.t % 60 == 0) REXLOG_INFO("hctp: forklift input held {:08X} pressed {:08X} stick {}", held, pressed, stick);
+  const bool riding_act = m == RoomKey(12080) || m == RoomKey(12081) || m == RoomKey(12082) || m == RoomKey(12083) ||
+                          m == RoomKey(12085) || m == RoomKey(12084);
+  if (!riding_act) {  // knocked off
+    JumpAct(ctx, base, f, RoomKey(12091));
+    g_fork = {0, 0, 0, g_fork.x, g_fork.z, g_fork.heading, 0, g_fork.moved, g_fork.crate, g_fork.crate_t};
+    return;
+  }
+  if (g_fork.state == 1) {
+    if (g_fork.t >= 2 * 27) g_fork.state = 2, JumpAct(ctx, base, f, RoomKey(12085));
+    return;
+  }
+  if (g_fork.state == 3) {
+    if (g_fork.t >= 2 * 36) g_fork.rider = 0, g_fork.state = 0;
+    return;
+  }
+  // driving
+  if ((pressed & kButtonX) && g_fork.t > 2 * 10) {
+    JumpAct(ctx, base, f, RoomKey(12084));
+    g_fork.state = 3, g_fork.t = 0, g_fork.speed = 0;
+    REXLOG_INFO("hctp: he gets off {}", p->name);
+    return;
+  }
+  if ((pressed & kButtonB) && g_fork.crate == 0 && p->recs.size() > 1) {
+    PlayRec(ctx, base, p->recs[1], kObjAct + uint32_t(Param(*p, 5, 86)));
+    g_fork.crate = 1, g_fork.crate_t = 0;
+    REXLOG_INFO("hctp: the crate tips off {}", p->name);
+  }
+  float& v = g_fork.speed;
+  if (held & 0x40) v = std::min(1.0f, v + 0.015f);
+  else if (held & kButtonR1) v = std::fabs(v) < 0.1f ? 0.0f : v - std::copysign(0.05f, v);
+  else if (held & kButtonY) v = std::max(-1.2f, v - 0.03f);
+  else v = v > 0 ? std::max(0.0f, v - 0.0125f) : std::min(0.0f, v + 0.0075f);
+  // steering: the stick's way (8 directions, 45 degrees apart: 4 up the screen = -z, 6 right = -x,
+  // 0 down) as a world heading (0 = toward -z), turned toward
+  bool turning = false;
+  if (stick >= 0 && stick < 8 && std::fabs(v) > 0.01f) {
+    float want = float(stick - 4) * 0.785398f;
+    if (v < 0) want += 3.14159265f;
+    float d = std::remainder(want - g_fork.heading, 6.2831853f);
+    const float step = 0.0245f * std::fabs(v);
+    turning = std::fabs(d) > step;
+    g_fork.heading += std::clamp(d, -step, step);
+  }
+  // (60 Hz: HCTP's per-frame move halved)
+  g_fork.x -= std::sin(g_fork.heading) * 0.375f * v;
+  g_fork.z -= std::cos(g_fork.heading) * 0.375f * v;
+  ForkliftPlace(ctx, base, *p);
+  PlaceFighter(base, f, g_fork.x, p->y, g_fork.z, g_fork.heading + 3.14159265f);
+  const uint32_t want_act = turning ? RoomKey(12082) : RoomKey(12085);
+  if (m != want_act && (m == RoomKey(12085) || m == RoomKey(12082) || m == RoomKey(12083)) &&
+      (m != want_act || RdF(base + f + 24) >= float(Frames(want_act, 24) - 1)))
+    JumpAct(ctx, base, f, want_act);
+  else if (RdF(base + f + 24) >= float(Frames(m, 24) - 1))
+    JumpAct(ctx, base, f, m);  // (the seated loop again)
+}
+
 // -- Off the cage top (HCTP GapIn_BackOpenSpace, from the strike button):
 // up on the cage (y <= -28) near its front or east edge, X while walking
 // toward the edge puts him on the edge (HCTP SetGapPos) and he jumps down
@@ -1844,6 +1980,11 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
       Room31Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z);
       Room35Fighter(ctx, base, f, i, m, x, y, z);
       Room33Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z, x_pressed);
+      if (x_pressed && s.motion == kWalkBackstage)
+        if (Prop* fl = FindKind("forklift"); fl && ForkliftGetOn(ctx, base, *fl, f, i, x, z)) {
+          s.motion = Rd32(base + f + 212);
+          continue;
+        }
       if (Room32Fighter(ctx, base, f, i, m, s.motion, touched, x, y, z, x_pressed)) {
         s.motion = Rd32(base + f + 212);
         continue;
@@ -2006,6 +2147,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     for (auto& s : g_fs) s = {};
     g_later.clear();
     g_taxis.clear();
+    g_fork = {};
     g_poles.clear();
     for (const auto& q : g_room.poles) g_poles.push_back({q[0], 0.0f, q[2]});
   }
@@ -2032,6 +2174,10 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       if ((p.kind == "throw" || p.kind == "stack" || p.kind == "drums") && p.state == 0) KnockOver(ctx, base, p, 0);
   // (=props in rooms 31-36: each car loses its door at 300, its bonnet at 420, is crushed at 540; the
   // equipment box jolts at 300; fighter 1 is electrocuted at 360 and thrown into the trailer at 600)
+  // (room 31: fighter 0 - the test's pad - stands by the forklift at 1100, after the trailer slam)
+  if (g_props_now && HctpRoom() == 31 && frame >= 1100 && frame < 1102)
+    if (Prop* fl = FindKind("forklift"); fl && Rd32(base + kChars))
+      PlaceFighter(base, Rd32(base + kChars), fl->x + 10.0f * std::cos(fl->ry), 0.0f, fl->z - 10.0f * std::sin(fl->ry), fl->ry);
   if (g_props_now && HctpRoom() == 33 && frame >= 420 && frame < 422 && !g_poles.empty() && Rd32(base + kChars + 4)) {
     const uint32_t f1 = Rd32(base + kChars + 4);
     PlaceFighter(base, f1, g_poles[0].x, 0.0f, g_poles[0].z + 6.0f, 3.14159265f);
@@ -2083,6 +2229,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   UpdateMoveCar(ctx, base);
   UpdateRoom32(ctx, base);
   UpdateRoom33(ctx, base);
+  UpdateForklift(ctx, base);
   // (the helicopter flies its path: its own motion, the room's act 10, again when it ends)
   if (Prop* h = FindKind("heli"); h && g_room.set_up_frames >= 30) {
     if (g_room.heli_t == 0) PlayProp(ctx, base, *h, kObjAct + 10);
