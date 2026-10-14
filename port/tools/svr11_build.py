@@ -552,6 +552,13 @@ def main(argv):
         b = Builder(spec, os.path.dirname(os.path.abspath(a.model)))
         rep['attires'] = b.build(a.out)
         rep['warnings'] = b.warnings
+        try:   # (bone rests lined up with the stock ones: tools/prop_bones.py, B3; rewrites only when it fixes one)
+            import prop_bones
+            pr = prop_bones.fix_pac(a.out, out=a.out)
+            if pr['fixed']:
+                rep['prop_bones'] = prop_bones.report_line(pr)
+        except Exception as e:   # noqa: BLE001 (never fails the build)
+            rep['warnings'].append('bone rests not checked (prop_bones: %s)' % e)
         rep['ok'] = True
     except BuildError as e:
         rep['error'] = str(e)

@@ -508,6 +508,17 @@ def write_mod(mod, man, out_svrmod, rep=None, pac11=None):
     the match's vertex budget first (fit_budget - the game leaves an over-budget model out), what that takes
     out added to rep['dropped']"""
     if pac11 and os.path.exists(os.path.join(mod, 'ch.pac')):
+        # bone rests lined up with the stock ones (tools/prop_bones.py, B3): an edited model's odd rests distort
+        # it in motion; the pac is rewritten only when a bone is put back, and a failure never fails the port
+        for f_ in sorted(x for x in os.listdir(mod) if x == 'ch.pac' or (x.startswith('attire') and x.endswith('.pac'))):
+            try:
+                import prop_bones
+                pr = prop_bones.fix_pac(os.path.join(mod, f_), out=os.path.join(mod, f_))
+                if pr['fixed'] and rep is not None:
+                    rep['notes'].append('%s: %s' % (f_, prop_bones.report_line(pr)))
+            except Exception as e:   # noqa: BLE001
+                if rep is not None:
+                    rep['warnings'].append('%s: bone rests not checked (prop_bones: %s)' % (f_, e))
         for d_ in fit_budget(os.path.join(mod, 'ch.pac'), os.path.join(pac11, 'ch', 'ch104.pac')):
             if rep is not None:
                 rep['dropped'].append(d_)
