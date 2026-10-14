@@ -23,6 +23,9 @@
 
 #include <dlfcn.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <pthread.h>
+#endif
 #include <unwind.h>
 
 #include <rex/logging.h>
@@ -69,6 +72,17 @@ void Line(FILE* f, const std::string& text) {
   REXLOG_ERROR("crash: {}", text);
 }
 
+// [mac] gettid() is Linux / bionic only; macOS names threads by a 64-bit id.
+int CrashThreadId() {
+#if defined(__APPLE__)
+  uint64_t tid = 0;
+  pthread_threadid_np(nullptr, &tid);
+  return static_cast<int>(tid);
+#else
+  return static_cast<int>(gettid());
+#endif
+}
+
 void Report(int sig, siginfo_t* info) {
   if (g_reported.exchange(true) || g_dir.empty()) return;
   if (g_hook) g_hook();
@@ -82,7 +96,7 @@ void Report(int sig, siginfo_t* info) {
   const std::filesystem::path text = g_dir / (std::string("crash_") + stamp + ".txt");
   FILE* f = std::fopen(text.c_str(), "w");
   char buf[512];
-  std::snprintf(buf, sizeof(buf), "SvR 2011 crash: %s (thread %d), address %p", SignalName(sig), gettid(),
+  std::snprintf(buf, sizeof(buf), "SvR 2011 crash: %s (thread %d), address %p", SignalName(sig), CrashThreadId(),
                 info ? info->si_addr : nullptr);
   Line(f, buf);
   Frames frames;
