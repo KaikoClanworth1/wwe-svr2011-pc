@@ -360,6 +360,57 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
 docs/ENTRANCE_ATTIRES.md: `attire<N>_entrance=<n>` (Rey Mysterio's "Evil" style), entrance
 outfits (EMD kind 4 per attire, already working for mods).
 
+## One entrance file (no disc, no folder)
+
+`entrance_port.py` takes a single entrance pac copied off a disc as `--src` (any file name), for
+`detect`, `list` and `convert`; `--game` is optional (detected from the format, `--game` wins):
+
+```
+python entrance_port.py detect  --src <file>
+python entrance_port.py list    --src <file> [--game-pac <2011 pac dir>]
+python entrance_port.py convert --src <file> --entrance <n> --number <2011 n> --out <dir> [--game-pac ...]
+```
+
+`detect` returns `{game, name, platform, entrances, file, detected, limits[]}`; `convert`'s report
+carries `lone: {file, detected, limits[], warning?}` and the limits again as notes.
+
+| Files | Games |
+|---|---|
+| `pac/evt/evt1.pac` / `evt2.pac` | SvR 2007 |
+| `pac/evt/Nyujyo*.pac` | SvR 2008, 2009, 2010, LoW, WWE '12 |
+| `pac/evt/Entrance*.pac` (xcompressed: svrmod) | WWE '13, 2K14, 2K15 |
+| `pac/evt/<entrance>.pac` (keep the name, or give `--entrance`) | 2K16, 2K17 |
+| `PAC/EVTENT.PAC` | HCTP, SvR 2004, Shut Your Mouth |
+| `PAC/EVT.PAC` / `EN3.PAC` | SvR 2006 / Just Bring It |
+
+Why one file is enough: every game keeps an entrance's script and all of its tracks - camera,
+props, other people - in the same pac (checked on every stock pac: 2007-2K15 EVP and EVT / EVZ of
+each number sit in one file; 2K16 / 2K17 are one pac per entrance; the PS2 games one file for all).
+The converted EVP / EVT are byte for byte a disc conversion's (one entrance per game, all 16 games),
+except the PS2 names below.
+
+What a lone file can't give:
+- the theme music (no converter reads it: the mod picks the song);
+- the titantron (`movies/titantron` on the disc): `--titantron` is skipped;
+- pyro, for the games that have it (2010 on): `pac/prtcls.pac`, 2K16 / 2K17
+  `pac/particle/pce6NNNN.pac`;
+- PS2 names: HCTP / SvR 2004 / SYM names are in `PAC/MOVES.PAC`, JBI's in the ELF -> "HCTP 3000";
+- JBI's hand poses (`M.PAC`): its pose ids are its own, so the hand events are left out and the
+  fingers keep the ring pose.
+Props are 2011's own objects (mapped by id), so nothing else is needed for them.
+
+Detection (`detect_lone`, all stock entrance pacs of all games checked; 2K16 / 2K17 sampled):
+- PS2: the DPAC's first group - `ENMT` JBI, `EVNT` SvR 2006, `EVET` with named rows SYM; numbered
+  `EVET` then `ENTR` with an `EVTM` row SvR 2004, else HCTP.
+- X360, after svrmod for xcompressed pacs: `HSPC` 2K17; an EPAC scene pac 2K16 (some 2K17 pacs are
+  the same format, converted the same way).
+- EVZ tracks: an EVP with ~16.6 K bytes per cast object (788-byte slots), or an xcompressed EPK8 whose
+  script group is `EVP2`, is 2K15; other xcompressed pacs WWE '13 (EPK8) / 2K14 (EPAC); plain ones
+  WWE '12.
+- EVT tracks: the EVP size % 4480 (one object = 21 x 212-byte slots + 28) is the header size: 240 or
+  a YMKs bank SvR 2010; 160 SvR 2007 / 2008, split by the EVT event-size table (op 127 = 0 in 2007);
+  176 SvR 2009 / LoW (LoW sizes op 72).
+
 ## Testing a converted entrance
 
 Put the pack in a test superstar mod's `moves/` with `entrance=<n>` and run a 1-on-1 test match
