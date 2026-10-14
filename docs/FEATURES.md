@@ -94,7 +94,6 @@ still being tested.
 - **Mod Maker: porting from WWE '13 and later** works again: the 2.1.0 zip was missing `svrmod.exe` and vgmstream in Mod Maker Tools ("ToolMissing: svrmod.exe"), and PS2 ports were missing `ps2_media.py`. The release now refuses to build without every tool the converters use.
 - **Mod Maker tools check**: the Mod Maker shows what it needs (Python, numpy, Pillow, svrmod, vgmstream, ffmpeg) and installs what's missing with one button; converters only run with a Python that has numpy and Pillow (no more "No module named 'numpy'").
 - **Launcher Setup: the ffmpeg download** shows its progress (the bar sat empty for the whole 115 MB) and says so when a download stalls.
-- **Mod Maker entrance preview**: no jitter, solid barriers and turnbuckles in the right place.
 
 ## New in 2.1.0
 
