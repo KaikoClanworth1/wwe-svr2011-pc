@@ -87,7 +87,7 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
-## New in 2.0.7 *(in progress - not released yet)*
+## New in 2.1.0
 
 ### Matches
 - **Three Stages of Hell sets**: THREE STAGES OF HELL opens a list of sets - NORMAL / FALLS COUNT ANYWHERE / LAST MAN STANDING, NORMAL / FIRST BLOOD / FINISHERS (a fall counts only within 10 s of a finisher or signature), NORMAL / LAST MAN STANDING / SUBMISSION, HELL IN A CELL: FIRST BLOOD / LAST MAN STANDING / SUBMISSION, and in a TLC ring TABLE / LADDER / TABLE and TABLE / TLC / LADDER - the prize hangs again after it's pulled down (1v1, 2v2, triple threat, fatal-4-way; switch mod `three_stages_tables_ladders`). Count-outs no longer end the whole match.
