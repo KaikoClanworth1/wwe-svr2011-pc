@@ -23,10 +23,16 @@ import json
 import os
 import shutil
 import struct
+import sys
+import time
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 N11 = 0x1C0 // 2
+
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
 
 
 def _norm(s):
@@ -158,12 +164,28 @@ def port_moveset(c):
                      id=str(new_id), _g=c.mgame, _g11=g11m)
             if v in templ:
                 a['template'] = str(templ[v])
+            lo, hi = getattr(c, 'prog', (70, 85))
+            nport = min(len(to_port), c.max_port if c.max_port is not None else len(to_port))
+            print('progress %d moves %d/%d: %s' % (lo + (hi - lo) * k // max(1, nport), k + 1, nport, nm),
+                  file=sys.stderr, flush=True)
+            t0 = time.time()
+            limit = float(os.environ.get('SVR2011_MOVE_TIME_LIMIT') or getattr(c, 'move_time', 120))
+            MP.DEADLINE, MP.QUIET = t0 + limit, True
             try:
                 MP.convert(a, r)
+            except MP.TimeLimit:
+                for to in tos:
+                    rows.append((None, to, v, nm, 'base kept (port over %d s: stopped)' % limit, base[to // 2]))
+                c.rep['warnings'].append('moveset: "%s" took over %d s to port and was stopped - the base move kept'
+                                         % (nm, limit))
+                continue
             except Exception as e:   # noqa: BLE001
                 for to in tos:
                     rows.append((None, to, v, nm, 'base kept (port failed: %s)' % str(e)[:80], base[to // 2]))
                 continue
+            finally:
+                MP.DEADLINE, MP.QUIET = None, False
+            log('moves %d/%d: %s ported in %.1f s' % (k + 1, nport, nm, time.time() - t0))
             for to in tos:
                 area[to // 2] = new_id
                 rows.append((None, to, v, nm, 'ported (template %s)' % r.get('template'), new_id))

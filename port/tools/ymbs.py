@@ -194,25 +194,96 @@ def _beam(init, s, targets, bits4, wrap, width=48):
     return codes, e
 
 
+def _cands(bits4):
+    """the code table in the scalar search's order (mag ascending, + before -): codes, |delta| factor, step index"""
+    import numpy as np
+    nmag = 8 if bits4 else 32
+    mags = np.repeat(np.arange(nmag), 2)
+    negs = np.tile(np.array([0, 1]), nmag)
+    codes = mags | np.where(negs == 1, 8 if bits4 else 0x20, 0)
+    idx = mags if bits4 else np.minimum(mags >> 2, 7)
+    return codes, mags * 2 + 1, negs, np.array(STEP)[idx]
+
+
+def _beam_np(init, s, targets, bits4, wrap, width=48):
+    """_beam with numpy: the same search (states (value, step) kept by least summed error, a state kept once),
+    back-pointers instead of code lists - ~100x faster"""
+    import numpy as np
+    codes, fac, negs, mult = _cands(bits4)
+    sh = 3 if bits4 else 5
+    v = np.array([init], np.int64)
+    st = np.array([s * 127], np.int64)
+    er = np.zeros(1, np.int64)
+    back = []
+    for t in targets[1:]:
+        d = (fac[None, :] * st[:, None]) >> sh
+        nv = np.where(negs[None, :] == 1, v[:, None] - d, v[:, None] + d)
+        ns = np.clip((st[:, None] * mult[None, :]) >> 6, 127, 24576)
+        diff = t - nv
+        if wrap:
+            diff = ((diff + 0x8000) & 0xFFFF) - 0x8000
+        e = er[:, None] + np.abs(diff)
+        nv, ns, e = nv.ravel(), ns.ravel(), e.ravel()
+        parent = np.repeat(np.arange(len(v)), len(codes))
+        code = np.tile(codes, len(v))
+        order = np.lexsort((e, ns, nv))   # (per (value, step) the least error first)
+        nv_o, ns_o = nv[order], ns[order]
+        first = np.ones(len(order), bool)
+        first[1:] = (nv_o[1:] != nv_o[:-1]) | (ns_o[1:] != ns_o[:-1])
+        keep = order[first]
+        keep = keep[np.argsort(e[keep], kind='stable')][:width]
+        v, st, er = nv[keep], ns[keep], e[keep]
+        back.append((parent[keep], code[keep]))
+    k = int(np.argmin(er)) if len(er) else 0
+    out = []
+    for par, code in reversed(back):
+        out.append(int(code[k]))
+        k = int(par[k])
+    out.reverse()
+    return out, int(er.min()) if len(er) else 0
+
+
+def _greedy_np(init, targets, bits4, wrap, svals):
+    """_run for every step byte in svals at once -> (s, err, codes) of the best"""
+    import numpy as np
+    codes, fac, negs, mult = _cands(bits4)
+    sh = 3 if bits4 else 5
+    S = np.array(svals, np.int64)
+    v = np.full(len(S), init, np.int64)
+    st = S * 127
+    er = np.zeros(len(S), np.int64)
+    pick = []
+    rows = np.arange(len(S))
+    for t in targets[1:]:
+        d = (fac[None, :] * st[:, None]) >> sh
+        nv = np.where(negs[None, :] == 1, v[:, None] - d, v[:, None] + d)
+        diff = t - nv
+        if wrap:
+            diff = ((diff + 0x8000) & 0xFFFF) - 0x8000
+        a = np.abs(diff)
+        j = np.argmin(a, axis=1)   # (the first least: the scalar order)
+        er += a[rows, j]
+        v = nv[rows, j]
+        st = np.clip((st * mult[j]) >> 6, 127, 24576)
+        pick.append(j)
+    b = int(np.argmin(er))
+    return int(S[b]), int(er[b]), [int(codes[p[b]]) for p in pick]
+
+
 def _best(init, targets, bits4, wrap):
     g = _best_greedy(init, targets, bits4, wrap)
     if g[1] <= 8 * len(targets):  # (greedy already within ~8 units a key: keep it)
         return g
     best = g
     for s in sorted({g[0], max(1, g[0] // 2), min(255, g[0] * 2), 8, 32, 96}):
-        codes, err = _beam(init, s, targets, bits4, wrap)
+        codes, err = _beam_np(init, s, targets, bits4, wrap)
         if err < best[1]:
             best = (s, err, codes)
     return best
 
 
 def _best_greedy(init, targets, bits4, wrap):
-    best = None
-    for s in list(range(1, 33)) + list(range(36, 256, 8)):
-        codes, err, vals = _run(init, s, targets, bits4, wrap)
-        if best is None or err < best[1]:
-            best = (s, err, codes)
-    return best
+    return _greedy_np(init, targets, bits4, wrap, list(range(1, 33)) + list(range(36, 256, 8)))
 
 
 def enc_t32(values):

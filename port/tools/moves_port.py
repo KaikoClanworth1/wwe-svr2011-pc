@@ -53,6 +53,7 @@ import os
 import re
 import struct
 import sys
+import time
 import traceback
 import zlib
 
@@ -92,8 +93,19 @@ def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
+DEADLINE = None   # (time.time() limit for one convert, set by callers like moveset_port; checked between steps)
+QUIET = False     # (no progress lines: a caller prints its own)
+
+
+class TimeLimit(Exception):
+    pass
+
+
 def progress(pct, text):
-    print('progress %d %s' % (pct, text), file=sys.stderr, flush=True)
+    if DEADLINE is not None and time.time() > DEADLINE:
+        raise TimeLimit('over the time limit at "%s"' % text)
+    if not QUIET:
+        print('progress %d %s' % (pct, text), file=sys.stderr, flush=True)
 
 
 def norm(s):
@@ -138,6 +150,12 @@ def read_pac(raw):
     raise ValueError('not a pac table')
 
 
+def placeholder(raw):
+    """a pac whose table is one "DMMY" entry (no group header; a 10 KB PACH with no moves): the disc's stand-in
+    for DLC motions (WWE 2K15's dlc_mot01-03.pac, 30 KB each) - the DLC packages bring the real ones"""
+    return raw[:4] in (b'EPK8', b'EPAC') and raw[0x800:0x808] == b'DMMY    ' and not any(raw[0x810:0x830])
+
+
 def unz(b):
     """a pac entry: BPE (Yuke's) or ZLIB ("ZLIB", u32, u32 packed, u32 size, zlib data at +16)"""
     if b[:4] == b'ZLIB':
@@ -168,10 +186,14 @@ class Game12:
     def _groups(self):
         if self._m is None:
             self._m = []
-            self.skipped = []
+            self.skipped, self.placeholders = [], []
             for rel in self.motion_pacs():
                 try:
-                    self._m += read_pac(self.pac_bytes(rel))
+                    raw = self.pac_bytes(rel)
+                    if placeholder(raw):
+                        self.placeholders.append(rel)
+                        continue
+                    self._m += read_pac(raw)
                 except Exception as e:   # noqa: BLE001  (a pac svrmod can't decode: its moves are left out)
                     self.skipped.append('%s (%s)' % (rel, str(e)[:120]))
                     log('moves_port: %s skipped: %s' % (rel, e))
@@ -276,10 +298,14 @@ class Game2K16(Game14):
     def _groups(self):
         if self._m is None:
             self._m = []
-            self.skipped = []
+            self.skipped, self.placeholders = [], []
             for rel in self.motion_pacs():
                 try:
-                    self._m += [(t, [(n.strip(b'\0 '), b) for n, b in es]) for t, es in self._read(self.pac_bytes(rel))]
+                    raw = self.pac_bytes(rel)
+                    if placeholder(raw):
+                        self.placeholders.append(rel)
+                        continue
+                    self._m += [(t, [(n.strip(b'\0 '), b) for n, b in es]) for t, es in self._read(raw)]
                 except Exception as e:   # noqa: BLE001
                     self.skipped.append('%s (%s)' % (rel, str(e)[:120]))
                     log('moves_port: %s skipped: %s' % (rel, e))
@@ -585,6 +611,16 @@ class Game11:
             for k in keys:
                 self.moved.add(k[0])
         self._g = {}
+        self._raw = {}
+        self._by_mid = None
+        self._gaps, self._gaps_dirty = None, False
+        # (shared between converts - a superstar convert's work folder is new each time; per 2011 pac folder)
+        shared = os.path.join(HERE, 'work', 'mv11')
+        try:
+            os.makedirs(shared, exist_ok=True)
+        except OSError:
+            shared = work
+        self._gaps_file = os.path.join(shared, 'template_gaps11_%08x.pkl' % zlib.crc32(os.path.abspath(pac11).lower().encode()))
 
     def groups(self, pac):
         if pac not in self._g:
@@ -593,30 +629,60 @@ class Game11:
 
     def bank(self, path):
         import ymks
-        pac = 'mpsp.pac' if path.startswith('MOTP') else 'm.pac'
-        parts = path.split('/')
-        blob = self.SM.entry_get(self.groups(pac), parts[0].ljust(4).encode(), parts[1].ljust(4).encode())
-        if len(parts) > 2:
-            blob = self.SM.tree_get(blob, [int(x, 16) for x in parts[2:]])
-        return pac, ymks.read_bank(self.SM.unpack(blob))
+        pac, raw = self.bank_raw(path)
+        return pac, ymks.read_bank(raw)
 
     def bank_raw(self, path):
-        """(pac, the bank's unpacked bytes) - YMBs banks, which ymks doesn't read"""
+        """(pac, the bank's unpacked bytes) - YMBs banks, which ymks doesn't read; kept (a moveset port
+        reads the same template banks for every move)"""
         pac = 'mpsp.pac' if path.startswith('MOTP') else 'm.pac'
-        parts = path.split('/')
-        blob = self.SM.entry_get(self.groups(pac), parts[0].ljust(4).encode(), parts[1].ljust(4).encode())
-        if len(parts) > 2:
-            blob = self.SM.tree_get(blob, [int(x, 16) for x in parts[2:]])
-        return pac, self.SM.unpack(blob)
+        if path not in self._raw:
+            parts = path.split('/')
+            blob = self.SM.entry_get(self.groups(pac), parts[0].ljust(4).encode(), parts[1].ljust(4).encode())
+            if len(parts) > 2:
+                blob = self.SM.tree_get(blob, [int(x, 16) for x in parts[2:]])
+            self._raw[path] = self.SM.unpack(blob)
+        return pac, self._raw[path]
+
+    def template_gap(self, path, bank, e):
+        """start_gap of a 2011 template's attacker / victim motions - kept, and saved in the work folder
+        (choose_template looks at every template of a category: decoding them all took ~25 s a move)"""
+        import pickle
+        import ymks
+        if self._gaps is None:
+            m = os.path.join(self.pac11, 'm.pac')
+            self._gaps_stamp = (os.path.getsize(m), int(os.path.getmtime(m)))
+            try:
+                stamp, self._gaps = pickle.load(open(self._gaps_file, 'rb'))
+                if stamp != self._gaps_stamp:
+                    self._gaps = {}
+            except Exception:   # noqa: BLE001
+                self._gaps = {}
+        k = (path, e['id'])
+        if k not in self._gaps:
+            v = bank.find(e['id'], 0, 1)
+            self._gaps[k] = start_gap(ymks.body_keys(e['data'], bank.T), ymks.body_keys(v['data'], bank.T)) if v else None
+            self._gaps_dirty = True
+        return self._gaps[k]
+
+    def save_gaps(self):
+        import pickle
+        if self._gaps_dirty:
+            try:
+                pickle.dump((self._gaps_stamp, self._gaps), open(self._gaps_file, 'wb'))
+            except OSError:
+                pass
+            self._gaps_dirty = False
 
     def banks_of(self, mid):
         """[(path, kind, [(x, y)])]"""
-        out = []
-        for path, (kind, keys, size) in self.idx.items():
-            ks = sorted({(k[1], k[2]) for k in keys if k[0] == mid})
-            if ks:
-                out.append((path, kind, ks))
-        return out
+        if self._by_mid is None:
+            by = {}
+            for path, (kind, keys, size) in self.idx.items():
+                for k in keys:
+                    by.setdefault(k[0], {}).setdefault(path, set()).add((k[1], k[2]))
+            self._by_mid = {m: [(p, self.idx[p][0], sorted(xs)) for p, xs in d.items()] for m, d in by.items()}
+        return list(self._by_mid.get(mid, []))
 
     def records(self, mid):
         """the move's WAZA/DATA records: [(kind, group, record bytes, events bytes)]"""
@@ -696,12 +762,13 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
                     continue
                 score = abs(e['frames'] - frames) / 10.0
                 if gap is not None:
-                    v = bank.find(e['id'], 0, 1)
-                    tg = start_gap(ymks.body_keys(e['data'], bank.T), ymks.body_keys(v['data'], bank.T)) if v else None
+                    tg = g11.template_gap(path, bank, e)
                     if tg is not None:
                         score += abs(tg - gap) / 100.0
                 if best is None or score < best[0]:
                     best = (score, e['id'], path)
+    if hasattr(g11, 'save_gaps'):
+        g11.save_gaps()
     return best[1] if best else None
 
 
@@ -835,7 +902,7 @@ def convert(a, rep):
     progress(60, 'tracks')
     offset = None
     nmot = 0
-    ymb_ns, ymb_solved = None, {}
+    ymb_ns, ymb_solved, ymb_built = None, {}, {}
     for path, kind, ks in g11.banks_of(tid):
         if kind == 'YMBs':   # (taunts, submissions: ADPCM channels with limb IK - ymbs_retarget)
             import ymbs
@@ -857,8 +924,13 @@ def convert(a, rep):
                         sample = YR.w13_sampler(R, blk)
                         if y not in ymb_solved:   # (the same motion in every bank: solved once)
                             ymb_solved[y] = YR.solve(ymb_ns, sample, nf)
-                        data, frames = YR.build_motion(bank, ymb_ns, sample, nf, typ, ymb_solved[y])
-                        worst = YR.check(bank, data, frames, typ, sample, ymb_ns)
+                        off = bank.dir[k][3]
+                        ck = (y, typ, raw[bank.base + off: bank.base + next(e for e in ends if e > off)])
+                        if ck not in ymb_built:   # (banks with the same template motion: encoded once)
+                            progress(60 + min(30, 8 * len(ymb_built)), 'tracks: %s x%d y%d' % (path, x, y))
+                            d_, f_ = YR.build_motion(bank, ymb_ns, sample, nf, typ, ymb_solved[y])
+                            ymb_built[ck] = (d_, f_, YR.check(bank, d_, f_, typ, sample, ymb_ns))
+                        data, frames, worst = ymb_built[ck]
                         rep['notes'].append('%s x%d y%d: YMBs motion, %d keys, worst joint %.2f units' %
                                             (path, x, y, frames, worst))
                         hdr = struct.pack('<BBBB4f', typ, 0, 1, 0, f0, f1, f2, f3)
@@ -919,6 +991,9 @@ def convert(a, rep):
     rep['dropped'].append('finger poses (the template\'s); the source\'s own sounds and damage timing (the template\'s, retimed)')
     for sk in getattr(g, 'skipped', []):
         rep['warnings'].append('not readable, its moves left out: ' + sk)
+    if getattr(g, 'placeholders', None):
+        rep['notes'].append('%s: DLC stand-ins on the disc (no moves; the DLC packages bring them)'
+                            % ', '.join(os.path.basename(p) for p in g.placeholders))
     rep.update(ok=True, out=pd, folder=pd, id=new_id, name=name, template=tid)
     progress(100, 'done')
     return rep

@@ -255,9 +255,11 @@ def build_ps2(cid, outdir, o, rep):
     ps2_moves.moveset_step(g, cid, base, o, work, mod, man, rep)
     # entrance
     SP.progress(60, 'entrance')
+    SP.source_keys(man, g.game_id, cid)
     if o.get('entrance'):
         man['entrance'] = o['entrance']
     else:
+        man['entrance_note'] = 'not ported (PS2: a 2011 entrance by name, else a generic one)'
         e, via = SP.entrance_from_names([name], g11)
         be = g11.entrance_block(base)[2]
         if not e and not same:
