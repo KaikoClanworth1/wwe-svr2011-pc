@@ -30,6 +30,55 @@ ROOM_30 = {
     40: (14, 'n a z'), 42: (17, 'n'),   # (41 hansha: HCTP's floor reflection - a white streak in 2011)
 }
 ALPHA_ID = 18
+# parking model ids free for room models (the game hides 6, 7, 11 and 16 at times; 18 = the alpha parts)
+FREE_IDS = (0, 1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 15, 17, 19)
+
+
+def room_table(stage):
+    """Any room: {fake id: ([HCTP room model ids], flags)} from its 50001 flag list - event-only
+    models ('e') left out, models with the same flags merged into one (the parking slot has 15
+    free ids), unlisted room models (< 100) as 'n'."""
+    import os
+    import re
+    fl = {}
+    raw = open(os.path.join(stage, '50001.bin'), 'rb').read().decode('shift_jis', 'replace')
+    for line in raw.splitlines():
+        line = line.split(';')[0].split('//')[0].strip()
+        m = re.match(r'(\d+)\s*(.*)', line)
+        if m:
+            fl[int(m.group(1))] = ' '.join(m.group(2).split()) or 'n'
+    ids = sorted(int(n[:5]) for n in os.listdir(stage) if n.endswith('.yobj') and int(n[:5]) < 100)
+    groups = {}
+    for i in ids:
+        f_ = fl.get(i, 'n')
+        if 'e' in f_.split():
+            continue
+        groups.setdefault(f_, []).append(i)
+    if len(groups) > len(FREE_IDS):
+        raise SystemExit(f'{len(groups)} model groups, {len(FREE_IDS)} free ids')
+    return {fid: (hids, f_) for fid, (f_, hids) in zip(FREE_IDS, sorted(groups.items(), key=lambda g: g[1][0]))}
+
+
+def merge_jboy(parts, name):
+    """JBOY models -> one (meshes appended, texture slots remapped onto one list)."""
+    merged = None
+    for J in parts:
+        if merged is None:
+            merged = J
+            continue
+        for s in J.meshes:
+            k = [i for i, (n, t, v) in enumerate(s.params) if n == 'texDiffuse'][0]
+            slot = struct.unpack('>i', s.params[k][2][:4])[0]
+            tn = J.textures[slot]
+            if tn not in merged.textures:
+                merged.textures.append(tn)
+            n, t, v = s.params[k]
+            s.params[k] = (n, t, struct.pack('>i', merged.textures.index(tn)) + v[4:])
+            merged.meshes.append(s)
+    merged.name = name
+    merged.nodes[0]['name'] = name
+    merged.nodes[0]['sphere'] = hctp2jboy.sphere_of([v[:3] for s in merged.meshes for v in s.verts])
+    return merged
 
 
 def two_level_cut(img):
@@ -151,18 +200,25 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
     models = {}
     flags = {}
     alpha_parts = []
-    for hid, (fid, fl) in ROOM_30.items():
-        M = yobj.read(open(f'{stage}/{hid:05d}.yobj', 'rb').read())
-        if 's' in fl.split() or 'a' in fl.split():
-            op, al = M, None
-        else:
-            op, al = split_alpha(M, kinds)
-        J = hctp2jboy.convert(op, tmpl, tone=tone) if op.meshes else None
-        if J:
-            models[fid] = J
+    import os
+    table = ({fid: ([hid], fl) for hid, (fid, fl) in ROOM_30.items()} if os.path.basename(os.path.normpath(stage)).endswith('0030')
+             else room_table(stage))
+    for fid, (hids, fl) in table.items():
+        parts = []
+        for hid in hids:
+            M = yobj.read(open(f'{stage}/{hid:05d}.yobj', 'rb').read())
+            if 's' in fl.split() or 'a' in fl.split():
+                op, al = M, None
+            else:
+                op, al = split_alpha(M, kinds)
+            J = hctp2jboy.convert(op, tmpl, tone=tone) if op.meshes else None
+            if J:
+                parts.append(J)
+            if al is not None and al.meshes:
+                alpha_parts.append(al)
+        if parts:
+            models[fid] = merge_jboy(parts, parts[0].name) if len(parts) > 1 else parts[0]
             flags[fid] = fl
-        if al is not None and al.meshes:
-            alpha_parts.append(al)
     if alpha_parts:
         import copy
         A = copy.copy(alpha_parts[0])
@@ -193,7 +249,7 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
     hmd = open(stage + '/00999.hmd', 'rb').read()
     if with_props:
         import hctp_props
-        extra = hctp_props.world_collision(stage, hctp_props.props(stage))
+        extra = hctp_props.world_collision(stage, hctp_props.props(stage, int(os.path.basename(os.path.normpath(stage))[-2:])))
         hmd = s8.hmd_write(s8.hmd_read(hmd) + extra) if extra else hmd
         if report:
             print(f'collision: 00999 + {len(extra)} prop triangles at rest')
@@ -211,6 +267,7 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
         if report:
             print(f'collision: {changed} climb faces remapped {climb_remap}')
     flag_text = ('\r\n'.join(f'{i} {flags[i]}' for i in sorted(flags)) + '\r\n').encode()
+    flag_text += b'//' + b'-' * 120 + b'\r\n'  # (a short list doesn't BPE-compress)
     entries = [(i, f.bpe_pack(jboy.write(m))) for i, m in sorted(models.items())]
     entries += [(200, f.bpe_pack(bundle)), (996, f.bpe_pack(hmd)), (50001, f.bpe_pack(flag_text))]
     h78 = open(p78, 'rb').read()[:0x800]
