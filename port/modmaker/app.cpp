@@ -21,6 +21,7 @@
 
 #include "char_preview.h"
 #include "disc_list.h"
+#include "simple_port.h"
 #include "model_materials.h"
 #include "hair_sim.h"
 #include "editor.h"
@@ -1595,6 +1596,9 @@ const PageDesc kPages[] = {
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
     {PageId::kPort, "Port from a disc", "", nullptr, port_page::Draw},
     {PageId::kDiscs, "   My game discs", "", nullptr, disc_list::Draw},
+    {PageId::kPortEntrance, "   Port an entrance", "", nullptr, [] { simple_port::Draw(simple_port::kEntrance); }},
+    {PageId::kPortMoves, "   Port moves", "", nullptr, [] { simple_port::Draw(simple_port::kMoves); }},
+    {PageId::kPortTaunts, "   Port taunts", "", nullptr, [] { simple_port::Draw(simple_port::kTaunts); }},
     {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
@@ -2617,6 +2621,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--simple-arena") && more) arena_page::TestSimple(_wtoi(argv[++i])), g_page = PageId::kArena;  // Simple arena at <step>
     else if (!wcscmp(argv[i], L"--simple-arena-start") && more) arena_page::TestSimpleStart(Utf8(argv[++i])), g_page = PageId::kArena;  // tile:<n> | empty:<n> | disc:<key>[:<bgNN>[:<host>]]
     else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs
+    else if (!wcscmp(argv[i], L"--simple-port") && more) {  // <entrance|moves|taunts>,<game key>[,<item>[,<step>]]
+      const std::string spec = Utf8(argv[++i]);
+      simple_port::TestStart(spec);
+      g_page = spec.rfind("moves", 0) == 0 ? PageId::kPortMoves : spec.rfind("taunts", 0) == 0 ? PageId::kPortTaunts : PageId::kPortEntrance;
+    }
     else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
       const std::wstring v = argv[++i];
       const size_t c = v.find(L',');
@@ -2795,7 +2804,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs",
+                              L"port-entrance", L"port-moves", L"port-taunts"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }
@@ -2881,7 +2891,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     while (!page_at.empty() && ImGui::GetTime() >= page_at.front().first) {  // (test aid --page-at)
       const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match",
-                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs"};
+                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs",
+                              L"port-entrance", L"port-moves", L"port-taunts"};
       for (int k = 0; k < int(std::size(names)) && k < int(PageId::kCount); ++k)
         if (page_at.front().second == names[k]) g_page = PageId(k), Log("test: page " + Utf8(names[k]));
       page_at.erase(page_at.begin());

@@ -1089,8 +1089,10 @@ void SetModEntrances(const std::vector<Packs::EntryLine>& lines) {
     e.number = n;
     const std::string script = ScriptName(l.file);
     const bool mod_moves = l.dir.filename() == "moves" && l.dir.parent_path().parent_path().filename() == "Superstars";
-    if (mod_moves) {
-      e.label = ManifestName(l.dir.parent_path());
+    std::error_code ec;
+    if (mod_moves || fs::exists(l.dir / "manifest.txt", ec)) {  // (a pack with a manifest: its name=, as a mod's - the
+      // Mod Maker's Simple entrance porting names it after the superstar)
+      e.label = ManifestName(mod_moves ? l.dir.parent_path() : l.dir);
       if (per_dir[l.dir] > 1 && !script.empty()) e.label += " - " + script;
     } else {
       const std::string game = PackGame(l.dir);

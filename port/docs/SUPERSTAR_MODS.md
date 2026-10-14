@@ -184,6 +184,12 @@ tab), `manifest.txt`:
 | `model=attire.pac` | a character model pac; its first attire is used |
 | `entrance=<n>` | optional, the entrance that attire gets (as `attireN_entrance=`) |
 
+- An entrance only (no `attire.pac`, no `model=`; the Mod Maker's Simple entrance
+  porting writes these): `attire=<1-4>` + `entrance=<n>` gives one of the
+  superstar's own attires that entrance and nothing else - no name, no attire
+  slot of its own, so the two-mods rule below and the launcher's Play guard leave
+  it alone. Of two for one attire the first folder (A-Z) is used.
+
 - A new attire: the model's first attire is copied to
   `Mods/SuperstarOverlay/ch<id>_x<N>.pac` with the superstar's id and the
   attire's digit in its EMD names, and mounted with the other overlay pacs. The

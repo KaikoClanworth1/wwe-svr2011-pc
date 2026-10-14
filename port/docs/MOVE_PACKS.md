@@ -109,6 +109,12 @@ Where a pack goes:
 A `disabled` file in the mod or pack folder turns it off. Keys the game
 already has are left alone.
 
+A pack of its own may carry a `manifest.txt` (`type=moves`, `name=`): its
+entrances are listed in CREATE AN ENTRANCE as `MOD: <name>` (as a superstar
+mod's are), else as the entrance script's name and the game from `pack.txt`'s
+first line. The Mod Maker's Simple entrance porting names them after the
+superstar.
+
 A move a pack adds only plays for a wrestler whose moveset has it (a superstar
 mod's `moves.txt`, or Create-A-Moveset): each wrestler's match bank is gathered
 from the `MOT/RR..` banks by his profile. Forced in a test

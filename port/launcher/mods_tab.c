@@ -420,7 +420,8 @@ int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size
     do {
         WCHAR man[MAX_PATH], off[MAX_PATH];
         FILE *f = NULL;
-        char line[512];
+        char line[512], model[MAX_PATH] = "attire.pac";
+        WCHAR wmodel[MAX_PATH], mpath[MAX_PATH];
         int attire_mod = 0;
         AttireMod *a = &mods[n];
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' || n >= MODS_MAX) continue;
@@ -440,9 +441,15 @@ int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size
             else if (!strcmp(line, "superstar")) a->id = atoi(eq);
             else if (!strcmp(line, "attire")) a->attire = !strcmp(eq, "new") ? 0 : atoi(eq);
             else if (!strcmp(line, "name")) MultiByteToWideChar(CP_UTF8, 0, eq, -1, a->name, 128);
+            else if (!strcmp(line, "model") && *eq) strncpy_s(model, MAX_PATH, eq, _TRUNCATE);
         }
         fclose(f);
         if (!attire_mod || a->id < 100 || a->id > 321 || a->attire < 0 || a->attire > 4) continue;
+        /* no model: only an entrance for one of the superstar's own attires (Simple entrance porting) - it holds no
+           attire, so it isn't moved (the game: the first folder A-Z keeps an attire's entrance) */
+        MultiByteToWideChar(CP_UTF8, 0, model, -1, wmodel, MAX_PATH);
+        swprintf_s(mpath, MAX_PATH, L"%s\\%s", a->folder, wmodel);
+        if (!exists(mpath)) continue;
         if (!a->name[0]) wcsncpy_s(a->name, 128, fd.cFileName, _TRUNCATE);
         a->born = ((unsigned long long)fd.ftCreationTime.dwHighDateTime << 32) | fd.ftCreationTime.dwLowDateTime;
         a->fresh = fresh && !_wcsicmp(a->folder, fresh);
