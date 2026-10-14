@@ -182,17 +182,17 @@ Every arena converted (`tools/arena_port.py`, `svrmod wwe13`) and played in one 
 | wwe2k14 | bg41 | bg41 | 1 | OK | 60.0 (low 60.0) | 5 | 19 |  |
 | wwe2k14 | bg42 | bg42 | 1 | OK | 60.0 (low 59.8) |  | 19 |  |
 | wwe2k14 | bg43 | bg43 | 1 | OK | 60.0 (low 59.4) |  | 19 |  |
-| wwe2k14 | bg44 | bg44 | 1 | CRASH (lr 8217FF84) |  |  | 19 |  |
+| wwe2k14 | bg44 | bg44 | 1 | CRASH (lr 8217FF84) | 60.0 (low 59.6) |  | 19 |  |
 | wwe2k14 | bg45 | bg45 | 1 | CRASH (lr 8217FF84) |  |  | 19 |  |
-| wwe2k14 | bg46 | bg46 | 1 | CRASH (lr 8217FF84) |  |  | 19 |  |
+| wwe2k14 | bg46 | bg46 | 1 | CRASH (lr 8217FF84) | 60.0 (low 54.8) |  | 19 |  |
 | wwe2k14 | bg47 | bg47 | 1 | OK | 60.0 (low 60.0) | 6 | 19 |  |
 | wwe2k14 | bg48 | bg48 | 1 | CRASH (lr 8217FF84) |  |  | 19 |  |
 | wwe2k14 | bg49 | bg49 | 1 | OK | 60.0 (low 52.2) |  | 19 |  |
-| wwe2k14 | bg50 | bg50 | 1 | CRASH (lr 8217FF84) |  | 7 | 19 |  |
+| wwe2k14 | bg50 | bg50 | 1 | CRASH (lr 8217FF84) | 60.0 (low 59.9) | 7 | 19 |  |
 | wwe2k14 | bg51 | bg51 | 1 | CRASH (lr 8217FF84) |  | 11 | 19 |  |
 | wwe2k14 | bg52 | bg52 | 1 | OK | 60.0 (low 60.0) | 3 | 18 |  |
 | wwe2k14 | bg53 | bg53 | 1 | CRASH (lr 8217FF84) |  | 2 | 18 |  |
-| wwe2k14 | bg54 | bg54 | 1 | CRASH (lr 8217FF84) |  |  | 18 |  |
+| wwe2k14 | bg54 | bg54 | 1 | CRASH (lr 8217FF84) | 60.0 (low 59.6) |  | 18 |  |
 | wwe2k14 | bg55 | bg55 | 1 | OK | 60.0 (low 59.4) |  | 18 |  |
 | wwe2k14 | bg56 | bg56 | 1 | OK | 60.0 (low 59.4) | 2 | 18 |  |
 | wwe2k15 | bg00 | bg00 | 0 | OK | 60.0 (low 60.0) | 8 | 19 |  |
@@ -240,5 +240,32 @@ Every arena converted (`tools/arena_port.py`, `svrmod wwe13`) and played in one 
 | wwe2k15 | bg48 | bg48 | 1 | OK | 60.0 (low 59.3) |  | 19 |  |
 | wwe2k15 | bg49 | bg49 | 1 | OK | 60.0 (low 60.0) |  | 20 |  |
 | wwe2k16 | bg00 | bg00 | 0 | OK | 60.0 (low 59.6) | 2 | 20 |  |
+| wwe2k16 | bg01 | bg01 | 1 | OK | 60.0 (low 59.8) | 6 | 20 |  |
+| wwe2k16 | bg02 | bg02 | 2 | OK | 60.0 (low 58.2) | 2 | 20 |  |
+| wwe2k16 | bg03 | bg03 | 3 | OK | 59.8 (low 53.0) | 22 | 20 |  |
+| wwe2k16 | bg04 | bg04 | 4 | OK | 60.0 (low 57.6) |  | 20 |  |
+| wwe2k16 | bg05 | bg05 | 5 | OK | 60.0 (low 58.2) | 9 | 20 |  |
+| wwe2k16 | bg06 | bg06 | 6 | CRASH (lr 8215A008) |  | 11 | 20 |  |
+| wwe2k16 | bg07 | bg07 | 7 | OK | 60.0 (low 59.9) | 6 | 20 |  |
+| wwe2k16 | bg08 | bg08 | 8 | OK | 60.0 (low 60.0) | 10 | 20 |  |
+| wwe2k16 | bg09 | bg09 | 9 | OK | 60.0 (low 59.0) | 6 | 20 |  |
+| wwe2k16 | bg11 | bg11 | 11 | CRASH (lr 824B0CC4) |  | 11 | 20 |  |
+| wwe2k16 | bg12 | bg12 | 12 | CRASH (lr 8215A008) |  | 24 | 20 |  |
+| wwe2k16 | bg13 | bg13 | 13 | OK | 60.0 (low 53.8) | 18 | 20 |  |
+| wwe2k16 | bg14 | bg14 | 14 | OK | 60.0 (low 59.2) | 9 | 20 |  |
+| wwe2k16 | bg15 | bg15 | 15 | CRASH (lr 8215A008) |  | 49 | 19 |  |
+| wwe2k16 | bg16 | bg16 | 16 | OK | 60.0 (low 59.6) | 4 | 20 |  |
+| wwe2k16 | bg17 | bg17 | 17 | CRASH |  | 13 | 20 |  |
+| wwe2k16 | bg18 | bg18 | 18 | OK | 60.0 (low 59.7) |  | 20 |  |
+| wwe2k16 | bg21 | bg21 | 1 | OK | 60.0 (low 59.8) |  | 21 |  |
+| wwe2k16 | bg22 | bg22 | 1 | CRASH (lr 824B70BC) |  | 2 | 20 |  |
+| wwe2k16 | bg23 | bg23 | 1 | OK | 60.0 (low 56.0) |  | 23 |  |
+| wwe2k16 | bg27 | bg27 | 1 | OK | 60.0 (low 59.4) | 6 | 20 |  |
+| wwe2k16 | bg28 | bg28 | 1 | OK | 60.0 (low 59.2) | 16 | 19 |  |
+| wwe2k16 | bg29 | bg29 | 1 | OK | 59.8 (low 42.5) |  | 19 |  |
+| wwe2k16 | bg30 | bg30 | 1 | OK | 60.0 (low 58.8) |  | 19 |  |
+| wwe2k16 | bg31 | bg31 | 1 | OK | 60.0 (low 57.8) | 3 | 19 |  |
+| wwe2k16 | bg35 | bg35 | 1 | OK | 60.0 (low 49.3) |  | 19 |  |
+| wwe2k16 | bg37 | bg37 | 1 | OK | 38.3 (low 29.5) | 6 | 20 |  |
 
 Special stages, not arenas (WWE '12+ bg60 and up: backstage rooms, studio / photo stages; not offered as arenas): wwe12 bg66 (OK), wwe12 bg67 (OK), wwe12 bg68 (OK), wwe12 bg76 (OK), wwe12 bg77 (OK), wwe12 bg78 (CRASH (lr 8215A008)), wwe12 bg79 (OK), wwe13 bg66 (OK), wwe13 bg67 (OK), wwe13 bg68 (OK), wwe13 bg76 (OK), wwe13 bg77 (OK), wwe13 bg78 (CRASH (lr 8218827C)), wwe13 bg79 (OK), wwe13 bg80 (CRASH (lr 8215A008)), wwe2k14 bg66 (OK), wwe2k14 bg67 (OK), wwe2k14 bg68 (OK), wwe2k14 bg76 (OK), wwe2k14 bg77 (OK), wwe2k14 bg78 (CRASH (lr 8215A008)), wwe2k14 bg79 (OK), wwe2k14 bg80 (CRASH (lr 8215A008)), wwe2k15 bg66 (OK), wwe2k15 bg67 (OK), wwe2k15 bg68 (OK), wwe2k15 bg76 (OK), wwe2k15 bg77 (OK), wwe2k15 bg78 (CRASH (lr 8215A008)), wwe2k15 bg79 (OK), wwe2k15 bg80 (CRASH (lr 8215A008))
