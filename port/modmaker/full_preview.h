@@ -19,6 +19,7 @@ struct Request {
   std::wstring song, movie;   // the mod's own theme / titantron ("": the superstar's profile's)
   std::wstring pack;          // the project's own move pack folder ("" = none): looked in first
   std::string title;          // the window's subtitle (the superstar's name)
+  float height = 0;           // a mod's height= (a factor of the superstar's size; 0 = none)
   int start_part = 0;         // the part it starts playing at (0 the first; 4 the walk to the ring)
 };
 
@@ -34,6 +35,12 @@ void TestOpen(int entrance, int star, float key, bool camera);
 void TestSong(const std::wstring& file);
 // Test aid --full-preview-movie <file>: the titantron movie the test opens with.
 void TestMovie(const std::wstring& file);
+// Test aid --full-preview-dump <file>: once loaded, every key from 0 (one a frame): "K key S slot L local-key lift y
+// V <view 16> P <proj 0, 5> B <bone x y z>..." (game coordinates, as drawn), then the file is closed.
+void TestDump(const std::wstring& file);
+// Test aid --full-preview-view <16 floats>,<fov degrees>: the view drawn with that camera (a game camera dump's view
+// matrix, row vectors) instead of the entrance's.
+void TestView(const std::wstring& spec);
 
 }  // namespace full_preview
 }  // namespace mm

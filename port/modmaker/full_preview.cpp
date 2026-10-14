@@ -6,7 +6,7 @@
 // entrant is the first character (type 01000000 00000000), the camera the first camera (00010000 0).
 // A track's key in the bank is (25000 + object, x = slot, y); the segments are slots 0 / 5 / 10 / 15 / 20,
 // played one after another (0 = the hidden intro: the entrant isn't drawn, the titantron plays). The
-// entrant's y0 = body (char_preview::DecodeClip, with y2 / y3 the fingers); the camera's y1 (else y0) =
+// entrant's y0 = body (char_preview::DecodeClip, with y2 / y3 the fingers); the camera's y1 (else y0; the game picks one of the two) =
 // 29-byte mode-1 keys [count][f32 pos x3, 0.01 units][f32 rot x3, rad][f32 fov] (tools/ymks.py
 // decode_camera): R = Rz Ry Rx, looking down the camera's local -x, its local -y the up; count = the
 // frames it takes to get there from where it was (0: a cut). Op 112 `70 z r` zooms (target z / 10,
@@ -91,6 +91,7 @@ struct Seg {
   std::vector<float> lift;  // per key: the y added to put the entrant on the practice arena's ground (Ground)
   std::vector<CamKey> cam;
   std::vector<ZoomEvent> zoom;
+  int height_ref = -1;  // op 113 `71 c`: from this frame the camera follows the entrant's height (-1: not)
 };
 // A ringside object the game puts out for the match (the steel steps): bgEtc.pac STG/WPON pack <model>, placed by
 // the ringside set's record (WPON 45010, key 1000: f32 position x3, f32 rotation x3 in degrees, s16 motion, u8
@@ -110,6 +111,7 @@ struct Loaded {
   bool grounded = false;  // (Ground done, with the model loaded)
   std::unique_ptr<svrfmt::Arena> arena;
   int music = -1, movie = -1;  // the profile's (-1: none)
+  float scale = 1;  // the superstar's size (chEtc.pac CHAR/DAT +28, 4.12 fixed point) x a mod's height=
 };
 
 // Where part `part` (0-4; 4 the walk to the ring) starts on the timeline: the keys of the parts before it (0 when it
@@ -125,6 +127,11 @@ float PartStart(const Loaded& L, int part) {
 }
 
 Request g_req;
+bool g_test_view_on = false;  // (test aid --full-preview-view)
+float g_test_view[16], g_test_fov = 30, g_test_xs = 1;  // (x sign of the projection)
+FILE* g_dump = nullptr;  // (test aid --full-preview-dump: every key's camera and bones, then closed)
+std::wstring g_dump_file;
+float g_dump_done = -1;
 bool g_open = false;
 std::atomic<int> g_load_state{0};  // 0 idle, 1 loading, 2 loaded (g_next ready)
 std::unique_ptr<Loaded> g_next, g_cur;
@@ -136,6 +143,7 @@ bool g_playing = false;
 bool g_use_camera = true, g_titantron_on = true, g_music_on = true;
 int g_saved_attire = 1;
 bool g_saved_gear = false;
+float g_saved_height = 1;  // (the pages' model size, put back on Close)
 std::string g_music_note;  // why there's no theme ("" = there is / loading)
 int g_seg_now = 0;
 float g_local_key = 0;
@@ -271,6 +279,7 @@ void DecodeCamera(const Bytes& bank, const uint8_t* d, size_t size, Seg& s) {
         const size_t n = bank[0x10 + op];  // (the bank's event-size table)
         if (!n || e + n > q) break;
         if (op == 112 && n >= 3) s.zoom.push_back({frame, float(r[e + 1]) / 10.0f, float(r[e + 2]) / 1000.0f});
+        if (op == 113 && s.height_ref < 0) s.height_ref = frame;
         e += n;
       }
     }
@@ -425,6 +434,27 @@ std::string PyroNote(const std::wstring& game, int number) {
   return out;
 }
 
+// The superstar's size: its CHAR/DAT record's +28 (after the record's 4-byte head), 4.12 fixed point - the game draws
+// the model at it and its entrance cameras follow it (op 113: 19.75 x (1 - size) on the camera's y, measured in
+// game: Big Show 1.121 -> -2.4, Cena 0.974 -> +0.5, Orton 1.010 -> -0.2). 1 when unknown.
+float ProfileScale(const std::wstring& game, int star) {
+  if (star < 0) return 1;
+  Bytes dat;
+  if (!ReadPacEntry(fs::path(game) / L"pac" / L"ch" / L"chEtc.pac", "DAT ", dat, "CHAR") &&
+      !ReadPacEntry(fs::path(game) / L"pac" / L"ch" / L"chEtc.pac", "DAT", dat, "CHAR"))
+    return 1;
+  std::vector<svrfmt::PachEntry> kids;
+  if (!svrfmt::PachRead(svrfmt::Unpack(dat), kids)) return 1;
+  for (const auto& k : kids) {
+    if (int(k.id) != star) continue;
+    const Bytes r = svrfmt::Unpack(k.data);
+    if (r.size() < 4 + 30) return 1;
+    const int v = Le16(&r[4 + 28]);
+    return v >= 2048 && v <= 8192 ? float(v) / 4096.0f : 1.0f;
+  }
+  return 1;
+}
+
 // The profile's entrance block of superstar `star` (chEtc.pac CHAR/PRO): music, movie numbers.
 void ProfileMedia(const std::wstring& game, int star, int& music, int& movie) {
   music = movie = -1;
@@ -518,6 +548,8 @@ std::unique_ptr<Loaded> LoadAll(const Request& req, const std::wstring& game) {
       s.keys = std::max(s.keys, frames);
       if (s.body) s.keys = std::max(s.keys, char_preview::ClipKeys(*s.body)), L->fingers |= char_preview::ClipHasFingers(*s.body);
     }
+    // (the camera's y1, else y0: the game plays one of the two per entrance - dumped in game, one run y0's keys
+    // exactly, the next y1's)
     if (cam >= 0 && (Track(evt, kIdShift + cam, s.slot, 1, &d, &size, &frames) ||
                      Track(evt, kIdShift + cam, s.slot, 0, &d, &size, &frames))) {
       DecodeCamera(evt, d, size, s);
@@ -532,6 +564,7 @@ std::unique_ptr<Loaded> LoadAll(const Request& req, const std::wstring& game) {
   RingsideStatics(game, L->statics);
   L->pyro = PyroNote(game, req.entrance);
   ProfileMedia(game, req.star, L->music, L->movie);
+  L->scale = ProfileScale(game, req.star) * (req.height > 0 ? req.height : 1.0f);
   L->arena = std::make_unique<svrfmt::Arena>();
   std::string aerr;
   if (!L->arena->Load(PathStr(fs::path(game) / L"pac" / L"bg" / L"bg29.pac"), &aerr)) {
@@ -844,6 +877,8 @@ void SetPlaying(bool on) {
 void Apply(std::unique_ptr<Loaded> L) {
   g_cur = std::move(L);
   if (!g_cur->error.empty()) return;
+  char_preview::SetHeight(g_cur->scale), char_preview::SetScaleAtRoot(true);  // (the superstar's size, as the game draws it)
+  Log("full preview: the superstar's size x" + std::to_string(g_cur->scale));
   if (g_cur->arena) editor::ViewArena(g_cur->arena.get(), "Practice arena", "");
   g_stage = StageGrid();
   if (g_cur->arena) BuildStageGrid(*g_cur->arena, g_stage);
@@ -856,10 +891,26 @@ void Apply(std::unique_ptr<Loaded> L) {
       char_preview::RenderProp(rtv, dsv, w, h, view, proj, st.prop, st.r, st.t, none);
     const int si = std::clamp(g_seg_now, 0, int(g_cur->segs.size()) - 1);
     const Seg& s = g_cur->segs[size_t(si)];
-    if (s.slot == 0 || !s.body) return;  // (segment 0 is the hidden intro: no entrant)
+    if (s.slot == 0 || !s.body) {  // (segment 0 is the hidden intro: no entrant)
+      if (g_dump) {
+        std::fprintf(g_dump, "K %.0f S %d L %.2f lift 0 V", g_key, s.slot, g_local_key);
+        for (int i = 0; i < 16; ++i) std::fprintf(g_dump, " %.5f", view[i]);
+        std::fprintf(g_dump, " P %.5f %.5f B\n", proj[0], proj[5]);
+        g_dump_done = g_key;
+      }
+      return;
+    }
     const float last = float(std::max(0, char_preview::ClipKeys(*s.body) - 1)), key = std::min(g_local_key, last);
     const float off[3] = {0, kSceneY + LiftAt(s, key), 0};  // (the camera gets the same)
     char_preview::RenderInto(rtv, dsv, w, h, view, proj, s.body.get(), key, off);
+    if (g_dump) {  // (test aid: this key's camera and the entrant's bones, as drawn)
+      std::fprintf(g_dump, "K %.0f S %d L %.2f lift %.3f V", g_key, s.slot, key, off[1]);
+      for (int i = 0; i < 16; ++i) std::fprintf(g_dump, " %.5f", view[i]);
+      std::fprintf(g_dump, " P %.5f %.5f B", proj[0], proj[5]);
+      for (const auto& b : char_preview::EntrantBones()) std::fprintf(g_dump, " %s %.3f %.3f %.3f", b.name.c_str(), b.t[0], b.t[1], b.t[2]);
+      std::fputc('\n', g_dump);
+      g_dump_done = g_key;
+    }
     // the props at this key: worn on the head (state 4), held (state 1: on the right hand), else keyed in the
     // entrance's frame. Not the title belt: the game places a champion's belt itself (its track keeps one
     // pose, two 0x7b refs, while the belt goes from hand to shoulder in the game) - not known yet
@@ -915,7 +966,7 @@ void Open(const Request& r) {
   audio_out::SetMuted(g_behind);
   char_preview::ClearProps();
   // the superstar as it enters: the attire (its entrance gear when it has some)
-  g_saved_attire = char_preview::Attire(), g_saved_gear = char_preview::Gear();
+  g_saved_attire = char_preview::Attire(), g_saved_gear = char_preview::Gear(), g_saved_height = char_preview::Height();
   if (!r.model.empty()) char_preview::SetModel(r.model, g_game);
   char_preview::SetAttire(std::max(1, r.attire));
   char_preview::SetGear(r.gear);
@@ -953,12 +1004,29 @@ void Close() {
     g_next.reset();
   }
   char_preview::SetGear(g_saved_gear);
+  char_preview::SetHeight(g_saved_height), char_preview::SetScaleAtRoot(false);
   char_preview::SetAttire(g_saved_attire);
   char_preview::ClearProps();
 }
 
 void TestSong(const std::wstring& file) { g_test_song = file; }
 void TestMovie(const std::wstring& file) { g_test_movie = file; }
+void TestDump(const std::wstring& file) { g_dump_file = file; }
+void TestView(const std::wstring& spec) {
+  float v[18];
+  int n = 0;
+  for (const wchar_t* p = spec.c_str(); *p && n < 18;) {
+    wchar_t* end = nullptr;
+    v[n] = std::wcstof(p, &end);
+    if (end == p) break;
+    ++n;
+    for (p = end; *p == L',' || *p == L' ';) ++p;
+  }
+  if (n < 17) return;
+  std::memcpy(g_test_view, v, sizeof g_test_view);
+  g_test_fov = v[16], g_test_view_on = true;
+  if (n >= 18) g_test_xs = v[17];
+}
 
 void TestOpen(int entrance, int star, float key, bool camera) {
   g_test_pending = true, g_test_entrance = entrance, g_test_star = star, g_test_key = key, g_test_camera = camera;
@@ -1004,6 +1072,18 @@ void Draw() {
         L.grounded = true;
       }
       // the clock
+      if (!g_dump_file.empty() && !g_dump && L.grounded) {  // (the dump: from key 0, one key a frame)
+        g_dump = _wfopen(g_dump_file.c_str(), L"w"), g_key = 0, g_dump_done = -1, SetPlaying(false);
+        Log("full preview: dumping every key into " + Utf8(g_dump_file));
+      }
+      if (g_dump && g_dump_done >= g_key) {
+        if (g_key + 1 >= float(L.total)) {
+          std::fclose(g_dump), g_dump = nullptr, g_dump_file.clear();
+          Log("full preview: dump done");
+        } else {
+          g_key += 1;
+        }
+      }
       if (g_playing) {
         g_key += ImGui::GetIO().DeltaTime * 30.0f;
         if (g_key >= float(L.total - 1)) g_key = float(L.total - 1), SetPlaying(false);
@@ -1021,8 +1101,14 @@ void Draw() {
       const ImVec2 avail = ImGui::GetContentRegionAvail();
       const float w = std::max(64.0f, avail.x), h = std::max(64.0f, avail.y - ctl_h);
       Cam c;
-      if (g_use_camera && CameraAt(s, rest, c)) {
+      if (g_test_view_on) {  // (test aid: the game's own camera, as dumped - view row-vector, fov in degrees)
+        float proj[16] = {};
+        const float xs = 1 / std::tan(g_test_fov * 3.14159265f / 360.0f), zn = 1, zf = 5000;  // (the fov: horizontal)
+        proj[0] = g_test_xs * xs, proj[5] = -xs * (w / h), proj[10] = zf / (zf - zn), proj[11] = 1, proj[14] = -zn * zf / (zf - zn);
+        editor::SetViewCamera(g_test_view, proj);
+      } else if (g_use_camera && CameraAt(s, rest, c)) {
         c.pos[1] += kSceneY + LiftAt(s, rest);  // (the entrance's frame -> the arena's, as the entrant)
+        if (s.height_ref >= 0 && rest >= float(s.height_ref)) c.pos[1] += 19.75f * (1 - L.scale);  // (op 113)
         float view[16], proj[16];
         Matrices(c, w / h, view, proj);
         editor::SetViewCamera(view, proj);

@@ -1520,6 +1520,8 @@ void ViewProj(float aspect, float out[16]) {
 
 float g_frame_lo[3], g_frame_hi[3];  // the bounds gathered over the slots skinned this frame
 float g_height_scale = 1;            // the model's (slot 0) size from its feet
+bool g_scale_at_root = false;        // (the Full preview: scaled about the root's x / z, not the origin - it walks far)
+float g_pivot[2] = {0, 0};           // (that x / z, game coordinates: the last Skin's root)
 float g_feet = 0, g_feet_next = 1e30f, g_top_next = -1e30f, g_tall = 0;  // slot 0's lowest / highest y (view, unscaled)
 // the floor under a motion (view y): its lowest bone over the whole motion, less a sole - in-ring motions
 // (finishers) are keyed on the ring canvas, above the arena floor (0) the stances and taunts stand on
@@ -1533,6 +1535,8 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
   const bool frame = g_frame;
   const bool model = &sl == &g_slots[0];
   const float s = model ? g_height_scale : 1.0f;
+  float cx = 0, cz = 0;  // (the scale's x / z pivot)
+  if (model && g_scale_at_root && !pose.empty()) cx = pose[0].t.x, cz = pose[0].t.z, g_pivot[0] = cx, g_pivot[1] = cz;
   for (size_t m = 0; m < sl.gpu.size(); ++m) {
     const PMesh& pm = sl.ch->meshes[m];
     ID3D11Buffer* vb = sl.gpu[m].vb;
@@ -1555,7 +1559,7 @@ void Skin(Slot& sl, const std::vector<Xf>& pose) {
       if (!pm.tan.empty())
         for (int j = 0; j < 4; ++j)
           if (f.w[j] > 0) tg = tg + Rotate(skin[size_t(f.node[j])], pm.tan[k]) * f.w[j];
-      out[k] = {{p.x * s, g_feet + (-p.y - g_feet) * s, -p.z * s}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}, {tg.x, -tg.y, -tg.z}};
+      out[k] = {{cx + (p.x - cx) * s, g_feet + (-p.y - g_feet) * s, -(cz + (p.z - cz) * s)}, {n.x, -n.y, -n.z}, {pm.uv[k][0], pm.uv[k][1]}, {tg.x, -tg.y, -tg.z}};
       if (frame)
         for (int c = 0; c < 3; ++c) lo[c] = std::min(lo[c], out[k].pos[c]), hi[c] = std::max(hi[c], out[k].pos[c]);
     }
@@ -2327,6 +2331,12 @@ void ClearProps() {
   g_props.clear();
 }
 
+// a posed point of the entrant (game coordinates) where it's drawn: the model's scale applied as Skin does
+void ScaledPoint(float x, float y, float z, float out[3]) {
+  const float s = g_height_scale, cx = g_scale_at_root ? g_pivot[0] : 0, cz = g_scale_at_root ? g_pivot[1] : 0;
+  out[0] = cx + (x - cx) * s, out[1] = -(g_feet + (-y - g_feet) * s), out[2] = cz + (z - cz) * s;
+}
+
 bool EntrantBone(const char* name, float r[9], float t[3]) {
   const Slot& sl = g_slots[0];
   if (!sl.ch || sl.world.size() != sl.ch->bones.size()) return false;
@@ -2334,10 +2344,22 @@ bool EntrantBone(const char* name, float r[9], float t[3]) {
     if (sl.ch->bones[i].name == name) {
       for (int a = 0; a < 3; ++a)
         for (int b = 0; b < 3; ++b) r[a * 3 + b] = sl.world[i].r[a][b];
-      t[0] = sl.world[i].t.x, t[1] = sl.world[i].t.y, t[2] = sl.world[i].t.z;
+      ScaledPoint(sl.world[i].t.x, sl.world[i].t.y, sl.world[i].t.z, t);
       return true;
     }
   return false;
+}
+
+std::vector<BonePos> EntrantBones() {
+  std::vector<BonePos> out;
+  const Slot& sl = g_slots[0];
+  if (!sl.ch || sl.world.size() != sl.ch->bones.size()) return out;
+  for (size_t i = 0; i < sl.world.size(); ++i) {
+    BonePos b{sl.ch->bones[i].name, {}};
+    ScaledPoint(sl.world[i].t.x, sl.world[i].t.y, sl.world[i].t.z, b.t);
+    out.push_back(b);
+  }
+  return out;
 }
 
 void RenderProp(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float view[16],
@@ -2824,6 +2846,8 @@ void Draw(float w, float h) {
 }
 
 void SetHeight(float scale) { g_height_scale = std::clamp(scale, 0.5f, 2.0f); }
+float Height() { return g_height_scale; }
+void SetScaleAtRoot(bool on) { g_scale_at_root = on; }
 float ModelHeight() { return g_slots[0].ch ? g_tall : 0.0f; }
 
 std::string Status() {

@@ -69,6 +69,9 @@ bool Hits();
 // made), shown live; the dummy keeps its own. ModelHeight: the model as posed
 // now, unscaled, in game units (1 = 10 cm; 0 until shown).
 void SetHeight(float scale);
+float Height();
+// The model scaled about its root's x / z instead of the origin (the Full preview: a walk far from the ring).
+void SetScaleAtRoot(bool on);
 float ModelHeight();
 // "Loading...", what is shown ("11089 vertices, 102 bones, idle") or why not.
 std::string Status();
@@ -116,6 +119,12 @@ bool RingsideSteps(const std::string& bg_etc, std::vector<uint8_t>& model, std::
 void ClearProps();
 // The entrant's bone as posed by the last RenderInto (game coordinates: rotation row-major, translation).
 bool EntrantBone(const char* name, float r[9], float t[3]);
+// Every bone of the entrant as posed by the last RenderInto (test aid: the Full preview's dump): name, world position.
+struct BonePos {
+  std::string name;
+  float t[3];
+};
+std::vector<BonePos> EntrantBones();
 // A prop's own bones turned by its track (bone k: Euler angles, R = Rz Ry Rx; off = its rest).
 struct PropBone {
   bool on = false;

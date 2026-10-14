@@ -1508,6 +1508,7 @@ void OpenFullPreview(int n, int start_part) {
   r.song = g_star.song, r.movie = g_star.movie, r.pack = g_star.pack;
   r.title = g_star.name[0] ? g_star.name : "your superstar";
   r.start_part = start_part;
+  r.height = g_star.height;  // (the mod's height=: on the superstar's own size)
   full_preview::Open(r);
 }
 
