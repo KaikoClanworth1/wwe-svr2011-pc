@@ -87,6 +87,15 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## New in 2.1.1
+
+### Fixes
+- **"The application was unable to start correctly (0xc0000142)"**: 2.1.0 put an old copy of Microsoft's Visual C++ runtime (14.29) beside the game, launcher and Mod Maker, and the programs (built with 14.51) - and overlays like Discord, Steam or RTSS - failed to start with it. The release no longer carries those files, and the launcher removes 2.1.0's copies from the game folder by itself. The launcher now starts without the runtime and, when it's missing or too old, offers Microsoft's installer (Setup tab, and before Play).
+- **Mod Maker: porting from WWE '13 and later** works again: the 2.1.0 zip was missing `svrmod.exe` and vgmstream in Mod Maker Tools ("ToolMissing: svrmod.exe"), and PS2 ports were missing `ps2_media.py`. The release now refuses to build without every tool the converters use.
+- **Mod Maker tools check**: the Mod Maker shows what it needs (Python, numpy, Pillow, svrmod, vgmstream, ffmpeg) and installs what's missing with one button; converters only run with a Python that has numpy and Pillow (no more "No module named 'numpy'").
+- **Launcher Setup: the ffmpeg download** shows its progress (the bar sat empty for the whole 115 MB) and says so when a download stalls.
+- **Mod Maker entrance preview**: no jitter, solid barriers and turnbuckles in the right place.
+
 ## New in 2.1.0
 
 ### Matches
