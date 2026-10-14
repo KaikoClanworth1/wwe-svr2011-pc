@@ -1,5 +1,7 @@
-"""Room 30 props + climb spots + converted motions -> GMGB package (78H3) for the row mod."""
+"""An HCTP room's props + climb spots + converted motions -> GMGB package (78H3) for the row mod.
+Room 30 by default; others by HCTP_ROOM / HCTP_DX / HCTP_DZ / HCTP_OUT (the mod folder)."""
 import math
+import os
 import struct
 import sys
 
@@ -10,11 +12,13 @@ sys.path.insert(0, r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\tools")
 import svr08_stage as s8
 import hctp_props, hctp_gimmick, hctp_fake56, hctp2jboy, yobj
 
-STAGE = r"D:\Xbox Games Ports\HCTP Extract\_unpacked\bg\stg_0030"
+ROOM = int(os.environ.get('HCTP_ROOM', '30'))
+STAGE = r"D:\Xbox Games Ports\HCTP Extract\_unpacked\bg\stg_00%02d" % ROOM
+OUT = os.environ.get('HCTP_OUT', 'mod_row')
 BG78 = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\bg\bg78.pac"
 GM = r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\gm.pac"
 BANK = 'out/mot/bank_h3.bin'
-DX, DZ = 180.0, -440.0
+DX, DZ = float(os.environ.get('HCTP_DX', '180')), float(os.environ.get('HCTP_DZ', '-440'))
 CLIMB_KEYS = {0xFB: 12541, 0xFD: 12542, 0xF4: 12503, 0xDF: 12503}
 # props' rest poses (HCTP: idle acts, or the first frame of their fall / open act)
 REST = {1243: 12532, 1234: 12523, 1264: 12531, 1232: 12558, 1252: 12556, 1236: 12555, 1233: 12559}
@@ -59,7 +63,7 @@ def climb_spots(hmd_bytes):
 
 _, _, _, _, e78 = s8.stage(BG78)
 tmpl = hctp2jboy.template({i: s8.unpack(b) for i, b in e78})
-plist = hctp_props.props(STAGE)
+plist = hctp_props.props(STAGE, ROOM)
 models = {}
 import os
 os.makedirs('out/props', exist_ok=True)
@@ -81,14 +85,15 @@ for pr in plist:
 STEAM = {32: (210, 2058), 34: (215, 2068)}   # particle -> (valve, hit volume)
 PUFFS = 5
 steam_lines, puffs = [], []
-M = yobj.read(open(f'{STAGE}/50101/01237.yobj', 'rb').read())
-J = hctp2jboy.convert(M, tmpl, keep_nodes=False)
-if os.environ.get('HCTP_PUFF_TEX'):   # (debug: the puff with another texture)
-    J.textures = [os.environ['HCTP_PUFF_TEX']]
-open('out/props/1237.jboy', 'wb').write(jboy.write(J))
-models[1237] = ('out/props/1237.jboy', J.textures)
+if ROOM == 30:
+    M = yobj.read(open(f'{STAGE}/50101/01237.yobj', 'rb').read())
+    J = hctp2jboy.convert(M, tmpl, keep_nodes=False)
+    if os.environ.get('HCTP_PUFF_TEX'):   # (debug: the puff with another texture)
+        J.textures = [os.environ['HCTP_PUFF_TEX']]
+    open('out/props/1237.jboy', 'wb').write(jboy.write(J))
+    models[1237] = ('out/props/1237.jboy', J.textures)
 for _, t, ppos, pry in hctp_props.placements(STAGE):
-    if t not in STEAM:
+    if ROOM != 30 or t not in STEAM:
         continue
     valve, coll = STEAM[t]
     R = [np.array(r) for r in s8.hmd_read(open(f'{STAGE}/50101/{coll:05d}.hmd', 'rb').read())]
@@ -108,15 +113,16 @@ for mid, (path, tl) in models.items():
 # the steam puff: 2011 props draw with an alpha cut-off, which drops all of
 # the soft zyouki smoke (alpha < 128 almost everywhere) - its alpha becomes
 # an ordered dither (a texel is solid as often as it was opaque), white-ish
-z = tb['zyouki'].astype(np.float32)
-h0, w0 = z.shape[:2]
-big = np.array(Image.fromarray(tb['zyouki'], 'RGBA').resize((w0 * 4, h0 * 4), Image.BILINEAR)).astype(np.float32)
-bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16.0
-thr = np.tile(bayer, (big.shape[0] // 4, big.shape[1] // 4))
-a = np.clip(big[..., 3] / 255.0 * 1.8, 0, 1)
-big[..., 3] = np.where(a > thr, 255, 0)
-big[..., :3] = np.clip(big[..., :3] * 0.5 + 128, 0, 255)
-tex['zyouki'] = hctp_fake56.dds(big.astype(np.uint8), 'cut')
+if 'zyouki' in tb:
+    z = tb['zyouki'].astype(np.float32)
+    h0, w0 = z.shape[:2]
+    big = np.array(Image.fromarray(tb['zyouki'], 'RGBA').resize((w0 * 4, h0 * 4), Image.BILINEAR)).astype(np.float32)
+    bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16.0
+    thr = np.tile(bayer, (big.shape[0] // 4, big.shape[1] // 4))
+    a = np.clip(big[..., 3] / 255.0 * 1.8, 0, 1)
+    big[..., 3] = np.where(a > thr, 255, 0)
+    big[..., :3] = np.clip(big[..., :3] * 0.5 + 128, 0, 255)
+    tex['zyouki'] = hctp_fake56.dds(big.astype(np.uint8), 'cut')
 spec = []
 for pr in plist:
     pos, a = hctp_props.to_2011(pr['pos'], pr['ry'], DX, DZ)
@@ -134,7 +140,8 @@ bank = open(BANK, 'rb').read()
 # (the puffs first: objects past the first 20 weren't drawn)
 spec = [dict(model=models[1237][0], pos=tuple(float(v) for v in o), ry=0.0, note=f'steam {t} puff {k}')
         for t, k, o in puffs] + spec
-hctp_gimmick.build(GM, 'mod_row/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
+os.makedirs(OUT, exist_ok=True)
+hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
                    records=spots, bank=bank)
 
 
@@ -148,7 +155,7 @@ KIND = {89: 'stack', 51: 'throw', 47: 'wall', 46: 'roof', 37: 'switch', 39: 'val
 # HCTP weapon -> 2011 (WPBS): cardboard box 56 -> 17 (78_obj_cbox), barrel 57 -> trash can 63,
 # lead pipe 148 -> kendo stick 88 (no pipe in 2011), trash can 9 -> 63
 WEAPON_2011 = {56: 17, 57: 63, 148: 88, 9: 63}
-tags = hctp_props.gobj_tags(1)
+tags = hctp_props.gobj_tags(ROOM - 29)
 
 
 def final_index_map(n):
@@ -208,5 +215,5 @@ lines += steam_lines
 for k, (t, j, o) in enumerate(puffs):  # (the first records, in spec order)
     lines.append(f"prop steam{t}_{j} {t} puff 0 {o[0]:.2f} {o[1]:.2f} {o[2]:.2f} 0 recs={100 + k} tris=")
 lines += [f"key {k} {v}" for k, v in sorted(frames.items())]
-open('mod_row/hctp.txt', 'w').write('\n'.join(lines) + '\n')
+open(f'{OUT}/hctp.txt', 'w').write('\n'.join(lines) + '\n')
 print(f'hctp.txt: {len(lines)} lines')

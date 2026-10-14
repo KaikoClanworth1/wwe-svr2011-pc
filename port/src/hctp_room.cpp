@@ -106,6 +106,11 @@ bool HctpRoomActive() {
   return r >= 0 && size_t(r) < svr2011::BackstageRows().size() && svr2011::BackstageRows()[size_t(r)].hctp > 0;
 }
 
+// The HCTP room number (hctp=30 the Back Entrance) - its cage rules use room 30's places.
+int HctpRoom() {
+  return HctpRoomActive() ? svr2011::BackstageRows()[size_t(svr2011::g_active_row)].hctp : 0;
+}
+
 void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
   int slot = -1;
   for (int i = 0; i < 8; ++i)
@@ -1053,7 +1058,7 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
           used = true;
         }
       }
-      if (!used) used = EdgeJump(ctx, base, f, i, x, y, z);
+      if (!used && HctpRoom() == 30) used = EdgeJump(ctx, base, f, i, x, y, z);
     } else if (s.wall >= 0) {
       if (g_log && s.idle % 60 == 0)
         REXLOG_INFO("hctp: fighter {} holds {}: motion {} presses {} idle {}", i, g_room.props[size_t(s.wall)].name, m,
@@ -1124,7 +1129,7 @@ uint32_t ColliderFighter(PPCContext& ctx, uint8_t* base, uint32_t collider) {
 }
 
 bool FenceBlocks(PPCContext& ctx, uint8_t* base, uint32_t comp, uint32_t target) {
-  if (!HctpRoomActive() || !g_room.loaded || !comp || !target) return false;
+  if (HctpRoom() != 30 || !g_room.loaded || !comp || !target) return false;
   const uint32_t att = Rd32(base + comp + 448), vic = ColliderFighter(ctx, base, target);
   if (!att || !vic || att == vic) return false;
   int sa = 2, sv = 2;
