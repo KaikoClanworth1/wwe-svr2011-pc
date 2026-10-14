@@ -1647,7 +1647,8 @@ bool FbxMaterialCell(const std::string& mesh, bool simple) {
     ImGui::SetNextItemWidth(200 * g_scale);
     if (ImGui::Combo(simple ? "Where it shines" : "Shine pattern", &e.spec_alpha, kAlpha, 4)) ch = true;
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Which places shine more: the colour picture's alpha, the same everywhere, or its bright places (not for see-through parts: there the alpha is the see-through).");
+      ImGui::SetTooltip("Which places shine more: the picture's alpha, the same everywhere, or its bright places. The builder writes it where the\n"
+                        "game reads it: skin parts into the normal map's alpha, other parts into the colour picture's (see-through parts: the alpha is the see-through).");
     ImGui::TextUnformatted(simple ? "Bumps:" : "Normal map:");
     ImGui::SameLine();
     ImGui::TextDisabled("%s", e.normal == 1 ? Utf8(fs::path(e.normal_file).filename().wstring()).c_str() : "the FBX's");

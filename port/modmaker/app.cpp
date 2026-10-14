@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "char_preview.h"
+#include "model_materials.h"
 #include "hair_sim.h"
 #include "editor.h"
 #include "full_preview.h"
@@ -2582,6 +2583,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-mat") && more) star_page::TestMaterials(Utf8(argv[++i]), false);
     else if (!wcscmp(argv[i], L"--open-materials")) star_page::TestMaterials("", true);
+    else if (!wcscmp(argv[i], L"--mat-dump") && more) {  // <pac>,<out.txt>: every mesh's shader, flags and parameters, then quit
+      const std::wstring a = argv[++i];
+      const size_t c = a.find(L',');
+      svrfmt::Bytes pac;
+      if (c != std::wstring::npos && svrfmt::ReadFile(Utf8(a.substr(0, c)), pac)) {
+        const std::string t = mm::DumpMaterials(pac);
+        if (FILE* f = _wfopen(a.substr(c + 1).c_str(), L"wb")) std::fwrite(t.data(), 1, t.size(), f), std::fclose(f);
+      }
+      return 0;
+    }
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--sign") && more) sign_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-sign-save") && more) sign_save = argv[++i];

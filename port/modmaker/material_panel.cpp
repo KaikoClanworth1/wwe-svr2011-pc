@@ -109,6 +109,8 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
     if (!node) continue;
     ImGui::PushID(label);
     bool ch = false;
+    // (the game draws a culled skin part with its skin shader: the shine follows the normal map's alpha there)
+    const bool skin = m.skin_shine && (e.two_sided >= 0 ? e.two_sided == 0 : (m.flags & 0x2) != 0);
     // shine
     if (m.has_spec) {
       float v = e.has_spec ? e.spec : m.spec;
@@ -116,7 +118,10 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
       if (ImGui::SliderFloat(simple ? "Shine" : "Shine (specular level)", &v, 0, 4, "%.2f", ImGuiSliderFlags_Logarithmic))
         e.has_spec = true, e.spec = v, ch = true;
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("How glossy it is (the game's g_fSpecularLev: skin is about 0.5). The colour picture's alpha makes some places shinier than others.");
+        ImGui::SetTooltip(skin ? "How glossy it is (the game's g_fSpecularLev: skin is about 0.5). Skin: the bumps (normal map) picture's alpha\n"
+                                 "makes some places shinier than others; the colour picture's alpha is where sweat shines in a match."
+                               : "How glossy it is (the game's g_fSpecularLev: skin is about 0.5). The colour picture's alpha makes some places\n"
+                                 "shinier than others.");
     }
     // colour
     if (m.has_tint) {
@@ -138,9 +143,11 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
         const std::wstring f = PickFile(false, L"A normal map picture (PNG, DDS ...)", kPics, 1);
         if (!f.empty()) e.normal = 1, e.normal_file = f, ch = true;
       }
+      if (skin && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Skin: the picture's alpha is where it shines. A picture without an alpha keeps the old map's.");
       ImGui::SameLine();
       if (ImGui::SmallButton(simple ? "Smooth" : "Flat")) e.normal = 2, e.normal_file.clear(), ch = true;
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("No bumps: a flat normal map.");
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip(skin ? "No bumps: a flat normal map (keeping the old map's alpha: where it shines)." : "No bumps: a flat normal map.");
       if (e.normal) {
         ImGui::SameLine();
         if (ImGui::SmallButton("As it was")) e.normal = 0, e.normal_file.clear(), ch = true;
@@ -153,7 +160,10 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
     ImGui::SameLine();
     bool both = e.two_sided >= 0 ? e.two_sided != 0 : (m.flags & 0x2) == 0;
     if (ImGui::Checkbox(simple ? "Both sides" : "Double-sided", &both)) e.two_sided = both, ch = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drawn from behind too (capes, open jackets, single-layer cloth); off: only its front - the game's flag 0x2.");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(m.skin_shine ? "Drawn from behind too (capes, open jackets, single-layer cloth); off: only its front - the game's flag 0x2.\n"
+                                       "Skin parts drawn from both sides get the game's plain shader: no sweat, the shine from the colour picture's alpha."
+                                     : "Drawn from behind too (capes, open jackets, single-layer cloth); off: only its front - the game's flag 0x2.");
     // the picture sheet
     const bool open = g_atlas_for == std::make_pair(m.model_id, m.mesh);
     if (ImGui::SmallButton(open ? "Hide the picture sheet" : (simple ? "Show where it is on the picture" : "Picture sheet (atlas)"))) g_atlas_for = open ? std::make_pair(~0u, -1) : std::make_pair(m.model_id, m.mesh);

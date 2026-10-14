@@ -55,7 +55,17 @@ EpacEntry* AttireEntry(Epac& e, int attire, bool gear) {
         if (en.name.size() >= 8 && en.name[6] == char('0' + attire - 1) && en.name[7] == (gear ? '4' : '2')) return &en;
   return nullptr;
 }
+bool SkinShineOf(const Mesh& s, uint32_t flags) {
+  const Param* t = Find(s, "texTilingMap");
+  const Param* spa = Find(s, "g_fSweatSPA");
+  return SkinShine(s.shader, flags, t && t->value.size() >= 4 && int32_t(RdBe(t->value)) >= 0,
+                   spa && spa->value.size() >= 4 ? FBe(spa->value) : 0.0f);
+}
 }  // namespace
+
+bool SkinShine(const std::string& shader, uint32_t flags, bool has_tiling, float sweat_spa) {
+  return shader == "yBumpMapSS" && (flags & 0x2) && has_tiling && sweat_spa != 0;
+}
 
 bool ReadMaterials(const Bytes& pac, int attire, bool gear, std::vector<MeshMat>& out, std::string* error) {
   out.clear();
@@ -88,10 +98,52 @@ bool ReadMaterials(const Bytes& pac, int attire, bool gear, std::vector<MeshMat>
       mm.color_tex = tex("texDiffuse");
       mm.normal_slot = Find(s, "texNormal") != nullptr;
       mm.normal_tex = tex("texNormal");
+      mm.skin_shine = SkinShineOf(s, mm.flags);
       out.push_back(mm);
     }
   }
   return true;
+}
+
+std::string DumpMaterials(const Bytes& pac) {
+  std::string o;
+  Epac e;
+  if (!EpacRead(pac, e)) return "not a model pac\n";
+  for (int a = 1; a <= 9; ++a)
+    for (const bool gear : {false, true}) {
+      EpacEntry* en = AttireEntry(e, a, gear);
+      std::vector<PachEntry> kids;
+      if (!en || !PachRead(Unpack(en->data), kids)) continue;
+      for (const auto& k : kids) {
+        const Bytes raw = Unpack(k.data);
+        Model m;
+        if (!IsJboy(raw) || !JboyRead(raw, m)) continue;
+        for (size_t i = 0; i < m.meshes.size(); ++i) {
+          const Mesh& s = m.meshes[i];
+          char line[160];
+          std::snprintf(line, sizeof line, "attire %d%s id %u %s mesh %zu shader %s flags %08X verts %zu\n", a, gear ? " gear" : "",
+                        unsigned(k.id), m.name.c_str(), i, s.shader.c_str(), s.raw.size() >= 0x8C ? RdBe(s.raw, 0x88) : 0u, s.verts.size());
+          o += line;
+          o += "  strips";
+          for (const Strip& st : s.strips) o += " " + std::to_string(st.indices.size());
+          o += "\n";
+          for (const Param& p : s.params) {
+            o += "  " + p.name + " t" + std::to_string(p.type) + ":";
+            for (size_t b = 0; b + 4 <= p.value.size() && b < 16; b += 4) {
+              if (p.type == 0x0d || p.type == 0x0a) std::snprintf(line, sizeof line, " %g", FBe(p.value, b));
+              else std::snprintf(line, sizeof line, " %d", int(int32_t(RdBe(p.value, b))));
+              o += line;
+            }
+            if (p.type == 0x0f && p.value.size() >= 4) {
+              const int slot = int(int32_t(RdBe(p.value)));
+              if (slot >= 0 && slot < int(m.textures.size())) o += " " + m.textures[size_t(slot)];
+            }
+            o += "\n";
+          }
+        }
+      }
+    }
+  return o;
 }
 
 bool PatchMaterials(Bytes& pac, int attire, bool gear, const std::map<std::pair<uint32_t, int>, MatEdit>& edits, std::string* error) {
@@ -156,6 +208,12 @@ bool PatchMaterials(Bytes& pac, int attire, bool gear, const std::map<std::pair<
           if (ed.normal == 2) img.w = img.h = 4, img.rgba.assign(4 * 4 * 4, 0), [&] {
               for (size_t q = 0; q < img.rgba.size(); q += 4) img.rgba[q] = 128, img.rgba[q + 1] = 128, img.rgba[q + 2] = 255, img.rgba[q + 3] = 255;
             }();
+          // (a skin mesh's shine mask is the normal map's alpha: kept from the old map - flat: the old map's size,
+          // flat bumps; a picture without an alpha of its own: the old alpha scaled to it). One texture per
+          // (picture, kept mask): meshes sharing both share it.
+          const int oslot = int(int32_t(RdBe(p->value)));
+          const std::string old_name = oslot >= 0 && oslot < int(m.textures.size()) ? m.textures[size_t(oslot)] : "";
+          const bool keep_mask = !old_name.empty() && SkinShineOf(s, s.raw.size() >= 0x8C ? RdBe(s.raw, 0x88) : 0);
           const Param* cp = Find(s, "texDiffuse");
           const int cslot = cp && cp->value.size() >= 4 ? int(int32_t(RdBe(cp->value))) : -1;
           const int b = bundle_with(cslot >= 0 && cslot < int(m.textures.size()) ? m.textures[size_t(cslot)] : "color");
@@ -164,12 +222,34 @@ bool PatchMaterials(Bytes& pac, int attire, bool gear, const std::map<std::pair<
             return false;
           }
           char name[16];
-          if (ed.normal == 2) std::snprintf(name, sizeof name, "mm_flatn");
-          else std::snprintf(name, sizeof name, "mm_n%u_%d", unsigned(kids[ki].id), int(i));
+          if (ed.normal == 2 && !keep_mask) std::snprintf(name, sizeof name, "mm_flatn");  // (one 4x4 flat map for the rest)
+          else {
+            uint32_t h = 2166136261u;
+            for (const char c : (ed.normal == 2 ? std::string("flat") : Utf8(ed.normal_file)) + "|" + (keep_mask ? old_name : ""))
+              h = (h ^ uint8_t(c)) * 16777619u;
+            std::snprintf(name, sizeof name, "mm_n%08x", h);
+          }
           bool have = false;
-          for (auto& t : bundles[size_t(b)])
-            if (t.name == name) have = true, t.data = ed.normal == 2 ? t.data : DdsEncode(img, DxtFormat::kDxt5);
-          if (!have) bundles[size_t(b)].push_back({name, "dds", DdsEncode(img, DxtFormat::kDxt5)}), flat_added += ed.normal == 2;
+          for (const auto& t : bundles[size_t(b)]) have |= t.name == name;
+          if (!have) {
+            if (keep_mask) {
+              Image old;
+              for (size_t bi = 0; bi < kids.size() && !old.w; ++bi)
+                for (const auto& t : bundles[bi])
+                  if (is_bundle[bi] && t.name == old_name && DdsDecode(t.data, old)) break;
+              bool opaque = true;
+              for (size_t q = 3; q < img.rgba.size() && opaque; q += 4) opaque = img.rgba[q] == 255;
+              if (old.w > 0 && ed.normal == 2) {
+                img = old;
+                for (size_t q = 0; q < img.rgba.size(); q += 4) img.rgba[q] = 128, img.rgba[q + 1] = 128, img.rgba[q + 2] = 255;
+              } else if (old.w > 0 && opaque) {
+                const Image a = Resize(old, img.w, img.h);
+                for (size_t q = 3; q < img.rgba.size(); q += 4) img.rgba[q] = a.rgba[q];
+              }
+            }
+            bundles[size_t(b)].push_back({name, "dds", DdsEncode(img, DxtFormat::kDxt5)});
+            flat_added += ed.normal == 2 && !keep_mask;
+          }
           bundle_changed[size_t(b)] = true;
           int slot = -1;
           for (size_t t = 0; t < m.textures.size(); ++t)
