@@ -115,8 +115,8 @@ class Src:
         self.path = path
         self.folder = path if self.d.kind == 'folder' else None
         self.cache = cache
-        if not self.d.exists('pac'):
-            raise BadInput('--src has no pac folder: %s' % path)
+        if not self.d.exists('pac') and not any(n.lower().endswith('.pac') for n in self.d.listdir('')):
+            raise BadInput('--src has no pac folder: %s' % path)   # (JBI keeps its PACs in the disc root)
 
     @property
     def root(self):

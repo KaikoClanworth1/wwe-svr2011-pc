@@ -40,7 +40,7 @@ SERIALS = {'ps2_jbi': ('SLES_504.77', 'SLUS_202.69'), 'ps2_sym': ('SLES_512.83',
 UNGROUPED = {'ps2_jbi'}   # (every model its own id, attire 0: a superstar's models share a name)
 NUMBERING = {'ps2_svr09': ('int', 0), 'ps2_svr10': ('dec', 100)}
 JUNK = re.compile(r'^(edit ?\d+|dlc ?\d+|0|dummy|motion test.*|moves? (set|man).*|.* bra \d+|average|speedy|wbm|green|red|'
-                  r'ojl|ktm|omp|ms|)$', re.I)   # (SYM's OJL / KTM / OMP / MS: no person)
+                  r'ojl|ktm|omp|ms|unknown d+.*|)$', re.I)   # (SYM's OJL / KTM / OMP / MS: no person)
 # (no gender in the name records: the women of the rosters by name - 2011's own gender wins when it has her)
 WOMEN = {'lita', 'trish stratus', 'stacy keibler', 'torrie wilson', 'victoria', 'sable', 'stephanie mcmahon', 'jazz',
          'molly holly', 'ivory', 'linda mcmahon', 'dawn marie', 'nidia', 'gail kim', 'jacqueline', 'terri'}
