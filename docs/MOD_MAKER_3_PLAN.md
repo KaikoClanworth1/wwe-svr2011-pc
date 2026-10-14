@@ -127,6 +127,11 @@ py tools/<kind>_port.py convert --game <id> --src <...> --item <key> --out <dir>
 - Exit codes: 0 ok, 2 bad input, 3 conversion failed; anything else is a
   crash (the Mod Maker shows the stderr tail).
 - `in_2011` drives the wizard's "2011 already has this" column.
+- Items may carry `status`: `ok`, `crashes` (converts but crashes 2011 at load -
+  known from the full pass) or `special` (not an item of the kind, e.g. WWE '12+
+  arena files bg60 and up: backstage rooms, studio / photo stages), with a
+  `reason` for the last two. The wizard greys `crashes` and `special` items out.
+  (`arena_port.py` sets it: `KNOWN_CRASHES`, `mark_items`.)
 - Output is a normal mod or pack: the Mod Maker opens it on its page, where
   the user finishes it and saves.
 
