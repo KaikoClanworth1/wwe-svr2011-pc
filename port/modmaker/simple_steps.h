@@ -4,10 +4,12 @@
 // keeps its own project and draws its own cards; this file draws the frame around them, the same way everywhere.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "app.h"
+#include "disc_list.h"
 
 namespace mm {
 namespace simple {
@@ -40,6 +42,9 @@ void ProblemList(const std::vector<Problem>& problems, int& step, int finish);
 void SummaryRow(const Step* steps, int at, const std::string& text, int& step);
 // Which steps have an error (out: count entries).
 void ErrorSteps(const std::vector<Problem>& problems, int count, bool* out);
+// A game picker: a card for each My game discs game `supported` takes (Games() order), with the platform and whether
+// its disc is set; a game without one says so and opens My game discs when clicked. True when `key` changed.
+bool GamePicker(const char* id, std::string& key, const std::function<bool(const disc_list::Game&)>& supported);
 
 }  // namespace simple
 }  // namespace mm

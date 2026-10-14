@@ -398,6 +398,31 @@ void CheckAttire(const fs::path& dir, std::vector<Problem>& p) {
   if (at != "new" && !IsInt(at, 1, 4, &slot))
     p.push_back(Error("attire=" + at + ": needs 1-4 or new - the game skips the mod.", "Pick an attire slot (Attires page)."));
   const std::string model = Trim(m.Get("model"));
+  long entrance = 0;
+  if (!Exists(dir / "attire.pac") && model.empty() && IsInt(Trim(m.Get("entrance")), 1, 65535, &entrance)) {
+    // (no model: only an entrance for one of the superstar's own attires - Simple entrance porting)
+    if (at == "new") p.push_back(Error("attire=new with no attire.pac: an entrance alone needs one of the superstar's own attires (1-4).", "Pick the attire."));
+    if (slot && star >= 100 && !g_game.empty()) {
+      const auto own = StarAttiresOf(int(star));
+      if (std::find(own.begin(), own.end(), int(slot)) == own.end())
+        p.push_back(Warning("This superstar has no attire " + at + " of their own: the entrance is only used when a mod gives them one.", "Pick one of their attires."));
+    }
+    std::error_code ec;
+    std::vector<fs::path> dirs;  // (another entrance for the same attire: the first A-Z keeps it)
+    for (const auto& e : fs::directory_iterator(dir.parent_path(), ec))
+      if (e.is_directory(ec) && e.path() != dir && !Exists(e.path() / "disabled")) dirs.push_back(e.path());
+    std::sort(dirs.begin(), dirs.end());
+    for (const auto& d : dirs) {
+      const Manifest o = ReadManifest(d);
+      if (Trim(o.Get("superstar")) == std::to_string(star) && Trim(o.Get("attire")) == at && !Trim(o.Get("entrance")).empty() &&
+          !Exists(d / "attire.pac") && Trim(o.Get("model")).empty() && d < dir) {
+        p.push_back(Warning("\"" + PathStr(d.filename()) + "\" gives this attire an entrance too and comes first (A-Z): this one isn't used.",
+                            "Switch one of them off."));
+        break;
+      }
+    }
+    return;
+  }
   if (!Exists(dir / "attire.pac")) p.push_back(Error("No attire.pac: the launcher won't install it" + std::string(model.empty() || model == "attire.pac" ? "." : " (it needs that name, whatever model= says)."), "Name the model attire.pac."));
   else if (!PacIsEpk8WithModels(dir / "attire.pac", true)) p.push_back(Error("attire.pac isn't a character model pac (EPK8 with an attire model).", "Pick a character model pac (Attires page)."));
   else BudgetProblems((dir / "attire.pac").wstring(), "This attire", true, p);
@@ -415,7 +440,8 @@ void CheckAttire(const fs::path& dir, std::vector<Problem>& p) {
     std::sort(dirs.begin(), dirs.end());
     for (const auto& d : dirs) {
       const Manifest o = ReadManifest(d);
-      if (Trim(o.Get("superstar")) == std::to_string(star) && Trim(o.Get("attire")) == at) {
+      if (Trim(o.Get("superstar")) == std::to_string(star) && Trim(o.Get("attire")) == at &&
+          (Exists(d / "attire.pac") || !Trim(o.Get("model")).empty())) {  // (an entrance-only mod holds no attire)
         p.push_back(Warning("Attire " + at + " of this superstar is also asked for by \"" + PathStr(d.filename()) + "\": " +
                                 (d < dir ? "it comes first (A-Z) and keeps it" : "this one comes first (A-Z) and keeps it") + "; the launcher moves the newer to a free attire at Play.",
                             "Pick another attire for one of them."));

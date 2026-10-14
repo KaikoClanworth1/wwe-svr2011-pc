@@ -142,5 +142,26 @@ void ErrorSteps(const std::vector<Problem>& problems, int count, bool* out) {
     if (p.error && p.step >= 0 && p.step < count) out[p.step] = true;
 }
 
+bool GamePicker(const char* id, std::string& key, const std::function<bool(const disc_list::Game&)>& supported) {
+  ImGui::PushID(id);
+  const float w = CardWidth(), h = 70 * g_scale;
+  const int per_row = CardsPerRow(w);
+  bool changed = false;
+  int n = 0;
+  for (const auto& g : disc_list::Games()) {
+    if (!supported(g)) continue;
+    const bool have = !disc_list::PathFor(g.key).empty();
+    const std::string line = std::string(g.xbox ? "Xbox 360" : "PS2") + (have ? " - your disc is set" : " - no disc yet: click to add it");
+    if (n++ % per_row) ImGui::SameLine(0, 8 * g_scale);
+    if (Card(g.key, g.name, line.c_str(), key == g.key, w, h)) {
+      if (!have) GoTo(PageId::kDiscs);
+      else if (key != g.key) key = g.key, changed = true;
+    }
+  }
+  if (!n) ImGui::TextDisabled("No game here can be read yet.");
+  ImGui::PopID();
+  return changed;
+}
+
 }  // namespace simple
 }  // namespace mm
