@@ -1,6 +1,6 @@
 # WWE SmackDown vs. Raw 2011 PC Port: features
 
-Everything the port adds to the game, as of v2.0.2 (4 October 2026).
+Everything the port adds to the game, as of v2.1.0 (14 October 2026): the core features first, then what each release added.
 "New in 2.0" marks what this release adds; "Experimental" marks what is
 still being tested.
 
