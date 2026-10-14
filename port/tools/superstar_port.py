@@ -71,6 +71,7 @@ GAMES = [
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
     dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
+    dict(id='ps2_jbi', name='WWF SmackDown! Just Bring It', platform='ps2', disc_hints=['SLES_504.77', 'SLUS_202.69'], status='ready'),
     dict(id='ps2_sym', name='WWE SmackDown! Shut Your Mouth', platform='ps2', disc_hints=['SLES_512.83', 'SLUS_205.12'], status='ready'),
     dict(id='ps2_hctp', name='WWE SmackDown! Here Comes the Pain', platform='ps2', disc_hints=['SLES_520.36', 'SLUS_207.87'], status='ready'),
     dict(id='ps2_svr04', name='WWE SmackDown! vs. Raw (PS2)', platform='ps2', disc_hints=['SLES_527.81', 'SLUS_209.36'], status='ready'),
@@ -114,8 +115,8 @@ class Src:
         self.path = path
         self.folder = path if self.d.kind == 'folder' else None
         self.cache = cache
-        if not self.d.exists('pac'):
-            raise BadInput('--src has no pac folder: %s' % path)
+        if not self.d.exists('pac') and not any(n.lower().endswith('.pac') for n in self.d.listdir('')):
+            raise BadInput('--src has no pac folder: %s' % path)   # (JBI keeps its PACs in the disc root)
 
     @property
     def root(self):

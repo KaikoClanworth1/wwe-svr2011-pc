@@ -26,20 +26,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 GAMES = {   # game id -> name
-    'ps2_sym': 'WWE SmackDown! Shut Your Mouth', 'ps2_hctp': 'WWE SmackDown! Here Comes the Pain',
+    'ps2_jbi': 'WWF SmackDown! Just Bring It', 'ps2_sym': 'WWE SmackDown! Shut Your Mouth', 'ps2_hctp': 'WWE SmackDown! Here Comes the Pain',
     'ps2_svr04': 'WWE SmackDown! vs. Raw (PS2)', 'ps2_svr06': 'WWE SmackDown! vs. Raw 2006 (PS2)',
     'ps2_svr07': 'WWE SmackDown vs. Raw 2007 (PS2)', 'ps2_svr08': 'WWE SmackDown vs. Raw 2008 (PS2)',
     'ps2_svr09': 'WWE SmackDown vs. Raw 2009 (PS2)', 'ps2_svr10': 'WWE SmackDown vs. Raw 2010 (PS2)',
 }
-SERIALS = {'ps2_sym': ('SLES_512.83', 'SLUS_205.12'), 'ps2_hctp': ('SLES_520.36', 'SLUS_207.87'),
+SERIALS = {'ps2_jbi': ('SLES_504.77', 'SLUS_202.69'), 'ps2_sym': ('SLES_512.83', 'SLUS_205.12'), 'ps2_hctp': ('SLES_520.36', 'SLUS_207.87'),
            'ps2_svr04': ('SLES_527.81', 'SLUS_209.36'), 'ps2_svr06': ('SLES_536.76', 'SLUS_211.34'),
            'ps2_svr07': ('SLES_544.89', 'SLUS_214.27'), 'ps2_svr08': ('SLES_548.79',), 'ps2_svr09': ('SLES_552.51',),
            'ps2_svr10': ('SLES_555.45',)}
 # model character id (XX of model id XXYZ) -> CHAR record number: the hex digits read as decimal (+ offset), or
 # the id as a number (PS2 2009); PS2 2007-2010 records are the X360 games' (2010's numbered from 100)
+UNGROUPED = {'ps2_jbi'}   # (every model its own id, attire 0: a superstar's models share a name)
 NUMBERING = {'ps2_svr09': ('int', 0), 'ps2_svr10': ('dec', 100)}
 JUNK = re.compile(r'^(edit ?\d+|dlc ?\d+|0|dummy|motion test.*|moves? (set|man).*|.* bra \d+|average|speedy|wbm|green|red|'
-                  r'ojl|ktm|omp|ms|)$', re.I)   # (SYM's OJL / KTM / OMP / MS: no person)
+                  r'ojl|ktm|omp|ms|unknown \d+.*|)$', re.I)   # (SYM's OJL / KTM / OMP / MS: no person)
 # (no gender in the name records: the women of the rosters by name - 2011's own gender wins when it has her)
 WOMEN = {'lita', 'trish stratus', 'stacy keibler', 'torrie wilson', 'victoria', 'sable', 'stephanie mcmahon', 'jazz',
          'molly holly', 'ivory', 'linda mcmahon', 'dawn marie', 'nidia', 'gail kim', 'jacqueline', 'terri'}
@@ -64,7 +65,7 @@ class GamePS2:
         serial = (self.g.disc.info() or {}).get('serial')
         if serial and serial not in SERIALS[game]:
             raise ValueError('this disc (%s) is not %s' % (serial, GAMES[game]))
-        self.label = GAMES[game].replace('WWE SmackDown! ', '').replace('WWE SmackDown ', '')
+        self.label = GAMES[game].replace('WWE SmackDown! ', '').replace('WWE SmackDown ', '').replace('WWF SmackDown! ', '')
         self.chars = self.g.characters()   # {model char id: {attire: model id}}
         self.names = self._names()
         self.dat = {c: bytes(209) for c in self.roster()}   # (cmd_list reads a gender byte; see gender())
@@ -103,7 +104,20 @@ class GamePS2:
     record_number = number
 
     def roster(self):
-        return [c for c in sorted(self.chars) if self.number(c) in self.names]
+        out = [c for c in sorted(self.chars) if self.number(c) in self.names]
+        if self.game_id in UNGROUPED:   # (one model per id: each name once, its first model - same_name() has the rest)
+            seen, first = set(), []
+            for c in out:
+                if self.name(c).lower() not in seen:
+                    seen.add(self.name(c).lower())
+                    first.append(c)
+            out = first
+        return out
+
+    def same_name(self, c):
+        """the other models of this superstar in a game that keeps one model per id (JBI)"""
+        n = self.name(c).lower()
+        return [x for x in sorted(self.chars) if x != c and self.number(x) in self.names and self.name(x).lower() == n]
 
     def name(self, c):
         return self.names.get(self.number(c), '')
@@ -177,6 +191,9 @@ def build_ps2(cid, outdir, o, rep):
     SP.progress(15, 'model')
     ats = sorted(g.chars[cid])
     pick = [int(x) for x in o['attires'].split(',')] if o.get('attires') else ats[:4]
+    if g.game_id in UNGROUPED and g.same_name(cid):
+        drop('%d more %s model(s) of his (%s): one per mod for now' % (len(g.same_name(cid)), g.label,
+                                                                      ', '.join('%x' % x for x in g.same_name(cid))))
     if len(ats) > 4 and not o.get('attires'):
         drop('attires %s (a mod holds 4; --attires to choose)' % ', '.join(str(a) for a in ats[4:]))
     pw = os.path.join(work, 'ps2_char')
