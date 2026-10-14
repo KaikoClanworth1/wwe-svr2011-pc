@@ -1563,8 +1563,8 @@ REX_HOOK_RAW(sub_82227150) {
 // What the match camera frames: sub_82227690(camera) -> a sphere (centre
 // +16/+20/+24, radius +32) around every competitor. Backstage with more than
 // two people, it is centred on their average position instead (radius: the
-// farthest of them from it). Backstage, fighters at different heights (one up
-// on a cage top or a walkway, -Y up) are framed head to feet: the centre
+// farthest of them from it). In an HCTP room's row (hctp=), fighters at
+// different heights (one up on the cage top, -Y up) are framed head to feet: the centre
 // between the lowest feet and the highest head, the radius at least half that.
 REX_EXTERN(__imp__sub_82227690);
 REX_HOOK_RAW(sub_82227690) {
@@ -1594,8 +1594,12 @@ REX_HOOK_RAW(sub_82227690) {
   // (a wrestler stands about 19 tall)
   float top = ys[0], feet = ys[0];
   for (int i = 1; i < n; ++i) top = std::min(top, ys[i]), feet = std::max(feet, ys[i]);
+  // (an HCTP room's row only: 2011's own areas keep the game's framing)
+  const bool hctp_row = svr2011::g_active_row >= 0 &&
+                        size_t(svr2011::g_active_row) < svr2011::BackstageRows().size() &&
+                        svr2011::BackstageRows()[size_t(svr2011::g_active_row)].hctp > 0;
   const auto frame_heights = [&] {
-    if (feet - top <= 8.0f) return;
+    if (!hctp_row || feet - top <= 8.0f) return;
     const float head = top - 19.0f;
     WrF(base + sphere + 20, (head + feet) / 2);
     if (RdF(base + sphere + 32) < (feet - head) / 2 + 4.0f) WrF(base + sphere + 32, (feet - head) / 2 + 4.0f);
