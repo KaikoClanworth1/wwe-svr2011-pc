@@ -90,7 +90,15 @@ struct Seg {
   std::vector<CamKey> cam;
   std::vector<ZoomEvent> zoom;
 };
+// A ringside object the game puts out for the match (the steel steps): bgEtc.pac STG/WPON pack <model>, placed by
+// the ringside set's record (WPON 45010, key 1000: f32 position x3, f32 rotation x3 in degrees, s16 motion, u8
+// place, u8 model; the steps are model 32 at the +x corners).
+struct Static {
+  int prop = -1;
+  float r[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, t[3] = {0, 0, 0};
+};
 struct Loaded {
+  std::vector<Static> statics;
   int number = -1;
   std::string name, source, error;
   std::vector<Seg> segs;
@@ -338,6 +346,48 @@ void DecodeProp(const Bytes& bank, const uint8_t* d, size_t size, PropTrack& t) 
   }
 }
 
+// The steel steps (and only them: the announce tables, bell and belt of the set stay out) from the ringside set.
+void RingsideStatics(const std::wstring& game, std::vector<Static>& out) {
+  Bytes wpon;
+  const fs::path etc = fs::path(game) / L"pac" / L"bg" / L"bgEtc.pac";
+  std::vector<svrfmt::PachEntry> kids;
+  if (!ReadPacEntry(etc, "WPON", wpon, "STG ") || !svrfmt::PachRead(svrfmt::Unpack(wpon), kids)) {
+    Log("full preview: the ring steps (pac\\bg\\bgEtc.pac STG/WPON) didn't load");
+    return;
+  }
+  Bytes table, steps;
+  for (const auto& k : kids)
+    if (k.id == 45010) table = svrfmt::Unpack(k.data);
+    else if (k.id == 32) steps = svrfmt::Unpack(k.data);
+  if (table.empty() || steps.empty()) return;
+  std::string err;
+  const int prop = char_preview::AddProp(steps, &err);
+  if (prop < 0) return Log("full preview: the ring steps' model didn't load (" + err + ")");
+  // the chunk stream: "SubH" {s16 key, s16 records, s32 link}, "Data" {u32 chunk size, record}
+  int key = -1;
+  for (size_t p = 4; p + 8 <= table.size();) {
+    const uint8_t* c = &table[p];
+    if (!std::memcmp(c, "SubH", 4) && p + 12 <= table.size()) {
+      key = int16_t(Le16(c + 4)), p += 12;
+    } else if (!std::memcmp(c, "Data", 4)) {
+      const uint32_t size = Le32(c + 4);
+      if (size < 36 || p + size > table.size()) break;
+      if (key == 1000 && c[8 + 27] == 32) {
+        Static s;
+        s.prop = prop;
+        for (int a = 0; a < 3; ++a) s.t[a] = LeF(c + 8 + 4 * a);
+        const float yaw = LeF(c + 8 + 16) * 3.14159265f / 180.0f, cy = std::cos(yaw), sy = std::sin(yaw);
+        const float r[9] = {cy, 0, sy, 0, 1, 0, -sy, 0, cy};
+        std::memcpy(s.r, r, sizeof r);
+        out.push_back(s);
+      }
+      p += size;
+    } else {
+      break;
+    }
+  }
+}
+
 // The profile's entrance block of superstar `star` (chEtc.pac CHAR/PRO): music, movie numbers.
 void ProfileMedia(const std::wstring& game, int star, int& music, int& movie) {
   music = movie = -1;
@@ -442,6 +492,7 @@ std::unique_ptr<Loaded> LoadAll(const Request& req, const std::wstring& game) {
     L->error = "Entrance " + std::to_string(req.entrance) + " has no tracks for its entrant.";
     return L;
   }
+  RingsideStatics(game, L->statics);
   ProfileMedia(game, req.star, L->music, L->movie);
   L->arena = std::make_unique<svrfmt::Arena>();
   std::string aerr;
@@ -735,6 +786,9 @@ void Apply(std::unique_ptr<Loaded> L) {
   editor::SetViewHint(false);
   editor::SetViewExtra([](ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float* view, const float* proj) {
     if (!g_cur) return;
+    static const char_preview::PropBones none;
+    for (const Static& st : g_cur->statics)  // (the ring steps: the arena's space)
+      char_preview::RenderProp(rtv, dsv, w, h, view, proj, st.prop, st.r, st.t, none);
     const int si = std::clamp(g_seg_now, 0, int(g_cur->segs.size()) - 1);
     const Seg& s = g_cur->segs[size_t(si)];
     if (s.slot == 0 || !s.body) return;  // (segment 0 is the hidden intro: no entrant)
