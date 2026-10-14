@@ -489,14 +489,16 @@ class Builder:
                     # (the skin shader: the shine mask is the normal map's alpha - the normal png's own when it has
                     # one and nothing else is asked, else the colour png's alpha, else the brightness; flat = 255.
                     # The colour alpha is then only the sweat shine: stock-like 0.3)
+                    # (default without a normal alpha: the brightness, NOT the colour alpha - on a 2011 export that is
+                    # the sweat mask, which made white specks in game; "texture" asks for the colour alpha)
                     if mode == 'flat':
                         mask = Image.new('L', im.size, 255)
-                    elif mode == 'brightness' or not (has_alpha(im) or (nim is not None and has_alpha(nim))):
-                        mask = spec_alpha(im).split()[3]
-                    elif mode == '' and nim is not None and has_alpha(nim):
+                    elif mode == 'texture' and has_alpha(im):
+                        mask = im.split()[3]
+                    elif mode in ('', 'texture') and nim is not None and has_alpha(nim):
                         mask = nim.split()[3]
                     else:
-                        mask = im.split()[3] if has_alpha(im) else spec_alpha(im).split()[3]
+                        mask = spec_alpha(im).split()[3]
                     base = nim if nim is not None else Image.new('RGBA', im.size, (128, 128, 255, 255))
                     base = base.convert('RGBA').copy()
                     base.putalpha(mask.resize(base.size, Image.LANCZOS))
