@@ -632,7 +632,7 @@ def named_list(disc, game, src, items, cache_root=None, scan=False):
     """WWE '12 - 2K17 'list' items with the game's own arena names ('name', 'bg' keeps bgNN) and, once
     'scan' has run, 'thumb' (a PNG of the arena's match intro backdrop). Names are cached per disc."""
     import arena_names as AN
-    path = AN.cache_dir(cache_root or arena_cache_root(), game, src)
+    path = AN.cache_dir(os.path.abspath(cache_root or arena_cache_root()), game, src)
     cache = None if scan else AN.load_cache(path)
     if cache is None:
         progress(5, "reading the game's arena names")
