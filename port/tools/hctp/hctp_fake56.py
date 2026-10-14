@@ -41,7 +41,8 @@ def room_table(stage):
     import os
     import re
     fl = {}
-    raw = open(os.path.join(stage, '50001.bin'), 'rb').read().decode('shift_jis', 'replace')
+    name = '50001.bin' if os.path.exists(os.path.join(stage, '50001.bin')) else '50001.txt'
+    raw = open(os.path.join(stage, name), 'rb').read().decode('shift_jis', 'replace')
     for line in raw.splitlines():
         line = line.split(';')[0].split('//')[0].strip()
         m = re.match(r'(\d+)\s*(.*)', line)
@@ -176,6 +177,45 @@ def dds(img, alpha):
     return bytes(out)
 
 
+class TexBank(dict):
+    """A room's texture bank; a name the bank lacks (room 32's doa_nob2: HCTP leaves it unset)
+    gets its nearest sibling (same name without the trailing digits), else a grey texel."""
+
+    def __missing__(self, name):
+        base = name.rstrip('0123456789')
+        for k in sorted(self):
+            if k.startswith(base):
+                print(f'texture {name}: not in the bank, using {k}')
+                self[name] = self[k]
+                return self[k]
+        print(f'texture {name}: not in the bank, grey')
+        self[name] = np.full((4, 4, 4), 128, np.uint8)
+        return self[name]
+
+
+def copy_of(M, kind):
+    """A room model's second copy: 'r' mirrored in the YZ plane (x -> -x, each strip's winding
+    turned by a leading repeat of its first vertex), 'y' turned 180 about Y."""
+    import copy
+    C = copy.copy(M)
+    C.meshes = []
+    flip = np.array([-1.0, 1.0, 1.0]) if kind == 'r' else np.array([-1.0, 1.0, -1.0])
+    for m in M.meshes:
+        n = dict(m, pos=m['pos'][:, :3] * flip if m['pos'].shape[1] == 3 else
+                 np.concatenate([m['pos'][:, :3] * flip, m['pos'][:, 3:]], 1),
+                 nrm=m['nrm'][:, :3] * flip if m['nrm'].shape[1] == 3 else
+                 np.concatenate([m['nrm'][:, :3] * flip, m['nrm'][:, 3:]], 1))
+        if kind == 'r':
+            n['subs'] = [dict(s, strips=[[st[0]] + list(st) for st in s['strips'] if len(st)]) for s in m['subs']]
+        C.meshes.append(n)
+    return C
+
+
+def texbank(stage):
+    return TexBank((n, img) for n, img in yobj.texbank(open(stage + '/00200.bin', 'rb').read()).items()
+                   if img is not None)
+
+
 def split_alpha(M, kinds):
     """-> (opaque model, alpha-only model) as yobj models sharing data."""
     import copy
@@ -195,7 +235,7 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
     _, _, _, _, e78 = s8.stage(p78)
     d78 = {i: s8.unpack(b) for i, b in e78}
     tmpl = hctp2jboy.template(d78)
-    tb = yobj.texbank(open(stage + '/00200.bin', 'rb').read())
+    tb = texbank(stage)
     kinds = {n: alpha_kind(img) for n, img in tb.items() if img is not None}
     models = {}
     flags = {}
@@ -207,18 +247,23 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
         parts = []
         for hid in hids:
             M = yobj.read(open(f'{stage}/{hid:05d}.yobj', 'rb').read())
-            if 's' in fl.split() or 'a' in fl.split():
-                op, al = M, None
-            else:
-                op, al = split_alpha(M, kinds)
-            J = hctp2jboy.convert(op, tmpl, tone=tone) if op.meshes else None
-            if J:
-                parts.append(J)
-            if al is not None and al.meshes:
-                alpha_parts.append(al)
+            # HCTP draws an 'r' model a second time mirrored in the YZ plane and a 'y' one turned
+            # 180 about Y (rooms 35 / 36: one half of the fountain square); 2011 has no such
+            # flags, so the copies are baked in
+            for Mi in [M] + [copy_of(M, k) for k in ('r', 'y') if k in fl.split()]:
+                if 's' in fl.split() or 'a' in fl.split():
+                    op, al = Mi, None
+                else:
+                    op, al = split_alpha(Mi, kinds)
+                J = hctp2jboy.convert(op, tmpl, tone=tone) if op.meshes else None
+                if J:
+                    parts.append(J)
+                if al is not None and al.meshes:
+                    alpha_parts.append(al)
         if parts:
             models[fid] = merge_jboy(parts, parts[0].name) if len(parts) > 1 else parts[0]
-            flags[fid] = fl
+            # (only the letters 2011 knows: r / y are baked, l(..) / m(..) name HCTP motions)
+            flags[fid] = ' '.join(k for k in fl.split() if k in ('n', 's', 'a', 'k', 'z', 'w', 'p')) or 'n'
     if alpha_parts:
         import copy
         A = copy.copy(alpha_parts[0])
@@ -245,7 +290,7 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
         models[ALPHA_ID] = merged
         flags[ALPHA_ID] = 'n s'
     used = sorted({t for m in models.values() for t in m.textures})
-    bundle = at.tex_bundle_write([(t + '.dds', dds(tb[t], kinds[t])) for t in used])
+    bundle = at.tex_bundle_write([(t + '.dds', dds(tb[t], kinds.get(t) or alpha_kind(tb[t]))) for t in used])
     hmd = open(stage + '/00999.hmd', 'rb').read()
     if with_props:
         import hctp_props

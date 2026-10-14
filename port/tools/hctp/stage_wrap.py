@@ -53,18 +53,20 @@ def index_build(recs):
     pairs, lst = [], []
     prev = None
     for c in cells:
+        # (a count ending in 0xFF: the cell's last triangle twice; a start ending in 0xFF: an
+        # entry no cell counts in front of it)
+        if (len(c) & 0xFF) == 0xFF:
+            c = c + [c[-1]]
         while (len(lst) & 0xFF) == 0xFF:
-            if prev is not None and pairs and lst:
-                lst.append(lst[-1])
-                pairs[-1] += 1
-            else:
-                lst.append(lst[-1] if lst else 0)
-        if any((v & 0xFF) == 0xFF for v in (len(lst), len(c))):
-            pass
+            lst.append(lst[-1] if lst else 0)
         pairs += [len(lst), len(c)]
         lst += c
         prev = c
     data = struct.pack(f'<{len(pairs)}H', *pairs) + struct.pack(f'<{len(lst)}H', *lst)
+    # (a big room's index barely compresses; the game reads only the cells' ranges, so a zero
+    # tail after them lets the entry decompress in place - it needs 64 bytes of slack)
+    if len(data) > 2048:
+        data += bytes(1024)
     used = set(data)
     if 0xFF in used:
         print('index: byte 0xFF still used')
