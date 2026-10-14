@@ -33,7 +33,9 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -67,8 +69,22 @@ struct ZoomEvent {
   int frame = 0;
   float target = 1, rate = 0;
 };
+// A prop's state at a frame of its track: its own bones, its offset, shown, how it's held (op 180-191's value).
+struct PropKey {
+  int frame = 0;
+  char_preview::PropBones bones;
+  float pos[3] = {0, 0, 0};
+  bool shown = true;
+  int state = 1;
+};
+struct PropTrack {
+  int prop = -1;  // char_preview's index
+  bool belt = false;  // (a title belt: not drawn, see the view's callback)
+  std::vector<PropKey> keys;  // one per keyed frame, in order (each holds the state reached)
+};
 struct Seg {
   int slot = 0, keys = 0;
+  std::vector<PropTrack> props;
   std::shared_ptr<char_preview::Clip> body;
   std::vector<float> lift;  // per key: the y added to put the entrant on the practice arena's ground (Ground)
   std::vector<CamKey> cam;
@@ -253,6 +269,75 @@ void DecodeCamera(const Bytes& bank, const uint8_t* d, size_t size, Seg& s) {
   }
 }
 
+// A prop's track (evt object of type 00000100): per record the events - 80 / 81 `50 04` / `51 04` hide /
+// show, 180-191 how it's held (182 = 1 follows its track ..., 183 = 4 worn on the head, 180 = 2) - and an
+// object pose: sub-records 0x75 [count][s16 root x3][mask u24][s16 x3 per masked bone], 0x7e [count][s16 x3]
+// (root), 0x7f [count][f32 x3], 0x7b [ref][count][s16 x3] (skipped), op < 21 [count][s16 x3] (one bone).
+// Angles 2pi / 65536, positions 0.01.
+void DecodeProp(const Bytes& bank, const uint8_t* d, size_t size, PropTrack& t) {
+  constexpr float kAng = 6.2831853f / 65536.0f;
+  PropKey cur;
+  int frame = 0;
+  for (size_t p = 0; p < size;) {
+    const uint8_t c = d[p];
+    if (c < 0x60) { frame += c, ++p; continue; }
+    size_t sz;
+    if (c == 0x60) {
+      if (p + 3 > size) break;
+      sz = size_t(d[p + 1]) | size_t(d[p + 2]) << 8, p += 3;
+    } else {
+      sz = c - 0x60u, ++p;
+    }
+    if (p + sz > size) break;
+    const uint8_t* r = d + p;
+    p += sz;
+    size_t q = 0;
+    if (sz && (r[0] & 0x80)) {
+      q = 1 + (r[0] & 0x7Fu);
+      for (size_t e = 1; e < q && e < sz;) {
+        const uint8_t op = r[e];
+        const size_t n = bank[0x10 + op];
+        if (!n || e + n > q) break;
+        if ((op == 80 || op == 81) && n >= 2) cur.shown = op == 81;
+        if (op >= 180 && op <= 191) cur.state = op == 180 ? 2 : op == 181 ? 3 : op == 182 ? 1 : op == 183 ? 4 : op;
+        e += n;
+      }
+    }
+    cur.frame = frame;
+    auto s16 = [](const uint8_t* b) { return float(int16_t(uint16_t(b[0] | b[1] << 8))); };
+    auto bone = [&](int k, const uint8_t* b) {
+      if (k < 0 || k >= 32) return;
+      if (int(cur.bones.size()) <= k) cur.bones.resize(size_t(k) + 1);
+      cur.bones[size_t(k)].on = true;
+      for (int a = 0; a < 3; ++a) cur.bones[size_t(k)].e[a] = s16(b + 2 * a) * kAng;
+    };
+    for (size_t s = q; s < sz;) {
+      const uint8_t op = r[s];
+      if (op == 0x75 && s + 11 <= sz) {
+        for (int a = 0; a < 3; ++a) cur.pos[a] = s16(r + s + 2 + 2 * a) * 0.01f;
+        const uint32_t mask = r[s + 8] | r[s + 9] << 8 | r[s + 10] << 16;
+        s += 11;
+        for (int k = 0; k < 24 && s + 6 <= sz; ++k)
+          if (mask >> k & 1) bone(k, r + s), s += 6;
+      } else if (op == 0x7e && s + 8 <= sz) {
+        for (int a = 0; a < 3; ++a) cur.pos[a] = s16(r + s + 2 + 2 * a) * 0.01f;
+        s += 8;
+      } else if (op == 0x7f && s + 14 <= sz) {
+        for (int a = 0; a < 3; ++a) cur.pos[a] = LeF(r + s + 2 + 4 * a) * 0.01f;
+        s += 14;
+      } else if (op == 0x7b && s + 9 <= sz) {
+        s += 9;
+      } else if (op < 21 && s + 8 <= sz) {
+        bone(op, r + s + 2), s += 8;
+      } else {
+        break;  // (an op not known here: the rest of the record is skipped)
+      }
+    }
+    t.keys.push_back(cur);
+    ++frame;
+  }
+}
+
 // The profile's entrance block of superstar `star` (chEtc.pac CHAR/PRO): music, movie numbers.
 void ProfileMedia(const std::wstring& game, int star, int& music, int& movie) {
   music = movie = -1;
@@ -296,9 +381,47 @@ std::unique_ptr<Loaded> LoadAll(const Request& req, const std::wstring& game) {
     if (cam < 0 && t0 == 0x00010000 && t1 == 0) cam = int(i);
   }
   if (ent < 0) ent = 0;
+  // the props (type 00000100): their evtobj.pac SOBJ models, one char_preview prop per model
+  struct PropObj {
+    int obj, prop;
+    bool belt;
+  };
+  std::vector<PropObj> props;
+  {
+    std::map<uint32_t, int> loaded;
+    const fs::path evtobj = fs::path(game) / L"pac" / L"evt" / L"evtobj.pac";
+    for (uint32_t i = 0; i < nobj; ++i) {
+      const size_t q = table + 32 * size_t(i);
+      if (q + 32 > evp.size() || Be32(&evp[q + 8]) != 0x00000100 || Be32(&evp[q + 12]) != 0) continue;
+      const uint32_t model = Be32(&evp[q + 4]);
+      auto it = loaded.find(model);
+      if (it == loaded.end()) {
+        Bytes sobj;
+        std::string err;
+        int idx = -1;
+        if (ReadPacEntry(evtobj, std::to_string(model).c_str(), sobj, "SOBJ")) idx = char_preview::AddProp(sobj, &err);
+        if (idx < 0) Log("full preview: prop " + std::to_string(model) + " not shown (" + (err.empty() ? "not in evtobj.pac" : err) + ")");
+        it = loaded.emplace(model, idx).first;
+      }
+      // (a title belt - evtobj 2002-2030, 2050-2052, 23xx, 25xx, 3xxx-5xxx: the champion's, from the belt models)
+      const bool belt = (model >= 2002 && model <= 2030) || (model >= 2050 && model <= 2052) || (model >= 2300 && model <= 2600) ||
+                        (model >= 3000 && model < 6000);
+      if (it->second >= 0) props.push_back({int(i), it->second, belt});
+    }
+  }
   for (int k = 0; k < 5; ++k) {
     Seg s;
     s.slot = kSlots[k];
+    for (const PropObj& po : props) {
+      const uint8_t* d = nullptr;
+      size_t size = 0;
+      int frames = 0;
+      if (!Track(evt, kIdShift + po.obj, s.slot, 0, &d, &size, &frames)) continue;
+      PropTrack t;
+      t.prop = po.prop, t.belt = po.belt;
+      DecodeProp(evt, d, size, t);
+      if (!t.keys.empty()) s.props.push_back(std::move(t));
+    }
     const uint8_t* d = nullptr;
     size_t size = 0;
     int frames = 0;
@@ -618,6 +741,25 @@ void Apply(std::unique_ptr<Loaded> L) {
     const float last = float(std::max(0, char_preview::ClipKeys(*s.body) - 1)), key = std::min(g_local_key, last);
     const float off[3] = {0, kSceneY + LiftAt(s, key), 0};  // (the camera gets the same)
     char_preview::RenderInto(rtv, dsv, w, h, view, proj, s.body.get(), key, off);
+    // the props at this key: worn on the head (state 4), held (state 1: on the right hand), else keyed in the
+    // entrance's frame. Not the title belt: the game places a champion's belt itself (its track keeps one
+    // pose, two 0x7b refs, while the belt goes from hand to shoulder in the game) - not known yet
+    for (const PropTrack& t : s.props) {
+      if (t.belt) continue;
+      const PropKey* k = &t.keys.front();
+      for (const PropKey& x : t.keys)
+        if (float(x.frame) <= key) k = &x;
+      if (!k->shown) continue;
+      float r[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, p[3] = {k->pos[0], k->pos[1], k->pos[2]};
+      const char* bone = k->state == 4 ? "atama" : k->state == 1 ? "r_te" : nullptr;
+      if (bone) {
+        float br[9], bt[3];
+        if (!char_preview::EntrantBone(bone, br, bt)) continue;
+        for (int a = 0; a < 3; ++a) p[a] = bt[a] + br[a * 3] * k->pos[0] + br[a * 3 + 1] * k->pos[1] + br[a * 3 + 2] * k->pos[2];
+        std::memcpy(r, br, sizeof r);
+      }
+      char_preview::RenderProp(rtv, dsv, w, h, view, proj, t.prop, r, p, k->bones, off);
+    }
   });
   std::wstring movie = g_req.movie;
   if (movie.empty() && g_cur->movie >= 0 && g_cur->movie < 700) {
@@ -652,6 +794,7 @@ void Open(const Request& r) {
   g_cur.reset();
   g_music_note.clear();
   audio_out::SetMuted(g_behind);
+  char_preview::ClearProps();
   // the superstar as it enters: the attire (its entrance gear when it has some)
   g_saved_attire = char_preview::Attire(), g_saved_gear = char_preview::Gear();
   if (!r.model.empty()) char_preview::SetModel(r.model, g_game);
@@ -692,6 +835,7 @@ void Close() {
   }
   char_preview::SetGear(g_saved_gear);
   char_preview::SetAttire(g_saved_attire);
+  char_preview::ClearProps();
 }
 
 void TestSong(const std::wstring& file) { g_test_song = file; }
@@ -814,6 +958,7 @@ void Draw() {
       if (ImGui::Checkbox("Theme music", &g_music_on)) SetPlaying(g_playing);
       ImGui::SameLine();
       ImGui::Checkbox("Titantron", &g_titantron_on);
+
       const std::string theme = audio_out::State() == 1 ? " - theme " + Clock(float(audio_out::Length() * 30)) :
                                 audio_out::State() == -1 ? " - no theme: " + audio_out::Error() :
                                 g_music_note.empty() ? std::string() : " - " + g_music_note;

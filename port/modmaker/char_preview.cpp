@@ -168,6 +168,8 @@ std::atomic<int> g_attire{1};  // the model's attire shown (1-4)
 std::atomic<bool> g_gear{false};       // entrance gear shown (kind 4) when the attire has it
 std::atomic<bool> g_gear_have{false};  // the shown attire has entrance gear
 
+bool LoadEmd(const Bytes& emd, Character& ch, std::string& err);
+
 bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire = 1, bool want_gear = false) {
   if (pac.size() < 0x4000 || std::memcmp(pac.data(), "EPK8", 4)) {
     err = "not a character model pac (EPK8)";
@@ -202,6 +204,11 @@ bool LoadCharacter(const Bytes& pac, Character& ch, std::string& err, int attire
     g_gear_have = !gear.empty();
     if (!gear.empty() && g_gear) emd = std::move(gear);  // (the entrance model instead)
   }
+  return LoadEmd(emd, ch, err);
+}
+
+// A model's EMD entry (or a prop's evtobj SOBJ entry: the same PACH of JBOYs and texture bundles).
+bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
   std::vector<PachEntry> kids;
   if (!PachRead(Unpack(emd), kids)) {
     err = "the model is not a PACH";
@@ -1713,12 +1720,81 @@ std::vector<TraceKey> ClipTrace(const Clip& clip) {
   return out;
 }
 
+void DrawPosed(Slot& sl, const std::vector<Xf>& pose, ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w,
+               int h, const float view[16], const float proj[16], const float offset[3]);
+
 void RenderInto(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float view[16],
                 const float proj[16], const Clip* clip, float key, const float offset[3]) {
   Slot& sl = g_slots[0];
   if (!sl.ch || !g_vs || !clip || sl.gpu.empty()) return;
   sl.world = Pose(*sl.ch, clip->m, key);
-  Skin(sl, sl.world);  // (written y up: a half turn about x - undone in the matrix)
+  DrawPosed(sl, sl.world, rtv, dsv, w, h, view, proj, offset);
+}
+
+// ---- props (the Full preview: an entrance's worn / held objects, evtobj.pac SOBJ models)
+std::vector<std::unique_ptr<Slot>> g_props;
+
+int AddProp(const std::vector<uint8_t>& sobj, std::string* err) {
+  auto ch = std::make_shared<Character>();
+  std::string e;
+  if (!LoadEmd(sobj, *ch, e)) {
+    if (err) *err = e;
+    return -1;
+  }
+  std::lock_guard lock(g_mutex);
+  g_props.push_back(std::make_unique<Slot>());
+  g_props.back()->pending = std::move(ch);
+  return int(g_props.size()) - 1;
+}
+
+void ClearProps() {
+  std::lock_guard lock(g_mutex);
+  for (auto& p : g_props) FreeCharacter(*p);
+  g_props.clear();
+}
+
+bool EntrantBone(const char* name, float r[9], float t[3]) {
+  const Slot& sl = g_slots[0];
+  if (!sl.ch || sl.world.size() != sl.ch->bones.size()) return false;
+  for (size_t i = 0; i < sl.world.size(); ++i)
+    if (sl.ch->bones[i].name == name) {
+      for (int a = 0; a < 3; ++a)
+        for (int b = 0; b < 3; ++b) r[a * 3 + b] = sl.world[i].r[a][b];
+      t[0] = sl.world[i].t.x, t[1] = sl.world[i].t.y, t[2] = sl.world[i].t.z;
+      return true;
+    }
+  return false;
+}
+
+void RenderProp(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float view[16],
+                const float proj[16], int prop, const float place_r[9], const float place_t[3], const PropBones& bones,
+                const float offset[3]) {
+  if (prop < 0 || prop >= int(g_props.size()) || !g_vs) return;
+  Slot& sl = *g_props[size_t(prop)];
+  if (sl.pending) Upload(sl, std::move(sl.pending)), sl.pending.reset();
+  if (!sl.ch || sl.gpu.empty()) return;
+  // its bones from their rests, the keyed ones turned (bone k = the key's op k), bone 0 placed by place_r / place_t
+  const size_t nb = sl.ch->bones.size();
+  std::vector<Xf> local(nb), world(nb);
+  for (size_t i = 0; i < nb; ++i) {
+    Euler(sl.ch->bones[i].r, local[i].r);
+    local[i].t = {sl.ch->bones[i].t[0], sl.ch->bones[i].t[1], sl.ch->bones[i].t[2]};
+    if (i < bones.size() && bones[i].on) Euler(bones[i].e, local[i].r);
+  }
+  Xf place;
+  for (int a = 0; a < 3; ++a)
+    for (int b = 0; b < 3; ++b) place.r[a][b] = place_r[a * 3 + b];
+  place.t = {place_t[0], place_t[1], place_t[2]};
+  for (size_t i = 0; i < nb; ++i) {
+    const int p = sl.ch->bones[i].parent;
+    world[i] = p >= 0 && size_t(p) < i ? Mul(world[size_t(p)], local[i]) : Mul(place, local[i]);
+  }
+  DrawPosed(sl, world, rtv, dsv, w, h, view, proj, offset);
+}
+
+void DrawPosed(Slot& sl, const std::vector<Xf>& pose, ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w,
+               int h, const float view[16], const float proj[16], const float offset[3]) {
+  Skin(sl, pose);  // (written y up: a half turn about x - undone in the matrix)
   // the skinned (y up) space -> game space (y, z negated), moved by `offset`, then the view
   float fv[16], viewproj[16];
   std::memcpy(fv, view, sizeof fv);

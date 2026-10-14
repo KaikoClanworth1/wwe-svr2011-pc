@@ -87,4 +87,21 @@ std::vector<TraceKey> ClipTrace(const Clip& clip);
 void RenderInto(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float view[16],
                 const float proj[16], const Clip* clip, float key, const float offset[3] = nullptr);
 
+// Props (the Full preview): an entrance's evtobj.pac SOBJ models, drawn with the entrant. AddProp parses one (any
+// thread; uploaded when first drawn) -> its index, -1 on error; ClearProps frees them all.
+int AddProp(const std::vector<uint8_t>& sobj, std::string* err = nullptr);
+void ClearProps();
+// The entrant's bone as posed by the last RenderInto (game coordinates: rotation row-major, translation).
+bool EntrantBone(const char* name, float r[9], float t[3]);
+// A prop's own bones turned by its track (bone k: Euler angles, R = Rz Ry Rx; off = its rest).
+struct PropBone {
+  bool on = false;
+  float e[3] = {0, 0, 0};
+};
+using PropBones = std::vector<PropBone>;
+// Draws prop `prop` with its bone 0 placed at place_r / place_t (game coordinates), then moved by offset.
+void RenderProp(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float view[16],
+                const float proj[16], int prop, const float place_r[9], const float place_t[3], const PropBones& bones,
+                const float offset[3] = nullptr);
+
 }  // namespace char_preview
