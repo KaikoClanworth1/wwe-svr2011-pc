@@ -1319,6 +1319,10 @@ void ViewFooter() {
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip(has ? "The blood a superstar gets in a match, on the face and body." : "This model has no blood layers.");
+  ImGui::SameLine();
+  bool ring = char_preview::Ring();
+  if (ImGui::Checkbox("Ring", &ring)) char_preview::SetRing(ring, Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg29.pac").wstring()));
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("The practice arena's ring round the superstar (posts, ropes, turnbuckles, aprons), its canvas under their feet.");
   if (char_preview::HasGear() || char_preview::Gear()) {
     ImGui::SameLine();
     ImGui::BeginDisabled(!char_preview::HasGear());
@@ -2211,6 +2215,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::wstring make_bink_in, make_bink_out, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   std::wstring ui_script;  // --ui-script <txt>: ImGui input played in, no real input (see UiScript)
+  bool ring_view = false;
   double shot_after = 6;
   std::vector<std::pair<double, std::wstring>> page_at;  // --page-at <page>@<s>[,...]: page switches at those times (tests)
   int star_id = 0, star_call = -1;
@@ -2485,6 +2490,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
     else if (!wcscmp(argv[i], L"--blood")) char_preview::SetBlood(true);
     else if (!wcscmp(argv[i], L"--gear")) char_preview::SetGear(true);  // entrance gear shown in the 3D views
+    else if (!wcscmp(argv[i], L"--ring")) ring_view = true;  // the basic ring in the 3D views (once the game folder is known)
     else if (!wcscmp(argv[i], L"--star-gear-fbx") && more) star_page::TestGearFbx(Utf8(argv[++i]));  // <attire>:<fbx>: fit the FBX gear, log, quit
     else if (!wcscmp(argv[i], L"--star-gear-from") && more) star_page::TestGearFrom(Utf8(argv[++i]));  // <attire>:<donor id>: fit the donor's entrance gear, log, quit
     else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
@@ -2577,6 +2583,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
   // the test aids
   star_page::TestStart(star_id, star_model, star_name, star_picture, star_save);
+  if (ring_view) char_preview::SetRing(true, Utf8((fs::path(g_game) / L"pac" / L"bg" / L"bg29.pac").wstring()));
   if (star_call >= 0 || !star_song.empty() || !star_movie.empty() || !star_voice.empty())
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
   if (star_height > 0) star_page::TestHeight(star_height);

@@ -90,6 +90,17 @@ void RenderInto(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w,
 // Props (the Full preview): an entrance's evtobj.pac SOBJ models, drawn with the entrant. AddProp parses one (any
 // thread; uploaded when first drawn) -> its index, -1 on error; ClearProps frees them all.
 int AddProp(const std::vector<uint8_t>& sobj, std::string* err = nullptr);
+// The basic ring (off by default): the practice arena's ring kit (`arena_pac`: the game's pac\\bg\\bg29.pac,
+// UTF-8) round the model, its canvas where the model stands; read the first time it's turned on.
+void SetRing(bool on, const std::string& arena_pac);
+bool Ring();
+// The steel steps the game puts out at the ring (pac\\bg\\bgEtc.pac STG/WPON: pack 32 the model, placed by the
+// ringside set 45010 key 1000 - f32 position x3, f32 rotation x3 in degrees, s16 motion, u8 place, u8 model): the
+// model (an SOBJ for AddProp) and each place, row-major rotation + translation in game space. `bg_etc` UTF-8.
+struct StepPlace {
+  float r[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, t[3] = {0, 0, 0};
+};
+bool RingsideSteps(const std::string& bg_etc, std::vector<uint8_t>& model, std::vector<StepPlace>& places);
 void ClearProps();
 // The entrant's bone as posed by the last RenderInto (game coordinates: rotation row-major, translation).
 bool EntrantBone(const char* name, float r[9], float t[3]);
