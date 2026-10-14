@@ -1,4 +1,4 @@
-﻿// The Arena Editor (Mod Maker, arenas branch). See editor.h.
+// The Arena Editor (Mod Maker, arenas branch). See editor.h.
 //
 // Game space: 1 unit = 10 cm, y points down (floor ~0, ring mat -12). The
 // view keeps game space and looks with "up" = -y. Objects are the arena's
@@ -1172,12 +1172,16 @@ void RenderScene() {
         break;
       case Role::kApron: {
         if (!g_show_ring) break;
-        const bool second = g_arena->models[o.model].id == 974;
+        // The game makes four panels, 974 / 973 / 974 / 973 round the ring (the ring object's +152..+164), so
+        // bs_ar_epron2 (974) is on the two z sides - the ramp's, with the arena's second picture (Superstars:
+        // WWE.COM) - and bs_ar_epron (973) on the two x sides. A panel's front (its triangles' winding; the
+        // normals say +z, for the light) faces -z at z = 0: each goes out along its front, so the picture
+        // reads from outside the ring.
+        const bool z_sides = g_arena->models[o.model].id == 974;
         for (int side = 0; side < 2; ++side) {
-          const float yaw = (second ? kPi / 2 : 0) + side * kPi;
+          const float yaw = (z_sides ? 0 : kPi / 2) + side * kPi;
           const float c = std::cos(yaw), s = std::sin(yaw);
-          // the panel faces +z at z = 0: move it out along its facing
-          SetCb(Place({kApronOut * s, 0, kApronOut * c}, yaw), light);
+          SetCb(Place({-kApronOut * s, 0, -kApronOut * c}, yaw), light);
           for (int k : o.meshes) DrawMesh(o.model, k);
         }
         break;
@@ -1965,6 +1969,7 @@ void ViewPreset(int which) {
     case 0: g_target = {0, -12, 0}, g_yaw = 0.0f, g_pitch = 0.32f, g_dist = 190; break;   // hard camera
     case 1: g_target = {0, -12, 0}, g_yaw = 0.0f, g_pitch = 1.5f, g_dist = 420; break;    // top
     case 2: g_target = {0, -12, 0}, g_yaw = kPi, g_pitch = 0.25f, g_dist = 260; break;    // from the stage
+    case 3: g_target = {0, -12, 0}, g_yaw = kPi / 2, g_pitch = 0.25f, g_dist = 190; break;  // from the side (test aid --editor-view 3)
   }
 }
 
