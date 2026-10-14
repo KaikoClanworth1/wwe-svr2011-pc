@@ -2490,4 +2490,112 @@ bool Budget(BudgetInfo& out) {
   return true;
 }
 
+// ---- for the Simple arena maker (editor.h)
+
+std::vector<std::string> TextureNames() {
+  std::vector<std::string> out;
+  if (!g_arena) return out;
+  for (const auto& b : g_arena->bundles)
+    for (const auto& t : b.textures) out.push_back(t.name);
+  return out;
+}
+
+std::vector<std::string> ModelTextures(uint32_t lo, uint32_t hi) {
+  std::vector<std::string> out;
+  if (!g_arena) return out;
+  for (const auto& am : g_arena->models)
+    if (am.id >= lo && am.id <= hi)
+      for (const auto& s : am.model.meshes) {
+        const int slot = DiffuseSlot(s);
+        if (slot >= 0 && slot < int(am.model.textures.size()) &&
+            std::find(out.begin(), out.end(), am.model.textures[size_t(slot)]) == out.end())
+          out.push_back(am.model.textures[size_t(slot)]);
+      }
+  return out;
+}
+
+bool TextureImage(const std::string& name, Image& out, int* w, int* h) {
+  const BundleTexture* t = g_arena ? g_arena->FindTexture(name) : nullptr;
+  if (!t) return false;
+  DdsInfo info;
+  if (!DdsInfoOf(t->data, info)) return false;
+  if (w) *w = info.w;
+  if (h) *h = info.h;
+  return DdsDecode(t->data, out);
+}
+
+bool ReplaceTexture(const std::string& name, const Image& img) {
+  if (!g_arena || img.rgba.empty()) return false;
+  for (auto& b : g_arena->bundles)
+    for (auto& t : b.textures) {
+      if (t.name != name) continue;
+      DdsInfo info;
+      if (!DdsInfoOf(t.data, info)) return false;
+      const DxtFormat fmt = info.format == DxtFormat::kArgb ? DxtFormat::kDxt5 : info.format;
+      t.data = DdsEncode(Resize(img, info.w, info.h), fmt, info.mips > 1);
+      b.changed = true;
+      ForgetTextures();
+      Edited();
+      return true;
+    }
+  return false;
+}
+
+void DrawViewport(float w, float h) {
+  if (!g_arena) {
+    ImGui::TextDisabled("No arena yet.");
+    return;
+  }
+  const int iw = std::max(16, int(w)), ih = std::max(16, int(h));
+  UpdateBudget();  // (the size, for the problems list: measured after edits, as the editor's panel does)
+  ResizeTarget(iw, ih);
+  g_vp_min = ImGui::GetCursorScreenPos();
+  g_vp_size = ImVec2(float(iw), float(ih));
+  RenderScene();
+  ImGui::InvisibleButton("simple_vp", g_vp_size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+  const bool hovered = ImGui::IsItemHovered();
+  ImGui::GetWindowDrawList()->AddImage(ImTextureID(reinterpret_cast<uintptr_t>(g_rt_srv)), g_vp_min, ImVec2(g_vp_min.x + iw, g_vp_min.y + ih));
+  if (hovered) {  // (a look: turn, move and zoom the camera - nothing here selects or edits)
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.MouseWheel != 0) g_dist = std::clamp(g_dist * std::pow(0.88f, io.MouseWheel), 10.0f, 2000.0f);
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Right) || ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+      const ImVec2 d = io.MouseDelta;
+      g_yaw -= ScreenX() * d.x * 0.006f;
+      g_pitch = std::clamp(g_pitch + d.y * 0.006f, -0.2f, 1.55f);
+    }
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+      const ImVec2 d = io.MouseDelta;
+      const V3 fwd = Norm(g_target - Eye()), right = Norm(Cross({0, -1, 0}, fwd)), up = Cross(fwd, right);
+      g_target = g_target - right * (ScreenX() * d.x * g_dist * 0.0015f) + up * (d.y * g_dist * 0.0015f);
+    }
+  }
+  ImGui::GetWindowDrawList()->AddText(ImVec2(g_vp_min.x + 8, g_vp_min.y + 6), IM_COL32(200, 200, 210, 200),
+                                      "Drag: turn   Middle drag: move   Wheel: zoom");
+}
+
+bool TextureBytes(const std::string& name, Bytes& out) {
+  const BundleTexture* t = g_arena ? g_arena->FindTexture(name) : nullptr;
+  if (!t) return false;
+  out = t->data;
+  return true;
+}
+
+bool SetTextureBytes(const std::string& name, const Bytes& dds) {
+  if (!g_arena) return false;
+  for (auto& b : g_arena->bundles)
+    for (auto& t : b.textures)
+      if (t.name == name) {
+        t.data = dds;
+        b.changed = true;
+        ForgetTextures();
+        Edited();
+        return true;
+      }
+  return false;
+}
+
+void SetViewPreset(int which) { ViewPreset(which); }
+void DrawRingKit() { RingKitPanel(); }
+void DrawLighting() { LightingPanel(); }
+
 }  // namespace editor

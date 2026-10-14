@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "disc_list.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/wwe13.h"
 #include "tool_run.h"
@@ -33,10 +34,24 @@ namespace {
 // ---- where the other games' files are (remembered in the settings? kept for the session)
 std::wstring g_w13_pac, g_w10_pac, g_w08_pac;
 
-std::wstring Guess(const wchar_t* folder) {
+// A game's pac folder: its extracted folder in My game discs first, else the old extract next to the port.
+std::wstring Guess(const wchar_t* folder, const char* game = nullptr) {
   std::error_code ec;
+  if (game) {
+    const std::wstring mine = disc_list::PathFor(game);
+    if (!mine.empty() && fs::is_directory(fs::path(mine) / L"pac", ec)) return (fs::path(mine) / L"pac").wstring();
+  }
   const fs::path cand = fs::path(L"D:\\Xbox Games Ports") / folder / L"pac";
   return fs::exists(cand, ec) ? cand.wstring() : L"";
+}
+
+// Under a folder row: where My game discs has that game (a disc image the tools here can't read: the Port page can).
+void MyDiscNote(const char* game) {
+  const std::wstring mine = disc_list::PathFor(game);
+  std::error_code ec;
+  if (mine.empty() || fs::is_directory(mine, ec)) return;
+  ImGui::TextDisabled("Your %s disc image is in My game discs: the Port page reads it as it is (Superstars, Moves, ...).",
+                      disc_list::GameByKey(game) ? disc_list::GameByKey(game)->name : game);
 }
 
 void FolderRow(const char* label, std::wstring& folder, const wchar_t* title) {
@@ -87,6 +102,31 @@ char g_w13_drop[128] = "";
 char g_w13_name[64] = "";
 bool g_show_arena_tab = false;  // (the Port page handed a file: that tab comes up)
 
+// A WWE '12 - 2K17 arena pac onto a host tile, in the background; the result is the Arena page's project.
+void Convert(const std::wstring& file, int host, const std::string& name, const Wwe13Options& opt, bool to_editor) {
+  std::string source = Utf8(fs::path(file).stem().wstring());  // ("Arenas_wwe2k16_bg01" from the Port page, or "bg01")
+  if (source.rfind("Arenas_", 0) == 0) source = source.substr(7);
+  std::replace(source.begin(), source.end(), '_', ' ');
+  RunInBackground([file, host, opt, name, source, to_editor] {
+    Progress("Reading the arena ...");
+    Bytes w13, hostpac;
+    if (!ReadFile(Utf8(file), w13)) { Status("Could not read " + Utf8(file)); return; }
+    if (!ReadFile(ArenaPath(host), hostpac)) { Status("Could not read the host arena."); return; }
+    Progress("Converting (a minute or so) ...");
+    Bytes out;
+    Wwe13Report rep;
+    std::string err;
+    if (!BuildArenaFromWwe13(w13, hostpac, opt, out, rep, &err)) { Status("The conversion failed: " + err); return; }
+    for (const auto& n : rep.notes) Log("  " + n);
+    if (!rep.halved.empty()) Log("  " + std::to_string(rep.halved.size()) + " pictures halved to fit");
+    char b[200];
+    std::snprintf(b, sizeof b, "Converted: %d models, %d meshes, %d entries (%d from the host, %d dropped, %d ring parts).",
+                  rep.conv.models, rep.conv.meshes, rep.entries, rep.from_host, rep.dropped, rep.ring_parts);
+    Status(b);
+    OnUiThread([out, host, name, source, to_editor] { arena_page::SetArenaFromPac(out, host, name, source, to_editor); });
+  });
+}
+
 void Wwe13ArenaTab() {
   ImGui::TextWrapped("A WWE '12, '13, 2K14, 2K15, 2K16 or 2K17 arena (its pac\\bg\\bgNN.pac, compressed or not; the Port page reads it off "
                      "the disc) rebuilt as a 2011 arena in the "
@@ -94,6 +134,23 @@ void Wwe13ArenaTab() {
                      "Arena page: give it a banner and a name there and save it. This is how RAW IS WAR, SmackDown "
                      "1999, Royal Rumble 1998 and King of the Ring 1998 were made.");
   ImGui::Spacing();
+  {  // the arenas on My game discs (the Port page lists a disc's arenas and copies the pick here)
+    std::vector<std::string> keys;
+    for (const char* k : {"wwe12", "wwe13", "wwe2k14", "wwe2k15", "wwe2k16", "wwe2k17"})
+      if (!disc_list::PathFor(k).empty()) keys.push_back(k);
+    if (keys.empty()) {
+      ImGui::TextDisabled("No WWE '12 - 2K17 disc in My game discs yet.");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("My game discs...")) GoTo(PageId::kDiscs);
+    } else {
+      ImGui::TextUnformatted("From my discs:");
+      for (const auto& k : keys) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(disc_list::GameByKey(k)->name)) port_page::Open(L"arena_port.py", disc_list::PathFor(k));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its arenas on the Port page: pick one there and it comes back here.");
+      }
+    }
+  }
   if (FileRow("Arena file...", g_w13_file, "pick a bgNN.pac", kPacFilter, 1) && g_w13_name[0] == 0)
     std::snprintf(g_w13_name, sizeof g_w13_name, "%s", IdFrom(FileName(g_w13_file), "wwe13").c_str());
   ImGui::SetNextItemWidth(320 * g_scale);
@@ -141,30 +198,7 @@ void Wwe13ArenaTab() {
       while (*p && *p != ',') ++p;
       if (*p == ',') ++p;
     }
-    const std::wstring file = g_w13_file;
-    const int host = g_w13_host;
-    const std::string name = g_w13_name;
-    std::string source = Utf8(fs::path(file).stem().wstring());  // ("Arenas_wwe2k16_bg01" from the Port page, or "bg01")
-    if (source.rfind("Arenas_", 0) == 0) source = source.substr(7);
-    std::replace(source.begin(), source.end(), '_', ' ');
-    RunInBackground([file, host, opt, name, source] {
-      Progress("Reading the WWE '13 arena ...");
-      Bytes w13, hostpac;
-      if (!ReadFile(Utf8(file), w13)) { Status("Could not read " + Utf8(file)); return; }
-      if (!ReadFile(ArenaPath(host), hostpac)) { Status("Could not read the host arena."); return; }
-      Progress("Converting (a minute or so) ...");
-      Bytes out;
-      Wwe13Report rep;
-      std::string err;
-      if (!BuildArenaFromWwe13(w13, hostpac, opt, out, rep, &err)) { Status("The conversion failed: " + err); return; }
-      for (const auto& n : rep.notes) Log("  " + n);
-      if (!rep.halved.empty()) Log("  " + std::to_string(rep.halved.size()) + " pictures halved to fit");
-      char b[200];
-      std::snprintf(b, sizeof b, "Converted: %d models, %d meshes, %d entries (%d from the host, %d dropped, %d ring parts).",
-                    rep.conv.models, rep.conv.meshes, rep.entries, rep.from_host, rep.dropped, rep.ring_parts);
-      Status(b);
-      OnUiThread([out, host, name, source] { arena_page::SetArenaFromPac(out, host, name, source); });
-    });
+    Convert(g_w13_file, g_w13_host, g_w13_name, opt, true);
   }
   PopAccent();
   ImGui::EndDisabled();
@@ -235,8 +269,9 @@ void Svr10StarTab() {
                      "into a move pack, the entrance and announcer name when 2011 has them. The mod opens on the "
                      "Superstar page.");
   ImGui::Spacing();
-  if (g_w10_pac.empty()) g_w10_pac = Guess(L"SvR2010 Extract");
+  if (g_w10_pac.empty()) g_w10_pac = Guess(L"SvR2010 Extract", "svr2010");
   FolderRow("SvR 2010 pac folder...", g_w10_pac, L"The SvR 2010 \"pac\" folder (its extract)");
+  MyDiscNote("svr2010");
   ImGui::SetNextItemWidth(120 * g_scale);
   ImGui::InputInt("2010 superstar id", &g_w10_id);
   Hint("The 2010 roster id (100 ...). The tool's survey lists them: run it once below.");
@@ -283,8 +318,9 @@ void Svr10MovesTab() {
                      "cameras), table records and category bits. The pack opens on the Moves page (save it as a "
                      "mod, or hand it to a superstar mod).");
   ImGui::Spacing();
-  if (g_w10_pac.empty()) g_w10_pac = Guess(L"SvR2010 Extract");
+  if (g_w10_pac.empty()) g_w10_pac = Guess(L"SvR2010 Extract", "svr2010");
   FolderRow("SvR 2010 pac folder...", g_w10_pac, L"The SvR 2010 \"pac\" folder (its extract)");
+  MyDiscNote("svr2010");
   TextField("Move ids", g_w10_moves, sizeof g_w10_moves, "e.g. 3088 3274 7573 (2010 move ids, space or comma separated)", 420);
   Hint("The 2010 move ids (the Game assets page shows 2011's misc.pac MOVS/WAZE names; 2010's are in its own "
        "misc.pac). A superstar's whole missing set comes with the SvR 2010 superstar tab instead.");
@@ -322,8 +358,9 @@ void Svr08Tab() {
                      "the area's objects - the bundled Parking Lot (2008) mod. The settings below are the ones it "
                      "used. The result opens on the Backstage page as an area of its own.");
   ImGui::Spacing();
-  if (g_w08_pac.empty()) g_w08_pac = Guess(L"SvR2008 Extract");
+  if (g_w08_pac.empty()) g_w08_pac = Guess(L"SvR2008 Extract", "svr2008");
   FolderRow("SvR 2008 pac folder...", g_w08_pac, L"The SvR 2008 \"pac\" folder (its extract)");
+  MyDiscNote("svr2008");
   ImGui::SetNextItemWidth(160 * g_scale);
   ImGui::Combo("Turn", &g_w08_rotate, "0\0" "180 degrees (faces the 2011 camera)\0");
   ImGui::SetNextItemWidth(160 * g_scale);
@@ -371,6 +408,10 @@ void Svr08Tab() {
 }
 
 }  // namespace
+
+void ConvertArena(const std::wstring& file, int host, const std::string& name, bool to_editor) {
+  Convert(file, host, name, g_w13, to_editor);
+}
 
 void UseArenaFile(const std::wstring& file, const std::string& name) {
   g_w13_file = file;

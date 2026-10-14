@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "char_preview.h"
+#include "disc_list.h"
 #include "model_materials.h"
 #include "hair_sim.h"
 #include "editor.h"
@@ -1402,6 +1403,29 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
   return pressed;
 }
 
+// ---------------------------------------------------------------- dropped files
+
+namespace {
+std::vector<std::wstring> g_drop_files;  // the last drop (WM_DROPFILES / the ui script), its point, its age in frames
+ImVec2 g_drop_at;
+int g_drop_frames = 0;
+}  // namespace
+
+bool DroppedOnLastItem(std::vector<std::wstring>& files) {
+  if (g_drop_files.empty()) return false;
+  const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+  if (g_drop_at.x < a.x || g_drop_at.y < a.y || g_drop_at.x >= b.x || g_drop_at.y >= b.y) return false;
+  files = std::move(g_drop_files);
+  g_drop_files.clear();
+  return true;
+}
+
+void SetDrop(std::vector<std::wstring> files, ImVec2 at) {
+  g_drop_files = std::move(files);
+  g_drop_at = at;
+  g_drop_frames = 0;
+}
+
 // ---------------------------------------------------------------- settings
 
 namespace {
@@ -1409,6 +1433,11 @@ namespace {
 fs::path SettingsDir() {
   wchar_t* p = nullptr;
   fs::path dir;
+  if (const wchar_t* own = _wgetenv(L"SVR2011_MM_SETTINGS"); own && *own) {  // (test runs: a settings folder of their own)
+    std::error_code ec;
+    fs::create_directories(own, ec);
+    return fs::path(own);
+  }
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &p))) dir = fs::path(p) / L"SvR2011 Mod Maker";
   if (p) CoTaskMemFree(p);
   std::error_code ec;
@@ -1431,6 +1460,12 @@ void LoadSettings() {
   if (!Value(t, "font").empty()) g_settings.font = std::clamp(std::atoi(Value(t, "font").c_str()), 12, 28);
   for (const auto& f : Values(t, "disc_folder")) g_settings.disc_folders.push_back(Wide(f));
   g_settings.bink2_tool = Wide(Value(t, "bink2_tool"));
+  for (const auto& d : Values(t, "my_disc")) {  // <game key>|<disc id>|<path>
+    const size_t a = d.find('|'), b = a == std::string::npos ? a : d.find('|', a + 1);
+    if (b == std::string::npos) continue;
+    g_settings.my_discs.push_back({d.substr(0, a), d.substr(a + 1, b - a - 1), Wide(d.substr(b + 1))});
+  }
+  g_settings.discs_seeded = Value(t, "discs_seeded") == "1";
 }
 
 }  // namespace
@@ -1444,14 +1479,16 @@ void SaveSettings() {
        "\nfont=" + std::to_string(g_settings.font) + "\n";
   for (const auto& f : g_settings.disc_folders) t += "disc_folder=" + Utf8(f) + "\n";
   if (!g_settings.bink2_tool.empty()) t += "bink2_tool=" + Utf8(g_settings.bink2_tool) + "\n";
+  for (const auto& d : g_settings.my_discs) t += "my_disc=" + d.key + "|" + d.id + "|" + Utf8(d.path) + "\n";
+  if (g_settings.discs_seeded) t += "discs_seeded=1\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
 }
 
 // ---- disc images
 
 namespace {
-std::vector<DiscRef> g_discs, g_discs_next;
-std::atomic<int> g_discs_state{0};  // 0 not read, 1 reading, 2 read (g_discs_next waiting), 3 ready
+std::vector<DiscRef> g_discs;
+std::atomic<int> g_discs_state{0};  // 0 not read, 1 the first search runs, 3 ready
 }  // namespace
 
 std::string DiscGameName(const std::string& id) {
@@ -1477,45 +1514,42 @@ std::vector<std::wstring> DiscFolders() {
   return {L"D:\\Roms\\Xbox 360\\WWE", L"D:\\Roms\\Playstation 2\\WWE Games"};
 }
 
+// Discs() is My game discs (disc_list.h): each set game whose image / folder is there, in its order.
 void RescanDiscs() {
-  int expect = g_discs_state.load();
-  if (expect == 1 || !g_discs_state.compare_exchange_strong(expect, 1)) return;
-  std::thread([folders = DiscFolders()] {
-    std::vector<DiscRef> out;
-    for (const auto& folder : folders) {
-      std::error_code ec;
-      std::vector<fs::path> isos;
-      for (const auto& e : fs::directory_iterator(folder, ec))
-        if (e.is_regular_file(ec) && Lower(e.path().extension().string()) == ".iso") isos.push_back(e.path());
-      std::sort(isos.begin(), isos.end());
-      for (const auto& p : isos) {
-        svrfmt::Disc d;
-        if (!d.Open(p.wstring())) continue;
-        DiscRef r;
-        r.path = p.wstring();
-        r.id = d.Id();
-        r.xbox = d.Xbox();
-        r.game = DiscGameName(r.id);
-        if (r.game.empty()) r.game = PathStr(p.stem()) + (r.xbox ? " (Xbox 360)" : " (PS2)");
-        out.push_back(std::move(r));
-      }
-    }
-    std::sort(out.begin(), out.end(), [](const DiscRef& a, const DiscRef& b) {
-      return a.xbox != b.xbox ? a.xbox : a.game < b.game;  // Xbox 360 first (the user's order)
-    });
-    g_discs_next = std::move(out);
-    g_discs_state = 2;
-  }).detach();
+  std::vector<DiscRef> out;
+  std::error_code ec;
+  for (const auto& d : g_settings.my_discs) {
+    const disc_list::Game* g = disc_list::GameByKey(d.key);
+    if (!g || d.path.empty() || !fs::exists(d.path, ec)) continue;
+    DiscRef r;
+    r.path = d.path;
+    r.id = d.id.empty() ? disc_list::IdFor(d.key) : d.id;
+    r.xbox = g->xbox;
+    r.game = disc_list::FullName(*g) + (fs::is_directory(d.path, ec) ? " - folder" : "");
+    out.push_back(std::move(r));
+  }
+  g_discs = std::move(out);
+  g_discs_state = 3;
 }
 
 bool DiscsReady() {
-  if (g_discs_state == 0) RescanDiscs();
-  if (g_discs_state == 2) {
-    g_discs = std::move(g_discs_next);
-    g_discs_next.clear();
-    g_discs_state = 3;
-    Log("discs: " + std::to_string(g_discs.size()) + " disc images found");
+  if (g_discs_state == 0) {
+    RescanDiscs();
+    if (!g_settings.discs_seeded) {  // the first time: the old disc folders searched to fill My game discs
+      g_settings.discs_seeded = true;
+      SaveSettings();
+      std::vector<std::wstring> folders;
+      std::error_code ec;
+      for (const auto& f : DiscFolders())
+        if (fs::is_directory(f, ec)) folders.push_back(f);
+      if (g_settings.my_discs.empty() && !folders.empty()) {
+        Log("discs: My game discs is empty - searching the disc folders once");
+        disc_list::FindInFolders(folders);
+        g_discs_state = 1;
+      }
+    }
   }
+  if (g_discs_state == 1 && !disc_list::Scanning()) RescanDiscs();
   return g_discs_state == 3;
 }
 
@@ -1560,6 +1594,7 @@ const PageDesc kPages[] = {
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
     {PageId::kPort, "Port from a disc", "", nullptr, port_page::Draw},
+    {PageId::kDiscs, "   My game discs", "", nullptr, disc_list::Draw},
     {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
@@ -1815,6 +1850,12 @@ void UiScript(const std::wstring& file) {
       if (e.what == "click") up_frame = 2;
       else io.AddMouseButtonEvent(1, false);
     } else if (e.what == "wheel") io.AddMouseWheelEvent(0, x);
+    else if (e.what == "drop") {  // drop <x> <y> <file>: as if dropped from Explorer
+      int used = 0;
+      std::sscanf(e.arg.c_str(), "%f %f %n", &x, &y, &used);
+      io.AddMousePosEvent(x, y);
+      SetDrop({Wide(e.arg.substr(size_t(used)))}, ImVec2(x, y));
+    }
     else if (e.what == "type") io.AddInputCharactersUTF8(e.arg.c_str());
     else if (e.what == "key") {
       const ImGuiKey k = e.arg == "Escape" ? ImGuiKey_Escape : e.arg == "Enter" ? ImGuiKey_Enter : e.arg == "Tab" ? ImGuiKey_Tab
@@ -2122,6 +2163,7 @@ void Draw() {
   if (log_h) LogPanel(log_h);
   StatusBar();
   ImGui::End();
+  if (!g_drop_files.empty() && ++g_drop_frames > 2) g_drop_files.clear();  // (dropped where nothing takes files)
   full_preview::Draw();  // (its own window, over the page)
   ToolsPanel();          // (the Mod Maker tools: found / missing, Install what's missing)
   // Ctrl+S saves the project
@@ -2144,6 +2186,20 @@ LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         CreateTarget();
       }
       return 0;
+    case WM_DROPFILES: {
+      HDROP drop = reinterpret_cast<HDROP>(wp);
+      std::vector<std::wstring> files;
+      const UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      for (UINT k = 0; k < n; ++k) {
+        wchar_t f[MAX_PATH * 4];
+        if (DragQueryFileW(drop, k, f, UINT(std::size(f)))) files.push_back(f);
+      }
+      POINT pt = {};
+      DragQueryPoint(drop, &pt);
+      DragFinish(drop);
+      SetDrop(std::move(files), ImVec2(float(pt.x), float(pt.y)));
+      return 0;
+    }
     case WM_CLOSE:
       if (ProjectDirty() && !g_quit_asked && IsWindowVisible(w)) {
         const int r = MessageBoxW(w, L"Save the project before closing?", L"SvR2011 Mod Maker",
@@ -2558,6 +2614,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--simple-capture") && more) star_page::TestSimpleCapture(argv[++i]);  // the 3D view as the select picture -> <png>, quit
     else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
     else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
+    else if (!wcscmp(argv[i], L"--simple-arena") && more) arena_page::TestSimple(_wtoi(argv[++i])), g_page = PageId::kArena;  // Simple arena at <step>
+    else if (!wcscmp(argv[i], L"--simple-arena-start") && more) arena_page::TestSimpleStart(Utf8(argv[++i])), g_page = PageId::kArena;  // tile:<n> | empty:<n> | disc:<key>[:<bgNN>[:<host>]]
+    else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs
     else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
       const std::wstring v = argv[++i];
       const size_t c = v.find(L',');
@@ -2656,6 +2715,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (behind) x = 0, y = 0, w = MulDiv(1280, dpi, 96), h = MulDiv(800, dpi, 96);
   g_wnd = CreateWindowExW(behind ? WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW : 0, wc.lpszClassName, L"SvR2011 Mod Maker",
                           WS_OVERLAPPEDWINDOW, x, y, w, h, nullptr, nullptr, inst, nullptr);
+  DragAcceptFiles(g_wnd, TRUE);  // (pictures dropped on the pages' drop targets)
   if (!CreateDevice(g_wnd)) {
     if (!behind) MessageBoxW(nullptr, L"Direct3D 11 is not available.", L"SvR2011 Mod Maker", MB_ICONERROR);
     return 1;
@@ -2735,7 +2795,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
   if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
+    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs"};
     for (int k = 0; k < int(PageId::kCount); ++k)
       if (page_name == names[k]) g_page = PageId(k);
   }
@@ -2821,12 +2881,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     while (!page_at.empty() && ImGui::GetTime() >= page_at.front().first) {  // (test aid --page-at)
       const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match",
-                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed"};
+                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs"};
       for (int k = 0; k < int(std::size(names)) && k < int(PageId::kCount); ++k)
         if (page_at.front().second == names[k]) g_page = PageId(k), Log("test: page " + Utf8(names[k]));
       page_at.erase(page_at.begin());
     }
-    if (!shot.empty() && ImGui::GetTime() >= shot_after && !Busy()) {  // the frame to a PNG, then quit
+    if (!shot.empty() && ImGui::GetTime() >= shot_after && !Busy() && !disc_list::Scanning()) {  // the frame to a PNG, then quit
       ID3D11Texture2D* back = nullptr;
       g_swap->GetBuffer(0, IID_PPV_ARGS(&back));
       D3D11_TEXTURE2D_DESC td;

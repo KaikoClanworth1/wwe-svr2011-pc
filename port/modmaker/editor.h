@@ -109,4 +109,21 @@ void ApplyBuild(svrfmt::Arena& a);
 std::string ManifestLines();
 void FromManifest(const std::string& text);
 
+// ---- the Simple arena maker (simple_arena.cpp): the edited arena's pictures and a view of it
+std::vector<std::string> TextureNames();  // every texture of the edited arena
+// The textures the models with ids lo..hi draw with (the aprons: 973 - 974).
+std::vector<std::string> ModelTextures(uint32_t lo, uint32_t hi);
+// A texture decoded (its full size; w / h: its size in the arena).
+bool TextureImage(const std::string& name, svrfmt::Image& out, int* w = nullptr, int* h = nullptr);
+// A texture replaced by a picture, fitted to its size and format (an edit: the mod carries it).
+bool ReplaceTexture(const std::string& name, const svrfmt::Image& img);
+// The edited arena's 3D view alone, w x h (turn, move, zoom; no tools).
+// A texture's DDS as stored / put back (the Simple arena's "Original").
+bool TextureBytes(const std::string& name, svrfmt::Bytes& out);
+bool SetTextureBytes(const std::string& name, const svrfmt::Bytes& dds);
+void DrawViewport(float w, float h);
+void SetViewPreset(int which);  // 0 hard camera, 1 top, 2 from the stage, 3 from the side
+void DrawRingKit();             // the Ring Kit panel (ropes, turnbuckles, pads, heights)
+void DrawLighting();            // the lighting panel (presets, colour, crowd)
+
 }  // namespace editor

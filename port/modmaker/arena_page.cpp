@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include "app.h"
+#include "arena_page_internal.h"
 #include "mod_check.h"
 #include <shellapi.h>
 
@@ -23,7 +24,6 @@ namespace arena_page {
 
 using namespace svrfmt;
 
-namespace {
 
 // Backstage brawl areas: all seven are rooms of one file, bg78.pac (models
 // by id range); a backstage brawl's match type decides the room. A backstage
@@ -45,29 +45,9 @@ const Area kAreas[7] = {
     {"Catering area", "Tables, food and the drinks.", {{140, 159}, {1130, 1139}}, {20, -8, -190, 45, 30}},
 };
 
-// The mod being made
-struct Project {
-  int arena = -1;                 // tile in g_arenas the mod starts from (-1: none / backstage)
-  int backstage = -1;             // the area being made (else an arena)
-  std::unique_ptr<Arena> edited;  // after an import / in the editor
-  std::string fbx;                // the Blender file it came from
-  Picture banner;                 // 256 x 128
-  char name[96] = "";
-  char author[64] = "";
-  char version[16] = "1.0";
-  std::map<std::string, Image> vs;  // the VS screen: replaced textures of the slot's theme
-  Picture load;                     // the loading screen (1024 x 512), optional
-  // backstage: an area of its own (arena_mods.cpp / match_types.cpp read these)
-  bool own_area = false;
-  char row[32] = "";                // row=<label>: its row in ONE ON ONE -> BACKSTAGE
-  char gimmick[8] = "";             // gimmick=<4 chars> with gimmick.pac
-  std::wstring gimmick_pac;
-  bool has_box = false;
-  float box[4] = {0, 0, 30, 30};    // box=x,z,half x,half z (game units, 10 cm)
-  float camera = 0, camera_height = 0;  // 0 = the game's
-  std::string source;               // source=<game> bgNN: the other game's arena it was converted from
-};
 Project g_proj;
+bool g_simple = false;  // (kept through a reset: the mode, not the project)
+int g_simple_step = 0;
 int g_sel = 0;    // the tile under the cursor on the Start tab
 int g_area = 0;   // the backstage area picked
 int g_tab = 0;
@@ -103,7 +83,7 @@ void StartProject(int i) {
 }
 
 void LoadInBackground(const std::string& pac, std::function<void(Arena&)> prepare, bool to_editor, bool no_crowd,
-                      const std::string& fbx = "") {
+                      const std::string& fbx) {
   RunInBackground([=] {
     Progress("Reading the arena file ...");
     auto a = std::make_unique<Arena>();
@@ -179,7 +159,7 @@ void ImportArena(int i) {
 // A new arena from nothing: the slot's file with everything but the ring,
 // the floor and the ringside parts emptied. The slot (the arena it loads in
 // place of) only decides the room it has and the VS screen style.
-void NewArena(int slot) {
+void NewArena(int slot, bool to_editor) {
   StartProject(slot);
   std::snprintf(g_proj.name, sizeof g_proj.name, "New Arena");
   LoadInBackground(ArenaPath(slot), [](Arena& a) {
@@ -191,7 +171,7 @@ void NewArena(int slot) {
                   "props from other arenas (Library) and your own files.", rep.models_emptied, rep.textures_shrunk,
                   rep.bytes_freed / 1048576.0);
     Status(b);
-  }, true, true);
+  }, to_editor, true);
 }
 
 std::string ModId() { return IdFrom(g_proj.name, g_proj.backstage >= 0 ? "backstage" : "arena"); }
@@ -294,17 +274,45 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   return true;
 }
 
+void SaveModTo(const std::wstring& f, std::function<void(bool)> done);
+
+std::string SignsId() { return g_proj.signs.empty() ? std::string() : ModId() + "_signs"; }
+
+std::vector<ZipEntry> SignsFiles() {
+  if (g_proj.signs.empty()) return {};
+  std::vector<std::pair<std::string, Image>> signs;
+  for (const auto& [n, pic] : g_proj.signs) signs.push_back({n, pic.image});
+  return signs_page::PackFiles(SignsId(), std::string(g_proj.name) + " (signs)", g_proj.author, signs);
+}
+
 void SaveMod() {
   BuildJob job;
   if (!PrepareBuild(job)) return;
   const std::wstring f = PickFile(true, L"Save the mod", kModFilter, 1, L"svrmod", (Wide(job.id) + L".svrmod").c_str());
   if (f.empty()) return;
+  SaveModTo(f);
+}
+
+void SaveModTo(const std::wstring& f, std::function<void(bool)> done) {
+  BuildJob job;
+  if (!PrepareBuild(job)) {
+    if (done) done(false);
+    return;
+  }
   const std::string out = Utf8(f);
-  RunInBackground([job, out]() mutable {
+  // the crowd signs: a sign pack of their own beside it (<name>_signs.svrmod)
+  const std::vector<ZipEntry> signs = g_proj.backstage < 0 ? SignsFiles() : std::vector<ZipEntry>();
+  const std::string signs_out = signs.empty() ? "" : Utf8((fs::path(f).parent_path() / fs::u8path(SignsId() + ".svrmod")).wstring());
+  RunInBackground([job, out, signs, signs_out, done]() mutable {
     std::vector<ZipEntry> files;
-    if (!FinishBuild(job, files)) return;
-    if (WriteFile(out, ZipWrite(files))) Status("Saved " + out + " (add it in the launcher's Mods tab with +).");
-    else Status("The mod could not be written: " + out);
+    const auto finish = [&](bool ok) {
+      if (done) OnUiThread([done, ok] { done(ok); });
+    };
+    if (!FinishBuild(job, files)) return finish(false);
+    if (!WriteFile(out, ZipWrite(files))) { Status("The mod could not be written: " + out); return finish(false); }
+    if (!signs.empty() && !WriteFile(signs_out, ZipWrite(signs))) { Status("The crowd signs could not be written: " + signs_out); return finish(false); }
+    Status("Saved " + out + (signs.empty() ? "" : " and its crowd signs " + signs_out) + " (add them in the launcher's Mods tab with +).");
+    finish(true);
   });
 }
 
@@ -333,9 +341,12 @@ void InstallMod(bool start) {
   }
   BuildJob job;
   if (!PrepareBuild(job)) return;
-  RunInBackground([job, start]() mutable {
+  const std::vector<ZipEntry> signs = g_proj.backstage < 0 ? SignsFiles() : std::vector<ZipEntry>();
+  const std::string signs_id = SignsId();
+  RunInBackground([job, start, signs, signs_id]() mutable {
     std::vector<ZipEntry> files;
     if (!FinishBuild(job, files) || !InstallFiles(job, files)) return;
+    if (!signs.empty() && !signs_page::InstallPack(signs_id, signs)) { Status("The crowd signs could not be installed (see the log)."); return; }
     if (start) StartGame();
   });
 }
@@ -647,8 +658,6 @@ void OwnAreaFields() {
   ImGui::Unindent();
 }
 
-}  // namespace
-
 // ---------------------------------------------------------------- public
 
 void Tick() {
@@ -737,7 +746,7 @@ void StartBackstage(int area) {
   LoadInBackground(PathStr(fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac"), nullptr, true, false);
 }
 
-void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source) {
+void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source, bool to_editor) {
   LeaveBackstage();
   g_proj = Project();
   editor::Ring() = RingSpec();
@@ -756,9 +765,10 @@ void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const 
     std::lock_guard lock(g_pending_mutex);
     g_pending = std::move(a);
     g_pending_fbx.clear();
-    g_pending_to_editor = true;
+    g_pending_to_editor = to_editor;
   }
-  Status("The converted arena is open in the 3D editor; the Arena page has its name, banner and the Save.");
+  Status(to_editor ? "The converted arena is open in the 3D editor; the Arena page has its name, banner and the Save."
+                   : "The converted arena is your arena now.");
 }
 
 void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name, const std::wstring& gimmick_pac,
@@ -827,6 +837,14 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
     if (DdsDecode(l->data, img)) g_proj.load.Set(std::move(img));
   }
   g_proj.fbx = in.Get("fbx");
+  for (int i = 0; !mod && i < 999; ++i) {  // (Simple arena's crowd signs: projects only)
+    Image img;
+    if (!in.Png(("sign" + std::to_string(i)).c_str(), img)) break;
+    Picture pic;
+    pic.Set(std::move(img));
+    g_proj.signs.push_back({in.Get(("sign_name" + std::to_string(i)).c_str()), std::move(pic)});
+  }
+  if (!mod && !backstage && in.GetInt("simple", 0)) g_simple = true, g_simple_step = std::clamp(in.GetInt("simple_step", 0), 0, int(kSaCount) - 1);
   if (backstage) {
     std::snprintf(g_proj.row, sizeof g_proj.row, "%s", in.Get("row").c_str());
     std::snprintf(g_proj.gimmick, sizeof g_proj.gimmick, "%s", in.Get("gimmick").substr(0, 4).c_str());
@@ -881,6 +899,11 @@ void WriteProject(ProjectOut& out) {
   if (!g_proj.banner.Empty()) out.files.push_back({"banner.dds", DdsEncode(g_proj.banner.image, DxtFormat::kDxt5, false)});
   if (!g_proj.load.Empty()) out.files.push_back({"load.dds", DdsEncode(g_proj.load.image, DxtFormat::kDxt5, false)});
   for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+  for (size_t i = 0; i < g_proj.signs.size(); ++i) {  // (Simple arena's crowd signs)
+    out.Key("sign_name" + std::to_string(i), g_proj.signs[i].first);
+    out.Png("sign" + std::to_string(i), g_proj.signs[i].second.image, "signs/" + std::to_string(i));
+  }
+  if (g_simple && g_proj.backstage < 0) out.Key("simple", 1), out.Key("simple_step", g_simple_step);
   if (g_proj.edited) {
     // the arena as edited (the kit / lighting apply at mod build, not here): a copy
     // taken now, compressed in the background
@@ -900,7 +923,7 @@ std::string StateText() {
                   "\nvs=" + std::to_string(g_proj.vs.size()) + "\nbanner=" + std::to_string(g_proj.banner.image.rgba.size()) +
                   "\nload=" + std::to_string(g_proj.load.image.rgba.size()) + "\nown=" + std::to_string(g_proj.own_area) +
                   "\nrow=" + g_proj.row + "\ngimmick=" + g_proj.gimmick + Utf8(g_proj.gimmick_pac) +
-                  "\nbox=" + std::to_string(g_proj.has_box) + "\n" + editor::ManifestLines();
+                  "\nbox=" + std::to_string(g_proj.has_box) + "\nsigns=" + std::to_string(g_proj.signs.size()) + "\n" + editor::ManifestLines();
   for (int k = 0; k < 3; ++k) s += editor::Ring().ropes[k].texture + ";";
   return s;
 }
@@ -918,15 +941,18 @@ void ArenaProblems(std::vector<Problem>& p) {
     p.push_back(Error("A backstage area is open, not an arena.", "Use the Backstage page, or pick an arena here."));
     return;
   }
-  if (g_proj.arena < 0) p.push_back(Error("No arena yet.", "Open one in the 3D editor, start an empty one or import from Blender."));
-  if (!g_proj.name[0]) p.push_back(Error("The arena has no name.", "Details tab."));
-  else if (std::strlen(g_proj.name) > 31) p.push_back(Warning("The name is long: the select page shows about 30 letters."));
-  if (g_proj.arena >= 0 && g_proj.banner.Empty()) p.push_back(Warning("No banner picture: a dark banner is used on the select page.", "Details tab."));
+  const auto at = [&](int step) { p.back().step = step; };  // (the Simple step that fixes it)
+  if (g_proj.arena < 0) p.push_back(Error("No arena yet.", "Open one in the 3D editor, start an empty one or import from Blender.")), at(kSaStart);
+  if (g_proj.arena >= 0 && g_simple && !g_proj.edited) p.push_back(Error("The arena is still loading.")), at(kSaStart);
+  if (!g_proj.name[0]) p.push_back(Error("The arena has no name.", "Details tab.")), at(kSaName);
+  else if (std::strlen(g_proj.name) > 31) p.push_back(Warning("The name is long: the select page shows about 30 letters.")), at(kSaName);
+  if (g_proj.arena >= 0 && g_proj.banner.Empty()) p.push_back(Warning("No banner picture: a dark banner is used on the select page.", "Details tab.")), at(kSaName);
   if (g_proj.arena >= 0 && !g_proj.edited && g_proj.fbx.empty())
-    p.push_back(Warning("Nothing changed yet: the mod would be a copy of the game's arena."));
+    p.push_back(Warning("Nothing changed yet: the mod would be a copy of the game's arena.")), at(kSaStart);
   if (editor::Ring().VisibleRopes() < 3 && editor::Ring().VisibleRopes() > 0)
-    p.push_back(Warning("Fewer than three ropes: rope moves are limited to the ropes left (the game adapts)."));
-  if (editor::Ring().VisibleRopes() == 0) p.push_back(Warning("No ropes: no rope moves, no rope breaks, a hardcore-style ring."));
+    p.push_back(Warning("Fewer than three ropes: rope moves are limited to the ropes left (the game adapts).")), at(kSaRing);
+  if (editor::Ring().VisibleRopes() == 0) p.push_back(Warning("No ropes: no rope moves, no rope breaks, a hardcore-style ring.")), at(kSaRing);
+  if (g_proj.signs.size() > 64) p.push_back(Warning("A lot of crowd signs: each match shows at most 16, drawn from the game's and every pack's.")), at(kSaSigns);
   // limits and crash risks (D12): a model the game can't hold, an arena over its room
   editor::BudgetInfo b;
   if (g_proj.arena >= 0 && editor::Budget(b)) {
@@ -934,14 +960,14 @@ void ArenaProblems(std::vector<Problem>& p) {
     std::snprintf(id, sizeof id, "0x%X", b.biggest_id);
     if (b.biggest > 430 * 1024)
       p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): models over about 430 KB "
-                          "have crashed the arena's load.", "Split it, cut its polygons, or hide parts of it (3D editor)."));
+                          "have crashed the arena's load.", "Split it, cut its polygons, or hide parts of it (3D editor).")), at(kSaLook);
     else if (b.biggest > 360 * 1024)
       p.push_back(Warning("A model you changed or added is " + Human(b.biggest) + " unpacked (" + id + "): close to the ~430 KB that "
-                          "crashed arena loads."));
+                          "crashed arena loads.")), at(kSaLook);
     if (b.file > b.file_max || b.unpacked > b.unpacked_max)
       p.push_back(Warning("The arena is over the game's room for it (" + Human(std::max(b.file, b.unpacked)) + " of " +
                           Human(std::max(b.file_max, b.unpacked_max)) + "): saving halves the biggest textures until it fits.",
-                          "Smaller pictures or fewer added objects keep them sharp."));
+                          "Smaller pictures or fewer added objects keep them sharp.")), at(kSaLook);
   }
 }
 
@@ -960,8 +986,22 @@ void BackstageProblems(std::vector<Problem>& p) {
 }
 
 void DrawArena() {
+  if (g_simple) return SimpleDraw();
+  const float top = ImGui::GetCursorPosY();
   Heading("Arena", "A new arena on the arena select pages, made from one of the game's own: edited in 3D here or in "
                    "Blender, or built from an empty hall.");
+  {
+    const ImVec2 after = ImGui::GetCursorPos();
+    const float bw = 300 * g_scale;
+    ImGui::SetCursorPos(ImVec2(std::max(0.0f, ImGui::GetWindowWidth() - bw - 24 * g_scale), top));
+    PushAccent();
+    if (ImGui::Button("Make an arena step by step (Simple)", ImVec2(bw, 0))) g_simple = true;
+    PopAccent();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("A step-by-step helper for this same arena: where it starts from, its name and pictures, crowd signs, "
+                        "the ring and the VS screen.\nSwitch back here any time - nothing is lost.");
+    ImGui::SetCursorPos(after);
+  }
   std::vector<Problem> problems;
   ArenaProblems(problems);
   if (ImGui::BeginTabBar("arena_tabs")) {

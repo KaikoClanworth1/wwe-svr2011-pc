@@ -262,7 +262,7 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kDiscs, kCount };
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
@@ -302,6 +302,13 @@ struct Settings {
   int font = 17;
   std::vector<std::wstring> disc_folders;  // where the disc images are ("" list = the defaults)
   std::wstring bink2_tool;                 // radvideo64.exe / a Bink 2 ffmpeg the player chose ("" = look for one)
+  // My game discs (disc_list.h): a game's disc image or extracted folder, and the disc id read from it
+  struct MyDisc {
+    std::string key, id;
+    std::wstring path;
+  };
+  std::vector<MyDisc> my_discs;
+  bool discs_seeded = false;  // the old disc folders were searched once to fill My game discs
 };
 extern Settings g_settings;
 void SaveSettings();
@@ -309,15 +316,16 @@ void AddRecent(const std::wstring& file);
 
 // ---------------------------------------------------------------- disc images (checklist D1)
 
-// The user's other WWE discs (Xbox 360 / PS2 images) in the settings' disc
-// folders (default D:\Roms\Xbox 360\WWE and D:\Roms\Playstation 2\WWE Games).
+// The user's other WWE discs: My game discs (disc_list.h), each game's disc image or extracted folder that is there.
+// The first time, the old disc folders (default D:\Roms\Xbox 360\WWE and D:\Roms\Playstation 2\WWE Games) are
+// searched to fill it.
 struct DiscRef {
   std::wstring path;
   std::string id;    // XEX title id / PS2 serial
   std::string game;  // the game's name (by id), else the file name
   bool xbox = false;
 };
-// Read in the background on first use: empty until DiscsReady().
+// Empty until DiscsReady() (only that first search takes a while).
 const std::vector<DiscRef>& Discs();
 bool DiscsReady();
 void RescanDiscs();
@@ -334,6 +342,10 @@ bool FileRow(const char* label, std::wstring& file, const char* none, const COMD
 // A labelled text field (label on the left).
 bool TextField(const char* label, char* buf, size_t size, const char* hint = nullptr, float width = 320);
 void Hint(const char* text);  // (?) with a tooltip
+// Files dropped on the window from Explorer: true (with the files) when they were dropped on the last ImGui item this
+// frame - a drop target for that item (a drop nobody takes is forgotten after a frame). Test aid: the --ui-script
+// event "drop <x> <y> <file>".
+bool DroppedOnLastItem(std::vector<std::wstring>& files);
 void Heading(const char* title, const char* about);
 void PushAccent();  // the red main-action button colours
 void PopAccent();
@@ -348,7 +360,10 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void TestInGame(); void SetTestSave(const std::wstring& f, int lib); void StartNew(int tile);
                        void StartBackstage(int area);
                        // a converted arena.pac as the arena project (host tile, name), into the 3D editor
-                       void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source = "");
+                       void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source = "",
+                                            bool to_editor = true);
+                       // Simple arena (simple_arena.cpp): the Arena page's step-by-step mode at <step> (test aid)
+                       void TestSimple(int step); void TestSimpleStart(const std::string& spec);
                        // a converted bg78 as a backstage project: area, name, and its own-area gimmick pac (or "")
                        void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name,
                                                 const std::wstring& gimmick_pac, const std::string& gimmick); }
@@ -371,19 +386,39 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       bool EntranceOutfit(const std::wstring& pac); }
 namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
-                       Image SignPicture(const Image& src); }
+                       Image SignPicture(const Image& src);
+                       // a sign pack's files (manifest.txt + NN_<name>.dds) from 128 x 64 signs; installed into
+                       // <game>\Mods\Signs\<id> (false: written nothing / logged)
+                       std::vector<ZipEntry> PackFiles(const std::string& id, const std::string& name, const std::string& author,
+                                                       const std::vector<std::pair<std::string, Image>>& signs);
+                       bool InstallPack(const std::string& id, const std::vector<ZipEntry>& files); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
 namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
 namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host);
+                       // a WWE '12 - 2K17 bgNN.pac onto host tile `host` with the tab's options (svrfmt/wwe13), in the
+                       // background, then the result as the Arena page's project (to_editor: the 3D editor shown)
+                       void ConvertArena(const std::wstring& file, int host, const std::string& name, bool to_editor);
                        // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
                        void UseArenaFile(const std::wstring& file, const std::string& name); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
 namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
-                      void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult(); }
+                      void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();
+                      // Any kind's steps embedded in another page (Simple modes): `script` is the converter
+                      // (L"arena_port.py" ...); with_disc_row: the disc picker first. The result comes back in
+                      // EmbeddedResult(): a converted .svrmod, a result folder (moves, entrances), or for WWE '12 - 2K17
+                      // arenas the bgNN.pac copied off the disc (to convert with other_page::ConvertArena).
+                      void EmbeddedFlow(const wchar_t* script, bool with_disc_row = true);
+                      // The disc (image or folder) the steps read; "" none.
+                      void SetSource(const std::wstring& path); std::wstring CurrentSource();
+                      // The Port page on a kind (its tab) and a disc.
+                      void Open(const wchar_t* script, const std::wstring& source);
+                      // The converter kinds (tab titles) whose `games` know this disc id as ready / native, asked
+                      // in the background one converter at a time ("" until known).
+                      std::string KindsFor(const std::string& disc_id); }
 namespace assets_page { void Draw(); void TestOpen(const std::string& path); void TestSource(const std::wstring& source); }
 namespace pac_editor {  // a copy of any pac, edited and saved elsewhere (Game assets)
 bool Open(svrfmt::Bytes pac, const std::string& label, const std::wstring& from, const std::string& note);

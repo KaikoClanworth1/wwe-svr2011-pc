@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "app.h"
+#include "disc_list.h"
 #include "full_preview.h"
 #include "json.h"
 #include "svrfmt/disc.h"
@@ -66,6 +67,9 @@ int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 std::string g_test_game;        // (--port-test kind@game: a folder's game, as picked in its combo)
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
+// Embedded (a Simple mode's steps): the result is handed back (EmbeddedResult), not opened on its page.
+bool g_embedded = false;
+std::wstring g_embedded_result;
 
 // ---- the work folder (<game>\Mods\.convert\port): the converters' results and their copies of disc files
 constexpr uint64_t kTrimAbove = 3ull << 30, kTrimTo = 3ull << 29;  // 3 GB -> 1.5 GB
@@ -151,8 +155,14 @@ std::string SourceId() {
     }
     return id;
   }
+  if (!g_folder.empty()) {  // (an extracted disc: its default.xex / SYSTEM.CNF says which game)
+    static std::wstring for_folder;
+    static std::string id;
+    if (for_folder != g_folder) for_folder = g_folder, id = disc_list::Identify(g_folder);
+    return id;
+  }
   const auto& d = Discs();
-  return g_folder.empty() && g_disc >= 0 && g_disc < int(d.size()) ? d[size_t(g_disc)].id : "";
+  return g_disc >= 0 && g_disc < int(d.size()) ? d[size_t(g_disc)].id : "";
 }
 
 bool HaveScript(int k) {
@@ -518,11 +528,14 @@ bool NativeBlocked(const NativePac& p) {
 
 void NativeArenas(int k, const std::string& game, const std::string& game_name) {
   const std::string want = game + "|" + Utf8(Source());
+  std::error_code dec;
+  const std::wstring src = Source();
+  const bool src_folder = fs::is_directory(src, dec);
   if (g_native_for != want) {  // the bg pacs, once per source (the disc's table is in memory: quick)
     g_native_for = want, g_native.clear(), g_native_pick = -1;
-    if (!g_image.empty()) {
+    if (!src_folder) {
       svrfmt::Disc disc;
-      if (disc.Open(g_image)) {
+      if (disc.Open(src)) {
         const int bg = disc.Find("pac/bg");
         if (bg >= 0)
           for (int c : disc.At(bg).children)
@@ -531,7 +544,7 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
       }
     } else {
       std::error_code ec;
-      for (const auto& e : fs::directory_iterator(fs::path(g_folder) / L"pac" / L"bg", ec)) {
+      for (const auto& e : fs::directory_iterator(fs::path(src) / L"pac" / L"bg", ec)) {
         const std::string n = Utf8(e.path().filename().wstring());
         if (e.is_regular_file(ec) && Lower(n).rfind("bg", 0) == 0 && Lower(n).ends_with(".pac")) g_native.push_back({n, -1, e.file_size(ec)});
       }
@@ -539,8 +552,9 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
     std::sort(g_native.begin(), g_native.end(), [](const NativePac& a, const NativePac& b) { return a.name < b.name; });
   }
   if (g_list_for != std::to_string(k) + "|" + want) List(k, game);  // (the converter's list: only each pac's status)
-  ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish on the Other games page "
-                     "(host arena, options, Convert).", game_name.c_str());
+  if (g_embedded) ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena.", game_name.c_str());
+  else ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish on the Other games page "
+                          "(host arena, options, Convert).", game_name.c_str());
   if (g_native.empty()) {
     ImGui::TextColored(kWarn, "No pac\bg\bgNN.pac found here.");
     return;
@@ -582,15 +596,17 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
   if (g_native_pick >= 0 && NativeBlocked(g_native[size_t(g_native_pick)])) g_native_pick = -1;  // (its status came in after the pick)
   ImGui::BeginDisabled(g_native_pick < 0 || Busy());
   PushAccent();
-  const bool use = ImGui::Button("4. Use this arena (Other games page)", ImVec2(320 * g_scale, 0)) || (!g_native_test.empty() && g_native_pick >= 0 && !Busy());
+  const bool use = ImGui::Button(g_embedded ? "4. Use this arena" : "4. Use this arena (Other games page)", ImVec2(320 * g_scale, 0)) ||
+                   (!g_native_test.empty() && g_native_pick >= 0 && !Busy());
   PopAccent();
   ImGui::EndDisabled();
   if (!use) return;
   g_native_test.clear();
   const NativePac p = g_native[size_t(g_native_pick)];
-  const std::wstring image = g_image, folder = g_folder;
+  const std::wstring image = src_folder ? L"" : src, folder = src_folder ? src : L"";
   const fs::path out = WorkDir() / Wide("Arenas_" + game + "_" + p.name);
-  RunInBackground([p, image, folder, out, game] {
+  const bool embedded = g_embedded;
+  RunInBackground([p, image, folder, out, game, embedded] {
     Progress("Copying " + p.name + " off the disc ...");
     Bytes b;
     bool ok = false;
@@ -603,7 +619,13 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
     std::error_code ec;
     fs::create_directories(out.parent_path(), ec);
     if (!ok || !svrfmt::WriteFile(Utf8(out.wstring()), b)) { Status("Could not copy " + p.name + "."); return; }
-    OnUiThread([out, p, game] {
+    OnUiThread([out, p, game, embedded] {
+      if (embedded) {  // (a Simple mode converts it itself)
+        Log("port: " + p.name + " -> " + Utf8(out.wstring()));
+        g_embedded_result = out.wstring();
+        CacheJob(true, false, out.parent_path());
+        return;
+      }
       Log("port: " + p.name + " -> " + Utf8(out.wstring()) + " (Other games page)");
       other_page::UseArenaFile(out.wstring(), IdFrom(game + "_" + fs::path(p.name).stem().string(), "arena"));
       GoTo(PageId::kOther);
@@ -613,15 +635,12 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
 }
 
 // The converted thing onto its page.
-// Embedded (the Superstar page's Simple mode): a converted superstar is handed back, not opened as a project.
-bool g_embedded = false;
-std::wstring g_embedded_result;
 
 void OpenResult() {
   const std::string out = g_result["out"].Str(), opens = g_result["opens"].Str();
   const fs::path p = Wide(out);
   std::error_code ec;
-  if (g_embedded && Lower(p.extension().string()) == ".svrmod") {
+  if (g_embedded && !out.empty()) {  // (a .svrmod, or a result folder: the Simple mode takes it from here)
     g_embedded_result = p.wstring();
     return;
   }
@@ -665,20 +684,21 @@ void DiscRow() {
                                                                    : "pick a disc";
   ImGui::SetNextItemWidth(420 * g_scale);
   if (ImGui::BeginCombo("1. The disc", label.c_str())) {
-    if (!DiscsReady()) ImGui::TextDisabled("Reading your disc images ...");
-    else if (discs.empty()) ImGui::TextDisabled("No disc images found (Game assets: Disc folders...).");
+    if (!DiscsReady()) ImGui::TextDisabled("Looking for your discs ...");
+    else if (discs.empty()) ImGui::TextDisabled("No discs yet: add them on My game discs (below).");
     for (int i = 0; i < int(discs.size()); ++i)
-      if (ImGui::Selectable((discs[size_t(i)].game + "##" + std::to_string(i)).c_str(), g_folder.empty() && g_disc == i))
-        g_disc = i, g_folder.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
+      if (ImGui::Selectable((discs[size_t(i)].game + "##" + std::to_string(i)).c_str(), g_folder.empty() && g_image.empty() && g_disc == i))
+        g_disc = i, g_folder.clear(), g_image.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
     ImGui::Separator();
     if (ImGui::Selectable("An extracted folder ...")) {
       const std::wstring f = PickFolder(L"A folder with another game's files (an extracted disc)");
-      if (!f.empty()) g_folder = f, g_list = Json(), g_list_for.clear(), g_result = Json();
+      if (!f.empty()) g_folder = f, g_image.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
     }
+    if (ImGui::Selectable("My game discs ...")) GoTo(PageId::kDiscs);
     ImGui::EndCombo();
   }
-  Hint("Your WWE disc images, read as they are (nothing extracted): Xbox 360 SvR 2007 to 2K17 and the PS2 games, "
-       "from the disc folders set on the Game assets page.");
+  Hint("Your WWE games from My game discs (set once there: Find my discs searches a folder for them): Xbox 360 SvR "
+       "2007 to 2K17 and the PS2 games, disc images read as they are, or extracted folders.");
 }
 
 }  // namespace
@@ -715,7 +735,7 @@ void KindBody(int k) {
   }
   std::string game;
   const Json& g = GameFor(k);
-  if (g.IsNull() && g_folder.empty()) {
+  if (g.IsNull() && (g_folder.empty() || !SourceId().empty())) {
     ImGui::TextColored(kWarn, "This converter doesn't know this disc (%s).", SourceId().c_str());
     return;
   }
@@ -955,27 +975,69 @@ void Draw() {
   KindBody(g_kind);
 }
 
-void SuperstarFlow() {
+void SuperstarFlow() { EmbeddedFlow(L"superstar_port.py"); }
+
+void EmbeddedFlow(const wchar_t* script, bool with_disc_row) {
   if (PythonExe().empty() || !PythonMissing().empty()) {
     ImGui::PushTextWrapPos(0);
-    ImGui::TextColored(kWarn, "Bringing superstars from older games needs Python 3 with numpy and Pillow: missing %s.",
-                       PythonMissing().c_str());
+    ImGui::TextColored(kWarn, "Bringing things from older games needs Python 3 with numpy and Pillow: missing %s.", PythonMissing().c_str());
     ImGui::PopTextWrapPos();
     if (ImGui::Button("Install what's missing...")) OpenToolsPanel();
     ImGui::SameLine();
     if (ImGui::SmallButton("Check again")) RecheckTools();
     return;
   }
-  DiscRow();
+  if (with_disc_row) DiscRow();
   if (Source().empty()) return;
   int k = 0;
   for (int i = 0; i < kKindCount; ++i)
-    if (std::wstring(kKinds[i].script) == L"superstar_port.py") k = i;
+    if (std::wstring(kKinds[i].script) == script) k = i;
   if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
   g_embedded = true;
   KindBody(k);
   g_embedded = false;
 }
+
+void SetSource(const std::wstring& path) {
+  if (path == CurrentSource()) return;
+  g_image.clear(), g_folder.clear(), g_disc = -1;
+  const auto& d = Discs();
+  for (int i = 0; i < int(d.size()); ++i)
+    if (d[size_t(i)].path == path) g_disc = i;
+  std::error_code ec;
+  if (g_disc < 0 && !path.empty()) (fs::is_directory(path, ec) ? g_folder : g_image) = path;
+  g_list = Json(), g_list_for.clear(), g_result = Json(), g_result_error.clear();
+}
+std::wstring CurrentSource() { return Source(); }
+
+void Open(const wchar_t* script, const std::wstring& source) {
+  for (int k = 0; k < kKindCount; ++k)
+    if (std::wstring(kKinds[k].script) == script) g_kind = g_force_kind = k;
+  SetSource(source);
+  GoTo(PageId::kPort);
+}
+
+std::string KindsFor(const std::string& disc_id) {
+  std::string out;
+  for (int k = 0; k < kKindCount; ++k) {
+    if (!HaveScript(k)) continue;
+    if (!g_games.count(k)) {  // (asked one at a time, when nothing else runs)
+      AskGames(k);
+      continue;
+    }
+    for (const auto& g : g_games[k].items) {
+      bool is = g["disc_hint"].Str() == disc_id;
+      for (const auto& h : g["disc_hints"].items) is |= h.Str() == disc_id;
+      const std::string st = g["status"].Str();
+      if (is && (st == "ready" || st == "native")) {
+        out += (out.empty() ? "" : ", ") + std::string(kKinds[k].title);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 std::wstring EmbeddedResult() { return g_embedded_result; }
 void ClearEmbeddedResult() { g_embedded_result.clear(); }
 

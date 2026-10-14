@@ -211,6 +211,37 @@ Image SignPicture(const Image& src) {
   return out;
 }
 
+std::vector<ZipEntry> PackFiles(const std::string& id, const std::string& name, const std::string& author,
+                                const std::vector<std::pair<std::string, Image>>& signs) {
+  std::vector<ZipEntry> files;
+  const std::string man = "type=signs\nid=" + id + "\nname=" + name + "\nauthor=" + author + "\nversion=1.0\n" + MadeWith();
+  files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
+  for (size_t i = 0; i < signs.size(); ++i) {
+    char n[16];
+    std::snprintf(n, sizeof n, "%02zu_", i + 1);
+    std::string stem;
+    for (char c : signs[i].first) stem += std::isalnum(uint8_t(c)) ? c : '_';
+    const Image& img = signs[i].second;
+    files.push_back({n + stem.substr(0, 40) + ".dds", DdsEncode(img.w == 128 && img.h == 64 ? img : SignPicture(img), DxtFormat::kDxt1, true)});
+  }
+  return files;
+}
+
+bool InstallPack(const std::string& id, const std::vector<ZipEntry>& files) {
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Signs" / fs::u8path(id);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  for (const auto& f : files)
+    if (!WriteFile(PathStr(dir / fs::u8path(f.name)), f.data)) {
+      Log("Could not write into " + PathStr(dir) + " (is the game running?)");
+      return false;
+    }
+  const std::string doctor = InstallReport("Signs", dir);
+  if (!doctor.empty()) Log("signs: " + doctor);
+  return true;
+}
+
 void TestStart(const std::vector<std::wstring>& files, const std::wstring& save) {
   g_test_files = files;
   g_test_save = save;
