@@ -648,6 +648,9 @@ def main(argv):
         if not os.path.exists(a.src):
             raise BadInput('--src %s: not found' % a.src)
         with discfs.open(a.src) as disc:
+            if not disc.isdir('pac/bg'):
+                raise BadInput('the game files have no pac/bg folder (an incomplete extract? use the whole disc '
+                               'folder or the ISO)')
             if a.cmd == 'list':
                 lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
                          'svr2009': lambda d: svr2008_list(d, SVR2009),
