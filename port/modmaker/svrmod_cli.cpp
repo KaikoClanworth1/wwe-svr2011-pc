@@ -4,11 +4,13 @@
 //   svrmod xdec <wwe13 file> <out>       WWE '13 0x0FF512ED file -> plain (EPK8 / EPAC ...)
 //   svrmod wwe13 <WWE13 bgNN.pac> <host SvR2011 bgNN.pac> <out.pac> [host-crowd] [prune-textures] [wwe13-ring]
 //         [host-ring-meshes] [rope-hi] [no-corners] [wwe13-aprons] [wwe13-lights] [tex=<name.dds>]... [card=<256x128 dds>]
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
 
+#include "svrfmt/archive.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/arena_import.h"
 #include "svrfmt/jboy.h"
@@ -328,7 +330,183 @@ int Wwe13(int argc, char** argv) {
   return 0;
 }
 
+// archive-test <pac>...: the pac editor's tree (svrfmt/archive) on each file - open + save unchanged must give
+// the same bytes; then every container rebuilt (Touch all) must give the same bytes too, or (xcompressed, written
+// back with stored chunks) the same content once decoded. "list <pac>" prints the tree two levels down.
+static void ListNode(ArcNode& n, int depth, int max_depth) {
+  for (size_t i = 0; i < n.kids.size() && i < 40; ++i) {
+    ArcNode& c = n.kids[i];
+    const bool cont = depth + 1 < max_depth && ArchiveExpand(c);
+    std::printf("%*s%s%s%s  %s  %zu bytes%s\n", depth * 2, "", c.group.empty() ? "" : (c.group + "/").c_str(), c.name.c_str(),
+                c.wrap == ArcWrap::Bpe ? " [BPE]" : c.wrap == ArcWrap::Zlib ? " [ZLIB]" : "", ArchiveKindOf(c).c_str(),
+                c.stored.size(), cont ? ":" : "");
+    if (cont) ListNode(c, depth + 1, max_depth);
+  }
+  if (n.kids.size() > 40) std::printf("%*s... %zu more\n", depth * 2, "", n.kids.size() - 40);
+}
+
+// The first place two trees differ once every container is opened ("" = the same).
+static std::string TreeDiff(ArcNode& a, ArcNode& b, const std::string& path, int depth) {
+  const bool ca = ArchiveExpand(a), cb = ArchiveExpand(b);
+  if (ca != cb || a.kind != b.kind) return path + ": kind";
+  if (!ca || depth <= 0) {
+    const Bytes x = ArchiveData(a), y = ArchiveData(b);
+    // (EPAC / HSPC sizes count 0x100s: an entry read back has zeros up to the next 0x100)
+    const Bytes& s = x.size() <= y.size() ? x : y;
+    const Bytes& l = x.size() <= y.size() ? y : x;
+    if (!std::equal(s.begin(), s.end(), l.begin()) || !std::all_of(l.begin() + ptrdiff_t(s.size()), l.end(), [](uint8_t v) { return v == 0; })) {
+      size_t d = 0;
+      while (d < x.size() && d < y.size() && x[d] == y[d]) ++d;
+      char m[96];
+      std::snprintf(m, sizeof m, ": data at 0x%zX (%zu vs %zu bytes)", d, x.size(), y.size());
+      return path + m;
+    }
+    return "";
+  }
+  if (a.kids.size() != b.kids.size()) return path + ": " + std::to_string(a.kids.size()) + " vs " + std::to_string(b.kids.size()) + " children";
+  for (size_t i = 0; i < a.kids.size(); ++i) {
+    ArcNode &x = a.kids[i], &y = b.kids[i];
+    if (x.name != y.name || x.group != y.group || x.id != y.id || x.hash != y.hash || x.tail != y.tail || x.flags != y.flags)
+      return path + "/" + x.name + ": header (" + y.name + ")";
+    const std::string d = TreeDiff(x, y, path + "/" + x.group + (x.group.empty() ? "" : ":") + x.name, depth - 1);
+    if (!d.empty()) return d;
+  }
+  return "";
+}
+
+// The first node whose stored bytes differ (trees already the same once unpacked).
+static std::string StoredDiff(ArcNode& a, ArcNode& b, const std::string& path) {
+  if (a.stored == b.stored) return "";
+  if (a.parsed && b.parsed && a.kind != ArcKind::Leaf)
+    for (size_t i = 0; i < a.kids.size() && i < b.kids.size(); ++i) {
+      const std::string d = StoredDiff(a.kids[i], b.kids[i], path + "/" + a.kids[i].group + (a.kids[i].group.empty() ? "" : ":") + a.kids[i].name);
+      if (!d.empty()) return d;
+    }
+  size_t d = 0;
+  while (d < a.stored.size() && d < b.stored.size() && a.stored[d] == b.stored[d]) ++d;
+  return path + " (" + std::to_string(a.stored.size()) + " vs " + std::to_string(b.stored.size()) + " bytes, from " + std::to_string(d) + ")";
+}
+
+// The deepest container (to depth 4) with at least two leaf children: the path to it (indexes).
+static bool EditTarget(ArcNode& n, std::vector<size_t>& path, int depth) {
+  if (depth > 4 || !ArchiveExpand(n)) return false;
+  for (size_t i = 0; i < n.kids.size(); ++i) {
+    path.push_back(i);
+    if (EditTarget(n.kids[i], path, depth + 1)) return true;
+    path.pop_back();
+  }
+  size_t leaves = 0;
+  for (auto& k : n.kids) leaves += !ArchiveExpand(k);
+  return depth > 0 && leaves >= 2 && n.kids.size() >= 2;
+}
+
+// archive-edit-test <pac>...: in the deepest list: the first leaf replaced (+ 8 bytes), the second removed, an
+// entry added (EPAC: a new name, PACH / SHDC: the removed id again, HSPC: refused with the reason) and (EPAC) one
+// renamed; saved, opened again: the same tree as the edited one in memory.
+static int ArchiveEditTest(int n, char** files) {
+  int bad = 0;
+  for (int f = 0; f < n; ++f) {
+    Bytes in;
+    std::string err;
+    Archive a;
+    if (!ReadFile(files[f], in) || !ArchiveOpen(in, a, &err)) { std::printf("FAIL open %s: %s\n", files[f], err.c_str()); ++bad; continue; }
+    std::vector<size_t> path;
+    if (!EditTarget(a.root, path, 0)) {   // (no nested list: the top one)
+      path.clear();
+      if (a.root.kids.size() < 2) { std::printf("skip %s: fewer than 2 entries\n", files[f]); continue; }
+    }
+    ArcNode* p = &a.root;
+    std::string where;
+    for (size_t i : path) where += "/" + p->kids[i].group + (p->kids[i].group.empty() ? "" : ":") + p->kids[i].name, p = &p->kids[i];
+    size_t leaf = 0;
+    while (leaf < p->kids.size() && ArchiveExpand(p->kids[leaf])) ++leaf;
+    if (leaf == p->kids.size()) { std::printf("skip %s: no plain entry in the top list\n", files[f]); continue; }
+    Bytes data = ArchiveData(p->kids[leaf]);
+    App(data, reinterpret_cast<const uint8_t*>("EDITTEST"), 8);
+    ArchiveReplace(p->kids[leaf], data);
+    const size_t gone = leaf + 1 < p->kids.size() ? leaf + 1 : (leaf ? 0 : 1);
+    const ArcNode removed = p->kids[gone];
+    ArchiveRemove(*p, gone);
+    std::string what = "replaced " + p->kids[leaf > gone ? leaf - 1 : leaf].name + ", removed " + removed.name;
+    const Bytes extra = {'N', 'E', 'W', '!', 1, 2, 3, 4};
+    if (p->kind == ArcKind::Epac) {
+      const std::string nm = ArchiveNameMax(*p) == 8 ? "ZZTEST1" : "ZZT1";
+      if (!ArchiveAdd(*p, removed.group, nm, 0, extra, &err)) { std::printf("FAIL %s: add: %s\n", files[f], err.c_str()); ++bad; continue; }
+      if (!ArchiveRename(*p, p->kids.size() - 1, ArchiveNameMax(*p) == 8 ? "ZZTEST2" : "ZZT2", &err)) {
+        std::printf("FAIL %s: rename: %s\n", files[f], err.c_str());
+        ++bad;
+        continue;
+      }
+      what += ", added " + removed.group + "/" + nm + ", renamed the last one";
+    } else if (p->kind == ArcKind::Hspc) {
+      what += ArchiveAdd(*p, "", "", 1, extra, &err) ? ", ADDED (should be refused)" : ", add refused";
+    } else if (!ArchiveAdd(*p, "", "", removed.id, extra, &err)) {
+      std::printf("FAIL %s: add %s: %s\n", files[f], removed.name.c_str(), err.c_str());
+      ++bad;
+      continue;
+    } else {
+      what += ", added " + removed.name + " back (new data)";
+    }
+    const Bytes out = ArchiveSave(a);
+    Archive b;
+    std::string diff;
+    if (!ArchiveOpen(out, b, &err)) diff = "the saved file doesn't open: " + err;
+    else diff = TreeDiff(a.root, b.root, "", 8);
+    const bool ok = diff.empty() && out != in;
+    std::printf("%s %s: %s in %s; %zu -> %zu bytes%s%s\n", ok ? "ok  " : "FAIL", files[f], what.c_str(),
+                where.empty() ? "the top list" : where.c_str(), in.size(), out.size(), diff.empty() ? "" : "; differs: ", diff.c_str());
+    bad += !ok;
+  }
+  return bad ? 1 : 0;
+}
+
+static int ArchiveTest(int n, char** files, bool list) {
+  int bad = 0;
+  for (int i = 0; i < n; ++i) {
+    Bytes in;
+    std::string err;
+    Archive a;
+    if (!ReadFile(files[i], in) || !ArchiveOpen(in, a, &err)) {
+      std::printf("FAIL open %s: %s\n", files[i], err.c_str());
+      ++bad;
+      continue;
+    }
+    if (list) {
+      std::printf("%s: %s, %zu entries\n", files[i], a.format.c_str(), a.root.kids.size());
+      ListNode(a.root, 0, 3);
+      continue;
+    }
+    const bool same0 = ArchiveSave(a) == in;
+    Bytes plain_in = in;
+    if (a.xcompress) XcompressDecode(in, plain_in);
+    ArchiveTouchAll(a.root);
+    const Bytes out = ArchiveSave(a);
+    Bytes plain_out = out;
+    bool readable = true;
+    if (a.xcompress) readable = XcompressDecode(out, plain_out);
+    bool same1 = readable && plain_out == plain_in;
+    std::string tree;
+    if (!same1) {   // (a BPE container the rebuild packs again: the same once every level is unpacked?)
+      Archive b, c;
+      if (!ArchiveOpen(out, b, &err) || !ArchiveOpen(in, c, &err)) tree = "rebuilt file unreadable: " + err;
+      else tree = TreeDiff(c.root, b.root, "", 8);
+      if (tree.empty()) { std::printf("ok   %s: %s; unchanged save identical; rebuilt the same once unpacked (stored differently: %s)\n", files[i], a.format.c_str(), StoredDiff(c.root, b.root, "").c_str()); bad += !same0; continue; }
+      std::printf("     tree: %s\n", tree.c_str());
+    }
+    size_t diff = 0;
+    if (!same1) while (diff < plain_out.size() && diff < plain_in.size() && plain_out[diff] == plain_in[diff]) ++diff;
+    std::printf("%s %s: %s; unchanged save %s; rebuilt %s%s\n", same0 && same1 ? "ok  " : "FAIL", files[i], a.format.c_str(),
+                same0 ? "identical" : "DIFFERS", same1 ? (a.xcompress ? "the same once decoded" : "identical") : "DIFFERS",
+                same1 ? "" : (" at 0x" + [&] { char b[24]; std::snprintf(b, sizeof b, "%zX (%zu vs %zu bytes)", diff, plain_out.size(), plain_in.size()); return std::string(b); }()).c_str());
+    bad += !(same0 && same1);
+  }
+  return bad ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc >= 3 && !std::strcmp(argv[1], "archive-test")) return ArchiveTest(argc - 2, argv + 2, false);
+  if (argc >= 3 && !std::strcmp(argv[1], "archive-list")) return ArchiveTest(argc - 2, argv + 2, true);
+  if (argc >= 3 && !std::strcmp(argv[1], "archive-edit-test")) return ArchiveEditTest(argc - 2, argv + 2);
   if ((argc == 7 || argc == 8) && !std::strcmp(argv[1], "makemod"))
     return MakeMod(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : nullptr);
   if (argc == 5 && !std::strcmp(argv[1], "ring")) return Ring(argv[2], argv[3], argv[4]);

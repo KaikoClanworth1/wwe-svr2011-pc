@@ -38,9 +38,12 @@ Bytes PachWrite(const std::vector<PachEntry>& entries);
 // has junk there - so the table is read the way that is consistent. Entries
 // sit on 0x800 sectors from 0x4000. Header +4 = the table's size, +8 the data
 // size. A group's u32 is 0, or (SvR 2007) the group's first data sector.
+// WWE 2K16 model pacs: 20-byte entries {name[4], u32 sector, u32 size / 0x100,
+// u32 size / 0x100 again, u32 tail ("0001" or 0)} - count = entries x 4 (e20).
 struct EpacEntry {
   std::string name;  // 4 chars (wide: 8)
   Bytes data;
+  uint32_t tail = 0;  // (e20) the entry's last u32, kept
 };
 struct EpacGroup {
   std::string type;  // 4 chars
@@ -54,6 +57,7 @@ struct Epac {
   Bytes trailer;  // packer footer ("EOP5/plugin version ..."), kept on repack
   bool epk8 = false;           // the magic says EPK8
   bool wide = false;           // 16-byte entries, 8-char names
+  bool e20 = false;            // 20-byte entries (WWE 2K16), 4-char names
   bool group_sectors = false;  // each group's u32 is its first data sector (SvR 2007)
   int32_t toc_extra = 0;       // header +4 minus the table's size (kept, so a repack is byte-identical)
 };

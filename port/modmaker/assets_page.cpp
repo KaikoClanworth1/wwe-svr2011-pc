@@ -596,21 +596,23 @@ void Viewer() {
   if (!n->detail.empty()) info += ", " + n->detail;
   ImGui::TextDisabled("%s", info.c_str());
   if (!n->error.empty()) ImGui::TextColored(kBad, "%s", n->error.c_str());
-  if (n->kind == Kind::kFile && n->opened && n->error.empty() && !n->children.empty()) {
+  const bool list_file = !n->data.empty() && (IsPach(n->data) || (n->data.size() >= 4 && !std::memcmp(n->data.data(), "HSPC", 4)));
+  if (n->kind == Kind::kFile && n->opened && n->error.empty() && (!n->children.empty() || list_file)) {
     PushAccent();
     const bool edit = ImGui::Button("Edit a copy of this pac...");
     PopAccent();
     ImGui::SameLine();
-    Hint("Opens a copy in the pac editor: export, replace, rename, remove or add entries (and the children of PACH "
-         "entries), then save the copy somewhere else. The original - the game's own pac folder, a disc - is never "
-         "written.");
+    Hint("Opens a copy in the pac editor: every level (EPAC / EPK8, WWE 2K17 HSPC, PACH and SHDC lists inside "
+         "entries); preview, export, replace, rename, remove or add entries, then save the copy somewhere else in "
+         "the pac's own layout. The original - the game's own pac folder, a disc - is never written.");
     if (edit) {
       Bytes all;
-      if (n->whole) all = *n->whole;
-      else if (!ReadRange(*n, 0, FileSize(*n), all)) all.clear();
+      Node raw;  // (the file as it is: an xcompress one too, so it is saved xcompressed again)
+      Inherit(raw, *n);
+      raw.whole.reset();
+      if (!ReadRange(raw, 0, FileSize(raw), all)) all.clear();
       if (all.empty()) Status("Could not read the pac.");
-      else pac_editor::Open(std::move(all), g_source_name + ": " + Path(n), n->disc ? Wide(n->label) : n->file.wstring(),
-                            n->whole ? "unwrapped from xcompress (saved without it: SvR 2011 reads plain pacs)" : "");
+      else pac_editor::Open(std::move(all), g_source_name + ": " + Path(n), n->disc ? Wide(n->label) : n->file.wstring(), "");
     }
   }
   if (!n->data.empty()) {
@@ -803,6 +805,12 @@ void Draw() {
     Open(*g_root);
     if (!g_test_path.empty()) OpenPath(g_test_path), g_test_path.clear();
   }
+  if (pac_editor::IsOpen()) {  // (the pac editor has a tree of its own: the whole width)
+    ImGui::BeginChild("viewer", ImVec2(0, 0), true);
+    pac_editor::Draw();
+    ImGui::EndChild();
+    return;
+  }
   ImGui::BeginChild("tree", ImVec2(340 * g_scale, 0), true);
   ImGui::SetNextItemWidth(-1);
   ImGui::InputTextWithHint("##find", "find in the open parts of the tree", g_find, sizeof g_find);
@@ -810,8 +818,7 @@ void Draw() {
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("viewer", ImVec2(0, 0), true);
-  if (pac_editor::IsOpen()) pac_editor::Draw();
-  else Viewer();
+  Viewer();
   ImGui::EndChild();
 }
 
