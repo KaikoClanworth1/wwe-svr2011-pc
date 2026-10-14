@@ -59,7 +59,7 @@ motions convert without retargeting (only re-encoded).
 | Climb crates / walkway / ladder / cage (wall attributes) | 2011 backstage fighters walk in motion 20500, which never reaches the wall switch (sub_82306B10); hctp_room asks the T22 search itself when a fighter presses into a 0xDF wall |
 | Walk off a ledge | works (gravity + floor triangles) |
 | Cage walls: grab (X) + mash -> both panels of a side break, vanish, stop blocking | works (player and AI); the panels' collision carries the panel tag (0xA0 + prop), so climbing accepts those tags too |
-| Hits / grabs through the standing fence (HCTP cells) | hooks on the hit broker's vt[8] sub_82238F28 and vt[10] sub_8222F678: inside-cage vs outside-cage pairs on the ground are dropped while that side's panels stand; untested in game |
+| Hits / grabs through the standing fence (HCTP cells) | hooks on the hit broker's vt[8] sub_82238F28 and vt[10] sub_8222F678: inside-cage vs outside-cage pairs on the ground are dropped while that side's panels stand; works (test: fighters at x 155 / 166 either side of the east panels, 48 CPU hits across, all dropped, no damage) |
 | Roof: 2nd knock-down breaks it, fall into the cage | works (DropIn nudges whoever stands over the hole; gravity does the rest) |
 | Button -> shutter opens, cart rolls out, crates fall | works: X in the button zone (12510), shutter 12525 then hidden, cart moved along z (MoveRec + pose copy off, obj+1140), hits whoever is in its way (340 = 12516), crates 12529, fade, 240 HCTP frames later the closing shutter (HCTP 1265, 12530) and everything resets |
 | Valves -> steam jets that hurt | works: X in the valve zone toggles (12511 / 12512, 121-frame gap, off after 250); 5 zyouki puffs per jet moved along it; burn 12509 in the jet volume (HMD 2058 / 2068); valve 210 also drops the barrel stack |
@@ -67,11 +67,15 @@ motions convert without retargeting (only re-encoded).
 | Stacks (cardboard, barrels, pipes) collapse and drop a weapon | cardboard + barrels work (2011 has no cardboard box / barrel / lead pipe: trash can 63 / tire iron 120) |
 | Railings fall | coded, untested |
 | Jump down off the cage top (HCTP GapIn, 12572 -> 12505) | works: X on the cage top facing its front or east edge puts him on the edge and he jumps to the floor |
-| Step into the broken roof hole (12092 -> 12506) | coded (X facing the hole from the frame), untested |
+| Step into the broken roof hole (12092 -> 12506) | works: X while walking toward the hole from the frame (within 6 of it) steps in; he lands in the cage ~1.5 s later |
 | Weapons the props drop | cardboard box 17 (stack), trash can 63 (barrels), kendo stick 88 for HCTP's lead pipe (2011 has none); their models load through load_weapons= (hook on sub_82301148, the per-area wanted-model list) |
 | Equipment crate rest pose | 12559 = the crate's own track of 12513, 1 frame (was a tilted green slab) |
 
-Test switches (SVR2011_TEST_HCTP_ROOF): `1` roof breaks at the first knock-down, `now` roof breaks at frame 300, `crate` fighter 1 shut in at frame 300, `steam` both valves opened at frame 300, `cart` the button cycle at frame 300, `props` railings, pipes and stacks knocked over at frame 300, `puff` a steam puff over fighter 0, `nograb` no cage-wall grabs.
+Test switches (SVR2011_TEST_HCTP_ROOF): `1` roof breaks at the first knock-down, `now` roof breaks at frame 300, `crate` fighter 1 shut in at frame 300, `steam` both valves opened at frame 300, `cart` the button cycle at frame 300, `props` railings, pipes and stacks knocked over at frame 300, `puff` a steam puff over fighter 0, `nograb` no cage-wall grabs or climbs (fence tests).
+
+Camera: backstage, fighters at different heights (one on the cage top) are framed head to feet (match_types.cpp, the sub_82227690 sphere: centre between the lowest feet and the highest head). One on top and one far off below can still leave the lower one at the frame's edge (the camera= distance cap).
+
+Known: walking off the frame into the open hole drops a fighter in by gravity without the step-in act (HCTP's GapIn needs X).
 
 Pitfalls:
 - Moving a prop (MoveRec): write elem +32/+48 and call sub_824B9C40(elem); then mark the objects' motion component ('S3MW' via sub_8269DFB0(obj+1088), its +24 -> +12 = 0), or sub_824B46F8 copies the last motion's matrices back every frame. Not obj+1140: that skips the node commit too and the object isn't drawn. PlayRec (sub_824B91C0) sets S3MW running again.

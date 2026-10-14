@@ -50,7 +50,7 @@ const bool g_steam_now = g_roof_env && std::strcmp(g_roof_env, "steam") == 0;
 const bool g_puff_now = g_roof_env && std::strcmp(g_roof_env, "puff") == 0;
 // (=props: the railings and the lead pipes knocked over 5 seconds in)
 const bool g_props_now = g_roof_env && std::strcmp(g_roof_env, "props") == 0;
-// (=nograb: no cage-wall grabs, so strikes reach the fence)
+// (=nograb: no cage-wall grabs or climbs, so strikes reach the fence)
 const bool g_no_grab = g_roof_env && std::strcmp(g_roof_env, "nograb") == 0;
 // (=cart: the button cycle starts 5 seconds in)
 const bool g_cart_now = g_roof_env && std::strcmp(g_roof_env, "cart") == 0;
@@ -125,7 +125,7 @@ void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
     c.pressing += 2;
   else if (c.pressing > 0)
     --c.pressing;
-  if (c.pressing < 12 || c.cooldown > 0) return;
+  if (c.pressing < 12 || c.cooldown > 0 || g_no_grab) return;
   const auto saved = ctx;
   ctx.r3.u64 = f;
   sub_824B6A70(ctx, base);

@@ -1563,14 +1563,16 @@ REX_HOOK_RAW(sub_82227150) {
 // What the match camera frames: sub_82227690(camera) -> a sphere (centre
 // +16/+20/+24, radius +32) around every competitor. Backstage with more than
 // two people, it is centred on their average position instead (radius: the
-// farthest of them from it).
+// farthest of them from it). Backstage, fighters at different heights (one up
+// on a cage top or a walkway, -Y up) are framed head to feet: the centre
+// between the lowest feet and the highest head, the radius at least half that.
 REX_EXTERN(__imp__sub_82227690);
 REX_HOOK_RAW(sub_82227690) {
   __imp__sub_82227690(ctx, base);
   const uint32_t sphere = ctx.r3.u32;
   if (!sphere || Rd32(base + kLiveSettings + 64) != 78) return;
   constexpr uint32_t kChars = 0x82E3CC50;
-  float xs[9], zs[9];
+  float xs[9], ys[9], zs[9];
   int n = 0;
   const auto saved = ctx;
   for (uint32_t i = 0; i < 9; ++i) {
@@ -1582,12 +1584,26 @@ REX_HOOK_RAW(sub_82227690) {
     const uint32_t pos = Rd32(base + ch + 304);
     if (!competitor || !pos) continue;
     xs[n] = RdF(base + pos);
+    ys[n] = RdF(base + pos + 4);
     zs[n] = RdF(base + pos + 8);
     ++n;
   }
   ctx = saved;
   ctx.r3.u64 = sphere;
-  if (n <= 2) return;
+  if (n == 0) return;
+  // (a wrestler stands about 19 tall)
+  float top = ys[0], feet = ys[0];
+  for (int i = 1; i < n; ++i) top = std::min(top, ys[i]), feet = std::max(feet, ys[i]);
+  const auto frame_heights = [&] {
+    if (feet - top <= 8.0f) return;
+    const float head = top - 19.0f;
+    WrF(base + sphere + 20, (head + feet) / 2);
+    if (RdF(base + sphere + 32) < (feet - head) / 2 + 4.0f) WrF(base + sphere + 32, (feet - head) / 2 + 4.0f);
+  };
+  if (n <= 2) {
+    frame_heights();
+    return;
+  }
   // Around the fighters near the player (1P: the first competitor): their
   // average; anyone farther away (another fight elsewhere) is left out, so
   // the camera stays close to the player's fight.
@@ -1610,6 +1626,7 @@ REX_HOOK_RAW(sub_82227690) {
   WrF(base + sphere + 16, mx);
   WrF(base + sphere + 24, mz);
   WrF(base + sphere + 32, r);
+  frame_heights();
 }
 
 // -- The whole backstage's fight box --------------------------------------
