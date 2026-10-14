@@ -414,6 +414,28 @@ class Builder:
             out.append([(b, w / tot) for b, w in top] if tot > 0 else [(self.index.get('root', 0), 1.0)])
         return out
 
+    def skin_shader(self, m):
+        """does the game draw this mesh with its skin shader? (ModMakerUIRework, from the converted shaders and a frame
+        dump: a yBumpMapSS mesh that is culled (flag 0x2), binds a tiling map and has g_fSweatSPA != 0.) The skin shader
+        takes the shine mask from the NORMAL map's alpha (the colour alpha is only the sweat shine); every other one
+        from the colour alpha. A cut-out (flags 0x110) keeps its alpha as opacity in the colour."""
+        kind = m.get('kind', 'skin')
+        if kind not in ('skin', 'hair'):
+            return False
+        tmpl = self.template_mesh(kind)[0]
+        if tmpl.shader != 'yBumpMapSS':
+            return False
+        mat = m.get('material') or {}
+        fl = struct.unpack_from('>I', tmpl.raw, 0x88)[0]
+        if mat.get('double_sided') is not None:
+            fl = (fl & ~0x2) if mat['double_sided'] else (fl | 0x2)
+        if mat.get('cutout') is not None:
+            fl = (fl | 0x110) if mat['cutout'] else (fl & ~0x110)
+        p = {n: v for n, t, v in tmpl.params}
+        tiling = 'texTilingMap' in p and struct.unpack('>i', p['texTilingMap'][:4])[0] >= 0
+        spa = 'g_fSweatSPA' in p and struct.unpack('>f', p['g_fSweatSPA'][:4])[0] != 0
+        return bool(fl & 0x2) and not (fl & 0x110) and tiling and spa
+
     def attire(self, a, entry_name):
         meshes = a['meshes']
         for m in meshes:
@@ -438,11 +460,11 @@ class Builder:
         def norm_of(m):
             return mat(m).get('normal') or (m.get('textures') or {}).get('normal') or at.get('normal')
 
-        def col_key(m):   # (one atlas cell per colour png + normal png + alpha mode; the tint is a mesh parameter)
+        def col_key(m):   # (one atlas cell per colour png + normal png + alpha mode + shader; the tint is a parameter)
             c = (m.get('textures') or {}).get('color') or at.get('color') or ''
             if not c:
                 return ''
-            return '%s|%s|%s' % (c, norm_of(m) or '', alpha_mode(m))
+            return '%s|%s|%s|%s' % (c, norm_of(m) or '', alpha_mode(m), 'S' if self.skin_shader(m) else '')
 
         def alpha_mode(m):   # (what the cell's colour alpha means: cut-out opacity, or how specular is modulated)
             if mat(m).get('cutout'):
@@ -458,10 +480,32 @@ class Builder:
             k = col_key(m)
             if k and k not in colors:
                 im = load_png(self.path(k.split('|')[0]))
-                # (colour alpha: the png's own when it has one - a cut-out's mask, or a specular level the caller
-                # painted - else a specular level from the brightness, per cell)
                 mode = alpha_mode(m)
-                if mode == 'flat':   # (uniform shine at the mesh's specular level)
+                nk = norm_of(m)
+                nim = load_png(self.path(nk)) if nk else None
+                if self.skin_shader(m):
+                    # (the skin shader: the shine mask is the normal map's alpha - the normal png's own when it has
+                    # one and nothing else is asked, else the colour png's alpha, else the brightness; flat = 255.
+                    # The colour alpha is then only the sweat shine: stock-like 0.3)
+                    if mode == 'flat':
+                        mask = Image.new('L', im.size, 255)
+                    elif mode == 'brightness' or not (has_alpha(im) or (nim is not None and has_alpha(nim))):
+                        mask = spec_alpha(im).split()[3]
+                    elif mode == '' and nim is not None and has_alpha(nim):
+                        mask = nim.split()[3]
+                    else:
+                        mask = im.split()[3] if has_alpha(im) else spec_alpha(im).split()[3]
+                    base = nim if nim is not None else Image.new('RGBA', im.size, (128, 128, 255, 255))
+                    base = base.convert('RGBA').copy()
+                    base.putalpha(mask.resize(base.size, Image.LANCZOS))
+                    normals[k] = base
+                    im = im.convert('RGB').convert('RGBA')
+                    im.putalpha(77)
+                    colors[k] = im
+                    continue
+                # (other shaders: the colour alpha is the shine mask - the png's own when it has one (a cut-out's
+                # opacity, or a level the caller painted), else from the brightness; flat = 255)
+                if mode == 'flat':
                     im = im.copy()
                     im.putalpha(255)
                 elif mode == 'brightness':
@@ -469,9 +513,8 @@ class Builder:
                 elif mode != 'texture' and not has_alpha(im):
                     im = spec_alpha(im)
                 colors[k] = im
-            nk = norm_of(m)
-            if k and nk and k not in normals:
-                normals[k] = load_png(self.path(nk))
+                if nim is not None:
+                    normals[k] = nim
         color = atlas.sheet(colors, COLOR_SIZE, (128, 128, 128, 255))
         if not colors:
             color = spec_alpha(color)
