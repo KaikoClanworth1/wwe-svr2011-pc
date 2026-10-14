@@ -113,6 +113,8 @@ def log(*a):
 
 def find_svrmod(arg=None):
     cands = [arg] if arg else []
+    if os.environ.get('SVR2011_SVRMOD'):  # (the Mod Maker's own, handed to every converter)
+        cands.append(os.environ['SVR2011_SVRMOD'])
     if os.environ.get('SVRMOD'):
         cands.append(os.environ['SVRMOD'])
     cands += [os.path.join(HERE, 'svrmod.exe'), os.path.join(HERE, '..', 'out', 'modmaker', 'svrmod.exe')]

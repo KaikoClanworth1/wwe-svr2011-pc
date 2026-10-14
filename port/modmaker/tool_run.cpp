@@ -3,16 +3,23 @@
 
 #include "app.h"
 
+#include <mutex>
 #include <thread>
+
+extern "C" {
+#include "../launcher/setup_tab.h"
+}
 
 namespace mm {
 
 namespace {
 
-std::wstring g_tools, g_python, g_ffmpeg;
+std::wstring g_tools, g_python, g_ffmpeg, g_svrmod, g_vgm;
 bool g_checked = false;
 std::string g_missing;
 bool g_missing_checked = false;
+std::mutex g_hint_mutex;
+std::string g_hint;  // what the last converter's output said was missing ("numpy", "svrmod.exe" ...)
 
 std::wstring ExeDir() {
   wchar_t buf[MAX_PATH * 2];
@@ -40,9 +47,72 @@ std::wstring OnPath(const wchar_t* name) {
   return L"";
 }
 
+// "" when `python` imports numpy and PIL, else the missing ones ("numpy, Pillow"); "?" when it didn't run.
+std::string ProbeModules(const std::wstring& python) {
+  const std::wstring probe = Quote(python) + L" -c \"import importlib.util as u; "
+                             L"print('missing:' + ','.join(n for m, n in (('numpy', 'numpy'), ('PIL', 'Pillow')) if u.find_spec(m) is None))\"";
+  SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
+  HANDLE rd = nullptr, wr = nullptr;
+  if (!CreatePipe(&rd, &wr, &sa, 0)) return "?";
+  SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+  STARTUPINFOW si = {sizeof si};
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = wr, si.hStdError = wr;
+  PROCESS_INFORMATION pi = {};
+  std::wstring cmd = probe;
+  std::string out;
+  if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    CloseHandle(wr);
+    char buf[512];
+    DWORD n = 0;
+    while (ReadFile(rd, buf, sizeof buf, &n, nullptr) && n) out.append(buf, n);
+    WaitForSingleObject(pi.hProcess, 20000);
+    CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+  } else {
+    CloseHandle(wr);
+  }
+  CloseHandle(rd);
+  const size_t at = out.find("missing:");
+  if (at == std::string::npos) return "?";
+  std::string m = out.substr(at + 8);
+  while (!m.empty() && (m.back() == '\r' || m.back() == '\n' || m.back() == ' ')) m.pop_back();
+  for (auto& c : m)
+    if (c == ',') c = '/';
+  std::string pretty;
+  for (size_t i = 0; i < m.size(); ++i) pretty += m[i] == '/' ? std::string(", ") : std::string(1, m[i]);
+  return pretty;
+}
+
+// What a converter's output line says is missing ("" = nothing): Python's ModuleNotFoundError, the tools' ToolMissing.
+std::string HintOf(const std::string& line) {
+  if (const size_t at = line.find("No module named '"); at != std::string::npos) {
+    const size_t e = line.find('\'', at + 17);
+    std::string mod = line.substr(at + 17, e == std::string::npos ? std::string::npos : e - at - 17);
+    if (const size_t dot = mod.find('.'); dot != std::string::npos) mod.resize(dot);
+    return mod == "PIL" ? "Pillow" : mod;
+  }
+  if (line.find("ToolMissing") != std::string::npos || (line.find("svrmod.exe") != std::string::npos && line.find("not found") != std::string::npos))
+    return line.find("vgmstream") != std::string::npos ? "vgmstream" : "svrmod.exe";
+  return "";
+}
+void NoteHint(const std::string& line) {
+  const std::string h = HintOf(line);
+  if (h.empty()) return;
+  std::lock_guard lock(g_hint_mutex);
+  if (g_hint.find(h) == std::string::npos) g_hint += (g_hint.empty() ? "" : ", ") + h;
+}
+std::string TakeHint() {
+  std::lock_guard lock(g_hint_mutex);
+  std::string h;
+  std::swap(h, g_hint);
+  return h;
+}
+
 void Check() {
   if (g_checked) return;
   g_checked = true;
+  g_python.clear(), g_ffmpeg.clear(), g_svrmod.clear(), g_vgm.clear(), g_tools.clear();
+  g_missing.clear(), g_missing_checked = false;
   const std::wstring exe = ExeDir();
   std::error_code ec;
   for (const fs::path cand : {fs::path(exe) / L"Mod Maker Tools", fs::path(exe) / L"tools",
@@ -56,12 +126,22 @@ void Check() {
   // 0-byte alias), then the py launcher
   for (const auto& home : ToolsHomes())
     if (g_python.empty() && fs::exists(home / L"python" / L"python.exe", ec)) g_python = (home / L"python" / L"python.exe").wstring();
-  for (const wchar_t* name : {L"python.exe", L"python3.exe"}) {
-    if (!g_python.empty()) break;
-    const std::wstring p = OnPath(name);
-    if (!p.empty() && !IsAlias(p)) g_python = p;
+  if (g_python.empty()) {  // (the player's own: only one that has numpy and Pillow - else the first, to say what's missing)
+    std::vector<std::wstring> cands;
+    for (const wchar_t* name : {L"python.exe", L"python3.exe"})
+      if (const std::wstring p = OnPath(name); !p.empty() && !IsAlias(p)) cands.push_back(p);
+    wchar_t no_py[8];  // (test: SVR2011_TEST_NO_PY=1 - as on a PC whose only Python is one without numpy)
+    if (const std::wstring p = OnPath(L"py.exe"); !p.empty() && !GetEnvironmentVariableW(L"SVR2011_TEST_NO_PY", no_py, 8)) cands.push_back(p);
+    for (const auto& c : cands) {
+      const std::string m = ProbeModules(c);
+      Log("tools: Python " + Utf8(c) + (m.empty() ? ": numpy and Pillow found" : m == "?" ? ": didn't run" : ": missing " + m));
+      if (m.empty()) {
+        g_python = c, g_missing_checked = true;
+        break;
+      }
+      if (g_python.empty()) g_python = c, g_missing = m == "?" ? "numpy, Pillow" : m, g_missing_checked = true;
+    }
   }
-  if (g_python.empty() && !OnPath(L"py.exe").empty()) g_python = OnPath(L"py.exe");
   // ffmpeg: the setup's, then PATH, then C:\ffmpeg\bin; the setup's goes first on the scripts' PATH too
   // (their shutil.which('ffmpeg') finds it: children inherit this process's environment)
   for (const auto& home : ToolsHomes())
@@ -75,9 +155,22 @@ void Check() {
     }
   if (g_ffmpeg.empty()) g_ffmpeg = OnPath(L"ffmpeg.exe");
   if (g_ffmpeg.empty() && fs::exists(L"C:\\ffmpeg\\bin\\ffmpeg.exe", ec)) g_ffmpeg = L"C:\\ffmpeg\\bin\\ffmpeg.exe";
+  // svrmod.exe and vgmstream: the Mod Maker Tools folder's (a development build: out\modmaker, third_party)
+  if (!g_tools.empty()) {
+    const fs::path t = g_tools;
+    for (const fs::path c : {t / L"svrmod.exe", t / L".." / L"out" / L"modmaker" / L"svrmod.exe"})
+      if (g_svrmod.empty() && fs::exists(c, ec)) g_svrmod = fs::weakly_canonical(c, ec).wstring();
+    for (const fs::path c : {t / L"vgmstream" / L"vgmstream-cli.exe", t / L".." / L"third_party" / L"vgmstream" / L"vgmstream-cli.exe"})
+      if (g_vgm.empty() && fs::exists(c, ec)) g_vgm = fs::weakly_canonical(c, ec).wstring();
+  }
+  // (every converter inherits them: svrfmt.py / wwe13_entrance.find_svrmod / wwise.find_vgmstream read these first)
+  SetEnvironmentVariableW(L"SVR2011_SVRMOD", g_svrmod.empty() ? nullptr : g_svrmod.c_str());
+  SetEnvironmentVariableW(L"SVR2011_VGMSTREAM", g_vgm.empty() ? nullptr : g_vgm.c_str());
   Log("tools: scripts " + (g_tools.empty() ? std::string("not found") : Utf8(g_tools)) + ", Python " +
       (g_python.empty() ? std::string("not found") : Utf8(g_python)) + ", ffmpeg " +
-      (g_ffmpeg.empty() ? std::string("not found") : Utf8(g_ffmpeg)));
+      (g_ffmpeg.empty() ? std::string("not found") : Utf8(g_ffmpeg)) + ", svrmod " +
+      (g_svrmod.empty() ? std::string("not found") : Utf8(g_svrmod)) + ", vgmstream " +
+      (g_vgm.empty() ? std::string("not found") : Utf8(g_vgm)));
 }
 
 // Runs a command with no window, reading its output into the log; returns the exit code.
@@ -108,7 +201,7 @@ int RunCapture(const std::wstring& cmdline, const std::wstring& cwd) {
     for (DWORD i = 0; i < n; ++i) {
       if (buf[i] == '\n') {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!line.empty()) Log("  " + line), Progress(line.substr(0, 120));
+        if (!line.empty()) Log("  " + line), Progress(line.substr(0, 120)), NoteHint(line);
         line.clear();
       } else {
         line += buf[i];
@@ -162,7 +255,7 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
         const size_t sp = line.find(' ', 9);
         Progress(sp == std::string::npos ? line.substr(9) : line.substr(9, sp - 9) + "%  " + line.substr(sp + 1, 110));
       } else if (!line.empty()) {
-        Log("  " + line);
+        Log("  " + line), NoteHint(line);
       }
       line.clear();
     };
@@ -191,38 +284,21 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
 std::wstring ToolsDir() { Check(); return g_tools; }
 std::wstring PythonExe() { Check(); return g_python; }
 std::wstring FfmpegExe() { Check(); return g_ffmpeg; }
+std::wstring SvrmodExe() { Check(); return g_svrmod; }
+std::wstring VgmstreamExe() { Check(); return g_vgm; }
 void RecheckTools() { g_checked = false, g_missing_checked = false; }
 
 std::string PythonMissing() {
   Check();
-  if (g_missing_checked) return g_missing;
+  if (g_missing_checked) return g_missing.empty() ? "" : g_missing + " (Mod Maker tools: Install what's missing)";
   g_missing_checked = true;
-  if (g_python.empty()) return g_missing = "Python 3 - install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow)";
-  // a quick import check, no window
-  const std::wstring probe = Quote(g_python) + L" -c \"import numpy, PIL; print('ok')\"";
-  SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
-  HANDLE rd = nullptr, wr = nullptr;
-  CreatePipe(&rd, &wr, &sa, 0);
-  SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-  STARTUPINFOW si = {sizeof si};
-  si.dwFlags = STARTF_USESTDHANDLES;
-  si.hStdOutput = wr, si.hStdError = wr;
-  PROCESS_INFORMATION pi = {};
-  std::wstring cmd = probe;
-  std::string out;
-  if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-    CloseHandle(wr);
-    char buf[512];
-    DWORD n = 0;
-    while (ReadFile(rd, buf, sizeof buf, &n, nullptr) && n) out.append(buf, n);
-    WaitForSingleObject(pi.hProcess, 20000);
-    CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
-  } else {
-    CloseHandle(wr);
+  if (g_python.empty()) {
+    g_missing = "Python 3 with numpy and Pillow";
+    return g_missing + " (Mod Maker tools: Install what's missing)";
   }
-  CloseHandle(rd);
-  if (out.find("ok") == std::string::npos) g_missing = "the Python packages numpy and Pillow (pip install numpy pillow)";
-  return g_missing;
+  const std::string m = ProbeModules(g_python);
+  g_missing = m == "?" ? "numpy, Pillow" : m;
+  return g_missing.empty() ? "" : g_missing + " (Mod Maker tools: Install what's missing)";
 }
 
 std::wstring Quote(const std::wstring& arg) {
@@ -248,11 +324,12 @@ bool RunCommand(const std::wstring& cmdline, std::function<void(int)> done, cons
 
 bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args,
                  std::function<void(int, const std::string&)> done, const std::wstring& cwd) {
-  Check();
-  if (g_python.empty()) {
-    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow), then Recheck.");
-    return false;
-  }
+  if (!ConvertersReady()) return false;
+  for (size_t i = 0; i + 1 < args.size(); ++i)
+    if (args[i] == L"--svrmod" && args[i + 1].empty()) {  // (SvrmodArgs: a WWE '12 - 2K17 port without svrmod.exe)
+      OpenToolsPanel("Missing: svrmod.exe (the Mod Maker's pac tool, needed for WWE '12 - 2K17 discs).");
+      return false;
+    }
   if (g_tools.empty() || !fs::exists(fs::path(g_tools) / script)) {
     Status("The converter " + Utf8(script) + " isn't in the Mod Maker Tools folder.");
     return false;
@@ -271,22 +348,25 @@ bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& ar
     work = w.wstring();
   }
   Log("> " + Utf8(cmd));
+  TakeHint();
   RunInBackground([cmd, cwd = work, done] {
     Progress("Running ...");
     std::string out;
     const int code = RunCaptureJson(cmd, cwd, out);
-    OnUiThread([done, code, out] { if (done) done(code, out); });
+    NoteHint(out);  // (a JSON error naming what's missing)
+    std::string hint = TakeHint();
+    if (code == 0) hint.clear();
+    OnUiThread([done, code, out, hint] {
+      if (!hint.empty()) OpenToolsPanel("Missing: " + hint + " - install now?");
+      if (done) done(code, out);
+    });
   });
   return true;
 }
 
 bool RunTool(const std::wstring& script, const std::vector<std::wstring>& args, std::function<void(int)> done,
              const std::wstring& cwd) {
-  Check();
-  if (g_python.empty()) {
-    Status("Python 3 is needed for this: install the Mod Maker tools from the launcher's Setup page (Install Python + numpy + Pillow), then Recheck.");
-    return false;
-  }
+  if (!ConvertersReady()) return false;
   if (g_tools.empty()) {
     Status("The converter scripts (Mod Maker Tools folder next to the Mod Maker) were not found.");
     return false;
@@ -301,7 +381,236 @@ bool RunTool(const std::wstring& script, const std::vector<std::wstring>& args, 
     fs::create_directories(w, ec);
     work = w.wstring();
   }
-  return RunCommand(cmd, std::move(done), work);
+  TakeHint();
+  return RunCommand(cmd, [done](int code) {
+    const std::string hint = TakeHint();
+    if (code != 0 && !hint.empty()) OpenToolsPanel("Missing: " + hint + " - install now?");
+    if (done) done(code);
+  }, work);
+}
+
+// ---- the tools panel
+
+namespace {
+bool g_panel_open = false;
+std::string g_panel_why;
+std::atomic<bool> g_installing{false};
+std::atomic<int> g_permille{0};
+std::mutex g_panel_mutex;
+std::string g_install_text, g_install_result;
+volatile LONG g_cancel = 0;
+bool g_ffmpeg_too = true;
+std::wstring g_test_from;  // (--tools-install-from: copy, don't download)
+bool g_test_press = false;
+
+void SetupProgress(int permille, const WCHAR* text) {
+  if (permille >= 0) g_permille = permille;
+  if (text) {
+    std::lock_guard lock(g_panel_mutex);
+    g_install_text = Utf8(text);
+  }
+}
+
+bool IsToolsPython(const std::wstring& p) {
+  for (const auto& home : ToolsHomes())
+    if (!p.empty() && fs::path(p).parent_path() == home / L"python") return true;
+  return false;
+}
+
+// What "Install what's missing" fetches now (the launcher's Setup items).
+unsigned InstallItems() {
+  unsigned items = 0;
+  if (!PythonMissing().empty()) items |= 1u << SETUP_PYTHON;
+  if (FfmpegExe().empty() && g_ffmpeg_too) items |= 1u << SETUP_FFMPEG;
+  return items;
+}
+
+void StartInstall() {
+  if (g_installing || g_game.empty()) return;
+  const unsigned items = InstallItems();
+  if (!items) return;
+  g_installing = true, g_permille = 0, g_cancel = 0;
+  {
+    std::lock_guard lock(g_panel_mutex);
+    g_install_text = "Starting...", g_install_result.clear();
+  }
+  Log("tools: installing" + std::string(items & (1u << SETUP_PYTHON) ? " Python + numpy + Pillow" : "") +
+      (items & (1u << SETUP_FFMPEG) ? " ffmpeg" : "") + " into " + Utf8((fs::path(g_game) / L"Tools").wstring()));
+  std::thread([items, game = g_game, from = g_test_from] {
+    WCHAR err[600] = L"";
+    int ok = 1;
+    if (!from.empty()) {  // (test: the same flow, the files copied from an earlier install)
+      std::error_code ec;
+      for (const auto& [bit, sub] : {std::make_pair(unsigned(SETUP_PYTHON), L"python"), std::make_pair(unsigned(SETUP_FFMPEG), L"ffmpeg")})
+        if (items & (1u << bit)) {
+          SetupProgress(bit == SETUP_PYTHON ? 300 : 700, (std::wstring(L"Copying ") + sub + L" (test)").c_str());
+          fs::create_directories(fs::path(game) / L"Tools", ec);
+          fs::copy(fs::path(from) / L"Tools" / sub, fs::path(game) / L"Tools" / sub,
+                   fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+          if (ec) ok = 0, swprintf_s(err, L"copy failed: %hs", ec.message().c_str());
+        }
+    } else {
+      ok = setup_install(game.c_str(), items, SetupProgress, &g_cancel, err, std::size(err));
+    }
+    const std::string result = ok ? "Installed. The converters use them now." : "Not installed: " + Utf8(err);
+    OnUiThread([result, ok] {
+      RecheckTools();
+      PythonMissing();
+      {
+        std::lock_guard lock(g_panel_mutex);
+        g_install_result = result;
+      }
+      Log("tools: " + result);
+      Status(result);
+      if (ok) g_panel_why.clear();
+      g_installing = false;
+    });
+  }).detach();
+}
+
+void Row(bool ok, bool optional, const char* name, const std::string& detail) {
+  ImGui::TableNextRow();
+  ImGui::TableNextColumn();
+  if (ok) ImGui::TextColored(ImVec4(0.35f, 0.8f, 0.45f, 1), "found");
+  else if (optional) ImGui::TextDisabled("optional");
+  else ImGui::TextColored(kWarn, "MISSING");
+  ImGui::TableNextColumn();
+  ImGui::TextUnformatted(name);
+  ImGui::TableNextColumn();
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextUnformatted(detail.c_str());
+  ImGui::PopTextWrapPos();
+}
+
+std::string Where(const std::wstring& p) { return Utf8(p); }
+
+// The Bink 2 tool (RAD Video Tools), as the launcher's Setup looks for it.
+std::wstring Bink2() {
+  wchar_t buf[MAX_PATH * 2];
+  if (SearchPathW(nullptr, L"radvideo64.exe", nullptr, DWORD(std::size(buf)), buf, nullptr)) return buf;
+  std::error_code ec;
+  for (const wchar_t* env : {L"ProgramFiles", L"ProgramFiles(x86)", L"ProgramW6432", L"LOCALAPPDATA"}) {
+    wchar_t b[MAX_PATH];
+    if (!GetEnvironmentVariableW(env, b, MAX_PATH)) continue;
+    for (const wchar_t* sub : {L"RADVideo", L"RAD Video Tools", L"RAD Game Tools\\RADVideo"})
+      if (fs::exists(fs::path(b) / sub / L"radvideo64.exe", ec)) return (fs::path(b) / sub / L"radvideo64.exe").wstring();
+  }
+  return L"";
+}
+}  // namespace
+
+void OpenToolsPanel(const std::string& why) {
+  g_panel_open = true;
+  if (!why.empty()) g_panel_why = why, Status(why);
+}
+
+bool ConvertersReady() {
+  const std::string m = PythonMissing();
+  if (!m.empty()) {
+    OpenToolsPanel("Missing: " + g_missing + " - install now?");
+    return false;
+  }
+  if (ToolsDir().empty()) {
+    OpenToolsPanel("Missing: the converter scripts (the Mod Maker Tools folder next to the Mod Maker).");
+    return false;
+  }
+  return true;
+}
+
+void StartupToolsCheck() {
+  if (g_game.empty()) return;
+  RecheckTools();
+  const bool need = !PythonMissing().empty() || ToolsDir().empty() || SvrmodExe().empty();
+  if (need && !g_behind) OpenToolsPanel("Some tools the converters (Port, Other games) need are missing.");
+}
+
+void TestToolsPanel(bool install, const std::wstring& from) {
+  g_panel_open = true;
+  if (!from.empty()) g_test_from = from;
+  if (install) g_test_press = true;
+}
+
+void ToolsPanel() {
+  if (!g_panel_open) return;
+  if (g_test_press && !g_installing && ImGui::GetFrameCount() > 30) g_test_press = false, StartInstall();
+  ImGui::SetNextWindowSize(ImVec2(760 * g_scale, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (!ImGui::Begin("Mod Maker tools", &g_panel_open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::End();
+    return;
+  }
+  if (!g_panel_why.empty()) ImGui::TextColored(kWarn, "%s", g_panel_why.c_str());
+  ImGui::TextWrapped("What the converters (Port from a disc, Other games) need, found or missing:");
+  const std::wstring py = PythonExe();
+  const std::string missing = PythonMissing().empty() ? "" : g_missing;
+  const bool py_found = !py.empty();
+  const bool mods_ok = py_found && missing.empty();
+  if (ImGui::BeginTable("tools", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 70 * g_scale);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 170 * g_scale);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+    Row(py_found, false, "Python 3",
+        !py_found ? "not found" : IsToolsPython(py) ? "the Mod Maker's own: " + Where(py) : "your own: " + Where(py));
+    Row(mods_ok, false, "numpy + Pillow",
+        mods_ok ? "found" : !py_found ? "come with the Mod Maker's Python" : "missing in that Python: " + missing);
+    Row(!ToolsDir().empty(), false, "Converter scripts",
+        ToolsDir().empty() ? "not found: the \"Mod Maker Tools\" folder next to the Mod Maker - unpack the release zip again" : Where(ToolsDir()));
+    Row(!SvrmodExe().empty(), false, "svrmod.exe",
+        SvrmodExe().empty() ? "not found: needed to read WWE '12 - 2K17 discs; it comes in the release zip's Mod Maker Tools folder"
+                            : Where(SvrmodExe()));
+    Row(!VgmstreamExe().empty(), false, "vgmstream",
+        VgmstreamExe().empty() ? "not found: theme songs from WWE '12 - 2K17 (without it the superstars come without them); it comes "
+                                 "in the release zip's Mod Maker Tools\\vgmstream"
+                               : Where(VgmstreamExe()));
+    Row(!FfmpegExe().empty(), true, "ffmpeg", FfmpegExe().empty() ? "SvR 2010 theme songs and the entrance preview's music" : Where(FfmpegExe()));
+    const std::wstring bink = Bink2();
+    Row(!bink.empty(), true, "Bink 2 tool", bink.empty() ? "only for .bk2 videos: RAD Video Tools, your own download from RAD's site" : Where(bink));
+    ImGui::EndTable();
+  }
+  ImGui::Spacing();
+  const bool ships = ToolsDir().empty() || SvrmodExe().empty() || VgmstreamExe().empty();
+  if (ships)
+    ImGui::TextWrapped("The scripts, svrmod.exe and vgmstream come with the Mod Maker: unpack the latest release zip over the "
+                       "game folder (keep \"Mod Maker Tools\" next to the Mod Maker).");
+  const unsigned items = InstallItems();
+  if (g_installing) {
+    std::string text;
+    {
+      std::lock_guard lock(g_panel_mutex);
+      text = g_install_text;
+    }
+    ImGui::ProgressBar(g_permille / 1000.0f, ImVec2(-1, 0), text.c_str());
+    if (ImGui::Button("Cancel")) InterlockedExchange(&g_cancel, 1);
+  } else {
+    if (FfmpegExe().empty()) ImGui::Checkbox("Also ffmpeg (optional)", &g_ffmpeg_too);
+    if (items) {
+      WCHAR list[1024];
+      unsigned long long total = 0;
+      setup_describe(items, list, std::size(list), &total);
+      ImGui::TextDisabled("Downloads (only from the official sites, checked against pinned SHA-256s; into %s\\Tools, no admin "
+                          "rights):", Utf8(g_game).c_str());
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextUnformatted(Utf8(list).c_str());
+      ImGui::PopTextWrapPos();
+      char label[96];
+      std::snprintf(label, sizeof label, "Install what's missing (%.0f MB)", double(total) / 1e6);
+      ImGui::BeginDisabled(g_game.empty());
+      if (ImGui::Button(label)) StartInstall();
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+    } else if (mods_ok) {
+      ImGui::TextColored(ImVec4(0.35f, 0.8f, 0.45f, 1), "Python, numpy and Pillow are ready.");
+      ImGui::SameLine();
+    }
+    if (ImGui::Button("Check again")) RecheckTools(), PythonMissing();
+    std::string result;
+    {
+      std::lock_guard lock(g_panel_mutex);
+      result = g_install_result;
+    }
+    if (!result.empty()) ImGui::TextWrapped("%s", result.c_str());
+  }
+  ImGui::End();
 }
 
 }  // namespace mm

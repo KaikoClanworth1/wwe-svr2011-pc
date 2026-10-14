@@ -56,6 +56,8 @@ bool ToolsReady(bool ffmpeg_too) {
   if (!missing.empty()) {
     ImGui::TextColored(kWarn, "Needs %s.", missing.c_str());
     ImGui::SameLine();
+    if (ImGui::SmallButton("Install what's missing...")) OpenToolsPanel();
+    ImGui::SameLine();
     if (ImGui::SmallButton("Recheck")) RecheckTools();
     return false;
   }
@@ -66,7 +68,9 @@ bool ToolsReady(bool ffmpeg_too) {
     return false;
   }
   if (ffmpeg_too && FfmpegExe().empty()) {
-    ImGui::TextColored(kWarn, "ffmpeg is needed too for the theme songs: the launcher's Setup page (Install ffmpeg).");
+    ImGui::TextColored(kWarn, "ffmpeg is needed too for the theme songs.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Install it...")) OpenToolsPanel();
     return false;
   }
   return true;

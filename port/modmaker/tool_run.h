@@ -19,6 +19,24 @@ void RecheckTools();
 std::string PythonMissing();
 // ffmpeg on PATH or C:\ffmpeg\bin ("" = none).
 std::wstring FfmpegExe();
+// The Mod Maker's own pac tool (WWE '12 - 2K17 pacs) and the Wwise theme decoder, in the Mod Maker Tools folder
+// (the dev tree's out\modmaker / third_party in a development build); "" = missing. Every converter gets them
+// (--svrmod, SVR2011_SVRMOD / SVR2011_VGMSTREAM), so none can come from somewhere else.
+std::wstring SvrmodExe();
+std::wstring VgmstreamExe();
+
+// ---- the tools panel ("Mod Maker tools"): Python, numpy, Pillow, the scripts, svrmod.exe, vgmstream, ffmpeg and
+// the Bink 2 tool, found or missing in plain words, and "Install what's missing" (the launcher's Setup installs:
+// Python + numpy + Pillow and ffmpeg into <game>\Tools from the official sites, pinned and checked, no admin).
+void OpenToolsPanel(const std::string& why = "");
+void ToolsPanel();          // each frame (app.cpp)
+void StartupToolsCheck();   // at start: the panel opens when something the converters need is missing
+// Before a Port / convert: true when Python with numpy and Pillow and the scripts are there; else the panel opens
+// (with what's missing) and false.
+bool ConvertersReady();
+// Test aids: --tools-panel (open it), --tools-install-from <dir with Tools\>: "Install what's missing" copies from
+// there instead of downloading (the same flow after), --tools-install (press it).
+void TestToolsPanel(bool install, const std::wstring& from);
 
 // Runs `<python> <tools>\<script> args...` (no window), its output into the
 // log line by line, then `done(exit code)` on the UI thread. False (logged)

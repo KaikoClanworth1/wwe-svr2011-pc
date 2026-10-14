@@ -274,6 +274,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         modmaker/media_page.cpp modmaker/full_preview.cpp modmaker/audio_out.cpp modmaker/video_mf.cpp modmaker/hair_sim.cpp modmaker/model_materials.cpp modmaker/material_panel.cpp modmaker/moves_page.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
         modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
         modmaker/tool_run.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c
+        launcher/setup_tab.c launcher/updater.c
         modmaker/svrfmt/wwe13.cpp ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack/lzxd.c modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
         modmaker/svrfmt/pac.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp modmaker/svrfmt/disc.cpp modmaker/pac_editor.cpp modmaker/loudness.cpp modmaker/port_page.cpp modmaker/attire_page.cpp
         modmaker/pac_attires.cpp modmaker/installed_page.cpp modmaker/svrfmt/char_fbx.cpp modmaker/rig_map.cpp launcher/unzip.c
@@ -291,7 +292,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_MM_VERSION LIMIT_COUNT 1)
     target_compile_definitions(svr2011_modmaker PRIVATE "PORT_VERSION=\"${SVR2011_MM_VERSION}\"")
     target_link_libraries(svr2011_modmaker PRIVATE d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32
-        mfplat mfreadwrite mfuuid propsys delayimp xaudio2)
+        mfplat mfreadwrite mfuuid propsys delayimp xaudio2 bcrypt winhttp)
     # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
     target_link_options(svr2011_modmaker PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
