@@ -1,7 +1,7 @@
 """PS2 superstar models -> SvR 2011 character pacs (superstar mods), through svr11_build.py.
 
     py ps2_char.py --list <disc iso or extract folder>
-    py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> [--attire N[,N..]|all] [--no-gear]
+    py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> [--attire N[,N..]|all] [--no-gear] [--models ID,ID..]
 
 --list prints JSON {game, disc_serial, characters: [{id, name, raw_id, source, attires: [{attire, source,
 bones, meshes}]}]}. The convert writes into <out dir>: model.json (svr11_build's neutral model), tex_*.png
@@ -907,20 +907,29 @@ def wrap_textures(meshes, out_dir, most=4.0):
             m['textures']['color'] = fn
 
 
-def convert(path, id_, out_dir, template, attire='all', gear=True):
+def convert(path, id_, out_dir, template, attire='all', gear=True, models=None):
+    """models: model ids to build as attires 1, 2, .. in that order instead of the character's own (JBI keeps
+    one model per id: a superstar's other models are other ids)"""
     g = open_game(path)
     chars = g.characters()
-    if id_ not in chars:
-        raise BadInput('no character %x (have %s)' % (id_, ' '.join('%x' % c for c in sorted(chars))))
-    ats = sorted(chars[id_]) if str(attire) == 'all' else [int(x) for x in str(attire).split(',') if x.strip()]
-    for at in ats:
-        if at not in chars[id_]:
-            raise BadInput('character %x has no attire %d' % (id_, at))
+    if models:
+        for mid in models:
+            if mid not in g.entries:
+                raise BadInput('no model %x' % mid)
+        ats = list(range(len(models)))
+        body_of = dict(zip(ats, models))
+    else:
+        if id_ not in chars:
+            raise BadInput('no character %x (have %s)' % (id_, ' '.join('%x' % c for c in sorted(chars))))
+        ats = sorted(chars[id_]) if str(attire) == 'all' else [int(x) for x in str(attire).split(',') if x.strip()]
+        for at in ats:
+            if at not in chars[id_]:
+                raise BadInput('character %x has no attire %d' % (id_, at))
+        body_of = {at: chars[id_][at] for at in ats}
     os.makedirs(out_dir, exist_ok=True)
     # an attire over the game's vertex page budget: its gear version is left out, else its next lighter body
     # (2006 and later keep a match body and a lighter one), until the builder takes it
-    body_of = {at: chars[id_][at] for at in ats}
-    no_gear = set() if gear else set(ats)
+    no_gear = set() if gear and not models else set(ats)
     fitted = []
     for _ in range(12):
         rep, rc = build_pac(g, id_, ats, body_of, no_gear, out_dir, template)
@@ -1025,6 +1034,7 @@ def main(argv):
     ap.add_argument('--template')
     ap.add_argument('--attire', default='all', help='all, one attire or a list: 0,2,3 (in this order)')
     ap.add_argument('--no-gear', action='store_true', help='leave the entrance gear out')
+    ap.add_argument('--models', help='model ids (hex) to build as attires 1, 2, .. in that order: 00,40')
     a = ap.parse_args(argv)
     try:
         if a.list:
@@ -1032,7 +1042,8 @@ def main(argv):
             return 0
         if not (a.disc and a.id and a.out and a.template):
             ap.error('give <disc> <id> <out dir> --template <2011 ch.pac>, or --list <disc>')
-        return convert(a.disc, int(a.id, 16), a.out, a.template, a.attire, not a.no_gear)
+        models = [int(x, 16) for x in a.models.split(',') if x.strip()] if a.models else None
+        return convert(a.disc, int(a.id, 16), a.out, a.template, a.attire, not a.no_gear, models)
     except BadInput as e:
         print(json.dumps(dict(ok=False, error=str(e))))
         return 2
