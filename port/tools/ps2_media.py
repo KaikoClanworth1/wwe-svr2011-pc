@@ -9,6 +9,7 @@ key, as ps2_port's g.number(cid)); themes become theme.mp3 at -24 LUFS (2011's l
 vgmstream), titantrons H.264 movie.mp4 without sound (the theme plays on its own; the .bik fallback is made
 at import / install as for every movie.mp4).
 
+ps2_jbi   M.PAC CHAR records "0000".. (512 B): music +0x11B, movie +0x11E; ADS/<n/30>/BGM<n>.ADS, MOVIE/<n/23>/<n>.IPU.
 ps2_sym   PAC/M.PAC CHAR group: per-character entries "0000".., then ALL = an inner PAC of 329-byte BPE
           records: music +0x13F, movie +0x13E (CEventBGM / CEventTitantron::SetData in the ELF, which has
           symbols). Music n = ADS/BGM<n/30>/BGM<n>.ADS (Sony ADS); movie n = MOVIE/TT<n/30>/<n>.IPU (the ELF's
@@ -103,16 +104,22 @@ class Media:
         """-> (file name, bytes) or (None, None)"""
         raise NotImplementedError
 
+    NAME_AT = None   # (the record's name offset where the profile records carry one)
+
     def generic(self, which, i):
-        """an index four or more profiles share is the game's stand-in (placeholder records, a PAL disc's cut
-        movies), not the superstar's own; a tag team shares two"""
+        """an index four or more superstars share is the game's stand-in (placeholder records, a PAL disc's cut
+        movies), not the superstar's own; a tag team shares two. Counted by name where the records have one
+        (JBI keeps copies of The Rock's record as other versions of him), else by record"""
         if not hasattr(self, '_uses'):
             self._uses = ({}, {})
-            for n in self.prof:
+            for n, r in self.prof.items():
+                key = n
+                if self.NAME_AT is not None:
+                    key = r[self.NAME_AT:self.NAME_AT + 30].split(b'\0')[0].strip().lower() or n
                 for k, v in enumerate(self.indexes(n)):
                     if v is not None:
-                        self._uses[k][v] = self._uses[k].get(v, 0) + 1
-        return self._uses[which].get(i, 0) >= 4
+                        self._uses[k].setdefault(v, set()).add(key)
+        return len(self._uses[which].get(i, ())) >= 4
 
 
 class AfsNamed(Media):
@@ -188,6 +195,7 @@ class HCTP(AfsNamed):
                 raise ValueError('not HCTP / SvR 2004 / 2006')
         self.label, entry, self.music_off, self.movie_off, self.MOVIE_DIR = self.LAYOUTS[game_id]
         self.prof = _pac_profiles(disc, 'PAC/M.PAC', entry)
+        self.NAME_AT = {'ps2_hctp': 0x116, 'ps2_svr04': 0x136}.get(game_id)   # (ps2_records; 2006's PRO has none)
 
     def indexes(self, number):
         r = self.prof.get(number)
@@ -221,6 +229,37 @@ class SYM(Media):
 
     def movie(self, i):
         return self._file('MOVIE/TT%d/%03d.IPU' % (i // 30, i), '%03d.IPU' % i)
+
+
+class JBI(SYM):
+    """Just Bring It: M.PAC (disc root) CHAR group's numbered records "0000".. (512 B, the record number = the
+    entry name): music +0x11B (+0x11F holds a second version of the same theme), movie +0x11E. Music n =
+    ADS/<n/30>/BGM<n>.ADS; movie n = MOVIE/<n/23>/<n>.IPU (the ELF's "\\MOVIE\\%02d\\%02d.IPU", 23 a folder).
+    Checked: The Rock / Stone Cold / Undertaker / Triple H's +0x11E movies show them; Triple H's and Jericho's
+    +0x11B themes match 2011's recordings (chroma 0.56 / 0.44)."""
+    label = 'Just Bring It'
+    NAME_AT = 0xF2
+
+    def __init__(self, disc, game_id=None):
+        import ps2_records as R
+        self.disc = disc
+        head = disc.read('M.PAC', 0, 0x4000)
+        self.prof = {}
+        for t, name, off, size in R._groups(head):
+            if t == b'CHAR' and name.isdigit():
+                self.prof[int(name)] = bytes(disc.read('M.PAC', off, size))
+        if not self.prof or len(next(iter(self.prof.values()))) != 512:
+            raise ValueError('not Just Bring It')
+
+    def indexes(self, number):
+        r = self.prof.get(number)
+        return (r[0x11B], r[0x11E]) if r and len(r) > 0x11E else (None, None)
+
+    def bgm(self, i):
+        return self._file('ADS/%d/BGM%03d.ADS' % (i // 30, i), 'BGM%03d.ADS' % i)
+
+    def movie(self, i):
+        return self._file('MOVIE/%02d/%02d.IPU' % (i // 23, i), '%02d.IPU' % i)
 
 
 class Twin360(AfsNamed):
@@ -282,7 +321,8 @@ def open_media(disc, game_id=None):
     """the game's media reader (by game id; without one, the games found by their files), or None"""
     if game_id in Twin360.LAYOUTS:
         return Twin360(disc, game_id)
-    order = {'ps2_sym': (SYM,), 'ps2_hctp': (HCTP,), 'ps2_svr04': (HCTP,), 'ps2_svr06': (HCTP,)}.get(game_id, (HCTP, SYM))
+    order = {'ps2_jbi': (JBI,), 'ps2_sym': (SYM,), 'ps2_hctp': (HCTP,), 'ps2_svr04': (HCTP,),
+             'ps2_svr06': (HCTP,)}.get(game_id, (HCTP, SYM, JBI))
     for G in order:
         try:
             return G(disc, game_id if game_id in HCTP.LAYOUTS else None)
