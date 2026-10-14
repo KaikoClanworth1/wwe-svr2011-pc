@@ -16,11 +16,12 @@
 // +0x1C0: +0x10 music, +0x12 movie): sound\Music.pck Play_MUS_<music>_0_0 through tools/wwise.py (Python +
 // vgmstream + ffmpeg), cached as Mods\.convert\full_preview\music_<n>.mp3. The titantron: movie= else
 // movies\titantron\<movie>.bik, shown in a corner (the practice arena has no screen).
-// The ground: an entrance's root height is keyed against the ground under the entrant, which the game adds
-// (the ring part stands on the arena floor's height in the track; the stage parts sit lower still). The
-// practice arena has no stage, so the entrant's lowest foot (the lowest over a few keys either side: steps
-// and jumps keep their shape) is put on its ground - the ring mat (y -12) inside the apron, else the floor (0)
-// - eased so stepping onto the apron doesn't jump.
+// The scene: the entrant's and the camera's tracks share one frame (every stock camera key aims at the root
+// as keyed) whose y 0 is the ring mat, the stage parts walking a floor-level stage; both move by the mat
+// height (-12) into the arena's space, plus the arena's stage / ramp height under the entrant (the practice
+// arena's stage is 1.8 m up: StageGrid from its meshes), as the game's own entrances there show. The view
+// is left-handed like the game's (x flipped in the projection: the writing on shirts and barriers reads the
+// right way round, checked against the game's shots of the same entrances, 14 Oct).
 #ifndef NOMINMAX
 #define NOMINMAX  // (std::min / std::max, not windows.h's macros)
 #endif
@@ -331,20 +332,70 @@ std::unique_ptr<Loaded> LoadAll(const Request& req, const std::wstring& game) {
 // ---- the ground under the entrant
 
 constexpr float kMatY = -12.0f, kApronOut = 31.9f;  // (editor.cpp's ring)
+// An entrance's tracks - the entrant AND its camera - are in one frame whose y 0 is the ring mat: the ring
+// part's feet stand at ~0 and the stage / ramp parts' at ~+12, the arena floor (2011 entrances walk a
+// floor-level stage: root ~+2.5 there; every stock camera key aims exactly at the entrant's root as keyed).
+// So the whole scene moves by the mat height into the arena's space; nothing is snapped per key.
+// An arena whose stage is raised (the practice arena's: y -18, a ramp down to z ~100) lifts the entrant by
+// the stage / ramp under him - seen in the game's own entrance there - and the camera with him (it aims at
+// the root as keyed): StageGrid, the highest upward-facing arena surface (y -30..0) beyond the ringside.
+constexpr float kSceneY = kMatY;
 
-void Ground(Seg& s) {
+struct StageGrid {
+  static constexpr float kX0 = -160, kZ0 = -400, kCell = 4;
+  static constexpr int kNx = 80, kNz = 200;
+  std::vector<float> h = std::vector<float>(size_t(kNx) * kNz, 0.0f);
+  float At(float x, float z) const {
+    if (std::fabs(z) < 64) return 0;  // (the ring and ringside: the frame's own)
+    const int i = int((x - kX0) / kCell), j = int((z - kZ0) / kCell);
+    return i >= 0 && j >= 0 && i < kNx && j < kNz ? h[size_t(j) * kNx + size_t(i)] : 0.0f;
+  }
+};
+
+void BuildStageGrid(const svrfmt::Arena& a, StageGrid& g) {
+  for (const auto& am : a.models)
+    for (const auto& me : am.model.meshes)
+      for (const auto& st : me.strips)
+        for (const auto& t : svrfmt::StripToTriangles(st.indices)) {
+          if (t[0] >= me.verts.size() || t[1] >= me.verts.size() || t[2] >= me.verts.size()) continue;
+          const float* p[3] = {me.verts[t[0]].pos, me.verts[t[1]].pos, me.verts[t[2]].pos};
+          const float ux = p[1][0] - p[0][0], uy = p[1][1] - p[0][1], uz = p[1][2] - p[0][2];
+          const float vx = p[2][0] - p[0][0], vy = p[2][1] - p[0][1], vz = p[2][2] - p[0][2];
+          const float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+          const float nl = std::sqrt(nx * nx + ny * ny + nz * nz);
+          if (nl < 1e-6f || std::fabs(ny) / nl < 0.7f) continue;  // (walls)
+          bool in = true;
+          for (const float* q : p) in &= q[1] > -30.0f && q[1] < 0.5f;
+          if (!in) continue;
+          const float minx = std::min({p[0][0], p[1][0], p[2][0]}), maxx = std::max({p[0][0], p[1][0], p[2][0]});
+          const float minz = std::min({p[0][2], p[1][2], p[2][2]}), maxz = std::max({p[0][2], p[1][2], p[2][2]});
+          const float det = (p[1][0] - p[0][0]) * (p[2][2] - p[0][2]) - (p[2][0] - p[0][0]) * (p[1][2] - p[0][2]);
+          if (std::fabs(det) < 1e-6f) continue;
+          for (int j = std::max(0, int((minz - StageGrid::kZ0) / StageGrid::kCell));
+               j <= std::min(StageGrid::kNz - 1, int((maxz - StageGrid::kZ0) / StageGrid::kCell)); ++j)
+            for (int i = std::max(0, int((minx - StageGrid::kX0) / StageGrid::kCell));
+                 i <= std::min(StageGrid::kNx - 1, int((maxx - StageGrid::kX0) / StageGrid::kCell)); ++i) {
+              const float cx = StageGrid::kX0 + (float(i) + 0.5f) * StageGrid::kCell;
+              const float cz = StageGrid::kZ0 + (float(j) + 0.5f) * StageGrid::kCell;
+              const float b1 = ((cx - p[0][0]) * (p[2][2] - p[0][2]) - (p[2][0] - p[0][0]) * (cz - p[0][2])) / det;
+              const float b2 = ((p[1][0] - p[0][0]) * (cz - p[0][2]) - (cx - p[0][0]) * (p[1][2] - p[0][2])) / det;
+              if (b1 < 0 || b2 < 0 || b1 + b2 > 1) continue;
+              const float y = p[0][1] + b1 * (p[1][1] - p[0][1]) + b2 * (p[2][1] - p[0][1]);
+              float& h = g.h[size_t(j) * StageGrid::kNx + size_t(i)];
+              h = std::min(h, y);  // (y down: the highest surface)
+            }
+        }
+}
+
+// per key: the arena's stage / ramp height under the entrant's root, eased so stepping up doesn't jump
+void Ground(Seg& s, const StageGrid& g) {
   s.lift.clear();
   if (!s.body) return;
   const auto tr = char_preview::ClipTrace(*s.body);
   if (tr.empty()) return;
-  const int n = int(tr.size()), win = 20, ease = 8;
+  const int n = int(tr.size()), ease = 8;
   std::vector<float> raw(static_cast<size_t>(n));
-  for (int k = 0; k < n; ++k) {
-    float low = -1e30f;  // (y down: the lowest foot is the largest y)
-    for (int j = std::max(0, k - win); j <= std::min(n - 1, k + win); ++j) low = std::max(low, tr[size_t(j)].foot);
-    const bool in_ring = std::fabs(tr[size_t(k)].x) < kApronOut && std::fabs(tr[size_t(k)].z) < kApronOut;
-    raw[size_t(k)] = low > -1e29f ? (in_ring ? kMatY : 0.0f) - low : 0.0f;
-  }
+  for (int k = 0; k < n; ++k) raw[size_t(k)] = g.At(tr[size_t(k)].x, tr[size_t(k)].z);
   s.lift.resize(size_t(n));
   for (int k = 0; k < n; ++k) {
     float sum = 0;
@@ -352,6 +403,12 @@ void Ground(Seg& s) {
     for (int j = std::max(0, k - ease); j <= std::min(n - 1, k + ease); ++j) sum += raw[size_t(j)], ++c;
     s.lift[size_t(k)] = sum / float(std::max(1, c));
   }
+}
+
+StageGrid g_stage;  // (the loaded arena's)
+
+float LiftAt(const Seg& s, float key) {
+  return s.lift.empty() ? 0.0f : s.lift[size_t(std::clamp(int(key), 0, int(s.lift.size()) - 1))];
 }
 
 // ---- the camera at a segment's key
@@ -440,7 +497,9 @@ void Matrices(const Cam& c, float aspect, float view[16], float proj[16]) {
   // the game's field of view (vertical here): the zoom's, else the key's
   float fov = c.zoomed ? 2 * std::atan(0.625f / c.zoom) * 0.82f : 2 * std::atan(0.8f * std::tan(c.fov / 2));
   fov = std::clamp(fov, 0.05f, 2.6f);
-  const float zn = 1, zf = 5000, ys = 1 / std::tan(fov / 2), xs = ys / aspect;
+  // (x flipped: the game's view is left-handed - with the plain basis above the shirts' and the barriers'
+  // writing came out mirrored next to the game's own shots; the editor draws with no culling)
+  const float zn = 1, zf = 5000, ys = 1 / std::tan(fov / 2), xs = -ys / aspect;
   const float p[16] = {xs, 0, 0, 0, 0, ys, 0, 0, 0, 0, zf / (zf - zn), 1, 0, 0, -zn * zf / (zf - zn), 0};
   std::memcpy(proj, p, sizeof p);
 }
@@ -548,6 +607,8 @@ void Apply(std::unique_ptr<Loaded> L) {
   g_cur = std::move(L);
   if (!g_cur->error.empty()) return;
   if (g_cur->arena) editor::ViewArena(g_cur->arena.get(), "Practice arena", "");
+  g_stage = StageGrid();
+  if (g_cur->arena) BuildStageGrid(*g_cur->arena, g_stage);
   editor::SetViewHint(false);
   editor::SetViewExtra([](ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h, const float* view, const float* proj) {
     if (!g_cur) return;
@@ -555,8 +616,7 @@ void Apply(std::unique_ptr<Loaded> L) {
     const Seg& s = g_cur->segs[size_t(si)];
     if (s.slot == 0 || !s.body) return;  // (segment 0 is the hidden intro: no entrant)
     const float last = float(std::max(0, char_preview::ClipKeys(*s.body) - 1)), key = std::min(g_local_key, last);
-    float off[3] = {0, 0, 0};
-    if (!s.lift.empty()) off[1] = s.lift[size_t(std::clamp(int(key), 0, int(s.lift.size()) - 1))];
+    const float off[3] = {0, kSceneY + LiftAt(s, key), 0};  // (the camera gets the same)
     char_preview::RenderInto(rtv, dsv, w, h, view, proj, s.body.get(), key, off);
   });
   std::wstring movie = g_req.movie;
@@ -676,8 +736,8 @@ void Draw() {
       ImGui::TextWrapped("%s", g_cur->error.c_str());
     } else {
       Loaded& L = *g_cur;
-      if (char_preview::ModelReady() && !L.grounded) {  // (needs the model: its feet)
-        for (Seg& sg : L.segs) Ground(sg);
+      if (char_preview::ModelReady() && !L.grounded) {  // (the entrant's path over the arena's stage / ramp)
+        for (Seg& sg : L.segs) Ground(sg, g_stage);
         L.grounded = true;
       }
       // the clock
@@ -699,6 +759,7 @@ void Draw() {
       const float w = std::max(64.0f, avail.x), h = std::max(64.0f, avail.y - ctl_h);
       Cam c;
       if (g_use_camera && CameraAt(s, rest, c)) {
+        c.pos[1] += kSceneY + LiftAt(s, rest);  // (the entrance's frame -> the arena's, as the entrant)
         float view[16], proj[16];
         Matrices(c, w / h, view, proj);
         editor::SetViewCamera(view, proj);
