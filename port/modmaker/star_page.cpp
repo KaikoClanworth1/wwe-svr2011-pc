@@ -507,14 +507,25 @@ const std::vector<PackMove>& PackMoves() {
 }
 
 void MovePicker() {
-  if (g_pick_slot < 0) return;
-  if (!ImGui::IsPopupOpen("pick_move")) ImGui::OpenPopup("pick_move");
-  ImGui::SetNextWindowSize(ImVec2(460 * g_scale, 420 * g_scale), ImGuiCond_Appearing);
+  static int opened_for = -1;  // the slot the popup was opened for: opened once, so a click outside closes it for good
+  if (g_pick_slot < 0) {
+    opened_for = -1;
+    return;
+  }
+  if (opened_for != g_pick_slot) ImGui::OpenPopup("pick_move"), opened_for = g_pick_slot;
+  // (every frame: a popup sizes itself to its contents, which left the list with no height)
+  ImGui::SetNextWindowSize(ImVec2(460 * g_scale, 420 * g_scale), ImGuiCond_Always);
   if (ImGui::BeginPopup("pick_move")) {
     ImGui::TextUnformatted(SlotLabel(g_pick_slot).c_str());
     ImGui::SetNextItemWidth(260 * g_scale);
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     ImGui::InputTextWithHint("##f", "find a move", g_pick_find, sizeof g_pick_find);
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {  // (the find box would only let go of it)
+      g_pick_slot = -1, opened_for = -1;
+      ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
+      return;
+    }
     ImGui::SameLine();
     ImGui::Checkbox("all moves", &g_pick_any);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every move, not only the ones of this slot's kind (those may not play from it).");
@@ -557,7 +568,7 @@ void MovePicker() {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("A move by number - e.g. one a move pack adds (it isn't in the game's list).");
     ImGui::EndPopup();
   } else {
-    g_pick_slot = -1;
+    g_pick_slot = -1, opened_for = -1;
   }
 }
 
