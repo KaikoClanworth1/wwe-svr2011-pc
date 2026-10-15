@@ -649,9 +649,9 @@ void ToolsPanel() {
       WCHAR list[1024];
       unsigned long long total = 0;
       setup_describe(items, list, std::size(list), &total);
+      ImGui::PushTextWrapPos(0);  // (the game folder can be long: wrapped, not cut at the window's edge)
       ImGui::TextDisabled("Downloads (only from the official sites, checked against pinned SHA-256s; into %s\\Tools, no admin "
                           "rights):", Utf8(g_game).c_str());
-      ImGui::PushTextWrapPos(0);
       ImGui::TextUnformatted(Utf8(list).c_str());
       ImGui::PopTextWrapPos();
       char label[96];

@@ -130,6 +130,7 @@ struct State {
   std::string label;        // the entrance's name in Create an Entrance (after "MOD: ")
   std::string extra_done;   // the entrance's extra, done
   bool installing = false;
+  bool saved = false;       // saved as a mod file
 };
 State g_s[kKindCount];
 
@@ -953,21 +954,81 @@ std::wstring ChosenSlots(Kind k, const State& s) {
 // A pack of the game's own (Mods\Moves\<folder>) with a manifest whose name= is what the user sees: the folder from
 // the name and the game; the name gets the game's when another pack has it already (two games' entrances of one
 // superstar). The label Create an Entrance shows is the name (src/move_packs.cpp).
-fs::path InstallPack(const fs::path& from, const std::string& name, const std::string& game, std::string& label) {
+std::string PackId(const std::string& name, const std::string& game) { return IdFrom(name + " " + game, "pack"); }
+
+// The name a pack is shown by: another installed pack with that name already -> the game's added.
+std::string PackLabel(const std::string& name, const std::string& game) {
   const fs::path moves = fs::path(g_game) / L"Mods" / L"Moves";
-  const fs::path dir = moves / Wide(IdFrom(name + " " + game, "pack"));
-  label = name;
+  const fs::path own = moves / Wide(PackId(name, game));
   std::error_code ec;
   for (const auto& e : fs::directory_iterator(moves, ec)) {
     Bytes t;
-    if (e.path() == dir || !svrfmt::ReadFile(PathStr(e.path() / L"manifest.txt"), t)) continue;
-    if (Lower(Value(std::string(t.begin(), t.end()), "name")) == Lower(name)) label = name + " (" + game + ")";
+    if (e.path() == own || !svrfmt::ReadFile(PathStr(e.path() / L"manifest.txt"), t)) continue;
+    if (Lower(Value(std::string(t.begin(), t.end()), "name")) == Lower(name)) return name + " (" + game + ")";
   }
+  return name;
+}
+
+// A pack's manifest: what the launcher's Mods tab installs (type=moves into Mods\Moves\<id>) and what the game labels
+// its entrances by (name=).
+std::string PackManifest(const std::string& id, const std::string& label) {
+  return "type=moves\nid=" + id + "\nname=" + label + "\nversion=1.0\n" + MadeWith();
+}
+
+fs::path InstallPack(const fs::path& from, const std::string& name, const std::string& game, std::string& label) {
+  const std::string id = PackId(name, game);
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Moves" / Wide(id);
+  label = PackLabel(name, game);
+  std::error_code ec;
   fs::remove_all(dir, ec);
   if (!CopyInto(from, dir)) return {};
-  const std::string m = "type=moves\nname=" + label + "\n" + MadeWith();
+  const std::string m = PackManifest(id, label);
   if (!svrfmt::WriteFile(PathStr(dir / L"manifest.txt"), Bytes(m.begin(), m.end()))) return {};
   return dir;
+}
+
+// ---- Save as a mod file (.svrmod): the same files Add to my game installs, zipped for the launcher's Mods tab
+
+std::wstring g_test_save;  // (test aid: the file a save goes to, no dialog)
+
+// Every file under a folder as zip entries ('/' separated, under `prefix`); dot-files and dot-folders left out.
+void FolderEntries(const fs::path& dir, const std::string& prefix, std::vector<svrfmt::ZipEntry>& out) {
+  std::error_code ec;
+  for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+    const std::string leaf = Utf8(it->path().filename().wstring());
+    if (!leaf.empty() && leaf[0] == '.') {
+      if (it->is_directory(ec)) it.disable_recursion_pending();
+      continue;
+    }
+    if (!it->is_regular_file(ec)) continue;
+    svrfmt::ZipEntry e;
+    e.name = prefix + Utf8(fs::relative(it->path(), dir, ec).generic_wstring());
+    if (svrfmt::ReadFile(PathStr(it->path()), e.data)) out.push_back(std::move(e));
+  }
+}
+
+// Asks where (a Save dialog, <name>.svrmod), writes the zip; the status line says how it's used. False: not saved.
+bool SaveModFile(const std::vector<svrfmt::ZipEntry>& files, const std::string& name, const std::string& note) {
+  std::wstring f = g_test_save;
+  if (f.empty()) f = PickFile(true, L"Save as a mod file", kModFilter, 1, L"svrmod", Wide(IdFrom(name, "mod") + ".svrmod").c_str());
+  if (f.empty()) return false;
+  if (!svrfmt::WriteFile(PathStr(fs::path(f)), svrfmt::ZipWrite(files))) {
+    Status("The mod file couldn't be written: " + Utf8(f));
+    return false;
+  }
+  Log("simple porting: saved " + Utf8(f) + " (" + std::to_string(files.size()) + " files)");
+  Status("Saved " + FileName(f) + ". " + note);
+  return true;
+}
+
+// A pack folder as a mod file (the entrance, or moves / taunts for Create-a-Moveset).
+bool SavePack(const fs::path& pack, const std::string& name, const std::string& game) {
+  std::vector<svrfmt::ZipEntry> files;
+  FolderEntries(pack, "", files);
+  files.erase(std::remove_if(files.begin(), files.end(), [](const svrfmt::ZipEntry& e) { return e.name == "manifest.txt"; }), files.end());
+  const std::string m = PackManifest(PackId(name, game), PackLabel(name, game));
+  files.push_back({"manifest.txt", Bytes(m.begin(), m.end())});
+  return SaveModFile(files, name, "Anyone can install it with the launcher's Mods tab (or Open it here).");
 }
 
 // The mod doctor on what was added, in this page's words (no "move pack").
@@ -989,6 +1050,10 @@ void Done(State& s, const std::string& what, const fs::path& dir, const std::str
   const std::string note = InstallReport(kind, dir);
   Status(note.empty() ? what : what + " " + note);
   ReloadEntrances();
+}
+
+void SaveEntrance(State& s) {
+  if (SavePack(ResultPack(s), s.item_name, GameName(s.game))) s.saved = true;
 }
 
 void AddEntrance(State& s) {
@@ -1032,7 +1097,7 @@ void UseForSuperstar(State& s) {
   Status(s.extra_done);
 }
 
-void InstallMoves(Kind k, State& s) {
+void InstallMoves(Kind k, State& s, bool save = false) {
   const std::string game = ConverterGame(k, s.game);
   const fs::path out = WorkDir() / Wide(std::string(k == kTaunts ? "taunts_" : "moves_") + game + "_" + Safe(s.item));
   std::error_code ec;
@@ -1043,7 +1108,7 @@ void InstallMoves(Kind k, State& s) {
   if (k == kTaunts) args.push_back(L"--taunts-only");
   AddSvrmod(args, game);
   Status(k == kTaunts ? "Bringing the taunts over (a few minutes each)..." : "Bringing the moves over...");
-  RunToolJson(L"superstar_port.py", args, [k](int code, const std::string& o) {
+  RunToolJson(L"superstar_port.py", args, [k, save](int code, const std::string& o) {
     State& s = g_s[k];
     Json j;
     const std::string what = k == kTaunts ? "taunts" : "moves";
@@ -1054,6 +1119,23 @@ void InstallMoves(Kind k, State& s) {
     const fs::path pack = fs::u8path(j["out"].Str());
     std::error_code ec;
     const bool has_pack = !pack.empty() && fs::exists(pack / L"pack.txt", ec);
+    if (save) {  // (a mod file: for a superstar, the whole superstar mod with them - a copy; else the pack)
+      s.installing = false;
+      if (s.target == 0) {
+        const fs::path copy = WorkDir() / Wide("save_" + Safe(Utf8(fs::path(s.mod).filename().wstring())));
+        fs::remove_all(copy, ec);
+        if (!CopyInto(s.mod, copy) || (has_pack && !MergePack(pack, copy / L"moves")) || !MergeMovesTxt(copy / L"moves.txt", j["moves_txt"]))
+          return Status("The mod file couldn't be made (the log says why).");
+        std::vector<svrfmt::ZipEntry> files;
+        FolderEntries(copy, "", files);
+        if (SaveModFile(files, ModName(s.mod), "It's " + ModName(s.mod) + " with " + s.item_name + "'s " + what +
+                                                    ": installing it (launcher's Mods tab) puts them in.")) s.saved = true;
+        return;
+      }
+      if (!has_pack) return Status("Nothing to save: the game has all of these " + what + " already.");
+      if (SavePack(pack, s.item_name + (k == kTaunts ? " taunts" : " moves"), GameName(s.game))) s.saved = true;
+      return;
+    }
     if (s.target == 0) {
       const fs::path mod = s.mod;
       if ((has_pack && !MergePack(pack, mod / L"moves")) || !MergeMovesTxt(mod / L"moves.txt", j["moves_txt"])) {
@@ -1085,6 +1167,15 @@ void BigButton(const char* label, bool enabled, const std::function<void()>& pre
   ImGui::EndDisabled();
 }
 
+// "Save as a mod file (.svrmod)...": beside Add to my game, for sharing or installing later with the launcher.
+void SaveButton(bool enabled, bool saved, const std::function<void()>& press) {
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!enabled);
+  if (ImGui::Button("Save as a mod file (.svrmod)...", ImVec2(0, 56 * g_scale))) press();
+  ImGui::EndDisabled();
+  if (saved) ImGui::TextDisabled("Saved: install it any time with the launcher's Mods tab, or share it.");
+}
+
 void FinishEntrance(State& s) {
   const int finish = IndexOf(kEntrance, kStepFinish);
   if (s.installed.empty()) {
@@ -1097,6 +1188,7 @@ void FinishEntrance(State& s) {
       s.installing = true;
       AddEntrance(s);
     });
+    SaveButton(ErrorCount(problems) == 0 && !s.installing && !Busy(), s.saved, [&] { SaveEntrance(s); });
     return;
   }
   ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1), "Done!");
@@ -1130,6 +1222,8 @@ void FinishEntrance(State& s) {
       ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1), "%s", s.extra_done.c_str());
     }
   }
+  ImGui::Spacing();
+  SaveButton(!Busy(), s.saved, [&] { SaveEntrance(s); });
   ImGui::Spacing();
   if (ImGui::Button("Bring over another entrance")) {
     State fresh;
@@ -1175,6 +1269,10 @@ void FinishMoves(Kind k, State& s) {
     s.installing = true;
     InstallMoves(k, s);
   });
+  SaveButton(ErrorCount(problems) == 0 && !s.installing && !Busy(), s.saved, [&] {
+    s.installing = true;
+    InstallMoves(k, s, true);
+  });
 }
 
 // ---- test aid
@@ -1196,22 +1294,26 @@ void TestTick(Kind k, State& s) {
   if (g_test.add && g_test.kind == k && !g_test.on && k != kEntrance && !s.item.empty()) {  // (moves / taunts: to a mod)
     AskRows(k, s);
     if (s.rows["rows"].type == Json::Type::kArray && !s.installing && !Busy()) {
-      s.target = 0;
-      s.mod = (fs::path(g_game) / L"Mods" / L"Superstars" / Wide(g_test.mod)).wstring();
+      s.target = g_test.mod.empty() ? 1 : 0;  // (no mod folder given: Create-a-Moveset)
+      if (!g_test.mod.empty()) s.mod = (fs::path(g_game) / L"Mods" / L"Superstars" / Wide(g_test.mod)).wstring();
       s.step = IndexOf(k, kStepFinish);
       g_test.add = false;
       if (ErrorCount(Problems(k, s))) {
         for (const auto& p : Problems(k, s)) Log("simple porting test: " + p.text);
       } else {
         s.installing = true;
-        InstallMoves(k, s);
+        InstallMoves(k, s, !g_test_save.empty());
       }
     }
     if (!s.rows_error.empty()) Log("simple porting test: " + s.rows_error), g_test.add = false;
   }
   if (g_test.add && g_test.kind == k && !g_test.on && k == kEntrance && !s.item.empty()) {
     Convert(s);
-    if (Converted(s) && s.installed.empty() && !s.installing && !Busy()) s.installing = true, AddEntrance(s), g_test.add = false;
+    if (Converted(s) && s.installed.empty() && !s.installing && !Busy()) {
+      g_test.add = false;
+      if (!g_test_save.empty()) SaveEntrance(s);
+      else s.installing = true, AddEntrance(s);
+    }
     if (!s.result_error.empty()) Log("simple porting test: " + s.result_error), g_test.add = false;
   }
   if (!g_test.on || g_test.kind != k) return;
@@ -1433,7 +1535,6 @@ void Draw(Kind k) {
   const std::vector<Problem> problems = Problems(k, s);
   bool has_error[kMaxSteps] = {};
   simple::ErrorSteps(problems, count, has_error);
-  for (int i = s.step; i < count; ++i) has_error[i] = false;  // ("!" only on the steps already passed)
   simple::StepList(StepsOf(k), count, s.step, has_error);
   ImGui::SameLine();
   const bool view = k != kEntrance && step == kStepPick;  // (moves / taunts: the 3D view beside the list)
@@ -1459,7 +1560,7 @@ void Draw(Kind k) {
     ImGui::TextDisabled("Shown on %s%s.", on ? on->name.c_str() : "a 2011 superstar", s.item_star11 ? " (2011's own)" : "");
     ImGui::EndChild();
   }
-  simple::BottomBar(s.step, count);
+  simple::BottomBar(s.step, count, simple::StepError(problems, s.step));
 }
 
 void TestStart(const std::string& spec) {
@@ -1475,7 +1576,8 @@ void TestStart(const std::string& spec) {
   g_test.game = f[1];
   g_test.item = f.size() > 2 ? f[2] : "";
   g_test.step = f.size() > 3 && !f[3].empty() ? std::atoi(f[3].c_str()) : -1;
-  g_test.add = f.size() > 4 && f[4] == "add";
+  g_test.add = f.size() > 4 && (f[4] == "add" || f[4].rfind("save=", 0) == 0);
+  g_test_save = f.size() > 4 && f[4].rfind("save=", 0) == 0 ? Wide(f[4].substr(5)) : L"";
   g_test.cancel = f.size() > 5 && f[5] == "cancel";
   g_test.mod = f.size() > 5 && f[5] != "cancel" ? f[5] : "";
   g_test.on = true;

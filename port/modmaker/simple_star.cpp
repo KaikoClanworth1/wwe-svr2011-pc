@@ -541,7 +541,7 @@ void SimpleDraw() {
   Preview();  // (its footer: Reset view, Blood, Damage)
   ImGui::EndChild();
 
-  simple::BottomBar(step, kStepCount);  // (Back / Next)
+  simple::BottomBar(step, kStepCount, simple::StepError(problems, step));  // (Back / Next: Next waits for the step's error)
 }
 
 }  // namespace star_page
