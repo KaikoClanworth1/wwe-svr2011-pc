@@ -150,6 +150,19 @@ def progress(p, text):
     print('progress %d %s' % (p, text), file=sys.stderr, flush=True)
 
 
+def bpe(raw):
+    """a BPE entry: svrmod.exe's encoder (seconds for an arena's textures), else the pure Python one
+    (minutes: 2.5 of a SvR 2008 arena's 2.6 went there), checked by unpacking it again"""
+    try:
+        out = svrfmt.bpe_pack(raw)
+        if svrfmt.bpe_decode(out) == raw:
+            return out
+        log('svrmod bpe: the packed entry does not unpack the same - the Python encoder instead')
+    except Exception as e:  # noqa: BLE001 - no svrmod.exe / it failed: the slow way
+        log('svrmod bpe unavailable (%s): the Python encoder (slow)' % e)
+    return svrfmt.bpe_encode(raw, compress=True)
+
+
 def textures(raw):
     """A texture set (u32 count, 32-byte records name[16] 'dds' size offset) -> [(name, dds bytes)]."""
     n = struct.unpack_from('<I', raw, 0)[0]
@@ -512,6 +525,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
             ents[i] = eb[i]
     unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
     have = None
+    progress(8, 'lights')
     if 0x7530 in ents and 0x7530 in eb:  # the arena's own lights, plus the sets the game needs
         import ymks
         bank = light_bank(unp(ents[0x7530]))
@@ -526,14 +540,15 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
             notes.append('light sets the game needs, from 2011 RAW: ' + ', '.join(map(str, added)))
         have = light_ids(bank)
     if 0xC364 not in ents:
+        progress(12, 'visibility tree')
         tree = vis_tree(ents)
         if tree:
-            ents[0xC364] = svrfmt.bpe_encode(tree, compress=True)
+            ents[0xC364] = bpe(tree)
             notes.append('visibility tree made from the arena models (the game had none)')
     if 0xC351 in ents and have:
         flags, moved = remap_lights(unp(ents[0xC351]), have)
         if moved:
-            ents[0xC351] = svrfmt.bpe_encode(flags, compress=True)
+            ents[0xC351] = bpe(flags)
             notes.append('light sets missing from the arena, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
     notes.append('crowd, announce table pictures and card from 2011 RAW')
 
@@ -544,6 +559,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         return svrfmt.epac_write(hb, g, tb)
 
     budget = len(host)
+    progress(16, 'fitting the textures into the %s file' % BASE_NAMES[base])
     data = build(ents[0x190])
     raw = svrfmt.bpe_decode(ents[0x190])
     texs = textures(raw)
@@ -566,7 +582,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
             texs[k] = (texs[k][0], smaller)
             halved.add(texs[k][0])
         progress(10 + rnd * 12, 'packing textures, round %d' % rnd)
-        data = build(svrfmt.bpe_encode(texture_set_write(texs, head), compress=True))
+        data = build(bpe(texture_set_write(texs, head)))
         log('round %d: file %d, budget %d' % (rnd, len(data), budget))
     if halved:
         notes.append('%d textures at half size to fit the %s file (%d bytes)' % (len(halved), BASE_NAMES[base], budget))
