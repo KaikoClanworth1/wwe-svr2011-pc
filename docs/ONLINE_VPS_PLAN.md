@@ -71,6 +71,13 @@ players --UDP 36500--> svr-relay-edge (unchanged) --127.0.0.1:36501--> svr2011 s
   for public requests, so require an admin token or reach the dashboard only
   through an SSH tunnel to 127.0.0.1:8101). Code change in `server.py`, before
   the move.
+- **Portal headers**: since the is_admin fix (loopback without
+  `X-Forwarded-For` is no longer admin) the service trusts `X-Portal-Role:
+  admin` on a loopback connection that has `X-Forwarded-For`. With nginx in
+  front, a client could send those headers itself: the `/svr/` location must
+  clear them (`proxy_set_header X-Portal-Role ""; proxy_set_header
+  X-Portal-Public "";` and set `X-Forwarded-For $remote_addr`), and the
+  dashboard is reached only through an SSH tunnel or the portal.
 - **TLS**: unchanged (nginx's Let's Encrypt for sho-ti.me).
 - **Ports to open**: none new. 80/443 and UDP 36500 are already public; 8101
   and 36501 stay on 127.0.0.1.
