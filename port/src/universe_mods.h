@@ -17,8 +17,10 @@ void InstallUniverseMods(rex::memory::Memory* memory, const std::filesystem::pat
 // -1 when the mod has none (the side table full, or not set up).
 int64_t UniverseModPlace(uint8_t* base, uint32_t id);
 // sub_825AD850 with a mod in the pair (place_a / place_b: the other id's own place, -1 none): the offset from the
-// rivalry table (P + 3616) to the pair's side byte, -1 for none. One byte per pair, whichever order.
-int64_t UniverseModPair(uint8_t* base, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b);
+// rivalry table the caller reads (`table`) to the pair's side byte, -1 for none. One byte per pair, whichever order.
+// Only Universe's own table (P + 3616) has the mods' bytes: a copy of it (sub_825C2BA0 works on one on the stack)
+// answers -1, the "no pair" every caller tests.
+int64_t UniverseModPair(uint8_t* base, uint32_t table, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b);
 // Whether a mod has a Universe entry.
 bool UniverseModIn(uint32_t id);
 // After Universe's reset (sub_825B6C60) and after a save is loaded (sub_8257A218): the side table cleared / read

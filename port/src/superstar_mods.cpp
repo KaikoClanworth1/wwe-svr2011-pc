@@ -2490,12 +2490,42 @@ REX_HOOK_RAW(sub_825B7B40) {  // (id, id) -> both in Universe
   }
   __imp__sub_825B7B40(ctx, base);
 }
+namespace {
+// The rivalry table sub_825AD850's caller adds the index to, read from the caller's registers (at the callee's entry
+// they are still the caller's). Its 7 callers (the whole exe searched): a table object's +4 or +12, or P+3616
+// itself - and some objects are copies (sub_825C2BA0 -> sub_825AD950 on a stack copy). 0: not known.
+uint32_t PairTable(const PPCContext& ctx, uint8_t* base) {
+  const uint32_t lr = uint32_t(ctx.lr);
+  const uint32_t save = Rd32(base + 0x82E407B4);
+  const uint32_t own = save ? save + 0x364B4 + 3616 : 0;  // (Universe's own: P+3616)
+  auto at = [&](uint32_t obj, uint32_t off) { return obj ? Rd32(base + obj + off) : 0u; };
+  if (lr >= 0x825AF908) return at(ctx.r31.u32, 4);   // sub_825AF908: obj r31, *(obj+4)
+  if (lr >= 0x825AF800) return own;                  // sub_825AF800: sub_8257A490 + 3616
+  if (lr >= 0x825AECE8) return at(ctx.r27.u32, 12);  // sub_825AECE8: obj r27, *(obj+12)
+  if (lr >= 0x825ADA48) return own;                  // sub_825ADA48: only tests -1
+  if (lr >= 0x825AD9C8) return at(ctx.r31.u32, 4);   // sub_825AD9C8: obj r31
+  if (lr >= 0x825AD950) return at(ctx.r31.u32, 4);   // sub_825AD950: obj r31
+  if (lr >= 0x825AD8E0) return at(ctx.r30.u32, 4);   // sub_825AD8E0: obj r30
+  return 0;
+}
+}  // namespace
 REX_EXTERN(__imp__sub_825AD850);
-REX_HOOK_RAW(sub_825AD850) {  // (id, id) -> the pair's rivalry index from P+3616, -1: none
+REX_HOOK_RAW(sub_825AD850) {  // (id, id) -> the pair's rivalry index from the caller's table, -1: none
   const uint32_t a = ctx.r3.u32, b = ctx.r4.u32;
   if (ModOf(a) || ModOf(b)) {
+    const uint32_t lr = uint32_t(ctx.lr);
+    const uint32_t table = lr >= 0x825AD8E0 && lr < 0x825AFA00 ? PairTable(ctx, base) : 0;
+    if (!table) {  // (a caller not known: no pair)
+      static bool said = false;
+      if (!said) {
+        said = true;
+        REXLOG_WARN("[svr2011] universe mods: rivalry pair asked from lr {:08X} - none", lr);
+      }
+      ctx.r3.u64 = uint64_t(int64_t(-1));
+      return;
+    }
     const int64_t pa = ModOf(a) ? 0 : UniversePlace(ctx, base, a), pb = ModOf(b) ? 0 : UniversePlace(ctx, base, b);
-    ctx.r3.u64 = uint64_t(svr2011::UniverseModPair(base, a, pa, b, pb));
+    ctx.r3.u64 = uint64_t(svr2011::UniverseModPair(base, table, a, pa, b, pb));
     return;
   }
   __imp__sub_825AD850(ctx, base);

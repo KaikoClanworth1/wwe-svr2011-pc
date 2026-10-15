@@ -44,6 +44,7 @@ uint32_t g_rows = 0;        // guest: kMax x kRow rivalry bytes
 std::vector<uint32_t> g_ids;  // the mods, in their side order (SuperstarModIds)
 fs::file_time_type g_seen{};  // SaveData.dat's time last read or written
 bool g_loaded = false;        // a save was loaded this run (or there was none at start: a new one may come)
+bool g_fresh = false;         // Fresh() has looked at the mods' entries since the last clear / read
 
 uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
@@ -70,9 +71,35 @@ uint32_t Entries(uint8_t* base, uint32_t p) {
 }
 
 void Clear() {
+  g_fresh = false;
   if (!g_memory || !g_entries) return;
   std::memset(g_memory->TranslateVirtual<uint8_t*>(g_entries), 0, kMax * kEntrySize + 8);
   std::memset(g_memory->TranslateVirtual<uint8_t*>(g_rows), 0, kMax * kRow);
+}
+
+// A mod's entry the game never set up (all zero: the Universe was made before the mod) gets what a superstar on the
+// disc list starts with: its first group of ratings at 500 / 600 / 600 (the values every unused place holds; at 0 the
+// cards never book the mod). Where that group sits in the 24 bytes is read off the game's own entries (+0 or +4);
+// nothing is written while they aren't set up yet.
+void Fresh(uint8_t* base, uint32_t p, uint8_t* ent) {
+  if (g_fresh) return;
+  int at0 = 0, at4 = 0;
+  for (uint32_t k = 70; k < kPlaces; ++k) {
+    const uint8_t* e = base + p + kEntries + k * kEntrySize;
+    const uint32_t v0 = uint32_t(e[0]) << 8 | e[1], v4 = uint32_t(e[4]) << 8 | e[5];
+    at0 += v0 >= 100 && v0 < 2000, at4 += v4 >= 100 && v4 < 2000;
+  }
+  if (std::max(at0, at4) < 10) return;
+  g_fresh = true;
+  const uint32_t off = at4 > at0 ? 4 : 0;
+  for (size_t i = 0; i < g_ids.size(); ++i) {
+    uint8_t* e = ent + i * kEntrySize;
+    if (std::any_of(e, e + kEntrySize, [](uint8_t c) { return c != 0; })) continue;
+    const uint16_t v[4] = {500, 600, 600, 0};
+    for (int j = 0; j < 4; ++j) e[off + 2 * j] = uint8_t(v[j] >> 8), e[off + 2 * j + 1] = uint8_t(v[j]);
+    REXLOG_INFO("[svr2011] universe mods: {} starts with the disc list's ratings (500 / 600 / 600 at +{})",
+                SuperstarModFolder(g_ids[i]), off);
+  }
 }
 
 fs::file_time_type SaveTime() {
@@ -197,6 +224,7 @@ int64_t UniverseModPlace(uint8_t* base, uint32_t id) {
   const int i = Index(id);
   const uint32_t p = P(base);
   if (i < 0 || !p || !g_entries) return -1;
+  Fresh(base, p, base + Entries(base, p));
   const uint32_t d = Entries(base, p) + uint32_t(i) * kEntrySize - (p + kEntries);  // (a multiple of 8)
   const uint32_t k = ((d >> 3) * 0x0AAAAAABu) & 0x1FFFFFFFu;  // (3k = d / 8 mod 2^29: 0x0AAAAAAB = 1/3 mod 2^29)
   if (uint32_t(k * kEntrySize) != d) {
@@ -206,9 +234,9 @@ int64_t UniverseModPlace(uint8_t* base, uint32_t id) {
   return int64_t(k);
 }
 
-int64_t UniverseModPair(uint8_t* base, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b) {
+int64_t UniverseModPair(uint8_t* base, uint32_t table, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b) {
   const uint32_t p = P(base);
-  if (!p || !g_rows || a == b) return -1;
+  if (!p || !g_rows || a == b || table != p + kRivalry) return -1;
   const int ia = Index(a), ib = Index(b);
   int row = -1;
   uint32_t col = 0;
@@ -223,7 +251,7 @@ int64_t UniverseModPair(uint8_t* base, uint32_t a, int64_t place_a, uint32_t b, 
   } else {
     return -1;
   }
-  const uint32_t off = g_rows + uint32_t(row) * kRow + col - (p + kRivalry);
+  const uint32_t off = g_rows + uint32_t(row) * kRow + col - table;
   return off == 0xFFFFFFFFu ? -1 : int64_t(int32_t(off));
 }
 
