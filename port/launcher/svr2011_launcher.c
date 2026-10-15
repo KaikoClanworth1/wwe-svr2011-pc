@@ -3255,6 +3255,49 @@ static int any_game_running(void)
     return found;
 }
 
+/* The port's programs (the game, the Mod Maker, another launcher) running from the folder `dir`, in plain
+ * words ("the Mod Maker and the game") into `out`; 0 when none. This launcher doesn't count. */
+static int programs_running_in(const WCHAR *dir, WCHAR *out, size_t n)
+{
+    static const struct { const WCHAR *exe, *say; } k_progs[] = {
+        { GAME_EXE, L"the game" }, { L"SvR2011 Mod Maker.exe", L"the Mod Maker" },
+        { L"SvR2011 Launcher.exe", L"another launcher" } };
+    PROCESSENTRY32W pe;
+    HANDLE snap;
+    int found = 0, said[3] = { 0, 0, 0 };
+    size_t i;
+    out[0] = 0;
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return 0;
+    pe.dwSize = sizeof pe;
+    if (Process32FirstW(snap, &pe))
+        do {
+            for (i = 0; i < 3; i++) {
+                WCHAR path[MAX_PATH], *slash;
+                DWORD len = MAX_PATH;
+                HANDLE p;
+                if (said[i] || _wcsicmp(pe.szExeFile, k_progs[i].exe) || pe.th32ProcessID == GetCurrentProcessId())
+                    continue;
+                p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+                if (!p)
+                    continue;
+                if (QueryFullProcessImageNameW(p, 0, path, &len) && (slash = wcsrchr(path, L'\\'))) {
+                    *slash = 0;
+                    if (same_dir(path, dir)) {
+                        said[i] = 1;
+                        swprintf_s(out + wcslen(out), n - wcslen(out), L"%s%s", found ? L" and " : L"",
+                                   k_progs[i].say);
+                        found++;
+                    }
+                }
+                CloseHandle(p);
+            }
+        } while (Process32NextW(snap, &pe));
+    CloseHandle(snap);
+    return found;
+}
+
 /* The saves folder setting (svr2011.toml's saves_folder, which the game reads
  * too): "" for the default, <game>\Saves. Kept with '/' (a TOML string takes
  * '\' as an escape); relative paths are from the game folder. */
@@ -6141,17 +6184,61 @@ static int up_copy_folders(const WCHAR *from, const WCHAR *to)
     return ok;
 }
 
-/* Copies the top-level files of `from` and its folders into `to`, keeping the
- * player's settings. The running launcher is renamed out of the way first
- * (Windows lets a running exe be renamed, not overwritten). */
+/* Windows' words for an error ("The process cannot access the file because it is being used by another
+ * process."), without the line end. */
+static void error_text(DWORD e, WCHAR *out, size_t n)
+{
+    size_t k;
+    if (!FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, e, 0, out, (DWORD)n, NULL))
+        swprintf_s(out, n, L"error %lu", e);
+    k = wcslen(out);
+    while (k && (out[k - 1] == L'\r' || out[k - 1] == L'\n' || out[k - 1] == L' ' || out[k - 1] == L'.'))
+        out[--k] = 0;
+}
+
+/* 1 when two files hold the same bytes. */
+static int same_file_bytes(const WCHAR *a, const WCHAR *b)
+{
+    static char ba[1 << 16], bb[1 << 16];
+    FILE *fa = NULL, *fb = NULL;
+    size_t na, nb;
+    int same = 0;
+    if (_wfopen_s(&fa, a, L"rb") || !fa || _wfopen_s(&fb, b, L"rb") || !fb)
+        goto done;
+    for (;;) {
+        na = fread(ba, 1, sizeof ba, fa);
+        nb = fread(bb, 1, sizeof bb, fb);
+        if (na != nb || memcmp(ba, bb, na))
+            break;
+        if (!na) {
+            same = 1;
+            break;
+        }
+    }
+done:
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return same;
+}
+
+#define UP_FILES_MAX 256
+
+/* Copies the top-level files of `from` and its folders into `to`, keeping the player's settings - the
+ * program files all or none: each is copied beside its old one as <name>.new first; only when all are there
+ * are the old ones renamed to <name>.old (Windows lets a running exe be renamed, not overwritten) and the
+ * new ones renamed in. A file that can't be written or replaced (the Mod Maker or the game running from the
+ * folder, an antivirus scan holding it) leaves the old set whole and says which file and why. 2.1.2 and
+ * older copied file by file and stopped at the first failure: a new launcher and DLLs with the old game
+ * ("version 2.1.1 - the newest is 2.1.2: online is off" after an update). */
 static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t errn)
 {
     static const WCHAR *keep[] = { L"launcher.ini", GAME_TOML };
-    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH], old[MAX_PATH + 8], sub[MAX_PATH], subdst[MAX_PATH];
+    static WCHAR names[UP_FILES_MAX][MAX_PATH];
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH], nw[MAX_PATH + 8], old[MAX_PATH + 8], why[256];
     WIN32_FIND_DATAW fd;
     HANDLE h;
     size_t i;
-    int ok = 1;
+    int n = 0, k, moved = 0, placed = 0, ok = 1;
     if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
         return 0;
     do {
@@ -6161,25 +6248,78 @@ static int up_copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t e
         for (i = 0; i < sizeof keep / sizeof *keep; i++)
             if (!_wcsicmp(fd.cFileName, keep[i]))
                 skip = 1;
-        if (skip || !join(src, from, fd.cFileName) || !join(dst, to, fd.cFileName))
+        if (!skip && n < UP_FILES_MAX)
+            wcscpy_s(names[n++], MAX_PATH, fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    /* 1: every new file beside its old one */
+    for (k = 0; k < n && ok; k++) {
+        if (!join(src, from, names[k]) || !join(dst, to, names[k]))
             continue;
-        if (!_wcsicmp(dst, s_launcher_exe)) {
-            swprintf_s(old, MAX_PATH + 8, L"%s.old", dst);
-            DeleteFileW(old);
-            MoveFileExW(dst, old, MOVEFILE_REPLACE_EXISTING);
-        }
-        if (!CopyFileW(src, dst, FALSE)) {
-            swprintf_s(err, errn, L"Could not replace %s (error %lu). Is the game or another launcher running?",
-                       dst, GetLastError());
+        swprintf_s(nw, MAX_PATH + 8, L"%s.new", dst);
+        if (!CopyFileW(src, nw, FALSE)) {
+            error_text(GetLastError(), why, 256);
+            swprintf_s(err, errn, L"The update couldn't write %s (%s). Nothing was changed.", nw, why);
             ok = 0;
         }
-    } while (ok && FindNextFileW(h, &fd));
-    FindClose(h);
+    }
+    /* 2: the old ones out of the way, then the new ones in */
+    for (k = 0; k < n && ok; k++, moved++) {
+        if (!join(dst, to, names[k]) || !file_exists(dst))
+            continue;
+        swprintf_s(old, MAX_PATH + 8, L"%s.old", dst);
+        DeleteFileW(old);
+        if (!MoveFileExW(dst, old, MOVEFILE_REPLACE_EXISTING)) {
+            error_text(GetLastError(), why, 256);
+            swprintf_s(err, errn, L"The update didn't finish: %s couldn't be replaced (%s). Is the Mod Maker or "
+                                  L"the game running from that folder? Close it, then update again - nothing was "
+                                  L"changed.", dst, why);
+            ok = 0;
+            break;
+        }
+    }
+    for (k = 0; k < n && ok; k++, placed++) {
+        if (!join(dst, to, names[k]))
+            continue;
+        swprintf_s(nw, MAX_PATH + 8, L"%s.new", dst);
+        if (!MoveFileExW(nw, dst, 0)) {
+            error_text(GetLastError(), why, 256);
+            swprintf_s(err, errn, L"The update didn't finish: %s couldn't be put in place (%s). Nothing was "
+                                  L"changed.", dst, why);
+            ok = 0;
+            break;
+        }
+    }
+    if (!ok) {   /* (back as it was: the new ones out, the old ones back, no .new left) */
+        for (k = 0; k < n; k++) {
+            if (!join(dst, to, names[k]))
+                continue;
+            swprintf_s(nw, MAX_PATH + 8, L"%s.new", dst);
+            swprintf_s(old, MAX_PATH + 8, L"%s.old", dst);
+            if (k < placed)
+                DeleteFileW(dst);
+            if (k < moved && file_exists(old))
+                MoveFileExW(old, dst, MOVEFILE_REPLACE_EXISTING);
+            DeleteFileW(nw);
+        }
+        return 0;
+    }
+    /* 3: the old ones gone (the running launcher's: at its next start); each file checked */
+    for (k = 0; k < n; k++) {
+        if (!join(src, from, names[k]) || !join(dst, to, names[k]))
+            continue;
+        swprintf_s(old, MAX_PATH + 8, L"%s.old", dst);
+        if (file_exists(old))
+            DeleteFileW(old);
+        if (ok && !same_file_bytes(src, dst)) {
+            swprintf_s(err, errn, L"The update didn't finish: %s is not the new version.", dst);
+            ok = 0;
+        }
+    }
     /* (its folders too: the mods that come with the port - the launcher
        installs new ones -, the shaders, the button pictures, the Android app) */
     if (ok)
         up_copy_folders(from, to);
-    (void)sub; (void)subdst;
     return ok;
 }
 
@@ -6270,24 +6410,44 @@ static void up_finished(int ok, WCHAR *err)
     up_status(L"Updated to version %s, with its bundled mods.", PORT_VERSION);
 }
 
-/* Downloads s_up's zip and copies its files over the install. */
-static int up_install(WCHAR *err, size_t errn)
+/* "Close the Mod Maker first": the port's programs running from the game folder or the launcher's; 1 when
+ * the update can go on. */
+static int up_programs_closed(WCHAR *err, size_t errn)
 {
-    WCHAR tmp[MAX_PATH], work[MAX_PATH], zip[MAX_PATH], files[MAX_PATH], probe[MAX_PATH];
-    WCHAR name[80];
+    WCHAR who[160], also[160];
+    int n = s_game_dir[0] ? programs_running_in(s_game_dir, who, 160) : 0;
+    if (!same_dir(s_game_dir, s_launcher_dir) && programs_running_in(s_launcher_dir, also, 160))
+        swprintf_s(who + wcslen(who), 160 - wcslen(who), L"%s%s", n++ ? L" and " : L"", also);
+    if (!n && any_game_running())
+        wcscpy_s(who, 160, L"the game"), n = 1;
+    if (!n)
+        return 1;
+    swprintf_s(err, errn, L"Close %s first, then update - %s running from the port's folder.", who,
+               n > 1 ? L"they are" : L"it is");
+    return 0;
+}
+
+/* The release zip kept in Tools\.downloads (SvR2011-PC-v<version>.zip) - "Finish the update" uses it. */
+static void up_zip_path(const WCHAR *version, WCHAR *out)
+{
+    WCHAR dir[MAX_PATH], name[80];
+    download_dir(dir);
+    swprintf_s(name, 80, L"SvR2011-PC-v%s.zip", version);
+    join(out, dir, name);
+}
+
+/* Copies a release zip's files over the install (the game folder, and the launcher's own folder if it is
+ * another one). */
+static int up_install_zip(const WCHAR *zip, WCHAR *err, size_t errn)
+{
+    WCHAR tmp[MAX_PATH], work[MAX_PATH], files[MAX_PATH], probe[MAX_PATH];
     int ok = 0;
     download_dir(tmp);
-    if (!join(work, tmp, L"svr2011-update"))
-        goto done;
+    if (!join(work, tmp, L"svr2011-update") || !join(files, work, L"files"))
+        return 0;
     remove_tree(work);
     CreateDirectoryW(work, NULL);
-    swprintf_s(name, 80, L"SvR2011-PC-v%s.zip", s_up.version);
-    if (!join(zip, work, name) || !join(files, work, L"files"))
-        goto done;
     CreateDirectoryW(files, NULL);
-    if (!update_download(s_up.url, zip, s_wnd, WM_APP_UPD_PROGRESS, &s_up_cancel, err, errn))
-        goto done;
-    PostMessageW(s_wnd, WM_APP_UPD_PROGRESS, 100, 1);
     if (!unpack(zip, files)) {
         swprintf_s(err, errn, L"Could not unpack the update.");
         goto done;
@@ -6296,11 +6456,8 @@ static int up_install(WCHAR *err, size_t errn)
         swprintf_s(err, errn, L"The update has no %s; nothing was changed.", GAME_EXE);
         goto done;
     }
-    if (any_game_running()) {
-        swprintf_s(err, errn, L"The game is running. Close it, then update again.");
+    if (!up_programs_closed(err, errn))
         goto done;
-    }
-    /* The game folder, and the launcher's own folder if it is another one. */
     ok = 1;
     if (s_game_dir[0] && dir_exists(s_game_dir) && has_program(s_game_dir))
         ok = up_copy_into(files, s_game_dir, err, errn);
@@ -6309,6 +6466,38 @@ static int up_install(WCHAR *err, size_t errn)
 done:
     remove_tree(work);
     return ok;
+}
+
+/* Downloads s_up's zip (kept in Tools\.downloads, older ones removed) and copies its files over the install. */
+static int up_install(WCHAR *err, size_t errn)
+{
+    WCHAR zip[MAX_PATH], dir[MAX_PATH], pat[MAX_PATH], other[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    if (!up_programs_closed(err, errn))
+        return 0;
+    up_zip_path(s_up.version, zip);
+    if (!file_exists(zip)) {
+        WCHAR part[MAX_PATH + 8];
+        swprintf_s(part, MAX_PATH + 8, L"%s.part", zip);
+        if (!update_download(s_up.url, part, s_wnd, WM_APP_UPD_PROGRESS, &s_up_cancel, err, errn))
+            return 0;
+        if (!MoveFileExW(part, zip, MOVEFILE_REPLACE_EXISTING)) {
+            swprintf_s(err, errn, L"Could not save the update in %s.", zip);
+            return 0;
+        }
+    }
+    if (s_wnd)
+        PostMessageW(s_wnd, WM_APP_UPD_PROGRESS, 100, 1);
+    download_dir(dir);
+    if (join(pat, dir, L"SvR2011-PC-v*.zip") && (h = FindFirstFileW(pat, &fd)) != INVALID_HANDLE_VALUE) {
+        do {   /* (older releases' zips) */
+            if (join(other, dir, fd.cFileName) && _wcsicmp(other, zip))
+                DeleteFileW(other);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return up_install_zip(zip, err, errn);
 }
 
 static DWORD WINAPI up_apply_thread(LPVOID arg)
@@ -6320,13 +6509,88 @@ static DWORD WINAPI up_apply_thread(LPVOID arg)
     return 0;
 }
 
+/* ── an update that didn't finish ─────────────────────────────────────────
+ * The game's version (its exe's version information, 2.1.3 on; older ones say 1.0) against the launcher's:
+ * another one means the last update replaced the launcher but not the game. "Finish the update" copies the
+ * release in again - from the zip kept in Tools\.downloads, else downloaded again. */
+static int s_up_finish;
+static WCHAR s_up_game_version[32];
+
+static int up_game_version(WCHAR *out, size_t n)
+{
+    WCHAR exe[MAX_PATH];
+    DWORD h = 0, sz;
+    void *buf;
+    VS_FIXEDFILEINFO *fi;
+    UINT fl;
+    int ok = 0;
+    out[0] = 0;
+    if (!s_game_dir[0] || !join(exe, s_game_dir, GAME_EXE) || !file_exists(exe) ||
+        !(sz = GetFileVersionInfoSizeW(exe, &h)) || !(buf = malloc(sz)))
+        return 0;
+    if (GetFileVersionInfoW(exe, 0, sz, buf) && VerQueryValueW(buf, L"\\", (void **)&fi, &fl) && fi) {
+        swprintf_s(out, n, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS), LOWORD(fi->dwFileVersionMS),
+                   HIWORD(fi->dwFileVersionLS));
+        ok = 1;
+    }
+    free(buf);
+    return ok;
+}
+
+static void up_check_finished(void)
+{
+    WCHAR gv[32];
+    s_up_finish = 0;
+    if (!up_game_version(gv, 32))
+        return;   /* (no game exe here, or one without version information) */
+    if (!version_newer(gv, PORT_VERSION) && !version_newer(PORT_VERSION, gv))
+        return;
+    s_up_finish = 1;
+    wcscpy_s(s_up_game_version, 32, !wcscmp(gv, L"1.0.0") ? L"older" : gv);
+    up_status(L"The game is %s, the launcher %s: the last update didn't finish.", s_up_game_version, PORT_VERSION);
+    set_text(ID_UP_BUTTON, L"Finish the update");
+}
+
+static DWORD WINAPI up_complete_thread(LPVOID arg)
+{
+    WCHAR err[600] = L"", zip[MAX_PATH];
+    int ok;
+    (void)arg;
+    up_zip_path(PORT_VERSION, zip);
+    if (file_exists(zip))
+        ok = up_install_zip(zip, err, 600);
+    else
+        ok = update_check_version(PORT_VERSION, &s_up, err, 600) && up_install(err, 600);
+    PostMessageW(s_wnd, WM_APP_UPD_DONE, (WPARAM)ok, ok ? 0 : (LPARAM)wdup(err[0] ? err : L"The update failed."));
+    return 0;
+}
+
+static void up_complete(void)
+{
+    WCHAR err[400];
+    if (s_up_busy || s_busy)
+        return;
+    if (!up_programs_closed(err, 400)) {
+        up_status(L"%s", err);
+        return;
+    }
+    InterlockedExchange(&s_up_busy, 1);
+    InterlockedExchange(&s_up_cancel, 0);
+    EnableWindow(ctl(ID_UP_BUTTON), FALSE);
+    EnableWindow(ctl(ID_PLAY), FALSE);
+    ShowWindow(ctl(ID_UP_PROGRESS), SW_SHOW);
+    SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, 0, 0);
+    up_status(L"Finishing the update to %s\x2026", PORT_VERSION);
+    CloseHandle(CreateThread(NULL, 0, up_complete_thread, NULL, 0, NULL));
+}
+
 static void up_apply(void)
 {
     WCHAR q[400];
     if (!s_up_available || s_up_busy || s_busy)
         return;
-    if (any_game_running()) {
-        up_status(L"Close the game first, then update.");
+    if (!up_programs_closed(q, 400)) {
+        up_status(L"%s", q);
         return;
     }
     swprintf_s(q, 400, L"Update the PC port to version %s?\n\nThe launcher downloads it (%.0f MB), replaces the "
@@ -6358,6 +6622,10 @@ static void up_checked(int ok, WCHAR *err)
         set_text(ID_UP_BUTTON, b);
         if (s_up_auto_run)
             up_apply();
+    } else if (s_up_finish) {
+        up_status(L"The game is %s, the launcher %s: the last update didn't finish.", s_up_game_version,
+                  PORT_VERSION);
+        set_text(ID_UP_BUTTON, L"Finish the update");
     } else {
         up_status(L"You have the newest version.");
     }
@@ -6399,6 +6667,7 @@ static int up_command(int id, int code)
     (void)code;
     if (id == ID_UP_BUTTON) {
         if (s_up_available) up_apply();
+        else if (s_up_finish) up_complete();
         else up_check(0);
         return 1;
     }
@@ -7167,12 +7436,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     load_launcher_ini();
     if (argv && argc >= 2 && !wcscmp(argv[1], L"--updated"))   /* (restarted by an update) */
         updated = 1;
-    {   /* the launcher an update replaced */
-        WCHAR old[MAX_PATH + 8];
-        int k;
+    {   /* the launcher an update replaced, and other program files it couldn't delete then (<name>.old) */
+        WCHAR old[MAX_PATH + 8], pat[MAX_PATH], f[MAX_PATH];
+        WIN32_FIND_DATAW fd;
+        HANDLE h;
+        int k, d;
         swprintf_s(old, MAX_PATH + 8, L"%s.old", s_launcher_exe);
         for (k = 0; k < 20 && file_exists(old) && !DeleteFileW(old); k++)
             Sleep(250);
+        for (d = 0; d < 2; d++) {
+            const WCHAR *dir = d ? s_game_dir : s_launcher_dir;
+            if (!dir[0] || (d && same_dir(s_game_dir, s_launcher_dir)) || !join(pat, dir, L"*.old") ||
+                (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+                continue;
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && join(f, dir, fd.cFileName))
+                    DeleteFileW(f);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
     }
     /* The VC++ runtime DLLs 2.1.0 shipped next to the programs (14.29): an overlay built for the newer runtime
        players have (Discord, Steam, RTSS, NVIDIA...) failed in our processes there - "unable to start correctly
@@ -7216,6 +7498,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (!up_install(err, 600)) { wprintf(L"update failed: %s\n", err); return 1; }
         setup_vcrt_cleanup(s_game_dir, NULL, 0);   /* (2.1.0's VC++ DLLs, as at a start) */
         wprintf(L"updated %s to %s\n", s_game_dir, s_up.version);
+        return 0;
+    }
+    /* --update-zip <release zip> [<game folder>]: install a release zip without a window (tests: a held file
+       leaves the old set whole). Then the game's version against this launcher's, as at a start. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--update-zip")) {
+        WCHAR err[600] = L"", gv[32];
+        console_setup();
+        if (argc >= 4)
+            wcscpy_s(s_game_dir, MAX_PATH, argv[3]);
+        if (!up_install_zip(argv[2], err, 600)) {
+            wprintf(L"update failed: %s\n", err);
+            return 1;
+        }
+        up_game_version(gv, 32);
+        wprintf(L"updated %s from %s; game %s, launcher %s\n", s_game_dir, argv[2], gv[0] ? gv : L"(no version)",
+                PORT_VERSION);
         return 0;
     }
     /* --movie-make <video> <bottom or -> <fit 0-2> <seconds> <out.bik> [size 320|640|1024] (tests; the
@@ -7523,6 +7821,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
     ShowWindow(s_wnd, show);
     UpdateWindow(s_wnd);
+    up_check_finished();
     if (!capture_file && GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini))
         up_check(1);
     if (capture_account) {
