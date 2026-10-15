@@ -2592,7 +2592,12 @@ std::string StateText() {
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
                   "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nmusic=" + std::to_string(g_star.music) + "\nmats=" + MaterialsText(g_star.mats) +
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
-  for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
+  // (the style's own attributes, filled in when the page is first drawn, aren't a change: a new project stays clean)
+  bool style_ratings = true;
+  for (int k = 0; k < 7; ++k) style_ratings &= g_star.ratings[k] == StarRating(kStyles[g_star.style].template_id, k);
+  if (!g_star.ratings_set || style_ratings) s += "style";
+  else
+    for (int k = 0; k < 7; ++k) s += std::to_string(g_star.ratings[k]) + ",";
   for (int a = 1; a < 4; ++a)
     s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a] + "|" +
          std::to_string(g_star.attire_entrance[a]);
