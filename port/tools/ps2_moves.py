@@ -205,6 +205,8 @@ def profile(src, cid):
 
 def _spell(s):
     s = re.sub(r'\b0+(\d)', r'\1', s.lower().strip())
+    if s.startswith('taunt '):   # (HCTP: "Taunt The Rock 1" = 2011's "The Rock 1", "Taunt Austin" = "Stone Cold")
+        s = re.sub(r'^(steve )?austin\b', 'stone cold', s[6:])
     return re.sub(r'^the ', '', s)
 
 

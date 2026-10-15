@@ -2051,7 +2051,10 @@ def moveset_rows(res, g11, names=None):
                   'port' if kind in ('ported', 'would port') else 'none')
         reason = verdict[verdict.find('(') + 1:verdict.rfind(')')] if '(' in verdict else ''
         if names is not None and reason == 'no porter for this game yet':   # (PS2: by name only)
-            reason = 'no 2011 move of that name (PS2 motions are not ported)'
+            reason = ("no 2011 taunt of that name or superstar - PS2 taunts can't be ported: the converter reads "
+                      "the PS2 games' move names, not their animations"
+                      if (slots.get(to) or {}).get('menu') == 'Taunts' else
+                      'no 2011 move of that name (PS2 motions are not ported)')
         id11 = nid if status != 'port' or kind == 'ported' else None
         out.append(dict(slot='0x%03X' % to, group=GROUPS.get((slots.get(to) or {}).get('menu') or '', 'other'),
                         source_id=v, name=(names or {}).get(v, nm) or nm, status=status, id11=id11,
