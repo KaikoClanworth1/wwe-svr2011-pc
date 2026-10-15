@@ -57,6 +57,9 @@ class PlayerSlots final : public rex::input::DeviceAssignment {
 // pad_types.cpp. Test aid: SVR2011_TEST_SCRIPT_PLAYER=<n> - the scripted
 // controller is player n (a second pad pressing START, without one).
 void MakeLeadPlayer(uint32_t user_index);
+// START taken at the press-START screen: player 1's device stays player 1 when controllers connect later
+// (they get the next players).
+void LockLeadPlayer();
 
 // The PlayStation (non-XInput) controllers through SDL, next to XInput.
 std::unique_ptr<rex::input::InputDriver> CreatePlayStationDriver();
