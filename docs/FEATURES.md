@@ -1,6 +1,6 @@
 # WWE SmackDown vs. Raw 2011 PC Port: features
 
-Everything the port adds to the game, as of v2.1.2 (15 October 2026): the core features first, then what each release added.
+Everything the port adds to the game, as of v2.1.3 (15 October 2026): the core features first, then what each release added.
 "New in 2.0" marks what this release adds; "Experimental" marks what is
 still being tested.
 
@@ -86,6 +86,17 @@ still being tested.
 
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
+
+## New in 2.1.3
+
+### Fixes
+- **Superstar mods whose CPU only reversed moves** (e.g. Jillian), with DLC Vol. 1 / 2 installed: the DLC's own move list hid the mods' moves from the CPU in matches, so a superstar whose moves were mostly new ones had nothing to attack with. The merged DLC copies now include the move list too.
+- **A controller connecting late took player 1**: whoever pressed START now stays player 1 (keyboard included); a controller that connects later gets the next number. PC and Android.
+- **Black screen at start** for players with a very long MY MUSIC list: the launcher cut the line when saving the settings and the file stopped working. The launcher reads any length and the game repairs a file cut this way; if the settings can't be read the game still starts.
+- **Mod Maker: Arena > From my other games** failed for SvR 2007 - 2010 discs ("'Namespace' object has no attribute 'item'").
+- **Launcher updates are all-or-nothing**: the update waits until the game and the Mod Maker are closed, swaps every file in only when all are ready, and checks them. If the game and the launcher are different versions (an update that didn't finish), the launcher says so and offers **Finish the update**.
+- **Antivirus false alarms**: the launcher is smaller (it uses Windows' own C runtime) and the programs carry proper version, publisher and copyright information; downloads go to the game folder's Tools\.downloads.
+- **Created Superstar uploads**: the game log now says why a Created Superstar is left out of the upload list (e.g. a DLC part).
 
 ## New in 2.1.2
 
