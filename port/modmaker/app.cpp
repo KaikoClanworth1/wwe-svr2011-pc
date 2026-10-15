@@ -1421,6 +1421,10 @@ void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::ve
     it = cache.insert_or_assign(pac, std::move(c)).first;
   }
   const auto& is = it->second.issues;
+  for (const auto& h : is.hair)
+    out.push_back(Error(who + "'s moving hair can't load - " + h + ": the game would crash or hang when the match loads.",
+                        "Port the superstar again with this Mod Maker (it writes each hair chain once), or remove "
+                        "the hair settings (entry 0x3C) in the pac editor."));
   for (const auto& m : is.nan_meshes)
     out.push_back(Error(who + "'s model is damaged (part " + m + " has broken points): the game would crash when it loads it.",
                         "Export the model again from your 3D program, or make it again from the FBX."));
@@ -2737,7 +2741,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         Bytes d;
         const auto is = ReadFile(Utf8(pac), d) ? svrfmt::CheckCharacterModel(d, 1) : svrfmt::CharModelIssues();
         char line[256];
-        std::snprintf(line, sizeof line, "%s: read %d, nan %d, eyes %.3f %.3f\n", FileName(pac).c_str(), int(is.read), int(is.nan_meshes.size()), is.eye_off[0], is.eye_off[1]);
+        std::snprintf(line, sizeof line, "%s: read %d, nan %d, eyes %.3f %.3f, hair %d\n", FileName(pac).c_str(), int(is.read), int(is.nan_meshes.size()), is.eye_off[0], is.eye_off[1], int(is.hair.size()));
         out += line;
       }
       WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));

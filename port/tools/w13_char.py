@@ -231,23 +231,49 @@ def hair_chains(m13):
     return out
 
 
+HAIR_LINES_MAX = 16   # (the most chain lines a stock 2011 0x3C has)
+
+
 def hair_text_11(text13, roots):
     """WWE '13 0x3C (SpringHairSetting: kami_bNN radius visc grav spring damp A lencorr bend movecorr, in cm) ->
-    2011's lines for these chains: the same columns, radius and gravity in 2011 units (x 0.1)"""
+    2011's lines for these chains: the same columns, radius and gravity in 2011 units (x 0.1). 2K15+ files
+    ("Version2") hold several Setting blocks naming the same chains: each chain once (its first line), at most
+    HAIR_LINES_MAX - 2011's own lists never name a chain twice or pass 16, and one that did (Asuka 2K17: 6 chains
+    x 4 blocks = 24 lines) crashed or hung the match load"""
     lines = [b'; hair chains from WWE \'13 (w13_char): kami_bNN radius visc grav spring damp A lencorr bend movecorr']
+    seen = set()
     for raw in text13.replace(b'\r', b'').split(b'\n'):
         tok = raw.split()
         if not tok or tok[0].startswith(b';') or tok[0].decode('latin-1') not in roots or len(tok) < 10:
+            continue
+        if tok[0] in seen or len(seen) >= HAIR_LINES_MAX:
             continue
         try:
             v = [float(x) for x in tok[1:10]]
         except ValueError:
             continue
+        seen.add(tok[0])
         v[0] *= 0.1
         v[2] *= 0.1
         lines.append((' %s %.4f %.4f %.4f %.4f %.4f %d %.4f %.4f %.4f ' % (
             tok[0].decode('latin-1'), v[0], v[1], v[2], v[3], v[4], int(v[5]), v[6], v[7], v[8])).encode('latin-1'))
     return b'\r\n'.join(lines) + b'\r\n'
+
+
+def hair_text_problems(text):
+    """a 2011 0x3C against what the game takes -> [problems]: a chain named twice, more than HAIR_LINES_MAX
+    chains (the Mod Maker's CheckHairSettings says the same; a chain the models haven't is fine - 23 stock
+    attires name some)"""
+    named = {}
+    for raw in text.replace(b'\r', b'').split(b'\n'):
+        tok = raw.split()
+        if len(tok) < 10 or tok[0].startswith(b';'):
+            continue
+        named[tok[0]] = named.get(tok[0], 0) + 1
+    out = ['%s named %d times' % (k.decode('latin-1'), v) for k, v in named.items() if v > 1]
+    if sum(named.values()) > HAIR_LINES_MAX:
+        out.append('%d chains, the game takes %d' % (sum(named.values()), HAIR_LINES_MAX))
+    return out
 
 
 class Conv:

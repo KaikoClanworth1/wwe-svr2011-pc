@@ -1303,6 +1303,11 @@ def fit_budget(path, tmpl):
                 return model_budget.attire_pages({k: v for k, v in kids.items() if k not in (0x7530, 0x7531, 0x7532)})[0] \
                     > model_budget.LIMIT
             n = name.decode('latin1').strip('\0 ')
+            if 0x3c in kids:   # (moving-hair settings the game can't take crash or hang the match load: fail here instead)
+                bad = w13_char.hair_text_problems(kids[0x3c])
+                if bad:
+                    raise BadInput('attire %s: its hair settings would crash the game (%s) - a converter bug, please '
+                                   'report it' % (n, '; '.join(bad)))
             if over() and 0x4e20 in kids:
                 del kids[0x4e20]
                 blob = w13_char.pack_kids(kids)
