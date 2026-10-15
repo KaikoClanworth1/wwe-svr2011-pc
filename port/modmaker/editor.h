@@ -72,6 +72,10 @@ void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std:
 // Alpha cut-outs only on the models whose C351 line has a transparency flag (s a k c i j o), the rest opaque - as the
 // game draws them (the Full preview: bg29's barrier panels have alpha but no flag). Off: every texture's alpha cuts.
 void SetGameTransparency(bool on);
+// The clock and look of the arena's own stage lights (its light sets, 0x7530) and of the beams / glows its motions
+// (0x7531) put in place: seconds since the show began (animated sets and motions loop at 60 frames a second), and
+// entrance: the entrance's effect models ("e" in 0xC351) instead of the match's ("g"). The editor's view: 0, the match.
+void SetStageTime(float seconds, bool entrance);
 // Drawn after the view's scene into the same target and depth (w x h), with the camera used: the Full preview's
 // wrestler. Empty: none.
 using ViewExtraFn = std::function<void(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, int w, int h,
