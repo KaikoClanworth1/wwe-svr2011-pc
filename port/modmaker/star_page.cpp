@@ -2959,6 +2959,63 @@ bool TakeFromMod(const std::wstring& svrmod, bool everything) {
   return true;
 }
 
+bool TakePartFromMod(const std::wstring& svrmod, StarPart part, int slot) {
+  Bytes zip;
+  ProjectIn in;
+  in.dir = fs::path(svrmod).parent_path() / fs::path(svrmod).stem();
+  if (!ReadFile(Utf8(svrmod), zip) || !ZipRead(zip, in.files)) return Status("That converted superstar can't be read: " + Utf8(svrmod)), false;
+  const ZipEntry* txt = in.Find("manifest.txt");
+  if (!txt) return Status("The converted superstar has no manifest."), false;
+  in.text.assign(txt->data.begin(), txt->data.end());
+  const StarProject keep = g_star;
+  if (!Read(in, true)) {
+    g_star = keep;
+    return Status("The converted superstar couldn't be read."), false;
+  }
+  const StarProject got = g_star;
+  g_star = keep;
+  const std::string who = got.name[0] ? std::string(got.name) : std::string("them");
+  switch (part) {
+    case StarPart::kAttire:  // (their look as one of yours: attire 2-4)
+      slot = std::clamp(slot, 1, 3);
+      g_star.attires[slot] = got.model;
+      std::snprintf(g_star.attire_names[slot], sizeof g_star.attire_names[slot], "%s", who.c_str());
+      Status("Attire " + std::to_string(slot + 1) + " is " + who + "'s look now.");
+      break;
+    case StarPart::kPictures:  // (their select picture, bust and full picture - the converter makes them from their renders)
+      g_star.picture = got.picture, g_star.picture_small = got.picture_small, g_star.own_bust = got.own_bust;
+      g_star.picture_full = got.picture_full, g_star.picture_src = got.picture_src, g_star.game_look = got.game_look;
+      Status(got.picture.Empty() ? who + " came without pictures: the converter found none." : "The pictures are " + who + "'s now.");
+      break;
+    case StarPart::kMusic:  // (their theme and titantron video)
+      g_star.song = got.song, g_star.music = got.music, g_star.theme_gain = got.theme_gain;
+      if (!got.movie.empty()) g_star.movie = got.movie;
+      Status(got.song.empty() && !got.music ? who + " came without a theme." : "The music is " + who + "'s now.");
+      break;
+    case StarPart::kExtras:  // (their strength, height and what the announcer says)
+      std::memcpy(g_star.ratings, got.ratings, sizeof g_star.ratings);
+      g_star.ratings_set = true;
+      g_star.height = got.height, g_star.call = got.call;
+      g_star.abilities = got.abilities, g_star.own_abilities = got.own_abilities;
+      std::memcpy(g_star.announcer, got.announcer, sizeof g_star.announcer);
+      std::memcpy(g_star.hometown_city, got.hometown_city, sizeof g_star.hometown_city);
+      std::memcpy(g_star.hometown_state, got.hometown_state, sizeof g_star.hometown_state);
+      Status("Strength, height and the announcer's lines are " + who + "'s now.");
+      break;
+  }
+  Touch();
+  return true;
+}
+
+bool TestSaveMod(const std::wstring& file) {
+  Job j;
+  PrepareJob(j);
+  std::vector<ZipEntry> files;
+  const bool ok = BuildFiles(j, files) && WriteFile(Utf8(file), ZipWrite(files));
+  Log(ok ? "test: saved " + Utf8(file) : "test: the mod couldn't be saved");
+  return ok;
+}
+
 void TestSimple(int step) { g_test_simple = step; }
 void TestGear(const std::string& spec) { g_test_gear = spec; }
 void TestGearFrom(const std::string& spec) { g_test_gear_from = spec; }

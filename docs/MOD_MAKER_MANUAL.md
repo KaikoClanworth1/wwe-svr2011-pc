@@ -169,6 +169,17 @@ mods).
   finish - each step one choice with a line on what it is. Whatever you skip
   comes from the fighting style, so the mod is valid from the first step. Full
   editor goes back to this page; nothing is lost either way.
+  Every step from Attires on starts with two cards: the game's own / your
+  files, or **From another game**. On Entrance, Moves and Taunts that is the
+  porting menu in the step (a disc from My game discs, a folder of the game's
+  files, or one entrance file; then the superstar - already picked when the
+  Look came from that game - and Watch / choose), and "Use ... for my
+  superstar" puts it in this superstar: the entrance number, its titantron
+  video and its move pack, or the moves / taunts in the move-set with their
+  pack. On Attires, Music, Pictures and Extras it brings that superstar over
+  with the Look's converter and takes only that part (their look as attire
+  2-4; their theme and video; their pictures, made from that game's renders;
+  their strength, height, abilities and announcer lines).
 - **Model from an FBX:** a rigged model from Blender, Unity / VRChat, Mixamo,
   Rigify, 3ds Max Biped or the UE Mannequin. Its bones are matched to the
   game's by their names (Bone mapping: change any), its meshes listed (on /

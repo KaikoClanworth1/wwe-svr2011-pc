@@ -121,7 +121,13 @@ const std::vector<PoseChoice>& Poses();
 std::string PoseLabel(int id);
 extern const char* const kNickNames[84];
 extern const char* const kAttributes[7];
-bool TakeFromMod(const std::wstring& svrmod, bool everything);  // a converted superstar's look (or all of it) into this project  // Model from an FBX: pick, report, bone matching, meshes, Make
+bool TakeFromMod(const std::wstring& svrmod, bool everything);
+// One part of a converted superstar (.svrmod) into this project: an attire (`slot` 1-3: attire 2-4), the pictures,
+// the music (theme + titantron) or the extras (strength, height, abilities, announcer).
+enum class StarPart { kAttire, kPictures, kMusic, kExtras };
+bool TakePartFromMod(const std::wstring& svrmod, StarPart part, int slot = 1);
+bool TestSaveMod(const std::wstring& file);  // (test aids: the project as a .svrmod, now)
+  // a converted superstar's look (or all of it) into this project  // Model from an FBX: pick, report, bone matching, meshes, Make
 
 }  // namespace star_page
 }  // namespace mm
