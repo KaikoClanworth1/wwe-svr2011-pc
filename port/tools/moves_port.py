@@ -150,6 +150,25 @@ def read_pac(raw):
     raise ValueError('not a pac table')
 
 
+def cache_dir(pac11, fallback):
+    """a writable folder kept between converts: <game>\\Mods\\.convert\\cache (the Port page's "Clear it" empties
+    it), else %LOCALAPPDATA%\\SvR2011\\convert cache, else fallback (the Mod Maker Tools folder may be read-only
+    and is replaced on update)"""
+    cands = [os.path.join(os.path.dirname(os.path.abspath(pac11)), 'Mods', '.convert', 'cache')]
+    if os.environ.get('LOCALAPPDATA'):
+        cands.append(os.path.join(os.environ['LOCALAPPDATA'], 'SvR2011', 'convert cache'))
+    for d in cands + [fallback]:
+        try:
+            os.makedirs(d, exist_ok=True)
+            probe = os.path.join(d, '.write_test')
+            open(probe, 'wb').close()
+            os.remove(probe)
+            return d
+        except OSError:
+            continue
+    return fallback
+
+
 def placeholder(raw):
     """a pac whose table is one "DMMY" entry (no group header; a 10 KB PACH with no moves): the disc's stand-in
     for DLC motions (WWE 2K15's dlc_mot01-03.pac, 30 KB each) - the DLC packages bring the real ones"""
@@ -615,12 +634,8 @@ class Game11:
         self._by_mid = None
         self._gaps, self._gaps_dirty = None, False
         # (shared between converts - a superstar convert's work folder is new each time; per 2011 pac folder)
-        shared = os.path.join(HERE, 'work', 'mv11')
-        try:
-            os.makedirs(shared, exist_ok=True)
-        except OSError:
-            shared = work
-        self._gaps_file = os.path.join(shared, 'template_gaps11_%08x.pkl' % zlib.crc32(os.path.abspath(pac11).lower().encode()))
+        self._gaps_file = os.path.join(cache_dir(pac11, work),
+                                       'template_gaps11_%08x.pkl' % zlib.crc32(os.path.abspath(pac11).lower().encode()))
 
     def groups(self, pac):
         if pac not in self._g:
