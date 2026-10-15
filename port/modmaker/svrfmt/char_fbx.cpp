@@ -280,6 +280,16 @@ std::vector<std::string> CheckHairSettings(const Bytes& pac) {
       if (lines > kHairLinesMax)
         out.push_back(who + ": its hair settings list " + std::to_string(lines) + " chains (the game takes at most " +
                       std::to_string(kHairLinesMax) + ")");
+      if (!named.empty()) {  // (moving hair: the models must fit the room the largest stock attire's take)
+        size_t bytes = 0;
+        for (const auto& k : kids) {
+          const Bytes d = Unpack(k.data);
+          if (d.size() >= 4 && !std::memcmp(d.data(), "JBOY", 4)) bytes += d.size();
+        }
+        if (bytes > kChainModelBytesMax)
+          out.push_back(who + ": with moving hair its models take " + std::to_string(bytes / 1024) + " KB, more than the game has room for (" +
+                        std::to_string(kChainModelBytesMax / 1024) + " KB)");
+      }
     }
   return out;
 }
@@ -288,6 +298,19 @@ CharModelIssues CheckCharacterModel(const Bytes& pac, int attire) {
   CharModelIssues out;
   out.eye_off[0] = out.eye_off[1] = -1;
   out.hair = CheckHairSettings(pac);
+  {
+    std::vector<EpacRow> rows;
+    std::map<char, std::string> first;
+    if (pac.size() >= 0x4000 && EpacTable(Bytes(pac.begin(), pac.begin() + 0x4000), 0, rows))
+      for (const auto& r : rows) {
+        const std::string& n = r.name;
+        if (r.group != "EMD " || n.size() != 8 || n[7] != '2' || !std::all_of(n.begin(), n.end(), [](char c) { return c >= '0' && c <= '9'; }))
+          continue;
+        auto [it, fresh] = first.emplace(n[6], n);
+        if (!fresh)
+          out.attire_clash.push_back("entries " + it->second + " and " + n + " are both attire " + std::string(1, char(n[6] + 1)));
+      }
+  }
   Character ch;
   std::string err;
   if (!ReadCharacter(pac, attire, ch, err)) return out;

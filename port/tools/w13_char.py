@@ -232,6 +232,23 @@ def hair_chains(m13):
 
 
 HAIR_LINES_MAX = 16   # (the most chain lines a stock 2011 0x3C has)
+# The most an attire's models (every JBOY child, unpacked) may take when its hair moves (chain lines in 0x3C): the
+# largest stock attire (ch117, 9 chains). A wrestler's models share a fixed area with what the moving hair
+# needs: Asuka 2K17 (6 chains, 1 067 988 bytes) ran out building her blood overlay (blood_face: the game crashed
+# copying into a null allocation, sub_826B6BA8 -> sub_8215A000) or hung on NOW LOADING; without the blood
+# (963 864) or with still hair (1 027 412) she plays, and still-haired ports load at up to 1 086 232 (Rollins 2K17).
+CHAIN_MODEL_BYTES_MAX = 1006376
+
+
+def hair_chain_count(text):
+    """the chains a 0x3C names (lines: name + 9 numbers)"""
+    return len({ln.split()[0] for ln in text.replace(b'\r', b'').split(b'\n')
+                if len(ln.split()) >= 10 and not ln.split()[0].startswith(b';')})
+
+
+def model_bytes(kids):
+    """an attire's models (JBOY children, unpacked) in bytes"""
+    return sum(len(v) for v in kids.values() if v[:4] == b'JBOY')
 
 
 def hair_text_11(text13, roots):
