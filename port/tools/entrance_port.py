@@ -9,7 +9,7 @@
    the Mod Maker; missing = exit 2)
   python entrance_port.py free-numbers [--game-pac <2011 pac dir>] [--mods <Mods dir>]
   python entrance_port.py detect --src <one entrance file>
-        -> {game, name, platform, entrances, file, detected, limits[]} (list / convert take the same file)
+        -> {ok, game, name, platform, entrances, file, detected, limits[]} (list / convert take the same file)
 
 Contract (shared by the Mod Maker's converters, docs/MOD_MAKER_3_PLAN.md):
 - stdout carries only the JSON result; logs go to stderr, progress lines on stderr read exactly
@@ -1051,7 +1051,7 @@ def cmd_detect(a):
         raise
     except Exception as x:
         raise InputError('%s: read as %s, but its entrances are not readable (%s)' % (info['file'], GAMES[g]['name'], x))
-    out = dict(game=g, name=GAMES[g]['name'], platform=GAMES[g]['platform'], entrances=n, **info)
+    out = dict(ok=True, game=g, name=GAMES[g]['name'], platform=GAMES[g]['platform'], entrances=n, **info)
     if g == 'wwe2k16':
         out['note'] = 'WWE 2K16 and 2K17 EPAC entrance pacs are the same format (converted the same way)'
     return out
