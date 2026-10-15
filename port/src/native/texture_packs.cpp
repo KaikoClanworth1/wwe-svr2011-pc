@@ -39,6 +39,10 @@
 #else
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <pthread/qos.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -92,6 +96,9 @@ constexpr uint32_t kMaxSide = 8192;
 void LowPriority() {
 #ifdef _WIN32
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+#elif defined(__APPLE__)
+  // [mac] No per-thread nice value on macOS: a background QoS class instead.
+  pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #else
   setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
 #endif
