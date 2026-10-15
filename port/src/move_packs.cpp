@@ -816,14 +816,18 @@ void WarnOverrides(const Packs& p) {
 
 // ---- building
 
-bool BuildMotionPac(const fs::path& game, const fs::path& overlay, const std::string& pac,
-                    const std::map<std::string, std::map<std::vector<uint32_t>, std::vector<Motion>>>& entries) {
+using MotionEntries = std::map<std::string, std::map<std::vector<uint32_t>, std::vector<Motion>>>;
+
+// src with the packs' motions in its banks, to dst. dlc: a DLC's copy of the pac (only some of its entries:
+// the others aren't looked for). *changed_entries: the entries it has of those the packs add.
+bool BuildMotionFile(const fs::path& src, const fs::path& dst, const std::string& pac, const MotionEntries& entries,
+                     bool dlc = false, size_t* changed_entries = nullptr) {
   std::map<std::string, Bytes> changed;
   size_t total = 0;
   for (const auto& [type_name, banks] : entries) {
     Bytes blob;
-    if (!ReadEntry(game / "pac" / pac, type_name, blob)) {
-      REXLOG_WARN("[svr2011] move packs: {} has no {}", pac, type_name);
+    if (!ReadEntry(src, type_name, blob)) {
+      if (!dlc) REXLOG_WARN("[svr2011] move packs: {} has no {}", pac, type_name);
       continue;
     }
     for (const auto& [path, motions] : banks) {
@@ -836,9 +840,15 @@ bool BuildMotionPac(const fs::path& game, const fs::path& overlay, const std::st
     }
     changed[type_name] = std::move(blob);
   }
-  if (!WritePac(game / "pac" / pac, overlay / pac, changed)) return false;
+  if (changed_entries) *changed_entries = changed.size();
+  if (dlc && changed.empty()) return true;  // (none of the packs' banks in this DLC pac)
+  if (!WritePac(src, dst, changed)) return false;
   REXLOG_INFO("[svr2011] move packs: {}: {} motions added", pac, total);
   return true;
+}
+
+bool BuildMotionPac(const fs::path& game, const fs::path& overlay, const std::string& pac, const MotionEntries& entries) {
+  return BuildMotionFile(game / "pac" / pac, overlay / pac, pac, entries);
 }
 
 // MOVS/WAZE as in the file (little-endian: u32 255, u32 record count, 128
@@ -900,8 +910,7 @@ std::map<uint16_t, Bytes> g_waze;  // the packs' moves' category bits (PatchWaze
 std::map<uint16_t, std::string> g_names;  // and their record names
 std::map<uint16_t, uint16_t> g_copies;     // and records copied from other moves
 
-bool BuildMisc(const fs::path& game, const fs::path& overlay, const Packs& p) {
-  const fs::path src = game / "pac" / "misc.pac";
+bool BuildMiscFile(const fs::path& src, const fs::path& dst, const Packs& p) {
   std::map<std::string, Bytes> changed;
   if (!p.waze.empty() || !p.names.empty() || !p.copies.empty()) {
     Bytes blob;
@@ -940,12 +949,106 @@ bool BuildMisc(const fs::path& game, const fs::path& overlay, const Packs& p) {
       changed[nm] = Repack(svrfmt::PachWrite(kids), bpe);
     }
   }
-  return WritePac(src, overlay / "misc.pac", changed);
+  return WritePac(src, dst, changed);
+}
+
+bool BuildMisc(const fs::path& game, const fs::path& overlay, const Packs& p) {
+  return BuildMiscFile(game / "pac" / "misc.pac", overlay / "misc.pac", p);
 }
 
 std::string Lower(std::string s) {
   for (char& ch : s) ch = char(std::tolower(uint8_t(ch)));
   return s;
+}
+
+// ---- DLC copies of the merged pacs
+// An installed DLC package (dlc.cpp: <user data>\0000000000000000\<title>\00000002\<package>\) can bring its
+// own copy of a pac the packs change - SvR 2011's Vol. 2 has pac\mpsp_dlc02.pac (the whole MOTP/GAME set with
+// its moves), m_dlc02.pac (some MOT banks) and misc.pac (the move tables), Vol. 3 misc.pac - and in a match the
+// game reads those instead of the overlay's: no motion from a pack was found (moves stood still or snapped).
+// So the packs go into those copies too, in place; the package's own file is kept beside it as <name>.orig
+// (the merge always starts from it, and it goes back when no pack is left). Players without the DLC: nothing.
+struct DlcCopy {
+  fs::path file;    // the package's pac
+  std::string pac;  // the game's pac it stands for ("m.pac", "mpsp.pac", "misc.pac")
+};
+
+fs::path Orig(const fs::path& f) {
+  fs::path o = f;
+  o += ".orig";
+  return o;
+}
+
+std::vector<DlcCopy> DlcCopies(const fs::path& dlc_root, const std::set<std::string>& pacs) {
+  std::vector<DlcCopy> out;
+  std::error_code ec;
+  if (dlc_root.empty() || !fs::is_directory(dlc_root, ec)) return out;
+  for (const auto& pkg : fs::directory_iterator(dlc_root, ec)) {
+    const fs::path dir = pkg.path() / "pac";
+    if (!fs::is_directory(dir, ec)) continue;
+    for (const auto& f : fs::directory_iterator(dir, ec)) {
+      if (!f.is_regular_file()) continue;
+      const std::string name = Lower(f.path().filename().string());
+      for (const std::string p : {"m.pac", "mpsp.pac", "misc.pac"}) {
+        if (!pacs.count(p)) continue;
+        const std::string stem = p.substr(0, p.size() - 4);
+        // (the same name, or <stem>_dlcNN.pac)
+        if (name == p ||
+            (name.rfind(stem + "_dlc", 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, ".pac") == 0))
+          out.push_back({f.path(), p});
+      }
+    }
+  }
+  std::sort(out.begin(), out.end(), [](const DlcCopy& a, const DlcCopy& b) { return a.file < b.file; });
+  return out;
+}
+
+// The packages' own files back (no pack left).
+void RestoreDlc(const fs::path& dlc_root) {
+  std::error_code ec;
+  if (dlc_root.empty() || !fs::is_directory(dlc_root, ec)) return;
+  for (const auto& pkg : fs::directory_iterator(dlc_root, ec))
+    for (const auto& f : fs::directory_iterator(pkg.path() / "pac", ec)) {
+      const fs::path p = f.path();
+      if (p.extension() != ".orig") continue;
+      fs::path to = p;
+      to.replace_extension();
+      fs::remove(to, ec);
+      fs::rename(p, to, ec);
+      if (!ec) REXLOG_INFO("[svr2011] move packs: DLC {} back as it came", to.filename().string());
+    }
+}
+
+bool MergeDlcCopy(const DlcCopy& c, const Packs& p) {
+  std::error_code ec;
+  const fs::path orig = Orig(c.file);
+  if (!fs::exists(orig, ec) && !fs::copy_file(c.file, orig, ec)) return false;  // (the package's own, kept)
+  fs::path tmp = c.file;
+  tmp += ".part";
+  bool ok = true;
+  size_t entries = 0;
+  if (c.pac == "misc.pac") {
+    ok = BuildMiscFile(orig, tmp, p);
+    entries = 1;
+  } else {
+    for (const auto& [pac, motions] : p.motions)  // (as pack.txt names it: "m.pac", "mpsp.pac")
+      if (Lower(pac) == c.pac) {
+        ok = BuildMotionFile(orig, tmp, c.file.filename().string(), motions, true, &entries);
+        break;
+      }
+  }
+  if (!ok || entries == 0) {  // (failed, or none of the packs' banks in it: the package's own file)
+    if (!ok) REXLOG_WARN("[svr2011] move packs: DLC {}: merging failed - the package's own kept", c.file.string());
+    fs::remove(tmp, ec);
+    fs::remove(c.file, ec);
+    fs::rename(orig, c.file, ec);
+    return ok && !ec;
+  }
+  fs::remove(c.file, ec);
+  fs::rename(tmp, c.file, ec);
+  if (ec) return false;
+  REXLOG_INFO("[svr2011] move packs: DLC {} has the packs too ({})", c.file.filename().string(), c.pac);
+  return true;
 }
 
 // pac/plist360(_4x3).h with the merged pacs named in the overlay.
@@ -1158,7 +1261,7 @@ bool EntranceScriptExists(int n) {
   return g_mod_scripts.count(n) != 0;
 }
 
-void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
+void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& dlc_root) {
   if (const char* v = std::getenv("SVR2011_TEST_PLIST"); v && *v) {  // (test aid: a folder made by hand)
     g_folder = v;
     return;
@@ -1183,6 +1286,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "gm.pac", kGimmickPac, "plist360.h", "plist360_4x3.h", "stamp.txt"})
       fs::remove(overlay / f, ec);  // (nothing to serve: free the space)
     fs::remove_all(overlay / "evt", ec);
+    RestoreDlc(dlc_root);  // (the DLC packages' own pacs back)
     LoadMoveTables(game);  // (a removed pack's moves in movesets: the match fallback still needs the tables)
     return;
   }
@@ -1215,10 +1319,23 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
   g_waze = packs.waze;
   g_names = packs.names;
   g_copies = packs.copies;
+  // (the DLC packages' copies of those pacs: merged ones keep the package's own as .orig - a package installed
+  // again has none, and merges again)
+  auto dlc_stamp = [&] {
+    std::string s;
+    for (const auto& c : DlcCopies(dlc_root, pacs)) {
+      const fs::path o = Orig(c.file);
+      const bool kept = fs::exists(o, ec);
+      s += "dlc " + c.file.parent_path().parent_path().filename().string() + "/" + c.file.filename().string() + " " +
+           std::to_string(static_cast<unsigned long long>(fs::file_size(kept ? o : c.file, ec))) +
+           (kept ? " kept\n" : " own\n");
+    }
+    return s;
+  };
   {
     std::ifstream old(overlay / "stamp.txt", std::ios::binary);
     std::string was((std::istreambuf_iterator<char>(old)), std::istreambuf_iterator<char>());
-    bool have = was == stamp;
+    bool have = was == stamp + dlc_stamp();
     for (const auto& p : pacs) have &= fs::exists(overlay / PacPath(p), ec);
     if (!gm.empty()) have &= fs::exists(overlay / kGimmickPac, ec);
     if (have) {
@@ -1269,7 +1386,13 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs) {
     LoadMoveTables(game);
     return;
   }
-  std::ofstream(overlay / "stamp.txt", std::ios::binary) << stamp;
+  // the DLC packages' copies (from their own files: packs taken out are out of them too)
+  RestoreDlc(dlc_root);
+  for (const auto& c : DlcCopies(dlc_root, pacs)) {
+    svr2011::KeepWindowAlive();
+    MergeDlcCopy(c, packs);  // (a failure keeps the package's own: logged)
+  }
+  std::ofstream(overlay / "stamp.txt", std::ios::binary) << stamp + dlc_stamp();
   Register(vfs, overlay);
   g_folder = "Mods\\PacOverlay";
   REXLOG_INFO("[svr2011] move packs: merged");
