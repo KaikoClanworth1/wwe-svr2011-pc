@@ -14,6 +14,7 @@
 // its rows by their parent node, +0x38). No file size limit applies.
 #include "match_types.h"
 #include "mystery_opponent.h"
+#include "pad_types.h"
 
 #include <algorithm>
 #include <cctype>
@@ -935,6 +936,22 @@ REX_HOOK_RAW(sub_82292D50) {
   const uint32_t motion = c ? Rd32(base + c + 212) : 0;
   const PPCContext saved = ctx;
   __imp__sub_82292D50(ctx, base);
+  // Once a match, who plays each wrestler: its character's port +1152 is its player (0-3; a CPU's too - the
+  // game plays a person whose player has no controller), so: that player's controller, or the CPU (problem
+  // reports - "the CPU only reverses": a controller nobody holds played him).
+  if (c) {
+    static uint32_t told_match = 0, told = 0;
+    const uint32_t m = Rd32(base + 0x82EDEB48), person = Rd32(base + c + 1156), port = Rd32(base + c + 1152);
+    if (m != told_match) told_match = m, told = 0;
+    if (m && person < 6 && !(told >> person & 1)) {
+      told |= 1u << person;
+      static const char* const kType[] = {"none", "Xbox", "PlayStation", "keyboard"};
+      const svr2011::PadType t = port < svr2011::kMaxPlayers ? svr2011::PlayerPadType(port) : svr2011::PadType::kNone;
+      REXLOG_INFO("[svr2011] match: person {} - {}", person,
+                  t != svr2011::PadType::kNone ? fmt::format("player {}'s controller ({})", port + 1, kType[int(t)])
+                                               : std::string("the CPU"));
+    }
+  }
   static const bool off = [] { const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN"); return v && *v == '0'; }();
   static const uint32_t alone_frames = [] {
     const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN_SECS");
