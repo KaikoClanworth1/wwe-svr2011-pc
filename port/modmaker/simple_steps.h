@@ -29,10 +29,14 @@ bool HeadingButton(const char* label, float top_y, bool accent);
 // The step's title, its "What is this?" line and a separator.
 void StepTitle(const Step& s);
 // The step list (left, `width` wide, `bottom` left free under it): click to go there; ticks on the steps before the
-// current one without errors, "!" on those with one (has_error: count entries, may be null).
+// current one without errors, "!" on those before it with one (has_error: count entries, may be null) - never on the
+// current step or later ones (not on first sight).
 void StepList(const Step* steps, int count, int& step, const bool* has_error, float width = 180, float bottom = 52);
-// Back, "Step n of N" with a bar, Next (hidden on the last step).
-void BottomBar(int& step, int count);
+// Back, "Step n of N" with a bar, Next (hidden on the last step). blocked: why Next can't be pressed yet (the current
+// step's error, shown as Next's hint; "" = it can).
+void BottomBar(int& step, int count, const std::string& blocked = "");
+// The first error of a step ("" none): BottomBar's `blocked`.
+std::string StepError(const std::vector<Problem>& problems, int step);
 // A problem's text without the file-level details a first-timer doesn't need ("(entry 00013902)").
 std::string Plain(std::string t);
 // The Finish card's "Things to check": each problem with a "Fix it" button that goes to its step (p.step; none for

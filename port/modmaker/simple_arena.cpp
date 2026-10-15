@@ -712,7 +712,7 @@ void SimpleDraw() {
     }
     ImGui::EndChild();
   }
-  simple::BottomBar(step, kSaCount);
+  simple::BottomBar(step, kSaCount, simple::StepError(problems, step));
 }
 
 }  // namespace arena_page

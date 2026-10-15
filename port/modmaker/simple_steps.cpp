@@ -61,7 +61,7 @@ void StepList(const Step* steps, int count, int& step, const bool* has_error, fl
   ImGui::BeginChild("steps", ImVec2(width * g_scale, -bottom * g_scale), true);
   for (int i = 0; i < count; ++i) {
     const bool on = i == step;
-    const bool err = has_error && has_error[i];
+    const bool err = has_error && has_error[i] && i < step;  // ("!" only on the steps already passed: not on first sight)
     const bool done = i < step && !err;
     std::string label = std::to_string(i + 1) + ".  " + steps[i].title;
     if (err) label += "  !";
@@ -77,7 +77,7 @@ void StepList(const Step* steps, int count, int& step, const bool* has_error, fl
   ImGui::EndChild();
 }
 
-void BottomBar(int& step, int count) {
+void BottomBar(int& step, int count, const std::string& blocked) {
   ImGui::BeginDisabled(step == 0);
   if (ImGui::Button("Back", ImVec2(140 * g_scale, 36 * g_scale))) --step;
   ImGui::EndDisabled();
@@ -89,9 +89,12 @@ void BottomBar(int& step, int count) {
   ImGui::EndGroup();
   ImGui::SameLine(ImGui::GetWindowWidth() - 160 * g_scale);
   if (step + 1 < count) {
+    ImGui::BeginDisabled(!blocked.empty());
     PushAccent();
     if (ImGui::Button("Next", ImVec2(140 * g_scale, 36 * g_scale))) ++step;
     PopAccent();
+    ImGui::EndDisabled();
+    if (!blocked.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", Plain(blocked).c_str());
   }
 }
 
@@ -159,6 +162,12 @@ void SummaryRow(const Step* steps, int at, const std::string& text, int& step) {
   ImGui::SameLine();
   if (ImGui::SmallButton("Change")) step = at;
   ImGui::PopID();
+}
+
+std::string StepError(const std::vector<Problem>& problems, int step) {
+  for (const auto& p : problems)
+    if (p.error && p.step == step) return p.text;
+  return {};
 }
 
 void ErrorSteps(const std::vector<Problem>& problems, int count, bool* out) {

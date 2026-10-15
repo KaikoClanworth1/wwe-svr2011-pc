@@ -219,6 +219,12 @@ void GameRow(const Game& g) {
     if (there) ImGui::TextUnformatted((Utf8(path) + (dir ? "  (folder)" : "")).c_str());
     else ImGui::TextColored(kWarn, "not found: %s", Utf8(path).c_str());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nDisc id: %s", Utf8(path).c_str(), IdFor(g.key).c_str());
+    if (there && dir)  // (some of the game's files: what that can do)
+      if (const std::string note = FolderNote(g.key); !note.empty()) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(kWarn, "%s", note.c_str());
+        ImGui::PopTextWrapPos();
+      }
   }
   ImGui::TableNextColumn();  // what the converters bring from it (their `games` lists, asked once)
   {
@@ -339,6 +345,67 @@ std::string Identify(const std::wstring& path, bool* xbox) {
   if (!d.Open(path)) return {};
   if (xbox) *xbox = d.Xbox();
   return Upper(d.Id());
+}
+
+// The files the moveset / taunt verbs read per game (Superstar Porting, 15 Oct: their disc caches; checked against the
+// discs: SvR 2007 / 2008 have no chEtc.pac); the motion pacs
+// are listed by their first (the verbs read whichever exist; a move whose pac is missing just can't come).
+struct Needs {
+  const char* key;
+  std::vector<const char*> moves;
+};
+const std::vector<Needs>& NeedTable() {
+  static const std::vector<Needs> t = {
+      {"svr2007", {"pac/m.pac", "pac/misc.pac", "pac/menu/menuHD.pac"}},  // (2007 / 2008: the superstars' records are in
+      {"svr2008", {"pac/m.pac", "pac/misc.pac", "pac/menu/menuHD.pac"}},  // misc.pac - no chEtc.pac; their list reads menuHD)
+      {"svr2009", {"pac/m.pac", "pac/misc.pac", "pac/ch/chEtc.pac"}},
+      {"svr2010", {"pac/m.pac", "pac/misc.pac", "pac/ch/chEtc.pac", "pac/DLC_HD.pac"}},
+      {"wwe12", {"pac/m.pac", "pac/misc.pac", "pac/ch/chEtc.pac"}},
+      {"wwe13", {"pac/misc.pac", "pac/ch/chEtc.pac", "pac/mot00.pac"}},
+      {"wwe2k14", {"pac/createmode.pac", "pac/string.pac", "pac/ch/chEtc.pac", "pac/mot00.pac"}},
+      {"wwe2k15", {"pac/createmode.pac", "pac/string.pac", "pac/ch/chEtc.pac", "pac/mot00.pac"}},
+      {"wwe2k16", {"pac/createmode.pac", "pac/string.pac", "pac/ch/chEtc.pac", "pac/mot00.pac"}},
+      {"wwe2k17", {"pac/createmode.pac", "pac/string_360.pac", "pac/ch/chEtc.pac", "pac/ingame/motion/all_mot0.pac"}},
+  };
+  return t;
+}
+
+std::vector<std::string> MissingFiles(const std::string& key, const std::string& what) {
+  std::vector<std::string> out;
+  const std::wstring path = PathFor(key);
+  std::error_code ec;
+  if (path.empty() || !fs::is_directory(path, ec) || what != "moves") return out;
+  const Game* g = GameByKey(key);
+  if (g && !g->xbox) {  // (PS2: the ELF, the profiles and the pacs - the whole disc)
+    if (!fs::exists(fs::path(path) / L"SYSTEM.CNF", ec)) out.push_back("the whole disc (SYSTEM.CNF and everything with it)");
+    return out;
+  }
+  for (const auto& n : NeedTable())
+    if (key == n.key)
+      for (const char* f : n.moves)
+        if (!fs::exists(fs::path(path) / fs::u8path(f), ec)) {
+          std::string w = f;
+          std::replace(w.begin(), w.end(), '/', '\\');
+          out.push_back(w);
+        }
+  if ((key == "svr2007" || key == "svr2008") && !fs::is_directory(fs::path(path) / L"pac" / L"ch", ec))
+    out.push_back("each superstar's own pac\\ch\\chNN.pac (the list shows only those whose file is there)");
+  return out;
+}
+
+std::string FolderNote(const std::string& key) {
+  const std::wstring path = PathFor(key);
+  std::error_code ec;
+  if (path.empty() || !fs::is_directory(path, ec) || !FolderId(path, nullptr).empty()) return {};
+  std::string note = "Some of the game's files (not a whole disc): porting uses what's here and says which file it needs when "
+                     "one isn't.";
+  const auto miss = MissingFiles(key, "moves");
+  if (!miss.empty()) {
+    note += " Moves and taunts need ";
+    for (size_t i = 0; i < miss.size(); ++i) note += (i ? (i + 1 == miss.size() ? " and " : ", ") : "") + miss[i];
+    note += " from that game.";
+  }
+  return note;
 }
 
 bool Scanning() { return g_scanning; }

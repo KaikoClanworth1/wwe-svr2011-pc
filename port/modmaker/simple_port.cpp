@@ -130,6 +130,12 @@ struct State {
   std::string label;        // the entrance's name in Create an Entrance (after "MOD: ")
   std::string extra_done;   // the entrance's extra, done
   bool installing = false;
+  bool saved = false;       // saved as a mod file
+  // the entrance menu without a disc: one entrance file (entrance_port detect / list / convert take it as --src)
+  std::wstring file;
+  std::string file_game, file_game_name, file_error;  // (detect: the converter's game id and name)
+  Json file_info;                                      // (detect's answer: limits[] - what one file can't bring)
+  char typed_name[64] = "";                            // the superstar's name when the file has numbers only
 };
 State g_s[kKindCount];
 
@@ -185,6 +191,13 @@ std::string ConverterGame(Kind k, const std::string& key) {
   const disc_list::Game* g = disc_list::GameByKey(key);
   return g ? ConverterGame(ScriptOf(k), *g) : std::string();
 }
+
+// Where a menu reads from: its one file, else the game's disc from My game discs; the converter's game id for it; the
+// game's name.
+std::wstring SrcOf(const State& s) { return s.file.empty() ? disc_list::PathFor(s.game) : s.file; }
+std::string GameOf(Kind k, const State& s) { return s.file.empty() ? ConverterGame(k, s.game) : s.file_game; }
+std::string TitleOf(const State& s) { return s.file.empty() ? GameName(s.game) : s.file_game_name; }
+bool HasSource(const State& s) { return s.file.empty() ? !s.game.empty() : !s.file_game.empty(); }
 
 // The converters' --svrmod for WWE '12 - 2K17 (the Mod Maker's own pac tool; RunToolJson opens the tools panel when
 // it's missing).
@@ -276,8 +289,8 @@ Picture* PictureFor(const std::string& game, const std::string& key, const std::
 // ---- the item list (entrances / superstars)
 
 void AskList(Kind k, State& s) {
-  const std::string game = ConverterGame(k, s.game);
-  const std::wstring src = disc_list::PathFor(s.game);
+  const std::string game = GameOf(k, s);
+  const std::wstring src = SrcOf(s);
   const std::string want = std::to_string(k) + "|" + game + "|" + Utf8(src);
   if (game.empty() || src.empty() || s.list_for == want || Busy()) return;
   if (!ConvertersReady()) return;  // (the tools panel says what's missing)
@@ -314,11 +327,93 @@ void Pick(Kind k, State& s, const std::string& key, const std::string& name) {
   const int step = s.step;
   Json list = std::move(s.list);
   const std::string list_for = s.list_for;
-  s = State();
-  s.game = game, s.step = step, s.list = std::move(list), s.list_for = list_for;
+  State fresh;
+  fresh.game = game, fresh.step = step, fresh.list = std::move(list), fresh.list_for = list_for;
+  fresh.file = s.file, fresh.file_game = s.file_game, fresh.file_game_name = s.file_game_name, fresh.file_info = s.file_info;
+  s = std::move(fresh);
   s.item = key, s.item_name = name, s.item_star11 = RosterByName(name);
   s.shown_on = s.play_star = s.item_star11;
   (void)k;
+}
+
+// ---- one entrance file instead of a disc (entrance_port detect: the game it's from, what one file can't bring)
+
+void LoneFile(State& s, const std::wstring& f) {
+  State fresh;
+  fresh.step = s.step;
+  fresh.file = f;
+  s = std::move(fresh);
+  std::vector<std::wstring> args = {L"detect", L"--src", f, L"--svrmod", SvrmodExe()};
+  RunToolJson(L"entrance_port.py", args, [f](int code, const std::string& o) {
+    State& s = g_s[kEntrance];
+    if (s.file != f) return;
+    Json j;
+    if (code == 0 && ParseJson(o, j) && j["ok"].Truthy() && !j["game"].Str().empty()) {
+      s.file_game = j["game"].Str(), s.file_game_name = j["name"].Str(), s.file_info = std::move(j);
+      Status("That's an entrance file from " + s.file_game_name + ".");
+    } else {
+      s.file_error = ErrorOf(code, o, "file check");
+    }
+  });
+}
+
+// What the file is and what one file can't bring, in plain words.
+void LoneNotes(const State& s) {
+  ImGui::Text("Your file: %s", FileName(s.file).c_str());
+  if (!s.file_error.empty()) {
+    ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "It can't be read as an entrance:");
+    ImGui::TextWrapped("%s", simple::Plain(s.file_error).c_str());
+    return;
+  }
+  if (s.file_game.empty()) return ImGui::TextDisabled("Reading it...");
+  ImGui::Text("From %s. Press Next to pick the superstar.", s.file_game_name.c_str());
+  for (const auto& l : s.file_info["limits"].items) {
+    std::string t = l.Str();
+    if (const size_t a = t.find(": --titantron needs the disc"); a != std::string::npos) t = t.substr(0, a) + ": it needs the disc";
+    ImGui::Bullet();
+    ImGui::TextWrapped("%s", t.c_str());
+  }
+}
+
+// ---- moves / taunts (and Simple superstar's import) without a disc: a folder with some of the game's files, set as
+// that game's "disc" in My game discs; what's missing for moves is said in plain words (disc_list::MissingFiles)
+
+std::wstring g_folder;  // a picked folder waiting for its game
+
+void FolderOfFiles(Kind k, State& s) {
+  ImGui::Spacing();
+  ImGui::Separator();
+  if (!s.game.empty())
+    if (const std::string note = disc_list::FolderNote(s.game); !note.empty()) {
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "%s", note.c_str());
+      ImGui::PopTextWrapPos();
+    }
+  if (g_folder.empty()) {
+    ImGui::TextDisabled("No disc any more?");
+    if (ImGui::Button("Use a folder of the game's files instead...")) {
+      g_folder = PickFolder(L"A folder with the game's files (the one holding its pac folder)");
+    }
+    return;
+  }
+  ImGui::Text("Which game are the files in %s from?", FileName(g_folder).c_str());
+  const float w = CardWidth(), h = 60 * g_scale;
+  const int per_row = CardsPerRow(w);
+  int n = 0;
+  for (const auto& g : disc_list::Games()) {
+    if (ConverterGame(ScriptOf(k), g).empty()) continue;
+    if (n++ % per_row) ImGui::SameLine(0, 8 * g_scale);
+    if (Card(g.key, g.name, g.xbox ? "Xbox 360" : "PS2", false, w, h)) {
+      disc_list::Set(g.key, g_folder, disc_list::Identify(g_folder));
+      State fresh;
+      fresh.game = g.key;
+      fresh.step = s.step;
+      s = std::move(fresh);
+      g_folder.clear();
+      Status(std::string(g.name) + " now reads from your folder (My game discs has it).");
+    }
+  }
+  if (ImGui::SmallButton("Cancel")) g_folder.clear();
 }
 
 // ---- step: the game
@@ -343,22 +438,33 @@ void StepGame(Kind k, State& s) {
     fresh.step = s.step;
     s = std::move(fresh);
   }
+  if (k != kEntrance) return FolderOfFiles(k, s);
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::TextDisabled("No disc any more?");
+  if (ImGui::Button("Use one entrance file instead...")) {
+    static const COMDLG_FILTERSPEC kPac[1] = {{L"An entrance file (*.pac)", L"*.pac"}};
+    const std::wstring f = PickFile(false, L"An entrance file from another game (Nyujyo0.pac, Entrance01.pac, EVTENT.PAC ...)", kPac, 1);
+    if (!f.empty()) LoneFile(s, f);
+  }
+  if (!s.file.empty()) LoneNotes(s);
 }
 
 // ---- step: the item (a superstar's entrance, or a superstar)
 
 void StepItem(Kind k, State& s) {
-  if (s.game.empty()) {
-    ImGui::TextDisabled("Pick the game first.");
+  if (!HasSource(s)) {
+    ImGui::TextDisabled(s.file.empty() ? "Pick the game first." : "Reading your file...");
     return;
   }
-  if (disc_list::PathFor(s.game).empty()) {
+  if (s.file.empty() && disc_list::PathFor(s.game).empty()) {
     ImGui::TextWrapped("The disc for this game isn't there any more.");
     if (ImGui::Button("Open My game discs")) GoTo(PageId::kDiscs);
     return;
   }
   AskList(k, s);
-  const std::string pics = ConverterGame(kMoves, s.game);  // (the pictures: superstar_port's thumbs, its own game id)
+  const std::string pics = s.file.empty() ? ConverterGame(kMoves, s.game) : std::string();  // (the pictures: superstar_port's
+  // thumbs, its own game id; one file: 2011's renders by name only)
   AskThumbs(pics, s.game);
   if (!s.list_error.empty()) {
     ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "Couldn't read the list:");
@@ -414,7 +520,7 @@ void StepItem(Kind k, State& s) {
 
 // ---- entrance: converted on the Watch step (a free number first), watched in the Full preview
 
-fs::path ResultDir(const State& s) { return WorkDir() / Wide("entrance_" + ConverterGame(kEntrance, s.game) + "_" + Safe(s.item)); }
+fs::path ResultDir(const State& s) { return WorkDir() / Wide("entrance_" + GameOf(kEntrance, s) + "_" + Safe(s.item)); }
 fs::path ResultPack(const State& s) { return ResultDir(s) / L"pack"; }
 fs::path ResultMovie(const State& s) {
   std::error_code ec;
@@ -424,8 +530,14 @@ fs::path ResultMovie(const State& s) {
 }
 bool Converted(const State& s) { return s.result["ok"].Truthy() && s.number > 0; }
 
+// A name that's only a number (a lone PS2 entrance file: the names are in another pac on the disc) needs typing.
+bool NeedsName(const State& s) {
+  return s.item_name.empty() || s.item_name.find_first_not_of("0123456789 ") == std::string::npos;
+}
+std::string EntranceName(const State& s) { return NeedsName(s) && s.typed_name[0] ? std::string(s.typed_name) : s.item_name; }
+
 void Convert(State& s) {
-  const std::string game = ConverterGame(kEntrance, s.game);
+  const std::string game = GameOf(kEntrance, s);
   const std::string want = game + "|" + s.item;
   if (s.result_for == want || Busy() || !ConvertersReady()) return;
   s.result_for = want;
@@ -446,7 +558,7 @@ void Convert(State& s) {
       if (s.result_for != want) return;
       std::error_code ec;
       fs::remove_all(out, ec);
-      std::vector<std::wstring> args = {L"convert", L"--game", Wide(game), L"--src", disc_list::PathFor(s.game),
+      std::vector<std::wstring> args = {L"convert", L"--game", Wide(game), L"--src", SrcOf(s),
                                         L"--entrance", Wide(s.item), L"--number", std::to_wstring(s.number),
                                         L"--name", Wide(s.item_name), L"--game-pac", Pac11(), L"--titantron", L"--out", out};
       AddSvrmod(args, game);
@@ -826,12 +938,14 @@ std::vector<Problem> Problems(Kind k, const State& s) {
     e.step = IndexOf(k, step);
     p.push_back(e);
   };
-  if (s.game.empty()) add(kStepGame, "No game picked yet.");
-  else if (disc_list::PathFor(s.game).empty()) add(kStepGame, "The game's disc isn't in My game discs any more.");
+  if (!HasSource(s)) add(kStepGame, s.file.empty() ? "No game picked yet." : "Your file isn't read yet.");
+  else if (s.file.empty() && disc_list::PathFor(s.game).empty()) add(kStepGame, "The game's disc isn't in My game discs any more.");
   if (s.item.empty()) add(kStepItem, "No superstar picked yet.");
   if (k == kEntrance) {
     if (!s.item.empty() && !Converted(s))
       add(kStepPick, s.result_error.empty() ? "The entrance isn't ready yet: open Watch first." : "The entrance couldn't be brought over.");
+    if (!s.item.empty() && NeedsName(s) && !s.typed_name[0])
+      add(kStepFinish, "This file has numbers only: type the superstar's name (it's what Create an Entrance shows).");
     return p;
   }
   if (!s.item.empty()) {
@@ -953,21 +1067,81 @@ std::wstring ChosenSlots(Kind k, const State& s) {
 // A pack of the game's own (Mods\Moves\<folder>) with a manifest whose name= is what the user sees: the folder from
 // the name and the game; the name gets the game's when another pack has it already (two games' entrances of one
 // superstar). The label Create an Entrance shows is the name (src/move_packs.cpp).
-fs::path InstallPack(const fs::path& from, const std::string& name, const std::string& game, std::string& label) {
+std::string PackId(const std::string& name, const std::string& game) { return IdFrom(name + " " + game, "pack"); }
+
+// The name a pack is shown by: another installed pack with that name already -> the game's added.
+std::string PackLabel(const std::string& name, const std::string& game) {
   const fs::path moves = fs::path(g_game) / L"Mods" / L"Moves";
-  const fs::path dir = moves / Wide(IdFrom(name + " " + game, "pack"));
-  label = name;
+  const fs::path own = moves / Wide(PackId(name, game));
   std::error_code ec;
   for (const auto& e : fs::directory_iterator(moves, ec)) {
     Bytes t;
-    if (e.path() == dir || !svrfmt::ReadFile(PathStr(e.path() / L"manifest.txt"), t)) continue;
-    if (Lower(Value(std::string(t.begin(), t.end()), "name")) == Lower(name)) label = name + " (" + game + ")";
+    if (e.path() == own || !svrfmt::ReadFile(PathStr(e.path() / L"manifest.txt"), t)) continue;
+    if (Lower(Value(std::string(t.begin(), t.end()), "name")) == Lower(name)) return name + " (" + game + ")";
   }
+  return name;
+}
+
+// A pack's manifest: what the launcher's Mods tab installs (type=moves into Mods\Moves\<id>) and what the game labels
+// its entrances by (name=).
+std::string PackManifest(const std::string& id, const std::string& label) {
+  return "type=moves\nid=" + id + "\nname=" + label + "\nversion=1.0\n" + MadeWith();
+}
+
+fs::path InstallPack(const fs::path& from, const std::string& name, const std::string& game, std::string& label) {
+  const std::string id = PackId(name, game);
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Moves" / Wide(id);
+  label = PackLabel(name, game);
+  std::error_code ec;
   fs::remove_all(dir, ec);
   if (!CopyInto(from, dir)) return {};
-  const std::string m = "type=moves\nname=" + label + "\n" + MadeWith();
+  const std::string m = PackManifest(id, label);
   if (!svrfmt::WriteFile(PathStr(dir / L"manifest.txt"), Bytes(m.begin(), m.end()))) return {};
   return dir;
+}
+
+// ---- Save as a mod file (.svrmod): the same files Add to my game installs, zipped for the launcher's Mods tab
+
+std::wstring g_test_save;  // (test aid: the file a save goes to, no dialog)
+
+// Every file under a folder as zip entries ('/' separated, under `prefix`); dot-files and dot-folders left out.
+void FolderEntries(const fs::path& dir, const std::string& prefix, std::vector<svrfmt::ZipEntry>& out) {
+  std::error_code ec;
+  for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+    const std::string leaf = Utf8(it->path().filename().wstring());
+    if (!leaf.empty() && leaf[0] == '.') {
+      if (it->is_directory(ec)) it.disable_recursion_pending();
+      continue;
+    }
+    if (!it->is_regular_file(ec)) continue;
+    svrfmt::ZipEntry e;
+    e.name = prefix + Utf8(fs::relative(it->path(), dir, ec).generic_wstring());
+    if (svrfmt::ReadFile(PathStr(it->path()), e.data)) out.push_back(std::move(e));
+  }
+}
+
+// Asks where (a Save dialog, <name>.svrmod), writes the zip; the status line says how it's used. False: not saved.
+bool SaveModFile(const std::vector<svrfmt::ZipEntry>& files, const std::string& name, const std::string& note) {
+  std::wstring f = g_test_save;
+  if (f.empty()) f = PickFile(true, L"Save as a mod file", kModFilter, 1, L"svrmod", Wide(IdFrom(name, "mod") + ".svrmod").c_str());
+  if (f.empty()) return false;
+  if (!svrfmt::WriteFile(PathStr(fs::path(f)), svrfmt::ZipWrite(files))) {
+    Status("The mod file couldn't be written: " + Utf8(f));
+    return false;
+  }
+  Log("simple porting: saved " + Utf8(f) + " (" + std::to_string(files.size()) + " files)");
+  Status("Saved " + FileName(f) + ". " + note);
+  return true;
+}
+
+// A pack folder as a mod file (the entrance, or moves / taunts for Create-a-Moveset).
+bool SavePack(const fs::path& pack, const std::string& name, const std::string& game) {
+  std::vector<svrfmt::ZipEntry> files;
+  FolderEntries(pack, "", files);
+  files.erase(std::remove_if(files.begin(), files.end(), [](const svrfmt::ZipEntry& e) { return e.name == "manifest.txt"; }), files.end());
+  const std::string m = PackManifest(PackId(name, game), PackLabel(name, game));
+  files.push_back({"manifest.txt", Bytes(m.begin(), m.end())});
+  return SaveModFile(files, name, "Anyone can install it with the launcher's Mods tab (or Open it here).");
 }
 
 // The mod doctor on what was added, in this page's words (no "move pack").
@@ -991,8 +1165,12 @@ void Done(State& s, const std::string& what, const fs::path& dir, const std::str
   ReloadEntrances();
 }
 
+void SaveEntrance(State& s) {
+  if (SavePack(ResultPack(s), EntranceName(s), TitleOf(s))) s.saved = true;
+}
+
 void AddEntrance(State& s) {
-  const fs::path dir = InstallPack(ResultPack(s), s.item_name, GameName(s.game), s.label);
+  const fs::path dir = InstallPack(ResultPack(s), EntranceName(s), TitleOf(s), s.label);
   if (dir.empty()) {
     s.installing = false;
     return Status("The entrance couldn't be added (the log says why).");
@@ -1032,7 +1210,7 @@ void UseForSuperstar(State& s) {
   Status(s.extra_done);
 }
 
-void InstallMoves(Kind k, State& s) {
+void InstallMoves(Kind k, State& s, bool save = false) {
   const std::string game = ConverterGame(k, s.game);
   const fs::path out = WorkDir() / Wide(std::string(k == kTaunts ? "taunts_" : "moves_") + game + "_" + Safe(s.item));
   std::error_code ec;
@@ -1043,7 +1221,7 @@ void InstallMoves(Kind k, State& s) {
   if (k == kTaunts) args.push_back(L"--taunts-only");
   AddSvrmod(args, game);
   Status(k == kTaunts ? "Bringing the taunts over (a few minutes each)..." : "Bringing the moves over...");
-  RunToolJson(L"superstar_port.py", args, [k](int code, const std::string& o) {
+  RunToolJson(L"superstar_port.py", args, [k, save](int code, const std::string& o) {
     State& s = g_s[k];
     Json j;
     const std::string what = k == kTaunts ? "taunts" : "moves";
@@ -1054,6 +1232,23 @@ void InstallMoves(Kind k, State& s) {
     const fs::path pack = fs::u8path(j["out"].Str());
     std::error_code ec;
     const bool has_pack = !pack.empty() && fs::exists(pack / L"pack.txt", ec);
+    if (save) {  // (a mod file: for a superstar, the whole superstar mod with them - a copy; else the pack)
+      s.installing = false;
+      if (s.target == 0) {
+        const fs::path copy = WorkDir() / Wide("save_" + Safe(Utf8(fs::path(s.mod).filename().wstring())));
+        fs::remove_all(copy, ec);
+        if (!CopyInto(s.mod, copy) || (has_pack && !MergePack(pack, copy / L"moves")) || !MergeMovesTxt(copy / L"moves.txt", j["moves_txt"]))
+          return Status("The mod file couldn't be made (the log says why).");
+        std::vector<svrfmt::ZipEntry> files;
+        FolderEntries(copy, "", files);
+        if (SaveModFile(files, ModName(s.mod), "It's " + ModName(s.mod) + " with " + s.item_name + "'s " + what +
+                                                    ": installing it (launcher's Mods tab) puts them in.")) s.saved = true;
+        return;
+      }
+      if (!has_pack) return Status("Nothing to save: the game has all of these " + what + " already.");
+      if (SavePack(pack, s.item_name + (k == kTaunts ? " taunts" : " moves"), GameName(s.game))) s.saved = true;
+      return;
+    }
     if (s.target == 0) {
       const fs::path mod = s.mod;
       if ((has_pack && !MergePack(pack, mod / L"moves")) || !MergeMovesTxt(mod / L"moves.txt", j["moves_txt"])) {
@@ -1085,11 +1280,24 @@ void BigButton(const char* label, bool enabled, const std::function<void()>& pre
   ImGui::EndDisabled();
 }
 
+// "Save as a mod file (.svrmod)...": beside Add to my game, for sharing or installing later with the launcher.
+void SaveButton(bool enabled, bool saved, const std::function<void()>& press) {
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!enabled);
+  if (ImGui::Button("Save as a mod file (.svrmod)...", ImVec2(0, 56 * g_scale))) press();
+  ImGui::EndDisabled();
+  if (saved) ImGui::TextDisabled("Saved: install it any time with the launcher's Mods tab, or share it.");
+}
+
 void FinishEntrance(State& s) {
   const int finish = IndexOf(kEntrance, kStepFinish);
   if (s.installed.empty()) {
+    if (!s.item.empty() && NeedsName(s)) {
+      ImGui::TextUnformatted("Whose entrance is it? This file has numbers only.");
+      TextField("Their name", s.typed_name, sizeof s.typed_name, "what Create an Entrance shows after MOD:", 320);
+    }
     if (!s.item.empty())
-      ImGui::Text("%s's entrance%s", s.item_name.c_str(), GameName(s.game).empty() ? "" : (", from " + GameName(s.game)).c_str());
+      ImGui::Text("%s's entrance%s", EntranceName(s).c_str(), TitleOf(s).empty() ? "" : (", from " + TitleOf(s)).c_str());
     std::vector<Problem> problems = Problems(kEntrance, s);
     simple::ProblemList(problems, s.step, finish);
     ImGui::Spacing();
@@ -1097,6 +1305,7 @@ void FinishEntrance(State& s) {
       s.installing = true;
       AddEntrance(s);
     });
+    SaveButton(ErrorCount(problems) == 0 && !s.installing && !Busy(), s.saved, [&] { SaveEntrance(s); });
     return;
   }
   ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1), "Done!");
@@ -1130,6 +1339,8 @@ void FinishEntrance(State& s) {
       ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1), "%s", s.extra_done.c_str());
     }
   }
+  ImGui::Spacing();
+  SaveButton(!Busy(), s.saved, [&] { SaveEntrance(s); });
   ImGui::Spacing();
   if (ImGui::Button("Bring over another entrance")) {
     State fresh;
@@ -1175,6 +1386,10 @@ void FinishMoves(Kind k, State& s) {
     s.installing = true;
     InstallMoves(k, s);
   });
+  SaveButton(ErrorCount(problems) == 0 && !s.installing && !Busy(), s.saved, [&] {
+    s.installing = true;
+    InstallMoves(k, s, true);
+  });
 }
 
 // ---- test aid
@@ -1196,26 +1411,35 @@ void TestTick(Kind k, State& s) {
   if (g_test.add && g_test.kind == k && !g_test.on && k != kEntrance && !s.item.empty()) {  // (moves / taunts: to a mod)
     AskRows(k, s);
     if (s.rows["rows"].type == Json::Type::kArray && !s.installing && !Busy()) {
-      s.target = 0;
-      s.mod = (fs::path(g_game) / L"Mods" / L"Superstars" / Wide(g_test.mod)).wstring();
+      s.target = g_test.mod.empty() ? 1 : 0;  // (no mod folder given: Create-a-Moveset)
+      if (!g_test.mod.empty()) s.mod = (fs::path(g_game) / L"Mods" / L"Superstars" / Wide(g_test.mod)).wstring();
       s.step = IndexOf(k, kStepFinish);
       g_test.add = false;
       if (ErrorCount(Problems(k, s))) {
         for (const auto& p : Problems(k, s)) Log("simple porting test: " + p.text);
       } else {
         s.installing = true;
-        InstallMoves(k, s);
+        InstallMoves(k, s, !g_test_save.empty());
       }
     }
     if (!s.rows_error.empty()) Log("simple porting test: " + s.rows_error), g_test.add = false;
   }
   if (g_test.add && g_test.kind == k && !g_test.on && k == kEntrance && !s.item.empty()) {
     Convert(s);
-    if (Converted(s) && s.installed.empty() && !s.installing && !Busy()) s.installing = true, AddEntrance(s), g_test.add = false;
+    if (Converted(s) && s.installed.empty() && !s.installing && !Busy()) {
+      g_test.add = false;
+      if (!g_test_save.empty()) SaveEntrance(s);
+      else s.installing = true, AddEntrance(s);
+    }
     if (!s.result_error.empty()) Log("simple porting test: " + s.result_error), g_test.add = false;
   }
   if (!g_test.on || g_test.kind != k) return;
-  if (s.game != g_test.game) s.game = g_test.game;
+  if (g_test.game.rfind("file:", 0) == 0) {  // (one entrance file instead of a disc)
+    if (s.file.empty()) LoneFile(s, Wide(g_test.game.substr(5)));
+    if (s.file_game.empty()) return;
+  } else if (s.game != g_test.game) {
+    s.game = g_test.game;
+  }
   if (!g_test.item.empty() && s.item.empty() && s.list.type == Json::Type::kArray) {
     std::string name;  // (found first: Pick resets the state the list is in)
     for (const auto& r : s.list.items)
@@ -1433,7 +1657,6 @@ void Draw(Kind k) {
   const std::vector<Problem> problems = Problems(k, s);
   bool has_error[kMaxSteps] = {};
   simple::ErrorSteps(problems, count, has_error);
-  for (int i = s.step; i < count; ++i) has_error[i] = false;  // ("!" only on the steps already passed)
   simple::StepList(StepsOf(k), count, s.step, has_error);
   ImGui::SameLine();
   const bool view = k != kEntrance && step == kStepPick;  // (moves / taunts: the 3D view beside the list)
@@ -1452,14 +1675,15 @@ void Draw(Kind k) {
     ImGui::BeginChild("view", ImVec2(0, -52 * g_scale), true);
     if (!s.play_star) s.play_star = StarById(139) ? 139 : (Stars().empty() ? 0 : Stars().front().id);  // (none of the same name: John Cena)
     char_preview::SetModel(GameChPac(s.play_star), g_game);
-    char_preview::SetDummy(GameChPac(s.play_star == 139 ? 125 : 139));  // (the one the move is done to)
+    // (the one the move is done to - only while a move plays: idle, the two stood in one spot)
+    char_preview::SetDummy(char_preview::Play().id >= 0 ? GameChPac(s.play_star == 139 ? 125 : 139) : std::wstring());
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     char_preview::Draw(avail.x, avail.y - 34 * g_scale);
     const StarInfo* on = StarById(s.play_star);
     ImGui::TextDisabled("Shown on %s%s.", on ? on->name.c_str() : "a 2011 superstar", s.item_star11 ? " (2011's own)" : "");
     ImGui::EndChild();
   }
-  simple::BottomBar(s.step, count);
+  simple::BottomBar(s.step, count, simple::StepError(problems, s.step));
 }
 
 void TestStart(const std::string& spec) {
@@ -1475,7 +1699,8 @@ void TestStart(const std::string& spec) {
   g_test.game = f[1];
   g_test.item = f.size() > 2 ? f[2] : "";
   g_test.step = f.size() > 3 && !f[3].empty() ? std::atoi(f[3].c_str()) : -1;
-  g_test.add = f.size() > 4 && f[4] == "add";
+  g_test.add = f.size() > 4 && (f[4] == "add" || f[4].rfind("save=", 0) == 0);
+  g_test_save = f.size() > 4 && f[4].rfind("save=", 0) == 0 ? Wide(f[4].substr(5)) : L"";
   g_test.cancel = f.size() > 5 && f[5] == "cancel";
   g_test.mod = f.size() > 5 && f[5] != "cancel" ? f[5] : "";
   g_test.on = true;
