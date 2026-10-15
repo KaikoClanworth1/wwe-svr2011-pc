@@ -59,6 +59,7 @@ XUID_BASE = 0x0009000100000000  # + account id: the player's XUID on every devic
 PBKDF2_ROUNDS = 240000
 MAX_FRIENDS = 200  # (a player's list)
 INVITE_LIFE = 600  # seconds an invite to a match stays
+PRESENCE_WINDOW = 60  # seconds a game stays online after its last request (it asks every 20 s)
 
 
 def now():
@@ -336,10 +337,10 @@ class Stats:
                                 (time.strftime("%Y-%m-%d"), account_id))
                 self.db.commit()
 
-    def playing_now(self, window=150):
+    def playing_now(self, window=None):
         """Accounts whose game asked something lately (a running game, signed in,
         asks /api/friends?here=1 every 20 s - the launchers don't count)."""
-        cutoff = now() - window
+        cutoff = now() - (window or PRESENCE_WINDOW)
         return sum(1 for t in list(self.recent.values()) if t >= cutoff)
 
     def players_online(self, window=300):
@@ -538,11 +539,12 @@ class Service:
 
     def presence(self, account_id):
         """playing: in an online match or its lobby (its game has the relay open);
-        online: in the game's ONLINE menus (game requests in the last 5 minutes);
+        online: its game running and signed in (it asks /api/friends?here=1 every
+        20 s; gone PRESENCE_WINDOW s after the last, at once when it says bye);
         else offline. (The launchers' own requests don't count.)"""
         if any(g.account["id"] == account_id for g in self.relay.games.values()):
             return "playing"
-        if now() - self.stats.recent.get(account_id, 0) < 300:
+        if now() - self.stats.recent.get(account_id, 0) < PRESENCE_WINDOW:
             return "online"
         return "offline"
 
@@ -573,6 +575,9 @@ class Service:
         account = self.token_account(request)
         if not account:
             return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        if request.query.get("bye"):  # (the game closing: offline now)
+            self.stats.recent.pop(account["id"], None)
+            return web.json_response({"ok": True})
         if request.query.get("here"):  # (the game asking: it's running, signed in)
             self.stats.seen(account["id"])
         if request.method == "POST":

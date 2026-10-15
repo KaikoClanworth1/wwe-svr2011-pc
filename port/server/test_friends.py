@@ -116,6 +116,10 @@ def main():
     _, r = request(server, "GET", "/api/friends", token=a)
     check(next(x for x in r["friends"] if x["name"] == names[2])["status"] == "online",
           "a game asking (?here=1) counts as online")
+    request(server, "GET", "/api/friends?bye=1", token=c)
+    _, r = request(server, "GET", "/api/friends", token=a)
+    check(next(x for x in r["friends"] if x["name"] == names[2])["status"] == "offline",
+          "a game closing (?bye=1) is offline at once")
     print("friends: " + ("all ok" if not failures else "%d failed" % len(failures)))
     return 1 if failures else 0
 

@@ -726,5 +726,6 @@ void Svr2011App::OnPostLoadXexImage() {
 // port mapping removed first.
 bool Svr2011App::OnWindowCloseRequested() {
   svr2011::StopPortMapping();
+  svr2011::OnlineOverlaySayGoodbye();  // (shown offline at once)
   return true;
 }

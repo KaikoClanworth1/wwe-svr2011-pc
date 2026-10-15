@@ -292,6 +292,8 @@ struct Peer {
   float rtt_direct = 0, rtt_relay = 0;  // (v2) each path's round trip, smoothed (ms; 0 not measured)
   Clock::time_point relay_ok{};        // (v2) a relayed ping last came back
   std::map<std::pair<uint16_t, uint16_t>, uint32_t> delivered;  // (v2: last sequence passed on, by to / from port)
+  Clock::time_point game_traffic{};    // game packets last passed either way (a session together)
+  Clock::time_point pinged{};          // last pinged (the ping loop skips peers of earlier sessions)
 };
 
 std::mutex g_mutex;
@@ -544,6 +546,7 @@ void ProxyLoop(Proxy* proxy) {
       path = PathOf(proxy->mac, it->second);
       fake = it->second.fake;
       v2 = it->second.data_v2;
+      it->second.game_traffic = Clock::now();
     }
     std::vector<uint8_t> packet;
     if (v2) {
@@ -560,7 +563,14 @@ void ProxyLoop(Proxy* proxy) {
 // The proxy for the peer's port `remote` (under g_mutex).
 Proxy* ProxyFor(const Mac& mac, uint16_t remote) {
   if (auto it = g_proxies.find({mac, remote}); it != g_proxies.end()) return it->second;
-  if (g_proxies.size() >= 64) return nullptr;
+  // (one per peer port this game ever played with - they live as long as the
+  // game; at 64 a busy evening of Royal Rumbles ran out: a new peer's packets
+  // were dropped, it froze and "left" - or every one was kicked, the host)
+  if (g_proxies.size() >= 512) {
+    static bool said = false;
+    if (!std::exchange(said, true)) REXLOG_ERROR("p2p: 512 peer proxies - new players' packets are dropped");
+    return nullptr;
+  }
   auto* proxy = new Proxy{socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP), mac, remote, 0};
   sockaddr_in at = Sin(0x7F000001, 0);
   socklen_t len = sizeof(at);
@@ -776,6 +786,7 @@ void OnData(const uint8_t* data, size_t size, Via via) {
       p.direct = Clock::now();
     }
     NetPacket(false, p.fake, size - 16, via.relayed);
+    p.game_traffic = Clock::now();
     Proxy* proxy = ProxyFor(mac, from);
     if (!proxy) return;
     s = proxy->s;
@@ -817,6 +828,7 @@ void OnDataV2(const uint8_t* data, size_t size, Via via) {
       p.direct = Clock::now();
     }
     fake = p.fake;
+    p.game_traffic = Clock::now();
     uint32_t& last = p.delivered[{to, from}];
     // (a peer that started over - a new match, a restarted game - begins at 1 again)
     if (seq + 64 < last) last = 0;
@@ -869,6 +881,8 @@ void SendMatchReport(const MatchReport& r) {
 
 // Once a second, a ping to each peer this game exchanges game packets with (it
 // has a proxy): their round trips for the log and the ping indicator (net_sim.h).
+constexpr auto kPingAfterGame = std::chrono::seconds(15);  // (pings this long after the last game packet)
+
 void PingLoop() {
   rex::thread::set_current_thread_name("p2p ping");
   for (;;) {
@@ -894,6 +908,12 @@ void PingLoop() {
         auto it = g_peers.find(mac);
         if (it == g_peers.end()) continue;
         Peer& p = it->second;
+        // (only the players this game plays with now: a peer of an earlier
+        // session - its proxy lives on - was pinged for good and stayed in the
+        // players' ping list after leaving, and after a restart of either game)
+        if (now - p.game_traffic > kPingAfterGame) continue;
+        if (now - p.pinged > std::chrono::seconds(3)) p.direct_ok = p.relay_ok = now;  // (pinged again: a fresh start)
+        p.pinged = now;
         Path direct = PathOf(mac, p);
         direct.relayed = false;
         // A pinging peer's path, checked every second: the relay when no direct

@@ -47,6 +47,10 @@ void SetOnlineOverlayFonts(ImFont* menu, ImFont* title);
 // Opens / closes it (any thread).
 void ToggleOnlineOverlay();
 
+// The game closing: the server shows this player offline now (not after its
+// 60 s presence window). A short request; nothing when signed out.
+void OnlineOverlaySayGoodbye();
+
 // True while it is open or the button that closed it is still held.
 bool OnlineOverlayHoldsInput();
 
