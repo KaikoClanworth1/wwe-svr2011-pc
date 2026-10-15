@@ -515,7 +515,7 @@ index e2b0470..06d6fea 100644
  
  inline std::string_view TranslateAnsiStringAddress(const memory::Memory* memory,
 diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
-index 949d185..cacde6d 100644
+index 949d185..f562efa 100644
 --- a/include/rex/system/xam/content_manager.h
 +++ b/include/rex/system/xam/content_manager.h
 @@ -11,10 +11,13 @@
@@ -545,7 +545,20 @@ index 949d185..cacde6d 100644
    KernelState* kernel_state_;
    std::string root_name_;
    std::string device_path_;
-@@ -182,7 +190,33 @@ class ContentManager {
+@@ -139,6 +147,12 @@ class ContentPackage {
+   uint32_t license_ = 0;
+ };
+ 
++// [svr2011] Told as a package is mounted (after its "<root>:" link) and unmounted (before it goes): the game
++// can link its own files under that root (move_packs.cpp: a DLC's pacs merged with move packs).
++using ContentMountHook = void (*)(const std::string& root_name, const std::filesystem::path& package_path,
++                                  bool mounted);
++void SetContentMountHook(ContentMountHook hook);
++
+ class ContentManager {
+  public:
+   ContentManager(KernelState* kernel_state, const std::filesystem::path& root_path);
+@@ -182,7 +196,33 @@ class ContentManager {
    // and writes a .header file for XAM enumeration.
    X_RESULT InstallContent(const std::filesystem::path& package_path);
  
@@ -4628,7 +4641,7 @@ index 2b93005..353bff0 100644
      return false;
    }
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
-index bd6c797..db0a694 100644
+index bd6c797..9de17d2 100644
 --- a/src/system/xam/content_manager.cpp
 +++ b/src/system/xam/content_manager.cpp
 @@ -16,9 +16,18 @@
@@ -4660,8 +4673,26 @@ index bd6c797..db0a694 100644
  namespace rex {
  namespace system {
  namespace xam {
-@@ -57,6 +69,9 @@ ContentPackage::~ContentPackage() {
+@@ -38,6 +50,9 @@ static const char* kGameContentHeaderDirName = "Headers";
+ 
+ static int content_device_id_ = 0;
+ 
++static ContentMountHook g_mount_hook = nullptr;  // [svr2011]
++void SetContentMountHook(ContentMountHook hook) { g_mount_hook = hook; }
++
+ ContentPackage::ContentPackage(KernelState* kernel_state, const std::string_view root_name,
+                                const XCONTENT_AGGREGATE_DATA& data,
+                                const std::filesystem::path& package_path)
+@@ -51,12 +66,17 @@ ContentPackage::ContentPackage(KernelState* kernel_state, const std::string_view
+   device->Initialize();
+   fs->RegisterDevice(std::move(device));
+   fs->RegisterSymbolicLink(root_name_ + ":", device_path_);
++  if (g_mount_hook) g_mount_hook(root_name_, package_path_, true);  // [svr2011]
+ }
+ 
+ ContentPackage::~ContentPackage() {
    auto fs = kernel_state_->file_system();
++  if (g_mount_hook) g_mount_hook(root_name_, package_path_, false);  // [svr2011]
    fs->UnregisterSymbolicLink(root_name_ + ":");
    fs->UnregisterDevice(device_path_);
 +  if (on_close_) {
@@ -4670,7 +4701,7 @@ index bd6c797..db0a694 100644
  }
  
  void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_path) {
-@@ -108,6 +123,13 @@ std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
+@@ -108,6 +128,13 @@ std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
      used_xuid = 0;
    }
  
@@ -4684,7 +4715,7 @@ index bd6c797..db0a694 100644
    // Content path:
    // content_root/xuid/title_id/content_type/data_file_name/
    auto package_root = ResolvePackageRoot(used_xuid, data.content_type, data.title_id);
-@@ -125,6 +147,10 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string
+@@ -125,6 +152,10 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string
      xuid = 0;
    }
  
@@ -4695,7 +4726,7 @@ index bd6c797..db0a694 100644
    auto xuid_str = fmt::format("{:016X}", xuid);
    auto title_id_str = fmt::format("{:08X}", title_id);
    auto content_type_str = fmt::format("{:08X}", uint32_t(content_type));
-@@ -147,10 +173,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+@@ -147,10 +178,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
  
    // Search path:
    // content_root/xuid/title_id/type_name/*
@@ -4714,7 +4745,7 @@ index bd6c797..db0a694 100644
        // Directories only.
        continue;
      }
-@@ -175,15 +207,27 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+@@ -175,15 +212,27 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
  
  std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
      const std::string_view root_name, uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
@@ -4742,7 +4773,7 @@ index bd6c797..db0a694 100644
    auto path = ResolvePackagePath(xuid, data);
    return std::filesystem::exists(path);
  }
-@@ -264,15 +308,19 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+@@ -264,15 +313,19 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
      }
    }
  
@@ -4767,7 +4798,7 @@ index bd6c797..db0a694 100644
  
    {
      auto global_lock = global_critical_region_.Acquire();
-@@ -294,15 +342,25 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
+@@ -294,15 +347,25 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
      }
    }
  
@@ -4796,7 +4827,7 @@ index bd6c797..db0a694 100644
  
    {
      auto global_lock = global_critical_region_.Acquire();
-@@ -333,7 +391,8 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+@@ -333,7 +396,8 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
                                               std::vector<uint8_t>* buffer) {
    auto global_lock = global_critical_region_.Acquire();
    auto package_path = ResolvePackagePath(xuid, data);
@@ -4806,7 +4837,7 @@ index bd6c797..db0a694 100644
    if (std::filesystem::exists(thumb_path)) {
      auto file = rex::filesystem::OpenFile(thumb_path, "rb");
      fseek(file, 0, SEEK_END);
-@@ -352,9 +411,14 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+@@ -352,9 +416,14 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
                                               std::vector<uint8_t> buffer) {
    auto global_lock = global_critical_region_.Acquire();
    auto package_path = ResolvePackagePath(xuid, data);
@@ -4822,7 +4853,7 @@ index bd6c797..db0a694 100644
      auto file = rex::filesystem::OpenFile(thumb_path, "wb");
      fwrite(buffer.data(), 1, buffer.size(), file);
      fclose(file);
-@@ -372,6 +436,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+@@ -372,6 +441,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
      return X_ERROR_ACCESS_DENIED;
    }
  
@@ -4837,7 +4868,7 @@ index bd6c797..db0a694 100644
    auto package_path = ResolvePackagePath(xuid, data);
    std::error_code ec;
    auto dir_removed = std::filesystem::remove_all(package_path, ec);
-@@ -419,6 +491,13 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+@@ -419,6 +496,13 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
    delete package;
  
    // Delete phase: remove package directory and .header file
@@ -4851,7 +4882,7 @@ index bd6c797..db0a694 100644
    auto package_path = ResolvePackagePath(xuid, data);
  
    uint64_t used_xuid = (data.xuid != uint64_t(-1) && data.xuid != 0) ? uint64_t(data.xuid) : xuid;
-@@ -518,6 +597,163 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
+@@ -518,6 +602,163 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
    }
  }
  
@@ -9153,3 +9184,72 @@ index 0000000..3002439
 +      1,  64,   0,   0,   0,   0, 
 +    128,  63,  62,   0,   0,   1
 +};
+diff --git a/src/filesystem/virtual_file_system.cpp b/src/filesystem/virtual_file_system.cpp
+index a1b4dad..7a449ec 100644
+--- a/src/filesystem/virtual_file_system.cpp
++++ b/src/filesystem/virtual_file_system.cpp
+@@ -72,10 +72,23 @@ bool VirtualFileSystem::UnregisterSymbolicLink(const std::string_view path) {
+   return true;
+ }
+ 
++// [svr2011] Of the links a path starts with, the longest: a link for one file
++// ("dlc1:\pac\m_dlc02.pac", move_packs.cpp) wins over its device's ("dlc1:") -
++// the map's order picked either.
++static auto LongestSymbolicLink(const std::unordered_map<std::string, std::string>& links,
++                                const std::string_view path) {
++  auto best = links.cend();
++  for (auto it = links.cbegin(); it != links.cend(); ++it) {
++    if (rex::string::utf8_starts_with_case(path, it->first) &&
++        (best == links.cend() || it->first.size() > best->first.size())) {
++      best = it;
++    }
++  }
++  return best;
++}
++
+ bool VirtualFileSystem::FindSymbolicLink(const std::string_view path, std::string& target) {
+-  auto it = std::find_if(symlinks_.cbegin(), symlinks_.cend(), [&](const auto& s) {
+-    return rex::string::utf8_starts_with_case(path, s.first);
+-  });
++  auto it = LongestSymbolicLink(symlinks_, path);
+   if (it == symlinks_.cend()) {
+     return false;
+   }
+@@ -86,10 +99,8 @@ bool VirtualFileSystem::FindSymbolicLink(const std::string_view path, std::strin
+ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path, std::string& result) {
+   result = path;
+   bool was_resolved = false;
+-  while (true) {
+-    auto it = std::find_if(symlinks_.cbegin(), symlinks_.cend(), [&](const auto& s) {
+-      return rex::string::utf8_starts_with_case(result, s.first);
+-    });
++  for (int hops = 0; hops < 16; ++hops) {  // [svr2011] (a link into itself can't hang the game)
++    auto it = LongestSymbolicLink(symlinks_, result);
+     if (it == symlinks_.cend()) {
+       break;
+     }
+@@ -192,10 +203,23 @@ bool VirtualFileSystem::DeletePath(const std::string_view path) {
+   return parent->Delete(entry);
+ }
+ 
+-X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view path,
++X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view requested_path,
+                                      FileDisposition creation_disposition, uint32_t desired_access,
+                                      bool is_directory, bool is_non_directory, File** out_file,
+                                      FileAction* out_action) {
++  // [svr2011] A link for this very file ("dlc1:\pac\m_dlc02.pac", move_packs.cpp - longer than its
++  // folder's path): the folder's resolution below would never see it.
++  std::string redirected;
++  if (!root_entry) {
++    auto global_lock = global_critical_region_.Acquire();
++    const auto canonical = rex::string::utf8_canonicalize_guest_path(requested_path);
++    auto it = LongestSymbolicLink(symlinks_, canonical);
++    if (it != symlinks_.cend() &&
++        it->first.size() > rex::string::utf8_find_base_guest_path(canonical).size() + 1) {
++      ResolveSymbolicLink(canonical, redirected);
++    }
++  }
++  const std::string_view path = redirected.empty() ? requested_path : std::string_view(redirected);
+   // TODO(gibbed): should 'is_directory' remain as a bool or should it be
+   // flipped to a generic FileAttributeFlags?
+ 
