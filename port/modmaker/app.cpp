@@ -25,6 +25,7 @@
 #include <future>
 #include <restartmanager.h>
 #include "simple_port.h"
+#include "simple_steps.h"
 #include "model_materials.h"
 #include "model_materials.h"
 #include "hair_sim.h"
@@ -1825,8 +1826,33 @@ void DrawEditor() {
 }
 
 // The "From another game" tabs: the Port page's kinds and the extracted-files tabs (Other games) for one thing
-void FromAnotherGame(const char* what, unsigned kinds, unsigned other) {
+// The cards over a "From another game" tab: one file, or a folder of the game's files, instead of a disc. `file`: what
+// one file is for these kinds ("" when they need more than one).
+void SourceCards(const char* file) {
+  const std::wstring src = port_page::CurrentSource();
+  std::error_code ec;
+  const bool folder = !src.empty() && fs::is_directory(src, ec), lone = !src.empty() && Lower(Utf8(fs::path(src).extension().wstring())) == ".pac";
+  ImGui::TextDisabled("Where from:");
+  const float w = simple::CardWidth(), h = 70 * g_scale;
+  if (file[0]) {
+    if (simple::Card("src_file", "One file", file, lone, w, h)) {
+      static const COMDLG_FILTERSPEC kPac[1] = {{L"A game file (*.pac)", L"*.pac"}};
+      const std::wstring f = PickFile(false, L"One file from another game", kPac, 1);
+      if (!f.empty()) port_page::SetSource(f);
+    }
+    ImGui::SameLine(0, 8 * g_scale);
+  }
+  if (simple::Card("src_folder", "A folder of game files", "the game's files you copied off a disc", folder, w, h)) {
+    const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)");
+    if (!f.empty()) port_page::SetSource(f);
+  }
+  ImGui::Spacing();
+  ImGui::TextDisabled("Or one of your game discs:");
+}
+
+void FromAnotherGame(const char* what, unsigned kinds, unsigned other, const char* file = "") {
   Heading("From another game", what);
+  SourceCards(file);
   port_page::DrawKinds(kinds);
   if (port_page::CurrentSource().empty()) {  // (a new player: where the discs come from)
     ImGui::TextDisabled("Pick one of your games above, or a file of one. Your discs are set once in My game discs.");
@@ -1868,19 +1894,22 @@ const PageDesc kPages[] = {
        FromAnotherGame("A superstar or attires from your other WWE games (SvR 2007 to 2K17, the PS2 games): pick the disc "
                        "or one character file; the superstar opens on the Superstar tab to finish.",
                        port_page::kSuperstars | port_page::kAttires,
-                       other_page::kStarFile | other_page::kW13Star | other_page::kSvr10Star);
+                       other_page::kStarFile | other_page::kW13Star | other_page::kSvr10Star,
+                       "a character pac (chNNN.pac) or a PS2 game's CH.PAC");
      }},
     {PageId::kArenaPort, "Arena from another game", "", nullptr,
      [] {
        FromAnotherGame("An arena or a backstage room from your other WWE games: pick the disc or one arena file; it opens "
                        "on the Arena tab to finish.",
-                       port_page::kArenas | port_page::kBackstageKind, other_page::kW13Arena | other_page::kSvr08);
+                       port_page::kArenas | port_page::kBackstageKind, other_page::kW13Arena | other_page::kSvr08,
+                       "an arena pac (pac\\bg\\bgNN.pac)");
      }},
     {PageId::kMovesPort, "Moves from another game", "", nullptr,
      [] {
        FromAnotherGame("A superstar's moves or an entrance from another game, with every option (the Moves, Taunts and "
                        "Entrance tabs are the quick way).",
-                       port_page::kMovesKind | port_page::kEntrances, other_page::kSvr10Moves);
+                       port_page::kMovesKind | port_page::kEntrances, other_page::kSvr10Moves,
+                       "an entrance pac (Nyujyo0.pac, Entrance01.pac ...)");
      }},
     {PageId::kBelts, "Belts & weapons", "", nullptr,
      [] {

@@ -438,7 +438,7 @@ namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::v
 namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab();  // 0 videos, 1 menus & renders, 2 audio
                        void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
-namespace moves_page { extern PageHooks hooks; void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
+namespace moves_page { extern PageHooks hooks; void OpenPack(const std::wstring& folder); void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
 namespace other_page { void Draw();
                        // only the tabs in mask, for the "From another game" tabs

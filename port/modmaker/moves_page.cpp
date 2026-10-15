@@ -549,6 +549,7 @@ bool Read(const ProjectIn& in, bool mod) {
 }  // namespace
 
 void TestOpen(const std::wstring& folder) { OpenFolder(folder); }
+void OpenPack(const std::wstring& folder) { OpenFolder(folder); }
 
 // test aid: --test-moves-save <file>: the pack as a mod, now (after --moves-pack)
 void TestSave(const std::wstring& file) {
