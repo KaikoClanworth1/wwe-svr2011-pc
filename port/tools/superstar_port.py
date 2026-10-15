@@ -2015,6 +2015,75 @@ def verb_setup(a):
     return cid, g11
 
 
+def svr10_moveset(a, g, src, cid, g11, cache, select=None, pack_dir=None):
+    """SvR 2010's own move path (svr10_superstar.Moves: 2011's motion where it has it, the others ported by
+    svr10_moves -> movepack) in moveset's rows. pack_dir: port the chosen slots' missing moves into a pack there.
+    -> (rows, moves_txt, pack folder or None, base)"""
+    S = svr10()
+    import movepack
+    for rel in ('pac/m.pac', 'pac/misc.pac'):
+        src.need(rel)
+    src.get('pac/mpsp.pac')   # (2011 has one; 2010 keeps MOTP in m.pac)
+    if cid not in g.dat or not g.named(cid):
+        raise BadInput('SvR 2010 has no superstar %d' % cid)
+    mv = S.Moves(g, g11, g.pac, a['pac11'], os.path.join(cache, 'svr10_moves'))
+    if mv.generic(cid):
+        raise BadInput("%s has SvR 2010's generic non-wrestler move set: nothing of his own to bring" % g.name(cid))
+    own11 = cid in g11.pro and g11.named(cid) and ('SSFA', cid) in g11.ssf and g11.chpac(cid)
+    base = int(a['base']) if a.get('base') else cid if own11 else S.choose_base(g, g11, cid, mv)[0]
+    miss = mv.missing(cid)
+    flags = {m: mv.w11[m][0] for m in miss if m in mv.w11}   # (dry: as if ported with the record's own bits)
+    area, rows, extra = mv.assign(cid, base, flags)
+    if extra:   # (the convert rebuilds a ported move with the slot's category bits: so does the dry run)
+        for m, bits in extra.items():
+            x = int.from_bytes(flags.get(m, bytes(16)), 'little') | sum(1 << b for b in bits)
+            flags[m] = x.to_bytes(16, 'little')
+        area, rows, extra = mv.assign(cid, base, flags)
+    chosen = [r for r in rows if select is None or r[1] in select]
+    pack = None
+    if pack_dir is not None:
+        want = [m for m in miss if any(r[2] == m for r in chosen)]
+        flags = {}
+        if want:
+            progress(20, 'porting %d moves' % len(want))
+            pdir = os.path.join(pack_dir + '.work')
+            with contextlib.redirect_stdout(sys.stderr):
+                man_moves, ok = mv.port(want, pdir, {}, False)
+                flags = {w['id']: bytes.fromhex(w['flags_after']) for w in man_moves['misc']['waze']}
+                for m in man_moves['moves']:
+                    flags.setdefault(m, mv.w11[m][0] if m in mv.w11 else bytes(16))
+                area, rows, extra = mv.assign(cid, base, flags)
+                if extra:
+                    man_moves, ok = mv.port(want, pdir, extra, False)
+                    flags = {w['id']: bytes.fromhex(w['flags_after']) for w in man_moves['misc']['waze']}
+                    for m in man_moves['moves']:
+                        flags.setdefault(m, mv.w11[m][0] if m in mv.w11 else bytes(16))
+                movepack.main(os.path.join(pdir, 'movepack'), pack_dir)
+            pack = pack_dir
+            shutil.rmtree(pdir, ignore_errors=True)
+        area, rows, extra = mv.assign(cid, base, flags)
+        chosen = [r for r in rows if select is None or r[1] in select]
+    t = S.u16s(g11.pro[base], 224)
+    keep = {r[1] for r in chosen}
+    moves_txt = ['0x%03X=%d' % (k * 2, v) for k, v in enumerate(area) if v != t[k] and k * 2 in keep]
+    slots = {int(s['off']): s for s in json.load(open(os.path.join(HERE, 'pro_slots.json')))['slots']}
+    out = []
+    for s10, s11, m, nm, v, nid in sorted(chosen, key=lambda r: r[1]):
+        if v.startswith('ok') or v.startswith('moved to'):
+            status = 'port' if m in miss else 'same'
+        elif 'substitute' in v:
+            status = 'similar'
+        else:
+            status = 'none'
+        id11 = None if status == 'port' and pack_dir is None else nid
+        out.append(dict(slot='0x%03X' % s11, group=GROUPS.get((slots.get(s11) or {}).get('menu') or '', 'other'),
+                        source_id=m, name=nm, status=status, id11=id11,
+                        name11=(nm if status == 'port' else mv.w11[nid][1] if nid in mv.w11 else None) if id11 is not None
+                        else None,
+                        reason='' if v == 'ok' else v))
+    return out, moves_txt, pack, base
+
+
 def cmd_moveset(a):
     """moveset --game G --src S --item K [--base N] [--cache D] -> {rows, base, base_name}: moveset_port's pass
     with nothing converted (PS2: ps2_moves - same / similar by name)"""
@@ -2024,8 +2093,12 @@ def cmd_moveset(a):
     work = tempfile.mkdtemp(prefix='svr_moveset_')
     try:
         src, g, cache = verb_game(a, work)
-        base = verb_base(a, g, cid, g11)
         rep = dict(notes=[], warnings=[], dropped=[])
+        if a['game'] == 'svr2010':   # (its own move path: svr10_superstar.Moves)
+            rows, moves_txt, pack, base = svr10_moveset(a, g, src, cid, g11, cache)
+            progress(100, 'done')
+            return dict(ok=True, rows=rows, base=base, base_name=g11.name(base), warnings=[], notes=[])
+        base = verb_base(a, g, cid, g11)
         if a['game'].startswith('ps2_'):
             import ps2_moves
             res = ps2_moves.port(g, cid, base, g11, a['pac11'], work, None, rep, near=True)
@@ -2071,8 +2144,17 @@ def cmd_moveset_pack(a):
         shutil.rmtree(work)
     os.makedirs(work)
     src, g, cache = verb_game(a, work)
-    base = verb_base(a, g, cid, g11)
     rep = dict(notes=[], warnings=[], dropped=[])
+    if a['game'] == 'svr2010':   # (its own move path: svr10_superstar.Moves + svr10_moves + movepack)
+        nm = re.sub(r'[^a-z0-9]+', '_', g.name(cid).lower()).strip('_') if cid in g.dat else 'moves'
+        pdir = os.path.join(outdir, '%s_10_moves' % (nm or 'moves'))
+        if os.path.exists(pdir):
+            shutil.rmtree(pdir)
+        rows, moves_txt, pack, base = svr10_moveset(a, g, src, cid, g11, cache, select, pdir)
+        progress(100, 'done')
+        return dict(ok=True, out=pack, moves_txt=moves_txt, rows=rows, base=base, base_name=g11.name(base),
+                    warnings=[], notes=[])
+    base = verb_base(a, g, cid, g11)
     pack = None
     if a['game'].startswith('ps2_'):   # (PS2 motions aren't ported: 2011's same / similar moves only)
         import ps2_moves
@@ -2202,6 +2284,9 @@ def main(argv):
             print(json.dumps({'error': 'unexpected argument: %s' % k}))
             return 2
     rep_path = None
+    if a.get('svrmod') and os.path.isfile(a['svrmod']) and not os.path.isfile(svrfmt._CLI):
+        svrfmt._CLI = os.path.abspath(a['svrmod'])   # (svrfmt's BPE packer, when SVR2011_SVRMOD isn't set)
+        os.environ.setdefault('SVR2011_SVRMOD', svrfmt._CLI)
     try:
         if cmd == 'games':
             res = GAMES
