@@ -97,8 +97,14 @@ struct CharModelIssues {
   // (every attire) moving-hair settings (child 0x3C) the game can't take - a chain named twice or more than
   // kHairLinesMax chains: crashed / hung the match load (Asuka 2K17: 6 chains x 4)
   std::vector<std::string> hair;
+  // wrestler entries ("%06d%02d", kind 2) sharing an attire digit: all but the first are never offered, and a
+  // match asking for one hangs (2K16 / 2K17 ports before 2.1.2 named every attire "...0402")
+  std::vector<std::string> attire_clash;
 };
 constexpr int kHairLinesMax = 16;  // the most chain lines a stock 0x3C has
+// With moving hair (chain lines in 0x3C) an attire's models (JBOY children, unpacked) fit in this: the largest stock
+// attire. More ran out of room at the match load (Asuka 2K17: crash building her blood overlay, or a hang).
+constexpr size_t kChainModelBytesMax = 1006376;
 // The hair-settings problems of every attire of a superstar pac (CharModelIssues::hair).
 std::vector<std::string> CheckHairSettings(const Bytes& pac);
 CharModelIssues CheckCharacterModel(const Bytes& pac, int attire);

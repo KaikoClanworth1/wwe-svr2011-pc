@@ -1112,7 +1112,10 @@ class GameW2K16(GameW2K15):
 
 def attires(pachs):
     """2K16+ model PACHs (no kind in a name) -> [(EPK8 name, PACH)]: the entrance-gear model (0x5208..
-    children) and exact copies left out"""
+    children) and exact copies left out; at most 4 (the game's attires). Names as the game's "%06d%02d":
+    character id (the template's 104; the game puts the mod's slot id in), attire * 10 + kind 2. (They were
+    "%04d0402" by attire: every attire had digit 0 - all "attire 1" to the game, the second one never offered,
+    and a match asking for attire 2 hung on NOW LOADING - Asuka / Rollins / Jericho 2K17.)"""
     out, seen = [], set()
     for b in pachs:
         kids = dict(svrfmt.pach_read(ch_tool.unpack(b)))
@@ -1122,7 +1125,9 @@ def attires(pachs):
         if key in seen:
             continue
         seen.add(key)
-        out.append((b'%04d0402' % (len(out) + 1), b))
+        if len(out) == 4:
+            break
+        out.append((b'000104%d2' % len(out), b))
     return out
 
 
@@ -1321,11 +1326,31 @@ def fit_budget(path, tmpl):
                 return model_budget.attire_pages({k: v for k, v in kids.items() if k not in (0x7530, 0x7531, 0x7532)})[0] \
                     > model_budget.LIMIT
             n = name.decode('latin1').strip('\0 ')
-            if 0x3c in kids:   # (moving-hair settings the game can't take crash or hang the match load: fail here instead)
+            if 0x3c in kids:   # (moving-hair settings the game can't take: fail here instead of in the game)
                 bad = w13_char.hair_text_problems(kids[0x3c])
                 if bad:
-                    raise BadInput('attire %s: its hair settings would crash the game (%s) - a converter bug, please '
-                                   'report it' % (n, '; '.join(bad)))
+                    raise BadInput('attire %s: its hair settings are ones the game can\'t take (%s) - a converter bug, '
+                                   'please report it' % (n, '; '.join(bad)))
+            if 0x3c in kids and w13_char.hair_chain_count(kids[0x3c]):
+                # (moving hair: the models must fit the room the largest stock attire takes, or the match load
+                # crashes / hangs - Asuka 2K17; the blood overlays go first, then the eyelashes)
+                for drop, what in (((0x7530, 0x7531, 0x7532), 'its blood overlays'), ((0x4e20,), 'its eyelashes')):
+                    if w13_char.model_bytes(kids) > w13_char.CHAIN_MODEL_BYTES_MAX and any(k in kids for k in drop):
+                        for k in drop:
+                            kids.pop(k, None)
+                        blob = w13_char.pack_kids(kids)
+                        changed = True
+                        out.append('attire %s: %s (with moving hair its models are over the %d bytes the game has '
+                                   'room for)' % (n, what, w13_char.CHAIN_MODEL_BYTES_MAX))
+                if w13_char.model_bytes(kids) > w13_char.CHAIN_MODEL_BYTES_MAX:
+                    if ents:
+                        changed = True
+                        out.append('attire %s: its models are too big with moving hair even without blood and '
+                                   'eyelashes (%d bytes)' % (n, w13_char.model_bytes(kids)))
+                        continue
+                    raise BadInput('attire %s: with moving hair its models take %d bytes, more than the game has room '
+                                   'for (%d) even without blood and eyelashes - the match would crash; please report '
+                                   'it' % (n, w13_char.model_bytes(kids), w13_char.CHAIN_MODEL_BYTES_MAX))
             if over() and 0x4e20 in kids:
                 del kids[0x4e20]
                 blob = w13_char.pack_kids(kids)

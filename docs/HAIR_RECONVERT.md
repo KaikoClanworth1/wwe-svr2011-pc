@@ -2,11 +2,16 @@
 
 **276 superstars in all.**
 
-Superstars ported from WWE '12 - 2K17 with the converters of 14 Oct 2026 (e3692a2, "ported hair moves") up to the fix (8581f08) got hair settings (ch child 0x3C) naming each hair chain several times: every one of these games' hair files holds several Setting blocks, and all of them were copied. The game crashes or hangs on NOW LOADING when such a superstar is in a match (first seen: Asuka from 2K17).
+Superstars ported from WWE '12 - 2K17 with the converters of 14 Oct 2026 (e3692a2, "ported hair moves") keep their hair moving, and two things went wrong with that:
 
-**What players do:** convert the superstar again with Mod Maker 2.1.2 or newer. The mod doctor (Superstar page, Installed) shows an error "... moving hair can't load" on any affected mod. Ports made before 14 Oct (no moving hair) and FBX / PS2 / SvR 2007 - 2010 ports aren't affected.
+1. **Duplicated hair settings** (fixed in 8581f08): the hair settings (ch child 0x3C) name each hair chain several times - every one of these games' hair files holds several Setting blocks, and all of them were copied. A defect the mod doctor flags ("... hair settings are damaged"); on its own it wasn't shown to crash.
+2. **Too big for moving hair** (fixed with the Asuka result, see below): a wrestler's models share a fixed area with what the moving hair needs. Above the largest stock attire's models (1 006 376 bytes) the match load ran out of room - Asuka 2K17 crashed building her blood overlay (attire 1) or hung on NOW LOADING (attire 2). The converter now leaves the blood overlays (then the eyelashes) out of such attires; the mod doctor shows an error "... models are too big for moving hair". Superstars whose hair doesn't move (Seth Rollins 2K17 ported before 14 Oct: 1 086 232 bytes) load fine.
 
-Found by replaying the old converter's hair step on every superstar of each disc (scratch survey, 15 Oct): the attires listed would have got duplicated chains (chains x lines).
+Also, unrelated to hair: **WWE 2K16 / 2K17 ports with two or more attires** (every one made before 2.1.2) named each attire as attire 1 ("00010402", "00020402"): the game offers only the first, and a match asked for the second hangs on NOW LOADING. The converter names them "000104" + attire digit + "2" now; the mod doctor shows "... names two outfits the same". Convert those again too.
+
+**What players do:** convert the superstar again with Mod Maker 2.1.2 or newer if it is in the list below and was ported on or after 14 Oct. The mod doctor (Superstar page, Installed) flags both problems on an installed mod. Ports made before 14 Oct (no moving hair) and FBX / PS2 / SvR 2007 - 2010 ports aren't affected.
+
+The list: every superstar whose hair moves after a port, found by replaying the old converter's hair step on every superstar of each disc (scratch survey, 15 Oct; chains x the lines it got). Which of them are also too big depends on the attire (Asuka 2K17 is).
 
 ## WWE '12: 21 of 72 superstars
 

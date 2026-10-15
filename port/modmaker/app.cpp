@@ -1425,10 +1425,18 @@ void ModelCheckProblems(const std::wstring& pac, const std::string& who, std::ve
     it = cache.insert_or_assign(pac, std::move(c)).first;
   }
   const auto& is = it->second.issues;
+  for (const auto& c : is.attire_clash)
+    out.push_back(Error(who + "'s model pac names two outfits the same (" + c + "): the second one never shows, and a match "
+                        "asked for it hangs on NOW LOADING.",
+                        "Port the superstar again with this Mod Maker (WWE 2K16 / 2K17 ports made before 2.1.2 have this)."));
   for (const auto& h : is.hair)
-    out.push_back(Error(who + "'s moving hair can't load - " + h + ": the game would crash or hang when the match loads.",
-                        "Port the superstar again with this Mod Maker (it writes each hair chain once), or remove "
-                        "the hair settings (entry 0x3C) in the pac editor."));
+    if (h.find("room for") != std::string::npos)  // (proven: Asuka 2K17 crashed / hung at the match load)
+      out.push_back(Error(who + "'s models are too big for moving hair - " + h + ": the game crashes or hangs when the match loads.",
+                          "Port the superstar again with this Mod Maker (it leaves the blood overlays out then), or remove the "
+                          "blood overlays (entries 0x7530 - 0x7532) in the pac editor."));
+    else
+      out.push_back(Warning(who + "'s hair settings are damaged - " + h + " (a converter defect of 14 Oct).",
+                            "Port the superstar again with this Mod Maker: it writes each hair chain once."));
   for (const auto& m : is.nan_meshes)
     out.push_back(Error(who + "'s model is damaged (part " + m + " has broken points): the game would crash when it loads it.",
                         "Export the model again from your 3D program, or make it again from the FBX."));
@@ -2745,7 +2753,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         Bytes d;
         const auto is = ReadFile(Utf8(pac), d) ? svrfmt::CheckCharacterModel(d, 1) : svrfmt::CharModelIssues();
         char line[256];
-        std::snprintf(line, sizeof line, "%s: read %d, nan %d, eyes %.3f %.3f, hair %d\n", FileName(pac).c_str(), int(is.read), int(is.nan_meshes.size()), is.eye_off[0], is.eye_off[1], int(is.hair.size()));
+        std::snprintf(line, sizeof line, "%s: read %d, nan %d, eyes %.3f %.3f, hair %d, attire clash %d\n", FileName(pac).c_str(), int(is.read), int(is.nan_meshes.size()), is.eye_off[0], is.eye_off[1], int(is.hair.size()), int(is.attire_clash.size()));
         out += line;
       }
       WriteFile(Utf8(v.substr(c + 1)), Bytes(out.begin(), out.end()));
