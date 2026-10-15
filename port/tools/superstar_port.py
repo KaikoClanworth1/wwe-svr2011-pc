@@ -150,6 +150,17 @@ class Src:
     def has(self, rel):
         return self.d.exists(rel)
 
+    def no_models(self):
+        """a folder of the game's files without any model pac (pac/ch/ch<id>.pac): the Mod Maker's
+        moves-only folders - list then shows everyone (model false) instead of no one"""
+        if not hasattr(self, '_no_models'):
+            try:
+                names = self.d.listdir('pac/ch') if self.d.exists('pac/ch') else []
+            except Exception:   # noqa: BLE001
+                names = []
+            self._no_models = not any(re.match(r'ch\d+\.pac$', n.lower()) for n in names)
+        return self._no_models
+
     def get(self, rel):
         """local path of rel (copied from the image when needed), or None"""
         if not self.d.exists(rel):
@@ -301,7 +312,7 @@ class Game09:
     def roster(self):
         return [c for c in sorted(self.g.dat) if 100 <= c < 400 and self.named(c)
                 and not self.name(c).upper().startswith(('MOTION', 'MOVES', 'EDIT', 'DLC', 'DUMMY', 'MATERIAL', 'LEGEND MOTEST'))
-                and self.has_chpac(c)]
+                and (self.has_chpac(c) or self.src.no_models())]
 
 
 class Game08(Game09):
@@ -352,7 +363,10 @@ class Game08(Game09):
     def ssf(self):
         if self._ssf is None:
             self._ssf = {}
-            h, g, t = svrfmt.epac_read(open(self.src.need('pac/menu/menuHD.pac'), 'rb').read())
+            mp = self.src.get('pac/menu/menuHD.pac')   # (only for pictures: without it, none - list's render false)
+            if not mp:
+                return self._ssf
+            h, g, t = svrfmt.epac_read(open(mp, 'rb').read())
             for ty, es in g:
                 for n, b in es:
                     if ty == b'MENU' and n in (b'SSFA', b'SSFB', b'SSFC'):
@@ -373,7 +387,7 @@ class Game08(Game09):
     def roster(self):
         return [c for c in sorted(self.g.dat) if c < 100 and self.named(c)
                 and not self.name(c).upper().startswith(('MOTION', 'MOVES', 'EDIT', 'DLC', 'DUMMY'))
-                and self.has_chpac(c)]
+                and (self.has_chpac(c) or self.src.no_models())]
 
 
 class Game07(Game08):
@@ -416,7 +430,10 @@ class Game07(Game08):
     def ssf(self):
         if self._ssf is None:
             self._ssf = {}
-            h, g, t = svrfmt.epac_read(open(self.src.need('pac/menu/menuHD.pac'), 'rb').read())
+            mp = self.src.get('pac/menu/menuHD.pac')   # (only for pictures: without it, none - list's render false)
+            if not mp:
+                return self._ssf
+            h, g, t = svrfmt.epac_read(open(mp, 'rb').read())
             for ty, es in g:
                 for n, b in es:
                     kind = {b'SF2B': 'SSFB', b'SF2A': 'SSFC'}.get(n)
@@ -936,7 +953,7 @@ class GameW:
         return ['Play_MUS_%04d_0_0' % m for m in (music, cid) if m]
 
     def roster(self):
-        return [c for c in sorted(self.dat) if 100 <= c < 400 and self.named(c) and self.has_chpac(c)
+        return [c for c in sorted(self.dat) if 100 <= c < 400 and self.named(c) and (self.has_chpac(c) or self.src.no_models())
                 and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
 
 
@@ -1103,7 +1120,7 @@ class GameW2K16(GameW2K15):
         return self.src.get('sound/game_sound_m.pck')
 
     def roster(self):
-        return [c for c in sorted(self.dat) if 100 <= c < 1000 and self.named(c) and self.has_chpac(c)
+        return [c for c in sorted(self.dat) if 100 <= c < 1000 and self.named(c) and (self.has_chpac(c) or self.src.no_models())
                 and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
 
     def model_entries(self, raw):

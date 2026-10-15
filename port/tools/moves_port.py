@@ -527,15 +527,24 @@ def convert0789(a, rep, outdir, g):
     g11 = a.get('_g11') or Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
     tid, how = (int(a['template']), 'option') if a.get('template') else (None, '')
     paired = e01 is not None
+    # (template categories: the slot's own (moveset_port passes its pro_slots bank), else every category of a
+    # one-on-one match - a tag team, Royal Rumble, ladder or cell move as the template made a singles move a
+    # team move: Sabu's Arabian Facebuster 6861 got 2647, MVMT/TEAM)
+    cats = slot_categories(a.get('cat'))
     if not tid and mid in g11.waze and any(g11.waze[mid][0]):   # (2011 keeps the move's record - cut
         bits = g11.waze[mid][0]                                           # ones have no category bits)
         same = {i for i, (b, n) in g11.waze.items() if b == bits and i in g11.moved}
         if same:
-            tid = choose_template(g11, '', nf, gap, same, paired)
+            tid = choose_template(g11, cats, nf, gap, same, paired) or choose_template(g11, SINGLES, nf, gap, same, paired)
             how = 'the same move category bits, the closest start gap and length'
     if not tid:
-        tid = choose_template(g11, '', nf, gap, None, paired)
-        how = ('two-person moves: ' if paired else 'one-person moves (a strike): ') + 'the closest start gap and length'
+        for cs, where in ((cats, 'the slot\'s categories %s' % '/'.join(cats)), (SINGLES, 'one-on-one categories'),
+                          ('', 'any category')):
+            tid = choose_template(g11, cs, nf, gap, None, paired)
+            if tid:
+                break
+        how = ('two-person moves: ' if paired else 'one-person moves (a strike): ') + \
+            'the closest start gap and length (%s)' % where
     if not tid or tid not in g11.waze:
         raise BadInput('no 2011 template move; give --template')
     if a.get('id'):
@@ -769,13 +778,28 @@ def start_gap(k0, k1):
     return ((r0[0] - r1[0]) ** 2 + (r0[2] - r1[2]) ** 2) ** 0.5
 
 
+# 2011's move categories (MVMT/<cat>) a one-on-one match uses - not TEAM (tag team), RUMB (Royal Rumble), LADR
+# (ladder), CELL / CETB (Hell in a Cell)
+SINGLES = ('ABIL', 'ANAS', 'APRO', 'BASE', 'CORN', 'FINI', 'GRND', 'ROPE', 'RUN', 'SPE1', 'SPE2', 'STAT', 'STN1', 'STN2')
+
+
+def slot_categories(bank):
+    """a pro_slots bank ('STN1', 'STAT', 'STND', 'ABIL+STAT', ...) -> the MVMT categories to look in first"""
+    out = []
+    for b in (bank or '').replace('+', ' ').split():
+        b = b.strip().upper()
+        out += ['STN1', 'STN2'] if b == 'STND' else [b] if b in SINGLES else []
+    return out or list(SINGLES)
+
+
 def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
     the attacker / victim start distance (a running move needs a running template) and the length"""
     import ymks
     best = None
+    cats = [c.strip() for c in cat] if isinstance(cat, (list, tuple)) else [cat.strip() if cat else '']
     for path, (kind, keys, size) in g11.idx.items():
-        if not path.startswith('MVMT/' + (cat.strip() if cat else '')) or kind != 'YMKs':
+        if not any(path.startswith('MVMT/' + c) for c in cats) or kind != 'YMKs':
             continue
         ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} & {k[0] for k in keys if k[1] == 0 and k[2] == 1}
         if not paired:   # (a one-person move - a strike: the victim reacts with its own motion)

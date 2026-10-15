@@ -1577,6 +1577,28 @@ REX_HOOK_RAW(sub_826B87B0) {
       return;
     }
   }
+  // Test aid: SVR2011_TEST_VFS_TRACE=<text> - every lookup whose name holds that text: the result and the
+  // out record's first 16 bytes (which archive answered), once per name and result
+  static const std::string trace = [] { const char* e = std::getenv("SVR2011_TEST_VFS_TRACE"); return std::string(e ? e : ""); }();
+  if (!trace.empty()) {
+    const std::string nm(reinterpret_cast<const char*>(base + ctx.r4.u32), 0,
+                         strnlen(reinterpret_cast<const char*>(base + ctx.r4.u32), 64));
+    if (nm.find(trace) != std::string::npos) {
+      const uint32_t out = ctx.r5.u32, caller = uint32_t(ctx.lr);
+      __imp__sub_826B87B0(ctx, base);
+      std::string o;
+      for (int i = 0; out && i < 16; ++i) o += fmt::format("{:02X}", base[out + i]);
+      static std::mutex tm;
+      static std::vector<std::string> told;
+      const std::string k = nm + "|" + o;
+      std::lock_guard lock(tm);
+      if (std::find(told.begin(), told.end(), k) == told.end()) {
+        told.push_back(k);
+        REXLOG_INFO("[svr2011] vfs trace: {} -> {:08X} out {} (from {:08X})", nm, ctx.r3.u32, o, caller);
+      }
+      return;
+    }
+  }
   if (!log) {
     __imp__sub_826B87B0(ctx, base);
     return;
@@ -2810,6 +2832,62 @@ REX_HOOK_RAW(sub_823941F8) {
   if (!ctx.r3.u32 && banks) {
     static const bool off = std::getenv("SVR2011_TEST_YMBS_SEARCH_OFF") != nullptr;  // (test aid: the game's search only)
     if (!off) ctx.r3.u64 = FindInUnsortedBanks(base, banks, id << 16 | x << 8 | y, out);
+  }
+  // Test aid: SVR2011_TEST_BANK_DUMP=<id>[,<id>] - at a lookup of that id (x 0, y 0), once per id and bank
+  // list: each bank in the list (its slot, magic, count, first / last key, whether the key is in its directory)
+  static const std::vector<uint32_t> dump_ids = [] {
+    std::vector<uint32_t> v;
+    if (const char* e = std::getenv("SVR2011_TEST_BANK_DUMP"))
+      for (const char* q = e; *q;) {
+        if (const long n = std::strtol(q, nullptr, 10); n > 0) v.push_back(uint32_t(n));
+        while (*q && *q != ',') ++q;
+        if (*q == ',') ++q;
+      }
+    return v;
+  }();
+  if (!dump_ids.empty() && x == 0 && y == 0 && banks &&
+      std::find(dump_ids.begin(), dump_ids.end(), id) != dump_ids.end()) {
+    static std::mutex dmu;
+    static std::vector<uint64_t> dumped;
+    std::lock_guard lock(dmu);
+    if (std::find(dumped.begin(), dumped.end(), uint64_t(id) << 32 | banks) == dumped.end()) {
+      dumped.push_back(uint64_t(id) << 32 | banks);
+      const uint32_t key = id << 16;
+      std::string s;
+      for (uint32_t k = 0; k < 68; ++k) {
+        uint32_t b = Rd32(GuestAt(base, banks + 4 * k));
+        if (!b) continue;
+        const uint32_t magic = Rd32(GuestAt(base, b));
+        if (magic != 0x734B4D59 && magic != 0x73424D59) b -= 16;
+        const uint32_t count = Rd32(GuestAt(base, b + 272));
+        if (!count || count > 20000) {
+          s += fmt::format(" [{} {:08X} count {}]", k, b, count);
+          continue;
+        }
+        const uint8_t* e = GuestAt(base, b + 276);
+        bool has = false;
+        for (uint32_t i = 0; i < count && !has; ++i) has = Rd32(e + i * 16) == key;
+        s += fmt::format(" [{} {:08X} {:08X} n {} {:08X}..{:08X}{}", k, b, Rd32(GuestAt(base, b)), count, Rd32(e),
+                         Rd32(e + (count - 1) * 16), has ? " HAS" : "");
+        if (Rd32(e) <= key && key <= Rd32(e + (count - 1) * 16)) {  // (the key's neighbours: where it would be)
+          uint32_t at = 0;
+          while (at < count && Rd32(e + at * 16) < key) ++at;
+          s += fmt::format(" at {}:", at);
+          for (uint32_t i = at >= 3 ? at - 3 : 0; i < count && i < at + 3; ++i)
+            s += fmt::format(" {:08X}", Rd32(e + i * 16));
+        }
+        s += "]";
+      }
+      REXLOG_INFO("[svr2011] bank dump: {} x 0 y 0 {} - list {:08X}:{}", id, ctx.r3.u32 ? "found" : "NOT FOUND", banks, s);
+      if (const uint32_t b0 = Rd32(GuestAt(base, banks)); b0 && std::getenv("SVR2011_TEST_BANK_KEYS")) {  // (bank 0's keys, all)
+        uint32_t b = b0;
+        if (Rd32(GuestAt(base, b)) != 0x734B4D59 && Rd32(GuestAt(base, b)) != 0x73424D59) b -= 16;
+        const uint32_t count = std::min<uint32_t>(Rd32(GuestAt(base, b + 272)), 20000);
+        std::string keys;
+        for (uint32_t i = 0; i < count; ++i) keys += fmt::format(" {:08X}", Rd32(GuestAt(base, b + 276) + i * 16));
+        REXLOG_INFO("[svr2011] bank keys: {:08X} n {}:{}", b, count, keys);
+      }
+    }
   }
   static const bool all = [] { const char* e = std::getenv("SVR2011_TEST_MOVE_LOG"); return e && !std::strcmp(e, "all"); }();
   if (all) {  // (SVR2011_TEST_MOVE_LOG=all: every lookup once, found or not)
