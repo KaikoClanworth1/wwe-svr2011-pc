@@ -1025,7 +1025,7 @@ void InstallMoves(Kind k, State& s) {
   std::vector<std::wstring> args = {L"moveset-pack", L"--game", Wide(game), L"--src", disc_list::PathFor(s.game),
                                     L"--item", Wide(s.item), L"--rows", ChosenSlots(k, s), L"--pac11", Pac11(),
                                     L"--out", out.wstring(), L"--cache", (WorkDir() / Wide("cache_" + game)).wstring()};
-  if (k == kTaunts) args.push_back(L"--taunts-only"), args.push_back(L"1");
+  if (k == kTaunts) args.push_back(L"--taunts-only");
   AddSvrmod(args, game);
   Status(k == kTaunts ? "Bringing the taunts over (a few minutes each)..." : "Bringing the moves over...");
   RunToolJson(L"superstar_port.py", args, [k](int code, const std::string& o) {
@@ -1171,11 +1171,29 @@ struct Test {
   bool on = false;
   bool add = false;     // (then Add to my game / Bring in, once ready)
   bool import = false;  // (Simple superstar's import, SuperstarImport)
+  bool cancel = false;  // (the import's moves cancelled 30 s in)
+  std::string mod;      // (moves / taunts add: the superstar mod folder they go to, Mods\Superstars\<mod>)
 };
 Test g_test;
 
 void TestTick(Kind k, State& s) {
   if (g_test.import) return;
+  if (g_test.add && g_test.kind == k && !g_test.on && k != kEntrance && !s.item.empty()) {  // (moves / taunts: to a mod)
+    AskRows(k, s);
+    if (s.rows["rows"].type == Json::Type::kArray && !s.installing && !Busy()) {
+      s.target = 0;
+      s.mod = (fs::path(g_game) / L"Mods" / L"Superstars" / Wide(g_test.mod)).wstring();
+      s.step = IndexOf(k, kStepFinish);
+      g_test.add = false;
+      if (ErrorCount(Problems(k, s))) {
+        for (const auto& p : Problems(k, s)) Log("simple porting test: " + p.text);
+      } else {
+        s.installing = true;
+        InstallMoves(k, s);
+      }
+    }
+    if (!s.rows_error.empty()) Log("simple porting test: " + s.rows_error), g_test.add = false;
+  }
   if (g_test.add && g_test.kind == k && !g_test.on && k == kEntrance && !s.item.empty()) {
     Convert(s);
     if (Converted(s) && s.installed.empty() && !s.installing && !Busy()) s.installing = true, AddEntrance(s), g_test.add = false;
@@ -1198,15 +1216,24 @@ void TestTick(Kind k, State& s) {
   }
 }
 
-// ---- Simple superstar's Look step: a superstar from another game (superstar_port list / thumbs / convert)
+// ---- Simple superstar's Look step: a superstar from another game, in two stages - the look (superstar_port convert
+// --no-moves --no-taunts: model, pictures, theme, entrance, ratings; a minute or so) handed back at once, then with
+// "Bring everything too" their moves and taunts (superstar_port moveset-pack --rows all: the slow part, ported one
+// by one) handed back after (SuperstarImportMoves). Both show the converter's progress and can be cancelled.
 
 State g_import;               // the game and the superstar picked (the moves menu's kind: superstar_port's list)
 bool g_import_all = false;    // "Bring everything too"
 std::string g_import_for, g_import_error;
 std::wstring g_import_ready;  // a converted .svrmod not handed back yet
 bool g_import_ready_all = false;
+// stage 2: the moves
+std::string g_moves_for, g_moves_error;  // (busy: g_moves_for set, no result / error yet)
+bool g_moves_done = false;
+std::wstring g_moves_pack;               // its move pack folder ("": none needed)
+std::vector<std::string> g_moves_lines;  // its moves.txt lines (0xOFF=id) for the rows that came over
 
 bool ImportRunning() { return !g_import_for.empty() && g_import_ready.empty() && g_import_error.empty(); }
+bool MovesRunning() { return !g_moves_for.empty() && !g_moves_done && g_moves_error.empty(); }
 
 void ImportConvert() {
   State& s = g_import;
@@ -1216,15 +1243,15 @@ void ImportConvert() {
   g_import_for = want;
   g_import_error.clear();
   g_import_ready.clear();
+  g_moves_for.clear(), g_moves_error.clear(), g_moves_done = false;
   const fs::path out = WorkDir() / Wide("star_" + game + "_" + Safe(s.item));
   std::error_code ec;
   fs::remove_all(out, ec);
   fs::create_directories(out, ec);
   std::vector<std::wstring> args = {L"convert", L"--game", Wide(game), L"--src", disc_list::PathFor(s.game), L"--out", out.wstring(),
-                                    L"--pac11", Pac11(), L"--item", Wide(s.item)};
-  if (!g_import_all) args.push_back(L"--no-moves"), args.push_back(L"--no-taunts");  // (the look only: no moves to port)
+                                    L"--pac11", Pac11(), L"--item", Wide(s.item), L"--no-moves", L"--no-taunts"};
   AddSvrmod(args, game);
-  Status("Bringing " + s.item_name + " over from your disc" + (g_import_all ? " with everything (this can take several minutes)..." : "..."));
+  Status("Bringing " + s.item_name + " over from your disc...");
   RunToolJson(L"superstar_port.py", args, [want, all = g_import_all](int code, const std::string& o) {
     if (g_import_for != want) return;
     Json j;
@@ -1232,10 +1259,60 @@ void ImportConvert() {
       g_import_ready = Wide(j["out"].Str());
       g_import_ready_all = all;
     } else {
-      g_import_error = ErrorOf(code, o, "superstar converter");
-      Status("That superstar couldn't be brought over: " + simple::Plain(g_import_error));
+      g_import_error = ToolCancelled() ? "cancelled" : ErrorOf(code, o, "superstar converter");
+      Status(ToolCancelled() ? "Cancelled." : "That superstar couldn't be brought over: " + simple::Plain(g_import_error));
     }
   });
+}
+
+// Stage 2: the superstar's whole moveset (moves and taunts) ported into one pack; only the rows that came over
+// (same / similar / port) are handed back - a "none" row keeps the project's own move.
+void MovesConvert() {
+  State& s = g_import;
+  const std::string game = ConverterGame(kMoves, s.game);
+  if (game.empty() || s.item.empty() || Busy() || !ConvertersReady()) return;
+  const std::string want = game + "|" + s.item;
+  g_moves_for = want, g_moves_error.clear(), g_moves_done = false, g_moves_pack.clear(), g_moves_lines.clear();
+  const fs::path out = WorkDir() / Wide("star_moves_" + game + "_" + Safe(s.item));
+  std::error_code ec;
+  fs::remove_all(out, ec);
+  std::vector<std::wstring> args = {L"moveset-pack", L"--game", Wide(game), L"--src", disc_list::PathFor(s.game),
+                                    L"--item", Wide(s.item), L"--rows", L"all", L"--pac11", Pac11(), L"--out", out.wstring(),
+                                    L"--cache", (WorkDir() / Wide("cache_" + game)).wstring()};
+  AddSvrmod(args, game);
+  Status("Bringing " + s.item_name + "'s moves over (one by one: this is the slow part)...");
+  RunToolJson(L"superstar_port.py", args, [want](int code, const std::string& o) {
+    if (g_moves_for != want) return;
+    Json j;
+    if (code != 0 || !ParseJson(o, j) || !j["ok"].Truthy()) {
+      g_moves_error = ToolCancelled() ? "cancelled" : ErrorOf(code, o, "moves converter");
+      Status(ToolCancelled() ? "Moves cancelled: your superstar keeps their fighting style's moves."
+                             : "Their moves couldn't be brought over: " + simple::Plain(g_moves_error));
+      return;
+    }
+    std::set<std::string> came;  // (slots whose move came over)
+    for (const auto& r : j["rows"].items)
+      if (r["status"].Str() != "none") came.insert(Lower(r["slot"].Str()));
+    for (const auto& l : j["moves_txt"].items) {
+      const std::string line = l.Str();
+      const size_t eq = line.find('=');
+      if (eq != std::string::npos && came.count(Lower(line.substr(0, eq)))) g_moves_lines.push_back(line);
+    }
+    g_moves_pack = j["out"].Str().empty() ? std::wstring() : Wide(j["out"].Str());
+    g_moves_done = true;
+  });
+}
+
+// The running stage's progress (the converter's own "<n>%  <text>") and Cancel.
+void StageLine(const char* what) {
+  ImGui::TextDisabled("%s", what);
+  const std::string now = ProgressNow();
+  if (!now.empty()) {
+    ImGui::SameLine();
+    ImGui::TextUnformatted(now.c_str());
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Cancel")) CancelTool();
 }
 
 }  // namespace
@@ -1255,11 +1332,12 @@ bool ImportList(std::wstring& mod, bool& everything) {
     if (!s.item.empty()) g_import_all = g_test.step == 1, g_test.on = false;
   }
   if (g_test.import && g_test.add && !g_test.on && !s.item.empty() && !Busy() && g_import_for.empty()) g_test.add = false, ImportConvert();
-  if (!g_import_ready.empty()) {  // (handed back once)
+  if (!g_import_ready.empty()) {  // (handed back once; then the moves, if asked for)
     mod = g_import_ready, everything = g_import_ready_all;
     g_import_ready.clear();
     g_import_for.clear();
-    Status("Here's " + s.item_name + ".");
+    Status("Here's " + s.item_name + (everything ? ". Their moves come next." : "."));
+    if (everything) WhenIdle([] { MovesConvert(); });
     return true;
   }
   if (s.game.empty()) {
@@ -1280,19 +1358,25 @@ bool ImportList(std::wstring& mod, bool& everything) {
   if (s.item.empty()) return false;
   ImGui::Spacing();
   const bool running = ImportRunning() && g_import_for == ConverterGame(kMoves, s.game) + "|" + s.item;
-  ImGui::BeginDisabled(running || Busy());
+  ImGui::BeginDisabled(running || MovesRunning() || Busy());
   PushAccent();
-  if (ImGui::Button(running ? "Bringing them over..." : ("Bring " + s.item_name + " in").c_str(), ImVec2(260 * g_scale, 36 * g_scale))) ImportConvert();
-  if (running) ImGui::TextDisabled(g_import_all ? "With everything this takes a few minutes: their moves are brought over too." : "This takes a minute or so.");
+  if (ImGui::Button(("Bring " + s.item_name + " in").c_str(), ImVec2(260 * g_scale, 36 * g_scale))) ImportConvert();
   PopAccent();
-  ImGui::EndDisabled();
   ImGui::SameLine();
   ImGui::Checkbox("Bring everything too (moves, theme, entrance, ratings)", &g_import_all);
-  if (!g_import_error.empty()) {
-    ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "That didn't work:");
-    ImGui::SameLine();
-    ImGui::TextWrapped("%s", simple::Plain(g_import_error).c_str());
-  }
+  ImGui::EndDisabled();
+  if (running) StageLine("Their look, pictures and music:");
+  if (MovesRunning()) StageLine("Their moves (one by one):");
+  static double moves_since = 0;  // (test aid: Cancel 30 s into the moves)
+  if (!MovesRunning()) moves_since = 0;
+  else if (g_test.cancel && !moves_since) moves_since = ImGui::GetTime();
+  else if (g_test.cancel && ImGui::GetTime() - moves_since > 30) g_test.cancel = false, Log("simple porting test: Cancel"), CancelTool();
+  for (const std::string* e : {&g_import_error, &g_moves_error})
+    if (!e->empty() && *e != "cancelled") {
+      ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "That didn't work:");
+      ImGui::SameLine();
+      ImGui::TextWrapped("%s", simple::Plain(*e).c_str());
+    }
   return false;
 }
 
@@ -1311,6 +1395,14 @@ bool SuperstarImport(std::wstring& mod, bool& everything) {
     ImGui::TreePop();
   }
   return got;
+}
+
+bool SuperstarImportMoves(std::wstring& pack, std::vector<std::string>& lines) {
+  if (!g_moves_done) return false;
+  g_moves_done = false, g_moves_for.clear();
+  pack = std::move(g_moves_pack), lines = std::move(g_moves_lines);
+  g_moves_pack.clear(), g_moves_lines.clear();
+  return true;
 }
 
 void Draw(Kind k) {
@@ -1368,6 +1460,8 @@ void TestStart(const std::string& spec) {
   g_test.item = f.size() > 2 ? f[2] : "";
   g_test.step = f.size() > 3 && !f[3].empty() ? std::atoi(f[3].c_str()) : -1;
   g_test.add = f.size() > 4 && f[4] == "add";
+  g_test.cancel = f.size() > 5 && f[5] == "cancel";
+  g_test.mod = f.size() > 5 && f[5] != "cancel" ? f[5] : "";
   g_test.on = true;
 }
 

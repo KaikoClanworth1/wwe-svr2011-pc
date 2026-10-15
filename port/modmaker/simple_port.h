@@ -12,6 +12,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace mm {
 namespace simple_port {
@@ -24,10 +25,15 @@ void Draw(Kind kind);
 // <name> in" (superstar_port convert) with a "Bring everything too" tick. True once, when the converted superstar
 // (.svrmod in `mod`) is ready; `everything` the tick (simple_star.cpp then takes it: TakeFromMod).
 bool SuperstarImport(std::wstring& mod, bool& everything);
+// With "Bring everything too", their moves and taunts come after the look (the slow part, ported one by one): true
+// once, when they're in - `pack` the move pack folder ("" when none was needed) and `lines` moves.txt's 0xOFF=id lines
+// for the slots that came over (simple_star.cpp puts them in the project). Polled every frame of the Simple page.
+bool SuperstarImportMoves(std::wstring& pack, std::vector<std::string>& lines);
 
 // Test aid --simple-port <entrance|moves|taunts|import>,<game key>[,<item key>[,<step>[,add]]]: that menu with the game (its
 // disc from My game discs) and the item picked, on that step (--shot shows it); add: Add to my game once ready. import:
-// Simple superstar's Look step (step 1: "Bring everything too"; add: Bring in).
+// Simple superstar's Look step (step 1: "Bring everything too"; add: Bring in; a 6th field "cancel": Cancel 30 s into the
+// moves).
 void TestStart(const std::string& spec);
 
 }  // namespace simple_port

@@ -24,6 +24,8 @@
 namespace mm {
 namespace star_page {
 
+void ParseMoveset(const std::string& t, char sep);  // (star_page.cpp: "0xOFF=id" items into g_star.moveset)
+
 namespace {
 
 using simple::Card;
@@ -476,6 +478,18 @@ void SimpleDraw() {
   if (!g_star.ratings_set) {
     for (int k = 0; k < 7; ++k) g_star.ratings[k] = StarRating(kStyles[g_star.style].template_id, k);
     g_star.ratings_set = true;
+  }
+  {  // (brought in with everything: their moves come after the look - simple_port.cpp)
+    std::wstring pack;
+    std::vector<std::string> lines;
+    if (simple_port::SuperstarImportMoves(pack, lines)) {
+      if (!pack.empty()) g_star.pack = pack;
+      std::string t;
+      for (const auto& l : lines) t += l + "\n";
+      ParseMoveset(t, '\n');
+      Touch();
+      Status(std::to_string(lines.size()) + " of their moves are in.");
+    }
   }
   const float top = ImGui::GetCursorPosY();
   Heading("Your superstar", "Step by step: each step has one thing to choose. Everything you skip comes from your fighting style.");

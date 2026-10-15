@@ -50,6 +50,10 @@ bool RunTool(const std::wstring& script, const std::vector<std::wstring>& args, 
 // the log and its "progress <0-100> <text>" lines to the status bar.
 bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args,
                  std::function<void(int code, const std::string& out)> done, const std::wstring& cwd = L"");
+// Stops the running RunToolJson converter and everything it started (its job object); its done() then gets a
+// non-zero code and ToolCancelled() is true until the next converter starts.
+void CancelTool();
+bool ToolCancelled();
 // Any process the same way (a full command line).
 bool RunCommand(const std::wstring& cmdline, std::function<void(int)> done, const std::wstring& cwd = L"");
 
