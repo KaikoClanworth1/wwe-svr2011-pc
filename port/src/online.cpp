@@ -14,6 +14,7 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <thread>
@@ -508,6 +509,28 @@ REX_HOOK_RAW(sub_82629160) {
 // labels (OnlineString) go with their button.
 REX_EXTERN(__imp__sub_82746358);
 REX_HOOK_RAW(sub_82746358) {
+  // Test aid SVR2011_TEST_CAW_UPLOAD=1: Community Creations' upload check (sub_8257BCD0, above) on every Created
+  // Superstar of the loaded save, once, at a menu - offline, no account (the hook logs the left-out ones' reasons).
+  if (static bool tested = false; !tested && std::getenv("SVR2011_TEST_CAW_UPLOAD")) {
+    const uint32_t save = (uint32_t(base[0x82E407B4]) << 24) | (uint32_t(base[0x82E407B5]) << 16) |
+                          (uint32_t(base[0x82E407B6]) << 8) | base[0x82E407B7];
+    int n = 0;
+    for (uint32_t k = 0; save && k < 50; ++k) n += base[save + 0x13F9C + k * 0x6BC + 34] != 0;
+    if (n) {  // (the save loaded - not the empty default one)
+      tested = true;
+      n = 0;
+      for (uint32_t k = 0; k < 50; ++k) {
+        const uint32_t profile = save + 0x13F9C + k * 0x6BC;
+        if (!base[profile + 34]) continue;  // (sub_8257B000: a CAW in this slot)
+        auto c = ctx;
+        c.r3.u64 = profile, c.r4.u64 = 0;
+        sub_8257BCD0(c, base);
+        ++n;
+        REXLOG_INFO("online test: CAW slot {} upload check: {}", k, c.r3.u32 ? "can be uploaded" : "left out");
+      }
+      REXLOG_INFO("online test: {} CAWs checked", n);
+    }
+  }
   const uint32_t out = ctx.r5.u32;
   // (the Player Match lobby's CPU slots put the Y label's state in the id's
   // high half - online_cpu.cpp's sub_824E3E60 hook: 1 + y + 3 * waiting)
