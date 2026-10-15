@@ -297,6 +297,13 @@ void AskList(Kind k, State& s) {
   });
 }
 
+// A name as the player reads it: the entrance scripts' "Chavo_Guerrero" -> "Chavo Guerrero".
+std::string Shown(std::string n) {
+  for (char& c : n)
+    if (c == '_') c = ' ';
+  return n;
+}
+
 std::string ItemKeyOf(const Json& r) {
   const std::string k = r["key"].Str();
   return k.empty() ? r["number"].Str() : k;
@@ -345,14 +352,14 @@ void StepItem(Kind k, State& s) {
     ImGui::TextDisabled("Pick the game first.");
     return;
   }
-  const std::string game = ConverterGame(k, s.game);
   if (disc_list::PathFor(s.game).empty()) {
     ImGui::TextWrapped("The disc for this game isn't there any more.");
     if (ImGui::Button("Open My game discs")) GoTo(PageId::kDiscs);
     return;
   }
   AskList(k, s);
-  AskThumbs(game, s.game);
+  const std::string pics = ConverterGame(kMoves, s.game);  // (the pictures: superstar_port's thumbs, its own game id)
+  AskThumbs(pics, s.game);
   if (!s.list_error.empty()) {
     ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "Couldn't read the list:");
     ImGui::TextWrapped("%s", simple::Plain(s.list_error).c_str());
@@ -371,7 +378,7 @@ void StepItem(Kind k, State& s) {
   const std::string f = Lower(s.find);
   int n = 0;
   for (const auto& r : s.list.items) {
-    const std::string name = r["name"].Str(), key = ItemKeyOf(r);
+    const std::string name = Shown(r["name"].Str()), key = ItemKeyOf(r);
     if (name.empty() || (!f.empty() && Lower(name).find(f) == std::string::npos)) continue;
     if (k != kEntrance && !r["model"].IsNull() && !r["model"].Truthy()) continue;  // (no body on the disc: nothing to show)
     if (n++ % per_row) ImGui::SameLine(0, 6 * g_scale);
@@ -379,7 +386,7 @@ void StepItem(Kind k, State& s) {
     ImGui::BeginGroup();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     if (ImGui::IsRectVisible(ImVec2(tw, th))) {
-      if (Picture* pic = PictureFor(game, k == kEntrance ? std::string() : key, name)) pic->Draw(tw, tw);
+      if (Picture* pic = PictureFor(pics, k == kEntrance ? std::string() : key, name)) pic->Draw(tw, tw);
       else ImGui::Dummy(ImVec2(tw, tw));
     } else {
       ImGui::Dummy(ImVec2(tw, tw));
@@ -638,6 +645,7 @@ void PlayRow(Kind k, State& s, const Json& r) {
   const std::string st = r["status"].Str();
   const int id11 = r["id11"].Int(0);
   if ((st == "same" || st == "similar") && id11 > 0) {
+    if (!anims_page::HasMotion(id11)) return Status("The Mod Maker can't show that one: only the game plays it.");
     anims_page::WatchMove(id11);  // (2011's own motion, read from m.pac)
     return;
   }
@@ -695,6 +703,8 @@ void StepRows(Kind k, State& s) {
   ImGui::SameLine();
   ImGui::TextDisabled("%d chosen", int(s.chosen.size()));
   ImGui::BeginChild("rows", ImVec2(0, 0), false);
+  const float row_w = ImGui::GetContentRegionAvail().x;  // (the columns follow the card's width: name, status, Play)
+  const float col_status = std::max(200 * g_scale, row_w * 0.48f), col_play = std::max(col_status + 150 * g_scale, row_w - 70 * g_scale);
   for (const auto& [gkey, gname] : kGroups) {
     if ((k == kTaunts) != !std::strcmp(gkey, "taunts")) continue;
     bool header = false;
@@ -718,7 +728,7 @@ void StepRows(Kind k, State& s) {
       }
       ImGui::SameLine();
       ImGui::TextUnformatted(r["name"].Str().c_str());
-      ImGui::SameLine(320 * g_scale);
+      ImGui::SameLine(col_status);
       const StatusText t = StatusOf(st);
       ImGui::TextColored(t.col, "%s", t.text);
       if (ImGui::IsItemHovered()) {
@@ -726,9 +736,14 @@ void StepRows(Kind k, State& s) {
         if (st == "similar" && !r["name11"].Str().empty()) tip = "2011's " + r["name11"].Str() + (tip.empty() ? "" : "\n" + tip);
         if (!tip.empty()) ImGui::SetTooltip("%s", simple::Plain(tip).c_str());
       }
-      ImGui::SameLine(520 * g_scale);
+      ImGui::SameLine(col_play);
       const bool playing = g_play.busy && g_play.for_ == ConverterGame(k, s.game) + "|" + r["source_id"].Str();
+      const bool own = st == "same" || st == "similar";  // (2011's own motion: shown when m.pac has it, else game-only)
+      const bool shown = !own || !anims_page::MovesIndexed() || anims_page::HasMotion(r["id11"].Int(0));
+      ImGui::BeginDisabled(!shown);
       if (ImGui::SmallButton(playing ? "Loading..." : "Play") && !playing) PlayRow(k, s, r);
+      ImGui::EndDisabled();
+      if (!shown && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Only the game can show this one.");
       ImGui::EndDisabled();
       ImGui::PopID();
     }
@@ -1204,7 +1219,7 @@ void TestTick(Kind k, State& s) {
   if (!g_test.item.empty() && s.item.empty() && s.list.type == Json::Type::kArray) {
     std::string name;  // (found first: Pick resets the state the list is in)
     for (const auto& r : s.list.items)
-      if (ItemKeyOf(r) == g_test.item) name = r["name"].Str();
+      if (ItemKeyOf(r) == g_test.item) name = Shown(r["name"].Str());
     if (!name.empty()) Pick(k, s, g_test.item, name);
     else Log("simple porting test: no item " + g_test.item + " in the list"), g_test.on = false;
   }
@@ -1325,7 +1340,7 @@ bool ImportList(std::wstring& mod, bool& everything) {
     if (!g_test.item.empty() && s.item.empty() && s.list.type == Json::Type::kArray) {
       std::string name;  // (found first: Pick resets the state the list is in)
       for (const auto& r : s.list.items)
-        if (ItemKeyOf(r) == g_test.item) name = r["name"].Str();
+        if (ItemKeyOf(r) == g_test.item) name = Shown(r["name"].Str());
       if (!name.empty()) Pick(kMoves, s, g_test.item, name);
       else Log("simple porting test: no superstar " + g_test.item), g_test.on = false;
     }
@@ -1435,12 +1450,13 @@ void Draw(Kind k) {
   if (view) {
     ImGui::SameLine();
     ImGui::BeginChild("view", ImVec2(0, -52 * g_scale), true);
-    if (!s.play_star && !Stars().empty()) s.play_star = Stars().front().id;
+    if (!s.play_star) s.play_star = StarById(139) ? 139 : (Stars().empty() ? 0 : Stars().front().id);  // (none of the same name: John Cena)
     char_preview::SetModel(GameChPac(s.play_star), g_game);
     char_preview::SetDummy(GameChPac(s.play_star == 139 ? 125 : 139));  // (the one the move is done to)
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     char_preview::Draw(avail.x, avail.y - 34 * g_scale);
-    ImGui::TextDisabled("%s", s.item_star11 ? "Shown on the 2011 superstar of the same name." : "Shown on a 2011 superstar.");
+    const StarInfo* on = StarById(s.play_star);
+    ImGui::TextDisabled("Shown on %s%s.", on ? on->name.c_str() : "a 2011 superstar", s.item_star11 ? " (2011's own)" : "");
     ImGui::EndChild();
   }
   simple::BottomBar(s.step, count);
