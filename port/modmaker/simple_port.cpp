@@ -228,6 +228,15 @@ std::string Norm(const std::string& s) {
   for (char c : Lower(s))
     if (std::isalnum(uint8_t(c))) o += c;
   if (o.rfind("the", 0) == 0 && o.size() > 6) o.erase(0, 3);  // ("The Undertaker" / "Undertaker")
+  // one name, several spellings across the games (both sides of a match go through here): -> one key
+  static const std::map<std::string, std::string> kAliases = {
+      {"chavogerrero", "chavoguerrero"},  {"vincemcmahon", "mrmcmahon"},      {"vincentmcmahon", "mrmcmahon"},
+      {"mcmahon", "mrmcmahon"},           {"steveaustin", "stonecold"},       {"stonecoldsteveaustin", "stonecold"},
+      {"hhh", "tripleh"},                 {"johnbradshawlayfield", "jbl"},    {"montelvontaviousporter", "mvp"},
+      {"ronkillings", "rtruth"},          {"teddibiasejr", "teddibiase"},     {"kennedy", "mrkennedy"},
+      {"kingbooker", "bookert"},
+  };
+  if (const auto it = kAliases.find(o); it != kAliases.end()) o = it->second;
   return o;
 }
 
