@@ -3052,7 +3052,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--simple-ring") && more) star_page::TestSimpleRing(_wtoi(argv[++i]));  // an entrance's walk to the ring in Simple's preview
     else if (!wcscmp(argv[i], L"--simple-capture") && more) star_page::TestSimpleCapture(argv[++i]);  // the 3D view as the select picture -> <png>, quit
     else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
-    else if (!wcscmp(argv[i], L"--simple") && more) star_page::TestSimple(_wtoi(argv[++i]));  // the Superstar page in Simple mode at <step>
+    else if (!wcscmp(argv[i], L"--simple") && more) {  // the Superstar page in Simple mode at <step>[,from]: that step's "From another game"
+      const std::wstring a = argv[++i];
+      star_page::TestSimple(_wtoi(a.c_str()));
+      if (a.find(L",from") != std::wstring::npos) star_page::TestSimpleFrom(_wtoi(a.c_str()));
+    }
+    else if (!wcscmp(argv[i], L"--simple-chain") && more) {  // "<kind>:<game>:<item>;...;save=<file>" (simple_star.cpp)
+      star_page::TestSimple(0);
+      star_page::TestSimpleChain(Utf8(argv[++i]));
+      g_page = PageId::kStar;
+    }
     else if (!wcscmp(argv[i], L"--simple-arena") && more) arena_page::TestSimple(_wtoi(argv[++i])), g_page = PageId::kArena;  // Simple arena at <step>
     else if (!wcscmp(argv[i], L"--simple-arena-start") && more) arena_page::TestSimpleStart(Utf8(argv[++i])), g_page = PageId::kArena;  // tile:<n> | empty:<n> | disc:<key>[:<bgNN>[:<host>]]
     else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs

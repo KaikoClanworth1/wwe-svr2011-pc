@@ -24,11 +24,29 @@ void Draw(Kind kind);
 // Simple superstar's Look step, "From an older game": a game (My game discs), its superstars with pictures, "Bring
 // <name> in" (superstar_port convert) with a "Bring everything too" tick. True once, when the converted superstar
 // (.svrmod in `mod`) is ready; `everything` the tick (simple_star.cpp then takes it: TakeFromMod).
-bool SuperstarImport(std::wstring& mod, bool& everything);
+bool SuperstarImport(std::wstring& mod, bool& everything, bool offer_everything = true);  // (false: no "Bring everything too")
 // With "Bring everything too", their moves and taunts come after the look (the slow part, ported one by one): true
 // once, when they're in - `pack` the move pack folder ("" when none was needed) and `lines` moves.txt's 0xOFF=id lines
 // for the slots that came over (simple_star.cpp puts them in the project). Polled every frame of the Simple page.
 bool SuperstarImportMoves(std::wstring& pack, std::vector<std::string>& lines);
+
+// Simple superstar's Entrance / Moves / Taunts steps, "From another game": that menu's steps in the step (the game -
+// a disc, a folder of its files or one file -, the superstar - the Look's own when it came from that game -, Watch /
+// choose), then "Use ... for my superstar": true once with what to put in the project. The same state as the stand-
+// alone tab of that kind.
+struct ForStarResult {
+  std::wstring pack;               // a move pack folder for the project's pack ("": none needed)
+  std::vector<std::string> lines;  // moves / taunts: moves.txt lines (0xOFF=id) for the move-set
+  int entrance = -1;               // entrance: its number (entrance=)
+  std::wstring movie;              // entrance: its titantron video ("": none)
+  std::string what;                // "<name>'s moves" (for the status line)
+};
+bool ForStar(Kind k, ForStarResult& out);
+// Test aid (--simple-chain): that menu in ForStar picks `game` and `item`, then Use once ready (moves / taunts: all
+// theirs that can come over).
+void ForStarTest(Kind k, const std::string& game, const std::string& item);
+// The project's move pack with another merged in: a new folder (neither is changed); either empty: the other.
+std::wstring CombinePacks(const std::wstring& have, const std::wstring& add);
 
 // Test aid --simple-port <entrance|moves|taunts|import>,<game key>[,<item key>[,<step>[,add]]]: that menu with the game (its
 // disc from My game discs) and the item picked, on that step (--shot shows it); add: Add to my game once ready. import:

@@ -59,6 +59,55 @@ int GameStarOf(const std::wstring& model) {
 
 std::wstring GameChPac(int id) { return (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(id) + L".pac")).wstring(); }
 
+// ---- each step's sources: the game's own / your files (as before), or from another game - the porting menus
+// (simple_port.h ForStar: a disc, a folder of the game's files or one file) or the converted superstar's part
+
+int g_src[16] = {};  // per step: 0 the game's own / my files, 1 from another game
+
+// Test aid --simple-chain "<kind>:<game>:<item>;...;save=<file>": the Simple superstar made from other games, stage
+// by stage - import (the Look: the whole superstar's look), entrance / moves / taunts (that step's From another game),
+// attire / pictures / music / extras (that part of the import) - then saved as a .svrmod and the Mod Maker closed.
+struct ChainStage {
+  std::string kind, game, item;
+};
+std::vector<ChainStage> g_chain;
+size_t g_chain_at = 0;
+bool g_chain_started = false, g_chain_done = false;
+std::wstring g_chain_save;
+
+// The cards at the top of a step; true: "From another game" is picked (the step shows that instead).
+bool FromAnotherGame(int step, const char* own, const char* own_line, const char* other_line) {
+  const float w = CardWidth(), h = 74 * g_scale;
+  if (Card("src_own", own, own_line, g_src[step] == 0, w, h)) g_src[step] = 0;
+  if (1 % CardsPerRow(w)) ImGui::SameLine(0, 8 * g_scale);
+  if (Card("src_other", "From another game", other_line, g_src[step] == 1, w, h)) g_src[step] = 1;
+  ImGui::Spacing();
+  return g_src[step] == 1;
+}
+
+// A porting menu's result into the project (entrance / moves / taunts).
+void TakeForStar(const simple_port::ForStarResult& r, int step) {
+  g_chain_done = true;
+  g_star.pack = simple_port::CombinePacks(g_star.pack, r.pack);
+  if (r.entrance > 0) g_star.entrance = r.entrance;
+  if (!r.movie.empty()) g_star.movie = r.movie;
+  if (!r.lines.empty()) {
+    std::string t;
+    for (const auto& l : r.lines) t += l + "\n";
+    ParseMoveset(t, '\n');
+  }
+  Touch();
+  g_src[step] = 0;  // (back to the step's own view: the result shows there)
+  Status(r.what + (r.entrance > 0 ? " is your superstar's now." : " are your superstar's now."));
+}
+
+// A converted superstar from another game (the Look step's converter), one part of it taken.
+void PartFromAnotherGame(StarPart part, int step, int slot = 1) {
+  std::wstring got;
+  bool all = false;
+  if (simple_port::SuperstarImport(got, all, false) && TakePartFromMod(got, part, slot)) g_src[step] = 0, g_chain_done = true;
+}
+
 void StepTitle(int step) { simple::StepTitle(kSteps[step]); }
 
 // A step's choice still the style's: said plainly.
@@ -150,7 +199,7 @@ void StepLook_() {
   } else {  // (a game from My game discs, its superstars with pictures: simple_port.cpp)
     std::wstring got;
     bool all = false;
-    if (simple_port::SuperstarImport(got, all)) TakeFromMod(got, all);
+    if (simple_port::SuperstarImport(got, all)) TakeFromMod(got, all), g_chain_done = true;
   }
   ImGui::Spacing();
   if (ImGui::SmallButton("Use a model file instead...")) {
@@ -191,7 +240,18 @@ void StepAttires() {
   ImGui::Spacing();
   MaterialsSection(true);
 }
+int g_attire_slot = 1;  // (from another game: the attire it goes in, 1-3 = attire 2-4)
 void StepAttires_() {
+  if (FromAnotherGame(2, "The game's or my files", "Another 2011 superstar's look, or a model file.",
+                      "A superstar's look from your other games, as one of your attires.")) {
+    ImGui::TextUnformatted("As attire");
+    for (int a = 1; a < 4; ++a) {
+      ImGui::SameLine();
+      if (ImGui::RadioButton(std::to_string(a + 1).c_str(), g_attire_slot == a)) g_attire_slot = a;
+    }
+    PartFromAnotherGame(StarPart::kAttire, 2, g_attire_slot);
+    return;
+  }
   const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
   auto own_has = [&](int n) {  // (the game counts them in order from 1)
     for (int k = 1; k <= n; ++k)
@@ -240,6 +300,11 @@ void StepAttires_() {
 }
 
 void StepMusic() {
+  if (FromAnotherGame(3, "A game theme or my song", "One of 2011's themes, or a song file of yours.",
+                      "Their theme and titantron video from that game.")) {
+    PartFromAnotherGame(StarPart::kMusic, 3);
+    return;
+  }
   FileRow("Pick a song...", g_star.song, g_star.music > 0 ? "the game's theme below" : "the style's", kSoundFilter, 1,
           "An MP3, WAV, OGG or other sound file.");
   if (!g_star.song.empty() && g_star.music) g_star.music = 0;  // (a song file picked: it wins)
@@ -278,7 +343,17 @@ void WatchEntrance(int n) {
   if (!started) Status("The entrance preview needs the Mod Maker tools (Python): see the log.");
 }
 
+void StepEntranceOwn();
 void StepEntrance() {
+  if (FromAnotherGame(4, "The game's entrances", "One of 2011's, or one you added.",
+                      "A superstar's entrance from your other games: a disc, a folder or one file.")) {
+    simple_port::ForStarResult r;
+    if (simple_port::ForStar(simple_port::kEntrance, r)) TakeForStar(r, 4);
+    return;
+  }
+  StepEntranceOwn();
+}
+void StepEntranceOwn() {
   if (EntrancePicker("Entrance", g_star.entrance, "The style's", 360)) Touch();
   if (g_star.entrance < 0) FromStyle("Entrance");
   {
@@ -336,6 +411,12 @@ void SlotRow(int slot, const char* label, bool two_people) {
 }
 
 void StepMoves() {
+  if (FromAnotherGame(5, "The game's moves", "Change a move to any of 2011's.",
+                      "A superstar's moves from your other games: a disc or a folder of its files.")) {
+    simple_port::ForStarResult r;
+    if (simple_port::ForStar(simple_port::kMoves, r)) TakeForStar(r, 5);
+    return;
+  }
   SlotRow(0x1E / 2, "Signature move", true);
   SlotRow(0x20 / 2, "Signature move 2", true);
   SlotRow(0x22 / 2, "Finisher", true);
@@ -346,11 +427,22 @@ void StepMoves() {
 }
 
 void StepTaunts() {
+  if (FromAnotherGame(6, "The game's taunts", "Change a taunt to any of 2011's.",
+                      "A superstar's taunts from your other games: a disc or a folder of its files.")) {
+    simple_port::ForStarResult r;
+    if (simple_port::ForStar(simple_port::kTaunts, r)) TakeForStar(r, 6);
+    return;
+  }
   for (int k = 0; k < 4; ++k) SlotRow((0x12 + 2 * k) / 2, ("Taunt " + std::to_string(k + 1)).c_str(), false);
   MovePicker();
 }
 
 void StepPictures() {
+  if (FromAnotherGame(7, "The 3D view or my picture", "Take it from the 3D view, or a picture of yours.",
+                      "Their pictures, made by the converter from that game's renders.")) {
+    PartFromAnotherGame(StarPart::kPictures, 7);
+    return;
+  }
   ImGui::TextUnformatted("Pose on the select screen");
   ImGui::SetNextItemWidth(300 * g_scale);
   const std::string cur = g_star.pose < 0 ? "The style's" : PoseLabel(g_star.pose);
@@ -404,6 +496,11 @@ void StepPictures() {
 }
 
 void StepExtras() {
+  if (FromAnotherGame(8, "Set them here", "Strength, height and what the announcer says.",
+                      "Their strength, height, abilities and announcer lines from that game.")) {
+    PartFromAnotherGame(StarPart::kExtras, 8);
+    return;
+  }
   ImGui::Text("Strength - overall %d", OverallRating(g_star.ratings));
   for (int k = 0; k < 7; ++k) {
     ImGui::SetNextItemWidth(260 * g_scale);
@@ -468,10 +565,78 @@ void StepFinish() {
 void TestSimpleLook(int mode) { g_look_mode = mode; }
 std::wstring g_test_capture;  // --simple-capture <png>: the 3D view taken as the select picture, saved, quit
 void TestSimpleCapture(const std::wstring& png) { g_test_capture = png; }
+bool g_test_simple_chain = false;
 int g_test_ring = -1;  // --simple-ring <entrance>: its walk to the ring in the preview (with --simple-capture: taken mid-walk)
 void TestSimpleRing(int n) { g_test_ring = n; }
+void TestSimpleChain(const std::string& spec) {
+  g_chain.clear(), g_chain_at = 0, g_chain_started = false;
+  for (size_t a = 0, b; a <= spec.size(); a = b + 1) {
+    b = spec.find(';', a);
+    if (b == std::string::npos) b = spec.size();
+    const std::string part = spec.substr(a, b - a);
+    if (part.rfind("save=", 0) == 0) {
+      g_chain_save = Wide(part.substr(5));
+      continue;
+    }
+    const size_t c1 = part.find(':'), c2 = c1 == std::string::npos ? c1 : part.find(':', c1 + 1);
+    if (c2 == std::string::npos) continue;
+    g_chain.push_back({part.substr(0, c1), part.substr(c1 + 1, c2 - c1 - 1), part.substr(c2 + 1)});
+  }
+  g_test_simple_chain = true;
+}
+void TestSimpleFrom(int step) {
+  if (step >= 0 && step < 16) g_src[step] = 1;
+}
+
+void ChainTick() {
+  if (g_chain_at >= g_chain.size()) return;
+  int& step = g_star.simple_step;
+  const ChainStage& c = g_chain[g_chain_at];
+  static const std::pair<const char*, int> kSteps[] = {{"import", 1}, {"attire", 2}, {"music", 3}, {"entrance", 4},
+                                                       {"moves", 5},  {"taunts", 6}, {"pictures", 7}, {"extras", 8}};
+  int at = -1;
+  for (const auto& [name, n] : kSteps)
+    if (c.kind == name) at = n;
+  if (at < 0) {
+    Log("simple superstar test: no stage " + c.kind), g_chain_at = g_chain.size();
+    return;
+  }
+  if (!g_chain_started) {
+    g_chain_started = true, g_chain_done = false;
+    step = at;
+    Log("simple superstar test: stage " + c.kind + " " + c.game + " " + c.item);
+    if (c.kind == "import") {
+      g_look_mode = 1;
+      simple_port::TestStart("import," + c.game + "," + c.item + ",0,add");
+    } else if (c.kind == "entrance" || c.kind == "moves" || c.kind == "taunts") {
+      g_src[at] = 1;
+      simple_port::ForStarTest(c.kind == "entrance" ? simple_port::kEntrance : c.kind == "moves" ? simple_port::kMoves : simple_port::kTaunts,
+                               c.game, c.item);
+    } else {
+      g_src[at] = 1;
+      simple_port::TestStart("import," + c.game + "," + c.item + ",0,add");
+    }
+    return;
+  }
+  static double since = 0;  // (a stage that never ends: logged, the Mod Maker closed)
+  if (!since) since = ImGui::GetTime();
+  if (!g_chain_done && ImGui::GetTime() - since > 900) {
+    Log("simple superstar test: stage " + c.kind + " didn't finish in 15 minutes");
+    g_chain_at = g_chain.size();
+    PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    return;
+  }
+  if (!g_chain_done || Busy()) return;
+  since = 0;
+  Log("simple superstar test: stage " + c.kind + " done");
+  g_chain_started = false;
+  if (++g_chain_at < g_chain.size()) return;
+  if (!g_chain_save.empty()) TestSaveMod(g_chain_save);
+  PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+}
 
 void SimpleDraw() {
+  ChainTick();
   int& step = g_star.simple_step;
   step = std::clamp(step, 0, int(kStepCount) - 1);
   if (g_star.model.empty()) g_star.model = StyleChPac();  // (valid from the first step: the style's look)

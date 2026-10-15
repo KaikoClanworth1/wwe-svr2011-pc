@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <functional>
 #include <map>
 #include <set>
@@ -389,6 +390,8 @@ void LoneNotes(const State& s) {
 // pack tab). A folder is set as that game's "disc" in My game discs; its game is read off it when it can be, else asked.
 
 std::wstring g_folder;  // a picked folder waiting for its game
+bool g_import_lone = false;  // the superstar import's "One file": a character file (port_page's lone-file steps)
+State& ImportState();
 
 void UseFolderFor(State& s, const std::string& key, const std::wstring& folder, const std::string& id) {
   disc_list::Set(key, folder, id);
@@ -420,9 +423,17 @@ void SourceCards(Kind k, State& s) {
   };
   next();
   if (Card("src_folder", "A folder of game files",
-           k == kEntrance ? "the game's files you copied off a disc" : "pac files copied off a disc (pac\\m.pac, pac\\misc.pac)",
+           k == kEntrance || &s == &ImportState() ? "the game's files you copied off a disc" : "pac files copied off a disc (pac\\m.pac, pac\\misc.pac)",
            !g_folder.empty(), w, h))
     PickGameFolder(k, s);
+  const bool import = &s == &ImportState();  // (Simple superstar's converter: a whole superstar, one file = a character)
+  if (import) {
+    next();
+    if (Card("src_char", "One file", "a character pac (chNNN.pac) or a PS2 game's CH.PAC", g_import_lone, w, h)) g_import_lone = true;
+    ImGui::Spacing();
+    ImGui::TextDisabled("Or one of your game discs:");
+    return;
+  }
   if (k == kMoves) {
     next();
     if (Card("src_pack", "A move pack folder", "pack.txt + motions\\ - opens on the Move pack tab", false, w, h)) {
@@ -1608,6 +1619,197 @@ void StageLine(const char* what) {
 }  // namespace
 
 namespace {
+// ---- Simple superstar's Entrance / Moves / Taunts steps, "From another game" (ForStar): the menu's own first steps
+// (g_s[k]: the same state as the stand-alone tab), then "Use for my superstar" - the result for the project
+
+ForStarResult g_for_ready[kKindCount];
+bool g_for_has[kKindCount] = {};
+bool g_for_busy[kKindCount] = {};
+
+// The game and the superstar the Look came from (Look > From an older game), as the menu's first pick.
+void DefaultFromLook(Kind k, State& s) {
+  if (s.game.empty() && s.file.empty() && !g_import.game.empty() && !ConverterGame(k, g_import.game).empty()) s.game = g_import.game;
+  if (!s.item.empty() || s.game != g_import.game || g_import.item_name.empty() || s.list.type != Json::Type::kArray) return;
+  std::string key, name;  // (found first: Pick resets the state the list is in)
+  for (const auto& r : s.list.items)
+    if (key.empty() && (ItemKeyOf(r) == g_import.item || Norm(Shown(r["name"].Str())) == Norm(g_import.item_name)))
+      key = ItemKeyOf(r), name = Shown(r["name"].Str());
+  if (!key.empty()) Pick(k, s, key, name);
+}
+
+void ForStarMoves(Kind k, State& s) {
+  const std::string game = ConverterGame(k, s.game);
+  const fs::path out = WorkDir() / Wide(std::string(k == kTaunts ? "star_taunts_" : "star_moves2_") + game + "_" + Safe(s.item));
+  std::error_code ec;
+  fs::remove_all(out, ec);
+  std::vector<std::wstring> args = {L"moveset-pack", L"--game", Wide(game), L"--src", disc_list::PathFor(s.game),
+                                    L"--item", Wide(s.item), L"--rows", ChosenSlots(k, s), L"--pac11", Pac11(),
+                                    L"--out", out.wstring(), L"--cache", (WorkDir() / Wide("cache_" + game)).wstring()};
+  if (k == kTaunts) args.push_back(L"--taunts-only");
+  AddSvrmod(args, game);
+  g_for_busy[k] = true;
+  Status(k == kTaunts ? "Bringing the taunts over (a few minutes each)..." : "Bringing the moves over...");
+  RunToolJson(L"superstar_port.py", args, [k](int code, const std::string& o) {
+    g_for_busy[k] = false;
+    State& s = g_s[k];
+    const std::string what = k == kTaunts ? "taunts" : "moves";
+    Json j;
+    if (code != 0 || !ParseJson(o, j) || !j["ok"].Truthy())
+      return Status("The " + what + " couldn't be brought over: " + simple::Plain(ErrorOf(code, o, "converter")));
+    ForStarResult r;
+    const fs::path pack = j["out"].Str().empty() ? fs::path() : fs::u8path(j["out"].Str());
+    std::error_code ec;
+    if (!pack.empty() && fs::exists(pack / L"pack.txt", ec)) r.pack = pack.wstring();
+    // (moves_txt has only the slots that differ from the converter's own base - 2011's superstar of that name -; this
+    // superstar's base is the fighting style's, so every chosen slot 2011 has the same or a similar move for goes in
+    // too: its 2011 id)
+    std::set<std::string> have;
+    for (const auto& l : j["moves_txt"].items) {
+      r.lines.push_back(l.Str());
+      have.insert(Lower(l.Str().substr(0, l.Str().find('='))));
+    }
+    for (const auto& row : j["rows"].items) {
+      const std::string slot = Lower(row["slot"].Str()), st = row["status"].Str();
+      const int id = row["id11"].Int(0);
+      if (id <= 0 || have.count(slot) || (st != "same" && st != "similar")) continue;
+      r.lines.push_back("# " + st + ": " + row["name11"].Str());
+      r.lines.push_back(slot + "=" + std::to_string(id));
+    }
+    r.what = s.item_name + "'s " + what;
+    g_for_ready[k] = std::move(r), g_for_has[k] = true;
+  });
+}
+
+}  // namespace
+
+struct ForStarTestSpec {
+  bool on = false;
+  std::string game, item;
+};
+ForStarTestSpec g_for_test[kKindCount];
+
+void ForStarTest(Kind k, const std::string& game, const std::string& item) { g_for_test[k] = {true, game, item}; }
+
+bool ForStar(Kind k, ForStarResult& out) {
+  bool test_use = false;  // (test aid: Use pressed once ready)
+  if (ForStarTestSpec& t = g_for_test[k]; t.on && !g_for_has[k] && !g_for_busy[k]) {
+    State& s = g_s[k];
+    if (s.game != t.game) {
+      s = State();
+      s.game = t.game;
+    }
+    if (s.item.empty()) {
+      AskList(k, s);
+      if (s.list.type == Json::Type::kArray) {
+        std::string name;  // (found first: Pick resets the state the list is in)
+        for (const auto& r : s.list.items)
+          if (ItemKeyOf(r) == t.item) name = Shown(r["name"].Str());
+        if (!name.empty()) Pick(k, s, t.item, name);
+        else Log("simple superstar test: no " + t.item + " in the list"), t.on = false;
+      }
+    } else {
+      s.step = 2;
+      if (k == kEntrance) {
+        Convert(s);
+        if (!s.result_error.empty()) Log("simple superstar test: " + s.result_error), t.on = false;
+        else if (Converted(s) && !Busy()) test_use = true;
+      } else {
+        AskRows(k, s);
+        if (s.rows["rows"].type == Json::Type::kArray && s.chosen.empty())
+          for (const auto& r : s.rows["rows"].items)
+            if (Mine(k, r) && r["status"].Str() != "none") s.chosen.insert(r["slot"].Str());
+        if (!s.chosen.empty() && !Busy()) test_use = true;
+        else if (s.rows["rows"].type == Json::Type::kArray && s.chosen.empty())
+          Log("simple superstar test: none of theirs can be brought over"), t.on = false;
+        if (!s.rows_error.empty()) Log("simple superstar test: " + s.rows_error), t.on = false;
+      }
+      if (test_use) t.on = false, Log("simple superstar test: Use");
+    }
+  }
+  if (g_for_has[k]) {
+    out = std::move(g_for_ready[k]);
+    g_for_ready[k] = ForStarResult();
+    g_for_has[k] = false;
+    return true;
+  }
+  State& s = g_s[k];
+  DefaultFromLook(k, s);
+  s.step = std::clamp(s.step, 0, 2);  // (the menu's first three: the game, the superstar, watch / choose)
+  static const char* kNames[3][3] = {{"1. Game", "2. Superstar", "3. Watch"}, {"1. Game", "2. Superstar", "3. Moves"},
+                                     {"1. Game", "2. Superstar", "3. Taunts"}};
+  for (int i = 0; i < 3; ++i) {
+    if (i) ImGui::SameLine(0, 4 * g_scale);
+    const bool on = s.step == i;
+    if (on) PushAccent();
+    ImGui::BeginDisabled(i > 0 && (!HasSource(s) || (i > 1 && s.item.empty())));
+    if (ImGui::SmallButton(kNames[k][i])) s.step = i;
+    ImGui::EndDisabled();
+    if (on) PopAccent();
+  }
+  ImGui::Spacing();
+  ImGui::BeginChild("for_star", ImVec2(0, -40 * g_scale), false);
+  switch (StepAt(k, s.step)) {
+    case kStepGame: StepGame(k, s); break;
+    case kStepItem: StepItem(k, s); break;
+    default: k == kEntrance ? StepWatch(s) : StepRows(k, s); break;
+  }
+  ImGui::EndChild();
+  // the step's button: on to the next, or (last) the result into this superstar
+  if (s.step < 2) {
+    ImGui::BeginDisabled(s.step == 0 ? !HasSource(s) : s.item.empty());
+    if (ImGui::Button("Next", ImVec2(160 * g_scale, 0))) ++s.step;
+    ImGui::EndDisabled();
+    return false;
+  }
+  bool ready = false;
+  if (k == kEntrance) {
+    ready = Converted(s);
+  } else {
+    for (const auto& r : s.rows["rows"].items) ready |= Mine(k, r) && s.chosen.count(r["slot"].Str());
+  }
+  ImGui::BeginDisabled(!ready || g_for_busy[k] || Busy());
+  PushAccent();
+  const std::string label = k == kEntrance ? "Use this entrance for my superstar" : k == kTaunts ? "Use these taunts for my superstar"
+                                                                                               : "Use these moves for my superstar";
+  const bool press = ImGui::Button(label.c_str(), ImVec2(320 * g_scale, 0)) || test_use;
+  PopAccent();
+  ImGui::EndDisabled();
+  if (!ready && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip(k == kEntrance ? "Watch it first: that brings it over." : "Tick the ones you want first.");
+  if (g_for_busy[k]) StageLine("Bringing them over:");
+  if (!press) return false;
+  if (k != kEntrance) {
+    ForStarMoves(k, s);
+    return false;
+  }
+  out = ForStarResult();
+  out.pack = ResultPack(s).wstring();
+  out.entrance = s.number;
+  out.movie = s.titantron ? ResultMovie(s).wstring() : std::wstring();
+  out.what = EntranceName(s) + "'s entrance";
+  return true;
+}
+
+std::wstring CombinePacks(const std::wstring& have, const std::wstring& add) {
+  if (add.empty()) return have;
+  if (have.empty()) return add;
+  // (a copy of the project's pack with the new one merged in: the user's own pack folder is never changed)
+  static int n = 0;
+  const fs::path to = WorkDir() / Wide("star_pack_" + std::to_string(++n) + "_" + std::to_string(std::time(nullptr)));
+  std::error_code ec;
+  fs::remove_all(to, ec);
+  if (!CopyInto(have, to) || !MergePack(add, to)) {
+    Log("simple porting: the two move packs couldn't be merged (" + PathStr(have) + " + " + PathStr(add) + ")");
+    return have;
+  }
+  return to.wstring();
+}
+
+namespace {
+
+State& ImportState() { return g_import; }
+bool g_import_offer_all = true;  // (false: a step that takes one part of them - no "Bring everything too")
+
 bool ImportList(std::wstring& mod, bool& everything) {
   State& s = g_import;
   if (g_test.on && g_test.import) {  // (test aid: the game and the superstar, then Bring in)
@@ -1652,8 +1854,10 @@ bool ImportList(std::wstring& mod, bool& everything) {
   PushAccent();
   if (ImGui::Button(("Bring " + s.item_name + " in").c_str(), ImVec2(260 * g_scale, 36 * g_scale))) ImportConvert();
   PopAccent();
-  ImGui::SameLine();
-  ImGui::Checkbox("Bring everything too (moves, theme, entrance, ratings)", &g_import_all);
+  if (g_import_offer_all) {
+    ImGui::SameLine();
+    ImGui::Checkbox("Bring everything too (moves, theme, entrance, ratings)", &g_import_all);
+  }
   ImGui::EndDisabled();
   if (running) StageLine("Their look, pictures and music:");
   if (MovesRunning()) StageLine("Their moves (one by one):");
@@ -1672,19 +1876,21 @@ bool ImportList(std::wstring& mod, bool& everything) {
 
 }  // namespace
 
-bool SuperstarImport(std::wstring& mod, bool& everything) {
+bool SuperstarImport(std::wstring& mod, bool& everything, bool offer_everything) {
+  g_import_offer_all = offer_everything;
+  if (!offer_everything) g_import_all = false;
   if (const std::wstring got = port_page::EmbeddedResult(); !got.empty()) {  // (a lone character file's, below)
     port_page::ClearEmbeddedResult();
     mod = got, everything = g_import_all;
     return true;
   }
-  const bool got = ImportList(mod, everything);
-  ImGui::Spacing();
-  if (ImGui::TreeNode("Use one character file instead...")) {  // (a chNNN.pac / a PS2 CH.PAC on its own: port_page)
+  if (g_import_lone) {  // (a chNNN.pac / a PS2 CH.PAC on its own: port_page's steps; the result comes back above)
+    if (ImGui::SmallButton("Back to the games")) g_import_lone = false;
+    ImGui::Spacing();
     port_page::SuperstarFileFlow();
-    ImGui::TreePop();
+    return false;
   }
-  return got;
+  return ImportList(mod, everything);
 }
 
 bool SuperstarImportMoves(std::wstring& pack, std::vector<std::string>& lines) {
