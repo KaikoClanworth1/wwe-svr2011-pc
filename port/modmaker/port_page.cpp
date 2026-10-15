@@ -67,7 +67,7 @@ int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 std::string g_test_game;        // (--port-test kind@game: a folder's game, as picked in its combo)
 
 std::wstring g_image;  // a disc image picked by path (test aid), not from the list
-std::wstring g_file;   // or one arena file (.pac): arena_port.py detect says its game and what a lone file lacks
+std::wstring g_file;   // or one arena / entrance file (.pac): the converter's detect says its game and what a lone file lacks
 Json g_detect;         // the detect answer for g_detect_for
 std::wstring g_detect_for;
 std::string g_detect_error;
@@ -758,22 +758,37 @@ void OpenResult() {
   ShellOpen(p.wstring());
 }
 
-std::wstring PickArenaFile() {
-  static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena file (bgNN.pac)", L"*.pac"}};
-  return PickFile(false, L"One arena file from another game (SvR 2007 - WWE 2K17: pac\\bg\\bgNN.pac)", kPac, 1);
+std::wstring PickOneFile() {
+  static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena or entrance file (*.pac)", L"*.pac"}};
+  return PickFile(false, L"One arena or entrance file from another game (e.g. pac\\bg\\bgNN.pac, Nyujyo0.pac, Entrance01.pac)", kPac, 1);
+}
+// The kinds one file can be (each converter's detect reads it), and the tab a file's name points to.
+bool TakesOneFile(int k) {
+  const std::wstring s = kKinds[k].script;
+  return s == L"arena_port.py" || s == L"entrance_port.py";
+}
+void TabForFile(const std::wstring& f) {
+  const std::string n = Lower(Utf8(fs::path(f).stem().wstring()));
+  bool digits = n.size() == 5;
+  for (char c : n) digits &= std::isdigit(uint8_t(c)) != 0;
+  const bool entrance = digits || n.rfind("nyujyo", 0) == 0 || n.rfind("entrance", 0) == 0 || n.rfind("evt", 0) == 0 || n.rfind("en3", 0) == 0;
+  for (int k = 0; k < kKindCount; ++k)
+    if (std::wstring(kKinds[k].script) == (entrance ? L"entrance_port.py" : L"arena_port.py")) g_kind = g_force_kind = k;
 }
 
-// One arena file (no disc): detect says the game (or a few it may be) and what a lone file can't bring. WWE '12 -
-// 2K17: the Mod Maker converts the file itself (as an arena off the disc); SvR 2007 - 2010: the usual list + convert,
-// with the game it returns.
-std::string FileArena(int k) {
-  if (g_detect_for != g_file && !Busy()) {
-    g_detect_for = g_file, g_detect = Json(), g_detect_error.clear(), g_file_game = 0;
-    RunToolJson(kKinds[k].script, {L"detect", L"--src", g_file}, [file = g_file](int code, const std::string& out) {
-      if (file != g_detect_for) return;
+// One file (no disc): the kind's detect says the game (or a few it may be) and what a lone file can't bring. Arenas
+// of WWE '12 - 2K17: the Mod Maker converts the file itself (as an arena off the disc); the rest: the usual list +
+// convert, with the game it returns.
+std::string FileSource(int k) {
+  const std::wstring for_this = g_file + L"|" + kKinds[k].script;
+  const bool arena = std::wstring(kKinds[k].script) == L"arena_port.py";
+  if (g_detect_for != for_this && !Busy()) {
+    g_detect_for = for_this, g_detect = Json(), g_detect_error.clear(), g_file_game = 0;
+    RunToolJson(kKinds[k].script, {L"detect", L"--src", g_file}, [for_this](int code, const std::string& out) {
+      if (for_this != g_detect_for) return;
       Json j;
       const bool parsed = ParseJson(out, j) && j.type == Json::Type::kObject;
-      if (code == 0 && parsed && j["ok"].Truthy()) g_detect = std::move(j);
+      if (code == 0 && parsed && !j["game"].Str().empty()) g_detect = std::move(j);
       else g_detect_error = parsed && !j["error"].Str().empty() ? j["error"].Str() : "the converter stopped (exit " + std::to_string(code) + "): see the log";
     });
   }
@@ -783,10 +798,11 @@ std::string FileArena(int k) {
     ImGui::PopTextWrapPos();
     return {};
   }
-  if (g_detect.type != Json::Type::kObject) {
+  if (g_detect.type != Json::Type::kObject || g_detect_for != for_this) {
     ImGui::TextDisabled("Reading the file ...");
     return {};
   }
+  const char* what = arena ? "An arena" : "Entrances";
   std::vector<std::string> ids = {g_detect["game"].Str()};
   for (const Json& a : g_detect["also"].items) ids.push_back(a.Str());
   auto name_of = [k](const std::string& id) {
@@ -797,30 +813,36 @@ std::string FileArena(int k) {
   g_file_game = std::clamp(g_file_game, 0, int(ids.size()) - 1);
   const std::string game = ids[size_t(g_file_game)];
   if (g_detect["sure"].Truthy() || ids.size() == 1) {
-    ImGui::Text("2. An arena from %s", g_detect["game_name"].Str().c_str());
+    const std::string from = !g_detect["game_name"].Str().empty() ? g_detect["game_name"].Str() : g_detect["name"].Str();
+    if (!arena && g_detect["entrances"].Int() > 0)
+      ImGui::Text("2. %d entrance%s from %s", int(g_detect["entrances"].Int()), g_detect["entrances"].Int() == 1 ? "" : "s", from.c_str());
+    else
+      ImGui::Text("2. %s from %s", what, from.c_str());
   } else {
     std::string all;
     for (size_t i = 0; i < ids.size(); ++i) all += (i ? (i + 1 == ids.size() ? " or " : ", ") : "") + name_of(ids[i]);
-    ImGui::TextWrapped("2. An arena from %s (the file looks the same in these games).", all.c_str());
+    ImGui::TextWrapped("2. %s from %s (the file looks the same in these games).", what, all.c_str());
     ImGui::SetNextItemWidth(260 * g_scale);
     if (ImGui::BeginCombo("Which game it's from", name_of(game).c_str())) {
       for (int i = 0; i < int(ids.size()); ++i)
         if (ImGui::Selectable(name_of(ids[size_t(i)]).c_str(), g_file_game == i)) g_file_game = i;
       ImGui::EndCombo();
     }
-    Hint("Only the arena's name from the port's list depends on it: the arena itself converts the same.");
+    Hint("Only the names from the port's list depend on it: the file itself converts the same.");
   }
   ImGui::PushTextWrapPos(0);
-  if (!g_detect["lacks"].items.empty()) {
+  const Json& lacks = arena ? g_detect["lacks"] : g_detect["limits"];  // (arena_port: lacks, entrance_port: limits)
+  if (!lacks.items.empty()) {
     ImGui::TextDisabled("On its own, the file can't bring:");
-    for (const Json& l : g_detect["lacks"].items) {  // (the converter's words, without its command-line options)
+    for (const Json& l : lacks.items) {  // (the converter's words, without its command-line options)
       std::string t = l.Str();
-      for (const char* opt : {" (with --pac11)", " (--pac11)"})
+      for (const char* opt : {" (with --pac11)", " (--pac11)", ": --titantron needs the disc"})
         for (size_t at; (at = t.find(opt)) != std::string::npos;) t.erase(at, std::strlen(opt));
       ImGui::BulletText("%s", t.c_str());
     }
   }
   for (const Json& n : g_detect["notes"].items) ImGui::TextColored(kWarn, "%s", n.Str().c_str());
+  if (!g_detect["note"].Str().empty()) ImGui::TextDisabled("%s", g_detect["note"].Str().c_str());
   ImGui::PopTextWrapPos();
   if (g_detect["convert"].Str() != "mod_maker") return game;
   // WWE '12 - 2K17: the file is the arena pac the Mod Maker converts
@@ -841,7 +863,7 @@ std::string FileArena(int k) {
   ImGui::EndDisabled();
   if (use) {
     g_native_test.clear();
-    Log("port: one arena file " + Utf8(g_file) + " (" + game + ")");
+    Log("port: one file " + Utf8(g_file) + " (" + game + ")");
     if (g_embedded) {
       g_embedded_result = g_file;
     } else {
@@ -854,7 +876,7 @@ std::string FileArena(int k) {
 
 void DiscRow() {
   const auto& discs = Discs();
-  std::string label = !g_file.empty()   ? Utf8(fs::path(g_file).filename().wstring()) + " (one arena file)"
+  std::string label = !g_file.empty()   ? Utf8(fs::path(g_file).filename().wstring()) + " (one file)"
                       : !g_image.empty()  ? Utf8(fs::path(g_image).filename().wstring())
                       : !g_folder.empty() ? Utf8(fs::path(g_folder).filename().wstring()) + " (folder)"
                       : g_disc >= 0 && g_disc < int(discs.size()) ? discs[size_t(g_disc)].game
@@ -871,20 +893,16 @@ void DiscRow() {
       const std::wstring f = PickFolder(L"A folder with another game's files (an extracted disc)");
       if (!f.empty()) g_folder = f, g_image.clear(), g_file.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
     }
-    if (ImGui::Selectable("One arena file (.pac) ...")) {
-      const std::wstring f = PickArenaFile();
-      if (!f.empty()) {
-        SetSource(f);
-        for (int k = 0; k < kKindCount; ++k)
-          if (std::wstring(kKinds[k].script) == L"arena_port.py") g_kind = g_force_kind = k;
-      }
+    if (ImGui::Selectable("One file: an arena or an entrance (.pac) ...")) {
+      const std::wstring f = PickOneFile();
+      if (!f.empty()) SetSource(f), TabForFile(f);
     }
     if (ImGui::Selectable("My game discs ...")) GoTo(PageId::kDiscs);
     ImGui::EndCombo();
   }
   Hint("Your WWE games from My game discs (set once there: Find my discs searches a folder for them): Xbox 360 SvR "
-       "2007 to 2K17 and the PS2 games, disc images read as they are, or extracted folders. Or one arena file "
-       "(bgNN.pac) on its own, from SvR 2007 to WWE 2K17.");
+       "2007 to 2K17 and the PS2 games, disc images read as they are, or extracted folders. Or one file on its own: an "
+       "arena (bgNN.pac, SvR 2007 to WWE 2K17) or an entrance file (Nyujyo / Entrance pacs, the PS2 games' EVT pacs).");
 }
 
 }  // namespace
@@ -922,11 +940,11 @@ void KindBody(int k) {
   std::string game;
   const Json& g = g_file.empty() ? GameFor(k) : Json();
   if (!g_file.empty()) {
-    if (std::wstring(kKinds[k].script) != L"arena_port.py") {
-      ImGui::TextDisabled("One arena file holds only an arena: see the Arenas tab.");
+    if (!TakesOneFile(k)) {
+      ImGui::TextDisabled("One file on its own works for arenas and entrances: see those tabs.");
       return;
     }
-    game = FileArena(k);
+    game = FileSource(k);
     if (game.empty()) return;
   } else if (g.IsNull() && (g_folder.empty() || !SourceId().empty())) {
     ImGui::TextColored(kWarn, "This converter doesn't know this disc (%s).", SourceId().c_str());
