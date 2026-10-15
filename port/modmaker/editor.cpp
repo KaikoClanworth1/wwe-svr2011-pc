@@ -361,7 +361,7 @@ SamplerState s : register(s0);
 float4 ps(VO i) : SV_Target {
   if (flat.w > 0.5) return float4(flat.rgb, 1);
   float4 tx = t.Sample(s, i.uv);
-  if (flat.w < -0.5) return float4(tx.rgb * tx.a * i.c.rgb * tint.rgb * 0.6, 0);
+  if (flat.w < -0.5) return float4(tx.rgb * tx.a * i.c.rgb * tint.rgb, 0);  // (glows and beams, added at full strength as the game - 0.6 left them faint)
   if (mode.x > 1.5) return float4(tint.rgb * 0.55, 1 - tx.a);  // (an LED mask: its holes are lit dots, blended)
   if (tx.a < 0.25 && mode.y < 0.5) discard;  // (mode.y: an opaque model - the game's alpha there isn't see-through)
   if (mode.x > 0.5) return float4(tx.rgb * tint.rgb, 1);  // (self-lit: a screen)
@@ -954,7 +954,10 @@ void SetStageLight(int set) {
   if (!g_stage_lights || g_light_bank.empty()) set = -1;
   if (set == g_cb_light_now) return;  // (the clock moves between frames only)
   StageLight sl;
-  float on[4] = {0, 1, 0, 0};
+  // (0.75: matched against game shots of RAW and the practice arena from the game's own cameras - at 1 the fills and
+  // directional lights together washed stage floors and stands out; test aid SVR2011_MM_STAGE_GAIN)
+  static const float gain = std::getenv("SVR2011_MM_STAGE_GAIN") ? std::strtof(std::getenv("SVR2011_MM_STAGE_GAIN"), nullptr) : 0.75f;
+  float on[4] = {0, gain, 0, 0};
   if (set >= 0 && (StageLightOf(set, sl) || StageLightOf(100, sl))) on[0] = 1;
   D3D11_MAPPED_SUBRESOURCE ms;
   if (FAILED(g_ctx->Map(g_cb_light, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
@@ -1404,8 +1407,32 @@ void RenderScene() {
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);  // (an LED mask drawn last mustn't leave its blend on)
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
   const bool given = g_readonly && g_vcam_set;  // (the view's camera from the caller)
-  const M4 view = given ? g_vcam_view : LookAt(Eye(), g_target, {0, -1, 0});
-  const M4 proj = given ? g_vcam_proj : Perspective(0.9f, float(g_rt_w) / float(std::max(1, g_rt_h)), 1.0f, 5000.0f, g_mirror);
+  M4 view = given ? g_vcam_view : LookAt(Eye(), g_target, {0, -1, 0});
+  M4 proj = given ? g_vcam_proj : Perspective(0.9f, float(g_rt_w) / float(std::max(1, g_rt_h)), 1.0f, 5000.0f, g_mirror);
+  // test aid SVR2011_MM_EDITOR_VIEW "<16 floats: the game's row-vector view>,<fov>": the game's own camera (its camera
+  // dump), the projection as the Full preview's --full-preview-view - for side-by-sides with game shots
+  static float test_view[17];
+  static const bool test_on = [] {
+    const char* e = std::getenv("SVR2011_MM_EDITOR_VIEW");
+    int n = 0;
+    for (const char* p = e; p && *p && n < 17;) {
+      char* end = nullptr;
+      test_view[n] = std::strtof(p, &end);
+      if (end == p) break;
+      ++n;
+      for (p = end; *p == ',' || *p == ' ';) ++p;
+    }
+    return n == 17;
+  }();
+  if (const char* t = std::getenv("SVR2011_MM_STAGE_TIME"); t && !g_readonly)  // (test aid "<seconds>[,e]": the clock / look)
+    g_stage_time = std::strtof(t, nullptr), g_stage_entrance = std::strchr(t, 'e') != nullptr;
+  if (test_on) {
+    std::memcpy(view.m, test_view, 64);
+    const float xs = 1 / std::tan(test_view[16] * kPi / 360.0f), zn = 1, zf = 5000;
+    proj = M4();
+    proj.m[0] = xs, proj.m[5] = -xs * float(g_rt_w) / float(std::max(1, g_rt_h)), proj.m[10] = zf / (zf - zn), proj.m[11] = 1;
+    proj.m[14] = -zn * zf / (zf - zn), proj.m[15] = 0;
+  }
   g_viewproj = Mul(view, proj);
   if (M4 inv; Invert(view, inv)) g_eye = {inv.m[12], inv.m[13], inv.m[14]};
   float light[3];
