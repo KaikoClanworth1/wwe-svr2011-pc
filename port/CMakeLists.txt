@@ -28,6 +28,7 @@ set(SVR2011_SOURCES
     src/jukebox.cpp
     src/graphics_page.cpp
     src/touch_controls.cpp
+    src/touch_icons.cpp
     src/discord_presence.cpp
     src/online.cpp
     src/online_net.cpp

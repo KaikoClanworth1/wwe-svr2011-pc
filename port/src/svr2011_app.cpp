@@ -684,7 +684,7 @@ void Svr2011App::OnPostLoadXexImage() {
         imgui_drawer(), window(),
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);
     // The on-screen controller (touch_controls.h).
-    svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
+    svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data, immediate_drawer());
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
     svr2011::InstallSlobberKnockerOverlay(imgui_drawer());  // (match_types.h)
     svr2011::InstallGauntletEliminatorOverlay(imgui_drawer());
