@@ -10,6 +10,14 @@
 #include <string>
 
 #include <SDL3/SDL_hints.h>
+#if defined(__ANDROID__)
+#include <set>
+
+#include <jni.h>
+#include <SDL3/SDL_gamepad.h>
+#include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_system.h>
+#endif
 
 #include "generated/default/svr2011_init.h"
 #include "fast_start.h"
@@ -21,6 +29,51 @@
 #include <rex/ppc.h>
 
 REXCVAR_DEFINE_BOOL(vibration, true, "Input", "Controller vibration (rumble); OPTIONS -> CONTROLS -> VIBRATION");
+REXCVAR_DEFINE_BOOL(device_vibration, true, "Input",
+                    "Android: when player 1's controller can't rumble (a handheld's built-in pad), the phone / "
+                    "handheld vibrates instead");
+
+#if defined(__ANDROID__)
+// The device's own vibrator (GameActivity.deviceRumble(low, high), 0-65535 each: VibratorManager's default
+// vibrator). Handhelds' built-in pads (AYN Thor / Odin, Retroid ...) have no vibrator of their own on their
+// InputDevice - SDL can't rumble them - their motor is the device's.
+namespace {
+void DeviceRumble(uint32_t low, uint32_t high) {
+  static uint32_t last = 0;  // (low << 16 | high: only changes go to Java)
+  const uint32_t now = low << 16 | high;
+  if (now == last) return;
+  last = now;
+  JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !activity) return;
+  jclass cls = env->GetObjectClass(activity);
+  static jmethodID method = env->GetMethodID(cls, "deviceRumble", "(II)V");
+  if (method) env->CallVoidMethod(activity, method, jint(low), jint(high));
+  if (env->ExceptionCheck()) env->ExceptionClear();
+  env->DeleteLocalRef(cls);
+  env->DeleteLocalRef(activity);
+}
+
+// Once per controller: can SDL rumble it (its InputDevice has a vibrator)?
+void LogRumbleSupport() {
+  static std::set<SDL_JoystickID> told;
+  int count = 0;
+  SDL_JoystickID* ids = SDL_GetGamepads(&count);
+  if (!ids) return;
+  for (int i = 0; i < count; ++i) {
+    SDL_Gamepad* pad = SDL_GetGamepadFromID(ids[i]);
+    if (!pad || !told.insert(ids[i]).second) continue;
+    const bool can = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+    const char* name = SDL_GetGamepadName(pad);
+    REXLOG_INFO("[svr2011] rumble: {} {}", name ? name : "controller",
+                can ? "supported"
+                    : REXCVAR_GET(device_vibration) ? "not supported -> device vibrator (when it plays player 1)"
+                                                    : "not supported (device_vibration off)");
+  }
+  SDL_free(ids);
+}
+}  // namespace
+#endif
 
 // The game's XamInputSetState(user, vibration) wrapper: sub_82905068 (r4: the
 // two motor speeds, u16 each). With vibration off the motors get 0 - so a
@@ -36,7 +89,23 @@ REX_HOOK_RAW(sub_82905068) {
     }
     std::memset(base + ctx.r4.u32, 0, 4);
   }
+#if defined(__ANDROID__)
+  const uint32_t user = (ctx.r3.u32 & 0xFF) == 0xFF ? 0 : ctx.r3.u32;
+  const uint32_t low = ctx.r4.u32 ? uint32_t(base[ctx.r4.u32] << 8 | base[ctx.r4.u32 + 1]) : 0;
+  const uint32_t high = ctx.r4.u32 ? uint32_t(base[ctx.r4.u32 + 2] << 8 | base[ctx.r4.u32 + 3]) : 0;
+#endif
   __imp__sub_82905068(ctx, base);
+#if defined(__ANDROID__)
+  // (the result: the pads' - SDK InputSystem::SetState - X_ERROR_SUCCESS when one rumbled, an error when
+  // the player's pads can't; touch controls alone count as success)
+  constexpr uint32_t kNotConnected = 0x48F;
+  const uint32_t result = ctx.r3.u32;
+  if (low | high) LogRumbleSupport();
+  if (user == 0) {
+    const bool fallback = REXCVAR_GET(device_vibration) && result != 0 && result != kNotConnected;
+    DeviceRumble(fallback ? low : 0, fallback ? high : 0);
+  }
+#endif
 }
 
 namespace svr2011 {

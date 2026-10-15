@@ -67,8 +67,51 @@ public class GameActivity extends SDLActivity {
         return device != null && (device.getSources() & InputDevice.SOURCE_CLASS_JOYSTICK) != 0;
     }
 
+    // The device's own vibrator for player 1's rumble when the controller can't rumble (pad_types.cpp:
+    // a handheld's built-in pad - AYN Thor / Odin, Retroid ... - has no vibrator on its InputDevice; its
+    // motor is the device's). low / high: the game's two motor speeds, 0-65535; 0 and 0 stop it. An Xbox
+    // 360 rumble holds until the game changes it: a long one-shot, cancelled or replaced on the next call.
+    private int rumbleAmplitude;
+
+    public synchronized void deviceRumble(int low, int high) {
+        int amplitude = Math.round((low * 0.6f + high * 0.4f) / 65535f * 255f);
+        amplitude = Math.max(0, Math.min(255, amplitude));
+        if (amplitude == rumbleAmplitude) return;
+        rumbleAmplitude = amplitude;
+        try {
+            android.os.Vibrator vibrator = DeviceVibrator();
+            if (vibrator == null || !vibrator.hasVibrator()) return;
+            if (amplitude == 0) {
+                vibrator.cancel();
+            } else if (android.os.Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(android.os.VibrationEffect.createOneShot(60000,
+                    vibrator.hasAmplitudeControl() ? amplitude : android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(60000);
+            }
+        } catch (Exception e) {
+            Log.w("SvR2011", "rumble: device vibrator failed", e);
+        }
+    }
+
+    private android.os.Vibrator DeviceVibrator() {
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            android.os.VibratorManager manager =
+                (android.os.VibratorManager) getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE);
+            if (manager != null) return manager.getDefaultVibrator();
+        }
+        return (android.os.Vibrator) getSystemService(android.content.Context.VIBRATOR_SERVICE);
+    }
+
+    @Override
+    protected void onPause() {
+        deviceRumble(0, 0);  // (no rumble left running behind another app)
+        super.onPause();
+    }
+
     @Override
     protected void onDestroy() {
+        deviceRumble(0, 0);
         running = false;
         super.onDestroy();
     }
