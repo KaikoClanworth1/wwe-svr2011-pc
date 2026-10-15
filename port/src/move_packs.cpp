@@ -1003,14 +1003,16 @@ std::string Lower(std::string s) {
 // ---- DLC copies of the merged pacs
 // An installed DLC package (dlc.cpp: <user data>\0000000000000000\<title>\00000002\<package>\) can bring its
 // own copy of a pac the packs change - SvR 2011's Vol. 2 has pac\mpsp_dlc02.pac (the whole MOTP/GAME set with
-// its moves) and m_dlc02.pac (some MOT banks) - and in a match the game reads those instead of the overlay's:
-// no motion from a pack was found (moves stood still or snapped). So the packs also go into copies of those,
+// its moves) and m_dlc02.pac (some MOT banks), Vol. 1 and 2 misc.pac (the move records, MOVS/WAZE, WAZA) - and
+// in a match the game reads those instead of the overlay's: no motion from a pack was found (moves stood still
+// or snapped), and a CPU whose moves are the packs' own had no record of them - nothing to attack with, it only
+// reversed (player report 2026-10-15). So the packs also go into copies of those,
 // Mods\PacOverlay\dlc\<package>\<name>, and the game's open of dlcN:\pac\<name> is linked to the copy. The
 // package's files are only ever read (test folders link their user data to the player's: a build writing into
 // the package changed the player's DLC). Players without the DLC: nothing.
 struct DlcCopy {
   fs::path file;    // the package's pac (read only)
-  std::string pac;  // the game's pac it stands for ("m.pac", "mpsp.pac")
+  std::string pac;  // the game's pac it stands for ("m.pac", "mpsp.pac", "misc.pac")
   fs::path copy;    // the overlay's copy with the packs
 };
 
@@ -1024,9 +1026,9 @@ std::vector<DlcCopy> DlcCopies(const fs::path& dlc_root, const fs::path& overlay
     for (const auto& f : fs::directory_iterator(dir, ec)) {
       if (!f.is_regular_file()) continue;
       const std::string name = Lower(f.path().filename().string());
-      // (not misc.pac: a DLC's own misc.pac with the packs' records in crashed the pac loading - its
-      // MOVS/WAZE gets the packs' move records as it loads, sub_8237E708 below)
-      for (const std::string p : {"m.pac", "mpsp.pac"}) {
+      // (misc.pac too: a copy once crashed the pac loading - read at the package catalog's old places,
+      // PatchDlcCatalogs since)
+      for (const std::string p : {"m.pac", "mpsp.pac", "misc.pac"}) {
         if (!pacs.count(p)) continue;
         const std::string stem = p.substr(0, p.size() - 4);
         // (the same name, or <stem>_dlcNN.pac)
@@ -1080,11 +1082,16 @@ bool MergeDlcCopy(const DlcCopy& c, const Packs& p) {
   fs::create_directories(c.copy.parent_path(), ec);
   bool ok = true;
   size_t entries = 0;
-  for (const auto& [pac, motions] : p.motions)  // (as pack.txt names it: "m.pac", "mpsp.pac")
-    if (Lower(pac) == c.pac) {
-      ok = BuildMotionFile(c.file, c.copy, c.file.filename().string(), motions, true, &entries);
-      break;
-    }
+  if (c.pac == "misc.pac") {
+    ok = BuildMiscFile(c.file, c.copy, p);
+    entries = 1;
+  } else {
+    for (const auto& [pac, motions] : p.motions)  // (as pack.txt names it: "m.pac", "mpsp.pac")
+      if (Lower(pac) == c.pac) {
+        ok = BuildMotionFile(c.file, c.copy, c.file.filename().string(), motions, true, &entries);
+        break;
+      }
+  }
   if (!ok || entries == 0) {
     if (!ok) REXLOG_WARN("[svr2011] move packs: DLC {}: merging failed - the package's own plays", c.file.string());
     fs::remove(c.copy, ec);
