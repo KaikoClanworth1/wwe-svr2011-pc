@@ -73,6 +73,7 @@ set(SVR2011_SOURCES
     src/hair_dump.cpp
     src/superstar_mods.cpp
     src/universe_mods.cpp
+    src/universe_welcome.cpp
     src/crowd_signs.cpp
     src/media_mods.cpp
     src/move_packs.cpp

@@ -11,7 +11,8 @@
 // (a mod-mod pair lives in the lower mod's row). Its place is a "virtual place" k with P + 16 + 24k (32-bit) = its
 // side entry; its pairs return the offset from P + 3616 to the side byte. Every caller works unchanged.
 // The table is guest memory (SystemHeapAlloc - the phone's build too) and lives in
-// Saves\SaveData.universe_mods.bin, keyed by mod folder: read after a save is loaded, written when the game writes
+// Saves\.universe\mods.bin (a dot folder, as .logos: a file of its own in Saves is taken for a save and gets a
+// header), keyed by mod folder: read after a save is loaded, written when the game writes
 // SaveData.dat (its time changes), cleared on Universe's reset. A save without the file: cleared.
 #include "universe_mods.h"
 
@@ -36,7 +37,7 @@ constexpr uint32_t kSavePtr = 0x82E407B4, kUniverse = 0x364B4, kEntries = 16, kR
 constexpr uint32_t kPlaces = 150, kMax = 137, kRow = kPlaces + kMax;  // (137: the mod slots, superstar_mods.cpp)
 
 rex::memory::Memory* g_memory = nullptr;
-fs::path g_file;            // Saves\SaveData.universe_mods.bin
+fs::path g_file;            // Saves\.universe\mods.bin
 fs::path g_save;            // Saves\SaveData.dat
 uint32_t g_entries = 0;     // guest: kMax x 24 B (+ 8: placed so P + 16 and an entry are 8 apart)
 uint32_t g_shift = 0;       // the entries' start in that block (0-7)
@@ -202,7 +203,19 @@ void Read(uint8_t* base) {
 void InstallUniverseMods(rex::memory::Memory* memory, const fs::path& saves) {
   g_memory = memory;
   g_save = saves / "SaveData.dat";
-  g_file = saves / "SaveData.universe_mods.bin";
+  g_file = saves / ".universe" / "mods.bin";
+  {  // (2.1.2 test builds kept it as Saves\SaveData.universe_mods.bin - moved, and the save header the saves layer
+     // made for it removed)
+    std::error_code ec;
+    fs::create_directories(g_file.parent_path(), ec);
+    const fs::path old = saves / "SaveData.universe_mods.bin";
+    if (fs::is_regular_file(old, ec)) {
+      if (!fs::exists(g_file, ec)) fs::rename(old, g_file, ec);
+      if (!ec) fs::remove(old, ec);
+      for (const char* x : {".header", ".png", ".file"}) fs::remove(saves / ".info" / ("SaveData.universe_mods.bin" + std::string(x)), ec);
+      REXLOG_INFO("[svr2011] universe mods: side table moved to {}", g_file.string());
+    }
+  }
   g_ids = SuperstarModIds();
   if (g_ids.size() > kMax) {
     REXLOG_WARN("[svr2011] universe mods: {} mods - the first {} take part in Universe", g_ids.size(), kMax);
