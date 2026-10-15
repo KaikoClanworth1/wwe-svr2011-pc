@@ -69,8 +69,17 @@ function Use-TestSaves {
         New-Item -ItemType Directory $ud | Out-Null
         Get-ChildItem $player -Directory | Where-Object { $_.Name -match '^[0-9A-F]{16}$' -and $_.Name -ne '0000000000000000' } |
             ForEach-Object { Copy-Item -Recurse $_.FullName $ud }
-        $dlc = Join-Path $player "0000000000000000"
-        if (Test-Path $dlc) { cmd /c mklink /J "$ud\0000000000000000" "$dlc" | Out-Null }
+    }
+    # The installed DLC as a private copy, never a link: game code that writes
+    # user data would otherwise change the player's own files (an older run
+    # left a junction here - replaced).
+    $dlc = Join-Path $player "0000000000000000"
+    $mine = Join-Path $ud "0000000000000000"
+    $item = Get-Item $mine -ErrorAction SilentlyContinue
+    if ($item -and $item.LinkType) { cmd /c rmdir "$mine" | Out-Null; $item = $null }
+    if (-not $item -and (Test-Path $dlc)) {
+        Copy-Item -Recurse $dlc $mine
+        Get-ChildItem $mine -Recurse -Filter *.orig | Remove-Item
     }
     $env:SVR2011_USER_DATA = $ud
 }
