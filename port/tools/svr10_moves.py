@@ -475,7 +475,10 @@ def bank_insert(raw, new):
 def bank_index(pacdir, cache):
     """path -> (kind, set of keys (id,x,y), size)"""
     if os.path.exists(cache):
-        return pickle.load(open(cache, 'rb'))
+        try:   # (a cache cut short - a cancelled convert - is rebuilt)
+            return pickle.load(open(cache, 'rb'))
+        except Exception:   # noqa: BLE001
+            pass
     idx = {}
     # 2011 moved MOTP/GAME (the packed in-match motion set) from m.pac to mpsp.pac
     for pacname in ('m.pac', 'mpsp.pac'):
@@ -487,7 +490,9 @@ def bank_index(pacdir, cache):
                 continue
             base, ents = ydir(raw)
             idx[path] = (raw[:4].decode(), set((e[2], e[1], e[0]) for e in ents if e[2] not in SENTINEL_IDS), len(raw))
-    pickle.dump(idx, open(cache, 'wb'))
+    tmp = cache + '.part'
+    pickle.dump(idx, open(tmp, 'wb'))
+    os.replace(tmp, cache)   # (written whole or not at all: a cancel can't leave half a cache)
     return idx
 
 

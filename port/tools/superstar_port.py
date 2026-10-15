@@ -1979,7 +1979,7 @@ def moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, **kw):
             progress(10, 'reading the moves')
             mgame.index()
             try:
-                pickle.dump(mgame._index, open(pk, 'wb'))
+                MP.save_atomic(pk, obj=mgame._index)
             except OSError:
                 pass
     elif gid in MP.OLD:
@@ -2171,7 +2171,7 @@ def cmd_moveset_pack(a):
             res['moves_txt'] = [ln for ln in res['moves_txt'] if int(ln.split('=')[0], 16) in select]
         names = res['ps2_names']
     else:
-        c = moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, select=select, prog=(10, 95))
+        c = moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, select=select, prog=(20, 95))
         import moveset_port
         res = moveset_port.port_moveset(c)
         if res is None:
