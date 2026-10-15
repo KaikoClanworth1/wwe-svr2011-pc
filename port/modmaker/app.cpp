@@ -346,6 +346,10 @@ void Progress(const std::string& what) {
   std::lock_guard lock(g_log_mutex);
   g_progress = what;
 }
+std::string ProgressNow() {
+  std::lock_guard lock(g_log_mutex);
+  return g_progress;
+}
 
 void RunInBackground(std::function<void()> fn) {
   if (g_busy) {

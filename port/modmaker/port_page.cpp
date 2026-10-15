@@ -72,6 +72,12 @@ Json g_detect;         // the detect answer for g_detect_for
 std::wstring g_detect_for;
 std::string g_detect_error;
 int g_file_game = 0;   // 0: the detected game, n: its also[n - 1] (the file can't tell, e.g. SvR 2008 / 2009)
+// one character file (superstar_port convert --src <pac>): a PS2 archive's character, the superstar number when the
+// file's name lacks it, the name; g_lone_args go on the convert's command line
+int g_char_pick = -1;
+int g_lone_id = 0;
+char g_lone_name[64] = "";
+std::vector<std::wstring> g_lone_args;
 // Embedded (a Simple mode's steps): the result is handed back (EmbeddedResult), not opened on its page.
 bool g_embedded = false;
 std::wstring g_embedded_result;
@@ -450,6 +456,7 @@ void Convert(int k, const std::string& game, const Json& item) {
     args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
   if (NeedsPicture(item) && !g_pp.pick.empty()) args.push_back(L"--picture"), args.push_back(Wide(g_pp.pick));
   for (auto& o : Options()) args.push_back(o);
+  for (auto& o : g_lone_args) args.push_back(o);
   g_result = Json();
   g_result_error.clear();
   auto run = [k, out, entrance](std::vector<std::wstring> a) {
@@ -759,21 +766,37 @@ void OpenResult() {
 }
 
 std::wstring PickOneFile() {
-  static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena or entrance file (*.pac)", L"*.pac"}};
-  return PickFile(false, L"One arena or entrance file from another game (e.g. pac\\bg\\bgNN.pac, Nyujyo0.pac, Entrance01.pac)", kPac, 1);
+  static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena, entrance or character file (*.pac)", L"*.pac"}};
+  return PickFile(false, L"One file from another game: an arena (pac\\bg\\bgNN.pac), an entrance (Nyujyo0.pac, Entrance01.pac) "
+                         L"or a character (pac\\ch\\chNNN.pac, a PS2 game's CH.PAC)", kPac, 1);
+}
+bool CharacterName(const std::string& stem);
+// the one-file source, read as a character file (not named like an arena or entrance pac)
+bool CharacterFile() {
+  const std::string n = Lower(Utf8(fs::path(g_file).stem().wstring()));
+  return !g_file.empty() && (CharacterName(n) || (n.rfind("bg", 0) != 0 && n.rfind("nyujyo", 0) != 0 && n.rfind("entrance", 0) != 0 &&
+                                                  n.rfind("evt", 0) != 0));
 }
 // The kinds one file can be (each converter's detect reads it), and the tab a file's name points to.
 bool TakesOneFile(int k) {
   const std::wstring s = kKinds[k].script;
-  return s == L"arena_port.py" || s == L"entrance_port.py";
+  return s == L"arena_port.py" || s == L"entrance_port.py" || s == L"superstar_port.py";
+}
+// a character file's name: chNNN (360), CH / CH2 (a PS2 game's archive of characters)
+bool CharacterName(const std::string& stem) {
+  if (stem.rfind("ch", 0) != 0) return false;
+  for (size_t i = 2; i < stem.size(); ++i)
+    if (!std::isdigit(uint8_t(stem[i]))) return false;
+  return true;
 }
 void TabForFile(const std::wstring& f) {
   const std::string n = Lower(Utf8(fs::path(f).stem().wstring()));
   bool digits = n.size() == 5;
   for (char c : n) digits &= std::isdigit(uint8_t(c)) != 0;
   const bool entrance = digits || n.rfind("nyujyo", 0) == 0 || n.rfind("entrance", 0) == 0 || n.rfind("evt", 0) == 0 || n.rfind("en3", 0) == 0;
+  const wchar_t* script = CharacterName(n) ? L"superstar_port.py" : entrance ? L"entrance_port.py" : L"arena_port.py";
   for (int k = 0; k < kKindCount; ++k)
-    if (std::wstring(kKinds[k].script) == (entrance ? L"entrance_port.py" : L"arena_port.py")) g_kind = g_force_kind = k;
+    if (std::wstring(kKinds[k].script) == script) g_kind = g_force_kind = k;
 }
 
 // One file (no disc): the kind's detect says the game (or a few it may be) and what a lone file can't bring. Arenas
@@ -782,13 +805,18 @@ void TabForFile(const std::wstring& f) {
 std::string FileSource(int k) {
   const std::wstring for_this = g_file + L"|" + kKinds[k].script;
   const bool arena = std::wstring(kKinds[k].script) == L"arena_port.py";
+  const bool star = std::wstring(kKinds[k].script) == L"superstar_port.py";
   if (g_detect_for != for_this && !Busy()) {
     g_detect_for = for_this, g_detect = Json(), g_detect_error.clear(), g_file_game = 0;
-    RunToolJson(kKinds[k].script, {L"detect", L"--src", g_file}, [for_this](int code, const std::string& out) {
+    g_char_pick = -1, g_lone_id = 0, g_lone_name[0] = 0, g_result = Json(), g_result_error.clear();
+    std::vector<std::wstring> dargs = {L"detect", L"--src", g_file};
+    if (star)  // (its detect: xcompressed pacs through svrmod.exe, a PS2 archive's character list cached by the game's pac)
+      dargs.insert(dargs.end(), {L"--pac11", (fs::path(g_game) / L"pac").wstring(), L"--svrmod", SvrmodExe()});
+    RunToolJson(kKinds[k].script, dargs, [for_this, star](int code, const std::string& out) {
       if (for_this != g_detect_for) return;
       Json j;
       const bool parsed = ParseJson(out, j) && j.type == Json::Type::kObject;
-      if (code == 0 && parsed && !j["game"].Str().empty()) g_detect = std::move(j);
+      if (code == 0 && parsed && (star ? j["ok"].Truthy() && !j["games"].items.empty() : !j["game"].Str().empty())) g_detect = std::move(j);
       else g_detect_error = parsed && !j["error"].Str().empty() ? j["error"].Str() : "the converter stopped (exit " + std::to_string(code) + "): see the log";
     });
   }
@@ -802,10 +830,16 @@ std::string FileSource(int k) {
     ImGui::TextDisabled("Reading the file ...");
     return {};
   }
-  const char* what = arena ? "An arena" : "Entrances";
+  const char* what = arena ? "An arena" : star ? "A superstar" : "Entrances";
   std::vector<std::string> ids = {g_detect["game"].Str()};
   for (const Json& a : g_detect["also"].items) ids.push_back(a.Str());
+  if (star) {  // (superstar_port: games[] = {id, name}, every game the file fits; game set only when it's one)
+    ids.clear();
+    for (const Json& a : g_detect["games"].items) ids.push_back(a["id"].Str());
+  }
   auto name_of = [k](const std::string& id) {
+    for (const Json& g : g_detect["games"].items)
+      if (g["id"].Str() == id && !g["name"].Str().empty()) return g["name"].Str();
     for (const Json& g : g_games[k].items)
       if (g["id"].Str() == id) return g["name"].Str();
     return id;
@@ -813,7 +847,8 @@ std::string FileSource(int k) {
   g_file_game = std::clamp(g_file_game, 0, int(ids.size()) - 1);
   const std::string game = ids[size_t(g_file_game)];
   if (g_detect["sure"].Truthy() || ids.size() == 1) {
-    const std::string from = !g_detect["game_name"].Str().empty() ? g_detect["game_name"].Str() : g_detect["name"].Str();
+    const std::string from = star ? name_of(game)
+                             : !g_detect["game_name"].Str().empty() ? g_detect["game_name"].Str() : g_detect["name"].Str();
     if (!arena && g_detect["entrances"].Int() > 0)
       ImGui::Text("2. %d entrance%s from %s", int(g_detect["entrances"].Int()), g_detect["entrances"].Int() == 1 ? "" : "s", from.c_str());
     else
@@ -828,7 +863,8 @@ std::string FileSource(int k) {
         if (ImGui::Selectable(name_of(ids[size_t(i)]).c_str(), g_file_game == i)) g_file_game = i;
       ImGui::EndCombo();
     }
-    Hint("Only the names from the port's list depend on it: the file itself converts the same.");
+    Hint(star ? "These games keep their characters the same way: pick the one the file is from (its disc's name)."
+              : "Only the names from the port's list depend on it: the file itself converts the same.");
   }
   ImGui::PushTextWrapPos(0);
   const Json& lacks = arena ? g_detect["lacks"] : g_detect["limits"];  // (arena_port: lacks, entrance_port: limits)
@@ -874,6 +910,131 @@ std::string FileSource(int k) {
   return {};
 }
 
+// A converter's progress ("<n>%  <text>" in the status line) as a bar while its job runs.
+void ProgressBar() {
+  const std::string p = ProgressNow();
+  const int pct = std::atoi(p.c_str());
+  const size_t sp = p.find("%  ");
+  ImGui::ProgressBar(std::clamp(pct, 0, 100) / 100.0f, ImVec2(420 * g_scale, 0),
+                     sp == std::string::npos ? "working ..." : (p.substr(0, sp + 1) + "  " + p.substr(sp + 3)).c_str());
+}
+
+// "pictures / renders (the base's)" -> "pictures / renders"; "name and profile (--name, else the file name)" -> "name
+// and profile" (the list says up front that the base superstar's stand in)
+std::string PlainMissing(std::string t) {
+  for (size_t a; (a = t.find(" (")) != std::string::npos;) {
+    const size_t b = t.find(')', a);
+    if (b == std::string::npos) break;
+    t.erase(a, b - a + 1);
+  }
+  return t;
+}
+
+// One character file (superstar_port convert --src <pac>): the character of a PS2 archive, the superstar number a
+// 360 file's name doesn't give, the name, then convert (2 - 7 minutes for PS2: the progress shows) and the mod opens
+// on the Superstar page; what one file can't bring is listed in plain words.
+void LoneStar(int k, const std::string& game) {
+  const Json& chars = g_detect["characters"];
+  const bool ps2 = chars.type == Json::Type::kArray && !chars.items.empty();
+  std::string key;
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextDisabled("On its own, the file brings the model, its outfits, entrance gear and hair. The pictures, theme, "
+                      "titantron, entrance, moves, ratings and name stay the base superstar's until you set them.");
+  if (!g_detect["note"].Str().empty()) ImGui::TextDisabled("%s", g_detect["note"].Str().c_str());
+  ImGui::PopTextWrapPos();
+  if (ps2) {  // an archive of characters: which one
+    if (g_test_stage == 0 && !g_test_item.empty())
+      for (int i = 0; i < int(chars.items.size()); ++i)
+        if (chars.items[size_t(i)]["id"].Str() == g_test_item) g_char_pick = i;
+    if (chars.items.size() == 1) g_char_pick = 0;
+    ImGui::Text("3. Which character (%d in this file)", int(chars.items.size()));
+    auto label = [](const Json& c) {
+      std::string outfits;
+      for (const Json& a : c["attires"].items) outfits += (outfits.empty() ? "" : ", ") + std::to_string(a.Int() + 1);
+      const std::string n = c["name"].Str();
+      return (n.empty() ? "Character " + c["id"].Str() : n + "  (" + c["id"].Str() + ")") +
+             (outfits.empty() ? "" : "   outfits " + outfits);
+    };
+    if (ImGui::BeginChild("chars", ImVec2(420 * g_scale, std::min(8.0f, float(chars.items.size())) * ImGui::GetTextLineHeightWithSpacing() + 8 * g_scale), true)) {
+      for (int i = 0; i < int(chars.items.size()); ++i)
+        if (ImGui::Selectable((label(chars.items[size_t(i)]) + "##c" + std::to_string(i)).c_str(), g_char_pick == i)) g_char_pick = i;
+    }
+    ImGui::EndChild();
+    Hint("The file holds several characters by number: the names live on the disc. Each one's outfits are listed; "
+         "convert one and look at it on the Superstar page.");
+    if (g_char_pick >= 0 && g_char_pick < int(chars.items.size())) key = chars.items[size_t(g_char_pick)]["id"].Str();
+  } else if (g_detect["id"].Int() > 0) {
+    key = std::to_string(g_detect["id"].Int());
+    ImGui::Text("3. Superstar %s of %s", key.c_str(), Utf8(fs::path(g_file).filename().wstring()).c_str());
+  } else {  // a renamed file: the number the game gave the superstar
+    ImGui::SetNextItemWidth(120 * g_scale);
+    ImGui::InputInt("3. The superstar's number", &g_lone_id);
+    Hint("The file's name doesn't say it: the number in the game's own name for it (chNNN.pac).");
+    if (g_lone_id > 0) key = std::to_string(g_lone_id);
+  }
+  ImGui::SetNextItemWidth(260 * g_scale);
+  ImGui::InputTextWithHint("Name", "the file's name if left empty", g_lone_name, sizeof g_lone_name);
+  if (game.rfind("ps2_", 0) == 0) {
+    ImGui::Checkbox("Same moves only (no similar ones)", &g_same_moves);
+    Hint("The moves stay the base superstar's (one file has no moveset); this only matters if you add his moves later.");
+  }
+  ImGui::SetNextItemWidth(360 * g_scale);
+  ImGui::InputTextWithHint("Options (advanced)", "e.g. --base 104 --height 1.05", g_options, sizeof g_options);
+  Hint("Extra options the converter takes, e.g. --base <2011 superstar id> to start from that superstar.");
+  const auto go = [k, game, &key] {
+    Json item;
+    item.type = Json::Type::kObject;
+    Json v;
+    v.type = Json::Type::kString;
+    v.s = key;
+    item.fields.push_back({"key", std::move(v)});
+    g_lone_args.clear();
+    if (g_lone_name[0]) g_lone_args = {L"--name", Wide(g_lone_name)};
+    Log("port: one character file " + Utf8(g_file) + " (" + game + ", " + key + ")");
+    Convert(k, game, item);
+    g_lone_args.clear();
+  };
+  if (g_test_stage == 0 && !Busy()) {  // (--port-test Superstars,<file>,<character or number>)
+    if (key.empty()) Log("port test: no character " + g_test_item), g_test_stage = 3;
+    else go(), g_test_stage = 2;
+  }
+  if (g_test_stage == 2 && !Busy() && (g_result.type == Json::Type::kObject || !g_result_error.empty())) {
+    Log("port test: convert " + (g_result_error.empty() ? "ok: " + g_result["out"].Str() : "FAILED: " + g_result_error));
+    for (const Json& m : g_result["missing"].items) Log("port test: missing " + PlainMissing(m.Str()));
+    g_test_stage = 3;
+    if (g_result_error.empty()) OpenResult();
+  }
+  ImGui::BeginDisabled(Busy() || key.empty());
+  PushAccent();
+  if (ImGui::Button(ps2 ? "4. Convert this character" : "4. Convert this superstar")) go();
+  PopAccent();
+  ImGui::EndDisabled();
+  if (Busy() && g_result.type != Json::Type::kObject && g_result_error.empty()) {
+    ImGui::SameLine();
+    ProgressBar();
+    if (game.rfind("ps2_", 0) == 0) ImGui::TextDisabled("A PS2 character takes a few minutes.");
+  }
+  if (!g_result_error.empty()) {
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(kBad, "%s", g_result_error.c_str());
+    ImGui::PopTextWrapPos();
+  }
+  if (g_result.type != Json::Type::kObject || !g_result["ok"].Truthy()) return;
+  ImGui::SameLine();
+  PushAccent();
+  if (ImGui::Button(g_embedded ? "5. Use it" : "5. Open it on the Superstar page")) OpenResult();
+  PopAccent();
+  ImGui::PushTextWrapPos(0);
+  if (!g_result["missing"].items.empty()) {
+    ImGui::TextColored(kWarn, "Not in one file - the base superstar's are used until you set your own:");
+    for (const Json& m : g_result["missing"].items) ImGui::BulletText("%s", PlainMissing(m.Str()).c_str());
+  }
+  for (const char* list : {"dropped", "notes"})
+    for (const auto& w : g_result[list].items)
+      ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.7f, 1), "%s%s", std::string(list) == "dropped" ? "left out: " : "", w.Str().c_str());
+  ImGui::PopTextWrapPos();
+}
+
 void DiscRow() {
   const auto& discs = Discs();
   std::string label = !g_file.empty()   ? Utf8(fs::path(g_file).filename().wstring()) + " (one file)"
@@ -893,7 +1054,7 @@ void DiscRow() {
       const std::wstring f = PickFolder(L"A folder with another game's files (an extracted disc)");
       if (!f.empty()) g_folder = f, g_image.clear(), g_file.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
     }
-    if (ImGui::Selectable("One file: an arena or an entrance (.pac) ...")) {
+    if (ImGui::Selectable("One file: an arena, an entrance or a character (.pac) ...")) {
       const std::wstring f = PickOneFile();
       if (!f.empty()) SetSource(f), TabForFile(f);
     }
@@ -902,7 +1063,8 @@ void DiscRow() {
   }
   Hint("Your WWE games from My game discs (set once there: Find my discs searches a folder for them): Xbox 360 SvR "
        "2007 to 2K17 and the PS2 games, disc images read as they are, or extracted folders. Or one file on its own: an "
-       "arena (bgNN.pac, SvR 2007 to WWE 2K17) or an entrance file (Nyujyo / Entrance pacs, the PS2 games' EVT pacs).");
+       "arena (bgNN.pac, SvR 2007 to WWE 2K17), an entrance file (Nyujyo / Entrance pacs, the PS2 games' EVT pacs) or a "
+       "character (chNNN.pac from any of the Xbox 360 games, a PS2 game's CH.PAC).");
 }
 
 }  // namespace
@@ -941,11 +1103,15 @@ void KindBody(int k) {
   const Json& g = g_file.empty() ? GameFor(k) : Json();
   if (!g_file.empty()) {
     if (!TakesOneFile(k)) {
-      ImGui::TextDisabled("One file on its own works for arenas and entrances: see those tabs.");
+      ImGui::TextDisabled("One file on its own works for superstars, arenas and entrances: see those tabs.");
       return;
     }
     game = FileSource(k);
     if (game.empty()) return;
+    if (std::wstring(kKinds[k].script) == L"superstar_port.py") {  // (one character file: no list, the file is the item)
+      LoneStar(k, game);
+      return;
+    }
   } else if (g.IsNull() && (g_folder.empty() || !SourceId().empty())) {
     ImGui::TextColored(kWarn, "This converter doesn't know this disc (%s).", SourceId().c_str());
     return;
@@ -1186,6 +1352,21 @@ void Draw() {
 }
 
 void SuperstarFlow() { EmbeddedFlow(L"superstar_port.py"); }
+
+void SuperstarFileFlow() {
+  const bool lone = !g_file.empty() && CharacterFile();
+  if (ImGui::Button(lone ? "Another character file..." : "Pick a character file...")) {
+    const std::wstring f = PickOneFile();
+    if (!f.empty()) SetSource(f);
+  }
+  if (!lone) {
+    Hint("A chNNN.pac from any of your Xbox 360 WWE games (SvR 2007 to WWE 2K17) or a PS2 game's CH.PAC.");
+    return;
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", Utf8(fs::path(g_file).filename().wstring()).c_str());
+  EmbeddedFlow(L"superstar_port.py", false);
+}
 
 void EmbeddedFlow(const wchar_t* script, bool with_disc_row) {
   if (PythonExe().empty() || !PythonMissing().empty()) {
