@@ -1927,11 +1927,17 @@ def thumb_image(g, game, c):
         try:
             pics = g.g.portraits(c)
         except Exception:   # noqa: BLE001
-            return None
+            pics = {}
         for k in ('bust', 'wide'):
             if k in pics:
                 return Image.fromarray(pics[k], 'RGBA')
-        return None
+        # (no picture in the game - SvR 2006 on: none found - its own model drawn from the front, so no card is blank)
+        try:
+            import ps2_char
+            im = ps2_char.bust_render(g.g, c)
+        except Exception:   # noqa: BLE001
+            return None
+        return Image.fromarray(im, 'RGBA') if im is not None else None
     ssf = g.ssf() if callable(getattr(g, 'ssf', None)) else getattr(g, 'ssf', {})
     for t in ('SSFC', 'SSFA', 'SSFB'):
         if (t, c) in ssf:

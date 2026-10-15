@@ -238,14 +238,24 @@ def read_yobj(d):
     return out
 
 
-def rtx3(t):
-    """RTX3 -> RGBA uint8 (h, w, 4), alpha 0..255"""
+def rtx3(t, size=None):
+    """RTX3 -> RGBA uint8 (h, w, 4), alpha 0..255. `size`: the texture's block size (the bank entry's): the block is
+    0x40 header, pixels, palette last - the header's offsets (+0x28 pixels, +0x3C palette) are 8 bytes short in some
+    games' banks (SvR 2006 / 2007: pixels at 0x40 but +0x28 = 0x38), so they're taken from the block's end when it
+    says so. (Read as they were, the first two colours of every palette were the bytes before it and every texel
+    moved by 16 / 8 places: green and yellow patches on Kane's tights and shins, a strip across the top of a head.)"""
     if t[:4] != b'RTX3':
         raise BadInput('not an RTX3 texture')
     h = struct.unpack_from('<16I', t)
     psm = ((h[2] | (h[3] << 32)) >> 20) & 0x3F
     w, hh = h[8] & 0xFFFF, h[8] >> 16
     po, co = h[10], h[15]
+    if size and psm in (0x13, 0x14):
+        pal_bytes = 1024 if psm == 0x13 else 64
+        pix_bytes = w * hh if psm == 0x13 else w * hh // 2
+        delta = (size - pal_bytes) - co
+        if delta in (4, 8, 16) and po + delta + pix_bytes == co + delta:
+            po, co = po + delta, co + delta
     if psm == 0x13:
         idx = np.frombuffer(t, np.uint8, w * hh, po)
         pal = np.frombuffer(t, np.uint8, 1024, co).reshape(256, 4).copy()
@@ -273,7 +283,7 @@ def texbank(d):
         e = d[0x10 + 0x20 * i:0x30 + 0x20 * i]
         size, off = struct.unpack_from('<II', e, 20)
         try:
-            out[cstr(e[:16]).lower()] = rtx3(d[off:off + size + 0x40])
+            out[cstr(e[:16]).lower()] = rtx3(d[off:off + size + 0x40], size)
         except BadInput:
             out[cstr(e[:16]).lower()] = None
     return out
@@ -837,6 +847,89 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
     ys = [p[1] for m in meshes for p in m['positions']]
     info = dict(bones_folded=folded, scale=1.0, height_m=round((max(ys) - min(ys)) / 10.0, 2) if ys else None)
     return dict(meshes=meshes, joints=joints), info
+
+
+def bust_render(game, ch, size=256):
+    """a picture of a character from its own model when the game has none (SvR 2006 on: no select pictures found):
+    the body and its parts in their bind pose, drawn from the front with their textures (nearest texel, a z-buffer,
+    a little light from the normals), cropped to head and shoulders -> RGBA uint8 (size, size, 4) or None"""
+    ats = game.characters().get(ch)
+    if not ats:
+        return None
+    body, parts, tex = game.model(ats[min(ats)])
+    tris = []   # (3 positions, 3 normals, 3 uvs, texture)
+    for src in [body] + parts:
+        for m in src['meshes']:
+            for sub in m['subs']:
+                tname = src['textures'][sub['tex']].lower() if sub['tex'] < len(src['textures']) else ''
+                if tname.startswith(('blood', 'bandage')):   # (injury overlays: shown only when hurt)
+                    continue
+                img = tex.get(tname)
+                for strip in sub['strips']:
+                    for k in range(len(strip) - 2):
+                        a, b, c = strip[k], strip[k + 1], strip[k + 2]
+                        idx = [a[0], b[0], c[0]]
+                        if len(set(idx)) < 3 or max(idx) >= len(m['pos']):
+                            continue
+                        flip = np.array([1.0, -1.0, 1.0])   # (PS2 model space: up is -y)
+                        tris.append((m['pos'][idx] * flip, m['nrm'][idx] * flip,
+                                     np.array([[a[1], a[2]], [b[1], b[2]], [c[1], c[2]]]), img))
+    if not tris:
+        return None
+    P = np.concatenate([t[0] for t in tris])
+    top, bottom = P[:, 1].max(), P[:, 1].min()
+    span = (top - bottom) * 0.30   # (head and shoulders)
+    # facing: away from the side the head's (flipped) normals lean to - the back of the head and neck holds more
+    # surface than the face (SvR 2006 / 2007: they look down -z)
+    head = np.concatenate([t[1] for t in tris if t[0][:, 1].min() > top - span * 0.5])
+    face_z = -1.0 if head[:, 2].mean() >= 0 else 1.0
+    cx = P[P[:, 1] > top - span, 0].mean()
+    scale = size / span
+    color = np.zeros((size, size, 3), np.float32)
+    alpha = np.zeros((size, size), np.uint8)
+    zbuf = np.full((size, size), -np.inf)
+    light = np.array([0.3, 0.4, face_z * 0.86])
+    for pos, nrm, uv, img in tris:
+        if pos[:, 1].max() < top - span * 1.05:
+            continue
+        x = (pos[:, 0] - cx) * scale * (-face_z) + size / 2   # (seen from the front: its left on our right)
+        y = (top - pos[:, 1]) * scale + size * 0.04
+        z = pos[:, 2] * face_z
+        x0, x1 = max(int(x.min()), 0), min(int(x.max()) + 1, size)
+        y0, y1 = max(int(y.min()), 0), min(int(y.max()) + 1, size)
+        if x0 >= x1 or y0 >= y1:
+            continue
+        den = (y[1] - y[2]) * (x[0] - x[2]) + (x[2] - x[1]) * (y[0] - y[2])
+        if abs(den) < 1e-9:
+            continue
+        gx, gy = np.meshgrid(np.arange(x0, x1) + 0.5, np.arange(y0, y1) + 0.5)
+        l0 = ((y[1] - y[2]) * (gx - x[2]) + (x[2] - x[1]) * (gy - y[2])) / den
+        l1 = ((y[2] - y[0]) * (gx - x[2]) + (x[0] - x[2]) * (gy - y[2])) / den
+        l2 = 1 - l0 - l1
+        inside = (l0 >= 0) & (l1 >= 0) & (l2 >= 0)
+        if not inside.any():
+            continue
+        zz = l0 * z[0] + l1 * z[1] + l2 * z[2]
+        sub = zbuf[y0:y1, x0:x1]
+        draw = inside & (zz > sub)
+        if img is not None:
+            h, w = img.shape[:2]
+            u = l0 * uv[0, 0] + l1 * uv[1, 0] + l2 * uv[2, 0]
+            v = l0 * uv[0, 1] + l1 * uv[1, 1] + l2 * uv[2, 1]
+            texel = img[(v * h).astype(int) % h, (u * w).astype(int) % w]
+            draw &= texel[..., 3] >= 64   # (see-through texels: hair cards' gaps)
+            rgb = texel[..., :3].astype(np.float32)
+        else:
+            rgb = np.full(gx.shape + (3,), 160.0, np.float32)
+        n = nrm.mean(axis=0)
+        shade = 0.55 + 0.45 * max(0.0, float(np.dot(n / (np.linalg.norm(n) or 1), light)))
+        sub[draw] = zz[draw]
+        color[y0:y1, x0:x1][draw] = rgb[draw] * shade
+        alpha[y0:y1, x0:x1][draw] = 255
+    out = np.zeros((size, size, 4), np.uint8)
+    out[..., :3] = np.clip(color, 0, 255).astype(np.uint8)
+    out[..., 3] = alpha
+    return out if alpha.any() else None
 
 
 def write_renders(pics, out_dir):
