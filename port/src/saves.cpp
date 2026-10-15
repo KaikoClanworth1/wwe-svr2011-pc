@@ -152,4 +152,4 @@ void UseFlatSaves(rex::system::KernelState* kernel_state, const fs::path& user_d
   }
 }
 
-}  // namespace svr2011
+}  // namespace svr2011a

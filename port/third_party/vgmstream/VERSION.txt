@@ -1,0 +1,7 @@
+vgmstream r2117 - the official Windows x64 release (vgmstream-win64.zip)
+Source: https://github.com/vgmstream/vgmstream/releases (vgmstream's own GitHub releases)
+Fetched 2026-10-06 (with the user's OK, for the WWE '13 theme work); shipped from 2026-10-13 by the user's decision.
+SHA-256 vgmstream-win64.zip  6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c
+SHA-256 vgmstream-cli.exe    29df08c557ada8269c92a6abfe3886ad2f65849b0b26ba78a0819b363bbc5b85
+Licence: COPYING (ISC-style, permissive). The *-vgmstream-*.dll files are FFmpeg (LGPL) builds made by vgmstream.
+Used by tools/wwise.py (Wwise Vorbis themes of WWE '12 and later) through the Mod Maker's converters.
