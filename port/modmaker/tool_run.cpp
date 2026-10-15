@@ -5,6 +5,7 @@
 #include "session_log.h"
 
 #include <chrono>
+#include <atomic>
 #include <mutex>
 #include <thread>
 
@@ -230,6 +231,11 @@ int RunCapture(const std::wstring& cmdline, const std::wstring& cwd) {
   return int(code);
 }
 
+// The running converter's job object (it and every process it starts): CancelTool ends them all.
+std::mutex g_job_mutex;
+HANDLE g_job = nullptr;
+std::atomic<bool> g_cancelled{false};
+
 // stdout collected, stderr logged on a thread of its own (progress lines to the bar).
 int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::string& out) {
   const auto start = std::chrono::steady_clock::now();
@@ -249,8 +255,10 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
   si.hStdInput = nullptr;
   PROCESS_INFORMATION pi = {};
   std::wstring cmd = cmdline;
-  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
-                                 nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+  g_cancelled = false;
+  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                                 CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS | CREATE_SUSPENDED, nullptr,
+                                 cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
   CloseHandle(owr);
   CloseHandle(ewr);
   if (!ok) {
@@ -258,6 +266,14 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
     Log("Could not start: " + Utf8(cmdline));
     return -1;
   }
+  {  // (in a job before it runs: what it starts is in it too)
+    std::lock_guard lock(g_job_mutex);
+    g_job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {};
+    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (g_job) SetInformationJobObject(g_job, JobObjectExtendedLimitInformation, &li, sizeof li), AssignProcessToJobObject(g_job, pi.hProcess);
+  }
+  ResumeThread(pi.hThread);
   std::thread err([erd] {
     std::string line;
     char buf[4096];
@@ -289,12 +305,26 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
   GetExitCodeProcess(pi.hProcess, &code);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  {
+    std::lock_guard lock(g_job_mutex);
+    if (g_job) CloseHandle(g_job), g_job = nullptr;
+  }
+  if (g_cancelled) session::Line("  (cancelled)");
   session::Raw("  its answer (stdout):", out.size() > (4u << 20) ? out.substr(out.size() - (4u << 20)) : out);
   Finished(int(code), start);
   return int(code);
 }
 
 }  // namespace
+
+void CancelTool() {
+  std::lock_guard lock(g_job_mutex);
+  if (!g_job) return;
+  g_cancelled = true;
+  TerminateJobObject(g_job, 1);
+  Log("The running converter was cancelled.");
+}
+bool ToolCancelled() { return g_cancelled; }
 
 std::wstring ToolsDir() { Check(); return g_tools; }
 std::wstring PythonExe() { Check(); return g_python; }
