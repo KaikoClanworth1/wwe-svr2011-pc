@@ -98,6 +98,8 @@ def port_moveset(c):
         nm = c.waze.get(v, '')
         if sl.get('fixed'):
             continue
+        if getattr(c, 'select', None) is not None and to not in c.select:   # (moveset-pack --rows: these slots only)
+            continue
         bank = (sl.get('bank') or '').strip()
         if getattr(c, 'same_ids', False) and v in w11:   # (SvR 2007-2009: 2011's ids)
             cand = [v]
@@ -133,7 +135,7 @@ def port_moveset(c):
         free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000]
         used = set()
         pdir = os.path.join(c.work, 'moveset_port')
-        if os.path.exists(pdir):
+        if os.path.exists(pdir) and not getattr(c, 'dry', False):
             shutil.rmtree(pdir)
         lines, motions = [], []
         for k, (v, tos) in enumerate(to_port.items()):
@@ -141,6 +143,11 @@ def port_moveset(c):
             if c.max_port is not None and k >= c.max_port:
                 for to in tos:
                     rows.append((None, to, v, nm, 'base kept (over the %d ported moves)' % c.max_port, base[to // 2]))
+                continue
+            if getattr(c, 'dry', False):   # (superstar_port moveset: what would be ported, nothing converted)
+                for to in tos:
+                    rows.append((None, to, v, nm, 'would port (template %s)' % (templ.get(v) or 'picked when porting'),
+                                 base[to // 2]))
                 continue
             h = zlib.crc32(('%s/%d/%d' % (c.gid, c.cid, v)).encode())
             new_id = None

@@ -4,6 +4,9 @@ the Mod Maker calls (docs/MOD_MAKER_3_PLAN.md section 4, docs/OTHER_GAMES.md).
     py superstar_port.py games
     py superstar_port.py list    --game <id> --src <ISO or extract folder> [--pac11 <2011 pac>]
     py superstar_port.py convert --game <id> --src <...> --item <key> --out <dir> [options]
+    py superstar_port.py thumbs  --game <id> --src <...> --out <dir> [--item <key>]
+    py superstar_port.py moveset --game <id> --src <...> --item <key> [--base N] [--cache <dir>]
+    py superstar_port.py moveset-pack --game <id> --src <...> --item <key> --rows all|0x012,0x14E [--taunts-only] --out <dir>
     py superstar_port.py detect  --src <one character pac> [--game <id>] [--svrmod <exe>]
     py superstar_port.py convert --src <one character pac> [--game <id>] [--item <id>] --out <dir> [--name S] [--base N]
 
@@ -62,6 +65,7 @@ import os
 import re
 import shutil
 import struct
+import zlib
 import sys
 import traceback
 import zipfile
@@ -1850,6 +1854,258 @@ def cmd_pictures(a):
     return dict(pictures=out, guess=None)
 
 
+# --------------------------------------------------------------------------- thumbs / moveset / moveset-pack (the Mod Maker's
+# simple moveset, taunt and entrance menus)
+
+GROUPS = {'Strikes': 'strikes', 'Front grapple': 'grapples', 'Rear grapple': 'grapples', 'Submissions': 'grapples',
+          'Irish whip': 'grapples', 'Running': 'running', 'Ground': 'ground', 'Corner': 'corner', 'Rope': 'ropes',
+          'Apron': 'ropes', 'Diving': 'aerial', 'Outside dives': 'aerial', 'Finishers': 'finishers',
+          'Signatures': 'signatures', 'Taunts': 'taunts'}
+
+
+def verb_cache(a, outdir=None):
+    """--cache, else <game>\\Mods\\.convert\\cache (moves_port.cache_dir): the disc's files and the move index kept
+    between calls"""
+    import moves_port as MP
+    return os.path.abspath(a['cache']) if a.get('cache') else MP.cache_dir(a['pac11'], outdir or os.path.join(HERE, 'work'))
+
+
+def verb_game(a, outdir=None):
+    cache = verb_cache(a, outdir)
+    src = Src(a['src'], os.path.join(cache, 'src_' + a['game']))
+    return src, open_game(a['game'], src, a.get('svrmod')), cache
+
+
+def thumb_image(g, game, c):
+    """a superstar's picture from the game itself (PS2: the select bust / wide picture; 360: SSFC bust, else the
+    renders) -> PIL image or None"""
+    from PIL import Image
+    import io
+    if game.startswith('ps2_'):
+        try:
+            pics = g.g.portraits(c)
+        except Exception:   # noqa: BLE001
+            return None
+        for k in ('bust', 'wide'):
+            if k in pics:
+                return Image.fromarray(pics[k], 'RGBA')
+        return None
+    ssf = g.ssf() if callable(getattr(g, 'ssf', None)) else getattr(g, 'ssf', {})
+    for t in ('SSFC', 'SSFA', 'SSFB'):
+        if (t, c) in ssf:
+            v = ssf[(t, c)]
+            try:
+                if v[:4] != b'DDS ':
+                    v = ch_tool.unpack(v)
+                if v[:4] != b'DDS ':
+                    return raw_image(v)
+                return Image.open(io.BytesIO(v)).convert('RGBA')
+            except Exception:   # noqa: BLE001
+                continue
+    return None
+
+
+def cmd_thumbs(a):
+    """thumbs --game G --src S --out D [--item K] -> [{key, name, thumb}] (thumb null: no picture - 2K17's renders
+    are unnamed: pictures + --picture); 128 px PNGs in D with thumbs.json, a second call only lists them"""
+    if not a.get('out'):
+        raise BadInput('thumbs needs --out')
+    outdir = os.path.abspath(a['out'])
+    os.makedirs(outdir, exist_ok=True)
+    idx = os.path.join(outdir, 'thumbs.json')
+    if os.path.exists(idx):
+        try:
+            got = json.load(open(idx))
+            if all(t['thumb'] is None or os.path.exists(t['thumb']) for t in got) and \
+                    (not a.get('item') or any(t['key'] == str(a['item']) for t in got)):
+                return [t for t in got if not a.get('item') or t['key'] == str(a['item'])]
+        except (ValueError, KeyError, TypeError):
+            pass
+    progress(2, 'reading the game')
+    src, g, cache = verb_game(a, outdir)
+    roster = [int(a['item'])] if a.get('item') else list(g.roster())
+    out = []
+    for k, c in enumerate(roster):
+        f = os.path.join(outdir, '%s.png' % c)
+        im = None if hasattr(g, 'pictures') else thumb_image(g, a['game'], c)
+        if im is not None:
+            im.thumbnail((128, 128))
+            im.save(f)
+        out.append(dict(key=str(c), name=g.name(c), thumb=f if im is not None else None))
+        progress(5 + 95 * (k + 1) // max(1, len(roster)), 'pictures')
+    if not a.get('item'):
+        json.dump(out, open(idx, 'w'))
+    return out
+
+
+def verb_base(a, g, cid, g11):
+    """the 2011 superstar a moveset sits on - convert's rule (his own when 2011 has him, else the closest build)"""
+    S = svr10()
+    if a.get('base'):
+        return int(a['base'])
+    if a['game'].startswith('ps2_'):
+        m = g.match11(cid, g11)
+        if m is not None:
+            return m
+        woman = g.gender(cid, g11)
+        cands = [c for c in S.candidates_11(g11) if g11.dat[c][208] == woman]
+        sc = sorted(struct.unpack_from('<H', g11.dat[c], 28)[0] for c in cands)
+        return min(cands, key=lambda c: abs(struct.unpack_from('<H', g11.dat[c], 28)[0] - sc[len(sc) // 2]))
+    i11 = g.id11(cid) if hasattr(g, 'id11') else cid
+    if i11 in playable11(g11) and S.norm(g11.name(i11)) == S.norm(g.name(cid)):
+        return i11
+    gg = g if hasattr(g, 'g') and hasattr(g.g, 'dat') else type('G', (), {'g': type('D', (), {'dat': g.dat})})()
+    return choose_base_old(gg, g11, cid)[0]
+
+
+def moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, **kw):
+    """moveset_port.Ctx for the superstar (as moveset_step builds it); the source's move index kept in cache"""
+    import moveset_port
+    import moveset_maps
+    import moves_port as MP
+    import pickle
+    gid = a['game']
+    pro = moveset_maps.profiles(g)
+    if cid not in pro:
+        raise BadInput('no %s move profile for %d' % (getattr(g, 'label', gid), cid))
+    mg = MP.GAME_CLASS.get(gid)
+    if mg is not None:
+        mgame = mg(src) if gid == 'wwe12' else mg(src, getattr(g, 'svrmod', None))
+        waze = mgame.waze
+        pk = os.path.join(cache, 'mindex_%s_%08x.pkl' % (gid, zlib.crc32(os.path.abspath(a['src']).lower().encode())))
+        try:
+            mgame._index = pickle.load(open(pk, 'rb'))
+        except Exception:   # noqa: BLE001
+            progress(10, 'reading the moves')
+            mgame.index()
+            try:
+                pickle.dump(mgame._index, open(pk, 'wb'))
+            except OSError:
+                pass
+    elif gid in MP.OLD:
+        mgame = MP.Game0789(src, os.path.join(cache, 'm0789_' + gid))
+        waze = mgame.waze
+    else:
+        mgame, waze = None, moveset_maps.waze_old(src)
+    return moveset_port.Ctx(gid=gid, cid=cid, base=base, g11=g11, pro=pro[cid], waze=waze, mgame=mgame,
+                            pac11=a['pac11'], svrmod=getattr(g, 'svrmod', None), work=work, mod=None, rep=rep,
+                            port=True, max_port=None, port_taunts=True, same_ids=gid in moveset_maps.SAME_IDS, **kw)
+
+
+def moveset_rows(res, g11, names=None):
+    """port_moveset's rows -> [{slot, group, source_id, name, status, id11, name11, reason}]"""
+    slots = {int(s['off']): s for s in json.load(open(os.path.join(HERE, 'pro_slots.json')))['slots']}
+    w11 = g11.waze()
+    out = []
+    for so, to, v, nm, verdict, nid in sorted(res['rows'], key=lambda r: r[1]):
+        kind = verdict.split(' (')[0]
+        status = ('same' if kind.startswith('same move') else 'similar' if kind.startswith('similar move') else
+                  'port' if kind in ('ported', 'would port') else 'none')
+        reason = verdict[verdict.find('(') + 1:verdict.rfind(')')] if '(' in verdict else ''
+        if names is not None and reason == 'no porter for this game yet':   # (PS2: by name only)
+            reason = 'no 2011 move of that name (PS2 motions are not ported)'
+        id11 = nid if status != 'port' or kind == 'ported' else None
+        out.append(dict(slot='0x%03X' % to, group=GROUPS.get((slots.get(to) or {}).get('menu') or '', 'other'),
+                        source_id=v, name=(names or {}).get(v, nm) or nm, status=status, id11=id11,
+                        name11=((names or {}).get(v, nm) or nm) if kind == 'ported' else   # (the pack names the record)
+                        w11[id11][1] if id11 in w11 else None, reason=reason))
+    return out
+
+
+def verb_setup(a):
+    if not a.get('item'):
+        raise BadInput('%s needs --item' % a.get('_cmd', 'moveset'))
+    cid = int(a['item'])
+    g11, snd = game11(a['pac11'])
+    return cid, g11
+
+
+def cmd_moveset(a):
+    """moveset --game G --src S --item K [--base N] [--cache D] -> {rows, base, base_name}: moveset_port's pass
+    with nothing converted (PS2: ps2_moves - same / similar by name)"""
+    cid, g11 = verb_setup(a)
+    progress(2, 'reading the game')
+    import tempfile
+    work = tempfile.mkdtemp(prefix='svr_moveset_')
+    try:
+        src, g, cache = verb_game(a, work)
+        base = verb_base(a, g, cid, g11)
+        rep = dict(notes=[], warnings=[], dropped=[])
+        if a['game'].startswith('ps2_'):
+            import ps2_moves
+            res = ps2_moves.port(g, cid, base, g11, a['pac11'], work, None, rep, near=True)
+            names = res['ps2_names'] if res else None
+        else:
+            c = moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, dry=True)
+            progress(40, 'matching the moves')
+            import moveset_port
+            res = moveset_port.port_moveset(c)
+            names = None
+        if res is None:
+            raise BadInput('no %s moveset map for this game yet' % a['game'])
+        progress(100, 'done')
+        return dict(ok=True, rows=moveset_rows(res, g11, names), base=base, base_name=g11.name(base),
+                    warnings=rep['warnings'], notes=rep['notes'])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def cmd_moveset_pack(a):
+    """moveset-pack --game G --src S --item K --rows all|0x012,0x14E [--taunts-only] --out D [--base N] [--cache D]
+    -> {ok, out (the pack folder: pack.txt + motions/, null when nothing was ported), moves_txt, rows, warnings,
+    notes}: the chosen slots' moves - 2011's own where it has them, the rest ported (moves_port) into one pack"""
+    cid, g11 = verb_setup(a)
+    if not a.get('out'):
+        raise BadInput('moveset-pack needs --out')
+    outdir = os.path.abspath(a['out'])
+    os.makedirs(outdir, exist_ok=True)
+    slots = {int(s['off']): s for s in json.load(open(os.path.join(HERE, 'pro_slots.json')))['slots']}
+    rows_arg = (a.get('rows') or 'all').strip().lower()
+    select = None if rows_arg == 'all' else set()
+    if select is not None:
+        try:
+            select = {int(x, 16) for x in rows_arg.split(',') if x.strip()}
+        except ValueError:
+            raise BadInput('--rows is all or slots like moves.txt: 0x012,0x14E')
+    if a.get('taunts_only'):
+        taunts = {o for o, s in slots.items() if s.get('menu') == 'Taunts'}
+        select = taunts if select is None else select & taunts
+    progress(2, 'reading the game')
+    work = os.path.join(outdir, '.work_%d' % cid)
+    if os.path.exists(work):
+        shutil.rmtree(work)
+    os.makedirs(work)
+    src, g, cache = verb_game(a, work)
+    base = verb_base(a, g, cid, g11)
+    rep = dict(notes=[], warnings=[], dropped=[])
+    pack = None
+    if a['game'].startswith('ps2_'):   # (PS2 motions aren't ported: 2011's same / similar moves only)
+        import ps2_moves
+        res = ps2_moves.port(g, cid, base, g11, a['pac11'], work, None, rep, near=True)
+        if res is None:
+            raise BadInput('no %s moveset map for this game yet' % a['game'])
+        if select is not None:
+            res['rows'] = [r for r in res['rows'] if r[1] in select]
+            res['moves_txt'] = [ln for ln in res['moves_txt'] if int(ln.split('=')[0], 16) in select]
+        names = res['ps2_names']
+    else:
+        c = moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, select=select, prog=(10, 95))
+        import moveset_port
+        res = moveset_port.port_moveset(c)
+        if res is None:
+            raise BadInput('no %s moveset map for this game yet' % a['game'])
+        names = None
+        if res['pack']:
+            nm = re.sub(r'[^a-z0-9]+', '_', g.name(cid).lower()).strip('_') or 'moves'
+            pack = os.path.join(outdir, '%s%s_moves' % (nm, getattr(g, 'suffix', '_' + a['game'])))
+            if os.path.exists(pack):
+                shutil.rmtree(pack)
+            shutil.copytree(res['pack'], pack)
+    progress(100, 'done')
+    return dict(ok=True, out=pack, moves_txt=res['moves_txt'], rows=moveset_rows(res, g11, names), base=base,
+                base_name=g11.name(base), warnings=rep['warnings'], notes=rep['notes'])
+
+
 def discfs_image(path):
     """a disc image (iso / xiso / god) rather than one pac"""
     return os.path.splitext(path)[1].lower() in ('.iso', '.xiso', '.god', '.img', '.bin', '.cso')
@@ -1938,7 +2194,7 @@ def main(argv):
     a = dict(pac11=PAC11)
     i = 2
     flags = {'--no-moves': 'no_moves', '--no-port': 'no_port', '--no-taunts': 'no_taunts', '--port-taunts': 'port_taunts',
-             '--same-moves': 'same_moves'}
+             '--same-moves': 'same_moves', '--taunts-only': 'taunts_only'}
     while i < len(argv):
         k = argv[i]
         if k in flags:
@@ -1965,7 +2221,7 @@ def main(argv):
         elif cmd == 'convert' and os.path.isfile(a.get('src') or '') and not discfs_image(a['src']):
             rep_path = os.path.join(os.path.abspath(a['out']), 'report.json') if a.get('out') else None
             res = cmd_convert(a)
-        elif cmd in ('list', 'convert', 'pictures'):
+        elif cmd in ('list', 'convert', 'pictures', 'thumbs', 'moveset', 'moveset-pack'):
             if a.get('game') not in {g['id'] for g in GAMES}:
                 raise BadInput('unknown --game %r (see games)' % a.get('game'))
             if a['game'] not in READY:
@@ -1976,6 +2232,12 @@ def main(argv):
                 res = cmd_list(a)
             elif cmd == 'pictures':
                 res = cmd_pictures(a)
+            elif cmd == 'thumbs':
+                res = cmd_thumbs(a)
+            elif cmd == 'moveset':
+                res = cmd_moveset(a)
+            elif cmd == 'moveset-pack':
+                res = cmd_moveset_pack(a)
             else:
                 rep_path = os.path.join(os.path.abspath(a['out']), 'report.json') if a.get('out') else None
                 res = cmd_convert(a)
