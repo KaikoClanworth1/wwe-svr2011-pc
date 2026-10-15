@@ -989,7 +989,9 @@ std::vector<DlcCopy> DlcCopies(const fs::path& dlc_root, const std::set<std::str
     for (const auto& f : fs::directory_iterator(dir, ec)) {
       if (!f.is_regular_file()) continue;
       const std::string name = Lower(f.path().filename().string());
-      for (const std::string p : {"m.pac", "mpsp.pac", "misc.pac"}) {
+      // (not misc.pac: a DLC's own misc.pac with the packs' records in crashed the pac loading - its
+      // MOVS/WAZE gets the packs' move records as it loads, sub_8237E708 below)
+      for (const std::string p : {"m.pac", "mpsp.pac"}) {
         if (!pacs.count(p)) continue;
         const std::string stem = p.substr(0, p.size() - 4);
         // (the same name, or <stem>_dlcNN.pac)
@@ -1021,6 +1023,20 @@ void RestoreDlc(const fs::path& dlc_root) {
 
 bool MergeDlcCopy(const DlcCopy& c, const Packs& p) {
   std::error_code ec;
+  // (test aid: SVR2011_TEST_DLC_SKIP=<text>[,<text>] - DLC files whose name holds one keep the package's own)
+  if (const char* v = std::getenv("SVR2011_TEST_DLC_SKIP"); v && *v) {
+    const std::string name = Lower(c.file.filename().string());
+    for (const char* q = v; *q;) {
+      const char* e = std::strchr(q, ',');
+      const std::string t = Lower(e ? std::string(q, e) : std::string(q));
+      if (!t.empty() && name.find(t) != std::string::npos) {
+        REXLOG_INFO("[svr2011] move packs: DLC {} left as it is (test)", c.file.filename().string());
+        return true;
+      }
+      if (!e) break;
+      q = e + 1;
+    }
+  }
   const fs::path orig = Orig(c.file);
   if (!fs::exists(orig, ec) && !fs::copy_file(c.file, orig, ec)) return false;  // (the package's own, kept)
   fs::path tmp = c.file;
