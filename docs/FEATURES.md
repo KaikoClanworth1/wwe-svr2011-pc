@@ -87,6 +87,33 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## New in 2.1.2
+
+### Fixes
+- **Online: "Your mods don't match"** no longer hides sessions because of the match type switches (Mods\MatchTypes). Players switch match types on and off differently, so the switches are left out of the comparison; in an online match both games play the host's PORT RULES pick.
+- **Mod Maker installs: "Could not write into ...\Mods\Superstars\... (is the game running?)"** when it wasn't: mods with a moves folder (ported superstars) failed at their first moves file. Installs now go into a folder of their own first and then swap in, so a failure leaves the installed copy as it was, and the message says what really happened (a program holding a file and which one, access denied, a path too long, a full drive).
+- **Bundled mods after an update**: a superstar could stay in the list but vanish from the game (its model gone, the rest left) when a file was in use during the update. The launcher now moves the old copy aside before putting the new one in, so a failure leaves it untouched and says which program holds it. Bundled mods already broken this way repair themselves the next time the launcher starts, keeping their on / off. The Android app replaces mods the same safe way.
+- **A superstar mod whose CPU only reversed moves** (Jillian, and any mod whose own moves pack was missing part of its motion files): such moves are now treated as missing, so the superstar keeps their base's move instead and fights normally; a warning lists them.
+- **Asuka (ported from WWE 2K17) crashed or hung on NOW LOADING.** Two converter bugs: superstars whose hair moves could be too big for the room the game has (the blood overlays are now left out of those attires), and WWE 2K16 / 2K17 superstars with two or more attires had every attire named as the first one (the second was never offered and hung when picked). Ported superstars may need converting again: see [HAIR_RECONVERT.md](HAIR_RECONVERT.md). The mod doctor flags affected mods.
+- 🧪 **Android: the left stick no longer turns into the D-pad** at random (it happened after the game's keyboard or the touch overlay's Keyboard / Online buttons had been used).
+- **Start-up hangs are easier to track down**: when the game seems stuck, its log now notes which game thread is spinning and where.
+
+### Mod Maker
+- **Simple menus for porting**: **My game discs** (find every supported game disc or extracted folder on your PC once, by its id), **Make an arena step by step** (start from a 2011 arena, another game's arena or an empty hall; aprons and screens, crowd signs, ring and lights, loading screens), **Port an entrance**, **Port moves**, **Port taunts**, and Simple superstar's **From an older game** as a list of that game's superstars with their pictures ("Bring everything too" brings their moves and taunts, with progress and Cancel).
+- **Port from one file**: a single character, arena or entrance file from any supported game, no whole disc needed (the game is recognised from the file).
+- **Every arena of WWE '12 - 2K17** in a grid of pictures with their real names.
+- **Full EPAC support in the pac editor**: every pac layout from SvR 2007 to WWE 2K17 (including WWE 2K16's and 2K17's), with the lists inside entries; preview textures and models, export, replace, add, remove and rename, and save in the game's own layout. It says plainly what a format can't take (WWE 2K17 entries can't be added).
+- **The mod doctor in plain words, with Fix buttons** that do the work (port a superstar's missing entrance, use a lighter copy of a model that's too big ...); Simple modes' "Fix it" runs the recommended one.
+- **Report a problem...** (title bar): describe it and the Mod Maker gathers its session logs, the open project and the tools check into one zip for a bug report. Every session is logged.
+- **Stage lights in the 3D views**: the arena editor and the Full preview light the arena with its own stage lights, beams and glows, as the game does.
+- Faster ports (SvR 2007 - 2009 arenas in seconds), "move i of n" progress, and first-run fixes for new players.
+
+### Online
+- **Lobby chat up to 300 characters** a message (the keyboard's field scrolls).
+- **Other players' Created Superstar pictures** show in the online lobby.
+
+<!-- TODO 2.1.2 (in progress, not on main yet): Mod Maker "Save as .svrmod"; moves from a folder of files. -->
+
 ## New in 2.1.1
 
 ### Fixes
