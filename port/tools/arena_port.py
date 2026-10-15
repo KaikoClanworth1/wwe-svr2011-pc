@@ -1007,7 +1007,7 @@ def main(argv):
             if a.game not in GAME_NAMES or a.game == 'svr2011':
                 raise BadInput('unknown game %r' % a.game)
             disc = discfs.open(a.src)
-            item, game_id = a.item, a.game
+            item, game_id = getattr(a, 'item', None), a.game  # (list / scan have no --item)
         with disc:
             if not disc.isdir('pac/bg'):
                 raise BadInput('the game files have no pac/bg folder (an incomplete extract? use the whole disc '
