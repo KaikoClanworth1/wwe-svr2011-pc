@@ -231,7 +231,7 @@ void GameRow(const Game& g) {
     const std::string kinds = port_page::KindsFor(IdFor(g.key));
     if (!kinds.empty()) {
       ImGui::TextDisabled("%s", Lower(kinds).c_str());
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("What Port from a disc can bring from this game: %s.", Lower(kinds).c_str());
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("What the From another game tabs can bring from this game: %s.", Lower(kinds).c_str());
     }
   }
   ImGui::TableNextColumn();
@@ -484,8 +484,8 @@ void Draw() {
     FindIn(g_test_folder);
   }
   const float top = ImGui::GetCursorPosY();
-  Heading("My game discs", "Your other WWE games, set once: Port from a disc, Other games and the Simple makers take "
-                           "their discs from here. Disc images (.iso) are read as they are; nothing is copied or changed.");
+  Heading("My game discs", "Your other WWE games, set once: every From another game tab and Moves & entrances read them. Disc "
+                           "images (.iso) are read as they are; nothing is copied or changed.");
   {  // Find my discs, on the heading's line
     const ImVec2 after = ImGui::GetCursorPos();
     const char* label = "Find my discs...";

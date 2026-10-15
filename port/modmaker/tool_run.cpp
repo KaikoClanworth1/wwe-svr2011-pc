@@ -583,7 +583,7 @@ void StartupToolsCheck() {
   if (g_game.empty()) return;
   RecheckTools();
   const bool need = !PythonMissing().empty() || ToolsDir().empty() || SvrmodExe().empty();
-  if (need && !g_behind) OpenToolsPanel("Some tools the converters (Port, Other games) need are missing.");
+  if (need && !g_behind) OpenToolsPanel("Some tools the converters (the From another game tabs) need are missing.");
 }
 
 void TestToolsPanel(bool install, const std::wstring& from) {
@@ -602,7 +602,7 @@ void ToolsPanel() {
     return;
   }
   if (!g_panel_why.empty()) ImGui::TextColored(kWarn, "%s", g_panel_why.c_str());
-  ImGui::TextWrapped("What bringing things over from your other WWE games needs (Port from a disc, Other games, the Simple makers and porting menus), found or missing:");
+  ImGui::TextWrapped("What bringing things over from your other WWE games needs (the From another game tabs, Moves & entrances and the Simple makers), found or missing:");
   const std::wstring py = PythonExe();
   const std::string missing = PythonMissing().empty() ? "" : g_missing;
   const bool py_found = !py.empty();

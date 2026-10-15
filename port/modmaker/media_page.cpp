@@ -384,6 +384,8 @@ void AudioTab() {
   }
 }
 
+int g_tab = 0;  // the part shown: 0 Titantron videos, 1 Menus & renders, 2 Audio (one pack holds all three)
+
 void Draw() {
   if (g_test_arena >= 0 && (!g_test_video.empty() || !g_test_pictures.empty())) {
     std::vector<Image> frames;
@@ -411,12 +413,10 @@ void Draw() {
   TextField("Author (optional)", g_media.author, sizeof g_media.author);
   TextField("Version (optional)", g_media.version, sizeof g_media.version, "1.0");
   ImGui::Spacing();
-  if (ImGui::BeginTabBar("media_tabs")) {
-    if (ImGui::BeginTabItem("Titantron videos")) { VideosTab(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Menus & renders")) { RendersTab(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Audio")) { AudioTab(); ImGui::EndTabItem(); }
-    ImGui::EndTabBar();
-  }
+  // (the parts are the Media group's tabs in the sidebar's tab row: SetTab)
+  if (g_tab == 1) RendersTab();
+  else if (g_tab == 2) AudioTab();
+  else VideosTab();
   ImGui::Spacing();
   DrawProblems(problems);
   ImGui::EndChild();
@@ -546,6 +546,9 @@ PageHooks hooks = {
     [](const ProjectIn& in) { return Read(in, false); },
     [](const ProjectIn& in) { return Read(in, true); },
 };
+
+void SetTab(int tab) { g_tab = tab; }
+int Tab() { return g_tab; }
 
 }  // namespace media_page
 }  // namespace mm

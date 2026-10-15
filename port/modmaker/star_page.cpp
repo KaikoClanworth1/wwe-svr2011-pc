@@ -2343,7 +2343,7 @@ void Draw() {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The whole entrance in the practice arena: its camera, the theme, the titantron.");
     Hint("The entrance motions and pyro (the music and movie are the files above): any the game has - every "
          "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
-         "(the Port page makes them from other games). Attires 2-4 can have their own.");
+         "(the From another game tab makes them from other games). Attires 2-4 can have their own.");
     {
       ImGui::SetNextItemWidth(320 * g_scale);
       const std::string cur = g_star.pose < 0 ? "The style's" : PoseLabel(g_star.pose);
@@ -2405,7 +2405,7 @@ void Draw() {
     }
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Moves the game doesn't have, carried inside the mod (moves/): a folder with pack.txt and "
-                        "motions/, as the Moves page saves one.");
+                        "motions/, as the Move pack tab saves one.");
     ImGui::SameLine();
     if (g_star.pack.empty()) ImGui::TextDisabled("none");
     else ImGui::TextUnformatted(FileName(g_star.pack).c_str());

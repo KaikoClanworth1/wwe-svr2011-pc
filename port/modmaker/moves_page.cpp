@@ -461,7 +461,7 @@ namespace {
 
 void Draw() {
   if (!g_put_test.empty()) RunPutTest();
-  Heading("Moves", "Moves the game doesn't have, in a move pack: motions for the attacker, the victim and the "
+  Heading("Move pack", "Moves the game doesn't have, in a move pack: motions for the attacker, the victim and the "
                    "cameras, plus the move's table records. Packs install on their own or ride inside a superstar mod.");
   std::vector<Problem> problems;
   Problems(problems);
