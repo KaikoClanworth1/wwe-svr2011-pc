@@ -84,6 +84,7 @@
 #include "online_mods.h"
 #include "online_chat.h"
 #include "p2p.h"
+#include "universe_mods.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -603,6 +604,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)
 #endif
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
+  svr2011::InstallUniverseMods(runtime()->memory(), g_saves);  // (the mods' WWE Universe side table: after the mods)
   svr2011::KeepWindowAlive();
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)
   svr2011::KeepWindowAlive();
