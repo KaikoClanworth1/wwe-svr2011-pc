@@ -166,6 +166,27 @@ else()
 endif()
 
 if(WIN32)
+    # The release version (VERSION.txt) for the programs' version information
+    # (src/svr2011.rc, launcher/launcher.rc): version_info.h, e.g. 2,1,3,0 / "2.1.3.0".
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_RC_VERSION LIMIT_COUNT 1)
+    string(STRIP "${SVR2011_RC_VERSION}" SVR2011_RC_VERSION)
+    string(REGEX MATCHALL "[0-9]+" SVR2011_RC_PARTS "${SVR2011_RC_VERSION}")
+    list(LENGTH SVR2011_RC_PARTS SVR2011_RC_COUNT)
+    while(SVR2011_RC_COUNT LESS 4)
+        list(APPEND SVR2011_RC_PARTS 0)
+        math(EXPR SVR2011_RC_COUNT "${SVR2011_RC_COUNT} + 1")
+    endwhile()
+    list(SUBLIST SVR2011_RC_PARTS 0 4 SVR2011_RC_PARTS)
+    string(REPLACE ";" "," SVR2011_RC_NUM "${SVR2011_RC_PARTS}")
+    string(REPLACE ";" "." SVR2011_RC_STR "${SVR2011_RC_PARTS}")
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/version_inc/version_info.h"
+        CONTENT "#define SVR2011_VER_NUM ${SVR2011_RC_NUM}
+#define SVR2011_VER_STR \"${SVR2011_RC_STR}\"
+")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt")
+    # (on the resource scripts only: a new version doesn't rebuild the sources)
+    set_property(SOURCE src/svr2011.rc launcher/launcher.rc APPEND PROPERTY INCLUDE_DIRECTORIES
+        ${CMAKE_CURRENT_BINARY_DIR}/version_inc)
     # (src/utf8.manifest: UTF-8 code page - game folders with any letters)
     add_executable(svr2011 WIN32 ${SVR2011_SOURCES} src/svr2011.rc src/utf8.manifest)
 elseif(ANDROID)
@@ -290,7 +311,8 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     target_include_directories(svr2011_modmaker PRIVATE modmaker modmaker/third_party/ufbx ${CMAKE_CURRENT_BINARY_DIR}/modmaker_inc
         ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack
         ${IMGUI_SRC} ${IMGUI_SRC}/backends ${REXSDK_DIR}/thirdparty/stb)
-    target_compile_definitions(svr2011_modmaker PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE SVRFMT_INFLATE)
+    target_compile_definitions(svr2011_modmaker PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE SVRFMT_INFLATE
+        SVR2011_RC_MODMAKER)
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_MM_VERSION LIMIT_COUNT 1)
     target_compile_definitions(svr2011_modmaker PRIVATE "PORT_VERSION=\"${SVR2011_MM_VERSION}\"")
     target_link_libraries(svr2011_modmaker PRIVATE version d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32
@@ -300,9 +322,13 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
     add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/launcher.rc src/utf8.manifest)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
-    # The C runtime built in (static CRT): the launcher starts without the VC++ runtime, tells a player who
-    # has none / an old one where to get it (setup_tab.c), and never holds the DLLs it may remove.
+    # The hybrid CRT: the VC++ part (vcruntime) built in, the Universal CRT from Windows (ucrtbase.dll /
+    # api-ms-win-crt-*, part of Windows 10+; Windows 7/8.1 with update KB2999226). The launcher starts
+    # without the VC++ runtime, tells a player who has none / an old one where to get it (setup_tab.c), and
+    # never holds the DLLs it may remove - and is an ordinary-sized program again (the fully static CRT
+    # made it look packed to antivirus heuristics).
     set_property(TARGET svr2011_launcher PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    target_link_options(svr2011_launcher PRIVATE -Wl,/NODEFAULTLIB:libucrt.lib -Wl,/DEFAULTLIB:ucrt.lib)
     target_compile_definitions(svr2011_launcher PRIVATE
         UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
     target_link_options(svr2011_launcher PRIVATE -Wl,/ENTRY:wWinMainCRTStartup)

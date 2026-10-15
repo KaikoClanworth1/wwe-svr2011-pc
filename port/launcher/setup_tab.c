@@ -100,12 +100,11 @@ int setup_vcrt_cleanup(const WCHAR *dir, WCHAR *log, size_t logn)
     if (!dir || !dir[0]) return 0;
     for (i = 0; i < 4; i++) {
         join(p, dir, k_vcrt[i]);
+        swprintf_s(old, MAX_PATH + 8, L"%s.old", p);
+        if (exists(old)) DeleteFileW(old);   /* (one put aside at an earlier start) */
         if (!exists(p) || !file_version(p, v) || v[0] != 14 || v[1] != 29) continue;   /* (not ours: kept) */
-        if (!DeleteFileW(p)) {   /* (in use: out of the way now, gone after a restart) */
-            swprintf_s(old, MAX_PATH + 8, L"%s.old", p);
-            DeleteFileW(old);
+        if (!DeleteFileW(p)) {   /* (in use: put aside now, deleted at a later start - no delete-at-reboot) */
             if (!MoveFileExW(p, old, MOVEFILE_REPLACE_EXISTING)) continue;
-            MoveFileExW(old, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
         }
         n++;
         if (log) swprintf_s(log + wcslen(log), logn - wcslen(log), L"%s%s %u.%u.%u", log[0] ? L", " : L"",
@@ -590,10 +589,16 @@ int setup_install(const WCHAR *game, unsigned items, setup_progress_fn progress,
                   size_t errn)
 {
     WCHAR tmp[MAX_PATH];
-    DWORD n = GetTempPathW(MAX_PATH, tmp);
     err[0] = 0;
-    if (!n || n >= MAX_PATH) wcscpy_s(tmp, MAX_PATH, game);
-    else if (tmp[n - 1] == L'\\') tmp[n - 1] = 0;
+    /* (the downloads in the game folder's Tools\.downloads, not %TEMP%: a program that downloads into %TEMP%
+       and unpacks programs from there looks like a dropper to antivirus heuristics) */
+    join(tmp, game, L"Tools\\.downloads");
+    mkdirs(tmp);
+    if (!exists(tmp)) {
+        DWORD n = GetTempPathW(MAX_PATH, tmp);
+        if (!n || n >= MAX_PATH) wcscpy_s(tmp, MAX_PATH, game);
+        else if (tmp[n - 1] == L'\\') tmp[n - 1] = 0;
+    }
     if ((items & (1u << SETUP_PYTHON)) && !install_python(game, tmp, progress, cancel, err, errn)) return 0;
     if ((items & (1u << SETUP_FFMPEG)) && !install_ffmpeg(game, tmp, progress, cancel, err, errn)) return 0;
     licences_readme(game);
