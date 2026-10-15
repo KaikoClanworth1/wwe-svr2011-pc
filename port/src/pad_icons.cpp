@@ -220,7 +220,15 @@ const Atlas* Identify(uint32_t pw, uint32_t ph, uint32_t glyphs, uint32_t count)
     }
     if (match) return a.get();
   }
-  // (once per kind: a page we have no other pictures for)
+  // (once per kind: a page we have no other pictures for - a page with no
+  // button glyphs, such as the 64x64 one with only the E018 logo, has
+  // nothing to swap and is not logged)
+  bool buttons = false;
+  for (uint32_t i = 0; i < count && !buttons; ++i) {
+    const uint32_t code = Rd32(g_base + glyphs + i * kGlyph + 20);
+    for (const auto& b : kBinds) buttons |= b.code == code;
+  }
+  if (!buttons) return nullptr;
   static std::set<std::string> logged;
   std::string id = fmt::format("{}x{}", pw, ph);
   for (uint32_t i = 0; i < count && i < 12; ++i) {
