@@ -1038,6 +1038,7 @@ void Close() {
   editor::SetViewExtra(nullptr);
   editor::SetSelfLit({});
   editor::SetGameTransparency(false);
+  editor::SetStageTime(0, false);
   char_preview::SetScalePivotY(std::numeric_limits<float>::quiet_NaN());
   editor::ClearViewCamera();
   editor::SetViewHint(true);
@@ -1175,6 +1176,7 @@ void Draw() {
       if (tt) TitantronAt(g_key / 30.0);
       editor::SetTextureOverride("tf_titan", tt && g_tt_screen ? g_tt_srv : nullptr);
       if (L.arena) {
+        editor::SetStageTime(float(g_key / 30.0), true);  // (the arena's own lights and beams, the entrance's)
         editor::DrawView(w, h);
       } else {
         ImGui::Dummy(ImVec2(w, h));

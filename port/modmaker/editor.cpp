@@ -190,6 +190,10 @@ struct Obj {
   // not shown, not listed, kept as it is
   bool outside = false;
   bool ceiling = false;  // a room's ceiling / lights rig (backstage): hidden in the view unless "Show ceilings"
+  // its flag table line (stage lights): l(<n>) the light set it is lit by (100 without), m(<n>) the
+  // object motion that places it, "e" entrance only, "g" match only, "b" billboard
+  int light_set = 100, motion = -1;
+  bool entrance_only = false, match_only = false, billboard = false;
   V3 pos;           // edit offset
   float yaw = 0;    // radians
   float scale = 1;
@@ -229,6 +233,8 @@ ID3D11PixelShader* g_ps = nullptr;
 ID3D11InputLayout* g_layout = nullptr;
 ID3D11Buffer* g_cb = nullptr;
 ID3D11Buffer* g_cb_mode = nullptr;   // (b1: mode.x 1 = self-lit, the textures in g_self_lit)
+ID3D11Buffer* g_cb_light = nullptr;  // (b2: the arena's light set for the next draws - SetStageLight)
+int g_cb_light_now = -2;
 int g_cb_mode_now = -1;
 std::set<std::string> g_self_lit;    // (SetSelfLit: screens drawn at their own brightness)
 std::set<std::string> g_led_mask;    // (SetSelfLit's masks: a screen's dot grid over it, its holes the lit dots)
@@ -338,6 +344,7 @@ cbuffer C : register(b0) {
   float4 flat;
 };
 cbuffer D : register(b1) { float4 mode; };
+cbuffer L : register(b2) { float4 ldir[6]; float4 lcol[6]; float4 lon; };  // (the arena's light set: 2 fills, 4 directional)
 struct VI { float3 p : POSITION; float3 n : NORMAL; float4 c : COLOR; float2 uv : TEXCOORD; };
 struct VO { float4 p : SV_Position; float3 n : NORMAL; float4 c : COLOR; float2 uv : TEXCOORD; };
 VO vs(VI i) {
@@ -359,6 +366,11 @@ float4 ps(VO i) : SV_Target {
   if (tx.a < 0.25 && mode.y < 0.5) discard;  // (mode.y: an opaque model - the game's alpha there isn't see-through)
   if (mode.x > 0.5) return float4(tx.rgb * tint.rgb, 1);  // (self-lit: a screen)
   float3 n = normalize(i.n + 1e-5);
+  if (lon.x > 0.5) {  // (the arena's own light set: fills half-lit from behind, directional ones as they face)
+    float3 l = lcol[0].rgb * (0.5 + 0.5 * dot(n, ldir[0].xyz)) + lcol[1].rgb * (0.5 + 0.5 * dot(n, ldir[1].xyz));
+    [unroll] for (int k = 2; k < 6; ++k) l += lcol[k].rgb * max(0, dot(n, ldir[k].xyz));
+    return float4(tx.rgb * i.c.rgb * tint.rgb * l * lon.y, 1);
+  }
   float d = abs(dot(n, normalize(float3(0.35, -1.0, 0.25))));
   return float4(tx.rgb * i.c.rgb * tint.rgb * (0.55 + 0.45 * d), 1);
 }
@@ -390,6 +402,8 @@ bool CreatePipeline() {
   g_dev->CreateBuffer(&bd, nullptr, &g_cb);
   bd.ByteWidth = 16;
   g_dev->CreateBuffer(&bd, nullptr, &g_cb_mode);
+  bd.ByteWidth = 13 * 16;
+  g_dev->CreateBuffer(&bd, nullptr, &g_cb_light);
   D3D11_SAMPLER_DESC sd = {};
   sd.Filter = D3D11_FILTER_ANISOTROPIC;
   sd.MaxAnisotropy = 8;
@@ -765,6 +779,199 @@ std::map<uint32_t, std::string> ModelFlagsOf(const svrfmt::Arena& arena) {
 }
 std::map<uint32_t, std::string> ModelFlags() { return g_arena ? ModelFlagsOf(*g_arena) : std::map<uint32_t, std::string>(); }
 
+// ---------------------------------------------------------------- stage lights
+// What the game lights an arena with, from the arena's own entries:
+// - 0x7530 (30000): a YMKs bank of light sets. Per set id, channels (the YMKs y) 0 and 1 = two
+//   opposite fill lights (the ground / sky colours), 10-13 = up to four directional lights, 50-59 =
+//   the moving crowd lights (set 20 only). Keys, 25 bytes: u8 frames to the next key, f32x3 position
+//   (x 0.01; the light comes from there towards the centre), s16x3 rotation, u16x3 colour (/ 4096).
+// - 0xC351 l(<n>): the set a model is lit by; a model without one gets set 100.
+// - 0x7531 (30001): object motions (YMKs, no header), one per m(<n>) of 0xC351, a 29-byte record a
+//   frame: u8, f32x3 position (x 0.01), f32x3 rotation (radians, x then y then z), f32 scale. They
+//   put the beams, glows and light rigs (modelled at the centre) in place, 60 frames a second.
+struct StageKey {
+  int frame = 0;
+  float v[9] = {};  // lights: position, rotation, colour; motions: position, rotation, scale
+};
+struct StageTrack {
+  int frames = 1;
+  std::vector<StageKey> keys;
+};
+using StageBank = std::map<std::pair<int, int>, StageTrack>;  // (id, channel) -> track
+StageBank g_light_bank, g_motions;
+const svrfmt::Arena* g_stage_of = nullptr;
+float g_stage_time = 0;          // seconds (SetStageTime: the Full preview's clock; the editor: still)
+bool g_stage_entrance = false;   // the entrance's look: "e" models shown, "g" ones not
+bool g_stage_lights = !std::getenv("SVR2011_MM_NO_STAGE_LIGHTS");  // (the lighting panel's; the env: an A/B test shot)
+
+float LeF32(const uint8_t* p) {
+  float f;
+  std::memcpy(&f, p, 4);
+  return f;
+}
+uint32_t LeU32(const uint8_t* p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24; }
+uint16_t LeU16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
+
+// A YMKs bank (the 16-byte "YMKs" head optional: the 2007-2009 banks and 0x7531 have none) -> its
+// tracks. motion: 0x7531's 29-byte records, else 0x7530's 25-byte light keys.
+StageBank ReadStageBank(const Bytes& raw, bool motion) {
+  StageBank out;
+  size_t p = raw.size() >= 16 && !std::memcmp(raw.data(), "YMKs", 4) ? 16 : 0;
+  if (raw.size() < p + 0x104) return out;
+  const uint32_t n = LeU32(raw.data() + p + 0x100);
+  const size_t dir = p + 0x104, base = dir + 16 * size_t(n);
+  if (n > 4096 || base > raw.size()) return out;
+  const size_t pose = motion ? 29 : 25;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint8_t* d = raw.data() + dir + 16 * i;
+    const int y = d[0], id = LeU16(d + 2);
+    const size_t off = LeU32(d + 4);
+    StageTrack t;
+    t.frames = int(std::max<uint32_t>(1, LeU32(d + 8)));
+    size_t q = base + off;
+    for (int f = 0; q < raw.size() && f < t.frames;) {
+      const uint8_t b = raw[q];
+      if (b < 0x60) {
+        f += b, ++q;
+        continue;
+      }
+      size_t sz = b - 0x60;
+      if (b == 0x60) {
+        if (q + 3 > raw.size()) break;
+        sz = LeU16(raw.data() + q + 1), q += 3;
+      } else {
+        ++q;
+      }
+      if (q + sz > raw.size()) break;
+      const uint8_t* r = raw.data() + q;
+      size_t rs = sz;
+      if (rs && (r[0] & 0x80)) {  // (an event block first)
+        const size_t ev = 1 + (r[0] & 0x7f);
+        r += std::min(ev, rs), rs -= std::min(ev, rs);
+      }
+      if (rs >= pose) {
+        StageKey k;
+        k.frame = f;
+        for (int a = 0; a < 3; ++a) k.v[a] = LeF32(r + 1 + 4 * a) * 0.01f;
+        if (motion) {
+          for (int a = 0; a < 3; ++a) k.v[3 + a] = LeF32(r + 13 + 4 * a);
+          k.v[6] = LeF32(r + 25);
+        } else {
+          for (int a = 0; a < 3; ++a) k.v[3 + a] = int16_t(LeU16(r + 13 + 2 * a)) * (2 * kPi / 65536.0f);
+          for (int a = 0; a < 3; ++a) k.v[6 + a] = LeU16(r + 19 + 2 * a) / 4096.0f;
+        }
+        t.keys.push_back(k);
+      }
+      q += sz, ++f;
+    }
+    if (!t.keys.empty()) out[{id, y}] = std::move(t);
+  }
+  return out;
+}
+
+// a track's values at the stage clock (looped; linear between keys)
+void SampleTrack(const StageTrack& t, float out[9]) {
+  const float f = std::fmod(g_stage_time * 60.0f, float(t.frames));
+  size_t k = 0;
+  while (k + 1 < t.keys.size() && float(t.keys[k + 1].frame) <= f) ++k;
+  const StageKey& a = t.keys[k];
+  if (k + 1 >= t.keys.size() || t.keys[k + 1].frame <= a.frame) {
+    std::memcpy(out, a.v, sizeof a.v);
+    return;
+  }
+  const StageKey& b = t.keys[k + 1];
+  const float u = std::clamp((f - float(a.frame)) / float(b.frame - a.frame), 0.0f, 1.0f);
+  for (int i = 0; i < 9; ++i) out[i] = a.v[i] + (b.v[i] - a.v[i]) * u;
+}
+
+void LoadStage() {
+  if (g_stage_of == g_arena) return;
+  g_stage_of = g_arena;
+  g_light_bank.clear(), g_motions.clear();
+  if (!g_arena) return;
+  for (const auto& e : g_arena->entries) {
+    if (e.id == 30000) g_light_bank = ReadStageBank(Unpack(e.data), false);
+    if (e.id == 30001) g_motions = ReadStageBank(Unpack(e.data), true);
+  }
+}
+
+// l(<n>), m(<n>), e / g / b of a flag table line (" ... ")
+void ReadStageFlags(const std::string& f, Obj& o) {
+  if (const size_t l = f.find(" l("); l != std::string::npos) o.light_set = std::atoi(f.c_str() + l + 3);
+  if (const size_t m = f.find(" m("); m != std::string::npos) o.motion = std::atoi(f.c_str() + m + 3);
+  auto word = [&](const char* w) {
+    for (size_t at = f.find(w); at != std::string::npos; at = f.find(w, at + 1))
+      if (at > 0 && std::isspace(uint8_t(f[at - 1])) && at + 1 < f.size() && std::isspace(uint8_t(f[at + 1]))) return true;
+    return false;
+  };
+  o.entrance_only = word("e"), o.match_only = word("g"), o.billboard = word("b");
+}
+
+// the light set's values now: two fills and four directional lights (direction to the light, colour)
+struct StageLight {
+  float dir[6][4] = {};  // xyz (towards the light), w unused
+  float col[6][4] = {};  // rgb
+};
+bool StageLightOf(int set, StageLight& out) {
+  static const int kCh[6] = {0, 1, 10, 11, 12, 13};
+  bool any = false;
+  for (int c = 0; c < 6; ++c) {
+    const auto t = g_light_bank.find({set, kCh[c]});
+    if (t == g_light_bank.end()) continue;
+    float v[9];
+    SampleTrack(t->second, v);
+    const V3 d = Norm({v[0], v[1], v[2]});
+    out.dir[c][0] = d.x, out.dir[c][1] = d.y, out.dir[c][2] = d.z;
+    out.col[c][0] = v[6], out.col[c][1] = v[7], out.col[c][2] = v[8];
+    any = true;
+  }
+  return any;
+}
+
+// an effect model's place now (its m(<n>) motion): scale, rotation x then y then z, the move
+bool MotionPlace(int motion, M4& out) {
+  const auto t = g_motions.find({motion, 0});
+  if (t == g_motions.end()) return false;
+  float v[9];
+  SampleTrack(t->second, v);
+  const float s = v[6] != 0 ? v[6] : 1.0f;
+  const float cx = std::cos(v[3]), sx = std::sin(v[3]), cy = std::cos(v[4]), sy = std::sin(v[4]), cz = std::cos(v[5]),
+              sz = std::sin(v[5]);
+  // row vectors: p * Rx * Ry * Rz (x first)
+  M4 rx, ry, rz, sc, tr;
+  rx.m[5] = cx, rx.m[6] = sx, rx.m[9] = -sx, rx.m[10] = cx;
+  ry.m[0] = cy, ry.m[2] = -sy, ry.m[8] = sy, ry.m[10] = cy;
+  rz.m[0] = cz, rz.m[1] = sz, rz.m[4] = -sz, rz.m[5] = cz;
+  sc.m[0] = sc.m[5] = sc.m[10] = s;
+  tr.m[12] = v[0], tr.m[13] = v[1], tr.m[14] = v[2];
+  out = Mul(Mul(Mul(Mul(sc, rx), ry), rz), tr);
+  return true;
+}
+
+// the light set the next draws are lit by (-1, no bank or the lights off: the editor's own light)
+void SetStageLight(int set) {
+  if (!g_cb_light) return;
+  if (!g_stage_lights || g_light_bank.empty()) set = -1;
+  if (set == g_cb_light_now) return;  // (the clock moves between frames only)
+  StageLight sl;
+  float on[4] = {0, 1, 0, 0};
+  if (set >= 0 && (StageLightOf(set, sl) || StageLightOf(100, sl))) on[0] = 1;
+  D3D11_MAPPED_SUBRESOURCE ms;
+  if (FAILED(g_ctx->Map(g_cb_light, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
+  auto* f = static_cast<float*>(ms.pData);
+  std::memcpy(f, sl.dir, sizeof sl.dir);
+  std::memcpy(f + 24, sl.col, sizeof sl.col);
+  std::memcpy(f + 48, on, sizeof on);
+  g_ctx->Unmap(g_cb_light, 0);
+  g_cb_light_now = set;
+}
+
+// an effect model (m(<n>)) is drawn where its motion puts it, in the look it belongs to
+bool ShowEffect(const Obj& o) {
+  if (!g_stage_lights || o.motion < 0 || !g_motions.count({o.motion, 0})) return false;
+  return g_stage_entrance ? !o.match_only : !o.entrance_only;
+}
+
 void BuildObjects() {
   g_objs.clear();
   g_undo.clear(), g_redo.clear();
@@ -780,6 +987,7 @@ void BuildObjects() {
       o.effect = f->second.find("m(") != std::string::npos;
       for (char sep : {' ', '\t', '\r'})  // (a standalone "r")
         for (char sep2 : {' ', '\t', '\r'}) o.mirrored |= f->second.find(std::string(1, sep) + "r" + sep2) != std::string::npos;
+      ReadStageFlags(f->second, o);
     }
     o.model = int(mi);
     o.label = Label(am);
@@ -1169,7 +1377,10 @@ void RenderScene() {
   g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
   g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
   g_ctx->PSSetConstantBuffers(1, 1, &g_cb_mode);
+  g_ctx->PSSetConstantBuffers(2, 1, &g_cb_light);
   g_cb_mode_now = -1;  // (its value: set again by the first mesh)
+  g_cb_light_now = -2;
+  LoadStage();
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);  // (an LED mask drawn last mustn't leave its blend on)
   g_ctx->PSSetSamplers(0, 1, &g_sampler);
   const bool given = g_readonly && g_vcam_set;  // (the view's camera from the caller)
@@ -1185,7 +1396,15 @@ void RenderScene() {
   }();
   const M4 ident;
   for (const Obj& o : g_objs) {
-    if (o.hidden || o.effect || o.outside || (o.ceiling && !g_show_ceilings)) continue;
+    if (o.hidden || o.outside || (o.ceiling && !g_show_ceilings)) continue;
+    SetStageLight(o.light_set);
+    if (o.effect) {  // (placed by its motion)
+      M4 at;
+      if (o.glow || !ShowEffect(o) || !MotionPlace(o.motion, at)) continue;
+      SetCb(at, light);
+      for (int k : o.meshes) DrawMesh(o.model, k);
+      continue;
+    }
     switch (o.role) {
       case Role::kNotDrawn:
         break;
@@ -1262,6 +1481,14 @@ void RenderScene() {
   for (const Obj& o : g_objs)
     if (o.glow && !o.hidden && !o.effect && !o.outside && !(o.ceiling && !g_show_ceilings) && o.role == Role::kNormal)
       for (int k : o.meshes) DrawMesh(o.model, k);
+  for (const Obj& o : g_objs) {  // (the beams and glows the arena's motions put in place)
+    M4 at;
+    if (!o.glow || !o.effect || o.hidden || o.outside || !ShowEffect(o) || !MotionPlace(o.motion, at)) continue;
+    g_glow_pass = true;
+    SetCb(at, light);
+    g_glow_pass = false;
+    for (int k : o.meshes) DrawMesh(o.model, k);
+  }
   {  // (the mirrored copies)
     M4 mirror;
     mirror.m[0] = -1;
@@ -1482,6 +1709,10 @@ void LightingPanel() {
   if (ImGui::SliderFloat("Strength", &g_light.strength, 0.3f, 1.6f, "%.2f")) p = int(std::size(kPresets)) - 1, Edited();
   ImGui::TextDisabled("Every arena material's colour (not the crowd).");
   if (ImGui::Checkbox("Crowd in the seats", &g_light.crowd)) Edited();
+  ImGui::Checkbox("The arena's own stage lights", &g_stage_lights);  // (the view only: the game always uses them)
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("The view lit as the game lights this arena: each object by its own light set, and the\n"
+                      "light beams and glows put where the arena's motions place them.\nOff: the editor's plain light.");
 }
 
 void Inspector() {
@@ -2245,6 +2476,8 @@ void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv) 
 }
 void SetViewExtra(ViewExtraFn fn) { g_view_extra = std::move(fn); }
 void SetGameTransparency(bool on) { g_game_alpha = on, g_cut_arena = nullptr; }
+void SetStageTime(float seconds, bool entrance) { g_stage_time = std::max(0.0f, seconds), g_stage_entrance = entrance; }
+
 void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks) {
   g_self_lit = std::set<std::string>(textures.begin(), textures.end());
   g_led_mask = std::set<std::string>(masks.begin(), masks.end());
