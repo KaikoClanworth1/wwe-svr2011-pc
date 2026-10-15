@@ -2120,24 +2120,40 @@ void InstallP2P(rex::memory::Memory* memory) {
     in_addr ina{};
     if (inet_pton(AF_INET, a.c_str(), &ina) == 1) g_me.lan = ntohl(ina.s_addr);
   }
+  // The P2P port: the setting's, else the next base other games search
+  // (+100, up to 3 more). With none, P2P was off and CREATE SESSION ended in
+  // "You have been disconnected" (a 2.1.3 report: UDP 36000 held by another
+  // program or a second game). The game's own ports follow the base (Offset).
+  const uint16_t wanted = g_me.base;
+  for (int k = 0; k < 4; ++k) {
+    const uint16_t base = uint16_t(wanted + 100 * k);
+    Socket s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == kBadSocket) break;
+    int yes = 1;
+    setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof(yes));
+    sockaddr_in at = {};
+    at.sin_family = AF_INET;
+    at.sin_addr.s_addr = htonl(INADDR_ANY);
+    at.sin_port = htons(base);
+    if (bind(s, reinterpret_cast<sockaddr*>(&at), sizeof(at)) == 0) {
+      g_socket = s;
+      g_me.base = base;
+      break;
+    }
+    CloseSocket(s);
+    REXLOG_WARN("p2p: UDP port {} is in use (another program, or a second game)", base);
+  }
+  if (g_socket == kBadSocket) {
+    REXLOG_ERROR("p2p: no free UDP port from {} on - online sessions can't be made (set p2p_port)", wanted);
+    return;
+  }
+  if (g_me.base != wanted) REXLOG_WARN("p2p: using UDP port {} instead of {}", g_me.base, wanted);
   // the player's online id (and the port base: two games on one PC differ)
   const std::string id = rex::cvar::Query<std::string>("online_xuid") + ":" + std::to_string(g_me.base);
   uint64_t h = 1469598103934665603ull;
   for (unsigned char c : id) h = (h ^ c) * 1099511628211ull;
   g_me.mac = {0x02, uint8_t(h >> 32), uint8_t(h >> 24), uint8_t(h >> 16), uint8_t(h >> 8), uint8_t(h)};
   g_me.xuid = std::strtoull(rex::cvar::Query<std::string>("online_xuid").c_str(), nullptr, 16);
-
-  g_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  int yes = 1;
-  setsockopt(g_socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof(yes));
-  sockaddr_in at = {};
-  at.sin_family = AF_INET;
-  at.sin_addr.s_addr = htonl(INADDR_ANY);
-  at.sin_port = htons(g_me.base);
-  if (g_socket == kBadSocket || bind(g_socket, reinterpret_cast<sockaddr*>(&at), sizeof(at)) != 0) {
-    REXLOG_ERROR("p2p: can't use UDP port {} (another program, or a second game: set p2p_port)", g_me.base);
-    return;
-  }
   std::thread(Receive).detach();
   std::thread(Keepalive).detach();
   std::thread(PingLoop).detach();
