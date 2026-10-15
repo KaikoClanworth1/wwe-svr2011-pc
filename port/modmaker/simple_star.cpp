@@ -15,6 +15,7 @@
 #include <cmath>
 #include <memory>
 
+#include "simple_port.h"
 #include "simple_steps.h"
 #include "star_page_internal.h"
 #include "svrfmt/png.h"
@@ -99,7 +100,7 @@ void StepLook_() {
   const int per_row = CardsPerRow(w);
   if (Card("game", "A superstar in the game", "Use the look of anyone on the roster.", mode == 0, w, h)) mode = 0;
   if (1 % per_row) ImGui::SameLine(0, 8 * g_scale);
-  if (Card("disc", "From an older game", "Bring someone in from SvR 2006 - 2010 or WWE '12 - 2K14.", mode == 1, w, h)) mode = 1;
+  if (Card("disc", "From an older game", "Someone from your other WWE games, or one character file.", mode == 1, w, h)) mode = 1;
   if (2 % per_row) ImGui::SameLine(0, 8 * g_scale);
   if (Card("fbx", "Import a 3D model", "Your own model from Blender, Unity, VRChat or Mixamo (FBX).", mode == 2, w, h)) mode = 2;
   ImGui::Spacing();
@@ -144,20 +145,10 @@ void StepLook_() {
     ImGui::TextDisabled("Pick a rigged model (one with a skeleton). The Mod Maker matches its bones to the game's, checks it, and builds your superstar from it.");
     ImGui::PopTextWrapPos();
     FbxRows(true);
-  } else {
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Pick the disc, list its superstars and convert one. The Mod Maker reads your disc images as they are.");
-    ImGui::PopTextWrapPos();
-    if (const std::wstring got = port_page::EmbeddedResult(); !got.empty()) {
-      ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1), "Converted. What should your superstar take from it?");
-      PushAccent();
-      if (ImGui::Button("Just the look", ImVec2(180 * g_scale, 0))) TakeFromMod(got, false), port_page::ClearEmbeddedResult();
-      PopAccent();
-      ImGui::SameLine();
-      if (ImGui::Button("Everything (look, music, pictures, moves)", ImVec2(0, 0))) TakeFromMod(got, true), port_page::ClearEmbeddedResult();
-      ImGui::Spacing();
-    }
-    port_page::SuperstarFlow();
+  } else {  // (a game from My game discs, its superstars with pictures: simple_port.cpp)
+    std::wstring got;
+    bool all = false;
+    if (simple_port::SuperstarImport(got, all)) TakeFromMod(got, all);
   }
   ImGui::Spacing();
   if (ImGui::SmallButton("Use a model file instead...")) {

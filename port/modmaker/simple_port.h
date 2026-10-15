@@ -20,8 +20,14 @@ enum Kind { kEntrance, kMoves, kTaunts, kKindCount };
 
 // The page (the rail's "Port an entrance" / "Port moves" / "Port taunts").
 void Draw(Kind kind);
-// Test aid --simple-port <entrance|moves|taunts>,<game key>[,<item key>[,<step>[,add]]]: that menu with the game (its disc
-// from My game discs) and the item picked, on that step (--shot shows it).
+// Simple superstar's Look step, "From an older game": a game (My game discs), its superstars with pictures, "Bring
+// <name> in" (superstar_port convert) with a "Bring everything too" tick. True once, when the converted superstar
+// (.svrmod in `mod`) is ready; `everything` the tick (simple_star.cpp then takes it: TakeFromMod).
+bool SuperstarImport(std::wstring& mod, bool& everything);
+
+// Test aid --simple-port <entrance|moves|taunts|import>,<game key>[,<item key>[,<step>[,add]]]: that menu with the game (its
+// disc from My game discs) and the item picked, on that step (--shot shows it); add: Add to my game once ready. import:
+// Simple superstar's Look step (step 1: "Bring everything too"; add: Bring in).
 void TestStart(const std::string& spec);
 
 }  // namespace simple_port
