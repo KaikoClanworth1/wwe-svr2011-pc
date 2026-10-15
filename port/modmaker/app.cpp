@@ -1626,7 +1626,7 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
           const size_t e = text.find("\"error\"");
           if (code != 0 || !fs::exists(mp4)) {
             Status("The Bink 2 video didn't convert" + (e == std::string::npos ? std::string(" (see the log).") : ": see the log.") +
-                   " Bink 2 needs RAD Video Tools (free, radgametools.com) - set it on the Other games page.");
+                   " Bink 2 needs RAD Video Tools (free, radgametools.com) - set it on Superstar > From another game.");
             Log("bink2: " + text);
             return;
           }
@@ -1824,22 +1824,38 @@ void DrawEditor() {
   editor::Draw();
 }
 
+// The "From another game" tabs: the Port page's kinds and the extracted-files tabs (Other games) for one thing
+void FromAnotherGame(const char* what, unsigned kinds, unsigned other) {
+  Heading("From another game", what);
+  port_page::DrawKinds(kinds);
+  if (port_page::CurrentSource().empty()) {  // (a new player: where the discs come from)
+    ImGui::TextDisabled("Pick one of your games above, or a file of one. Your discs are set once in My game discs.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Open My game discs")) GoTo(PageId::kDiscs);
+  }
+  if (!other) return;
+  ImGui::Spacing();
+  ImGui::SeparatorText("From another game's extracted files");
+  other_page::DrawTabs(other);
+}
+
+// Every page (its project hooks, its draw). The sidebar shows the groups (kGroups) and their tabs.
 const PageDesc kPages[] = {
     {PageId::kArena, "Arena", "Make", &arena_page::hooks, nullptr},
-    {PageId::kEditor, "   3D editor", "", nullptr, DrawEditor},
+    {PageId::kEditor, "3D editor", "", nullptr, DrawEditor},
     {PageId::kBackstage, "Backstage", "", &backstage_page::hooks, nullptr},
     {PageId::kStar, "Superstar", "", &star_page::hooks, nullptr},
     {PageId::kAttire, "Attires", "", &attire_page::hooks, nullptr},
-    {PageId::kMoves, "Moves", "", &moves_page::hooks, nullptr},
+    {PageId::kMoves, "Move pack", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
     {PageId::kPort, "Port from a disc", "", nullptr, port_page::Draw},
-    {PageId::kDiscs, "   My game discs", "", nullptr, disc_list::Draw},
-    {PageId::kPortEntrance, "   Port an entrance", "", nullptr, [] { simple_port::Draw(simple_port::kEntrance); }},
-    {PageId::kPortMoves, "   Port moves", "", nullptr, [] { simple_port::Draw(simple_port::kMoves); }},
-    {PageId::kPortTaunts, "   Port taunts", "", nullptr, [] { simple_port::Draw(simple_port::kTaunts); }},
+    {PageId::kDiscs, "My game discs", "", nullptr, disc_list::Draw},
+    {PageId::kPortEntrance, "Port an entrance", "", nullptr, [] { simple_port::Draw(simple_port::kEntrance); }},
+    {PageId::kPortMoves, "Port moves", "", nullptr, [] { simple_port::Draw(simple_port::kMoves); }},
+    {PageId::kPortTaunts, "Port taunts", "", nullptr, [] { simple_port::Draw(simple_port::kTaunts); }},
     {PageId::kOther, "Other games", "", nullptr, other_page::Draw},
     {PageId::kCaw, "CAW pictures", "Saves", nullptr, caw_page::Draw},
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
@@ -1847,7 +1863,114 @@ const PageDesc kPages[] = {
     {PageId::kInstalled, "Installed mods", "", nullptr, installed_page::Draw},
     {PageId::kIcons, "Icons & renders", "", nullptr, icons_page::Draw},
     {PageId::kHelp, "Manual", "Help", nullptr, help_page::Draw},
+    {PageId::kStarPort, "Superstar from another game", "", nullptr,
+     [] {
+       FromAnotherGame("A superstar or attires from your other WWE games (SvR 2007 to 2K17, the PS2 games): pick the disc "
+                       "or one character file; the superstar opens on the Superstar tab to finish.",
+                       port_page::kSuperstars | port_page::kAttires,
+                       other_page::kStarFile | other_page::kW13Star | other_page::kSvr10Star);
+     }},
+    {PageId::kArenaPort, "Arena from another game", "", nullptr,
+     [] {
+       FromAnotherGame("An arena or a backstage room from your other WWE games: pick the disc or one arena file; it opens "
+                       "on the Arena tab to finish.",
+                       port_page::kArenas | port_page::kBackstageKind, other_page::kW13Arena | other_page::kSvr08);
+     }},
+    {PageId::kMovesPort, "Moves from another game", "", nullptr,
+     [] {
+       FromAnotherGame("A superstar's moves or an entrance from another game, with every option (the Moves, Taunts and "
+                       "Entrance tabs are the quick way).",
+                       port_page::kMovesKind | port_page::kEntrances, other_page::kSvr10Moves);
+     }},
+    {PageId::kBelts, "Belts & weapons", "", nullptr,
+     [] {
+       FromAnotherGame("Title belts' and weapons' looks from another game, as a texture pack.",
+                       port_page::kBelts | port_page::kWeapons, 0);
+     }},
 };
+
+// The sidebar: one entry per group; a group with more than one tab shows them in a row over the page.
+struct GroupTab {
+  const char* label;
+  PageId page;
+  int media = -1;  // the Media page's part (media_page::SetTab)
+};
+struct Group {
+  const char* name;
+  const char* section;  // "" = continues the last
+  std::vector<GroupTab> tabs;
+};
+const Group kGroups[] = {
+    {"Superstar", "Make", {{"Superstar", PageId::kStar}, {"Attires", PageId::kAttire}, {"From another game", PageId::kStarPort}}},
+    {"Arena", "", {{"Arena", PageId::kArena}, {"Backstage", PageId::kBackstage}, {"3D editor", PageId::kEditor},
+                   {"From another game", PageId::kArenaPort}}},
+    {"Moves & entrances", "", {{"Moves", PageId::kPortMoves}, {"Taunts", PageId::kPortTaunts}, {"Entrance", PageId::kPortEntrance},
+                               {"Move pack", PageId::kMoves}, {"From another game", PageId::kMovesPort}}},
+    {"Media", "", {{"Crowd signs", PageId::kSigns}, {"Menu backgrounds", PageId::kBackgrounds},
+                   {"Titantron videos", PageId::kMedia, 0}, {"Menus & renders", PageId::kMedia, 1}, {"Audio", PageId::kMedia, 2},
+                   {"Belts & weapons", PageId::kBelts}}},
+    {"Match types", "", {{"Match types", PageId::kMatch}}},
+    {"My game discs", "Porting", {{"My game discs", PageId::kDiscs}}},
+    {"CAW pictures", "Saves", {{"CAW pictures", PageId::kCaw}}},
+    {"Game assets", "Look", {{"Game assets", PageId::kAssets}}},
+    {"Animations", "", {{"Animations", PageId::kAnims}}},
+    {"Installed mods", "", {{"Installed mods", PageId::kInstalled}}},
+    {"Icons & renders", "", {{"Icons & renders", PageId::kIcons}}},
+    {"Manual", "Help", {{"Manual", PageId::kHelp}}},
+};
+constexpr int kGroupCount = int(sizeof kGroups / sizeof kGroups[0]);
+int g_group_tab[kGroupCount] = {};  // each group's last tab (its sidebar entry goes back to it)
+
+bool TabOn(const GroupTab& t) { return g_page == t.page && (t.media < 0 || media_page::Tab() == t.media); }
+
+int GroupOf(PageId p) {
+  for (int g = 0; g < kGroupCount; ++g)
+    for (const auto& t : kGroups[g].tabs)
+      if (t.page == p) return g;
+  return -1;
+}
+
+void ShowTab(const GroupTab& t) {
+  g_page = t.page;
+  if (t.media >= 0) media_page::SetTab(t.media);
+}
+
+// The old Port from a disc and Other games pages live on the "From another game" tab of the thing they make.
+void ResolvePage() {
+  if (g_page == PageId::kPort) {
+    const unsigned bit = 1u << port_page::Kind();
+    g_page = bit & (port_page::kSuperstars | port_page::kAttires)    ? PageId::kStarPort
+             : bit & (port_page::kMovesKind | port_page::kEntrances) ? PageId::kMovesPort
+             : bit & (port_page::kBelts | port_page::kWeapons)       ? PageId::kBelts
+                                                                     : PageId::kArenaPort;
+  } else if (g_page == PageId::kOther) {
+    g_page = PageId::kArenaPort;  // (what goes there from other pages: a WWE '12 - 2K17 arena file to convert)
+  }
+  const int g = GroupOf(g_page);
+  if (g >= 0)
+    for (int i = 0; i < int(kGroups[g].tabs.size()); ++i)
+      if (TabOn(kGroups[g].tabs[size_t(i)])) g_group_tab[g] = i;
+}
+
+// The tab row over the page of a group with more than one tab.
+void TabRow() {
+  const int g = GroupOf(g_page);
+  if (g < 0 || kGroups[g].tabs.size() < 2) return;
+  for (size_t i = 0; i < kGroups[g].tabs.size(); ++i) {
+    const GroupTab& t = kGroups[g].tabs[i];
+    if (i) ImGui::SameLine(0, 4 * g_scale);
+    const bool on = TabOn(t);
+    const bool editor_off = t.page == PageId::kEditor && !editor::HasArena();
+    if (on) ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
+    ImGui::BeginDisabled(editor_off);
+    if (ImGui::Button(t.label)) ShowTab(t);
+    ImGui::EndDisabled();
+    if (editor_off && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("Open an arena or a backstage area in 3D first (the Arena or Backstage tab).");
+    if (on) ImGui::PopStyleColor();
+  }
+  ImGui::Separator();
+}
 
 const PageDesc& Desc(PageId p) {
   for (const auto& d : kPages)
@@ -1904,6 +2027,35 @@ const char* PageName(PageId p) {
 }
 
 void GoTo(PageId p) { g_page = p; }
+
+bool PageByName(const std::wstring& name, PageId& page) {
+  // (the old pages' names keep working: port / other open the "From another game" tab of the shown kind)
+  static const struct {
+    const wchar_t* name;
+    PageId page;
+    int media;
+  } kNames[] = {
+      {L"arena", PageId::kArena, -1}, {L"editor", PageId::kEditor, -1}, {L"backstage", PageId::kBackstage, -1},
+      {L"superstar", PageId::kStar, -1}, {L"moves", PageId::kMoves, -1}, {L"move-pack", PageId::kMoves, -1},
+      {L"signs", PageId::kSigns, -1}, {L"backgrounds", PageId::kBackgrounds, -1}, {L"media", PageId::kMedia, 0},
+      {L"media-videos", PageId::kMedia, 0}, {L"media-renders", PageId::kMedia, 1}, {L"media-audio", PageId::kMedia, 2},
+      {L"match", PageId::kMatch, -1}, {L"other", PageId::kOther, -1}, {L"caw", PageId::kCaw, -1},
+      {L"assets", PageId::kAssets, -1}, {L"anims", PageId::kAnims, -1}, {L"icons", PageId::kIcons, -1},
+      {L"help", PageId::kHelp, -1}, {L"port", PageId::kPort, -1}, {L"attires", PageId::kAttire, -1},
+      {L"installed", PageId::kInstalled, -1}, {L"discs", PageId::kDiscs, -1},
+      {L"port-entrance", PageId::kPortEntrance, -1}, {L"entrance", PageId::kPortEntrance, -1},
+      {L"port-moves", PageId::kPortMoves, -1}, {L"moves-entrances", PageId::kPortMoves, -1},
+      {L"port-taunts", PageId::kPortTaunts, -1}, {L"taunts", PageId::kPortTaunts, -1},
+      {L"superstar-port", PageId::kStarPort, -1}, {L"arena-port", PageId::kArenaPort, -1},
+      {L"moves-port", PageId::kMovesPort, -1}, {L"belts", PageId::kBelts, -1}};
+  for (const auto& n : kNames)
+    if (name == n.name) {
+      page = n.page;
+      if (n.media >= 0) media_page::SetTab(n.media);
+      return true;
+    }
+  return false;
+}
 
 bool ProjectDirty() {
   return g_saved_state.count(g_project_page) && (CurrentState(g_project_page) != g_saved_state[g_project_page] ||
@@ -2306,23 +2458,21 @@ void TitleBar() {
 
 void Rail(float height) {
   ImGui::BeginChild("rail", ImVec2(170 * g_scale, height), true);
-  const char* last = nullptr;
-  for (const auto& d : kPages) {
-    if (d.section[0] && (!last || std::strcmp(last, d.section))) {
-      if (last) ImGui::Spacing();
+  for (int g = 0; g < kGroupCount; ++g) {
+    const Group& d = kGroups[g];
+    if (d.section[0]) {
+      if (g) ImGui::Spacing();
       ImGui::TextDisabled("%s", Upper(d.section).c_str());
-      last = d.section;
     }
-    const bool on = g_page == d.id;
-    const bool project_type = d.hooks && d.id == g_project_page;
+    const bool on = GroupOf(g_page) == g;
+    bool project_type = false;  // (a dot: the current project's type is in this group)
+    for (const auto& t : d.tabs) project_type |= Hooks(t.page) && t.page == g_project_page;
     if (on) ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
-    const bool editor_off = d.id == PageId::kEditor && !editor::HasArena();
-    ImGui::BeginDisabled(editor_off);
-    if (ImGui::Button(d.name, ImVec2(-1, 0))) g_page = d.id;
-    ImGui::EndDisabled();
-    if (editor_off && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("Open an arena or a backstage area in 3D first (Arena or Backstage page).");
-    if (project_type && !on) {  // (a dot: the current project's type)
+    if (ImGui::Button(d.name, ImVec2(-1, 0))) {
+      const GroupTab& t = d.tabs[size_t(g_group_tab[g])];
+      ShowTab(t.page == PageId::kEditor && !editor::HasArena() ? d.tabs[0] : t);
+    }
+    if (project_type && !on) {
       const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
       ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(b.x - 10 * g_scale, (a.y + b.y) / 2), 3 * g_scale,
                                                   IM_COL32(230, 25, 50, 255));
@@ -2392,6 +2542,7 @@ void Draw() {
     for (auto& fn : q) fn();
   }
   arena_page::Tick();
+  ResolvePage();
   FollowPage();
   g_problems.clear();
   if (PageHooks* h = Hooks(g_project_page); h && h->problems) h->problems(g_problems);
@@ -2413,6 +2564,7 @@ void Draw() {
   const PageDesc& d = Desc(g_page);
   ImGui::BeginChild("page", ImVec2(0, body_h), d.id != PageId::kEditor,
                     d.id == PageId::kEditor ? ImGuiWindowFlags_None : ImGuiWindowFlags_None);
+  TabRow();
   if (d.draw) d.draw();
   else if (d.hooks && d.hooks->draw) d.hooks->draw();
   ImGui::EndChild();
@@ -3043,6 +3195,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (start_editor >= 0 && start_editor < 20) arena_page::OpenEditor(start_editor);
   editor::TestStart(start_view, Utf8(start_select));  // (before the arena is set)
   if (start_page >= 0 && start_page < 8 && start_mod.empty()) g_page = page_of[start_page];
+  if (start_page >= 5 && start_page < 8) media_page::SetTab(start_page - 5);
   if (start_backstage >= 0 && start_backstage < 7) arena_page::StartBackstage(start_backstage);
   if (!start_mod.empty()) {
     arena_page::OpenModFile(start_mod);
@@ -3060,12 +3213,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     run_tool_args.erase(run_tool_args.begin());
     RunTool(script, run_tool_args, [](int code) { Status("test: tool exit code " + std::to_string(code)); });
   }
-  if (!page_name.empty()) {
-    const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match", L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs",
-                              L"port-entrance", L"port-moves", L"port-taunts"};
-    for (int k = 0; k < int(PageId::kCount); ++k)
-      if (page_name == names[k]) g_page = PageId(k);
-  }
+  if (!page_name.empty()) PageByName(page_name, g_page);
   if (!project.empty()) ProjectOpen(project);
   // test aid: --test-project <file.svrproj>: the shown page saved as a project, everything
   // reset, the project opened again; its state text goes to <file>.txt, the log to <file>.log
@@ -3147,11 +3295,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_ctx->ClearRenderTargetView(g_rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     while (!page_at.empty() && ImGui::GetTime() >= page_at.front().first) {  // (test aid --page-at)
-      const wchar_t* names[] = {L"arena", L"editor", L"backstage", L"superstar", L"moves", L"signs", L"backgrounds", L"media", L"match",
-                                L"other", L"caw", L"assets", L"anims", L"icons", L"help", L"port", L"attires", L"installed", L"discs",
-                              L"port-entrance", L"port-moves", L"port-taunts"};
-      for (int k = 0; k < int(std::size(names)) && k < int(PageId::kCount); ++k)
-        if (page_at.front().second == names[k]) g_page = PageId(k), Log("test: page " + Utf8(names[k]));
+      if (PageByName(page_at.front().second, g_page)) Log("test: page " + Utf8(page_at.front().second));
       page_at.erase(page_at.begin());
     }
     if (!shot.empty() && ImGui::GetTime() >= shot_after && !Busy() && !disc_list::Scanning()) {  // the frame to a PNG, then quit

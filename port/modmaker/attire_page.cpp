@@ -317,7 +317,7 @@ void Draw() {
     }
   }
   if (FileRow("Model (ch.pac)...", g_at.model, "none", kPacFilter, 1, "A character model pac - one of the game's, a superstar mod's or a "
-              "converted one (Port page): the attire picked below becomes this attire."))
+              "converted one (From another game tab): the attire picked below becomes this attire."))
     g_at.from = 1;
   if (!g_at.model.empty()) {  // which of the pac's attires
     const std::vector<int> own = ModelAttires(g_at.model);

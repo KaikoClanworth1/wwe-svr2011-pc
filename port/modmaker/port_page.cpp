@@ -33,7 +33,7 @@ struct Kind {
 };
 const Kind kKinds[] = {
     {"Superstars", L"superstar_port.py", "A whole superstar mod: model, pictures, theme, titantron, ratings, entrance and calls where 2011 has them."},
-    {"Moves", L"moves_port.py", "Moves 2011 lacks, as a move pack (the Moves page saves it; a superstar mod can carry it)."},
+    {"Moves", L"moves_port.py", "Moves 2011 lacks, as a move pack (the Move pack tab saves it; a superstar mod can carry it)."},
     {"Entrances", L"entrance_port.py", "An entrance as a move pack with its own number, for a superstar mod's entrance= (and per attire)."},
     {"Arenas", L"arena_port.py", "An arena mod on one of 2011's arena slots, with its banner, loading and VS pictures."},
     {"Attires", L"attire_port.py", "Attires for a superstar - a mod's own, or new ones for 2011's roster."},
@@ -586,7 +586,7 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
   }
   if (g_list_for != std::to_string(k) + "|" + want) List(k, game);  // (the converter's list: only each pac's status)
   if (g_embedded) ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena.", game_name.c_str());
-  else ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish on the Other games page "
+  else ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish below (extracted files) "
                           "(host arena, options, Convert).", game_name.c_str());
   if (g_native.empty()) {
     ImGui::TextColored(kWarn, "No pac\bg\bgNN.pac found here.");
@@ -685,7 +685,7 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
   if (g_native_pick >= 0 && NativeBlocked(g_native[size_t(g_native_pick)])) g_native_pick = -1;  // (its status came in after the pick)
   ImGui::BeginDisabled(g_native_pick < 0 || Busy());
   PushAccent();
-  const bool use = ImGui::Button(g_embedded ? "4. Use this arena" : "4. Use this arena (Other games page)", ImVec2(320 * g_scale, 0)) ||
+  const bool use = ImGui::Button(g_embedded ? "4. Use this arena" : "4. Use this arena", ImVec2(320 * g_scale, 0)) ||
                    (!g_native_test.empty() && g_native_pick >= 0 && !Busy());
   PopAccent();
   ImGui::EndDisabled();
@@ -715,7 +715,7 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
         CacheJob(true, false, out.parent_path());
         return;
       }
-      Log("port: " + p.name + " -> " + Utf8(out.wstring()) + " (Other games page)");
+      Log("port: " + p.name + " -> " + Utf8(out.wstring()) + " (Arena > From another game)");
       other_page::UseArenaFile(out.wstring(), IdFrom(game + "_" + fs::path(p.name).stem().string(), "arena"));
       GoTo(PageId::kOther);
       CacheJob(true, false, out.parent_path());
@@ -743,7 +743,7 @@ void OpenResult() {
     return;
   }
   if (opens == "backstage" && fs::exists(p / L"manifest.txt", ec)) {  // (installed already: opened as a project, the folder only read)
-    if (ProjectOpenFolder(p.wstring())) Status("Installed into Mods\\Backstage\\" + Utf8(p.filename().wstring()) + ", opened on the Backstage page.");
+    if (ProjectOpenFolder(p.wstring())) Status("Installed into Mods\\Backstage\\" + Utf8(p.filename().wstring()) + ", opened on the Backstage tab.");
     return;
   }
   if (opens == "belt" || opens == "weapon") {  // a texture pack folder: into the game's Texture Packs
@@ -892,7 +892,7 @@ std::string FileSource(int k) {
   ImGui::Text("3. %s", title.c_str());
   ImGui::BeginDisabled(Busy());
   PushAccent();
-  const bool use = ImGui::Button((std::string(g_embedded ? "4. Use this arena" : "4. Use this arena (Other games page)") + "##lone").c_str(),
+  const bool use = ImGui::Button((std::string(g_embedded ? "4. Use this arena" : "4. Use this arena") + "##lone").c_str(),
                                  ImVec2(320 * g_scale, 0)) ||
                    (!g_native_test.empty() && !Busy());
   PopAccent();
@@ -1278,7 +1278,7 @@ void KindBody(int k) {
       ImGui::TextDisabled("Built on the 2011 move %s (%d)%s; record %s. Not right? Pick a template above and convert again.",
                           MoveName(t).c_str(), t, g_template > 0 ? "" : ", picked automatically", g_result["id"].Str().c_str());
     if (g_result["opens"].Str() == "moves" && std::wstring(kKinds[k].script) != L"entrance_port.py")
-      ImGui::TextColored(kWarn, "To use it in matches, put it in a superstar's moveset (the Moves page, or a superstar's Moveset section).");
+      ImGui::TextColored(kWarn, "To use it in matches, put it in a superstar's moveset (the Move pack tab, or a superstar's Moveset section).");
     if (std::wstring(kKinds[k].script) == L"entrance_port.py" && std::atoi(g_result["number"].Str().c_str()) > 0) {
       // the ported entrance, played whole before it is installed: its own pack is looked in first
       const StarInfo* w = StarById(g_fp_who);
@@ -1323,9 +1323,11 @@ void TestStart(const std::string& spec) {
   g_test_stage = 0;
 }
 
-void Draw() {
-  Heading("Port from another game", "Bring a superstar, arena, moves, an entrance or more from your other WWE discs into "
-                                    "SvR 2011: pick the disc, what to port and the item; it opens on its page to finish.");
+void Draw() { DrawKinds(~0u); }
+
+// The kinds in `mask` (bit k: kKinds[k]) on one of the "From another game" tabs (Superstar, Arena, Moves &
+// entrances, Media): the disc row, those kinds' tabs, the shown kind's steps.
+void DrawKinds(unsigned mask) {
   if (PythonExe().empty() || !PythonMissing().empty()) {
     ImGui::TextColored(kWarn, "The converters need Python 3 with numpy and Pillow: missing %s.", PythonMissing().c_str());
     if (ImGui::Button("Install what's missing...")) OpenToolsPanel();
@@ -1333,13 +1335,22 @@ void Draw() {
     if (ImGui::SmallButton("Check again")) RecheckTools();
     return;
   }
+  if (!(mask >> g_kind & 1)) {  // (the shown kind isn't one of these: the first that is)
+    for (int k = 0; k < kKindCount; ++k)
+      if (mask >> k & 1) {
+        g_kind = k, g_result = Json(), g_result_error.clear();
+        break;
+      }
+  }
   DiscRow();
   CacheRow();
   if (Source().empty()) return;
   ImGui::Spacing();
-  if (ImGui::BeginTabBar("kinds")) {
+  int shown = 0;
+  for (int k = 0; k < kKindCount; ++k) shown += mask >> k & 1;
+  if (shown > 1 && ImGui::BeginTabBar("kinds")) {
     for (int k = 0; k < kKindCount; ++k)
-      if (ImGui::BeginTabItem(kKinds[k].title, nullptr, k == g_force_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
+      if ((mask >> k & 1) && ImGui::BeginTabItem(kKinds[k].title, nullptr, k == g_force_kind ? ImGuiTabItemFlags_SetSelected : 0)) {
         if (g_force_kind < 0 || g_force_kind == k) {
           g_force_kind = -1;
           if (g_kind != k) g_kind = k, g_result = Json(), g_result_error.clear();
@@ -1350,6 +1361,8 @@ void Draw() {
   }
   KindBody(g_kind);
 }
+
+int Kind() { return g_kind; }
 
 void SuperstarFlow() { EmbeddedFlow(L"superstar_port.py"); }
 
@@ -1406,7 +1419,7 @@ void Open(const wchar_t* script, const std::wstring& source) {
   for (int k = 0; k < kKindCount; ++k)
     if (std::wstring(kKinds[k].script) == script) g_kind = g_force_kind = k;
   SetSource(source);
-  GoTo(PageId::kPort);
+  GoTo(PageId::kPort);  // (the app shows the kind's own "From another game" tab)
 }
 
 std::string KindsFor(const std::string& disc_id) {
