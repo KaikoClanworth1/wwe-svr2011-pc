@@ -25,6 +25,7 @@
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "cae_mod_motions.h"
 #include "superstar_mods.h"
+#include "universe_mods.h"
 #include "move_packs.h"
 #include "startup_pump.h"
 
@@ -2298,41 +2299,13 @@ REX_HOOK_RAW(sub_8257A218) {
   __imp__sub_8257A218(ctx, base);
   const auto r3 = ctx.r3.u64;
   ApplyRecords(base);
+  svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
   ctx.r3.u64 = r3;
 }
 
-// WWE Universe's title holders: 14 titles x 2 u16 ids (a tag title's two;
-// 0x200 none) at save + 0x7CD70 (SaveData.dat 0x7CD88, after its 0x18-byte
-// header). A mod has no place in Universe (above), so a title it holds can't
-// be booked - "gave Kenny Omega the Intercontinental title: holder blank,
-// nobody could fight for it" - yet its TITLE SETTINGS page gives it one.
-// Checked once a frame: a holder that just became a mod gets the one before
-// back; one a save already holds (none before) leaves the title vacant, as a
-// title nobody holds.
-namespace {
-void KeepModsOffTitles(uint8_t* base) {
-  constexpr uint32_t kSave = 0x82E407B4, kTitles = 0x7CD70, kSlots = 28, kNone = 0x200;
-  static uint32_t last[kSlots], last_save = 0;
-  const uint32_t save = Rd32(base + kSave);
-  if (!save || g_mods.empty()) return;
-  if (save != last_save) {
-    std::fill(std::begin(last), std::end(last), kNone);
-    last_save = save;
-  }
-  for (uint32_t i = 0; i < kSlots; ++i) {
-    uint8_t* p = base + save + kTitles + i * 2;
-    uint32_t id = Rd16(p);
-    if (const Mod* m = ModOf(id)) {
-      const uint32_t back = ModOf(last[i]) ? kNone : last[i];
-      p[0] = uint8_t(back >> 8), p[1] = uint8_t(back);
-      REXLOG_WARN("[svr2011] superstar mods: Universe title {} (holder {}) can't go to {} (id {}): {}", i / 2,
-                  i % 2 + 1, m->name, id, back == kNone ? std::string("left vacant") : "back to id " + std::to_string(back));
-      id = back;
-    }
-    last[i] = id;
-  }
-}
-}  // namespace
+// WWE Universe's title holders (14 titles x 2 u16 ids at save + 0x7CD70) take mod ids as they are: a mod has its
+// Universe entry (universe_mods.cpp), so a title it holds is booked like any other (47438dc kept mods off titles
+// while they had none).
 
 // Once a frame (the game's pad reads, frame_rate.cpp): a mod's profile that
 // is a placeholder again gets the mod's back. A save's copy of a slot can be
@@ -2343,7 +2316,7 @@ void KeepModsOffTitles(uint8_t* base) {
 // placeholder and stays.
 namespace svr2011 {
 void CheckModProfiles(uint8_t* base) {
-  KeepModsOffTitles(base);
+  UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
   std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
@@ -2421,9 +2394,9 @@ REX_HOOK_RAW(sub_82736C68) {
   __imp__sub_82736C68(ctx, base);
 }
 
-// Owned (DLC-flagged ids must be): mods are - but not for WWE Universe's
-// rankings (sub_825AF0F0's loop) and its owned snapshot (sub_825CA488): see
-// below.
+// Owned (DLC-flagged ids must be): mods are - for WWE Universe's rankings
+// (sub_825AF0F0's loop) and its owned snapshot (sub_825CA488) only those with
+// a Universe entry (universe_mods.cpp: all of them, up to 137).
 constexpr uint32_t kUniverseOwnedCallers[] = {0x825AF190, 0x825CA518};
 REX_EXTERN(__imp__sub_828C1288);
 REX_HOOK_RAW(sub_828C1288) {
@@ -2431,23 +2404,21 @@ REX_HOOK_RAW(sub_828C1288) {
     const uint32_t lr = uint32_t(ctx.lr);
     bool universe = false;
     for (uint32_t c : kUniverseOwnedCallers) universe |= lr == c;
-    ctx.r3.u64 = universe ? 0 : 1;
+    ctx.r3.u64 = !universe || svr2011::UniverseModIn(ctx.r3.u32) ? 1 : 0;
     return;
   }
   __imp__sub_828C1288(ctx, base);
 }
 
-// ---- WWE Universe: no mods
+// ---- WWE Universe: mods in a side table (universe_mods.cpp)
 // Universe keeps 150 superstars (P = *(0x82E407B4) + 0x364B4: 24-byte
 // entries at P+16 - 0-49 created, 50-69 DLC, 70-149 a disc list of 80 ids at
 // 0x82DACA40 - a rivalry byte per pair at P+3616, match cards from P+14942).
 // sub_825B7660(id) gives an id's place: created and DLC ids their own number,
-// disc-list ids 70 + their index. Mods passed sub_825B75A8 (eligible: owned,
-// selectable, DLC-flagged) and took their id as place: mods 151-181 wrote
-// past the 150 entries into the rivalry table and the first match card,
-// 111-149 shared real superstars' entries ("Universe with the SvR 2010 mods
-// crashes", 2.0.4/2.0.5). Mods stay out of Universe: not eligible, no place,
-// no pair (sub_825B7B40); every caller handles "none" (-1 / 0).
+// disc-list ids 70 + their index. Mods taking their id as place wrote past
+// the 150 entries (2.0.4/2.0.5 crashes; 0f87e22 kept them out). Now a mod's
+// place is a virtual one landing on its side entry, its pairs on side bytes
+// (sub_825AD850), and Universe's reset (sub_825B6C60) clears the side table.
 // "Is this id present" (sub_828B7078(id): the flag 0x82DB3AE0 + id, read by
 // the CHAR/DAT and CHAR/PRO loaders and the roster getters): a mod's id is,
 // so the 65 ids the game keeps absent load their placeholder record and
@@ -2463,27 +2434,54 @@ REX_HOOK_RAW(sub_828B7078) {
 
 REX_EXTERN(__imp__sub_825B75A8);
 REX_HOOK_RAW(sub_825B75A8) {  // (id, need owned) -> in Universe
-  if (ModOf(ctx.r3.u32)) {
+  if (ModOf(ctx.r3.u32) && !svr2011::UniverseModIn(ctx.r3.u32)) {  // (a mod past the side table's room)
     ctx.r3.u64 = 0;
     return;
   }
   __imp__sub_825B75A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_825B7660);
+namespace {
+int64_t UniversePlace(PPCContext& ctx, uint8_t* base, uint32_t id) {  // (any id: the game's place, a mod's side one)
+  if (ModOf(id)) return svr2011::UniverseModPlace(base, id);
+  const auto saved = ctx;
+  ctx.r3.u64 = id;
+  __imp__sub_825B7660(ctx, base);
+  const int64_t place = int64_t(int32_t(ctx.r3.u32));
+  ctx = saved;
+  return place;
+}
+}  // namespace
 REX_HOOK_RAW(sub_825B7660) {  // (id) -> Universe place, -1: none
   if (ModOf(ctx.r3.u32)) {
-    ctx.r3.u64 = uint64_t(int64_t(-1));
+    ctx.r3.u64 = uint64_t(svr2011::UniverseModPlace(base, ctx.r3.u32));
     return;
   }
   __imp__sub_825B7660(ctx, base);
 }
 REX_EXTERN(__imp__sub_825B7B40);
 REX_HOOK_RAW(sub_825B7B40) {  // (id, id) -> both in Universe
-  if (ModOf(ctx.r3.u32) || ModOf(ctx.r4.u32)) {
-    ctx.r3.u64 = 0;
+  const uint32_t a = ctx.r3.u32, b = ctx.r4.u32;
+  if (ModOf(a) || ModOf(b)) {  // (its own code looks ids up in the disc list: a mod's answered here)
+    ctx.r3.u64 = UniversePlace(ctx, base, a) != -1 && UniversePlace(ctx, base, b) != -1 ? 1 : 0;
     return;
   }
   __imp__sub_825B7B40(ctx, base);
+}
+REX_EXTERN(__imp__sub_825AD850);
+REX_HOOK_RAW(sub_825AD850) {  // (id, id) -> the pair's rivalry index from P+3616, -1: none
+  const uint32_t a = ctx.r3.u32, b = ctx.r4.u32;
+  if (ModOf(a) || ModOf(b)) {
+    const int64_t pa = ModOf(a) ? 0 : UniversePlace(ctx, base, a), pb = ModOf(b) ? 0 : UniversePlace(ctx, base, b);
+    ctx.r3.u64 = uint64_t(svr2011::UniverseModPair(base, a, pa, b, pb));
+    return;
+  }
+  __imp__sub_825AD850(ctx, base);
+}
+REX_EXTERN(__imp__sub_825B6C60);
+REX_HOOK_RAW(sub_825B6C60) {  // Universe's reset (its tables cleared): the mods' side table too
+  __imp__sub_825B6C60(ctx, base);
+  svr2011::UniverseModsReset();
 }
 REX_EXTERN(__imp__sub_82589198);
 REX_HOOK_RAW(sub_82589198) {
