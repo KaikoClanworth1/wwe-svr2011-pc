@@ -31,12 +31,16 @@ final class GpuInfo {
         String override = testOverride();
         if (override != null) return renderer_ = override;
         SharedPreferences prefs = c.getSharedPreferences("gpu", Context.MODE_PRIVATE);
-        if (Build.FINGERPRINT.equals(prefs.getString("fingerprint", null))) {
-            renderer_ = prefs.getString("renderer", "");
+        String cached = prefs.getString("renderer", "");
+        if (Build.FINGERPRINT.equals(prefs.getString("fingerprint", null)) && !cached.isEmpty()) {
+            renderer_ = cached;
             return renderer_;
         }
         renderer_ = query();
-        prefs.edit().putString("fingerprint", Build.FINGERPRINT).putString("renderer", renderer_).apply();
+        // (a failed query isn't kept: an empty name made a Mali phone look like no Mali for good - asked again
+        // the next time)
+        if (!renderer_.isEmpty())
+            prefs.edit().putString("fingerprint", Build.FINGERPRINT).putString("renderer", renderer_).apply();
         return renderer_;
     }
 

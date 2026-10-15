@@ -63,6 +63,12 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
   // formats it can't filter or read too, so their paths run on another GPU)
   const bool simulated = rex::cvar::GetFlagByName("vulkan_simulate_mali") == "true";
   const bool mali = props.vendorID == 0x13B5 || simulated;  // ARM
+  if (mali && !REXCVAR_GET(mali_alpha)) {
+    // (started without the launcher's Mali alpha mode - a home screen that skipped the launcher, settings reset:
+    // what it decides in the game is turned on here; the SDK has relaxed the device requirements already)
+    REXLOG_WARN("GPU report: a Mali GPU without mali_alpha - turned on");
+    REXCVAR_SET(mali_alpha, true);
+  }
   REXLOG_INFO("GPU report: '{}', vendor 0x{:04X} device 0x{:08X}, Vulkan {}.{}.{}, driver 0x{:08X}{}",
               props.deviceName, props.vendorID, props.deviceID, VK_API_VERSION_MAJOR(props.apiVersion),
               VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
