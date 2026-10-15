@@ -790,8 +790,9 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
             # one output mesh per texture
             for si, sub in enumerate(m['subs']):
                 tname = src['textures'][sub['tex']] if sub['tex'] < len(src['textures']) else ''
-                if tname.lower().startswith('blood'):
-                    continue   # (the PS2's blood overlay: shown only while bleeding - 2011 has its own)
+                if tname.lower().startswith(('blood', 'bandage')):
+                    continue   # (the PS2's blood and bandage overlays: shown only while hurt - 2011 has its own;
+                    #  the 2006 / 2007 forehead bandage showed on every superstar all match long)
                 key = {}
                 pos, nrm, uvs, wts, tris, bones = [], [], [], [], [], []
                 bidx = {}
