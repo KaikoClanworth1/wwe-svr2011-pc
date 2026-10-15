@@ -228,6 +228,10 @@ void PollThread() {
   }
 }
 
+void SayGoodbye() {
+  if (SignedIn()) net::ServerRequest("GET", "/api/friends?bye=1");
+}
+
 void PollSoon() {
   std::lock_guard lock(g_mutex);
   g_poll_now = true;
@@ -872,6 +876,16 @@ void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
 void SetOnlineOverlayFonts(ImFont* menu, ImFont* title) {
   g_menu_font = menu;
   g_title_font = title;
+}
+
+void OnlineOverlaySayGoodbye() {
+  // (on a thread of its own: the window closes after 1.5 s at most, answered or not)
+  auto done = std::make_shared<std::atomic<bool>>(false);
+  std::thread([done] {
+    SayGoodbye();
+    *done = true;
+  }).detach();
+  for (int i = 0; i < 30 && !*done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
 
 void ToggleOnlineOverlay() { g_toggle = true; }
