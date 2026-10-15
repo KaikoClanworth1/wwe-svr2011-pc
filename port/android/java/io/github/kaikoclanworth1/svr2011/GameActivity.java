@@ -7,12 +7,65 @@ import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
+import android.view.InputDevice;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLControllerManager;
 
 public class GameActivity extends SDLActivity {
     // While the game runs (the launcher's Saves / Paint Tool tabs wait: it keeps its saves open).
     static volatile boolean running;
+
+    // A controller's sticks, whichever view has the focus. SDL reads them only
+    // in its game view's motion listener, and only for events whose source is
+    // exactly SOURCE_JOYSTICK. When the phone keyboard's hidden text field has
+    // the focus (the game's keyboard, the online overlay, a phone keyboard
+    // tap), or a source carries more bits, the motion goes unhandled, and
+    // Android turns an unhandled stick into D-pad key presses (ViewRootImpl's
+    // synthetic joystick keys) that SDL takes as the controller's D-pad: the
+    // left stick "becomes the D-pad" until the focus comes back
+    // (bug 2.1.1: Galaxy S26 Ultra, Xbox Series X / PS5 controllers).
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if ((event.getSource() & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 &&
+            event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            try {
+                SDLControllerManager.handleJoystickMotionEvent(event);
+                return true;  // (handled: no synthetic D-pad keys from it)
+            } catch (RuntimeException e) {  // (SDL not set up: its libraries didn't load)
+                Log.w("SvR2011", "joystick motion: " + e);
+            }
+        }
+        return super.dispatchGenericMotionEvent(event);
+    }
+
+    // Belt and braces: D-pad keys Android made up from a stick (FLAG_FALLBACK,
+    // from a joystick-class device) never reach the game - neither as the
+    // controller's D-pad nor, while the controller is between a removal and
+    // its re-add, as the arrow keys of the keyboard binds.
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if ((event.getFlags() & KeyEvent.FLAG_FALLBACK) != 0 && IsDpad(event.getKeyCode()) &&
+            FromJoystick(event)) {
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private static boolean IsDpad(int key) {
+        return key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN ||
+               key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT ||
+               key == KeyEvent.KEYCODE_DPAD_UP_LEFT || key == KeyEvent.KEYCODE_DPAD_UP_RIGHT ||
+               key == KeyEvent.KEYCODE_DPAD_DOWN_LEFT || key == KeyEvent.KEYCODE_DPAD_DOWN_RIGHT;
+    }
+
+    private static boolean FromJoystick(KeyEvent event) {
+        if ((event.getSource() & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) return true;
+        InputDevice device = InputDevice.getDevice(event.getDeviceId());
+        return device != null && (device.getSources() & InputDevice.SOURCE_CLASS_JOYSTICK) != 0;
+    }
 
     @Override
     protected void onDestroy() {
