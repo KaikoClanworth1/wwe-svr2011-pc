@@ -12,6 +12,8 @@
 //   type <text>                 type on the PC keyboard (keyboard_typing.h)
 //   key <BACK|ENTER|ESC|LEFT|RIGHT|UP|DOWN>   press a PC keyboard key
 //   set <cvar> <value>          sets a setting at once (not queued; tests of live changes)
+//   connect                     an idle "Test Pad" connects now (not queued; late-controller tests;
+//                               SVR2011_TEST_SCRIPT_AS_KEYBOARD=1 lists the script as the keyboard)
 //   touch <x> <y> <ms>          a finger on the on-screen controller at x, y
 //                               (fractions of the window) for ms
 //   drag <x0> <y0> <x1> <y1> <ms>   a finger down at x0, y0, moved to x1, y1

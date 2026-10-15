@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #include <SDL3/SDL_hints.h>
@@ -195,6 +196,23 @@ static std::array<std::atomic<uint8_t>, kMaxPlayers> g_order = {0, 1, 2, 3};
 
 static uint32_t Slot(uint32_t user_index) { return g_order[user_index].load(std::memory_order_relaxed); }
 
+// The player who pressed START keeps player 1 (LockLeadPlayer): a controller that connects later - a pad
+// switched on, Steam / DS4Windows' virtual pad - went before the keyboard and took player 1 from a keyboard
+// player (report 2026-10-15: the keyboard player became player 2, an idle "XInput Controller" player 1).
+// g_primary: each slot's own device (a controller or the keyboard; not the shared touch controls).
+static std::mutex g_lead_mutex;
+static rex::input::DeviceId g_lead = rex::input::DeviceId::kInvalid;
+static std::string g_lead_name;
+static std::array<rex::input::DeviceId, kMaxPlayers> g_primary{};
+static std::array<std::string, kMaxPlayers> g_primary_name;
+static std::vector<rex::input::DeviceId> g_known;  // (the devices seen at the last change)
+
+static uint32_t PlayerOfSlot(uint32_t slot) {
+  for (uint32_t p = 0; p < kMaxPlayers; ++p)
+    if (Slot(p) == slot) return p;
+  return slot;
+}
+
 PadType PlayerPadType(uint32_t user_index) {
   return user_index < kMaxPlayers ? g_types[Slot(user_index)].load(std::memory_order_relaxed) : PadType::kNone;
 }
@@ -215,6 +233,18 @@ void MakeLeadPlayer(uint32_t user_index) {
   ++g_version;  // (the button pictures follow)
   REXLOG_INFO("[svr2011] players: player {} pressed START - now player 1 (the profile's), player 1 now player {}",
               user_index + 1, user_index + 1);
+  std::lock_guard lock(g_lead_mutex);
+  if (g_lead != rex::input::DeviceId::kInvalid) g_lead = g_primary[lead], g_lead_name = g_primary_name[lead];
+}
+
+void LockLeadPlayer() {
+  std::lock_guard lock(g_lead_mutex);
+  const uint32_t slot = Slot(0);
+  if (g_primary[slot] == rex::input::DeviceId::kInvalid) return;  // (touch controls alone: nothing to keep)
+  if (g_lead != g_primary[slot])
+    REXLOG_INFO("[svr2011] players: START pressed - player 1 stays '{}' when controllers connect later",
+                g_primary_name[slot]);
+  g_lead = g_primary[slot], g_lead_name = g_primary_name[slot];
 }
 
 uint32_t PadTypesInUse() {
@@ -252,6 +282,7 @@ void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
   // unplugging pad one doesn't make pad two player one).
   const DeviceInfo* keyboard = nullptr;
   std::vector<const DeviceInfo*> shared;  // (the touch controller: player 1's)
+  std::array<const DeviceInfo*, kMaxPlayers> primary{};  // (each slot's own device)
   uint32_t next_free = 0;
   // Test aid: SVR2011_TEST_SCRIPT_PLAYER=<n> - the scripted controller as
   // player n's pad (a second pad, say, pressing START at the title; the
@@ -271,6 +302,7 @@ void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
   for (const DeviceInfo& d : devices) {
     if (script_player >= 1 && script_player <= kMaxPlayers && d.name == "Script") {
       users_[script_player - 1].push_back(d.id);
+      primary[script_player - 1] = &d;
       types[script_player - 1] = PadType::kXbox;
       next_free = std::max(next_free, script_player);
     } else if (d.name == kKeyboardName) {
@@ -285,6 +317,7 @@ void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
       }
     } else if (const uint32_t o = ordinal(d); o < kMaxPlayers) {
       users_[o].push_back(d.id);
+      if (!primary[o]) primary[o] = &d;
       if (types[o] == PadType::kNone) types[o] = TypeOf(d);
       next_free = std::max(next_free, o + 1);
     }
@@ -295,8 +328,43 @@ void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
     const uint32_t user = script_player >= 2 && users_[0].empty() ? 0 : std::min(next_free, kMaxPlayers - 1);
     users_[user].push_back(keyboard->id);
     if (types[user] == PadType::kNone) types[user] = PadType::kKeyboard;
+    if (!primary[user]) primary[user] = keyboard;
   }
-  for (const DeviceInfo* d : shared) users_[0].push_back(d->id);
+  {
+    // The player who pressed START stays player 1: his device's slot back first in the order.
+    std::lock_guard lock(g_lead_mutex);
+    std::vector<rex::input::DeviceId> now;
+    for (uint32_t i = 0; i < kMaxPlayers; ++i) {
+      g_primary[i] = primary[i] ? primary[i]->id : rex::input::DeviceId::kInvalid;
+      g_primary_name[i] = primary[i] ? primary[i]->name : std::string();
+      if (primary[i]) now.push_back(primary[i]->id);
+    }
+    if (g_lead != rex::input::DeviceId::kInvalid) {
+      int at = -1;
+      for (uint32_t i = 0; i < kMaxPlayers && at < 0; ++i)
+        if (g_primary[i] == g_lead) at = int(i);
+      for (uint32_t i = 0; i < kMaxPlayers && at < 0; ++i)  // (reconnected: a new id, the same name)
+        if (primary[i] && g_primary_name[i] == g_lead_name) at = int(i), g_lead = g_primary[i];
+      if (at >= 0 && Slot(0) != uint32_t(at)) {
+        const uint32_t p = PlayerOfSlot(uint32_t(at));
+        const uint8_t first = g_order[0].load();
+        g_order[0] = uint8_t(at);
+        g_order[p] = first;
+        ++g_version;
+      }
+    }
+    for (uint32_t i = 0; i < kMaxPlayers; ++i) {
+      if (!primary[i] || std::find(g_known.begin(), g_known.end(), primary[i]->id) != g_known.end()) continue;
+      if (g_known.empty()) continue;  // (the start: the devices there from the beginning)
+      if (g_lead != rex::input::DeviceId::kInvalid && primary[i]->id != g_lead)
+        REXLOG_INFO("[svr2011] players: {} connected - player {} (player 1 stays {})", primary[i]->name,
+                    PlayerOfSlot(i) + 1, g_lead_name);
+      else
+        REXLOG_INFO("[svr2011] players: {} connected - player {}", primary[i]->name, PlayerOfSlot(i) + 1);
+    }
+    g_known = now;
+  }
+  for (const DeviceInfo* d : shared) users_[Slot(0)].push_back(d->id);  // (player 1's, wherever he is)
   // Test aid: SVR2011_TEST_PAD_TYPES=xbox,ps,kb,none - the players' types as
   // if those controllers were connected (button pictures without the pads).
   if (const char* v = std::getenv("SVR2011_TEST_PAD_TYPES"); v && *v) {
@@ -311,9 +379,13 @@ void PlayerSlots::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
 
   std::string log;
   bool changed = false;
+  static std::array<uint8_t, kMaxPlayers> logged_order{0, 1, 2, 3};
   for (uint32_t i = 0; i < kMaxPlayers; ++i) {
     changed |= g_types[i].exchange(types[i]) != types[i];
-    if (types[i] != PadType::kNone) log += fmt::format("{}P{} {}", log.empty() ? "" : ", ", i + 1, TypeName(types[i]));
+    changed |= logged_order[i] != Slot(i);
+    logged_order[i] = uint8_t(Slot(i));
+    const PadType t = types[Slot(i)];  // (by player: player i plays slot Slot(i))
+    if (t != PadType::kNone) log += fmt::format("{}P{} {}", log.empty() ? "" : ", ", i + 1, TypeName(t));
   }
   if (changed) {
     ++g_version;
@@ -355,11 +427,14 @@ REX_HOOK_RAW(sub_8258B5F8) {
   const uint32_t state_before = screen ? Be32(base + screen + 2752) : 0;
   svr2011::FastStartScreenFrame(base, screen);
   __imp__sub_8258B5F8(ctx, base);
-  if (screen && state_before != 3 && Be32(base + screen + 2752) == 3)  // (START taken: fast_start.h)
+  const bool taken = screen && state_before != 3 && Be32(base + screen + 2752) == 3;
+  if (taken)  // (START taken: fast_start.h)
     svr2011::FastStartPressStart(base, screen, Be32(base + screen + kScreenPad));
   const uint32_t data = Be32(base + kGameData);
-  if (!data || pad == 0 || pad >= svr2011::kMaxPlayers || Be32(base + data) != pad) return;
-  svr2011::MakeLeadPlayer(pad);
-  SetBe32(base + data, 0);
-  SetBe32(base + screen + kScreenPad, 0);
+  if (data && pad != 0 && pad < svr2011::kMaxPlayers && Be32(base + data) == pad) {
+    svr2011::MakeLeadPlayer(pad);
+    SetBe32(base + data, 0);
+    SetBe32(base + screen + kScreenPad, 0);
+  }
+  if (taken) svr2011::LockLeadPlayer();  // (player 1 - the presser - stays player 1 when pads connect later)
 }
