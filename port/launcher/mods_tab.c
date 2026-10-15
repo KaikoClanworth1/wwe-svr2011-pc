@@ -23,6 +23,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <restartmanager.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -569,6 +570,7 @@ static void safe_id(WCHAR *id)
 }
 
 static int install_file(const WCHAR *zip);
+static void install_log(const WCHAR *game, const WCHAR *text);
 
 static void add_mod(void)
 {
@@ -645,6 +647,117 @@ static int version_newer(const WCHAR *a, const WCHAR *b)
     return 0;
 }
 
+/* A .svrmod's manifest.txt read from the zip (its central directory and that
+   one entry, not an unpack of the whole mod) -> type and id. */
+static int zip_manifest(const WCHAR *zip, Mod *m)
+{
+    FILE *f;
+    unsigned char tail[65536 + 22], *cd = NULL, hdr[30], *data = NULL, *raw = NULL;
+    long long size;
+    size_t got, i, at;
+    unsigned cd_size, cd_off, n;
+    int ok = 0;
+    if (_wfopen_s(&f, zip, L"rb") || !f) return 0;
+    _fseeki64(f, 0, SEEK_END);
+    size = _ftelli64(f);
+    got = (size_t)(size < (long long)sizeof tail ? size : (long long)sizeof tail);
+    _fseeki64(f, size - (long long)got, SEEK_SET);
+    if (fread(tail, 1, got, f) != got) goto done;
+    for (i = got >= 22 ? got - 22 : 0;; --i) {   /* the end-of-central-directory record */
+        if (tail[i] == 0x50 && tail[i + 1] == 0x4B && tail[i + 2] == 5 && tail[i + 3] == 6) break;
+        if (!i) goto done;
+    }
+    n = tail[i + 10] | tail[i + 11] << 8;
+    cd_size = tail[i + 12] | tail[i + 13] << 8 | tail[i + 14] << 16 | (unsigned)tail[i + 15] << 24;
+    cd_off = tail[i + 16] | tail[i + 17] << 8 | tail[i + 18] << 16 | (unsigned)tail[i + 19] << 24;
+    if (!(cd = (unsigned char *)malloc(cd_size)) || _fseeki64(f, cd_off, SEEK_SET) || fread(cd, 1, cd_size, f) != cd_size)
+        goto done;
+    for (at = 0; n-- && at + 46 <= cd_size;) {
+        const unsigned method = cd[at + 10] | cd[at + 11] << 8;
+        const unsigned csize = cd[at + 20] | cd[at + 21] << 8 | cd[at + 22] << 16 | (unsigned)cd[at + 23] << 24;
+        const unsigned usize = cd[at + 24] | cd[at + 25] << 8 | cd[at + 26] << 16 | (unsigned)cd[at + 27] << 24;
+        const unsigned nlen = cd[at + 28] | cd[at + 29] << 8, xlen = cd[at + 30] | cd[at + 31] << 8;
+        const unsigned clen = cd[at + 32] | cd[at + 33] << 8;
+        const unsigned loc = cd[at + 42] | cd[at + 43] << 8 | cd[at + 44] << 16 | (unsigned)cd[at + 45] << 24;
+        if (at + 46 + nlen > cd_size) break;
+        if (nlen == 12 && !memcmp(cd + at + 46, "manifest.txt", 12) && usize < (1u << 20) && csize < (1u << 20)) {
+            if (_fseeki64(f, loc, SEEK_SET) || fread(hdr, 1, 30, f) != 30 ||
+                _fseeki64(f, loc + 30 + (hdr[26] | hdr[27] << 8) + (hdr[28] | hdr[29] << 8), SEEK_SET))
+                goto done;
+            if (!(raw = (unsigned char *)malloc(csize + 1)) || fread(raw, 1, csize, f) != csize) goto done;
+            if (method == 0 && csize == usize) data = raw, raw = NULL;
+            else if (method == 8 && (data = (unsigned char *)malloc(usize + 1)) && unzip_inflate(raw, csize, data, usize)) {}
+            else goto done;
+            data[usize] = 0;
+            {   /* "key=value" lines, UTF-8 */
+                char *line = (char *)data, *next;
+                for (; line && *line; line = next) {
+                    WCHAR w[512], *eq;
+                    next = strchr(line, '\n');
+                    if (next) *next++ = 0;
+                    if (!MultiByteToWideChar(CP_UTF8, 0, line, -1, w, 512)) continue;
+                    trim(w);
+                    if (!(eq = wcschr(w, L'='))) continue;
+                    *eq++ = 0;
+                    if (!wcscmp(w, L"type")) wcsncpy_s(m->type, 32, eq, _TRUNCATE);
+                    else if (!wcscmp(w, L"id")) wcsncpy_s(m->id, 64, eq, _TRUNCATE);
+                    else if (!wcscmp(w, L"version")) wcsncpy_s(m->version, 32, eq, _TRUNCATE);
+                }
+            }
+            ok = m->type[0] && m->id[0];
+            break;
+        }
+        at += 46 + nlen + xlen + clen;
+    }
+done:
+    free(cd);
+    free(raw);
+    free(data);
+    fclose(f);
+    return ok;
+}
+
+/* A mod type's folder under Mods (as install_file places it); NULL for one it doesn't install. */
+static const WCHAR *kind_folder(const WCHAR *type)
+{
+    static const struct { const WCHAR *type, *folder; } k[] = {
+        {L"superstar", L"Superstars"}, {L"arena", L"Arenas"}, {L"backstage", L"Backstage"}, {L"signs", L"Signs"},
+        {L"media", L"Media"}, {L"matchtype", L"MatchTypes"}, {L"background", L"Backgrounds"}, {L"attire", L"Attires"},
+        {L"moves", L"Moves"},
+    };
+    int i;
+    for (i = 0; i < (int)(sizeof k / sizeof *k); ++i)
+        if (!_wcsicmp(type, k[i].type)) return k[i].folder;
+    return NULL;
+}
+
+/* An installed mod folder missing what install_file requires of its type (a superstar without ch.pac, an arena
+   without arena.pac ...): what a half-done replace left. */
+static int folder_incomplete(const WCHAR *dir, const WCHAR *type)
+{
+    WCHAR p[MAX_PATH];
+    const WCHAR *need[3] = { L"manifest.txt", NULL, NULL };
+    int i;
+    if (!_wcsicmp(type, L"superstar")) need[1] = L"ch.pac";
+    else if (!_wcsicmp(type, L"arena")) need[1] = L"arena.pac", need[2] = L"banner.dds";
+    else if (!_wcsicmp(type, L"backstage")) need[1] = L"arena.pac";
+    else if (!_wcsicmp(type, L"attire")) need[1] = L"attire.pac";
+    else if (!_wcsicmp(type, L"moves")) need[1] = L"pack.txt";
+    else if (!_wcsicmp(type, L"background")) need[1] = L"*.dds";
+    for (i = 0; i < 3 && need[i]; ++i) {
+        swprintf_s(p, MAX_PATH, L"%s\\%s", dir, need[i]);
+        if (wcschr(need[i], L'*')) {
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW(p, &fd);
+            if (h == INVALID_HANDLE_VALUE) return 1;
+            FindClose(h);
+        } else if (!exists(p)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int mods_install(const WCHAR *game_dir, const WCHAR *zip)
 {
     wcsncpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"", _TRUNCATE);
@@ -706,6 +819,52 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
             changed = 1;
         }
     }
+    /* Old copies a replace couldn't recycle (swap_in): gone now. */
+    {
+        WCHAR olds[MAX_PATH];
+        swprintf_s(olds, MAX_PATH, L"%s\\.old", mods);
+        if (exists(olds)) remove_tree(olds, 1);
+    }
+    /* Repair: a bundle installed before whose folder is now incomplete (a 2.1.2 update's replace that recycled
+       the old folder half-way - a held file - and then couldn't move the new one in: the manifest but no model,
+       listed but left out by the game) is installed again, keeping its on / off. A bundle whose folder is gone
+       altogether stays gone (the player removed it). */
+    h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            WCHAR key[MAX_PATH + 2], *at, dir[MAX_PATH], msg[512];
+            const WCHAR *kf;
+            Mod bm;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            swprintf_s(key, MAX_PATH + 2, L"%s|", fd.cFileName);
+            for (at = wcsstr(known, key); at && at != known && at[-1] != L'\n'; at = wcsstr(at + 1, key)) {}
+            if (!at) continue;   /* (not installed yet: the loop below does it) */
+            ZeroMemory(&bm, sizeof bm);
+            swprintf_s(zip, MAX_PATH, L"%s\\%s", bundle_dir, fd.cFileName);
+            if (!zip_manifest(zip, &bm) || !(kf = kind_folder(bm.type))) continue;
+            safe_id(bm.id);
+            swprintf_s(dir, MAX_PATH, L"%s\\%s\\%s", mods, kf, bm.id);
+            if (!exists(dir) || !folder_incomplete(dir, bm.type)) continue;
+            swprintf_s(msg, 512, L"bundled %s: %s\\%s is incomplete (a replace stopped half-way) - installing it again",
+                       fd.cFileName, kf, bm.id);
+            install_log(game_dir, msg);
+            /* its lines out (every one: an update leaves the older version's line too) - the loop below installs it
+               again, keeping its on / off */
+            while (at) {
+                WCHAR *end = wcschr(at, L'\n');
+                end = end ? end + 1 : at + wcslen(at);
+                memmove(at, end, (wcslen(end) + 1) * sizeof(WCHAR));
+                changed = 1;
+                for (at = wcsstr(known, key); at && at != known && at[-1] != L'\n'; at = wcsstr(at + 1, key)) {}
+            }
+            {
+                WCHAR mark[MAX_PATH + 4];
+                swprintf_s(mark, MAX_PATH + 4, L"\n%s|repair\n", fd.cFileName);   /* (keeps "fresh" off below) */
+                if (wcslen(known) + wcslen(mark) < sizeof known / sizeof *known - 1) wcscat_s(known, sizeof known / sizeof *known, mark + 1);
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
     h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) {
         if (changed && _wfopen_s(&f, list, L"w, ccs=UTF-8") == 0 && f) {
@@ -750,6 +909,14 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
         }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
+    {   /* (the repair's "<file>|repair" marks: not written) */
+        WCHAR *r;
+        while ((r = wcsstr(known, L"|repair\n")) != NULL) {
+            WCHAR *start = r, *end = r + 8;
+            while (start > known && start[-1] != L'\n') --start;
+            memmove(start, end, (wcslen(end) + 1) * sizeof(WCHAR));
+        }
+    }
     if (changed && _wfopen_s(&f, list, L"w, ccs=UTF-8") == 0 && f) {
         fputws(known, f);
         fclose(f);
@@ -790,6 +957,127 @@ static void make_movie_fallbacks(const WCHAR *dir)
         if (!movie_make(&job)) status(job.err);
     }
     fclose(f);
+}
+
+/* A line in <game>\Mods\.install.log (UTF-8): what an install or the bundle
+   repair did when it didn't simply work - the launcher may have no window to
+   say it in (installs at start-up, after an update, --bundled). */
+static void install_log(const WCHAR *game, const WCHAR *text)
+{
+    WCHAR path[MAX_PATH];
+    SYSTEMTIME st;
+    FILE *f;
+    swprintf_s(path, MAX_PATH, L"%s\\Mods\\.install.log", game);
+    if (_wfopen_s(&f, path, L"a, ccs=UTF-8") || !f) return;
+    GetLocalTime(&st);
+    fwprintf(f, L"%04d-%02d-%02d %02d:%02d:%02d %s\n", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, text);
+    fclose(f);
+}
+
+static void collect_files(const WCHAR *dir, WCHAR (*files)[MAX_PATH], int *n, int cap)
+{
+    WCHAR pat[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    swprintf_s(pat, MAX_PATH, L"%s\\*", dir);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || *n >= cap) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            WCHAR sub[MAX_PATH];
+            swprintf_s(sub, MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+            collect_files(sub, files, n, cap);
+        } else {
+            swprintf_s(files[(*n)++], MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+/* The programs holding files of `dir` open (Restart Manager), "" if none is found. */
+static void who_holds(const WCHAR *dir, WCHAR *out, size_t cap)
+{
+    static WCHAR files[256][MAX_PATH];
+    static LPCWSTR names[256];
+    int n = 0, i;
+    DWORD session = 0;
+    WCHAR key[CCH_RM_SESSION_KEY + 1] = { 0 };
+    out[0] = 0;
+    collect_files(dir, files, &n, 256);
+    if (!n || RmStartSession(&session, 0, key) != ERROR_SUCCESS) return;
+    for (i = 0; i < n; ++i) names[i] = files[i];
+    if (RmRegisterResources(session, (UINT)n, names, 0, NULL, 0, NULL) == ERROR_SUCCESS) {
+        RM_PROCESS_INFO info[16];
+        UINT need = 0, have = 16;
+        DWORD reason = 0;
+        if (RmGetList(session, &need, &have, info, &reason) == ERROR_SUCCESS)
+            for (i = 0; i < (int)have; ++i)
+                if (!wcsstr(out, info[i].strAppName)) {
+                    if (out[0]) wcsncat_s(out, cap, L", ", _TRUNCATE);
+                    wcsncat_s(out, cap, info[i].strAppName, _TRUNCATE);
+                }
+    }
+    RmEndSession(session);
+}
+
+/* MoveFileW, tried a few times over ~2 s: an antivirus scanning freshly
+   unpacked files, or OneDrive, holds them for a moment. */
+static int move_retry(const WCHAR *from, const WCHAR *to)
+{
+    int i;
+    for (i = 0; i < 8; ++i) {
+        if (MoveFileW(from, to)) return 1;
+        Sleep(250);
+    }
+    return 0;
+}
+
+/* The new copy of a mod (tmp) in place of the installed one (dst), never
+   leaving a half: the old folder is renamed into Mods\.old first (a rename
+   fails whole when a file in it is held, and then nothing changed), the new
+   one moved in (on failure the old one goes back), and only then the old one
+   goes to the Recycle Bin (if that fails, Mods\.old is emptied at the next
+   start). It used to be recycled first: a held file left a folder with its
+   manifest but no model - listed, but left out by the game (2.1.2 bundled-mod
+   reports). 1 on success; else `why` says what to do. */
+static int swap_in(const WCHAR *tmp, const WCHAR *dst, const WCHAR *kind, const WCHAR *id, WCHAR *why, size_t cap)
+{
+    WCHAR old[MAX_PATH], olds[MAX_PATH], who[512];
+    int n = 0;
+    if (!exists(dst)) {
+        if (move_retry(tmp, dst)) return 1;
+        swprintf_s(why, cap, L"The mod could not be moved into %s (Windows error %lu): close the game and the Mod Maker "
+                             L"and install again.", dst, GetLastError());
+        return 0;
+    }
+    swprintf_s(olds, MAX_PATH, L"%s\\Mods\\.old", s_game);
+    SHCreateDirectoryExW(NULL, olds, NULL);
+    do swprintf_s(old, MAX_PATH, L"%s\\%s-%s-%d", olds, kind, id, n++);
+    while (exists(old) && n < 1000);
+    if (!move_retry(dst, old)) {
+        const DWORD err = GetLastError();
+        who_holds(dst, who, 512);
+        if (who[0]) swprintf_s(why, cap, L"The installed copy of \"%s\" is in use by %s: close that program and install "
+                                         L"again (the installed copy is unchanged).", id, who);
+        else swprintf_s(why, cap, L"The installed copy of \"%s\" couldn't be replaced (Windows error %lu - the game, the "
+                                  L"Mod Maker, an antivirus or OneDrive may be using it): it is unchanged; close them and "
+                                  L"install again.", id, err);
+        return 0;
+    }
+    if (!move_retry(tmp, dst)) {
+        const DWORD err = GetLastError();
+        if (!MoveFileW(old, dst)) {
+            swprintf_s(why, cap, L"\"%s\" couldn't be installed (Windows error %lu) and its old copy couldn't be put back: "
+                                 L"it is in %s.", id, err, old);
+            return 0;
+        }
+        swprintf_s(why, cap, L"\"%s\" couldn't be installed (Windows error %lu - an antivirus or OneDrive may be holding "
+                             L"the new files): the installed copy is unchanged; install again.", id, err);
+        return 0;
+    }
+    remove_tree(old, 1);  /* (an older version: to the Recycle Bin; a held file leaves it for the next start) */
+    return 1;
 }
 
 static int install_file(const WCHAR *zip)
@@ -898,9 +1186,9 @@ place:
         int was_off;
         swprintf_s(off, MAX_PATH, L"%s\\disabled", dst);
         was_off = exists(off);  /* (a new version keeps the old one's on / off) */
-        if (exists(dst)) remove_tree(dst, 1);  /* an older version: to the Recycle Bin */
-        if (!MoveFileW(tmp, dst)) {
-            status(L"The mod could not be installed (is the game running?).");
+        if (!swap_in(tmp, dst, kind, m.id, t, 512)) {
+            status(t);
+            install_log(s_game, t);
             remove_tree(tmp, 0);
             return 0;
         }

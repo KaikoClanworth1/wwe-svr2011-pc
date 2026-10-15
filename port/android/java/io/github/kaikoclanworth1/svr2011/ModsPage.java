@@ -426,12 +426,39 @@ final class ModsPage {
             }
             off = new File(dest, "disabled").exists();
         }
-        deleteTree(dest);
-        dest.getParentFile().mkdirs();
-        FileOps.copyTree(stage, dest);  // (the cache and the games folder are different storage)
-        deleteTree(stage);
-        if (!new File(dest, attire ? "attire.pac" : pic ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac").isFile())
-            throw new IOException("can't write to the game folder");
+        // The new copy beside the old one first (the cache and the games folder are different storage: a copy, which
+        // can stop half-way - a full card), then the old one renamed aside, the new one renamed in (the old one back
+        // if that fails) and only then the old one deleted: a failure leaves the installed copy as it was. (It used
+        // to be deleted first: a stopped copy left a folder the mods list showed and the game left out - the PC
+        // launcher's 2.1.2 bundled-mod reports, mods_tab.c swap_in.)
+        String need = attire ? "attire.pac" : pic ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
+        File kind = dest.getParentFile(), mods = kind.getParentFile();
+        File fresh = new File(mods, ".new-" + kind.getName() + "-" + id), old = new File(mods, ".old-" + kind.getName() + "-" + id);
+        deleteTree(fresh);
+        deleteTree(old);
+        kind.mkdirs();
+        try {
+            FileOps.copyTree(stage, fresh);
+        } catch (IOException copyFailed) {
+            deleteTree(fresh);
+            throw new IOException("can't write to the game folder (" + copyFailed.getMessage() + "); the installed copy is unchanged");
+        } finally {
+            deleteTree(stage);
+        }
+        if (!new File(fresh, need).isFile()) {
+            deleteTree(fresh);
+            throw new IOException("can't write to the game folder; the installed copy is unchanged");
+        }
+        if (dest.exists() && !dest.renameTo(old)) {
+            deleteTree(fresh);
+            throw new IOException("can't replace the installed copy (it is unchanged)");
+        }
+        if (!fresh.renameTo(dest)) {
+            if (old.exists()) old.renameTo(dest);
+            deleteTree(fresh);
+            throw new IOException("can't move the new copy in (the installed copy is unchanged)");
+        }
+        deleteTree(old);
         if (off) new FileOutputStream(new File(dest, "disabled")).close();
         if (attire) {
             try (OutputStream o = new FileOutputStream(new File(dest, ".installed"))) {  // (the install order: the newer moves)
