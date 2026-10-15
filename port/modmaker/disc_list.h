@@ -40,6 +40,15 @@ void Remove(const std::string& key);
 // The game keys with a disc set (whether or not the path is still there), in Games() order.
 std::vector<std::string> SetKeys();
 
+// A game set as a folder (an extract, or only some of the game's files - a player without the disc any more): the
+// files `what` reads there that aren't in it, as the player sees them ("pac\m.pac"); "moves" = the moveset and taunts
+// (superstar_port moveset / moveset-pack). Empty: all there, not a folder, or nothing known for that game. A PS2 game
+// needs its whole disc: SYSTEM.CNF is listed when it isn't there.
+std::vector<std::string> MissingFiles(const std::string& key, const std::string& what = "moves");
+// A game set as a folder that isn't a whole disc (no default.xex / SYSTEM.CNF): what it can do, in plain words ("" for
+// a disc image or a whole extract).
+std::string FolderNote(const std::string& key);
+
 // A disc image's or an extracted folder's disc id ("" when it isn't a disc / has none): the image's default.xex /
 // SYSTEM.CNF, or the folder's.
 std::string Identify(const std::wstring& path, bool* xbox = nullptr);
