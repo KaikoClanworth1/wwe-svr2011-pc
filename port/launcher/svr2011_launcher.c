@@ -3540,6 +3540,15 @@ static void saves_refresh(void)
     } while (FindNextFileW(f, &fd));
     FindClose(f);
     fmt_size(size, 32, total);
+    {   /* the game couldn't write its save last time (UserData\save_write_failed.txt, universe_welcome.cpp) */
+        WCHAR ud[MAX_PATH], failed[MAX_PATH];
+        if (join(ud, s_game_dir, L"UserData") && join(failed, ud, L"save_write_failed.txt") &&
+            GetFileAttributesW(failed) != INVALID_FILE_ATTRIBUTES) {
+            saves_status(L"WARNING: the game couldn't write its save last time it ran. Check that %s isn't read-only, "
+                         L"blocked by Windows Controlled folder access, or kept online-only by OneDrive.", saves);
+            return;
+        }
+    }
     if (n)
         saves_status(L"%d save file%s, %s, in %s.", n, n == 1 ? L"" : L"s", size, saves);
     else

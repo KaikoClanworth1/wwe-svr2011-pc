@@ -26,6 +26,7 @@
 #include "cae_mod_motions.h"
 #include "superstar_mods.h"
 #include "universe_mods.h"
+#include "universe_welcome.h"
 #include "move_packs.h"
 #include "startup_pump.h"
 
@@ -2339,6 +2340,7 @@ REX_HOOK_RAW(sub_8257A218) {
 namespace svr2011 {
 void CheckModProfiles(uint8_t* base) {
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
+  UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);

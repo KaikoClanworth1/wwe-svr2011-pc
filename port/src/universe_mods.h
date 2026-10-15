@@ -1,6 +1,6 @@
 // Superstar mods in WWE Universe (universe_mods.cpp): Universe keeps 150 superstars in the save; a switched-on mod
 // gets an entry and its rivalries in a side table instead (guest memory, saved next to the save as
-// Saves\SaveData.universe_mods.bin), so the save itself stays as older builds read it.
+// Saves\.universe\mods.bin), so the save itself stays as older builds read it.
 #pragma once
 
 #include <cstdint>
