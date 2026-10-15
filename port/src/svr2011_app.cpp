@@ -155,6 +155,51 @@ std::string Env(const char* name) {
   return result;
 }
 
+// A settings file's "basic strings" broken over lines joined again: a
+// `key = "...` line with no closing quote takes the next non-blank lines
+// (the blank ones between them dropped) until its quote closes.
+std::string JoinBrokenTomlStrings(const std::string& text) {
+  const auto open_string = [](const std::string& line) {
+    size_t p = line.find_first_not_of(" \t");
+    if (p == std::string::npos || line[p] == '#' || line[p] == '[') return false;
+    const size_t eq = line.find('=', p);
+    if (eq == std::string::npos) return false;
+    p = line.find_first_not_of(" \t", eq + 1);
+    if (p == std::string::npos || line[p] != '"' || line.compare(p, 3, "\"\"\"") == 0) return false;
+    for (++p; p < line.size(); ++p) {
+      if (line[p] == '\\') ++p;
+      else if (line[p] == '"') return false;
+    }
+    return true;
+  };
+  std::string out, pending;
+  bool joining = false;
+  for (size_t pos = 0; pos <= text.size();) {
+    size_t nl = text.find('\n', pos);
+    if (nl == std::string::npos) nl = text.size();
+    std::string line = text.substr(pos, nl - pos);
+    const bool cr = !line.empty() && line.back() == '\r';
+    if (cr) line.pop_back();
+    const bool last = nl == text.size();
+    pos = nl + 1;
+    if (joining) {
+      if (line.empty()) {
+        if (last) break;
+        continue;
+      }
+      pending += line;
+    } else {
+      pending = line;
+    }
+    joining = open_string(pending) && !last;
+    if (joining) continue;
+    out += pending;
+    if (!last) out += cr ? "\r\n" : "\n";
+  }
+  if (joining) out += pending;
+  return out;
+}
+
 // The runtime's user data (paths.user_data_root) and the saves folder.
 std::filesystem::path g_user_data;
 std::filesystem::path g_saves;
@@ -230,6 +275,15 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     std::ifstream in(paths.config_path);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
+    // A string broken over lines: launchers up to 2.1.2 wrote a value longer
+    // than 1023 bytes (MY MUSIC's song list) back in pieces, a blank line more
+    // at every save. The file no longer parsed - every setting ignored, no
+    // gpu_plugin: a black screen at start (a 2.1.2 report).
+    if (std::string fixed = JoinBrokenTomlStrings(text); fixed != text) {
+      REXLOG_WARN("settings: {} had a value broken over lines - joined again", paths.config_path.string());
+      text = std::move(fixed);
+      std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
+    }
     auto key_of = [](const std::string& line) {
       const size_t a = line.find_first_not_of(" \t");
       const size_t eq = line.find('=');
@@ -276,6 +330,12 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
+  // A settings file that couldn't be read (every setting ignored) still draws.
+  if (config.gpu_plugin.empty()) {
+    rex::cvar::SetFlagByName("gpu_plugin", "xenos");
+    config.gpu_plugin = "xenos";
+    REXLOG_WARN("settings: no gpu_plugin (could {} be read?) - using xenos", g_config_path.string());
+  }
 #if defined(__ANDROID__)
   // The phone draws natively on Vulkan only: a settings file with another
   // value ("any", seen in a player's report: "no backend for the emulator's
