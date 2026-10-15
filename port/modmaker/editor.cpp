@@ -250,6 +250,7 @@ ID3D11DepthStencilState* g_depth = nullptr;
 ID3D11DepthStencilState* g_depth_ro = nullptr;  // (glows: test, no write)
 ID3D11BlendState* g_add = nullptr;               // (glows: additive)
 ID3D11ShaderResourceView* g_white = nullptr;
+ID3D11ShaderResourceView* g_screen_off = nullptr;  // (MovieSurface: a screen that is off)
 // the viewport's target
 ID3D11Texture2D* g_rt = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
@@ -452,6 +453,11 @@ bool CreatePipeline() {
   g_dev->CreateTexture2D(&td, &srd, &tex);
   g_dev->CreateShaderResourceView(tex, nullptr, &g_white);
   tex->Release();
+  const uint32_t off = 0xFF1A1816u;  // (a movie screen that is off: near black)
+  srd.pSysMem = &off;
+  g_dev->CreateTexture2D(&td, &srd, &tex);
+  g_dev->CreateShaderResourceView(tex, nullptr, &g_screen_off);
+  tex->Release();
   return true;
 }
 
@@ -482,13 +488,36 @@ void ResizeTarget(int w, int h) {
 
 std::map<std::string, ID3D11ShaderResourceView*> g_tex_override;  // (SetTextureOverride: the Full preview's titantron)
 
+// The texture a model names, in the arena's sets: as written, else whatever the case - the game finds them so
+// (the practice arena's Sheat_A seats ask for st_sheata / st_sheata_blue, its set has st_sheatA / st_sheatA_Blue;
+// RAW's billboards rawtest02 for RAWtest02) - drawn white they were the "white stands".
+const BundleTexture* FindTextureAnyCase(const std::string& name) {
+  if (!g_arena) return nullptr;
+  if (const BundleTexture* t = g_arena->FindTexture(name)) return t;
+  auto low = [](std::string x) {
+    for (char& c : x) c = char(std::tolower(uint8_t(c)));
+    return x;
+  };
+  const std::string want = low(name);
+  for (const auto& b : g_arena->bundles)
+    for (const auto& t : b.textures)
+      if (low(t.name) == want) return &t;
+  return nullptr;
+}
+
+// Surfaces the game fills with a movie at run time (no such texture in any pac): RAW's screens titantron_movie and
+// arena_movie (the superstar's movies	itantron\<id>.bik: 320 x 320, the titantron above, a name strip below).
+// Without a movie set on them (SetTextureOverride) they are drawn as a screen that is off, not white.
+bool MovieSurface(const std::string& name) { return name == "titantron_movie" || name == "arena_movie"; }
+
 ID3D11ShaderResourceView* TextureFor(const std::string& name) {
   if (auto o = g_tex_override.find(name); o != g_tex_override.end() && o->second) return o->second;
   if (name.empty()) return g_white;
+  if (MovieSurface(name) && g_screen_off) return g_screen_off;
   auto it = g_tex.find(name);
   if (it != g_tex.end()) return it->second ? it->second : g_white;
   ID3D11ShaderResourceView* srv = nullptr;
-  if (const BundleTexture* t = g_arena ? g_arena->FindTexture(name) : nullptr) {
+  if (const BundleTexture* t = FindTextureAnyCase(name)) {
     DdsInfo info;
     if (DdsInfoOf(t->data, info)) {
       DXGI_FORMAT f = DXGI_FORMAT_UNKNOWN;
