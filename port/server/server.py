@@ -402,6 +402,7 @@ class Stats:
 
 class Service:
     def __init__(self, args):
+        self.local_admin = bool(getattr(args, "local_admin", False))
         self.base = "/" + args.base.strip("/") if args.base.strip("/") else ""
         self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20)
         self.sake = gs.Sake(self.store)
@@ -444,15 +445,18 @@ class Service:
         return account
 
     def is_admin(self, request):
-        """The dashboard: Project Index admins (through the portal), or anyone on
-        this PC talking to the service directly."""
+        """The dashboard: Project Index admins (through the portal: its headers on
+        a loopback connection). A loopback request without the portal's headers
+        is NOT an admin any more - behind a public proxy on the same host (nginx
+        on a VPS) every request comes from loopback - unless the service runs
+        with --local-admin (a developer's own server)."""
         if request.headers.get("X-Portal-Public"):
             return False
         if request.remote not in LOOPBACK:
             return False
         if request.headers.get("X-Forwarded-For"):  # through the portal
             return request.headers.get("X-Portal-Role") == "admin"
-        return True
+        return self.local_admin
 
     def throttled(self, ip, limit=10, window=600):
         q = self.attempts[ip]
@@ -1181,6 +1185,9 @@ def main():
     ap.add_argument("--relay-edge", default=None,
                     help="host:port of relay_edge.py's link (it takes the UDP; --relay-udp-port: the players' port there)")
     ap.add_argument("--relay-secret", default=None, help="the file with the secret shared with the edge")
+    ap.add_argument("--local-admin", action="store_true",
+                    help="the dashboard for anyone on this PC talking to the service directly (a developer's own "
+                         "server; never behind a public proxy on the same host)")
     args = ap.parse_args()
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
