@@ -966,6 +966,26 @@ void SetStageLight(int set) {
   g_cb_light_now = set;
 }
 
+V3 g_eye;  // the camera's position this frame (RenderScene): "b" models turn to it
+
+// A "b" (billboard) model turned about its own length to face the camera, as the game draws its beams: every "b"
+// model of the stock arenas (RAW's ar_ten_beam / raw_glow_mo*, the practice arena's tf_ / stand_glow_mo*) runs along
+// its local x from the lamp, its quads lying in local x / y and facing local z. at: its place (scale, rotation, move;
+// row vectors), the turn about local x goes first.
+M4 FaceCamera(const M4& at) {
+  const V3 ax = Norm({at.m[0], at.m[1], at.m[2]}), yw = Norm({at.m[4], at.m[5], at.m[6]}),
+           zw = Norm({at.m[8], at.m[9], at.m[10]});
+  V3 v = g_eye - V3{at.m[12], at.m[13], at.m[14]};
+  v = v - ax * Dot(v, ax);  // (towards the camera, across the beam)
+  if (Dot(v, v) < 1e-6f) return at;
+  v = Norm(v);
+  // p * Rx(t): local z -> (0, -sin t, cos t), so the face's normal becomes -sin t yw + cos t zw = v
+  const float t = std::atan2(-Dot(v, yw), Dot(v, zw)), c = std::cos(t), sn = std::sin(t);
+  M4 rx;
+  rx.m[5] = c, rx.m[6] = sn, rx.m[9] = -sn, rx.m[10] = c;
+  return Mul(rx, at);
+}
+
 // an effect model (m(<n>)) is drawn where its motion puts it, in the look it belongs to
 bool ShowEffect(const Obj& o) {
   if (!g_stage_lights || o.motion < 0 || !g_motions.count({o.motion, 0})) return false;
@@ -1387,6 +1407,7 @@ void RenderScene() {
   const M4 view = given ? g_vcam_view : LookAt(Eye(), g_target, {0, -1, 0});
   const M4 proj = given ? g_vcam_proj : Perspective(0.9f, float(g_rt_w) / float(std::max(1, g_rt_h)), 1.0f, 5000.0f, g_mirror);
   g_viewproj = Mul(view, proj);
+  if (M4 inv; Invert(view, inv)) g_eye = {inv.m[12], inv.m[13], inv.m[14]};
   float light[3];
   LightTint(light);
   const bool per_rope = [] {
@@ -1401,6 +1422,7 @@ void RenderScene() {
     if (o.effect) {  // (placed by its motion)
       M4 at;
       if (o.glow || !ShowEffect(o) || !MotionPlace(o.motion, at)) continue;
+      if (o.billboard) at = FaceCamera(at);
       SetCb(at, light);
       for (int k : o.meshes) DrawMesh(o.model, k);
       continue;
@@ -1484,6 +1506,7 @@ void RenderScene() {
   for (const Obj& o : g_objs) {  // (the beams and glows the arena's motions put in place)
     M4 at;
     if (!o.glow || !o.effect || o.hidden || o.outside || !ShowEffect(o) || !MotionPlace(o.motion, at)) continue;
+    if (o.billboard) at = FaceCamera(at);
     g_glow_pass = true;
     SetCb(at, light);
     g_glow_pass = false;
