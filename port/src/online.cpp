@@ -14,6 +14,7 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -430,6 +431,50 @@ REX_HOOK_RAW(sub_828D1648) {
   const uint32_t data = ctx.r3.u32;
   ctx.r3.u64 = base[data + 13] == 0 ? 1 : 0;
 }
+
+// Community Creations' Created Superstar upload list: sub_8257BCD0(profile, r4) - the save's CAW record
+// (sub_8257A450: save + 0x13F9C + k * 0x6BC) - is true for one that can be uploaded. It isn't when any of: the
+// record's +1677 (an online-only CAW), +1716..1719 / +1720..1723 (per-attire marks), the CAW's roster entry (36
+// bytes, runtime table at 0x82EBE9FC by the id at +32) +17 or +32, a DLC part (sub_8257ABB8 / sub_8257BAC0 - the
+// game's own rule: "purchased content cannot be uploaded"). A player report (2.1.2: "it says I don't have any I can
+// upload, and I made it on this version") is read through this: each CAW the list leaves out is logged once a run
+// with the reason, so the next report says which.
+REX_EXTERN(__imp__sub_8257BCD0);
+REX_EXTERN(__imp__sub_8257ABB8);
+REX_HOOK_RAW(sub_8257BCD0) {
+  const uint32_t profile = ctx.r3.u32;
+  const auto saved = ctx;
+  __imp__sub_8257BCD0(ctx, base);
+  if (ctx.r3.u32 || !profile) return;
+  static std::set<uint32_t> said;
+  const uint8_t* p = base + profile;
+  const int16_t id = int16_t(uint16_t(p[32]) << 8 | p[33]);
+  if (!said.insert(uint32_t(uint16_t(id))).second) return;
+  std::string why;
+  auto add = [&](const std::string& s) { why += (why.empty() ? "" : ", ") + s; };
+  if (p[1677]) add("online-only CAW (+1677 = " + std::to_string(p[1677]) + ")");
+  for (int a = 0; a < 4; ++a)
+    if (p[1716 + a]) add("attire " + std::to_string(a + 1) + " mark +1716 = " + std::to_string(p[1716 + a]));
+  for (int a = 0; a < 4; ++a)
+    if (p[1720 + a]) add("attire " + std::to_string(a + 1) + " mark +1720 = " + std::to_string(p[1720 + a]));
+  if (id >= 0 && id < 322) {
+    const uint8_t* rec = base + 0x82EBE9FCu + uint32_t(id) * 36;
+    if (rec[17]) add("downloaded (+17 = " + std::to_string(rec[17]) + ")");
+    if (rec[32]) add("roster +32 = " + std::to_string(rec[32]));
+    auto c = saved;
+    c.r3.u64 = 0x82EBE9FCu + uint32_t(id) * 36, c.r4.u64 = uint64_t(id);  // (sub_8257ABB8(rec, id): a DLC part)
+    __imp__sub_8257ABB8(c, base);
+    if (c.r3.u32) add("a DLC part (purchased content)");
+  }
+  char name[64] = {};
+  for (int i = 0; i < 31; ++i) {  // (its name: UTF-16BE at the record's start)
+    const char ch = char(p[2 * i + 1]);
+    if (!ch || p[2 * i]) break;
+    name[i] = ch;
+  }
+  REXLOG_INFO("online: CAW id {} \"{}\" left out of the upload list: {}", id, name, why.empty() ? "a DLC part or a part the game marks" : why);
+}
+
 
 // Community Creations upload of a story: the game's check (sub_82629160,
 // asked only by the upload confirm sub_82511C18) says "This Created Content
