@@ -585,13 +585,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallMatchTypes(runtime()->memory());
   // Arena mods: custom arenas in place of a host arena (arena_mods.h).
   svr2011::KeepWindowAlive();
-  {
-    // (the installed DLC packages - dlc.cpp - whose own m / mpsp / misc pacs get the packs too)
-    char title[16];
-    std::snprintf(title, sizeof(title), "%08X", runtime()->kernel_state()->title_id());
-    svr2011::InstallMovePacks(runtime()->file_system(),  // (arenas branch: before the game mounts its pacs)
-                              g_user_data / "0000000000000000" / title / "00000002");
-  }
+  svr2011::InstallMovePacks(runtime()->file_system());  // (arenas branch: before the game mounts its pacs)
   svr2011::KeepWindowAlive();
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();
