@@ -2867,10 +2867,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--simple-arena") && more) arena_page::TestSimple(_wtoi(argv[++i])), g_page = PageId::kArena;  // Simple arena at <step>
     else if (!wcscmp(argv[i], L"--simple-arena-start") && more) arena_page::TestSimpleStart(Utf8(argv[++i])), g_page = PageId::kArena;  // tile:<n> | empty:<n> | disc:<key>[:<bgNN>[:<host>]]
     else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs
-    else if (!wcscmp(argv[i], L"--simple-port") && more) {  // <entrance|moves|taunts>,<game key>[,<item>[,<step>]]
+    else if (!wcscmp(argv[i], L"--simple-port") && more) {  // <entrance|moves|taunts|import>,<game key>[,<item>[,<step>[,add]]]
       const std::string spec = Utf8(argv[++i]);
       simple_port::TestStart(spec);
-      g_page = spec.rfind("moves", 0) == 0 ? PageId::kPortMoves : spec.rfind("taunts", 0) == 0 ? PageId::kPortTaunts : PageId::kPortEntrance;
+      if (spec.rfind("import", 0) == 0) star_page::TestSimple(1), star_page::TestSimpleLook(1), g_page = PageId::kStar;  // (Simple superstar's Look step)
+      else g_page = spec.rfind("moves", 0) == 0 ? PageId::kPortMoves : spec.rfind("taunts", 0) == 0 ? PageId::kPortTaunts : PageId::kPortEntrance;
     }
     else if (!wcscmp(argv[i], L"--star-fbx") && more) {  // <fbx>[,<fbx_map= text>]: the FBX import's mapping table
       const std::wstring v = argv[++i];

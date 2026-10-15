@@ -227,6 +227,7 @@ int RosterByName(const std::string& name) {
 }
 
 void AskThumbs(const std::string& game, const std::string& key) {
+  if (game.empty()) return;  // (the converter's games not read yet)
   Thumbs& t = g_thumbs[game];
   if (t.asked || Busy()) return;
   t.asked = true;
@@ -287,8 +288,8 @@ void AskList(Kind k, State& s) {
   if (k == kEntrance) args.push_back(L"--game-pac"), args.push_back(Pac11());
   else args.push_back(L"--pac11"), args.push_back(Pac11());
   AddSvrmod(args, game);
-  RunToolJson(ScriptOf(k), args, [k, want](int code, const std::string& out) {
-    State& s = g_s[k];
+  RunToolJson(ScriptOf(k), args, [sp = &s, want](int code, const std::string& out) {  // (s: a menu's, or the import's)
+    State& s = *sp;
     if (s.list_for != want) return;
     Json j;
     if (code == 0 && ParseJson(out, j) && j.type == Json::Type::kArray) s.list = std::move(j);
@@ -1168,11 +1169,13 @@ struct Test {
   std::string game, item;
   int step = -1;
   bool on = false;
-  bool add = false;  // (then Add to my game, once the entrance is ready)
+  bool add = false;     // (then Add to my game / Bring in, once ready)
+  bool import = false;  // (Simple superstar's import, SuperstarImport)
 };
 Test g_test;
 
 void TestTick(Kind k, State& s) {
+  if (g_test.import) return;
   if (g_test.add && g_test.kind == k && !g_test.on && k == kEntrance && !s.item.empty()) {
     Convert(s);
     if (Converted(s) && s.installed.empty() && !s.installing && !Busy()) s.installing = true, AddEntrance(s), g_test.add = false;
@@ -1181,9 +1184,11 @@ void TestTick(Kind k, State& s) {
   if (!g_test.on || g_test.kind != k) return;
   if (s.game != g_test.game) s.game = g_test.game;
   if (!g_test.item.empty() && s.item.empty() && s.list.type == Json::Type::kArray) {
+    std::string name;  // (found first: Pick resets the state the list is in)
     for (const auto& r : s.list.items)
-      if (ItemKeyOf(r) == g_test.item) Pick(k, s, g_test.item, r["name"].Str());
-    if (s.item.empty()) Log("simple porting test: no item " + g_test.item + " in the list"), g_test.on = false;
+      if (ItemKeyOf(r) == g_test.item) name = r["name"].Str();
+    if (!name.empty()) Pick(k, s, g_test.item, name);
+    else Log("simple porting test: no item " + g_test.item + " in the list"), g_test.on = false;
   }
   if (g_test.item.empty() || !s.item.empty()) {
     if (g_test.step >= 0) s.step = std::min(g_test.step, StepCount(k) - 1);
@@ -1193,7 +1198,120 @@ void TestTick(Kind k, State& s) {
   }
 }
 
+// ---- Simple superstar's Look step: a superstar from another game (superstar_port list / thumbs / convert)
+
+State g_import;               // the game and the superstar picked (the moves menu's kind: superstar_port's list)
+bool g_import_all = false;    // "Bring everything too"
+std::string g_import_for, g_import_error;
+std::wstring g_import_ready;  // a converted .svrmod not handed back yet
+bool g_import_ready_all = false;
+
+bool ImportRunning() { return !g_import_for.empty() && g_import_ready.empty() && g_import_error.empty(); }
+
+void ImportConvert() {
+  State& s = g_import;
+  const std::string game = ConverterGame(kMoves, s.game);
+  if (game.empty() || s.item.empty() || Busy() || !ConvertersReady()) return;
+  const std::string want = game + "|" + s.item;
+  g_import_for = want;
+  g_import_error.clear();
+  g_import_ready.clear();
+  const fs::path out = WorkDir() / Wide("star_" + game + "_" + Safe(s.item));
+  std::error_code ec;
+  fs::remove_all(out, ec);
+  fs::create_directories(out, ec);
+  std::vector<std::wstring> args = {L"convert", L"--game", Wide(game), L"--src", disc_list::PathFor(s.game), L"--out", out.wstring(),
+                                    L"--pac11", Pac11(), L"--item", Wide(s.item)};
+  if (!g_import_all) args.push_back(L"--no-moves"), args.push_back(L"--no-taunts");  // (the look only: no moves to port)
+  AddSvrmod(args, game);
+  Status("Bringing " + s.item_name + " over from your disc" + (g_import_all ? " with everything (this can take several minutes)..." : "..."));
+  RunToolJson(L"superstar_port.py", args, [want, all = g_import_all](int code, const std::string& o) {
+    if (g_import_for != want) return;
+    Json j;
+    if (code == 0 && ParseJson(o, j) && j["ok"].Truthy() && !j["out"].Str().empty()) {
+      g_import_ready = Wide(j["out"].Str());
+      g_import_ready_all = all;
+    } else {
+      g_import_error = ErrorOf(code, o, "superstar converter");
+      Status("That superstar couldn't be brought over: " + simple::Plain(g_import_error));
+    }
+  });
+}
+
 }  // namespace
+
+namespace {
+bool ImportList(std::wstring& mod, bool& everything) {
+  State& s = g_import;
+  if (g_test.on && g_test.import) {  // (test aid: the game and the superstar, then Bring in)
+    s.game = g_test.game;
+    if (!g_test.item.empty() && s.item.empty() && s.list.type == Json::Type::kArray) {
+      std::string name;  // (found first: Pick resets the state the list is in)
+      for (const auto& r : s.list.items)
+        if (ItemKeyOf(r) == g_test.item) name = r["name"].Str();
+      if (!name.empty()) Pick(kMoves, s, g_test.item, name);
+      else Log("simple porting test: no superstar " + g_test.item), g_test.on = false;
+    }
+    if (!s.item.empty()) g_import_all = g_test.step == 1, g_test.on = false;
+  }
+  if (g_test.import && g_test.add && !g_test.on && !s.item.empty() && !Busy() && g_import_for.empty()) g_test.add = false, ImportConvert();
+  if (!g_import_ready.empty()) {  // (handed back once)
+    mod = g_import_ready, everything = g_import_ready_all;
+    g_import_ready.clear();
+    g_import_for.clear();
+    Status("Here's " + s.item_name + ".");
+    return true;
+  }
+  if (s.game.empty()) {
+    ImGui::TextUnformatted("Which game?");
+    StepGame(kMoves, s);
+    return false;
+  }
+  ImGui::Text("From %s", GameName(s.game).c_str());
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Another game")) {
+    s = State();
+    g_import_for.clear(), g_import_error.clear();
+    return false;
+  }
+  ImGui::BeginChild("import", ImVec2(0, 330 * g_scale), false);
+  StepItem(kMoves, s);
+  ImGui::EndChild();
+  if (s.item.empty()) return false;
+  ImGui::Spacing();
+  const bool running = ImportRunning() && g_import_for == ConverterGame(kMoves, s.game) + "|" + s.item;
+  ImGui::BeginDisabled(running || Busy());
+  PushAccent();
+  if (ImGui::Button(running ? "Bringing them over..." : ("Bring " + s.item_name + " in").c_str(), ImVec2(260 * g_scale, 36 * g_scale))) ImportConvert();
+  if (running) ImGui::TextDisabled(g_import_all ? "With everything this takes a few minutes: their moves are brought over too." : "This takes a minute or so.");
+  PopAccent();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::Checkbox("Bring everything too (moves, theme, entrance, ratings)", &g_import_all);
+  if (!g_import_error.empty()) {
+    ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "That didn't work:");
+    ImGui::SameLine();
+    ImGui::TextWrapped("%s", simple::Plain(g_import_error).c_str());
+  }
+  return false;
+}
+
+}  // namespace
+
+bool SuperstarImport(std::wstring& mod, bool& everything) {
+  if (const std::wstring got = port_page::EmbeddedResult(); !got.empty()) {  // (a lone character file's, below)
+    port_page::ClearEmbeddedResult();
+    mod = got, everything = g_import_all;
+    return true;
+  }
+  const bool got = ImportList(mod, everything);
+  ImGui::Spacing();
+  if (ImGui::TreeNode("Use one character file instead...")) {  // (a chNNN.pac / a PS2 CH.PAC on its own: port_page)
+    port_page::SuperstarFileFlow();
+    ImGui::TreePop();
+  }
+  return got;
+}
 
 void Draw(Kind k) {
   State& s = g_s[k];
@@ -1244,7 +1362,8 @@ void TestStart(const std::string& spec) {
     f.push_back(spec.substr(a, b - a));
   }
   if (f.size() < 2) return;
-  g_test.kind = f[0] == "moves" ? kMoves : f[0] == "taunts" ? kTaunts : kEntrance;
+  g_test.import = f[0] == "import";  // (Simple superstar's Look step; step 1 = with "Bring everything too")
+  g_test.kind = f[0] == "moves" || g_test.import ? kMoves : f[0] == "taunts" ? kTaunts : kEntrance;
   g_test.game = f[1];
   g_test.item = f.size() > 2 ? f[2] : "";
   g_test.step = f.size() > 3 && !f[3].empty() ? std::atoi(f[3].c_str()) : -1;
