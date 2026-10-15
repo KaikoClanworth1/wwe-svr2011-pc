@@ -6651,6 +6651,8 @@ static void up_done(int ok, WCHAR *err)
                     MB_OK | MB_ICONINFORMATION);
         ZeroMemory(&si, sizeof si);
         si.cb = sizeof si;
+        si.dwFlags = STARTF_USESHOWWINDOW;   /* (shown, whatever this launcher was started with) */
+        si.wShowWindow = SW_SHOWNORMAL;
         swprintf_s(cmd, MAX_PATH + 32, L"\"%s\" --updated", s_launcher_exe);
         if (CreateProcessW(s_launcher_exe, cmd, NULL, NULL, FALSE, 0, NULL, s_launcher_dir, &si, &pi)) {
             CloseHandle(pi.hProcess);
@@ -7819,7 +7821,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         SetWindowPos(s_wnd, NULL, -8000, -8000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         show = SW_SHOWNOACTIVATE;
     }
+    if (!capture_file) {
+        /* Always shown normally, never the show state it was started with: a launcher started hidden
+           (Start-Process -WindowStyle Hidden, a hidden parent's restart) ran with an invisible window. The
+           first ShowWindow can take the starter's state over: shown again if it stayed hidden. On a place no
+           monitor shows: onto the primary one. */
+        show = SW_SHOWNORMAL;
+        if (!MonitorFromWindow(s_wnd, MONITOR_DEFAULTTONULL))
+            SetWindowPos(s_wnd, NULL, 80, 80, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     ShowWindow(s_wnd, show);
+    if (!capture_file && !IsWindowVisible(s_wnd))
+        ShowWindow(s_wnd, SW_SHOWNORMAL);
     UpdateWindow(s_wnd);
     up_check_finished();
     if (!capture_file && GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini))
