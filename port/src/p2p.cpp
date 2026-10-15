@@ -563,7 +563,14 @@ void ProxyLoop(Proxy* proxy) {
 // The proxy for the peer's port `remote` (under g_mutex).
 Proxy* ProxyFor(const Mac& mac, uint16_t remote) {
   if (auto it = g_proxies.find({mac, remote}); it != g_proxies.end()) return it->second;
-  if (g_proxies.size() >= 64) return nullptr;
+  // (one per peer port this game ever played with - they live as long as the
+  // game; at 64 a busy evening of Royal Rumbles ran out: a new peer's packets
+  // were dropped, it froze and "left" - or every one was kicked, the host)
+  if (g_proxies.size() >= 512) {
+    static bool said = false;
+    if (!std::exchange(said, true)) REXLOG_ERROR("p2p: 512 peer proxies - new players' packets are dropped");
+    return nullptr;
+  }
   auto* proxy = new Proxy{socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP), mac, remote, 0};
   sockaddr_in at = Sin(0x7F000001, 0);
   socklen_t len = sizeof(at);
