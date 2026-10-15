@@ -206,7 +206,8 @@ def ps2_characters(path, game, work, cache=None):
     if cf:
         try:
             os.makedirs(cache, exist_ok=True)
-            json.dump(dict(key=key, characters=out), open(cf, 'w'))
+            open(cf + '.part', 'w').write(json.dumps(dict(key=key, characters=out)))
+            os.replace(cf + '.part', cf)
         except OSError:
             pass
     return out

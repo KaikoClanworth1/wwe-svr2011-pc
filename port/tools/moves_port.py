@@ -95,6 +95,7 @@ def log(*a):
 
 DEADLINE = None   # (time.time() limit for one convert, set by callers like moveset_port; checked between steps)
 QUIET = False     # (no progress lines: a caller prints its own)
+STAGES = None     # (a list: each progress step's (text, time) is added - moveset_port's per-move timings)
 
 
 class TimeLimit(Exception):
@@ -102,6 +103,8 @@ class TimeLimit(Exception):
 
 
 def progress(pct, text):
+    if STAGES is not None:
+        STAGES.append((text, time.time()))
     if DEADLINE is not None and time.time() > DEADLINE:
         raise TimeLimit('over the time limit at "%s"' % text)
     if not QUIET:
@@ -167,6 +170,19 @@ def cache_dir(pac11, fallback):
         except OSError:
             continue
     return fallback
+
+
+def save_atomic(path, data=None, obj=None):
+    """write bytes (data) or a pickle (obj) to path whole or not at all (a cancelled convert - the Mod Maker kills
+    the process tree - leaves no half-written cache)"""
+    import pickle
+    tmp = path + '.part'
+    with open(tmp, 'wb') as f:
+        if obj is not None:
+            pickle.dump(obj, f)
+        else:
+            f.write(data)
+    os.replace(tmp, path)
 
 
 def placeholder(raw):
@@ -684,7 +700,7 @@ class Game11:
         import pickle
         if self._gaps_dirty:
             try:
-                pickle.dump((self._gaps_stamp, self._gaps), open(self._gaps_file, 'wb'))
+                save_atomic(self._gaps_file, obj=(self._gaps_stamp, self._gaps))
             except OSError:
                 pass
             self._gaps_dirty = False

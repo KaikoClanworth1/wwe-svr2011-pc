@@ -35,6 +35,26 @@ def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
+def stage_times(stages):
+    """moves_port's progress steps [(text, time)] -> 'reading 0.1, decode 0.3, template pick 0.0, retarget 1.2, tracks 2.0'
+    (tracks with a YMBs taunt: the limb solve + the encode)"""
+    names = {'reading the game': 'reading', 'decoding the motion': 'decode', '2011 banks': 'template pick',
+             'retargeting': 'retarget', 'tracks': 'tracks'}
+    out, ymbs = [], False
+    for (a, ta), (b, tb) in zip(stages, stages[1:]):
+        if a.startswith('tracks:'):
+            ymbs = True
+            a = 'tracks'
+        n = names.get(a)
+        if n is None:
+            continue
+        if out and out[-1][0] == n:
+            out[-1][1] += tb - ta
+        else:
+            out.append([n, tb - ta])
+    return ', '.join('%s%s %.1f' % (n, ' (YMBs)' if n == 'tracks' and ymbs else '', t) for n, t in out)
+
+
 def _norm(s):
     import moves_port as MP
     return MP.norm(s)
@@ -173,11 +193,13 @@ def port_moveset(c):
                 a['template'] = str(templ[v])
             lo, hi = getattr(c, 'prog', (70, 85))
             nport = min(len(to_port), c.max_port if c.max_port is not None else len(to_port))
-            print('progress %d moves %d/%d: %s' % (lo + (hi - lo) * k // max(1, nport), k + 1, nport, nm),
-                  file=sys.stderr, flush=True)
+            kinds = ['taunt' if x in templ else 'move' for x in list(to_port)[:nport]]
+            kind = kinds[k]
+            line = '%s %d of %d: %s' % (kind, kinds[:k + 1].count(kind), kinds.count(kind), nm)
+            print('progress %d %s' % (lo + (hi - lo) * k // max(1, nport), line), file=sys.stderr, flush=True)
             t0 = time.time()
             limit = float(os.environ.get('SVR2011_MOVE_TIME_LIMIT') or getattr(c, 'move_time', 120))
-            MP.DEADLINE, MP.QUIET = t0 + limit, True
+            MP.DEADLINE, MP.QUIET, MP.STAGES = t0 + limit, True, [('start', t0)]
             try:
                 MP.convert(a, r)
             except MP.TimeLimit:
@@ -191,8 +213,8 @@ def port_moveset(c):
                     rows.append((None, to, v, nm, 'base kept (port failed: %s)' % str(e)[:80], base[to // 2]))
                 continue
             finally:
-                MP.DEADLINE, MP.QUIET = None, False
-            log('moves %d/%d: %s ported in %.1f s' % (k + 1, nport, nm, time.time() - t0))
+                stages, MP.DEADLINE, MP.QUIET, MP.STAGES = MP.STAGES, None, False, None
+            log('%s ported in %.1f s (%s)' % (line, time.time() - t0, stage_times(stages)))
             for to in tos:
                 area[to // 2] = new_id
                 rows.append((None, to, v, nm, 'ported (template %s)' % r.get('template'), new_id))
