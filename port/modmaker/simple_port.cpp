@@ -384,45 +384,96 @@ void LoneNotes(const State& s) {
   }
 }
 
-// ---- moves / taunts (and Simple superstar's import) without a disc: a folder with some of the game's files, set as
-// that game's "disc" in My game discs; what's missing for moves is said in plain words (disc_list::MissingFiles)
+// ---- step 1's sources besides a disc: a folder of the game's files (some of them are enough: what's missing for
+// moves is said in plain words, disc_list::MissingFiles), one file (an entrance pac), a move pack folder (the Move
+// pack tab). A folder is set as that game's "disc" in My game discs; its game is read off it when it can be, else asked.
 
 std::wstring g_folder;  // a picked folder waiting for its game
 
-void FolderOfFiles(Kind k, State& s) {
-  ImGui::Spacing();
-  ImGui::Separator();
+void UseFolderFor(State& s, const std::string& key, const std::wstring& folder, const std::string& id) {
+  disc_list::Set(key, folder, id);
+  State fresh;
+  fresh.game = key;
+  fresh.step = s.step;
+  s = std::move(fresh);
+  Status(std::string(disc_list::GameByKey(key)->name) + " now reads from your folder (My game discs has it).");
+}
+
+void PickGameFolder(Kind k, State& s) {
+  const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)");
+  if (f.empty()) return;
+  bool xbox = true;
+  const std::string id = disc_list::Identify(f, &xbox);
+  const disc_list::Game* g = id.empty() ? nullptr : disc_list::GameById(id);
+  if (g && !ConverterGame(ScriptOf(k), *g).empty()) return UseFolderFor(s, g->key, f, id);  // (its game read off it)
+  g_folder = f;
+}
+
+// The cards over the game list: where the files come from, when it isn't a disc of yours.
+void SourceCards(Kind k, State& s) {
+  ImGui::TextDisabled("Where from:");
+  const float w = CardWidth(), h = 70 * g_scale;
+  const int per_row = CardsPerRow(w);
+  int n = 0;
+  auto next = [&] {
+    if (n++ % per_row) ImGui::SameLine(0, 8 * g_scale);
+  };
+  next();
+  if (Card("src_folder", "A folder of game files",
+           k == kEntrance ? "the game's files you copied off a disc" : "pac files copied off a disc (pac\\m.pac, pac\\misc.pac)",
+           !g_folder.empty(), w, h))
+    PickGameFolder(k, s);
+  if (k == kMoves) {
+    next();
+    if (Card("src_pack", "A move pack folder", "pack.txt + motions\\ - opens on the Move pack tab", false, w, h)) {
+      const std::wstring f = PickFolder(L"A move pack folder (pack.txt and motions\\)");
+      if (!f.empty()) {
+        moves_page::OpenPack(f);
+        GoTo(PageId::kMoves);
+      }
+    }
+  }
+  next();
+  if (k == kEntrance) {
+    if (Card("src_file", "One file", "an entrance pac (Nyujyo0.pac, Entrance01.pac, EVTENT.PAC ...)", !s.file.empty(), w, h)) {
+      static const COMDLG_FILTERSPEC kPac[1] = {{L"An entrance file (*.pac)", L"*.pac"}};
+      const std::wstring f = PickFile(false, L"An entrance file from another game (Nyujyo0.pac, Entrance01.pac, EVTENT.PAC ...)", kPac, 1);
+      if (!f.empty()) LoneFile(s, f);
+    }
+  } else if (Card("src_file", "One file", k == kMoves ? "a move-set isn't in one file: pick a folder with m.pac + misc.pac"
+                                                      : "taunts aren't in one file: pick a folder with m.pac + misc.pac",
+                  false, w, h)) {
+    Status(k == kMoves ? "A superstar's moves need the game's pac\\m.pac and pac\\misc.pac: pick the folder they're in."
+                       : "Taunts need the game's pac\\m.pac and pac\\misc.pac: pick the folder they're in.");
+    PickGameFolder(k, s);
+  }
+  if (!g_folder.empty()) {  // (a folder whose game can't be read off it: asked)
+    ImGui::Spacing();
+    ImGui::Text("Which game are the files in %s from?", FileName(g_folder).c_str());
+    const float gw = CardWidth(), gh = 60 * g_scale;
+    const int gper = CardsPerRow(gw);
+    int m = 0;
+    for (const auto& g : disc_list::Games()) {
+      if (ConverterGame(ScriptOf(k), g).empty()) continue;
+      if (m++ % gper) ImGui::SameLine(0, 8 * g_scale);
+      if (Card(g.key, g.name, g.xbox ? "Xbox 360" : "PS2", false, gw, gh)) {
+        const std::wstring f = g_folder;
+        g_folder.clear();
+        UseFolderFor(s, g.key, f, disc_list::Identify(f));
+        break;
+      }
+    }
+    if (ImGui::SmallButton("Cancel")) g_folder.clear();
+  }
   if (!s.game.empty())
     if (const std::string note = disc_list::FolderNote(s.game); !note.empty()) {
       ImGui::PushTextWrapPos(0);
       ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "%s", note.c_str());
       ImGui::PopTextWrapPos();
     }
-  if (g_folder.empty()) {
-    ImGui::TextDisabled("No disc any more?");
-    if (ImGui::Button("Use a folder of the game's files instead...")) {
-      g_folder = PickFolder(L"A folder with the game's files (the one holding its pac folder)");
-    }
-    return;
-  }
-  ImGui::Text("Which game are the files in %s from?", FileName(g_folder).c_str());
-  const float w = CardWidth(), h = 60 * g_scale;
-  const int per_row = CardsPerRow(w);
-  int n = 0;
-  for (const auto& g : disc_list::Games()) {
-    if (ConverterGame(ScriptOf(k), g).empty()) continue;
-    if (n++ % per_row) ImGui::SameLine(0, 8 * g_scale);
-    if (Card(g.key, g.name, g.xbox ? "Xbox 360" : "PS2", false, w, h)) {
-      disc_list::Set(g.key, g_folder, disc_list::Identify(g_folder));
-      State fresh;
-      fresh.game = g.key;
-      fresh.step = s.step;
-      s = std::move(fresh);
-      g_folder.clear();
-      Status(std::string(g.name) + " now reads from your folder (My game discs has it).");
-    }
-  }
-  if (ImGui::SmallButton("Cancel")) g_folder.clear();
+  if (!s.file.empty()) LoneNotes(s);
+  ImGui::Spacing();
+  ImGui::TextDisabled("Or one of your game discs:");
 }
 
 // ---- step: the game
@@ -440,6 +491,7 @@ void StepGame(Kind k, State& s) {
     }
     return;
   }
+  SourceCards(k, s);
   auto supported = [&](const disc_list::Game& g) { return !ConverterGame(script, g).empty(); };
   if (simple::GamePicker("games", s.game, supported)) {
     State fresh;
@@ -447,16 +499,6 @@ void StepGame(Kind k, State& s) {
     fresh.step = s.step;
     s = std::move(fresh);
   }
-  if (k != kEntrance) return FolderOfFiles(k, s);
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::TextDisabled("No disc any more?");
-  if (ImGui::Button("Use one entrance file instead...")) {
-    static const COMDLG_FILTERSPEC kPac[1] = {{L"An entrance file (*.pac)", L"*.pac"}};
-    const std::wstring f = PickFile(false, L"An entrance file from another game (Nyujyo0.pac, Entrance01.pac, EVTENT.PAC ...)", kPac, 1);
-    if (!f.empty()) LoneFile(s, f);
-  }
-  if (!s.file.empty()) LoneNotes(s);
 }
 
 // ---- step: the item (a superstar's entrance, or a superstar)
