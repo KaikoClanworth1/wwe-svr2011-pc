@@ -602,7 +602,7 @@ void ToolsPanel() {
     return;
   }
   if (!g_panel_why.empty()) ImGui::TextColored(kWarn, "%s", g_panel_why.c_str());
-  ImGui::TextWrapped("What the converters (Port from a disc, Other games) need, found or missing:");
+  ImGui::TextWrapped("What bringing things over from your other WWE games needs (Port from a disc, Other games, the Simple makers and porting menus), found or missing:");
   const std::wstring py = PythonExe();
   const std::string missing = PythonMissing().empty() ? "" : g_missing;
   const bool py_found = !py.empty();

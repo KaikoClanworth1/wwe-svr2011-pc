@@ -108,7 +108,7 @@ void StepLook_() {
   ImGui::Spacing();
   const int now = GameStarOf(g_star.model);
   if (const StarInfo* s = now ? StarById(now) : nullptr) ImGui::Text("Now: looks like %s.", s->name.c_str());
-  else if (!g_star.model.empty()) ImGui::Text("Now: %s.", FileName(g_star.model).c_str());
+  else if (!g_star.model.empty()) ImGui::Text("Now: %s.", Lower(FileName(g_star.model)) == "ch.pac" ? "the look you brought in" : FileName(g_star.model).c_str());
   ImGui::Spacing();
   if (mode == 0) {
     ImGui::SetNextItemWidth(260 * g_scale);
