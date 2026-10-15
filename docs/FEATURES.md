@@ -1,6 +1,6 @@
 # WWE SmackDown vs. Raw 2011 PC Port: features
 
-Everything the port adds to the game, as of v2.1.0 (14 October 2026): the core features first, then what each release added.
+Everything the port adds to the game, as of v2.1.2 (15 October 2026): the core features first, then what each release added.
 "New in 2.0" marks what this release adds; "Experimental" marks what is
 still being tested.
 
@@ -96,6 +96,13 @@ still being tested.
 - **A superstar mod whose CPU only reversed moves** (Jillian, and any mod whose own moves pack was missing part of its motion files): such moves are now treated as missing, so the superstar keeps their base's move instead and fights normally; a warning lists them.
 - **Asuka (ported from WWE 2K17) crashed or hung on NOW LOADING.** Two converter bugs: superstars whose hair moves could be too big for the room the game has (the blood overlays are now left out of those attires), and WWE 2K16 / 2K17 superstars with two or more attires had every attire named as the first one (the second was never offered and hung when picked). Ported superstars may need converting again: see [HAIR_RECONVERT.md](HAIR_RECONVERT.md). The mod doctor flags affected mods.
 - 🧪 **Android: the left stick no longer turns into the D-pad** at random (it happened after the game's keyboard or the touch overlay's Keyboard / Online buttons had been used).
+- **Mod moves now play in matches with DLC Vol. 2 / 3 installed.** The DLC carries its own full copies of the game's move animation files, so ported moves and the bundled superstars' own moves (Sabu, The Sandman ...) were missing in matches for most players. The port now builds merged copies of those DLC files (and their file tables) in Mods\PacOverlay and points the game at them; the DLC itself is only read.
+- **The WWE Universe welcome screen came back at every start** when the game was closed before its first save. Accepting it is now written to the save right away. A Saves folder the game can't write to (read-only, Windows' Controlled folder access, OneDrive online-only files) is now logged plainly and shown as a warning in the launcher's Saves tab, instead of the game silently keeping nothing.
+- **Royal Rumble entrants with custom music** (and any entrant whose theme is a menu song you switched off) no longer start a random song from your Music folder that never stops: the jukebox only acts in the menus.
+- **PS2 superstars (HCTP, SvR 2005 - 2010)**: every texture was read 8 bytes off - green / yellow patches on some (SvR 2006 / 2007 Kane), shifted colours on others, 2007's white strip on top of the head. Fixed; converting them again is worth it. The 2006 / 2007 forehead bandage (an injury overlay) is left out like blood, and superstars with no picture in their game get one drawn from their model.
+- **PS2 taunts** (HCTP, SYM, Just Bring It) are matched to 2011's taunts in the porting menus ("Taunt Austin 1" = Stone Cold's); before, every one was "not available".
+- 🧪 **Android on Mali GPUs: the game closed right after starting** on some phones (the launcher was skipped, so Mali mode wasn't switched on). The launcher now always shows, and the game turns Mali mode on by itself and carries on without the graphics features Mali lacks.
+- 🧪 **Android vibration on handhelds** (AYN, Retroid, Odin ...): their built-in controllers have no motor of their own, so nothing vibrated. The device vibrates instead (Settings > Controls, "Vibrate the device when the controller can't").
 - **Start-up hangs are easier to track down**: when the game seems stuck, its log now notes which game thread is spinning and where.
 
 ### Mod Maker
@@ -106,13 +113,19 @@ still being tested.
 - **The mod doctor in plain words, with Fix buttons** that do the work (port a superstar's missing entrance, use a lighter copy of a model that's too big ...); Simple modes' "Fix it" runs the recommended one.
 - **Report a problem...** (title bar): describe it and the Mod Maker gathers its session logs, the open project and the tools check into one zip for a bug report. Every session is logged.
 - **Stage lights in the 3D views**: the arena editor and the Full preview light the arena with its own stage lights, beams and glows, as the game does.
+- **A simpler sidebar** (22 entries down to 12): Superstar, Arena, Moves & entrances, Media and Match types, with tabs; every port starts from the thing you make (its "From another game" tab), and My game discs is the one place your discs are set.
+- **Save as a mod file (.svrmod)** at the end of every porting menu, beside Add to my game; a ported entrance installed from it still shows as "MOD: <name>" in CREATE AN ENTRANCE.
+- **No disc needed**: every porting menu starts with "A folder of game files" and "One file" cards above the game discs (one entrance file, files copied off a disc, a move pack folder).
+- **Simple superstar takes every part from other games**: entrance, moves, taunts, attires, music, pictures and extras each have "From another game", with that game's superstar picked for you when the look came from it.
+- A new project opens clean (no "Save *" or errors before you've done anything); superstar pictures are found across games' spellings (Chavo Gerrero, Vince McMahon ...).
 - Faster ports (SvR 2007 - 2009 arenas in seconds), "move i of n" progress, and first-run fixes for new players.
+
+### WWE Universe
+- **Superstar mods are part of WWE Universe**: Universe now holds up to 137 mod superstars beside its own 150, so mods are booked in matches, get rivalries and allies, and can hold titles. Their Universe data is kept in a file of its own beside the save (Saves\.universe), so the save stays readable by older versions.
 
 ### Online
 - **Lobby chat up to 300 characters** a message (the keyboard's field scrolls).
 - **Other players' Created Superstar pictures** show in the online lobby.
-
-<!-- TODO 2.1.2 (in progress, not on main yet): Mod Maker "Save as .svrmod"; moves from a folder of files. -->
 
 ## New in 2.1.1
 
