@@ -236,9 +236,58 @@ bool ReadCharacter(const Bytes& pac, int attire, Character& ch, std::string& err
 
 }  // namespace
 
+std::vector<std::string> CheckHairSettings(const Bytes& pac) {
+  std::vector<std::string> out;
+  Epac e;
+  if (!EpacRead(pac, e)) return out;
+  int attire = 0;
+  for (const auto& g : e.groups)
+    for (const auto& en : g.entries) {
+      std::vector<PachEntry> kids;
+      if (!PachRead(Unpack(en.data), kids)) continue;
+      ++attire;
+      // (a chain the models haven't is fine: 23 stock attires name some)
+      const PachEntry* text = nullptr;
+      for (const auto& k : kids)
+        if (k.id == 0x3C) text = &k;
+      if (!text) continue;
+      const Bytes t = Unpack(text->data);
+      std::map<std::string, int> named;
+      int lines = 0;
+      size_t at = 0;
+      while (at < t.size()) {
+        size_t nl = at;
+        while (nl < t.size() && t[nl] != '\n') ++nl;
+        std::vector<std::string> tok;
+        std::string cur;
+        for (size_t i = at; i < nl; ++i) {
+          const char c = char(t[i]);
+          if (c == ' ' || c == '\t' || c == '\r') {
+            if (!cur.empty()) tok.push_back(cur), cur.clear();
+          } else {
+            cur += c;
+          }
+        }
+        if (!cur.empty()) tok.push_back(cur);
+        at = nl + 1;
+        if (tok.size() < 10 || tok[0][0] == ';') continue;  // (a chain line: name + 9 numbers)
+        ++lines;
+        ++named[tok[0]];
+      }
+      const std::string who = "attire " + std::to_string(attire) + " (" + en.name + ")";
+      for (const auto& [name, n] : named)
+        if (n > 1) out.push_back(who + ": its hair settings name " + name + " " + std::to_string(n) + " times");
+      if (lines > kHairLinesMax)
+        out.push_back(who + ": its hair settings list " + std::to_string(lines) + " chains (the game takes at most " +
+                      std::to_string(kHairLinesMax) + ")");
+    }
+  return out;
+}
+
 CharModelIssues CheckCharacterModel(const Bytes& pac, int attire) {
   CharModelIssues out;
   out.eye_off[0] = out.eye_off[1] = -1;
+  out.hair = CheckHairSettings(pac);
   Character ch;
   std::string err;
   if (!ReadCharacter(pac, attire, ch, err)) return out;

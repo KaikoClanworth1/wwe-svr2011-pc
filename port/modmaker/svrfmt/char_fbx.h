@@ -94,7 +94,13 @@ struct CharModelIssues {
   std::vector<std::string> nan_meshes;
   double eye_off[2] = {0, 0};  // l_eye, r_eye: the distance (-1: no eye bone or no vertices on it)
   bool read = false;
+  // (every attire) moving-hair settings (child 0x3C) the game can't take - a chain named twice or more than
+  // kHairLinesMax chains: crashed / hung the match load (Asuka 2K17: 6 chains x 4)
+  std::vector<std::string> hair;
 };
+constexpr int kHairLinesMax = 16;  // the most chain lines a stock 0x3C has
+// The hair-settings problems of every attire of a superstar pac (CharModelIssues::hair).
+std::vector<std::string> CheckHairSettings(const Bytes& pac);
 CharModelIssues CheckCharacterModel(const Bytes& pac, int attire);
 
 // Test: the exported file read back (ufbx) against the pac - bones, bind matrices, vertices, weights; a line per check.
