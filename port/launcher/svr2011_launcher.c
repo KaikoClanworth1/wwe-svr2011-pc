@@ -240,6 +240,16 @@ static int mkdirs(const WCHAR *path)
     return CreateDirectoryW(tmp, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
+/* Where downloads go: Tools\.downloads beside the launcher (the program's own folder, not %TEMP% - a
+ * program that downloads into %TEMP% and unpacks programs from there looks like a dropper to antivirus
+ * heuristics); %TEMP% only when that folder can't be written. */
+static void download_dir(WCHAR *out)
+{
+    if (join(out, s_launcher_dir, L"Tools\\.downloads") && mkdirs(out))
+        return;
+    GetTempPathW(MAX_PATH, out);
+}
+
 static WCHAR *wdup(const WCHAR *s)
 {
     size_t n = wcslen(s) + 1;
@@ -5334,8 +5344,8 @@ static int adb_get(apk_progress_fn progress, WCHAR *err, int errn)
     if (adb_find(s_launcher_dir, s_adb, MAX_PATH))
         return 1;
     progress(0, L"Downloading Google's Android platform tools (adb)\x2026");
-    GetTempPathW(MAX_PATH, dir);
-    swprintf_s(tmp, MAX_PATH, L"%ssvr2011-platform-tools.zip", dir);
+    download_dir(dir);
+    join(tmp, dir, L"svr2011-platform-tools.zip");
     if (!update_download(ADB_TOOLS_URL, tmp, NULL, 0, &s_cancel, err, (size_t)errn))
         return 0;
     if (!unzip_file(tmp, s_launcher_dir)) {
@@ -6121,7 +6131,7 @@ static int up_finish_run(HWND notify, WCHAR *err, size_t errn)
     WCHAR tmp[MAX_PATH], work[MAX_PATH], zip[MAX_PATH], files[MAX_PATH];
     UpdateInfo info;
     int ok = 0;
-    GetTempPathW(MAX_PATH, tmp);
+    download_dir(tmp);
     work[0] = 0;
     if (!update_check_version(PORT_VERSION, &info, err, errn))
         goto done;
@@ -6203,7 +6213,7 @@ static int up_install(WCHAR *err, size_t errn)
     WCHAR tmp[MAX_PATH], work[MAX_PATH], zip[MAX_PATH], files[MAX_PATH], probe[MAX_PATH];
     WCHAR name[80];
     int ok = 0;
-    GetTempPathW(MAX_PATH, tmp);
+    download_dir(tmp);
     if (!join(work, tmp, L"svr2011-update"))
         goto done;
     remove_tree(work);
