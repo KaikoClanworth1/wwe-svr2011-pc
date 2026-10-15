@@ -120,6 +120,11 @@ uint32_t g_event_names = 0;           // guest "Play_Menu_Music\0Stop_Menu_Music
 std::atomic<uint32_t> g_music_object{0};
 std::atomic<bool> g_have_object{false};
 int g_stop_in = -1, g_play_in = -1, g_restore_in = -1;  // under g_mutex
+// The menus are on: from the game's own Play_Menu_Music to its Stop_Menu_Music
+// (or its stop of every sound). Outside them the menu songs' sound nodes are
+// entrance themes (a Royal Rumble's entrants: ORIGINAL THEME n) - never
+// stopped as songs that are off, no user song started for them.
+std::atomic<bool> g_menus{false};
 int g_preview = -1;   // the song every item plays for a preview (under g_mutex)
 int g_previewed = -1; // the song last previewed: left to play out even if off
 bool g_previewed_started = false;  // (it has started: until then the song fading out isn't judged)
@@ -503,11 +508,13 @@ bool JukeboxEvent(uint8_t* base, const char* e, uint32_t object) {
   // The menus ending (the game stops its menu music, or every sound): a user
   // song stops too; the game's music is unmuted once the stopped music faded.
   if (!own && (!std::strncmp(e, "Stop_Menu_Music", 15) || !std::strncmp(e, "Stop_All_Audio", 14))) {
+    g_menus = false;
     std::lock_guard lock(g_mutex);
     StopUserLocked(150);
     return false;
   }
   if (std::strcmp(e, "Play_Menu_Music") != 0) return false;
+  if (!own) g_menus = true;
   g_music_object = object;
   g_have_object = true;
   if (!g_searched.exchange(true)) Search();
@@ -580,7 +587,7 @@ void JukeboxUpdate(PPCContext& ctx, uint8_t* base) {
       g_game_started = now;
       g_game_decided = false;
     }
-    if (game_now >= 0 && !g_game_decided && g_preview < 0 && g_user_handle < 0 && g_user_start_in < 0 &&
+    if (game_now >= 0 && g_menus && !g_game_decided && g_preview < 0 && g_user_handle < 0 && g_user_start_in < 0 &&
         g_stop_in < 0 && g_play_in < 0 &&
         UserOnCountLocked() > 0 && now - g_game_started >= std::chrono::seconds(SongSeconds(game_now) - 2)) {
       g_game_decided = true;
@@ -619,7 +626,7 @@ void JukeboxUpdate(PPCContext& ctx, uint8_t* base) {
       idle = g_stop_in < 0 && g_play_in < 0 && g_restore_in < 0;
       if (now >= 0 && now != g_previewed && !waiting) g_previewed = -1;
     }
-    if (off && idle && g_quiet > 180) RequestSkip();  // (3 s after the last one: the stopped song fades)
+    if (off && idle && g_quiet > 180 && g_menus) RequestSkip();  // (3 s after the last one: the stopped song fades)
   }
 }
 
