@@ -19,7 +19,7 @@ namespace svr2011 {
 // into copies of m.pac, misc.pac and mpsp.pac in <game>/Mods/PacOverlay
 // (rebuilt only when a pack or a game file changed), with a pac list naming
 // them there. dlc_root: the installed DLC packages (dlc.cpp, only read) - those bringing
-// their own m / mpsp pac (Vol. 2) get a copy with the packs in Mods/PacOverlay/dlc.
+// their own m / mpsp / misc pac (Vol. 1, 2) get a copy with the packs in Mods/PacOverlay/dlc.
 void InstallMovePacks(rex::filesystem::VirtualFileSystem* fs, const std::filesystem::path& dlc_root = {});
 
 // The folder (under the game folder) the game reads its pac list from, or ""
