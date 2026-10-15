@@ -662,6 +662,13 @@ public class LauncherActivity extends Activity {
             "user_language", new String[] {"English", "Français", "Deutsch", "Español", "Italiano"},
             new String[] {"1", "4", "3", "5", "6"}, false, "1");
 
+        // (src/pad_types.cpp: player 1's rumble on the device's own motor when the controller has none -
+        // handhelds' built-in pads; a Bluetooth pad without rumble too)
+        LinearLayout controls = card(c, "Controls");
+        toggle(controls, "Vibrate the device when the controller can't",
+            "Built-in controllers of handhelds (AYN, Retroid ...) and pads without rumble: the device vibrates instead",
+            "device_vibration", true);
+
         LinearLayout quality = card(c, "Quality");
         choice(quality, "Render resolution", "The most the game renders at; lower is faster", "native_max_scale",
             new String[] {"Auto", "720p (Xbox 360)", "1440p", "2160p"}, new String[] {"4", "1", "2", "3"}, false, "4");
@@ -709,6 +716,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("native_prepare_pipelines", true);
             settings_.setBool("native_dump_textures", false);
             settings_.setBool("audio_mute", false);
+            settings_.setBool("device_vibration", true);
             settings_.setBool("unlock_everything", true);
             settings_.setBool("skip_intros", false);
             settings_.setBool("skip_training", false);
