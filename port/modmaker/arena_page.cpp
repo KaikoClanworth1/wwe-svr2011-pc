@@ -786,7 +786,7 @@ void SetBackstageFromPac(const Bytes& pac, int area, const std::string& name, co
   }
   Touch();
   GoTo(PageId::kBackstage);
-  Status("The converted area is on the Backstage page (and in the 3D editor).");
+  Status("The converted area is on the Backstage tab (and in the 3D editor).");
 }
 
 void SetTestSave(const std::wstring& f, int lib) {
@@ -936,7 +936,7 @@ void Reset() {
 
 void ArenaProblems(std::vector<Problem>& p) {
   if (g_proj.backstage >= 0) {  // (the Arena page while a backstage area is open)
-    p.push_back(Error("A backstage area is open here, not an arena.").With("Go to the Backstage page", [] { GoTo(PageId::kBackstage); }));
+    p.push_back(Error("A backstage area is open here, not an arena.").With("Go to the Backstage tab", [] { GoTo(PageId::kBackstage); }));
     return;
   }
   const auto go = [](int step) { return [step] { if (g_simple) g_simple_step = step; }; };

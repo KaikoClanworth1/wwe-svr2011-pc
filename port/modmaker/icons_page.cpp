@@ -140,7 +140,7 @@ void StarsTab() {
     const int id = stars[g_star].id;
     LoadStarPics(id);
     ImGui::Text("%s (id %d)", stars[g_star].name.c_str(), id);
-    ImGui::TextDisabled("A superstar mod or a media pack can replace these (Superstar page: select picture; Media page: Menus & renders).");
+    ImGui::TextDisabled("A superstar mod or a media pack can replace these (Superstar page: select picture; Media > Menus & renders).");
     auto& v = g_star_pics[id];
     if (v.empty()) ImGui::TextDisabled("No renders in DLC_HD.pac for this id.");
     for (size_t k = 0; k < v.size(); ++k) {
@@ -308,7 +308,7 @@ void SignsTab() {
   LoadSigns();
   ImGui::Text("%zu signs in audience.pac AUDE/BORD (128 x 64 DXT1). Ids: a superstar's id x 10 + 1..4 are the signs "
               "that superstar's fans hold; 4001+ the Created Superstar picker's; 5001+ the general ones.", g_signs.size());
-  ImGui::TextDisabled("Sign packs and superstar mods add to these (Crowd signs page; Superstar page: crowd signs).");
+  ImGui::TextDisabled("Sign packs and superstar mods add to these (Media > Crowd signs; Superstar page: crowd signs).");
   ImGui::SetNextItemWidth(200 * g_scale);
   ImGui::InputTextWithHint("##sf", "find by id", g_find, sizeof g_find);
   const std::string f = g_find;

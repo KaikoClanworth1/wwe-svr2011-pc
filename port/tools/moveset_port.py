@@ -191,6 +191,7 @@ def port_moveset(c):
                      id=str(new_id), _g=c.mgame, _g11=g11m)
             if v in templ:
                 a['template'] = str(templ[v])
+            a['cat'] = (slots.get(tos[0]) or {}).get('bank') or ''   # (template categories: the slot's - moves_port)
             lo, hi = getattr(c, 'prog', (70, 85))
             nport = min(len(to_port), c.max_port if c.max_port is not None else len(to_port))
             kinds = ['taunt' if x in templ else 'move' for x in list(to_port)[:nport]]

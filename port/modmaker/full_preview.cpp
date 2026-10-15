@@ -810,7 +810,7 @@ void OpenTitantron(const std::wstring& file) {
     Log("full preview: the titantron movie didn't open: " + Utf8(file) + " (" + Utf8(err) + "; " + why + ")");
     Bytes head;
     if (svrfmt::ReadFile(PathStr(fs::path(file)), head) && head.size() >= 3 && !std::memcmp(head.data(), "KB2", 3))
-      g_tt_note = "A Bink 2 movie (WWE 2K15 and later):\nthe preview and the game play it\nonce it's converted (Other games\npage: Bink 2 tool).";
+      g_tt_note = "A Bink 2 movie (WWE 2K15 and later):\nthe preview and the game play it\nonce it's converted (Superstar >\nFrom another game: Bink 2 tool).";
     else
       g_tt_note = "The titantron movie didn't open\n(see the log).";
     return;

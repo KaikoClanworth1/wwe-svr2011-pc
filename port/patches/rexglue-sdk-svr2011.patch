@@ -2232,7 +2232,7 @@ index 8f2fcb0..77d4a36 100644
  
  void GraphicsSystem::MarkVblank() {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..9f7cd74 100644
+index 001f36b..0bbb026 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -25,6 +25,7 @@
@@ -2243,7 +2243,29 @@ index 001f36b..9f7cd74 100644
  #include <rex/dbg.h>
  #include <rex/logging.h>
  #include <rex/math.h>
-@@ -930,10 +931,17 @@ bool VulkanCommandProcessor::SetupContext() {
+@@ -897,6 +898,21 @@ bool VulkanCommandProcessor::SetupContext() {
+     return false;
+   }
+ 
++  // [svr2011] No vertexPipelineStoresAndAtomics: an Arm Mali (every driver), whose geometry shaders are slow -
++  // points, rectangles and quads expanded / converted without them, as the launcher's Mali alpha mode sets,
++  // whatever the settings say (a start without alpha mode closed at once - 2.1.2 report).
++  if (!device_properties.vertexPipelineStoresAndAtomics &&
++      !(REXCVAR_GET(vulkan_force_expand_point_sprites_in_vs) &&
++        REXCVAR_GET(vulkan_force_expand_rectangle_lists_in_vs) &&
++        REXCVAR_GET(vulkan_force_convert_quad_lists_to_triangle_lists))) {
++    REXGPU_WARN(
++        "Vulkan: no vertexPipelineStoresAndAtomics (Mali) - points, rectangles and quads expanded in the "
++        "vertex shader (vulkan_force_* turned on)");
++    REXCVAR_SET(vulkan_force_expand_point_sprites_in_vs, true);
++    REXCVAR_SET(vulkan_force_expand_rectangle_lists_in_vs, true);
++    REXCVAR_SET(vulkan_force_convert_quad_lists_to_triangle_lists, true);
++  }
++
+   primitive_processor_ =
+       std::make_unique<VulkanPrimitiveProcessor>(*register_file_, *memory_, *shared_memory_, *this);
+   if (!primitive_processor_->Initialize()) {
+@@ -930,10 +946,17 @@ bool VulkanCommandProcessor::SetupContext() {
      return false;
    }
    if (!device_properties.vertexPipelineStoresAndAtomics) {
@@ -2265,7 +2287,7 @@ index 001f36b..9f7cd74 100644
    }
    if (!device_properties.geometryShader) {
      if (REXCVAR_GET(vulkan_require_geometry_shader)) {
-@@ -2160,6 +2168,19 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+@@ -2160,6 +2183,19 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
    }
  }
  
@@ -2285,7 +2307,7 @@ index 001f36b..9f7cd74 100644
  void VulkanCommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                                                     uint32_t num_registers) {
    if (!num_registers) {
-@@ -2272,6 +2293,8 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+@@ -2272,6 +2308,8 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
  void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                         uint32_t frontbuffer_height) {
    SCOPE_profile_cpu_f("gpu");
@@ -2294,7 +2316,7 @@ index 001f36b..9f7cd74 100644
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
  
-@@ -2312,9 +2335,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2312,9 +2350,31 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
    xenos::TextureFormat frontbuffer_format;
    bool swap_source_needs_rb_swap = false;
@@ -2329,7 +2351,7 @@ index 001f36b..9f7cd74 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
-@@ -2407,8 +2452,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2407,8 +2467,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
@@ -2351,7 +2373,7 @@ index 001f36b..9f7cd74 100644
        guest_output_width, guest_output_height, display_width, display_height,
        [this, guest_output_width, guest_output_height, frontbuffer_format, swap_texture_view,
         swap_post_effect,
-@@ -2923,6 +2979,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2923,6 +2994,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
          EndSubmission(true);
          return true;
        });
@@ -2365,7 +2387,7 @@ index 001f36b..9f7cd74 100644
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
-@@ -3695,6 +3758,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3695,6 +3773,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
    VulkanShader::VulkanTranslation* vertex_shader_translation;
    VulkanShader::VulkanTranslation* pixel_shader_translation;
    bool memexport_writes_possible = memexport_used_vertex || memexport_used_pixel;
@@ -2384,7 +2406,7 @@ index 001f36b..9f7cd74 100644
  
    // Two iterations because a submission (even the current one - in which case
    // it needs to be ended, and a new one must be started) may need to be awaited
-@@ -4385,6 +4460,9 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4385,6 +4475,9 @@ bool VulkanCommandProcessor::IssueCopy() {
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -5811,7 +5833,7 @@ index 0000000..b1ba2a6
 +}  // namespace ui
 +}  // namespace rex
 diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
-index 8197bb4..0c640ba 100644
+index 8197bb4..2408810 100644
 --- a/src/ui/vulkan/vulkan_device.cpp
 +++ b/src/ui/vulkan/vulkan_device.cpp
 @@ -26,9 +26,17 @@ REXCVAR_DEFINE_BOOL(vulkan_require_fragment_stores_and_atomics, true, "UI/Vulkan
@@ -5855,22 +5877,48 @@ index 8197bb4..0c640ba 100644
  
    if (with_gpu_emulation) {
      if (!supported_features.independentBlend) {
-@@ -116,10 +138,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -116,26 +138,30 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
            properties.deviceName);
        return nullptr;
      }
 -    if (!supported_features.vertexPipelineStoresAndAtomics) {
++    // [svr2011] A device without these is used with the fallbacks instead of refused (the game issues no
++    // vertex shader stores; geometry shaders and line fill have their own paths): a Mali-G610 started without
++    // the launcher's Mali alpha mode (which turns these requirements off) closed at once - 2.1.2 report.
 +    if (REXCVAR_GET(vulkan_require_vertex_pipeline_stores_and_atomics) &&
 +        !supported_features.vertexPipelineStoresAndAtomics) {
        REXLOG_WARN(
 -          "Vulkan device '{}' doesn't support vertexPipelineStoresAndAtomics, which "
 -          "is required for Vulkan GPU emulation parity",
-+          "Vulkan device '{}' doesn't support vertexPipelineStoresAndAtomics, but "
-+          "vulkan_require_vertex_pipeline_stores_and_atomics=true",
++          "Vulkan device '{}' doesn't support vertexPipelineStoresAndAtomics: "
++          "vulkan_require_vertex_pipeline_stores_and_atomics turned off (memory export goes through compute)",
            properties.deviceName);
-       return nullptr;
+-      return nullptr;
++      REXCVAR_SET(vulkan_require_vertex_pipeline_stores_and_atomics, false);
      }
-@@ -205,6 +228,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+     if (REXCVAR_GET(vulkan_require_geometry_shader) && !supported_features.geometryShader) {
+       REXLOG_WARN(
+-          "Vulkan device '{}' doesn't support geometryShader, but "
+-          "vulkan_require_geometry_shader=true",
++          "Vulkan device '{}' doesn't support geometryShader: vulkan_require_geometry_shader turned off "
++          "(primitives converted / expanded without it)",
+           properties.deviceName);
+-      return nullptr;
++      REXCVAR_SET(vulkan_require_geometry_shader, false);
+     }
+     if (REXCVAR_GET(vulkan_require_fill_mode_non_solid) && !supported_features.fillModeNonSolid) {
+       REXLOG_WARN(
+-          "Vulkan device '{}' doesn't support fillModeNonSolid, but "
+-          "vulkan_require_fill_mode_non_solid=true",
++          "Vulkan device '{}' doesn't support fillModeNonSolid: vulkan_require_fill_mode_non_solid turned off "
++          "(line / point fill drawn solid)",
+           properties.deviceName);
+-      return nullptr;
++      REXCVAR_SET(vulkan_require_fill_mode_non_solid, false);
+     }
+   }
+ 
+@@ -205,6 +231,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  
    bool ext_1_2_KHR_sampler_mirror_clamp_to_edge = false;
    bool ext_1_1_KHR_maintenance1 = false;
@@ -5881,7 +5929,7 @@ index 8197bb4..0c640ba 100644
    bool ext_1_2_KHR_shader_float_controls = false;
    bool ext_EXT_fragment_shader_interlock = false;
    bool ext_1_3_EXT_shader_demote_to_helper_invocation = false;
-@@ -236,6 +263,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -236,6 +266,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        XE_UI_VULKAN_STRUCT_EXTENSION(EXT_custom_border_color)
        // Required for true null descriptors in bindless texture bindings.
        XE_UI_VULKAN_STRUCT_EXTENSION(EXT_robustness2)
@@ -5891,7 +5939,7 @@ index 8197bb4..0c640ba 100644
      }
      if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
        // #237.
-@@ -273,6 +303,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -273,6 +306,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
          if (requested_extension_it == requested_extensions.cend()) {
            continue;
          }
@@ -5904,7 +5952,7 @@ index 8197bb4..0c640ba 100644
          assert_not_null(requested_extension_it->second);
          if (!*requested_extension_it->second) {
            enabled_extensions.emplace_back(requested_extension_it->first.c_str());
-@@ -335,10 +371,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -335,10 +374,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
    VulkanFeatures<VkPhysicalDeviceRobustness2FeaturesEXT,
                   VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT>
        features_EXT_robustness2;
@@ -5920,7 +5968,7 @@ index 8197bb4..0c640ba 100644
      }
      if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
        features_1_3.Link(supported_features_2, device_create_info);
-@@ -650,8 +691,48 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -650,8 +694,48 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        XE_UI_VULKAN_FEATURE_2(features_1_2, samplerMirrorClampToEdge);
        XE_UI_VULKAN_FEATURE_2(features_1_2, uniformBufferStandardLayout);
        XE_UI_VULKAN_FEATURE_2(features_1_2, scalarBlockLayout);

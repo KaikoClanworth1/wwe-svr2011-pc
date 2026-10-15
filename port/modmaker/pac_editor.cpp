@@ -396,7 +396,7 @@ void SelectedPanel() {
     ImGui::TextUnformatted(g_prev_text.c_str());
     if (kind == "model") {
       ImGui::Spacing();
-      ImGui::TextDisabled("SvR 2011 character models open on the Animations page; other games' superstars port on the Port page.");
+      ImGui::TextDisabled("SvR 2011 character models open on the Animations page; other games' superstars port on Superstar > From another game.");
     }
     ImGui::EndChild();
   } else {

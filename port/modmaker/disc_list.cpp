@@ -231,7 +231,7 @@ void GameRow(const Game& g) {
     const std::string kinds = port_page::KindsFor(IdFor(g.key));
     if (!kinds.empty()) {
       ImGui::TextDisabled("%s", Lower(kinds).c_str());
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("What Port from a disc can bring from this game: %s.", Lower(kinds).c_str());
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("What the From another game tabs can bring from this game: %s.", Lower(kinds).c_str());
     }
   }
   ImGui::TableNextColumn();
@@ -356,8 +356,8 @@ struct Needs {
 };
 const std::vector<Needs>& NeedTable() {
   static const std::vector<Needs> t = {
-      {"svr2007", {"pac/m.pac", "pac/misc.pac", "pac/menu/menuHD.pac"}},  // (2007 / 2008: the superstars' records are in
-      {"svr2008", {"pac/m.pac", "pac/misc.pac", "pac/menu/menuHD.pac"}},  // misc.pac - no chEtc.pac; their list reads menuHD)
+      {"svr2007", {"pac/m.pac", "pac/misc.pac"}},  // (2007 / 2008: the superstars' records are in misc.pac - no
+      {"svr2008", {"pac/m.pac", "pac/misc.pac"}},  // chEtc.pac; menuHD.pac and the model pacs optional: superstar_port 1a9ceab)
       {"svr2009", {"pac/m.pac", "pac/misc.pac", "pac/ch/chEtc.pac"}},
       {"svr2010", {"pac/m.pac", "pac/misc.pac", "pac/ch/chEtc.pac", "pac/DLC_HD.pac"}},
       {"wwe12", {"pac/m.pac", "pac/misc.pac", "pac/ch/chEtc.pac"}},
@@ -388,8 +388,6 @@ std::vector<std::string> MissingFiles(const std::string& key, const std::string&
           std::replace(w.begin(), w.end(), '/', '\\');
           out.push_back(w);
         }
-  if ((key == "svr2007" || key == "svr2008") && !fs::is_directory(fs::path(path) / L"pac" / L"ch", ec))
-    out.push_back("each superstar's own pac\\ch\\chNN.pac (the list shows only those whose file is there)");
   return out;
 }
 
@@ -486,8 +484,8 @@ void Draw() {
     FindIn(g_test_folder);
   }
   const float top = ImGui::GetCursorPosY();
-  Heading("My game discs", "Your other WWE games, set once: Port from a disc, Other games and the Simple makers take "
-                           "their discs from here. Disc images (.iso) are read as they are; nothing is copied or changed.");
+  Heading("My game discs", "Your other WWE games, set once: every From another game tab and Moves & entrances read them. Disc "
+                           "images (.iso) are read as they are; nothing is copied or changed.");
   {  // Find my discs, on the heading's line
     const ImVec2 after = ImGui::GetCursorPos();
     const char* label = "Find my discs...";

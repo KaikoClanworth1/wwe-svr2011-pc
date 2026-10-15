@@ -301,10 +301,13 @@ struct ProjectIn {
 };
 
 // The project's type is its page. Pages the rail shows.
-enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kDiscs, kPortEntrance, kPortMoves, kPortTaunts, kCount };
+enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kDiscs, kPortEntrance, kPortMoves, kPortTaunts,
+                    kStarPort, kArenaPort, kMovesPort, kBelts, kCount };  // (the last four: "From another game" / belt tabs)
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);
+// A page by its test-aid name (--page-name / --page-at: arena, editor, ... old names too); false: none.
+bool PageByName(const std::wstring& name, PageId& page);
 // The mod-type pages' project hooks.
 struct PageHooks {
   const char* type;  // manifest type= ("" = not a mod page)
@@ -432,18 +435,29 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
                                                        const std::vector<std::pair<std::string, Image>>& signs);
                        bool InstallPack(const std::string& id, const std::vector<ZipEntry>& files); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
-namespace media_page { extern PageHooks hooks; void TestStart(int arena, const std::wstring& video,
+namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab();  // 0 videos, 1 menus & renders, 2 audio
+                       void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
-namespace other_page { void Draw(); void TestConvertW13(const std::wstring& file, int host);
+namespace other_page { void Draw();
+                       // only the tabs in mask, for the "From another game" tabs
+                       enum : unsigned { kW13Arena = 1, kStarFile = 2, kW13Star = 4, kSvr10Star = 8, kSvr10Moves = 16, kSvr08 = 32 };
+                       void DrawTabs(unsigned mask);
+                       void TestConvertW13(const std::wstring& file, int host);
                        // a WWE '12 - 2K17 bgNN.pac onto host tile `host` with the tab's options (svrfmt/wwe13), in the
                        // background, then the result as the Arena page's project (to_editor: the 3D editor shown)
                        void ConvertArena(const std::wstring& file, int host, const std::string& name, bool to_editor);
                        // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
                        void UseArenaFile(const std::wstring& file, const std::string& name); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
-namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
+namespace port_page { void Draw();
+                      // only the kinds in mask (bit k: Superstars, Moves, Entrances, Arenas, Attires, Belts, Weapons,
+                      // Backstage), for the pages' "From another game" tabs; Kind(): the shown kind's bit number
+                      enum : unsigned { kSuperstars = 1, kMovesKind = 2, kEntrances = 4, kArenas = 8, kAttires = 16, kBelts = 32,
+                                        kWeapons = 64, kBackstageKind = 128 };
+                      void DrawKinds(unsigned mask); int Kind();
+                      void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();
                       // one character file instead of a disc, embedded: a "Pick a character file" button, then the

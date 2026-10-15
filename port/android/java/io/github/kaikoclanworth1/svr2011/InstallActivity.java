@@ -57,6 +57,14 @@ public class InstallActivity extends Activity {
         return new File(new File(Environment.getExternalStorageDirectory(), "games"), kFolderName);
     }
 
+    // An automated test's start (tools/phone_session.ps1, android_night.ps1): "args" or an SVR2011_* extra.
+    static boolean testExtras(android.os.Bundle extras) {
+        if (extras == null) return false;
+        for (String key : extras.keySet())
+            if (key.equals("args") || key.startsWith("SVR2011_")) return true;
+        return false;
+    }
+
     static boolean installed() {
         return new File(gameFolder(), "default.xex").isFile();
     }
@@ -175,9 +183,12 @@ public class InstallActivity extends Activity {
             return;
         }
         if (installed()) {
-            // The launcher; automated tests (extras for the game) go straight to the game.
+            // The launcher; automated tests (extras for the game: "args" or SVR2011_*) go straight to the game.
+            // (Only those: some home screens add extras of their own when they open an app, and those phones
+            // skipped the launcher every time - and with it the Mali alpha-mode check: a Mali-G610 started the
+            // game without it, which closed at once - 2.1.2 report.)
             Intent next;
-            if (getIntent().getExtras() != null) {
+            if (testExtras(getIntent().getExtras())) {
                 next = new Intent(this, GameActivity.class);
                 next.putExtras(getIntent().getExtras());
             } else {
