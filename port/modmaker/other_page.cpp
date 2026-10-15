@@ -204,6 +204,26 @@ void Wwe13ArenaTab() {
   ImGui::EndDisabled();
 }
 
+// ---- one character file from any game (superstar_port.py convert --src <pac>, on the Port page)
+
+std::wstring g_star_file;
+
+void StarFileTab() {
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextWrapped("One character file from any of your other games, without the disc: a chNNN.pac of SvR 2007 to WWE "
+                     "2K17 (compressed or not) or a PS2 game's CH.PAC (it holds many characters: you pick one). The Port "
+                     "page reads which game it's from and turns it into a superstar mod with the model, its outfits, "
+                     "entrance gear and hair; it opens on the Superstar page to finish.");
+  ImGui::PopTextWrapPos();
+  ImGui::Spacing();
+  FileRow("Character file...", g_star_file, "pick a chNNN.pac or a PS2 CH.PAC", kPacFilter, 1);
+  ImGui::BeginDisabled(g_star_file.empty());
+  PushAccent();
+  if (ImGui::Button("Read it on the Port page", ImVec2(320 * g_scale, 0))) port_page::Open(L"superstar_port.py", g_star_file);
+  PopAccent();
+  ImGui::EndDisabled();
+}
+
 // ---- WWE '13 superstar (xdec built in, w13_char.py)
 
 std::wstring g_w13ch_file, g_w13ch_template, g_w13ch_portrait, g_w13ch_out;
@@ -510,6 +530,7 @@ void Draw() {
       Wwe13ArenaTab();
       ImGui::EndTabItem();
     }
+    if (ImGui::BeginTabItem("Superstar file (any game)")) { StarFileTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("WWE '13 superstar")) { Wwe13StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 superstar")) { Svr10StarTab(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("SvR 2010 moves")) { Svr10MovesTab(); ImGui::EndTabItem(); }

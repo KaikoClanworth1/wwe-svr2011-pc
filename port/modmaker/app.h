@@ -112,6 +112,7 @@ bool Busy();
 // fn once no background job runs (a job's own done callback comes while it still counts as busy).
 void WhenIdle(std::function<void()> fn);
 void Progress(const std::string& what);
+std::string ProgressNow();  // what the running job last said (a converter's "<n>%  <text>"; "" none)
 // Runs fn on the UI thread before the next frame (from a background job).
 void OnUiThread(std::function<void()> fn);
 
@@ -445,6 +446,9 @@ namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); 
 namespace port_page { void Draw(); void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();
+                      // one character file instead of a disc, embedded: a "Pick a character file" button, then the
+                      // lone file's steps (game, character, convert); the .svrmod comes back in EmbeddedResult()
+                      void SuperstarFileFlow();
                       // Any kind's steps embedded in another page (Simple modes): `script` is the converter
                       // (L"arena_port.py" ...); with_disc_row: the disc picker first. The result comes back in
                       // EmbeddedResult(): a converted .svrmod, a result folder (moves, entrances), or for WWE '12 - 2K17
