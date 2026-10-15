@@ -1025,7 +1025,7 @@ void InstallMoves(Kind k, State& s) {
   std::vector<std::wstring> args = {L"moveset-pack", L"--game", Wide(game), L"--src", disc_list::PathFor(s.game),
                                     L"--item", Wide(s.item), L"--rows", ChosenSlots(k, s), L"--pac11", Pac11(),
                                     L"--out", out.wstring(), L"--cache", (WorkDir() / Wide("cache_" + game)).wstring()};
-  if (k == kTaunts) args.push_back(L"--taunts-only"), args.push_back(L"1");
+  if (k == kTaunts) args.push_back(L"--taunts-only");
   AddSvrmod(args, game);
   Status(k == kTaunts ? "Bringing the taunts over (a few minutes each)..." : "Bringing the moves over...");
   RunToolJson(L"superstar_port.py", args, [k](int code, const std::string& o) {
@@ -1172,11 +1172,28 @@ struct Test {
   bool add = false;     // (then Add to my game / Bring in, once ready)
   bool import = false;  // (Simple superstar's import, SuperstarImport)
   bool cancel = false;  // (the import's moves cancelled 30 s in)
+  std::string mod;      // (moves / taunts add: the superstar mod folder they go to, Mods\Superstars\<mod>)
 };
 Test g_test;
 
 void TestTick(Kind k, State& s) {
   if (g_test.import) return;
+  if (g_test.add && g_test.kind == k && !g_test.on && k != kEntrance && !s.item.empty()) {  // (moves / taunts: to a mod)
+    AskRows(k, s);
+    if (s.rows["rows"].type == Json::Type::kArray && !s.installing && !Busy()) {
+      s.target = 0;
+      s.mod = (fs::path(g_game) / L"Mods" / L"Superstars" / Wide(g_test.mod)).wstring();
+      s.step = IndexOf(k, kStepFinish);
+      g_test.add = false;
+      if (ErrorCount(Problems(k, s))) {
+        for (const auto& p : Problems(k, s)) Log("simple porting test: " + p.text);
+      } else {
+        s.installing = true;
+        InstallMoves(k, s);
+      }
+    }
+    if (!s.rows_error.empty()) Log("simple porting test: " + s.rows_error), g_test.add = false;
+  }
   if (g_test.add && g_test.kind == k && !g_test.on && k == kEntrance && !s.item.empty()) {
     Convert(s);
     if (Converted(s) && s.installed.empty() && !s.installing && !Busy()) s.installing = true, AddEntrance(s), g_test.add = false;
@@ -1444,6 +1461,7 @@ void TestStart(const std::string& spec) {
   g_test.step = f.size() > 3 && !f[3].empty() ? std::atoi(f[3].c_str()) : -1;
   g_test.add = f.size() > 4 && f[4] == "add";
   g_test.cancel = f.size() > 5 && f[5] == "cancel";
+  g_test.mod = f.size() > 5 && f[5] != "cancel" ? f[5] : "";
   g_test.on = true;
 }
 
