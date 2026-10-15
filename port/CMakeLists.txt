@@ -306,7 +306,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     target_link_options(svr2011_launcher PRIVATE -Wl,/ENTRY:wWinMainCRTStartup)
     target_link_libraries(svr2011_launcher PRIVATE
         comctl32 comdlg32 shell32 ole32 uxtheme windowscodecs mfplat mfreadwrite mfuuid propsys winhttp gdiplus delayimp
-        bcrypt version)
+        bcrypt version rstrtmgr)
     # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
     target_link_options(svr2011_launcher PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     # The release version (VERSION.txt; package.ps1 names the zip after it and the
