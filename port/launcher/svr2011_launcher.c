@@ -1047,23 +1047,86 @@ static int lines_insert(Lines *l, int at, const char *s)
     return 1;
 }
 
+/* 1 when a "key = value" line's value is a "basic string" with no closing quote. */
+static int toml_open_string(const char *line)
+{
+    const char *p = line, *eq;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (!*p || *p == '#' || *p == '[' || !(eq = strchr(p, '=')))
+        return 0;
+    p = eq + 1;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p != '"' || !strncmp(p, "\"\"\"", 3))
+        return 0;
+    for (p++; *p; p++) {
+        if (*p == '\\' && p[1])
+            p++;
+        else if (*p == '"')
+            return 0;
+    }
+    return 1;
+}
+
+/* Lines of any length (a long value - MY MUSIC's song list - is one line). Launchers up to 2.1.2 read 1023
+ * bytes at a time and wrote a long line back cut into pieces, a blank line more at every save: a string
+ * broken over lines, a settings file the game could no longer read (no gpu_plugin: a black screen). Such a
+ * string's pieces are joined again (the blank lines between them dropped). */
 static int toml_read(const WCHAR *path, Lines *l)
 {
     FILE *f;
-    char line[1024];
+    char *text, *s, *e, *line = NULL;
+    long size;
     memset(l, 0, sizeof *l);
     if (_wfopen_s(&f, path, L"rb") || !f)
         return 0;
-    while (fgets(line, sizeof line, f)) {
-        size_t k = strlen(line);
-        char *s = line;
-        while (k && (line[k - 1] == '\n' || line[k - 1] == '\r'))
-            line[--k] = 0;
-        if (l->n == 0 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
-            s += 3;
-        lines_insert(l, l->n, s);
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0 || !(text = (char *)malloc((size_t)size + 1))) {
+        fclose(f);
+        return 0;
     }
+    size = (long)fread(text, 1, (size_t)size, f);
     fclose(f);
+    text[size] = 0;
+    s = text;
+    if ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
+        s += 3;
+    for (; s; s = e ? e + 1 : NULL) {
+        size_t k;
+        e = strchr(s, '\n');
+        if (e)
+            *e = 0;
+        k = strlen(s);
+        while (k && (s[k - 1] == '\r' || s[k - 1] == '\n'))
+            s[--k] = 0;
+        if (!e && !k)
+            break;
+        if (line) {   /* (a broken string's next piece) */
+            char *j;
+            if (!k)
+                continue;
+            if (!(j = (char *)realloc(line, strlen(line) + k + 1)))
+                break;
+            line = j;
+            strcat(line, s);
+        } else {
+            if (!(line = _strdup(s)))
+                break;
+        }
+        if (toml_open_string(line) && e)
+            continue;
+        lines_insert(l, l->n, line);
+        free(line);
+        line = NULL;
+    }
+    if (line) {
+        lines_insert(l, l->n, line);
+        free(line);
+    }
+    free(text);
     return 1;
 }
 
