@@ -4,6 +4,14 @@ the Mod Maker calls (docs/MOD_MAKER_3_PLAN.md section 4, docs/OTHER_GAMES.md).
     py superstar_port.py games
     py superstar_port.py list    --game <id> --src <ISO or extract folder> [--pac11 <2011 pac>]
     py superstar_port.py convert --game <id> --src <...> --item <key> --out <dir> [options]
+    py superstar_port.py detect  --src <one character pac> [--game <id>] [--svrmod <exe>]
+    py superstar_port.py convert --src <one character pac> [--game <id>] [--item <id>] --out <dir> [--name S] [--base N]
+
+One character pac (tools/lone_pac.py): a 360 ch<id>.pac of any game here (plus Legends of WrestleMania) or a PS2
+character archive (CH.PAC / CH2.PAC: --item one of detect's characters, hex). The game is read from the file;
+when it fits several (SvR 2009 / LoW, PS2 SvR 2006 / 2007 / 2008) the error JSON lists them in games[] - ask, then
+--game. The mod holds the model, its attires, entrance gear and hair physics; report missing[] lists what needs
+the disc (pictures, theme, titantron, entrance, moveset, ratings, name, attire names).
 
 stdout is only JSON; logs go to stderr, with progress lines `progress <0-100> <text>`.
 Exit 0 ok, 2 bad input, 3 failed.
@@ -1264,8 +1272,14 @@ def model_w(g, cid, pac11, out, portrait):
             ents = [(n, b) for t, es in g.MP.read_pac(raw) if t == b'EMD ' for n, b in es if n.endswith(b'2')]
             ents.sort(key=lambda e: e[0])
         left = [n.decode('latin1') for n, _ in ents[g.max_attires:]]
-        w13_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), [(b'EMD ', n, b) for n, b in ents[:g.max_attires]],
-                            tmp)
+        kept = ents[:g.max_attires]
+        gear = []
+        if not hasattr(g, 'model_entries'):   # (2K14 / 2K15: a kept attire's entrance gear, kind 4 - <id><attire>4)
+            own = {n[:7] for n, _ in kept}
+            gear = [(n, b) for t, es in g.MP.read_pac(raw) if t == b'EMD ' for n, b in es
+                    if len(n) == 8 and n.endswith(b'4') and n[:7] in own]
+        model_w.gear = [n.decode('latin1') for n, _ in gear]
+        w13_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), [(b'EMD ', n, b) for n, b in kept + gear], tmp)
         raw = open(tmp, 'rb').read()
     open(tmp, 'wb').write(raw)
     ptmp = None
@@ -1521,39 +1535,82 @@ def buildW(cid, outdir, o, rep):
 
 # --------------------------------------------------------------------------- one model pac (convert --src <ch*.pac>)
 
-SINGLE = {   # game -> (label, mod id suffix)
-    'svr2007': ('SvR 2007', '_07'), 'svr2008': ('SvR 2008', '_08'), 'svr2009': ('SvR 2009', '_09'),
-    'svr2010': ('SvR 2010', '_10'), 'wwe12': ("WWE '12", '_12'), 'wwe13': ("WWE '13", '_13'),
-    'wwe2k14': ('WWE 2K14', '_2k14'), 'wwe2k15': ('WWE 2K15', '_2k15'), 'wwe2k16': ('WWE 2K16', '_2k16'),
-    'wwe2k17': ('WWE 2K17', '_2k17')}
-SINGLE_MISSING = ["renders (the base's)", "theme (the base's)", "titantron (the base's)", "entrance (the base's)",
-                  "moveset (the base's)", "ratings and abilities (the base's)", 'name and profile (--name, else the file name)',
-                  'attire names']
+SINGLE = {   # game -> mod id suffix (labels: lone_pac.LABELS)
+    'svr2007': '_07', 'svr2008': '_08', 'svr2009': '_09', 'low': '_low', 'svr2010': '_10', 'wwe12': '_12', 'wwe13': '_13',
+    'wwe2k14': '_2k14', 'wwe2k15': '_2k15', 'wwe2k16': '_2k16', 'wwe2k17': '_2k17',
+    'ps2_jbi': '_jbi', 'ps2_sym': '_sym', 'ps2_hctp': '_hctp', 'ps2_svr04': '_svr04', 'ps2_svr06': '_svr06',
+    'ps2_svr07': '_svr07', 'ps2_svr08': '_svr08', 'ps2_svr09': '_svr09', 'ps2_svr10': '_svr10'}
+SINGLE_MISSING = ["pictures / renders (the base's)", "theme (the base's)", "titantron (the base's)",
+                  "entrance (the base's)", "moveset (the base's)", "ratings and abilities (the base's)",
+                  'name and profile (--name, else the file name)', 'attire names']
+
+
+class Ambiguous(BadInput):
+    """the lone file's format fits more than one game: games = [ids] (the Mod Maker asks, then --game)"""
+
+    def __init__(self, msg, games):
+        BadInput.__init__(self, msg)
+        self.games = games
+
+
+def pac_children(path):
+    """{entry name: set of child ids} of a 2011 ch pac"""
+    out = {}
+    try:
+        for t, es in ch_tool.epk8_read(open(path, 'rb').read())[1]:
+            for n, b in es:
+                if n.strip(b'\0'):
+                    out[n.decode('latin1').strip('\0 ')] = {i for i, _ in svrfmt.pach_read(ch_tool.unpack(b))}
+    except Exception:   # noqa: BLE001
+        pass
+    return out
+
+
+def single_game(a):
+    """--game, else lone_pac.detect's one game; several fit: Ambiguous -> (game, detect result)"""
+    import lone_pac
+    try:
+        r = lone_pac.detect(a['src'], a.get('svrmod'))
+    except lone_pac.BadInput as e:
+        raise BadInput(str(e))
+    if a.get('game'):
+        if a['game'] not in SINGLE:
+            raise BadInput('one model pac as --src: --game is one of %s' % ', '.join(SINGLE))
+        return a['game'], r
+    if len(r['games']) > 1:
+        raise Ambiguous('this %s fits %s: say which with --game' % (r['format'], ' or '.join(
+            lone_pac.LABELS.get(g, g) for g in r['games'])), r['games'])
+    return r['games'][0], r
 
 
 def build_single(cid, outdir, o, rep):
-    """a superstar mod from one model pac: its model and attires only (no profile, renders, theme, moves:
-    the base's, listed in the report's missing[]); the pac is read as the game's own ch pac"""
+    """a superstar mod from one character pac: its model, attires, entrance gear and hair physics (what the pac
+    holds); no profile, pictures, theme, moves: the base's, listed in the report's missing[]. 360: the pac read as
+    the game's own ch pac; PS2: a character archive (CH.PAC / CH2.PAC) through ps2_char.py, --item the character"""
+    import lone_pac
     pac = os.path.abspath(o['src'])
     game = o['game']
-    label, suffix = SINGLE[game]
+    label, suffix = lone_pac.LABELS[game], SINGLE[game]
+    ps2 = game.startswith('ps2_')
     g11, pac11 = o['g11'], o['pac11']
     note, warn, drop = rep['notes'].append, rep['warnings'].append, rep['dropped'].append
-    name = (o.get('name') or '%s %d' % (label, cid))[:31]
-    mid = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + suffix if o.get('name') else 'ch%d%s' % (cid, suffix)
+    name = (o.get('name') or ('%s %x' if ps2 else '%s %d') % (label, cid))[:31]
+    mid = (re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + suffix if o.get('name')
+           else ('ch%x%s' if ps2 else 'ch%d%s') % (cid, suffix))
     work = os.path.join(outdir, '.work_%d' % cid)
     mod = os.path.join(outdir, mid)
     for d in (work, mod):
         if os.path.exists(d):
             shutil.rmtree(d)
         os.makedirs(d)
+    note('source: %s, %s%s' % (os.path.basename(pac), label, ' (--game)' if o.get('game_given') else ' (from the file)'))
     progress(5, 'base superstar')
     if o.get('base'):
         base, why = o['base'], 'option'
-    elif 100 <= cid <= 292 and cid in playable11(g11):
+    elif not ps2 and 100 <= cid <= 292 and cid in playable11(g11):
         base, why = cid, ("2011's superstar with the same id (the games after 2011 keep its ids for most of "
                           '100-292; a single pac has no profile: --base picks another)')
-    elif 100 <= cid <= 292 and cid in g11.dat and g11.dat[cid][208] == 1:
+    elif not ps2 and 100 <= cid <= 292 and cid in g11.dat and g11.dat[cid][208] == 1:
         base, why = 174, ("a woman (2011's record %d is): a single pac has no profile - --base picks another" % cid)
     else:
         base, why = 104, 'default - a single pac has no profile: --base picks another (a woman: 174 Melina)'
@@ -1561,10 +1618,12 @@ def build_single(cid, outdir, o, rep):
         raise BadInput('--base %d is not a 2011 superstar' % base)
     note('base %d %s (%s)' % (base, g11.name(base), why))
     man = collections.OrderedDict(type='superstar', id=mid, name=name, short=name, base=base,
-                                  author=label + ' port', made_with='Port tools (%s, one model pac)' % label, version='1.0')
+                                  author=label + ' port', made_with='Port tools (%s, one character pac)' % label,
+                                  version='1.0')
     progress(20, 'model')
     out = os.path.join(mod, 'ch.pac')
     import model_budget
+    gear = None   # (entrance gear converted: [names]; None = not looked at)
     if game.startswith('wwe'):
         import moves_port as MP
 
@@ -1579,32 +1638,89 @@ def build_single(cid, outdir, o, rep):
         if game != 'wwe12':
             import wwe13_entrance as WE
             g.WE, g.svrmod = WE, WE.find_svrmod(o.get('svrmod'))
+        model_w.gear = None
         try:
-            left = model_w(g, cid, pac11, out, None)
+            with contextlib.redirect_stdout(sys.stderr):
+                left = model_w(g, cid, pac11, out, None)
         except BadInput:
             raise
         except Exception as e:   # noqa: BLE001
-            raise BadInput('%s is not a %s model pac (%s: %s)' % (os.path.basename(pac), label, type(e).__name__, str(e)[:120]))
+            raise BadInput('%s is not a %s character pac (%s: %s)' % (os.path.basename(pac), label, type(e).__name__,
+                                                                      str(e)[:120]))
         if left:
             drop('attires past %d (2011 has 4 at most): %s' % (g.max_attires, ', '.join(left)))
+        if game in ('wwe2k16', 'wwe2k17'):
+            drop('entrance gear: the %s gear model (children 0x5208) is not converted yet' % label)
+        else:
+            gear = model_w.gear if model_w.gear is not None else [n for n in pac_children(out) if n.endswith('4')]
     elif game == 'svr2007':
         import svr07_char
-        kept7, extra = svr07_char.convert(pac, out, os.path.join(pac11, 'ch', 'ch104.pac'), cid, None)
+        with contextlib.redirect_stdout(sys.stderr):
+            kept7, extra = svr07_char.convert(pac, out, os.path.join(pac11, 'ch', 'ch104.pac'), cid, None)
         note('attires %s (svr07_char)' % ', '.join('%s -> %s' % k[:2] for k in kept7))
         for e in extra:
             drop('attire %s (a mod holds 4)' % e)
-    elif game in ('svr2008', 'svr2009'):
-        kept, extra = model_from_2008_family(pac, cid, pac11, out, None, True)
+    elif game in ('svr2008', 'svr2009', 'low'):
+        with contextlib.redirect_stdout(sys.stderr):
+            kept, extra = model_from_2008_family(pac, cid, pac11, out, None, True)
         note('attires %s (svr08_char)' % ', '.join('%s -> %s' % k for k in kept))
+        for n in getattr(model_from_2008_family, 'notes', []):
+            (warn if 'may crash' in n else note)(n)
         for e in extra:
             drop('attire %s (a mod holds 4)' % e)
-    else:   # svr2010: model_from_2010 reads <pac10>/ch/ch<id>.pac
+    elif game == 'svr2010':   # (model_from_2010 reads <pac10>/ch/ch<id>.pac)
         S = svr10()
         p10 = os.path.join(work, 'pac10')
         os.makedirs(os.path.join(p10, 'ch'))
         shutil.copyfile(pac, os.path.join(p10, 'ch', 'ch%d.pac' % cid))
-        with contextlib.redirect_stdout(sys.stderr):
-            S.model_from_2010(p10, cid, pac11, out)
+        import svr10_char
+        own = svr10_char.dlc_render
+
+        def base_bust(pac_dir, group, i):   # (the 2010 bust is in the disc's DLC_HD.pac: the base's portrait)
+            p = os.path.join(pac11, 'ch', 'ch%d.pac' % base)
+            if not os.path.exists(p):
+                p = os.path.join(pac11, 'ch', 'ch104.pac')
+            emd = [b for t, n, b in svr10_char.epk8_entries(p) if t == b'EMD ']
+            return dict(svrfmt.pach_read(ch_tool.unpack(emd[0])))[0xc8]
+        svr10_char.dlc_render = base_bust
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                S.model_from_2010(p10, cid, pac11, out)
+        finally:
+            svr10_char.dlc_render = own
+        note("portrait (0xc8 / 0xc9): the base's - SvR 2010 keeps its bust in the disc's DLC_HD.pac")
+    else:   # PS2 character archive: ps2_char.py on a folder that looks like the disc (lone_pac.ps2_disc)
+        chars = {int(c['id'], 16): c['attires'] for c in lone_pac.ps2_characters(pac, game, work, __import__('moves_port').cache_dir(pac11, work))}
+        if cid not in chars:
+            raise BadInput('%s has no character %x (it has %s)' % (os.path.basename(pac), cid,
+                                                                     ' '.join('%x' % c for c in sorted(chars))))
+        ats = chars[cid]
+        if len(ats) > 4:
+            drop('attires %s (a mod holds 4)' % ', '.join(str(x) for x in ats[4:]))
+        tmpl = os.path.join(pac11, 'ch', 'ch%d.pac' % base)
+        if not os.path.exists(tmpl):
+            tmpl = os.path.join(pac11, 'ch', 'ch104.pac')
+        pw = os.path.join(work, 'ps2_char')
+        import subprocess
+        r = subprocess.run([sys.executable, os.path.join(HERE, 'ps2_char.py'), lone_pac.ps2_disc(pac, game, work),
+                            '%x' % cid, pw, '--template', tmpl, '--attire', ','.join(str(x) for x in ats[:4])],
+                           capture_output=True, text=True)
+        try:
+            pr = json.load(open(os.path.join(pw, 'report.json')))
+        except (OSError, ValueError):
+            raise RuntimeError('ps2_char failed: %s' % (r.stderr or r.stdout)[-600:])
+        if not pr.get('ok') or not os.path.exists(os.path.join(pw, 'ch.pac')):
+            raise RuntimeError('ps2_char: %s' % (pr.get('error') or 'no ch.pac'))
+        shutil.copyfile(os.path.join(pw, 'ch.pac'), out)
+        note('attires %s (ps2_char)' % ', '.join('%s %s' % (s['attire'], s['model_id']) for s in pr.get('sources', [])))
+        gear = ['attire %s: %s' % (s['attire'], ', '.join(s['gear'])) for s in pr.get('sources', []) if s.get('gear')]
+        for f in pr.get('fitted', []):
+            drop('model: %s' % f)
+        for w in pr.get('warnings', [])[:8]:
+            warn('model: %s' % w)
+        for f in ('render.dds', 'render_small.dds'):   # (only from the disc's menu pacs: not in a lone archive)
+            if os.path.exists(os.path.join(pw, f)):
+                shutil.copyfile(os.path.join(pw, f), os.path.join(mod, f))
     if not os.path.exists(out):
         raise BadInput('no wrestler model in %s' % os.path.basename(pac))
     pages = model_budget.model_pages(out)
@@ -1612,11 +1728,18 @@ def build_single(cid, outdir, o, rep):
     for n_, pg, parts in pages:
         if pg > model_budget.LIMIT:
             note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
+    if gear:
+        note('entrance gear: %s' % ', '.join(gear))
+    elif gear is not None:
+        note('entrance gear: none in this pac')
+    kids = pac_children(out)
+    hair = sorted(n for n, k in kids.items() if 0x3C in k)
+    note('hair physics: %s' % ('kept (%s)' % ', '.join(hair) if hair else 'none in this pac'))
     source_keys(man, game, cid)
     man['source_file'] = os.path.basename(pac)
     rep['missing'] = list(SINGLE_MISSING)
-    warn('one model pac: only the model and its attires - ' + '; '.join(SINGLE_MISSING) +
-         ' (the full game folder or disc as --src gives them)')
+    warn('one character pac: the model, its attires%s - %s need the disc' % (
+        ', entrance gear and hair physics' if not ps2 else ' and entrance gear', '; '.join(SINGLE_MISSING)))
     progress(95, 'packing')
     out_mod = os.path.join(outdir, mid + '.svrmod')
     write_mod(mod, man, out_mod, rep, pac11)
@@ -1654,6 +1777,15 @@ def open_game(game, src, svrmod=None):
             raise BadInput('game %s is not ready (status research; docs/OTHER_GAMES.md)' % game)
         return ps2_port.GamePS2(game, src.path)
     raise BadInput('game %s is not ready (status research; docs/OTHER_GAMES.md)' % game)
+
+
+def subprocess_json(cmd):
+    import subprocess
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    lines = (r.stdout or '').strip().splitlines()
+    if not lines:
+        raise RuntimeError((r.stderr or 'no output')[-400:])
+    return lines[-1]
 
 
 def cmd_list(a):
@@ -1713,33 +1845,61 @@ def cmd_pictures(a):
     return dict(pictures=out, guess=None)
 
 
+def discfs_image(path):
+    """a disc image (iso / xiso / god) rather than one pac"""
+    return os.path.splitext(path)[1].lower() in ('.iso', '.xiso', '.god', '.img', '.bin', '.cso')
+
+
+def convert_single(a):
+    import lone_pac
+    given = bool(a.get('game'))
+    game, det = single_game(a)
+    outdir = os.path.abspath(a['out'])
+    os.makedirs(outdir, exist_ok=True)
+    if game.startswith('ps2_'):   # (an archive of characters: --item the character, as detect lists it - hex)
+        chars = lone_pac.ps2_characters(a['src'], game, os.path.join(outdir, '.lone'), __import__('moves_port').cache_dir(a['pac11'], os.path.join(outdir, '.lone')))
+        if a.get('item'):
+            try:
+                cid = int(a['item'], 16)
+            except ValueError:
+                raise BadInput('--item is a character id from detect (hex)')
+        elif len(chars) == 1:
+            cid = int(chars[0]['id'], 16)
+        else:
+            e = BadInput('%s holds %d characters: say which with --item (detect lists them)' % (
+                os.path.basename(a['src']), len(chars)))
+            e.characters = chars
+            raise e
+    else:
+        try:
+            cid = int(a['item']) if a.get('item') else lone_pac.file_id(a['src'])
+        except ValueError:
+            raise BadInput('--item is the superstar id (a number)')
+        if cid is None:
+            raise BadInput("convert needs --item (the superstar id; not in the pac's name)")
+    g11, snd = game11(a['pac11'])
+    rep = dict(ok=False, out=None, folder=None, opens='superstar', warnings=[], dropped=[], notes=[])
+    o = dict(a, g11=g11, game=game, game_given=given)
+    if o.get('base') is not None:
+        o['base'] = int(o['base'])
+    out, mod = build_single(cid, outdir, o, rep)
+    rep.update(ok=True, out=out, folder=mod, game=game)
+    progress(100, 'done')
+    return rep
+
+
 def cmd_convert(a):
-    single = os.path.isfile(a.get('src') or '') and a['src'].lower().endswith('.pac')
+    single = os.path.isfile(a.get('src') or '') and not discfs_image(a['src'])
     if (not a.get('item') and not single) or not a.get('out'):
         raise BadInput('convert needs --item and --out')
+    if single:   # (one character pac: build_single; the game from the file when --game is left out)
+        return convert_single(a)
     try:
         cid = int(a.get('item'))
     except ValueError:
         raise BadInput('--item is a superstar id (from list)')
-    except TypeError:   # (one model pac without --item: the id in its name, ch147.pac)
-        m = re.search(r'ch_?(\d+)', os.path.basename(a['src']), re.I)
-        if not m:
-            raise BadInput("convert needs --item (the superstar id; not in the pac's name)")
-        cid = int(m.group(1))
     outdir = os.path.abspath(a['out'])
     os.makedirs(outdir, exist_ok=True)
-    if single:   # (one model pac: build_single)
-        if a['game'] not in SINGLE:
-            raise BadInput("one model pac as --src: %s only (PS2 models are inside the disc's packs)" % ', '.join(SINGLE))
-        g11, snd = game11(a['pac11'])
-        rep = dict(ok=False, out=None, folder=None, opens='superstar', warnings=[], dropped=[], notes=[])
-        o = dict(a, g11=g11)
-        if o.get('base') is not None:
-            o['base'] = int(o['base'])
-        out, mod = build_single(cid, outdir, o, rep)
-        rep.update(ok=True, out=out, folder=mod)
-        progress(100, 'done')
-        return rep
     src = Src(a['src'], os.path.join(outdir, '.src_' + a['game']))
     progress(1, 'reading the game')
     g = open_game(a['game'], src, a.get('svrmod'))
@@ -1767,7 +1927,7 @@ def cmd_convert(a):
 
 def main(argv):
     if len(argv) < 2 or argv[1] in ('-h', '--help'):
-        print(json.dumps({'error': 'usage: games | list --game G --src S | convert --game G --src S --item K --out D [--picture KEY] | pictures --game G --src S --out D'}))
+        print(json.dumps({'error': 'usage: games | list --game G --src S | convert --game G --src S --item K --out D [--picture KEY] | pictures --game G --src S --out D | detect --src <one character pac> | convert --src <one character pac> [--game G] [--item K] --out D'}))
         return 2
     cmd = argv[1]
     a = dict(pac11=PAC11)
@@ -1789,6 +1949,17 @@ def main(argv):
     try:
         if cmd == 'games':
             res = GAMES
+        elif cmd == 'detect':   # (one character pac: lone_pac.py detect)
+            import lone_pac
+            if not a.get('src'):
+                raise BadInput('--src is needed')
+            res = json.loads(subprocess_json([sys.executable, os.path.join(HERE, 'lone_pac.py'), 'detect', '--src', a['src']]
+                                             + (['--svrmod', a['svrmod']] if a.get('svrmod') else [])
+                                             + (['--game', a['game']] if a.get('game') else [])
+                                             + ['--cache', __import__('moves_port').cache_dir(a['pac11'], os.path.join(HERE, 'work'))]))
+        elif cmd == 'convert' and os.path.isfile(a.get('src') or '') and not discfs_image(a['src']):
+            rep_path = os.path.join(os.path.abspath(a['out']), 'report.json') if a.get('out') else None
+            res = cmd_convert(a)
         elif cmd in ('list', 'convert', 'pictures'):
             if a.get('game') not in {g['id'] for g in GAMES}:
                 raise BadInput('unknown --game %r (see games)' % a.get('game'))
@@ -1806,16 +1977,24 @@ def main(argv):
         else:
             raise BadInput('unknown command %r' % cmd)
     except (BadInput, FileNotFoundError) as e:
-        print(json.dumps({'ok': False, 'error': str(e) if isinstance(e, BadInput) else missing(rel_to(e.filename or str(e), a.get('src')))}))
+        res = {'ok': False, 'error': str(e) if isinstance(e, BadInput) else missing(rel_to(e.filename or str(e), a.get('src')))}
+        if getattr(e, 'games', None):   # (Ambiguous: the games the file fits - ask, then --game)
+            import lone_pac
+            res['games'] = [dict(id=g, name=lone_pac.LABELS.get(g, g)) for g in e.games]
+        if getattr(e, 'characters', None):
+            res['characters'] = e.characters
+        print(json.dumps(res))
         return 2
     except Exception as e:   # noqa: BLE001
         traceback.print_exc(file=sys.stderr)
         res = {'ok': False, 'error': '%s: %s' % (type(e).__name__, e), 'opens': 'superstar'}
         if rep_path:
+            os.makedirs(os.path.dirname(rep_path), exist_ok=True)
             json.dump(res, open(rep_path, 'w'), indent=1)
         print(json.dumps(res))
         return 3
     if rep_path:
+        os.makedirs(os.path.dirname(rep_path), exist_ok=True)
         json.dump(res, open(rep_path, 'w'), indent=1)
     print(json.dumps(res, indent=None if cmd == 'convert' else 1))
     return 0
