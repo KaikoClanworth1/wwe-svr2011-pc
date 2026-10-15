@@ -8,7 +8,7 @@
 // save before ACCEPT and after a manual save, then setting each changed byte alone in the before-file.
 // So: when the flag goes 1 -> 0 in memory and the file still has 1, that byte goes into the file at once (its
 // checksum redone: big-endian u16 at 0x1A = the sum of the bytes from 0x1C, mod 2^16). Nothing else in the file
-// changes. A write that fails is logged and written to <user data>\save_write_failed.txt (the launcher shows it).
+// changes; the game's working copy in Saves\.mount gets it too when it isn't a hard link of the save. A write that fails is logged and written to <user data>\save_write_failed.txt (the launcher shows it).
 #include "universe_welcome.h"
 
 #include <cstdint>
@@ -44,36 +44,71 @@ void Failed(const std::string& why) {
          "online-only by OneDrive.\n";
 }
 
-void KeepSeen() {
+// The save files that hold SaveData.dat: Saves\SaveData.dat, and the game's working copy in Saves\.mount\SaveData.dat\
+// when it isn't the same file (no hard links on that drive: the copy is moved back over the save at close).
+std::vector<fs::path> SaveFiles() {
+  std::vector<fs::path> out;
   std::error_code ec;
-  if (!fs::is_regular_file(g_save, ec)) return;  // (no save file: the game makes one when it saves)
-  std::vector<char> d;
-  {
-    std::ifstream in(g_save, std::ios::binary);
-    if (!in) return Failed("can't be read");
-    d.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  if (fs::is_regular_file(g_save, ec)) out.push_back(g_save);
+  const fs::path mount = g_save.parent_path() / ".mount" / g_save.filename();
+  for (const auto& e : fs::directory_iterator(mount, ec)) {
+    if (ec || !e.is_regular_file(ec)) continue;
+    if (!out.empty() && fs::equivalent(e.path(), out[0], ec)) continue;
+    out.push_back(e.path());
   }
-  if (d.size() <= kFlag) return;
-  if (d[kFlag] == 0) return;  // (already seen in the file)
-  uint32_t sum = 0;
-  for (size_t i = kSumFrom; i < d.size(); ++i) sum += uint8_t(d[i]);
-  if (((uint8_t(d[kSum]) << 8 | uint8_t(d[kSum + 1])) & 0xFFFF) != (sum & 0xFFFF)) {
-    REXLOG_WARN("[svr2011] universe welcome: {}'s checksum isn't the one known - left alone", g_save.string());
-    return;
+  return out;
+}
+
+// `n` bytes at file offset `at` set to `v` in every save file that doesn't have them yet - in place, the checksum
+// redone (BE u16 at 0x1A = the sum of the bytes from 0x1C). `only_if_zero`: a file whose bytes there aren't all 0 is
+// left as it is (the game wrote its own). True: some file changed.
+bool PatchSave(uint32_t at, const uint8_t* v, uint32_t n, bool only_if_zero, const char* what) {
+  bool changed = false;
+  for (const fs::path& file : SaveFiles()) {
+    std::vector<char> d;
+    {
+      std::ifstream in(file, std::ios::binary);
+      if (!in) {
+        Failed("can't be read");
+        continue;
+      }
+      d.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (d.size() < at + n) continue;
+    if (std::memcmp(d.data() + at, v, n) == 0) continue;  // (already there)
+    bool zero = true;
+    for (uint32_t i = 0; i < n; ++i) zero &= d[at + i] == 0;
+    if (only_if_zero && !zero) continue;
+    uint32_t sum = 0;
+    for (size_t i = kSumFrom; i < d.size(); ++i) sum += uint8_t(d[i]);
+    if ((uint32_t(uint8_t(d[kSum])) << 8 | uint8_t(d[kSum + 1])) != (sum & 0xFFFF)) {
+      REXLOG_WARN("[svr2011] saves: {}'s checksum isn't the one known - left alone", file.string());
+      continue;
+    }
+    for (uint32_t i = 0; i < n; ++i) sum = sum - uint8_t(d[at + i]) + v[i], d[at + i] = char(v[i]);
+    d[kSum] = char(sum >> 8 & 0xFF), d[kSum + 1] = char(sum & 0xFF);
+    std::fstream f(file, std::ios::binary | std::ios::in | std::ios::out);  // (in place: a hard link stays one)
+    if (!f) {
+      Failed("can't be opened for writing");
+      continue;
+    }
+    f.seekp(kSum);
+    f.write(d.data() + kSum, 2);
+    f.seekp(at);
+    f.write(d.data() + at, n);
+    f.flush();
+    if (!f) {
+      Failed("the write failed");
+      continue;
+    }
+    REXLOG_INFO("[svr2011] saves: {} kept in {}", what, file.string());
+    changed = true;
   }
-  sum -= uint8_t(d[kFlag]);
-  d[kFlag] = 0;
-  d[kSum] = char(sum >> 8 & 0xFF), d[kSum + 1] = char(sum & 0xFF);
-  std::fstream f(g_save, std::ios::binary | std::ios::in | std::ios::out);  // (in place: a hard link in .mount stays)
-  if (!f) return Failed("can't be opened for writing");
-  f.seekp(kSum);
-  f.write(d.data() + kSum, 2);
-  f.seekp(kFlag);
-  f.write(d.data() + kFlag, 1);
-  f.flush();
-  if (!f) return Failed("the write failed");
-  REXLOG_INFO("[svr2011] universe welcome: accepted - kept as seen in {}", g_save.filename().string());
-  fs::remove(g_failed, ec);
+  if (changed) {
+    std::error_code ec;
+    fs::remove(g_failed, ec);
+  }
+  return changed;
 }
 
 }  // namespace
@@ -105,7 +140,10 @@ void UniverseWelcomeTick(uint8_t* base) {
   if (g_save.empty()) return;
   const uint32_t save = Rd32(base + kSavePtr);
   const int now = save ? base[save + kFlag - kHeader] : -1;
-  if (now == 0 && g_last == 1) KeepSeen();  // (a save being loaded: the default one first, flag 1, then the file's)
+  if (now == 0 && g_last == 1) {  // (a save being loaded: the default one first, flag 1, then the file's)
+    const uint8_t zero = 0;
+    PatchSave(kFlag, &zero, 1, false, "the Universe welcome accepted");
+  }
   g_last = now;
 }
 
