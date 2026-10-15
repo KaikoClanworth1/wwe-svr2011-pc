@@ -163,6 +163,31 @@ old exported move pack hides a mod's fixed motions that way.
      (`superstar_mods.cpp`).
    - `tools/plist_fix.py` can refresh an arc instead, for tests on patched
      files.
+4. **Installed DLC:**
+   - DLC Vol. 2 brings its own `pac\m_dlc02.pac` (MOT/RR00-02, RB00, BMD0,
+     RRBS, BA00) and `pac\mpsp_dlc02.pac` (all of MOTP/GAME). With it
+     installed the game reads those, not the overlay's, so the packs go into
+     copies of them too: `Mods\PacOverlay\dlc\<package>\<name>`.
+   - The package (`<user data>\0000000000000000\5451085D\00000002\<package>`)
+     is only ever read. Test folders link their user data to the player's,
+     and an older build that merged into the package changed the player's
+     DLC. If a package still has a `<name>.orig` from that build, it is put
+     back at start-up.
+   - The package's `info\catalog_hd.arc` / `catalog_sd.arc` are pre-built
+     directories of its pacs (each entry's name, big-endian sector and size).
+     The game reads the pacs through them, so a merged copy read at the old
+     places crashed every match. Copies of the catalogs with the copies'
+     places go beside them. An entry is found by name plus old place; a copy
+     that can't be found so isn't served.
+   - When the game mounts the package (`dlc0:`, `dlc1:` ... in the order it
+     finds them; SDK `SetContentMountHook`) its root gets links
+     `<root>:\pac\<name>` and `<root>:\info\<catalog>` to the copies. The SDK
+     picks the longest matching link, and an open checks a link for the file
+     itself before its folder's.
+   - One merge at a time: `Mods\PacOverlay\merge.lock` (a folder), and every
+     pac is written as `.part` and renamed.
+   - The DLC's `misc.pac` is not copied (one with the packs' records crashed
+     the pac loading); its MOVS/WAZE gets the packs' records as it loads.
 
 ## Tests
 

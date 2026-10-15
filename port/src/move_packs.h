@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -17,8 +18,9 @@ namespace svr2011 {
 // pack (Mods/Superstars/<mod>/moves/pack.txt, Mods/Moves/<pack>/pack.txt)
 // into copies of m.pac, misc.pac and mpsp.pac in <game>/Mods/PacOverlay
 // (rebuilt only when a pack or a game file changed), with a pac list naming
-// them there.
-void InstallMovePacks(rex::filesystem::VirtualFileSystem* fs);
+// them there. dlc_root: the installed DLC packages (dlc.cpp, only read) - those bringing
+// their own m / mpsp pac (Vol. 2) get a copy with the packs in Mods/PacOverlay/dlc.
+void InstallMovePacks(rex::filesystem::VirtualFileSystem* fs, const std::filesystem::path& dlc_root = {});
 
 // The folder (under the game folder) the game reads its pac list from, or ""
 // for the game's own. With an overlay the pacs are mounted from their own
