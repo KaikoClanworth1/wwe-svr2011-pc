@@ -13,6 +13,10 @@
 #define RC_DESCRIPTION "SvR2011 Mod Maker - mod editor for the WWE SmackDown vs. Raw 2011 PC Port"
 #define RC_INTERNAL    "svr2011_modmaker"
 #define RC_FILENAME    "SvR2011 Mod Maker.exe"
+#elif defined(SVR2011_RC_UPDATER)
+#define RC_DESCRIPTION "SvR2011 Updater - installs updates of the WWE SmackDown vs. Raw 2011 PC Port for its launcher"
+#define RC_INTERNAL    "svr2011_updater"
+#define RC_FILENAME    "SvR2011 Updater.exe"
 #else
 #define RC_DESCRIPTION "SvR2011 Launcher - installs, sets up and starts the WWE SmackDown vs. Raw 2011 PC Port"
 #define RC_INTERNAL    "svr2011_launcher"

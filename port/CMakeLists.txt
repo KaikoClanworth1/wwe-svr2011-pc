@@ -342,4 +342,17 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_VERSION LIMIT_COUNT 1)
     target_compile_definitions(svr2011_launcher PRIVATE "PORT_VERSION=L\"${SVR2011_VERSION}\"")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt")
+    # The updater (launcher/updater_main.c): downloads a release and replaces the program files for the
+    # launcher, which starts it and closes - so the launcher itself never swaps executables or restarts
+    # itself (what antivirus heuristics take for a dropper).
+    add_executable(svr2011_updater WIN32 launcher/updater_main.c launcher/updater.c launcher/unzip.c
+        launcher/launcher.rc src/utf8.manifest)
+    set_target_properties(svr2011_updater PROPERTIES OUTPUT_NAME "SvR2011 Updater")
+    set_property(TARGET svr2011_updater PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    target_link_options(svr2011_updater PRIVATE -Wl,/NODEFAULTLIB:libucrt.lib -Wl,/DEFAULTLIB:ucrt.lib
+        -Wl,/ENTRY:wWinMainCRTStartup)
+    target_compile_definitions(svr2011_updater PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN
+        SVR2011_RC_UPDATER "PORT_VERSION=L\"${SVR2011_VERSION}\"")
+    target_link_libraries(svr2011_updater PRIVATE comctl32 shell32 winhttp)
+    add_dependencies(svr2011_launcher svr2011_updater)
 endif()

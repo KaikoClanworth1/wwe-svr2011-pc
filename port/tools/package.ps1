@@ -17,7 +17,7 @@ $zip   = Join-Path $port "out\$name.zip"
 
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
-$files = @("svr2011.exe", "SvR2011 Launcher.exe", "rexruntime.dll", "rexgpu-xenos.dll")
+$files = @("svr2011.exe", "SvR2011 Launcher.exe", "SvR2011 Updater.exe", "rexruntime.dll", "rexgpu-xenos.dll")
 foreach ($f in $files) {
     $src = Join-Path $build $f
     if (-not (Test-Path $src)) { throw "$f is missing from $build - build first" }
