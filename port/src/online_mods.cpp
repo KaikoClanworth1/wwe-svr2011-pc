@@ -28,6 +28,7 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -45,6 +46,8 @@
 #include "generated/default/svr2011_init.h"
 #include "arena_mods.h"
 #include "fps_overlay.h"
+#include "frame_rate.h"
+#include "move_packs.h"
 #include "online_files.h"
 #include "p2p.h"
 #include "superstar_mods.h"
@@ -82,6 +85,7 @@ struct Mine {
   std::map<std::string, uint32_t> id_of;    // key -> superstar id
   std::map<std::string, std::string> label;  // key -> "Sabu 1.3" (superstars and arenas)
   std::map<std::string, std::string> arena_folder;  // arena key -> folder
+  std::map<std::string, std::pair<std::string, std::string>> pack_of;  // move pack key -> (kind, folder)
 };
 
 std::set<std::string> Hidden() {
@@ -111,7 +115,14 @@ const Mine& MyMods() {
       if (!e.is_directory() || hidden.count(folder) || !svr2011::ModKey("Arenas", folder, &key, &label)) continue;
       m.label[key] = label, m.arena_folder[key] = folder;
     }
-    REXLOG_INFO("online mods: {} superstar and {} arena mods for online lobbies", m.key_of.size(), m.arena_folder.size());
+    // (move packs: Mods/Moves/<pack>, a superstar mod's moves/ - by its mod's key; "pack:" keys)
+    for (const auto& [kind, folder] : svr2011::MovePacks()) {
+      std::string key, label;
+      if (hidden.count(folder) || !svr2011::ModKey(kind, folder, &key, &label)) continue;
+      m.pack_of["pack:" + key] = {kind, folder}, m.label["pack:" + key] = label;
+    }
+    REXLOG_INFO("online mods: {} superstar and {} arena mods, {} move packs for online lobbies", m.key_of.size(),
+                m.arena_folder.size(), m.pack_of.size());
     return m;
   }();
   return mine;
@@ -128,6 +139,10 @@ struct Theirs {
   std::set<std::string> arenas;            // arena keys
   std::string arena;                       // (host) the session's custom arena key, "" none
   int tile = -1;
+  std::set<std::string> packs;             // its move pack keys
+  std::vector<std::string> agreed;         // (the host) the packs every player has, for the match
+  uint64_t echo = 0;                       // (a client) the host's agreed list it has (its hash)
+  bool packs_known = false;                // (it sent its packs: a game of this version)
   Clock::time_point heard;
   bool told = false;                       // (its CHAT line said)
 };
@@ -139,6 +154,59 @@ std::vector<std::string> g_chat;      // CHAT lines to add (the game's thread)
 std::string g_arena_lacking;          // (a client) the session's arena this game lacks: its label
 uint64_t g_host = 0;                  // the session's host
 bool g_retranslate = false;           // (a client: the host's table just came - the records before it in its numbering)
+// The move packs this lobby's match plays: every player has them (the host decides, everyone echoes - the
+// match starts only when all have the same list). A match's move from another pack plays its category's
+// default on every game (OnlinePackMoveAllowed). Kept while a match runs.
+std::vector<std::string> g_agreed;
+uint64_t g_agreed_hash = 0;
+std::string g_off_said;               // (the CHAT line about packs off, once a change)
+
+uint64_t HashKeys(const std::vector<std::string>& keys) {
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (const auto& k : keys) {
+    for (unsigned char c : k) h = (h ^ c) * 0x100000001B3ull;
+    h = (h ^ 0xFF) * 0x100000001B3ull;
+  }
+  return h | 1;  // (never 0: "none yet")
+}
+
+// The moves the agreed packs give (a match's lookup, rebuilt outside matches).
+std::shared_ptr<const std::vector<bool>> g_allowed_moves;
+std::atomic<bool> g_restricted{false};  // (an online match session: moves off agreed packs play defaults)
+
+void SetAgreed(std::vector<std::string> keys) {  // (under g_mutex)
+  std::sort(keys.begin(), keys.end());
+  if (keys == g_agreed && g_agreed_hash) return;
+  g_agreed = std::move(keys);
+  g_agreed_hash = HashKeys(g_agreed);
+  auto allowed = std::make_shared<std::vector<bool>>(65536, false);
+  for (const auto& k : g_agreed) {
+    const auto it = MyMods().pack_of.find(k);
+    if (it == MyMods().pack_of.end()) continue;
+    for (const uint16_t id : svr2011::MovePackMoves(it->second.first, it->second.second)) (*allowed)[id] = true;
+  }
+  std::atomic_store(&g_allowed_moves, std::shared_ptr<const std::vector<bool>>(std::move(allowed)));
+  // (the CHAT: this game's packs off for the match)
+  std::vector<std::string> off;
+  for (const auto& [key, pack] : MyMods().pack_of)
+    if (!std::binary_search(g_agreed.begin(), g_agreed.end(), key)) off.push_back(MyMods().label.at(key));
+  std::string line;
+  if (!off.empty()) {
+    line = "Move packs off for this match (not every player has them): ";
+    for (size_t i = 0; i < off.size(); ++i) {
+      if (line.size() + off[i].size() > 90) {
+        line += " +" + std::to_string(off.size() - i);
+        break;
+      }
+      line += (i ? ", " : "") + off[i];
+    }
+  }
+  if (line != g_off_said) {
+    if (!line.empty()) g_chat.push_back(line);
+    g_off_said = line;
+    if (LogOn() || !line.empty()) REXLOG_INFO("online mods: agreed move packs {} - {}", g_agreed.size(), line.empty() ? "all of this game's" : line);
+  }
+}
 
 // Strings in messages.
 void PutStr(std::vector<uint8_t>& o, const std::string& s) {
@@ -205,6 +273,18 @@ void SendTable(const svr2011::P2PLobby& lobby) {
   for (const auto& [id, key] : m.key_of) Put16(o, uint16_t(id)), PutStr(o, key), PutStr(o, m.label.at(key));
   Put16(o, uint16_t(m.arena_folder.size()));
   for (const auto& [key, f] : m.arena_folder) PutStr(o, key), PutStr(o, m.label.at(key));
+  Put16(o, uint16_t(m.pack_of.size()));
+  for (const auto& [key, pack] : m.pack_of) PutStr(o, key), PutStr(o, m.label.at(key));
+  {
+    std::lock_guard lock(g_mutex);
+    if (lobby.host) {
+      Put16(o, uint16_t(g_agreed.size()));
+      for (const auto& k : g_agreed) PutStr(o, k);
+    } else {
+      Put16(o, 0);
+    }
+    Put64(o, g_agreed_hash);
+  }
   svr2011::P2PSendMods(o);
 }
 
@@ -257,6 +337,17 @@ void OnTable(In& r) {
   for (uint16_t i = 0; i < na && r.ok; ++i) {
     const std::string key = r.str(), label = r.str();
     t.arenas.insert(key), t.label[key] = label;
+  }
+  if (r.ok && r.at < r.n) {  // (move packs: games of this version)
+    const uint16_t np = r.u16();
+    for (uint16_t i = 0; i < np && r.ok; ++i) {
+      const std::string key = r.str(), label = r.str();
+      t.packs.insert(key), t.label[key] = label;
+    }
+    const uint16_t ng = r.u16();
+    for (uint16_t i = 0; i < ng && r.ok; ++i) t.agreed.push_back(r.str());
+    t.echo = r.u64();
+    t.packs_known = r.ok;
   }
   if (!r.ok || !xuid || xuid == MyXuid()) return;
   if (t.name.empty()) t.name = "A player";
@@ -327,12 +418,31 @@ void Loop() {
       if (!lobby.in || lobby.session != g_session) {
         if (g_session && LogOn()) REXLOG_INFO("online mods: lobby {:016X} over", g_session);
         g_theirs.clear(), g_chat.clear(), g_arena_lacking.clear(), g_host = 0;
+        g_agreed.clear(), g_agreed_hash = 0, g_off_said.clear();
         g_session = lobby.in ? lobby.session : 0;
         apply = true;  // (back to no arena: below)
       }
       for (auto it = g_theirs.begin(); it != g_theirs.end();)
         it = std::find(lobby.members.begin(), lobby.members.end(), it->first) == lobby.members.end() ? g_theirs.erase(it)
                                                                                                       : std::next(it);
+      g_restricted = lobby.in;
+      if (lobby.in && !svr2011::InMatch()) {
+        if (lobby.host) {  // (the packs every player in the lobby has)
+          std::vector<std::string> keys;
+          for (const auto& [key, pack] : MyMods().pack_of) {
+            bool all = true;
+            for (const uint64_t x : lobby.members) {
+              if (x == MyXuid()) continue;
+              const auto t = g_theirs.find(x);
+              all = all && t != g_theirs.end() && t->second.packs.count(key);
+            }
+            if (all) keys.push_back(key);
+          }
+          SetAgreed(std::move(keys));
+        } else if (auto h = g_theirs.find(g_host); h != g_theirs.end() && h->second.packs_known) {
+          SetAgreed(h->second.agreed);
+        }
+      }
       if (lobby.in && !lobby.host) {
         if (auto h = g_theirs.find(g_host); h != g_theirs.end()) {
           arena = h->second.arena, tile = h->second.tile, apply = true;
@@ -542,6 +652,20 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
         if (!lacking.empty()) why = Join(lacking) + " lacks this session's arena: " + MyMods().label.at(arena);
       }
     }
+    if (why.empty() && lobby.host) {  // (every game plays the same move packs: they echo the host's list)
+      for (const uint64_t x : lobby.members) {
+        if (x == MyXuid()) continue;
+        const auto t = g_theirs.find(x);
+        if (t == g_theirs.end()) {
+          why = "a player who just joined is still sending its mods";
+          break;
+        }
+        if (t->second.packs_known && t->second.echo != g_agreed_hash) {
+          why = t->second.name + " is still taking the move packs list";
+          break;
+        }
+      }
+    }
     const uint32_t slots = std::min<uint32_t>(Rd32(base + L + 28), 12);
     for (uint32_t j = 0; j < slots && why.empty(); ++j) {
       const uint8_t* rec = base + L + kSlots + j * kSlotSize;
@@ -565,6 +689,12 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
     told = why, told_at = Clock::now();
   }
   return false;
+}
+
+bool OnlinePackMoveAllowed(uint16_t id) {
+  if (!g_restricted.load() || StockPlays(id)) return true;
+  const auto allowed = std::atomic_load(&g_allowed_moves);
+  return allowed && (*allowed)[id];
 }
 
 bool OnlineModEveryoneHas(uint32_t id) {

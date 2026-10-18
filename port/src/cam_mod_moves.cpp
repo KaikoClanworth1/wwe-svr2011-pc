@@ -24,6 +24,7 @@
 
 #include "cam_mod_moves.h"
 #include "move_packs.h"
+#include "online_mods.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -193,7 +194,10 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
   const uint32_t cat = kSlotCategory[slot];
   const uint16_t id = uint16_t(got & 0x7FFF);
   // (no move table in a match - 0x82E3C214 is a menu's: what the game loaded is asked, move_packs.cpp)
-  if (cat >= 128 || !id || CreatedFinisher(id) || !(planted || svr2011::MoveMissing(id))) return got;
+  // (online: a move from a pack not every player has - its category's default on every game: online_mods.h)
+  if (cat >= 128 || !id || CreatedFinisher(id) ||
+      !(planted || svr2011::MoveMissing(id) || !svr2011::OnlinePackMoveAllowed(id)))
+    return got;
   const uint16_t def = svr2011::CategoryDefaultMove(int(cat));
   if (!def) {
     static int nolog = 0;

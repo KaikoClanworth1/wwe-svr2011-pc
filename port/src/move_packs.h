@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rex::filesystem {
@@ -36,6 +37,13 @@ int MoveUsable(uint16_t id);
 // Is `id` one of the packs' own moves (a waze / wazename / wazecopy line names it)? CREATE A MOVE-SET
 // shows those as "MOD: <name>" rows at the end of its lists (cam_mod_moves.cpp).
 bool PackMove(uint16_t id);
+// The move packs installed (kind "Moves" or "Superstars" - a superstar mod's moves/ - and the mod's folder),
+// each pack's moves, and whether the stock game plays a move without any pack: online lobbies agree which
+// packs every player has, and a match's move from any other pack plays its category's default
+// (online_mods.cpp, cam_mod_moves.cpp) - the same on every game.
+std::vector<std::pair<std::string, std::string>> MovePacks();
+std::vector<uint16_t> MovePackMoves(const std::string& kind, const std::string& folder);
+bool StockPlays(uint16_t id);
 
 // The game move a slot of `category` (0-127) falls back to in a match when its own has no record:
 // computed at each MOVS/WAZE load (0 = none / not loaded).

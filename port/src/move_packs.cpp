@@ -946,6 +946,10 @@ int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, in
 }
 
 std::map<uint16_t, Bytes> g_waze;  // the packs' moves' category bits (PatchWaze at each MOVS/WAZE load)
+// Each pack's moves ((kind "Moves" / "Superstars", the mod's folder) -> ids): online lobbies agree which
+// packs every player has; a match's move from another pack plays its category's default (MovePacks).
+std::map<std::pair<std::string, std::string>, std::set<uint16_t>> g_pack_ids;
+std::mutex g_pack_ids_mutex;
 std::map<uint16_t, std::string> g_names;  // and their record names
 std::map<uint16_t, uint16_t> g_copies;     // and records copied from other moves
 
@@ -1512,9 +1516,26 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   auto read_packs = [&](bool data) {
     packs = Packs{};
     stamp = std::string(kFormat) + "\n";
+    std::map<std::pair<std::string, std::string>, std::set<uint16_t>> pack_ids;
     for (const auto& d : dirs) {
+      std::set<uint16_t> before;
+      for (const auto& [id, b] : packs.waze) before.insert(id);
+      for (const auto& [id, n] : packs.names) before.insert(id);
+      for (const auto& [id, c] : packs.copies) before.insert(id);
       ReadPack(d, packs, stamp, data);
       stamp += ContentStamp(d / "pack.txt");
+      // (its moves: the ids it adds - a superstar mod's moves/ folder, or Mods/Moves/<pack>)
+      const bool star = d.filename() == "moves";
+      const std::string kind = star ? "Superstars" : d.parent_path().filename().string();
+      if (kind != "Superstars" && kind != "Moves") continue;
+      auto& ids = pack_ids[{kind, (star ? d.parent_path() : d).filename().string()}];
+      for (const auto& [id, b] : packs.waze) if (!before.count(id)) ids.insert(id);
+      for (const auto& [id, n] : packs.names) if (!before.count(id)) ids.insert(id);
+      for (const auto& [id, c] : packs.copies) if (!before.count(id)) ids.insert(id);
+    }
+    {
+      std::lock_guard lock(g_pack_ids_mutex);
+      g_pack_ids = std::move(pack_ids);
     }
     // (the game's own files too - in both reads, or the saved stamp never
     // matches the next start's and every start merges again)
@@ -1782,6 +1803,25 @@ bool PackMove(uint16_t id) { return g_waze.count(id) || g_names.count(id) || g_c
 uint16_t CategoryDefaultMove(int category) {
   std::lock_guard lock(g_usable_mutex);
   return category >= 0 && size_t(category) < g_defaults.size() ? g_defaults[category] : 0;
+}
+
+std::vector<std::pair<std::string, std::string>> MovePacks() {
+  std::lock_guard lock(g_pack_ids_mutex);
+  std::vector<std::pair<std::string, std::string>> out;
+  for (const auto& [pack, ids] : g_pack_ids)
+    if (!ids.empty()) out.push_back(pack);
+  return out;
+}
+
+std::vector<uint16_t> MovePackMoves(const std::string& kind, const std::string& folder) {
+  std::lock_guard lock(g_pack_ids_mutex);
+  const auto it = g_pack_ids.find({kind, folder});
+  return it == g_pack_ids.end() ? std::vector<uint16_t>{} : std::vector<uint16_t>(it->second.begin(), it->second.end());
+}
+
+bool StockPlays(uint16_t id) {
+  std::lock_guard lock(g_usable_mutex);
+  return g_stock_ok.empty() || g_stock_ok[id];  // (tables not loaded: nothing to judge by)
 }
 
 bool MoveMissing(uint16_t id) {

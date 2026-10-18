@@ -48,5 +48,9 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L);
 // A superstar (this game's id) every player in the lobby has - a stock one,
 // or a mod all have: for the host's own picks (CPU slots, Mystery Opponent).
 bool OnlineModEveryoneHas(uint32_t id);
+// A match's move in an online session: false when it's from a move pack not
+// every player of the lobby has (and the stock game can't play it) - then it
+// plays its category's default, the same on every game (cam_mod_moves.cpp).
+bool OnlinePackMoveAllowed(uint16_t id);
 
 }  // namespace svr2011
