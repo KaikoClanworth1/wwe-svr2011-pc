@@ -457,7 +457,8 @@ std::string ModSetDifference(const std::string& mine, const std::string& theirs,
   if (!superstars) {  // (checked in the lobby: online_mods.h)
     for (auto* m : {&a, &b})
       for (auto it = m->begin(); it != m->end();)
-        it = it->second.kind == "Superstars" || it->second.kind == "Arenas" ? m->erase(it) : std::next(it);
+        it = it->second.kind == "Superstars" || it->second.kind == "Arenas" || it->second.kind == "Moves"
+                 ? m->erase(it) : std::next(it);
   }
   std::vector<std::string> parts;
   for (const auto& [key, l] : b)

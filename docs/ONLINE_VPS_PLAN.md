@@ -36,105 +36,139 @@ games, pending invites (`self.invites`), presence (`stats.recent`), the
 current minute's counters, login throttles, the blob cache. Accounts, tokens,
 GP tickets, uploads and leaderboards are on disk and survive.
 
-## 2. Target on the VPS
+## 2. Target: a split - the VPS runs the server, the PC keeps only the files
+
+The user's rule: *the server for connections runs on the VPS; players reach
+the user's storage only when they download from Community Creations.*
 
 ```
-players --https--> nginx (443, sho-ti.me) --/svr/--> 127.0.0.1:8101 svr2011 service (systemd)
-players --UDP 36500--> svr-relay-edge (unchanged) --127.0.0.1:36501--> svr2011 service
+players --https--> VPS nginx (sho-ti.me) --/svr/--> core (server.py --role core, 127.0.0.1:8101)
+players --UDP 36500--> relay edge (as today) --127.0.0.1:36501--> core
+core --(only file bytes, over WireGuard)--> PC storage node (server.py --role storage, 10.8.0.2:8102)
 ```
 
-- **Service**: `/opt/svr2011/` with the server code (a copy of the repo's
-  `port/server`, pinned to a release tag), its own venv
+Players only ever talk to the VPS (one server URL, `https://sho-ti.me/svr`, as
+today). The game and the launcher need no change: the split is inside the
+server.
+
+### What runs where
+
+| On the VPS (core: `--role core`) | On the PC (storage: `--role storage`) |
+|---|---|
+| sign-in, accounts, tokens (`/api/register|login|logout|session`) | the bytes of uploaded files: CAWs, logos, stories, reels, move-sets, entrance songs / movies (`data\blobs\`) |
+| presence, friends, invites (`/api/friends`, `/api/invite`) | |
+| live session reports, netreports, stats, the dashboard | |
+| the relay (https half; the UDP edge is there already) | |
+| leaderboards, CompetitionService, AuthService | |
+| Sake **metadata**: SearchForRecords, GetSpecificRecords, GetRecordCount, Create / Update / DeleteRecord, RateRecord (records, fields, ratings, owners) | |
+| `community.db` (all of the above + the blob index: sha, sizes, refs, quotas) | |
+| the 64 MB cache of recently downloaded files | |
+
+**Pure storage calls** (the only ones that reach the PC, through the core):
+Sake `upload.aspx` / `download.aspx` (file bytes), `/api/logo/<hash>` GET /
+POST (logo bytes), `/api/media` and the entrance song / movie reads (bytes),
+the dashboard's upload pictures. Everything else is metadata in the core's
+database. (`/api/logos/wanted` is a list from the database: core.)
+
+### How it stays consistent
+
+- The core is the only writer of `community.db`; the storage node is a dumb,
+  content-addressed store (`/blob/<sha>`, a shared key, `X-Storage-Key`).
+- An upload: the core compresses, sends the bytes to the node, **then** writes
+  the rows - with the node down the upload is refused and nothing is written.
+- A delete / the hourly garbage collection: the core drops the refs and asks
+  the node to delete. A delete missed while the node was off leaves an orphan
+  file on the PC (harmless; a later sweep can list the node's shas against the
+  core's blob table).
+- Downloads: from the core's cache when recent, else from the node.
+
+### When the PC is off
+
+Sign-in, presence, friends, invites, matchmaking, the relay, leaderboards,
+Community Creations **lists and details** keep working. Downloading or
+uploading a file fails: the game shows its own "Download failed." (and the
+upload error). Server-side test: with the node stopped, the 20 non-file
+checks of `test_server.py` pass and the file ones fail cleanly.
+
+### Server code (ready: commit 3c38571)
+
+`server.py --role all|core|storage` (`all` = today), `--storage-url`,
+`--storage-key`; `gamespy.Store` takes a blob backend (`LocalBlobs` /
+`RemoteBlobs`).
+
+### The VPS service
+
+- `/opt/svr2011/` (the repo's `port/server`, a tagged version), its own venv
   (`python3 -m venv /opt/svr2011/venv; pip install aiohttp`), data in
-  `/var/lib/svr2011/` (db + blobs), logs in `/var/log/svr2011/`.
-- **systemd** `svr2011.service`: `ExecStart=/opt/svr2011/venv/bin/python
-  server.py --host 127.0.0.1 --port 8101 --base /svr --data /var/lib/svr2011
-  --log /var/log/svr2011/server.log --max-connections 100 --max-file-mb 8
-  --quota-mb 256 --relay-udp-port 36500 --relay-edge 127.0.0.1:36501
-  --relay-secret /etc/svr2011/relay_secret.txt`; `Restart=always`,
-  `RestartSec=3`, own user (`svr2011`, or `DynamicUser` with
-  `StateDirectory=svr2011` / `LogsDirectory=svr2011`), `ProtectSystem=strict`,
-  `NoNewPrivileges=yes`, `LimitNOFILE=8192`. SELinux: a non-standard port on
-  127.0.0.1 behind nginx needs `setsebool -P httpd_can_network_connect 1`
-  (already on if nginx proxies to 10.8.0.2 today).
-- **The relay edge** stays as it is; its link moves from `10.8.0.1:36501`
-  (WireGuard) to `127.0.0.1:36501`, so the firewalld rich rule for 36501 from
-  10.8.0.0/24 is no longer needed (close it after the move).
-- **nginx**: a `location /svr/ { proxy_pass http://127.0.0.1:8101; ... }`
-  before the portal's catch-all, with the same streaming settings as today
+  `/var/lib/svr2011/` (only `community.db*` - no blobs), logs in
+  `/var/log/svr2011/`.
+- systemd `svr2011.service`: `ExecStart=/opt/svr2011/venv/bin/python
+  server.py --supervise --role core --host 127.0.0.1 --port 8101 --base /svr
+  --data /var/lib/svr2011 --log /var/log/svr2011/server.log
+  --relay-udp-port 36500 --relay-edge 127.0.0.1:36501 --relay-secret
+  /etc/svr2011/relay_secret.txt --storage-url http://10.8.0.2:8102
+  --storage-key /etc/svr2011/storage_key.txt`; `Restart=always`, its own
+  user, `StateDirectory` / `LogsDirectory`, `ProtectSystem=strict`.
+  (Settings - max connections, presence window, mods online - in
+  `/var/lib/svr2011/settings.json`, edited from the dashboard.)
+- nginx `location /svr/ { proxy_pass http://127.0.0.1:8101; }` before the
+  portal's catch-all, with the streaming settings of today
   (`proxy_buffering off; proxy_request_buffering off; proxy_read_timeout
-  14400s; client_max_body_size 0; proxy_http_version 1.1`) and
-  `X-Forwarded-For` / `X-Real-IP` set (the service reads the client IP for
-  the relay's address hint and throttles).
-- **Admin**: the dashboard stays off the public site. Fix `is_admin` first
-  (no "loopback without X-Forwarded-For = admin"; nginx always adds the header
-  for public requests, so require an admin token or reach the dashboard only
-  through an SSH tunnel to 127.0.0.1:8101). Code change in `server.py`, before
-  the move.
-- **Portal headers**: since the is_admin fix (loopback without
-  `X-Forwarded-For` is no longer admin) the service trusts `X-Portal-Role:
-  admin` on a loopback connection that has `X-Forwarded-For`. With nginx in
-  front, a client could send those headers itself: the `/svr/` location must
-  clear them (`proxy_set_header X-Portal-Role ""; proxy_set_header
-  X-Portal-Public "";` and set `X-Forwarded-For $remote_addr`), and the
-  dashboard is reached only through an SSH tunnel or the portal.
-- **TLS**: unchanged (nginx's Let's Encrypt for sho-ti.me).
-- **Ports to open**: none new. 80/443 and UDP 36500 are already public; 8101
-  and 36501 stay on 127.0.0.1.
-- **ffmpeg**: `dnf install ffmpeg-free` (or RPM Fusion's ffmpeg) for entrance
-  media transcoding; optional.
-- **Backups**: a systemd timer, nightly: `sqlite3 community.db ".backup
-  /var/backups/svr2011/community-$(date +%F).db"` (consistent with WAL) +
-  `rsync` of `blobs/` (content-addressed: only new files copy), keep 14 days;
-  a weekly copy off the VPS (the user's PC pulling over SSH/WireGuard, or the
-  provider's snapshot feature) **(user decides where)**.
-- **Logs**: `logrotate` for `/var/log/svr2011/*.log` (daily, 14 kept,
-  compressed); journald for the unit. The log has player IPs: keep 14 days.
-- **Monitoring**: `systemd` restarts on crash; a timer every minute
-  `curl -fsS http://127.0.0.1:8101/__health || systemctl restart svr2011`;
-  the Project Index uptime watcher can keep checking the public URL.
+  14400s; client_max_body_size 0; proxy_http_version 1.1`), and
+  `proxy_set_header X-Forwarded-For $remote_addr; proxy_set_header
+  X-Portal-Role ""; proxy_set_header X-Portal-Public "";` (a client must not
+  forge the admin headers). The dashboard: through an SSH tunnel to
+  127.0.0.1:8101 (or a separate admin location with its own login).
+- The relay edge: its link moves from 10.8.0.1:36501 to 127.0.0.1:36501.
+- SELinux: `setsebool -P httpd_can_network_connect 1` if not already on.
+- Backups (when the user picks them): `sqlite3 community.db ".backup ..."`
+  nightly on the VPS (the db is small); the blobs stay on the PC.
+
+### The PC's storage node
+
+- Project Index runs `server.py --supervise --role storage --host 10.8.0.2
+  --port 8102 --data <Apps\SvR2011\data> --storage-key <...>` instead of
+  today's service (it serves `data\blobs\` as it is: no file moves).
+- Windows firewall: TCP 8102 from 10.8.0.1 only (the tunnel).
 
 ## 3. Cut-over
 
 Preparation (no downtime):
-1. Code: the `is_admin` fix; a `--relay-edge 127.0.0.1:36501` run tested
-   locally; tag the server version.
-2. **(user)** VPS: create `/opt/svr2011`, the venv, the unit (disabled), the
-   nginx location (not yet active), the backup timer; copy the relay secret.
-3. Dry run: copy a snapshot of `data\` (db via `sqlite3 .backup`, `blobs\`)
-   to the VPS, start the unit on another port (e.g. 8102), run
-   `test_server.py` / `test_friends.py` / `test_relay.py` against it over an
-   SSH tunnel. Stop it, delete the dry-run data.
+1. **(user)** VPS: the directories, venv, unit (disabled), nginx location
+   (not active), the relay secret and a new storage key in `/etc/svr2011/`.
+2. **(user)** PC: the same storage key file; firewall rule for 8102 from the
+   tunnel.
+3. Dry run: start a storage node on the PC (port 8103) and a core on the VPS
+   (port 8102, a copy of the db) and run `test_server.py` / `test_friends.py`
+   through an SSH tunnel; stop both, delete the copy.
 
-Switch (a short downtime, at a quiet hour; players in a match keep
-playing P2P, but new sign-ins, uploads and relayed matches fail meanwhile):
-1. Announce (Discord / launcher news).
-2. Stop the PC service (Project Index: stop the SvR2011 app / its PIDs). From
-   here the live data is frozen.
-3. Copy `community.db` (+ `-wal`: copy after a clean stop, or `.backup`) and
-   `blobs\` to `/var/lib/svr2011/` (~400 MB; rsync over WireGuard).
-4. Start `svr2011.service`; check `/__health` locally; check `relay: edge
-   linked` in its log.
-5. Reload nginx with the `/svr/` location -> 127.0.0.1:8101.
-6. Smoke test from outside: launcher sign-in, game ONLINE menu (`signed in
-   as`), a Community Creations list, a relayed test match (`p2p_force_relay`).
-7. Leave the PC copy stopped (disable it in Project Index so a reboot doesn't
-   start it); keep its `data\` untouched for a week.
+Switch (a short downtime at a quiet hour; P2P matches in progress keep
+playing):
+1. Announce it.
+2. Stop the PC service (Project Index). The data is frozen.
+3. Copy `community.db` (after the clean stop: with its `-wal`, or
+   `sqlite3 .backup`) to `/var/lib/svr2011/`. ~15 MB.
+4. Start the PC's storage node (Project Index, `--role storage`).
+5. Start `svr2011.service` on the VPS; check `/__health`, "relay: edge
+   linked", one download from the dashboard.
+6. Reload nginx with the `/svr/` location.
+7. Smoke test from outside: launcher sign-in, ONLINE menu ("signed in as"),
+   a Community Creations list and one download, a relayed test match.
 
-Rollback (any time in the first week): stop `svr2011.service`, remove the nginx
-`/svr/` location (the portal path takes over again), start the PC service.
-Data written on the VPS since the switch would be lost unless copied back
-(same steps reversed) - so decide within hours, or copy back.
+Rollback (first week): stop the VPS unit, remove the nginx location (the
+portal path takes over), copy the VPS `community.db` back to the PC (files
+uploaded meanwhile are already on the PC: the node stored them), start the PC
+service with `--role all`.
 
 ## 4. What the user must do
 
-- SSH to the VPS (sudo): create the user/directories, install the unit, the
-  nginx location, logrotate, backup timer; `setsebool` if needed.
-- Copy the data (or allow a script to rsync it over WireGuard).
-- Choose the off-VPS backup target.
-- The go for the switch time and the PC service stop.
-- DNS: nothing (sho-ti.me already points at the VPS).
-- Provider firewall: nothing new (443 and UDP 36500 are already open).
+- VPS (SSH, sudo): directories, venv, unit, nginx location, SELinux boolean,
+  the key files; later the backup timer.
+- PC: the storage key file, the firewall rule for TCP 8102 from 10.8.0.1, the
+  Project Index service line `--role storage`.
+- The go for the switch time.
+- DNS and the provider firewall: nothing new (sho-ti.me points at the VPS;
+  443 and UDP 36500 are open already; 8101 / 8102 / 36501 stay private).
 
 ## 5. Capacity
 
@@ -260,8 +294,10 @@ agreement + takeover (non-host), then (a). (b) only if players ask after (a).
   `gamespy.py` key, or every game's login breaks. The move copies code as is.
 - **Data copy consistency**: copy the db only after the PC service stopped
   (WAL), or with `sqlite3 .backup`.
-- **Admin exposure**: the loopback-admin rule must be fixed before the
-  service sits behind a public nginx on the same host.
+- **Admin exposure**: fixed (9e892b4: loopback without the portal's headers
+  is no admin); nginx must still clear client-sent X-Portal-* headers.
+- **The PC as storage**: its line, its uptime and the tunnel decide whether
+  downloads work; online play doesn't depend on it.
 - **Two copies of the server code** (main checkout vs worktrees): deploy from
   one tagged version.
 - **SELinux / firewalld surprises** on Fedora (proxy to a local port; the
