@@ -59,8 +59,45 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{2,14}$")  # 3-15, what the g
 XUID_BASE = 0x0009000100000000  # + account id: the player's XUID on every device
 PBKDF2_ROUNDS = 240000
 MAX_FRIENDS = 200  # (a player's list)
-INVITE_LIFE = 600  # seconds an invite to a match stays
-PRESENCE_WINDOW = 60  # seconds a game stays online after its last request (it asks every 20 s)
+# Settings the dashboard edits (data/settings.json, read at start; "live" ones
+# apply at once, the others at the next start).
+SETTINGS_SPEC = {
+    "presence_window": {"default": 60, "min": 30, "max": 600, "live": True,
+                        "help": "seconds a game stays online after its last presence request (it asks every 20 s)"},
+    "invite_life": {"default": 600, "min": 60, "max": 3600, "live": True,
+                    "help": "seconds an invite to a match stays"},
+    "mods_online": {"default": True, "live": True,
+                    "help": "mods in online sessions: off = every game plays online without its mods (no mod sets compared)"},
+    "max_connections": {"default": 100, "min": 10, "max": 1000, "live": False,
+                        "help": "game requests at once (more wait up to 10 s, then 503)"},
+}
+SETTINGS = {k: v["default"] for k, v in SETTINGS_SPEC.items()}
+LIVE_LIFE = 60      # seconds a session host's report stays (it reports every 20 s)
+RESTART_CODE = 75   # the exit code that asks the supervisor (--supervise) to start the server again
+
+
+def load_settings(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            stored = json.load(f)
+    except (OSError, ValueError):
+        return
+    for k, v in stored.items():
+        ok, value = check_setting(k, v)
+        if ok:
+            SETTINGS[k] = value
+
+
+def check_setting(k, v):
+    spec = SETTINGS_SPEC.get(k)
+    if not spec:
+        return False, None
+    if isinstance(spec["default"], bool):
+        return (True, v) if isinstance(v, bool) else (False, None)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False, None
+    v = int(v)
+    return (spec["min"] <= v <= spec["max"]), v
 
 
 def now():
@@ -416,7 +453,7 @@ class Stats:
     def playing_now(self, window=None):
         """Accounts whose game asked something lately (a running game, signed in,
         asks /api/friends?here=1 every 20 s - the launchers don't count)."""
-        cutoff = now() - (window or PRESENCE_WINDOW)
+        cutoff = now() - (window or SETTINGS["presence_window"])
         return sum(1 for t in list(self.recent.values()) if t >= cutoff)
 
     def players_online(self, window=300):
@@ -500,6 +537,10 @@ class Service:
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
         self.data_dir = Path(args.data)
+        self.settings_path = self.data_dir / "settings.json"
+        self.log_path = getattr(args, "log", None)
+        self.supervised = bool(os.environ.get("SVR2011_SUPERVISOR_PID"))
+        self.live = {}   # session id -> the host's last report (api_live)
         self.dashboard_html = (HERE / "dashboard.html").read_text(encoding="utf-8")
         self.max_media = {"music": args.max_music_mb << 20, "movie": args.max_movie_mb << 20}
         self.media_quota = args.media_quota_mb << 20
@@ -626,19 +667,19 @@ class Service:
     def presence(self, account_id):
         """playing: in an online match or its lobby (its game has the relay open);
         online: its game in online mode - the ONLINE menus or an online match (it
-        asks /api/friends?here=1 every 20 s then; gone PRESENCE_WINDOW s after the
+        asks /api/friends?here=1 every 20 s then; gone presence_window s after the
         last, at once when it says bye);
         else offline. (The launchers' own requests don't count.)"""
         if any(g.account["id"] == account_id for g in self.relay.games.values()):
             return "playing"
-        if now() - self.stats.recent.get(account_id, 0) < PRESENCE_WINDOW:
+        if now() - self.stats.recent.get(account_id, 0) < SETTINGS["presence_window"]:
             return "online"
         return "offline"
 
     def friends_json(self, account):
         mine, theirs = self.accounts.friends(account["id"])
         waiting = self.invites.get(account["id"], {})
-        for k in [k for k, v in waiting.items() if now() - v["t"] > INVITE_LIFE]:
+        for k in [k for k, v in waiting.items() if now() - v["t"] > SETTINGS["invite_life"]]:
             del waiting[k]
         added = {a["id"] for a in mine}
         friends = [{"name": a["name"], "status": self.presence(a["id"]), "last_seen": a["last_seen"],
@@ -646,6 +687,7 @@ class Service:
         friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
+            "config": {"mods_online": bool(SETTINGS["mods_online"])},
             "online_now": self.stats.playing_now(),
             "friends": friends,
             "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
@@ -687,6 +729,37 @@ class Service:
             else:
                 self.accounts.remove_friend(account["id"], other["id"])
         return web.json_response(self.friends_json(account))
+
+    async def api_live(self, request):
+        """A session host's report (p2p.cpp, every 20 s while it hosts): {"session": hex id,
+        "kind", "rule", "arena", "state": "lobby" | "match", "players": [{"name", "path"}],
+        "slots", "started"}. Kept LIVE_LIFE s; the dashboard's live view."""
+        account = self.token_account(request)
+        if not account:
+            return web.json_response({"ok": False}, status=401)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False}, status=400)
+        sid = str(body.get("session") or "")[:20]
+        if not re.fullmatch(r"[0-9A-Fa-f]{1,20}", sid):
+            return web.json_response({"ok": False}, status=400)
+        if body.get("ended"):
+            self.live.pop(sid, None)
+            return web.json_response({"ok": True})
+        if len(self.live) >= 2000 and sid not in self.live:
+            return web.json_response({"ok": False}, status=503)
+        players = [{"name": str(p.get("name") or "")[:32], "path": str(p.get("path") or "")[:8]}
+                   for p in (body.get("players") or [])[:16] if isinstance(p, dict)]
+        old = self.live.get(sid, {})
+        state = str(body.get("state") or "lobby")[:12]
+        self.live[sid] = {
+            "session": sid, "host": account["name"], "kind": str(body.get("kind") or "")[:40],
+            "rule": str(body.get("rule") or "")[:40], "arena": str(body.get("arena") or "")[:40], "state": state,
+            "players": players, "slots": int(body.get("slots") or 0), "version": str(body.get("version") or "")[:16],
+            "since": old.get("since", now()), "state_since": old.get("state_since", now())
+            if old.get("state") == state else now(), "seen": now()}
+        return web.json_response({"ok": True})
 
     async def api_invite(self, request):
         """An invite to the match session the player is in, for a friend's game
@@ -1158,6 +1231,92 @@ class Service:
         return web.json_response({"ok": True})
 
     @admin_only
+    @admin_only
+    async def admin_live(self, request):
+        """The sessions hosts reported in the last LIVE_LIFE s, and the relay's games now."""
+        t = now()
+        for k in [k for k, v in self.live.items() if t - v["seen"] > LIVE_LIFE]:
+            del self.live[k]
+        sessions = sorted(self.live.values(), key=lambda v: -v["since"])
+        relay = [{"name": g.account["name"], "since": getattr(g, "since", 0)} for g in self.relay.games.values()]
+        return web.json_response({"now": t, "sessions": sessions, "relay": relay,
+                                  "udp_games": len(getattr(self.relay, "udp_games", {}))})
+
+    @admin_only
+    async def admin_log(self, request):
+        """The end of the server's log (--log), filtered: ?filter=<text>&lines=<n>."""
+        if not self.log_path:
+            return web.json_response({"ok": False, "error": "This server writes no log file (--log)."}, status=404)
+        want = max(10, min(int(request.query.get("lines", "300") or 300), 3000))
+        needle = request.query.get("filter", "").lower()
+
+        def tail():
+            with open(self.log_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                chunk = 4 << 20 if needle else 512 << 10  # (a filter looks further back)
+                f.seek(max(0, size - chunk))
+                lines = f.read().decode("utf-8", "replace").splitlines()[1:]
+            if needle:
+                lines = [ln for ln in lines if needle in ln.lower()]
+            return lines[-want:], size
+
+        lines, size = await asyncio.get_running_loop().run_in_executor(None, tail)
+        return web.json_response({"ok": True, "lines": lines, "size": size})
+
+    @admin_only
+    async def admin_settings(self, request):
+        """GET: the settings and what they mean; POST {key: value}: saved to data/settings.json,
+        applied at once where they're live (the rest at the next start)."""
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return web.json_response({"ok": False, "error": "Send a JSON object."}, status=400)
+            changed = {}
+            for k, v in body.items():
+                ok, value = check_setting(k, v)
+                if not ok:
+                    return web.json_response({"ok": False, "error": "%s: not a valid value." % k}, status=400)
+                changed[k] = value
+            try:
+                stored = json.load(open(self.settings_path, encoding="utf-8"))
+            except (OSError, ValueError):
+                stored = {}
+            stored.update(changed)
+            tmp = str(self.settings_path) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(stored, f, indent=1, sort_keys=True)
+            os.replace(tmp, self.settings_path)
+            for k, v in changed.items():
+                if SETTINGS_SPEC[k]["live"]:
+                    SETTINGS[k] = v
+            gs.log("settings: %s (dashboard)" % ", ".join("%s=%s" % kv for kv in sorted(changed.items())))
+        try:
+            stored = json.load(open(self.settings_path, encoding="utf-8"))
+        except (OSError, ValueError):
+            stored = {}
+        return web.json_response({"ok": True, "supervised": self.supervised, "settings": [
+            dict(key=k, value=SETTINGS[k], saved=stored.get(k, SETTINGS[k]), **{
+                n: v for n, v in spec.items()}) for k, spec in SETTINGS_SPEC.items()]})
+
+    @admin_only
+    async def admin_restart(self, request):
+        """The "Restart online" button: a clean exit the supervisor (--supervise) starts again."""
+        if not self.supervised:
+            return web.json_response({"ok": False, "error": "No supervisor runs this server (--supervise): "
+                                                            "it would stay down."}, status=409)
+        gs.log("restart: asked from the dashboard")
+
+        def bye():
+            gs.log("stopped %s: restart from the dashboard" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            os._exit(RESTART_CODE)
+
+        asyncio.get_running_loop().call_later(0.5, bye)
+        return web.json_response({"ok": True})
+
     async def admin_users(self, request):
         out = []
         uploads = collections.Counter(r["ownerid"] for r in self.store.all("UserContent"))
@@ -1246,6 +1405,7 @@ class Service:
         app.router.add_get(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/friends", self.api_friends)
         app.router.add_post(b + "/api/invite", self.api_invite)
+        app.router.add_post(b + "/api/live", self.api_live)
         app.router.add_post(b + "/api/stats/{what}", self.api_stats)
         app.router.add_post(b + "/api/netreport", self.api_netreport)
         app.router.add_route("*", b + "/api/logo/{hash}", self.api_logo)
@@ -1264,9 +1424,70 @@ class Service:
         app.router.add_get("/api/admin/leaderboard", self.admin_leaderboard)
         app.router.add_post("/api/admin/upload/{id}/{action}", self.admin_upload_action)
         app.router.add_get("/api/admin/users", self.admin_users)
+        app.router.add_get("/api/admin/live", self.admin_live)
+        app.router.add_get("/api/admin/log", self.admin_log)
+        app.router.add_route("*", "/api/admin/settings", self.admin_settings)
+        app.router.add_post("/api/admin/restart", self.admin_restart)
         app.router.add_post("/api/admin/user/{id}/{action}", self.admin_user_action)
         app.cleanup_ctx.append(self.background)
         return app
+
+
+def supervise(args):
+    """--supervise: the server as a child process, started again when it exits - at once after
+    the dashboard's restart (exit code RESTART_CODE), else after a backoff (a crash: 2 s,
+    doubling to 60 s while it keeps failing within a minute)."""
+    import subprocess
+    if args.log:
+        gs.LOG = open(args.log, "a", encoding="utf-8")
+    cmd = [sys.executable, os.path.abspath(__file__)] + [a for a in sys.argv[1:] if a != "--supervise"]
+    env = dict(os.environ, SVR2011_SUPERVISOR_PID=str(os.getpid()))
+    backoff = 2.0
+    while True:
+        started = time.time()
+        gs.log("supervisor: starting the server %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        try:
+            code = subprocess.call(cmd, env=env)
+        except KeyboardInterrupt:
+            return
+        ran = time.time() - started
+        if code == RESTART_CODE:
+            gs.log("supervisor: restart asked - starting it again")
+            backoff = 2.0
+            continue
+        gs.log("supervisor: the server exited (code %s) after %.0f s - again in %.0f s" % (code, ran, backoff))
+        time.sleep(backoff)
+        backoff = 2.0 if ran > 60 else min(backoff * 2, 60.0)
+
+
+def watch_supervisor():
+    """A supervised server ends when its supervisor is gone (the portal stopped it), so it never
+    holds the port on its own."""
+    pid = int(os.environ.get("SVR2011_SUPERVISOR_PID") or 0)
+    if not pid:
+        return
+
+    def alive():
+        if sys.platform == "win32":
+            import ctypes
+            k = ctypes.WinDLL("kernel32")
+            k.OpenProcess.restype = ctypes.c_void_p
+            h = k.OpenProcess(0x00100000, False, pid)  # (SYNCHRONIZE)
+            if not h:
+                return False
+            gone = k.WaitForSingleObject(ctypes.c_void_p(h), 0) == 0
+            k.CloseHandle(ctypes.c_void_p(h))
+            return not gone
+        return os.getppid() == pid
+
+    def watch():
+        while True:
+            time.sleep(2)
+            if not alive():
+                gs.log("stopped %s: the supervisor is gone" % time.strftime("%Y-%m-%d %H:%M:%S"))
+                os._exit(0)
+
+    threading.Thread(target=watch, name="supervisor watch", daemon=True).start()
 
 
 def main():
@@ -1289,14 +1510,23 @@ def main():
     ap.add_argument("--relay-edge", default=None,
                     help="host:port of relay_edge.py's link (it takes the UDP; --relay-udp-port: the players' port there)")
     ap.add_argument("--relay-secret", default=None, help="the file with the secret shared with the edge")
+    ap.add_argument("--supervise", action="store_true",
+                    help="run the server as a child process and start it again when it exits (a crash, or the "
+                         "dashboard's Restart online)")
     ap.add_argument("--local-admin", action="store_true",
                     help="the dashboard for anyone on this PC talking to the service directly (a developer's own "
                          "server; never behind a public proxy on the same host)")
     args = ap.parse_args()
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
+    if args.supervise:
+        return supervise(args)
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")
+    load_settings(os.path.join(args.data, "settings.json"))
+    if SETTINGS["max_connections"] != SETTINGS_SPEC["max_connections"]["default"]:
+        args.max_connections = SETTINGS["max_connections"]  # (the dashboard's, over the command line's)
+    watch_supervisor()
     threading.excepthook = lambda a: gs.log("error: thread %s died:\n%s" % (
         a.thread.name if a.thread else "?", "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback))))
     service = Service(args)

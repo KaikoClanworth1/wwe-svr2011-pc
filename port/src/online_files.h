@@ -59,6 +59,12 @@ uint64_t GameplayModSetHash();
 // Practice Arena 1.0, you don't; ..." (`theirs`: the other side's set;
 // superstars = false leaves superstar and arena mods out: they are
 // checked in the lobby, online_mods.h).
+// The server's switch (its dashboard, with every friends answer): mods in
+// online sessions allowed (default) or off - then this game shares no mod set
+// and no mod superstar / arena can be picked online.
+void SetOnlineModsAllowed(bool on);
+bool OnlineModsAllowed();
+
 std::string ModSetDifference(const std::string& mine, const std::string& theirs, bool superstars = true);
 // A mod as the online checks know it (Mods/<kind>/<folder>, kind
 // "Superstars" or "Arenas"): its key "<folder> <version> <CRC of its

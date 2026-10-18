@@ -18,6 +18,9 @@ namespace svr2011 {
 
 void InstallMatchTypes(rex::memory::Memory* memory);
 
+// The last match placed (its rule and arena; ~0 before one): the online live report.
+void LastMatch(uint32_t* rule, uint32_t* arena);
+
 // Match type mods: each match type the port adds is on unless
 // <game>\Mods\MatchTypes\<id>\disabled exists (the launcher's Mods tab; read
 // once, at the first ask). Ids: falls_count_anywhere, championship_scramble,

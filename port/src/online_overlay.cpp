@@ -42,6 +42,7 @@
 #include "generated/default/svr2011_init.h"
 #include "json_lite.h"
 #include "keyboard_typing.h"
+#include "online_files.h"
 #include "online_net.h"
 #include "graphics_page.h"
 #include "p2p.h"
@@ -214,6 +215,7 @@ void Poll() {
   Json j;
   if (r && r->status == 200 && JsonReader{r->body}.Value(j) && j["friends"]) {
     s.answered = true;
+    if (const Json* c = j["config"]; c && (*c)["mods_online"]) SetOnlineModsAllowed((*c)["mods_online"]->b);
     for (const Json& f : j["friends"]->items) s.friends.push_back({f.Str("name"), f.Str("status"),
                                                                    f["mutual"] && f["mutual"]->b});
     if (const Json* a = j["added_you"])

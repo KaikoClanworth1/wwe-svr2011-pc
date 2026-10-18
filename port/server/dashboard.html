@@ -69,6 +69,16 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
 .viewer img { width: 512px; max-width: 100%; border-radius: 8px;
               background: repeating-conic-gradient(#2a2e35 0 25%, #1f2328 0 50%) 50% / 24px 24px; }
 .viewer .cap { margin-top: 10px; font-size: 14px; }
+.log { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+       font: 12.5px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
+       max-height: 480px; overflow: auto; color: var(--dim); margin: 0; }
+.set { display: grid; grid-template-columns: minmax(150px, 220px) 120px 1fr; gap: 8px 14px; align-items: center;
+       background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.set .h { color: var(--faint); font-size: 12.5px; }
+.set input[type=number] { width: 110px; }
+.row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.note { color: var(--faint); font-size: 12.5px; }
+@media (max-width: 640px) { .set { grid-template-columns: 1fr; } }
 .viewer .cap small { color: var(--dim, #8a93a0); display: block; margin-top: 2px; }
 </style>
 </head>
@@ -118,6 +128,22 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       <canvas id="c-games"></canvas>
       <div class="legend"><i style="background:var(--accent)"></i>games open<i style="background:var(--warn)"></i>games joined</div></div>
   </div>
+
+  <h2>Live <span class="spacer"></span><span class="note" id="live-note"></span></h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Host</th><th>Players</th><th>Match</th><th>State</th><th>For</th><th>Session</th></tr></thead>
+    <tbody id="live"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+  </table></div>
+
+  <h2>Settings <span class="spacer"></span></h2>
+  <div class="set" id="settings"><span class="empty">Loading&hellip;</span></div>
+  <div class="row"><button class="btn" id="save-set">Save settings</button>
+    <button class="btn danger" id="restart">Restart online</button><span class="note" id="set-note"></span></div>
+
+  <h2>Server log <span class="spacer"></span><input class="filter" id="f-log" placeholder="Filter (e.g. error, relay, a name)">
+    <select class="filter" id="n-log"><option>100</option><option selected>300</option><option>1000</option><option>3000</option></select>
+    <button class="btn" id="r-log">Refresh</button></h2>
+  <pre class="log" id="log">Loading&hellip;</pre>
 
   <h2>Leaderboards <span class="spacer"></span><select class="filter" id="lb-view"></select></h2>
   <div class="scroll"><table>
@@ -313,6 +339,67 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   }
   el('lb-view').addEventListener('change', function () { lbView = +this.value; leaderboard(); });
 
+  function dur(s) {
+    s = Math.max(0, Math.round(s));
+    return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : (s / 3600).toFixed(1) + ' h';
+  }
+  function live() {
+    api('api/admin/live').then(function (d) {
+      el('live-note').textContent = d.sessions.length + ' session' + (d.sessions.length === 1 ? '' : 's') +
+        ' reported · ' + d.relay.length + ' relay stream' + (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games + ' UDP relay games';
+      el('live').innerHTML = d.sessions.length ? d.sessions.map(function (v) {
+        var players = v.players.map(function (p) {
+          return esc(p.name) + (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
+        }).join(', ');
+        return '<tr><td>' + esc(v.host) + (v.version ? ' <span class="tag">' + esc(v.version) + '</span>' : '') +
+          '</td><td>' + players + ' <span class="note">' + v.players.length + (v.slots ? '/' + v.slots : '') + '</span></td><td>' +
+          esc([v.kind, v.rule, v.arena].filter(Boolean).join(' · ')) + '</td><td><span class="tag' +
+          (v.state === 'match' ? ' on' : '') + '">' + esc(v.state) + '</span> ' + dur(d.now - v.state_since) +
+          '</td><td>' + dur(d.now - v.since) + '</td><td class="note">' + esc(v.session) + '</td></tr>';
+      }).join('') : '<tr><td colspan="6" class="empty">No sessions reported right now (games report while they host).</td></tr>';
+    }).catch(function () {});
+  }
+  var settingsList = [];
+  function settings() {
+    api('api/admin/settings').then(function (d) {
+      settingsList = d.settings;
+      el('settings').innerHTML = d.settings.map(function (x) {
+        var input = typeof x.default === 'boolean'
+          ? '<input type="checkbox" data-set="' + x.key + '"' + (x.saved ? ' checked' : '') + '>'
+          : '<input class="filter" type="number" data-set="' + x.key + '" min="' + x.min + '" max="' + x.max + '" value="' + x.saved + '">';
+        return '<b>' + esc(x.key.replace(/_/g, ' ')) + '</b>' + input + '<span class="h">' + esc(x.help) +
+          (x.live ? '' : ' (applies at the next start' + (x.value !== x.saved ? ': now ' + x.value : '') + ')') + '</span>';
+      }).join('');
+      el('restart').disabled = !d.supervised;
+      el('restart').title = d.supervised ? '' : 'No supervisor runs this server (--supervise): it would stay down.';
+    }).catch(function (e) { el('settings').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+  }
+  function log() {
+    api('api/admin/log?lines=' + el('n-log').value + '&filter=' + encodeURIComponent(el('f-log').value)).then(function (d) {
+      var box = el('log'), atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+      box.textContent = d.lines.join('\n') || '(nothing matches)';
+      if (atEnd) box.scrollTop = box.scrollHeight;
+    }).catch(function (e) { el('log').textContent = e.message; });
+  }
+  el('save-set').addEventListener('click', function () {
+    var body = {};
+    document.querySelectorAll('[data-set]').forEach(function (i) {
+      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : Number(i.value);
+    });
+    api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+      .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })
+      .catch(function (e) { el('set-note').textContent = 'Not saved: ' + e.message; });
+  });
+  el('restart').addEventListener('click', function () {
+    if (!confirm('Restart the online service? Players in the menus are back in seconds; matches in progress keep playing (P2P), relayed ones may drop.')) return;
+    api('api/admin/restart', {method: 'POST'}).then(function () {
+      el('set-note').textContent = 'Restarting\u2026';
+    }).catch(function (e) { el('set-note').textContent = 'Not restarted: ' + e.message; });
+  });
+  el('r-log').addEventListener('click', log);
+  el('f-log').addEventListener('change', log);
+  el('n-log').addEventListener('change', log);
+
   function lists() {
     leaderboard();
     api('api/admin/uploads').then(function (d) { uploads = d; renderUploads(); }).catch(function () {});
@@ -354,7 +441,9 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   window.addEventListener('resize', charts);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') el('viewer').classList.remove('on'); });
 
-  stats(); lists();
+  stats(); lists(); live(); settings(); log();
+  setInterval(live, 5000);
+  setInterval(log, 15000);
   setInterval(stats, 5000);
   setInterval(lists, 30000);
 })();
