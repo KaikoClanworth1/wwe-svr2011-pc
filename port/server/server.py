@@ -37,6 +37,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 import traceback
@@ -263,6 +264,72 @@ class Accounts:
 
 # -- Statistics ----------------------------------------------------------------
 
+def memory_mb():
+    """This process's resident memory (MB), or '?'."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                    (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                                   "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                                                   "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+            c = PMC()
+            c.cb = ctypes.sizeof(c)
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi = ctypes.WinDLL("psapi")
+            psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+            if psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+                return "%d" % (c.WorkingSetSize >> 20)
+        else:
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return "%d" % (int(line.split()[1]) >> 10)
+    except Exception:
+        pass
+    return "?"
+
+
+class Watchdog(threading.Thread):
+    """The event loop stalling (a blocking call, a lock, a long query): when it
+    hasn't run a tick for over 5 s, its thread's stack goes in the log; then how
+    long the stall lasted."""
+
+    def __init__(self, loop, limit=5.0):
+        super().__init__(name="loop watchdog", daemon=True)
+        self.loop = loop
+        self.limit = limit
+        self.beat = time.monotonic()
+        self.loop_thread = threading.get_ident()
+
+    def tick(self):
+        self.beat = time.monotonic()
+
+    def run(self):
+        stalled = 0.0
+        while True:
+            time.sleep(1.0)
+            try:
+                self.loop.call_soon_threadsafe(self.tick)
+            except RuntimeError:  # (the loop closed)
+                return
+            late = time.monotonic() - self.beat
+            if late > self.limit and not stalled:
+                stalled = late
+                frame = sys._current_frames().get(self.loop_thread)
+                gs.log("watchdog: the event loop hasn't run for %.0f s (%s); it is at:\n%s" % (
+                    late, time.strftime("%Y-%m-%d %H:%M:%S"), "".join(traceback.format_stack(frame)) if frame else "?"))
+            elif stalled and late < 2.0:
+                gs.log("watchdog: the event loop runs again (stalled about %.0f s)" % stalled)
+                stalled = 0.0
+            elif stalled:
+                stalled = max(stalled, late)
+
+
 class Stats:
     """Per-minute counters of the game's traffic, kept in the database (the
     dashboard's history), plus the live gauges."""
@@ -409,6 +476,8 @@ class Service:
         self.accounts = Accounts(self.store)
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
+        self.max_connections = args.max_connections
+        self.busy_said = 0.0
         edge = getattr(args, "relay_edge", None)
         self.netreport_last = {}  # account id -> its last match report (memory only)
         self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0),
@@ -477,6 +546,10 @@ class Service:
             await asyncio.wait_for(self.slots.acquire(), 10)
         except asyncio.TimeoutError:
             self.stats.count("refused")
+            if now() - self.busy_said > 60:  # (once a minute: a hang's cause shows in the log)
+                self.busy_said = now()
+                gs.log("busy: all %d request slots taken for 10 s (%d running) - refusing (503)" %
+                       (self.max_connections, self.stats.active))
             return web.Response(status=503, text="busy")
         self.stats.begin()
         bytes_in = request.content_length or 0
@@ -1106,6 +1179,14 @@ class Service:
     async def health(self, request):
         return web.json_response({"ok": True})
 
+    def health_line(self):
+        r = self.relay
+        return ("health: %s requests running %d of %d, relay streams %d, UDP games %d (edge %d), threads %d, "
+                "memory %s MB, players online %d" % (
+                    time.strftime("%Y-%m-%d %H:%M:%S"), self.stats.active, self.max_connections, len(r.games),
+                    len(getattr(r, "udp_games", {})), len(getattr(r, "edge_games", ())), threading.active_count(),
+                    memory_mb(), self.stats.playing_now()))
+
     # background
 
     async def background(self, app):
@@ -1125,7 +1206,20 @@ class Service:
                 except Exception:
                     gs.log("error:", traceback.format_exc())
 
-        tasks = [asyncio.create_task(minutes()), asyncio.create_task(janitor())]
+        async def health():  # (one line every 5 minutes: what a hang or a crash looked like before)
+            while True:
+                await asyncio.sleep(float(os.environ.get("SVR2011_HEALTH_EVERY", 300)))  # (tests: shorter)
+                try:
+                    gs.log(self.health_line())
+                except Exception:
+                    gs.log("error:", traceback.format_exc())
+
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda lp, ctx: gs.log(
+            "error: unhandled in the event loop: %s\n%s" % (ctx.get("message"), "".join(traceback.format_exception(
+                ctx["exception"])) if ctx.get("exception") else "")))
+        Watchdog(loop).start()
+        tasks = [asyncio.create_task(minutes()), asyncio.create_task(janitor()), asyncio.create_task(health())]
         yield
         for t in tasks:
             t.cancel()
@@ -1193,10 +1287,18 @@ def main():
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")
+    threading.excepthook = lambda a: gs.log("error: thread %s died:\n%s" % (
+        a.thread.name if a.thread else "?", "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback))))
     service = Service(args)
+    gs.log("started %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
     gs.log("Community Creations server on %s:%d (game: %s/, dashboard: /), data in %s, up to %d connections" % (
         args.host, args.port, service.base, os.path.abspath(args.data), args.max_connections))
-    web.run_app(service.build(), host=args.host, port=args.port, print=None, access_log=None)
+    try:
+        web.run_app(service.build(), host=args.host, port=args.port, print=None, access_log=None)
+    except BaseException as e:  # (why it stopped, in its own log - the portal's err.log starts empty each start)
+        gs.log("stopped %s: %s\n%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), type(e).__name__, traceback.format_exc()))
+        raise
+    gs.log("stopped %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
 
 
 if __name__ == "__main__":
