@@ -376,6 +376,10 @@ uint32_t OnlineString(uint32_t id) {
       break;
   }
   if (id >= kAddCpuId && id <= kWaitingId && g_cpu_labels[id - kAddCpuId]) return g_cpu_labels[id - kAddCpuId];
+  // (the match ended because its host left: say so - the game's own words were
+  // "An error occurred during the match")
+  if (id == 0xC6A2 && P2PHostLeft())
+    return GuestText(g_hidden_text, "The host left the session.\nThe match is over.");
   // The search found only hosts this game can't play (another version or
   // other gameplay mods): the game's own message says so.
   if (id && (id == kNoSessionsId || id == kJoinFailedId)) {
