@@ -194,14 +194,21 @@ bool SignedIn() {
   return rex::cvar::Query<bool>("online_enabled") && !rex::cvar::Query<std::string>("online_token").empty();
 }
 
+void SayGoodbye();
+
 void Poll() {
   if (!SignedIn()) {
     std::lock_guard lock(g_mutex);
     g_state = State{};
     return;
   }
-  // (?here=1: this game is running, signed in - its friends see it Online)
-  auto r = net::ServerRequest("GET", "/api/friends?here=1");
+  // (?here=1: this game is in online mode - its friends see it Online; leaving
+  // online mode says bye: the offline menus show nobody online)
+  static bool was_online = false;
+  const bool online = P2POnlineMode();
+  if (was_online && !online) SayGoodbye();
+  was_online = online;
+  auto r = net::ServerRequest("GET", online ? "/api/friends?here=1" : "/api/friends");
   State s;
   s.signed_in = true;
   Json j;

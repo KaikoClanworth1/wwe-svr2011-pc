@@ -58,6 +58,11 @@ std::string P2PHiddenReason(int* sessions = nullptr);
 // The session's host left during a match in the last minute (its game stopped
 // answering): the game's "An error occurred during the match" says so (online.cpp).
 bool P2PHostLeft();
+
+// Online mode: the player in the ONLINE menus (the game's presence session) or
+// an online session / match - or was, in the last 30 s. Presence, the relay's
+// stream: only then (the offline menus show nobody online).
+bool P2POnlineMode();
 // A port session property (an int32: XUSER_PROPERTY type 1, e.g. 0x1000F001
 // the port's match mode): the host sets it before the game creates its
 // session (it goes into every session it hosts from then on, as
