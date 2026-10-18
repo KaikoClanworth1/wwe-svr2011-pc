@@ -517,7 +517,10 @@ class Service:
     def __init__(self, args):
         self.local_admin = bool(getattr(args, "local_admin", False))
         self.base = "/" + args.base.strip("/") if args.base.strip("/") else ""
-        self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20)
+        blobs = None
+        if getattr(args, "role", "all") == "core":  # (the blob bytes on the storage node: the user's PC)
+            blobs = gs.RemoteBlobs(args.storage_url, read_key(args.storage_key))
+        self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20, blobs=blobs)
         self.sake = gs.Sake(self.store)
         self.accounts = Accounts(self.store)
         self.stats = Stats(self.store)
@@ -1433,6 +1436,53 @@ class Service:
         return app
 
 
+def read_key(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def storage_app(args):
+    """--role storage: only the Community Creations files' bytes (the user's PC behind the VPS):
+    GET / HEAD / PUT / DELETE /blob/<sha>?packed=0|1 with the core's key (X-Storage-Key), and /__health."""
+    blobs = gs.LocalBlobs(os.path.join(args.data, "blobs"))
+    key = read_key(args.storage_key)
+
+    def ok(request):
+        return hmac.compare_digest(request.headers.get("X-Storage-Key", ""), key)
+
+    async def blob(request):
+        if not ok(request):
+            return web.Response(status=403)
+        sha = request.match_info["sha"]
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return web.Response(status=400)
+        loop = asyncio.get_running_loop()
+        if request.method == "PUT":
+            data = await request.read()
+            if not data:
+                return web.Response(status=400)
+            await loop.run_in_executor(None, blobs.put, sha, data, request.query.get("packed") != "0")
+            return web.Response(text="ok")
+        if request.method == "DELETE":
+            await loop.run_in_executor(None, blobs.delete, sha)
+            return web.Response(text="ok")
+        if request.method == "HEAD":
+            return web.Response(status=200 if blobs.exists(sha) else 404)
+        got = await loop.run_in_executor(None, blobs.get, sha)
+        if got is None:
+            return web.Response(status=404)
+        return web.Response(body=got[0], headers={"X-Packed": "1" if got[1] else "0"},
+                            content_type="application/octet-stream")
+
+    async def health(request):
+        return web.json_response({"ok": True, "role": "storage"})
+
+    app = web.Application(client_max_size=(args.max_file_mb + 1) << 20 if args.max_file_mb < 1024 else 1 << 31)
+    app.router.add_route("*", "/blob/{sha}", blob)
+    app.router.add_get("/__health", health)
+    return app
+
+
 def supervise(args):
     """--supervise: the server as a child process, started again when it exits - at once after
     the dashboard's restart (exit code RESTART_CODE), else after a backoff (a crash: 2 s,
@@ -1510,6 +1560,11 @@ def main():
     ap.add_argument("--relay-edge", default=None,
                     help="host:port of relay_edge.py's link (it takes the UDP; --relay-udp-port: the players' port there)")
     ap.add_argument("--relay-secret", default=None, help="the file with the secret shared with the edge")
+    ap.add_argument("--role", choices=("all", "core", "storage"), default="all",
+                    help="all: everything here (today's PC); core: everything but the Community Creations files' "
+                         "bytes, which go to --storage-url (the VPS); storage: only those bytes (the PC behind it)")
+    ap.add_argument("--storage-url", default=None, help="(core) the storage node, e.g. http://10.8.0.2:8102")
+    ap.add_argument("--storage-key", default=None, help="(core, storage) the file with the key they share")
     ap.add_argument("--supervise", action="store_true",
                     help="run the server as a child process and start it again when it exits (a crash, or the "
                          "dashboard's Restart online)")
@@ -1521,6 +1576,17 @@ def main():
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     if args.supervise:
         return supervise(args)
+    if args.role in ("core", "storage") and not args.storage_key:
+        ap.error("--role %s needs --storage-key" % args.role)
+    if args.role == "core" and not args.storage_url:
+        ap.error("--role core needs --storage-url")
+    if args.role == "storage":
+        if args.log:
+            gs.LOG = open(args.log, "a", encoding="utf-8")
+        watch_supervisor()
+        gs.log("storage node on %s:%d, blobs in %s" % (args.host, args.port, os.path.abspath(args.data)))
+        web.run_app(storage_app(args), host=args.host, port=args.port, print=None, access_log=None)
+        return
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")
     load_settings(os.path.join(args.data, "settings.json"))

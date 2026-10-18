@@ -147,11 +147,92 @@ def caw_logo_hashes(data):
     return sorted({"%016X" % h for h, u in zip(hashes, used) if u and h})
 
 
+class LocalBlobs:
+    """Blob bytes in folder/<sha[:2]>/<sha>.xz (lzma) or .bin (stored as sent)."""
+
+    def __init__(self, folder):
+        self.folder = folder
+
+    def path(self, sha, packed=True):
+        return os.path.join(self.folder, sha[:2], sha + (".xz" if packed else ".bin"))
+
+    def exists(self, sha):
+        return os.path.exists(self.path(sha)) or os.path.exists(self.path(sha, False))
+
+    def put(self, sha, data, packed):
+        path = self.path(sha, packed)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+
+    def get(self, sha):
+        """-> (bytes as stored, packed) or None."""
+        for packed in (False, True):
+            try:
+                with open(self.path(sha, packed), "rb") as f:
+                    return f.read(), packed
+            except OSError:
+                pass
+        return None
+
+    def delete(self, sha):
+        for packed in (True, False):
+            try:
+                os.remove(self.path(sha, packed))
+            except OSError:
+                pass
+
+
+class RemoteBlobs:
+    """Blob bytes on a storage node (server.py --role storage, the user's PC behind the VPS): GET / PUT /
+    DELETE <url>/blob/<sha>?packed=0|1 with the shared key. Down: reads give None (a download fails, the
+    game says so), writes raise (an upload is refused)."""
+
+    def __init__(self, url, key, timeout=20):
+        self.url = url.rstrip("/")
+        self.key = key
+        self.timeout = timeout
+
+    def _req(self, method, sha, data=None, packed=True):
+        import urllib.request
+        r = urllib.request.Request("%s/blob/%s?packed=%d" % (self.url, sha, 1 if packed else 0), data=data,
+                                   method=method, headers={"X-Storage-Key": self.key})
+        return urllib.request.urlopen(r, timeout=self.timeout)
+
+    def exists(self, sha):
+        try:
+            with self._req("HEAD", sha) as f:
+                return f.status == 200
+        except Exception:
+            return False
+
+    def put(self, sha, data, packed):
+        with self._req("PUT", sha, data, packed) as f:
+            if f.status != 200:
+                raise OSError("storage refused %s" % sha)
+
+    def get(self, sha):
+        try:
+            with self._req("GET", sha) as f:
+                return f.read(), f.headers.get("X-Packed") == "1"
+        except Exception:
+            return None
+
+    def delete(self, sha):
+        try:
+            self._req("DELETE", sha).close()
+        except Exception:
+            pass
+
+
 class Store:
-    def __init__(self, folder, max_file=8 << 20, quota=256 << 20, cache_bytes=64 << 20):
+    def __init__(self, folder, max_file=8 << 20, quota=256 << 20, cache_bytes=64 << 20, blobs=None):
         self.folder = folder
         self.blob_dir = os.path.join(folder, "blobs")
         os.makedirs(self.blob_dir, exist_ok=True)
+        self._blobs = blobs  # (None: here - LocalBlobs)
         self.max_file = max_file
         self.quota = quota
         self.db = sqlite3.connect(os.path.join(folder, "community.db"), check_same_thread=False)
@@ -347,21 +428,23 @@ class Store:
     def _blob_path(self, sha, packed=True):
         return os.path.join(self.blob_dir, sha[:2], sha + (".xz" if packed else ".bin"))
 
+    @property
+    def blobs(self):
+        """Where blob bytes live: here (LocalBlobs), or a storage node (RemoteBlobs, --role core)."""
+        if self._blobs is None:
+            self._blobs = LocalBlobs(self.blob_dir)
+        return self._blobs
+
     def _put_blob(self, data, compress=True):
         """Stores data (once per content); returns its sha. Caller holds the lock.
         compress=False for what is compressed already (songs, movies)."""
         sha = hashlib.sha256(data).hexdigest()
         row = self.db.execute("SELECT refs FROM blobs WHERE sha = ?", (sha,)).fetchone()
-        if row and (os.path.exists(self._blob_path(sha)) or os.path.exists(self._blob_path(sha, False))):
+        if row and self.blobs.exists(sha):
             self.db.execute("UPDATE blobs SET refs = refs + 1 WHERE sha = ?", (sha,))
             return sha
         packed = lzma.compress(data, preset=6) if compress else data
-        path = self._blob_path(sha, compress)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(packed)
-        os.replace(tmp, path)
+        self.blobs.put(sha, packed, compress)
         self.db.execute("INSERT OR REPLACE INTO blobs VALUES (?, ?, ?, ?)",
                         (sha, len(data), len(packed), (row[0] if row else 0) + 1))
         return sha
@@ -374,11 +457,7 @@ class Store:
         row = self.db.execute("SELECT refs FROM blobs WHERE sha = ?", (sha,)).fetchone()
         if row and row[0] <= 0:
             self.db.execute("DELETE FROM blobs WHERE sha = ?", (sha,))
-            for packed in (True, False):
-                try:
-                    os.remove(self._blob_path(sha, packed))
-                except OSError:
-                    pass
+            self.blobs.delete(sha)
             if sha in self.cache:
                 self.cache_bytes -= len(self.cache.pop(sha))
 
@@ -388,14 +467,12 @@ class Store:
             if data is not None:
                 self.cache.move_to_end(sha)
                 return data
+        got = self.blobs.get(sha)
+        if got is None:
+            return None
         try:
-            if os.path.exists(self._blob_path(sha, False)):
-                with open(self._blob_path(sha, False), "rb") as f:
-                    data = f.read()
-            else:
-                with open(self._blob_path(sha), "rb") as f:
-                    data = lzma.decompress(f.read())
-        except (OSError, lzma.LZMAError):
+            data = lzma.decompress(got[0]) if got[1] else got[0]
+        except lzma.LZMAError:
             return None
         with self.lock:
             if len(data) <= self.cache_max // 4:
