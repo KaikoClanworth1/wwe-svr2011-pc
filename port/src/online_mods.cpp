@@ -47,7 +47,9 @@
 #include "arena_mods.h"
 #include "fps_overlay.h"
 #include "frame_rate.h"
+#include "match_types.h"
 #include "move_packs.h"
+#include "online_rules.h"
 #include "online_files.h"
 #include "p2p.h"
 #include "superstar_mods.h"
@@ -86,6 +88,7 @@ struct Mine {
   std::map<std::string, std::string> label;  // key -> "Sabu 1.3" (superstars and arenas)
   std::map<std::string, std::string> arena_folder;  // arena key -> folder
   std::map<std::string, std::pair<std::string, std::string>> pack_of;  // move pack key -> (kind, folder)
+  std::set<std::string> backstage;  // backstage mod keys ("bs:" + its key)
 };
 
 std::set<std::string> Hidden() {
@@ -121,6 +124,12 @@ const Mine& MyMods() {
       if (hidden.count(folder) || !svr2011::ModKey(kind, folder, &key, &label)) continue;
       m.pack_of["pack:" + key] = {kind, folder}, m.label["pack:" + key] = label;
     }
+    for (const auto& e : fs::directory_iterator(rex::filesystem::GetExecutableFolder() / "Mods" / "Backstage", ec)) {
+      const std::string folder = e.path().filename().string();
+      std::string key, label;
+      if (!e.is_directory() || hidden.count(folder) || !svr2011::ModKey("Backstage", folder, &key, &label)) continue;
+      m.backstage.insert("bs:" + key), m.label["bs:" + key] = label;
+    }
     REXLOG_INFO("online mods: {} superstar and {} arena mods, {} move packs for online lobbies", m.key_of.size(),
                 m.arena_folder.size(), m.pack_of.size());
     return m;
@@ -141,6 +150,8 @@ struct Theirs {
   int tile = -1;
   std::set<std::string> packs;             // its move pack keys
   std::vector<std::string> agreed;         // (the host) the packs every player has, for the match
+  std::set<std::string> backstage;         // its backstage mod keys
+  bool backstage_known = false;
   uint64_t echo = 0;                       // (a client) the host's agreed list it has (its hash)
   bool packs_known = false;                // (it sent its packs: a game of this version)
   Clock::time_point heard;
@@ -285,6 +296,8 @@ void SendTable(const svr2011::P2PLobby& lobby) {
     }
     Put64(o, g_agreed_hash);
   }
+  Put16(o, uint16_t(m.backstage.size()));
+  for (const auto& key : m.backstage) PutStr(o, key), PutStr(o, m.label.at(key));
   svr2011::P2PSendMods(o);
 }
 
@@ -348,6 +361,14 @@ void OnTable(In& r) {
     for (uint16_t i = 0; i < ng && r.ok; ++i) t.agreed.push_back(r.str());
     t.echo = r.u64();
     t.packs_known = r.ok;
+  }
+  if (r.ok && r.at < r.n) {  // (backstage mods)
+    const uint16_t nb = r.u16();
+    for (uint16_t i = 0; i < nb && r.ok; ++i) {
+      const std::string key = r.str(), label = r.str();
+      t.backstage.insert(key), t.label[key] = label;
+    }
+    t.backstage_known = r.ok;
   }
   if (!r.ok || !xuid || xuid == MyXuid()) return;
   if (t.name.empty()) t.name = "A player";
@@ -664,6 +685,22 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
           why = t->second.name + " is still taking the move packs list";
           break;
         }
+      }
+    }
+    // (a backstage match plays its rooms with each game's backstage mods: they must be the same)
+    if (why.empty() && lobby.host && BackstageRule(OnlineCreateSessionRule())) {
+      for (const uint64_t x : lobby.members) {
+        if (x == MyXuid()) continue;
+        const auto t = g_theirs.find(x);
+        if (t == g_theirs.end() || !t->second.backstage_known || t->second.backstage == MyMods().backstage) continue;
+        std::vector<std::string> diff;
+        for (const auto& k : MyMods().backstage)
+          if (!t->second.backstage.count(k)) diff.push_back(MyMods().label.at(k));
+        for (const auto& k : t->second.backstage)
+          if (!MyMods().backstage.count(k)) diff.push_back(t->second.label[k]);
+        why = "your backstage mods differ from " + t->second.name + "'s (" + Join(diff) +
+              "): pick a match outside the backstage";
+        break;
       }
     }
     const uint32_t slots = std::min<uint32_t>(Rd32(base + L + 28), 12);

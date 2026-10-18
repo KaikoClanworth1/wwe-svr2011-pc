@@ -48,6 +48,8 @@
 namespace svr2011 {
 std::atomic<uint32_t> g_match_rule{~0u}, g_match_arena{~0u};  // (the last match placed: LastMatch)
 void LastMatch(uint32_t* rule, uint32_t* arena) { *rule = g_match_rule.load(), *arena = g_match_arena.load(); }
+// (the whole backstage 0x19 / 0x1A, the 1 on 1 rooms 0x1B.. and the 2 on 2 rooms 0x70-0x76: arena 78)
+bool BackstageRule(uint32_t rule) { return (rule >= 0x19 && rule <= 0x21) || (rule >= 0x70 && rule <= 0x76); }
 }  // namespace svr2011
 
 namespace {
