@@ -293,6 +293,8 @@ OnlineRulesSetup OnlineRulesFor(uint32_t rule) {
   return s;
 }
 
+uint32_t OnlineCreateSessionRule() { return PickedRule(); }
+
 }  // namespace svr2011
 
 // CREATE SESSION made / freed.

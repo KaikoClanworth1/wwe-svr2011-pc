@@ -414,7 +414,18 @@ std::string VersionDifference(const std::string& theirs) {
          PortVersion() + ": they need to update.";
 }
 
+std::atomic<bool> g_mods_online{true};  // (the server's switch: SetOnlineModsAllowed)
+
+void SetOnlineModsAllowed(bool on) {
+  if (g_mods_online.exchange(on) != on)
+    REXLOG_WARN("online: mods in online sessions {} by the server", on ? "allowed again" : "switched off");
+}
+
+bool OnlineModsAllowed() { return g_mods_online.load(); }
+
 const std::string& GameplayModSet() {
+  static const std::string none;
+  if (!OnlineModsAllowed()) return none;  // (mods off online: no set to compare, none to share)
   static const std::string set = [] {
     std::string s = BuildModSet();
     REXLOG_INFO("online: gameplay mods for online: {}", s.empty() ? std::string("none") : "\n" + s);
@@ -424,6 +435,7 @@ const std::string& GameplayModSet() {
 }
 
 bool ModKey(const std::string& kind, const std::string& folder, std::string* key, std::string* label) {
+  if (!OnlineModsAllowed()) return false;  // (mods off online: no mod can be picked)
   static const auto set = ParseSet(GameplayModSet());
   const auto it = set.find(kind + "/" + folder);
   if (it == set.end()) return false;

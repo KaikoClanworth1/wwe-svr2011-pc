@@ -55,6 +55,8 @@
 #include "net_sim.h"
 #include "net_stats.h"
 #include "online_overlay.h"
+#include "online_rules.h"
+#include "match_types.h"
 #include "script_input.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
@@ -1348,11 +1350,66 @@ void OnPipeData(const uint8_t* data, size_t size) {
   buf.erase(buf.begin(), buf.begin() + ptrdiff_t(at));
 }
 
-// STUN now and then; the relay's pipe (signed in) while the player plays
-// online - a session open, or session activity in the last 5 minutes (the
-// ONLINE menu's presence session comes and goes) - registered every 15 s
-// (which also keeps its NAT's mapping open). Each pipe is two of the server's
-// connections: games outside online play don't hold any.
+// A JSON string.
+std::string JsonQuote(const std::string& v) {
+  std::string out = "\"";
+  for (const char c : v) {
+    if (c == '"' || c == '\\') out += '\\';
+    if (uint8_t(c) >= 0x20) out += c;
+  }
+  return out + "\"";
+}
+
+// The sessions this game hosts, for the server's live view (the dashboard):
+// every 20 s while it hosts - players and their paths, the match picked, lobby
+// or match - and "ended" when the session closes.
+void ReportLive(bool signed_in) {
+  static Clock::time_point last{};
+  static std::set<uint64_t> reported;
+  const auto now = Clock::now();
+  if (!signed_in || now - last < std::chrono::seconds(20)) return;
+  last = now;
+  std::vector<std::string> bodies;
+  std::set<uint64_t> hosting;
+  {
+    std::lock_guard lock(g_mutex);
+    const bool in_match = NetStatsNow().active;
+    std::map<uint32_t, std::string> names;
+    for (const auto& l : NetLinks()) names[l.peer] = l.name;
+    for (const auto& [object, local] : g_sessions) {
+      // (a match session: not the ONLINE menus' presence session, flags 707 with one slot)
+      if (!local.host || local.session.public_slots + local.session.private_slots < 2) continue;
+      hosting.insert(local.session.id);
+      std::string players = "{\"name\": " + JsonQuote(rex::cvar::Query<std::string>("online_name")) + ", \"path\": \"host\"}";
+      for (const auto& [mac, p] : g_peers) {
+        if (now - p.game_traffic > std::chrono::seconds(15)) continue;  // (this session's players)
+        const auto n = names.find(p.fake);
+        players += ", {\"name\": " + JsonQuote(n != names.end() && !n->second.empty() ? n->second : "?") +
+                   ", \"path\": \"" + (p.relayed ? "relay" : p.tunnel ? "direct" : "lan") + "\"}";
+      }
+      uint32_t rule = OnlineCreateSessionRule(), arena = ~0u, played = ~0u;
+      LastMatch(&played, &arena);
+      if (in_match && played != ~0u) rule = played;
+      bodies.push_back(fmt::format(
+          "{{\"session\": \"{:X}\", \"state\": \"{}\", \"rule\": \"{}\", \"arena\": \"{}\", "
+          "\"slots\": {}, \"version\": {}, \"players\": [{}]}}",
+          local.session.id, in_match ? "match" : "lobby", rule == ~0u ? "" : fmt::format("rule {:02X}", rule),
+          in_match && arena != ~0u ? fmt::format("arena {}", arena) : "",
+          local.session.public_slots + local.session.private_slots, JsonQuote(PortVersion()), players));
+    }
+  }
+  for (const uint64_t id : reported)
+    if (!hosting.count(id)) bodies.push_back(fmt::format("{{\"session\": \"{:X}\", \"ended\": true}}", id));
+  reported = std::move(hosting);
+  for (const std::string& b : bodies)
+    net::ServerRequest("POST", "/api/live", b, {{"Content-Type", "application/json"}});
+}
+
+// STUN now and then; the relay's pipe (signed in) while the player is in
+// online mode (P2POnlineMode: the ONLINE menus, a session, or either in the
+// last 30 s) - registered every 15 s (which also keeps its NAT's mapping
+// open). Each pipe is two of the server's connections: games outside online
+// play don't hold any.
 void Keepalive() {
   rex::thread::set_current_thread_name("p2p keepalive");
   using namespace std::chrono_literals;
@@ -1437,6 +1494,7 @@ void Keepalive() {
       SendOn(g_socket, g_udp_relay_ip, g_udp_relay_port, reg, sizeof(reg));
     }
     if (!wanted && g_udp_welcome_ms) g_udp_welcome_ms = 0, ticket.clear(), ticketed = {};
+    ReportLive(relay);
     std::this_thread::sleep_for(1s);
   }
 }

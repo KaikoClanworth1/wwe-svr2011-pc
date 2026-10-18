@@ -45,6 +45,11 @@
 #include "script_input.h"
 #include "generated/default/svr2011_init.h"
 
+namespace svr2011 {
+std::atomic<uint32_t> g_match_rule{~0u}, g_match_arena{~0u};  // (the last match placed: LastMatch)
+void LastMatch(uint32_t* rule, uint32_t* arena) { *rule = g_match_rule.load(), *arena = g_match_arena.load(); }
+}  // namespace svr2011
+
 namespace {
 
 constexpr uint32_t kRec = 0x74, kFirst = 0x28;
@@ -1749,6 +1754,7 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
   }
   ctx = saved;
   std::string line = fmt::format("rule {:02X}, arena {} - {}", rule, Rd32(base + kLive + 64), people);
+  svr2011::g_match_rule = rule, svr2011::g_match_arena = Rd32(base + kLive + 64);
   static std::string last;  // (placed three times as a match loads: logged once)
   if (line == last) return;
   last = line;

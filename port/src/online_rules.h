@@ -19,6 +19,9 @@ namespace svr2011 {
 // The row and the lobby panel (svr2011_app.cpp).
 void InstallOnlineRulesOverlay(rex::ui::ImGuiDrawer* drawer);
 
+// The match picked on CREATE SESSION (~0: none): the online live report.
+uint32_t OnlineCreateSessionRule();
+
 // Player 1's buttons each controller reading (frame_rate.cpp): LB / RB cycle the row.
 void OnlineRulesPad(uint16_t buttons);
 
