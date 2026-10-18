@@ -128,6 +128,8 @@ ImFont* g_title_font = nullptr;
 
 std::mutex g_mutex;
 State g_state;
+std::string g_notice, g_notice2;  // (OnlineOverlayNotice: picked up by the toast, under g_mutex)
+int g_notice_secs = 0;
 std::string g_message;  // the last action's outcome (shown on the overlay)
 Clock::time_point g_message_at{};
 std::set<std::string> g_invited;  // friends invited to the current session (its id + name)
@@ -400,6 +402,14 @@ void OnlineOverlay::Toast(ImGuiIO& io) {
     toast_line2_ = "TO A " + Upper(i.kind.empty() ? "match" : i.kind) + "  -  " +
                    Upper(rex::cvar::Query<std::string>("bind_online_menu")) + " OR BACK + RB TO ANSWER";
     toast_until_ = Clock::now() + std::chrono::seconds(10);
+  }
+  {
+    std::lock_guard lock(g_mutex);
+    if (!g_notice.empty()) {
+      toast_ = std::move(g_notice), toast_line2_ = std::move(g_notice2);
+      toast_until_ = Clock::now() + std::chrono::seconds(g_notice_secs);
+      g_notice.clear(), g_notice2.clear();
+    }
   }
   if (g_open || Clock::now() > toast_until_ || toast_.empty()) return;
   const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f), size = 24 * sc, size2 = 18 * sc;
@@ -876,6 +886,11 @@ void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
 void SetOnlineOverlayFonts(ImFont* menu, ImFont* title) {
   g_menu_font = menu;
   g_title_font = title;
+}
+
+void OnlineOverlayNotice(const std::string& line1, const std::string& line2, int seconds) {
+  std::lock_guard lock(g_mutex);
+  g_notice = line1, g_notice2 = line2, g_notice_secs = seconds;
 }
 
 void OnlineOverlaySayGoodbye() {

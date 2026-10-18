@@ -54,6 +54,7 @@
 #include "port_map.h"
 #include "net_sim.h"
 #include "net_stats.h"
+#include "online_overlay.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
@@ -483,6 +484,8 @@ struct Proxy {
   uint16_t remote = 0;  // the peer's game port (as its game knows it)
   uint16_t local = 0;   // the proxy's port
   std::map<uint16_t, DataStream> streams;  // (v2: by this game's port; the proxy's thread only)
+  std::atomic<int64_t> used_ms{0};  // last packet through it, either way (FreeIdleProxies)
+  std::atomic<bool> dead{false};    // freed: its thread deletes it
 };
 std::map<std::pair<Mac, uint16_t>, Proxy*> g_proxies;
 std::map<uint16_t, Proxy*> g_proxy_ports;
@@ -531,9 +534,17 @@ void ProxyLoop(Proxy* proxy) {
     const int n = int(recvfrom(proxy->s, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
                                reinterpret_cast<sockaddr*>(&from), &len));
     if (n <= 0) {
+      if (proxy->dead) {  // (FreeIdleProxies freed it; nothing else holds it any more)
+#if !defined(_WIN32)
+        CloseSocket(proxy->s);
+#endif
+        delete proxy;
+        return;
+      }
       if (!Reset()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
       continue;
     }
+    proxy->used_ms = NowMs();
     // (from the game's own socket: its port as the game knows it)
     const uint16_t from_port = uint16_t(ntohs(from.sin_port) - Offset(g_me.base));
     Path path;
@@ -582,10 +593,35 @@ Proxy* ProxyFor(const Mac& mac, uint16_t remote) {
     return nullptr;
   }
   proxy->local = ntohs(at.sin_port);
+  proxy->used_ms = NowMs();
   g_proxies[{mac, remote}] = proxy;
   g_proxy_ports[proxy->local] = proxy;
   std::thread(ProxyLoop, proxy).detach();  // (proxies live as long as the game)
   return proxy;
+}
+
+// Proxies with no packet either way for 2 minutes (a session long over): their
+// socket closed, their thread ends. They piled up for good before - at the cap
+// a new player's packets were dropped. One wanted again is made again.
+void FreeIdleProxies() {
+  constexpr int64_t kIdleMs = 120000;
+  const int64_t now = NowMs();
+  std::lock_guard lock(g_mutex);
+  for (auto it = g_proxies.begin(); it != g_proxies.end();) {
+    Proxy* proxy = it->second;
+    if (now - proxy->used_ms.load() < kIdleMs) {
+      ++it;
+      continue;
+    }
+    g_proxy_ports.erase(proxy->local);
+    it = g_proxies.erase(it);
+    proxy->dead = true;
+#if defined(_WIN32)
+    CloseSocket(proxy->s);  // (its recvfrom returns: the thread deletes it)
+#else
+    shutdown(proxy->s, SHUT_RDWR);  // (wakes its recvfrom; the thread closes it - no fd reused under it)
+#endif
+  }
 }
 
 // -- sessions ----------------------------------------------------------------------------
@@ -613,6 +649,8 @@ struct Local {
 std::map<uint32_t, uint32_t> g_contexts;      // the player's (B0006)
 std::map<uint32_t, Property> g_properties;    // (B0007)
 std::map<uint32_t, Local> g_sessions;         // by session object
+uint64_t g_host_left_session = 0;               // (the session whose host left in a match: told once)
+std::atomic<int64_t> g_host_left_ms{0};
 std::map<uint64_t, std::vector<uint8_t>> g_qos;  // QoS data by session id (XNetQosListen)
 std::map<uint64_t, Session> g_found;          // the last search's sessions
 // An invite accepted (online_overlay.cpp): its session comes first in searches,
@@ -789,6 +827,7 @@ void OnData(const uint8_t* data, size_t size, Via via) {
     p.game_traffic = Clock::now();
     Proxy* proxy = ProxyFor(mac, from);
     if (!proxy) return;
+    proxy->used_ms = NowMs();
     s = proxy->s;
   }
   SendOn(s, 0x7F000001, uint16_t(to + Offset(g_me.base)), data + 16, size - 16);
@@ -837,6 +876,7 @@ void OnDataV2(const uint8_t* data, size_t size, Via via) {
     }
     Proxy* proxy = ProxyFor(mac, from);
     if (!proxy) return;
+    proxy->used_ms = NowMs();
     s = proxy->s;
   }
   for (const auto& [bytes, n] : deliver) {
@@ -885,8 +925,9 @@ constexpr auto kPingAfterGame = std::chrono::seconds(15);  // (pings this long a
 
 void PingLoop() {
   rex::thread::set_current_thread_name("p2p ping");
-  for (;;) {
+  for (int tick = 1;; ++tick) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (tick % 10 == 0) FreeIdleProxies();
     std::vector<Path> to;
     const bool in_match = NetStatsNow().active;
     {
@@ -953,6 +994,28 @@ void PingLoop() {
       const std::string name = rex::cvar::Query<std::string>("online_name").substr(0, 32);
       w.u8(uint8_t(name.size())), w.bytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
       NetSimSend([path, b = std::move(w.b)] { Send(path, b); });
+    }
+    // The session's host gone in a match (its game closed or cut off): the game
+    // ends the session for everyone after its drop timeout, saying only "a
+    // connection error" - this says why (a notice now; the game's "An error
+    // occurred during the match" reworded: online.cpp, P2PHostLeft).
+    if (in_match) {
+      std::lock_guard lock(g_mutex);
+      const auto now = Clock::now();
+      for (const auto& [object, local] : g_sessions) {
+        if (local.host) continue;
+        const auto it = g_peers.find(MacOf(local.session.host.data()));
+        if (it == g_peers.end()) continue;
+        const Peer& h = it->second;
+        const auto heard = std::max(h.direct_ok, h.relay_ok);
+        if (heard == Clock::time_point{} || now - heard < std::chrono::seconds(4) ||
+            g_host_left_session == local.session.id)
+          continue;
+        g_host_left_session = local.session.id;
+        g_host_left_ms = NowMs();
+        REXLOG_WARN("p2p: the session's host ({}) stopped answering in the match - it left", Ip(h.fake));
+        OnlineOverlayNotice("THE HOST LEFT", "THE MATCH IS OVER - BACK TO THE ONLINE MENU", 12);
+      }
     }
     if (!in_match && g_report.seconds) {
       if (g_report.seconds >= 30) SendMatchReport(g_report);  // (a match, not a lobby's blip)
@@ -1990,6 +2053,11 @@ std::optional<bool> P2PRanked() {
   const auto t = g_contexts.find(kContextGameType);
   if (t == g_contexts.end()) return std::nullopt;
   return t->second == 0;
+}
+
+bool P2PHostLeft() {
+  const int64_t at = g_host_left_ms.load();
+  return at && NowMs() - at < 60000;
 }
 
 std::string P2PHiddenReason(int* sessions) {

@@ -191,6 +191,27 @@ REX_HOOK_RAW(sub_8298E3A0) {
 
 REXCVAR_DECLARE(bool, p2p_send_every_frame);  // (p2p.cpp)
 
+// A player whose game is gone (closed, crashed, cut off) froze every other
+// game ~15 s: gss drops a silent peer after its match timeout (session +744 =
+// 15000 ms, set through sub_829B60C8 when the session enters state 7 - by
+// sub_829B3A48 and sub_829B43C8; the lobby's +740 by sub_829B3918). The match
+// timeout is now p2p_drop_seconds: the same drop (the game's own "has left and
+// will be replaced by AI", or - the host - the session's end), sooner.
+REXCVAR_DEFINE_UINT32(p2p_drop_seconds, 5, "Online",
+                      "Seconds a silent player freezes an online match before the game drops them (3-15)");
+REX_EXTERN(__imp__sub_829B60C8);
+REX_HOOK_RAW(sub_829B60C8) {
+  const uint32_t from = uint32_t(ctx.lr);
+  if (from == 0x829B3A98 || from == 0x829B49E8) {  // (the match's timeout)
+    const uint32_t ms = std::clamp<uint32_t>(REXCVAR_GET(p2p_drop_seconds), 3, 15) * 1000;
+    if (ctx.r3.u32 > ms) {
+      REXLOG_INFO("net: a silent player is dropped after {} s (the game's {} ms)", ms / 1000, ctx.r3.u32);
+      ctx.r3.u64 = ms;
+    }
+  }
+  __imp__sub_829B60C8(ctx, base);
+}
+
 // Lower lag on long links (p2p_send_every_frame). The game's lockstep (gss)
 // has no frame numbers: each game queues every frame's input to every player
 // and takes one from each player's queue a frame. Its input lead (frames from

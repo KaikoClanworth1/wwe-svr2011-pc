@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 struct ImFont;
 
@@ -50,6 +51,10 @@ void ToggleOnlineOverlay();
 // The game closing: the server shows this player offline now (not after its
 // 60 s presence window). A short request; nothing when signed out.
 void OnlineOverlaySayGoodbye();
+
+// A notice at the top of the screen for `seconds` (any thread): two lines,
+// e.g. "THE HOST LEFT" / "THE MATCH IS OVER".
+void OnlineOverlayNotice(const std::string& line1, const std::string& line2, int seconds);
 
 // True while it is open or the button that closed it is still held.
 bool OnlineOverlayHoldsInput();
