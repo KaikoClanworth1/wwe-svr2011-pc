@@ -55,6 +55,7 @@
 #include "net_sim.h"
 #include "net_stats.h"
 #include "online_overlay.h"
+#include "script_input.h"
 
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
@@ -1368,8 +1369,7 @@ void Keepalive() {
       std::lock_guard lock(g_mutex);
       if (!g_sessions.empty()) g_online_at = NowMs();
     }
-    const int64_t at = g_online_at;
-    const bool wanted = relay && at && NowMs() - at < 300000;
+    const bool wanted = relay && P2POnlineMode();
     std::shared_ptr<net::Pipe> pipe;
     {
       std::lock_guard lock(g_pipe_mutex);
@@ -2053,6 +2053,19 @@ std::optional<bool> P2PRanked() {
   const auto t = g_contexts.find(kContextGameType);
   if (t == g_contexts.end()) return std::nullopt;
   return t->second == 0;
+}
+
+bool P2POnlineMode() {
+  {
+    std::lock_guard lock(g_mutex);
+    if (!g_sessions.empty()) return true;
+  }
+  // (the ONLINE menus: the main-menu object's group 0x5EC - the game's presence
+  // session there isn't held all the time)
+  uint32_t group = 0, row = 0;
+  if (ScriptMenuState(&group, &row) && group == 0x5EC) return true;
+  const int64_t at = g_online_at;
+  return at && NowMs() - at < 30000;  // (between screens the sessions come and go)
 }
 
 bool P2PHostLeft() {

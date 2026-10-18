@@ -362,7 +362,8 @@ class Stats:
         self.peak = 0
         self.max_peak = 0
         self.minute = self._zero()
-        self.recent = {}      # account id -> last request time
+        self.recent = {}      # account id -> last presence request (a game in online mode)
+        self.days_counted = set()  # (day, account id) already in player_days
         self.total_in = 0
         self.total_out = 0
         self.started = now()
@@ -396,13 +397,21 @@ class Stats:
         self.minute[what] += n
 
     def seen(self, account_id):
-        first = account_id not in self.recent
+        """A game in online mode (its ONLINE menus or an online match) asked: online now."""
         self.recent[account_id] = now()
-        if first:
-            with self.lock:
-                self.db.execute("INSERT OR IGNORE INTO player_days VALUES (?, ?)",
-                                (time.strftime("%Y-%m-%d"), account_id))
-                self.db.commit()
+        self.day(account_id)
+
+    def day(self, account_id):
+        """The account played today (the dashboard's daily players) - any request of its game."""
+        key = (time.strftime("%Y-%m-%d"), account_id)
+        if key in self.days_counted:
+            return
+        if len(self.days_counted) > 100000:
+            self.days_counted.clear()
+        self.days_counted.add(key)
+        with self.lock:
+            self.db.execute("INSERT OR IGNORE INTO player_days VALUES (?, ?)", key)
+            self.db.commit()
 
     def playing_now(self, window=None):
         """Accounts whose game asked something lately (a running game, signed in,
@@ -509,8 +518,8 @@ class Service:
         if not auth.startswith("Bearer "):
             return None
         account = self.accounts.from_token(auth[7:].strip())
-        if account:
-            self.stats.seen(account["id"])
+        if account:  # (not presence: a game outside online mode fetches logos / Community Creations too)
+            self.stats.day(account["id"])
         return account
 
     def is_admin(self, request):
@@ -616,8 +625,9 @@ class Service:
 
     def presence(self, account_id):
         """playing: in an online match or its lobby (its game has the relay open);
-        online: its game running and signed in (it asks /api/friends?here=1 every
-        20 s; gone PRESENCE_WINDOW s after the last, at once when it says bye);
+        online: its game in online mode - the ONLINE menus or an online match (it
+        asks /api/friends?here=1 every 20 s then; gone PRESENCE_WINDOW s after the
+        last, at once when it says bye);
         else offline. (The launchers' own requests don't count.)"""
         if any(g.account["id"] == account_id for g in self.relay.games.values()):
             return "playing"
