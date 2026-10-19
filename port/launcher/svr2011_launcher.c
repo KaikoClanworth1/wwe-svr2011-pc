@@ -106,7 +106,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
@@ -186,6 +186,7 @@ static void play_counts(void);
 static void steps_refresh(void);
 static int setup_first_step(void);
 static int step_at(POINT pt);
+static int mod_tab_at(POINT pt);
 static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
 static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
 static int       s_dpi = 96;
@@ -2337,8 +2338,20 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     /* (below the line) */
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_MUSIC, 0xE8D6, L"Music" },
     { TAB_MOVIES, 0xE714, L"Movies" },      { TAB_PAINT, 0xE790, L"Paint Tool" },
-    { TAB_TEXPACKS, 0xE8B9, L"Texture packs" },
 };
+
+/* Mods, in three tabs: the installed mods (TAB_MODS), Discovery, Texture packs - a tab bar on top of each
+   (paint_mod_tabs). The tab of a page, or -1. */
+static const int k_mod_tabs[] = { TAB_MODS, TAB_DISCOVER, TAB_TEXPACKS };
+#define N_MOD_TABS 3
+static int mods_tab_of(int tab)
+{
+    int i;
+    for (i = 0; i < N_MOD_TABS; i++)
+        if (k_mod_tabs[i] == tab)
+            return i;
+    return -1;
+}
 
 /* Setup, step by step: this PC (TAB_SETUP), the game (TAB_INSTALL), DLC, Android - one sidebar entry; a step
    bar on top of each (paint_steps). The step of a page, or -1. */
@@ -2353,7 +2366,7 @@ static int setup_step(int tab)
     return -1;
 }
 /* The sidebar entry a page belongs to (Setup's steps: Setup). */
-static int nav_tab(int tab) { return setup_step(tab) >= 0 ? TAB_SETUP : tab; }
+static int nav_tab(int tab) { return setup_step(tab) >= 0 ? TAB_SETUP : mods_tab_of(tab) >= 0 ? TAB_MODS : tab; }
 #define NAV_N    ((int)(sizeof k_nav / sizeof k_nav[0]))
 #define NAV_MAIN 6       /* the main pages (big rows), then the line, the others (small rows) */
 #define NAV_TOP  86
@@ -2494,7 +2507,7 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
     const int push = button && (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON);
     if (tab >= 0 && tab != TAB_PLAY)
         x += PAD;
-    if (tab == TAB_SETUP)
+    if (tab == TAB_SETUP || tab == TAB_TEXPACKS)
         y += 44;   /* (below the step bar; the other steps' pages start lower already) */
     /* A group box becomes a card the window draws (the control is never shown). */
     if (button && kind == BS_GROUPBOX && tab >= 0 && s_ncards < (int)(sizeof s_cards / sizeof s_cards[0])) {
@@ -2949,7 +2962,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -2989,6 +3002,14 @@ static void build_ui(void)
     add(TAB_PLAY, L"Button", L"Import Saves\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 552, 356, 154, 36, ID_PL_IMPORT);
     add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 554, 128, 28, ID_REPORT);
     up_setup();
+
+    /* Discovery (Mods' second tab): to come - browsing and downloading the community's .svrmod mods. */
+    add(TAB_DISCOVER, L"Button", L"Discovery", BS_GROUPBOX, X0, 60, 560, 150, 0);
+    add(TAB_DISCOVER, L"Static",
+        L"Find mods other players made: search by name and tags, see their pictures, download them with a click. "
+        L"Uploading your own .svrmod mods (signed in online: Settings \x2192 Online) comes with it.\n\n"
+        L"Coming in a later version.",
+        SS_LEFT | SS_NOPREFIX, X0 + 16, 92, 528, 100, 0);
 
     /* Settings */
     add(TAB_SETTINGS, L"Button", L"Display", BS_GROUPBOX, X0, 14, 560, 224, 0);
@@ -7366,13 +7387,61 @@ static void paint_steps(HDC dc)
     }
 }
 
+/* ── Mods' tab bar ─────────────────────────────────────────────────────── */
+static RECT s_mod_tab_rects[N_MOD_TABS];
+
+static int mod_tab_at(POINT pt)
+{
+    int i;
+    if (mods_tab_of(s_cur_tab) < 0)
+        return -1;
+    for (i = 0; i < N_MOD_TABS; i++)
+        if (PtInRect(&s_mod_tab_rects[i], pt))
+            return i;
+    return -1;
+}
+
+/* On top of each Mods page: its three tabs, the page's own underlined in red. */
+static void paint_mod_tabs(HDC dc)
+{
+    static const WCHAR *const names[N_MOD_TABS] = { L"Installed Mods", L"Discovery", L"Texture Packs" };
+    static const WCHAR icons[N_MOD_TABS] = { 0xEA86, 0xE721, 0xE8B9 };
+    const int cur = mods_tab_of(s_cur_tab), x0 = SB_W + PAD + X0;
+    int i, x = x0;
+    RECT line = { S(x0), S(DY + 38), S(x0 + 560), S(DY + 39) };
+    HBRUSH b = CreateSolidBrush(C_CARD_LINE);
+    FillRect(dc, &line, b);
+    DeleteObject(b);
+    SetBkMode(dc, TRANSPARENT);
+    for (i = 0; i < N_MOD_TABS; i++) {
+        const int here = i == cur, w = 168;
+        WCHAR g[2] = { icons[i], 0 };
+        RECT t = { S(x), S(DY + 4), S(x + 26), S(DY + 34) };
+        SelectObject(dc, s_icons);
+        SetTextColor(dc, here ? C_ACCENT_HOT : C_MUTED);
+        DrawTextW(dc, g, 1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, s_nav);
+        SetTextColor(dc, here ? RGB(255, 255, 255) : RGB(190, 192, 202));
+        SetRect(&t, S(x + 26), S(DY + 4), S(x + w), S(DY + 34));
+        DrawTextW(dc, names[i], -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        if (here) {
+            RECT u = { S(x), S(DY + 37), S(x + w - 16), S(DY + 40) };
+            b = CreateSolidBrush(C_ACCENT);
+            FillRect(dc, &u, b);
+            DeleteObject(b);
+        }
+        SetRect(&s_mod_tab_rects[i], S(x), S(DY), S(x + w - 16), S(DY + 40));
+        x += w;
+    }
+}
+
 /* The window: the sidebar, the page's title, its cards. */
 static void paint_window(HDC dc)
 {
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
-                                                    L"Music", L"Roster: sort categories", L"Texture packs",
-                                                    L"Setup" };
+                                                    L"Music", L"Roster: sort categories", L"Mods",
+                                                    L"Setup", L"Mods" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -7494,6 +7563,8 @@ static void paint_window(HDC dc)
             paint_play(dc);
         if (setup_step(s_cur_tab) >= 0)
             paint_steps(dc);
+        if (mods_tab_of(s_cur_tab) >= 0)
+            paint_mod_tabs(dc);
     }
     SelectObject(dc, old);
 }
@@ -7870,6 +7941,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             show_tab(k_nav[k].tab);
         else if (k < 0 && step_at(pt) >= 0)
             show_tab(k_steps[step_at(pt)]);
+        else if (k < 0 && mod_tab_at(pt) >= 0)
+            show_tab(k_mod_tabs[mod_tab_at(pt)]);
         else if (k < 0 && play_link_at(pt) >= 0)
             show_tab(play_link_at(pt) == TAB_SETUP ? setup_first_step() : play_link_at(pt));
         return 0;
@@ -7898,7 +7971,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
             if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) ||
-                play_link_at(pt) >= 0 || step_at(pt) >= 0) {
+                play_link_at(pt) >= 0 || step_at(pt) >= 0 || mod_tab_at(pt) >= 0) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
             }
@@ -8344,7 +8417,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */

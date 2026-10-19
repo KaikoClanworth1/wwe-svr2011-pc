@@ -51,7 +51,7 @@ static HWND s_list, s_status, s_wnd;
 static WCHAR s_game[MAX_PATH];
 static int s_filling;              /* (checkbox notifications while filling the list) */
 
-enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND };
+enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF };
 
 static void status(const WCHAR *t) { SetWindowTextW(s_status, t); }
 
@@ -572,11 +572,43 @@ static void safe_id(WCHAR *id)
 static int install_file(const WCHAR *zip);
 static void install_log(const WCHAR *game, const WCHAR *text);
 
+/* + : one or several .svrmod / .zip files, installed one after the other. */
 static void add_mod(void)
 {
-    WCHAR zip[MAX_PATH];
-    if (!s_game[0]) { status(L"Install the game first (Install tab)."); return; }
-    if (pick_file(zip)) install_file(zip);
+    IFileOpenDialog *dlg = NULL;
+    IShellItemArray *items = NULL;
+    DWORD n = 0, i;
+    int done = 0;
+    COMDLG_FILTERSPEC spec[] = { { L"SvR2011 mods (*.svrmod, *.zip)", L"*.svrmod;*.zip" } };
+    if (!s_game[0]) { status(L"Install the game first (Setup \x2192 The game)."); return; }
+    if (FAILED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void **)&dlg)))
+        return;
+    dlg->lpVtbl->SetFileTypes(dlg, 1, spec);
+    dlg->lpVtbl->SetOptions(dlg, FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+    dlg->lpVtbl->SetTitle(dlg, L"Add mods (several at once: Ctrl+click)");
+    if (SUCCEEDED(dlg->lpVtbl->Show(dlg, s_wnd)) && SUCCEEDED(dlg->lpVtbl->GetResults(dlg, &items))) {
+        items->lpVtbl->GetCount(items, &n);
+        for (i = 0; i < n; i++) {
+            IShellItem *it = NULL;
+            PWSTR path = NULL;
+            if (SUCCEEDED(items->lpVtbl->GetItemAt(items, i, &it)) &&
+                SUCCEEDED(it->lpVtbl->GetDisplayName(it, SIGDN_FILESYSPATH, &path))) {
+                WCHAR one[MAX_PATH];
+                wcsncpy_s(one, MAX_PATH, path, _TRUNCATE);
+                CoTaskMemFree(path);
+                install_file(one);   /* (its own status line; the last one's stays) */
+                done++;
+            }
+            if (it) it->lpVtbl->Release(it);
+        }
+        items->lpVtbl->Release(items);
+    }
+    dlg->lpVtbl->Release(dlg);
+    if (done > 1) {
+        WCHAR t[96];
+        swprintf_s(t, 96, L"Installed %d mods (they load the next time the game starts).", done);
+        status(t);
+    }
 }
 
 /* A picture for the main menu (backgrounds.h). */
@@ -1233,10 +1265,63 @@ place:
 static int selected(void) { return ListView_GetNextItem(s_list, -1, LVNI_SELECTED); }
 static void set_enabled(int i, int on);
 
+/* The selected rows' mods (indices into s_mods), at most `max`. */
+static int selected_all(int *out, int max)
+{
+    int row = -1, n = 0;
+    while (n < max && (row = ListView_GetNextItem(s_list, row, LVNI_SELECTED)) >= 0) {
+        LVITEMW it;
+        ZeroMemory(&it, sizeof it);
+        it.mask = LVIF_PARAM;
+        it.iItem = row;
+        if (ListView_GetItem(s_list, &it) && (int)it.lParam >= 0 && (int)it.lParam < s_nmods)
+            out[n++] = (int)it.lParam;
+    }
+    return n;
+}
+
+/* On / Off: the selected ones (through their tick, as a click on it does: the superstar limit's count too). */
+static void switch_selected(int on)
+{
+    int row = -1, n = 0;
+    while ((row = ListView_GetNextItem(s_list, row, LVNI_SELECTED)) >= 0) {
+        ListView_SetCheckState(s_list, row, on);
+        n++;
+    }
+    if (!n) status(L"Select mods in the list first (Ctrl / Shift + click for several, Ctrl+A for all).");
+}
+
+static void remove_one(int i);
 static void remove_mod(void)
 {
+    static int sel[MODS_MAX];
     WCHAR t[512];
-    int i = selected();
+    int n = selected_all(sel, MODS_MAX), k, gone = 0, kept = 0;
+    if (n > 1) {
+        swprintf_s(t, 512, L"Remove these %d mods? Their folders go to the Recycle Bin (match types are switched off "
+                           L"instead).", n);
+        if (MessageBoxW(s_wnd, t, L"Remove mods", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return;
+        for (k = 0; k < n; k++) {
+            const int i = sel[k];
+            if (!_wcsicmp(s_mods[i].type, L"matchtype")) { set_enabled(i, 0); kept++; continue; }
+            if (remove_tree(s_mods[i].folder, 1)) {
+                if (!_wcsicmp(s_mods[i].type, L"superstar")) free_superstar_slot(s_game, s_mods[i].folder);
+                gone++;
+            }
+        }
+        scan();
+        fill();
+        swprintf_s(t, 512, L"Removed %d (in the Recycle Bin)%s%s.", gone, kept ? L"; match types switched off" : L"",
+                   gone + kept < n ? L"; some could not be removed (is the game running?)" : L"");
+        status(t);
+        return;
+    }
+    remove_one(n ? sel[0] : -1);
+}
+
+static void remove_one(int i)
+{
+    WCHAR t[512];
     if (i < 0 || i >= s_nmods) { status(L"Select a mod in the list first."); return; }
     if (!_wcsicmp(s_mods[i].type, L"matchtype")) {
         /* (the game has a match type on unless its folder says "disabled": removing it would turn it back on) */
@@ -1318,7 +1403,7 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     if (title_font) SendMessageW(h, WM_SETFONT, (WPARAM)title_font, TRUE);
     add(tab, L"Static", L"Arenas, superstars and more. + adds a .svrmod file, \x2212 removes the selected "
                         L"mod, the tick turns it on or off.", SS_LEFT, 28, 86, 560, 36, 0);
-    s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_EDITLABELS | WS_BORDER | WS_TABSTOP,
+    s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_EDITLABELS | WS_BORDER | WS_TABSTOP,
                  28, 126, 512, 250, id_base + M_LIST);
     ListView_SetExtendedListViewStyle(s_list, LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_DOUBLEBUFFER);
     for (i = 0; i < 6; i++) {
@@ -1332,6 +1417,9 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     }
     add(tab, L"Button", L"+", BS_PUSHBUTTON | WS_TABSTOP, 548, 126, 40, 34, id_base + M_ADD);
     add(tab, L"Button", L"\x2212", BS_PUSHBUTTON | WS_TABSTOP, 548, 166, 40, 34, id_base + M_REMOVE);
+    /* (the selected ones - several with Ctrl / Shift, all with Ctrl+A - on or off) */
+    add(tab, L"Button", L"On", BS_PUSHBUTTON | WS_TABSTOP, 548, 214, 40, 34, id_base + M_ON);
+    add(tab, L"Button", L"Off", BS_PUSHBUTTON | WS_TABSTOP, 548, 254, 40, 34, id_base + M_OFF);
     if (maker_present()) {
         add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 170, 32, id_base + M_MAKER);
         add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 206, 386, 150, 32, id_base + M_FOLDER);
@@ -1349,6 +1437,7 @@ int mods_command(int id, int code)
 {
     (void)code;
     if (id == s_base + M_ADD) { add_mod(); return 1; }
+    if (id == s_base + M_ON || id == s_base + M_OFF) { switch_selected(id == s_base + M_ON); return 1; }
     if (id == s_base + M_REMOVE) { remove_mod(); return 1; }
     if (id == s_base + M_FOLDER) { open_folder(); return 1; }
     if (id == s_base + M_MAKER) { open_maker(); return 1; }
@@ -1437,6 +1526,10 @@ int mods_notify(const NMHDR *nm)
         wcsncpy_s(s_mods[i].name, 128, d->item.pszText, _TRUNCATE);
         status(L"Renamed: the game's BACKGROUNDS page shows the new name from the next start.");
         return 2;
+    }
+    if (nm->code == LVN_KEYDOWN && ((const NMLVKEYDOWN *)nm)->wVKey == 'A' && GetKeyState(VK_CONTROL) < 0) {
+        ListView_SetItemState(s_list, -1, LVIS_SELECTED, LVIS_SELECTED);   /* (Ctrl+A: all) */
+        return 1;
     }
     if (nm->code == LVN_ITEMCHANGED) {
         const NMLISTVIEW *lv = (const NMLISTVIEW *)nm;
