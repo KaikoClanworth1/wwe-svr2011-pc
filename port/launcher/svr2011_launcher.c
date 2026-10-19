@@ -51,6 +51,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <math.h>
 #include <wchar.h>
 
 #include "apk_package.h"
@@ -120,6 +121,7 @@ enum {
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES,
+    ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
@@ -185,7 +187,8 @@ static RECT      s_credit_link;            /* the credit's link (top right of ev
 static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
 static int       s_dpi = 96;
 static HICON     s_icon;
-static HWND      s_ctl[TAB_COUNT][32];
+#define TAB_CTL_MAX 64   /* a page's controls (more are created but never shown) */
+static HWND      s_ctl[TAB_COUNT][TAB_CTL_MAX];
 static int       s_nctl[TAB_COUNT];
 static WCHAR     s_launcher_dir[MAX_PATH], s_launcher_exe[MAX_PATH], s_launcher_ini[MAX_PATH];
 static WCHAR     s_game_dir[MAX_PATH];
@@ -209,6 +212,35 @@ static const struct { int w, h, scale; const WCHAR *label; } k_res[] = {
     { 3840, 2160, 3, L"3840 \x00D7 2160  (4K)" },
 };
 #define N_RES ((int)(sizeof k_res / sizeof k_res[0]))
+/* The render resolution: the game's GRAPHICS -> RENDER RESOLUTION steps (graphics_page.cpp kScales), saved
+   in the same keys - native_max_scale, native_render_scale, native_scene_height. */
+static const struct { int max_scale; double res; int height; const WCHAR *label; } k_render[] = {
+    { 4, 1.0, 0, L"Auto (follows the window)" }, { 1, 0.5, 0, L"360p" }, { 1, 2.0 / 3.0, 0, L"480p" },
+    { 1, 1.0, 0, L"720p (Xbox 360)" }, { 2, 1.0, 900, L"900p" }, { 2, 1.0, 1080, L"1080p" },
+    { 2, 1.0, 0, L"1440p" }, { 3, 1.0, 0, L"2160p (4K)" },
+};
+#define N_RENDER ((int)(sizeof k_render / sizeof k_render[0]))
+
+/* As the game's GraphicsPage::Load picks the row from the three keys. */
+static int render_index(int max_scale, double res, int height)
+{
+    int i, best = 0;
+    if (height > 0) {
+        for (i = 0; i < N_RENDER; i++)
+            if (k_render[i].height > 0 &&
+                (k_render[best].height == 0 || abs(k_render[i].height - height) < abs(k_render[best].height - height)))
+                best = i;
+    } else if (res > 0.0 && res < 0.99) {
+        for (i = 0; i < N_RENDER; i++)
+            if (k_render[i].res < 0.99 && fabs(k_render[i].res - res) < fabs(k_render[best].res - res))
+                best = i;
+    } else {
+        for (i = 0; i < N_RENDER; i++)
+            if (k_render[i].max_scale == max_scale && k_render[i].res >= 0.99 && k_render[i].height == 0)
+                best = i;
+    }
+    return best;
+}
 
 static int S(int v) { return MulDiv(v, s_dpi, 96); }
 
@@ -1678,13 +1710,36 @@ static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_a
     SendMessageW(ctl(ID_LANGUAGE), CB_SETCURSEL, (WPARAM)language_index(language), 0);
     SendMessageW(ctl(ID_MSAA), CB_SETCURSEL, (WPARAM)(msaa >= 1 && msaa <= 4 ? msaa - 1 : 0), 0);
     SendMessageW(ctl(ID_RENDERER), CB_SETCURSEL, (WPARAM)renderer, 0);
-    CheckRadioButton(s_wnd, ID_WINDOWED, ID_FULLSCREEN, fullscreen ? ID_FULLSCREEN : ID_WINDOWED);
+    /* (not CheckRadioButton: the exclusive one's id isn't next to the others) */
+    CheckDlgButton(s_wnd, ID_WINDOWED, !fullscreen ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FULLSCREEN, fullscreen == 1 ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FULLSCREEN_EX, fullscreen == 2 ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_RESOLUTION), CB_SETCURSEL, (WPARAM)res, 0);
     CheckDlgButton(s_wnd, ID_VSYNC, vsync ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_INPUT), CB_SETCURSEL, (WPARAM)(sdl ? 1 : 0), 0);
     SendMessageW(ctl(ID_AUDIO), CB_SETCURSEL, (WPARAM)(sdl_audio ? 1 : 0), 0);
     CheckDlgButton(s_wnd, ID_MUTE, mute ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SHOWFPS, fps ? BST_CHECKED : BST_UNCHECKED);
+}
+
+/* The window size row: only for a window (full screen is the screen's own size - in the game too, whose
+   RESOLUTION row says FULL SCREEN then); the line under it says which. */
+static void display_hint(void)
+{
+    const int windowed = IsDlgButtonChecked(s_wnd, ID_WINDOWED) == BST_CHECKED;
+    WCHAR t[200];
+    DEVMODEW dm;
+    ZeroMemory(&dm, sizeof dm);
+    dm.dmSize = sizeof dm;
+    EnableWindow(ctl(ID_RESOLUTION), windowed);
+    if (windowed)
+        wcscpy_s(t, 200, L"The window's size. Frame rate: at most; normal speed at either.");
+    else if (EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmPelsWidth)
+        swprintf_s(t, 200, L"Full screen: your screen's own size (%lu \x00D7 %lu now), not the window size.",
+                   dm.dmPelsWidth, dm.dmPelsHeight);
+    else
+        wcscpy_s(t, 200, L"Full screen: your screen's own size, not the window size.");
+    set_text(ID_RES_HINT, t);
 }
 
 /* A Steam Deck (Steam sets SteamDeck=1 for what it starts there). */
@@ -1701,6 +1756,8 @@ static void settings_load(void)
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0;
+    int exclusive = 0, max_scale = 4, scene_height = 0;
+    double render_scale = 1.0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1715,6 +1772,10 @@ static void settings_load(void)
             if (in_section || !toml_kv(l.v[i], key, sizeof key, val, sizeof val))
                 continue;
             if (!strcmp(key, "fullscreen")) fullscreen = !strcmp(val, "true");
+            else if (!strcmp(key, "fullscreen_exclusive")) exclusive = !strcmp(val, "true");
+            else if (!strcmp(key, "native_max_scale")) max_scale = atoi(val);
+            else if (!strcmp(key, "native_render_scale")) render_scale = atof(val);
+            else if (!strcmp(key, "native_scene_height")) scene_height = atoi(val);
             else if (!strcmp(key, "vsync")) vsync = !strcmp(val, "true");
             else if (!strcmp(key, "audio_mute")) mute = !strcmp(val, "true");
             else if (!strcmp(key, "input_backend")) sdl = !_stricmp(val, "sdl");
@@ -1752,8 +1813,10 @@ static void settings_load(void)
             res = i;
     /* anti-aliasing: native_aa (1 off, 2-4), else the older on / off (on = 2x) */
     msaa = aa >= 1 && aa <= 4 ? aa : msaa ? 2 : 1;
-    settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
+    settings_show(fullscreen && exclusive ? 2 : fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   api, language);
+    SendMessageW(ctl(ID_RENDER_RES), CB_SETCURSEL, (WPARAM)render_index(max_scale, render_scale, scene_height), 0);
+    display_hint();
     (void)emulated;  /* (an old native_renderer = "off": saved as "main" next time) */
     online_show(online, online_name, online_server);
     {
@@ -1775,14 +1838,15 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 29 };
+    enum { NK = 33 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
                                     "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
                                     "process_priority", "unlock_everything", "native_texture_quality",
-                                    "skip_intros", "skip_training" };
+                                    "skip_intros", "skip_training", "fullscreen_exclusive", "native_max_scale",
+                                    "native_render_scale", "native_scene_height" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1805,7 +1869,15 @@ static int settings_save(void)
     sprintf_s(vals[3], 64, "%d", k_res[sel].scale);
     sprintf_s(vals[4], 64, "%d", k_res[sel].w);
     sprintf_s(vals[5], 64, "%d", k_res[sel].h);
-    strcpy_s(vals[6], 64, IsDlgButtonChecked(s_wnd, ID_FULLSCREEN) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[6], 64, IsDlgButtonChecked(s_wnd, ID_WINDOWED) == BST_CHECKED ? "false" : "true");
+    strcpy_s(vals[29], 64, IsDlgButtonChecked(s_wnd, ID_FULLSCREEN_EX) == BST_CHECKED ? "true" : "false");
+    {   /* (as the game writes them: graphics_page.cpp kRenderScale) */
+        int ri = (int)SendMessageW(ctl(ID_RENDER_RES), CB_GETCURSEL, 0, 0);
+        if (ri < 0 || ri >= N_RENDER) ri = 0;
+        sprintf_s(vals[30], 64, "%d", k_render[ri].max_scale);
+        sprintf_s(vals[31], 64, "%.4f", k_render[ri].res);
+        sprintf_s(vals[32], 64, "%d", k_render[ri].height);
+    }
     strcpy_s(vals[7], 64, IsDlgButtonChecked(s_wnd, ID_VSYNC) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[8], 64, IsDlgButtonChecked(s_wnd, ID_MUTE) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[10], 64, IsDlgButtonChecked(s_wnd, ID_SHOWFPS) == BST_CHECKED ? "true" : "false");
@@ -1920,6 +1992,8 @@ static int settings_save(void)
 static void settings_defaults(void)
 {
     settings_show(0, 0, 1, 0, 0, 0, 1, 1, 0, 1);
+    SendMessageW(ctl(ID_RENDER_RES), CB_SETCURSEL, 0, 0);
+    display_hint();
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, BST_CHECKED);
@@ -2442,7 +2516,7 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
         s_nbtns++;
         SetWindowSubclass(c, btn_proc, 1, 0);
     }
-    if (tab >= 0 && s_nctl[tab] < 32)
+    if (tab >= 0 && s_nctl[tab] < TAB_CTL_MAX)
         s_ctl[tab][s_nctl[tab]++] = c;
     if (s_nplaced < (int)(sizeof s_placed / sizeof s_placed[0])) {
         Placed *pl = &s_placed[s_nplaced++];
@@ -2516,6 +2590,8 @@ static void show_tab(int t)
     }
     if (t == TAB_PLAY)
         refresh_play();
+    if (t == TAB_SETTINGS && !s_settings_dirty)
+        settings_load();
     if (t == TAB_INSTALL)
         update_free_space();
     if (t == TAB_SAVES)
@@ -2887,24 +2963,31 @@ static void build_ui(void)
     up_setup();
 
     /* Settings */
-    add(TAB_SETTINGS, L"Button", L"Display", BS_GROUPBOX, X0, 50, 560, 188, 0);
-    add(TAB_SETTINGS, L"Static", L"Mode", SS_LEFT, X0 + 16, 76, 120, 20, 0);
-    add(TAB_SETTINGS, L"Button", L"Windowed", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, X0 + 150, 72, 110, 24, ID_WINDOWED);
-    add(TAB_SETTINGS, L"Button", L"Fullscreen", BS_AUTORADIOBUTTON, X0 + 270, 72, 110, 24, ID_FULLSCREEN);
-    add(TAB_SETTINGS, L"Static", L"Resolution", SS_LEFT, X0 + 16, 108, 120, 20, 0);
+    add(TAB_SETTINGS, L"Button", L"Display", BS_GROUPBOX, X0, 14, 560, 224, 0);
+    add(TAB_SETTINGS, L"Static", L"Mode", SS_LEFT, X0 + 16, 44, 120, 20, 0);
+    add(TAB_SETTINGS, L"Button", L"Windowed", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, X0 + 150, 42, 96, 22, ID_WINDOWED);
+    add(TAB_SETTINGS, L"Button", L"Full screen", BS_AUTORADIOBUTTON, X0 + 252, 42, 100, 22, ID_FULLSCREEN);
+    add(TAB_SETTINGS, L"Button", L"Full screen (exclusive)", BS_AUTORADIOBUTTON, X0 + 358, 42, 188, 22, ID_FULLSCREEN_EX);
+    add(TAB_SETTINGS, L"Static", L"Window size", SS_LEFT, X0 + 16, 76, 120, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
-            X0 + 150, 104, 240, 200, ID_RESOLUTION);
+            X0 + 150, 72, 240, 200, ID_RESOLUTION);
     for (i = 0; i < N_RES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_res[i].label);
-    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 104, 146, 200,
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 72, 146, 200,
             ID_FRAMERATE);
     for (i = 0; i < N_FRAME_RATES; i++) {
         WCHAR t[32];
         swprintf_s(t, 32, L"%d FPS", k_frame_rates[i]);
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
     }
-    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; normal speed at either.",
-        SS_LEFT, X0 + 150, 132, 396, 18, 0);
+    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 98, 396, 18, ID_RES_HINT);
+    /* (the game's GRAPHICS -> RENDER RESOLUTION: the same keys) */
+    add(TAB_SETTINGS, L"Static", L"Render resolution", SS_LEFT, X0 + 16, 126, 130, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 122, 240, 240,
+            ID_RENDER_RES);
+    for (i = 0; i < N_RENDER; i++)
+        SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_render[i].label);
+    add(TAB_SETTINGS, L"Static", L"Also in game: GRAPHICS.", SS_LEFT, X0 + 400, 126, 146, 20, 0);
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 154, 360, 24, ID_VSYNC);
     add(TAB_SETTINGS, L"Button", L"Show FPS (F2)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 400, 154, 150, 24, ID_SHOWFPS);
@@ -7190,15 +7273,17 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(s_wnd, L"open", m, NULL, NULL, SW_SHOWNORMAL);
             break;
         }
-        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES:
+        case ID_RESOLUTION: case ID_RENDER_RES: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }
             break;
-        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
-        case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING:
+        case ID_WINDOWED: case ID_FULLSCREEN: case ID_FULLSCREEN_EX: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS:
+        case ID_PREPARE: case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING:
             if (HIWORD(wp) == BN_CLICKED) {
+                if (LOWORD(wp) == ID_WINDOWED || LOWORD(wp) == ID_FULLSCREEN || LOWORD(wp) == ID_FULLSCREEN_EX)
+                    display_hint();
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }
