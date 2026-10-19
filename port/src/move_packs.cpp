@@ -638,6 +638,7 @@ bool WritePacTo(const fs::path& src, const fs::path& dst, const std::map<std::st
       size = uint64_t(e.size256) * 0x100;
       in.seekg(std::streamoff(0x4000 + uint64_t(e.sector) * 0x800));
       for (uint64_t left = size; left;) {
+        svr2011::KeepWindowAlive();  // (a big pac or bank takes seconds: the window keeps answering)
         const size_t n = size_t(std::min<uint64_t>(left, buf.size()));
         if (!in.read(buf.data(), std::streamsize(n))) return false;
         out.write(buf.data(), std::streamsize(n));
@@ -773,6 +774,7 @@ bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::str
         size = uint64_t(e.size256) * 0x100;
         in.seekg(std::streamoff(0x4000 + uint64_t(e.sector) * 0x800));
         for (uint64_t left = size; left;) {
+          svr2011::KeepWindowAlive();  // (a big pac or bank takes seconds: the window keeps answering)
           const size_t n = size_t(std::min<uint64_t>(left, buf.size()));
           if (!in.read(buf.data(), std::streamsize(n))) return false;
           out.write(buf.data(), std::streamsize(n));
@@ -870,6 +872,7 @@ bool BuildMotionFile(const fs::path& src, const fs::path& dst, const std::string
       continue;
     }
     for (const auto& [path, motions] : banks) {
+      svr2011::KeepWindowAlive();  // (a big pac or bank takes seconds: the window keeps answering)
       size_t added = 0;
       if (!EditTree(blob, path, 0, [&](Bytes& raw) { return BankInsert(raw, motions, added); })) {
         REXLOG_WARN("[svr2011] move packs: {} {}: bank not changed", pac, type_name);
