@@ -1978,6 +1978,41 @@ static DWORD WINAPI game_watch(LPVOID p)
     return 0;
 }
 
+/* The game folder's native_shaders\shaders.dxil.pak: without it the game only shows "some of the game's files
+ * are missing". Copied again from the launcher's folder when it has one; otherwise (or when that fails - a
+ * 2.1.3 player had the game in Pictures) the player is told where and why. 1: start the game. */
+static int shaders_ready(void)
+{
+    WCHAR dir[MAX_PATH], pack[MAX_PATH], src[MAX_PATH], m[1400], failed[80] = L"";
+    const WCHAR *where = L"";
+    WCHAR lower[MAX_PATH];
+    if (!join(dir, s_game_dir, L"native_shaders") || !join(pack, dir, L"shaders.dxil.pak"))
+        return 1;
+    if (file_exists(pack))
+        return 1;
+    if (!same_dir(s_game_dir, s_launcher_dir) && join(src, s_launcher_dir, L"native_shaders\\shaders.dxil.pak") &&
+        file_exists(src)) {
+        CreateDirectoryW(dir, NULL);
+        if (CopyFileW(src, pack, FALSE))
+            return 1;
+        swprintf_s(failed, 80, L" and copying it failed (Windows error %lu)", GetLastError());
+    }
+    wcscpy_s(lower, MAX_PATH, s_game_dir);
+    _wcslwr_s(lower, MAX_PATH);
+    if (wcsstr(lower, L"\\onedrive"))
+        where = L"\n\nThe game is in a OneDrive folder: OneDrive can keep files online-only or remove them.";
+    else if (wcsstr(lower, L"\\pictures") || wcsstr(lower, L"\\documents") || wcsstr(lower, L"\\desktop"))
+        where = L"\n\nThe game is in your Pictures, Documents or Desktop folder: Windows Controlled folder access "
+                L"(Windows Security, Ransomware protection) blocks programs from writing there.";
+    swprintf_s(m, 1400,
+               L"The game's shaders are missing: %s has no shaders.dxil.pak%s.%s\n\nExtract the release zip "
+               L"again into a plain folder such as C:\\Games\\SvR2011, check that native_shaders\\shaders.dxil.pak is "
+               L"there (an antivirus may remove it), and start the launcher from that folder.\n\nStart the game "
+               L"anyway?",
+               dir, failed, where);
+    return MessageBoxW(s_wnd, m, WINDOW_TITLE, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+}
+
 static void play(void)
 {
     WCHAR exe[MAX_PATH], cmd[MAX_PATH + 4];
@@ -2020,6 +2055,8 @@ static void play(void)
             if (a != IDNO) return;
         }
     }
+    if (!shaders_ready())
+        return;
     join(exe, s_game_dir, GAME_EXE);
     swprintf_s(cmd, MAX_PATH + 4, L"\"%s\"", exe);
     memset(&si, 0, sizeof si);

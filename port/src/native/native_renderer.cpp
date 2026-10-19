@@ -14,6 +14,7 @@
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
+#include <cctype>
 #include <cmath>
 #include <atomic>
 #include <chrono>
@@ -1376,10 +1377,38 @@ bool Initialize() {
   {
     std::error_code ec;
     if (!ShaderExists("present.vs")) {
-      REXLOG_ERROR("native renderer: its shaders are missing ({} has no present.vs{}) - reinstall "
-                   "with the launcher to get the native_shaders folder",
-                   ShaderDirectory().string(), backend::ShaderExtension());
-      Fail("its shaders are missing - reinstall the game");
+      // (what is there: a missing folder, an empty one or one without the pack tells copying apart from
+      // something removing files - a 2.1.3 player had the game in Pictures and no pack)
+      auto utf8 = [](const std::filesystem::path& p) {  // (string() throws on names outside the code page)
+        const auto u = p.u8string();
+        return std::string(u.begin(), u.end());
+      };
+      const std::filesystem::path dir = ShaderDirectory();
+      const std::filesystem::path pack = dir / (std::string("shaders") + backend::ShaderExtension() + ".pak");
+      uint32_t files = 0;
+      for (const auto& e : std::filesystem::directory_iterator(dir, ec)) files += e.is_regular_file() ? 1 : 0;
+      const bool pack_there = std::filesystem::exists(pack, ec);
+      REXLOG_ERROR("native renderer: its shaders are missing ({} has no present.vs{}; folder {}, {} files, {} {}) - "
+                   "reinstall with the launcher to get the native_shaders folder",
+                   utf8(dir), backend::ShaderExtension(), std::filesystem::exists(dir, ec) ? "there" : "missing",
+                   files, utf8(pack.filename()),
+                   pack_there ? std::to_string(std::filesystem::file_size(pack, ec)) + " bytes (unreadable)"
+                              : std::string("missing"));
+      std::string reason = "its shaders are missing (" + utf8(dir) + ")";
+#ifdef _WIN32
+      // A game folder in the user's Pictures / Documents / Desktop or OneDrive: Windows Controlled folder access
+      // blocks programs writing there and OneDrive can keep files online-only or move them.
+      std::string lower = utf8(rex::filesystem::GetExecutableFolder());
+      for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));
+      for (const char* place : {"\\pictures", "\\documents", "\\desktop", "\\onedrive"}) {
+        if (lower.find(place) != std::string::npos) {
+          reason += " - the game is in " + utf8(rex::filesystem::GetExecutableFolder()) +
+                    ", where Windows Controlled folder access or OneDrive can block or remove its files";
+          break;
+        }
+      }
+#endif
+      Fail(reason.c_str());
     }
   }
   return true;
