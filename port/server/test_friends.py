@@ -69,9 +69,9 @@ def main():
     check(r["friends"][0]["mutual"], "added back: mutual")
 
     # the friend in the game's ONLINE menu (a game request), then in a match (the relay)
-    request(server, "GET", "/api/session", token=b)
+    request(server, "GET", "/api/friends?here=1&mode=online", token=b)  # (a 2.1.4+ game in online mode)
     _, r = request(server, "GET", "/api/friends", token=a)
-    check(r["friends"][0]["status"] == "online", "online after a game request")
+    check(r["friends"][0]["status"] == "online", "online after a game in online mode asked")
     gid = secrets.token_hex(6)
 
     def hold():
@@ -106,7 +106,7 @@ def main():
     check(status == 400, "not a session: refused")
     status, _ = request(server, "POST", "/api/invite", {"to": names[2], "session": info, "kind": "ROYAL RUMBLE"}, a)
     check(status == 200, "invited")
-    _, r = request(server, "GET", "/api/friends?here=1", token=c)
+    _, r = request(server, "GET", "/api/friends?here=1&mode=online", token=c)
     inv = r.get("invites", [])
     check(len(inv) == 1 and inv[0]["from"] == names[0] and inv[0]["session"] == info and inv[0]["kind"] == "ROYAL RUMBLE",
           "the invite reaches the friend, with its session")
@@ -115,7 +115,7 @@ def main():
     check(r.get("invites") == [], "declined: gone")
     _, r = request(server, "GET", "/api/friends", token=a)
     check(next(x for x in r["friends"] if x["name"] == names[2])["status"] == "online",
-          "a game asking (?here=1) counts as online")
+          "a game asking (?here=1&mode=online) counts as online")
     request(server, "GET", "/api/friends?bye=1", token=c)
     _, r = request(server, "GET", "/api/friends", token=a)
     check(next(x for x in r["friends"] if x["name"] == names[2])["status"] == "offline",

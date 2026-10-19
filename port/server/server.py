@@ -399,7 +399,8 @@ class Stats:
         self.peak = 0
         self.max_peak = 0
         self.minute = self._zero()
-        self.recent = {}      # account id -> last presence request (a game in online mode)
+        self.recent = {}      # account id -> last presence poll (?here=1): its game runs (old clients: from start)
+        self.online_mode = {}  # account id -> last poll marked &mode=online (2.1.4 on: only in online mode)
         self.days_counted = set()  # (day, account id) already in player_days
         self.total_in = 0
         self.total_out = 0
@@ -433,10 +434,13 @@ class Stats:
     def count(self, what, n=1):
         self.minute[what] += n
 
-    def seen(self, account_id):
-        """A game in online mode (its ONLINE menus or an online match) asked: online now."""
+    def seen(self, account_id, online_mode=False):
+        """A game's presence poll: its game runs - in online mode when it says so (2.1.4 on)."""
         self.recent[account_id] = now()
+        if online_mode:
+            self.online_mode[account_id] = now()
         self.day(account_id)
+
 
     def day(self, account_id):
         """The account played today (the dashboard's daily players) - any request of its game."""
@@ -449,6 +453,11 @@ class Stats:
         with self.lock:
             self.db.execute("INSERT OR IGNORE INTO player_days VALUES (?, ?)", key)
             self.db.commit()
+
+    def running_now(self, window=None):
+        """Games running and signed in (presence polls; old clients poll from start)."""
+        cutoff = now() - (window or SETTINGS["presence_window"])
+        return sum(1 for t in list(self.recent.values()) if t >= cutoff)
 
     def playing_now(self, window=None):
         """Accounts whose game asked something lately (a running game, signed in,
@@ -667,6 +676,21 @@ class Service:
 
     # friends and who's online (the launchers' Friends list)
 
+    def in_online_mode(self):
+        """Accounts in online mode now: games that say so (&mode=online, 2.1.4 on - older ones are refused
+        online anyway and don't count)."""
+        t = now()
+        return {a for a, at in list(self.stats.online_mode.items()) if t - at < SETTINGS["presence_window"]}
+
+    def in_session(self):
+        """Players in a session or match now: the hosts' live reports (2.1.4+ hosts) - their names."""
+        t = now()
+        names = set()
+        for v in list(self.live.values()):
+            if t - v["seen"] <= LIVE_LIFE:
+                names |= {p["name"] for p in v["players"] if p.get("name")}
+        return len(names)
+
     def presence(self, account_id):
         """playing: in an online match or its lobby (its game has the relay open);
         online: its game in online mode - the ONLINE menus or an online match (it
@@ -675,7 +699,7 @@ class Service:
         else offline. (The launchers' own requests don't count.)"""
         if any(g.account["id"] == account_id for g in self.relay.games.values()):
             return "playing"
-        if now() - self.stats.recent.get(account_id, 0) < SETTINGS["presence_window"]:
+        if account_id in self.in_online_mode():
             return "online"
         return "offline"
 
@@ -691,7 +715,7 @@ class Service:
         return {
             "ok": True,
             "config": {"mods_online": bool(SETTINGS["mods_online"])},
-            "online_now": self.stats.playing_now(),
+            "online_now": len(self.in_online_mode()),
             "friends": friends,
             "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
             "invites": [{"from": v["from"], "xuid": v["xuid"], "session": v["session"], "kind": v["kind"],
@@ -707,11 +731,12 @@ class Service:
         account = self.token_account(request)
         if not account:
             return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
-        if request.query.get("bye"):  # (the game closing: offline now)
+        if request.query.get("bye"):  # (the game closing / leaving online mode: offline now)
             self.stats.recent.pop(account["id"], None)
+            self.stats.online_mode.pop(account["id"], None)
             return web.json_response({"ok": True})
-        if request.query.get("here"):  # (the game asking: it's running, signed in)
-            self.stats.seen(account["id"])
+        if request.query.get("here"):  # (the game asking: it's running, signed in; 2.1.4 on: &mode=online)
+            self.stats.seen(account["id"], request.query.get("mode") == "online")
         if request.method == "POST":
             try:
                 body = await request.json()
@@ -1112,6 +1137,9 @@ class Service:
                 "connections": self.stats.active, "max_connections": self.max_connections,
                 "peak_since_start": self.stats.max_peak,
                 "players_online": self.stats.players_online(),
+                "online_mode": len(self.in_online_mode()),
+                "in_session": self.in_session(),
+                "game_running": self.stats.running_now(),
                 "bytes_in": self.stats.total_in, "bytes_out": self.stats.total_out,
                 "since": self.stats.started,
                 "relay_games": len(self.relay.games), "relayed_packets": self.relay.relayed,

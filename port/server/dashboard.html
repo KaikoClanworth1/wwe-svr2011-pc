@@ -90,7 +90,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   <div class="tiles">
     <div class="tile"><div class="k">Connections</div><div class="v" id="v-conn">&ndash;</div>
       <div class="s" id="s-conn"></div><div class="bar"><i id="b-conn"></i></div></div>
-    <div class="tile"><div class="k">Players online</div><div class="v" id="v-online">&ndash;</div>
+    <div class="tile"><div class="k">In online mode</div><div class="v" id="v-online">&ndash;</div>
       <div class="s" id="s-online"></div></div>
     <div class="tile"><div class="k">Bandwidth (session)</div><div class="v" id="v-bw">&ndash;</div>
       <div class="s" id="s-bw"></div></div>
@@ -255,8 +255,10 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       el('v-conn').innerHTML = n.connections + '<small>/ ' + n.max_connections + '</small>';
       el('s-conn').textContent = 'peak since start ' + n.peak_since_start;
       el('b-conn').style.width = Math.min(100, n.connections / n.max_connections * 100) + '%';
-      el('v-online').textContent = n.players_online;
-      el('s-online').textContent = p.today + ' today · ' + p.week + ' this week · ' + p.month + ' this month';
+      el('v-online').textContent = n.online_mode != null ? n.online_mode : n.players_online;
+      el('s-online').textContent = (n.in_session != null ? n.in_session + ' in a session / match · ' +
+        n.game_running + ' game running (port open) · ' : '') +
+        p.today + ' today · ' + p.week + ' this week · ' + p.month + ' this month';
       el('v-bw').textContent = bytes(n.bytes_out + n.bytes_in);
       el('s-bw').textContent = bytes(n.bytes_out) + ' sent · ' + bytes(n.bytes_in) + ' received';
       el('v-disk').textContent = bytes(s.stored + s.database);
