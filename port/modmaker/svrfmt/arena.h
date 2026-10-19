@@ -62,6 +62,17 @@ struct Arena {
   BundleTexture* FindTexture(const std::string& name);
 };
 
+// An arena's geometry against what 2011's arenas hold: every model's vertices and strip indices, summed. The stock
+// maxima (15 Oct, all 27 stock bgNN.pac): 65,450 vertices (bg16), 110,522 indices (bg16). WWE 2K16 ports over them
+// (bg06 / bg12 / bg15: 78,935-91,476 vertices) crashed at load (lr 8215A008, the arena's buffers); every port that
+// played was under (up to 65,431).
+constexpr size_t kMaxArenaVerts = 65450, kMaxArenaIndices = 110522;
+struct ArenaGeometry {
+  size_t verts = 0, indices = 0;
+  bool Over() const { return verts > kMaxArenaVerts || indices > kMaxArenaIndices; }
+};
+ArenaGeometry GeometryOf(const Arena& a);
+
 struct ExportReport {
   int models = 0, meshes = 0, triangles = 0, textures = 0, textures_failed = 0;
   std::vector<std::string> warnings;
