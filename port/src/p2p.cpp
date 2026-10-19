@@ -646,6 +646,7 @@ struct Session {
 struct Local {
   Session session;
   bool host = false;
+  bool started = false;  // (XSessionStart .. XSessionEnd: its match runs - not offered to searches)
   std::set<uint64_t> members_public, members_private;
 };
 
@@ -1161,7 +1162,8 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       {
         std::lock_guard lock(g_mutex);
         for (const auto& [obj, local] : g_sessions) {
-          if (local.host) mine.push_back(local.session);
+          // (not one whose match runs: a lockstep match can't be joined - it listed, the join then failed)
+          if (local.host && !local.started) mine.push_back(local.session);
         }
       }
       if (mine.empty() && via.relayed) break;  // (a search through the relay reaches every game)
@@ -1933,7 +1935,10 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
     case 0xB0014:    // XSessionStart
     case 0xB0015: {  // XSessionEnd
       std::lock_guard lock(g_mutex);
-      return g_sessions.count(u32(0)) ? std::optional<uint32_t>(kOk) : std::nullopt;
+      auto it = g_sessions.find(u32(0));
+      if (it == g_sessions.end()) return std::nullopt;
+      it->second.started = message == 0xB0014;
+      return kOk;
     }
     case 0xB0018: {  // XSessionModify
       std::lock_guard lock(g_mutex);
@@ -1994,6 +1999,23 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         } else if (s.filled_public < s.public_slots) {
           open.push_back(s);
         }
+      }
+      // Best first (QUICK MATCH takes the game's best of the list): the host this game reached fastest
+      // (its last round trip; never pinged: after those), then the one with more players waiting.
+      {
+        std::lock_guard lock(g_mutex);
+        auto rtt = [&](const Session& s) {
+          const auto it = g_peers.find(MacOf(s.host.data()));
+          if (it == g_peers.end()) return 100000.0f;
+          const float r = it->second.relayed ? it->second.rtt_relay : it->second.rtt_direct;
+          return r > 0 ? r : 100000.0f;
+        };
+        const auto from = open.begin() + (invited && !open.empty() && open.front().id == invited ? 1 : 0);
+        std::stable_sort(from, open.end(), [&](const Session& a, const Session& b) {
+          const float ra = rtt(a), rb = rtt(b);
+          if (ra != rb) return ra < rb;
+          return a.filled_public > b.filled_public;
+        });
       }
       // (an invite's search lists that session alone: the game sorts its list
       // by connection, not by this order - the first row was another session;
