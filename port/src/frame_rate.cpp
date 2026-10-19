@@ -427,8 +427,13 @@ REX_HOOK_RAW(sub_8269D768) {
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
   // (SVR2011_TEST_SLOW_IN_MATCH=1: only while a match runs - the menus at speed for the scripted route)
-  static const bool slow_in_match = std::getenv("SVR2011_TEST_SLOW_IN_MATCH") != nullptr;
-  if (slow_ms > 0 && (!slow_in_match || g_in_match)) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+  // (=2: only while the match's clock runs - the highlights and replays at speed)
+  static const char* slow_in_match = std::getenv("SVR2011_TEST_SLOW_IN_MATCH");
+  static uint32_t slow_clock = 0;
+  const bool clock_runs = G32(base, kMatchFrames) != slow_clock;
+  slow_clock = G32(base, kMatchFrames);
+  if (slow_ms > 0 && (!slow_in_match || (*slow_in_match == '2' ? clock_runs : g_in_match.load())))
+    std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
   const auto now = Clock::now();
   if (g_world_last == Clock::time_point{}) g_world_last = now - std::chrono::microseconds(16667);
   g_world_acc += std::chrono::duration<double>(now - g_world_last).count() * 60.0;
@@ -896,15 +901,60 @@ REX_HOOK_RAW(sub_8217A718) {
 // playback lost step with the handshake: at 30 fps the replays showed the
 // match's first moments, nearly still, and the highlights had one clip (a
 // player's report, 2.0.4). Queued once a frame, in its last update, as at 60
-// (the recording then holds a frame per frame drawn, and plays back so).
+// (the recording then holds a frame per frame drawn).
+// Played back so, a recording made at two updates a frame (a slow PC, or 30
+// fps) ran twice as fast once the replay itself kept 60 (two players'
+// reports, 2.1.3). The recorder runs the same way for both (+92, its mode,
+// stays 1), so: while the match's clock runs, it records - the updates each
+// recorded frame stood for are counted; while it stands (the highlights, a
+// replay), the playback steps once per that many updates. At 60 nothing
+// changes (one update a frame, a step each).
+static bool g_replay_step = true;  // (this frame's step: its two callbacks queued)
 REX_EXTERN(__imp__sub_826E0F78);
 REX_HOOK_RAW(sub_826E0F78) {
-  if (g_extra_update && (ctx.r5.u32 == 0x8217AF38 || ctx.r5.u32 == 0x8217A718) &&
-      ctx.r6.u32 == Rd32(base + 0x82DEA30C) && std::this_thread::get_id() == g_logic_thread.load()) {
-    static int skipped = 0;
-    if (++skipped == 1 || skipped % 1000 == 0)
-      REXLOG_INFO("frame rate: the replay recorder's callbacks queued once a frame ({} skipped)", skipped);
-    return;
+  const uint32_t obj = ctx.r6.u32;
+  if ((ctx.r5.u32 == 0x8217AF38 || ctx.r5.u32 == 0x8217A718) && obj && obj == Rd32(base + 0x82DEA30C) &&
+      std::this_thread::get_id() == g_logic_thread.load()) {
+    if (g_extra_update) {
+      static int skipped = 0;
+      if (++skipped == 1 || skipped % 1000 == 0)
+        REXLOG_INFO("frame rate: the replay recorder's callbacks queued once a frame ({} skipped)", skipped);
+      return;
+    }
+    if (ctx.r5.u32 == 0x8217AF38) {  // (the first of the two, once a frame)
+      static double rec_updates = 0, rec_frames = 0;  // (the recording: updates, frames)
+      static double play_acc = 0;
+      static int play_frames = 0, play_steps = 0;  // (for the log)
+      static uint32_t last_clock = 0;
+      static int phase = -1;  // 1 recording, 0 playing
+      const uint32_t clock = G32(base, kMatchFrames);
+      if (clock < last_clock) rec_updates = rec_frames = 0;  // (a new match)
+      const int now = clock != last_clock ? 1 : 0;
+      last_clock = clock;
+      const double per = std::clamp(rec_frames > 0 ? rec_updates / rec_frames : 1.0, 1.0, double(kMaxTicks));
+      if (now != phase) {
+        const uint32_t part = Rd32(base + obj + 156);
+        REXLOG_INFO("frame rate: replay recorder {} ({:.0f} frames recorded, {:.2f} updates each; {} steps in {} "
+                    "frames played; mode {} part {})",
+                    now ? "recording" : "playing", rec_frames, per, play_steps, play_frames, Rd32(base + obj + 92),
+                    part ? Rd32(base + part + 1504) : 0);
+        phase = now;
+        play_acc = 0;
+        play_frames = play_steps = 0;
+      }
+      if (now) {
+        rec_updates += g_world_ticks;
+        rec_frames += 1;
+        g_replay_step = true;
+      } else {
+        play_acc += g_world_ticks;
+        g_replay_step = play_acc >= per - 0.01;
+        if (g_replay_step) play_acc -= per, ++play_steps;
+        if (++play_frames % 600 == 0)
+          REXLOG_INFO("frame rate: replay recorder playing - {} steps in {} frames", play_steps, play_frames);
+      }
+    }
+    if (!g_replay_step) return;  // (playing: this frame shows the last one again)
   }
   __imp__sub_826E0F78(ctx, base);
 }
