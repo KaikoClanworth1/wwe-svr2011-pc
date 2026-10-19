@@ -153,6 +153,7 @@ enum {
 #define WM_APP_MOVIE_DONE (WM_APP + 6)   /* wParam 1 ok / 0 failed */
 #define WM_APP_UPD_CHECKED (WM_APP + 7)  /* wParam 1 ok, lParam heap error text */
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
+#define WM_APP_UPD_REPAIR (WM_APP + 9)   /* the missing files fetched by themselves */
 #define UPDATER_EXE L"SvR2011 Updater.exe"   /* (launcher/updater_main.c: installs updates for the launcher) */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
 #define WM_APP_UPD_FINISHED (WM_APP + 13) /* wParam 1 ok, lParam heap error text */
@@ -6270,7 +6271,7 @@ static void up_finished(int ok, WCHAR *err)
 /* Starts "SvR2011 Updater.exe" (beside the launcher) to download and install a release - `version` that
  * release ("Finish the update"), NULL the newest - and closes the launcher: the updater replaces the program
  * files and starts the launcher again. The launcher never swaps its own files. 1 when it was started. */
-static int up_run_updater(const WCHAR *version)
+static int up_run_updater(const WCHAR *version, int repair)
 {
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -6279,7 +6280,7 @@ static int up_run_updater(const WCHAR *version)
         up_status(L"%s is missing beside the launcher: download the newest release from GitHub instead.", UPDATER_EXE);
         return 0;
     }
-    swprintf_s(cmd, 3 * MAX_PATH + 64, L"\"%s\" --apply \"%s\" \"%s\"%s%s", exe, s_game_dir[0] ? s_game_dir : s_launcher_dir,
+    swprintf_s(cmd, 3 * MAX_PATH + 64, L"\"%s\" %s \"%s\" \"%s\"%s%s", exe, repair ? L"--repair" : L"--apply", s_game_dir[0] ? s_game_dir : s_launcher_dir,
                s_launcher_dir, version ? L" --version " : L"", version ? version : L"");
     ZeroMemory(&si, sizeof si);
     si.cb = sizeof si;
@@ -6336,6 +6337,7 @@ static int up_game_version(WCHAR *out, size_t n)
 }
 
 static WCHAR s_up_finish_msg[400], s_up_finish_btn[40];
+static int s_repair_failed;   /* (started with --repair-failed: no repair by itself this time) */
 
 /* The install against its release's file list (release_files.txt, 2.1.4 on): each file there, with its size. */
 static int up_files_ok(const WCHAR *dir, WCHAR *msg, size_t n)
@@ -6360,20 +6362,26 @@ static void up_check_finished(void)
         wcscpy_s(s_up_finish_btn, 40, L"Finish the update");
     } else if (!up_files_ok(s_game_dir, s_up_finish_msg, 400) ||
                (!same_dir(s_game_dir, s_launcher_dir) && !up_files_ok(s_launcher_dir, s_up_finish_msg, 400))) {
-        s_up_finish = 1;   /* (the same versions, but files an update or an unzip left out) */
+        s_up_finish = 2;   /* (the same versions, but files an update or an unzip left out) */
         wcscpy_s(s_up_finish_btn, 40, L"Repair the install");
+        if (s_repair_failed)
+            wcscat_s(s_up_finish_msg, 400, L" (The last repair didn't finish.)");
     }
     if (s_up_finish) {
         up_status(L"%s", s_up_finish_msg);
         set_text(ID_UP_BUTTON, s_up_finish_btn);
     }
+    /* missing files: fetched by themselves (the updater gets only those, then starts the launcher again) -
+       unless the last repair failed or the game runs */
+    if (s_up_finish == 2 && !s_repair_failed && !any_game_running() && s_wnd)
+        PostMessageW(s_wnd, WM_APP_UPD_REPAIR, 0, 0);
 }
 
 static void up_complete(void)
 {
     if (s_up_busy || s_busy)
         return;
-    up_run_updater(PORT_VERSION);
+    up_run_updater(PORT_VERSION, s_up_finish == 2);
 }
 
 static void up_apply(void)
@@ -6387,7 +6395,7 @@ static void up_apply(void)
                s_up.version, s_up.size / 1048576.0);
     if (MessageBoxW(s_wnd, q, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
         return;
-    up_run_updater(NULL);
+    up_run_updater(NULL, 0);
 }
 
 static void up_checked(int ok, WCHAR *err)
@@ -6916,6 +6924,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         if (lp) up_status(L"Installing version %s\x2026", s_up.version);
         return 0;
         return 0;
+    case WM_APP_UPD_REPAIR:
+        up_complete();
+        return 0;
     case WM_APP_UPD_FINISHED:
         up_finished((int)wp, (WCHAR *)lp);
         return 0;
@@ -7186,6 +7197,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     load_launcher_ini();
     if (argv && argc >= 2 && !wcscmp(argv[1], L"--updated"))   /* (restarted by an update) */
         updated = 1;
+    if (argv && argc >= 2 && !wcscmp(argv[1], L"--repair-failed"))   /* (restarted by a repair that failed) */
+        s_repair_failed = 1;
     {   /* the launcher an update replaced, and other program files it couldn't delete then (<name>.old) */
         WCHAR old[MAX_PATH + 8], pat[MAX_PATH], f[MAX_PATH];
         WIN32_FIND_DATAW fd;

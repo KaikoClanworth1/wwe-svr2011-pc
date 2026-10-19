@@ -31,3 +31,8 @@ int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, 
 typedef void (*update_progress_fn)(uint64_t done, uint64_t total, void *ctx);
 int update_download_cb(const WCHAR *url, const WCHAR *path, update_progress_fn progress, void *ctx,
                        volatile LONG *cancel, WCHAR *err, size_t errn);
+
+/* `len` bytes of `url` from `offset` (an HTTP Range request) into `out`; offset < 0 = the last `len` bytes.
+   `total` (may be NULL) gets the whole file's size the server gave. 1 when all `len` bytes came. */
+int update_read_range(const WCHAR *url, int64_t offset, uint32_t len, void *out, uint64_t *total,
+                      WCHAR *err, size_t errn);

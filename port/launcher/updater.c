@@ -69,7 +69,7 @@ static int http_get(Http *h, const WCHAR *url, const WCHAR *accept, WCHAR *err, 
         http_close(h);
         return 0;
     }
-    if (status != 200) {
+    if (status != 200 && status != 206) {   /* (206: a Range request's part) */
         if (status == 403)
             swprintf_s(err, errn, L"%s is limiting requests right now (HTTP 403); try again later.", host);
         else
@@ -276,6 +276,48 @@ out:
     free(buf);
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
     if (!ok) DeleteFileW(path);
+    http_close(&h);
+    return ok;
+}
+
+int update_read_range(const WCHAR *url, int64_t offset, uint32_t len, void *out, uint64_t *total,
+                      WCHAR *err, size_t errn)
+{
+    Http h;
+    WCHAR hdr[160], cr[96];
+    DWORD crn = sizeof cr, got;
+    uint32_t done = 0;
+    int ok = 0;
+    if (offset < 0)   /* (the last `len` bytes) */
+        swprintf_s(hdr, 160, L"Accept: application/octet-stream\r\nRange: bytes=-%u", len);
+    else
+        swprintf_s(hdr, 160, L"Accept: application/octet-stream\r\nRange: bytes=%lld-%lld", offset,
+                   offset + (int64_t)len - 1);
+    if (!http_get(&h, url, hdr, err, errn))
+        return 0;
+    if (total) {   /* (Content-Range: bytes a-b/total) */
+        WCHAR *slash;
+        *total = 0;
+        if (WinHttpQueryHeaders(h.request, WINHTTP_QUERY_CONTENT_RANGE, WINHTTP_HEADER_NAME_BY_INDEX, cr, &crn,
+                                WINHTTP_NO_HEADER_INDEX) && (slash = wcschr(cr, L'/')))
+            *total = _wcstoui64(slash + 1, NULL, 10);
+    }
+    while (done < len) {
+        got = 0;
+        if (!WinHttpReadData(h.request, (char *)out + done, len - done, &got)) {
+            swprintf_s(err, errn, L"The download was interrupted (error %lu).", GetLastError());
+            goto out;
+        }
+        if (!got)
+            break;
+        done += got;
+    }
+    if (done != len) {
+        swprintf_s(err, errn, L"The server sent %u of %u bytes.", done, len);
+        goto out;
+    }
+    ok = 1;
+out:
     http_close(&h);
     return ok;
 }

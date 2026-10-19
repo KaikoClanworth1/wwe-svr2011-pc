@@ -508,16 +508,225 @@ static void start_launcher(int updated)
     si.cb = sizeof si;
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_SHOWNORMAL;
-    swprintf_s(cmd, MAX_PATH + 32, updated ? L"\"%s\" --updated" : L"\"%s\"", exe);
+    swprintf_s(cmd, MAX_PATH + 32, updated == 2 ? L"\"%s\" --repair-failed" : updated ? L"\"%s\" --updated" : L"\"%s\"",
+               exe);
     if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, s_launcher, &si, &pi)) {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
 }
 
+/* ── repair: only the files that are missing or damaged ───────────────── *
+ * The install's own release_files.txt names every file; the bad ones are read out of the release zip - the
+ * one kept in Tools\.downloads, else straight from GitHub with HTTP Range requests (a few MB instead of the
+ * whole zip). */
+
+typedef struct ZipSrc { HANDLE file; const WCHAR *url; uint64_t size; } ZipSrc;
+
+static int src_read(ZipSrc *z, uint64_t off, uint32_t len, void *buf, WCHAR *err, size_t errn)
+{
+    if (z->file != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER li;
+        DWORD got = 0;
+        li.QuadPart = (LONGLONG)off;
+        if (!SetFilePointerEx(z->file, li, NULL, FILE_BEGIN) || !ReadFile(z->file, buf, len, &got, NULL) || got != len) {
+            swprintf_s(err, errn, L"Could not read the saved release zip.");
+            return 0;
+        }
+        return 1;
+    }
+    return update_read_range(z->url, (int64_t)off, len, buf, NULL, err, errn);
+}
+
+static uint32_t rd32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static uint16_t rd16(const unsigned char *p) { return (uint16_t)(p[0] | p[1] << 8); }
+
+#define REPAIR_MAX 512
+typedef struct BadList { int n; WCHAR rel[REPAIR_MAX][MAX_PATH]; } BadList;
+
+static void collect_bad(const WCHAR *rel, void *ctx)
+{
+    BadList *b = (BadList *)ctx;
+    if (b->n < REPAIR_MAX && _wcsicmp(rel, UPDATER_EXE))
+        wcscpy_s(b->rel[b->n++], MAX_PATH, rel);
+}
+
+/* One entry of the zip (its central directory record at `e`) written to dir\rel. */
+static int extract_entry(ZipSrc *z, const unsigned char *e, const WCHAR *dir, const WCHAR *rel, WCHAR *err, size_t errn)
+{
+    uint16_t method = rd16(e + 10);
+    uint32_t csize = rd32(e + 20), usize = rd32(e + 24), lho = rd32(e + 42);
+    unsigned char lh[30], *in = NULL, *out = NULL;
+    WCHAR dst[MAX_PATH], folder[MAX_PATH], tmp[MAX_PATH + 8], why[256], *slash;
+    HANDLE f;
+    DWORD wrote;
+    int ok = 0;
+    if (!src_read(z, lho, 30, lh, err, errn) || rd32(lh) != 0x04034b50)
+        return 0;
+    if (!(in = (unsigned char *)malloc(csize ? csize : 1)) || !(out = (unsigned char *)malloc(usize ? usize : 1)) ||
+        !src_read(z, (uint64_t)lho + 30 + rd16(lh + 26) + rd16(lh + 28), csize, in, err, errn))
+        goto done;
+    if (method == 0 && csize == usize)
+        memcpy(out, in, usize);
+    else if (method != 8 || !unzip_inflate(in, csize, out, usize)) {
+        swprintf_s(err, errn, L"Could not unpack %s from the release.", rel);
+        goto done;
+    }
+    if (!join(dst, dir, rel))
+        goto done;
+    wcscpy_s(folder, MAX_PATH, dst);
+    if ((slash = wcsrchr(folder, L'\\')))
+        *slash = 0, mkdirs(folder);
+    swprintf_s(tmp, MAX_PATH + 8, L"%s.part", dst);
+    f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE || !WriteFile(f, out, usize, &wrote, NULL) || wrote != usize) {
+        if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+        DeleteFileW(tmp);
+        swprintf_s(err, errn, L"Could not write %s (disk full, or an antivirus blocking the folder?).", dst);
+        goto done;
+    }
+    CloseHandle(f);
+    SetFileAttributesW(dst, FILE_ATTRIBUTE_NORMAL);
+    if (!MoveFileExW(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {
+        error_text(GetLastError(), why, 256);
+        DeleteFileW(tmp);
+        swprintf_s(err, errn, L"Could not replace %s (%s). Close the game and the Mod Maker, then try again.", dst, why);
+        goto done;
+    }
+    ok = 1;
+done:
+    free(in);
+    free(out);
+    return ok;
+}
+
+/* The bad files of `dir` from the release zip `z` into `dir`. */
+static int repair_from(ZipSrc *z, const WCHAR *dir, BadList *bad, WCHAR *err, size_t errn)
+{
+    unsigned char *tail = NULL, *cd = NULL;
+    uint32_t tail_n, cd_size, cd_off, i, entries, p;
+    int ok = 0, k;
+    if (z->file != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER li;
+        if (!GetFileSizeEx(z->file, &li))
+            return 0;
+        z->size = (uint64_t)li.QuadPart;
+        tail_n = (uint32_t)(z->size < 65557 ? z->size : 65557);
+    } else   /* (the size GitHub gave for the asset: its storage doesn't take "the last N bytes" ranges) */
+        tail_n = (uint32_t)(z->size && z->size < 65557 ? z->size : 65557);
+    if (!z->size) {
+        swprintf_s(err, errn, L"The release zip's size isn't known.");
+        return 0;
+    }
+    if (!(tail = (unsigned char *)malloc(tail_n)))
+        return 0;
+    if (!src_read(z, z->size - tail_n, tail_n, tail, err, errn))
+        goto done;
+    for (p = tail_n - 22;; p--) {   /* (the end of central directory record) */
+        if (rd32(tail + p) == 0x06054b50)
+            break;
+        if (!p) {
+            swprintf_s(err, errn, L"The release zip has no file directory.");
+            goto done;
+        }
+    }
+    entries = rd16(tail + p + 10);
+    cd_size = rd32(tail + p + 12);
+    cd_off = rd32(tail + p + 16);
+    if (!(cd = (unsigned char *)malloc(cd_size)) || !src_read(z, cd_off, cd_size, cd, err, errn))
+        goto done;
+    for (k = 0; k < bad->n; k++) {
+        int found = 0;
+        for (i = 0, p = 0; i < entries && p + 46 <= cd_size && !found; i++) {
+            uint16_t nlen = rd16(cd + p + 28), xlen = rd16(cd + p + 30), clen = rd16(cd + p + 32);
+            WCHAR name[MAX_PATH], *c;
+            int wn = MultiByteToWideChar(CP_UTF8, 0, (const char *)cd + p + 46, nlen, name, MAX_PATH - 1);
+            name[wn > 0 ? wn : 0] = 0;
+            for (c = name; *c; c++)
+                if (*c == L'/') *c = L'\\';
+            if (!_wcsicmp(name, bad->rel[k])) {
+                found = 1;
+                say(L"Getting %s (%d of %d)\x2026", bad->rel[k], k + 1, bad->n);
+                if (!extract_entry(z, cd + p, dir, bad->rel[k], err, errn))
+                    goto done;
+            }
+            p += 46 + nlen + xlen + clen;
+        }
+        if (!found) {
+            swprintf_s(err, errn, L"%s isn't in the release zip.", bad->rel[k]);
+            goto done;
+        }
+    }
+    ok = 1;
+done:
+    free(tail);
+    free(cd);
+    return ok;
+}
+
+/* Repairs the install (`s_game`, and `s_launcher` if it is another folder): 1 when every listed file is right
+ * after it; `*count` = how many were got. Without a file list (or one of another version than `version`) the
+ * whole release again instead. */
+static int repair_install(const WCHAR *version, int *count, WCHAR *err, size_t errn)
+{
+    static BadList bad;
+    const WCHAR *dirs[2] = { s_game, s_launcher };
+    WCHAR zip[MAX_PATH], ddir[MAX_PATH], name[80];
+    UpdateInfo info;
+    ReleaseCheck rc;
+    int d, have_info = 0;
+    *count = 0;
+    download_dir(ddir);
+    for (d = 0; d < 2; d++) {
+        ZipSrc z = { INVALID_HANDLE_VALUE, NULL, 0 };
+        int ok;
+        if (d && same_dir(s_game, s_launcher))
+            break;
+        bad.n = 0;
+        say(L"Checking the installed files\x2026");
+        if (!release_check(dirs[d], NULL, 1, &rc, collect_bad, &bad) || (version && wcscmp(rc.version, version))) {
+            UpdateInfo full;   /* (no list: the whole release again) */
+            if (!(version ? update_check_version(version, &full, err, errn) : update_check(&full, err, errn)))
+                return 0;
+            return install_release(&full, err, errn);
+        }
+        if (!bad.n)
+            continue;
+        swprintf_s(name, 80, L"SvR2011-PC-v%s.zip", rc.version);
+        join(zip, ddir, name);
+        if (file_exists(zip))
+            z.file = CreateFileW(zip, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (z.file == INVALID_HANDLE_VALUE) {
+            if (!have_info && !update_check_version(rc.version, &info, err, errn))
+                return 0;
+            have_info = 1;
+            z.url = info.url;
+            z.size = info.size;
+        }
+        say(L"Repairing the install: %d file(s) of version %s\x2026", bad.n, rc.version);
+        ok = repair_from(&z, dirs[d], &bad, err, errn);
+        if (z.file != INVALID_HANDLE_VALUE)
+            CloseHandle(z.file);
+        if (!ok)
+            return 0;
+        *count += bad.n;
+        bad.n = 0;
+        release_check(dirs[d], NULL, 1, &rc, collect_bad, &bad);
+        if (bad.n) {
+            swprintf_s(err, errn, L"%d file(s) are still missing or damaged after the repair (first: %s).", bad.n,
+                       bad.rel[0]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* ── the window (--apply) ─────────────────────────────────────────────── */
 
 static WCHAR s_want[32];   /* --version: that release (Finish the update), else the newest */
+static int s_repair;        /* --repair: only the missing / damaged files */
+
+static int s_repaired;
 
 static DWORD WINAPI apply_thread(LPVOID arg)
 {
@@ -526,10 +735,14 @@ static DWORD WINAPI apply_thread(LPVOID arg)
     int ok;
     (void)arg;
     err[0] = 0;
-    say(L"Looking for the update\x2026");
-    ok = s_want[0] ? update_check_version(s_want, &info, err, 700) : update_check(&info, err, 700);
-    if (ok)
-        ok = install_release(&info, err, 700);
+    if (s_repair) {
+        ok = repair_install(s_want[0] ? s_want : NULL, &s_repaired, err, 700);
+    } else {
+        say(L"Looking for the update\x2026");
+        ok = s_want[0] ? update_check_version(s_want, &info, err, 700) : update_check(&info, err, 700);
+        if (ok)
+            ok = install_release(&info, err, 700);
+    }
     PostMessageW(s_wnd, WM_APP + 1, (WPARAM)ok, (LPARAM)err);
     return 0;
 }
@@ -538,14 +751,17 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     switch (m) {
     case WM_APP + 1:
-        if (wp) {
+        if (wp && s_repair) {   /* (a quiet success: no box, the launcher just comes back) */
+            start_launcher(1);
+        } else if (wp) {
             MessageBoxW(w, L"The PC port is updated. The launcher starts again now.", TITLE, MB_OK | MB_ICONINFORMATION);
             start_launcher(1);
         } else {
             WCHAR msg[800];
-            swprintf_s(msg, 800, L"%s", ((const WCHAR *)lp)[0] ? (const WCHAR *)lp : L"The update failed.");
+            swprintf_s(msg, 800, L"%s", ((const WCHAR *)lp)[0] ? (const WCHAR *)lp
+                                       : s_repair ? L"The repair failed." : L"The update failed.");
             MessageBoxW(w, msg, TITLE, MB_OK | MB_ICONWARNING);
-            start_launcher(0);
+            start_launcher(s_repair ? 2 : 0);
         }
         DestroyWindow(w);
         return 0;
@@ -576,7 +792,7 @@ static int run_window(HINSTANCE inst)
     RegisterClassW(&wc);
     s_wnd = CreateWindowW(wc.lpszClassName, TITLE, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                           CW_USEDEFAULT, CW_USEDEFAULT, 460, 150, NULL, NULL, inst, NULL);
-    s_text = CreateWindowW(L"Static", L"Looking for the update\x2026", WS_CHILD | WS_VISIBLE, 16, 16, 420, 40,
+    s_text = CreateWindowW(L"Static", s_repair ? L"Checking the installed files\x2026" : L"Looking for the update\x2026", WS_CHILD | WS_VISIBLE, 16, 16, 420, 40,
                            s_wnd, NULL, inst, NULL);
     s_bar = CreateWindowW(PROGRESS_CLASSW, NULL, WS_CHILD | WS_VISIBLE, 16, 64, 420, 18, s_wnd, NULL, inst, NULL);
     SendMessageW(s_text, WM_SETFONT, (WPARAM)font, TRUE);
@@ -649,7 +865,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         MessageBoxW(NULL, L"Start the SvR 2011 launcher and use its Update button.", TITLE, MB_OK | MB_ICONINFORMATION);
         return 1;
     }
-    if (!wcscmp(argv[1], L"--apply") && argc >= 4) {
+    if (!wcscmp(argv[1], L"--repair-cli") && argc >= 3) {   /* <game folder> [<version>] (tests, no window) */
+        WCHAR err[700] = L"";
+        int n = 0;
+        console_setup();
+        wcscpy_s(s_game, MAX_PATH, argv[2]);
+        if (!repair_install(argc >= 4 ? argv[3] : NULL, &n, err, 700)) { cprint(L"repair failed: %s\n", err); return 1; }
+        cprint(L"repaired %d file(s) in %s\n", n, s_game);
+        return 0;
+    }
+    if (!wcscmp(argv[1], L"--repair") && argc >= 4)
+        s_repair = 1;
+    if ((!wcscmp(argv[1], L"--apply") || s_repair) && argc >= 4) {
         wcscpy_s(s_game, MAX_PATH, argv[2]);
         wcscpy_s(s_launcher, MAX_PATH, argv[3]);
         for (i = 4; i + 1 < argc; i++)
