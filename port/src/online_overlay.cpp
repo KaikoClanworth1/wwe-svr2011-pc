@@ -209,7 +209,8 @@ void Poll() {
   const bool online = P2POnlineMode();
   if (was_online && !online) SayGoodbye();
   was_online = online;
-  auto r = net::ServerRequest("GET", online ? "/api/friends?here=1" : "/api/friends");
+  // (&mode=online: counted "in online mode" - the server counts only games that say so)
+  auto r = net::ServerRequest("GET", online ? "/api/friends?here=1&mode=online" : "/api/friends");
   State s;
   s.signed_in = true;
   Json j;
