@@ -108,7 +108,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
@@ -2364,10 +2364,10 @@ static int mods_tab_of(int tab)
     return -1;
 }
 
-/* Setup, step by step: this PC (TAB_SETUP), the game (TAB_INSTALL), DLC, Android - one sidebar entry; a step
-   bar on top of each (paint_steps). The step of a page, or -1. */
-static const int k_steps[] = { TAB_SETUP, TAB_INSTALL, TAB_DLC, TAB_ANDROID };
-#define N_STEPS 4
+/* Setup, step by step: this PC (TAB_SETUP), the game (TAB_INSTALL), DLC, the Mod Maker's tools, Android - one
+   sidebar entry; a step bar on top of each (paint_steps). The step of a page, or -1. */
+static const int k_steps[] = { TAB_SETUP, TAB_INSTALL, TAB_DLC, TAB_TOOLS, TAB_ANDROID };
+#define N_STEPS 5
 static int setup_step(int tab)
 {
     int i;
@@ -2518,7 +2518,7 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
     const int push = button && (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON);
     if (tab >= 0 && tab != TAB_PLAY)
         x += PAD;
-    if (tab == TAB_SETUP || tab == TAB_TEXPACKS)
+    if (tab == TAB_SETUP || tab == TAB_TEXPACKS || tab == TAB_TOOLS)
         y += 44;   /* (below the step bar; the other steps' pages start lower already) */
     /* A group box becomes a card the window draws (the control is never shown). */
     if (button && kind == BS_GROUPBOX && tab >= 0 && s_ncards < (int)(sizeof s_cards / sizeof s_cards[0])) {
@@ -2658,7 +2658,7 @@ static void show_tab(int t)
         roster_show(s_game_dir);
     if (t == TAB_TEXPACKS)
         texpacks_show(s_game_dir);
-    if (t == TAB_SETUP)
+    if (t == TAB_SETUP || t == TAB_TOOLS)
         setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
@@ -2973,7 +2973,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -3294,7 +3294,7 @@ static void build_ui(void)
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
-    setup_build(s_wnd, add, TAB_SETUP, ID_SETUP_BASE, setup_go_install);
+    setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -7325,6 +7325,7 @@ static void steps_refresh(void)
         FindClose(h);
     }
     s_step_done[3] = -1;
+    s_step_done[4] = -1;
 }
 
 /* Setup's first step still to do (all done: the first). */
@@ -7353,8 +7354,8 @@ static int step_at(POINT pt)
    page's own underlined in red. */
 static void paint_steps(HDC dc)
 {
-    static const WCHAR *const names[N_STEPS] = { L"This PC", L"The game", L"DLC", L"Android" };
-    const int cur = setup_step(s_cur_tab), x0 = SB_W + PAD + X0, w = 140;
+    static const WCHAR *const names[N_STEPS] = { L"This PC", L"The game", L"DLC", L"Tools", L"Android" };
+    const int cur = setup_step(s_cur_tab), x0 = SB_W + PAD + X0, w = 112;
     int i;
     RECT line = { S(x0), S(DY + 42), S(x0 + 560), S(DY + 43) };
     HBRUSH b = CreateSolidBrush(C_CARD_LINE);
@@ -7450,7 +7451,7 @@ static void paint_window(HDC dc)
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
                                                     L"Music", L"Roster: sort categories", L"Mods",
-                                                    L"Setup", L"Mods" };
+                                                    L"Setup", L"Mods", L"Setup" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -8426,7 +8427,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
