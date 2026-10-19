@@ -172,6 +172,18 @@ if (Test-Path $apk) {
     Write-Warning "no $apk (tools\build_apk.py) - this package has no Android app"
 }
 
+# The release's file list (release_files.txt: size, SHA-256 and path of every file): the updater checks an
+# install against it after copying, and the launcher at every start, so a file an update or an unzip left
+# out is found and can be repaired.
+$listFile = Join-Path $stage "release_files.txt"
+$rootLen = (Resolve-Path $stage).Path.TrimEnd('\').Length + 1
+$lines = @("SvR2011 release $Version")
+foreach ($f in Get-ChildItem $stage -Recurse -File | Sort-Object FullName) {
+    $rel = $f.FullName.Substring($rootLen)
+    $lines += "{0}`t{1}`t{2}" -f $f.Length, (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower(), $rel
+}
+[IO.File]::WriteAllLines($listFile, $lines, (New-Object Text.UTF8Encoding $false))
+"release_files.txt: $($lines.Count - 1) files"
 Remove-Item $zip -ErrorAction SilentlyContinue
 # Entry names with "/": Compress-Archive in Windows PowerShell writes "\",
 # which Linux extractors such as the Steam Deck's Ark turn into files named

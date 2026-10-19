@@ -25,6 +25,7 @@
 #include <string.h>
 #include "updater.h"
 #include "unzip.h"
+#include "release_check.h"
 
 #define GAME_EXE     L"svr2011.exe"
 #define LAUNCHER_EXE L"SvR2011 Launcher.exe"
@@ -373,6 +374,57 @@ static int copy_into(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t errn
     return ok;
 }
 
+/* ── the install checked against the release's file list ─────────────── */
+
+typedef struct Recopy { const WCHAR *from, *to; int failed; } Recopy;
+
+/* A bad file copied in again from the unpacked release (this program's own file: its .new copy). */
+static void recopy_bad(const WCHAR *rel, void *ctx)
+{
+    Recopy *r = (Recopy *)ctx;
+    WCHAR src[MAX_PATH], dst[MAX_PATH], dir[MAX_PATH], *slash;
+    if (!_wcsicmp(rel, UPDATER_EXE))
+        return;
+    if (!join(src, r->from, rel) || !join(dst, r->to, rel)) {
+        r->failed = 1;
+        return;
+    }
+    wcscpy_s(dir, MAX_PATH, dst);
+    if ((slash = wcsrchr(dir, L'\\')))
+        *slash = 0, mkdirs(dir);
+    SetFileAttributesW(dst, FILE_ATTRIBUTE_NORMAL);
+    if (!CopyFileW(src, dst, FALSE))
+        r->failed = 1;
+}
+
+static void count_bad(const WCHAR *rel, void *ctx)
+{
+    if (_wcsicmp(rel, UPDATER_EXE))
+        ++*(int *)ctx;
+}
+
+/* Every file of the release in `to` with the right bytes: bad ones copied again once, then checked again.
+ * 1 when all are right (or the release has no list). */
+static int verify_install(const WCHAR *from, const WCHAR *to, WCHAR *err, size_t errn)
+{
+    WCHAR list[MAX_PATH];
+    ReleaseCheck rc;
+    Recopy r = { from, to, 0 };
+    int still = 0;
+    if (!join(list, from, L"release_files.txt") || !file_exists(list))
+        return 1;   /* (releases before 2.1.4 have no list) */
+    say(L"Checking the installed files\x2026");
+    if (!release_check(to, list, 1, &rc, recopy_bad, &r) || !rc.bad)
+        return 1;
+    release_check(to, list, 1, &rc, count_bad, &still);
+    if (!still)
+        return 1;
+    swprintf_s(err, errn, L"The update didn't finish: %d file(s) of version %s are missing or damaged in %s (first: "
+                          L"%s). Free some disk space or allow the folder in your antivirus, then update again.",
+               still, rc.version, to, rc.first_bad);
+    return 0;
+}
+
 /* A release zip's files over the install (the game folder, and the launcher's folder if it is another one). */
 static int install_zip(const WCHAR *zip, WCHAR *err, size_t errn)
 {
@@ -398,9 +450,9 @@ static int install_zip(const WCHAR *zip, WCHAR *err, size_t errn)
     say(L"Installing the update\x2026");
     ok = 1;
     if (s_game[0] && dir_exists(s_game))
-        ok = copy_into(files, s_game, err, errn);
+        ok = copy_into(files, s_game, err, errn) && verify_install(files, s_game, err, errn);
     if (ok && !same_dir(s_game, s_launcher))
-        ok = copy_into(files, s_launcher, err, errn);
+        ok = copy_into(files, s_launcher, err, errn) && verify_install(files, s_launcher, err, errn);
 done:
     remove_tree(work);
     return ok;

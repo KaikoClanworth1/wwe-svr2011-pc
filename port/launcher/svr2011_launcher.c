@@ -67,6 +67,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #include "ascii_fold.h"
 #include "unzip.h"
 #include "updater.h"
+#include "release_check.h"
 #include "stfs.h"
 #include "caw_import.h"
 #include "verify.h"
@@ -6334,18 +6335,38 @@ static int up_game_version(WCHAR *out, size_t n)
     return ok;
 }
 
+static WCHAR s_up_finish_msg[400], s_up_finish_btn[40];
+
+/* The install against its release's file list (release_files.txt, 2.1.4 on): each file there, with its size. */
+static int up_files_ok(const WCHAR *dir, WCHAR *msg, size_t n)
+{
+    ReleaseCheck rc;
+    if (!dir[0] || !release_check(dir, NULL, 0, &rc, NULL, NULL) || !rc.bad || wcscmp(rc.version, PORT_VERSION))
+        return 1;
+    swprintf_s(msg, n, L"%d file(s) of version %s are missing or damaged (e.g. %s): repair the install.", rc.bad,
+               rc.version, rc.first_bad);
+    return 0;
+}
+
 static void up_check_finished(void)
 {
     WCHAR gv[32];
     s_up_finish = 0;
-    if (!up_game_version(gv, 32))
-        return;   /* (no game exe here, or one without version information) */
-    if (!version_newer(gv, PORT_VERSION) && !version_newer(PORT_VERSION, gv))
-        return;
-    s_up_finish = 1;
-    wcscpy_s(s_up_game_version, 32, !wcscmp(gv, L"1.0.0") ? L"older" : gv);
-    up_status(L"The game is %s, the launcher %s: the last update didn't finish.", s_up_game_version, PORT_VERSION);
-    set_text(ID_UP_BUTTON, L"Finish the update");
+    if (up_game_version(gv, 32) && (version_newer(gv, PORT_VERSION) || version_newer(PORT_VERSION, gv))) {
+        s_up_finish = 1;
+        wcscpy_s(s_up_game_version, 32, !wcscmp(gv, L"1.0.0") ? L"older" : gv);
+        swprintf_s(s_up_finish_msg, 400, L"The game is %s, the launcher %s: the last update didn't finish.",
+                   s_up_game_version, PORT_VERSION);
+        wcscpy_s(s_up_finish_btn, 40, L"Finish the update");
+    } else if (!up_files_ok(s_game_dir, s_up_finish_msg, 400) ||
+               (!same_dir(s_game_dir, s_launcher_dir) && !up_files_ok(s_launcher_dir, s_up_finish_msg, 400))) {
+        s_up_finish = 1;   /* (the same versions, but files an update or an unzip left out) */
+        wcscpy_s(s_up_finish_btn, 40, L"Repair the install");
+    }
+    if (s_up_finish) {
+        up_status(L"%s", s_up_finish_msg);
+        set_text(ID_UP_BUTTON, s_up_finish_btn);
+    }
 }
 
 static void up_complete(void)
@@ -6384,9 +6405,8 @@ static void up_checked(int ok, WCHAR *err)
         if (s_up_auto_run)
             up_apply();
     } else if (s_up_finish) {
-        up_status(L"The game is %s, the launcher %s: the last update didn't finish.", s_up_game_version,
-                  PORT_VERSION);
-        set_text(ID_UP_BUTTON, L"Finish the update");
+        up_status(L"%s", s_up_finish_msg);
+        set_text(ID_UP_BUTTON, s_up_finish_btn);
     } else {
         up_status(L"You have the newest version.");
     }
