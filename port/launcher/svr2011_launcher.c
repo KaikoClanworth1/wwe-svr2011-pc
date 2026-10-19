@@ -60,6 +60,7 @@
 #include "music_tab.h"
 #include "texpacks_tab.h"
 #include "setup_tab.h"
+#include "discover_tab.h"
 static void setup_go_install(void);
 static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
@@ -114,6 +115,7 @@ enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 #define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
 #define ID_SETUP_BASE 1200 /* the Setup tab's (setup_tab.c) */
+#define ID_DISCOVER_BASE 1300 /* Mods -> Discovery's (discover_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -1428,6 +1430,25 @@ static int online_request(const char *path, const char *body, const char *token,
     return (int)status;
 }
 
+/* Discovery's (discover_tab.c): the server's address; the account's token and name ("" signed out). */
+static void discover_server(WCHAR *out, int n)
+{
+    online_server_text(out, n);
+    if (!wcsstr(out, L"://")) {
+        WCHAR tmp[300];
+        swprintf_s(tmp, 300, L"http://%s", out);
+        wcscpy_s(out, n, tmp);
+    }
+}
+
+static void discover_account(char *token, size_t token_n, WCHAR *name, size_t name_n)
+{
+    strcpy_s(token, token_n, s_online_token);
+    name[0] = 0;
+    if (s_online_token[0] && name_n > 1)
+        GetWindowTextW(ctl(ID_ON_NAME), name, (int)name_n);
+}
+
 static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
 {
     return online_request(path, body ? body : "{}", token, out, outn);
@@ -2658,6 +2679,8 @@ static void show_tab(int t)
         roster_show(s_game_dir);
     if (t == TAB_TEXPACKS)
         texpacks_show(s_game_dir);
+    if (t == TAB_DISCOVER)
+        discover_show(s_game_dir);
     if (t == TAB_SETUP || t == TAB_TOOLS)
         setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
@@ -3014,14 +3037,6 @@ static void build_ui(void)
     add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 554, 128, 28, ID_REPORT);
     up_setup();
 
-    /* Discovery (Mods' second tab): to come - browsing and downloading the community's .svrmod mods. */
-    add(TAB_DISCOVER, L"Button", L"Discovery", BS_GROUPBOX, X0, 60, 560, 150, 0);
-    add(TAB_DISCOVER, L"Static",
-        L"Find mods other players made: search by name and tags, see their pictures, download them with a click. "
-        L"Uploading your own .svrmod mods (signed in online: Settings \x2192 Online) comes with it.\n\n"
-        L"Coming in a later version.",
-        SS_LEFT | SS_NOPREFIX, X0 + 16, 92, 528, 100, 0);
-
     /* Settings */
     add(TAB_SETTINGS, L"Button", L"Display", BS_GROUPBOX, X0, 14, 560, 224, 0);
     add(TAB_SETTINGS, L"Static", L"Mode", SS_LEFT, X0 + 16, 44, 120, 20, 0);
@@ -3293,6 +3308,7 @@ static void build_ui(void)
     roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
+    discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
     setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
 
@@ -7594,7 +7610,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_FR_NAME, name);
             }
         }
-        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n)) {
+        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n)) {
             const int r = mods_notify(n);
             if (r == 2 || r == 3) return r == 2;  /* (renaming a background: mods_tab.c) */
         }
@@ -7604,6 +7620,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
             roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)) ||
+            discover_command(LOWORD(wp), HIWORD(wp)) ||
             setup_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
@@ -7933,7 +7950,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_DRAWITEM:
         if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_BUTTON && draw_button_buffered((DRAWITEMSTRUCT *)lp))
             return TRUE;
+        if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_STATIC && discover_draw((DRAWITEMSTRUCT *)lp))
+            return TRUE;
         break;
+    case WM_APP_DISCOVER:
+        discover_message(m, wp, lp);
+        return 0;
     case WM_LBUTTONDOWN: {
         const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         const int k = nav_at(pt.x, pt.y);
@@ -8569,7 +8591,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 SendMessageW(s_wnd, WM_NOTIFY, ID_TAB, (LPARAM)&n);
             }
             /* (the Online tab: until the Friends list is in, 5 s at most) */
-            while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000))
+            while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000) ||
+                   (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000))   /* (its list and pictures) */
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);
