@@ -96,13 +96,25 @@ static void DrawNativeFailure(ImGuiIO& io) {
   const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
                                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                                  ImGuiWindowFlags_NoNav;
+  // (missing files: not the device - a driver or another graphics API won't help)
+  const bool files_missing = reason.rfind("its shaders are missing", 0) == 0;
   if (ImGui::Begin("##svr2011_native_failed", nullptr, flags)) {
     ImGui::SetWindowFontScale(1.4f);
-    ImGui::TextWrapped("The game's graphics can't run on this device");
+    ImGui::TextWrapped(files_missing ? "Some of the game's files are missing" : "The game's graphics can't run on this device");
     ImGui::SetWindowFontScale(1.0f);
     ImGui::Spacing();
     ImGui::TextWrapped("Reason: %s.", reason.c_str());
     ImGui::Spacing();
+    if (files_missing) {
+#if defined(__ANDROID__)
+      ImGui::TextWrapped("Reinstall the game with the launcher (its native_shaders folder), and please send a problem "
+                         "report (launcher: Play tab, Report a problem).");
+#else
+      ImGui::TextWrapped("Extract the release zip again into a plain folder such as C:\\Games\\SvR2011 (not Pictures, "
+                         "Documents, Desktop or OneDrive), check that its native_shaders folder has shaders.dxil.pak, "
+                         "and start the game from the launcher there. Your antivirus may also have removed the file.");
+#endif
+    } else {
 #if defined(__ANDROID__)
     ImGui::TextWrapped("Try another graphics driver (launcher: Settings, Graphics driver), and please send a problem "
                        "report (launcher: Play tab, Report a problem).");
@@ -111,6 +123,7 @@ static void DrawNativeFailure(ImGuiIO& io) {
                        "Options > Graphics, or the launcher's Settings) - and please send a problem report (the "
                        "launcher's Report a problem).");
 #endif
+    }
   }
   ImGui::End();
 #else
