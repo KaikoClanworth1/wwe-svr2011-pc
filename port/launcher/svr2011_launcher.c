@@ -2656,6 +2656,8 @@ static void show_tab(int t)
 
 static void saves_setup(HWND list);
 static void saves_refresh(void);
+static void save_info_copy(const WCHAR *from_dir, const WCHAR *from_name, const WCHAR *to_dir, const WCHAR *to_name);
+static int saves_make_writable(const WCHAR *saves);
 static void list_columns(HWND list, const WCHAR *const *names, const int *widths, int n);
 static HWND pt_setup_grid(void);
 static void mv_setup(void);
@@ -4065,6 +4067,7 @@ static void saves_restore(void)
             n++;
     } while (FindNextFileW(f, &fd));
     FindClose(f);
+    saves_make_writable(saves);
     saves_refresh();
     if (had)
         saves_status(L"Restored %d save%s from %s. Your previous saves were backed up to %s.", n, n == 1 ? L"" : L"s",
@@ -4106,8 +4109,10 @@ static void saves_export(void)
             skipped++;
             continue;
         }
-        if (shell_op(FO_COPY, from, to, 0))
+        if (shell_op(FO_COPY, from, to, 0)) {
             done++;
+            save_info_copy(saves, names[i], dest, names[i]);
+        }
     }
     saves_status(L"Exported %d save%s to %s.%s", done, done == 1 ? L"" : L"s", dest,
                  skipped ? L" Some were already there and were left as they were." : L"");
@@ -4150,22 +4155,161 @@ static int pick_save_files(WCHAR *buf, size_t n)
     return got;
 }
 
+/* ── importing saves: the right name, writable ───────────────────────── */
+/* An imported save only works under the name the game looks for, and writable (a read-only one: the game's
+   save mount fails and it says "Load Failed" with a blank save). Players' copies arrive renamed ("SaveData (1).dat"
+   from a browser), as an older version's package folder (<name>\SaveData.Dat inside), as Xbox 360 packages, or
+   read-only (from a zip, a disc, another PC). */
+
+/* `name` without a browser's " (1)" / "(2)" before its extension. */
+static void save_name_clean(WCHAR *name)
+{
+    WCHAR *dot = wcsrchr(name, L'.'), *open;
+    if (!dot || dot == name || dot[-1] != L')')
+        return;
+    open = dot - 1;
+    while (open > name && iswdigit(open[-1]))
+        open--;
+    if (open == dot - 1 || open == name || open[-1] != L'(')
+        return;
+    open--;
+    if (open > name && open[-1] == L' ')
+        open--;
+    memmove(open, dot, (wcslen(dot) + 1) * sizeof(WCHAR));
+}
+
+static uint32_t be32_at(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+
+/* What the file is, by its bytes: 1 the main save (SaveData.dat: its checksum, caw_import.c's), 2 a Created
+   Superstar (.cas), 3 Paint Tool logos (.pt), 4 an Xbox 360 package (STFS), 0 something else. */
+static int save_file_kind(const WCHAR *path)
+{
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    LARGE_INTEGER size;
+    uint8_t *b = NULL;
+    DWORD got = 0;
+    int kind = 0;
+    if (f == INVALID_HANDLE_VALUE)
+        return 0;
+    if (GetFileSizeEx(f, &size) && size.QuadPart >= 16 && size.QuadPart <= 0x900000 &&
+        (b = (uint8_t *)malloc((size_t)size.QuadPart)) && ReadFile(f, b, (DWORD)size.QuadPart, &got, NULL) &&
+        got == (DWORD)size.QuadPart) {
+        if (!memcmp(b, "CON ", 4) || !memcmp(b, "LIVE", 4) || !memcmp(b, "PIRS", 4))
+            kind = 4;
+        else if (got == 7888892 && be32_at(b) == 0x02A78E9Au)
+            kind = 3;
+        else if (got == 1347532 && be32_at(b) == 0x4B && be32_at(b + 4) == 0x18 && be32_at(b + 8) == 7)
+            kind = 2;
+        else if (got >= 0x812DC) {
+            uint32_t sum = 0, i;
+            for (i = 0x1C; i < 0x812DC; i++)
+                sum += b[i];
+            if (be32_at(b + 0x18) == sum)
+                kind = 1;
+        }
+    }
+    free(b);
+    CloseHandle(f);
+    return kind;
+}
+
+/* The name `src` goes into the saves folder as (`out`): an older version's package folder (<name>\SaveData.Dat)
+   gives its folder's name; a browser's " (1)" goes; the main save is always SaveData.dat. 0: not a save of the
+   game's by its bytes or its name (asks first). */
+static int save_import_name(const WCHAR *src, int kind, WCHAR *out)
+{
+    const WCHAR *name = wcsrchr(src, L'\\');
+    name = name ? name + 1 : src;
+    wcscpy_s(out, MAX_PATH, name);
+    if (!_wcsicmp(name, L"SaveData.Dat") && kind != 1 && name > src + 1) {
+        /* (inside a package folder: the folder is the save's name) */
+        WCHAR dir[MAX_PATH];
+        const WCHAR *slash;
+        wcsncpy_s(dir, MAX_PATH, src, (size_t)(name - src - 1));
+        slash = wcsrchr(dir, L'\\');
+        if (slash && wcschr(slash + 1, L'.'))
+            wcscpy_s(out, MAX_PATH, slash + 1);
+    }
+    save_name_clean(out);
+    if (kind == 1)
+        wcscpy_s(out, MAX_PATH, L"SaveData.dat");
+    {   /* (replays and highlight reels have nothing to tell them by: their names) */
+        const WCHAR *ext = wcsrchr(out, L'.');
+        if (!kind && ext && (!_wcsicmp(ext, L".cas") || !_wcsicmp(ext, L".pt") || !_wcsicmp(ext, L".rec") ||
+                             !_wcsicmp(ext, L".scn") || !_wcsicmp(ext, L".dat")))
+            return 1;
+    }
+    return kind != 0;
+}
+
+/* Every file in the saves folder writable again (read-only ones: "Load Failed" in the game). The count. */
+static int saves_make_writable(const WCHAR *saves)
+{
+    WCHAR pat[MAX_PATH], f[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int n = 0;
+    if (!join(pat, saves, L"*"))
+        return 0;
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    do
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && (fd.dwFileAttributes & FILE_ATTRIBUTE_READONLY) &&
+            join(f, saves, fd.cFileName) && SetFileAttributesW(f, fd.dwFileAttributes & ~FILE_ATTRIBUTE_READONLY))
+            n++;
+    while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+/* A save's files in .info (its header: the name the game finds it by; the list's picture), from one saves-like
+   folder to another, under `to_name`. */
+static void save_info_copy(const WCHAR *from_dir, const WCHAR *from_name, const WCHAR *to_dir, const WCHAR *to_name)
+{
+    static const WCHAR *const extra[] = { L".header", L".file", L".png" };
+    WCHAR a[MAX_PATH], b[MAX_PATH], d[MAX_PATH];
+    int j;
+    if (!join(d, to_dir, L".info"))
+        return;
+    for (j = 0; j < 3; j++) {
+        swprintf_s(a, MAX_PATH, L"%s\\.info\\%s%s", from_dir, from_name, extra[j]);
+        swprintf_s(b, MAX_PATH, L"%s\\%s%s", d, to_name, extra[j]);
+        if (file_exists(a)) {
+            CreateDirectoryW(d, NULL);
+            if (CopyFileW(a, b, FALSE))
+                SetFileAttributesW(b, FILE_ATTRIBUTE_NORMAL);
+        }
+    }
+}
+
 static void saves_import(void)
 {
     static WCHAR files[32768];
+    static WCHAR names[256][MAX_PATH];
+    static int kinds[256];
     WCHAR saves[MAX_PATH], to[MAX_PATH], before[MAX_PATH], t[512];
-    const WCHAR *p, *name;
-    int n, i, exists = 0, done = 0, backed = 0;
+    const WCHAR *p;
+    int n, i, exists = 0, done = 0, backed = 0, unknown = 0, renamed = 0;
     if (saves_locked() || !saves_dir(saves))
         return;
     n = pick_save_files(files, 32768);
     if (!n)
         return;
-    for (p = files, i = 0; i < n; i++, p += wcslen(p) + 1) {
-        name = wcsrchr(p, L'\\');
-        name = name ? name + 1 : p;
-        if (join(to, saves, name) && (file_exists(to) || dir_exists(to)))
+    for (p = files, i = 0; i < n && i < 256; i++, p += wcslen(p) + 1) {
+        kinds[i] = save_file_kind(p);
+        if (!save_import_name(p, kinds[i], names[i]))
+            unknown++;
+        if (join(to, saves, names[i]) && (file_exists(to) || dir_exists(to)))
             exists++;
+    }
+    if (n > 256)
+        n = 256;
+    if (unknown) {
+        swprintf_s(t, 512, L"%d of the %d files don't look like saves of this game (not a main save, Created "
+                           L"Superstar, Paint Tool or Xbox 360 save). Import them anyway?", unknown, n);
+        if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
+            return;
     }
     if (exists) {
         swprintf_s(t, 512, L"%d of the %d files replace saves you have. Replace them?\n\n"
@@ -4180,17 +4324,47 @@ static void saves_import(void)
     }
     mkdirs(saves);
     for (p = files, i = 0; i < n; i++, p += wcslen(p) + 1) {
-        name = wcsrchr(p, L'\\');
-        name = name ? name + 1 : p;
-        if (join(to, saves, name) && CopyFileW(p, to, FALSE))
-            done++;
+        WCHAR src_dir[MAX_PATH];
+        const WCHAR *src_name = wcsrchr(p, L'\\');
+        int ok = 0;
+        if (!join(to, saves, names[i]))
+            continue;
+        if (kinds[i] == 4) {   /* (an Xbox 360 package: its save file, as the Import Xbox 360 save button does) */
+            uint8_t *data = NULL;
+            size_t size = 0;
+            if (stfs_read_save(p, &data, &size)) {
+                HANDLE f = CreateFileW(to, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                DWORD put = 0;
+                if (f != INVALID_HANDLE_VALUE) {
+                    ok = WriteFile(f, data, (DWORD)size, &put, NULL) && put == size;
+                    CloseHandle(f);
+                }
+                free(data);
+            }
+        } else {
+            ok = CopyFileW(p, to, FALSE);
+        }
+        if (!ok)
+            continue;
+        done++;
+        if (wcscmp(names[i], src_name ? src_name + 1 : p))
+            renamed++;
+        SetFileAttributesW(to, FILE_ATTRIBUTE_NORMAL);
+        /* (its header beside it, an exported .info: the name the game finds it by) */
+        if (src_name && kinds[i] != 4) {
+            wcsncpy_s(src_dir, MAX_PATH, p, (size_t)(src_name - p));
+            if (!wcscmp(names[i], src_name + 1))
+                save_info_copy(src_dir, src_name + 1, saves, names[i]);
+        }
     }
+    saves_make_writable(saves);
     saves_refresh();
+    swprintf_s(t, 512, renamed ? L" %d got the name the game looks for." : L"", renamed);
     if (backed)
-        saves_status(L"Imported %d save%s. Your previous saves were backed up to %s.", done, done == 1 ? L"" : L"s",
-                     before);
+        saves_status(L"Imported %d save%s.%s Your previous saves were backed up to %s.", done, done == 1 ? L"" : L"s",
+                     t, before);
     else
-        saves_status(L"Imported %d save%s.", done, done == 1 ? L"" : L"s");
+        saves_status(L"Imported %d save%s.%s", done, done == 1 ? L"" : L"s", t);
 }
 
 static void saves_delete(void)
