@@ -3169,11 +3169,17 @@ SVR2011_ONLINE_TRACE(sub_828B4A48)
 // as on the console.
 REX_EXTERN(__imp__sub_82856B00);
 REX_HOOK_RAW(sub_82856B00) {
-  if (ctx.r4.u32 == 32 && ctx.r3.u32) {
+  // (the 75 ids whose case starts with the object's character - none there: false too; id 32 also its
+  // +20, the one it handles. The others read plain values off the character, or check before going
+  // further; the 24 ids that don't read the character are left alone - all 99 cases read through.)
+  constexpr uint64_t kReadsChar[2] = {0xC01FADCFFFFFFFFEull, 0x00000007803FFFFFull};  // (bit = id)
+  const uint32_t id = ctx.r4.u32;
+  if (ctx.r3.u32 && id < 128 && (kReadsChar[id / 64] >> (id % 64) & 1)) {
     const uint32_t ch = Rd32(base + ctx.r3.u32);
-    if (!ch || !Rd32(base + ch + 20)) {
+    if (!ch || (id == 32 && !Rd32(base + ch + 20))) {
       static int logged = 0;
-      if (logged++ < 3) REXLOG_INFO("[svr2011] event condition 32 with no character to check - false (as on the console)");
+      if (logged++ < 3)
+        REXLOG_INFO("[svr2011] event condition {} with no character to check - false (as on the console)", id);
       ctx.r3.u64 = 0;
       return;
     }
