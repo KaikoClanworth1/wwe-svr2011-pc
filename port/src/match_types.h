@@ -20,6 +20,8 @@ void InstallMatchTypes(rex::memory::Memory* memory);
 
 // The last match placed (its rule and arena; ~0 before one): the online live report.
 void LastMatch(uint32_t* rule, uint32_t* arena);
+// A backstage match's rule (its rooms are bg78 - where backstage mods play).
+bool BackstageRule(uint32_t rule);
 
 // Match type mods: each match type the port adds is on unless
 // <game>\Mods\MatchTypes\<id>\disabled exists (the launcher's Mods tab; read
