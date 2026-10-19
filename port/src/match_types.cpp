@@ -3158,3 +3158,25 @@ SVR2011_ONLINE_TRACE(sub_82470A60)
 SVR2011_ONLINE_TRACE(sub_82470AA0)
 SVR2011_ONLINE_TRACE(sub_82470AE0)
 SVR2011_ONLINE_TRACE(sub_828B4A48)
+
+// A condition of the game's event scripts (sub_82856B00(object, id), 99 of
+// them): id 32 reads the object's character's +20 (another character - the
+// one it's handling) and that one's +212 / +220 without checking it's there
+// (id 33, its neighbour, checks +12 first). With none, the console read near
+// address 0 and the condition came out false; here it crashed - Road to
+// WrestleMania, Jericho's week 12, the backstage fight with Triple H, right
+// after the vending machine. With no character there the condition is false,
+// as on the console.
+REX_EXTERN(__imp__sub_82856B00);
+REX_HOOK_RAW(sub_82856B00) {
+  if (ctx.r4.u32 == 32 && ctx.r3.u32) {
+    const uint32_t ch = Rd32(base + ctx.r3.u32);
+    if (!ch || !Rd32(base + ch + 20)) {
+      static int logged = 0;
+      if (logged++ < 3) REXLOG_INFO("[svr2011] event condition 32 with no character to check - false (as on the console)");
+      ctx.r3.u64 = 0;
+      return;
+    }
+  }
+  __imp__sub_82856B00(ctx, base);
+}
