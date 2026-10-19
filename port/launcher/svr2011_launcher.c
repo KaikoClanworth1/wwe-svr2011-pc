@@ -46,6 +46,7 @@
 #include <tlhelp32.h>
 #include <windowsx.h>
 #include <wincodec.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,6 +86,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' " \
                         "version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
@@ -8485,15 +8487,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, inst, NULL);
     if (!s_wnd)
         return 1;
-    {   /* the dark title bar (Windows 10 2004+ / 11; dwmapi loaded only here) */
-        HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
-        if (dwm) {
-            typedef HRESULT(WINAPI * SetAttr)(HWND, DWORD, LPCVOID, DWORD);
-            SetAttr set = (SetAttr)(void *)GetProcAddress(dwm, "DwmSetWindowAttribute");
-            BOOL on = TRUE;
-            if (set) set(s_wnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &on, sizeof on);
-            FreeLibrary(dwm);
-        }
+    {   /* the dark title bar (Windows 10 2004+ / 11; older ones ignore it) - imported normally, not looked up
+           (GetProcAddress lookups are one more thing antivirus heuristics weigh) */
+        BOOL on = TRUE;
+        DwmSetWindowAttribute(s_wnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &on, sizeof on);
     }
     build_ui();
     /* Mods that came with the port and aren't in the game yet (an update can bring new ones). */
