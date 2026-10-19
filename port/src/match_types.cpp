@@ -273,12 +273,20 @@ uint32_t SetRule(uint32_t normal, int set) {
 }
 // The sets a mode's submenu offers, in row order: the three normal ones, then
 // (one on one, two on two, triple threat, fatal-4-way) the table / ladder
-// ones (switch mod three_stages_tables_ladders) and the cell one.
+// ones (switch mod three_stages_tables_ladders).
+// The sets with a FIRST BLOOD fall (1 NORMAL / FIRST BLOOD / FINISHERS, 4 HELL IN A CELL: FIRST BLOOD / LMS /
+// SUBMISSION) aren't offered: a fall won by first blood never reaches the falls judge - the game's own
+// blood win starts and the match froze (report 2026-10-16). Back when that fall is handled.
 std::vector<int> SetsFor(uint32_t normal) {
-  std::vector<int> sets{0, 1, 2};
+  static bool told = false;
+  if (!told) {
+    told = true;
+    REXLOG_INFO("match types: THREE STAGES OF HELL sets with a FIRST BLOOD fall left out (a first blood win froze "
+                "the match)");
+  }
+  std::vector<int> sets{0, 2};
   if (SetRule(normal, 3) == normal) return sets;
   if (svr2011::MatchTypeSwitchOn("three_stages_tables_ladders")) sets.push_back(5), sets.push_back(3);
-  sets.push_back(4);
   return sets;
 }
 
@@ -1160,7 +1168,7 @@ REX_HOOK_RAW(sub_827374A0) {
     if (const uint32_t rules = Rd32(base + kRules)) {
       dumped = true;
       for (uint32_t r : {0x00u, 0x03u, 0x04u, 0x07u, 0x08u, 0x0Bu, 0x0Du, 0x0Eu, 0x0Fu, 0x10u, 0x11u, 0x12u, 0x13u,
-                         0x23u, 0x27u, 0x28u, 0x2Au, 0x35u, 0x3Bu, 0x4Cu, 0x4Du, 0x4Eu, 0x4Fu, 0x50u}) {
+                         0x23u, 0x27u, 0x28u, 0x29u, 0x2Au, 0x31u, 0x35u, 0x3Bu, 0x4Cu, 0x4Du, 0x4Eu, 0x4Fu, 0x50u}) {
         std::string rec, opt;
         for (uint32_t k = 0; k < kRuleSize; ++k) rec += fmt::format("{:02X}", base[rules + r * kRuleSize + k]);
         for (uint32_t k = 0; k < kRule2Size; ++k) opt += fmt::format("{:02X}", base[rules + kRule2 + r * kRule2Size + k]);
