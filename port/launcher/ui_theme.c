@@ -139,7 +139,7 @@ int theme_hero(HDC dc, const RECT *r, int radius, const WCHAR *image, COLORREF c
     {
         /* The right part of the card: the picture at the card's height. A picture more than twice that
            area's width scrolls (scroll = pixels moved so far; it wraps around). */
-        const int h = r->bottom - r->top, area_l = r->left + (r->right - r->left) / 2, area_w = r->right - area_l;
+        const int h = r->bottom - r->top, area_l = r->left + (r->right - r->left) * 3 / 5, area_w = r->right - area_l;
         int w = (int)((double)s_hero_w * h / s_hero_h), x;
         GdipSetClipRectI(g, area_l, r->top, area_w, h, 1 /* intersect */);
         if (w < area_w) {   /* (narrow: at the area's width, its middle band) */

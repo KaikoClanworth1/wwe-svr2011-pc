@@ -121,7 +121,7 @@ enum {
     ID_TAB = 100,
     /* play */
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
-    ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT,
+    ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES,
@@ -187,6 +187,11 @@ typedef struct { RECT r; int tab; } PlayLink;
 static PlayLink  s_play_links[8];
 static int       s_nplay_links;
 static void play_counts(void);
+static void play_notice(void);
+/* The Play page's notice (play_notice): one line when something needs the player, its button's action. */
+enum { NOTICE_NONE, NOTICE_FOLDER, NOTICE_SETUP, NOTICE_FILES, NOTICE_UPDATE };
+static WCHAR     s_notice[220];
+static int       s_notice_action;
 static void steps_refresh(void);
 static int setup_first_step(void);
 static int step_at(POINT pt);
@@ -2154,6 +2159,7 @@ static void refresh_play(void)
     playtime_show();
     play_counts();
     play_size_start();
+    play_notice();
     if (s_wnd)
         InvalidateRect(s_wnd, NULL, FALSE);
 }
@@ -3010,30 +3016,23 @@ static void build_ui(void)
     /* Play: the game (status, time played, PLAY), its folder, help, updates. */
     /* (cards: the picture card, three tiles, Setup / Saves / Mods / Texture packs, the status line -
        paint_play draws what's on them) */
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, -8, 724, 200, 0);
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, 204, 233, 64, 0);
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0 + 245, 204, 233, 64, 0);
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0 + 490, 204, 234, 64, 0);
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, 280, 356, 128, 0);
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0 + 368, 280, 356, 128, 0);
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, 420, 356, 112, 0);
-    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0 + 368, 420, 356, 112, 0);
+    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, -8, 724, 400, 0);
+    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, 406, 724, 44, 0);
+    add(TAB_PLAY, L"Button", L"\x01", BS_GROUPBOX, X0, 462, 724, 48, 0);   /* (the notice: drawn only with one) */
     add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, 544, 724, 48, 0);
-    h = add(TAB_PLAY, L"Button", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 24, 98, 176, 54, ID_PLAY);
+    h = add(TAB_PLAY, L"Button", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 28, 212, 190, 60, ID_PLAY);
     set_big(h);
     /* Start without mods: the game with no mods at all, saves untouched (SVR2011_NO_MODS) */
-    add(TAB_PLAY, L"Button", L"Start Without Mods", BS_PUSHBUTTON | WS_TABSTOP, X0 + 212, 98, 176, 54, ID_PLAY_NOMODS);
-    add(TAB_PLAY, L"Button", L"Close on start", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 24, 164, 126, 20, ID_CLOSE_ON_PLAY);
+    add(TAB_PLAY, L"Button", L"Start Without Mods", BS_PUSHBUTTON | WS_TABSTOP, X0 + 230, 212, 190, 60, ID_PLAY_NOMODS);
+    add(TAB_PLAY, L"Button", L"Close on start", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 28, 300, 126, 20, ID_CLOSE_ON_PLAY);
     /* the faster start (fast_start.cpp): settings like the Settings tab's, kept by Play */
-    add(TAB_PLAY, L"Button", L"Skip intros", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 156, 164, 104, 20, ID_SKIP_INTROS);
-    add(TAB_PLAY, L"Button", L"Skip practice ring", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 266, 164, 130, 20,
+    add(TAB_PLAY, L"Button", L"Skip intros", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 160, 300, 104, 20, ID_SKIP_INTROS);
+    add(TAB_PLAY, L"Button", L"Skip practice ring", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 270, 300, 130, 20,
         ID_SKIP_TRAINING);
+    add(TAB_PLAY, L"Button", L"", BS_PUSHBUTTON | WS_TABSTOP, X0 + 724 - 16 - 160, 472, 160, 28, ID_PL_NOTICE);
     add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 48, 559, 236, 20, ID_PLAY_STATUS);
     add(-1, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 82, 300, 22, ID_PLAYTIME);
     add(-1, L"Edit", L"", ES_READONLY | ES_AUTOHSCROLL | WS_BORDER, X0 + 16, 206, 410, 26, ID_GAMEDIR);
-    add(TAB_PLAY, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 262, 360, 78, 30, ID_GAMEDIR_CHANGE);
-    add(TAB_PLAY, L"Button", L"Export Saves\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 386, 356, 154, 36, ID_PL_EXPORT);
-    add(TAB_PLAY, L"Button", L"Import Saves\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 552, 356, 154, 36, ID_PL_IMPORT);
     add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 554, 128, 28, ID_REPORT);
     up_setup();
 
@@ -6891,6 +6890,7 @@ static void up_checked(int ok, WCHAR *err)
     InterlockedExchange(&s_up_busy, 0);
     EnableWindow(ctl(ID_UP_BUTTON), TRUE);
     s_up_available = ok && version_newer(s_up.version, PORT_VERSION);
+    play_notice();
     if (!ok) {
         up_status(L"%s", err ? err : L"Could not check for updates.");
     } else if (s_up_available) {
@@ -6933,7 +6933,7 @@ static void up_setup(void)
     swprintf_s(v, 64, L"Version %s", PORT_VERSION);
     add(-1, L"Static", v, SS_LEFT, X0 + 16, 354, 150, 20, ID_VERSION);
     add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 290, 550, 156, 36, ID_UP_STATUS);
-    add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 490 + 122, 222, 104, 28, ID_UP_BUTTON);
+    add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 724 - 16 - 160, 414, 160, 28, ID_UP_BUTTON);
     add(TAB_SETTINGS, L"Button", L"Check for updates when the launcher starts", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 404, 400, 22, ID_UP_AUTO);
     add(TAB_PLAY, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 290, 584, 156, 4, ID_UP_PROGRESS);
@@ -7094,7 +7094,7 @@ static void hero_find(void)
 
 static void hero_rect(RECT *r)
 {
-    r->left = PX(0); r->top = PY(-8); r->right = PX(724); r->bottom = PY(192);
+    r->left = PX(0); r->top = PY(-8); r->right = PX(724); r->bottom = PY(392);
 }
 
 /* The mods (as mods_tab.c's list counts them: folders under Mods\<type>, off with a "disabled" file) and
@@ -7192,10 +7192,41 @@ static void play_card_head(HDC dc, int x, int y, WCHAR icon, const WCHAR *title,
     play_link(x, y, 356, 62, tab);
 }
 
+/* What needs the player now, if anything (one line on the Play page, with its button): no game here, the
+   program missing, program files missing (antivirus), the VC++ runtime, an update. */
+static void play_notice(void)
+{
+    WCHAR v[32];
+    const WCHAR *button = L"";
+    s_notice[0] = 0;
+    s_notice_action = NOTICE_NONE;
+    if (!s_game_dir[0] || !is_game_folder(s_game_dir)) {
+        wcscpy_s(s_notice, 220, L"No game in this folder: choose the game's folder, or install it (Setup).");
+        s_notice_action = NOTICE_FOLDER; button = L"Choose folder\x2026";
+    } else if (!has_program(s_game_dir)) {
+        wcscpy_s(s_notice, 220, GAME_EXE L" is missing from the game folder (antivirus, or an unfinished install).");
+        s_notice_action = NOTICE_FILES; button = L"Open Setup";
+    } else if (s_size_known && s_files_listed && s_files_bad) {
+        swprintf_s(s_notice, 220, L"%d of the port's program files %s missing - antivirus may have taken %s.",
+                   s_files_bad, s_files_bad == 1 ? L"is" : L"are", s_files_bad == 1 ? L"it" : L"them");
+        s_notice_action = NOTICE_FILES; button = L"Check files";
+    } else if (setup_vcrt_system(v, 32) != SETUP_VCRT_OK) {
+        wcscpy_s(s_notice, 220, L"Setup isn't finished: the game needs Microsoft's Visual C++ runtime.");
+        s_notice_action = NOTICE_SETUP; button = L"Open Setup";
+    } else if (s_up_available) {
+        swprintf_s(s_notice, 220, L"Version %s of the port is available.", s_up.version);
+        s_notice_action = NOTICE_UPDATE; button = L"Update\x2026";
+    }
+    set_text(ID_PL_NOTICE, button);
+    ShowWindow(ctl(ID_PL_NOTICE), s_notice[0] && s_cur_tab == TAB_PLAY ? SW_SHOW : SW_HIDE);
+    if (s_wnd && s_cur_tab == TAB_PLAY)
+        InvalidateRect(s_wnd, NULL, FALSE);
+}
+
 static void paint_play(HDC dc)
 {
     RECT hr;
-    WCHAR t[160], a[32];
+    WCHAR t[200], a[32], when[64];
     WCHAR pt_path[MAX_PATH];
     WIN32_FILE_ATTRIBUTE_DATA fa;
     unsigned long long sec = 0, ses = 0;
@@ -7203,31 +7234,31 @@ static void paint_play(HDC dc)
     s_nplay_links = 0;
     SetBkMode(dc, TRANSPARENT);
 
-    /* the picture card */
+    /* the picture card: the title, Play, Start Without Mods, the game's size */
     hero_rect(&hr);
     i = theme_hero(dc, &hr, S(10), s_hero_file, C_CARD, S(s_hero_scroll) / 2);
     if (i && !s_hero_moving)
         SetTimer(s_wnd, HERO_TIMER, 33, NULL);
     s_hero_moving = i;
     theme_round_rect(dc, &hr, S(10), THEME_NONE, C_CARD_LINE, (float)S(1));
-    play_text(dc, s_huge, C_TEXT, 24, 8, 560, 40, GAME_TITLE, DT_LEFT | DT_VCENTER);
-    play_text(dc, s_font, C_MUTED, 24, 50, 560, 22,
+    play_text(dc, s_huge, C_TEXT, 28, 84, 560, 44, GAME_TITLE, DT_LEFT | DT_VCENTER);
+    play_text(dc, s_font, C_MUTED, 28, 132, 560, 22,
               L"The legendary roster. The biggest arenas. The ultimate showdown.", DT_LEFT | DT_VCENTER);
-    play_line(dc, 404, 104, 0, 42);
-    play_glyph(dc, s_mark_font, C_MUTED, 418, 110, 0xEDA2);
-    play_text(dc, s_font, C_MUTED, 458, 98, 200, 18, L"Game size", DT_LEFT | DT_VCENTER);
+    play_line(dc, 436, 218, 0, 48);
+    play_glyph(dc, s_mark_font, C_MUTED, 450, 226, 0xEDA2);
+    play_text(dc, s_font, C_MUTED, 490, 212, 200, 18, L"Game size", DT_LEFT | DT_VCENTER);
     if (s_size_known && same_dir(s_size_dir, s_game_dir)) {
         fmt_size(a, 32, s_size_game);
-        play_text(dc, s_big, C_TEXT, 458, 116, 200, 24, a, DT_LEFT | DT_VCENTER);
+        play_text(dc, s_big, C_TEXT, 490, 230, 200, 24, a, DT_LEFT | DT_VCENTER);
         fmt_size(a, 32, s_size_mods);
-        swprintf_s(t, 160, L"(mods: %s)", a);
-        play_text(dc, s_font, C_MUTED, 458, 140, 200, 18, t, DT_LEFT | DT_VCENTER);
+        swprintf_s(t, 200, L"(mods: %s)", a);
+        play_text(dc, s_font, C_MUTED, 490, 254, 200, 18, t, DT_LEFT | DT_VCENTER);
     } else {
-        play_text(dc, s_big, C_MUTED, 458, 116, 200, 24, s_game_dir[0] ? L"Measuring\x2026" : L"\x2014",
+        play_text(dc, s_big, C_MUTED, 490, 230, 200, 24, s_game_dir[0] ? L"Measuring\x2026" : L"\x2014",
                   DT_LEFT | DT_VCENTER);
     }
 
-    /* the tiles: last session, sessions and time played (the game's playtime.txt), the version */
+    /* one slim row: last played, sessions and time, the version (Check for updates: build_ui) */
     swprintf_s(pt_path, MAX_PATH, L"%s\\playtime.txt", s_game_dir);
     {
         FILE *f = NULL;
@@ -7240,8 +7271,7 @@ static void paint_play(HDC dc)
             fclose(f);
         }
     }
-    play_glyph(dc, s_mark_font, C_MUTED, 18, 222, 0xE823);
-    play_text(dc, s_font, C_MUTED, 62, 214, 160, 18, L"Last session", DT_LEFT | DT_VCENTER);
+    wcscpy_s(when, 64, L"not yet");
     if (ses && GetFileAttributesExW(pt_path, GetFileExInfoStandard, &fa)) {
         FILETIME now;
         ULARGE_INTEGER u0, u1;
@@ -7250,55 +7280,26 @@ static void paint_play(HDC dc)
         u0.LowPart = fa.ftLastWriteTime.dwLowDateTime; u0.HighPart = fa.ftLastWriteTime.dwHighDateTime;
         u1.LowPart = now.dwLowDateTime; u1.HighPart = now.dwHighDateTime;
         m = u1.QuadPart > u0.QuadPart ? (u1.QuadPart - u0.QuadPart) / 600000000ull : 0;
-        if (m < 1) wcscpy_s(t, 160, L"Just now");
-        else if (m < 60) swprintf_s(t, 160, L"%llu minute%s ago", m, m == 1 ? L"" : L"s");
-        else if (m < 48 * 60) swprintf_s(t, 160, L"%llu hour%s ago", m / 60, m / 60 == 1 ? L"" : L"s");
-        else swprintf_s(t, 160, L"%llu days ago", m / 1440);
-    } else {
-        wcscpy_s(t, 160, L"Not played yet");
+        if (m < 1) wcscpy_s(when, 64, L"just now");
+        else if (m < 60) swprintf_s(when, 64, L"%llu min ago", m);
+        else if (m < 48 * 60) swprintf_s(when, 64, L"%llu h ago", m / 60);
+        else swprintf_s(when, 64, L"%llu days ago", m / 1440);
     }
-    play_text(dc, s_big, C_TEXT, 62, 232, 166, 24, t, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
-    play_glyph(dc, s_mark_font, C_MUTED, 245 + 18, 222, 0xE7FC);
-    play_text(dc, s_font, C_MUTED, 245 + 62, 214, 160, 18, L"Total sessions", DT_LEFT | DT_VCENTER);
     if (sec >= 3600)
-        swprintf_s(t, 160, L"%llu  \x00B7  %llu h %llu min", ses, sec / 3600, sec / 60 % 60);
+        swprintf_s(t, 200, L"Last played %s   \x00B7   %llu session%s, %llu h %llu min   \x00B7   Version %s", when, ses,
+                   ses == 1 ? L"" : L"s", sec / 3600, sec / 60 % 60, PORT_VERSION);
     else
-        swprintf_s(t, 160, L"%llu  \x00B7  %llu min", ses, sec / 60);
-    play_text(dc, s_big, C_TEXT, 245 + 62, 232, 166, 24, t, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
-    play_glyph(dc, s_mark_font, C_MUTED, 490 + 14, 222, 0xE7B8);
-    play_text(dc, s_font, C_MUTED, 490 + 56, 214, 64, 18, L"Version", DT_LEFT | DT_VCENTER);
-    swprintf_s(t, 160, L"v%s", PORT_VERSION);
-    play_text(dc, s_big, C_TEXT, 490 + 56, 232, 64, 24, t, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+        swprintf_s(t, 200, L"Last played %s   \x00B7   %llu session%s, %llu min   \x00B7   Version %s", when, ses,
+                   ses == 1 ? L"" : L"s", sec / 60, PORT_VERSION);
+    play_glyph(dc, s_icons, C_MUTED, 18, 420, 0xE823);
+    play_text(dc, s_font, C_MUTED, 46, 416, 480, 24, t, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
 
-    /* Setup: the game folder's state */
-    play_card_head(dc, 0, 280, 0xE90F, L"Setup", L"Run the setup wizard or configure your game.", TAB_SETUP);
-    {
-        const int ok = is_game_folder(s_game_dir) && has_program(s_game_dir);
-        play_glyph(dc, s_icons, ok ? C_GOOD : C_WARN, 20, 366, ok ? 0xE930 : 0xE7BA);
-        play_text(dc, s_font, C_TEXT, 46, 356, 210, 18,
-                  ok ? L"Game installation detected"
-                     : is_game_folder(s_game_dir) ? GAME_EXE L" is missing" : L"No game in this folder",
-                  DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
-        play_text(dc, s_font, C_MUTED, 46, 374, 210, 18, s_game_dir, DT_LEFT | DT_VCENTER | DT_PATH_ELLIPSIS);
+    /* the notice (play_notice): only when something needs the player */
+    if (s_notice[0]) {
+        play_glyph(dc, s_icons, s_notice_action == NOTICE_UPDATE ? RGB(120, 170, 255) : C_WARN, 18, 478,
+                   s_notice_action == NOTICE_UPDATE ? 0xE896 : 0xE7BA);
+        play_text(dc, s_font, C_TEXT, 46, 472, 480, 28, s_notice, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
     }
-    /* Saves (the buttons: build_ui) */
-    play_card_head(dc, 368, 280, 0xE74E, L"Saves", L"Back up and restore your game saves.", TAB_SAVES);
-    /* Mods, Texture packs */
-    play_card_head(dc, 0, 420, 0xEA86, L"Mods", L"Manage your installed mods and find new ones.",
-                   TAB_MODS);
-    play_glyph(dc, s_icons, C_MUTED, 20, 494, 0xE7B8);
-    play_text(dc, s_font, C_MUTED, 46, 484, 180, 18, L"Installed mods", DT_LEFT | DT_VCENTER);
-    swprintf_s(t, 160, L"%d  (%d on)", s_mods_n, s_mods_on);
-    play_text(dc, s_font, C_TEXT, 46, 502, 180, 18, t, DT_LEFT | DT_VCENTER);
-    play_text(dc, s_font, RGB(120, 170, 255), 200, 492, 138, 20, L"Manage Mods  \x2192", DT_RIGHT | DT_VCENTER);
-    play_link(230, 488, 112, 28, TAB_MODS);
-    play_card_head(dc, 368, 420, 0xE8B9, L"Texture Packs", L"Browse and install texture packs.", TAB_TEXPACKS);
-    play_glyph(dc, s_icons, C_MUTED, 368 + 20, 494, 0xE8B9);
-    play_text(dc, s_font, C_MUTED, 368 + 46, 484, 180, 18, L"Installed packs", DT_LEFT | DT_VCENTER);
-    swprintf_s(t, 160, L"%d", s_packs_n);
-    play_text(dc, s_font, C_TEXT, 368 + 46, 502, 180, 18, t, DT_LEFT | DT_VCENTER);
-    play_text(dc, s_font, RGB(120, 170, 255), 368 + 200, 492, 138, 20, L"Manage Packs  \x2192", DT_RIGHT | DT_VCENTER);
-    play_link(368 + 230, 488, 112, 28, TAB_TEXPACKS);
 
     /* the status line: ready (ID_PLAY_STATUS), updates (ID_UP_STATUS), the program files' check */
     play_glyph(dc, s_icons, s_play_ready ? C_GOOD : C_WARN, 18, 560, s_play_ready ? 0xE930 : 0xE7BA);
@@ -7311,7 +7312,7 @@ static void paint_play(HDC dc)
     else if (!s_files_bad)
         play_text(dc, s_font, C_GOOD, 616, 568, 104, 18, L"No files blocked", DT_LEFT | DT_VCENTER);
     else {
-        swprintf_s(t, 160, L"%d file%s missing", s_files_bad, s_files_bad == 1 ? L"" : L"s");
+        swprintf_s(t, 200, L"%d file%s missing", s_files_bad, s_files_bad == 1 ? L"" : L"s");
         play_text(dc, s_font, C_WARN, 616, 568, 104, 18, t, DT_LEFT | DT_VCENTER);
     }
 }
@@ -7572,12 +7573,12 @@ static void paint_window(HDC dc)
         for (i = 0; i < s_ncards; i++) {
             const Card *cd = &s_cards[i];
             RECT c;
-            if (cd->tab != s_cur_tab)
+            if (cd->tab != s_cur_tab || (cd->title[0] == 1 && !s_notice[0]))
                 continue;
             c.left = S(cd->x + SB_W); c.top = S(cd->y + DY); c.right = S(cd->x + cd->w + SB_W);
             c.bottom = S(cd->y + cd->h + DY);
             theme_round_rect(dc, &c, S(10), C_CARD, C_CARD_LINE, (float)S(1));
-            if (cd->title[0]) {
+            if (cd->title[0] > 1) {
                 SelectObject(dc, s_card);
                 SetTextColor(dc, C_TEXT);
                 r = c;
@@ -7632,6 +7633,16 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             break;
         case ID_PLAY_NOMODS:
             play_with(1);
+            break;
+        case ID_PL_NOTICE:
+            if (s_notice_action == NOTICE_FOLDER)
+                SendMessageW(w, WM_COMMAND, ID_GAMEDIR_CHANGE, 0);
+            else if (s_notice_action == NOTICE_UPDATE)
+                SendMessageW(w, WM_COMMAND, ID_UP_BUTTON, 0);
+            else if (s_notice_action == NOTICE_FILES)
+                show_tab(TAB_INSTALL);   /* (Verify game files / Repair) */
+            else if (s_notice_action == NOTICE_SETUP)
+                show_tab(setup_first_step());
             break;
         case ID_PL_EXPORT:   /* (the Saves page: pick the saves there) */
             show_tab(TAB_SAVES);
@@ -7835,8 +7846,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         free((void *)lp);
         return 0;
     case WM_APP_SIZE:
-        if (s_cur_tab == TAB_PLAY)
-            InvalidateRect(w, NULL, FALSE);
+        play_notice();
         return 0;
     case WM_TIMER:
         if (wp == HERO_TIMER) {
