@@ -98,6 +98,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
    (copies of the port were re-uploaded, sending players to other channels). */
 #define REPO_URL          L"https://github.com/KaikoClanworth1/wwe-svr2011-pc"
 #define KOFI_URL          L"https://ko-fi.com/kaikoclanworth"
+#define PAYPAL_URL        L"https://www.paypal.com/donate/?hosted_button_id=MS4C2WC38N3W2"
 #define CREDIT_LINE       L"Launcher - Version " PORT_VERSION L" - By KaikoClanworth"
 #define CREDIT_LINK       L"Download free at github.com/KaikoClanworth1/wwe-svr2011-pc"
 #define MAIN_TITLE        CREDIT_LINE L" - " CREDIT_LINK
@@ -198,6 +199,7 @@ static int step_at(POINT pt);
 static int mod_tab_at(POINT pt);
 static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
 static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
+static RECT      s_paypal_link;            /* ... " / PayPal" after it */
 static int       s_dpi = 96;
 static HICON     s_icon;
 #define TAB_CTL_MAX 64   /* a page's controls (more are created but never shown) */
@@ -7546,6 +7548,16 @@ static void paint_window(HDC dc)
         GetTextExtentPoint32W(dc, L"ko-fi", 5, &z);
         s_kofi_link.left = k.left; s_kofi_link.right = k.left + z.cx;
         s_kofi_link.top = k.top; s_kofi_link.bottom = k.top + z.cy;
+        k.left += z.cx;
+        SetTextColor(dc, RGB(150, 152, 162));
+        DrawTextW(dc, L"  B7 ", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L"  B7 ", 3, &z);
+        k.left += z.cx;
+        SetTextColor(dc, C_ACCENT);
+        DrawTextW(dc, L"PayPal", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L"PayPal", 6, &z);
+        s_paypal_link.left = k.left; s_paypal_link.right = k.left + z.cx;
+        s_paypal_link.top = k.top; s_paypal_link.bottom = k.top + z.cy;
         SetTextColor(dc, RGB(150, 152, 162));
     }
     /* The credit, top right of every page: the link opens the release page. */
@@ -7973,6 +7985,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(w, L"open", REPO_URL, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
+        if (PtInRect(&s_paypal_link, pt)) {
+            ShellExecuteW(w, L"open", PAYPAL_URL, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
         if (PtInRect(&s_kofi_link, pt)) {
             ShellExecuteW(w, L"open", KOFI_URL, NULL, NULL, SW_SHOWNORMAL);
             return 0;
@@ -8012,7 +8028,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
-            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) ||
+            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) || PtInRect(&s_paypal_link, pt) ||
                 play_link_at(pt) >= 0 || step_at(pt) >= 0 || mod_tab_at(pt) >= 0) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
