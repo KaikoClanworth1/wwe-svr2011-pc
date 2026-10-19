@@ -183,6 +183,9 @@ typedef struct { RECT r; int tab; } PlayLink;
 static PlayLink  s_play_links[8];
 static int       s_nplay_links;
 static void play_counts(void);
+static void steps_refresh(void);
+static int setup_first_step(void);
+static int step_at(POINT pt);
 static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
 static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
 static int       s_dpi = 96;
@@ -2334,9 +2337,23 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     /* (below the line) */
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_MUSIC, 0xE8D6, L"Music" },
     { TAB_MOVIES, 0xE714, L"Movies" },      { TAB_PAINT, 0xE790, L"Paint Tool" },
-    { TAB_TEXPACKS, 0xE8B9, L"Texture packs" }, { TAB_DLC, 0xE7B8, L"DLC" },
-    { TAB_INSTALL, 0xE896, L"Install" },    { TAB_ANDROID, 0xE8EA, L"Android" },
+    { TAB_TEXPACKS, 0xE8B9, L"Texture packs" },
 };
+
+/* Setup, step by step: this PC (TAB_SETUP), the game (TAB_INSTALL), DLC, Android - one sidebar entry; a step
+   bar on top of each (paint_steps). The step of a page, or -1. */
+static const int k_steps[] = { TAB_SETUP, TAB_INSTALL, TAB_DLC, TAB_ANDROID };
+#define N_STEPS 4
+static int setup_step(int tab)
+{
+    int i;
+    for (i = 0; i < N_STEPS; i++)
+        if (k_steps[i] == tab)
+            return i;
+    return -1;
+}
+/* The sidebar entry a page belongs to (Setup's steps: Setup). */
+static int nav_tab(int tab) { return setup_step(tab) >= 0 ? TAB_SETUP : tab; }
 #define NAV_N    ((int)(sizeof k_nav / sizeof k_nav[0]))
 #define NAV_MAIN 6       /* the main pages (big rows), then the line, the others (small rows) */
 #define NAV_TOP  86
@@ -2477,6 +2494,8 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
     const int push = button && (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON);
     if (tab >= 0 && tab != TAB_PLAY)
         x += PAD;
+    if (tab == TAB_SETUP)
+        y += 44;   /* (below the step bar; the other steps' pages start lower already) */
     /* A group box becomes a card the window draws (the control is never shown). */
     if (button && kind == BS_GROUPBOX && tab >= 0 && s_ncards < (int)(sizeof s_cards / sizeof s_cards[0])) {
         Card *cd = &s_cards[s_ncards++];
@@ -2505,6 +2524,11 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
         ListView_SetTextColor(c, C_TEXT);
         if (hd) SetWindowTheme(hd, L"DarkMode_ItemsView", NULL);
         SetWindowSubclass(c, list_proc, 2, 0);
+    }
+    if (!_wcsicmp(cls, PROGRESS_CLASSW)) {   /* (unthemed: its colours) */
+        SetWindowTheme(c, L"", L"");
+        SendMessageW(c, PBM_SETBKCOLOR, 0, (LPARAM)C_FIELD);
+        SendMessageW(c, PBM_SETBARCOLOR, 0, (LPARAM)C_ACCENT);
     }
     if (!_wcsicmp(cls, WC_TREEVIEWW)) {
         TreeView_SetBkColor(c, C_FIELD);
@@ -2592,6 +2616,8 @@ static void show_tab(int t)
         refresh_play();
     if (t == TAB_SETTINGS && !s_settings_dirty)
         settings_load();
+    if (setup_step(t) >= 0)
+        steps_refresh();
     if (t == TAB_INSTALL)
         update_free_space();
     if (t == TAB_SAVES)
@@ -7072,13 +7098,107 @@ static void paint_play(HDC dc)
 #undef PX
 #undef PY
 
+/* ── Setup's step bar ──────────────────────────────────────────────────── */
+/* Each step's state, found when a step's page is shown (s_step_done: 1 done, 0 to do, -1 optional). */
+static int  s_step_done[N_STEPS];
+static RECT s_step_rects[N_STEPS];
+
+static void steps_refresh(void)
+{
+    WCHAR v[32], d[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    s_step_done[0] = setup_vcrt_system(v, 32) == SETUP_VCRT_OK;
+    s_step_done[1] = is_game_folder(s_game_dir) && has_program(s_game_dir);
+    s_step_done[2] = -1;
+    swprintf_s(d, MAX_PATH, L"%s\\DLC\\*", s_game_dir);
+    h = s_game_dir[0] ? FindFirstFileW(d, &fd) : INVALID_HANDLE_VALUE;
+    if (h != INVALID_HANDLE_VALUE) {
+        do
+            if (fd.cFileName[0] != L'.')
+                s_step_done[2] = 1;
+        while (s_step_done[2] < 0 && FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    s_step_done[3] = -1;
+}
+
+/* Setup's first step still to do (all done: the first). */
+static int setup_first_step(void)
+{
+    int i;
+    steps_refresh();
+    for (i = 0; i < N_STEPS; i++)
+        if (!s_step_done[i])
+            return k_steps[i];
+    return k_steps[0];
+}
+
+static int step_at(POINT pt)
+{
+    int i;
+    if (setup_step(s_cur_tab) < 0)
+        return -1;
+    for (i = 0; i < N_STEPS; i++)
+        if (PtInRect(&s_step_rects[i], pt))
+            return i;
+    return -1;
+}
+
+/* On top of each step's page: four steps, each a circle (its number; a tick when done) and its name, the
+   page's own underlined in red. */
+static void paint_steps(HDC dc)
+{
+    static const WCHAR *const names[N_STEPS] = { L"This PC", L"The game", L"DLC", L"Android" };
+    const int cur = setup_step(s_cur_tab), x0 = SB_W + PAD + X0, w = 140;
+    int i;
+    RECT line = { S(x0), S(DY + 42), S(x0 + 560), S(DY + 43) };
+    HBRUSH b = CreateSolidBrush(C_CARD_LINE);
+    FillRect(dc, &line, b);
+    DeleteObject(b);
+    SetBkMode(dc, TRANSPARENT);
+    for (i = 0; i < N_STEPS; i++) {
+        const int x = x0 + i * w, done = s_step_done[i] == 1, here = i == cur;
+        RECT c = { S(x), S(DY + 4), S(x + 26), S(DY + 30) }, t;
+        WCHAR num[4];
+        const WCHAR *state = done ? L"Done" : s_step_done[i] < 0 ? L"Optional" : L"To do";
+        theme_round_rect(dc, &c, S(13), done ? C_GOOD : here ? C_ACCENT : C_CARD,
+                         done || here ? THEME_NONE : RGB(90, 94, 106), (float)S(1));
+        SetTextColor(dc, done || here ? RGB(255, 255, 255) : C_MUTED);
+        if (done) {
+            WCHAR g[2] = { 0xE73E, 0 };
+            SelectObject(dc, s_icons);
+            DrawTextW(dc, g, 1, &c, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        } else {
+            swprintf_s(num, 4, L"%d", i + 1);
+            SelectObject(dc, s_nav);
+            DrawTextW(dc, num, -1, &c, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        SelectObject(dc, s_nav);
+        SetTextColor(dc, here ? RGB(255, 255, 255) : RGB(200, 202, 210));
+        SetRect(&t, S(x + 34), S(DY + 0), S(x + w - 4), S(DY + 18));
+        DrawTextW(dc, names[i], -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        SelectObject(dc, s_font);
+        SetTextColor(dc, done ? C_GOOD : C_MUTED);
+        SetRect(&t, S(x + 34), S(DY + 18), S(x + w - 4), S(DY + 36));
+        DrawTextW(dc, state, -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        if (here) {
+            RECT u = { S(x), S(DY + 41), S(x + w - 8), S(DY + 44) };
+            b = CreateSolidBrush(C_ACCENT);
+            FillRect(dc, &u, b);
+            DeleteObject(b);
+        }
+        SetRect(&s_step_rects[i], S(x), S(DY), S(x + w - 8), S(DY + 44));
+    }
+}
+
 /* The window: the sidebar, the page's title, its cards. */
 static void paint_window(HDC dc)
 {
-    static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install the game", L"DLC",
-                                                    L"Saves", L"Paint Tool", L"Movies", L"Android", L"Mods",
+    static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
+                                                    L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
                                                     L"Music", L"Roster: sort categories", L"Texture packs",
-                                                    L"First time setup" };
+                                                    L"Setup" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -7104,7 +7224,7 @@ static void paint_window(HDC dc)
     r.top = S(44); r.bottom = S(64);
     DrawTextW(dc, L"PC PORT", -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
     for (k = 0; k < NAV_N; k++) {
-        const int sel = k_nav[k].tab == s_cur_tab, hot = k == s_nav_hover, big = k < NAV_MAIN;
+        const int sel = k_nav[k].tab == nav_tab(s_cur_tab), hot = k == s_nav_hover, big = k < NAV_MAIN;
         const RECT n = nav_rect(k);
         RECT it = { 0, S(n.top), S(SB_W), S(n.bottom) };
         WCHAR icon[2] = { k_nav[k].icon, 0 };
@@ -7198,6 +7318,8 @@ static void paint_window(HDC dc)
         }
         if (s_cur_tab == TAB_PLAY)
             paint_play(dc);
+        if (setup_step(s_cur_tab) >= 0)
+            paint_steps(dc);
     }
     SelectObject(dc, old);
 }
@@ -7568,10 +7690,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(w, L"open", KOFI_URL, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
-        if (k >= 0 && k_nav[k].tab != s_cur_tab)
+        if (k >= 0 && k_nav[k].tab == TAB_SETUP && setup_step(s_cur_tab) < 0)
+            show_tab(setup_first_step());
+        else if (k >= 0 && k_nav[k].tab != nav_tab(s_cur_tab))
             show_tab(k_nav[k].tab);
+        else if (k < 0 && step_at(pt) >= 0)
+            show_tab(k_steps[step_at(pt)]);
         else if (k < 0 && play_link_at(pt) >= 0)
-            show_tab(play_link_at(pt));
+            show_tab(play_link_at(pt) == TAB_SETUP ? setup_first_step() : play_link_at(pt));
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -7598,7 +7724,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
             if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) ||
-                play_link_at(pt) >= 0) {
+                play_link_at(pt) >= 0 || step_at(pt) >= 0) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
             }
