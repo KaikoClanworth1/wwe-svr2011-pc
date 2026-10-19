@@ -1216,15 +1216,23 @@ REX_HOOK_RAW(sub_822446E0) {
   } else if (count > g_pin.count) {
     g_pin.count = count;
   } else if (count == 0 && g_pin.count > 0) {
-    if (!g_pin.broken) {
-      g_pin.broken = true;
-      static int fixed = 0;
-      if (++fixed <= 20 || fixed % 100 == 0)
-        REXLOG_INFO("frame rate: a pin count of {} dropped to 0 - the count goes on by its timing ({} times)",
-                    g_pin.count, fixed);
+    // Only the lost step is put right: a count of 1 dropping when the 2 is due (140 frames in). A count
+    // dropping at any other moment, or from 2, is the pinned man kicking out - not always with a motion
+    // change in the same update: taken as broken, nobody kicked out at 30 fps (report 2026-10-17).
+    const uint32_t into = frame - g_pin.start;
+    if (!g_pin.broken && !(g_pin.count == 1 && into >= 128 && into <= 160)) {
+      g_pin = PinGuard{};  // (a kick-out: the game's own count)
+    } else {
+      if (!g_pin.broken) {
+        g_pin.broken = true;
+        static int fixed = 0;
+        if (++fixed <= 20 || fixed % 100 == 0)
+          REXLOG_INFO("frame rate: a pin count of {} dropped to 0 {} frames into the count - it goes on by its timing ({} times)",
+                      g_pin.count, into, fixed);
+      }
+      g_pin.count = std::max(g_pin.count, CountAt(into));
+      Wr32(base + judge + 100, uint32_t(g_pin.count));
     }
-    g_pin.count = std::max(g_pin.count, CountAt(frame - g_pin.start));
-    Wr32(base + judge + 100, uint32_t(g_pin.count));
   }
   if (!LostTraceOn()) return __imp__sub_822446E0(ctx, base);
   const LostSnap before = SnapLost(base);
