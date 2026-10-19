@@ -1401,8 +1401,9 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     s_base = id_base;
     h = add(tab, L"Static", L"Mods", SS_LEFT, 28, 54, 300, 28, 0);
     if (title_font) SendMessageW(h, WM_SETFONT, (WPARAM)title_font, TRUE);
-    add(tab, L"Static", L"Arenas, superstars and more. + adds a .svrmod file, \x2212 removes the selected "
-                        L"mod, the tick turns it on or off.", SS_LEFT, 28, 86, 560, 36, 0);
+    add(tab, L"Static", L"Arenas, superstars and more. + adds .svrmod files, \x2212 removes the selected mods, "
+                        L"On / Off or the tick turns them on or off (Ctrl / Shift + click: several, Ctrl+A: all).",
+        SS_LEFT, 28, 86, 560, 36, 0);
     s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_EDITLABELS | WS_BORDER | WS_TABSTOP,
                  28, 126, 512, 250, id_base + M_LIST);
     ListView_SetExtendedListViewStyle(s_list, LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_DOUBLEBUFFER);
