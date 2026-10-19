@@ -3075,12 +3075,9 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Button", L"Mute", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 464, 306, 84, 24, ID_MUTE);
     add(TAB_SETTINGS, L"Button", L"High CPU priority (helps on busy or weak PCs)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 334, 530, 24, ID_PRIORITY);
-    add(TAB_SETTINGS, L"Button", L"Entrance music", BS_GROUPBOX, X0, 374, 560, 68, 0);
-    add(TAB_SETTINGS, L"Static", L"Create An Entrance \x2192 Music \x2192 USER PLAYLIST plays your own songs: "
-                                 L"add them on the Music tab.",
-        SS_LEFT, X0 + 16, 400, 370, 36, 0);
-    add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 400, 146, 28,
-        ID_MUSIC_OPEN);
+    /* Launcher: its own settings (launcher.ini) - the update check (up_setup puts it here). Entrance music is on
+       the Music page. */
+    add(TAB_SETTINGS, L"Button", L"Launcher", BS_GROUPBOX, X0, 374, 560, 68, 0);
     add(TAB_SETTINGS, L"Button", L"Game", BS_GROUPBOX, X0, 450, 560, 78, 0);
     add(TAB_SETTINGS, L"Static", L"Language", SS_LEFT, X0 + 16, 474, 130, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 470, 200, 200,
@@ -6912,7 +6909,8 @@ static void up_setup(void)
     add(-1, L"Static", v, SS_LEFT, X0 + 16, 354, 150, 20, ID_VERSION);
     add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 290, 550, 156, 36, ID_UP_STATUS);
     add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 490 + 122, 222, 104, 28, ID_UP_BUTTON);
-    add(-1, L"Button", L"Check when the launcher starts", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 406, 300, 22, ID_UP_AUTO);
+    add(TAB_SETTINGS, L"Button", L"Check for updates when the launcher starts", BS_AUTOCHECKBOX | WS_TABSTOP,
+        X0 + 16, 404, 400, 22, ID_UP_AUTO);
     add(TAB_PLAY, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 290, 584, 156, 4, ID_UP_PROGRESS);
     ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     CheckDlgButton(s_wnd, ID_UP_AUTO,
