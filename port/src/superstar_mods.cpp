@@ -24,6 +24,7 @@
 //   mods are.
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "cae_mod_motions.h"
+#include "no_mods.h"
 #include "superstar_mods.h"
 #include "universe_mods.h"
 #include "universe_welcome.h"
@@ -616,6 +617,7 @@ bool FitModelBudget(svrfmt::Bytes& pac, std::string& notes) {
 }
 
 void LoadMods() {
+  if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
   const fs::path dir = g_game / "Mods" / "Superstars";
   if (!fs::is_directory(dir, ec)) return;
@@ -897,6 +899,7 @@ const AttireMod* AttireModOf(uint32_t id, uint32_t attire) {
 }
 
 void LoadAttireMods() {
+  if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
   const fs::path dir = g_game / "Mods" / "Attires";
   const fs::path overlay = g_game / "Mods" / "SuperstarOverlay";
@@ -1792,6 +1795,7 @@ REX_HOOK_RAW(sub_825EA4E8) {
 // Hardy's with the name swapped (WriteAnnouncerNames).
 constexpr uint32_t kTemplateCall = 112;  // (Matt Hardy: every category his name is in)
 std::map<std::string, std::string> CawCalls() {
+  if (svr2011::NoMods()) return {};  // (Start Without Mods: no_mods.h)
   static std::map<std::string, std::string> calls;
   static fs::file_time_type stamp{};
   const fs::path file = g_game / "Mods" / "caw_announcer.txt";
@@ -2549,6 +2553,7 @@ REX_HOOK_RAW(sub_82589198) {
 namespace svr2011 {
 
 void CopySuperstarMovies(const std::filesystem::path& movies) {
+  if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
   const fs::path dir = rex::filesystem::GetExecutableFolder() / "Mods" / "Superstars";
   for (const auto& e : fs::directory_iterator(dir, ec)) {

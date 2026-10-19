@@ -2185,6 +2185,8 @@ static int shaders_ready(void)
 
 static void play_with(int no_mods);
 static void play(void) { play_with(0); }
+static int saves_backup_to(const WCHAR *suffix, WCHAR *out);
+static int saves_dir(WCHAR *out);
 /* no_mods: the game without any mod (Start Without Mods): SVR2011_NO_MODS=1 in its environment. */
 static void play_with(int no_mods)
 {
@@ -2234,6 +2236,13 @@ static void play_with(int no_mods)
     swprintf_s(cmd, MAX_PATH + 4, L"\"%s\"", exe);
     memset(&si, 0, sizeof si);
     si.cb = sizeof si;
+    if (no_mods) {   /* (a backup of the saves first, each time: the way back if that run changes them) */
+        WCHAR saves[MAX_PATH], before[MAX_PATH];
+        if (saves_dir(saves) && dir_exists(saves) && !saves_backup_to(L" (before Start Without Mods)", before) &&
+            MessageBoxW(s_wnd, L"The saves could not be backed up first. Start without mods anyway?", WINDOW_TITLE,
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+            return;
+    }
     SetEnvironmentVariableW(L"SVR2011_NO_MODS", no_mods ? L"1" : NULL);
     if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, s_game_dir, &si, &pi)) {
         WCHAR m[MAX_PATH + 64];

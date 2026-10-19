@@ -44,6 +44,7 @@
 // instead of sub_82595428). Unchanged entries are streamed from the original
 // files; changed ones are re-compressed (real BPE).
 #include "move_packs.h"
+#include "no_mods.h"
 #include "superstar_mods.h"
 #include "startup_pump.h"
 
@@ -1348,6 +1349,7 @@ const std::string& PacListFolder() { return g_folder; }
 // pac\gm.pac never was.)
 constexpr const char* kGimmickPac = "bsgimmick.pac";
 fs::path BackstageGimmickPac(const fs::path& game) {
+  if (svr2011::NoMods()) return {};  // (Start Without Mods: no_mods.h)
   std::error_code ec;
   std::vector<fs::path> dirs;
   for (const auto& e : fs::directory_iterator(game / "Mods" / "Backstage", ec))
@@ -1489,6 +1491,11 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     return;
   }
   const fs::path game = rex::filesystem::GetExecutableFolder();
+  if (svr2011::NoMods()) {  // (Start Without Mods: the overlay left as it is, the stock tables - no_mods.h)
+    REXLOG_INFO("[svr2011] move packs: started without mods - none merged, the overlay kept");
+    LoadMoveTables(game);
+    return;
+  }
   const fs::path overlay = game / "Mods" / "PacOverlay";
   std::error_code ec;
   // the packs: superstar mods' moves/ folders and Mods/Moves/<pack>
@@ -1725,7 +1732,7 @@ namespace svr2011 {
 void LoadMoveTables(const fs::path& game) {
   const fs::path overlay = game / "Mods" / "PacOverlay" / "misc.pac";
   std::error_code ec;
-  const fs::path src = fs::exists(overlay, ec) ? overlay : game / "pac" / "misc.pac";
+  const fs::path src = !svr2011::NoMods() && fs::exists(overlay, ec) ? overlay : game / "pac" / "misc.pac";
   Bytes blob;
   if (!ReadEntry(src, "MOVS/WAZE", blob)) {
     REXLOG_WARN("[svr2011] move packs: no MOVS/WAZE in {} - no match fallback for removed moves", src.string());

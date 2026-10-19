@@ -1,5 +1,6 @@
 // What online needs to trust - see online_files.h.
 #include "online_files.h"
+#include "no_mods.h"
 
 #include <algorithm>
 #include <atomic>
@@ -271,6 +272,7 @@ bool Cosmetic(const fs::path& p) {
 }
 
 std::string BuildModSet() {
+  if (svr2011::NoMods()) return {};  // (Start Without Mods: no_mods.h)
   std::vector<std::string> lines;
   const fs::path mods = rex::filesystem::GetExecutableFolder() / "Mods";
   std::error_code ec;

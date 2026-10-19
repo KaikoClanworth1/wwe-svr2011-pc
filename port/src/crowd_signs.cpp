@@ -23,6 +23,7 @@
 //    these;
 //  - the merged bank is handed to the match loader instead of the file's.
 #include "crowd_signs.h"
+#include "no_mods.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -69,6 +70,7 @@ svrfmt::Bytes SignEntry(const fs::path& dds) {
 }
 
 void LoadPacks() {
+  if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
   const fs::path dir = rex::filesystem::GetExecutableFolder() / "Mods" / "Signs";
   std::vector<fs::path> packs;
