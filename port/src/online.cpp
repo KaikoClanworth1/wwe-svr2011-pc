@@ -950,3 +950,19 @@ REX_HOOK_RAW(sub_82519C60) {
 namespace svr2011 {
 uint32_t OnlineScratch() { return g_scratch; }
 }  // namespace svr2011
+
+// The game's DLC check on joining (sub_824CDE90: attribute 5 of the session's
+// search entry - one number the host's game advertises - must be 113, else
+// "Unable to join the session due to a difference in downloadable content",
+// C67E). Not a list of packs; what the number means isn't known yet: logged
+// (the entry +48 the attribute) for the reports.
+REX_EXTERN(__imp__sub_824FDFC8);
+REX_HOOK_RAW(sub_824FDFC8) {
+  __imp__sub_824FDFC8(ctx, base);
+  static uint32_t last = 0;
+  if (ctx.r3.u32 != last) {
+    last = ctx.r3.u32;
+    REXLOG_INFO("online: a session's DLC attribute is {} (the game wants 113{})", ctx.r3.u32,
+                ctx.r3.u32 == 113 ? "" : " - it says 'a difference in downloadable content'");
+  }
+}
