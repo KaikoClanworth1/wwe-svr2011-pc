@@ -78,7 +78,8 @@ std::vector<Option> OptionsFor(uint32_t rule) {
   const bool normal = std::find(std::begin(kNormal), std::end(kNormal), rule) != std::end(kNormal);
   if (normal || rule == 0x08 || rule == 0x0F) {
     o.push_back(kWe);
-    for (int k = 0; k < 3; ++k) o.push_back(kStage[k]);
+    // (not NORMAL / BLOOD / FINISHER: a FIRST BLOOD fall froze the match - match_types.cpp SetsFor)
+    for (int k : {0, 2}) o.push_back(kStage[k]);
     if (rule == 0x0D) o.push_back(kMysteryOpt);  // (TRIPLE THREAT: 2 players + the hidden CPU)
     if (rule == 0x08) o.push_back(kGeOpt);       // (6-MAN: 2 players + 4 CPU entrants)
     if (rule == 0x08) o.push_back(kSkOpt);       // (6-MAN: the 2 players against 4 CPUs in turn)
@@ -88,8 +89,7 @@ std::vector<Option> OptionsFor(uint32_t rule) {
     o.push_back(kStage[4]);  // (as the other PORT RULES options: not by the switch mods - both sides must agree)
     o.push_back(kStage[5]);
   } else if (rule >= 0x31 && rule <= 0x34) {
-    o.push_back(kTl);
-    o.push_back(kStage[3]);
+    o.push_back(kTl);  // (not the cell's BLOOD / LMS / SUB: its FIRST BLOOD fall froze the match)
     o.push_back(kRoofOpt);
   } else if ((rule >= 0x3C && rule <= 0x3F) || rule == 0x51) {
     o.push_back(kInside);

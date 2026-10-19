@@ -273,12 +273,20 @@ uint32_t SetRule(uint32_t normal, int set) {
 }
 // The sets a mode's submenu offers, in row order: the three normal ones, then
 // (one on one, two on two, triple threat, fatal-4-way) the table / ladder
-// ones (switch mod three_stages_tables_ladders) and the cell one.
+// ones (switch mod three_stages_tables_ladders).
+// The sets with a FIRST BLOOD fall (1 NORMAL / FIRST BLOOD / FINISHERS, 4 HELL IN A CELL: FIRST BLOOD / LMS /
+// SUBMISSION) aren't offered: a fall won by first blood never reaches the falls judge - the game's own
+// blood win starts and the match froze (report 2026-10-16). Back when that fall is handled.
 std::vector<int> SetsFor(uint32_t normal) {
-  std::vector<int> sets{0, 1, 2};
+  static bool told = false;
+  if (!told) {
+    told = true;
+    REXLOG_INFO("match types: THREE STAGES OF HELL sets with a FIRST BLOOD fall left out (a first blood win froze "
+                "the match)");
+  }
+  std::vector<int> sets{0, 2};
   if (SetRule(normal, 3) == normal) return sets;
   if (svr2011::MatchTypeSwitchOn("three_stages_tables_ladders")) sets.push_back(5), sets.push_back(3);
-  sets.push_back(4);
   return sets;
 }
 
