@@ -48,6 +48,7 @@ os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
 from aiohttp import web
 
 import gamespy as gs
+import discovery
 import leaderboards
 import media
 import relay
@@ -531,6 +532,8 @@ class Service:
             blobs = gs.RemoteBlobs(args.storage_url, read_key(args.storage_key))
         self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20, blobs=blobs)
         self.sake = gs.Sake(self.store)
+        discovery.init(self.store)
+        self.mod_upload = asyncio.Lock()  # (one .svrmod stored at a time: they are up to 250 MB, held in memory)
         self.accounts = Accounts(self.store)
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
@@ -1113,6 +1116,165 @@ class Service:
             return await handler(self, request)
         return wrapped
 
+    # Discovery: players' .svrmod mods (discovery.py). Browsing, pictures and downloads need no account;
+    # uploads need one (its name is the author); owners delete their own, the dashboard hides / deletes any.
+
+    def _mod_id(self, request):
+        try:
+            return int(request.match_info["id"])
+        except (KeyError, ValueError):
+            return None
+
+    async def api_mods(self, request):
+        q = request.query
+        try:
+            page = max(0, int(q.get("page", "0")))
+        except ValueError:
+            page = 0
+        types = sum(v for k, v in discovery.TYPES.items() if k in q.get("type", "").lower().split(","))
+        res = await asyncio.get_running_loop().run_in_executor(
+            None, discovery.search, self.store, q.get("q", "")[:100], types, q.get("tag", "")[:24],
+            q.get("sort", "new"), page)
+        return web.json_response(res)
+
+    async def api_mod(self, request):
+        mid = self._mod_id(request)
+        if mid is None:
+            return web.Response(status=400)
+        if request.method == "DELETE":
+            account = self.account(request)
+            if not account:
+                return web.Response(status=401)
+            if discovery.owner_of(self.store, mid) != account["id"]:
+                return web.json_response({"ok": False, "error": "Only its uploader can delete it."}, status=403)
+            await asyncio.get_running_loop().run_in_executor(None, discovery.delete, self.store, mid)
+            gs.log("discovery: mod %d deleted by its owner %s" % (mid, account["name"]))
+            return web.json_response({"ok": True})
+        info, _ = discovery.get(self.store, mid)
+        return web.json_response(info) if info else web.Response(status=404)
+
+    async def api_mod_file(self, request):
+        mid = self._mod_id(request)
+        info, blobs = discovery.get(self.store, mid) if mid is not None else (None, None)
+        if not info:
+            return web.Response(status=404)
+        data = await asyncio.get_running_loop().run_in_executor(None, self.store._get_blob, blobs["sha"])
+        if data is None:
+            return web.Response(status=404)
+        discovery.counted(self.store, mid)
+        self.stats.count("downloads")
+        name = re.sub(r'[^A-Za-z0-9 ._()-]', "_", blobs["file_name"] or "mod.svrmod")
+        return web.Response(body=data, content_type="application/octet-stream",
+                            headers={"Content-Disposition": 'attachment; filename="%s"' % name})
+
+    async def api_mod_image(self, request):
+        mid = self._mod_id(request)
+        info, blobs = discovery.get(self.store, mid) if mid is not None else (None, None)
+        try:
+            n = int(request.match_info["n"])
+        except ValueError:
+            return web.Response(status=400)
+        if not info or not 0 <= n < len(blobs["images"]):
+            return web.Response(status=404)
+        data = await asyncio.get_running_loop().run_in_executor(None, self.store._get_blob, blobs["images"][n])
+        if data is None:
+            return web.Response(status=404)
+        return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+    async def api_mod_upload(self, request):
+        """multipart: name, version, types (entrance,superstar,arena,moveset), tags, description; svrmod (the file);
+        img0-img3 (1024 x 768 JPEG). Every one but tags and description is needed."""
+        account = self.account(request)
+        if not account:
+            return web.json_response({"ok": False, "error": "Sign in online first."}, status=401)
+        length = request.content_length
+        if not length:
+            return web.json_response({"ok": False, "error": "no length"}, status=411)
+        if length > discovery.MAX_MOD + (8 << 20):
+            return web.json_response({"ok": False, "error": "larger than %d MB" % (discovery.MAX_MOD >> 20)},
+                                     status=413)
+        if self.mod_upload.locked():
+            return web.json_response({"ok": False, "error": "Another mod is being stored - try again in a minute."},
+                                     status=503)
+        async with self.mod_upload:
+            fields, images, data, file_name = {}, {}, None, ""
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                name = part.name or ""
+                if name == "svrmod":
+                    file_name = os.path.basename((part.filename or "").replace("\\", "/"))
+                    data = await part.read()
+                elif re.fullmatch(r"img[0-3]", name):
+                    images[int(name[3])] = await part.read()
+                elif name in discovery.MAX_TEXT or name == "types":
+                    fields[name] = (await part.text()).strip()[:discovery.MAX_TEXT.get(name, 100)]
+                else:
+                    await part.release()
+            types = sum(v for k, v in discovery.TYPES.items() if k in fields.get("types", "").lower().split(","))
+            why = None
+            if not fields.get("name") or not fields.get("version") or not types:
+                why = "A name, a version and the mod's type are needed."
+            elif not data or not file_name.lower().endswith(".svrmod"):
+                why = "Only a .svrmod file can be uploaded."
+            elif sorted(images) != list(range(discovery.IMAGES)):
+                why = "Four pictures are needed."
+            else:
+                for n, img in sorted(images.items()):
+                    if len(img) > discovery.MAX_IMG or discovery.jpeg_size(img) != (discovery.IMG_W, discovery.IMG_H):
+                        why = "Picture %d isn't a %d x %d JPEG." % (n + 1, discovery.IMG_W, discovery.IMG_H)
+                        break
+            loop = asyncio.get_running_loop()
+            if not why:
+                manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
+            if why:
+                gs.log("discovery: upload from %s refused: %s" % (account["name"], why))
+                return web.json_response({"ok": False, "error": why}, status=400)
+            fields["types"] = types
+            fields["tags"] = discovery.clean_tags(fields.get("tags", ""))
+            fields.setdefault("description", "")
+            mid = await loop.run_in_executor(None, discovery.add, self.store, account["id"], account["name"], fields,
+                                             data, file_name, [images[n] for n in range(discovery.IMAGES)])
+            gs.log("discovery: mod %d \"%s\" %s (%d bytes, %s) from %s" % (
+                mid, fields["name"], fields["version"], len(data), manifest.get("type", "?"), account["name"]))
+            return web.json_response({"ok": True, "id": mid, "size": len(data)})
+
+    @admin_only
+    async def admin_mods(self, request):
+        q = request.query
+        try:
+            page = max(0, int(q.get("page", "0")))
+        except ValueError:
+            page = 0
+        res = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: discovery.search(self.store, q.get("q", ""), 0, "", "new", page, True))
+        return web.json_response(res)
+
+    @admin_only
+    async def admin_mod_image(self, request):
+        mid = self._mod_id(request)
+        _, blobs = discovery.get(self.store, mid, True) if mid is not None else (None, None)
+        if not blobs or not blobs["images"]:
+            return web.Response(status=404)
+        data = await asyncio.get_running_loop().run_in_executor(None, self.store._get_blob, blobs["images"][0])
+        return web.Response(body=data or b"", content_type="image/jpeg")
+
+    @admin_only
+    async def admin_mod_action(self, request):
+        mid, action = self._mod_id(request), request.match_info["action"]
+        if mid is None or discovery.owner_of(self.store, mid) is None:
+            return web.json_response({"ok": False, "error": "No such mod."}, status=404)
+        if action == "delete":
+            await asyncio.get_running_loop().run_in_executor(None, discovery.delete, self.store, mid)
+        elif action in ("hide", "show"):
+            discovery.set_hidden(self.store, mid, action == "hide")
+        else:
+            return web.json_response({"ok": False}, status=400)
+        gs.log("admin: mod %d %s" % (mid, action))
+        return web.json_response({"ok": True})
+
     @admin_only
     async def dashboard(self, request):
         return web.Response(text=self.dashboard_html, content_type="text/html", charset="utf-8")
@@ -1445,6 +1607,11 @@ class Service:
         app.router.add_get(b + "/api/media/{sha}", self.api_media_get)  # (and HEAD)
         app.router.add_route("*", b + "/api/entrance/{fileid}", self.api_entrance)
         app.router.add_route("*", b + "/game/{tail:.*}", self.game)
+        app.router.add_get(b + "/api/mods", self.api_mods)
+        app.router.add_post(b + "/api/mods", self.api_mod_upload)
+        app.router.add_route("*", b + "/api/mods/{id}", self.api_mod)  # (GET; DELETE: its owner)
+        app.router.add_get(b + "/api/mods/{id}/file", self.api_mod_file)
+        app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
         app.router.add_get("/", self.dashboard)
@@ -1454,6 +1621,9 @@ class Service:
         app.router.add_get("/api/admin/upload/{id}/full.png", self.admin_upload_full)
         app.router.add_get("/api/admin/leaderboard", self.admin_leaderboard)
         app.router.add_post("/api/admin/upload/{id}/{action}", self.admin_upload_action)
+        app.router.add_get("/api/admin/mods", self.admin_mods)
+        app.router.add_get("/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
+        app.router.add_post("/api/admin/mod/{id}/{action}", self.admin_mod_action)
         app.router.add_get("/api/admin/users", self.admin_users)
         app.router.add_get("/api/admin/live", self.admin_live)
         app.router.add_get("/api/admin/log", self.admin_log)
@@ -1505,7 +1675,7 @@ def storage_app(args):
     async def health(request):
         return web.json_response({"ok": True, "role": "storage"})
 
-    app = web.Application(client_max_size=(args.max_file_mb + 1) << 20 if args.max_file_mb < 1024 else 1 << 31)
+    app = web.Application(client_max_size=1 << 31)  # (any blob: songs, movies, mods - only the key's holder puts)
     app.router.add_route("*", "/blob/{sha}", blob)
     app.router.add_get("/__health", health)
     return app

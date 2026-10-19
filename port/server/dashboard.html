@@ -159,6 +159,12 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     <tbody id="uploads"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
   </table></div>
 
+  <h2>Mods (Discovery) <span class="spacer"></span><input class="filter" id="f-mod" placeholder="Filter"></h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Name</th><th>Type</th><th>Author</th><th>Version</th><th class="num">Size</th><th class="num">Downloads</th><th>Uploaded</th><th></th></tr></thead>
+    <tbody id="mods"><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
+  </table></div>
+
   <h2>Accounts <span class="spacer"></span><input class="filter" id="f-acc" placeholder="Filter"></h2>
   <div class="scroll"><table>
     <thead><tr><th>Name</th><th>Joined</th><th>Last seen</th><th class="num">Uploads</th><th class="num">Storage</th><th></th></tr></thead>
@@ -288,7 +294,19 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     }).catch(function (e) { el('err').textContent = 'Stats: ' + e.message; });
   }
 
-  var uploads = [], users = [];
+  var uploads = [], users = [], mods = [];
+  function renderMods() {
+    var f = el('f-mod').value.toLowerCase();
+    var rows = mods.filter(function (m) { return !f || (m.name + ' ' + m.author + ' ' + m.tags.join(' ')).toLowerCase().indexOf(f) >= 0; });
+    el('mods').innerHTML = rows.length ? rows.map(function (m) {
+      return '<tr><td>' + esc(m.name) + (m.hidden ? ' <span class="tag bad">hidden</span>' : '') +
+        '</td><td>' + esc(m.types.join(', ')) + '</td><td>' + esc(m.author) + '</td><td>' + esc(m.version) +
+        '</td><td class="num">' + bytes(m.size) + '</td><td class="num">' + m.downloads + '</td><td>' + ago(m.created) +
+        '</td><td class="num"><button class="btn" data-modview="' + m.id + '">View</button>' +
+        '<button class="btn" data-mod="' + m.id + '" data-a="' + (m.hidden ? 'show' : 'hide') + '">' + (m.hidden ? 'Show' : 'Hide') + '</button>' +
+        '<button class="btn danger" data-mod="' + m.id + '" data-a="delete">Delete</button></td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">No mods.</td></tr>';
+  }
   function renderUploads() {
     var f = el('f-up').value.toLowerCase();
     var rows = uploads.filter(function (u) { return !f || (u.title + ' ' + u.author).toLowerCase().indexOf(f) >= 0; });
@@ -406,6 +424,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     leaderboard();
     api('api/admin/uploads').then(function (d) { uploads = d; renderUploads(); }).catch(function () {});
     api('api/admin/users').then(function (d) { users = d; renderUsers(); }).catch(function () {});
+    api('api/admin/mods').then(function (d) { mods = d.mods; renderMods(); }).catch(function () {});
   }
 
   document.addEventListener('click', function (e) {
@@ -422,14 +441,23 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       el('viewer').classList.add('on');
       return;
     }
+    if (b.dataset.modview) {
+      var m = mods.filter(function (x) { return String(x.id) === b.dataset.modview; })[0] || {};
+      el('v-img').onerror = null;
+      el('v-img').src = 'api/admin/mod/' + b.dataset.modview + '/image.jpg';
+      el('v-cap').innerHTML = esc(m.name || '') + '<small>' + esc((m.types || []).join(', ')) + ' by ' +
+        esc(m.author || '') + ' &middot; tap to close</small>';
+      el('viewer').classList.add('on');
+      return;
+    }
     if (b.dataset.r) {
       range = b.dataset.r;
       document.querySelectorAll('#range button').forEach(function (x) { x.classList.toggle('on', x === b); });
       stats(); return;
     }
-    var a = b.dataset.a, what = b.dataset.up ? 'upload' : b.dataset.user ? 'user' : null;
+    var a = b.dataset.a, what = b.dataset.up ? 'upload' : b.dataset.user ? 'user' : b.dataset.mod ? 'mod' : null;
     if (!what) return;
-    var id = b.dataset.up || b.dataset.user;
+    var id = b.dataset.up || b.dataset.user || b.dataset.mod;
     if (a === 'delete' && !confirm(what === 'user' ? 'Delete this account and everything it uploaded?' : 'Delete this upload?')) return;
     if (a === 'reset' && !confirm('Give this account a new random password? Its sessions are signed out.')) return;
     b.disabled = true;
@@ -439,6 +467,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     }).catch(function (err) { alert(err.message); b.disabled = false; });
   });
   el('f-up').addEventListener('input', renderUploads);
+  el('f-mod').addEventListener('input', renderMods);
   el('f-acc').addEventListener('input', renderUsers);
   window.addEventListener('resize', charts);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') el('viewer').classList.remove('on'); });
