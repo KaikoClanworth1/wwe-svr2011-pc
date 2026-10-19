@@ -177,6 +177,16 @@ std::vector<std::string> Arena::FitFile(const std::vector<std::string>& keep) {
   return reduced;
 }
 
+ArenaGeometry GeometryOf(const Arena& a) {
+  ArenaGeometry g;
+  for (const auto& am : a.models)
+    for (const auto& m : am.model.meshes) {
+      g.verts += m.verts.size();
+      for (const auto& s : m.strips) g.indices += s.indices.size();
+    }
+  return g;
+}
+
 BundleTexture* Arena::FindTexture(const std::string& name) {
   for (auto& b : bundles)
     for (auto& t : b.textures)

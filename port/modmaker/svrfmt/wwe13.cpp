@@ -1507,6 +1507,11 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
                           std::to_string(dropped) + " biggest mesh(es) left out");
     outm[id] = Pack(j);
   }
+  // 0xC35A (50010): the "MipmapData" table (XML: texture name -> mip level the game skips to). Always the host's: WWE
+  // 2K16 / 2K17's (241 entries, NumOfData 241; every stock 2011 arena says 200) crashed the game just before the match
+  // - a render target resolve into a null texture (2K17 bg09, user report 15 Oct; bisected in game: the host's
+  // 0xC35A alone makes it play)
+  outm.erase(0xC35A);
   // the host's: the ring kit, and data files WWE '13 has none of (not its
   // models; not its ad boards or titantron flip-book, placed for its own hall)
   for (const auto& e : host.entries)
@@ -1860,6 +1865,14 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   out = a.Save(error);
   if (error && !error->empty()) return false;
   if (out.size() > host.original_file) rep.notes.push_back("still bigger than the host file");
+  // (more geometry than any 2011 arena: the game crashes loading it - WWE 2K16 bg06 / bg12 / bg15)
+  if (const ArenaGeometry g = GeometryOf(a); g.Over()) {
+    if (error)
+      *error = "this arena has more 3D detail than SvR 2011 can load (" + std::to_string(g.verts) + " points and " +
+               std::to_string(g.indices) + " corners; the game's own arenas have up to " + std::to_string(kMaxArenaVerts) +
+               " and " + std::to_string(kMaxArenaIndices) + "): it would crash the game when the match loads";
+    return false;
+  }
   return true;
 }
 

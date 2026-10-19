@@ -11,6 +11,7 @@
 #include <functional>
 #include <sstream>
 
+#include "svrfmt/arena.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
 #include "svrfmt/zip_write.h"
@@ -628,12 +629,74 @@ const char* const kArenaBases[] = {"arena_SD", "arena_RAW", "arena_WM26", "arena
                                    "arena_BASH", "arena_NoC", "arena_BP", "arena_RR", "arena_BR", "arena_Series", "arena_TLC",
                                    "arena_ttt", "arena_EC", "arena_back", "arena_EXT", "arena_ECW", "arena_drui"};
 
+// An arena's 0xC35A, the "MipmapData" table (XML, texture -> mip level): its NumOfData (every stock arena says 200), -1
+// none. WWE 2K16 / 2K17 arenas converted before 16 Oct kept their own (241): the game crashed just before the match
+// (2K17 bg09, a render target resolve into a null texture; the 2011 arena's table alone made it play - its own trimmed
+// to 234 entries still crashed). WWE '13 ports keep theirs (234) and play: the check is for 2K16 / 2K17 sources only.
+int MipmapDataCount(const Epac& e) {
+  std::vector<PachEntry> ents;
+  if (e.groups.empty() || e.groups[0].entries.empty() || !PachRead(e.groups[0].entries[0].data, ents)) return -1;
+  for (const auto& x : ents)
+    if (x.id == 0xC35A) {
+      const Bytes u = Unpack(x.data);
+      const std::string t(u.begin(), u.end());
+      const size_t at = t.find("NumOfData=\"");
+      return at == std::string::npos ? -1 : std::atoi(t.c_str() + at + 11);
+    }
+  return -1;
+}
+// the fix: the 2011 RAW arena's table put in (as the converter does now)
+std::function<void()> RepairMipmapData(const fs::path& f) {
+  return [f] {
+    Bytes b, rb;
+    Epac e, r;
+    std::vector<PachEntry> ents, rents;
+    if (!ReadFile(PathStr(f), b) || !EpacRead(b, e) || e.groups.empty() || e.groups[0].entries.empty() ||
+        !PachRead(e.groups[0].entries[0].data, ents))
+      return;
+    if (g_game.empty() || !ReadFile(PathStr(fs::path(g_game) / "pac" / "bg" / "bg01.pac"), rb) || !EpacRead(rb, r) ||
+        r.groups.empty() || r.groups[0].entries.empty() || !PachRead(r.groups[0].entries[0].data, rents))
+      return;
+    for (const auto& x : rents)
+      if (x.id == 0xC35A)
+        for (auto& y : ents)
+          if (y.id == 0xC35A) y.data = x.data;
+    e.groups[0].entries[0].data = PachWrite(ents);
+    WriteFile(PathStr(f), EpacWrite(e));
+  };
+}
+
 void CheckArenaPac(const fs::path& dir, const fs::path& f, std::vector<Problem>& p) {
   Bytes b;
   Epac e;
   if (!Exists(f)) p.push_back(Error("The arena's file is missing: the game skips it.").With(kOpen, OpenIt(dir)).With("Turn it off", TurnOff(dir)));
   else if (!ReadFile(PathStr(f), b) || b.size() < 0x800 || std::memcmp(b.data(), "EPAC", 4) || !EpacRead(b, e))
     p.push_back(Error("The arena's file is damaged.").With(kOpen, OpenIt(dir)).With("Turn it off", TurnOff(dir)));
+  else if (const std::string src = Trim(ReadManifest(dir).Get("source"));
+           (src.rfind("wwe2k16", 0) == 0 || src.rfind("wwe2k17", 0) == 0) && MipmapDataCount(e) != 200) {
+    p.push_back(Error("The arena was made from a WWE 2K16 / 2K17 arena by an older Mod Maker: it crashes the game just before the "
+                      "match.").With("Repair it", RepairMipmapData(f), "repaired (the game's own texture detail table put in)")
+                    .With("Turn it off", TurnOff(dir)));
+  }
+  Arena a;
+  if (!b.empty() && !std::memcmp(b.data(), "EPAC", 4) && a.LoadData(b)) {
+    // (svrfmt/arena.h kMaxArenaVerts: over the game's own arenas' 3D detail, ports crashed at match load)
+    if (const ArenaGeometry g = GeometryOf(a); g.Over())
+      p.push_back(Error("The arena has more 3D detail than the game can load (" + std::to_string(g.verts) + " points; the game's own "
+                        "arenas have up to " + std::to_string(kMaxArenaVerts) + "): the game crashes when the match loads.")
+                      .With("Turn it off", TurnOff(dir)).With(kOpen, OpenIt(dir)));
+    int odd = 0;  // (pictures the game can't show: 2011's arenas use DXT1 / DXT3 / DXT5 and ARGB)
+    for (const auto& set : a.bundles)
+      for (const auto& t : set.textures) {
+        DdsInfo info;  // (one that isn't a picture file at all is left alone: stock bg23 has one)
+        if (DdsInfoOf(t.data, info) && info.format != DxtFormat::kDxt1 && info.format != DxtFormat::kDxt3 &&
+            info.format != DxtFormat::kDxt5 && info.format != DxtFormat::kArgb)
+          ++odd;
+      }
+    if (odd)
+      p.push_back(Warning(std::to_string(odd) + " of the arena's pictures are of a kind the game's arenas don't use: they may show "
+                          "black or wrong.").With(kOpen, OpenIt(dir)));
+  }
 }
 
 void CheckArena(const fs::path& dir, std::vector<Problem>& p) {

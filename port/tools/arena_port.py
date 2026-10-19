@@ -68,6 +68,11 @@ KNOWN_CRASHES = {
     ('wwe2k14', 'bg00'): 'crashes at load - 2 of 2 runs, open',
     ('wwe2k14', 'bg12'): 'crashes at load (object motion loader, lr 826AEF18) - 3 of 3 runs, open',
     ('wwe2k14', 'bg17'): 'crashes at load (lr 82188A00) - 3 of 3 runs, open',
+    # (15 Oct: more 3D detail than any 2011 arena - 78,935-91,476 vertices vs the stock 65,450: crashed at load,
+    # lr 8215A008; svrmod wwe13 now refuses them, svrfmt/arena.h kMaxArenaVerts)
+    ('wwe2k16', 'bg06'): 'more 3D detail than SvR 2011 can load (crashes at load)',
+    ('wwe2k16', 'bg12'): 'more 3D detail than SvR 2011 can load (crashes at load)',
+    ('wwe2k16', 'bg15'): 'more 3D detail than SvR 2011 can load (crashes at load)',
 }
 
 
