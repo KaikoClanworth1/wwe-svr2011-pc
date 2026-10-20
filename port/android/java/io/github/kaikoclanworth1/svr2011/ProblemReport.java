@@ -1,7 +1,9 @@
 // WWE SmackDown vs. Raw 2011 - "Report a problem" on the phone (as the PC
 // launcher's, launcher/report.c): one zip in the Download folder with the
 // newest game logs, crash reports and svr2011.toml (the account's token and
-// password removed), plus report.txt (app version, phone, Android version).
+// password removed), plus report.txt (app version, phone, Android version),
+// saves_check.txt (the Created Superstar saves' checksums, not the saves) and
+// mods_text.txt (the superstar mods' text files) - port/docs/PROBLEM_REPORTS.md.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -65,8 +67,101 @@ final class ProblemReport {
                 }
                 put(zip, "svr2011.toml", out.toString().getBytes(StandardCharsets.UTF_8));
             }
+            addSavesCheck(zip, gameFolder);
+            addModsText(zip, gameFolder);
         }
         return r;
+    }
+
+    // The saves folder: svr2011.toml's saves_folder (relative to the game folder), else <game>/Saves.
+    static File savesDir(File gameFolder) {
+        File toml = new File(gameFolder, "svr2011.toml");
+        if (toml.isFile()) {
+            try {
+                for (String line : new String(read(toml, 1 << 20), StandardCharsets.UTF_8).split("\n")) {
+                    String t = line.trim();
+                    int q = t.indexOf('"'), e = t.lastIndexOf('"');
+                    if (t.startsWith("saves_folder") && q >= 0 && e > q + 1) {
+                        File f = new File(t.substring(q + 1, e));
+                        return f.isAbsolute() ? f : new File(gameFolder, f.getPath());
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+        }
+        return new File(gameFolder, "Saves");
+    }
+
+    static long be32(byte[] d, int at) {
+        return ((d[at] & 0xFFL) << 24) | ((d[at + 1] & 0xFFL) << 16) | ((d[at + 2] & 0xFFL) << 8) | (d[at + 3] & 0xFFL);
+    }
+
+    // saves_check.txt: each Created Superstar save's size, slot, attires with a picture, and whether its three
+    // checksums agree with each other and with SaveData.dat's record for its slot (as launcher/report.c).
+    static void addSavesCheck(ZipOutputStream zip, File gameFolder) throws IOException {
+        final int cas = 1347532, slotAt = 746340, slotSize = 149528, pic = 131072, rec = 0x1483C4;
+        File dir = savesDir(gameFolder);
+        StringBuilder t = new StringBuilder("Created Superstar saves in " + dir + "\n");
+        File sdFile = new File(dir, "SaveData.dat");
+        byte[] sd = sdFile.isFile() ? read(sdFile, 8 << 20) : null;
+        if (sd != null && sd.length > 0x812DC) {
+            long sum = 0;
+            for (int i = 0x1C; i < 0x812DC; i++) sum += sd[i] & 0xFF;
+            t.append("SaveData.dat: ").append(sd.length).append(" bytes, its checksum ")
+                .append((sum & 0xFFFFFFFFL) == be32(sd, 0x18) ? "OK" : "DOESN'T MATCH").append('\n');
+        } else {
+            t.append("SaveData.dat: ").append(sd == null ? "none" : "too small").append('\n');
+        }
+        File[] files = dir.listFiles((d, n) -> n.endsWith("CreateSuperStar.cas"));
+        if (files == null || files.length == 0) {
+            t.append("(none)\n");
+        } else {
+            Arrays.sort(files);
+            for (File f : files) {
+                byte[] d = f.length() == cas ? read(f, cas) : null;
+                if (d == null || d.length != cas) {
+                    t.append(f.getName()).append(": ").append(f.length()).append(" bytes - NOT ").append(cas)
+                        .append(", the game can't load it\n");
+                    continue;
+                }
+                int slot = ((d[rec + 0x20] & 0xFF) << 8) | (d[rec + 0x21] & 0xFF);
+                StringBuilder pics = new StringBuilder();
+                for (int a = 0; a < 4; a++) {
+                    boolean any = false;
+                    for (int i = 0; i < pic && !any; i += 97) any = d[slotAt + a * slotSize + i] != 0;
+                    if (any) pics.append(pics.length() > 0 ? "+" : "").append(a + 1);
+                }
+                long s1 = be32(d, 12), s2 = be32(d, 0x148FC8), s3 = be32(d, 0x148DBC), sv = 0;
+                int r = 0x13FB8 + slot * 0x6BC + 0x65C;
+                boolean inSd = sd != null && slot < 50 && r + 4 <= sd.length;
+                if (inSd) sv = be32(sd, r);
+                boolean agree = s1 == s2 && s1 == s3 && (!inSd || sv == s1);
+                t.append(String.format(Locale.US,
+                    "%s: slot %d, attires with a picture %s, checksums %08X %08X %08X, SaveData.dat %s%08X - %s\n",
+                    f.getName(), slot, pics.length() > 0 ? pics : "none", s1, s2, s3, inSd ? "" : "(none) ", sv,
+                    agree ? "agree" : "DON'T AGREE (the game will call it damaged)"));
+            }
+        }
+        put(zip, "saves_check.txt", t.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    // mods_text.txt: each superstar mod's manifest.txt, moves.txt and threads.txt (64 KB each, 512 KB in all).
+    static void addModsText(ZipOutputStream zip, File gameFolder) throws IOException {
+        File[] mods = new File(gameFolder, "Mods/Superstars").listFiles(f -> f.isDirectory() && !f.getName().startsWith("."));
+        if (mods == null || mods.length == 0) return;
+        Arrays.sort(mods);
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        for (File m : mods) {
+            for (String n : new String[] {"manifest.txt", "moves.txt", "threads.txt"}) {
+                File f = new File(m, n);
+                if (!f.isFile() || out.size() >= (512 << 10)) continue;
+                byte[] b = read(f, 64 << 10);
+                out.write(("==== " + m.getName() + "/" + n + " (" + b.length + " bytes)\n").getBytes(StandardCharsets.UTF_8));
+                out.write(b);
+                out.write('\n');
+            }
+        }
+        if (out.size() > 0) put(zip, "mods_text.txt", out.toByteArray());
     }
 
     static void put(ZipOutputStream zip, String name, byte[] data) throws IOException {
