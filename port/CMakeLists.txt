@@ -55,6 +55,8 @@ set(SVR2011_SOURCES
     src/net_sim.cpp
     src/paint_pages.cpp
     src/match_types.cpp
+    src/match_diag.cpp
+    src/caw_check.cpp
     src/match_hud.cpp
     src/slobber_knocker.cpp
     src/gauntlet_eliminator.cpp

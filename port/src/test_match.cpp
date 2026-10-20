@@ -237,5 +237,18 @@ REX_HOOK_RAW(sub_828BC5E8) {
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
                 Rd32(base + kLive + kArena));
   }
+  // (problem reports: the picks - who and which attire; a Created Superstar is its save slot, ids below 50)
+  if (const uint32_t match = ctx.r3.u32) {
+    std::string picks;
+    for (uint32_t i = 0; i < kMaxPeople; ++i) {
+      const uint32_t v = Rd32(base + match + kSlots + i * kSlotSize + 8);
+      if (v == kNoPick || v / 100 >= 512) continue;
+      picks += fmt::format("{}person {} {} {} attire {}", picks.empty() ? "" : ", ", i, v / 100 < 50 ? "CAW slot" : "id",
+                           v / 100, v % 100 / 10 + 1);
+    }
+    static std::string last;
+    if (!picks.empty() && picks != last) REXLOG_INFO("[svr2011] match picks: {}", picks);
+    last = picks;
+  }
   __imp__sub_828BC5E8(ctx, base);
 }

@@ -385,6 +385,17 @@ bool LoadEmd(const Bytes& emd, Character& ch, std::string& err) {
     err = "the model has no meshes";
     return false;
   }
+  // (problem reports - "a black shape": what the model holds, and the textures its meshes name that it lacks:
+  // those draw black, in here and in the game)
+  std::map<std::string, int> missing;
+  for (const auto& pm : ch.meshes)
+    if (!pm.blood && !ch.textures.count(pm.tex)) ++missing[pm.tex];
+  std::string names, lacks;
+  for (size_t mi = 0; mi < models.size() && mi < 8; ++mi) names += (names.empty() ? "" : ", ") + models[mi].name;
+  for (const auto& [t, n] : missing) lacks += (lacks.empty() ? "" : ", ") + t + " (" + std::to_string(n) + " meshes)";
+  mm::Log("model preview: " + std::to_string(models.size()) + " models (" + names + "), " + std::to_string(ch.meshes.size()) +
+          " meshes, " + std::to_string(ch.verts) + " vertices, " + std::to_string(ch.textures.size()) + " textures" +
+          (lacks.empty() ? "; every mesh's texture is there" : "; textures the meshes name but the model lacks (drawn black): " + lacks));
   return true;
 }
 

@@ -45,6 +45,7 @@
 #include "move_packs.h"
 #include "ring_rules.h"
 #include "superstar_mods.h"
+#include "caw_check.h"
 #include "superstar_threads.h"
 #include "crowd_signs.h"
 #include "hd_movies.h"
@@ -582,6 +583,7 @@ void Svr2011App::OnPostLoadXexImage() {
     }
   }
   REXLOG_INFO("saves: {}", g_saves.string());
+  svr2011::CheckCawSaves(g_saves);  // (problem reports: the Created Superstar saves, caw_check.h)
 
   // Saves as plain files in the Saves folder (saves.h).
   svr2011::UseFlatSaves(runtime()->kernel_state(), g_user_data, g_saves);

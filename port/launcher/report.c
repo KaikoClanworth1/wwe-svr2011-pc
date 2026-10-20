@@ -3,6 +3,7 @@
 #include "report.h"
 
 #include <share.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -466,6 +467,192 @@ static void add_settings(Zip *z, const WCHAR *game_dir)
     free(data);
 }
 
+/* A growing text buffer (the report's own text files). */
+typedef struct {
+    char *p;
+    size_t n, cap;
+} Text;
+
+static void text_add(Text *t, const char *s, size_t n)
+{
+    if (t->n + n + 1 > t->cap) {
+        size_t cap = (t->cap ? t->cap * 2 : 4096) + n;
+        char *p = (char *)realloc(t->p, cap);
+        if (!p)
+            return;
+        t->p = p, t->cap = cap;
+    }
+    memcpy(t->p + t->n, s, n);
+    t->n += n;
+    t->p[t->n] = 0;
+}
+
+static void text_printf(Text *t, const char *fmt, ...)
+{
+    char line[1024];
+    int n;
+    va_list ap;
+    va_start(ap, fmt);
+    n = vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    if (n > 0)
+        text_add(t, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
+/* The saves folder: svr2011.toml's saves_folder (relative to the game folder), else <game>\Saves. */
+static void saves_dir(const WCHAR *game_dir, WCHAR *out, size_t n)
+{
+    WCHAR path[MAX_PATH];
+    size_t size = 0, i = 0;
+    uint8_t *data;
+    swprintf_s(out, n, L"%s\\Saves", game_dir);
+    swprintf_s(path, MAX_PATH, L"%s\\svr2011.toml", game_dir);
+    data = read_file(path, &size, 1 << 20);
+    if (!data)
+        return;
+    data[size] = 0;
+    while (i < size) {
+        const char *l = (const char *)data + i, *q;
+        size_t e = i;
+        while (e < size && data[e] != '\n')
+            e++;
+        while (*l == ' ' || *l == '\t')
+            l++;
+        if (!strncmp(l, "saves_folder", 12) && (q = strchr(l, '"')) != NULL && q < (const char *)data + e) {
+            char v[MAX_PATH * 3];
+            size_t k = 0;
+            WCHAR w[MAX_PATH], *c;
+            for (q++; *q && *q != '"' && k + 1 < sizeof v; q++)
+                v[k++] = *q;
+            v[k] = 0;
+            if (k && MultiByteToWideChar(CP_UTF8, 0, v, -1, w, MAX_PATH)) {
+                for (c = w; *c; c++)
+                    if (*c == L'/')
+                        *c = L'\\';
+                if (w[1] == L':' || (w[0] == L'\\' && w[1] == L'\\'))
+                    wcscpy_s(out, n, w);
+                else
+                    swprintf_s(out, n, L"%s\\%s", game_dir, w);
+            }
+            break;
+        }
+        i = e + 1;
+    }
+    free(data);
+}
+
+static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+
+/* saves_check.txt: each Created Superstar save's size, slot, attires with a picture, and whether its three
+   checksums agree with each other and with SaveData.dat's record for its slot (as the game logs at start,
+   caw_check.cpp) - what a "my CAW won't load" report needs, without the saves themselves. */
+static void add_saves_check(Zip *z, const WCHAR *game_dir)
+{
+    enum { CAS = 1347532, SLOT_AT = 746340, SLOT = 149528, PIC = 131072, REC = 0x1483C4 };
+    WCHAR dir[MAX_PATH], pat[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    Text t = {0};
+    size_t sds = 0;
+    uint8_t *sd;
+    int files = 0;
+    saves_dir(game_dir, dir, MAX_PATH);
+    swprintf_s(path, MAX_PATH, L"%s\\SaveData.dat", dir);
+    sd = read_file(path, &sds, 8u << 20);
+    text_printf(&t, "Created Superstar saves in %ls\r\n", dir);
+    if (sd && sds > 0x812DC) {
+        uint32_t sum = 0;
+        size_t i;
+        for (i = 0x1C; i < 0x812DC; i++)
+            sum += sd[i];
+        text_printf(&t, "SaveData.dat: %u bytes, its checksum %s\r\n", (unsigned)sds, sum == be32(sd + 0x18) ? "OK" : "DOESN'T MATCH");
+    } else {
+        text_printf(&t, "SaveData.dat: %s\r\n", sd ? "too small" : "none");
+    }
+    swprintf_s(pat, MAX_PATH, L"%s\\*CreateSuperStar.cas", dir);
+    h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            size_t size = 0;
+            uint8_t *d;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            swprintf_s(path, MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+            d = read_file(path, &size, 2u << 20);
+            files++;
+            if (!d || size != CAS) {
+                text_printf(&t, "%ls: %u bytes - NOT %u, the game can't load it\r\n", fd.cFileName, (unsigned)size, (unsigned)CAS);
+            } else {
+                unsigned slot = (unsigned)d[REC + 0x20] << 8 | d[REC + 0x21], a;
+                uint32_t s1 = be32(d + 12), s2 = be32(d + 0x148FC8), s3 = be32(d + 0x148DBC), sv = 0;
+                size_t rec = 0x13FB8 + (size_t)slot * 0x6BC + 0x65C;
+                int in_sd = sd && slot < 50 && rec + 4 <= sds;
+                char pics[16] = "";
+                if (in_sd)
+                    sv = be32(sd + rec);
+                for (a = 0; a < 4; a++) {
+                    const uint8_t *s = d + SLOT_AT + (size_t)a * SLOT;
+                    size_t i;
+                    int any = 0;
+                    for (i = 0; i < PIC && !any; i += 97)
+                        any = s[i] != 0;
+                    if (any) {
+                        char one[4];
+                        sprintf_s(one, sizeof one, "%s%u", pics[0] ? "+" : "", a + 1);
+                        strcat_s(pics, sizeof pics, one);
+                    }
+                }
+                text_printf(&t, "%ls: slot %u, attires with a picture %s, checksums %08X %08X %08X, SaveData.dat %s%08X - %s\r\n",
+                            fd.cFileName, slot, pics[0] ? pics : "none", s1, s2, s3, in_sd ? "" : "(none) ", sv,
+                            s1 == s2 && s1 == s3 && (!in_sd || sv == s1) ? "agree" : "DON'T AGREE (the game will call it damaged)");
+            }
+            free(d);
+        } while (FindNextFileW(h, &fd) && files < 100);
+        FindClose(h);
+    }
+    if (!files)
+        text_printf(&t, "(none)\r\n");
+    free(sd);
+    zip_add(z, "saves_check.txt", (const uint8_t *)t.p, t.n);
+    free(t.p);
+}
+
+/* mods_text.txt: each superstar mod's small text files (manifest.txt, moves.txt, threads.txt), one after
+   another under their names - what a mod's freeze or look needs, without the models. */
+static void add_mods_text(Zip *z, const WCHAR *game_dir)
+{
+    static const WCHAR *const kFiles[] = {L"manifest.txt", L"moves.txt", L"threads.txt"};
+    WCHAR pat[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    Text t = {0};
+    swprintf_s(pat, MAX_PATH, L"%s\\Mods\\Superstars\\*", game_dir);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        int k;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
+            continue;
+        for (k = 0; k < 3 && t.n < (512u << 10); k++) {
+            size_t size = 0;
+            uint8_t *d;
+            swprintf_s(path, MAX_PATH, L"%s\\Mods\\Superstars\\%s\\%s", game_dir, fd.cFileName, kFiles[k]);
+            d = read_file(path, &size, 64u << 10);
+            if (!d)
+                continue;
+            text_printf(&t, "==== %ls/%ls (%u bytes)\r\n", fd.cFileName, kFiles[k], (unsigned)size);
+            text_add(&t, (const char *)d, size);
+            text_add(&t, "\r\n", 2);
+            free(d);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (t.n)
+        zip_add(z, "mods_text.txt", (const uint8_t *)t.p, t.n);
+    free(t.p);
+}
+
 int report_make(const WCHAR *game_dir, const WCHAR *version, WCHAR *out, int outn, int *logs, int *crashes)
 {
     return report_make_ex(game_dir, version, NULL, out, outn, logs, crashes);
@@ -477,7 +664,7 @@ int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *desc
     WCHAR dir[MAX_PATH], sub[MAX_PATH];
     SYSTEMTIME st;
     Zip z;
-    char info[512];
+    char info[768];
     OSVERSIONINFOW os = {sizeof os};
     crc_init();
     *logs = *crashes = 0;
@@ -498,8 +685,10 @@ int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *desc
         sprintf_s(info, sizeof info,
                   "SvR 2011 PC port problem report\r\nlauncher version: %ls\r\nWindows: %lu.%lu.%lu\r\n"
                   "made: %04d-%02d-%02d %02d:%02d:%02d\r\n"
-                  "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
-                  "(account token and password removed); IP addresses blanked (x.x.x.x)\r\n",
+                  "contents: the newest game logs (logs/), crash reports (crashes/), svr2011.toml "
+                  "(account token and password removed), saves_check.txt (the Created Superstar saves' "
+                  "checksums, not the saves) and mods_text.txt (the superstar mods' text files); "
+                  "IP addresses blanked (x.x.x.x)\r\n",
                   version, os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, st.wYear, st.wMonth, st.wDay,
                   st.wHour, st.wMinute, st.wSecond);
         if (description && *description) {
@@ -522,6 +711,8 @@ int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *desc
     swprintf_s(sub, MAX_PATH, L"%s\\UserData\\crashes", game_dir);
     *crashes = add_newest(&z, sub, L"crash_*.txt", 3, "crashes", 1u << 20);
     add_settings(&z, game_dir);
+    add_saves_check(&z, game_dir);
+    add_mods_text(&z, game_dir);
     zip_finish(&z);
     fclose(z.f);
     return 1;
