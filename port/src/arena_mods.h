@@ -2,6 +2,7 @@
 // Plan and findings: docs/ARENA_MOD_MAKER_PLAN.md.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,9 @@ uint32_t ArenaSelectString(uint32_t caller);
 // The arena number a match in that arena plays as (RedirectArena: the stock
 // practice ring on another tile plays as 29); the arena itself otherwise.
 int ArenaNumberFor(int arena);
+// The match screen's arena read (sub_8247B6C8(screen), test_match.cpp's hook - the match loads by it): a custom
+// arena's tile set to the arena it plays as.
+void ScreenArenaRead(uint8_t* base, uint32_t screen);
 // A player's pad buttons as the game read them (XInput bits, with LT / RT
 // pressed as 0x400 / 0x800): LB / RB and LT / RT turn the arena select page.
 void ArenaSelectPad(uint32_t user, uint16_t buttons);

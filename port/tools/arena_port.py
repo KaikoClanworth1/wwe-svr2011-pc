@@ -330,9 +330,9 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
         wwe13_pack.pack(mod, svrmod, 'Port tools (SvR %s)' % year)
     finally:
         sys.stdout = old
-    notes.append('base %s (tile %d on the custom arena pages); the game renames its stage to the slot\'s' % (BASE_NAMES[base], base))
+    notes.append('base %s (arena %d: it plays as that arena, wherever its tile is on the custom arena pages); the game renames its stage to the slot\'s' % (BASE_NAMES[base], base))
     if n not in (0, 1, 2, 4, 7, 9, 13, 14, 15) and in11 is None:
-        notes.append('2011 has no %s arena: the mod sits on the %s tile' % (show, BASE_NAMES[base]))
+        notes.append('2011 has no %s arena: the mod plays as the %s arena' % (show, BASE_NAMES[base]))
     progress(100, 'done')
     return {'ok': True, 'out': svrmod, 'folder': mod, 'opens': 'arena', 'warnings': warnings, 'dropped': dropped,
             'notes': notes}
@@ -640,7 +640,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     finally:
         sys.stdout = old
     if in11 is None:
-        notes.append('2011 has no %s arena: the mod sits on the %s tile' % (show, BASE_NAMES[base]))
+        notes.append('2011 has no %s arena: the mod plays as the %s arena' % (show, BASE_NAMES[base]))
     progress(100, 'done')
     return {'ok': True, 'out': svrmod, 'folder': mod, 'opens': 'arena', 'warnings': warnings, 'dropped': dropped,
             'notes': notes}

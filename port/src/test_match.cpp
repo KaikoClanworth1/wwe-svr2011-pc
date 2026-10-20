@@ -180,6 +180,7 @@ REX_HOOK_RAW(sub_825740C8) {
 
 REX_EXTERN(__imp__sub_8247B6C8);
 REX_HOOK_RAW(sub_8247B6C8) {
+  svr2011::ScreenArenaRead(base, ctx.r3.u32);
   SetScreenArena(base, ctx.r3.u32);
   __imp__sub_8247B6C8(ctx, base);
 }
