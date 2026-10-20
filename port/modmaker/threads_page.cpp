@@ -11,11 +11,13 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <array>
 #include <map>
 
 #include "app.h"
 #include "json.h"
 #include "star_page_internal.h"
+#include "svrfmt/jboy.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
 #include "tool_run.h"
@@ -54,7 +56,29 @@ struct Editor {
   Picture view;
   bool view_dirty = true;
   bool naming = false;  // threads_parts.py running
+  // the model's triangles on the texture, rastered at the masks' size: each texel's UV island and mesh (-1 none)
+  std::vector<Model> models;
+  std::vector<std::string> mesh_names;
+  std::vector<int32_t> island, mesh_of;
+  int geo_w = 0, geo_h = 0;
+  // painting
+  int tool = 0;  // kBrush ...
+  int radius = 12, tolerance = 40;
+  float zoom = 1, pan_x = 0, pan_y = 0;  // (zoom 1: the texture fits; pan in texels)
+  int pick_mesh = 0;
+  struct Stroke {
+    std::vector<uint32_t> idx;
+    std::vector<std::array<uint8_t, 12>> before, after;
+  };
+  std::vector<Stroke> undo, redo;
+  Stroke stroke;               // the one being painted
+  std::vector<uint8_t> touched;  // (this stroke's texels, recorded once)
+  bool painting = false;
+  double last_compose = 0;
 } g;
+
+enum Tool { kBrush, kEraser, kFillColour, kIsland, kMeshPick, kTools };
+const char* const kToolNames[kTools] = {"Brush", "Eraser", "Fill by colour", "Fill UV island", "Fill a mesh"};
 
 std::vector<std::pair<std::string, int>> g_names;  // the game's part names (threads_parts.py --names)
 bool g_names_asked = false;
@@ -156,6 +180,11 @@ void Load(const std::wstring& pac, int in, int attire) {
   for (const auto& k : kids) {
     std::vector<BundleTexture> texs;
     const Bytes u = Unpack(k.data);
+    if (IsJboy(u) && k.id < 0x4e20) {  // (the body and the hair: their meshes on the colour texture)
+      Model m;
+      if (JboyRead(u, m)) g.models.push_back(std::move(m));
+      continue;
+    }
     if (!IsTextureBundle(u) || !BundleRead(u, texs)) continue;
     for (const auto& t : texs) {
       const std::string n = Lower(t.name);
@@ -239,6 +268,279 @@ void Compose() {
         }
       }
   g.view.Set(std::move(img));
+}
+
+// ---- the model on the texture (islands, meshes) and the painting
+
+// The triangles of the meshes that sample the colour texture (texDiffuse -> "color") -> the island map (triangles
+// sharing a vertex join one) and the mesh map, rastered at the masks' size (u, v wrapped; v down, as the texture).
+void BuildGeometry() {
+  g.geo_w = g.w, g.geo_h = g.h;
+  g.island.assign(size_t(g.w) * g.h, -1), g.mesh_of.assign(size_t(g.w) * g.h, -1), g.mesh_names.clear();
+  int base_island = 0, mesh_no = 0;
+  for (size_t mi = 0; mi < g.models.size(); ++mi) {
+    const Model& m = g.models[mi];
+    for (size_t si = 0; si < m.meshes.size(); ++si) {
+      const Mesh& me = m.meshes[si];
+      int tex = -1;
+      for (const auto& pr : me.params)
+        if (pr.name == "texDiffuse" && pr.value.size() >= 4) tex = int32_t(Be32(pr.value.data()));
+      if (tex < 0 || tex >= int(m.textures.size()) || Lower(m.textures[size_t(tex)]) != "color" || me.uvs.empty()) continue;
+      const int id = mesh_no++;
+      g.mesh_names.push_back((mi ? "hair " : "") + std::to_string(si + 1) + "  " + me.shader + "  (" + std::to_string(me.verts.size()) + " vertices)");
+      std::vector<std::array<uint16_t, 3>> tris;
+      for (const auto& st : me.strips)
+        for (size_t k = 2; k < st.indices.size(); ++k) {
+          const uint16_t a = st.indices[k - 2], b = st.indices[k - 1], c = st.indices[k];
+          if (a == b || b == c || a == c || a >= me.uvs.size() || b >= me.uvs.size() || c >= me.uvs.size()) continue;
+          tris.push_back({a, b, c});
+        }
+      // islands: union-find over the vertices
+      std::vector<int> parent(me.uvs.size());
+      for (size_t k = 0; k < parent.size(); ++k) parent[k] = int(k);
+      auto find = [&](int x) {
+        while (parent[size_t(x)] != x) x = parent[size_t(x)] = parent[size_t(parent[size_t(x)])];
+        return x;
+      };
+      for (const auto& t : tris) parent[size_t(find(t[1]))] = find(t[0]), parent[size_t(find(t[2]))] = find(t[0]);
+      std::map<int, int> root_id;
+      for (const auto& t : tris) {
+        const int r = find(t[0]);
+        auto it = root_id.find(r);
+        const int isl = it != root_id.end() ? it->second : (root_id[r] = base_island + int(root_id.size()));
+        float u[3], v[3];
+        for (int c = 0; c < 3; ++c) {
+          float x = me.uvs[t[c]][0], y = me.uvs[t[c]][1];
+          u[c] = (x - std::floor(x)) * g.w, v[c] = (y - std::floor(y)) * g.h;
+        }
+        // (a triangle across the wrap: its corners brought to one side)
+        for (int c = 1; c < 3; ++c) {
+          if (u[c] - u[0] > g.w / 2.0f) u[c] -= g.w;
+          if (u[0] - u[c] > g.w / 2.0f) u[c] += g.w;
+          if (v[c] - v[0] > g.h / 2.0f) v[c] -= g.h;
+          if (v[0] - v[c] > g.h / 2.0f) v[c] += g.h;
+        }
+        const int x0 = int(std::floor(std::min({u[0], u[1], u[2]}))), x1 = int(std::ceil(std::max({u[0], u[1], u[2]})));
+        const int y0 = int(std::floor(std::min({v[0], v[1], v[2]}))), y1 = int(std::ceil(std::max({v[0], v[1], v[2]})));
+        const float d = (v[1] - v[2]) * (u[0] - u[2]) + (u[2] - u[1]) * (v[0] - v[2]);
+        if (std::fabs(d) < 1e-6f || x1 - x0 > g.w || y1 - y0 > g.h) continue;
+        for (int y = y0; y <= y1; ++y)
+          for (int x = x0; x <= x1; ++x) {
+            const float px = x + 0.5f, py = y + 0.5f;
+            const float a = ((v[1] - v[2]) * (px - u[2]) + (u[2] - u[1]) * (py - v[2])) / d;
+            const float b = ((v[2] - v[0]) * (px - u[2]) + (u[0] - u[2]) * (py - v[2])) / d;
+            if (a < -0.01f || b < -0.01f || a + b > 1.01f) continue;
+            const size_t i = size_t(((y % g.h) + g.h) % g.h) * g.w + size_t(((x % g.w) + g.w) % g.w);
+            g.island[i] = isl, g.mesh_of[i] = id;
+          }
+      }
+      base_island += int(root_id.size());
+    }
+  }
+  Log("threads parts: " + std::to_string(mesh_no) + " mesh(es), " + std::to_string(base_island) + " UV island(s) on the texture");
+}
+void NeedGeometry() {
+  if (!g.w) g.w = g.color.w, g.h = g.color.h;
+  if (g.geo_w != g.w || g.geo_h != g.h || g.island.empty()) BuildGeometry();
+}
+
+// One texel set for the picked part (the others cleared there: a texel is one part's) or erased - recorded for undo.
+void SetTexel(size_t i, bool on) {
+  if (g.touched.size() != size_t(g.w) * g.h) g.touched.assign(size_t(g.w) * g.h, 0);
+  std::array<uint8_t, 12> old{};
+  for (int k = 0; k < kParts; ++k) old[k] = g.parts[k].v.empty() ? 0 : g.parts[k].v[i];
+  Part& sel = g.parts[g.sel];
+  if (sel.v.size() != size_t(g.w) * g.h) sel.v.assign(size_t(g.w) * g.h, 0);
+  if (on) {
+    for (int k = 0; k < kParts; ++k)
+      if (k != g.sel && !g.parts[k].v.empty()) g.parts[k].v[i] = 0;
+    sel.v[i] = uint8_t(kLevel * 17);
+  } else {
+    sel.v[i] = 0;
+  }
+  if (!g.touched[i]) g.touched[i] = 1, g.stroke.idx.push_back(uint32_t(i)), g.stroke.before.push_back(old);
+}
+void EndStroke() {
+  if (g.stroke.idx.empty()) return;
+  for (size_t n = 0; n < g.stroke.idx.size(); ++n) {
+    std::array<uint8_t, 12> now{};
+    for (int k = 0; k < kParts; ++k) now[k] = g.parts[k].v.empty() ? 0 : g.parts[k].v[g.stroke.idx[n]];
+    g.stroke.after.push_back(now);
+    g.touched[g.stroke.idx[n]] = 0;
+  }
+  g.undo.push_back(std::move(g.stroke));
+  if (g.undo.size() > 30) g.undo.erase(g.undo.begin());
+  g.redo.clear();
+  g.stroke = Editor::Stroke();
+  g.edited = true, g.view_dirty = true;
+}
+void ApplyStroke(const Editor::Stroke& st, bool forward) {
+  for (int k = 0; k < kParts; ++k)
+    if (g.parts[k].v.size() != size_t(g.w) * g.h) g.parts[k].v.assign(size_t(g.w) * g.h, 0);
+  for (size_t n = 0; n < st.idx.size(); ++n) {
+    const auto& vals = forward ? st.after[n] : st.before[n];
+    for (int k = 0; k < kParts; ++k) g.parts[k].v[st.idx[n]] = vals[k];
+  }
+  g.edited = true, g.view_dirty = true;
+}
+void Undo() {
+  if (g.undo.empty()) return;
+  ApplyStroke(g.undo.back(), false);
+  g.redo.push_back(std::move(g.undo.back()));
+  g.undo.pop_back();
+}
+void Redo() {
+  if (g.redo.empty()) return;
+  ApplyStroke(g.redo.back(), true);
+  g.undo.push_back(std::move(g.redo.back()));
+  g.redo.pop_back();
+}
+
+void Brush(int cx, int cy, bool on) {
+  const int r = std::max(1, g.radius);
+  for (int y = cy - r; y <= cy + r; ++y)
+    for (int x = cx - r; x <= cx + r; ++x)
+      if (x >= 0 && y >= 0 && x < g.w && y < g.h && (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r) SetTexel(size_t(y) * g.w + x, on);
+}
+// The colour texture's colour at a mask texel.
+const uint8_t* ColourAt(size_t i) {
+  const int x = int(i % size_t(g.w)), y = int(i / size_t(g.w));
+  return &g.color.rgba[4 * (size_t(y * g.color.h / g.h) * g.color.w + size_t(x * g.color.w / g.w))];
+}
+// Fill: the texels of the island under (x, y) - with `by_colour`, only those connected to it within the tolerance.
+void Fill(int cx, int cy, bool by_colour) {
+  NeedGeometry();
+  if (cx < 0 || cy < 0 || cx >= g.w || cy >= g.h) return;
+  const size_t start = size_t(cy) * g.w + cx;
+  const int isl = g.island[start];
+  if (!by_colour) {
+    if (isl < 0) return Status("No part of the model is on that spot of the texture.");
+    for (size_t i = 0; i < g.island.size(); ++i)
+      if (g.island[i] == isl) SetTexel(i, true);
+    return;
+  }
+  const uint8_t* c0 = ColourAt(start);
+  const int r0 = c0[0], g0 = c0[1], b0 = c0[2];
+  std::vector<uint8_t> seen(g.island.size(), 0);
+  std::vector<size_t> todo = {start};
+  seen[start] = 1;
+  while (!todo.empty()) {
+    const size_t i = todo.back();
+    todo.pop_back();
+    SetTexel(i, true);
+    const int x = int(i % size_t(g.w)), y = int(i / size_t(g.w));
+    const int nb[4][2] = {{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}};
+    for (const auto& n : nb) {
+      if (n[0] < 0 || n[1] < 0 || n[0] >= g.w || n[1] >= g.h) continue;
+      const size_t j = size_t(n[1]) * g.w + n[0];
+      if (seen[j] || (isl >= 0 && g.island[j] != isl)) continue;
+      const uint8_t* c = ColourAt(j);
+      if (std::abs(c[0] - r0) + std::abs(c[1] - g0) + std::abs(c[2] - b0) > g.tolerance * 3) continue;
+      seen[j] = 1, todo.push_back(j);
+    }
+  }
+}
+void FillMesh(int mesh) {
+  NeedGeometry();
+  for (size_t i = 0; i < g.mesh_of.size(); ++i)
+    if (g.mesh_of[i] == mesh) SetTexel(i, true);
+}
+
+// The texture with the parts, zoomed and panned; the picked tool on a click / drag.
+void Canvas() {
+  if (g.view_dirty && (!g.painting || ImGui::GetTime() - g.last_compose > 0.1)) Compose(), g.last_compose = ImGui::GetTime();
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  if (g.view.Empty() || avail.x < 10 || avail.y < 10) return;
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("canvas", avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+  const bool hover = ImGui::IsItemHovered();
+  const float fit = std::min(avail.x / g.view.image.w, avail.y / g.view.image.h);
+  const float k = fit * g.zoom;  // screen pixels per texture pixel
+  if (hover && ImGui::GetIO().MouseWheel != 0) {  // (zoom about the cursor)
+    const ImVec2 m = ImGui::GetMousePos();
+    const float tx = (m.x - at.x) / k + g.pan_x, ty = (m.y - at.y) / k + g.pan_y;
+    g.zoom = std::clamp(g.zoom * (ImGui::GetIO().MouseWheel > 0 ? 1.25f : 0.8f), 1.0f, 32.0f);
+    const float k2 = fit * g.zoom;
+    g.pan_x = tx - (m.x - at.x) / k2, g.pan_y = ty - (m.y - at.y) / k2;
+  }
+  if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right))
+    g.pan_x -= ImGui::GetIO().MouseDelta.x / k, g.pan_y -= ImGui::GetIO().MouseDelta.y / k;
+  const float vw = avail.x / k, vh = avail.y / k;
+  g.pan_x = std::clamp(g.pan_x, 0.0f, std::max(0.0f, g.view.image.w - vw));
+  g.pan_y = std::clamp(g.pan_y, 0.0f, std::max(0.0f, g.view.image.h - vh));
+  const ImVec2 uv0(g.pan_x / g.view.image.w, g.pan_y / g.view.image.h);
+  const ImVec2 uv1(std::min(1.0f, (g.pan_x + vw) / g.view.image.w), std::min(1.0f, (g.pan_y + vh) / g.view.image.h));
+  const ImVec2 size((uv1.x - uv0.x) * g.view.image.w * k, (uv1.y - uv0.y) * g.view.image.h * k);
+  ImGui::GetWindowDrawList()->AddImage(g.view.Id(), at, ImVec2(at.x + size.x, at.y + size.y), uv0, uv1);
+  if (!hover && !g.painting) return;
+  const ImVec2 m = ImGui::GetMousePos();
+  const int tx = int(((m.x - at.x) / k + g.pan_x) * g.w / g.view.image.w), ty = int(((m.y - at.y) / k + g.pan_y) * g.h / g.view.image.h);
+  if (g.tool == kBrush || g.tool == kEraser) {  // (the brush's circle)
+    const float rr = g.radius * k * g.view.image.w / g.w;
+    ImGui::GetWindowDrawList()->AddCircle(m, rr, IM_COL32(255, 255, 255, 200), 32, 1.5f);
+  }
+  if (!g.parts[g.sel].used) return;
+  if (ImGui::IsItemActivated() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    g.painting = true;
+    if (g.tool == kFillColour) Fill(tx, ty, true);
+    if (g.tool == kIsland) Fill(tx, ty, false);
+    if (g.tool == kMeshPick) {
+      NeedGeometry();
+      if (tx >= 0 && ty >= 0 && tx < g.w && ty < g.h && g.mesh_of[size_t(ty) * g.w + tx] >= 0) FillMesh(g.mesh_of[size_t(ty) * g.w + tx]);
+    }
+    g.view_dirty = true;
+  }
+  if (g.painting && ImGui::IsMouseDown(ImGuiMouseButton_Left) && (g.tool == kBrush || g.tool == kEraser))
+    Brush(tx, ty, g.tool == kBrush), g.view_dirty = true;
+  if (g.painting && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) g.painting = false, EndStroke();
+}
+
+void Tools() {
+  ImGui::TextUnformatted("Paint the picked part:");
+  for (int t = 0; t < kTools; ++t) {
+    if (t) ImGui::SameLine();
+    if (ImGui::RadioButton(kToolNames[t], g.tool == t)) g.tool = t;
+  }
+  if (g.tool == kBrush || g.tool == kEraser) {
+    ImGui::SetNextItemWidth(200 * g_scale);
+    ImGui::SliderInt("size", &g.radius, 1, 128);
+  }
+  if (g.tool == kFillColour) {
+    ImGui::SetNextItemWidth(200 * g_scale);
+    ImGui::SliderInt("tolerance", &g.tolerance, 1, 128);
+  }
+  if (g.tool == kMeshPick) {
+    NeedGeometry();
+    ImGui::SetNextItemWidth(300 * g_scale);
+    if (ImGui::BeginCombo("##mesh", g.pick_mesh < int(g.mesh_names.size()) ? g.mesh_names[size_t(g.pick_mesh)].c_str() : "(no mesh)")) {
+      for (int k = 0; k < int(g.mesh_names.size()); ++k)
+        if (ImGui::Selectable(g.mesh_names[size_t(k)].c_str(), g.pick_mesh == k)) g.pick_mesh = k;
+      ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Fill it") && g.parts[g.sel].used) FillMesh(g.pick_mesh), EndStroke();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(or click the mesh on the texture)");
+  }
+  ImGui::BeginDisabled(g.undo.empty());
+  if (ImGui::Button("Undo")) Undo();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(g.redo.empty());
+  if (ImGui::Button("Redo")) Redo();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Clear the part") && g.parts[g.sel].used) {
+    for (size_t i = 0; i < g.parts[g.sel].v.size(); ++i)
+      if (g.parts[g.sel].v[i]) SetTexel(i, false);
+    EndStroke();
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("Wheel: zoom, right drag: move");
+  if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::GetIO().KeyCtrl) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Z)) Undo();
+    if (ImGui::IsKeyPressed(ImGuiKey_Y)) Redo();
+  }
 }
 
 // Save: the masks into a copy of the model (the project's model then points at it), the parts' lines into the
@@ -399,9 +701,10 @@ void ThreadsDraw() {
   ImGui::EndDisabled();
   ImGui::EndChild();
   ImGui::SameLine();
-  if (g.view_dirty) Compose();
-  const ImVec2 avail = ImGui::GetContentRegionAvail();
-  g.view.Draw(avail.x, avail.y);
+  ImGui::BeginGroup();
+  Tools();
+  Canvas();
+  ImGui::EndGroup();
 }
 
 // Test aid --threads-edit <attire>[,make|name][,save][,out=<file.svrmod>]: the tab on that attire, the auto masks /
@@ -435,6 +738,37 @@ void ThreadsTestTick() {
     Log("threads edit test: coverage" + cov + "; colour " + std::to_string(g.color.w) + "x" + std::to_string(g.color.h));
     Log("threads edit test: attire " + std::to_string(g.attire) + ", " + std::to_string(n) + " part(s), masks " + std::to_string(g.masks) +
         ", " + std::to_string(g.w) + "x" + std::to_string(g.h));
+    if (const size_t o = g_threads_test.find("ops="); o != std::string::npos) {  // ("ops=a;b;...": the painting, then)
+      std::string ops = g_threads_test.substr(o + 4);
+      ops = ops.substr(0, ops.find(','));
+      for (size_t at = 0; at < ops.size();) {
+        size_t e = ops.find(';', at);
+        if (e == std::string::npos) e = ops.size();
+        const std::string op = ops.substr(at, e - at);
+        at = e + 1;
+        int part = 0, a = 0, b = 0, c = 0;
+        char name[16] = {};
+        const int n = std::sscanf(op.c_str(), "%15[a-z]:%d:%d:%d:%d", name, &part, &a, &b, &c);
+        const std::string what = name;
+        if (n >= 2 && part >= 1 && part <= kParts) {
+          g.sel = part - 1;
+          if (!g.parts[g.sel].used) g.parts[g.sel].used = true;
+        }
+        if (what == "brush" || what == "erase") g.radius = c ? c : g.radius, Brush(a, b, what == "brush");
+        if (what == "fill") Fill(a, b, true);
+        if (what == "island") Fill(a, b, false);
+        if (what == "mesh") FillMesh(a);
+        if (what == "clear")
+          for (size_t i = 0; i < g.parts[g.sel].v.size(); ++i)
+            if (g.parts[g.sel].v[i]) SetTexel(i, false);
+        if (what != "undo" && what != "redo") EndStroke();
+        if (what == "undo") Undo();
+        if (what == "redo") Redo();
+        size_t on = 0;
+        for (uint8_t x : g.parts[g.sel].v) on += x > 8;
+        Log("threads edit test: " + op + " -> part " + std::to_string(g.sel + 1) + " has " + std::to_string(on) + " texel(s)");
+      }
+    }
     if (g_threads_test.find("save") != std::string::npos) Save();
     if (const size_t o = g_threads_test.find("out="); o != std::string::npos) {  // (then the project as a .svrmod, and quit)
       TestSaveMod(Wide(g_threads_test.substr(o + 4)));
