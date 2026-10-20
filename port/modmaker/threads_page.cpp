@@ -657,8 +657,14 @@ void NamePicker(Part& p, int k) {
 }  // namespace
 
 void ThreadsTestTick();
+// The tab on attire `a` (the Simple superstar's Attires step: "Colour parts").
+void ThreadsOpen(int a) {
+  const auto [pac, in] = AttireSource(std::max(1, a));
+  Load(pac, in, std::max(1, a));
+}
 void ThreadsDraw() {
   ThreadsTestTick();
+  if (g_star.simple && ImGui::Button("< Back to your superstar")) return GoTo(PageId::kStar);
   Heading("Superstar Threads parts", "The parts of each attire that Superstar Threads lets players recolour: where they are on "
                                      "the attire's texture, their names and their default colours.");
   if (g_star.model.empty()) {

@@ -107,6 +107,8 @@ std::wstring StyleChPac();  // the fighting style's superstar's model (pac\ch\ch
 void SimpleDraw();          // simple_star.cpp
 void FbxRows(bool simple);
 void GearRows(bool simple);  // entrance gear per attire: has it, show it, leave it out, give it another attire's
+std::vector<int> AttireCount();  // the attires the mod has, 1..4 (star_page.cpp)
+void ThreadsOpen(int attire);    // the Threads parts tab on that attire (threads_page.cpp)
 // the move-set: the picker (g_pick_slot >= 0 opens it), slot names, the preview of a pose
 extern int g_pick_slot;
 extern char g_pick_find[48];
