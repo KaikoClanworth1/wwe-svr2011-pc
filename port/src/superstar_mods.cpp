@@ -2423,16 +2423,20 @@ MovesetCount CountMoves(const uint8_t* profile) {
 }
 bool MovesetWorks(const MovesetCount& c) { return c.usable >= kMinUsableMoves; }
 
-// Fail-safe: a mod slot whose move-set doesn't work gets a stock superstar's whole move-set (one picked by the
-// mod's folder name: the same one every run), then the mod's own usable moves on top - never a stuck match.
+// Fail-safe: a mod slot whose move-set doesn't work gets a stock superstar's whole move-set (one of the mod's
+// gender - record +208 - picked by the mod's folder name: the same one every run), then the mod's own usable
+// moves on top - never a stuck match.
 void EnsureMoveset(uint8_t* base, uint8_t* sp, const Mod& m) {
   const MovesetCount now = CountMoves(sp);
   if (MovesetWorks(now)) return;
+  const uint32_t mi = Rd16(base + kIdToIndex + m.slot * 2);
+  const int gender = mi < 512 ? base[kRecords + mi * kRecordSize + 208] : -1;
   std::vector<uint32_t> donors;
   for (uint32_t id = 100; id <= 321; ++id) {
     if (ModOf(id) || std::find(std::begin(kPool), std::end(kPool), id) != std::end(kPool)) continue;
     const uint32_t i = Rd16(base + kIdToIndex + id * 2);
     if (i >= 512 || !base[kRecords + i * kRecordSize + kFullName]) continue;
+    if (gender >= 0 && base[kRecords + i * kRecordSize + 208] != gender) continue;
     if (MovesetWorks(CountMoves(base + kProfiles + i * kProfileSize))) donors.push_back(id);
   }
   if (donors.empty()) {
@@ -2448,8 +2452,8 @@ void EnsureMoveset(uint8_t* base, uint8_t* sp, const Mod& m) {
   for (const auto& [off, id] : m.moves)
     if (off + 1u < kEntrance && svr2011::MoveUsable(id) == 1) sp[off] = uint8_t(id >> 8), sp[off + 1] = uint8_t(id);
   const MovesetCount after = CountMoves(sp);
-  REXLOG_WARN("[svr2011] superstar mods: {}: its move-set didn't work ({} of {} moves usable) - superstar {}'s "
-              "given instead, with the mod's own on top ({} usable now)", m.folder, now.usable, now.set, donor, after.usable);
+  REXLOG_WARN("[svr2011] superstar mods: {}: its move-set didn't work ({} of {} moves usable) - superstar {}'s (gender {}) "
+              "given instead, with the mod's own on top ({} usable now)", m.folder, now.usable, now.set, donor, gender, after.usable);
 }
 
 void CheckModProfiles(uint8_t* base) {
