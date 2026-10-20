@@ -282,6 +282,7 @@ struct CustomArena {
   std::string manifest;        // its text (ring.* keys: ring_rules.h)
   std::string base;            // the arena it was made from (manifest base=arena_SS)
   int base_arena = -1;         // its number (-1: no base - it plays as the tile's arena)
+  bool tron_live = false;      // manifest titantron=live: its video screens show the match camera (TitantronFile)
   svrfmt::Bytes banner;        // DXT5 blocks, 16-bit swapped (empty = none)
   // its VS screen pictures (vs/<name>.dds): name -> DXT5 blocks, swapped
   std::vector<std::pair<std::string, svrfmt::Bytes>> vs;
@@ -502,6 +503,7 @@ void LoadCustomArenas() {
       std::fclose(t);
     }
     c.base_arena = ArenaOfBanner(c.base);
+    c.tron_live = c.manifest.find("\ntitantron=live") != std::string::npos || c.manifest.rfind("titantron=live", 0) == 0;
     svrfmt::Bytes dds;
     if (svrfmt::ReadFile((f / "banner.dds").string(), dds)) c.banner = BannerBlocks(dds);
     if (c.banner.empty()) REXLOG_WARN("[svr2011] arena mods: {} has no 256 x 128 DXT5 banner.dds", c.id);
@@ -935,6 +937,99 @@ void ForceTheme(char* path) {
   path[8] = b;
 }
 
+// The titantron. The game shows its videos on an arena's models 800-899 (every stock arena: 801 / 807 the arena's
+// loop video, 803 / 806 / 808 the entrance video): during entrances the video, in a match the match camera (it
+// resolves the camera into their texture). Stock arenas are made for that; a ported one (WWE 2K / '13) has its own
+// screen art on other models, flagged g (shown in matches only), which those screens cover - so its match showed the
+// camera over it (user report 20 Oct). Custom arenas therefore get their 800-899 models flagged e (0xC351: shown
+// during entrances only) - the entrance video stays, the match shows the arena's own screens; manifest
+// titantron=live keeps the camera. The flagged copy: Mods/ArenaOverlay/tron_<id>.pac, made once (again when the
+// arena's file changes: size and time in tron_<id>.pac.src).
+std::string TitantronFile(const CustomArena& c) {
+  if (c.tron_live) return c.file;
+  std::error_code ec;
+  const fs::path src = g_game / fs::u8path(c.file);
+  const std::string rel = "Mods/ArenaOverlay/tron_" + c.id + ".pac";
+  const fs::path dst = g_game / fs::u8path(rel), stamp_file = dst.string() + ".src";
+  const std::string stamp = std::to_string(fs::file_size(src, ec)) + " " +
+                            std::to_string(static_cast<long long>(fs::last_write_time(src, ec).time_since_epoch().count()));
+  if (fs::exists(dst, ec)) {
+    std::ifstream in(stamp_file);
+    std::string had;
+    std::getline(in, had);
+    if (had == stamp) return rel;
+    if (had == stamp + " unchanged") return c.file;
+  }
+  svrfmt::Bytes data;
+  svrfmt::Epac e;
+  if (!svrfmt::ReadFile(src.string(), data) || !svrfmt::EpacRead(data, e)) {
+    REXLOG_WARN("[svr2011] arena mods: {} - its file can't be read for the titantron (as it is)", c.id);
+    return c.file;
+  }
+  int flagged = 0;
+  for (auto& g : e.groups)
+    for (auto& en : g.entries) {
+      const svrfmt::Bytes raw = svrfmt::Unpack(en.data);
+      std::vector<svrfmt::PachEntry> kids;
+      if (raw.size() < 4 || std::memcmp(raw.data(), "PACH", 4) || !svrfmt::PachRead(raw, kids)) continue;
+      bool changed = false;
+      for (auto& k : kids) {
+        if (k.id != 0xC351) continue;
+        const svrfmt::Bytes text = svrfmt::Unpack(k.data);
+        std::string t(text.begin(), text.end()), out;
+        size_t at = 0;
+        while (at < t.size()) {  // (lines "<model id> <flags>"; ids 800-899 without e / g get e)
+          size_t end = t.find('\n', at);
+          if (end == std::string::npos) end = t.size();
+          std::string line = t.substr(at, end - at);
+          const bool cr = !line.empty() && line.back() == '\r';
+          if (cr) line.pop_back();
+          size_t p = line.find_first_not_of(" \t");
+          if (p != std::string::npos && std::isdigit(uint8_t(line[p]))) {
+            const int id = std::atoi(line.c_str() + p);
+            std::istringstream words(line.substr(p));
+            std::string w;
+            bool has = false;
+            words >> w;
+            while (words >> w) has |= w == "e" || w == "g";
+            if (id >= 800 && id <= 899 && !has) line += " e", ++flagged, changed = true;
+          }
+          out += line + (cr ? "\r" : "") + (end < t.size() ? "\n" : "");
+          at = end + 1;
+        }
+        if (changed) k.data = svrfmt::BpeEncode(svrfmt::Bytes(out.begin(), out.end()));
+      }
+      if (changed) {  // (packed again when it was: the arena's memory holds the file as it is)
+        const bool packed = en.data.size() >= 4 && !std::memcmp(en.data.data(), "BPE ", 4);
+        en.data = packed ? svrfmt::BpeEncode(svrfmt::PachWrite(kids)) : svrfmt::PachWrite(kids);
+      }
+    }
+  fs::create_directories(dst.parent_path(), ec);
+  if (!flagged) {  // (no video screens to change: its own file, remembered)
+    std::ofstream(dst, std::ios::binary | std::ios::trunc);
+    std::ofstream(stamp_file, std::ios::trunc) << stamp << " unchanged\n";
+    return c.file;
+  }
+  const svrfmt::Bytes out = svrfmt::EpacWrite(e);
+  const fs::path tmp = dst.string() + ".tmp";
+  {
+    std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+    o.write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+    if (!o) {
+      REXLOG_WARN("[svr2011] arena mods: {} - the titantron copy can't be written (as it is)", c.id);
+      return c.file;
+    }
+  }
+  fs::remove(dst, ec);
+  fs::rename(tmp, dst, ec);
+  if (ec) return c.file;
+  std::ofstream(stamp_file, std::ios::trunc) << stamp << "\n";
+  REXLOG_INFO("[svr2011] arena mods: {} - {} video screens shown during entrances only (its own screens in the "
+              "match; titantron=live keeps the camera)",
+              c.id, flagged);
+  return rel;
+}
+
 // Custom arena c picked on the tile of arena `tile` (nullptr: none): it plays as its base arena (the tile's when it
 // has none) - that arena's file is c's, and a match on the tile plays as that arena (g_plays_as).
 int g_redirected_file = -1;  // (the arena whose file is the custom one: its base)
@@ -947,7 +1042,7 @@ void PointAt(const CustomArena* c, int tile) {
   SetDecodeSwaps(c, as);
   svr2011::SetRingRules(c ? c->manifest : std::string());
   if (!c || tile < 0) return;
-  svr2011::RedirectArena(as, c->file);
+  svr2011::RedirectArena(as, TitantronFile(*c));
   g_redirected_host = tile, g_redirected_file = as;
   if (as != tile) g_plays_as[tile] = as;
 }
