@@ -91,6 +91,33 @@ uint32_t g_controls_label = 0;  // "CONTROLS"
 uint32_t g_backgrounds_label = 0;  // "BACKGROUNDS"
 uint32_t g_extra_label = 0;     // "Mods" (the "?" tile opens the managers: src/managers.cpp)
 
+// CREATE AN ENTRANCE's motion presets (DIVA / SUPERSTAR / LEGEND nn: entrance scripts 480-563 left from older
+// games) by whose entrance they are - English only, the other languages keep the game's text. The names are the
+// scripts' own (EVP +0x22, pac\evt) and the DLC.pac ENEX/LSD rows {entrance, string id}; the ones whose script
+// name doesn't say who (Diva 03, General Powerfull, Brian Kendrick next to The Brian Kendrick, General Entrance)
+// keep the game's label. (Player request, 20 Oct.)
+struct PresetName {
+  uint32_t id;
+  const char* name;
+};
+constexpr PresetName kPresetNames[] = {
+    {0x2009, "MARIA"}, {0x200A, "TORRIE WILSON"}, {0x200B, "ASHLEY"}, {0x200C, "VICTORIA"}, {0x200D, "CANDICE"},
+    {0x200E, "JILLIAN"}, {0x200F, "TRISH STRATUS"}, {0x2010, "VAMPIRE DIVA"}, {0x2011, "GYMNAST DIVA"},
+    {0x2017, "KURT ANGLE"}, {0x2018, "BOOKER T"}, {0x2019, "KING BOOKER"}, {0x201A, "SABU"}, {0x201B, "SANDMAN"},
+    {0x201D, "KENNY DYKSTRA"}, {0x201E, "BOBBY LASHLEY"}, {0x201F, "GREGORY HELMS"}, {0x2020, "KEVIN THORN"},
+    {0x2021, "BALLS MAHONEY"}, {0x2022, "LANCE CADE"}, {0x2023, "TREVOR MURDOCH"}, {0x2024, "BIG DADDY V"},
+    {0x2025, "SNITSKY"}, {0x2027, "CHUCK PALUMBO"}, {0x2028, "TAZZ"}, {0x2029, "HARDCORE HOLLY"},
+    {0x202B, "CHRIS JERICHO (CLASSIC)"}, {0x202C, "RANDY ORTON (CLASSIC)"}, {0x202D, "SHANE MCMAHON"},
+    {0x202E, "TOMMY DREAMER"}, {0x202F, "CURT HAWKINS"}, {0x2030, "CHARLIE HAAS"}, {0x2031, "SUPER CRAZY"},
+    {0x2032, "BATISTA (CLASSIC)"}, {0x2033, "THE BOOGEYMAN"}, {0x2034, "JIMMY WANG YANG"}, {0x2035, "JEFF HARDY"},
+    {0x2036, "JBL"}, {0x2037, "UMAGA"}, {0x2038, "THE BRIAN KENDRICK"}, {0x2039, "THE GREAT KHALI"},
+    {0x203A, "JESSE"}, {0x203B, "BOXER"}, {0x203C, "VIP"}, {0x203D, "LADIES MAN"}, {0x203E, "CLUMSY SUPERSTAR"}, {0x207C, "ZOMBIE"},
+    {0x2053, "HULK HOGAN"}, {0x2054, "MILLION DOLLAR MAN"}, {0x2055, "MR. PERFECT"}, {0x2056, "DUSTY RHODES"},
+    {0x2057, "JUNKYARD DOG"}, {0x2058, "BOB ORTON JR."}, {0x2059, "EDDIE GUERRERO"}, {0x205A, "MICK FOLEY"},
+    {0x205B, "RIC FLAIR"}, {0x205C, "VADER"}, {0x205D, "DOINK THE CLOWN"},
+};
+std::map<uint32_t, uint32_t> g_preset_text;  // string id -> guest string (English only)
+
 uint32_t Be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
 }
@@ -271,6 +298,14 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   const Labels* l = &kLabels[0];
   for (const Labels& k : kLabels)
     if (k.language == language) l = &k;
+  if (l == &kLabels[0])  // (English - also the fallback for other ids: CREATE AN ENTRANCE's presets by name)
+    for (const PresetName& pn : kPresetNames) {
+      const uint32_t n = uint32_t(std::strlen(pn.name) + 1);
+      if (const uint32_t t = memory->SystemHeapAlloc(n)) {
+        std::memcpy(memory->TranslateVirtual<char*>(t), pn.name, n);
+        g_preset_text[pn.id] = t;
+      }
+    }
   const size_t n_graphics = std::strlen(l->graphics) + 1, n_exit = std::strlen(l->exit) + 1,
                n_ach = std::strlen(l->achievements) + 1, n_text = std::strlen(l->achievements_text) + 1,
                n_language = std::strlen(l->language_label) + 1, n_jukebox = std::strlen(l->jukebox) + 1,
@@ -323,6 +358,10 @@ REX_HOOK_RAW(sub_82153EF8) {
   }
   if (const uint32_t s = svr2011::MatchTypeString(ctx.r4.u32)) {  // (match_types.h: added rows)
     ctx.r3.u64 = s;
+    return;
+  }
+  if (const auto it = g_preset_text.find(ctx.r4.u32); it != g_preset_text.end()) {
+    ctx.r3.u64 = it->second;
     return;
   }
   if (g_label && ctx.r4.u32 == kGraphicsLabelId) {
