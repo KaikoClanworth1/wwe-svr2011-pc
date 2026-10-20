@@ -901,9 +901,29 @@ def convert(a, rep):
     name = (a.get('name') or g.waze.get(mid) or 'MOVE %d' % mid)[:63]
     progress(10, 'decoding the motion')
     xs = sorted(idx[mid])
-    cat0, path0 = idx[mid][xs[0]]
-    bl = Y.decode_record(g.record(cat0, path0))
-    bl = list(bl.values()) if isinstance(bl, dict) else list(bl)
+    # The move's records (x): one can be a short lead-in whose body keys stop at frame ~18 while its root and timing
+    # tracks run the whole length - 2K14's Shell Shocked 50551: x0 5.8 KB (body to 18 of 752), x1 34 KB (to 752); the
+    # first one made the body freeze in the grab pose and glide with the root. The record whose body moves longest.
+    best = None
+    for x in xs:
+        cat_x, path_x = idx[mid][x]
+        bl_x = Y.decode_record(g.record(cat_x, path_x))
+        bl_x = list(bl_x.values()) if isinstance(bl_x, dict) else list(bl_x)
+        body = 0
+        for b in bl_x:
+            for nm_, tr in b['tracks'].items():
+                if not nm_.startswith('Bip '):
+                    continue
+                for v in tr['parts'].values():
+                    ts = [k[0] for k in v] if isinstance(v, list) and v else \
+                        [k[0] for k in v['keys']] if isinstance(v, dict) and v.get('keys') else []
+                    if ts:
+                        body = max(body, ts[-1])
+        if best is None or body > best[0]:
+            best = (body, x, cat_x, path_x, bl_x)
+    _, x0, cat0, path0, bl = best
+    if x0 != xs[0]:
+        rep['notes'].append('source record x%d (its body moves the whole motion; x%d is a short lead-in)' % (x0, xs[0]))
     # blocks are named <phase 4 hex><person 4 hex>: 0000 0000/0001 a 2-frame set-up pose, 0010 0000/0001
     # the move's attacker / victim (0011.. variants), 0001-0005 0000 one-person parts. The move: the
     # first phase from 0010 with both people, else the longest one-person block.

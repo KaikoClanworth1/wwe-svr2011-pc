@@ -17,6 +17,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 sys.path.insert(0, TOOLS)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 sys.path.insert(0, os.path.join(HERE, 'mot'))
 
 # room -> (dx, dz, crop x0,x1,z0,z1 or None, row name)

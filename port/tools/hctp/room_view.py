@@ -15,6 +15,8 @@ import sys
 
 import numpy as np
 
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 import to_glb
 import yobj
 

@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <unordered_map>
@@ -99,6 +100,8 @@ static_assert(std::size(kPool) == 137);
 constexpr uint32_t kOwnId = 32, kOwnId2 = 218;  // u16 own id in the record
 constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its fans hold (id*10 + 1..4)
 constexpr uint32_t kSelectTile = 226;            // u16: its tile in the select grid's portrait table
+constexpr int kMinUsableMoves = 40;  // (EnsureMoveset: fewer usable moves than this - the move-set doesn't work)
+bool g_moves_checked = false;        // (CheckModProfiles: the mods' moves checked since the profiles were set up)
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
@@ -373,14 +376,78 @@ bool CopyIfChanged(const fs::path& from, const fs::path& to) {
   return fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
 }
 
+// The Music folder's playlist names the port gave mods' themes (Music\.mod_themes: "<name>\t<mod folder>"): a
+// playlist name is both what USER PLAYLIST shows and what an entrance keeps, so two mods - or a mod and a player's
+// own song - with the same name played one file (2.1.3 report: themes swapped between converted superstars).
+std::map<std::string, std::string> g_theme_owner;
+bool g_theme_owner_read = false;
+
+fs::path ThemeOwnersFile() {
+  const fs::path music = svr2011::UserMusicFolder();
+  return music.empty() ? fs::path() : music / ".mod_themes";
+}
+
+void ReadThemeOwners() {
+  if (g_theme_owner_read) return;
+  g_theme_owner_read = true;
+  std::ifstream in(ThemeOwnersFile());
+  for (std::string l; std::getline(in, l);) {
+    if (!l.empty() && l.back() == '\r') l.pop_back();
+    if (const size_t t = l.find('\t'); t != std::string::npos) g_theme_owner[l.substr(0, t)] = l.substr(t + 1);
+  }
+}
+
+void WriteThemeOwners() {
+  std::ofstream out(ThemeOwnersFile(), std::ios::trunc);
+  for (const auto& [name, folder] : g_theme_owner) out << name << '\t' << folder << '\n';
+}
+
+bool SameBytes(const fs::path& a, const fs::path& b) {
+  std::error_code ec;
+  if (fs::file_size(a, ec) != fs::file_size(b, ec) || ec) return false;
+  std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+  char x[65536], y[65536];
+  while (fa && fb) {
+    fa.read(x, sizeof x), fb.read(y, sizeof y);
+    if (fa.gcount() != fb.gcount() || std::memcmp(x, y, size_t(fa.gcount()))) return false;
+  }
+  return true;
+}
+
+// The playlist name a mod's theme gets: the mod's name, unless another mod owns it or the player has a song /
+// playlist of that name - then "<name> [<mod folder>]" (39 characters, as the entrance keeps). A song file the port
+// wrote before this list existed (the same bytes as the mod's theme) is the mod's own.
+std::string ThemeName(const Mod& m, const fs::path& music, const fs::path& theme) {
+  ReadThemeOwners();
+  const std::string plain = FileName(m.name);
+  auto taken = [&](const std::string& n) {
+    if (const auto it = g_theme_owner.find(n); it != g_theme_owner.end()) return it->second != m.folder;
+    std::error_code ec;
+    if (fs::is_directory(music / n, ec)) return true;
+    for (const auto& e : fs::directory_iterator(music, ec)) {
+      if (!e.is_regular_file(ec) || e.path().stem().string() != n) continue;
+      return !SameBytes(e.path(), theme);  // (a player's own song - or the port's, from before the list)
+    }
+    return false;
+  };
+  std::string name = plain;
+  if (taken(name)) {
+    const std::string tag = " [" + m.folder.substr(0, 30) + "]";
+    name = FileName(plain.substr(0, plain.size() + tag.size() > 39 ? 39 - tag.size() : plain.size()) + tag);
+  }
+  if (g_theme_owner[name] != m.folder) g_theme_owner[name] = m.folder, WriteThemeOwners();
+  return name;
+}
+
 void InstallMedia(Mod& m, const fs::path& folder, const std::string& song, const std::string& movie, float song_gain) {
   std::error_code ec;
   const std::string name = FileName(m.name);
   if (!song.empty() && fs::exists(folder / song, ec)) {
     const fs::path music = svr2011::UserMusicFolder();
-    const fs::path to = music / (name + fs::path(song).extension().string());
+    const std::string theme = music.empty() ? std::string() : ThemeName(m, music, folder / song);
+    const fs::path to = music / (theme + fs::path(song).extension().string());
     if (!music.empty() && CopyIfChanged(folder / song, to)) {
-      m.song = name;
+      m.song = theme;
       svr2011::SetSongGain(to, song_gain);
     }
   }
@@ -2344,6 +2411,57 @@ REX_HOOK_RAW(sub_8257A218) {
 // move that doesn't exist (crash, 2.0.3). A save's edited copy is no
 // placeholder and stays.
 namespace svr2011 {
+// A mod slot's move-set as the CPU and the player use it: the u16 move ids below the entrance block. Usable: ones
+// the game has a record with motions for (MoveUsable). A profile copied from a base that is a blank placeholder,
+// or a save's broken copy, has few or none: the CPU (and the player) got stuck in matches (player report, 20 Oct).
+struct MovesetCount {
+  int set = 0, usable = 0;
+};
+MovesetCount CountMoves(const uint8_t* profile) {
+  MovesetCount c;
+  for (uint32_t off = 0; off + 1 < kEntrance; off += 2) {
+    const uint16_t id = Rd16(profile + off);
+    if (!id || id == 0xFFFF) continue;
+    ++c.set;
+    c.usable += svr2011::MoveUsable(id) == 1;
+  }
+  return c;
+}
+bool MovesetWorks(const MovesetCount& c) { return c.usable >= kMinUsableMoves; }
+
+// Fail-safe: a mod slot whose move-set doesn't work gets a stock superstar's whole move-set (one of the mod's
+// gender - record +208 - picked by the mod's folder name: the same one every run), then the mod's own usable
+// moves on top - never a stuck match.
+void EnsureMoveset(uint8_t* base, uint8_t* sp, const Mod& m) {
+  const MovesetCount now = CountMoves(sp);
+  if (MovesetWorks(now)) return;
+  const uint32_t mi = Rd16(base + kIdToIndex + m.slot * 2);
+  const int gender = mi < 512 ? base[kRecords + mi * kRecordSize + 208] : -1;
+  std::vector<uint32_t> donors;
+  for (uint32_t id = 100; id <= 321; ++id) {
+    if (ModOf(id) || std::find(std::begin(kPool), std::end(kPool), id) != std::end(kPool)) continue;
+    const uint32_t i = Rd16(base + kIdToIndex + id * 2);
+    if (i >= 512 || !base[kRecords + i * kRecordSize + kFullName]) continue;
+    if (gender >= 0 && base[kRecords + i * kRecordSize + 208] != gender) continue;
+    if (MovesetWorks(CountMoves(base + kProfiles + i * kProfileSize))) donors.push_back(id);
+  }
+  if (donors.empty()) {
+    REXLOG_WARN("[svr2011] superstar mods: {}: its move-set doesn't work ({} of {} moves usable) and no stock one "
+                "was found to give it", m.folder, now.usable, now.set);
+    return;
+  }
+  uint32_t h = 2166136261u;
+  for (char c : m.folder) h = (h ^ uint8_t(c)) * 16777619u;
+  const uint32_t donor = donors[h % donors.size()];
+  const uint8_t* dp = base + kProfiles + Rd16(base + kIdToIndex + donor * 2) * kProfileSize;
+  std::memcpy(sp, dp, kEntrance);  // (the move block only: below the entrance)
+  for (const auto& [off, id] : m.moves)
+    if (off + 1u < kEntrance && svr2011::MoveUsable(id) == 1) sp[off] = uint8_t(id >> 8), sp[off + 1] = uint8_t(id);
+  const MovesetCount after = CountMoves(sp);
+  REXLOG_WARN("[svr2011] superstar mods: {}: its move-set didn't work ({} of {} moves usable) - superstar {}'s (gender {}) "
+              "given instead, with the mod's own on top ({} usable now)", m.folder, now.usable, now.set, donor, gender, after.usable);
+}
+
 void CheckModProfiles(uint8_t* base) {
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
@@ -2355,14 +2473,19 @@ void CheckModProfiles(uint8_t* base) {
     for (const auto& b : g_blank) have_blank |= b.first == m.slot;
     if (have_blank && IsBlank(m.slot, base + kProfiles + si * kProfileSize)) {
       ApplyRecords(base);
+      g_moves_checked = false;  // (the profiles were set up again: checked again)
       return;
     }
   }
   // Once the move records are loaded: a mod's own move the game has no usable
   // record for (SetOwnMoves may have run before they were) goes back to the
   // base's - only where the slot still holds the mod's id, never an edit.
-  static bool checked = false;
+  bool& checked = g_moves_checked;
   if (checked || MoveUsable(0) < 0) return;
+  {  // (the profiles loaded: a stock superstar holds its moves - else later)
+    const uint32_t ri = Rd16(base + kIdToIndex + 100 * 2);  // (THE ROCK)
+    if (ri >= 512 || !CountMoves(base + kProfiles + ri * kProfileSize).set) return;
+  }
   checked = true;
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2), bi = Rd16(base + kIdToIndex + m.base * 2);
@@ -2377,6 +2500,11 @@ void CheckModProfiles(uint8_t* base) {
     }
     if (!fixed.empty())
       REXLOG_WARN("[svr2011] superstar mods: {}: moves the game doesn't have, the base's put back:{}", m.folder, fixed);
+    if (const char* t = std::getenv("SVR2011_TEST_EMPTY_MOVESET"); t && m.folder == t) {  // (test aid: a broken move-set)
+      std::memset(sp, 0, kEntrance);
+      REXLOG_INFO("[svr2011] superstar mods: test: {}'s move-set emptied", m.folder);
+    }
+    EnsureMoveset(base, sp, m);
   }
 }
 }  // namespace svr2011

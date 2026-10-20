@@ -1,5 +1,7 @@
 """Standing pelvis height in the motion data of both games (root y, 0.01 units, y down):
 frames with both knees within 12 deg of straight and the lowest joint on the floor."""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 import sys, numpy as np, ymks as Y, fk, hmot, s11mot
 B11 = r"C:\Users\Ranger\AppData\Local\Temp\claude\D--Xbox-Games-Ports-WWE-Smackdown-Vs-Raw-2011\dfe83e05-1f37-4854-b5ee-c656d2553e43\scratchpad\ymks\banks\m_MOT_BM01_1.bin"
 K = 12 / 360 * 65536

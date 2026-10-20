@@ -26,6 +26,7 @@
 #include "tool_run.h"
 #include "svrfmt/png.h"
 #include "disc_list.h"
+#include "simple_port.h"
 #include "imgui_internal.h"
 
 namespace mm {
@@ -94,6 +95,8 @@ std::wstring StyleChPac() {
 }
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
 int g_test_id = 0;
+extern std::string g_test_import;  // (--star-import-moveset: TestImportMoveset)
+void RunTestImport(const std::string& spec);
 std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
 std::string g_test_hometown;
 int g_test_pose = -1;
@@ -585,6 +588,225 @@ void MovePicker() {
   }
 }
 
+// ---- a whole moveset from somewhere else (player request, 20 Oct): a 2011 superstar's, one of the superstar mods
+// installed in the game, or another game's superstar (the Port moves menu, simple_port.h ForStar)
+int g_imp_src = -1;  // -1 closed, 0 a 2011 superstar, 1 one of my mods, 2 another game
+char g_imp_find[48] = "";
+int g_imp_pick = -1;  // (the list's chosen row)
+bool g_imp_test_save = false;  // (test aid game:<game>:<item>: the project saved once their moves are in)
+struct ImportMod {
+  fs::path dir;
+  std::string name;
+  int base = 0;
+};
+std::vector<ImportMod> g_imp_mods;
+
+// The moves a move pack brings (pack.txt's waze / wazecopy / wazename lines: the game plays them whatever misc.pac
+// says), read once per pack folder and change.
+const std::set<int>& PackMoveIds(const std::wstring& pack) {
+  static std::map<std::wstring, std::pair<fs::file_time_type, std::set<int>>> cache;
+  static const std::set<int> kNone;
+  if (pack.empty()) return kNone;
+  std::error_code ec;
+  const fs::path f = fs::path(pack) / L"pack.txt";
+  const auto t = fs::last_write_time(f, ec);
+  auto& c = cache[pack];
+  if (ec || c.first == t) return c.second;
+  c.first = t, c.second.clear();
+  Bytes b;
+  ReadFile(PathStr(f), b);
+  const std::string text(b.begin(), b.end());
+  for (size_t at = 0; at < text.size();) {
+    size_t e = text.find('\n', at);
+    if (e == std::string::npos) e = text.size();
+    const std::string l = text.substr(at, e - at);
+    at = e + 1;
+    for (const char* k : {"waze ", "wazecopy ", "wazename "})
+      if (l.rfind(k, 0) == 0) c.second.insert(std::atoi(l.c_str() + std::strlen(k)));
+  }
+  return c.second;
+}
+
+// A move the game can play (as its MoveUsable): misc.pac has a record with its move kinds, or a move pack brings it.
+// (Stock profiles hold a few the game can't: RVD's 0x0E0 10280 - in a match such a slot gets the base's move.)
+// True when the game's moves didn't load (nothing to tell by).
+bool MoveUsable(int id, const std::wstring& pack) {
+  const auto& infos = MoveInfos();
+  if (infos.empty() || PackMoveIds(pack).count(id)) return true;
+  for (const PackMove& pm : PackMoves())  // (the installed move packs' and this mod's)
+    if (pm.id == id) return true;
+  const auto it = infos.find(id);
+  return it != infos.end() && std::any_of(std::begin(it->second.bits), std::end(it->second.bits), [](uint8_t b) { return b != 0; });
+}
+
+// Slot -> move id ("0xOFF=id" lines, a moves.txt) on top of `full`; a ported mod's "# same: / # similar:" notes too.
+void OverlayMoves(const std::string& t, std::vector<int>& full, std::map<int, std::string>& notes) {
+  std::string note;
+  for (size_t at = 0; at < t.size();) {
+    size_t e = t.find('\n', at);
+    if (e == std::string::npos) e = t.size();
+    std::string item = t.substr(at, e - at);
+    at = e + 1;
+    if (!item.empty() && item.back() == '\r') item.pop_back();
+    if (item.rfind("# same:", 0) == 0 || item.rfind("# similar:", 0) == 0) {
+      note = item.substr(2);
+      continue;
+    }
+    const size_t eq = item.find('=');
+    if (eq == std::string::npos || item[0] == '#') continue;
+    const int off = int(std::strtol(item.c_str(), nullptr, 0)), id = std::atoi(item.c_str() + eq + 1);
+    if (off >= 0 && off < 2 * kMoveSlots && !(off & 1) && id > 0) {
+      full[size_t(off / 2)] = id;
+      if (!note.empty()) notes[off / 2] = note;
+    }
+    note.clear();
+  }
+}
+
+// The whole moveset `full` (every slot) as the project's: the slots that differ from the style's become its picks
+// (the earlier picks and a moves list file go: they'd sit under or over the new set), a pack joins the project's.
+void TakeWholeMoveset(const std::vector<int>& full, const std::map<int, std::string>& notes, const std::wstring& pack,
+                      const std::string& from) {
+  const std::vector<int> base = ProfileMoves(kStyles[g_star.style].template_id);
+  g_star.moveset.clear(), g_star.moveset_note.clear(), g_star.moves.clear();
+  int n = 0;
+  std::string skipped;
+  for (int s = 0; s < int(full.size()) && s < kMoveSlots; ++s) {
+    const int was = s < int(base.size()) ? base[size_t(s)] : 0;
+    if (!full[size_t(s)] || full[size_t(s)] == was) continue;
+    if (!MoveUsable(full[size_t(s)], pack)) {  // (the game couldn't play it: the style's stays)
+      char b[32];
+      std::snprintf(b, sizeof b, " 0x%03X=%d", s * 2, full[size_t(s)]);
+      skipped += b;
+      continue;
+    }
+    g_star.moveset[s] = full[size_t(s)], ++n;
+    if (const auto it = notes.find(s); it != notes.end()) g_star.moveset_note[s] = it->second;
+  }
+  if (!pack.empty()) g_star.pack = simple_port::CombinePacks(g_star.pack, pack);
+  Touch();
+  if (!skipped.empty()) Log("import moveset: " + from + ": moves the game can't play, the style's kept:" + skipped);
+  Log("import moveset: " + from + ": " + std::to_string(n) + " slots differ from the style's" + (pack.empty() ? "" : ", with its move pack"));
+  Status(from + "'s whole moveset is your superstar's now (" + std::to_string(n) + " slots differ from your fighting style's).");
+}
+
+bool ImportFromStar(int id) {
+  const std::vector<int> moves = ProfileMoves(id);
+  const StarInfo* st = StarById(id);
+  if (moves.empty() || !st) return Status("That superstar's moves couldn't be read (misc.pac)."), false;
+  std::vector<int> full(size_t(kMoveSlots), 0);
+  std::copy_n(moves.begin(), std::min(moves.size(), full.size()), full.begin());
+  TakeWholeMoveset(full, {}, L"", st->name);
+  return true;
+}
+
+void ReadImportMods() {
+  g_imp_mods.clear();
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Superstars", ec)) {
+    Bytes man;
+    if (!e.is_directory(ec) || !ReadFile(PathStr(e.path() / L"manifest.txt"), man)) continue;
+    const std::string t(man.begin(), man.end());
+    ImportMod m;
+    m.dir = e.path();
+    m.name = Value(t, "name");
+    if (m.name.empty()) m.name = Utf8(e.path().filename().wstring());
+    m.base = std::atoi(Value(t, "base").c_str());
+    g_imp_mods.push_back(std::move(m));
+  }
+  std::sort(g_imp_mods.begin(), g_imp_mods.end(), [](const ImportMod& a, const ImportMod& b) { return Lower(a.name) < Lower(b.name); });
+}
+
+// A superstar mod's moveset: its base's moves, its moves list on top, its move pack (moves\pack.txt) with it.
+bool ImportFromMod(const fs::path& dir) {
+  Bytes man;
+  if (!ReadFile(PathStr(dir / L"manifest.txt"), man)) return Status("That mod has no manifest.txt."), false;
+  const std::string t(man.begin(), man.end());
+  std::string name = Value(t, "name"), file = Value(t, "moves");
+  if (name.empty()) name = Utf8(dir.filename().wstring());
+  if (file.empty()) file = "moves.txt";
+  std::vector<int> full(size_t(kMoveSlots), 0);
+  const std::vector<int> moves = ProfileMoves(std::atoi(Value(t, "base").c_str()));
+  std::copy_n(moves.begin(), std::min(moves.size(), full.size()), full.begin());
+  std::map<int, std::string> notes;
+  Bytes mv;
+  const bool listed = ReadFile(PathStr(dir / fs::u8path(file)), mv);
+  if (listed) OverlayMoves(std::string(mv.begin(), mv.end()), full, notes);
+  if (moves.empty() && !listed) return Status(name + " has no moves to bring: no moves list, and its base's couldn't be read."), false;
+  std::error_code ec;
+  const fs::path pack = dir / L"moves";
+  TakeWholeMoveset(full, notes, fs::exists(pack / L"pack.txt", ec) ? pack.wstring() : std::wstring(), name);
+  return true;
+}
+
+void ImportMovesetSection() {
+  ImGui::Spacing();
+  ImGui::TextUnformatted("Import a whole moveset from:");
+  static const char* const kSrc[] = {"A 2011 superstar", "One of my superstar mods", "Another game"};
+  for (int i = 0; i < 3; ++i) {
+    if (i) ImGui::SameLine();
+    if (ImGui::RadioButton(kSrc[i], g_imp_src == i)) {
+      g_imp_src = i, g_imp_pick = -1, g_imp_find[0] = 0;
+      if (i == 1) ReadImportMods();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Close##imp")) g_imp_src = -1;
+  ImGui::TextDisabled("The whole set replaces this superstar's moves (the moves you picked and a moves list file).");
+  if (g_imp_src == 2) {  // (the Port moves menu: a game, a superstar, their moves - "Use ... for my superstar")
+    simple_port::ForStarResult r;
+    if (simple_port::ForStar(simple_port::kMoves, r)) {
+      g_star.moveset.clear(), g_star.moveset_note.clear(), g_star.moves.clear();
+      std::string text;
+      for (const auto& l : r.lines) text += l + "\n";
+      ParseMoveset(text, '\n');
+      g_star.pack = simple_port::CombinePacks(g_star.pack, r.pack);
+      for (auto it = g_star.moveset.begin(); it != g_star.moveset.end();) {  // (ones the game can't play: the style's)
+        if (MoveUsable(it->second, g_star.pack)) {
+          ++it;
+          continue;
+        }
+        Log("import moveset: the game can't play move " + std::to_string(it->second) + ": the style's kept");
+        g_star.moveset_note.erase(it->first);
+        it = g_star.moveset.erase(it);
+      }
+      Touch();
+      Log("import moveset: " + r.what + ": " + std::to_string(r.lines.size()) + " slots");
+      Status(r.what + " are your superstar's now (the slots that couldn't come over keep your fighting style's).");
+      g_imp_src = -1;
+      if (g_imp_test_save) g_imp_test_save = false, TestSaveMod(g_test_save), PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    }
+    return;
+  }
+  ImGui::SetNextItemWidth(240 * g_scale);
+  ImGui::InputTextWithHint("##impf", "find a superstar", g_imp_find, sizeof g_imp_find);
+  const std::string f = Lower(g_imp_find);
+  std::string chosen;
+  ImGui::BeginChild("imp_list", ImVec2(360 * g_scale, 200 * g_scale), true);
+  if (g_imp_src == 0) {
+    for (const auto& st : Stars()) {
+      if (!f.empty() && Lower(st.name).find(f) == std::string::npos) continue;
+      if (ImGui::Selectable((st.name + "##" + std::to_string(st.id)).c_str(), g_imp_pick == st.id)) g_imp_pick = st.id;
+      if (g_imp_pick == st.id) chosen = st.name;
+    }
+  } else {
+    if (g_imp_mods.empty()) ImGui::TextDisabled("No superstar mods in the game's Mods\\Superstars.");
+    for (int i = 0; i < int(g_imp_mods.size()); ++i) {
+      const ImportMod& m = g_imp_mods[size_t(i)];
+      if (!f.empty() && Lower(m.name).find(f) == std::string::npos) continue;
+      if (ImGui::Selectable((m.name + "##m" + std::to_string(i)).c_str(), g_imp_pick == i)) g_imp_pick = i;
+      if (g_imp_pick == i) chosen = m.name;
+    }
+  }
+  ImGui::EndChild();
+  ImGui::BeginDisabled(chosen.empty());
+  if (ImGui::Button(chosen.empty() ? "Use their moveset" : ("Use " + chosen + "'s moveset").c_str(), ImVec2(300 * g_scale, 0))) {
+    const bool ok = g_imp_src == 0 ? ImportFromStar(g_imp_pick) : ImportFromMod(g_imp_mods[size_t(g_imp_pick)].dir);
+    if (ok) g_imp_src = -1;
+  }
+  ImGui::EndDisabled();
+}
+
 void MovesetSection() {
   const int changed = int(g_star.moveset.size());
   const std::string head = "Moveset" + (changed ? " (" + std::to_string(changed) + " changed)" : std::string(": the style's")) + "###moveset";
@@ -608,6 +830,12 @@ void MovesetSection() {
   ImGui::Checkbox("all slots", &g_moveset_all);
   ImGui::SameLine();
   if (changed && ImGui::SmallButton("Back to the style's moves")) g_star.moveset.clear(), Touch();
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Import a whole moveset...")) g_imp_src = g_imp_src < 0 ? 0 : -1;
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Every move of a 2011 superstar, of one of your superstar mods (with its own move pack), or of a "
+                      "superstar from another game (the Port moves menu).");
+  if (g_imp_src >= 0) ImportMovesetSection();
   if (!g_moveset_all && !changed) ImGui::TextDisabled("Tick \"all slots\" (or find one) to change a move.");
   const std::string f = Lower(g_moveset_find);
   const bool can_watch = anims_page::MovesIndexed();
@@ -2072,6 +2300,22 @@ void Problems(std::vector<Problem>& p) {
       p.push_back(Error("The folder of extra moves (" + FileName(g_star.pack) + ") is broken: it has no list of its moves, so none of them would play.")
                       .With("Leave the extra moves out", [] { g_star.pack.clear(); Touch(); }));
   }
+  {  // (picked, imported or from a test: moves the game can't play - in a match those slots get the base's)
+    std::vector<int> bad;
+    for (const auto& [slot, id] : g_star.moveset)
+      if (!MoveUsable(id, g_star.pack)) bad.push_back(slot);
+    if (!bad.empty()) {
+      std::string list;
+      for (size_t k = 0; k < bad.size() && k < 4; ++k)
+        list += (k ? ", " : "") + SlotLabel(bad[k]) + " (move " + std::to_string(g_star.moveset[bad[k]]) + ")";
+      p.push_back(Warning(std::to_string(bad.size()) + " move(s) in the moveset the game can't play: " + list +
+                          (bad.size() > 4 ? ", ..." : "") + ". In a match those slots would do the base superstar's moves.")
+                      .With("Use the style's moves there", [bad] {
+                        for (int s : bad) g_star.moveset.erase(s), g_star.moveset_note.erase(s);
+                        Touch();
+                      }, "the style's moves are back in those slots"));
+    }
+  }
   tag(kStepMoves);
   auto clean = [](char* s) {  // letters and digits only, capitals (the announcer's clip names)
     char* o = s;
@@ -2240,8 +2484,9 @@ void Draw() {
       std::snprintf(g_star.hometown_city, sizeof g_star.hometown_city, "%s", g_test_hometown.substr(0, c).c_str());
       std::snprintf(g_star.hometown_state, sizeof g_star.hometown_state, "%s", c == std::string::npos ? "" : g_test_hometown.substr(c + 1).c_str());
     }
+    if (!g_test_import.empty()) RunTestImport(g_test_import);  // (after the style: the import is set against it)
     ApplyTestMaterials();  // (--star-mat before the test save)
-    if (!g_test_save.empty()) {
+    if (!g_test_save.empty() && g_test_import.rfind("game:", 0) != 0) {  // (game: saves once the port is done)
       Job j;
       PrepareJob(j);
       std::vector<ZipEntry> files;
@@ -2926,6 +3171,21 @@ void TestWatchSlot(int off) { g_watch_slot_test = off / 2, g_moveset_open_once =
 void TestMoveset(const std::string& spec) {
   ParseMoveset(spec, ',');
   g_moveset_open_once = true;
+}
+
+// --star-import-moveset star:<id> | mod:<folder in Mods\Superstars>: that whole moveset into the project; open:<0-2>: the
+// import shown with that source; game:<game>:<item>: the Another game source, Use once ready (then --test-star-save).
+std::string g_test_import;
+void TestImportMoveset(const std::string& spec) { g_test_import = spec, g_moveset_open_once = true; }
+void RunTestImport(const std::string& spec) {
+  if (spec.rfind("star:", 0) == 0) ImportFromStar(std::atoi(spec.c_str() + 5));
+  else if (spec.rfind("open:", 0) == 0) g_imp_src = std::clamp(std::atoi(spec.c_str() + 5), 0, 2), g_imp_src == 1 ? ReadImportMods() : void();
+  else if (spec.rfind("game:", 0) == 0 && spec.find(':', 5) != std::string::npos) {  // (then saved when done)
+    const size_t c = spec.find(':', 5);
+    g_imp_src = 2, g_imp_test_save = !g_test_save.empty();
+    simple_port::ForStarTest(simple_port::kMoves, spec.substr(5, c - 5), spec.substr(c + 1));
+  } else if (spec.rfind("mod:", 0) == 0) ImportFromMod(fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(spec.substr(4)));
+  else Log("import moveset test: star:<id> or mod:<folder>, not " + spec);
 }
 
 void TestFbx(const std::wstring& fbx, const std::string& map) { g_test_fbx = fbx, g_test_fbx_map = map; }
