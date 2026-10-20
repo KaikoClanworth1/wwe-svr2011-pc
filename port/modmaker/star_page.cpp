@@ -196,6 +196,7 @@ struct Job {
   std::map<int, int> moveset;
   std::string id, manifest;
   std::wstring model, song, movie, voice, cae, attires[4];
+  std::string threads;  // (the Threads parts tab's threads.txt)
   std::string attire_names[4];
   Image picture, picture_small, picture_full;
   std::vector<Image> signs;
@@ -1128,6 +1129,7 @@ bool PrepareJob(Job& j) {
   if (!g_star.moves.empty() || !g_star.moveset.empty()) j.manifest += "moves=moves.txt\n";
   j.moves = g_star.moves, j.pack = g_star.pack, j.moveset = g_star.moveset;
   j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice, j.cae = g_star.cae;
+  j.threads = g_star.threads;
   j.gear = g_star.gear;
   j.mats = g_star.mats;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
@@ -1215,6 +1217,7 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     files.push_back({"movie.bik", std::move(m)});
     man += "movie=movie.bik\n";
   }
+  if (!j.threads.empty()) files.push_back({"threads.txt", Bytes(j.threads.begin(), j.threads.end())});  // (Threads parts tab)
   if (!j.cae.empty()) {  // (a created entrance: the game's block as it wrote it - superstar_mods.cpp cae=)
     Bytes c;
     if (!ReadFile(Utf8(j.cae), c) || c.size() != 284) {
@@ -1300,7 +1303,7 @@ void SaveMod() {
       if (WriteFile(out, ZipWrite(files))) Status("Saved " + out + " (add it in the launcher's Mods tab with +).");
       else Status("The mod could not be written: " + out);
     };
-    if (OwnModel(j.model)) WithThreadsParts(j.id, std::move(files), write);
+    if (OwnModel(j.model) && j.threads.empty()) WithThreadsParts(j.id, std::move(files), write);  // (made in the tab: kept)
     else write(files);
   });
 }
@@ -1325,7 +1328,7 @@ void Install(bool start) {
       Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ")." + InstallReport("Superstars", dir));
       if (start) StartGame();
     };
-    if (!OwnModel(j.model)) return done();
+    if (!OwnModel(j.model) || !j.threads.empty()) return done();
     OnUiThread([dir, done] {  // (its own model: its Superstar Threads parts first, then the doctor's report)
       WhenIdle([dir, done] { MakeThreadsParts(dir, [done](int, const std::string&) { RunInBackground(done); }); });
     });
@@ -2649,7 +2652,7 @@ void Draw() {
         PostMessageW(g_wnd, WM_CLOSE, 0, 0);
       };
       if (!BuildFiles(j, files)) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
-      else if (OwnModel(j.model)) WithThreadsParts(j.id, std::move(files), write);  // (as Save as mod)
+      else if (OwnModel(j.model) && j.threads.empty()) WithThreadsParts(j.id, std::move(files), write);  // (as Save as mod)
       else write(files);
     }
   }
@@ -3006,7 +3009,7 @@ std::string StateText() {
   for (int a = 1; a < 4; ++a)
     s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a] + "|" +
          std::to_string(g_star.attire_entrance[a]);
-  s += "\nmoveset=" + MovesetText() + "\ncae=" + Utf8(g_star.cae);
+  s += "\nmoveset=" + MovesetText() + "\ncae=" + Utf8(g_star.cae) + "\nthreads=" + g_star.threads;
   s += "\nentrance=" + std::to_string(g_star.entrance) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
@@ -3119,6 +3122,10 @@ void WriteProject(ProjectOut& out) {
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", g_star.movie, "star/movie");
   out.File("cae", g_star.cae, "star/cae");
+  if (!g_star.threads.empty()) {
+    out.Key("threads", "star/threads.txt");
+    out.files.push_back({"star/threads.txt", Bytes(g_star.threads.begin(), g_star.threads.end())});
+  }
   if (!g_star.cae_name.empty()) out.Key("cae_name", g_star.cae_name);
   out.File("voice", g_star.voice, "star/voice");
   for (int a = 1; a < 4; ++a) {
@@ -3283,6 +3290,11 @@ bool Read(const ProjectIn& in, bool mod) {
   if (const std::string g = in.Get("theme_gain"); !g.empty()) g_star.theme_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 6.0f);
   g_star.movie = file("movie", nullptr);
   g_star.cae = file("cae", nullptr);
+  {  // (threads.txt: the project's own, or a mod's)
+    const std::string tf = mod ? std::string("threads.txt") : in.Get("threads");
+    for (const auto& f : in.files)
+      if (!tf.empty() && f.name == tf) g_star.threads.assign(f.data.begin(), f.data.end());
+  }
   g_star.cae_name = in.Get("cae_name");
   if (!g_star.cae.empty() && g_star.cae_name.empty()) g_star.cae_name = "this mod's";
   g_star.voice = file("voice", nullptr);
