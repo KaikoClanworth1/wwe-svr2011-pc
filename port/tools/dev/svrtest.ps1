@@ -1,0 +1,285 @@
+# svrtest - one command for a hidden, private test run (docs/DEBUG_SUITE_PLAN.md 2A). For us only: tools\dev is
+# never packaged (tools/release_guard.ps1).
+#
+#   svrtest.ps1 match --p1 136 --p2 110 [--p3 ..] [--attire 2,1] [--arena 9] [--rule 3C] [--entrances]
+#                     [--shot 5s] [--shots every:2s:5] [--until "<log text>"] [--quit 15s]
+#   svrtest.ps1 entrance --p1 136 [--attire 2] [--shots every:6s:20]        (until "entrances over")
+#   svrtest.ps1 route <name> [--shot 3s] [--quit 10s]                       (script_input.cpp kRoutes)
+#   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
+# common: --exe release|dbg|<path>  --backend d3d12|vulkan|d3d11  --mods none|<folder>[,<folder>...]
+#         --userdata <dir>  --perf 0|1|2  --log-level info|debug  --name <run name>  --keep (leave it running)
+#         --arg "<game option>" (more of the game's --options, repeatable)
+#
+# Each run: refuses when the player's game runs or 4 test games already do (any chat); refreshes the private
+# game folder runs\svrtest\game (the exe + DLLs copied; pac's own files private copies - the game patches some at
+# start - and its sub-folders, sound, movies, native_shaders, pad_icons as read-only junctions to Game Files; its own Mods holding only --mods; private UserData, Music, Custom Movies);
+# takes a free p2p port in 36500-36599; starts hidden, muted, behind every window; follows the cues; stops the
+# game by its PID; writes runs\svrtest\<stamp>_<name>\ (game.log, shots, result.json) and prints result.json.
+#
+# Times: "5s", "1500ms" or a number of seconds; shots count from the match's start (the log's "replay recorder
+# recording": the match world running - after the entrances when they play; the "match starts" line doesn't come in
+# test matches), the entrances' start (entrance: the "test match: people" hand-off), or the route / script's end.
+param([Parameter(Position = 0)][string]$Command = "", [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest)
+$ErrorActionPreference = "Stop"
+$tools = Split-Path $PSScriptRoot -Parent
+$port = Split-Path $tools -Parent
+$gameFiles = if (Test-Path (Join-Path (Split-Path $port -Parent) "Game Files\pac")) { Join-Path (Split-Path $port -Parent) "Game Files" } `
+             else { "D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Game Files" }
+. (Join-Path $tools "test_guard.ps1")
+Add-Type -AssemblyName System.Drawing
+if (-not ("SvrTestWin" -as [type])) {
+    Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class SvrTestWin {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint f);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+}
+"@
+}
+[void][SvrTestWin]::SetProcessDPIAware()
+
+# ---- options
+$o = @{ p = @{}; exe = "release"; backend = ""; mods = "none"; perf = ""; loglevel = "info"; name = ""; keep = $false; args = @()
+        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = "" }
+for ($i = 0; $i -lt $Rest.Count; $i++) {
+    $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
+    switch -regex ($a) {
+        '^--p([1-6])$' { $o.p[[int]$Matches[1]] = $v; $i++; continue }
+        '^--attire$' { $o.attire = $v; $i++; continue }
+        '^--arena$' { $o.arena = $v; $i++; continue }
+        '^--rule$' { $o.rule = $v; $i++; continue }
+        '^--entrances$' { $o.entrances = $true; continue }
+        '^--shot$' { $o.shot += $v; $i++; continue }
+        '^--shots$' { $o.every = $v; $i++; continue }
+        '^--until$' { $o.until = $v; $i++; continue }
+        '^--quit$' { $o.quit = $v; $i++; continue }
+        '^--exe$' { $o.exe = $v; $i++; continue }
+        '^--backend$' { $o.backend = $v; $i++; continue }
+        '^--mods$' { $o.mods = $v; $i++; continue }
+        '^--userdata$' { $o.userdata = $v; $i++; continue }
+        '^--perf$' { $o.perf = $v; $i++; continue }
+        '^--log-level$' { $o.loglevel = $v; $i++; continue }
+        '^--name$' { $o.name = $v; $i++; continue }
+        '^--keep$' { $o.keep = $true; continue }
+        '^--arg$' { $o.args += $v; $i++; continue }
+        default { if (-not $o.target -and $a -notlike "--*") { $o.target = $a } else { throw "svrtest: unknown option $a" } }
+    }
+}
+if ($Command -notin "match", "entrance", "route", "script") {
+    throw "svrtest: match | entrance | route <name> | script <file> (see the top of tools\dev\svrtest.ps1)"
+}
+if ($Command -eq "entrance") { $o.entrances = $true; if (-not $o.until) { $o.until = "entrances over" } }
+function Seconds([string]$t) {
+    if (-not $t) { return 0 }
+    if ($t -match '^(\d+(\.\d+)?)ms$') { return [double]$Matches[1] / 1000 }
+    if ($t -match '^(\d+(\.\d+)?)s?$') { return [double]$Matches[1] }
+    throw "svrtest: a time is 5s, 1500ms or a number, not $t"
+}
+
+# ---- guards: the player's game, the test-game cap (all chats), a free port
+Assert-NoPlayerGame
+$running = @(Get-SvrGames).Count
+if ($running -ge 4) { throw "svrtest: $running test games already run (4 at most, all chats together) - try again later" }
+$used = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalPort })
+$p2p = 36500..36599 | Where-Object { $_ -notin $used } | Get-Random
+if (-not $p2p) { throw "svrtest: no free UDP port in 36500-36599" }
+
+# ---- the private game folder
+$root = Join-Path $port "runs\svrtest"
+$game = Join-Path $root "game"
+New-Item -ItemType Directory -Force $game, (Join-Path $game "Mods"), (Join-Path $root "music"), (Join-Path $root "movies") | Out-Null
+# pac: a real folder. The game patches pac\string.pac and pac\menu\menu.pac in place at start (game_files.cpp
+# PatchGameFiles: a .tmp renamed over the file) - through a junction that would rewrite the player's install. So
+# the files in pac\ and pac\menu\ are private copies (refreshed when Game Files' copy is newer), and only the sub-folders the game never writes (bg, ch, edit, evt, evtdsc) are junctions.
+function Remove-Junction([string]$path) {  # (the link only, never what it points at)
+    if ((Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue).LinkType -eq "Junction") { cmd /c rmdir "`"$path`"" | Out-Null }
+}
+function Mirror-Pac([string]$src, [string]$dst, [string[]]$copyDirs) {
+    Remove-Junction $dst
+    New-Item -ItemType Directory -Force $dst | Out-Null
+    foreach ($f in Get-ChildItem -LiteralPath $src -File) {
+        $to = Join-Path $dst $f.Name
+        if (-not (Test-Path -LiteralPath $to) -or ((Get-Item -LiteralPath $to).LastWriteTime -lt $f.LastWriteTime)) {
+            Copy-Item -LiteralPath $f.FullName $to -Force
+        }
+    }
+    foreach ($d in Get-ChildItem -LiteralPath $src -Directory) {
+        $to = Join-Path $dst $d.Name
+        if ($d.Name -in $copyDirs) { Mirror-Pac $d.FullName $to @() }
+        elseif (-not (Test-Path -LiteralPath $to)) { New-Item -ItemType Junction -Path $to -Target $d.FullName | Out-Null }
+    }
+}
+Mirror-Pac (Join-Path $gameFiles "pac") (Join-Path $game "pac") @("menu")
+foreach ($d in "sound", "movies", "native_shaders", "nxeart", "pad_icons") {
+    $link = Join-Path $game $d
+    $src = Join-Path $gameFiles $d
+    if ((Test-Path $link) -or -not (Test-Path $src)) { continue }
+    if (Test-Path $src -PathType Container) { New-Item -ItemType Junction -Path $link -Target $src | Out-Null }
+    else { Copy-Item $src $link }  # (nxeart is a file)
+}
+foreach ($f in "default.xex", "plist360.arc", "plist360_4x3.arc") {
+    if (-not (Test-Path (Join-Path $game $f))) { Copy-Item (Join-Path $gameFiles $f) $game }
+}
+$build = switch ($o.exe) { "release" { Join-Path $port "out\build\SourceRelease" } "dbg" { Join-Path $port "out\build\DebugSuite" } default { Split-Path $o.exe -Parent } }
+$exeName = switch ($o.exe) { "release" { "svr2011.exe" } "dbg" { "svr2011_dbg.exe" } default { Split-Path $o.exe -Leaf } }
+foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
+    $src = Join-Path $build $f
+    if (-not (Test-Path $src) -and $f -ne $exeName) { $src = Join-Path $port "out\build\SourceRelease\$f" }
+    if (-not (Test-Path $src)) { throw "svrtest: no $f in $build - build it first" }
+    Copy-Item $src $game -Force
+}
+# its Mods: only --mods (a mod folder is placed by its manifest's type)
+$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes" }
+Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" } | Remove-Item -Recurse -Force
+if ($o.mods -and $o.mods -ne "none") {
+    foreach ($m in $o.mods -split ',') {
+        $man = Join-Path $m "manifest.txt"
+        if (-not (Test-Path $man)) { throw "svrtest: --mods $m has no manifest.txt" }
+        $type = ((Get-Content $man | Where-Object { $_ -match '^type=' }) -replace '^type=', '').Trim().ToLower()
+        $kind = if ($kinds[$type]) { $kinds[$type] } else { "Superstars" }
+        New-Item -ItemType Directory -Force (Join-Path $game "Mods\$kind") | Out-Null
+        Copy-Item -Recurse $m (Join-Path $game "Mods\$kind\$(Split-Path $m -Leaf)")
+    }
+}
+$userdata = if ($o.userdata) { $o.userdata } else { Join-Path $port "runs\univ_userdata" }  # (private: its own DLC copy)
+# never the player's user data, nor one whose DLC is a link (the game patches the installed DLC's string.pac and
+# catalog.dlc in place)
+$udFull = [IO.Path]::GetFullPath($userdata).TrimEnd('\')
+if ($udFull.StartsWith([IO.Path]::GetFullPath($gameFiles).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { throw "svrtest: --userdata is inside Game Files - use a private copy" }
+$dlc = Join-Path $userdata "0000000000000000"
+if ((Test-Path $dlc) -and (Get-Item -LiteralPath $dlc -Force).LinkType) { throw "svrtest: $dlc is a link - give the test user data a private DLC copy" }
+# a tripwire: what the game patches at start, in Game Files, before the run (compared in result.json)
+$watched = @("pac\string.pac", "pac\menu\menu.pac") | ForEach-Object { Join-Path $gameFiles $_ } | Where-Object { Test-Path $_ }
+$watchedTimes = @{}; foreach ($w in $watched) { $watchedTimes[$w] = (Get-Item $w).LastWriteTimeUtc }
+
+# ---- the run's folder and the game's environment
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$name = if ($o.name) { $o.name } else { $Command + $(if ($o.target) { "_" + ($o.target -replace '[^A-Za-z0-9]', '') }) }
+$out = Join-Path $root "$($stamp)_$name"
+New-Item -ItemType Directory -Force $out | Out-Null
+$log = Join-Path $out "game.log"
+$inputFile = Join-Path $out "input.txt"
+Set-Content $inputFile "" -NoNewline
+$env:SVR2011_INPUT_FILE = $inputFile
+$env:SVR2011_USER_DATA = $userdata
+$env:SVR2011_MUSIC = Join-Path $root "music"
+$env:SVR2011_MOVIES = Join-Path $root "movies"
+$env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
+$env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
+foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_NATIVE_SHADERS") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
+$steps = @()
+if ($Command -in "match", "entrance") {
+    $people = @(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] })
+    if ($people.Count -lt 2 -and $Command -eq "match") { throw "svrtest match: --p1 and --p2 at least" }
+    if ($people.Count -lt 2) { $people += "EDGE" }
+    $spec = "people=" + ($people -join ",")
+    if ($o.arena) { $spec += " arena=$($o.arena)" } else { $spec += " arena=1" }
+    if ($o.attire) { $spec += " attires=$($o.attire)" }
+    $env:SVR2011_TEST_MATCH = $spec
+    if ($o.rule) { $env:SVR2011_TEST_RULE = $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) }
+    $steps = if ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }
+} elseif ($Command -eq "route") {
+    if (-not $o.target) { throw "svrtest route <name>" }
+    $steps = @("route $($o.target)")
+} else {
+    if (-not $o.target -or -not (Test-Path $o.target)) { throw "svrtest script <file>" }
+    $steps = @(Get-Content $o.target)
+}
+$gameArgs = @("--log_file=`"$log`"", "--log_level=$($o.loglevel)", "--audio_mute=true", "--fullscreen=false", "--monitor=2",
+              "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_port=$p2p")
+if ($o.backend) { $gameArgs += "--gpu_backend=$($o.backend)" }
+if ($o.perf) { $gameArgs += "--perf_overlay=$($o.perf)", "--perf_log_seconds=5" }
+$gameArgs += $o.args
+
+# ---- run
+$t0 = Get-Date
+$proc = Start-Process (Join-Path $game $exeName) -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
+for ($t = 0; $t -lt 100 -and -not $proc.HasExited; $t++) { $proc.Refresh(); if ($proc.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
+if ($proc.MainWindowHandle -ne 0) {
+    [void][SvrTestWin]::SetWindowPos($proc.MainWindowHandle, [IntPtr]1, $SvrParkX, 0, 0, 0, $SvrParkFlags)
+    [void][SvrTestWin]::ShowWindow($proc.MainWindowHandle, 4)
+}
+Add-Content $inputFile ($steps -join "`n")
+$shots = @(); $timings = [ordered]@{}; $ok = $true; $why = ""
+function LogHas([string]$text) { (Test-Path $log) -and (Select-String -Path $log -Pattern $text -SimpleMatch -Quiet) }
+function Wait-Log([string]$text, [double]$secs) {
+    $until = (Get-Date).AddSeconds($secs)
+    while ((Get-Date) -lt $until -and -not $proc.HasExited) { if (LogHas $text) { return $true }; Start-Sleep -Milliseconds 500 }
+    return (LogHas $text)
+}
+function Shot([string]$label) {
+    $proc.Refresh()
+    $h = $proc.MainWindowHandle
+    if ($h -eq [IntPtr]::Zero) { return }
+    $r = New-Object SvrTestWin+RECT; [void][SvrTestWin]::GetWindowRect($h, [ref]$r)
+    $w = $r.R - $r.L; $hh = $r.B - $r.T
+    if ($w -le 0 -or $hh -le 0) { return }
+    $bmp = New-Object System.Drawing.Bitmap $w, $hh
+    $g = [System.Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc()
+    [void][SvrTestWin]::PrintWindow($h, $dc, 2); $g.ReleaseHdc($dc)
+    $k = [math]::Min(1.0, 1280.0 / $w)
+    $small = New-Object System.Drawing.Bitmap $bmp, ([int]($w * $k)), ([int]($hh * $k))
+    $file = Join-Path $out "$label.png"
+    $small.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
+    $small.Dispose(); $g.Dispose(); $bmp.Dispose()
+    $script:shots += (Split-Path $file -Leaf)
+}
+try {
+    # the start: the main menu, then the command's own cue (the match hand-off / the route's end)
+    if (Wait-Log "title: main menu" 180) { $timings.main_menu_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
+    # (the real line has a space after "people": not the script's own "pressuntil A test match: people")
+    $cue = if ($Command -in "match", "entrance") { "test match: people " } else { "script input: all steps done" }
+    if (Wait-Log $cue 240) { $timings.cue_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
+    else { $ok = $false; $why = "no `"$cue`" in the log (the game: $(if ($proc.HasExited) { 'exited' } else { 'still running' }))" }
+    # (a match's shots count from its start: the replay recorder recording - after the entrances when they play)
+    if ($ok -and $Command -eq "match") {
+        if (Wait-Log "replay recorder recording" 300) { $timings.match_starts_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
+        else { $ok = $false; $why = "the match didn't start (no `"replay recorder recording`" in the log)" }
+    }
+    $from = Get-Date
+    $plan = @()
+    foreach ($s in $o.shot) { $plan += [pscustomobject]@{ at = (Seconds $s); label = "shot_$s" } }
+    if ($o.every -match '^every:([^:]+)(:(\d+))?$') {
+        $step = Seconds $Matches[1]; $n = if ($Matches[3]) { [int]$Matches[3] } else { 10 }
+        for ($k = 1; $k -le $n; $k++) { $plan += [pscustomobject]@{ at = $step * $k; label = ("shot_{0:D2}" -f $k) } }
+    }
+    $quitAt = if ($o.quit) { Seconds $o.quit } else { 0 }
+    foreach ($p in ($plan | Sort-Object at)) {
+        while (((Get-Date) - $from).TotalSeconds -lt $p.at -and -not $proc.HasExited) {
+            if ($o.until -and (LogHas $o.until)) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        if ($proc.HasExited) { break }
+        Shot $p.label
+        if ($o.until -and (LogHas $o.until)) { $timings.until_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1); break }
+    }
+    if ($o.until -and -not $timings.until_s) { if (Wait-Log $o.until 300) { $timings.until_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) } }
+    if ($quitAt) { while (((Get-Date) - $from).TotalSeconds -lt $quitAt -and -not $proc.HasExited) { Start-Sleep -Milliseconds 250 } }
+    if ($proc.HasExited -and $ok) { $ok = $false; $why = "the game exited (code $($proc.ExitCode))" }
+} finally {
+    if (-not $o.keep -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
+}
+
+# ---- result.json
+$lines = if (Test-Path $log) { Get-Content $log } else { @() }
+$errors = @($lines | Where-Object { $_ -match '\[(error|critical)\]' -and $_ -notmatch 'BaseHeap|PhysicalHeap|ResolvePath' })
+$fps = @($lines | Where-Object { $_ -match '\] fps: ' } | Select-Object -Last 3 | ForEach-Object { ($_ -split '\] fps: ')[1] })
+# (crash reports always go to <game>\UserData\crashes, whatever SVR2011_USER_DATA says)
+$crashes = @(Get-ChildItem (Join-Path $userdata "crashes"), (Join-Path $game "UserData\crashes") -Filter "crash_*.txt" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 } | ForEach-Object { $_.FullName })
+if ($crashes) { $ok = $false; $why = "crashed: $($crashes -join ', ')" }
+$touched = @($watched | Where-Object { (Get-Item $_).LastWriteTimeUtc -ne $watchedTimes[$_] })
+if ($touched) { $ok = $false; $why = "GAME FILES CHANGED during the run: $($touched -join ', ')"; Write-Warning $why }
+$result = [ordered]@{
+    ok = $ok; why = $why; command = "$Command $($Rest -join ' ')"; exe = (Join-Path $game $exeName); pid = $proc.Id; p2p_port = $p2p
+    timings = $timings; match = @($lines | Where-Object { $_ -match 'test match: people|\] match: ' } | Select-Object -Last 2 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
+    fps = $fps; errors = $errors.Count; first_errors = @($errors | Select-Object -First 5 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
+    crashes = $crashes; game_files_changed = $touched; shots = $shots; folder = $out; log = $log; kept_running = ($o.keep -and -not $proc.HasExited)
+}
+$json = $result | ConvertTo-Json -Depth 4
+Set-Content (Join-Path $out "result.json") $json -Encoding UTF8
+$json
