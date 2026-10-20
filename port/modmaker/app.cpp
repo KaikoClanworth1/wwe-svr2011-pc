@@ -2727,7 +2727,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::vector<std::pair<double, std::wstring>> page_at;  // --page-at <page>@<s>[,...]: page switches at those times (tests)
   int star_id = 0, star_call = -1;
   float star_height = 0;
-  std::string star_moveset;
+  std::string star_moveset, star_import_moveset;
   int star_entrance = 0;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
@@ -3079,6 +3079,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-import-moveset") && more) star_import_moveset = Utf8(argv[++i]);  // star:<id> | mod:<folder>
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--run-fix") && more) g_test_fix = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--install-star")) g_test_install_frames = 0;  // "<text>[|<n>]" (see g_test_fix)
@@ -3224,6 +3225,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
   if (star_height > 0) star_page::TestHeight(star_height);
   if (!star_moveset.empty()) star_page::TestMoveset(star_moveset);
+  if (!star_import_moveset.empty()) star_page::TestImportMoveset(star_import_moveset);
   if (star_entrance) star_page::TestEntrance(star_entrance);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
