@@ -34,6 +34,7 @@
 #include "achievements_page.h"
 #include "jukebox.h"
 #include "backgrounds_page.h"
+#include "weapons_page.h"
 #include "caw_logos.h"
 #include "paint_pages.h"
 #include "match_types.h"
@@ -443,6 +444,7 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   svr2011::SetAchievementsPageFonts(menu, title ? title : menu);
   svr2011::SetJukeboxPageFonts(menu, title ? title : menu);
   svr2011::SetBackgroundsPageFonts(menu, title ? title : menu);
+  svr2011::SetWeaponsPageFonts(menu, title ? title : menu);
   svr2011::SetMatchHudFonts(menu, title ? title : menu);
 }
 
@@ -684,6 +686,7 @@ void Svr2011App::OnPostLoadXexImage() {
         static_cast<rex::input::InputSystem*>(runtime()->input_system()));
     svr2011::InstallJukeboxPage(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()));
     svr2011::InstallBackgroundsPage(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()));
+    svr2011::InstallWeaponsPage(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()));
     svr2011::InstallGraphicsPage(
         imgui_drawer(), window(),
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);

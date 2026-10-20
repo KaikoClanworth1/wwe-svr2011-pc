@@ -1,4 +1,4 @@
-"""Adds menu entries (pac/menu/menu.pac): CONTROLS, GRAPHICS, LANGUAGE and BACKGROUNDS to MY WWE -> OPTIONS,
+"""Adds menu entries (pac/menu/menu.pac): CONTROLS, GRAPHICS, LANGUAGE, BACKGROUNDS and WEAPONS to MY WWE -> OPTIONS,
 ACHIEVEMENTS and JUKEBOX to MY WWE and EXIT to the main menu.
 
 The main menus are a table of 0x74-byte records in menu.pac entry MFLO/0000
@@ -57,9 +57,13 @@ ADDITIONS = [
     # MY WWE -> OPTIONS: BACKGROUNDS after LANGUAGE (a copy of it). Its label id is outside
     # the game's string ids (0xAFC8, the next one, is the game's own: the help bar's A).
     (0xAFC4, 0x11, 0x0FA0B200, 0, NO_TEXT),
+    # MY WWE -> OPTIONS: WEAPONS after BACKGROUNDS (a copy of it).
+    (0x0FA0B200, 0x11, 0x0FA0B201, 0, NO_TEXT),
 ]
 # Hidden records (never shown) dropped to make room: the table's slot can't grow.
 DROPPED = [(0xA02E, 0x01), (0xA47E, 0x0E), (0xA47F, 0x0E), (0xA480, 0x0E), (0xA481, 0x0E), (0xA482, 0x0E)]
+# ... and one that ends its group (the record before it becomes the group's last).
+DROPPED_LAST = [(0xA483, 0x0E)]
 
 
 def u32(d, o):
@@ -116,6 +120,24 @@ def drop_skipped(data, label, group):
     raise SystemExit(f"{FILE}: skipped entry {label:#x} in group {group:#x} not found")
 
 
+def drop_skipped_last(data, label, group):
+    """drop_skipped for a record that ends its group: the one before it (same
+    group) gets the last-of-group flag (src/game_files.cpp DropSkippedLast)."""
+    total = u32(data, MFLO + 4)
+    for i in range(1, total):
+        o = FIRST + i * REC
+        prev = o - REC
+        if u32(data, o) == label and u32(data, o + 0x18) == group:
+            if not (data[o + 0x41] & 1) or not (u32(data, o + 0x3C) & 2) or u32(data, prev + 0x18) != group:
+                break
+            struct.pack_into(">I", data, prev + 0x3C, u32(data, prev + 0x3C) | 2)
+            end = FIRST + total * REC
+            data[o:end] = data[o + REC:end] + bytes(REC)
+            struct.pack_into(">I", data, MFLO + 4, total - 1)
+            return
+    raise SystemExit(f"{FILE}: skipped last entry {label:#x} in group {group:#x} not found")
+
+
 def main() -> int:
     src = os.path.join(DISC, FILE)
     dst = os.path.join(GAME, FILE)
@@ -129,6 +151,8 @@ def main() -> int:
     # and a NEW SUPERSTAR copy in CREATE.
     for label, group in DROPPED:
         drop_skipped(data, label, group)
+    for label, group in DROPPED_LAST:
+        drop_skipped_last(data, label, group)
     if 0x28 + u32(data, MFLO + 4) * REC + len(ADDITIONS) * REC > MFLO_SLOT:
         raise SystemExit(f"{FILE}: no room in MFLO/0000")
     for addition in ADDITIONS:
@@ -139,7 +163,7 @@ def main() -> int:
     tmp = dst + ".tmp"
     open(tmp, "wb").write(data)
     os.replace(tmp, dst)
-    print(f"{FILE}: added CONTROLS, GRAPHICS, LANGUAGE and BACKGROUNDS (MY WWE -> OPTIONS), ACHIEVEMENTS and JUKEBOX (MY WWE) and EXIT (main menu)")
+    print(f"{FILE}: added CONTROLS, GRAPHICS, LANGUAGE, BACKGROUNDS and WEAPONS (MY WWE -> OPTIONS), ACHIEVEMENTS and JUKEBOX (MY WWE) and EXIT (main menu)")
     return 0
 
 

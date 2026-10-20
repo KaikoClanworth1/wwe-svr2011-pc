@@ -65,6 +65,7 @@ set(SVR2011_SOURCES
     src/three_stages.cpp
     src/mystery_opponent.cpp
     src/backgrounds_page.cpp
+    src/weapons_page.cpp
     src/fast_start.cpp
     src/players.cpp
     src/sort_filters.cpp

@@ -13,6 +13,7 @@
 #include "arena_lights.h"
 #include "port_map.h"
 #include "backgrounds_page.h"
+#include "weapons_page.h"
 #include "mystery_opponent.h"
 
 #include <algorithm>
@@ -1247,7 +1248,7 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
     input->SetGuestInputHold(
         [] {
           return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() || JukeboxPageHoldsInput() ||
-                 BackgroundsPageHoldsInput() || TouchControlsHoldInput() || OnlineOverlayHoldsInput() ||
+                 BackgroundsPageHoldsInput() || WeaponsPageHoldsInput() || TouchControlsHoldInput() || OnlineOverlayHoldsInput() ||
                  MysteryOpponentHoldsInput();
         });
   }
