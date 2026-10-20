@@ -3,12 +3,26 @@
 // For us only: compiled into svr2011_dbg.exe (CMake option SVR2011_DEBUG_SUITE, its own build folder
 // out/build/DebugSuite*), never into a release - tools/release_guard.ps1 (package.ps1) fails a package that holds
 // a debug-suite file or the kMarker bytes. Everything here is inside src/debug_suite/ or #if SVR2011_DEBUG_SUITE.
+//
+// The cues (settings: --dbg_shot=5,10 on the command line; times in seconds from dbg_from's zero):
+//   dbg_from=match|start     the zero: the match's start (the replay recorder recording - after the entrances
+//                            when they play; from zero again each match) or the game's start
+//   dbg_shot=5,10,every:2:5  shots of the frame image, read back from the GPU (works hidden / minimised): at
+//                            5 s, 10 s and every 2 s five times -> <dbg_out>/shot_<ms>.png
+//   dbg_state=8              state dumps -> <dbg_out>/state_<ms>.json (the match's people with their last
+//                            moves and positions, the match clock, fps, the perf numbers)
+//   dbg_quit=15              the game ends itself (exit code 0) at 15 s, after the cues before it
+//   dbg_speed=N              N world updates a frame (fast-forward; 1 normal; online lockstep keeps 1)
+//   dbg_out=<folder>         where shots and states go (default: dbg in the working folder)
+// Each cue logs a "SVRDBG: ..." line (svrtest reads them).
 
 #pragma once
 
 #if !SVR2011_DEBUG_SUITE
 #error "debug_suite.h is only for the debug-suite build (SVR2011_DEBUG_SUITE)"
 #endif
+
+#include <cstdint>
 
 namespace rex::memory {
 class Memory;
@@ -19,7 +33,17 @@ namespace svr2011::dbg {
 // The marker every debug-suite build carries (the release guard looks for its first bytes, "SVRDBG:").
 extern const char kMarker[];
 
-// At start (svr2011_app.cpp): logs the marker; later steps add the cues, the state dumps and the direct boot.
+// At start (svr2011_app.cpp): logs the marker and the cues, starts the cue thread.
 void Install(rex::memory::Memory* memory);
+
+// The renderer (native_renderer.cpp OnPresent): a shot is due - this frame's image is read back and handed to
+// WriteShot (RGBA8 rows `row_bytes` apart).
+bool ShotWanted();
+void WriteShot(const uint8_t* rgba, uint32_t width, uint32_t height, uint32_t row_bytes);
+
+// frame_rate.cpp: the match clock started running (the replay recorder recording; dbg_from=match's zero), and
+// the world updates this frame (dbg_speed; 0: the normal rule).
+void OnMatchStarted();
+int SpeedTicks();
 
 }  // namespace svr2011::dbg
