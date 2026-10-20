@@ -74,6 +74,7 @@ set(SVR2011_SOURCES
     src/hctp_room.cpp
     src/hair_dump.cpp
     src/superstar_mods.cpp
+    src/superstar_threads.cpp
     src/universe_mods.cpp
     src/universe_welcome.cpp
     src/crowd_signs.cpp

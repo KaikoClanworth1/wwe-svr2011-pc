@@ -25,6 +25,7 @@
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "cae_mod_motions.h"
 #include "superstar_mods.h"
+#include "superstar_threads.h"
 #include "universe_mods.h"
 #include "universe_welcome.h"
 #include "move_packs.h"
@@ -1249,8 +1250,10 @@ void ApplyRecords(uint8_t* base) {
         if (x.slot == m.slot && !x.profile.empty()) k = &x;
       if (k) {
         std::memcpy(sp, k->profile.data(), kProfileSize);
+        svr2011::ThreadsSlots(sp, m.folder);  // (Threads slots: kept by folder)
       } else {
         std::memcpy(sp, bp, kProfileSize);
+        svr2011::ThreadsSlots(sp, m.folder);  // (not the base's Threads slots)
         SetOwnMoves(sp, m);
         REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {}{}", m.base, m.slot,
                     m.moves.empty() && m.entrance < 0 ? "" : " (its own moves / entrance)");
@@ -1291,6 +1294,7 @@ void ApplyRecords(uint8_t* base) {
     // the old mod, goes too: this mod's, as for a new slot.
     if (!was.empty() && !IsBlank(m.slot, sp)) {
       std::memcpy(sp, bp, kProfileSize);
+      svr2011::ThreadsSlots(sp, m.folder);
       SetOwnMoves(sp, m);
       SetEntranceMedia(sp, m, bp);
       REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (the slot held \"{}\")", m.base, m.slot, was);
@@ -1569,6 +1573,8 @@ REX_HOOK_RAW(sub_826B87B0) {
     const char* e = std::getenv("SVR2011_TEST_VFS_LOG");
     return e && *e == '1';
   }();
+  // Superstar Threads' list with the mods' records (superstar_threads.h): asked for by another name
+  if (const uint32_t alias = svr2011::ThreadsAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
   // a media mod's replacement (renders: media_mods.h) - the first match in
   // the archive list wins, so the game's own would: asked for by another name
   if (const uint32_t alias = svr2011::MediaAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) {
@@ -2632,6 +2638,13 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
     const uint32_t name = kAttireModNameIds + uint32_t(k);
     g_attire_names.push_back({name, at});
     Wr32(b + pairs + a.attire * 8, name);
+  }
+  // Superstar Threads: the mods whose model is their base's, listed (superstar_threads.h)
+  {
+    std::vector<svr2011::ThreadsMod> tm;
+    for (const auto& m : g_mods) tm.push_back({m.slot, m.base, m.folder, g_game / "Mods" / "Superstars" / m.folder / "ch.pac"});
+    if (svr2011::BuildThreadsOverlay(memory, g_game, g_game / "Mods" / "SuperstarOverlay", tm))
+      g_extra_mounts.push_back("smods:\\threads.pac");
   }
   // The overlay files as smods:\<file>: a device of their own, made after they
   // are written (a host device lists its folder once, so GAME: would not see

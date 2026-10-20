@@ -45,6 +45,7 @@
 #include "move_packs.h"
 #include "ring_rules.h"
 #include "superstar_mods.h"
+#include "superstar_threads.h"
 #include "crowd_signs.h"
 #include "hd_movies.h"
 #include "media_mods.h"
@@ -666,6 +667,7 @@ void Svr2011App::OnPostLoadXexImage() {
 #ifndef SVR2011_D3D_TRACE
   svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)
 #endif
+  svr2011::SetThreadsSaves(g_saves);  // (the mods' Superstar Threads slots, kept by folder)
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   svr2011::InstallUniverseWelcome(g_saves, g_user_data);  // (the Universe welcome kept as seen once accepted)
   svr2011::InstallUniverseMods(runtime()->memory(), g_saves);  // (the mods' WWE Universe side table: after the mods)

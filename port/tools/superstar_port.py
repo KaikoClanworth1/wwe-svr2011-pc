@@ -577,6 +577,21 @@ def write_mod(mod, man, out_svrmod, rep=None, pac11=None):
     txt = ''.join('%s=%s\n' % (k, man[k]) for k in order if k in man)
     txt += ''.join('%s=%s\n' % (k, v) for k, v in man.items() if k not in order)   # (attire<N>_name= ...)
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n').write(txt)
+    if pac11 and os.path.exists(os.path.join(mod, 'ch.pac')):
+        # Superstar Threads parts from the model's masks (tools/threads_parts.py); a failure never fails the port
+        try:
+            import threads_parts
+            parts = threads_parts.build(mod, os.path.dirname(os.path.normpath(pac11)))
+            if parts:
+                threads_parts.write(mod, parts)
+                if rep is not None:
+                    rep['notes'].append('Superstar Threads: %d part(s) in %d attire(s)' %
+                                        (sum(len(a['parts']) for a in parts), len(parts)))
+            elif rep is not None:
+                rep['notes'].append('Superstar Threads: not listed (the model has no Threads masks)')
+        except Exception as e:   # noqa: BLE001
+            if rep is not None:
+                rep['warnings'].append('Superstar Threads parts not made (threads_parts: %s)' % e)
     tmp = out_svrmod + '.tmp'
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
         for root, dirs, files in os.walk(mod):

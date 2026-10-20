@@ -19,6 +19,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 72.
 | `render_full.dds` | (optional) a separate 512 x 512 full-body picture for SSFB (the select screen in some modes); without it SSFB is `render.dds` too |
 | `voice.<ext>` | (optional) a recording of the name: the ring announcer "says" it |
 | `attireN.pac` | (optional, N = 2-4) another model pac: its first attire becomes the mod's attire N |
+| `threads.txt` | (optional) its Superstar Threads parts, from `tools/threads_parts.py` (see Superstar Threads) |
 | `moves.txt` | (optional, `moves=`) its own moves over the base's: lines `0xOFF=<move id>`, OFF a byte offset in the profile's move block (0..0x1BF, even) |
 | `disabled` | (optional) turns the mod off |
 
@@ -434,12 +435,60 @@ it.
 - The game's own IK solver (sub_823A4DD8) wasn't decoded; the preview's IK is
   an approximation that looks right on Jericho, The Rock and a Diva.
 
+## Superstar Threads
+
+`src/superstar_threads.cpp`, `tools/threads_parts.py`. Threads lists the
+superstars of `edit\edit.pac` EDIT/SSTL: one PACH child, a u16 count (68), then
+484-byte records:
+
+| bytes | |
+|---|---|
+| 0 | u32 id (little-endian) |
+| 4 | 48 u32 part-name string ids, 12 per attire (attire a, part p at (a-1)*12+p-1); -1 = none |
+| 196, 244, 292 | per part: area (the camera: 1 head, 2 arms, 3 chest, 5 waist / hands, 6 legs, 8 feet), view, kind |
+| 340 | per part: its default RGB |
+
+Part p of an attire paints where channel (p-1) % 4 (R G B A) of that attire's
+`Mask1` / `Mask2` / `Mask3` texture is set; the masks sit in the model's EMD
+entry next to `color` (children 0x0d-0x0f) and no mesh uses them. The names are
+the game's (string.pac group 0600 and its translations): ELBOW PADS, TRUNKS 1,
+KNEE PADS DESIGN 2 ... Each name always comes with the same area / view / kind.
+
+A superstar's three slots are the last 324 bytes of his 1056-byte profile
+(+0x2DC, +0x348, +0x3B4: 108 bytes each; +0 = -1 when empty, else the attire it
+started from; RGB per part from +4, the name at +0x28).
+
+At start the port writes `Mods\SuperstarOverlay\threads.pac`: the game's SSTL
+plus a record for each listed mod, as EDIT/SSTM. The game's lookup of
+`/EDIT/SSTL` is pointed at it; edit.pac is never written.
+
+- **Same model as its base** (attire-1 models byte for byte: an attire swap, a
+  renamed copy): the base's record under the mod's id.
+- **`threads.txt`** in the mod folder: its own parts. Lines
+  `<attire>.<part>=<name id>,<rrggbb>` (`format=1` first; `#` starts a
+  comment). The name id must be one a stock record uses; its area / view / kind
+  are taken from the stock parts of that name. `tools/threads_parts.py <mod
+  folder>` writes it from the model's masks: each used channel is named after
+  the body area under it (the bone weights of the vertices that sample it, and
+  their height) - TRUNKS 1 / 2 for two large waist channels, TRUNKS DESIGN n for
+  small ones, KNEE PADS, KICKPADS, BOOTS, SOLES ... - and gets the texture's
+  colour there as its default. `--json` is for the Mod Maker, `--names` lists the
+  usable names. superstar_port.py and svr10_superstar.py run it on every mod they
+  make. On the stock models it names the Rock's 8 parts as the game does, and
+  the others close to it.
+- **Neither:** not listed; the log says why ("... has no threads.txt (Mod
+  Maker: make Threads parts)"). Models without masks (ports from SvR 2006-2009
+  and the PS2 games) have nothing to paint: `threads_parts.py` exits 3.
+- **Slots:** kept by the mod's folder in `Saves\.threads\<folder>.bin` (324
+  bytes), not by the id it holds this run. They are put into its profile as it
+  is set up (empty when there is no file - never the base's), and written when
+  the game saves (the file is removed when all three are empty).
+
 ## Known limits
 
 - A mod has at most 4 attires.
-- Superstar Threads doesn't list mods (nor the managers). It lists the COS
-  table's characters, a table with room for only about 13 more, and saves
-  attires by its rows. Use attire pacs instead.
+- Superstar Threads lists a mod only with its base's model or a threads.txt, and paints only models
+  with masks (see above).
 - WWE Universe lists are not checked. The select screen itself is: one on one, tag team (2 on 2), and the
   COM side.
 
