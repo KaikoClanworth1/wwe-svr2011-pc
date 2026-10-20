@@ -651,7 +651,11 @@ public class LauncherActivity extends Activity {
         LinearLayout c = column();
         LinearLayout display = card(c, "Display");
         toggle(display, "Touch controls", "The on-screen controller (EDIT in game rearranges it)", "touch_controls", true);
-        toggle(display, "Show FPS", "The frame rate at the top of the screen", "show_fps", true);
+        // (the performance overlay, fps_overlay.h: perf_overlay wins over the older show_fps)
+        choice(display, "Performance", "FPS: the frame rate. Full: also memory, CPU and the GPU's frame time",
+               "perf_overlay", new String[] {"Off", "FPS", "Full"}, new String[] {"0", "1", "2"}, false, "1");
+        choice(display, "Performance corner", "Where the performance numbers sit", "perf_overlay_corner",
+               new String[] {"Top left", "Top right", "Bottom left", "Bottom right"}, new String[] {"0", "1", "2", "3"}, false, "0");
         toggle(display, "VSync", "No tearing; waits for the screen's refresh", "vsync", true);
         // (no Renderer choice: the game draws only natively; an old "off" becomes "main")
         if ("off".equals(settings_.getString("native_renderer", "main"))) {
@@ -704,6 +708,8 @@ public class LauncherActivity extends Activity {
         defaults.setOnClickListener(v -> {
             settings_.setBool("touch_controls", true);
             settings_.setBool("show_fps", true);
+            settings_.setInt("perf_overlay", 1);
+            settings_.setInt("perf_overlay_corner", 0);
             settings_.setBool("vsync", true);
             settings_.setString("native_renderer", "main");
             settings_.setInt("user_language", 1);

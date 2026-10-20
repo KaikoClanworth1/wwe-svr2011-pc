@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <d3d11.h>
 #include <wrl/client.h>
 
 #include <plume_d3d12.h>
@@ -300,5 +301,38 @@ class D3D12Backend final : public Backend {
 }  // namespace
 
 std::unique_ptr<Backend> CreateD3D12Backend() { return std::make_unique<D3D12Backend>(); }
+
+
+// The adapter the emulator's device is on (by its LUID: the D3D12 device's, or the D3D11 device's DXGI adapter), its
+// local (dedicated) memory use and budget.
+bool DxgiVideoMemory(uint64_t* used, uint64_t* budget) {
+  static std::mutex mutex;
+  static Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter;
+  static bool tried = false;
+  std::lock_guard lock(mutex);
+  if (!tried) {
+    tried = true;
+    LUID luid = {};
+    bool have = false;
+    if (ActiveApi() == Api::kD3D11) {
+      if (const rex::external_frame::D3D11Device* d = rex::external_frame::GetD3D11Device()) {
+        Microsoft::WRL::ComPtr<IDXGIDevice> dx;
+        Microsoft::WRL::ComPtr<IDXGIAdapter> a;
+        DXGI_ADAPTER_DESC desc = {};
+        if (SUCCEEDED(static_cast<ID3D11Device*>(d->device)->QueryInterface(IID_PPV_ARGS(&dx))) && SUCCEEDED(dx->GetAdapter(&a)) &&
+            SUCCEEDED(a->GetDesc(&desc)))
+          luid = desc.AdapterLuid, have = true;
+      }
+    } else if (auto* d12 = static_cast<ID3D12Device*>(rex::external_frame::Device())) {
+      luid = d12->GetAdapterLuid(), have = true;
+    }
+    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+    if (have && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter));
+  }
+  DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+  if (!adapter || FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) return false;
+  *used = info.CurrentUsage, *budget = info.Budget;
+  return true;
+}
 
 }  // namespace svr2011::native::backend

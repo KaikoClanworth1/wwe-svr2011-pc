@@ -1674,6 +1674,9 @@ bool BeginFrame(Renderer* r) {
 
 uint32_t g_write_backs = 0, g_write_back_w = 0, g_write_back_h = 0;  // (native perf line)
 double g_write_back_ms = 0;
+std::mutex g_costs_mutex;  // (LastFrameCosts: the overlay's)
+FrameCosts g_costs;
+double g_resident_mb = 0;  // (the textures' host memory at the last 5 s perf log)
 
 int BlankedSlot(Renderer* r);
 
@@ -1694,6 +1697,21 @@ void UpdateTitle(Renderer* r) {
   const auto now = std::chrono::steady_clock::now();
   const double secs = std::chrono::duration<double>(now - r->stat_start).count();
   if (secs < 0.5) return;
+  {  // (the overlay's per-frame costs: the deltas since the last half second, the 5 s totals still counting)
+    static double last_draw = 0, last_wait = 0, last_submit = 0, last_draws = 0;
+    static uint32_t last_frames = 0;
+    if (r->perf_frames < last_frames) last_draw = last_wait = last_submit = last_draws = 0, last_frames = 0;  // (reset)
+    if (const uint32_t n = r->perf_frames - last_frames) {
+      FrameCosts c;
+      c.draw_ms = (r->perf_draw_ms - last_draw) / n, c.gpu_wait_ms = (r->perf_wait_ms - last_wait) / n;
+      c.submit_ms = (r->perf_submit_ms - last_submit) / n, c.draws = (double(r->perf_draws) - last_draws) / n;
+      c.texture_mb = g_resident_mb;
+      std::lock_guard lock(g_costs_mutex);
+      g_costs = c;
+    }
+    last_draw = r->perf_draw_ms, last_wait = r->perf_wait_ms, last_submit = r->perf_submit_ms;
+    last_draws = double(r->perf_draws), last_frames = r->perf_frames;
+  }
   const double psecs = std::chrono::duration<double>(now - r->perf_start).count();
   if (psecs >= 5.0 && r->perf_frames) {
     const double f = r->perf_frames;
@@ -1725,6 +1743,7 @@ void UpdateTitle(Renderer* r) {
     }
     {
       const textures::Stats ts = textures::TakePerf();
+      g_resident_mb = ts.resident_bytes / 1048576.0;
       REXLOG_INFO("native perf: textures: {} uploads ({:.1f} MB, {:.1f} ms, converting {:.1f} ms) in {:.1f} s; "
                   "{} resident ({:.1f} MB, {} with mip levels left out)",
                   ts.uploads_total, ts.upload_bytes / 1048576.0, ts.upload_ms, ts.convert_ms, psecs,
@@ -3612,6 +3631,11 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 
 // ---------------------------------------------------------------------------
 // entry points
+
+FrameCosts LastFrameCosts() {
+  std::lock_guard lock(g_costs_mutex);
+  return g_costs;
+}
 
 std::string RendererLabel() {
   if (g_failed) return "Native - stopped";
