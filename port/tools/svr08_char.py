@@ -231,7 +231,10 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
     black and red; the body mesh with attire 1's sheets rendered fine."""
     base = dict(tex_read(kids[0xa]))
     base0 = dict(tex_read(first_kids[0xa]))   # (attire 2 shares attire 1's color / normal)
-    pick = lambda suffix: next((d for n, d in list(base.items()) + list(base0.items()) if n.lower().endswith(suffix)), None)
+    # (by the name's end, else anywhere in it: Carlito's 2008 sheet is "1802color_01")
+    both = list(base.items()) + list(base0.items())
+    pick = lambda suffix: (next((d for n, d in both if n.lower().endswith(suffix)), None) or
+                           next((d for n, d in both if suffix in n.lower() and 'blood' not in n.lower()), None))
     color, normal = pick('color'), pick('normal')
     ao = next((d for n, d in base.items() if n.lower().endswith('ao')), None) or pick('ao')
     cos = dict(tex_read(kids[0x27])) if 0x27 in kids else {}
