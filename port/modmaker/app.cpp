@@ -1941,6 +1941,7 @@ const PageDesc kPages[] = {
     {PageId::kBackstage, "Backstage", "", &backstage_page::hooks, nullptr},
     {PageId::kStar, "Superstar", "", &star_page::hooks, nullptr},
     {PageId::kAttire, "Attires", "", &attire_page::hooks, nullptr},
+    {PageId::kThreads, "Threads parts", "", nullptr, star_page::ThreadsDraw},
     {PageId::kMoves, "Move pack", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
@@ -1999,7 +2000,8 @@ struct Group {
   std::vector<GroupTab> tabs;
 };
 const Group kGroups[] = {
-    {"Superstar", "Make", {{"Superstar", PageId::kStar}, {"Attires", PageId::kAttire}, {"From another game", PageId::kStarPort}}},
+    {"Superstar", "Make", {{"Superstar", PageId::kStar}, {"Attires", PageId::kAttire}, {"Threads parts", PageId::kThreads},
+                           {"From another game", PageId::kStarPort}}},
     {"Arena", "", {{"Arena", PageId::kArena}, {"Backstage", PageId::kBackstage}, {"3D editor", PageId::kEditor},
                    {"From another game", PageId::kArenaPort}}},
     {"Moves & entrances", "", {{"Moves", PageId::kPortMoves}, {"Taunts", PageId::kPortTaunts}, {"Entrance", PageId::kPortEntrance},
@@ -2145,7 +2147,7 @@ bool PageByName(const std::wstring& name, PageId& page) {
       {L"port-moves", PageId::kPortMoves, -1}, {L"moves-entrances", PageId::kPortMoves, -1},
       {L"port-taunts", PageId::kPortTaunts, -1}, {L"taunts", PageId::kPortTaunts, -1},
       {L"superstar-port", PageId::kStarPort, -1}, {L"arena-port", PageId::kArenaPort, -1},
-      {L"moves-port", PageId::kMovesPort, -1}, {L"belts", PageId::kBelts, -1}};
+      {L"moves-port", PageId::kMovesPort, -1}, {L"belts", PageId::kBelts, -1}, {L"threads", PageId::kThreads, -1}};
   for (const auto& n : kNames)
     if (name == n.name) {
       page = n.page;
@@ -3149,6 +3151,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
+    else if (!wcscmp(argv[i], L"--threads-edit") && more) star_page::ThreadsTest(Utf8(argv[++i]));  // <attire>[,make|name][,save]
     else if (!wcscmp(argv[i], L"--star-cae") && more) star_page::TestCae(Utf8(argv[++i]));  // a created entrance (Mods\.cae id)
     else if (!wcscmp(argv[i], L"--star-import-moveset") && more) star_import_moveset = Utf8(argv[++i]);  // star:<id> | mod:<folder>
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
