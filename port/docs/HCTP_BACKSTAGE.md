@@ -164,11 +164,11 @@ whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_wo
 - Game (hctp_room.cpp): after each CFRS update (match_types.cpp hook) only the current room's models
   (sub_8252FF40) and its records' objects (sub_824B4198) are shown; the other rooms' collision triangles are
   lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. Walking or
-  running for 30 frames within 16 of a door takes every fighter through: placed side by side at the other
+  running for 30 frames within 22 of a door takes every fighter through: placed side by side at the other
   door's entry, the fight box moved to that room (SetFightBox), the camera's eye put at the framed target +
   its old offset for 30 views (SnapMatchCamera - moving the eye once didn't hold: the camera rebuilt it).
   A room's runtime state (later shows, taxis, poles, heli, forklift, what ShowRec hid) is kept while it is
-  away. Test switch `SVR2011_TEST_HCTP_ROOF=tour`: a door every 6 seconds; `SVR2011_TEST_HCTP_NOVIS=1 /
+  away. Test switches `SVR2011_TEST_HCTP_ROOF=tour`: a door every 6 seconds; `=door`: fighter 0 put on the first door's trigger 5 s in (walk with the scripted stick); `=fork` (room 31): fighter 0 gets on the forklift 5 s in; `SVR2011_TEST_HCTP_NOVIS=1 /
   models / objects`: the stock visibility only.
 - Known: weapons carried or dropped stay where they are when the room changes (they show in the next room).
 

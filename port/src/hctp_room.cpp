@@ -54,6 +54,10 @@ const bool g_props_now = g_roof_env && std::strcmp(g_roof_env, "props") == 0;
 // (=tour: the world mod's doors in turn, every 6 seconds from 6 seconds in - each room's first door,
 // then its next on the next visit)
 const bool g_tour_now = g_roof_env && std::strcmp(g_roof_env, "tour") == 0;
+// (=fork: room 31, fighter 0 - the test's pad - gets on the forklift 5 seconds in; the script drives)
+const bool g_fork_now = g_roof_env && std::strcmp(g_roof_env, "fork") == 0;
+// (=door: the world mod's first door - fighter 0 put on its trigger 5 seconds in; the script walks him)
+const bool g_door_now = g_roof_env && std::strcmp(g_roof_env, "door") == 0;
 // (=nograb: no cage-wall grabs or climbs, so strikes reach the fence)
 const bool g_no_grab = g_roof_env && std::strcmp(g_roof_env, "nograb") == 0;
 // (=cart: the button cycle starts 5 seconds in)
@@ -2384,6 +2388,9 @@ void GoThrough(PPCContext& ctx, uint8_t* base, const Door& d, int who) {
         if (!f || !Rd32(base + f + 304)) continue;
         const float side = (n % 2 ? -1.0f : 1.0f) * float((n + 1) / 2) * 14.0f;
         const float back = i == uint32_t(who) ? 0.0f : -12.0f;
+        // (an act first - standing, 0 - then the place: a walk or run under way puts him back where
+        // he was, the game's own snap does it in this order too)
+        JumpAct(ctx, base, f, 0);
         PlaceFighter(base, f, t.ex + side * fz + back * fx, t.y, t.ez - side * fx + back * fz, t.eyaw);
         ++n;
       }
@@ -2420,7 +2427,7 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
     const float x = RdF(base + f + 288), z = RdF(base + f + 296);
     const Door* near = nullptr;
     for (const Door& d : Cur().doors)
-      if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 16.0f * 16.0f) near = &d;
+      if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f) near = &d;
     hold = near && moving ? hold + 1 : 0;
     if (hold >= 30) {
       GoThrough(ctx, base, *near, int(i));
@@ -2501,6 +2508,15 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     size_t& n = next[Cur().number];
     GoThrough(ctx, base, Cur().doors[n++ % Cur().doors.size()], 0);
   }
+  if (g_door_now && World() && frame >= 300 && !Cur().doors.empty() && Rd32(base + kChars)) {
+    static bool done = false;
+    if (!done) {
+      done = true;
+      const Door& d = Cur().doors[0];
+      PlaceFighter(base, Rd32(base + kChars), d.x, d.y, d.z, d.eyaw + 3.14159265f);
+      REXLOG_INFO("hctp: fighter 0 put at door {} (test)", d.id);
+    }
+  }
   UpdateWorld(ctx, base);
   SetUp(ctx, base);
   Fighters(ctx, base);
@@ -2527,6 +2543,17 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   if (g_props_now && HctpRoom() == 31 && frame >= 1100 && frame < 1102)
     if (Prop* fl = FindKind("forklift"); fl && Rd32(base + kChars))
       PlaceFighter(base, Rd32(base + kChars), fl->x - 10.0f * std::cos(fl->ry), 0.0f, fl->z - 10.0f * std::sin(fl->ry), fl->ry);
+  if (g_fork_now && HctpRoom() == 31 && frame >= 300 && !g_fork.rider && g_fork.state == 0 && Rd32(base + kChars))
+    if (Prop* fl = FindKind("forklift")) {
+      static bool done = false;
+      if (!done) {
+        done = true;
+        const uint32_t f0 = Rd32(base + kChars);
+        const float x = fl->x - 10.0f * std::cos(fl->ry), z = fl->z - 10.0f * std::sin(fl->ry);
+        PlaceFighter(base, f0, x, 0.0f, z, fl->ry);
+        ForkliftGetOn(ctx, base, *fl, f0, 0, x, z);
+      }
+    }
   // (room 33: fighter 0 - the test's pad - stands under the helicopter from 600 to 1200)
   if (g_props_now && HctpRoom() == 33 && frame >= 600 && frame < 1200 && !g_heli.rider && Rd32(base + kChars)) {
     float hx, hy, hz, hyaw;
