@@ -1286,6 +1286,8 @@ int g_blood_stage = 2;  // which of the shared textures: stage 0 light .. 2 heav
 std::map<std::string, ID3D11ShaderResourceView*> g_blood_srv;  // "bloodface0_2" -> texture (misc.pac BATS/INIT/110)
 bool g_blood_loaded = false;
 bool g_frame = false;  // (frame the camera on the next posed frame)
+ID3D11ShaderResourceView* g_colour_override = nullptr;  // (SetColourOverride: the model's "color" texture swapped)
+int g_colour_override_frame = -100;
 
 void Release(IUnknown* p) {
   if (p) p->Release();
@@ -2213,6 +2215,10 @@ void Render(int w, int h) {
     g_ctx->IASetVertexBuffers(0, 1, &g.vb, &stride, &offset);
     g_ctx->IASetIndexBuffer(g.ib, DXGI_FORMAT_R32_UINT, 0);
     ID3D11ShaderResourceView* srv = g.tex;
+    if (g_colour_override && &sl == &g_slots[0] && ImGui::GetFrameCount() - g_colour_override_frame <= 2) {
+      const auto ct = sl.textures.find("color");
+      if (ct != sl.textures.end() && srv == ct->second) srv = g_colour_override;
+    }
     if (g.blood_kind) {
       const auto bit = g_blood_srv.find(std::string(g.blood_kind == 1 ? "bloodface0_" : "bloodbody0_") + std::to_string(g_blood_stage));
       if (bit == g_blood_srv.end() || !bit->second) continue;
@@ -2396,6 +2402,12 @@ void SetRing(bool on, const std::string& arena_pac) {
 }
 bool Ring() { return g_ring_on; }
 void SetMaterialPreview(const std::map<std::pair<uint32_t, int>, mm::MatEdit>& edits) { g_mat_preview = edits; }
+void SetColourOverride(const svrfmt::Image* img) {
+  if (g_colour_override) g_colour_override->Release(), g_colour_override = nullptr;
+  if (img && img->w && img->h) g_colour_override = MakeTexture(svrfmt::DdsEncode(*img, svrfmt::DxtFormat::kArgb, false));
+  g_colour_override_frame = ImGui::GetFrameCount();
+}
+void KeepColourOverride() { g_colour_override_frame = ImGui::GetFrameCount(); }
 void SetHighlight(uint32_t model_id, int mesh) { g_highlight = {model_id, mesh}, g_highlight_frame = ImGui::GetFrameCount(); }
 
 bool MeshAtlas(uint32_t model_id, int mesh, bool normal, void** texture, std::vector<std::array<float, 2>>* uvs) {

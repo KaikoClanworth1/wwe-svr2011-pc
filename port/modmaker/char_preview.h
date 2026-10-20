@@ -7,6 +7,7 @@
 #include <array>
 #include <map>
 #include "model_materials.h"
+#include "svrfmt/texture.h"
 
 #include <d3d11.h>
 
@@ -26,6 +27,10 @@ void SetModel(const std::wstring& ch_pac, const std::wstring& game);
 void SetDummy(const std::wstring& ch_pac);
 // The model's attire shown (1-4: its EMD entry ......<n-1>2; one it doesn't have: the first). Reloads the model.
 void SetAttire(int attire);
+// The model's colour texture swapped for `img` while drawing (the Threads parts tab's recolour preview); kept while
+// it is set again every frame or two (KeepColourOverride), so leaving the tab drops it. nullptr: off.
+void SetColourOverride(const svrfmt::Image* img);
+void KeepColourOverride();
 // Test aid (Animations phase B): the game's pose dump (src/pose_dump.cpp lines) for motion id / x against this
 // view's pose of the same tracks - person 0's on the model, the other on the dummy; "" until both are loaded.
 std::string ComparePoseDump(const std::wstring& dump, std::shared_ptr<const std::vector<uint8_t>> bank, int id, int x);
