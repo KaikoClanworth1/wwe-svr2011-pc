@@ -527,6 +527,17 @@ bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, st
     return false;
   }
   fs::remove_all(old, ec);
+  {  // (the session log, for a report: what was installed, its theme / music / movie files)
+    std::string keys;
+    for (const auto& f : files)
+      if (f.name == "manifest.txt") {
+        const std::string t(f.data.begin(), f.data.end());
+        for (const char* k : {"type", "name", "base", "song", "music", "movie", "theme_gain", "entrance", "cae", "moves", "pack"})
+          if (const std::string v = Value(t, k); !v.empty()) keys += std::string(" ") + k + "=" + v;
+      }
+    Log("install: " + PathStr(dir.parent_path().filename()) + "/" + PathStr(dir.filename()) + " (" + std::to_string(files.size()) +
+        " files):" + keys);
+  }
   return true;
 }
 

@@ -310,6 +310,48 @@ std::string ModDoctor(const std::wstring& game) {
   return text;
 }
 
+// The game's side of a problem (a mod that crashes or plays wrong in the game - players aren't asked for files): its
+// newest logs (logs\svr2011_*.log) and crash notes (UserData\crashes\crash_*.txt), every installed mod's small text files
+// (manifest.txt, its moves list, moves\pack.txt, .applied), the Music folder's file names and the mod theme owners
+// (Music\.mod_themes).
+void GameFiles(const fs::path& game, const std::function<void(std::string, const std::string&)>& add) {
+  std::error_code ec;
+  auto newest = [&](const fs::path& dir, const std::wstring& prefix, const std::wstring& ext, size_t n) {
+    std::vector<std::pair<fs::file_time_type, fs::path>> v;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+      const std::wstring f = e.path().filename().wstring();
+      if (e.is_regular_file(ec) && f.rfind(prefix, 0) == 0 && Lower(e.path().extension().string()) == Utf8(ext))
+        v.push_back({e.last_write_time(ec), e.path()});
+    }
+    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    if (v.size() > n) v.resize(n);
+    return v;
+  };
+  for (const auto& [t, p] : newest(game / L"logs", L"svr2011", L".log", 3)) add("game/logs/" + PathStr(p.filename()), ReadTail(p, kTextCap));
+  for (const auto& [t, p] : newest(game / L"UserData" / L"crashes", L"crash_", L".txt", 3))
+    add("game/crashes/" + PathStr(p.filename()), ReadTail(p, kSmallCap));
+  for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes"})
+    for (const auto& e : fs::directory_iterator(game / L"Mods" / kind, ec)) {
+      if (!e.is_directory(ec) || e.path().filename().wstring()[0] == L'.') continue;
+      const std::string at = std::string("game/mods/") + kind + "/" + Utf8(e.path().filename().wstring()) + "/";
+      Bytes man;
+      std::string moves = "moves.txt";
+      if (svrfmt::ReadFile(PathStr(e.path() / L"manifest.txt"), man)) {
+        const std::string t(man.begin(), man.end());
+        add(at + "manifest.txt", t);
+        if (const std::string m = Value(t, "moves"); !m.empty()) moves = m;
+      }
+      for (const fs::path f : {fs::u8path(moves), fs::path(L"moves") / L"pack.txt", fs::path(L".applied")})
+        if (fs::is_regular_file(e.path() / f, ec) && fs::file_size(e.path() / f, ec) <= kSmallCap)
+          add(at + PathStr(f.generic_wstring()), ReadTail(e.path() / f, kSmallCap));
+    }
+  std::string music;
+  for (const auto& e : fs::recursive_directory_iterator(game / L"Music", ec))
+    if (e.is_regular_file(ec)) music += PathStr(fs::relative(e.path(), game / L"Music", ec)) + "  " + std::to_string(e.file_size(ec)) + "\n";
+  add("game/music.txt", music.empty() ? std::string("(no Music folder, or empty)\n") : music);
+  if (fs::is_regular_file(game / L"Music" / L".mod_themes", ec)) add("game/music_mod_themes.txt", ReadTail(game / L"Music" / L".mod_themes", kSmallCap));
+}
+
 // Makes the zip (a worker thread); its path, or "" (logged).
 std::wstring BuildReport(const Snapshot& s) {
   std::vector<ZipEntry> z;
@@ -322,7 +364,9 @@ std::wstring BuildReport(const Snapshot& s) {
                         s.system +
                         "contents: the newest Mod Maker session logs (logs/), the open project's text files "
                         "(project/), the converters' newest report and log (convert/), the tools check (tools.txt), "
-                        "the mod doctor on the installed mods (mod_doctor.txt); internet addresses, the Windows user "
+                        "the mod doctor on the installed mods (mod_doctor.txt), the game's newest logs (game/logs/) and "
+                        "crash notes (game/crashes/), every installed mod's manifest, moves list and pack list "
+                        "(game/mods/), the Music folder's file names (game/music.txt); internet addresses, the Windows user "
                         "folder's name and values given to passwords, tokens and keys blanked\n");
   // the session logs: this one and the ones before
   {
@@ -364,6 +408,7 @@ std::wstring BuildReport(const Snapshot& s) {
   }
   add("tools.txt", s.tools);
   add("mod_doctor.txt", ModDoctor(s.game));
+  if (!s.game.empty()) GameFiles(fs::path(s.game), add);
   // the zip, where the launcher puts its reports
   const fs::path dir = (s.game.empty() ? SettingsDir() : fs::path(s.game)) / L"Reports";
   std::error_code ec;
