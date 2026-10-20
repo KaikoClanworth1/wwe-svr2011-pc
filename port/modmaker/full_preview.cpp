@@ -1037,7 +1037,7 @@ void Close() {
   CloseTitantron();
   editor::SetViewExtra(nullptr);
   editor::SetSelfLit({});
-  editor::SetGameTransparency(false);
+  editor::SetGameTransparency(true);  // (the game's rules: every view uses them now)
   editor::SetStageTime(0, false);
   char_preview::SetScalePivotY(std::numeric_limits<float>::quiet_NaN());
   editor::ClearViewCamera();

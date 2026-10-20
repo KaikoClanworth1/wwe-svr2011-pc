@@ -2248,7 +2248,7 @@ bool ProjectOpen(const std::wstring& file) {
 
 // Test aid --ui-script <txt>: ImGui events played into the (hidden) window at given times, inside the app - never
 // real input. One event a line, "<seconds> <what>": "move x y", "click x y" (left down + up, a frame apart),
-// "rclick x y", "wheel n", "type <text>", "key <Escape|Enter|Tab|Backspace|Down|Up>". x / y in the window's pixels
+// "rclick x y", "wheel n", "type <text>", "key <Escape|Enter|Tab|Backspace|Down|Up|A-Z>". x / y in the window's pixels
 // (as in a --shot picture). Lines starting with # are skipped.
 void UiScript(const std::wstring& file) {
   struct Ev {
@@ -2301,7 +2301,8 @@ void UiScript(const std::wstring& file) {
     }
     else if (e.what == "type") io.AddInputCharactersUTF8(e.arg.c_str());
     else if (e.what == "key") {
-      const ImGuiKey k = e.arg == "Escape" ? ImGuiKey_Escape : e.arg == "Enter" ? ImGuiKey_Enter : e.arg == "Tab" ? ImGuiKey_Tab
+      const ImGuiKey k = e.arg.size() == 1 && e.arg[0] >= 'A' && e.arg[0] <= 'Z' ? ImGuiKey(ImGuiKey_A + (e.arg[0] - 'A'))
+                         : e.arg == "Escape" ? ImGuiKey_Escape : e.arg == "Enter" ? ImGuiKey_Enter : e.arg == "Tab" ? ImGuiKey_Tab
                          : e.arg == "Backspace" ? ImGuiKey_Backspace : e.arg == "Down" ? ImGuiKey_DownArrow : ImGuiKey_UpArrow;
       io.AddKeyEvent(k, true);
       io.AddKeyEvent(k, false);

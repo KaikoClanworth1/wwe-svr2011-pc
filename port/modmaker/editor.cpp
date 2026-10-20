@@ -237,12 +237,17 @@ ID3D11Buffer* g_cb_mode = nullptr;   // (b1: mode.x 1 = self-lit, the textures i
 ID3D11Buffer* g_cb_light = nullptr;  // (b2: the arena's light set for the next draws - SetStageLight)
 int g_cb_light_now = -2;
 int g_cb_mode_now = -1;
+bool g_keep_blend = false;  // (the glow pass: its additive blend stays, whatever the model's own kind)
 std::set<std::string> g_self_lit;    // (SetSelfLit: screens drawn at their own brightness)
 std::set<std::string> g_led_mask;    // (SetSelfLit's masks: a screen's dot grid over it, its holes the lit dots)
 ID3D11BlendState* g_led_blend = nullptr;
-bool g_game_alpha = false;           // (SetGameTransparency: alpha cuts only on the C351-flagged models, as the game)
+// The game's see-through rules, from each model's C351 flags (on in every view; env SVR2011_MM_NO_GAME_ALPHA: the old
+// cut-everything look, for A/B shots): s / k / i / j blended, a / o added, c cut out, none opaque. Every texture's
+// alpha cut at 0.25 turned the cage trusses (s) of Hell in a Cell into blotchy holes, and WWE barriers (no flag, a
+// gloss mask in the alpha) see-through.
+bool g_game_alpha = !std::getenv("SVR2011_MM_NO_GAME_ALPHA");
 const svrfmt::Arena* g_cut_arena = nullptr;
-std::vector<char> g_cut;             // (per model: its C351 line has a transparency flag)
+std::vector<char> g_cut;             // (per model: 0 opaque, 1 cut out, 2 blended, 3 added)
 std::map<uint32_t, std::string> ModelFlagsOf(const svrfmt::Arena& arena);
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_solid = nullptr;
@@ -367,16 +372,24 @@ float4 ps(VO i) : SV_Target {
   float4 tx = t.Sample(s, i.uv);
   if (flat.w < -0.5) return float4(tx.rgb * tx.a * i.c.rgb * tint.rgb, 0);  // (glows and beams, added at full strength as the game - 0.6 left them faint)
   if (mode.x > 1.5) return float4(tint.rgb * 0.55, 1 - tx.a);  // (an LED mask: its holes are lit dots, blended)
-  if (tx.a < 0.25 && mode.y < 0.5) discard;  // (mode.y: an opaque model - the game's alpha there isn't see-through)
-  if (mode.x > 0.5) return float4(tx.rgb * tint.rgb, 1);  // (self-lit: a screen)
-  float3 n = normalize(i.n + 1e-5);
-  if (lon.x > 0.5) {  // (the arena's own light set: fills half-lit from behind, directional ones as they face)
-    float3 l = lcol[0].rgb * (0.5 + 0.5 * dot(n, ldir[0].xyz)) + lcol[1].rgb * (0.5 + 0.5 * dot(n, ldir[1].xyz));
-    [unroll] for (int k = 2; k < 6; ++k) l += lcol[k].rgb * max(0, dot(n, ldir[k].xyz));
-    return float4(tx.rgb * i.c.rgb * tint.rgb * l * lon.y, 1);
+  // mode.z: the model's see-through kind (its C351 flags): 0 opaque or cut-out, 1 blended (s k i j), 2 added (a o)
+  if (mode.z < 0.5) { if (tx.a < 0.25 && mode.y < 0.5) discard; }  // (mode.y: opaque - the game's alpha there isn't see-through)
+  else if (tx.a < 0.004) discard;
+  float3 c;
+  if (mode.x > 0.5) c = tx.rgb * tint.rgb;  // (self-lit: a screen)
+  else {
+    float3 n = normalize(i.n + 1e-5);
+    if (lon.x > 0.5) {  // (the arena's own light set: fills half-lit from behind, directional ones as they face)
+      float3 l = lcol[0].rgb * (0.5 + 0.5 * dot(n, ldir[0].xyz)) + lcol[1].rgb * (0.5 + 0.5 * dot(n, ldir[1].xyz));
+      [unroll] for (int k = 2; k < 6; ++k) l += lcol[k].rgb * max(0, dot(n, ldir[k].xyz));
+      c = tx.rgb * i.c.rgb * tint.rgb * l * lon.y;
+    } else {
+      float d = abs(dot(n, normalize(float3(0.35, -1.0, 0.25))));
+      c = tx.rgb * i.c.rgb * tint.rgb * (0.55 + 0.45 * d);
+    }
   }
-  float d = abs(dot(n, normalize(float3(0.35, -1.0, 0.25))));
-  return float4(tx.rgb * i.c.rgb * tint.rgb * (0.55 + 0.45 * d), 1);
+  if (mode.z > 1.5) return float4(c * tx.a, 0);
+  return float4(c, mode.z > 0.5 ? tx.a : 1);
 }
 )";
 
@@ -668,6 +681,32 @@ void SetCb(const M4& world, const float tint[3], const float* flat = nullptr) {
   g_ctx->Unmap(g_cb, 0);
 }
 
+// A field's width that leaves room for `label` (the widest of a group, so the fields line up) at any font size.
+float LabelRoom(const char* label) {
+  return ImGui::CalcTextSize(label).x + ImGui::GetStyle().ItemInnerSpacing.x + 2;
+}
+
+int AlphaKind(int model) {
+  if (!g_arena || model < 0) return 1;
+  if (!g_game_alpha) return 1;
+  if (g_cut_arena != g_arena) {
+    g_cut_arena = g_arena;
+    g_cut.assign(g_arena->models.size(), 0);
+    const auto flags = ModelFlagsOf(*g_arena);
+    for (size_t i = 0; i < g_arena->models.size(); ++i) {
+      const auto f = flags.find(g_arena->models[i].id);
+      if (f == flags.end()) {
+        g_cut[i] = 1;  // (no line - an added object, a ring part: as before)
+        continue;
+      }
+      for (const char* w : {" c "}) if (f->second.find(w) != std::string::npos) g_cut[i] = 1;
+      for (const char* w : {" s ", " k ", " i ", " j "}) if (f->second.find(w) != std::string::npos) g_cut[i] = 2;
+      for (const char* w : {" a ", " o "}) if (f->second.find(w) != std::string::npos) g_cut[i] = 3;
+    }
+  }
+  return size_t(model) < g_cut.size() ? g_cut[size_t(model)] : 1;
+}
+
 void DrawMesh(int model, int mesh) {
   GpuMesh* g = Gpu(model, mesh);
   if (!g->vb || !g->count) return;
@@ -676,29 +715,18 @@ void DrawMesh(int model, int mesh) {
   g_ctx->IASetIndexBuffer(g->ib, DXGI_FORMAT_R16_UINT, 0);
   ID3D11ShaderResourceView* srv = TextureFor(g->tex);
   g_ctx->PSSetShaderResources(0, 1, &srv);
-  int mode = g_led_mask.count(g->tex) ? 2 : g_self_lit.count(g->tex) ? 1 : 0;
-  if (g_game_alpha && g_arena) {
-    if (g_cut_arena != g_arena) {  // (2011's transparency flags, docs: s a k c i j o as words of a model's C351 line)
-      g_cut_arena = g_arena;
-      g_cut.assign(g_arena->models.size(), 0);
-      const auto flags = ModelFlagsOf(*g_arena);
-      for (size_t i = 0; i < g_arena->models.size(); ++i) {
-        const auto f = flags.find(g_arena->models[i].id);
-        if (f == flags.end()) {
-          g_cut[i] = 1;  // (no line: as before)
-          continue;
-        }
-        for (const char* w : {" s ", " a ", " k ", " c ", " i ", " j ", " o "})
-          if (f->second.find(w) != std::string::npos) g_cut[i] = 1;
-      }
-    }
-    if (model >= 0 && size_t(model) < g_cut.size() && !g_cut[size_t(model)] && mode == 0) mode = 3;
-  }
+  const int lit = g_led_mask.count(g->tex) ? 2 : g_self_lit.count(g->tex) ? 1 : 0;
+  const int kind = lit == 2 ? 1 : AlphaKind(model);  // (0 opaque, 1 cut out, 2 blended, 3 added)
+  const int mode = lit * 4 + kind;
   if (mode != g_cb_mode_now && g_cb_mode && !g_glow_pass) {
-    if (mode == 2 || g_cb_mode_now == 2) g_ctx->OMSetBlendState(mode == 2 ? g_led_blend : nullptr, nullptr, 0xFFFFFFFF);
+    const auto blend = [](int m) -> ID3D11BlendState* {
+      return m / 4 == 2 || m % 4 == 2 ? g_led_blend : m % 4 == 3 ? g_add : nullptr;
+    };
+    if (!g_keep_blend && (g_cb_mode_now < 0 || blend(mode) != blend(g_cb_mode_now)))
+      g_ctx->OMSetBlendState(blend(mode), nullptr, 0xFFFFFFFF);
     D3D11_MAPPED_SUBRESOURCE ms;
     if (SUCCEEDED(g_ctx->Map(g_cb_mode, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
-      const float v[4] = {mode == 3 ? 0.0f : float(mode), mode == 3 ? 1.0f : 0.0f, 0, 0};
+      const float v[4] = {float(lit), kind == 1 ? 0.0f : 1.0f, kind == 2 ? 1.0f : kind == 3 ? 2.0f : 0.0f, 0};
       std::memcpy(ms.pData, v, sizeof v);
       g_ctx->Unmap(g_cb_mode, 0);
       g_cb_mode_now = mode;
@@ -1494,7 +1522,7 @@ void RenderScene() {
       case Role::kNotDrawn:
         break;
       case Role::kNormal:
-        if (o.glow) break;  // (after the solid ones)
+        if (o.glow || AlphaKind(o.model) >= 2) break;  // (after the solid ones)
         SetCb(ident, light);
         for (int k : o.meshes) DrawMesh(o.model, k);
         if (o.mirrored) {  // (the game's mirrored copy)
@@ -1557,8 +1585,26 @@ void RenderScene() {
       }
     }
   }
+  // the see-through models (C351 s k i j: blended, a o: added), after the solid ones, depth read only
+  g_ctx->OMSetDepthStencilState(g_depth_ro, 0);
+  for (const Obj& o : g_objs) {
+    if (o.hidden || o.effect || o.outside || (o.ceiling && !g_show_ceilings) || o.glow || o.role != Role::kNormal ||
+        AlphaKind(o.model) < 2)
+      continue;
+    SetStageLight(o.light_set);
+    SetCb(ident, light);
+    for (int k : o.meshes) DrawMesh(o.model, k);
+    if (o.mirrored) {
+      M4 mirror;
+      mirror.m[0] = -1;
+      SetCb(mirror, light);
+      for (int k : o.meshes) DrawMesh(o.model, k);
+    }
+  }
+  g_ctx->OMSetDepthStencilState(g_depth, 0);
   // light glows and beams, added on top
   g_ctx->OMSetBlendState(g_add, nullptr, 0xFFFFFFFF);
+  g_keep_blend = true;
   g_ctx->OMSetDepthStencilState(g_depth_ro, 0);
   g_glow_pass = true;
   SetCb(ident, light);
@@ -1585,7 +1631,9 @@ void RenderScene() {
       if (o.glow && o.mirrored && !o.hidden && !o.effect && !o.outside && o.role == Role::kNormal)
         for (int k : o.meshes) DrawMesh(o.model, k);
   }
+  g_keep_blend = false;
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+  g_cb_mode_now = -1;
   g_ctx->OMSetDepthStencilState(g_depth, 0);
   // the selection, as a wireframe on top
   g_ctx->RSSetState(g_wire);
@@ -1757,9 +1805,9 @@ void RingKitPanel() {
   ImGui::SameLine();
   changed |= ImGui::Checkbox("Corner pads", &g_ring.pads);
   float base = RopeBase() * 10, gap = RopeGap() * 10;  // cm
-  ImGui::SetNextItemWidth(-90);
+  ImGui::SetNextItemWidth(-LabelRoom("Low rope (cm)"));
   if (ImGui::SliderFloat("Low rope (cm)", &base, 15, 70, "%.0f")) g_ring.rope_base = base / 10, changed = true;
-  ImGui::SetNextItemWidth(-90);
+  ImGui::SetNextItemWidth(-LabelRoom("Low rope (cm)"));
   if (ImGui::SliderFloat("Rope gap (cm)", &gap, 25, 55, "%.0f")) g_ring.rope_gap = gap / 10, changed = true;
   if (RopeBase() + 2 * RopeGap() > 12.5f)
     ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1), "The top rope would be above the posts.");
@@ -1857,16 +1905,16 @@ void Inspector() {
     // (typed or dragged: Ctrl+click or double-click a field to type a value; no range but a 1 km sanity bound)
     float p[3] = {o.pos.x / 10, -o.pos.y / 10, o.pos.z / 10};  // metres, up positive
     bool ch = false;
-    ImGui::SetNextItemWidth(-60);
+    ImGui::SetNextItemWidth(-LabelRoom("Turn (deg)"));
     ch |= ImGui::DragFloat3("Move (m)", p, 0.01f, -kMaxMove / 10, kMaxMove / 10, "%.3f");
     if (ImGui::IsItemActivated()) PushUndo();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right, up, forward in metres. Drag, or Ctrl+click to type.");
     float deg[3] = {o.yaw * 180 / kPi, o.pitch * 180 / kPi, o.roll * 180 / kPi};
-    ImGui::SetNextItemWidth(-60);
+    ImGui::SetNextItemWidth(-LabelRoom("Turn (deg)"));
     ch |= ImGui::DragFloat3("Turn (deg)", deg, 0.25f, 0, 0, "%.2f");
     if (ImGui::IsItemActivated()) PushUndo();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Turn (about the up axis), tilt forward, tilt sideways - any angle.");
-    ImGui::SetNextItemWidth(-60);
+    ImGui::SetNextItemWidth(-LabelRoom("Turn (deg)"));
     ch |= ImGui::DragFloat("Scale", &o.scale, 0.002f, 0.01f, 100, "%.3f");
     if (ImGui::IsItemActivated()) PushUndo();
     if (ch) {
@@ -1900,7 +1948,7 @@ void Inspector() {
     const Model& m = am.model;
     const int slot = DiffuseSlot(m.meshes[o.meshes[0]]);
     const std::string cur = slot >= 0 && slot < int(m.textures.size()) ? m.textures[slot] : "";
-    ImGui::SetNextItemWidth(-60);
+    ImGui::SetNextItemWidth(-LabelRoom("Texture"));
     if (ImGui::BeginCombo("Texture", cur.c_str())) {
       for (const auto& b : g_arena->bundles)
         for (const auto& t : b.textures)
@@ -2059,7 +2107,7 @@ void RetextureFromFolder(const std::string& folder) {
 
 void AddPanel() {
   static float box[3] = {1.0f, 1.0f, 1.0f};  // metres
-  ImGui::SetNextItemWidth(-90);
+  ImGui::SetNextItemWidth(-LabelRoom("Box (m)"));
   ImGui::DragFloat3("Box (m)", box, 0.05f, 0.1f, 50, "%.2f");
   if (ImGui::Button("Add box at the view centre")) AddBox(box[0] * 10, box[1] * 10, box[2] * 10);
   if (ImGui::Button("Pictures from a folder...")) {
@@ -2593,7 +2641,7 @@ void SetTextureOverride(const std::string& name, ID3D11ShaderResourceView* srv) 
   else g_tex_override.erase(name);
 }
 void SetViewExtra(ViewExtraFn fn) { g_view_extra = std::move(fn); }
-void SetGameTransparency(bool on) { g_game_alpha = on, g_cut_arena = nullptr; }
+void SetGameTransparency(bool on) { g_game_alpha = on && !std::getenv("SVR2011_MM_NO_GAME_ALPHA"), g_cut_arena = nullptr; }
 void SetStageTime(float seconds, bool entrance) { g_stage_time = std::max(0.0f, seconds), g_stage_entrance = entrance; }
 
 void SetSelfLit(const std::vector<std::string>& textures, const std::vector<std::string>& masks) {
