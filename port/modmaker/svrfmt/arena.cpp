@@ -1,6 +1,10 @@
 #include "arena.h"
 
 #include <algorithm>
+#include <string>
+#include <sstream>
+#include <map>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -185,6 +189,121 @@ ArenaGeometry GeometryOf(const Arena& a) {
       for (const auto& s : m.strips) g.indices += s.indices.size();
     }
   return g;
+}
+
+int FitNodeSpheres(Model& m) {
+  int fitted = 0;
+  for (size_t i = 0; i < m.nodes.size(); ++i) {
+    Node& n = m.nodes[i];
+    if (n.t[0] || n.t[1] || n.t[2] || n.r[0] || n.r[1] || n.r[2]) continue;  // (in its own space: left as it is)
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    std::vector<const Mesh*> carried;
+    for (const auto& me : m.meshes) {
+      const bool mine = m.nodes.size() == 1 || std::find(me.palette.begin(), me.palette.end(), int32_t(i + 1)) != me.palette.end();
+      if (!mine || me.verts.empty()) continue;
+      carried.push_back(&me);
+      for (int j = 0; j < 3; ++j) lo[j] = std::min(lo[j], me.sphere[j] - me.sphere[3]), hi[j] = std::max(hi[j], me.sphere[j] + me.sphere[3]);
+    }
+    if (carried.empty()) continue;
+    const float c[3] = {(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
+    float r = 0;
+    for (const Mesh* me : carried) {
+      const float dx = me->sphere[0] - c[0], dy = me->sphere[1] - c[1], dz = me->sphere[2] - c[2];
+      r = std::max(r, std::sqrt(dx * dx + dy * dy + dz * dz) + me->sphere[3]);
+    }
+    n.sphere[0] = c[0], n.sphere[1] = c[1], n.sphere[2] = c[2], n.sphere[3] = r;
+    ++fitted;
+  }
+  return fitted;
+}
+
+int GrowVisibility(Arena& a) {
+  PachEntry* vis = nullptr;
+  for (auto& e : a.entries)
+    if (e.id == 0xC364) vis = &e;
+  if (!vis) return 0;
+  const Bytes raw = Unpack(vis->data);
+  std::string t(raw.begin(), raw.end());
+  struct Node {
+    size_t at = 0, len = 0;  // the box line (without its line end)
+    std::string parent;
+    float b[6] = {};
+  };
+  std::map<std::string, Node> nodes;
+  const std::string kNode = "NODE MY_NAME = ";
+  for (size_t at = t.find(kNode); at != std::string::npos; at = t.find(kNode, at + 1)) {
+    const size_t eol = t.find('\n', at);
+    if (eol == std::string::npos) break;
+    std::istringstream head(t.substr(at + kNode.size(), eol - at - kNode.size()));
+    std::string name, key, eq;
+    Node n;
+    head >> name >> key >> eq >> n.parent;
+    const size_t brace = t.find('{', eol);
+    if (brace == std::string::npos) break;
+    const size_t bs = t.find('\n', brace);
+    if (bs == std::string::npos) break;
+    const size_t be = t.find('\n', bs + 1);
+    if (be == std::string::npos) break;
+    n.at = bs + 1, n.len = be - bs - 1;
+    if (n.len && t[n.at + n.len - 1] == '\r') --n.len;
+    std::istringstream box(t.substr(n.at, n.len));
+    for (float& f : n.b) box >> f;
+    if (!box) continue;
+    nodes[name] = n;
+  }
+  auto bounds = [](const Model& m, float lo[3], float hi[3]) {
+    for (int j = 0; j < 3; ++j) lo[j] = 1e30f, hi[j] = -1e30f;
+    for (const auto& me : m.meshes)
+      for (const auto& v : me.verts)
+        for (int j = 0; j < 3; ++j) lo[j] = std::min(lo[j], v.pos[j]), hi[j] = std::max(hi[j], v.pos[j]);
+    return lo[0] <= hi[0];
+  };
+  // the Y axis's sign: the one that fits the boxes of models that weren't changed
+  float fit_plus = 0, fit_minus = 0;
+  for (const auto& am : a.models) {
+    auto it = nodes.find(am.model.name);
+    float lo[3], hi[3];
+    if (am.changed || it == nodes.end() || !bounds(am.model, lo, hi)) continue;
+    const float* b = it->second.b;
+    fit_plus += std::fabs(b[1] - lo[2] / 10) + std::fabs(b[4] - hi[2] / 10);
+    fit_minus += std::fabs(b[1] + hi[2] / 10) + std::fabs(b[4] + lo[2] / 10);
+  }
+  const bool plus = fit_plus <= fit_minus;
+  std::map<std::string, std::array<float, 6>> grown;
+  auto grow = [&](const std::string& name, const float g[6]) {
+    for (std::string n = name; !n.empty();) {
+      auto it = nodes.find(n);
+      if (it == nodes.end()) break;
+      float* b = it->second.b;
+      bool more = false;
+      for (int j = 0; j < 3; ++j) {
+        if (g[j] < b[j]) b[j] = g[j], more = true;
+        if (g[j + 3] > b[j + 3]) b[j + 3] = g[j + 3], more = true;
+      }
+      if (!more) break;  // (it holds it: so do its parents)
+      grown[n] = {b[0], b[1], b[2], b[3], b[4], b[5]};
+      n = it->second.parent;
+    }
+  };
+  for (const auto& am : a.models) {
+    float lo[3], hi[3];
+    if (!am.changed || !nodes.count(am.model.name) || !bounds(am.model, lo, hi)) continue;
+    const float g[6] = {lo[0] / 10, plus ? lo[2] / 10 : -hi[2] / 10, -hi[1] / 10,
+                        hi[0] / 10, plus ? hi[2] / 10 : -lo[2] / 10, -lo[1] / 10};
+    grow(am.model.name, g);
+  }
+  if (grown.empty()) return 0;
+  std::vector<std::pair<size_t, std::string>> order;  // (rewritten from the end: earlier offsets stay valid)
+  for (const auto& [n, b] : grown) order.push_back({nodes[n].at, n});
+  std::sort(order.rbegin(), order.rend());
+  for (const auto& [at, n] : order) {
+    const auto& b = grown[n];
+    char line[200];
+    std::snprintf(line, sizeof line, "\t%g %g %g %g %g %g", b[0], b[1], b[2], b[3], b[4], b[5]);
+    t.replace(at, nodes[n].len, line);
+  }
+  vis->data = BpeEncode(Bytes(t.begin(), t.end()));
+  return int(grown.size());
 }
 
 BundleTexture* Arena::FindTexture(const std::string& name) {

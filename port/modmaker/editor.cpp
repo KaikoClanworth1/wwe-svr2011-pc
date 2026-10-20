@@ -195,7 +195,8 @@ struct Obj {
   int light_set = 100, motion = -1;
   bool entrance_only = false, match_only = false, billboard = false;
   V3 pos;           // edit offset
-  float yaw = 0;    // radians
+  float yaw = 0;    // radians (turn about the up axis)
+  float pitch = 0, roll = 0;  // radians: tilted forward / sideways (applied before the turn)
   float scale = 1;
   V3 pivot;         // bottom centre of the original geometry
   std::vector<std::vector<Vertex>> base;
@@ -203,7 +204,7 @@ struct Obj {
 };
 
 struct Snapshot {
-  std::vector<std::array<float, 6>> xf;  // pos, yaw, scale, hidden
+  std::vector<std::array<float, 8>> xf;  // pos, yaw, scale, hidden, pitch, roll
   std::vector<std::string> tex;          // each object's texture (first mesh)
 };
 
@@ -299,10 +300,12 @@ ImVec2 g_vp_min, g_vp_size;
 enum class Tool { kSelect, kMove, kRotate, kScale };
 Tool g_tool = Tool::kMove;
 bool g_snap = true;
+float g_turn_snap = kPi / 12;  // (radians; 0: free)
+constexpr float kMaxMove = 10000.0f;  // (game units, 10 cm: 1 km - a sanity bound, not the game's)
 // a drag in the viewport
 int g_drag_axis = -1;  // -1 none, 0..2 axis, 3 plane
 V3 g_drag_start_pos;
-float g_drag_start_yaw = 0, g_drag_start_scale = 1;
+float g_drag_start_yaw = 0, g_drag_start_scale = 1, g_drag_start_pitch = 0, g_drag_start_roll = 0;
 V3 g_drag_hit;
 ImVec2 g_drag_mouse;
 
@@ -728,7 +731,14 @@ void ComputePivot(Obj& o) {
 // The edit transform into the model's vertices (and strips, for hidden).
 void ApplyObj(Obj& o) {
   Model& m = g_arena->models[o.model].model;
-  const float c = std::cos(o.yaw), s = std::sin(o.yaw);
+  // R = yaw (about the up axis) * pitch (about x) * roll (about z): game axes (y down)
+  const float cy = std::cos(o.yaw), sy = std::sin(o.yaw), cp = std::cos(o.pitch), sp = std::sin(o.pitch),
+              cr = std::cos(o.roll), sr = std::sin(o.roll);
+  auto rot = [&](float x, float y, float z, float* out) {
+    const float x1 = x * cr - y * sr, y1 = x * sr + y * cr;
+    const float y2 = y1 * cp - z * sp, z2 = y1 * sp + z * cp;
+    out[0] = x1 * cy + z2 * sy, out[1] = y2, out[2] = -x1 * sy + z2 * cy;
+  };
   for (size_t k = 0; k < o.meshes.size(); ++k) {
     Mesh& mesh = m.meshes[o.meshes[k]];
     if (o.movable) {
@@ -736,14 +746,13 @@ void ApplyObj(Obj& o) {
       mesh.verts.resize(base.size());
       for (size_t i = 0; i < base.size(); ++i) {
         Vertex v = base[i];
-        const float dx = (v.pos[0] - o.pivot.x) * o.scale, dy = (v.pos[1] - o.pivot.y) * o.scale,
-                    dz = (v.pos[2] - o.pivot.z) * o.scale;
-        v.pos[0] = o.pivot.x + o.pos.x + dx * c + dz * s;
-        v.pos[1] = o.pivot.y + o.pos.y + dy;
-        v.pos[2] = o.pivot.z + o.pos.z - dx * s + dz * c;
-        const float nx = v.normal[0], nz = v.normal[2];
-        v.normal[0] = nx * c + nz * s;
-        v.normal[2] = -nx * s + nz * c;
+        float d[3], n[3];
+        rot((v.pos[0] - o.pivot.x) * o.scale, (v.pos[1] - o.pivot.y) * o.scale, (v.pos[2] - o.pivot.z) * o.scale, d);
+        v.pos[0] = o.pivot.x + o.pos.x + d[0];
+        v.pos[1] = o.pivot.y + o.pos.y + d[1];
+        v.pos[2] = o.pivot.z + o.pos.z + d[2];
+        rot(v.normal[0], v.normal[1], v.normal[2], n);
+        v.normal[0] = n[0], v.normal[1] = n[1], v.normal[2] = n[2];
         mesh.verts[i] = v;
       }
       // bounding sphere
@@ -768,6 +777,7 @@ void ApplyObj(Obj& o) {
   g_arena->models[o.model].changed = true;
   ForgetGpu(o.model);
   Edited();
+  if (o.movable) FitNodeSpheres(m);  // (the game culls by the node spheres: svrfmt/arena.h)
 }
 
 Role RoleOf(uint32_t id) {
@@ -1070,7 +1080,7 @@ void BuildObjects() {
 Snapshot Snap() {
   Snapshot s;
   for (const auto& o : g_objs) {
-    s.xf.push_back({o.pos.x, o.pos.y, o.pos.z, o.yaw, o.scale, o.hidden ? 1.f : 0.f});
+    s.xf.push_back({o.pos.x, o.pos.y, o.pos.z, o.yaw, o.scale, o.hidden ? 1.f : 0.f, o.pitch, o.roll});
     s.tex.push_back(ObjTexture(o));
   }
   return s;
@@ -1088,9 +1098,9 @@ void Restore(const Snapshot& s) {
     const auto& x = s.xf[i];
     if (i < s.tex.size() && !s.tex[i].empty() && s.tex[i] != ObjTexture(o)) SetObjTexture(o, s.tex[i]);
     if (o.pos.x == x[0] && o.pos.y == x[1] && o.pos.z == x[2] && o.yaw == x[3] && o.scale == x[4] &&
-        o.hidden == (x[5] > 0.5f))
+        o.hidden == (x[5] > 0.5f) && o.pitch == x[6] && o.roll == x[7])
       continue;
-    o.pos = {x[0], x[1], x[2]}, o.yaw = x[3], o.scale = x[4], o.hidden = x[5] > 0.5f;
+    o.pos = {x[0], x[1], x[2]}, o.yaw = x[3], o.scale = x[4], o.hidden = x[5] > 0.5f, o.pitch = x[6], o.roll = x[7];
     ApplyObj(o);
   }
 }
@@ -1111,16 +1121,12 @@ void Redo() {
   Restore(s);
 }
 
-// Ringside / entrance parts: the game's moves aim at fixed spots near them.
+// Anywhere, any way round (the edit is baked into the vertices; save grows the visibility tree's boxes to
+// match - svrfmt GrowVisibility). Ringside / entrance parts too: the game's collision and the spots its moves
+// aim at stay where they were (the inspector says so). Only sanity bounds remain.
 void Constrain(Obj& o) {
-  if (o.zone == Zone::kRingside || o.zone == Zone::kEntrance) {
-    const float lim = 5.0f;  // 50 cm
-    o.pos.x = std::clamp(o.pos.x, -lim, lim);
-    o.pos.y = std::clamp(o.pos.y, -lim, lim);
-    o.pos.z = std::clamp(o.pos.z, -lim, lim);
-    o.scale = std::clamp(o.scale, 0.8f, 1.25f);
-  }
-  o.scale = std::clamp(o.scale, 0.05f, 20.0f);
+  for (float* v : {&o.pos.x, &o.pos.y, &o.pos.z}) *v = std::clamp(*v, -kMaxMove, kMaxMove);
+  o.scale = std::clamp(o.scale, 0.01f, 100.0f);
 }
 
 int HostModel() {
@@ -1182,6 +1188,7 @@ void Duplicate(int i) {
   o.pivot = src.pivot;
   o.pos = src.pos + V3{6, 0, 6};
   o.yaw = src.yaw;
+  o.pitch = src.pitch, o.roll = src.roll;
   o.scale = src.scale;
   ApplyObj(o);
   g_sel = n;
@@ -1837,23 +1844,34 @@ void Inspector() {
   } else if (!o.movable) {
     ImGui::TextWrapped("This object is rigged (moves with bones): it can be hidden or retextured, not moved.");
   } else {
-    if (o.zone == Zone::kRingside || o.zone == Zone::kEntrance)
-      ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "Wrestlers' moves aim at this: moves are limited to 50 cm.");
+    if (o.zone == Zone::kRingside || o.zone == Zone::kEntrance) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.75f, 0.3f, 1));
+      ImGui::TextWrapped("Only its look moves; wrestlers still use the old spot.");
+      ImGui::PopStyleColor();
+    }
+    if (o.mirrored) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+      ImGui::TextWrapped("The game draws it twice, mirrored across the middle: its mirror image moves too.");
+      ImGui::PopStyleColor();
+    }
+    // (typed or dragged: Ctrl+click or double-click a field to type a value; no range but a 1 km sanity bound)
     float p[3] = {o.pos.x / 10, -o.pos.y / 10, o.pos.z / 10};  // metres, up positive
     bool ch = false;
     ImGui::SetNextItemWidth(-60);
-    ch |= ImGui::DragFloat3("Move (m)", p, 0.02f, -200, 200, "%.2f");
+    ch |= ImGui::DragFloat3("Move (m)", p, 0.01f, -kMaxMove / 10, kMaxMove / 10, "%.3f");
     if (ImGui::IsItemActivated()) PushUndo();
-    float deg = o.yaw * 180 / kPi;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right, up, forward in metres. Drag, or Ctrl+click to type.");
+    float deg[3] = {o.yaw * 180 / kPi, o.pitch * 180 / kPi, o.roll * 180 / kPi};
     ImGui::SetNextItemWidth(-60);
-    ch |= ImGui::DragFloat("Turn (deg)", &deg, 0.5f, -360, 360, "%.1f");
+    ch |= ImGui::DragFloat3("Turn (deg)", deg, 0.25f, 0, 0, "%.2f");
     if (ImGui::IsItemActivated()) PushUndo();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Turn (about the up axis), tilt forward, tilt sideways - any angle.");
     ImGui::SetNextItemWidth(-60);
-    ch |= ImGui::DragFloat("Scale", &o.scale, 0.005f, 0.05f, 20, "%.3f");
+    ch |= ImGui::DragFloat("Scale", &o.scale, 0.002f, 0.01f, 100, "%.3f");
     if (ImGui::IsItemActivated()) PushUndo();
     if (ch) {
       o.pos = {p[0] * 10, -p[1] * 10, p[2] * 10};
-      o.yaw = deg * kPi / 180;
+      o.yaw = deg[0] * kPi / 180, o.pitch = deg[1] * kPi / 180, o.roll = deg[2] * kPi / 180;
       Constrain(o);
       ApplyObj(o);
     }
@@ -1861,7 +1879,7 @@ void Inspector() {
     ImGui::SameLine();
     if (ImGui::Button("Reset")) {
       PushUndo();
-      o.pos = {}, o.yaw = 0, o.scale = 1;
+      o.pos = {}, o.yaw = 0, o.pitch = 0, o.roll = 0, o.scale = 1;
       ApplyObj(o);
     }
   }
@@ -2124,7 +2142,7 @@ void ViewportInput(bool hovered) {
   Obj* sel = g_sel >= 0 && g_sel < int(g_objs.size()) ? &g_objs[g_sel] : nullptr;
   const bool can_edit = !g_readonly && sel && sel->movable && g_tool != Tool::kSelect;
   // the start of every selected object (a drag moves them together)
-  static std::vector<std::pair<int, std::array<float, 5>>> drag_starts;
+  static std::vector<std::pair<int, std::array<float, 7>>> drag_starts;
   if (g_grid) {  // a 1 m grid on the floor round the view's target, 5 m lines brighter
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float y = g_area_lo >= 0 ? g_target.y : kMatY + 10.0f;  // (the arena floor is a metre under the mat)
@@ -2206,6 +2224,7 @@ void ViewportInput(bool hovered) {
       PushUndo();
       g_drag_start_pos = sel->pos;
       g_drag_start_yaw = sel->yaw;
+      g_drag_start_pitch = sel->pitch, g_drag_start_roll = sel->roll;
       g_drag_start_scale = sel->scale;
       g_drag_mouse = m;
     }
@@ -2214,6 +2233,7 @@ void ViewportInput(bool hovered) {
       PushUndo();
       g_drag_axis = 4;  // rotate / scale by horizontal drag
       g_drag_start_yaw = sel->yaw;
+      g_drag_start_pitch = sel->pitch, g_drag_start_roll = sel->roll;
       g_drag_start_scale = sel->scale;
       g_drag_mouse = m;
     }
@@ -2221,7 +2241,7 @@ void ViewportInput(bool hovered) {
       drag_starts.clear();
       for (int i : Selection()) {
         const Obj& o = g_objs[i];
-        if (o.movable) drag_starts.push_back({i, {o.pos.x, o.pos.y, o.pos.z, o.yaw, o.scale}});
+        if (o.movable) drag_starts.push_back({i, {o.pos.x, o.pos.y, o.pos.z, o.yaw, o.scale, o.pitch, o.roll}});
       }
     }
   }
@@ -2255,9 +2275,12 @@ void ViewportInput(bool hovered) {
     } else if (g_drag_axis == 4) {
       const float dx = m.x - g_drag_mouse.x;
       if (g_tool == Tool::kRotate) {
-        float yaw = g_drag_start_yaw + ScreenX() * dx * 0.01f;
-        if (g_snap) yaw = std::round(yaw / (kPi / 12)) * (kPi / 12);
-        sel->yaw = yaw;
+        // (the turn by default; Shift: tilt forward, Alt: tilt sideways)
+        const float start = io.KeyShift ? g_drag_start_pitch : io.KeyAlt ? g_drag_start_roll : g_drag_start_yaw;
+        float a = start + ScreenX() * dx * 0.01f;
+        if (g_snap && g_turn_snap > 0) a = std::round(a / g_turn_snap) * g_turn_snap;
+        sel->yaw = g_drag_start_yaw, sel->pitch = g_drag_start_pitch, sel->roll = g_drag_start_roll;
+        (io.KeyShift ? sel->pitch : io.KeyAlt ? sel->roll : sel->yaw) = a;
       } else if (g_tool == Tool::kScale) {
         sel->scale = g_drag_start_scale * std::exp(dx * 0.005f);
       }
@@ -2267,11 +2290,13 @@ void ViewportInput(bool hovered) {
     // the others follow: the same move, the same turn, the same scale factor
     const V3 dpos = sel->pos - g_drag_start_pos;
     const float dyaw = sel->yaw - g_drag_start_yaw, fscale = g_drag_start_scale > 0 ? sel->scale / g_drag_start_scale : 1;
+    const float dpitch = sel->pitch - g_drag_start_pitch, droll = sel->roll - g_drag_start_roll;
     for (const auto& [i, st] : drag_starts) {
       if (i == g_sel || i < 0 || i >= int(g_objs.size())) continue;
       Obj& o = g_objs[i];
       o.pos = V3{st[0], st[1], st[2]} + dpos;
       o.yaw = st[3] + dyaw;
+      o.pitch = st[5] + dpitch, o.roll = st[6] + droll;
       o.scale = st[4] * fscale;
       Constrain(o);
       ApplyObj(o);
@@ -2747,13 +2772,26 @@ void Draw() {
   ImGui::Checkbox("Snap", &g_snap);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70 * scale);
-  const char* steps[] = {"10 cm", "25 cm", "50 cm", "1 m"};
-  const float step_v[] = {1, 2.5f, 5, 10};
-  int si = 2;
-  for (int k = 0; k < 4; ++k)
+  const char* steps[] = {"1 cm", "5 cm", "10 cm", "25 cm", "50 cm", "1 m", "5 m"};
+  const float step_v[] = {0.1f, 0.5f, 1, 2.5f, 5, 10, 50};
+  int si = 4;
+  for (int k = 0; k < 7; ++k)
     if (std::fabs(step_v[k] - g_snap_step) < 0.01f) si = k;
-  if (ImGui::Combo("##step", &si, steps, 4)) g_snap_step = step_v[si];
+  if (ImGui::Combo("##step", &si, steps, 7)) g_snap_step = step_v[si];
   if (ImGui::IsItemHovered()) ImGui::SetTooltip("The snap step: moves and arrow-key nudges round to it.");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(62 * scale);
+  {
+    const char* turns[] = {"free", "1\xC2\xB0", "5\xC2\xB0", "15\xC2\xB0", "45\xC2\xB0"};
+    const float turn_v[] = {0, 1, 5, 15, 45};
+    int ti = 3;
+    for (int k = 0; k < 5; ++k)
+      if (std::fabs(turn_v[k] * kPi / 180 - g_turn_snap) < 1e-4f) ti = k;
+    if (ImGui::Combo("##turn", &ti, turns, 5)) g_turn_snap = turn_v[ti] * kPi / 180;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("The turn snap (with Snap on). Turn tool: drag turns, Shift+drag tilts forward,\n"
+                        "Alt+drag tilts sideways; the inspector takes typed angles.");
+  }
   ImGui::SameLine();
   ImGui::BeginDisabled(g_undo.empty());
   if (ImGui::Button("Undo")) Undo();
