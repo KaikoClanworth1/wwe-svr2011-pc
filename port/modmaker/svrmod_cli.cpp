@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 
 #include "svrfmt/archive.h"
@@ -136,6 +137,48 @@ int BpeTest(const char* pac, const char* out) {
 }
 
 // Compress a raw file to a BPE entry (used by the Python lab tools).
+// lights <arena.pac> <host bg01.pac> [out.pac]: the match / default / entrance light sets' levels and the
+// sets DarkLightSets would take from the host; with out.pac, the arena written with them (as the Mod Maker's
+// "Repair it" does).
+int Lights(const char* pac, const char* host_pac, const char* out) {
+  auto bank_of = [](const Epac& e, std::vector<PachEntry>& ents) -> Bytes {
+    if (e.groups.empty() || e.groups[0].entries.empty() || !PachRead(e.groups[0].entries[0].data, ents)) return {};
+    for (const auto& x : ents)
+      if (x.id == 0x7530) return Unpack(x.data);
+    return {};
+  };
+  Bytes b, hb;
+  Epac e, h;
+  std::vector<PachEntry> ents, hents;
+  if (!ReadFile(pac, b) || !EpacRead(b, e) || !ReadFile(host_pac, hb) || !EpacRead(hb, h)) {
+    std::printf("can't read the pacs\n");
+    return 1;
+  }
+  const Bytes bank = bank_of(e, ents), host = bank_of(h, hents);
+  if (bank.empty() || host.empty()) {
+    std::printf("no light bank (0x7530)\n");
+    return 1;
+  }
+  for (int id : {10, 100, 200}) {
+    const LightLevel lv = LightLevelOf(bank, id);
+    std::printf("set %d: %s ground %.2f sky %.2f directional %s\n", id, lv.found ? "" : "(none)", lv.ground, lv.sky,
+                lv.directional ? "yes" : "no");
+  }
+  const std::set<int> dark = DarkLightSets(bank);
+  std::printf("dark sets:");
+  for (int id : dark) std::printf(" %d", id);
+  std::printf("%s\n", dark.empty() ? " none" : "");
+  if (!out) return 0;
+  std::vector<int> replaced;
+  for (auto& y : ents)
+    if (y.id == 0x7530) y.data = BpeEncode(ReplaceLightSets(bank, host, dark, &replaced));
+  e.groups[0].entries[0].data = PachWrite(ents);
+  std::printf("replaced:");
+  for (int id : replaced) std::printf(" %d", id);
+  std::printf("\n");
+  return WriteFile(out, EpacWrite(e)) ? 0 : 1;
+}
+
 int Bpe(const char* in, const char* out) {
   Bytes raw;
   if (!ReadFile(in, raw)) return 1;
@@ -519,6 +562,7 @@ int main(int argc, char** argv) {
   }
   if (argc == 5 && !std::strcmp(argv[1], "import")) return Import(argv[2], argv[3], argv[4]);
   if (argc == 4 && !std::strcmp(argv[1], "bpe")) return Bpe(argv[2], argv[3]);
+  if ((argc == 4 || argc == 5) && !std::strcmp(argv[1], "lights")) return Lights(argv[2], argv[3], argc == 5 ? argv[4] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "roundtrip")) return Roundtrip(argc - 2, argv + 2);
   if (argc == 4 && !std::strcmp(argv[1], "export")) return Export(argv[2], argv[3]);

@@ -14,6 +14,7 @@
 #include "svrfmt/arena.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
+#include "svrfmt/wwe13.h"
 #include "svrfmt/zip_write.h"
 
 namespace mm {
@@ -666,6 +667,38 @@ std::function<void()> RepairMipmapData(const fs::path& f) {
   };
 }
 
+// An arena's light bank (0x7530, unpacked; empty: none)
+Bytes LightBankOf(const Epac& e) {
+  std::vector<PachEntry> ents;
+  if (e.groups.empty() || e.groups[0].entries.empty() || !PachRead(e.groups[0].entries[0].data, ents)) return {};
+  for (const auto& x : ents)
+    if (x.id == 0x7530) return Unpack(x.data);
+  return {};
+}
+// The fix for dark match lights (svrfmt DarkLightSets): those sets from the game's RAW arena (bg01, only read) into the
+// mod's own arena file, as the converter does now
+std::function<void()> RepairLights(const fs::path& f) {
+  return [f] {
+    Bytes b, rb;
+    Epac e, r;
+    std::vector<PachEntry> ents;
+    if (!ReadFile(PathStr(f), b) || !EpacRead(b, e) || e.groups.empty() || e.groups[0].entries.empty() ||
+        !PachRead(e.groups[0].entries[0].data, ents))
+      return;
+    if (g_game.empty() || !ReadFile(PathStr(fs::path(g_game) / "pac" / "bg" / "bg01.pac"), rb) || !EpacRead(rb, r))
+      return;
+    const Bytes host = LightBankOf(r);
+    if (host.empty()) return;
+    for (auto& y : ents)
+      if (y.id == 0x7530) {
+        const Bytes bank = Unpack(y.data);
+        y.data = BpeEncode(ReplaceLightSets(bank, host, DarkLightSets(bank)));
+      }
+    e.groups[0].entries[0].data = PachWrite(ents);
+    WriteFile(PathStr(f), EpacWrite(e));
+  };
+}
+
 void CheckArenaPac(const fs::path& dir, const fs::path& f, std::vector<Problem>& p) {
   Bytes b;
   Epac e;
@@ -703,6 +736,20 @@ void CheckArena(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   if (m.found) ManifestBasics(dir, m, "arena", p), TrailingSpaces(dir, m, p);
   CheckArenaPac(dir, dir / "arena.pac", p);
+  {  // (the match lighting: svrfmt/wwe13.h DarkLightSets)
+    Bytes b;
+    Epac e;
+    if (ReadFile(PathStr(dir / "arena.pac"), b) && b.size() >= 0x800 && !std::memcmp(b.data(), "EPAC", 4) && EpacRead(b, e)) {
+      const std::set<int> dark = DarkLightSets(LightBankOf(e));
+      if (dark.count(10))
+        p.push_back(Warning("The arena's match lighting is much darker than the game's arenas: wrestlers and the ring look dark "
+                            "in the match (bright at the entrance).")
+                        .With("Repair it", RepairLights(dir / "arena.pac"), "repaired (the game's own match lighting put in)"));
+      else if (dark.count(100))
+        p.push_back(Warning("Parts of the arena have no light from any side: they look flat and dark.")
+                        .With("Repair it", RepairLights(dir / "arena.pac"), "repaired (the game's own light for them put in)"));
+    }
+  }
   if (!Exists(dir / "banner.dds"))
     p.push_back(Error("The arena has no select screen picture: the launcher won't install it.").With(kOpen, OpenIt(dir)));
   else if (const std::string is = DdsIssue(dir / "banner.dds", 256, 128, {DxtFormat::kDxt5}, "DXT5"); !is.empty())

@@ -10,6 +10,7 @@
 
 #include "frame_rate.h"
 #include "graphics_page.h"
+#include "arena_lights.h"
 #include "port_map.h"
 #include "backgrounds_page.h"
 #include "mystery_opponent.h"
@@ -109,6 +110,7 @@ enum Row {
   kFastStart,                                                    // DISPLAY (last)
   kPing,                                                         // DISPLAY
   kRouterPort,                                                   // DISPLAY
+  kArenaBrightness,                                              // GRAPHICS
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -123,7 +125,7 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kF
 const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kPing, kRouterPort, kRenderer, kTouch,
                                               kReplays, kCpuPriority, kFastStart},
 #endif
-                                             {kRenderScale, kAntiAliasing, kTextureQuality, kWide, kCutsceneFps},
+                                             {kRenderScale, kAntiAliasing, kTextureQuality, kArenaBrightness, kWide, kCutsceneFps},
                                              {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
@@ -386,6 +388,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int resolution_ = kDefaultResolution;
   int scale_ = 0;  // (kScales)
   int textures_ = 0;  // (kTextureQualities)
+  int brightness_ = 100;  // ARENA BRIGHTNESS, percent (arena_lights.h)
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
   bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
@@ -457,6 +460,7 @@ void GraphicsPage::Load() {
       if (q == kTextureQualities[i]) textures_ = i;
   }
   effects_ = rex::cvar::Query<bool>("native_scale_effects");
+  brightness_ = ArenaBrightness();
   fps60_ = rex::cvar::Query<bool>("unlock_30fps");
   native_at_start_ = native::CanSwitch();
   {
@@ -523,6 +527,13 @@ void GraphicsPage::Change(int row, int dir) {
       shadows_ = !shadows_;
       rex::cvar::SetFlagByName("native_shadows", shadows_ ? "true" : "false");
       SaveSetting("native_shadows", shadows_ ? "true" : "false");
+      break;
+    case kArenaBrightness:
+      brightness_ += 10 * (dir ? dir : 1);  // (50-200%, round as the other rows)
+      if (brightness_ > 200) brightness_ = 50;
+      if (brightness_ < 50) brightness_ = 200;
+      SetArenaBrightness(brightness_);
+      SaveSetting("arena_brightness", std::to_string(brightness_));
       break;
     case kTextureQuality:
       textures_ = (textures_ + dir + kNumTextureQualities) % kNumTextureQualities;
@@ -1068,6 +1079,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderer: return api_ == 1 ? "VULKAN" : api_ == 2 ? "DIRECT3D 11" : "AUTO";
       case kRenderScale: return kScales[scale_].label;
       case kTextureQuality: return kTextureQualityLabels[textures_];
+      case kArenaBrightness: {
+        static char b[16];
+        std::snprintf(b, sizeof b, "%d%%", brightness_);
+        return b;
+      }
       case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
       case kCrowd: return crowd_ ? "ON" : "OFF";
       case kShadows: return shadows_ ? "ON" : "OFF";
@@ -1099,6 +1115,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderer: return "GRAPHICS API";
       case kRenderScale: return "RENDER RESOLUTION";
       case kTextureQuality: return "TEXTURES";
+      case kArenaBrightness: return "ARENA BRIGHTNESS";
       case kAntiAliasing: return "ANTI-ALIASING";
       case kEffects: return "EFFECT DETAIL";
       case kCrowd: return "CROWD";
@@ -1148,6 +1165,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kAntiAliasing:
         return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
                "pixel): smoother edges, slower. Limited by RENDER SCALE.";
+      case kArenaBrightness:
+        return "The arena's lights - on the wrestlers, the ring and the hall. 100%: the game's own. From the next "
+               "arena that loads.";
       case kTextureQuality:
         return "MEDIUM / LOW: big textures at half / a quarter of their size - less memory, faster loading. "
                "Menus and text stay sharp.";

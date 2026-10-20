@@ -69,6 +69,7 @@ set(SVR2011_SOURCES
     src/players.cpp
     src/sort_filters.cpp
     src/arena_mods.cpp
+    src/arena_lights.cpp
     src/ring_rules.cpp
     src/hctp_room.cpp
     src/hair_dump.cpp

@@ -1788,6 +1788,20 @@ void LightingPanel() {
   if (ImGui::SliderFloat("Strength", &g_light.strength, 0.3f, 1.6f, "%.2f")) p = int(std::size(kPresets)) - 1, Edited();
   ImGui::TextDisabled("Every arena material's colour (not the crowd).");
   if (ImGui::Checkbox("Crowd in the seats", &g_light.crowd)) Edited();
+  ImGui::SeparatorText("In the game");
+  {
+    static const char* const kMatch[] = {"The game's (match lighting)", "The entrance's lighting",
+                                         "The entrance's, with its coloured spotlight"};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##match_light", &g_light.match_light, kMatch, 3)) Edited();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("How the wrestlers and the ring are lit during the match. The entrance's: as on the stage\n"
+                        "and ramp (brighter in arenas whose match lighting is dark).");
+    if (ImGui::SliderFloat("Game light", &g_light.game_scale, 0.5f, 2.0f, "x%.2f")) Edited();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("The arena's lights in the game - wrestlers, ring and hall - times this (and the player's\n"
+                        "GRAPHICS -> ARENA BRIGHTNESS). Not shown in this view.");
+  }
   ImGui::Checkbox("The arena's own stage lights", &g_stage_lights);  // (the view only: the game always uses them)
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("The view lit as the game lights this arena: each object by its own light set, and the\n"
@@ -2675,6 +2689,13 @@ std::string ManifestLines() {
     s += b;
     if (!g_light.crowd) s += "crowd=0\n";
   }
+  if (std::fabs(g_light.game_scale - 1.0f) > 0.004f) {  // (the game's arena_lights.cpp)
+    char b[48];
+    std::snprintf(b, sizeof b, "light_scale=%.2f\n", g_light.game_scale);
+    s += b;
+  }
+  if (g_light.match_light == 1) s += "match_light=entrance\n";
+  if (g_light.match_light == 2) s += "match_light=entrance_spot\n";
   return s;
 }
 
@@ -2692,6 +2713,12 @@ void FromManifest(const std::string& text) {
       g_light.preset = int(std::size(kPresets)) - 1;
     } else if (line == "crowd=0") {
       g_light.crowd = false;
+    } else if (line.rfind("light_scale=", 0) == 0) {
+      g_light.game_scale = std::clamp(std::strtof(line.c_str() + 12, nullptr), 0.5f, 2.0f);
+    } else if (line == "match_light=entrance") {
+      g_light.match_light = 1;
+    } else if (line == "match_light=entrance_spot") {
+      g_light.match_light = 2;
     } else if (line.rfind("light.strength=", 0) == 0) {
       g_light.strength = std::strtof(line.c_str() + 15, nullptr);
       g_light.preset = int(std::size(kPresets)) - 1;

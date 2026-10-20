@@ -582,7 +582,7 @@ std::set<int> LightIds13(const Bytes& bank) {
 // object), and WWE 2K14's 52 crashed its arena load (in the object motion
 // loader sub_82183C10, after the light sets); with 41 or 47 it plays.
 Bytes FillLights13(const Bytes& bank, const Bytes& host, const std::set<int>& want, std::vector<int>& added,
-                   std::vector<int>& unused) {
+                   std::vector<int>& unused, const std::set<int>& replace = {}) {
   size_t head, data, hh, hdata;
   std::vector<LightDir13> dirs, hd;
   if (!LightBankRead13(bank, head, dirs, data) || !LightBankRead13(host, hh, hd, hdata)) return bank;
@@ -591,7 +591,8 @@ Bytes FillLights13(const Bytes& bank, const Bytes& host, const std::set<int>& wa
   {
     std::vector<LightDir13> keep;
     for (const auto& d : dirs)
-      if (host_ids.count(d.id) || want.count(d.id)) keep.push_back(d);
+      if (replace.count(d.id)) continue;  // (the host's instead)
+      else if (host_ids.count(d.id) || want.count(d.id)) keep.push_back(d);
       else if (unused.empty() || unused.back() != d.id) unused.push_back(d.id);
     dirs.swap(keep);
   }
@@ -629,6 +630,73 @@ Bytes FillLights13(const Bytes& bank, const Bytes& host, const std::set<int>& wa
   }
   out.insert(out.end(), bank.begin() + data, bank.end());
   App(out, extra);
+  return out;
+}
+
+// A light set's first keys (25-byte pose: u8 count, f32 x3 position, s16 x3
+// rotation, u16 x3 colour / 4096; after an event block when the record's
+// first byte has bit 7): ground / sky colour (y 0 / 1, the RGB mean) and
+// whether a directional light (y 10-13) has colour.
+LightLevel LightLevelOf(const Bytes& bank, int id) {
+  LightLevel lv;
+  size_t head, data;
+  std::vector<LightDir13> dirs;
+  if (!LightBankRead13(bank, head, dirs, data)) return lv;
+  std::set<uint32_t> offs;
+  for (const auto& d : dirs) offs.insert(d.off);
+  for (const auto& d : dirs) {
+    if (d.id != id) continue;
+    lv.found = true;
+    if (data + d.off >= bank.size()) continue;
+    auto nx = offs.upper_bound(d.off);
+    const size_t end = nx == offs.end() ? bank.size() : std::min(bank.size(), data + *nx);
+    // the stream's first record (b < 0x60 skips frames; 0x60 + u16 or b - 0x60: a record's size)
+    size_t p = data + d.off;
+    const uint8_t* rec = nullptr;
+    size_t len = 0;
+    while (p < end) {
+      const uint8_t c = bank[p];
+      if (c < 0x60) { ++p; continue; }
+      if (c == 0x60) {
+        if (p + 3 > end) break;
+        len = Le16(&bank[p + 1]), p += 3;
+      } else {
+        len = c - 0x60, p += 1;
+      }
+      if (p + len <= end) rec = &bank[p];
+      break;
+    }
+    if (!rec || !len) continue;
+    if (rec[0] & 0x80) {
+      const size_t ev = rec[0] & 0x7F;
+      if (ev + 1 >= len) continue;
+      rec += 1 + ev, len -= 1 + ev;
+    }
+    if (len < 25) continue;
+    const float c = (Le16(rec + 19) + Le16(rec + 21) + Le16(rec + 23)) / (3.0f * 4096.0f);
+    if (d.y == 0) lv.ground = c;
+    if (d.y == 1) lv.sky = c;
+    if (d.y >= 10 && d.y <= 13 && c > 0.01f) lv.directional = true;
+  }
+  return lv;
+}
+
+std::set<int> DarkLightSets(const Bytes& bank) {
+  std::set<int> ids;
+  const LightLevel match = LightLevelOf(bank, 10);
+  if (match.found && match.ground >= 0 && match.ground < kDarkMatchGround)
+    for (int id = 10; id <= 14; ++id) ids.insert(id);
+  const LightLevel def = LightLevelOf(bank, 100);
+  if (def.found && !def.directional && def.ground + def.sky < kDarkDefaultAmbient) ids.insert(100);
+  return ids;
+}
+
+Bytes ReplaceLightSets(const Bytes& bank, const Bytes& host, const std::set<int>& ids, std::vector<int>* replaced) {
+  std::set<int> want = LightIds13(bank);
+  want.insert(ids.begin(), ids.end());
+  std::vector<int> added, unused;
+  Bytes out = FillLights13(bank, host, want, added, unused, ids);
+  if (replaced) *replaced = added;
   return out;
 }
 
@@ -1474,7 +1542,15 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
     if (outm.count(0xC353))
       for (int id : ZoneLights13(Text(Unpack(outm[0xC353])))) want.insert(id);
     std::vector<int> added, unused;
-    if (hostm.count(0x7530)) bank13 = FillLights13(bank13, Unpack(hostm[0x7530]->data), want, added, unused);
+    // (match lights far darker than SvR2011's - WWE '13's set 10: ground 0.14, RAW 0.78 - or a default set 100
+    // without directional light: the host's, as SvR 2008 / 2009 ports take RAW's set 10; DarkLightSets)
+    const std::set<int> dark = DarkLightSets(bank13);
+    if (hostm.count(0x7530)) bank13 = FillLights13(bank13, Unpack(hostm[0x7530]->data), want, added, unused, dark);
+    if (!dark.empty()) {
+      std::string n = "match lighting too dark for SvR 2011 - the 2011 host arena's sets used:";
+      for (int id : dark) n += " " + std::to_string(id);
+      rep.notes.push_back(n);
+    }
     if (!added.empty()) {
       std::string n = "light sets from the 2011 host arena:";
       for (int id : added) n += " " + std::to_string(id);
