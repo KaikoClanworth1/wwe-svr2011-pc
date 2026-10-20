@@ -15,17 +15,20 @@ Output: `model.json` (the builder's neutral model), `tex_*.png`, `ch.pac`, `rend
 
 ## Games
 
-| Game | Serial (PAL) | Characters / attires | Notes |
+| Game | Serial (PAL / NTSC-U) | Characters / attires | Notes |
 |---|---|---|---|
-| WWF SmackDown! Just Bring It | SLES_504.77 | 139 models | `CH.PAC` at the root; one model per id; one 1024 x 128 TIM2 strip each |
-| WWE SmackDown! Shut Your Mouth | SLES_512.83 | 71 / 140 | ids character * 16 + n |
-| WWE SmackDown! Here Comes the Pain | SLES_520.36 | 80 / 134 | ids XXYZ; select pictures |
-| WWE SmackDown! vs. Raw (2004) | SLES_527.81 | 87 / 106 | select pictures |
-| WWE SmackDown! vs. Raw 2006 | SLES_536.76 | 79 / 103 | parts BPE'd |
-| WWE SmackDown vs. Raw 2007 (PS2) | SLES_544.89 | 80 / 86 | `PAC/CH/`, parts BPE'd |
-| WWE SmackDown vs. Raw 2008 (PS2) | SLES_548.79 | 74 / 81 | |
-| WWE SmackDown vs. Raw 2009 (PS2) | SLES_552.51 | 83 / 105 | named EMD groups ("6601") |
-| WWE SmackDown vs. Raw 2010 (PS2) | SLES_555.45 | 66 / 91 | DPK8 archives |
+| WWF SmackDown! Just Bring It | SLES_504.77 / SLUS_203.16 | 139 models | `CH.PAC` at the root; one model per id; one 1024 x 128 TIM2 strip each |
+| WWE SmackDown! Shut Your Mouth | SLES_512.83 / SLUS_204.83 | 71 / 140 | ids character * 16 + n |
+| WWE SmackDown! Here Comes the Pain | SLES_520.36 / SLUS_207.87 | 80 / 134 | ids XXYZ; select pictures |
+| WWE SmackDown! vs. Raw (2004) | SLES_527.81 / SLUS_210.60 | 87 / 106 | select pictures |
+| WWE SmackDown! vs. Raw 2006 | SLES_536.76 / SLUS_212.86 | 79 / 103 | parts BPE'd |
+| WWE SmackDown vs. Raw 2007 (PS2) | SLES_544.89 / SLUS_214.27 | 80 / 86 | `PAC/CH/`, parts BPE'd |
+| WWE SmackDown vs. Raw 2008 (PS2) | SLES_548.79 / SLUS_216.45 | 74 / 81 | |
+| WWE SmackDown vs. Raw 2009 (PS2) | SLES_552.51 / SLUS_218.10 | 83 / 105 | named EMD groups ("6601") |
+| WWE SmackDown vs. Raw 2010 (PS2) | SLES_555.45 / SLUS_219.01 | 66 / 91 | DPK8 archives |
+
+NTSC-U discs are recognised by serial (all tools and the Mod Maker); the file layouts were only checked on
+PAL discs, so a USA disc that fails adds a "USA disc" note to the convert report.
 
 Not done: the PS2 SvR 2011 disc (the same game as ours) and WWE Crush Hour (below).
 

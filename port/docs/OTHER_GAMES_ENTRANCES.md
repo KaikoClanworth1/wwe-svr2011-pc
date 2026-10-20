@@ -20,12 +20,12 @@ the state of the converter. Linked from docs/OTHER_GAMES.md (Superstar Porting's
 
 | game | disc id | entrances | converter | status |
 |---|---|---|---|---|
-| SmackDown! Here Comes the Pain (PS2) | SLES_520.36 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
-| SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, played in game (Andre 3066 as 490) |
-| SmackDown! Shut Your Mouth (PS2) | SLES_512.83 | 114 | `sym_entrance.py` (game sym) | ready, played in game (Hollywood Hogan 3044 as 491); all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
-| SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 | 93 | `svr06_entrance.py` (game svr06) | ready, played in game (JYD 4080 as 492); all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
-| WWF SmackDown! Just Bring It (PS2) | SLES_504.77 | 348 | `jbi_entrance.py` (game jbi; SYM's back end) | ready, played in game (Chris Benoit, JBI 1, as 499; again with the mapped fingers); all 348 convert offline, named from the ELF |
-| SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
+| SmackDown! Here Comes the Pain (PS2) | SLES_520.36 / SLUS_207.87 | 185 | `hctp_entrance.py` | ready, played in game (Goldberg) |
+| SmackDown! vs. Raw (PS2, 2004) | SLES_527.81 / SLUS_210.60 | 96 | `entrance_port.py` (HCTP path, game svr04) | ready, played in game (Andre 3066 as 490) |
+| SmackDown! Shut Your Mouth (PS2) | SLES_512.83 / SLUS_204.83 | 114 | `sym_entrance.py` (game sym) | ready, played in game (Hollywood Hogan 3044 as 491); all 114 convert offline (Hollywood Hogan 3044, DDP 3020, X-Pac 3067, Raven 3058) |
+| SmackDown! vs. Raw 2006 (PS2) | SLES_536.76 / SLUS_212.86 | 93 | `svr06_entrance.py` (game svr06) | ready, played in game (JYD 4080 as 492); all 93 convert offline (JYD 4080, La Resistance 4202, Team Angle 4252); 2/3 also in SvR 2007 |
+| WWF SmackDown! Just Bring It (PS2) | SLES_504.77 / SLUS_203.16 | 348 | `jbi_entrance.py` (game jbi; SYM's back end) | ready, played in game (Chris Benoit, JBI 1, as 499; again with the mapped fingers); all 348 convert offline, named from the ELF |
+| SvR 2007-2010 (PS2) | SLES_544.89 / 548.79 / 552.51 / 555.45, SLUS_214.27 / 216.45 / 218.10 / 219.01 | same as 360 | `ps2_entrance.py` (games svr07-svr10 read PS2 discs) | ready: 2008 / 2009 output byte-identical to the 360's |
 | WWE 2K15 / 2K16 / 2K17 (X360) | 545408B6 / 315A07D2 / 545408BA | 138 / 236 / 315 | `wwe13_entrance.py --game wwe2k15/16/17` | ready, played in game (2K15 Rollins 369, 2K16 Owens 458, 2K17 Asuka 292); 2K15 one-takes warned |
 | SvR 2007 (X360) | 545107E0 | 150 (58 in 2011) | `entrance_port.py` (2008 path) | ready, played in game (Andre 4109 as 496) |
 | SvR 2008 (X360) | 5451080B | 136 (78 in 2011) | `svr08_entrance.py` | ready, played in game (Sandman) |
@@ -145,7 +145,7 @@ scripts are the 360 EVP in PS2 byte order (two-u16 fields, raw type bytes: a lit
 reader + `parse_evp_le`) lets the svr07-10 converters take a PS2 disc; 2008/2009 output then equals
 the 360-based one - done: `tools/ps2_entrance.py` (`entrance_port.pac_entries` reads DPAC / DPK8 and turns
 PS2 scripts into the 360 bytes), so games svr07-svr10 take a PS2 disc; `games` lists the PS2 serials in
-`disc_hints` (PAL discs checked; US SLUS serials not known yet). Checked: 2008 Sandman 4132 and 2009
+`disc_hints` (PAL discs checked; NTSC-U SLUS serials listed too, their data layouts untested). Checked: 2008 Sandman 4132 and 2009
 Kennedy 4062 byte-identical to the 360-based conversion, 2007 Andre 4109 script identical (one minor track
 differs, as on the disc), 2010 Kennedy 162 converts. Titantrons: Sofdec MPEG-1 224x192 in `MOVIE/NMV*.AFS`; themes CRI ADX; pyro sets are
 PS2 textures (not portable). The 360 discs are the better source.
