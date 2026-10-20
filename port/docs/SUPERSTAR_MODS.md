@@ -480,9 +480,32 @@ plus a record for each listed mod, as EDIT/SSTM. The game's lookup of
   usable names. superstar_port.py and svr10_superstar.py run it on every mod they
   make. On the stock models it names the Rock's 8 parts as the game does, and
   the others close to it.
+- **Models without masks** (ports from SvR 2006-2009 and the PS2 games):
+  `threads_parts.py <mod> --make-masks` paints them first (`--dry-run --preview
+  <png>` shows them over the colour texture). The skin's colour is read off the
+  head meshes (warm, mid-bright texels: not hair, beard or eyes); a texel of a
+  clothing mesh whose colour is far from it (RGB distance over 60) is cloth -
+  per texel, as a legs mesh holds trousers and knees. Cloth regions in the
+  texture (specks and seams opened away) get the body area under them and their
+  colour; regions of one area and colour make one channel, and the biggest
+  eight (arms, top, waist, legs, feet in that order) go into Mask1 / Mask2
+  (children 0x0d / 0x0e, A4R4G4B4, value 11 as the stock masks; BPE-compressed -
+  the game unpacks in place - by svrmod.exe or, without it, the Python coder,
+  about 20 s an attire). Left out: thin or skin-surrounded dark patterns
+  (tattoos), small skin-coloured regions (chest hair). Each mask's DDS reserved
+  words (+32) hold "SVRT" and its channels' body groups, so the names follow the
+  painter's group even where a model's hands sample its trousers' texels.
+  Height is measured along the skeleton (foot- to head-weighted vertices), as PS2
+  models stand in a T-pose. Empty masks (the PS2 converter writes blank ones) and
+  another model's (a template's: most of what they mark lies outside this
+  model's colour triangles) are replaced; `--remake-masks` replaces any. The
+  pac's first version is kept in `<mod>\.threads_backup`. superstar_port.py does
+  it on every mod it makes whose model needs it. Tested in game: Sabu (SvR 2008:
+  GLOVES, TRUNKS 1/2, TIGHTS, BOOTS, BOOTS DESIGN, SOLES; attire 2 adds a
+  SINGLET) and Goldberg (PS2 HCTP: WRIST TAPE, TRUNKS, KNEE PADS, BOOTS - his
+  tattoos left alone); Carlito (SvR 2008) gets TRUNKS and TIGHTS.
 - **Neither:** not listed; the log says why ("... has no threads.txt (Mod
-  Maker: make Threads parts)"). Models without masks (ports from SvR 2006-2009
-  and the PS2 games) have nothing to paint: `threads_parts.py` exits 3.
+  Maker: make Threads parts)").
 - **Slots:** kept by the mod's folder in `Saves\.threads\<folder>.bin` (324
   bytes), not by the id it holds this run. They are put into its profile as it
   is set up (empty when there is no file - never the base's), and written when

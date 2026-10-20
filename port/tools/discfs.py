@@ -291,7 +291,7 @@ def _cnf_info(d):
         for line in d.read("SYSTEM.CNF").decode("latin-1").splitlines():
             if line.replace(" ", "").upper().startswith("BOOT2="):
                 boot = line.split("=", 1)[1].strip()
-                out["serial"] = boot.replace("cdrom0:", "").strip("\\/").split(";")[0]
+                out["serial"] = boot.replace("cdrom0:", "").strip("\\/").split(";")[0].upper()  # (as the Mod Maker reads it)
     return out
 
 

@@ -2,6 +2,7 @@
 
 #include "fps_overlay.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -18,15 +19,22 @@
 #include "free_cam.h"
 #include "native/native_renderer.h"
 #include "net_sim.h"
+#include "perf_stats.h"
 
 REXCVAR_DEFINE_BOOL(show_fps, true, "UI", "Show the frame rate counter (toggle in game: F2)");
+REXCVAR_DEFINE_INT32(perf_overlay, -1, "UI",
+                     "The performance overlay: 0 off, 1 the frame rate, 2 everything (RAM, VRAM, CPU, the renderer's "
+                     "costs); -1 follows show_fps. F2 cycles it");
+REXCVAR_DEFINE_INT32(perf_overlay_corner, 0, "UI",
+                     "Where the performance overlay sits: 0 top left, 1 top right, 2 bottom left, 3 bottom right");
 REXCVAR_DEFINE_BOOL(show_ping, true, "UI", "Online: show the round trip to the other players (top right)");
 
 namespace svr2011 {
 
 namespace {
 FpsOverlay* g_overlay = nullptr;     // lives for the whole run
-std::atomic<bool> g_visible{false};
+std::atomic<int> g_level{0};         // 0 off, 1 the frame rate, 2 everything
+std::atomic<int> g_corner{0};
 std::mutex g_notice_mutex;
 std::string g_notice;
 std::chrono::steady_clock::time_point g_notice_until;
@@ -188,18 +196,26 @@ void FpsOverlay::OnDraw(ImGuiIO& io) {
   if (UiHidden()) return;  // (free camera F7: free_cam.h)
   DrawNotice(io);
   DrawPing(io);
-  if (!g_visible.load(std::memory_order_relaxed)) return;
+  const int level = g_level.load(std::memory_order_relaxed);
+  if (!level) return;
   const FrameTiming t = GetFrameTiming();
-  // Top centre of the window.
-  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 6.0f), ImGuiCond_Always,
-                          ImVec2(0.5f, 0.0f));
-  ImGui::SetNextWindowBgAlpha(0.45f);
+  // A corner of the window (perf_overlay_corner): out of the game's own HUD in the middle.
+  const int corner = g_corner.load(std::memory_order_relaxed);
+  const bool right = corner == 1 || corner == 3, bottom = corner >= 2;
+  const float pad = 6.0f;
+  // (top right: under the online ping when it shows)
+  const float ping_h = right && !bottom && REXCVAR_GET(show_ping) && !NetLinks().empty() ? 34.0f : 0.0f;
+  ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - pad : pad, bottom ? io.DisplaySize.y - pad : pad + ping_h),
+                          ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
+  ImGui::SetNextWindowBgAlpha(level >= 2 ? 0.6f : 0.45f);
   const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
                                  ImGuiWindowFlags_AlwaysAutoResize |
                                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                                  ImGuiWindowFlags_NoNav;
+  // (the window's size: ImGui's font is small on a 1440p / 4K window - 720p is 1x)
+  const float k = std::max(1.0f, io.DisplaySize.y / 720.0f);
   if (ImGui::Begin("##svr2011_fps", nullptr, flags)) {
-    ImGui::SetWindowFontScale(1.5f);
+    ImGui::SetWindowFontScale(1.5f * k);
     // Green at the frame rate the game draws (frame_rate.h), yellow from 3/4 of it.
     const double cap = FrameRateNow();
     const ImVec4 colour = t.fps >= cap * 0.97   ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f)
@@ -212,20 +228,52 @@ void FpsOverlay::OnDraw(ImGuiIO& io) {
     ImGui::SameLine();
     ImGui::TextDisabled("|  %s", native::RendererLabel().c_str());
 #endif
+    if (level >= 2) {  // (perf_stats.h: sampled twice a second, only at this level)
+      const PerfSample s = SamplePerf();
+      ImGui::SetWindowFontScale(1.15f * k);
+      const ImVec4 dim(0.85f, 0.85f, 0.85f, 1.0f);
+      ImGui::TextColored(dim, "RAM %.0f MB  (private %.0f MB)   guest %.0f / %.0f MB  +%.0f MB virtual", s.ram_ws_mb,
+                         s.ram_private_mb, s.guest_physical_mb, s.guest_physical_total_mb, s.guest_virtual_mb);
+      if (s.vram) {
+        const double f = s.vram_budget_mb > 0 ? s.vram_used_mb / s.vram_budget_mb : 0;
+        ImGui::TextColored(f > 0.9 ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f) : f > 0.75 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f) : dim,
+                           "VRAM %.0f / %.0f MB   textures %.0f MB", s.vram_used_mb, s.vram_budget_mb, s.texture_mb);
+      } else {
+        ImGui::TextColored(dim, "VRAM n/a   textures %.0f MB", s.texture_mb);
+      }
+      std::string cpu;
+      char b[96];
+      for (const auto& th : s.busiest) {
+        std::snprintf(b, sizeof b, "   %s %.0f%%", th.name.c_str(), th.pct);
+        cpu += b;
+      }
+      ImGui::TextColored(dim, "CPU %.0f%% of %d cores%s", s.cpu_pct, s.cores, cpu.c_str());
+      // (GPU wait: the CPU waiting for the GPU's frame before - high when the GPU is the limit)
+      ImGui::TextColored(s.gpu_wait_ms > 4.0 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f) : dim,
+                         "GPU wait %.2f ms   draw %.2f ms   submit %.2f ms   %.0f draws", s.gpu_wait_ms, s.draw_ms,
+                         s.submit_ms, s.draws);
+    }
   }
   ImGui::End();
 }
 
 void InstallFpsOverlay(rex::ui::ImGuiDrawer* drawer) {
-  g_visible = REXCVAR_GET(show_fps);
+  const int level = REXCVAR_GET(perf_overlay);
+  g_level = level >= 0 ? std::min(level, 2) : REXCVAR_GET(show_fps) ? 1 : 0;
+  g_corner = std::clamp(REXCVAR_GET(perf_overlay_corner), 0, 3);
   g_overlay = new FpsOverlay(drawer);
-  rex::ui::RegisterBind("bind_fps_counter", "F2", "Toggle frame rate counter",
-                        [] { SetFpsCounterVisible(!FpsCounterVisible()); });
+  rex::ui::RegisterBind("bind_fps_counter", "F2", "Performance overlay: off, the frame rate, everything",
+                        [] { SetPerfOverlayLevel((PerfOverlayLevel() + 1) % 3); });
 }
 
-void SetFpsCounterVisible(bool visible) { g_visible = visible; }
+void SetFpsCounterVisible(bool visible) { g_level = visible ? std::max(1, g_level.load()) : 0; }
 
-bool FpsCounterVisible() { return g_visible; }
+bool FpsCounterVisible() { return g_level.load() > 0; }
+
+void SetPerfOverlayLevel(int level) { g_level = std::clamp(level, 0, 2); }
+int PerfOverlayLevel() { return g_level.load(); }
+void SetPerfOverlayCorner(int corner) { g_corner = std::clamp(corner, 0, 3); }
+int PerfOverlayCorner() { return g_corner.load(); }
 
 void ShowNotice(const std::string& text, float seconds) {
   std::lock_guard lock(g_notice_mutex);

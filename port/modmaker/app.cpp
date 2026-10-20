@@ -568,14 +568,49 @@ bool TestFixOn(const std::vector<Problem>& problems) {
 int FixesDone() { return g_fixes_done; }
 void FixChanged() { ++g_fixes_done; }
 
+// The mod folders threads_parts.py found no colour masks in, kept in <game>\Mods\.convert\threads_no_masks.txt (one
+// path a line) so the doctor offers making them at once next time.
 std::set<std::wstring> g_threads_no_masks;
-bool ThreadsNoMasks(const fs::path& dir) { return g_threads_no_masks.count(fs::absolute(dir).wstring()) > 0; }
-void MakeThreadsParts(const fs::path& dir, std::function<void(int, const std::string&)> done) {
+bool g_threads_no_masks_read = false;
+fs::path NoMasksFile() { return fs::path(g_game) / L"Mods" / L".convert" / L"threads_no_masks.txt"; }
+void ReadNoMasks() {
+  if (g_threads_no_masks_read || g_game.empty()) return;
+  g_threads_no_masks_read = true;
+  Bytes t;
+  if (!ReadFile(PathStr(NoMasksFile()), t)) return;
+  const std::string s(t.begin(), t.end());
+  for (size_t at = 0; at < s.size();) {
+    size_t e = s.find('\n', at);
+    if (e == std::string::npos) e = s.size();
+    if (e > at) g_threads_no_masks.insert(Wide(s.substr(at, e - at)));
+    at = e + 1;
+  }
+}
+void WriteNoMasks() {
+  std::string t;
+  for (const auto& d : g_threads_no_masks) t += Utf8(d) + "\n";
+  std::error_code ec;
+  fs::create_directories(NoMasksFile().parent_path(), ec);
+  WriteFile(PathStr(NoMasksFile()), Bytes(t.begin(), t.end()));
+}
+bool ThreadsNoMasks(const fs::path& dir) {
+  ReadNoMasks();
+  std::error_code ec;
+  return g_threads_no_masks.count(fs::absolute(dir).wstring()) > 0 && !fs::exists(dir / "threads.txt", ec);
+}
+void MakeThreadsParts(const fs::path& dir, std::function<void(int, const std::string&)> done, bool make_masks) {
   const std::wstring d = fs::absolute(dir).wstring();
-  const bool started = RunToolJson(L"threads_parts.py", {d, L"--json", L"--game", g_game}, [d, done](int code, const std::string& out) {
+  std::vector<std::wstring> args = {d, L"--json", L"--game", g_game};
+  if (make_masks) args.push_back(L"--make-masks");
+  const bool started = RunToolJson(L"threads_parts.py", args, [d, done](int code, const std::string& out) {
     Json j;
     const std::string msg = ParseJson(out, j) ? j["message"].Str() : std::string();
-    if (code == 3) g_threads_no_masks.insert(d);
+    ReadNoMasks();
+    if (code == 3 && g_threads_no_masks.insert(d).second) WriteNoMasks();
+    if (code == 0 && g_threads_no_masks.erase(d)) WriteNoMasks();
+    for (const auto& m : j["masks"].items)  // (masks painted: which model file, attire, channels)
+      Log("threads parts: masks made: " + m["pac"].Str() + " attire " + std::to_string(m["attire"].Int()) +
+          (m["info"].Str().empty() ? "" : ": " + m["info"].Str()));
     Log("threads parts: " + Utf8(d) + ": exit " + std::to_string(code) + (msg.empty() ? "" : ": " + msg));
     if (done) done(code, msg);
   });
@@ -1773,7 +1808,14 @@ std::string DiscGameName(const std::string& id) {
       {"SLES_536.76", "SmackDown! vs. Raw 2006 (PS2)"}, {"SLES_544.89", "SmackDown vs. Raw 2007 (PS2)"},
       {"SLES_548.79", "SmackDown vs. Raw 2008 (PS2)"}, {"SLES_552.51", "SmackDown vs. Raw 2009 (PS2)"},
       {"SLES_555.45", "SmackDown vs. Raw 2010 (PS2)"}, {"SLES_556.35", "SmackDown vs. Raw 2011 (PS2)"},
-      {"SLUS_203.85", "Crush Hour (PS2)"},
+      {"SLUS_203.16", "SmackDown! Just Bring It (PS2)"}, {"SLUS_202.69", "SmackDown! Just Bring It (PS2)"},
+      {"SLUS_201.22", "SmackDown! Just Bring It (PS2)"}, {"SLUS_204.83", "SmackDown! Shut Your Mouth (PS2)"},
+      {"SLUS_205.12", "SmackDown! Shut Your Mouth (PS2)"}, {"SLUS_207.87", "SmackDown! Here Comes the Pain (PS2)"},
+      {"SLUS_210.60", "SmackDown! vs. Raw (PS2)"}, {"SLUS_209.36", "SmackDown! vs. Raw (PS2)"},
+      {"SLUS_212.86", "SmackDown! vs. Raw 2006 (PS2)"}, {"SLUS_211.34", "SmackDown! vs. Raw 2006 (PS2)"},
+      {"SLUS_214.27", "SmackDown vs. Raw 2007 (PS2)"}, {"SLUS_216.45", "SmackDown vs. Raw 2008 (PS2)"},
+      {"SLUS_218.10", "SmackDown vs. Raw 2009 (PS2)"}, {"SLUS_219.01", "SmackDown vs. Raw 2010 (PS2)"},
+      {"SLUS_219.39", "SmackDown vs. Raw 2011 (PS2)"}, {"SLUS_203.85", "Crush Hour (PS2)"},
   };
   const auto it = kNames.find(id);
   return it == kNames.end() ? std::string() : it->second;

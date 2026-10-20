@@ -17,6 +17,7 @@ namespace disc_list {
 namespace {
 
 // The ids are the converters' disc_hint(s) (tools/*_port.py `games`; docs/MOD_MAKER_3_PLAN.md).
+// (disc ids: the 360 title id; PS2 serials PAL first, then NTSC-U - as tools/ps2_port.py SERIALS)
 const std::vector<Game> kGames = {
     {"svr2007", "SmackDown vs. Raw 2007", true, {"545107E0"}},
     {"svr2008", "SmackDown vs. Raw 2008", true, {"5451080B"}},
@@ -29,15 +30,15 @@ const std::vector<Game> kGames = {
     {"wwe2k15", "WWE 2K15", true, {"545408B6"}},
     {"wwe2k16", "WWE 2K16", true, {"315A07D2"}},
     {"wwe2k17", "WWE 2K17", true, {"545408BA"}},
-    {"ps2_jbi", "SmackDown! Just Bring It", false, {"SLES_504.77", "SLUS_202.69"}},
-    {"ps2_sym", "SmackDown! Shut Your Mouth", false, {"SLES_512.83", "SLUS_205.12"}},
+    {"ps2_jbi", "SmackDown! Just Bring It", false, {"SLES_504.77", "SLUS_203.16", "SLUS_202.69", "SLUS_201.22"}},
+    {"ps2_sym", "SmackDown! Shut Your Mouth", false, {"SLES_512.83", "SLUS_204.83", "SLUS_205.12"}},
     {"ps2_hctp", "SmackDown! Here Comes the Pain", false, {"SLES_520.36", "SLUS_207.87"}},
-    {"ps2_svr04", "SmackDown! vs. Raw", false, {"SLES_527.81", "SLUS_209.36"}},
-    {"ps2_svr06", "SmackDown! vs. Raw 2006", false, {"SLES_536.76", "SLUS_211.34"}},
+    {"ps2_svr04", "SmackDown! vs. Raw", false, {"SLES_527.81", "SLUS_210.60", "SLUS_209.36"}},
+    {"ps2_svr06", "SmackDown! vs. Raw 2006", false, {"SLES_536.76", "SLUS_212.86", "SLUS_211.34"}},
     {"ps2_svr07", "SmackDown vs. Raw 2007 (PS2)", false, {"SLES_544.89", "SLUS_214.27"}},
-    {"ps2_svr08", "SmackDown vs. Raw 2008 (PS2)", false, {"SLES_548.79"}},
-    {"ps2_svr09", "SmackDown vs. Raw 2009 (PS2)", false, {"SLES_552.51"}},
-    {"ps2_svr10", "SmackDown vs. Raw 2010 (PS2)", false, {"SLES_555.45"}},
+    {"ps2_svr08", "SmackDown vs. Raw 2008 (PS2)", false, {"SLES_548.79", "SLUS_216.45"}},
+    {"ps2_svr09", "SmackDown vs. Raw 2009 (PS2)", false, {"SLES_552.51", "SLUS_218.10"}},
+    {"ps2_svr10", "SmackDown vs. Raw 2010 (PS2)", false, {"SLES_555.45", "SLUS_219.01"}},
 };
 
 Settings::MyDisc* Find(const std::string& key) {

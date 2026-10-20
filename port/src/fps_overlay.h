@@ -1,9 +1,9 @@
-// WWE SmackDown vs. Raw 2011 - on-screen FPS counter.
+// WWE SmackDown vs. Raw 2011 - the performance overlay (and the FPS counter it grew from).
 //
-// A small readout at the top of the window of the game's own frame rate
-// (frame_stats.h): FPS, frame time and the 1% low over the last second. Shown
-// when the show_fps setting is on (launcher: Settings; in game: MY WWE ->
-// OPTIONS -> GRAPHICS), toggled with F2.
+// In a corner of the window (perf_overlay_corner), at a level (perf_overlay; launcher: Settings; in game: MY WWE ->
+// OPTIONS -> GRAPHICS, PERFORMANCE; F2 cycles it): off, the frame rate (FPS, frame time, 1% low - frame_stats.h), or
+// full - with RAM, the guest's memory, VRAM, CPU and its busiest threads, and the renderer's frame costs
+// (perf_stats.h). Nothing is measured below full.
 
 #pragma once
 
@@ -27,6 +27,12 @@ void InstallFpsOverlay(rex::ui::ImGuiDrawer* drawer);
 // Shows or hides the counter (any thread).
 void SetFpsCounterVisible(bool visible);
 bool FpsCounterVisible();
+// The overlay's level: 0 off, 1 the frame rate, 2 everything; its corner: 0 top left, 1 top right, 2 bottom left,
+// 3 bottom right (any thread).
+void SetPerfOverlayLevel(int level);
+int PerfOverlayLevel();
+void SetPerfOverlayCorner(int corner);
+int PerfOverlayCorner();
 
 // A short notice at the bottom centre for `seconds` (any thread), e.g. a save
 // the port had to cancel.

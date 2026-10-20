@@ -31,10 +31,17 @@ GAMES = {   # game id -> name
     'ps2_svr07': 'WWE SmackDown vs. Raw 2007 (PS2)', 'ps2_svr08': 'WWE SmackDown vs. Raw 2008 (PS2)',
     'ps2_svr09': 'WWE SmackDown vs. Raw 2009 (PS2)', 'ps2_svr10': 'WWE SmackDown vs. Raw 2010 (PS2)',
 }
-SERIALS = {'ps2_jbi': ('SLES_504.77', 'SLUS_202.69'), 'ps2_sym': ('SLES_512.83', 'SLUS_205.12'), 'ps2_hctp': ('SLES_520.36', 'SLUS_207.87'),
-           'ps2_svr04': ('SLES_527.81', 'SLUS_209.36'), 'ps2_svr06': ('SLES_536.76', 'SLUS_211.34'),
-           'ps2_svr07': ('SLES_544.89', 'SLUS_214.27'), 'ps2_svr08': ('SLES_548.79',), 'ps2_svr09': ('SLES_552.51',),
-           'ps2_svr10': ('SLES_555.45',)}
+# PS2 disc serials: PAL first, then NTSC-U (psxdatacenter's list; older values kept - other printings).
+# The other tools (ps2_char, superstar_port, entrance_port, backstage_port, the Mod Maker's disc_list) list the same.
+SERIALS = {'ps2_jbi': ('SLES_504.77', 'SLUS_203.16', 'SLUS_202.69', 'SLUS_201.22'),
+           'ps2_sym': ('SLES_512.83', 'SLUS_204.83', 'SLUS_205.12'),
+           'ps2_hctp': ('SLES_520.36', 'SLUS_207.87'),
+           'ps2_svr04': ('SLES_527.81', 'SLUS_210.60', 'SLUS_209.36'),
+           'ps2_svr06': ('SLES_536.76', 'SLUS_212.86', 'SLUS_211.34'),
+           'ps2_svr07': ('SLES_544.89', 'SLUS_214.27'),
+           'ps2_svr08': ('SLES_548.79', 'SLUS_216.45'),
+           'ps2_svr09': ('SLES_552.51', 'SLUS_218.10'),
+           'ps2_svr10': ('SLES_555.45', 'SLUS_219.01')}
 # model character id (XX of model id XXYZ) -> CHAR record number: the hex digits read as decimal (+ offset), or
 # the id as a number (PS2 2009); PS2 2007-2010 records are the X360 games' (2010's numbered from 100)
 UNGROUPED = {'ps2_jbi'}   # (every model its own id, attire 0: a superstar's models share a name)
@@ -62,7 +69,7 @@ class GamePS2:
         import ps2_char as P
         self.P, self.game_id, self.path = P, game, path
         self.g = P.open_game(path)
-        serial = (self.g.disc.info() or {}).get('serial')
+        serial = self.serial = (self.g.disc.info() or {}).get('serial')
         if serial and serial not in SERIALS[game]:
             raise ValueError('this disc (%s) is not %s' % (serial, GAMES[game]))
         self.label = GAMES[game].replace('WWE SmackDown! ', '').replace('WWE SmackDown ', '').replace('WWF SmackDown! ', '')
@@ -175,6 +182,9 @@ def build_ps2(cid, outdir, o, rep):
             shutil.rmtree(d)
         os.makedirs(d)
     note, warn, drop = rep['notes'].append, rep['warnings'].append, rep['dropped'].append
+    if (getattr(g, 'serial', None) or '').startswith('SLUS'):  # (problem reports: the tables were made on PAL discs)
+        note("a USA disc (%s): its name / move / theme record layouts are the PAL disc's - not yet checked on a USA "
+             'build (a wrong name, move or theme here: report it with this note)' % g.serial)
     SP.progress(5, 'base superstar')
     woman = g.gender(cid, g11)
     same = [g.match11(cid, g11)] if g.match11(cid, g11) is not None else []

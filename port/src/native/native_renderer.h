@@ -48,6 +48,13 @@ bool NativeActive();
 // What draws the game right now, for the FPS counter: "Native 2x",
 // "Emulated", or "Emulated (native failed)".
 std::string RendererLabel();
+// The renderer's own costs per frame over about the last second (the performance overlay): recording the frame's
+// draws on the CPU, waiting for the GPU to finish the frame before (high: the GPU is the limit), submitting, and the
+// draws; the textures' host memory. Zero before the first frames.
+struct FrameCosts {
+  double draw_ms = 0, gpu_wait_ms = 0, submit_ms = 0, draws = 0, texture_mb = 0;
+};
+FrameCosts LastFrameCosts();
 
 // Game state (any thread): a match (entrances on) or the menus - on a wide
 // window, matches fill it (native_widescreen), menus stay 16:9.

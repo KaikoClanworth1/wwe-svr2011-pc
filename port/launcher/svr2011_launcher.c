@@ -1753,7 +1753,8 @@ static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_a
     SendMessageW(ctl(ID_INPUT), CB_SETCURSEL, (WPARAM)(sdl ? 1 : 0), 0);
     SendMessageW(ctl(ID_AUDIO), CB_SETCURSEL, (WPARAM)(sdl_audio ? 1 : 0), 0);
     CheckDlgButton(s_wnd, ID_MUTE, mute ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(s_wnd, ID_SHOWFPS, fps ? BST_CHECKED : BST_UNCHECKED);
+    /* (the performance overlay: 0 off, 1 the frame rate, 2 everything - fps_overlay.h perf_overlay) */
+    SendMessageW(ctl(ID_SHOWFPS), CB_SETCURSEL, (WPARAM)(fps >= 0 && fps <= 2 ? fps : 1), 0);
 }
 
 /* The window size row: only for a window (full screen is the screen's own size - in the game too, whose
@@ -1787,7 +1788,7 @@ static void settings_load(void)
 {
     WCHAR p[MAX_PATH];
     Lines l;
-    int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
+    int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, perf = -1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, arena_light = 100;
     int exclusive = 0, max_scale = 4, scene_height = 0;
@@ -1815,6 +1816,7 @@ static void settings_load(void)
             else if (!strcmp(key, "input_backend")) sdl = !_stricmp(val, "sdl");
             else if (!strcmp(key, "audio_backend")) sdl_audio = !_stricmp(val, "sdl");
             else if (!strcmp(key, "show_fps")) fps = !strcmp(val, "true");
+            else if (!strcmp(key, "perf_overlay")) perf = atoi(val);
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
             else if (!strcmp(key, "native_aa")) aa = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
@@ -1848,6 +1850,8 @@ static void settings_load(void)
             res = i;
     /* anti-aliasing: native_aa (1 off, 2-4), else the older on / off (on = 2x) */
     msaa = aa >= 1 && aa <= 4 ? aa : msaa ? 2 : 1;
+    if (perf >= 0 && perf <= 2)  /* (perf_overlay wins over the older show_fps) */
+        fps = perf;
     settings_show(fullscreen && exclusive ? 2 : fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   api, language);
     SendMessageW(ctl(ID_RENDER_RES), CB_SETCURSEL, (WPARAM)render_index(max_scale, render_scale, scene_height), 0);
@@ -1876,7 +1880,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 34 };
+    enum { NK = 35 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -1884,7 +1888,7 @@ static int settings_save(void)
                                     "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
                                     "process_priority", "unlock_everything", "native_texture_quality",
                                     "skip_intros", "skip_training", "fullscreen_exclusive", "native_max_scale",
-                                    "native_render_scale", "native_scene_height", "arena_brightness" };
+                                    "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1918,7 +1922,11 @@ static int settings_save(void)
     }
     strcpy_s(vals[7], 64, IsDlgButtonChecked(s_wnd, ID_VSYNC) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[8], 64, IsDlgButtonChecked(s_wnd, ID_MUTE) == BST_CHECKED ? "true" : "false");
-    strcpy_s(vals[10], 64, IsDlgButtonChecked(s_wnd, ID_SHOWFPS) == BST_CHECKED ? "true" : "false");
+    {
+        const int pi = (int)SendMessageW(ctl(ID_SHOWFPS), CB_GETCURSEL, 0, 0);
+        strcpy_s(vals[10], 64, pi > 0 ? "true" : "false");
+        sprintf_s(vals[34], 64, "%d", pi >= 0 && pi <= 2 ? pi : 1);
+    }
     strcpy_s(vals[9], 64, SendMessageW(ctl(ID_AUDIO), CB_GETCURSEL, 0, 0) == 1 ? "\"sdl\"" : "\"xaudio2\"");
     {
         const int ai = (int)SendMessageW(ctl(ID_MSAA), CB_GETCURSEL, 0, 0);
@@ -3083,7 +3091,10 @@ static void build_ui(void)
         swprintf_s(t, 16, L"%d%%", i);  /* (100%: the game's own) */
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
     }
-    add(TAB_SETTINGS, L"Button", L"Show FPS (F2)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 400, 154, 150, 24, ID_SHOWFPS);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 154, 150, 120, ID_SHOWFPS);
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Overlay: off");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Overlay: FPS (F2)");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Overlay: full (F2)");
     add(TAB_SETTINGS, L"Static", L"Anti-aliasing", SS_LEFT, X0 + 16, 186, 100, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 116, 182, 140, 200, ID_MSAA);
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Off");
@@ -7708,13 +7719,13 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             break;
         }
         case ID_ARENA_LIGHT:
-        case ID_RESOLUTION: case ID_RENDER_RES: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES:
+        case ID_RESOLUTION: case ID_RENDER_RES: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES: case ID_SHOWFPS:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }
             break;
-        case ID_WINDOWED: case ID_FULLSCREEN: case ID_FULLSCREEN_EX: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS:
+        case ID_WINDOWED: case ID_FULLSCREEN: case ID_FULLSCREEN_EX: case ID_VSYNC: case ID_MUTE:
         case ID_PREPARE: case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING:
             if (HIWORD(wp) == BN_CLICKED) {
                 if (LOWORD(wp) == ID_WINDOWED || LOWORD(wp) == ID_FULLSCREEN || LOWORD(wp) == ID_FULLSCREEN_EX)

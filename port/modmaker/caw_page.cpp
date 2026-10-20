@@ -246,8 +246,12 @@ bool Save(Caw& c, std::string& err) {
   const bool have_sd = ReadFile(PathStr(save_dat), sd) && sd.size() > kSaveSumTo;
   // backups once
   std::error_code ec;
-  if (!fs::exists(c.file.wstring() + L".bak", ec)) fs::copy_file(c.file, c.file.wstring() + L".bak", ec);
-  if (have_sd && !fs::exists(save_dat.wstring() + L".bak", ec)) fs::copy_file(save_dat, save_dat.wstring() + L".bak", ec);
+  // (in Saves\.backup: the game's saves folder takes every file in it as a save - a .bak beside them got a header)
+  const fs::path backups = c.file.parent_path() / L".backup";
+  fs::create_directories(backups, ec);
+  const fs::path cas_bak = backups / (c.file.filename().wstring() + L".bak"), sd_bak = backups / L"SaveData.dat.bak";
+  if (!fs::exists(cas_bak, ec)) fs::copy_file(c.file, cas_bak, ec);
+  if (have_sd && !fs::exists(sd_bak, ec)) fs::copy_file(save_dat, sd_bak, ec);
   int64_t delta = 0;
   for (int a = 0; a < 4; ++a) {
     Attire& at = c.attires[a];
@@ -262,17 +266,36 @@ bool Save(Caw& c, std::string& err) {
     std::memcpy(s + kThumbAt, thumb.data(), kThumbBytes);
     delta += int64_t(Sum(d, kSlotAt + size_t(a) * kSlotSize, kRenderField)) + int64_t(Sum(d, kSlotAt + size_t(a) * kSlotSize + kThumbAt, kThumbField));
   }
-  const uint32_t sum = uint32_t(int64_t(Be(d, kSum1)) + delta);
+  const uint32_t was = Be(d, kSum1), sum = uint32_t(int64_t(was) + delta);
   PutBe(d, kSum1, sum), PutBe(d, kSum2, sum), PutBe(d, kSum3, sum);
   if (!WriteFile(PathStr(c.file), d)) { err = "could not write the save"; return false; }
+  // (problem reports - "my CAW won't load": what changed, and the sums before and after)
+  std::string attires;
+  for (int a = 0; a < 4; ++a)
+    if (!c.attires[a].new_render.rgba.empty())
+      attires += (attires.empty() ? "" : "+") + std::to_string(a + 1) + (c.attires[a].present ? "" : " (had no picture)");
+  char line[512];
+  std::snprintf(line, sizeof line, "CAW pictures: %s (slot %d) attire %s: picture %zu + head %zu bytes; checksum %08X -> %08X",
+                PathStr(c.file.filename()).c_str(), c.slot, attires.c_str(), kRenderBytes, kThumbBytes, unsigned(was), unsigned(sum));
+  std::string sd_note = "; SaveData.dat not changed";
   if (have_sd && c.slot >= 0 && c.slot < 50) {
     const size_t rec = kSaveRecords + size_t(c.slot) * kSaveRecord;
     if (rec + 0x660 <= sd.size()) {
+      const uint32_t rec_was = Be(sd, rec + 0x65C), file_was = Be(sd, kSaveSumAt);
       PutBe(sd, rec + 0x65C, sum);
       PutBe(sd, kSaveSumAt, uint32_t(Sum(sd, kSaveSumFrom, kSaveSumTo - kSaveSumFrom)));
-      if (!WriteFile(PathStr(save_dat), sd)) { err = "the .cas is written but SaveData.dat could not be (the game may call the CAW damaged)"; return false; }
+      char n[200];
+      std::snprintf(n, sizeof n, "; SaveData.dat record %08X -> %08X%s, file sum %08X -> %08X", unsigned(rec_was), unsigned(sum),
+                    rec_was == was ? "" : " (it didn't match the .cas before)", unsigned(file_was), unsigned(Be(sd, kSaveSumAt)));
+      sd_note = n;
+      if (!WriteFile(PathStr(save_dat), sd)) {
+        Log(std::string(line) + sd_note + " - SaveData.dat NOT WRITTEN");
+        err = "the .cas is written but SaveData.dat could not be (the game may call the CAW damaged)";
+        return false;
+      }
     }
   }
+  Log(line + sd_note);
   for (auto& at : c.attires) {
     if (at.new_render.rgba.empty()) continue;
     at.render.Set(at.new_render);
@@ -319,7 +342,7 @@ void Draw() {
   }
   Heading("CAW pictures", "The picture the game shows for a Created Superstar in its lists (the one FINALIZE made), "
                           "replaced from any picture of yours. Edits go into the save in the game's Saves folder; a "
-                          ".bak copy is kept the first time. The Ring announcer row gives a CAW a superstar's own introduction.");
+                          "copy is kept the first time (Saves\\.backup). The Ring announcer row gives a CAW a superstar's own introduction.");
   if (g_game.empty()) {
     ImGui::TextDisabled("No game folder.");
     return;
@@ -434,7 +457,7 @@ void Draw() {
   PushAccent();
   if (ImGui::Button("Save into the game's save", ImVec2(260 * g_scale, 0))) {
     std::string err;
-    if (Save(c, err)) Status("Saved: " + c.label + "'s pictures replaced (" + PathStr(c.file.filename()) + "; .bak kept).");
+    if (Save(c, err)) Status("Saved: " + c.label + "'s pictures replaced (" + PathStr(c.file.filename()) + "; the first version kept in Saves\\.backup).");
     else Status("Not saved: " + err + ".");
   }
   PopAccent();

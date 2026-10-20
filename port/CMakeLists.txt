@@ -25,6 +25,7 @@ set(SVR2011_SOURCES
     src/frame_stats.cpp
     src/profiler.cpp
     src/fps_overlay.cpp
+    src/perf_stats.cpp
     src/achievements_page.cpp
     src/jukebox.cpp
     src/graphics_page.cpp
@@ -55,6 +56,8 @@ set(SVR2011_SOURCES
     src/net_sim.cpp
     src/paint_pages.cpp
     src/match_types.cpp
+    src/match_diag.cpp
+    src/caw_check.cpp
     src/match_hud.cpp
     src/slobber_knocker.cpp
     src/gauntlet_eliminator.cpp

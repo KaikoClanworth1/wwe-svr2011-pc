@@ -46,6 +46,7 @@
 #include "move_packs.h"
 #include "ring_rules.h"
 #include "superstar_mods.h"
+#include "caw_check.h"
 #include "superstar_threads.h"
 #include "crowd_signs.h"
 #include "hd_movies.h"
@@ -55,6 +56,7 @@
 #include "crash_report.h"
 #include "dlc.h"
 #include "fps_overlay.h"
+#include "perf_stats.h"
 #include "game_files.h"
 #include "graphics_page.h"
 #include "menu_hooks.h"
@@ -473,7 +475,7 @@ void Svr2011App::OnPostLoadXexImage() {
     }
 #endif
     static const char* const kGroups[][2] = {
-        {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps"},
+        {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps perf_overlay perf_overlay_corner perf_log_seconds"},
         {"renderer", "native_renderer gpu_backend native_max_scale native_render_scale native_scene_height native_aa native_2x_msaa native_scale_effects "
                      "native_texture_quality native_texture_packs native_dump_textures native_widescreen native_prepare_pipelines "
                      "frame_rate full_speed unlock_30fps "
@@ -584,6 +586,7 @@ void Svr2011App::OnPostLoadXexImage() {
     }
   }
   REXLOG_INFO("saves: {}", g_saves.string());
+  svr2011::CheckCawSaves(g_saves);  // (problem reports: the Created Superstar saves, caw_check.h)
 
   // Saves as plain files in the Saves folder (saves.h).
   svr2011::UseFlatSaves(runtime()->kernel_state(), g_user_data, g_saves);
@@ -637,6 +640,7 @@ void Svr2011App::OnPostLoadXexImage() {
 
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
+  svr2011::InstallPerfStats(runtime()->memory());  // (perf_stats.h: the overlay's numbers, perf_log_seconds)
   svr2011::InstallPadIcons(runtime()->memory());  // (pad_icons.h)
   svr2011::InstallPlaytime();                     // (playtime.h)
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);

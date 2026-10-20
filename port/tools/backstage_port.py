@@ -30,7 +30,7 @@ import discfs  # noqa: E402
 
 GAMES = [
     {'id': 'hctp', 'name': "WWE SmackDown! Here Comes the Pain", 'platform': 'ps2',
-     'disc_hint': 'SLES_520.36', 'status': 'ready'},
+     'disc_hint': 'SLES_520.36', 'disc_hints': ['SLES_520.36', 'SLUS_207.87'], 'status': 'ready'},
 ]
 # HCTP room -> what it is (re_gimmicks.md / re_rooms31_36.md; 36 is 35 without the flood water)
 HCTP_ROOMS = {

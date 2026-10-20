@@ -12,6 +12,7 @@
 // new rows inserted after their anchors (a group's rows are consecutive, in
 // display order; flag 2 at +0x3C marks the group's last row; a submenu finds
 // its rows by their parent node, +0x38). No file size limit applies.
+#include "match_diag.h"
 #include "match_types.h"
 #include "mystery_opponent.h"
 #include "pad_types.h"
@@ -1740,11 +1741,13 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
   constexpr uint32_t kLive = 0x82E3DE00, kChars = 0x82E3CC50, kRoster = 0x82EDEA88;
   const auto saved = ctx;
   std::string people;
+  svr2011::ClearMatchPeople();  // (a frozen match's report: match_diag.h)
   for (uint32_t i = 0; i < 10; ++i) {
     const uint32_t ch = Rd32(base + kChars + i * 4);
     if (!ch) continue;
     const uint32_t id = Rd32(base + ch + 1156);
     std::string name;
+    uint32_t superstar = 0xFFFF;  // (the record's +0x20: the superstar id)
     if (const uint32_t roster = Rd32(base + kRoster)) {
       ctx.r3.u64 = roster;
       ctx.r4.u64 = id;
@@ -1757,12 +1760,14 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
         }
         for (uint32_t at = 0x22; at < 0x22 + 64 && base[rec + at] >= 0x20 && base[rec + at] < 0x7F; ++at)
           name += char(base[rec + at]);
+        superstar = uint32_t(base[rec + 0x20]) << 8 | base[rec + 0x21];
       }
     }
     ctx.r3.u64 = id;
     sub_8257C190(ctx, base);
     sub_82573EC8(ctx, base);
     const uint32_t info = ctx.r3.u32;
+    svr2011::NoteMatchPerson(i, superstar, name.empty() ? "?" : name);
     people += fmt::format("{}{} (person {}, team {})", people.empty() ? "" : ", ", name.empty() ? "?" : name, id,
                           info ? base[info + 13] : 255);
   }

@@ -15,17 +15,20 @@ Output: `model.json` (the builder's neutral model), `tex_*.png`, `ch.pac`, `rend
 
 ## Games
 
-| Game | Serial (PAL) | Characters / attires | Notes |
+| Game | Serial (PAL / NTSC-U) | Characters / attires | Notes |
 |---|---|---|---|
-| WWF SmackDown! Just Bring It | SLES_504.77 | 139 models | `CH.PAC` at the root; one model per id; one 1024 x 128 TIM2 strip each |
-| WWE SmackDown! Shut Your Mouth | SLES_512.83 | 71 / 140 | ids character * 16 + n |
-| WWE SmackDown! Here Comes the Pain | SLES_520.36 | 80 / 134 | ids XXYZ; select pictures |
-| WWE SmackDown! vs. Raw (2004) | SLES_527.81 | 87 / 106 | select pictures |
-| WWE SmackDown! vs. Raw 2006 | SLES_536.76 | 79 / 103 | parts BPE'd |
-| WWE SmackDown vs. Raw 2007 (PS2) | SLES_544.89 | 80 / 86 | `PAC/CH/`, parts BPE'd |
-| WWE SmackDown vs. Raw 2008 (PS2) | SLES_548.79 | 74 / 81 | |
-| WWE SmackDown vs. Raw 2009 (PS2) | SLES_552.51 | 83 / 105 | named EMD groups ("6601") |
-| WWE SmackDown vs. Raw 2010 (PS2) | SLES_555.45 | 66 / 91 | DPK8 archives |
+| WWF SmackDown! Just Bring It | SLES_504.77 / SLUS_203.16 | 139 models | `CH.PAC` at the root; one model per id; one 1024 x 128 TIM2 strip each |
+| WWE SmackDown! Shut Your Mouth | SLES_512.83 / SLUS_204.83 | 71 / 140 | ids character * 16 + n |
+| WWE SmackDown! Here Comes the Pain | SLES_520.36 / SLUS_207.87 | 80 / 134 | ids XXYZ; select pictures |
+| WWE SmackDown! vs. Raw (2004) | SLES_527.81 / SLUS_210.60 | 87 / 106 | select pictures |
+| WWE SmackDown! vs. Raw 2006 | SLES_536.76 / SLUS_212.86 | 79 / 103 | parts BPE'd |
+| WWE SmackDown vs. Raw 2007 (PS2) | SLES_544.89 / SLUS_214.27 | 80 / 86 | `PAC/CH/`, parts BPE'd |
+| WWE SmackDown vs. Raw 2008 (PS2) | SLES_548.79 / SLUS_216.45 | 74 / 81 | |
+| WWE SmackDown vs. Raw 2009 (PS2) | SLES_552.51 / SLUS_218.10 | 83 / 105 | named EMD groups ("6601") |
+| WWE SmackDown vs. Raw 2010 (PS2) | SLES_555.45 / SLUS_219.01 | 66 / 91 | DPK8 archives |
+
+NTSC-U discs are recognised by serial (all tools and the Mod Maker); the file layouts were only checked on
+PAL discs, so a USA disc that fails adds a "USA disc" note to the convert report.
 
 Not done: the PS2 SvR 2011 disc (the same game as ours) and WWE Crush Hour (below).
 
@@ -35,6 +38,12 @@ Not done: the PS2 SvR 2011 disc (the same game as ours) and WWE Crush Hour (belo
   `u16 n | 0x8000, u16 start sector, n x {u16 id, u16 size / 0x100}`, entries 0x800-aligned; a named group
   is `u32 n, n x {name4, u16 sector, u16 size / 0x100}` (SvR 2009 names its models in ASCII hex: "6601";
   SYM doubles the counts).
+- **One entry on its own** (an inner `PAC ` cut out of a CH.PAC, as players send them): `lone_pac.py`
+  converts it when it holds the body (part 2, YOBJ, skeleton included) and its textures (part 9; JBI part 1),
+  wrapped as a one-entry DPAC (character 1, attire 0; the mod is named after the file). The game goes by the
+  parts (every PAL entry checked, 20 Oct): BPE'd 0/1/10 JBI; plain 10/11 SYM; plain 8 (RTX3) only HCTP; plain
+  100/101 HCTP or SvR 2004 (asked); BPE'd 26/27 SvR 2006-2008 (asked); BPE'd 5/100 SvR 2009. No name, pictures
+  or entrance gear (other entries). Without a body or textures the error says where the whole CH.PAC is.
 - **DPK8** (PS2 SvR 2010): groups `{tag4, u32 n (0x4000: 12-byte entries)}`, entries
   `{name8, u16 sector, u16 size / 0x100}`; model names are a 4-digit prefix plus the XXYZ id ("00010201").
 - Model ids **XXYZ**: XX the character, Y the attire, Z the part. What Z means differs by game (HCTP 0/1

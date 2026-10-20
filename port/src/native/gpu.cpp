@@ -83,4 +83,16 @@ void StallQueue(plume::RenderCommandQueue* queue) {
   if (g_backend) g_backend->StallQueue(queue);
 }
 
+#if !defined(_WIN32)
+bool DxgiVideoMemory(uint64_t*, uint64_t*) { return false; }
+#endif
+bool VideoMemory(uint64_t* used, uint64_t* budget) {
+  switch (ActiveApi()) {
+    case Api::kVulkan: return VulkanVideoMemory(used, budget);
+    case Api::kD3D12:
+    case Api::kD3D11: return DxgiVideoMemory(used, budget);
+    default: return false;
+  }
+}
+
 }  // namespace svr2011::native::backend

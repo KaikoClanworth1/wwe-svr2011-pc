@@ -356,15 +356,17 @@ def named_groups(head):
 
 # ------------------------------------------------------------------ the games
 
-SERIALS = {   # PS2 disc serial -> game
-    'SLES_504.77': 'WWF SmackDown! Just Bring It', 'SLUS_202.69': 'WWF SmackDown! Just Bring It',
-    'SLES_512.83': 'WWE SmackDown! Shut Your Mouth', 'SLUS_205.12': 'WWE SmackDown! Shut Your Mouth',
+SERIALS = {   # PS2 disc serial -> game (PAL, then NTSC-U - as ps2_port.SERIALS)
+    'SLES_504.77': 'WWF SmackDown! Just Bring It', 'SLUS_203.16': 'WWF SmackDown! Just Bring It', 'SLUS_202.69': 'WWF SmackDown! Just Bring It', 'SLUS_201.22': 'WWF SmackDown! Just Bring It',
+    'SLES_512.83': 'WWE SmackDown! Shut Your Mouth', 'SLUS_204.83': 'WWE SmackDown! Shut Your Mouth', 'SLUS_205.12': 'WWE SmackDown! Shut Your Mouth',
     'SLES_520.36': 'WWE SmackDown! Here Comes the Pain', 'SLUS_207.87': 'WWE SmackDown! Here Comes the Pain',
-    'SLES_527.81': 'WWE SmackDown! vs. Raw (2004)', 'SLUS_209.36': 'WWE SmackDown! vs. Raw (2004)',
-    'SLES_536.76': 'WWE SmackDown! vs. Raw 2006', 'SLUS_211.34': 'WWE SmackDown! vs. Raw 2006',
+    'SLES_527.81': 'WWE SmackDown! vs. Raw (2004)', 'SLUS_210.60': 'WWE SmackDown! vs. Raw (2004)', 'SLUS_209.36': 'WWE SmackDown! vs. Raw (2004)',
+    'SLES_536.76': 'WWE SmackDown! vs. Raw 2006', 'SLUS_212.86': 'WWE SmackDown! vs. Raw 2006', 'SLUS_211.34': 'WWE SmackDown! vs. Raw 2006',
     'SLES_544.89': 'WWE SmackDown vs. Raw 2007 (PS2)', 'SLUS_214.27': 'WWE SmackDown vs. Raw 2007 (PS2)',
-    'SLES_548.79': 'WWE SmackDown vs. Raw 2008 (PS2)', 'SLES_552.51': 'WWE SmackDown vs. Raw 2009 (PS2)',
-    'SLES_555.45': 'WWE SmackDown vs. Raw 2010 (PS2)', 'SLES_556.35': 'WWE SmackDown vs. Raw 2011 (PS2)',
+    'SLES_548.79': 'WWE SmackDown vs. Raw 2008 (PS2)', 'SLUS_216.45': 'WWE SmackDown vs. Raw 2008 (PS2)',
+    'SLES_552.51': 'WWE SmackDown vs. Raw 2009 (PS2)', 'SLUS_218.10': 'WWE SmackDown vs. Raw 2009 (PS2)',
+    'SLES_555.45': 'WWE SmackDown vs. Raw 2010 (PS2)', 'SLUS_219.01': 'WWE SmackDown vs. Raw 2010 (PS2)',
+    'SLES_556.35': 'WWE SmackDown vs. Raw 2011 (PS2)', 'SLUS_219.39': 'WWE SmackDown vs. Raw 2011 (PS2)',
 }
 
 

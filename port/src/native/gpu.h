@@ -104,5 +104,11 @@ void LoadPipelineCache(plume::RenderDevice* device, const std::filesystem::path&
 void SavePipelineCache(plume::RenderDevice* device, const std::filesystem::path& file);
 // Debug: makes `queue` wait for good before its next work (a stuck GPU job).
 void StallQueue(plume::RenderCommandQueue* queue);
+// The GPU's own memory in use and the budget the OS / driver gives the game (bytes; the performance overlay):
+// DXGI QueryVideoMemoryInfo (D3D12 / D3D11), VK_EXT_memory_budget's device-local heaps (Vulkan). False where
+// the API can't tell.
+bool VideoMemory(uint64_t* used, uint64_t* budget);
+bool DxgiVideoMemory(uint64_t* used, uint64_t* budget);    // (backend_d3d12.cpp; Windows)
+bool VulkanVideoMemory(uint64_t* used, uint64_t* budget);  // (backend_vulkan.cpp)
 
 }  // namespace svr2011::native::backend
