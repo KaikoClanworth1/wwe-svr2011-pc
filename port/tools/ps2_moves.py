@@ -257,6 +257,7 @@ def similar(res, g11, base, pac11, work, near=True):
     """the slots port_moveset kept: a 2011 move of the same name with another number ("Snap Jab" ->
     "Snap Jab 2") that 2011's roster uses in that slot or its menu group -> 'similar move in 2011 (name)'
     (near=False: only the same id and name -> 'same move in 2011 (same id: name)')"""
+    import moves_port as MP
     moved, in_slot, in_menu, menu_of, stems = _g11_slots(g11, pac11, work)
     w11, w = g11.waze(), res['ps2_names']
     area = list(struct.unpack_from('<%dH' % (len(g11.pro[base]) // 2), g11.pro[base], 0))
@@ -268,7 +269,8 @@ def similar(res, g11, base, pac11, work, near=True):
         so, to, v, nm, verdict, nid = row
         st = _stem(w.get(v, nm) or '')
         if verdict.startswith('base kept') and so is not None and st and not verdict.startswith('base kept (a taunt'):
-            c = [x for x in stems.get(st, ()) if x in moved and (to in in_slot[x] or menu_of.get(to, '') in in_menu[x])]
+            c = [x for x in stems.get(st, ()) if x in moved and MP.usable11(w11, x) and
+                 (to in in_slot[x] or menu_of.get(to, '') in in_menu[x])]
             if v in c:   # (the same id and name in both games: the series kept the move - its own record)
                 area[to // 2] = v
                 row = (so, to, v, nm, 'same move in 2011 (same id: %s)' % w11[v][1], v)
