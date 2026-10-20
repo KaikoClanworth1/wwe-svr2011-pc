@@ -15,6 +15,9 @@ Exit codes: 0 ok, 2 bad input, 3 conversion failed.
   this builds the room into a copy of 2011's bg78 (parking slot), its gimmick package (props, climb spots,
   converted motions) and hctp.txt (tools/hctp/build_room.py; docs/HCTP_BACKSTAGE.md). Each item is its own
   row in the BACKSTAGE list. Needs the player's 2011 pac/bg/bg78.pac and pac/gm.pac (--pac11).
+  The worlds (hctpworld, hctpfountain) are several rooms in one row that the wrestlers walk between
+  through HCTP's doors (tools/hctp/build_world.py); 2011 loads at most ~400 room meshes, so HCTP's
+  backstage is two worlds: rooms 30-34, and 34 + 35.
 """
 import argparse
 import json
@@ -42,6 +45,13 @@ HCTP_ROOMS = {
     35: ('Fountain Square', 'lion statues to climb, fountains to throw people into'),
     36: ('Fountain Square (dry)', 'room 35 as HCTP\'s second copy'),
 }
+# world item -> (row name, rooms - the first is where the match starts, about)
+HCTP_WORLDS = {
+    'hctpworld': ('HCTP Backstage', (30, 31, 32, 33, 34),
+                  'Back Entrance, Parking Lot, Training Room, Times Square and Outside the Arena in one: '
+                  'walk through the doors'),
+    'hctpfountain': ('HCTP Fountain Square', (34, 35), 'Outside the Arena and Fountain Square in one: walk through the doors'),
+}
 
 
 class BadInput(Exception):
@@ -66,8 +76,11 @@ def hctp_list(disc):
     import hctp_unpack
     hctp_check(disc)
     stg = {name for (g, name) in hctp_unpack.dpac(disc.read('PAC/BG.PAC', 0, 0x4000)) if g == 'STG'}
-    return [{'key': 'hctp%d' % r, 'name': n, 'room': r, 'about': about, 'status': 'ready' if '%04d' % r in stg else 'missing'}
-            for r, (n, about) in sorted(HCTP_ROOMS.items())]
+    return ([{'key': 'hctp%d' % r, 'name': n, 'room': r, 'about': about, 'status': 'ready' if '%04d' % r in stg else 'missing'}
+             for r, (n, about) in sorted(HCTP_ROOMS.items())] +
+            [{'key': k, 'name': n, 'rooms': list(rs), 'about': about,
+              'status': 'ready' if all('%04d' % r in stg for r in rs) else 'missing'}
+             for k, (n, rs, about) in HCTP_WORLDS.items()])
 
 
 def pac_folder(pac11):
@@ -82,12 +95,14 @@ def hctp_convert(disc, item, out, pac11, name, mod_id=None):
     import hctp_unpack
     import build_room
     hctp_check(disc)
+    if item.lower() in HCTP_WORLDS:
+        return hctp_world(disc, item.lower(), out, pac11, name, mod_id)
     try:
         room = int(item.lower().replace('hctp', ''))
     except ValueError:
         room = -1
     if room not in HCTP_ROOMS:
-        raise BadInput('unknown item %r (hctp30 .. hctp36)' % item)
+        raise BadInput('unknown item %r (hctp30 .. hctp36, %s)' % (item, ', '.join(HCTP_WORLDS)))
     pac = pac_folder(pac11)
     work = tempfile.mkdtemp(prefix='backstage_port_')
     try:
@@ -103,6 +118,27 @@ def hctp_convert(disc, item, out, pac11, name, mod_id=None):
             'files': rep['files'], 'warnings': [], 'dropped': [],
             'notes': ['installs as Mods/Backstage/%s; plays from its own row in BACKSTAGE' % os.path.basename(out.rstrip('/\\')),
                       HCTP_ROOMS[room][1]]}
+
+
+def hctp_world(disc, item, out, pac11, name, mod_id=None):
+    import hctp_unpack
+    import build_world
+    row, rooms, about = HCTP_WORLDS[item]
+    pac = pac_folder(pac11)
+    work = tempfile.mkdtemp(prefix='backstage_port_')
+    try:
+        progress(2, 'reading the disc')
+        unpacked = os.path.join(work, 'unpacked')
+        hctp_unpack.unpack(disc, unpacked, list(rooms))
+        os.makedirs(out, exist_ok=True)
+        rep = build_world.build(unpacked, pac, work, out, rooms, name=name or row, mod_id=mod_id,
+                                progress=lambda p, t: progress(5 + p * 0.95, t))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return {'ok': True, 'out': out, 'opens': 'backstage', 'name': name or row, 'rooms': list(rooms), 'id': rep['id'],
+            'files': rep['files'], 'warnings': [], 'dropped': [],
+            'notes': ['installs as Mods/Backstage/%s; plays from its own row in BACKSTAGE' % os.path.basename(out.rstrip('/\\')),
+                      about]}
 
 
 def main(argv):

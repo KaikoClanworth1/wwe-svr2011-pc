@@ -30,7 +30,7 @@ def bank_keep(bank, keys):
 
 
 def build(gm11, out, entry='78H3', props=(), textures=None, report=False, keep_bank=True, keep_models=True,
-          records=(), bank=None):
+          records=(), bank=None, first_obj=1040, last_obj=1079):
     (h11, g11, t11), _, pk = G.find(gm11, b'GMGB', b'78PK')
     top = dict(f.pach_read(pk))
     sub = {i: G.unpack(b) for i, b in f.pach_read(top[0])}
@@ -50,13 +50,13 @@ def build(gm11, out, entry='78H3', props=(), textures=None, report=False, keep_b
             if struct.unpack_from('<I', loc11, 16 + 32 * k + 12)[0] in kept_ids]
     # HCTP props
     models = {}
-    next_rec, next_obj = 100, 1040
+    next_rec, next_obj = 100, first_obj
     for p in props:
         m = jboy.read(open(p['model'], 'rb').read())
         oid = next_obj
         next_obj += 1
-        if oid > 1079:
-            raise SystemExit('more than 40 objects')
+        if oid > last_obj:
+            raise SystemExit(f'more than {last_obj - first_obj + 1} objects')
         models[oid] = m
         rid = next_rec
         next_rec += 1

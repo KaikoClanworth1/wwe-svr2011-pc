@@ -134,6 +134,61 @@ Test switch `SVR2011_TEST_HCTP_ROOF=props` in rooms 31-36 drives the interaction
 generator, slam; racks, wall, locker, toilet, shower; lion; window, pole) and puts fighter 0 (the scripted
 pad) by the forklift (31) / under the helicopter (33).
 
+## The HCTP backstage as walkable worlds (2026-10-20, branch hctp-full)
+
+`tools/backstage_port.py convert --item hctpworld` (Back Entrance, Parking Lot, Training Room, Times Square,
+Outside the Arena) and `--item hctpfountain` (Outside the Arena, Fountain Square) build one backstage row each
+whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_world.py <unpacked> <pac11>
+<work> <mod> [rooms]`; the first room is where the match starts).
+- Limits found: 2011 loads ~400 stage meshes at most (stock bg78 445 with its characters' share; 5 rooms =
+  ~400 load, 6 = 625 fail in the stage loader sub_826E73F8 - the null comes from allocator 128's physical
+  window 0x15140000-0x16230000, ~17 MB, shared with the stage textures and the gimmick package; texture bytes
+  alone weren't it: six rooms at PS2 resolution still failed). Room 35 alone is 225 meshes (61 textures on
+  its ground) - hence two worlds. World builds upscale PS2 textures 2x (see-through 1x; single rooms 4x / 2x),
+  cap the stage bundle at 3.5 MB (world_stage.TEX_BUDGET) and leave out HCTP 'w' models (HCTP_DROP_W).
+- The match camera's framed target stays inside the stock backstage (it stopped at x 325 when the rooms
+  stood 1000 apart along x): all rooms lie one over the other in the parking room's place.
+- Stage (`world_stage.py`): room k in model ids 20k..20k+19 (stock bg78 keeps one room per id block too);
+  its texture names get the prefix `k`; stock models 0-199 not taken are stubs and their textures go; all
+  rooms' collision in the parking pair 1003 / 1004 (rooms in order).
+- Gimmick package: every room's props as objects 1000-1139 (stock CFRS uses 1000-1139 for its rooms),
+  records in room order, then the climb spots room by room; the bank = bank_wr + each room's object acts from
+  its own first key (31: 13000, 32: 13100, 33: 13200, 34: 13300, 35: 13400; room 30's are in bank_h3).
+- hctp.txt: `room <n> <model lo> <hi> <object lo> <hi> <object act key> <x0> <x1> <z0> <z1> <tri lo> <hi>
+  <spot lo> <hi>` before each room's lines (triangles after stage_wrap's dummies: k + k // 255), `door <id>
+  <to> <x> <y> <z> <entry x> <entry z> <entry yaw>` and `spawn <model> <x> <y> <z>` (weapons put down on the
+  room's first visit; the first room's are the manifest's weapons=). HCTP's move points (50000.txt `m`, ids
+  201-210) pair 202-203, 204-205, 206-207, 208-209, 210-201: Back Entrance (30) is the hub (Training Room 32,
+  Parking Lot 31, Times Square 33), Parking Lot -> Outside the Arena (34) -> Fountain Square (35). The trigger
+  is 8 in from the move point, the entry 30 in.
+- Game (hctp_room.cpp): after each CFRS update (match_types.cpp hook) only the current room's models
+  (sub_8252FF40) and its records' objects (sub_824B4198) are shown; the other rooms' collision triangles are
+  lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. Walking or
+  running for 30 frames within 16 of a door takes every fighter through: placed side by side at the other
+  door's entry, the fight box moved to that room (SetFightBox), the camera's eye put at the framed target +
+  its old offset for 30 views (SnapMatchCamera - moving the eye once didn't hold: the camera rebuilt it).
+  A room's runtime state (later shows, taxis, poles, heli, forklift, what ShowRec hid) is kept while it is
+  away. Test switch `SVR2011_TEST_HCTP_ROOF=tour`: a door every 6 seconds; `SVR2011_TEST_HCTP_NOVIS=1 /
+  models / objects`: the stock visibility only.
+- Known: weapons carried or dropped stay where they are when the room changes (they show in the next room).
+
+HCTP's own model flags (50001.txt legend): s normal translucent, a additive translucent, k translucent
+before shadows, z no z-write, m(n) motion, l(n) light motion, r / y also drawn mirrored / turned, n near
+clip, e events only, w only in the move camera during play. 2011 reads s / a / z / n itself (stock bg78:
+s on shadow / line decals, a + l(101..) on light cones). HCTP 'a' layers became plain translucent ('s') at a
+quarter of their vertex alpha: 2011 draws 'a' in its light motion's colour (Times Square's traffic-light
+glows, 208 x 208 ground quads with green / yellow vertex colours, covered the street solid green - also with
+l(101)).
+
+Facing conventions (2011): a fighter's yaw y faces (sin y, cos y); a gimmick object's local +z at yaw a
+points (-sin a, cos a) - objects turn the other way. The traffic car (atan2(-dx, dz)) and the forklift
+(model yaw pi - heading) were driving mirrored ("wrong way").
+
+PS2 culling: the room shells wind like stock 2011 (every triangle agrees with its normals; normals unit),
+but the PS2 drew everything from both sides. Converted meshes now clear render flag 0x2 (back-face cull) for
+props and for cut-out / blended textures (fences, grilles, signs); solid walls stay culled, so a camera
+outside a room still sees in. Room 33's taxis had mixed winding - double-sided now.
+
 ## State when paused (2026-10-14, branch hctp-resume)
 
 Done and checked in game: all seven rooms build and load (60 fps) with their props, own weapons and
