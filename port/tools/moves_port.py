@@ -526,6 +526,9 @@ def convert0789(a, rep, outdir, g):
     progress(25, '2011 banks')
     g11 = a.get('_g11') or Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
     tid, how = (int(a['template']), 'option') if a.get('template') else (None, '')
+    if tid and not usable11(g11.waze, tid):
+        rep['warnings'].append("template %d is a move the game can't play (no move record): picked another" % tid)
+        tid = None
     paired = e01 is not None
     # (template categories: the slot's own (moveset_port passes its pro_slots bank), else every category of a
     # one-on-one match - a tag team, Royal Rumble, ladder or cell move as the template made a singles move a
@@ -640,6 +643,13 @@ def waze_records(raw):
 
 # --------------------------------------------------------------------------- SvR 2011
 
+def usable11(waze, mid):
+    """a 2011 move the game can play (as its MoveUsable): a misc.pac WAZE record with move-kind bits. Stock
+    profiles hold a few it can't (RVD's 10280 and 35781 have no record): never a template or a pick."""
+    r = waze.get(mid)
+    return bool(r and any(r[0]))
+
+
 class Game11:
     def __init__(self, pac11, work):
         import svr10_moves as SM
@@ -748,11 +758,21 @@ class Game11:
                     out.append(('mbd', i, r, b''))
         return out
 
+    def in_profiles(self):
+        """the move ids 2011's own profiles use (a record one of them uses is never free: rewriting it would
+        change that superstar's move)"""
+        if getattr(self, '_in_pro', None) is None:
+            import svr10_superstar as SS
+            self._in_pro = set()
+            for r in SS.Game(self.pac11, 11).pro.values():
+                self._in_pro.update(struct.unpack_from('<%dH' % (min(len(r), 0x1C0) // 2), r, 0))
+        return self._in_pro
+
     def free_record(self, name=None, near=None):
         """a record 2011 keeps without motions (a cut move): the one named `name`, else the first. near: a
         template id - only records in its thousand (a taunt in 9000-9999: an in-match taunt on a record
         elsewhere, 3894, wasn't found - Sabu's 9040 was)"""
-        free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000]
+        free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000 and i not in self.in_profiles()]
         if near is not None and any(i // 1000 == near // 1000 for i in free):
             free = [i for i in free if i // 1000 == near // 1000]
         if name:
@@ -809,7 +829,7 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
         pac, bank = g11.bank(path)
         for e in bank.entries:
             if e['id'] in ids and e['x'] == 0 and e['y'] == 0:
-                if e['id'] not in g11.waze:   # (motions without a move record: wazecopy needs one)
+                if not usable11(g11.waze, e['id']):   # (wazecopy needs a record the game plays)
                     continue
                 if allowed is not None and e['id'] not in allowed:
                     continue
@@ -950,7 +970,11 @@ def convert(a, rep):
         k0, k1 = R0.keys(att, 2), R0.keys(vic, 2)
         gap = ((k0[0][0][0] - k1[0][0][0]) ** 2 + (k0[0][0][2] - k1[0][0][2]) ** 2) ** 0.5
         rep['notes'].append('source start gap %.0f units' % gap)
-    tid = int(a['template']) if a.get('template') else choose_template(g11, cat11, nf, gap)
+    tid = int(a['template']) if a.get('template') else None
+    if tid and not usable11(g11.waze, tid):
+        rep['warnings'].append("template %d is a move the game can't play (no move record): picked another" % tid)
+        tid, a = None, dict(a, template=None)
+    tid = tid or choose_template(g11, cat11, nf, gap)
     if not tid and not a.get('template'):   # (no two-person move of that category in 2011: any category)
         tid = choose_template(g11, '', nf, gap)
         cat11 = 'any'

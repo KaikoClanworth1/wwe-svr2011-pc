@@ -125,7 +125,7 @@ def port_moveset(c):
             cand = [v]
         else:
             cand = sorted(by11.get(_norm(nm), set())) if nm else []
-        fit = [x for x in cand if x in moved and (to in in_slot[x] or menu_of.get(to, '') in in_menu[x])]
+        fit = [x for x in cand if x in moved and MP.usable11(w11, x) and (to in in_slot[x] or menu_of.get(to, '') in in_menu[x])]
         if fit:
             area[to // 2] = fit[0]
             rows.append((so, to, v, nm, 'same move in 2011', fit[0]))
@@ -152,7 +152,7 @@ def port_moveset(c):
                                                              'porting off'), base[to // 2]))
     pack = None
     if to_port:
-        free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000]
+        free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000 and i not in in_slot]   # (never a stock one's)
         used = set()
         pdir = os.path.join(c.work, 'moveset_port')
         if os.path.exists(pdir) and not getattr(c, 'dry', False):
