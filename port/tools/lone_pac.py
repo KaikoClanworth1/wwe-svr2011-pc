@@ -15,6 +15,7 @@ What tells the games apart (one pac per game looked at, 2026-10-15):
 - PS2: DPK8 = SvR 2010; DPAC with named entries (6601) = SvR 2009; DPAC numbered: parts 0/1/10/11 (BPE'd) = Just
   Bring It; plain YOBJ parts: no 100/101 = Shut Your Mouth, else ids ending in 0 = HCTP, none = SvR 2004;
   BPE'd 2/8/9/26/27 = SvR 2006, 2007 or 2008 (asked).
+- PS2, one entry cut out of a CH.PAC (an inner "PAC "): wrapped as an archive of one (_detect_entry).
 """
 import json
 import os
@@ -82,7 +83,7 @@ def detect(path, svrmod=None):
     if head[:4] in (b'DPAC', b'DPK8'):
         return _detect_ps2(path, head)
     if head[:4] == b'PAC ':
-        raise BadInput('this is one model entry from a PS2 character archive: give the whole CH.PAC (or CH2.PAC)')
+        return _detect_entry(path)
     raw, x = decode(path, svrmod)
     import ch_tool
     import svrfmt
@@ -163,6 +164,84 @@ def _detect_ps2(path, head):
     return out
 
 
+WHERE_CH = ("the whole character archive is on the game's disc: PAC\\CH.PAC (and CH2.PAC); SvR 2007 - 2010: "
+            "PAC\\CH\\CH.PAC; Just Bring It: CH.PAC at the root. Give the Mod Maker the disc's .iso (My game "
+            "discs), or copy the file out of the .iso with 7-Zip")
+
+
+def entry_parts(d):
+    """one entry of a PS2 character archive (an inner "PAC ") -> {part: bytes}, BPE'd parts decoded"""
+    import ps2_char as PC
+    out = PC.pac(d)
+    for k, v in out.items():
+        if v[:4] == b'BPE ':
+            import svrfmt
+            out[k] = svrfmt.bpe_decode(v)
+    return out
+
+
+def _detect_entry(path):
+    """one model entry cut out of a PS2 CH.PAC: converted on its own when it holds a body (part 2, a YOBJ - the
+    skeleton is in it) and its textures (part 9; Just Bring It: the TIM2 strip, part 1). The game goes by
+    which parts there are (2026-10-20, every entry of the PAL discs): BPE'd 0/1/10 Just Bring It; plain
+    10/11 Shut Your Mouth; plain 8 (RTX3) only HCTP; plain 100/101 HCTP or SvR 2004; BPE'd 26/27 SvR 2006 -
+    2008; BPE'd 5/100 SvR 2009."""
+    import ps2_char as PC
+    raw = open(path, 'rb').read()
+    try:
+        packed = PC.pac(raw)
+        e = entry_parts(raw)
+    except Exception:   # noqa: BLE001
+        raise BadInput('this looks like one model entry from a PS2 character archive but it does not read: ' + WHERE_CH)
+    bpe = any(v[:4] == b'BPE ' for v in packed.values())
+    if bpe and 0 in e and 1 in e and 10 in e:
+        games = ['ps2_jbi']
+    elif not bpe and 10 in e and 11 in e and 100 not in e:
+        games = ['ps2_sym']
+    elif not bpe and 8 in e and 100 in e:
+        games = ['ps2_hctp']
+    elif not bpe and 100 in e:
+        games = ['ps2_hctp', 'ps2_svr04']
+    elif bpe and (26 in e or 27 in e):
+        games = ['ps2_svr06', 'ps2_svr07', 'ps2_svr08']
+    elif bpe and 100 in e:
+        games = ['ps2_svr09']
+    else:
+        raise BadInput('one model entry from a PS2 character archive, from a game this tool does not tell '
+                       '(parts %s): ' % ' '.join(str(k) for k in sorted(e)) + WHERE_CH)
+    if 2 not in e or e[2][:4] != b'YOBJ':
+        raise BadInput('this is one entry from a PS2 character archive with no model in it: ' + WHERE_CH)
+    try:
+        y = PC.read_yobj(e[2])
+    except PC.BadInput as x:
+        raise BadInput('the model in this PS2 entry does not read (%s): ' % x + WHERE_CH)
+    if sum(len(m['pos']) for m in y['meshes']) < PC.Yukes.GEAR_VERTS:
+        raise BadInput('this PS2 entry is a small model (entrance gear or a pad), not a wrestler: ' + WHERE_CH)
+    if (1 if games == ['ps2_jbi'] else 9) not in e:
+        raise BadInput("this PS2 entry has the model but not its textures: " + WHERE_CH)
+    note = ('one model entry (parts %s): one attire, no name, pictures or entrance gear - those are in the '
+            'rest of the archive' % ' '.join(str(k) for k in sorted(e)))
+    if len(games) > 1:
+        note += '; ' + ' and '.join(LABELS[g] for g in games) + ' keep the same entry format'
+    return dict(format='PAC (one PS2 entry)', games=games, raw=None, note=note)
+
+
+ENTRY_ID = {'ps2_jbi': 0x1, 'ps2_sym': 0x10}   # (the wrapped entry: character 1, attire 0 - ps2_char's id rules)
+
+
+def _wrap_entry(path, game, dst):
+    """one entry -> a DPAC holding it alone (ps2_char.dpac's numbered "EMD" group)"""
+    d = open(path, 'rb').read()
+    n = (len(d) + 0xFF) // 0x100
+    if n > 0xFFFF:
+        raise BadInput('this PS2 entry is too big for an archive entry')
+    head = bytearray(0x4000)
+    head[:4] = b'DPAC'
+    struct.pack_into('<4sHHHH', head, 0x800, b'EMD ', 1 | 0x8000, 0, ENTRY_ID.get(game, 0x100), n)
+    with open(dst, 'wb') as f:
+        f.write(bytes(head) + d + bytes(n * 0x100 - len(d)))
+
+
 def ps2_disc(path, game, work):
     """a folder ps2_char.py reads as the game's disc: the archive as its CH.PAC (JBI: at the root), SYSTEM.CNF
     with the game's serial (ps2_char's material rules go by game), SYM's own pac names (its check) -> folder"""
@@ -174,10 +253,15 @@ def ps2_disc(path, game, work):
         else 'PAC/CH.PAC'
     dst = os.path.join(d, *rel.split('/'))
     os.makedirs(os.path.dirname(dst))
-    try:
-        os.link(os.path.abspath(path), dst)
-    except OSError:
-        shutil.copyfile(path, dst)
+    with open(path, 'rb') as f:
+        lone = f.read(4) == b'PAC '
+    if lone:   # (one entry on its own: wrapped as an archive of one)
+        _wrap_entry(path, game, dst)
+    else:
+        try:
+            os.link(os.path.abspath(path), dst)
+        except OSError:
+            shutil.copyfile(path, dst)
     serial = ps2_port.SERIALS[game][0]
     open(os.path.join(d, 'SYSTEM.CNF'), 'w').write('BOOT2 = cdrom0:\\%s;1\r\nVER = 1.00\r\n' % serial)
     if game == 'ps2_sym':
