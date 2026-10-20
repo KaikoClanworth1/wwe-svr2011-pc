@@ -2313,7 +2313,10 @@ def convert_single(a):
     outdir = os.path.abspath(a['out'])
     os.makedirs(outdir, exist_ok=True)
     if game.startswith('ps2_'):   # (an archive of characters: --item the character, as detect lists it - hex)
-        chars = lone_pac.ps2_characters(a['src'], game, os.path.join(outdir, '.lone'), __import__('moves_port').cache_dir(a['pac11'], os.path.join(outdir, '.lone')))
+        with open(a['src'], 'rb') as f:
+            if f.read(4) == b'PAC ' and not a.get('name'):   # (one entry: always character 1 - named by the file)
+                a = dict(a, name=os.path.splitext(os.path.basename(a['src']))[0])
+        chars =lone_pac.ps2_characters(a['src'], game, os.path.join(outdir, '.lone'), __import__('moves_port').cache_dir(a['pac11'], os.path.join(outdir, '.lone')))
         if a.get('item'):
             try:
                 cid = int(a['item'], 16)

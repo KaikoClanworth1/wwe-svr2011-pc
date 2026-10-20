@@ -38,6 +38,12 @@ Not done: the PS2 SvR 2011 disc (the same game as ours) and WWE Crush Hour (belo
   `u16 n | 0x8000, u16 start sector, n x {u16 id, u16 size / 0x100}`, entries 0x800-aligned; a named group
   is `u32 n, n x {name4, u16 sector, u16 size / 0x100}` (SvR 2009 names its models in ASCII hex: "6601";
   SYM doubles the counts).
+- **One entry on its own** (an inner `PAC ` cut out of a CH.PAC, as players send them): `lone_pac.py`
+  converts it when it holds the body (part 2, YOBJ, skeleton included) and its textures (part 9; JBI part 1),
+  wrapped as a one-entry DPAC (character 1, attire 0; the mod is named after the file). The game goes by the
+  parts (every PAL entry checked, 20 Oct): BPE'd 0/1/10 JBI; plain 10/11 SYM; plain 8 (RTX3) only HCTP; plain
+  100/101 HCTP or SvR 2004 (asked); BPE'd 26/27 SvR 2006-2008 (asked); BPE'd 5/100 SvR 2009. No name, pictures
+  or entrance gear (other entries). Without a body or textures the error says where the whole CH.PAC is.
 - **DPK8** (PS2 SvR 2010): groups `{tag4, u32 n (0x4000: 12-byte entries)}`, entries
   `{name8, u16 sector, u16 size / 0x100}`; model names are a 4-digit prefix plus the XXYZ id ("00010201").
 - Model ids **XXYZ**: XX the character, Y the attire, Z the part. What Z means differs by game (HCTP 0/1
