@@ -28,12 +28,17 @@
 #include <windows.h>
 #endif
 
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
 
 #include "generated/default/svr2011_init.h"
+
+REXCVAR_DEFINE_BOOL(caw_logos_anywhere, true, "Gameplay",
+                    "Created Superstars: logos show anywhere on clothing and skin (off: the game's own logo mask "
+                    "keeps them off the crotch and chest areas)");
 
 namespace {
 
@@ -497,4 +502,27 @@ REX_HOOK_RAW(sub_828DDC00) {
     ctx.r4.u64 = 0;
   }
   __imp__sub_828DDC00(ctx, base);
+}
+
+// Logos anywhere (caw_logos_anywhere, default on): the game keeps logos off parts of clothing and skin -
+// the crotch / chest areas of trunks, underwear and tops, the skin under them. The logo texture's builder
+// (sub_828EB8E8) draws each layer pixel by pixel and first reads a mask image at that spot (its palette
+// entry's alpha, byte 0): 255 skips the pixel, less is taken off the logo's alpha. The mask
+// (sub_828E9A58(builder, n) builds mask n into the image at builder +156; +100 its pixels, +104 its
+// 256-entry palette) is made see-through here: every logo pixel is drawn where the editor put it. Only
+// how the logo texture is built changes - not the saved Created Superstar, nor what goes online (other
+// players' games build their own textures, with or without the mask).
+REX_EXTERN(__imp__sub_828E9A58);
+REX_HOOK_RAW(sub_828E9A58) {
+  const uint32_t builder = ctx.r3.u32, n = ctx.r4.u32;
+  __imp__sub_828E9A58(ctx, base);
+  if (!REXCVAR_GET(caw_logos_anywhere)) return;
+  const uint32_t mask = Rd32(base, builder + 156);
+  const uint32_t palette = mask ? Rd32(base, mask + 104) : 0;
+  if (!palette) return;
+  bool changed = false;
+  for (uint32_t k = 0; k < 256; ++k)
+    if (base[palette + k * 4]) base[palette + k * 4] = 0, changed = true;
+  static int logged = 0;
+  if (changed && ++logged <= 5) REXLOG_INFO("caw logos: logo mask {} cleared - logos show anywhere", n);
 }
