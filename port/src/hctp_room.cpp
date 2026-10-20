@@ -291,6 +291,7 @@ struct Room {
   std::vector<std::array<float, 4>> spawns;
   bool visited = false;
   std::vector<std::pair<float, float>> coll_saved;  // (its triangles' y while it is away)
+  std::vector<std::pair<uint32_t, std::array<float, 3>>> parked;  // (its weapons lying there while it is away)
   std::vector<Prop> props;
   std::vector<WeaponSpot> weapons;
   std::map<uint32_t, int> frames;
@@ -2344,6 +2345,47 @@ void Visit(PPCContext& ctx, uint8_t* base, Room& r) {
   for (const auto& w : r.spawns) SpawnWeapon(ctx, base, int(w[0]), w[1], w[2], w[3]);
 }
 
+// The weapons lying in a room (the match's weapon objects, 72 at 0x82DE0220, position +288..+296 as a
+// wrestler's): parked far below the floor while the room is away, back where they lay when it is the
+// current one again - unless someone took one meanwhile. One within 14 of a wrestler is left alone: in
+// his hands it goes with him (one only lying by him shows in the next room).
+constexpr uint32_t kWeaponObjects = 0x82DE0220;
+constexpr float kParkDrop = 5000.0f;
+
+void PlaceObject(uint8_t* base, uint32_t o, float x, float y, float z) {
+  WrF(base + o + 288, x), WrF(base + o + 292, y), WrF(base + o + 296, z);
+  const uint32_t body = Rd32(base + o + 304);
+  if (body >= 0x40000000u && body < 0xA0000000u) WrF(base + body, x), WrF(base + body + 4, y), WrF(base + body + 8, z);
+}
+
+void ParkWeapons(uint8_t* base, Room& r) {
+  r.parked.clear();
+  for (uint32_t i = 0; i < 72; ++i) {
+    const uint32_t w = Rd32(base + kWeaponObjects + 4 * i);
+    if (!w) continue;
+    const float x = RdF(base + w + 288), y = RdF(base + w + 292), z = RdF(base + w + 296);
+    if (y > kParkDrop / 2) continue;
+    bool by_someone = false;
+    for (uint32_t j = 0; j < 8 && !by_someone; ++j)
+      if (const uint32_t f = Rd32(base + kChars + 4 * j)) {
+        const float dx = RdF(base + f + 288) - x, dz = RdF(base + f + 296) - z;
+        by_someone = dx * dx + dz * dz < 14.0f * 14.0f;
+      }
+    if (by_someone) continue;
+    r.parked.push_back({w, {x, y, z}});
+    PlaceObject(base, w, x, y + kParkDrop, z);
+  }
+}
+
+void UnparkWeapons(uint8_t* base, Room& r) {
+  for (const auto& [w, p] : r.parked) {
+    bool still = false;
+    for (uint32_t i = 0; i < 72 && !still; ++i) still = Rd32(base + kWeaponObjects + 4 * i) == w;
+    if (still && RdF(base + w + 292) > kParkDrop / 2) PlaceObject(base, w, p[0], p[1], p[2]);
+  }
+  r.parked.clear();
+}
+
 void SwitchRoom(PPCContext& ctx, uint8_t* base, size_t k) {
   if (k == g_cur || k >= g_rooms.size()) return;
   RoomCollision(base, Cur(), false);
@@ -2368,6 +2410,7 @@ void SwitchRoom(PPCContext& ctx, uint8_t* base, size_t k) {
     }
   RoomCollision(base, Cur(), true);
   RoomSpots(ctx, base, Cur(), true);
+  UnparkWeapons(base, Cur());
   Visit(ctx, base, Cur());
   Cur().set_up_frames = 0;  // (SetUp hides again what waits hidden)
   for (auto& s : g_fs) s = {};
@@ -2380,6 +2423,7 @@ void GoThrough(PPCContext& ctx, uint8_t* base, const Door& d, int who) {
   for (size_t k = 0; k < g_rooms.size(); ++k)
     for (const Door& t : g_rooms[k].doors) {
       if (t.id != d.to) continue;
+      ParkWeapons(base, Cur());  // (before anyone moves: what lies by a wrestler goes with him)
       // (side by side across the way in; the one who went through in front)
       const float fx = std::sin(t.eyaw), fz = std::cos(t.eyaw);
       int n = 0;

@@ -170,7 +170,9 @@ whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_wo
   A room's runtime state (later shows, taxis, poles, heli, forklift, what ShowRec hid) is kept while it is
   away. Test switches `SVR2011_TEST_HCTP_ROOF=tour`: a door every 6 seconds; `=door`: fighter 0 put on the first door's trigger 5 s in (walk with the scripted stick); `=fork` (room 31): fighter 0 gets on the forklift 5 s in; `SVR2011_TEST_HCTP_NOVIS=1 /
   models / objects`: the stock visibility only.
-- Known: weapons carried or dropped stay where they are when the room changes (they show in the next room).
+- Weapons: lying ones are parked 5000 below the floor while their room is away (the match's weapon objects,
+  72 pointers at 0x82DE0220, position +288..+296) and put back on return; one within 14 of a wrestler stays
+  (held: it goes with him; one only lying by him shows in the next room).
 
 HCTP's own model flags (50001.txt legend): s normal translucent, a additive translucent, k translucent
 before shadows, z no z-write, m(n) motion, l(n) light motion, r / y also drawn mirrored / turned, n near
