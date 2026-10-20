@@ -73,6 +73,19 @@ struct ArenaGeometry {
 };
 ArenaGeometry GeometryOf(const Arena& a);
 
+// The visibility tree (entry 0xC364: a text of named boxes, one per arena model, in metres on 3ds Max axes -
+// X = x / 10, Y = +-z / 10, Z = -y / 10 - under a root box): every changed model's box, and its parents' up to
+// the root, grown to hold its geometry as it is now (an object moved or turned in the editor would otherwise be
+// outside its box: the game may leave it out of view). Boxes only grow: models that didn't move stay as they are.
+// -> the boxes grown.
+int GrowVisibility(Arena& a);
+
+// A model's nodes' bounding spheres (the game culls a model whose node sphere is out of view - an object moved off
+// its shipped place vanished: bg01's arena_chair02 raised over the ring, 20 Oct): each node without its own
+// transform (t = r = 0, as arena models' are) refitted around the spheres of the meshes it carries (its palette
+// index; all meshes for a model's only node). -> the nodes refitted.
+int FitNodeSpheres(Model& m);
+
 struct ExportReport {
   int models = 0, meshes = 0, triangles = 0, textures = 0, textures_failed = 0;
   std::vector<std::string> warnings;

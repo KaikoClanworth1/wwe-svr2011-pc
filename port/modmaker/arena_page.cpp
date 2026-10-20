@@ -249,6 +249,8 @@ bool PrepareBuild(BuildJob& job) {
 
 // manifest.txt, arena.pac, banner.dds (false on error, logged)
 bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
+  if (const int grown = GrowVisibility(*job.arena))  // (moved / turned objects: svrfmt/arena.h)
+    Log("  " + std::to_string(grown) + " visibility boxes grown to hold moved objects.");
   Progress("Fitting the arena into the game's room ...");
   const auto halved = job.arena->FitFile(job.keep);
   if (!halved.empty())
@@ -906,6 +908,7 @@ void WriteProject(ProjectOut& out) {
     // the arena as edited (the kit / lighting apply at mod build, not here): a copy
     // taken now, compressed in the background
     auto copy = std::make_shared<Arena>(*g_proj.edited);
+    GrowVisibility(*copy);  // (as at build)
     out.deferred.push_back([copy](std::vector<ZipEntry>& files) {
       Progress("Compressing the arena ...");
       std::string err;

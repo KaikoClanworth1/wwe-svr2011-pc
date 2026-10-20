@@ -5,6 +5,10 @@
 //   svrmod wwe13 <WWE13 bgNN.pac> <host SvR2011 bgNN.pac> <out.pac> [host-crowd] [prune-textures] [wwe13-ring]
 //         [host-ring-meshes] [rope-hi] [no-corners] [wwe13-aprons] [wwe13-lights] [tex=<name.dds>]... [card=<256x128 dds>]
 #include <algorithm>
+#include <sstream>
+#include <map>
+#include <cmath>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -177,6 +181,80 @@ int Lights(const char* pac, const char* host_pac, const char* out) {
   for (int id : replaced) std::printf(" %d", id);
   std::printf("\n");
   return WriteFile(out, EpacWrite(e)) ? 0 : 1;
+}
+
+// move <arena.pac> <model name> <right m> <up m> <forward m> <yaw deg> <pitch deg> <roll deg> <out.pac> [vis]:
+// one model moved / turned on all three axes about its bottom centre (the editor's pivot), its meshes' bounding
+// spheres refitted; with "vis" its visibility-tree box (0xC364, metres, 3ds Max axes) is refitted and its parents
+// grown to hold it - svrfmt GrowVisibility, as the editor's save (test aid for the editor's limits).
+int Move(int argc, char** argv) {
+  const char* pac = argv[2];
+  const std::string name = argv[3];
+  const float dx = float(std::atof(argv[4])) * 10, up = float(std::atof(argv[5])) * 10, dz = float(std::atof(argv[6])) * 10;
+  const float kDeg = 3.14159265f / 180;
+  const float yaw = float(std::atof(argv[7])) * kDeg, pitch = float(std::atof(argv[8])) * kDeg,
+              roll = float(std::atof(argv[9])) * kDeg;
+  const char* out = argv[10];
+  const bool vis = argc >= 12 && !std::strcmp(argv[11], "vis");
+  Arena a;
+  std::string err;
+  if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
+  ArenaModel* am = nullptr;
+  for (auto& m : a.models)
+    if (m.model.name == name) am = &m;
+  if (!am) { std::printf("no model %s\n", name.c_str()); return 1; }
+  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+  for (const auto& me : am->model.meshes)
+    for (const auto& v : me.verts)
+      for (int j = 0; j < 3; ++j) lo[j] = std::min(lo[j], v.pos[j]), hi[j] = std::max(hi[j], v.pos[j]);
+  const float olo[3] = {lo[0], lo[1], lo[2]}, ohi[3] = {hi[0], hi[1], hi[2]};
+  const float px = (lo[0] + hi[0]) / 2, py = hi[1], pz = (lo[2] + hi[2]) / 2;  // (y down: hi = bottom)
+  // R = yaw (about y) * pitch (about x) * roll (about z), game axes
+  const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch), cr = std::cos(roll),
+              sr = std::sin(roll);
+  auto rot = [&](float x, float y, float z, float* o) {
+    float x1 = x * cr - y * sr, y1 = x * sr + y * cr, z1 = z;     // roll
+    float y2 = y1 * cp - z1 * sp, z2 = y1 * sp + z1 * cp, x2 = x1;  // pitch
+    o[0] = x2 * cy + z2 * sy, o[1] = y2, o[2] = -x2 * sy + z2 * cy;  // yaw
+  };
+  for (auto& me : am->model.meshes) {
+    for (auto& v : me.verts) {
+      float r[3], n[3];
+      rot(v.pos[0] - px, v.pos[1] - py, v.pos[2] - pz, r);
+      v.pos[0] = px + dx + r[0], v.pos[1] = py - up + r[1], v.pos[2] = pz + dz + r[2];
+      rot(v.normal[0], v.normal[1], v.normal[2], n);
+      for (int j = 0; j < 3; ++j) v.normal[j] = n[j];
+    }
+    float l[3] = {1e30f, 1e30f, 1e30f}, h[3] = {-1e30f, -1e30f, -1e30f};
+    for (const auto& v : me.verts)
+      for (int j = 0; j < 3; ++j) l[j] = std::min(l[j], v.pos[j]), h[j] = std::max(h[j], v.pos[j]);
+    if (!me.verts.empty()) {
+      const float c[3] = {(l[0] + h[0]) / 2, (l[1] + h[1]) / 2, (l[2] + h[2]) / 2};
+      float rr = 0;
+      for (const auto& v : me.verts)
+        rr = std::max(rr, (v.pos[0] - c[0]) * (v.pos[0] - c[0]) + (v.pos[1] - c[1]) * (v.pos[1] - c[1]) +
+                              (v.pos[2] - c[2]) * (v.pos[2] - c[2]));
+      me.sphere = {c[0], c[1], c[2], std::sqrt(rr)};
+    }
+  }
+  if (std::getenv("SVRMOD_NO_NODE_FIT") == nullptr) std::printf("nodes refitted: %d\n", FitNodeSpheres(am->model));
+  am->changed = true;
+  for (int j = 0; j < 3; ++j) lo[j] = 1e30f, hi[j] = -1e30f;
+  for (const auto& me : am->model.meshes)
+    for (const auto& v : me.verts)
+      for (int j = 0; j < 3; ++j) lo[j] = std::min(lo[j], v.pos[j]), hi[j] = std::max(hi[j], v.pos[j]);
+  std::printf("%s: bounds (game units) %.1f %.1f %.1f .. %.1f %.1f %.1f -> %.1f %.1f %.1f .. %.1f %.1f %.1f\n",
+              name.c_str(), olo[0], olo[1], olo[2], ohi[0], ohi[1], ohi[2], lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+  for (const auto& n : am->model.nodes)
+    std::printf("node %s t %.1f %.1f %.1f r %.2f %.2f %.2f parent %d sphere %.1f %.1f %.1f r %.1f\n", n.name.c_str(), n.t[0],
+                n.t[1], n.t[2], n.r[0], n.r[1], n.r[2], n.parent, n.sphere[0], n.sphere[1], n.sphere[2], n.sphere[3]);
+  if (vis) std::printf("vis: %d boxes grown\n", GrowVisibility(a));  // (as the editor's save)
+  const auto reduced = a.FitFile({});  // (as the editor's save: the shipped size is the budget)
+  if (!reduced.empty()) std::printf("fit: %zu textures halved\n", reduced.size());
+  std::string serr;
+  const Bytes saved = a.Save(&serr);
+  if (saved.empty()) { std::printf("save failed: %s\n", serr.c_str()); return 1; }
+  return WriteFile(out, saved) ? 0 : 1;
 }
 
 int Bpe(const char* in, const char* out) {
@@ -562,6 +640,7 @@ int main(int argc, char** argv) {
   }
   if (argc == 5 && !std::strcmp(argv[1], "import")) return Import(argv[2], argv[3], argv[4]);
   if (argc == 4 && !std::strcmp(argv[1], "bpe")) return Bpe(argv[2], argv[3]);
+  if ((argc == 11 || argc == 12) && !std::strcmp(argv[1], "move")) return Move(argc, argv);
   if ((argc == 4 || argc == 5) && !std::strcmp(argv[1], "lights")) return Lights(argv[2], argv[3], argc == 5 ? argv[4] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "roundtrip")) return Roundtrip(argc - 2, argv + 2);
