@@ -24,6 +24,7 @@
 // extra ones repeat the controller reading and leave the characters' job to
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
+#include "match_diag.h"
 #include "free_cam.h"
 #include "thread_cpu.h"
 #include "fast_start.h"
@@ -574,6 +575,7 @@ REX_HOOK_RAW(sub_8269C728) {
       const auto started = Clock::now();
       for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
+        svr2011::MatchDiagTick(g_base, g_in_match.load());  // (wrestlers who stopped: match_diag.h)
         static bool dumped = false;
         if (dump_at > 0 && !dumped && g_base && Clock::now() - started > std::chrono::seconds(dump_at)) {
           dumped = true;
@@ -603,6 +605,7 @@ REX_HOOK_RAW(sub_8269C728) {
             dumped_for = g_dbg_since.load();
             DumpGuestThreads(g_base);
             DumpJobEvents();
+            if (g_in_match.load()) svr2011::LogMatchState(g_base, "world update stuck");
           }
         }
       }
