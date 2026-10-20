@@ -23,6 +23,7 @@
 // 256 A8R8G8B8) turns transparent.
 
 #include "backgrounds_page.h"
+#include "no_mods.h"
 
 #include <algorithm>
 #include <array>
@@ -152,6 +153,7 @@ std::string NameFromFile(std::string f) {
 
 // The custom pictures on disk, by folder name and file.
 void ScanCustoms() {
+  if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::vector<Custom> out;
   std::error_code ec;
   std::vector<fs::path> dirs;

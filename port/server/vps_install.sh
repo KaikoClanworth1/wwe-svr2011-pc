@@ -36,7 +36,7 @@ etc=/etc/svr2011
 unit=/etc/systemd/system/svr2011.service
 ngx_dir=/etc/nginx/svr2011
 ngx_file=$ngx_dir/svr-location.conf
-files="server.py gamespy.py leaderboards.py media.py relay.py relay_link.py thumbs.py lb_reset.py
+files="server.py gamespy.py leaderboards.py media.py relay.py relay_link.py thumbs.py lb_reset.py discovery.py
        dashboard.html leaderboards.json requirements.txt"
 
 # run CMD...: does it (or prints it with --dry-run)
@@ -172,6 +172,23 @@ location /svr/ {
     proxy_send_timeout 14400s;
     # uploads: Community Creations files (--max-file-mb 8)
     client_max_body_size 8m;
+}
+
+# Discovery uploads: a .svrmod up to 250 MB and its four pictures (discovery.py)
+location = /svr/api/mods {
+    proxy_pass http://127.0.0.1:8101;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Portal-Role "";
+    proxy_set_header X-Portal-Public "";
+    proxy_set_header X-Portal-User "";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    client_max_body_size 260m;
 }
 
 # entrance songs and movies are larger (--max-music-mb 512, --max-movie-mb 1024)

@@ -20,6 +20,7 @@
 // table (as if not installed).
 
 #include "online_mods.h"
+#include "no_mods.h"
 
 #include <algorithm>
 #include <atomic>
@@ -102,6 +103,10 @@ std::set<std::string> Hidden() {
 }
 
 const Mine& MyMods() {
+  if (svr2011::NoMods()) {
+    static const Mine none;
+    return none;
+  }  // (Start Without Mods: no_mods.h)
   static const Mine mine = [] {
     Mine m;
     const auto hidden = Hidden();

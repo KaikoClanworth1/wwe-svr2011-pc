@@ -678,42 +678,53 @@ static void start(unsigned items)
     else { s_busy = 0; refresh(); }
 }
 
-void setup_build(HWND wnd, mods_add_fn add, int tab, int id_base, setup_goto_fn go_install)
+void setup_build(HWND wnd, mods_add_fn add, int tab, int tools_tab, int id_base, setup_goto_fn go_install)
 {
     const int x = 28;
     int i, y;
     s_wnd = wnd;
     s_base = id_base;
     s_go_install = go_install;
-    add(tab, L"Button", L"What this PC has", BS_GROUPBOX, x, 4, 560, 446, 0);
-    s_ctl[S_INTRO] = add(tab, L"Static", L"What the game and its tools need on this PC. The game itself needs only "
-                         L"the first three; Python and ffmpeg are for the Mod Maker's converters.",
+    /* This PC: the game, the VC++ runtime, Media Foundation (rows 0-2); Tools: the rest (optional) */
+    add(tab, L"Button", L"What this PC has", BS_GROUPBOX, x, 4, 560, 240, 0);
+    s_ctl[S_INTRO] = add(tab, L"Static", L"What the game needs on this PC. The Mod Maker's tools (Python, ffmpeg) "
+                         L"are an optional step of their own: Tools.",
                          SS_LEFT | SS_NOPREFIX, x + 16, 34, 528, 34, id_base + S_INTRO);
-    for (i = 0, y = 72; i < SETUP_N; i++, y += 42)
-        s_ctl[S_ROW0 + i] = add(tab, L"Static", L"", SS_LEFT | SS_NOPREFIX, x + 16, y,
+    add(tools_tab, L"Button", L"Mod Maker tools (optional)", BS_GROUPBOX, x, 4, 560, 318, 0);
+    add(tools_tab, L"Static", L"Only for making mods: Python and ffmpeg run the Mod Maker's converters, Bink 2 makes "
+                              L"HD entrance videos, adb installs the game to a phone (Android step). Playing needs none.",
+        SS_LEFT | SS_NOPREFIX, x + 16, 34, 528, 34, 0);
+    for (i = 0; i < SETUP_N; i++) {
+        const int tools = i > SETUP_MF;
+        y = 72 + (tools ? i - SETUP_MF - 1 : i) * 42;
+        s_ctl[S_ROW0 + i] = add(tools ? tools_tab : tab, L"Static", L"", SS_LEFT | SS_NOPREFIX, x + 16, y,
                                 i == SETUP_VCRT ? 384 : 528, 40, id_base + S_ROW0 + i);
+    }
     /* (the VC++ runtime's download page in the player's browser - Microsoft's own link, nothing downloaded here) */
     s_ctl[S_VCRT] = add(tab, L"Button", L"Get the VC++ runtime", BS_PUSHBUTTON | WS_TABSTOP, x + 404, 72 + SETUP_VCRT * 42 + 4,
                         140, 28, id_base + S_VCRT);
-    y = 72 + SETUP_N * 42 + 4;
-    s_ctl[S_INSTALL] = add(tab, L"Button", L"Install Python + numpy + Pillow (33 MB)", BS_DEFPUSHBUTTON | WS_TABSTOP,
+    y = 72 + (SETUP_N - SETUP_MF - 1) * 42 + 4;
+    s_ctl[S_INSTALL] = add(tools_tab, L"Button", L"Install Python + numpy + Pillow (33 MB)", BS_DEFPUSHBUTTON | WS_TABSTOP,
                            x + 16, y, 270, 32, id_base + S_INSTALL);
-    s_ctl[S_FFMPEG] = add(tab, L"Button", L"Install ffmpeg (115 MB)", BS_PUSHBUTTON | WS_TABSTOP, x + 296, y, 170, 32,
+    s_ctl[S_FFMPEG] = add(tools_tab, L"Button", L"Install ffmpeg (115 MB)", BS_PUSHBUTTON | WS_TABSTOP, x + 296, y, 170, 32,
                           id_base + S_FFMPEG);
-    s_ctl[S_STOP] = add(tab, L"Button", L"Stop", BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, x + 476, y, 68, 32,
+    s_ctl[S_STOP] = add(tools_tab, L"Button", L"Stop", BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, x + 476, y, 68, 32,
                         id_base + S_STOP);
     y += 38;
+    s_ctl[S_RAD] = add(tools_tab, L"Button", L"RAD's download page", BS_PUSHBUTTON | WS_TABSTOP, x + 16, y, 150, 28,
+                       id_base + S_RAD);
+    add(tools_tab, L"Button", L"Check again", BS_PUSHBUTTON | WS_TABSTOP, x + 176, y, 120, 28, id_base + S_RECHECK);
+    /* This PC's buttons */
+    y = 72 + (SETUP_MF + 1) * 42 + 4;
     s_ctl[S_RECHECK] = add(tab, L"Button", L"Check again", BS_PUSHBUTTON | WS_TABSTOP, x + 16, y, 120, 28,
                            id_base + S_RECHECK);
-    s_ctl[S_GOTO_INSTALL] = add(tab, L"Button", L"Install tab", BS_PUSHBUTTON | WS_TABSTOP, x + 146, y, 110, 28,
+    s_ctl[S_GOTO_INSTALL] = add(tab, L"Button", L"Next: the game", BS_PUSHBUTTON | WS_TABSTOP, x + 146, y, 130, 28,
                                 id_base + S_GOTO_INSTALL);
-    s_ctl[S_FEATURES] = add(tab, L"Button", L"Optional features", BS_PUSHBUTTON | WS_TABSTOP, x + 266, y, 140, 28,
+    s_ctl[S_FEATURES] = add(tab, L"Button", L"Optional features", BS_PUSHBUTTON | WS_TABSTOP, x + 286, y, 140, 28,
                             id_base + S_FEATURES);
-    s_ctl[S_RAD] = add(tab, L"Button", L"RAD's download page", BS_PUSHBUTTON | WS_TABSTOP, x + 416, y, 128, 28,
-                       id_base + S_RAD);
-    s_ctl[S_PROGRESS] = add(tab, PROGRESS_CLASSW, L"", PBS_SMOOTH, x, 458, 560, 18, id_base + S_PROGRESS);
+    s_ctl[S_PROGRESS] = add(tools_tab, PROGRESS_CLASSW, L"", PBS_SMOOTH, x, 330, 560, 18, id_base + S_PROGRESS);
     SendMessageW(s_ctl[S_PROGRESS], PBM_SETRANGE32, 0, 1000);
-    s_ctl[S_STATUS] = add(tab, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, x, 482, 560, 36,
+    s_ctl[S_STATUS] = add(tools_tab, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, x, 354, 560, 36,
                           id_base + S_STATUS);
 }
 

@@ -23,6 +23,7 @@
 // untiled, with 16-bit words byte-swapped.
 #include "backgrounds_page.h"
 #include "arena_lights.h"
+#include "no_mods.h"
 #include "arena_mods.h"
 #include "crowd_off.h"
 #include "move_packs.h"
@@ -452,6 +453,7 @@ void LayOutPages() {
 }
 
 void LoadCustomArenas() {
+  if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
   const fs::path dir = g_game / "Mods" / "Arenas";
   if (!fs::is_directory(dir, ec)) return;
@@ -1216,6 +1218,7 @@ uint32_t ArenaSelectString(uint32_t caller) {
 std::vector<BackstageRow> g_backstage_rows;
 
 void LoadBackstage() {
+  if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
   std::vector<fs::path> found;
   std::vector<fs::path> dirs;

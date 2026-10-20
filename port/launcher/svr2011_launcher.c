@@ -46,11 +46,13 @@
 #include <tlhelp32.h>
 #include <windowsx.h>
 #include <wincodec.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <math.h>
 #include <wchar.h>
 
 #include "apk_package.h"
@@ -58,6 +60,7 @@
 #include "music_tab.h"
 #include "texpacks_tab.h"
 #include "setup_tab.h"
+#include "discover_tab.h"
 static void setup_go_install(void);
 static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
@@ -84,6 +87,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' " \
                         "version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
@@ -106,21 +110,23 @@ static void setup_console_progress(int permille, const WCHAR *text);
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 #define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
 #define ID_SETUP_BASE 1200 /* the Setup tab's (setup_tab.c) */
+#define ID_DISCOVER_BASE 1300 /* Mods -> Discovery's (discover_tab.c) */
 
 enum {
     ID_TAB = 100,
     /* play */
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
-    ID_SKIP_INTROS, ID_SKIP_TRAINING,
+    ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT,
+    ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
@@ -160,6 +166,8 @@ enum {
 #define WM_APP_UPD_FINISHED (WM_APP + 13) /* wParam 1 ok, lParam heap error text */
 #define WM_APP_VERIFY   (WM_APP + 12)    /* wParam permille, or 1001: done (s_verify) */
 #define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
+#define WM_APP_SIZE     (WM_APP + 14)    /* the Play page's game size / file check is in (size_thread) */
+#define HERO_TIMER      0x5F02           /* the Play page's picture scrolling */
 #define FRIENDS_TIMER   0x5F01           /* the Friends list's refresh while the Online tab shows */
 #define APK_OK          1001
 #define APK_FAILED      1002
@@ -170,12 +178,32 @@ static HFONT     s_font, s_big, s_title;
 static HFONT     s_icons, s_nav, s_card, s_huge;
 static HFONT     s_mark_font;                     /* Verify game files' mark (the icon font, large) */  /* the look: sidebar icons and labels, card titles, page title */
 static int       s_cur_tab = -1, s_nav_hover = -1;
+/* The Play page (paint_play): the game's size and its program files' check (size_thread), the picture. */
+static volatile LONG s_size_busy;
+static uint64_t  s_size_game, s_size_mods;
+static int       s_size_known, s_files_listed, s_files_bad, s_play_ready;
+static WCHAR     s_size_dir[MAX_PATH], s_hero_file[MAX_PATH];
+static int       s_hero_scroll, s_hero_moving;
+typedef struct { RECT r; int tab; } PlayLink;
+static PlayLink  s_play_links[8];
+static int       s_nplay_links;
+static void play_counts(void);
+static void play_notice(void);
+/* The Play page's notice (play_notice): one line when something needs the player, its button's action. */
+enum { NOTICE_NONE, NOTICE_FOLDER, NOTICE_SETUP, NOTICE_FILES, NOTICE_UPDATE };
+static WCHAR     s_notice[220];
+static int       s_notice_action;
+static void steps_refresh(void);
+static int setup_first_step(void);
+static int step_at(POINT pt);
+static int mod_tab_at(POINT pt);
 static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
 static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
 static RECT      s_paypal_link;            /* ... " / PayPal" after it */
 static int       s_dpi = 96;
 static HICON     s_icon;
-static HWND      s_ctl[TAB_COUNT][32];
+#define TAB_CTL_MAX 64   /* a page's controls (more are created but never shown) */
+static HWND      s_ctl[TAB_COUNT][TAB_CTL_MAX];
 static int       s_nctl[TAB_COUNT];
 static WCHAR     s_launcher_dir[MAX_PATH], s_launcher_exe[MAX_PATH], s_launcher_ini[MAX_PATH];
 static WCHAR     s_game_dir[MAX_PATH];
@@ -199,6 +227,35 @@ static const struct { int w, h, scale; const WCHAR *label; } k_res[] = {
     { 3840, 2160, 3, L"3840 \x00D7 2160  (4K)" },
 };
 #define N_RES ((int)(sizeof k_res / sizeof k_res[0]))
+/* The render resolution: the game's GRAPHICS -> RENDER RESOLUTION steps (graphics_page.cpp kScales), saved
+   in the same keys - native_max_scale, native_render_scale, native_scene_height. */
+static const struct { int max_scale; double res; int height; const WCHAR *label; } k_render[] = {
+    { 4, 1.0, 0, L"Auto (follows the window)" }, { 1, 0.5, 0, L"360p" }, { 1, 2.0 / 3.0, 0, L"480p" },
+    { 1, 1.0, 0, L"720p (Xbox 360)" }, { 2, 1.0, 900, L"900p" }, { 2, 1.0, 1080, L"1080p" },
+    { 2, 1.0, 0, L"1440p" }, { 3, 1.0, 0, L"2160p (4K)" },
+};
+#define N_RENDER ((int)(sizeof k_render / sizeof k_render[0]))
+
+/* As the game's GraphicsPage::Load picks the row from the three keys. */
+static int render_index(int max_scale, double res, int height)
+{
+    int i, best = 0;
+    if (height > 0) {
+        for (i = 0; i < N_RENDER; i++)
+            if (k_render[i].height > 0 &&
+                (k_render[best].height == 0 || abs(k_render[i].height - height) < abs(k_render[best].height - height)))
+                best = i;
+    } else if (res > 0.0 && res < 0.99) {
+        for (i = 0; i < N_RENDER; i++)
+            if (k_render[i].res < 0.99 && fabs(k_render[i].res - res) < fabs(k_render[best].res - res))
+                best = i;
+    } else {
+        for (i = 0; i < N_RENDER; i++)
+            if (k_render[i].max_scale == max_scale && k_render[i].res >= 0.99 && k_render[i].height == 0)
+                best = i;
+    }
+    return best;
+}
 
 static int S(int v) { return MulDiv(v, s_dpi, 96); }
 
@@ -1380,6 +1437,25 @@ static int online_request(const char *path, const char *body, const char *token,
     return (int)status;
 }
 
+/* Discovery's (discover_tab.c): the server's address; the account's token and name ("" signed out). */
+static void discover_server(WCHAR *out, int n)
+{
+    online_server_text(out, n);
+    if (!wcsstr(out, L"://")) {
+        WCHAR tmp[300];
+        swprintf_s(tmp, 300, L"http://%s", out);
+        wcscpy_s(out, n, tmp);
+    }
+}
+
+static void discover_account(char *token, size_t token_n, WCHAR *name, size_t name_n)
+{
+    strcpy_s(token, token_n, s_online_token);
+    name[0] = 0;
+    if (s_online_token[0] && name_n > 1)
+        GetWindowTextW(ctl(ID_ON_NAME), name, (int)name_n);
+}
+
 static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
 {
     return online_request(path, body ? body : "{}", token, out, outn);
@@ -1668,13 +1744,36 @@ static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_a
     SendMessageW(ctl(ID_LANGUAGE), CB_SETCURSEL, (WPARAM)language_index(language), 0);
     SendMessageW(ctl(ID_MSAA), CB_SETCURSEL, (WPARAM)(msaa >= 1 && msaa <= 4 ? msaa - 1 : 0), 0);
     SendMessageW(ctl(ID_RENDERER), CB_SETCURSEL, (WPARAM)renderer, 0);
-    CheckRadioButton(s_wnd, ID_WINDOWED, ID_FULLSCREEN, fullscreen ? ID_FULLSCREEN : ID_WINDOWED);
+    /* (not CheckRadioButton: the exclusive one's id isn't next to the others) */
+    CheckDlgButton(s_wnd, ID_WINDOWED, !fullscreen ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FULLSCREEN, fullscreen == 1 ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FULLSCREEN_EX, fullscreen == 2 ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_RESOLUTION), CB_SETCURSEL, (WPARAM)res, 0);
     CheckDlgButton(s_wnd, ID_VSYNC, vsync ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_INPUT), CB_SETCURSEL, (WPARAM)(sdl ? 1 : 0), 0);
     SendMessageW(ctl(ID_AUDIO), CB_SETCURSEL, (WPARAM)(sdl_audio ? 1 : 0), 0);
     CheckDlgButton(s_wnd, ID_MUTE, mute ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SHOWFPS, fps ? BST_CHECKED : BST_UNCHECKED);
+}
+
+/* The window size row: only for a window (full screen is the screen's own size - in the game too, whose
+   RESOLUTION row says FULL SCREEN then); the line under it says which. */
+static void display_hint(void)
+{
+    const int windowed = IsDlgButtonChecked(s_wnd, ID_WINDOWED) == BST_CHECKED;
+    WCHAR t[200];
+    DEVMODEW dm;
+    ZeroMemory(&dm, sizeof dm);
+    dm.dmSize = sizeof dm;
+    EnableWindow(ctl(ID_RESOLUTION), windowed);
+    if (windowed)
+        wcscpy_s(t, 200, L"The window's size. Frame rate: at most; normal speed at either.");
+    else if (EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmPelsWidth)
+        swprintf_s(t, 200, L"Full screen: your screen's own size (%lu \x00D7 %lu now), not the window size.",
+                   dm.dmPelsWidth, dm.dmPelsHeight);
+    else
+        wcscpy_s(t, 200, L"Full screen: your screen's own size, not the window size.");
+    set_text(ID_RES_HINT, t);
 }
 
 /* A Steam Deck (Steam sets SteamDeck=1 for what it starts there). */
@@ -1691,6 +1790,8 @@ static void settings_load(void)
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, arena_light = 100;
+    int exclusive = 0, max_scale = 4, scene_height = 0;
+    double render_scale = 1.0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
     settings_path(p);
@@ -1705,6 +1806,10 @@ static void settings_load(void)
             if (in_section || !toml_kv(l.v[i], key, sizeof key, val, sizeof val))
                 continue;
             if (!strcmp(key, "fullscreen")) fullscreen = !strcmp(val, "true");
+            else if (!strcmp(key, "fullscreen_exclusive")) exclusive = !strcmp(val, "true");
+            else if (!strcmp(key, "native_max_scale")) max_scale = atoi(val);
+            else if (!strcmp(key, "native_render_scale")) render_scale = atof(val);
+            else if (!strcmp(key, "native_scene_height")) scene_height = atoi(val);
             else if (!strcmp(key, "vsync")) vsync = !strcmp(val, "true");
             else if (!strcmp(key, "audio_mute")) mute = !strcmp(val, "true");
             else if (!strcmp(key, "input_backend")) sdl = !_stricmp(val, "sdl");
@@ -1743,8 +1848,10 @@ static void settings_load(void)
             res = i;
     /* anti-aliasing: native_aa (1 off, 2-4), else the older on / off (on = 2x) */
     msaa = aa >= 1 && aa <= 4 ? aa : msaa ? 2 : 1;
-    settings_show(fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
+    settings_show(fullscreen && exclusive ? 2 : fullscreen, res, vsync, sdl, sdl_audio, mute, fps, msaa,
                   api, language);
+    SendMessageW(ctl(ID_RENDER_RES), CB_SETCURSEL, (WPARAM)render_index(max_scale, render_scale, scene_height), 0);
+    display_hint();
     (void)emulated;  /* (an old native_renderer = "off": saved as "main" next time) */
     online_show(online, online_name, online_server);
     {
@@ -1769,14 +1876,15 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 30 };
+    enum { NK = 34 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
                                     "online_enabled", "online_name", "online_server", "native_prepare_pipelines",
                                     "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
                                     "process_priority", "unlock_everything", "native_texture_quality",
-                                    "skip_intros", "skip_training", "arena_brightness" };
+                                    "skip_intros", "skip_training", "fullscreen_exclusive", "native_max_scale",
+                                    "native_render_scale", "native_scene_height", "arena_brightness" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -1799,7 +1907,15 @@ static int settings_save(void)
     sprintf_s(vals[3], 64, "%d", k_res[sel].scale);
     sprintf_s(vals[4], 64, "%d", k_res[sel].w);
     sprintf_s(vals[5], 64, "%d", k_res[sel].h);
-    strcpy_s(vals[6], 64, IsDlgButtonChecked(s_wnd, ID_FULLSCREEN) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[6], 64, IsDlgButtonChecked(s_wnd, ID_WINDOWED) == BST_CHECKED ? "false" : "true");
+    strcpy_s(vals[29], 64, IsDlgButtonChecked(s_wnd, ID_FULLSCREEN_EX) == BST_CHECKED ? "true" : "false");
+    {   /* (as the game writes them: graphics_page.cpp kRenderScale) */
+        int ri = (int)SendMessageW(ctl(ID_RENDER_RES), CB_GETCURSEL, 0, 0);
+        if (ri < 0 || ri >= N_RENDER) ri = 0;
+        sprintf_s(vals[30], 64, "%d", k_render[ri].max_scale);
+        sprintf_s(vals[31], 64, "%.4f", k_render[ri].res);
+        sprintf_s(vals[32], 64, "%d", k_render[ri].height);
+    }
     strcpy_s(vals[7], 64, IsDlgButtonChecked(s_wnd, ID_VSYNC) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[8], 64, IsDlgButtonChecked(s_wnd, ID_MUTE) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[10], 64, IsDlgButtonChecked(s_wnd, ID_SHOWFPS) == BST_CHECKED ? "true" : "false");
@@ -1838,7 +1954,7 @@ static int settings_save(void)
     }
     {
         const int li = (int)SendMessageW(ctl(ID_ARENA_LIGHT), CB_GETCURSEL, 0, 0);
-        sprintf_s(vals[29], 64, "%d", li >= 0 && li <= 15 ? 50 + 10 * li : 100);
+        sprintf_s(vals[33], 64, "%d", li >= 0 && li <= 15 ? 50 + 10 * li : 100);
     }
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
@@ -1918,6 +2034,8 @@ static int settings_save(void)
 static void settings_defaults(void)
 {
     settings_show(0, 0, 1, 0, 0, 0, 1, 1, 0, 1);
+    SendMessageW(ctl(ID_RENDER_RES), CB_SETCURSEL, 0, 0);
+    display_hint();
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, BST_CHECKED);
@@ -1957,6 +2075,76 @@ static void playtime_show(void)
     set_text(ID_PLAYTIME, t);
 }
 
+/* The game's size (its folder; its Mods part) and the program files against the release's list -
+   in the background (a big folder takes a moment), WM_APP_SIZE when done. */
+static void add_size(const WCHAR *dir, int depth, uint64_t *total, uint64_t *mods)
+{
+    WCHAR pat[MAX_PATH], sub[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    if (depth > 24 || swprintf_s(pat, MAX_PATH, L"%s\\*", dir) < 0)
+        return;
+    h = FindFirstFileExW(pat, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            uint64_t t = 0;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)   /* (links: not the game's own) */
+                continue;
+            if (swprintf_s(sub, MAX_PATH, L"%s\\%s", dir, fd.cFileName) < 0)
+                continue;
+            add_size(sub, depth + 1, &t, NULL);
+            *total += t;
+            if (mods && depth == 0 && !_wcsicmp(fd.cFileName, L"Mods"))
+                *mods += t;
+        } else {
+            *total += ((uint64_t)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+static DWORD WINAPI size_thread(LPVOID p)
+{
+    WCHAR *dir = (WCHAR *)p;
+    ReleaseCheck rc;
+    uint64_t total = 0, mods = 0;
+    add_size(dir, 0, &total, &mods);
+    s_size_game = total;
+    s_size_mods = mods;
+    ZeroMemory(&rc, sizeof rc);
+    s_files_listed = release_check(dir, NULL, 0, &rc, NULL, NULL) ? rc.files : 0;
+    s_files_bad = rc.bad;
+    s_size_known = 1;
+    free(dir);
+    InterlockedExchange(&s_size_busy, 0);
+    PostMessageW(s_wnd, WM_APP_SIZE, 0, 0);
+    return 0;
+}
+
+static void play_size_start(void)
+{
+    WCHAR *dir;
+    HANDLE t;
+    if (!s_game_dir[0] || !dir_exists(s_game_dir) || (s_size_known && same_dir(s_size_dir, s_game_dir)))
+        return;
+    if (InterlockedCompareExchange(&s_size_busy, 1, 0))
+        return;
+    wcscpy_s(s_size_dir, MAX_PATH, s_game_dir);
+    s_size_known = 0;
+    dir = _wcsdup(s_game_dir);
+    t = dir ? CreateThread(NULL, 0, size_thread, dir, 0, NULL) : NULL;
+    if (t)
+        CloseHandle(t);
+    else {
+        free(dir);
+        InterlockedExchange(&s_size_busy, 0);
+    }
+}
+
 static void refresh_play(void)
 {
     const WCHAR *t;
@@ -1975,9 +2163,16 @@ static void refresh_play(void)
         t = L"Ready.";
         ready = 1;
     }
-    set_text(ID_PLAY_STATUS, t);
+    s_play_ready = ready;
+    set_text(ID_PLAY_STATUS, ready ? L"All systems ready. Have fun!" : t);
     EnableWindow(ctl(ID_PLAY), ready && !s_busy);
+    EnableWindow(ctl(ID_PLAY_NOMODS), ready && !s_busy);
     playtime_show();
+    play_counts();
+    play_size_start();
+    play_notice();
+    if (s_wnd)
+        InvalidateRect(s_wnd, NULL, FALSE);
 }
 
 static DWORD WINAPI game_watch(LPVOID p)
@@ -2026,7 +2221,12 @@ static int shaders_ready(void)
     return MessageBoxW(s_wnd, m, WINDOW_TITLE, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
 }
 
-static void play(void)
+static void play_with(int no_mods);
+static void play(void) { play_with(0); }
+static int saves_backup_to(const WCHAR *suffix, WCHAR *out);
+static int saves_dir(WCHAR *out);
+/* no_mods: the game without any mod (Start Without Mods): SVR2011_NO_MODS=1 in its environment. */
+static void play_with(int no_mods)
 {
     WCHAR exe[MAX_PATH], cmd[MAX_PATH + 4];
     STARTUPINFOW si;
@@ -2074,12 +2274,22 @@ static void play(void)
     swprintf_s(cmd, MAX_PATH + 4, L"\"%s\"", exe);
     memset(&si, 0, sizeof si);
     si.cb = sizeof si;
+    if (no_mods) {   /* (a backup of the saves first, each time: the way back if that run changes them) */
+        WCHAR saves[MAX_PATH], before[MAX_PATH];
+        if (saves_dir(saves) && dir_exists(saves) && !saves_backup_to(L" (before Start Without Mods)", before) &&
+            MessageBoxW(s_wnd, L"The saves could not be backed up first. Start without mods anyway?", WINDOW_TITLE,
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+            return;
+    }
+    SetEnvironmentVariableW(L"SVR2011_NO_MODS", no_mods ? L"1" : NULL);
     if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, s_game_dir, &si, &pi)) {
         WCHAR m[MAX_PATH + 64];
+        SetEnvironmentVariableW(L"SVR2011_NO_MODS", NULL);
         swprintf_s(m, MAX_PATH + 64, L"Windows could not start the game (error %lu).", GetLastError());
         set_text(ID_PLAY_STATUS, m);
         return;
     }
+    SetEnvironmentVariableW(L"SVR2011_NO_MODS", NULL);
     CloseHandle(pi.hThread);
     if (s_game_proc)
         CloseHandle(s_game_proc);
@@ -2145,38 +2355,84 @@ static int pick_image(WCHAR *out)
 
 #define HEADER_H 64      /* dark title band */
 #define DY       64      /* page content sits this much lower than laid out */
-#define CLIENT_W 620
+#define CLIENT_W 780
+#define PAD      80      /* the other pages: laid out 620 wide, centred */
 #define CLIENT_H 600     /* below the band */
 #define SB_W     196     /* the sidebar (the pages sit right of it) */
 
-/* The look: a dark sidebar (the tabs), the pages light grey with white
-   cards (the group boxes, drawn by the window), red for the main action. */
-#define C_SIDEBAR       RGB(20, 20, 24)
-#define C_SIDEBAR_HOVER RGB(36, 36, 42)
-#define C_SIDEBAR_SEL   RGB(48, 48, 56)
-#define C_ACCENT        RGB(208, 20, 44)
-#define C_ACCENT_HOT    RGB(228, 38, 60)
-#define C_ACCENT_DOWN   RGB(168, 14, 34)
-#define C_PAGE          RGB(243, 243, 246)
-#define C_CARD          RGB(255, 255, 255)
-#define C_CARD_LINE     RGB(222, 222, 228)
-#define C_TEXT          RGB(28, 28, 32)
-#define C_MUTED         RGB(112, 112, 122)
-static HBRUSH s_page_brush, s_card_brush;
+/* The look: dark - a near-black sidebar (the tabs), dark grey pages with
+   slightly lighter cards (the group boxes, drawn by the window), red for the
+   main action. */
+#define C_SIDEBAR       RGB(14, 15, 19)
+#define C_SIDEBAR_HOVER RGB(28, 30, 36)
+#define C_SIDEBAR_SEL   RGB(56, 20, 27)
+#define C_ACCENT        RGB(214, 22, 44)
+#define C_ACCENT_HOT    RGB(234, 42, 62)
+#define C_ACCENT_DOWN   RGB(170, 14, 34)
+#define C_PAGE          RGB(20, 22, 27)
+#define C_CARD          RGB(27, 30, 36)
+#define C_CARD_LINE     RGB(46, 50, 58)
+#define C_FIELD         RGB(16, 18, 22)
+#define C_TEXT          RGB(236, 237, 241)
+#define C_MUTED         RGB(150, 153, 163)
+#define C_GOOD          RGB(52, 199, 89)
+#define C_WARN          RGB(240, 160, 40)
+static HBRUSH s_page_brush, s_card_brush, s_field_brush;
 
 /* The sidebar: the tabs in this order, with their icons (Segoe icon font). */
 static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     { TAB_PLAY, 0xE768, L"Play" },          { TAB_SETTINGS, 0xE713, L"Settings" },
-    { TAB_ONLINE, 0xE774, L"Online" },      { TAB_SAVES, 0xE74E, L"Saves" },
-    { TAB_ROSTER, 0xE716, L"Roster" },      { TAB_MUSIC, 0xE8D6, L"Music" },
-    { TAB_MODS, 0xE90F, L"Mods" },          { TAB_TEXPACKS, 0xE8B9, L"Texture packs" },
-    { TAB_PAINT, 0xE790, L"Paint Tool" },   { TAB_MOVIES, 0xE714, L"Movies" },
-    { TAB_DLC, 0xE7B8, L"DLC" },            { TAB_INSTALL, 0xE896, L"Install" },
-    { TAB_ANDROID, 0xE8EA, L"Android" },     { TAB_SETUP, 0xE73E, L"Setup" },
+    { TAB_SAVES, 0xE74E, L"Saves" },        { TAB_ROSTER, 0xE716, L"Roster" },
+    { TAB_MODS, 0xEA86, L"Mods" },          { TAB_SETUP, 0xE90F, L"Setup" },
+    /* (below the line) */
+    { TAB_ONLINE, 0xE774, L"Online" },      { TAB_MUSIC, 0xE8D6, L"Music" },
+    { TAB_MOVIES, 0xE714, L"Movies" },      { TAB_PAINT, 0xE790, L"Paint Tool" },
 };
-#define NAV_N   ((int)(sizeof k_nav / sizeof k_nav[0]))
-#define NAV_TOP 80      /* (14 tabs above the version line) */
-#define NAV_H   38
+
+/* Mods, in three tabs: the installed mods (TAB_MODS), Discovery, Texture packs - a tab bar on top of each
+   (paint_mod_tabs). The tab of a page, or -1. */
+static const int k_mod_tabs[] = { TAB_MODS, TAB_DISCOVER, TAB_TEXPACKS };
+#define N_MOD_TABS 3
+static int mods_tab_of(int tab)
+{
+    int i;
+    for (i = 0; i < N_MOD_TABS; i++)
+        if (k_mod_tabs[i] == tab)
+            return i;
+    return -1;
+}
+
+/* Setup, step by step: this PC (TAB_SETUP), the game (TAB_INSTALL), DLC, the Mod Maker's tools, Android - one
+   sidebar entry; a step bar on top of each (paint_steps). The step of a page, or -1. */
+static const int k_steps[] = { TAB_SETUP, TAB_INSTALL, TAB_DLC, TAB_TOOLS, TAB_ANDROID };
+#define N_STEPS 5
+static int setup_step(int tab)
+{
+    int i;
+    for (i = 0; i < N_STEPS; i++)
+        if (k_steps[i] == tab)
+            return i;
+    return -1;
+}
+/* The sidebar entry a page belongs to (Setup's steps: Setup). */
+static int nav_tab(int tab) { return setup_step(tab) >= 0 ? TAB_SETUP : mods_tab_of(tab) >= 0 ? TAB_MODS : tab; }
+#define NAV_N    ((int)(sizeof k_nav / sizeof k_nav[0]))
+#define NAV_MAIN 6       /* the main pages (big rows), then the line, the others (small rows) */
+#define NAV_TOP  86
+#define NAV_H    42
+#define NAV_H2   31
+#define NAV_LINE 15
+
+/* A sidebar row's place. */
+static RECT nav_rect(int k)
+{
+    RECT r;
+    r.left = 0;
+    r.right = SB_W;
+    r.top = NAV_TOP + (k < NAV_MAIN ? k * NAV_H : NAV_MAIN * NAV_H + NAV_LINE + (k - NAV_MAIN) * NAV_H2);
+    r.bottom = r.top + (k < NAV_MAIN ? NAV_H : NAV_H2);
+    return r;
+}
 
 /* A group box: a card the window draws on the page. */
 typedef struct { int tab, x, y, w, h; WCHAR title[64]; } Card;
@@ -2276,12 +2532,32 @@ static void make_fonts(void)
     s_huge = CreateFontIndirectW(&ncm.lfMessageFont);
 }
 
+/* A list's column headers: light text (the dark header theme leaves it dark). */
+static LRESULT CALLBACK list_proc(HWND h, UINT m, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id; (void)ref;
+    if (m == WM_NOTIFY && ((NMHDR *)lp)->hwndFrom == ListView_GetHeader(h) && ((NMHDR *)lp)->code == NM_CUSTOMDRAW) {
+        NMCUSTOMDRAW *cd = (NMCUSTOMDRAW *)lp;
+        if (cd->dwDrawStage == CDDS_PREPAINT)
+            return CDRF_NOTIFYITEMDRAW;
+        if (cd->dwDrawStage == CDDS_ITEMPREPAINT) {
+            SetTextColor(cd->hdc, C_TEXT);
+            return CDRF_DODEFAULT;
+        }
+    }
+    return DefSubclassProc(h, m, wp, lp);
+}
+
 static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x, int y, int w, int h, int id)
 {
     HWND c;
     const int button = !_wcsicmp(cls, L"Button");
     const DWORD kind = style & BS_TYPEMASK;
     const int push = button && (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON);
+    if (tab >= 0 && tab != TAB_PLAY)
+        x += PAD;
+    if (tab == TAB_SETUP || tab == TAB_TEXPACKS || tab == TAB_TOOLS)
+        y += 44;   /* (below the step bar; the other steps' pages start lower already) */
     /* A group box becomes a card the window draws (the control is never shown). */
     if (button && kind == BS_GROUPBOX && tab >= 0 && s_ncards < (int)(sizeof s_cards / sizeof s_cards[0])) {
         Card *cd = &s_cards[s_ncards++];
@@ -2295,13 +2571,38 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
     c = CreateWindowExW(0, cls, text, WS_CHILD | style, S(x + SB_W), S(y + DY), S(w), S(h), s_wnd,
                         (HMENU)(INT_PTR)id, s_inst, NULL);
     SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    /* Dark: check boxes and radio buttons unthemed (they take the text colour then: WM_CTLCOLORSTATIC),
+       fields and lists in Windows' dark control themes, lists' colours set. */
+    if (button && !push)
+        SetWindowTheme(c, L"", L"");
+    else if (!_wcsicmp(cls, L"Edit") || !_wcsicmp(cls, L"ComboBox"))
+        SetWindowTheme(c, L"DarkMode_CFD", NULL);
+    else if (!_wcsicmp(cls, WC_LISTVIEWW) || !_wcsicmp(cls, L"ListBox") || !_wcsicmp(cls, WC_TREEVIEWW))
+        SetWindowTheme(c, L"DarkMode_Explorer", NULL);
+    if (!_wcsicmp(cls, WC_LISTVIEWW)) {
+        HWND hd = ListView_GetHeader(c);
+        ListView_SetBkColor(c, C_FIELD);
+        ListView_SetTextBkColor(c, C_FIELD);
+        ListView_SetTextColor(c, C_TEXT);
+        if (hd) SetWindowTheme(hd, L"DarkMode_ItemsView", NULL);
+        SetWindowSubclass(c, list_proc, 2, 0);
+    }
+    if (!_wcsicmp(cls, PROGRESS_CLASSW)) {   /* (unthemed: its colours) */
+        SetWindowTheme(c, L"", L"");
+        SendMessageW(c, PBM_SETBKCOLOR, 0, (LPARAM)C_FIELD);
+        SendMessageW(c, PBM_SETBARCOLOR, 0, (LPARAM)C_ACCENT);
+    }
+    if (!_wcsicmp(cls, WC_TREEVIEWW)) {
+        TreeView_SetBkColor(c, C_FIELD);
+        TreeView_SetTextColor(c, C_TEXT);
+    }
     if (push && s_nbtns < (int)(sizeof s_btns / sizeof s_btns[0])) {
         s_btns[s_nbtns].h = c;
         s_btns[s_nbtns].primary = kind == BS_DEFPUSHBUTTON || is_primary_id(id);
         s_nbtns++;
         SetWindowSubclass(c, btn_proc, 1, 0);
     }
-    if (tab >= 0 && s_nctl[tab] < 32)
+    if (tab >= 0 && s_nctl[tab] < TAB_CTL_MAX)
         s_ctl[tab][s_nctl[tab]++] = c;
     if (s_nplaced < (int)(sizeof s_placed / sizeof s_placed[0])) {
         Placed *pl = &s_placed[s_nplaced++];
@@ -2375,6 +2676,10 @@ static void show_tab(int t)
     }
     if (t == TAB_PLAY)
         refresh_play();
+    if (t == TAB_SETTINGS && !s_settings_dirty)
+        settings_load();
+    if (setup_step(t) >= 0)
+        steps_refresh();
     if (t == TAB_INSTALL)
         update_free_space();
     if (t == TAB_SAVES)
@@ -2391,7 +2696,9 @@ static void show_tab(int t)
         roster_show(s_game_dir);
     if (t == TAB_TEXPACKS)
         texpacks_show(s_game_dir);
-    if (t == TAB_SETUP)
+    if (t == TAB_DISCOVER)
+        discover_show(s_game_dir);
+    if (t == TAB_SETUP || t == TAB_TOOLS)
         setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
         ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
@@ -2413,6 +2720,8 @@ static void show_tab(int t)
 
 static void saves_setup(HWND list);
 static void saves_refresh(void);
+static void save_info_copy(const WCHAR *from_dir, const WCHAR *from_name, const WCHAR *to_dir, const WCHAR *to_name);
+static int saves_make_writable(const WCHAR *saves);
 static void list_columns(HWND list, const WCHAR *const *names, const int *widths, int n);
 static HWND pt_setup_grid(void);
 static void mv_setup(void);
@@ -2704,7 +3013,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -2716,57 +3025,64 @@ static void build_ui(void)
     }
 
     /* Play: the game (status, time played, PLAY), its folder, help, updates. */
-    add(TAB_PLAY, L"Button", L"WWE SmackDown vs. Raw 2011", BS_GROUPBOX, X0, 4, 560, 150, 0);
-    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 38, 300, 40, ID_PLAY_STATUS);
-    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 82, 300, 22, ID_PLAYTIME);
-    h = add(TAB_PLAY, L"Button", L"PLAY", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 336, 36, 208, 64, ID_PLAY);
+    /* (cards: the picture card, three tiles, Setup / Saves / Mods / Texture packs, the status line -
+       paint_play draws what's on them) */
+    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, -8, 724, 400, 0);
+    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, 406, 724, 44, 0);
+    add(TAB_PLAY, L"Button", L"\x01", BS_GROUPBOX, X0, 462, 724, 48, 0);   /* (the notice: drawn only with one) */
+    add(TAB_PLAY, L"Button", L"", BS_GROUPBOX, X0, 544, 724, 48, 0);
+    h = add(TAB_PLAY, L"Button", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 28, 212, 190, 60, ID_PLAY);
     set_big(h);
-    add(TAB_PLAY, L"Button", L"Close the launcher when the game starts", BS_AUTOCHECKBOX | WS_TABSTOP,
-        X0 + 16, 116, 320, 24, ID_CLOSE_ON_PLAY);
+    /* Start without mods: the game with no mods at all, saves untouched (SVR2011_NO_MODS) */
+    add(TAB_PLAY, L"Button", L"Start Without Mods", BS_PUSHBUTTON | WS_TABSTOP, X0 + 230, 212, 190, 60, ID_PLAY_NOMODS);
+    add(TAB_PLAY, L"Button", L"Close on start", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 28, 300, 126, 20, ID_CLOSE_ON_PLAY);
     /* the faster start (fast_start.cpp): settings like the Settings tab's, kept by Play */
-    add(TAB_PLAY, L"Button", L"Skip the intro movies", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 336, 106, 208, 22,
-        ID_SKIP_INTROS);
-    add(TAB_PLAY, L"Button", L"Skip the practice ring", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 336, 128, 208, 22,
+    add(TAB_PLAY, L"Button", L"Skip intros", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 160, 300, 104, 20, ID_SKIP_INTROS);
+    add(TAB_PLAY, L"Button", L"Skip practice ring", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 270, 300, 130, 20,
         ID_SKIP_TRAINING);
-    add(TAB_PLAY, L"Button", L"Game folder", BS_GROUPBOX, X0, 170, 560, 82, 0);
-    add(TAB_PLAY, L"Edit", L"", ES_READONLY | ES_AUTOHSCROLL | WS_BORDER, X0 + 16, 206, 410, 26, ID_GAMEDIR);
-    add(TAB_PLAY, L"Button", L"Change\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 436, 204, 108, 30, ID_GAMEDIR_CHANGE);
-    add(TAB_PLAY, L"Static", L"Display, resolution, controller and audio options are on the Settings tab; they "
-                             L"apply the next time the game starts.",
-        SS_LEFT, X0, 268, 380, 40, 0);
-    add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 394, 270, 166, 32, ID_REPORT);
+    add(TAB_PLAY, L"Button", L"", BS_PUSHBUTTON | WS_TABSTOP, X0 + 724 - 16 - 160, 472, 160, 28, ID_PL_NOTICE);
+    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 48, 559, 236, 20, ID_PLAY_STATUS);
+    add(-1, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 82, 300, 22, ID_PLAYTIME);
+    add(-1, L"Edit", L"", ES_READONLY | ES_AUTOHSCROLL | WS_BORDER, X0 + 16, 206, 410, 26, ID_GAMEDIR);
+    add(TAB_PLAY, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 554, 128, 28, ID_REPORT);
     up_setup();
 
     /* Settings */
-    add(TAB_SETTINGS, L"Button", L"Display", BS_GROUPBOX, X0, 50, 560, 188, 0);
-    add(TAB_SETTINGS, L"Static", L"Mode", SS_LEFT, X0 + 16, 76, 120, 20, 0);
-    add(TAB_SETTINGS, L"Button", L"Windowed", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, X0 + 150, 72, 110, 24, ID_WINDOWED);
-    add(TAB_SETTINGS, L"Button", L"Fullscreen", BS_AUTORADIOBUTTON, X0 + 270, 72, 110, 24, ID_FULLSCREEN);
-    /* arena_brightness (the game's GRAPHICS -> ARENA BRIGHTNESS): the arenas' lights, 50-200% */
-    add(TAB_SETTINGS, L"Static", L"Arena light", SS_LEFT, X0 + 390, 76, 70, 20, 0);
-    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 462, 72, 84, 300,
-            ID_ARENA_LIGHT);
-    for (i = 50; i <= 200; i += 10) {
-        WCHAR t[16];
-        swprintf_s(t, 16, L"%d%%", i);  /* (100%: the game's own) */
-        SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
-    }
-    add(TAB_SETTINGS, L"Static", L"Resolution", SS_LEFT, X0 + 16, 108, 120, 20, 0);
+    add(TAB_SETTINGS, L"Button", L"Display", BS_GROUPBOX, X0, 14, 560, 224, 0);
+    add(TAB_SETTINGS, L"Static", L"Mode", SS_LEFT, X0 + 16, 44, 120, 20, 0);
+    add(TAB_SETTINGS, L"Button", L"Windowed", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, X0 + 150, 42, 96, 22, ID_WINDOWED);
+    add(TAB_SETTINGS, L"Button", L"Full screen", BS_AUTORADIOBUTTON, X0 + 252, 42, 100, 22, ID_FULLSCREEN);
+    add(TAB_SETTINGS, L"Button", L"Full screen (exclusive)", BS_AUTORADIOBUTTON, X0 + 358, 42, 188, 22, ID_FULLSCREEN_EX);
+    add(TAB_SETTINGS, L"Static", L"Window size", SS_LEFT, X0 + 16, 76, 120, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
-            X0 + 150, 104, 240, 200, ID_RESOLUTION);
+            X0 + 150, 72, 240, 200, ID_RESOLUTION);
     for (i = 0; i < N_RES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_res[i].label);
-    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 104, 146, 200,
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 72, 146, 200,
             ID_FRAMERATE);
     for (i = 0; i < N_FRAME_RATES; i++) {
         WCHAR t[32];
         swprintf_s(t, 32, L"%d FPS", k_frame_rates[i]);
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
     }
-    add(TAB_SETTINGS, L"Static", L"Rendered to fit the window. Frame rate: at most; normal speed at either.",
-        SS_LEFT, X0 + 150, 132, 396, 18, 0);
-    add(TAB_SETTINGS, L"Button", L"VSync (no tearing; waits for the monitor's refresh)", BS_AUTOCHECKBOX | WS_TABSTOP,
-        X0 + 16, 154, 360, 24, ID_VSYNC);
+    add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 98, 396, 18, ID_RES_HINT);
+    /* (the game's GRAPHICS -> RENDER RESOLUTION: the same keys) */
+    add(TAB_SETTINGS, L"Static", L"Render resolution", SS_LEFT, X0 + 16, 126, 130, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 122, 240, 240,
+            ID_RENDER_RES);
+    for (i = 0; i < N_RENDER; i++)
+        SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_render[i].label);
+    add(TAB_SETTINGS, L"Static", L"Also in game: GRAPHICS.", SS_LEFT, X0 + 400, 126, 146, 20, 0);
+    add(TAB_SETTINGS, L"Button", L"VSync (no tearing)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 154, 160, 24, ID_VSYNC);
+    /* arena_brightness (the game's GRAPHICS -> ARENA BRIGHTNESS): the arenas' lights, 50-200% */
+    add(TAB_SETTINGS, L"Static", L"Arena light", SS_LEFT, X0 + 190, 158, 76, 20, 0);
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 270, 154, 90, 300,
+            ID_ARENA_LIGHT);
+    for (i = 50; i <= 200; i += 10) {
+        WCHAR t[16];
+        swprintf_s(t, 16, L"%d%%", i);  /* (100%: the game's own) */
+        SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)t);
+    }
     add(TAB_SETTINGS, L"Button", L"Show FPS (F2)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 400, 154, 150, 24, ID_SHOWFPS);
     add(TAB_SETTINGS, L"Static", L"Anti-aliasing", SS_LEFT, X0 + 16, 186, 100, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 116, 182, 140, 200, ID_MSAA);
@@ -2801,12 +3117,9 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Button", L"Mute", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 464, 306, 84, 24, ID_MUTE);
     add(TAB_SETTINGS, L"Button", L"High CPU priority (helps on busy or weak PCs)", BS_AUTOCHECKBOX | WS_TABSTOP,
         X0 + 16, 334, 530, 24, ID_PRIORITY);
-    add(TAB_SETTINGS, L"Button", L"Entrance music", BS_GROUPBOX, X0, 374, 560, 68, 0);
-    add(TAB_SETTINGS, L"Static", L"Create An Entrance \x2192 Music \x2192 USER PLAYLIST plays your own songs: "
-                                 L"add them on the Music tab.",
-        SS_LEFT, X0 + 16, 400, 370, 36, 0);
-    add(TAB_SETTINGS, L"Button", L"Open Music folder", BS_PUSHBUTTON | WS_TABSTOP, X0 + 400, 400, 146, 28,
-        ID_MUSIC_OPEN);
+    /* Launcher: its own settings (launcher.ini) - the update check (up_setup puts it here). Entrance music is on
+       the Music page. */
+    add(TAB_SETTINGS, L"Button", L"Launcher", BS_GROUPBOX, X0, 374, 560, 68, 0);
     add(TAB_SETTINGS, L"Button", L"Game", BS_GROUPBOX, X0, 450, 560, 78, 0);
     add(TAB_SETTINGS, L"Static", L"Language", SS_LEFT, X0 + 16, 474, 130, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 150, 470, 200, 200,
@@ -3013,8 +3326,9 @@ static void build_ui(void)
     roster_build(s_wnd, add, TAB_ROSTER, ID_ROSTER_BASE);
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
+    discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
-    setup_build(s_wnd, add, TAB_SETUP, ID_SETUP_BASE, setup_go_install);
+    setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
 
     CheckDlgButton(s_wnd, ID_CLOSE_ON_PLAY,
                    GetPrivateProfileIntW(L"Launcher", L"CloseOnPlay", 0, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -3816,6 +4130,7 @@ static void saves_restore(void)
             n++;
     } while (FindNextFileW(f, &fd));
     FindClose(f);
+    saves_make_writable(saves);
     saves_refresh();
     if (had)
         saves_status(L"Restored %d save%s from %s. Your previous saves were backed up to %s.", n, n == 1 ? L"" : L"s",
@@ -3857,8 +4172,10 @@ static void saves_export(void)
             skipped++;
             continue;
         }
-        if (shell_op(FO_COPY, from, to, 0))
+        if (shell_op(FO_COPY, from, to, 0)) {
             done++;
+            save_info_copy(saves, names[i], dest, names[i]);
+        }
     }
     saves_status(L"Exported %d save%s to %s.%s", done, done == 1 ? L"" : L"s", dest,
                  skipped ? L" Some were already there and were left as they were." : L"");
@@ -3901,22 +4218,161 @@ static int pick_save_files(WCHAR *buf, size_t n)
     return got;
 }
 
+/* ── importing saves: the right name, writable ───────────────────────── */
+/* An imported save only works under the name the game looks for, and writable (a read-only one: the game's
+   save mount fails and it says "Load Failed" with a blank save). Players' copies arrive renamed ("SaveData (1).dat"
+   from a browser), as an older version's package folder (<name>\SaveData.Dat inside), as Xbox 360 packages, or
+   read-only (from a zip, a disc, another PC). */
+
+/* `name` without a browser's " (1)" / "(2)" before its extension. */
+static void save_name_clean(WCHAR *name)
+{
+    WCHAR *dot = wcsrchr(name, L'.'), *open;
+    if (!dot || dot == name || dot[-1] != L')')
+        return;
+    open = dot - 1;
+    while (open > name && iswdigit(open[-1]))
+        open--;
+    if (open == dot - 1 || open == name || open[-1] != L'(')
+        return;
+    open--;
+    if (open > name && open[-1] == L' ')
+        open--;
+    memmove(open, dot, (wcslen(dot) + 1) * sizeof(WCHAR));
+}
+
+static uint32_t be32_at(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+
+/* What the file is, by its bytes: 1 the main save (SaveData.dat: its checksum, caw_import.c's), 2 a Created
+   Superstar (.cas), 3 Paint Tool logos (.pt), 4 an Xbox 360 package (STFS), 0 something else. */
+static int save_file_kind(const WCHAR *path)
+{
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    LARGE_INTEGER size;
+    uint8_t *b = NULL;
+    DWORD got = 0;
+    int kind = 0;
+    if (f == INVALID_HANDLE_VALUE)
+        return 0;
+    if (GetFileSizeEx(f, &size) && size.QuadPart >= 16 && size.QuadPart <= 0x900000 &&
+        (b = (uint8_t *)malloc((size_t)size.QuadPart)) && ReadFile(f, b, (DWORD)size.QuadPart, &got, NULL) &&
+        got == (DWORD)size.QuadPart) {
+        if (!memcmp(b, "CON ", 4) || !memcmp(b, "LIVE", 4) || !memcmp(b, "PIRS", 4))
+            kind = 4;
+        else if (got == 7888892 && be32_at(b) == 0x02A78E9Au)
+            kind = 3;
+        else if (got == 1347532 && be32_at(b) == 0x4B && be32_at(b + 4) == 0x18 && be32_at(b + 8) == 7)
+            kind = 2;
+        else if (got >= 0x812DC) {
+            uint32_t sum = 0, i;
+            for (i = 0x1C; i < 0x812DC; i++)
+                sum += b[i];
+            if (be32_at(b + 0x18) == sum)
+                kind = 1;
+        }
+    }
+    free(b);
+    CloseHandle(f);
+    return kind;
+}
+
+/* The name `src` goes into the saves folder as (`out`): an older version's package folder (<name>\SaveData.Dat)
+   gives its folder's name; a browser's " (1)" goes; the main save is always SaveData.dat. 0: not a save of the
+   game's by its bytes or its name (asks first). */
+static int save_import_name(const WCHAR *src, int kind, WCHAR *out)
+{
+    const WCHAR *name = wcsrchr(src, L'\\');
+    name = name ? name + 1 : src;
+    wcscpy_s(out, MAX_PATH, name);
+    if (!_wcsicmp(name, L"SaveData.Dat") && kind != 1 && name > src + 1) {
+        /* (inside a package folder: the folder is the save's name) */
+        WCHAR dir[MAX_PATH];
+        const WCHAR *slash;
+        wcsncpy_s(dir, MAX_PATH, src, (size_t)(name - src - 1));
+        slash = wcsrchr(dir, L'\\');
+        if (slash && wcschr(slash + 1, L'.'))
+            wcscpy_s(out, MAX_PATH, slash + 1);
+    }
+    save_name_clean(out);
+    if (kind == 1)
+        wcscpy_s(out, MAX_PATH, L"SaveData.dat");
+    {   /* (replays and highlight reels have nothing to tell them by: their names) */
+        const WCHAR *ext = wcsrchr(out, L'.');
+        if (!kind && ext && (!_wcsicmp(ext, L".cas") || !_wcsicmp(ext, L".pt") || !_wcsicmp(ext, L".rec") ||
+                             !_wcsicmp(ext, L".scn") || !_wcsicmp(ext, L".dat")))
+            return 1;
+    }
+    return kind != 0;
+}
+
+/* Every file in the saves folder writable again (read-only ones: "Load Failed" in the game). The count. */
+static int saves_make_writable(const WCHAR *saves)
+{
+    WCHAR pat[MAX_PATH], f[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int n = 0;
+    if (!join(pat, saves, L"*"))
+        return 0;
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    do
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && (fd.dwFileAttributes & FILE_ATTRIBUTE_READONLY) &&
+            join(f, saves, fd.cFileName) && SetFileAttributesW(f, fd.dwFileAttributes & ~FILE_ATTRIBUTE_READONLY))
+            n++;
+    while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+/* A save's files in .info (its header: the name the game finds it by; the list's picture), from one saves-like
+   folder to another, under `to_name`. */
+static void save_info_copy(const WCHAR *from_dir, const WCHAR *from_name, const WCHAR *to_dir, const WCHAR *to_name)
+{
+    static const WCHAR *const extra[] = { L".header", L".file", L".png" };
+    WCHAR a[MAX_PATH], b[MAX_PATH], d[MAX_PATH];
+    int j;
+    if (!join(d, to_dir, L".info"))
+        return;
+    for (j = 0; j < 3; j++) {
+        swprintf_s(a, MAX_PATH, L"%s\\.info\\%s%s", from_dir, from_name, extra[j]);
+        swprintf_s(b, MAX_PATH, L"%s\\%s%s", d, to_name, extra[j]);
+        if (file_exists(a)) {
+            CreateDirectoryW(d, NULL);
+            if (CopyFileW(a, b, FALSE))
+                SetFileAttributesW(b, FILE_ATTRIBUTE_NORMAL);
+        }
+    }
+}
+
 static void saves_import(void)
 {
     static WCHAR files[32768];
+    static WCHAR names[256][MAX_PATH];
+    static int kinds[256];
     WCHAR saves[MAX_PATH], to[MAX_PATH], before[MAX_PATH], t[512];
-    const WCHAR *p, *name;
-    int n, i, exists = 0, done = 0, backed = 0;
+    const WCHAR *p;
+    int n, i, exists = 0, done = 0, backed = 0, unknown = 0, renamed = 0;
     if (saves_locked() || !saves_dir(saves))
         return;
     n = pick_save_files(files, 32768);
     if (!n)
         return;
-    for (p = files, i = 0; i < n; i++, p += wcslen(p) + 1) {
-        name = wcsrchr(p, L'\\');
-        name = name ? name + 1 : p;
-        if (join(to, saves, name) && (file_exists(to) || dir_exists(to)))
+    for (p = files, i = 0; i < n && i < 256; i++, p += wcslen(p) + 1) {
+        kinds[i] = save_file_kind(p);
+        if (!save_import_name(p, kinds[i], names[i]))
+            unknown++;
+        if (join(to, saves, names[i]) && (file_exists(to) || dir_exists(to)))
             exists++;
+    }
+    if (n > 256)
+        n = 256;
+    if (unknown) {
+        swprintf_s(t, 512, L"%d of the %d files don't look like saves of this game (not a main save, Created "
+                           L"Superstar, Paint Tool or Xbox 360 save). Import them anyway?", unknown, n);
+        if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
+            return;
     }
     if (exists) {
         swprintf_s(t, 512, L"%d of the %d files replace saves you have. Replace them?\n\n"
@@ -3931,17 +4387,47 @@ static void saves_import(void)
     }
     mkdirs(saves);
     for (p = files, i = 0; i < n; i++, p += wcslen(p) + 1) {
-        name = wcsrchr(p, L'\\');
-        name = name ? name + 1 : p;
-        if (join(to, saves, name) && CopyFileW(p, to, FALSE))
-            done++;
+        WCHAR src_dir[MAX_PATH];
+        const WCHAR *src_name = wcsrchr(p, L'\\');
+        int ok = 0;
+        if (!join(to, saves, names[i]))
+            continue;
+        if (kinds[i] == 4) {   /* (an Xbox 360 package: its save file, as the Import Xbox 360 save button does) */
+            uint8_t *data = NULL;
+            size_t size = 0;
+            if (stfs_read_save(p, &data, &size)) {
+                HANDLE f = CreateFileW(to, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                DWORD put = 0;
+                if (f != INVALID_HANDLE_VALUE) {
+                    ok = WriteFile(f, data, (DWORD)size, &put, NULL) && put == size;
+                    CloseHandle(f);
+                }
+                free(data);
+            }
+        } else {
+            ok = CopyFileW(p, to, FALSE);
+        }
+        if (!ok)
+            continue;
+        done++;
+        if (wcscmp(names[i], src_name ? src_name + 1 : p))
+            renamed++;
+        SetFileAttributesW(to, FILE_ATTRIBUTE_NORMAL);
+        /* (its header beside it, an exported .info: the name the game finds it by) */
+        if (src_name && kinds[i] != 4) {
+            wcsncpy_s(src_dir, MAX_PATH, p, (size_t)(src_name - p));
+            if (!wcscmp(names[i], src_name + 1))
+                save_info_copy(src_dir, src_name + 1, saves, names[i]);
+        }
     }
+    saves_make_writable(saves);
     saves_refresh();
+    swprintf_s(t, 512, renamed ? L" %d got the name the game looks for." : L"", renamed);
     if (backed)
-        saves_status(L"Imported %d save%s. Your previous saves were backed up to %s.", done, done == 1 ? L"" : L"s",
-                     before);
+        saves_status(L"Imported %d save%s.%s Your previous saves were backed up to %s.", done, done == 1 ? L"" : L"s",
+                     t, before);
     else
-        saves_status(L"Imported %d save%s.", done, done == 1 ? L"" : L"s");
+        saves_status(L"Imported %d save%s.%s", done, done == 1 ? L"" : L"s", t);
 }
 
 static void saves_delete(void)
@@ -6423,6 +6909,7 @@ static void up_checked(int ok, WCHAR *err)
     InterlockedExchange(&s_up_busy, 0);
     EnableWindow(ctl(ID_UP_BUTTON), TRUE);
     s_up_available = ok && version_newer(s_up.version, PORT_VERSION);
+    play_notice();
     if (!ok) {
         up_status(L"%s", err ? err : L"Could not check for updates.");
     } else if (s_up_available) {
@@ -6463,13 +6950,12 @@ static void up_setup(void)
 {
     WCHAR v[64];
     swprintf_s(v, 64, L"Version %s", PORT_VERSION);
-    add(TAB_PLAY, L"Button", L"Updates", BS_GROUPBOX, X0, 326, 560, 110, 0);
-    add(TAB_PLAY, L"Static", v, SS_LEFT, X0 + 16, 354, 150, 20, ID_VERSION);
-    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 376, 370, 36, ID_UP_STATUS);
-    add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 394, 352, 150, 30, ID_UP_BUTTON);
-    add(TAB_PLAY, L"Button", L"Check when the launcher starts", BS_AUTOCHECKBOX | WS_TABSTOP,
-        X0 + 16, 406, 300, 22, ID_UP_AUTO);
-    add(TAB_PLAY, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 330, 410, 214, 14, ID_UP_PROGRESS);
+    add(-1, L"Static", v, SS_LEFT, X0 + 16, 354, 150, 20, ID_VERSION);
+    add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 290, 550, 156, 36, ID_UP_STATUS);
+    add(TAB_PLAY, L"Button", L"Check for updates", BS_PUSHBUTTON | WS_TABSTOP, X0 + 724 - 16 - 160, 414, 160, 28, ID_UP_BUTTON);
+    add(TAB_SETTINGS, L"Button", L"Check for updates when the launcher starts", BS_AUTOCHECKBOX | WS_TABSTOP,
+        X0 + 16, 404, 400, 22, ID_UP_AUTO);
+    add(TAB_PLAY, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0 + 290, 584, 156, 4, ID_UP_PROGRESS);
     ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     CheckDlgButton(s_wnd, ID_UP_AUTO,
                    GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini) ? BST_CHECKED : BST_UNCHECKED);
@@ -6499,9 +6985,11 @@ static int nav_at(int x, int y)
     int k;
     if (x < 0 || x >= S(SB_W))
         return -1;
-    for (k = 0; k < NAV_N; k++)
-        if (y >= S(NAV_TOP + k * NAV_H) && y < S(NAV_TOP + k * NAV_H + NAV_H - 4))
+    for (k = 0; k < NAV_N; k++) {
+        const RECT r = nav_rect(k);
+        if (y >= S(r.top) && y < S(r.bottom))
             return k;
+    }
     return -1;
 }
 
@@ -6527,19 +7015,19 @@ static int draw_button(const DRAWITEMSTRUCT *d)
         HGDIOBJ old;
         FillRect(dc, &r, card_at(d->hwndItem) ? s_card_brush : s_page_brush);  /* (behind the corners) */
         if (primary) {
-            fill = disabled ? RGB(224, 186, 192) : down ? C_ACCENT_DOWN : hot ? C_ACCENT_HOT : C_ACCENT;
+            fill = disabled ? RGB(92, 40, 48) : down ? C_ACCENT_DOWN : hot ? C_ACCENT_HOT : C_ACCENT;
             line = THEME_NONE;
             ink = RGB(255, 255, 255);
         } else {
-            fill = disabled ? RGB(246, 246, 248) : down ? RGB(226, 226, 232) : hot ? RGB(240, 240, 245) : C_CARD;
-            line = disabled ? RGB(226, 226, 232) : hot ? RGB(168, 168, 178) : RGB(198, 198, 206);
-            ink = disabled ? RGB(160, 160, 168) : C_TEXT;
+            fill = disabled ? RGB(30, 32, 38) : down ? RGB(24, 26, 31) : hot ? RGB(44, 48, 56) : RGB(34, 37, 44);
+            line = disabled ? RGB(44, 47, 54) : hot ? RGB(98, 102, 114) : RGB(66, 70, 80);
+            ink = disabled ? RGB(100, 103, 112) : C_TEXT;
         }
         theme_round_rect(dc, &r, S(play ? 8 : 6), fill, line, (float)S(1));
         if ((d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT)) {
             RECT f = r;
             InflateRect(&f, -S(3), -S(3));
-            theme_round_rect(dc, &f, S(4), THEME_NONE, primary ? RGB(255, 214, 220) : C_ACCENT, (float)S(1));
+            theme_round_rect(dc, &f, S(4), THEME_NONE, primary ? RGB(255, 190, 200) : C_ACCENT, (float)S(1));
         }
         GetWindowTextW(d->hwndItem, text, 128);
         SetBkMode(dc, TRANSPARENT);
@@ -6599,13 +7087,407 @@ static int draw_button_buffered(const DRAWITEMSTRUCT *d)
     return ok;
 }
 
+/* ── the Play page ─────────────────────────────────────────────────────── */
+/* Its cards are group boxes (build_ui); what's on them is drawn here: the picture card (title, the
+   game's size), the tiles (last session, sessions, version), Setup / Saves / Mods / Texture packs, the
+   status line. Places are the page's (x from X0, y from DY). */
+#define PX(x) S(SB_W + X0 + (x))
+#define PY(y) S(DY + (y))
+
+static int s_mods_n, s_mods_on, s_packs_n;
+
+/* The picture behind the title: <launcher folder>\launcher_art\hero.(png|jpg|jpeg|bmp), the player's
+   own (a wide one scrolls). None: the card without a picture. */
+static void hero_find(void)
+{
+    static const WCHAR *const ext[] = { L"png", L"jpg", L"jpeg", L"bmp" };
+    int i;
+    s_hero_file[0] = 0;
+    for (i = 0; i < 4; i++) {
+        swprintf_s(s_hero_file, MAX_PATH, L"%s\\launcher_art\\hero.%s", s_launcher_dir, ext[i]);
+        if (file_exists(s_hero_file))
+            return;
+    }
+    s_hero_file[0] = 0;
+}
+
+static void hero_rect(RECT *r)
+{
+    r->left = PX(0); r->top = PY(-8); r->right = PX(724); r->bottom = PY(392);
+}
+
+/* The mods (as mods_tab.c's list counts them: folders under Mods\<type>, off with a "disabled" file) and
+   the texture packs (folders in Texture Packs). */
+static void play_counts(void)
+{
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves",
+                                         L"MatchTypes", L"Backgrounds", L"Attires" };
+    WCHAR pat[MAX_PATH], off[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int t;
+    s_mods_n = s_mods_on = s_packs_n = 0;
+    if (!s_game_dir[0])
+        return;
+    for (t = 0; t < (int)(sizeof types / sizeof types[0]); t++) {
+        swprintf_s(pat, MAX_PATH, L"%s\\Mods\\%s\\*", s_game_dir, types[t]);
+        h = FindFirstFileW(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE)
+            continue;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
+                continue;
+            s_mods_n++;
+            swprintf_s(off, MAX_PATH, L"%s\\Mods\\%s\\%s\\disabled", s_game_dir, types[t], fd.cFileName);
+            if (!file_exists(off))
+                s_mods_on++;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    swprintf_s(pat, MAX_PATH, L"%s\\Texture Packs\\*", s_game_dir);
+    h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != L'.')
+                s_packs_n++;
+        while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
+
+/* The card link under pt (a card's top part, "Manage ..."): its page, or -1. */
+static int play_link_at(POINT pt)
+{
+    int i;
+    if (s_cur_tab != TAB_PLAY)
+        return -1;
+    for (i = 0; i < s_nplay_links; i++)
+        if (PtInRect(&s_play_links[i].r, pt))
+            return s_play_links[i].tab;
+    return -1;
+}
+
+static void play_link(int x, int y, int w, int h, int tab)
+{
+    if (s_nplay_links < (int)(sizeof s_play_links / sizeof s_play_links[0])) {
+        PlayLink *l = &s_play_links[s_nplay_links++];
+        l->r.left = PX(x); l->r.top = PY(y); l->r.right = PX(x + w); l->r.bottom = PY(y + h);
+        l->tab = tab;
+    }
+}
+
+static void play_text(HDC dc, HFONT f, COLORREF c, int x, int y, int w, int h, const WCHAR *t, UINT flags)
+{
+    RECT r = { PX(x), PY(y), PX(x + w), PY(y + h) };
+    SelectObject(dc, f);
+    SetTextColor(dc, c);
+    DrawTextW(dc, t, -1, &r, flags | DT_SINGLELINE | DT_NOPREFIX);
+}
+
+static void play_glyph(HDC dc, HFONT f, COLORREF c, int x, int y, WCHAR g)
+{
+    WCHAR t[2] = { g, 0 };
+    play_text(dc, f, c, x, y, 40, 40, t, DT_LEFT | DT_TOP);
+}
+
+static void play_line(HDC dc, int x, int y, int w, int h)
+{
+    RECT r = { PX(x), PY(y), PX(x + w), PY(y + h) };
+    HBRUSH b = CreateSolidBrush(C_CARD_LINE);
+    if (r.right == r.left) r.right++;
+    if (r.bottom == r.top) r.bottom++;
+    FillRect(dc, &r, b);
+    DeleteObject(b);
+}
+
+/* A card's head: its icon, title, line of help, the arrow; the head opens `tab`. */
+static void play_card_head(HDC dc, int x, int y, WCHAR icon, const WCHAR *title, const WCHAR *help, int tab)
+{
+    play_glyph(dc, s_mark_font, C_TEXT, x + 18, y + 16, icon);
+    play_text(dc, s_big, C_TEXT, x + 62, y + 10, 260, 24, title, DT_LEFT | DT_VCENTER);
+    play_text(dc, s_font, C_MUTED, x + 62, y + 34, 262, 20, help, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    play_glyph(dc, s_icons, C_MUTED, x + 330, y + 24, 0xE76C);
+    play_line(dc, x + 18, y + 64, 320, 0);
+    play_link(x, y, 356, 62, tab);
+}
+
+/* What needs the player now, if anything (one line on the Play page, with its button): no game here, the
+   program missing, program files missing (antivirus), the VC++ runtime, an update. */
+static void play_notice(void)
+{
+    WCHAR v[32];
+    const WCHAR *button = L"";
+    s_notice[0] = 0;
+    s_notice_action = NOTICE_NONE;
+    if (!s_game_dir[0] || !is_game_folder(s_game_dir)) {
+        wcscpy_s(s_notice, 220, L"No game in this folder: choose the game's folder, or install it (Setup).");
+        s_notice_action = NOTICE_FOLDER; button = L"Choose folder\x2026";
+    } else if (!has_program(s_game_dir)) {
+        wcscpy_s(s_notice, 220, GAME_EXE L" is missing from the game folder (antivirus, or an unfinished install).");
+        s_notice_action = NOTICE_FILES; button = L"Open Setup";
+    } else if (s_size_known && s_files_listed && s_files_bad) {
+        swprintf_s(s_notice, 220, L"%d of the port's program files %s missing - antivirus may have taken %s.",
+                   s_files_bad, s_files_bad == 1 ? L"is" : L"are", s_files_bad == 1 ? L"it" : L"them");
+        s_notice_action = NOTICE_FILES; button = L"Check files";
+    } else if (setup_vcrt_system(v, 32) != SETUP_VCRT_OK) {
+        wcscpy_s(s_notice, 220, L"Setup isn't finished: the game needs Microsoft's Visual C++ runtime.");
+        s_notice_action = NOTICE_SETUP; button = L"Open Setup";
+    } else if (s_up_available) {
+        swprintf_s(s_notice, 220, L"Version %s of the port is available.", s_up.version);
+        s_notice_action = NOTICE_UPDATE; button = L"Update\x2026";
+    }
+    set_text(ID_PL_NOTICE, button);
+    ShowWindow(ctl(ID_PL_NOTICE), s_notice[0] && s_cur_tab == TAB_PLAY ? SW_SHOW : SW_HIDE);
+    if (s_wnd && s_cur_tab == TAB_PLAY)
+        InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void paint_play(HDC dc)
+{
+    RECT hr;
+    WCHAR t[200], a[32], when[64];
+    WCHAR pt_path[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    unsigned long long sec = 0, ses = 0;
+    int i;
+    s_nplay_links = 0;
+    SetBkMode(dc, TRANSPARENT);
+
+    /* the picture card: the title, Play, Start Without Mods, the game's size */
+    hero_rect(&hr);
+    i = theme_hero(dc, &hr, S(10), s_hero_file, C_CARD, S(s_hero_scroll) / 2);
+    if (i && !s_hero_moving)
+        SetTimer(s_wnd, HERO_TIMER, 33, NULL);
+    s_hero_moving = i;
+    theme_round_rect(dc, &hr, S(10), THEME_NONE, C_CARD_LINE, (float)S(1));
+    play_text(dc, s_huge, C_TEXT, 28, 84, 560, 44, GAME_TITLE, DT_LEFT | DT_VCENTER);
+    play_text(dc, s_font, C_MUTED, 28, 132, 560, 22,
+              L"The legendary roster. The biggest arenas. The ultimate showdown.", DT_LEFT | DT_VCENTER);
+    play_line(dc, 436, 218, 0, 48);
+    play_glyph(dc, s_mark_font, C_MUTED, 450, 226, 0xEDA2);
+    play_text(dc, s_font, C_MUTED, 490, 212, 200, 18, L"Game size", DT_LEFT | DT_VCENTER);
+    if (s_size_known && same_dir(s_size_dir, s_game_dir)) {
+        fmt_size(a, 32, s_size_game);
+        play_text(dc, s_big, C_TEXT, 490, 230, 200, 24, a, DT_LEFT | DT_VCENTER);
+        fmt_size(a, 32, s_size_mods);
+        swprintf_s(t, 200, L"(mods: %s)", a);
+        play_text(dc, s_font, C_MUTED, 490, 254, 200, 18, t, DT_LEFT | DT_VCENTER);
+    } else {
+        play_text(dc, s_big, C_MUTED, 490, 230, 200, 24, s_game_dir[0] ? L"Measuring\x2026" : L"\x2014",
+                  DT_LEFT | DT_VCENTER);
+    }
+
+    /* one slim row: last played, sessions and time, the version (Check for updates: build_ui) */
+    swprintf_s(pt_path, MAX_PATH, L"%s\\playtime.txt", s_game_dir);
+    {
+        FILE *f = NULL;
+        char line[128];
+        if (!_wfopen_s(&f, pt_path, L"r") && f) {
+            while (fgets(line, sizeof line, f)) {
+                if (!strncmp(line, "seconds=", 8)) sec = _strtoui64(line + 8, NULL, 10);
+                if (!strncmp(line, "sessions=", 9)) ses = _strtoui64(line + 9, NULL, 10);
+            }
+            fclose(f);
+        }
+    }
+    wcscpy_s(when, 64, L"not yet");
+    if (ses && GetFileAttributesExW(pt_path, GetFileExInfoStandard, &fa)) {
+        FILETIME now;
+        ULARGE_INTEGER u0, u1;
+        unsigned long long m;
+        GetSystemTimeAsFileTime(&now);
+        u0.LowPart = fa.ftLastWriteTime.dwLowDateTime; u0.HighPart = fa.ftLastWriteTime.dwHighDateTime;
+        u1.LowPart = now.dwLowDateTime; u1.HighPart = now.dwHighDateTime;
+        m = u1.QuadPart > u0.QuadPart ? (u1.QuadPart - u0.QuadPart) / 600000000ull : 0;
+        if (m < 1) wcscpy_s(when, 64, L"just now");
+        else if (m < 60) swprintf_s(when, 64, L"%llu min ago", m);
+        else if (m < 48 * 60) swprintf_s(when, 64, L"%llu h ago", m / 60);
+        else swprintf_s(when, 64, L"%llu days ago", m / 1440);
+    }
+    if (sec >= 3600)
+        swprintf_s(t, 200, L"Last played %s   \x00B7   %llu session%s, %llu h %llu min   \x00B7   Version %s", when, ses,
+                   ses == 1 ? L"" : L"s", sec / 3600, sec / 60 % 60, PORT_VERSION);
+    else
+        swprintf_s(t, 200, L"Last played %s   \x00B7   %llu session%s, %llu min   \x00B7   Version %s", when, ses,
+                   ses == 1 ? L"" : L"s", sec / 60, PORT_VERSION);
+    play_glyph(dc, s_icons, C_MUTED, 18, 420, 0xE823);
+    play_text(dc, s_font, C_MUTED, 46, 416, 480, 24, t, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+
+    /* the notice (play_notice): only when something needs the player */
+    if (s_notice[0]) {
+        play_glyph(dc, s_icons, s_notice_action == NOTICE_UPDATE ? RGB(120, 170, 255) : C_WARN, 18, 478,
+                   s_notice_action == NOTICE_UPDATE ? 0xE896 : 0xE7BA);
+        play_text(dc, s_font, C_TEXT, 46, 472, 480, 28, s_notice, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    }
+
+    /* the status line: ready (ID_PLAY_STATUS), updates (ID_UP_STATUS), the program files' check */
+    play_glyph(dc, s_icons, s_play_ready ? C_GOOD : C_WARN, 18, 560, s_play_ready ? 0xE930 : 0xE7BA);
+    play_glyph(dc, s_icons, C_MUTED, 592, 560, 0xEA18);
+    play_text(dc, s_font, C_MUTED, 616, 550, 104, 18, L"Antivirus", DT_LEFT | DT_VCENTER);
+    if (!s_size_known)
+        play_text(dc, s_font, C_MUTED, 616, 568, 104, 18, L"Checking files\x2026", DT_LEFT | DT_VCENTER);
+    else if (!s_files_listed)
+        play_text(dc, s_font, C_MUTED, 616, 568, 104, 18, L"No file list", DT_LEFT | DT_VCENTER);
+    else if (!s_files_bad)
+        play_text(dc, s_font, C_GOOD, 616, 568, 104, 18, L"No files blocked", DT_LEFT | DT_VCENTER);
+    else {
+        swprintf_s(t, 200, L"%d file%s missing", s_files_bad, s_files_bad == 1 ? L"" : L"s");
+        play_text(dc, s_font, C_WARN, 616, 568, 104, 18, t, DT_LEFT | DT_VCENTER);
+    }
+}
+#undef PX
+#undef PY
+
+/* ── Setup's step bar ──────────────────────────────────────────────────── */
+/* Each step's state, found when a step's page is shown (s_step_done: 1 done, 0 to do, -1 optional). */
+static int  s_step_done[N_STEPS];
+static RECT s_step_rects[N_STEPS];
+
+static void steps_refresh(void)
+{
+    WCHAR v[32], d[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    s_step_done[0] = setup_vcrt_system(v, 32) == SETUP_VCRT_OK;
+    s_step_done[1] = is_game_folder(s_game_dir) && has_program(s_game_dir);
+    s_step_done[2] = -1;
+    swprintf_s(d, MAX_PATH, L"%s\\DLC\\*", s_game_dir);
+    h = s_game_dir[0] ? FindFirstFileW(d, &fd) : INVALID_HANDLE_VALUE;
+    if (h != INVALID_HANDLE_VALUE) {
+        do
+            if (fd.cFileName[0] != L'.')
+                s_step_done[2] = 1;
+        while (s_step_done[2] < 0 && FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    s_step_done[3] = -1;
+    s_step_done[4] = -1;
+}
+
+/* Setup's first step still to do (all done: the first). */
+static int setup_first_step(void)
+{
+    int i;
+    steps_refresh();
+    for (i = 0; i < N_STEPS; i++)
+        if (!s_step_done[i])
+            return k_steps[i];
+    return k_steps[0];
+}
+
+static int step_at(POINT pt)
+{
+    int i;
+    if (setup_step(s_cur_tab) < 0)
+        return -1;
+    for (i = 0; i < N_STEPS; i++)
+        if (PtInRect(&s_step_rects[i], pt))
+            return i;
+    return -1;
+}
+
+/* On top of each step's page: four steps, each a circle (its number; a tick when done) and its name, the
+   page's own underlined in red. */
+static void paint_steps(HDC dc)
+{
+    static const WCHAR *const names[N_STEPS] = { L"This PC", L"The game", L"DLC", L"Tools", L"Android" };
+    const int cur = setup_step(s_cur_tab), x0 = SB_W + PAD + X0, w = 112;
+    int i;
+    RECT line = { S(x0), S(DY + 42), S(x0 + 560), S(DY + 43) };
+    HBRUSH b = CreateSolidBrush(C_CARD_LINE);
+    FillRect(dc, &line, b);
+    DeleteObject(b);
+    SetBkMode(dc, TRANSPARENT);
+    for (i = 0; i < N_STEPS; i++) {
+        const int x = x0 + i * w, done = s_step_done[i] == 1, here = i == cur;
+        RECT c = { S(x), S(DY + 4), S(x + 26), S(DY + 30) }, t;
+        WCHAR num[4];
+        const WCHAR *state = done ? L"Done" : s_step_done[i] < 0 ? L"Optional" : L"To do";
+        theme_round_rect(dc, &c, S(13), done ? C_GOOD : here ? C_ACCENT : C_CARD,
+                         done || here ? THEME_NONE : RGB(90, 94, 106), (float)S(1));
+        SetTextColor(dc, done || here ? RGB(255, 255, 255) : C_MUTED);
+        if (done) {
+            WCHAR g[2] = { 0xE73E, 0 };
+            SelectObject(dc, s_icons);
+            DrawTextW(dc, g, 1, &c, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        } else {
+            swprintf_s(num, 4, L"%d", i + 1);
+            SelectObject(dc, s_nav);
+            DrawTextW(dc, num, -1, &c, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        SelectObject(dc, s_nav);
+        SetTextColor(dc, here ? RGB(255, 255, 255) : RGB(200, 202, 210));
+        SetRect(&t, S(x + 34), S(DY + 0), S(x + w - 4), S(DY + 18));
+        DrawTextW(dc, names[i], -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        SelectObject(dc, s_font);
+        SetTextColor(dc, done ? C_GOOD : C_MUTED);
+        SetRect(&t, S(x + 34), S(DY + 18), S(x + w - 4), S(DY + 36));
+        DrawTextW(dc, state, -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        if (here) {
+            RECT u = { S(x), S(DY + 41), S(x + w - 8), S(DY + 44) };
+            b = CreateSolidBrush(C_ACCENT);
+            FillRect(dc, &u, b);
+            DeleteObject(b);
+        }
+        SetRect(&s_step_rects[i], S(x), S(DY), S(x + w - 8), S(DY + 44));
+    }
+}
+
+/* ── Mods' tab bar ─────────────────────────────────────────────────────── */
+static RECT s_mod_tab_rects[N_MOD_TABS];
+
+static int mod_tab_at(POINT pt)
+{
+    int i;
+    if (mods_tab_of(s_cur_tab) < 0)
+        return -1;
+    for (i = 0; i < N_MOD_TABS; i++)
+        if (PtInRect(&s_mod_tab_rects[i], pt))
+            return i;
+    return -1;
+}
+
+/* On top of each Mods page: its three tabs, the page's own underlined in red. */
+static void paint_mod_tabs(HDC dc)
+{
+    static const WCHAR *const names[N_MOD_TABS] = { L"Installed Mods", L"Discovery", L"Texture Packs" };
+    static const WCHAR icons[N_MOD_TABS] = { 0xEA86, 0xE721, 0xE8B9 };
+    const int cur = mods_tab_of(s_cur_tab), x0 = SB_W + PAD + X0;
+    int i, x = x0;
+    RECT line = { S(x0), S(DY + 38), S(x0 + 560), S(DY + 39) };
+    HBRUSH b = CreateSolidBrush(C_CARD_LINE);
+    FillRect(dc, &line, b);
+    DeleteObject(b);
+    SetBkMode(dc, TRANSPARENT);
+    for (i = 0; i < N_MOD_TABS; i++) {
+        const int here = i == cur, w = 168;
+        WCHAR g[2] = { icons[i], 0 };
+        RECT t = { S(x), S(DY + 4), S(x + 26), S(DY + 34) };
+        SelectObject(dc, s_icons);
+        SetTextColor(dc, here ? C_ACCENT_HOT : C_MUTED);
+        DrawTextW(dc, g, 1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, s_nav);
+        SetTextColor(dc, here ? RGB(255, 255, 255) : RGB(190, 192, 202));
+        SetRect(&t, S(x + 26), S(DY + 4), S(x + w), S(DY + 34));
+        DrawTextW(dc, names[i], -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        if (here) {
+            RECT u = { S(x), S(DY + 37), S(x + w - 16), S(DY + 40) };
+            b = CreateSolidBrush(C_ACCENT);
+            FillRect(dc, &u, b);
+            DeleteObject(b);
+        }
+        SetRect(&s_mod_tab_rects[i], S(x), S(DY), S(x + w - 16), S(DY + 40));
+        x += w;
+    }
+}
+
 /* The window: the sidebar, the page's title, its cards. */
 static void paint_window(HDC dc)
 {
-    static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install the game", L"DLC",
-                                                    L"Saves", L"Paint Tool", L"Movies", L"Android", L"Mods",
-                                                    L"Music", L"Roster: sort categories", L"Texture packs",
-                                                    L"First time setup" };
+    static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
+                                                    L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
+                                                    L"Music", L"Roster: sort categories", L"Mods",
+                                                    L"Setup", L"Mods", L"Setup" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -6631,28 +7513,45 @@ static void paint_window(HDC dc)
     r.top = S(44); r.bottom = S(64);
     DrawTextW(dc, L"PC PORT", -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
     for (k = 0; k < NAV_N; k++) {
-        const int sel = k_nav[k].tab == s_cur_tab, hot = k == s_nav_hover;
-        RECT it = { S(10), S(NAV_TOP + k * NAV_H), S(SB_W - 10), S(NAV_TOP + k * NAV_H + NAV_H - 4) };
+        const int sel = k_nav[k].tab == nav_tab(s_cur_tab), hot = k == s_nav_hover, big = k < NAV_MAIN;
+        const RECT n = nav_rect(k);
+        RECT it = { 0, S(n.top), S(SB_W), S(n.bottom) };
         WCHAR icon[2] = { k_nav[k].icon, 0 };
-        if (sel || hot)
-            theme_round_rect(dc, &it, S(6), sel ? C_SIDEBAR_SEL : C_SIDEBAR_HOVER, THEME_NONE, 0);
-        if (sel) {
-            RECT bar = { it.left, it.top + S(8), it.left + S(4), it.bottom - S(8) };
-            theme_round_rect(dc, &bar, S(2), C_ACCENT, THEME_NONE, 0);
+        if (sel || hot) {
+            HBRUSH b = CreateSolidBrush(sel ? C_SIDEBAR_SEL : C_SIDEBAR_HOVER);
+            FillRect(dc, &it, b);
+            DeleteObject(b);
         }
-        SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(178, 178, 188));
+        if (sel) {
+            RECT bar = { 0, it.top, S(4), it.bottom };
+            HBRUSH b = CreateSolidBrush(C_ACCENT);
+            FillRect(dc, &bar, b);
+            DeleteObject(b);
+        }
+        SetTextColor(dc, sel ? C_ACCENT_HOT : big ? RGB(178, 180, 190) : RGB(130, 132, 142));
         SelectObject(dc, s_icons);
         r = it;
-        r.left += S(18);
+        r.left += S(26);
         DrawTextW(dc, icon, 1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        SelectObject(dc, s_nav);
-        r.left += S(30);
+        SetTextColor(dc, sel ? RGB(255, 255, 255) : big ? RGB(214, 216, 224) : RGB(150, 152, 162));
+        SelectObject(dc, big ? s_nav : s_font);
+        r.left += S(34);
         DrawTextW(dc, k_nav[k].name, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        if (k == NAV_MAIN - 1) {   /* (the line under the main pages) */
+            RECT line = { S(20), it.bottom + S(NAV_LINE / 2), S(SB_W - 20), it.bottom + S(NAV_LINE / 2) + 1 };
+            HBRUSH b = CreateSolidBrush(RGB(40, 43, 50));
+            FillRect(dc, &line, b);
+            DeleteObject(b);
+        }
     }
     SelectObject(dc, s_font);
-    SetTextColor(dc, RGB(120, 120, 132));
-    swprintf_s(v, 64, L"Version %s", PORT_VERSION);
-    r.left = S(20); r.right = S(SB_W - 10); r.top = cl.bottom - S(34); r.bottom = cl.bottom - S(12);
+    SetTextColor(dc, RGB(150, 152, 162));
+    swprintf_s(v, 64, L"Launcher v%s", PORT_VERSION);
+    {
+        RECT dot = { S(20), cl.bottom - S(28), S(28), cl.bottom - S(20) };
+        theme_round_rect(dc, &dot, S(4), C_GOOD, THEME_NONE, 0);
+    }
+    r.left = S(36); r.right = S(SB_W - 10); r.top = cl.bottom - S(34); r.bottom = cl.bottom - S(12);
     DrawTextW(dc, v, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
     /* "Support me: ko-fi" above the version: the link opens the Ko-fi page. */
     {
@@ -6667,7 +7566,7 @@ static void paint_window(HDC dc)
         s_kofi_link.left = k.left; s_kofi_link.right = k.left + z.cx;
         s_kofi_link.top = k.top; s_kofi_link.bottom = k.top + z.cy;
         k.left += z.cx;
-        SetTextColor(dc, RGB(120, 120, 132));
+        SetTextColor(dc, RGB(150, 152, 162));
         DrawTextW(dc, L"  B7 ", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
         GetTextExtentPoint32W(dc, L"  B7 ", 3, &z);
         k.left += z.cx;
@@ -6676,7 +7575,7 @@ static void paint_window(HDC dc)
         GetTextExtentPoint32W(dc, L"PayPal", 6, &z);
         s_paypal_link.left = k.left; s_paypal_link.right = k.left + z.cx;
         s_paypal_link.top = k.top; s_paypal_link.bottom = k.top + z.cy;
-        SetTextColor(dc, RGB(120, 120, 132));
+        SetTextColor(dc, RGB(150, 152, 162));
     }
     /* The credit, top right of every page: the link opens the release page. */
     {
@@ -6684,7 +7583,7 @@ static void paint_window(HDC dc)
         SIZE z;
         SelectObject(dc, s_font);
         c.left = S(SB_W + X0 + 200); c.right = cl.right - S(16); c.top = S(12); c.bottom = S(31);
-        SetTextColor(dc, RGB(120, 120, 132));
+        SetTextColor(dc, C_MUTED);
         DrawTextW(dc, CREDIT_LINE, -1, &c, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
         c.top = S(31); c.bottom = S(50);
         SetTextColor(dc, C_ACCENT);
@@ -6697,17 +7596,18 @@ static void paint_window(HDC dc)
     if (s_cur_tab >= 0 && s_cur_tab < TAB_COUNT) {
         SelectObject(dc, s_huge);
         SetTextColor(dc, C_TEXT);
-        r.left = S(SB_W + X0); r.right = cl.right - S(16); r.top = S(14); r.bottom = S(52);
-        DrawTextW(dc, titles[s_cur_tab], -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        r.left = S(SB_W + X0 + PAD); r.right = cl.right - S(16); r.top = S(14); r.bottom = S(52);
+        if (s_cur_tab != TAB_PLAY)
+            DrawTextW(dc, titles[s_cur_tab], -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         for (i = 0; i < s_ncards; i++) {
             const Card *cd = &s_cards[i];
             RECT c;
-            if (cd->tab != s_cur_tab)
+            if (cd->tab != s_cur_tab || (cd->title[0] == 1 && !s_notice[0]))
                 continue;
             c.left = S(cd->x + SB_W); c.top = S(cd->y + DY); c.right = S(cd->x + cd->w + SB_W);
             c.bottom = S(cd->y + cd->h + DY);
             theme_round_rect(dc, &c, S(10), C_CARD, C_CARD_LINE, (float)S(1));
-            if (cd->title[0]) {
+            if (cd->title[0] > 1) {
                 SelectObject(dc, s_card);
                 SetTextColor(dc, C_TEXT);
                 r = c;
@@ -6715,6 +7615,12 @@ static void paint_window(HDC dc)
                 DrawTextW(dc, cd->title, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
             }
         }
+        if (s_cur_tab == TAB_PLAY)
+            paint_play(dc);
+        if (setup_step(s_cur_tab) >= 0)
+            paint_steps(dc);
+        if (mods_tab_of(s_cur_tab) >= 0)
+            paint_mod_tabs(dc);
     }
     SelectObject(dc, old);
 }
@@ -6734,7 +7640,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_FR_NAME, name);
             }
         }
-        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n)) {
+        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n)) {
             const int r = mods_notify(n);
             if (r == 2 || r == 3) return r == 2;  /* (renaming a background: mods_tab.c) */
         }
@@ -6744,6 +7650,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
             roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)) ||
+            discover_command(LOWORD(wp), HIWORD(wp)) ||
             setup_command(LOWORD(wp), HIWORD(wp)))
             return 0;
         switch (LOWORD(wp)) {
@@ -6752,6 +7659,26 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             break;
         case ID_PLAY:
             play();
+            break;
+        case ID_PLAY_NOMODS:
+            play_with(1);
+            break;
+        case ID_PL_NOTICE:
+            if (s_notice_action == NOTICE_FOLDER)
+                SendMessageW(w, WM_COMMAND, ID_GAMEDIR_CHANGE, 0);
+            else if (s_notice_action == NOTICE_UPDATE)
+                SendMessageW(w, WM_COMMAND, ID_UP_BUTTON, 0);
+            else if (s_notice_action == NOTICE_FILES)
+                show_tab(TAB_INSTALL);   /* (Verify game files / Repair) */
+            else if (s_notice_action == NOTICE_SETUP)
+                show_tab(setup_first_step());
+            break;
+        case ID_PL_EXPORT:   /* (the Saves page: pick the saves there) */
+            show_tab(TAB_SAVES);
+            break;
+        case ID_PL_IMPORT:
+            show_tab(TAB_SAVES);
+            saves_import();
             break;
         case ID_GAMEDIR_CHANGE: {
             WCHAR d[MAX_PATH];
@@ -6780,16 +7707,18 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(s_wnd, L"open", m, NULL, NULL, SW_SHOWNORMAL);
             break;
         }
-        case ID_RESOLUTION: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES:
         case ID_ARENA_LIGHT:
+        case ID_RESOLUTION: case ID_RENDER_RES: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }
             break;
-        case ID_WINDOWED: case ID_FULLSCREEN: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS: case ID_PREPARE:
-        case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING:
+        case ID_WINDOWED: case ID_FULLSCREEN: case ID_FULLSCREEN_EX: case ID_VSYNC: case ID_MUTE: case ID_SHOWFPS:
+        case ID_PREPARE: case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING:
             if (HIWORD(wp) == BN_CLICKED) {
+                if (LOWORD(wp) == ID_WINDOWED || LOWORD(wp) == ID_FULLSCREEN || LOWORD(wp) == ID_FULLSCREEN_EX)
+                    display_hint();
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }
@@ -6946,7 +7875,21 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         friends_show((int)wp, (char *)lp);
         free((void *)lp);
         return 0;
+    case WM_APP_SIZE:
+        play_notice();
+        return 0;
     case WM_TIMER:
+        if (wp == HERO_TIMER) {
+            RECT hr;
+            if (s_cur_tab != TAB_PLAY || !s_hero_moving || !IsWindowVisible(w) || IsIconic(w)) {
+                KillTimer(w, HERO_TIMER);
+                return 0;
+            }
+            s_hero_scroll++;
+            hero_rect(&hr);
+            InvalidateRect(w, &hr, FALSE);
+            return 0;
+        }
         if (wp == FRIENDS_TIMER && s_tab_visible_online && IsWindowVisible(w) && !IsIconic(w))
             friends_fetch(NULL);
         return 0;
@@ -7019,11 +7962,23 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         relayout();
         return 0;
     }
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        SetTextColor((HDC)wp, C_TEXT);
+        SetBkColor((HDC)wp, C_FIELD);
+        return (LRESULT)s_field_brush;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN: {
-        /* (text on a card: white; on the page: its grey) */
-        const int on_card = card_at((HWND)lp);
-        SetTextColor((HDC)wp, C_TEXT);
+        /* (text on a card: its colour; on the page: the page's) */
+        const int on_card = card_at((HWND)lp), id = GetDlgCtrlID((HWND)lp);
+        SetTextColor((HDC)wp, id == ID_PLAY_STATUS && s_play_ready ? C_GOOD : id == ID_UP_STATUS ? C_MUTED : C_TEXT);
+        if ((GetWindowLongW((HWND)lp, GWL_STYLE) & ES_READONLY) && m == WM_CTLCOLORSTATIC) {
+            WCHAR cn[16];
+            if (GetClassNameW((HWND)lp, cn, 16) && !_wcsicmp(cn, L"Edit")) {   /* (read-only fields) */
+                SetBkColor((HDC)wp, C_FIELD);
+                return (LRESULT)s_field_brush;
+            }
+        }
         if (GetDlgCtrlID((HWND)lp) == ID_VERIFY_MARK) {   /* (green OK, red damaged, amber can't tell) */
             static const COLORREF c[] = { RGB(112, 112, 122), RGB(112, 112, 122), RGB(24, 150, 60),
                                           RGB(208, 20, 44), RGB(214, 140, 0) };
@@ -7035,7 +7990,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_DRAWITEM:
         if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_BUTTON && draw_button_buffered((DRAWITEMSTRUCT *)lp))
             return TRUE;
+        if (((DRAWITEMSTRUCT *)lp)->CtlType == ODT_STATIC && discover_draw((DRAWITEMSTRUCT *)lp))
+            return TRUE;
         break;
+    case WM_APP_DISCOVER:
+        discover_message(m, wp, lp);
+        return 0;
     case WM_LBUTTONDOWN: {
         const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         const int k = nav_at(pt.x, pt.y);
@@ -7051,8 +8011,16 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(w, L"open", KOFI_URL, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
-        if (k >= 0 && k_nav[k].tab != s_cur_tab)
+        if (k >= 0 && k_nav[k].tab == TAB_SETUP && setup_step(s_cur_tab) < 0)
+            show_tab(setup_first_step());
+        else if (k >= 0 && k_nav[k].tab != nav_tab(s_cur_tab))
             show_tab(k_nav[k].tab);
+        else if (k < 0 && step_at(pt) >= 0)
+            show_tab(k_steps[step_at(pt)]);
+        else if (k < 0 && mod_tab_at(pt) >= 0)
+            show_tab(k_mod_tabs[mod_tab_at(pt)]);
+        else if (k < 0 && play_link_at(pt) >= 0)
+            show_tab(play_link_at(pt) == TAB_SETUP ? setup_first_step() : play_link_at(pt));
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -7078,7 +8046,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
-            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) || PtInRect(&s_paypal_link, pt)) {
+            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) || PtInRect(&s_paypal_link, pt) ||
+                play_link_at(pt) >= 0 || step_at(pt) >= 0 || mod_tab_at(pt) >= 0) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
             }
@@ -7524,7 +8493,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -7569,6 +8538,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     theme_init();
     s_page_brush = CreateSolidBrush(C_PAGE);
     s_card_brush = CreateSolidBrush(C_CARD);
+    s_field_brush = CreateSolidBrush(C_FIELD);
+    hero_find();
     /* The game's own icon (launcher.rc, from its Xbox 360 title image). */
     s_icon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE);
 
@@ -7590,6 +8561,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, inst, NULL);
     if (!s_wnd)
         return 1;
+    {   /* the dark title bar (Windows 10 2004+ / 11; older ones ignore it) - imported normally, not looked up
+           (GetProcAddress lookups are one more thing antivirus heuristics weigh) */
+        BOOL on = TRUE;
+        DwmSetWindowAttribute(s_wnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &on, sizeof on);
+    }
     build_ui();
     /* Mods that came with the port and aren't in the game yet (an update can bring new ones). */
     if (is_game_folder(s_game_dir)) {
@@ -7659,7 +8635,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 SendMessageW(s_wnd, WM_NOTIFY, ID_TAB, (LPARAM)&n);
             }
             /* (the Online tab: until the Friends list is in, 5 s at most) */
-            while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000))
+            while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000) ||
+                   (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000))   /* (its list and pictures) */
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);

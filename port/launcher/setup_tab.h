@@ -44,7 +44,8 @@ void setup_describe(unsigned items, WCHAR *out, size_t n, unsigned long long *to
 typedef void (*setup_goto_fn)(void);
 
 /* Builds the tab's controls (ids id_base .. id_base + 19). */
-void setup_build(HWND wnd, mods_add_fn add, int tab, int id_base, setup_goto_fn go_install);
+/* `tab`: what the game needs (This PC); `tools_tab`: the Mod Maker's tools, Bink 2, adb (optional). */
+void setup_build(HWND wnd, mods_add_fn add, int tab, int tools_tab, int id_base, setup_goto_fn go_install);
 /* The tab was shown: checks again. */
 void setup_show(const WCHAR *game_dir, const WCHAR *launcher_dir);
 /* WM_COMMAND: 1 when handled. */
