@@ -2,6 +2,8 @@
 positions, the 21 motion bones' chain lengths, and the name mapping.  python skel_compare.py [ch.pac]"""
 import sys, math
 import numpy as np
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 import fk
 
 nH, nameH = fk.hctp_nodes()

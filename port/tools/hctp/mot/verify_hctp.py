@@ -3,6 +3,8 @@ character track of a bank; per frame the lowest joint (max y, y down) should sit
 (y ~ 0) for grounded motions, and joints must move smoothly.  Compares three composition rules."""
 import sys, collections, math
 import numpy as np
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 import hmot, fk
 
 FEET = ['l_ashi', 'r_ashi', 'l_tsumasaki', 'r_tsumasaki', 'l_te', 'r_te', 'atama', 'koshi', 'l_sune', 'r_sune']

@@ -73,8 +73,14 @@ if ($WithModMaker) {
             foreach ($m in [regex]::Matches($line, "__import__\(\s*['""]([A-Za-z_]\w*)['""]")) { $mods += $m.Groups[1].Value }
         }
         foreach ($m in ($mods | Where-Object { $_ } | Sort-Object -Unique)) {
-            if (-not (Test-Path (Join-Path $PSScriptRoot "$m.py"))) { continue }   # (not one of ours: the standard library, numpy...)
-            if ((Test-Path (Join-Path $py.DirectoryName "$m.py")) -or (Test-Path (Join-Path $mmtools "$m.py"))) { continue }
+            $rel = $py.DirectoryName.Substring($mmtools.Length).TrimStart('\')   # (the script's subfolder: hctp, hctp\mot)
+            if (-not (Test-Path (Join-Path $PSScriptRoot "$m.py")) -and
+                -not (Test-Path (Join-Path (Join-Path $PSScriptRoot $rel) "$m.py"))) { continue }   # (not one of ours: the standard library, numpy...)
+            if (Test-Path (Join-Path $mmtools "$m.py")) { continue }
+            # (beside the script only counts when the script puts its own folder on sys.path: the Tools' embeddable
+            # Python doesn't - 2.1.3's hctp_fake56.py: "Missing: hctp2jboy - install now?")
+            if ((Test-Path (Join-Path $py.DirectoryName "$m.py")) -and
+                ((Get-Content $py.FullName -Raw) -match 'sys\.path\.insert\(0,\s*os\.path\.dirname\(os\.path\.abspath\(__file__\)\)\)')) { continue }
             $missing += "$($py.Name) imports $m (tools\$m.py)"
         }
     }

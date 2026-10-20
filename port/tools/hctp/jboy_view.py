@@ -3,6 +3,7 @@ import base64, io, os, sys, struct
 import numpy as np
 from PIL import Image
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 import svr08_stage as s8, jboy, arena_tool as at
 import to_glb
 

@@ -92,6 +92,15 @@ std::string HintOf(const std::string& line) {
     const size_t e = line.find('\'', at + 17);
     std::string mod = line.substr(at + 17, e == std::string::npos ? std::string::npos : e - at - 17);
     if (const size_t dot = mod.find('.'); dot != std::string::npos) mod.resize(dot);
+    // (one of the Mod Maker Tools' own modules - hctp2jboy, hmot... - is no package to install: the converter's own
+    // error says what's wrong; a player was asked "Missing: hctp2jboy - install now?" again and again)
+    if (!g_tools.empty() && !mod.empty()) {
+      std::error_code ec;
+      const fs::path tools(g_tools), file = Wide(mod + ".py");
+      if (fs::exists(tools / file, ec)) return "";
+      for (fs::recursive_directory_iterator it(tools, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename() == file) return "";
+    }
     return mod == "PIL" ? "Pillow" : mod;
   }
   if (line.find("ToolMissing") != std::string::npos || (line.find("svrmod.exe") != std::string::npos && line.find("not found") != std::string::npos))

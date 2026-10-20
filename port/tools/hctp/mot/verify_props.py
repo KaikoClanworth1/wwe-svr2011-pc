@@ -4,6 +4,8 @@ tracks and check (1) each 2011 record parses with 2011's object grammar (0x75 = 
 rotation / translation / root state after every record equals the HCTP source, (3) FK of the
 cardboard stack (danboru, 50101/01243) at the end of act 33 puts every box on the floor."""
 import sys, struct
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 import hmot, ymks as Y, hctp2ymks as C, objpose
 
 PB = r"D:/Xbox Games Ports/HCTP Extract/_unpacked/bg/stg_0030/50102.bin"
