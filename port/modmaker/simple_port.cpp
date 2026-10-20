@@ -514,6 +514,42 @@ void StepGame(Kind k, State& s) {
 
 // ---- step: the item (a superstar's entrance, or a superstar)
 
+// Which superstars a convert found entrance gear for (a coat or hat: superstar_port's report "gear"), kept in the
+// converters' work folder (gear_flags.txt "<converter game>|<item>\t<entries>") - the list marks them from then on,
+// without reading the disc at list time.
+std::map<std::string, int>& GearFlags() {
+  static std::map<std::string, int> m;
+  static bool read = false;
+  if (read) return m;
+  read = true;
+  Bytes t;
+  if (!svrfmt::ReadFile(PathStr(WorkDir() / L"gear_flags.txt"), t)) return m;
+  const std::string s(t.begin(), t.end());
+  for (size_t at = 0; at < s.size();) {
+    size_t e = s.find('\n', at);
+    if (e == std::string::npos) e = s.size();
+    const std::string l = s.substr(at, e - at);
+    at = e + 1;
+    if (const size_t tab = l.find('\t'); tab != std::string::npos) m[l.substr(0, tab)] = std::atoi(l.c_str() + tab + 1);
+  }
+  return m;
+}
+int GearFlag(const std::string& key) {
+  const auto& m = GearFlags();
+  const auto it = m.find(key);
+  return it == m.end() ? 0 : it->second;
+}
+void SetGearFlag(const std::string& key, int n) {
+  auto& m = GearFlags();
+  if (m.count(key) && m[key] == n) return;
+  m[key] = n;
+  std::string t;
+  for (const auto& [k, v] : m) t += k + "\t" + std::to_string(v) + "\n";
+  std::error_code ec;
+  fs::create_directories(WorkDir(), ec);
+  svrfmt::WriteFile(PathStr(WorkDir() / L"gear_flags.txt"), Bytes(t.begin(), t.end()));
+}
+
 void StepItem(Kind k, State& s) {
   if (!HasSource(s)) {
     ImGui::TextDisabled(s.file.empty() ? "Pick the game first." : "Reading your file...");
@@ -556,6 +592,13 @@ void StepItem(Kind k, State& s) {
     if (ImGui::IsRectVisible(ImVec2(tw, th))) {
       if (Picture* pic = PictureFor(pics, k == kEntrance ? std::string() : key, name)) pic->Draw(tw, tw);
       else ImGui::Dummy(ImVec2(tw, tw));
+      if (k != kEntrance && GearFlag(ConverterGame(kMoves, s.game) + "|" + key) > 0) {  // (a coat: entrance gear)
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 sz = ImGui::CalcTextSize("COAT");
+        const ImVec2 a(p.x + 3 * g_scale, p.y + 3 * g_scale), b(a.x + sz.x + 6 * g_scale, a.y + sz.y + 2 * g_scale);
+        dl->AddRectFilled(a, b, IM_COL32(20, 20, 24, 210), 3 * g_scale);
+        dl->AddText(ImVec2(a.x + 3 * g_scale, a.y + 1 * g_scale), IM_COL32(255, 210, 120, 255), "COAT");
+      }
     } else {
       ImGui::Dummy(ImVec2(tw, tw));
     }
@@ -568,6 +611,8 @@ void StepItem(Kind k, State& s) {
     if (ImGui::IsItemClicked() && !on) Pick(k, s, key, name);
     if (ImGui::IsItemHovered()) {
       std::string tip = name;
+      if (k != kEntrance && GearFlag(ConverterGame(kMoves, s.game) + "|" + key) > 0)
+        tip += "\nHas entrance gear (a coat or hat worn on the way to the ring)";
       if (k == kEntrance) {
         if (r["has_pyro"].Truthy()) tip += "\nWith fireworks";
         if (r["has_movie"].Truthy()) tip += "\nWith their titantron video";
@@ -1559,6 +1604,7 @@ void ImportConvert() {
     if (code == 0 && ParseJson(o, j) && j["ok"].Truthy() && !j["out"].Str().empty()) {
       g_import_ready = Wide(j["out"].Str());
       g_import_ready_all = all;
+      if (j["gear"].type == Json::Type::kArray) SetGearFlag(want, int(j["gear"].items.size()));
     } else {
       g_import_error = ToolCancelled() ? "cancelled" : ErrorOf(code, o, "superstar converter");
       Status(ToolCancelled() ? "Cancelled." : "That superstar couldn't be brought over: " + simple::Plain(g_import_error));
