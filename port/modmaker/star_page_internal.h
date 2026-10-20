@@ -31,6 +31,8 @@ struct StarProject {
   bool ratings_set = false;  // (the style's, until moved)
   char name[32] = "", short_name[32] = "", author[64] = "", version[16] = "1.0";
   std::wstring model, song, movie, voice;
+  std::wstring cae;      // a created entrance (cae=: the game's 284-byte entrance block, "Made in the game")
+  std::string cae_name;  // whose it was in the game (shown)
   std::wstring attires[4];        // [1..3]: attires 2-4 from other model pacs (their first attire)
   char attire_names[4][32] = {};  // [1..3]: their names on CHANGE ATTIRE ("" = ATTIRE N)
   int attire_entrance[4] = {-1, -1, -1, -1};  // [1..3]: attire<N>_entrance= (-1: the superstar's entrance)

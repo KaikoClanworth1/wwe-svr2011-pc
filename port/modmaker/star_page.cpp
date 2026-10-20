@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <set>
 #include <thread>
@@ -95,6 +96,14 @@ std::wstring StyleChPac() {
 }
 // test aids: --star <id> picks the model, --star-* files, --test-star-save <file> saves the mod and quits
 int g_test_id = 0;
+extern std::string g_test_cae;  // (--star-cae: TestCae)
+struct MadeEntrance {  // (a created entrance the game listed: MadeEntrances)
+  int id = 0;
+  std::string name;
+};
+std::vector<MadeEntrance> MadeEntrances();
+bool UseMadeEntrance(int id, const std::string& name);
+void CreatedEntranceRow();
 extern std::string g_test_import;  // (--star-import-moveset: TestImportMoveset)
 void RunTestImport(const std::string& spec);
 std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
@@ -186,7 +195,7 @@ bool SetPortrait(Bytes& pac, const Image& bust) {
 struct Job {
   std::map<int, int> moveset;
   std::string id, manifest;
-  std::wstring model, song, movie, voice, attires[4];
+  std::wstring model, song, movie, voice, cae, attires[4];
   std::string attire_names[4];
   Image picture, picture_small, picture_full;
   std::vector<Image> signs;
@@ -1118,7 +1127,7 @@ bool PrepareJob(Job& j) {
   }
   if (!g_star.moves.empty() || !g_star.moveset.empty()) j.manifest += "moves=moves.txt\n";
   j.moves = g_star.moves, j.pack = g_star.pack, j.moveset = g_star.moveset;
-  j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice;
+  j.model = g_star.model, j.song = g_star.song, j.movie = g_star.movie, j.voice = g_star.voice, j.cae = g_star.cae;
   j.gear = g_star.gear;
   j.mats = g_star.mats;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
@@ -1205,6 +1214,15 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     }
     files.push_back({"movie.bik", std::move(m)});
     man += "movie=movie.bik\n";
+  }
+  if (!j.cae.empty()) {  // (a created entrance: the game's block as it wrote it - superstar_mods.cpp cae=)
+    Bytes c;
+    if (!ReadFile(Utf8(j.cae), c) || c.size() != 284) {
+      Status("The created entrance's file is missing or damaged: pick it again (Created entrance).");
+      return false;
+    }
+    files.push_back({"cae.bin", std::move(c)});
+    man += "cae=cae.bin\n";
   }
   if (!j.moves.empty() || !j.moveset.empty()) {  // the file's lines, then the page's picks (later lines win)
     Bytes t;
@@ -2525,6 +2543,9 @@ void Draw() {
       std::snprintf(g_star.hometown_state, sizeof g_star.hometown_state, "%s", c == std::string::npos ? "" : g_test_hometown.substr(c + 1).c_str());
     }
     if (!g_test_import.empty()) RunTestImport(g_test_import);  // (after the style: the import is set against it)
+    if (!g_test_cae.empty())
+      for (const auto& m : MadeEntrances())
+        if (std::to_string(m.id) == g_test_cae) UseMadeEntrance(m.id, m.name);
     ApplyTestMaterials();  // (--star-mat before the test save)
     if (!g_test_save.empty() && g_test_import.rfind("game:", 0) != 0) {  // (game: saves once the port is done)
       Job j;
@@ -2634,6 +2655,7 @@ void Draw() {
     Hint("The entrance motions and pyro (the music and movie are the files above): any the game has - every "
          "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
          "(the From another game tab makes them from other games). Attires 2-4 can have their own.");
+    CreatedEntranceRow();
     {
       ImGui::SetNextItemWidth(320 * g_scale);
       const std::string cur = g_star.pose < 0 ? "The style's" : PoseLabel(g_star.pose);
@@ -2891,7 +2913,7 @@ std::string StateText() {
   for (int a = 1; a < 4; ++a)
     s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a] + "|" +
          std::to_string(g_star.attire_entrance[a]);
-  s += "\nmoveset=" + MovesetText();
+  s += "\nmoveset=" + MovesetText() + "\ncae=" + Utf8(g_star.cae);
   s += "\nentrance=" + std::to_string(g_star.entrance) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
@@ -2902,6 +2924,65 @@ std::string StateText() {
 }
 
 void Reset() { g_star = StarProject(); }
+
+// "Made in the game": the created entrances the game found in its profiles at its last start (superstar_mods.cpp
+// ExportCreatedEntrances: <game>\Mods\.cae\<id>.bin + list.txt) - built in the game's own CREATE AN ENTRANCE (ADVANCED
+// CREATION: a motion, pyro and the rest per scene, with its preview), then given to this mod (cae=).
+std::vector<MadeEntrance> MadeEntrances() {
+  static std::vector<MadeEntrance> v;
+  static double when = -100;
+  if (ImGui::GetTime() - when < 3) return v;
+  when = ImGui::GetTime();
+  v.clear();
+  Bytes t;
+  if (!ReadFile(PathStr(fs::path(g_game) / L"Mods" / L".cae" / L"list.txt"), t)) return v;
+  const std::string s(t.begin(), t.end());
+  for (size_t at = 0; at < s.size();) {
+    size_t e = s.find('\n', at);
+    if (e == std::string::npos) e = s.size();
+    const std::string l = s.substr(at, e - at);
+    at = e + 1;
+    if (const size_t tab = l.find('\t'); tab != std::string::npos) v.push_back({std::atoi(l.c_str()), l.substr(tab + 1)});
+  }
+  return v;
+}
+
+// A created entrance into the project: a copy (the game rewrites its folder at every start).
+bool UseMadeEntrance(int id, const std::string& name) {
+  const fs::path from = fs::path(g_game) / L"Mods" / L".cae" / (std::to_wstring(id) + L".bin");
+  Bytes b;
+  if (!ReadFile(PathStr(from), b) || b.size() != 284) return Status("That created entrance's file is gone: start the game once to list them again."), false;
+  const fs::path to = fs::path(g_game) / L"Mods" / L".convert" / L"cae" / (std::to_wstring(id) + L"_" + std::to_wstring(std::time(nullptr)) + L".bin");
+  std::error_code ec;
+  fs::create_directories(to.parent_path(), ec);
+  if (!WriteFile(PathStr(to), b)) return Status("The created entrance couldn't be copied (" + PathStr(to) + ")."), false;
+  g_star.cae = to.wstring(), g_star.cae_name = name;
+  Touch();
+  Log("created entrance: " + name + " (" + std::to_string(id) + ") -> " + PathStr(to));
+  Status(Who() + " walks out with " + name + "'s created entrance now (made in CREATE AN ENTRANCE).");
+  return true;
+}
+
+void CreatedEntranceRow() {
+  const auto made = MadeEntrances();
+  ImGui::SetNextItemWidth(320 * g_scale);
+  const std::string cur = g_star.cae.empty() ? std::string("None (the entrance above)") : g_star.cae_name + " (made in the game)";
+  if (ImGui::BeginCombo("Created entrance", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (ImGui::Selectable("None (the entrance above)", g_star.cae.empty())) g_star.cae.clear(), g_star.cae_name.clear(), Touch();
+    for (const auto& m : made)
+      if (ImGui::Selectable((m.name + " (made in the game)##" + std::to_string(m.id)).c_str(), false)) UseMadeEntrance(m.id, m.name);
+    if (made.empty()) ImGui::TextDisabled("None yet: make one in the game (below), then start the game once.");
+    ImGui::EndCombo();
+  }
+  Hint("An entrance built in the game's own CREATE AN ENTRANCE (ADVANCED CREATION: a motion, pyro and the rest for each "
+       "scene, with its preview): give it to any superstar or Created Superstar there, start the game once, and pick "
+       "it here. The mod then walks out with it (the music and movie stay the files above) until the player makes "
+       "their own for it in the game.");
+}
+
+// Test aid --star-cae <id>: that created entrance (Mods\.cae) into the project.
+std::string g_test_cae;
+void TestCae(const std::string& id) { g_test_cae = id; }
 
 void WriteProject(ProjectOut& out) {
   out.Key("name", g_star.name);
@@ -2944,6 +3025,8 @@ void WriteProject(ProjectOut& out) {
   if (g_star.music > 0) out.Key("music", std::to_string(g_star.music));
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", g_star.movie, "star/movie");
+  out.File("cae", g_star.cae, "star/cae");
+  if (!g_star.cae_name.empty()) out.Key("cae_name", g_star.cae_name);
   out.File("voice", g_star.voice, "star/voice");
   for (int a = 1; a < 4; ++a) {
     out.File("attire" + std::to_string(a + 1), g_star.attires[a], "star/attire" + std::to_string(a + 1));
@@ -3106,6 +3189,9 @@ bool Read(const ProjectIn& in, bool mod) {
   if (const int m = std::atoi(in.Get("music").c_str()); m >= 1 && m <= 253) g_star.music = m;
   if (const std::string g = in.Get("theme_gain"); !g.empty()) g_star.theme_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 6.0f);
   g_star.movie = file("movie", nullptr);
+  g_star.cae = file("cae", nullptr);
+  g_star.cae_name = in.Get("cae_name");
+  if (!g_star.cae.empty() && g_star.cae_name.empty()) g_star.cae_name = "this mod's";
   g_star.voice = file("voice", nullptr);
   for (int a = 1; a < 4; ++a) {
     g_star.attires[a] = file(("attire" + std::to_string(a + 1)).c_str(), nullptr);

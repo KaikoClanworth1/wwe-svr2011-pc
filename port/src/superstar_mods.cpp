@@ -2510,7 +2510,68 @@ void EnsureMoveset(uint8_t* base, uint8_t* sp, const Mod& m) {
               "given instead, with the mod's own on top ({} usable now)", m.folder, now.usable, now.set, donor, gender, after.usable);
 }
 
+// The created entrances (CREATE AN ENTRANCE's ADVANCED CREATION) the profiles hold, for the Mod Maker's "Made in the
+// game" (a mod's cae=): <game>\Mods\.cae\<id>.bin (the 284-byte block as the game holds it) and list.txt
+// ("<id>\t<name>"). Only that folder is written - never a save or a DLC file; a file only when it changed.
+void ExportCreatedEntrances(const uint8_t* base) {
+  static uint32_t frames = 0;
+  static std::string last;  // (what was written: the profiles' created entrances, compared in memory)
+  if (++frames % 300) return;  // (every 5 s: a save loaded, an entrance made in the game)
+  {
+    const uint32_t ri = Rd16(base + kIdToIndex + 100 * 2);  // (the profiles loaded)
+    if (ri >= 512 || !CountMoves(base + kProfiles + ri * kProfileSize).set) return;
+  }
+  std::string now;
+  for (uint32_t id = 1; id < 512; ++id) {
+    const uint32_t i = Rd16(base + kIdToIndex + id * 2);
+    if (i < 512 && base[kProfiles + i * kProfileSize + kEntrance + 0xC7])
+      now.append(reinterpret_cast<const char*>(base + kProfiles + i * kProfileSize + kEntrance), kCaeSize);
+  }
+  if (now == last) return;
+  last = now;
+  std::error_code ec;
+  const fs::path dir = g_game / "Mods" / ".cae";
+  std::string list;
+  std::set<std::string> keep = {"list.txt"}, seen;  // (seen: name + block - a copy slot of the same superstar once)
+  for (uint32_t id = 1; id < 512; ++id) {
+    const uint32_t i = Rd16(base + kIdToIndex + id * 2);
+    if (i >= 512 || !base[kRecords + i * kRecordSize + kFullName]) continue;
+    const uint8_t* e = base + kProfiles + i * kProfileSize + kEntrance;
+    if (!e[0xC7]) continue;
+    bool real = true;  // (each scene's motion: 0, or 10000 + 1000 * scene + an entrance)
+    int parts = 0;
+    for (uint32_t p = 0; p < 5; ++p) {
+      const int n = e[kCaeFrom + 34 * p + 14] << 8 | e[kCaeFrom + 34 * p + 15];
+      if (n && (n < int(10000 + 1000 * p) || n >= int(11000 + 1000 * p))) real = false;
+      parts += n != 0;
+    }
+    if (!real || !parts) continue;
+    char name[kNameLen + 1] = {};
+    std::memcpy(name, base + kRecords + i * kRecordSize + kFullName, kNameLen);
+    if (!seen.insert(std::string(name) + std::string(reinterpret_cast<const char*>(e), kCaeSize)).second) continue;
+    const std::string file = std::to_string(id) + ".bin";
+    keep.insert(file);
+    list += std::to_string(id) + "\t" + name + "\n";
+    std::vector<uint8_t> have;
+    if (std::ifstream in(dir / file, std::ios::binary); in) have.assign(std::istreambuf_iterator<char>(in), {});
+    if (have.size() == kCaeSize && !std::memcmp(have.data(), e, kCaeSize)) continue;
+    fs::create_directories(dir, ec);
+    std::ofstream(dir / file, std::ios::binary).write(reinterpret_cast<const char*>(e), kCaeSize);
+  }
+  std::string old;
+  if (std::ifstream in(dir / "list.txt", std::ios::binary); in) old.assign(std::istreambuf_iterator<char>(in), {});
+  if (old != list && (!list.empty() || fs::exists(dir, ec))) {
+    fs::create_directories(dir, ec);
+    std::ofstream(dir / "list.txt", std::ios::binary) << list;
+    REXLOG_INFO("[svr2011] superstar mods: created entrances for the Mod Maker: {} in {}",
+                std::count(list.begin(), list.end(), '\n'), dir.string());
+  }
+  for (const auto& f : fs::directory_iterator(dir, ec))  // (ones gone from the profiles)
+    if (!keep.count(f.path().filename().string())) fs::remove(f.path(), ec);
+}
+
 void CheckModProfiles(uint8_t* base) {
+  ExportCreatedEntrances(base);
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
