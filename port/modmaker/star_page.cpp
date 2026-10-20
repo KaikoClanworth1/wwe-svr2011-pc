@@ -593,6 +593,7 @@ void MovePicker() {
 int g_imp_src = -1;  // -1 closed, 0 a 2011 superstar, 1 one of my mods, 2 another game
 char g_imp_find[48] = "";
 int g_imp_pick = -1;  // (the list's chosen row)
+bool g_imp_test_save = false;  // (test aid game:<game>:<item>: the project saved once their moves are in)
 struct ImportMod {
   fs::path dir;
   std::string name;
@@ -718,6 +719,7 @@ void ImportMovesetSection() {
       Log("import moveset: " + r.what + ": " + std::to_string(r.lines.size()) + " slots");
       Status(r.what + " are your superstar's now (the slots that couldn't come over keep your fighting style's).");
       g_imp_src = -1;
+      if (g_imp_test_save) g_imp_test_save = false, TestSaveMod(g_test_save), PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
     return;
   }
@@ -2413,7 +2415,7 @@ void Draw() {
     }
     if (!g_test_import.empty()) RunTestImport(g_test_import);  // (after the style: the import is set against it)
     ApplyTestMaterials();  // (--star-mat before the test save)
-    if (!g_test_save.empty()) {
+    if (!g_test_save.empty() && g_test_import.rfind("game:", 0) != 0) {  // (game: saves once the port is done)
       Job j;
       PrepareJob(j);
       std::vector<ZipEntry> files;
@@ -3101,13 +3103,17 @@ void TestMoveset(const std::string& spec) {
 }
 
 // --star-import-moveset star:<id> | mod:<folder in Mods\Superstars>: that whole moveset into the project; open:<0-2>: the
-// import shown with that source.
+// import shown with that source; game:<game>:<item>: the Another game source, Use once ready (then --test-star-save).
 std::string g_test_import;
 void TestImportMoveset(const std::string& spec) { g_test_import = spec, g_moveset_open_once = true; }
 void RunTestImport(const std::string& spec) {
   if (spec.rfind("star:", 0) == 0) ImportFromStar(std::atoi(spec.c_str() + 5));
   else if (spec.rfind("open:", 0) == 0) g_imp_src = std::clamp(std::atoi(spec.c_str() + 5), 0, 2), g_imp_src == 1 ? ReadImportMods() : void();
-  else if (spec.rfind("mod:", 0) == 0) ImportFromMod(fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(spec.substr(4)));
+  else if (spec.rfind("game:", 0) == 0 && spec.find(':', 5) != std::string::npos) {  // (then saved when done)
+    const size_t c = spec.find(':', 5);
+    g_imp_src = 2, g_imp_test_save = !g_test_save.empty();
+    simple_port::ForStarTest(simple_port::kMoves, spec.substr(5, c - 5), spec.substr(c + 1));
+  } else if (spec.rfind("mod:", 0) == 0) ImportFromMod(fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(spec.substr(4)));
   else Log("import moveset test: star:<id> or mod:<folder>, not " + spec);
 }
 
