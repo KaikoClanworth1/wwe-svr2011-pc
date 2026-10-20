@@ -15,6 +15,7 @@
 #include <map>
 
 #include "app.h"
+#include "char_preview.h"
 #include "json.h"
 #include "star_page_internal.h"
 #include "svrfmt/jboy.h"
@@ -75,6 +76,8 @@ struct Editor {
   std::vector<uint8_t> touched;  // (this stroke's texels, recorded once)
   bool painting = false;
   double last_compose = 0;
+  bool recolour_dirty = true;  // the 3D preview's recoloured texture
+  double last_recolour = 0;
 } g;
 
 enum Tool { kBrush, kEraser, kFillColour, kIsland, kMeshPick, kTools };
@@ -240,7 +243,7 @@ void AutoName(bool make_masks) {
       }
     }
     ApplyProjectLines();
-    g.view_dirty = true;
+    g.view_dirty = true, g.recolour_dirty = true;
     Status(make_masks ? "Colour masks made: check the parts' names and colours, then Save." : "The parts are named.");
   });
 }
@@ -368,6 +371,7 @@ void EndStroke() {
     g.stroke.after.push_back(now);
     g.touched[g.stroke.idx[n]] = 0;
   }
+  g.recolour_dirty = true;
   g.undo.push_back(std::move(g.stroke));
   if (g.undo.size() > 30) g.undo.erase(g.undo.begin());
   g.redo.clear();
@@ -543,6 +547,42 @@ void Tools() {
   }
 }
 
+// The 3D preview: the colour texture recoloured as Superstar Threads would, about - each texel of a part tinted to
+// the part's colour by its mask, keeping its shading (its brightness against the part's average).
+void Recolour() {
+  g.recolour_dirty = false;
+  Image img = g.color;
+  if (!g.w || !g.h || !img.w) return char_preview::SetColourOverride(nullptr);
+  float avg[kParts] = {};
+  {  // (each part's average brightness)
+    double sum[kParts] = {}, n[kParts] = {};
+    for (int y = 0; y < img.h; y += 2)
+      for (int x = 0; x < img.w; x += 2) {
+        const size_t mi = size_t(y * g.h / img.h) * g.w + size_t(x * g.w / img.w);
+        const uint8_t* px = &img.rgba[4 * (size_t(y) * img.w + x)];
+        for (int k = 0; k < kParts; ++k)
+          if (g.parts[k].used && !g.parts[k].v.empty() && g.parts[k].v[mi] > 8)
+            sum[k] += (px[0] * 0.3 + px[1] * 0.59 + px[2] * 0.11), n[k] += 1;
+      }
+    for (int k = 0; k < kParts; ++k) avg[k] = n[k] ? float(sum[k] / n[k]) : 128.0f;
+  }
+  for (int y = 0; y < img.h; ++y)
+    for (int x = 0; x < img.w; ++x) {
+      const size_t mi = size_t(y * g.h / img.h) * g.w + size_t(x * g.w / img.w);
+      uint8_t* px = &img.rgba[4 * (size_t(y) * img.w + x)];
+      for (int k = 0; k < kParts; ++k) {
+        const Part& p = g.parts[k];
+        if (!p.used || p.v.empty() || p.v[mi] <= 8) continue;
+        const float m = std::min(1.0f, p.v[mi] / float(kLevel * 17));
+        const float lum = (px[0] * 0.3f + px[1] * 0.59f + px[2] * 0.11f) / std::max(8.0f, avg[k]);
+        const float c[3] = {float((p.rgb >> 16) & 255), float((p.rgb >> 8) & 255), float(p.rgb & 255)};
+        for (int ch = 0; ch < 3; ++ch) px[ch] = uint8_t(std::clamp(px[ch] * (1 - m) + std::min(255.0f, c[ch] * lum) * m, 0.0f, 255.0f));
+        break;
+      }
+    }
+  char_preview::SetColourOverride(&img);
+}
+
 // Save: the masks into a copy of the model (the project's model then points at it), the parts' lines into the
 // project's threads.txt (this attire's replaced).
 void Save() {
@@ -683,9 +723,10 @@ void ThreadsDraw() {
     ImGui::SameLine();
     float c[3] = {((p.rgb >> 16) & 255) / 255.f, ((p.rgb >> 8) & 255) / 255.f, (p.rgb & 255) / 255.f};
     if (ImGui::ColorEdit3("##rgb", c, ImGuiColorEditFlags_NoInputs))
-      p.rgb = uint32_t(c[0] * 255 + 0.5f) << 16 | uint32_t(c[1] * 255 + 0.5f) << 8 | uint32_t(c[2] * 255 + 0.5f), g.edited = true;
+      p.rgb = uint32_t(c[0] * 255 + 0.5f) << 16 | uint32_t(c[1] * 255 + 0.5f) << 8 | uint32_t(c[2] * 255 + 0.5f), g.edited = true,
+      g.recolour_dirty = true;
     ImGui::SameLine();
-    if (ImGui::SmallButton("x")) p = Part(), g.edited = true, g.view_dirty = true;
+    if (ImGui::SmallButton("x")) p = Part(), g.edited = true, g.view_dirty = true, g.recolour_dirty = true;
     ImGui::PopID();
   }
   int free_part = -1;
@@ -699,6 +740,19 @@ void ThreadsDraw() {
   ImGui::BeginDisabled(!g.edited || g.naming);
   if (ImGui::Button("Save the parts into my superstar", ImVec2(300 * g_scale, 0))) Save();
   ImGui::EndDisabled();
+  // the model with its parts in their colours (the colour pickers above): as Superstar Threads paints them, about
+  ImGui::Spacing();
+  ImGui::TextDisabled("The parts in their colours (drag: turn):");
+  if (g.recolour_dirty && ImGui::GetTime() - g.last_recolour > 0.15) Recolour(), g.last_recolour = ImGui::GetTime();
+  char_preview::KeepColourOverride();
+  {
+    static std::wstring shown;
+    static int shown_in = 0;
+    if (shown != g.pac || shown_in != g.in) shown = g.pac, shown_in = g.in, char_preview::SetModel(g.pac, g_game), char_preview::SetAttire(g.in),
+                                            g.recolour_dirty = true;
+  }
+  const ImVec2 room = ImGui::GetContentRegionAvail();
+  char_preview::Draw(room.x, std::max(200.0f * g_scale, room.y));
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginGroup();
@@ -758,10 +812,11 @@ void ThreadsTestTick() {
         if (what == "fill") Fill(a, b, true);
         if (what == "island") Fill(a, b, false);
         if (what == "mesh") FillMesh(a);
+        if (what == "rgb") g.parts[g.sel].rgb = uint32_t(a & 255) << 16 | uint32_t(b & 255) << 8 | uint32_t(c & 255), g.recolour_dirty = true;
         if (what == "clear")
           for (size_t i = 0; i < g.parts[g.sel].v.size(); ++i)
             if (g.parts[g.sel].v[i]) SetTexel(i, false);
-        if (what != "undo" && what != "redo") EndStroke();
+        if (what != "undo" && what != "redo" && what != "rgb") EndStroke();
         if (what == "undo") Undo();
         if (what == "redo") Redo();
         size_t on = 0;
