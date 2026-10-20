@@ -18,12 +18,27 @@ $SvrParkX = if ($SvrTwoScreens) { 1920 } else { 0 }
 $SvrParkFlags = if ($SvrTwoScreens) { 0x11 } else { 0x13 }   # NOSIZE|NOACTIVATE (+ NOMOVE on one screen)
 
 function Get-SvrGames {
-    @(Get-CimInstance Win32_Process -Filter "Name = 'svr2011.exe' OR Name = 'svr2011_trace.exe'" -ErrorAction SilentlyContinue)
+    @(Get-CimInstance Win32_Process -Filter "Name = 'svr2011.exe' OR Name = 'svr2011_trace.exe' OR Name = 'svr2011_dbg.exe'" -ErrorAction SilentlyContinue)
+}
+
+# A test folder of any chat: its exe's folder or a parent holds the (empty) marker file .svr2011_test - e.g.
+# "D:\Xbox Games Ports\SvR2011 Anthology Test" - so a test run from outside port\runs is never taken for the
+# player's game. (Those games still count toward the 4 test games at once; Stop-TestGames leaves them alone.)
+function Test-HasTestMarker([string]$exe) {
+    if (-not $exe) { return $false }
+    $d = Split-Path $exe -Parent
+    while ($d) {
+        if (Test-Path -LiteralPath (Join-Path $d ".svr2011_test")) { return $true }
+        $up = Split-Path $d -Parent
+        if (-not $up -or $up -eq $d) { break }
+        $d = $up
+    }
+    return $false
 }
 
 function Test-IsTestGame($proc) {
     $cmd = [string]$proc.CommandLine
-    return $cmd -match [regex]::Escape("\port\runs\")
+    return ($cmd -match [regex]::Escape("\port\runs\")) -or (Test-HasTestMarker ([string]$proc.ExecutablePath))
 }
 
 function Stop-TestGames {
@@ -32,6 +47,7 @@ function Stop-TestGames {
         # netperf_game, online_game, lim_game, opt_*...: another session's test,
         # with up to 6 test games from several sessions at once)
         if ([string]$p.ExecutablePath -match [regex]::Escape("\port\runs\")) { continue }
+        if (Test-HasTestMarker ([string]$p.ExecutablePath)) { continue }  # (another chat's marked test folder)
         # (not the online tests' games: online_session.ps1 runs them beside others;
         # nor the Limit Breaking and Optimizing sessions' games: lim_game, opt_*)
         if ((Test-IsTestGame $p) -and ([string]$p.CommandLine -notmatch [regex]::Escape("\runs\online_game\")) -and
