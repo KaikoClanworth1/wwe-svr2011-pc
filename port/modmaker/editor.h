@@ -23,6 +23,11 @@ struct Lighting {
   float strength = 1.0f;
   bool crowd = true;              // the people in the seats
   bool Default() const;
+  // In the game (manifest light_scale= / match_light=: the game's arena_lights.cpp): the arena's lights x
+  // game_scale (with the player's ARENA BRIGHTNESS); match_light 0 the game's, 1 the entrance's in the match,
+  // 2 the entrance's with its coloured key light.
+  float game_scale = 1.0f;
+  int match_light = 0;
 };
 
 struct Hooks {
