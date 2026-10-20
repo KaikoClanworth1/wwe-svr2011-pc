@@ -26,6 +26,21 @@ The entrance manager keeps a copy per match slot: S = E + 4 at `mgr + 36 + idx *
 | 0xC8 / 0xC9 | 196 / 197 | flags of the normal / champion version (stage effects) [L] |
 | 0xCC | 200 | USER PLAYLIST name (UTF-16BE) |
 
+A created part (34 bytes, big-endian u16s in memory; seen in a save's ADVANCED CREATION entrance,
+Alicia Fox 297, 2026-10-20): +8 a value of the CAE list category 14 (values 100+, one per
+superstar - 157 = ALICIA FOX) [L: the scene's lighting or camera set], +10 the pyro (category 12,
+5000 = NONE, 5042 "STAGE BROTHERS OF DESTRUCTION"...), +14 the motion (10000 + 1000p + entrance
+number: categories 15 / 7 / 8 / 9 / 10), +16..+22, +26, +28, +32 = 9999 (the default), the rest 0.
+The CAE lists themselves: `pac\DLC.pac` ENEX/LSD, per category u16 count then 6-byte rows {value,
+string id, unlock} (docs/CAE_MOD_MOTIONS.md).
+
+**`cae=<file>`** (superstar mods): a whole 284-byte block as the game holds it (big-endian, e.g. a
+save's created entrance); its +0x1C..+0xC9 (the five parts and the created-entrance flags) is
+copied into the mod's profile while the slot's parts are its base's or ones the port set before
+(`.applied` `cae=<hash>`), so a player's own CREATE AN ENTRANCE edit stays. Test aid:
+`SVR2011_TEST_DUMP_ENTRANCES=<file>` writes every profile's block (`id hex`) once the profiles
+are set up. Played 2026-10-20: Rock Chain with Alicia Fox's created entrance walked out with it.
+
 Examples: Cena 139 / 602 John_Cena_Champ / 602; Kane 107 / 600 / 610; Batista, Rey (123),
 Undertaker (103): own / own / 610 "General Champ A Normal"; divas multi-title 614.
 

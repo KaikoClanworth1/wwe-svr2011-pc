@@ -11,7 +11,7 @@ New playable characters from `<game>/Mods/Superstars/<folder>/`, up to 72.
 
 | file | |
 |---|---|
-| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `pose=<id>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>`, `attire1..4_entrance=<number>` |
+| `manifest.txt` | `type=superstar`, `id=`, `name=` (31 chars), `short=`, `base=<id>`, `style=<name>`, `ratings=<7 numbers>`, `abilities=<ids>`, `moves=<file>`, `entrance=<number>`, `announcer=<NAME>`, `author=`, `version=`, `song=<file>`, `movie=<file>`, `call=<0-83>`, `height=<scale>`, `pose=<id>`, `voice=<file>`, `attire2..4=<file>`, `attire2..4_name=<text>`, `attire1..4_entrance=<number>`, `cae=<file>` |
 | `ch.pac` | the model pac (EPK8, like `pac/ch/chNNN.pac`). It can be any character's: the `EMD` names get the slot's id |
 | `theme.<ext>` | (optional) the entrance song: .mp3 .m4a .aac .wav .flac .wma .ogg |
 | `movie.bik` | (optional) the entrance movie: a 320x320 Bink, made in the launcher's Movies tab |
@@ -325,6 +325,10 @@ the slot. A save made with the mod keeps the player's own edits.
   `song=` / `movie=`. Any entrance number works: a stock one, or one a move
   pack adds (converted from another game: `tools/entrance_port.py`,
   docs/OTHER_GAMES_ENTRANCES.md).
+- **`cae=<file>`:** a created entrance (CREATE AN ENTRANCE's ADVANCED
+  CREATION: motion, pyro and the rest per scene) as a 284-byte entrance block,
+  big-endian as the game holds it. The mod's slot plays it until the player
+  makes their own. Details: docs/ENTRANCE_ATTIRES.md 1.
 - **`attire<N>_entrance=<number>`** (N = 1-4, the mod's attire): that attire
   walks out with its own entrance, with or without a title - like Rey
   Mysterio's "Evil" attire, which the stock game does in code. A created
