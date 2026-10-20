@@ -44,6 +44,7 @@
 #include "p2p.h"
 #include "script_input.h"
 #include "generated/default/svr2011_init.h"
+#include "free_cam.h"
 
 namespace svr2011 {
 std::atomic<uint32_t> g_match_rule{~0u}, g_match_arena{~0u};  // (the last match placed: LastMatch)
@@ -1592,7 +1593,9 @@ REX_HOOK_RAW(sub_82227150) {
       }
     }
   }
+  const uint32_t view = ctx.r3.u32, eye = ctx.r4.u32, dir = ctx.r5.u32;
   __imp__sub_82227150(ctx, base);
+  svr2011::FreeCamSceneView(base, view, eye, dir);  // (the free camera's, F6: free_cam.h)
 }
 
 // What the match camera frames: sub_82227690(camera) -> a sphere (centre

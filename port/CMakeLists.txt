@@ -19,6 +19,7 @@ set(SVR2011_SOURCES
     src/svr2011_app.cpp
     src/script_input.cpp
     src/keyboard_typing.cpp
+    src/free_cam.cpp
     src/platform.cpp
     src/gpu_probe.cpp
     src/frame_stats.cpp

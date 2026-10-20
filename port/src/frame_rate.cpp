@@ -24,6 +24,7 @@
 // extra ones repeat the controller reading and leave the characters' job to
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
+#include "free_cam.h"
 #include "thread_cpu.h"
 #include "fast_start.h"
 #include "pad_icons.h"
@@ -175,6 +176,8 @@ void WriteTiming(uint8_t* base, int fps) {
 }
 
 void ApplyFrameRate(uint8_t* base) { WriteTiming(base, 60); }
+
+bool Lockstep() { return g_lockstep.load(); }
 
 void SetLockstep(bool on) {
   if (g_lockstep.exchange(on) == on) return;
@@ -491,13 +494,16 @@ REX_HOOK_RAW(sub_8269C728) {
   g_frame_commands.clear();  // (last frame's ran at the barrier)
   g_job_frame.fetch_add(1);
   JobEv('F', uint32_t(g_world_ticks));
-  for (int i = 0; i < g_world_ticks; ++i) {
+  // (free camera F8: the match held - no update passes, the frame drawn as it was; free_cam.h)
+  const int passes = svr2011::FreeCamPaused() && !g_lockstep && svr2011::InMatch() ? 0 : g_world_ticks;
+  for (int i = 0; i < passes; ++i) {
     g_dbg_pass_now = 10 + i;
     g_dbg_pass = 10 + i;
-    g_extra_update = i + 1 < g_world_ticks;
+    g_extra_update = i + 1 < passes;
     UpdatePass(ctx, base, m);
   }
   g_extra_update = false;
+  svr2011::FreeCamFrame(base);  // (free_cam.h)
   if (g_job_owed != JobOwed::kNone) {  // (only an extra update reached the job this frame)
     const auto before = ctx;
     const bool round = g_job_owed == JobOwed::kRound;
@@ -721,6 +727,7 @@ REX_HOOK_RAW(sub_82905058) {
     return;
   }
   __imp__sub_82905058(ctx, base);
+  if (out && ctx.r3.u32 == 0) svr2011::FreeCamPad(user, base + out);  // (flying: the game gets no input - free_cam.h)
   if (user == 0 && out && ctx.r3.u32 == 0) {
     svr2011::FastStartInput(base, out);  // (the start skips: fast_start.h)
     // (the online overlay's BACK + RB never reaches the game: online_overlay.h)

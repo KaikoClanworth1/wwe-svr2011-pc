@@ -18,6 +18,7 @@
 
 #include "keyboard_typing.h"
 #include "pad_types.h"
+#include "free_cam.h"
 #include "story_designer.h"
 #include "touch_controls.h"
 
@@ -222,6 +223,14 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
   } else if (verb == "title") {
     step.kind = Step::kTitle;
     queue_.push_back(step);
+  } else if (verb == "hotkey") {  // (hotkey <key> [ms]: the free camera's keys, at once - free_cam.h)
+    std::string name;
+    int ms = 100;
+    in >> name >> ms;
+    std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+    if (!svr2011::FreeCamScriptKey(name.c_str(), ms)) REXLOG_WARN("script input: unknown hotkey '{}'", line);
+    else REXLOG_INFO("script input: {}", line);
+    return;
   } else if (verb == "where") {  // (logs the open menu group and row: the overnight menu explorer)
     step.kind = Step::kWhere;
     queue_.push_back(step);

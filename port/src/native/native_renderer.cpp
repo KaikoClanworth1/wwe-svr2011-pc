@@ -69,6 +69,7 @@
 #include "native/recording_list.h"
 #include "native/guest_d3d.h"
 #include "native/textures.h"
+#include "free_cam.h"
 
 // Default "main" (as the launcher): settings files without the key use it.
 #if defined(__ANDROID__)
@@ -3319,6 +3320,17 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   // covering the whole screen (a fade) and everything else fill the width.
   bool middle = false;
   const bool depth_test = (Reg(RB_DEPTHCONTROL) >> 1) & 1;
+  // Free camera F7 (free_cam.h): in a match, the HUD isn't drawn - its 2D sprites (as below: flat in the target's
+  // pixels, no depth, not a full-screen fade or pass) and the players' bars on the floor (in the world, no depth,
+  // alpha blended: the frame's last draws; the scene's one draw without depth, the ring's, blends otherwise).
+  if (svr2011::UiHidden() && g_match_scene.load() && !g_frame_2d && (vte & 1) && !depth_test) {
+    bool full = false;
+    if (Reg(RB_BLENDCONTROL0) == 0x07060706 ||
+        (FlatPixels(decl, up, indexed, start, count, base_vertex, tw, th, &full) && !full)) {
+      ++r->frame_stats.skipped_target;
+      return;
+    }
+  }
   if (reshaped && depth_test) ++r->frame_stats.wide_3d;
   if (reshaped && g_frame_2d) {
     middle = (vte & 1) != 0;  // (screen-space passes keep the target's width)

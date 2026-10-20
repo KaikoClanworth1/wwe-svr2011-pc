@@ -51,6 +51,7 @@ void SetSceneThirtyFps(bool on);
 // per frame at a 60 Hz frame clock, as on the console - both peers step the
 // world alike; a device that can't make 60 runs slower instead of catching up.
 void SetLockstep(bool on);
+bool Lockstep();
 
 // Chooses the frame rate, at once (GRAPHICS -> FRAME RATE).
 void SetTargetFrameRate(int fps);
