@@ -120,6 +120,9 @@ struct Stats {
 };
 // The accumulated performance counters (and resets them).
 Stats TakePerf();
+// The game's textures on the GPU now: their host bytes and how many (the performance overlay).
+uint64_t ResidentBytes();
+uint32_t ResidentCount();
 Stats FrameStats();  // and resets the per-frame counters
 
 }  // namespace svr2011::native::textures

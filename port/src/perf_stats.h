@@ -33,6 +33,7 @@ struct PerfSample {
   };
   std::vector<Thread> busiest;                    // the 3 busiest threads
   double draw_ms = 0, gpu_wait_ms = 0, submit_ms = 0, draws = 0, texture_mb = 0;  // the renderer, per frame
+  double targets_mb = 0;  // the renderer's render targets (game VRAM = textures + these)
 };
 
 // The latest numbers (sampled again when the last are older than half a second).

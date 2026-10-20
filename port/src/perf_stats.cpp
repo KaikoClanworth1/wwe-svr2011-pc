@@ -207,6 +207,7 @@ PerfSample Take() {
   if (native::backend::VideoMemory(&used, &budget)) s.vram = true, s.vram_used_mb = used / 1048576.0, s.vram_budget_mb = budget / 1048576.0;
   const native::FrameCosts c = native::LastFrameCosts();
   s.draw_ms = c.draw_ms, s.gpu_wait_ms = c.gpu_wait_ms, s.submit_ms = c.submit_ms, s.draws = c.draws, s.texture_mb = c.texture_mb;
+  s.targets_mb = c.targets_mb;
 #endif
   return s;
 }
@@ -268,8 +269,9 @@ std::string PerfLine(const PerfSample& s) {
     std::snprintf(b, sizeof b, ", %s %.0f%%", th.name.c_str(), th.pct);
     out += b;
   }
-  std::snprintf(b, sizeof b, " | renderer: draw %.2f ms, GPU wait %.2f ms, submit %.2f ms, %.0f draws, textures %.0f MB",
-                s.draw_ms, s.gpu_wait_ms, s.submit_ms, s.draws, s.texture_mb);
+  std::snprintf(b, sizeof b, " | game VRAM %.0f MB (textures %.0f, render targets %.0f) | renderer: draw %.2f ms, GPU wait "
+                "%.2f ms, submit %.2f ms, %.0f draws",
+                s.texture_mb + s.targets_mb, s.texture_mb, s.targets_mb, s.draw_ms, s.gpu_wait_ms, s.submit_ms, s.draws);
   return out + b;
 }
 

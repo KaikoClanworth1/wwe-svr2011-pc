@@ -2,8 +2,8 @@
 //
 // In a corner of the window (perf_overlay_corner), at a level (perf_overlay; launcher: Settings; in game: MY WWE ->
 // OPTIONS -> GRAPHICS, PERFORMANCE; F2 cycles it): off, the frame rate (FPS, frame time, 1% low - frame_stats.h), or
-// full - with RAM, the guest's memory, VRAM, CPU and its busiest threads, and the renderer's frame costs
-// (perf_stats.h). Nothing is measured below full.
+// full - with the game's own GPU memory (its textures and render targets; native_renderer.h LastFrameCosts). The
+// system's numbers (RAM, CPU, the driver's VRAM budget) are in the perf: log lines only (perf_stats.h).
 
 #pragma once
 
