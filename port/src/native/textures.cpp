@@ -1493,6 +1493,13 @@ plume::RenderComponentMapping ComponentMapping(uint32_t swizzle, uint32_t compon
   return plume::RenderComponentMapping(out[0], out[1], out[2], out[3]);
 }
 
+uint64_t ResidentBytes() { return g_resident_bytes; }
+uint32_t ResidentCount() {
+  uint32_t n = 0;
+  for (const auto& [key, e] : g_textures) n += e.resource != nullptr;
+  return n;
+}
+
 Stats TakePerf() {
   Stats s = g_stats;
   s.textures = 0;  // (with a resource: a texture quality change drops them)

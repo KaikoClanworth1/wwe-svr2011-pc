@@ -55,7 +55,11 @@ def room_table(stage):
     groups = {}
     for i in ids:
         f_ = fl.get(i, 'n')
-        if 'e' in f_.split():
+        if 'e' in f_.split() or str(i) in os.environ.get('HCTP_SKIP_MODELS', '').split(','):  # (test aid: skip ids)
+            continue
+        # ('w': shown only by HCTP's move cameras, never in play - HCTP_DROP_W leaves them out: the world
+        # stage's mesh count)
+        if 'w' in f_.split() and os.environ.get('HCTP_DROP_W'):
             continue
         # (an additive layer driven by a light motion - room 35's flood water, which never floods
         # in HCTP: 2011 draws it as an opaque sheet over the square)
@@ -147,10 +151,15 @@ def upscale(img, k):
     return big.crop((w * k, h * k, 2 * w * k, 2 * h * k))
 
 
+# (HCTP_TEX_UPSCALE: at most this upscale, see-through textures half of it - the world stage uses 2: its
+# textures, its props' and their GPU buffers share one memory window)
+UPSCALE = int(os.environ.get('HCTP_TEX_UPSCALE', '4'))
+
+
 def dds(img, alpha):
     h0, w0 = img.shape[:2]
     k = 1
-    while k < (4 if alpha == 'opaque' else 2) and max(w0, h0) * k * 2 <= (512 if alpha == 'opaque' else 256):
+    while k < (min(UPSCALE, 4) if alpha == 'opaque' else max(1, UPSCALE // 2)) and max(w0, h0) * k * 2 <= (512 if alpha == 'opaque' else 256):
         k *= 2
     src = img
     if alpha == 'cut' and two_level_cut(img):  # (the lower level is a hole: no colour of its own)
@@ -244,6 +253,9 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
     tmpl = hctp2jboy.template(d78)
     tb = texbank(stage)
     kinds = {n: alpha_kind(img) for n, img in tb.items() if img is not None}
+
+    def see_through(t):   # (cut-outs - fences, grilles, foliage: both sides; solid walls stay culled, so a
+        return kinds.get(t) in ('cut', 'blend')   # camera outside a room still sees in)
     models = {}
     flags = {}
     alpha_parts = []
@@ -262,15 +274,22 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
                     op, al = Mi, None
                 else:
                     op, al = split_alpha(Mi, kinds)
-                J = hctp2jboy.convert(op, tmpl, tone=tone) if op.meshes else None
+                # (additive layers - 'a', drawn plain translucent - at a quarter: street-light pools and
+                # Times Square's traffic-light glows covered the street in solid colour)
+                J = (hctp2jboy.convert(op, tmpl, tone=tone, double_sided=see_through,
+                                       alpha=0.25 if 'a' in fl.split() else 1.0) if op.meshes else None)
                 if J:
                     parts.append(J)
                 if al is not None and al.meshes:
                     alpha_parts.append(al)
         if parts:
             models[fid] = merge_jboy(parts, parts[0].name) if len(parts) > 1 else parts[0]
-            # (only the letters 2011 knows: r / y are baked, l(..) / m(..) name HCTP motions)
-            flags[fid] = ' '.join(k for k in fl.split() if k in ('n', 's', 'a', 'k', 'z', 'w', 'p')) or 'n'
+            # (only the letters 2011 knows: r / y are baked, l(..) / m(..) name HCTP motions. An additive
+            # layer ('a': street-light cones and pools) is drawn by 2011 in its light motion's colour - flat
+            # green over Times Square's street, without one or with stock l(101) alike: plain translucent
+            # ('s') instead, a soft haze)
+            fl_ = [('s' if k == 'a' else k) for k in fl.split() if k in os.environ.get('HCTP_FLAGS_KEEP', 'nsakzwp')]
+            flags[fid] = ' '.join(dict.fromkeys(fl_)) or 'n'
     # a model of more than MAX_MESHES meshes (room 34's ground: 99) is split over free ids
     # (room 34 crashed at load with it whole; 71 load fine)
     for fid in sorted(models):
@@ -294,7 +313,7 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
         # textures are per source model: convert each and merge meshes
         merged = None
         for p in alpha_parts:
-            J = hctp2jboy.convert(p, tmpl, tone=tone)
+            J = hctp2jboy.convert(p, tmpl, tone=tone, double_sided=True)
             if merged is None:
                 merged = J
                 merged.name = 'hctp_alpha'

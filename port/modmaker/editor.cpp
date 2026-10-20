@@ -1856,6 +1856,14 @@ void LightingPanel() {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("The arena's lights in the game - wrestlers, ring and hall - times this (and the player's\n"
                         "GRAPHICS -> ARENA BRIGHTNESS). Not shown in this view.");
+    static const char* const kTron[] = {"Titantron: the arena's screens", "Titantron: the live camera"};
+    int tron = g_light.tron_live ? 1 : 0;
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##titantron", &tron, kTron, 2)) g_light.tron_live = tron == 1, Edited();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("What the video screens (models 800-899) show during the match. The arena's own screens:\n"
+                        "the screen art it was made with. The live camera: the match itself, as in the game's own\n"
+                        "arenas. The entrance video plays on them either way.");
   }
   ImGui::Checkbox("The arena's own stage lights", &g_stage_lights);  // (the view only: the game always uses them)
   if (ImGui::IsItemHovered())
@@ -2769,6 +2777,7 @@ std::string ManifestLines() {
   }
   if (g_light.match_light == 1) s += "match_light=entrance\n";
   if (g_light.match_light == 2) s += "match_light=entrance_spot\n";
+  if (g_light.tron_live) s += "titantron=live\n";
   return s;
 }
 
@@ -2792,6 +2801,8 @@ void FromManifest(const std::string& text) {
       g_light.match_light = 1;
     } else if (line == "match_light=entrance_spot") {
       g_light.match_light = 2;
+    } else if (line == "titantron=live") {
+      g_light.tron_live = true;
     } else if (line.rfind("light.strength=", 0) == 0) {
       g_light.strength = std::strtof(line.c_str() + 15, nullptr);
       g_light.preset = int(std::size(kPresets)) - 1;

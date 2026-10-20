@@ -180,7 +180,7 @@ def build_models(stage, plist, tmpl, outdir, tone=1.0):
             if mid in done:
                 continue
             M = yobj.read(open(os.path.join(stage, '50101', f'{mid:05d}.yobj'), 'rb').read())
-            J = hctp2jboy.convert(M, tmpl, tone=tone)
+            J = hctp2jboy.convert(M, tmpl, tone=tone, double_sided=True)
             path = os.path.join(outdir, f'{mid}.jboy')
             open(path, 'wb').write(jboy.write(J))
             done[mid] = (path, J.textures)

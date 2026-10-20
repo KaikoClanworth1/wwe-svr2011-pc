@@ -1705,7 +1705,10 @@ void UpdateTitle(Renderer* r) {
       FrameCosts c;
       c.draw_ms = (r->perf_draw_ms - last_draw) / n, c.gpu_wait_ms = (r->perf_wait_ms - last_wait) / n;
       c.submit_ms = (r->perf_submit_ms - last_submit) / n, c.draws = (double(r->perf_draws) - last_draws) / n;
-      c.texture_mb = g_resident_mb;
+      c.texture_mb = textures::ResidentBytes() / 1048576.0;
+      c.textures = textures::ResidentCount();
+      for (const auto& [k, t] : r->color_targets) c.targets_mb += double(t.host_w) * t.host_h * 4 / 1048576.0;
+      for (const auto& [k, t] : r->depth_targets) c.targets_mb += double(t.host_w) * t.host_h * 4 / 1048576.0;
       std::lock_guard lock(g_costs_mutex);
       g_costs = c;
     }

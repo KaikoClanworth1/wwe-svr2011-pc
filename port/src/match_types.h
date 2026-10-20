@@ -55,6 +55,15 @@ uint32_t FighterInput(uint32_t fighter);
 // (hctp_room.cpp; only in a match from a row with hctp=).
 void HctpRoomUpdate(PPCContext& ctx, uint8_t* base);
 
+// The HCTP backstage as one stage (hctp_room.cpp): after each CFRS room-visibility
+// update (match_types.cpp), only the current room's models and objects are shown.
+void HctpWorldVisibility(PPCContext& ctx, uint8_t* base);
+// (match_types.cpp) The backstage fight box set up for the match: a new centre and
+// half sizes (the fighters went through a door into another room); the match
+// camera snapped onto them (not panning across).
+void SetFightBox(uint8_t* base, float cx, float cz, float hx, float hz);
+void SnapMatchCamera();
+
 // Slobber Knocker (slobber_knocker.cpp): the match set up is one
 // (match_types.cpp), a new one starts, and each world update while it runs.
 bool SlobberKnockerMatch();

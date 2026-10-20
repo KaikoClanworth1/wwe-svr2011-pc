@@ -1148,7 +1148,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                                          : "Play in a window (F11 switches to full screen).";
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
       case kFrameRate: return "Frames a second in matches, at most (menus: 60). The game always runs at its normal speed.";
-      case kFpsCounter: return "FPS: the frame rate. FULL: also memory (RAM, VRAM), CPU and the GPU's frame time. F2 switches it.";
+      case kFpsCounter: return "FPS: the frame rate. FULL: also the game's video memory (its textures and render targets). F2 switches it.";
       case kOverlayCorner: return "Which corner of the screen the performance numbers sit in.";
       case kRouterPort: return "Online: your router opens the game's port while you play (UPnP), so far-off players connect directly. OFF: never touched.";
       case kPing: return "Online matches: the delay to the other players at the top right (bars: green under 150 ms, yellow under 250, red above).";

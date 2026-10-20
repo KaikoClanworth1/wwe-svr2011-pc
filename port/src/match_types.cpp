@@ -1468,6 +1468,7 @@ REX_EXTERN(__imp__sub_825310B8);
 REX_HOOK_RAW(sub_825310B8) {
   const uint32_t task = ctx.r3.u32 - 32;
   __imp__sub_825310B8(ctx, base);
+  svr2011::HctpWorldVisibility(ctx, base);
   constexpr uint32_t kLive = 0x82E3DE00, kStory = 0x82E3C1F4;
   if (Rd32(base + kLive + 64) != 78 || !g_free_roam || Rd32(base + kStory)) return;
   const auto saved = ctx;
@@ -1565,6 +1566,14 @@ REX_HOOK_RAW(sub_822F26B8) {
 // vehicles on that side. (Clamping the eye inside the area, or putting it on
 // the area's centre side, gave extreme close-ups.)
 uint32_t g_camera_frame = 0;
+// After the fighters jump (SnapMatchCamera: through an HCTP door into another room, 1000s away), the
+// eye follows them at once: for kSnapFrames views it is put at the framed target + the eye's offset
+// from it before the jump (x / z), also in its kept copy (+96 / +104), so the camera's own easing
+// carries on from there. (Moving the eye once didn't hold: it was rebuilt and panned across.)
+constexpr int kSnapFrames = 30;
+int g_camera_snap = 0;
+float g_camera_offset[2] = {};
+bool g_camera_offset_set = false;
 REX_EXTERN(__imp__sub_822F2A38);
 REX_HOOK_RAW(sub_822F2A38) {
   g_camera_frame = ctx.r3.u32;
@@ -1574,6 +1583,20 @@ REX_HOOK_RAW(sub_822F2A38) {
 REX_EXTERN(__imp__sub_82227150);
 REX_HOOK_RAW(sub_82227150) {
   const uint32_t cam = g_camera_frame;
+  if (cam && ctx.r3.u32 == 0x82E3CC00 && ctx.r4.u32 == cam + 304 && ctx.r5.u32 == cam + 288) {
+    const uint32_t sp = ctx.r1.u32;  // (still sub_822F2A38's frame: the framed target at +128 / +136)
+    const float tx = RdF(base + sp + 128), tz = RdF(base + sp + 136);
+    if (g_camera_snap > 0 && g_camera_offset_set) {
+      --g_camera_snap;
+      for (uint32_t at : {96u, 304u}) {
+        WrF(base + cam + at, tx + g_camera_offset[0]);
+        WrF(base + cam + at + 8, tz + g_camera_offset[1]);
+      }
+    } else {
+      g_camera_offset[0] = RdF(base + cam + 304) - tx, g_camera_offset[1] = RdF(base + cam + 312) - tz;
+      g_camera_offset_set = true;
+    }
+  }
   if (cam && ctx.r3.u32 == 0x82E3CC00 && ctx.r4.u32 == cam + 304 && ctx.r5.u32 == cam + 288 &&
       svr2011::g_active_row >= 0 && size_t(svr2011::g_active_row) < svr2011::BackstageRows().size() &&
       !Rd32(base + 0x82E3C1F4)) {
@@ -1682,10 +1705,12 @@ REX_HOOK_RAW(sub_82227690) {
 // The whole backstage has no area there - the box would stay a point - so it
 // gets a box around all of it: the walls of the whole backstage (bg78 wall
 // mesh 0, x -530..510, z -550..470) keep the fighters in, as in story mode.
+uint32_t g_fight_box = 0;  // (the last box set up: SetFightBox moves it)
 REX_EXTERN(__imp__sub_8224EF28);
 REX_HOOK_RAW(sub_8224EF28) {
   const uint32_t box = ctx.r3.u32;
   __imp__sub_8224EF28(ctx, base);
+  if (box) g_fight_box = box;
   if (box && std::getenv("SVR2011_TEST_BOX_LOG"))  // (test aid: the area's own box)
     REXLOG_INFO("match types: area box centre {:.0f} {:.0f} {:.0f}, half {:.0f} {:.0f} / {:.0f} {:.0f}",
                 RdF(base + box + 32), RdF(base + box + 36), RdF(base + box + 40), RdF(base + box + 64),
@@ -3223,3 +3248,20 @@ REX_HOOK_RAW(sub_82856B00) {
   }
   __imp__sub_82856B00(ctx, base);
 }
+
+namespace svr2011 {
+
+void SetFightBox(uint8_t* base, float cx, float cz, float hx, float hz) {
+  if (!g_fight_box) return;
+  WrF(base + g_fight_box + 32, cx);
+  WrF(base + g_fight_box + 40, cz);
+  const float half[4] = {hx, hz, hx + 5.0f, hz + 5.0f};
+  for (uint32_t i = 0; i < 4; ++i) {
+    WrF(base + g_fight_box + 64 + i * 4, half[i]);
+    WrF(base + 0x82D9E9D4 + i * 4, half[i]);
+  }
+}
+
+void SnapMatchCamera() { g_camera_snap = kSnapFrames; }
+
+}  // namespace svr2011

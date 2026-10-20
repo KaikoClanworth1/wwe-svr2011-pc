@@ -31,6 +31,7 @@ struct StarProject {
   bool ratings_set = false;  // (the style's, until moved)
   char name[32] = "", short_name[32] = "", author[64] = "", version[16] = "1.0";
   std::wstring model, song, movie, voice;
+  std::string threads;   // threads.txt made in the Threads parts tab ("" = none: an own model gets threads_parts.py's)
   std::wstring cae;      // a created entrance (cae=: the game's 284-byte entrance block, "Made in the game")
   std::string cae_name;  // whose it was in the game (shown)
   std::wstring attires[4];        // [1..3]: attires 2-4 from other model pacs (their first attire)
@@ -106,6 +107,8 @@ std::wstring StyleChPac();  // the fighting style's superstar's model (pac\ch\ch
 void SimpleDraw();          // simple_star.cpp
 void FbxRows(bool simple);
 void GearRows(bool simple);  // entrance gear per attire: has it, show it, leave it out, give it another attire's
+std::vector<int> AttireCount();  // the attires the mod has, 1..4 (star_page.cpp)
+void ThreadsOpen(int attire);    // the Threads parts tab on that attire (threads_page.cpp)
 // the move-set: the picker (g_pick_slot >= 0 opens it), slot names, the preview of a pose
 extern int g_pick_slot;
 extern char g_pick_find[48];

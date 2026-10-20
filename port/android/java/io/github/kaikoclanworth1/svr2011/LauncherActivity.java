@@ -652,7 +652,7 @@ public class LauncherActivity extends Activity {
         LinearLayout display = card(c, "Display");
         toggle(display, "Touch controls", "The on-screen controller (EDIT in game rearranges it)", "touch_controls", true);
         // (the performance overlay, fps_overlay.h: perf_overlay wins over the older show_fps)
-        choice(display, "Performance", "FPS: the frame rate. Full: also memory, CPU and the GPU's frame time",
+        choice(display, "Performance", "FPS: the frame rate. Full: also the game's video memory",
                "perf_overlay", new String[] {"Off", "FPS", "Full"}, new String[] {"0", "1", "2"}, false, "1");
         choice(display, "Performance corner", "Where the performance numbers sit", "perf_overlay_corner",
                new String[] {"Top left", "Top right", "Bottom left", "Bottom right"}, new String[] {"0", "1", "2", "3"}, false, "0");

@@ -28,6 +28,9 @@ struct Lighting {
   // 2 the entrance's with its coloured key light.
   float game_scale = 1.0f;
   int match_light = 0;
+  // manifest titantron=live: the video screens show the match camera in the match (the game's arena_mods.cpp
+  // TitantronFile); off, the arena's own screens show then (the entrance video stays either way)
+  bool tron_live = false;
 };
 
 struct Hooks {
