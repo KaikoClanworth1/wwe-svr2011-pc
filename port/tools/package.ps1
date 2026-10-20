@@ -178,6 +178,11 @@ if (Test-Path $apk) {
     Write-Warning "no $apk (tools\build_apk.py) - this package has no Android app"
 }
 
+# Never the debug / test suite (docs/DEBUG_SUITE_PLAN.md): a debug-suite file or binary fails the package.
+. (Join-Path $PSScriptRoot "release_guard.ps1")
+Assert-NoDebugSuite $stage @($apk)
+"release guard: no debug / test suite in the package"
+
 # The release's file list (release_files.txt: size, SHA-256 and path of every file): the updater checks an
 # install against it after copying, and the launcher at every start, so a file an update or an unzip left
 # out is found and can be repaired.
