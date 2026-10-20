@@ -22,6 +22,7 @@
 // menu/MatchHD.pac (MENU/MASI), kept in guest physical memory (4 KB view)
 // untiled, with 16-bit words byte-swapped.
 #include "backgrounds_page.h"
+#include "arena_lights.h"
 #include "arena_mods.h"
 #include "crowd_off.h"
 #include "move_packs.h"
@@ -1007,6 +1008,10 @@ REX_HOOK_RAW(sub_826AEF10) {
   __imp__sub_826AEF10(ctx, base);
   if (dst && size) SwapDecoded(base + dst, size);
   if (dst && size) svr2011::BackgroundsDecoded(base + dst, size);  // (custom menu pictures: backgrounds_page.h)
+  if (dst && size) {  // (an arena's light bank: ARENA BRIGHTNESS, the arena mod's light keys - arena_lights.h)
+    const auto* chosen = static_cast<const CustomArena*>(g_redirected_custom);
+    svr2011::ArenaLightsDecoded(base + dst, size, chosen ? chosen->manifest : std::string());
+  }
 }
 
 // Does a file exist (r3 path): a custom arena's VS theme instead of the one
@@ -1531,11 +1536,17 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
       if (c.id == sv.substr(0, colon)) SetDecodeSwaps(&c, colon == std::string::npos ? 1 : std::atoi(sv.c_str() + colon + 1));
   }
   if (std::getenv("SVR2011_TEST_SCAN")) StartScan();
-  // Test aid: SVR2011_TEST_ARENA_REDIRECT=<nn>=<file relative to the game folder>
+  // Test aid: SVR2011_TEST_ARENA_REDIRECT=<nn>=<file relative to the game folder> (a custom arena's arena.pac:
+  // chosen as if picked on the arena select - its manifest's keys apply, e.g. the light keys)
   if (const char* v = std::getenv("SVR2011_TEST_ARENA_REDIRECT"); v && *v) {
     const std::string s = v;
     const size_t eq = s.find('=');
-    if (eq != std::string::npos) RedirectArena(std::atoi(s.substr(0, eq).c_str()), s.substr(eq + 1));
+    if (eq != std::string::npos) {
+      const std::string file = s.substr(eq + 1);
+      RedirectArena(std::atoi(s.substr(0, eq).c_str()), file);
+      for (const auto& c : g_customs)
+        if (c.file == file) g_redirected_custom = &c, svr2011::SetRingRules(c.manifest);
+    }
   }
   // Test aid: SVR2011_TEST_FILE_LINK=<path>=<path>;... (game folder relative,
   // e.g. PAC\M.PAC=Mods\PacOverlay\m.pac): file-level symbolic links.
