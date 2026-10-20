@@ -601,6 +601,44 @@ struct ImportMod {
 };
 std::vector<ImportMod> g_imp_mods;
 
+// The moves a move pack brings (pack.txt's waze / wazecopy / wazename lines: the game plays them whatever misc.pac
+// says), read once per pack folder and change.
+const std::set<int>& PackMoveIds(const std::wstring& pack) {
+  static std::map<std::wstring, std::pair<fs::file_time_type, std::set<int>>> cache;
+  static const std::set<int> kNone;
+  if (pack.empty()) return kNone;
+  std::error_code ec;
+  const fs::path f = fs::path(pack) / L"pack.txt";
+  const auto t = fs::last_write_time(f, ec);
+  auto& c = cache[pack];
+  if (ec || c.first == t) return c.second;
+  c.first = t, c.second.clear();
+  Bytes b;
+  ReadFile(PathStr(f), b);
+  const std::string text(b.begin(), b.end());
+  for (size_t at = 0; at < text.size();) {
+    size_t e = text.find('\n', at);
+    if (e == std::string::npos) e = text.size();
+    const std::string l = text.substr(at, e - at);
+    at = e + 1;
+    for (const char* k : {"waze ", "wazecopy ", "wazename "})
+      if (l.rfind(k, 0) == 0) c.second.insert(std::atoi(l.c_str() + std::strlen(k)));
+  }
+  return c.second;
+}
+
+// A move the game can play (as its MoveUsable): misc.pac has a record with its move kinds, or a move pack brings it.
+// (Stock profiles hold a few the game can't: RVD's 0x0E0 10280 - in a match such a slot gets the base's move.)
+// True when the game's moves didn't load (nothing to tell by).
+bool MoveUsable(int id, const std::wstring& pack) {
+  const auto& infos = MoveInfos();
+  if (infos.empty() || PackMoveIds(pack).count(id)) return true;
+  for (const PackMove& pm : PackMoves())  // (the installed move packs' and this mod's)
+    if (pm.id == id) return true;
+  const auto it = infos.find(id);
+  return it != infos.end() && std::any_of(std::begin(it->second.bits), std::end(it->second.bits), [](uint8_t b) { return b != 0; });
+}
+
 // Slot -> move id ("0xOFF=id" lines, a moves.txt) on top of `full`; a ported mod's "# same: / # similar:" notes too.
 void OverlayMoves(const std::string& t, std::vector<int>& full, std::map<int, std::string>& notes) {
   std::string note;
@@ -632,14 +670,22 @@ void TakeWholeMoveset(const std::vector<int>& full, const std::map<int, std::str
   const std::vector<int> base = ProfileMoves(kStyles[g_star.style].template_id);
   g_star.moveset.clear(), g_star.moveset_note.clear(), g_star.moves.clear();
   int n = 0;
+  std::string skipped;
   for (int s = 0; s < int(full.size()) && s < kMoveSlots; ++s) {
     const int was = s < int(base.size()) ? base[size_t(s)] : 0;
     if (!full[size_t(s)] || full[size_t(s)] == was) continue;
+    if (!MoveUsable(full[size_t(s)], pack)) {  // (the game couldn't play it: the style's stays)
+      char b[32];
+      std::snprintf(b, sizeof b, " 0x%03X=%d", s * 2, full[size_t(s)]);
+      skipped += b;
+      continue;
+    }
     g_star.moveset[s] = full[size_t(s)], ++n;
     if (const auto it = notes.find(s); it != notes.end()) g_star.moveset_note[s] = it->second;
   }
   if (!pack.empty()) g_star.pack = simple_port::CombinePacks(g_star.pack, pack);
   Touch();
+  if (!skipped.empty()) Log("import moveset: " + from + ": moves the game can't play, the style's kept:" + skipped);
   Log("import moveset: " + from + ": " + std::to_string(n) + " slots differ from the style's" + (pack.empty() ? "" : ", with its move pack"));
   Status(from + "'s whole moveset is your superstar's now (" + std::to_string(n) + " slots differ from your fighting style's).");
 }
@@ -715,6 +761,15 @@ void ImportMovesetSection() {
       for (const auto& l : r.lines) text += l + "\n";
       ParseMoveset(text, '\n');
       g_star.pack = simple_port::CombinePacks(g_star.pack, r.pack);
+      for (auto it = g_star.moveset.begin(); it != g_star.moveset.end();) {  // (ones the game can't play: the style's)
+        if (MoveUsable(it->second, g_star.pack)) {
+          ++it;
+          continue;
+        }
+        Log("import moveset: the game can't play move " + std::to_string(it->second) + ": the style's kept");
+        g_star.moveset_note.erase(it->first);
+        it = g_star.moveset.erase(it);
+      }
       Touch();
       Log("import moveset: " + r.what + ": " + std::to_string(r.lines.size()) + " slots");
       Status(r.what + " are your superstar's now (the slots that couldn't come over keep your fighting style's).");
@@ -2244,6 +2299,22 @@ void Problems(std::vector<Problem>& p) {
     if (!fs::exists(fs::path(g_star.pack) / L"pack.txt", ec))
       p.push_back(Error("The folder of extra moves (" + FileName(g_star.pack) + ") is broken: it has no list of its moves, so none of them would play.")
                       .With("Leave the extra moves out", [] { g_star.pack.clear(); Touch(); }));
+  }
+  {  // (picked, imported or from a test: moves the game can't play - in a match those slots get the base's)
+    std::vector<int> bad;
+    for (const auto& [slot, id] : g_star.moveset)
+      if (!MoveUsable(id, g_star.pack)) bad.push_back(slot);
+    if (!bad.empty()) {
+      std::string list;
+      for (size_t k = 0; k < bad.size() && k < 4; ++k)
+        list += (k ? ", " : "") + SlotLabel(bad[k]) + " (move " + std::to_string(g_star.moveset[bad[k]]) + ")";
+      p.push_back(Warning(std::to_string(bad.size()) + " move(s) in the moveset the game can't play: " + list +
+                          (bad.size() > 4 ? ", ..." : "") + ". In a match those slots would do the base superstar's moves.")
+                      .With("Use the style's moves there", [bad] {
+                        for (int s : bad) g_star.moveset.erase(s), g_star.moveset_note.erase(s);
+                        Touch();
+                      }, "the style's moves are back in those slots"));
+    }
   }
   tag(kStepMoves);
   auto clean = [](char* s) {  // letters and digits only, capitals (the announcer's clip names)
