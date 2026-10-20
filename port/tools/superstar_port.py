@@ -614,6 +614,11 @@ def write_mod(mod, man, out_svrmod, rep=None, pac11=None):
         # Superstar Threads parts from the model's masks (tools/threads_parts.py); a failure never fails the port
         try:
             import threads_parts
+            # (a model without masks - SvR 2006-2009, PS2 - gets them painted from its clothes' colours first)
+            made = threads_parts.add_masks(mod, write=True, backup=False)
+            if any(n for _, _, n, _ in made) and rep is not None:
+                rep['notes'].append('Superstar Threads: masks made for %s' % ', '.join(
+                    '%s attire %d (%d)' % (f, a, n) for f, a, n, _ in made if n))
             parts = threads_parts.build(mod, os.path.dirname(os.path.normpath(pac11)))
             if parts:
                 threads_parts.write(mod, parts)
