@@ -434,12 +434,32 @@ it.
 - The game's own IK solver (sub_823A4DD8) wasn't decoded; the preview's IK is
   an approximation that looks right on Jericho, The Rock and a Diva.
 
+## Superstar Threads
+
+`src/superstar_threads.cpp`. Threads lists the superstars of `edit\edit.pac`
+EDIT/SSTL: one PACH child, a u16 count (68), then 484-byte records {u32 id
+(little-endian), 50 u32 part-name string ids (-1 padded), each part's material
+groups, default colours}. A superstar's three slots are the last 324 bytes of
+his 1056-byte profile (+0x2DC, +0x348, +0x3B4: 108 bytes each; +0 = -1 when
+empty, colours after it, the name at +0x28).
+
+- **Listed:** a mod whose attire-1 models (EMD `<id>0<kind>`) are its base's,
+  byte for byte - an attire swap or a renamed copy. At start the port writes
+  `Mods\SuperstarOverlay\threads.pac`: the game's SSTL plus the base's record
+  under each such mod's id, as EDIT/SSTM. The game's lookup of `/EDIT/SSTL`
+  is pointed at it; edit.pac is never written.
+- **Not listed:** a mod with a model of its own (converted, FBX, other
+  games); the base's parts would colour the wrong materials. The log says
+  "<folder> not listed - its model isn't its base's".
+- **Slots:** kept by the mod's folder in `Saves\.threads\<folder>.bin` (324
+  bytes), not by the id it holds this run. They are put into its profile as it
+  is set up (empty when there is no file - never the base's), and written when
+  the game saves (the file is removed when all three are empty).
+
 ## Known limits
 
 - A mod has at most 4 attires.
-- Superstar Threads doesn't list mods (nor the managers). It lists the COS
-  table's characters, a table with room for only about 13 more, and saves
-  attires by its rows. Use attire pacs instead.
+- Superstar Threads lists only mods with their base's model (see above).
 - WWE Universe lists are not checked. The select screen itself is: one on one, tag team (2 on 2), and the
   COM side.
 
