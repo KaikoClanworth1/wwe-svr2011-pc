@@ -28,16 +28,19 @@ def sphere_of(P):
     return (float(c[0]), float(c[1]), float(c[2]), float(np.sqrt(((P - c) ** 2).sum(1)).max()) + 0.01)
 
 
-def argb(c, tone=1.0):
-    r, g, b, a = (max(0, min(255, int(round(x * 255 * (tone if i < 3 else 1.0))))) for i, x in enumerate(c))
+def argb(c, tone=1.0, alpha=1.0):
+    r, g, b, a = (max(0, min(255, int(round(x * 255 * (tone if i < 3 else alpha))))) for i, x in enumerate(c))
     return (a << 24) | (r << 16) | (g << 8) | b
 
 
 def convert(M, tmpl_model, name=None, tone=1.0, xform=None, tex_rename=None, max_verts=0xFFFF, merge=True,
-            keep_nodes=False):
+            keep_nodes=False, double_sided=False, alpha=1.0):
     """M: yobj.Model (world space). tmpl_model: jboy.Model whose meshes[0] and
     node are the template. xform(P) -> P for positions (normals rotate with
-    xform's linear part if given as (R, t)). Returns jboy.Model."""
+    xform's linear part if given as (R, t)). double_sided: True, or f(texture name) -> bool: those meshes
+    drawn from both sides (render flags +0x88 without 0x2, back-face cull - the PS2 drew everything
+    both sides: single-sided fences, signs and props vanished from behind). alpha: vertex alpha scale (an
+    additive PS2 layer drawn plain translucent: a faint one). Returns jboy.Model."""
     tm = tmpl_model.meshes[0]
     out = copy.copy(tmpl_model)
     out.name = (name or M.name)[:15]
@@ -64,7 +67,7 @@ def convert(M, tmpl_model, name=None, tone=1.0, xform=None, tex_rename=None, max
                     vi &= 0xFFFF
                     q = stq[2] or 1.0
                     uv = (stq[0] / q, stq[1] / q)
-                    col = argb(c, tone)
+                    col = argb(c, tone, alpha)
                     k = (vi, round(uv[0], 5), round(uv[1], 5), col)
                     if keep_nodes and VN is not None and vi < len(VN):
                         vnodes_key = int(VN[vi])
@@ -110,6 +113,9 @@ def convert(M, tmpl_model, name=None, tone=1.0, xform=None, tex_rename=None, max
                         for n, t, v in tm.params]
             s.sphere = sphere_of([v[:3] for v in verts])
             s.raw = s.raw[:0xA4] + struct.pack('>4f', *s.sphere) + s.raw[0xB4:]
+            if double_sided is True or (callable(double_sided) and double_sided(tname)):
+                fl = struct.unpack_from('>I', s.raw, 0x88)[0] & ~0x2
+                s.raw = s.raw[:0x88] + struct.pack('>I', fl) + s.raw[0x8C:]
             out.meshes.append(s)
     if not out.meshes:
         return None

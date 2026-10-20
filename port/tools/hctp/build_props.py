@@ -22,6 +22,13 @@ BG78 = os.path.join(PAC11, 'bg', 'bg78.pac')
 GM = os.path.join(PAC11, 'gm.pac')
 BANK = os.environ.get('HCTP_BANK', 'out/mot/bank_h3.bin')
 DX, DZ = float(os.environ.get('HCTP_DX', '180')), float(os.environ.get('HCTP_DZ', '-440'))
+# (one room of the world stage, build_world.py: its object acts' first key, its first GMPD record, its first
+# triangle in HMD 1004, a prefix for its texture names; HCTP_SPEC_OUT: the gimmick parts to a file, not built)
+OBJ_ACT = int(os.environ.get('HCTP_OBJ_ACT', '12700'))
+REC_BASE = int(os.environ.get('HCTP_REC_BASE', '100'))
+TRI_BASE = int(os.environ.get('HCTP_TRI_BASE', '0'))
+SPEC_OUT = os.environ.get('HCTP_SPEC_OUT')
+TEX_PREFIX = os.environ.get('HCTP_TEX_PREFIX', '')
 CLIMB_KEYS = {0xFB: 12541, 0xFD: 12542, 0xF4: 12503, 0xDF: 12503}
 # props' rest poses (HCTP: idle acts, or the first frame of their fall / open act)
 REST = {1243: 12532, 1234: 12523, 1264: 12531, 1232: 12558, 1252: 12556, 1236: 12555, 1233: 12559}
@@ -79,7 +86,7 @@ for pr in plist:
         # (a model that never plays a key is drawn with its nodes' own
         # transforms: those that don't move get none - 1262 the cart body,
         # 1235 the button panel)
-        J = hctp2jboy.convert(M, tmpl, keep_nodes=mid not in STILL)
+        J = hctp2jboy.convert(M, tmpl, keep_nodes=mid not in STILL, double_sided=True)
         path = f'out/props/{mid}.jboy'
         open(path, 'wb').write(jboy.write(J))
         models[mid] = (path, J.textures)
@@ -90,7 +97,7 @@ PUFFS = 5
 steam_lines, puffs = [], []
 if ROOM == 30:
     M = yobj.read(open(f'{STAGE}/50101/01237.yobj', 'rb').read())
-    J = hctp2jboy.convert(M, tmpl, keep_nodes=False)
+    J = hctp2jboy.convert(M, tmpl, keep_nodes=False, double_sided=True)
     if os.environ.get('HCTP_PUFF_TEX'):   # (debug: the puff with another texture)
         J.textures = [os.environ['HCTP_PUFF_TEX']]
     open('out/props/1237.jboy', 'wb').write(jboy.write(J))
@@ -135,7 +142,7 @@ for pr in plist:
             prm = hctp_props.gobj_tags(ROOM - 29)[pr['id']][1]
             ix = {71: (0, 8), 81: (3, 4)}.get(pr['kind'])
             if ix and int(prm[ix[0]]) == mid and prm[ix[1]] > 0:
-                idle = 12700 + int(prm[ix[1]])
+                idle = OBJ_ACT + int(prm[ix[1]])
         spec.append(dict(model=models[mid][0], pos=pos, ry=a, note=f"{pr['id']} m{mid}", idle=idle))
 # climb spots from the room collision with props (HCTP coordinates, original attributes)
 hmd = open(STAGE + r'\00999.hmd', 'rb').read()
@@ -150,8 +157,23 @@ bank = open(BANK, 'rb').read()
 spec = [dict(model=models[1237][0], pos=tuple(float(v) for v in o), ry=0.0, note=f'steam {t} puff {k}')
         for t, k, o in puffs] + spec
 os.makedirs(OUT, exist_ok=True)
-hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
-                   records=spots, bank=bank, keep_models=False)
+if SPEC_OUT:
+    import pickle
+    if TEX_PREFIX:   # (rooms reuse texture names: each room's get its prefix)
+        ren = {t: (TEX_PREFIX + t)[:15] for t in tex}
+        if len(set(ren.values())) != len(ren):
+            raise SystemExit('texture names clash after the prefix')
+        for path in {p['model'] for p in spec}:
+            J = jboy.read(open(path, 'rb').read())
+            J.textures = [ren.get(t, t) for t in J.textures]
+            open(path, 'wb').write(jboy.write(J))
+        tex = {ren[t]: d for t, d in tex.items()}
+    for p in spec:
+        p['model'] = os.path.abspath(p['model'])
+    pickle.dump(dict(spec=spec, spots=spots, tex=tex), open(SPEC_OUT, 'wb'))
+else:
+    hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
+                       records=spots, bank=bank, keep_models=False)
 
 
 # ------------------------------------------------------------ hctp.txt (hctp_room.cpp's room data)
@@ -186,8 +208,8 @@ def final_index_map(n):
 
 n0 = struct.unpack_from('<I', open(STAGE + r'\00999.hmd', 'rb').read(), 4)[0]
 lists = hctp_props.world_collision_lists(STAGE, plist)
-fmap = final_index_map(n0 + sum(len(x) for x in lists))
-lines, at, rid = [], n0, 100 + len(puffs)
+fmap = final_index_map(TRI_BASE + n0 + sum(len(x) for x in lists))[TRI_BASE:]
+lines, at, rid = [], n0, REC_BASE + len(puffs)
 weapon_lines = []
 # weapons the room's objects become (HCTP weapon -> 2011): bat 7 / lead pipe 148 -> kendo 88, chair 4
 HCTP_WEAPON_OBJ = {7: 88, 148: 88, 4: 4}
@@ -255,7 +277,7 @@ import svr08_gimmick as G
 T, ents, _ = G.bank_parse(bank)
 frames = {}
 for e in ents:
-    if 12500 <= e[2] < 13400:
+    if 12500 <= e[2] < 14000:
         frames[e[2]] = max(frames.get(e[2], 0), e[4])
 # The helicopter's flight (GmHeli: room act 10 on its body - its root keys are its path, 0.01 units, room
 # space): heli <hctp frame> <x> <y> <z> <yaw> lines, 2011 space
@@ -276,7 +298,7 @@ for tid, (kd, prm) in sorted(tags.items()):
 lines += weapon_lines
 lines += steam_lines
 for k, (t, j, o) in enumerate(puffs):  # (the first records, in spec order)
-    lines.append(f"prop steam{t}_{j} {t} puff 0 {o[0]:.2f} {o[1]:.2f} {o[2]:.2f} 0 recs={100 + k} tris=")
+    lines.append(f"prop steam{t}_{j} {t} puff 0 {o[0]:.2f} {o[1]:.2f} {o[2]:.2f} 0 recs={REC_BASE + k} tris=")
 lines += [f"key {k} {v}" for k, v in sorted(frames.items())]
 open(f'{OUT}/hctp.txt', 'w').write('\n'.join(lines) + '\n')
 print(f'hctp.txt: {len(lines)} lines')
