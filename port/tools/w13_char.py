@@ -490,6 +490,7 @@ class Conv:
         out = {}
         body = self.model(body13, self.body, nodes, nmap, origin, tex_body, kind)
         out[0] = jboy.write(body)
+        self.last = (body, body13, nodes, nmap, origin, tex_body)   # (gear(): the pieces join this body)
         # hair / mustache (transA) and eyelash (transB): same skeleton, by name
         for src, dst, tm, slots in ((0x2710, 0x2710, self.hair or self.body, {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}),
                                     (0x4e22, 0x4e20, self.lash, {'texDiffuse': 'color'})):
@@ -633,6 +634,57 @@ def dds_encode(img, fourcc):
     return bytes(out)
 
 
+GEAR_PIECES = range(0x5208, 0x5300)   # 2K16+ entrance-gear pieces: extra models in an attire's PACH
+GEAR_DROP = (0x64, 0xc8, 0xc9, 0x7530, 0x7531, 0x7532)   # (2011's own gear models have none of these)
+
+
+def _sub_map(m13, body13, nodes, nmap):
+    """a model's nodes -> the 2011 body's (by name; else the 2011 node the name maps to; else the nearest ancestor
+    that is one; else atama) - as the hair's"""
+    body_names = {b['name']: j for j, b in enumerate(body13['nodes'])}
+    idx11 = {nd['name']: j for j, nd in enumerate(nodes)}
+    out = {}
+    for i in range(len(m13['nodes'])):
+        k = i
+        while k >= 0:
+            nm = m13['nodes'][k]['name']
+            if nm in body_names:
+                out[i] = nmap[body_names[nm]]
+                break
+            if name13to11(nm) in idx11:
+                out[i] = idx11[name13to11(nm)]
+                break
+            k = m13['nodes'][k]['parent']
+        else:
+            out[i] = idx11.get('atama', 0)
+    return out
+
+
+def gear(conv, kids13, out):
+    """2K16+: an attire's entrance-gear pieces (children 0x5208.., small see-through models on the attire's own
+    sheets, skinned to its skeleton - Jericho 2K16's) -> the 2011 entrance-gear model (kind 4): the converted body
+    with the first piece's meshes added (the others are variants of it), as 2011's own gear models (no face
+    animation, portraits or blood). None when the attire has no piece."""
+    pieces = sorted(i for i in kids13 if i in GEAR_PIECES and kids13[i][:4] == b'JBOY')
+    if not pieces or not getattr(conv, 'last', None):
+        return None
+    body, body13, nodes, nmap, origin, tex_body = conv.last
+    m13 = read13(kids13[pieces[0]])
+    sub = _sub_map(m13, body13, nodes, nmap)
+    tm = conv.hair or conv.body
+    tmpl = tm.meshes[-1]   # (a see-through card's parameters: the hair's)
+    slots = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
+    pm = conv.model(m13, tm, nodes, sub, origin, tex_body, lambda s: (tmpl, slots))
+    merged = jboy.read(jboy.write(body))
+    for ms in pm.meshes:
+        ms.u74 = len(merged.meshes)
+        merged.meshes.append(ms)
+    g = {k: v for k, v in out.items() if k not in GEAR_DROP}
+    g[0] = jboy.write(merged)
+    gear.pieces = len(pieces)
+    return g
+
+
 def pack_kids(kids):
     return svrfmt.pach_write([(i, svrfmt.bpe_encode(kids[i], compress=True)) for i in sorted(kids)])
 
@@ -650,7 +702,13 @@ def convert(src, out, tmpl, portrait=None):
                 print('skip', name)
                 continue
             print('attire', name.decode(), '...')
-            entries.append((typ, name, pack_kids(conv.attire(kids))))
+            out11 = conv.attire(kids)
+            entries.append((typ, name, pack_kids(out11)))
+            g = gear(conv, kids, out11) if name.rstrip(b'\0').endswith(b'2') else None
+            if g:   # (its entrance gear: <id><attire>4)
+                gname = name.rstrip(b'\0')[:-1] + b'4'
+                print('entrance gear', gname.decode(), '(%d piece(s), the first one)' % gear.pieces)
+                entries.append((typ, gname, pack_kids(g)))
     write_epk8(tmpl, entries, out)
     print('wrote', out, os.path.getsize(out))
 
