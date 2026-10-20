@@ -235,9 +235,20 @@ std::string LookName(const std::wstring& pac) {
 }
 
 void StepAttires_() ;
+
 void StepAttires() {
   StepAttires_();
   ImGui::Spacing();
+  if (!g_star.model.empty()) {  // (Superstar Threads: the parts players can recolour - the same editor as the full one's tab)
+    ImGui::TextUnformatted("Colour parts");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(the parts Superstar Threads lets players recolour: trunks, boots, pads...)");
+    for (int a : AttireCount()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton(("Attire " + std::to_string(a) + "...").c_str())) ThreadsOpen(a), GoTo(PageId::kThreads);
+    }
+    ImGui::Spacing();
+  }
   MaterialsSection(true);
 }
 int g_attire_slot = 1;  // (from another game: the attire it goes in, 1-3 = attire 2-4)
