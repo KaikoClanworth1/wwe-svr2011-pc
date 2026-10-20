@@ -66,6 +66,9 @@
 #include "online_rules.h"
 #include "players.h"
 #include "superstar_mods.h"
+#if SVR2011_DEBUG_SUITE
+#include "debug_suite/debug_suite.h"
+#endif
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
 REXCVAR_DEFINE_BOOL(full_speed, true, "GPU",
@@ -445,6 +448,9 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
+#if SVR2011_DEBUG_SUITE
+  if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
+#endif
   // 30 fps at 60 Hz (SetHalfFrames): while frames take two updates (a PC that
   // can't keep 60 Hz) every frame is shown - as 30 fps did before - and every
   // other one again once it keeps up (a running average of the updates).
@@ -948,6 +954,9 @@ REX_HOOK_RAW(sub_826E0F78) {
                     "frames played; mode {} part {})",
                     now ? "recording" : "playing", rec_frames, per, play_steps, play_frames, Rd32(base + obj + 92),
                     part ? Rd32(base + part + 1504) : 0);
+#if SVR2011_DEBUG_SUITE
+        if (now && rec_frames == 0) svr2011::dbg::OnMatchStarted();  // (a new match's first recording: the cues' zero)
+#endif
         phase = now;
         play_acc = 0;
         play_frames = play_steps = 0;

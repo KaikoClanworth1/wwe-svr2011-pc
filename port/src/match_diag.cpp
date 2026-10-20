@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 
 #include <rex/logging.h>
@@ -98,6 +99,35 @@ void LogMatchState(uint8_t* base, const char* why) {
     }
     REXLOG_WARN("[svr2011] match state:   person {} {} - {}; {}", person, g_names[i], mod.empty() ? "not a mod" : "mod " + mod, move);
   }
+}
+
+uint32_t MatchClock(uint8_t* base) { return base ? Rd32(base, kMatchFrames) : 0; }
+
+std::vector<MatchPerson> MatchPeople(uint8_t* base) {
+  std::vector<MatchPerson> out;
+  if (!base) return out;
+  std::lock_guard lock(g_mutex);
+  const auto now = Clock::now();
+  for (uint32_t i = 0; i < 10; ++i) {
+    const uint32_t ch = Rd32(base, kChars + i * 4);
+    if (ch < 0x40000000u || (ch & 3) || g_names[i].empty()) continue;  // (as LogMatchState)
+    MatchPerson p;
+    p.index = i, p.person = Rd32(base, ch + 1156), p.superstar = g_ids[i], p.name = g_names[i];
+    if (p.superstar < 512) p.mod = SuperstarModFolder(p.superstar);
+    for (const auto& e : g_last) {
+      if (e.fighter.load() != ch) continue;
+      p.last_move = e.move.load() & 0xFFFF;
+      p.move_age_s = std::chrono::duration<double>(now - Clock::time_point(Clock::duration(e.at.load()))).count();
+      break;
+    }
+    // (the character's position: +304 points at x, y, z - match_types.cpp's lumberjack framing)
+    if (const uint32_t pos = Rd32(base, ch + 304); pos >= 0x40000000u && !(pos & 3)) {
+      auto f = [&](uint32_t a) { const uint32_t v = Rd32(base, a); float r; std::memcpy(&r, &v, 4); return r; };
+      p.has_position = true, p.x = f(pos), p.y = f(pos + 4), p.z = f(pos + 8);
+    }
+    out.push_back(std::move(p));
+  }
+  return out;
 }
 
 void MatchDiagTick(uint8_t* base, bool in_match) {

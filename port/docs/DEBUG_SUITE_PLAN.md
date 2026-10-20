@@ -87,5 +87,10 @@ errors, the match line, paths).
 2. `svrtest` on today's pieces (folder set-up, guards, ports, routes, SVR2011_TEST_MATCH, shots, PID stop,
    result.json) - useful at once, still ~60 s to a match.
 3. Game side: cues (shot / state / quit), state.json, fast-forward.
+   Done (debug_suite.h): `dbg_from=match|start`, `dbg_shot=5,10,every:2:5` (the frame image read back from the
+   GPU, PNG written on its own thread), `dbg_state=` (state_<ms>.json: people, superstar ids, mods, last move, position,
+   match clock, fps, perf line), `dbg_quit=`, `dbg_speed=N` (N world updates a frame; 4 ran a 20 s match clean - the
+   game's motion blur stacks up in shots), `dbg_out=`. svrtest `--exe dbg` uses them for `match` (`--state`, `--fast`).
+   Not yet: wrestlers' damage in state.json (offset unknown), cues for entrance / route / script (window shots there).
 4. Direct boot (research + build), then CAW people.
 5. LAN pair, `open <page>` targets, then moving test-only aids behind the fence.
