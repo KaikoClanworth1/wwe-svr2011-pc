@@ -20,7 +20,7 @@ struct ThreadsMod {
 
 // At start, before the overlay device is registered: Mods\SuperstarOverlay\threads.pac with the game's
 // EDIT/SSTL as EDIT/SSTM plus a record for each mod whose model is its base's (the base's record under the
-// mod's id). False: none (no file, no alias).
+// mod's id) or that has a threads.txt (its parts). False: none (no file, no alias).
 bool BuildThreadsOverlay(rex::memory::Memory* memory, const std::filesystem::path& game,
                          const std::filesystem::path& overlay, const std::vector<ThreadsMod>& mods);
 

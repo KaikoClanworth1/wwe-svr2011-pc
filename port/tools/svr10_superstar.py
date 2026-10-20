@@ -846,6 +846,15 @@ def build(cid, out, o):
              'announcer', 'call', 'height', 'song', 'movie']
     txt = ''.join('%s=%s\n' % (k, man[k]) for k in order if k in man)
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n').write(txt)
+    if os.path.exists(os.path.join(mod, 'ch.pac')):   # Superstar Threads parts from the model's masks
+        try:
+            import threads_parts
+            parts = threads_parts.build(mod, os.path.dirname(os.path.normpath(pac11)))
+            if parts:
+                threads_parts.write(mod, parts)
+            p('Superstar Threads: %s' % ('%d part(s)' % sum(len(a['parts']) for a in parts) if parts else 'not listed (no masks)'))
+        except Exception as e:   # noqa: BLE001 - never fails the port
+            p('Superstar Threads parts not made (threads_parts: %s)' % e)
     tmp = out + '.%d.tmp' % os.getpid()
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
         for root, dirs, files in os.walk(mod):
