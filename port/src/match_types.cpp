@@ -44,6 +44,7 @@
 #include "online_rules.h"
 #include "p2p.h"
 #include "script_input.h"
+#include "weapons_page.h"
 #include "generated/default/svr2011_init.h"
 #include "free_cam.h"
 
@@ -2323,7 +2324,7 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
     }
   }
   // (with SVR2011_TEST_ITEM_LOG) the stock under the ring (*0x82E3C06C: +0
-  // count, +8 entries, -1 taken) each time it changes, and how long each
+  // count, +8 entries: weapon model ids, -1 taken) each time it changes, and how long each
   // search under the ring (motions 15480 / 15481) lasts.
   if (static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr; item_log) {
     const uint32_t frames = Rd32(base + 0x82E3CD0C);
@@ -2332,11 +2333,7 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
       const uint32_t entries = Rd32(base + list + 8);
       std::string s;
       for (int32_t i = 0; i < n && i < 32 && entries; ++i) {
-        const int32_t e = int32_t(Rd32(base + entries + uint32_t(i) * 4));
-        const uint32_t o = e >= 0 && e < 72 ? Rd32(base + 0x82DE0220 + uint32_t(e) * 4) : 0;
-        s += o ? fmt::format(" {}:m{}{}", e, Rd32(base + o + 80),
-                             RdF(base + o + 288) == 0.f && RdF(base + o + 296) == 0.f ? "" : "(out)")
-               : fmt::format(" {}", e);
+        s += fmt::format(" {}", int32_t(Rd32(base + entries + uint32_t(i) * 4)));  // (weapon model ids; -1 taken)
       }
       static std::string last;
       if (s != last) {
@@ -2551,6 +2548,22 @@ bool ApplyRowWeapons(uint8_t* base, uint32_t rule) {
   return true;
 }
 
+// Test aid: SVR2011_TEST_PLACED_MODELS=<model>,... - the weapons WEAPONS
+// EVERYWHERE places, in its order (to see weapons: OPTIONS -> WEAPONS ones).
+int TestPlacedModel(uint32_t i, int model) {
+  static const std::vector<int> models = [] {
+    std::vector<int> out;
+    if (const char* v = std::getenv("SVR2011_TEST_PLACED_MODELS"))
+      for (const char* p = v; *p;) {
+        out.push_back(std::atoi(p));
+        while (*p && *p != ',') ++p;
+        if (*p) ++p;
+      }
+    return out;
+  }();
+  return i < models.size() && models[i] > 0 ? models[i] : model;
+}
+
 void ApplyWeapons(uint8_t* base) {
   RestoreWeapons(base);
   const uint32_t rule = base[0x82E3DE00];
@@ -2581,6 +2594,7 @@ void ApplyWeapons(uint8_t* base) {
       Placed w = list[i];
       // (test aid: SVR2011_TEST_WE_IN_RING=1 - all of them in the ring, in a row: to see them)
       if (std::getenv("SVR2011_TEST_WE_IN_RING")) w.place = 0, w.x = -24.f + 7.f * float(i), w.y = -12.f, w.z = 0.f;
+      w.model = uint8_t(TestPlacedModel(i, w.model));
       WrF(r, w.x), WrF(r + 4, w.y), WrF(r + 8, w.z);
       WrF(r + 12, 0.f), WrF(r + 16, w.yaw), WrF(r + 20, 0.f);
       r[24] = uint8_t(15010 >> 8), r[25] = uint8_t(15010 & 0xFF);  // (motion: lying)
@@ -2588,6 +2602,8 @@ void ApplyWeapons(uint8_t* base) {
       r[27] = w.model;
     }
   }
+  for (uint32_t i = 0; i < n; ++i)  // (the chosen weapons lie about in place of the game's: OPTIONS -> WEAPONS)
+    base[records + i * 28 + 27] = uint8_t(svr2011::ExtremeWeaponsPlacedModel(int(i), TestPlacedModel(i, list[i].model)));
   g_swapped = {entry, Rd32(base + entry), Rd32(base + entry + 4), lent, lent ? kExtremeFirst : 0};
   Wr32(base + entry, n);
   Wr32(base + entry + 4, records);
@@ -2600,7 +2616,9 @@ REX_EXTERN(__imp__sub_8227B938);
 REX_HOOK_RAW(sub_8227B938) {
   ApplyWeapons(base);
   if (g_swapped.entry) REXLOG_INFO("match types: WEAPONS EVERYWHERE - the weapons are made");
+  svr2011::ExtremeWeaponsMaking(base, true, ctx);  // (the Extreme Rules weapons as chosen: weapons_page.h)
   __imp__sub_8227B938(ctx, base);
+  svr2011::ExtremeWeaponsMaking(base, false, ctx);
   RestoreWeapons(base);
 }
 
@@ -2609,6 +2627,7 @@ REX_EXTERN(__imp__sub_8227D130);
 REX_HOOK_RAW(sub_8227D130) {
   ApplyWeapons(base);
   __imp__sub_8227D130(ctx, base);
+  svr2011::ExtremeWeaponsPlaced(base, g_memory);  // (the stock under the ring: the chosen weapons - weapons_page.h)
   RestoreWeapons(base);
 }
 
@@ -2758,6 +2777,8 @@ REX_EXTERN(__imp__sub_82301148);
 REX_HOOK_RAW(sub_82301148) {
   const uint32_t list = ctx.r3.u32;
   __imp__sub_82301148(ctx, base);
+  // (the Extreme Rules option on: its weapons as chosen on MY WWE -> OPTIONS -> WEAPONS - weapons_page.h)
+  if (list && base[0x82E3DE00 + 56]) svr2011::ChooseExtremeWeapons(base, list);
   const int r = svr2011::g_active_row;
   if (!list || r < 0 || size_t(r) >= svr2011::BackstageRows().size() || Rd32(base + kStoryContext)) return;
   const auto& row = svr2011::BackstageRows()[size_t(r)];

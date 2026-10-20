@@ -42,6 +42,7 @@
 #include "graphics_page.h"
 #include "jukebox.h"
 #include "backgrounds_page.h"
+#include "weapons_page.h"
 #include "discord_presence.h"
 #include "online.h"
 #include "match_types.h"
@@ -61,6 +62,7 @@ constexpr uint32_t kJukeboxLabelId = 0xAFC5;
 constexpr uint32_t kJukeboxTextId = 0xAFC6;
 constexpr uint32_t kControlsLabelId = 0xAFC7;
 constexpr uint32_t kBackgroundsLabelId = 0x0FA0B200;  // (not 0xAFC8: the game's own, the help bar's A)
+constexpr uint32_t kWeaponsLabelId = 0x0FA0B201;
 // Character select: the name beside the "?" tile ("Random", looked up by the
 // panel code in sub_82465728 for tile kind 4) - that tile opens the managers
 // (src/managers.cpp), so it reads "Mods" there (the superstar mods are in its list).
@@ -75,6 +77,7 @@ constexpr uint32_t kControlsRow = 5;           // its 6th entry (after CHEAT COD
 constexpr uint32_t kGraphicsRow = 6;           // after CONTROLS
 constexpr uint32_t kLanguageRow = 7;           // after GRAPHICS
 constexpr uint32_t kBackgroundsRow = 8;        // after LANGUAGE
+constexpr uint32_t kWeaponsRow = 9;            // after BACKGROUNDS
 constexpr uint32_t kExitRow = 7;               // main menu: after SHOP (row 6)
 // Main-menu object fields (sub_82447210 and friends).
 constexpr uint32_t kMenuGroup = 380;   // current group (< 1000) or screen id
@@ -89,6 +92,7 @@ uint32_t g_jukebox_text = 0;
 uint32_t g_language_label = 0;  // "LANGUAGE"
 uint32_t g_controls_label = 0;  // "CONTROLS"
 uint32_t g_backgrounds_label = 0;  // "BACKGROUNDS"
+uint32_t g_weapons_label = 0;  // "WEAPONS"
 uint32_t g_extra_label = 0;     // "Mods" (the "?" tile opens the managers: src/managers.cpp)
 
 // CREATE AN ENTRANCE's motion presets (DIVA / SUPERSTAR / LEGEND nn: entrance scripts 480-563 left from older
@@ -276,23 +280,24 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
     const char* jukebox_text;
     const char* controls;
     const char* backgrounds;
+    const char* weapons;
   };
   static const Labels kLabels[] = {
       {1, "GRAPHICS", "EXIT", "ACHIEVEMENTS",
        "View your achievements: what you've unlocked and how to earn the rest.", "LANGUAGE", "JUKEBOX",
-       "Choose which songs play in the menus.", "CONTROLS", "BACKGROUNDS"},
+       "Choose which songs play in the menus.", "CONTROLS", "BACKGROUNDS", "WEAPONS"},
       {4, "GRAPHISMES", "QUITTER", "SUCC\xC3\x88S",
        "Consultez vos succ\xC3\xA8s : ceux d\xC3\xA9" "bloqu\xC3\xA9s et comment obtenir les autres.", "LANGUE", "JUKEBOX",
-       "Choisissez les musiques jou\xC3\xA9" "es dans les menus.", "COMMANDES", "ARRI\xC3\x88RE-PLANS"},
+       "Choisissez les musiques jou\xC3\xA9" "es dans les menus.", "COMMANDES", "ARRI\xC3\x88RE-PLANS", "ARMES"},
       {3, "GRAFIK", "BEENDEN", "ERFOLGE",
        "Deine Erfolge: was du freigeschaltet hast und wie du den Rest bekommst.", "SPRACHE", "JUKEBOX",
-       "W\xC3\xA4hle, welche Songs in den Men\xC3\xBC" "s laufen.", "STEUERUNG", "HINTERGR\xC3\x9C" "NDE"},
+       "W\xC3\xA4hle, welche Songs in den Men\xC3\xBC" "s laufen.", "STEUERUNG", "HINTERGR\xC3\x9C" "NDE", "WAFFEN"},
       {5, "GR\xC3\x81" "FICOS", "SALIR", "LOGROS",
        "Mira tus logros: los que has desbloqueado y c\xC3\xB3mo conseguir el resto.", "IDIOMA", "JUKEBOX",
-       "Elige qu\xC3\xA9 canciones suenan en los men\xC3\xBA" "s.", "CONTROLES", "FONDOS"},
+       "Elige qu\xC3\xA9 canciones suenan en los men\xC3\xBA" "s.", "CONTROLES", "FONDOS", "ARMAS"},
       {6, "GRAFICA", "ESCI", "OBIETTIVI",
        "I tuoi obiettivi: quelli sbloccati e come ottenere gli altri.", "LINGUA", "JUKEBOX",
-       "Scegli quali brani suonano nei men\xC3\xB9.", "COMANDI", "SFONDI"},
+       "Scegli quali brani suonano nei men\xC3\xB9.", "COMANDI", "SFONDI", "ARMI"},
   };
   const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
   const Labels* l = &kLabels[0];
@@ -310,9 +315,9 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
                n_ach = std::strlen(l->achievements) + 1, n_text = std::strlen(l->achievements_text) + 1,
                n_language = std::strlen(l->language_label) + 1, n_jukebox = std::strlen(l->jukebox) + 1,
                n_jukebox_text = std::strlen(l->jukebox_text) + 1, n_controls = std::strlen(l->controls) + 1,
-               n_backgrounds = std::strlen(l->backgrounds) + 1;
+               n_backgrounds = std::strlen(l->backgrounds) + 1, n_weapons = std::strlen(l->weapons) + 1;
   g_label = memory->SystemHeapAlloc(
-      uint32_t(n_graphics + n_exit + n_ach + n_text + n_language + 6 + n_jukebox + n_jukebox_text + n_controls + n_backgrounds + 16));
+      uint32_t(n_graphics + n_exit + n_ach + n_text + n_language + 6 + n_jukebox + n_jukebox_text + n_controls + n_backgrounds + n_weapons + 16));
   if (!g_label) {
     REXLOG_WARN("menu: no guest memory for the GRAPHICS label");
     return;
@@ -336,6 +341,8 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   std::memcpy(memory->TranslateVirtual<char*>(g_controls_label), l->controls, n_controls);
   g_backgrounds_label = g_controls_label + uint32_t(n_controls);
   std::memcpy(memory->TranslateVirtual<char*>(g_backgrounds_label), l->backgrounds, n_backgrounds);
+  g_weapons_label = g_backgrounds_label + uint32_t(n_backgrounds);
+  std::memcpy(memory->TranslateVirtual<char*>(g_weapons_label), l->weapons, n_weapons);
 }
 
 }  // namespace svr2011
@@ -394,6 +401,10 @@ REX_HOOK_RAW(sub_82153EF8) {
   }
   if (g_backgrounds_label && ctx.r4.u32 == kBackgroundsLabelId) {
     ctx.r3.u64 = g_backgrounds_label;
+    return;
+  }
+  if (g_weapons_label && ctx.r4.u32 == kWeaponsLabelId) {
+    ctx.r3.u64 = g_weapons_label;
     return;
   }
   if (g_language_label && ctx.r4.u32 == kLanguageLabelId) {
@@ -489,6 +500,10 @@ REX_HOOK_RAW(sub_82447210) {
     }
     if (group == kOptionsGroup && cursor == kBackgroundsRow) {
       svr2011::OpenBackgroundsPage();
+      return;
+    }
+    if (group == kOptionsGroup && cursor == kWeaponsRow) {
+      svr2011::OpenWeaponsPage();
       return;
     }
     if (group == kMyWweGroup && cursor == kAchievementsRow) {

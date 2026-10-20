@@ -3,7 +3,7 @@
 // extra tools. The same changes as tools/patch_strings.py and
 // tools/patch_menu.py (keep them in sync):
 //   pac/string.pac     console wording -> PC wording (dlc.cpp's table)
-//   pac/menu/menu.pac  CONTROLS, GRAPHICS, LANGUAGE and BACKGROUNDS in MY WWE -> OPTIONS, ACHIEVEMENTS in MY WWE,
+//   pac/menu/menu.pac  CONTROLS, GRAPHICS, LANGUAGE, BACKGROUNDS and WEAPONS in MY WWE -> OPTIONS, ACHIEVEMENTS in MY WWE,
 //                      EXIT in the main menu (the port supplies their labels,
 //                      menu_hooks.cpp)
 #include "game_files.h"
@@ -39,6 +39,24 @@ bool DropSkipped(std::vector<uint8_t>& d, uint32_t label, uint32_t group) {
     const size_t o = kFirst + i * kRec;
     if (Be32(d, o) != label || Be32(d, o + 0x18) != group) continue;
     if (!(d[o + 0x41] & 1) || (Be32(d, o + 0x3C) & 2)) continue;
+    const size_t end = kFirst + total * kRec;
+    std::memmove(&d[o], &d[o + kRec], end - o - kRec);
+    std::memset(&d[end - kRec], 0, kRec);
+    SetBe32(&d[kMflo + 4], total - 1);
+    return true;
+  }
+  return false;
+}
+
+// A hidden record that is its group's last (the game skips it): out, the
+// record before it becomes the group's last.
+bool DropSkippedLast(std::vector<uint8_t>& d, uint32_t label, uint32_t group) {
+  const uint32_t total = Be32(d, kMflo + 4);
+  for (uint32_t i = 1; i < total; ++i) {
+    const size_t o = kFirst + i * kRec, prev = o - kRec;
+    if (Be32(d, o) != label || Be32(d, o + 0x18) != group) continue;
+    if (!(d[o + 0x41] & 1) || !(Be32(d, o + 0x3C) & 2) || Be32(d, prev + 0x18) != group) return false;
+    SetBe32(&d[prev + 0x3C], Be32(d, prev + 0x3C) | 2);
     const size_t end = kFirst + total * kRec;
     std::memmove(&d[o], &d[o + kRec], end - o - kRec);
     std::memset(&d[end - kRec], 0, kRec);
@@ -109,9 +127,11 @@ void PatchMenu(const std::filesystem::path& file) {
   if (d.size() < kMflo + kMfloSlot) return;
   // The table's header (records, shown records): the disc's, after each patch
   // (v0.1-v0.3: GRAPHICS, EXIT; + ACHIEVEMENTS; v1.0.4: + LANGUAGE; v2.0.3:
-  // + JUKEBOX; v2.0.5: + CONTROLS; v2.0.6: + BACKGROUNDS). Each step takes the table from one state to the next.
+  // + JUKEBOX; v2.0.5: + CONTROLS; v2.0.6: + BACKGROUNDS; v2.1.4: + WEAPONS). Each step takes the table from one
+  // state to the next.
   auto state = [&] { return std::pair(Be32(d, kMflo + 4), Be32(d, kMflo + 8)); };
   constexpr uint32_t kBackgroundsLabel = 0x0FA0B200;  // (v2.0.6: BACKGROUNDS - below)
+  constexpr uint32_t kWeaponsLabel = 0x0FA0B201;      // (v2.1.4: WEAPONS - below)
   using State = std::pair<uint32_t, uint32_t>;
   const State before = state();
   const bool node_fixed = FixNodeOrder(d);  // (v1.0.4)
@@ -157,7 +177,14 @@ void PatchMenu(const std::filesystem::path& file) {
     if (!Find(d, 0xAFC7, 0x11) || !DropSkipped(d, 0xA482, 0x0E) || !AddEntry(d, 0xAFC4, 0x11, kBackgroundsLabel))
       return fail();
   }
-  if (state() != State(0xE5, 0xE3) || !Find(d, 0xAFC5, 0x05) || !Find(d, 0xAFC7, 0x11) || !Find(d, kBackgroundsLabel, 0x11))
+  if (state() == State(0xE5, 0xE3)) {
+    // (v2.1.4) WEAPONS after BACKGROUNDS (a copy of it); the last hidden NEW
+    // SUPERSTAR copy in CREATE goes (its group's last: the one before it takes that).
+    if (!Find(d, kBackgroundsLabel, 0x11) || !DropSkippedLast(d, 0xA483, 0x0E) ||
+        !AddEntry(d, kBackgroundsLabel, 0x11, kWeaponsLabel))
+      return fail();
+  }
+  if (state() != State(0xE5, 0xE4) || !Find(d, 0xAFC5, 0x05) || !Find(d, 0xAFC7, 0x11) || !Find(d, kWeaponsLabel, 0x11))
     return fail();
   if (state() == before && !node_fixed) return;  // patched already
   const auto tmp = file.string() + ".tmp";
@@ -169,7 +196,7 @@ void PatchMenu(const std::filesystem::path& file) {
   std::error_code ec;
   std::filesystem::rename(tmp, file, ec);
   if (!ec) REXLOG_INFO("{}: {}", file.string(), state() == before ? "MY WWE -> OPTIONS back fixed (node order)"
-                                                                 : "added CONTROLS, GRAPHICS, LANGUAGE, BACKGROUNDS, ACHIEVEMENTS, JUKEBOX and EXIT");
+                                                                 : "added CONTROLS, GRAPHICS, LANGUAGE, BACKGROUNDS, WEAPONS, ACHIEVEMENTS, JUKEBOX and EXIT");
 }
 
 }  // namespace
