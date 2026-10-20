@@ -32,6 +32,7 @@
 #include "editor.h"
 #include "full_preview.h"
 #include "tool_run.h"
+#include "json.h"
 #include "session_log.h"
 extern "C" {
 #include "../launcher/movie_maker.h"
@@ -554,6 +555,21 @@ bool TestFixOn(const std::vector<Problem>& problems) {
   return true;
 }
 int FixesDone() { return g_fixes_done; }
+void FixChanged() { ++g_fixes_done; }
+
+std::set<std::wstring> g_threads_no_masks;
+bool ThreadsNoMasks(const fs::path& dir) { return g_threads_no_masks.count(fs::absolute(dir).wstring()) > 0; }
+void MakeThreadsParts(const fs::path& dir, std::function<void(int, const std::string&)> done) {
+  const std::wstring d = fs::absolute(dir).wstring();
+  const bool started = RunToolJson(L"threads_parts.py", {d, L"--json", L"--game", g_game}, [d, done](int code, const std::string& out) {
+    Json j;
+    const std::string msg = ParseJson(out, j) ? j["message"].Str() : std::string();
+    if (code == 3) g_threads_no_masks.insert(d);
+    Log("threads parts: " + Utf8(d) + ": exit " + std::to_string(code) + (msg.empty() ? "" : ": " + msg));
+    if (done) done(code, msg);
+  });
+  if (!started && done) done(-1, "the Mod Maker tools (Python) aren't ready, or another tool is running");
+}
 
 void RunFix(const FixAction& f) {
   if (f.run) f.run();
