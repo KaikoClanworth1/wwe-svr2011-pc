@@ -1178,16 +1178,23 @@ class GameW2K16(GameW2K15):
 
 
 def attires(pachs):
-    """2K16+ model PACHs (no kind in a name) -> [(EPK8 name, PACH)]: the entrance-gear model (0x5208..
-    children) and exact copies left out; at most 4 (the game's attires). Names as the game's "%06d%02d":
+    """2K16+ model PACHs (no kind in a name) -> [(EPK8 name, PACH)]: exact copies left out; at most 4 (the game's
+    attires). An attire's entrance-gear pieces (extra JBOY children 0x5208.., e.g. Jericho 2K16's jacket) are left
+    out of it: 2011 draws only its known children (they would need merging into the body as a kind-4 model);
+    attires.gear_pieces counts them. Names as the game's "%06d%02d":
     character id (the template's 104; the game puts the mod's slot id in), attire * 10 + kind 2. (They were
     "%04d0402" by attire: every attire had digit 0 - all "attire 1" to the game, the second one never offered,
     and a match asking for attire 2 hung on NOW LOADING - Asuka / Rollins / Jericho 2K17.)"""
     out, seen = [], set()
+    attires.gear_pieces = 0
     for b in pachs:
         kids = dict(svrfmt.pach_read(ch_tool.unpack(b)))
-        if 0x5208 in kids or 0 not in kids:
+        if 0 not in kids:
             continue
+        pieces = [i for i in kids if 0x5208 <= i < 0x5300]
+        if pieces:
+            attires.gear_pieces += len(pieces)
+            b = svrfmt.pach_write([(i, d) for i, d in svrfmt.pach_read(ch_tool.unpack(b)) if i not in pieces])
         key = ch_tool.unpack(kids[0])
         if key in seen:
             continue
@@ -1529,6 +1536,11 @@ def buildW(cid, outdir, o, rep):
         import model_budget
         pages = model_budget.model_pages(os.path.join(mod, 'ch.pac'))
         note('model: %s ch%d.pac, %d attires (w13_char)' % (gw.label, cid, len(pages)))
+        if hasattr(gw, 'model_entries') and getattr(attires, 'gear_pieces', 0):
+            drop('entrance gear: %d %s gear piece(s) (children 0x5208..) not converted yet - the attire comes without '
+                 'them' % (attires.gear_pieces, gw.label))
+        elif getattr(model_w, 'gear', None):
+            note('entrance gear: %s' % ', '.join(model_w.gear))
         for n_, pg, parts in pages:
             if pg > model_budget.LIMIT:
                 note('attire %s: %d of %d pages - the game leaves the blood overlays out' % (n_, pg, model_budget.LIMIT))
@@ -1751,7 +1763,11 @@ def build_single(cid, outdir, o, rep):
         if left:
             drop('attires past %d (2011 has 4 at most): %s' % (g.max_attires, ', '.join(left)))
         if game in ('wwe2k16', 'wwe2k17'):
-            drop('entrance gear: the %s gear model (children 0x5208) is not converted yet' % label)
+            if getattr(attires, 'gear_pieces', 0):
+                drop('entrance gear: %d %s gear piece(s) (children 0x5208..) not converted yet - the attire comes '
+                     'without them' % (attires.gear_pieces, label))
+            else:
+                gear = []
         else:
             gear = model_w.gear if model_w.gear is not None else [n for n in pac_children(out) if n.endswith('4')]
     elif game == 'svr2007':
