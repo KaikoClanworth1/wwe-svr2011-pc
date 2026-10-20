@@ -81,7 +81,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 10";  // (2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
+constexpr const char* kFormat = "movepacks 11";  // (11: BATS / BATH INIT get the records themselves, not WAZA's tables - a DLC's differ; 2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
 std::string g_folder;  // PacListFolder
 
 struct Motion {
@@ -984,14 +984,22 @@ bool BuildMiscFile(const fs::path& src, const fs::path& dst, const Packs& p) {
         }
       changed["WAZA/DATA"] = Repack(svrfmt::PachWrite(kids), bpe);
     }
-    for (const char* nm : {"BATS/INIT", "BATH/INIT"}) {  // (the same three tables, children 10-12)
+    // BATS / BATH INIT children 10-12: the same three tables - in the game's misc.pac byte for byte WAZA's,
+    // in a DLC's not (its WAZA has the DLC's moves, 51000 / 270488 bytes, its BATS 39284 / 205980): copying
+    // WAZA's over them (2.1.3) changed the stock moves' data in matches - wrestlers fell and got up at once
+    // (players' reports 2026-10-19). Each gets the packs' records itself; one that can't stays as it is.
+    for (const char* nm : {"BATS/INIT", "BATH/INIT"}) {
       Bytes blob;
       if (!ReadEntry(src, nm, blob)) continue;
       const bool bpe = svrfmt::IsBpe(blob);
       std::vector<svrfmt::PachEntry> kids;
       if (!svrfmt::PachRead(svrfmt::Unpack(blob), kids)) continue;
-      for (auto& k : kids)
-        if (k.id >= 10 && k.id <= 12 && !c[k.id - 10].empty()) k.data = c[k.id - 10];
+      for (auto& k : kids) {
+        if (k.id < 10 || k.id > 12 || c[k.id - 10].empty()) continue;
+        Bytes own = k.data;
+        if (EditGroups(own, k.id == 10 ? p.exh : k.id == 11 ? p.evt : p.mbd, int(k.id - 10))) k.data = std::move(own);
+        else REXLOG_WARN("[svr2011] move packs: {} child {}: the packs' records don't fit - kept as it is", nm, k.id);
+      }
       changed[nm] = Repack(svrfmt::PachWrite(kids), bpe);
     }
   }
