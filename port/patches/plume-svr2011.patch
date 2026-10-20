@@ -1029,10 +1029,10 @@ index 0789c20..3f803fe 100644
  endif()
 diff --git a/plume_d3d11.h b/plume_d3d11.h
 new file mode 100644
-index 0000000..6887b83
+index 0000000..7e6778c
 --- /dev/null
 +++ b/plume_d3d11.h
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,302 @@
 +//
 +// plume
 +//
@@ -1100,9 +1100,11 @@ index 0000000..6887b83
 +            Microsoft::WRL::ComPtr<ID3D11Resource> staging;
 +            uint32_t subresource = 0;
 +            uint64_t offset = 0;
-+            uint32_t rowPitch = 0;
++            uint32_t rowPitch = 0;     // (the buffer's: the footprint's padded row)
 +            uint32_t rows = 0;
 +            uint32_t depth = 1;
++            uint32_t rowBytes = 0;     // the staging texture's data per row (its width; the
++            uint32_t stagingRows = 0;  // footprint row can be wider) and its rows
 +        };
 +        std::mutex readbackMutex;
 +        std::vector<PendingReadback> readbacks;
@@ -1335,10 +1337,10 @@ index 0000000..6887b83
 +};
 diff --git a/plume_d3d11.cpp b/plume_d3d11.cpp
 new file mode 100644
-index 0000000..ae7405c
+index 0000000..2a30902
 --- /dev/null
 +++ b/plume_d3d11.cpp
-@@ -0,0 +1,1828 @@
+@@ -0,0 +1,1840 @@
 +//
 +// plume
 +//
@@ -1760,11 +1762,15 @@ index 0000000..ae7405c
 +                    if (FAILED(device->context->Map(p.staging.Get(), p.subresource, D3D11_MAP_READ, 0, &mapped))) {
 +                        continue;
 +                    }
++                    // Per row: the bytes the staging row holds (not the buffer's padded pitch - reading that
++                    // much ran past the staging copy's end on the last row).
++                    const uint32_t bytes = std::min({p.rowPitch, p.rowBytes ? p.rowBytes : p.rowPitch, uint32_t(mapped.RowPitch)});
++                    const uint32_t rows = p.stagingRows ? std::min(p.rows, p.stagingRows) : p.rows;
 +                    for (uint32_t z = 0; z < p.depth; ++z) {
-+                        for (uint32_t y = 0; y < p.rows; ++y) {
++                        for (uint32_t y = 0; y < rows; ++y) {
 +                            const uint64_t dst = p.offset + (uint64_t(z) * p.rows + y) * p.rowPitch;
-+                            if (dst + p.rowPitch > desc.size) break;
-+                            std::memcpy(cpu + dst, static_cast<const uint8_t *>(mapped.pData) + size_t(z) * mapped.DepthPitch + size_t(y) * mapped.RowPitch, p.rowPitch);
++                            if (dst + bytes > desc.size) break;
++                            std::memcpy(cpu + dst, static_cast<const uint8_t *>(mapped.pData) + size_t(z) * mapped.DepthPitch + size_t(y) * mapped.RowPitch, bytes);
 +                        }
 +                    }
 +                    device->context->Unmap(p.staging.Get(), p.subresource);
@@ -2683,7 +2689,7 @@ index 0000000..ae7405c
 +                if (!src->d3d || !dst) break;
 +                // A staging copy of the subresource, read into the buffer at map().
 +                Microsoft::WRL::ComPtr<ID3D11Resource> staging;
-+                UINT stagingSub = 0;
++                UINT stagingSub = 0, stagingW = 0, stagingH = 0;
 +                Microsoft::WRL::ComPtr<ID3D11Texture2D> t2;
 +                if (SUCCEEDED(src->d3d.As(&t2))) {
 +                    D3D11_TEXTURE2D_DESC d;
@@ -2691,6 +2697,7 @@ index 0000000..ae7405c
 +                    const UINT mip = c.a % d.MipLevels;
 +                    d.Width = std::max(d.Width >> mip, 1u);
 +                    d.Height = std::max(d.Height >> mip, 1u);
++                    stagingW = d.Width, stagingH = d.Height;
 +                    d.MipLevels = 1;
 +                    d.ArraySize = 1;
 +                    d.Usage = D3D11_USAGE_STAGING;
@@ -2712,6 +2719,13 @@ index 0000000..ae7405c
 +                p.rowPitch = c.b;
 +                p.rows = c.c;
 +                p.depth = c.d;
++                {
++                    // (a staging row holds only the texture's width: the footprint's row is padded to 256
++                    // bytes - a 736-wide Created Superstar portrait read 3072 bytes from 2944-byte rows)
++                    const uint32_t blockWidth = RenderFormatBlockWidth(src->desc.format);
++                    p.rowBytes = ((stagingW + blockWidth - 1) / blockWidth) * RenderFormatSize(src->desc.format);
++                    p.stagingRows = (stagingH + blockWidth - 1) / blockWidth;
++                }
 +                std::lock_guard lock(dst->readbackMutex);
 +                dst->readbacks.push_back(std::move(p));
 +                break;
