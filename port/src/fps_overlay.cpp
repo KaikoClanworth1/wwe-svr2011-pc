@@ -15,6 +15,7 @@
 
 #include "frame_rate.h"
 #include "frame_stats.h"
+#include "free_cam.h"
 #include "native/native_renderer.h"
 #include "net_sim.h"
 
@@ -184,6 +185,7 @@ static void DrawPing(ImGuiIO& io) {
 void FpsOverlay::OnDraw(ImGuiIO& io) {
   DrawNativeFailure(io);
   DrawPipelineProgress(io);
+  if (UiHidden()) return;  // (free camera F7: free_cam.h)
   DrawNotice(io);
   DrawPing(io);
   if (!g_visible.load(std::memory_order_relaxed)) return;

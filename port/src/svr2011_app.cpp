@@ -64,6 +64,7 @@
 #include "native/native_renderer.h"
 #include "frame_stats.h"
 #include "keyboard_typing.h"
+#include "free_cam.h"
 #include "gpu_probe.h"
 #include "platform.h"
 #include "script_input.h"
@@ -638,6 +639,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
+  svr2011::InstallFreeCam(window());  // (F5-F8: free_cam.h)
   // 10 pages of Paint Tool logos (paint_pages.h).
   svr2011::InstallPaintPages(runtime()->memory(),
                              static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_saves);
