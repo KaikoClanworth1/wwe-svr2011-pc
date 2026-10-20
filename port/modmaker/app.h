@@ -154,6 +154,13 @@ bool FixButtons(const Problem& p, bool accent_first = true);
 // Runs a fix and says so: "Done: <what>".
 void RunFix(const FixAction& f);
 int FixesDone();
+// A fix that finished later (a tool it started): the pages check again, as after RunFix.
+void FixChanged();
+// Superstar Threads parts for a superstar mod folder (tools/threads_parts.py: <folder>\threads.txt from its model's
+// colour masks). done(code, message) on the UI thread: 0 made, 3 the model has no colour masks, else failed.
+void MakeThreadsParts(const std::filesystem::path& dir, std::function<void(int code, const std::string& message)> done);
+// The folders threads_parts.py found no colour masks in (this session): the doctor says so instead of offering it.
+bool ThreadsNoMasks(const std::filesystem::path& dir);
 // Test aid --run-fix: tries the pending one on this list (logged); true when it ran or reported.
 bool TestFixOn(const std::vector<Problem>& problems);
 

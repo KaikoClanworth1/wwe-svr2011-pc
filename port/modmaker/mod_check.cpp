@@ -443,6 +443,26 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   else {
     BudgetProblems(ch.wstring(), who, false, p);
     ModelCheckProblems(ch.wstring(), who, p);
+    // Superstar Threads paints a mod's parts from its threads.txt (tools/threads_parts.py makes it from the model's
+    // colour masks); installed mods only (a .svrmod's check runs on a cache copy)
+    std::error_code ec;
+    const fs::path mods = fs::absolute(fs::path(g_game) / L"Mods", ec), at = fs::absolute(dir, ec);
+    const bool installed = !g_game.empty() && PathStr(at).rfind(PathStr(mods), 0) == 0;
+    if (installed && !Exists(dir / "threads.txt")) {
+      if (ThreadsNoMasks(dir))
+        p.push_back(Warning(who + "'s model has no colour masks: Superstar Threads can't recolour " + who + "'s attires.").Note());
+      else
+        p.push_back(Warning(who + " has no Superstar Threads parts: Superstar Threads can't recolour " + who + "'s attires.")
+                        .With("Make Superstar Threads parts", [dir, who] {
+                          Status("Making " + who + "'s Superstar Threads parts ...");
+                          MakeThreadsParts(dir, [who](int code, const std::string& msg) {
+                            if (code == 0) Status(who + "'s Superstar Threads parts are made" + (msg.empty() ? "." : ": " + msg + "."));
+                            else if (code == 3) Status("This model has no colour masks: Superstar Threads can't recolour " + who + "'s attires.");
+                            else Status("The Superstar Threads parts couldn't be made (see the log).");
+                            FixChanged();
+                          });
+                        }, "Superstar Threads parts are being made"));
+    }
   }
   if (!IsInt(Trim(m.Get("base")), 100, 321))
     p.push_back(Error(who + " has no fighting style: the game leaves " + who + " out.").With(kOpen, OpenIt(dir)));

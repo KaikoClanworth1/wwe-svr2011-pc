@@ -1239,6 +1239,36 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
   return true;
 }
 
+// The project's own model (an FBX's, a converted one - not one of the game's pac\ch): it gets Superstar Threads parts
+// (threads.txt, tools/threads_parts.py) when the mod is saved or installed.
+bool OwnModel(const std::wstring& model) {
+  if (model.empty()) return false;
+  std::error_code ec;
+  const std::wstring stock = fs::absolute(fs::path(g_game) / L"pac" / L"ch", ec).wstring(), m = fs::absolute(model, ec).wstring();
+  return Lower(Utf8(m)).rfind(Lower(Utf8(stock)), 0) != 0;
+}
+
+// The mod's model files (manifest + .pac) into a work folder, threads_parts.py there, its threads.txt added to the
+// files; then `then` (in the background), with or without it.
+void WithThreadsParts(const std::string& id, std::vector<ZipEntry> files, std::function<void(std::vector<ZipEntry>&)> then) {
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"threads" / fs::u8path(id);
+  std::error_code ec;
+  fs::remove_all(work, ec);
+  fs::create_directories(work, ec);
+  for (const auto& f : files)
+    if (f.name == "manifest.txt" || (f.name.size() > 4 && f.name.compare(f.name.size() - 4, 4, ".pac") == 0 && f.name.find('/') == std::string::npos))
+      WriteFile(PathStr(work / fs::u8path(f.name)), f.data);
+  OnUiThread([work, files, then] {
+    WhenIdle([work, files, then] {
+      MakeThreadsParts(work, [work, files, then](int code, const std::string&) mutable {
+        Bytes t;
+        if (code == 0 && ReadFile(PathStr(work / L"threads.txt"), t)) files.push_back({"threads.txt", t});
+        RunInBackground([files, then]() mutable { then(files); });
+      });
+    });
+  });
+}
+
 void SaveMod() {
   Job j;
   if (!PrepareJob(j)) return;
@@ -1248,8 +1278,12 @@ void SaveMod() {
   RunInBackground([j, out]() mutable {
     std::vector<ZipEntry> files;
     if (!BuildFiles(j, files)) return;
-    if (WriteFile(out, ZipWrite(files))) Status("Saved " + out + " (add it in the launcher's Mods tab with +).");
-    else Status("The mod could not be written: " + out);
+    auto write = [out](std::vector<ZipEntry>& files) {
+      if (WriteFile(out, ZipWrite(files))) Status("Saved " + out + " (add it in the launcher's Mods tab with +).");
+      else Status("The mod could not be written: " + out);
+    };
+    if (OwnModel(j.model)) WithThreadsParts(j.id, std::move(files), write);
+    else write(files);
   });
 }
 
@@ -1269,8 +1303,14 @@ void Install(bool start) {
       Status("Not installed: " + why);
       return;
     }
-    Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ")." + InstallReport("Superstars", dir));
-    if (start) StartGame();
+    auto done = [dir, start] {
+      Status("Installed: under the M tile of the character select from the next game start (" + PathStr(dir) + ")." + InstallReport("Superstars", dir));
+      if (start) StartGame();
+    };
+    if (!OwnModel(j.model)) return done();
+    OnUiThread([dir, done] {  // (its own model: its Superstar Threads parts first, then the doctor's report)
+      WhenIdle([dir, done] { MakeThreadsParts(dir, [done](int, const std::string&) { RunInBackground(done); }); });
+    });
   });
 }
 
@@ -2490,8 +2530,13 @@ void Draw() {
       Job j;
       PrepareJob(j);
       std::vector<ZipEntry> files;
-      if (BuildFiles(j, files) && WriteFile(Utf8(g_test_save), ZipWrite(files))) Log("test: saved " + Utf8(g_test_save));
-      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      auto write = [](std::vector<ZipEntry>& files) {
+        if (WriteFile(Utf8(g_test_save), ZipWrite(files))) Log("test: saved " + Utf8(g_test_save));
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      };
+      if (!BuildFiles(j, files)) PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      else if (OwnModel(j.model)) WithThreadsParts(j.id, std::move(files), write);  // (as Save as mod)
+      else write(files);
     }
   }
   if (g_star.simple) return SimpleDraw();
