@@ -82,6 +82,9 @@ fs::path g_game, g_overlay;
 bool g_overlay_ready = false;
 std::string g_redirect[100];  // arena number -> relative file ("" = original)
 int g_number_for[100];        // arena number -> the number a match there plays as (0: its own), see RedirectArena
+// arena number -> the arena a match picked there plays as (0: its own): a custom arena on another arena's tile plays
+// as its base arena (FollowCursor), whose file is the custom one
+int g_plays_as[100];
 std::string g_default[100];   // arena number -> its file when no custom arena is on its tile (media mods: screens)
 
 std::string Upper(std::string s) {
@@ -260,9 +263,9 @@ void StartScan() {
 // Moving past the right edge goes to the next page, past the left edge to
 // the previous one (as the Paint Tool grid); LB / RB and LT / RT change the
 // page too (keyboard: 1 / 3 and Q / E, the controller keys' defaults).
-// A custom arena borrows its tile's arena as host: while its tile is the one
-// under the cursor, the host's file is the custom arena's
-// (RedirectArena), so the match that follows loads it.
+// A custom arena borrows its base arena as host: while its tile is the one
+// under the cursor, the host's file is the custom arena's (RedirectArena) and
+// a match on the tile plays as the host (PointAt), so the match loads it.
 
 struct Banner {
   std::string name;    // "arena_SD"
@@ -278,6 +281,7 @@ struct CustomArena {
   std::string id, name, file;  // file: relative to the game folder
   std::string manifest;        // its text (ring.* keys: ring_rules.h)
   std::string base;            // the arena it was made from (manifest base=arena_SS)
+  int base_arena = -1;         // its number (-1: no base - it plays as the tile's arena)
   svrfmt::Bytes banner;        // DXT5 blocks, 16-bit swapped (empty = none)
   // its VS screen pictures (vs/<name>.dds): name -> DXT5 blocks, swapped
   std::vector<std::pair<std::string, svrfmt::Bytes>> vs;
@@ -419,37 +423,54 @@ void LoadBanners() {
   }
 }
 
-// Custom arenas on the pages: each on the tile of the arena it was made
-// from (manifest base=), so it plays in that arena's place - the file the
-// game loads for that tile, with the memory room and VS screen style it was
-// made for. More than one on the same arena: pages 3, 4... Arenas without a
-// base fill the free tiles.
+// Custom arenas on the pages: in install order (g_customs: Mods/Arenas/order.txt), left to right and row by row,
+// no gaps - a page more only when one is full. Whatever tile one is on, a match on it plays as the arena it was
+// made from (manifest base=: its memory room, VS screen style, the game's per-arena data) - FollowCursor points
+// that arena's file at it and the match at that arena (g_plays_as). (Until 2.1.3 each sat on its base's tile:
+// page 2's SmackDown tile empty when no mod was made from SmackDown, RAW's filled.)
 std::vector<std::array<int, 20>> g_layout;  // pages 2.. : tile -> index in g_customs (-1)
 
-int TileOf(const std::string& banner) {
-  for (int k = 0; k < 20; ++k)
-    if (banner == g_tiles[k].banner) return k;
+int ArenaOfBanner(const std::string& banner) {
+  for (const Tile& t : kTiles)
+    if (banner == t.banner) return t.arena;
   return -1;
 }
 
 void LayOutPages() {
   g_layout.clear();
-  auto place = [](size_t i, int tile) {
-    for (auto& page : g_layout)
-      if (tile >= 0 ? page[tile] < 0 : true) {
-        if (tile >= 0) { page[tile] = int(i); return; }
-        for (int& t : page)
-          if (t < 0) { t = int(i); return; }
-      }
-    std::array<int, 20> page;
-    page.fill(-1);
-    page[tile >= 0 ? tile : 0] = int(i);
-    g_layout.push_back(page);
-  };
-  for (size_t i = 0; i < g_customs.size(); ++i)
-    if (TileOf(g_customs[i].base) >= 0) place(i, TileOf(g_customs[i].base));
-  for (size_t i = 0; i < g_customs.size(); ++i)
-    if (TileOf(g_customs[i].base) < 0) place(i, -1);
+  for (size_t i = 0; i < g_customs.size(); ++i) {
+    if (i % 20 == 0) g_layout.emplace_back().fill(-1);
+    g_layout.back()[i % 20] = int(i);
+  }
+}
+
+// The install order: Mods/Arenas/order.txt, a folder a line (the game's own file - written when a folder comes or
+// goes). Folders not in it yet (installed since) go last, by name among themselves; folders gone leave it, so the
+// rest close up. Switched-off ones keep their line (and their place when switched on again).
+std::vector<fs::path> InInstallOrder(const fs::path& dir, std::vector<fs::path> folders) {
+  std::vector<std::string> order, kept;
+  if (std::ifstream in(dir / "order.txt"); in)
+    for (std::string l; std::getline(in, l);) {
+      while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+      if (!l.empty() && std::find(order.begin(), order.end(), l) == order.end()) order.push_back(l);
+    }
+  std::error_code ec;
+  for (const auto& l : order)  // (folder names as written: the ANSI code page, as the mods' ids)
+    if (fs::exists(dir / fs::path(l) / "arena.pac", ec)) kept.push_back(l);
+  std::sort(folders.begin(), folders.end());
+  for (const auto& f : folders)
+    if (std::find(kept.begin(), kept.end(), f.filename().string()) == kept.end()) kept.push_back(f.filename().string());
+  if (kept != order) {
+    std::ofstream out(dir / "order.txt", std::ios::binary | std::ios::trunc);
+    for (const auto& l : kept) out << l << '\n';
+    REXLOG_INFO("[svr2011] arena mods: order.txt {} ({} folders, was {})", out ? "written" : "NOT written", kept.size(),
+                order.size());
+  }
+  std::vector<fs::path> sorted;
+  for (const auto& l : kept)
+    for (const auto& f : folders)
+      if (f.filename().string() == l) sorted.push_back(f);
+  return sorted;
 }
 
 void LoadCustomArenas() {
@@ -461,7 +482,7 @@ void LoadCustomArenas() {
   for (const auto& e : fs::directory_iterator(dir, ec))
     if (e.is_directory() && fs::exists(e.path() / "arena.pac", ec) && !fs::exists(e.path() / "disabled", ec))
       folders.push_back(e.path());  // ("disabled": turned off in the launcher's Mods tab)
-  std::sort(folders.begin(), folders.end());
+  folders = InInstallOrder(dir, folders);
   for (const auto& f : folders) {
     CustomArena c;
     c.id = f.filename().string();
@@ -480,6 +501,7 @@ void LoadCustomArenas() {
       }
       std::fclose(t);
     }
+    c.base_arena = ArenaOfBanner(c.base);
     svrfmt::Bytes dds;
     if (svrfmt::ReadFile((f / "banner.dds").string(), dds)) c.banner = BannerBlocks(dds);
     if (c.banner.empty()) REXLOG_WARN("[svr2011] arena mods: {} has no 256 x 128 DXT5 banner.dds", c.id);
@@ -913,24 +935,33 @@ void ForceTheme(char* path) {
   path[8] = b;
 }
 
-// The host arena of the tile under the cursor plays the custom arena there.
+// Custom arena c picked on the tile of arena `tile` (nullptr: none): it plays as its base arena (the tile's when it
+// has none) - that arena's file is c's, and a match on the tile plays as that arena (g_plays_as).
+int g_redirected_file = -1;  // (the arena whose file is the custom one: its base)
+void PointAt(const CustomArena* c, int tile) {
+  if (g_redirected_file >= 0) svr2011::RedirectArena(g_redirected_file, "");
+  if (g_redirected_host >= 0) g_plays_as[g_redirected_host] = 0;
+  g_redirected_custom = c;
+  g_redirected_host = g_redirected_file = -1;
+  const int as = c ? (c->base_arena >= 0 ? c->base_arena : tile) : -1;
+  SetDecodeSwaps(c, as);
+  svr2011::SetRingRules(c ? c->manifest : std::string());
+  if (!c || tile < 0) return;
+  svr2011::RedirectArena(as, c->file);
+  g_redirected_host = tile, g_redirected_file = as;
+  if (as != tile) g_plays_as[tile] = as;
+}
+
+// The custom arena on the tile under the cursor is the one played.
 void FollowCursor(int row, int col) {
   const CustomArena* c = row < 4 ? CustomAt(row * 5 + col) : nullptr;
   g_cursor_custom = c ? int(c - g_customs.data()) : -1;
-  // the tile's arena: the one the game loads (LayOutPages puts each custom
-  // arena on the tile of the arena it was made from)
-  const int host = c ? g_tiles[row * 5 + col].arena : -1;
-  if (c == g_redirected_custom && host == g_redirected_host) return;
-  g_redirected_custom = c;
-  SetDecodeSwaps(c, host);
-  if (g_redirected_host >= 0) svr2011::RedirectArena(g_redirected_host, "");
-  g_redirected_host = -1;
-  svr2011::SetRingRules(c ? c->manifest : std::string());
-  if (c) {
-    svr2011::RedirectArena(host, c->file);
-    g_redirected_host = host;
-    REXLOG_INFO("[svr2011] arena select: {} on {}", c->name, g_tiles[row * 5 + col].banner);
-  }
+  const int tile = c ? g_tiles[row * 5 + col].arena : -1;
+  if (c == g_redirected_custom && tile == g_redirected_host) return;
+  PointAt(c, tile);
+  if (c)
+    REXLOG_INFO("[svr2011] arena select: {} on {} (arena {}, plays as arena {})", c->name, g_tiles[row * 5 + col].banner,
+                tile, g_redirected_file);
 }
 
 }  // namespace
@@ -987,11 +1018,23 @@ REX_HOOK_RAW(sub_82773F00) {
     const uint32_t arena = rd(screen + kScreenArena);
     g_crowd_arena = int(arena);
     const int as = svr2011::ArenaNumberFor(int(arena));
+    REXLOG_INFO("[svr2011] arena mods: a match loads in arena {}{}", arena,
+                g_redirected_custom ? " - " + static_cast<const CustomArena*>(g_redirected_custom)->name + " chosen" : "");
     if (as != int(arena)) {
       uint8_t* q = base + screen + kScreenArena;
       q[0] = uint8_t(uint32_t(as) >> 24), q[1] = uint8_t(uint32_t(as) >> 16), q[2] = uint8_t(uint32_t(as) >> 8), q[3] = uint8_t(as);
       REXLOG_INFO("[svr2011] arena mods: the match in arena {} plays as arena {}", arena, as);
     }
+    // (for reports: a custom arena chosen whose file the match doesn't load - the stock arena plays)
+    if (const auto* c = static_cast<const CustomArena*>(g_redirected_custom); c && g_redirected_file >= 0) {
+      if (as != g_redirected_file && svr2011::ArenaNumberFor(g_redirected_file) != as)
+        REXLOG_WARN("[svr2011] arena mods: {} chosen (arena {} plays as {}), but the match is in arena {} (as {}) - not it",
+                    c->name, g_redirected_host, g_redirected_file, arena, as);
+      else
+        REXLOG_INFO("[svr2011] arena mods: the match plays {} (BG{:02})", c->name, g_redirected_file);
+    }
+  } else {
+    REXLOG_INFO("[svr2011] arena mods: a match loads with no match screen (arena not checked)");
   }
   __imp__sub_82773F00(ctx, base);
 }
@@ -1071,7 +1114,7 @@ REX_HOOK_RAW(sub_823D4FC0) {
     g_located_at = NowMs();
     // A custom arena already chosen (the screen opened again from the match
     // screen): its page again, with it still played - the game puts the
-    // cursor on its tile (its base arena's). Going back to page 1 here
+    // cursor on the match's arena's tile. Going back to page 1 here
     // dropped the pick: a stock arena was played (2.0.5 player reports).
     g_committed_custom = g_redirected_custom;
     g_committed_host = g_redirected_host;
@@ -1149,19 +1192,8 @@ REX_HOOK_RAW(sub_823D4FC0) {
     g_committed_host = g_redirected_host;
   } else if (pressed & 0x2000) {
     if (g_committed_custom != g_redirected_custom || g_committed_host != g_redirected_host) {
-      if (g_redirected_host >= 0) svr2011::RedirectArena(g_redirected_host, "");
-      g_redirected_host = -1;
-      g_redirected_custom = nullptr;
-      if (const auto* c = static_cast<const CustomArena*>(g_committed_custom); c && g_committed_host >= 0) {
-        SetDecodeSwaps(c, g_committed_host);
-        svr2011::SetRingRules(c->manifest);
-        svr2011::RedirectArena(g_committed_host, c->file);
-        g_redirected_custom = c;
-        g_redirected_host = g_committed_host;
-      } else {
-        SetDecodeSwaps(nullptr, -1);
-        svr2011::SetRingRules(std::string());
-      }
+      const auto* c = static_cast<const CustomArena*>(g_committed_custom);
+      PointAt(c && g_committed_host >= 0 ? c : nullptr, g_committed_host);
       REXLOG_INFO("[svr2011] arena select: cancelled, {} kept",
                   g_redirected_custom ? static_cast<const CustomArena*>(g_redirected_custom)->name : std::string("the stock arena"));
     }
@@ -1327,6 +1359,8 @@ std::string ArenaModInUse(int* tile) {
   return c->id;
 }
 
+// (tile: the arena of the host's tile - the session's arena; this game finds the mod's base itself, so the pages'
+// order may differ between the two games)
 bool UseArenaMod(const std::string& folder, int tile) {
   static int used = -1;  // (the tile this game plays another's arena on)
   static std::string used_folder;
@@ -1334,9 +1368,7 @@ bool UseArenaMod(const std::string& folder, int tile) {
   used_folder = folder;
   if (folder.empty() || tile < 0 || tile >= 100) {
     if (used >= 0) {
-      RedirectArena(used, "");
-      SetDecodeSwaps(nullptr, -1);
-      SetRingRules(std::string());
+      PointAt(nullptr, -1);
       REXLOG_INFO("[svr2011] arena mods: the online session's custom arena off");
     }
     used = -1;
@@ -1344,18 +1376,33 @@ bool UseArenaMod(const std::string& folder, int tile) {
   }
   for (const auto& c : g_customs) {
     if (c.id != folder) continue;
-    if (used >= 0 && used != tile) RedirectArena(used, "");
-    SetDecodeSwaps(&c, tile);
-    SetRingRules(c.manifest);
-    RedirectArena(tile, c.file);
-    if (used != tile) REXLOG_INFO("[svr2011] arena mods: the online session's custom arena {} on arena {}", c.name, tile);
+    PointAt(&c, tile);
+    if (used != tile)
+      REXLOG_INFO("[svr2011] arena mods: the online session's custom arena {} on arena {} (plays as arena {})", c.name,
+                  tile, g_redirected_file);
     used = tile;
     return true;
   }
   return false;
 }
 
-int ArenaNumberFor(int arena) { return arena >= 0 && arena < 100 && g_number_for[arena] ? g_number_for[arena] : arena; }
+int ArenaNumberFor(int arena) {
+  if (arena >= 0 && arena < 100 && g_plays_as[arena]) arena = g_plays_as[arena];
+  return arena >= 0 && arena < 100 && g_number_for[arena] ? g_number_for[arena] : arena;
+}
+
+// (The match record copies the screen's arena when the match screen opens - sub_82773F00 - and again from this read
+// once one is picked: a WWE Universe match picked on page 2 played the tile's stock arena without it.)
+void ScreenArenaRead(uint8_t* base, uint32_t screen) {
+  constexpr uint32_t kScreenArena = 244;
+  if (!screen) return;
+  uint8_t* q = base + screen + kScreenArena;
+  const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
+  if (arena >= 100 || !g_plays_as[arena]) return;
+  const uint32_t as = uint32_t(g_plays_as[arena]);
+  q[0] = uint8_t(as >> 24), q[1] = uint8_t(as >> 16), q[2] = uint8_t(as >> 8), q[3] = uint8_t(as);
+  REXLOG_INFO("[svr2011] arena mods: the match screen's arena {} plays as arena {}", arena, as);
+}
 
 void ArenaSelectPad(uint32_t user, uint16_t buttons) {
   if (user < 8) g_shoulders[user] = buttons & 0x3F00;  // (+ A 0x1000, B 0x2000: pick / cancel)
