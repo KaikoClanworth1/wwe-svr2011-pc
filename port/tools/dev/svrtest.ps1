@@ -11,8 +11,8 @@
 #         --arg "<game option>" (more of the game's --options, repeatable)
 #
 # Each run: refuses when the player's game runs or 4 test games already do (any chat); refreshes the private
-# game folder runs\svrtest\game (the exe + DLLs copied; pac, sound, movies, native_shaders, nxeart, pad_icons as
-# read-only junctions to Game Files; its own Mods holding only --mods; private UserData, Music, Custom Movies);
+# game folder runs\svrtest\game (the exe + DLLs copied; pac's own files private copies - the game patches some at
+# start - and its sub-folders, sound, movies, native_shaders, pad_icons as read-only junctions to Game Files; its own Mods holding only --mods; private UserData, Music, Custom Movies);
 # takes a free p2p port in 36500-36599; starts hidden, muted, behind every window; follows the cues; stops the
 # game by its PID; writes runs\svrtest\<stamp>_<name>\ (game.log, shots, result.json) and prints result.json.
 #
@@ -92,7 +92,29 @@ if (-not $p2p) { throw "svrtest: no free UDP port in 36500-36599" }
 $root = Join-Path $port "runs\svrtest"
 $game = Join-Path $root "game"
 New-Item -ItemType Directory -Force $game, (Join-Path $game "Mods"), (Join-Path $root "music"), (Join-Path $root "movies") | Out-Null
-foreach ($d in "pac", "sound", "movies", "native_shaders", "nxeart", "pad_icons") {
+# pac: a real folder. The game patches pac\string.pac and pac\menu\menu.pac in place at start (game_files.cpp
+# PatchGameFiles: a .tmp renamed over the file) - through a junction that would rewrite the player's install. So
+# the files in pac\ and pac\menu\ are private copies (refreshed when Game Files' copy is newer), and only the sub-folders the game never writes (bg, ch, edit, evt, evtdsc) are junctions.
+function Remove-Junction([string]$path) {  # (the link only, never what it points at)
+    if ((Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue).LinkType -eq "Junction") { cmd /c rmdir "`"$path`"" | Out-Null }
+}
+function Mirror-Pac([string]$src, [string]$dst, [string[]]$copyDirs) {
+    Remove-Junction $dst
+    New-Item -ItemType Directory -Force $dst | Out-Null
+    foreach ($f in Get-ChildItem -LiteralPath $src -File) {
+        $to = Join-Path $dst $f.Name
+        if (-not (Test-Path -LiteralPath $to) -or ((Get-Item -LiteralPath $to).LastWriteTime -lt $f.LastWriteTime)) {
+            Copy-Item -LiteralPath $f.FullName $to -Force
+        }
+    }
+    foreach ($d in Get-ChildItem -LiteralPath $src -Directory) {
+        $to = Join-Path $dst $d.Name
+        if ($d.Name -in $copyDirs) { Mirror-Pac $d.FullName $to @() }
+        elseif (-not (Test-Path -LiteralPath $to)) { New-Item -ItemType Junction -Path $to -Target $d.FullName | Out-Null }
+    }
+}
+Mirror-Pac (Join-Path $gameFiles "pac") (Join-Path $game "pac") @("menu")
+foreach ($d in "sound", "movies", "native_shaders", "nxeart", "pad_icons") {
     $link = Join-Path $game $d
     $src = Join-Path $gameFiles $d
     if ((Test-Path $link) -or -not (Test-Path $src)) { continue }
@@ -124,6 +146,15 @@ if ($o.mods -and $o.mods -ne "none") {
     }
 }
 $userdata = if ($o.userdata) { $o.userdata } else { Join-Path $port "runs\univ_userdata" }  # (private: its own DLC copy)
+# never the player's user data, nor one whose DLC is a link (the game patches the installed DLC's string.pac and
+# catalog.dlc in place)
+$udFull = [IO.Path]::GetFullPath($userdata).TrimEnd('\')
+if ($udFull.StartsWith([IO.Path]::GetFullPath($gameFiles).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { throw "svrtest: --userdata is inside Game Files - use a private copy" }
+$dlc = Join-Path $userdata "0000000000000000"
+if ((Test-Path $dlc) -and (Get-Item -LiteralPath $dlc -Force).LinkType) { throw "svrtest: $dlc is a link - give the test user data a private DLC copy" }
+# a tripwire: what the game patches at start, in Game Files, before the run (compared in result.json)
+$watched = @("pac\string.pac", "pac\menu\menu.pac") | ForEach-Object { Join-Path $gameFiles $_ } | Where-Object { Test-Path $_ }
+$watchedTimes = @{}; foreach ($w in $watched) { $watchedTimes[$w] = (Get-Item $w).LastWriteTimeUtc }
 
 # ---- the run's folder and the game's environment
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -238,13 +269,16 @@ try {
 $lines = if (Test-Path $log) { Get-Content $log } else { @() }
 $errors = @($lines | Where-Object { $_ -match '\[(error|critical)\]' -and $_ -notmatch 'BaseHeap|PhysicalHeap|ResolvePath' })
 $fps = @($lines | Where-Object { $_ -match '\] fps: ' } | Select-Object -Last 3 | ForEach-Object { ($_ -split '\] fps: ')[1] })
-$crashes = @(Get-ChildItem (Join-Path $userdata "crashes") -Filter "crash_*.txt" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 } | ForEach-Object { $_.FullName })
+# (crash reports always go to <game>\UserData\crashes, whatever SVR2011_USER_DATA says)
+$crashes = @(Get-ChildItem (Join-Path $userdata "crashes"), (Join-Path $game "UserData\crashes") -Filter "crash_*.txt" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 } | ForEach-Object { $_.FullName })
 if ($crashes) { $ok = $false; $why = "crashed: $($crashes -join ', ')" }
+$touched = @($watched | Where-Object { (Get-Item $_).LastWriteTimeUtc -ne $watchedTimes[$_] })
+if ($touched) { $ok = $false; $why = "GAME FILES CHANGED during the run: $($touched -join ', ')"; Write-Warning $why }
 $result = [ordered]@{
     ok = $ok; why = $why; command = "$Command $($Rest -join ' ')"; exe = (Join-Path $game $exeName); pid = $proc.Id; p2p_port = $p2p
     timings = $timings; match = @($lines | Where-Object { $_ -match 'test match: people|\] match: ' } | Select-Object -Last 2 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
     fps = $fps; errors = $errors.Count; first_errors = @($errors | Select-Object -First 5 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
-    crashes = $crashes; shots = $shots; folder = $out; log = $log; kept_running = ($o.keep -and -not $proc.HasExited)
+    crashes = $crashes; game_files_changed = $touched; shots = $shots; folder = $out; log = $log; kept_running = ($o.keep -and -not $proc.HasExited)
 }
 $json = $result | ConvertTo-Json -Depth 4
 Set-Content (Join-Path $out "result.json") $json -Encoding UTF8
