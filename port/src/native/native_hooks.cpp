@@ -80,8 +80,20 @@ REX_HOOK_RAW(sub_82918A88) {
   if (log_calls && ctx.r8.u32) {
     const uint8_t* obj = base + ctx.r8.u32;
     auto be32 = [](const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; };
-    REXLOG_INFO("[svr2011] resolve call: flags {:X} texture {:08X} fetch {:08X} {:08X} {:08X}", ctx.r4.u32,
-                ctx.r8.u32, be32(obj + 0x1C), be32(obj + 0x20), be32(obj + 0x24));
+    REXLOG_INFO("[svr2011] resolve call: flags {:X} texture {:08X} fetch {:08X} {:08X} {:08X} (lr {:08X})", ctx.r4.u32,
+                ctx.r8.u32, be32(obj + 0x1C), be32(obj + 0x20), be32(obj + 0x24), uint32_t(ctx.lr));
+  } else if (log_calls) {
+    REXLOG_INFO("[svr2011] resolve call: flags {:X} no texture (lr {:08X})", ctx.r4.u32, uint32_t(ctx.lr));
+  }
+  // A resolve into no texture: skipped. The D3D code reads the destination's fields (null + 0x28): a ported WWE 2K17
+  // arena's screens (Clash of the Champions, wwe_2k17_bg09) crashed every so often at the entrance or in the match
+  // (20 Oct). Nothing is copied anywhere then - at most a screen keeps its last picture.
+  if (!ctx.r8.u32) {
+    static std::atomic<uint32_t> skipped{0};
+    if (skipped.fetch_add(1) < 8)
+      REXLOG_WARN("[svr2011] resolve into no texture skipped (flags {:X}, lr {:08X}; {} so far)", ctx.r4.u32,
+                  uint32_t(ctx.lr), skipped.load());
+    return;
   }
   if (nr::Enabled()) {
     const PPCContext args = ctx;
