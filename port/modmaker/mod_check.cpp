@@ -457,7 +457,19 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
     const bool installed = !g_game.empty() && PathStr(at).rfind(PathStr(mods), 0) == 0;
     if (installed && !Exists(dir / "threads.txt")) {
       if (ThreadsNoMasks(dir))
-        p.push_back(Warning(who + "'s model has no colour masks: Superstar Threads can't recolour " + who + "'s attires.").Note());
+        p.push_back(Warning(who + "'s model has no colour masks: Superstar Threads can't recolour " + who + "'s attires.",
+                            "The fix paints colour masks for the model (its parts found from the body areas) and names them; "
+                            "the model's old files are kept in the mod's .threads_backup folder.")
+                        .With("Make colour masks and Threads parts", [dir, who] {
+                          Status("Making colour masks and Superstar Threads parts for " + who + " ...");
+                          MakeThreadsParts(dir, [who, dir](int code, const std::string& msg) {
+                            if (code == 0)
+                              Status(who + "'s colour masks and Superstar Threads parts are made" + (msg.empty() ? "" : ": " + msg) +
+                                     " (the old model files are in " + PathStr(dir / ".threads_backup") + ").");
+                            else Status("The colour masks couldn't be made (see the log).");
+                            FixChanged();
+                          }, true);
+                        }, "colour masks and Threads parts are being made"));
       else
         p.push_back(Warning(who + " has no Superstar Threads parts: Superstar Threads can't recolour " + who + "'s attires.")
                         .With("Make Superstar Threads parts", [dir, who] {
