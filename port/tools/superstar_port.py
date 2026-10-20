@@ -2346,6 +2346,7 @@ def convert_single(a):
         o['base'] = int(o['base'])
     out, mod = build_single(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod, game=game)
+    gear_flag(rep)
     progress(100, 'done')
     return rep
 
@@ -2383,8 +2384,16 @@ def cmd_convert(a):
         fn = ps2_port.build_ps2
     out, mod = fn(cid, outdir, o, rep)
     rep.update(ok=True, out=out, folder=mod)
+    gear_flag(rep)
     progress(100, 'done')
     return rep
+
+
+def gear_flag(rep):
+    """rep['gear']: the mod's entrance-gear entries (kind 4: a coat / hat worn for the entrance) - the Mod Maker marks
+    such superstars with a coat and offers their gear to other mods"""
+    pac = os.path.join(rep.get('folder') or '', 'ch.pac')
+    rep['gear'] = sorted(n for n in pac_children(pac) if n.endswith('4')) if os.path.exists(pac) else []
 
 
 def main(argv):

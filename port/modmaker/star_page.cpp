@@ -1827,6 +1827,37 @@ const std::vector<int>& GearDonors() {
   return v;
 }
 
+// Entrance gear another superstar mod installed in the game has (its ch.pac's kind-4 entries): one row per attire.
+struct ModGear {
+  std::string label;
+  std::wstring pac;
+  int attire = 1;
+};
+const std::vector<ModGear>& ModGearDonors() {
+  static std::vector<ModGear> v;
+  static double when = -100;
+  if (ImGui::GetTime() - when < 5) return v;
+  when = ImGui::GetTime();
+  v.clear();
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Superstars", ec)) {
+    const fs::path pac = e.path() / L"ch.pac";
+    if (!e.is_directory(ec) || !fs::exists(pac, ec)) continue;
+    Bytes man;
+    std::string name = Utf8(e.path().filename().wstring());
+    if (ReadFile(PathStr(e.path() / L"manifest.txt"), man)) {
+      const std::string n = Value(std::string(man.begin(), man.end()), "name");
+      if (!n.empty()) name = n;
+    }
+    for (int a : GearOf(pac.wstring())) v.push_back({name + " (mod), attire " + std::to_string(a), pac.wstring(), a});
+  }
+  return v;
+}
+
+int g_gear_disc_attire = 0;  // "From my game discs": the attire the converted superstar's gear goes to (0: closed)
+ModGear g_gear_mod_pick;     // (GearDonorPopup: a mod's gear picked)
+
+// picked: a 2011 superstar's id; or -1 with g_gear_mod_pick a mod's; or -2 "From my game discs".
 bool GearDonorPopup(const char* id, int& picked) {
   bool hit = false;
   if (ImGui::BeginPopup(id)) {
@@ -1835,6 +1866,12 @@ bool GearDonorPopup(const char* id, int& picked) {
       const StarInfo* s = StarById(d);
       if (ImGui::Selectable(((s ? s->name : std::to_string(d)) + "##gd" + std::to_string(d)).c_str())) picked = d, hit = true, ImGui::CloseCurrentPopup();
     }
+    const auto& mods = ModGearDonors();
+    if (!mods.empty()) ImGui::Separator(), ImGui::TextDisabled("Your superstar mods");
+    for (size_t k = 0; k < mods.size(); ++k)
+      if (ImGui::Selectable((mods[k].label + "##gm" + std::to_string(k)).c_str())) g_gear_mod_pick = mods[k], picked = -1, hit = true, ImGui::CloseCurrentPopup();
+    ImGui::Separator();
+    if (ImGui::Selectable("From my game discs... (a superstar of another game)")) picked = -2, hit = true, ImGui::CloseCurrentPopup();
     ImGui::Separator();
     ImGui::PushTextWrapPos(300 * g_scale);
     ImGui::TextDisabled("Coats, jackets, hats and robes carry over. A shirt painted on the skin (Cena's) doesn't.");
@@ -1844,18 +1881,22 @@ bool GearDonorPopup(const char* id, int& picked) {
   return hit;
 }
 
-void GearTransplant(const std::wstring& target, int attire, int donor, std::function<void(const std::wstring&)> done) {
+// The entrance gear of attire `donor_attire` of `donor_pac` (any wrestler pac with a kind-4 entry: the game's, a
+// mod's, a superstar converted from another game) fitted onto this attire's body (svr11_build --gear-from).
+void GearTransplantFrom(const std::wstring& target, int attire, const std::wstring& donor_pac, int donor_attire, const std::string& name,
+                        std::function<void(const std::wstring&)> done) {
   const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"gear";
   std::error_code ec;
   fs::create_directories(work, ec);
-  const std::wstring stem = fs::path(target).stem().wstring() + L"_a" + std::to_wstring(attire) + L"_gear" + std::to_wstring(donor);
+  uint32_t h = 2166136261u;
+  for (wchar_t c : donor_pac) h = (h ^ uint32_t(c)) * 16777619u;
+  const std::wstring stem = fs::path(target).stem().wstring() + L"_a" + std::to_wstring(attire) + L"_gear" + std::to_wstring(h % 100000) +
+                            L"_" + std::to_wstring(donor_attire);
   const std::wstring out = (work / (stem + L".pac")).wstring(), report = (work / (stem + L".json")).wstring();
-  const std::wstring donor_pac = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(donor) + L".pac")).wstring();
   fs::remove(out, ec);
-  const StarInfo* who = StarById(donor);
-  const std::string name = who ? who->name : std::to_string(donor);
   Status("Fitting " + name + "'s entrance gear ...");
-  const bool started = RunToolJson(L"svr11_build.py", {L"--gear-from", donor_pac + L",1", L"--onto", target + L"," + std::to_wstring(attire), out, report},
+  Log("gear: " + name + " (" + Utf8(donor_pac) + ", attire " + std::to_string(donor_attire) + ") onto attire " + std::to_string(attire));
+  const bool started = RunToolJson(L"svr11_build.py", {L"--gear-from", donor_pac + L"," + std::to_wstring(donor_attire), L"--onto", target + L"," + std::to_wstring(attire), out, report},
                                    [out, name, done](int code, const std::string& text) {
     Json j;
     const bool parsed = ParseJson(text, j);
@@ -1872,6 +1913,11 @@ void GearTransplant(const std::wstring& target, int attire, int donor, std::func
     done(out);
   });
   if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
+}
+void GearTransplant(const std::wstring& target, int attire, int donor, std::function<void(const std::wstring&)> done) {
+  const StarInfo* who = StarById(donor);
+  GearTransplantFrom(target, attire, (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(donor) + L".pac")).wstring(), 1,
+                     who ? who->name : std::to_string(donor), std::move(done));
 }
 
 // Entrance gear from an FBX: the pieces (a coat or hat skinned to a humanoid rig) posed onto this model's body
@@ -1995,16 +2041,15 @@ void MaterialsSection(bool simple) {
   if (MaterialPanel(pac, in, gear, g_view_attire, g_star.mats, simple)) Touch();
 }
 
+void GearFromDisc();
 void GearRows(bool simple) {
   if (g_star.model.empty()) return;
   const std::vector<int> own_gear = GearOf(g_star.model);
   bool any = !own_gear.empty();
   for (int a = 2; a <= 4; ++a)
     if (!g_star.attires[a - 1].empty() && !GearOf(g_star.attires[a - 1]).empty()) any = true;
-  if (!any && g_star.gear.empty()) {
-    ImGui::TextDisabled("Entrance gear: none (they walk out in their attire).");
-    return;
-  }
+  if (!any && g_star.gear.empty())
+    ImGui::TextDisabled("Entrance gear: none yet (they walk out in their attire) - a coat, hat or robe can come from another superstar:");
   ImGui::TextUnformatted("Entrance gear");
   ImGui::SameLine();
   ImGui::TextDisabled(simple ? "(a coat, hat or shirt worn only for the entrance)" : "(EMD kind 4: the outfit worn for the entrance, per attire)");
@@ -2067,14 +2112,17 @@ void GearRows(bool simple) {
       if (GearDonorPopup("gear_donor", donor)) {
         const int at = a;
         const bool own = pac == g_star.model;
-        GearTransplant(pac, in, donor, [at, own](const std::wstring& made) {
+        auto put = [at, own](const std::wstring& made) {
           if (own) g_star.model = made;
           else g_star.attires[at - 1] = made;
           g_star.gear.erase(at);
           g_view_attire = at;
           char_preview::SetGear(true);
           Touch();
-        });
+        };
+        if (donor > 0) GearTransplant(pac, in, donor, put);
+        else if (donor == -1) GearTransplantFrom(pac, in, g_gear_mod_pick.pac, g_gear_mod_pick.attire, g_gear_mod_pick.label, put);
+        else if (donor == -2) g_gear_disc_attire = a;
       }
     }
     if (pac == g_star.model) {  // (the same model: another of its attires' gear)
@@ -2090,6 +2138,44 @@ void GearRows(bool simple) {
     }
     ImGui::PopID();
   }
+  GearFromDisc();
+}
+
+// "From my game discs": a superstar of another game converted (its look: the Simple import list), then its entrance
+// gear (the converters keep kind 4: WWE '12-2K15, SvR 2008-2010, PS2) fitted onto the attire picked.
+void GearFromDisc() {
+  if (!g_gear_disc_attire) return;
+  ImGui::Separator();
+  ImGui::Text("Entrance gear for attire %d from another game's superstar", g_gear_disc_attire);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Close##geardisc")) {
+    g_gear_disc_attire = 0;
+    return;
+  }
+  std::wstring mod;
+  bool all = false;
+  if (!simple_port::SuperstarImport(mod, all, false)) return;
+  const int at = g_gear_disc_attire;
+  g_gear_disc_attire = 0;
+  Bytes z;
+  std::vector<ZipEntry> files;
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert" / L"gear" / (fs::path(mod).stem().wstring() + L"_donor.pac");
+  if (!ReadFile(PathStr(mod), z) || !ZipRead(z, files)) return Status("The converted superstar couldn't be read (see the log).");
+  for (const auto& f : files)
+    if (f.name == "ch.pac") WriteFile(PathStr(work), f.data);
+  const std::vector<int> g = GearOf(work.wstring());
+  const std::string name = Utf8(fs::path(mod).stem().wstring());
+  if (g.empty()) return Status(name + " has no entrance gear in that game (no coat or hat model): pick another superstar.");
+  const auto [pac, in] = AttireSource(at);
+  const bool own = pac == g_star.model;
+  GearTransplantFrom(pac, in, work.wstring(), g[0], name, [at, own](const std::wstring& made) {
+    if (own) g_star.model = made;
+    else g_star.attires[at - 1] = made;
+    g_star.gear.erase(at);
+    g_view_attire = at;
+    char_preview::SetGear(true);
+    Touch();
+  });
 }
 
 // The superstar's name for messages ("Your superstar" until it has one).
@@ -2514,8 +2600,15 @@ void Draw() {
         WriteLogTo((fs::path(g_game) / L"Mods" / L".convert" / L"gear" / L"gear.log").wstring());
         PostMessageW(g_wnd, WM_CLOSE, 0, 0);
       };
-      WhenIdle([at, donor, finish] {
-        GearTransplant(g_star.model, at, donor, [finish](const std::wstring& made) { g_star.model = made, Log("test: gear fitted " + Utf8(made)), finish(); });
+      const std::string spec = g_test_gear_from.substr(c + 1);  // (<id>, or pac=<path>,<attire>: any pac's gear)
+      WhenIdle([at, donor, finish, spec] {
+        auto put = [finish](const std::wstring& made) { g_star.model = made, Log("test: gear fitted " + Utf8(made)), finish(); };
+        if (spec.rfind("pac=", 0) == 0) {
+          const size_t k = spec.rfind(',');
+          GearTransplantFrom(g_star.model, at, Wide(spec.substr(4, k - 4)), std::atoi(spec.c_str() + k + 1), "test", put);
+        } else {
+          GearTransplant(g_star.model, at, donor, put);
+        }
       });
       // (a failure closes too: after the tool, Busy() is false and the model unchanged)
     }
