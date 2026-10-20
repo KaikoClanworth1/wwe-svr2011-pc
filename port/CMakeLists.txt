@@ -25,6 +25,7 @@ set(SVR2011_SOURCES
     src/frame_stats.cpp
     src/profiler.cpp
     src/fps_overlay.cpp
+    src/perf_stats.cpp
     src/achievements_page.cpp
     src/jukebox.cpp
     src/graphics_page.cpp

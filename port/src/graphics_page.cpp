@@ -111,6 +111,7 @@ enum Row {
   kPing,                                                         // DISPLAY
   kRouterPort,                                                   // DISPLAY
   kArenaBrightness,                                              // GRAPHICS
+  kOverlayCorner,                                                // DISPLAY (after PERFORMANCE)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -120,9 +121,9 @@ const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
-const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kPing, kRouterPort, kTouch, kReplays, kFastStart},
+const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kTouch, kReplays, kFastStart},
 #else
-const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kPing, kRouterPort, kRenderer, kTouch,
+const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kRenderer, kTouch,
                                               kReplays, kCpuPriority, kFastStart},
 #endif
                                              {kRenderScale, kAntiAliasing, kTextureQuality, kArenaBrightness, kWide, kCutsceneFps},
@@ -401,7 +402,8 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
   bool ping_ = true;
   bool router_port_ = true;
-  bool fps_ = true, vsync_ = true, native_ = true, full_speed_ = true;
+  int perf_ = 1, corner_ = 0;  // (PERFORMANCE: 0 off, 1 the frame rate, 2 everything; its corner)
+  bool vsync_ = true, native_ = true, full_speed_ = true;
   bool high_priority_ = false;  // (process_priority 1: above normal, perf_hooks.cpp)
   int display_ = kWindowed;  // (DisplayMode)
   bool effects_ = true, fps60_ = true;
@@ -469,7 +471,8 @@ void GraphicsPage::Load() {
   }
   api_ = api_at_start_;
   native_ = true;  // (the game draws only natively)
-  fps_ = FpsCounterVisible();
+  perf_ = PerfOverlayLevel();
+  corner_ = PerfOverlayCorner();
   ping_ = rex::cvar::Query<bool>("show_ping");
   router_port_ = rex::cvar::Query<bool>("p2p_port_mapping");
   touch_ = rex::cvar::Query<bool>("touch_controls");
@@ -625,9 +628,15 @@ void GraphicsPage::Change(int row, int dir) {
       if (!router_port_) svr2011::StopPortMapping();  // (off: given back now; on: from the next start)
       break;
     case kFpsCounter:
-      fps_ = !fps_;
-      SetFpsCounterVisible(fps_);
-      SaveSetting("show_fps", fps_ ? "true" : "false");
+      perf_ = (perf_ + dir + 3) % 3;
+      SetPerfOverlayLevel(perf_);
+      SaveSetting("perf_overlay", std::to_string(perf_));
+      SaveSetting("show_fps", perf_ ? "true" : "false");  // (older launchers read it)
+      break;
+    case kOverlayCorner:
+      corner_ = (corner_ + dir + 4) % 4;
+      SetPerfOverlayCorner(corner_);
+      SaveSetting("perf_overlay_corner", std::to_string(corner_));
       break;
     case kFrameRate:
       frame_rate_ = (frame_rate_ + dir + kNumFrameRates) % kNumFrameRates;
@@ -1059,7 +1068,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         std::snprintf(fps, sizeof(fps), "%d FPS", kFrameRates[frame_rate_]);
         return fps;
       }
-      case kFpsCounter: return fps_ ? "ON" : "OFF";
+      case kFpsCounter: return perf_ == 2 ? "FULL" : perf_ == 1 ? "FPS" : "OFF";
+      case kOverlayCorner: {
+        static const char* const kCorners[] = {"TOP LEFT", "TOP RIGHT", "BOTTOM LEFT", "BOTTOM RIGHT"};
+        return kCorners[corner_ & 3];
+      }
       case kPing: return ping_ ? "ON" : "OFF";
       case kRouterPort: return router_port_ ? "ON" : "OFF";
       case kFullSpeed: return full_speed_ ? "ON" : "OFF (AS THE XBOX 360)";
@@ -1098,7 +1111,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kDisplay: return "DISPLAY MODE";
       case kVsync: return "VSYNC";
       case kFrameRate: return "FRAME RATE";
-      case kFpsCounter: return "FPS COUNTER";
+      case kFpsCounter: return "PERFORMANCE";
+      case kOverlayCorner: return "PERFORMANCE CORNER";
       case kPing: return "ONLINE PING";
       case kRouterPort: return "ROUTER PORT (UPNP)";
       case kFullSpeed: return "FULL SPEED";
@@ -1133,7 +1147,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                                          : "Play in a window (F11 switches to full screen).";
       case kVsync: return "Waits for the monitor's refresh: no tearing.";
       case kFrameRate: return "Frames a second in matches, at most (menus: 60). The game always runs at its normal speed.";
-      case kFpsCounter: return "Shows the frame rate at the top of the screen (F2).";
+      case kFpsCounter: return "FPS: the frame rate. FULL: also memory (RAM, VRAM), CPU and the GPU's frame time. F2 switches it.";
+      case kOverlayCorner: return "Which corner of the screen the performance numbers sit in.";
       case kRouterPort: return "Online: your router opens the game's port while you play (UPnP), so far-off players connect directly. OFF: never touched.";
       case kPing: return "Online matches: the delay to the other players at the top right (bars: green under 150 ms, yellow under 250, red above).";
       case kFullSpeed:
