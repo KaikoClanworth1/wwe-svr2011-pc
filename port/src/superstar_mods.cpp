@@ -41,6 +41,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <unordered_map>
@@ -151,6 +152,12 @@ struct Mod {
   std::vector<std::pair<uint16_t, uint16_t>> moves;
   int entrance = -1;            // entrance number (manifest entrance=; profile +0x1C0 +0x14..+0x18)
   int attire_entrance[4] = {-1, -1, -1, -1};  // per attire (manifest attire<N>_entrance=; EntranceForAttire)
+  // a created entrance (manifest cae=<file>: a whole 284-byte entrance block as the game holds it, big-endian -
+  // its five scene parts are copied in: motion, pyro and the rest per scene, as CREATE AN ENTRANCE's ADVANCED
+  // CREATION makes them); its parts' hash (.applied cae=) so a player's own later edit stays
+  std::vector<uint8_t> cae;
+  uint32_t cae_hash = 0;
+  std::vector<uint32_t> caes_set;
   std::vector<uint8_t> abilities;  // (manifest abilities=a,b,...; record +230.., up to 8)
   // its height: a factor of the base's (manifest height=1.05; 0 = the base's)
   double height = 0;
@@ -507,6 +514,32 @@ void SetOwnMoves(uint8_t* profile, const Mod& m) {
       profile[kEntrance + k] = uint8_t(m.entrance >> 8), profile[kEntrance + k + 1] = uint8_t(m.entrance);
 }
 
+// A created entrance's part of the entrance block (docs/ENTRANCE_ATTIRES.md 1): the five scene parts (34 bytes each
+// from +0x1C: motion +14, pyro +10 (5000 = none), ...) and the created-entrance flags +0xC6..+0xC9 (+0xC7 != 0: the
+// per-scene parts play instead of the single number at +0x14).
+constexpr uint32_t kCaeSize = 284, kCaeFrom = 0x1C, kCaeTo = 0xCA;
+uint32_t CaeHash(const uint8_t* e) {
+  uint32_t h = 2166136261u;
+  for (uint32_t k = kCaeFrom; k < kCaeTo; ++k) h = (h ^ e[k]) * 16777619u;
+  return h;
+}
+
+// The mod's created entrance (cae=) into the profile while the slot's parts are the base's or one the port set
+// before: a player's own CREATE AN ENTRANCE edit stays.
+void SetCaeParts(uint8_t* e, const Mod& m, const uint8_t* b) {
+  if (m.cae.size() != kCaeSize) return;
+  const uint32_t now = CaeHash(e);
+  if (now == m.cae_hash) return;
+  if (std::memcmp(e + kCaeFrom, b + kCaeFrom, kCaeTo - kCaeFrom) &&
+      std::find(m.caes_set.begin(), m.caes_set.end(), now) == m.caes_set.end())
+    return;
+  std::memcpy(e + kCaeFrom, m.cae.data() + kCaeFrom, kCaeTo - kCaeFrom);
+  REXLOG_INFO("[svr2011] superstar mods: id {} entrance: created entrance from the mod (scene motions {} {} {} {} {})", m.slot,
+              e[kCaeFrom + 14] << 8 | e[kCaeFrom + 15], e[kCaeFrom + 48] << 8 | e[kCaeFrom + 49],
+              e[kCaeFrom + 82] << 8 | e[kCaeFrom + 83], e[kCaeFrom + 116] << 8 | e[kCaeFrom + 117],
+              e[kCaeFrom + 150] << 8 | e[kCaeFrom + 151]);
+}
+
 // The profile's entrance music and movie follow the mod's manifest while they
 // are still what the port set before or the base's (`base_profile`): a new
 // theme or movie added to an installed mod reaches a slot a save already has.
@@ -551,6 +584,7 @@ void SetEntranceMedia(uint8_t* profile, const Mod& m, const uint8_t* base_profil
       for (uint32_t k : {0x14u, 0x16u, 0x18u})
         e[k] = uint8_t(m.entrance >> 8), e[k + 1] = uint8_t(m.entrance);
   }
+  SetCaeParts(e, m, b);
   if (std::memcmp(before, e, sizeof before))
     REXLOG_INFO("[svr2011] superstar mods: id {} entrance: music {}{}, movie {}", m.slot,
                 int(e[kMusic] << 8 | e[kMusic + 1]), m.song.empty() ? "" : " (" + m.song + ")",
@@ -568,6 +602,7 @@ void ReadApplied(Mod& m, const fs::path& folder) {
       if (l.rfind("movie=", 0) == 0) m.movies_set.push_back(std::atoi(l.c_str() + 6));
       if (l.rfind("music=", 0) == 0) m.musics_set.push_back(std::atoi(l.c_str() + 6));
       if (l.rfind("entrance=", 0) == 0) m.entrances_set.push_back(std::atoi(l.c_str() + 9));
+      if (l.rfind("cae=", 0) == 0) m.caes_set.push_back(uint32_t(std::strtoul(l.c_str() + 4, nullptr, 16)));
     }
     std::fclose(t);
   }
@@ -576,12 +611,14 @@ void ReadApplied(Mod& m, const fs::path& folder) {
   bool add_entrance = m.entrance >= 0 &&
                       std::find(m.entrances_set.begin(), m.entrances_set.end(), m.entrance) == m.entrances_set.end();
   bool add_music = m.music && std::find(m.musics_set.begin(), m.musics_set.end(), m.music) == m.musics_set.end();
-  if (!add_song && !add_movie && !add_entrance && !add_music) return;
+  bool add_cae = m.cae_hash && std::find(m.caes_set.begin(), m.caes_set.end(), m.cae_hash) == m.caes_set.end();
+  if (!add_song && !add_movie && !add_entrance && !add_music && !add_cae) return;
   if (FILE* t = std::fopen((folder / ".applied").string().c_str(), "ab")) {
     if (add_song) std::fprintf(t, "song=%s\n", m.song.c_str()), m.songs_set.push_back(m.song);
     if (add_movie) std::fprintf(t, "movie=%d\n", m.movie), m.movies_set.push_back(m.movie);
     if (add_entrance) std::fprintf(t, "entrance=%d\n", m.entrance), m.entrances_set.push_back(m.entrance);
     if (add_music) std::fprintf(t, "music=%d\n", m.music), m.musics_set.push_back(m.music);
+    if (add_cae) std::fprintf(t, "cae=%08x\n", m.cae_hash), m.caes_set.push_back(m.cae_hash);
     std::fclose(t);
   }
 }
@@ -786,6 +823,13 @@ void LoadMods() {
         }
         if (l.rfind("pose=", 0) == 0) m.pose = uint32_t(std::clamp(std::atoi(l.c_str() + 5), 0, 65535));
         if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
+        if (l.rfind("cae=", 0) == 0) {  // (a created entrance's block: CaeParts)
+          std::ifstream in(f / fs::u8path(l.substr(4)), std::ios::binary);
+          std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+          if (b.size() == kCaeSize) m.cae = std::move(b), m.cae_hash = CaeHash(m.cae.data());
+          else REXLOG_WARN("[svr2011] superstar mods: {}: cae={} is not a {}-byte entrance block ({} bytes): left out", m.folder,
+                           l.substr(4), kCaeSize, b.size());
+        }
         if (l.rfind("music=", 0) == 0) {  // (1-253: the game's own themes; 254 is the user playlist, 255 none)
           const int v = std::atoi(l.c_str() + 6);
           if (v >= 1 && v <= 253) m.music = v;
@@ -2466,7 +2510,68 @@ void EnsureMoveset(uint8_t* base, uint8_t* sp, const Mod& m) {
               "given instead, with the mod's own on top ({} usable now)", m.folder, now.usable, now.set, donor, gender, after.usable);
 }
 
+// The created entrances (CREATE AN ENTRANCE's ADVANCED CREATION) the profiles hold, for the Mod Maker's "Made in the
+// game" (a mod's cae=): <game>\Mods\.cae\<id>.bin (the 284-byte block as the game holds it) and list.txt
+// ("<id>\t<name>"). Only that folder is written - never a save or a DLC file; a file only when it changed.
+void ExportCreatedEntrances(const uint8_t* base) {
+  static uint32_t frames = 0;
+  static std::string last;  // (what was written: the profiles' created entrances, compared in memory)
+  if (++frames % 300) return;  // (every 5 s: a save loaded, an entrance made in the game)
+  {
+    const uint32_t ri = Rd16(base + kIdToIndex + 100 * 2);  // (the profiles loaded)
+    if (ri >= 512 || !CountMoves(base + kProfiles + ri * kProfileSize).set) return;
+  }
+  std::string now;
+  for (uint32_t id = 1; id < 512; ++id) {
+    const uint32_t i = Rd16(base + kIdToIndex + id * 2);
+    if (i < 512 && base[kProfiles + i * kProfileSize + kEntrance + 0xC7])
+      now.append(reinterpret_cast<const char*>(base + kProfiles + i * kProfileSize + kEntrance), kCaeSize);
+  }
+  if (now == last) return;
+  last = now;
+  std::error_code ec;
+  const fs::path dir = g_game / "Mods" / ".cae";
+  std::string list;
+  std::set<std::string> keep = {"list.txt"}, seen;  // (seen: name + block - a copy slot of the same superstar once)
+  for (uint32_t id = 1; id < 512; ++id) {
+    const uint32_t i = Rd16(base + kIdToIndex + id * 2);
+    if (i >= 512 || !base[kRecords + i * kRecordSize + kFullName]) continue;
+    const uint8_t* e = base + kProfiles + i * kProfileSize + kEntrance;
+    if (!e[0xC7]) continue;
+    bool real = true;  // (each scene's motion: 0, or 10000 + 1000 * scene + an entrance)
+    int parts = 0;
+    for (uint32_t p = 0; p < 5; ++p) {
+      const int n = e[kCaeFrom + 34 * p + 14] << 8 | e[kCaeFrom + 34 * p + 15];
+      if (n && (n < int(10000 + 1000 * p) || n >= int(11000 + 1000 * p))) real = false;
+      parts += n != 0;
+    }
+    if (!real || !parts) continue;
+    char name[kNameLen + 1] = {};
+    std::memcpy(name, base + kRecords + i * kRecordSize + kFullName, kNameLen);
+    if (!seen.insert(std::string(name) + std::string(reinterpret_cast<const char*>(e), kCaeSize)).second) continue;
+    const std::string file = std::to_string(id) + ".bin";
+    keep.insert(file);
+    list += std::to_string(id) + "\t" + name + "\n";
+    std::vector<uint8_t> have;
+    if (std::ifstream in(dir / file, std::ios::binary); in) have.assign(std::istreambuf_iterator<char>(in), {});
+    if (have.size() == kCaeSize && !std::memcmp(have.data(), e, kCaeSize)) continue;
+    fs::create_directories(dir, ec);
+    std::ofstream(dir / file, std::ios::binary).write(reinterpret_cast<const char*>(e), kCaeSize);
+  }
+  std::string old;
+  if (std::ifstream in(dir / "list.txt", std::ios::binary); in) old.assign(std::istreambuf_iterator<char>(in), {});
+  if (old != list && (!list.empty() || fs::exists(dir, ec))) {
+    fs::create_directories(dir, ec);
+    std::ofstream(dir / "list.txt", std::ios::binary) << list;
+    REXLOG_INFO("[svr2011] superstar mods: created entrances for the Mod Maker: {} in {}",
+                std::count(list.begin(), list.end(), '\n'), dir.string());
+  }
+  for (const auto& f : fs::directory_iterator(dir, ec))  // (ones gone from the profiles)
+    if (!keep.count(f.path().filename().string())) fs::remove(f.path(), ec);
+}
+
 void CheckModProfiles(uint8_t* base) {
+  ExportCreatedEntrances(base);
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
@@ -2491,6 +2596,20 @@ void CheckModProfiles(uint8_t* base) {
     if (ri >= 512 || !CountMoves(base + kProfiles + ri * kProfileSize).set) return;
   }
   checked = true;
+  if (const char* f = std::getenv("SVR2011_TEST_DUMP_ENTRANCES")) {  // (test aid: every profile's entrance block, hex)
+    if (FILE* o = std::fopen(f, "wb")) {
+      for (uint32_t id = 0; id < 512; ++id) {
+        const uint32_t i = Rd16(base + kIdToIndex + id * 2);
+        if (i >= 512) continue;
+        const uint8_t* e = base + kProfiles + i * kProfileSize + kEntrance;
+        std::fprintf(o, "%u ", id);
+        for (uint32_t k = 0; k < 284; ++k) std::fprintf(o, "%02x", e[k]);
+        std::fputc('\n', o);
+      }
+      std::fclose(o);
+      REXLOG_INFO("[svr2011] superstar mods: test: entrance blocks written to {}", f);
+    }
+  }
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2), bi = Rd16(base + kIdToIndex + m.base * 2);
     if (si >= 512 || bi >= 512) continue;

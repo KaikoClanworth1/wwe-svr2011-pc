@@ -423,7 +423,7 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   ManifestBasics(dir, m, "superstar", p);
   TrailingSpaces(dir, m, p);
   UnknownKeys(dir, m, {"short", "base", "song", "music", "theme_gain", "movie", "voice", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
-                       "entrance", "abilities", "moves", "pack", "game_look"},
+                       "entrance", "abilities", "moves", "pack", "game_look", "cae"},
               {"attire"}, p);
   const std::string name = Trim(m.Get("name"));
   const std::string who = name.empty() ? std::string("The superstar") : name;
@@ -434,6 +434,13 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
     else if (!Trim(m.Get("song")).empty())
       p.push_back(Warning(who + " has both their own song and a game theme: their own song plays.")
                       .With("Keep the own song", Set(dir, "music", "")).With("Keep the game theme", Set(dir, "song", "")));
+  }
+  if (const std::string c = Trim(m.Get("cae")); !c.empty()) {  // (a created entrance: the game's 284-byte block)
+    std::error_code ec;
+    const auto size = fs::file_size(dir / fs::u8path(c), ec);
+    if (ec || size != 284)
+      p.push_back(Warning(who + "'s created entrance file (" + c + ") is " + (ec ? std::string("missing") : "damaged") +
+                          ": " + who + " walks out with the entrance number instead.").With("Leave it out", Set(dir, "cae", "")));
   }
   const fs::path ch = dir / "ch.pac";
   if (!Exists(ch))
