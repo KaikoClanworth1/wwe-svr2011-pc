@@ -482,19 +482,31 @@ def pad_render(dds, size=512):
     return svr08_char.dds_encode(canvas, 'DXT5')
 
 
+# The children 2011's own entrance-gear models (kind 4: Undertaker 00010304) have none of: face animation, portraits,
+# blood overlays (the gear is worn for the entrance only). 0x408 (2008 / 2010 kind 4: the coat flaps' cloth settings,
+# hira_* bones) is kept.
+GEAR_DROP = (0x64, 0xc8, 0xc9, 0x7530, 0x7531, 0x7532)
+
+
 def model_from_2008_family(src_pac, cid, pac11, out, portrait, hex_names):
     """svr08_char's conversion of the wrestler (kind 2) entries of a 2008-family ch pac
-    (2008: EMD names id attire kind in decimal, 2009: 2 hex digits). -> [(entry, 2011 name)]"""
+    (2008: EMD names id attire kind in decimal, 2009: 2 hex digits), and each kept attire's entrance gear (kind 4: the
+    whole wrestler in a coat / hat for the entrance - 2008's Undertaker 0304) the same way. -> [(entry, 2011 name)];
+    .gear the gear entries made ([2011 name])"""
     import svr08_char
     tp = svr08_char.Template(os.path.join(pac11, 'ch', 'ch104.pac'))
     h, g, t = svrfmt.epac_read(open(src_pac, 'rb').read())
     emd = next(es for ty, es in g if ty == b'EMD ')
-    ents = []
+    ents, gear_src = [], {}
     for n, b in emd:
         s = n.decode('latin1').strip('\0 ')
-        if len(s) != 4 or s[3] != '2':
+        if len(s) != 4 or s[3] not in '24':
             continue
-        ents.append((s, int(s[2]), {i: svr08_char.unp(x) for i, x in svrfmt.pach_read(svr08_char.unp(b))}))
+        kids = {i: svr08_char.unp(x) for i, x in svrfmt.pach_read(svr08_char.unp(b))}
+        if s[3] == '4':
+            gear_src[int(s[2])] = (s, kids)
+        else:
+            ents.append((s, int(s[2]), kids))
     if not ents:
         raise RuntimeError('no wrestler (kind 2) model in %s' % os.path.basename(src_pac))
     ents.sort(key=lambda e: e[1])
@@ -519,8 +531,29 @@ def model_from_2008_family(src_pac, cid, pac11, out, portrait, hex_names):
         name = b'%06d%02d' % (cid, k * 10 + 2)
         entries.append((name, svrfmt.pach_write([(i, svrfmt.bpe_encode(o[i], compress=True)) for i in sorted(o)])))
         kept.append((s, name.decode()))
+    gear_made = []
+    for k, (s, att, kids) in enumerate(ents[:4]):   # (the kept attires' entrance gear, kind 4)
+        if att not in gear_src:
+            continue
+        gs, gkids = gear_src[att]
+        if 0 not in gkids or gkids[0][:4] != b'JBOY' or 0xa not in gkids:
+            budget_notes.append('attire %s: entrance gear %s has no model to convert: left out' % (s, gs))
+            continue
+        o = svr08_char.attire(gkids, tp, None, [0x20], first)
+        for c in GEAR_DROP:
+            o.pop(c, None)
+        if 0x408 in gkids:
+            o[0x408] = gkids[0x408]
+        pg, _ = model_budget.attire_pages(o)
+        if pg > model_budget.LIMIT:   # (the gear loads instead of the match model: the same vertex budget)
+            budget_notes.append('attire %s: entrance gear %s is %d of %d pages of vertex memory: left out' % (s, gs, pg, model_budget.LIMIT))
+            continue
+        name = b'%06d%02d' % (cid, k * 10 + 4)
+        entries.append((name, svrfmt.pach_write([(i, svrfmt.bpe_encode(o[i], compress=True)) for i in sorted(o)])))
+        gear_made.append(name.decode())
     svr08_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), entries, out)
     model_from_2008_family.notes = budget_notes
+    model_from_2008_family.gear = gear_made
     return kept, [e[0] for e in ents[4:]]
 
 
@@ -686,6 +719,8 @@ def build09(cid, outdir, o, rep):
     elif g9.has_chpac(cid):
         kept, extra = model_from_2008_family(g9.chpac(cid), cid, pac11, os.path.join(mod, 'ch.pac'), portrait, True)
         note('model: %s ch%d.pac attires %s converted (svr08_char)' % (g9.label, cid, ', '.join('%s -> %s' % k for k in kept)))
+        if getattr(model_from_2008_family, 'gear', None):
+            note('entrance gear: %s' % ', '.join(model_from_2008_family.gear))
         for n in getattr(model_from_2008_family, 'notes', []):
             (warn if 'may crash' in n else note)(n)
         for e in extra:
@@ -1730,6 +1765,7 @@ def build_single(cid, outdir, o, rep):
         with contextlib.redirect_stdout(sys.stderr):
             kept, extra = model_from_2008_family(pac, cid, pac11, out, None, True)
         note('attires %s (svr08_char)' % ', '.join('%s -> %s' % k for k in kept))
+        gear = list(getattr(model_from_2008_family, 'gear', None) or [])
         for n in getattr(model_from_2008_family, 'notes', []):
             (warn if 'may crash' in n else note)(n)
         for e in extra:
@@ -1755,6 +1791,7 @@ def build_single(cid, outdir, o, rep):
         finally:
             svr10_char.dlc_render = own
         note("portrait (0xc8 / 0xc9): the base's - SvR 2010 keeps its bust in the disc's DLC_HD.pac")
+        gear = [n for n in pac_children(out) if n.endswith('4')]
     else:   # PS2 character archive: ps2_char.py on a folder that looks like the disc (lone_pac.ps2_disc)
         chars = {int(c['id'], 16): c['attires'] for c in lone_pac.ps2_characters(pac, game, work, __import__('moves_port').cache_dir(pac11, work))}
         if cid not in chars:

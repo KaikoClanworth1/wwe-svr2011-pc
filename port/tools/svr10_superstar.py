@@ -405,6 +405,17 @@ def model_from_2010(pac10, cid, pac11, out):
     want = b'2' if b'2' in kinds else b'0'
     entries, kept, notes = [], [], []
     for typ, name, blob in allents:
+        if typ == b'EMD ' and want == b'2' and name[7:8] == b'4':   # (entrance gear: the whole wrestler in a coat / hat)
+            if ch_tool.unpack(blob)[:4] == b'PACH':
+                kids = svrfmt.pach_read(ch_tool.unpack(blob))
+                have = {i for i, d in kids}
+                drop = {0x64, 0xc8, 0xc9, 0x7530, 0x7531, 0x7532}   # (as 2011's own gear models: none of these)
+                new = [(i, d) for i, d in kids if i not in drop] + ([(0x50, t50)] if 0x50 not in have else [])
+                blob = svrfmt.pach_write(sorted(new, key=lambda x: x[0]))
+                notes.append('%s: entrance gear' % name.decode())
+            entries.append((typ, name, blob))
+            kept.append(name.decode())
+            continue
         if typ == b'EMD ':
             if name[7:8] != want:
                 continue
