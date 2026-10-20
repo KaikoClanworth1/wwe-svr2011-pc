@@ -1808,7 +1808,14 @@ std::string DiscGameName(const std::string& id) {
       {"SLES_536.76", "SmackDown! vs. Raw 2006 (PS2)"}, {"SLES_544.89", "SmackDown vs. Raw 2007 (PS2)"},
       {"SLES_548.79", "SmackDown vs. Raw 2008 (PS2)"}, {"SLES_552.51", "SmackDown vs. Raw 2009 (PS2)"},
       {"SLES_555.45", "SmackDown vs. Raw 2010 (PS2)"}, {"SLES_556.35", "SmackDown vs. Raw 2011 (PS2)"},
-      {"SLUS_203.85", "Crush Hour (PS2)"},
+      {"SLUS_203.16", "SmackDown! Just Bring It (PS2)"}, {"SLUS_202.69", "SmackDown! Just Bring It (PS2)"},
+      {"SLUS_201.22", "SmackDown! Just Bring It (PS2)"}, {"SLUS_204.83", "SmackDown! Shut Your Mouth (PS2)"},
+      {"SLUS_205.12", "SmackDown! Shut Your Mouth (PS2)"}, {"SLUS_207.87", "SmackDown! Here Comes the Pain (PS2)"},
+      {"SLUS_210.60", "SmackDown! vs. Raw (PS2)"}, {"SLUS_209.36", "SmackDown! vs. Raw (PS2)"},
+      {"SLUS_212.86", "SmackDown! vs. Raw 2006 (PS2)"}, {"SLUS_211.34", "SmackDown! vs. Raw 2006 (PS2)"},
+      {"SLUS_214.27", "SmackDown vs. Raw 2007 (PS2)"}, {"SLUS_216.45", "SmackDown vs. Raw 2008 (PS2)"},
+      {"SLUS_218.10", "SmackDown vs. Raw 2009 (PS2)"}, {"SLUS_219.01", "SmackDown vs. Raw 2010 (PS2)"},
+      {"SLUS_219.39", "SmackDown vs. Raw 2011 (PS2)"}, {"SLUS_203.85", "Crush Hour (PS2)"},
   };
   const auto it = kNames.find(id);
   return it == kNames.end() ? std::string() : it->second;

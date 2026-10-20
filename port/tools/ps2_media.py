@@ -164,7 +164,11 @@ class AfsNamed(Media):
 
     def movie(self, i):
         if not hasattr(self, '_m'):
-            self._m = self._index(self.MOVIE_DIR, self.MOVIE_GLOB, r'(?:pal_)?nmv(\d+)\.sfd$')
+            # (the folder the layout names, else the other spelling: the PAL 2006 disc's MOVIEP, a NTSC one's MOVIE?)
+            for d in dict.fromkeys((self.MOVIE_DIR, 'MOVIE', 'MOVIEP')):
+                self._m = self._index(d, self.MOVIE_GLOB, r'(?:pal_)?nmv(\d+)\.sfd$')
+                if self._m:
+                    break
         if i not in self._m:
             return None, None
         nm, a, k = self._m[i]

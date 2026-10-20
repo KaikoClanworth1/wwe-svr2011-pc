@@ -406,7 +406,7 @@ def read_source(src):
     if not src.exists(EN3):
         raise ValueError('not a Just Bring It disc: no %s' % EN3)
     roster, teams = {}, {}
-    elf = next((n for n in ('SLES_504.77', 'SLUS_201.22', 'SLPM_650.84') if src.exists(n)), None)
+    elf = next((n for n in ('SLES_504.77', 'SLUS_203.16', 'SLUS_202.69', 'SLUS_201.22', 'SLPM_650.84') if src.exists(n)), None)
     if elf:
         roster, teams = elf_names(src.read(elf))
     hands = jbi_hand_library(src.read('M.PAC')) if src.exists('M.PAC') else {}

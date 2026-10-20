@@ -453,10 +453,10 @@ def in_2011(name, game_pac):
 # ============================================================================ games
 
 GAMES = collections.OrderedDict([
-    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', disc_hints=['545107E0', 'SLES_544.89'], status='ready')),
-    ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', disc_hints=['5451080B', 'SLES_548.79'], status='ready')),
-    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', disc_hints=['54510826', 'SLES_552.51'], status='ready')),
-    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', disc_hints=['54510844', 'SLES_555.45'], status='ready')),
+    ('svr07', dict(name='SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', disc_hints=['545107E0', 'SLES_544.89', 'SLUS_214.27'], status='ready')),
+    ('svr08', dict(name='SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', disc_hints=['5451080B', 'SLES_548.79', 'SLUS_216.45'], status='ready')),
+    ('svr09', dict(name='SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', disc_hints=['54510826', 'SLES_552.51', 'SLUS_218.10'], status='ready')),
+    ('svr10', dict(name='SmackDown vs. Raw 2010', platform='x360', disc_hint='54510844', disc_hints=['54510844', 'SLES_555.45', 'SLUS_219.01'], status='ready')),
     ('low', dict(name='WWE Legends of WrestleMania', platform='x360', disc_hint='54510838', status='ready')),
     ('wwe12', dict(name="WWE '12", platform='x360', disc_hint='54510890', status='ready')),
     ('wwe13', dict(name="WWE '13", platform='x360', disc_hint='545108B4', status='ready')),
@@ -464,11 +464,11 @@ GAMES = collections.OrderedDict([
     ('wwe2k15', dict(name='WWE 2K15', platform='x360', disc_hint='545408B6', status='ready')),
     ('wwe2k16', dict(name='WWE 2K16', platform='x360', disc_hint='315A07D2', status='ready')),
     ('wwe2k17', dict(name='WWE 2K17', platform='x360', disc_hint='545408BA', status='ready')),
-    ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', status='ready')),
-    ('sym', dict(name='SmackDown! Shut Your Mouth', platform='ps2', disc_hint='SLES_512.83', status='ready')),
-    ('jbi', dict(name='WWF SmackDown! Just Bring It', platform='ps2', disc_hint='SLES_504.77', status='ready')),
-    ('svr04', dict(name='SmackDown! vs. Raw', platform='ps2', disc_hint='SLES_527.81', status='ready')),
-    ('svr06', dict(name='SmackDown! vs. Raw 2006', platform='ps2', disc_hint='SLES_536.76', status='ready')),
+    ('hctp', dict(name='SmackDown! Here Comes the Pain', platform='ps2', disc_hint='SLES_520.36', disc_hints=['SLES_520.36', 'SLUS_207.87'], status='ready')),
+    ('sym', dict(name='SmackDown! Shut Your Mouth', platform='ps2', disc_hint='SLES_512.83', disc_hints=['SLES_512.83', 'SLUS_204.83', 'SLUS_205.12'], status='ready')),
+    ('jbi', dict(name='WWF SmackDown! Just Bring It', platform='ps2', disc_hint='SLES_504.77', disc_hints=['SLES_504.77', 'SLUS_203.16', 'SLUS_202.69', 'SLUS_201.22'], status='ready')),
+    ('svr04', dict(name='SmackDown! vs. Raw', platform='ps2', disc_hint='SLES_527.81', disc_hints=['SLES_527.81', 'SLUS_210.60', 'SLUS_209.36'], status='ready')),
+    ('svr06', dict(name='SmackDown! vs. Raw 2006', platform='ps2', disc_hint='SLES_536.76', disc_hints=['SLES_536.76', 'SLUS_212.86', 'SLUS_211.34'], status='ready')),
 ])
 # (disc_hint: the Xbox 360 title id / PS2 serial discfs.open(iso).info() reports)
 
