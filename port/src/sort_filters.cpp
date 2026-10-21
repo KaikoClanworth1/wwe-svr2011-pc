@@ -188,8 +188,24 @@ REX_EXTERN(__imp__sub_82734970);
 REX_HOOK_RAW(sub_82734970) {
   const uint32_t lists = ctx.r4.u32;
   __imp__sub_82734970(ctx, base);
-  if (lists) Retag(base, lists);
+  // (not a list of Create-a-Superstar slots: Road to WrestleMania's Streak story lists only those - its master holds
+  // slot numbers 0, 1, 2 ..., not roster ids - and NPC / MODS put roster ids in it: they showed, and picking one did
+  // nothing (slot 111...). A roster list has no id 0; its CAS entries have the top bit.)
+  bool slots = false;
+  if (lists) {
+    const List master{base, lists + 6 * kListSize};
+    for (uint32_t i = 0; i < master.Count() && !slots; ++i) slots = master.Id(i) == 0;
+  }
+  if (lists && !slots) Retag(base, lists);
   DumpRoster(base);
+  if (lists && std::getenv("SVR2011_TEST_LIST_LOG")) {  // (test aid: each category's count and first ids)
+    for (uint32_t c = 0; c < 8; ++c) {
+      const List l{base, lists + c * kListSize};
+      std::string ids;
+      for (uint32_t i = 0; i < l.Count() && i < 12; ++i) ids += fmt::format(" {:X}/{}", l.Id(i), l.Flag(i));
+      REXLOG_INFO("[svr2011] sort: list {:08X} cat {}: {} -{}", lists, c, l.Count(), ids);
+    }
+  }
 }
 
 // A category is shown: sub_824611B8(screen, player) - its label (the text
