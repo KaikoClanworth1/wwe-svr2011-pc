@@ -1094,6 +1094,11 @@ bool CcUploadModsRefused(PPCContext& ctx, uint8_t* base, uint32_t screen) {
     std::string head;
     for (uint32_t k = 0; data && k < 64; ++k) head += fmt::format("{:02X}", base[data + k]);
     REXLOG_INFO("online: CC upload kind {} - its data at {:08X}: {} (not checked for mods yet)", kind, data, head);
+    // (test aid SVR2011_TEST_CC_DUMP=<folder>: 16 KB of it to <folder>/cc_kind<kind>.bin - its layout)
+    if (const char* dir = std::getenv("SVR2011_TEST_CC_DUMP"); dir && *dir && data) {
+      std::ofstream out(std::filesystem::path(dir) / fmt::format("cc_kind{}.bin", kind), std::ios::binary);
+      out.write(reinterpret_cast<const char*>(base + data), 16384);
+    }
   }
   ctx = saved;
   if (uses.empty()) return false;
