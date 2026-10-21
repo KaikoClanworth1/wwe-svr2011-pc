@@ -39,6 +39,7 @@
 #include <rex/system/xmemory.h>
 
 #include "generated/default/svr2011_init.h"
+#include "rtwm_streak.h"
 #include "superstar_mods.h"
 
 namespace {
@@ -197,6 +198,13 @@ REX_HOOK_RAW(sub_82734970) {
     for (uint32_t i = 0; i < master.Count() && !slots; ++i) slots = master.Id(i) == 0;
   }
   if (lists && !slots) Retag(base, lists);
+  if (lists && !slots) svr2011::RtwmCasList(0, false);
+  // (Road to WrestleMania's Streak list: the superstar mods in MODS - rtwm_streak.cpp plays the story as one)
+  if (lists && slots && svr2011::InRoadToWrestleMania() && !svr2011::SuperstarModIds().empty()) {
+    const List master{base, lists + 6 * kListSize};
+    svr2011::RtwmCasList(master.Count() ? master.Id(0) : 0, true);
+    FillMods(base, lists);
+  }
   DumpRoster(base);
   if (lists && std::getenv("SVR2011_TEST_LIST_LOG")) {  // (test aid: each category's count and first ids)
     for (uint32_t c = 0; c < 8; ++c) {

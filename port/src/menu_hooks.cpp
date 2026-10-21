@@ -148,6 +148,7 @@ std::mutex g_menu_mutex;
 std::map<std::pair<uint32_t, uint32_t>, std::string> g_menu_texts;
 std::atomic<uint32_t> g_menu_selects{0};
 std::atomic<uint32_t> g_menu_selected{0};  // (group << 16 | row of the last one)
+std::atomic<uint32_t> g_main_row{~0u};      // (the main menu's - group 1 - last choice: 2 Road to WrestleMania)
 
 void ReadMenuLabels() {
   g_menu_labels_read = true;
@@ -257,6 +258,9 @@ void ScriptMenuTable(const uint8_t* table, size_t size) {
   }
   g_menu_texts_stale = true;  // (read again at the menu's next use: the rows' places moved)
 }
+
+// (by its place, not its label: the label is in the player's language)
+bool InRoadToWrestleMania() { return g_main_row.load() == 2; }
 
 uint32_t ScriptMenuSelects(uint32_t* group, uint32_t* row) {
   const uint32_t last = g_menu_selected.load();
@@ -477,6 +481,7 @@ REX_HOOK_RAW(sub_82447210) {
     const uint8_t* menu = base + ctx.r3.u32;
     const uint32_t group = Be32(menu + kMenuGroup), cursor = Be32(menu + kMenuCursor);
     g_menu_selected = group << 16 | (cursor & 0xFFFF);
+    if (group == 1) g_main_row = cursor;
     ++g_menu_selects;
     // The entry's label, for the log ("menu select: OPTIONS (group 5 row 3)").
     std::string label;
