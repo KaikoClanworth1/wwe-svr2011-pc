@@ -2670,6 +2670,11 @@ namespace svr2011 {
 
 void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   if (!HctpRoomActive()) {
+    if (Cur().loaded) {
+      for (Held& h : g_held) h = {};
+      REXLOG_INFO("hctp: room unloaded (held placements, door hold cleared)");
+      std::fill(std::begin(g_door_hold), std::end(g_door_hold), 0);
+    }
     Cur().loaded = false;
     return;
   }
@@ -2688,6 +2693,10 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     g_door_cd = 0;
     g_box_set = false;
     g_world_set = false;
+    for (Held& h : g_held) h = {};
+    std::fill(std::begin(g_door_hold), std::end(g_door_hold), 0);
+    REXLOG_INFO("hctp: room loaded ({} rooms) - reset: wrestler states, later shows, taxis, forklift, heli, poles, "
+                "room stashes, held placements, door hold / cooldown, fight box, rng", g_rooms.size());
   }
   Cur().last_frame = frame;
   if (!Rd32(base + kGimmickMgr) || !Rd32(base + kStage)) return;
@@ -2820,6 +2829,12 @@ void InstallHctpOverlay(rex::ui::ImGuiDrawer* drawer) { new DoorPromptOverlay(dr
 
 // A world frame's start (frame_rate.cpp, before the game's update): the held placements.
 void HctpBeforeFrame(uint8_t* base) {
+  // (nothing outside an HCTP row's match: a held slot from the last match must not write into the next
+  // one's wrestlers - they are other objects then)
+  if (!HctpRoomActive() || !Cur().loaded) {
+    for (Held& h : g_held) h = {};
+    return;
+  }
   for (Held& h : g_held)
     if (h.frames > 0 && h.f) {
       PlaceBody(base, h.f, h.x, h.y, h.z, h.yaw);
