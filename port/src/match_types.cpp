@@ -1185,7 +1185,12 @@ REX_HOOK_RAW(sub_827374A0) {
   // A backstage mod's own row: its bg78 for this match (any other: the usual)
   {
     const auto& own = svr2011::BackstageRows();
-    const int k = g_pending_own_row;
+    int k = g_pending_own_row;
+    // (test aid SVR2011_TEST_BACKSTAGE_ROW=<row name>: that mod's row, with SVR2011_TEST_RULE its area's rule -
+    // a match started without the menus, e.g. svrtest lan)
+    if (const char* v = std::getenv("SVR2011_TEST_BACKSTAGE_ROW"); k < 0 && v && *v)
+      for (size_t i = 0; i < own.size(); ++i)
+        if (own[i].label == v) k = int(i);
     const bool use = k >= 0 && size_t(k) < own.size() && !Rd32(base + kStoryContext) &&
                      rule == kBackstage1v1FirstRule + uint32_t(own[size_t(k)].area);
     if (use) REXLOG_INFO("match types: backstage area '{}'", own[size_t(k)].label);
