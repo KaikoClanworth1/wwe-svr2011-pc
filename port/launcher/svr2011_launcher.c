@@ -839,6 +839,9 @@ static void install_bundled(const WCHAR *game, const WCHAR *dir)
 static volatile LONG s_bundled_busy;
 static WCHAR s_bundled_text[160];
 static HWND s_bundled_wnd;
+static int s_play_pending;  /* Play (1) / Start Without Mods (2) clicked while they were installed: started after */
+static int s_up_finishing;  /* (up_finish: the update's folders being fetched - the bundled install follows) */
+static int s_bundled_again;  /* (start_bundled while one ran - up_finish's new folders: once more after it) */
 
 static void bundled_progress(int n, int total)
 {
@@ -866,8 +869,12 @@ static void start_bundled(void)
     WCHAR *dirs;
     size_t g, l;
     HANDLE t;
-    if (!is_game_folder(s_game_dir) || InterlockedCompareExchange(&s_bundled_busy, 1, 0))
+    if (!is_game_folder(s_game_dir))
         return;
+    if (InterlockedCompareExchange(&s_bundled_busy, 1, 0)) {
+        s_bundled_again = 1;
+        return;
+    }
     g = wcslen(s_game_dir), l = wcslen(s_launcher_dir);
     dirs = (WCHAR *)calloc(g + l + 2, sizeof(WCHAR));
     if (!dirs) {
@@ -889,15 +896,26 @@ static void start_bundled(void)
     CloseHandle(t);
 }
 
+static void play_with(int no_mods);
+
 static void bundled_message(WPARAM wp)
 {
     if (wp == (WPARAM)0xFFFFFFFF) {
+        const int pending = s_play_pending;
         InterlockedExchange(&s_bundled_busy, 0);
+        if (s_bundled_again) {  /* (asked again meanwhile: the new folders' mods - the click still waits) */
+            s_bundled_again = 0;
+            start_bundled();
+            if (s_bundled_busy) return;
+        }
+        s_play_pending = 0;
         refresh_play();
         if (s_cur_tab == TAB_MODS) mods_show(s_game_dir);
+        if (pending) play_with(pending == 2);  /* (the click made while they were installed) */
         return;
     }
-    swprintf_s(s_bundled_text, 160, L"Installing the update's mods\x2026 (%u of %u)",
+    swprintf_s(s_bundled_text, 160, s_play_pending ? L"The game starts after the mods\x2026 (%u of %u)"
+                                                    : L"Installing the update's mods\x2026 (%u of %u)",
                (unsigned)(wp >> 16 & 0xFFFF), (unsigned)(wp & 0xFFFF));
     refresh_play();
 }
@@ -2242,8 +2260,8 @@ static void refresh_play(void)
     }
     s_play_ready = ready;
     set_text(ID_PLAY_STATUS, ready && s_bundled_busy ? s_bundled_text : ready ? L"All systems ready. Have fun!" : t);
-    EnableWindow(ctl(ID_PLAY), ready && !s_busy && !s_bundled_busy);  /* (the bundled mods first) */
-    EnableWindow(ctl(ID_PLAY_NOMODS), ready && !s_busy && !s_bundled_busy);
+    EnableWindow(ctl(ID_PLAY), ready && !s_busy);  /* (during the bundled install a click waits for it: play_with) */
+    EnableWindow(ctl(ID_PLAY_NOMODS), ready && !s_busy);
     playtime_show();
     play_counts();
     play_size_start();
@@ -2310,6 +2328,24 @@ static void play_with(int no_mods)
     PROCESS_INFORMATION pi;
     if (game_running()) {
         set_text(ID_PLAY_STATUS, L"The game is already running.");
+        return;
+    }
+    if (s_up_finishing) {  /* (finishing the update: its mods follow - the game starts once they're in) */
+        s_play_pending = no_mods ? 2 : 1;
+        set_text(ID_PLAY_STATUS, L"The game starts after the update\x2026");
+        return;
+    }
+    if (s_bundled_busy) {  /* (the update's mods are being installed: the game starts once they're in) */
+        WCHAR count[40] = L"";
+        const WCHAR *n = wcschr(s_bundled_text, L'(');  /* (the "n of N" kept) */
+        if (n) wcsncpy_s(count, 40, n, _TRUNCATE);
+        s_play_pending = no_mods ? 2 : 1;
+        swprintf_s(s_bundled_text, 160, L"The game starts after the mods\x2026%s%s", count[0] ? L" " : L"", count);
+        set_text(ID_PLAY_STATUS, s_bundled_text);
+        return;
+    }
+    if (s_busy) {  /* (an install or repair is running: Play is disabled then - a click that got through says why) */
+        set_text(ID_PLAY_STATUS, L"An install is running - Play when it's done.");
         return;
     }
     if (!is_game_folder(s_game_dir) || !has_program(s_game_dir)) {
@@ -6824,6 +6860,7 @@ static void up_finish(void)
     ShowWindow(ctl(ID_UP_PROGRESS), SW_SHOW);
     SendMessageW(ctl(ID_UP_PROGRESS), PBM_SETPOS, 0, 0);
     up_status(L"Finishing the update: downloading the bundled mods and button pictures\x2026");
+    s_up_finishing = 1;
     CloseHandle(CreateThread(NULL, 0, up_finish_thread, NULL, 0, NULL));
 }
 
@@ -6832,10 +6869,15 @@ static void up_finished(int ok, WCHAR *err)
     ShowWindow(ctl(ID_UP_PROGRESS), SW_HIDE);
     InterlockedExchange(&s_up_busy, 0);
     EnableWindow(ctl(ID_UP_BUTTON), TRUE);
+    s_up_finishing = 0;
     if (!ok) {
+        const int pending = s_play_pending;
         up_status(L"The update is done, but its mods could not be fetched (%s). Updating again later adds them.",
                   err ? err : L"");
         free(err);
+        s_play_pending = 0;
+        refresh_play();
+        if (pending) play_with(pending == 2);  /* (the click made meanwhile) */
         return;
     }
     start_bundled();  /* (on a worker: the Play page says so; the Mods tab is rescanned when they're in) */
@@ -7088,9 +7130,10 @@ static int draw_button(const DRAWITEMSTRUCT *d)
         HGDIOBJ old;
         FillRect(dc, &r, card_at(d->hwndItem) ? s_card_brush : s_page_brush);  /* (behind the corners) */
         if (primary) {
-            fill = disabled ? RGB(92, 40, 48) : down ? C_ACCENT_DOWN : hot ? C_ACCENT_HOT : C_ACCENT;
+            /* (disabled: grey - a dim red with white text looked like a working button, and a click did nothing) */
+            fill = disabled ? RGB(48, 51, 58) : down ? C_ACCENT_DOWN : hot ? C_ACCENT_HOT : C_ACCENT;
             line = THEME_NONE;
-            ink = RGB(255, 255, 255);
+            ink = disabled ? RGB(122, 126, 136) : RGB(255, 255, 255);
         } else {
             fill = disabled ? RGB(30, 32, 38) : down ? RGB(24, 26, 31) : hot ? RGB(44, 48, 56) : RGB(34, 37, 44);
             line = disabled ? RGB(44, 47, 54) : hot ? RGB(98, 102, 114) : RGB(66, 70, 80);
@@ -8612,6 +8655,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
            when the install was done (ms from the start), and the capture waits for it (2 minutes at most). */
         if (argc >= 5 && !wcscmp(argv[4], L"--bundled-start"))
             capture_bundled = 1;
+        /* ... --bundled-start --click-play: Play is clicked as soon as the install starts (it waits for it, then
+           starts the game - the folder's svr2011.exe; tests put a stand-in there). */
+        if (capture_bundled && argc >= 6 && !wcscmp(argv[5], L"--click-play"))
+            capture_bundled = 2;
     }
 
     icc.dwSize = sizeof icc;
@@ -8689,6 +8736,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
        replace left invisible for minutes). */
     if ((!capture_file || capture_bundled) && is_game_folder(s_game_dir))
         start_bundled();
+    if (capture_bundled == 2)
+        PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(ID_PLAY, BN_CLICKED), (LPARAM)ctl(ID_PLAY));
     up_check_finished();
     if (!capture_file && GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini))
         up_check(1);
