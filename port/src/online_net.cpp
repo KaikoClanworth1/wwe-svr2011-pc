@@ -451,7 +451,8 @@ void HandleHttp(Socket s) {
   }
   // A Community Creations record from this build: its upload passed the "uses mods" check at the
   // confirm step (online.h CcUploadModsRefused) - the server refuses unmarked ones (cc_unmarked).
-  if (target.find("/sakestorageserver/") != std::string::npos && body.find("CreateRecord") != std::string::npos &&
+  // (the game asks for /SakeStorageServer/StorageServer.asmx - any case)
+  if (Lower(target).find("/sakestorageserver/") != std::string::npos && body.find("CreateRecord") != std::string::npos &&
       body.find("UserContent") != std::string::npos)
     forward.emplace_back("x-svr-modfree", "1");
   const auto t0 = std::chrono::steady_clock::now();
