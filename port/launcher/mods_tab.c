@@ -256,11 +256,38 @@ void mods_show(const WCHAR *game_dir)
     fill();
 }
 
-/* Removes a folder tree (Recycle Bin when `recycle`). */
+int mods_delete_tree(const WCHAR *dir)
+{
+    WCHAR pat[MAX_PATH], p[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    const DWORD a = GetFileAttributesW(dir);
+    if (a == INVALID_FILE_ATTRIBUTES) return 1;
+    if (!(a & FILE_ATTRIBUTE_DIRECTORY)) {
+        SetFileAttributesW(dir, FILE_ATTRIBUTE_NORMAL);
+        return DeleteFileW(dir) != 0;
+    }
+    if (!(a & FILE_ATTRIBUTE_REPARSE_POINT) && swprintf_s(pat, MAX_PATH, L"%s\\*", dir) > 0) {
+        h = FindFirstFileW(pat, &fd);  /* (a junction: the link only, never what it points at) */
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+                if (swprintf_s(p, MAX_PATH, L"%s\\%s", dir, fd.cFileName) > 0) mods_delete_tree(p);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    SetFileAttributesW(dir, FILE_ATTRIBUTE_NORMAL);
+    return RemoveDirectoryW(dir) != 0 || GetFileAttributesW(dir) == INVALID_FILE_ATTRIBUTES;
+}
+
+/* Removes a folder tree: to the Recycle Bin when `recycle` (a mod the player removes), else directly
+   (mods_delete_tree: the launcher's own temporary and replaced copies). */
 static int remove_tree(const WCHAR *dir, int recycle)
 {
     WCHAR from[MAX_PATH + 2] = { 0 };
     SHFILEOPSTRUCTW op;
+    if (!recycle) return mods_delete_tree(dir);
     wcsncpy_s(from, MAX_PATH, dir, _TRUNCATE);  /* (double NUL terminated) */
     ZeroMemory(&op, sizeof op);
     op.wFunc = FO_DELETE;
@@ -665,6 +692,10 @@ int mods_add_background(const WCHAR *game_dir, const WCHAR *image, int logo)
 static WCHAR s_installed[MAX_PATH];  /* the folder install_file put the last mod in */
 static int s_installed_existed;      /* ... and whether it was installed already */
 static int s_bundle_install;         /* (mods_install_bundled: never an older version over a newer one) */
+static void (*s_bundled_progress)(int n, int total);
+static int s_bundled_n, s_bundled_total;  /* (this call's: the progress) */
+
+void mods_set_bundled_progress(void (*progress)(int n, int total)) { s_bundled_progress = progress; }
 
 /* a > b as dotted versions ("1.10" > "1.9"). */
 static int version_newer(const WCHAR *a, const WCHAR *b)
@@ -851,11 +882,11 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
             changed = 1;
         }
     }
-    /* Old copies a replace couldn't recycle (swap_in): gone now. */
+    /* Old copies a replace left (swap_in: one held then): gone now. */
     {
         WCHAR olds[MAX_PATH];
         swprintf_s(olds, MAX_PATH, L"%s\\.old", mods);
-        if (exists(olds)) remove_tree(olds, 1);
+        if (exists(olds)) remove_tree(olds, 0);
     }
     /* Repair: a bundle installed before whose folder is now incomplete (a 2.1.2 update's replace that recycled
        the old folder half-way - a held file - and then couldn't move the new one in: the manifest but no model,
@@ -897,6 +928,21 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
+    {   /* (how many to install: the progress's "n of total") */
+        int total = 0, n = 0;
+        h = FindFirstFileW(pat, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                swprintf_s(line, MAX_PATH + 64, L"%s|%lu|%lu%lu\n", fd.cFileName, fd.nFileSizeLow,
+                           fd.ftLastWriteTime.dwHighDateTime, fd.ftLastWriteTime.dwLowDateTime);
+                if (!wcsstr(known, line)) ++total;
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        s_bundled_total = total;
+        s_bundled_n = n;
+    }
     h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) {
         if (changed && _wfopen_s(&f, list, L"w, ccs=UTF-8") == 0 && f) {
@@ -925,6 +971,7 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
         s_installed[0] = 0;
         s_installed_existed = 0;
         s_bundle_install = 1;
+        if (s_bundled_progress) s_bundled_progress(++s_bundled_n, s_bundled_total);
         if (mods_install(game_dir, zip) && fresh && !s_installed_existed && s_installed[0] &&
             !wcsstr(s_installed, L"\\Mods\\MatchTypes\\")) {
             WCHAR off[MAX_PATH];
@@ -1069,8 +1116,8 @@ static int move_retry(const WCHAR *from, const WCHAR *to)
    leaving a half: the old folder is renamed into Mods\.old first (a rename
    fails whole when a file in it is held, and then nothing changed), the new
    one moved in (on failure the old one goes back), and only then the old one
-   goes to the Recycle Bin (if that fails, Mods\.old is emptied at the next
-   start). It used to be recycled first: a held file left a folder with its
+   is deleted (directly - the shell's delete took 30 s a folder here; if it
+   fails, Mods\.old is emptied at the next start). It used to be recycled first: a held file left a folder with its
    manifest but no model - listed, but left out by the game (2.1.2 bundled-mod
    reports). 1 on success; else `why` says what to do. */
 static int swap_in(const WCHAR *tmp, const WCHAR *dst, const WCHAR *kind, const WCHAR *id, WCHAR *why, size_t cap)
@@ -1108,7 +1155,7 @@ static int swap_in(const WCHAR *tmp, const WCHAR *dst, const WCHAR *kind, const 
                              L"the new files): the installed copy is unchanged; install again.", id, err);
         return 0;
     }
-    remove_tree(old, 1);  /* (an older version: to the Recycle Bin; a held file leaves it for the next start) */
+    remove_tree(old, 0);  /* (the replaced copy, directly: a held file leaves it in Mods\.old for the next start) */
     return 1;
 }
 
