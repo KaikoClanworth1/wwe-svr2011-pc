@@ -8,14 +8,20 @@
 // option on (live settings +56: EXTREME RULES, WEAPONS EVERYWHERE, the
 // structures' WEAPONS INSIDE), nine more. The page replaces those nine with
 // the player's choice (a weapon 0-3 times; cvar extreme_weapons, "" = the
-// game's own nine). Online the host's choice goes with the session (property
-// 0x1000F002) and every game in it uses that; Ranked matches keep the game's.
+// game's own nine). Weapon mods (weapon_mods.h, pool=extreme) are rows after
+// the game's weapons, in the same room. Online the host's choice goes with the
+// session (property 0x1000F002: the game's weapons; 0x1000F003: its mod
+// weapons' hash - the mods themselves by key in the lobby's tables, those every
+// player has: online_mods.h) and every game in it uses that; Ranked matches keep
+// the game's.
 // Controller (D-pad / stick: choose, A / right: one more, left: one less, Y:
 // the game's set, B: back), keyboard (arrows, Enter, Y, Esc) or touch.
 
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <rex/ppc.h>
@@ -54,5 +60,8 @@ int ExtremeWeaponsPlacedModel(int i, int model);
 void ExtremeWeaponsMaking(uint8_t* base, bool begin, PPCContext& ctx);
 // ... and put in place (after sub_8227D130): the stock under the ring holds the chosen ones.
 void ExtremeWeaponsPlaced(uint8_t* base, rex::memory::Memory* memory);
+
+// This game's weapon mods in its choice: {key, count} (the host's for an online lobby: online_mods.cpp).
+std::vector<std::pair<std::string, int>> HostModWeaponPicks();
 
 }  // namespace svr2011

@@ -277,7 +277,6 @@ void LoadWeaponMods() {
       ids[m.folder] = id, ids_changed = true;
     }
     m.id = ids[m.folder];
-    m.kb = int(fs::file_size(f / "weapon.pac", ec) / 1024);
     g_mods.push_back(m);
   }
   if (ids_changed) {
@@ -303,6 +302,10 @@ void LoadWeaponMods() {
       m.id = 0;
       continue;
     }
+    m.kb = int((svrfmt::Unpack(p).size() + 1023) / 1024);
+    uint64_t h = 0xCBF29CE484222325ull;  // (FNV-1a of the pack as stored)
+    for (uint8_t b : p) h = (h ^ b) * 0x100000001B3ull;
+    m.key = fmt::format("{}\t{:016X}\t{}", m.folder, h, m.like);
     packs[m.id] = std::move(p);
   }
   std::vector<WponCopy> tables;

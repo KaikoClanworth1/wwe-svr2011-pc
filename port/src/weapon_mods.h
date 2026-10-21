@@ -30,7 +30,8 @@ struct WeaponMod {
   std::string folder, name;
   int id = 0;    // its weapon id (160-255)
   int like = 0;  // the stock weapon whose settings it has
-  int kb = 0;    // its pack's size (KB): what loading it takes, roughly
+  int kb = 0;    // its pack unpacked (KB): what loading it takes, as the WEAPONS page counts the game's
+  std::string key;  // online: "<folder>\t<pack hash>\t<like>" - the same mod on two games
   bool extreme = true, backstage = true;  // pool=
 };
 

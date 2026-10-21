@@ -13,7 +13,8 @@
 // Each game's mods go to the lobby's games every 2 s (p2p.h P2PSendMods):
 //   u8 1, u64 session, u64 xuid, u8 host, name, arena key + u8 tile (the
 //   host's custom arena; "" none), u16 superstars {u16 id, key, label},
-//   u16 arenas {key, label}  (strings: u8 length + bytes)
+//   u16 arenas {key, label}  (strings: u8 length + bytes), then (games of later versions) move packs, the host's
+//   agreed packs + an echo, backstage mods, weapon mods {key, label} and the host's agreed mod weapons {key, u8 n}
 // and the host tells a refused picker why: u8 2, u64 session, u64 to, text.
 // Test aids: SVR2011_TEST_LOBBY_LOG logs the tables and translations;
 // SVR2011_TEST_MOD_HIDE=<folder>[,<folder>] leaves mods out of this game's
@@ -54,6 +55,8 @@
 #include "online_files.h"
 #include "p2p.h"
 #include "superstar_mods.h"
+#include "weapon_mods.h"
+#include "weapons_page.h"
 
 namespace fs = std::filesystem;
 
@@ -90,6 +93,7 @@ struct Mine {
   std::map<std::string, std::string> arena_folder;  // arena key -> folder
   std::map<std::string, std::pair<std::string, std::string>> pack_of;  // move pack key -> (kind, folder)
   std::set<std::string> backstage;  // backstage mod keys ("bs:" + its key)
+  std::map<std::string, int> weapon_id;  // weapon mod key -> its weapon id here (weapon_mods.h)
 };
 
 std::set<std::string> Hidden() {
@@ -135,8 +139,11 @@ const Mine& MyMods() {
       if (!e.is_directory() || hidden.count(folder) || !svr2011::ModKey("Backstage", folder, &key, &label)) continue;
       m.backstage.insert("bs:" + key), m.label["bs:" + key] = label;
     }
-    REXLOG_INFO("online mods: {} superstar and {} arena mods, {} move packs for online lobbies", m.key_of.size(),
-                m.arena_folder.size(), m.pack_of.size());
+    if (svr2011::OnlineModsAllowed())  // (weapon mods: by their own keys - not in the gameplay set, online_files.h)
+      for (const auto& w : svr2011::WeaponMods())
+        if (w.extreme && !w.key.empty() && !hidden.count(w.folder)) m.weapon_id[w.key] = w.id, m.label[w.key] = w.name;
+    REXLOG_INFO("online mods: {} superstar and {} arena mods, {} move packs, {} weapon mods for online lobbies",
+                m.key_of.size(), m.arena_folder.size(), m.pack_of.size(), m.weapon_id.size());
     return m;
   }();
   return mine;
@@ -157,6 +164,9 @@ struct Theirs {
   std::vector<std::string> agreed;         // (the host) the packs every player has, for the match
   std::set<std::string> backstage;         // its backstage mod keys
   bool backstage_known = false;
+  std::set<std::string> weapons;           // its weapon mod keys
+  std::vector<std::pair<std::string, int>> wpicks;  // (the host) its mod weapons every player has: {key, count}
+  bool weapons_known = false;
   uint64_t echo = 0;                       // (a client) the host's agreed list it has (its hash)
   bool packs_known = false;                // (it sent its packs: a game of this version)
   Clock::time_point heard;
@@ -176,6 +186,9 @@ bool g_retranslate = false;           // (a client: the host's table just came -
 std::vector<std::string> g_agreed;
 uint64_t g_agreed_hash = 0;
 std::string g_off_said;               // (the CHAT line about packs off, once a change)
+// The host's mod weapons for this lobby's Extreme Rules matches that every player has ({key, count}, sorted): the
+// host decides, everyone echoes them with the packs (Echo) - the WEAPONS page's choice online (weapons_page.h).
+std::vector<std::pair<std::string, int>> g_wpicks;
 
 uint64_t HashKeys(const std::vector<std::string>& keys) {
   uint64_t h = 0xCBF29CE484222325ull;
@@ -222,6 +235,18 @@ void SetAgreed(std::vector<std::string> keys) {  // (under g_mutex)
     g_off_said = line;
     if (LogOn() || !line.empty()) REXLOG_INFO("online mods: agreed move packs {} - {}", g_agreed.size(), line.empty() ? "all of this game's" : line);
   }
+}
+
+// What a game echoes of the host's lists: the packs' hash, and the mod weapons' folded in (none: the packs' alone,
+// as games without weapon mods echo); under g_mutex.
+uint64_t Echo() {
+  if (g_wpicks.empty() || !g_agreed_hash) return g_agreed_hash;
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (const auto& [k, n] : g_wpicks) {
+    for (unsigned char c : k) h = (h ^ c) * 0x100000001B3ull;
+    h = (h ^ uint64_t(n + 1)) * 0x100000001B3ull;
+  }
+  return (g_agreed_hash ^ h) | 1;
 }
 
 // Strings in messages.
@@ -299,10 +324,18 @@ void SendTable(const svr2011::P2PLobby& lobby) {
     } else {
       Put16(o, 0);
     }
-    Put64(o, g_agreed_hash);
+    Put64(o, Echo());
   }
   Put16(o, uint16_t(m.backstage.size()));
   for (const auto& key : m.backstage) PutStr(o, key), PutStr(o, m.label.at(key));
+  if (!m.weapon_id.empty()) {  // (weapon mods: only games that have some - the others lack every mod weapon)
+    Put16(o, uint16_t(m.weapon_id.size()));
+    for (const auto& [key, id] : m.weapon_id) PutStr(o, key), PutStr(o, m.label.at(key));
+    std::lock_guard lock(g_mutex);
+    Put16(o, uint16_t(lobby.host ? g_wpicks.size() : 0));
+    if (lobby.host)
+      for (const auto& [key, n] : g_wpicks) PutStr(o, key), o.push_back(uint8_t(n));
+  }
   svr2011::P2PSendMods(o);
 }
 
@@ -375,6 +408,20 @@ void OnTable(In& r) {
     }
     t.backstage_known = r.ok;
   }
+  if (r.ok && r.at < r.n) {  // (weapon mods, the host's agreed mod weapons)
+    const uint16_t nw = r.u16();
+    for (uint16_t i = 0; i < nw && r.ok; ++i) {
+      const std::string key = r.str(), label = r.str();
+      t.weapons.insert(key), t.label[key] = label;
+    }
+    const uint16_t np = r.u16();
+    for (uint16_t i = 0; i < np && r.ok; ++i) {
+      std::string key = r.str();
+      const int n = r.u8();
+      t.wpicks.emplace_back(std::move(key), n);
+    }
+    t.weapons_known = r.ok;
+  }
   if (!r.ok || !xuid || xuid == MyXuid()) return;
   if (t.name.empty()) t.name = "A player";
   std::lock_guard lock(g_mutex);
@@ -444,7 +491,7 @@ void Loop() {
       if (!lobby.in || lobby.session != g_session) {
         if (g_session && LogOn()) REXLOG_INFO("online mods: lobby {:016X} over", g_session);
         g_theirs.clear(), g_chat.clear(), g_arena_lacking.clear(), g_host = 0;
-        g_agreed.clear(), g_agreed_hash = 0, g_off_said.clear();
+        g_agreed.clear(), g_agreed_hash = 0, g_off_said.clear(), g_wpicks.clear();
         g_session = lobby.in ? lobby.session : 0;
         apply = true;  // (back to no arena: below)
       }
@@ -465,8 +512,23 @@ void Loop() {
             if (all) keys.push_back(key);
           }
           SetAgreed(std::move(keys));
+          // (this game's mod weapons that every player has)
+          std::vector<std::pair<std::string, int>> picks;
+          for (const auto& [key, n] : svr2011::HostModWeaponPicks()) {
+            bool all = MyMods().weapon_id.count(key) != 0;
+            for (const uint64_t x : lobby.members) {
+              if (x == MyXuid()) continue;
+              const auto t = g_theirs.find(x);
+              all = all && t != g_theirs.end() && t->second.weapons.count(key);
+            }
+            if (all) picks.emplace_back(key, n);
+          }
+          std::sort(picks.begin(), picks.end());
+          if (picks != g_wpicks && LogOn()) REXLOG_INFO("online mods: agreed mod weapons {}", picks.size());
+          g_wpicks = std::move(picks);
         } else if (auto h = g_theirs.find(g_host); h != g_theirs.end() && h->second.packs_known) {
           SetAgreed(h->second.agreed);
+          g_wpicks = h->second.weapons_known ? h->second.wpicks : std::vector<std::pair<std::string, int>>{};
         }
       }
       if (lobby.in && !lobby.host) {
@@ -686,7 +748,7 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
           why = "a player who just joined is still sending its mods";
           break;
         }
-        if (t->second.packs_known && t->second.echo != g_agreed_hash) {
+        if (t->second.packs_known && t->second.echo != Echo()) {
           why = t->second.name + " is still taking the move packs list";
           break;
         }
@@ -731,6 +793,14 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
     told = why, told_at = Clock::now();
   }
   return false;
+}
+
+std::vector<std::pair<int, int>> OnlineModWeapons() {
+  std::vector<std::pair<int, int>> out;
+  std::lock_guard lock(g_mutex);
+  for (const auto& [key, n] : g_wpicks)
+    if (const auto it = MyMods().weapon_id.find(key); it != MyMods().weapon_id.end()) out.emplace_back(it->second, n);
+  return out;
 }
 
 bool OnlinePackMoveAllowed(uint16_t id) {
