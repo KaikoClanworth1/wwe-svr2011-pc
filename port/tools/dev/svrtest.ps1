@@ -6,6 +6,8 @@
 #                     [--boot] [--cpu all]   (--boot, dbg only: straight into the match - no title, no menus)
 #   svrtest.ps1 entrance --p1 EDGE [--attire 2] [--shots every:6s:20]        (until "entrances over")
 #   svrtest.ps1 route <name> [--shot 3s] [--quit 10s]                       (script_input.cpp kRoutes)
+#   svrtest.ps1 open <page> [--shot 3s] [--quit 10s]    (dbg: straight to caw, threads, cae, options:<ROW>,
+#                                                        match_creator, universe, menu:<A>B>C> - boot.cpp kPages)
 #   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
 # common: --exe release|dbg|<path>  --backend d3d12|vulkan|d3d11  --mods none|<folder>[,<folder>...]
 #         --userdata <dir>  --perf 0|1|2  --log-level info|debug  --name <run name>  --keep (leave it running)
@@ -77,9 +79,10 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         default { if (-not $o.target -and $a -notlike "--*") { $o.target = $a } else { throw "svrtest: unknown option $a" } }
     }
 }
-if ($Command -notin "match", "entrance", "route", "script") {
-    throw "svrtest: match | entrance | route <name> | script <file> (see the top of tools\dev\svrtest.ps1)"
+if ($Command -notin "match", "entrance", "route", "script", "open") {
+    throw "svrtest: match | entrance | route <name> | script <file> | open <page> (see the top of tools\dev\svrtest.ps1)"
 }
+if ($Command -eq "open") { if (-not $o.target) { throw "svrtest open <page>" }; $o.exe = if ($o.exe -eq "release") { "dbg" } else { $o.exe } }
 if ($Command -eq "entrance") { $o.entrances = $true; if (-not $o.until) { $o.until = "entrances over" } }
 function Seconds([string]$t) {
     if (-not $t) { return 0 }
@@ -138,7 +141,12 @@ foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
     $src = Join-Path $build $f
     if (-not (Test-Path $src) -and $f -ne $exeName) { $src = Join-Path $port "out\build\SourceRelease\$f" }
     if (-not (Test-Path $src)) { throw "svrtest: no $f in $build - build it first" }
-    Copy-Item $src $game -Force
+    # (only when the build changed; a game that just ended can hold the exe a moment)
+    $to = Join-Path $game $f
+    $same = (Test-Path $to) -and (Get-Item $to).Length -eq (Get-Item $src).Length -and (Get-Item $to).LastWriteTimeUtc -eq (Get-Item $src).LastWriteTimeUtc
+    for ($k = 0; -not $same; $k++) {
+        try { Copy-Item $src $game -Force -ErrorAction Stop; break } catch { if ($k -ge 20) { throw }; Start-Sleep -Milliseconds 500 }
+    }
 }
 # its Mods: only --mods (a mod folder is placed by its manifest's type)
 $kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes" }
@@ -190,6 +198,8 @@ if ($Command -in "match", "entrance") {
     $env:SVR2011_TEST_MATCH = $spec
     if ($o.rule) { $env:SVR2011_TEST_RULE = $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) }
     $steps = if ($o.boot) { @() } elseif ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }
+} elseif ($Command -eq "open") {
+    $steps = @()
 } elseif ($Command -eq "route") {
     if (-not $o.target) { throw "svrtest route <name>" }
     $steps = @("route $($o.target)")
@@ -230,6 +240,7 @@ if ($gameCues) {
     if ($o.state) { $gameArgs += "--dbg_state=$((@($o.state | ForEach-Object { (Seconds $_).ToString($inv) })) -join ',')" }
     if ($o.quit) { $gameArgs += "--dbg_quit=$((Seconds $o.quit).ToString($inv))" }
 }
+if ($Command -eq "open") { $gameArgs += "--dbg_boot=`"$($o.target)`"" }
 $gameArgs += $o.args
 
 # ---- run
@@ -267,10 +278,10 @@ function Shot([string]$label) {
 }
 try {
     # the start: the main menu, then the command's own cue (the match hand-off / the route's end)
-    $menuCue = if ($o.boot) { "fast start: the main menu" } else { "title: main menu" }
+    $menuCue = if ($o.boot -or $Command -eq "open") { "fast start: the main menu" } else { "title: main menu" }
     if (Wait-Log $menuCue 180) { $timings.main_menu_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
     # (the real line has a space after "people": not the script's own "pressuntil A test match: people")
-    $cue = if ($o.boot) { "SVRDBG: boot: match -" } elseif ($Command -in "match", "entrance") { "test match: people " } else { "script input: all steps done" }
+    $cue = if ($o.boot) { "SVRDBG: boot: match -" } elseif ($Command -eq "open") { "SVRDBG: boot: page " } elseif ($Command -in "match", "entrance") { "test match: people " } else { "script input: all steps done" }
     $deadline = (Get-Date).AddSeconds(240)
     while ((Get-Date) -lt $deadline -and -not $proc.HasExited -and -not (LogHas $cue) -and -not (LogHas "script input: no route")) { Start-Sleep -Milliseconds 500 }
     if (LogHas "script input: no route") { $ok = $false; $why = (@(Select-String -Path $log -Pattern "script input: no route" -SimpleMatch)[0].Line -split '\] ', 2)[-1] -replace '^.*script input: ', '' }
@@ -316,7 +327,10 @@ try {
     if ($quitAt) { while (((Get-Date) - $from).TotalSeconds -lt $quitAt -and -not $proc.HasExited) { Start-Sleep -Milliseconds 250 } }
     if ($proc.HasExited -and $ok -and -not $timings.quit_s) { $ok = $false; $why = "the game exited (code $($proc.ExitCode))" }
 } finally {
-    if (-not $o.keep -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    if (-not $o.keep -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        [void]$proc.WaitForExit(15000)  # (gone before the next run copies the exe over it)
+    }
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 }
 

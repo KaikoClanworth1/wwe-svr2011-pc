@@ -1,6 +1,6 @@
 // WWE SmackDown vs. Raw 2011 - the debug suite's direct boot (debug_suite.h: dbg_boot).
 //
-// dbg_boot=match: from launch straight into the match dbg_match asks for. The intros and the practice ring are
+// dbg_boot=match: from launch straight into the match dbg_match asks for (dbg_boot=<page>: a menu page, below). The intros and the practice ring are
 // skipped (fast_start.cpp's START pulses, on the Start Screen too), and as soon as the main menu is up the match
 // set-up is filled and committed as the exhibition flow's sub_82736020 does after its select screens, and the
 // next scene (1, the exhibition match) asked for - the game tears its menus down and loads the match itself
@@ -37,7 +37,9 @@
 #include "debug_suite/debug_suite.h"
 #include "script_input.h"
 
-REXCVAR_DEFINE_STRING(dbg_boot, "", "Debug", "SVRDBG: start straight in: match (dbg_match's)");
+REXCVAR_DEFINE_STRING(dbg_boot, "", "Debug",
+                      "SVRDBG: start straight in: match (dbg_match's), a page (caw, threads, cae, options, "
+                      "match_creator, universe ...), options:<ROW> or menu:<A>B>C>");
 REXCVAR_DEFINE_STRING(dbg_match, "", "Debug",
                       "SVRDBG: the match for dbg_boot=match: people=EDGE,KANE attires=1,1 arena=1 rule=0 cpu=all");
 REXCVAR_DEFINE_BOOL(dbg_entrances, false, "Debug", "SVRDBG: a booted match plays its entrances");
@@ -247,23 +249,122 @@ void StartMatch(PPCContext& ctx, uint8_t* base) {
   REXLOG_INFO("SVRDBG: boot: match - {}; rule {:02X}, arena {}{}", line, m.rule, m.arena, m.all_cpu ? ", all CPU" : "");
 }
 
+// dbg_boot=<page>: the menu path to a page, chosen with the game's own calls (as its input handler
+// sub_82448260 makes them for a cursor move and A - no pad input), the row found as the menu_hooks' "menu
+// <LABEL>" steps find it; one entry each time the menu has settled on a new group. A path is labels joined by '>' (menu:CREATE MODES>CREATE A SUPERSTAR>NEW), or a
+// short name below; options:<ROW> is MY WWE > OPTIONS > <ROW>.
+struct Page {
+  const char* name;
+  const char* path;
+};
+constexpr Page kPages[] = {
+    {"caw", "CREATE MODES>CREATE A SUPERSTAR>NEW"},
+    {"create", "CREATE MODES>CREATE A SUPERSTAR>NEW"},
+    {"caw_edit", "CREATE MODES>CREATE A SUPERSTAR>EDIT"},
+    {"threads", "CREATE MODES>CREATE A SUPERSTAR>SUPERSTAR THREADS"},
+    {"paint", "CREATE MODES>CREATE A SUPERSTAR>PAINT TOOL"},
+    {"cae", "CREATE MODES>CREATE AN ENTRANCE"},
+    {"finisher", "CREATE MODES>CREATE A FINISHER"},
+    {"moveset", "CREATE MODES>CREATE A MOVE-SET"},
+    {"story", "CREATE MODES>STORY DESIGNER"},
+    {"reel", "CREATE MODES>HIGHLIGHT REEL"},
+    {"options", "MY>OPTIONS"},
+    {"match_creator", "MY>OPTIONS>MATCH CREATOR"},
+    {"jukebox", "MY>JUKEBOX"},
+    {"achievements", "MY>ACHIEVEMENTS"},
+    {"superstar_management", "MY>SUPERSTAR MANAGEMENT"},
+    {"universe", "UNIVERSE"},
+    {"rtwm", "ROAD TO WRESTLEMANIA"},
+    {"online", "ONLINE"},
+    {"shop", "SHOP"},
+};
+
+std::vector<std::string> g_path;  // the labels still to choose
+std::string g_page;
+uint32_t g_left_group = ~0u;      // the group the last choice was made in (the next waits for another)
+Clock::time_point g_group_since{};
+uint32_t g_group_seen = ~0u;
+
+bool MenuPath(const std::string& want, std::vector<std::string>* out) {
+  std::string path;
+  if (want.rfind("menu:", 0) == 0) path = want.substr(5);
+  else if (want.rfind("options:", 0) == 0) path = "MY>OPTIONS>" + want.substr(8);
+  else
+    for (const Page& p : kPages)
+      if (want == p.name) path = p.path;
+  if (path.empty()) return false;
+  std::stringstream list(path);
+  std::string item;
+  while (std::getline(list, item, '>')) out->push_back(item);
+  return !out->empty();
+}
+
+void MenuFrame(PPCContext& ctx, uint8_t* base) {
+  uint32_t group = 0, row = 0;
+  if (!ScriptMenuState(&group, &row)) return;
+  if (group != g_group_seen) {
+    if (g_left_group != ~0u) REXLOG_INFO("SVRDBG: boot: menu group {:X}", group);
+    g_group_seen = group, g_group_since = Clock::now();
+  }
+  // (a group of the menu - not a screen id - other than the last choice's, settled a moment)
+  if (group >= 1000 || group == g_left_group || Clock::now() - g_group_since < std::chrono::milliseconds(1000)) return;
+  if (g_left_group == ~0u && group != 1) return;  // (the first choice in the main menu - not the title's group 0)
+  const uint32_t menu = Rd32(base + kMenu);
+  if (!menu) return;
+  int rows = 0;
+  const std::string& label = g_path.front();
+  const int at = ScriptMenuRow(group, label, &rows);
+  if (at < 0) {
+    REXLOG_ERROR("SVRDBG: boot: no '{}' in menu group {:X} ({}) - stopped", label, group, ScriptMenuTexts(group));
+    g_done = true;
+    return;
+  }
+  // As the menu's own input (sub_82448260): a cursor move - +360 the row, +384 what it leads to
+  // (sub_82445640), the redraws - then A: sub_82447210(menu, 1) and the two calls after it.
+  const PPCContext saved = ctx;
+  Wr32(base + menu + 360, uint32_t(at));
+  Call(ctx, base, sub_82445640, {menu, group < 1000 ? int64_t(group) : -1, at});
+  Wr32(base + menu + 384, ctx.r3.u32);
+  for (auto fn : {sub_82446B90, sub_82446E30, sub_82447168, sub_824463F8, sub_82445D80}) Call(ctx, base, fn, {menu});
+  Wr32(base + menu + 1796, 0);  // (who pressed A: player 1 - its checks, sub_824418B8 / sub_82441A80, read it)
+  Call(ctx, base, sub_82447210, {menu, 1});
+  Call(ctx, base, sub_82446E30, {menu});
+  Call(ctx, base, sub_82447168, {menu});
+  ctx = saved;
+  REXLOG_INFO("SVRDBG: boot: chose {} (group {:X} row {})", label, group, at);
+  g_left_group = group;
+  g_path.erase(g_path.begin());
+  if (g_path.empty()) {
+    g_done = true;
+    REXLOG_INFO("SVRDBG: boot: page {} open", g_page);
+  }
+}
+
 }  // namespace
 
-bool BootWanted() { return !g_done && REXCVAR_GET(dbg_boot) == "match"; }
+bool BootWanted() { return !g_done && !REXCVAR_GET(dbg_boot).empty(); }
 
 void InstallBoot() {
-  if (REXCVAR_GET(dbg_boot).empty()) return;
-  if (REXCVAR_GET(dbg_boot) != "match") {
-    REXLOG_ERROR("SVRDBG: boot: dbg_boot={} isn't known (match)", REXCVAR_GET(dbg_boot));
-    return;
+  const std::string want = REXCVAR_GET(dbg_boot);
+  if (want.empty()) return;
+  if (want != "match") {
+    if (!MenuPath(want, &g_path)) {
+      std::string names;
+      for (const Page& p : kPages) names += std::string(names.empty() ? "" : ", ") + p.name;
+      REXLOG_ERROR("SVRDBG: boot: dbg_boot={} isn't known (match, {}, options:<ROW>, menu:<A>B>C>)", want, names);
+      g_done = true;
+      return;
+    }
+    g_page = want;
   }
   REXCVAR_SET(skip_intros, true);
   REXCVAR_SET(skip_training, true);
-  REXLOG_INFO("SVRDBG: boot: match ({})", REXCVAR_GET(dbg_match));
+  REXLOG_INFO("SVRDBG: boot: {} ({})", want, want == "match" ? REXCVAR_GET(dbg_match) : want);
 }
 
 void BootFrame(PPCContext& ctx, uint8_t* base) {
   if (!BootWanted()) return;
+  if (!g_path.empty()) return MenuFrame(ctx, base);
   uint32_t group = 0, row = 0;
   if (!ScriptMenuState(&group, &row) || group != 1) {
     g_menu_since = {};
