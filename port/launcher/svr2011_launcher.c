@@ -839,6 +839,7 @@ static void install_bundled(const WCHAR *game, const WCHAR *dir)
 static volatile LONG s_bundled_busy;
 static WCHAR s_bundled_text[160];
 static HWND s_bundled_wnd;
+static int s_bundled_answered;  /* (the questions of this start asked: the next pass acts on the answers) */
 static int s_play_pending;  /* Play (1) / Start Without Mods (2) clicked while they were installed: started after */
 static int s_up_finishing;  /* (up_finish: the update's folders being fetched - the bundled install follows) */
 static int s_bundled_again;  /* (start_bundled while one ran - up_finish's new folders: once more after it) */
@@ -883,6 +884,7 @@ static void start_bundled(void)
     }
     memcpy(dirs, s_game_dir, g * sizeof(WCHAR));
     memcpy(dirs + g + 1, s_launcher_dir, l * sizeof(WCHAR));
+    if (!s_bundled_answered) mods_bundled_reset();  /* (a new check: its own questions; the answered pass keeps them) */
     s_bundled_wnd = s_wnd;
     wcscpy_s(s_bundled_text, 160, L"Checking the mods that came with the port\x2026");
     refresh_play();
@@ -897,12 +899,46 @@ static void start_bundled(void)
 }
 
 static void play_with(int no_mods);
+static int s_bundled_no_ask;  /* (--capture: never a message box - the questions are in Mods\.install.log) */
+
+/* The bundled mods' questions (mods_tab.h): asked once a check is done, then acted on by a second pass. */
+static int bundled_ask(void)
+{
+    static BundledQuestion q[32];
+    const int n = mods_bundled_questions(q, 32);
+    int i;
+    if (!n || s_bundled_answered || s_bundled_no_ask) return 0;
+    s_bundled_answered = 1;
+    for (i = 0; i < n && i < 32; ++i) {
+        WCHAR t[900];
+        int a;
+        if (q[i].kind == BUNDLED_ASK_UPDATE) {
+            swprintf_s(t, 900, L"A newer version (%s) of the bundled mod \"%s\" came with the update, but your copy "
+                               L"(version %s) has been edited.\n\nYes: update it - your edited copy is kept in "
+                               L"Mods\\.backup.\nNo: keep your copy (you won't be asked again for this version).",
+                       q[i].ship[0] ? q[i].ship : L"?", q[i].name, q[i].have[0] ? q[i].have : L"?");
+            a = MessageBoxW(s_wnd, t, WINDOW_TITLE L" - bundled mods", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
+        } else {
+            swprintf_s(t, 900, L"Files of the bundled mod \"%s\" are missing (an antivirus, or a copy that stopped "
+                               L"half-way).\n\nFix it automatically (it's installed again, its on / off kept)?\n"
+                               L"No: not now (you're asked again at the next start).", q[i].name);
+            a = MessageBoxW(s_wnd, t, WINDOW_TITLE L" - bundled mods", MB_YESNO | MB_ICONWARNING);
+        }
+        mods_bundled_answer(q[i].file, a == IDYES ? BUNDLED_YES : BUNDLED_NO);
+    }
+    return 1;
+}
 
 static void bundled_message(WPARAM wp)
 {
     if (wp == (WPARAM)0xFFFFFFFF) {
         const int pending = s_play_pending;
         InterlockedExchange(&s_bundled_busy, 0);
+        if (bundled_ask()) {  /* (answered: a second pass acts on them - the click still waits) */
+            start_bundled();
+            if (s_bundled_busy) return;
+        }
+        s_bundled_answered = 0;  /* (this round over: a later check asks again) */
         if (s_bundled_again) {  /* (asked again meanwhile: the new folders' mods - the click still waits) */
             s_bundled_again = 0;
             start_bundled();
@@ -914,9 +950,14 @@ static void bundled_message(WPARAM wp)
         if (pending) play_with(pending == 2);  /* (the click made while they were installed) */
         return;
     }
-    swprintf_s(s_bundled_text, 160, s_play_pending ? L"The game starts after the mods\x2026 (%u of %u)"
-                                                    : L"Installing the update's mods\x2026 (%u of %u)",
-               (unsigned)(wp >> 16 & 0xFFFF), (unsigned)(wp & 0xFFFF));
+    if (wp & 0xFFFF)
+        swprintf_s(s_bundled_text, 160, s_play_pending ? L"The game starts after the mods\x2026 (%u of %u)"
+                                                        : L"Installing the update's mods\x2026 (%u of %u)",
+                   (unsigned)(wp >> 16 & 0xFFFF), (unsigned)(wp & 0xFFFF));
+    else
+        swprintf_s(s_bundled_text, 160, s_play_pending ? L"The game starts after the mods\x2026 (%u)"
+                                                        : L"Installing the update's mods\x2026 (%u)",
+                   (unsigned)(wp >> 16 & 0xFFFF));
     refresh_play();
 }
 
@@ -8610,6 +8651,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
     /* Tests: --bundled <game folder> installs <game>\Bundled Mods as a start does. */
     if (argv && argc >= 3 && !wcscmp(argv[1], L"--bundled")) {
+        /* ... --answer yes|no: the answer to its questions (an edited copy with a newer version: update / keep;
+           files missing: fix / not now); without it they're only logged (Mods\.install.log) */
+        mods_bundled_reset();
+        if (argc >= 5 && !wcscmp(argv[3], L"--answer")) mods_bundled_answer(NULL, !wcscmp(argv[4], L"yes") ? BUNDLED_YES : BUNDLED_NO);
         install_bundled(argv[2], argv[2]);
         LocalFree(argv);
         return 0;
@@ -8734,6 +8779,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     /* Mods that came with the port and aren't in the game yet (an update can bring new ones): once the window shows,
        on a worker (start_bundled; they used to be installed before the window was, which an update with many to
        replace left invisible for minutes). */
+    s_bundled_no_ask = capture_file != NULL;
     if ((!capture_file || capture_bundled) && is_game_folder(s_game_dir))
         start_bundled();
     if (capture_bundled == 2)
