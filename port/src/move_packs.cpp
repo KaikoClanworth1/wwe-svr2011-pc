@@ -1684,7 +1684,8 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   // packs' props out, and their entrance scripts use the game's props named by propfallback lines
   if (const auto obj = packs.entries.find(kPropPac); ok && obj != packs.entries.end()) {
     svr2011::KeepWindowAlive();
-    if (!BuildEntryPac(game, overlay, kPropPac, obj->second)) {
+    // (test aid SVR2011_TEST_NO_PROP_COPY: as if the copy couldn't be made)
+    if (std::getenv("SVR2011_TEST_NO_PROP_COPY") || !BuildEntryPac(game, overlay, kPropPac, obj->second)) {
       if (packs.prop_fallback.empty()) {
         ok = false;
       } else {
