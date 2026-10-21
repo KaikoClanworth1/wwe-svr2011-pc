@@ -1698,6 +1698,15 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
     REXLOG_INFO("[svr2011] crowd: off - arenas without their crowd");
   }
   LoadCustomArenas();
+  // Test aid: SVR2011_TEST_ARENA_MOD=<custom arena folder> - it is picked from the start, on its base arena's tile
+  // (SVR2011_TEST_MATCH arena=<that base> plays it).
+  if (const char* v = std::getenv("SVR2011_TEST_ARENA_MOD"); v && *v) {
+    for (const auto& c : g_customs)
+      if (c.id == v) {
+        PointAt(&c, c.base_arena >= 0 ? c.base_arena : 1);
+        REXLOG_INFO("[svr2011] arena mods: test - {} picked (plays as arena {})", c.name, g_redirected_file);
+      }
+  }
   LoadBackstage();
   LoadLoadingPictures();
   // Test aid: SVR2011_TEST_LOADING=<custom arena id>:<theme>: its loading and
