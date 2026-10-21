@@ -125,7 +125,7 @@ enum {
     ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
-    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT,
+    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE,
     ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
@@ -1919,7 +1919,7 @@ static void settings_load(void)
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, perf = -1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, arena_light = 100;
-    int exclusive = 0, max_scale = 4, scene_height = 0;
+    int exclusive = 0, max_scale = 4, scene_height = 0, upscale = 0, upscale_quality = 1;
     double render_scale = 1.0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
     s_online_token[0] = s_online_xuid[0] = 0;
@@ -1947,6 +1947,8 @@ static void settings_load(void)
             else if (!strcmp(key, "perf_overlay")) perf = atoi(val);
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
             else if (!strcmp(key, "native_aa")) aa = atoi(val);
+            else if (!strcmp(key, "native_upscale")) upscale = !_stricmp(val, "fsr1");
+            else if (!strcmp(key, "native_upscale_quality")) upscale_quality = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
             else if (!strcmp(key, "unlock_everything")) unlock_all = strcmp(val, "false") != 0;
@@ -1997,6 +1999,9 @@ static void settings_load(void)
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, skip_training ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, (WPARAM)textures, 0);
+    /* (Off, then FSR 1 ultra quality .. performance: native_upscale_quality 0-3) */
+    SendMessageW(ctl(ID_UPSCALE), CB_SETCURSEL,
+                 (WPARAM)(upscale ? 1 + (upscale_quality >= 0 && upscale_quality <= 3 ? upscale_quality : 1) : 0), 0);
     if (arena_light < 50 || arena_light > 200)
         arena_light = 100;
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, (WPARAM)((arena_light - 50 + 5) / 10), 0);
@@ -2008,7 +2013,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 35 };
+    enum { NK = 37 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -2016,7 +2021,8 @@ static int settings_save(void)
                                     "online_token", "online_xuid", "frame_rate", "p2p_peers", "native_aa",
                                     "process_priority", "unlock_everything", "native_texture_quality",
                                     "skip_intros", "skip_training", "fullscreen_exclusive", "native_max_scale",
-                                    "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay" };
+                                    "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay",
+                                    "native_upscale", "native_upscale_quality" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -2091,6 +2097,11 @@ static int settings_save(void)
     {
         const int li = (int)SendMessageW(ctl(ID_ARENA_LIGHT), CB_GETCURSEL, 0, 0);
         sprintf_s(vals[33], 64, "%d", li >= 0 && li <= 15 ? 50 + 10 * li : 100);
+    }
+    {   /* (as the game writes them: graphics_page.cpp kUpscaling) */
+        const int ui = (int)SendMessageW(ctl(ID_UPSCALE), CB_GETCURSEL, 0, 0);
+        strcpy_s(vals[35], 64, ui >= 1 && ui <= 4 ? "\"fsr1\"" : "\"off\"");
+        sprintf_s(vals[36], 64, "%d", ui >= 1 && ui <= 4 ? ui - 1 : 1);
     }
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
@@ -2178,6 +2189,7 @@ static void settings_defaults(void)
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, 0, 0);
+    SendMessageW(ctl(ID_UPSCALE), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, 5, 0);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
@@ -3226,7 +3238,14 @@ static void build_ui(void)
             ID_RENDER_RES);
     for (i = 0; i < N_RENDER; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_render[i].label);
-    add(TAB_SETTINGS, L"Static", L"Also in game: GRAPHICS.", SS_LEFT, X0 + 400, 126, 146, 20, 0);
+    /* native_upscale (the game's GRAPHICS -> UPSCALING): AMD FSR 1, in place of the render resolution */
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 122, 146, 200,
+            ID_UPSCALE);
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Upscaling: off");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Ultra Quality");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Quality");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Balanced");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Performance");
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 154, 160, 24, ID_VSYNC);
     /* arena_brightness (the game's GRAPHICS -> ARENA BRIGHTNESS): the arenas' lights, 50-200% */
     add(TAB_SETTINGS, L"Static", L"Arena light", SS_LEFT, X0 + 190, 158, 76, 20, 0);
