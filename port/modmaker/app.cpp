@@ -2938,7 +2938,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       if (a == std::wstring::npos || b == std::wstring::npos) return 1;
       const std::string fbx = Utf8(v.substr(0, a)), tpl = Utf8(v.substr(a + 1, b - a - 1));
       std::string dir = Utf8(v.substr(b + 1));
-      // (test: "<dir>|<mesh>=spec:1.5&tint:1,0.3,0.3&cut:1&both:1&alpha:flat&normal:<png>;..." - the builder's per-mesh material)
+      // (test: "<dir>|<mesh>=spec:1.5&tint:1,0.3,0.3&cut:1&both:1&flip:1&alpha:flat&normal:<png>&shine:<png>;..." - the builder's per-mesh material)
       svrfmt::FbxImportOptions mopts;
       if (const size_t bar = dir.find('|'); bar != std::string::npos) {
         const std::string spec = dir.substr(bar + 1);
@@ -2964,6 +2964,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
             if (k == "tint") f.has_tint = std::sscanf(val.c_str(), "%f,%f,%f", &f.tint[0], &f.tint[1], &f.tint[2]) == 3;
             if (k == "cut") f.cutout = std::atoi(val.c_str());
             if (k == "both") f.double_sided = std::atoi(val.c_str());
+            if (k == "flip") f.flip = std::atoi(val.c_str());
+            if (k == "shine") f.shine_mask = val;
             if (k == "alpha") f.specular_alpha = val;
             if (k == "normal") f.normal = val;
           }
@@ -3125,6 +3127,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--simple-ring") && more) star_page::TestSimpleRing(_wtoi(argv[++i]));  // an entrance's walk to the ring in Simple's preview
     else if (!wcscmp(argv[i], L"--simple-capture") && more) star_page::TestSimpleCapture(argv[++i]);  // the 3D view as the select picture -> <png>, quit
     else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
+    else if (!wcscmp(argv[i], L"--look-tab") && more) star_page::TestLookTab(_wtoi(argv[++i]));  // Simple's Look step: 0 Model, 1 Materials
+    else if (!wcscmp(argv[i], L"--fbx-step") && more) star_page::TestFbxStep(_wtoi(argv[++i]) - 1);  // the FBX import's step <1-5>
     else if (!wcscmp(argv[i], L"--simple") && more) {  // the Superstar page in Simple mode at <step>[,from]: that step's "From another game"
       const std::wstring a = argv[++i];
       star_page::TestSimple(_wtoi(a.c_str()));
@@ -3245,6 +3249,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) x = y = CW_USEDEFAULT;
   }
   if (behind) x = 0, y = 0, w = MulDiv(1280, dpi, 96), h = MulDiv(800, dpi, 96);
+  if (const wchar_t* size = _wgetenv(L"SVR2011_MM_SHOT_SIZE"); behind && size && *size) {  // (test shots: "<w>x<h>")
+    int sw = 0, sh = 0;
+    if (swscanf_s(size, L"%dx%d", &sw, &sh) == 2 && sw >= 640 && sh >= 480) w = MulDiv(sw, dpi, 96), h = MulDiv(sh, dpi, 96);
+  }
   g_wnd = CreateWindowExW(behind ? WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW : 0, wc.lpszClassName, L"SvR2011 Mod Maker",
                           WS_OVERLAPPEDWINDOW, x, y, w, h, nullptr, nullptr, inst, nullptr);
   DragAcceptFiles(g_wnd, TRUE);  // (pictures dropped on the pages' drop targets)

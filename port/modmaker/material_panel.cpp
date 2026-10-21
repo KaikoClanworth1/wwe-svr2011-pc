@@ -2,6 +2,8 @@
 // shows it): per mesh of the model in the 3D view its shine, normal map, colour, see-through cut-out and both
 // sides - the game's own per-mesh values (model_materials.h), previewed live, written into the pac at save.
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <map>
@@ -49,6 +51,22 @@ std::string PartName(const MeshMat& m) {
   if (n.find("hige") != std::string::npos) return "Beard";
   if (m.model_id == 20000) return "Face extras";
   return m.model.empty() ? "Part" : m.model;
+}
+
+// A small picture of the part: its area of the picture sheet (its UVs' box). False when the 3D view has none.
+bool PartThumb(uint32_t id, int mesh, float side) {
+  void* tex = nullptr;
+  std::vector<std::array<float, 2>> uvs;
+  if (!char_preview::MeshAtlas(id, mesh, false, &tex, &uvs) || !tex || uvs.empty()) return false;
+  float lo[2] = {1, 1}, hi[2] = {0, 0};
+  for (const auto& uv : uvs)
+    for (int k = 0; k < 2; ++k) {
+      const float f = uv[size_t(k)] - std::floor(uv[size_t(k)]);  // (tiling: wrapped into the sheet)
+      lo[k] = std::min(lo[k], f), hi[k] = std::max(hi[k], f);
+    }
+  if (hi[0] <= lo[0] || hi[1] <= lo[1]) return false;
+  ImGui::Image(ImTextureID(tex), ImVec2(side, side), ImVec2(lo[0], lo[1]), ImVec2(hi[0], hi[1]));
+  return true;
 }
 
 // The mesh's picture sheet with its own area outlined (its triangles in UV space).
@@ -104,6 +122,7 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
     char label[160];
     std::snprintf(label, sizeof label, "%s, part %d%s###m%u_%d", PartName(m).c_str(), m.mesh + 1, e.Empty() ? "" : "  - changed",
                   unsigned(m.model_id), m.mesh);
+    if (PartThumb(m.model_id, m.mesh, ImGui::GetFrameHeight())) ImGui::SameLine();
     const bool node = ImGui::TreeNode(label);
     if (ImGui::IsItemHovered() || node) hover = {m.model_id, m.mesh};  // (lit up in the 3D view)
     if (!node) continue;
@@ -169,6 +188,12 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
       ImGui::SetTooltip(m.skin_shine ? "Drawn from behind too (capes, open jackets, single-layer cloth); off: only its front - the game's flag 0x2.\n"
                                        "Skin parts drawn from both sides get the game's plain shader: no sweat, the shine from the colour picture's alpha."
                                      : "Drawn from behind too (capes, open jackets, single-layer cloth); off: only its front - the game's flag 0x2.");
+    ImGui::SameLine();
+    bool flip = e.flip == 1;
+    if (ImGui::Checkbox("Flip faces", &flip)) e.flip = flip ? 1 : -1, ch = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Turns its faces the other way round (winding and normals): for a part that shows inside out in the game -\n"
+                        "dark where it should be lit, its inside showing. The 3D view draws it as the game does.");
     // the picture sheet
     const bool open = g_atlas_for == std::make_pair(m.model_id, m.mesh);
     if (ImGui::SmallButton(open ? "Hide the picture sheet" : (simple ? "Show where it is on the picture" : "Picture sheet (atlas)"))) g_atlas_for = open ? std::make_pair(~0u, -1) : std::make_pair(m.model_id, m.mesh);

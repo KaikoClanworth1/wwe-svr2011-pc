@@ -283,6 +283,18 @@ bool PatchMaterials(Bytes& pac, int attire, bool gear, const std::map<std::pair<
           if (Param* p = Find(s, "g_fSweatSPA"); p && p->value.size() >= 4) FWr(p->value, 0, 0.0f);
         WrBe(s.raw, 0x88, f), changed = true;
       }
+      if (ed.flip == 1) {  // (faces turned over: each strip one index longer - its first again - flips every triangle's
+                           // winding (the strip's odd / even turns swap), and the normals point the other way)
+        for (auto& st : s.strips) {
+          if (st.indices.empty()) continue;
+          if (st.prim == 6) st.indices.insert(st.indices.begin(), st.indices.front());
+          else
+            for (size_t k = 0; k + 2 < st.indices.size(); k += 3) std::swap(st.indices[k + 1], st.indices[k + 2]);  // (a triangle list)
+        }
+        for (auto& v : s.verts)
+          for (float& c : v.normal) c = -c;
+        changed = true;
+      }
       if (ed.normal != 0)
         if (Param* p = Find(s, "texNormal"); p && p->value.size() >= 4) {
           // the picture (or a flat normal) as a DXT5 texture of the bundle holding the colour picture
@@ -362,7 +374,9 @@ std::string MaterialsText(const std::map<MatKey, MatEdit>& m) {
     std::snprintf(b, sizeof b, "%d %d %u %d|%d %g|%d|%d %g %g %g|%d|%d|%d|", std::get<0>(k), int(std::get<1>(k)), unsigned(std::get<2>(k)),
                   std::get<3>(k), int(e.has_spec), e.spec, e.normal, int(e.has_tint), e.tint[0], e.tint[1], e.tint[2], e.cutout,
                   e.two_sided, e.spec_alpha);
-    t += b + Utf8(e.normal_file) + "\n";
+    t += b + Utf8(e.normal_file);
+    if (e.flip >= 0 || !e.shine_mask.empty()) t += "\t" + std::to_string(e.flip) + "\t" + Utf8(e.shine_mask);  // (after a tab: older lines have none)
+    t += "\n";
   }
   return t;
 }
@@ -380,7 +394,16 @@ std::map<MatKey, MatEdit> MaterialsFromText(const std::string& t) {
     e.has_spec = hs != 0, e.has_tint = ht != 0;
     size_t bar = 0;
     for (int n = 0; n < 7 && bar != std::string::npos; ++n) bar = line.find('|', bar + 1);
-    if (bar != std::string::npos) e.normal_file = Wide(line.substr(bar + 1));
+    if (bar != std::string::npos) {
+      std::string rest = line.substr(bar + 1);
+      if (const size_t tab = rest.find('\t'); tab != std::string::npos) {
+        const std::string more = rest.substr(tab + 1);
+        rest.resize(tab);
+        e.flip = std::atoi(more.c_str());
+        if (const size_t t2 = more.find('\t'); t2 != std::string::npos) e.shine_mask = Wide(more.substr(t2 + 1));
+      }
+      e.normal_file = Wide(rest);
+    }
     m[{a, g != 0, uint32_t(id), mesh}] = e;
   }
   return m;

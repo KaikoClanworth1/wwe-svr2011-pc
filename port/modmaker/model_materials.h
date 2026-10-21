@@ -22,8 +22,10 @@ struct MatEdit {
   float tint[3] = {1, 1, 1};
   int cutout = -1, two_sided = -1;  // -1 as it is
   int spec_alpha = 0;         // FBX builds only (svr11_build "specular_alpha"): 0 as is, 1 texture, 2 flat, 3 brightness
+  int flip = -1;              // 1: its faces turned over (winding and normals: a part that shows inside out in game)
+  std::wstring shine_mask;    // FBX builds only: a picture whose brightness is where it shines
   bool Empty() const {
-    return !has_spec && normal == 0 && !has_tint && cutout < 0 && two_sided < 0 && spec_alpha == 0;
+    return !has_spec && normal == 0 && !has_tint && cutout < 0 && two_sided < 0 && spec_alpha == 0 && flip < 0 && shine_mask.empty();
   }
 };
 

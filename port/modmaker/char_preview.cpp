@@ -1157,7 +1157,7 @@ struct GpuVertex {
 };
 struct Cb {
   float viewproj[16];
-  float flags[4];  // x: alpha test, y: the floor
+  float flags[4];  // x: alpha test, y: the floor, z: the normals (NormalMode)
   float key[4];    // toward the key light (view space, camera relative: upper left)
   float fill[4];   // toward the fill light (lower right)
   float fwd[4];    // the camera's forward
@@ -1179,8 +1179,11 @@ float4 ps(VO i) : SV_Target {
   float4 tx = t.Sample(s, i.uv);
   if (flags.x > 0.5 && tx.a < 0.3) discard;
   float3 n = normalize(i.n + 1e-5);
-  float side = dot(n, fwd.xyz) > 0 ? -1 : 1;
-  n *= side;  // (the back of a two-sided part: cloth, hair cards)
+  // (a culled part lit as the game lights it - its normals point in, so the game's light comes from -n: a part with
+  // its faces the wrong way round shows dark and inside out here too; flipped: turned over. Both sides: the back of
+  // cloth and hair cards faces the camera)
+  if (flags.z > 0.5) n = -n;
+  else if (flags.z > -0.5) n *= dot(n, fwd.xyz) > 0 ? -1 : 1;
   if (mat.z > 0.5 && dot(i.t, i.t) > 1e-8) {  // the normal map (tangent space, +U along the tangent)
     float3 T = normalize(i.t - n * dot(n, i.t)), B = cross(n, T);
     float3 m = tn.Sample(s, i.uv).xyz * 2 - 1;
@@ -1213,6 +1216,7 @@ ID3D11Buffer* g_cb = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_raster = nullptr;
 ID3D11RasterizerState* g_raster_cull = nullptr;  // (culled meshes: render flag 0x2)
+ID3D11RasterizerState* g_raster_cull_front = nullptr;  // (culled and turned over: Flip faces)
 ID3D11DepthStencilState* g_depth = nullptr;
 ID3D11ShaderResourceView* g_white = nullptr;
 ID3D11ShaderResourceView* g_floor_tex = nullptr;  // the ring canvas with a 1 m grid
@@ -1233,6 +1237,7 @@ struct GpuMesh {
   ID3D11ShaderResourceView* mask = nullptr;  // a skin's shine mask: this map's alpha (the pac's normal map, kept when it's replaced)
   float spec = 0.5f, spec_pow = 50, tint[3] = {1, 1, 1};
   bool culled = true;
+  bool flipped = false;      // (the panel's Flip faces: its fronts are its backs)
   bool skin_params = false;  // (PMesh) - culled too: the game's skin shader, shine from the normal map's alpha
   int spec_alpha = -1;  // the shine's mask: -1 the game's (skin: the normal map's alpha, else the colour's), 0 none, 1 the colour's alpha, 2 its brightness
   uint32_t model_id = 0;
@@ -1482,6 +1487,8 @@ bool CreatePipeline() {
   rd.CullMode = D3D11_CULL_BACK;  // (a culled mesh, flag 0x2: the game's fronts are clockwise in this view - checked on stock bodies)
   rd.FrontCounterClockwise = FALSE;
   g_dev->CreateRasterizerState(&rd, &g_raster_cull);
+  rd.CullMode = D3D11_CULL_FRONT;
+  g_dev->CreateRasterizerState(&rd, &g_raster_cull_front);
   D3D11_DEPTH_STENCIL_DESC dd = {};
   dd.DepthEnable = TRUE;
   dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
@@ -1974,6 +1981,7 @@ GpuMesh Previewed(const GpuMesh& g) {
   if (e.cutout >= 0) o.cutout = e.cutout != 0;
   if (e.cutout == 1) o.skin_params = false;  // (PatchMaterials: g_fSweatSPA 0 - the colour-alpha shader, which cuts)
   if (e.two_sided >= 0) o.culled = e.two_sided == 0;
+  if (e.flip == 1) o.flipped = !o.flipped;
   if (e.normal == 1) {  // (as PatchMaterials: a skin keeps its old shine mask unless the picture has an alpha)
     o.ntex = PreviewNormal(e.normal_file);
     if (g_preview_normal_alpha[e.normal_file]) o.mask = o.ntex;
@@ -2002,10 +2010,14 @@ void UseMaterial(Cb* c, const GpuMesh* g) {
   for (int k = 0; k < 3; ++k) c->tint[k] = g ? g->tint[k] : 1;
   c->tint[3] = 1;
 }
+// The shader's normals (flags.z): 0 both sides (toward the camera), 1 culled (the game's: they point in), -1 culled
+// and turned over.
+float NormalMode(const GpuMesh* g) { return !g || !g->culled ? 0.0f : g->flipped ? -1.0f : 1.0f; }
 void BindMaterial(const GpuMesh* g) {
   ID3D11ShaderResourceView* n[2] = {g && g->ntex ? g->ntex : nullptr, g && g->mask ? g->mask : nullptr};
   g_ctx->PSSetShaderResources(1, 2, n);
-  g_ctx->RSSetState(g && g->culled && g_raster_cull ? g_raster_cull : g_raster);
+  ID3D11RasterizerState* cull = g && g->flipped ? g_raster_cull_front : g_raster_cull;
+  g_ctx->RSSetState(g && g->culled && cull ? cull : g_raster);
 }
 
 void Render(int w, int h) {
@@ -2155,7 +2167,7 @@ void Render(int w, int h) {
     Cb* c = static_cast<Cb*>(ms.pData);
     std::memcpy(c->viewproj, viewproj, 64);
     UseMaterial(c, g);
-    c->flags[0] = cutout, c->flags[1] = floor, c->flags[2] = c->flags[3] = 0;
+    c->flags[0] = cutout, c->flags[1] = floor, c->flags[2] = NormalMode(g), c->flags[3] = 0;
     const float k4[4] = {key.x, key.y, key.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
     std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);
     std::memcpy(c->shadow, shadows, sizeof shadows);
@@ -2552,6 +2564,7 @@ void DrawPosed(Slot& sl, const std::vector<Xf>& pose, ID3D11RenderTargetView* rt
     std::memset(c, 0, sizeof *c);
     std::memcpy(c->viewproj, viewproj, 64);
     c->flags[0] = g.cutout && !(g.skin_params && g.culled) ? 1.0f : 0.0f;
+    c->flags[2] = NormalMode(&g);
     UseMaterial(c, &g);
     const float k4[4] = {key_l.x, key_l.y, key_l.z, 0}, f4[4] = {fill.x, fill.y, fill.z, 0}, w4[4] = {fwd.x, fwd.y, fwd.z, 0};
     std::memcpy(c->key, k4, 16), std::memcpy(c->fill, f4, 16), std::memcpy(c->fwd, w4, 16);
